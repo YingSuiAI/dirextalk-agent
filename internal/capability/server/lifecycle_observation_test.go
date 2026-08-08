@@ -154,7 +154,7 @@ func TestCapabilityObservationLifecycleGateAndDeprovisionException(t *testing.T)
 	s.grantKey = deprovWatchPublicKey
 	deprovStream := newObservationWatchStream()
 	err = s.WatchOperation(&capv1.WatchOperationRequest{OperationId: deprov.ID, CallContext: deprovWatchCall, Permission: deprovWatchPermission}, deprovStream)
-	if !errors.Is(err, context.Canceled) {
+	if err != nil && !errors.Is(err, context.Canceled) && status.Code(err) != codes.Canceled {
 		t.Fatalf("deprovision WatchOperation did not stream terminal event: %v", err)
 	}
 	var terminal bool

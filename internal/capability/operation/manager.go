@@ -1135,6 +1135,9 @@ func (m *Manager) Watch(ctx context.Context, operationID string, afterSequence i
 					return
 				}
 			}
+			if terminalEvent(event) {
+				return
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -1215,8 +1218,40 @@ func (m *Manager) emitEvent(ctx context.Context, operationID, eventType string, 
 func (m *Manager) publishEvent(e Event) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for w := range m.watchers[e.OperationID] {
-		m.sendWatcherEventLocked(w, e)
+	set := m.watchers[e.OperationID]
+	for w := range set {
+		sent := m.sendWatcherEventLocked(w, e)
+		if !terminalEvent(e) {
+			continue
+		}
+		// A terminal event must always win over buffered progress. Progress is
+		// durable and can be resumed by sequence, while retaining a watcher
+		// after its operation has ended permanently consumes one HTTP/2 stream.
+		if !sent {
+			select {
+			case <-w.done:
+				sent = true
+			default:
+				for !sent {
+					<-w.ch
+					sent = m.sendWatcherEventLocked(w, e)
+				}
+			}
+		}
+		delete(set, w)
+		closeWatcherLocked(w)
+	}
+	if len(set) == 0 {
+		delete(m.watchers, e.OperationID)
+	}
+}
+
+func terminalEvent(event Event) bool {
+	switch event.EventType {
+	case "result", "error", "cancelled":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1232,6 +1267,11 @@ func (m *Manager) sendWatcherEvent(w *watcher, event Event) bool {
 }
 
 func (m *Manager) sendWatcherEventLocked(w *watcher, event Event) bool {
+	select {
+	case <-w.done:
+		return false
+	default:
+	}
 	if _, ok := w.seen[event.Sequence]; ok {
 		return true
 	}
@@ -1247,6 +1287,11 @@ func (m *Manager) sendWatcherEventLocked(w *watcher, event Event) bool {
 func (m *Manager) sendWatcherEventBlocking(ctx context.Context, w *watcher, event Event) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	select {
+	case <-w.done:
+		return false
+	default:
+	}
 	if _, ok := w.seen[event.Sequence]; ok {
 		return true
 	}

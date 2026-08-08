@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -897,6 +898,111 @@ func TestManager_Watch(t *testing.T) {
 	// 验证至少收到了 accepted 事件
 	if len(eventTypes) == 0 {
 		t.Error("Should have received at least one event")
+	}
+}
+
+func TestManager_WatchReplaysTerminalEventAndCloses(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-watch-terminal-replay", CapabilityID: "test.cap.v1", OperationName: "mutate", RequestJSON: []byte(`{}`), RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	if err := manager.Start(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Complete(context.Background(), op.ID, []byte(`{"done":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	events, err := manager.Watch(context.Background(), op.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var types []string
+	for event := range events {
+		types = append(types, event.EventType)
+	}
+	if len(types) == 0 || types[len(types)-1] != "result" {
+		t.Fatalf("replayed event types=%v", types)
+	}
+	manager.mu.Lock()
+	watchers := len(manager.watchers)
+	manager.mu.Unlock()
+	if watchers != 0 {
+		t.Fatalf("terminal replay retained %d watcher sets", watchers)
+	}
+}
+
+func TestManager_WatchLiveTerminalClosesAcrossReplayRace(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-watch-terminal-live", CapabilityID: "test.cap.v1", OperationName: "mutate", RequestJSON: []byte(`{}`), RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	if err := manager.Start(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	events, err := manager.Watch(context.Background(), op.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Complete immediately so the terminal publication races the watcher's
+	// durable replay. The terminal event must be delivered exactly once and the
+	// channel must close in either ordering.
+	if err := manager.Complete(context.Background(), op.ID, []byte(`{"done":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	terminal := 0
+	for event := range events {
+		if terminalEvent(event) {
+			terminal++
+		}
+	}
+	if terminal != 1 {
+		t.Fatalf("terminal events=%d, want 1", terminal)
+	}
+	manager.mu.Lock()
+	watchers := len(manager.watchers)
+	manager.mu.Unlock()
+	if watchers != 0 {
+		t.Fatalf("live terminal retained %d watcher sets", watchers)
+	}
+}
+
+func TestManager_TerminalOperationsDoNotAccumulateWatchers(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	const count = 80
+	channels := make([]<-chan Event, 0, count)
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("op-watch-capacity-%03d", i)
+		op := &Operation{ID: id, CapabilityID: "test.cap.v1", OperationName: "mutate", RequestJSON: []byte(`{}`), RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+		if err := manager.Start(context.Background(), op); err != nil {
+			t.Fatalf("start %d: %v", i, err)
+		}
+		events, err := manager.Watch(context.Background(), id, 0)
+		if err != nil {
+			t.Fatalf("watch %d: %v", i, err)
+		}
+		channels = append(channels, events)
+		if err := manager.Complete(context.Background(), id, []byte(`{"done":true}`)); err != nil {
+			t.Fatalf("complete %d: %v", i, err)
+		}
+	}
+	for i, events := range channels {
+		terminal := 0
+		for event := range events {
+			if terminalEvent(event) {
+				terminal++
+			}
+		}
+		if terminal != 1 {
+			t.Fatalf("watch %d terminal events=%d", i, terminal)
+		}
+	}
+	manager.mu.Lock()
+	watchers := len(manager.watchers)
+	manager.mu.Unlock()
+	if watchers != 0 {
+		t.Fatalf("%d terminal operations retained %d watcher sets", count, watchers)
 	}
 }
 
