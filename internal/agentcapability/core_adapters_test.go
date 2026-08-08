@@ -1179,6 +1179,31 @@ func TestChatCapabilitySchemaRequiresProfilePins(t *testing.T) {
 	}
 }
 
+func TestChatCapabilityPinsDurableStreamResultAndEventSchemas(t *testing.T) {
+	descriptor := (&coreChatCapability{}).Descriptor()
+	for _, operation := range descriptor.GetOperations() {
+		if operation.GetOperationId() != "stream_chat" {
+			continue
+		}
+		checks := []struct {
+			name   string
+			schema string
+			want   string
+		}{
+			{name: "result", schema: operation.GetResultSchemaJson(), want: "e517caf92e89459a4b9e6318b519765499bfa0e30c077c0bf004cfd852ea5545"},
+			{name: "event", schema: operation.GetEventSchemaJson(), want: "dad787ab7255e30302327d0cc1467503d43ed5f1ec9ff869d968edb810e98966"},
+		}
+		for _, check := range checks {
+			digest := sha256.Sum256([]byte(check.schema))
+			if got := hex.EncodeToString(digest[:]); got != check.want {
+				t.Fatalf("stream %s schema digest = %s, want %s: %s", check.name, got, check.want, check.schema)
+			}
+		}
+		return
+	}
+	t.Fatal("stream_chat descriptor is missing")
+}
+
 type durableTurnCapabilityStub struct {
 	conversation coreconversation.Conversation
 }

@@ -1849,7 +1849,14 @@ func descriptor(id, name, description string, specs []opSpec) *capv1.CapabilityD
 
 const publicTurnMetadataSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"last_sequence":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["accepted","running","waiting_confirmation","completed","canceled","failed"],"type":"string"},"terminal_code":{"type":"string"},"terminal_summary":{"type":"string"},"turn_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["turn_id","conversation_id","state","revision","last_sequence","terminal_code","terminal_summary","created_at","updated_at"],"type":"object"}`
 
-func operationEventSchema(string, string) string {
+const durableChatStreamResultSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"done":{"const":true,"type":"boolean"},"idempotency_key":{"format":"uuid","type":"string"},"message":{"type":"object"},"model_profile_id":{"format":"uuid","type":"string"},"references":{"items":{"type":"object"},"type":"array"},"related_plan_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"related_task_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"revision":{"minimum":1,"type":"integer"},"tool_results":{"items":{"type":"object"},"type":"array"},"tool_summaries":{"items":{"type":"string"},"type":"array"}},"required":["idempotency_key","conversation_id","revision","message","done","model_profile_id"],"type":"object"}`
+
+const durableChatStreamEventSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"error_code":{"type":"string"},"error_summary":{"type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"kind":{"enum":["accepted","started","delta","tool_call","tool_result","done","error"],"type":"string"},"response":` + durableChatStreamResultSchema + `,"revision":{"minimum":1,"type":"integer"},"text":{"type":"string"},"tool_call":{"type":"object"},"tool_result":{"type":"object"},"turn_id":{"format":"uuid","type":"string"}},"required":["kind","idempotency_key","conversation_id","turn_id","revision"],"type":"object"}`
+
+func operationEventSchema(capabilityID, operation string) string {
+	if capabilityID == "agent.chat.v1" && operation == "stream_chat" {
+		return durableChatStreamEventSchema
+	}
 	return `{"type":"object"}`
 }
 
@@ -1867,6 +1874,8 @@ func operationResultSchema(capabilityID, operation string) string {
 		return `{"additionalProperties":false,"properties":{"expires_at":{"format":"date-time","type":"string"},"max_chunk_bytes":{"minimum":1,"type":"integer"},"received_size":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"source_id":{"format":"uuid","type":"string"},"status":{"enum":["receiving","committed","consumed"],"type":"string"},"turn_request_id":{"format":"uuid","type":"string"},"upload_id":{"format":"uuid","type":"string"}},"required":["upload_id","source_id","turn_request_id","status","received_size","max_chunk_bytes","revision","expires_at"],"type":"object"}`
 	case "agent.chat.v1:upload_attachment_commit":
 		return `{"additionalProperties":false,"properties":{"expires_at":{"format":"date-time","type":"string"},"kind":{"enum":["image","file","workspace_archive"],"type":"string"},"mime_type":{"maxLength":255,"minLength":1,"type":"string"},"name":{"maxLength":255,"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"sha256":{"pattern":"^[a-f0-9]{64}$","type":"string"},"size_bytes":{"maximum":8388608,"minimum":1,"type":"integer"},"source_id":{"format":"uuid","type":"string"},"status":{"const":"committed","type":"string"},"turn_request_id":{"format":"uuid","type":"string"}},"required":["source_id","revision","turn_request_id","kind","name","mime_type","size_bytes","sha256","status","expires_at"],"type":"object"}`
+	case "agent.chat.v1:stream_chat":
+		return durableChatStreamResultSchema
 	case "agent.models.v1:sync_models":
 		return `{"additionalProperties":false,"properties":{"default_client_profile_id":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"profiles":{"type":"array"}},"required":["profiles","default_client_profile_id","default_conversation_client_profile_id","default_tool_client_profile_id","default_embedding_client_profile_id","default_speech_client_profile_id"],"type":"object"}`
 	case "agent.models.v1:list_models":
