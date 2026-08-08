@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -699,13 +700,18 @@ func consumeDurableTurnStreamWithConversation(
 		case coreconversation.EventError:
 			return nil, classifyDurableTurnFailure(streamEvent.ErrCode)
 		default:
-			if err := emitCapabilityProgress(ctx, operationID, *streamEvent, progress); err != nil {
+			projected, err := projectDurableChatStreamEvent(turn, *streamEvent)
+			if err != nil {
+				return nil, err
+			}
+			if err := emitCapabilityProgressValue(ctx, operationID, projected, progress); err != nil {
 				return nil, err
 			}
 		}
 	}
 	if response != nil {
-		return marshalResult(response, nil)
+		projected, err := projectDurableChatStreamResult(turn, *response)
+		return marshalResult(projected, err)
 	}
 	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return nil, coreconversation.ErrCanceled
@@ -713,10 +719,80 @@ func consumeDurableTurnStreamWithConversation(
 	return nil, coreconversation.ErrChatFailed
 }
 
+// durableChatStreamResult is the public durable stream wire DTO. Core's
+// ChatResponse deliberately keeps its internal request_id name, so it must
+// never be serialized directly at the neutral Capability boundary.
+type durableChatStreamResult struct {
+	IdempotencyKey string                        `json:"idempotency_key"`
+	ConversationID string                        `json:"conversation_id"`
+	Revision       uint64                        `json:"revision"`
+	Message        coreconversation.Message      `json:"message"`
+	Done           bool                          `json:"done"`
+	ModelProfileID string                        `json:"model_profile_id"`
+	RelatedTaskIDs []string                      `json:"related_task_ids,omitempty"`
+	RelatedPlanIDs []string                      `json:"related_plan_ids,omitempty"`
+	References     []coreconversation.Reference  `json:"references,omitempty"`
+	ToolSummaries  []string                      `json:"tool_summaries,omitempty"`
+	ToolResults    []coreconversation.ToolResult `json:"tool_results,omitempty"`
+}
+
+// durableChatStreamEvent is the exact event schema advertised by
+// durableChatStreamEventSchema. TurnSequence remains an internal replay
+// cursor and is intentionally not exposed by this versioned wire contract.
+type durableChatStreamEvent struct {
+	Kind           string                       `json:"kind"`
+	IdempotencyKey string                       `json:"idempotency_key"`
+	ConversationID string                       `json:"conversation_id"`
+	TurnID         string                       `json:"turn_id"`
+	Revision       uint64                       `json:"revision"`
+	Text           string                       `json:"text,omitempty"`
+	ToolCall       *coreconversation.ToolCall   `json:"tool_call,omitempty"`
+	ToolResult     *coreconversation.ToolResult `json:"tool_result,omitempty"`
+	ErrorCode      string                       `json:"error_code,omitempty"`
+	ErrorSummary   string                       `json:"error_summary,omitempty"`
+}
+
+func projectDurableChatStreamResult(turn coreconversation.Turn, response coreconversation.ChatResponse) (durableChatStreamResult, error) {
+	if !coretask.ValidUUID(turn.RequestID) || !coretask.ValidUUID(turn.ConversationID) ||
+		response.RequestID != turn.RequestID || response.ConversationID != turn.ConversationID ||
+		response.Revision == 0 || !response.Done || !coretask.ValidUUID(response.ModelProfileID) || response.Message.Validate() != nil ||
+		response.ModelProfileID != response.Message.ModelProfileID ||
+		!slices.Equal(response.RelatedTaskIDs, response.Message.RelatedTaskIDs) ||
+		!slices.Equal(response.RelatedPlanIDs, response.Message.RelatedPlanIDs) ||
+		!slices.Equal(response.References, response.Message.References) {
+		return durableChatStreamResult{}, coreconversation.ErrChatFailed
+	}
+	return durableChatStreamResult{
+		IdempotencyKey: turn.RequestID, ConversationID: turn.ConversationID,
+		Revision: response.Revision, Message: response.Message, Done: true,
+		ModelProfileID: response.ModelProfileID,
+		RelatedTaskIDs: append([]string(nil), response.Message.RelatedTaskIDs...),
+		RelatedPlanIDs: append([]string(nil), response.Message.RelatedPlanIDs...),
+		References:     append([]coreconversation.Reference(nil), response.Message.References...),
+		ToolSummaries:  append([]string(nil), response.ToolSummaries...),
+		ToolResults:    append([]coreconversation.ToolResult(nil), response.ToolResults...),
+	}, nil
+}
+
+func projectDurableChatStreamEvent(turn coreconversation.Turn, event coreconversation.StreamEvent) (durableChatStreamEvent, error) {
+	if !coretask.ValidUUID(turn.ID) || !coretask.ValidUUID(turn.RequestID) || !coretask.ValidUUID(turn.ConversationID) || turn.Revision == 0 ||
+		event.RequestID != turn.RequestID || event.ConversationID != turn.ConversationID {
+		return durableChatStreamEvent{}, coreconversation.ErrChatFailed
+	}
+	return durableChatStreamEvent{
+		Kind: string(event.Kind), IdempotencyKey: turn.RequestID, ConversationID: turn.ConversationID,
+		TurnID: turn.ID, Revision: turn.Revision, Text: event.Text,
+		ToolCall: event.ToolCall, ToolResult: event.ToolResult,
+		ErrorCode: event.ErrCode, ErrorSummary: event.ErrSummary,
+	}, nil
+}
+
 func durableTurnStreamEvent(turn coreconversation.Turn, event coreconversation.TurnEvent) *coreconversation.StreamEvent {
 	base := coreconversation.StreamEvent{TurnSequence: event.Sequence, RequestID: turn.RequestID, ConversationID: turn.ConversationID}
 	switch event.Kind {
-	case coreconversation.TurnEventAccepted, coreconversation.TurnEventStarted:
+	case coreconversation.TurnEventAccepted:
+		base.Kind = coreconversation.StreamEventKind("accepted")
+	case coreconversation.TurnEventStarted:
 		base.Kind = coreconversation.EventStarted
 	case coreconversation.TurnEventDelta:
 		base.Kind, base.Text = coreconversation.EventDelta, event.Text

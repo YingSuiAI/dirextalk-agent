@@ -256,8 +256,10 @@ func TestConsumeChatStreamErrorsRemainClassifiable(t *testing.T) {
 
 func TestConsumeDurableTurnStreamPersistsReplayableProgressAndTerminal(t *testing.T) {
 	operationID := uuid.NewString()
-	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: operationID, ConversationID: uuid.NewString()}
-	response := &coreconversation.ChatResponse{RequestID: operationID, ConversationID: turn.ConversationID, Done: true}
+	profileID := uuid.NewString()
+	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: operationID, ConversationID: uuid.NewString(), Revision: 1}
+	message := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "complete", CreatedAt: time.Now().UTC(), ModelProfileID: profileID}
+	response := &coreconversation.ChatResponse{RequestID: operationID, ConversationID: turn.ConversationID, Revision: 2, Message: message, Done: true, ModelProfileID: profileID}
 	events := make(chan coreconversation.TurnEvent, 3)
 	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 1, Kind: coreconversation.TurnEventAccepted}
 	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 2, Kind: coreconversation.TurnEventStarted}
@@ -265,10 +267,10 @@ func TestConsumeDurableTurnStreamPersistsReplayableProgressAndTerminal(t *testin
 	close(events)
 
 	var progressIDs []string
-	var progressEvents []coreconversation.StreamEvent
+	var progressEvents []map[string]any
 	ctx := capabilityoperation.WithOperationID(context.Background(), operationID)
 	raw, err := consumeDurableTurnStream(ctx, "stream_chat", turn, events, func(_ context.Context, gotID string, payload []byte) error {
-		var event coreconversation.StreamEvent
+		var event map[string]any
 		if err := json.Unmarshal(payload, &event); err != nil {
 			return err
 		}
@@ -283,16 +285,73 @@ func TestConsumeDurableTurnStreamPersistsReplayableProgressAndTerminal(t *testin
 		t.Fatalf("progress ids=%v events=%+v", progressIDs, progressEvents)
 	}
 	for index, event := range progressEvents {
-		if progressIDs[index] != operationID || event.RequestID != operationID || event.ConversationID != turn.ConversationID {
+		assertValueMatchesAdvertisedObjectSchema(t, []byte(durableChatStreamEventSchema), event)
+		if progressIDs[index] != operationID || event["idempotency_key"] != operationID || event["conversation_id"] != turn.ConversationID || event["turn_id"] != turn.ID || event["revision"] != float64(1) {
 			t.Fatalf("progress[%d] id=%q event=%+v", index, progressIDs[index], event)
 		}
+		if _, present := event["request_id"]; present {
+			t.Fatalf("progress[%d] leaked Core request_id: %+v", index, event)
+		}
+		if _, present := event["turn_sequence"]; present {
+			t.Fatalf("progress[%d] leaked Core turn_sequence: %+v", index, event)
+		}
 	}
-	if progressEvents[0].Kind != coreconversation.EventStarted || progressEvents[0].TurnSequence != 1 || progressEvents[1].Kind != coreconversation.EventStarted || progressEvents[1].TurnSequence != 2 {
+	if progressEvents[0]["kind"] != "accepted" || progressEvents[1]["kind"] != "started" {
 		t.Fatalf("progress events=%+v", progressEvents)
 	}
-	var result coreconversation.ChatResponse
-	if json.Unmarshal(raw, &result) != nil || result.RequestID != operationID || result.ConversationID != turn.ConversationID || !result.Done {
+	var result map[string]any
+	if json.Unmarshal(raw, &result) != nil || result["idempotency_key"] != operationID || result["conversation_id"] != turn.ConversationID || result["done"] != true || result["revision"] != float64(2) {
 		t.Fatalf("terminal result=%s", raw)
+	}
+	assertValueMatchesAdvertisedObjectSchema(t, []byte(durableChatStreamResultSchema), result)
+	if _, present := result["request_id"]; present {
+		t.Fatalf("terminal result leaked Core request_id: %s", raw)
+	}
+}
+
+func assertValueMatchesAdvertisedObjectSchema(t *testing.T, schemaJSON []byte, value map[string]any) {
+	t.Helper()
+	var schema struct {
+		AdditionalProperties bool                       `json:"additionalProperties"`
+		Properties           map[string]json.RawMessage `json:"properties"`
+		Required             []string                   `json:"required"`
+	}
+	if err := json.Unmarshal(schemaJSON, &schema); err != nil {
+		t.Fatalf("decode advertised schema: %v", err)
+	}
+	if schema.AdditionalProperties {
+		t.Fatal("advertised durable wire schema must reject additional properties")
+	}
+	for field := range value {
+		if _, allowed := schema.Properties[field]; !allowed {
+			t.Fatalf("wire field %q is outside advertised schema: %+v", field, value)
+		}
+	}
+	for _, field := range schema.Required {
+		if _, present := value[field]; !present {
+			t.Fatalf("wire value omits required field %q: %+v", field, value)
+		}
+	}
+}
+
+func TestDurableChatWireProjectionFailsClosedOnInvalidAuthority(t *testing.T) {
+	profileID := uuid.NewString()
+	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Revision: 1}
+	message := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "complete", CreatedAt: time.Now().UTC(), ModelProfileID: profileID}
+	response := coreconversation.ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 2, Message: message, Done: true, ModelProfileID: profileID}
+	if _, err := projectDurableChatStreamResult(turn, response); err != nil {
+		t.Fatal(err)
+	}
+	badResponse := response
+	badResponse.RequestID = uuid.NewString()
+	if _, err := projectDurableChatStreamResult(turn, badResponse); !errors.Is(err, coreconversation.ErrChatFailed) {
+		t.Fatalf("mismatched result identity err=%v", err)
+	}
+	badTurn := turn
+	badTurn.Revision = 0
+	event := coreconversation.StreamEvent{Kind: coreconversation.EventDelta, RequestID: turn.RequestID, ConversationID: turn.ConversationID, Text: "partial"}
+	if _, err := projectDurableChatStreamEvent(badTurn, event); !errors.Is(err, coreconversation.ErrChatFailed) {
+		t.Fatalf("zero event revision err=%v", err)
 	}
 }
 
@@ -1250,7 +1309,7 @@ func TestConsumeDurableTurnStreamPublishesWaitingConfirmationOffer(t *testing.T)
 		RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID}, References: references,
 		Status: "waiting_user", CreatedAt: now}
 	close(events)
-	var progress []coreconversation.StreamEvent
+	var progress []map[string]any
 	raw, err := consumeDurableTurnStreamWithConversation(
 		context.Background(), "stream_chat",
 		coreconversation.Turn{ID: turnID, RequestID: requestID, ConversationID: conversationID, State: coreconversation.TurnAccepted, Revision: 1},
@@ -1259,7 +1318,7 @@ func TestConsumeDurableTurnStreamPublishesWaitingConfirmationOffer(t *testing.T)
 			if operationID != "stream_chat" {
 				t.Fatalf("operation id = %q", operationID)
 			}
-			var event coreconversation.StreamEvent
+			var event map[string]any
 			if err := json.Unmarshal(raw, &event); err != nil {
 				return err
 			}
@@ -1270,14 +1329,14 @@ func TestConsumeDurableTurnStreamPublishesWaitingConfirmationOffer(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var response coreconversation.ChatResponse
+	var response durableChatStreamResult
 	if err := json.Unmarshal(raw, &response); err != nil {
 		t.Fatal(err)
 	}
-	if !response.Done || response.RequestID != requestID || response.Revision != 3 || response.Message.ID != message.ID ||
+	if !response.Done || response.IdempotencyKey != requestID || response.Revision != 3 || response.Message.ID != message.ID ||
 		len(response.RelatedTaskIDs) != 1 || len(response.RelatedPlanIDs) != 1 || len(response.References) != 3 ||
-		len(progress) != 2 || progress[0].Kind != coreconversation.EventStarted || progress[1].Kind != coreconversation.EventStarted ||
-		progress[0].RequestID != requestID || progress[0].ConversationID != conversationID {
+		len(progress) != 2 || progress[0]["kind"] != "accepted" || progress[1]["kind"] != "started" ||
+		progress[0]["idempotency_key"] != requestID || progress[0]["conversation_id"] != conversationID || progress[0]["turn_id"] != turnID {
 		t.Fatalf("offer response=%+v progress=%+v", response, progress)
 	}
 }
