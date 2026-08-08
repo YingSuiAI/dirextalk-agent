@@ -227,8 +227,8 @@ func (s *Store) ResolveProfile(ctx context.Context, id string) (coremodel.Profil
 
 func (s *Store) GetProfileDefaults(ctx context.Context) (coremodel.ProfileDefaults, error) {
 	var out coremodel.ProfileDefaults
-	var conversation, embedding, speech *string
-	err := s.pool.QueryRow(ctx, `SELECT default_conversation_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id FROM core_model_profile_defaults WHERE singleton=true`).Scan(&conversation, &embedding, &speech)
+	var conversation, tool, embedding, speech *string
+	err := s.pool.QueryRow(ctx, `SELECT default_conversation_client_profile_id,default_tool_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id FROM core_model_profile_defaults WHERE singleton=true`).Scan(&conversation, &tool, &embedding, &speech)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, nil
 	}
@@ -237,6 +237,9 @@ func (s *Store) GetProfileDefaults(ctx context.Context) (coremodel.ProfileDefaul
 	}
 	if conversation != nil {
 		out.ConversationClientProfileID = *conversation
+	}
+	if tool != nil {
+		out.ToolClientProfileID = *tool
 	}
 	if embedding != nil {
 		out.EmbeddingClientProfileID = *embedding
@@ -457,7 +460,7 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 		return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
 	}
 	seen := make(map[string]struct{}, len(cmd.Entries))
-	out := coremodel.SyncProfileResult{DefaultClientProfileID: cmd.DefaultClientProfileID, DefaultConversationProfileID: cmd.DefaultConversationProfileID, DefaultEmbeddingProfileID: cmd.DefaultEmbeddingProfileID, DefaultSpeechProfileID: cmd.DefaultSpeechProfileID, Profiles: make([]coremodel.PublicProfile, 0, len(cmd.Entries))}
+	out := coremodel.SyncProfileResult{DefaultClientProfileID: cmd.DefaultClientProfileID, DefaultConversationProfileID: cmd.DefaultConversationProfileID, DefaultToolProfileID: cmd.DefaultToolProfileID, DefaultEmbeddingProfileID: cmd.DefaultEmbeddingProfileID, DefaultSpeechProfileID: cmd.DefaultSpeechProfileID, Profiles: make([]coremodel.PublicProfile, 0, len(cmd.Entries))}
 	for _, e := range cmd.Entries {
 		if e.APIKey != nil && *e.APIKey == "" {
 			return coremodel.SyncProfileResult{}, coremodel.ErrAPIKeyUnavailable
@@ -583,19 +586,30 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 	if out.DefaultClientProfileID == "" {
 		out.DefaultClientProfileID = out.DefaultConversationProfileID
 	}
-	for _, value := range []string{out.DefaultConversationProfileID, out.DefaultEmbeddingProfileID, out.DefaultSpeechProfileID} {
-		if value == "" {
+	for _, binding := range []struct {
+		value string
+		kind  string
+	}{
+		{out.DefaultConversationProfileID, coremodel.ModelKindConversation},
+		{out.DefaultToolProfileID, coremodel.ModelKindConversation},
+		{out.DefaultEmbeddingProfileID, coremodel.ModelKindEmbedding},
+		{out.DefaultSpeechProfileID, coremodel.ModelKindSpeech},
+	} {
+		if binding.value == "" {
 			continue
 		}
-		var exists bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL)`, value).Scan(&exists); err != nil || !exists {
-			if err != nil {
-				return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
-			}
+		var kind string
+		if err = tx.QueryRow(ctx, `SELECT model_kind FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL`, binding.value).Scan(&kind); errors.Is(err, pgx.ErrNoRows) {
 			return coremodel.SyncProfileResult{}, coremodel.ErrProfileNotFound
 		}
+		if err != nil {
+			return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
+		}
+		if kind != binding.kind {
+			return coremodel.SyncProfileResult{}, coremodel.ErrInvalidProfile
+		}
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_defaults(singleton,default_client_profile_id,default_conversation_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id,updated_at) VALUES(true,$1,$2,$3,$4,clock_timestamp()) ON CONFLICT (singleton) DO UPDATE SET default_client_profile_id=EXCLUDED.default_client_profile_id,default_conversation_client_profile_id=EXCLUDED.default_conversation_client_profile_id,default_embedding_client_profile_id=EXCLUDED.default_embedding_client_profile_id,default_speech_client_profile_id=EXCLUDED.default_speech_client_profile_id,updated_at=EXCLUDED.updated_at`, nullableClientProfileID(out.DefaultClientProfileID), nullableClientProfileID(out.DefaultConversationProfileID), nullableClientProfileID(out.DefaultEmbeddingProfileID), nullableClientProfileID(out.DefaultSpeechProfileID)); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_defaults(singleton,default_client_profile_id,default_conversation_client_profile_id,default_tool_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id,updated_at) VALUES(true,$1,$2,$3,$4,$5,clock_timestamp()) ON CONFLICT (singleton) DO UPDATE SET default_client_profile_id=EXCLUDED.default_client_profile_id,default_conversation_client_profile_id=EXCLUDED.default_conversation_client_profile_id,default_tool_client_profile_id=EXCLUDED.default_tool_client_profile_id,default_embedding_client_profile_id=EXCLUDED.default_embedding_client_profile_id,default_speech_client_profile_id=EXCLUDED.default_speech_client_profile_id,updated_at=EXCLUDED.updated_at`, nullableClientProfileID(out.DefaultClientProfileID), nullableClientProfileID(out.DefaultConversationProfileID), nullableClientProfileID(out.DefaultToolProfileID), nullableClientProfileID(out.DefaultEmbeddingProfileID), nullableClientProfileID(out.DefaultSpeechProfileID)); err != nil {
 		return coremodel.SyncProfileResult{}, mapProfileDBError(err)
 	}
 	encoded, err := json.Marshal(out)

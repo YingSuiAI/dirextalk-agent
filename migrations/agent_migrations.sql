@@ -880,6 +880,7 @@ CREATE TABLE core_model_profile_defaults (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
     default_client_profile_id text REFERENCES core_model_profiles(client_profile_id),
     default_conversation_client_profile_id text REFERENCES core_model_profiles(client_profile_id),
+    default_tool_client_profile_id text REFERENCES core_model_profiles(client_profile_id),
     default_embedding_client_profile_id text REFERENCES core_model_profiles(client_profile_id),
     default_speech_client_profile_id text REFERENCES core_model_profiles(client_profile_id),
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
@@ -1314,6 +1315,48 @@ CREATE TABLE core_web_search_replays (
     idempotency_key uuid NOT NULL,
     request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
     response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 65536),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (owner_id, account_generation, idempotency_key)
+);
+
+-- Agent-owned typed text-tool configuration. The four built-ins are virtual
+-- at revision zero until the first full-list replacement is persisted.
+CREATE TABLE core_text_tool_configs (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    enabled boolean NOT NULL DEFAULT false,
+    revision bigint NOT NULL CHECK (revision > 0),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    CHECK (updated_at >= created_at),
+    PRIMARY KEY (owner_id, account_generation)
+);
+
+CREATE TABLE core_text_tool_items (
+    owner_id text NOT NULL,
+    account_generation bigint NOT NULL,
+    tool_id text NOT NULL CHECK (
+        tool_id IN ('translation','summary','explanation','search') OR
+        tool_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    ),
+    name text NOT NULL CHECK (octet_length(name) BETWEEN 1 AND 64),
+    system_prompt text NOT NULL CHECK (octet_length(system_prompt) BETWEEN 1 AND 16384),
+    tool_order integer NOT NULL CHECK (tool_order BETWEEN 0 AND 31),
+    enabled boolean NOT NULL,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (owner_id, account_generation, tool_id),
+    UNIQUE (owner_id, account_generation, tool_order),
+    FOREIGN KEY (owner_id, account_generation)
+        REFERENCES core_text_tool_configs(owner_id, account_generation) ON DELETE CASCADE
+);
+
+CREATE TABLE core_text_tool_replays (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    idempotency_key uuid NOT NULL,
+    request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 1048576),
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (owner_id, account_generation, idempotency_key)
 );

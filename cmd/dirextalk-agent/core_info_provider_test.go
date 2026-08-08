@@ -49,6 +49,7 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 			"plans_list", "runs_list", "secrets_list"),
 		coreInfoDescriptor("agent.voice.v1", true),
 		coreInfoDescriptor("agent.web_search.v1", true, "get_config", "update_config", "test"),
+		coreInfoDescriptor("agent.text_tools.v1", true, "get_config", "update_config", "execute"),
 		coreInfoDescriptor("agent.confirmations.v1", true),
 		coreInfoDescriptor("agent.skills.v1", true, append(
 			append([]string{"invoke_product"}, coreMCPRequiredOperations...),
@@ -96,6 +97,7 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 		"schedules.server",
 		"skills.server",
 		"task",
+		"text_tools.server",
 		"voice.server",
 		"web_search.server",
 	}
@@ -108,6 +110,18 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 	}
 	if !reflect.DeepEqual(status.Capabilities, want) {
 		t.Fatalf("Core status capabilities = %#v, want %#v", status.Capabilities, want)
+	}
+}
+
+func TestCoreInfoProviderRequiresCompleteTextToolOperations(t *testing.T) {
+	for _, missing := range coreTextToolsRequiredOperations {
+		descriptor := coreInfoDescriptor("agent.text_tools.v1", true, coreInfoOperationsWithout(coreTextToolsRequiredOperations, missing)...)
+		if got := coreDescriptorTokens(descriptor); len(got) != 0 {
+			t.Fatalf("missing %s projected text tools: %v", missing, got)
+		}
+	}
+	if got := coreDescriptorTokens(coreInfoDescriptor("agent.text_tools.v1", true, coreTextToolsRequiredOperations...)); !reflect.DeepEqual(got, []string{"text_tools.server"}) {
+		t.Fatalf("complete text tool descriptor tokens=%v", got)
 	}
 }
 

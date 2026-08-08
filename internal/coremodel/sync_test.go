@@ -59,6 +59,53 @@ func TestSyncProfilesPreservesMissingProfilesAndRotatesWriteOnlyKey(t *testing.T
 	}
 }
 
+func TestSyncProfilesPersistsIndependentConversationKindToolDefault(t *testing.T) {
+	repo := NewMemoryProfileRepository()
+	svc, err := NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := svc.Sync(context.Background(), SyncProfileCommand{
+		IdempotencyKey:               "a0000000-0000-4000-8000-000000000060",
+		DefaultConversationProfileID: "chat",
+		Entries:                      []SyncProfileEntry{syncEntry("chat", "Chat", "chat-key")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.DefaultToolProfileID != "" {
+		t.Fatalf("tool default fell back to conversation: %+v", first)
+	}
+	bound, err := svc.Sync(context.Background(), SyncProfileCommand{
+		IdempotencyKey:       "a0000000-0000-4000-8000-000000000061",
+		DefaultToolProfileID: "tool",
+		Entries:              []SyncProfileEntry{syncEntry("tool", "Tool", "tool-key")},
+	})
+	if err != nil || bound.DefaultToolProfileID != "tool" {
+		t.Fatalf("tool default=%+v err=%v", bound, err)
+	}
+	page, err := svc.List(context.Background(), ListProfileCommand{Limit: 10})
+	if err != nil || page.Defaults.ToolClientProfileID != "tool" || page.Defaults.ConversationClientProfileID != "" {
+		t.Fatalf("durable defaults=%+v err=%v", page.Defaults, err)
+	}
+
+	for index, entry := range []SyncProfileEntry{
+		{ClientProfileID: "embed", DisplayName: "Embed", Provider: ProviderOpenAICompatible, ModelKind: ModelKindEmbedding, Model: "embed", APIKey: stringPtr("embed-key")},
+		{ClientProfileID: "speech", DisplayName: "Speech", Provider: ProviderVolcVoice, ModelKind: ModelKindSpeech},
+	} {
+		_, err = svc.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: []string{"a0000000-0000-4000-8000-000000000062", "a0000000-0000-4000-8000-000000000063"}[index], DefaultToolProfileID: entry.ClientProfileID, Entries: []SyncProfileEntry{entry}})
+		if !errors.Is(err, ErrInvalidProfile) {
+			t.Fatalf("tool default accepted %s profile: %v", entry.ModelKind, err)
+		}
+	}
+	if _, err = svc.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: "a0000000-0000-4000-8000-000000000064", DefaultEmbeddingProfileID: "embed", Entries: []SyncProfileEntry{{ClientProfileID: "embed", DisplayName: "Embed", Provider: ProviderOpenAICompatible, ModelKind: ModelKindEmbedding, Model: "embed", APIKey: stringPtr("embed-key")}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.SyncProfiles(context.Background(), "a0000000-0000-4000-8000-000000000065", "memory-store-tool-kind", SyncProfileCommand{DefaultToolProfileID: "embed"}); !errors.Is(err, ErrInvalidProfile) {
+		t.Fatalf("memory repository accepted embedding tool default: %v", err)
+	}
+}
+
 func TestSyncProfilesPreservesAndReplacesProviderSecrets(t *testing.T) {
 	svc := newSyncTestService(t)
 	first := mustSync(t, svc, "a0000000-0000-4000-8000-000000000050", "primary", SyncProfileEntry{

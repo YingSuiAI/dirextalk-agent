@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
 
@@ -339,6 +340,40 @@ type IntrinsicExecutionResult struct {
 
 type IntrinsicResolver interface {
 	ResolveIntrinsicTools(context.Context, TurnLease) ([]ResolvedIntrinsic, error)
+}
+
+// ConversationScheduleCommand is the trusted, atomic boundary used by the
+// Agent-owned schedule intrinsic. The model never supplies any identity or
+// execution binding carried here.
+type ConversationScheduleCommand struct {
+	Lease    TurnLease
+	Schedule coretask.Schedule
+	Mutation coretask.MutationCommand
+	Response ChatResponse
+}
+
+func (c ConversationScheduleCommand) Validate() error {
+	turn := c.Lease.Turn
+	if turn.ID == "" || turn.RequestID == "" || strings.TrimSpace(turn.OwnerID) == "" || turn.AccountGeneration == 0 ||
+		c.Lease.LeaseID == "" || c.Lease.Epoch == 0 || c.Schedule.Validate() != nil || c.Mutation.Validate() != nil ||
+		c.Mutation.ExpectedRevision != 0 || c.Response.RequestID != turn.RequestID ||
+		c.Response.ConversationID != turn.ConversationID || c.Response.ModelProfileID != turn.ProfileID || !c.Response.Done ||
+		c.Response.Message.ModelProfileID != turn.ProfileID || c.Response.Message.Validate() != nil {
+		return ErrInvalid
+	}
+	template := c.Schedule.Spec
+	if template.Kind != coretask.TaskKindAgent || template.ConversationID != turn.ConversationID || template.ModelProfileID != turn.ProfileID ||
+		len(template.AttachmentRefs) != 0 || len(template.Extensions) != 0 || len(template.KnowledgeRefs) != 0 || template.Payload.Agent == nil ||
+		template.Payload.Agent.OwnerID != strings.TrimSpace(turn.OwnerID) || template.Payload.Agent.AccountGeneration != turn.AccountGeneration ||
+		template.Payload.ConversationTool != nil || template.Payload.Extension != nil || template.Payload.KnowledgeIndex != nil || template.Payload.AWSChange != nil ||
+		template.Payload.Workload != nil || template.Payload.CloudWorker != nil || template.Payload.ExecutionV2Run != nil {
+		return ErrInvalid
+	}
+	return nil
+}
+
+type ConversationScheduleStore interface {
+	CommitConversationSchedule(context.Context, ConversationScheduleCommand) (coretask.Schedule, error)
 }
 
 // ExtensionSnapshotResolver may resolve an already-pinned snapshot to an
@@ -895,7 +930,7 @@ func (s ExtensionSelection) Validate() error {
 		return ErrInvalid
 	}
 	for _, t := range s.AllowedTools {
-		if strings.TrimSpace(t) == "" || t == coremodel.IntrinsicCloudWorkerProposeToolName {
+		if strings.TrimSpace(t) == "" || coremodel.IsIntrinsicToolName(t) {
 			return ErrInvalid
 		}
 	}

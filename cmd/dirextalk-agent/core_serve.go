@@ -37,6 +37,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corevoice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
@@ -111,6 +112,12 @@ func serveCore(cfg config.Config) error {
 	profiles, err := coremodel.NewService(store, coremodel.NewConnectionTester())
 	if err != nil {
 		return fmt.Errorf("initialize model profile service: %w", err)
+	}
+	textToolService, err := coretexttool.NewService(postgres.NewCoreTextToolStore(store), profiles, webSearchService, func(profile coremodel.Profile) (coremodel.Client, error) {
+		return coremodel.NewClient(profile, coremodel.WithTimeout(coretexttool.ExecutionLimit))
+	})
+	if err != nil {
+		return fmt.Errorf("initialize text tool service: %w", err)
 	}
 	modelService, err := rpcapi.NewModelProfileService(profiles)
 	if err != nil {
@@ -529,6 +536,7 @@ func serveCore(cfg config.Config) error {
 				return awsComposition.domain
 			}(),
 			WebSearch:   webSearchService,
+			TextTools:   textToolService,
 			Voice:       voiceService,
 			Deprovision: deprovisionService,
 			DeprovisionPurge: func(ctx context.Context) error {

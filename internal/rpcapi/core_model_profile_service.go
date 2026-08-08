@@ -58,7 +58,7 @@ func (s *ModelProfileService) List(ctx context.Context, req *agentv1.ModelProfil
 	if err != nil {
 		return nil, grpcProfileError(err)
 	}
-	out := &agentv1.ModelProfileServiceListResponse{NextPageToken: page.NextCursor, Profiles: make([]*agentv1.CoreModelProfile, 0, len(page.Profiles))}
+	out := &agentv1.ModelProfileServiceListResponse{NextPageToken: page.NextCursor, Profiles: make([]*agentv1.CoreModelProfile, 0, len(page.Profiles)), DefaultClientProfileId: page.Defaults.ConversationClientProfileID, DefaultConversationClientProfileId: page.Defaults.ConversationClientProfileID, DefaultToolClientProfileId: page.Defaults.ToolClientProfileID, DefaultEmbeddingClientProfileId: page.Defaults.EmbeddingClientProfileID, DefaultSpeechClientProfileId: page.Defaults.SpeechClientProfileID}
 	for _, p := range page.Profiles {
 		out.Profiles = append(out.Profiles, publicProfileProto(p))
 	}
@@ -106,7 +106,7 @@ func (s *ModelProfileService) Sync(ctx context.Context, req *agentv1.ModelProfil
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	cmd := coremodel.SyncProfileCommand{IdempotencyKey: req.IdempotencyKey, DefaultClientProfileID: req.DefaultClientProfileId, Entries: make([]coremodel.SyncProfileEntry, 0, len(req.Entries))}
+	cmd := coremodel.SyncProfileCommand{IdempotencyKey: req.IdempotencyKey, DefaultClientProfileID: req.DefaultClientProfileId, DefaultConversationProfileID: req.DefaultConversationClientProfileId, DefaultToolProfileID: req.DefaultToolClientProfileId, DefaultEmbeddingProfileID: req.DefaultEmbeddingClientProfileId, DefaultSpeechProfileID: req.DefaultSpeechClientProfileId, Entries: make([]coremodel.SyncProfileEntry, 0, len(req.Entries))}
 	for _, entry := range req.Entries {
 		if entry == nil {
 			return nil, grpcProfileError(coremodel.ErrInvalidProfile)
@@ -120,14 +120,14 @@ func (s *ModelProfileService) Sync(ctx context.Context, req *agentv1.ModelProfil
 			value := *entry.ApiKey
 			key = &value
 		}
-		e := coremodel.SyncProfileEntry{ClientProfileID: entry.ClientProfileId, ExpectedRevision: entry.ExpectedRevision, DisplayName: entry.DisplayName, Provider: provider, BaseURL: entry.BaseUrl, Model: entry.Model, SystemPrompt: entry.SystemPrompt, APIKey: key, Temperature: entry.Temperature, TopP: entry.TopP, MaxOutputTokens: int(entry.MaxOutputTokens), ContextWindow: int(entry.ContextWindow), ReasoningEffort: entry.ReasoningEffort}
+		e := coremodel.SyncProfileEntry{ClientProfileID: entry.ClientProfileId, ExpectedRevision: entry.ExpectedRevision, DisplayName: entry.DisplayName, Provider: provider, ModelKind: entry.ModelKind, InputModalities: append([]string(nil), entry.InputModalities...), BaseURL: entry.BaseUrl, Model: entry.Model, SystemPrompt: entry.SystemPrompt, APIKey: key, Temperature: entry.Temperature, TopP: entry.TopP, MaxOutputTokens: int(entry.MaxOutputTokens), ContextWindow: int(entry.ContextWindow), ReasoningEffort: entry.ReasoningEffort}
 		cmd.Entries = append(cmd.Entries, e)
 	}
 	result, err := s.profiles.Sync(ctx, cmd)
 	if err != nil {
 		return nil, grpcProfileError(err)
 	}
-	out := &agentv1.ModelProfileServiceSyncResponse{DefaultClientProfileId: result.DefaultClientProfileID, Profiles: make([]*agentv1.CoreModelProfile, 0, len(result.Profiles))}
+	out := &agentv1.ModelProfileServiceSyncResponse{DefaultClientProfileId: result.DefaultClientProfileID, DefaultConversationClientProfileId: result.DefaultConversationProfileID, DefaultToolClientProfileId: result.DefaultToolProfileID, DefaultEmbeddingClientProfileId: result.DefaultEmbeddingProfileID, DefaultSpeechClientProfileId: result.DefaultSpeechProfileID, Profiles: make([]*agentv1.CoreModelProfile, 0, len(result.Profiles))}
 	for _, p := range result.Profiles {
 		out.Profiles = append(out.Profiles, publicProfileProto(p))
 	}
@@ -238,7 +238,7 @@ func fromProtoProvider(v agentv1.CoreModelProvider) (coremodel.ModelProvider, er
 	}
 }
 func publicProfileProto(p coremodel.PublicProfile) *agentv1.CoreModelProfile {
-	out := &agentv1.CoreModelProfile{ProfileId: p.ID, ClientProfileId: p.ClientProfileID, DisplayName: p.DisplayName, Provider: toProtoProvider(p.Provider), BaseUrl: p.BaseURL, Model: p.Model, SystemPrompt: p.SystemPrompt, ApiKeyConfigured: p.APIKeyConfigured, MaxOutputTokens: int32(p.MaxOutputTokens), ContextWindow: int32(p.ContextWindow), ReasoningEffort: p.ReasoningEffort, Revision: p.Revision, CredentialVersion: p.CredentialVersion}
+	out := &agentv1.CoreModelProfile{ProfileId: p.ID, ClientProfileId: p.ClientProfileID, DisplayName: p.DisplayName, Provider: toProtoProvider(p.Provider), ModelKind: p.ModelKind, InputModalities: append([]string(nil), p.InputModalities...), BaseUrl: p.BaseURL, Model: p.Model, SystemPrompt: p.SystemPrompt, ApiKeyConfigured: p.APIKeyConfigured, MaxOutputTokens: int32(p.MaxOutputTokens), ContextWindow: int32(p.ContextWindow), ReasoningEffort: p.ReasoningEffort, Revision: p.Revision, CredentialVersion: p.CredentialVersion}
 	if p.Temperature != nil {
 		v := *p.Temperature
 		out.Temperature = &v

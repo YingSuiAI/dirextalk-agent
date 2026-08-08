@@ -43,6 +43,7 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 		"CREATE TABLE core_extension_artifact_cleanup",
 		"profile_snapshot_api_key_ciphertext",
 		"provider_secret_status",
+		"default_tool_client_profile_id",
 		"provider_secrets_ciphertext",
 		"secret_value_ciphertext",
 		"CREATE TABLE agent_account_deprovisions",

@@ -43,9 +43,26 @@ func TestCoreV1ServiceDescriptorsAndPrivacy(t *testing.T) {
 	if f := profile.Fields().ByName("credential_version"); f == nil || f.Kind() != protoreflect.Int64Kind {
 		t.Fatal("profile credential_version missing or wrong type")
 	}
+	if f := profile.Fields().ByName("model_kind"); f == nil || f.Kind() != protoreflect.StringKind {
+		t.Fatal("profile model_kind missing or wrong type")
+	}
+	if f := profile.Fields().ByName("input_modalities"); f == nil || !f.IsList() || f.Kind() != protoreflect.StringKind {
+		t.Fatal("profile input_modalities missing or wrong type")
+	}
 	syncEntry := (&agentv1.CoreModelProfileSyncEntry{}).ProtoReflect().Descriptor()
 	if f := syncEntry.Fields().ByName("api_key"); f == nil || !f.HasOptionalKeyword() {
 		t.Fatal("sync api_key must be optional/write-only")
+	}
+	for _, message := range []protoreflect.MessageDescriptor{
+		(&agentv1.ModelProfileServiceListResponse{}).ProtoReflect().Descriptor(),
+		(&agentv1.ModelProfileServiceSyncRequest{}).ProtoReflect().Descriptor(),
+		(&agentv1.ModelProfileServiceSyncResponse{}).ProtoReflect().Descriptor(),
+	} {
+		for _, name := range []protoreflect.Name{"default_client_profile_id", "default_conversation_client_profile_id", "default_tool_client_profile_id", "default_embedding_client_profile_id", "default_speech_client_profile_id"} {
+			if message.Fields().ByName(name) == nil {
+				t.Fatalf("%s missing %s", message.Name(), name)
+			}
+		}
 	}
 	if got := (&agentv1.CoreModelProfile{}).ProtoReflect().Descriptor().Fields().ByName("provider").Enum().Values().Len(); got != 4 {
 		t.Fatalf("provider values=%d, want 4", got)

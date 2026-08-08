@@ -41,6 +41,14 @@ const (
 	TaskKindExecutionV2Run   TaskKind = "execution_v2_run"
 )
 
+// AgentTaskPayload is optional for direct Task creation and required for a
+// schedule created from an authenticated conversation turn. It contains only
+// immutable account authority, never credentials or arbitrary references.
+type AgentTaskPayload struct {
+	OwnerID           string `json:"owner_id"`
+	AccountGeneration uint64 `json:"account_generation"`
+}
+
 // WorkloadTaskPayload is the immutable execution fence for a workload
 // operation.  It deliberately contains identifiers and digests only; provider
 // credentials and secret values remain behind their typed provider boundary.
@@ -145,6 +153,7 @@ type AWSChangeTaskPayload struct {
 
 // TaskPayload is a closed union; exactly one branch must match Kind.
 type TaskPayload struct {
+	Agent            *AgentTaskPayload            `json:"agent,omitempty"`
 	ConversationTool *ConversationToolTaskPayload `json:"conversation_tool,omitempty"`
 	Extension        *ExtensionTaskPayload        `json:"extension,omitempty"`
 	KnowledgeIndex   *KnowledgeIndexTaskPayload   `json:"knowledge_index,omitempty"`
@@ -331,6 +340,9 @@ func (s TaskSpec) Normalize() (TaskSpec, error) {
 
 func normalizePayload(s *TaskSpec) error {
 	count := 0
+	if s.Payload.Agent != nil {
+		count++
+	}
 	if s.Payload.Extension != nil {
 		count++
 	}
@@ -354,8 +366,14 @@ func normalizePayload(s *TaskSpec) error {
 	}
 	switch s.Kind {
 	case TaskKindAgent:
-		if count != 0 {
+		if count > 1 || (count == 1 && s.Payload.Agent == nil) {
 			return ErrInvalid
+		}
+		if p := s.Payload.Agent; p != nil {
+			p.OwnerID = strings.TrimSpace(p.OwnerID)
+			if p.OwnerID == "" || len([]byte(p.OwnerID)) > 512 || !utf8.ValidString(p.OwnerID) || p.AccountGeneration == 0 {
+				return ErrInvalid
+			}
 		}
 	case TaskKindExtension:
 		if count != 1 || s.Payload.Extension == nil {

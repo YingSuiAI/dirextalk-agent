@@ -40,6 +40,8 @@ message CoreModelProfile {
   google.protobuf.Timestamp updated_at = 15;
   string client_profile_id = 16;
   int64 credential_version = 17;
+  string model_kind = 18;
+  repeated string input_modalities = 19;
 }
 
 message CoreModelProfileSyncEntry {
@@ -56,6 +58,8 @@ message CoreModelProfileSyncEntry {
   int32 max_output_tokens = 11;
   int32 context_window = 12;
   string reasoning_effort = 13;
+  string model_kind = 14;
+  repeated string input_modalities = 15;
 }
 
 message ModelProfileServiceCreateRequest {
@@ -84,6 +88,11 @@ message ModelProfileServiceListRequest {
 message ModelProfileServiceListResponse {
   repeated CoreModelProfile profiles = 1;
   string next_page_token = 2;
+  string default_client_profile_id = 3;
+  string default_conversation_client_profile_id = 4;
+  string default_tool_client_profile_id = 5;
+  string default_embedding_client_profile_id = 6;
+  string default_speech_client_profile_id = 7;
 }
 
 message ModelProfileServiceUpdateRequest {
@@ -127,10 +136,18 @@ message ModelProfileServiceSyncRequest {
   string idempotency_key = 1;
   string default_client_profile_id = 2;
   repeated CoreModelProfileSyncEntry entries = 3;
+  string default_conversation_client_profile_id = 4;
+  string default_tool_client_profile_id = 5;
+  string default_embedding_client_profile_id = 6;
+  string default_speech_client_profile_id = 7;
 }
 message ModelProfileServiceSyncResponse {
   repeated CoreModelProfile profiles = 1;
   string default_client_profile_id = 2;
+  string default_conversation_client_profile_id = 3;
+  string default_tool_client_profile_id = 4;
+  string default_embedding_client_profile_id = 5;
+  string default_speech_client_profile_id = 6;
 }
 
 service ModelProfileService {

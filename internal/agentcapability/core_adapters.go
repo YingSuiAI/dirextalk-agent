@@ -29,6 +29,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corevoice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
@@ -51,6 +52,7 @@ type CoreBindings struct {
 	ExecutionV2        *coreexecutionv2.Service
 	AWS                *coreaws.Service
 	WebSearch          *corewebsearch.Service
+	TextTools          *coretexttool.Service
 	// Voice and Misc are optional composition ports.  The Core registry owns
 	// their publication so standalone capability tests and the production
 	// composition share the same catalog path.
@@ -75,6 +77,9 @@ func NewCoreRegistry(bindings CoreBindings) *Registry {
 	}
 	if bindings.WebSearch != nil {
 		r.Register(NewCoreWebSearchCapability(bindings.WebSearch))
+	}
+	if bindings.TextTools != nil {
+		r.Register(NewCoreTextToolCapability(bindings.TextTools))
 	}
 	if bindings.Voice != nil {
 		r.Register(NewCoreVoiceCapability(bindings.Voice, bindings.CapabilityProgress))
@@ -980,6 +985,7 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 		}
 		cmd.DefaultClientProfileID = stringValue(in, "default_client_profile_id")
 		cmd.DefaultConversationProfileID = stringValue(in, "default_conversation_client_profile_id")
+		cmd.DefaultToolProfileID = stringValue(in, "default_tool_client_profile_id")
 		cmd.DefaultEmbeddingProfileID = stringValue(in, "default_embedding_client_profile_id")
 		cmd.DefaultSpeechProfileID = stringValue(in, "default_speech_client_profile_id")
 		result, err := c.service.Sync(ctx, cmd)
@@ -997,7 +1003,7 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 		if err != nil {
 			return nil, err
 		}
-		return marshalResult(map[string]any{"profiles": p.Profiles, "next_page_token": p.NextCursor, "default_client_profile_id": p.Defaults.ConversationClientProfileID, "default_conversation_client_profile_id": p.Defaults.ConversationClientProfileID, "default_embedding_client_profile_id": p.Defaults.EmbeddingClientProfileID, "default_speech_client_profile_id": p.Defaults.SpeechClientProfileID}, nil)
+		return marshalResult(map[string]any{"profiles": p.Profiles, "next_page_token": p.NextCursor, "default_client_profile_id": p.Defaults.ConversationClientProfileID, "default_conversation_client_profile_id": p.Defaults.ConversationClientProfileID, "default_tool_client_profile_id": p.Defaults.ToolClientProfileID, "default_embedding_client_profile_id": p.Defaults.EmbeddingClientProfileID, "default_speech_client_profile_id": p.Defaults.SpeechClientProfileID}, nil)
 	case "get_model":
 		p, err := c.service.Get(ctx, stringValue(in, "profile_id"))
 		return marshalResult(p, err)
@@ -1861,6 +1867,10 @@ func operationResultSchema(capabilityID, operation string) string {
 		return `{"additionalProperties":false,"properties":{"expires_at":{"format":"date-time","type":"string"},"max_chunk_bytes":{"minimum":1,"type":"integer"},"received_size":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"source_id":{"format":"uuid","type":"string"},"status":{"enum":["receiving","committed","consumed"],"type":"string"},"turn_request_id":{"format":"uuid","type":"string"},"upload_id":{"format":"uuid","type":"string"}},"required":["upload_id","source_id","turn_request_id","status","received_size","max_chunk_bytes","revision","expires_at"],"type":"object"}`
 	case "agent.chat.v1:upload_attachment_commit":
 		return `{"additionalProperties":false,"properties":{"expires_at":{"format":"date-time","type":"string"},"kind":{"enum":["image","file","workspace_archive"],"type":"string"},"mime_type":{"maxLength":255,"minLength":1,"type":"string"},"name":{"maxLength":255,"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"sha256":{"pattern":"^[a-f0-9]{64}$","type":"string"},"size_bytes":{"maximum":8388608,"minimum":1,"type":"integer"},"source_id":{"format":"uuid","type":"string"},"status":{"const":"committed","type":"string"},"turn_request_id":{"format":"uuid","type":"string"}},"required":["source_id","revision","turn_request_id","kind","name","mime_type","size_bytes","sha256","status","expires_at"],"type":"object"}`
+	case "agent.models.v1:sync_models":
+		return `{"additionalProperties":false,"properties":{"default_client_profile_id":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"profiles":{"type":"array"}},"required":["profiles","default_client_profile_id","default_conversation_client_profile_id","default_tool_client_profile_id","default_embedding_client_profile_id","default_speech_client_profile_id"],"type":"object"}`
+	case "agent.models.v1:list_models":
+		return `{"additionalProperties":false,"properties":{"default_client_profile_id":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"next_page_token":{"type":"string"},"profiles":{"type":"array"}},"required":["profiles","next_page_token","default_client_profile_id","default_conversation_client_profile_id","default_tool_client_profile_id","default_embedding_client_profile_id","default_speech_client_profile_id"],"type":"object"}`
 	default:
 		return `{"type":"object"}`
 	}
@@ -1904,7 +1914,7 @@ func operationInputSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:stream_chat":
 		return `{"additionalProperties":false,"type":"object","properties":{"accepted_attachment_ids":{"items":{"format":"uuid","type":"string"},"maxItems":4,"uniqueItems":true,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"message":{"minLength":1,"type":"string"},"model_profile_id":{"format":"uuid","type":"string"},"model_profile_revision":{"minimum":1,"type":"integer"},"credential_version":{"minimum":1,"type":"integer"}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
 	case "agent.models.v1:sync_models":
-		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"default_client_profile_id":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"entries":{"type":"array"}},"required":["idempotency_key","entries"]}`
+		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"default_client_profile_id":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"entries":{"type":"array"}},"required":["idempotency_key","entries"]}`
 	case "agent.knowledge.v1:list_sources":
 		return `{"type":"object","properties":{"page_token":{"type":"string"},"page_size":{"type":"integer"},"limit":{"type":"integer"},"kind":{"type":"string"},"status":{"type":"string"}}}`
 	case "agent.knowledge.v1:get_config":

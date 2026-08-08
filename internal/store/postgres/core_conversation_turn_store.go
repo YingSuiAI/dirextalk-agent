@@ -562,43 +562,54 @@ func (s *CoreConversationStore) CommitTurn(ctx context.Context, lease core.TurnL
 		return core.Turn{}, err
 	}
 	defer tx.Rollback(ctx)
-	var turn core.Turn
-	if err = s.scanTurn(ctx, tx, lease.Turn.ID, &turn); err != nil {
-		return core.Turn{}, core.ErrConflict
+	if err = s.commitTurnTx(ctx, tx, lease, response); err != nil {
+		return core.Turn{}, err
 	}
-	if turn.State != core.TurnRunning || turn.RequestID != lease.Turn.RequestID {
-		return core.Turn{}, core.ErrConflict
+	if err = tx.Commit(ctx); err != nil {
+		return core.Turn{}, err
+	}
+	return s.GetTurn(ctx, lease.Turn.ID)
+}
+
+func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lease core.TurnLease, response core.ChatResponse) error {
+	var turn core.Turn
+	if err := s.scanTurn(ctx, tx, lease.Turn.ID, &turn); err != nil {
+		return core.ErrConflict
+	}
+	if turn.State != core.TurnRunning || turn.RequestID != lease.Turn.RequestID || turn.OwnerID != lease.Turn.OwnerID ||
+		turn.AccountGeneration != lease.Turn.AccountGeneration || turn.ConversationID != lease.Turn.ConversationID || turn.ProfileID != lease.Turn.ProfileID {
+		return core.ErrConflict
 	}
 	raw, _ := json.Marshal(response)
 	now := time.Now().UTC()
 	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='completed',revision=revision+1,response_json=$2,lease_id=NULL,lease_expires_at=NULL,updated_at=$3 WHERE turn_id=$1 AND lease_id=$4 AND lease_epoch=$5 AND state='running'`, lease.Turn.ID, raw, now, lease.LeaseID, lease.Epoch)
 	if err != nil {
-		return core.Turn{}, err
+		return err
 	}
 	if result.RowsAffected() != 1 {
-		return core.Turn{}, core.ErrConflict
+		return core.ErrConflict
 	}
 	convResult, err := tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,'',$2,$3,$3) ON CONFLICT(conversation_id) DO UPDATE SET revision=$2,updated_at=$3 WHERE core_conversations.revision=$4`, response.ConversationID, response.Revision, now, response.Revision-1)
 	if err != nil {
-		return core.Turn{}, err
+		return err
 	}
 	if convResult.RowsAffected() != 1 {
-		return core.Turn{}, core.ErrConflict
+		return core.ErrConflict
 	}
 	var nextSequence int64
 	if err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence),0)+1 FROM core_messages WHERE conversation_id=$1`, response.ConversationID).Scan(&nextSequence); err != nil {
-		return core.Turn{}, err
+		return err
 	}
 	user := core.Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-user:"+lease.Turn.RequestID)).String(), Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: response.Message.CreatedAt.Add(-time.Microsecond)}
 	for i, m := range []core.Message{user, response.Message} {
 		payload, _ := json.Marshal(m)
 		tasks, _ := stringArrayJSONPG(m.RelatedTaskIDs)
 		plans, _ := stringArrayJSONPG(m.RelatedPlanIDs)
-		references, _ := json.Marshal(m.References)
+		references, _ := referenceArrayJSONPG(m.References)
 		sums, _ := stringArrayJSONPG(m.ToolSummaries)
 		insertResult, insertErr := tx.Exec(ctx, `INSERT INTO core_messages(message_id,conversation_id,sequence,role,content,model_profile_id,payload_json,related_task_ids,related_plan_ids,references_json,tool_summaries,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(message_id) DO NOTHING`, m.ID, response.ConversationID, nextSequence+int64(i), m.Role, m.Content, nullableUUIDPG(m.ModelProfileID), payload, tasks, plans, references, sums, m.CreatedAt)
 		if insertErr != nil {
-			return core.Turn{}, insertErr
+			return insertErr
 		}
 		if insertResult.RowsAffected() == 0 {
 			var existingPayload []byte
@@ -609,27 +620,24 @@ func (s *CoreConversationStore) CommitTurn(ctx context.Context, lease core.TurnL
 			var expectedValue, existingValue any
 			_ = json.Unmarshal(payload, &expectedValue)
 			if err = tx.QueryRow(ctx, `SELECT conversation_id,sequence,role,content,model_profile_id,payload_json FROM core_messages WHERE message_id=$1`, m.ID).Scan(&existingConversation, &existingSequence, &existingRole, &existingContent, &existingProfile, &existingPayload); err != nil {
-				return core.Turn{}, core.ErrConflict
+				return core.ErrConflict
 			}
 			_ = json.Unmarshal(existingPayload, &existingValue)
 			profileMatches := (existingProfile == nil && m.ModelProfileID == "") || (existingProfile != nil && existingProfile.String() == m.ModelProfileID)
 			if existingConversation != response.ConversationID || existingSequence != nextSequence+int64(i) || existingRole != string(m.Role) || existingContent != m.Content || !profileMatches || !reflect.DeepEqual(expectedValue, existingValue) {
-				return core.Turn{}, core.ErrConflict
+				return core.ErrConflict
 			}
 		}
 		if m.ModelProfileID != "" {
 			if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id) VALUES('conversation',$1,$2) ON CONFLICT DO NOTHING`, response.ConversationID, m.ModelProfileID); err != nil {
-				return core.Turn{}, err
+				return err
 			}
 		}
 	}
 	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, turn.LastSequence+1, core.TurnEvent{Kind: core.TurnEventDone, Message: &response.Message, Response: &response}, now); err != nil {
-		return core.Turn{}, err
+		return err
 	}
-	if err = tx.Commit(ctx); err != nil {
-		return core.Turn{}, err
-	}
-	return s.GetTurn(ctx, lease.Turn.ID)
+	return nil
 }
 
 func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.TurnCancelCommand) (core.Turn, error) {

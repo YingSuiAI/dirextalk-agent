@@ -83,6 +83,22 @@ the bounded provider request; deprovision takes the exclusive form, so cleanup
 cannot be followed by a configuration/replay resurrection or an outbound call
 that won the race.
 
+The Agent also publishes `agent.text_tools.v1` only through the authenticated
+owner-client Capability surface. PostgreSQL owns its full-list configuration
+and configuration-mutation replay; executions create no text-tool,
+conversation, history, or Task rows. The shared Capability ledger still keeps
+its normal bounded result receipt (but discards selected-text request JSON),
+and restart recovery fences an interrupted call uncertain without replay. The
+four stable built-ins have server-side prompts, while canonical UUID items are
+model-only transforms. Search defaults disabled, and enabling it together with
+the global text-tool configuration requires an already enabled Tavily
+configuration with a valid server-side credential. Execution rechecks and
+reuses that encrypted Web Search snapshot and dispatch fence, so later
+disablement or credential removal fails closed. The typed
+`core_text_tool.proto` messages are DTO
+schema authority only: no Core gRPC service is registered because that
+listener does not carry authenticated owner/account-generation context.
+
 `WorkloadService` uses the distinct `WORKLOAD` Task kind and the readiness
 semantics defined in the [API contract](api-contract.md). Missing or stale
 target proof keeps a capability disabled; there is no implicit default target
@@ -126,6 +142,12 @@ and streaming chat. Provider-neutral model calls pass through Eino's
 `ToolCallingChatModel` boundary. Background work uses a Task execution snapshot
 so profile, extension, Knowledge, attachment, and secret bindings cannot drift
 while a request is running.
+
+Profile sync durably stores separate conversation, tool, embedding, and speech
+role defaults. The tool role references only a conversation-kind profile and
+has no implicit conversation-default fallback; an absent tool binding remains
+absent. The Protobuf and `agent.models.v1` Capability contracts project the
+profile kind/modalities and all role defaults without credential material.
 
 Every Chat, StreamChat, and StartTurn request carries the exact model-profile
 pin triple: `model_profile_id`, `model_profile_revision`, and
@@ -177,6 +199,17 @@ checkpoint or terminalize it.
 Schedules create independent Tasks for one-time or Cron occurrences. Core v1
 has no priority, DAG/graph, task dependency authoring, or cluster/pool
 scheduler.
+
+Natural-language Native turns create schedules only through the Core-owned
+`agent.schedule.create` intrinsic. The model supplies the bounded schedule
+intent and trigger; Core binds the authenticated owner/account generation,
+current conversation, and pinned model profile from the durable turn lease.
+The schedule template persists exactly the typed `payload.agent` owner and
+positive generation authority in addition to its conversation/profile fields;
+it contains no credential or arbitrary reference fields.
+The PostgreSQL boundary atomically commits the schedule, idempotency replay,
+turn response/event, and transcript, so recovery cannot expose either a
+schedule without its conversation receipt or a receipt without its schedule.
 
 Eino adapts each model round, while the Agent-owned Task ledger remains the
 durable orchestrator for model dispatch, tool calls, retries, recovery, and

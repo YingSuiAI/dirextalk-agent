@@ -174,6 +174,7 @@ type SyncProfileCommand struct {
 	IdempotencyKey               string
 	DefaultClientProfileID       string
 	DefaultConversationProfileID string
+	DefaultToolProfileID         string
 	DefaultEmbeddingProfileID    string
 	DefaultSpeechProfileID       string
 	Entries                      []SyncProfileEntry
@@ -183,6 +184,7 @@ type SyncProfileResult struct {
 	Profiles                     []PublicProfile `json:"profiles"`
 	DefaultClientProfileID       string          `json:"default_client_profile_id"`
 	DefaultConversationProfileID string          `json:"default_conversation_client_profile_id"`
+	DefaultToolProfileID         string          `json:"default_tool_client_profile_id"`
 	DefaultEmbeddingProfileID    string          `json:"default_embedding_client_profile_id"`
 	DefaultSpeechProfileID       string          `json:"default_speech_client_profile_id"`
 	Replay                       bool            `json:"-"`

@@ -1489,16 +1489,15 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			return
 		}
 	}
-	var intrinsicTools []ResolvedIntrinsic
-	if s.intrinsics != nil {
-		intrinsicTools, err = s.intrinsics.ResolveIntrinsicTools(ctx, lease)
-		if err != nil {
-			_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_unavailable", "Core intrinsic tool is unavailable")
-			return
-		}
+	intrinsicTools, err := s.resolveIntrinsicTools(ctx, lease)
+	if err != nil {
+		_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_unavailable", "Core intrinsic tool is unavailable")
+		return
+	}
+	if len(intrinsicTools) != 0 {
 		seen := make(map[string]struct{}, len(intrinsicTools))
 		for _, intrinsic := range intrinsicTools {
-			if intrinsic.Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName || intrinsic.Tool.InputSchema == nil || intrinsic.Execute == nil {
+			if !coremodel.IsIntrinsicToolName(intrinsic.Tool.Name) || intrinsic.Tool.InputSchema == nil || intrinsic.Execute == nil {
 				_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_invalid", "Core intrinsic tool binding is invalid")
 				return
 			}
@@ -1583,7 +1582,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					calls = out.result.Message.ToolCalls
 				}
 				for _, call := range calls {
-					if call.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
+					if !coremodel.IsIntrinsicToolName(call.Name) {
 						continue
 					}
 					if len(calls) != 1 {

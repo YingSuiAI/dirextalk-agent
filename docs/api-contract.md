@@ -60,6 +60,10 @@ multi-tenant model.
 - Mutations use the UUID idempotency keys defined by their Protobuf messages;
   revision-bearing mutations reject stale expected revisions without changing
   state.
+- `agent.models.v1` sync/list responses expose durable conversation, tool,
+  embedding, and speech client-profile defaults. The tool default is an
+  independent binding to a conversation-kind profile; it never falls back to
+  the conversation default and rejects embedding- or speech-kind profiles.
 - Durable Task events/results are fenced by Task revision, attempt, and lease
   epoch. `WatchEvents` resumes strictly after its supplied sequence.
 - `Chat`, `StreamChat`, and `StartTurn` require a positive, exact
@@ -85,6 +89,19 @@ multi-tenant model.
   optional source IDs, and a result limit; it returns bounded passages plus
   secret-free embedding provenance and never calls back through Product
   Capability.
+- Authenticated durable Native turns receive the Core-owned
+  `agent.schedule.create` intrinsic when the PostgreSQL conversation/schedule
+  store is composed. Model input is limited to `name`, `goal`, exactly one
+  `run_at` or `cron` plus IANA `timezone`, and optional `timeout_seconds`.
+  Owner, account generation, conversation, and model profile are injected from
+  the fenced turn lease. Owner and generation persist only in the typed
+  `task_template.payload.agent` authority object; credentials,
+  attachment/Knowledge references, and extension bindings are not accepted.
+  Schedule creation, its replay receipt,
+  both transcript messages, terminal turn response, and done event commit in
+  one transaction. Schedule and idempotency identities are deterministic from
+  the accepted turn/request/tool-call identity, so an uncertain same-call retry
+  replays without creating another schedule.
 - Capability conversation reads use a closed Flutter-facing projection.
   Conversations expose only id/title/revision/timestamps/status; history
   exposes only user/assistant messages with durable sequence, terminal status,
@@ -141,6 +158,31 @@ multi-tenant model.
 - `agent.web_search.v1` exposes `get_config`, `update_config`, and `test` for
   the typed Tavily provider. Only `update_config` accepts the write-only key;
   chat requests carry no `tool_credentials` envelope.
+- `agent.text_tools.v1` is an owner-client-only Capability with `get_config`
+  (READ), `update_config` (MUTATION), and `execute` (MUTATION). Configuration
+  is a full ordered-list replacement: at most 32 items, at most six enabled
+  items, unique stable built-in or canonical UUID IDs, and contiguous order.
+  Revision zero is a virtual disabled global config containing the four
+  server-authored translation, summary, explanation, and search defaults;
+  search alone defaults disabled. The first update must expect revision zero.
+  An update that makes the global configuration and search enabled is accepted
+  only when the same owner/account generation already has enabled Tavily Web
+  Search with a valid server-side credential. Disabling either layer does not
+  require a search credential. `execute` rechecks that fence and fails closed
+  if Web Search is later disabled, cleared, rotated, or unavailable. `execute`
+  accepts only `tool_id` and
+  selected text, resolves the explicit `default_tool_client_profile_id`
+  conversation profile and current credential server-side with no fallback,
+  and never writes conversation, history, Task, or execution replay state.
+  Search alone uses the fenced Tavily path with at most five results and sends
+  its evidence as separate untrusted model context. Model execution is one
+  shot, limited to 60 seconds and 64 KiB of output.
+  Because `execute` is a Capability MUTATION, the common operation ledger
+  retains the bounded output/sources JSON as its ordinary plaintext result and
+  event receipt until ledger/account cleanup; deprovision purges it. The
+  ledger always stores request JSON as `{}`, so selected text is not durable.
+  Pending or running calls interrupted by restart become `uncertain` and are
+  never automatically dispatched again.
 - Unknown enum values, malformed UUIDs, invalid digests, and unsupported
   combinations fail closed as `INVALID_ARGUMENT` or `FAILED_PRECONDITION`.
 

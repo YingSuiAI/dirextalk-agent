@@ -52,11 +52,12 @@ type ProfilePage struct {
 	Defaults   ProfileDefaults `json:"-"`
 }
 
-// ProfileDefaults are stable role bindings used by conversation, embedding,
-// and speech runtimes. The default_client_profile_id field aliases the
+// ProfileDefaults are stable role bindings used by conversation, tool,
+// embedding, and speech runtimes. The default_client_profile_id field aliases the
 // conversation role at the capability boundary.
 type ProfileDefaults struct {
 	ConversationClientProfileID string `json:"default_conversation_client_profile_id"`
+	ToolClientProfileID         string `json:"default_tool_client_profile_id"`
 	EmbeddingClientProfileID    string `json:"default_embedding_client_profile_id"`
 	SpeechClientProfileID       string `json:"default_speech_client_profile_id"`
 }
@@ -319,6 +320,7 @@ func (s *Service) Sync(ctx context.Context, cmd SyncProfileCommand) (SyncProfile
 	}
 	cmd.DefaultClientProfileID = strings.TrimSpace(cmd.DefaultClientProfileID)
 	cmd.DefaultConversationProfileID = strings.TrimSpace(cmd.DefaultConversationProfileID)
+	cmd.DefaultToolProfileID = strings.TrimSpace(cmd.DefaultToolProfileID)
 	cmd.DefaultEmbeddingProfileID = strings.TrimSpace(cmd.DefaultEmbeddingProfileID)
 	cmd.DefaultSpeechProfileID = strings.TrimSpace(cmd.DefaultSpeechProfileID)
 	if cmd.DefaultConversationProfileID == "" {
@@ -327,7 +329,7 @@ func (s *Service) Sync(ctx context.Context, cmd SyncProfileCommand) (SyncProfile
 	if cmd.DefaultClientProfileID == "" {
 		cmd.DefaultClientProfileID = cmd.DefaultConversationProfileID
 	}
-	for _, defaultID := range []string{cmd.DefaultConversationProfileID, cmd.DefaultEmbeddingProfileID, cmd.DefaultSpeechProfileID} {
+	for _, defaultID := range []string{cmd.DefaultConversationProfileID, cmd.DefaultToolProfileID, cmd.DefaultEmbeddingProfileID, cmd.DefaultSpeechProfileID} {
 		if defaultID == "" {
 			continue
 		}
@@ -342,6 +344,9 @@ func (s *Service) Sync(ctx context.Context, cmd SyncProfileCommand) (SyncProfile
 		return SyncProfileResult{}, err
 	}
 	if err := s.validateSyncDefaultKind(ctx, cmd.DefaultConversationProfileID, ModelKindConversation, cmd.Entries); err != nil {
+		return SyncProfileResult{}, err
+	}
+	if err := s.validateSyncDefaultKind(ctx, cmd.DefaultToolProfileID, ModelKindConversation, cmd.Entries); err != nil {
 		return SyncProfileResult{}, err
 	}
 	if err := s.validateSyncDefaultKind(ctx, cmd.DefaultEmbeddingProfileID, ModelKindEmbedding, cmd.Entries); err != nil {
@@ -469,6 +474,40 @@ func (s *Service) ResolveProfile(ctx context.Context, id string) (Profile, error
 		return Profile{}, ErrAPIKeyUnavailable
 	}
 	return p, nil
+}
+
+// ResolveDefaultToolProfile resolves the explicit tool role binding and its
+// current secret-bearing conversation profile. It intentionally has no
+// conversation-default fallback: an unset or stale tool binding fails closed.
+func (s *Service) ResolveDefaultToolProfile(ctx context.Context) (Profile, error) {
+	if s == nil || s.repo == nil {
+		return Profile{}, ErrProfileRepository
+	}
+	reader, ok := s.repo.(ProfileDefaultsReader)
+	if !ok {
+		return Profile{}, ErrProfileNotFound
+	}
+	defaults, err := reader.GetProfileDefaults(ctx)
+	if err != nil {
+		return Profile{}, safeServiceError(err)
+	}
+	clientID := strings.TrimSpace(defaults.ToolClientProfileID)
+	if clientID == "" {
+		return Profile{}, ErrProfileNotFound
+	}
+	profile, err := s.ResolveClientProfile(ctx, clientID)
+	if err != nil {
+		return Profile{}, err
+	}
+	kind := strings.TrimSpace(profile.ModelKind)
+	if kind == "" {
+		kind = ModelKindConversation
+	}
+	if kind != ModelKindConversation {
+		profile.APIKey = ""
+		return Profile{}, ErrInvalidProfile
+	}
+	return profile, nil
 }
 
 // ResolveDefaultProfileID resolves the durable role binding to the Core UUID
@@ -682,10 +721,11 @@ func syncProfileDigest(cmd SyncProfileCommand) (string, error) {
 	canonical := struct {
 		Default             string `json:"default_client_profile_id"`
 		ConversationDefault string `json:"default_conversation_client_profile_id"`
+		ToolDefault         string `json:"default_tool_client_profile_id"`
 		EmbeddingDefault    string `json:"default_embedding_client_profile_id"`
 		SpeechDefault       string `json:"default_speech_client_profile_id"`
 		Entries             []any  `json:"entries"`
-	}{Default: cmd.DefaultClientProfileID, ConversationDefault: cmd.DefaultConversationProfileID, EmbeddingDefault: cmd.DefaultEmbeddingProfileID, SpeechDefault: cmd.DefaultSpeechProfileID}
+	}{Default: cmd.DefaultClientProfileID, ConversationDefault: cmd.DefaultConversationProfileID, ToolDefault: cmd.DefaultToolProfileID, EmbeddingDefault: cmd.DefaultEmbeddingProfileID, SpeechDefault: cmd.DefaultSpeechProfileID}
 	for _, e := range cmd.Entries {
 		keyHash := ""
 		if e.APIKey != nil {
@@ -1136,7 +1176,7 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 	if cmd.DefaultClientProfileID == "" {
 		cmd.DefaultClientProfileID = cmd.DefaultConversationProfileID
 	}
-	for _, defaultID := range []string{cmd.DefaultConversationProfileID, cmd.DefaultEmbeddingProfileID, cmd.DefaultSpeechProfileID} {
+	for _, defaultID := range []string{cmd.DefaultConversationProfileID, cmd.DefaultToolProfileID, cmd.DefaultEmbeddingProfileID, cmd.DefaultSpeechProfileID} {
 		if defaultID == "" {
 			continue
 		}
@@ -1144,14 +1184,39 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 			return SyncProfileResult{}, ErrProfileNotFound
 		}
 	}
+	for _, binding := range []struct {
+		clientID string
+		kind     string
+	}{
+		{cmd.DefaultConversationProfileID, ModelKindConversation},
+		{cmd.DefaultToolProfileID, ModelKindConversation},
+		{cmd.DefaultEmbeddingProfileID, ModelKindEmbedding},
+		{cmd.DefaultSpeechProfileID, ModelKindSpeech},
+	} {
+		if binding.clientID == "" {
+			continue
+		}
+		profile := work[byClient[binding.clientID]]
+		kind := strings.ToLower(strings.TrimSpace(profile.ModelKind))
+		if kind == "" {
+			kind = ModelKindConversation
+		}
+		if profile.Provider == ProviderVolcVoice {
+			kind = ModelKindSpeech
+		}
+		if kind != binding.kind {
+			return SyncProfileResult{}, ErrInvalidProfile
+		}
+	}
 	out.DefaultClientProfileID = cmd.DefaultClientProfileID
 	out.DefaultConversationProfileID = cmd.DefaultConversationProfileID
+	out.DefaultToolProfileID = cmd.DefaultToolProfileID
 	out.DefaultEmbeddingProfileID = cmd.DefaultEmbeddingProfileID
 	out.DefaultSpeechProfileID = cmd.DefaultSpeechProfileID
 	for id, p := range work {
 		r.profiles[id] = p
 	}
-	r.defaults = ProfileDefaults{ConversationClientProfileID: out.DefaultConversationProfileID, EmbeddingClientProfileID: out.DefaultEmbeddingProfileID, SpeechClientProfileID: out.DefaultSpeechProfileID}
+	r.defaults = ProfileDefaults{ConversationClientProfileID: out.DefaultConversationProfileID, ToolClientProfileID: out.DefaultToolProfileID, EmbeddingClientProfileID: out.DefaultEmbeddingProfileID, SpeechClientProfileID: out.DefaultSpeechProfileID}
 	r.syncIdempotency[key] = struct {
 		Digest string
 		Result SyncProfileResult

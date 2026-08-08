@@ -10,6 +10,9 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
@@ -89,6 +92,44 @@ func TestRegistryRedactsUnclassifiedCapabilityErrors(t *testing.T) {
 	}
 	if strings.Contains(message, "secret-sentinel") {
 		t.Fatalf("classified message leaked upstream detail: %q", message)
+	}
+}
+
+func TestRegistryClassifiesTextToolAndWebSearchDomainErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		err         error
+		wantCode    string
+		wantMessage string
+	}{
+		{name: "text tool invalid", err: coretexttool.ErrInvalid, wantCode: "INVALID_ARGUMENT", wantMessage: "Agent request is invalid"},
+		{name: "text tool not found", err: coretexttool.ErrNotFound, wantCode: "NOT_FOUND", wantMessage: "Agent resource was not found"},
+		{name: "text tool conflict", err: coretexttool.ErrRevisionConflict, wantCode: "CONFLICT", wantMessage: "Agent state changed; refresh and retry"},
+		{name: "text tool disabled", err: coretexttool.ErrDisabled, wantCode: "PRECONDITION_FAILED", wantMessage: "Agent configuration is not ready"},
+		{name: "text tool model missing", err: errors.Join(coretexttool.ErrModelNotConfigured, coremodel.ErrProfileNotFound), wantCode: "PRECONDITION_FAILED", wantMessage: "Agent configuration is not ready"},
+		{name: "text tool model upstream", err: coretexttool.ErrModel, wantCode: "UPSTREAM_FAILED", wantMessage: "Agent operation failed"},
+		{name: "text tool model repository", err: errors.Join(coretexttool.ErrModel, coremodel.ErrProfileRepository), wantCode: "UNAVAILABLE", wantMessage: "Agent dependency is unavailable"},
+		{name: "text tool repository", err: coretexttool.ErrRepository, wantCode: "UNAVAILABLE", wantMessage: "Agent dependency is unavailable"},
+		{name: "web search not configured", err: corewebsearch.ErrNotConfigured, wantCode: "PRECONDITION_FAILED", wantMessage: "Agent configuration is not ready"},
+		{name: "web search disabled", err: corewebsearch.ErrDisabled, wantCode: "PRECONDITION_FAILED", wantMessage: "Agent configuration is not ready"},
+		{name: "web search conflict", err: corewebsearch.ErrIdempotencyConflict, wantCode: "CONFLICT", wantMessage: "Agent state changed; refresh and retry"},
+		{name: "web search repository", err: corewebsearch.ErrRepository, wantCode: "UNAVAILABLE", wantMessage: "Agent dependency is unavailable"},
+		{name: "web search provider", err: corewebsearch.ErrProvider, wantCode: "UNAVAILABLE", wantMessage: "Agent dependency is unavailable"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r := NewRegistry()
+			r.Register(registryErrorCapability{err: test.err})
+			capability, ok := r.Get("test.error.v1")
+			if !ok {
+				t.Fatal("registered capability missing")
+			}
+			_, err := capability.HandleOperation(context.Background(), "execute", []byte(`{}`))
+			code, message, classified := capabilityoperation.FailureDetails(err)
+			if !classified || code != test.wantCode || message != test.wantMessage || !errors.Is(err, test.err) {
+				t.Fatalf("code=%q message=%q classified=%v err=%v", code, message, classified, err)
+			}
+		})
 	}
 }
 

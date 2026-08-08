@@ -15,7 +15,7 @@ func TestCommittedMigrationBytesRemainImmutable(t *testing.T) {
 		size   int
 		sha256 string
 	}{
-		{"000001_core_v1_fresh.up.sql", 84149, "71a0719dcf45f727e247607871f1e0726af447e7fff9fc625f8c5b7003e64bc0"},
+		{"000001_core_v1_fresh.up.sql", 86268, "fe74913058dfd1f28f1e43bc7dcf191b537df045c91db57bd185d68703b9f798"},
 		{"000002_knowledge_search_provenance.up.sql", 1352, "91c124b8967f4ddb8ffbb3ac4baa131dd21d397eafb87026718b3819bcd13468"},
 		{"000003_aws_credential_test_claims.up.sql", 1855, "563f8f2b4a49c1e66e33f3a8ab6fdf606f21674fc45fad4c36add6ddc81f615a"},
 		{"000004_knowledge_pgvector.up.sql", 1941, "a9c7f8f495b4b5dc967f4534a94ccb8563cdd0d7b32f6b9d34fd471459156ad6"},

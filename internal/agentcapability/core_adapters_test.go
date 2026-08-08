@@ -504,7 +504,7 @@ func TestModelSyncMapsSnakeCaseRolesAndSpeechMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	capability := &coreModelCapability{service: service}
-	result, err := capability.HandleOperation(context.Background(), "sync_models", []byte(`{"idempotency_key":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","default_conversation_client_profile_id":"chat","default_embedding_client_profile_id":"embed","default_speech_client_profile_id":"speech","entries":[{"client_profile_id":"chat","display_name":"Chat","provider":"openrouter","model":"openai/gpt-4o-mini","api_key":"sentinel","model_kind":"conversation","provider_config":{"app_id":"safe"}},{"client_profile_id":"embed","display_name":"Embed","provider":"openrouter","model":"text-embedding-3-small","api_key":"sentinel","model_kind":"embedding"},{"client_profile_id":"speech","display_name":"Speech","provider":"volc_voice","model_kind":"speech","provider_config":{"app_id":"voice"},"provider_secrets":{"rtc_app_key":"provider-secret-sentinel"}}]}`))
+	result, err := capability.HandleOperation(context.Background(), "sync_models", []byte(`{"idempotency_key":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","default_conversation_client_profile_id":"chat","default_tool_client_profile_id":"tool","default_embedding_client_profile_id":"embed","default_speech_client_profile_id":"speech","entries":[{"client_profile_id":"chat","display_name":"Chat","provider":"openrouter","model":"openai/gpt-4o-mini","api_key":"sentinel","model_kind":"conversation","provider_config":{"app_id":"safe"}},{"client_profile_id":"tool","display_name":"Tool","provider":"openrouter","model":"openai/gpt-4o-mini","api_key":"sentinel","model_kind":"conversation"},{"client_profile_id":"embed","display_name":"Embed","provider":"openrouter","model":"text-embedding-3-small","api_key":"sentinel","model_kind":"embedding"},{"client_profile_id":"speech","display_name":"Speech","provider":"volc_voice","model_kind":"speech","provider_config":{"app_id":"voice"},"provider_secrets":{"rtc_app_key":"provider-secret-sentinel"}}]}`))
 	if err != nil {
 		t.Fatalf("sync models: %v", err)
 	}
@@ -514,14 +514,27 @@ func TestModelSyncMapsSnakeCaseRolesAndSpeechMetadata(t *testing.T) {
 	var decoded struct {
 		Profiles     []coremodel.PublicProfile `json:"profiles"`
 		Conversation string                    `json:"default_conversation_client_profile_id"`
+		Tool         string                    `json:"default_tool_client_profile_id"`
 		Embedding    string                    `json:"default_embedding_client_profile_id"`
 		Speech       string                    `json:"default_speech_client_profile_id"`
 	}
 	if err := json.Unmarshal(result, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Conversation != "chat" || decoded.Embedding != "embed" || decoded.Speech != "speech" || len(decoded.Profiles) != 3 {
+	if decoded.Conversation != "chat" || decoded.Tool != "tool" || decoded.Embedding != "embed" || decoded.Speech != "speech" || len(decoded.Profiles) != 4 {
 		t.Fatalf("unexpected sync projection: %s", result)
+	}
+	listed, err := capability.HandleOperation(context.Background(), "list_models", []byte(`{}`))
+	if err != nil || !strings.Contains(string(listed), `"default_tool_client_profile_id":"tool"`) {
+		t.Fatalf("tool default missing from list_models: %s err=%v", listed, err)
+	}
+	for _, operation := range capability.Descriptor().Operations {
+		if (operation.GetOperationId() == "sync_models" || operation.GetOperationId() == "list_models") && !strings.Contains(operation.GetResultSchemaJson(), "default_tool_client_profile_id") {
+			t.Fatalf("%s result schema missing tool default: %s", operation.GetOperationId(), operation.GetResultSchemaJson())
+		}
+		if operation.GetOperationId() == "sync_models" && !strings.Contains(operation.GetInputSchemaJson(), "default_tool_client_profile_id") {
+			t.Fatalf("sync input schema missing tool default: %s", operation.GetInputSchemaJson())
+		}
 	}
 	defaultID, err := service.ResolveDefaultProfileID(context.Background(), coremodel.ModelKindConversation)
 	if err != nil {

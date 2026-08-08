@@ -22,6 +22,7 @@ var (
 	coreSkillsRequiredOperations = []string{
 		"discover_skill", "get_skill", "list_skills", "inspect_skill", "install_skill", "update_skill", "remove_skill", "enable_skill", "disable_skill", "invoke_skill",
 	}
+	coreTextToolsRequiredOperations = []string{"get_config", "update_config", "execute"}
 )
 
 // newCoreInfoProvider exposes only non-secret process metadata. The embedded
@@ -122,6 +123,11 @@ func coreDescriptorTokens(descriptor *capv1.CapabilityDescriptor) []string {
 		return []string{"voice.server"}
 	case "agent.web_search.v1":
 		return []string{"web_search.server"}
+	case "agent.text_tools.v1":
+		if coreDescriptorHasOperations(descriptor, coreTextToolsRequiredOperations) {
+			return []string{"text_tools.server"}
+		}
+		return nil
 	case "agent.execution.v2":
 		return coreExecutionTokens(descriptor)
 	default:

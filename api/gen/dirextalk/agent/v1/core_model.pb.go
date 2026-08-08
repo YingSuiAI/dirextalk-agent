@@ -192,6 +192,8 @@ type CoreModelProfile struct {
 	UpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	ClientProfileId   string                 `protobuf:"bytes,16,opt,name=client_profile_id,json=clientProfileId,proto3" json:"client_profile_id,omitempty"`
 	CredentialVersion int64                  `protobuf:"varint,17,opt,name=credential_version,json=credentialVersion,proto3" json:"credential_version,omitempty"`
+	ModelKind         string                 `protobuf:"bytes,18,opt,name=model_kind,json=modelKind,proto3" json:"model_kind,omitempty"`
+	InputModalities   []string               `protobuf:"bytes,19,rep,name=input_modalities,json=inputModalities,proto3" json:"input_modalities,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -345,6 +347,20 @@ func (x *CoreModelProfile) GetCredentialVersion() int64 {
 	return 0
 }
 
+func (x *CoreModelProfile) GetModelKind() string {
+	if x != nil {
+		return x.ModelKind
+	}
+	return ""
+}
+
+func (x *CoreModelProfile) GetInputModalities() []string {
+	if x != nil {
+		return x.InputModalities
+	}
+	return nil
+}
+
 type CoreModelProfileSyncEntry struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	ClientProfileId  string                 `protobuf:"bytes,1,opt,name=client_profile_id,json=clientProfileId,proto3" json:"client_profile_id,omitempty"`
@@ -360,6 +376,8 @@ type CoreModelProfileSyncEntry struct {
 	MaxOutputTokens  int32                  `protobuf:"varint,11,opt,name=max_output_tokens,json=maxOutputTokens,proto3" json:"max_output_tokens,omitempty"`
 	ContextWindow    int32                  `protobuf:"varint,12,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
 	ReasoningEffort  string                 `protobuf:"bytes,13,opt,name=reasoning_effort,json=reasoningEffort,proto3" json:"reasoning_effort,omitempty"`
+	ModelKind        string                 `protobuf:"bytes,14,opt,name=model_kind,json=modelKind,proto3" json:"model_kind,omitempty"`
+	InputModalities  []string               `protobuf:"bytes,15,rep,name=input_modalities,json=inputModalities,proto3" json:"input_modalities,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -483,6 +501,20 @@ func (x *CoreModelProfileSyncEntry) GetReasoningEffort() string {
 		return x.ReasoningEffort
 	}
 	return ""
+}
+
+func (x *CoreModelProfileSyncEntry) GetModelKind() string {
+	if x != nil {
+		return x.ModelKind
+	}
+	return ""
+}
+
+func (x *CoreModelProfileSyncEntry) GetInputModalities() []string {
+	if x != nil {
+		return x.InputModalities
+	}
+	return nil
 }
 
 type ModelProfileServiceCreateRequest struct {
@@ -802,11 +834,16 @@ func (x *ModelProfileServiceListRequest) GetPageToken() string {
 }
 
 type ModelProfileServiceListResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Profiles      []*CoreModelProfile    `protobuf:"bytes,1,rep,name=profiles,proto3" json:"profiles,omitempty"`
-	NextPageToken string                 `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                              protoimpl.MessageState `protogen:"open.v1"`
+	Profiles                           []*CoreModelProfile    `protobuf:"bytes,1,rep,name=profiles,proto3" json:"profiles,omitempty"`
+	NextPageToken                      string                 `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
+	DefaultClientProfileId             string                 `protobuf:"bytes,3,opt,name=default_client_profile_id,json=defaultClientProfileId,proto3" json:"default_client_profile_id,omitempty"`
+	DefaultConversationClientProfileId string                 `protobuf:"bytes,4,opt,name=default_conversation_client_profile_id,json=defaultConversationClientProfileId,proto3" json:"default_conversation_client_profile_id,omitempty"`
+	DefaultToolClientProfileId         string                 `protobuf:"bytes,5,opt,name=default_tool_client_profile_id,json=defaultToolClientProfileId,proto3" json:"default_tool_client_profile_id,omitempty"`
+	DefaultEmbeddingClientProfileId    string                 `protobuf:"bytes,6,opt,name=default_embedding_client_profile_id,json=defaultEmbeddingClientProfileId,proto3" json:"default_embedding_client_profile_id,omitempty"`
+	DefaultSpeechClientProfileId       string                 `protobuf:"bytes,7,opt,name=default_speech_client_profile_id,json=defaultSpeechClientProfileId,proto3" json:"default_speech_client_profile_id,omitempty"`
+	unknownFields                      protoimpl.UnknownFields
+	sizeCache                          protoimpl.SizeCache
 }
 
 func (x *ModelProfileServiceListResponse) Reset() {
@@ -849,6 +886,41 @@ func (x *ModelProfileServiceListResponse) GetProfiles() []*CoreModelProfile {
 func (x *ModelProfileServiceListResponse) GetNextPageToken() string {
 	if x != nil {
 		return x.NextPageToken
+	}
+	return ""
+}
+
+func (x *ModelProfileServiceListResponse) GetDefaultClientProfileId() string {
+	if x != nil {
+		return x.DefaultClientProfileId
+	}
+	return ""
+}
+
+func (x *ModelProfileServiceListResponse) GetDefaultConversationClientProfileId() string {
+	if x != nil {
+		return x.DefaultConversationClientProfileId
+	}
+	return ""
+}
+
+func (x *ModelProfileServiceListResponse) GetDefaultToolClientProfileId() string {
+	if x != nil {
+		return x.DefaultToolClientProfileId
+	}
+	return ""
+}
+
+func (x *ModelProfileServiceListResponse) GetDefaultEmbeddingClientProfileId() string {
+	if x != nil {
+		return x.DefaultEmbeddingClientProfileId
+	}
+	return ""
+}
+
+func (x *ModelProfileServiceListResponse) GetDefaultSpeechClientProfileId() string {
+	if x != nil {
+		return x.DefaultSpeechClientProfileId
 	}
 	return ""
 }
@@ -1286,12 +1358,16 @@ func (x *ModelProfileServiceTestConnectionResponse) GetErrorCode() string {
 }
 
 type ModelProfileServiceSyncRequest struct {
-	state                  protoimpl.MessageState       `protogen:"open.v1"`
-	IdempotencyKey         string                       `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	DefaultClientProfileId string                       `protobuf:"bytes,2,opt,name=default_client_profile_id,json=defaultClientProfileId,proto3" json:"default_client_profile_id,omitempty"`
-	Entries                []*CoreModelProfileSyncEntry `protobuf:"bytes,3,rep,name=entries,proto3" json:"entries,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	state                              protoimpl.MessageState       `protogen:"open.v1"`
+	IdempotencyKey                     string                       `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	DefaultClientProfileId             string                       `protobuf:"bytes,2,opt,name=default_client_profile_id,json=defaultClientProfileId,proto3" json:"default_client_profile_id,omitempty"`
+	Entries                            []*CoreModelProfileSyncEntry `protobuf:"bytes,3,rep,name=entries,proto3" json:"entries,omitempty"`
+	DefaultConversationClientProfileId string                       `protobuf:"bytes,4,opt,name=default_conversation_client_profile_id,json=defaultConversationClientProfileId,proto3" json:"default_conversation_client_profile_id,omitempty"`
+	DefaultToolClientProfileId         string                       `protobuf:"bytes,5,opt,name=default_tool_client_profile_id,json=defaultToolClientProfileId,proto3" json:"default_tool_client_profile_id,omitempty"`
+	DefaultEmbeddingClientProfileId    string                       `protobuf:"bytes,6,opt,name=default_embedding_client_profile_id,json=defaultEmbeddingClientProfileId,proto3" json:"default_embedding_client_profile_id,omitempty"`
+	DefaultSpeechClientProfileId       string                       `protobuf:"bytes,7,opt,name=default_speech_client_profile_id,json=defaultSpeechClientProfileId,proto3" json:"default_speech_client_profile_id,omitempty"`
+	unknownFields                      protoimpl.UnknownFields
+	sizeCache                          protoimpl.SizeCache
 }
 
 func (x *ModelProfileServiceSyncRequest) Reset() {
@@ -1345,12 +1421,44 @@ func (x *ModelProfileServiceSyncRequest) GetEntries() []*CoreModelProfileSyncEnt
 	return nil
 }
 
+func (x *ModelProfileServiceSyncRequest) GetDefaultConversationClientProfileId() string {
+	if x != nil {
+		return x.DefaultConversationClientProfileId
+	}
+	return ""
+}
+
+func (x *ModelProfileServiceSyncRequest) GetDefaultToolClientProfileId() string {
+	if x != nil {
+		return x.DefaultToolClientProfileId
+	}
+	return ""
+}
+
+func (x *ModelProfileServiceSyncRequest) GetDefaultEmbeddingClientProfileId() string {
+	if x != nil {
+		return x.DefaultEmbeddingClientProfileId
+	}
+	return ""
+}
+
+func (x *ModelProfileServiceSyncRequest) GetDefaultSpeechClientProfileId() string {
+	if x != nil {
+		return x.DefaultSpeechClientProfileId
+	}
+	return ""
+}
+
 type ModelProfileServiceSyncResponse struct {
-	state                  protoimpl.MessageState `protogen:"open.v1"`
-	Profiles               []*CoreModelProfile    `protobuf:"bytes,1,rep,name=profiles,proto3" json:"profiles,omitempty"`
-	DefaultClientProfileId string                 `protobuf:"bytes,2,opt,name=default_client_profile_id,json=defaultClientProfileId,proto3" json:"default_client_profile_id,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	state                              protoimpl.MessageState `protogen:"open.v1"`
+	Profiles                           []*CoreModelProfile    `protobuf:"bytes,1,rep,name=profiles,proto3" json:"profiles,omitempty"`
+	DefaultClientProfileId             string                 `protobuf:"bytes,2,opt,name=default_client_profile_id,json=defaultClientProfileId,proto3" json:"default_client_profile_id,omitempty"`
+	DefaultConversationClientProfileId string                 `protobuf:"bytes,3,opt,name=default_conversation_client_profile_id,json=defaultConversationClientProfileId,proto3" json:"default_conversation_client_profile_id,omitempty"`
+	DefaultToolClientProfileId         string                 `protobuf:"bytes,4,opt,name=default_tool_client_profile_id,json=defaultToolClientProfileId,proto3" json:"default_tool_client_profile_id,omitempty"`
+	DefaultEmbeddingClientProfileId    string                 `protobuf:"bytes,5,opt,name=default_embedding_client_profile_id,json=defaultEmbeddingClientProfileId,proto3" json:"default_embedding_client_profile_id,omitempty"`
+	DefaultSpeechClientProfileId       string                 `protobuf:"bytes,6,opt,name=default_speech_client_profile_id,json=defaultSpeechClientProfileId,proto3" json:"default_speech_client_profile_id,omitempty"`
+	unknownFields                      protoimpl.UnknownFields
+	sizeCache                          protoimpl.SizeCache
 }
 
 func (x *ModelProfileServiceSyncResponse) Reset() {
@@ -1397,6 +1505,34 @@ func (x *ModelProfileServiceSyncResponse) GetDefaultClientProfileId() string {
 	return ""
 }
 
+func (x *ModelProfileServiceSyncResponse) GetDefaultConversationClientProfileId() string {
+	if x != nil {
+		return x.DefaultConversationClientProfileId
+	}
+	return ""
+}
+
+func (x *ModelProfileServiceSyncResponse) GetDefaultToolClientProfileId() string {
+	if x != nil {
+		return x.DefaultToolClientProfileId
+	}
+	return ""
+}
+
+func (x *ModelProfileServiceSyncResponse) GetDefaultEmbeddingClientProfileId() string {
+	if x != nil {
+		return x.DefaultEmbeddingClientProfileId
+	}
+	return ""
+}
+
+func (x *ModelProfileServiceSyncResponse) GetDefaultSpeechClientProfileId() string {
+	if x != nil {
+		return x.DefaultSpeechClientProfileId
+	}
+	return ""
+}
+
 var File_dirextalk_agent_v1_core_model_proto protoreflect.FileDescriptor
 
 const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
@@ -1406,7 +1542,7 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\bpreserve\x18\x01 \x01(\v2\x16.google.protobuf.EmptyH\x00R\bpreserve\x12\x12\n" +
 	"\x03set\x18\x02 \x01(\x01H\x00R\x03set\x12\x16\n" +
 	"\x05clear\x18\x03 \x01(\bH\x00R\x05clearB\a\n" +
-	"\x05value\"\xe1\x05\n" +
+	"\x05value\"\xab\x06\n" +
 	"\x10CoreModelProfile\x12\x1d\n" +
 	"\n" +
 	"profile_id\x18\x01 \x01(\tR\tprofileId\x12!\n" +
@@ -1428,9 +1564,12 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12*\n" +
 	"\x11client_profile_id\x18\x10 \x01(\tR\x0fclientProfileId\x12-\n" +
-	"\x12credential_version\x18\x11 \x01(\x03R\x11credentialVersionB\x0e\n" +
+	"\x12credential_version\x18\x11 \x01(\x03R\x11credentialVersion\x12\x1d\n" +
+	"\n" +
+	"model_kind\x18\x12 \x01(\tR\tmodelKind\x12)\n" +
+	"\x10input_modalities\x18\x13 \x03(\tR\x0finputModalitiesB\x0e\n" +
 	"\f_temperatureB\b\n" +
-	"\x06_top_p\"\xce\x04\n" +
+	"\x06_top_p\"\x98\x05\n" +
 	"\x19CoreModelProfileSyncEntry\x12*\n" +
 	"\x11client_profile_id\x18\x01 \x01(\tR\x0fclientProfileId\x120\n" +
 	"\x11expected_revision\x18\x02 \x01(\x03H\x00R\x10expectedRevision\x88\x01\x01\x12!\n" +
@@ -1445,7 +1584,10 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	" \x01(\x01H\x03R\x04topP\x88\x01\x01\x12*\n" +
 	"\x11max_output_tokens\x18\v \x01(\x05R\x0fmaxOutputTokens\x12%\n" +
 	"\x0econtext_window\x18\f \x01(\x05R\rcontextWindow\x12)\n" +
-	"\x10reasoning_effort\x18\r \x01(\tR\x0freasoningEffortB\x14\n" +
+	"\x10reasoning_effort\x18\r \x01(\tR\x0freasoningEffort\x12\x1d\n" +
+	"\n" +
+	"model_kind\x18\x0e \x01(\tR\tmodelKind\x12)\n" +
+	"\x10input_modalities\x18\x0f \x03(\tR\x0finputModalitiesB\x14\n" +
 	"\x12_expected_revisionB\n" +
 	"\n" +
 	"\b_api_keyB\x0e\n" +
@@ -1477,10 +1619,15 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\x1eModelProfileServiceListRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +
-	"page_token\x18\x02 \x01(\tR\tpageToken\"\x8b\x01\n" +
+	"page_token\x18\x02 \x01(\tR\tpageToken\"\xf4\x03\n" +
 	"\x1fModelProfileServiceListResponse\x12@\n" +
 	"\bprofiles\x18\x01 \x03(\v2$.dirextalk.agent.v1.CoreModelProfileR\bprofiles\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xef\x06\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x129\n" +
+	"\x19default_client_profile_id\x18\x03 \x01(\tR\x16defaultClientProfileId\x12R\n" +
+	"&default_conversation_client_profile_id\x18\x04 \x01(\tR\"defaultConversationClientProfileId\x12B\n" +
+	"\x1edefault_tool_client_profile_id\x18\x05 \x01(\tR\x1adefaultToolClientProfileId\x12L\n" +
+	"#default_embedding_client_profile_id\x18\x06 \x01(\tR\x1fdefaultEmbeddingClientProfileId\x12F\n" +
+	" default_speech_client_profile_id\x18\a \x01(\tR\x1cdefaultSpeechClientProfileId\"\xef\x06\n" +
 	" ModelProfileServiceUpdateRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x1d\n" +
 	"\n" +
@@ -1523,14 +1670,22 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	")ModelProfileServiceTestConnectionResponse\x12\x1c\n" +
 	"\treachable\x18\x01 \x01(\bR\treachable\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\x02 \x01(\tR\terrorCode\"\xcd\x01\n" +
+	"error_code\x18\x02 \x01(\tR\terrorCode\"\xfb\x03\n" +
 	"\x1eModelProfileServiceSyncRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x129\n" +
 	"\x19default_client_profile_id\x18\x02 \x01(\tR\x16defaultClientProfileId\x12G\n" +
-	"\aentries\x18\x03 \x03(\v2-.dirextalk.agent.v1.CoreModelProfileSyncEntryR\aentries\"\x9e\x01\n" +
+	"\aentries\x18\x03 \x03(\v2-.dirextalk.agent.v1.CoreModelProfileSyncEntryR\aentries\x12R\n" +
+	"&default_conversation_client_profile_id\x18\x04 \x01(\tR\"defaultConversationClientProfileId\x12B\n" +
+	"\x1edefault_tool_client_profile_id\x18\x05 \x01(\tR\x1adefaultToolClientProfileId\x12L\n" +
+	"#default_embedding_client_profile_id\x18\x06 \x01(\tR\x1fdefaultEmbeddingClientProfileId\x12F\n" +
+	" default_speech_client_profile_id\x18\a \x01(\tR\x1cdefaultSpeechClientProfileId\"\xcc\x03\n" +
 	"\x1fModelProfileServiceSyncResponse\x12@\n" +
 	"\bprofiles\x18\x01 \x03(\v2$.dirextalk.agent.v1.CoreModelProfileR\bprofiles\x129\n" +
-	"\x19default_client_profile_id\x18\x02 \x01(\tR\x16defaultClientProfileId*\xa6\x01\n" +
+	"\x19default_client_profile_id\x18\x02 \x01(\tR\x16defaultClientProfileId\x12R\n" +
+	"&default_conversation_client_profile_id\x18\x03 \x01(\tR\"defaultConversationClientProfileId\x12B\n" +
+	"\x1edefault_tool_client_profile_id\x18\x04 \x01(\tR\x1adefaultToolClientProfileId\x12L\n" +
+	"#default_embedding_client_profile_id\x18\x05 \x01(\tR\x1fdefaultEmbeddingClientProfileId\x12F\n" +
+	" default_speech_client_profile_id\x18\x06 \x01(\tR\x1cdefaultSpeechClientProfileId*\xa6\x01\n" +
 	"\x11CoreModelProvider\x12#\n" +
 	"\x1fCORE_MODEL_PROVIDER_UNSPECIFIED\x10\x00\x12)\n" +
 	"%CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE\x10\x01\x12!\n" +

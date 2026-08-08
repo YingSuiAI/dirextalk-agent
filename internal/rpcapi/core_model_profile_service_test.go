@@ -93,15 +93,20 @@ func TestModelProfileRPCSyncPresenceAndOrder(t *testing.T) {
 	}
 	service, _ := NewModelProfileService(domain)
 	first, err := service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
-		IdempotencyKey:         "a0000000-0000-4000-8000-000000000040",
-		DefaultClientProfileId: "two",
+		IdempotencyKey:             "a0000000-0000-4000-8000-000000000040",
+		DefaultClientProfileId:     "two",
+		DefaultToolClientProfileId: "one",
 		Entries: []*agentv1.CoreModelProfileSyncEntry{
-			{ClientProfileId: "one", DisplayName: "One", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "model", ApiKey: stringPtrRPC("one-secret")},
+			{ClientProfileId: "one", DisplayName: "One", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, ModelKind: coremodel.ModelKindConversation, InputModalities: []string{"text", "image"}, Model: "model", ApiKey: stringPtrRPC("one-secret")},
 			{ClientProfileId: "two", DisplayName: "Two", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "model", ApiKey: stringPtrRPC("two-secret")},
 		},
 	})
-	if err != nil || len(first.Profiles) != 2 || first.Profiles[0].ClientProfileId != "one" || first.DefaultClientProfileId != "two" {
+	if err != nil || len(first.Profiles) != 2 || first.Profiles[0].ClientProfileId != "one" || first.Profiles[0].ModelKind != coremodel.ModelKindConversation || len(first.Profiles[0].InputModalities) != 2 || first.DefaultClientProfileId != "two" || first.DefaultToolClientProfileId != "one" {
 		t.Fatalf("sync=%+v err=%v", first, err)
+	}
+	listed, err := service.List(context.Background(), &agentv1.ModelProfileServiceListRequest{PageSize: 10})
+	if err != nil || listed.DefaultToolClientProfileId != "one" {
+		t.Fatalf("list defaults=%+v err=%v", listed, err)
 	}
 	if strings.Contains(first.String(), "secret") {
 		t.Fatal("sync response leaked API key")

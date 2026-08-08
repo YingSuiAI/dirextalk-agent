@@ -305,6 +305,7 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	}
 	created, err := store.SyncProfiles(ctx, uuid.NewString(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", coremodel.SyncProfileCommand{
 		DefaultClientProfileID: "one",
+		DefaultToolProfileID:   "two",
 		Entries:                []coremodel.SyncProfileEntry{syncStoreEntry("one", "One", "one-secret"), syncStoreEntry("two", "Two", "two-secret")},
 	})
 	if err != nil || len(created.Profiles) != 2 || created.Profiles[0].ClientProfileID != "one" || created.Profiles[1].ClientProfileID != "two" {
@@ -312,6 +313,14 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(created), "one-secret") || strings.Contains(fmt.Sprint(created), "two-secret") {
 		t.Fatal("sync response leaked API key")
+	}
+	defaults, err := store.GetProfileDefaults(ctx)
+	if err != nil || defaults.ToolClientProfileID != "two" {
+		t.Fatalf("durable tool default=%+v err=%v", defaults, err)
+	}
+	_, err = store.SyncProfiles(ctx, uuid.NewString(), "abababababababababababababababababababababababababababababababab", coremodel.SyncProfileCommand{DefaultToolProfileID: "embed", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "embed", DisplayName: "Embed", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, Model: "embed", APIKey: stringPtrStore("embed-secret")}}})
+	if !errors.Is(err, coremodel.ErrInvalidProfile) {
+		t.Fatalf("PostgreSQL accepted embedding tool default: %v", err)
 	}
 	updated, err := store.SyncProfiles(ctx, uuid.NewString(), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", coremodel.SyncProfileCommand{DefaultClientProfileID: "two", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(1), DisplayName: "Two rotated", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: stringPtrStore("rotated")}}})
 	if err != nil || len(updated.Profiles) != 1 || updated.Profiles[0].Revision != 2 {

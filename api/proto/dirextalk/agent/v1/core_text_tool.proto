@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+
+// These messages are typed DTO authorities for agent.text_tools.v1. There is
+// intentionally no Core gRPC service: only the Capability boundary carries
+// authenticated owner and account-generation context.
+message CoreTextToolItem {
+  // One of translation, summary, explanation, search, or a canonical UUID.
+  string tool_id = 1;
+  string name = 2;
+  string system_prompt = 3;
+  int32 order = 4;
+  bool enabled = 5;
+}
+
+message CoreTextToolConfig {
+  bool enabled = 1;
+  int64 revision = 2;
+  repeated CoreTextToolItem tools = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message CoreTextToolUpdateInput {
+  string idempotency_key = 1;
+  int64 expected_revision = 2;
+  bool enabled = 3;
+  repeated CoreTextToolItem tools = 4;
+}
+
+message CoreTextToolExecuteInput {
+  string tool_id = 1;
+  string selected_text = 2;
+}
+
+message CoreTextToolSource {
+  string title = 1;
+  string url = 2;
+  string snippet = 3;
+}
+
+message CoreTextToolExecuteResult {
+  string tool_id = 1;
+  string output = 2;
+  repeated CoreTextToolSource sources = 3;
+}

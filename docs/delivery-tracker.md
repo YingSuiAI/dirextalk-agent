@@ -24,6 +24,10 @@ contract](message-server-integration-development-contract.md), and
   its Capability operation identity is the public turn identity while the
   client-message request identity remains a separate idempotency fence.
 - Agent-owned encrypted Tavily Web Search configuration and guarded dispatch.
+- Agent-owned typed text tools with virtual revision-zero built-ins, durable
+  full-list configuration/replay, explicit Tool-profile resolution, and
+  bounded non-conversational model/search execution through the owner-client
+  `agent.text_tools.v1` Capability.
 - MCP/Skill lifecycle with isolated extension-runner execution. Official
   Registry remotes are accepted only when the manifest declares exactly one
   header-free `streamable-http` endpoint; other header or transport shapes
@@ -50,6 +54,10 @@ contract](message-server-integration-development-contract.md), and
   the Core binary; authenticated instance info and `agent.info.v1` status
   report it separately from the `v1` API protocol version.
 - Versioned, Buf-lint-clean Protobufs and focused Core contract tests.
+- Durable model role defaults include an independent conversation-kind tool
+  profile binding across memory/PostgreSQL stores, Protobuf, and
+  `agent.models.v1` sync/list schemas and results; speech/embedding bindings
+  are rejected and no conversation-default fallback is synthesized.
 - Closed Capability conversation/history DTOs, conversation-bound newest-first
   history cursors, strict UUID mutation keys, typed/redacted domain failures,
   and post-composition durable-turn recovery.
@@ -57,6 +65,11 @@ contract](message-server-integration-development-contract.md), and
   `list_turns` and use it as the durable Capability operation identity. The
   client-message request identity remains a private idempotency fence, and an
   explicit Capability operation cancellation fences that exact durable turn.
+- Native durable turns expose the Core-owned `agent.schedule.create` intrinsic
+  with model input limited to schedule intent/trigger/timeout. Turn authority
+  supplies owner generation, conversation, and profile; PostgreSQL commits the
+  schedule/replay and terminal transcript/event as one deterministic,
+  replay-safe transaction.
 - The single Cloud Worker source path uses `ephemeral-pi-task` /
   `pi_json_task_v1`, a real `CLOUD_WORKER` CoreTask and CoreConfirmation,
   atomic conversation offer/outbox persistence, private WorkerControl fencing,

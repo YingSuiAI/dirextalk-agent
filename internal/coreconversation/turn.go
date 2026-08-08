@@ -275,7 +275,7 @@ func (s ExtensionExecutionSnapshot) Validate() error {
 	}
 	seen := map[string]struct{}{}
 	for _, name := range s.ToolNames {
-		if name == "" || len(name) > MaxToolNameBytes || name == coremodel.IntrinsicCloudWorkerProposeToolName {
+		if name == "" || len(name) > MaxToolNameBytes || coremodel.IsIntrinsicToolName(name) {
 			return ErrInvalid
 		}
 		if _, ok := seen[name]; ok {

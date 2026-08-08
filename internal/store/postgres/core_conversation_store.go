@@ -231,6 +231,17 @@ func stringArrayJSONPG(values []string) ([]byte, error) {
 	return json.Marshal(values)
 }
 
+// referenceArrayJSONPG preserves the fresh-state core_messages contract:
+// references_json is always an array, including for ordinary messages with
+// no references. json.Marshal on a nil slice would produce JSON null and be
+// rejected by core_messages_references_json_chk.
+func referenceArrayJSONPG(values []core.Reference) ([]byte, error) {
+	if values == nil {
+		values = []core.Reference{}
+	}
+	return json.Marshal(values)
+}
+
 func normalizeConversationTimesPG(conversation *core.Conversation, deletedAt *time.Time) {
 	conversation.CreatedAt = conversation.CreatedAt.UTC()
 	conversation.UpdatedAt = conversation.UpdatedAt.UTC()

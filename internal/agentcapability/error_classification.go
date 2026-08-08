@@ -9,6 +9,8 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -46,6 +48,13 @@ func classifyCapabilityError(err error) error {
 	if _, _, classified := capabilityoperation.FailureDetails(err); classified {
 		return err
 	}
+	// A missing or unusable explicit tool-model binding is a configuration
+	// prerequisite even when its retained internal cause is a more general
+	// model validation error. Repository and provider failures do not carry
+	// this marker and continue through the normal unavailable/upstream mapping.
+	if errors.Is(err, coretexttool.ErrModelNotConfigured) {
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent configuration is not ready", err)
+	}
 	switch status.Code(err) {
 	case codes.InvalidArgument:
 		return capabilityoperation.NewFailure("INVALID_ARGUMENT", "Product request is invalid", err)
@@ -78,13 +87,16 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coreknowledge.ErrPathTraversal),
 		errors.Is(err, coreknowledge.ErrLimitExceeded),
 		errors.Is(err, coreknowledge.ErrCursorConflict),
+		errors.Is(err, coretexttool.ErrInvalid),
+		errors.Is(err, corewebsearch.ErrInvalid),
 		errors.Is(err, coredeprovision.ErrInvalid):
 		return capabilityoperation.NewFailure("INVALID_ARGUMENT", "Agent request is invalid", err)
 	case errors.Is(err, coreknowledge.ErrQuotaExceeded):
 		return capabilityoperation.NewFailure("RESOURCE_EXHAUSTED", capabilityoperation.KnowledgeQuotaExceededMessage, err)
 	case errors.Is(err, coreconversation.ErrDeleted),
 		errors.Is(err, coremodel.ErrProfileNotFound),
-		errors.Is(err, coreknowledge.ErrNotFound):
+		errors.Is(err, coreknowledge.ErrNotFound),
+		errors.Is(err, coretexttool.ErrNotFound):
 		return capabilityoperation.NewFailure("NOT_FOUND", "Agent resource was not found", err)
 	case errors.Is(err, coreconversation.ErrConflict),
 		errors.Is(err, coreconversation.ErrInFlight),
@@ -95,12 +107,20 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coreknowledge.ErrConflict),
 		errors.Is(err, coreknowledge.ErrIdempotencyConflict),
 		errors.Is(err, coreknowledge.ErrRevisionConflict),
-		errors.Is(err, coreknowledge.ErrSourceReferenced):
+		errors.Is(err, coreknowledge.ErrSourceReferenced),
+		errors.Is(err, coretexttool.ErrRevisionConflict),
+		errors.Is(err, coretexttool.ErrIdempotencyConflict),
+		errors.Is(err, corewebsearch.ErrRevisionConflict),
+		errors.Is(err, corewebsearch.ErrIdempotencyConflict):
 		return capabilityoperation.NewFailure("CONFLICT", "Agent state changed; refresh and retry", err)
 	case errors.Is(err, coremodel.ErrAPIKeyUnavailable),
 		errors.Is(err, coreknowledge.ErrIneligible),
 		errors.Is(err, coreknowledge.ErrCleanupPending),
-		errors.Is(err, coreconversation.ErrMemoryRecallUnavailable):
+		errors.Is(err, coreconversation.ErrMemoryRecallUnavailable),
+		errors.Is(err, coretexttool.ErrDisabled),
+		errors.Is(err, coretexttool.ErrToolDisabled),
+		errors.Is(err, corewebsearch.ErrNotConfigured),
+		errors.Is(err, corewebsearch.ErrDisabled):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent configuration is not ready", err)
 	case errors.Is(err, coreconversation.ErrChatFailed):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent chat failed", err)
@@ -109,7 +129,10 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coremodel.ErrProviderUnavailable),
 		errors.Is(err, coremodel.ErrInvalidResponse),
 		errors.Is(err, coremodel.ErrStreamTruncated),
-		errors.Is(err, coreknowledge.ErrFilesystemUnavailable):
+		errors.Is(err, coreknowledge.ErrFilesystemUnavailable),
+		errors.Is(err, coretexttool.ErrRepository),
+		errors.Is(err, corewebsearch.ErrRepository),
+		errors.Is(err, corewebsearch.ErrProvider):
 		return capabilityoperation.NewFailure("UNAVAILABLE", "Agent dependency is unavailable", err)
 	default:
 		return capabilityoperation.NewFailure("UPSTREAM_FAILED", "Agent operation failed", err)

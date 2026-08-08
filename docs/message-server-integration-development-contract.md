@@ -39,6 +39,15 @@ callback over its authenticated mTLS channel. Callbacks do not become a second
 Agent database or execution ledger, and neither direction accepts raw Agent
 secrets from Flutter.
 
+Text tools cross only as the owner-client `agent.text_tools.v1` descriptor.
+Message Server forwards the canonical typed config/update/execute payloads and
+does not supply a model profile, credential, prompt fallback, owner field, or
+execution history. Agent resolves its explicit Tool model default and stored
+secrets after validating the authenticated Permission context. There is no
+parallel Core gRPC TextTool service. The ordinary Capability operation receipt
+retains bounded output for result observation, but its durable request is `{}`
+and an interrupted execution is never automatically replayed.
+
 The one Cloud Worker terminal callback is the fixed private
 `product.agent_execution.v1/record_completion` operation. Agent dispatches it
 only from a durable outbox after the result message is frozen and all recorded
