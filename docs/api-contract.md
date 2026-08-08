@@ -189,6 +189,19 @@ multi-tenant model.
   ledger always stores request JSON as `{}`, so selected text is not durable.
   Pending or running calls interrupted by restart become `uncertain` and are
   never automatically dispatched again.
+- `agent.image_tools.v1` is the owner-client-only, five-operation image text
+  boundary: `upload_begin`, `upload_append`, `upload_commit`, `extract_text`,
+  and `translate_text`. JPEG, PNG, and WebP bytes use a dedicated PostgreSQL
+  source store with an 8 MiB image limit, 1 MiB canonical chunks, SHA-256
+  verification, 30-minute expiry, and exact owner/account-generation/image-
+  request binding. A committed source is atomically consumed once and its
+  database bytes are cleared before the provider call. Execution requires the
+  global text-tool switch, the explicit conversation-kind Tool default, a
+  current credential, and advertised `image` input modality; there is no
+  profile or conversation fallback. Fixed server prompts provide only text
+  extraction and translation to a canonical BCP-47 locale. Calls create no
+  conversation, history, Task, or image replay rows outside bounded upload
+  idempotency receipts; the common Capability ledger persists request `{}`.
 - Unknown enum values, malformed UUIDs, invalid digests, and unsupported
   combinations fail closed as `INVALID_ARGUMENT` or `FAILED_PRECONDITION`.
 

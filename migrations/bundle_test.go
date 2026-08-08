@@ -36,7 +36,7 @@ func TestCommittedMigrationBytesRemainImmutable(t *testing.T) {
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 5 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" {
+	if len(entries) != 6 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Cloud Worker migrations", entries)
 	}
 	migration := Ordered()[0]
@@ -64,6 +64,10 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	cloudWorker := Ordered()[4]
 	if cloudWorker.Version != 5 || len(cloudWorker.Script) == 0 || cloudWorker.Script[len(cloudWorker.Script)-1] != '\n' {
 		t.Fatal("Cloud Worker migration lost its source newline")
+	}
+	imageTools := Ordered()[5]
+	if imageTools.Version != 6 || !bytes.Contains(imageTools.Script, []byte("CREATE TABLE core_image_tool_uploads")) {
+		t.Fatal("image tools migration missing ephemeral source store")
 	}
 	if !bytes.Contains(cloudWorker.Script, []byte(cloudworker.PostgresOutputJournalSchemaRequirement)) {
 		t.Fatal("Cloud Worker migration drifted from the output journal schema requirement")

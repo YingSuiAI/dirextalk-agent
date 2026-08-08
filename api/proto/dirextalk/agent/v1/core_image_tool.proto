@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+
+// Typed DTO authority for the owner-client-only agent.image_tools.v1
+// Capability. Raw image bytes are write-only upload input and never appear in
+// a result or ordinary read response.
+message CoreImageToolUploadBeginInput {
+  string idempotency_key = 1;
+  string image_request_id = 2;
+  string name = 3;
+  string mime_type = 4;
+  uint64 declared_size = 5;
+  string content_sha256 = 6;
+}
+
+message CoreImageToolUploadAppendInput {
+  string idempotency_key = 1;
+  string upload_id = 2;
+  uint64 expected_revision = 3;
+  uint32 ordinal = 4;
+  uint64 offset_bytes = 5;
+  string data_base64 = 6;
+  string chunk_sha256 = 7;
+}
+
+message CoreImageToolUploadCommitInput {
+  string idempotency_key = 1;
+  string upload_id = 2;
+  uint64 expected_revision = 3;
+  string content_sha256 = 4;
+}
+
+message CoreImageToolUploadResult {
+  string upload_id = 1;
+  string source_id = 2;
+  string image_request_id = 3;
+  string status = 4;
+  uint64 received_size = 5;
+  uint64 max_chunk_bytes = 6;
+  uint64 revision = 7;
+  google.protobuf.Timestamp expires_at = 8;
+}
+
+message CoreImageToolSourceResult {
+  string source_id = 1;
+  uint64 source_revision = 2;
+  string image_request_id = 3;
+  string name = 4;
+  string mime_type = 5;
+  uint64 size_bytes = 6;
+  string sha256 = 7;
+  string status = 8;
+  google.protobuf.Timestamp expires_at = 9;
+}
+
+message CoreImageToolExecuteInput {
+  string idempotency_key = 1;
+  string source_id = 2;
+  uint64 source_revision = 3;
+}
+
+message CoreImageToolTranslateInput {
+  string idempotency_key = 1;
+  string source_id = 2;
+  uint64 source_revision = 3;
+  string target_locale = 4;
+}
+
+message CoreImageToolExecuteResult {
+  string idempotency_key = 1;
+  string source_id = 2;
+  uint64 source_revision = 3;
+  string text = 4;
+}
+
+message CoreImageToolTranslateResult {
+  string idempotency_key = 1;
+  string source_id = 2;
+  uint64 source_revision = 3;
+  string text = 4;
+  string target_locale = 5;
+}

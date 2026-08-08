@@ -90,7 +90,8 @@ func TestModelRunnerToolDoneAndStreamError(t *testing.T) {
 	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return fc, nil })
 	// Generate returns no tool calls => Done true; stream non-EOF error propagates.
 	snapshot := coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1})
-	res, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: snapshot})
+	request := coreconversation.ModelRunRequest{Snapshot: snapshot, Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "test"}}}}
+	res, err := r.Run(context.Background(), request)
 	if err != nil || res.Done {
 		t.Fatalf("run done=%v err=%v", res.Done, err)
 	}
@@ -99,13 +100,13 @@ func TestModelRunnerToolDoneAndStreamError(t *testing.T) {
 	}
 	fc2 := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{{ToolCalls: []coremodel.ToolCall{{Index: 0, ID: "c", Function: coremodel.FunctionCall{Name: "f", Arguments: "{"}}}}}, err: errors.New("boom")}}
 	r2, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return fc2, nil })
-	res, err = r2.Stream(context.Background(), coreconversation.ModelRunRequest{Snapshot: snapshot}, nil)
+	res, err = r2.Stream(context.Background(), request, nil)
 	if err == nil || res.Done {
 		t.Fatalf("stream err=%v done=%v", err, res.Done)
 	}
 	fc3 := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: "ok"}}}}
 	r3, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return fc3, nil })
-	res, err = r3.Stream(context.Background(), coreconversation.ModelRunRequest{Snapshot: snapshot}, nil)
+	res, err = r3.Stream(context.Background(), request, nil)
 	if err != nil || !res.Done || res.Message.Content != "ok" || !coretask.ValidUUID(res.Message.ID) {
 		t.Fatalf("successful stream result=%+v err=%v", res, err)
 	}
@@ -256,7 +257,7 @@ func TestModelRunnerForwardsResolvedExtensionToolsToProvider(t *testing.T) {
 	client := &captureClient{}
 	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
 	ext := coreconversation.ResolvedExtension{Tools: []coremodel.Tool{{Name: "product_contacts_list", Description: "list contacts", InputSchema: map[string]any{"type": "object"}}}}
-	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}), Extensions: []coreconversation.ResolvedExtension{ext}})
+	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}), Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "test"}}}, Extensions: []coreconversation.ResolvedExtension{ext}})
 	if err != nil {
 		t.Fatal(err)
 	}

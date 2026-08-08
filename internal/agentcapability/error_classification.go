@@ -7,6 +7,7 @@ import (
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreimagetool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
@@ -52,7 +53,7 @@ func classifyCapabilityError(err error) error {
 	// prerequisite even when its retained internal cause is a more general
 	// model validation error. Repository and provider failures do not carry
 	// this marker and continue through the normal unavailable/upstream mapping.
-	if errors.Is(err, coretexttool.ErrModelNotConfigured) {
+	if errors.Is(err, coretexttool.ErrModelNotConfigured) || errors.Is(err, coreimagetool.ErrModelNotConfigured) {
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent configuration is not ready", err)
 	}
 	switch status.Code(err) {
@@ -88,6 +89,7 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coreknowledge.ErrLimitExceeded),
 		errors.Is(err, coreknowledge.ErrCursorConflict),
 		errors.Is(err, coretexttool.ErrInvalid),
+		errors.Is(err, coreimagetool.ErrInvalid),
 		errors.Is(err, corewebsearch.ErrInvalid),
 		errors.Is(err, coredeprovision.ErrInvalid):
 		return capabilityoperation.NewFailure("INVALID_ARGUMENT", "Agent request is invalid", err)
@@ -97,6 +99,10 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coremodel.ErrProfileNotFound),
 		errors.Is(err, coreknowledge.ErrNotFound),
 		errors.Is(err, coretexttool.ErrNotFound):
+		// Image sources intentionally cease to exist after expiry cleanup.
+		// A consumed source is classified as conflict below.
+		return capabilityoperation.NewFailure("NOT_FOUND", "Agent resource was not found", err)
+	case errors.Is(err, coreimagetool.ErrNotFound), errors.Is(err, coreimagetool.ErrExpired):
 		return capabilityoperation.NewFailure("NOT_FOUND", "Agent resource was not found", err)
 	case errors.Is(err, coreconversation.ErrConflict),
 		errors.Is(err, coreconversation.ErrInFlight),
@@ -113,12 +119,15 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, corewebsearch.ErrRevisionConflict),
 		errors.Is(err, corewebsearch.ErrIdempotencyConflict):
 		return capabilityoperation.NewFailure("CONFLICT", "Agent state changed; refresh and retry", err)
+	case errors.Is(err, coreimagetool.ErrConflict), errors.Is(err, coreimagetool.ErrConsumed):
+		return capabilityoperation.NewFailure("CONFLICT", "Agent state changed; refresh and retry", err)
 	case errors.Is(err, coremodel.ErrAPIKeyUnavailable),
 		errors.Is(err, coreknowledge.ErrIneligible),
 		errors.Is(err, coreknowledge.ErrCleanupPending),
 		errors.Is(err, coreconversation.ErrMemoryRecallUnavailable),
 		errors.Is(err, coretexttool.ErrDisabled),
 		errors.Is(err, coretexttool.ErrToolDisabled),
+		errors.Is(err, coreimagetool.ErrDisabled),
 		errors.Is(err, corewebsearch.ErrNotConfigured),
 		errors.Is(err, corewebsearch.ErrDisabled):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent configuration is not ready", err)
@@ -131,6 +140,7 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coremodel.ErrStreamTruncated),
 		errors.Is(err, coreknowledge.ErrFilesystemUnavailable),
 		errors.Is(err, coretexttool.ErrRepository),
+		errors.Is(err, coreimagetool.ErrRepository), errors.Is(err, coreimagetool.ErrModel),
 		errors.Is(err, corewebsearch.ErrRepository),
 		errors.Is(err, corewebsearch.ErrProvider):
 		return capabilityoperation.NewFailure("UNAVAILABLE", "Agent dependency is unavailable", err)

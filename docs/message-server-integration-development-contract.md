@@ -54,6 +54,14 @@ parallel Core gRPC TextTool service. The ordinary Capability operation receipt
 retains bounded output for result observation, but its durable request is `{}`
 and an interrupted execution is never automatically replayed.
 
+Image tools cross only as `agent.image_tools.v1` with the exact five-operation
+descriptor; `image_tools.server` is projected only when all five are ready.
+Message Server forwards bounded canonical chunks and the two typed execute
+requests. It cannot supply URLs, inline profile/credential material, owner
+identity, prompts, or chat attachment identifiers. `image_request_id` is
+established at begin, must equal execute `idempotency_key`, and source revision
+is exactly one.
+
 The one Cloud Worker terminal callback is the fixed private
 `product.agent_execution.v1/record_completion` operation. Agent dispatches it
 only from a durable outbox after the result message is frozen and all recorded

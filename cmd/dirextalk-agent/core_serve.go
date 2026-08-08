@@ -32,6 +32,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreimagetool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge/semantic"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -118,6 +119,12 @@ func serveCore(cfg config.Config) error {
 	})
 	if err != nil {
 		return fmt.Errorf("initialize text tool service: %w", err)
+	}
+	imageToolService, err := coreimagetool.NewService(postgres.NewCoreImageToolStore(store), textToolService, profiles, func(profile coremodel.Profile) (coremodel.Client, error) {
+		return coremodel.NewClient(profile, coremodel.WithTimeout(coreimagetool.ExecutionLimit))
+	})
+	if err != nil {
+		return fmt.Errorf("initialize image tool service: %w", err)
 	}
 	modelService, err := rpcapi.NewModelProfileService(profiles)
 	if err != nil {
@@ -537,6 +544,7 @@ func serveCore(cfg config.Config) error {
 			}(),
 			WebSearch:   webSearchService,
 			TextTools:   textToolService,
+			ImageTools:  imageToolService,
 			Voice:       voiceService,
 			Deprovision: deprovisionService,
 			DeprovisionPurge: func(ctx context.Context) error {

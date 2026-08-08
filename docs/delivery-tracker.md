@@ -28,6 +28,10 @@ contract](message-server-integration-development-contract.md), and
   full-list configuration/replay, explicit Tool-profile resolution, and
   bounded non-conversational model/search execution through the owner-client
   `agent.text_tools.v1` Capability.
+- Owner-client image text extraction and locale translation through
+  `agent.image_tools.v1`, with dedicated bounded PostgreSQL uploads, atomic
+  consume-and-byte-clear, strict Tool-profile image-modality gates, fixed safe
+  prompts, and no conversation/history/Task persistence.
 - MCP/Skill lifecycle with isolated extension-runner execution. Official
   Registry remotes are accepted only when the manifest declares exactly one
   header-free `streamable-http` endpoint; other header or transport shapes

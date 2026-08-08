@@ -99,6 +99,17 @@ disablement or credential removal fails closed. The typed
 schema authority only: no Core gRPC service is registered because that
 listener does not carry authenticated owner/account-generation context.
 
+Image extraction and image-text translation use the independent
+`agent.image_tools.v1` owner-client Capability. Its dedicated ephemeral upload
+store shares the 8 MiB/1 MiB/30-minute mature attachment bounds but never
+creates or reuses a chat source. Consume is atomic and one-way, clears stored
+bytes, and binds exact owner, generation, image request, source, and revision.
+Execution is enabled only by the text-tool global switch and an explicit,
+credentialed conversation Tool profile whose input modalities include image.
+The provider-neutral typed in-memory image part is the only model input path;
+URLs, paths, data URIs, arbitrary prompts, Tavily, and configurable text-tool
+items are not accepted by this surface.
+
 `WorkloadService` uses the distinct `WORKLOAD` Task kind and the readiness
 semantics defined in the [API contract](api-contract.md). Missing or stale
 target proof keeps a capability disabled; there is no implicit default target

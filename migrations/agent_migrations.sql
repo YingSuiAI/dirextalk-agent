@@ -2204,3 +2204,48 @@ CREATE TABLE core_cloud_worker_session_replays (
     PRIMARY KEY (operation, session_id, idempotency_key)
 );
 -- dirextalk-agent migration end 000005_cloud_worker_v1.up.sql
+-- dirextalk-agent migration begin 000006_image_tools_v1.up.sql
+-- Image tools use a dedicated bounded, ephemeral source store. Raw image
+-- bytes never enter conversation, task, history, or capability-ledger rows.
+CREATE TABLE core_image_tool_uploads (
+    upload_id uuid PRIMARY KEY,
+    source_id uuid NOT NULL UNIQUE,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    image_request_id uuid NOT NULL,
+    begin_idempotency_key uuid NOT NULL UNIQUE,
+    begin_request_digest char(64) NOT NULL CHECK (begin_request_digest ~ '^[a-f0-9]{64}$'),
+    name text NOT NULL CHECK (length(name) BETWEEN 1 AND 255),
+    mime_type text NOT NULL CHECK (mime_type IN ('image/jpeg','image/png','image/webp')),
+    declared_size bigint NOT NULL CHECK (declared_size BETWEEN 1 AND 8388608),
+    content_sha256 char(64) NOT NULL CHECK (content_sha256 ~ '^[a-f0-9]{64}$'),
+    content_bytes bytea NOT NULL DEFAULT ''::bytea CHECK (octet_length(content_bytes) <= 8388608),
+    received_size bigint NOT NULL DEFAULT 0 CHECK (received_size BETWEEN 0 AND 8388608),
+    next_ordinal integer NOT NULL DEFAULT 0 CHECK (next_ordinal BETWEEN 0 AND 4096),
+    status text NOT NULL CHECK (status IN ('receiving','committed','consumed')),
+    revision bigint NOT NULL CHECK (revision > 0),
+    expires_at timestamptz NOT NULL,
+    consumed_at timestamptz,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    UNIQUE(owner_id, account_generation, image_request_id),
+    CHECK (received_size <= declared_size),
+    CHECK (
+        (status = 'receiving' AND consumed_at IS NULL AND octet_length(content_bytes) = received_size) OR
+        (status = 'committed' AND consumed_at IS NULL AND received_size = declared_size AND octet_length(content_bytes) = declared_size) OR
+        (status = 'consumed' AND consumed_at IS NOT NULL AND received_size = 0 AND octet_length(content_bytes) = 0)
+    ),
+    CHECK (expires_at > created_at),
+    CHECK (updated_at >= created_at)
+);
+CREATE INDEX core_image_tool_uploads_expiry_idx ON core_image_tool_uploads(expires_at);
+CREATE TABLE core_image_tool_replays (
+    operation text NOT NULL CHECK (operation IN ('append','commit')),
+    idempotency_key uuid NOT NULL,
+    request_digest char(64) NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    upload_id uuid NOT NULL REFERENCES core_image_tool_uploads(upload_id) ON DELETE CASCADE,
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 32768),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY(operation,idempotency_key)
+);
+-- dirextalk-agent migration end 000006_image_tools_v1.up.sql

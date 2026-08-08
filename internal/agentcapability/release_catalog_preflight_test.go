@@ -123,6 +123,7 @@ func releaseBaselineDescriptors() map[string]*capv1.CapabilityDescriptor {
 		(&coreChatCapability{}).Descriptor(),
 		NewCoreWebSearchCapability(nil).Descriptor(),
 		NewCoreTextToolCapability(nil).Descriptor(),
+		NewCoreImageToolCapability(nil).Descriptor(),
 		(&coreModelCapability{}).Descriptor(),
 		(&coreKnowledgeCapability{}).Descriptor(),
 		(&coreTaskCapability{}).Descriptor(),

@@ -26,6 +26,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreimagetool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -53,6 +54,7 @@ type CoreBindings struct {
 	AWS                *coreaws.Service
 	WebSearch          *corewebsearch.Service
 	TextTools          *coretexttool.Service
+	ImageTools         *coreimagetool.Service
 	// Voice and Misc are optional composition ports.  The Core registry owns
 	// their publication so standalone capability tests and the production
 	// composition share the same catalog path.
@@ -80,6 +82,9 @@ func NewCoreRegistry(bindings CoreBindings) *Registry {
 	}
 	if bindings.TextTools != nil {
 		r.Register(NewCoreTextToolCapability(bindings.TextTools))
+	}
+	if bindings.ImageTools != nil {
+		r.Register(NewCoreImageToolCapability(bindings.ImageTools))
 	}
 	if bindings.Voice != nil {
 		r.Register(NewCoreVoiceCapability(bindings.Voice, bindings.CapabilityProgress))

@@ -50,6 +50,7 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 		coreInfoDescriptor("agent.voice.v1", true),
 		coreInfoDescriptor("agent.web_search.v1", true, "get_config", "update_config", "test"),
 		coreInfoDescriptor("agent.text_tools.v1", true, "get_config", "update_config", "execute"),
+		coreInfoDescriptor("agent.image_tools.v1", true, coreImageToolsRequiredOperations...),
 		coreInfoDescriptor("agent.confirmations.v1", true),
 		coreInfoDescriptor("agent.skills.v1", true, append(
 			append([]string{"invoke_product"}, coreMCPRequiredOperations...),
@@ -87,6 +88,7 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 		"execution.v2.secrets",
 		"execution.v2.transport.aws_ssm",
 		"execution.v2.transport.http_api",
+		"image_tools.server",
 		"knowledge",
 		"mcp",
 		"memory.server",
@@ -122,6 +124,18 @@ func TestCoreInfoProviderRequiresCompleteTextToolOperations(t *testing.T) {
 	}
 	if got := coreDescriptorTokens(coreInfoDescriptor("agent.text_tools.v1", true, coreTextToolsRequiredOperations...)); !reflect.DeepEqual(got, []string{"text_tools.server"}) {
 		t.Fatalf("complete text tool descriptor tokens=%v", got)
+	}
+}
+
+func TestCoreInfoProviderRequiresCompleteImageToolOperations(t *testing.T) {
+	for _, missing := range coreImageToolsRequiredOperations {
+		descriptor := coreInfoDescriptor("agent.image_tools.v1", true, coreInfoOperationsWithout(coreImageToolsRequiredOperations, missing)...)
+		if got := coreDescriptorTokens(descriptor); len(got) != 0 {
+			t.Fatalf("missing %s projected image tools: %v", missing, got)
+		}
+	}
+	if got := coreDescriptorTokens(coreInfoDescriptor("agent.image_tools.v1", true, coreImageToolsRequiredOperations...)); !reflect.DeepEqual(got, []string{"image_tools.server"}) {
+		t.Fatalf("complete image tool descriptor tokens=%v", got)
 	}
 }
 
