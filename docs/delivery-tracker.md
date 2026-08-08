@@ -73,7 +73,7 @@ contract](message-server-integration-development-contract.md), and
   preflight compares every Message Server readiness-baseline action, binding,
   and schema pin against the actual Agent descriptor constructors and reports
   all catalog differences in one run.
-- Native durable turns expose the Core-owned `agent.schedule.create` intrinsic
+- Native durable turns expose the Core-owned `agent_schedule_create` intrinsic
   with model input limited to schedule intent/trigger/timeout. Turn authority
   supplies owner generation, conversation, and profile; PostgreSQL commits the
   schedule/replay and terminal transcript/event as one deterministic,
@@ -161,7 +161,7 @@ support.
 - On **2026-08-07**, `go test ./internal/store/postgres -run 'CloudWorker' -count=1`
   passed against the local PostgreSQL 18 test service. In particular,
   `TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation`
-  passed the fresh-state path from `cloud_worker.propose` through atomic offer,
+  passed the fresh-state path from `cloud_worker_propose` through atomic offer,
   owner confirmation, one fake provider dispatch, real PostgreSQL-backed
   WorkerControl challenge/claim/heartbeat/complete, canonical Pi final parsing,
   exact-version central validation, eight `verified_destroyed` resource
@@ -188,7 +188,7 @@ support.
 - Generic non-Cloud-Worker Execution V2 provider mutations still require their
   exact typed route, target proof, and configured CloudFormation service role;
   live generic AWS provision/read-back acceptance is not recorded.
-- Production `cloud_worker.propose` accepts an explicit cloud command and one
+- Production `cloud_worker_propose` accepts an explicit cloud command and one
   structural local-budget case: the frozen turn contains a validated workspace
   archive, while the versioned Native runtime policy has no general workspace
   executor. Its deterministic evidence binds owner/account generation,

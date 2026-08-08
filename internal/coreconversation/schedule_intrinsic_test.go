@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,5 +138,25 @@ func TestScheduleIntrinsicStoreFailureDoesNotReportCommittedTurn(t *testing.T) {
 		"name": "once", "goal": "send reminder", "run_at": "2026-08-09T00:00:00Z",
 	}); err == nil {
 		t.Fatal("store failure was ignored")
+	}
+}
+
+func TestScheduleIntrinsicFailureClassificationIsSpecificAndRedacted(t *testing.T) {
+	lease := scheduleIntrinsicLease()
+	invalidErr := executeScheduleForTest(t, &conversationScheduleStoreStub{}, lease, "call-invalid", map[string]any{
+		"name": "invalid", "goal": "send reminder", "cron": "not a cron", "timezone": "UTC",
+	})
+	code, summary := intrinsicTerminalFailure(coremodel.IntrinsicScheduleCreateToolName, invalidErr)
+	if code != "invalid_intrinsic_arguments" || summary != "Core intrinsic arguments are invalid" {
+		t.Fatalf("invalid classification code=%q summary=%q err=%v", code, summary, invalidErr)
+	}
+
+	privateErr := errors.New("database unavailable: private connection detail")
+	persistenceErr := executeScheduleForTest(t, &conversationScheduleStoreStub{err: privateErr}, lease, "call-persistence", map[string]any{
+		"name": "once", "goal": "send reminder", "run_at": "2026-08-09T00:00:00Z",
+	})
+	code, summary = intrinsicTerminalFailure(coremodel.IntrinsicScheduleCreateToolName, persistenceErr)
+	if code != "schedule_persistence_failed" || summary != "Schedule could not be saved" || strings.Contains(summary, "private") {
+		t.Fatalf("persistence classification code=%q summary=%q err=%v", code, summary, persistenceErr)
 	}
 }

@@ -19,6 +19,14 @@ func (r *autoIndexRepository) GetEmbeddingConfig(context.Context) (EmbeddingConf
 	return r.config, nil
 }
 
+func (r *autoIndexRepository) UpdateEmbeddingConfig(ctx context.Context, command EmbeddingConfigCommand) (EmbeddingConfig, error) {
+	value, err := r.MemoryRepository.UpdateEmbeddingConfig(ctx, command)
+	if err == nil {
+		r.config = value
+	}
+	return value, err
+}
+
 func (r *autoIndexRepository) ListAutoIndexCandidates(_ context.Context, profileID, digest string, limit int) ([]Source, error) {
 	result := make([]Source, 0, limit)
 	for _, source := range r.candidates {
@@ -36,6 +44,69 @@ type recordingIndexer struct {
 	requests      []IndexRequest
 	existing      TaskReference
 	existingFound bool
+}
+
+type memoryEmbeddingStatusRepository struct {
+	*MemoryRepository
+	config   EmbeddingConfig
+	statuses map[string]EmbeddingSourceStatus
+}
+
+func (r *memoryEmbeddingStatusRepository) GetEmbeddingConfig(context.Context) (EmbeddingConfig, error) {
+	return r.config, nil
+}
+
+func (r *memoryEmbeddingStatusRepository) GetEmbeddingSourceStatus(_ context.Context, sourceID string, _ EmbeddingConfig) (EmbeddingSourceStatus, error) {
+	status, ok := r.statuses[sourceID]
+	if !ok {
+		return EmbeddingSourceStatus{}, ErrNotFound
+	}
+	return status, nil
+}
+
+func TestMemoryReadsIncludeAuthoritativeEmbeddingStatusAndSafeErrorCode(t *testing.T) {
+	base, err := NewMemoryRepository(time.Now, testOpener{}, NewMemoryContentPort(1<<20), referenceFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := base.CreateMemory(context.Background(), MemoryCommand{
+		IdempotencyKey: "10101010-1010-4010-8010-101010101010",
+		SourceID:       "20202020-2020-4020-8020-202020202020",
+		Content:        "remember",
+		MediaType:      "text/plain",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.mu.Lock()
+	stored := base.sources[source.ID]
+	stored.ErrorCode = "embedding_provider_failed"
+	base.sources[source.ID] = stored
+	base.mu.Unlock()
+
+	repo := &memoryEmbeddingStatusRepository{
+		MemoryRepository: base,
+		config: EmbeddingConfig{
+			EmbeddingProfileID:     "30303030-3030-4030-8030-303030303030",
+			CollectionConfigDigest: strings.Repeat("a", 64),
+			Revision:               1,
+		},
+		statuses: map[string]EmbeddingSourceStatus{
+			source.ID: {Status: SourceStatusIndexing, Indexed: false, Stale: true, Revision: source.Revision},
+		},
+	}
+	service, err := NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory, err := service.GetMemory(context.Background(), source.ID)
+	if err != nil || memory.EmbeddingIndexed || !memory.EmbeddingStale || memory.EmbeddingStatus != string(SourceStatusIndexing) || memory.ErrorCode != "embedding_provider_failed" {
+		t.Fatalf("memory status = %+v err=%v", memory, err)
+	}
+	page, err := service.ListMemories(context.Background(), ListQuery{PageSize: 50})
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != memory.ID || page.Items[0].EmbeddingStatus != memory.EmbeddingStatus || page.Items[0].ErrorCode != memory.ErrorCode {
+		t.Fatalf("memory page = %+v err=%v", page, err)
+	}
 }
 
 func (i *recordingIndexer) RequestIndex(_ context.Context, request IndexRequest) (TaskReference, error) {
@@ -286,9 +357,8 @@ func TestServiceBindEmbeddingProfileMakesReadySourcesAutoIndexCandidates(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo.config = bound
-	if err := service.ReconcileAutoIndex(context.Background(), 8); err != nil {
-		t.Fatal(err)
+	if bound.EmbeddingProfileID != repo.config.EmbeddingProfileID {
+		t.Fatalf("repository binding did not update: bound=%+v config=%+v", bound, repo.config)
 	}
 	if len(indexer.requests) != 1 || indexer.requests[0].SourceIDs[0] != source.ID {
 		t.Fatalf("stale source was not requeued after binding: %#v", indexer.requests)

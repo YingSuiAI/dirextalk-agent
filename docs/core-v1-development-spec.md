@@ -215,7 +215,7 @@ has no priority, DAG/graph, task dependency authoring, or cluster/pool
 scheduler.
 
 Natural-language Native turns create schedules only through the Core-owned
-`agent.schedule.create` intrinsic. The model supplies the bounded schedule
+`agent_schedule_create` intrinsic. The model supplies the bounded schedule
 intent and trigger; Core binds the authenticated owner/account generation,
 current conversation, and pinned model profile from the durable turn lease.
 The schedule template persists exactly the typed `payload.agent` owner and
@@ -348,7 +348,7 @@ evidence and remaining verification are recorded in the
 
 The Native Agent remains local-first and retains its local sandbox, worker
 pool, MCP, Skills, Knowledge, Conversation Tools, and Extension Runner. The
-Core intrinsic `cloud_worker.propose` may create a paid offer only from a turn
+Core intrinsic `cloud_worker_propose` may create a paid offer only from a turn
 whose trusted policy proves an explicit user cloud request or immutable local
 budget insufficiency. A local failure is not proof and never triggers an
 automatic upgrade.

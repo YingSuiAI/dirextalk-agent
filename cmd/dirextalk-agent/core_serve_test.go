@@ -73,6 +73,25 @@ func TestCoreMemoryRecallResolverTreatsEmptyMemoryAsEmptyContext(t *testing.T) {
 	}
 }
 
+func TestCoreMemoryRecallResolverTreatsUnavailableEmbeddingAsEmptyContext(t *testing.T) {
+	resolver := coreMemoryRecallResolver{service: memoryRecallSearchFunc(func(context.Context, string, int) (coreknowledge.SearchPage, error) {
+		return coreknowledge.SearchPage{}, coreknowledge.ErrNotFound
+	})}
+	value, err := resolver.RecallMemory(context.Background(), "remember")
+	if err != nil || value != "" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
+}
+
+func TestCoreMemoryRecallResolverPreservesInfrastructureAndIntegrityFailures(t *testing.T) {
+	resolver := coreMemoryRecallResolver{service: memoryRecallSearchFunc(func(context.Context, string, int) (coreknowledge.SearchPage, error) {
+		return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
+	})}
+	if _, err := resolver.RecallMemory(context.Background(), "remember"); !errors.Is(err, coreknowledge.ErrConflict) {
+		t.Fatalf("failure was not preserved: %v", err)
+	}
+}
+
 func TestComposeCoreKnowledgeDisabledDoesNotCreateProductionFallback(t *testing.T) {
 	composition, err := composeCoreKnowledge(config.Config{}, nil, nil)
 	if err != nil {
@@ -101,7 +120,7 @@ func (reconcileKnowledgeFence) ConsumeDelete(_ context.Context, _ coreknowledge.
 	return transition()
 }
 
-func TestKnowledgeEmbeddingReconcileFailsClosedWithoutBlockingInitialModelSetup(t *testing.T) {
+func TestKnowledgeEmbeddingReconcileDisablesBindingWithoutDurableModelDefault(t *testing.T) {
 	repo, err := coreknowledge.NewMemoryRepository(time.Now, reconcileKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), reconcileKnowledgeFence{})
 	if err != nil {
 		t.Fatal(err)
@@ -123,8 +142,8 @@ func TestKnowledgeEmbeddingReconcileFailsClosedWithoutBlockingInitialModelSetup(
 		t.Fatal(err)
 	}
 	current, err := domain.GetEmbeddingConfig(context.Background())
-	if err != nil || current.EmbeddingProfileID != initial.EmbeddingProfileID {
-		t.Fatalf("invalid provisioned binding was unexpectedly changed: %+v err=%v", current, err)
+	if err != nil || current.EmbeddingProfileID != uuid.Nil.String() || current.Revision != initial.Revision+1 {
+		t.Fatalf("orphaned provisioned binding was not disabled: %+v err=%v", current, err)
 	}
 }
 

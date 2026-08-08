@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -333,6 +335,47 @@ func TestCoreModelCatalogRejectsRedirectAndRedactsProviderFailure(t *testing.T) 
 	}
 	if redirectedRequests != 0 {
 		t.Fatalf("catalog followed redirect: %d redirected requests", redirectedRequests)
+	}
+}
+
+func TestCoreModelCatalogClassifiesNetworkAndTimeoutFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		client  *http.Client
+		timeout time.Duration
+		want    error
+	}{
+		{
+			name: "network unavailable",
+			client: &http.Client{Transport: catalogRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				return nil, errors.New("private network detail")
+			})},
+			timeout: time.Second,
+			want:    coremodel.ErrProviderUnavailable,
+		},
+		{
+			name: "provider timeout",
+			client: &http.Client{Transport: catalogRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				<-request.Context().Done()
+				return nil, request.Context().Err()
+			})},
+			timeout: 10 * time.Millisecond,
+			want:    context.DeadlineExceeded,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			catalog := newCoreModelCatalogWithHTTPClient(nil, test.client, test.timeout)
+			_, err := catalog.ListModels(context.Background(), agentcapability.ModelCatalogRequest{
+				Provider: "openrouter", BaseURL: "https://example.test/v1", APIKey: "request-key", ModelKind: coremodel.ModelKindConversation,
+			})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("error = %v, want %v", err, test.want)
+			}
+			if strings.Contains(err.Error(), "private network detail") || strings.Contains(err.Error(), "request-key") {
+				t.Fatalf("classified error leaked private detail: %v", err)
+			}
+		})
 	}
 }
 

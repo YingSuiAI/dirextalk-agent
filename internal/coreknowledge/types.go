@@ -89,13 +89,17 @@ type Source struct {
 // Memory is the public long-term-memory projection. Content is deliberately
 // available only from memory get/list operations, never generic source lists.
 type Memory struct {
-	ID        string    `json:"memory_id"`
-	Title     string    `json:"title"`
-	Content   string    `json:"content"`
-	Tags      []string  `json:"tags"`
-	Revision  int64     `json:"revision"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID               string    `json:"memory_id"`
+	Title            string    `json:"title"`
+	Content          string    `json:"content"`
+	Tags             []string  `json:"tags"`
+	Revision         int64     `json:"revision"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	EmbeddingIndexed bool      `json:"embedding_indexed"`
+	EmbeddingStale   bool      `json:"embedding_stale"`
+	EmbeddingStatus  string    `json:"embedding_status"`
+	ErrorCode        string    `json:"error_code,omitempty"`
 }
 
 type MemoryPage struct {

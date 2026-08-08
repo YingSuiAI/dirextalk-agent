@@ -144,7 +144,7 @@ func (r *CoreKnowledgeStore) GetMemory(ctx context.Context, id string) (coreknow
 	if err != nil {
 		return coreknowledge.Memory{}, err
 	}
-	return coreknowledge.Memory{ID: s.ID, Title: s.Title, Content: content, Tags: append([]string(nil), s.Tags...), Revision: s.Revision, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt}, nil
+	return coreknowledge.Memory{ID: s.ID, Title: s.Title, Content: content, Tags: append([]string(nil), s.Tags...), Revision: s.Revision, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, ErrorCode: s.ErrorCode}, nil
 }
 
 func (r *CoreKnowledgeStore) ListMemories(ctx context.Context, q coreknowledge.ListQuery) (coreknowledge.MemoryPage, error) {
@@ -166,7 +166,7 @@ func (r *CoreKnowledgeStore) ListMemories(ctx context.Context, q coreknowledge.L
 		if readErr != nil {
 			return coreknowledge.MemoryPage{}, readErr
 		}
-		items = append(items, coreknowledge.Memory{ID: source.ID, Title: source.Title, Content: content, Tags: append([]string(nil), source.Tags...), Revision: source.Revision, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt})
+		items = append(items, coreknowledge.Memory{ID: source.ID, Title: source.Title, Content: content, Tags: append([]string(nil), source.Tags...), Revision: source.Revision, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt, ErrorCode: source.ErrorCode})
 	}
 	return coreknowledge.MemoryPage{Items: items, NextPageToken: page.NextPageToken}, nil
 }

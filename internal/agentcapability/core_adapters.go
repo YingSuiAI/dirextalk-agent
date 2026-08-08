@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -1104,19 +1105,23 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 		if err != nil {
 			return nil, err
 		}
+		// Model sync and the Knowledge embedding projection are separate durable
+		// transactions. The committed model defaults are the reconciliation
+		// authority, so a projection failure must not report the already-applied
+		// model mutation as failed. Retry immediately on a replay when possible;
+		// the Knowledge sweep also converges the same durable desired state.
 		if c.knowledge != nil {
 			if cmd.DefaultEmbeddingProfileID != "" {
 				if bindErr := c.bindKnowledgeEmbedding(ctx); bindErr != nil {
-					return nil, bindErr
+					slog.Warn("Knowledge embedding projection is pending after model sync", "operation", "bind", "error", bindErr)
 				}
 			} else {
 				config, configErr := c.knowledge.GetEmbeddingConfig(ctx)
 				if configErr != nil {
-					return nil, configErr
-				}
-				if config.EmbeddingProfileID != uuid.Nil.String() {
+					slog.Warn("Knowledge embedding projection is pending after model sync", "operation", "disable", "error", configErr)
+				} else if config.EmbeddingProfileID != uuid.Nil.String() {
 					if _, disableErr := c.knowledge.DisableEmbeddingProfile(ctx, config.EmbeddingProfileID); disableErr != nil {
-						return nil, disableErr
+						slog.Warn("Knowledge embedding projection is pending after model sync", "operation", "disable", "error", disableErr)
 					}
 				}
 			}
@@ -1302,8 +1307,15 @@ func (c *coreKnowledgeCapability) mergeEmbeddingSourceProjection(ctx context.Con
 	if value == nil {
 		return
 	}
-	value["embedding_indexed"] = false
-	value["embedding_status"] = "unknown"
+	if _, exists := value["embedding_indexed"]; !exists {
+		value["embedding_indexed"] = false
+	}
+	if _, exists := value["embedding_stale"]; !exists {
+		value["embedding_stale"] = true
+	}
+	if _, exists := value["embedding_status"]; !exists {
+		value["embedding_status"] = "unknown"
+	}
 	if c == nil || c.service == nil || sourceID == "" {
 		return
 	}
@@ -1983,6 +1995,14 @@ const durableChatStreamResultSchema = `{"additionalProperties":false,"properties
 
 const durableChatStreamEventSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"error_code":{"type":"string"},"error_summary":{"type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"kind":{"enum":["accepted","started","delta","tool_call","tool_result","done","error"],"type":"string"},"response":` + durableChatStreamResultSchema + `,"revision":{"minimum":1,"type":"integer"},"text":{"type":"string"},"tool_call":{"type":"object"},"tool_result":{"type":"object"},"turn_id":{"format":"uuid","type":"string"}},"required":["kind","idempotency_key","conversation_id","turn_id","revision"],"type":"object"}`
 
+const memoryResultSchema = `{"additionalProperties":false,"properties":{"content":{"type":"string"},"created_at":{"format":"date-time","type":"string"},"embedding_indexed":{"type":"boolean"},"embedding_revision":{"minimum":0,"type":"integer"},"embedding_stale":{"type":"boolean"},"embedding_status":{"type":"string"},"error_code":{"type":"string"},"memory_id":{"format":"uuid","type":"string"},"replayed":{"type":"boolean"},"revision":{"minimum":1,"type":"integer"},"tags":{"items":{"type":"string"},"type":"array"},"title":{"type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["memory_id","title","content","tags","revision","created_at","updated_at","replayed","embedding_indexed","embedding_stale","embedding_status"],"type":"object"}`
+
+const memoryCreateResultSchema = `{"additionalProperties":false,"properties":{"content":{"type":"string"},"created_at":{"format":"date-time","type":"string"},"embedding_indexed":{"type":"boolean"},"embedding_model":{"type":"string"},"embedding_profile_id":{"format":"uuid","type":"string"},"embedding_profile_revision":{"minimum":1,"type":"integer"},"embedding_revision":{"minimum":0,"type":"integer"},"embedding_stale":{"type":"boolean"},"embedding_status":{"type":"string"},"error_code":{"type":"string"},"memory_id":{"format":"uuid","type":"string"},"replayed":{"type":"boolean"},"revision":{"minimum":1,"type":"integer"},"tags":{"items":{"type":"string"},"type":"array"},"title":{"type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["memory_id","title","content","tags","revision","created_at","updated_at","replayed","embedding_indexed","embedding_stale","embedding_status"],"type":"object"}`
+
+const memoryListItemSchema = `{"additionalProperties":false,"properties":{"content":{"type":"string"},"created_at":{"format":"date-time","type":"string"},"embedding_indexed":{"type":"boolean"},"embedding_stale":{"type":"boolean"},"embedding_status":{"type":"string"},"error_code":{"type":"string"},"memory_id":{"format":"uuid","type":"string"},"revision":{"minimum":1,"type":"integer"},"tags":{"items":{"type":"string"},"type":"array"},"title":{"type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["memory_id","title","content","tags","revision","created_at","updated_at","embedding_indexed","embedding_stale","embedding_status"],"type":"object"}`
+
+const memoryListResultSchema = `{"additionalProperties":false,"properties":{"items":{"items":` + memoryListItemSchema + `,"type":"array"},"next_page_token":{"type":"string"}},"required":["items","next_page_token"],"type":"object"}`
+
 func operationEventSchema(capabilityID, operation string) string {
 	if capabilityID == "agent.chat.v1" && operation == "stream_chat" {
 		return durableChatStreamEventSchema
@@ -1996,6 +2016,12 @@ func operationResultSchema(capabilityID, operation string) string {
 		return `{"type":"object","properties":{"embedding_profile_id":{"type":"string"},"embedding_profile_revision":{"type":"integer"},"embedding_model":{"type":"string"},"dimension":{"type":"integer"},"collection":{"type":"string"},"collection_config_digest":{"type":"string"},"revision":{"type":"integer"},"updated_at":{"type":"string"}},"required":["embedding_profile_id","embedding_profile_revision","embedding_model","collection_config_digest","revision"]}`
 	case "agent.knowledge.v1:search_knowledge", "agent.knowledge.v1:search_memory":
 		return `{"type":"object","properties":{"items":{"type":"array"},"next_cursor":{"type":"string"},"search_mode":{"type":"string"},"embedding_profile_id":{"type":"string"},"embedding_profile_revision":{"type":"integer"},"embedding_model":{"type":"string"},"embedding_generation":{"type":"string"},"collection_config_digest":{"type":"string"}},"required":["items","next_cursor","search_mode"]}`
+	case "agent.knowledge.v1:create_memory":
+		return memoryCreateResultSchema
+	case "agent.knowledge.v1:list_memories":
+		return memoryListResultSchema
+	case "agent.knowledge.v1:get_memory", "agent.knowledge.v1:update_memory", "agent.knowledge.v1:delete_memory":
+		return memoryResultSchema
 	case "agent.knowledge.v1:status":
 		return `{"additionalProperties":false,"properties":{"checked_at":{"format":"date-time","type":"string"},"cleanup_pending_count":{"minimum":0,"type":"integer"},"count":{"minimum":0,"type":"integer"},"embedding_indexed":{"minimum":0,"type":"integer"},"embedding_model":{"type":"string"},"embedding_profile_id":{"format":"uuid","type":"string"},"embedding_profile_revision":{"minimum":1,"type":"integer"},"embedding_stale":{"minimum":0,"type":"integer"},"failed_count":{"minimum":0,"type":"integer"},"indexing_count":{"minimum":0,"type":"integer"},"max_source_bytes":{"const":16777216,"type":"integer"},"quota_limit_bytes":{"const":67108864,"type":"integer"},"quota_remaining_bytes":{"minimum":0,"type":"integer"},"quota_used_bytes":{"minimum":0,"type":"integer"},"ready_count":{"minimum":0,"type":"integer"},"supported":{"type":"boolean"},"uploading_count":{"minimum":0,"type":"integer"}},"required":["supported","count","embedding_indexed","embedding_stale","ready_count","uploading_count","indexing_count","failed_count","cleanup_pending_count","checked_at","quota_used_bytes","quota_limit_bytes","quota_remaining_bytes","max_source_bytes"],"type":"object"}`
 	case "agent.chat.v1:list_turns":
@@ -2175,16 +2201,23 @@ func uploadJSON(upload coreknowledge.Upload, includeReplay bool) map[string]any 
 }
 
 func memoryJSON(memory coreknowledge.Memory, replayed bool) map[string]any {
-	return map[string]any{
-		"memory_id":  memory.ID,
-		"title":      memory.Title,
-		"content":    memory.Content,
-		"tags":       append([]string(nil), memory.Tags...),
-		"revision":   memory.Revision,
-		"created_at": memory.CreatedAt,
-		"updated_at": memory.UpdatedAt,
-		"replayed":   replayed,
+	value := map[string]any{
+		"memory_id":         memory.ID,
+		"title":             memory.Title,
+		"content":           memory.Content,
+		"tags":              append([]string{}, memory.Tags...),
+		"revision":          memory.Revision,
+		"created_at":        memory.CreatedAt,
+		"updated_at":        memory.UpdatedAt,
+		"replayed":          replayed,
+		"embedding_indexed": memory.EmbeddingIndexed,
+		"embedding_stale":   memory.EmbeddingStale,
+		"embedding_status":  memory.EmbeddingStatus,
 	}
+	if memory.ErrorCode != "" {
+		value["error_code"] = memory.ErrorCode
+	}
+	return value
 }
 func stringValue(m map[string]json.RawMessage, key string) string {
 	var v string

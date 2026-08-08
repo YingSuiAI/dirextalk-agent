@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -795,12 +796,18 @@ func TestCoreKnowledgeIndexerAutoExplicitAndConcurrentReplay(t *testing.T) {
 	}
 }
 
-func TestCoreKnowledgePostgresEmbeddingBindingMarksReadySourceStaleAndRequeues(t *testing.T) {
+func TestCoreKnowledgePostgresEmbeddingSwitchRetiresOldGenerationAndRequeuesPreservedSource(t *testing.T) {
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
 	oldProfile, newProfile := uuid.NewString(), uuid.NewString()
-	createTestProfile(ctx, t, repo.store, oldProfile, "old-embed", "old-secret")
-	createTestProfile(ctx, t, repo.store, newProfile, "new-embed", "new-secret")
+	createEmbeddingProfile := func(id, model, apiKey string) {
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		if _, err := repo.store.CreateProfile(ctx, coremodel.Profile{ID: id, DisplayName: model, Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://example.invalid/v1", Model: model, APIKey: apiKey, ContextWindow: 32768, Revision: 1, CreatedAt: now, UpdatedAt: now}, uuid.NewString(), strings.Repeat("a", 64)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createEmbeddingProfile(oldProfile, "old-embed", "old-secret")
+	createEmbeddingProfile(newProfile, "new-embed", "new-secret")
 	digest := strings.Repeat("f", 64)
 	config, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: oldProfile, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, Revision: 1})
 	if err != nil {
@@ -810,7 +817,21 @@ func TestCoreKnowledgePostgresEmbeddingBindingMarksReadySourceStaleAndRequeues(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.store.pool.Exec(ctx, `UPDATE core_knowledge_sources SET promoted_generation=$2,promoted_revision=revision,promoted_profile_id=$3,promoted_profile_revision=1,promoted_collection_config_digest=$4 WHERE source_id=$1`, source.ID, "generation-old", oldProfile, digest); err != nil {
+	oldGeneration := "generation-old-" + uuid.NewString()
+	if _, err := repo.store.pool.Exec(ctx, `INSERT INTO core_knowledge_vector_generations(generation,state,promoted_at) VALUES($1,'promoted',clock_timestamp())`, oldGeneration); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.store.pool.Exec(ctx, `INSERT INTO core_knowledge_vectors(point_id,generation,state,source_id,revision,chunk_ref,digest,snippet,embedding) VALUES($1,$2,'promoted',$3,$4,'chunk-0',$5,'old indexed memory','[1,0]')`, uuid.New(), oldGeneration, source.ID, source.Revision, strings.Repeat("e", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.store.pool.Exec(ctx, `UPDATE core_knowledge_sources SET promoted_generation=$2,promoted_revision=revision,promoted_profile_id=$3,promoted_profile_revision=1,promoted_collection_config_digest=$4 WHERE source_id=$1`, source.ID, oldGeneration, oldProfile, digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.store.pool.Exec(ctx, `INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id) VALUES('knowledge_generation',$1,$2)`, source.ID, oldProfile); err != nil {
+		t.Fatal(err)
+	}
+	queuedSource, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "queued under old profile", MediaType: "text/plain"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	indexer, err := NewKnowledgeIndexer(repo.store, oldProfile, digest)
@@ -818,6 +839,20 @@ func TestCoreKnowledgePostgresEmbeddingBindingMarksReadySourceStaleAndRequeues(t
 		t.Fatal(err)
 	}
 	indexer.SetEmbeddingConfigReader(repo)
+	oldTask, err := indexer.RequestIndex(ctx, coreknowledge.IndexRequest{IdempotencyKey: uuid.NewString(), SourceIDs: []string{queuedSource.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exercise the task-owned profile reference used by task-backed Knowledge
+	// dispatch paths. The embedding switch must remove it only after the exact
+	// job task has been canceled in the same transaction.
+	if _, err := repo.store.pool.Exec(ctx, `INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id) VALUES('task',$1,$2)`, oldTask.TaskID, oldProfile); err != nil {
+		t.Fatal(err)
+	}
+	var oldTaskRefs int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_model_profile_active_refs WHERE owner_kind='task' AND owner_id=$1 AND profile_id=$2`, oldTask.TaskID, oldProfile).Scan(&oldTaskRefs); err != nil || oldTaskRefs != 1 {
+		t.Fatalf("old queued task ref count=%d err=%v", oldTaskRefs, err)
+	}
 	service, err := coreknowledge.NewService(repo, indexer)
 	if err != nil {
 		t.Fatal(err)
@@ -829,16 +864,33 @@ func TestCoreKnowledgePostgresEmbeddingBindingMarksReadySourceStaleAndRequeues(t
 	if err != nil || bound.EmbeddingProfileID != newProfile || bound.Revision != config.Revision+1 {
 		t.Fatalf("bound config=%+v err=%v", bound, err)
 	}
-	state, err := repo.GetEmbeddingSourceStatus(ctx, source.ID, bound)
-	if err != nil || !state.Stale || state.Indexed {
-		t.Fatalf("ready source did not become stale after binding: %+v err=%v", state, err)
-	}
-	if err := service.ReconcileAutoIndex(ctx, 8); err != nil {
+	var oldVectors, oldRefs, oldTaskRefsAfter int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_vectors WHERE generation=$1`, oldGeneration).Scan(&oldVectors); err != nil {
 		t.Fatal(err)
 	}
-	state, err = repo.GetEmbeddingSourceStatus(ctx, source.ID, bound)
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_model_profile_active_refs WHERE owner_kind='knowledge_generation' AND profile_id=$1`, oldProfile).Scan(&oldRefs); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_model_profile_active_refs WHERE owner_kind='task' AND owner_id=$1 AND profile_id=$2`, oldTask.TaskID, oldProfile).Scan(&oldTaskRefsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if oldVectors != 0 || oldRefs != 0 || oldTaskRefsAfter != 0 {
+		t.Fatalf("old generation was not retired: vectors=%d refs=%d task_refs=%d", oldVectors, oldRefs, oldTaskRefsAfter)
+	}
+	models, err := coremodel.NewService(repo.store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := models.Delete(ctx, coremodel.DeleteProfileCommand{ID: oldProfile, IdempotencyKey: uuid.NewString(), ExpectedRevision: 1}); err != nil {
+		t.Fatalf("delete retired embedding profile: %v", err)
+	}
+	kept, err := service.GetMemory(ctx, source.ID)
+	if err != nil || kept.Content != "already promoted" {
+		t.Fatalf("source memory was not preserved: %+v err=%v", kept, err)
+	}
+	state, err := repo.GetEmbeddingSourceStatus(ctx, source.ID, bound)
 	if err != nil || state.Status != coreknowledge.SourceStatusIndexing {
-		t.Fatalf("stale source was not requeued: %+v err=%v", state, err)
+		t.Fatalf("preserved source was not automatically requeued: %+v err=%v", state, err)
 	}
 	var jobs int
 	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_index_jobs WHERE source_ids @> jsonb_build_array($1::text) AND profile_id=$2::uuid AND status='queued'`, source.ID, newProfile).Scan(&jobs); err != nil || jobs != 1 {

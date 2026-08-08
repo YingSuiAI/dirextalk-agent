@@ -90,7 +90,7 @@ multi-tenant model.
   secret-free embedding provenance and never calls back through Product
   Capability.
 - Authenticated durable Native turns receive the Core-owned
-  `agent.schedule.create` intrinsic when the PostgreSQL conversation/schedule
+  `agent_schedule_create` intrinsic when the PostgreSQL conversation/schedule
   store is composed. Model input is limited to `name`, `goal`, exactly one
   `run_at` or `cron` plus IANA `timezone`, and optional `timeout_seconds`.
   Owner, account generation, conversation, and model profile are injected from
@@ -216,7 +216,7 @@ while the real CoreTask claim and launch material separately pin attempt and
 lease epoch.
 
 Cloud Worker offers are created only by the Core intrinsic
-`cloud_worker.propose` during an authoritative conversation turn. Public
+`cloud_worker_propose` during an authoritative conversation turn. Public
 clients use `agent.execution.v2.plans.get/list`,
 `agent.execution.v2.runs.get/list/cancel/events`, and
 `agent.execution.v2.artifacts.get/download`; they use

@@ -10,6 +10,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreimagetool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
@@ -83,6 +84,7 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coremodel.ErrUnsupportedProvider),
 		errors.Is(err, coremodel.ErrInvalidCompletionRequest),
 		errors.Is(err, coremodel.ErrCompletionRequestTooLarge),
+		errors.Is(err, coretask.ErrInvalid),
 		errors.Is(err, coreknowledge.ErrInvalid),
 		errors.Is(err, coreknowledge.ErrChecksumMismatch),
 		errors.Is(err, coreknowledge.ErrPathTraversal),
@@ -97,6 +99,7 @@ func classifyCapabilityError(err error) error {
 		return capabilityoperation.NewFailure("RESOURCE_EXHAUSTED", capabilityoperation.KnowledgeQuotaExceededMessage, err)
 	case errors.Is(err, coreconversation.ErrDeleted),
 		errors.Is(err, coremodel.ErrProfileNotFound),
+		errors.Is(err, coretask.ErrNotFound),
 		errors.Is(err, coreknowledge.ErrNotFound),
 		errors.Is(err, coretexttool.ErrNotFound):
 		// Image sources intentionally cease to exist after expiry cleanup.
@@ -110,6 +113,10 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coremodel.ErrRevisionConflict),
 		errors.Is(err, coremodel.ErrProfileInUse),
 		errors.Is(err, coremodel.ErrSyncConflict),
+		errors.Is(err, coretask.ErrConflict),
+		errors.Is(err, coretask.ErrRevisionConflict),
+		errors.Is(err, coretask.ErrLeaseConflict),
+		errors.Is(err, coretask.ErrDispatchStarted),
 		errors.Is(err, coreknowledge.ErrConflict),
 		errors.Is(err, coreknowledge.ErrIdempotencyConflict),
 		errors.Is(err, coreknowledge.ErrRevisionConflict),
@@ -131,6 +138,8 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, corewebsearch.ErrNotConfigured),
 		errors.Is(err, corewebsearch.ErrDisabled):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent configuration is not ready", err)
+	case errors.Is(err, coretask.ErrTerminal), errors.Is(err, coretask.ErrTimedOut):
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent task cannot be changed in its current state", err)
 	case errors.Is(err, coreconversation.ErrChatFailed):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent chat failed", err)
 	case errors.Is(err, coremodel.ErrProfileRepository),

@@ -481,7 +481,7 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 	}
 	resolved, err := intrinsic.ResolveIntrinsicTools(h.ctx, h.lease)
 	if err != nil || len(resolved) != 1 || resolved[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
-		t.Fatalf("resolve cloud_worker.propose: tools=%+v err=%v", resolved, err)
+		t.Fatalf("resolve cloud_worker_propose: tools=%+v err=%v", resolved, err)
 	}
 	arguments, _ := json.Marshal(map[string]any{
 		"objective":      "Produce a centrally verified fresh-state result",
@@ -494,7 +494,7 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 		CanonicalArguments: arguments,
 	})
 	if err != nil || !result.TurnCommitted {
-		t.Fatalf("cloud_worker.propose result=%+v err=%v", result, err)
+		t.Fatalf("cloud_worker_propose result=%+v err=%v", result, err)
 	}
 
 	plans, _, err := h.cloud.ListPlansForAuthority(h.ctx, h.owner, h.generation, "", 10)

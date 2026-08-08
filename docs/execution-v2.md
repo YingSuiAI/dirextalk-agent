@@ -10,7 +10,7 @@ AWS credentials, or result bodies.
 Execution V2 keeps its non-conflicting analysis, target, deployment,
 service-binding, secret, plan/run read, list, cancel, event, and artifact
 operations. Cloud Worker plans are created only inside an authoritative Native
-Agent turn by the built-in `cloud_worker.propose` tool. A client cannot create
+Agent turn by the built-in `cloud_worker_propose` tool. A client cannot create
 an AWS Cloud Worker plan or run directly.
 
 There is one confirmation authority:

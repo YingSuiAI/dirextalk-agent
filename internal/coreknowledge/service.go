@@ -107,7 +107,10 @@ func (s *Service) GetMemory(ctx context.Context, id string) (Memory, error) {
 		return Memory{}, ErrNotFound
 	}
 	value, err := reader.GetMemory(ctx, id)
-	return value, safeError(err)
+	if err != nil {
+		return Memory{}, safeError(err)
+	}
+	return s.withMemoryEmbeddingStatus(ctx, value), nil
 }
 
 func (s *Service) ListMemories(ctx context.Context, query ListQuery) (MemoryPage, error) {
@@ -122,7 +125,32 @@ func (s *Service) ListMemories(ctx context.Context, query ListQuery) (MemoryPage
 		return MemoryPage{}, ErrNotFound
 	}
 	value, err := reader.ListMemories(ctx, query)
-	return value, safeError(err)
+	if err != nil {
+		return MemoryPage{}, safeError(err)
+	}
+	for index := range value.Items {
+		value.Items[index] = s.withMemoryEmbeddingStatus(ctx, value.Items[index])
+	}
+	return value, nil
+}
+
+// withMemoryEmbeddingStatus adds the authoritative, secret-free per-source
+// vector projection without making readable memory content depend on semantic
+// indexing availability. Unknown means the repository cannot currently prove
+// a binding; stale remains true so consumers never mistake it for indexed.
+func (s *Service) withMemoryEmbeddingStatus(ctx context.Context, memory Memory) Memory {
+	memory.Tags = append([]string{}, memory.Tags...)
+	memory.EmbeddingIndexed = false
+	memory.EmbeddingStale = true
+	memory.EmbeddingStatus = "unknown"
+	status, err := s.SourceEmbeddingStatus(ctx, memory.ID)
+	if err != nil {
+		return memory
+	}
+	memory.EmbeddingIndexed = status.Indexed
+	memory.EmbeddingStale = status.Stale
+	memory.EmbeddingStatus = string(status.Status)
+	return memory
 }
 func (s *Service) List(ctx context.Context, query ListQuery) (Page, error) {
 	if err := query.validate(); err != nil {
@@ -276,11 +304,9 @@ func (s *Service) UpdateEmbeddingConfig(ctx context.Context, command EmbeddingCo
 }
 
 // BindEmbeddingProfile switches the owner-scoped embedding profile while
-// preserving the collection and vector dimension.  The profile binding is a
-// separate durable transaction from model sync, so callers must treat a
-// returned error as a failed synchronization and retry with the same
-// idempotency key; a restart/reconcile can safely converge an already applied
-// binding because the desired profile is checked before issuing a mutation.
+// preserving the collection and vector dimension. The profile binding is a
+// separate durable projection of the model default; callers may retry it
+// because the desired profile is checked before issuing a mutation.
 func (s *Service) BindEmbeddingProfile(ctx context.Context, profileID string) (EmbeddingConfig, error) {
 	if s == nil || s.repository == nil || !validUUID(profileID) {
 		return EmbeddingConfig{}, ErrInvalid
@@ -291,6 +317,7 @@ func (s *Service) BindEmbeddingProfile(ctx context.Context, profileID string) (E
 			return EmbeddingConfig{}, err
 		}
 		if current.EmbeddingProfileID == profileID {
+			_ = s.ReconcileAutoIndex(ctx, 64)
 			return current, nil
 		}
 		key := uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk/knowledge/bind-embedding/"+profileID+"/"+strconv.FormatInt(current.Revision, 10))).String()
@@ -300,6 +327,10 @@ func (s *Service) BindEmbeddingProfile(ctx context.Context, profileID string) (E
 			Collection: current.Collection, CollectionConfigDigest: current.CollectionConfigDigest,
 		})
 		if updateErr == nil {
+			// The durable source projection now marks every preserved source stale.
+			// Trigger the normal idempotent reconciler immediately; the periodic
+			// sweep remains the crash/retry path if enqueueing is interrupted.
+			_ = s.ReconcileAutoIndex(ctx, 64)
 			return bound, nil
 		}
 		if !errors.Is(updateErr, ErrRevisionConflict) {

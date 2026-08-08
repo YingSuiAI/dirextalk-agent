@@ -160,6 +160,11 @@ func (r *CoreKnowledgeStore) UpdateEmbeddingConfig(ctx context.Context, command 
 		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrInvalid
 	}
 	now := time.Now().UTC()
+	if current.EmbeddingProfileID != uuid.Nil.String() && current.EmbeddingProfileID != command.EmbeddingProfileID {
+		if err = r.retireEmbeddingProfileTx(ctx, tx, current.EmbeddingProfileID, now); err != nil {
+			return coreknowledge.EmbeddingConfig{}, err
+		}
+	}
 	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_embedding_config SET embedding_profile_id=$1,revision=revision+1,updated_at=$2 WHERE singleton=true AND revision=$3`, command.EmbeddingProfileID, now, command.ExpectedRevision); err != nil {
 		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
 	}
@@ -202,6 +207,28 @@ func (r *CoreKnowledgeStore) DisableEmbeddingProfile(ctx context.Context, profil
 		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrRevisionConflict
 	}
 	now := time.Now().UTC()
+	if err = r.retireEmbeddingProfileTx(ctx, tx, profileID, now); err != nil {
+		return coreknowledge.EmbeddingConfig{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_embedding_config SET embedding_profile_id=$1,revision=revision+1,updated_at=$2 WHERE singleton=true`, uuid.Nil, now); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	current.EmbeddingProfileID = uuid.Nil.String()
+	current.Revision++
+	current.UpdatedAt = now
+	if err = tx.Commit(ctx); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	return current, nil
+}
+
+// retireEmbeddingProfileTx removes every executable/index binding owned by an
+// old embedding profile while preserving source metadata and content. The
+// caller holds the embedding-config advisory lock and commits the replacement
+// binding in the same transaction, so profile deletion cannot race a still
+// queryable generation.
+func (r *CoreKnowledgeStore) retireEmbeddingProfileTx(ctx context.Context, tx pgx.Tx, profileID string, now time.Time) error {
+	var err error
 	// Fence every first-generation and replacement job before clearing the
 	// binding. A worker that returns after this commit observes a canceled task
 	// and the durable staging tombstone, so it cannot re-promote or leak vectors.
@@ -212,33 +239,41 @@ func (r *CoreKnowledgeStore) DisableEmbeddingProfile(ctx context.Context, profil
 		CROSS JOIN LATERAL jsonb_array_elements_text(job.source_ids) item(value)
 		WHERE job.profile_id=$1 AND job.status IN ('queued','running')
 		ON CONFLICT(source_id,generation) DO UPDATE SET cleanup_kind='canceled_staging',quiescent_after=GREATEST(COALESCE(core_knowledge_generation_cleanup.quiescent_after,EXCLUDED.quiescent_after),EXCLUDED.quiescent_after)`, profileID, now); err != nil {
-		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+		return coreknowledge.ErrConflict
 	}
 	var runningTasks int64
 	if err = tx.QueryRow(ctx, `SELECT count(*) FROM core_tasks task JOIN core_knowledge_index_jobs job ON job.task_id=task.task_id WHERE job.profile_id=$1 AND job.status IN ('queued','running') AND task.status='running'`, profileID).Scan(&runningTasks); err != nil {
-		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+		return coreknowledge.ErrConflict
 	}
 	if _, err = tx.Exec(ctx, `UPDATE core_tasks task SET status='canceled',failure_code='user_canceled',failure_summary='',lease_holder='',lease_expires_at=NULL,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$2 FROM core_knowledge_index_jobs job WHERE job.task_id=task.task_id AND job.profile_id=$1 AND job.status IN ('queued','running') AND task.status IN ('queued','running')`, profileID, now); err != nil {
-		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+		return coreknowledge.ErrConflict
 	}
 	if runningTasks > 0 {
 		if _, err = tx.Exec(ctx, `UPDATE core_task_runtime_concurrency SET running_count=GREATEST(0,running_count-$1),revision=revision+1,updated_at=$2 WHERE singleton=true`, runningTasks, now); err != nil {
-			return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+			return coreknowledge.ErrConflict
 		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_index_jobs SET status='canceled',error_code='user_canceled',error_summary='',updated_at=$2 WHERE profile_id=$1 AND status IN ('queued','running')`, profileID, now); err != nil {
-		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+		return coreknowledge.ErrConflict
+	}
+	// These tasks were canceled directly under the same Knowledge transaction,
+	// so retire the matching task-owned model references here as well. Leaving
+	// them behind would make a fully retired embedding profile appear in use.
+	if _, err = tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs ref USING core_knowledge_index_jobs job,core_tasks task
+		WHERE ref.owner_kind='task' AND ref.owner_id=job.task_id AND ref.profile_id=$1
+		AND job.profile_id=$1 AND task.task_id=job.task_id AND task.status='canceled'`, profileID); err != nil {
+		return coreknowledge.ErrConflict
 	}
 	if _, err = tx.Exec(ctx, `DELETE FROM core_knowledge_vectors WHERE generation IN (
 		SELECT generation FROM core_knowledge_index_jobs WHERE profile_id=$1
 		UNION SELECT promoted_generation FROM core_knowledge_sources WHERE promoted_profile_id=$1 AND promoted_generation<>'')`, profileID); err != nil {
-		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+		return coreknowledge.ErrConflict
 	}
 	if _, err = tx.Exec(ctx, `DELETE FROM core_knowledge_vector_generations WHERE generation IN (
 		SELECT generation FROM core_knowledge_index_jobs WHERE profile_id=$1
 		UNION SELECT promoted_generation FROM core_knowledge_sources WHERE promoted_profile_id=$1 AND promoted_generation<>'')
 		AND NOT EXISTS (SELECT 1 FROM core_knowledge_vectors vector WHERE vector.generation=core_knowledge_vector_generations.generation)`, profileID); err != nil {
-		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+		return coreknowledge.ErrConflict
 	}
 	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_sources source SET
 		status=CASE WHEN source.status='indexing' THEN 'ready' ELSE source.status END,
@@ -251,24 +286,15 @@ func (r *CoreKnowledgeStore) DisableEmbeddingProfile(ctx context.Context, profil
 		updated_at=$2
 		WHERE source.promoted_profile_id=$1 OR source.source_id IN (
 			SELECT item.value::uuid FROM core_knowledge_index_jobs job CROSS JOIN LATERAL jsonb_array_elements_text(job.source_ids) item(value) WHERE job.profile_id=$1)`, profileID, now); err != nil {
-		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+		return coreknowledge.ErrConflict
 	}
 	if _, err = tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs WHERE owner_kind='knowledge_generation' AND profile_id=$1`, profileID); err != nil {
-		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+		return coreknowledge.ErrConflict
 	}
 	if _, err = tx.Exec(ctx, `DELETE FROM core_knowledge_list_snapshots`); err != nil {
-		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+		return coreknowledge.ErrConflict
 	}
-	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_embedding_config SET embedding_profile_id=$1,revision=revision+1,updated_at=$2 WHERE singleton=true`, uuid.Nil, now); err != nil {
-		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
-	}
-	current.EmbeddingProfileID = uuid.Nil.String()
-	current.Revision++
-	current.UpdatedAt = now
-	if err = tx.Commit(ctx); err != nil {
-		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
-	}
-	return current, nil
+	return nil
 }
 
 var _ coreknowledge.EmbeddingConfigStore = (*CoreKnowledgeStore)(nil)

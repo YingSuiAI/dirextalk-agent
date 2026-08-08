@@ -28,9 +28,9 @@ const (
 )
 
 var (
-	errCoreModelCatalogUnavailable = errors.New("model provider request failed")
+	errCoreModelCatalogUnavailable = coremodel.ErrProviderUnavailable
 	errCoreModelCatalogResponse    = errors.New("model provider returned an invalid response")
-	errCoreModelCatalogTimeout     = errors.New("model provider request timed out")
+	errCoreModelCatalogTimeout     = context.DeadlineExceeded
 )
 
 // coreModelCatalog is the request-scoped provider discovery implementation

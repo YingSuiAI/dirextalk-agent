@@ -1161,7 +1161,7 @@ func BindingForPlan(plan Plan) (coreconfirmation.Binding, error) {
 		ParameterDigest:   coreconfirmation.Digest(plan.Digest),
 		NetworkDigest:     coreconfirmation.Digest(digestValue(plan.NetworkGrants)),
 		SecretGrantDigest: coreconfirmation.Digest(digestValue(plan.SecretGrants)),
-		SelectedTool:      "cloud_worker.propose",
+		SelectedTool:      "cloud_worker_propose",
 		SelectedCommand:   []string{},
 		NetworkGrants:     append(make([]string, 0, len(plan.NetworkGrants)), plan.NetworkGrants...),
 		SecretGrants:      secretGrants,

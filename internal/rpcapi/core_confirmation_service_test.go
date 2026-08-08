@@ -32,7 +32,7 @@ func cloudWorkerRPCBinding(t *testing.T) coreconfirmation.Binding {
 		TargetID: executionID, TargetRevision: 1, TargetKind: "ephemeral_pi_worker",
 		SourceVersion: "ephemeral-pi-task", SourceCommit: strings.Repeat("b", 64),
 		ContentDigest: d, ManifestDigest: d, ExecutionDigest: d, PermissionDigest: d,
-		ParameterDigest: d, NetworkDigest: d, SecretGrantDigest: d, SelectedTool: "cloud_worker.propose",
+		ParameterDigest: d, NetworkDigest: d, SecretGrantDigest: d, SelectedTool: "cloud_worker_propose",
 		SelectedCommand: []string{}, NetworkGrants: []string{"controlled_https_egress"},
 		SecretGrants: []coreconfirmation.SecretGrant{
 			{ReferenceID: "22222222-2222-4222-8222-222222222222", Purpose: coreconfirmation.SecretPurposeModelAPIKey, BindingDigest: d},

@@ -491,6 +491,9 @@ func operationStatusError(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return status.Error(codes.Canceled, err.Error())
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return status.Error(codes.DeadlineExceeded, context.DeadlineExceeded.Error())
+	}
 	if code, message, ok := operation.FailureDetails(err); ok {
 		switch code {
 		case "INVALID_ARGUMENT":

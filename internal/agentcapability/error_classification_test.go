@@ -8,6 +8,8 @@ import (
 
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -68,6 +70,14 @@ func TestClassifyCapabilityErrorDistinguishesKnowledgeQuotaFromRequestLimit(t *t
 	}
 }
 
+func TestClassifyCapabilityErrorMapsModelProviderNetworkFailureToUnavailable(t *testing.T) {
+	classified := classifyCapabilityError(coremodel.ErrProviderUnavailable)
+	code, message, ok := capabilityoperation.FailureDetails(classified)
+	if !ok || code != "UNAVAILABLE" || message != "Agent dependency is unavailable" || !errors.Is(classified, coremodel.ErrProviderUnavailable) {
+		t.Fatalf("code=%q message=%q classified=%v err=%v", code, message, ok, classified)
+	}
+}
+
 func TestClassifyCapabilityErrorPrefersContextTermination(t *testing.T) {
 	tests := []error{context.Canceled, context.DeadlineExceeded}
 	for _, contextErr := range tests {
@@ -80,5 +90,31 @@ func TestClassifyCapabilityErrorPrefersContextTermination(t *testing.T) {
 		if _, _, ok := capabilityoperation.FailureDetails(classified); ok {
 			t.Fatalf("context error %v was wrapped as a capability failure", contextErr)
 		}
+	}
+}
+
+func TestClassifyCapabilityErrorMapsCoreTaskScheduleErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{name: "invalid", err: coretask.ErrInvalid, wantCode: "INVALID_ARGUMENT"},
+		{name: "not found", err: coretask.ErrNotFound, wantCode: "NOT_FOUND"},
+		{name: "conflict", err: coretask.ErrConflict, wantCode: "CONFLICT"},
+		{name: "revision conflict", err: coretask.ErrRevisionConflict, wantCode: "CONFLICT"},
+		{name: "lease conflict", err: coretask.ErrLeaseConflict, wantCode: "CONFLICT"},
+		{name: "dispatch started", err: coretask.ErrDispatchStarted, wantCode: "CONFLICT"},
+		{name: "terminal", err: coretask.ErrTerminal, wantCode: "PRECONDITION_FAILED"},
+		{name: "timed out", err: coretask.ErrTimedOut, wantCode: "PRECONDITION_FAILED"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			classified := classifyCapabilityError(test.err)
+			code, _, ok := capabilityoperation.FailureDetails(classified)
+			if !ok || code != test.wantCode || !errors.Is(classified, test.err) {
+				t.Fatalf("code=%q classified=%v err=%v", code, ok, classified)
+			}
+		})
 	}
 }

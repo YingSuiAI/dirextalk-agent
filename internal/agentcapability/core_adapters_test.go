@@ -86,7 +86,7 @@ func newCloudWorkerConfirmationCapability(t *testing.T) (*coreConfirmationCapabi
 		ParameterDigest:   coreconfirmation.Digest(strings.Repeat("5", 64)),
 		NetworkDigest:     coreconfirmation.Digest(strings.Repeat("6", 64)),
 		SecretGrantDigest: coreconfirmation.Digest(strings.Repeat("7", 64)),
-		SelectedTool:      "cloud_worker.propose",
+		SelectedTool:      "cloud_worker_propose",
 		NetworkGrants:     []string{"controlled_https_egress"},
 		SecretGrants: []coreconfirmation.SecretGrant{
 			{ReferenceID: referenceIDs[0], Purpose: coreconfirmation.SecretPurposeModelAPIKey, BindingDigest: coreconfirmation.Digest(referenceDigests[0])},
@@ -698,6 +698,80 @@ func TestKnowledgeCapabilityRequiresExplicitUUIDIdempotencyKeys(t *testing.T) {
 	}
 }
 
+func TestKnowledgeMemoryResultSchemasCloseCurrentProjection(t *testing.T) {
+	descriptor := (&coreKnowledgeCapability{}).Descriptor()
+	operations := make(map[string]*capv1.OperationDescriptor, len(descriptor.GetOperations()))
+	for _, operation := range descriptor.GetOperations() {
+		operations[operation.GetOperationId()] = operation
+	}
+
+	requiredMemoryFields := []string{
+		"memory_id", "title", "content", "tags", "revision", "created_at", "updated_at",
+		"embedding_indexed", "embedding_stale", "embedding_status",
+	}
+	for _, operationID := range []string{"create_memory", "update_memory", "delete_memory", "get_memory"} {
+		operation := operations[operationID]
+		if operation == nil {
+			t.Fatalf("missing %s descriptor", operationID)
+		}
+		var schema struct {
+			AdditionalProperties bool                       `json:"additionalProperties"`
+			Properties           map[string]json.RawMessage `json:"properties"`
+			Required             []string                   `json:"required"`
+		}
+		if err := json.Unmarshal([]byte(operation.GetResultSchemaJson()), &schema); err != nil {
+			t.Fatalf("decode %s result schema: %v", operationID, err)
+		}
+		if schema.AdditionalProperties || len(schema.Properties) == 0 {
+			t.Fatalf("%s result schema is not closed: %s", operationID, operation.GetResultSchemaJson())
+		}
+		for _, field := range append(requiredMemoryFields, "replayed") {
+			if _, declared := schema.Properties[field]; !declared || !containsString(schema.Required, field) {
+				t.Errorf("%s does not require declared field %q: %s", operationID, field, operation.GetResultSchemaJson())
+			}
+		}
+		if _, declared := schema.Properties["error_code"]; !declared || containsString(schema.Required, "error_code") {
+			t.Errorf("%s error_code must be declared and optional: %s", operationID, operation.GetResultSchemaJson())
+		}
+	}
+
+	listOperation := operations["list_memories"]
+	if listOperation == nil {
+		t.Fatal("missing list_memories descriptor")
+	}
+	var listSchema struct {
+		AdditionalProperties bool `json:"additionalProperties"`
+		Properties           struct {
+			Items struct {
+				Items struct {
+					AdditionalProperties bool                       `json:"additionalProperties"`
+					Properties           map[string]json.RawMessage `json:"properties"`
+					Required             []string                   `json:"required"`
+				} `json:"items"`
+			} `json:"items"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal([]byte(listOperation.GetResultSchemaJson()), &listSchema); err != nil {
+		t.Fatal(err)
+	}
+	if listSchema.AdditionalProperties || listSchema.Properties.Items.Items.AdditionalProperties ||
+		!containsString(listSchema.Required, "items") || !containsString(listSchema.Required, "next_page_token") {
+		t.Fatalf("list_memories result envelope is not closed: %s", listOperation.GetResultSchemaJson())
+	}
+	for _, field := range requiredMemoryFields {
+		if _, declared := listSchema.Properties.Items.Items.Properties[field]; !declared || !containsString(listSchema.Properties.Items.Items.Required, field) {
+			t.Errorf("list_memories item does not require declared field %q: %s", field, listOperation.GetResultSchemaJson())
+		}
+	}
+	if _, declared := listSchema.Properties.Items.Items.Properties["replayed"]; declared {
+		t.Fatalf("list_memories item advertises mutation-only replay state: %s", listOperation.GetResultSchemaJson())
+	}
+	if _, declared := listSchema.Properties.Items.Items.Properties["error_code"]; !declared || containsString(listSchema.Properties.Items.Items.Required, "error_code") {
+		t.Fatalf("list_memories item error_code must be declared and optional: %s", listOperation.GetResultSchemaJson())
+	}
+}
+
 type flakyEmbeddingConfigRepository struct {
 	*coreknowledge.MemoryRepository
 	failures int
@@ -890,7 +964,7 @@ func TestModelSyncRejectsEmbeddingDefaultWithoutEmbeddingProfile(t *testing.T) {
 	}
 }
 
-func TestModelSyncBindingFailureIsRetriedByTheSameIdempotencyKey(t *testing.T) {
+func TestModelSyncBindingFailureDoesNotMisreportCommittedMutationAndReplayConverges(t *testing.T) {
 	ctx := context.Background()
 	models, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
 	if err != nil {
@@ -910,19 +984,27 @@ func TestModelSyncBindingFailureIsRetriedByTheSameIdempotencyKey(t *testing.T) {
 	}
 	capability := &coreModelCapability{service: models, knowledge: knowledge}
 	request := []byte(`{"idempotency_key":"abababab-abab-4bab-8bab-abababababab","default_embedding_client_profile_id":"embed","entries":[{"client_profile_id":"embed","display_name":"Embedding","provider":"openai_compatible","base_url":"https://example.invalid/v1","model":"embed","model_kind":"embedding","api_key":"secret"}]}`)
-	if _, err := capability.HandleOperation(ctx, "sync_models", request); err != coreknowledge.ErrConflict {
-		t.Fatalf("first sync binding error=%v", err)
+	if _, err := capability.HandleOperation(ctx, "sync_models", request); err != nil {
+		t.Fatalf("committed model sync was reported failed: %v", err)
+	}
+	defaultID, err := models.ResolveDefaultProfileID(ctx, coremodel.ModelKindEmbedding)
+	if err != nil || defaultID != coremodel.SyncProfileID("embed") {
+		t.Fatalf("model default was not committed: id=%q err=%v", defaultID, err)
+	}
+	config, err := knowledge.GetEmbeddingConfig(ctx)
+	if err != nil || config.EmbeddingProfileID == defaultID {
+		t.Fatalf("failed projection was reported as applied: %+v err=%v", config, err)
 	}
 	if _, err := capability.HandleOperation(ctx, "sync_models", request); err != nil {
 		t.Fatal(err)
 	}
-	config, err := knowledge.GetEmbeddingConfig(ctx)
+	config, err = knowledge.GetEmbeddingConfig(ctx)
 	if err != nil || config.EmbeddingProfileID != coremodel.SyncProfileID("embed") {
 		t.Fatalf("retry did not converge embedding binding: %+v err=%v", config, err)
 	}
 }
 
-func TestModelSyncDisableFailureIsRetriedAfterSyncReplay(t *testing.T) {
+func TestModelSyncDisableFailureDoesNotMisreportCommittedMutationAndReplayConverges(t *testing.T) {
 	ctx := context.Background()
 	models, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
 	if err != nil {
@@ -943,13 +1025,20 @@ func TestModelSyncDisableFailureIsRetriedAfterSyncReplay(t *testing.T) {
 	}
 	capability := &coreModelCapability{service: models, knowledge: knowledge}
 	request := []byte(`{"idempotency_key":"cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd","entries":[]}`)
-	if _, err := capability.HandleOperation(ctx, "sync_models", request); err != coreknowledge.ErrConflict {
-		t.Fatalf("first disable error=%v", err)
+	if _, err := capability.HandleOperation(ctx, "sync_models", request); err != nil {
+		t.Fatalf("committed model sync was reported failed: %v", err)
+	}
+	if _, err := models.ResolveDefaultProfileID(ctx, coremodel.ModelKindEmbedding); !errors.Is(err, coremodel.ErrProfileNotFound) {
+		t.Fatalf("embedding default was not durably cleared: %v", err)
+	}
+	config, err := knowledge.GetEmbeddingConfig(ctx)
+	if err != nil || config.EmbeddingProfileID != profileID {
+		t.Fatalf("failed disable was reported as applied: %+v err=%v", config, err)
 	}
 	if _, err := capability.HandleOperation(ctx, "sync_models", request); err != nil {
 		t.Fatal(err)
 	}
-	config, err := knowledge.GetEmbeddingConfig(ctx)
+	config, err = knowledge.GetEmbeddingConfig(ctx)
 	if err != nil || config.EmbeddingProfileID != uuid.Nil.String() {
 		t.Fatalf("retry did not disable embedding: %+v err=%v", config, err)
 	}
@@ -1110,8 +1199,49 @@ func TestKnowledgeCapabilityProjectsHonestSemanticStatusAndMemoryMetadata(t *tes
 	if err := json.Unmarshal(memoryRaw, &memory); err != nil {
 		t.Fatal(err)
 	}
-	if memory["embedding_indexed"] != false || memory["embedding_status"] != "unknown" || memory["embedding_profile_id"] != profileID || memory["embedding_model"] != "text-embedding-test" {
+	if memory["embedding_indexed"] != false || memory["embedding_stale"] != true || memory["embedding_status"] != "unknown" || memory["embedding_profile_id"] != profileID || memory["embedding_model"] != "text-embedding-test" {
 		t.Fatalf("unexpected memory semantic projection: %s", memoryRaw)
+	}
+	if _, exposed := memory["error_code"]; exposed {
+		t.Fatalf("healthy memory exposed an error code: %s", memoryRaw)
+	}
+	listRaw, err := capability.HandleOperation(ctx, "list_memories", []byte(`{"page_size":50}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed struct {
+		Items []map[string]any `json:"items"`
+	}
+	if json.Unmarshal(listRaw, &listed) != nil || len(listed.Items) != 1 || listed.Items[0]["embedding_indexed"] != false || listed.Items[0]["embedding_stale"] != true || listed.Items[0]["embedding_status"] != "unknown" {
+		t.Fatalf("memory list omitted semantic state: %s", listRaw)
+	}
+	getRequest, err := json.Marshal(map[string]any{"memory_id": memory["memory_id"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	getRaw, err := capability.HandleOperation(ctx, "get_memory", getRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotMemory map[string]any
+	if json.Unmarshal(getRaw, &gotMemory) != nil || gotMemory["embedding_indexed"] != false || gotMemory["embedding_stale"] != true || gotMemory["embedding_status"] != "unknown" {
+		t.Fatalf("memory get omitted semantic state: %s", getRaw)
+	}
+	updateRequest, err := json.Marshal(map[string]any{
+		"memory_id": memory["memory_id"], "expected_revision": memory["revision"],
+		"title": "fact updated", "content": "long-term fact updated",
+		"idempotency_key": "78787878-7878-4787-8787-787878787878",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedRaw, err := capability.HandleOperation(ctx, "update_memory", updateRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated map[string]any
+	if json.Unmarshal(updatedRaw, &updated) != nil || updated["embedding_indexed"] != false || updated["embedding_stale"] != true || updated["embedding_status"] != "unknown" {
+		t.Fatalf("memory update omitted semantic state: %s", updatedRaw)
 	}
 	if strings.Contains(string(memoryRaw), apiKey) {
 		t.Fatalf("embedding secret leaked: %s", memoryRaw)

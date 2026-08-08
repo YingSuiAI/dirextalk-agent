@@ -241,6 +241,53 @@ func TestProviderPayloadsMapToolExchanges(t *testing.T) {
 	}
 }
 
+func TestProviderSafeIntrinsicNamesRoundTripPayloadsAndResponses(t *testing.T) {
+	for _, name := range []string{IntrinsicScheduleCreateToolName, IntrinsicCloudWorkerProposeToolName} {
+		if !toolNamePattern.MatchString(name) || strings.Contains(name, ".") {
+			t.Fatalf("intrinsic tool name is not provider-safe: %q", name)
+		}
+	}
+	name := IntrinsicScheduleCreateToolName
+	request := CompletionRequest{
+		Messages: []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call-1", Type: "function", Function: FunctionCall{Name: name, Arguments: `{}`}}}}},
+		Tools:    []Tool{{Name: name, InputSchema: map[string]any{"type": "object"}}},
+	}
+	for provider, payload := range map[ModelProvider]any{
+		ProviderOpenAICompatible: openAIPayload(validProfile(ProviderOpenAICompatible, "https://example.test", "key"), request, false),
+		ProviderAnthropic:        anthropicPayload(validProfile(ProviderAnthropic, "https://example.test", "key"), request, false),
+		ProviderGemini:           geminiPayload(validProfile(ProviderGemini, "https://example.test", "key"), request),
+	} {
+		raw, err := json.Marshal(payload)
+		if err != nil || !strings.Contains(string(raw), `"`+name+`"`) {
+			t.Fatalf("provider %q payload=%s err=%v", provider, raw, err)
+		}
+	}
+
+	responses := map[ModelProvider]string{
+		ProviderOpenAICompatible: `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"` + name + `","arguments":"{}"}}]}}]}`,
+		ProviderAnthropic:        `{"content":[{"type":"tool_use","id":"call-1","name":"` + name + `","input":{}}]}`,
+		ProviderGemini:           `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"` + name + `","args":{}}}]}}]}`,
+	}
+	for provider, body := range responses {
+		completion, err := decodeCompletion(provider, []byte(body), nil)
+		if err != nil || len(completion.Message.ToolCalls) != 1 || completion.Message.ToolCalls[0].Function.Name != name {
+			t.Fatalf("provider %q completion=%#v err=%v", provider, completion, err)
+		}
+	}
+
+	streamBodies := map[ModelProvider]string{
+		ProviderOpenAICompatible: `{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"` + name + `","arguments":"{}"}}]}}]}`,
+		ProviderAnthropic:        `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-1","name":"` + name + `"}}`,
+		ProviderGemini:           `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"` + name + `","args":{}}}]}}]}`,
+	}
+	for provider, body := range streamBodies {
+		delta, ok := decodeDeltaState(provider, []byte(body), map[int]string{})
+		if !ok || len(delta.ToolCalls) != 1 || delta.ToolCalls[0].Function.Name != name {
+			t.Fatalf("provider %q delta=%#v ok=%v", provider, delta, ok)
+		}
+	}
+}
+
 func TestSystemPromptOrdering(t *testing.T) {
 	p := validProfile(ProviderOpenAICompatible, "https://example.com", "k")
 	p.SystemPrompt = "saved system"

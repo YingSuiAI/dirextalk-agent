@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -57,5 +58,12 @@ func TestOperationStatusErrorRedactsUnclassifiedDetails(t *testing.T) {
 		if strings.Contains(got.Error(), "secret-sentinel") {
 			t.Fatalf("status leaked upstream detail: %v", got)
 		}
+	}
+}
+
+func TestOperationStatusErrorPreservesDeadlineExceeded(t *testing.T) {
+	got := operationStatusError(errors.Join(context.DeadlineExceeded, errors.New("private provider detail")))
+	if status.Code(got) != codes.DeadlineExceeded || status.Convert(got).Message() != context.DeadlineExceeded.Error() {
+		t.Fatalf("status = %v, want redacted deadline exceeded", got)
 	}
 }

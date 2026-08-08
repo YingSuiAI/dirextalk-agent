@@ -26,8 +26,8 @@ var geminiModelPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,256}$`)
 var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 const (
-	IntrinsicCloudWorkerProposeToolName = "cloud_worker.propose"
-	IntrinsicScheduleCreateToolName     = "agent.schedule.create"
+	IntrinsicCloudWorkerProposeToolName = "cloud_worker_propose"
+	IntrinsicScheduleCreateToolName     = "agent_schedule_create"
 	maxImageInputBytes                  = 8 << 20
 )
 
@@ -40,11 +40,10 @@ func IsIntrinsicToolName(value string) bool {
 	}
 }
 
-// validToolName deliberately does not turn dotted names into a general
-// extension namespace. Only Core-owned intrinsics may use a dotted name;
-// MCP/Skill tools retain the existing conservative identifier grammar.
+// Core intrinsics and extension tools share the same conservative provider-
+// safe identifier grammar.
 func validToolName(value string) bool {
-	return toolNamePattern.MatchString(value) || IsIntrinsicToolName(value)
+	return toolNamePattern.MatchString(value)
 }
 
 func ValidateClientProfileID(id string) error {

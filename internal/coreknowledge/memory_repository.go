@@ -609,7 +609,7 @@ func (r *MemoryRepository) ListMemories(ctx context.Context, q ListQuery) (Memor
 }
 
 func memoryFromSource(source Source, content string, tags []string) Memory {
-	return Memory{ID: source.ID, Title: source.Title, Content: content, Tags: append([]string(nil), tags...), Revision: source.Revision, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt}
+	return Memory{ID: source.ID, Title: source.Title, Content: content, Tags: append([]string(nil), tags...), Revision: source.Revision, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt, ErrorCode: source.ErrorCode}
 }
 
 func (r *MemoryRepository) cleanupSnapshotsLocked(now time.Time) {

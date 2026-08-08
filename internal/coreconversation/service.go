@@ -1612,7 +1612,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					}
 					intrinsicResult, intrinsicErr := intrinsic.Execute(ctx, IntrinsicExecutionRequest{Lease: lease, Call: call, CanonicalArguments: arguments})
 					if intrinsicErr != nil || !intrinsicResult.TurnCommitted {
-						_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_failed", "Core intrinsic operation failed")
+						code, summary := intrinsicTerminalFailure(call.Name, intrinsicErr)
+						_, _ = s.turns.FailTurn(ctx, lease, code, summary)
 					}
 					return
 				}
@@ -1725,6 +1726,16 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			cancel()
 		}
 	}
+}
+
+func intrinsicTerminalFailure(toolName string, err error) (string, string) {
+	if toolName == coremodel.IntrinsicScheduleCreateToolName {
+		if errors.Is(err, ErrInvalid) {
+			return "invalid_intrinsic_arguments", "Core intrinsic arguments are invalid"
+		}
+		return "schedule_persistence_failed", "Schedule could not be saved"
+	}
+	return "intrinsic_failed", "Core intrinsic operation failed"
 }
 
 func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots []ExtensionExecutionSnapshot) ([]ResolvedExtension, error) {
