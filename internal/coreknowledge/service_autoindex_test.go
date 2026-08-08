@@ -2,8 +2,11 @@ package coreknowledge
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type autoIndexRepository struct {
@@ -99,6 +102,30 @@ func TestServiceReconcileAutoIndexIsRestartSafeAndBounded(t *testing.T) {
 	}
 	if len(indexer.requests) != 2 || indexer.requests[0].IdempotencyKey != indexer.requests[1].IdempotencyKey {
 		t.Fatalf("restart reconcile key changed: %#v", indexer.requests)
+	}
+}
+
+func TestServicePreservesMutationsWithoutAnEmbeddingBinding(t *testing.T) {
+	base, err := NewMemoryRepository(time.Now, testOpener{}, NewMemoryContentPort(1<<20), referenceFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &autoIndexRepository{MemoryRepository: base, config: EmbeddingConfig{EmbeddingProfileID: uuid.Nil.String(), CollectionConfigDigest: strings.Repeat("0", 64), Revision: 2}}
+	indexer := &recordingIndexer{}
+	service, err := NewService(repo, indexer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := service.CreateMemory(context.Background(), MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "preserved while semantic search is disabled", MediaType: "text/plain"})
+	if err != nil || source.ID == "" {
+		t.Fatalf("source=%+v err=%v", source, err)
+	}
+	repo.candidates = []Source{source}
+	if err := service.ReconcileAutoIndex(context.Background(), 64); err != nil {
+		t.Fatal(err)
+	}
+	if len(indexer.requests) != 0 {
+		t.Fatalf("index requests without binding = %#v", indexer.requests)
 	}
 }
 
@@ -201,6 +228,38 @@ func TestServiceBindEmbeddingProfilePreservesCollectionAndIsReplaySafe(t *testin
 	replayed, err := service.BindEmbeddingProfile(context.Background(), bound.EmbeddingProfileID)
 	if err != nil || replayed.Revision != bound.Revision {
 		t.Fatalf("binding replay changed config: %+v err=%v", replayed, err)
+	}
+}
+
+func TestServiceDisableEmbeddingProfilePreservesSourcesAndRebinds(t *testing.T) {
+	base, err := NewMemoryRepository(time.Now, testOpener{}, NewMemoryContentPort(1<<20), referenceFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldProfile := "11111111-1111-4111-8111-111111111111"
+	if _, err := base.EnsureEmbeddingConfig(context.Background(), EmbeddingConfig{EmbeddingProfileID: oldProfile, EmbeddingProfileRevision: 3, EmbeddingModel: "old", EmbeddingGeneration: "generation-old", Dimension: 2, Collection: "knowledge", CollectionConfigDigest: strings.Repeat("d", 64), Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	memory, err := base.CreateMemory(context.Background(), MemoryCommand{IdempotencyKey: "22222222-2222-4222-8222-222222222222", SourceID: "33333333-3333-4333-8333-333333333333", Title: "kept", Content: "memory text remains", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := service.DisableEmbeddingProfile(context.Background(), oldProfile)
+	if err != nil || disabled.EmbeddingProfileID != uuid.Nil.String() || disabled.EmbeddingProfileRevision != 0 || disabled.EmbeddingModel != "" || disabled.EmbeddingGeneration != "" {
+		t.Fatalf("disabled=%+v err=%v", disabled, err)
+	}
+	kept, err := service.GetMemory(context.Background(), memory.ID)
+	if err != nil || kept.Content != "memory text remains" {
+		t.Fatalf("memory was not preserved: %+v err=%v", kept, err)
+	}
+	newProfile := "44444444-4444-4444-8444-444444444444"
+	bound, err := service.BindEmbeddingProfile(context.Background(), newProfile)
+	if err != nil || bound.EmbeddingProfileID != newProfile {
+		t.Fatalf("rebind=%+v err=%v", bound, err)
 	}
 }
 

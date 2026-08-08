@@ -1104,9 +1104,21 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 		if err != nil {
 			return nil, err
 		}
-		if c.knowledge != nil && cmd.DefaultEmbeddingProfileID != "" {
-			if bindErr := c.bindKnowledgeEmbedding(ctx); bindErr != nil {
-				return nil, bindErr
+		if c.knowledge != nil {
+			if cmd.DefaultEmbeddingProfileID != "" {
+				if bindErr := c.bindKnowledgeEmbedding(ctx); bindErr != nil {
+					return nil, bindErr
+				}
+			} else {
+				config, configErr := c.knowledge.GetEmbeddingConfig(ctx)
+				if configErr != nil {
+					return nil, configErr
+				}
+				if config.EmbeddingProfileID != uuid.Nil.String() {
+					if _, disableErr := c.knowledge.DisableEmbeddingProfile(ctx, config.EmbeddingProfileID); disableErr != nil {
+						return nil, disableErr
+					}
+				}
 			}
 		}
 		return marshalResult(result, nil)
@@ -1252,21 +1264,27 @@ func (c *coreKnowledgeCapability) embeddingProjection(ctx context.Context) map[s
 	if err != nil || strings.TrimSpace(config.EmbeddingProfileID) == "" || config.Revision < 1 {
 		return value
 	}
+	// Knowledge source storage remains available without a semantic binding.
+	// Omit provenance entirely in that state so consumers can distinguish
+	// storage readiness from exact embedding readiness without accepting an
+	// all-zero UUID as a usable model profile.
+	value["supported"] = true
+	if config.EmbeddingProfileID == uuid.Nil.String() {
+		return value
+	}
 	if c.models == nil {
 		// The model-profile authority is required to prove the profile
 		// revision/model projection. Returning only the config binding would
 		// make a safe read appear complete while omitting its provenance.
 		return value
 	}
-	value["supported"] = true
-	value["embedding_profile_id"] = config.EmbeddingProfileID
 	profileRevision := config.Revision
 	if c.models != nil && coretask.ValidUUID(config.EmbeddingProfileID) {
 		profile, profileErr := c.models.Get(ctx, config.EmbeddingProfileID)
 		if profileErr != nil || strings.ToLower(strings.TrimSpace(profile.ModelKind)) != coremodel.ModelKindEmbedding || !profile.APIKeyConfigured {
-			value["supported"] = false
 			return value
 		}
+		value["embedding_profile_id"] = config.EmbeddingProfileID
 		if profile.Revision > 0 {
 			profileRevision = profile.Revision
 		}

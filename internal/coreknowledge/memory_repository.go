@@ -129,6 +129,33 @@ func (r *MemoryRepository) UpdateEmbeddingConfig(_ context.Context, command Embe
 	return current, nil
 }
 
+func (r *MemoryRepository) DisableEmbeddingProfile(_ context.Context, profileID string) (EmbeddingConfig, error) {
+	if !validUUID(profileID) {
+		return EmbeddingConfig{}, ErrInvalid
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.embeddingConfig == nil {
+		return EmbeddingConfig{}, ErrNotFound
+	}
+	current := *r.embeddingConfig
+	if current.EmbeddingProfileID == uuid.Nil.String() {
+		return current, nil
+	}
+	if current.EmbeddingProfileID != profileID {
+		return EmbeddingConfig{}, ErrRevisionConflict
+	}
+	current.EmbeddingProfileID = uuid.Nil.String()
+	current.EmbeddingProfileRevision = 0
+	current.EmbeddingModel = ""
+	current.EmbeddingGeneration = ""
+	current.Revision++
+	current.UpdatedAt = r.nowUTC()
+	r.embeddingConfig = &current
+	r.snapshots = make(map[string]repositorySnapshot)
+	return current, nil
+}
+
 func NewMemoryRepository(now func() time.Time, opener ManagedFileOpener, contentPort StreamingContentPort, fence SourceReferenceFence) (*MemoryRepository, error) {
 	if now == nil || opener == nil || contentPort == nil || fence == nil {
 		return nil, ErrInvalid

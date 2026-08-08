@@ -176,4 +176,99 @@ func (r *CoreKnowledgeStore) UpdateEmbeddingConfig(ctx context.Context, command 
 	return current, nil
 }
 
+func (r *CoreKnowledgeStore) DisableEmbeddingProfile(ctx context.Context, profileID string) (coreknowledge.EmbeddingConfig, error) {
+	if r == nil || r.store == nil || uuid.Validate(profileID) != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrInvalid
+	}
+	tx, err := r.store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('knowledge:embedding-config',0))`); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	current, err := r.loadEmbeddingConfig(ctx, tx.QueryRow(ctx, `SELECT embedding_profile_id::text,dimension,collection,collection_config_digest,revision,updated_at FROM core_knowledge_embedding_config WHERE singleton=true FOR UPDATE`))
+	if err != nil {
+		return coreknowledge.EmbeddingConfig{}, err
+	}
+	if current.EmbeddingProfileID == uuid.Nil.String() {
+		if err = tx.Commit(ctx); err != nil {
+			return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+		}
+		return current, nil
+	}
+	if current.EmbeddingProfileID != profileID {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrRevisionConflict
+	}
+	now := time.Now().UTC()
+	// Fence every first-generation and replacement job before clearing the
+	// binding. A worker that returns after this commit observes a canceled task
+	// and the durable staging tombstone, so it cannot re-promote or leak vectors.
+	if _, err = tx.Exec(ctx, `INSERT INTO core_knowledge_generation_cleanup(source_id,generation,cleanup_kind,revision,quiescent_after)
+		SELECT item.value::uuid,job.generation,'canceled_staging',0,COALESCE(task.lease_expires_at,$2)
+		FROM core_knowledge_index_jobs job
+		JOIN core_tasks task ON task.task_id=job.task_id
+		CROSS JOIN LATERAL jsonb_array_elements_text(job.source_ids) item(value)
+		WHERE job.profile_id=$1 AND job.status IN ('queued','running')
+		ON CONFLICT(source_id,generation) DO UPDATE SET cleanup_kind='canceled_staging',quiescent_after=GREATEST(COALESCE(core_knowledge_generation_cleanup.quiescent_after,EXCLUDED.quiescent_after),EXCLUDED.quiescent_after)`, profileID, now); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	var runningTasks int64
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM core_tasks task JOIN core_knowledge_index_jobs job ON job.task_id=task.task_id WHERE job.profile_id=$1 AND job.status IN ('queued','running') AND task.status='running'`, profileID).Scan(&runningTasks); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_tasks task SET status='canceled',failure_code='user_canceled',failure_summary='',lease_holder='',lease_expires_at=NULL,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$2 FROM core_knowledge_index_jobs job WHERE job.task_id=task.task_id AND job.profile_id=$1 AND job.status IN ('queued','running') AND task.status IN ('queued','running')`, profileID, now); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	if runningTasks > 0 {
+		if _, err = tx.Exec(ctx, `UPDATE core_task_runtime_concurrency SET running_count=GREATEST(0,running_count-$1),revision=revision+1,updated_at=$2 WHERE singleton=true`, runningTasks, now); err != nil {
+			return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+		}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_index_jobs SET status='canceled',error_code='user_canceled',error_summary='',updated_at=$2 WHERE profile_id=$1 AND status IN ('queued','running')`, profileID, now); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM core_knowledge_vectors WHERE generation IN (
+		SELECT generation FROM core_knowledge_index_jobs WHERE profile_id=$1
+		UNION SELECT promoted_generation FROM core_knowledge_sources WHERE promoted_profile_id=$1 AND promoted_generation<>'')`, profileID); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM core_knowledge_vector_generations WHERE generation IN (
+		SELECT generation FROM core_knowledge_index_jobs WHERE profile_id=$1
+		UNION SELECT promoted_generation FROM core_knowledge_sources WHERE promoted_profile_id=$1 AND promoted_generation<>'')
+		AND NOT EXISTS (SELECT 1 FROM core_knowledge_vectors vector WHERE vector.generation=core_knowledge_vector_generations.generation)`, profileID); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_sources source SET
+		status=CASE WHEN source.status='indexing' THEN 'ready' ELSE source.status END,
+		error_code=CASE WHEN source.status='indexing' THEN '' ELSE source.error_code END,
+		promoted_generation=CASE WHEN source.promoted_profile_id=$1 THEN '' ELSE source.promoted_generation END,
+		promoted_revision=CASE WHEN source.promoted_profile_id=$1 THEN 0 ELSE source.promoted_revision END,
+		promoted_profile_id=CASE WHEN source.promoted_profile_id=$1 THEN NULL ELSE source.promoted_profile_id END,
+		promoted_profile_revision=CASE WHEN source.promoted_profile_id=$1 THEN 0 ELSE source.promoted_profile_revision END,
+		promoted_collection_config_digest=CASE WHEN source.promoted_profile_id=$1 THEN '' ELSE source.promoted_collection_config_digest END,
+		updated_at=$2
+		WHERE source.promoted_profile_id=$1 OR source.source_id IN (
+			SELECT item.value::uuid FROM core_knowledge_index_jobs job CROSS JOIN LATERAL jsonb_array_elements_text(job.source_ids) item(value) WHERE job.profile_id=$1)`, profileID, now); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs WHERE owner_kind='knowledge_generation' AND profile_id=$1`, profileID); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM core_knowledge_list_snapshots`); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_embedding_config SET embedding_profile_id=$1,revision=revision+1,updated_at=$2 WHERE singleton=true`, uuid.Nil, now); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	current.EmbeddingProfileID = uuid.Nil.String()
+	current.Revision++
+	current.UpdatedAt = now
+	if err = tx.Commit(ctx); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	return current, nil
+}
+
 var _ coreknowledge.EmbeddingConfigStore = (*CoreKnowledgeStore)(nil)

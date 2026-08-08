@@ -311,6 +311,10 @@ page level:
 same provenance even if the current default embedding profile is rebound.
 `agent.knowledge.v1` `get_config` and `update_config` return the same current
 projection, without API keys or provider secret material.
+Clearing the default embedding profile disables semantic search, cancels and
+fences in-flight indexing, and removes promoted vectors while preserving source
+files and memory text. A later embedding binding automatically reconciles those
+ready, unindexed sources without a migration or content fallback.
 
 ### AWS
 

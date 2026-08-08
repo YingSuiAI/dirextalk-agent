@@ -202,6 +202,9 @@ func (s *Service) ReconcileAutoIndex(ctx context.Context, limit int) error {
 		}
 		return err
 	}
+	if config.EmbeddingProfileID == uuid.Nil.String() {
+		return nil
+	}
 	candidates, err := reader.ListAutoIndexCandidates(ctx, config.EmbeddingProfileID, config.CollectionConfigDigest, limit)
 	if err != nil {
 		return err
@@ -224,7 +227,7 @@ func (s *Service) requestAutomaticIndex(ctx context.Context, source Source) {
 }
 
 func (s *Service) requestAutomaticIndexWithConfig(ctx context.Context, source Source, config EmbeddingConfig) {
-	if s == nil || s.indexer == nil || source.ID == "" || source.Revision <= 0 || config.EmbeddingProfileID == "" || config.CollectionConfigDigest == "" {
+	if s == nil || s.indexer == nil || source.ID == "" || source.Revision <= 0 || config.EmbeddingProfileID == "" || config.EmbeddingProfileID == uuid.Nil.String() || config.CollectionConfigDigest == "" {
 		return
 	}
 	profileRevision := config.EmbeddingProfileRevision
@@ -304,6 +307,18 @@ func (s *Service) BindEmbeddingProfile(ctx context.Context, profileID string) (E
 		}
 	}
 	return EmbeddingConfig{}, ErrRevisionConflict
+}
+
+func (s *Service) DisableEmbeddingProfile(ctx context.Context, profileID string) (EmbeddingConfig, error) {
+	if s == nil || s.repository == nil || !validUUID(profileID) {
+		return EmbeddingConfig{}, ErrInvalid
+	}
+	disabler, ok := s.repository.(EmbeddingProfileDisabler)
+	if !ok {
+		return EmbeddingConfig{}, ErrNotFound
+	}
+	value, err := disabler.DisableEmbeddingProfile(ctx, profileID)
+	return value, safeError(err)
 }
 
 func (s *Service) Search(ctx context.Context, query SearchQuery) (SearchPage, error) {

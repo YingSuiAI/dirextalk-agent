@@ -703,6 +703,19 @@ type flakyEmbeddingConfigRepository struct {
 	failures int
 }
 
+type flakyEmbeddingDisableRepository struct {
+	*coreknowledge.MemoryRepository
+	failures int
+}
+
+func (r *flakyEmbeddingDisableRepository) DisableEmbeddingProfile(ctx context.Context, profileID string) (coreknowledge.EmbeddingConfig, error) {
+	if r.failures > 0 {
+		r.failures--
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	return r.MemoryRepository.DisableEmbeddingProfile(ctx, profileID)
+}
+
 func (r *flakyEmbeddingConfigRepository) UpdateEmbeddingConfig(ctx context.Context, command coreknowledge.EmbeddingConfigCommand) (coreknowledge.EmbeddingConfig, error) {
 	if r.failures > 0 {
 		r.failures--
@@ -786,6 +799,85 @@ func TestModelSyncBindsKnowledgeEmbeddingAndAutoIndexesCapabilityMutations(t *te
 	}
 }
 
+func TestModelSyncClearsEmbeddingBindingButPreservesMemory(t *testing.T) {
+	ctx := context.Background()
+	models, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	knowledgeRepo, err := coreknowledge.NewMemoryRepository(time.Now, adapterKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), adapterKnowledgeFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := knowledgeRepo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: "11111111-1111-4111-8111-111111111111", Dimension: 2, Collection: "knowledge", CollectionConfigDigest: strings.Repeat("c", 64), Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	knowledge, err := coreknowledge.NewService(knowledgeRepo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreModelCapability{service: models, knowledge: knowledge}
+	first := []byte(`{"idempotency_key":"12121212-1212-4121-8121-121212121212","default_embedding_client_profile_id":"embed","entries":[{"client_profile_id":"embed","display_name":"Embedding","provider":"openai_compatible","base_url":"https://example.invalid/v1","model":"embed","model_kind":"embedding","api_key":"secret"}]}`)
+	if _, err := capability.HandleOperation(ctx, "sync_models", first); err != nil {
+		t.Fatal(err)
+	}
+	memory, err := knowledge.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: "23232323-2323-4232-8232-232323232323", SourceID: "34343434-3434-4343-8343-343434343434", Title: "kept", Content: "durable memory", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clear := []byte(`{"idempotency_key":"45454545-4545-4454-8454-454545454545","entries":[]}`)
+	if _, err := capability.HandleOperation(ctx, "sync_models", clear); err != nil {
+		t.Fatal(err)
+	}
+	config, err := knowledge.GetEmbeddingConfig(ctx)
+	if err != nil || config.EmbeddingProfileID != uuid.Nil.String() {
+		t.Fatalf("config=%+v err=%v", config, err)
+	}
+	kept, err := knowledge.GetMemory(ctx, memory.ID)
+	if err != nil || kept.Content != "durable memory" {
+		t.Fatalf("memory=%+v err=%v", kept, err)
+	}
+}
+
+func TestKnowledgeStatusKeepsStorageSupportedWithoutEmbeddingBinding(t *testing.T) {
+	ctx := context.Background()
+	repo, err := coreknowledge.NewMemoryRepository(time.Now, adapterKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), adapterKnowledgeFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: uuid.Nil.String(), Dimension: 2, Collection: "knowledge", CollectionConfigDigest: strings.Repeat("0", 64), Revision: 2}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := coreknowledge.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "visible without vectors", MediaType: "text/plain"}); err != nil {
+		t.Fatal(err)
+	}
+	models, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreKnowledgeCapability{service: service, models: models}
+	raw, err := capability.HandleOperation(ctx, "status", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status map[string]any
+	if err := json.Unmarshal(raw, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status["supported"] != true || status["embedding_indexed"] != float64(0) || status["embedding_stale"] != float64(1) {
+		t.Fatalf("status=%s", raw)
+	}
+	for _, key := range []string{"embedding_profile_id", "embedding_profile_revision", "embedding_model"} {
+		if _, exists := status[key]; exists {
+			t.Fatalf("status exposed %s without binding: %s", key, raw)
+		}
+	}
+}
+
 func TestModelSyncRejectsEmbeddingDefaultWithoutEmbeddingProfile(t *testing.T) {
 	models, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
 	if err != nil {
@@ -827,6 +919,39 @@ func TestModelSyncBindingFailureIsRetriedByTheSameIdempotencyKey(t *testing.T) {
 	config, err := knowledge.GetEmbeddingConfig(ctx)
 	if err != nil || config.EmbeddingProfileID != coremodel.SyncProfileID("embed") {
 		t.Fatalf("retry did not converge embedding binding: %+v err=%v", config, err)
+	}
+}
+
+func TestModelSyncDisableFailureIsRetriedAfterSyncReplay(t *testing.T) {
+	ctx := context.Background()
+	models, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := coreknowledge.NewMemoryRepository(time.Now, adapterKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), adapterKnowledgeFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileID := coremodel.SyncProfileID("embed")
+	if _, err := base.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: strings.Repeat("e", 64), Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	flaky := &flakyEmbeddingDisableRepository{MemoryRepository: base, failures: 1}
+	knowledge, err := coreknowledge.NewService(flaky, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreModelCapability{service: models, knowledge: knowledge}
+	request := []byte(`{"idempotency_key":"cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd","entries":[]}`)
+	if _, err := capability.HandleOperation(ctx, "sync_models", request); err != coreknowledge.ErrConflict {
+		t.Fatalf("first disable error=%v", err)
+	}
+	if _, err := capability.HandleOperation(ctx, "sync_models", request); err != nil {
+		t.Fatal(err)
+	}
+	config, err := knowledge.GetEmbeddingConfig(ctx)
+	if err != nil || config.EmbeddingProfileID != uuid.Nil.String() {
+		t.Fatalf("retry did not disable embedding: %+v err=%v", config, err)
 	}
 }
 

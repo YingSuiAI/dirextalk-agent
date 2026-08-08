@@ -354,6 +354,12 @@ type EmbeddingConfigStore interface {
 	UpdateEmbeddingConfig(context.Context, EmbeddingConfigCommand) (EmbeddingConfig, error)
 }
 
+// EmbeddingProfileDisabler invalidates semantic search/index state for one
+// exact active profile while preserving source files and memory text.
+type EmbeddingProfileDisabler interface {
+	DisableEmbeddingProfile(context.Context, string) (EmbeddingConfig, error)
+}
+
 // EmbeddingStatusReader is an optional persistence projection for promoted
 // vector generations. A repository that cannot prove promotion should omit
 // this port; callers then remain conservative and report zero indexed vectors

@@ -413,6 +413,17 @@ func (s *Store) DeleteProfile(ctx context.Context, id, key, digest string, expec
 		if refs > 0 {
 			return coremodel.MutationSnapshot{}, coremodel.ErrProfileInUse
 		}
+		// Embedding jobs retain immutable profile FKs for task provenance. Once
+		// Knowledge has retired every active generation, tombstone the current
+		// profile and wipe its live credential while preserving those historical
+		// references. Other profile kinds retain the established hard-delete
+		// behavior.
+		if p.ModelKind == coremodel.ModelKindEmbedding {
+			if _, err := tx.Exec(ctx, `UPDATE core_model_profiles SET client_profile_id=NULL,api_key_configured=false,api_key_nonce=NULL,api_key_ciphertext=NULL,provider_secrets_nonce=NULL,provider_secrets_ciphertext=NULL,provider_secret_status='{}'::jsonb,deleted_at=clock_timestamp(),updated_at=clock_timestamp() WHERE profile_id=$1`, id); err != nil {
+				return coremodel.MutationSnapshot{}, mapProfileDBError(err)
+			}
+			return coremodel.MutationSnapshot{Profile: p.Public(), Deleted: true}, nil
+		}
 		// Secret revisions are immutable task snapshot material. They may be
 		// retired only when no durable task snapshot still names this profile;
 		// otherwise the FK deliberately turns deletion into a conflict.
@@ -538,7 +549,24 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 			if e.ExpectedRevision != nil {
 				return coremodel.SyncProfileResult{}, coremodel.ErrRevisionConflict
 			}
-			p = coremodel.Profile{ID: deterministicSyncProfileID(e.ClientProfileID), ClientProfileID: e.ClientProfileID, DisplayName: e.DisplayName, Provider: e.Provider, ModelKind: e.ModelKind, InputModalities: append([]string(nil), e.InputModalities...), ProviderConfig: e.ProviderConfig, ProviderSecrets: e.ProviderSecrets, BaseURL: e.BaseURL, Model: e.Model, APIKey: valueOrEmpty(e.APIKey), SystemPrompt: e.SystemPrompt, Temperature: e.Temperature, TopP: e.TopP, MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort, Revision: 1, CredentialVersion: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+			profileID := deterministicSyncProfileID(e.ClientProfileID)
+			var retired coremodel.Profile
+			retired, err = scanProfile(tx.QueryRow(ctx, profileSelectColumns+` FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NOT NULL FOR UPDATE`, profileID))
+			retiredExists := err == nil
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
+			}
+			if retiredExists && e.APIKey == nil {
+				return coremodel.SyncProfileResult{}, coremodel.ErrAPIKeyUnavailable
+			}
+			now := time.Now().UTC()
+			revision, credentialVersion, createdAt := int64(1), int64(1), now
+			if retiredExists {
+				revision = retired.Revision + 1
+				credentialVersion = retired.CredentialVersion + 1
+				createdAt = retired.CreatedAt
+			}
+			p = coremodel.Profile{ID: profileID, ClientProfileID: e.ClientProfileID, DisplayName: e.DisplayName, Provider: e.Provider, ModelKind: e.ModelKind, InputModalities: append([]string(nil), e.InputModalities...), ProviderConfig: e.ProviderConfig, ProviderSecrets: e.ProviderSecrets, BaseURL: e.BaseURL, Model: e.Model, APIKey: valueOrEmpty(e.APIKey), SystemPrompt: e.SystemPrompt, Temperature: e.Temperature, TopP: e.TopP, MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort, Revision: revision, CredentialVersion: credentialVersion, CreatedAt: createdAt, UpdatedAt: now}
 			p, err = coremodel.ValidateProfile(p)
 			if err != nil {
 				return coremodel.SyncProfileResult{}, err
@@ -554,7 +582,11 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 				return coremodel.SyncProfileResult{}, sealErr
 			}
 			providerKeyVersion, providerKeyNonce, providerKeyCipher := providerSecretStatusArgs(providerEnvelope)
-			_, err = tx.Exec(ctx, `INSERT INTO core_model_profiles (profile_id,client_profile_id,display_name,provider,model_kind,input_modalities,provider_config,provider_secret_status,provider_secrets_key_version,provider_secrets_nonce,provider_secrets_ciphertext,base_url,model_name,system_prompt,api_key_configured,credential_version,api_key_key_version,api_key_nonce,api_key_ciphertext,temperature,top_p,max_output_tokens,context_window,reasoning_effort,revision,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`, p.ID, p.ClientProfileID, p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.CreatedAt, p.UpdatedAt)
+			if retiredExists {
+				_, err = tx.Exec(ctx, `UPDATE core_model_profiles SET client_profile_id=$2,display_name=$3,provider=$4,model_kind=$5,input_modalities=$6::jsonb,provider_config=$7::jsonb,provider_secret_status=$8::jsonb,provider_secrets_key_version=$9,provider_secrets_nonce=$10,provider_secrets_ciphertext=$11,base_url=$12,model_name=$13,system_prompt=$14,api_key_configured=$15,credential_version=$16,api_key_key_version=$17,api_key_nonce=$18,api_key_ciphertext=$19,temperature=$20,top_p=$21,max_output_tokens=$22,context_window=$23,reasoning_effort=$24,revision=$25,deleted_at=NULL,updated_at=$26 WHERE profile_id=$1 AND deleted_at IS NOT NULL`, p.ID, p.ClientProfileID, p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.UpdatedAt)
+			} else {
+				_, err = tx.Exec(ctx, `INSERT INTO core_model_profiles (profile_id,client_profile_id,display_name,provider,model_kind,input_modalities,provider_config,provider_secret_status,provider_secrets_key_version,provider_secrets_nonce,provider_secrets_ciphertext,base_url,model_name,system_prompt,api_key_configured,credential_version,api_key_key_version,api_key_nonce,api_key_ciphertext,temperature,top_p,max_output_tokens,context_window,reasoning_effort,revision,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`, p.ID, p.ClientProfileID, p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.CreatedAt, p.UpdatedAt)
+			}
 			if err != nil {
 				return coremodel.SyncProfileResult{}, mapProfileDBError(err)
 			}

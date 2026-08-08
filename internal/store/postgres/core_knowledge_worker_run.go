@@ -274,6 +274,10 @@ func (w *knowledgeTaskWorker) promote(ctx context.Context, task coretask.Task, j
 	if err = tx.QueryRow(ctx, `SELECT revision FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL`, jobProfileID).Scan(&currentProfileRevision); err != nil || currentProfileRevision != jobProfileRevision || jobConfig != task.Spec.Payload.KnowledgeIndex.CollectionConfigDigest || jobProfileID != task.Spec.ModelProfileID {
 		return coretask.ErrRevisionConflict
 	}
+	var activeProfileID string
+	if err = tx.QueryRow(ctx, `SELECT embedding_profile_id::text FROM core_knowledge_embedding_config WHERE singleton=true FOR SHARE`).Scan(&activeProfileID); err != nil || activeProfileID != jobProfileID {
+		return coretask.ErrRevisionConflict
+	}
 	for i, id := range ids {
 		var srcStatus string
 		var srcRev int64
@@ -299,7 +303,7 @@ func (w *knowledgeTaskWorker) promote(ctx context.Context, task coretask.Task, j
 		if _, e := tx.Exec(ctx, `INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id) VALUES('knowledge_generation',$1,$2)`, id, jobProfileID); e != nil {
 			return e
 		}
-		tag, e := tx.Exec(ctx, `UPDATE core_knowledge_sources SET status='ready',promoted_generation=$2,promoted_revision=$3,promoted_profile_id=$4,promoted_profile_revision=$5,promoted_collection_config_digest=$6,updated_at=$7 WHERE source_id=$1 AND status='indexing' AND revision=$3`, id, generation, revs[i], jobProfileID, jobProfileRevision, jobConfig, now)
+		tag, e := tx.Exec(ctx, `UPDATE core_knowledge_sources SET status='ready',error_code='',promoted_generation=$2,promoted_revision=$3,promoted_profile_id=$4,promoted_profile_revision=$5,promoted_collection_config_digest=$6,updated_at=$7 WHERE source_id=$1 AND status='indexing' AND revision=$3`, id, generation, revs[i], jobProfileID, jobProfileRevision, jobConfig, now)
 		if e != nil {
 			err = e
 			return err

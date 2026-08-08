@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -253,6 +254,9 @@ func TestCoreKnowledgeWorkerPostgresMemoryUpdateSupersedesInFlightIndex(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := repo.store.pool.Exec(ctx, `UPDATE core_knowledge_sources SET error_code='knowledge_index_failed' WHERE source_id=$1`, memory.ID); err != nil {
+		t.Fatal(err)
+	}
 	newOutcome := handler(ctx, newTask)
 	if newOutcome.Err != nil {
 		t.Fatalf("new outcome=%#v", newOutcome)
@@ -266,6 +270,128 @@ func TestCoreKnowledgeWorkerPostgresMemoryUpdateSupersedesInFlightIndex(t *testi
 	}
 	if sourceStatus != string(coreknowledge.SourceStatusReady) || sourceError != "" || sourceRevision != updated.Revision {
 		t.Fatalf("promoted source=%s/%s revision=%d", sourceStatus, sourceError, sourceRevision)
+	}
+}
+
+func TestCoreKnowledgePostgresDisableFirstGenerationAndReaddEmbeddingProfile(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	models, err := coremodel.NewService(repo.store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientProfileID := "embedding-readd"
+	firstKey := "first-write-only-key"
+	first, err := models.Sync(ctx, coremodel.SyncProfileCommand{
+		IdempotencyKey:            uuid.NewString(),
+		DefaultEmbeddingProfileID: clientProfileID,
+		Entries: []coremodel.SyncProfileEntry{{
+			ClientProfileID: clientProfileID, DisplayName: "Embedding", Provider: coremodel.ProviderOpenAICompatible,
+			ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://example.invalid/v1", Model: "embed-v1", APIKey: &firstKey,
+		}},
+	})
+	if err != nil || len(first.Profiles) != 1 {
+		t.Fatalf("first sync=%+v err=%v", first, err)
+	}
+	profileID := coremodel.SyncProfileID(clientProfileID)
+	configDigest := strings.Repeat("4", 64)
+	if _, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: configDigest, Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	indexer, err := NewKnowledgeIndexer(repo.store, profileID, configDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexer.SetEmbeddingConfigReader(repo)
+	knowledge, err := coreknowledge.NewService(repo, indexer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory, err := knowledge.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), Title: "preserved", Content: "keep this memory text", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstTaskID, firstGeneration string
+	if err := repo.store.pool.QueryRow(ctx, `SELECT task_id::text,generation FROM core_knowledge_index_jobs WHERE profile_id=$1 AND status='queued'`, profileID).Scan(&firstTaskID, &firstGeneration); err != nil {
+		t.Fatal(err)
+	}
+	tasks := NewCoreTaskStore(repo.store)
+	claimed, _, err := tasks.ClaimNextDue(ctx, "disable-race-worker", time.Now().UTC(), time.Minute, 1)
+	if err != nil || claimed.ID != firstTaskID {
+		t.Fatalf("claimed=%+v err=%v", claimed, err)
+	}
+	if _, err := repo.store.pool.Exec(ctx, `INSERT INTO core_knowledge_vector_generations(generation,state) VALUES($1,'staged')`, firstGeneration); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.store.pool.Exec(ctx, `INSERT INTO core_knowledge_vectors(point_id,generation,state,source_id,revision,chunk_ref,digest,snippet,embedding) VALUES($1,$2,'staged',$3,$4,'chunk-0',$5,'staged','[1,0]')`, uuid.New(), firstGeneration, memory.ID, memory.Revision, strings.Repeat("5", 64)); err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := knowledge.DisableEmbeddingProfile(ctx, profileID)
+	if err != nil || disabled.EmbeddingProfileID != uuid.Nil.String() {
+		t.Fatalf("disabled=%+v err=%v", disabled, err)
+	}
+	kept, err := knowledge.GetMemory(ctx, memory.ID)
+	if err != nil || kept.Content != "keep this memory text" {
+		t.Fatalf("kept=%+v err=%v", kept, err)
+	}
+	keptSource, err := knowledge.Get(ctx, memory.ID)
+	if err != nil || keptSource.Status != coreknowledge.SourceStatusReady || keptSource.ErrorCode != "" {
+		t.Fatalf("kept source=%+v err=%v", keptSource, err)
+	}
+	var taskStatus, jobStatus string
+	if err := repo.store.pool.QueryRow(ctx, `SELECT task.status,job.status FROM core_tasks task JOIN core_knowledge_index_jobs job ON job.task_id=task.task_id WHERE task.task_id=$1`, firstTaskID).Scan(&taskStatus, &jobStatus); err != nil {
+		t.Fatal(err)
+	}
+	var vectors int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_vectors WHERE generation=$1`, firstGeneration).Scan(&vectors); err != nil {
+		t.Fatal(err)
+	}
+	if taskStatus != "canceled" || jobStatus != "canceled" || vectors != 0 {
+		t.Fatalf("disabled task/job/vectors=%s/%s/%d", taskStatus, jobStatus, vectors)
+	}
+	backend, _ := semantic.NewMemoryStore(2)
+	engine, _ := semantic.NewIndexEngine(semantic.IndexConfig{Embedder: workerEmbedding{}, VectorStore: backend, ProfileResolver: workerProfiles{id: profileID}, EmbeddingProfileID: profileID, Dimension: 2, ConfigReader: repo})
+	handler, _ := NewKnowledgeTaskHandler(repo.store, nil, repo.content.(*pgKnowledgeContent), engine)
+	lateOutcome := handler(ctx, claimed)
+	if lateOutcome.Err == nil || !lateOutcome.TerminalOwned {
+		t.Fatalf("late disabled worker outcome=%#v", lateOutcome)
+	}
+	var promotedRevision int64
+	if err := repo.store.pool.QueryRow(ctx, `SELECT promoted_revision FROM core_knowledge_sources WHERE source_id=$1`, memory.ID).Scan(&promotedRevision); err != nil || promotedRevision != 0 {
+		t.Fatalf("late worker promoted revision=%d err=%v", promotedRevision, err)
+	}
+	if _, err := models.Sync(ctx, coremodel.SyncProfileCommand{IdempotencyKey: uuid.NewString()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := models.Delete(ctx, coremodel.DeleteProfileCommand{ID: profileID, IdempotencyKey: uuid.NewString(), ExpectedRevision: first.Profiles[0].Revision}); err != nil {
+		t.Fatal(err)
+	}
+	withoutKey, err := models.Sync(ctx, coremodel.SyncProfileCommand{IdempotencyKey: uuid.NewString(), Entries: []coremodel.SyncProfileEntry{{ClientProfileID: clientProfileID, DisplayName: "Embedding 2", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://example.invalid/v1", Model: "embed-v2"}}})
+	if !errors.Is(err, coremodel.ErrAPIKeyUnavailable) || len(withoutKey.Profiles) != 0 {
+		t.Fatalf("readd without key=%+v err=%v", withoutKey, err)
+	}
+	secondKey := "second-write-only-key"
+	second, err := models.Sync(ctx, coremodel.SyncProfileCommand{
+		IdempotencyKey:            uuid.NewString(),
+		DefaultEmbeddingProfileID: clientProfileID,
+		Entries:                   []coremodel.SyncProfileEntry{{ClientProfileID: clientProfileID, DisplayName: "Embedding 2", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://example.invalid/v1", Model: "embed-v2", APIKey: &secondKey}},
+	})
+	if err != nil || len(second.Profiles) != 1 {
+		t.Fatalf("second sync=%+v err=%v", second, err)
+	}
+	resolved, err := models.ResolveClientProfile(ctx, clientProfileID)
+	if err != nil || resolved.ID != profileID || resolved.Revision <= first.Profiles[0].Revision || resolved.CredentialVersion <= first.Profiles[0].CredentialVersion {
+		t.Fatalf("resolved=%+v first=%+v err=%v", resolved, first.Profiles[0], err)
+	}
+	if _, err := knowledge.BindEmbeddingProfile(ctx, resolved.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := knowledge.ReconcileAutoIndex(ctx, 64); err != nil {
+		t.Fatal(err)
+	}
+	var rebuiltProfileID string
+	if err := repo.store.pool.QueryRow(ctx, `SELECT profile_id::text FROM core_knowledge_index_jobs WHERE profile_id=$1 AND status='queued' ORDER BY created_at DESC LIMIT 1`, profileID).Scan(&rebuiltProfileID); err != nil || rebuiltProfileID != profileID {
+		t.Fatalf("rebuilt profile=%q err=%v", rebuiltProfileID, err)
 	}
 }
 
