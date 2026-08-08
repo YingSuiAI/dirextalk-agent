@@ -14,6 +14,8 @@ import (
 
 func TestOutputJournalDeletesEveryUnacceptedVersionAndRetainsOnlyCentralArtifacts(t *testing.T) {
 	now := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	current := now
+	clock := func() time.Time { return current }
 	plan, artifact, _ := retentionFixture(t, now)
 	identity, err := outputExecutionIdentity(plan)
 	if err != nil {
@@ -26,7 +28,7 @@ func TestOutputJournalDeletesEveryUnacceptedVersionAndRetainsOnlyCentralArtifact
 	result := outputObservation(identity, "result.json", "result-version-1", 128, false, now)
 	failure := outputObservation(identity, "failed.json", "failed-version-1", 64, false, now)
 	marker := outputObservation(identity, "partial.json", "delete-marker-1", 0, true, now)
-	objects := newMemoryOutputVersions(identity, 2, retained, result, failure, marker)
+	objects := newMemoryOutputVersions(identity, 2, clock, retained, result, failure, marker)
 	objects.exact[outputVersionKey(retained.Identity)] = OutputExactObservation{
 		Identity: retained.Identity, Exists: true, SizeBytes: artifact.Retention.Claim.SizeBytes,
 		MediaType: artifact.Retention.Claim.MediaType, SHA256: artifact.Retention.Claim.SHA256,
@@ -36,7 +38,7 @@ func TestOutputJournalDeletesEveryUnacceptedVersionAndRetainsOnlyCentralArtifact
 	// the mandatory second inventory as proof and must not retain result.json.
 	objects.outcomes[outputVersionKey(result.Identity)] = []outputDeleteOutcome{{remove: true, err: ErrOutputDeleteUncertain}}
 	ledger := NewMemoryOutputJournalLedger()
-	manager, err := NewOutputJournalManager(ledger, outputFactory{objects: objects}, func() time.Time { return now })
+	manager, err := NewOutputJournalManager(ledger, outputFactory{objects: objects}, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +69,8 @@ func TestOutputJournalDeletesEveryUnacceptedVersionAndRetainsOnlyCentralArtifact
 	deleteCalls := objects.deleteCount()
 	// A restarted controller re-opens the journal, performs two fresh complete
 	// inventories, and proves the same retained set without another delete.
-	restarted, _ := NewOutputJournalManager(ledger, outputFactory{objects: objects}, func() time.Time { return now.Add(time.Second) })
+	current = now.Add(time.Second)
+	restarted, _ := NewOutputJournalManager(ledger, outputFactory{objects: objects}, clock)
 	if err = restarted.Cleanup(t.Context(), plan, []Artifact{artifact}); err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +81,8 @@ func TestOutputJournalDeletesEveryUnacceptedVersionAndRetainsOnlyCentralArtifact
 
 func TestOutputJournalUnknownDeleteRequiresReadbackBeforeRetryAcrossRestart(t *testing.T) {
 	now := time.Date(2026, 8, 8, 11, 0, 0, 0, time.UTC)
+	current := now
+	clock := func() time.Time { return current }
 	plan, _, _, source := stagingFixture(t, now)
 	if source.Body != nil {
 		_ = source.Body.Close()
@@ -87,13 +92,13 @@ func TestOutputJournalUnknownDeleteRequiresReadbackBeforeRetryAcrossRestart(t *t
 		t.Fatal(err)
 	}
 	stray := outputObservation(identity, "unknown-put.bin", "unknown-version-1", 32, false, now)
-	objects := newMemoryOutputVersions(identity, 1000, stray)
+	objects := newMemoryOutputVersions(identity, 1000, clock, stray)
 	objects.outcomes[outputVersionKey(stray.Identity)] = []outputDeleteOutcome{
 		{remove: false, err: ErrOutputDeleteUncertain},
 		{remove: true},
 	}
 	ledger := NewMemoryOutputJournalLedger()
-	manager, _ := NewOutputJournalManager(ledger, outputFactory{objects: objects}, func() time.Time { return now })
+	manager, _ := NewOutputJournalManager(ledger, outputFactory{objects: objects}, clock)
 	if err = manager.Authorize(t.Context(), plan, outputRunningTask(plan, 1)); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +109,8 @@ func TestOutputJournalUnknownDeleteRequiresReadbackBeforeRetryAcrossRestart(t *t
 	if len(records) != 1 || records[0].State != OutputVersionDeleteUncertain || records[0].DeleteAttempts != 1 {
 		t.Fatalf("uncertain record=%+v", records)
 	}
-	restarted, _ := NewOutputJournalManager(ledger, outputFactory{objects: objects}, func() time.Time { return now.Add(time.Second) })
+	current = now.Add(time.Second)
+	restarted, _ := NewOutputJournalManager(ledger, outputFactory{objects: objects}, clock)
 	if err = restarted.Cleanup(t.Context(), plan, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -116,10 +122,11 @@ func TestOutputJournalUnknownDeleteRequiresReadbackBeforeRetryAcrossRestart(t *t
 
 func TestOutputJournalRejectsStaleLeaseAndUnjournaledRetention(t *testing.T) {
 	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
 	plan, artifact, _ := retentionFixture(t, now)
 	identity, _ := outputExecutionIdentity(plan)
-	objects := newMemoryOutputVersions(identity, 1000)
-	manager, _ := NewOutputJournalManager(NewMemoryOutputJournalLedger(), outputFactory{objects: objects}, func() time.Time { return now })
+	objects := newMemoryOutputVersions(identity, 1000, clock)
+	manager, _ := NewOutputJournalManager(NewMemoryOutputJournalLedger(), outputFactory{objects: objects}, clock)
 	task := outputRunningTask(plan, 1)
 	task.Lease.Epoch++
 	if err := manager.Authorize(t.Context(), plan, task); !errors.Is(err, ErrStaleAuthorization) {
@@ -165,12 +172,13 @@ type memoryOutputVersions struct {
 	exact       map[string]OutputExactObservation
 	outcomes    map[string][]outputDeleteOutcome
 	deleteCalls []OutputVersionIdentity
+	now         func() time.Time
 }
 
-func newMemoryOutputVersions(identity OutputExecutionIdentity, pageSize int, versions ...OutputVersionObservation) *memoryOutputVersions {
+func newMemoryOutputVersions(identity OutputExecutionIdentity, pageSize int, now func() time.Time, versions ...OutputVersionObservation) *memoryOutputVersions {
 	store := &memoryOutputVersions{
 		identity: identity, pageSize: pageSize, versions: make(map[string]OutputVersionObservation),
-		exact: make(map[string]OutputExactObservation), outcomes: make(map[string][]outputDeleteOutcome),
+		exact: make(map[string]OutputExactObservation), outcomes: make(map[string][]outputDeleteOutcome), now: now,
 	}
 	for _, version := range versions {
 		store.versions[outputVersionKey(version.Identity)] = version
@@ -202,7 +210,7 @@ func (store *memoryOutputVersions) InventoryPage(_ context.Context, request Outp
 	if end > len(values) {
 		end = len(values)
 	}
-	page := OutputInventoryPage{Identity: store.identity, Versions: append([]OutputVersionObservation(nil), values[start:end]...), ObservedAt: time.Now().UTC()}
+	page := OutputInventoryPage{Identity: store.identity, Versions: append([]OutputVersionObservation(nil), values[start:end]...), ObservedAt: store.now().UTC()}
 	for index := range page.Versions {
 		page.Versions[index].ObservedAt = page.ObservedAt
 	}
@@ -219,12 +227,12 @@ func (store *memoryOutputVersions) ObserveExact(_ context.Context, identity Outp
 	key := outputVersionKey(identity)
 	exact, ok := store.exact[key]
 	if !ok {
-		return OutputExactObservation{Identity: identity, Exists: false, ObservedAt: time.Now().UTC()}, nil
+		return OutputExactObservation{Identity: identity, Exists: false, ObservedAt: store.now().UTC()}, nil
 	}
 	if _, live := store.versions[key]; !live {
-		exact = OutputExactObservation{Identity: identity, Exists: false, ObservedAt: time.Now().UTC()}
+		exact = OutputExactObservation{Identity: identity, Exists: false, ObservedAt: store.now().UTC()}
 	}
-	exact.ObservedAt = time.Now().UTC()
+	exact.ObservedAt = store.now().UTC()
 	return exact, nil
 }
 
