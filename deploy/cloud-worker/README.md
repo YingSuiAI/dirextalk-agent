@@ -93,6 +93,27 @@ Amazon plugin `1.8.1` has no native target-account allowlist in the
 and the external disposable-account Gate remain part of publication
 authorization.
 
+When Packer runs on a same-VPC build host, transfer one digest-bound build
+context instead of checking this repository out on that host. The context
+contains the exact rootfs tar, Packer template, installer, allowlist, and the
+only authorized build wrapper while excluding credentials and mutable package
+inputs:
+
+```text
+sh deploy/cloud-worker/package-ami-build-context.sh \
+  --rootfs-tar /absolute/path/dirextalk-cloud-worker-rootfs.tar \
+  --rootfs-sha256 <rootfs-tar-sha256> \
+  --output-tar /absolute/path/dirextalk-cloud-worker-ami-context.tar \
+  --output-sha256 /absolute/path/dirextalk-cloud-worker-ami-context.tar.sha256
+```
+
+Verify the outer digest before extraction and the included
+`deploy/cloud-worker/context.sha256` immediately afterwards. Run the included
+`build-worker-ami.sh` from the extracted context root; it still requires the
+exact account, Region, VPC, private subnet, source AMI, KMS key, and two
+read-back Security Groups. The build host or transfer channel never supplies
+an authorization fallback, and the context is Region-neutral.
+
 The produced `/usr/local/share/dirextalk-cloud-worker/installation.json` is
 canonical JSON. At startup the Worker matches its AMI, Worker, aggregate Pi,
 Pi executable, result extension, host-network policy, and all three CA digests
