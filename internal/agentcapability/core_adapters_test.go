@@ -1311,11 +1311,11 @@ func TestListTurnsCapabilityPublishesOnlyCanonicalMetadata(t *testing.T) {
 	}
 	turns := envelope["turns"].([]any)
 	turn := turns[0].(map[string]any)
-	if len(turn) != 9 || turn["turn_id"] == nil || turn["idempotency_key"] != nil ||
+	if len(turn) != 10 || turn["turn_id"] == nil || turn["idempotency_key"] != "33333333-3333-4333-8333-333333333333" ||
 		turn["conversation_id"] == nil || turn["state"] != "completed" {
 		t.Fatalf("canonical turn metadata = %#v", turn)
 	}
-	for _, forbidden := range []string{"ID", "RequestID", "Prompt", "ProfileID", "idempotency_key", "request_id", "prompt", "profile_id", "ProfileSnapshot"} {
+	for _, forbidden := range []string{"ID", "RequestID", "Prompt", "ProfileID", "request_id", "prompt", "profile_id", "ProfileSnapshot"} {
 		if _, leaked := turn[forbidden]; leaked {
 			t.Fatalf("private turn field %q leaked: %#v", forbidden, turn)
 		}
@@ -1367,6 +1367,116 @@ func TestListTurnsCapabilityRejectsUnknownAliasesAndMalformedFields(t *testing.T
 			t.Fatalf("input %s error=%v, want ErrInvalid", raw, err)
 		}
 	}
+}
+
+type stopTurnCapabilityStore struct {
+	coreconversation.Store
+	coreconversation.TurnStore
+	command coreconversation.TurnCancelCommand
+	calls   int
+	turn    coreconversation.Turn
+}
+
+func (s *stopTurnCapabilityStore) RequestTurnCancel(_ context.Context, command coreconversation.TurnCancelCommand) (coreconversation.Turn, error) {
+	s.calls++
+	s.command = command
+	return s.turn, nil
+}
+
+type stopTurnModelRunner struct{}
+
+func (stopTurnModelRunner) Run(context.Context, coreconversation.ModelRunRequest) (coreconversation.ModelRunResult, error) {
+	return coreconversation.ModelRunResult{}, nil
+}
+
+type stopTurnProfileResolver struct{}
+
+func (stopTurnProfileResolver) ResolveProfileSnapshot(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+	return coremodel.ExecutionSnapshot{}, nil
+}
+
+func newStopTurnCapability(t *testing.T) (*coreChatCapability, *stopTurnCapabilityStore) {
+	t.Helper()
+	now := time.Date(2026, 8, 8, 7, 8, 9, 0, time.UTC)
+	store := &stopTurnCapabilityStore{turn: coreconversation.Turn{
+		ID: uuid.NewString(), ConversationID: uuid.NewString(), RequestID: uuid.NewString(),
+		Prompt: "must-not-cross", ProfileID: uuid.NewString(), Revision: 4, LastSequence: 7,
+		State: coreconversation.TurnCanceled, TerminalCode: "canceled", TerminalSummary: "turn canceled",
+		CreatedAt: now, UpdatedAt: now.Add(time.Second),
+	}}
+	service, err := coreconversation.NewService(store, stopTurnModelRunner{}, nil, stopTurnProfileResolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &coreChatCapability{service: service}, store
+}
+
+func TestStopTurnCapabilityCallsConversationServiceAndReturnsOnlyPublicMetadata(t *testing.T) {
+	capability, store := newStopTurnCapability(t)
+	key := uuid.NewString()
+	raw := []byte(`{"idempotency_key":"` + key + `","turn_id":"` + store.turn.ID + `","expected_revision":3}`)
+	result, err := capability.HandleOperation(context.Background(), "stop_turn", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.calls != 1 || store.command.RequestID != key || store.command.TurnID != store.turn.ID || store.command.ExpectedRevision != 3 {
+		t.Fatalf("CancelTurn command=%+v calls=%d", store.command, store.calls)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result, &output); err != nil {
+		t.Fatal(err)
+	}
+	if len(output) != 10 || output["idempotency_key"] != key || output["turn_id"] != store.turn.ID || output["state"] != "canceled" {
+		t.Fatalf("public stop_turn result=%s", result)
+	}
+	for _, forbidden := range []string{"request_id", "prompt", "profile_id", "cancel_requested", "request_fingerprint"} {
+		if _, present := output[forbidden]; present {
+			t.Fatalf("private field %q leaked: %s", forbidden, result)
+		}
+	}
+}
+
+func TestStopTurnCapabilityRejectsUnknownAndMalformedInputBeforeService(t *testing.T) {
+	capability, store := newStopTurnCapability(t)
+	key, turnID := uuid.NewString(), store.turn.ID
+	for _, raw := range []string{
+		`{"idempotency_key":"` + key + `","turn_id":"` + turnID + `","expected_revision":3,"request_id":"` + uuid.NewString() + `"}`,
+		`{"idempotency_key":"` + key + `","turn_id":"` + turnID + `","expected_revision":0}`,
+		`{"idempotency_key":"not-a-uuid","turn_id":"` + turnID + `","expected_revision":3}`,
+		`{"idempotency_key":"` + key + `","turn_id":"not-a-uuid","expected_revision":3}`,
+		`{"idempotency_key":"` + key + `","turn_id":"` + turnID + `","expected_revision":3} {}`,
+	} {
+		if _, err := capability.HandleOperation(context.Background(), "stop_turn", []byte(raw)); !errors.Is(err, coreconversation.ErrInvalid) {
+			t.Fatalf("input %s error=%v, want ErrInvalid", raw, err)
+		}
+	}
+	if store.calls != 0 {
+		t.Fatalf("invalid requests reached CancelTurn %d times", store.calls)
+	}
+}
+
+func TestStopTurnDescriptorMatchesPinnedMessageServerContract(t *testing.T) {
+	descriptor := (&coreChatCapability{}).Descriptor()
+	for _, operation := range descriptor.GetOperations() {
+		if operation.GetOperationId() != "stop_turn" {
+			continue
+		}
+		if operation.GetOperationType() != capv1.OperationType_OPERATION_TYPE_MUTATION ||
+			len(operation.GetRequiredScopes()) != 1 || operation.GetRequiredScopes()[0] != "agent:chat:write" ||
+			!chatOperationRequiresKey("stop_turn") {
+			t.Fatalf("unexpected stop_turn descriptor: %+v", operation)
+		}
+		inputDigest := sha256.Sum256([]byte(operation.GetInputSchemaJson()))
+		resultDigest := sha256.Sum256([]byte(operation.GetResultSchemaJson()))
+		if got := hex.EncodeToString(inputDigest[:]); got != "d7bc619c13ed4ab5b743b7157d80e1a303386d1259696f19b5d82cfb939e1058" {
+			t.Fatalf("stop_turn input digest=%s schema=%s", got, operation.GetInputSchemaJson())
+		}
+		if got := hex.EncodeToString(resultDigest[:]); got != "5031fafc12966ca78f1c41730d87f967f622647042719a67dca2619cfb737763" {
+			t.Fatalf("stop_turn result digest=%s schema=%s", got, operation.GetResultSchemaJson())
+		}
+		return
+	}
+	t.Fatal("stop_turn descriptor is missing")
 }
 
 func containsString(values []string, want string) bool {

@@ -62,9 +62,13 @@ contract](message-server-integration-development-contract.md), and
   history cursors, strict UUID mutation keys, typed/redacted domain failures,
   and post-composition durable-turn recovery.
 - Native durable turns expose the canonical public `turn_id` through
-  `list_turns` and use it as the durable Capability operation identity. The
-  client-message request identity remains a private idempotency fence, and an
-  explicit Capability operation cancellation fences that exact durable turn.
+  `list_turns` together with the original start `idempotency_key`, and use the
+  turn id as the durable Capability operation identity. Typed `stop_turn`
+  performs a revision-fenced conversation cancellation and returns only the
+  public turn projection plus its cancellation idempotency key. A release
+  preflight compares every Message Server readiness-baseline action, binding,
+  and schema pin against the actual Agent descriptor constructors and reports
+  all catalog differences in one run.
 - Native durable turns expose the Core-owned `agent.schedule.create` intrinsic
   with model input limited to schedule intent/trigger/timeout. Turn authority
   supplies owner generation, conversation, and profile; PostgreSQL commits the
@@ -86,6 +90,7 @@ contract](message-server-integration-development-contract.md), and
 ```text
 go test ./...
 go vet ./...
+DIREXTALK_MESSAGE_SERVER_ROOT=../dirextalk-message-server go test ./internal/agentcapability -run '^TestMessageServerBaselineCatalogPreflight$' -count=1 -v
 go build ./cmd/dirextalk-agent ./cmd/dirextalk-extension-runner ./cmd/dirextalk-core-runner
 buf lint
 git diff --check
@@ -98,6 +103,11 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-08**, the release catalog preflight checked all 66 current
+  Message Server readiness-baseline actions against 11 actual Agent descriptor
+  constructors with no remaining missing binding, operation, or schema digest.
+  Focused tests also covered strict typed turn cancellation, revision/key
+  forwarding, closed output, unknown fields, and the pinned stop/list schemas.
 - On **2026-08-07**, focused extension, MCP HTTP, and Agent Capability tests
   covered exact header-free official-registry inspection, installation without
   secret input, credential-free invocation, omitted Authorization headers,

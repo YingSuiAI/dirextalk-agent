@@ -111,10 +111,16 @@ multi-tenant model.
 - Capability `agent.chat.v1/list_turns` accepts only a canonical conversation
   UUID, an optional opaque page token of at most 4,096 bytes, and an optional
   limit from 1 through 1,000. Its closed result projects exactly `turn_id`,
-  `conversation_id`, `state`, `revision`, `last_sequence`, `terminal_code`,
-  `terminal_summary`, `created_at`, and `updated_at`; prompts, request identity,
-  model/profile data, credentials, and execution snapshots never cross the
-  Capability boundary.
+  the original start `idempotency_key`, `conversation_id`, `state`, `revision`,
+  `last_sequence`, `terminal_code`, `terminal_summary`, `created_at`, and
+  `updated_at`; prompts, request fingerprints, model/profile data, credentials,
+  and execution snapshots never cross the Capability boundary.
+- Capability `agent.chat.v1/stop_turn` is the revision-fenced durable-turn
+  cancellation mutation. It accepts exactly `idempotency_key`, `turn_id`, and
+  positive `expected_revision`, calls the conversation service cancellation
+  path, and returns only the same public turn metadata plus the cancellation
+  request `idempotency_key`. It does not alias generic Capability operation
+  cancellation, accept unknown fields, or expose the original prompt/profile.
 - Capability `agent.chat.v1/stream_chat` starts and watches the same durable
   conversation turn exposed by `list_turns`. Its canonical Capability
   `operation_id` is the public `turn_id`; the request id remains the distinct

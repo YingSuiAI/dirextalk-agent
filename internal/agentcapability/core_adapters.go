@@ -160,9 +160,11 @@ type coreChatCapability struct {
 	progress func(context.Context, string, []byte) error
 }
 
-// publicTurnMetadata is the only list_turns projection allowed to cross the
-// Capability boundary. In particular, prompt, request identity, model/profile
-// data, and decrypted execution snapshots remain Agent-private.
+// publicTurnMetadata is the common safe turn projection allowed to cross the
+// Capability boundary. In particular, prompt, request fingerprints,
+// model/profile data, and decrypted execution snapshots remain Agent-private.
+// Callers add only the action-authoritative idempotency key: the original turn
+// request for list_turns, or the cancellation request for stop_turn.
 type publicTurnMetadata struct {
 	TurnID          string                     `json:"turn_id"`
 	ConversationID  string                     `json:"conversation_id"`
@@ -173,6 +175,16 @@ type publicTurnMetadata struct {
 	TerminalSummary string                     `json:"terminal_summary"`
 	CreatedAt       time.Time                  `json:"created_at"`
 	UpdatedAt       time.Time                  `json:"updated_at"`
+}
+
+type publicStoppedTurn struct {
+	publicTurnMetadata
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type publicListedTurn struct {
+	publicTurnMetadata
+	IdempotencyKey string `json:"idempotency_key"`
 }
 
 type publicConversation struct {
@@ -312,10 +324,10 @@ func projectPublicTurnMetadata(value coreconversation.Turn) publicTurnMetadata {
 	}
 }
 
-func publicTurnMetadataList(values []coreconversation.Turn) []publicTurnMetadata {
-	result := make([]publicTurnMetadata, 0, len(values))
+func publicTurnMetadataList(values []coreconversation.Turn) []publicListedTurn {
+	result := make([]publicListedTurn, 0, len(values))
 	for _, value := range values {
-		result = append(result, projectPublicTurnMetadata(value))
+		result = append(result, publicListedTurn{publicTurnMetadata: projectPublicTurnMetadata(value), IdempotencyKey: value.RequestID})
 	}
 	return result
 }
@@ -327,6 +339,7 @@ func (c *coreChatCapability) Descriptor() *capv1.CapabilityDescriptor {
 		{"list_conversations", capv1.OperationType_OPERATION_TYPE_READ, "agent:chat:read"},
 		{"rename_conversation", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:chat:write"},
 		{"delete_conversation", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:chat:write"},
+		{"stop_turn", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:chat:write"},
 		{"list_turns", capv1.OperationType_OPERATION_TYPE_READ, "agent:chat:read"},
 		{"compress_context", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:chat:write"},
 		{"summarize", capv1.OperationType_OPERATION_TYPE_READ, "agent:chat:read"},
@@ -349,6 +362,9 @@ func (c *coreChatCapability) resolveProfilePins(in map[string]json.RawMessage) (
 }
 
 func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
+	if operationID == "stop_turn" {
+		return c.handleStopTurn(ctx, raw)
+	}
 	var in map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
@@ -547,6 +563,21 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 	default:
 		return nil, fmt.Errorf("unknown chat operation %q", operationID)
 	}
+}
+
+func (c *coreChatCapability) handleStopTurn(ctx context.Context, raw []byte) ([]byte, error) {
+	var request struct {
+		IdempotencyKey   string `json:"idempotency_key"`
+		TurnID           string `json:"turn_id"`
+		ExpectedRevision uint64 `json:"expected_revision"`
+	}
+	if err := decodeStrictObject(raw, &request); err != nil || !coretask.ValidUUID(request.IdempotencyKey) || !coretask.ValidUUID(request.TurnID) || request.ExpectedRevision == 0 {
+		return nil, coreconversation.ErrInvalid
+	}
+	turn, err := c.service.CancelTurn(ctx, coreconversation.TurnCancelCommand{
+		RequestID: request.IdempotencyKey, TurnID: request.TurnID, ExpectedRevision: request.ExpectedRevision,
+	})
+	return marshalResult(publicStoppedTurn{publicTurnMetadata: projectPublicTurnMetadata(turn), IdempotencyKey: request.IdempotencyKey}, err)
 }
 
 func validateDurableStreamChatInput(in map[string]json.RawMessage) error {
@@ -824,7 +855,7 @@ func validateListTurnsCapabilityInput(in map[string]json.RawMessage) error {
 
 func chatOperationRequiresKey(operation string) bool {
 	switch operation {
-	case "create_conversation", "rename_conversation", "delete_conversation", "compress_context", "chat",
+	case "create_conversation", "rename_conversation", "delete_conversation", "stop_turn", "compress_context", "chat",
 		"upload_attachment_begin", "upload_attachment_append", "upload_attachment_commit", "stream_chat":
 		return true
 	default:
@@ -1847,7 +1878,7 @@ func descriptor(id, name, description string, specs []opSpec) *capv1.CapabilityD
 	return d
 }
 
-const publicTurnMetadataSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"last_sequence":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["accepted","running","waiting_confirmation","completed","canceled","failed"],"type":"string"},"terminal_code":{"type":"string"},"terminal_summary":{"type":"string"},"turn_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["turn_id","conversation_id","state","revision","last_sequence","terminal_code","terminal_summary","created_at","updated_at"],"type":"object"}`
+const publicTurnResultSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"last_sequence":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["accepted","running","waiting_confirmation","completed","canceled","failed"],"type":"string"},"terminal_code":{"type":"string"},"terminal_summary":{"type":"string"},"turn_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["turn_id","idempotency_key","conversation_id","state","revision","last_sequence","terminal_code","terminal_summary","created_at","updated_at"],"type":"object"}`
 
 const durableChatStreamResultSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"done":{"const":true,"type":"boolean"},"idempotency_key":{"format":"uuid","type":"string"},"message":{"type":"object"},"model_profile_id":{"format":"uuid","type":"string"},"references":{"items":{"type":"object"},"type":"array"},"related_plan_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"related_task_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"revision":{"minimum":1,"type":"integer"},"tool_results":{"items":{"type":"object"},"type":"array"},"tool_summaries":{"items":{"type":"string"},"type":"array"}},"required":["idempotency_key","conversation_id","revision","message","done","model_profile_id"],"type":"object"}`
 
@@ -1869,7 +1900,9 @@ func operationResultSchema(capabilityID, operation string) string {
 	case "agent.knowledge.v1:status":
 		return `{"additionalProperties":false,"properties":{"checked_at":{"format":"date-time","type":"string"},"cleanup_pending_count":{"minimum":0,"type":"integer"},"count":{"minimum":0,"type":"integer"},"embedding_indexed":{"minimum":0,"type":"integer"},"embedding_model":{"type":"string"},"embedding_profile_id":{"format":"uuid","type":"string"},"embedding_profile_revision":{"minimum":1,"type":"integer"},"embedding_stale":{"minimum":0,"type":"integer"},"failed_count":{"minimum":0,"type":"integer"},"indexing_count":{"minimum":0,"type":"integer"},"max_source_bytes":{"const":16777216,"type":"integer"},"quota_limit_bytes":{"const":67108864,"type":"integer"},"quota_remaining_bytes":{"minimum":0,"type":"integer"},"quota_used_bytes":{"minimum":0,"type":"integer"},"ready_count":{"minimum":0,"type":"integer"},"supported":{"type":"boolean"},"uploading_count":{"minimum":0,"type":"integer"}},"required":["supported","count","embedding_indexed","embedding_stale","ready_count","uploading_count","indexing_count","failed_count","cleanup_pending_count","checked_at","quota_used_bytes","quota_limit_bytes","quota_remaining_bytes","max_source_bytes"],"type":"object"}`
 	case "agent.chat.v1:list_turns":
-		return `{"additionalProperties":false,"properties":{"next_page_token":{"type":"string"},"turns":{"items":` + publicTurnMetadataSchema + `,"type":"array"}},"required":["turns","next_page_token"],"type":"object"}`
+		return `{"additionalProperties":false,"properties":{"next_page_token":{"type":"string"},"turns":{"items":` + publicTurnResultSchema + `,"type":"array"}},"required":["turns","next_page_token"],"type":"object"}`
+	case "agent.chat.v1:stop_turn":
+		return publicTurnResultSchema
 	case "agent.chat.v1:upload_attachment_begin", "agent.chat.v1:upload_attachment_append":
 		return `{"additionalProperties":false,"properties":{"expires_at":{"format":"date-time","type":"string"},"max_chunk_bytes":{"minimum":1,"type":"integer"},"received_size":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"source_id":{"format":"uuid","type":"string"},"status":{"enum":["receiving","committed","consumed"],"type":"string"},"turn_request_id":{"format":"uuid","type":"string"},"upload_id":{"format":"uuid","type":"string"}},"required":["upload_id","source_id","turn_request_id","status","received_size","max_chunk_bytes","revision","expires_at"],"type":"object"}`
 	case "agent.chat.v1:upload_attachment_commit":
@@ -1906,6 +1939,8 @@ func operationInputSchema(capabilityID, operation string) string {
 		return `{"type":"object","properties":{"conversation_id":{"type":"string"},"title":{"type":"string"},"expected_revision":{"type":"integer"},"idempotency_key":{"type":"string"}},"required":["conversation_id","title","expected_revision","idempotency_key"]}`
 	case "agent.chat.v1:delete_conversation":
 		return `{"type":"object","properties":{"conversation_id":{"type":"string"},"expected_revision":{"type":"integer"},"idempotency_key":{"type":"string"}},"required":["conversation_id","expected_revision","idempotency_key"]}`
+	case "agent.chat.v1:stop_turn":
+		return `{"additionalProperties":false,"properties":{"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"turn_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","turn_id","expected_revision"],"type":"object"}`
 	case "agent.chat.v1:list_turns":
 		return `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"limit":{"maximum":1000,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"}},"required":["conversation_id"],"type":"object"}`
 	case "agent.chat.v1:compress_context":

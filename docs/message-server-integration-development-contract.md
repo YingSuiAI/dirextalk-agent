@@ -34,6 +34,12 @@ Agent descriptors are published only after their complete composition and
 readiness proof pass; a schema or proxy registration alone is not a live
 capability.
 
+Before an Agent release, the local catalog preflight reads the sibling Message
+Server baseline, explicit action bindings, and generated schema pins as release
+inputs, then validates them against the Agent's real descriptor constructors.
+It is test-only tooling and introduces no runtime cross-repository dependency;
+all missing and mismatched baseline actions are reported together.
+
 The Agent-to-Message-Server direction is the separate Product Capability
 callback over its authenticated mTLS channel. Callbacks do not become a second
 Agent database or execution ledger, and neither direction accepts raw Agent
