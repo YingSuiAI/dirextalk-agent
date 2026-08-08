@@ -160,6 +160,10 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 	if strings.Contains(containerfile, "COPY --chmod=0444 deploy/cloud-worker/pi-egress.nft") {
 		t.Fatal("rootfs build must render a release-bound egress policy, not copy the empty template")
 	}
+	if strings.Contains(containerfile, `printf '{\"schema_version\"`) ||
+		strings.Contains(containerfile, `printf '{\"pi_version\"`) {
+		t.Fatal("rootfs build must not emit JSON with literal escape characters")
+	}
 	if strings.Count(containerfile, "install -m 0440 -o 0 -g 65531") != 2 ||
 		strings.Count(containerfile, "install -m 0440 -o 0 -g 65532") != 1 ||
 		!strings.Contains(containerfile, "install -m 0551 -o 0 -g 65531 /out/pi/pi") ||
@@ -577,6 +581,87 @@ func TestRootfsBundleIsReproducibleAndRejectsUnreviewedFiles(t *testing.T) {
 	)
 	if result, err := command.CombinedOutput(); err == nil {
 		t.Fatalf("packager accepted an unreviewed file: %s", result)
+	}
+}
+
+func TestWorkerContainerBuildProducesCanonicalInstallationManifest(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("immutable Worker rootfs build is Linux-only")
+	}
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		t.Skip("Docker is not installed")
+	}
+	if result, err := exec.Command(docker, "buildx", "version").CombinedOutput(); err != nil {
+		t.Skipf("Docker Buildx is unavailable: %v: %s", err, result)
+	}
+	openssl, err := exec.LookPath("openssl")
+	if err != nil {
+		t.Skip("OpenSSL is not installed")
+	}
+
+	deployRoot := cloudWorkerDeployRoot(t)
+	repositoryRoot := filepath.Clean(filepath.Join(deployRoot, "..", ".."))
+	workspace := t.TempDir()
+	secretPaths := make([]string, 3)
+	for index, name := range []string{"control", "outbound", "relay"} {
+		keyPath := filepath.Join(workspace, name+".key")
+		certificatePath := filepath.Join(workspace, name+".pem")
+		command := exec.Command(openssl,
+			"req", "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes", "-days", "1",
+			"-subj", "/CN=dirextalk-worker-build-test-"+name,
+			"-keyout", keyPath, "-out", certificatePath,
+		)
+		if result, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("generate %s build trust root: %v: %s", name, err, result)
+		}
+		secretPaths[index] = certificatePath
+	}
+
+	outputRoot := filepath.Join(workspace, "rootfs")
+	semanticDigest := strings.Repeat("a", 64)
+	command := exec.Command(docker,
+		"buildx", "build",
+		"--output", "type=local,dest="+outputRoot,
+		"--build-arg", "GO_BUILD_BASE=docker.io/library/golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2",
+		"--build-arg", "AMI_DIGEST="+semanticDigest,
+		"--secret", "id=dirextalk_control_plane_ca,src="+secretPaths[0],
+		"--secret", "id=dirextalk_outbound_proxy_ca,src="+secretPaths[1],
+		"--secret", "id=dirextalk_model_relay_ca,src="+secretPaths[2],
+		"--file", filepath.Join(deployRoot, "worker.Containerfile"),
+		repositoryRoot,
+	)
+	if result, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build real Worker rootfs: %v:\n%s", err, result)
+	}
+
+	manifestPath := filepath.Join(outputRoot, "usr", "local", "share", "dirextalk-cloud-worker", "installation.json")
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := parseInstallationManifest(raw)
+	if err != nil {
+		t.Fatalf("built installation manifest is not canonical: %v: %q", err, raw)
+	}
+	if manifest.AMIDigest != semanticDigest || manifest.PiVersion != "0.83.0" {
+		t.Fatalf("built installation identity drifted: %+v", manifest)
+	}
+	piDigest, err := installationPiDigest(manifest)
+	if err != nil || piDigest != manifest.PiDigest {
+		t.Fatalf("built Pi descriptor digest mismatch: got %q, want %q: %v", piDigest, manifest.PiDigest, err)
+	}
+
+	consumerPattern := `s/^{"schema_version":"dirextalk.agent.cloud-worker-installation\/v1","ami_digest":"\([a-f0-9]\{64\}\)",.*$/\1/p`
+	for _, name := range []string{"build-worker-ami.sh", "qualify-image.sh"} {
+		consumer := readDeployFile(t, deployRoot, name)
+		if !strings.Contains(consumer, "sed -n '"+consumerPattern+"'") {
+			t.Fatalf("%s does not consume the canonical built manifest prefix", name)
+		}
+	}
+	result, err := exec.Command("sed", "-n", consumerPattern, manifestPath).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(result)) != semanticDigest {
+		t.Fatalf("release consumers cannot read built AMI digest: %v: %q", err, result)
 	}
 }
 
