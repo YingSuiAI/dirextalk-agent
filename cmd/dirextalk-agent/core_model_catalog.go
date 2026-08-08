@@ -96,13 +96,10 @@ func (c *coreModelCatalog) ListModels(ctx context.Context, request agentcapabili
 		if err != nil {
 			return agentcapability.ModelCatalogResult{}, errors.New("model profile lookup failed")
 		}
-		profileKind := strings.ToLower(strings.TrimSpace(profile.ModelKind))
-		if profileKind == "" {
-			profileKind = coremodel.ModelKindConversation
-		}
-		if profileKind != kind {
-			return agentcapability.ModelCatalogResult{}, fmt.Errorf("model profile kind %q does not match requested kind %q", profileKind, kind)
-		}
+		// A stored profile is a write-only credential source for its provider,
+		// while kind selects the catalog being discovered. Keeping those roles
+		// independent lets a first OpenRouter conversation profile discover the
+		// embedding catalog before an embedding profile exists.
 		profileProvider := strings.ToLower(strings.TrimSpace(string(profile.Provider)))
 		if provider != "" && !catalogProvidersMatch(provider, profileProvider, profile.BaseURL) {
 			return agentcapability.ModelCatalogResult{}, fmt.Errorf("provider %q does not match model profile provider %q", provider, profileProvider)

@@ -380,6 +380,46 @@ func TestCoreModelCatalogProfileIDUsesDurableProfileSecret(t *testing.T) {
 	}
 }
 
+func TestCoreModelCatalogConversationProfileCanDiscoverOpenRouterEmbeddings(t *testing.T) {
+	repo := coremodel.NewMemoryProfileRepository()
+	profiles, err := coremodel.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const profileID = "44444444-4444-4444-8444-444444444444"
+	key := "stored-openrouter-key"
+	if _, err := profiles.Create(context.Background(), coremodel.CreateProfileCommand{
+		IdempotencyKey: "55555555-5555-4555-8555-555555555555",
+		Spec: coremodel.ProfileSpec{
+			ID:          profileID,
+			DisplayName: "OpenRouter chat",
+			Provider:    coremodel.ModelProvider("openrouter"),
+			ModelKind:   coremodel.ModelKindConversation,
+			BaseURL:     "https://openrouter.ai/api/v1",
+			Model:       "openai/gpt-4o-mini",
+			APIKey:      &key,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	catalog := newCoreModelCatalogWithHTTPClient(profiles, &http.Client{Transport: catalogRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != "https://openrouter.ai/api/v1/embeddings/models" || r.Header.Get("Authorization") != "Bearer "+key {
+			t.Fatalf("embedding credential request url=%q auth=%q", r.URL, r.Header.Get("Authorization"))
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"openai/text-embedding-3-small","architecture":{"output_modalities":["embeddings"]}}]}`))}, nil
+	})}, 0)
+	result, err := catalog.ListModels(context.Background(), agentcapability.ModelCatalogRequest{
+		ModelProfileID: profileID,
+		ModelKind:      coremodel.ModelKindEmbedding,
+	})
+	if err != nil {
+		t.Fatalf("embedding catalog via conversation credential: %v", err)
+	}
+	if len(result.Models) != 1 || result.Models[0]["id"] != "openai/text-embedding-3-small" {
+		t.Fatalf("embedding models = %#v", result.Models)
+	}
+}
+
 func TestCoreModelCatalogClientProfileIDUsesDurableProfileSecret(t *testing.T) {
 	repo := coremodel.NewMemoryProfileRepository()
 	profiles, err := coremodel.NewService(repo, nil)

@@ -178,7 +178,10 @@ profile listing. It resolves either a write-only request credential or an
 Agent-owned profile ID, performs a bounded provider request, and returns only
 normalized non-secret model metadata. OpenRouter conversation discovery uses
 the text-output filter; embedding discovery uses its dedicated embeddings
-catalog endpoint.
+catalog endpoint. A resolved profile supplies only its provider credential and
+origin; the requested catalog kind is independent, so an existing OpenRouter
+conversation profile can bootstrap embedding discovery before an embedding
+profile exists.
 
 When Web Search is enabled and configured, the conversation resolver adds one
 compiled `web_search` tool. The resolver decrypts the credential only to prove
