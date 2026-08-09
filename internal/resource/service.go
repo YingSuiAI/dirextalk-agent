@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -832,11 +833,18 @@ func exactVerifiedDestroySuccessor(
 }
 
 func exactDestroyReconciliationIdentity(left, right ResourceV1) bool {
+	if !slices.Equal(left.ProviderCandidateIDs, right.ProviderCandidateIDs) {
+		return false
+	}
 	expected := left.clone()
 	expected.State = right.State
 	expected.Intent = right.Intent
 	expected.ReadBack = right.ReadBack
 	expected.BlockedReason = right.BlockedReason
+	// JSON round-trips may represent an empty candidate list as either [] or
+	// null. slices.Equal above keeps non-empty candidates exact while this
+	// assignment removes that representation-only difference from DeepEqual.
+	expected.ProviderCandidateIDs = right.ProviderCandidateIDs
 	expected.Revision = right.Revision
 	expected.UpdatedAt = right.UpdatedAt
 	return reflect.DeepEqual(expected, right)

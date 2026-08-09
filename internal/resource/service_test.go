@@ -1563,6 +1563,19 @@ func TestDestroyAdoptsExactVerifiedReaperSuccessor(t *testing.T) {
 	}
 }
 
+func TestDestroyReconciliationNormalizesEmptyProviderCandidates(t *testing.T) {
+	local := ResourceV1{ProviderCandidateIDs: []string{}}
+	remote := local.clone()
+	remote.ProviderCandidateIDs = nil
+	if !exactDestroyReconciliationIdentity(local, remote) {
+		t.Fatal("nil and empty provider candidate lists should be equivalent")
+	}
+	remote.ProviderCandidateIDs = []string{"i-unexpected"}
+	if exactDestroyReconciliationIdentity(local, remote) {
+		t.Fatal("non-empty provider candidate drift was accepted")
+	}
+}
+
 func TestVerifiedReaperReconciliationRejectsDuplicateResourceIDs(t *testing.T) {
 	fixture := newResourceFixture(t)
 	created, err := fixture.service.Provision(
