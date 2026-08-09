@@ -1192,10 +1192,19 @@ func loadCloudWorkerResourcesTx(ctx context.Context, tx pgx.Tx, plan cloudworker
 			at := verified.UTC()
 			typed.VerifiedAt = &at
 		}
-		typed.CreatedAt, typed.UpdatedAt = typed.CreatedAt.UTC(), typed.UpdatedAt.UTC()
+		typed = canonicalCloudWorkerResourceTimes(typed)
 		var projected cloudworker.Resource
 		expectedID := deterministicCloudWorkerUUID("cloud-worker-aws-resource", plan.ExecutionID+":"+typed.Kind)
-		if json.Unmarshal(raw, &projected) != nil || !reflect.DeepEqual(projected, typed) || !cloudWorkerResourceKind(typed.Kind) ||
+		if json.Unmarshal(raw, &projected) != nil {
+			logCloudWorkerResumeInvariant("resource_projection")
+			return nil, cloudworker.ErrConflict
+		}
+		// Observed addresses are the only Resource fields without independent
+		// typed columns. Recover them from the canonical JSON, then retain the
+		// strict full projection comparison and address-kind validation below.
+		typed.PrivateIP, typed.PublicIP = projected.PrivateIP, projected.PublicIP
+		projected = canonicalCloudWorkerResourceTimes(projected)
+		if !reflect.DeepEqual(projected, typed) || !cloudWorkerResourceKind(typed.Kind) ||
 			typed.ValidateObservedAddresses() != nil ||
 			typed.ResourceID != expectedID || typed.AccountGeneration != plan.AccountGeneration || typed.Provider != "aws" ||
 			typed.AccountID != plan.AWS.AccountID || typed.Region != plan.AWS.Region || typed.LaunchIdentity != identity.LaunchIdentity ||
@@ -1233,6 +1242,16 @@ func loadCloudWorkerResourcesTx(ctx context.Context, tx pgx.Tx, plan cloudworker
 func jsonEquivalent(left, right []byte) bool {
 	var a, b any
 	return json.Unmarshal(left, &a) == nil && json.Unmarshal(right, &b) == nil && reflect.DeepEqual(a, b)
+}
+
+func canonicalCloudWorkerResourceTimes(resource cloudworker.Resource) cloudworker.Resource {
+	resource.CreatedAt = resource.CreatedAt.UTC().Truncate(time.Microsecond)
+	resource.UpdatedAt = resource.UpdatedAt.UTC().Truncate(time.Microsecond)
+	if resource.VerifiedAt != nil {
+		at := resource.VerifiedAt.UTC().Truncate(time.Microsecond)
+		resource.VerifiedAt = &at
+	}
+	return resource
 }
 
 func jsonValuePresent(raw []byte) bool {
@@ -1313,6 +1332,7 @@ func (s *CloudWorkerStore) RecordResources(ctx context.Context, supplied coretas
 	seen := make(map[string]struct{}, len(resources))
 	provider, launchIdentity := "", ""
 	for _, resource := range resources {
+		resource = canonicalCloudWorkerResourceTimes(resource)
 		expectedResourceID := deterministicCloudWorkerUUID("cloud-worker-aws-resource", executionID+":"+resource.Kind)
 		if !cloudWorkerResourceKind(resource.Kind) || resource.ResourceID != expectedResourceID || resource.ExecutionID != executionID ||
 			resource.AccountGeneration != plan.AccountGeneration || (resource.Provider != "aws" && resource.Provider != "fake") ||
@@ -1342,7 +1362,11 @@ func (s *CloudWorkerStore) RecordResources(ctx context.Context, supplied coretas
 			&oldResourceID, &oldProviderID, &oldRaw, &oldRevision)
 		if readErr == nil {
 			var old cloudworker.Resource
-			if json.Unmarshal(oldRaw, &old) != nil || oldResourceID != resource.ResourceID || old.ResourceID != resource.ResourceID ||
+			if json.Unmarshal(oldRaw, &old) != nil {
+				return cloudworker.Execution{}, cloudworker.ErrConflict
+			}
+			old = canonicalCloudWorkerResourceTimes(old)
+			if oldResourceID != resource.ResourceID || old.ResourceID != resource.ResourceID ||
 				old.ExecutionID != executionID || old.AccountGeneration != resource.AccountGeneration || old.Provider != resource.Provider ||
 				old.Kind != resource.Kind || old.AccountID != resource.AccountID || old.Region != resource.Region ||
 				old.LaunchIdentity != resource.LaunchIdentity || oldProviderID != old.ProviderID ||
@@ -1353,7 +1377,7 @@ func (s *CloudWorkerStore) RecordResources(ctx context.Context, supplied coretas
 				return cloudworker.Execution{}, cloudworker.ErrConflict
 			}
 			if resource.Revision == oldRevision {
-				if !jsonEquivalent(oldRaw, raw) {
+				if !reflect.DeepEqual(old, resource) {
 					return cloudworker.Execution{}, cloudworker.ErrConflict
 				}
 				continue

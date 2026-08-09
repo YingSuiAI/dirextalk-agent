@@ -577,10 +577,40 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 	}
 
 	record = activatePGCloudLedger(t, h.ctx, ledger, record, h.now.Add(5*time.Minute))
-	resources := pgCloudResources(record, h.now.Add(5*time.Minute), cloudworker.ResourceCreated, 1)
+	resourceAt := h.now.Add(5*time.Minute + 321*time.Nanosecond)
+	resources := pgCloudResources(record, resourceAt, cloudworker.ResourceCreated, 1)
+	for index := range resources {
+		switch resources[index].Kind {
+		case string(cloudaws.ResourceEC2):
+			resources[index].PrivateIP = "10.90.0.24"
+		case string(cloudaws.ResourceEIP):
+			resources[index].PublicIP = "198.51.100.24"
+		}
+	}
 	execution, err = h.cloud.RecordResources(h.ctx, reclaimed, execution.Revision, resources, cloudworker.StateAwaitingWorker)
 	if err != nil || execution.Cleanup.ResourcesTotal != uint64(len(cloudaws.AllResourceKinds())) {
 		t.Fatalf("record exact resources execution=%+v err=%v", execution, err)
+	}
+	addressResume, err := h.cloud.GetResumeContext(h.ctx, reclaimed)
+	if err != nil {
+		t.Fatalf("resume resources with observed addresses: %v", err)
+	}
+	var privateIP, publicIP string
+	var resumedCreatedAt time.Time
+	for _, resource := range addressResume.Resources {
+		switch resource.Kind {
+		case string(cloudaws.ResourceEC2):
+			privateIP = resource.PrivateIP
+			resumedCreatedAt = resource.CreatedAt
+		case string(cloudaws.ResourceEIP):
+			publicIP = resource.PublicIP
+		}
+	}
+	addressResume.Destroy()
+	if privateIP != "10.90.0.24" || publicIP != "198.51.100.24" ||
+		!resumedCreatedAt.Equal(resourceAt.UTC().Truncate(time.Microsecond)) {
+		t.Fatalf("resource projection was not preserved across resume: private=%q public=%q created_at=%s",
+			privateIP, publicIP, resumedCreatedAt)
 	}
 
 	expectation := pgCloudExpectation(record)
