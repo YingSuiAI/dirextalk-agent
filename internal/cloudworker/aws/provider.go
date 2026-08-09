@@ -101,6 +101,10 @@ func validIAMImmutableID(value string) bool {
 // InstanceProfileId. Mutable IAM names and ARNs are deliberately rejected.
 func ValidIAMImmutableID(value string) bool { return validIAMImmutableID(value) }
 
+// ValidEIPAllocationID reports whether value is an immutable EC2 Elastic IP
+// allocation identifier. A public IPv4 address is deliberately rejected.
+func ValidEIPAllocationID(value string) bool { return eipAllocationIDPattern.MatchString(value) }
+
 // Every CloudClient request contains the complete immutable execution scope.
 // A production adapter must verify the live AWS caller account and region and
 // the exact resource owner/provider/launch tags inside each method before it

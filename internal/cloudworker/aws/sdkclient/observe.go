@@ -457,9 +457,29 @@ func (client *Client) readStackMapping(ctx context.Context, identity cloudaws.Ex
 			return stackMapping{}, cloudaws.ErrOwnershipMismatch
 		}
 		result.resources[kind] = resource
-		result.physical[kind] = awssdk.ToString(resource.PhysicalResourceId)
+		// When AWS::EC2::EIP uses InstanceId, CloudFormation reports the
+		// public IPv4 address as PhysicalResourceId. The immutable allocation
+		// ID is read only from the template's explicit GetAtt output below.
+		if kind != cloudaws.ResourceEIP {
+			result.physical[kind] = awssdk.ToString(resource.PhysicalResourceId)
+		}
 	}
-	if !allowPartial && len(result.resources) != len(cfnResourceTypes) {
+	requireComplete := !allowPartial || stack.StackStatus == cftypes.StackStatusCreateComplete || stack.StackStatus == cftypes.StackStatusUpdateComplete
+	if requireComplete && len(result.resources) != len(cfnResourceTypes) {
+		return stackMapping{}, cloudaws.ErrCloudReadback
+	}
+	allocationOutputFound := false
+	for _, stackOutput := range stack.Outputs {
+		if awssdk.ToString(stackOutput.OutputKey) != eipAllocationIDOutputKey {
+			continue
+		}
+		if allocationOutputFound || !cloudaws.ValidEIPAllocationID(awssdk.ToString(stackOutput.OutputValue)) {
+			return stackMapping{}, cloudaws.ErrCloudReadback
+		}
+		allocationOutputFound = true
+		result.physical[cloudaws.ResourceEIP] = awssdk.ToString(stackOutput.OutputValue)
+	}
+	if requireComplete && !allocationOutputFound {
 		return stackMapping{}, cloudaws.ErrCloudReadback
 	}
 	return result, nil
@@ -819,6 +839,7 @@ func validateExpectedResourceProviderIDs(values map[cloudaws.ResourceKind]string
 	for kind, providerID := range values {
 		if !validKinds[kind] || providerID == "" ||
 			((kind == cloudaws.ResourceIAMRole || kind == cloudaws.ResourceInstanceProfile) && !validIAMUniqueID(providerID)) ||
+			(kind == cloudaws.ResourceEIP && !cloudaws.ValidEIPAllocationID(providerID)) ||
 			(kind != cloudaws.ResourceIAMRole && kind != cloudaws.ResourceInstanceProfile && !providerPattern.MatchString(providerID)) {
 			return cloudaws.ErrInvalid
 		}

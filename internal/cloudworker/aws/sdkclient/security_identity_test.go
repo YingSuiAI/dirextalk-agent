@@ -142,6 +142,54 @@ func TestObserveDeleteCompleteUsesIndependentDestroyedInventory(t *testing.T) {
 	}
 }
 
+func TestReadStackMappingUsesOnlyImmutableEIPAllocationOutput(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	plan, intent := sdkSecurityPlanAndIntent(t, now)
+	stackID := sdkSecurityStackID(intent.StackName)
+	stack := sdkSecurityStack(plan, intent, stackID, now.Add(time.Second))
+	tags := cloudaws.RequiredTags(plan.Identity, plan.Digest, plan.InfrastructureDigest, intent.IntentDigest)
+
+	t.Run("ignores public IP physical resource ID", func(t *testing.T) {
+		client, _ := sdkSecurityClient(t, now.Add(2*time.Second), stack, nil, nil)
+		mapping, err := client.readStackMapping(context.Background(), plan.Identity, stack, tags, false)
+		if err != nil || mapping.physical[cloudaws.ResourceEIP] != "eipalloc-0123456789abcdef0" {
+			t.Fatalf("EIP mapping=%q err=%v", mapping.physical[cloudaws.ResourceEIP], err)
+		}
+	})
+
+	t.Run("missing output remains partial while provisioning", func(t *testing.T) {
+		partial := stack
+		partial.Outputs = nil
+		client, _ := sdkSecurityClient(t, now.Add(2*time.Second), partial, nil, nil)
+		mapping, err := client.readStackMapping(context.Background(), plan.Identity, partial, tags, true)
+		if err != nil || mapping.physical[cloudaws.ResourceEIP] != "" {
+			t.Fatalf("partial EIP mapping=%q err=%v", mapping.physical[cloudaws.ResourceEIP], err)
+		}
+	})
+
+	for _, testCase := range []struct {
+		name    string
+		outputs []cftypes.Output
+	}{
+		{name: "active output missing"},
+		{name: "public IP output rejected", outputs: []cftypes.Output{{OutputKey: awssdk.String(eipAllocationIDOutputKey), OutputValue: awssdk.String("203.0.113.10")}}},
+		{name: "duplicate allocation output rejected", outputs: []cftypes.Output{
+			{OutputKey: awssdk.String(eipAllocationIDOutputKey), OutputValue: awssdk.String("eipalloc-0123456789abcdef0")},
+			{OutputKey: awssdk.String(eipAllocationIDOutputKey), OutputValue: awssdk.String("eipalloc-fedcba98765432100")},
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			invalid := stack
+			invalid.Outputs = testCase.outputs
+			client, _ := sdkSecurityClient(t, now.Add(2*time.Second), invalid, nil, nil)
+			invalid.StackStatus = cftypes.StackStatusCreateComplete
+			if _, err := client.readStackMapping(context.Background(), plan.Identity, invalid, tags, true); !errors.Is(err, cloudaws.ErrCloudReadback) {
+				t.Fatalf("invalid EIP output err=%v, want cloud read-back failure", err)
+			}
+		})
+	}
+}
+
 func TestFindStackByIntentFailsClosedOnReplacementVisibilityAndPagination(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	plan, intent := sdkSecurityPlanAndIntent(t, now)
@@ -436,6 +484,7 @@ func sdkSecurityStack(plan cloudaws.Plan, intent cloudaws.DispatchIntent, stackI
 		StackId: awssdk.String(stackID), StackName: awssdk.String(intent.StackName), CreationTime: awssdk.Time(createdAt),
 		StackStatus: cftypes.StackStatusCreateInProgress,
 		Tags:        sdkCFNTags(cloudaws.RequiredTags(plan.Identity, plan.Digest, plan.InfrastructureDigest, intent.IntentDigest)),
+		Outputs:     []cftypes.Output{{OutputKey: awssdk.String(eipAllocationIDOutputKey), OutputValue: awssdk.String("eipalloc-0123456789abcdef0")}},
 	}
 }
 
@@ -528,7 +577,9 @@ func (fake *securityCFNFake) DescribeStackResources(context.Context, *cloudforma
 	physical := map[cloudaws.ResourceKind]string{
 		cloudaws.ResourceSecurityGroup: "sg-0123456789abcdef0", cloudaws.ResourceIAMRole: awssdk.ToString(fake.stack.StackName) + "-role",
 		cloudaws.ResourceInstanceProfile: awssdk.ToString(fake.stack.StackName) + "-profile", cloudaws.ResourceENI: "eni-0123456789abcdef0",
-		cloudaws.ResourceEIP: "eipalloc-0123456789abcdef0", cloudaws.ResourceEC2: "i-0123456789abcdef0",
+		// AWS::EC2::EIP with InstanceId returns the public address here. The
+		// production mapping must ignore it in favor of the stack output.
+		cloudaws.ResourceEIP: "203.0.113.10", cloudaws.ResourceEC2: "i-0123456789abcdef0",
 	}
 	// Plan names use the deterministic stack name as their prefix.
 	resources := make([]cftypes.StackResource, 0, len(cfnResourceTypes))

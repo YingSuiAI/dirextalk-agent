@@ -196,6 +196,9 @@ func validProviderIDForKind(kind ResourceKind, providerID string) bool {
 	if kind == ResourceIAMRole || kind == ResourceInstanceProfile {
 		return validIAMImmutableID(providerID)
 	}
+	if kind == ResourceEIP {
+		return eipAllocationIDPattern.MatchString(providerID)
+	}
 	return providerPattern.MatchString(providerID)
 }
 

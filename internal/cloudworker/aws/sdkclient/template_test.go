@@ -60,6 +60,12 @@ func TestFixedTemplateIsOneClosedWorkerWithCanonicalBootstrap(t *testing.T) {
 	if instanceRef["Ref"] != cloudaws.LogicalID(cloudaws.ResourceEC2) {
 		t.Fatalf("EIP instance association = %+v", instanceRef)
 	}
+	outputs := object(t, template["Outputs"])
+	allocationOutput := object(t, outputs[eipAllocationIDOutputKey])
+	allocationGetAtt := array(t, object(t, allocationOutput["Value"])["Fn::GetAtt"])
+	if len(allocationGetAtt) != 2 || allocationGetAtt[0] != cloudaws.LogicalID(cloudaws.ResourceEIP) || allocationGetAtt[1] != "AllocationId" {
+		t.Fatalf("EIP allocation output = %+v", allocationGetAtt)
+	}
 	metadata := object(t, instance["MetadataOptions"])
 	if metadata["HttpTokens"] != "required" || metadata["HttpEndpoint"] != "enabled" || metadata["HttpProtocolIpv6"] != "disabled" || metadata["HttpPutResponseHopLimit"] != float64(1) {
 		t.Fatalf("unsafe metadata options: %+v", metadata)

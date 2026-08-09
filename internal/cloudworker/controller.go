@@ -557,7 +557,7 @@ func (c *Controller) ensureActive(ctx context.Context, task coretask.Task, run *
 		if err := c.checkRuntimeDeadline(task, run); err != nil {
 			return cloudaws.ObservedGraph{}, err
 		}
-		graph, err := c.aws.Ensure(ctx, run.awsPlan, run.intent)
+		graph, err := c.ensureWithCancelPreemption(ctx, run)
 		if err == nil && graph.State == cloudaws.GraphActive {
 			resources, projectErr := ProjectAWSResourceGraph(run.plan, run.execution, run.awsPlan, run.intent, graph, run.resources)
 			if projectErr != nil || len(resources) != len(cloudaws.AllResourceKinds()) {
@@ -582,6 +582,61 @@ func (c *Controller) ensureActive(ctx context.Context, task coretask.Task, run *
 		}
 		if waitErr := c.wait(ctx); waitErr != nil {
 			return cloudaws.ObservedGraph{}, waitErr
+		}
+	}
+}
+
+type controllerEnsureResult struct {
+	graph cloudaws.ObservedGraph
+	err   error
+}
+
+// ensureWithCancelPreemption keeps the durable execution row observable while
+// the provider is reconciling a provisioning request. Provider calls are
+// context-aware, so a persisted cancel intent interrupts the in-flight call;
+// the caller can then fence the Worker and enter cleanup with the original
+// dispatch identity instead of waiting for provisioning to return naturally.
+func (c *Controller) ensureWithCancelPreemption(ctx context.Context, run *controllerRun) (cloudaws.ObservedGraph, error) {
+	if run == nil || !run.hasAWSDispatch() {
+		return cloudaws.ObservedGraph{}, ErrInvalid
+	}
+	providerCtx, cancelProvider := context.WithCancel(ctx)
+	defer cancelProvider()
+	completed := make(chan controllerEnsureResult, 1)
+	go func() {
+		graph, err := c.aws.Ensure(providerCtx, run.awsPlan, run.intent)
+		completed <- controllerEnsureResult{graph: graph, err: err}
+	}()
+
+	poll := time.NewTicker(c.pollInterval)
+	defer poll.Stop()
+	for {
+		select {
+		case result := <-completed:
+			return result.graph, result.err
+		case <-poll.C:
+			current, err := c.store.GetExecution(ctx, run.plan.OwnerID, run.plan.ExecutionID)
+			if err != nil {
+				cancelProvider()
+				<-completed
+				return cloudaws.ObservedGraph{}, err
+			}
+			if current.ExecutionID != run.execution.ExecutionID || current.PlanDigest != run.plan.Digest ||
+				current.ExecutionDigest != run.plan.ExecutionDigest || current.AccountGeneration != run.plan.AccountGeneration {
+				cancelProvider()
+				<-completed
+				return cloudaws.ObservedGraph{}, ErrStaleAuthorization
+			}
+			if current.TerminalIntent == string(StateCanceled) {
+				run.execution = current
+				cancelProvider()
+				<-completed
+				return cloudaws.ObservedGraph{}, errControllerCancelRequested
+			}
+		case <-ctx.Done():
+			cancelProvider()
+			<-completed
+			return cloudaws.ObservedGraph{}, ctx.Err()
 		}
 	}
 }

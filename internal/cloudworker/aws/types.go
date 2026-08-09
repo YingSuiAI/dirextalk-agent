@@ -42,17 +42,18 @@ var (
 	ErrReconcilePending  = errors.New("ephemeral AWS reconciliation is pending")
 	ErrDestroyRequested  = errors.New("ephemeral AWS destruction is already requested")
 
-	accountPattern      = regexp.MustCompile(`^[0-9]{12}$`)
-	regionPattern       = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+$`)
-	providerPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$`)
-	awsIDPattern        = regexp.MustCompile(`^(?:ami|vpc|subnet)-[0-9a-f]{8,17}$`)
-	instanceTypePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*\.[a-z0-9]+$`)
-	digestPattern       = regexp.MustCompile(`^[a-f0-9]{64}$`)
-	hostnamePattern     = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
-	iamNamePattern      = regexp.MustCompile(`^[A-Za-z0-9+=,.@_-]{1,64}$`)
-	s3BucketPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
-	versionIDPattern    = regexp.MustCompile(`^[A-Za-z0-9._~+/=-]+$`)
-	kmsARNPattern       = regexp.MustCompile(`^arn:(?:aws|aws-cn|aws-us-gov):kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-f-]{36}$`)
+	accountPattern         = regexp.MustCompile(`^[0-9]{12}$`)
+	regionPattern          = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+$`)
+	providerPattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$`)
+	eipAllocationIDPattern = regexp.MustCompile(`^eipalloc-[0-9a-f]{8,17}$`)
+	awsIDPattern           = regexp.MustCompile(`^(?:ami|vpc|subnet)-[0-9a-f]{8,17}$`)
+	instanceTypePattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*\.[a-z0-9]+$`)
+	digestPattern          = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	hostnamePattern        = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
+	iamNamePattern         = regexp.MustCompile(`^[A-Za-z0-9+=,.@_-]{1,64}$`)
+	s3BucketPattern        = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+	versionIDPattern       = regexp.MustCompile(`^[A-Za-z0-9._~+/=-]+$`)
+	kmsARNPattern          = regexp.MustCompile(`^arn:(?:aws|aws-cn|aws-us-gov):kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-f-]{36}$`)
 )
 
 const (
@@ -807,7 +808,7 @@ func (graph ObservedGraph) Validate(plan Plan, intent DispatchIntent) error {
 	requiredTags := RequiredTags(plan.Identity, plan.Digest, plan.InfrastructureDigest, intent.IntentDigest)
 	for _, observation := range graph.Resources {
 		if !validResourceKind(observation.Kind) || observation.LogicalID != LogicalID(observation.Kind) || observation.ObservedAt.IsZero() ||
-			(observation.ProviderID != "" && !providerPattern.MatchString(observation.ProviderID)) ||
+			(observation.ProviderID != "" && !validProviderIDForKind(observation.Kind, observation.ProviderID)) ||
 			(observation.PrivateIP != "" && (observation.Kind != ResourceEC2 || !validWorkerIPv4(observation.PrivateIP))) ||
 			(observation.PublicIP != "" && (observation.Kind != ResourceEIP || !validWorkerIPv4(observation.PublicIP))) ||
 			(!observation.Exists && (observation.PrivateIP != "" || observation.PublicIP != "")) {
@@ -818,7 +819,7 @@ func (graph ObservedGraph) Validate(plan Plan, intent DispatchIntent) error {
 		}
 		seen[observation.Kind] = struct{}{}
 		if observation.Exists {
-			if !providerPattern.MatchString(observation.ProviderID) || observation.LaunchIdentity != plan.Identity.LaunchIdentity || observation.Generation != plan.Identity.Generation ||
+			if !validProviderIDForKind(observation.Kind, observation.ProviderID) || observation.LaunchIdentity != plan.Identity.LaunchIdentity || observation.Generation != plan.Identity.Generation ||
 				!containsTags(observation.Tags, requiredTags) {
 				return ErrOwnershipMismatch
 			}

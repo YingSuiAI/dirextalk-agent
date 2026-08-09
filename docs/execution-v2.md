@@ -164,6 +164,11 @@ execution cannot become terminal until every recorded EC2, EBS, ENI, EIP,
 security-group, IAM role/profile, and stack identity is independently read
 back as `verified_destroyed`.
 
+The EIP provider identity recorded in the resource graph and ledger is the
+immutable `eipalloc-*` AllocationId, never its public IPv4 address. The fixed
+CloudFormation template publishes that value through an explicit `GetAtt`
+output; an active stack without a valid AllocationId output fails closed.
+
 The controller never synchronously runs Pi after provisioning. It waits for a
 durable WorkerControl terminal session, collects the exact S3 object version,
 validates its digest/schema/limits, freezes the result, cleans all resources,

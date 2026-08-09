@@ -12,6 +12,8 @@ import (
 
 const templateVersion = "2010-09-09"
 
+const eipAllocationIDOutputKey = "WorkerElasticIPAllocationId"
+
 func buildTemplate(request cloudaws.CreateStackRequest) (string, error) {
 	// AWS::EC2::Instance Ebs does not expose the gp3 Throughput property.
 	// The current qualified Worker shape uses the AWS default of 125 MiB/s;
@@ -126,6 +128,14 @@ func buildTemplate(request cloudaws.CreateStackRequest) (string, error) {
 			},
 		},
 		"Resources": resources,
+		"Outputs": map[string]any{
+			eipAllocationIDOutputKey: map[string]any{
+				"Description": "Immutable allocation ID for the Worker Elastic IP",
+				"Value": map[string]any{"Fn::GetAtt": []any{
+					cloudaws.LogicalID(cloudaws.ResourceEIP), "AllocationId",
+				}},
+			},
+		},
 	}
 	encoded, err := json.Marshal(template)
 	if err != nil || len(encoded) > 50*1024 {

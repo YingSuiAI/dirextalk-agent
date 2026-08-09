@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/modelrelay"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
@@ -54,6 +56,29 @@ type controllerTestStore struct {
 	failCalls            int
 	cancelCalls          int
 	lastCollectionResult ProviderResult
+}
+
+type controllerConcurrentCancelStore struct {
+	*controllerTestStore
+	mu sync.RWMutex
+}
+
+func (store *controllerConcurrentCancelStore) GetExecution(ctx context.Context, owner, executionID string) (Execution, error) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	return store.controllerTestStore.GetExecution(ctx, owner, executionID)
+}
+
+func (store *controllerConcurrentCancelStore) requestCancel(t *testing.T) {
+	t.Helper()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.execution.TerminalIntent = string(StateCanceled)
+	store.execution.Revision++
+	store.execution.UpdatedAt = store.now
+	if err := store.execution.Seal(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (store *controllerTestStore) GetControllerContext(context.Context, coretask.Task) (ControllerContext, error) {
@@ -404,6 +429,8 @@ type controllerTestAWS struct {
 	observeCalls int
 	destroyCalls int
 	ensureErrors []error
+	onEnsure     func()
+	waitEnsure   bool
 	observeErr   error
 	destroyErr   error
 	onObserve    func()
@@ -426,10 +453,17 @@ func (provider *controllerTestAWS) Prepare(_ context.Context, plan cloudaws.Plan
 	return plan.Identity, nil
 }
 
-func (provider *controllerTestAWS) Ensure(_ context.Context, plan cloudaws.Plan, intent cloudaws.DispatchIntent) (cloudaws.ObservedGraph, error) {
+func (provider *controllerTestAWS) Ensure(ctx context.Context, plan cloudaws.Plan, intent cloudaws.DispatchIntent) (cloudaws.ObservedGraph, error) {
 	provider.trace.add("aws_ensure")
 	provider.ensureCalls++
 	provider.bind(plan, intent)
+	if provider.onEnsure != nil {
+		provider.onEnsure()
+	}
+	if provider.waitEnsure {
+		<-ctx.Done()
+		return cloudaws.ObservedGraph{}, ctx.Err()
+	}
 	if len(provider.ensureErrors) > 0 {
 		err := provider.ensureErrors[0]
 		provider.ensureErrors = provider.ensureErrors[1:]
@@ -1049,6 +1083,47 @@ func TestControllerCancelFencesBeforeCleanupWithoutNewProvision(t *testing.T) {
 	if fixture.trace.index("fence_sessions") < 0 || fixture.trace.index("fence_sessions") > fixture.trace.index("begin_cleanup") ||
 		fixture.trace.index("begin_cleanup") > fixture.trace.index("aws_destroy") {
 		t.Fatalf("cancel was not fence-first: %v", fixture.trace.entries)
+	}
+}
+
+func TestControllerPersistedCancelPreemptsBlockedProvisioningAndTerminalizes(t *testing.T) {
+	fixture := newControllerTestFixture(t)
+	store := &controllerConcurrentCancelStore{controllerTestStore: fixture.store}
+	started := make(chan struct{})
+	fixture.aws.waitEnsure = true
+	fixture.aws.onEnsure = func() { close(started) }
+	controller := fixture.controller(t, nil)
+	controller.store = store
+	outcomes := make(chan coreruntime.ManagedOutcome, 1)
+	go func() { outcomes <- controller.Handle(context.Background(), fixture.task) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("provider provisioning did not start")
+	}
+	store.requestCancel(t)
+
+	var outcome coreruntime.ManagedOutcome
+	select {
+	case outcome = <-outcomes:
+	case <-time.After(time.Second):
+		t.Fatal("persisted cancellation did not preempt provider provisioning")
+	}
+	if outcome.Err == nil || !outcome.TerminalOwned || fixture.store.execution.State != StateCanceled ||
+		fixture.store.cancelCalls != 1 {
+		t.Fatalf("outcome=%+v state=%s cancel=%d trace=%v", outcome, fixture.store.execution.State,
+			fixture.store.cancelCalls, fixture.trace.entries)
+	}
+	if fixture.aws.ensureCalls != 1 || fixture.aws.destroyCalls != 1 ||
+		!fixture.store.execution.Cleanup.VerifiedDestroyed {
+		t.Fatalf("provider calls ensure=%d destroy=%d cleanup=%+v trace=%v", fixture.aws.ensureCalls,
+			fixture.aws.destroyCalls, fixture.store.execution.Cleanup, fixture.trace.entries)
+	}
+	if fixture.trace.index("aws_ensure") < 0 || fixture.trace.index("fence_sessions") < fixture.trace.index("aws_ensure") ||
+		fixture.trace.index("fence_sessions") > fixture.trace.index("begin_cleanup") ||
+		fixture.trace.index("begin_cleanup") > fixture.trace.index("aws_destroy") ||
+		fixture.trace.index("aws_destroy") > fixture.trace.index("terminal:canceled") {
+		t.Fatalf("cancel did not preempt provisioning into ordered cleanup: %v", fixture.trace.entries)
 	}
 }
 

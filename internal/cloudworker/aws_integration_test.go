@@ -273,6 +273,8 @@ func providerIDForGraph(kind cloudaws.ResourceKind) string {
 	switch kind {
 	case cloudaws.ResourceEC2:
 		return "i-0123456789abcdef0"
+	case cloudaws.ResourceEIP:
+		return "eipalloc-0123456789abcdef0"
 	case cloudaws.ResourceIAMRole:
 		return "AROA1234567890ABCDEFG"
 	case cloudaws.ResourceInstanceProfile:

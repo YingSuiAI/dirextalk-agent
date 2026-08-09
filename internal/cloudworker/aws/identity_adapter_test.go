@@ -50,6 +50,36 @@ func TestPostgresLedgerWorkerIdentityUsesExactActiveInstanceIndex(t *testing.T) 
 	}
 }
 
+func TestEIPPublicAddressCannotBecomeProviderIdentity(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	plan, intent, record := activeIdentityRecord(t, now)
+	entry := record.Resources[ResourceEIP]
+	entry.ProviderID = "203.0.113.10"
+	entry.Observation.ProviderID = entry.ProviderID
+	record.Resources[ResourceEIP] = entry
+	if err := record.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("ledger accepted public EIP address as provider identity: %v", err)
+	}
+
+	resources := make([]ResourceObservation, 0, len(record.Resources))
+	for _, kind := range AllResourceKinds() {
+		resources = append(resources, record.Resources[kind].Observation)
+	}
+	policy, err := plan.Network.SecurityGroupPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph := ObservedGraph{
+		Identity: plan.Identity, PlanDigest: plan.Digest, InfrastructureDigest: plan.InfrastructureDigest,
+		IntentDigest: intent.IntentDigest, StackProviderID: record.StackProviderID, State: GraphActive,
+		Resources: resources, Topology: TopologyProof{EC2InstanceCount: 1, Egress: policy.Egress,
+			FQDNEnforcement: policy.FQDNEnforcement, FQDNPolicyDigest: policy.FQDNPolicyDigest}, ObservedAt: now,
+	}
+	if err := graph.Validate(plan, intent); !errors.Is(err, ErrCloudReadback) {
+		t.Fatalf("public graph accepted public EIP address as provider identity: %v", err)
+	}
+}
+
 func activeIdentityRecord(t *testing.T, now time.Time) (Plan, DispatchIntent, LedgerRecord) {
 	t.Helper()
 	plan := testPlan(t, now)
@@ -75,6 +105,8 @@ func activeIdentityRecord(t *testing.T, now time.Time) (Plan, DispatchIntent, Le
 		switch kind {
 		case ResourceEC2:
 			providerID = "i-0123456789abcdef0"
+		case ResourceEIP:
+			providerID = "eipalloc-0123456789abcdef0"
 		case ResourceIAMRole:
 			providerID = "AROA1234567890ABCDEFG"
 		case ResourceInstanceProfile:
