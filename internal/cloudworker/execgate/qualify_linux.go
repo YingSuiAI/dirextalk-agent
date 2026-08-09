@@ -21,11 +21,18 @@ func QualifyFanotifyExecPermission(ctx context.Context, executable string) error
 	defer monitor.Close()
 
 	command := exec.CommandContext(ctx, executable)
-	if err := command.Start(); err != nil {
-		return err
+	return qualifyWithMonitor(ctx, monitor, command.Run)
+}
+
+func qualifyWithMonitor(ctx context.Context, monitor permissionMonitor, run func() error) error {
+	if ctx == nil || monitor == nil || run == nil {
+		return ErrInvalid
 	}
 	done := make(chan error, 1)
-	go func() { done <- command.Wait() }()
+	// exec.Cmd.Start waits for the child-side exec handshake. FAN_OPEN_EXEC_PERM
+	// blocks that handshake until this goroutine's event is answered, so launch
+	// must remain concurrent with the permission-event loop.
+	go func() { done <- run() }()
 	return qualifyPermissionEvents(ctx, monitor.Events(), monitor.Errors(), done)
 }
 

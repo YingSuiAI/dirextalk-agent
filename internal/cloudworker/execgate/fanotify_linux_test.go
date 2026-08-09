@@ -13,6 +13,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+type qualificationTestMonitor struct {
+	events chan permissionEvent
+	errors chan error
+}
+
+func (monitor *qualificationTestMonitor) Events() <-chan permissionEvent { return monitor.events }
+func (monitor *qualificationTestMonitor) Errors() <-chan error           { return monitor.errors }
+func (monitor *qualificationTestMonitor) Close() error                   { return nil }
+
 func TestParseFanotifyPermissionMetadata(t *testing.T) {
 	raw := make([]byte, 24)
 	binary.NativeEndian.PutUint32(raw[0:4], 24)
@@ -59,6 +68,50 @@ func TestQualifyPermissionEventsAllowsEveryExecutableOpen(t *testing.T) {
 	}
 	if len(responses) != 2 || !responses[0] || !responses[1] {
 		t.Fatalf("responses=%v, want two allowed executable opens", responses)
+	}
+}
+
+func TestQualifyWithMonitorLaunchesConcurrentlyAndAllowsEveryExecutableOpen(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	monitor := &qualificationTestMonitor{
+		events: make(chan permissionEvent),
+		errors: make(chan error),
+	}
+	run := func() error {
+		for index := 0; index < 2; index++ {
+			file, err := os.Open(os.DevNull)
+			if err != nil {
+				return err
+			}
+			response := make(chan bool, 1)
+			event := permissionEvent{
+				PID:  int32(index + 1),
+				File: file,
+				done: func(allow bool) error {
+					response <- allow
+					return nil
+				},
+			}
+			select {
+			case monitor.events <- event:
+			case <-ctx.Done():
+				_ = file.Close()
+				return ctx.Err()
+			}
+			select {
+			case allowed := <-response:
+				if !allowed {
+					return ErrViolation
+				}
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	}
+	if err := qualifyWithMonitor(ctx, monitor, run); err != nil {
+		t.Fatal(err)
 	}
 }
 
