@@ -1968,11 +1968,17 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 				return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrConflict
 			}
 		} else {
-			var activeSessions, fenceRecords uint64
-			if err = tx.QueryRow(ctx, `SELECT count(*) FROM core_cloud_worker_sessions WHERE execution_id=$1 AND state='active'`, plan.ExecutionID).Scan(&activeSessions); err != nil || activeSessions != 0 {
-				return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrConflict
-			}
-			if err = tx.QueryRow(ctx, `SELECT count(*) FROM core_cloud_worker_session_fences WHERE execution_id=$1 AND task_id=$2 AND task_attempt=$3 AND lease_epoch=$4`, plan.ExecutionID, plan.TaskID, currentTask.Attempt, currentTask.LeaseEpoch).Scan(&fenceRecords); err != nil || fenceRecords != 1 {
+			var activeSessions, unfencedSessions, unfencedCurrentExpectations uint64
+			if err = tx.QueryRow(ctx, `SELECT
+				(SELECT count(*) FROM core_cloud_worker_sessions WHERE execution_id=$1 AND state='active'),
+				(SELECT count(*) FROM core_cloud_worker_sessions s WHERE s.execution_id=$1 AND NOT EXISTS (
+					SELECT 1 FROM core_cloud_worker_session_fences f WHERE f.execution_id=s.execution_id
+					AND f.task_id=s.task_id AND f.task_attempt=s.task_attempt AND f.lease_epoch=s.lease_epoch)),
+				(SELECT count(*) FROM core_cloud_worker_launch_expectations e WHERE e.execution_id=$1 AND e.current=true AND NOT EXISTS (
+					SELECT 1 FROM core_cloud_worker_session_fences f WHERE f.execution_id=e.execution_id
+					AND f.task_id=e.task_id AND f.task_attempt=e.task_attempt AND f.lease_epoch=e.lease_epoch))`,
+				plan.ExecutionID).Scan(&activeSessions, &unfencedSessions, &unfencedCurrentExpectations); err != nil ||
+				activeSessions != 0 || unfencedSessions != 0 || unfencedCurrentExpectations != 0 {
 				return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrConflict
 			}
 		}

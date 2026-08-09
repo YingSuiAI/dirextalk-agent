@@ -138,7 +138,9 @@ replacement. Delta collection begins only after the execution gate proves the
 Worker cgroup contains no Pi or tool descendant.
 
 The execution Gate is a separate root-owned systemd service and is the only
-image process with `CAP_SYS_ADMIN` (plus `CAP_KILL` for fenced cleanup). The
+image process with `CAP_SYS_ADMIN` (plus `CAP_KILL` for fenced cleanup and
+`CAP_SYS_PTRACE` for reading the exact cross-UID Worker executable through
+`/proc/<pid>/exe`). The
 long-running Worker retains only `CAP_SETUID`/`CAP_SETGID`, and Pi receives no
 capability. The Gate uses `FAN_OPEN_EXEC_PERM` against the executable file
 already opened by the kernel, verifies device/inode/SHA-256, permits exactly
@@ -184,13 +186,15 @@ data; user data is not a maintenance script or a second command channel. The
 enabled boot graph performs qualification before the Worker without SSH or
 SSM: the execution Gate first runs its production fanotify permission probe,
 then `dirextalk-cloud-worker-boot-qualification.service` invokes the bound
-read-only image/network checks, and finally the Worker verifies its own exact
-process capability set before reading the immutable bootstrap. Preserve all
-three PASS records from EC2 console output:
+read-only image/network checks. The Worker unit then runs a pre-start Gate ping
+as the real Worker UID with the exact Worker capability set, and finally the
+Worker verifies that set again before reading the immutable bootstrap. Preserve
+all four PASS records from EC2 console output:
 
 ```text
 [cloud-worker-exec-gate] fanotify_qualification=pass
 cloud-worker candidate boot prequalification: PASS
+[cloud-worker] exec_gate_qualification=pass
 [cloud-worker] startup_qualification=pass
 ```
 

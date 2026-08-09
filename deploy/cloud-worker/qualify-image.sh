@@ -332,7 +332,7 @@ check_process_capabilities() {
         [ "$value" = "$expected" ] || { echo "unexpected $field for $unit" >&2; exit 69; }
     done
 }
-check_process_capabilities dirextalk-cloud-worker-exec-gate.service 0000000000200020
+check_process_capabilities dirextalk-cloud-worker-exec-gate.service 0000000000280020
 
 [ "$(stat -Lc '%a:%u:%g' /run/dirextalk-cloud-worker-exec-gate)" = 750:0:65531 ] || {
     echo "execution Gate runtime directory boundary mismatch" >&2

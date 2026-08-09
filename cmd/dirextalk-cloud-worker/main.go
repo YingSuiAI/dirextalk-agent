@@ -19,6 +19,7 @@ import (
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/worker"
 	"google.golang.org/grpc"
@@ -27,7 +28,19 @@ import (
 
 const maximumWorkerControlMessageBytes = 2 << 20
 
+const qualifyExecGateArgument = "--qualify-exec-gate"
+
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == qualifyExecGateArgument {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := qualifyExecGate(ctx); err != nil {
+			slog.Error("[cloud-worker] exec_gate_qualification=failed")
+			os.Exit(1)
+		}
+		slog.Info("[cloud-worker] exec_gate_qualification=pass")
+		return
+	}
 	if len(os.Args) != 1 {
 		slog.Error("[cloud-worker] outcome=invalid_arguments")
 		os.Exit(2)
@@ -39,6 +52,17 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("[cloud-worker] outcome=succeeded")
+}
+
+func qualifyExecGate(ctx context.Context) error {
+	if ctx == nil || currentEffectiveUID() != execgate.DefaultWorkerUID {
+		return worker.ErrInvalid
+	}
+	if err := validateCurrentProcessCapabilities("/proc/self/status", "00000000000000c0"); err != nil {
+		return err
+	}
+	_, err := cloudruntime.NewOSProcessRunner(worker.PiRuntimeUID, worker.PiRuntimeGID)
+	return err
 }
 
 func run(ctx context.Context) error {

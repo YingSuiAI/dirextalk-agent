@@ -632,7 +632,17 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 	if err != nil || !execution.Cleanup.VerifiedDestroyed {
 		t.Fatalf("cleanup projection=%+v err=%v", execution, err)
 	}
-	terminal, outbox, err := h.cloud.FailExecution(h.ctx, reclaimed, execution.Revision, "worker_failed", "worker failed safely")
+	if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_tasks SET lease_expires_at=$2 WHERE task_id=$1`, reclaimed.ID, h.now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	terminalTask, _, err := h.tasks.ClaimNextDue(h.ctx, uuid.NewString(), h.now.Add(8*time.Minute), 30*time.Minute, 4)
+	if err != nil || terminalTask.ID != reclaimed.ID || terminalTask.LeaseEpoch == reclaimed.LeaseEpoch {
+		t.Fatalf("terminal reclaim=%+v previous=%+v err=%v", terminalTask, reclaimed, err)
+	}
+	if _, err = controlStore.FenceExecutionSessions(h.ctx, terminalTask, offer.Execution.ExecutionID, "terminal reclaim cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	terminal, outbox, err := h.cloud.FailExecution(h.ctx, terminalTask, execution.Revision, "worker_failed", "worker failed safely")
 	if err != nil || terminal.State != cloudworker.StateFailed || outbox.ExecutionID != offer.Execution.ExecutionID {
 		t.Fatalf("terminal=%+v outbox=%+v err=%v", terminal, outbox, err)
 	}
@@ -641,7 +651,7 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 		failedTask.FailureCode != "worker_failed" || failedTask.FailureSummary != "worker failed safely" {
 		t.Fatalf("failed task terminal contract mismatch: task=%+v err=%v", failedTask, err)
 	}
-	replayedTerminal, replayedOutbox, err := h.cloud.FailExecution(h.ctx, reclaimed, execution.Revision, "worker_failed", "worker failed safely")
+	replayedTerminal, replayedOutbox, err := h.cloud.FailExecution(h.ctx, terminalTask, execution.Revision, "worker_failed", "worker failed safely")
 	if err != nil || replayedTerminal.Revision != terminal.Revision || replayedOutbox.EventID != outbox.EventID {
 		t.Fatalf("lost-response replay terminal=%+v outbox=%+v err=%v", replayedTerminal, replayedOutbox, err)
 	}

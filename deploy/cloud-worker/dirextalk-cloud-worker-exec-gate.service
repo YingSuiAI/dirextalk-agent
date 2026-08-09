@@ -21,8 +21,8 @@ StandardError=journal+console
 TasksMax=8
 
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_KILL
-AmbientCapabilities=CAP_SYS_ADMIN CAP_KILL
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_KILL
+AmbientCapabilities=CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_KILL
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 PrivateDevices=yes

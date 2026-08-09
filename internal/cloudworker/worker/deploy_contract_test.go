@@ -59,6 +59,7 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 		"User=dirextalk-cloud-worker",
 		"Group=dirextalk-pi",
 		"SupplementaryGroups=dirextalk-cloud-worker",
+		"ExecStartPre=/usr/local/bin/dirextalk-cloud-worker --qualify-exec-gate",
 		"CPUQuota=200%",
 		"MemoryMax=3584M",
 		"MemorySwapMax=0",
@@ -99,8 +100,8 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 		"ExecStartPre=/usr/local/bin/dirextalk-cloud-worker-exec-gate --qualify-fanotify",
 		"RuntimeDirectory=dirextalk-cloud-worker-exec-gate",
 		"RuntimeDirectoryMode=0750",
-		"CapabilityBoundingSet=CAP_SYS_ADMIN CAP_KILL",
-		"AmbientCapabilities=CAP_SYS_ADMIN CAP_KILL",
+		"CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_KILL",
+		"AmbientCapabilities=CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_KILL",
 		"RestrictAddressFamilies=AF_UNIX",
 	} {
 		if !strings.Contains(gateUnit, required) {
@@ -332,7 +333,7 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 		`systemctl is-active`,
 		"ActiveEnterTimestampMonotonic",
 		"check_process_capabilities",
-		"0000000000200020",
+		"0000000000280020",
 		"/run/dirextalk-cloud-worker-exec-gate/control.sock",
 		"nft --handle list chain inet dirextalk_cloud_worker pi_output",
 		`grep -Eq 'hook output priority -20; policy drop;'`,

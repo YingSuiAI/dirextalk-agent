@@ -189,6 +189,16 @@ support.
   creation, exact credential-revision restart recovery, output-version journal
   cleanup, and the final second S3 inventory proof. No real AWS mutation was
   performed.
+- On **2026-08-10**, an authorized fresh Tokyo API run proved immutable EIP
+  AllocationId projection and cancellation cleanup of all eight resource kinds.
+  The Worker did not claim because the execution Gate could not read the
+  cross-UID Worker `/proc/<pid>/exe` identity without `CAP_SYS_PTRACE`; the AMI
+  contract now grants that exact capability and the Worker unit performs a real
+  Worker-UID Gate ping before startup. The same run also exposed terminal cleanup
+  retry after a CoreTask lease reclaim: terminalization now validates the
+  immutable launch-expectation/session fences instead of the controller's newer
+  lease epoch. Focused PG18 and Cloud Worker tests pass; a corrected AMI and a
+  fresh successful live run remain required for acceptance.
 
 ## Remaining release gates
 
@@ -207,12 +217,14 @@ support.
   snapshot, and policy revision. All other budget cases remain fail-closed;
   transient concurrency, model arguments, timeouts, and failed local execution
   never become budget evidence.
-- No Worker AMI has been built, booted, or qualified from the immutable
-  `deploy/cloud-worker` inputs. Repository contract tests and a fake/provider
-  pass do not establish an AMI digest as production-ready.
-- No real Cloud Worker AWS mutation has been executed. The required authorized
-  disposable account, Region, credential revision, Worker AMI, and explicit
-  cost ceiling have not been supplied for this lane.
+- A Worker AMI built from the immutable `deploy/cloud-worker` inputs passed the
+  earlier offline and boot checks, but the first live run proved those checks
+  did not exercise the Worker-UID Gate client path. It is not production-ready;
+  the corrected four-PASS qualification and fresh live run remain open.
+- One authorized, budget-bounded real Cloud Worker AWS mutation has been
+  executed in Tokyo. It proved provisioning and independent eight-kind cleanup,
+  but not Worker claim, Pi execution, artifact delivery, or successful terminal
+  completion.
 - The fresh-state real-cloud acceptance remains open: App conversation offer,
   user confirmation, exactly one EC2/Worker/Pi, exact artifact collection,
   verified cleanup, unique result delivery, and an independent post-run AWS

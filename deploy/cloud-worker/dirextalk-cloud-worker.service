@@ -19,6 +19,7 @@ SupplementaryGroups=dirextalk-cloud-worker
 WorkingDirectory=/var/lib/dirextalk-cloud-worker
 StateDirectory=dirextalk-cloud-worker/state dirextalk-cloud-worker/workspaces
 StateDirectoryMode=0710
+ExecStartPre=/usr/local/bin/dirextalk-cloud-worker --qualify-exec-gate
 ExecStart=/usr/local/bin/dirextalk-cloud-worker
 Restart=no
 StandardOutput=journal+console
