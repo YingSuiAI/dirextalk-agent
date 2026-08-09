@@ -816,11 +816,12 @@ func graphState(status cftypes.StackStatus) (cloudaws.GraphState, error) {
 	case cftypes.StackStatusDeleteInProgress, cftypes.StackStatusDeleteFailed:
 		return cloudaws.GraphDestroying, nil
 	case cftypes.StackStatusCreateInProgress, cftypes.StackStatusReviewInProgress, cftypes.StackStatusUpdateInProgress,
-		cftypes.StackStatusUpdateCompleteCleanupInProgress, cftypes.StackStatusCreateFailed,
-		cftypes.StackStatusRollbackInProgress, cftypes.StackStatusRollbackFailed, cftypes.StackStatusRollbackComplete,
-		cftypes.StackStatusUpdateFailed, cftypes.StackStatusUpdateRollbackInProgress, cftypes.StackStatusUpdateRollbackFailed,
-		cftypes.StackStatusUpdateRollbackCompleteCleanupInProgress, cftypes.StackStatusUpdateRollbackComplete:
+		cftypes.StackStatusUpdateCompleteCleanupInProgress, cftypes.StackStatusRollbackInProgress,
+		cftypes.StackStatusUpdateRollbackInProgress, cftypes.StackStatusUpdateRollbackCompleteCleanupInProgress:
 		return cloudaws.GraphProvisioning, nil
+	case cftypes.StackStatusCreateFailed, cftypes.StackStatusRollbackFailed, cftypes.StackStatusRollbackComplete,
+		cftypes.StackStatusUpdateFailed, cftypes.StackStatusUpdateRollbackFailed, cftypes.StackStatusUpdateRollbackComplete:
+		return "", cloudaws.ErrCloudMutation
 	default:
 		return "", cloudaws.ErrCloudReadback
 	}

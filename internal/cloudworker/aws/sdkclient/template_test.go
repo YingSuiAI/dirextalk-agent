@@ -22,6 +22,11 @@ func TestFixedTemplateIsOneClosedWorkerWithCanonicalBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	resources := object(t, template["Resources"])
+	// The stack itself and the instance's implicit root EBS volume complete
+	// the eight-kind observed graph without separate template declarations.
+	if len(resources) != len(cloudaws.AllResourceKinds())-2 {
+		t.Fatalf("declared resource count = %d, want %d", len(resources), len(cloudaws.AllResourceKinds())-2)
+	}
 	instanceCount := 0
 	for _, raw := range resources {
 		resource := object(t, raw)
@@ -42,6 +47,19 @@ func TestFixedTemplateIsOneClosedWorkerWithCanonicalBootstrap(t *testing.T) {
 	}
 
 	instance := resourceProperties(t, resources, cloudaws.ResourceEC2)
+	blockDevices := array(t, instance["BlockDeviceMappings"])
+	rootEBS := object(t, object(t, blockDevices[0])["Ebs"])
+	if _, exists := rootEBS["Throughput"]; exists {
+		t.Fatalf("AWS::EC2::Instance Ebs contains unsupported Throughput: %+v", rootEBS)
+	}
+	eip := resourceProperties(t, resources, cloudaws.ResourceEIP)
+	if _, exists := eip["NetworkInterfaceId"]; exists {
+		t.Fatalf("AWS::EC2::EIP contains unsupported NetworkInterfaceId: %+v", eip)
+	}
+	instanceRef := object(t, eip["InstanceId"])
+	if instanceRef["Ref"] != cloudaws.LogicalID(cloudaws.ResourceEC2) {
+		t.Fatalf("EIP instance association = %+v", instanceRef)
+	}
 	metadata := object(t, instance["MetadataOptions"])
 	if metadata["HttpTokens"] != "required" || metadata["HttpEndpoint"] != "enabled" || metadata["HttpProtocolIpv6"] != "disabled" || metadata["HttpPutResponseHopLimit"] != float64(1) {
 		t.Fatalf("unsafe metadata options: %+v", metadata)
@@ -109,6 +127,25 @@ func TestFixedTemplateIsOneClosedWorkerWithCanonicalBootstrap(t *testing.T) {
 	encoded, _ := json.Marshal(template)
 	if strings.Contains(strings.ToLower(string(encoded)), "ssm") && !strings.Contains(string(encoded), `"SSMEnabled":false`) {
 		t.Fatal("template contains SSM capability")
+	}
+}
+
+func TestFixedTemplateRejectsUnrepresentableGP3Throughput(t *testing.T) {
+	request := testCreateRequest(t)
+	request.Plan.RootVolumeThroughput = 250
+	plan, err := cloudaws.SealPlan(request.Plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := cloudaws.NewDispatchIntent(plan, request.Intent.Authorization, request.Intent.RecordedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Plan = plan
+	request.Intent = intent
+	request.ResourceTags = cloudaws.RequiredTags(request.Identity, plan.Digest, plan.InfrastructureDigest, intent.IntentDigest)
+	if _, err := buildTemplate(request); err == nil {
+		t.Fatal("AWS::EC2::Instance template accepted non-default gp3 throughput")
 	}
 }
 

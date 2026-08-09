@@ -53,6 +53,30 @@ func TestFindStackByIntentRequiresPagedOriginalCreationEvent(t *testing.T) {
 	}
 }
 
+func TestGraphStateFailsClosedOnTerminalProvisioningFailure(t *testing.T) {
+	for _, status := range []cftypes.StackStatus{
+		cftypes.StackStatusCreateFailed,
+		cftypes.StackStatusRollbackFailed,
+		cftypes.StackStatusRollbackComplete,
+		cftypes.StackStatusUpdateFailed,
+		cftypes.StackStatusUpdateRollbackFailed,
+		cftypes.StackStatusUpdateRollbackComplete,
+	} {
+		if _, err := graphState(status); !errors.Is(err, cloudaws.ErrCloudMutation) {
+			t.Fatalf("terminal stack status %s err=%v", status, err)
+		}
+	}
+	for _, status := range []cftypes.StackStatus{
+		cftypes.StackStatusCreateInProgress,
+		cftypes.StackStatusRollbackInProgress,
+		cftypes.StackStatusUpdateRollbackInProgress,
+	} {
+		if state, err := graphState(status); err != nil || state != cloudaws.GraphProvisioning {
+			t.Fatalf("in-progress stack status %s state=%s err=%v", status, state, err)
+		}
+	}
+}
+
 func TestFindStackByIntentFailsClosedOnReplacementVisibilityAndPagination(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	plan, intent := sdkSecurityPlanAndIntent(t, now)

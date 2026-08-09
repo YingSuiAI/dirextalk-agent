@@ -13,7 +13,10 @@ import (
 const templateVersion = "2010-09-09"
 
 func buildTemplate(request cloudaws.CreateStackRequest) (string, error) {
-	if request.Validate() != nil {
+	// AWS::EC2::Instance Ebs does not expose the gp3 Throughput property.
+	// The current qualified Worker shape uses the AWS default of 125 MiB/s;
+	// reject any other value before a CloudFormation mutation could begin.
+	if request.Validate() != nil || request.Plan.RootVolumeThroughput != 125 {
 		return "", cloudaws.ErrInvalid
 	}
 	bootstrap, err := request.Plan.BootstrapDocument()
@@ -81,7 +84,7 @@ func buildTemplate(request cloudaws.CreateStackRequest) (string, error) {
 		cloudaws.LogicalID(cloudaws.ResourceEIP): map[string]any{
 			"Type": "AWS::EC2::EIP",
 			"Properties": map[string]any{
-				"Domain": "vpc", "NetworkInterfaceId": map[string]any{"Ref": cloudaws.LogicalID(cloudaws.ResourceENI)}, "Tags": tags,
+				"Domain": "vpc", "InstanceId": map[string]any{"Ref": cloudaws.LogicalID(cloudaws.ResourceEC2)}, "Tags": tags,
 			},
 		},
 		cloudaws.LogicalID(cloudaws.ResourceEC2): map[string]any{
@@ -96,7 +99,7 @@ func buildTemplate(request cloudaws.CreateStackRequest) (string, error) {
 					"DeviceName": request.Plan.RootDeviceName,
 					"Ebs": map[string]any{"DeleteOnTermination": true, "Encrypted": true, "KmsKeyId": request.Plan.RootKMSKeyARN,
 						"VolumeSize": request.Plan.RootVolumeGiB, "VolumeType": request.Plan.RootVolumeType,
-						"Iops": request.Plan.RootVolumeIOPS, "Throughput": request.Plan.RootVolumeThroughput},
+						"Iops": request.Plan.RootVolumeIOPS},
 				}},
 				"PropagateTagsToVolumeOnCreation": true,
 				"UserData":                        base64.StdEncoding.EncodeToString(bootstrap),
