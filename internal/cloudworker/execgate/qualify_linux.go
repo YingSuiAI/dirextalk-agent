@@ -4,7 +4,6 @@ package execgate
 
 import (
 	"context"
-	"errors"
 	"os/exec"
 )
 
@@ -22,33 +21,57 @@ func QualifyFanotifyExecPermission(ctx context.Context, executable string) error
 	defer monitor.Close()
 
 	command := exec.CommandContext(ctx, executable)
-	done := make(chan error, 1)
-	go func() { done <- command.Run() }()
-
-	select {
-	case event, ok := <-monitor.Events():
-		if !ok || event.PID < 1 || event.File == nil {
-			return ErrUnavailable
-		}
-		if err := event.respond(true); err != nil {
-			_ = event.File.Close()
-			return err
-		}
-		_ = event.File.Close()
-	case err := <-monitor.Errors():
-		if err == nil {
-			return ErrUnavailable
-		}
+	if err := command.Start(); err != nil {
 		return err
-	case <-ctx.Done():
-		return ctx.Err()
 	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	return qualifyPermissionEvents(ctx, monitor.Events(), monitor.Errors(), done)
+}
 
-	if err := <-done; err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
+func qualifyPermissionEvents(
+	ctx context.Context,
+	events <-chan permissionEvent,
+	monitorErrors <-chan error,
+	commandDone <-chan error,
+) error {
+	observed := uint64(0)
+	if ctx == nil || events == nil || monitorErrors == nil || commandDone == nil {
+		return ErrInvalid
+	}
+	for {
+		select {
+		case event, ok := <-events:
+			if !ok || event.PID < 1 || event.File == nil {
+				return ErrUnavailable
+			}
+			if err := event.respond(true); err != nil {
+				_ = event.File.Close()
+				return err
+			}
+			_ = event.File.Close()
+			observed++
+		case err, ok := <-monitorErrors:
+			if !ok || err == nil {
+				return ErrUnavailable
+			}
+			return err
+		case err, ok := <-commandDone:
+			if !ok {
+				return ErrUnavailable
+			}
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return err
+			}
+			if observed == 0 {
+				return ErrUnavailable
+			}
+			return nil
+		case <-ctx.Done():
 			return ctx.Err()
 		}
-		return err
 	}
-	return nil
 }

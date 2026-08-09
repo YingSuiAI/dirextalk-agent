@@ -31,6 +31,60 @@ func TestParseFanotifyPermissionMetadata(t *testing.T) {
 	}
 }
 
+func TestQualifyPermissionEventsAllowsEveryExecutableOpen(t *testing.T) {
+	events := make(chan permissionEvent, 2)
+	monitorErrors := make(chan error)
+	commandDone := make(chan error, 1)
+	responses := make([]bool, 0, 2)
+	for index := 0; index < 2; index++ {
+		file, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		last := index == 1
+		events <- permissionEvent{
+			PID:  int32(index + 1),
+			File: file,
+			done: func(allow bool) error {
+				responses = append(responses, allow)
+				if last {
+					commandDone <- nil
+				}
+				return nil
+			},
+		}
+	}
+	if err := qualifyPermissionEvents(t.Context(), events, monitorErrors, commandDone); err != nil {
+		t.Fatal(err)
+	}
+	if len(responses) != 2 || !responses[0] || !responses[1] {
+		t.Fatalf("responses=%v, want two allowed executable opens", responses)
+	}
+}
+
+func TestQualifyPermissionEventsRejectsUnobservedCompletion(t *testing.T) {
+	events := make(chan permissionEvent)
+	monitorErrors := make(chan error)
+	commandDone := make(chan error, 1)
+	commandDone <- nil
+	if err := qualifyPermissionEvents(t.Context(), events, monitorErrors, commandDone); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("error=%v, want ErrUnavailable", err)
+	}
+}
+
+func TestQualifyPermissionEventsHonorsContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := qualifyPermissionEvents(ctx, make(chan permissionEvent), make(chan error), make(chan error))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error=%v, want context deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("qualification returned after %v", elapsed)
+	}
+}
+
 func TestFanotifyExecPermissionExternalAMIGate(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("AMI qualification requires root and CAP_SYS_ADMIN")
