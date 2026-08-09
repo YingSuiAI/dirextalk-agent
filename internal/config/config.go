@@ -468,7 +468,7 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	relayHost, err := validateCloudWorkerHTTPS("model_relay_endpoint", worker.ModelRelayEndpoint, worker.ModelRelayServerName)
+	relayHost, err := validateCloudWorkerModelRelayEndpoint(worker.ModelRelayEndpoint, worker.ModelRelayServerName)
 	if err != nil {
 		return err
 	}
@@ -618,6 +618,18 @@ func validateCloudWorkerHTTPS(name, raw, serverName string) (string, error) {
 		return "", fmt.Errorf("core_cloud_worker %s must be an exact HTTPS server binding", name)
 	}
 	return serverName, nil
+}
+
+func validateCloudWorkerModelRelayEndpoint(raw, serverName string) (string, error) {
+	host, err := validateCloudWorkerHTTPS("model_relay_endpoint", raw, serverName)
+	if err != nil {
+		return "", err
+	}
+	parsed, _ := url.Parse(strings.TrimSpace(raw))
+	if parsed.Path != "/v1" || parsed.RawPath != "" {
+		return "", errors.New("core_cloud_worker model_relay_endpoint must use the exact /v1 path")
+	}
+	return host, nil
 }
 
 var awsServiceRoleARNRE = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]{1,512}$`)

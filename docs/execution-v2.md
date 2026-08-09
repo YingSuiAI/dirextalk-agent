@@ -62,6 +62,8 @@ exec is forbidden. The Worker does not load the user's local MCP installations, 
 Extension Runner, local sandbox credentials, or Agent database. It receives
 only a short-lived model relay grant, exact versioned input objects, its exact
 artifact prefix, and the approved network/secret grant descriptors.
+The configured private Model Relay endpoint is an exact HTTPS base URL whose
+path is `/v1`; startup rejects a bare origin, encoded path, or trailing slash.
 
 Workspace modes are closed:
 
@@ -102,13 +104,16 @@ and offer outbox. Confirm, reject, expiry, requote, and terminal conversation
 projection updates use the same atomic boundary. A replay returns the exact
 existing objects only when its canonical request digest matches.
 
-Every terminal Cloud Worker CoreTask retains a display-oriented server snapshot
+A successful Cloud Worker CoreTask retains a display-oriented server snapshot
 inside its existing result JSON. The snapshot keeps the stable Worker/stack
 name, Region, any private or public IP observed before cleanup, and the sealed
 non-secret Worker configuration from the Plan. An address is optional when the
-qualified network shape does not publish one. Provider instance IDs, AWS
-account identity, and account/plan generations remain authorization evidence
-in their typed authorities and are not required to render the task snapshot.
+qualified network shape does not publish one. Failed and canceled CoreTasks
+retain their failure fields and no result, as required by the CoreTask schema;
+their typed Plan and Execution records remain authoritative. Provider instance
+IDs, AWS account identity, and account/plan generations remain authorization
+evidence in those typed authorities and are not required to render a successful
+task snapshot.
 
 A public conversation reference carries account generation plus the exact
 task, plan, run/execution, confirmation, revision, quote, binding, and execution

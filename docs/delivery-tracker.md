@@ -178,12 +178,13 @@ support.
   `git diff --check`. The `GOFLAGS` override disables only Go VCS stamping,
   which otherwise resolves the parent `/home/adam` Git directory instead of
   this linked worktree; it does not change compiled source or test behavior.
-- On **2026-08-09**, terminal Cloud Worker CoreTasks began retaining their
+- On **2026-08-09**, successful Cloud Worker CoreTasks began retaining their
   stable Worker/stack name, Region, optional observed private/public IPs, and
   sealed non-secret Worker configuration in the existing result JSON across
   verified resource cleanup. Focused Cloud Worker and PostgreSQL package tests
-  cover display without account/generation/provider-instance prerequisites and
-  successful as well as failed terminal persistence.
+  cover display without account/generation/provider-instance prerequisites.
+  Failed and canceled tasks keep `result_json` null and use the existing
+  CoreTask failure fields, matching the immutable schema constraint.
   Focused fresh-state tests additionally covered atomic Cloud Worker offer
   creation, exact credential-revision restart recovery, output-version journal
   cleanup, and the final second S3 inventory proof. No real AWS mutation was

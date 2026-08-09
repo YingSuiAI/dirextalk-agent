@@ -2008,23 +2008,23 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
 	}
 
-	resources, err := loadCloudWorkerTaskResultResourcesTx(ctx, tx, plan)
-	if err != nil {
-		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
-	}
-	resultSnapshot, err := cloudworker.NewTaskResultSnapshot(plan, resources, next.ArtifactIDs)
-	if err != nil {
-		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
-	}
-	resultJSON, _ := json.Marshal(resultSnapshot)
-	coreResult := coretask.Result{Summary: summary, JSON: resultJSON}
+	var taskResult []byte
 	if terminal == cloudworker.StateSucceeded {
-		coreResult.Text = summary
+		resources, loadErr := loadCloudWorkerTaskResultResourcesTx(ctx, tx, plan)
+		if loadErr != nil {
+			return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, loadErr
+		}
+		resultSnapshot, snapshotErr := cloudworker.NewTaskResultSnapshot(plan, resources, next.ArtifactIDs)
+		if snapshotErr != nil {
+			return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, snapshotErr
+		}
+		resultJSON, _ := json.Marshal(resultSnapshot)
+		coreResult := coretask.Result{Text: summary, Summary: summary, JSON: resultJSON}
+		if coreResult.Validate() != nil {
+			return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrInvalid
+		}
+		taskResult, _ = json.Marshal(coreResult)
 	}
-	if coreResult.Validate() != nil {
-		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrInvalid
-	}
-	taskResult, _ := json.Marshal(coreResult)
 	taskStatus := string(coretask.StatusSucceeded)
 	if terminal == cloudworker.StateFailed {
 		taskStatus = string(coretask.StatusFailed)

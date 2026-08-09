@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -338,6 +337,11 @@ func TestCloudWorkerPostgresConfirmationAndPredispatchCancelProjection(t *testin
 			if err != nil || terminal.State != cloudworker.StateCanceled || outbox.ExecutionID != current.ExecutionID {
 				t.Fatalf("cancel terminal=%+v outbox=%+v err=%v", terminal, outbox, err)
 			}
+			canceledTask, err := h.tasks.GetTask(h.ctx, offer.Task.ID)
+			if err != nil || canceledTask.Status != coretask.StatusCanceled || canceledTask.Result != nil ||
+				canceledTask.FailureCode != "user_canceled" || canceledTask.FailureSummary != "Cloud Worker task canceled" {
+				t.Fatalf("canceled task terminal contract mismatch: task=%+v err=%v", canceledTask, err)
+			}
 			replayed, err = h.cloud.RequestCancel(h.ctx, h.owner, h.generation, current.ExecutionID, current.Revision, key)
 			if err != nil || replayed.State != cloudworker.StateCanceled || replayed.Revision != terminal.Revision {
 				t.Fatalf("terminal cancel replay=%+v err=%v", replayed, err)
@@ -633,10 +637,9 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 		t.Fatalf("terminal=%+v outbox=%+v err=%v", terminal, outbox, err)
 	}
 	failedTask, err := h.tasks.GetTask(h.ctx, offer.Task.ID)
-	var failedSnapshot cloudworker.TaskResultSnapshot
-	if err != nil || failedTask.Result == nil || json.Unmarshal(failedTask.Result.JSON, &failedSnapshot) != nil ||
-		failedSnapshot.ServerSnapshot.Name == "" || failedSnapshot.ServerSnapshot.Region != offer.Plan.AWS.Region {
-		t.Fatalf("failed task lost server configuration snapshot: task=%+v snapshot=%+v err=%v", failedTask, failedSnapshot, err)
+	if err != nil || failedTask.Status != coretask.StatusFailed || failedTask.Result != nil ||
+		failedTask.FailureCode != "worker_failed" || failedTask.FailureSummary != "worker failed safely" {
+		t.Fatalf("failed task terminal contract mismatch: task=%+v err=%v", failedTask, err)
 	}
 	replayedTerminal, replayedOutbox, err := h.cloud.FailExecution(h.ctx, reclaimed, execution.Revision, "worker_failed", "worker failed safely")
 	if err != nil || replayedTerminal.Revision != terminal.Revision || replayedOutbox.EventID != outbox.EventID {
