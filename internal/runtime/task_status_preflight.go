@@ -162,9 +162,11 @@ func validTaskStatusPreflight(
 		return false
 	}
 	if view.CompletionReportAvailable {
+		var report map[string]json.RawMessage
 		if view.CompletionReportPending ||
 			len(view.CompletionReport) == 0 ||
-			!json.Valid(view.CompletionReport) {
+			json.Unmarshal(view.CompletionReport, &report) != nil ||
+			report == nil {
 			return false
 		}
 	} else if len(view.CompletionReport) != 0 ||

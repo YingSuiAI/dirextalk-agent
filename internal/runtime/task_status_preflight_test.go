@@ -88,7 +88,7 @@ func TestTrustedTaskStatusPreflightRejectsInvalidCompletionReportState(t *testin
 				Definition: modelapi.Tool{Name: CloudDialogueToolTeamTaskStatus},
 				Run: func(context.Context, ToolInvocation) (ToolResult, error) {
 					return ToolResult{
-						Content:        `{"task_id":"` + taskID + `","execution_status":"finished","outcome_status":"succeeded","revision":1,"terminal":true,"completion_report_available":true,"completion_report_pending":true}`,
+						Content:        `{"task_id":"` + taskID + `","execution_status":"finished","outcome_status":"succeeded","revision":1,"terminal":true,"completion_report_available":true,"completion_report_pending":false,"completion_report":null}`,
 						RelatedTaskIDs: []string{taskID},
 					}, nil
 				},
