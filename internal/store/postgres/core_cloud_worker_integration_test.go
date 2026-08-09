@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -630,6 +631,12 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 	terminal, outbox, err := h.cloud.FailExecution(h.ctx, reclaimed, execution.Revision, "worker_failed", "worker failed safely")
 	if err != nil || terminal.State != cloudworker.StateFailed || outbox.ExecutionID != offer.Execution.ExecutionID {
 		t.Fatalf("terminal=%+v outbox=%+v err=%v", terminal, outbox, err)
+	}
+	failedTask, err := h.tasks.GetTask(h.ctx, offer.Task.ID)
+	var failedSnapshot cloudworker.TaskResultSnapshot
+	if err != nil || failedTask.Result == nil || json.Unmarshal(failedTask.Result.JSON, &failedSnapshot) != nil ||
+		failedSnapshot.ServerSnapshot.Name == "" || failedSnapshot.ServerSnapshot.Region != offer.Plan.AWS.Region {
+		t.Fatalf("failed task lost server configuration snapshot: task=%+v snapshot=%+v err=%v", failedTask, failedSnapshot, err)
 	}
 	replayedTerminal, replayedOutbox, err := h.cloud.FailExecution(h.ctx, reclaimed, execution.Revision, "worker_failed", "worker failed safely")
 	if err != nil || replayedTerminal.Revision != terminal.Revision || replayedOutbox.EventID != outbox.EventID {

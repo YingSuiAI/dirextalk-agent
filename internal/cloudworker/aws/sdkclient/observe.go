@@ -486,6 +486,7 @@ func (client *Client) observePhysical(ctx context.Context, identity cloudaws.Exe
 			return cloudaws.ResourceObservation{}, "", cloudaws.ErrCloudReadback
 		}
 		observation.Tags = tags
+		observation.PrivateIP = awssdk.ToString(instance.PrivateIpAddress)
 		return observation, rootID, nil
 	case cloudaws.ResourceEBS:
 		volume, found, err := client.describeVolume(ctx, providerID)
@@ -523,6 +524,7 @@ func (client *Client) observePhysical(ctx context.Context, identity cloudaws.Exe
 			return cloudaws.ResourceObservation{}, "", cloudaws.ErrOwnershipMismatch
 		}
 		observation.Tags = tags
+		observation.PublicIP = awssdk.ToString(value.PublicIp)
 		return observation, "", nil
 	case cloudaws.ResourceSecurityGroup:
 		value, found, err := client.describeSecurityGroup(ctx, providerID)

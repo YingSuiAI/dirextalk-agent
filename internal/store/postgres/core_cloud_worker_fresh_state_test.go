@@ -608,6 +608,14 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 	if err != nil {
 		t.Fatal(err)
 	}
+	var taskSnapshot cloudworker.TaskResultSnapshot
+	if terminalTask.Result == nil || json.Unmarshal(terminalTask.Result.JSON, &taskSnapshot) != nil ||
+		taskSnapshot.ExecutionID != plan.ExecutionID || taskSnapshot.ServerSnapshot.Name == "" ||
+		taskSnapshot.ServerSnapshot.Region != plan.AWS.Region ||
+		taskSnapshot.ServerSnapshot.WorkerConfig.InstanceType != plan.Compute.InstanceType ||
+		taskSnapshot.ServerSnapshot.WorkerConfig.WorkerReleaseDigest != plan.Compute.WorkerReleaseDigest {
+		t.Fatalf("terminal task did not retain its server configuration snapshot: task=%+v snapshot=%+v", terminalTask, taskSnapshot)
+	}
 	turn, err := h.conversation.GetTurn(h.ctx, plan.TurnID)
 	if err != nil {
 		t.Fatal(err)

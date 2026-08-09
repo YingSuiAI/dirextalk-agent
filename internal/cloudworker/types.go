@@ -337,6 +337,8 @@ type Resource struct {
 	Provider          string        `json:"provider"`
 	Kind              string        `json:"kind"`
 	ProviderID        string        `json:"provider_id"`
+	PrivateIP         string        `json:"private_ip,omitempty"`
+	PublicIP          string        `json:"public_ip,omitempty"`
 	AccountID         string        `json:"account_id"`
 	Region            string        `json:"region"`
 	LaunchIdentity    string        `json:"launch_identity"`
@@ -345,6 +347,22 @@ type Resource struct {
 	CreatedAt         time.Time     `json:"created_at"`
 	UpdatedAt         time.Time     `json:"updated_at"`
 	VerifiedAt        *time.Time    `json:"verified_at,omitempty"`
+}
+
+func (r Resource) ValidateObservedAddresses() error {
+	if r.PrivateIP != "" {
+		parsed := net.ParseIP(strings.TrimSpace(r.PrivateIP))
+		if r.Kind != "ec2" || parsed == nil || parsed.To4() == nil || r.PrivateIP != parsed.String() {
+			return ErrInvalid
+		}
+	}
+	if r.PublicIP != "" {
+		parsed := net.ParseIP(strings.TrimSpace(r.PublicIP))
+		if r.Kind != "eip" || parsed == nil || parsed.To4() == nil || r.PublicIP != parsed.String() {
+			return ErrInvalid
+		}
+	}
+	return nil
 }
 
 type Artifact struct {

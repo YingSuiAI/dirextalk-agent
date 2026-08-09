@@ -77,11 +77,25 @@ func ProjectAWSResourceGraph(
 		observation := observed[kind]
 		old, hadOld := prior[kind]
 		providerID := strings.TrimSpace(observation.ProviderID)
+		privateIP := strings.TrimSpace(observation.PrivateIP)
+		publicIP := strings.TrimSpace(observation.PublicIP)
 		if hadOld && old.ProviderID != "" {
 			if providerID != "" && providerID != old.ProviderID {
 				return nil, ErrConflict
 			}
 			providerID = old.ProviderID
+		}
+		if hadOld && old.PrivateIP != "" {
+			if privateIP != "" && privateIP != old.PrivateIP {
+				return nil, ErrConflict
+			}
+			privateIP = old.PrivateIP
+		}
+		if hadOld && old.PublicIP != "" {
+			if publicIP != "" && publicIP != old.PublicIP {
+				return nil, ErrConflict
+			}
+			publicIP = old.PublicIP
 		}
 		state := projectedResourceState(graph.State, observation.Exists)
 		if state == "" || (observation.Exists && providerID == "") {
@@ -110,11 +124,14 @@ func ProjectAWSResourceGraph(
 		next := Resource{
 			ResourceID:  deterministicID("cloud-worker-aws-resource", sealedPlan.ExecutionID+":"+string(kind)),
 			ExecutionID: sealedPlan.ExecutionID, AccountGeneration: sealedPlan.AccountGeneration,
-			Provider: "aws", Kind: string(kind), ProviderID: providerID,
+			Provider: "aws", Kind: string(kind), ProviderID: providerID, PrivateIP: privateIP, PublicIP: publicIP,
 			AccountID: sealedPlan.AWS.AccountID, Region: sealedPlan.AWS.Region,
 			LaunchIdentity: awsPlan.Identity.LaunchIdentity, State: state,
 			Revision: revision, CreatedAt: createdAt, UpdatedAt: updatedAt,
 			VerifiedAt: verifiedAt,
+		}
+		if next.ValidateObservedAddresses() != nil {
+			return nil, ErrInvalid
 		}
 		if hadOld && !sameProjectedResource(old, next) {
 			next.Revision++
@@ -137,6 +154,9 @@ func indexProjectedResources(plan Plan, identity cloudaws.ExecutionIdentity, val
 			value.Provider != "aws" || value.AccountID != plan.AWS.AccountID || value.Region != plan.AWS.Region ||
 			value.LaunchIdentity != identity.LaunchIdentity || value.Revision == 0 || value.CreatedAt.IsZero() ||
 			value.UpdatedAt.Before(value.CreatedAt) || (value.State == ResourceVerifiedDestroyed) != (value.VerifiedAt != nil) {
+			return nil, ErrConflict
+		}
+		if value.ValidateObservedAddresses() != nil {
 			return nil, ErrConflict
 		}
 		if _, duplicate := result[kind]; duplicate {
@@ -184,7 +204,7 @@ func sameProjectedResource(left, right Resource) bool {
 	return left.ResourceID == right.ResourceID && left.ExecutionID == right.ExecutionID &&
 		left.AccountGeneration == right.AccountGeneration && left.Provider == right.Provider &&
 		left.Kind == right.Kind && left.ProviderID == right.ProviderID && left.AccountID == right.AccountID &&
-		left.Region == right.Region && left.LaunchIdentity == right.LaunchIdentity && left.State == right.State &&
+		left.PrivateIP == right.PrivateIP && left.PublicIP == right.PublicIP && left.Region == right.Region && left.LaunchIdentity == right.LaunchIdentity && left.State == right.State &&
 		left.CreatedAt.Equal(right.CreatedAt) && left.UpdatedAt.Equal(right.UpdatedAt) && equalOptionalTime(left.VerifiedAt, right.VerifiedAt)
 }
 

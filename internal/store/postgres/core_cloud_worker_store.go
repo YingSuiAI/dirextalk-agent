@@ -1177,6 +1177,7 @@ func loadCloudWorkerResourcesTx(ctx context.Context, tx pgx.Tx, plan cloudworker
 		var projected cloudworker.Resource
 		expectedID := deterministicCloudWorkerUUID("cloud-worker-aws-resource", plan.ExecutionID+":"+typed.Kind)
 		if json.Unmarshal(raw, &projected) != nil || !reflect.DeepEqual(projected, typed) || !cloudWorkerResourceKind(typed.Kind) ||
+			typed.ValidateObservedAddresses() != nil ||
 			typed.ResourceID != expectedID || typed.AccountGeneration != plan.AccountGeneration || typed.Provider != "aws" ||
 			typed.AccountID != plan.AWS.AccountID || typed.Region != plan.AWS.Region || typed.LaunchIdentity != identity.LaunchIdentity ||
 			typed.Revision == 0 || typed.UpdatedAt.Before(typed.CreatedAt) ||
@@ -1300,7 +1301,7 @@ func (s *CloudWorkerStore) RecordResources(ctx context.Context, supplied coretas
 			resource.Revision == 0 || resource.CreatedAt.IsZero() || resource.UpdatedAt.IsZero() || resource.UpdatedAt.Before(resource.CreatedAt) ||
 			(resource.State != cloudworker.ResourcePlanned && resource.State != cloudworker.ResourceCreated && resource.State != cloudworker.ResourceDeleteRequested && resource.State != cloudworker.ResourceVerifiedDestroyed) ||
 			(resource.State == cloudworker.ResourceVerifiedDestroyed) != (resource.VerifiedAt != nil) ||
-			resource.State == cloudworker.ResourceCreated && resource.ProviderID == "" {
+			(resource.State == cloudworker.ResourceCreated && resource.ProviderID == "") || resource.ValidateObservedAddresses() != nil {
 			return cloudworker.Execution{}, cloudworker.ErrInvalid
 		}
 		if provider == "" {
@@ -1853,6 +1854,29 @@ func requireCloudWorkerZeroMutationTx(ctx context.Context, tx pgx.Tx, executionI
 	return nil
 }
 
+func loadCloudWorkerTaskResultResourcesTx(ctx context.Context, tx pgx.Tx, plan cloudworker.Plan) ([]cloudworker.Resource, error) {
+	rows, err := tx.Query(ctx, `SELECT resource_json FROM core_cloud_worker_resources WHERE execution_id=$1 ORDER BY kind FOR UPDATE`, plan.ExecutionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	resources := make([]cloudworker.Resource, 0, len(cloudaws.AllResourceKinds()))
+	for rows.Next() {
+		var raw []byte
+		var resource cloudworker.Resource
+		if err = rows.Scan(&raw); err != nil || json.Unmarshal(raw, &resource) != nil ||
+			resource.ExecutionID != plan.ExecutionID || resource.AccountGeneration != plan.AccountGeneration ||
+			resource.AccountID != plan.AWS.AccountID || resource.Region != plan.AWS.Region || resource.ValidateObservedAddresses() != nil {
+			return nil, cloudworker.ErrConflict
+		}
+		resources = append(resources, resource)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return resources, nil
+}
+
 func (s *CloudWorkerStore) CompleteExecution(ctx context.Context, task coretask.Task, expectedRevision uint64, result cloudworker.ProviderResult) (cloudworker.Execution, cloudworker.CompletionOutbox, error) {
 	return s.terminalExecution(ctx, task, expectedRevision, cloudworker.StateSucceeded, "", strings.TrimSpace(result.Summary), &result)
 }
@@ -1984,18 +2008,23 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
 	}
 
-	var taskResult []byte
-	if terminal == cloudworker.StateSucceeded {
-		resultJSON, _ := json.Marshal(struct {
-			ExecutionID string   `json:"execution_id"`
-			ArtifactIDs []string `json:"artifact_ids"`
-		}{plan.ExecutionID, next.ArtifactIDs})
-		coreResult := coretask.Result{Text: summary, Summary: summary, JSON: resultJSON}
-		if coreResult.Validate() != nil {
-			return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrInvalid
-		}
-		taskResult, _ = json.Marshal(coreResult)
+	resources, err := loadCloudWorkerTaskResultResourcesTx(ctx, tx, plan)
+	if err != nil {
+		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
 	}
+	resultSnapshot, err := cloudworker.NewTaskResultSnapshot(plan, resources, next.ArtifactIDs)
+	if err != nil {
+		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
+	}
+	resultJSON, _ := json.Marshal(resultSnapshot)
+	coreResult := coretask.Result{Summary: summary, JSON: resultJSON}
+	if terminal == cloudworker.StateSucceeded {
+		coreResult.Text = summary
+	}
+	if coreResult.Validate() != nil {
+		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrInvalid
+	}
+	taskResult, _ := json.Marshal(coreResult)
 	taskStatus := string(coretask.StatusSucceeded)
 	if terminal == cloudworker.StateFailed {
 		taskStatus = string(coretask.StatusFailed)

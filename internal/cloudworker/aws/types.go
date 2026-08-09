@@ -623,12 +623,22 @@ func NewDispatchIntent(plan Plan, authorization AuthorizationBinding, recordedAt
 		PlanDigest:           plan.Digest,
 		InfrastructureDigest: plan.InfrastructureDigest,
 		Authorization:        authorization,
-		StackName:            "dtx-pi-" + strings.ReplaceAll(plan.Identity.ExecutionID, "-", "")[:16] + "-g" + strconv.FormatUint(plan.Identity.Generation, 10),
+		StackName:            WorkerServerName(plan.Identity.ExecutionID, plan.Identity.Generation),
 		ClientToken:          "dtx-" + seed,
 		RecordedAt:           recordedAt.UTC(),
 	}
 	intent.IntentDigest = intent.expectedDigest()
 	return intent, intent.Validate(plan)
+}
+
+// WorkerServerName is the stable, non-secret display name assigned to one
+// immutable Cloud Worker plan generation.
+func WorkerServerName(executionID string, generation uint64) string {
+	compact := strings.ReplaceAll(strings.TrimSpace(executionID), "-", "")
+	if len(compact) < 16 || generation == 0 {
+		return ""
+	}
+	return "dtx-pi-" + compact[:16] + "-g" + strconv.FormatUint(generation, 10)
 }
 
 func (intent DispatchIntent) expectedDigest() string {
@@ -669,7 +679,7 @@ func newDispatchIntent(plan Plan, authorization AuthorizationBinding, recordedAt
 		InfrastructureDigest string           `json:"infrastructure_digest"`
 	}{dispatchIdentityFor(plan.Identity), plan.Digest, plan.InfrastructureDigest})
 	intent := DispatchIntent{SchemaVersion: IntentSchemaV1, Identity: plan.Identity, PlanDigest: plan.Digest, InfrastructureDigest: plan.InfrastructureDigest, Authorization: authorization,
-		StackName:   "dtx-pi-" + strings.ReplaceAll(plan.Identity.ExecutionID, "-", "")[:16] + "-g" + strconv.FormatUint(plan.Identity.Generation, 10),
+		StackName:   WorkerServerName(plan.Identity.ExecutionID, plan.Identity.Generation),
 		ClientToken: "dtx-" + seed, RecordedAt: recordedAt.UTC()}
 	intent.IntentDigest = intent.expectedDigest()
 	return intent, nil
@@ -747,6 +757,8 @@ type ResourceObservation struct {
 	Kind           ResourceKind      `json:"kind"`
 	LogicalID      string            `json:"logical_id"`
 	ProviderID     string            `json:"provider_id"`
+	PrivateIP      string            `json:"private_ip,omitempty"`
+	PublicIP       string            `json:"public_ip,omitempty"`
 	Exists         bool              `json:"exists"`
 	Tags           map[string]string `json:"tags"`
 	LaunchIdentity string            `json:"launch_identity"`
@@ -794,7 +806,10 @@ func (graph ObservedGraph) Validate(plan Plan, intent DispatchIntent) error {
 	requiredTags := RequiredTags(plan.Identity, plan.Digest, plan.InfrastructureDigest, intent.IntentDigest)
 	for _, observation := range graph.Resources {
 		if !validResourceKind(observation.Kind) || observation.LogicalID != LogicalID(observation.Kind) || observation.ObservedAt.IsZero() ||
-			(observation.ProviderID != "" && !providerPattern.MatchString(observation.ProviderID)) {
+			(observation.ProviderID != "" && !providerPattern.MatchString(observation.ProviderID)) ||
+			(observation.PrivateIP != "" && (observation.Kind != ResourceEC2 || !validWorkerIPv4(observation.PrivateIP))) ||
+			(observation.PublicIP != "" && (observation.Kind != ResourceEIP || !validWorkerIPv4(observation.PublicIP))) ||
+			(!observation.Exists && (observation.PrivateIP != "" || observation.PublicIP != "")) {
 			return ErrCloudReadback
 		}
 		if _, duplicate := seen[observation.Kind]; duplicate {
@@ -853,6 +868,11 @@ func (graph ObservedGraph) Validate(plan Plan, intent DispatchIntent) error {
 		return ErrCloudReadback
 	}
 	return nil
+}
+
+func validWorkerIPv4(value string) bool {
+	parsed := net.ParseIP(strings.TrimSpace(value))
+	return parsed != nil && parsed.To4() != nil && value == parsed.String()
 }
 
 func stackProviderID(resources []ResourceObservation) string {
