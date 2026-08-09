@@ -988,6 +988,7 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 	if execution.State == cloudworker.StateWaitingUser || execution.State == cloudworker.StateQueued ||
 		execution.State == cloudworker.StateSucceeded || execution.State == cloudworker.StateFailed || execution.State == cloudworker.StateCanceled ||
 		execution.State == cloudworker.StateRejected || execution.State == cloudworker.StateExpired {
+		logCloudWorkerResumeInvariant("execution_state")
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	var authorization cloudworker.LaunchAuthorization
@@ -1004,23 +1005,28 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 		&authorization.AuthorizedAt, &sourceDigest, &stagedRaw, &inputRaw, &runtimeRaw, &qualificationRaw,
 		&launchIdentity, &intentDigest, &identityRaw)
 	if err != nil {
+		logCloudWorkerResumeInvariant("launch_material")
 		return cloudworker.ResumeContext{}, cloudworker.ErrStaleAuthorization
 	}
 	authorization.ConfirmedAt, authorization.AuthorizedAt = authorization.ConfirmedAt.UTC(), authorization.AuthorizedAt.UTC()
 	binding, err := cloudworker.BindingForPlan(plan)
 	if err != nil || validateLaunchPrerequisiteForStore(authorization.LaunchPrerequisite, plan, string(binding.Digest)) != nil {
+		logCloudWorkerResumeInvariant("launch_prerequisite")
 		return cloudworker.ResumeContext{}, cloudworker.ErrStaleAuthorization
 	}
 	var staged cloudworker.StagedInputManifest
 	if json.Unmarshal(stagedRaw, &staged) != nil {
+		logCloudWorkerResumeInvariant("staged_manifest_json")
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	stagedDigest, err := staged.Seal(plan.InputManifest)
 	if err != nil || stagedDigest != authorization.StagedManifestSHA256 {
+		logCloudWorkerResumeInvariant("staged_manifest_digest")
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	var qualification cloudworker.RuntimeQualification
 	if json.Unmarshal(qualificationRaw, &qualification) != nil {
+		logCloudWorkerResumeInvariant("runtime_qualification")
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	material := cloudworker.RuntimeTaskMaterial{RuntimeTaskJSON: bytes.Clone(runtimeRaw), RuntimeTaskSHA256: authorization.RuntimeTaskSHA256,
@@ -1030,12 +1036,14 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 			AccountGeneration: plan.AccountGeneration, Attempt: authorization.TaskAttempt, LeaseEpoch: authorization.LeaseEpoch}}
 	if json.Unmarshal(runtimeRaw, &material.Task) != nil || material.Task.ExecutionID != plan.ExecutionID || material.Task.TaskID != plan.TaskID {
 		material.Destroy()
+		logCloudWorkerResumeInvariant("runtime_task_json")
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	runtimeDigest, digestErr := material.Task.Digest()
 	inputDigest := sha256.Sum256(inputRaw)
 	if digestErr != nil || runtimeDigest != authorization.RuntimeTaskSHA256 || hex.EncodeToString(inputDigest[:]) != authorization.InputManifestSHA256 || sourceDigest != plan.InputManifestDigest {
 		material.Destroy()
+		logCloudWorkerResumeInvariant("runtime_task_digest")
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	// MarkDispatchPrepared updates the launch columns and execution flag in one
@@ -1045,6 +1053,7 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 	if dispatchPrepared != execution.ProviderMutationStarted ||
 		(dispatchPrepared && (!coretask.ValidDigest(launchIdentity) || !coretask.ValidDigest(intentDigest))) {
 		material.Destroy()
+		logCloudWorkerResumeInvariant("dispatch_marker")
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	var storedIdentity cloudaws.ExecutionIdentity
@@ -1054,6 +1063,7 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 			storedIdentity.TaskID != plan.TaskID || storedIdentity.TaskAttempt != authorization.TaskAttempt ||
 			storedIdentity.LeaseEpoch != authorization.LeaseEpoch {
 			material.Destroy()
+			logCloudWorkerResumeInvariant("stored_dispatch_identity")
 			return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 		}
 	}
@@ -1075,10 +1085,12 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 		if buildErr != nil || !reflect.DeepEqual(ledger.Plan, expectedAWSPlan) ||
 			!reflect.DeepEqual(ledger.Intent, expectedIntent) || !ledger.Identity.Equal(expectedAWSPlan.Identity) {
 			material.Destroy()
+			logCloudWorkerResumeInvariant("aws_dispatch_projection")
 			return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 		}
 		if dispatchPrepared && (!ledger.Identity.Equal(storedIdentity) || ledger.Intent.IntentDigest != intentDigest) {
 			material.Destroy()
+			logCloudWorkerResumeInvariant("aws_dispatch_identity")
 			return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 		}
 		resources, err = loadCloudWorkerResourcesTx(ctx, tx, plan, ledger.Identity)
@@ -1088,6 +1100,7 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 		}
 	} else if dispatchPrepared {
 		material.Destroy()
+		logCloudWorkerResumeInvariant("aws_ledger_missing")
 		return cloudworker.ResumeContext{}, cloudworker.ErrStaleAuthorization
 	} else {
 		// No durable AWS intent means no Core resource projection can exist.
@@ -1110,6 +1123,10 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 		return cloudworker.ResumeContext{}, err
 	}
 	return resume, nil
+}
+
+func logCloudWorkerResumeInvariant(stage string) {
+	slog.Warn("[cloud-worker.store] resume_invariant_deferred", "stage", stage)
 }
 
 // loadCloudWorkerAWSRecordTx revalidates the repeated immutable owner and
@@ -1145,6 +1162,7 @@ func loadCloudWorkerAWSRecordTx(ctx context.Context, tx pgx.Tx, plan cloudworker
 		record.Identity.AccountGeneration != plan.AccountGeneration || record.Identity.Region != plan.AWS.Region ||
 		record.Identity.ExecutionID != plan.ExecutionID || record.Identity.TaskID != plan.TaskID ||
 		record.Identity.TaskAttempt == 0 || record.Identity.LeaseEpoch == 0 || record.Identity.Generation != plan.Revision {
+		logCloudWorkerResumeInvariant("aws_ledger_record")
 		return cloudaws.LedgerRecord{}, cloudworker.ErrConflict
 	}
 	return record, nil
@@ -1184,6 +1202,7 @@ func loadCloudWorkerResourcesTx(ctx context.Context, tx pgx.Tx, plan cloudworker
 			typed.Revision == 0 || typed.UpdatedAt.Before(typed.CreatedAt) ||
 			(typed.State == cloudworker.ResourceVerifiedDestroyed) != (typed.VerifiedAt != nil) ||
 			typed.State == cloudworker.ResourceCreated && typed.ProviderID == "" {
+			logCloudWorkerResumeInvariant("resource_projection")
 			return nil, cloudworker.ErrConflict
 		}
 		if _, duplicate := byKind[typed.Kind]; duplicate {

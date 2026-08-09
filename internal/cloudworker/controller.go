@@ -961,10 +961,12 @@ func (c *Controller) requote(ctx context.Context, task coretask.Task, plan Plan,
 func (c *Controller) resumeCleaning(ctx context.Context, task coretask.Task, run *controllerRun) coreruntime.ManagedOutcome {
 	resume, err := c.store.GetResumeContext(ctx, task)
 	if err != nil {
+		slog.Warn("[cloud-worker.controller] terminalization_deferred", "stage", "resume_context", "class", controllerErrorClass(err))
 		return c.owned(err)
 	}
 	defer resume.Destroy()
 	if err = c.loadResume(run, resume); err != nil {
+		slog.Warn("[cloud-worker.controller] terminalization_deferred", "stage", "resume_projection", "class", controllerErrorClass(err))
 		return c.owned(err)
 	}
 	run.workersFenced = true
