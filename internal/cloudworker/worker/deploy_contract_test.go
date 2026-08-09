@@ -339,6 +339,7 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 		`grep -c '^[[:space:]]*meta .*# handle'`,
 		"networkd_pid_before",
 		"ss -H -lntu",
+		`^\[fe80:[0-9a-f:]+\]%[[:alnum:]_.:-]+:546$`,
 		"its live service",
 		"systemd-networkd identity changed",
 		"non-loopback inbound listener",
@@ -355,6 +356,9 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 	}
 	if strings.Contains(qualifier, "ss -H -lntup") {
 		t.Fatal("boot qualification must not require process visibility outside its capability boundary")
+	}
+	if strings.Contains(qualifier, `^\[fe80:[0-9a-f:]+%[[:alnum:]_.:-]+\]:546$`) {
+		t.Fatal("boot qualification must match ss IPv6 zone placement outside the address brackets")
 	}
 
 	allowlist := readDeployFile(t, root, "rootfs-files.allowlist")

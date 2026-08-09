@@ -366,7 +366,7 @@ ss -H -lntu | while read -r netid _state _recvq _sendq local_address _peer_addre
             # PID remains stable across the observation.
             if [ "$netid" = udp ] &&
                 { printf '%s\n' "$local_address" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}%[[:alnum:]_.:-]+:68$' ||
-                    printf '%s\n' "$local_address" | grep -Eq '^\[fe80:[0-9a-f:]+%[[:alnum:]_.:-]+\]:546$'; }; then
+                    printf '%s\n' "$local_address" | grep -Eq '^\[fe80:[0-9a-f:]+\]%[[:alnum:]_.:-]+:546$'; }; then
                 continue
             fi
             echo "non-loopback inbound listener: $netid $local_address" >&2
