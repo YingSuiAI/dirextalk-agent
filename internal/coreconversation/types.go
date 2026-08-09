@@ -332,6 +332,11 @@ type IntrinsicExecutionRequest struct {
 	Lease              TurnLease
 	Call               ToolCall
 	CanonicalArguments json.RawMessage
+	// ConversationRevision is the authoritative revision loaded for the model
+	// round. Intrinsics that atomically append to the transcript must fence
+	// their commit against this value instead of guessing from an optional
+	// client CAS field.
+	ConversationRevision uint64
 }
 
 type IntrinsicExecutionResult struct {

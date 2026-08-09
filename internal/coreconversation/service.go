@@ -1610,7 +1610,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 							return
 						}
 					}
-					intrinsicResult, intrinsicErr := intrinsic.Execute(ctx, IntrinsicExecutionRequest{Lease: lease, Call: call, CanonicalArguments: arguments})
+					intrinsicResult, intrinsicErr := intrinsic.Execute(ctx, IntrinsicExecutionRequest{
+						Lease: lease, Call: call, CanonicalArguments: arguments,
+						ConversationRevision: conv.Revision,
+					})
 					if intrinsicErr != nil || !intrinsicResult.TurnCommitted {
 						code, summary := intrinsicTerminalFailure(call.Name, intrinsicErr)
 						_, _ = s.turns.FailTurn(ctx, lease, code, summary)

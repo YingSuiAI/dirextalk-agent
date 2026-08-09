@@ -71,7 +71,8 @@ func scheduleIntrinsic(store ConversationScheduleStore, bound TurnLease) Resolve
 
 func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleStore, bound TurnLease, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
 	if ctx == nil || store == nil || request.Lease.Turn.ID != bound.Turn.ID || request.Lease.Turn.RequestID != bound.Turn.RequestID ||
-		request.Lease.LeaseID != bound.LeaseID || request.Lease.Epoch != bound.Epoch || request.Call.Name != coremodel.IntrinsicScheduleCreateToolName || request.Call.Validate() != nil {
+		request.Lease.LeaseID != bound.LeaseID || request.Lease.Epoch != bound.Epoch || request.Call.Name != coremodel.IntrinsicScheduleCreateToolName || request.Call.Validate() != nil ||
+		request.ConversationRevision == 0 || request.ConversationRevision == ^uint64(0) {
 		return IntrinsicExecutionResult{}, ErrInvalid
 	}
 	args, err := parseScheduleIntrinsicArguments(request.CanonicalArguments)
@@ -124,10 +125,11 @@ func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleSto
 	}{turn.OwnerID, turn.AccountGeneration, turn.ID, turn.RequestID, request.Call.ID, schedule}
 	digestRaw, _ := json.Marshal(digestInput)
 	digestSum := sha256.Sum256(digestRaw)
-	revision := uint64(2)
-	if turn.ExpectedRevision != nil {
-		revision = *turn.ExpectedRevision + 1
-	}
+	// The client revision is optional for normal chat. Use the exact
+	// conversation snapshot that produced this model tool call, so a later
+	// concurrent commit still fails the PostgreSQL CAS instead of either
+	// guessing revision 2 or appending to context the model did not see.
+	revision := request.ConversationRevision + 1
 	message := Message{
 		ID:   uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-schedule-message:"+turn.ID+":"+request.Call.ID)).String(),
 		Role: RoleAssistant, Content: fmt.Sprintf("Scheduled %q (schedule_id: %s).", schedule.Name, schedule.ID),

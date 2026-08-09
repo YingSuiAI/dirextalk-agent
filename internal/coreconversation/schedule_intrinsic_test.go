@@ -23,6 +23,11 @@ type scheduleCapableTurnStore struct {
 	*conversationScheduleStoreStub
 }
 
+type executingScheduleTurnStore struct {
+	*readOnlyTurnStore
+	*conversationScheduleStoreStub
+}
+
 func (s *conversationScheduleStoreStub) CommitConversationSchedule(_ context.Context, command ConversationScheduleCommand) (coretask.Schedule, error) {
 	if s.err != nil {
 		return coretask.Schedule{}, s.err
@@ -45,20 +50,86 @@ func scheduleIntrinsicLease() TurnLease {
 
 func executeScheduleForTest(t *testing.T, store *conversationScheduleStoreStub, lease TurnLease, callID string, arguments map[string]any) error {
 	t.Helper()
+	conversationRevision := uint64(1)
+	if lease.Turn.ExpectedRevision != nil {
+		conversationRevision = *lease.Turn.ExpectedRevision
+	}
+	return executeScheduleForTestAtRevision(t, store, lease, callID, arguments, conversationRevision)
+}
+
+func executeScheduleForTestAtRevision(t *testing.T, store *conversationScheduleStoreStub, lease TurnLease, callID string, arguments map[string]any, conversationRevision uint64) error {
+	t.Helper()
 	raw, err := json.Marshal(arguments)
 	if err != nil {
 		t.Fatal(err)
 	}
 	intrinsic := scheduleIntrinsic(store, lease)
 	result, err := intrinsic.Execute(context.Background(), IntrinsicExecutionRequest{
-		Lease:              lease,
-		Call:               ToolCall{ID: callID, Name: coremodel.IntrinsicScheduleCreateToolName, Arguments: string(raw)},
-		CanonicalArguments: raw,
+		Lease:                lease,
+		Call:                 ToolCall{ID: callID, Name: coremodel.IntrinsicScheduleCreateToolName, Arguments: string(raw)},
+		CanonicalArguments:   raw,
+		ConversationRevision: conversationRevision,
 	})
 	if err == nil && !result.TurnCommitted {
 		t.Fatal("schedule intrinsic returned success without committing the turn")
 	}
 	return err
+}
+
+func TestScheduleIntrinsicUsesLoadedRevisionWhenClientCASIsOmitted(t *testing.T) {
+	lease := scheduleIntrinsicLease()
+	lease.Turn.ExpectedRevision = nil
+	store := &conversationScheduleStoreStub{}
+	arguments := map[string]any{
+		"name": "existing conversation", "goal": "send reminder", "run_at": "2026-08-09T02:03:04Z",
+	}
+	if err := executeScheduleForTestAtRevision(t, store, lease, "call-existing", arguments, 5); err != nil {
+		t.Fatalf("execute schedule intrinsic: %v", err)
+	}
+	if len(store.commands) != 1 || store.commands[0].Response.Revision != 6 {
+		t.Fatalf("response=%+v", store.commands)
+	}
+	if err := executeScheduleForTestAtRevision(t, store, lease, "call-invalid", arguments, 0); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("zero conversation revision err=%v", err)
+	}
+}
+
+func TestExecuteTurnPassesLoadedConversationRevisionToScheduleIntrinsic(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{
+		ID: conversationID, Revision: 5,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(),
+		OwnerID: "@owner:example.test", AccountGeneration: 9,
+		ConversationID: conversationID, Prompt: "schedule this", ProfileID: profile.ProfileID,
+		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+		State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC(),
+	}
+	turnStore := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}
+	scheduleStore := &conversationScheduleStoreStub{}
+	store := &executingScheduleTurnStore{readOnlyTurnStore: turnStore, conversationScheduleStoreStub: scheduleStore}
+	call := ToolCall{
+		ID: uuid.NewString(), Name: coremodel.IntrinsicScheduleCreateToolName,
+		Arguments: `{"name":"existing conversation","goal":"send reminder","run_at":"2026-08-09T02:03:04Z"}`,
+	}
+	model := &twoRoundReadOnlyModel{call: call}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+		return profile, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.executeTurn(context.Background(), turn.ID)
+	if len(scheduleStore.commands) != 1 || scheduleStore.commands[0].Response.Revision != 6 || turnStore.failedCode != "" {
+		t.Fatalf("commands=%+v failed=%q", scheduleStore.commands, turnStore.failedCode)
+	}
 }
 
 func TestScheduleIntrinsicInjectsTurnAuthorityAndUsesDeterministicIdentity(t *testing.T) {
