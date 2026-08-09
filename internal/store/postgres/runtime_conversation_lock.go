@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
@@ -28,10 +30,7 @@ func (store *Store) AcquireRuntimeConversation(
 	if err != nil {
 		return nil, fmt.Errorf("acquire runtime conversation lock connection: %w", err)
 	}
-	lockKey := strings.Join(
-		[]string{runtimeConversationLockPrefix, ownerID, conversationID},
-		"\x00",
-	)
+	lockKey := runtimeConversationLockKey(ownerID, conversationID)
 	if _, err := connection.Exec(
 		ctx,
 		`SELECT pg_advisory_lock(hashtextextended($1, 0))`,
@@ -48,4 +47,12 @@ func (store *Store) AcquireRuntimeConversation(
 			}
 		})
 	}, nil
+}
+
+func runtimeConversationLockKey(ownerID, conversationID string) string {
+	digest := sha256.Sum256([]byte(strings.Join(
+		[]string{runtimeConversationLockPrefix, ownerID, conversationID},
+		"\x00",
+	)))
+	return runtimeConversationLockPrefix + "/" + hex.EncodeToString(digest[:])
 }
