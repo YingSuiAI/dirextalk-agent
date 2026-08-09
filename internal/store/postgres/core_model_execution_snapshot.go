@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -13,6 +14,9 @@ import (
 // snapshot. Non-secret fields are reconstructed from the snapshot itself, so
 // profile updates cannot drift a queued task to a newer configuration.
 func (s *Store) ResolveExecutionProfile(ctx context.Context, snap coretask.ModelProfileSnapshot) (coremodel.Profile, error) {
+	if snap.ModelKind != coremodel.ModelKindConversation || snap.CredentialVersion <= 0 || snap.SecretRef != fmt.Sprintf("model-profile:%s:%d", snap.ProfileID, snap.Revision) || snap.Digest != coreTaskModelSnapshotDigest(snap) {
+		return coremodel.Profile{}, coretask.ErrRevisionConflict
+	}
 	var version uint32
 	var nonce, ciphertext []byte
 	if err := s.pool.QueryRow(ctx, `SELECT secret_key_version,api_key_nonce,api_key_ciphertext FROM core_model_profile_secret_revisions WHERE profile_id=$1 AND revision=$2`, snap.ProfileID, snap.Revision).Scan(&version, &nonce, &ciphertext); err != nil {
@@ -27,5 +31,5 @@ func (s *Store) ResolveExecutionProfile(ctx context.Context, snap coretask.Model
 	}
 	apiKey := string(plaintext)
 	clearBytes(plaintext)
-	return coremodel.Profile{ID: snap.ProfileID, Revision: snap.Revision, Provider: coremodel.ModelProvider(snap.Provider), BaseURL: snap.BaseURL, Model: snap.Model, APIKey: apiKey, APIKeyConfigured: true, SystemPrompt: snap.SystemPrompt, Temperature: snap.Temperature, TopP: snap.TopP, MaxOutputTokens: snap.MaxOutputTokens, ContextWindow: snap.ContextWindow, ReasoningEffort: snap.ReasoningEffort}, nil
+	return coremodel.Profile{ID: snap.ProfileID, DisplayName: "snapshot", Revision: snap.Revision, CredentialVersion: snap.CredentialVersion, Provider: coremodel.ModelProvider(snap.Provider), ModelKind: snap.ModelKind, BaseURL: snap.BaseURL, Model: snap.Model, APIKey: apiKey, APIKeyConfigured: true, SystemPrompt: snap.SystemPrompt, Temperature: snap.Temperature, TopP: snap.TopP, MaxOutputTokens: snap.MaxOutputTokens, ContextWindow: snap.ContextWindow, ReasoningEffort: snap.ReasoningEffort}, nil
 }

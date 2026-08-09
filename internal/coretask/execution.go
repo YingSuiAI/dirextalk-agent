@@ -20,19 +20,21 @@ import (
 const MaxAgentRounds = 8
 
 type ModelProfileSnapshot struct {
-	ProfileID       string   `json:"profile_id"`
-	Revision        int64    `json:"revision"`
-	Digest          string   `json:"digest"`
-	SecretRef       string   `json:"secret_ref"`
-	Provider        string   `json:"provider"`
-	BaseURL         string   `json:"base_url"`
-	Model           string   `json:"model"`
-	SystemPrompt    string   `json:"system_prompt"`
-	Temperature     *float64 `json:"temperature,omitempty"`
-	TopP            *float64 `json:"top_p,omitempty"`
-	MaxOutputTokens int      `json:"max_output_tokens"`
-	ContextWindow   int      `json:"context_window"`
-	ReasoningEffort string   `json:"reasoning_effort"`
+	ProfileID         string   `json:"profile_id"`
+	Revision          int64    `json:"revision"`
+	CredentialVersion int64    `json:"credential_version"`
+	Digest            string   `json:"digest"`
+	SecretRef         string   `json:"secret_ref"`
+	Provider          string   `json:"provider"`
+	ModelKind         string   `json:"model_kind"`
+	BaseURL           string   `json:"base_url"`
+	Model             string   `json:"model"`
+	SystemPrompt      string   `json:"system_prompt"`
+	Temperature       *float64 `json:"temperature,omitempty"`
+	TopP              *float64 `json:"top_p,omitempty"`
+	MaxOutputTokens   int      `json:"max_output_tokens"`
+	ContextWindow     int      `json:"context_window"`
+	ReasoningEffort   string   `json:"reasoning_effort"`
 }
 
 type ExtensionExecutionSnapshot struct {

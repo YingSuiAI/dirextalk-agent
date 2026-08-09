@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -151,7 +152,11 @@ func TestCoreTaskGenericPayloadPersistenceAndScheduleParity(t *testing.T) {
 	if err != nil || got.Spec.Kind != coretask.TaskKindExtension || got.Spec.Payload.Extension == nil {
 		t.Fatalf("extension roundtrip=%+v err=%v", got, err)
 	}
-	knowledge := create(coretask.TaskSpec{Kind: coretask.TaskKindKnowledgeIndex, Goal: "index", ModelProfileID: profile, IdempotencyKey: uuid.NewString(), Payload: coretask.TaskPayload{KnowledgeIndex: &coretask.KnowledgeIndexTaskPayload{SourceIDs: []string{"source-a"}, ExpectedSourceRevision: []uint64{2}, CollectionConfigDigest: strings.Repeat("b", 64)}}})
+	embeddingProfile := uuid.NewString()
+	if _, err = store.CreateProfile(ctx, coremodel.Profile{ID: embeddingProfile, DisplayName: "embedding", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://example.invalid", Model: "embedding-test", APIKey: "test", Revision: 1, CreatedAt: now, UpdatedAt: now}, uuid.NewString(), strings.Repeat("d", 64)); err != nil {
+		t.Fatal(err)
+	}
+	knowledge := create(coretask.TaskSpec{Kind: coretask.TaskKindKnowledgeIndex, Goal: "index", ModelProfileID: embeddingProfile, IdempotencyKey: uuid.NewString(), Payload: coretask.TaskPayload{KnowledgeIndex: &coretask.KnowledgeIndexTaskPayload{SourceIDs: []string{"source-a"}, ExpectedSourceRevision: []uint64{2}, CollectionConfigDigest: strings.Repeat("b", 64)}}})
 	if got, err = tasks.GetTask(ctx, knowledge.ID); err != nil || got.Spec.Kind != coretask.TaskKindKnowledgeIndex {
 		t.Fatalf("knowledge roundtrip=%+v err=%v", got, err)
 	}

@@ -124,6 +124,9 @@ func (s *CoreTaskStore) modelRoundTx(ctx context.Context, tx rowQuerier, taskID 
 	var state string
 	var response []byte
 	if err := tx.QueryRow(ctx, `SELECT task_id::text,attempt,round,lease_epoch,task_revision,input_digest,state,response_json,error_code,error_summary,created_at,updated_at FROM core_task_model_rounds WHERE task_id=$1 AND attempt=$2 AND round=$3`, taskID, attempt, round).Scan(&m.TaskID, &m.Attempt, &m.Round, &m.LeaseEpoch, &m.TaskRevision, &m.InputDigest, &state, &response, &m.ErrorCode, &m.ErrorSummary, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return m, coretask.ErrNotFound
+		}
 		return m, err
 	}
 	m.State = coretask.ModelRoundState(state)
@@ -234,6 +237,9 @@ func (s *CoreTaskStore) toolTx(ctx context.Context, tx rowQuerier, taskID string
 	var state string
 	var result []byte
 	if err := tx.QueryRow(ctx, `SELECT task_id::text,attempt,round,call_id,lease_epoch,task_revision,tool_digest,arguments_digest,state,result_json,error_code,error_summary,created_at,updated_at FROM core_task_tool_calls WHERE task_id=$1 AND attempt=$2 AND round=$3 AND call_id=$4`, taskID, attempt, round, callID).Scan(&t.TaskID, &t.Attempt, &t.Round, &t.CallID, &t.LeaseEpoch, &t.TaskRevision, &t.ToolDigest, &t.ArgumentsDigest, &state, &result, &t.ErrorCode, &t.ErrorSummary, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return t, coretask.ErrNotFound
+		}
 		return t, err
 	}
 	t.State = coretask.ToolCallState(state)

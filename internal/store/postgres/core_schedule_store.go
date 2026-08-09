@@ -109,7 +109,7 @@ func (s *CoreScheduleStore) ListOccurrences(ctx context.Context, scheduleID, tok
 		}
 		afterID = cursor.ID
 	}
-	rows, err := s.store.pool.Query(ctx, `SELECT occurrence_id,schedule_id,scheduled_for,trigger_key,task_id,created_at FROM core_schedule_occurrences WHERE schedule_id=$1 AND ($2::timestamptz IS NULL OR (scheduled_for,occurrence_id)>($2,$3::uuid)) ORDER BY scheduled_for,occurrence_id LIMIT $4`, scheduleID, nullableScheduleTime(after), nullableScheduleUUID(afterID), limit+1)
+	rows, err := s.store.pool.Query(ctx, `SELECT occurrence_id,schedule_id,scheduled_for,COALESCE(trigger_key::text,''),task_id,created_at FROM core_schedule_occurrences WHERE schedule_id=$1 AND ($2::timestamptz IS NULL OR (scheduled_for,occurrence_id)>($2,$3::uuid)) ORDER BY scheduled_for,occurrence_id LIMIT $4`, scheduleID, nullableScheduleTime(after), nullableScheduleUUID(afterID), limit+1)
 	if err != nil {
 		return nil, "", err
 	}
