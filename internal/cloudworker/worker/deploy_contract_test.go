@@ -335,7 +335,12 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 		"0000000000200020",
 		"/run/dirextalk-cloud-worker-exec-gate/control.sock",
 		"nft --handle list chain inet dirextalk_cloud_worker pi_output",
+		`grep -Eq 'hook output priority -20; policy drop;'`,
 		`grep -c '^[[:space:]]*meta .*# handle'`,
+		"networkd_pid_before",
+		"ss -H -lntup",
+		`\"systemd-network\",pid=$networkd_pid_before`,
+		"systemd-networkd identity changed",
 		"non-loopback inbound listener",
 	} {
 		if !strings.Contains(qualifier, required) {
@@ -344,6 +349,9 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 	}
 	if strings.Contains(qualifier, "SKIP") || strings.Contains(qualifier, "skip") {
 		t.Fatal("AMI qualification must not have a skip path")
+	}
+	if strings.Contains(qualifier, "priority filter -20") {
+		t.Fatal("AMI qualification must match the pinned nftables 1.0.4 chain rendering")
 	}
 
 	allowlist := readDeployFile(t, root, "rootfs-files.allowlist")

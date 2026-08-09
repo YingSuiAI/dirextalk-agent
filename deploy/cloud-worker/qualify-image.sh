@@ -347,7 +347,7 @@ rules=$(mktemp)
 cleanup_rules() { rm -f -- "$rules"; }
 trap cleanup_rules EXIT HUP INT TERM
 nft --handle list chain inet dirextalk_cloud_worker pi_output > "$rules"
-grep -Eq 'hook output priority filter -20; policy drop;' "$rules" || { echo "Pi nft chain is not default-drop" >&2; exit 69; }
+grep -Eq 'hook output priority -20; policy drop;' "$rules" || { echo "Pi nft chain is not default-drop" >&2; exit 69; }
 [ "$(grep -c '^[[:space:]]*meta .*# handle' "$rules")" -eq 7 ] || { echo "Pi nft rule count drifted" >&2; exit 69; }
 grep -Eq 'meta skuid 65532 ip daddr 127\.0\.0\.1 ip protocol tcp tcp dport 38081 accept' "$rules" || {
     echo "Pi loopback bridge rule is missing" >&2
@@ -355,9 +355,25 @@ grep -Eq 'meta skuid 65532 ip daddr 127\.0\.0\.1 ip protocol tcp tcp dport 38081
 }
 grep -Eq 'meta skuid 65532 reject' "$rules" || { echo "Pi terminal reject rule is missing" >&2; exit 69; }
 
-ss -H -lntu | while read -r netid _state _recvq _sendq local_address _peer_address; do
+networkd_pid_before=$(systemctl show --property=MainPID --value systemd-networkd.service)
+case "$networkd_pid_before" in ''|0|*[!0-9]*) echo "missing systemd-networkd PID" >&2; exit 69 ;; esac
+ss -H -lntup | while read -r netid _state _recvq _sendq local_address _peer_address process; do
     case "$local_address" in 127.*:*|\[::1\]:*) ;;
-        *) echo "non-loopback inbound listener: $netid $local_address" >&2; exit 69 ;;
+        *)
+            # systemd-networkd must retain its EC2 DHCP client sockets after
+            # acquiring the lease. They are not inbound services; bind the
+            # only exceptions to its exact live PID and DHCP client ports.
+            if [ "$netid" = udp ] &&
+                { printf '%s\n' "$local_address" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}%[[:alnum:]_.:-]+:68$' ||
+                    printf '%s\n' "$local_address" | grep -Eq '^\[fe80:[0-9a-f:]+%[[:alnum:]_.:-]+\]:546$'; } &&
+                printf '%s\n' "$process" | grep -Eq "^users:\(\(\"systemd-network\",pid=$networkd_pid_before,fd=[0-9]+\)\)$"; then
+                continue
+            fi
+            echo "non-loopback inbound listener: $netid $local_address" >&2
+            exit 69
+            ;;
     esac
 done
+networkd_pid_after=$(systemctl show --property=MainPID --value systemd-networkd.service)
+[ "$networkd_pid_after" = "$networkd_pid_before" ] || { echo "systemd-networkd identity changed" >&2; exit 70; }
 echo "cloud-worker candidate boot prequalification: PASS"
