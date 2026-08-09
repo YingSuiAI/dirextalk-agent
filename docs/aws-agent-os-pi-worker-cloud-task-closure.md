@@ -29,7 +29,7 @@
 
 | 仓库 | 分支 | 已验收功能提交 | 说明 |
 | --- | --- | --- | --- |
-| `dirextalk-agent` | `aws-agent-os` | `e7dcd5b` | demo2 v105；Central 读取 retained Artifact 并在 durable conversation 生成回复 |
+| `dirextalk-agent` | `aws-agent-os` | `bd34f3a` | demo2 v106；Central 读取 retained Artifact，并兼容收敛 Reaper 的规范化资源清单 |
 | `dirextalk-message-server` | `aws-agent-os` | `42b018c` | durable completion relay 和 v2 ProductCore event |
 | `dirextalk-flutter` | `aws-agent-os` | `6f0a716a` | 用户 Artifact 过滤、Plan/Task relation 恢复、App 真实验收 |
 
@@ -660,6 +660,42 @@ Agent 在成功 Team Report 与 verified cleanup 同一事务边界内产生 `te
 
 这次是新 v2 realtime event、Central 真实回复、产物内容读取、App 多 Artifact 展示、后续指代记忆和 AWS 归零的同一条关联验收，不再是历史事件重放。
 
+### 16.5 Reaper 规范化资源清单兼容收敛
+
+第三次验收后，demo2 仍反复恢复一条较早取消的 Deployment
+`5d63b90f-2772-586d-8f4e-a820ab5c8626`。AWS 资源实际已不存在，Reaper 在
+DynamoDB 中保存的 revision 14 清单也已把五类资源标记为
+`verified_destroyed`，但 Central 的 PostgreSQL 本地代次仍是 revision 5 的
+`destroy_scheduled`。两份 EC2 资源事实唯一的表示差异是
+`provider_candidate_ids` 的空数组与 `null`；旧
+`exactDestroyReconciliationIdentity` 使用 `reflect.DeepEqual`，把这两个语义相同
+的空列表误判成资源漂移，因此无法采用 Reaper 的后继代次。
+
+提交 `bd34f3a2511180d32b54e7b8d6f66d3adf310f26` 先用
+`slices.Equal` 比较候选 ID，再把预期值规范化为 Reaper 值后执行其余严格等值
+校验。它只放宽 `nil` 与空切片的表示差异；任何额外的非空 provider candidate
+仍然失败关闭。聚焦测试覆盖空列表兼容和非空漂移拒绝，`internal/resource`
+完整测试、竞态测试、相关跨包测试与 `go vet` 均通过。
+
+Agent-only 镜像
+`v0.1.0-alpha.20260809.106-bd34f3a25111@sha256:0b8df10dbf236ff7a288d2a03a5d8cdee347e60a55eea6cc1adefbf4fb9c2f43`
+部署到 demo2 后，系统没有手工修改数据库便自动完成以下收敛：
+
+- Team role 进入 `completed/canceled`，record revision 由 57 推进到 66；
+- EC2、EBS、ENI、EIP 和 Security Group 全部进入
+  `verified_destroyed/readback_exists=false`；
+- 本地 mirror 采用 Reaper manifest revision 14，mirror generation 11，状态
+  `mirrored`；
+- 收敛后的两个后台周期没有再出现该 Deployment、资源 revision conflict 或
+  cloud-prerequisite recovery 警告；
+- 第三次真实验收的 Task 仍为 `finished/succeeded`，Execution 与角色仍为
+  `completed/succeeded`，Agent 容器 healthy、零重启。
+
+独立 AWS API 对旧 provider ID 回读确认 EBS、ENI、EIP、Security Group 和 EC2
+均不存在。临时 x86 发布构建机 `i-0e26061afba7890e1` 随后终止，其 root volume、
+ENI、安全组和临时 SSH key 均回读为不存在；Buildx 会话与 demo2 ECR
+authorization 也已清空。
+
 ## 17. 第十二阶段：Flutter 完成展示
 
 ### 17.1 Plan 卡与轮询
@@ -863,6 +899,15 @@ App 自动收到完成消息和 Artifact metadata，公开结果不含 Worker ri
 
 Central 的内部 completion observation 包含三个经重新读取和 SHA-256 验证的 `content_state=included` 内容。Central 生成的回复读出六词结果，区分用户产物与内部 `final.json`，并主动指出 Worker final 未遵守用户指定的摘要限制。App 只显示 `report.md` 与 `result.json`。不附带任何 ID 的后续追问仍由 Central 正确回答六个词及对应文件。独立 AWS API 确认 EC2 `terminated`，EBS、ENI、EIP 和 Security Group 均为空集合；三个 S3 Artifact 按 90 天保留策略保存。
 
+### 21.4 旧资源清单恢复兼容验收
+
+2026-08-09，Agent v106 在不修改 Worker AMI、Message Server 或 Flutter 的前提下，
+修复了旧 PostgreSQL 空数组与 Reaper DynamoDB `null` 的规范化差异。真实历史
+Deployment `5d63b90f-2772-586d-8f4e-a820ab5c8626` 在启动后的后台恢复中自动采用
+revision 14 清单，五类资源全部达到 `verified_destroyed`，Team role 完成为
+`canceled`。收敛后持续观察两个后台周期未再出现相关 warning，第三次验收的
+成功 Task 状态保持不变。当前 demo2 Agent release 和 digest 记录在 16.5 节。
+
 ## 22. 已知边界
 
 以下能力**没有**被本文所述闭环实现或验收：
@@ -927,6 +972,7 @@ Central 的内部 completion observation 包含三个经重新读取和 SHA-256 
 | Retained Artifact 内容读取 | `internal/app/team_artifact_content_reader.go` |
 | Central 完成 observation/合成 | `internal/runtimeapp/team_completion.go` |
 | 清理 | `internal/app/team_role_cleanup.go` |
+| Resource/Reaper 清单收敛 | `internal/resource/service.go` |
 | Reaper | `cmd/dirextalk-aws-reaper/main.go`、`internal/awsreaper/` |
 | AMI 发布 | `cmd/dirextalk-agent/publish_worker_ami.go`、`internal/workeramictl/` |
 | 真实验收账本 | `docs/delivery-tracker.md` |
