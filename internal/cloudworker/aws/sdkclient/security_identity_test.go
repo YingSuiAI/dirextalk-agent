@@ -109,6 +109,39 @@ func TestObserveTerminalRollbackWithoutIAMResourcesReadsNamesAsAbsent(t *testing
 	}
 }
 
+func TestObserveDeleteCompleteUsesIndependentDestroyedInventory(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	plan, intent := sdkSecurityPlanAndIntent(t, now)
+	stackID := sdkSecurityStackID(intent.StackName)
+	stack := sdkSecurityStack(plan, intent, stackID, now.Add(time.Second))
+	stack.StackStatus = cftypes.StackStatusDeleteComplete
+	iamFake := &securityIAMFake{roleMissing: true, profileMissing: true}
+	client, _ := sdkSecurityClient(t, now.Add(2*time.Second), stack, nil, iamFake)
+	policy, err := plan.Network.SecurityGroupPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := client.ObserveGraph(context.Background(), cloudaws.ObserveGraphRequest{
+		Identity: plan.Identity, Plan: plan, PlanDigest: plan.Digest, InfrastructureDigest: plan.InfrastructureDigest,
+		IntentDigest: intent.IntentDigest, ClientToken: intent.ClientToken, StackProviderID: stackID,
+		ExpectedResourceProviderIDs: map[cloudaws.ResourceKind]string{cloudaws.ResourceStack: stackID},
+		ExpectedTags:                cloudaws.RequiredTags(plan.Identity, plan.Digest, plan.InfrastructureDigest, intent.IntentDigest),
+		SecurityGroupPolicy:         policy,
+	})
+	if err != nil || graph.State != cloudaws.GraphVerifiedDestroyed || graph.StackProviderID != "" ||
+		len(graph.Resources) != len(cloudaws.AllResourceKinds()) {
+		t.Fatalf("DELETE_COMPLETE graph=%+v err=%v", graph, err)
+	}
+	for _, resource := range graph.Resources {
+		if resource.Exists {
+			t.Fatalf("DELETE_COMPLETE retained live %s: %+v", resource.Kind, resource)
+		}
+		if resource.Kind == cloudaws.ResourceStack && resource.ProviderID != stackID {
+			t.Fatalf("deleted stack tombstone ID=%q, want %q", resource.ProviderID, stackID)
+		}
+	}
+}
+
 func TestFindStackByIntentFailsClosedOnReplacementVisibilityAndPagination(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	plan, intent := sdkSecurityPlanAndIntent(t, now)

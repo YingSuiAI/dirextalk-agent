@@ -58,6 +58,14 @@ func (client *Client) ObserveGraph(ctx context.Context, request cloudaws.Observe
 	if err := client.validateStack(stack, stackName, request.StackProviderID, request.ExpectedTags); err != nil {
 		return cloudaws.ObservedGraph{}, err
 	}
+	// CloudFormation retains a fully deleted stack in DescribeStacks for a
+	// bounded history window. Its exact ARN and tags remain useful ownership
+	// proof, but DELETE_COMPLETE is not a live resource. Reuse the independent
+	// tagged inventory and deterministic IAM-name read-back before publishing
+	// the graph tombstone.
+	if stack.StackStatus == cftypes.StackStatusDeleteComplete {
+		return client.observeWithoutStack(ctx, request)
+	}
 	state, err := graphState(stack.StackStatus)
 	if err != nil {
 		return cloudaws.ObservedGraph{}, err
