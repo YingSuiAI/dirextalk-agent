@@ -51,7 +51,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     && chmod 0555 /out/dirextalk-cloud-worker /out/dirextalk-cloud-worker-exec-gate
 
 RUN mkdir -p \
-        /out/rootfs/etc/ssl/certs \
         /out/rootfs/usr/local/bin \
         /out/rootfs/usr/local/sbin \
         /out/rootfs/usr/local/lib/dirextalk-cloud-worker/pi/theme \
@@ -63,8 +62,7 @@ RUN mkdir -p \
     && install -m 0551 -o 0 -g 65531 /out/pi/pi /out/rootfs/usr/local/lib/dirextalk-cloud-worker/pi/pi \
     && install -m 0444 /out/pi/package.json /out/rootfs/usr/local/lib/dirextalk-cloud-worker/pi/package.json \
     && install -m 0444 /out/pi/photon_rs_bg.wasm /out/rootfs/usr/local/lib/dirextalk-cloud-worker/pi/photon_rs_bg.wasm \
-    && install -m 0444 /out/pi/theme/*.json /out/rootfs/usr/local/lib/dirextalk-cloud-worker/pi/theme/ \
-    && install -m 0444 /etc/ssl/certs/ca-certificates.crt /out/rootfs/etc/ssl/certs/ca-certificates.crt
+    && install -m 0444 /out/pi/theme/*.json /out/rootfs/usr/local/lib/dirextalk-cloud-worker/pi/theme/
 
 COPY --chmod=0444 deploy/cloud-worker/dirextalk-result.ts /out/rootfs/usr/local/lib/dirextalk-cloud-worker/pi/dirextalk-result.ts
 COPY --chmod=0444 deploy/cloud-worker/dirextalk-cloud-worker.service /out/rootfs/usr/local/lib/systemd/system/dirextalk-cloud-worker.service

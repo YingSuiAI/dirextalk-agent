@@ -59,7 +59,10 @@ POSIX utilities and the exact supplied `nftables` NEVRA. The installer only
 verifies that immutable source-AMI input with `rpm -q`; it never consults a
 mutable package repository. A different nftables build requires a newly
 qualified explicit source AMI ID. Missing tools or observations fail closed;
-there is no unpinned fallback.
+there is no unpinned fallback. The qualified Amazon Linux source also supplies
+the root-owned, non-symlink system trust bundle at
+`/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`; the Worker payload does
+not replace the source image's system roots.
 
 The semantic `ami_digest` must equal canonical `installation.json`; it is
 tagged on the AMI, build instance, root volume, and snapshot. The distinct

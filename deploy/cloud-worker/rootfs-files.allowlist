@@ -1,5 +1,4 @@
 # mode uid gid path
-0444 0 0 etc/ssl/certs/ca-certificates.crt
 0555 0 0 usr/local/bin/dirextalk-cloud-worker
 0555 0 0 usr/local/bin/dirextalk-cloud-worker-exec-gate
 0444 0 0 usr/local/lib/dirextalk-cloud-worker/pi/dirextalk-result.ts

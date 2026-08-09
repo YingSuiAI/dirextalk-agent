@@ -167,6 +167,8 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 	if strings.Count(containerfile, "install -m 0440 -o 0 -g 65531") != 2 ||
 		strings.Count(containerfile, "install -m 0440 -o 0 -g 65532") != 1 ||
 		!strings.Contains(containerfile, "install -m 0551 -o 0 -g 65531 /out/pi/pi") ||
+		strings.Contains(containerfile, "/out/rootfs/etc/ssl") ||
+		strings.Contains(containerfile, "/out/rootfs/etc/pki") ||
 		strings.Contains(containerfile, "update-ca-certificates") ||
 		strings.Contains(containerfile, "ENV NODE_EXTRA_CA_CERTS") {
 		t.Fatal("control/proxy CA ownership or system trust boundary is unsafe")
@@ -327,6 +329,9 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 		if !strings.Contains(allowlist, required) {
 			t.Fatalf("rootfs allowlist lacks %q", required)
 		}
+	}
+	if strings.Contains(allowlist, "etc/ssl/") || strings.Contains(allowlist, "etc/pki/") {
+		t.Fatal("rootfs payload must use the exact qualified source AMI system trust bundle")
 	}
 	for _, name := range []string{"package-rootfs-bundle.sh", "install-rootfs.sh", "qualify-image.sh", "build-worker-ami.sh"} {
 		info, err := os.Stat(filepath.Join(root, name))

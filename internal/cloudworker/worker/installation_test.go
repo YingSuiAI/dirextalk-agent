@@ -19,6 +19,14 @@ import (
 	"time"
 )
 
+func TestDefaultInstallationUsesQualifiedSourceSystemTrust(t *testing.T) {
+	t.Parallel()
+	paths := DefaultInstallationPaths()
+	if paths.SystemTrustBundle != "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem" {
+		t.Fatalf("system trust bundle = %q", paths.SystemTrustBundle)
+	}
+}
+
 func TestLoadInstallationBindsImagePolicyAndProxyTrust(t *testing.T) {
 	t.Parallel()
 	fixture := newInstallationFixture(t)

@@ -25,7 +25,7 @@ const (
 	DefaultTrustBundlePath          = "/usr/local/share/dirextalk-cloud-worker/control-plane-ca.pem"
 	DefaultOutboundProxyTrustPath   = "/usr/local/share/dirextalk-cloud-worker/outbound-proxy-ca.pem"
 	DefaultModelRelayTrustPath      = cloudruntime.PiModelRelayTrustBundlePath
-	DefaultSystemTrustBundlePath    = "/etc/ssl/certs/ca-certificates.crt"
+	DefaultSystemTrustBundlePath    = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
 	DefaultHostNetworkPolicyPath    = "/usr/local/share/dirextalk-cloud-worker/pi-egress.nft"
 	DefaultWorkerExecutablePath     = "/usr/local/bin/dirextalk-cloud-worker"
 	DefaultPiExecutablePath         = "/usr/local/lib/dirextalk-cloud-worker/pi/pi"
