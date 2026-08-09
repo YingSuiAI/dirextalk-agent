@@ -9,6 +9,7 @@
 0444 0 0 usr/local/lib/dirextalk-cloud-worker/pi/theme/light.json
 0444 0 0 usr/local/lib/dirextalk-cloud-worker/pi/theme/theme-schema.json
 0444 0 0 usr/local/lib/systemd/system/dirextalk-cloud-worker-exec-gate.service
+0444 0 0 usr/local/lib/systemd/system/dirextalk-cloud-worker-boot-qualification.service
 0444 0 0 usr/local/lib/systemd/system/dirextalk-cloud-worker-network.service
 0444 0 0 usr/local/lib/systemd/system/dirextalk-cloud-worker.service
 0555 0 0 usr/local/sbin/dirextalk-cloud-worker-qualify

@@ -140,6 +140,7 @@ for reserved in \
     usr/local/share/dirextalk-cloud-worker \
     usr/local/lib/systemd/system/dirextalk-cloud-worker.service \
     usr/local/lib/systemd/system/dirextalk-cloud-worker-exec-gate.service \
+    usr/local/lib/systemd/system/dirextalk-cloud-worker-boot-qualification.service \
     usr/local/lib/systemd/system/dirextalk-cloud-worker-network.service \
     usr/lib/sysusers.d/dirextalk-cloud-worker.conf
 do
@@ -189,6 +190,7 @@ assert_target
 systemctl --root="$target_root" enable \
     dirextalk-cloud-worker-network.service \
     dirextalk-cloud-worker-exec-gate.service \
+    dirextalk-cloud-worker-boot-qualification.service \
     dirextalk-cloud-worker.service
 systemctl --root="$target_root" mask \
     sshd.service sshd.socket ssh.service ssh.socket \

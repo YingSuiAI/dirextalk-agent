@@ -1,0 +1,27 @@
+[Unit]
+Description=Dirextalk immutable Cloud Worker boot qualification
+Documentation=https://github.com/YingSuiAI/dirextalk-agent
+Requires=dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service
+After=dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service
+Before=dirextalk-cloud-worker.service
+AssertFileIsExecutable=/usr/local/sbin/dirextalk-cloud-worker-qualify
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/dirextalk-cloud-worker-qualify --phase boot --target-root / --ami-digest-file /usr/local/share/dirextalk-cloud-worker/installation.json --rootfs-sha256-file /usr/local/share/dirextalk-cloud-worker/rootfs-bundle.sha256 --nftables-nevra-file /usr/local/share/dirextalk-cloud-worker/nftables.nevra
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -45,6 +47,10 @@ func run(ctx context.Context) error {
 		validatePrivateDirectory(worker.DefaultWorkspaceRoot, currentEffectiveUID(), worker.PiRuntimeGID) != nil {
 		return worker.ErrInvalid
 	}
+	if err := validateCurrentProcessCapabilities("/proc/self/status", "00000000000000c0"); err != nil {
+		return err
+	}
+	slog.Info("[cloud-worker] startup_qualification=pass")
 	imds := worker.NewIMDSClient()
 	bootstrapRaw, err := imds.ReadUserData(ctx)
 	if err != nil {
@@ -159,6 +165,43 @@ func run(ctx context.Context) error {
 		}
 		return bridgeErr
 	}
+}
+
+func validateCurrentProcessCapabilities(path, expected string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return worker.ErrUnavailable
+	}
+	defer file.Close()
+	wanted := map[string]bool{
+		"CapInh:": false,
+		"CapPrm:": false,
+		"CapEff:": false,
+		"CapBnd:": false,
+		"CapAmb:": false,
+	}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) != 2 {
+			continue
+		}
+		if _, ok := wanted[fields[0]]; ok {
+			if fields[1] != expected || wanted[fields[0]] {
+				return worker.ErrInvalid
+			}
+			wanted[fields[0]] = true
+		}
+	}
+	if scanner.Err() != nil {
+		return worker.ErrUnavailable
+	}
+	for _, found := range wanted {
+		if !found {
+			return worker.ErrInvalid
+		}
+	}
+	return nil
 }
 
 type workerControlTunnel interface {

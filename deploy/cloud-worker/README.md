@@ -178,24 +178,28 @@ The final AMI process must:
 - keep S3 bucket keys disabled for the versioned staging/artifact bucket so
   the exact object ARN KMS encryption-context policy remains effective.
 
-Packer runs the `offline` qualification phase before snapshotting. After a
-fresh candidate is launched with its real immutable Worker bootstrap, invoke
-the same bound command from launch user data and preserve console output; do
-not add SSH or SSM for qualification:
+Packer runs the `offline` qualification phase before snapshotting. A fresh
+candidate must still use the real immutable Worker JSON as its exact EC2 user
+data; user data is not a maintenance script or a second command channel. The
+enabled boot graph performs qualification before the Worker without SSH or
+SSM: the execution Gate first runs its production fanotify permission probe,
+then `dirextalk-cloud-worker-boot-qualification.service` invokes the bound
+read-only image/network checks, and finally the Worker verifies its own exact
+process capability set before reading the immutable bootstrap. Preserve all
+three PASS records from EC2 console output:
 
 ```text
-/usr/local/sbin/dirextalk-cloud-worker-qualify \
-  --phase boot \
-  --target-root / \
-  --ami-digest <semantic-ami-digest> \
-  --rootfs-sha256 <rootfs-tar-sha256> \
-  --nftables-nevra <exact-nftables-nevra>
+[cloud-worker-exec-gate] fanotify_qualification=pass
+cloud-worker candidate boot prequalification: PASS
+[cloud-worker] startup_qualification=pass
 ```
 
-This phase requires all three units active in order, exact Gate and Worker
-process capabilities, the root/65531 Gate socket boundary, the exact
-default-drop Pi nftables chain, and no non-loopback TCP or UDP listener. It
-has no skip path. The Packer build SG is never reused at runtime.
+The boot graph requires the network and Gate units active before the
+qualification service and the qualification service complete before the
+Worker. It verifies exact Gate and Worker process capabilities, the
+root/65531 Gate socket boundary, the exact default-drop Pi nftables chain, and
+no non-loopback TCP or UDP listener. It has no skip path. The Packer build SG
+is never reused at runtime.
 Independently read back the candidate Worker Security Group and require zero
 ingress rules; a host listener check cannot prove AWS policy.
 
@@ -214,12 +218,14 @@ shellcheck deploy/cloud-worker/*.sh
 
 `TestFanotifyExecPermissionExternalAMIGate` intentionally skips on an ordinary
 host without root plus `CAP_SYS_ADMIN`. That skip is acceptable only for local
-repository checks. On the candidate Linux AMI/kernel it must run with `-v` and
-record `PASS`. Boot qualification must then prove the network and Gate units
-are active before the Worker, the Worker has no `CAP_SYS_ADMIN`, Pi has no
-effective/permitted/inheritable capability, the Gate socket is root-owned and
-group-accessible only to UID/GID `65531`, and no SSH/SSM or inbound listener is
-enabled. A skip or missing observation leaves the AMI unqualified.
+repository checks. The candidate Linux AMI/kernel runs the same production
+`QualifyFanotifyExecPermission` path from the Gate's mandatory `ExecStartPre`;
+its console PASS is the non-skipped external proof. Boot qualification must
+then prove the network and Gate units are active before the Worker, the Worker
+has no `CAP_SYS_ADMIN`, Pi has no effective/permitted/inheritable capability,
+the Gate socket is root-owned and group-accessible only to UID/GID `65531`,
+and no SSH/SSM or inbound listener is enabled. A missing PASS or observation
+leaves the AMI unqualified.
 
 The AMI build renders a fixed host nftables policy and qualification compares
 its digest with the immutable Core AWS release profile. Runtime user data

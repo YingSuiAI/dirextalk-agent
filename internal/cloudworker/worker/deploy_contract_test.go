@@ -54,8 +54,8 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 
 	unit := readDeployFile(t, root, "dirextalk-cloud-worker.service")
 	for _, required := range []string{
-		"Requires=dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service",
-		"After=network-online.target dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service",
+		"Requires=dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service dirextalk-cloud-worker-boot-qualification.service",
+		"After=network-online.target dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service dirextalk-cloud-worker-boot-qualification.service",
 		"User=dirextalk-cloud-worker",
 		"Group=dirextalk-pi",
 		"SupplementaryGroups=dirextalk-cloud-worker",
@@ -96,6 +96,7 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 		"AssertFileIsExecutable=/usr/local/lib/dirextalk-cloud-worker/pi/pi",
 		"User=root",
 		"Group=dirextalk-cloud-worker",
+		"ExecStartPre=/usr/local/bin/dirextalk-cloud-worker-exec-gate --qualify-fanotify",
 		"RuntimeDirectory=dirextalk-cloud-worker-exec-gate",
 		"RuntimeDirectoryMode=0750",
 		"CapabilityBoundingSet=CAP_SYS_ADMIN CAP_KILL",
@@ -109,6 +110,28 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 	if strings.Contains(gateUnit, "ConditionFileIsExecutable=") ||
 		strings.Contains(strings.ToLower(gateUnit), "ssm") {
 		t.Fatal("required execution gate may be skipped or use SSM")
+	}
+
+	bootQualificationUnit := readDeployFile(t, root, "dirextalk-cloud-worker-boot-qualification.service")
+	for _, required := range []string{
+		"Requires=dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service",
+		"After=dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service",
+		"Before=dirextalk-cloud-worker.service",
+		"ExecStart=/usr/local/sbin/dirextalk-cloud-worker-qualify --phase boot",
+		"--ami-digest-file /usr/local/share/dirextalk-cloud-worker/installation.json",
+		"--rootfs-sha256-file /usr/local/share/dirextalk-cloud-worker/rootfs-bundle.sha256",
+		"--nftables-nevra-file /usr/local/share/dirextalk-cloud-worker/nftables.nevra",
+		"CapabilityBoundingSet=CAP_NET_ADMIN",
+		"AmbientCapabilities=CAP_NET_ADMIN",
+	} {
+		if !strings.Contains(bootQualificationUnit, required) {
+			t.Fatalf("boot qualification unit lacks %q", required)
+		}
+	}
+	if strings.Contains(bootQualificationUnit, "CAP_SYS_ADMIN") ||
+		strings.Contains(strings.ToLower(bootQualificationUnit), "ssm") ||
+		strings.Contains(strings.ToLower(bootQualificationUnit), "ssh") {
+		t.Fatal("boot qualification gained an execution-gate or remote maintenance path")
 	}
 	gateConfig := execgate.DefaultConfig()
 	if gateConfig.SocketPath != execgate.DefaultSocketPath ||
@@ -143,6 +166,7 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 		"id=dirextalk_model_relay_ca,required=true",
 		"dirextalk-cloud-worker-network.service",
 		"dirextalk-cloud-worker-exec-gate.service",
+		"dirextalk-cloud-worker-boot-qualification.service",
 		"/out/dirextalk-cloud-worker-exec-gate ./cmd/dirextalk-cloud-worker-exec-gate",
 		"/usr/local/bin/dirextalk-cloud-worker-exec-gate",
 		"pi-egress.nft",
@@ -174,10 +198,11 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 		t.Fatal("control/proxy CA ownership or system trust boundary is unsafe")
 	}
 	for name, content := range map[string]string{
-		"worker unit":  unit,
-		"gate unit":    gateUnit,
-		"network unit": networkUnit,
-		"rootfs build": containerfile,
+		"worker unit":             unit,
+		"gate unit":               gateUnit,
+		"boot qualification unit": bootQualificationUnit,
+		"network unit":            networkUnit,
+		"rootfs build":            containerfile,
 	} {
 		lower := strings.ToLower(content)
 		if strings.Contains(lower, "amazon-ssm-agent") || strings.Contains(lower, "sshd") ||
@@ -289,14 +314,18 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 
 	qualifier := readDeployFile(t, root, "qualify-image.sh")
 	for _, required := range []string{
-		`--phase offline|boot --target-root ABSOLUTE_DIR --ami-digest HEX`,
+		`--phase offline|boot --target-root ABSOLUTE_DIR`,
+		`--ami-digest-file`,
+		`--rootfs-sha256-file`,
+		`--nftables-nevra-file`,
 		"canonical installation AMI digest mismatch",
 		`[ "$phase" != boot ] || [ "$target_root" = / ]`,
 		"qualification dependency is missing",
 		`444:0:0:1`,
 		"Pi execute-only loader boundary mismatch",
 		"explicit PT_INTERP bypass executed the pinned Pi",
-		"Pi runtime retained a supplementary group",
+		"Pi runtime identity or capability boundary mismatch",
+		`$1 == "CapEff:" { cap_eff = ($2 == "0000000000000000") }`,
 		"Pi runtime inherited a readable executable descriptor",
 		`setpriv --reuid=65532 --regid=65532 --clear-groups`,
 		`systemd-analyze --root="$target_root"`,
@@ -304,7 +333,6 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 		"ActiveEnterTimestampMonotonic",
 		"check_process_capabilities",
 		"0000000000200020",
-		"00000000000000c0",
 		"/run/dirextalk-cloud-worker-exec-gate/control.sock",
 		"nft --handle list chain inet dirextalk_cloud_worker pi_output",
 		`grep -c '^[[:space:]]*meta .*# handle'`,
@@ -322,6 +350,7 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 	for _, required := range []string{
 		"0555 0 0 usr/local/bin/dirextalk-cloud-worker",
 		"0555 0 0 usr/local/bin/dirextalk-cloud-worker-exec-gate",
+		"0444 0 0 usr/local/lib/systemd/system/dirextalk-cloud-worker-boot-qualification.service",
 		"0551 0 65531 usr/local/lib/dirextalk-cloud-worker/pi/pi",
 		"0555 0 0 usr/local/sbin/dirextalk-cloud-worker-qualify",
 		"0444 0 0 usr/local/share/dirextalk-cloud-worker/rootfs-files.allowlist",
@@ -721,6 +750,7 @@ func TestCloudWorkerUnitsEnableMaskAndVerifyInFakeRoot(t *testing.T) {
 	workerUnits := []string{
 		"dirextalk-cloud-worker-network.service",
 		"dirextalk-cloud-worker-exec-gate.service",
+		"dirextalk-cloud-worker-boot-qualification.service",
 		"dirextalk-cloud-worker.service",
 	}
 	for _, unit := range workerUnits {
@@ -773,6 +803,7 @@ func TestCloudWorkerUnitsEnableMaskAndVerifyInFakeRoot(t *testing.T) {
 	for _, path := range []string{
 		"usr/local/bin/dirextalk-cloud-worker",
 		"usr/local/bin/dirextalk-cloud-worker-exec-gate",
+		"usr/local/sbin/dirextalk-cloud-worker-qualify",
 		"usr/local/lib/dirextalk-cloud-worker/pi/pi",
 		"usr/local/share/dirextalk-cloud-worker/pi-egress.nft",
 		"usr/local/share/dirextalk-cloud-worker/installation.json",
@@ -811,7 +842,7 @@ func TestCloudWorkerUnitsEnableMaskAndVerifyInFakeRoot(t *testing.T) {
 	}
 	command := exec.Command(analyzer,
 		"--root="+target, "--man=no", "--generators=no", "verify",
-		workerUnits[0], workerUnits[1], workerUnits[2],
+		workerUnits[0], workerUnits[1], workerUnits[2], workerUnits[3],
 	)
 	if result, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("systemd-analyze rejected fake-root Worker units: %v: %s", err, result)

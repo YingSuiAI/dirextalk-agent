@@ -3,10 +3,10 @@
 package execgate
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"os"
-	"os/exec"
 	"testing"
 	"time"
 
@@ -35,32 +35,13 @@ func TestFanotifyExecPermissionExternalAMIGate(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("AMI qualification requires root and CAP_SYS_ADMIN")
 	}
-	monitor, err := newPermissionMonitor("/bin/true")
-	if err != nil {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := QualifyFanotifyExecPermission(ctx, "/bin/true"); err != nil {
 		if errors.Is(err, ErrUnavailable) {
 			t.Skip("kernel/capability does not admit FAN_OPEN_EXEC_PERM; retain AMI external gate")
 		}
 		t.Fatal(err)
 	}
-	defer monitor.Close()
-	command := exec.Command("/bin/true")
-	done := make(chan error, 1)
-	go func() { done <- command.Run() }()
-	select {
-	case event := <-monitor.Events():
-		if event.PID < 1 || event.File == nil {
-			t.Fatalf("invalid permission event: %+v", event)
-		}
-		if err := event.respond(true); err != nil {
-			t.Fatal(err)
-		}
-		_ = event.File.Close()
-	case err := <-monitor.Errors():
-		t.Fatal(err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("fanotify did not intercept executable open")
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
+	t.Log("cloud-worker fanotify executable permission qualification: PASS")
 }

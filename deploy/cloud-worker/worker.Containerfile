@@ -67,6 +67,7 @@ RUN mkdir -p \
 COPY --chmod=0444 deploy/cloud-worker/dirextalk-result.ts /out/rootfs/usr/local/lib/dirextalk-cloud-worker/pi/dirextalk-result.ts
 COPY --chmod=0444 deploy/cloud-worker/dirextalk-cloud-worker.service /out/rootfs/usr/local/lib/systemd/system/dirextalk-cloud-worker.service
 COPY --chmod=0444 deploy/cloud-worker/dirextalk-cloud-worker-exec-gate.service /out/rootfs/usr/local/lib/systemd/system/dirextalk-cloud-worker-exec-gate.service
+COPY --chmod=0444 deploy/cloud-worker/dirextalk-cloud-worker-boot-qualification.service /out/rootfs/usr/local/lib/systemd/system/dirextalk-cloud-worker-boot-qualification.service
 COPY --chmod=0444 deploy/cloud-worker/dirextalk-cloud-worker-network.service /out/rootfs/usr/local/lib/systemd/system/dirextalk-cloud-worker-network.service
 COPY --chmod=0444 deploy/cloud-worker/dirextalk-cloud-worker.sysusers /out/rootfs/usr/lib/sysusers.d/dirextalk-cloud-worker.conf
 COPY --chmod=0555 deploy/cloud-worker/qualify-image.sh /out/rootfs/usr/local/sbin/dirextalk-cloud-worker-qualify

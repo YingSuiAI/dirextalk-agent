@@ -10,6 +10,7 @@ AssertFileIsExecutable=/usr/local/lib/dirextalk-cloud-worker/pi/pi
 Type=exec
 User=root
 Group=dirextalk-cloud-worker
+ExecStartPre=/usr/local/bin/dirextalk-cloud-worker-exec-gate --qualify-fanotify
 ExecStart=/usr/local/bin/dirextalk-cloud-worker-exec-gate
 Restart=no
 RuntimeDirectory=dirextalk-cloud-worker-exec-gate

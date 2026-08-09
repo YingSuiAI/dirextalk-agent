@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/x509"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +14,29 @@ import (
 
 type recordingWorkerControlTunnel struct {
 	addresses chan string
+}
+
+func TestValidateCurrentProcessCapabilitiesRequiresExactCompleteSet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "status")
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const exact = "00000000000000c0"
+	write("Name:\tworker\nCapInh:\t" + exact + "\nCapPrm:\t" + exact + "\nCapEff:\t" + exact + "\nCapBnd:\t" + exact + "\nCapAmb:\t" + exact + "\n")
+	if err := validateCurrentProcessCapabilities(path, exact); err != nil {
+		t.Fatalf("exact capability set rejected: %v", err)
+	}
+	write("CapInh:\t" + exact + "\nCapPrm:\t" + exact + "\nCapEff:\t00000000002000c0\nCapBnd:\t" + exact + "\nCapAmb:\t" + exact + "\n")
+	if err := validateCurrentProcessCapabilities(path, exact); err == nil {
+		t.Fatal("capability drift accepted")
+	}
+	write("CapInh:\t" + exact + "\nCapPrm:\t" + exact + "\nCapEff:\t" + exact + "\nCapBnd:\t" + exact + "\n")
+	if err := validateCurrentProcessCapabilities(path, exact); err == nil {
+		t.Fatal("missing capability field accepted")
+	}
 }
 
 func (tunnel *recordingWorkerControlTunnel) DialTunnel(

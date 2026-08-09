@@ -2,8 +2,8 @@
 Description=Dirextalk single ephemeral Pi Cloud Worker
 Documentation=https://github.com/YingSuiAI/dirextalk-agent
 Wants=network-online.target
-Requires=dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service
-After=network-online.target dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service
+Requires=dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service dirextalk-cloud-worker-boot-qualification.service
+After=network-online.target dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service dirextalk-cloud-worker-boot-qualification.service
 AssertFileIsExecutable=/usr/local/bin/dirextalk-cloud-worker
 AssertPathExists=/usr/local/share/dirextalk-cloud-worker/installation.json
 AssertPathExists=/usr/local/share/dirextalk-cloud-worker/control-plane-ca.pem

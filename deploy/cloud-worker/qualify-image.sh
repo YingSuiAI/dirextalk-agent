@@ -2,7 +2,7 @@
 set -eu
 
 usage() {
-    echo "usage: $0 --phase offline|boot --target-root ABSOLUTE_DIR --ami-digest HEX --rootfs-sha256 HEX --nftables-nevra EXACT_NEVRA" >&2
+    echo "usage: $0 --phase offline|boot --target-root ABSOLUTE_DIR (--ami-digest HEX|--ami-digest-file FILE) (--rootfs-sha256 HEX|--rootfs-sha256-file FILE) (--nftables-nevra EXACT_NEVRA|--nftables-nevra-file FILE)" >&2
     exit 64
 }
 
@@ -11,17 +11,38 @@ target_root=
 ami_digest=
 rootfs_sha256=
 nftables_nevra=
+ami_digest_file=
+rootfs_sha256_file=
+nftables_nevra_file=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --phase) [ "$#" -ge 2 ] || usage; phase=$2; shift 2 ;;
         --target-root) [ "$#" -ge 2 ] || usage; target_root=$2; shift 2 ;;
         --ami-digest) [ "$#" -ge 2 ] || usage; ami_digest=$2; shift 2 ;;
+        --ami-digest-file) [ "$#" -ge 2 ] || usage; ami_digest_file=$2; shift 2 ;;
         --rootfs-sha256) [ "$#" -ge 2 ] || usage; rootfs_sha256=$2; shift 2 ;;
+        --rootfs-sha256-file) [ "$#" -ge 2 ] || usage; rootfs_sha256_file=$2; shift 2 ;;
         --nftables-nevra) [ "$#" -ge 2 ] || usage; nftables_nevra=$2; shift 2 ;;
+        --nftables-nevra-file) [ "$#" -ge 2 ] || usage; nftables_nevra_file=$2; shift 2 ;;
         *) usage ;;
     esac
 done
 case "$phase" in offline|boot) ;; *) usage ;; esac
+[ -z "$ami_digest" ] || [ -z "$ami_digest_file" ] || usage
+[ -z "$rootfs_sha256" ] || [ -z "$rootfs_sha256_file" ] || usage
+[ -z "$nftables_nevra" ] || [ -z "$nftables_nevra_file" ] || usage
+if [ -n "$ami_digest_file" ]; then
+    [ -f "$ami_digest_file" ] && [ ! -L "$ami_digest_file" ] || usage
+    ami_digest=$(sed -n 's/^{"schema_version":"dirextalk.agent.cloud-worker-installation\/v1","ami_digest":"\([a-f0-9]\{64\}\)",.*$/\1/p' "$ami_digest_file")
+fi
+if [ -n "$rootfs_sha256_file" ]; then
+    [ -f "$rootfs_sha256_file" ] && [ ! -L "$rootfs_sha256_file" ] || usage
+    rootfs_sha256=$(cat "$rootfs_sha256_file")
+fi
+if [ -n "$nftables_nevra_file" ]; then
+    [ -f "$nftables_nevra_file" ] && [ ! -L "$nftables_nevra_file" ] || usage
+    nftables_nevra=$(cat "$nftables_nevra_file")
+fi
 [ -n "$target_root" ] && [ -n "$ami_digest" ] && [ -n "$rootfs_sha256" ] && [ -n "$nftables_nevra" ] || usage
 case "$target_root" in /*) ;; *) usage ;; esac
 printf '%s' "$ami_digest" | grep -Eq '^[a-f0-9]{64}$' || { echo "invalid semantic AMI digest" >&2; exit 65; }
@@ -116,6 +137,7 @@ done
 for unit in \
     dirextalk-cloud-worker-network.service \
     dirextalk-cloud-worker-exec-gate.service \
+    dirextalk-cloud-worker-boot-qualification.service \
     dirextalk-cloud-worker.service
 do
     if unit_state=$(systemctl --root="$target_root" is-enabled "$unit"); then
@@ -145,6 +167,7 @@ done
 systemd-analyze --root="$target_root" --man=no --generators=no verify \
     dirextalk-cloud-worker-network.service \
     dirextalk-cloud-worker-exec-gate.service \
+    dirextalk-cloud-worker-boot-qualification.service \
     dirextalk-cloud-worker.service
 
 qualify_pi_execution_boundary() (
@@ -245,8 +268,12 @@ qualify_pi_execution_boundary() (
         $1 == "Uid:" { uid = ($2 == 65532 && $3 == 65532 && $4 == 65532 && $5 == 65532) }
         $1 == "Gid:" { gid = ($2 == 65532 && $3 == 65532 && $4 == 65532 && $5 == 65532) }
         $1 == "Groups:" { groups = (NF == 1) }
-        END { exit uid && gid && groups ? 0 : 1 }
-    ' "/proc/$probe_pid/status" || { echo "Pi runtime retained a supplementary group" >&2; exit 66; }
+        $1 == "CapInh:" { cap_inh = ($2 == "0000000000000000") }
+        $1 == "CapPrm:" { cap_prm = ($2 == "0000000000000000") }
+        $1 == "CapEff:" { cap_eff = ($2 == "0000000000000000") }
+        $1 == "CapAmb:" { cap_amb = ($2 == "0000000000000000") }
+        END { exit uid && gid && groups && cap_inh && cap_prm && cap_eff && cap_amb ? 0 : 1 }
+    ' "/proc/$probe_pid/status" || { echo "Pi runtime identity or capability boundary mismatch" >&2; exit 66; }
     assert_probe_identity
     for descriptor in "/proc/$probe_pid/fd/"*; do
         if descriptor_target=$(readlink "$descriptor" 2>/dev/null); then
@@ -277,8 +304,7 @@ fi
 
 for unit in \
     dirextalk-cloud-worker-network.service \
-    dirextalk-cloud-worker-exec-gate.service \
-    dirextalk-cloud-worker.service
+    dirextalk-cloud-worker-exec-gate.service
 do
     if unit_state=$(systemctl is-active "$unit"); then
         [ "$unit_state" = active ] || { echo "unit is not active: $unit" >&2; exit 69; }
@@ -290,11 +316,9 @@ do
 done
 network_started=$(systemctl show --property=ActiveEnterTimestampMonotonic --value dirextalk-cloud-worker-network.service)
 gate_started=$(systemctl show --property=ActiveEnterTimestampMonotonic --value dirextalk-cloud-worker-exec-gate.service)
-worker_started=$(systemctl show --property=ActiveEnterTimestampMonotonic --value dirextalk-cloud-worker.service)
-case "$network_started:$gate_started:$worker_started" in *[!0-9:]*) echo "invalid systemd activation timestamp" >&2; exit 69 ;; esac
-[ "$network_started" -gt 0 ] && [ "$gate_started" -gt 0 ] && [ "$worker_started" -gt 0 ] && \
-    [ "$network_started" -le "$worker_started" ] && [ "$gate_started" -le "$worker_started" ] || {
-    echo "Worker became active before its network or execution Gate" >&2
+case "$network_started:$gate_started" in *[!0-9:]*) echo "invalid systemd activation timestamp" >&2; exit 69 ;; esac
+[ "$network_started" -gt 0 ] && [ "$gate_started" -gt 0 ] || {
+    echo "network or execution Gate has no activation timestamp" >&2
     exit 69
 }
 
@@ -309,7 +333,6 @@ check_process_capabilities() {
     done
 }
 check_process_capabilities dirextalk-cloud-worker-exec-gate.service 0000000000200020
-check_process_capabilities dirextalk-cloud-worker.service 00000000000000c0
 
 [ "$(stat -Lc '%a:%u:%g' /run/dirextalk-cloud-worker-exec-gate)" = 750:0:65531 ] || {
     echo "execution Gate runtime directory boundary mismatch" >&2
@@ -337,4 +360,4 @@ ss -H -lntu | while read -r netid _state _recvq _sendq local_address _peer_addre
         *) echo "non-loopback inbound listener: $netid $local_address" >&2; exit 69 ;;
     esac
 done
-echo "cloud-worker candidate boot qualification: PASS"
+echo "cloud-worker candidate boot prequalification: PASS"
