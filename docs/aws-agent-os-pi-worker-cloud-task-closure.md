@@ -626,6 +626,8 @@ Agent 在成功 Team Report 与 verified cleanup 同一事务边界内产生 `te
 
 完成结果通过 realtime `server.event` 送达 App。它不是 Matrix 聊天消息，但 Central 生成的回复已经是原 durable Chat conversation 的正式组成部分。Message Server 不执行模型、不总结报告，也不拥有助手话术。
 
+用户在 Worker 运行和完成期间仍可继续对话。Central 对同一 owner/conversation 的普通 Chat 与后台完成合成使用跨进程 PostgreSQL advisory lock 串行执行，并在锁内重新读取 revision。先获得锁的一方提交后，后一方基于包含该新消息的完整历史继续生成，不因后台通知与前台消息竞争而丢失用户回合或重复执行工具。
+
 ## 17. 第十二阶段：Flutter 完成展示
 
 ### 17.1 Plan 卡与轮询

@@ -1496,6 +1496,9 @@ Turn Controller 使用独立 migration 45：
   `GetConversationState` 与 Central 的权威 revision 对齐，不要求 App 重传
   Artifact ID、Task ID 或隐藏上下文。断线重放、重复事件、模型失败、会话并发、
   页面保存竞态和当前会话即时显示都必须保持幂等、失败关闭和 cursor 不越过。
+  同一 owner/conversation 的前台 Chat 与后台完成合成还必须在 Central 内通过
+  PostgreSQL advisory lock 跨进程串行，并在锁内重新读取 revision；因此用户在
+  Worker 工作期间继续聊天时，两条真实回复都会按提交顺序进入同一权威记忆。
   旧 v1 事件中由 Flutter 生成本地化固定摘要的实现只代表控制链验证，不能作为
   Agent 产品闭环继续保留。该旧链路曾发布到 demo2：Agent v60 与 Message
   Server e2e.10 均健康，

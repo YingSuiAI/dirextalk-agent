@@ -155,14 +155,6 @@ func (service *Service) Chat(ctx context.Context, scope runtimeapi.MutationScope
 	if claim.Completed {
 		return publicResult(claim.Response.Result), nil
 	}
-	releaseCapacity, err := service.acquireCapacity()
-	if err != nil {
-		if releaseErr := service.releaseRequest(ctx, scope, request.RequestID, claim.LeaseEpoch); releaseErr != nil {
-			return runtimeapi.ChatResult{}, stableDurabilityError(releaseErr)
-		}
-		return runtimeapi.ChatResult{}, err
-	}
-	defer releaseCapacity()
 	request, err = service.bindMemoryMode(ctx, scope, request, claim.LeaseEpoch)
 	if err != nil {
 		service.releaseRequest(ctx, scope, request.RequestID, claim.LeaseEpoch)
@@ -170,6 +162,25 @@ func (service *Service) Chat(ctx context.Context, scope runtimeapi.MutationScope
 	}
 
 	executionCtx, guard := service.guardRequest(ctx, scope, request.RequestID, claim.LeaseEpoch, lease)
+	releaseConversation, err := service.lockAndReconcileConversation(
+		executionCtx,
+		&request,
+	)
+	if err != nil {
+		guard.stop()
+		service.releaseRequest(ctx, scope, request.RequestID, claim.LeaseEpoch)
+		return runtimeapi.ChatResult{}, err
+	}
+	defer releaseConversation()
+	releaseCapacity, err := service.acquireCapacity()
+	if err != nil {
+		guard.stop()
+		if releaseErr := service.releaseRequest(ctx, scope, request.RequestID, claim.LeaseEpoch); releaseErr != nil {
+			return runtimeapi.ChatResult{}, stableDurabilityError(releaseErr)
+		}
+		return runtimeapi.ChatResult{}, err
+	}
+	defer releaseCapacity()
 	result, executeErr := service.executor.Chat(withRuntimeLease(withMutationScope(executionCtx, scope), claim.LeaseEpoch), request)
 	renewErr := guard.stop()
 	if renewErr != nil {
@@ -203,19 +214,31 @@ func (service *Service) Stream(ctx context.Context, scope runtimeapi.MutationSco
 		}
 		return nil
 	}
+	request, err = service.bindMemoryMode(ctx, scope, request, claim.LeaseEpoch)
+	if err != nil {
+		service.releaseRequest(ctx, scope, request.RequestID, claim.LeaseEpoch)
+		return err
+	}
+	executionCtx, guard := service.guardRequest(ctx, scope, request.RequestID, claim.LeaseEpoch, lease)
+	releaseConversation, err := service.lockAndReconcileConversation(
+		executionCtx,
+		&request,
+	)
+	if err != nil {
+		guard.stop()
+		service.releaseRequest(ctx, scope, request.RequestID, claim.LeaseEpoch)
+		return err
+	}
+	defer releaseConversation()
 	releaseCapacity, err := service.acquireCapacity()
 	if err != nil {
+		guard.stop()
 		if releaseErr := service.releaseRequest(ctx, scope, request.RequestID, claim.LeaseEpoch); releaseErr != nil {
 			return stableDurabilityError(releaseErr)
 		}
 		return err
 	}
 	defer releaseCapacity()
-	request, err = service.bindMemoryMode(ctx, scope, request, claim.LeaseEpoch)
-	if err != nil {
-		service.releaseRequest(ctx, scope, request.RequestID, claim.LeaseEpoch)
-		return err
-	}
 
 	buffered := make([]runtimeapi.StreamEvent, 0, 16)
 	bufferedBytes := 0
@@ -231,7 +254,6 @@ func (service *Service) Stream(ctx context.Context, scope runtimeapi.MutationSco
 		buffered = append(buffered, public)
 		return nil
 	}
-	executionCtx, guard := service.guardRequest(ctx, scope, request.RequestID, claim.LeaseEpoch, lease)
 	result, executeErr := service.executor.Stream(withRuntimeLease(withMutationScope(executionCtx, scope), claim.LeaseEpoch), request, forward)
 	renewErr := guard.stop()
 	if renewErr != nil {
