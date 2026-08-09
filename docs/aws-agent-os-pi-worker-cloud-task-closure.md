@@ -628,6 +628,14 @@ Agent 在成功 Team Report 与 verified cleanup 同一事务边界内产生 `te
 
 用户在 Worker 运行和完成期间仍可继续对话。Central 对同一 owner/conversation 的普通 Chat 与后台完成合成使用跨进程 PostgreSQL advisory lock 串行执行，并在锁内重新读取 revision。先获得锁的一方提交后，后一方基于包含该新消息的完整历史继续生成，不因后台通知与前台消息竞争而丢失用户回合或重复执行工具。
 
+### 16.4 Central 真实回复线上收口
+
+2026-08-09 的 demo2 验收首先发现，最初实现把 `owner_id`、NUL 分隔符和 `conversation_id` 直接作为 PostgreSQL advisory-lock 的 `text` 参数。PostgreSQL 拒绝 `0x00`，所以模型、完成 observation 和会话都有效，但协调器在模型调用前返回 `runtime durability is unavailable`。提交 `ff0c7afcad9f65101002eee5f5a38d260c5ea23c` 改为在 Agent 进程内计算域分隔的 SHA-256 锁摘要；数据库只接收固定长度十六进制键，不再接收 NUL 或原始会话标识。提交 `4b761368bdab57f18af590f39f202d0c03ef0175` 同时约束 Central：若 Worker 声称的重型交付物没有进入 retained Artifact manifest，不得建议在聊天中本地重建，应解释交付缺口并把是否重新派发、明确要求完整归档交给用户决定。
+
+最终 demo2 Agent 镜像为 `v0.1.0-alpha.20260809.102-4b761368bdab@sha256:f79e41bfaf494d9e8bf6c7399435ac469c51480442e5582eec3aaff519eafb7d`，回读 revision 与 Git 提交一致，容器 healthy、restart count 为 0。对既有成功 Task `019fe147-5b65-7db0-acde-28abedaccaad` 的完成事件 `019fe14f-285f-798f-a346-f42debd84263` 进行可信重放后，Central 从原会话理解用户所说的“这个文件”，生成自然语言 LogScope 总结，区分 Worker 声称的源码/测试与实际只保留的 `final.json`。权威 conversation 从 revision 14 原子推进到 15；确定性 assistant message ID 为 `34d94e66-ccac-5437-8281-1952f8037b89`。连续两次重放返回相同 ID、正文和 revision，数据库只存在一条完成回复，请求账本为 `completed`，末尾持久化结构是 observation assistant/tool pair 加 Central assistant reply，内部 provider-framing 指令没有进入会话。
+
+这次证明的是 final Agent 镜像上的 Central 生成、记忆读取、锁串行化、原子持久化和重放幂等。它使用的是 Message Server cursor 已经越过的历史完成事件，因此没有重新证明一个新 v2 realtime event 在 App 中的展示，也没有验证新生成策略对下一条未完成事件的实际措辞。最终仍需从已登录 App 提交并批准一个新 Pi Worker 任务，监控 Worker 启动/执行/清理，并在同一会话验证自然回复、多 Artifact 卡和后续指代记忆。
+
 ## 17. 第十二阶段：Flutter 完成展示
 
 ### 17.1 Plan 卡与轮询
