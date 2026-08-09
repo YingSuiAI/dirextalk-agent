@@ -670,22 +670,23 @@ func (provider *Provider) Observe(ctx context.Context, identity ExecutionIdentit
 	}
 	var graph ObservedGraph
 	if record.StackProviderID != "" && (record.Resources[ResourceIAMRole].ProviderID == "" || record.Resources[ResourceInstanceProfile].ProviderID == "") {
-		resolved, resolveErr := provider.ensureIAMResourceProviderIDs(ctx, record)
-		err = resolveErr
-		if err != nil {
-			// A terminal CloudFormation failure may roll back before either IAM
-			// logical resource is created. ResolveIAMResourceIdentities cannot
-			// produce immutable IDs in that state, so accept the stronger graph
-			// read-back only when the exact owned stack is terminal-failed and
-			// both deterministic IAM names were freshly observed absent.
-			failed, readErr := provider.readGraph(ctx, record)
-			if readErr != nil || failed.State != GraphFailed ||
-				!resourceObservedAbsent(failed.Resources, ResourceIAMRole) ||
-				!resourceObservedAbsent(failed.Resources, ResourceInstanceProfile) {
-				return ObservedGraph{}, err
-			}
-			graph = failed
+		// A terminal CloudFormation failure may roll back before either IAM
+		// logical resource is created. Read the exact owned graph first so that
+		// failed or already-deleted stacks can be reconciled without fabricating
+		// immutable IAM IDs. Non-terminal graphs still require the ordinary IAM
+		// proof before any resource identity can be bound.
+		terminal, readErr := provider.readGraph(ctx, record)
+		terminalWithoutIAM := readErr == nil &&
+			(terminal.State == GraphFailed || terminal.State == GraphVerifiedDestroyed) &&
+			resourceObservedAbsent(terminal.Resources, ResourceIAMRole) &&
+			resourceObservedAbsent(terminal.Resources, ResourceInstanceProfile)
+		if terminalWithoutIAM {
+			graph = terminal
 		} else {
+			resolved, resolveErr := provider.ensureIAMResourceProviderIDs(ctx, record)
+			if resolveErr != nil {
+				return ObservedGraph{}, resolveErr
+			}
 			record = resolved
 		}
 	}
