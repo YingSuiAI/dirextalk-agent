@@ -18,14 +18,17 @@ var historicalEntityIDPattern = regexp.MustCompile(
 )
 
 type taskStatusPreflightView struct {
-	TaskID          string `json:"task_id"`
-	ExecutionStatus string `json:"execution_status"`
-	OutcomeStatus   string `json:"outcome_status"`
-	Revision        int64  `json:"revision"`
-	Terminal        bool   `json:"terminal"`
-	PlanID          string `json:"plan_id,omitempty"`
-	PlanRevision    uint64 `json:"plan_revision,omitempty"`
-	PlanStatus      string `json:"plan_status,omitempty"`
+	TaskID                    string          `json:"task_id"`
+	ExecutionStatus           string          `json:"execution_status"`
+	OutcomeStatus             string          `json:"outcome_status"`
+	Revision                  int64           `json:"revision"`
+	Terminal                  bool            `json:"terminal"`
+	CompletionReportAvailable bool            `json:"completion_report_available"`
+	CompletionReportPending   bool            `json:"completion_report_pending"`
+	CompletionReport          json.RawMessage `json:"completion_report,omitempty"`
+	PlanID                    string          `json:"plan_id,omitempty"`
+	PlanRevision              uint64          `json:"plan_revision,omitempty"`
+	PlanStatus                string          `json:"plan_status,omitempty"`
 }
 
 type taskStatusPreflightResult struct {
@@ -156,6 +159,16 @@ func validTaskStatusPreflight(
 		return false
 	}
 	if view.Terminal != (view.ExecutionStatus == "finished") {
+		return false
+	}
+	if view.CompletionReportAvailable {
+		if view.CompletionReportPending ||
+			len(view.CompletionReport) == 0 ||
+			!json.Valid(view.CompletionReport) {
+			return false
+		}
+	} else if len(view.CompletionReport) != 0 ||
+		(view.CompletionReportPending && !view.Terminal) {
 		return false
 	}
 	if view.PlanID == "" {

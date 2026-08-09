@@ -55,6 +55,87 @@ func TestRuntimeServiceFailsClosedWithoutServerModelCatalog(t *testing.T) {
 	}
 }
 
+func TestRuntimeServiceSynthesizesVerifiedTeamCompletion(t *testing.T) {
+	t.Parallel()
+	sourceEventID := uuid.NewString()
+	coordinator := &runtimeCoordinatorStub{
+		completionResult: runtimeapp.TeamCompletionResult{
+			SourceEventID:  sourceEventID,
+			ConversationID: "conversation-1",
+			RequestID:      uuid.NewString(),
+			Chat: runtimeapi.ChatResult{
+				Message: modelapi.Message{
+					Role:    modelapi.RoleAssistant,
+					Content: "Team execution finished; final.json is available.",
+				},
+				ConversationRevision: 8,
+			},
+		},
+	}
+	service := NewRuntimeService(
+		coordinator,
+		RuntimeFeatures{ModelProfiles: runtimeServiceTestProfiles(t)},
+	)
+	credentialID := uuid.NewString()
+	ctx := auth.ContextWithPrincipal(
+		context.Background(),
+		auth.Principal{
+			ClientID:     "message-server",
+			CredentialID: credentialID,
+		},
+	)
+	response, err := service.SynthesizeTeamCompletion(
+		ctx,
+		&agentv1.SynthesizeTeamCompletionRequest{
+			OwnerId:       "owner-1",
+			SourceEventId: sourceEventID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coordinator.completionOwnerID != "owner-1" ||
+		coordinator.completionSourceEventID != sourceEventID ||
+		coordinator.completionScope.ClientID != "message-server" ||
+		coordinator.completionScope.CredentialID != credentialID ||
+		response.GetSourceEventId() != sourceEventID ||
+		response.GetConversationId() != "conversation-1" ||
+		response.GetConversationRevision() != 8 ||
+		response.GetMessage().GetMessageId() == "" ||
+		response.GetMessage().GetContent() !=
+			"Team execution finished; final.json is available." {
+		t.Fatalf("completion response = %#v", response)
+	}
+}
+
+func TestRuntimeServiceReadsAuthoritativeConversationRevision(t *testing.T) {
+	t.Parallel()
+	coordinator := &runtimeCoordinatorStub{
+		conversation: runtimeapi.Conversation{
+			OwnerID:        "owner-1",
+			ConversationID: "conversation-1",
+			Revision:       11,
+		},
+		conversationFound: true,
+	}
+	service := NewRuntimeService(coordinator)
+	response, err := service.GetConversationState(
+		context.Background(),
+		&agentv1.GetConversationStateRequest{
+			OwnerId:        "owner-1",
+			ConversationId: "conversation-1",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.GetFound() || response.GetConversationRevision() != 11 ||
+		coordinator.conversationOwnerID != "owner-1" ||
+		coordinator.conversationID != "conversation-1" {
+		t.Fatalf("conversation state response = %#v", response)
+	}
+}
+
 func TestPutRuntimeConfigMapsAuthenticatedScopeAndOpaqueReferences(t *testing.T) {
 	credentialID := uuid.NewString()
 	coordinator := &runtimeCoordinatorStub{}
@@ -430,14 +511,22 @@ func TestRuntimeServiceListModelsMapsTransientBindingAndSanitizedResponse(t *tes
 }
 
 type runtimeCoordinatorStub struct {
-	savedScope   runtimeapi.MutationScope
-	savedCommand runtimeapi.SaveRuntimeConfigCommand
-	saveCalls    int
-	chatRequest  runtimeapi.ChatRequest
-	chatCalls    int
-	listRequest  runtimeapi.ModelListRequest
-	listScope    runtimeapi.MutationScope
-	listedModels []modelapi.Descriptor
+	savedScope              runtimeapi.MutationScope
+	savedCommand            runtimeapi.SaveRuntimeConfigCommand
+	saveCalls               int
+	chatRequest             runtimeapi.ChatRequest
+	chatCalls               int
+	listRequest             runtimeapi.ModelListRequest
+	listScope               runtimeapi.MutationScope
+	listedModels            []modelapi.Descriptor
+	completionResult        runtimeapp.TeamCompletionResult
+	completionScope         runtimeapi.MutationScope
+	completionOwnerID       string
+	completionSourceEventID string
+	conversation            runtimeapi.Conversation
+	conversationFound       bool
+	conversationOwnerID     string
+	conversationID          string
 }
 
 func (*runtimeCoordinatorStub) LoadRuntimeConfig(context.Context, string) (runtimeapi.RuntimeConfig, error) {
@@ -492,6 +581,28 @@ func (stub *runtimeCoordinatorStub) ListModels(_ context.Context, scope runtimea
 
 func (*runtimeCoordinatorStub) Stream(context.Context, runtimeapi.MutationScope, runtimeapi.ChatRequest, runtimeapi.StreamEmitter) error {
 	return nil
+}
+
+func (stub *runtimeCoordinatorStub) SynthesizeTeamCompletion(
+	_ context.Context,
+	scope runtimeapi.MutationScope,
+	ownerID string,
+	sourceEventID string,
+) (runtimeapp.TeamCompletionResult, error) {
+	stub.completionScope = scope
+	stub.completionOwnerID = ownerID
+	stub.completionSourceEventID = sourceEventID
+	return stub.completionResult, nil
+}
+
+func (stub *runtimeCoordinatorStub) ConversationState(
+	_ context.Context,
+	ownerID string,
+	conversationID string,
+) (runtimeapi.Conversation, bool, error) {
+	stub.conversationOwnerID = ownerID
+	stub.conversationID = conversationID
+	return stub.conversation, stub.conversationFound, nil
 }
 
 type cloudDialogueConnectionReaderStub struct {

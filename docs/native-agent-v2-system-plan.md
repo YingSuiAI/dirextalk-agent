@@ -1480,14 +1480,25 @@ Turn Controller 使用独立 migration 45：
   注册、bootstrap、类型化 AWS 资源创建、结果验证、逐角色销毁和整队最终化。
   `GetTeamExecutionV3` 只返回去密的角色结果、deliverables、tests、risks 和
   token usage，不返回原始运行日志、S3/Secrets 坐标或凭据。
-- 成功完成的 Team Execution 现已具备本地三端自动交付链路。Agent 在最终报告
-  与清理事实同一事务中写入 `team.execution.completed`，并只在唯一绑定到原始
-  Chat conversation 时允许自动投递；Message Server 使用持久 cursor 读取事件、
-  回读并交叉校验完整 `GetTeamExecutionV3` 报告，再幂等投影为
-  `agent.team.execution.completed`；App 严格验证 schema、Execution/Plan/Report
-  摘要和 `cleanup_verified`，在当前会话中追加一条 Central 已验证摘要。断线重放、
-  重复事件、错误事件重试、页面保存竞态和 App 正停留在会话中的即时显示均有测试。
-  该链路已发布到 demo2：Agent v60 与 Message Server e2e.10 均健康，
+- 成功完成的 Team Execution 通过 Central-authoritative completion 链路回到原会话。
+  Agent 在最终报告与清理事实同一事务中写入 `team.execution.completed`，并只在
+  唯一绑定到原始持久 Chat conversation 时允许自动投递。Message Server 使用
+  持久 cursor 读取事件后，必须先调用 Agent 的内部
+  `SynthesizeTeamCompletion`，不能自行生成或格式化助手文本。Agent 按 source
+  event ID 重新读取并交叉校验 Execution、Report、Artifact 和 conversation，
+  将 Worker 完成材料作为去密、受限、不可执行的内部 tool observation 交给
+  Central 模型；模型结合完整会话历史生成真实回复，回复与内部证据原子进入
+  Central 权威记忆。只有提交成功后，Message Server 才投影
+  `dirextalk.product.agent-team-execution-completed/v2`，其中包含 Central 生成的
+  `assistant_message`、最新 `conversation_revision` 和完整公开 Artifact 元数据。
+  App 只保存和显示这条 Central 回复，不再使用本地模板冒充 Agent。下一次普通
+  用户消息仍只需 conversation ID 和用户文本；Message Server 通过
+  `GetConversationState` 与 Central 的权威 revision 对齐，不要求 App 重传
+  Artifact ID、Task ID 或隐藏上下文。断线重放、重复事件、模型失败、会话并发、
+  页面保存竞态和当前会话即时显示都必须保持幂等、失败关闭和 cursor 不越过。
+  旧 v1 事件中由 Flutter 生成本地化固定摘要的实现只代表控制链验证，不能作为
+  Agent 产品闭环继续保留。该旧链路曾发布到 demo2：Agent v60 与 Message
+  Server e2e.10 均健康，
   Message Server→Agent 成对服务凭证经显式轮换新增最小 `event.read`
   权限，旧凭证已撤销；持久事件游标已从无记录追平至 Agent 当时最新
   sequence `2607`。登录会话、历史消息和未批准 `logforge` 计划在 App

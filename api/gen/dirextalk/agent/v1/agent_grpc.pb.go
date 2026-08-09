@@ -353,12 +353,14 @@ var TaskService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	RuntimeService_GetCapabilities_FullMethodName  = "/dirextalk.agent.v1.RuntimeService/GetCapabilities"
-	RuntimeService_GetRuntimeConfig_FullMethodName = "/dirextalk.agent.v1.RuntimeService/GetRuntimeConfig"
-	RuntimeService_PutRuntimeConfig_FullMethodName = "/dirextalk.agent.v1.RuntimeService/PutRuntimeConfig"
-	RuntimeService_ListModels_FullMethodName       = "/dirextalk.agent.v1.RuntimeService/ListModels"
-	RuntimeService_Chat_FullMethodName             = "/dirextalk.agent.v1.RuntimeService/Chat"
-	RuntimeService_StreamChat_FullMethodName       = "/dirextalk.agent.v1.RuntimeService/StreamChat"
+	RuntimeService_GetCapabilities_FullMethodName          = "/dirextalk.agent.v1.RuntimeService/GetCapabilities"
+	RuntimeService_GetRuntimeConfig_FullMethodName         = "/dirextalk.agent.v1.RuntimeService/GetRuntimeConfig"
+	RuntimeService_PutRuntimeConfig_FullMethodName         = "/dirextalk.agent.v1.RuntimeService/PutRuntimeConfig"
+	RuntimeService_ListModels_FullMethodName               = "/dirextalk.agent.v1.RuntimeService/ListModels"
+	RuntimeService_Chat_FullMethodName                     = "/dirextalk.agent.v1.RuntimeService/Chat"
+	RuntimeService_StreamChat_FullMethodName               = "/dirextalk.agent.v1.RuntimeService/StreamChat"
+	RuntimeService_SynthesizeTeamCompletion_FullMethodName = "/dirextalk.agent.v1.RuntimeService/SynthesizeTeamCompletion"
+	RuntimeService_GetConversationState_FullMethodName     = "/dirextalk.agent.v1.RuntimeService/GetConversationState"
 )
 
 // RuntimeServiceClient is the client API for RuntimeService service.
@@ -371,6 +373,8 @@ type RuntimeServiceClient interface {
 	ListModels(ctx context.Context, in *ListModelsRequest, opts ...grpc.CallOption) (*ListModelsResponse, error)
 	Chat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (*ChatResponse, error)
 	StreamChat(ctx context.Context, in *StreamChatRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamChatResponse], error)
+	SynthesizeTeamCompletion(ctx context.Context, in *SynthesizeTeamCompletionRequest, opts ...grpc.CallOption) (*SynthesizeTeamCompletionResponse, error)
+	GetConversationState(ctx context.Context, in *GetConversationStateRequest, opts ...grpc.CallOption) (*GetConversationStateResponse, error)
 }
 
 type runtimeServiceClient struct {
@@ -450,6 +454,26 @@ func (c *runtimeServiceClient) StreamChat(ctx context.Context, in *StreamChatReq
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type RuntimeService_StreamChatClient = grpc.ServerStreamingClient[StreamChatResponse]
 
+func (c *runtimeServiceClient) SynthesizeTeamCompletion(ctx context.Context, in *SynthesizeTeamCompletionRequest, opts ...grpc.CallOption) (*SynthesizeTeamCompletionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SynthesizeTeamCompletionResponse)
+	err := c.cc.Invoke(ctx, RuntimeService_SynthesizeTeamCompletion_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *runtimeServiceClient) GetConversationState(ctx context.Context, in *GetConversationStateRequest, opts ...grpc.CallOption) (*GetConversationStateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetConversationStateResponse)
+	err := c.cc.Invoke(ctx, RuntimeService_GetConversationState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RuntimeServiceServer is the server API for RuntimeService service.
 // All implementations must embed UnimplementedRuntimeServiceServer
 // for forward compatibility.
@@ -460,6 +484,8 @@ type RuntimeServiceServer interface {
 	ListModels(context.Context, *ListModelsRequest) (*ListModelsResponse, error)
 	Chat(context.Context, *ChatRequest) (*ChatResponse, error)
 	StreamChat(*StreamChatRequest, grpc.ServerStreamingServer[StreamChatResponse]) error
+	SynthesizeTeamCompletion(context.Context, *SynthesizeTeamCompletionRequest) (*SynthesizeTeamCompletionResponse, error)
+	GetConversationState(context.Context, *GetConversationStateRequest) (*GetConversationStateResponse, error)
 	mustEmbedUnimplementedRuntimeServiceServer()
 }
 
@@ -487,6 +513,12 @@ func (UnimplementedRuntimeServiceServer) Chat(context.Context, *ChatRequest) (*C
 }
 func (UnimplementedRuntimeServiceServer) StreamChat(*StreamChatRequest, grpc.ServerStreamingServer[StreamChatResponse]) error {
 	return status.Error(codes.Unimplemented, "method StreamChat not implemented")
+}
+func (UnimplementedRuntimeServiceServer) SynthesizeTeamCompletion(context.Context, *SynthesizeTeamCompletionRequest) (*SynthesizeTeamCompletionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SynthesizeTeamCompletion not implemented")
+}
+func (UnimplementedRuntimeServiceServer) GetConversationState(context.Context, *GetConversationStateRequest) (*GetConversationStateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetConversationState not implemented")
 }
 func (UnimplementedRuntimeServiceServer) mustEmbedUnimplementedRuntimeServiceServer() {}
 func (UnimplementedRuntimeServiceServer) testEmbeddedByValue()                        {}
@@ -610,6 +642,42 @@ func _RuntimeService_StreamChat_Handler(srv interface{}, stream grpc.ServerStrea
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type RuntimeService_StreamChatServer = grpc.ServerStreamingServer[StreamChatResponse]
 
+func _RuntimeService_SynthesizeTeamCompletion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SynthesizeTeamCompletionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RuntimeServiceServer).SynthesizeTeamCompletion(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RuntimeService_SynthesizeTeamCompletion_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RuntimeServiceServer).SynthesizeTeamCompletion(ctx, req.(*SynthesizeTeamCompletionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RuntimeService_GetConversationState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetConversationStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RuntimeServiceServer).GetConversationState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RuntimeService_GetConversationState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RuntimeServiceServer).GetConversationState(ctx, req.(*GetConversationStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RuntimeService_ServiceDesc is the grpc.ServiceDesc for RuntimeService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -636,6 +704,14 @@ var RuntimeService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Chat",
 			Handler:    _RuntimeService_Chat_Handler,
+		},
+		{
+			MethodName: "SynthesizeTeamCompletion",
+			Handler:    _RuntimeService_SynthesizeTeamCompletion_Handler,
+		},
+		{
+			MethodName: "GetConversationState",
+			Handler:    _RuntimeService_GetConversationState_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

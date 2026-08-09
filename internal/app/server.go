@@ -244,6 +244,8 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		agentv1.RuntimeService_ListModels_FullMethodName:                                 "runtime.chat",
 		agentv1.RuntimeService_Chat_FullMethodName:                                       "runtime.chat",
 		agentv1.RuntimeService_StreamChat_FullMethodName:                                 "runtime.chat",
+		agentv1.RuntimeService_SynthesizeTeamCompletion_FullMethodName:                   "runtime.chat",
+		agentv1.RuntimeService_GetConversationState_FullMethodName:                       "runtime.read",
 		agentv1.CloudControlService_GetCapabilities_FullMethodName:                       "cloud.read",
 		agentv1.CloudControlService_CreateCloudGoal_FullMethodName:                       "cloud.plan.write",
 		agentv1.CloudControlService_PreviewAwsIdentity_FullMethodName:                    "cloud.connection.preview",

@@ -43,6 +43,23 @@ type runtimeModelDiscoverer interface {
 	ListModels(context.Context, runtimeapi.MutationScope, runtimeapi.ModelListRequest) ([]modelapi.Descriptor, error)
 }
 
+type runtimeTeamCompletionSynthesizer interface {
+	SynthesizeTeamCompletion(
+		context.Context,
+		runtimeapi.MutationScope,
+		string,
+		string,
+	) (runtimeapp.TeamCompletionResult, error)
+}
+
+type runtimeConversationStateReader interface {
+	ConversationState(
+		context.Context,
+		string,
+		string,
+	) (runtimeapi.Conversation, bool, error)
+}
+
 type RuntimeService struct {
 	agentv1.UnimplementedRuntimeServiceServer
 	coordinator              RuntimeCoordinator
@@ -236,6 +253,90 @@ func (service *RuntimeService) StreamChat(request *agentv1.StreamChatRequest, st
 		return publicRuntimeError(err)
 	}
 	return nil
+}
+
+func (service *RuntimeService) SynthesizeTeamCompletion(
+	ctx context.Context,
+	request *agentv1.SynthesizeTeamCompletionRequest,
+) (*agentv1.SynthesizeTeamCompletionResponse, error) {
+	if service == nil || service.coordinator == nil ||
+		service.features.ModelProfiles == nil {
+		return nil, status.Error(
+			codes.Unimplemented,
+			"Team completion synthesis is unavailable",
+		)
+	}
+	synthesizer, ok := service.coordinator.(runtimeTeamCompletionSynthesizer)
+	if !ok {
+		return nil, status.Error(
+			codes.Unimplemented,
+			"Team completion synthesis is unavailable",
+		)
+	}
+	scope, err := runtimeMutationScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if request == nil || request.GetOwnerId() == "" ||
+		request.GetSourceEventId() == "" {
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"owner_id and source_event_id are required",
+		)
+	}
+	result, err := synthesizer.SynthesizeTeamCompletion(
+		ctx,
+		scope,
+		request.GetOwnerId(),
+		request.GetSourceEventId(),
+	)
+	if err != nil {
+		return nil, publicRuntimeError(err)
+	}
+	return &agentv1.SynthesizeTeamCompletionResponse{
+		SourceEventId:        result.SourceEventID,
+		ConversationId:       result.ConversationID,
+		Message:              &agentv1.RuntimeAssistantMessage{MessageId: assistantMessageID(result.RequestID), Content: result.Chat.Message.Content},
+		ConversationRevision: result.Chat.ConversationRevision,
+	}, nil
+}
+
+func (service *RuntimeService) GetConversationState(
+	ctx context.Context,
+	request *agentv1.GetConversationStateRequest,
+) (*agentv1.GetConversationStateResponse, error) {
+	if service == nil || service.coordinator == nil {
+		return nil, status.Error(
+			codes.Unimplemented,
+			"conversation state is unavailable",
+		)
+	}
+	reader, ok := service.coordinator.(runtimeConversationStateReader)
+	if !ok {
+		return nil, status.Error(
+			codes.Unimplemented,
+			"conversation state is unavailable",
+		)
+	}
+	if request == nil || request.GetOwnerId() == "" ||
+		request.GetConversationId() == "" {
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"owner_id and conversation_id are required",
+		)
+	}
+	conversation, found, err := reader.ConversationState(
+		ctx,
+		request.GetOwnerId(),
+		request.GetConversationId(),
+	)
+	if err != nil {
+		return nil, publicRuntimeError(err)
+	}
+	return &agentv1.GetConversationStateResponse{
+		Found:                found,
+		ConversationRevision: conversation.Revision,
+	}, nil
 }
 
 func transientModelFromProto(invocation *agentv1.TransientModelInvocation) (*runtimeapi.TransientModelInvocation, error) {
@@ -644,6 +745,10 @@ func publicRuntimeError(err error) error {
 		return status.Error(codes.FailedPrecondition, "model provider does not expose a compatible model list")
 	case errors.Is(err, runtimeapp.ErrCapacityExhausted):
 		return status.Error(codes.ResourceExhausted, "local Agent capacity is temporarily exhausted")
+	case errors.Is(err, runtimeapp.ErrTeamCompletionInvalid):
+		return status.Error(codes.FailedPrecondition, "Team completion evidence is invalid")
+	case errors.Is(err, runtimeapp.ErrTeamCompletionNotFound):
+		return status.Error(codes.NotFound, "Team completion event was not found")
 	default:
 		return status.Error(codes.Internal, "runtime operation failed")
 	}

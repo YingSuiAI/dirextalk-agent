@@ -609,19 +609,22 @@ Message Server 到 Agent 使用 TLS 1.3 gRPC、受保护文件中的 `DTX-Servic
 
 ### 16.3 Durable completion relay
 
-Agent 在成功 Team Report 与 verified cleanup 同一事务边界内产生 `team.execution.completed` task event。Message Server 的 relay：
+Agent 在成功 Team Report 与 verified cleanup 同一事务边界内产生 `team.execution.completed` task event。这个事件是内部触发信号，不是用户可见消息。完成交付按以下顺序执行：
 
 1. 从 PostgreSQL cursor 读取最后确认的 Agent event sequence；
 2. 调用 `TaskService.WatchEvents(after_seq)`；
 3. 遇到 Team completion 摘要后，不直接转发；
-4. 再调用 `GetTeamExecutionV3` 读取完整 Execution；
-5. 核对 conversation/execution/task/plan/revision/report digest/generated time/cleanup；
-6. 写入 ProductCore `agent.team.execution.completed` event；
-7. dedupe key 绑定 Execution ID 和 Report digest；
-8. 成功持久化后才单调推进 cursor；
-9. 断流后从已提交 cursor 重连。
+4. 调用 RuntimeService `SynthesizeTeamCompletion(owner_id, source_event_id)`；
+5. Central 按事件 ID 重新读取并核对 conversation/execution/task/plan/revision/report digest/generated time/cleanup；
+6. Central 重新读取完整 Team Report 和已保留 Artifact，确认每个 final digest 都有真实 Artifact 绑定；
+7. Central 把去密且有大小上限的完成材料作为内部 tool observation 送入模型，Worker 文本只作为数据，不能成为指令；
+8. Central 使用持久 RuntimeConfig 和原 conversation 历史生成真实 assistant reply，并把 observation 与回复原子提交到权威会话；
+9. Message Server 收到 Central 的 `message_id`、`content` 和 `conversation_revision` 后，才写入 ProductCore `agent.team.execution.completed` v2 event；
+10. dedupe key 绑定 Execution ID 和 Report digest；
+11. ProductCore 持久化成功后才单调推进 cursor；
+12. 断流或模型失败后从未提交 cursor 重试，同一个 source event 使用确定性 Runtime request ID，不重复调用模型。
 
-完成结果通过 realtime `server.event` 送达 App。它不是 Matrix 聊天消息，也不会修改原 durable Chat Turn。
+完成结果通过 realtime `server.event` 送达 App。它不是 Matrix 聊天消息，但 Central 生成的回复已经是原 durable Chat conversation 的正式组成部分。Message Server 不执行模型、不总结报告，也不拥有助手话术。
 
 ## 17. 第十二阶段：Flutter 完成展示
 
@@ -639,21 +642,24 @@ Agent 在成功 Team Report 与 verified cleanup 同一事务边界内产生 `te
 
 ### 17.2 完成事件严格校验
 
-Flutter 只接受 schema `dirextalk.product.agent-team-execution-completed/v1`。事件必须满足：
+Flutter 只接受 schema `dirextalk.product.agent-team-execution-completed/v2`。事件必须满足：
 
 - source event sequence 合法；
+- source event ID 是 canonical UUID；
 - conversation ID 与当前账号数据域匹配；
+- `assistant_message.message_id` 与 `content` 非空，且该内容由 Central RPC 返回；
+- `conversation_revision` 非负并相对本地会话单调前进；
 - 顶层 Execution/Task/Plan/revision 与内嵌 Execution 一致；
 - Execution status 是 `completed`；
 - `cleanup_verified=true`；
 - report digest 和 generated time 一致；
 - 每个 Artifact 都能绑定 report 中的 Role/Action/final digest。
 
-事件按 sequence 串行应用。处理失败时不 ack，重连后重放。最终消息使用 Execution ID 生成稳定 message ID，因此重复完成事件只会写入一次。
+事件按 sequence 串行应用。处理失败时不 ack，重连后重放。最终消息直接使用 Central 返回的稳定 message ID，因此重复完成事件只会写入一次；App 不生成任何助手正文。
 
 ### 17.3 App 展示什么
 
-App 在原会话中写入本地化完成消息，并展示：
+App 在原会话中写入 Central 的真实回复，并把结构化 Artifact 作为独立附件卡展示。Central 可根据任务和上下文自由决定正文中应突出结论、数字、风险、需要用户决定的事项或文件，不受固定模板限制。结构化区域可展示：
 
 - Central 验证后的 summary；
 - deliverables；
@@ -663,6 +669,8 @@ App 在原会话中写入本地化完成消息，并展示：
 - Artifact 名称、类型、大小、SHA-256、生成时间和保留截止时间。
 
 Artifact 卡不直接下载和展示原始对象内容。历史 Artifact 元数据同时进入 Settings 下的 Deliverables 页面，并按账号域和 Artifact ID 去重。
+
+普通连续对话不要求 App 再附加 Artifact ID、Task ID 或 Execution ID。因为上一条助手消息、内部完成 observation 和 Artifact manifest 已进入 Central 的权威 conversation，Central 应从自己的历史理解“这个文件”“刚才的数字”等指代。若同一条回复主动列出多个同名或同类对象，Central 应在回复中使用清晰名称消除歧义。
 
 ## 18. 恢复与幂等矩阵
 

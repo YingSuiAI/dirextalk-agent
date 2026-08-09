@@ -591,6 +591,38 @@ func (store *Store) EventsAfter(ctx context.Context, afterSeq int64, limit int) 
 	return events, nil
 }
 
+func (store *Store) GetTaskEvent(
+	ctx context.Context,
+	eventID string,
+) (task.Event, error) {
+	parsed, err := uuid.Parse(strings.TrimSpace(eventID))
+	if err != nil || parsed == uuid.Nil || parsed.String() != eventID {
+		return task.Event{}, fmt.Errorf("%w: invalid event id", task.ErrInvalid)
+	}
+	var event task.Event
+	err = store.pool.QueryRow(ctx, `
+		SELECT seq, event_id, event_type, aggregate_type, aggregate_id,
+		       revision, summary_json, occurred_at
+		FROM task_events
+		WHERE event_id=$1`, parsed).Scan(
+		&event.Seq,
+		&event.EventID,
+		&event.EventType,
+		&event.AggregateType,
+		&event.AggregateID,
+		&event.Revision,
+		&event.SummaryJSON,
+		&event.OccurredAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return task.Event{}, task.ErrNotFound
+	}
+	if err != nil {
+		return task.Event{}, fmt.Errorf("get task event: %w", err)
+	}
+	return event, nil
+}
+
 type taskScanner interface{ Scan(...any) error }
 
 func loadTask(ctx context.Context, query rowQuerier, taskID uuid.UUID, forUpdate bool) (task.Task, error) {

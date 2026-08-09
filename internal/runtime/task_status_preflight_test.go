@@ -46,7 +46,7 @@ func TestTrustedTaskStatusPreflightUsesAuthoritativeStatus(t *testing.T) {
 						t.Fatalf("status input = %s", invocation.Arguments)
 					}
 					return ToolResult{
-						Content:        `{"schema_version":"dirextalk.agent.team-task-lifecycle-summary/v1","operation":"status","task_id":"` + taskID + `","execution_status":"finished","outcome_status":"failed","revision":6,"terminal":true,"plan_id":"` + planID + `","plan_revision":2,"plan_status":"approved"}`,
+						Content:        `{"schema_version":"dirextalk.agent.team-task-lifecycle-summary/v1","operation":"status","task_id":"` + taskID + `","execution_status":"finished","outcome_status":"failed","revision":6,"terminal":true,"plan_id":"` + planID + `","plan_revision":2,"plan_status":"approved","completion_report_available":true,"completion_report_pending":false,"completion_report":{"summary":"The worker finished the requested analysis.","deliverables":["final.json"]}}`,
 						RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID},
 					}, nil
 				},
@@ -70,8 +70,37 @@ func TestTrustedTaskStatusPreflightUsesAuthoritativeStatus(t *testing.T) {
 		preflight.Messages[1].Role != modelapi.RoleTool ||
 		preflight.Messages[1].ToolCallID != preflight.Messages[0].ToolCalls[0].ID ||
 		strings.Contains(preflight.Messages[1].Content, "awaiting approval") ||
-		preflight.Messages[1].Content != `{"task_id":"`+taskID+`","execution_status":"finished","outcome_status":"failed","revision":6,"terminal":true,"plan_id":"`+planID+`","plan_revision":2,"plan_status":"approved"}` {
+		preflight.Messages[1].Content != `{"task_id":"`+taskID+`","execution_status":"finished","outcome_status":"failed","revision":6,"terminal":true,"completion_report_available":true,"completion_report_pending":false,"completion_report":{"summary":"The worker finished the requested analysis.","deliverables":["final.json"]},"plan_id":"`+planID+`","plan_revision":2,"plan_status":"approved"}` {
 		t.Fatalf("preflight calls=%d result=%#v", calls, preflight)
+	}
+}
+
+func TestTrustedTaskStatusPreflightRejectsInvalidCompletionReportState(t *testing.T) {
+	t.Parallel()
+	taskID := "019fc569-5b66-74d2-bb69-c3308175f109"
+	set := toolSet{
+		request: ToolRequest{
+			RequestID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			OwnerID:   "owner-1", ConversationID: "conversation-1",
+		},
+		byName: map[string]Tool{
+			CloudDialogueToolTeamTaskStatus: {
+				Definition: modelapi.Tool{Name: CloudDialogueToolTeamTaskStatus},
+				Run: func(context.Context, ToolInvocation) (ToolResult, error) {
+					return ToolResult{
+						Content:        `{"task_id":"` + taskID + `","execution_status":"finished","outcome_status":"succeeded","revision":1,"terminal":true,"completion_report_available":true,"completion_report_pending":true}`,
+						RelatedTaskIDs: []string{taskID},
+					}, nil
+				},
+			},
+		},
+	}
+	if got := trustedTaskStatusPreflight(
+		context.Background(),
+		set,
+		[]modelapi.Message{{Role: modelapi.RoleAssistant, Content: taskID}},
+	); got.ProjectProfile != "" || len(got.Messages) != 0 {
+		t.Fatalf("invalid completion report state was injected: %#v", got)
 	}
 }
 

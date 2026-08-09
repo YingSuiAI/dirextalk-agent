@@ -305,11 +305,22 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (state runSt
 	if !hasUserMessage(requestMessages) {
 		return runState{}, ErrInvalidRequest
 	}
+	if request.TrustedObservation {
+		if err := validateTrustedObservationMessages(requestMessages); err != nil ||
+			request.CloudDialogue != nil || request.TransientModel != nil {
+			return runState{}, ErrInvalidRequest
+		}
+	}
 	config, err := r.configs.LoadRuntimeConfig(ctx, request.OwnerID)
 	if err != nil {
 		return runState{}, err
 	}
 	config = normalizedRuntimeConfig(config)
+	if request.TrustedObservation {
+		// Completion synthesis is one model-authored reply over verified facts.
+		// It has no tool loop and cannot start follow-on work.
+		config.MaxSteps = 1
+	}
 	transient, err := prepareTransientModelMetadata(request)
 	if err != nil {
 		return runState{}, err
@@ -360,6 +371,9 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (state runSt
 	history = append(history, state.conversation.Messages...)
 	history = append(history, requestMessages...)
 	projectProfile := modelProjectProfile(config.ProjectProfile, request.CloudDialogue != nil)
+	if request.TrustedObservation {
+		projectProfile += "\n\n" + trustedTeamCompletionPolicy
+	}
 	preflightBudget, ok := modelInputByteBudget(config.ModelProfile, nil)
 	if !ok {
 		return runState{}, contextWindowInputError()
@@ -405,6 +419,13 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (state runSt
 		if searchProfile != nil {
 			enabledNames = append(enabledNames, SearchToolName)
 		}
+	}
+	if request.TrustedObservation {
+		enabledNames = nil
+		knowledgeRefs = nil
+		mcpServerIDs = nil
+		recipeIDs = nil
+		searchProfile = nil
 	}
 	tools, err := loadToolSet(ctx, r.tools, ToolRequest{
 		RequestID:         request.RequestID,
@@ -482,7 +503,13 @@ func (r *Runtime) pendingConversation(state *runState, produced []modelapi.Messa
 		return nil, 0
 	}
 	conversation := cloneConversation(state.conversation)
-	conversation.Messages = append(conversation.Messages, cloneMessages(state.requestMessages)...)
+	requestMessages := state.requestMessages
+	if len(requestMessages) > 0 &&
+		validateTrustedObservationMessages(requestMessages) == nil {
+		// The last item is an internal model instruction, not a user utterance.
+		requestMessages = requestMessages[:len(requestMessages)-1]
+	}
+	conversation.Messages = append(conversation.Messages, cloneMessages(requestMessages)...)
 	conversation.Messages = append(conversation.Messages, cloneMessages(produced)...)
 	conversation = compactConversation(conversation, state.config.MemoryMessageLimit, r.now())
 	conversation.Revision = state.expectedRevision

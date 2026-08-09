@@ -357,6 +357,15 @@ func (command RuntimeRequestCommand) Validated() (RuntimeRequestCommand, error) 
 		}
 		return RuntimeRequestCommand{}, ErrInvalidRequest
 	}
+	if command.Request.TrustedObservation {
+		if err := validateTrustedObservationMessages(command.Request.Messages); err != nil ||
+			command.Request.ConversationID == "" ||
+			command.Request.MemoryDisabled ||
+			command.Request.CloudDialogue != nil ||
+			command.Request.TransientModel != nil {
+			return RuntimeRequestCommand{}, ErrInvalidRequest
+		}
+	}
 	return command, nil
 }
 
@@ -375,7 +384,14 @@ func (command RuntimeRequestCommand) Digest() ([sha256.Size]byte, error) {
 	if err != nil {
 		return [sha256.Size]byte{}, err
 	}
-	encoded, err := json.Marshal(validated.Request)
+	digestRequest := validated.Request
+	if digestRequest.TrustedObservation {
+		// A completion observation is idempotent by its immutable event payload.
+		// Its first attempt may race an ordinary user turn, so a reclaimed request
+		// is allowed to bind the newly authoritative conversation revision.
+		digestRequest.ExpectedConversationRevision = 0
+	}
+	encoded, err := json.Marshal(digestRequest)
 	if err != nil {
 		return [sha256.Size]byte{}, fmt.Errorf("%w: encode runtime request", ErrRuntimePersistence)
 	}

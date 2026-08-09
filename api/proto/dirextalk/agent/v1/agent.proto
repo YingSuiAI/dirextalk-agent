@@ -347,6 +347,8 @@ service RuntimeService {
   rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
   rpc Chat(ChatRequest) returns (ChatResponse);
   rpc StreamChat(StreamChatRequest) returns (stream StreamChatResponse);
+  rpc SynthesizeTeamCompletion(SynthesizeTeamCompletionRequest) returns (SynthesizeTeamCompletionResponse);
+  rpc GetConversationState(GetConversationStateRequest) returns (GetConversationStateResponse);
 }
 
 message CloudCapabilities {
@@ -2460,4 +2462,30 @@ message ListCloudManagedServicesRequest {
 message ListCloudManagedServicesResponse {
   repeated CloudManagedCompatibilityService services = 1;
   string next_page_token = 2;
+}
+
+// SynthesizeTeamCompletion is an internal control-plane operation. The caller
+// supplies only the immutable Agent event identity; Central reloads and
+// verifies the execution, report, artifacts, conversation, and model profile
+// before authoring a real assistant reply.
+message SynthesizeTeamCompletionRequest {
+  string owner_id = 1;
+  string source_event_id = 2;
+}
+
+message SynthesizeTeamCompletionResponse {
+  string source_event_id = 1;
+  string conversation_id = 2;
+  RuntimeAssistantMessage message = 3;
+  int64 conversation_revision = 4;
+}
+
+message GetConversationStateRequest {
+  string owner_id = 1;
+  string conversation_id = 2;
+}
+
+message GetConversationStateResponse {
+  bool found = 1;
+  int64 conversation_revision = 2;
 }

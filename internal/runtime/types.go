@@ -53,6 +53,11 @@ type ChatRequest struct {
 	MemoryDisabled               bool
 	CloudDialogue                *CloudDialogueScope
 	TransientModel               *TransientModelInvocation
+	// TrustedObservation is set only by an internal application boundary after
+	// it has validated a server-owned event. Public Chat RPCs never expose this
+	// bit. The final synthetic user instruction is model-only and is not written
+	// into the authoritative conversation.
+	TrustedObservation bool
 	// BootstrapClientID is supplied from the authenticated gRPC principal and
 	// is never accepted from protobuf input or included in durable request data.
 	BootstrapClientID string `json:"-"`
