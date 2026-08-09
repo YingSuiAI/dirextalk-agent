@@ -668,15 +668,32 @@ func (provider *Provider) Observe(ctx context.Context, identity ExecutionIdentit
 	if err != nil {
 		return ObservedGraph{}, err
 	}
+	var graph ObservedGraph
 	if record.StackProviderID != "" && (record.Resources[ResourceIAMRole].ProviderID == "" || record.Resources[ResourceInstanceProfile].ProviderID == "") {
-		record, err = provider.ensureIAMResourceProviderIDs(ctx, record)
+		resolved, resolveErr := provider.ensureIAMResourceProviderIDs(ctx, record)
+		err = resolveErr
+		if err != nil {
+			// A terminal CloudFormation failure may roll back before either IAM
+			// logical resource is created. ResolveIAMResourceIdentities cannot
+			// produce immutable IDs in that state, so accept the stronger graph
+			// read-back only when the exact owned stack is terminal-failed and
+			// both deterministic IAM names were freshly observed absent.
+			failed, readErr := provider.readGraph(ctx, record)
+			if readErr != nil || failed.State != GraphFailed ||
+				!resourceObservedAbsent(failed.Resources, ResourceIAMRole) ||
+				!resourceObservedAbsent(failed.Resources, ResourceInstanceProfile) {
+				return ObservedGraph{}, err
+			}
+			graph = failed
+		} else {
+			record = resolved
+		}
+	}
+	if graph.ObservedAt.IsZero() {
+		graph, err = provider.readGraph(ctx, record)
 		if err != nil {
 			return ObservedGraph{}, err
 		}
-	}
-	graph, err := provider.readGraph(ctx, record)
-	if err != nil {
-		return ObservedGraph{}, err
 	}
 	if err := provider.persistGraph(ctx, graph, intentChecked); err != nil {
 		return ObservedGraph{}, err
@@ -1092,7 +1109,9 @@ func (provider *Provider) Destroy(ctx context.Context, identity ExecutionIdentit
 	if err != nil {
 		return ObservedGraph{}, err
 	}
-	if record.StackProviderID != "" && record.Resources[ResourceInstanceProfile].IdentityState != ResourceIdentityVerified {
+	iamGraphAbsent := observed.State == GraphFailed && resourceObservedAbsent(observed.Resources, ResourceIAMRole) &&
+		resourceObservedAbsent(observed.Resources, ResourceInstanceProfile)
+	if record.StackProviderID != "" && record.Resources[ResourceInstanceProfile].IdentityState != ResourceIdentityVerified && !iamGraphAbsent {
 		if err := provider.ensureInstanceProfileIdentity(ctx, identity, true); err != nil {
 			return ObservedGraph{}, err
 		}
@@ -1108,7 +1127,10 @@ func (provider *Provider) Destroy(ctx context.Context, identity ExecutionIdentit
 	if err != nil {
 		return ObservedGraph{}, err
 	}
-	if record.StackProviderID != "" && record.Resources[ResourceInstanceProfile].IdentityState != ResourceIdentityVerified {
+	freshIAMGraphAbsent := resourceObservedAbsent(fresh.Resources, ResourceIAMRole) &&
+		resourceObservedAbsent(fresh.Resources, ResourceInstanceProfile)
+	if record.StackProviderID != "" && record.Resources[ResourceInstanceProfile].IdentityState != ResourceIdentityVerified &&
+		!(iamGraphAbsent && freshIAMGraphAbsent) {
 		return fresh, ErrReconcilePending
 	}
 	for _, kind := range destroyOrder {

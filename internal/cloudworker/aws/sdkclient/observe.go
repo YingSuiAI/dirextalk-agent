@@ -66,6 +66,15 @@ func (client *Client) ObserveGraph(ctx context.Context, request cloudaws.Observe
 	if err != nil {
 		return cloudaws.ObservedGraph{}, err
 	}
+	// A terminal rollback can contain no IAM StackResource entries at all.
+	// Read the deterministic names directly so an absent terminal graph is
+	// fresh evidence, while any unbound same-name resource still fails closed.
+	if mapping.physical[cloudaws.ResourceIAMRole] == "" {
+		mapping.physical[cloudaws.ResourceIAMRole] = request.Plan.IAMRoleName
+	}
+	if mapping.physical[cloudaws.ResourceInstanceProfile] == "" {
+		mapping.physical[cloudaws.ResourceInstanceProfile] = request.Plan.InstanceProfileName
+	}
 	for kind, expected := range request.ExpectedResourceProviderIDs {
 		if kind == cloudaws.ResourceStack {
 			if expected != awssdk.ToString(stack.StackId) {

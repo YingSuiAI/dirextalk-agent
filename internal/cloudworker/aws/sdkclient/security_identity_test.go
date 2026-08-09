@@ -77,6 +77,38 @@ func TestGraphStateFailsClosedOnTerminalProvisioningFailure(t *testing.T) {
 	}
 }
 
+func TestObserveTerminalRollbackWithoutIAMResourcesReadsNamesAsAbsent(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	plan, intent := sdkSecurityPlanAndIntent(t, now)
+	stackID := sdkSecurityStackID(intent.StackName)
+	stack := sdkSecurityStack(plan, intent, stackID, now.Add(time.Second))
+	stack.StackStatus = cftypes.StackStatusRollbackComplete
+	iamFake := &securityIAMFake{roleMissing: true, profileMissing: true}
+	client, cfn := sdkSecurityClient(t, now.Add(2*time.Second), stack, nil, iamFake)
+	cfn.emptyStackResources = true
+	policy, err := plan.Network.SecurityGroupPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := client.ObserveGraph(context.Background(), cloudaws.ObserveGraphRequest{
+		Identity: plan.Identity, Plan: plan, PlanDigest: plan.Digest, InfrastructureDigest: plan.InfrastructureDigest,
+		IntentDigest: intent.IntentDigest, ClientToken: intent.ClientToken, StackProviderID: stackID,
+		ExpectedResourceProviderIDs: map[cloudaws.ResourceKind]string{cloudaws.ResourceStack: stackID},
+		ExpectedTags:                cloudaws.RequiredTags(plan.Identity, plan.Digest, plan.InfrastructureDigest, intent.IntentDigest),
+		SecurityGroupPolicy:         policy,
+	})
+	if err != nil || graph.State != cloudaws.GraphFailed || len(graph.Resources) != len(cloudaws.AllResourceKinds()) {
+		t.Fatalf("terminal rollback graph=%+v err=%v", graph, err)
+	}
+	for _, kind := range []cloudaws.ResourceKind{cloudaws.ResourceIAMRole, cloudaws.ResourceInstanceProfile} {
+		for _, resource := range graph.Resources {
+			if resource.Kind == kind && resource.Exists {
+				t.Fatalf("%s was not observed absent: %+v", kind, resource)
+			}
+		}
+	}
+}
+
 func TestFindStackByIntentFailsClosedOnReplacementVisibilityAndPagination(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	plan, intent := sdkSecurityPlanAndIntent(t, now)
@@ -413,14 +445,15 @@ func (fake *securitySTSFake) GetCallerIdentity(context.Context, *sts.GetCallerId
 }
 
 type securityCFNFake struct {
-	mu             sync.Mutex
-	stack          cftypes.Stack
-	eventPages     map[string]*cloudformation.DescribeStackEventsOutput
-	eventInputs    []cloudformation.DescribeStackEventsInput
-	createCalls    int
-	deleteCalls    int
-	describeInputs []cloudformation.DescribeStacksInput
-	deleteInputs   []cloudformation.DeleteStackInput
+	mu                  sync.Mutex
+	stack               cftypes.Stack
+	eventPages          map[string]*cloudformation.DescribeStackEventsOutput
+	eventInputs         []cloudformation.DescribeStackEventsInput
+	createCalls         int
+	deleteCalls         int
+	describeInputs      []cloudformation.DescribeStacksInput
+	deleteInputs        []cloudformation.DeleteStackInput
+	emptyStackResources bool
 }
 
 func (fake *securityCFNFake) CreateStack(context.Context, *cloudformation.CreateStackInput, ...func(*cloudformation.Options)) (*cloudformation.CreateStackOutput, error) {
@@ -456,6 +489,9 @@ func (fake *securityCFNFake) DescribeStackEvents(_ context.Context, input *cloud
 func (fake *securityCFNFake) DescribeStackResources(context.Context, *cloudformation.DescribeStackResourcesInput, ...func(*cloudformation.Options)) (*cloudformation.DescribeStackResourcesOutput, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
+	if fake.emptyStackResources {
+		return &cloudformation.DescribeStackResourcesOutput{}, nil
+	}
 	physical := map[cloudaws.ResourceKind]string{
 		cloudaws.ResourceSecurityGroup: "sg-0123456789abcdef0", cloudaws.ResourceIAMRole: awssdk.ToString(fake.stack.StackName) + "-role",
 		cloudaws.ResourceInstanceProfile: awssdk.ToString(fake.stack.StackName) + "-profile", cloudaws.ResourceENI: "eni-0123456789abcdef0",
@@ -507,11 +543,16 @@ type securityIAMFake struct {
 	tagErrors       []error
 	applyUnknownTag bool
 	tagCalls        int
+	roleMissing     bool
+	profileMissing  bool
 }
 
 func (fake *securityIAMFake) GetRole(context.Context, *iam.GetRoleInput, ...func(*iam.Options)) (*iam.GetRoleOutput, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
+	if fake.roleMissing {
+		return nil, &iamtypes.NoSuchEntityException{}
+	}
 	copy := fake.role
 	return &iam.GetRoleOutput{Role: &copy}, nil
 }
@@ -523,6 +564,9 @@ func (fake *securityIAMFake) ListRoleTags(context.Context, *iam.ListRoleTagsInpu
 func (fake *securityIAMFake) GetInstanceProfile(context.Context, *iam.GetInstanceProfileInput, ...func(*iam.Options)) (*iam.GetInstanceProfileOutput, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
+	if fake.profileMissing {
+		return nil, &iamtypes.NoSuchEntityException{}
+	}
 	copy := fake.profile
 	copy.Roles = append([]iamtypes.Role(nil), fake.profile.Roles...)
 	return &iam.GetInstanceProfileOutput{InstanceProfile: &copy}, nil

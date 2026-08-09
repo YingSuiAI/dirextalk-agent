@@ -1028,6 +1028,76 @@ func TestReaperRestartAndConcurrentSweepConverge(t *testing.T) {
 	}
 }
 
+func TestTerminalStackFailureBeforeIAMCreationReapsWithoutFabricatedIDs(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	plan, _, ledger, cloud, provider := testProvider(t, &now)
+	if _, err := provider.Ensure(context.Background(), plan, cloud.intent); err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := ledger.Get(context.Background(), plan.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloud.mu.Lock()
+	stack := cloud.resources[ResourceStack]
+	cloud.resources = map[ResourceKind]ResourceObservation{ResourceStack: stack}
+	cloud.graphStateOverride = GraphFailed
+	cloud.iamResolveErr = ErrOwnershipMismatch
+	cloud.mu.Unlock()
+
+	failed := record.clone()
+	failed.State = LifecycleProvisioning
+	failed.CleanupRequestedAt = time.Time{}
+	for _, kind := range AllResourceKinds() {
+		entry := failed.Resources[kind]
+		entry.State = ResourcePlanned
+		entry.Observation = ResourceObservation{}
+		entry.Mutation = MutationRecord{}
+		if kind != ResourceStack {
+			entry.ProviderID = ""
+		}
+		if kind == ResourceInstanceProfile {
+			entry.IdentityState = ResourceIdentityPending
+			entry.IdentityMutation = MutationRecord{}
+		}
+		failed.Resources[kind] = entry
+	}
+	failed.Revision++
+	failed.UpdatedAt = now.Add(time.Second)
+	if _, err := ledger.CompareAndSwap(context.Background(), failed, record.Revision); err != nil {
+		t.Fatal(err)
+	}
+	now = failed.UpdatedAt
+
+	observed, err := provider.Observe(context.Background(), plan.Identity)
+	if err != nil || observed.State != GraphFailed ||
+		!resourceObservedAbsent(observed.Resources, ResourceIAMRole) ||
+		!resourceObservedAbsent(observed.Resources, ResourceInstanceProfile) {
+		t.Fatalf("terminal pre-IAM graph = %s, %v", observed.State, err)
+	}
+	destroyed, err := provider.Destroy(context.Background(), plan.Identity, observed)
+	if err != nil || destroyed.State != GraphVerifiedDestroyed {
+		t.Fatalf("terminal pre-IAM cleanup = %s, %v", destroyed.State, err)
+	}
+	stored, err := ledger.Get(context.Background(), plan.Identity)
+	if err != nil || stored.State != LifecycleVerifiedDestroyed {
+		t.Fatalf("terminal pre-IAM ledger state = %s, %v", stored.State, err)
+	}
+	if cloud.identityCalls != 1 {
+		t.Fatalf("cleanup fabricated an IAM identity mutation: calls=%d", cloud.identityCalls)
+	}
+	for _, kind := range AllResourceKinds() {
+		wantDeletes := 0
+		if kind == ResourceStack {
+			wantDeletes = 1
+		}
+		if cloud.deleteCalls[kind] != wantDeletes || stored.Resources[kind].State != ResourceVerifiedDestroyed {
+			t.Fatalf("%s deletes=%d state=%s", kind, cloud.deleteCalls[kind], stored.Resources[kind].State)
+		}
+	}
+}
+
 func testPlan(t *testing.T, now time.Time) Plan {
 	t.Helper()
 	identity := ExecutionIdentity{
@@ -1107,6 +1177,8 @@ type fakeCloud struct {
 	applyUnknownCreate bool
 	profileUntagged    bool
 	identityErrors     []error
+	iamResolveErr      error
+	graphStateOverride GraphState
 	applyUnknownTag    bool
 	identityCalls      int
 	identityRequests   []EnsureResourceIdentityRequest
@@ -1279,6 +1351,9 @@ func (cloud *fakeCloud) ResolveIAMResourceIdentities(_ context.Context, request 
 		!containsTags(request.ExpectedTags, RequiredTags(cloud.plan.Identity, cloud.plan.Digest, cloud.plan.InfrastructureDigest, cloud.intent.IntentDigest)) {
 		return IAMResourceIdentityProof{}, ErrIdentityMismatch
 	}
+	if cloud.iamResolveErr != nil {
+		return IAMResourceIdentityProof{}, cloud.iamResolveErr
+	}
 	return IAMResourceIdentityProof{
 		Identity: cloud.plan.Identity, PlanDigest: cloud.plan.Digest, InfrastructureDigest: cloud.plan.InfrastructureDigest,
 		IntentDigest: cloud.intent.IntentDigest, StackProviderID: cloud.providerID(ResourceStack),
@@ -1403,6 +1478,9 @@ func (cloud *fakeCloud) graphLocked() ObservedGraph {
 		state = GraphActive
 	} else if cloud.created && identityPending {
 		state = GraphProvisioning
+	}
+	if cloud.graphStateOverride != "" {
+		state = cloud.graphStateOverride
 	}
 	stackID := ""
 	if cloud.created {

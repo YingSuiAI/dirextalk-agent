@@ -894,6 +894,15 @@ func resourceExists(resources []ResourceObservation, kind ResourceKind) bool {
 	return false
 }
 
+func resourceObservedAbsent(resources []ResourceObservation, kind ResourceKind) bool {
+	for _, item := range resources {
+		if item.Kind == kind {
+			return !item.Exists
+		}
+	}
+	return false
+}
+
 func equalRules(left, right []NetworkRule) bool {
 	left = slices.Clone(left)
 	right = slices.Clone(right)
