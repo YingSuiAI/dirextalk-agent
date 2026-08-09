@@ -44,8 +44,8 @@ func TestResolveExecutionProfileBuildsExecutableClientProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.DisplayName != "snapshot" || profile.ModelKind != coremodel.ModelKindConversation || profile.CredentialVersion != snapshot.CredentialVersion || !profile.APIKeyConfigured || profile.APIKey == "" {
-		t.Fatalf("resolved execution profile is incomplete: display_name=%q model_kind=%q credential_version=%d api_key_configured=%t", profile.DisplayName, profile.ModelKind, profile.CredentialVersion, profile.APIKeyConfigured)
+	if profile.DisplayName != "snapshot" || profile.ModelKind != coremodel.ModelKindConversation || !profile.APIKeyConfigured || profile.APIKey == "" {
+		t.Fatalf("resolved execution profile is incomplete: display_name=%q model_kind=%q api_key_configured=%t", profile.DisplayName, profile.ModelKind, profile.APIKeyConfigured)
 	}
 	if _, err = coremodel.ValidateProfile(profile); err != nil {
 		t.Fatalf("resolved execution profile is invalid: %v", err)

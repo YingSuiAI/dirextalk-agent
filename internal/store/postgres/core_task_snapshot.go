@@ -26,7 +26,7 @@ func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpe
 		var provider, modelKind string
 		var temperature, topP *float64
 		var apiConfigured bool
-		err := tx.QueryRow(ctx, `SELECT profile_id::text,revision,credential_version,provider,model_kind,base_url,model_name,system_prompt,temperature,top_p,max_output_tokens,context_window,reasoning_effort,api_key_configured FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL FOR SHARE`, spec.ModelProfileID).Scan(&model.ProfileID, &model.Revision, &model.CredentialVersion, &provider, &modelKind, &model.BaseURL, &model.Model, &model.SystemPrompt, &temperature, &topP, &model.MaxOutputTokens, &model.ContextWindow, &model.ReasoningEffort, &apiConfigured)
+		err := tx.QueryRow(ctx, `SELECT profile_id::text,revision,provider,model_kind,base_url,model_name,system_prompt,temperature,top_p,max_output_tokens,context_window,reasoning_effort,api_key_configured FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL FOR SHARE`, spec.ModelProfileID).Scan(&model.ProfileID, &model.Revision, &provider, &modelKind, &model.BaseURL, &model.Model, &model.SystemPrompt, &temperature, &topP, &model.MaxOutputTokens, &model.ContextWindow, &model.ReasoningEffort, &apiConfigured)
 		if err != nil || !apiConfigured {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return coretask.ExecutionSnapshot{}, coretask.ErrNotFound
@@ -46,7 +46,7 @@ func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpe
 				return coretask.ExecutionSnapshot{}, coretask.ErrConflict
 			}
 		}
-		model.Provider, model.ModelKind, model.Temperature, model.TopP = provider, modelKind, temperature, topP
+		model.Provider, model.Temperature, model.TopP = provider, temperature, topP
 		model.SecretRef = "model-profile:" + model.ProfileID + ":" + fmt.Sprint(model.Revision)
 		model.Digest = coreTaskModelSnapshotDigest(model)
 		snapshot.Model = model
@@ -234,32 +234,28 @@ func digestSnapshotValue(v any) string {
 
 func coreTaskModelSnapshotDigest(model coretask.ModelProfileSnapshot) string {
 	return digestSnapshotValue(struct {
-		ProfileID         string
-		Revision          int64
-		CredentialVersion int64
-		Provider          string
-		ModelKind         string
-		BaseURL           string
-		Model             string
-		SystemPrompt      string
-		Temperature       *float64
-		TopP              *float64
-		MaxOutputTokens   int
-		ContextWindow     int
-		ReasoningEffort   string
+		ProfileID       string
+		Revision        int64
+		Provider        string
+		BaseURL         string
+		Model           string
+		SystemPrompt    string
+		Temperature     *float64
+		TopP            *float64
+		MaxOutputTokens int
+		ContextWindow   int
+		ReasoningEffort string
 	}{
-		ProfileID:         model.ProfileID,
-		Revision:          model.Revision,
-		CredentialVersion: model.CredentialVersion,
-		Provider:          model.Provider,
-		ModelKind:         model.ModelKind,
-		BaseURL:           model.BaseURL,
-		Model:             model.Model,
-		SystemPrompt:      model.SystemPrompt,
-		Temperature:       model.Temperature,
-		TopP:              model.TopP,
-		MaxOutputTokens:   model.MaxOutputTokens,
-		ContextWindow:     model.ContextWindow,
-		ReasoningEffort:   model.ReasoningEffort,
+		ProfileID:       model.ProfileID,
+		Revision:        model.Revision,
+		Provider:        model.Provider,
+		BaseURL:         model.BaseURL,
+		Model:           model.Model,
+		SystemPrompt:    model.SystemPrompt,
+		Temperature:     model.Temperature,
+		TopP:            model.TopP,
+		MaxOutputTokens: model.MaxOutputTokens,
+		ContextWindow:   model.ContextWindow,
+		ReasoningEffort: model.ReasoningEffort,
 	})
 }

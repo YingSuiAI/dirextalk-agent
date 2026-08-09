@@ -152,10 +152,9 @@ sampling limits, and a protected API-key revision. Conversations provide unary
 and streaming chat. Provider-neutral model calls pass through Eino's
 `ToolCallingChatModel` boundary. Background work uses a Task execution snapshot
 so profile, extension, Knowledge, attachment, and secret bindings cannot drift
-while a request is running. The model binding records the profile revision,
-credential version, model kind, exact protected-secret reference, and a digest
-of every provider execution parameter; Agent and Cloud Worker tasks reject
-non-conversation profiles before they become runnable.
+while a request is running. Agent and Cloud Worker task creation rejects
+non-conversation profiles, and execution verifies the exact protected-secret
+reference plus the digest of every snapshotted provider parameter.
 
 Profile sync durably stores separate conversation, tool, embedding, and speech
 role defaults. The tool role references only a conversation-kind profile and

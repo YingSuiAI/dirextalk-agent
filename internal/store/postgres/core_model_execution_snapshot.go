@@ -14,7 +14,7 @@ import (
 // snapshot. Non-secret fields are reconstructed from the snapshot itself, so
 // profile updates cannot drift a queued task to a newer configuration.
 func (s *Store) ResolveExecutionProfile(ctx context.Context, snap coretask.ModelProfileSnapshot) (coremodel.Profile, error) {
-	if snap.ModelKind != coremodel.ModelKindConversation || snap.CredentialVersion <= 0 || snap.SecretRef != fmt.Sprintf("model-profile:%s:%d", snap.ProfileID, snap.Revision) || snap.Digest != coreTaskModelSnapshotDigest(snap) {
+	if snap.SecretRef != fmt.Sprintf("model-profile:%s:%d", snap.ProfileID, snap.Revision) || snap.Digest != coreTaskModelSnapshotDigest(snap) {
 		return coremodel.Profile{}, coretask.ErrRevisionConflict
 	}
 	var version uint32
@@ -31,5 +31,5 @@ func (s *Store) ResolveExecutionProfile(ctx context.Context, snap coretask.Model
 	}
 	apiKey := string(plaintext)
 	clearBytes(plaintext)
-	return coremodel.Profile{ID: snap.ProfileID, DisplayName: "snapshot", Revision: snap.Revision, CredentialVersion: snap.CredentialVersion, Provider: coremodel.ModelProvider(snap.Provider), ModelKind: snap.ModelKind, BaseURL: snap.BaseURL, Model: snap.Model, APIKey: apiKey, APIKeyConfigured: true, SystemPrompt: snap.SystemPrompt, Temperature: snap.Temperature, TopP: snap.TopP, MaxOutputTokens: snap.MaxOutputTokens, ContextWindow: snap.ContextWindow, ReasoningEffort: snap.ReasoningEffort}, nil
+	return coremodel.Profile{ID: snap.ProfileID, DisplayName: "snapshot", Revision: snap.Revision, Provider: coremodel.ModelProvider(snap.Provider), ModelKind: coremodel.ModelKindConversation, BaseURL: snap.BaseURL, Model: snap.Model, APIKey: apiKey, APIKeyConfigured: true, SystemPrompt: snap.SystemPrompt, Temperature: snap.Temperature, TopP: snap.TopP, MaxOutputTokens: snap.MaxOutputTokens, ContextWindow: snap.ContextWindow, ReasoningEffort: snap.ReasoningEffort}, nil
 }
