@@ -1,7 +1,7 @@
 # AWS Agent OS: Pi Worker 云端任务闭环技术实现
 
-> 文档状态：已实现、已部署、已完成两次真实 App-to-Worker-to-App 验收
-> 最后核对：2026-08-07
+> 文档状态：已实现、已部署、已完成三次真实 App-to-Worker-to-App 验收
+> 最后核对：2026-08-09
 > 范围：单角色、单 Pi Worker、AWS EC2 临时任务闭环
 > 不包含：Adam 迁移方案、Worker Market、Runs/Tasks 进度页、多 Worker 市场化能力
 
@@ -16,9 +16,10 @@
 5. Pi Worker 启动、证明身份、领取唯一任务并执行；
 6. Worker 只提交受限结构化结果和 Artifact；
 7. Central Agent 校验结果、销毁资源并生成不可变报告；
-8. Message Server 可靠地把完成事件转发给 App；
-9. App 在原会话显示完成消息和交付物元数据；
-10. 独立 AWS API 查询确认任务资源归零。
+8. Central Agent 读取受限产物内容，结合原会话生成真实回复；
+9. Message Server 可靠地把完成事件和 Central 回复转发给 App；
+10. App 在原会话显示 Central 回复和用户交付物；
+11. 独立 AWS API 查询确认任务资源归零。
 
 这份文档描述的是已经跑通的历史闭环，不是未来架构设想。后续把能力迁移到 Adam 框架时，应把本文作为行为基线和验收基线，而不是原样搬运全部旧 RPC 与旧内部模块。
 
@@ -26,11 +27,11 @@
 
 闭环分布在三个同名分支中：
 
-| 仓库 | 分支 HEAD | 闭环功能代码基线 | 说明 |
+| 仓库 | 分支 | 已验收功能提交 | 说明 |
 | --- | --- | --- | --- |
-| `dirextalk-agent` | `51bc9ae` | `78a9db7` | `cc093b9` 记录最终验收；之后两个提交只包含 Worker 进度设计文档 |
-| `dirextalk-message-server` | `7f3aa36` | `cc52c7d` | HEAD 只比闭环代码多一份未实施的进度方案 |
-| `dirextalk-flutter` | `e2de881` | `46675dfd` | HEAD 只比闭环代码多一份未实施的 Flutter Runs 方案 |
+| `dirextalk-agent` | `aws-agent-os` | `e7dcd5b` | demo2 v105；Central 读取 retained Artifact 并在 durable conversation 生成回复 |
+| `dirextalk-message-server` | `aws-agent-os` | `42b018c` | durable completion relay 和 v2 ProductCore event |
+| `dirextalk-flutter` | `aws-agent-os` | `6f0a716a` | 用户 Artifact 过滤、Plan/Task relation 恢复、App 真实验收 |
 
 当前 Agent worktree 中未跟踪的 `internal/workerprogress/`、`000064_worker_milestone_events.up.sql` 和相关测试，不属于 `aws-agent-os` 已提交内容，也不属于本文所称的已实现闭环。
 
@@ -523,9 +524,9 @@ Result manifest 最多包含 8 个 runtime result。单个对象 claim 上限 8 
 
 Worker 的“我完成了”在完成这些步骤前始终是不可信声明。
 
-### 14.3 Central 是否再次调用模型总结
+### 14.3 可信报告与 Central 用户回复是两层
 
-已验收的单 Pi 闭环**没有第二次模型调用**。Central 使用确定性代码把验证后的 Pi final 投影为 Team Report：
+Central 使用确定性代码把验证后的 Pi final 投影为不可变 Team Report：
 
 - `summary`；
 - `deliverables`；
@@ -534,6 +535,17 @@ Worker 的“我完成了”在完成这些步骤前始终是不可信声明。
 - artifact SHA-256。
 
 Worker 自报 `risks` 仍保留在内部 evidence，但从公开 Team Report、Message Server 完成事件和 App 消息中排除。AWS 清理状态只能来自 Central 的 Resource Ledger 和独立 read-back，不能由 Worker 文本声明。
+
+Team Report 不是面向用户的固定话术。Execution 完成且清理验证后，Central 会在原 durable conversation 中执行一次独立的模型合成：
+
+1. 重新读取事件、Execution、Report 和 Artifact manifest；
+2. 使用 Artifact 绑定的 owner、Connection、bucket/key、media type、精确字节数和 SHA-256 从 S3 读取内容；
+3. 单个 Artifact 最多向模型提供 128 KiB，一次完成合成总内容最多 256 KiB；
+4. 非 UTF-8、含 NUL、长度/摘要不符或对象路径越界时关闭失败；
+5. 命中似密钥内容时只返回 `redacted` 状态，不向模型提供原文；
+6. 将有界 observation 作为工具结果加入原会话，由 Central 结合用户的原始目标、之前对话和实际产物生成回复。
+
+因此不存在 Message Server 或 App 用模板“代替 Agent 说话”的路径。确定性代码负责事实与安全边界，Central 模型负责结合语境、判断重点和向用户表达。
 
 ## 15. 第十阶段：销毁与 Reaper
 
@@ -634,7 +646,19 @@ Agent 在成功 Team Report 与 verified cleanup 同一事务边界内产生 `te
 
 最终 demo2 Agent 镜像为 `v0.1.0-alpha.20260809.102-4b761368bdab@sha256:f79e41bfaf494d9e8bf6c7399435ac469c51480442e5582eec3aaff519eafb7d`，回读 revision 与 Git 提交一致，容器 healthy、restart count 为 0。对既有成功 Task `019fe147-5b65-7db0-acde-28abedaccaad` 的完成事件 `019fe14f-285f-798f-a346-f42debd84263` 进行可信重放后，Central 从原会话理解用户所说的“这个文件”，生成自然语言 LogScope 总结，区分 Worker 声称的源码/测试与实际只保留的 `final.json`。权威 conversation 从 revision 14 原子推进到 15；确定性 assistant message ID 为 `34d94e66-ccac-5437-8281-1952f8037b89`。连续两次重放返回相同 ID、正文和 revision，数据库只存在一条完成回复，请求账本为 `completed`，末尾持久化结构是 observation assistant/tool pair 加 Central assistant reply，内部 provider-framing 指令没有进入会话。
 
-这次证明的是 final Agent 镜像上的 Central 生成、记忆读取、锁串行化、原子持久化和重放幂等。它使用的是 Message Server cursor 已经越过的历史完成事件，因此没有重新证明一个新 v2 realtime event 在 App 中的展示，也没有验证新生成策略对下一条未完成事件的实际措辞。最终仍需从已登录 App 提交并批准一个新 Pi Worker 任务，监控 Worker 启动/执行/清理，并在同一会话验证自然回复、多 Artifact 卡和后续指代记忆。
+上述历史重放只证明了服务端合成。后续的新 App 原生任务已在同日关闭剩余验收缺口：
+
+- demo2 部署 Agent `v0.1.0-alpha.20260809.105-e7dcd5b38240@sha256:a7108845b65511844856574d031ccb17efab201e186a5618a1410f7fef3134ee`，容器 healthy、零重启；
+- App 提交 Task `019fe696-5ee9-7ab7-bfb0-790ac6f31acc`，批准 Plan `c6004fd2-15c7-5ef9-b426-04114c38c369`；
+- Execution `48f68b08-a679-5868-b631-8f35d8a23dfe`、Dispatch `2a10f296-3b7d-5355-85fe-81dbe7807037`、Deployment `6d41dfc5-6484-5584-bf6e-f9796a30246a`、Worker `26126b01-dcde-54e9-ba78-e3dd97176b60` 均唯一绑定；
+- Osaka `t3.small` 实例 `i-0a16bcd2b629db9b5` 从官方 AMI `ami-0f47932b5ebb748c5` 启动，Worker 完成 `succeeded`；
+- Central 保留并逐字节验证 `report.md` 57 B、`result.json` 63 B 和内部 `final.json` 716 B，Team Report digest 为 `sha256:a90fa6bc4d8331d285870094edc1edd71986250d3f92516f918d4ba89402613f`；
+- completion observation 的三个 Artifact 均为 `content_state=included`，Central 从实际文件中读出 `blue ocean waves gently rolling today`，同时自主指出 Worker final 违反了用户的摘要约束；
+- App 只展示用户产物 `report.md` 和 `result.json`，不展示内部 `final.json`；
+- 用户随后不携带任何 Task、Plan、Execution 或 Artifact ID 追问“六个词和对应文件”，Central 从同一 durable conversation 正确回答，conversation revision 最终推进到 27；
+- Central 报告 `cleanup_verified=true`；独立 AWS API 确认 EC2 已 `terminated`，同 Deployment 标签下 EBS、ENI、EIP 和 Security Group 均为空集合。
+
+这次是新 v2 realtime event、Central 真实回复、产物内容读取、App 多 Artifact 展示、后续指代记忆和 AWS 归零的同一条关联验收，不再是历史事件重放。
 
 ## 17. 第十二阶段：Flutter 完成展示
 
@@ -679,6 +703,10 @@ App 在原会话中写入 Central 的真实回复，并把结构化 Artifact 作
 - Artifact 名称、类型、大小、SHA-256、生成时间和保留截止时间。
 
 Artifact 卡不直接下载和展示原始对象内容。历史 Artifact 元数据同时进入 Settings 下的 Deliverables 页面，并按账号域和 Artifact ID 去重。
+
+当一次完成同时存在用户文件和 Worker 内部 `final.json` 时，App 只在 Chat 和 Deliverables 页面展示用户文件。若历史任务只保留 `final.json`，它仍作为唯一可见的降级产物，避免用户什么都看不到。
+
+Plan/Task 卡优先使用 Central `done` 事件携带的结构化 `related_plan_ids` / `related_task_ids`。若历史流式消息丢失该元数据，但 Central 自己的回复明确写出 `Plan ID` 或 `Task ID`，Flutter 会恢复并持久化关联，使审批卡可操作。这是 Central 输出到 App 的展示关联，不是要求 App 在后续对话中把 ID 再传回 Central。
 
 普通连续对话不要求 App 再附加 Artifact ID、Task ID 或 Execution ID。因为上一条助手消息、内部完成 observation 和 Artifact manifest 已进入 Central 的权威 conversation，Central 应从自己的历史理解“这个文件”“刚才的数字”等指代。若同一条回复主动列出多个同名或同类对象，Central 应在回复中使用清晰名称消除歧义。
 
@@ -766,7 +794,7 @@ source commit
 
 测试证明的是各层行为；真实 AWS E2E 由下一节的验收账本证明。
 
-## 21. 两次真实验收证据
+## 21. 三次真实验收证据
 
 ### 21.1 恢复门禁任务
 
@@ -812,6 +840,29 @@ source commit
 
 App 自动收到完成消息和 Artifact metadata，公开结果不含 Worker risks。Central 和独立 AWS API 再次确认五类任务资源归零。用于发布的临时 x86 builder、root volume、ENI、安全组、IAM role/profile、S3 input versions、Buildx session 和 ECR authorization 也在流程结束后确认不存在。
 
+### 21.3 Central 产物内容与会话记忆收口任务
+
+2026-08-09，第三条链在新 App 会话中验证了真实产物读取、Central 自主回复和后续记忆：
+
+| 事实 | 值 |
+| --- | --- |
+| Agent release | `v0.1.0-alpha.20260809.105-e7dcd5b38240` |
+| Agent image digest | `sha256:a7108845b65511844856574d031ccb17efab201e186a5618a1410f7fef3134ee` |
+| Worker AMI | `ami-0f47932b5ebb748c5` |
+| Task | `019fe696-5ee9-7ab7-bfb0-790ac6f31acc` |
+| Plan | `c6004fd2-15c7-5ef9-b426-04114c38c369` |
+| Execution | `48f68b08-a679-5868-b631-8f35d8a23dfe` |
+| Dispatch | `2a10f296-3b7d-5355-85fe-81dbe7807037` |
+| Deployment | `6d41dfc5-6484-5584-bf6e-f9796a30246a` |
+| Worker | `26126b01-dcde-54e9-ba78-e3dd97176b60` |
+| EC2 | `i-0a16bcd2b629db9b5` / Osaka `t3.small` |
+| `report.md` | 57 B / `sha256:da61febb01226e16c0bbd07a9a122f022cb023b559234bde31a0ded1365bf667` |
+| `result.json` | 63 B / `sha256:bdc9aee004efe00582d2f604a4e672a178e20e4cba8b318ae8d28b4410076087` |
+| internal `final.json` | 716 B / `sha256:be562469a33246997a35f1344abf0649c8e6ed8e9be7de0b166c3a51b722d8a3` |
+| Team Report digest | `sha256:a90fa6bc4d8331d285870094edc1edd71986250d3f92516f918d4ba89402613f` |
+
+Central 的内部 completion observation 包含三个经重新读取和 SHA-256 验证的 `content_state=included` 内容。Central 生成的回复读出六词结果，区分用户产物与内部 `final.json`，并主动指出 Worker final 未遵守用户指定的摘要限制。App 只显示 `report.md` 与 `result.json`。不附带任何 ID 的后续追问仍由 Central 正确回答六个词及对应文件。独立 AWS API 确认 EC2 `terminated`，EBS、ENI、EIP 和 Security Group 均为空集合；三个 S3 Artifact 按 90 天保留策略保存。
+
 ## 22. 已知边界
 
 以下能力**没有**被本文所述闭环实现或验收：
@@ -845,7 +896,7 @@ App 自动收到完成消息和 Artifact metadata，公开结果不含 Worker ri
 - verified cleanup 必须是 Execution 成功条件；
 - 完成事件必须 durable、cursor-resumable、idempotent、与原会话唯一绑定；
 - App 必须严格校验 schema 和 cross-object bindings；
-- 最终仍需一条新的 App-to-Worker-to-App 真实 AWS 任务和任务标签资源归零证明。
+- 任何改动 Worker Runtime、产物合成、完成事件或清理语义的新发布，都必须重复 App-to-Worker-to-App 真实 AWS 任务和任务标签资源归零验收。
 
 ## 24. 关键代码索引
 
@@ -873,6 +924,8 @@ App 自动收到完成消息和 Artifact metadata，公开结果不含 Worker ri
 | Worker AMI 构建与验证 | `internal/workerami/`、`deploy/container/worker-ami/` |
 | Result 校验 | `internal/workerresult/collector.go` |
 | S3 Collector | `internal/app/team_result_collector.go` |
+| Retained Artifact 内容读取 | `internal/app/team_artifact_content_reader.go` |
+| Central 完成 observation/合成 | `internal/runtimeapp/team_completion.go` |
 | 清理 | `internal/app/team_role_cleanup.go` |
 | Reaper | `cmd/dirextalk-aws-reaper/main.go`、`internal/awsreaper/` |
 | AMI 发布 | `cmd/dirextalk-agent/publish_worker_ami.go`、`internal/workeramictl/` |
@@ -901,6 +954,7 @@ App 自动收到完成消息和 Artifact metadata，公开结果不含 Worker ri
 | Chat store | `lib/data/native_agent_chat_store.dart` |
 | Team Plan 卡 | `lib/presentation/agent/native_agent_team_plan_card.dart` |
 | Artifact 卡 | `lib/presentation/agent/native_agent_artifact_card.dart` |
+| Chat relation 恢复与卡片组装 | `lib/presentation/agent/agent_pages.dart` |
 | Realtime event controller | `lib/presentation/providers/as_event_stream_provider.dart` |
 | Artifact 聚合 | `lib/presentation/providers/native_agent_chat_store_provider.dart` |
 | Deliverables 页面 | `lib/presentation/pages/agent_deliverables_page.dart` |
@@ -909,4 +963,4 @@ App 自动收到完成消息和 Artifact metadata，公开结果不含 Worker ri
 
 这套闭环已经证明了一个最小但完整的 Agent OS 路径：Central 可以把模型理解转成可信计划，在用户授权后调度用户 AWS 账号中的临时 Pi Worker，让 Worker 只执行被批准的任务，并在结果通过校验、资源完成销毁后，把一个可恢复、可去重、与原会话绑定的完成事实送回 App。
 
-它当前是“官方单 Pi Worker MVP”，不是完整 Worker Market，也不是最终 Adam 架构。后续开发应以本文列出的行为不变量和两次真实验收证据为基线，逐步替换旧接口，而不是重新发明一套未经闭环验证的执行链。
+它当前是“官方单 Pi Worker MVP”，不是完整 Worker Market，也不是最终 Adam 架构。后续开发应以本文列出的行为不变量和三次真实验收证据为基线，逐步替换旧接口，而不是重新发明一套未经闭环验证的执行链。
