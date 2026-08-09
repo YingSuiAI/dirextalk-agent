@@ -645,6 +645,9 @@ func (provider *Provider) reconcileEnsure(ctx context.Context, identity Executio
 	if err := provider.persistGraph(ctx, graph, intentChecked); err != nil {
 		return ObservedGraph{}, err
 	}
+	if graph.State == GraphFailed {
+		return graph, ErrCloudMutation
+	}
 	if graph.State != GraphActive {
 		return graph, ErrReconcilePending
 	}
@@ -836,6 +839,10 @@ func (provider *Provider) persistGraph(ctx context.Context, graph ObservedGraph,
 		case GraphProvisioning:
 			if record.State != LifecycleDestroying && record.CleanupRequestedAt.IsZero() {
 				record.State = LifecycleProvisioning
+			}
+		case GraphFailed:
+			if record.State != LifecycleDestroying && record.CleanupRequestedAt.IsZero() {
+				record.State = LifecycleFailed
 			}
 		case GraphDestroying:
 			record.State = LifecycleDestroying

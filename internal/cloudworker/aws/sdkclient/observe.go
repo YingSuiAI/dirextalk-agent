@@ -821,7 +821,7 @@ func graphState(status cftypes.StackStatus) (cloudaws.GraphState, error) {
 		return cloudaws.GraphProvisioning, nil
 	case cftypes.StackStatusCreateFailed, cftypes.StackStatusRollbackFailed, cftypes.StackStatusRollbackComplete,
 		cftypes.StackStatusUpdateFailed, cftypes.StackStatusUpdateRollbackFailed, cftypes.StackStatusUpdateRollbackComplete:
-		return "", cloudaws.ErrCloudMutation
+		return cloudaws.GraphFailed, nil
 	default:
 		return "", cloudaws.ErrCloudReadback
 	}

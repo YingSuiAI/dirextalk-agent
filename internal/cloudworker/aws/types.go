@@ -749,6 +749,7 @@ type GraphState string
 const (
 	GraphProvisioning      GraphState = "provisioning"
 	GraphActive            GraphState = "active"
+	GraphFailed            GraphState = "failed"
 	GraphDestroying        GraphState = "destroying"
 	GraphVerifiedDestroyed GraphState = "verified_destroyed"
 )
@@ -843,7 +844,7 @@ func (graph ObservedGraph) Validate(plan Plan, intent DispatchIntent) error {
 		if stackProviderID(graph.Resources) != graph.StackProviderID {
 			return ErrCloudReadback
 		}
-	case GraphProvisioning:
+	case GraphProvisioning, GraphFailed:
 		// Partial graphs are accepted only as reconciliation evidence. Every
 		// present resource still passed the exact ownership checks above.
 	case GraphDestroying:

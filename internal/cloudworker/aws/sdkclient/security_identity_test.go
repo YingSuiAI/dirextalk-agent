@@ -62,8 +62,8 @@ func TestGraphStateFailsClosedOnTerminalProvisioningFailure(t *testing.T) {
 		cftypes.StackStatusUpdateRollbackFailed,
 		cftypes.StackStatusUpdateRollbackComplete,
 	} {
-		if _, err := graphState(status); !errors.Is(err, cloudaws.ErrCloudMutation) {
-			t.Fatalf("terminal stack status %s err=%v", status, err)
+		if state, err := graphState(status); err != nil || state != cloudaws.GraphFailed {
+			t.Fatalf("terminal stack status %s state=%s err=%v", status, state, err)
 		}
 	}
 	for _, status := range []cftypes.StackStatus{
