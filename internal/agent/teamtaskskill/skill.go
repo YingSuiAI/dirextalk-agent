@@ -172,12 +172,27 @@ func (skill *Skill) Tools(
 				if err != nil {
 					return runtimeapi.ToolResult{}, err
 				}
+				planValue, planFound, planErr :=
+					skill.dependencies.Lifecycle.FindTeamTaskPlan(
+						runCtx,
+						StatusRequest{
+							OwnerID: scope.OwnerID,
+							TaskID:  input.TaskID,
+						},
+					)
+				if planErr != nil {
+					return runtimeapi.ToolResult{}, planErr
+				}
+				var plan *teamorchestration.PlanFact
+				if planFound {
+					plan = &planValue
+				}
 				return lifecycleResult(
 					"cancel",
 					canceled.Task,
 					canceled.State,
 					scope.OwnerID,
-					nil,
+					plan,
 					nil,
 				)
 			},

@@ -451,12 +451,22 @@ func TestLifecycleResultBoundsMaximumValidTeamReport(t *testing.T) {
 
 func TestSkillReadsAndCancelsOnlyExactTaskWithoutClaimingCleanup(t *testing.T) {
 	t.Parallel()
+	planID := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 	stub := &lifecycleStub{current: task.Task{
 		TaskID:          teamTaskTestTaskID,
 		OwnerID:         "owner-1",
 		ExecutionStatus: task.ExecutionRunning,
 		OutcomeStatus:   task.OutcomePending,
 		Revision:        3,
+	}, planFound: true, plan: teamorchestration.PlanFact{
+		TaskID: teamTaskTestTaskID,
+		Plan: teamplan.Plan{
+			PlanID:   planID,
+			Revision: 1,
+			OwnerID:  "owner-1",
+		},
+		Status:         teamorchestration.PlanCanceled,
+		RecordRevision: 2,
 	}}
 	skill, err := New(Dependencies{Lifecycle: stub})
 	if err != nil {
@@ -542,6 +552,14 @@ func TestSkillReadsAndCancelsOnlyExactTaskWithoutClaimingCleanup(t *testing.T) {
 		cancelView["cancellation_committed"] != true ||
 		cancelView["resource_cleanup_verification"] != resourceCleanupNotVerified ||
 		cancelView["cloud_resources_absent"] != nil ||
+		cancelView["plan_id"] != planID ||
+		cancelView["plan_status"] != string(teamorchestration.PlanCanceled) ||
+		len(cancelResult.RelatedPlanIDs) != 1 ||
+		cancelResult.RelatedPlanIDs[0] != planID ||
+		stub.planRequest != (StatusRequest{
+			OwnerID: "owner-1",
+			TaskID:  teamTaskTestTaskID,
+		}) ||
 		stub.cancelRequest.IdempotencyKey != wantKey ||
 		stub.cancelRequest.OwnerID != request.OwnerID ||
 		stub.cancelRequest.TaskID != teamTaskTestTaskID {
