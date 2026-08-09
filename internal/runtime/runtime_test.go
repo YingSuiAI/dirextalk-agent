@@ -462,6 +462,7 @@ func TestTrustedObservationUsesHistoryAndPersistsOnlyEvidenceAndReply(t *testing
 		if len(request.Messages) != 6 ||
 			request.Messages[0].Role != modelapi.RoleSystem ||
 			!strings.Contains(request.Messages[0].Content, trustedTeamCompletionPolicy) ||
+			!strings.Contains(request.Messages[0].Content, "do not offer to rebuild that work locally") ||
 			request.Messages[1].Content != "build the report" ||
 			request.Messages[2].Content != "I will send it when the Team finishes." ||
 			len(request.Messages[3].ToolCalls) != 1 ||
