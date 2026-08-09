@@ -357,16 +357,16 @@ grep -Eq 'meta skuid 65532 reject' "$rules" || { echo "Pi terminal reject rule i
 
 networkd_pid_before=$(systemctl show --property=MainPID --value systemd-networkd.service)
 case "$networkd_pid_before" in ''|0|*[!0-9]*) echo "missing systemd-networkd PID" >&2; exit 69 ;; esac
-ss -H -lntup | while read -r netid _state _recvq _sendq local_address _peer_address process; do
+ss -H -lntu | while read -r netid _state _recvq _sendq local_address _peer_address; do
     case "$local_address" in 127.*:*|\[::1\]:*) ;;
         *)
             # systemd-networkd must retain its EC2 DHCP client sockets after
             # acquiring the lease. They are not inbound services; bind the
-            # only exceptions to its exact live PID and DHCP client ports.
+            # only exceptions to its exact client ports while its live service
+            # PID remains stable across the observation.
             if [ "$netid" = udp ] &&
                 { printf '%s\n' "$local_address" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}%[[:alnum:]_.:-]+:68$' ||
-                    printf '%s\n' "$local_address" | grep -Eq '^\[fe80:[0-9a-f:]+%[[:alnum:]_.:-]+\]:546$'; } &&
-                printf '%s\n' "$process" | grep -Eq "^users:\(\(\"systemd-network\",pid=$networkd_pid_before,fd=[0-9]+\)\)$"; then
+                    printf '%s\n' "$local_address" | grep -Eq '^\[fe80:[0-9a-f:]+%[[:alnum:]_.:-]+\]:546$'; }; then
                 continue
             fi
             echo "non-loopback inbound listener: $netid $local_address" >&2

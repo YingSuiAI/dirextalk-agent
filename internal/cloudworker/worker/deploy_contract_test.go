@@ -338,8 +338,8 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 		`grep -Eq 'hook output priority -20; policy drop;'`,
 		`grep -c '^[[:space:]]*meta .*# handle'`,
 		"networkd_pid_before",
-		"ss -H -lntup",
-		`\"systemd-network\",pid=$networkd_pid_before`,
+		"ss -H -lntu",
+		"its live service",
 		"systemd-networkd identity changed",
 		"non-loopback inbound listener",
 	} {
@@ -352,6 +352,9 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 	}
 	if strings.Contains(qualifier, "priority filter -20") {
 		t.Fatal("AMI qualification must match the pinned nftables 1.0.4 chain rendering")
+	}
+	if strings.Contains(qualifier, "ss -H -lntup") {
+		t.Fatal("boot qualification must not require process visibility outside its capability boundary")
 	}
 
 	allowlist := readDeployFile(t, root, "rootfs-files.allowlist")
