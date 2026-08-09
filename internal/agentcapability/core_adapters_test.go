@@ -20,9 +20,79 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 )
+
+type taskEventsServiceStub struct {
+	progress []coretask.Progress
+}
+
+func (s *taskEventsServiceStub) CreateTask(context.Context, coretask.CreateTaskCommand) (coretask.Task, error) {
+	return coretask.Task{}, errors.New("unexpected CreateTask")
+}
+func (s *taskEventsServiceStub) GetTask(context.Context, string) (coretask.Task, error) {
+	return coretask.Task{}, errors.New("unexpected GetTask")
+}
+func (s *taskEventsServiceStub) ListTasks(context.Context, coretask.TaskListQuery) ([]coretask.Task, string, error) {
+	return nil, "", errors.New("unexpected ListTasks")
+}
+func (s *taskEventsServiceStub) CancelTask(context.Context, coretask.CancelCommand) (coretask.Task, error) {
+	return coretask.Task{}, errors.New("unexpected CancelTask")
+}
+func (s *taskEventsServiceStub) RetryTask(context.Context, coretask.RetryCommand) (coretask.Task, error) {
+	return coretask.Task{}, errors.New("unexpected RetryTask")
+}
+func (s *taskEventsServiceStub) DeleteTask(context.Context, coretask.DeleteTaskCommand) (coretask.DeletedTaskResponse, error) {
+	return coretask.DeletedTaskResponse{}, errors.New("unexpected DeleteTask")
+}
+func (s *taskEventsServiceStub) ListProgress(context.Context, string, uint64, int) ([]coretask.Progress, string, error) {
+	return s.progress, "next", nil
+}
+func (s *taskEventsServiceStub) WatchProgress(context.Context, string, uint64) (<-chan coretask.Progress, error) {
+	return nil, errors.New("unexpected WatchProgress")
+}
+
+func TestTaskEventsCapabilityProjectsProtoContractFields(t *testing.T) {
+	taskID := uuid.NewString()
+	eventID := uuid.NewString()
+	at := time.Date(2035, 1, 2, 3, 4, 5, 6000000, time.UTC)
+	percent := 37.5
+	capability := &coreTaskCapability{service: &taskEventsServiceStub{progress: []coretask.Progress{{
+		TaskID: taskID, EventID: eventID, Sequence: 2, Attempt: 1,
+		Status: coretask.StatusRunning, Phase: "model_round", Message: "working",
+		Percent: &percent, ResultSummary: "done", At: at,
+	}}}}
+
+	raw, err := capability.HandleOperation(context.Background(), "list_task_events", []byte(`{"task_id":"`+taskID+`","after_sequence":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Events        []map[string]any `json:"events"`
+		NextPageToken string           `json:"next_page_token"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Events) != 1 || response.NextPageToken != "next" {
+		t.Fatalf("unexpected response: %s", raw)
+	}
+	event := response.Events[0]
+	if event["task_id"] != taskID || event["event_id"] != eventID || event["occurred_at"] != at.Format(time.RFC3339Nano) || event["progress_message"] != "working" || event["percent"] != percent {
+		t.Fatalf("task event did not match the public contract: %#v", event)
+	}
+	result, ok := event["result"].(map[string]any)
+	if !ok || result["summary"] != "done" {
+		t.Fatalf("task event result was not projected: %#v", event)
+	}
+	for _, legacy := range []string{"at", "message", "result_json", "result_summary"} {
+		if _, exists := event[legacy]; exists {
+			t.Fatalf("task event retained internal field %q: %#v", legacy, event)
+		}
+	}
+}
 
 func TestConfirmationCapabilityFencesOpaqueIDsByPermissionOwner(t *testing.T) {
 	now := time.Date(2035, 1, 2, 3, 4, 5, 0, time.UTC)

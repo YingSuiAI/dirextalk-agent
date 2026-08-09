@@ -1230,7 +1230,14 @@ func (c *coreTaskCapability) HandleOperation(ctx context.Context, operationID st
 		return marshalResult(map[string]any{"tasks": items, "next_page_token": next}, err)
 	case "list_task_events":
 		items, next, err := c.service.ListProgress(ctx, stringValue(in, "task_id"), uint64Value(in, "after_sequence"), pageLimit(in, 100))
-		return marshalResult(map[string]any{"events": items, "next_page_token": next}, err)
+		if err != nil {
+			return nil, err
+		}
+		events := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			events = append(events, taskProgressResult(item))
+		}
+		return marshalResult(map[string]any{"events": events, "next_page_token": next}, nil)
 	case "cancel_task":
 		taskID := stringValue(in, "task_id")
 		rev := uintValue(in, "expected_revision")
@@ -2154,6 +2161,41 @@ func marshalResult(v any, err error) ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(v)
+}
+
+func taskProgressResult(progress coretask.Progress) map[string]any {
+	result := map[string]any{
+		"task_id":     progress.TaskID,
+		"sequence":    progress.Sequence,
+		"event_id":    progress.EventID,
+		"attempt":     progress.Attempt,
+		"status":      progress.Status,
+		"occurred_at": progress.At,
+	}
+	if progress.Phase != "" {
+		result["phase"] = progress.Phase
+	}
+	if progress.Message != "" {
+		result["progress_message"] = progress.Message
+	}
+	if progress.Percent != nil {
+		result["percent"] = *progress.Percent
+	}
+	if len(progress.ResultJSON) > 0 {
+		var value map[string]any
+		if json.Unmarshal(progress.ResultJSON, &value) == nil {
+			result["result"] = value
+		}
+	} else if progress.ResultSummary != "" {
+		result["result"] = map[string]any{"summary": progress.ResultSummary}
+	}
+	if progress.ErrorCode != "" {
+		result["error_code"] = progress.ErrorCode
+	}
+	if progress.ErrorSummary != "" {
+		result["error_summary"] = progress.ErrorSummary
+	}
+	return result
 }
 
 func sourceJSON(source coreknowledge.Source) map[string]any {
