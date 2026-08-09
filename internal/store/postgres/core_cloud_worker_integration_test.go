@@ -332,6 +332,10 @@ func TestCloudWorkerPostgresConfirmationAndPredispatchCancelProjection(t *testin
 			if err != nil || cleaning.State != cloudworker.StateCleaning {
 				t.Fatalf("begin cancel cleanup=%+v err=%v", cleaning, err)
 			}
+			if _, _, invalidErr := h.cloud.CancelExecution(h.ctx, task, cleaning.Revision,
+				"canceled", "Cloud Worker task canceled"); !errors.Is(invalidErr, cloudworker.ErrInvalid) {
+				t.Fatalf("internal execution state was accepted as public task cancellation code: %v", invalidErr)
+			}
 			terminal, outbox, err := h.cloud.CancelExecution(h.ctx, task, cleaning.Revision,
 				"user_canceled", "Cloud Worker task canceled")
 			if err != nil || terminal.State != cloudworker.StateCanceled || outbox.ExecutionID != current.ExecutionID {

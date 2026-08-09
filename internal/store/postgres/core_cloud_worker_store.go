@@ -1677,9 +1677,11 @@ func (s *CloudWorkerStore) MarkDispatchPrepared(ctx context.Context, supplied co
 }
 
 func (s *CloudWorkerStore) BeginCleanup(ctx context.Context, supplied coretask.Task, expectedExecutionRevision uint64, terminalIntent cloudworker.ExecutionState, code, summary string) (cloudworker.Execution, error) {
+	code, summary = strings.TrimSpace(code), strings.TrimSpace(summary)
 	if s == nil || s.store == nil || supplied.Lease == nil || expectedExecutionRevision == 0 ||
 		(terminalIntent != cloudworker.StateSucceeded && terminalIntent != cloudworker.StateFailed && terminalIntent != cloudworker.StateCanceled) ||
-		len(code) > 128 || len(summary) > 4096 {
+		len(code) > 128 || len(summary) > 4096 ||
+		(terminalIntent == cloudworker.StateCanceled && code != "user_canceled") {
 		return cloudworker.Execution{}, cloudworker.ErrInvalid
 	}
 	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
@@ -1699,7 +1701,7 @@ func (s *CloudWorkerStore) BeginCleanup(ctx context.Context, supplied coretask.T
 		return cloudworker.Execution{}, cloudworker.ErrRevisionConflict
 	}
 	if execution.State == cloudworker.StateCleaning {
-		if execution.TerminalIntent != string(terminalIntent) || execution.FailureCode != strings.TrimSpace(code) || execution.FailureSummary != strings.TrimSpace(summary) {
+		if execution.TerminalIntent != string(terminalIntent) || execution.FailureCode != code || execution.FailureSummary != summary {
 			return cloudworker.Execution{}, cloudworker.ErrConflict
 		}
 		if err = tx.Commit(ctx); err != nil {
@@ -1713,7 +1715,7 @@ func (s *CloudWorkerStore) BeginCleanup(ctx context.Context, supplied coretask.T
 	}
 	next.TerminalIntent = string(terminalIntent)
 	if terminalIntent != cloudworker.StateSucceeded {
-		next.FailureCode, next.FailureSummary = strings.TrimSpace(code), strings.TrimSpace(summary)
+		next.FailureCode, next.FailureSummary = code, summary
 		if next.FailureCode == "" {
 			return cloudworker.Execution{}, cloudworker.ErrInvalid
 		}
@@ -1937,7 +1939,8 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 	if s == nil || s.store == nil || supplied.Spec.Payload.CloudWorker == nil || supplied.Lease == nil || expectedRevision == 0 ||
 		(terminal != cloudworker.StateSucceeded && terminal != cloudworker.StateFailed && terminal != cloudworker.StateCanceled) ||
 		len(code) > 128 || len(summary) > core.MaxSummaryBytes || (terminal == cloudworker.StateSucceeded) != (providerResult != nil) ||
-		(terminal != cloudworker.StateSucceeded && code == "") {
+		(terminal != cloudworker.StateSucceeded && code == "") ||
+		(terminal == cloudworker.StateCanceled && code != "user_canceled") {
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrInvalid
 	}
 	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})

@@ -280,6 +280,9 @@ func (store *controllerTestStore) RecordArtifacts(_ context.Context, _ coretask.
 func (store *controllerTestStore) BeginCleanup(_ context.Context, _ coretask.Task, expectedRevision uint64, terminal ExecutionState, code, summary string) (Execution, error) {
 	store.trace.add("begin_cleanup")
 	store.beginCleanupCalls++
+	if terminal == StateCanceled && code != "user_canceled" {
+		return Execution{}, ErrInvalid
+	}
 	if expectedRevision != store.execution.Revision {
 		return Execution{}, ErrRevisionConflict
 	}
@@ -319,6 +322,9 @@ func (store *controllerTestStore) FailExecution(_ context.Context, _ coretask.Ta
 func (store *controllerTestStore) CancelExecution(_ context.Context, _ coretask.Task, expectedRevision uint64, code, summary string) (Execution, CompletionOutbox, error) {
 	store.trace.add("terminal:canceled")
 	store.cancelCalls++
+	if code != "user_canceled" {
+		return Execution{}, CompletionOutbox{}, ErrInvalid
+	}
 	next, err := store.terminal(expectedRevision, StateCanceled, code, summary)
 	return next, CompletionOutbox{}, err
 }

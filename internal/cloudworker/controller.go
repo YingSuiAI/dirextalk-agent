@@ -1006,7 +1006,15 @@ func (c *Controller) finish(ctx context.Context, task coretask.Task, run *contro
 	if err := ctx.Err(); err != nil {
 		return c.owned(err)
 	}
-	if terminal != StateSucceeded {
+	if terminal == StateCanceled {
+		// CoreTask exposes the user-facing cancellation reason, not the
+		// Execution state name. Keep every cancellation path on that one public
+		// terminal code, including a cleaning execution resumed after restart.
+		code = "user_canceled"
+		if summary == "" {
+			summary = "Cloud Worker execution canceled"
+		}
+	} else if terminal != StateSucceeded {
 		if code == "" {
 			code = "cloud_worker_failed"
 		}
