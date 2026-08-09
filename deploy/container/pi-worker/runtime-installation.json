@@ -20,7 +20,7 @@
     {
       "name": "dirextalk_result_v1",
       "path": "/opt/dirextalk-worker/runtimes/pi/extensions/dirextalk-result.ts",
-      "sha256": "sha256:39e98a6a8339a48c0b1609ff7aed3c7af0807ee9e2cb4a975b64e46a2e5f94d9"
+      "sha256": "sha256:c7d74946490d70f2be2d3da55b34e95ca273b3a7c64aa348bf9b90d78eaa6cc0"
     }
   ],
   "models": [

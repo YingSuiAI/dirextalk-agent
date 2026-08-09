@@ -120,6 +120,59 @@ func TestWorkerIdentityAuthorizerFailsClosedBeforeProviderOnFactMismatch(t *test
 	}
 }
 
+func TestWorkerIdentityAuthorizerAllowsExactActiveInstanceReplay(t *testing.T) {
+	fixture := newWorkerIdentityAuthorizerFixture(t)
+	fixture.deployments.deployment.State = worker.StateLeased
+	fixture.deployments.deployment.WorkerID = uuid.NewString()
+	fixture.deployments.deployment.ProviderInstanceID = fixture.claim.InstanceID
+	fixture.deployments.deployment.Enrollment.ConsumedAt = time.Now().UTC()
+
+	evidence, err := fixture.authorizer.AuthorizeDeployment(
+		context.Background(),
+		fixture.claim,
+	)
+	if err != nil {
+		t.Fatalf("AuthorizeDeployment() replay error = %v", err)
+	}
+	if !evidence.Authorized || evidence.InstanceID != fixture.claim.InstanceID ||
+		fixture.provider.calls != 1 {
+		t.Fatalf("replay evidence=%+v calls=%d", evidence, fixture.provider.calls)
+	}
+}
+
+func TestWorkerIdentityAuthorizerRejectsInexactActiveReplay(t *testing.T) {
+	tests := map[string]func(*workerIdentityAuthorizerFixture){
+		"wrong instance": func(fixture *workerIdentityAuthorizerFixture) {
+			fixture.deployments.deployment.ProviderInstanceID = "i-0fedcba9876543210"
+		},
+		"missing worker": func(fixture *workerIdentityAuthorizerFixture) {
+			fixture.deployments.deployment.WorkerID = ""
+		},
+		"unconsumed enrollment": func(fixture *workerIdentityAuthorizerFixture) {
+			fixture.deployments.deployment.Enrollment.ConsumedAt = time.Time{}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			fixture := newWorkerIdentityAuthorizerFixture(t)
+			fixture.deployments.deployment.State = worker.StateLeased
+			fixture.deployments.deployment.WorkerID = uuid.NewString()
+			fixture.deployments.deployment.ProviderInstanceID = fixture.claim.InstanceID
+			fixture.deployments.deployment.Enrollment.ConsumedAt = time.Now().UTC()
+			mutate(&fixture)
+
+			_, err := fixture.authorizer.AuthorizeDeployment(
+				context.Background(),
+				fixture.claim,
+			)
+			if !errors.Is(err, workeridentity.ErrIdentityRejected) ||
+				fixture.provider.calls != 0 {
+				t.Fatalf("error=%v provider calls=%d", err, fixture.provider.calls)
+			}
+		})
+	}
+}
+
 type workerIdentityAuthorizerFixture struct {
 	authorizer  *workerIdentityAuthorizer
 	claim       workeridentity.DeploymentClaim

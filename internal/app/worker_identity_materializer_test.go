@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
@@ -60,6 +61,64 @@ func TestWorkerIdentityMaterializerRejectsFactDriftBeforeS3(t *testing.T) {
 				t.Fatalf("error=%v binder calls=%d", err, fixture.binder.calls)
 			}
 		})
+	}
+}
+
+func TestWorkerIdentityMaterializerReplaysExactActiveBindingWithoutS3(t *testing.T) {
+	fixture := newWorkerIdentityMaterializerFixture(t)
+	fixture.deployments.deployment.State = worker.StateLeased
+	fixture.deployments.deployment.WorkerID = fixture.challenge.WorkerID
+	fixture.deployments.deployment.ProviderInstanceID = fixture.identity.InstanceID
+	fixture.deployments.deployment.Enrollment.ConsumedAt = time.Now().UTC()
+	fixture.deployments.deployment.RecipeBundle = fixture.binder.result.Recipe
+	fixture.deployments.deployment.ExecutionBundle = fixture.binder.result.Execution
+	fixture.deployments.deployment.Access = worker.AccessScope{
+		ArtifactPrefix:   fixture.binder.result.ArtifactPrefix,
+		CheckpointPrefix: fixture.binder.result.CheckpointPrefix,
+		EvidencePrefix:   fixture.binder.result.EvidencePrefix,
+		LogPrefix:        fixture.binder.result.LogPrefix,
+		SecretRefs:       []string{},
+	}
+
+	materialized, err := fixture.materializer.MaterializeWorkerIdentity(
+		context.Background(),
+		fixture.challenge,
+		fixture.identity,
+	)
+	if err != nil {
+		t.Fatalf("MaterializeWorkerIdentity() replay error = %v", err)
+	}
+	if fixture.binder.calls != 0 ||
+		materialized.RecipeBundle != fixture.deployments.deployment.RecipeBundle ||
+		materialized.ExecutionBundle != fixture.deployments.deployment.ExecutionBundle ||
+		materialized.Access.ArtifactPrefix != fixture.deployments.deployment.Access.ArtifactPrefix {
+		t.Fatalf("replay materialization=%+v binder calls=%d", materialized, fixture.binder.calls)
+	}
+}
+
+func TestWorkerIdentityMaterializerRejectsInexactActiveReplay(t *testing.T) {
+	fixture := newWorkerIdentityMaterializerFixture(t)
+	fixture.deployments.deployment.State = worker.StateLeased
+	fixture.deployments.deployment.WorkerID = fixture.challenge.WorkerID
+	fixture.deployments.deployment.ProviderInstanceID = fixture.identity.InstanceID
+	fixture.deployments.deployment.Enrollment.ConsumedAt = time.Now().UTC()
+	fixture.deployments.deployment.RecipeBundle = fixture.binder.result.Recipe
+	fixture.deployments.deployment.ExecutionBundle = fixture.binder.result.Execution
+	fixture.deployments.deployment.Access = worker.AccessScope{
+		ArtifactPrefix:   fixture.binder.result.ArtifactPrefix,
+		CheckpointPrefix: fixture.binder.result.CheckpointPrefix,
+		EvidencePrefix:   fixture.binder.result.EvidencePrefix,
+		LogPrefix:        fixture.binder.result.LogPrefix,
+	}
+	fixture.deployments.deployment.WorkerID = uuid.NewString()
+
+	_, err := fixture.materializer.MaterializeWorkerIdentity(
+		context.Background(),
+		fixture.challenge,
+		fixture.identity,
+	)
+	if !errors.Is(err, worker.ErrIdentityRejected) || fixture.binder.calls != 0 {
+		t.Fatalf("error=%v binder calls=%d", err, fixture.binder.calls)
 	}
 }
 

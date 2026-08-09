@@ -10,6 +10,7 @@ interface DirextalkResultDetails {
   deliverables: string[];
   tests: string[];
   risks: string[];
+  artifacts: string[];
 }
 
 const submitResult = defineTool({
@@ -22,6 +23,8 @@ const submitResult = defineTool({
   promptGuidelines: [
     "Call dirextalk_submit_result exactly once as the final action.",
     "Report only completed, partial, or blocked status.",
+    "List the relative workspace path of every retained user-facing JSON, Markdown, or text file in artifacts.",
+    "List only files that exist, and do not list final.json or changes.patch.",
     "Do not include credentials, secret references, raw logs, or hidden reasoning.",
   ],
   parameters: Type.Object(
@@ -35,6 +38,7 @@ const submitResult = defineTool({
       deliverables: Type.Array(Type.String()),
       tests: Type.Array(Type.String()),
       risks: Type.Array(Type.String()),
+      artifacts: Type.Array(Type.String()),
     },
     { additionalProperties: false },
   ),

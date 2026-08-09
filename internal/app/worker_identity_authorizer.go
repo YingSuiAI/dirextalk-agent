@@ -82,7 +82,7 @@ func (authorizer *workerIdentityAuthorizer) AuthorizeDeployment(ctx context.Cont
 	}
 	deployment, err := authorizer.deployments.Get(ctx, claim.DeploymentID)
 	if err != nil || deployment.DeploymentID != claim.DeploymentID || deployment.OwnerID != claim.OwnerID ||
-		deployment.State != worker.StatePendingEnrollment || deployment.ProviderInstanceID != "" {
+		!workerIdentityEnrollmentAllowed(deployment, claim.InstanceID) {
 		return workeridentity.DeploymentEvidence{}, workeridentity.ErrIdentityRejected
 	}
 	launch, err := authorizer.launches.Resolve(ctx, claim.OwnerID, deployment)
@@ -158,6 +158,24 @@ func (authorizer *workerIdentityAuthorizer) AuthorizeDeployment(ctx context.Cont
 		AccountID: observed.AccountID, Region: observed.Region, WorkerRoleName: observed.WorkerProfileName,
 		InstanceID: observed.InstanceID, TagDigest: observed.TagDigest, ObservedAt: observed.ObservedAt,
 	}, nil
+}
+
+func workerIdentityEnrollmentAllowed(
+	deployment worker.Deployment,
+	providerInstanceID string,
+) bool {
+	switch deployment.State {
+	case worker.StatePendingEnrollment:
+		return deployment.WorkerID == "" &&
+			deployment.ProviderInstanceID == "" &&
+			deployment.Enrollment.ConsumedAt.IsZero()
+	case worker.StateReady, worker.StateLeased, worker.StateCancelRequested:
+		return deployment.WorkerID != "" &&
+			deployment.ProviderInstanceID == providerInstanceID &&
+			!deployment.Enrollment.ConsumedAt.IsZero()
+	default:
+		return false
+	}
 }
 
 var _ workeridentity.DeploymentResourceAuthorizer = (*workerIdentityAuthorizer)(nil)

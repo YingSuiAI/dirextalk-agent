@@ -57,8 +57,18 @@ func (materializer *workerIdentityMaterializer) MaterializeWorkerIdentity(
 		return worker.IdentityMaterialization{}, worker.ErrIdentityRejected
 	}
 	deployment, err := materializer.deployments.Get(ctx, challenge.DeploymentID)
-	if err != nil || deployment.DeploymentID != challenge.DeploymentID || deployment.OwnerID != challenge.OwnerID ||
-		deployment.State != worker.StatePendingEnrollment || deployment.ProviderInstanceID != "" ||
+	if err != nil || deployment.DeploymentID != challenge.DeploymentID || deployment.OwnerID != challenge.OwnerID {
+		return worker.IdentityMaterialization{}, worker.ErrIdentityRejected
+	}
+	if replay, ok := replayedWorkerIdentityMaterialization(
+		deployment,
+		challenge,
+		identity,
+	); ok {
+		return replay, nil
+	}
+	if deployment.State != worker.StatePendingEnrollment ||
+		deployment.ProviderInstanceID != "" ||
 		(deployment.WorkerID != "" && deployment.WorkerID != challenge.WorkerID) {
 		return worker.IdentityMaterialization{}, worker.ErrIdentityRejected
 	}
@@ -94,4 +104,36 @@ func (materializer *workerIdentityMaterializer) MaterializeWorkerIdentity(
 		return worker.IdentityMaterialization{}, worker.ErrIdentityRejected
 	}
 	return result, nil
+}
+
+func replayedWorkerIdentityMaterialization(
+	deployment worker.Deployment,
+	challenge worker.IdentityChallenge,
+	identity workeridentity.VerifiedIdentity,
+) (worker.IdentityMaterialization, bool) {
+	switch deployment.State {
+	case worker.StateReady, worker.StateLeased, worker.StateCancelRequested:
+	default:
+		return worker.IdentityMaterialization{}, false
+	}
+	if deployment.WorkerID != challenge.WorkerID ||
+		deployment.ProviderInstanceID != identity.InstanceID ||
+		deployment.Enrollment.ConsumedAt.IsZero() {
+		return worker.IdentityMaterialization{}, false
+	}
+	result := worker.IdentityMaterialization{
+		RecipeBundle:    deployment.RecipeBundle,
+		ExecutionBundle: deployment.ExecutionBundle,
+		Access: worker.AccessScope{
+			ArtifactPrefix:   deployment.Access.ArtifactPrefix,
+			CheckpointPrefix: deployment.Access.CheckpointPrefix,
+			EvidencePrefix:   deployment.Access.EvidencePrefix,
+			LogPrefix:        deployment.Access.LogPrefix,
+			SecretRefs:       append([]string(nil), deployment.Access.SecretRefs...),
+		},
+	}
+	if result.Validate(identity.PrincipalID, challenge.DeploymentID) != nil {
+		return worker.IdentityMaterialization{}, false
+	}
+	return result, true
 }

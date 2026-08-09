@@ -16,9 +16,28 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func TestCanceledHeartbeatRecognizesGRPCContextTermination(t *testing.T) {
+	t.Parallel()
+	for _, err := range []error{
+		context.Canceled,
+		context.DeadlineExceeded,
+		status.Error(codes.Canceled, "context canceled"),
+		status.Error(codes.DeadlineExceeded, "deadline exceeded"),
+	} {
+		if !isCanceledHeartbeat(err) {
+			t.Fatalf("canceled heartbeat was not recognized: %v", err)
+		}
+	}
+	if isCanceledHeartbeat(status.Error(codes.Unavailable, "unavailable")) {
+		t.Fatal("an unavailable heartbeat was treated as intentional cancellation")
+	}
+}
 
 type runnerControlFake struct {
 	mu              sync.Mutex

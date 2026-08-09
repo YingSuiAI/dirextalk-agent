@@ -26,6 +26,7 @@ const (
 const piSystemPrompt = `Execute one approved Dirextalk Worker role.
 Use only the enabled tools and the supplied workspace.
 Do not inspect credential locations or reveal private configuration.
+Retain user-facing JSON, Markdown, or text files in the workspace and list their relative paths in the artifacts field.
 Call dirextalk_submit_result exactly once as the final action.`
 
 type PiConfig struct {
@@ -216,7 +217,11 @@ func (executor *PiExecutor) Execute(
 		return Result{}, fmt.Errorf("run Pi: %w", err)
 	}
 	defer clear(processOutput.Stdout)
-	usage, finalJSON, err := parsePiEvents(processOutput.Stdout)
+	var artifactPaths []string
+	usage, finalJSON, err := parsePiEventsWithArtifacts(
+		processOutput.Stdout,
+		&artifactPaths,
+	)
 	if err != nil {
 		return Result{}, err
 	}
@@ -225,10 +230,24 @@ func (executor *PiExecutor) Execute(
 		MediaType: "application/json",
 		Content:   finalJSON,
 	}}
+	retained, err := collectPiArtifacts(
+		ctx,
+		task,
+		workspace,
+		artifactPaths,
+	)
+	if err != nil {
+		clear(finalJSON)
+		return Result{}, fmt.Errorf(
+			"%w: collect Pi artifacts",
+			ErrExecution,
+		)
+	}
+	artifacts = append(artifacts, retained...)
 	if task.IncludePatch {
 		patch, err := executor.patches.Collect(ctx, workspace)
 		if err != nil {
-			clear(finalJSON)
+			destroyArtifacts(artifacts)
 			return Result{}, fmt.Errorf(
 				"%w: collect Pi patch",
 				ErrExecution,
@@ -366,7 +385,8 @@ func piPrompt(task TaskV1, contextJSON []byte) ([]byte, error) {
 	var prompt bytes.Buffer
 	prompt.WriteString("Execute one approved remote Worker role.\n")
 	prompt.WriteString(
-		"Use dirextalk_submit_result exactly once as the final action.\n\n",
+		"Use dirextalk_submit_result exactly once as the final action. " +
+			"List each retained user-facing JSON, Markdown, or text file by its relative workspace path in artifacts.\n\n",
 	)
 	prompt.WriteString("Task ID: ")
 	prompt.WriteString(task.TaskID)
@@ -421,9 +441,17 @@ type piFinalDetails struct {
 	Deliverables []string `json:"deliverables"`
 	Tests        []string `json:"tests"`
 	Risks        []string `json:"risks"`
+	Artifacts    []string `json:"artifacts,omitempty"`
 }
 
 func parsePiEvents(stream []byte) (Usage, []byte, error) {
+	return parsePiEventsWithArtifacts(stream, nil)
+}
+
+func parsePiEventsWithArtifacts(
+	stream []byte,
+	artifactPaths *[]string,
+) (Usage, []byte, error) {
 	if len(stream) == 0 ||
 		len(stream) > MaxProcessOutputBytes ||
 		!utf8.Valid(stream) {
@@ -441,6 +469,7 @@ func parsePiEvents(stream []byte) (Usage, []byte, error) {
 	finalSeen := false
 	var usage Usage
 	var finalJSON []byte
+	var retainedPaths []string
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
@@ -517,11 +546,12 @@ func parsePiEvents(stream []byte) (Usage, []byte, error) {
 				!result.Terminate {
 				return Usage{}, nil, piEventInvalid()
 			}
-			canonical, err := canonicalPiFinal(result.Details)
+			canonical, paths, err := canonicalPiFinal(result.Details)
 			if err != nil {
 				return Usage{}, nil, err
 			}
 			finalJSON = canonical
+			retainedPaths = paths
 			finalSeen = true
 		case "agent_end":
 			if !agentStarted ||
@@ -554,6 +584,9 @@ func parsePiEvents(stream []byte) (Usage, []byte, error) {
 			FailureStagePi,
 			FailureCodePiFinalMissing,
 		)
+	}
+	if artifactPaths != nil {
+		*artifactPaths = append((*artifactPaths)[:0], retainedPaths...)
 	}
 	return usage, finalJSON, nil
 }
@@ -667,16 +700,16 @@ type PiFinalV1 struct {
 	Risks         []string `json:"risks"`
 }
 
-func canonicalPiFinal(detailsJSON []byte) ([]byte, error) {
+func canonicalPiFinal(detailsJSON []byte) ([]byte, []string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(detailsJSON))
 	decoder.DisallowUnknownFields()
 	var details piFinalDetails
 	if decoder.Decode(&details) != nil {
-		return nil, ErrExecution
+		return nil, nil, ErrExecution
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, ErrExecution
+		return nil, nil, ErrExecution
 	}
 	final := PiFinalV1{
 		SchemaVersion: PiFinalSchemaV1,
@@ -688,11 +721,14 @@ func canonicalPiFinal(detailsJSON []byte) ([]byte, error) {
 	}
 	encoded, err := json.Marshal(final)
 	if err != nil {
-		return nil, ErrExecution
+		return nil, nil, ErrExecution
 	}
 	_, canonical, err := ParsePiFinalV1(encoded)
 	clear(encoded)
-	return canonical, err
+	if err != nil {
+		return nil, nil, err
+	}
+	return canonical, append([]string(nil), details.Artifacts...), nil
 }
 
 // ParsePiFinalV1 applies the same strict, secret-rejecting contract used by

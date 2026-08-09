@@ -153,6 +153,9 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 	heartbeatDone := make(chan error, 1)
 	go func() {
 		heartbeatErr := lease.heartbeatLoop(heartbeatContext, runner.heartbeatInterval(config.LeaseDuration))
+		if heartbeatContext.Err() != nil && isCanceledHeartbeat(heartbeatErr) {
+			heartbeatErr = nil
+		}
 		if heartbeatErr != nil && heartbeatContext.Err() == nil {
 			cancelExecution()
 		}
@@ -173,9 +176,6 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 	}
 	stopHeartbeat()
 	heartbeatErr := <-heartbeatDone
-	if errors.Is(heartbeatErr, context.Canceled) || errors.Is(heartbeatErr, context.DeadlineExceeded) {
-		heartbeatErr = nil
-	}
 	if heartbeatErr != nil && !errors.Is(heartbeatErr, ErrCancellationRequested) {
 		return Result{CompletedActions: completedActions}, fmt.Errorf("Worker heartbeat failed: %w", heartbeatErr)
 	}
@@ -210,6 +210,16 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 		return result, executionErr
 	}
 	return result, nil
+}
+
+func isCanceledHeartbeat(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		status.Code(err) == codes.Canceled ||
+		status.Code(err) == codes.DeadlineExceeded
 }
 
 func (runner Runner) waitForClaimableAssignment(ctx context.Context, config Config, sessionToken []byte) (*agentv1.WorkerAssignment, error) {

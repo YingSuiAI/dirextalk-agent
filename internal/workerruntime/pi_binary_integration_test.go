@@ -25,7 +25,7 @@ const (
 	piQualificationBinaryEnvironment = "DIREXTALK_PI_QUALIFICATION_BINARY"
 	pi083DarwinARM64ExecutableSHA256 = "c4e195fd511fd3eac2bfd91d5058b456248c62202871efe23f13e299d49dd642"
 	pi083LinuxAMD64ExecutableSHA256  = "c25c16162b62eda32deb0d544bcae5e5d6c6148958e17130e6aed2d115104f1a"
-	piResultExtensionSHA256          = "39e98a6a8339a48c0b1609ff7aed3c7af0807ee9e2cb4a975b64e46a2e5f94d9"
+	piResultExtensionSHA256          = "c7d74946490d70f2be2d3da55b34e95ca273b3a7c64aa348bf9b90d78eaa6cc0"
 )
 
 func TestPi083RealBinaryLoopbackQualification(t *testing.T) {
@@ -182,7 +182,7 @@ func newPiLoopbackProvider(t *testing.T) *piLoopbackProvider {
 		}
 		writer.Header().Set("Content-Type", "text/event-stream")
 		chunks := []string{
-			`{"id":"loopback-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call-loopback-1","type":"function","function":{"name":"dirextalk_submit_result","arguments":"{\"status\":\"completed\",\"summary\":\"Pi 0.83.0 loopback qualification passed.\",\"deliverables\":[],\"tests\":[\"real Pi binary\"],\"risks\":[]}"}}]},"finish_reason":null}]}`,
+			`{"id":"loopback-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call-loopback-1","type":"function","function":{"name":"dirextalk_submit_result","arguments":"{\"status\":\"completed\",\"summary\":\"Pi 0.83.0 loopback qualification passed.\",\"deliverables\":[],\"tests\":[\"real Pi binary\"],\"risks\":[],\"artifacts\":[]}"}}]},"finish_reason":null}]}`,
 			`{"id":"loopback-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":12,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}`,
 		}
 		for _, chunk := range chunks {
