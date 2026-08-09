@@ -231,6 +231,15 @@ message ConversationServiceCancelTurnRequest {
 message ConversationServiceCancelTurnResponse {
   CoreConversationTurn turn = 1;
 }
+message ConversationServiceSteerTurnRequest {
+  string idempotency_key = 1;
+  string turn_id = 2;
+  int64 expected_revision = 3;
+  string instruction = 4;
+}
+message ConversationServiceSteerTurnResponse {
+  CoreConversationTurn turn = 1;
+}
 
 message ConversationServiceWatchTurnEventsResponse {
   CoreConversationTurnEvent event = 1;
@@ -247,4 +256,5 @@ service ConversationService {
   rpc GetTurn(ConversationServiceGetTurnRequest) returns (ConversationServiceGetTurnResponse);
   rpc WatchTurnEvents(ConversationServiceWatchTurnEventsRequest) returns (stream ConversationServiceWatchTurnEventsResponse);
   rpc CancelTurn(ConversationServiceCancelTurnRequest) returns (ConversationServiceCancelTurnResponse);
+  rpc SteerTurn(ConversationServiceSteerTurnRequest) returns (ConversationServiceSteerTurnResponse);
 }

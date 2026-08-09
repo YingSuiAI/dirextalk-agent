@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
@@ -600,8 +601,24 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 	if err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence),0)+1 FROM core_messages WHERE conversation_id=$1`, response.ConversationID).Scan(&nextSequence); err != nil {
 		return err
 	}
-	user := core.Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-user:"+lease.Turn.RequestID)).String(), Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: response.Message.CreatedAt.Add(-time.Microsecond)}
-	for i, m := range []core.Message{user, response.Message} {
+	steers, err := listTurnSteersTx(ctx, tx, lease.Turn.ID)
+	if err != nil {
+		return err
+	}
+	transcript := make([]core.Message, 0, len(steers)+2)
+	firstUserAt := response.Message.CreatedAt.Add(-time.Duration(len(steers)+1) * time.Microsecond)
+	transcript = append(transcript, core.Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-user:"+lease.Turn.RequestID)).String(), Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: firstUserAt})
+	for index, steer := range steers {
+		transcript = append(transcript, core.Message{
+			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-steer-user:"+steer.RequestID)).String(),
+			Role:           core.RoleUser,
+			Content:        steer.Instruction,
+			ModelProfileID: lease.Turn.ProfileID,
+			CreatedAt:      firstUserAt.Add(time.Duration(index+1) * time.Microsecond),
+		})
+	}
+	transcript = append(transcript, response.Message)
+	for i, m := range transcript {
 		payload, _ := json.Marshal(m)
 		tasks, _ := stringArrayJSONPG(m.RelatedTaskIDs)
 		plans, _ := stringArrayJSONPG(m.RelatedPlanIDs)
@@ -638,6 +655,29 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 		return err
 	}
 	return nil
+}
+
+func listTurnSteersTx(ctx context.Context, tx pgx.Tx, turnID string) ([]core.TurnSteer, error) {
+	rows, err := tx.Query(ctx, `SELECT sequence,payload_json,created_at FROM core_conversation_turn_events WHERE turn_id=$1 AND kind=$2 ORDER BY sequence`, turnID, string(core.TurnEventSteered))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]core.TurnSteer, 0)
+	for rows.Next() {
+		var sequence int64
+		var raw []byte
+		var createdAt time.Time
+		if err = rows.Scan(&sequence, &raw, &createdAt); err != nil {
+			return nil, err
+		}
+		var event core.TurnEvent
+		if json.Unmarshal(raw, &event) != nil || uuid.Validate(event.MutationID) != nil || event.ExpectedRevision == 0 || strings.TrimSpace(event.Text) == "" {
+			return nil, core.ErrConflict
+		}
+		result = append(result, core.TurnSteer{RequestID: event.MutationID, Instruction: event.Text, ExpectedRevision: event.ExpectedRevision, Sequence: sequence, CreatedAt: createdAt.UTC()})
+	}
+	return result, rows.Err()
 }
 
 func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.TurnCancelCommand) (core.Turn, error) {
@@ -713,6 +753,107 @@ func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.Tu
 		return core.Turn{}, err
 	}
 	return s.GetTurn(ctx, c.TurnID)
+}
+
+func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.TurnSteerCommand) (core.Turn, bool, error) {
+	if uuid.Validate(c.RequestID) != nil || uuid.Validate(c.TurnID) != nil || c.ExpectedRevision == 0 || strings.TrimSpace(c.Instruction) == "" {
+		return core.Turn{}, false, core.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.Turn{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	var state string
+	var revision uint64
+	var lastSequence int64
+	var cancelRequested bool
+	if err = tx.QueryRow(ctx, `SELECT state,revision,last_sequence,cancel_requested FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, c.TurnID).Scan(&state, &revision, &lastSequence, &cancelRequested); err != nil {
+		return core.Turn{}, false, core.ErrConflict
+	}
+	rows, err := tx.Query(ctx, `SELECT payload_json FROM core_conversation_turn_events WHERE turn_id=$1 AND kind=$2 ORDER BY sequence`, c.TurnID, string(core.TurnEventSteered))
+	if err != nil {
+		return core.Turn{}, false, err
+	}
+	for rows.Next() {
+		var raw []byte
+		if err = rows.Scan(&raw); err != nil {
+			rows.Close()
+			return core.Turn{}, false, err
+		}
+		var event core.TurnEvent
+		if json.Unmarshal(raw, &event) != nil {
+			rows.Close()
+			return core.Turn{}, false, core.ErrConflict
+		}
+		if event.MutationID == c.RequestID {
+			rows.Close()
+			if event.ExpectedRevision != c.ExpectedRevision || event.Text != strings.TrimSpace(c.Instruction) {
+				return core.Turn{}, false, core.ErrConflict
+			}
+			if err = tx.Commit(ctx); err != nil {
+				return core.Turn{}, false, err
+			}
+			turn, getErr := s.GetTurn(ctx, c.TurnID)
+			return turn, false, getErr
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return core.Turn{}, false, err
+	}
+	rows.Close()
+	if cancelRequested || revision != c.ExpectedRevision || (state != string(core.TurnAccepted) && state != string(core.TurnRunning)) {
+		return core.Turn{}, false, core.ErrConflict
+	}
+	now := time.Now().UTC()
+	event := core.TurnEvent{
+		Kind:             core.TurnEventSteered,
+		Text:             strings.TrimSpace(c.Instruction),
+		MutationID:       c.RequestID,
+		ExpectedRevision: c.ExpectedRevision,
+	}
+	if err = insertTurnEventTx(ctx, tx, c.TurnID, lastSequence+1, event, now); err != nil {
+		return core.Turn{}, false, err
+	}
+	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',dispatch_state='',dispatch_epoch=0,dispatch_result_json=NULL,lease_id=NULL,lease_expires_at=NULL,lease_epoch=lease_epoch+1,revision=revision+1,updated_at=$2 WHERE turn_id=$1 AND revision=$3 AND state IN ('accepted','running') AND cancel_requested=false`, c.TurnID, now, c.ExpectedRevision)
+	if err != nil {
+		return core.Turn{}, false, err
+	}
+	if result.RowsAffected() != 1 {
+		return core.Turn{}, false, core.ErrConflict
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.Turn{}, false, err
+	}
+	turn, getErr := s.GetTurn(ctx, c.TurnID)
+	return turn, true, getErr
+}
+
+func (s *CoreConversationStore) ListTurnSteers(ctx context.Context, turnID string) ([]core.TurnSteer, error) {
+	if uuid.Validate(turnID) != nil {
+		return nil, core.ErrInvalid
+	}
+	rows, err := s.pool.Query(ctx, `SELECT sequence,payload_json,created_at FROM core_conversation_turn_events WHERE turn_id=$1 AND kind=$2 ORDER BY sequence`, turnID, string(core.TurnEventSteered))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]core.TurnSteer, 0)
+	for rows.Next() {
+		var sequence int64
+		var raw []byte
+		var createdAt time.Time
+		if err = rows.Scan(&sequence, &raw, &createdAt); err != nil {
+			return nil, err
+		}
+		var event core.TurnEvent
+		if json.Unmarshal(raw, &event) != nil || uuid.Validate(event.MutationID) != nil || event.ExpectedRevision == 0 || strings.TrimSpace(event.Text) == "" {
+			return nil, core.ErrConflict
+		}
+		result = append(result, core.TurnSteer{RequestID: event.MutationID, Instruction: event.Text, ExpectedRevision: event.ExpectedRevision, Sequence: sequence, CreatedAt: createdAt.UTC()})
+	}
+	return result, rows.Err()
 }
 
 func (s *CoreConversationStore) MarkTurnCanceled(ctx context.Context, lease core.TurnLease) (core.Turn, error) {

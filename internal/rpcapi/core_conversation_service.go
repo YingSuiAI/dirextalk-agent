@@ -350,3 +350,14 @@ func (s *CoreConversationService) CancelTurn(ctx context.Context, r *agentv1.Con
 	}
 	return &agentv1.ConversationServiceCancelTurnResponse{Turn: turnProto(turn)}, nil
 }
+
+func (s *CoreConversationService) SteerTurn(ctx context.Context, r *agentv1.ConversationServiceSteerTurnRequest) (*agentv1.ConversationServiceSteerTurnResponse, error) {
+	turn, e := s.service.SteerTurn(ctx, coreconversation.TurnSteerCommand{
+		RequestID: r.GetIdempotencyKey(), TurnID: r.GetTurnId(),
+		ExpectedRevision: uint64(r.GetExpectedRevision()), Instruction: r.GetInstruction(),
+	})
+	if e != nil {
+		return nil, mapErr(e)
+	}
+	return &agentv1.ConversationServiceSteerTurnResponse{Turn: turnProto(turn)}, nil
+}

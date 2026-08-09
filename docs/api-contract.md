@@ -121,6 +121,15 @@ multi-tenant model.
   path, and returns only the same public turn metadata plus the cancellation
   request `idempotency_key`. It does not alias generic Capability operation
   cancellation, accept unknown fields, or expose the original prompt/profile.
+- Capability `agent.chat.v1/steer_turn` appends one non-empty instruction to
+  the same accepted/running durable turn. It accepts exactly a mutation
+  `idempotency_key`, `turn_id`, positive `expected_revision`, and
+  `instruction`. The store records the instruction in the append-only turn
+  ledger, advances the turn revision, invalidates the active provider lease,
+  and cancels that provider context before regenerating from the original
+  prompt plus every recorded instruction. It never creates or queues a second
+  turn. The typed result returns the original turn idempotency identity plus
+  the separate steer mutation receipt; prompt/profile data stays private.
 - Capability `agent.chat.v1/stream_chat` starts and watches the same durable
   conversation turn exposed by `list_turns`. Its canonical Capability
   `operation_id` is the public `turn_id`; the request id remains the distinct

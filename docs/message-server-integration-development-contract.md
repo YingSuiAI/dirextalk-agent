@@ -95,6 +95,10 @@ published. Message Server forwards this business acceptance and identity rather
 than synthesizing a second accepted event. Turn history uses the same
 `turn_id`/`idempotency_key` pair, and `agent.chat.v1/stop_turn` accepts only its
 own UUID idempotency key plus the authoritative turn id and expected revision.
+Same-turn guidance uses `agent.chat.v1/steer_turn` with a separate mutation
+UUID, that authoritative turn id/revision, and one bounded instruction. Agent
+Core persists and applies it immediately to the current turn; neither proxy
+nor Flutter may represent it as a queued successor turn.
 
 ## Deployment boundary
 

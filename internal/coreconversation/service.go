@@ -1151,6 +1151,52 @@ func (s *Service) CancelTurn(ctx context.Context, cmd TurnCancelCommand) (Turn, 
 	return turn, err
 }
 
+// SteerTurn appends user guidance to the current durable turn. The store
+// invalidates the active provider lease before this method interrupts the
+// in-flight model context, so a late result from the superseded generation
+// cannot commit or dispatch a tool.
+func (s *Service) SteerTurn(ctx context.Context, cmd TurnSteerCommand) (Turn, error) {
+	if s.turns == nil || !validUUID(cmd.TurnID) || !validUUID(cmd.RequestID) || cmd.ExpectedRevision == 0 {
+		return Turn{}, ErrInvalid
+	}
+	cmd.Instruction = strings.TrimSpace(cmd.Instruction)
+	if err := validateText(cmd.Instruction, MaxContentBytes); err != nil {
+		return Turn{}, err
+	}
+	store, ok := s.turns.(TurnSteerStore)
+	if !ok {
+		return Turn{}, ErrInvalid
+	}
+	turn, applied, err := store.RequestTurnSteer(ctx, cmd)
+	if err != nil {
+		return Turn{}, err
+	}
+	if !applied {
+		return turn, nil
+	}
+	s.cancelMu.Lock()
+	if signal := s.cancelSignals[cmd.TurnID]; signal != nil {
+		select {
+		case <-signal:
+		default:
+			close(signal)
+		}
+	}
+	s.cancelMu.Unlock()
+	s.runtimeMu.Lock()
+	if runtime := s.runtime[cmd.TurnID]; runtime != nil {
+		select {
+		case runtime.wake <- struct{}{}:
+		default:
+		}
+	}
+	s.runtimeMu.Unlock()
+	if turn.State == TurnAccepted || turn.State == TurnRunning {
+		s.startTurnSupervisor(turn.ID, context.WithoutCancel(ctx))
+	}
+	return turn, nil
+}
+
 func (s *Service) runTurnSupervisor(ctx context.Context, id string) {
 	backoff := time.Second
 	var wake <-chan struct{}
@@ -1487,6 +1533,18 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		if err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "model context is invalid")
 			return
+		}
+		if steerStore, ok := s.turns.(TurnSteerStore); ok {
+			steers, steerErr := steerStore.ListTurnSteers(ctx, turn.ID)
+			if steerErr != nil {
+				_, _ = s.turns.FailTurn(ctx, lease, "turn_steer_unavailable", "same-turn guidance is unavailable")
+				return
+			}
+			modelConversation, err = appendTurnSteers(modelConversation, turn, steers, s.clock())
+			if err != nil {
+				_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "model context is invalid")
+				return
+			}
 		}
 	}
 	intrinsicTools, err := s.resolveIntrinsicTools(ctx, lease)
@@ -1857,6 +1915,38 @@ func modelConversationForTurn(conv Conversation, insertAt int, turn Turn, recall
 	transient = append(transient, user)
 	out.Messages = append(prefix, transient...)
 	out.Messages = append(out.Messages, suffix...)
+	return out, nil
+}
+
+func appendTurnSteers(conversation Conversation, turn Turn, steers []TurnSteer, now time.Time) (Conversation, error) {
+	out := conversation.Snapshot()
+	for _, steer := range steers {
+		if !validUUID(steer.RequestID) || steer.ExpectedRevision == 0 {
+			return Conversation{}, ErrConflict
+		}
+		instruction := strings.TrimSpace(steer.Instruction)
+		if err := validateText(instruction, MaxContentBytes); err != nil {
+			return Conversation{}, err
+		}
+		createdAt := steer.CreatedAt.UTC()
+		if createdAt.IsZero() {
+			createdAt = now.UTC()
+		}
+		if len(out.Messages) > 0 && !createdAt.After(out.Messages[len(out.Messages)-1].CreatedAt) {
+			createdAt = out.Messages[len(out.Messages)-1].CreatedAt.Add(time.Nanosecond)
+		}
+		message := Message{
+			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-steer-user:"+steer.RequestID)).String(),
+			Role:           RoleUser,
+			Content:        instruction,
+			CreatedAt:      createdAt,
+			ModelProfileID: turn.ProfileID,
+		}
+		if err := message.Validate(); err != nil {
+			return Conversation{}, err
+		}
+		out.Messages = append(out.Messages, message)
+	}
 	return out, nil
 }
 

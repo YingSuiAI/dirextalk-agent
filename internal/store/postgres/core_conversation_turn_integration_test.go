@@ -217,6 +217,71 @@ func TestCoreConversationTurnCancelCompletionFencePostgres(t *testing.T) {
 	}
 }
 
+func TestCoreConversationTurnSteerInvalidatesProviderLeaseAndCommitsGuidancePostgres(t *testing.T) {
+	h := openTurnDB(t)
+	cmd := turnCommand()
+	turn, err := h.store.StartTurn(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createTestProfile(context.Background(), t, h.store.Store, turn.ProfileID, "test", "integration-secret")
+	staleLease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.store.PrepareTurnModel(context.Background(), staleLease); err != nil {
+		t.Fatal(err)
+	}
+	steer := core.TurnSteerCommand{
+		RequestID: uuid.NewString(), TurnID: turn.ID,
+		ExpectedRevision: turn.Revision, Instruction: "focus on the concise answer",
+	}
+	steered, applied, err := h.store.RequestTurnSteer(context.Background(), steer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Fatal("first steer was not applied")
+	}
+	if steered.ID != turn.ID || steered.State != core.TurnAccepted || steered.Revision != turn.Revision+1 || steered.LastSequence != turn.LastSequence+1 {
+		t.Fatalf("steered turn=%+v", steered)
+	}
+	if err = h.store.RecordTurnModelResult(context.Background(), staleLease, core.ModelRunResult{}); err != core.ErrConflict {
+		t.Fatalf("stale provider result err=%v", err)
+	}
+	replayed, applied, err := h.store.RequestTurnSteer(context.Background(), steer)
+	if err != nil || replayed.Revision != steered.Revision {
+		t.Fatalf("steer replay=%+v err=%v", replayed, err)
+	}
+	if applied {
+		t.Fatal("idempotent steer replay was applied twice")
+	}
+	changed := steer
+	changed.Instruction = "different guidance"
+	if _, _, err = h.store.RequestTurnSteer(context.Background(), changed); err != core.ErrConflict {
+		t.Fatalf("changed steer replay err=%v", err)
+	}
+	steers, err := h.store.ListTurnSteers(context.Background(), turn.ID)
+	if err != nil || len(steers) != 1 || steers[0].RequestID != steer.RequestID || steers[0].Instruction != steer.Instruction {
+		t.Fatalf("steers=%+v err=%v", steers, err)
+	}
+	lease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := core.ChatResponse{RequestID: cmd.RequestID, ConversationID: turn.ConversationID, Revision: 2, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "concise answer", ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC()}}
+	if _, err = h.store.CommitTurn(context.Background(), lease, response); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := h.store.LoadConversation(context.Background(), turn.ConversationID)
+	if err != nil || len(conversation.Messages) != 3 {
+		t.Fatalf("conversation=%+v err=%v", conversation, err)
+	}
+	if conversation.Messages[0].Content != cmd.Prompt || conversation.Messages[1].Content != steer.Instruction || conversation.Messages[2].Content != "concise answer" {
+		t.Fatalf("same-turn transcript=%+v", conversation.Messages)
+	}
+}
+
 func TestCoreConversationTurnDispatchRecoveryPostgres(t *testing.T) {
 	h := openTurnDB(t)
 	turn, err := h.store.StartTurn(context.Background(), turnCommand())

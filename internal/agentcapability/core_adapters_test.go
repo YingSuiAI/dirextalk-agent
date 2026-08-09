@@ -1863,6 +1863,108 @@ func TestStopTurnDescriptorMatchesPinnedMessageServerContract(t *testing.T) {
 	t.Fatal("stop_turn descriptor is missing")
 }
 
+type steerTurnCapabilityStore struct {
+	coreconversation.Store
+	coreconversation.TurnStore
+	command coreconversation.TurnSteerCommand
+	calls   int
+	turn    coreconversation.Turn
+}
+
+func (s *steerTurnCapabilityStore) RequestTurnSteer(_ context.Context, command coreconversation.TurnSteerCommand) (coreconversation.Turn, bool, error) {
+	s.calls++
+	s.command = command
+	return s.turn, true, nil
+}
+
+func (s *steerTurnCapabilityStore) ListTurnSteers(context.Context, string) ([]coreconversation.TurnSteer, error) {
+	return nil, nil
+}
+
+func (s *steerTurnCapabilityStore) GetTurn(context.Context, string) (coreconversation.Turn, error) {
+	terminal := s.turn
+	terminal.State = coreconversation.TurnCompleted
+	return terminal, nil
+}
+
+func newSteerTurnCapability(t *testing.T) (*coreChatCapability, *steerTurnCapabilityStore) {
+	t.Helper()
+	now := time.Date(2026, 8, 9, 7, 8, 9, 0, time.UTC)
+	store := &steerTurnCapabilityStore{turn: coreconversation.Turn{
+		ID: uuid.NewString(), ConversationID: uuid.NewString(), RequestID: uuid.NewString(),
+		Prompt: "must-not-cross", ProfileID: uuid.NewString(), Revision: 5, LastSequence: 8,
+		State: coreconversation.TurnAccepted, CreatedAt: now, UpdatedAt: now.Add(time.Second),
+	}}
+	service, err := coreconversation.NewService(store, stopTurnModelRunner{}, nil, stopTurnProfileResolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	return &coreChatCapability{service: service}, store
+}
+
+func TestSteerTurnCapabilityCallsConversationServiceAndReturnsTypedReceipt(t *testing.T) {
+	capability, store := newSteerTurnCapability(t)
+	key := uuid.NewString()
+	raw := []byte(`{"idempotency_key":"` + key + `","turn_id":"` + store.turn.ID + `","expected_revision":4,"instruction":"answer with the constraints first"}`)
+	result, err := capability.HandleOperation(context.Background(), "steer_turn", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.calls != 1 || store.command.RequestID != key || store.command.TurnID != store.turn.ID || store.command.ExpectedRevision != 4 || store.command.Instruction != "answer with the constraints first" {
+		t.Fatalf("SteerTurn command=%+v calls=%d", store.command, store.calls)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result, &output); err != nil {
+		t.Fatal(err)
+	}
+	if len(output) != 11 || output["idempotency_key"] != store.turn.RequestID || output["steer_idempotency_key"] != key || output["turn_id"] != store.turn.ID || output["state"] != "accepted" {
+		t.Fatalf("public steer_turn result=%s", result)
+	}
+	for _, forbidden := range []string{"instruction", "prompt", "profile_id", "request_fingerprint"} {
+		if _, present := output[forbidden]; present {
+			t.Fatalf("private field %q leaked: %s", forbidden, result)
+		}
+	}
+}
+
+func TestSteerTurnCapabilityRejectsUnknownAndMalformedInput(t *testing.T) {
+	capability, store := newSteerTurnCapability(t)
+	key, turnID := uuid.NewString(), store.turn.ID
+	for _, raw := range []string{
+		`{"idempotency_key":"` + key + `","turn_id":"` + turnID + `","expected_revision":4,"instruction":"guide","message":"alias"}`,
+		`{"idempotency_key":"` + key + `","turn_id":"` + turnID + `","expected_revision":0,"instruction":"guide"}`,
+		`{"idempotency_key":"` + key + `","turn_id":"` + turnID + `","expected_revision":4,"instruction":"   "}`,
+		`{"idempotency_key":"bad","turn_id":"` + turnID + `","expected_revision":4,"instruction":"guide"}`,
+	} {
+		if _, err := capability.HandleOperation(context.Background(), "steer_turn", []byte(raw)); !errors.Is(err, coreconversation.ErrInvalid) {
+			t.Fatalf("input %s error=%v, want ErrInvalid", raw, err)
+		}
+	}
+	if store.calls != 0 {
+		t.Fatalf("invalid requests reached SteerTurn %d times", store.calls)
+	}
+}
+
+func TestSteerTurnDescriptorPublishesClosedTypedContract(t *testing.T) {
+	descriptor := (&coreChatCapability{}).Descriptor()
+	for _, operation := range descriptor.GetOperations() {
+		if operation.GetOperationId() != "steer_turn" {
+			continue
+		}
+		if operation.GetOperationType() != capv1.OperationType_OPERATION_TYPE_MUTATION ||
+			len(operation.GetRequiredScopes()) != 1 || operation.GetRequiredScopes()[0] != "agent:chat:write" ||
+			!chatOperationRequiresKey("steer_turn") ||
+			!strings.Contains(operation.GetInputSchemaJson(), `"additionalProperties":false`) ||
+			!strings.Contains(operation.GetInputSchemaJson(), `"instruction"`) ||
+			!strings.Contains(operation.GetResultSchemaJson(), `"steer_idempotency_key"`) {
+			t.Fatalf("unexpected steer_turn descriptor: %+v", operation)
+		}
+		return
+	}
+	t.Fatal("steer_turn descriptor is missing")
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

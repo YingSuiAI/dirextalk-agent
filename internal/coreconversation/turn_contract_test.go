@@ -432,6 +432,35 @@ func TestStartTurnFingerprintBindsImmutableSnapshotAndPrompt(t *testing.T) {
 	}
 }
 
+func TestAppendTurnSteersKeepsGuidanceInsideCurrentModelTurn(t *testing.T) {
+	now := time.Date(2026, 8, 9, 3, 4, 5, 0, time.UTC)
+	turn := Turn{ID: uuid.NewString(), ProfileID: uuid.NewString()}
+	conversation := Conversation{ID: uuid.NewString(), Revision: 1, Messages: []Message{{
+		ID: uuid.NewString(), Role: RoleUser, Content: "original question",
+		ModelProfileID: turn.ProfileID, CreatedAt: now,
+	}}}
+	steers := []TurnSteer{
+		{RequestID: uuid.NewString(), Instruction: "focus on correctness", ExpectedRevision: 1, Sequence: 2, CreatedAt: now.Add(time.Second)},
+		{RequestID: uuid.NewString(), Instruction: "then keep it concise", ExpectedRevision: 2, Sequence: 3, CreatedAt: now.Add(2 * time.Second)},
+	}
+	got, err := appendTurnSteers(conversation, turn, steers, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages) != 3 || got.Messages[0].Content != "original question" || got.Messages[1].Content != steers[0].Instruction || got.Messages[2].Content != steers[1].Instruction {
+		t.Fatalf("same-turn model context=%+v", got.Messages)
+	}
+	for index, steer := range steers {
+		message := got.Messages[index+1]
+		if message.Role != RoleUser || message.ID != uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-steer-user:"+steer.RequestID)).String() {
+			t.Fatalf("steer message[%d]=%+v", index, message)
+		}
+	}
+	if len(conversation.Messages) != 1 {
+		t.Fatal("appendTurnSteers mutated the caller conversation")
+	}
+}
+
 func TestModelConversationForTurnInjectsTransientRecallAndCurrentPrompt(t *testing.T) {
 	profileID := uuid.NewString()
 	turn := Turn{ID: uuid.NewString(), Prompt: "what do you remember?", ProfileID: profileID, CreatedAt: time.Now().UTC()}

@@ -40,6 +40,7 @@ const (
 	TurnEventWaitingConfirmation TurnEventKind = "waiting_confirmation"
 	TurnEventToolCall            TurnEventKind = "tool_call"
 	TurnEventToolResult          TurnEventKind = "tool_result"
+	TurnEventSteered             TurnEventKind = "steered"
 )
 
 type Turn struct {
@@ -75,28 +76,30 @@ type Turn struct {
 }
 
 type TurnEvent struct {
-	TurnID         string
-	Sequence       int64
-	Kind           TurnEventKind
-	Text           string
-	Message        *Message
-	Response       *ChatResponse
-	ToolCall       *ToolCall
-	ToolResult     *ToolResult
-	ConfirmationID string
-	AttemptID      string
-	ExecutionID    string
-	Status         string
-	RelatedTaskIDs []string
-	RelatedPlanIDs []string
-	References     []Reference
-	ErrorCode      string
-	ErrorSummary   string
-	FirstSequence  int64
-	LastSequence   int64
-	ReplayGap      bool
-	CreatedAt      time.Time
-	Err            error `json:"-"`
+	TurnID           string
+	Sequence         int64
+	Kind             TurnEventKind
+	Text             string
+	Message          *Message
+	Response         *ChatResponse
+	ToolCall         *ToolCall
+	ToolResult       *ToolResult
+	ConfirmationID   string
+	AttemptID        string
+	ExecutionID      string
+	Status           string
+	RelatedTaskIDs   []string
+	RelatedPlanIDs   []string
+	References       []Reference
+	ErrorCode        string
+	ErrorSummary     string
+	FirstSequence    int64
+	LastSequence     int64
+	ReplayGap        bool
+	MutationID       string
+	ExpectedRevision uint64
+	CreatedAt        time.Time
+	Err              error `json:"-"`
 }
 
 type TurnStartCommand struct {
@@ -123,6 +126,21 @@ type TurnCancelCommand struct {
 	RequestID        string
 	TurnID           string
 	ExpectedRevision uint64
+}
+
+type TurnSteerCommand struct {
+	RequestID        string
+	TurnID           string
+	ExpectedRevision uint64
+	Instruction      string
+}
+
+type TurnSteer struct {
+	RequestID        string
+	Instruction      string
+	ExpectedRevision uint64
+	Sequence         int64
+	CreatedAt        time.Time
 }
 
 type TurnLease struct {
@@ -208,6 +226,14 @@ type TurnDispatchStore interface {
 
 type TurnCancelStore interface {
 	MarkTurnCanceledRequested(context.Context, string) (Turn, error)
+}
+
+// TurnSteerStore persists same-turn user guidance in the durable event ledger.
+// Implementations must revision-fence the mutation and invalidate any active
+// provider lease before returning success.
+type TurnSteerStore interface {
+	RequestTurnSteer(context.Context, TurnSteerCommand) (Turn, bool, error)
+	ListTurnSteers(context.Context, string) ([]TurnSteer, error)
 }
 
 type TurnUncertainStore interface {

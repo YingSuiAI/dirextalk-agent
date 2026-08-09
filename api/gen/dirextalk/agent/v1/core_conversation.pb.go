@@ -2300,6 +2300,118 @@ func (x *ConversationServiceCancelTurnResponse) GetTurn() *CoreConversationTurn 
 	return nil
 }
 
+type ConversationServiceSteerTurnRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	IdempotencyKey   string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	TurnId           string                 `protobuf:"bytes,2,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
+	ExpectedRevision int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	Instruction      string                 `protobuf:"bytes,4,opt,name=instruction,proto3" json:"instruction,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ConversationServiceSteerTurnRequest) Reset() {
+	*x = ConversationServiceSteerTurnRequest{}
+	mi := &file_dirextalk_agent_v1_core_conversation_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConversationServiceSteerTurnRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConversationServiceSteerTurnRequest) ProtoMessage() {}
+
+func (x *ConversationServiceSteerTurnRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_core_conversation_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConversationServiceSteerTurnRequest.ProtoReflect.Descriptor instead.
+func (*ConversationServiceSteerTurnRequest) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_core_conversation_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ConversationServiceSteerTurnRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *ConversationServiceSteerTurnRequest) GetTurnId() string {
+	if x != nil {
+		return x.TurnId
+	}
+	return ""
+}
+
+func (x *ConversationServiceSteerTurnRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
+func (x *ConversationServiceSteerTurnRequest) GetInstruction() string {
+	if x != nil {
+		return x.Instruction
+	}
+	return ""
+}
+
+type ConversationServiceSteerTurnResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Turn          *CoreConversationTurn  `protobuf:"bytes,1,opt,name=turn,proto3" json:"turn,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConversationServiceSteerTurnResponse) Reset() {
+	*x = ConversationServiceSteerTurnResponse{}
+	mi := &file_dirextalk_agent_v1_core_conversation_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConversationServiceSteerTurnResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConversationServiceSteerTurnResponse) ProtoMessage() {}
+
+func (x *ConversationServiceSteerTurnResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_core_conversation_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConversationServiceSteerTurnResponse.ProtoReflect.Descriptor instead.
+func (*ConversationServiceSteerTurnResponse) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_core_conversation_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *ConversationServiceSteerTurnResponse) GetTurn() *CoreConversationTurn {
+	if x != nil {
+		return x.Turn
+	}
+	return nil
+}
+
 type ConversationServiceWatchTurnEventsResponse struct {
 	state         protoimpl.MessageState     `protogen:"open.v1"`
 	Event         *CoreConversationTurnEvent `protobuf:"bytes,1,opt,name=event,proto3" json:"event,omitempty"`
@@ -2309,7 +2421,7 @@ type ConversationServiceWatchTurnEventsResponse struct {
 
 func (x *ConversationServiceWatchTurnEventsResponse) Reset() {
 	*x = ConversationServiceWatchTurnEventsResponse{}
-	mi := &file_dirextalk_agent_v1_core_conversation_proto_msgTypes[28]
+	mi := &file_dirextalk_agent_v1_core_conversation_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2321,7 +2433,7 @@ func (x *ConversationServiceWatchTurnEventsResponse) String() string {
 func (*ConversationServiceWatchTurnEventsResponse) ProtoMessage() {}
 
 func (x *ConversationServiceWatchTurnEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_conversation_proto_msgTypes[28]
+	mi := &file_dirextalk_agent_v1_core_conversation_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2334,7 +2446,7 @@ func (x *ConversationServiceWatchTurnEventsResponse) ProtoReflect() protoreflect
 
 // Deprecated: Use ConversationServiceWatchTurnEventsResponse.ProtoReflect.Descriptor instead.
 func (*ConversationServiceWatchTurnEventsResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_conversation_proto_rawDescGZIP(), []int{28}
+	return file_dirextalk_agent_v1_core_conversation_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ConversationServiceWatchTurnEventsResponse) GetEvent() *CoreConversationTurnEvent {
@@ -2580,9 +2692,17 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\aturn_id\x18\x02 \x01(\tR\x06turnId\x12+\n" +
 	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\"e\n" +
 	"%ConversationServiceCancelTurnResponse\x12<\n" +
+	"\x04turn\x18\x01 \x01(\v2(.dirextalk.agent.v1.CoreConversationTurnR\x04turn\"\xb6\x01\n" +
+	"#ConversationServiceSteerTurnRequest\x12'\n" +
+	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x17\n" +
+	"\aturn_id\x18\x02 \x01(\tR\x06turnId\x12+\n" +
+	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\x12 \n" +
+	"\vinstruction\x18\x04 \x01(\tR\vinstruction\"d\n" +
+	"$ConversationServiceSteerTurnResponse\x12<\n" +
 	"\x04turn\x18\x01 \x01(\v2(.dirextalk.agent.v1.CoreConversationTurnR\x04turn\"q\n" +
 	"*ConversationServiceWatchTurnEventsResponse\x12C\n" +
-	"\x05event\x18\x01 \x01(\v2-.dirextalk.agent.v1.CoreConversationTurnEventR\x05event2\xec\t\n" +
+	"\x05event\x18\x01 \x01(\v2-.dirextalk.agent.v1.CoreConversationTurnEventR\x05event2\xec\n" +
+	"\n" +
 	"\x13ConversationService\x12u\n" +
 	"\x06Create\x124.dirextalk.agent.v1.ConversationServiceCreateRequest\x1a5.dirextalk.agent.v1.ConversationServiceCreateResponse\x12l\n" +
 	"\x03Get\x121.dirextalk.agent.v1.ConversationServiceGetRequest\x1a2.dirextalk.agent.v1.ConversationServiceGetResponse\x12o\n" +
@@ -2595,7 +2715,8 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\aGetTurn\x125.dirextalk.agent.v1.ConversationServiceGetTurnRequest\x1a6.dirextalk.agent.v1.ConversationServiceGetTurnResponse\x12\x92\x01\n" +
 	"\x0fWatchTurnEvents\x12=.dirextalk.agent.v1.ConversationServiceWatchTurnEventsRequest\x1a>.dirextalk.agent.v1.ConversationServiceWatchTurnEventsResponse0\x01\x12\x81\x01\n" +
 	"\n" +
-	"CancelTurn\x128.dirextalk.agent.v1.ConversationServiceCancelTurnRequest\x1a9.dirextalk.agent.v1.ConversationServiceCancelTurnResponseBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
+	"CancelTurn\x128.dirextalk.agent.v1.ConversationServiceCancelTurnRequest\x1a9.dirextalk.agent.v1.ConversationServiceCancelTurnResponse\x12~\n" +
+	"\tSteerTurn\x127.dirextalk.agent.v1.ConversationServiceSteerTurnRequest\x1a8.dirextalk.agent.v1.ConversationServiceSteerTurnResponseBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
 
 var (
 	file_dirextalk_agent_v1_core_conversation_proto_rawDescOnce sync.Once
@@ -2609,7 +2730,7 @@ func file_dirextalk_agent_v1_core_conversation_proto_rawDescGZIP() []byte {
 	return file_dirextalk_agent_v1_core_conversation_proto_rawDescData
 }
 
-var file_dirextalk_agent_v1_core_conversation_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_dirextalk_agent_v1_core_conversation_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_dirextalk_agent_v1_core_conversation_proto_goTypes = []any{
 	(*CoreConversation)(nil),                           // 0: dirextalk.agent.v1.CoreConversation
 	(*CoreConversationReference)(nil),                  // 1: dirextalk.agent.v1.CoreConversationReference
@@ -2639,26 +2760,28 @@ var file_dirextalk_agent_v1_core_conversation_proto_goTypes = []any{
 	(*CoreConversationTurnEvent)(nil),                  // 25: dirextalk.agent.v1.CoreConversationTurnEvent
 	(*ConversationServiceCancelTurnRequest)(nil),       // 26: dirextalk.agent.v1.ConversationServiceCancelTurnRequest
 	(*ConversationServiceCancelTurnResponse)(nil),      // 27: dirextalk.agent.v1.ConversationServiceCancelTurnResponse
-	(*ConversationServiceWatchTurnEventsResponse)(nil), // 28: dirextalk.agent.v1.ConversationServiceWatchTurnEventsResponse
-	(*timestamppb.Timestamp)(nil),                      // 29: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),                            // 30: google.protobuf.Struct
-	(*CoreExtensionSelection)(nil),                     // 31: dirextalk.agent.v1.CoreExtensionSelection
+	(*ConversationServiceSteerTurnRequest)(nil),        // 28: dirextalk.agent.v1.ConversationServiceSteerTurnRequest
+	(*ConversationServiceSteerTurnResponse)(nil),       // 29: dirextalk.agent.v1.ConversationServiceSteerTurnResponse
+	(*ConversationServiceWatchTurnEventsResponse)(nil), // 30: dirextalk.agent.v1.ConversationServiceWatchTurnEventsResponse
+	(*timestamppb.Timestamp)(nil),                      // 31: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),                            // 32: google.protobuf.Struct
+	(*CoreExtensionSelection)(nil),                     // 33: dirextalk.agent.v1.CoreExtensionSelection
 }
 var file_dirextalk_agent_v1_core_conversation_proto_depIdxs = []int32{
-	29, // 0: dirextalk.agent.v1.CoreConversation.created_at:type_name -> google.protobuf.Timestamp
-	29, // 1: dirextalk.agent.v1.CoreConversation.updated_at:type_name -> google.protobuf.Timestamp
-	30, // 2: dirextalk.agent.v1.CoreConversationMessage.payload:type_name -> google.protobuf.Struct
-	29, // 3: dirextalk.agent.v1.CoreConversationMessage.created_at:type_name -> google.protobuf.Timestamp
+	31, // 0: dirextalk.agent.v1.CoreConversation.created_at:type_name -> google.protobuf.Timestamp
+	31, // 1: dirextalk.agent.v1.CoreConversation.updated_at:type_name -> google.protobuf.Timestamp
+	32, // 2: dirextalk.agent.v1.CoreConversationMessage.payload:type_name -> google.protobuf.Struct
+	31, // 3: dirextalk.agent.v1.CoreConversationMessage.created_at:type_name -> google.protobuf.Timestamp
 	1,  // 4: dirextalk.agent.v1.CoreConversationMessage.references:type_name -> dirextalk.agent.v1.CoreConversationReference
 	0,  // 5: dirextalk.agent.v1.ConversationServiceCreateResponse.conversation:type_name -> dirextalk.agent.v1.CoreConversation
 	0,  // 6: dirextalk.agent.v1.ConversationServiceGetResponse.conversation:type_name -> dirextalk.agent.v1.CoreConversation
 	2,  // 7: dirextalk.agent.v1.ConversationServiceGetResponse.messages:type_name -> dirextalk.agent.v1.CoreConversationMessage
 	0,  // 8: dirextalk.agent.v1.ConversationServiceListResponse.conversations:type_name -> dirextalk.agent.v1.CoreConversation
-	31, // 9: dirextalk.agent.v1.ConversationServiceChatRequest.extensions:type_name -> dirextalk.agent.v1.CoreExtensionSelection
+	33, // 9: dirextalk.agent.v1.ConversationServiceChatRequest.extensions:type_name -> dirextalk.agent.v1.CoreExtensionSelection
 	0,  // 10: dirextalk.agent.v1.ConversationServiceChatResponse.conversation:type_name -> dirextalk.agent.v1.CoreConversation
 	2,  // 11: dirextalk.agent.v1.ConversationServiceChatResponse.message:type_name -> dirextalk.agent.v1.CoreConversationMessage
 	1,  // 12: dirextalk.agent.v1.ConversationServiceChatResponse.references:type_name -> dirextalk.agent.v1.CoreConversationReference
-	31, // 13: dirextalk.agent.v1.ConversationServiceStreamChatRequest.extensions:type_name -> dirextalk.agent.v1.CoreExtensionSelection
+	33, // 13: dirextalk.agent.v1.ConversationServiceStreamChatRequest.extensions:type_name -> dirextalk.agent.v1.CoreExtensionSelection
 	1,  // 14: dirextalk.agent.v1.CoreStreamChatToolProgress.references:type_name -> dirextalk.agent.v1.CoreConversationReference
 	1,  // 15: dirextalk.agent.v1.CoreToolResult.references:type_name -> dirextalk.agent.v1.CoreConversationReference
 	2,  // 16: dirextalk.agent.v1.CoreStreamChatDone.message:type_name -> dirextalk.agent.v1.CoreConversationMessage
@@ -2667,43 +2790,46 @@ var file_dirextalk_agent_v1_core_conversation_proto_depIdxs = []int32{
 	14, // 19: dirextalk.agent.v1.ConversationServiceStreamChatResponse.delta:type_name -> dirextalk.agent.v1.CoreStreamChatDelta
 	15, // 20: dirextalk.agent.v1.ConversationServiceStreamChatResponse.tool:type_name -> dirextalk.agent.v1.CoreStreamChatToolProgress
 	17, // 21: dirextalk.agent.v1.ConversationServiceStreamChatResponse.done:type_name -> dirextalk.agent.v1.CoreStreamChatDone
-	29, // 22: dirextalk.agent.v1.CoreConversationTurn.created_at:type_name -> google.protobuf.Timestamp
-	29, // 23: dirextalk.agent.v1.CoreConversationTurn.updated_at:type_name -> google.protobuf.Timestamp
+	31, // 22: dirextalk.agent.v1.CoreConversationTurn.created_at:type_name -> google.protobuf.Timestamp
+	31, // 23: dirextalk.agent.v1.CoreConversationTurn.updated_at:type_name -> google.protobuf.Timestamp
 	2,  // 24: dirextalk.agent.v1.CoreConversationTurn.result:type_name -> dirextalk.agent.v1.CoreConversationMessage
-	31, // 25: dirextalk.agent.v1.ConversationServiceStartTurnRequest.extensions:type_name -> dirextalk.agent.v1.CoreExtensionSelection
+	33, // 25: dirextalk.agent.v1.ConversationServiceStartTurnRequest.extensions:type_name -> dirextalk.agent.v1.CoreExtensionSelection
 	19, // 26: dirextalk.agent.v1.ConversationServiceStartTurnResponse.turn:type_name -> dirextalk.agent.v1.CoreConversationTurn
 	19, // 27: dirextalk.agent.v1.ConversationServiceGetTurnResponse.turn:type_name -> dirextalk.agent.v1.CoreConversationTurn
 	2,  // 28: dirextalk.agent.v1.CoreConversationTurnEvent.message:type_name -> dirextalk.agent.v1.CoreConversationMessage
-	29, // 29: dirextalk.agent.v1.CoreConversationTurnEvent.created_at:type_name -> google.protobuf.Timestamp
+	31, // 29: dirextalk.agent.v1.CoreConversationTurnEvent.created_at:type_name -> google.protobuf.Timestamp
 	16, // 30: dirextalk.agent.v1.CoreConversationTurnEvent.tool_result:type_name -> dirextalk.agent.v1.CoreToolResult
 	1,  // 31: dirextalk.agent.v1.CoreConversationTurnEvent.references:type_name -> dirextalk.agent.v1.CoreConversationReference
 	19, // 32: dirextalk.agent.v1.ConversationServiceCancelTurnResponse.turn:type_name -> dirextalk.agent.v1.CoreConversationTurn
-	25, // 33: dirextalk.agent.v1.ConversationServiceWatchTurnEventsResponse.event:type_name -> dirextalk.agent.v1.CoreConversationTurnEvent
-	3,  // 34: dirextalk.agent.v1.ConversationService.Create:input_type -> dirextalk.agent.v1.ConversationServiceCreateRequest
-	5,  // 35: dirextalk.agent.v1.ConversationService.Get:input_type -> dirextalk.agent.v1.ConversationServiceGetRequest
-	7,  // 36: dirextalk.agent.v1.ConversationService.List:input_type -> dirextalk.agent.v1.ConversationServiceListRequest
-	9,  // 37: dirextalk.agent.v1.ConversationService.Delete:input_type -> dirextalk.agent.v1.ConversationServiceDeleteRequest
-	11, // 38: dirextalk.agent.v1.ConversationService.Chat:input_type -> dirextalk.agent.v1.ConversationServiceChatRequest
-	13, // 39: dirextalk.agent.v1.ConversationService.StreamChat:input_type -> dirextalk.agent.v1.ConversationServiceStreamChatRequest
-	20, // 40: dirextalk.agent.v1.ConversationService.StartTurn:input_type -> dirextalk.agent.v1.ConversationServiceStartTurnRequest
-	22, // 41: dirextalk.agent.v1.ConversationService.GetTurn:input_type -> dirextalk.agent.v1.ConversationServiceGetTurnRequest
-	24, // 42: dirextalk.agent.v1.ConversationService.WatchTurnEvents:input_type -> dirextalk.agent.v1.ConversationServiceWatchTurnEventsRequest
-	26, // 43: dirextalk.agent.v1.ConversationService.CancelTurn:input_type -> dirextalk.agent.v1.ConversationServiceCancelTurnRequest
-	4,  // 44: dirextalk.agent.v1.ConversationService.Create:output_type -> dirextalk.agent.v1.ConversationServiceCreateResponse
-	6,  // 45: dirextalk.agent.v1.ConversationService.Get:output_type -> dirextalk.agent.v1.ConversationServiceGetResponse
-	8,  // 46: dirextalk.agent.v1.ConversationService.List:output_type -> dirextalk.agent.v1.ConversationServiceListResponse
-	10, // 47: dirextalk.agent.v1.ConversationService.Delete:output_type -> dirextalk.agent.v1.ConversationServiceDeleteResponse
-	12, // 48: dirextalk.agent.v1.ConversationService.Chat:output_type -> dirextalk.agent.v1.ConversationServiceChatResponse
-	18, // 49: dirextalk.agent.v1.ConversationService.StreamChat:output_type -> dirextalk.agent.v1.ConversationServiceStreamChatResponse
-	21, // 50: dirextalk.agent.v1.ConversationService.StartTurn:output_type -> dirextalk.agent.v1.ConversationServiceStartTurnResponse
-	23, // 51: dirextalk.agent.v1.ConversationService.GetTurn:output_type -> dirextalk.agent.v1.ConversationServiceGetTurnResponse
-	28, // 52: dirextalk.agent.v1.ConversationService.WatchTurnEvents:output_type -> dirextalk.agent.v1.ConversationServiceWatchTurnEventsResponse
-	27, // 53: dirextalk.agent.v1.ConversationService.CancelTurn:output_type -> dirextalk.agent.v1.ConversationServiceCancelTurnResponse
-	44, // [44:54] is the sub-list for method output_type
-	34, // [34:44] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	19, // 33: dirextalk.agent.v1.ConversationServiceSteerTurnResponse.turn:type_name -> dirextalk.agent.v1.CoreConversationTurn
+	25, // 34: dirextalk.agent.v1.ConversationServiceWatchTurnEventsResponse.event:type_name -> dirextalk.agent.v1.CoreConversationTurnEvent
+	3,  // 35: dirextalk.agent.v1.ConversationService.Create:input_type -> dirextalk.agent.v1.ConversationServiceCreateRequest
+	5,  // 36: dirextalk.agent.v1.ConversationService.Get:input_type -> dirextalk.agent.v1.ConversationServiceGetRequest
+	7,  // 37: dirextalk.agent.v1.ConversationService.List:input_type -> dirextalk.agent.v1.ConversationServiceListRequest
+	9,  // 38: dirextalk.agent.v1.ConversationService.Delete:input_type -> dirextalk.agent.v1.ConversationServiceDeleteRequest
+	11, // 39: dirextalk.agent.v1.ConversationService.Chat:input_type -> dirextalk.agent.v1.ConversationServiceChatRequest
+	13, // 40: dirextalk.agent.v1.ConversationService.StreamChat:input_type -> dirextalk.agent.v1.ConversationServiceStreamChatRequest
+	20, // 41: dirextalk.agent.v1.ConversationService.StartTurn:input_type -> dirextalk.agent.v1.ConversationServiceStartTurnRequest
+	22, // 42: dirextalk.agent.v1.ConversationService.GetTurn:input_type -> dirextalk.agent.v1.ConversationServiceGetTurnRequest
+	24, // 43: dirextalk.agent.v1.ConversationService.WatchTurnEvents:input_type -> dirextalk.agent.v1.ConversationServiceWatchTurnEventsRequest
+	26, // 44: dirextalk.agent.v1.ConversationService.CancelTurn:input_type -> dirextalk.agent.v1.ConversationServiceCancelTurnRequest
+	28, // 45: dirextalk.agent.v1.ConversationService.SteerTurn:input_type -> dirextalk.agent.v1.ConversationServiceSteerTurnRequest
+	4,  // 46: dirextalk.agent.v1.ConversationService.Create:output_type -> dirextalk.agent.v1.ConversationServiceCreateResponse
+	6,  // 47: dirextalk.agent.v1.ConversationService.Get:output_type -> dirextalk.agent.v1.ConversationServiceGetResponse
+	8,  // 48: dirextalk.agent.v1.ConversationService.List:output_type -> dirextalk.agent.v1.ConversationServiceListResponse
+	10, // 49: dirextalk.agent.v1.ConversationService.Delete:output_type -> dirextalk.agent.v1.ConversationServiceDeleteResponse
+	12, // 50: dirextalk.agent.v1.ConversationService.Chat:output_type -> dirextalk.agent.v1.ConversationServiceChatResponse
+	18, // 51: dirextalk.agent.v1.ConversationService.StreamChat:output_type -> dirextalk.agent.v1.ConversationServiceStreamChatResponse
+	21, // 52: dirextalk.agent.v1.ConversationService.StartTurn:output_type -> dirextalk.agent.v1.ConversationServiceStartTurnResponse
+	23, // 53: dirextalk.agent.v1.ConversationService.GetTurn:output_type -> dirextalk.agent.v1.ConversationServiceGetTurnResponse
+	30, // 54: dirextalk.agent.v1.ConversationService.WatchTurnEvents:output_type -> dirextalk.agent.v1.ConversationServiceWatchTurnEventsResponse
+	27, // 55: dirextalk.agent.v1.ConversationService.CancelTurn:output_type -> dirextalk.agent.v1.ConversationServiceCancelTurnResponse
+	29, // 56: dirextalk.agent.v1.ConversationService.SteerTurn:output_type -> dirextalk.agent.v1.ConversationServiceSteerTurnResponse
+	46, // [46:57] is the sub-list for method output_type
+	35, // [35:46] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_core_conversation_proto_init() }
@@ -2727,7 +2853,7 @@ func file_dirextalk_agent_v1_core_conversation_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_core_conversation_proto_rawDesc), len(file_dirextalk_agent_v1_core_conversation_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   29,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

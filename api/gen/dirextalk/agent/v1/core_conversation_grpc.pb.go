@@ -29,6 +29,7 @@ const (
 	ConversationService_GetTurn_FullMethodName         = "/dirextalk.agent.v1.ConversationService/GetTurn"
 	ConversationService_WatchTurnEvents_FullMethodName = "/dirextalk.agent.v1.ConversationService/WatchTurnEvents"
 	ConversationService_CancelTurn_FullMethodName      = "/dirextalk.agent.v1.ConversationService/CancelTurn"
+	ConversationService_SteerTurn_FullMethodName       = "/dirextalk.agent.v1.ConversationService/SteerTurn"
 )
 
 // ConversationServiceClient is the client API for ConversationService service.
@@ -45,6 +46,7 @@ type ConversationServiceClient interface {
 	GetTurn(ctx context.Context, in *ConversationServiceGetTurnRequest, opts ...grpc.CallOption) (*ConversationServiceGetTurnResponse, error)
 	WatchTurnEvents(ctx context.Context, in *ConversationServiceWatchTurnEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ConversationServiceWatchTurnEventsResponse], error)
 	CancelTurn(ctx context.Context, in *ConversationServiceCancelTurnRequest, opts ...grpc.CallOption) (*ConversationServiceCancelTurnResponse, error)
+	SteerTurn(ctx context.Context, in *ConversationServiceSteerTurnRequest, opts ...grpc.CallOption) (*ConversationServiceSteerTurnResponse, error)
 }
 
 type conversationServiceClient struct {
@@ -173,6 +175,16 @@ func (c *conversationServiceClient) CancelTurn(ctx context.Context, in *Conversa
 	return out, nil
 }
 
+func (c *conversationServiceClient) SteerTurn(ctx context.Context, in *ConversationServiceSteerTurnRequest, opts ...grpc.CallOption) (*ConversationServiceSteerTurnResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConversationServiceSteerTurnResponse)
+	err := c.cc.Invoke(ctx, ConversationService_SteerTurn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ConversationServiceServer is the server API for ConversationService service.
 // All implementations must embed UnimplementedConversationServiceServer
 // for forward compatibility.
@@ -187,6 +199,7 @@ type ConversationServiceServer interface {
 	GetTurn(context.Context, *ConversationServiceGetTurnRequest) (*ConversationServiceGetTurnResponse, error)
 	WatchTurnEvents(*ConversationServiceWatchTurnEventsRequest, grpc.ServerStreamingServer[ConversationServiceWatchTurnEventsResponse]) error
 	CancelTurn(context.Context, *ConversationServiceCancelTurnRequest) (*ConversationServiceCancelTurnResponse, error)
+	SteerTurn(context.Context, *ConversationServiceSteerTurnRequest) (*ConversationServiceSteerTurnResponse, error)
 	mustEmbedUnimplementedConversationServiceServer()
 }
 
@@ -226,6 +239,9 @@ func (UnimplementedConversationServiceServer) WatchTurnEvents(*ConversationServi
 }
 func (UnimplementedConversationServiceServer) CancelTurn(context.Context, *ConversationServiceCancelTurnRequest) (*ConversationServiceCancelTurnResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CancelTurn not implemented")
+}
+func (UnimplementedConversationServiceServer) SteerTurn(context.Context, *ConversationServiceSteerTurnRequest) (*ConversationServiceSteerTurnResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SteerTurn not implemented")
 }
 func (UnimplementedConversationServiceServer) mustEmbedUnimplementedConversationServiceServer() {}
 func (UnimplementedConversationServiceServer) testEmbeddedByValue()                             {}
@@ -414,6 +430,24 @@ func _ConversationService_CancelTurn_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ConversationService_SteerTurn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConversationServiceSteerTurnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ConversationServiceServer).SteerTurn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ConversationService_SteerTurn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ConversationServiceServer).SteerTurn(ctx, req.(*ConversationServiceSteerTurnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ConversationService_ServiceDesc is the grpc.ServiceDesc for ConversationService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -452,6 +486,10 @@ var ConversationService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CancelTurn",
 			Handler:    _ConversationService_CancelTurn_Handler,
+		},
+		{
+			MethodName: "SteerTurn",
+			Handler:    _ConversationService_SteerTurn_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
