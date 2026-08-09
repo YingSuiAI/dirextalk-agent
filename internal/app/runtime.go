@@ -57,6 +57,7 @@ type runtimeCompositionOptions struct {
 	modelProfiles         *modelapi.ProfileCatalog
 	searchProfiles        *searchprofile.Catalog
 	transientCredentials  runtimeapi.TransientCredentialConsumer
+	teamArtifactContents  runtimeapp.TeamArtifactContentReader
 }
 
 // WithCloudGoalMaterializer enables the production queued planning path. The
@@ -174,6 +175,18 @@ func WithTransientModelCredentials(consumer runtimeapi.TransientCredentialConsum
 			return errors.New("transient model credential consumer is unavailable")
 		}
 		options.transientCredentials = consumer
+		return nil
+	}
+}
+
+func WithTeamArtifactContentReader(
+	reader runtimeapp.TeamArtifactContentReader,
+) RuntimeCompositionOption {
+	return func(options *runtimeCompositionOptions) error {
+		if options == nil || reader == nil {
+			return errors.New("Team artifact content reader is unavailable")
+		}
+		options.teamArtifactContents = reader
 		return nil
 	}
 }
@@ -461,9 +474,17 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	if err != nil {
 		return RuntimeComposition{}, errors.New("runtime executor is unavailable")
 	}
-	coordinatorOptions := make([]runtimeapp.ServiceOption, 0, 1)
+	coordinatorOptions := make([]runtimeapp.ServiceOption, 0, 2)
 	if runtimeAdmission != nil {
 		coordinatorOptions = append(coordinatorOptions, runtimeapp.WithAdmission(runtimeAdmission))
+	}
+	if options.teamArtifactContents != nil {
+		coordinatorOptions = append(
+			coordinatorOptions,
+			runtimeapp.WithTeamArtifactContentReader(
+				options.teamArtifactContents,
+			),
+		)
 	}
 	coordinator, err := runtimeapp.NewService(store, executor, coordinatorOptions...)
 	if err != nil {

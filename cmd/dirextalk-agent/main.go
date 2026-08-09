@@ -578,7 +578,13 @@ func serve() error {
 		)
 	}
 	if cloudComposition != nil {
-		runtimeOptions = append(runtimeOptions, app.WithCloudGoalMaterializer(cloudComposition.ProviderPlans))
+		runtimeOptions = append(
+			runtimeOptions,
+			app.WithCloudGoalMaterializer(cloudComposition.ProviderPlans),
+			app.WithTeamArtifactContentReader(
+				cloudComposition.TeamArtifactContents,
+			),
+		)
 	}
 	if teamModelOffers != nil {
 		if cloudComposition == nil {

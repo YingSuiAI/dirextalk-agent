@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
+	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
@@ -26,6 +27,8 @@ const (
 	maximumObservedListItems       = 3
 	maximumObservedSummaryBytes    = 1024
 	maximumObservedListItemBytes   = 256
+	maximumObservedArtifactBytes   = 128 << 10
+	maximumObservedContentBytes    = 256 << 10
 	maximumCompletionAttempts      = 4
 )
 
@@ -40,6 +43,16 @@ type teamCompletionStore interface {
 	GetTeamExecutionReport(context.Context, string, string) (teamreport.Fact, error)
 	ListTeamArtifacts(context.Context, string, string) ([]teamartifact.ArtifactV1, error)
 	LoadConversation(context.Context, string, string) (runtimeapi.Conversation, bool, error)
+}
+
+// TeamArtifactContentReader returns exact digest-bound bytes for a retained
+// artifact after enforcing its owner, Connection, object, size, and digest.
+type TeamArtifactContentReader interface {
+	ReadTeamArtifactContent(
+		context.Context,
+		teamartifact.ArtifactV1,
+		int64,
+	) ([]byte, error)
 }
 
 type TeamCompletionResult struct {
@@ -112,6 +125,13 @@ type observedArtifact struct {
 	Verification     teamartifact.VerificationState `json:"verification"`
 	CreatedAt        string                         `json:"created_at"`
 	RetentionExpires string                         `json:"retention_expires_at"`
+	ContentState     string                         `json:"content_state"`
+	Content          string                         `json:"content,omitempty"`
+}
+
+type observedArtifactContent struct {
+	state   string
+	content string
 }
 
 // SynthesizeTeamCompletion turns a server-owned completion event into a real
@@ -141,6 +161,7 @@ func (service *Service) SynthesizeTeamCompletion(
 	summary, observation, err := loadTeamCompletionObservation(
 		ctx,
 		store,
+		service.teamArtifactContentReader,
 		ownerID,
 		sourceEventID,
 	)
@@ -231,6 +252,7 @@ func (service *Service) ConversationState(
 func loadTeamCompletionObservation(
 	ctx context.Context,
 	store teamCompletionStore,
+	contentReader TeamArtifactContentReader,
 	ownerID string,
 	sourceEventID string,
 ) (teamCompletionEventSummary, []byte, error) {
@@ -264,11 +286,20 @@ func loadTeamCompletionObservation(
 	if !completionFactsMatch(summary, execution, report, artifacts) {
 		return teamCompletionEventSummary{}, nil, ErrTeamCompletionInvalid
 	}
+	contents, err := readObservedArtifactContents(
+		ctx,
+		contentReader,
+		artifacts,
+	)
+	if err != nil {
+		return teamCompletionEventSummary{}, nil, err
+	}
 	observation := projectCompletionObservation(
 		sourceEventID,
 		summary,
 		report,
 		artifacts,
+		contents,
 	)
 	encoded, err := json.Marshal(observation)
 	if err != nil {
@@ -365,6 +396,7 @@ func projectCompletionObservation(
 	summary teamCompletionEventSummary,
 	report teamreport.Fact,
 	artifacts []teamartifact.ArtifactV1,
+	contents map[string]observedArtifactContent,
 ) completionObservation {
 	roles := make([]observedRole, 0, len(report.Report.Roles))
 	for _, role := range report.Report.Roles {
@@ -409,6 +441,7 @@ func projectCompletionObservation(
 	}
 	manifest := make([]observedArtifact, 0, artifactLimit)
 	for _, artifact := range artifacts[:artifactLimit] {
+		content := contents[artifact.ArtifactID]
 		manifest = append(manifest, observedArtifact{
 			ArtifactID:       artifact.ArtifactID,
 			RoleID:           artifact.RoleID,
@@ -421,6 +454,8 @@ func projectCompletionObservation(
 			Verification:     artifact.Verification,
 			CreatedAt:        artifact.CreatedAt.Format(time.RFC3339Nano),
 			RetentionExpires: artifact.RetentionExpires.Format(time.RFC3339Nano),
+			ContentState:     content.state,
+			Content:          content.content,
 		})
 	}
 	return completionObservation{
@@ -439,6 +474,64 @@ func projectCompletionObservation(
 		ArtifactManifestTruncated: artifactLimit != len(artifacts),
 		RetainedArtifacts:         manifest,
 	}
+}
+
+func readObservedArtifactContents(
+	ctx context.Context,
+	reader TeamArtifactContentReader,
+	artifacts []teamartifact.ArtifactV1,
+) (map[string]observedArtifactContent, error) {
+	result := make(map[string]observedArtifactContent, len(artifacts))
+	remaining := int64(maximumObservedContentBytes)
+	for _, artifact := range artifacts {
+		if reader == nil {
+			result[artifact.ArtifactID] = observedArtifactContent{
+				state: "not_loaded",
+			}
+			continue
+		}
+		if artifact.SizeBytes > maximumObservedArtifactBytes {
+			result[artifact.ArtifactID] = observedArtifactContent{
+				state: "omitted_size",
+			}
+			continue
+		}
+		if artifact.SizeBytes > remaining {
+			result[artifact.ArtifactID] = observedArtifactContent{
+				state: "omitted_budget",
+			}
+			continue
+		}
+		content, err := reader.ReadTeamArtifactContent(
+			ctx,
+			artifact,
+			artifact.SizeBytes,
+		)
+		if err != nil {
+			clear(content)
+			return nil, err
+		}
+		if int64(len(content)) != artifact.SizeBytes ||
+			!utf8.Valid(content) ||
+			strings.ContainsRune(string(content), '\x00') {
+			clear(content)
+			return nil, ErrTeamCompletionInvalid
+		}
+		text := string(content)
+		clear(content)
+		remaining -= artifact.SizeBytes
+		if security.ContainsLikelySecret(text) {
+			result[artifact.ArtifactID] = observedArtifactContent{
+				state: "redacted",
+			}
+			continue
+		}
+		result[artifact.ArtifactID] = observedArtifactContent{
+			state:   "included",
+			content: text,
+		}
+	}
+	return result, nil
 }
 
 func boundedList(values []string) []string {

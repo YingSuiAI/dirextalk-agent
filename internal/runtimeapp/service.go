@@ -58,14 +58,16 @@ type Admission interface {
 }
 
 type Service struct {
-	store        Store
-	executor     Executor
-	admission    Admission
-	requestLease time.Duration
+	store                     Store
+	executor                  Executor
+	admission                 Admission
+	teamArtifactContentReader TeamArtifactContentReader
+	requestLease              time.Duration
 }
 
 type serviceOptions struct {
-	admission Admission
+	admission                 Admission
+	teamArtifactContentReader TeamArtifactContentReader
 }
 
 type ServiceOption func(*serviceOptions) error
@@ -80,6 +82,16 @@ func WithAdmission(admission Admission) ServiceOption {
 	}
 }
 
+func WithTeamArtifactContentReader(reader TeamArtifactContentReader) ServiceOption {
+	return func(options *serviceOptions) error {
+		if options == nil || reader == nil {
+			return ErrInvalidDependencies
+		}
+		options.teamArtifactContentReader = reader
+		return nil
+	}
+}
+
 func NewService(store Store, executor Executor, optionSet ...ServiceOption) (*Service, error) {
 	if store == nil || executor == nil {
 		return nil, ErrInvalidDependencies
@@ -90,7 +102,13 @@ func NewService(store Store, executor Executor, optionSet ...ServiceOption) (*Se
 			return nil, ErrInvalidDependencies
 		}
 	}
-	return &Service{store: store, executor: executor, admission: options.admission, requestLease: defaultRequestLease}, nil
+	return &Service{
+		store:                     store,
+		executor:                  executor,
+		admission:                 options.admission,
+		teamArtifactContentReader: options.teamArtifactContentReader,
+		requestLease:              defaultRequestLease,
+	}, nil
 }
 
 func (service *Service) LoadRuntimeConfig(ctx context.Context, ownerID string) (runtimeapi.RuntimeConfig, error) {

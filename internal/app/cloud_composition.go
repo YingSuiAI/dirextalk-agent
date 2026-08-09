@@ -37,6 +37,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/pairingworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
+	"github.com/YingSuiAI/dirextalk-agent/internal/runtimeapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretresolver"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
@@ -74,6 +75,7 @@ type CloudComposition struct {
 	PairingApprovals           *pairing.ApprovalService
 	PairingWorkerOperations    *pairingworker.Service
 	PairingReceiptVerifier     pairingWorkerReceiptVerifier
+	TeamArtifactContents       runtimeapp.TeamArtifactContentReader
 	foundationLaunches         *foundationLaunchCompensator
 	healthProbeScheduler       *healthProbeScheduler
 	orphanRecovery             *orphanRecoveryController
@@ -374,6 +376,14 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		return nil, err
 	}
 	runtimeFactory, err := newAWSResourceRuntimeFactory(agentInstanceID, vault, resourceStore)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	teamArtifactContents, err := newAWSTeamArtifactContentReader(
+		store,
+		runtimeFactory,
+	)
 	if err != nil {
 		vault.Close()
 		return nil, err
@@ -791,6 +801,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		PairingApprovals:           pairingApprovals,
 		PairingWorkerOperations:    pairingWorkerOperations,
 		PairingReceiptVerifier:     pairingWorkerReceiptVerifier{keys: rootHelperStore},
+		TeamArtifactContents:       teamArtifactContents,
 		ManagedPreparation:         managedPreparation,
 		foundationLaunches:         launchCompensator,
 		healthProbeScheduler:       healthProbeScheduler,

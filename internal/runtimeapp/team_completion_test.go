@@ -3,6 +3,7 @@ package runtimeapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,11 @@ func TestSynthesizeTeamCompletionUsesVerifiedFactsAndDurableConversation(t *test
 		},
 		conversationFound: true,
 	}
+	contentReader := &teamArtifactContentReaderFake{
+		contents: map[string][]byte{
+			fixture.artifacts[0].ArtifactID: []byte(strings.Repeat("x", 128)),
+		},
+	}
 	executor := &executorFake{chat: func(
 		_ context.Context,
 		request runtimeapi.ChatRequest,
@@ -57,7 +63,15 @@ func TestSynthesizeTeamCompletionUsesVerifiedFactsAndDurableConversation(t *test
 			observation["source_event_id"] != fixture.event.EventID ||
 			observation["artifact_count"] != float64(1) ||
 			strings.Contains(request.Messages[1].Content, "s3://") ||
-			strings.Contains(request.Messages[1].Content, fixture.ownerID) {
+			strings.Contains(request.Messages[1].Content, fixture.ownerID) ||
+			!strings.Contains(
+				request.Messages[1].Content,
+				`"content_state":"included"`,
+			) ||
+			!strings.Contains(
+				request.Messages[1].Content,
+				`"content":"`+strings.Repeat("x", 128)+`"`,
+			) {
 			t.Fatalf("completion observation = %s", request.Messages[1].Content)
 		}
 		message := modelapi.Message{
@@ -79,7 +93,11 @@ func TestSynthesizeTeamCompletionUsesVerifiedFactsAndDurableConversation(t *test
 			ExpectedConversationRevision: 3,
 		}, nil
 	}}
-	service, err := NewService(store, executor)
+	service, err := NewService(
+		store,
+		executor,
+		WithTeamArtifactContentReader(contentReader),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +115,8 @@ func TestSynthesizeTeamCompletionUsesVerifiedFactsAndDurableConversation(t *test
 		result.Chat.Message.Content !=
 			"The Team finished the analysis. final.json is available." ||
 		result.Chat.ConversationRevision != 4 ||
-		executor.chatCalls.Load() != 1 {
+		executor.chatCalls.Load() != 1 ||
+		contentReader.calls != 1 {
 		t.Fatalf("completion result = %#v", result)
 	}
 	replayed, err := service.SynthesizeTeamCompletion(
@@ -109,7 +128,8 @@ func TestSynthesizeTeamCompletionUsesVerifiedFactsAndDurableConversation(t *test
 	if err != nil ||
 		replayed.Chat.Message.Content != result.Chat.Message.Content ||
 		replayed.Chat.ConversationRevision != result.Chat.ConversationRevision ||
-		executor.chatCalls.Load() != 1 {
+		executor.chatCalls.Load() != 1 ||
+		contentReader.calls != 2 {
 		t.Fatalf(
 			"completion replay = %#v, error=%v, model_calls=%d",
 			replayed,
@@ -298,6 +318,24 @@ type teamCompletionStoreFake struct {
 	artifacts         []teamartifact.ArtifactV1
 	conversation      runtimeapi.Conversation
 	conversationFound bool
+}
+
+type teamArtifactContentReaderFake struct {
+	contents map[string][]byte
+	calls    int
+}
+
+func (reader *teamArtifactContentReaderFake) ReadTeamArtifactContent(
+	_ context.Context,
+	artifact teamartifact.ArtifactV1,
+	maximum int64,
+) ([]byte, error) {
+	reader.calls++
+	content, found := reader.contents[artifact.ArtifactID]
+	if !found || int64(len(content)) != maximum {
+		return nil, errors.New("artifact content unavailable")
+	}
+	return append([]byte(nil), content...), nil
 }
 
 func (store *teamCompletionStoreFake) GetTaskEvent(
