@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
@@ -1029,6 +1030,7 @@ func (c *Controller) finish(ctx context.Context, task coretask.Task, run *contro
 		}
 	}
 	if err = c.cleanup(ctx, task, run, result.Artifacts); err != nil {
+		slog.Warn("[cloud-worker.controller] terminalization_deferred", "stage", "cleanup", "class", controllerErrorClass(err))
 		return c.owned(err)
 	}
 	switch terminal {
@@ -1040,12 +1042,34 @@ func (c *Controller) finish(ctx context.Context, task coretask.Task, run *contro
 		_, _, err = c.store.FailExecution(ctx, task, run.execution.Revision, code, summary)
 	}
 	if err != nil {
+		slog.Warn("[cloud-worker.controller] terminalization_deferred", "stage", "terminal_commit", "class", controllerErrorClass(err))
 		return c.owned(err)
 	}
 	if terminal == StateSucceeded {
 		return c.owned(nil)
 	}
 	return c.owned(fmt.Errorf("%s", code))
+}
+
+func controllerErrorClass(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, ErrLeaseConflict), errors.Is(err, coretask.ErrLeaseConflict), errors.Is(err, control.ErrStaleLease):
+		return "lease_conflict"
+	case errors.Is(err, ErrRevisionConflict), errors.Is(err, coretask.ErrRevisionConflict):
+		return "revision_conflict"
+	case errors.Is(err, ErrConflict), errors.Is(err, coretask.ErrConflict), errors.Is(err, control.ErrConflict):
+		return "conflict"
+	case errors.Is(err, ErrInvalid), errors.Is(err, coretask.ErrInvalid), errors.Is(err, control.ErrInvalid):
+		return "invalid"
+	default:
+		return "dependency_error"
+	}
 }
 
 func terminalReasonCode(terminal ExecutionState, code string) string {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"time"
@@ -1930,17 +1931,21 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
 	}
 	if execution.Revision != expectedRevision || execution.State != cloudworker.StateCleaning || execution.TerminalIntent != string(terminal) {
+		logCloudWorkerTerminalInvariant("execution_state")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrRevisionConflict
 	}
 	if execution.ProviderMutationStarted && !execution.Cleanup.VerifiedDestroyed {
+		logCloudWorkerTerminalInvariant("cleanup_projection")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrConflict
 	}
 	resourceTotal, resourceRemaining, err := lockedCloudWorkerStateCounts(ctx, tx, `SELECT state FROM core_cloud_worker_resources WHERE execution_id=$1 FOR UPDATE`, plan.ExecutionID)
 	if err != nil || resourceTotal != execution.Cleanup.ResourcesTotal || resourceRemaining != 0 {
+		logCloudWorkerTerminalInvariant("resource_cleanup")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrConflict
 	}
 	awsTotal, awsRemaining, err := lockedCloudWorkerStateCounts(ctx, tx, `SELECT state FROM core_cloud_worker_aws_ledger WHERE execution_id=$1 FOR UPDATE`, plan.ExecutionID)
 	if err != nil || awsRemaining != 0 {
+		logCloudWorkerTerminalInvariant("aws_cleanup")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrConflict
 	}
 	if execution.ProviderMutationStarted && awsTotal == 0 {
@@ -1955,6 +1960,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 	// while a provider-started execution requires the complete authorized set.
 	if err != nil || stagedRemaining != 0 || stagedTotal > plan.InputManifestItemCount ||
 		(execution.ProviderMutationStarted && stagedTotal != plan.InputManifestItemCount) {
+		logCloudWorkerTerminalInvariant("input_cleanup")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrConflict
 	}
 	var expectationCount uint64
@@ -1965,6 +1971,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		if terminal == cloudworker.StateSucceeded {
 			var sessionState string
 			if err = tx.QueryRow(ctx, `SELECT state FROM core_cloud_worker_sessions WHERE execution_id=$1 ORDER BY claimed_at DESC LIMIT 1 FOR UPDATE`, plan.ExecutionID).Scan(&sessionState); err != nil || sessionState != "completed" {
+				logCloudWorkerTerminalInvariant("successful_session")
 				return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrConflict
 			}
 		} else {
@@ -1979,6 +1986,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 					AND f.task_id=e.task_id AND f.task_attempt=e.task_attempt AND f.lease_epoch=e.lease_epoch))`,
 				plan.ExecutionID).Scan(&activeSessions, &unfencedSessions, &unfencedCurrentExpectations); err != nil ||
 				activeSessions != 0 || unfencedSessions != 0 || unfencedCurrentExpectations != 0 {
+				logCloudWorkerTerminalInvariant("session_fence")
 				return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrConflict
 			}
 		}
@@ -2043,6 +2051,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		WHERE task_id=$1 AND status='running' AND attempt=$7 AND lease_epoch=$8 AND revision=$9 AND lease_expires_at>$6`,
 		plan.TaskID, taskStatus, taskResult, code, summary, now, currentTask.Attempt, currentTask.LeaseEpoch, currentTask.Revision)
 	if err != nil || update.RowsAffected() != 1 {
+		logCloudWorkerTerminalInvariant("task_fence")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrLeaseConflict
 	}
 	taskEventInsert, insertErr := tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,result_json,error_code,error_summary,occurred_at)
@@ -2056,6 +2065,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 	}
 	concurrencyUpdate, updateErr := tx.Exec(ctx, `UPDATE core_task_runtime_concurrency SET running_count=GREATEST(0,running_count-1),revision=revision+1,updated_at=$1 WHERE singleton=true`, now)
 	if updateErr != nil || concurrencyUpdate.RowsAffected() != 1 {
+		logCloudWorkerTerminalInvariant("task_concurrency")
 		if updateErr != nil {
 			return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, updateErr
 		}
@@ -2064,6 +2074,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 	var confirmation coreconfirmation.Confirmation
 	confirmation, err = scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1 FOR UPDATE`, plan.ConfirmationID))
 	if err != nil {
+		logCloudWorkerTerminalInvariant("confirmation")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrStaleAuthorization
 	}
 	confirmationReferenceRevision := uint64(confirmation.Revision)
@@ -2080,11 +2091,13 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		if err = tx.QueryRow(ctx, `SELECT task_id::text,active FROM core_confirmation_reservations
 			WHERE confirmation_id=$1 FOR UPDATE`, plan.ConfirmationID).Scan(&reservationTaskID, &reservationActive); err != nil ||
 			reservationTaskID != plan.TaskID || !reservationActive {
+			logCloudWorkerTerminalInvariant("confirmation_reservation")
 			return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrStaleAuthorization
 		}
 		reservationUpdate, updateErr := tx.Exec(ctx, `UPDATE core_confirmation_reservations SET active=false
 			WHERE confirmation_id=$1 AND task_id=$2 AND active=true`, plan.ConfirmationID, plan.TaskID)
 		if updateErr != nil || reservationUpdate.RowsAffected() != 1 {
+			logCloudWorkerTerminalInvariant("confirmation_release")
 			if updateErr != nil {
 				return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, updateErr
 			}
@@ -2093,6 +2106,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		confirmationUpdate, updateErr := tx.Exec(ctx, `UPDATE core_confirmations SET consumed_released=true,revision=revision+1,updated_at=$2
 			WHERE confirmation_id=$1 AND state='consumed' AND consumed_released=false AND revision=$3`, plan.ConfirmationID, now, confirmation.Revision)
 		if updateErr != nil || confirmationUpdate.RowsAffected() != 1 {
+			logCloudWorkerTerminalInvariant("confirmation_projection")
 			if updateErr != nil {
 				return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, updateErr
 			}
@@ -2108,12 +2122,14 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 			return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrStaleAuthorization
 		}
 	} else {
+		logCloudWorkerTerminalInvariant("confirmation_state")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrStaleAuthorization
 	}
 
 	var requestID, turnState, profileID string
 	var turnRevision, turnSequence uint64
 	if err = tx.QueryRow(ctx, `SELECT request_id::text,state,profile_id::text,revision,last_sequence FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, plan.TurnID).Scan(&requestID, &turnState, &profileID, &turnRevision, &turnSequence); err != nil || turnState != "waiting_confirmation" {
+		logCloudWorkerTerminalInvariant("conversation_turn")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrConflict
 	}
 	var conversationRevision uint64
@@ -2125,6 +2141,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
 	}
 	if !confirmation.Binding.Equal(binding) {
+		logCloudWorkerTerminalInvariant("confirmation_binding")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrStaleAuthorization
 	}
 	references := cloudWorkerReferences(plan, next, binding, confirmationReferenceRevision, confirmationReferenceState)
@@ -2132,6 +2149,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		Content: summary, ModelProfileID: profileID, RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID},
 		References: references, CreatedAt: now}
 	if resultMessage.Validate() != nil {
+		logCloudWorkerTerminalInvariant("result_message")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrInvalid
 	}
 	var messageSequence int64
@@ -2158,6 +2176,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 	}
 	turnUpdate, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='completed',response_json=$2,revision=revision+1,last_sequence=$3,updated_at=$4 WHERE turn_id=$1 AND state='waiting_confirmation' AND revision=$5`, plan.TurnID, responseRaw, turnEvent.Sequence, now, turnRevision)
 	if err != nil || turnUpdate.RowsAffected() != 1 {
+		logCloudWorkerTerminalInvariant("turn_projection")
 		if err == nil {
 			err = cloudworker.ErrConflict
 		}
@@ -2168,6 +2187,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		TurnID: plan.TurnID, ResultMessageID: resultMessage.ID, TerminalState: string(terminal), CompletedAt: now}
 	outbox.PayloadDigest = cloudworker.CompletionDigest(outbox)
 	if outbox.Validate() != nil {
+		logCloudWorkerTerminalInvariant("completion_outbox")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrInvalid
 	}
 	outboxRaw, _ := json.Marshal(outbox)
@@ -2184,6 +2204,10 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
 	}
 	return next, outbox, nil
+}
+
+func logCloudWorkerTerminalInvariant(stage string) {
+	slog.Warn("[cloud-worker.store] terminal_invariant_deferred", "stage", stage)
 }
 
 func scanCloudWorkerCompletionOutbox(row cloudWorkerRowScanner) (cloudworker.CompletionOutbox, error) {
