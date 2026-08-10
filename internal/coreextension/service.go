@@ -161,21 +161,18 @@ func (s *service) prepareMutation(ctx context.Context, m Mutation) (Mutation, Ar
 	if e != nil {
 		return m, ArtifactReceipt{}, e
 	}
-	in, e := a.Inspect(ctx, InspectRequest{Kind: m.Candidate.Kind, Source: m.Candidate.Source, ID: m.Candidate.ID, Pin: m.Candidate.Pin})
-	if e != nil {
-		return m, ArtifactReceipt{}, e
-	}
-	if in.Validate() != nil || !equalInspection(m.Inspection, in) {
-		return m, ArtifactReceipt{}, ErrConflict
-	}
-	f, e := a.Fetch(ctx, in.Candidate)
+	// Fetch returns the source adapter's authoritative inspection and immutable
+	// bytes in one read. Comparing that snapshot directly with the owner-reviewed
+	// inspection preserves the drift fence without downloading the same pinned
+	// source once for Inspect and again for Fetch.
+	f, e := a.Fetch(ctx, m.Candidate)
 	if e != nil {
 		return m, ArtifactReceipt{}, e
 	}
 	if e = f.Validate(); e != nil {
 		return m, ArtifactReceipt{}, ErrConflict
 	}
-	if !equalCandidate(f.Candidate, in.Candidate) || !equalInspection(f.Inspection, in) || f.ContentDigest != in.ContentDigest {
+	if !equalCandidate(f.Candidate, m.Candidate) || !equalInspection(f.Inspection, m.Inspection) || f.ContentDigest != m.Inspection.ContentDigest {
 		return m, ArtifactReceipt{}, ErrConflict
 	}
 	receipt, e := s.artifacts.Materialize(ctx, f)
@@ -187,8 +184,8 @@ func (s *service) prepareMutation(ctx context.Context, m Mutation) (Mutation, Ar
 		return Mutation{}, ArtifactReceipt{}, ErrInvalid
 	}
 	m.ArtifactPath, m.ArtifactDigest = receipt.RelativePath, receipt.ArtifactDigest
-	m.Candidate = in.Candidate
-	m.Inspection = in
+	m.Candidate = f.Candidate
+	m.Inspection = f.Inspection
 	m.Inspection.SecretGrants = bound
 	receipts, e := s.secrets.Bind(ctx, m.SecretInputs)
 	if e != nil {

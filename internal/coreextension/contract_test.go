@@ -470,13 +470,15 @@ func (s *testArtifacts) Materialize(context.Context, FetchArtifact) (ArtifactRec
 func (s *testArtifacts) Remove(context.Context, ArtifactReceipt) error { s.removed++; return nil }
 
 type countedAdapter struct {
-	inspection Inspection
-	artifact   FetchArtifact
-	fetches    int
+	inspection  Inspection
+	artifact    FetchArtifact
+	inspections int
+	fetches     int
 }
 
 func (a *countedAdapter) Search(context.Context, SearchQuery) (Page, error) { return Page{}, nil }
 func (a *countedAdapter) Inspect(context.Context, InspectRequest) (Inspection, error) {
+	a.inspections++
 	return a.inspection, nil
 }
 func (a *countedAdapter) Fetch(context.Context, Candidate) (FetchArtifact, error) {
@@ -616,8 +618,8 @@ func TestPrepareMutationFencesReviewedInspectionBeforeSideEffects(t *testing.T) 
 			if _, err := svc.RequestInstall(context.Background(), mutation()); !errors.Is(err, ErrConflict) {
 				t.Fatalf("drift accepted: %v", err)
 			}
-			if adapter.fetches != 0 || artifacts.materialized != 0 || secrets.binds != 0 || len(r.items) != 0 {
-				t.Fatalf("drift caused side effects: fetch=%d materialize=%d bind=%d items=%d", adapter.fetches, artifacts.materialized, secrets.binds, len(r.items))
+			if adapter.inspections != 0 || adapter.fetches != 1 || artifacts.materialized != 0 || secrets.binds != 0 || len(r.items) != 0 {
+				t.Fatalf("drift fence calls: inspect=%d fetch=%d materialize=%d bind=%d items=%d", adapter.inspections, adapter.fetches, artifacts.materialized, secrets.binds, len(r.items))
 			}
 		})
 	}
@@ -628,8 +630,8 @@ func TestPrepareMutationFencesReviewedInspectionBeforeSideEffects(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if adapter.fetches != 1 || artifacts.materialized != 1 || secrets.binds != 1 || len(r.items) != 1 {
-			t.Fatalf("exact inspection did not complete: fetch=%d materialize=%d bind=%d items=%d", adapter.fetches, artifacts.materialized, secrets.binds, len(r.items))
+		if adapter.inspections != 0 || adapter.fetches != 1 || artifacts.materialized != 1 || secrets.binds != 1 || len(r.items) != 1 {
+			t.Fatalf("exact inspection did not complete: inspect=%d fetch=%d materialize=%d bind=%d items=%d", adapter.inspections, adapter.fetches, artifacts.materialized, secrets.binds, len(r.items))
 		}
 		got, err := r.Get(context.Background(), res.Installation.ID)
 		if err != nil || len(got.Versions) != 1 || len(got.Versions[0].SecretGrants) != 2 {
@@ -714,8 +716,8 @@ func TestPrepareMutationFencesReviewedInspectionBeforeSideEffects(t *testing.T) 
 			if _, err := svc.RequestInstall(context.Background(), mutation()); !errors.Is(err, ErrConflict) {
 				t.Fatalf("order accepted: %v", err)
 			}
-			if adapter.fetches != 0 || artifacts.materialized != 0 || secrets.binds != 0 || len(r.items) != 0 {
-				t.Fatal("order drift side effects")
+			if adapter.inspections != 0 || adapter.fetches != 1 || artifacts.materialized != 0 || secrets.binds != 0 || len(r.items) != 0 {
+				t.Fatalf("order drift fence calls: inspect=%d fetch=%d materialize=%d bind=%d items=%d", adapter.inspections, adapter.fetches, artifacts.materialized, secrets.binds, len(r.items))
 			}
 		})
 	}
