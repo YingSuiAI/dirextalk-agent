@@ -31,14 +31,15 @@ var (
 	// execution verb to the Cloud target. Independent keywords elsewhere in the
 	// prompt are deliberately insufficient.
 	englishCloudExecutionCommand = regexp.MustCompile(
-		`(?:^|[.!?;\n]\s*)(?:(?:please|kindly)\s+|(?:can|could)\s+you\s+(?:please\s+)?|i\s+(?:want|need)\s+you\s+to\s+)?(?:` +
+		`(?:^|[.!?;\n]\s*)(?:(?:please|kindly)\s+|(?:can|could)\s+you\s+(?:please\s+)?|i\s+(?:want|need)\s+you\s+to\s+)?(?:explicitly\s+)?(?:` +
 			`(?:run|execute|process|offload|launch)\s+[^.!?;\r\n]{1,160}?\s+(?:on|in|using|with|to)\s+(?:an?\s+|the\s+)?` + englishCloudTarget + `\b|` +
 			`(?:use|start|launch)\s+(?:an?\s+|the\s+)?` + englishCloudTarget + `\s+(?:to\s+)?(?:run|execute|process|edit|build|analy[sz]e|handle|explain)\b)`)
 	chineseCloudExecutionCommand = regexp.MustCompile(
-		`(?:^|[。！？；\n]\s*)(?:请(?:你)?|麻烦(?:你)?|我要你|需要你)?\s*(?:` +
+		`(?:^|[。！？；\n]\s*)(?:请(?:你)?|麻烦(?:你)?|我要你|需要你)?\s*(?:(?:明确|务必|必须)\s*)?(?:` +
 			`(?:在|到|用|使用|通过|交给)\s*` + chineseCloudTarget + `(?:上|中)?\s*(?:执行|运行|处理|启动)|` +
 			`(?:把|将)[^。！？；\r\n]{1,96}?(?:交给|放到|放在|提交到)\s*` + chineseCloudTarget + `(?:上|中)?\s*(?:执行|运行|处理)|` +
 			`(?:让|启动)\s*` + chineseCloudTarget + `\s*(?:来|去)?\s*(?:执行|运行|处理))`)
+	cloudIntentClauseBoundary = regexp.MustCompile(`[.!?;\n。！？；,，]+`)
 
 	englishCloudNegation = regexp.MustCompile(
 		`(?:\b(?:do\s+not|don't|never|without|no)\b[^.!?;\r\n]{0,120}\b(?:aws|ec2|cloud)\b|\b(?:aws|ec2|cloud)\b[^.!?;\r\n]{0,120}\b(?:not|never|without)\b)`)
@@ -55,6 +56,11 @@ var (
 	chineseLocalExecution   = regexp.MustCompile(
 		`(?:(?:在|用|使用)?(?:本机|本地|当前机器|当前电脑)(?:上|中)?[^。！？；，,\r\n]{0,16}(?:执行|运行|处理)|` +
 			`(?:执行|运行|处理)[^。！？；，,\r\n]{0,16}(?:在|用|使用)(?:本机|本地|当前机器|当前电脑)(?:上|中)?)`)
+	englishLocalExecutionNegation = regexp.MustCompile(
+		`\b(?:do\s+not|don't|never)\s+(?:run|execute|process|handle)\s+(?:locally|on\s+(?:(?:my|this|the)\s+)?(?:machine|computer|device)|in\s+(?:the\s+)?local\s+sandbox)\b`)
+	chineseLocalExecutionNegation = regexp.MustCompile(
+		`(?:(?:不要|不用|禁止|别|不可|不能)\s*(?:在|用|使用)?\s*(?:本机|本地|当前机器|当前电脑)(?:上|中)?\s*(?:执行|运行|处理)|` +
+			`(?:不要|不用|禁止|别|不可|不能)\s*(?:执行|运行|处理)\s*(?:在|用|使用)?\s*(?:本机|本地|当前机器|当前电脑)(?:上|中)?)`)
 )
 
 // IntrinsicOwnerContext is resolved from Agent-owned account metadata. It is
@@ -315,25 +321,51 @@ func turnAllowsAttachments(turn coreconversation.Turn, selected []string) bool {
 }
 
 func hasExplicitCloudIntent(prompt string) bool {
-	value := strings.ToLower(strings.TrimSpace(prompt))
-	if value == "" {
-		return false
-	}
-	if englishCloudNegation.MatchString(value) || englishCloudConditional.MatchString(value) ||
-		englishCloudComparison.MatchString(value) || englishLocalExecution.MatchString(value) ||
-		chineseCloudNegation.MatchString(value) || chineseCloudConditional.MatchString(value) ||
-		chineseCloudComparison.MatchString(value) || chineseLocalExecution.MatchString(value) {
-		return false
-	}
-	return englishCloudExecutionCommand.MatchString(value) || chineseCloudExecutionCommand.MatchString(value)
+	explicit, veto := assessCloudIntent(prompt)
+	return explicit && !veto
 }
 
 func hasCloudExecutionVeto(prompt string) bool {
+	_, veto := assessCloudIntent(prompt)
+	return veto
+}
+
+// assessCloudIntent keeps negation scope inside one punctuation-delimited
+// clause. A directive such as "do not run locally; run this on AWS" is a
+// positive cloud authorization, while any actual cloud negation, conditional,
+// comparison, or conflicting positive local command still fails closed.
+func assessCloudIntent(prompt string) (explicit bool, veto bool) {
 	value := strings.ToLower(strings.TrimSpace(prompt))
-	return value == "" || englishCloudNegation.MatchString(value) || englishCloudConditional.MatchString(value) ||
-		englishCloudComparison.MatchString(value) || englishLocalExecution.MatchString(value) ||
-		chineseCloudNegation.MatchString(value) || chineseCloudConditional.MatchString(value) ||
-		chineseCloudComparison.MatchString(value) || chineseLocalExecution.MatchString(value)
+	if value == "" {
+		return false, true
+	}
+	if englishCloudConditional.MatchString(value) || englishCloudComparison.MatchString(value) ||
+		chineseCloudConditional.MatchString(value) || chineseCloudComparison.MatchString(value) {
+		return false, true
+	}
+	for _, clause := range cloudIntentClauseBoundary.Split(value, -1) {
+		clause = strings.TrimSpace(clause)
+		if clause == "" {
+			continue
+		}
+		// A negative local directive is not itself paid-cloud authority, but it
+		// must not be reinterpreted as either a positive local command or a
+		// cloud negation spanning into the next clause.
+		clause = englishLocalExecutionNegation.ReplaceAllString(clause, " ")
+		clause = chineseLocalExecutionNegation.ReplaceAllString(clause, " ")
+		clause = strings.TrimSpace(clause)
+		if clause == "" {
+			continue
+		}
+		if englishCloudNegation.MatchString(clause) || chineseCloudNegation.MatchString(clause) ||
+			englishLocalExecution.MatchString(clause) || chineseLocalExecution.MatchString(clause) {
+			return false, true
+		}
+		if englishCloudExecutionCommand.MatchString(clause) || chineseCloudExecutionCommand.MatchString(clause) {
+			explicit = true
+		}
+	}
+	return explicit, false
 }
 
 var _ coreconversation.IntrinsicResolver = (*ProposeIntrinsic)(nil)

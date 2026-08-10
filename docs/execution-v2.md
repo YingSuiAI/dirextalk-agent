@@ -49,6 +49,12 @@ A model assertion and a local execution failure are not budget evidence. A
 local failure never silently upgrades to paid cloud execution, and a cloud
 failure never falls back to a hidden local rerun.
 
+Cloud intent is evaluated by punctuation-delimited command clause. A negative
+local directive paired with an independent explicit cloud command (for
+example, “do not run locally; run this task on AWS”) is valid explicit cloud
+authorization. An actual cloud negation, conditional, comparison, or
+conflicting positive local command remains a fail-closed veto.
+
 The cloud recipe and adapter are fixed:
 
 ```text

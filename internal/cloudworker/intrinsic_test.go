@@ -210,6 +210,10 @@ func TestExplicitCloudIntentIsDeterministicAndNegationWins(t *testing.T) {
 		{name: "cloud command with how objective", prompt: "Run an analysis of how this code works on AWS.", want: true},
 		{name: "cloud command with chinese how objective", prompt: "请在 AWS 云端执行，分析如何修复这个问题。", want: true},
 		{name: "cloud command about local issue", prompt: "请在 AWS 云端处理本地出现的错误。", want: true},
+		{name: "explicit chinese cloud command with local veto", prompt: "请明确使用 AWS Cloud Worker 执行这个任务，不要在本地执行。", want: true},
+		{name: "chinese local veto before cloud command", prompt: "不要在本地执行；请使用 AWS Cloud Worker 执行这个任务。", want: true},
+		{name: "english local veto before cloud command", prompt: "Do not run locally; run this task on AWS.", want: true},
+		{name: "english explicit worker command", prompt: "Explicitly use an AWS cloud worker to execute this task.", want: true},
 
 		{name: "local only", prompt: "本机执行即可"},
 		{name: "chinese cloud negation", prompt: "不要用云端执行"},
@@ -227,8 +231,8 @@ func TestExplicitCloudIntentIsDeterministicAndNegationWins(t *testing.T) {
 		{name: "chinese conditional cloud command", prompt: "如果本机跑不完，就放到 AWS 云端执行。"},
 		{name: "english compare executions", prompt: "Compare local execution with an AWS cloud worker run."},
 		{name: "chinese compare executions", prompt: "对比本机执行和 AWS 云端执行。"},
-		{name: "negated local then cloud command", prompt: "Do not run locally; run this task on AWS."},
 		{name: "conditional separate command sentence", prompt: "If capacity is low. Run this task on AWS."},
+		{name: "conflicting local and cloud commands", prompt: "Run this locally; run this task on AWS."},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -239,8 +243,29 @@ func TestExplicitCloudIntentIsDeterministicAndNegationWins(t *testing.T) {
 	}
 }
 
+func TestCloudExecutionVetoPreservesNegationScope(t *testing.T) {
+	for _, prompt := range []string{
+		"请明确使用 AWS Cloud Worker 执行这个任务，不要在本地执行。",
+		"Do not run locally; run this task on AWS.",
+	} {
+		if hasCloudExecutionVeto(prompt) {
+			t.Fatalf("legitimate cloud authorization was vetoed: %q", prompt)
+		}
+	}
+	for _, prompt := range []string{
+		"不要用云端执行，只在本机运行。",
+		"Do not run this task on AWS; run it locally.",
+		"如果本机跑不完，就放到 AWS 云端执行。",
+		"Run this locally; run this task on AWS.",
+	} {
+		if !hasCloudExecutionVeto(prompt) {
+			t.Fatalf("ambiguous or negative cloud request was not vetoed: %q", prompt)
+		}
+	}
+}
+
 func TestIntrinsicIsCoreOwnedStrictAndBindsDurableTurn(t *testing.T) {
-	intrinsic, store, lease := intrinsicFixture(t, "请在 AWS 云端执行这项任务", nil, nil)
+	intrinsic, store, lease := intrinsicFixture(t, "请明确使用 AWS Cloud Worker 执行这个任务，不要在本地执行。", nil, nil)
 	callID := "call-1"
 	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "analyze the repository", "workspace_mode": "none"}, callID); err != nil {
 		t.Fatal(err)
