@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -72,11 +73,13 @@ func (validator *ResultValidator) Collect(
 	}
 	reader, err := validator.readers.ReaderForResult(ctx, plan, execution, authorization)
 	if err != nil || reader == nil {
+		logResultCollectionFailure("reader", plan, session, err)
 		return ProviderResult{}, errors.Join(ErrInvalid, err)
 	}
 	scope := cloudresult.Scope{Bucket: plan.ArtifactGrant.Bucket, KeyPrefix: plan.ArtifactGrant.KeyPrefix}
 	collector, err := cloudresult.NewCollector(reader, scope)
 	if err != nil {
+		logResultCollectionFailure("collector_initialize", plan, session, err)
 		return ProviderResult{}, ErrInvalid
 	}
 	claim := cloudresult.ObjectClaim{
@@ -92,13 +95,16 @@ func (validator *ResultValidator) Collect(
 	}
 	collected, err := collector.Collect(ctx, claim, expectation)
 	if err != nil {
+		logResultCollectionFailure("object_verification", plan, session, err)
 		return ProviderResult{}, err
 	}
 	defer collected.Destroy()
 	if err := validateCollectedLimits(plan, material, collected); err != nil {
+		logResultCollectionFailure("limits", plan, session, err)
 		return ProviderResult{}, err
 	}
 	if err := validateCentralResultText(plan, collected.Final); err != nil {
+		logResultCollectionFailure("public_text", plan, session, err)
 		return ProviderResult{}, err
 	}
 
@@ -153,7 +159,7 @@ func validateCollectedLimits(
 	usage := collected.Manifest.Usage
 	if usage.Validate() != nil || usage.OutputTokens < 0 || usage.ReasoningOutputTokens < 0 ||
 		uint64(usage.OutputTokens) > plan.Limits.MaxTokens ||
-		uint64(usage.ReasoningOutputTokens) > plan.Limits.MaxTokens-uint64(usage.OutputTokens) {
+		usage.ReasoningOutputTokens > usage.OutputTokens {
 		return ErrInvalid
 	}
 	var total uint64
@@ -181,6 +187,25 @@ func validateCollectedLimits(
 		return ErrInvalid
 	}
 	return nil
+}
+
+func logResultCollectionFailure(phase string, plan Plan, session control.Session, err error) {
+	class := "unknown"
+	switch {
+	case errors.Is(err, cloudresult.ErrUnavailable):
+		class = "unavailable"
+	case errors.Is(err, ErrStaleAuthorization):
+		class = "stale_authorization"
+	case errors.Is(err, cloudresult.ErrInvalid), errors.Is(err, ErrInvalid):
+		class = "invalid"
+	case err == nil:
+		class = "missing_dependency"
+	}
+	slog.Warn("[cloud-worker.result] collection_failed",
+		"phase", phase, "class", class,
+		"execution_id", plan.ExecutionID, "task_id", plan.TaskID,
+		"session_id", session.SessionID, "task_attempt", session.Fence.Attempt,
+		"lease_epoch", session.Fence.LeaseEpoch)
 }
 
 func validateCentralResultText(plan Plan, final cloudruntime.PiFinalV1) error {

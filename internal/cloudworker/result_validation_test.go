@@ -80,6 +80,40 @@ func TestValidateCollectedLimitsRequiresInputBoundWorkspaceDelta(t *testing.T) {
 	}
 }
 
+func TestValidateCollectedLimitsTreatsReasoningAsOutputSubset(t *testing.T) {
+	t.Parallel()
+	plan := Plan{
+		WorkspaceMode: WorkspaceNone,
+		Limits: Limits{
+			MaxTokens:      4096,
+			MaxOutputBytes: 64 << 10,
+		},
+	}
+	material := RuntimeTaskMaterial{InputManifestSHA256: digestValue("runtime-input-manifest")}
+	collected := cloudresult.Collected{
+		Manifest: cloudresult.Manifest{
+			Usage: cloudruntime.Usage{
+				OutputTokens:          4096,
+				ReasoningOutputTokens: 3072,
+			},
+		},
+		Artifacts: []cloudresult.CollectedArtifact{{
+			Claim: cloudresult.ObjectClaim{
+				Name: "final.json", SizeBytes: 2, MediaType: "application/json",
+			},
+			Content: []byte("{}"),
+		}},
+	}
+	if err := validateCollectedLimits(plan, material, collected); err != nil {
+		t.Fatalf("reasoning included in output tokens was double-counted: %v", err)
+	}
+
+	collected.Manifest.Usage.ReasoningOutputTokens = 4097
+	if err := validateCollectedLimits(plan, material, collected); err == nil {
+		t.Fatal("reasoning tokens greater than total output tokens were accepted")
+	}
+}
+
 func TestResultCollectionUsesCurrentSessionFenceAfterLeaseReclaim(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	plan, execution, prerequisite, sourceRead := stagingFixture(t, now)
