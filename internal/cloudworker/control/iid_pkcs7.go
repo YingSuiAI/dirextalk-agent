@@ -171,15 +171,41 @@ func verifyAWSDSASigner(signed *pkcs7.PKCS7, certificate *x509.Certificate) erro
 	defer clear(encodedSigner)
 	var signer awsIIDSignerInfo
 	rest, err := asn1.Unmarshal(encodedSigner, &signer)
-	if err != nil || len(rest) != 0 || signer.Version != 1 ||
-		signer.IssuerAndSerialNumber.SerialNumber == nil ||
-		signer.IssuerAndSerialNumber.SerialNumber.Cmp(certificate.SerialNumber) != 0 ||
-		!bytes.Equal(signer.IssuerAndSerialNumber.IssuerName.FullBytes, certificate.RawIssuer) ||
-		!signer.DigestAlgorithm.Algorithm.Equal(oidSHA1) ||
-		!(signer.DigestEncryptionAlgorithm.Algorithm.Equal(oidDSA) ||
-			signer.DigestEncryptionAlgorithm.Algorithm.Equal(oidDSAWithSHA1)) ||
-		len(signer.AuthenticatedAttributes) != 3 || len(signer.UnauthenticatedAttributes) != 0 {
-		logIIDRejected("dsa_signer_contract")
+	if err != nil || len(rest) != 0 {
+		logIIDRejected("dsa_signer_decode")
+		return ErrIdentityRejected
+	}
+	if signer.Version != 1 {
+		logIIDRejected("dsa_signer_version")
+		return ErrIdentityRejected
+	}
+	if signer.IssuerAndSerialNumber.SerialNumber == nil ||
+		signer.IssuerAndSerialNumber.SerialNumber.Cmp(certificate.SerialNumber) != 0 {
+		logIIDRejected("dsa_signer_serial")
+		return ErrIdentityRejected
+	}
+	if !bytes.Equal(signer.IssuerAndSerialNumber.IssuerName.FullBytes, certificate.RawIssuer) {
+		logIIDRejected("dsa_signer_issuer")
+		return ErrIdentityRejected
+	}
+	if !signer.DigestAlgorithm.Algorithm.Equal(oidSHA1) {
+		logIIDRejected("dsa_digest_algorithm")
+		return ErrIdentityRejected
+	}
+	if !signer.DigestEncryptionAlgorithm.Algorithm.Equal(oidDSA) &&
+		!signer.DigestEncryptionAlgorithm.Algorithm.Equal(oidDSAWithSHA1) {
+		logIIDRejected("dsa_signature_algorithm")
+		return ErrIdentityRejected
+	}
+	// Required signed attributes are validated for exact presence and
+	// uniqueness below. Additional authenticated attributes are covered by the
+	// same DSA signature and are not an identity ambiguity.
+	if len(signer.AuthenticatedAttributes) < 3 {
+		logIIDRejected("dsa_authenticated_attributes")
+		return ErrIdentityRejected
+	}
+	if len(signer.UnauthenticatedAttributes) != 0 {
+		logIIDRejected("dsa_unauthenticated_attributes")
 		return ErrIdentityRejected
 	}
 	var contentType asn1.ObjectIdentifier
