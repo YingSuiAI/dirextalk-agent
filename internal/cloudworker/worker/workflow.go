@@ -115,12 +115,15 @@ func (workflow *Workflow) Run(ctx context.Context) error {
 
 	runCtx, cancelRun := context.WithDeadline(ctx, claimed.NotAfter)
 	defer cancelRun()
+	if heartbeatErr := workflow.heartbeatOnce(runCtx, claimed, 1); heartbeatErr != nil {
+		return heartbeatTerminalError(heartbeatErr, runCtx.Err())
+	}
 	heartbeatCtx, stopHeartbeat := context.WithCancel(runCtx)
 	heartbeatFailure := make(chan error, 1)
 	heartbeatDone := make(chan struct{})
 	go func() {
 		defer close(heartbeatDone)
-		heartbeatFailure <- workflow.heartbeatLoop(heartbeatCtx, cancelRun, claimed)
+		heartbeatFailure <- workflow.heartbeatLoop(heartbeatCtx, cancelRun, claimed, 1)
 	}()
 	stopAndReadHeartbeat := func() error {
 		stopHeartbeat()
@@ -135,19 +138,25 @@ func (workflow *Workflow) Run(ctx context.Context) error {
 			heartbeatErr := stopAndReadHeartbeat()
 			return heartbeatTerminalError(heartbeatErr, runCtx.Err())
 		}
+		identityErr := workflow.checkIdentity(runCtx)
 		heartbeatErr := stopAndReadHeartbeat()
 		if heartbeatErr != nil && !errors.Is(heartbeatErr, context.Canceled) {
 			return heartbeatTerminalError(heartbeatErr, runCtx.Err())
 		}
-		failureCode := runtimeFailureCode(runErr)
-		if identityErr := workflow.checkIdentity(runCtx); identityErr != nil {
+		if identityErr != nil {
 			return identityErr
 		}
-		failErr := workflow.control.Fail(runCtx, FailRequest{
+		if runCtx.Err() != nil {
+			return heartbeatTerminalError(heartbeatErr, runCtx.Err())
+		}
+		failureCode := runtimeFailureCode(runErr)
+		terminalCtx, cancelTerminal := context.WithTimeout(runCtx, claimed.HeartbeatInterval)
+		failErr := workflow.control.Fail(terminalCtx, FailRequest{
 			Fence: binding.Fence(), SessionID: claimed.SessionID,
 			SessionToken: claimed.SessionToken, Code: failureCode,
 			IdempotencyKey: uuid.NewString(),
 		})
+		cancelTerminal()
 		if failErr != nil {
 			return controlError(failErr)
 		}
@@ -177,18 +186,24 @@ func (workflow *Workflow) Run(ctx context.Context) error {
 		heartbeatErr := stopAndReadHeartbeat()
 		return heartbeatTerminalError(heartbeatErr, runCtx.Err())
 	}
+	identityErr := workflow.checkIdentity(runCtx)
 	heartbeatErr := stopAndReadHeartbeat()
 	if heartbeatErr != nil && !errors.Is(heartbeatErr, context.Canceled) {
 		return heartbeatTerminalError(heartbeatErr, runCtx.Err())
 	}
-	if err := workflow.checkIdentity(runCtx); err != nil {
-		return err
+	if identityErr != nil {
+		return identityErr
 	}
-	err = workflow.control.Complete(runCtx, CompleteRequest{
+	if runCtx.Err() != nil {
+		return heartbeatTerminalError(heartbeatErr, runCtx.Err())
+	}
+	terminalCtx, cancelTerminal := context.WithTimeout(runCtx, claimed.HeartbeatInterval)
+	err = workflow.control.Complete(terminalCtx, CompleteRequest{
 		Fence: binding.Fence(), SessionID: claimed.SessionID,
 		SessionToken: claimed.SessionToken, ManifestClaim: manifestClaim, RuntimeTopology: topology,
 		IdempotencyKey: uuid.NewString(),
 	})
+	cancelTerminal()
 	if err != nil {
 		return controlError(err)
 	}
@@ -293,63 +308,68 @@ func (workflow *Workflow) heartbeatLoop(
 	ctx context.Context,
 	cancelRun context.CancelFunc,
 	claimed ClaimedTask,
+	sequence uint64,
 ) error {
 	ticker := time.NewTicker(claimed.HeartbeatInterval)
 	defer ticker.Stop()
-	sequence := uint64(0)
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if !workflow.now().Before(claimed.NotAfter) {
-				cancelRun()
-				return ErrExpired
-			}
-			if err := workflow.checkIdentity(ctx); err != nil {
+			sequence++
+			if err := workflow.heartbeatOnce(ctx, claimed, sequence); err != nil {
+				if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+					return err
+				}
 				cancelRun()
 				return err
 			}
-			sequence++
-			response, err := workflow.control.Heartbeat(
-				ctx, claimed.Binding.Fence(), claimed.SessionID,
-				claimed.SessionToken, sequence, uuid.NewString(),
-			)
-			if err != nil {
-				// A successful run stops the heartbeat context while an RPC may
-				// still be in flight. In that narrow case, transports can report
-				// either their context error or the equivalent Worker-domain
-				// cancellation/expiry. Preserve the context result so the normal
-				// shutdown path can ignore it. The same errors while ctx is still
-				// active remain authoritative and cancel the run below.
-				if ctx.Err() != nil && stoppedHeartbeatError(err) {
-					return ctx.Err()
-				}
-				cancelRun()
-				return controlError(err)
-			}
-			if response.Sequence != sequence || response.NotAfter.IsZero() ||
-				response.NotAfter.After(claimed.NotAfter) {
-				cancelRun()
-				return ErrInvalid
-			}
-			switch response.State {
-			case LeaseActive:
-				if !workflow.now().Before(response.NotAfter) {
-					cancelRun()
-					return ErrExpired
-				}
-			case LeaseCanceled:
-				cancelRun()
-				return ErrCanceled
-			case LeaseExpired:
-				cancelRun()
-				return ErrExpired
-			default:
-				cancelRun()
-				return ErrInvalid
-			}
 		}
+	}
+}
+
+func (workflow *Workflow) heartbeatOnce(
+	ctx context.Context,
+	claimed ClaimedTask,
+	sequence uint64,
+) error {
+	heartbeatCtx, cancelHeartbeat := context.WithTimeout(ctx, claimed.HeartbeatInterval)
+	defer cancelHeartbeat()
+	if !workflow.now().Before(claimed.NotAfter) {
+		return ErrExpired
+	}
+	if err := workflow.checkIdentity(heartbeatCtx); err != nil {
+		return err
+	}
+	response, err := workflow.control.Heartbeat(
+		heartbeatCtx, claimed.Binding.Fence(), claimed.SessionID,
+		claimed.SessionToken, sequence, uuid.NewString(),
+	)
+	if err != nil {
+		// A successful run stops the heartbeat context while an RPC may still
+		// be in flight. Preserve that local stop; active failures stay authoritative.
+		if ctx.Err() != nil && stoppedHeartbeatError(err) {
+			return ctx.Err()
+		}
+		return controlError(err)
+	}
+	if response.Sequence != sequence || response.NotAfter.IsZero() ||
+		response.NotAfter.After(claimed.NotAfter) {
+		return ErrInvalid
+	}
+	switch response.State {
+	case LeaseActive:
+		if !workflow.now().Before(response.NotAfter) {
+			return ErrExpired
+		}
+		return nil
+	case LeaseCanceled:
+		return ErrCanceled
+	case LeaseExpired:
+		return ErrExpired
+	default:
+		return ErrInvalid
 	}
 }
 
@@ -364,6 +384,9 @@ func (workflow *Workflow) revalidateIdentity(ctx context.Context) (InstanceIdent
 	identity, err := workflow.identity.ReadIdentity(ctx)
 	if err != nil {
 		identity.Destroy()
+		if ctx.Err() != nil {
+			return InstanceIdentity{}, ctx.Err()
+		}
 		return InstanceIdentity{}, ErrUnavailable
 	}
 	if identity.AccountID != workflow.bootstrap.AccountID ||

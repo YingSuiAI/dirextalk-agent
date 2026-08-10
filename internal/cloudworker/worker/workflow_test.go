@@ -53,6 +53,70 @@ func TestWorkflowRetriesOnlyNotReadyBeforeClaim(t *testing.T) {
 	}
 }
 
+func TestWorkflowHeartbeatsImmediatelyBeforeInstantExecution(t *testing.T) {
+	fixture := newWorkflowRetryFixture(t)
+	fixture.executor.beforeReturn = func(context.Context) {
+		if sequences := fixture.control.heartbeatSnapshot(); len(sequences) != 1 || sequences[0] != 1 {
+			t.Fatalf("heartbeat sequences before execution return=%v, want [1]", sequences)
+		}
+	}
+	if err := fixture.workflow.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if sequences := fixture.control.heartbeatSnapshot(); len(sequences) != 1 || sequences[0] != 1 {
+		t.Fatalf("heartbeat sequences=%v, want [1]", sequences)
+	}
+}
+
+func TestWorkflowBoundsBlockedInitialHeartbeat(t *testing.T) {
+	fixture := newWorkflowRetryFixture(t)
+	fixture.control.claimed.HeartbeatInterval = 100 * time.Millisecond
+	fixture.control.heartbeatWaitForContext = true
+
+	err := fixture.workflow.Run(t.Context())
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Run() error=%v, want ErrUnavailable", err)
+	}
+	if fixture.executor.runCount != 0 || fixture.control.heartbeatCount != 1 {
+		t.Fatalf("executor/heartbeat=%d/%d, want 0/1", fixture.executor.runCount, fixture.control.heartbeatCount)
+	}
+}
+
+func TestWorkflowBoundsBlockedCompleteAfterFreshHeartbeat(t *testing.T) {
+	fixture := newWorkflowRetryFixture(t)
+	fixture.control.claimed.HeartbeatInterval = 100 * time.Millisecond
+	fixture.control.completeWaitForContext = true
+
+	err := fixture.workflow.Run(t.Context())
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Run() error=%v, want ErrUnavailable", err)
+	}
+	if fixture.control.completeCount != 1 || fixture.control.failCount != 0 {
+		t.Fatalf("complete/fail=%d/%d, want 1/0", fixture.control.completeCount, fixture.control.failCount)
+	}
+	if sequences := fixture.control.heartbeatSnapshot(); len(sequences) == 0 || sequences[0] != 1 {
+		t.Fatalf("heartbeat sequences=%v, want initial sequence 1", sequences)
+	}
+}
+
+func TestWorkflowBoundsBlockedFailAfterFreshHeartbeat(t *testing.T) {
+	fixture := newWorkflowRetryFixture(t)
+	fixture.control.claimed.HeartbeatInterval = 100 * time.Millisecond
+	fixture.control.failWaitForContext = true
+	fixture.executor.runError = cloudruntime.ErrExecution
+
+	err := fixture.workflow.Run(t.Context())
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Run() error=%v, want ErrUnavailable", err)
+	}
+	if fixture.control.completeCount != 0 || fixture.control.failCount != 1 {
+		t.Fatalf("complete/fail=%d/%d, want 0/1", fixture.control.completeCount, fixture.control.failCount)
+	}
+	if sequences := fixture.control.heartbeatSnapshot(); len(sequences) == 0 || sequences[0] != 1 {
+		t.Fatalf("heartbeat sequences=%v, want initial sequence 1", sequences)
+	}
+}
+
 func TestWorkflowPermanentNotReadyStopsAtRetryDeadline(t *testing.T) {
 	fixture := newWorkflowRetryFixture(t)
 	fixture.control.alwaysChallengeError = ErrNotReady
@@ -128,6 +192,7 @@ func TestWorkflowIgnoresHeartbeatTerminationOnlyAfterLocalStop(t *testing.T) {
 			fixture.control.heartbeatStarted = make(chan struct{}, 1)
 			fixture.control.heartbeatWaitForContext = true
 			fixture.control.heartbeatError = heartbeatErr
+			fixture.control.heartbeatSuccessesBeforeBehavior = 1
 			fixture.control.claimed.HeartbeatInterval = 100 * time.Millisecond
 			fixture.executor.beforeReturn = func(ctx context.Context) {
 				select {
@@ -142,10 +207,10 @@ func TestWorkflowIgnoresHeartbeatTerminationOnlyAfterLocalStop(t *testing.T) {
 			if err := fixture.workflow.Run(t.Context()); err != nil {
 				t.Fatalf("Run() error = %v", err)
 			}
-			if fixture.control.heartbeatCount != 1 ||
+			if fixture.control.heartbeatCount != 2 ||
 				fixture.uploader.uploadCount != 1 || fixture.control.completeCount != 1 {
 				t.Fatalf(
-					"heartbeat/upload/complete = %d/%d/%d, want 1/1/1",
+					"heartbeat/upload/complete = %d/%d/%d, want 2/1/1",
 					fixture.control.heartbeatCount, fixture.uploader.uploadCount,
 					fixture.control.completeCount,
 				)
@@ -166,6 +231,7 @@ func TestWorkflowDoesNotIgnoreActiveHeartbeatFailure(t *testing.T) {
 			fixture := newWorkflowRetryFixture(t)
 			fixture.control.heartbeatStarted = make(chan struct{}, 1)
 			fixture.control.heartbeatError = heartbeatErr
+			fixture.control.heartbeatSuccessesBeforeBehavior = 1
 			fixture.control.claimed.HeartbeatInterval = 100 * time.Millisecond
 			fixture.executor.beforeReturn = func(ctx context.Context) {
 				<-ctx.Done()
@@ -175,10 +241,10 @@ func TestWorkflowDoesNotIgnoreActiveHeartbeatFailure(t *testing.T) {
 			if err == nil {
 				t.Fatal("Run() unexpectedly ignored an active heartbeat failure")
 			}
-			if fixture.control.heartbeatCount != 1 ||
+			if fixture.control.heartbeatCount != 2 ||
 				fixture.uploader.uploadCount != 0 || fixture.control.completeCount != 0 {
 				t.Fatalf(
-					"heartbeat/upload/complete = %d/%d/%d, want 1/0/0",
+					"heartbeat/upload/complete = %d/%d/%d, want 2/0/0",
 					fixture.control.heartbeatCount, fixture.uploader.uploadCount,
 					fixture.control.completeCount,
 				)
@@ -192,6 +258,7 @@ func TestWorkflowDoesNotIgnoreUnexpectedHeartbeatFailureAfterLocalStop(t *testin
 	fixture.control.heartbeatStarted = make(chan struct{}, 1)
 	fixture.control.heartbeatWaitForContext = true
 	fixture.control.heartbeatError = ErrUnavailable
+	fixture.control.heartbeatSuccessesBeforeBehavior = 1
 	fixture.control.claimed.HeartbeatInterval = 100 * time.Millisecond
 	fixture.executor.beforeReturn = func(ctx context.Context) {
 		select {
@@ -207,10 +274,10 @@ func TestWorkflowDoesNotIgnoreUnexpectedHeartbeatFailureAfterLocalStop(t *testin
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("Run() error = %v, want ErrUnavailable", err)
 	}
-	if fixture.control.heartbeatCount != 1 ||
+	if fixture.control.heartbeatCount != 2 ||
 		fixture.uploader.uploadCount != 1 || fixture.control.completeCount != 0 {
 		t.Fatalf(
-			"heartbeat/upload/complete = %d/%d/%d, want 1/1/0",
+			"heartbeat/upload/complete = %d/%d/%d, want 2/1/0",
 			fixture.control.heartbeatCount, fixture.uploader.uploadCount,
 			fixture.control.completeCount,
 		)
@@ -239,6 +306,9 @@ func TestWorkflowConsumesGRPCHeartbeatDeadlineOnlyAfterLocalStop(t *testing.T) {
 			if err != nil {
 				t.Fatalf("newGRPCControlClient() error = %v", err)
 			}
+			client.sessionID = fixture.control.claimed.SessionID
+			client.fence = fixture.control.claimed.Binding.Fence()
+			client.notAfter = fixture.control.claimed.NotAfter
 			fixture.workflow.control = &workflowGRPCHeartbeatControl{
 				workflowRetryControl: fixture.control,
 				grpc:                 client,
@@ -266,9 +336,9 @@ func TestWorkflowConsumesGRPCHeartbeatDeadlineOnlyAfterLocalStop(t *testing.T) {
 			if !test.waitForLocalStop && !errors.Is(runErr, ErrUnavailable) {
 				t.Fatalf("Run() active deadline error = %v, want ErrUnavailable", runErr)
 			}
-			if rpc.callCount() != 1 || fixture.control.completeCount != test.wantComplete {
+			if rpc.callCount() != 2 || fixture.control.completeCount != test.wantComplete {
 				t.Fatalf(
-					"heartbeat/complete = %d/%d, want 1/%d",
+					"heartbeat/complete = %d/%d, want 2/%d",
 					rpc.callCount(), fixture.control.completeCount, test.wantComplete,
 				)
 			}
@@ -484,21 +554,26 @@ func (workflowRetryProofs) Generate(
 }
 
 type workflowRetryControl struct {
-	mu                      sync.Mutex
-	identity                *workflowRetryIdentity
-	challenge               Challenge
-	claimed                 ClaimedTask
-	challengeErrors         []error
-	alwaysChallengeError    error
-	onChallenge             func()
-	requests                []ChallengeRequest
-	identityReads           []int
-	claimCount              int
-	completeCount           int
-	heartbeatStarted        chan struct{}
-	heartbeatWaitForContext bool
-	heartbeatError          error
-	heartbeatCount          int
+	mu                               sync.Mutex
+	identity                         *workflowRetryIdentity
+	challenge                        Challenge
+	claimed                          ClaimedTask
+	challengeErrors                  []error
+	alwaysChallengeError             error
+	onChallenge                      func()
+	requests                         []ChallengeRequest
+	identityReads                    []int
+	claimCount                       int
+	completeCount                    int
+	heartbeatStarted                 chan struct{}
+	heartbeatWaitForContext          bool
+	heartbeatError                   error
+	heartbeatCount                   int
+	heartbeatSuccessesBeforeBehavior int
+	heartbeatSequences               []uint64
+	completeWaitForContext           bool
+	failWaitForContext               bool
+	failCount                        int
 }
 
 func (control *workflowRetryControl) IssueIdentityChallenge(
@@ -539,16 +614,19 @@ func (control *workflowRetryControl) Heartbeat(
 	_ Fence,
 	_ string,
 	_ []byte,
-	_ uint64,
+	sequence uint64,
 	_ string,
 ) (HeartbeatResult, error) {
 	control.mu.Lock()
 	control.heartbeatCount++
+	control.heartbeatSequences = append(control.heartbeatSequences, sequence)
+	exerciseBehavior := control.heartbeatCount > control.heartbeatSuccessesBeforeBehavior
 	started := control.heartbeatStarted
-	waitForContext := control.heartbeatWaitForContext
+	waitForContext := exerciseBehavior && control.heartbeatWaitForContext
 	heartbeatErr := control.heartbeatError
+	claimed := control.claimed
 	control.mu.Unlock()
-	if started != nil {
+	if started != nil && exerciseBehavior {
 		select {
 		case started <- struct{}{}:
 		default:
@@ -556,22 +634,46 @@ func (control *workflowRetryControl) Heartbeat(
 	}
 	if waitForContext {
 		<-ctx.Done()
+		if heartbeatErr == nil {
+			return HeartbeatResult{}, ctx.Err()
+		}
 	}
-	if heartbeatErr == nil {
-		return HeartbeatResult{}, errors.New("unexpected heartbeat")
+	if exerciseBehavior && heartbeatErr != nil {
+		return HeartbeatResult{}, heartbeatErr
 	}
-	return HeartbeatResult{}, heartbeatErr
+	return HeartbeatResult{
+		State: LeaseActive, NotAfter: claimed.NotAfter, Sequence: sequence,
+	}, nil
 }
 
-func (control *workflowRetryControl) Complete(context.Context, CompleteRequest) error {
+func (control *workflowRetryControl) Complete(ctx context.Context, _ CompleteRequest) error {
 	control.mu.Lock()
-	defer control.mu.Unlock()
 	control.completeCount++
+	waitForContext := control.completeWaitForContext
+	control.mu.Unlock()
+	if waitForContext {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	return nil
 }
 
-func (*workflowRetryControl) Fail(context.Context, FailRequest) error {
+func (control *workflowRetryControl) Fail(ctx context.Context, _ FailRequest) error {
+	control.mu.Lock()
+	control.failCount++
+	waitForContext := control.failWaitForContext
+	control.mu.Unlock()
+	if waitForContext {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	return errors.New("unexpected fail")
+}
+
+func (control *workflowRetryControl) heartbeatSnapshot() []uint64 {
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	return append([]uint64(nil), control.heartbeatSequences...)
 }
 
 func (control *workflowRetryControl) challengeSnapshot() ([]ChallengeRequest, []int) {
@@ -584,6 +686,7 @@ type workflowRetryExecutor struct {
 	runCount     int
 	topology     execgate.Proof
 	beforeReturn func(context.Context)
+	runError     error
 }
 
 func (executor *workflowRetryExecutor) Run(ctx context.Context, _ ClaimedTask) (cloudruntime.Result, error) {
@@ -594,7 +697,7 @@ func (executor *workflowRetryExecutor) Run(ctx context.Context, _ ClaimedTask) (
 	if err := ctx.Err(); err != nil {
 		return cloudruntime.Result{}, err
 	}
-	return cloudruntime.Result{}, nil
+	return cloudruntime.Result{}, executor.runError
 }
 
 func (executor *workflowRetryExecutor) TerminalRuntimeTopology() (execgate.Proof, error) {
@@ -649,14 +752,24 @@ type workflowHeartbeatRPC struct {
 
 func (rpc *workflowHeartbeatRPC) Heartbeat(
 	ctx context.Context,
-	_ *agentv1.WorkerControlServiceHeartbeatRequest,
+	request *agentv1.WorkerControlServiceHeartbeatRequest,
 	_ ...grpc.CallOption,
 ) (*agentv1.WorkerControlServiceHeartbeatResponse, error) {
 	rpc.mu.Lock()
 	rpc.calls++
+	call := rpc.calls
 	started := rpc.started
 	waitForLocalStop := rpc.waitForLocalStop
 	rpc.mu.Unlock()
+	if call == 1 {
+		return &agentv1.WorkerControlServiceHeartbeatResponse{
+			Session: &agentv1.CoreCloudWorkerSession{
+				SessionId: request.SessionId, Fence: request.Fence,
+				State:            agentv1.CoreCloudWorkerSessionState_CORE_CLOUD_WORKER_SESSION_STATE_ACTIVE,
+				ProgressSequence: request.ProgressSequence,
+			},
+		}, nil
+	}
 	select {
 	case started <- struct{}{}:
 	default:
