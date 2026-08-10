@@ -167,6 +167,14 @@ type coreChatCapability struct {
 	progress func(context.Context, string, []byte) error
 }
 
+type durableStreamExtensionSelection struct {
+	Kind          string   `json:"kind"`
+	ID            string   `json:"id"`
+	PinnedVersion string   `json:"pinned_version"`
+	Digest        string   `json:"digest"`
+	AllowedTools  []string `json:"allowed_tools"`
+}
+
 // publicTurnMetadata is the common safe turn projection allowed to cross the
 // Capability boundary. In particular, prompt, request fingerprints,
 // model/profile data, and decrypted execution snapshots remain Agent-private.
@@ -541,7 +549,8 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 		})
 		return marshalResult(value, err)
 	case "stream_chat":
-		if err := validateDurableStreamChatInput(in); err != nil {
+		extensions, err := validateDurableStreamChatInput(in)
+		if err != nil {
 			return nil, err
 		}
 		profileID, profileRevision, credentialVersion, err := c.resolveProfilePins(in)
@@ -560,6 +569,7 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 			TurnID: turnID, RequestID: key, OwnerID: ownerID, AccountGeneration: generation,
 			ConversationID: stringValue(in, "conversation_id"), Prompt: stringValue(in, "message"), ProfileID: profileID,
 			ExpectedProfileRevision: profileRevision, ExpectedCredentialVersion: credentialVersion,
+			Extensions:            extensions,
 			AcceptedAttachmentIDs: stringSlice(in, "accepted_attachment_ids"),
 		})
 		if err != nil {
@@ -617,44 +627,90 @@ func (c *coreChatCapability) handleSteerTurn(ctx context.Context, raw []byte) ([
 	}, err)
 }
 
-func validateDurableStreamChatInput(in map[string]json.RawMessage) error {
+func validateDurableStreamChatInput(in map[string]json.RawMessage) ([]coreconversation.ExtensionSelection, error) {
 	allowed := map[string]struct{}{
 		"idempotency_key": {}, "conversation_id": {}, "message": {},
 		"model_profile_id": {}, "model_profile_revision": {}, "credential_version": {},
-		"accepted_attachment_ids": {},
+		"accepted_attachment_ids": {}, "extensions": {},
 	}
 	for key := range in {
 		if _, ok := allowed[key]; !ok {
-			return coreconversation.ErrInvalid
+			return nil, coreconversation.ErrInvalid
 		}
 	}
 	if !coretask.ValidUUID(stringValue(in, "idempotency_key")) ||
 		!coretask.ValidUUID(stringValue(in, "model_profile_id")) ||
 		int64Value(in, "model_profile_revision") <= 0 || int64Value(in, "credential_version") <= 0 ||
 		strings.TrimSpace(stringValue(in, "message")) == "" {
-		return coreconversation.ErrInvalid
+		return nil, coreconversation.ErrInvalid
 	}
 	conversationID := stringValue(in, "conversation_id")
 	if conversationID != "" && !coretask.ValidUUID(conversationID) {
-		return coreconversation.ErrInvalid
+		return nil, coreconversation.ErrInvalid
 	}
 	if raw, present := in["accepted_attachment_ids"]; present {
 		var ids []string
 		if json.Unmarshal(raw, &ids) != nil || len(ids) > coreconversation.MaxTurnAttachments {
-			return coreconversation.ErrInvalid
+			return nil, coreconversation.ErrInvalid
 		}
 		seen := make(map[string]struct{}, len(ids))
 		for _, id := range ids {
 			if !coretask.ValidUUID(id) {
-				return coreconversation.ErrInvalid
+				return nil, coreconversation.ErrInvalid
 			}
 			if _, duplicate := seen[id]; duplicate {
-				return coreconversation.ErrInvalid
+				return nil, coreconversation.ErrInvalid
 			}
 			seen[id] = struct{}{}
 		}
 	}
-	return nil
+	extensions, err := durableStreamExtensions(in["extensions"])
+	if err != nil {
+		return nil, err
+	}
+	return extensions, nil
+}
+
+func durableStreamExtensions(raw json.RawMessage) ([]coreconversation.ExtensionSelection, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var encoded []json.RawMessage
+	if json.Unmarshal(raw, &encoded) != nil || len(encoded) == 0 || len(encoded) > coreconversation.MaxToolCallsPerMessage {
+		return nil, coreconversation.ErrInvalid
+	}
+	out := make([]coreconversation.ExtensionSelection, 0, len(encoded))
+	seenInstallations := make(map[string]struct{}, len(encoded))
+	for _, item := range encoded {
+		var value durableStreamExtensionSelection
+		if decodeStrictObject(item, &value) != nil || value.Kind != string(coreconversation.ExtensionMCP) ||
+			value.ID != strings.TrimSpace(value.ID) || !coretask.ValidUUID(value.ID) ||
+			value.PinnedVersion != strings.TrimSpace(value.PinnedVersion) || value.PinnedVersion == "" || len(value.PinnedVersion) > 256 ||
+			!coretask.ValidDigest(value.Digest) || len(value.AllowedTools) == 0 || len(value.AllowedTools) > coreconversation.MaxToolCallsPerMessage {
+			return nil, coreconversation.ErrInvalid
+		}
+		if _, duplicate := seenInstallations[value.ID]; duplicate {
+			return nil, coreconversation.ErrInvalid
+		}
+		seenInstallations[value.ID] = struct{}{}
+		toolNames := append([]string(nil), value.AllowedTools...)
+		slices.Sort(toolNames)
+		for index, name := range toolNames {
+			if name != strings.TrimSpace(name) || name == "" || len(name) > coreconversation.MaxToolNameBytes ||
+				coremodel.IsIntrinsicToolName(name) || (index > 0 && name == toolNames[index-1]) {
+				return nil, coreconversation.ErrInvalid
+			}
+		}
+		selection := coreconversation.ExtensionSelection{
+			Kind: coreconversation.ExtensionKind(value.Kind), ID: value.ID, Version: value.PinnedVersion,
+			Digest: value.Digest, AllowedTools: toolNames,
+		}
+		if selection.Validate() != nil {
+			return nil, coreconversation.ErrInvalid
+		}
+		out = append(out, selection)
+	}
+	return out, nil
 }
 
 func authenticatedChatOwner(ctx context.Context) (string, uint64, error) {
@@ -2041,6 +2097,8 @@ const publicTurnResultSchema = `{"additionalProperties":false,"properties":{"con
 
 const publicSteeredTurnResultSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"last_sequence":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["accepted","running"],"type":"string"},"steer_idempotency_key":{"format":"uuid","type":"string"},"terminal_code":{"type":"string"},"terminal_summary":{"type":"string"},"turn_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["turn_id","idempotency_key","steer_idempotency_key","conversation_id","state","revision","last_sequence","terminal_code","terminal_summary","created_at","updated_at"],"type":"object"}`
 
+const durableStreamExtensionSelectionSchema = `{"additionalProperties":false,"properties":{"allowed_tools":{"items":{"maxLength":256,"minLength":1,"type":"string"},"maxItems":64,"minItems":1,"type":"array","uniqueItems":true},"digest":{"pattern":"^[a-f0-9]{64}$","type":"string"},"id":{"format":"uuid","type":"string"},"kind":{"const":"mcp","type":"string"},"pinned_version":{"maxLength":256,"minLength":1,"type":"string"}},"required":["kind","id","pinned_version","digest","allowed_tools"],"type":"object"}`
+
 const durableChatStreamResultSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"done":{"const":true,"type":"boolean"},"idempotency_key":{"format":"uuid","type":"string"},"message":{"type":"object"},"model_profile_id":{"format":"uuid","type":"string"},"references":{"items":{"type":"object"},"type":"array"},"related_plan_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"related_task_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"revision":{"minimum":1,"type":"integer"},"tool_results":{"items":{"type":"object"},"type":"array"},"tool_summaries":{"items":{"type":"string"},"type":"array"}},"required":["idempotency_key","conversation_id","revision","message","done","model_profile_id"],"type":"object"}`
 
 const durableChatStreamEventSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"error_code":{"type":"string"},"error_summary":{"type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"kind":{"enum":["accepted","started","delta","tool_call","tool_result","done","error"],"type":"string"},"response":` + durableChatStreamResultSchema + `,"revision":{"minimum":1,"type":"integer"},"text":{"type":"string"},"tool_call":{"type":"object"},"tool_result":{"type":"object"},"turn_id":{"format":"uuid","type":"string"}},"required":["kind","idempotency_key","conversation_id","turn_id","revision"],"type":"object"}`
@@ -2135,7 +2193,7 @@ func operationInputSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:upload_attachment_commit":
 		return `{"additionalProperties":false,"properties":{"content_sha256":{"pattern":"^[a-f0-9]{64}$","type":"string"},"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"upload_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","upload_id","expected_revision","content_sha256"],"type":"object"}`
 	case "agent.chat.v1:stream_chat":
-		return `{"additionalProperties":false,"type":"object","properties":{"accepted_attachment_ids":{"items":{"format":"uuid","type":"string"},"maxItems":4,"uniqueItems":true,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"message":{"minLength":1,"type":"string"},"model_profile_id":{"format":"uuid","type":"string"},"model_profile_revision":{"minimum":1,"type":"integer"},"credential_version":{"minimum":1,"type":"integer"}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
+		return `{"additionalProperties":false,"type":"object","properties":{"accepted_attachment_ids":{"items":{"format":"uuid","type":"string"},"maxItems":4,"uniqueItems":true,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"message":{"minLength":1,"type":"string"},"model_profile_id":{"format":"uuid","type":"string"},"model_profile_revision":{"minimum":1,"type":"integer"},"credential_version":{"minimum":1,"type":"integer"},"extensions":{"items":` + durableStreamExtensionSelectionSchema + `,"maxItems":64,"minItems":1,"type":"array","uniqueItems":true}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
 	case "agent.models.v1:sync_models":
 		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"default_client_profile_id":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"entries":{"type":"array"}},"required":["idempotency_key","entries"]}`
 	case "agent.knowledge.v1:list_sources":

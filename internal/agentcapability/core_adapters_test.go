@@ -1563,6 +1563,67 @@ func TestChatCapabilitySchemaRequiresProfilePins(t *testing.T) {
 	}
 }
 
+func TestDurableStreamChatParsesExactExtensionSelections(t *testing.T) {
+	requestID, profileID, installationID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	digest := strings.Repeat("a", 64)
+	raw := []byte(`{"idempotency_key":"` + requestID + `","message":"run locally","model_profile_id":"` + profileID + `","model_profile_revision":2,"credential_version":3,"extensions":[{"kind":"mcp","id":"` + installationID + `","pinned_version":"1.2.3","digest":"` + digest + `","allowed_tools":["second","first"]}]}`)
+	var input map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &input); err != nil {
+		t.Fatal(err)
+	}
+	extensions, err := validateDurableStreamChatInput(input)
+	if err != nil || len(extensions) != 1 {
+		t.Fatalf("extensions=%+v err=%v", extensions, err)
+	}
+	selection := extensions[0]
+	if selection.Kind != coreconversation.ExtensionMCP || selection.ID != installationID || selection.Version != "1.2.3" || selection.Digest != digest ||
+		len(selection.AllowedTools) != 2 || selection.AllowedTools[0] != "first" || selection.AllowedTools[1] != "second" {
+		t.Fatalf("selection=%+v", selection)
+	}
+
+	var streamOperation *capv1.OperationDescriptor
+	for _, operation := range (&coreChatCapability{}).Descriptor().GetOperations() {
+		if operation.GetOperationId() == "stream_chat" {
+			streamOperation = operation
+			break
+		}
+	}
+	if streamOperation == nil || !strings.Contains(streamOperation.GetInputSchemaJson(), `"extensions"`) ||
+		!strings.Contains(streamOperation.GetInputSchemaJson(), `"pinned_version"`) ||
+		!strings.Contains(streamOperation.GetInputSchemaJson(), `"additionalProperties":false`) {
+		t.Fatalf("stream_chat schema=%v", streamOperation)
+	}
+}
+
+func TestDurableStreamChatRejectsInexactExtensionSelections(t *testing.T) {
+	requestID, profileID, installationID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	digest := strings.Repeat("a", 64)
+	prefix := `{"idempotency_key":"` + requestID + `","message":"run locally","model_profile_id":"` + profileID + `","model_profile_revision":2,"credential_version":3,"extensions":`
+	tests := []struct {
+		name       string
+		extensions string
+	}{
+		{name: "empty", extensions: `[]`},
+		{name: "unknown field", extensions: `[{"kind":"mcp","id":"` + installationID + `","pinned_version":"1.2.3","digest":"` + digest + `","allowed_tools":["echo"],"extra":true}]`},
+		{name: "non local kind", extensions: `[{"kind":"knowledge","id":"` + installationID + `","pinned_version":"1.2.3","digest":"` + digest + `","allowed_tools":["echo"]}]`},
+		{name: "duplicate tool", extensions: `[{"kind":"mcp","id":"` + installationID + `","pinned_version":"1.2.3","digest":"` + digest + `","allowed_tools":["echo","echo"]}]`},
+		{name: "intrinsic tool", extensions: `[{"kind":"mcp","id":"` + installationID + `","pinned_version":"1.2.3","digest":"` + digest + `","allowed_tools":["cloud_worker_propose"]}]`},
+		{name: "digest is not exact", extensions: `[{"kind":"mcp","id":"` + installationID + `","pinned_version":"1.2.3","digest":"sha256:x","allowed_tools":["echo"]}]`},
+		{name: "duplicate installation", extensions: `[{"kind":"mcp","id":"` + installationID + `","pinned_version":"1.2.3","digest":"` + digest + `","allowed_tools":["echo"]},{"kind":"mcp","id":"` + installationID + `","pinned_version":"1.2.3","digest":"` + digest + `","allowed_tools":["other"]}]`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var input map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(prefix+test.extensions+`}`), &input); err != nil {
+				t.Fatal(err)
+			}
+			if extensions, err := validateDurableStreamChatInput(input); !errors.Is(err, coreconversation.ErrInvalid) || len(extensions) != 0 {
+				t.Fatalf("extensions=%+v err=%v", extensions, err)
+			}
+		})
+	}
+}
+
 func TestChatCapabilityPinsDurableStreamResultAndEventSchemas(t *testing.T) {
 	descriptor := (&coreChatCapability{}).Descriptor()
 	for _, operation := range descriptor.GetOperations() {

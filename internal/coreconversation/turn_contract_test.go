@@ -38,6 +38,13 @@ type capturingTurnModel struct {
 	runs    int
 }
 
+type fixedToolCallsTurnModel struct{ calls []ToolCall }
+
+func (m fixedToolCallsTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
+	message := Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: append([]ToolCall(nil), m.calls...), CreatedAt: time.Now().UTC()}
+	return ModelRunResult{Message: message, ToolCalls: append([]ToolCall(nil), m.calls...)}, nil
+}
+
 type twoRoundReadOnlyModel struct {
 	call     ToolCall
 	requests []ModelRunRequest
@@ -58,6 +65,7 @@ type readOnlyTurnStore struct {
 	dispatchState string
 	dispatch      ModelRunResult
 	failedCode    string
+	prepareCalls  int
 }
 
 func (s *readOnlyTurnStore) FailTurn(_ context.Context, _ TurnLease, code, _ string) (Turn, error) {
@@ -66,6 +74,7 @@ func (s *readOnlyTurnStore) FailTurn(_ context.Context, _ TurnLease, code, _ str
 }
 
 func (s *readOnlyTurnStore) PrepareConversationTool(context.Context, PrepareToolCommand) (ToolAttempt, coretask.Task, coreconfirmation.Confirmation, error) {
+	s.prepareCalls++
 	return ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, ErrInvalid
 }
 
@@ -642,6 +651,62 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 		model.request.Intrinsics[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
 		len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != selection.ID {
 		t.Fatalf("model request lost intrinsic or extension: %+v", model.request)
+	}
+}
+
+func TestExecuteTurnRejectsMultipleLocalOrCloudRouteCallsBeforeExecution(t *testing.T) {
+	tests := []struct {
+		name     string
+		calls    []ToolCall
+		wantCode string
+	}{
+		{
+			name: "multiple local tools",
+			calls: []ToolCall{
+				{ID: uuid.NewString(), Name: "local_task", Arguments: `{}`},
+				{ID: uuid.NewString(), Name: "local_task_two", Arguments: `{}`},
+			},
+			wantCode: "tool_batch_rejected",
+		},
+		{
+			name: "local and cloud routes",
+			calls: []ToolCall{
+				{ID: uuid.NewString(), Name: "local_task", Arguments: `{}`},
+				{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`},
+			},
+			wantCode: "intrinsic_batch_rejected",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := testTurnSnapshot()
+			turn := Turn{
+				ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(),
+				Prompt: "choose one execution route", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
+				ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 1, CreatedAt: time.Now().UTC(),
+			}
+			store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore(), turn: turn}}
+			service, err := NewService(store, fixedToolCallsTurnModel{calls: test.calls}, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			intrinsicCalls := 0
+			service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+				return []ResolvedIntrinsic{{
+					Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerProposeToolName, InputSchema: map[string]any{"type": "object"}},
+					Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+						intrinsicCalls++
+						return IntrinsicExecutionResult{TurnCommitted: true}, nil
+					},
+				}}, nil
+			}))
+
+			service.executeTurn(context.Background(), turn.ID)
+
+			if store.failedCode != test.wantCode || store.prepareCalls != 0 || intrinsicCalls != 0 {
+				t.Fatalf("failure=%q prepare_calls=%d intrinsic_calls=%d", store.failedCode, store.prepareCalls, intrinsicCalls)
+			}
+		})
 	}
 }
 

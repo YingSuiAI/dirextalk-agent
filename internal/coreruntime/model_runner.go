@@ -95,31 +95,18 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 		tools = append(tools, tool)
 	}
 	for _, ext := range req.Extensions {
+		if len(ext.Tools) == 0 && len(ext.Snapshot.ToolNames) != 0 {
+			return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
+		}
 		for _, tool := range ext.Tools {
-			if strings.TrimSpace(tool.Name) == "" {
-				continue
+			if strings.TrimSpace(tool.Name) == "" || tool.InputSchema == nil {
+				return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
 			}
 			if _, exists := seenTools[tool.Name]; exists {
 				return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
 			}
 			seenTools[tool.Name] = struct{}{}
-			if tool.InputSchema == nil {
-				tool.InputSchema = map[string]any{"type": "object"}
-			}
 			tools = append(tools, tool)
-		}
-		if len(ext.Tools) == 0 {
-			for _, name := range ext.Snapshot.ToolNames {
-				name = strings.TrimSpace(name)
-				if name == "" {
-					continue
-				}
-				if _, exists := seenTools[name]; exists {
-					return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
-				}
-				seenTools[name] = struct{}{}
-				tools = append(tools, coremodel.Tool{Name: name, Description: "extension tool", InputSchema: map[string]any{"type": "object"}})
-			}
 		}
 	}
 	return p, client, coremodel.CompletionRequest{Messages: messages, Tools: tools}, nil

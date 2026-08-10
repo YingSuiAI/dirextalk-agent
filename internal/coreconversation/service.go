@@ -1639,14 +1639,23 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				if len(calls) == 0 {
 					calls = out.result.Message.ToolCalls
 				}
+				hasIntrinsic := false
 				for _, call := range calls {
-					if !coremodel.IsIntrinsicToolName(call.Name) {
-						continue
+					if coremodel.IsIntrinsicToolName(call.Name) {
+						hasIntrinsic = true
+						break
 					}
-					if len(calls) != 1 {
+				}
+				if len(calls) != 1 {
+					if hasIntrinsic {
 						_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_batch_rejected", "Core intrinsic tool must be the only call in a model round")
-						return
+					} else {
+						_, _ = s.turns.FailTurn(ctx, lease, "tool_batch_rejected", "Conversation tool must be the only call in a durable model round")
 					}
+					return
+				}
+				call := calls[0]
+				if coremodel.IsIntrinsicToolName(call.Name) {
 					var intrinsic *ResolvedIntrinsic
 					for index := range intrinsicTools {
 						if intrinsicTools[index].Tool.Name == call.Name {
@@ -1683,7 +1692,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					_, _ = s.turns.FailTurn(ctx, lease, "extensions_unavailable", "conversation tool store is unavailable")
 					return
 				}
-				call := calls[0]
 				var bound ExtensionExecutionSnapshot
 				var executable *ResolvedExtension
 				for _, candidate := range turn.ExtensionSnapshots {

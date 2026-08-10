@@ -266,6 +266,27 @@ func TestModelRunnerForwardsResolvedExtensionToolsToProvider(t *testing.T) {
 	}
 }
 
+func TestModelRunnerRejectsMissingExactExtensionToolSchemas(t *testing.T) {
+	id := "00000000-0000-4000-8000-000000000001"
+	snapshot := coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1})
+	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return &captureClient{}, nil })
+	tests := []struct {
+		name      string
+		extension coreconversation.ResolvedExtension
+	}{
+		{name: "snapshot names without resolved tools", extension: coreconversation.ResolvedExtension{Snapshot: coreconversation.ExtensionExecutionSnapshot{ToolNames: []string{"local_task"}}}},
+		{name: "resolved tool without schema", extension: coreconversation.ResolvedExtension{Tools: []coremodel.Tool{{Name: "local_task"}}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: snapshot, Extensions: []coreconversation.ResolvedExtension{test.extension}})
+			if !errors.Is(err, coremodel.ErrInvalidCompletionRequest) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
 type captureClient struct{ req coremodel.CompletionRequest }
 
 func (c *captureClient) Generate(_ context.Context, req coremodel.CompletionRequest) (coremodel.Completion, error) {

@@ -314,8 +314,8 @@ type ResolvedExtension struct {
 	Execute   func(context.Context, ToolExecutionRequest) (ToolResult, error)
 	Snapshot  ExtensionExecutionSnapshot
 	// Tools is the immutable model-facing tool catalog for this resolved
-	// extension.  Legacy MCP/Skill resolvers may leave it empty; the runtime
-	// then falls back to the pinned snapshot names with an object schema.
+	// extension. A snapshot that names tools must resolve their exact schemas;
+	// the runtime never synthesizes a permissive schema.
 	Tools []coremodel.Tool
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/execution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/source"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
@@ -45,27 +47,69 @@ func (r conversationExtensionResolver) ResolveExtensions(ctx context.Context, se
 	}
 	out := make([]coreconversation.ResolvedExtension, 0, len(selections))
 	for _, selection := range selections {
+		if selection.Validate() != nil || len(selection.AllowedTools) == 0 {
+			return nil, coreextension.ErrInvalid
+		}
 		installation, err := r.store.Get(ctx, selection.ID)
-		if err != nil || installation.State != coreextension.StateInstalled {
+		if err != nil || installation.ID != selection.ID || installation.State != coreextension.StateInstalled ||
+			!installation.Enabled || installation.Revision <= 0 || coreconversation.ExtensionKind(installation.Kind) != selection.Kind {
 			return nil, coreextension.ErrConflict
 		}
 		var version *coreextension.VersionRecord
 		for i := range installation.Versions {
 			candidate := &installation.Versions[i]
-			if candidate.VersionID == selection.Version || extensionVersionPin(*candidate) == selection.Version {
+			if extensionVersionPin(*candidate) == selection.Version {
 				version = candidate
 				break
 			}
 		}
-		if version == nil || version.ContentDigest != selection.Digest || installation.ActiveVersionID != version.VersionID {
+		if version == nil || version.ContentDigest != selection.Digest || !coretask.ValidDigest(version.ContentDigest) ||
+			!coretask.ValidDigest(version.ArtifactDigest) || installation.ActiveVersionID != version.VersionID {
 			return nil, coreextension.ErrConflict
 		}
-		tools := make([]string, 0, len(version.Tools))
+		descriptors := make(map[string]coreextension.Tool, len(version.Tools))
 		for _, tool := range version.Tools {
-			tools = append(tools, tool.Name)
+			if tool.Name == "" || tool.Name != strings.TrimSpace(tool.Name) || coremodel.IsIntrinsicToolName(tool.Name) {
+				return nil, coreextension.ErrConflict
+			}
+			if _, duplicate := descriptors[tool.Name]; duplicate {
+				return nil, coreextension.ErrConflict
+			}
+			descriptors[tool.Name] = tool
 		}
-		toolSchema := toolSchemaDigest(version.Tools)
-		out = append(out, coreconversation.ResolvedExtension{Selection: selection, Snapshot: coreconversation.ExtensionExecutionSnapshot{Selection: selection, InstallationID: installation.ID, VersionID: version.VersionID, InstallationRevision: uint64(installation.Revision), Source: string(installation.Source), ContentDigest: version.ContentDigest, ArtifactDigest: version.ArtifactDigest, ToolSchemaDigest: toolSchema, NetworkBindingDigest: version.NetworkSchemaDigest, SecretBindingDigest: version.SecretSchemaDigest, ToolNames: tools, RequiresConfirmation: true}})
+		allowed := append([]string(nil), selection.AllowedTools...)
+		sort.Strings(allowed)
+		selectedDescriptors := make([]coreextension.Tool, 0, len(allowed))
+		modelTools := make([]coremodel.Tool, 0, len(allowed))
+		for index, name := range allowed {
+			if index > 0 && name == allowed[index-1] {
+				return nil, coreextension.ErrInvalid
+			}
+			descriptor, ok := descriptors[name]
+			if !ok || !coretask.ValidDigest(descriptor.InputSchemaDigest) || schemaDigest(descriptor.InputSchema) != descriptor.InputSchemaDigest {
+				return nil, coreextension.ErrConflict
+			}
+			var schema map[string]any
+			if json.Unmarshal(descriptor.InputSchema, &schema) != nil || schema == nil {
+				return nil, coreextension.ErrConflict
+			}
+			selectedDescriptors = append(selectedDescriptors, descriptor)
+			modelTools = append(modelTools, coremodel.Tool{Name: descriptor.Name, Description: descriptor.Description, InputSchema: schema})
+		}
+		normalizedSelection := selection
+		normalizedSelection.AllowedTools = allowed
+		toolSchema := toolSchemaDigest(selectedDescriptors)
+		out = append(out, coreconversation.ResolvedExtension{
+			Selection: normalizedSelection,
+			Snapshot: coreconversation.ExtensionExecutionSnapshot{
+				Selection: normalizedSelection, InstallationID: installation.ID, VersionID: version.VersionID,
+				InstallationRevision: uint64(installation.Revision), Source: string(installation.Source),
+				ContentDigest: version.ContentDigest, ArtifactDigest: version.ArtifactDigest, ToolSchemaDigest: toolSchema,
+				NetworkBindingDigest: version.NetworkSchemaDigest, SecretBindingDigest: version.SecretSchemaDigest,
+				ToolNames: allowed, RequiresConfirmation: true,
+			},
+			Tools: modelTools,
+		})
 	}
 	return out, nil
 }
