@@ -153,7 +153,8 @@ func (executor *PiExecutor) Run(
 	if task.WorkspaceMode == WorkspaceNone {
 		workspace = filepath.Join(jobRoot, "workspace")
 		if os.Mkdir(workspace, 0o770) != nil ||
-			os.Chown(workspace, -1, int(executor.runtimeGID)) != nil {
+			os.Chown(workspace, -1, int(executor.runtimeGID)) != nil ||
+			os.Chmod(workspace, 0o770) != nil {
 			return Result{}, ErrExecution
 		}
 	} else if !validWorkspaceDirectory(workspace) {

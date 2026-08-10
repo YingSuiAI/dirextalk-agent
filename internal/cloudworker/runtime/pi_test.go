@@ -166,6 +166,9 @@ func TestPiRunnerWorkspaceModesAreClosed(t *testing.T) {
 			if mode == WorkspaceNone && tools != PiResultToolName {
 				t.Fatalf("none tools=%q", tools)
 			}
+			if mode == WorkspaceNone && process.directoryMode != 0o770 {
+				t.Fatalf("none workspace mode=%#o", process.directoryMode)
+			}
 		})
 	}
 }
@@ -348,10 +351,11 @@ func (resolver *fakeResolver) Resolve(context.Context, Task) (Inputs, error) {
 }
 
 type fakeProcess struct {
-	events       []byte
-	spec         ProcessSpec
-	modelsConfig []byte
-	calls        int
+	events        []byte
+	spec          ProcessSpec
+	modelsConfig  []byte
+	directoryMode os.FileMode
+	calls         int
 }
 
 func (process *fakeProcess) Run(_ context.Context, spec ProcessSpec) (ProcessOutput, error) {
@@ -367,6 +371,11 @@ func (process *fakeProcess) Run(_ context.Context, spec ProcessSpec) (ProcessOut
 		process.spec.SecretEnvironment[name] = bytes.Clone(value)
 	}
 	process.spec.Stdin = bytes.Clone(spec.Stdin)
+	directory, err := os.Stat(spec.Directory)
+	if err != nil {
+		return ProcessOutput{}, err
+	}
+	process.directoryMode = directory.Mode().Perm()
 	raw, err := os.ReadFile(filepath.Join(spec.Environment["PI_CODING_AGENT_DIR"], "models.json"))
 	if err != nil {
 		return ProcessOutput{}, err
