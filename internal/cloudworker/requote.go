@@ -21,6 +21,7 @@ const (
 func compileRequoteOffer(
 	ctx context.Context,
 	quoter Quoter,
+	baseLimits Limits,
 	old Plan,
 	reason string,
 	now time.Time,
@@ -28,7 +29,7 @@ func compileRequoteOffer(
 	modelAuthorization ModelAuthorization,
 ) (RequoteOfferCommand, error) {
 	modelDigest := modelAuthorization.BindingDigest
-	if ctx == nil || quoter == nil || old.Seal() != nil || validateAWS(awsBinding) != nil ||
+	if ctx == nil || quoter == nil || validateLimits(baseLimits) != nil || old.Seal() != nil || validateAWS(awsBinding) != nil ||
 		modelAuthorization.Seal() != nil || modelAuthorization.BindingDigest != modelDigest ||
 		modelAuthorization.ModelProfileID != old.ModelAuthorization.ModelProfileID {
 		return RequoteOfferCommand{}, ErrInvalid
@@ -45,6 +46,11 @@ func compileRequoteOffer(
 	plan := old
 	plan.AWS = awsBinding
 	plan.ModelAuthorization = modelAuthorization
+	limits, err := effectivePlanLimits(baseLimits, modelAuthorization)
+	if err != nil {
+		return RequoteOfferCommand{}, err
+	}
+	plan.Limits = limits
 	plan.PlanID = deterministicID("cloud-worker-requote-plan", seed)
 	plan.ExecutionID = deterministicID("cloud-worker-requote-execution", seed)
 	plan.TaskID = deterministicID("cloud-worker-requote-task", seed)

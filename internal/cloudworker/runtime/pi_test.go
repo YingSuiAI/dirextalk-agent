@@ -216,8 +216,10 @@ func TestPiRunnerRejectsUsageBeyondExactAuthorizedMaxTokens(t *testing.T) {
 	t.Parallel()
 	contextJSON := []byte(`{"scope":"approved"}`)
 	task := validTask(contextJSON, WorkspaceNone)
-	task.MaxOutputTokens = 23
-	process := &fakeProcess{events: validPiEventStream()}
+	task.MaxOutputTokens = 512
+	process := &fakeProcess{events: bytes.Replace(
+		validPiEventStream(), []byte(`"output":24`), []byte(`"output":513`), 1,
+	)}
 	executor := newTestExecutor(t, task, Inputs{
 		InputManifestJSON: bytes.Clone(contextJSON),
 	}, process, nil)

@@ -77,6 +77,7 @@ type ModelAuthorization struct {
 	Provider                string `json:"provider"`
 	Model                   string `json:"model"`
 	Interface               string `json:"interface"`
+	MaximumOutputTokens     uint64 `json:"maximum_output_tokens"`
 	CredentialVersion       uint64 `json:"credential_version"`
 	CredentialBindingDigest string `json:"credential_binding_digest"`
 	BindingDigest           string `json:"binding_digest"`
@@ -475,6 +476,7 @@ func (a *ModelAuthorization) Seal() error {
 		a.Provider == "" || len(a.Provider) > 128 || strings.ContainsAny(a.Provider, "\r\n\x00") ||
 		a.Model == "" || len(a.Model) > 256 || strings.ContainsAny(a.Model, "\r\n\x00") ||
 		a.Interface == "" || len(a.Interface) > 128 || strings.ContainsAny(a.Interface, "\r\n\x00") ||
+		a.MaximumOutputTokens > 10_000_000 ||
 		!validDigest(a.CredentialBindingDigest) ||
 		!((a.Provider == "openai" && a.Interface == "openai_responses") ||
 			(a.Provider == "openai_compatible" && a.Interface == "openai_compatible")) {
@@ -486,9 +488,10 @@ func (a *ModelAuthorization) Seal() error {
 		Provider                string
 		Model                   string
 		Interface               string
+		MaximumOutputTokens     uint64
 		CredentialVersion       uint64
 		CredentialBindingDigest string
-	}{a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.Model, a.Interface, a.CredentialVersion, a.CredentialBindingDigest})
+	}{a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.Model, a.Interface, a.MaximumOutputTokens, a.CredentialVersion, a.CredentialBindingDigest})
 	return nil
 }
 

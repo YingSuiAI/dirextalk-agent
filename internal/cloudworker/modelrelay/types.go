@@ -93,6 +93,7 @@ type ProfileReference struct {
 	Provider                string `json:"provider"`
 	Interface               string `json:"interface"`
 	Model                   string `json:"model"`
+	MaximumOutputTokens     uint64 `json:"maximum_output_tokens"`
 	CredentialBindingDigest string `json:"credential_binding_digest"`
 	ModelBindingDigest      string `json:"model_binding_digest"`
 }
@@ -102,6 +103,7 @@ func (r ProfileReference) Validate() error {
 		r.AccountGeneration == 0 || r.AccountGeneration > math.MaxInt64 || !canonicalUUID(r.ProfileID) ||
 		r.ProfileRevision == 0 || r.ProfileRevision > math.MaxInt64 ||
 		r.CredentialVersion == 0 || r.CredentialVersion > math.MaxInt64 ||
+		r.MaximumOutputTokens > MaximumTokens ||
 		!namePattern.MatchString(r.Model) || !validDigest(r.CredentialBindingDigest) ||
 		!validDigest(r.ModelBindingDigest) || !validProviderInterface(r.Provider, r.Interface) {
 		return ErrInvalid

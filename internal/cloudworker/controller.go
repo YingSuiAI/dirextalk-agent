@@ -81,6 +81,7 @@ type ControllerResultCollector interface {
 type ControllerConfig struct {
 	Store               Store
 	Quoter              Quoter
+	BaseLimits          Limits
 	AWSBindings         AWSBindingResolver
 	ModelAuthorizations ModelAuthorizationResolver
 	Stager              ControllerInputStager
@@ -103,6 +104,7 @@ type ControllerConfig struct {
 type Controller struct {
 	store               Store
 	quoter              Quoter
+	baseLimits          Limits
 	awsBindings         AWSBindingResolver
 	modelAuthorizations ModelAuthorizationResolver
 	stager              ControllerInputStager
@@ -121,7 +123,7 @@ type Controller struct {
 // Provider cannot be injected here, so production can never run Pi locally or
 // bypass WorkerControl/result collection.
 func NewController(config ControllerConfig) (*Controller, error) {
-	if config.Store == nil || config.Quoter == nil || config.AWSBindings == nil || config.ModelAuthorizations == nil || config.Stager == nil || config.Outputs == nil || config.Qualifications == nil ||
+	if config.Store == nil || config.Quoter == nil || validateLimits(config.BaseLimits) != nil || config.AWSBindings == nil || config.ModelAuthorizations == nil || config.Stager == nil || config.Outputs == nil || config.Qualifications == nil ||
 		config.AWS == nil || config.Sessions == nil || config.ModelGrants == nil || config.Results == nil {
 		return nil, ErrInvalid
 	}
@@ -141,7 +143,7 @@ func NewController(config ControllerConfig) (*Controller, error) {
 		return nil, ErrInvalid
 	}
 	return &Controller{
-		store: config.Store, quoter: config.Quoter, awsBindings: config.AWSBindings, modelAuthorizations: config.ModelAuthorizations, stager: config.Stager, outputs: config.Outputs,
+		store: config.Store, quoter: config.Quoter, baseLimits: config.BaseLimits, awsBindings: config.AWSBindings, modelAuthorizations: config.ModelAuthorizations, stager: config.Stager, outputs: config.Outputs,
 		qualifications: config.Qualifications, aws: config.AWS,
 		sessions: config.Sessions, modelGrants: config.ModelGrants,
 		results: config.Results, now: config.Clock, pollInterval: config.PollInterval,
@@ -948,7 +950,7 @@ func (c *Controller) requote(ctx context.Context, task coretask.Task, plan Plan,
 	if currentModel.Seal() != nil || currentModel.BindingDigest != modelDigest || currentModel.ModelProfileID != plan.ModelAuthorization.ModelProfileID {
 		return c.owned(ErrStaleAuthorization)
 	}
-	command, err := compileRequoteOffer(ctx, c.quoter, plan, reason, c.now().UTC(), currentAWS, currentModel)
+	command, err := compileRequoteOffer(ctx, c.quoter, c.baseLimits, plan, reason, c.now().UTC(), currentAWS, currentModel)
 	if err != nil {
 		return c.owned(err)
 	}

@@ -6,8 +6,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/google/uuid"
 )
+
+type limitRecordingQuoter struct {
+	base FakeQuoter
+	last QuoteRequest
+}
+
+func (quoter *limitRecordingQuoter) Quote(ctx context.Context, request QuoteRequest) (Quote, error) {
+	quoter.last = request
+	return quoter.base.Quote(ctx, request)
+}
+
+func (quoter *limitRecordingQuoter) Validate(ctx context.Context, plan Plan) (Quote, error) {
+	return quoter.base.Validate(ctx, plan)
+}
 
 type proposalAWSBindingResolver struct {
 	binding AWSBinding
@@ -81,5 +96,134 @@ func TestServiceProposalFailsClosedWhenCredentialAuthorityIsStale(t *testing.T) 
 	}
 	if resolver.calls != 1 || len(store.commands) != 0 {
 		t.Fatalf("stale credential authority persisted an offer: calls=%d commands=%d", resolver.calls, len(store.commands))
+	}
+}
+
+func TestServiceProposalBindsOneEffectiveTokenLimitBeforeQuoteAndRuntimeTask(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	defaults := intrinsicDefaults(now)
+	defaults.Limits.MaxTokens = 1_000_000
+	resolver := &proposalAWSBindingResolver{binding: defaults.AWS}
+	store := &intrinsicStore{}
+	quoter := &limitRecordingQuoter{base: FakeQuoter{
+		AmountMicros: 1000, MaximumAuthorizedMicros: 2000,
+		TTL: 5 * time.Minute, Now: func() time.Time { return now },
+	}}
+	service, err := NewServiceWithAWSBindingResolver(
+		store, defaults, quoter, resolver, func() time.Time { return now },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := credentialProposalCommand()
+	command.ModelAuthorization.MaximumOutputTokens = 0
+	offer, err := service.Propose(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens
+	if offer.Plan.Limits.MaxTokens != want || quoter.last.Limits.MaxTokens != want ||
+		offer.Plan.Quote.BasisDigest != offer.Plan.AuthorizationBasisDigest ||
+		offer.Execution.PlanDigest != offer.Plan.Digest ||
+		offer.Execution.ExecutionDigest != offer.Plan.ExecutionDigest {
+		t.Fatalf("bound offer drift: plan=%+v quote_request=%+v execution=%+v", offer.Plan, quoter.last, offer.Execution)
+	}
+
+	execution, err := offer.Execution.Transition(StateQueued, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := StagedInputManifest{
+		Schema: StagedInputManifestSchemaV1, ExecutionID: offer.Plan.ExecutionID,
+		SourceManifestDigest: offer.Plan.InputManifestDigest,
+	}
+	if _, err = staged.Seal(offer.Plan.InputManifest); err != nil {
+		t.Fatal(err)
+	}
+	material, err := BuildRuntimeTask(
+		offer.Plan, execution, staged,
+		RuntimeTaskFence{ExecutionID: offer.Plan.ExecutionID, TaskID: offer.Plan.TaskID, AccountGeneration: offer.Plan.AccountGeneration, Attempt: 1, LeaseEpoch: 1},
+		RuntimeQualification{PiRuntimeDigest: offer.Plan.Compute.PiRuntimeDigest, PiVersion: "0.83.0", PiExecutableSHA256: digestValue("pi-executable"), ResultExtensionSHA256: digestValue("result-extension")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer material.Destroy()
+	if material.Task.MaxOutputTokens != offer.Plan.Limits.MaxTokens {
+		t.Fatalf("runtime task max = %d, plan max = %d", material.Task.MaxOutputTokens, offer.Plan.Limits.MaxTokens)
+	}
+}
+
+func TestServiceProposalRejectsUnqualifiedEffectiveTokenLimitBeforeAuthorityOrQuote(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	defaults := intrinsicDefaults(now)
+	resolver := &proposalAWSBindingResolver{binding: defaults.AWS}
+	store := &intrinsicStore{}
+	quoter := &limitRecordingQuoter{base: FakeQuoter{
+		AmountMicros: 1000, MaximumAuthorizedMicros: 2000,
+		TTL: 5 * time.Minute, Now: func() time.Time { return now },
+	}}
+	service, err := NewServiceWithAWSBindingResolver(store, defaults, quoter, resolver, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := credentialProposalCommand()
+	command.ModelAuthorization.MaximumOutputTokens = 511
+	if _, err = service.Propose(context.Background(), command); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("proposal error = %v, want ErrInvalid", err)
+	}
+	if resolver.calls != 0 || len(store.commands) != 0 || quoter.last.OwnerID != "" {
+		t.Fatalf("invalid output limit crossed a side-effect boundary: resolver=%d store=%d quote=%+v", resolver.calls, len(store.commands), quoter.last)
+	}
+}
+
+func TestRequoteRecomputesEffectiveTokenLimitFromServerBase(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name, credentialDigest string
+		oldMaximum, newMaximum uint64
+	}{
+		{name: "profile limit increases", credentialDigest: "requote-model-increase", oldMaximum: 2048, newMaximum: 4096},
+		{name: "profile limit decreases", credentialDigest: "requote-model-decrease", oldMaximum: 4096, newMaximum: 2048},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			defaults := intrinsicDefaults(now)
+			defaults.Limits.MaxTokens = 100_000
+			store := &intrinsicStore{}
+			quoter := FakeQuoter{AmountMicros: 1000, MaximumAuthorizedMicros: 2000, TTL: 5 * time.Minute, Now: func() time.Time { return now }}
+			service, err := NewService(store, defaults, quoter, func() time.Time { return now })
+			if err != nil {
+				t.Fatal(err)
+			}
+			proposal := credentialProposalCommand()
+			proposal.ModelAuthorization.MaximumOutputTokens = test.oldMaximum
+			offer, err := service.Propose(context.Background(), proposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if offer.Plan.Limits.MaxTokens != test.oldMaximum {
+				t.Fatalf("old effective max = %d", offer.Plan.Limits.MaxTokens)
+			}
+			current := offer.Plan.ModelAuthorization
+			current.ModelProfileRevision++
+			current.CredentialVersion++
+			current.CredentialBindingDigest = digestValue(test.credentialDigest)
+			current.MaximumOutputTokens = test.newMaximum
+			if err = current.Seal(); err != nil {
+				t.Fatal(err)
+			}
+			command, err := compileRequoteOffer(
+				context.Background(), quoter, defaults.Limits, offer.Plan,
+				RequoteReasonDrift, now.Add(time.Second), offer.Plan.AWS, current,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if command.Plan.Limits.MaxTokens != test.newMaximum ||
+				command.Plan.Quote.BasisDigest != command.Plan.AuthorizationBasisDigest ||
+				command.Plan.Digest == offer.Plan.Digest {
+				t.Fatalf("replacement limit/digest drift: old=%+v replacement=%+v", offer.Plan, command.Plan)
+			}
+		})
 	}
 }

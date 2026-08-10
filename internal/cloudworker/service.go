@@ -296,6 +296,10 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	if err := command.ModelAuthorization.Seal(); err != nil {
 		return Offer{}, err
 	}
+	limits, err := effectivePlanLimits(s.defaults.Limits, command.ModelAuthorization)
+	if err != nil {
+		return Offer{}, err
+	}
 	awsBinding, err := s.awsBindings.ResolveCurrentAWSBinding(ctx)
 	if err != nil || validateAWS(awsBinding) != nil {
 		return Offer{}, errors.Join(ErrStaleAuthorization, err)
@@ -341,7 +345,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		},
 		WorkerBootstrap:          s.defaults.WorkerBootstrap,
 		ModelRelay:               s.defaults.ModelRelay,
-		Limits:                   s.defaults.Limits,
+		Limits:                   limits,
 		NetworkGrants:            append([]string(nil), s.defaults.NetworkGrants...),
 		SecretGrants:             append([]SecretGrant(nil), s.defaults.SecretGrants...),
 		ArtifactRetentionSeconds: s.defaults.ArtifactRetentionSeconds,

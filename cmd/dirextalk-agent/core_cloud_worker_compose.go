@@ -264,7 +264,7 @@ func composeCoreCloudWorker(
 		return nil, fmt.Errorf("initialize Cloud Worker Execution V2 port: %w", err)
 	}
 	controller, err := cloudworker.NewController(cloudworker.ControllerConfig{
-		Store: cloudStore, Quoter: quoter, AWSBindings: credentialAuthority, ModelAuthorizations: modelResolver,
+		Store: cloudStore, Quoter: quoter, BaseLimits: defaults.Limits, AWSBindings: credentialAuthority, ModelAuthorizations: modelResolver,
 		Stager: stager, Outputs: outputs, Qualifications: qualification,
 		AWS: provider, Sessions: controlStore, ModelGrants: relay, Results: results,
 		PollInterval: worker.ControllerPollInterval, WorkerHeartbeatStaleAfter: 3 * worker.WorkerHeartbeatInterval,

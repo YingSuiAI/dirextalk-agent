@@ -27,7 +27,7 @@ func TestExactModelResolverRequiresCompleteSnapshotAndReturnsDestroyableCredenti
 	authorization := cloudworker.ModelAuthorization{
 		ModelProfileID: profile.ID, ModelProfileRevision: uint64(profile.Revision),
 		Provider: string(profile.Provider), Interface: modelrelay.InterfaceOpenAICompatible,
-		Model: profile.Model, CredentialVersion: uint64(profile.CredentialVersion),
+		Model: profile.Model, MaximumOutputTokens: uint64(profile.MaxOutputTokens), CredentialVersion: uint64(profile.CredentialVersion),
 		CredentialBindingDigest: snapshot.Digest(),
 	}
 	if err := authorization.Seal(); err != nil {
@@ -37,7 +37,7 @@ func TestExactModelResolverRequiresCompleteSnapshotAndReturnsDestroyableCredenti
 		OwnerID: "@owner:example.test", AccountGeneration: 9,
 		ProfileID: profile.ID, ProfileRevision: uint64(profile.Revision),
 		CredentialVersion: uint64(profile.CredentialVersion), Provider: string(profile.Provider),
-		Interface: modelrelay.InterfaceOpenAICompatible, Model: profile.Model,
+		Interface: modelrelay.InterfaceOpenAICompatible, Model: profile.Model, MaximumOutputTokens: uint64(profile.MaxOutputTokens),
 		CredentialBindingDigest: authorization.CredentialBindingDigest,
 		ModelBindingDigest:      authorization.BindingDigest,
 	}
@@ -70,7 +70,7 @@ func TestExactModelResolverRejectsRevisionCredentialAndEndpointDrift(t *testing.
 	snapshot := coremodel.SnapshotFromProfile(profile)
 	authorization := cloudworker.ModelAuthorization{
 		ModelProfileID: profile.ID, ModelProfileRevision: 7, Provider: string(profile.Provider),
-		Interface: modelrelay.InterfaceOpenAICompatible, Model: profile.Model, CredentialVersion: 3,
+		Interface: modelrelay.InterfaceOpenAICompatible, Model: profile.Model, MaximumOutputTokens: uint64(profile.MaxOutputTokens), CredentialVersion: 3,
 		CredentialBindingDigest: snapshot.Digest(),
 	}
 	if err := authorization.Seal(); err != nil {
@@ -79,7 +79,7 @@ func TestExactModelResolverRejectsRevisionCredentialAndEndpointDrift(t *testing.
 	reference := modelrelay.ProfileReference{
 		OwnerID: "@owner:example.test", AccountGeneration: 9, ProfileID: profile.ID,
 		ProfileRevision: 7, CredentialVersion: 3, Provider: string(profile.Provider),
-		Interface: modelrelay.InterfaceOpenAICompatible, Model: profile.Model,
+		Interface: modelrelay.InterfaceOpenAICompatible, Model: profile.Model, MaximumOutputTokens: uint64(profile.MaxOutputTokens),
 		CredentialBindingDigest: authorization.CredentialBindingDigest, ModelBindingDigest: authorization.BindingDigest,
 	}
 	current := profile

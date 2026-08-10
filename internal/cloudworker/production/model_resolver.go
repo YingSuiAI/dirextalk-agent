@@ -83,7 +83,8 @@ func (resolver *ExactModelResolver) resolve(ctx context.Context, reference model
 	expected := cloudworker.ModelAuthorization{
 		ModelProfileID: reference.ProfileID, ModelProfileRevision: reference.ProfileRevision,
 		Provider: reference.Provider, Model: reference.Model, Interface: reference.Interface,
-		CredentialVersion: reference.CredentialVersion, CredentialBindingDigest: reference.CredentialBindingDigest,
+		MaximumOutputTokens: reference.MaximumOutputTokens,
+		CredentialVersion:   reference.CredentialVersion, CredentialBindingDigest: reference.CredentialBindingDigest,
 	}
 	if expected.Seal() != nil || expected.BindingDigest != reference.ModelBindingDigest {
 		return coremodel.Profile{}, modelrelay.ErrProfileDrift

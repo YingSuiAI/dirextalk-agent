@@ -21,6 +21,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/google/uuid"
 )
@@ -142,6 +143,12 @@ func (task Task) Validate() error {
 			return ErrInvalid
 		}
 	} else if task.WorkspaceSHA256 != task.InputManifestSHA256 {
+		return ErrInvalid
+	}
+	if task.Adapter == AdapterPiJSONTaskV1 &&
+		task.ModelProvider == "deepseek" &&
+		(task.MaxOutputTokens < runtimebounds.PiOpenAICompatibleMinimumOutputTokens ||
+			task.MaxOutputTokens > runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens) {
 		return ErrInvalid
 	}
 	return nil

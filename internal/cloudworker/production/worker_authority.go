@@ -97,6 +97,7 @@ func (authority *WorkerAuthority) IssueWorkerClaimMaterial(ctx context.Context, 
 		CredentialVersion: resume.Plan.ModelAuthorization.CredentialVersion,
 		Provider:          resume.Plan.ModelAuthorization.Provider, Interface: resume.Plan.ModelAuthorization.Interface,
 		Model:                   resume.Plan.ModelAuthorization.Model,
+		MaximumOutputTokens:     resume.Plan.ModelAuthorization.MaximumOutputTokens,
 		CredentialBindingDigest: resume.Plan.ModelAuthorization.CredentialBindingDigest,
 		ModelBindingDigest:      resume.Plan.ModelAuthorization.BindingDigest,
 	}

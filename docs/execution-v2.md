@@ -148,6 +148,13 @@ a fresh quote and fresh CoreConfirmation. An expired quote, credential drift,
 model drift, input drift, instance drift, or grant drift cannot reuse an old
 confirmation.
 
+For the Pi OpenAI-compatible adapter, the Plan carries one effective output
+token limit computed before its authorization digest and quote. It is the
+minimum of the server Cloud Worker limit, a positive exact-profile output
+limit, and Pi's qualified provider-request ceiling of 384 Ki tokens, and it
+must be at least 512 tokens. The same value is priced and then propagated
+unchanged through the runtime task, Model Relay grant, and Pi model override.
+
 Public projections are explicit allow-lists. They omit AWS credential IDs,
 raw objectives, user-prompt and private model-binding digests, exact S3
 locations, placement/bootstrap/relay material, provider resource IDs,

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/google/uuid"
 )
 
@@ -221,6 +222,20 @@ func TestActivatePersistsOnlyDigestAndBuildsRuntimeGrant(t *testing.T) {
 	first, _ := fixture.store.GetGrant(t.Context(), fixture.issued.Grant.GrantID)
 	if first.State != GrantFenced || first.ReasonCode != "superseded" || second.Grant.State != GrantActive {
 		t.Fatalf("grant replacement first=%+v second=%+v", first, second.Grant)
+	}
+}
+
+func TestQualifiedPiMaximumPropagatesUnchangedIntoRuntimeGrant(t *testing.T) {
+	fixture := newRelayFixture(t, runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens)
+	defer fixture.issued.Destroy()
+	runtimeGrant, err := fixture.issued.RuntimeModelGrant()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeGrant.Destroy()
+	if fixture.issued.Grant.MaxTokens != runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens ||
+		runtimeGrant.MaxOutputTokens != fixture.issued.Grant.MaxTokens {
+		t.Fatalf("relay/runtime grant max drift: grant=%d runtime=%d", fixture.issued.Grant.MaxTokens, runtimeGrant.MaxOutputTokens)
 	}
 }
 

@@ -673,7 +673,7 @@ func (fixture *controllerTestFixture) controller(t *testing.T, quoter Quoter) *C
 		quoter = fixture.quoter
 	}
 	controller, err := NewController(ControllerConfig{
-		Store: fixture.store, Quoter: quoter, AWSBindings: fixture.bindings, ModelAuthorizations: fixture.models, Stager: fixture.stager,
+		Store: fixture.store, Quoter: quoter, BaseLimits: intrinsicDefaults(fixture.now).Limits, AWSBindings: fixture.bindings, ModelAuthorizations: fixture.models, Stager: fixture.stager,
 		Outputs:        fixture.outputs,
 		Qualifications: fixture.resolver, AWS: fixture.aws, Sessions: fixture.sessions,
 		ModelGrants: fixture.grants, Results: fixture.collector,
