@@ -1,7 +1,6 @@
 package control
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -15,26 +14,12 @@ import (
 	"github.com/google/uuid"
 )
 
-const (
-	defaultIdentityVerificationRetryTimeout        = 30 * time.Second
-	defaultIdentityVerificationRetryInitialBackoff = time.Second
-	defaultIdentityVerificationRetryMaximumBackoff = 5 * time.Second
-)
-
-type identityVerificationRetryPolicy struct {
-	timeout        time.Duration
-	initialBackoff time.Duration
-	maximumBackoff time.Duration
-}
-
 type Service struct {
-	store                Store
-	verifier             IdentityVerifier
-	leases               LeaseAuthority
-	clock                func() time.Time
-	random               func([]byte) error
-	identityRetry        identityVerificationRetryPolicy
-	waitForIdentityRetry func(context.Context, time.Duration) error
+	store    Store
+	verifier IdentityVerifier
+	leases   LeaseAuthority
+	clock    func() time.Time
+	random   func([]byte) error
 }
 
 func NewService(store Store, verifier IdentityVerifier, leases LeaseAuthority) (*Service, error) {
@@ -45,12 +30,6 @@ func NewService(store Store, verifier IdentityVerifier, leases LeaseAuthority) (
 		store: store, verifier: verifier, leases: leases,
 		clock:  func() time.Time { return time.Now().UTC() },
 		random: func(value []byte) error { _, err := rand.Read(value); return err },
-		identityRetry: identityVerificationRetryPolicy{
-			timeout:        defaultIdentityVerificationRetryTimeout,
-			initialBackoff: defaultIdentityVerificationRetryInitialBackoff,
-			maximumBackoff: defaultIdentityVerificationRetryMaximumBackoff,
-		},
-		waitForIdentityRetry: waitForIdentityVerificationRetry,
 	}, nil
 }
 
@@ -92,7 +71,6 @@ func (s *Service) Claim(ctx context.Context, request ClaimRequest) (ClaimResult,
 	if s == nil || !validUUID(request.ChallengeID) || request.Fence.validate() != nil || strings.TrimSpace(request.Nonce) != request.Nonce || len(request.Nonce) < 32 || validateProof(request.Proof) != nil {
 		return ClaimResult{}, ErrInvalid
 	}
-	defer clear(request.Proof.Payload)
 	if err := s.leases.ValidateCloudWorkerLease(ctx, request.Fence); err != nil {
 		logClaimRejected(request, "lease", ErrStaleLease)
 		return ClaimResult{}, ErrStaleLease
@@ -115,19 +93,10 @@ func (s *Service) Claim(ctx context.Context, request ClaimRequest) (ClaimResult,
 		logClaimRejected(request, "challenge_binding", ErrIdentityRejected)
 		return ClaimResult{}, ErrIdentityRejected
 	}
-	claims, err := s.verifyIdentityWithRetry(ctx, request, challenge.ExpiresAt)
+	claims, err := s.verifier.Verify(ctx, request.Nonce, request.Proof)
 	if err != nil {
 		logClaimRejected(request, "identity_verifier", err)
 		return ClaimResult{}, redactedVerifierError(err)
-	}
-	now = s.clock().UTC()
-	if !now.Before(challenge.ExpiresAt) {
-		logClaimRejected(request, "post_verification_challenge_expired", ErrChallengeExpired)
-		return ClaimResult{}, ErrChallengeExpired
-	}
-	if err := s.leases.ValidateCloudWorkerLease(ctx, request.Fence); err != nil {
-		logClaimRejected(request, "post_verification_lease", ErrStaleLease)
-		return ClaimResult{}, ErrStaleLease
 	}
 	if err := validateClaims(challenge.Expectation, claims); err != nil {
 		logClaimRejected(request, "identity_claims", err)
@@ -151,95 +120,6 @@ func (s *Service) Claim(ctx context.Context, request ClaimRequest) (ClaimResult,
 		return ClaimResult{}, err
 	}
 	return ClaimResult{Session: session, SessionToken: append([]byte(nil), token...)}, nil
-}
-
-// verifyIdentityWithRetry absorbs short AWS identity/read-back convergence
-// after the durable challenge and fence have already been validated. Every
-// attempt runs the complete verifier against a private proof copy; no identity
-// mismatch is accepted and the challenge remains unconsumed until verification
-// and the atomic session claim both succeed.
-func (s *Service) verifyIdentityWithRetry(
-	ctx context.Context,
-	request ClaimRequest,
-	challengeExpiresAt time.Time,
-) (IdentityClaims, error) {
-	policy := s.identityRetry
-	if policy.timeout <= 0 || policy.initialBackoff <= 0 ||
-		policy.maximumBackoff < policy.initialBackoff || s.waitForIdentityRetry == nil {
-		return IdentityClaims{}, ErrInvalid
-	}
-	if err := ctx.Err(); err != nil {
-		return IdentityClaims{}, err
-	}
-	start := s.clock().UTC()
-	deadline := start.Add(policy.timeout)
-	if challengeExpiresAt.Before(deadline) {
-		deadline = challengeExpiresAt
-	}
-	retryDuration := deadline.Sub(start)
-	if retryDuration <= 0 {
-		return IdentityClaims{}, ErrIdentityRejected
-	}
-	retryCtx, cancel := context.WithTimeout(ctx, retryDuration)
-	defer cancel()
-	backoff := policy.initialBackoff
-	attempt := 0
-	for {
-		if err := ctx.Err(); err != nil {
-			return IdentityClaims{}, err
-		}
-		if retryCtx.Err() != nil || !s.clock().UTC().Before(deadline) {
-			return IdentityClaims{}, ErrIdentityRejected
-		}
-		attempt++
-		proof := IdentityProof{
-			Method:  request.Proof.Method,
-			Payload: bytes.Clone(request.Proof.Payload),
-		}
-		claims, err := s.verifier.Verify(retryCtx, request.Nonce, proof)
-		clear(proof.Payload)
-		if err == nil {
-			return claims, nil
-		}
-		if ctx.Err() != nil {
-			return IdentityClaims{}, ctx.Err()
-		}
-		if !errors.Is(err, ErrIdentityRejected) {
-			return IdentityClaims{}, err
-		}
-		remaining := deadline.Sub(s.clock().UTC())
-		if retryCtx.Err() != nil || remaining <= 0 {
-			return IdentityClaims{}, ErrIdentityRejected
-		}
-		delay := min(backoff, remaining)
-		slog.Warn(
-			"[cloud-worker.control] identity_verification_retry",
-			"execution_id", request.Fence.ExecutionID,
-			"task_id", request.Fence.TaskID,
-			"verification_attempt", attempt,
-			"delay_ms", delay.Milliseconds(),
-		)
-		if err := s.waitForIdentityRetry(retryCtx, delay); err != nil {
-			if ctx.Err() != nil {
-				return IdentityClaims{}, ctx.Err()
-			}
-			return IdentityClaims{}, ErrIdentityRejected
-		}
-		if backoff < policy.maximumBackoff {
-			backoff = min(backoff*2, policy.maximumBackoff)
-		}
-	}
-}
-
-func waitForIdentityVerificationRetry(ctx context.Context, delay time.Duration) error {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
 func logClaimRejected(request ClaimRequest, stage string, err error) {
