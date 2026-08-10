@@ -363,18 +363,35 @@ func TestCoreExtensionPostgresExecutionFenceReplay(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	execution, e := coord.RequestTask(ctx, coreextension.ExecuteRequest{InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: key})
+	execution, e := coord.RequestTask(ctx, coreextension.ExecuteRequest{OwnerID: "@owner:example.test", AccountGeneration: 1, InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: key})
 	if e != nil || execution.TaskID == "" || execution.ConfirmationID == "" {
 		t.Fatalf("execution proposal=%#v err=%v", execution, e)
 	}
-	if _, e = coord.RequestTask(ctx, coreextension.ExecuteRequest{InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()}); !errors.Is(e, coreextension.ErrConflict) {
+	if _, e = coord.RequestTask(ctx, coreextension.ExecuteRequest{OwnerID: "@owner:example.test", AccountGeneration: 1, InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()}); !errors.Is(e, coreextension.ErrConflict) {
 		t.Fatalf("concurrent execution proposal was accepted: %v", e)
 	}
 	binding, e := cs.ReadTargetBinding(ctx, execution.ConfirmationID)
 	if e != nil {
 		t.Fatal(e)
 	}
-	confirmed, e := cs.Confirm(ctx, coreconfirmation.ConfirmCommand{ConfirmationID: execution.ConfirmationID, IdempotencyKey: uuid.NewString(), RequestDigest: coreconfirmation.Digest(strings.Repeat("e", 64)), ExpectedRevision: 1, Binding: binding, At: time.Now().UTC()})
+	if binding.OwnerID != "@owner:example.test" {
+		t.Fatalf("execution confirmation owner=%q", binding.OwnerID)
+	}
+	confirmationService, e := coreconfirmation.NewService(cs)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = confirmationService.GetAuthorized(ctx, coreconfirmation.Authority{OwnerID: "@foreign:example.test", AccountGeneration: 1}, execution.ConfirmationID); !errors.Is(e, coreconfirmation.ErrNotFound) {
+		t.Fatalf("foreign owner authorization error=%v", e)
+	}
+	if _, e = confirmationService.GetAuthorized(ctx, coreconfirmation.Authority{OwnerID: "@owner:example.test", AccountGeneration: 2}, execution.ConfirmationID); !errors.Is(e, coreconfirmation.ErrStale) {
+		t.Fatalf("stale generation authorization error=%v", e)
+	}
+	unchanged, e := cs.Get(ctx, execution.ConfirmationID)
+	if e != nil || unchanged.State != coreconfirmation.StatePending || unchanged.Revision != 1 {
+		t.Fatalf("authorization checks mutated confirmation=%+v err=%v", unchanged, e)
+	}
+	confirmed, e := confirmationService.ConfirmAuthorized(ctx, coreconfirmation.Authority{OwnerID: "@owner:example.test", AccountGeneration: 1}, coreconfirmation.ConfirmCommand{ConfirmationID: execution.ConfirmationID, IdempotencyKey: uuid.NewString(), ExpectedRevision: 1, At: time.Now().UTC()})
 	if e != nil || confirmed.State != coreconfirmation.StateConfirmed {
 		t.Fatalf("execution confirmation=%#v err=%v", confirmed, e)
 	}
@@ -409,7 +426,7 @@ func TestCoreExtensionPostgresExecutionFenceReplay(t *testing.T) {
 	// Crash after consumption: reclaiming the task under a new lease must not
 	// redispatch the one-shot capability. The task is durably marked uncertain
 	// while the consumed reservation remains active and blocks new proposals.
-	second, e := coord2.RequestTask(ctx, coreextension.ExecuteRequest{InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()})
+	second, e := coord2.RequestTask(ctx, coreextension.ExecuteRequest{OwnerID: "@owner:example.test", AccountGeneration: 1, InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -455,7 +472,7 @@ func TestCoreExtensionPostgresExecutionFenceReplay(t *testing.T) {
 	if !activeReservation || released {
 		t.Fatalf("uncertain reservation was released: active=%v released=%v", activeReservation, released)
 	}
-	if _, e = coord2.RequestTask(ctx, coreextension.ExecuteRequest{InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()}); !errors.Is(e, coreextension.ErrConflict) {
+	if _, e = coord2.RequestTask(ctx, coreextension.ExecuteRequest{OwnerID: "@owner:example.test", AccountGeneration: 1, InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()}); !errors.Is(e, coreextension.ErrConflict) {
 		t.Fatalf("proposal bypassed uncertain reservation: %v", e)
 	}
 	uncertainTask, e := ts.GetTask(ctx, secondTask.ID)
@@ -466,7 +483,13 @@ func TestCoreExtensionPostgresExecutionFenceReplay(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	ackCommand := coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand{ConfirmationID: second.ConfirmationID, TaskID: secondTask.ID, InstallationID: installed.ID, ExpectedTaskRevision: int64(uncertainTask.Revision), ExpectedConfirmationRevision: uncertainConfirmation.Revision, Resolution: coreconfirmation.ExtensionUncertainAcknowledgedUnknownNoRetry, IdempotencyKey: uuid.NewString()}
+	ackCommand := coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand{OwnerID: "@owner:example.test", AccountGeneration: 1, ConfirmationID: second.ConfirmationID, TaskID: secondTask.ID, InstallationID: installed.ID, ExpectedTaskRevision: int64(uncertainTask.Revision), ExpectedConfirmationRevision: uncertainConfirmation.Revision, Resolution: coreconfirmation.ExtensionUncertainAcknowledgedUnknownNoRetry, IdempotencyKey: uuid.NewString()}
+	staleAck := ackCommand
+	staleAck.AccountGeneration = 2
+	staleAck.IdempotencyKey = uuid.NewString()
+	if _, e = cs.AcknowledgeExtensionExecutionUncertain(ctx, staleAck); !errors.Is(e, coreconfirmation.ErrConflict) {
+		t.Fatalf("stale generation uncertain acknowledgement error=%v", e)
+	}
 	ack, e := cs.AcknowledgeExtensionExecutionUncertain(ctx, ackCommand)
 	if e != nil || !ack.ReservationReleased || ack.Task.FailureCode != "extension_execution_uncertain" {
 		t.Fatalf("ack=%+v err=%v", ack, e)
@@ -486,7 +509,7 @@ func TestCoreExtensionPostgresExecutionFenceReplay(t *testing.T) {
 		concurrent.Add(1)
 		go func() {
 			defer concurrent.Done()
-			_, reqErr := coord2.RequestTask(ctx, coreextension.ExecuteRequest{InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()})
+			_, reqErr := coord2.RequestTask(ctx, coreextension.ExecuteRequest{OwnerID: "@owner:example.test", AccountGeneration: 1, InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()})
 			results <- reqErr
 		}()
 	}
@@ -561,7 +584,7 @@ func TestCoreExtensionPostgresUncertainAckRacesLifecycleMutations(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution, err := coord.RequestTask(ctx, coreextension.ExecuteRequest{InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: json.RawMessage(`{"x":1}`), IdempotencyKey: uuid.NewString()})
+	execution, err := coord.RequestTask(ctx, coreextension.ExecuteRequest{OwnerID: "@owner:example.test", AccountGeneration: 1, InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: json.RawMessage(`{"x":1}`), IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +633,7 @@ func TestCoreExtensionPostgresUncertainAckRacesLifecycleMutations(t *testing.T) 
 	if _, err = ext.RemoveMutation(ctx, preflight); !errors.Is(err, coreextension.ErrConflict) {
 		t.Fatalf("remove bypassed active uncertain reservation: %v", err)
 	}
-	ackCommand := coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand{ConfirmationID: execution.ConfirmationID, TaskID: execution.TaskID, InstallationID: installed.ID, ExpectedTaskRevision: int64(uncertainTask.Revision), ExpectedConfirmationRevision: uncertainConfirmation.Revision, Resolution: coreconfirmation.ExtensionUncertainAcknowledgedUnknownNoRetry, IdempotencyKey: uuid.NewString()}
+	ackCommand := coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand{OwnerID: "@owner:example.test", AccountGeneration: 1, ConfirmationID: execution.ConfirmationID, TaskID: execution.TaskID, InstallationID: installed.ID, ExpectedTaskRevision: int64(uncertainTask.Revision), ExpectedConfirmationRevision: uncertainConfirmation.Revision, Resolution: coreconfirmation.ExtensionUncertainAcknowledgedUnknownNoRetry, IdempotencyKey: uuid.NewString()}
 
 	type lifecycleResult struct {
 		name string

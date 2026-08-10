@@ -1114,7 +1114,7 @@ func (c *coreConfirmationCapability) HandleOperation(ctx context.Context, operat
 		value, err := c.service.RejectAuthorized(ctx, authority, coreconfirmation.RejectCommand{ConfirmationID: stringValue(in, "confirmation_id"), IdempotencyKey: key, ExpectedRevision: int64Value(in, "expected_revision"), Reason: stringValue(in, "reason"), Note: stringValue(in, "note")})
 		return marshalResult(map[string]any{"confirmation": value.Public()}, err)
 	case "acknowledge_extension_execution_uncertain":
-		value, err := c.service.AcknowledgeExtensionExecutionUncertain(ctx, coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand{ConfirmationID: stringValue(in, "confirmation_id"), TaskID: stringValue(in, "task_id"), InstallationID: stringValue(in, "installation_id"), ExpectedTaskRevision: int64Value(in, "expected_task_revision"), ExpectedConfirmationRevision: int64Value(in, "expected_confirmation_revision"), Resolution: coreconfirmation.ExtensionUncertainResolution(stringValue(in, "resolution")), IdempotencyKey: key})
+		value, err := c.service.AcknowledgeExtensionExecutionUncertain(ctx, coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand{OwnerID: authority.OwnerID, AccountGeneration: authority.AccountGeneration, ConfirmationID: stringValue(in, "confirmation_id"), TaskID: stringValue(in, "task_id"), InstallationID: stringValue(in, "installation_id"), ExpectedTaskRevision: int64Value(in, "expected_task_revision"), ExpectedConfirmationRevision: int64Value(in, "expected_confirmation_revision"), Resolution: coreconfirmation.ExtensionUncertainResolution(stringValue(in, "resolution")), IdempotencyKey: key})
 		return marshalResult(value, err)
 	default:
 		return nil, fmt.Errorf("unknown confirmation operation %q", operationID)
@@ -1851,11 +1851,15 @@ func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operation
 		x, err := c.service.ListTools(ctx, stringValue(in, "installation_id"), int64Value(in, "expected_revision"))
 		return marshalResult(map[string]any{"tools": x}, err)
 	case "invoke_skill", "execute_mcp":
+		permission, ok := capabilityclient.PermissionFromContext(ctx)
+		if !ok || permission == nil || strings.TrimSpace(permission.GetAuthenticatedOwnerId()) == "" || permission.GetAccountGeneration() <= 0 {
+			return nil, coreextension.ErrInvalid
+		}
 		input := json.RawMessage(in["input"])
 		if len(input) == 0 {
 			input = json.RawMessage(`{}`)
 		}
-		r, err := c.service.Execute(ctx, coreextension.ExecuteRequest{InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision"), ToolName: stringValue(in, "tool_name"), Input: input, IdempotencyKey: valueOrUUID(in, "idempotency_key")})
+		r, err := c.service.Execute(ctx, coreextension.ExecuteRequest{OwnerID: strings.TrimSpace(permission.GetAuthenticatedOwnerId()), AccountGeneration: uint64(permission.GetAccountGeneration()), InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision"), ToolName: stringValue(in, "tool_name"), Input: input, IdempotencyKey: valueOrUUID(in, "idempotency_key")})
 		return marshalResult(r, err)
 	case "invoke_product":
 		return c.invokeProduct(ctx, in)

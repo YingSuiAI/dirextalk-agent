@@ -593,15 +593,17 @@ type ToggleCommand struct {
 	Enabled          bool
 }
 type ExecuteRequest struct {
-	InstallationID   string
-	ExpectedRevision int64
-	ToolName         string
-	Input            json.RawMessage
-	IdempotencyKey   string
+	OwnerID           string
+	AccountGeneration uint64
+	InstallationID    string
+	ExpectedRevision  int64
+	ToolName          string
+	Input             json.RawMessage
+	IdempotencyKey    string
 }
 type ExecuteResult struct {
-	TaskID         string
-	ConfirmationID string
+	TaskID         string `json:"task_id"`
+	ConfirmationID string `json:"confirmation_id"`
 }
 
 type SourceAdapter interface {

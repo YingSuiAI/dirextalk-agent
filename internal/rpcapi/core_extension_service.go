@@ -2,13 +2,11 @@ package rpcapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"strings"
 	"time"
@@ -289,17 +287,6 @@ func (s *MCPService) ListTools(ctx context.Context, r *agentv1.MCPServiceListToo
 	}
 	return o, nil
 }
-func (s *MCPService) ExecuteTool(ctx context.Context, r *agentv1.MCPServiceExecuteToolRequest) (*agentv1.MCPServiceExecuteToolResponse, error) {
-	var in json.RawMessage
-	if r.Input != nil {
-		in, _ = json.Marshal(r.Input.AsMap())
-	}
-	x, e := s.svc.Execute(ctx, coreextension.ExecuteRequest{IdempotencyKey: r.IdempotencyKey, InstallationID: r.InstallationId, ExpectedRevision: r.ExpectedRevision, ToolName: r.ToolName, Input: in})
-	if e != nil {
-		return nil, extErr(e)
-	}
-	return &agentv1.MCPServiceExecuteToolResponse{TaskId: x.TaskID, ConfirmationId: x.ConfirmationID}, nil
-}
 
 // SkillService delegates to the same narrow implementation while preserving
 // the generated service-specific protobuf contract.
@@ -372,17 +359,5 @@ func (s *SkillService) Get(ctx context.Context, r *agentv1.SkillServiceGetReques
 	}
 	return &agentv1.SkillServiceGetResponse{Installation: installTo(i)}, nil
 }
-func (s *SkillService) Execute(ctx context.Context, r *agentv1.SkillServiceExecuteRequest) (*agentv1.SkillServiceExecuteResponse, error) {
-	var in json.RawMessage
-	if r.Input != nil {
-		in, _ = json.Marshal(r.Input.AsMap())
-	}
-	x, e := s.svc.Execute(ctx, coreextension.ExecuteRequest{IdempotencyKey: r.IdempotencyKey, InstallationID: r.InstallationId, ExpectedRevision: r.ExpectedRevision, Input: in})
-	if e != nil {
-		return nil, extErr(e)
-	}
-	return &agentv1.SkillServiceExecuteResponse{TaskId: x.TaskID, ConfirmationId: x.ConfirmationID}, nil
-}
 
 var _ = time.Time{}
-var _ = structpb.NewStruct

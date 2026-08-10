@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -116,5 +117,25 @@ func TestClassifyCapabilityErrorMapsCoreTaskScheduleErrors(t *testing.T) {
 				t.Fatalf("code=%q classified=%v err=%v", code, ok, classified)
 			}
 		})
+	}
+}
+
+func TestClassifyCapabilityErrorMapsConfirmationErrors(t *testing.T) {
+	tests := []struct {
+		err      error
+		wantCode string
+	}{
+		{err: coreconfirmation.ErrInvalid, wantCode: "INVALID_ARGUMENT"},
+		{err: coreconfirmation.ErrNotFound, wantCode: "NOT_FOUND"},
+		{err: coreconfirmation.ErrRevisionConflict, wantCode: "CONFLICT"},
+		{err: coreconfirmation.ErrStale, wantCode: "PRECONDITION_FAILED"},
+		{err: coreconfirmation.ErrBindingUnavailable, wantCode: "UNAVAILABLE"},
+	}
+	for _, test := range tests {
+		classified := classifyCapabilityError(test.err)
+		code, _, ok := capabilityoperation.FailureDetails(classified)
+		if !ok || code != test.wantCode || !errors.Is(classified, test.err) {
+			t.Fatalf("error=%v code=%q classified=%v ok=%v", test.err, code, classified, ok)
+		}
 	}
 }

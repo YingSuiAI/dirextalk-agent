@@ -59,6 +59,16 @@ func TestSourceMatrixAndSecretRedaction(t *testing.T) {
 	}
 }
 
+func TestExecuteResultUsesPublicSnakeCaseKeys(t *testing.T) {
+	raw, err := json.Marshal(ExecuteResult{TaskID: "task-id", ConfirmationID: "confirmation-id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"task_id":"task-id","confirmation_id":"confirmation-id"}` {
+		t.Fatalf("unexpected execute result JSON: %s", raw)
+	}
+}
+
 func TestAllSourceMatrices(t *testing.T) {
 	for _, source := range []Source{SourceOfficialRegistry, SourceSmithery, SourceGlama, SourceGitHub} {
 		c, i := testInspection(t, KindMCP, source)

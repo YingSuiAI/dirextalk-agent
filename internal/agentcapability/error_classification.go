@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreimagetool"
@@ -84,6 +85,7 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coremodel.ErrUnsupportedProvider),
 		errors.Is(err, coremodel.ErrInvalidCompletionRequest),
 		errors.Is(err, coremodel.ErrCompletionRequestTooLarge),
+		errors.Is(err, coreconfirmation.ErrInvalid),
 		errors.Is(err, coretask.ErrInvalid),
 		errors.Is(err, coreknowledge.ErrInvalid),
 		errors.Is(err, coreknowledge.ErrChecksumMismatch),
@@ -99,6 +101,7 @@ func classifyCapabilityError(err error) error {
 		return capabilityoperation.NewFailure("RESOURCE_EXHAUSTED", capabilityoperation.KnowledgeQuotaExceededMessage, err)
 	case errors.Is(err, coreconversation.ErrDeleted),
 		errors.Is(err, coremodel.ErrProfileNotFound),
+		errors.Is(err, coreconfirmation.ErrNotFound),
 		errors.Is(err, coretask.ErrNotFound),
 		errors.Is(err, coreknowledge.ErrNotFound),
 		errors.Is(err, coretexttool.ErrNotFound):
@@ -113,6 +116,10 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coremodel.ErrRevisionConflict),
 		errors.Is(err, coremodel.ErrProfileInUse),
 		errors.Is(err, coremodel.ErrSyncConflict),
+		errors.Is(err, coreconfirmation.ErrConflict),
+		errors.Is(err, coreconfirmation.ErrRevisionConflict),
+		errors.Is(err, coreconfirmation.ErrIdempotencyConflict),
+		errors.Is(err, coreconfirmation.ErrTaskFenceConflict),
 		errors.Is(err, coretask.ErrConflict),
 		errors.Is(err, coretask.ErrRevisionConflict),
 		errors.Is(err, coretask.ErrLeaseConflict),
@@ -140,6 +147,8 @@ func classifyCapabilityError(err error) error {
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent configuration is not ready", err)
 	case errors.Is(err, coretask.ErrTerminal), errors.Is(err, coretask.ErrTimedOut):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent task cannot be changed in its current state", err)
+	case errors.Is(err, coreconfirmation.ErrStale), errors.Is(err, coreconfirmation.ErrExpired), errors.Is(err, coreconfirmation.ErrInvalidTransition):
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent confirmation cannot be changed in its current state", err)
 	case errors.Is(err, coreconversation.ErrChatFailed):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent chat failed", err)
 	case errors.Is(err, coremodel.ErrProfileRepository),
@@ -147,6 +156,7 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coremodel.ErrProviderUnavailable),
 		errors.Is(err, coremodel.ErrInvalidResponse),
 		errors.Is(err, coremodel.ErrStreamTruncated),
+		errors.Is(err, coreconfirmation.ErrBindingUnavailable),
 		errors.Is(err, coreknowledge.ErrFilesystemUnavailable),
 		errors.Is(err, coretexttool.ErrRepository),
 		errors.Is(err, coreimagetool.ErrRepository), errors.Is(err, coreimagetool.ErrModel),

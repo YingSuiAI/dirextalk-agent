@@ -51,11 +51,10 @@ func authorizeConfirmation(value Confirmation, authority Authority) error {
 		// Do not disclose the existence of another owner's confirmation.
 		return ErrNotFound
 	}
-	if value.Binding.OperationDomain == "cloud_worker.execute" || value.Binding.OperationDomain == "execution_v2.run" {
-		// Cloud Worker authorization is account-generation fenced because an
-		// owner identifier may be recreated after deprovisioning. A missing
-		// owner/generation on this domain is an invalid stale authority record,
-		// not permission to use the current account.
+	if value.Binding.OperationDomain == "cloud_worker.execute" || value.Binding.OperationDomain == "execution_v2.run" || value.Binding.OperationDomain == "extension.execute" {
+		// Durable execution authorization is account-generation fenced because
+		// an owner identifier may be recreated after deprovisioning. A missing
+		// owner/generation is stale authority, not permission for the new account.
 		if storedOwner != authority.OwnerID || boundOwner != authority.OwnerID ||
 			value.Binding.AccountGeneration != authority.AccountGeneration {
 			return ErrStale
@@ -257,7 +256,8 @@ func (s *Service) ReleaseReservation(ctx context.Context, command ReleaseReserva
 // AcknowledgeExtensionExecutionUncertain is an explicit reconciliation
 // acknowledgement. It never retries or dispatches the uncertain operation.
 func (s *Service) AcknowledgeExtensionExecutionUncertain(ctx context.Context, command AcknowledgeExtensionExecutionUncertainCommand) (AcknowledgeExtensionExecutionUncertainResult, error) {
-	if s == nil || !validateUUID(command.IdempotencyKey) || !validateUUID(command.ConfirmationID) || !validateUUID(command.TaskID) || !validateUUID(command.InstallationID) || command.ExpectedTaskRevision < 1 || command.ExpectedConfirmationRevision < 1 || command.Resolution != ExtensionUncertainAcknowledgedUnknownNoRetry {
+	command.OwnerID = strings.TrimSpace(command.OwnerID)
+	if s == nil || command.OwnerID == "" || command.AccountGeneration == 0 || !validateUUID(command.IdempotencyKey) || !validateUUID(command.ConfirmationID) || !validateUUID(command.TaskID) || !validateUUID(command.InstallationID) || command.ExpectedTaskRevision < 1 || command.ExpectedConfirmationRevision < 1 || command.Resolution != ExtensionUncertainAcknowledgedUnknownNoRetry {
 		return AcknowledgeExtensionExecutionUncertainResult{}, ErrInvalid
 	}
 	ack, ok := s.repository.(ExtensionUncertainAcknowledger)

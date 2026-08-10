@@ -14,19 +14,14 @@ import (
 
 type CoreConfirmationService struct {
 	agentv1.UnimplementedConfirmationServiceServer
-	service      *coreconfirmation.Service
-	acknowledger coreconfirmation.ExtensionUncertainAcknowledger
+	service *coreconfirmation.Service
 }
 
-func NewCoreConfirmationService(s *coreconfirmation.Service, optional ...coreconfirmation.ExtensionUncertainAcknowledger) (*CoreConfirmationService, error) {
+func NewCoreConfirmationService(s *coreconfirmation.Service) (*CoreConfirmationService, error) {
 	if s == nil {
 		return nil, errors.New("confirmation service requires service")
 	}
-	var acknowledger coreconfirmation.ExtensionUncertainAcknowledger
-	if len(optional) > 0 {
-		acknowledger = optional[0]
-	}
-	return &CoreConfirmationService{service: s, acknowledger: acknowledger}, nil
+	return &CoreConfirmationService{service: s}, nil
 }
 func (s *CoreConfirmationService) Get(ctx context.Context, r *agentv1.ConfirmationServiceGetRequest) (*agentv1.ConfirmationServiceGetResponse, error) {
 	if r == nil {
@@ -75,23 +70,6 @@ func (s *CoreConfirmationService) Reject(ctx context.Context, r *agentv1.Confirm
 		return nil, confirmationError(e)
 	}
 	return &agentv1.ConfirmationServiceRejectResponse{Confirmation: confirmationProto(c)}, nil
-}
-func (s *CoreConfirmationService) AcknowledgeExtensionExecutionUncertain(ctx context.Context, r *agentv1.ConfirmationServiceAcknowledgeExtensionExecutionUncertainRequest) (*agentv1.ConfirmationServiceAcknowledgeExtensionExecutionUncertainResponse, error) {
-	if r == nil || s.acknowledger == nil {
-		return nil, status.Error(codes.Unimplemented, "extension execution reconciliation unavailable")
-	}
-	if r.GetResolution() != agentv1.CoreExtensionExecutionUncertainResolution_CORE_EXTENSION_EXECUTION_UNCERTAIN_RESOLUTION_ACKNOWLEDGED_UNKNOWN_NO_RETRY {
-		return nil, status.Error(codes.InvalidArgument, "unsupported reconciliation resolution")
-	}
-	result, err := s.acknowledger.AcknowledgeExtensionExecutionUncertain(ctx, coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand{
-		ConfirmationID: r.GetConfirmationId(), TaskID: r.GetTaskId(), InstallationID: r.GetInstallationId(),
-		ExpectedTaskRevision: r.GetExpectedTaskRevision(), ExpectedConfirmationRevision: r.GetExpectedConfirmationRevision(),
-		Resolution: coreconfirmation.ExtensionUncertainAcknowledgedUnknownNoRetry, IdempotencyKey: r.GetIdempotencyKey(),
-	})
-	if err != nil {
-		return nil, confirmationError(err)
-	}
-	return &agentv1.ConfirmationServiceAcknowledgeExtensionExecutionUncertainResponse{Confirmation: confirmationProto(result.Confirmation), Task: coreTaskProto(result.Task), Resolution: r.GetResolution(), ReservationReleased: result.ReservationReleased}, nil
 }
 func confirmationProto(c coreconfirmation.Confirmation) *agentv1.CoreConfirmation {
 	publicBinding := c.Binding.Public()

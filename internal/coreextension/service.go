@@ -3,6 +3,7 @@ package coreextension
 import (
 	"context"
 	"encoding/json"
+	"strings"
 )
 
 // Service is the narrow lifecycle/use-case boundary consumed by RPC adapters.
@@ -295,7 +296,7 @@ func (s *service) ListTools(ctx context.Context, id string, rev int64) ([]Tool, 
 	return nil, ErrNotFound
 }
 func (s *service) Execute(ctx context.Context, r ExecuteRequest) (ExecuteResult, error) {
-	if !validUUID(r.IdempotencyKey) || !validUUID(r.InstallationID) || r.ExpectedRevision < 1 {
+	if strings.TrimSpace(r.OwnerID) == "" || strings.TrimSpace(r.OwnerID) != r.OwnerID || r.AccountGeneration == 0 || !validUUID(r.IdempotencyKey) || !validUUID(r.InstallationID) || r.ExpectedRevision < 1 {
 		return ExecuteResult{}, ErrInvalid
 	}
 	coordinator, ok := s.coordinator.(ConfirmationCoordinator)

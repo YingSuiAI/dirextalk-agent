@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
@@ -18,7 +19,7 @@ const extensionUncertainAckOperation = "extension_execution_uncertain_ack"
 // reservation after an owner explicitly accepts the unknown outcome. It never
 // queues, retries, or re-dispatches the task.
 func (s *CoreConfirmationStore) AcknowledgeExtensionExecutionUncertain(ctx context.Context, command coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand) (coreconfirmation.AcknowledgeExtensionExecutionUncertainResult, error) {
-	if s == nil || s.store == nil || !coretask.ValidUUID(command.ConfirmationID) || !coretask.ValidUUID(command.TaskID) || !coretask.ValidUUID(command.InstallationID) || !coretask.ValidUUID(command.IdempotencyKey) || command.ExpectedTaskRevision < 1 || command.ExpectedConfirmationRevision < 1 || command.Resolution != coreconfirmation.ExtensionUncertainAcknowledgedUnknownNoRetry {
+	if s == nil || s.store == nil || strings.TrimSpace(command.OwnerID) == "" || command.AccountGeneration == 0 || !coretask.ValidUUID(command.ConfirmationID) || !coretask.ValidUUID(command.TaskID) || !coretask.ValidUUID(command.InstallationID) || !coretask.ValidUUID(command.IdempotencyKey) || command.ExpectedTaskRevision < 1 || command.ExpectedConfirmationRevision < 1 || command.Resolution != coreconfirmation.ExtensionUncertainAcknowledgedUnknownNoRetry {
 		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, coreconfirmation.ErrInvalid
 	}
 	digest := coreconfirmation.AcknowledgeExtensionExecutionUncertainDigest(command)
@@ -60,7 +61,7 @@ func (s *CoreConfirmationStore) AcknowledgeExtensionExecutionUncertain(ctx conte
 	if err != nil {
 		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, err
 	}
-	if cur.ConfirmationID != command.ConfirmationID || cur.TaskID != command.TaskID || cur.Binding.OperationDomain != "extension.execute" || cur.Binding.TargetID != command.InstallationID || cur.Binding.OwnerID != s.store.instanceID.String() || cur.State != coreconfirmation.StateConsumed || cur.Revision != command.ExpectedConfirmationRevision {
+	if cur.ConfirmationID != command.ConfirmationID || cur.TaskID != command.TaskID || cur.Binding.OperationDomain != "extension.execute" || cur.Binding.TargetID != command.InstallationID || cur.Binding.OwnerID != command.OwnerID || cur.Binding.AccountGeneration != command.AccountGeneration || cur.State != coreconfirmation.StateConsumed || cur.Revision != command.ExpectedConfirmationRevision {
 		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, coreconfirmation.ErrConflict
 	}
 	taskStore := NewCoreTaskStore(s.store)

@@ -131,6 +131,11 @@ func TestCoreServerBufconnTLSAuthAndCoreCapabilities(t *testing.T) {
 	if len(caps.GetCapabilities()) != 10 {
 		t.Fatalf("capabilities=%v", caps.GetCapabilities())
 	}
+	for _, capability := range caps.GetCapabilities() {
+		if capability.GetName() == "extension.execution_reconciliation" {
+			t.Fatal("dead direct extension reconciliation RPC was advertised")
+		}
+	}
 }
 
 func TestCoreServerAdvertisesIndependentWorkloadCapabilities(t *testing.T) {

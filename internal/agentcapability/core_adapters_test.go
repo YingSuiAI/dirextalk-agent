@@ -1483,6 +1483,7 @@ func TestExtensionMutationSchemasPublishOnlyWriteOnlySecretValue(t *testing.T) {
 type capturingExtensionService struct {
 	coreextension.Service
 	mutation coreextension.Mutation
+	execute  coreextension.ExecuteRequest
 	calls    int
 }
 
@@ -1490,6 +1491,29 @@ func (s *capturingExtensionService) RequestInstall(_ context.Context, mutation c
 	s.calls++
 	s.mutation = mutation
 	return coreextension.MutationResult{}, nil
+}
+
+func (s *capturingExtensionService) Execute(_ context.Context, request coreextension.ExecuteRequest) (coreextension.ExecuteResult, error) {
+	s.calls++
+	s.execute = request
+	return coreextension.ExecuteResult{TaskID: "task-id", ConfirmationID: "confirmation-id"}, nil
+}
+
+func TestExtensionExecuteUsesAuthenticatedOwner(t *testing.T) {
+	service := &capturingExtensionService{}
+	capability := &coreExtensionCapability{service: service}
+	raw := []byte(`{"installation_id":"00000000-0000-4000-8000-000000000001","expected_revision":4,"tool_name":"write_html","input":{},"idempotency_key":"00000000-0000-4000-8000-000000000002"}`)
+	if _, err := capability.HandleOperation(context.Background(), "execute_mcp", raw); !errors.Is(err, coreextension.ErrInvalid) || service.calls != 0 {
+		t.Fatalf("missing authority err=%v calls=%d", err, service.calls)
+	}
+	ctx := capabilityclient.WithCallContext(context.Background(), nil, &capv1.PermissionContext{AuthenticatedOwnerId: "@owner:example.test", AccountGeneration: 1})
+	result, err := capability.HandleOperation(ctx, "execute_mcp", raw)
+	if err != nil || service.calls != 1 || service.execute.OwnerID != "@owner:example.test" || service.execute.AccountGeneration != 1 {
+		t.Fatalf("result=%s request=%#v calls=%d err=%v", result, service.execute, service.calls, err)
+	}
+	if strings.Contains(string(result), "TaskID") || !strings.Contains(string(result), `"task_id":"task-id"`) {
+		t.Fatalf("execute result did not use public snake_case keys: %s", result)
+	}
 }
 
 func TestExtensionMutationHandlerRejectsLegacySecretValueAlias(t *testing.T) {

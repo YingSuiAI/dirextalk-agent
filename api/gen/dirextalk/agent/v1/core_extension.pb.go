@@ -9,7 +9,6 @@ package agentv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	structpb "google.golang.org/protobuf/types/known/structpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
@@ -2102,197 +2101,6 @@ func (x *CoreListToolsResponse) GetTools() []*CoreTool {
 	return nil
 }
 
-// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-type CoreExecuteToolRequest struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	IdempotencyKey   string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	InstallationId   string                 `protobuf:"bytes,2,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
-	ExpectedRevision int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
-	ToolName         string                 `protobuf:"bytes,4,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
-	Input            *structpb.Struct       `protobuf:"bytes,5,opt,name=input,proto3" json:"input,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
-}
-
-func (x *CoreExecuteToolRequest) Reset() {
-	*x = CoreExecuteToolRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[25]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CoreExecuteToolRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CoreExecuteToolRequest) ProtoMessage() {}
-
-func (x *CoreExecuteToolRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[25]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CoreExecuteToolRequest.ProtoReflect.Descriptor instead.
-func (*CoreExecuteToolRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{25}
-}
-
-func (x *CoreExecuteToolRequest) GetIdempotencyKey() string {
-	if x != nil {
-		return x.IdempotencyKey
-	}
-	return ""
-}
-
-func (x *CoreExecuteToolRequest) GetInstallationId() string {
-	if x != nil {
-		return x.InstallationId
-	}
-	return ""
-}
-
-func (x *CoreExecuteToolRequest) GetExpectedRevision() int64 {
-	if x != nil {
-		return x.ExpectedRevision
-	}
-	return 0
-}
-
-func (x *CoreExecuteToolRequest) GetToolName() string {
-	if x != nil {
-		return x.ToolName
-	}
-	return ""
-}
-
-func (x *CoreExecuteToolRequest) GetInput() *structpb.Struct {
-	if x != nil {
-		return x.Input
-	}
-	return nil
-}
-
-// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-type CoreExecuteSkillRequest struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	IdempotencyKey   string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	InstallationId   string                 `protobuf:"bytes,2,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
-	ExpectedRevision int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
-	Input            *structpb.Struct       `protobuf:"bytes,4,opt,name=input,proto3" json:"input,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
-}
-
-func (x *CoreExecuteSkillRequest) Reset() {
-	*x = CoreExecuteSkillRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[26]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CoreExecuteSkillRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CoreExecuteSkillRequest) ProtoMessage() {}
-
-func (x *CoreExecuteSkillRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[26]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CoreExecuteSkillRequest.ProtoReflect.Descriptor instead.
-func (*CoreExecuteSkillRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{26}
-}
-
-func (x *CoreExecuteSkillRequest) GetIdempotencyKey() string {
-	if x != nil {
-		return x.IdempotencyKey
-	}
-	return ""
-}
-
-func (x *CoreExecuteSkillRequest) GetInstallationId() string {
-	if x != nil {
-		return x.InstallationId
-	}
-	return ""
-}
-
-func (x *CoreExecuteSkillRequest) GetExpectedRevision() int64 {
-	if x != nil {
-		return x.ExpectedRevision
-	}
-	return 0
-}
-
-func (x *CoreExecuteSkillRequest) GetInput() *structpb.Struct {
-	if x != nil {
-		return x.Input
-	}
-	return nil
-}
-
-// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-type CoreExecuteResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CoreExecuteResponse) Reset() {
-	*x = CoreExecuteResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[27]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CoreExecuteResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CoreExecuteResponse) ProtoMessage() {}
-
-func (x *CoreExecuteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[27]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CoreExecuteResponse.ProtoReflect.Descriptor instead.
-func (*CoreExecuteResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{27}
-}
-
-func (x *CoreExecuteResponse) GetTaskId() string {
-	if x != nil {
-		return x.TaskId
-	}
-	return ""
-}
-
 type MCPServiceSearchRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Kind          CoreExtensionKind      `protobuf:"varint,1,opt,name=kind,proto3,enum=dirextalk.agent.v1.CoreExtensionKind" json:"kind,omitempty"`
@@ -2306,7 +2114,7 @@ type MCPServiceSearchRequest struct {
 
 func (x *MCPServiceSearchRequest) Reset() {
 	*x = MCPServiceSearchRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[28]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2318,7 +2126,7 @@ func (x *MCPServiceSearchRequest) String() string {
 func (*MCPServiceSearchRequest) ProtoMessage() {}
 
 func (x *MCPServiceSearchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[28]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2331,7 +2139,7 @@ func (x *MCPServiceSearchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceSearchRequest.ProtoReflect.Descriptor instead.
 func (*MCPServiceSearchRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{28}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *MCPServiceSearchRequest) GetKind() CoreExtensionKind {
@@ -2379,7 +2187,7 @@ type MCPServiceSearchResponse struct {
 
 func (x *MCPServiceSearchResponse) Reset() {
 	*x = MCPServiceSearchResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[29]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2391,7 +2199,7 @@ func (x *MCPServiceSearchResponse) String() string {
 func (*MCPServiceSearchResponse) ProtoMessage() {}
 
 func (x *MCPServiceSearchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[29]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2404,7 +2212,7 @@ func (x *MCPServiceSearchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceSearchResponse.ProtoReflect.Descriptor instead.
 func (*MCPServiceSearchResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{29}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *MCPServiceSearchResponse) GetCandidates() []*CoreExtensionCandidate {
@@ -2433,7 +2241,7 @@ type MCPServiceInspectRequest struct {
 
 func (x *MCPServiceInspectRequest) Reset() {
 	*x = MCPServiceInspectRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[30]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2445,7 +2253,7 @@ func (x *MCPServiceInspectRequest) String() string {
 func (*MCPServiceInspectRequest) ProtoMessage() {}
 
 func (x *MCPServiceInspectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[30]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2458,7 +2266,7 @@ func (x *MCPServiceInspectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceInspectRequest.ProtoReflect.Descriptor instead.
 func (*MCPServiceInspectRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{30}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *MCPServiceInspectRequest) GetKind() CoreExtensionKind {
@@ -2498,7 +2306,7 @@ type MCPServiceInspectResponse struct {
 
 func (x *MCPServiceInspectResponse) Reset() {
 	*x = MCPServiceInspectResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[31]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2510,7 +2318,7 @@ func (x *MCPServiceInspectResponse) String() string {
 func (*MCPServiceInspectResponse) ProtoMessage() {}
 
 func (x *MCPServiceInspectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[31]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2523,7 +2331,7 @@ func (x *MCPServiceInspectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceInspectResponse.ProtoReflect.Descriptor instead.
 func (*MCPServiceInspectResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{31}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *MCPServiceInspectResponse) GetInspection() *CoreExtensionInspection {
@@ -2547,7 +2355,7 @@ type MCPServiceRequestInstallRequest struct {
 
 func (x *MCPServiceRequestInstallRequest) Reset() {
 	*x = MCPServiceRequestInstallRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[32]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2559,7 +2367,7 @@ func (x *MCPServiceRequestInstallRequest) String() string {
 func (*MCPServiceRequestInstallRequest) ProtoMessage() {}
 
 func (x *MCPServiceRequestInstallRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[32]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2572,7 +2380,7 @@ func (x *MCPServiceRequestInstallRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceRequestInstallRequest.ProtoReflect.Descriptor instead.
 func (*MCPServiceRequestInstallRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{32}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *MCPServiceRequestInstallRequest) GetIdempotencyKey() string {
@@ -2628,7 +2436,7 @@ type MCPServiceRequestInstallResponse struct {
 
 func (x *MCPServiceRequestInstallResponse) Reset() {
 	*x = MCPServiceRequestInstallResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[33]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2640,7 +2448,7 @@ func (x *MCPServiceRequestInstallResponse) String() string {
 func (*MCPServiceRequestInstallResponse) ProtoMessage() {}
 
 func (x *MCPServiceRequestInstallResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[33]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2653,7 +2461,7 @@ func (x *MCPServiceRequestInstallResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceRequestInstallResponse.ProtoReflect.Descriptor instead.
 func (*MCPServiceRequestInstallResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{33}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *MCPServiceRequestInstallResponse) GetInstallation() *CoreInstallation {
@@ -2686,7 +2494,7 @@ type MCPServiceRequestUpdateRequest struct {
 
 func (x *MCPServiceRequestUpdateRequest) Reset() {
 	*x = MCPServiceRequestUpdateRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[34]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2698,7 +2506,7 @@ func (x *MCPServiceRequestUpdateRequest) String() string {
 func (*MCPServiceRequestUpdateRequest) ProtoMessage() {}
 
 func (x *MCPServiceRequestUpdateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[34]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2711,7 +2519,7 @@ func (x *MCPServiceRequestUpdateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceRequestUpdateRequest.ProtoReflect.Descriptor instead.
 func (*MCPServiceRequestUpdateRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{34}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *MCPServiceRequestUpdateRequest) GetMutation() *MCPServiceRequestInstallRequest {
@@ -2732,7 +2540,7 @@ type MCPServiceRequestUpdateResponse struct {
 
 func (x *MCPServiceRequestUpdateResponse) Reset() {
 	*x = MCPServiceRequestUpdateResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[35]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2744,7 +2552,7 @@ func (x *MCPServiceRequestUpdateResponse) String() string {
 func (*MCPServiceRequestUpdateResponse) ProtoMessage() {}
 
 func (x *MCPServiceRequestUpdateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[35]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2757,7 +2565,7 @@ func (x *MCPServiceRequestUpdateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceRequestUpdateResponse.ProtoReflect.Descriptor instead.
 func (*MCPServiceRequestUpdateResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{35}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *MCPServiceRequestUpdateResponse) GetInstallation() *CoreInstallation {
@@ -2792,7 +2600,7 @@ type MCPServiceRequestUninstallRequest struct {
 
 func (x *MCPServiceRequestUninstallRequest) Reset() {
 	*x = MCPServiceRequestUninstallRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[36]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2804,7 +2612,7 @@ func (x *MCPServiceRequestUninstallRequest) String() string {
 func (*MCPServiceRequestUninstallRequest) ProtoMessage() {}
 
 func (x *MCPServiceRequestUninstallRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[36]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2817,7 +2625,7 @@ func (x *MCPServiceRequestUninstallRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use MCPServiceRequestUninstallRequest.ProtoReflect.Descriptor instead.
 func (*MCPServiceRequestUninstallRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{36}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *MCPServiceRequestUninstallRequest) GetIdempotencyKey() string {
@@ -2852,7 +2660,7 @@ type MCPServiceRequestUninstallResponse struct {
 
 func (x *MCPServiceRequestUninstallResponse) Reset() {
 	*x = MCPServiceRequestUninstallResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[37]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2864,7 +2672,7 @@ func (x *MCPServiceRequestUninstallResponse) String() string {
 func (*MCPServiceRequestUninstallResponse) ProtoMessage() {}
 
 func (x *MCPServiceRequestUninstallResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[37]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2877,7 +2685,7 @@ func (x *MCPServiceRequestUninstallResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use MCPServiceRequestUninstallResponse.ProtoReflect.Descriptor instead.
 func (*MCPServiceRequestUninstallResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{37}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *MCPServiceRequestUninstallResponse) GetInstallation() *CoreInstallation {
@@ -2914,7 +2722,7 @@ type MCPServiceListRequest struct {
 
 func (x *MCPServiceListRequest) Reset() {
 	*x = MCPServiceListRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[38]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2926,7 +2734,7 @@ func (x *MCPServiceListRequest) String() string {
 func (*MCPServiceListRequest) ProtoMessage() {}
 
 func (x *MCPServiceListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[38]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2939,7 +2747,7 @@ func (x *MCPServiceListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceListRequest.ProtoReflect.Descriptor instead.
 func (*MCPServiceListRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{38}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *MCPServiceListRequest) GetKind() CoreExtensionKind {
@@ -2987,7 +2795,7 @@ type MCPServiceListResponse struct {
 
 func (x *MCPServiceListResponse) Reset() {
 	*x = MCPServiceListResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[39]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2999,7 +2807,7 @@ func (x *MCPServiceListResponse) String() string {
 func (*MCPServiceListResponse) ProtoMessage() {}
 
 func (x *MCPServiceListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[39]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3012,7 +2820,7 @@ func (x *MCPServiceListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceListResponse.ProtoReflect.Descriptor instead.
 func (*MCPServiceListResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{39}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *MCPServiceListResponse) GetInstallations() []*CoreInstallation {
@@ -3038,7 +2846,7 @@ type MCPServiceGetRequest struct {
 
 func (x *MCPServiceGetRequest) Reset() {
 	*x = MCPServiceGetRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[40]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3050,7 +2858,7 @@ func (x *MCPServiceGetRequest) String() string {
 func (*MCPServiceGetRequest) ProtoMessage() {}
 
 func (x *MCPServiceGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[40]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3063,7 +2871,7 @@ func (x *MCPServiceGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceGetRequest.ProtoReflect.Descriptor instead.
 func (*MCPServiceGetRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{40}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *MCPServiceGetRequest) GetInstallationId() string {
@@ -3082,7 +2890,7 @@ type MCPServiceGetResponse struct {
 
 func (x *MCPServiceGetResponse) Reset() {
 	*x = MCPServiceGetResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[41]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3094,7 +2902,7 @@ func (x *MCPServiceGetResponse) String() string {
 func (*MCPServiceGetResponse) ProtoMessage() {}
 
 func (x *MCPServiceGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[41]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3107,7 +2915,7 @@ func (x *MCPServiceGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceGetResponse.ProtoReflect.Descriptor instead.
 func (*MCPServiceGetResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{41}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *MCPServiceGetResponse) GetInstallation() *CoreInstallation {
@@ -3127,7 +2935,7 @@ type MCPServiceListToolsRequest struct {
 
 func (x *MCPServiceListToolsRequest) Reset() {
 	*x = MCPServiceListToolsRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[42]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3139,7 +2947,7 @@ func (x *MCPServiceListToolsRequest) String() string {
 func (*MCPServiceListToolsRequest) ProtoMessage() {}
 
 func (x *MCPServiceListToolsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[42]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3152,7 +2960,7 @@ func (x *MCPServiceListToolsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceListToolsRequest.ProtoReflect.Descriptor instead.
 func (*MCPServiceListToolsRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{42}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *MCPServiceListToolsRequest) GetInstallationId() string {
@@ -3178,7 +2986,7 @@ type MCPServiceListToolsResponse struct {
 
 func (x *MCPServiceListToolsResponse) Reset() {
 	*x = MCPServiceListToolsResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[43]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3190,7 +2998,7 @@ func (x *MCPServiceListToolsResponse) String() string {
 func (*MCPServiceListToolsResponse) ProtoMessage() {}
 
 func (x *MCPServiceListToolsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[43]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3203,7 +3011,7 @@ func (x *MCPServiceListToolsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServiceListToolsResponse.ProtoReflect.Descriptor instead.
 func (*MCPServiceListToolsResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{43}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *MCPServiceListToolsResponse) GetTools() []*CoreTool {
@@ -3211,134 +3019,6 @@ func (x *MCPServiceListToolsResponse) GetTools() []*CoreTool {
 		return x.Tools
 	}
 	return nil
-}
-
-type MCPServiceExecuteToolRequest struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	IdempotencyKey   string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	InstallationId   string                 `protobuf:"bytes,2,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
-	ExpectedRevision int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
-	ToolName         string                 `protobuf:"bytes,4,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
-	Input            *structpb.Struct       `protobuf:"bytes,5,opt,name=input,proto3" json:"input,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
-}
-
-func (x *MCPServiceExecuteToolRequest) Reset() {
-	*x = MCPServiceExecuteToolRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[44]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *MCPServiceExecuteToolRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*MCPServiceExecuteToolRequest) ProtoMessage() {}
-
-func (x *MCPServiceExecuteToolRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[44]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use MCPServiceExecuteToolRequest.ProtoReflect.Descriptor instead.
-func (*MCPServiceExecuteToolRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{44}
-}
-
-func (x *MCPServiceExecuteToolRequest) GetIdempotencyKey() string {
-	if x != nil {
-		return x.IdempotencyKey
-	}
-	return ""
-}
-
-func (x *MCPServiceExecuteToolRequest) GetInstallationId() string {
-	if x != nil {
-		return x.InstallationId
-	}
-	return ""
-}
-
-func (x *MCPServiceExecuteToolRequest) GetExpectedRevision() int64 {
-	if x != nil {
-		return x.ExpectedRevision
-	}
-	return 0
-}
-
-func (x *MCPServiceExecuteToolRequest) GetToolName() string {
-	if x != nil {
-		return x.ToolName
-	}
-	return ""
-}
-
-func (x *MCPServiceExecuteToolRequest) GetInput() *structpb.Struct {
-	if x != nil {
-		return x.Input
-	}
-	return nil
-}
-
-type MCPServiceExecuteToolResponse struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	TaskId         string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	ConfirmationId string                 `protobuf:"bytes,2,opt,name=confirmation_id,json=confirmationId,proto3" json:"confirmation_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *MCPServiceExecuteToolResponse) Reset() {
-	*x = MCPServiceExecuteToolResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[45]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *MCPServiceExecuteToolResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*MCPServiceExecuteToolResponse) ProtoMessage() {}
-
-func (x *MCPServiceExecuteToolResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[45]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use MCPServiceExecuteToolResponse.ProtoReflect.Descriptor instead.
-func (*MCPServiceExecuteToolResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{45}
-}
-
-func (x *MCPServiceExecuteToolResponse) GetTaskId() string {
-	if x != nil {
-		return x.TaskId
-	}
-	return ""
-}
-
-func (x *MCPServiceExecuteToolResponse) GetConfirmationId() string {
-	if x != nil {
-		return x.ConfirmationId
-	}
-	return ""
 }
 
 type SkillServiceSearchRequest struct {
@@ -3354,7 +3034,7 @@ type SkillServiceSearchRequest struct {
 
 func (x *SkillServiceSearchRequest) Reset() {
 	*x = SkillServiceSearchRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[46]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3366,7 +3046,7 @@ func (x *SkillServiceSearchRequest) String() string {
 func (*SkillServiceSearchRequest) ProtoMessage() {}
 
 func (x *SkillServiceSearchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[46]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3379,7 +3059,7 @@ func (x *SkillServiceSearchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillServiceSearchRequest.ProtoReflect.Descriptor instead.
 func (*SkillServiceSearchRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{46}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *SkillServiceSearchRequest) GetKind() CoreExtensionKind {
@@ -3427,7 +3107,7 @@ type SkillServiceSearchResponse struct {
 
 func (x *SkillServiceSearchResponse) Reset() {
 	*x = SkillServiceSearchResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[47]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3439,7 +3119,7 @@ func (x *SkillServiceSearchResponse) String() string {
 func (*SkillServiceSearchResponse) ProtoMessage() {}
 
 func (x *SkillServiceSearchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[47]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3452,7 +3132,7 @@ func (x *SkillServiceSearchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillServiceSearchResponse.ProtoReflect.Descriptor instead.
 func (*SkillServiceSearchResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{47}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *SkillServiceSearchResponse) GetCandidates() []*CoreExtensionCandidate {
@@ -3481,7 +3161,7 @@ type SkillServiceInspectRequest struct {
 
 func (x *SkillServiceInspectRequest) Reset() {
 	*x = SkillServiceInspectRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[48]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3493,7 +3173,7 @@ func (x *SkillServiceInspectRequest) String() string {
 func (*SkillServiceInspectRequest) ProtoMessage() {}
 
 func (x *SkillServiceInspectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[48]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3506,7 +3186,7 @@ func (x *SkillServiceInspectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillServiceInspectRequest.ProtoReflect.Descriptor instead.
 func (*SkillServiceInspectRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{48}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *SkillServiceInspectRequest) GetKind() CoreExtensionKind {
@@ -3546,7 +3226,7 @@ type SkillServiceInspectResponse struct {
 
 func (x *SkillServiceInspectResponse) Reset() {
 	*x = SkillServiceInspectResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[49]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3558,7 +3238,7 @@ func (x *SkillServiceInspectResponse) String() string {
 func (*SkillServiceInspectResponse) ProtoMessage() {}
 
 func (x *SkillServiceInspectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[49]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3571,7 +3251,7 @@ func (x *SkillServiceInspectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillServiceInspectResponse.ProtoReflect.Descriptor instead.
 func (*SkillServiceInspectResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{49}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *SkillServiceInspectResponse) GetInspection() *CoreExtensionInspection {
@@ -3595,7 +3275,7 @@ type SkillServiceRequestInstallRequest struct {
 
 func (x *SkillServiceRequestInstallRequest) Reset() {
 	*x = SkillServiceRequestInstallRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[50]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3607,7 +3287,7 @@ func (x *SkillServiceRequestInstallRequest) String() string {
 func (*SkillServiceRequestInstallRequest) ProtoMessage() {}
 
 func (x *SkillServiceRequestInstallRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[50]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3620,7 +3300,7 @@ func (x *SkillServiceRequestInstallRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use SkillServiceRequestInstallRequest.ProtoReflect.Descriptor instead.
 func (*SkillServiceRequestInstallRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{50}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *SkillServiceRequestInstallRequest) GetIdempotencyKey() string {
@@ -3676,7 +3356,7 @@ type SkillServiceRequestInstallResponse struct {
 
 func (x *SkillServiceRequestInstallResponse) Reset() {
 	*x = SkillServiceRequestInstallResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[51]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3688,7 +3368,7 @@ func (x *SkillServiceRequestInstallResponse) String() string {
 func (*SkillServiceRequestInstallResponse) ProtoMessage() {}
 
 func (x *SkillServiceRequestInstallResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[51]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3701,7 +3381,7 @@ func (x *SkillServiceRequestInstallResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use SkillServiceRequestInstallResponse.ProtoReflect.Descriptor instead.
 func (*SkillServiceRequestInstallResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{51}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *SkillServiceRequestInstallResponse) GetInstallation() *CoreInstallation {
@@ -3734,7 +3414,7 @@ type SkillServiceRequestUpdateRequest struct {
 
 func (x *SkillServiceRequestUpdateRequest) Reset() {
 	*x = SkillServiceRequestUpdateRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[52]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3746,7 +3426,7 @@ func (x *SkillServiceRequestUpdateRequest) String() string {
 func (*SkillServiceRequestUpdateRequest) ProtoMessage() {}
 
 func (x *SkillServiceRequestUpdateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[52]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3759,7 +3439,7 @@ func (x *SkillServiceRequestUpdateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillServiceRequestUpdateRequest.ProtoReflect.Descriptor instead.
 func (*SkillServiceRequestUpdateRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{52}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *SkillServiceRequestUpdateRequest) GetMutation() *SkillServiceRequestInstallRequest {
@@ -3780,7 +3460,7 @@ type SkillServiceRequestUpdateResponse struct {
 
 func (x *SkillServiceRequestUpdateResponse) Reset() {
 	*x = SkillServiceRequestUpdateResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[53]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3792,7 +3472,7 @@ func (x *SkillServiceRequestUpdateResponse) String() string {
 func (*SkillServiceRequestUpdateResponse) ProtoMessage() {}
 
 func (x *SkillServiceRequestUpdateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[53]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3805,7 +3485,7 @@ func (x *SkillServiceRequestUpdateResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use SkillServiceRequestUpdateResponse.ProtoReflect.Descriptor instead.
 func (*SkillServiceRequestUpdateResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{53}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *SkillServiceRequestUpdateResponse) GetInstallation() *CoreInstallation {
@@ -3840,7 +3520,7 @@ type SkillServiceRequestUninstallRequest struct {
 
 func (x *SkillServiceRequestUninstallRequest) Reset() {
 	*x = SkillServiceRequestUninstallRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[54]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3852,7 +3532,7 @@ func (x *SkillServiceRequestUninstallRequest) String() string {
 func (*SkillServiceRequestUninstallRequest) ProtoMessage() {}
 
 func (x *SkillServiceRequestUninstallRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[54]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3865,7 +3545,7 @@ func (x *SkillServiceRequestUninstallRequest) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use SkillServiceRequestUninstallRequest.ProtoReflect.Descriptor instead.
 func (*SkillServiceRequestUninstallRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{54}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *SkillServiceRequestUninstallRequest) GetIdempotencyKey() string {
@@ -3900,7 +3580,7 @@ type SkillServiceRequestUninstallResponse struct {
 
 func (x *SkillServiceRequestUninstallResponse) Reset() {
 	*x = SkillServiceRequestUninstallResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[55]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3912,7 +3592,7 @@ func (x *SkillServiceRequestUninstallResponse) String() string {
 func (*SkillServiceRequestUninstallResponse) ProtoMessage() {}
 
 func (x *SkillServiceRequestUninstallResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[55]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3925,7 +3605,7 @@ func (x *SkillServiceRequestUninstallResponse) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use SkillServiceRequestUninstallResponse.ProtoReflect.Descriptor instead.
 func (*SkillServiceRequestUninstallResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{55}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *SkillServiceRequestUninstallResponse) GetInstallation() *CoreInstallation {
@@ -3962,7 +3642,7 @@ type SkillServiceListRequest struct {
 
 func (x *SkillServiceListRequest) Reset() {
 	*x = SkillServiceListRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[56]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3974,7 +3654,7 @@ func (x *SkillServiceListRequest) String() string {
 func (*SkillServiceListRequest) ProtoMessage() {}
 
 func (x *SkillServiceListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[56]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3987,7 +3667,7 @@ func (x *SkillServiceListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillServiceListRequest.ProtoReflect.Descriptor instead.
 func (*SkillServiceListRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{56}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *SkillServiceListRequest) GetKind() CoreExtensionKind {
@@ -4035,7 +3715,7 @@ type SkillServiceListResponse struct {
 
 func (x *SkillServiceListResponse) Reset() {
 	*x = SkillServiceListResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[57]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4047,7 +3727,7 @@ func (x *SkillServiceListResponse) String() string {
 func (*SkillServiceListResponse) ProtoMessage() {}
 
 func (x *SkillServiceListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[57]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4060,7 +3740,7 @@ func (x *SkillServiceListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillServiceListResponse.ProtoReflect.Descriptor instead.
 func (*SkillServiceListResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{57}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *SkillServiceListResponse) GetInstallations() []*CoreInstallation {
@@ -4086,7 +3766,7 @@ type SkillServiceGetRequest struct {
 
 func (x *SkillServiceGetRequest) Reset() {
 	*x = SkillServiceGetRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[58]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4098,7 +3778,7 @@ func (x *SkillServiceGetRequest) String() string {
 func (*SkillServiceGetRequest) ProtoMessage() {}
 
 func (x *SkillServiceGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[58]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4111,7 +3791,7 @@ func (x *SkillServiceGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillServiceGetRequest.ProtoReflect.Descriptor instead.
 func (*SkillServiceGetRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{58}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *SkillServiceGetRequest) GetInstallationId() string {
@@ -4130,7 +3810,7 @@ type SkillServiceGetResponse struct {
 
 func (x *SkillServiceGetResponse) Reset() {
 	*x = SkillServiceGetResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[59]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4142,7 +3822,7 @@ func (x *SkillServiceGetResponse) String() string {
 func (*SkillServiceGetResponse) ProtoMessage() {}
 
 func (x *SkillServiceGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[59]
+	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4155,7 +3835,7 @@ func (x *SkillServiceGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillServiceGetResponse.ProtoReflect.Descriptor instead.
 func (*SkillServiceGetResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{59}
+	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *SkillServiceGetResponse) GetInstallation() *CoreInstallation {
@@ -4165,131 +3845,11 @@ func (x *SkillServiceGetResponse) GetInstallation() *CoreInstallation {
 	return nil
 }
 
-type SkillServiceExecuteRequest struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	IdempotencyKey   string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	InstallationId   string                 `protobuf:"bytes,2,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
-	ExpectedRevision int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
-	Input            *structpb.Struct       `protobuf:"bytes,4,opt,name=input,proto3" json:"input,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
-}
-
-func (x *SkillServiceExecuteRequest) Reset() {
-	*x = SkillServiceExecuteRequest{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[60]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SkillServiceExecuteRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SkillServiceExecuteRequest) ProtoMessage() {}
-
-func (x *SkillServiceExecuteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[60]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SkillServiceExecuteRequest.ProtoReflect.Descriptor instead.
-func (*SkillServiceExecuteRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{60}
-}
-
-func (x *SkillServiceExecuteRequest) GetIdempotencyKey() string {
-	if x != nil {
-		return x.IdempotencyKey
-	}
-	return ""
-}
-
-func (x *SkillServiceExecuteRequest) GetInstallationId() string {
-	if x != nil {
-		return x.InstallationId
-	}
-	return ""
-}
-
-func (x *SkillServiceExecuteRequest) GetExpectedRevision() int64 {
-	if x != nil {
-		return x.ExpectedRevision
-	}
-	return 0
-}
-
-func (x *SkillServiceExecuteRequest) GetInput() *structpb.Struct {
-	if x != nil {
-		return x.Input
-	}
-	return nil
-}
-
-type SkillServiceExecuteResponse struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	TaskId         string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	ConfirmationId string                 `protobuf:"bytes,2,opt,name=confirmation_id,json=confirmationId,proto3" json:"confirmation_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *SkillServiceExecuteResponse) Reset() {
-	*x = SkillServiceExecuteResponse{}
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[61]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SkillServiceExecuteResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SkillServiceExecuteResponse) ProtoMessage() {}
-
-func (x *SkillServiceExecuteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_extension_proto_msgTypes[61]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SkillServiceExecuteResponse.ProtoReflect.Descriptor instead.
-func (*SkillServiceExecuteResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP(), []int{61}
-}
-
-func (x *SkillServiceExecuteResponse) GetTaskId() string {
-	if x != nil {
-		return x.TaskId
-	}
-	return ""
-}
-
-func (x *SkillServiceExecuteResponse) GetConfirmationId() string {
-	if x != nil {
-		return x.ConfirmationId
-	}
-	return ""
-}
-
 var File_dirextalk_agent_v1_core_extension_proto protoreflect.FileDescriptor
 
 const file_dirextalk_agent_v1_core_extension_proto_rawDesc = "" +
 	"\n" +
-	"'dirextalk/agent/v1/core_extension.proto\x12\x12dirextalk.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xa1\x01\n" +
+	"'dirextalk/agent/v1/core_extension.proto\x12\x12dirextalk.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa1\x01\n" +
 	"\rCoreSourcePin\x12)\n" +
 	"\x10registry_version\x18\x01 \x01(\tR\x0fregistryVersion\x12'\n" +
 	"\x0fregistry_sha256\x18\x02 \x01(\tR\x0eregistrySha256\x12\x1d\n" +
@@ -4444,20 +4004,7 @@ const file_dirextalk_agent_v1_core_extension_proto_rawDesc = "" +
 	"\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12+\n" +
 	"\x11expected_revision\x18\x02 \x01(\x03R\x10expectedRevision\"K\n" +
 	"\x15CoreListToolsResponse\x122\n" +
-	"\x05tools\x18\x01 \x03(\v2\x1c.dirextalk.agent.v1.CoreToolR\x05tools\"\xe3\x01\n" +
-	"\x16CoreExecuteToolRequest\x12'\n" +
-	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12'\n" +
-	"\x0finstallation_id\x18\x02 \x01(\tR\x0einstallationId\x12+\n" +
-	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\x12\x1b\n" +
-	"\ttool_name\x18\x04 \x01(\tR\btoolName\x12-\n" +
-	"\x05input\x18\x05 \x01(\v2\x17.google.protobuf.StructR\x05input\"\xc7\x01\n" +
-	"\x17CoreExecuteSkillRequest\x12'\n" +
-	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12'\n" +
-	"\x0finstallation_id\x18\x02 \x01(\tR\x0einstallationId\x12+\n" +
-	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\x12-\n" +
-	"\x05input\x18\x04 \x01(\v2\x17.google.protobuf.StructR\x05input\".\n" +
-	"\x13CoreExecuteResponse\x12\x17\n" +
-	"\atask_id\x18\x01 \x01(\tR\x06taskId\"\xe5\x01\n" +
+	"\x05tools\x18\x01 \x03(\v2\x1c.dirextalk.agent.v1.CoreToolR\x05tools\"\xe5\x01\n" +
 	"\x17MCPServiceSearchRequest\x129\n" +
 	"\x04kind\x18\x01 \x01(\x0e2%.dirextalk.agent.v1.CoreExtensionKindR\x04kind\x12?\n" +
 	"\x06source\x18\x02 \x01(\x0e2'.dirextalk.agent.v1.CoreExtensionSourceR\x06source\x12\x12\n" +
@@ -4524,16 +4071,7 @@ const file_dirextalk_agent_v1_core_extension_proto_rawDesc = "" +
 	"\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12+\n" +
 	"\x11expected_revision\x18\x02 \x01(\x03R\x10expectedRevision\"Q\n" +
 	"\x1bMCPServiceListToolsResponse\x122\n" +
-	"\x05tools\x18\x01 \x03(\v2\x1c.dirextalk.agent.v1.CoreToolR\x05tools\"\xe9\x01\n" +
-	"\x1cMCPServiceExecuteToolRequest\x12'\n" +
-	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12'\n" +
-	"\x0finstallation_id\x18\x02 \x01(\tR\x0einstallationId\x12+\n" +
-	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\x12\x1b\n" +
-	"\ttool_name\x18\x04 \x01(\tR\btoolName\x12-\n" +
-	"\x05input\x18\x05 \x01(\v2\x17.google.protobuf.StructR\x05input\"a\n" +
-	"\x1dMCPServiceExecuteToolResponse\x12\x17\n" +
-	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12'\n" +
-	"\x0fconfirmation_id\x18\x02 \x01(\tR\x0econfirmationId\"\xe7\x01\n" +
+	"\x05tools\x18\x01 \x03(\v2\x1c.dirextalk.agent.v1.CoreToolR\x05tools\"\xe7\x01\n" +
 	"\x19SkillServiceSearchRequest\x129\n" +
 	"\x04kind\x18\x01 \x01(\x0e2%.dirextalk.agent.v1.CoreExtensionKindR\x04kind\x12?\n" +
 	"\x06source\x18\x02 \x01(\x0e2'.dirextalk.agent.v1.CoreExtensionSourceR\x06source\x12\x12\n" +
@@ -4595,15 +4133,7 @@ const file_dirextalk_agent_v1_core_extension_proto_rawDesc = "" +
 	"\x16SkillServiceGetRequest\x12'\n" +
 	"\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\"c\n" +
 	"\x17SkillServiceGetResponse\x12H\n" +
-	"\finstallation\x18\x01 \x01(\v2$.dirextalk.agent.v1.CoreInstallationR\finstallation\"\xca\x01\n" +
-	"\x1aSkillServiceExecuteRequest\x12'\n" +
-	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12'\n" +
-	"\x0finstallation_id\x18\x02 \x01(\tR\x0einstallationId\x12+\n" +
-	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\x12-\n" +
-	"\x05input\x18\x04 \x01(\v2\x17.google.protobuf.StructR\x05input\"_\n" +
-	"\x1bSkillServiceExecuteResponse\x12\x17\n" +
-	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12'\n" +
-	"\x0fconfirmation_id\x18\x02 \x01(\tR\x0econfirmationId*t\n" +
+	"\finstallation\x18\x01 \x01(\v2$.dirextalk.agent.v1.CoreInstallationR\finstallation*t\n" +
 	"\x11CoreExtensionKind\x12#\n" +
 	"\x1fCORE_EXTENSION_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17CORE_EXTENSION_KIND_MCP\x10\x01\x12\x1d\n" +
@@ -4632,7 +4162,7 @@ const file_dirextalk_agent_v1_core_extension_proto_rawDesc = "" +
 	"\x11CoreSecretPurpose\x12#\n" +
 	"\x1fCORE_SECRET_PURPOSE_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"CORE_SECRET_PURPOSE_MCP_CREDENTIAL\x10\x01\x12$\n" +
-	" CORE_SECRET_PURPOSE_SKILL_SECRET\x10\x022\xf1\a\n" +
+	" CORE_SECRET_PURPOSE_SKILL_SECRET\x10\x022\xfd\x06\n" +
 	"\n" +
 	"MCPService\x12c\n" +
 	"\x06Search\x12+.dirextalk.agent.v1.MCPServiceSearchRequest\x1a,.dirextalk.agent.v1.MCPServiceSearchResponse\x12f\n" +
@@ -4642,8 +4172,7 @@ const file_dirextalk_agent_v1_core_extension_proto_rawDesc = "" +
 	"\x10RequestUninstall\x125.dirextalk.agent.v1.MCPServiceRequestUninstallRequest\x1a6.dirextalk.agent.v1.MCPServiceRequestUninstallResponse\x12]\n" +
 	"\x04List\x12).dirextalk.agent.v1.MCPServiceListRequest\x1a*.dirextalk.agent.v1.MCPServiceListResponse\x12Z\n" +
 	"\x03Get\x12(.dirextalk.agent.v1.MCPServiceGetRequest\x1a).dirextalk.agent.v1.MCPServiceGetResponse\x12l\n" +
-	"\tListTools\x12..dirextalk.agent.v1.MCPServiceListToolsRequest\x1a/.dirextalk.agent.v1.MCPServiceListToolsResponse\x12r\n" +
-	"\vExecuteTool\x120.dirextalk.agent.v1.MCPServiceExecuteToolRequest\x1a1.dirextalk.agent.v1.MCPServiceExecuteToolResponse2\x99\a\n" +
+	"\tListTools\x12..dirextalk.agent.v1.MCPServiceListToolsRequest\x1a/.dirextalk.agent.v1.MCPServiceListToolsResponse2\xad\x06\n" +
 	"\fSkillService\x12g\n" +
 	"\x06Search\x12-.dirextalk.agent.v1.SkillServiceSearchRequest\x1a..dirextalk.agent.v1.SkillServiceSearchResponse\x12j\n" +
 	"\aInspect\x12..dirextalk.agent.v1.SkillServiceInspectRequest\x1a/.dirextalk.agent.v1.SkillServiceInspectResponse\x12\x7f\n" +
@@ -4651,8 +4180,7 @@ const file_dirextalk_agent_v1_core_extension_proto_rawDesc = "" +
 	"\rRequestUpdate\x124.dirextalk.agent.v1.SkillServiceRequestUpdateRequest\x1a5.dirextalk.agent.v1.SkillServiceRequestUpdateResponse\x12\x85\x01\n" +
 	"\x10RequestUninstall\x127.dirextalk.agent.v1.SkillServiceRequestUninstallRequest\x1a8.dirextalk.agent.v1.SkillServiceRequestUninstallResponse\x12a\n" +
 	"\x04List\x12+.dirextalk.agent.v1.SkillServiceListRequest\x1a,.dirextalk.agent.v1.SkillServiceListResponse\x12^\n" +
-	"\x03Get\x12*.dirextalk.agent.v1.SkillServiceGetRequest\x1a+.dirextalk.agent.v1.SkillServiceGetResponse\x12j\n" +
-	"\aExecute\x12..dirextalk.agent.v1.SkillServiceExecuteRequest\x1a/.dirextalk.agent.v1.SkillServiceExecuteResponseBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
+	"\x03Get\x12*.dirextalk.agent.v1.SkillServiceGetRequest\x1a+.dirextalk.agent.v1.SkillServiceGetResponseBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
 
 var (
 	file_dirextalk_agent_v1_core_extension_proto_rawDescOnce sync.Once
@@ -4667,7 +4195,7 @@ func file_dirextalk_agent_v1_core_extension_proto_rawDescGZIP() []byte {
 }
 
 var file_dirextalk_agent_v1_core_extension_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_dirextalk_agent_v1_core_extension_proto_msgTypes = make([]protoimpl.MessageInfo, 62)
+var file_dirextalk_agent_v1_core_extension_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
 var file_dirextalk_agent_v1_core_extension_proto_goTypes = []any{
 	(CoreExtensionKind)(0),                       // 0: dirextalk.agent.v1.CoreExtensionKind
 	(CoreExtensionSource)(0),                     // 1: dirextalk.agent.v1.CoreExtensionSource
@@ -4699,173 +4227,157 @@ var file_dirextalk_agent_v1_core_extension_proto_goTypes = []any{
 	(*CoreTool)(nil),                             // 27: dirextalk.agent.v1.CoreTool
 	(*CoreListToolsRequest)(nil),                 // 28: dirextalk.agent.v1.CoreListToolsRequest
 	(*CoreListToolsResponse)(nil),                // 29: dirextalk.agent.v1.CoreListToolsResponse
-	(*CoreExecuteToolRequest)(nil),               // 30: dirextalk.agent.v1.CoreExecuteToolRequest
-	(*CoreExecuteSkillRequest)(nil),              // 31: dirextalk.agent.v1.CoreExecuteSkillRequest
-	(*CoreExecuteResponse)(nil),                  // 32: dirextalk.agent.v1.CoreExecuteResponse
-	(*MCPServiceSearchRequest)(nil),              // 33: dirextalk.agent.v1.MCPServiceSearchRequest
-	(*MCPServiceSearchResponse)(nil),             // 34: dirextalk.agent.v1.MCPServiceSearchResponse
-	(*MCPServiceInspectRequest)(nil),             // 35: dirextalk.agent.v1.MCPServiceInspectRequest
-	(*MCPServiceInspectResponse)(nil),            // 36: dirextalk.agent.v1.MCPServiceInspectResponse
-	(*MCPServiceRequestInstallRequest)(nil),      // 37: dirextalk.agent.v1.MCPServiceRequestInstallRequest
-	(*MCPServiceRequestInstallResponse)(nil),     // 38: dirextalk.agent.v1.MCPServiceRequestInstallResponse
-	(*MCPServiceRequestUpdateRequest)(nil),       // 39: dirextalk.agent.v1.MCPServiceRequestUpdateRequest
-	(*MCPServiceRequestUpdateResponse)(nil),      // 40: dirextalk.agent.v1.MCPServiceRequestUpdateResponse
-	(*MCPServiceRequestUninstallRequest)(nil),    // 41: dirextalk.agent.v1.MCPServiceRequestUninstallRequest
-	(*MCPServiceRequestUninstallResponse)(nil),   // 42: dirextalk.agent.v1.MCPServiceRequestUninstallResponse
-	(*MCPServiceListRequest)(nil),                // 43: dirextalk.agent.v1.MCPServiceListRequest
-	(*MCPServiceListResponse)(nil),               // 44: dirextalk.agent.v1.MCPServiceListResponse
-	(*MCPServiceGetRequest)(nil),                 // 45: dirextalk.agent.v1.MCPServiceGetRequest
-	(*MCPServiceGetResponse)(nil),                // 46: dirextalk.agent.v1.MCPServiceGetResponse
-	(*MCPServiceListToolsRequest)(nil),           // 47: dirextalk.agent.v1.MCPServiceListToolsRequest
-	(*MCPServiceListToolsResponse)(nil),          // 48: dirextalk.agent.v1.MCPServiceListToolsResponse
-	(*MCPServiceExecuteToolRequest)(nil),         // 49: dirextalk.agent.v1.MCPServiceExecuteToolRequest
-	(*MCPServiceExecuteToolResponse)(nil),        // 50: dirextalk.agent.v1.MCPServiceExecuteToolResponse
-	(*SkillServiceSearchRequest)(nil),            // 51: dirextalk.agent.v1.SkillServiceSearchRequest
-	(*SkillServiceSearchResponse)(nil),           // 52: dirextalk.agent.v1.SkillServiceSearchResponse
-	(*SkillServiceInspectRequest)(nil),           // 53: dirextalk.agent.v1.SkillServiceInspectRequest
-	(*SkillServiceInspectResponse)(nil),          // 54: dirextalk.agent.v1.SkillServiceInspectResponse
-	(*SkillServiceRequestInstallRequest)(nil),    // 55: dirextalk.agent.v1.SkillServiceRequestInstallRequest
-	(*SkillServiceRequestInstallResponse)(nil),   // 56: dirextalk.agent.v1.SkillServiceRequestInstallResponse
-	(*SkillServiceRequestUpdateRequest)(nil),     // 57: dirextalk.agent.v1.SkillServiceRequestUpdateRequest
-	(*SkillServiceRequestUpdateResponse)(nil),    // 58: dirextalk.agent.v1.SkillServiceRequestUpdateResponse
-	(*SkillServiceRequestUninstallRequest)(nil),  // 59: dirextalk.agent.v1.SkillServiceRequestUninstallRequest
-	(*SkillServiceRequestUninstallResponse)(nil), // 60: dirextalk.agent.v1.SkillServiceRequestUninstallResponse
-	(*SkillServiceListRequest)(nil),              // 61: dirextalk.agent.v1.SkillServiceListRequest
-	(*SkillServiceListResponse)(nil),             // 62: dirextalk.agent.v1.SkillServiceListResponse
-	(*SkillServiceGetRequest)(nil),               // 63: dirextalk.agent.v1.SkillServiceGetRequest
-	(*SkillServiceGetResponse)(nil),              // 64: dirextalk.agent.v1.SkillServiceGetResponse
-	(*SkillServiceExecuteRequest)(nil),           // 65: dirextalk.agent.v1.SkillServiceExecuteRequest
-	(*SkillServiceExecuteResponse)(nil),          // 66: dirextalk.agent.v1.SkillServiceExecuteResponse
-	(*timestamppb.Timestamp)(nil),                // 67: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),                      // 68: google.protobuf.Struct
+	(*MCPServiceSearchRequest)(nil),              // 30: dirextalk.agent.v1.MCPServiceSearchRequest
+	(*MCPServiceSearchResponse)(nil),             // 31: dirextalk.agent.v1.MCPServiceSearchResponse
+	(*MCPServiceInspectRequest)(nil),             // 32: dirextalk.agent.v1.MCPServiceInspectRequest
+	(*MCPServiceInspectResponse)(nil),            // 33: dirextalk.agent.v1.MCPServiceInspectResponse
+	(*MCPServiceRequestInstallRequest)(nil),      // 34: dirextalk.agent.v1.MCPServiceRequestInstallRequest
+	(*MCPServiceRequestInstallResponse)(nil),     // 35: dirextalk.agent.v1.MCPServiceRequestInstallResponse
+	(*MCPServiceRequestUpdateRequest)(nil),       // 36: dirextalk.agent.v1.MCPServiceRequestUpdateRequest
+	(*MCPServiceRequestUpdateResponse)(nil),      // 37: dirextalk.agent.v1.MCPServiceRequestUpdateResponse
+	(*MCPServiceRequestUninstallRequest)(nil),    // 38: dirextalk.agent.v1.MCPServiceRequestUninstallRequest
+	(*MCPServiceRequestUninstallResponse)(nil),   // 39: dirextalk.agent.v1.MCPServiceRequestUninstallResponse
+	(*MCPServiceListRequest)(nil),                // 40: dirextalk.agent.v1.MCPServiceListRequest
+	(*MCPServiceListResponse)(nil),               // 41: dirextalk.agent.v1.MCPServiceListResponse
+	(*MCPServiceGetRequest)(nil),                 // 42: dirextalk.agent.v1.MCPServiceGetRequest
+	(*MCPServiceGetResponse)(nil),                // 43: dirextalk.agent.v1.MCPServiceGetResponse
+	(*MCPServiceListToolsRequest)(nil),           // 44: dirextalk.agent.v1.MCPServiceListToolsRequest
+	(*MCPServiceListToolsResponse)(nil),          // 45: dirextalk.agent.v1.MCPServiceListToolsResponse
+	(*SkillServiceSearchRequest)(nil),            // 46: dirextalk.agent.v1.SkillServiceSearchRequest
+	(*SkillServiceSearchResponse)(nil),           // 47: dirextalk.agent.v1.SkillServiceSearchResponse
+	(*SkillServiceInspectRequest)(nil),           // 48: dirextalk.agent.v1.SkillServiceInspectRequest
+	(*SkillServiceInspectResponse)(nil),          // 49: dirextalk.agent.v1.SkillServiceInspectResponse
+	(*SkillServiceRequestInstallRequest)(nil),    // 50: dirextalk.agent.v1.SkillServiceRequestInstallRequest
+	(*SkillServiceRequestInstallResponse)(nil),   // 51: dirextalk.agent.v1.SkillServiceRequestInstallResponse
+	(*SkillServiceRequestUpdateRequest)(nil),     // 52: dirextalk.agent.v1.SkillServiceRequestUpdateRequest
+	(*SkillServiceRequestUpdateResponse)(nil),    // 53: dirextalk.agent.v1.SkillServiceRequestUpdateResponse
+	(*SkillServiceRequestUninstallRequest)(nil),  // 54: dirextalk.agent.v1.SkillServiceRequestUninstallRequest
+	(*SkillServiceRequestUninstallResponse)(nil), // 55: dirextalk.agent.v1.SkillServiceRequestUninstallResponse
+	(*SkillServiceListRequest)(nil),              // 56: dirextalk.agent.v1.SkillServiceListRequest
+	(*SkillServiceListResponse)(nil),             // 57: dirextalk.agent.v1.SkillServiceListResponse
+	(*SkillServiceGetRequest)(nil),               // 58: dirextalk.agent.v1.SkillServiceGetRequest
+	(*SkillServiceGetResponse)(nil),              // 59: dirextalk.agent.v1.SkillServiceGetResponse
+	(*timestamppb.Timestamp)(nil),                // 60: google.protobuf.Timestamp
 }
 var file_dirextalk_agent_v1_core_extension_proto_depIdxs = []int32{
-	4,   // 0: dirextalk.agent.v1.CoreExtensionSecretGrantDescriptor.purpose:type_name -> dirextalk.agent.v1.CoreSecretPurpose
-	6,   // 1: dirextalk.agent.v1.CoreExecution.stdio:type_name -> dirextalk.agent.v1.CoreStaticEntry
-	7,   // 2: dirextalk.agent.v1.CoreExecution.remote:type_name -> dirextalk.agent.v1.CoreRemoteEndpoint
-	8,   // 3: dirextalk.agent.v1.CoreExecution.skill:type_name -> dirextalk.agent.v1.CoreSkillEntry
-	0,   // 4: dirextalk.agent.v1.CoreExtensionCandidate.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
-	1,   // 5: dirextalk.agent.v1.CoreExtensionCandidate.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
-	5,   // 6: dirextalk.agent.v1.CoreExtensionCandidate.pin:type_name -> dirextalk.agent.v1.CoreSourcePin
-	2,   // 7: dirextalk.agent.v1.CoreExtensionCandidate.transport:type_name -> dirextalk.agent.v1.CoreExtensionTransport
-	12,  // 8: dirextalk.agent.v1.CoreExtensionInspection.candidate:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
-	10,  // 9: dirextalk.agent.v1.CoreExtensionInspection.execution:type_name -> dirextalk.agent.v1.CoreExecution
-	11,  // 10: dirextalk.agent.v1.CoreExtensionInspection.network_grants:type_name -> dirextalk.agent.v1.CoreNetworkGrant
-	9,   // 11: dirextalk.agent.v1.CoreExtensionInspection.secret_grants:type_name -> dirextalk.agent.v1.CoreExtensionSecretGrantDescriptor
-	5,   // 12: dirextalk.agent.v1.CoreExtensionVersion.pin:type_name -> dirextalk.agent.v1.CoreSourcePin
-	10,  // 13: dirextalk.agent.v1.CoreExtensionVersion.execution:type_name -> dirextalk.agent.v1.CoreExecution
-	67,  // 14: dirextalk.agent.v1.CoreExtensionVersion.created_at:type_name -> google.protobuf.Timestamp
-	11,  // 15: dirextalk.agent.v1.CoreExtensionVersion.network_grants:type_name -> dirextalk.agent.v1.CoreNetworkGrant
-	9,   // 16: dirextalk.agent.v1.CoreExtensionVersion.secret_grants:type_name -> dirextalk.agent.v1.CoreExtensionSecretGrantDescriptor
-	0,   // 17: dirextalk.agent.v1.CoreInstallation.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
-	1,   // 18: dirextalk.agent.v1.CoreInstallation.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
-	3,   // 19: dirextalk.agent.v1.CoreInstallation.state:type_name -> dirextalk.agent.v1.CoreExtensionState
-	14,  // 20: dirextalk.agent.v1.CoreInstallation.versions:type_name -> dirextalk.agent.v1.CoreExtensionVersion
-	9,   // 21: dirextalk.agent.v1.CoreInstallation.secret_grants:type_name -> dirextalk.agent.v1.CoreExtensionSecretGrantDescriptor
-	67,  // 22: dirextalk.agent.v1.CoreInstallation.created_at:type_name -> google.protobuf.Timestamp
-	67,  // 23: dirextalk.agent.v1.CoreInstallation.updated_at:type_name -> google.protobuf.Timestamp
-	2,   // 24: dirextalk.agent.v1.CoreInstallation.transport:type_name -> dirextalk.agent.v1.CoreExtensionTransport
-	11,  // 25: dirextalk.agent.v1.CoreInstallation.network_grants:type_name -> dirextalk.agent.v1.CoreNetworkGrant
-	4,   // 26: dirextalk.agent.v1.CoreExtensionSecretInput.purpose:type_name -> dirextalk.agent.v1.CoreSecretPurpose
-	0,   // 27: dirextalk.agent.v1.CoreExtensionSearchRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
-	1,   // 28: dirextalk.agent.v1.CoreExtensionSearchRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
-	12,  // 29: dirextalk.agent.v1.CoreExtensionSearchResponse.candidates:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
-	0,   // 30: dirextalk.agent.v1.CoreExtensionInspectRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
-	1,   // 31: dirextalk.agent.v1.CoreExtensionInspectRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
-	5,   // 32: dirextalk.agent.v1.CoreExtensionInspectRequest.pin:type_name -> dirextalk.agent.v1.CoreSourcePin
-	13,  // 33: dirextalk.agent.v1.CoreExtensionInspectResponse.inspection:type_name -> dirextalk.agent.v1.CoreExtensionInspection
-	12,  // 34: dirextalk.agent.v1.CoreExtensionMutationRequest.candidate:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
-	13,  // 35: dirextalk.agent.v1.CoreExtensionMutationRequest.inspection:type_name -> dirextalk.agent.v1.CoreExtensionInspection
-	16,  // 36: dirextalk.agent.v1.CoreExtensionMutationRequest.secret_inputs:type_name -> dirextalk.agent.v1.CoreExtensionSecretInput
-	15,  // 37: dirextalk.agent.v1.CoreExtensionMutationResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
-	15,  // 38: dirextalk.agent.v1.CoreExtensionGetResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
-	0,   // 39: dirextalk.agent.v1.CoreExtensionListRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
-	1,   // 40: dirextalk.agent.v1.CoreExtensionListRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
-	3,   // 41: dirextalk.agent.v1.CoreExtensionListRequest.state:type_name -> dirextalk.agent.v1.CoreExtensionState
-	15,  // 42: dirextalk.agent.v1.CoreExtensionListResponse.installations:type_name -> dirextalk.agent.v1.CoreInstallation
-	27,  // 43: dirextalk.agent.v1.CoreListToolsResponse.tools:type_name -> dirextalk.agent.v1.CoreTool
-	68,  // 44: dirextalk.agent.v1.CoreExecuteToolRequest.input:type_name -> google.protobuf.Struct
-	68,  // 45: dirextalk.agent.v1.CoreExecuteSkillRequest.input:type_name -> google.protobuf.Struct
-	0,   // 46: dirextalk.agent.v1.MCPServiceSearchRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
-	1,   // 47: dirextalk.agent.v1.MCPServiceSearchRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
-	12,  // 48: dirextalk.agent.v1.MCPServiceSearchResponse.candidates:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
-	0,   // 49: dirextalk.agent.v1.MCPServiceInspectRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
-	1,   // 50: dirextalk.agent.v1.MCPServiceInspectRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
-	5,   // 51: dirextalk.agent.v1.MCPServiceInspectRequest.pin:type_name -> dirextalk.agent.v1.CoreSourcePin
-	13,  // 52: dirextalk.agent.v1.MCPServiceInspectResponse.inspection:type_name -> dirextalk.agent.v1.CoreExtensionInspection
-	12,  // 53: dirextalk.agent.v1.MCPServiceRequestInstallRequest.candidate:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
-	13,  // 54: dirextalk.agent.v1.MCPServiceRequestInstallRequest.inspection:type_name -> dirextalk.agent.v1.CoreExtensionInspection
-	16,  // 55: dirextalk.agent.v1.MCPServiceRequestInstallRequest.secret_inputs:type_name -> dirextalk.agent.v1.CoreExtensionSecretInput
-	15,  // 56: dirextalk.agent.v1.MCPServiceRequestInstallResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
-	37,  // 57: dirextalk.agent.v1.MCPServiceRequestUpdateRequest.mutation:type_name -> dirextalk.agent.v1.MCPServiceRequestInstallRequest
-	15,  // 58: dirextalk.agent.v1.MCPServiceRequestUpdateResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
-	15,  // 59: dirextalk.agent.v1.MCPServiceRequestUninstallResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
-	0,   // 60: dirextalk.agent.v1.MCPServiceListRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
-	1,   // 61: dirextalk.agent.v1.MCPServiceListRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
-	3,   // 62: dirextalk.agent.v1.MCPServiceListRequest.state:type_name -> dirextalk.agent.v1.CoreExtensionState
-	15,  // 63: dirextalk.agent.v1.MCPServiceListResponse.installations:type_name -> dirextalk.agent.v1.CoreInstallation
-	15,  // 64: dirextalk.agent.v1.MCPServiceGetResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
-	27,  // 65: dirextalk.agent.v1.MCPServiceListToolsResponse.tools:type_name -> dirextalk.agent.v1.CoreTool
-	68,  // 66: dirextalk.agent.v1.MCPServiceExecuteToolRequest.input:type_name -> google.protobuf.Struct
-	0,   // 67: dirextalk.agent.v1.SkillServiceSearchRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
-	1,   // 68: dirextalk.agent.v1.SkillServiceSearchRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
-	12,  // 69: dirextalk.agent.v1.SkillServiceSearchResponse.candidates:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
-	0,   // 70: dirextalk.agent.v1.SkillServiceInspectRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
-	1,   // 71: dirextalk.agent.v1.SkillServiceInspectRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
-	5,   // 72: dirextalk.agent.v1.SkillServiceInspectRequest.pin:type_name -> dirextalk.agent.v1.CoreSourcePin
-	13,  // 73: dirextalk.agent.v1.SkillServiceInspectResponse.inspection:type_name -> dirextalk.agent.v1.CoreExtensionInspection
-	12,  // 74: dirextalk.agent.v1.SkillServiceRequestInstallRequest.candidate:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
-	13,  // 75: dirextalk.agent.v1.SkillServiceRequestInstallRequest.inspection:type_name -> dirextalk.agent.v1.CoreExtensionInspection
-	16,  // 76: dirextalk.agent.v1.SkillServiceRequestInstallRequest.secret_inputs:type_name -> dirextalk.agent.v1.CoreExtensionSecretInput
-	15,  // 77: dirextalk.agent.v1.SkillServiceRequestInstallResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
-	55,  // 78: dirextalk.agent.v1.SkillServiceRequestUpdateRequest.mutation:type_name -> dirextalk.agent.v1.SkillServiceRequestInstallRequest
-	15,  // 79: dirextalk.agent.v1.SkillServiceRequestUpdateResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
-	15,  // 80: dirextalk.agent.v1.SkillServiceRequestUninstallResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
-	0,   // 81: dirextalk.agent.v1.SkillServiceListRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
-	1,   // 82: dirextalk.agent.v1.SkillServiceListRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
-	3,   // 83: dirextalk.agent.v1.SkillServiceListRequest.state:type_name -> dirextalk.agent.v1.CoreExtensionState
-	15,  // 84: dirextalk.agent.v1.SkillServiceListResponse.installations:type_name -> dirextalk.agent.v1.CoreInstallation
-	15,  // 85: dirextalk.agent.v1.SkillServiceGetResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
-	68,  // 86: dirextalk.agent.v1.SkillServiceExecuteRequest.input:type_name -> google.protobuf.Struct
-	33,  // 87: dirextalk.agent.v1.MCPService.Search:input_type -> dirextalk.agent.v1.MCPServiceSearchRequest
-	35,  // 88: dirextalk.agent.v1.MCPService.Inspect:input_type -> dirextalk.agent.v1.MCPServiceInspectRequest
-	37,  // 89: dirextalk.agent.v1.MCPService.RequestInstall:input_type -> dirextalk.agent.v1.MCPServiceRequestInstallRequest
-	39,  // 90: dirextalk.agent.v1.MCPService.RequestUpdate:input_type -> dirextalk.agent.v1.MCPServiceRequestUpdateRequest
-	41,  // 91: dirextalk.agent.v1.MCPService.RequestUninstall:input_type -> dirextalk.agent.v1.MCPServiceRequestUninstallRequest
-	43,  // 92: dirextalk.agent.v1.MCPService.List:input_type -> dirextalk.agent.v1.MCPServiceListRequest
-	45,  // 93: dirextalk.agent.v1.MCPService.Get:input_type -> dirextalk.agent.v1.MCPServiceGetRequest
-	47,  // 94: dirextalk.agent.v1.MCPService.ListTools:input_type -> dirextalk.agent.v1.MCPServiceListToolsRequest
-	49,  // 95: dirextalk.agent.v1.MCPService.ExecuteTool:input_type -> dirextalk.agent.v1.MCPServiceExecuteToolRequest
-	51,  // 96: dirextalk.agent.v1.SkillService.Search:input_type -> dirextalk.agent.v1.SkillServiceSearchRequest
-	53,  // 97: dirextalk.agent.v1.SkillService.Inspect:input_type -> dirextalk.agent.v1.SkillServiceInspectRequest
-	55,  // 98: dirextalk.agent.v1.SkillService.RequestInstall:input_type -> dirextalk.agent.v1.SkillServiceRequestInstallRequest
-	57,  // 99: dirextalk.agent.v1.SkillService.RequestUpdate:input_type -> dirextalk.agent.v1.SkillServiceRequestUpdateRequest
-	59,  // 100: dirextalk.agent.v1.SkillService.RequestUninstall:input_type -> dirextalk.agent.v1.SkillServiceRequestUninstallRequest
-	61,  // 101: dirextalk.agent.v1.SkillService.List:input_type -> dirextalk.agent.v1.SkillServiceListRequest
-	63,  // 102: dirextalk.agent.v1.SkillService.Get:input_type -> dirextalk.agent.v1.SkillServiceGetRequest
-	65,  // 103: dirextalk.agent.v1.SkillService.Execute:input_type -> dirextalk.agent.v1.SkillServiceExecuteRequest
-	34,  // 104: dirextalk.agent.v1.MCPService.Search:output_type -> dirextalk.agent.v1.MCPServiceSearchResponse
-	36,  // 105: dirextalk.agent.v1.MCPService.Inspect:output_type -> dirextalk.agent.v1.MCPServiceInspectResponse
-	38,  // 106: dirextalk.agent.v1.MCPService.RequestInstall:output_type -> dirextalk.agent.v1.MCPServiceRequestInstallResponse
-	40,  // 107: dirextalk.agent.v1.MCPService.RequestUpdate:output_type -> dirextalk.agent.v1.MCPServiceRequestUpdateResponse
-	42,  // 108: dirextalk.agent.v1.MCPService.RequestUninstall:output_type -> dirextalk.agent.v1.MCPServiceRequestUninstallResponse
-	44,  // 109: dirextalk.agent.v1.MCPService.List:output_type -> dirextalk.agent.v1.MCPServiceListResponse
-	46,  // 110: dirextalk.agent.v1.MCPService.Get:output_type -> dirextalk.agent.v1.MCPServiceGetResponse
-	48,  // 111: dirextalk.agent.v1.MCPService.ListTools:output_type -> dirextalk.agent.v1.MCPServiceListToolsResponse
-	50,  // 112: dirextalk.agent.v1.MCPService.ExecuteTool:output_type -> dirextalk.agent.v1.MCPServiceExecuteToolResponse
-	52,  // 113: dirextalk.agent.v1.SkillService.Search:output_type -> dirextalk.agent.v1.SkillServiceSearchResponse
-	54,  // 114: dirextalk.agent.v1.SkillService.Inspect:output_type -> dirextalk.agent.v1.SkillServiceInspectResponse
-	56,  // 115: dirextalk.agent.v1.SkillService.RequestInstall:output_type -> dirextalk.agent.v1.SkillServiceRequestInstallResponse
-	58,  // 116: dirextalk.agent.v1.SkillService.RequestUpdate:output_type -> dirextalk.agent.v1.SkillServiceRequestUpdateResponse
-	60,  // 117: dirextalk.agent.v1.SkillService.RequestUninstall:output_type -> dirextalk.agent.v1.SkillServiceRequestUninstallResponse
-	62,  // 118: dirextalk.agent.v1.SkillService.List:output_type -> dirextalk.agent.v1.SkillServiceListResponse
-	64,  // 119: dirextalk.agent.v1.SkillService.Get:output_type -> dirextalk.agent.v1.SkillServiceGetResponse
-	66,  // 120: dirextalk.agent.v1.SkillService.Execute:output_type -> dirextalk.agent.v1.SkillServiceExecuteResponse
-	104, // [104:121] is the sub-list for method output_type
-	87,  // [87:104] is the sub-list for method input_type
-	87,  // [87:87] is the sub-list for extension type_name
-	87,  // [87:87] is the sub-list for extension extendee
-	0,   // [0:87] is the sub-list for field type_name
+	4,  // 0: dirextalk.agent.v1.CoreExtensionSecretGrantDescriptor.purpose:type_name -> dirextalk.agent.v1.CoreSecretPurpose
+	6,  // 1: dirextalk.agent.v1.CoreExecution.stdio:type_name -> dirextalk.agent.v1.CoreStaticEntry
+	7,  // 2: dirextalk.agent.v1.CoreExecution.remote:type_name -> dirextalk.agent.v1.CoreRemoteEndpoint
+	8,  // 3: dirextalk.agent.v1.CoreExecution.skill:type_name -> dirextalk.agent.v1.CoreSkillEntry
+	0,  // 4: dirextalk.agent.v1.CoreExtensionCandidate.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
+	1,  // 5: dirextalk.agent.v1.CoreExtensionCandidate.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
+	5,  // 6: dirextalk.agent.v1.CoreExtensionCandidate.pin:type_name -> dirextalk.agent.v1.CoreSourcePin
+	2,  // 7: dirextalk.agent.v1.CoreExtensionCandidate.transport:type_name -> dirextalk.agent.v1.CoreExtensionTransport
+	12, // 8: dirextalk.agent.v1.CoreExtensionInspection.candidate:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
+	10, // 9: dirextalk.agent.v1.CoreExtensionInspection.execution:type_name -> dirextalk.agent.v1.CoreExecution
+	11, // 10: dirextalk.agent.v1.CoreExtensionInspection.network_grants:type_name -> dirextalk.agent.v1.CoreNetworkGrant
+	9,  // 11: dirextalk.agent.v1.CoreExtensionInspection.secret_grants:type_name -> dirextalk.agent.v1.CoreExtensionSecretGrantDescriptor
+	5,  // 12: dirextalk.agent.v1.CoreExtensionVersion.pin:type_name -> dirextalk.agent.v1.CoreSourcePin
+	10, // 13: dirextalk.agent.v1.CoreExtensionVersion.execution:type_name -> dirextalk.agent.v1.CoreExecution
+	60, // 14: dirextalk.agent.v1.CoreExtensionVersion.created_at:type_name -> google.protobuf.Timestamp
+	11, // 15: dirextalk.agent.v1.CoreExtensionVersion.network_grants:type_name -> dirextalk.agent.v1.CoreNetworkGrant
+	9,  // 16: dirextalk.agent.v1.CoreExtensionVersion.secret_grants:type_name -> dirextalk.agent.v1.CoreExtensionSecretGrantDescriptor
+	0,  // 17: dirextalk.agent.v1.CoreInstallation.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
+	1,  // 18: dirextalk.agent.v1.CoreInstallation.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
+	3,  // 19: dirextalk.agent.v1.CoreInstallation.state:type_name -> dirextalk.agent.v1.CoreExtensionState
+	14, // 20: dirextalk.agent.v1.CoreInstallation.versions:type_name -> dirextalk.agent.v1.CoreExtensionVersion
+	9,  // 21: dirextalk.agent.v1.CoreInstallation.secret_grants:type_name -> dirextalk.agent.v1.CoreExtensionSecretGrantDescriptor
+	60, // 22: dirextalk.agent.v1.CoreInstallation.created_at:type_name -> google.protobuf.Timestamp
+	60, // 23: dirextalk.agent.v1.CoreInstallation.updated_at:type_name -> google.protobuf.Timestamp
+	2,  // 24: dirextalk.agent.v1.CoreInstallation.transport:type_name -> dirextalk.agent.v1.CoreExtensionTransport
+	11, // 25: dirextalk.agent.v1.CoreInstallation.network_grants:type_name -> dirextalk.agent.v1.CoreNetworkGrant
+	4,  // 26: dirextalk.agent.v1.CoreExtensionSecretInput.purpose:type_name -> dirextalk.agent.v1.CoreSecretPurpose
+	0,  // 27: dirextalk.agent.v1.CoreExtensionSearchRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
+	1,  // 28: dirextalk.agent.v1.CoreExtensionSearchRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
+	12, // 29: dirextalk.agent.v1.CoreExtensionSearchResponse.candidates:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
+	0,  // 30: dirextalk.agent.v1.CoreExtensionInspectRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
+	1,  // 31: dirextalk.agent.v1.CoreExtensionInspectRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
+	5,  // 32: dirextalk.agent.v1.CoreExtensionInspectRequest.pin:type_name -> dirextalk.agent.v1.CoreSourcePin
+	13, // 33: dirextalk.agent.v1.CoreExtensionInspectResponse.inspection:type_name -> dirextalk.agent.v1.CoreExtensionInspection
+	12, // 34: dirextalk.agent.v1.CoreExtensionMutationRequest.candidate:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
+	13, // 35: dirextalk.agent.v1.CoreExtensionMutationRequest.inspection:type_name -> dirextalk.agent.v1.CoreExtensionInspection
+	16, // 36: dirextalk.agent.v1.CoreExtensionMutationRequest.secret_inputs:type_name -> dirextalk.agent.v1.CoreExtensionSecretInput
+	15, // 37: dirextalk.agent.v1.CoreExtensionMutationResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
+	15, // 38: dirextalk.agent.v1.CoreExtensionGetResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
+	0,  // 39: dirextalk.agent.v1.CoreExtensionListRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
+	1,  // 40: dirextalk.agent.v1.CoreExtensionListRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
+	3,  // 41: dirextalk.agent.v1.CoreExtensionListRequest.state:type_name -> dirextalk.agent.v1.CoreExtensionState
+	15, // 42: dirextalk.agent.v1.CoreExtensionListResponse.installations:type_name -> dirextalk.agent.v1.CoreInstallation
+	27, // 43: dirextalk.agent.v1.CoreListToolsResponse.tools:type_name -> dirextalk.agent.v1.CoreTool
+	0,  // 44: dirextalk.agent.v1.MCPServiceSearchRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
+	1,  // 45: dirextalk.agent.v1.MCPServiceSearchRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
+	12, // 46: dirextalk.agent.v1.MCPServiceSearchResponse.candidates:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
+	0,  // 47: dirextalk.agent.v1.MCPServiceInspectRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
+	1,  // 48: dirextalk.agent.v1.MCPServiceInspectRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
+	5,  // 49: dirextalk.agent.v1.MCPServiceInspectRequest.pin:type_name -> dirextalk.agent.v1.CoreSourcePin
+	13, // 50: dirextalk.agent.v1.MCPServiceInspectResponse.inspection:type_name -> dirextalk.agent.v1.CoreExtensionInspection
+	12, // 51: dirextalk.agent.v1.MCPServiceRequestInstallRequest.candidate:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
+	13, // 52: dirextalk.agent.v1.MCPServiceRequestInstallRequest.inspection:type_name -> dirextalk.agent.v1.CoreExtensionInspection
+	16, // 53: dirextalk.agent.v1.MCPServiceRequestInstallRequest.secret_inputs:type_name -> dirextalk.agent.v1.CoreExtensionSecretInput
+	15, // 54: dirextalk.agent.v1.MCPServiceRequestInstallResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
+	34, // 55: dirextalk.agent.v1.MCPServiceRequestUpdateRequest.mutation:type_name -> dirextalk.agent.v1.MCPServiceRequestInstallRequest
+	15, // 56: dirextalk.agent.v1.MCPServiceRequestUpdateResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
+	15, // 57: dirextalk.agent.v1.MCPServiceRequestUninstallResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
+	0,  // 58: dirextalk.agent.v1.MCPServiceListRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
+	1,  // 59: dirextalk.agent.v1.MCPServiceListRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
+	3,  // 60: dirextalk.agent.v1.MCPServiceListRequest.state:type_name -> dirextalk.agent.v1.CoreExtensionState
+	15, // 61: dirextalk.agent.v1.MCPServiceListResponse.installations:type_name -> dirextalk.agent.v1.CoreInstallation
+	15, // 62: dirextalk.agent.v1.MCPServiceGetResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
+	27, // 63: dirextalk.agent.v1.MCPServiceListToolsResponse.tools:type_name -> dirextalk.agent.v1.CoreTool
+	0,  // 64: dirextalk.agent.v1.SkillServiceSearchRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
+	1,  // 65: dirextalk.agent.v1.SkillServiceSearchRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
+	12, // 66: dirextalk.agent.v1.SkillServiceSearchResponse.candidates:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
+	0,  // 67: dirextalk.agent.v1.SkillServiceInspectRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
+	1,  // 68: dirextalk.agent.v1.SkillServiceInspectRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
+	5,  // 69: dirextalk.agent.v1.SkillServiceInspectRequest.pin:type_name -> dirextalk.agent.v1.CoreSourcePin
+	13, // 70: dirextalk.agent.v1.SkillServiceInspectResponse.inspection:type_name -> dirextalk.agent.v1.CoreExtensionInspection
+	12, // 71: dirextalk.agent.v1.SkillServiceRequestInstallRequest.candidate:type_name -> dirextalk.agent.v1.CoreExtensionCandidate
+	13, // 72: dirextalk.agent.v1.SkillServiceRequestInstallRequest.inspection:type_name -> dirextalk.agent.v1.CoreExtensionInspection
+	16, // 73: dirextalk.agent.v1.SkillServiceRequestInstallRequest.secret_inputs:type_name -> dirextalk.agent.v1.CoreExtensionSecretInput
+	15, // 74: dirextalk.agent.v1.SkillServiceRequestInstallResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
+	50, // 75: dirextalk.agent.v1.SkillServiceRequestUpdateRequest.mutation:type_name -> dirextalk.agent.v1.SkillServiceRequestInstallRequest
+	15, // 76: dirextalk.agent.v1.SkillServiceRequestUpdateResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
+	15, // 77: dirextalk.agent.v1.SkillServiceRequestUninstallResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
+	0,  // 78: dirextalk.agent.v1.SkillServiceListRequest.kind:type_name -> dirextalk.agent.v1.CoreExtensionKind
+	1,  // 79: dirextalk.agent.v1.SkillServiceListRequest.source:type_name -> dirextalk.agent.v1.CoreExtensionSource
+	3,  // 80: dirextalk.agent.v1.SkillServiceListRequest.state:type_name -> dirextalk.agent.v1.CoreExtensionState
+	15, // 81: dirextalk.agent.v1.SkillServiceListResponse.installations:type_name -> dirextalk.agent.v1.CoreInstallation
+	15, // 82: dirextalk.agent.v1.SkillServiceGetResponse.installation:type_name -> dirextalk.agent.v1.CoreInstallation
+	30, // 83: dirextalk.agent.v1.MCPService.Search:input_type -> dirextalk.agent.v1.MCPServiceSearchRequest
+	32, // 84: dirextalk.agent.v1.MCPService.Inspect:input_type -> dirextalk.agent.v1.MCPServiceInspectRequest
+	34, // 85: dirextalk.agent.v1.MCPService.RequestInstall:input_type -> dirextalk.agent.v1.MCPServiceRequestInstallRequest
+	36, // 86: dirextalk.agent.v1.MCPService.RequestUpdate:input_type -> dirextalk.agent.v1.MCPServiceRequestUpdateRequest
+	38, // 87: dirextalk.agent.v1.MCPService.RequestUninstall:input_type -> dirextalk.agent.v1.MCPServiceRequestUninstallRequest
+	40, // 88: dirextalk.agent.v1.MCPService.List:input_type -> dirextalk.agent.v1.MCPServiceListRequest
+	42, // 89: dirextalk.agent.v1.MCPService.Get:input_type -> dirextalk.agent.v1.MCPServiceGetRequest
+	44, // 90: dirextalk.agent.v1.MCPService.ListTools:input_type -> dirextalk.agent.v1.MCPServiceListToolsRequest
+	46, // 91: dirextalk.agent.v1.SkillService.Search:input_type -> dirextalk.agent.v1.SkillServiceSearchRequest
+	48, // 92: dirextalk.agent.v1.SkillService.Inspect:input_type -> dirextalk.agent.v1.SkillServiceInspectRequest
+	50, // 93: dirextalk.agent.v1.SkillService.RequestInstall:input_type -> dirextalk.agent.v1.SkillServiceRequestInstallRequest
+	52, // 94: dirextalk.agent.v1.SkillService.RequestUpdate:input_type -> dirextalk.agent.v1.SkillServiceRequestUpdateRequest
+	54, // 95: dirextalk.agent.v1.SkillService.RequestUninstall:input_type -> dirextalk.agent.v1.SkillServiceRequestUninstallRequest
+	56, // 96: dirextalk.agent.v1.SkillService.List:input_type -> dirextalk.agent.v1.SkillServiceListRequest
+	58, // 97: dirextalk.agent.v1.SkillService.Get:input_type -> dirextalk.agent.v1.SkillServiceGetRequest
+	31, // 98: dirextalk.agent.v1.MCPService.Search:output_type -> dirextalk.agent.v1.MCPServiceSearchResponse
+	33, // 99: dirextalk.agent.v1.MCPService.Inspect:output_type -> dirextalk.agent.v1.MCPServiceInspectResponse
+	35, // 100: dirextalk.agent.v1.MCPService.RequestInstall:output_type -> dirextalk.agent.v1.MCPServiceRequestInstallResponse
+	37, // 101: dirextalk.agent.v1.MCPService.RequestUpdate:output_type -> dirextalk.agent.v1.MCPServiceRequestUpdateResponse
+	39, // 102: dirextalk.agent.v1.MCPService.RequestUninstall:output_type -> dirextalk.agent.v1.MCPServiceRequestUninstallResponse
+	41, // 103: dirextalk.agent.v1.MCPService.List:output_type -> dirextalk.agent.v1.MCPServiceListResponse
+	43, // 104: dirextalk.agent.v1.MCPService.Get:output_type -> dirextalk.agent.v1.MCPServiceGetResponse
+	45, // 105: dirextalk.agent.v1.MCPService.ListTools:output_type -> dirextalk.agent.v1.MCPServiceListToolsResponse
+	47, // 106: dirextalk.agent.v1.SkillService.Search:output_type -> dirextalk.agent.v1.SkillServiceSearchResponse
+	49, // 107: dirextalk.agent.v1.SkillService.Inspect:output_type -> dirextalk.agent.v1.SkillServiceInspectResponse
+	51, // 108: dirextalk.agent.v1.SkillService.RequestInstall:output_type -> dirextalk.agent.v1.SkillServiceRequestInstallResponse
+	53, // 109: dirextalk.agent.v1.SkillService.RequestUpdate:output_type -> dirextalk.agent.v1.SkillServiceRequestUpdateResponse
+	55, // 110: dirextalk.agent.v1.SkillService.RequestUninstall:output_type -> dirextalk.agent.v1.SkillServiceRequestUninstallResponse
+	57, // 111: dirextalk.agent.v1.SkillService.List:output_type -> dirextalk.agent.v1.SkillServiceListResponse
+	59, // 112: dirextalk.agent.v1.SkillService.Get:output_type -> dirextalk.agent.v1.SkillServiceGetResponse
+	98, // [98:113] is the sub-list for method output_type
+	83, // [83:98] is the sub-list for method input_type
+	83, // [83:83] is the sub-list for extension type_name
+	83, // [83:83] is the sub-list for extension extendee
+	0,  // [0:83] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_core_extension_proto_init() }
@@ -4884,7 +4396,7 @@ func file_dirextalk_agent_v1_core_extension_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_core_extension_proto_rawDesc), len(file_dirextalk_agent_v1_core_extension_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   62,
+			NumMessages:   55,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

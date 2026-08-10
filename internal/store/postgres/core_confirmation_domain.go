@@ -558,7 +558,7 @@ func extensionExecutionBindingTx(ctx context.Context, tx pgx.Tx, cur coreconfirm
 		return coreconfirmation.Binding{}, coreconfirmation.ErrStale
 	}
 	installation := coreextension.Installation{ID: payload.Extension.InstallationID, Kind: coreextension.Kind(kind), Transport: coreextension.Transport(transport), Revision: revision}
-	return extensionExecutionBinding(cur.Binding.OwnerID, installation, version, payload.Extension.ToolName, payload.Extension.CanonicalInputJSON)
+	return extensionExecutionBinding(cur.Binding.OwnerID, cur.Binding.AccountGeneration, installation, version, payload.Extension.ToolName, payload.Extension.CanonicalInputJSON)
 }
 
 func (s *CoreConfirmationStore) replay(ctx context.Context, tx pgx.Tx, op, key string, dig coreconfirmation.Digest) (coreconfirmation.Confirmation, bool, error) {

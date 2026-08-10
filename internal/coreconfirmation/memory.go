@@ -48,7 +48,7 @@ func NewMemoryRepository(now ...func() time.Time) *MemoryRepository {
 }
 
 func (r *MemoryRepository) AcknowledgeExtensionExecutionUncertain(_ context.Context, command AcknowledgeExtensionExecutionUncertainCommand) (AcknowledgeExtensionExecutionUncertainResult, error) {
-	if !validateUUID(command.ConfirmationID) || !validateUUID(command.TaskID) || !validateUUID(command.InstallationID) || !validateUUID(command.IdempotencyKey) || command.ExpectedTaskRevision < 1 || command.ExpectedConfirmationRevision < 1 || command.Resolution != ExtensionUncertainAcknowledgedUnknownNoRetry {
+	if strings.TrimSpace(command.OwnerID) == "" || command.AccountGeneration == 0 || !validateUUID(command.ConfirmationID) || !validateUUID(command.TaskID) || !validateUUID(command.InstallationID) || !validateUUID(command.IdempotencyKey) || command.ExpectedTaskRevision < 1 || command.ExpectedConfirmationRevision < 1 || command.Resolution != ExtensionUncertainAcknowledgedUnknownNoRetry {
 		return AcknowledgeExtensionExecutionUncertainResult{}, ErrInvalid
 	}
 	digest := AcknowledgeExtensionExecutionUncertainDigest(command)
@@ -65,7 +65,7 @@ func (r *MemoryRepository) AcknowledgeExtensionExecutionUncertain(_ context.Cont
 	if !ok {
 		return AcknowledgeExtensionExecutionUncertainResult{}, ErrNotFound
 	}
-	if c.TaskID != command.TaskID || c.Binding.OperationDomain != "extension.execute" || c.Binding.TargetID != command.InstallationID || c.Binding.OwnerID == "" || c.State != StateConsumed || c.Revision != command.ExpectedConfirmationRevision {
+	if c.TaskID != command.TaskID || c.Binding.OperationDomain != "extension.execute" || c.Binding.TargetID != command.InstallationID || c.Binding.OwnerID != command.OwnerID || c.Binding.AccountGeneration != command.AccountGeneration || c.State != StateConsumed || c.Revision != command.ExpectedConfirmationRevision {
 		return AcknowledgeExtensionExecutionUncertainResult{}, ErrConflict
 	}
 	fence, ok := r.taskFences[command.TaskID]

@@ -27,7 +27,6 @@ const (
 	MCPService_List_FullMethodName             = "/dirextalk.agent.v1.MCPService/List"
 	MCPService_Get_FullMethodName              = "/dirextalk.agent.v1.MCPService/Get"
 	MCPService_ListTools_FullMethodName        = "/dirextalk.agent.v1.MCPService/ListTools"
-	MCPService_ExecuteTool_FullMethodName      = "/dirextalk.agent.v1.MCPService/ExecuteTool"
 )
 
 // MCPServiceClient is the client API for MCPService service.
@@ -52,8 +51,6 @@ type MCPServiceClient interface {
 	Get(ctx context.Context, in *MCPServiceGetRequest, opts ...grpc.CallOption) (*MCPServiceGetResponse, error)
 	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
 	ListTools(ctx context.Context, in *MCPServiceListToolsRequest, opts ...grpc.CallOption) (*MCPServiceListToolsResponse, error)
-	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-	ExecuteTool(ctx context.Context, in *MCPServiceExecuteToolRequest, opts ...grpc.CallOption) (*MCPServiceExecuteToolResponse, error)
 }
 
 type mCPServiceClient struct {
@@ -144,16 +141,6 @@ func (c *mCPServiceClient) ListTools(ctx context.Context, in *MCPServiceListTool
 	return out, nil
 }
 
-func (c *mCPServiceClient) ExecuteTool(ctx context.Context, in *MCPServiceExecuteToolRequest, opts ...grpc.CallOption) (*MCPServiceExecuteToolResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(MCPServiceExecuteToolResponse)
-	err := c.cc.Invoke(ctx, MCPService_ExecuteTool_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // MCPServiceServer is the server API for MCPService service.
 // All implementations must embed UnimplementedMCPServiceServer
 // for forward compatibility.
@@ -176,8 +163,6 @@ type MCPServiceServer interface {
 	Get(context.Context, *MCPServiceGetRequest) (*MCPServiceGetResponse, error)
 	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
 	ListTools(context.Context, *MCPServiceListToolsRequest) (*MCPServiceListToolsResponse, error)
-	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-	ExecuteTool(context.Context, *MCPServiceExecuteToolRequest) (*MCPServiceExecuteToolResponse, error)
 	mustEmbedUnimplementedMCPServiceServer()
 }
 
@@ -211,9 +196,6 @@ func (UnimplementedMCPServiceServer) Get(context.Context, *MCPServiceGetRequest)
 }
 func (UnimplementedMCPServiceServer) ListTools(context.Context, *MCPServiceListToolsRequest) (*MCPServiceListToolsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListTools not implemented")
-}
-func (UnimplementedMCPServiceServer) ExecuteTool(context.Context, *MCPServiceExecuteToolRequest) (*MCPServiceExecuteToolResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ExecuteTool not implemented")
 }
 func (UnimplementedMCPServiceServer) mustEmbedUnimplementedMCPServiceServer() {}
 func (UnimplementedMCPServiceServer) testEmbeddedByValue()                    {}
@@ -380,24 +362,6 @@ func _MCPService_ListTools_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
-func _MCPService_ExecuteTool_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(MCPServiceExecuteToolRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(MCPServiceServer).ExecuteTool(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: MCPService_ExecuteTool_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(MCPServiceServer).ExecuteTool(ctx, req.(*MCPServiceExecuteToolRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // MCPService_ServiceDesc is the grpc.ServiceDesc for MCPService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -437,10 +401,6 @@ var MCPService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "ListTools",
 			Handler:    _MCPService_ListTools_Handler,
 		},
-		{
-			MethodName: "ExecuteTool",
-			Handler:    _MCPService_ExecuteTool_Handler,
-		},
 	},
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "dirextalk/agent/v1/core_extension.proto",
@@ -454,7 +414,6 @@ const (
 	SkillService_RequestUninstall_FullMethodName = "/dirextalk.agent.v1.SkillService/RequestUninstall"
 	SkillService_List_FullMethodName             = "/dirextalk.agent.v1.SkillService/List"
 	SkillService_Get_FullMethodName              = "/dirextalk.agent.v1.SkillService/Get"
-	SkillService_Execute_FullMethodName          = "/dirextalk.agent.v1.SkillService/Execute"
 )
 
 // SkillServiceClient is the client API for SkillService service.
@@ -477,8 +436,6 @@ type SkillServiceClient interface {
 	List(ctx context.Context, in *SkillServiceListRequest, opts ...grpc.CallOption) (*SkillServiceListResponse, error)
 	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
 	Get(ctx context.Context, in *SkillServiceGetRequest, opts ...grpc.CallOption) (*SkillServiceGetResponse, error)
-	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-	Execute(ctx context.Context, in *SkillServiceExecuteRequest, opts ...grpc.CallOption) (*SkillServiceExecuteResponse, error)
 }
 
 type skillServiceClient struct {
@@ -559,16 +516,6 @@ func (c *skillServiceClient) Get(ctx context.Context, in *SkillServiceGetRequest
 	return out, nil
 }
 
-func (c *skillServiceClient) Execute(ctx context.Context, in *SkillServiceExecuteRequest, opts ...grpc.CallOption) (*SkillServiceExecuteResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SkillServiceExecuteResponse)
-	err := c.cc.Invoke(ctx, SkillService_Execute_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // SkillServiceServer is the server API for SkillService service.
 // All implementations must embed UnimplementedSkillServiceServer
 // for forward compatibility.
@@ -589,8 +536,6 @@ type SkillServiceServer interface {
 	List(context.Context, *SkillServiceListRequest) (*SkillServiceListResponse, error)
 	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
 	Get(context.Context, *SkillServiceGetRequest) (*SkillServiceGetResponse, error)
-	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-	Execute(context.Context, *SkillServiceExecuteRequest) (*SkillServiceExecuteResponse, error)
 	mustEmbedUnimplementedSkillServiceServer()
 }
 
@@ -621,9 +566,6 @@ func (UnimplementedSkillServiceServer) List(context.Context, *SkillServiceListRe
 }
 func (UnimplementedSkillServiceServer) Get(context.Context, *SkillServiceGetRequest) (*SkillServiceGetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Get not implemented")
-}
-func (UnimplementedSkillServiceServer) Execute(context.Context, *SkillServiceExecuteRequest) (*SkillServiceExecuteResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Execute not implemented")
 }
 func (UnimplementedSkillServiceServer) mustEmbedUnimplementedSkillServiceServer() {}
 func (UnimplementedSkillServiceServer) testEmbeddedByValue()                      {}
@@ -772,24 +714,6 @@ func _SkillService_Get_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
-func _SkillService_Execute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SkillServiceExecuteRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(SkillServiceServer).Execute(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: SkillService_Execute_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SkillServiceServer).Execute(ctx, req.(*SkillServiceExecuteRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // SkillService_ServiceDesc is the grpc.ServiceDesc for SkillService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -824,10 +748,6 @@ var SkillService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Get",
 			Handler:    _SkillService_Get_Handler,
-		},
-		{
-			MethodName: "Execute",
-			Handler:    _SkillService_Execute_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

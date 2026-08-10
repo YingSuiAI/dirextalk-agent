@@ -51,7 +51,7 @@ func (c *PostgresExtensionExecutionCoordinator) CreateTask(ctx context.Context, 
 // transaction as its immutable binding; only ConfirmationService.Confirm may
 // transition it to queued.
 func (c *PostgresExtensionExecutionCoordinator) RequestTask(ctx context.Context, in coreextension.ExecuteRequest) (coreextension.ExecuteResult, error) {
-	if c == nil || c.store == nil || !coretask.ValidUUID(in.IdempotencyKey) || !coretask.ValidUUID(in.InstallationID) || in.ExpectedRevision == 0 {
+	if c == nil || c.store == nil || strings.TrimSpace(in.OwnerID) == "" || strings.TrimSpace(in.OwnerID) != in.OwnerID || in.AccountGeneration == 0 || !coretask.ValidUUID(in.IdempotencyKey) || !coretask.ValidUUID(in.InstallationID) || in.ExpectedRevision == 0 {
 		return coreextension.ExecuteResult{}, coreextension.ErrInvalid
 	}
 	if strings.TrimSpace(in.ToolName) != in.ToolName {
@@ -95,7 +95,7 @@ func (c *PostgresExtensionExecutionCoordinator) RequestTask(ctx context.Context,
 	if installation.Kind == coreextension.KindMCP && strings.TrimSpace(in.ToolName) == "" {
 		return coreextension.ExecuteResult{}, coreextension.ErrInvalid
 	}
-	binding, err := extensionExecutionBinding(c.store.instanceID.String(), installation, version, in.ToolName, canonical)
+	binding, err := extensionExecutionBinding(in.OwnerID, in.AccountGeneration, installation, version, in.ToolName, canonical)
 	if err != nil {
 		return coreextension.ExecuteResult{}, err
 	}
@@ -159,7 +159,7 @@ func (c *PostgresExtensionExecutionCoordinator) RequestTask(ctx context.Context,
 	return coreextension.ExecuteResult{TaskID: task.ID, ConfirmationID: cid}, nil
 }
 
-func extensionExecutionBinding(ownerID string, installation coreextension.Installation, version coreextension.VersionRecord, tool string, input json.RawMessage) (coreconfirmation.Binding, error) {
+func extensionExecutionBinding(ownerID string, accountGeneration uint64, installation coreextension.Installation, version coreextension.VersionRecord, tool string, input json.RawMessage) (coreconfirmation.Binding, error) {
 	parameter, err := coretask.CanonicalMutationDigest(struct{ Input json.RawMessage }{input})
 	if err != nil {
 		return coreconfirmation.Binding{}, err
@@ -179,7 +179,7 @@ func extensionExecutionBinding(ownerID string, installation coreextension.Instal
 	case version.Execution.Remote != nil:
 		command = []string{"remote", version.Execution.Remote.URL}
 	}
-	b := coreconfirmation.Binding{OwnerID: ownerID, OperationDomain: "extension.execute", TargetID: installation.ID, TargetRevision: installation.Revision, TargetKind: string(installation.Kind), SourceVersion: version.Pin.RegistryVersion, SourceCommit: version.Pin.GitCommit, ContentDigest: coreconfirmation.Digest(version.ContentDigest), ManifestDigest: coreconfirmation.Digest(version.ManifestDigest), ExecutionDigest: coreconfirmation.Digest(version.ExecutionDigest), PermissionDigest: coreconfirmation.Digest(permission), ParameterDigest: coreconfirmation.Digest(parameter), NetworkDigest: coreconfirmation.Digest(network), SecretGrantDigest: coreconfirmation.Digest(secret), SelectedTool: tool, SelectedCommand: command}
+	b := coreconfirmation.Binding{OwnerID: ownerID, AccountGeneration: accountGeneration, OperationDomain: "extension.execute", TargetID: installation.ID, TargetRevision: installation.Revision, TargetKind: string(installation.Kind), SourceVersion: version.Pin.RegistryVersion, SourceCommit: version.Pin.GitCommit, ContentDigest: coreconfirmation.Digest(version.ContentDigest), ManifestDigest: coreconfirmation.Digest(version.ManifestDigest), ExecutionDigest: coreconfirmation.Digest(version.ExecutionDigest), PermissionDigest: coreconfirmation.Digest(permission), ParameterDigest: coreconfirmation.Digest(parameter), NetworkDigest: coreconfirmation.Digest(network), SecretGrantDigest: coreconfirmation.Digest(secret), SelectedTool: tool, SelectedCommand: command}
 	for _, g := range version.NetworkGrants {
 		b.NetworkGrants = append(b.NetworkGrants, fmt.Sprintf("%s://%s:%d%s:%s", g.Scheme, g.Host, g.Port, g.PathPrefix, g.Digest))
 	}

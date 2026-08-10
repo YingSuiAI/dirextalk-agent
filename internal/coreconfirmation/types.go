@@ -45,6 +45,8 @@ const ExtensionUncertainAcknowledgedUnknownNoRetry ExtensionUncertainResolution 
 // acknowledgement for a consumed extension execution whose provider outcome
 // cannot be proven. It never retries or dispatches work.
 type AcknowledgeExtensionExecutionUncertainCommand struct {
+	OwnerID                      string
+	AccountGeneration            uint64
 	ConfirmationID               string
 	TaskID                       string
 	InstallationID               string
@@ -187,6 +189,10 @@ func (b Binding) normalized() (Binding, error) {
 	}
 	if b.OperationDomain == "execution_v2.run" {
 		if b.OwnerID == "" || b.AccountGeneration == 0 || cloudFields || !validateUUID(b.TargetID) {
+			return Binding{}, ErrInvalid
+		}
+	} else if b.OperationDomain == "extension.execute" {
+		if b.OwnerID == "" || b.AccountGeneration == 0 {
 			return Binding{}, ErrInvalid
 		}
 	} else if b.AccountGeneration != 0 && b.OperationDomain != "cloud_worker.execute" {
@@ -501,8 +507,10 @@ func releaseDigest(command ReleaseReservationCommand) Digest {
 
 func AcknowledgeExtensionExecutionUncertainDigest(command AcknowledgeExtensionExecutionUncertainCommand) Digest {
 	return canonicalDigest(struct {
+		OwnerID                                            string
+		AccountGeneration                                  uint64
 		ConfirmationID, TaskID, InstallationID             string
 		ExpectedTaskRevision, ExpectedConfirmationRevision int64
 		Resolution                                         ExtensionUncertainResolution
-	}{command.ConfirmationID, command.TaskID, command.InstallationID, command.ExpectedTaskRevision, command.ExpectedConfirmationRevision, command.Resolution})
+	}{command.OwnerID, command.AccountGeneration, command.ConfirmationID, command.TaskID, command.InstallationID, command.ExpectedTaskRevision, command.ExpectedConfirmationRevision, command.Resolution})
 }
