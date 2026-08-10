@@ -152,9 +152,11 @@ func (verifier *STSSigV4IdentityVerifier) verifyPayload(
 		!accountPattern.MatchString(document.AccountID) ||
 		!regionPattern.MatchString(document.Region) ||
 		!instancePattern.MatchString(document.InstanceID) || document.PendingTime.IsZero() {
+		logIdentityVerificationRejected("payload_document")
 		return instanceIdentityDocument{}, ErrIdentityRejected
 	}
 	if err := verifier.iid.Verify(payload.IMDSDocument, payload.IMDSPKCS7, document.Region); err != nil {
+		logIdentityVerificationRejected("payload_iid_signature")
 		return instanceIdentityDocument{}, ErrIdentityRejected
 	}
 	endpoint, err := regionalSTSEndpoint(document.Region)
@@ -165,16 +167,19 @@ func (verifier *STSSigV4IdentityVerifier) verifyPayload(
 		len(payload.Authorization) == 0 || len(payload.Authorization) > 4096 ||
 		len(payload.SessionToken) == 0 || len(payload.SessionToken) > 16<<10 ||
 		strings.ContainsAny(payload.Endpoint+payload.Host+payload.ContentType+payload.ContentSHA256+payload.AmzDate+payload.Challenge, "\r\n\x00") {
+		logIdentityVerificationRejected("payload_binding")
 		return instanceIdentityDocument{}, ErrIdentityRejected
 	}
 	digest := sha256.Sum256([]byte(stsIdentityBody))
 	if payload.ContentSHA256 != hex.EncodeToString(digest[:]) {
+		logIdentityVerificationRejected("payload_digest")
 		return instanceIdentityDocument{}, ErrIdentityRejected
 	}
 	signedAt, err := time.Parse("20060102T150405Z", payload.AmzDate)
 	now := verifier.now().UTC()
 	if err != nil || signedAt.After(now.Add(30*time.Second)) || now.Sub(signedAt) > identityProofMaxAge ||
 		validateAuthorization(payload, signedAt) != nil {
+		logIdentityVerificationRejected("payload_authorization")
 		return instanceIdentityDocument{}, ErrIdentityRejected
 	}
 	return document, nil

@@ -9,6 +9,7 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
+	"log/slog"
 	"math/big"
 	"strings"
 	"time"
@@ -57,11 +58,13 @@ func NewPKCS7IIDVerifier(certificates map[string][][]byte) (*PKCS7IIDVerifier, e
 
 func (verifier *PKCS7IIDVerifier) Verify(document, signature []byte, region string) error {
 	if verifier == nil {
+		logIIDRejected("verifier")
 		return ErrIdentityRejected
 	}
 	certificates := verifier.certificates[region]
 	if len(document) == 0 || len(document) > maximumProofBytes ||
 		len(signature) == 0 || len(signature) > maximumProofBytes || len(certificates) == 0 {
+		logIIDRejected("input")
 		return ErrIdentityRejected
 	}
 	compact := strings.Map(func(character rune) rune {
@@ -73,29 +76,41 @@ func (verifier *PKCS7IIDVerifier) Verify(document, signature []byte, region stri
 	der, err := base64.StdEncoding.DecodeString(compact)
 	if err != nil || len(der) == 0 || len(der) > maximumProofBytes {
 		clear(der)
+		logIIDRejected("base64")
 		return ErrIdentityRejected
 	}
 	defer clear(der)
 	signed, err := pkcs7.Parse(der)
 	if err != nil || signed == nil || len(signed.Signers) != 1 {
+		logIIDRejected("pkcs7_parse")
 		return ErrIdentityRejected
 	}
 	// AWS PKCS7 documents may omit the signer certificate; add only the
 	// region-pinned certificates supplied by server configuration.
 	signed.Certificates = append(signed.Certificates, certificates...)
 	if !bytes.Equal(signed.Content, document) {
+		logIIDRejected("document_binding")
 		return ErrIdentityRejected
 	}
 	signer := signed.GetOnlySigner()
 	if signer == nil {
+		logIIDRejected("signer")
 		return ErrIdentityRejected
 	}
 	for _, certificate := range certificates {
 		if bytes.Equal(signer.Raw, certificate.Raw) {
-			return verifyAWSDSASigner(signed, signer)
+			if err := verifyAWSDSASigner(signed, signer); err != nil {
+				return err
+			}
+			return nil
 		}
 	}
+	logIIDRejected("pinned_certificate")
 	return ErrIdentityRejected
+}
+
+func logIIDRejected(stage string) {
+	slog.Warn("[cloud-worker.identity] iid_rejected", "stage", stage)
 }
 
 var (
@@ -140,14 +155,17 @@ type awsIIDDSASignature struct {
 // Region-pinned certificate selected above.
 func verifyAWSDSASigner(signed *pkcs7.PKCS7, certificate *x509.Certificate) error {
 	if signed == nil || certificate == nil || len(signed.Signers) != 1 {
+		logIIDRejected("dsa_input")
 		return ErrIdentityRejected
 	}
 	publicKey, ok := certificate.PublicKey.(*dsa.PublicKey)
 	if !ok || publicKey == nil {
+		logIIDRejected("dsa_public_key")
 		return ErrIdentityRejected
 	}
 	encodedSigner, err := asn1.Marshal(signed.Signers[0])
 	if err != nil {
+		logIIDRejected("dsa_signer_encode")
 		return ErrIdentityRejected
 	}
 	defer clear(encodedSigner)
@@ -161,28 +179,34 @@ func verifyAWSDSASigner(signed *pkcs7.PKCS7, certificate *x509.Certificate) erro
 		!(signer.DigestEncryptionAlgorithm.Algorithm.Equal(oidDSA) ||
 			signer.DigestEncryptionAlgorithm.Algorithm.Equal(oidDSAWithSHA1)) ||
 		len(signer.AuthenticatedAttributes) != 3 || len(signer.UnauthenticatedAttributes) != 0 {
+		logIIDRejected("dsa_signer_contract")
 		return ErrIdentityRejected
 	}
 	var contentType asn1.ObjectIdentifier
 	if readAWSIIDSignedAttribute(signer.AuthenticatedAttributes, oidContentType, &contentType) != nil ||
 		!contentType.Equal(oidPKCS7Data) {
+		logIIDRejected("dsa_content_type")
 		return ErrIdentityRejected
 	}
 	var expectedDigest []byte
 	if readAWSIIDSignedAttribute(signer.AuthenticatedAttributes, oidMessageDigest, &expectedDigest) != nil {
+		logIIDRejected("dsa_message_digest")
 		return ErrIdentityRejected
 	}
 	contentDigest := sha1.Sum(signed.Content)
 	if !bytes.Equal(expectedDigest, contentDigest[:]) {
+		logIIDRejected("dsa_content_digest")
 		return ErrIdentityRejected
 	}
 	var signingTime time.Time
 	if readAWSIIDSignedAttribute(signer.AuthenticatedAttributes, oidSigningTime, &signingTime) != nil ||
 		signingTime.Before(certificate.NotBefore) || signingTime.After(certificate.NotAfter) {
+		logIIDRejected("dsa_signing_time")
 		return ErrIdentityRejected
 	}
 	signedAttributes, err := marshalAWSIIDAttributes(signer.AuthenticatedAttributes)
 	if err != nil {
+		logIIDRejected("dsa_attributes")
 		return ErrIdentityRejected
 	}
 	defer clear(signedAttributes)
@@ -191,6 +215,7 @@ func verifyAWSDSASigner(signed *pkcs7.PKCS7, certificate *x509.Certificate) erro
 	rest, err = asn1.Unmarshal(signer.EncryptedDigest, &signature)
 	if err != nil || len(rest) != 0 || signature.R == nil || signature.S == nil ||
 		!dsa.Verify(publicKey, attributeDigest[:], signature.R, signature.S) {
+		logIIDRejected("dsa_signature")
 		return ErrIdentityRejected
 	}
 	return nil
