@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
@@ -231,6 +232,11 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		ModelAuthorization: modelAuthorization,
 	})
 	if err != nil {
+		slog.Warn("[cloud-worker.intrinsic] proposal_failed",
+			"class", intrinsicProposalErrorClass(err),
+			"turn_id", bound.Turn.ID,
+			"workspace_mode", mode,
+			"proposal_reason", reason)
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
 	if offer.Plan.TurnID != bound.Turn.ID || offer.Plan.ConversationID != bound.Turn.ConversationID || offer.Plan.AccountGeneration != owner.AccountGeneration || offer.Task.ID != offer.Plan.TaskID || offer.Confirmation.ConfirmationID != offer.Plan.ConfirmationID {
@@ -287,15 +293,34 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 	if (WorkspaceMode(arguments.WorkspaceMode) == WorkspaceNone) != (len(arguments.AttachmentIDs) == 0) {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
-	canonical, _ := json.Marshal(arguments)
-	if !bytes.Equal(canonical, raw) {
-		return proposeIntrinsicArguments{}, ErrInvalid
-	}
-	// Attachment selection is a semantic set. Validate the caller's canonical
-	// JSON before normalizing its order, then give the trusted resolver a stable
-	// order so random UUID ordering cannot make an otherwise valid call flaky.
+	// JSON whitespace and object-key order carry no authority. The semantic
+	// fields above remain strict, and the trusted resolver receives a stable
+	// attachment order so equivalent model output cannot fail spuriously.
 	sort.Strings(arguments.AttachmentIDs)
 	return arguments, nil
+}
+
+func intrinsicProposalErrorClass(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, ErrPricingCatalogStale):
+		return "pricing_catalog_stale"
+	case errors.Is(err, ErrQuoteExpired):
+		return "quote_expired"
+	case errors.Is(err, ErrStaleAuthorization):
+		return "stale_authorization"
+	case errors.Is(err, ErrCloudIntentRequired):
+		return "cloud_intent_required"
+	case errors.Is(err, ErrLeaseConflict):
+		return "lease_conflict"
+	case errors.Is(err, ErrConflict):
+		return "conflict"
+	case errors.Is(err, ErrInvalid):
+		return "invalid"
+	default:
+		return "dependency_error"
+	}
 }
 
 func turnAllowsAttachments(turn coreconversation.Turn, selected []string) bool {

@@ -264,6 +264,34 @@ func TestCloudExecutionVetoPreservesNegationScope(t *testing.T) {
 	}
 }
 
+func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
+	arguments, err := parseProposeIntrinsicArguments([]byte("{\n  \"workspace_mode\": \"none\", \"objective\": \"run once\"\n}"))
+	if err != nil || arguments.Objective != "run once" || arguments.WorkspaceMode != string(WorkspaceNone) || len(arguments.AttachmentIDs) != 0 {
+		t.Fatalf("arguments=%+v err=%v", arguments, err)
+	}
+}
+
+func TestIntrinsicProposalErrorClass(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{ErrPricingCatalogStale, "pricing_catalog_stale"},
+		{ErrQuoteExpired, "quote_expired"},
+		{ErrStaleAuthorization, "stale_authorization"},
+		{ErrCloudIntentRequired, "cloud_intent_required"},
+		{ErrLeaseConflict, "lease_conflict"},
+		{ErrConflict, "conflict"},
+		{ErrInvalid, "invalid"},
+		{errors.New("dependency"), "dependency_error"},
+	}
+	for _, test := range tests {
+		if got := intrinsicProposalErrorClass(test.err); got != test.want {
+			t.Fatalf("intrinsicProposalErrorClass(%v)=%q want %q", test.err, got, test.want)
+		}
+	}
+}
+
 func TestIntrinsicIsCoreOwnedStrictAndBindsDurableTurn(t *testing.T) {
 	intrinsic, store, lease := intrinsicFixture(t, "请明确使用 AWS Cloud Worker 执行这个任务，不要在本地执行。", nil, nil)
 	callID := "call-1"
