@@ -334,6 +334,17 @@ check_process_capabilities() {
 }
 check_process_capabilities dirextalk-cloud-worker-exec-gate.service 0000000000280020
 
+gate_tasks_current=$(systemctl show --property=TasksCurrent --value dirextalk-cloud-worker-exec-gate.service)
+gate_tasks_max=$(systemctl show --property=TasksMax --value dirextalk-cloud-worker-exec-gate.service)
+case "$gate_tasks_current" in
+    ''|*[!0-9]*) echo "invalid execution Gate current task count" >&2; exit 69 ;;
+esac
+case "$gate_tasks_max" in
+    ''|*[!0-9]*) echo "invalid execution Gate task limit" >&2; exit 69 ;;
+esac
+[ "$gate_tasks_max" -eq 64 ] || { echo "execution Gate task limit mismatch" >&2; exit 69; }
+[ "$gate_tasks_current" -le 48 ] || { echo "execution Gate lacks runtime task headroom" >&2; exit 69; }
+
 [ "$(stat -Lc '%a:%u:%g' /run/dirextalk-cloud-worker-exec-gate)" = 750:0:65531 ] || {
     echo "execution Gate runtime directory boundary mismatch" >&2
     exit 69

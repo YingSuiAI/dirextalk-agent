@@ -296,9 +296,10 @@ Local checks may explicitly skip the real fanotify permission test when the
 host lacks root or `CAP_SYS_ADMIN`; such a skip is not AMI evidence. The
 candidate AMI/kernel must record a non-skipped fanotify pass plus boot evidence
 that both required fence units are active before the Worker, only the Gate has
-`CAP_SYS_ADMIN`, Pi has no capability, the terminal cgroup-empty proof is
-accepted centrally, and no SSH/SSM or inbound listener exists. Any missing
-observation keeps that AMI digest unpublished.
+`CAP_SYS_ADMIN`, the Gate cgroup retains the release-bound task headroom needed
+by its Go runtime and per-request handlers, Pi has no capability, the terminal
+cgroup-empty proof is accepted centrally, and no SSH/SSM or inbound listener
+exists. Any missing observation keeps that AMI digest unpublished.
 
 Release evidence includes deterministic digest/requote tests, PostgreSQL
 atomicity and restart tests, Worker identity/replay tests, Pi loopback and exact

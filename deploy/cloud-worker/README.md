@@ -201,9 +201,10 @@ cloud-worker candidate boot prequalification: PASS
 The boot graph requires the network and Gate units active before the
 qualification service and the qualification service complete before the
 Worker. It verifies exact Gate and Worker process capabilities, the
-root/65531 Gate socket boundary, the exact default-drop Pi nftables chain, and
-no non-loopback TCP or UDP listener. It has no skip path. The Packer build SG
-is never reused at runtime.
+root/65531 Gate socket boundary, the bounded Gate task limit with runtime
+headroom for the Go scheduler and request handlers, the exact default-drop Pi
+nftables chain, and no non-loopback TCP or UDP listener. It has no skip path.
+The Packer build SG is never reused at runtime.
 Independently read back the candidate Worker Security Group and require zero
 ingress rules; a host listener check cannot prove AWS policy.
 
