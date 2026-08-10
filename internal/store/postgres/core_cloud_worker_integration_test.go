@@ -756,8 +756,29 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 		IdempotencyKey: uuid.NewString(), RequestDigest: pgCloudDigest("stale-heartbeat"), At: h.now.Add(6 * time.Minute)}); !errors.Is(err, control.ErrTerminal) {
 		t.Fatalf("fenced session heartbeat err=%v", err)
 	}
+	// Reclaim once more and publish a current expectation without a session.
+	// A later terminal reclaim must fence this previous-lease authority even
+	// though there is no session row from which to discover it.
+	if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_tasks SET lease_expires_at=$2 WHERE task_id=$1`, reclaimed.ID, h.now.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	cleanupTask, _, err := h.tasks.ClaimNextDue(h.ctx, uuid.NewString(), h.now.Add(6*time.Minute), 30*time.Minute, 4)
+	if err != nil || cleanupTask.ID != reclaimed.ID || cleanupTask.LeaseEpoch == reclaimed.LeaseEpoch {
+		t.Fatalf("cleanup reclaim=%+v previous=%+v err=%v", cleanupTask, reclaimed, err)
+	}
+	if err = controlStore.SetLaunchExpectation(h.ctx, cleanupTask, expectation); err != nil {
+		t.Fatal(err)
+	}
+	var unfencedCurrent int
+	if err = h.store.pool.QueryRow(h.ctx, `SELECT count(*) FROM core_cloud_worker_launch_expectations e
+		WHERE e.execution_id=$1 AND e.current=true AND NOT EXISTS (
+			SELECT 1 FROM core_cloud_worker_session_fences f WHERE f.execution_id=e.execution_id
+			AND f.task_id=e.task_id AND f.task_attempt=e.task_attempt AND f.lease_epoch=e.lease_epoch)`,
+		offer.Execution.ExecutionID).Scan(&unfencedCurrent); err != nil || unfencedCurrent != 1 {
+		t.Fatalf("unfenced current expectation=%d err=%v", unfencedCurrent, err)
+	}
 
-	execution, err = h.cloud.BeginCleanup(h.ctx, reclaimed, execution.Revision, cloudworker.StateFailed, "worker_failed", "worker failed safely")
+	execution, err = h.cloud.BeginCleanup(h.ctx, cleanupTask, execution.Revision, cloudworker.StateFailed, "worker_failed", "worker failed safely")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -770,7 +791,7 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 	}
 	partial[0].State = cloudworker.ResourceVerifiedDestroyed
 	partial[0].VerifiedAt = &partialAt
-	if _, partialErr := h.cloud.RecordResources(h.ctx, reclaimed, execution.Revision, partial, cloudworker.StateCleaning); !errors.Is(partialErr, cloudworker.ErrConflict) {
+	if _, partialErr := h.cloud.RecordResources(h.ctx, cleanupTask, execution.Revision, partial, cloudworker.StateCleaning); !errors.Is(partialErr, cloudworker.ErrConflict) {
 		t.Fatalf("mixed public cleanup evidence accepted: %v", partialErr)
 	}
 	record = destroyPGCloudLedger(t, h.ctx, ledger, record, h.now.Add(7*time.Minute))
@@ -781,19 +802,26 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 		resources[index].UpdatedAt = destroyedAt
 		resources[index].VerifiedAt = &destroyedAt
 	}
-	execution, err = h.cloud.RecordResources(h.ctx, reclaimed, execution.Revision, resources, cloudworker.StateCleaning)
+	execution, err = h.cloud.RecordResources(h.ctx, cleanupTask, execution.Revision, resources, cloudworker.StateCleaning)
 	if err != nil || !execution.Cleanup.VerifiedDestroyed {
 		t.Fatalf("cleanup projection=%+v err=%v", execution, err)
 	}
-	if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_tasks SET lease_expires_at=$2 WHERE task_id=$1`, reclaimed.ID, h.now.Add(-time.Minute)); err != nil {
+	if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_tasks SET lease_expires_at=$2 WHERE task_id=$1`, cleanupTask.ID, h.now.Add(7*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	terminalTask, _, err := h.tasks.ClaimNextDue(h.ctx, uuid.NewString(), h.now.Add(8*time.Minute), 30*time.Minute, 4)
-	if err != nil || terminalTask.ID != reclaimed.ID || terminalTask.LeaseEpoch == reclaimed.LeaseEpoch {
-		t.Fatalf("terminal reclaim=%+v previous=%+v err=%v", terminalTask, reclaimed, err)
+	if err != nil || terminalTask.ID != cleanupTask.ID || terminalTask.LeaseEpoch == cleanupTask.LeaseEpoch {
+		t.Fatalf("terminal reclaim=%+v previous=%+v err=%v", terminalTask, cleanupTask, err)
 	}
 	if _, err = controlStore.FenceExecutionSessions(h.ctx, terminalTask, offer.Execution.ExecutionID, "terminal reclaim cleanup"); err != nil {
 		t.Fatal(err)
+	}
+	if err = h.store.pool.QueryRow(h.ctx, `SELECT count(*) FROM core_cloud_worker_launch_expectations e
+		WHERE e.execution_id=$1 AND e.current=true AND NOT EXISTS (
+			SELECT 1 FROM core_cloud_worker_session_fences f WHERE f.execution_id=e.execution_id
+			AND f.task_id=e.task_id AND f.task_attempt=e.task_attempt AND f.lease_epoch=e.lease_epoch)`,
+		offer.Execution.ExecutionID).Scan(&unfencedCurrent); err != nil || unfencedCurrent != 0 {
+		t.Fatalf("terminal reclaim left current expectation unfenced=%d err=%v", unfencedCurrent, err)
 	}
 	terminal, outbox, err := h.cloud.FailExecution(h.ctx, terminalTask, execution.Revision, "worker_failed", "worker failed safely")
 	if err != nil || terminal.State != cloudworker.StateFailed || outbox.ExecutionID != offer.Execution.ExecutionID {

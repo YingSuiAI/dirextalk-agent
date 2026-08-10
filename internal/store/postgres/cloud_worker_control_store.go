@@ -847,28 +847,12 @@ func (s *CloudWorkerControlStore) FenceExecutionSessions(ctx context.Context, su
 	if err != nil || validateCloudWorkerTaskFence(currentTask, supplied, now) != nil {
 		return control.Session{}, control.ErrStaleLease
 	}
-	// A pre-launch cancellation has no launch expectation yet, and the fence
-	// table deliberately references that immutable expectation. Only publish a
-	// current-fence row when the exact expectation exists; historical session
-	// fences below are always sourced from rows that already satisfy the FK.
-	var currentExpectationCount int
-	if err = tx.QueryRow(ctx, `SELECT count(*) FROM core_cloud_worker_launch_expectations
-		WHERE execution_id=$1 AND task_id=$2 AND task_attempt=$3 AND lease_epoch=$4 AND current=true`,
-		executionID, supplied.ID, supplied.Attempt, supplied.LeaseEpoch).Scan(&currentExpectationCount); err != nil {
-		return control.Session{}, err
-	}
-	if currentExpectationCount > 1 {
-		return control.Session{}, control.ErrConflict
-	}
-	if currentExpectationCount == 1 {
-		if _, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_session_fences(execution_id,task_id,task_attempt,lease_epoch,fenced_at,reason)
-			VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, executionID, supplied.ID, supplied.Attempt,
-			supplied.LeaseEpoch, now, strings.TrimSpace(reason)); err != nil {
-			return control.Session{}, err
-		}
-	}
+	// Fence every published launch expectation, including a current expectation
+	// owned by a previous CoreTask lease. A controller may reclaim an execution
+	// after the runtime deadline but before it can publish a replacement
+	// expectation; terminal cleanup must still revoke that Worker authority.
 	if _, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_session_fences(execution_id,task_id,task_attempt,lease_epoch,fenced_at,reason)
-		SELECT execution_id,task_id,task_attempt,lease_epoch,$2,$3 FROM core_cloud_worker_sessions WHERE execution_id=$1
+		SELECT execution_id,task_id,task_attempt,lease_epoch,$2,$3 FROM core_cloud_worker_launch_expectations WHERE execution_id=$1
 		ON CONFLICT DO NOTHING`, executionID, now, strings.TrimSpace(reason)); err != nil {
 		return control.Session{}, err
 	}

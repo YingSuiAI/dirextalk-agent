@@ -1231,6 +1231,33 @@ func TestControllerCleanupPendingNeverTerminalizes(t *testing.T) {
 	}
 }
 
+func TestControllerCleaningResumeReassertsWorkerFence(t *testing.T) {
+	fixture := newControllerTestFixture(t)
+	fixture.primeAuthorized(t, true)
+	fixture.sessions.session = control.Session{}
+	fixture.sessions.findErr = control.ErrNotFound
+	if _, err := fixture.store.BeginCleanup(context.Background(), fixture.task, fixture.store.execution.Revision,
+		StateFailed, "runtime_deadline_exceeded", "Cloud Worker authorized runtime deadline exceeded"); err != nil {
+		t.Fatal(err)
+	}
+	fixture.trace.entries = nil
+
+	outcome := fixture.controller(t, nil).Handle(context.Background(), fixture.task)
+	if outcome.Err == nil || fixture.store.execution.State != StateFailed || fixture.store.failCalls != 1 {
+		t.Fatalf("outcome=%+v state=%s fail=%d trace=%v", outcome, fixture.store.execution.State,
+			fixture.store.failCalls, fixture.trace.entries)
+	}
+	if fixture.sessions.fenceCalls != 1 || fixture.grants.calls != 0 || fixture.aws.destroyCalls != 1 ||
+		!fixture.store.execution.Cleanup.VerifiedDestroyed {
+		t.Fatalf("resume fence=%d grants=%d destroy=%d cleanup=%+v trace=%v", fixture.sessions.fenceCalls,
+			fixture.grants.calls, fixture.aws.destroyCalls, fixture.store.execution.Cleanup, fixture.trace.entries)
+	}
+	if fixture.trace.index("fence_sessions") < 0 || fixture.trace.index("fence_sessions") > fixture.trace.index("aws_destroy") ||
+		fixture.trace.index("aws_destroy") > fixture.trace.index("terminal:failed") {
+		t.Fatalf("cleaning resume did not reassert fence before terminalization: %v", fixture.trace.entries)
+	}
+}
+
 func TestControllerLeaseLossExitsWithoutCleanup(t *testing.T) {
 	fixture := newControllerTestFixture(t)
 	fixture.aws.ensureErrors = []error{coretask.ErrLeaseConflict}

@@ -989,7 +989,6 @@ func (c *Controller) resumeCleaning(ctx context.Context, task coretask.Task, run
 		slog.Warn("[cloud-worker.controller] terminalization_deferred", "stage", "resume_projection", "class", controllerErrorClass(err))
 		return c.owned(err)
 	}
-	run.workersFenced = true
 	terminal := ExecutionState(run.execution.TerminalIntent)
 	switch terminal {
 	case StateCanceled:
