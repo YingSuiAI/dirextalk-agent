@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -681,6 +682,16 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 	if empty, fenceErr := controlStore.FenceExecutionSessions(h.ctx, reclaimed, offer.Execution.ExecutionID, "pre-worker check"); fenceErr != nil || empty.SessionID != "" {
 		t.Fatalf("empty pre-worker fence=%+v err=%v", empty, fenceErr)
 	}
+	pendingLookup := control.LaunchLookup{ExecutionID: offer.Execution.ExecutionID, TaskID: reclaimed.ID,
+		AccountGeneration: h.generation, InstanceID: "i-0123456789abcdef0", LaunchIdentity: record.Identity.LaunchIdentity}
+	if _, resolveErr := controlStore.ResolveWorkerLaunch(h.ctx, pendingLookup); !errors.Is(resolveErr, control.ErrNotFound) {
+		t.Fatalf("pre-publication Worker launch was not retriable: %v", resolveErr)
+	}
+	wrongLaunch := pendingLookup
+	wrongLaunch.LaunchIdentity = strings.Repeat("0", 64)
+	if _, resolveErr := controlStore.ResolveWorkerLaunch(h.ctx, wrongLaunch); !errors.Is(resolveErr, control.ErrStaleLease) {
+		t.Fatalf("foreign pre-publication launch escaped stale fence: %v", resolveErr)
+	}
 
 	record = activatePGCloudLedger(t, h.ctx, ledger, record, h.now.Add(5*time.Minute))
 	resourceAt := h.now.Add(5*time.Minute + 321*time.Nanosecond)
@@ -725,6 +736,12 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 	}
 	fence := control.TaskFence{ExecutionID: offer.Execution.ExecutionID, TaskID: reclaimed.ID,
 		AccountGeneration: h.generation, Attempt: reclaimed.Attempt, LeaseEpoch: reclaimed.LeaseEpoch}
+	resolved, err := controlStore.ResolveWorkerLaunch(h.ctx, control.LaunchLookup{ExecutionID: offer.Execution.ExecutionID,
+		TaskID: reclaimed.ID, AccountGeneration: h.generation, InstanceID: expectation.InstanceID,
+		LaunchIdentity: expectation.LaunchIdentity})
+	if err != nil || resolved.Fence != fence || !reflect.DeepEqual(resolved.Expectation, expectation) {
+		t.Fatalf("published Worker launch resolution=%+v err=%v", resolved, err)
+	}
 	firstSession := claimPGCloudSession(t, h.ctx, controlStore, fence, expectation, "first")
 	secondSession := claimPGCloudSession(t, h.ctx, controlStore, fence, expectation, "second")
 	storedFirst, err := controlStore.GetSession(h.ctx, firstSession.SessionID)

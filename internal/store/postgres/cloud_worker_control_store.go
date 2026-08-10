@@ -82,6 +82,33 @@ func (s *CloudWorkerControlStore) ValidateCloudWorkerLease(ctx context.Context, 
 	return tx.Commit(ctx)
 }
 
+func (s *CloudWorkerControlStore) workerLaunchPublicationPending(ctx context.Context, lookup control.LaunchLookup, fence control.TaskFence) (bool, error) {
+	var pending bool
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	err := s.store.pool.QueryRow(ctx, `SELECT NOT EXISTS (
+		SELECT 1 FROM core_cloud_worker_launch_expectations expectation
+		WHERE expectation.execution_id=execution.execution_id
+		  AND expectation.task_id=task.task_id AND expectation.task_attempt=task.attempt
+		  AND expectation.lease_epoch=task.lease_epoch
+		  AND expectation.account_generation=execution.account_generation AND expectation.current=true
+	)
+	FROM core_tasks task
+	JOIN core_cloud_worker_executions execution ON execution.task_id=task.task_id
+	JOIN core_cloud_worker_launch_material material ON material.execution_id=execution.execution_id
+	WHERE task.task_id=$1 AND task.deleted_at IS NULL AND task.status='running'
+	  AND task.attempt=$2 AND task.lease_epoch=$3 AND task.lease_expires_at>$4
+	  AND execution.execution_id=$5 AND execution.account_generation=$6
+	  AND execution.provider_mutation_started=true AND execution.terminal_intent=''
+	  AND execution.state IN ('provisioning','awaiting_worker')
+	  AND material.task_id=task.task_id AND material.account_generation=execution.account_generation
+	  AND material.launch_identity=$7`, lookup.TaskID, fence.Attempt, fence.LeaseEpoch, now,
+		lookup.ExecutionID, lookup.AccountGeneration, lookup.LaunchIdentity).Scan(&pending)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return pending, err
+}
+
 // ResolveWorkerLaunch revalidates a boot request against the current CoreTask,
 // exact launch expectation, immutable launch material and active AWS ledger.
 // A mutable EC2 name or tag lookup cannot manufacture this authority.
@@ -99,6 +126,16 @@ func (s *CloudWorkerControlStore) ResolveWorkerLaunch(ctx context.Context, looku
 	fence, err := controlFenceForTask(task, lookup.ExecutionID)
 	if err != nil || fence.AccountGeneration != lookup.AccountGeneration {
 		return control.IssueChallengeRequest{}, control.ErrStaleLease
+	}
+	pending, err := s.workerLaunchPublicationPending(ctx, lookup, fence)
+	if err != nil {
+		return control.IssueChallengeRequest{}, err
+	}
+	if pending {
+		// EC2 can finish cloud-init before the controller has observed the
+		// stack and published its exact identity expectation. No authority is
+		// issued here; NotFound activates the Worker's bounded retry path.
+		return control.IssueChallengeRequest{}, control.ErrNotFound
 	}
 	if err = s.ValidateCloudWorkerLease(ctx, fence); err != nil {
 		return control.IssueChallengeRequest{}, err
