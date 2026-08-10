@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -61,6 +62,7 @@ type Runner struct {
 	InstallResolver   InstallResolver
 	WorkspaceResolver WorkspaceResolver
 	V2Backend         V2Backend
+	Logger            *slog.Logger
 }
 
 // RunV2 is the descriptor-only execution path.
@@ -92,17 +94,20 @@ func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registr
 	}()
 	install, err := r.InstallResolver.ResolveInstall(request.InstallDigest)
 	if err != nil {
-		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorDeniedRequest}, err
+		r.logDenied(request.RunID, "install_resolve")
+		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorDeniedRequest}, ErrDenied
 	}
 	defer install.Close()
 	workspaceFD, err := r.WorkspaceResolver.ResolveWorkspace(request.TaskID, request.TaskFence)
 	if err != nil {
-		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorDeniedRequest}, err
+		r.logDenied(request.RunID, "workspace_resolve")
+		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorDeniedRequest}, ErrDenied
 	}
 	defer unix.Close(workspaceFD)
 	baseline, err := SnapshotWorkspaceFD(workspaceFD)
 	if err != nil {
-		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorDeniedRequest}, err
+		r.logDenied(request.RunID, "workspace_snapshot")
+		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorDeniedRequest}, ErrDenied
 	}
 	if err = registry.Transition(request.RunID, PhaseAdmitted, ErrorNone); err != nil {
 		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorExecution}, err
@@ -221,6 +226,12 @@ func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registr
 	}
 	code = ErrorNone
 	return StatusV1{RunID: request.RunID, Phase: PhaseTombstone, Status: status, Stdout: stdout, Stderr: stderr, ExitCode: processExitCode(p), ResultFiles: resultFiles}, nil
+}
+
+func (r Runner) logDenied(runID, stage string) {
+	if r.Logger != nil {
+		r.Logger.Warn("extension runner request denied", "run_id", runID, "stage", stage, "error_code", ErrorDeniedRequest)
+	}
 }
 
 func processExitCode(process Process) *int {

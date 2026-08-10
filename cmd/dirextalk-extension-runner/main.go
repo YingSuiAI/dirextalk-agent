@@ -93,7 +93,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	defer listener.Close()
-	r := extensionrunner.Runner{InstallResolver: extensionrunner.DiskInstallResolver{Root: *installRoot}, WorkspaceResolver: extensionrunner.DiskWorkspaceResolver{Root: *workspaceRoot}, V2Backend: backend}
+	r := extensionrunner.Runner{InstallResolver: extensionrunner.DiskInstallResolver{Root: *installRoot}, WorkspaceResolver: extensionrunner.DiskWorkspaceResolver{Root: *workspaceRoot, SharedGID: uint32(uid64)}, V2Backend: backend, Logger: slog.Default()}
 	registry, err := extensionrunner.NewPersistentRunRegistry(*stateRoot)
 	if err != nil {
 		die("registry: " + err.Error())

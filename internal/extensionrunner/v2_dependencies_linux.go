@@ -89,7 +89,10 @@ func validManifestEntries(es []ManifestEntry) bool {
 	return true
 }
 
-type DiskWorkspaceResolver struct{ Root string }
+type DiskWorkspaceResolver struct {
+	Root      string
+	SharedGID uint32
+}
 
 func (r DiskWorkspaceResolver) ResolveWorkspace(taskID, taskFence string) (int, error) {
 	if !filepath.IsAbs(r.Root) {
@@ -109,7 +112,7 @@ func (r DiskWorkspaceResolver) ResolveWorkspace(taskID, taskFence string) (int, 
 	}
 	defer unix.Close(root)
 	var st unix.Stat_t
-	if unix.Fstat(root, &st) != nil || st.Uid != uint32(os.Geteuid()) || st.Mode&0o022 != 0 {
+	if unix.Fstat(root, &st) != nil || !validWorkspaceRootStat(&st, r.SharedGID) {
 		return -1, ErrInvalid
 	}
 	if e = unix.Mkdirat(root, task, 0o700); e != nil && e != unix.EEXIST {
@@ -120,6 +123,9 @@ func (r DiskWorkspaceResolver) ResolveWorkspace(taskID, taskFence string) (int, 
 		return -1, ErrInvalid
 	}
 	defer unix.Close(tfd)
+	if unix.Fstat(tfd, &st) != nil || !validPrivateWorkspaceDirStat(&st) {
+		return -1, ErrInvalid
+	}
 	if e = unix.Mkdirat(tfd, fence, 0o700); e != nil && e != unix.EEXIST {
 		return -1, ErrInvalid
 	}
@@ -127,9 +133,23 @@ func (r DiskWorkspaceResolver) ResolveWorkspace(taskID, taskFence string) (int, 
 	if e != nil {
 		return -1, ErrInvalid
 	}
-	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR || st.Uid != uint32(os.Geteuid()) || st.Mode&0o077 != 0 {
+	if unix.Fstat(fd, &st) != nil || !validPrivateWorkspaceDirStat(&st) {
 		unix.Close(fd)
 		return -1, ErrInvalid
 	}
 	return fd, nil
+}
+
+func validWorkspaceRootStat(st *unix.Stat_t, sharedGID uint32) bool {
+	if st == nil || st.Mode&unix.S_IFMT != unix.S_IFDIR || st.Uid != uint32(os.Geteuid()) {
+		return false
+	}
+	if sharedGID == 0 {
+		return st.Mode&0o022 == 0
+	}
+	return st.Gid == sharedGID && st.Mode&0o777 == 0o770
+}
+
+func validPrivateWorkspaceDirStat(st *unix.Stat_t) bool {
+	return st != nil && st.Mode&unix.S_IFMT == unix.S_IFDIR && st.Uid == uint32(os.Geteuid()) && st.Mode&0o777 == 0o700
 }

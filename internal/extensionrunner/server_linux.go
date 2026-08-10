@@ -240,7 +240,7 @@ func (s Server) ready(ctx context.Context) bool {
 		return false
 	}
 	if resolver, ok := s.Runner.WorkspaceResolver.(DiskWorkspaceResolver); ok && !safeRunnerRoot(resolver.Root) {
-		if s.SharedWorkspaceGID == 0 || !safeSharedRunnerRoot(resolver.Root, s.SharedWorkspaceGID) {
+		if resolver.SharedGID == 0 || resolver.SharedGID != s.SharedWorkspaceGID || !safeSharedRunnerRoot(resolver.Root, resolver.SharedGID) {
 			return false
 		}
 	}

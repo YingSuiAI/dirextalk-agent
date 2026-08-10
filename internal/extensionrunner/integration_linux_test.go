@@ -163,7 +163,7 @@ func TestLinuxIsolationServerClientHTMLResultOptIn(t *testing.T) {
 
 	probe := buildIsolationProbe(t)
 	installRoot, digest := materializeIntegrationInstall(t, probe)
-	workspaceRoot := t.TempDir()
+	workspaceRoot, sharedWorkspaceGID := productionSharedWorkspaceRoot(t)
 	socketPath := filepath.Join(t.TempDir(), "runner.sock")
 	listener, err := Listen(socketPath, 0o600)
 	if err != nil {
@@ -172,10 +172,15 @@ func TestLinuxIsolationServerClientHTMLResultOptIn(t *testing.T) {
 	serverCtx, cancelServer := context.WithCancel(context.Background())
 	serveDone := make(chan error, 1)
 	server := Server{
-		Listener:        listener,
-		Authorizer:      UIDAllowlist{uint32(os.Geteuid()): {}},
-		RunnerUID:       uint32(os.Geteuid()),
-		Runner:          Runner{InstallResolver: DiskInstallResolver{Root: installRoot}, WorkspaceResolver: DiskWorkspaceResolver{Root: workspaceRoot}, V2Backend: backend},
+		Listener:           listener,
+		Authorizer:         UIDAllowlist{uint32(os.Geteuid()): {}},
+		RunnerUID:          uint32(os.Geteuid()),
+		SharedWorkspaceGID: sharedWorkspaceGID,
+		Runner: Runner{
+			InstallResolver:   DiskInstallResolver{Root: installRoot},
+			WorkspaceResolver: DiskWorkspaceResolver{Root: workspaceRoot, SharedGID: sharedWorkspaceGID},
+			V2Backend:         backend,
+		},
 		Registry:        NewRunRegistry(),
 		PublicationRoot: installRoot,
 	}

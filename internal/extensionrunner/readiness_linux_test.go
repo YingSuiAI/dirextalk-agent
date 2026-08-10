@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 type readinessBackend struct{ err error }
@@ -71,6 +73,31 @@ func TestSharedRunnerRootRequiresExactGroupAndMode(t *testing.T) {
 	}
 	if safeSharedRunnerRoot(root, uint32(os.Getegid())) {
 		t.Fatal("private mode accepted for shared runner root")
+	}
+}
+
+func TestServerReadyAndWorkspaceResolverAgreeOnSharedRoot(t *testing.T) {
+	root, sharedGID := productionSharedWorkspaceRoot(t)
+	server := Server{
+		SharedWorkspaceGID: sharedGID,
+		Runner: Runner{
+			V2Backend:         readinessBackend{},
+			WorkspaceResolver: DiskWorkspaceResolver{Root: root, SharedGID: sharedGID},
+		},
+		Registry:        &RunRegistry{},
+		PublicationRoot: t.TempDir(),
+	}
+	if !server.ready(context.Background()) {
+		t.Fatal("ready rejected the exact production shared workspace root")
+	}
+	fd, err := server.Runner.WorkspaceResolver.ResolveWorkspace(testTaskID, testFenceID)
+	if err != nil {
+		t.Fatalf("ready workspace root failed runtime resolution: %v", err)
+	}
+	_ = unix.Close(fd)
+	server.SharedWorkspaceGID++
+	if server.ready(context.Background()) {
+		t.Fatal("ready accepted a shared GID that differs from the runtime resolver")
 	}
 }
 
