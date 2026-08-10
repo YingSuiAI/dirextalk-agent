@@ -57,15 +57,16 @@ func TestProductionQuoterFailsClosedOnStaleDriftAndHardLimit(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		mutate func(*pricingCatalogFake, *ProductionQuoterConfig)
+		want   error
 	}{
-		{name: "stale source", mutate: func(catalog *pricingCatalogFake, _ *ProductionQuoterConfig) { catalog.sourceOffset = -time.Minute }},
+		{name: "stale source", mutate: func(catalog *pricingCatalogFake, _ *ProductionQuoterConfig) { catalog.sourceOffset = -time.Minute }, want: ErrPricingCatalogStale},
 		{name: "request drift", mutate: func(catalog *pricingCatalogFake, _ *ProductionQuoterConfig) {
 			catalog.requestDigestOverride = digestValue("foreign")
-		}},
+		}, want: ErrInvalid},
 		{name: "revision drift", mutate: func(catalog *pricingCatalogFake, _ *ProductionQuoterConfig) {
 			catalog.revisionOverride = digestValue("foreign")
-		}},
-		{name: "hard maximum", mutate: func(_ *pricingCatalogFake, config *ProductionQuoterConfig) { config.AbsoluteHardLimitMicros = 1 }},
+		}, want: ErrInvalid},
+		{name: "hard maximum", mutate: func(_ *pricingCatalogFake, config *ProductionQuoterConfig) { config.AbsoluteHardLimitMicros = 1 }, want: ErrInvalid},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			catalog := &pricingCatalogFake{now: &now, rates: rates}
@@ -75,7 +76,7 @@ func TestProductionQuoterFailsClosedOnStaleDriftAndHardLimit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := quoter.Quote(context.Background(), request); !errors.Is(err, ErrInvalid) {
+			if _, err := quoter.Quote(context.Background(), request); !errors.Is(err, test.want) {
 				t.Fatalf("unsafe catalog quote = %v", err)
 			}
 		})

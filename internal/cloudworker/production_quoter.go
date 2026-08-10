@@ -77,9 +77,11 @@ func (snapshot PricingCatalogSnapshot) validate(request PricingCatalogRequest, n
 	})
 	now = now.UTC()
 	if err != nil || snapshot.Currency != "USD" || snapshot.RequestDigest != request.digest() || snapshot.RevisionDigest != sealed.RevisionDigest ||
-		snapshot.SourceTime != snapshot.SourceTime.UTC() || snapshot.ExpiresAt != snapshot.ExpiresAt.UTC() || now.Before(snapshot.SourceTime) ||
-		now.Sub(snapshot.SourceTime) > maximumAge || !now.Before(snapshot.ExpiresAt) {
+		snapshot.SourceTime != snapshot.SourceTime.UTC() || snapshot.ExpiresAt != snapshot.ExpiresAt.UTC() || now.Before(snapshot.SourceTime) {
 		return ErrInvalid
+	}
+	if now.Sub(snapshot.SourceTime) > maximumAge || !now.Before(snapshot.ExpiresAt) {
+		return ErrPricingCatalogStale
 	}
 	return nil
 }

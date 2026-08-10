@@ -402,6 +402,108 @@ func preparePGCloudLaunch(t *testing.T, h *pgCloudWorkerHarness) (cloudworker.Of
 	return offer, task, begin, material
 }
 
+func TestCloudWorkerPostgresClaimAtomicallyConsumesConfirmationAndBeginsExecution(t *testing.T) {
+	t.Run("commit", func(t *testing.T) {
+		h := newPGCloudWorkerHarness(t)
+		defer h.cleanup()
+		offer := h.propose(t)
+		confirmed, err := h.confirmation.Confirm(h.ctx, coreconfirmation.ConfirmCommand{
+			ConfirmationID: offer.Confirmation.ConfirmationID, IdempotencyKey: uuid.NewString(),
+			ExpectedRevision: offer.Confirmation.Revision, At: h.now.Add(time.Second),
+		})
+		if err != nil || confirmed.State != coreconfirmation.StateConfirmed {
+			t.Fatalf("confirm=%+v err=%v", confirmed, err)
+		}
+		if _, err = h.store.pool.Exec(h.ctx, `CREATE FUNCTION require_cloud_worker_claim_serializable() RETURNS trigger
+			LANGUAGE plpgsql AS $$ BEGIN
+				IF current_setting('transaction_isolation') <> 'serializable' THEN
+					RAISE EXCEPTION 'cloud worker claim must be serializable';
+				END IF;
+				RETURN NEW;
+			END $$;
+			CREATE TRIGGER require_cloud_worker_claim_serializable BEFORE INSERT ON core_cloud_worker_begin_authorizations
+			FOR EACH ROW EXECUTE FUNCTION require_cloud_worker_claim_serializable()`); err != nil {
+			t.Fatal(err)
+		}
+		claimed, lease, err := h.tasks.ClaimNextDue(h.ctx, "atomic-cloud-worker-claim", h.now.Add(2*time.Second), 30*time.Minute, 4)
+		if err != nil || claimed.ID != offer.Task.ID || claimed.Status != coretask.StatusRunning {
+			t.Fatalf("claim=%+v lease=%+v err=%v", claimed, lease, err)
+		}
+
+		var confirmationState, executionState string
+		var confirmationRevision, executionRevision, reservationRevision int64
+		var reservationAttempt int
+		var reservationEpoch, beginAttempt, beginEpoch int64
+		var reservationActive bool
+		var reservationExpires time.Time
+		if err = h.store.pool.QueryRow(h.ctx, `SELECT c.state,c.revision,e.state,e.revision,
+			r.acquired_attempt,r.acquired_lease_epoch,r.task_revision,r.acquired_lease_expires_at,r.active,
+			b.task_attempt,b.lease_epoch
+			FROM core_confirmations c
+			JOIN core_cloud_worker_executions e ON e.confirmation_id=c.confirmation_id
+			JOIN core_confirmation_reservations r ON r.confirmation_id=c.confirmation_id
+			JOIN core_cloud_worker_begin_authorizations b ON b.execution_id=e.execution_id
+			WHERE c.confirmation_id=$1`, offer.Confirmation.ConfirmationID).Scan(
+			&confirmationState, &confirmationRevision, &executionState, &executionRevision,
+			&reservationAttempt, &reservationEpoch, &reservationRevision, &reservationExpires, &reservationActive,
+			&beginAttempt, &beginEpoch); err != nil {
+			t.Fatal(err)
+		}
+		if confirmationState != string(coreconfirmation.StateConsumed) || confirmationRevision != int64(confirmed.Revision+1) ||
+			executionState != string(cloudworker.StateProvisioning) || executionRevision != int64(offer.Execution.Revision+2) ||
+			!reservationActive || reservationAttempt != int(claimed.Attempt) || reservationEpoch != int64(claimed.LeaseEpoch) ||
+			reservationRevision != int64(claimed.Revision) || !reservationExpires.Equal(lease.ExpiresAt) ||
+			beginAttempt != int64(claimed.Attempt) || beginEpoch != int64(claimed.LeaseEpoch) {
+			t.Fatalf("atomic claim mismatch confirmation=%s/%d execution=%s/%d reservation=%d/%d/%d/%v/%v begin=%d/%d task=%+v lease=%+v",
+				confirmationState, confirmationRevision, executionState, executionRevision, reservationAttempt, reservationEpoch,
+				reservationRevision, reservationExpires, reservationActive, beginAttempt, beginEpoch, claimed, lease)
+		}
+		begin, err := h.cloud.BeginExecution(h.ctx, claimed)
+		if err != nil || begin.Execution.State != cloudworker.StateProvisioning ||
+			begin.Prerequisite.TaskAttempt != claimed.Attempt || begin.Prerequisite.LeaseEpoch != claimed.LeaseEpoch {
+			t.Fatalf("idempotent begin=%+v err=%v", begin, err)
+		}
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		h := newPGCloudWorkerHarness(t)
+		defer h.cleanup()
+		offer := h.propose(t)
+		confirmed, err := h.confirmation.Confirm(h.ctx, coreconfirmation.ConfirmCommand{
+			ConfirmationID: offer.Confirmation.ConfirmationID, IdempotencyKey: uuid.NewString(),
+			ExpectedRevision: offer.Confirmation.Revision, At: h.now.Add(time.Second),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = h.store.pool.Exec(h.ctx, `DELETE FROM core_confirmation_current_bindings WHERE operation_domain='cloud_worker.execute' AND target_id=$1`, offer.Execution.ExecutionID); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = h.tasks.ClaimNextDue(h.ctx, "atomic-cloud-worker-rollback", h.now.Add(2*time.Second), 30*time.Minute, 4); !errors.Is(err, cloudworker.ErrStaleAuthorization) {
+			t.Fatalf("claim error=%v", err)
+		}
+		var taskStatus, confirmationState, executionState string
+		var taskRevision, confirmationRevision, executionRevision int64
+		var reservationCount, beginCount int
+		if err = h.store.pool.QueryRow(h.ctx, `SELECT t.status,t.revision,c.state,c.revision,e.state,e.revision,
+			(SELECT count(*) FROM core_confirmation_reservations WHERE confirmation_id=c.confirmation_id),
+			(SELECT count(*) FROM core_cloud_worker_begin_authorizations WHERE execution_id=e.execution_id)
+			FROM core_tasks t JOIN core_confirmations c ON c.task_id=t.task_id
+			JOIN core_cloud_worker_executions e ON e.task_id=t.task_id WHERE t.task_id=$1`, offer.Task.ID).Scan(
+			&taskStatus, &taskRevision, &confirmationState, &confirmationRevision, &executionState, &executionRevision,
+			&reservationCount, &beginCount); err != nil {
+			t.Fatal(err)
+		}
+		if taskStatus != string(coretask.StatusQueued) || taskRevision != int64(offer.Task.Revision+1) ||
+			confirmationState != string(coreconfirmation.StateConfirmed) || confirmationRevision != int64(confirmed.Revision) ||
+			executionState != string(cloudworker.StateQueued) || executionRevision != int64(offer.Execution.Revision+1) ||
+			reservationCount != 0 || beginCount != 0 {
+			t.Fatalf("rollback leaked state task=%s/%d confirmation=%s/%d execution=%s/%d reservation=%d begin=%d",
+				taskStatus, taskRevision, confirmationState, confirmationRevision, executionState, executionRevision, reservationCount, beginCount)
+		}
+	})
+}
+
 func TestCloudWorkerPostgresExpiredDomainDeadlineReclaimsLease(t *testing.T) {
 	h := newPGCloudWorkerHarness(t)
 	defer h.cleanup()

@@ -704,7 +704,29 @@ func (s *CloudWorkerStore) BeginExecution(ctx context.Context, supplied coretask
 	if err = validateCloudWorkerTaskFence(current, supplied, now); err != nil {
 		return cloudworker.BeginResult{}, err
 	}
-	plan, execution, err := cloudWorkerPlanAndExecutionTx(ctx, tx, current.Spec.Payload.CloudWorker, true)
+	result, err := s.beginExecutionTx(ctx, tx, current, now)
+	if err != nil {
+		return cloudworker.BeginResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return cloudworker.BeginResult{}, err
+	}
+	return result, nil
+}
+
+// beginExecutionTx is shared by the queue's first Cloud Worker claim and the
+// controller's idempotent recovery call. The caller owns the serializable
+// transaction and already holds the task row lock.
+func (s *CloudWorkerStore) beginExecutionTx(ctx context.Context, tx pgx.Tx, current coretask.Task, now time.Time) (cloudworker.BeginResult, error) {
+	if s == nil || s.store == nil || tx == nil || current.Spec.Payload.CloudWorker == nil || current.Lease == nil ||
+		validateCloudWorkerTaskFence(current, current, now) != nil {
+		return cloudworker.BeginResult{}, cloudworker.ErrLeaseConflict
+	}
+	payload := current.Spec.Payload.CloudWorker
+	// Plans are immutable at a fixed revision. Read the plan first, then lock
+	// mutable rows in the repository-wide Task -> Confirmation -> Execution
+	// order so confirm/cancel/claim cannot deadlock one another.
+	plan, err := scanCloudWorkerPlan(tx.QueryRow(ctx, cloudWorkerPlanSelect+` WHERE plan_id=$1 AND revision=$2`, payload.PlanID, payload.PlanRevision))
 	if err != nil {
 		return cloudworker.BeginResult{}, err
 	}
@@ -717,6 +739,18 @@ func (s *CloudWorkerStore) BeginExecution(ctx context.Context, supplied coretask
 	}
 	confirmation, err := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1 FOR UPDATE`, plan.ConfirmationID))
 	if err != nil {
+		return cloudworker.BeginResult{}, cloudworker.ErrStaleAuthorization
+	}
+	execution, err := scanCloudWorkerExecution(tx.QueryRow(ctx, cloudWorkerExecutionSelect+` WHERE execution_id=$1 FOR UPDATE`, payload.ExecutionID))
+	if err != nil || plan.ExecutionID != payload.ExecutionID || plan.ConfirmationID != payload.ConfirmationID ||
+		plan.Digest != payload.PlanDigest || plan.Quote.Digest != payload.QuoteDigest ||
+		plan.ExecutionDigest != payload.ExecutionDigest || plan.AccountGeneration != payload.AccountGeneration ||
+		plan.TurnID != payload.TurnID || plan.ConversationID != payload.ConversationID ||
+		execution.ExecutionID != plan.ExecutionID || execution.PlanDigest != plan.Digest ||
+		execution.ExecutionDigest != plan.ExecutionDigest || execution.TaskID != plan.TaskID ||
+		execution.ConfirmationID != plan.ConfirmationID || confirmation.ConfirmationID != plan.ConfirmationID ||
+		confirmation.TaskID != plan.TaskID {
+		logCloudWorkerBeginInvariant("identity_binding", "task/confirmation/execution identity or digest binding drifted", current, confirmation, execution)
 		return cloudworker.BeginResult{}, cloudworker.ErrStaleAuthorization
 	}
 	var immutableRaw, currentRaw []byte
@@ -746,10 +780,8 @@ func (s *CloudWorkerStore) BeginExecution(ctx context.Context, supplied coretask
 		}
 		if stored.TaskAttempt == current.Attempt && stored.LeaseEpoch == current.LeaseEpoch {
 			if confirmation.State != coreconfirmation.StateConsumed || execution.State != cloudworker.StateProvisioning {
+				logCloudWorkerBeginInvariant("stored_fence", "stored begin authorization does not match consumed/provisioning state", current, confirmation, execution)
 				return cloudworker.BeginResult{}, cloudworker.ErrStaleAuthorization
-			}
-			if err = tx.Commit(ctx); err != nil {
-				return cloudworker.BeginResult{}, err
 			}
 			return cloudworker.BeginResult{Plan: plan, Execution: execution, Prerequisite: stored}, nil
 		}
@@ -758,14 +790,20 @@ func (s *CloudWorkerStore) BeginExecution(ctx context.Context, supplied coretask
 			return cloudworker.BeginResult{}, cloudworker.ErrLeaseConflict
 		}
 		stored.TaskAttempt, stored.LeaseEpoch = current.Attempt, current.LeaseEpoch
-		if _, err = tx.Exec(ctx, `UPDATE core_confirmation_reservations SET acquired_attempt=$2,acquired_lease_epoch=$3,task_revision=$4,active=true WHERE confirmation_id=$1`, plan.ConfirmationID, current.Attempt, current.LeaseEpoch, current.Revision); err != nil {
-			return cloudworker.BeginResult{}, err
+		reservationUpdate, updateErr := tx.Exec(ctx, `UPDATE core_confirmation_reservations SET acquired_attempt=$2,acquired_lease_epoch=$3,task_revision=$4,acquired_lease_expires_at=$5,active=true WHERE confirmation_id=$1`, plan.ConfirmationID, current.Attempt, current.LeaseEpoch, current.Revision, current.Lease.ExpiresAt)
+		if updateErr != nil || reservationUpdate.RowsAffected() != 1 {
+			logCloudWorkerBeginInvariant("reservation_rebind", "active confirmation reservation was not rebound to the current lease", current, confirmation, execution)
+			if updateErr != nil {
+				return cloudworker.BeginResult{}, updateErr
+			}
+			return cloudworker.BeginResult{}, cloudworker.ErrStaleAuthorization
 		}
-		if _, err = tx.Exec(ctx, `UPDATE core_cloud_worker_begin_authorizations SET task_attempt=$2,lease_epoch=$3,created_at=$4 WHERE execution_id=$1`, plan.ExecutionID, current.Attempt, current.LeaseEpoch, now); err != nil {
-			return cloudworker.BeginResult{}, err
-		}
-		if err = tx.Commit(ctx); err != nil {
-			return cloudworker.BeginResult{}, err
+		beginUpdate, updateErr := tx.Exec(ctx, `UPDATE core_cloud_worker_begin_authorizations SET task_attempt=$2,lease_epoch=$3,created_at=$4 WHERE execution_id=$1`, plan.ExecutionID, current.Attempt, current.LeaseEpoch, now)
+		if updateErr != nil || beginUpdate.RowsAffected() != 1 {
+			if updateErr != nil {
+				return cloudworker.BeginResult{}, updateErr
+			}
+			return cloudworker.BeginResult{}, cloudworker.ErrStaleAuthorization
 		}
 		return cloudworker.BeginResult{Plan: plan, Execution: execution, Prerequisite: stored}, nil
 	}
@@ -773,15 +811,21 @@ func (s *CloudWorkerStore) BeginExecution(ctx context.Context, supplied coretask
 		return cloudworker.BeginResult{}, storedErr
 	}
 	if confirmation.State != coreconfirmation.StateConfirmed || execution.State != cloudworker.StateQueued {
+		logCloudWorkerBeginInvariant("initial_state", "confirmation/execution pair is not confirmed/queued", current, confirmation, execution)
 		return cloudworker.BeginResult{}, cloudworker.ErrStaleAuthorization
 	}
 	confirmedAt := confirmation.UpdatedAt.UTC()
 	confirmationRevision := confirmation.Revision + 1
-	if _, err = tx.Exec(ctx, `UPDATE core_confirmations SET state='consumed',revision=revision+1,updated_at=$2 WHERE confirmation_id=$1 AND state='confirmed' AND revision=$3`, plan.ConfirmationID, now, confirmation.Revision); err != nil {
-		return cloudworker.BeginResult{}, err
+	confirmationUpdate, updateErr := tx.Exec(ctx, `UPDATE core_confirmations SET state='consumed',revision=revision+1,updated_at=$2 WHERE confirmation_id=$1 AND state='confirmed' AND revision=$3`, plan.ConfirmationID, now, confirmation.Revision)
+	if updateErr != nil || confirmationUpdate.RowsAffected() != 1 {
+		logCloudWorkerBeginInvariant("confirmation_consume", "confirmed revision was not consumed", current, confirmation, execution)
+		if updateErr != nil {
+			return cloudworker.BeginResult{}, updateErr
+		}
+		return cloudworker.BeginResult{}, cloudworker.ErrStaleAuthorization
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_confirmation_reservations(confirmation_id,task_id,acquired_attempt,acquired_lease_epoch,task_revision,active)
-		VALUES($1,$2,$3,$4,$5,true)`, plan.ConfirmationID, plan.TaskID, current.Attempt, current.LeaseEpoch, current.Revision); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_confirmation_reservations(confirmation_id,task_id,acquired_attempt,acquired_lease_epoch,task_revision,acquired_lease_expires_at,active)
+		VALUES($1,$2,$3,$4,$5,$6,true)`, plan.ConfirmationID, plan.TaskID, current.Attempt, current.LeaseEpoch, current.Revision, current.Lease.ExpiresAt); err != nil {
 		return cloudworker.BeginResult{}, err
 	}
 	next, err := execution.Transition(cloudworker.StateProvisioning, now)
@@ -804,10 +848,18 @@ func (s *CloudWorkerStore) BeginExecution(ctx context.Context, supplied coretask
 		prerequisite.ConfirmationBindingDigest, prerequisite.ConfirmedAt, now); err != nil {
 		return cloudworker.BeginResult{}, err
 	}
-	if err = tx.Commit(ctx); err != nil {
-		return cloudworker.BeginResult{}, err
-	}
 	return cloudworker.BeginResult{Plan: plan, Execution: next, Prerequisite: prerequisite}, nil
+}
+
+func logCloudWorkerBeginInvariant(stage, reason string, task coretask.Task, confirmation coreconfirmation.Confirmation, execution cloudworker.Execution) {
+	slog.Warn("[cloud-worker.store] begin_invariant_blocked",
+		"stage", stage, "reason", reason,
+		"task_id", task.ID, "task_status", task.Status, "task_revision", task.Revision,
+		"task_attempt", task.Attempt, "task_lease_epoch", task.LeaseEpoch,
+		"confirmation_id", confirmation.ConfirmationID, "confirmation_state", confirmation.State,
+		"confirmation_revision", confirmation.Revision,
+		"execution_id", execution.ExecutionID, "execution_state", execution.State,
+		"execution_revision", execution.Revision, "provider_mutation_started", execution.ProviderMutationStarted)
 }
 
 func saveCloudWorkerExecutionTx(ctx context.Context, tx pgx.Tx, previous, next cloudworker.Execution, eventType string) error {
@@ -988,7 +1040,11 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 	if execution.State == cloudworker.StateWaitingUser || execution.State == cloudworker.StateQueued ||
 		execution.State == cloudworker.StateSucceeded || execution.State == cloudworker.StateFailed || execution.State == cloudworker.StateCanceled ||
 		execution.State == cloudworker.StateRejected || execution.State == cloudworker.StateExpired {
-		logCloudWorkerResumeInvariant("execution_state")
+		logCloudWorkerResumeInvariant("execution_state", "reason", "execution state is not resumable",
+			"task_id", currentTask.ID, "task_status", currentTask.Status, "task_revision", currentTask.Revision,
+			"task_attempt", currentTask.Attempt, "task_lease_epoch", currentTask.LeaseEpoch,
+			"execution_id", execution.ExecutionID, "execution_state", execution.State,
+			"execution_revision", execution.Revision, "provider_mutation_started", execution.ProviderMutationStarted)
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	var authorization cloudworker.LaunchAuthorization
@@ -1005,28 +1061,40 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 		&authorization.AuthorizedAt, &sourceDigest, &stagedRaw, &inputRaw, &runtimeRaw, &qualificationRaw,
 		&launchIdentity, &intentDigest, &identityRaw)
 	if err != nil {
-		logCloudWorkerResumeInvariant("launch_material")
+		if errors.Is(err, pgx.ErrNoRows) && !execution.ProviderMutationStarted {
+			return cloudworker.ResumeContext{}, cloudworker.ErrNotFound
+		}
+		logCloudWorkerResumeInvariant("launch_material", "reason", "launch material is missing after provider mutation",
+			"task_id", currentTask.ID, "task_status", currentTask.Status, "task_revision", currentTask.Revision,
+			"task_attempt", currentTask.Attempt, "task_lease_epoch", currentTask.LeaseEpoch,
+			"execution_id", execution.ExecutionID, "execution_state", execution.State,
+			"execution_revision", execution.Revision, "provider_mutation_started", execution.ProviderMutationStarted)
 		return cloudworker.ResumeContext{}, cloudworker.ErrStaleAuthorization
 	}
 	authorization.ConfirmedAt, authorization.AuthorizedAt = authorization.ConfirmedAt.UTC(), authorization.AuthorizedAt.UTC()
 	binding, err := cloudworker.BindingForPlan(plan)
 	if err != nil || validateLaunchPrerequisiteForStore(authorization.LaunchPrerequisite, plan, string(binding.Digest)) != nil {
-		logCloudWorkerResumeInvariant("launch_prerequisite")
+		logCloudWorkerResumeInvariant("launch_prerequisite", "reason", "launch prerequisite no longer matches plan",
+			"task_id", currentTask.ID, "task_revision", currentTask.Revision, "task_lease_epoch", currentTask.LeaseEpoch,
+			"execution_id", execution.ExecutionID, "execution_state", execution.State, "execution_revision", execution.Revision)
 		return cloudworker.ResumeContext{}, cloudworker.ErrStaleAuthorization
 	}
 	var staged cloudworker.StagedInputManifest
 	if json.Unmarshal(stagedRaw, &staged) != nil {
-		logCloudWorkerResumeInvariant("staged_manifest_json")
+		logCloudWorkerResumeInvariant("staged_manifest_json", "reason", "staged manifest JSON is invalid",
+			"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID, "execution_revision", execution.Revision)
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	stagedDigest, err := staged.Seal(plan.InputManifest)
 	if err != nil || stagedDigest != authorization.StagedManifestSHA256 {
-		logCloudWorkerResumeInvariant("staged_manifest_digest")
+		logCloudWorkerResumeInvariant("staged_manifest_digest", "reason", "staged manifest digest drifted",
+			"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID, "execution_revision", execution.Revision)
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	var qualification cloudworker.RuntimeQualification
 	if json.Unmarshal(qualificationRaw, &qualification) != nil {
-		logCloudWorkerResumeInvariant("runtime_qualification")
+		logCloudWorkerResumeInvariant("runtime_qualification", "reason", "runtime qualification JSON is invalid",
+			"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID, "execution_revision", execution.Revision)
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	material := cloudworker.RuntimeTaskMaterial{RuntimeTaskJSON: bytes.Clone(runtimeRaw), RuntimeTaskSHA256: authorization.RuntimeTaskSHA256,
@@ -1036,14 +1104,16 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 			AccountGeneration: plan.AccountGeneration, Attempt: authorization.TaskAttempt, LeaseEpoch: authorization.LeaseEpoch}}
 	if json.Unmarshal(runtimeRaw, &material.Task) != nil || material.Task.ExecutionID != plan.ExecutionID || material.Task.TaskID != plan.TaskID {
 		material.Destroy()
-		logCloudWorkerResumeInvariant("runtime_task_json")
+		logCloudWorkerResumeInvariant("runtime_task_json", "reason", "runtime task JSON or identity is invalid",
+			"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID, "execution_revision", execution.Revision)
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	runtimeDigest, digestErr := material.Task.Digest()
 	inputDigest := sha256.Sum256(inputRaw)
 	if digestErr != nil || runtimeDigest != authorization.RuntimeTaskSHA256 || hex.EncodeToString(inputDigest[:]) != authorization.InputManifestSHA256 || sourceDigest != plan.InputManifestDigest {
 		material.Destroy()
-		logCloudWorkerResumeInvariant("runtime_task_digest")
+		logCloudWorkerResumeInvariant("runtime_task_digest", "reason", "runtime task/input/source digest drifted",
+			"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID, "execution_revision", execution.Revision)
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	// MarkDispatchPrepared updates the launch columns and execution flag in one
@@ -1053,7 +1123,10 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 	if dispatchPrepared != execution.ProviderMutationStarted ||
 		(dispatchPrepared && (!coretask.ValidDigest(launchIdentity) || !coretask.ValidDigest(intentDigest))) {
 		material.Destroy()
-		logCloudWorkerResumeInvariant("dispatch_marker")
+		logCloudWorkerResumeInvariant("dispatch_marker", "reason", "dispatch marker and execution mutation flag disagree",
+			"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID,
+			"execution_state", execution.State, "execution_revision", execution.Revision,
+			"provider_mutation_started", execution.ProviderMutationStarted, "dispatch_prepared", dispatchPrepared)
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
 	var storedIdentity cloudaws.ExecutionIdentity
@@ -1063,7 +1136,8 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 			storedIdentity.TaskID != plan.TaskID || storedIdentity.TaskAttempt != authorization.TaskAttempt ||
 			storedIdentity.LeaseEpoch != authorization.LeaseEpoch {
 			material.Destroy()
-			logCloudWorkerResumeInvariant("stored_dispatch_identity")
+			logCloudWorkerResumeInvariant("stored_dispatch_identity", "reason", "stored dispatch identity drifted",
+				"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID, "execution_revision", execution.Revision)
 			return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 		}
 	}
@@ -1085,12 +1159,14 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 		if buildErr != nil || !reflect.DeepEqual(ledger.Plan, expectedAWSPlan) ||
 			!reflect.DeepEqual(ledger.Intent, expectedIntent) || !ledger.Identity.Equal(expectedAWSPlan.Identity) {
 			material.Destroy()
-			logCloudWorkerResumeInvariant("aws_dispatch_projection")
+			logCloudWorkerResumeInvariant("aws_dispatch_projection", "reason", "AWS ledger projection does not match immutable launch material",
+				"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID, "execution_revision", execution.Revision)
 			return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 		}
 		if dispatchPrepared && (!ledger.Identity.Equal(storedIdentity) || ledger.Intent.IntentDigest != intentDigest) {
 			material.Destroy()
-			logCloudWorkerResumeInvariant("aws_dispatch_identity")
+			logCloudWorkerResumeInvariant("aws_dispatch_identity", "reason", "AWS ledger identity does not match dispatch marker",
+				"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID, "execution_revision", execution.Revision)
 			return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 		}
 		resources, err = loadCloudWorkerResourcesTx(ctx, tx, plan, ledger.Identity)
@@ -1100,7 +1176,8 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 		}
 	} else if dispatchPrepared {
 		material.Destroy()
-		logCloudWorkerResumeInvariant("aws_ledger_missing")
+		logCloudWorkerResumeInvariant("aws_ledger_missing", "reason", "dispatch is marked but AWS ledger is missing",
+			"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID, "execution_revision", execution.Revision)
 		return cloudworker.ResumeContext{}, cloudworker.ErrStaleAuthorization
 	} else {
 		// No durable AWS intent means no Core resource projection can exist.
@@ -1125,8 +1202,10 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 	return resume, nil
 }
 
-func logCloudWorkerResumeInvariant(stage string) {
-	slog.Warn("[cloud-worker.store] resume_invariant_deferred", "stage", stage)
+func logCloudWorkerResumeInvariant(stage string, details ...any) {
+	attributes := []any{"stage", stage}
+	attributes = append(attributes, details...)
+	slog.Warn("[cloud-worker.store] resume_invariant_deferred", attributes...)
 }
 
 // loadCloudWorkerAWSRecordTx revalidates the repeated immutable owner and

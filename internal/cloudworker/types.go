@@ -41,6 +41,7 @@ var (
 	ErrRevisionConflict    = errors.New("cloudworker: revision conflict")
 	ErrStaleAuthorization  = errors.New("cloudworker: stale authorization")
 	ErrQuoteExpired        = errors.New("cloudworker: quote expired")
+	ErrPricingCatalogStale = errors.New("cloudworker: pricing catalog stale")
 	ErrProviderUnavailable = errors.New("cloudworker: provider unavailable")
 	ErrLeaseConflict       = errors.New("cloudworker: task lease conflict")
 )

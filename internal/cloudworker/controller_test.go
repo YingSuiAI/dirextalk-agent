@@ -44,6 +44,7 @@ type controllerTestStore struct {
 	artifacts            []Artifact
 	beginHook            func()
 	beginErr             error
+	beginCalls           int
 	authorizeHook        func()
 	authorizeErr         error
 	markHook             func()
@@ -94,6 +95,7 @@ func (store *controllerTestStore) GetExecution(_ context.Context, owner, executi
 
 func (store *controllerTestStore) BeginExecution(_ context.Context, task coretask.Task) (BeginResult, error) {
 	store.trace.add("begin_execution")
+	store.beginCalls++
 	if store.beginHook != nil {
 		store.beginHook()
 	}
@@ -980,6 +982,28 @@ func TestControllerModelAndPriceDriftRequoteBeforeStaging(t *testing.T) {
 				fixture.aws.prepareCalls, fixture.aws.ensureCalls, fixture.store.replaceCommand.Plan.Quote)
 		}
 	})
+}
+
+func TestControllerStalePricingTerminalizesWithoutAWSMutation(t *testing.T) {
+	fixture := newControllerTestFixture(t)
+	quoter := &controllerInterruptQuoter{delegate: fixture.quoter, err: ErrPricingCatalogStale, failAt: 1}
+
+	outcome := fixture.controller(t, quoter).Handle(context.Background(), fixture.task)
+	if outcome.Err == nil || outcome.Err.Error() != "pricing_catalog_stale" || !outcome.TerminalOwned {
+		t.Fatalf("outcome=%+v trace=%v", outcome, fixture.trace.entries)
+	}
+	if fixture.store.execution.State != StateFailed || fixture.store.execution.FailureCode != "pricing_catalog_stale" ||
+		fixture.store.failCalls != 1 || fixture.store.beginCleanupCalls != 1 {
+		t.Fatalf("stale pricing did not reach one explicit terminal state: state=%s code=%q cleanup=%d fail=%d trace=%v",
+			fixture.store.execution.State, fixture.store.execution.FailureCode, fixture.store.beginCleanupCalls,
+			fixture.store.failCalls, fixture.trace.entries)
+	}
+	if fixture.store.beginCalls != 0 || fixture.stager.stageCalls != 0 || fixture.aws.prepareCalls != 0 ||
+		fixture.aws.ensureCalls != 0 || fixture.aws.observeCalls != 0 || fixture.aws.destroyCalls != 0 {
+		t.Fatalf("stale pricing crossed a mutation boundary: begin=%d stage=%d prepare=%d ensure=%d observe=%d destroy=%d trace=%v",
+			fixture.store.beginCalls, fixture.stager.stageCalls, fixture.aws.prepareCalls, fixture.aws.ensureCalls,
+			fixture.aws.observeCalls, fixture.aws.destroyCalls, fixture.trace.entries)
+	}
 }
 
 func TestControllerModelDriftAfterStagingNeverEnsuresAWS(t *testing.T) {

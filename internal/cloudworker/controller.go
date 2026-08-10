@@ -230,7 +230,7 @@ func (c *Controller) handleProduction(ctx context.Context, task coretask.Task) c
 	}
 	current, err := c.validateCurrentAuthority(ctx, run.plan)
 	if err != nil {
-		return c.owned(err)
+		return c.handleAuthorityFailure(ctx, task, &run, "pre_begin", err)
 	}
 	if current.requoteReason != "" {
 		return c.requote(ctx, task, run.plan, current.requoteReason)
@@ -387,7 +387,7 @@ func (c *Controller) prepareDispatch(ctx context.Context, task coretask.Task, ru
 	// mutation or dispatch-opening Core CAS may happen on stale authorization.
 	current, err := c.validateCurrentAuthority(ctx, run.plan)
 	if err != nil {
-		return c.owned(err)
+		return c.handleAuthorityFailure(ctx, task, run, "pre_dispatch", err)
 	}
 	if current.requoteReason != "" {
 		return c.requoteRun(ctx, task, run, current.requoteReason)
@@ -441,7 +441,7 @@ func (c *Controller) prepareDispatch(ctx context.Context, task coretask.Task, ru
 	// boundary. Drift destroys the prepared intent and creates a fresh offer.
 	current, err = c.validateCurrentAuthority(ctx, run.plan)
 	if err != nil {
-		return c.owned(err)
+		return c.handleAuthorityFailure(ctx, task, run, "dispatch_commit", err)
 	}
 	if current.requoteReason != "" {
 		return c.requoteRun(ctx, task, run, current.requoteReason)
@@ -850,6 +850,24 @@ func (c *Controller) validateCurrentAuthority(ctx context.Context, plan Plan) (c
 	return current, nil
 }
 
+func (c *Controller) handleAuthorityFailure(ctx context.Context, task coretask.Task, run *controllerRun, stage string, err error) coreruntime.ManagedOutcome {
+	if run == nil {
+		return c.owned(ErrInvalid)
+	}
+	slog.Warn("[cloud-worker.controller] authority_validation_deferred",
+		"stage", stage, "class", controllerErrorClass(err),
+		"task_id", task.ID, "task_status", task.Status, "task_revision", task.Revision,
+		"task_attempt", task.Attempt, "task_lease_epoch", task.LeaseEpoch,
+		"execution_id", run.execution.ExecutionID, "execution_state", run.execution.State,
+		"execution_revision", run.execution.Revision, "provider_mutation_started", run.execution.ProviderMutationStarted,
+		"plan_id", run.plan.PlanID, "plan_revision", run.plan.Revision,
+		"quote_source_time", run.plan.Quote.SourceTime, "quote_expires_at", run.plan.Quote.ExpiresAt)
+	if errors.Is(err, ErrPricingCatalogStale) {
+		return c.finish(ctx, task, run, StateFailed, ProviderResult{}, "pricing_catalog_stale", "Cloud Worker pricing catalog is stale")
+	}
+	return c.owned(err)
+}
+
 func (c *Controller) refreshExecution(ctx context.Context, run *controllerRun) error {
 	if run == nil {
 		return ErrInvalid
@@ -1067,6 +1085,8 @@ func controllerErrorClass(err error) string {
 	switch {
 	case err == nil:
 		return "none"
+	case errors.Is(err, ErrPricingCatalogStale):
+		return "pricing_catalog_stale"
 	case errors.Is(err, context.Canceled):
 		return "context_canceled"
 	case errors.Is(err, context.DeadlineExceeded):
