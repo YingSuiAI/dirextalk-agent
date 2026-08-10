@@ -14,6 +14,7 @@ import (
 	"math"
 	"net"
 	"net/url"
+	pathpkg "path"
 	"regexp"
 	"strings"
 	"time"
@@ -475,9 +476,20 @@ func validRelayURL(raw string) bool {
 }
 
 func validProviderBaseURL(raw string) bool {
-	// Provider routing is authorization-bound and resolved inside the Agent.
-	// Keep the first implementation closed to the conventional /v1 HTTPS API.
-	return validRelayURL(raw)
+	parsed, err := url.Parse(raw)
+	if err != nil || raw != strings.TrimSpace(raw) || len(raw) > 2048 ||
+		parsed.Scheme != "https" || parsed.User != nil || parsed.RawQuery != "" ||
+		parsed.Fragment != "" || parsed.Opaque != "" || parsed.RawPath != "" ||
+		parsed.Host == "" || parsed.Host != strings.ToLower(parsed.Host) ||
+		net.ParseIP(parsed.Hostname()) != nil || parsed.String() != raw ||
+		strings.ContainsAny(parsed.Host+parsed.Path, "\r\n\x00") {
+		return false
+	}
+	// Core model profiles normalize away a trailing slash. Preserve their
+	// authorization-bound API prefix (for example OpenRouter's /api/v1) rather
+	// than forcing every OpenAI-compatible provider to live at the root /v1.
+	return parsed.Path == "" ||
+		(parsed.Path == strings.TrimRight(parsed.Path, "/") && parsed.Path == pathpkg.Clean(parsed.Path))
 }
 
 func digestBytes(value []byte) [sha256.Size]byte { return sha256.Sum256(value) }

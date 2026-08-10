@@ -548,6 +548,37 @@ func (function roundTripperFunc) RoundTrip(request *http.Request) (*http.Respons
 	return function(request)
 }
 
+func TestProviderTargetPreservesAuthorizedAPIPrefix(t *testing.T) {
+	for name, test := range map[string]struct {
+		base string
+		want string
+	}{
+		"root_v1":        {base: "https://provider.example.test/v1", want: "https://provider.example.test/v1/chat/completions"},
+		"nested_v1":      {base: "https://openrouter.ai/api/v1", want: "https://openrouter.ai/api/v1/chat/completions"},
+		"empty_api_path": {base: "https://api.deepseek.com", want: "https://api.deepseek.com/v1/chat/completions"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := providerTarget(test.base, PathChatCompletions)
+			if err != nil || got != test.want {
+				t.Fatalf("providerTarget(%q)=%q err=%v, want %q", test.base, got, err, test.want)
+			}
+		})
+	}
+	for _, base := range []string{
+		"http://provider.example.test/v1",
+		"https://user@provider.example.test/v1",
+		"https://provider.example.test/v1?route=other",
+		"https://provider.example.test/v1#other",
+		"https://127.0.0.1/v1",
+		"https://provider.example.test/api/../v1",
+		"https://provider.example.test/api/v1/",
+	} {
+		if got, err := providerTarget(base, PathChatCompletions); err == nil {
+			t.Fatalf("providerTarget(%q) accepted unsafe base as %q", base, got)
+		}
+	}
+}
+
 func TestHTTPBackendConstructsProviderAuthorizationWithoutRelayHeaders(t *testing.T) {
 	reference := ProfileReference{
 		OwnerID: "owner", AccountGeneration: 1, ProfileID: uuid.NewString(),
@@ -561,7 +592,7 @@ func TestHTTPBackendConstructsProviderAuthorizationWithoutRelayHeaders(t *testin
 	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		called = true
 		body, _ := io.ReadAll(request.Body)
-		if request.URL.String() != "https://provider.example.test/v1/chat/completions" ||
+		if request.URL.String() != "https://provider.example.test/api/v1/chat/completions" ||
 			request.Header.Get("Authorization") != "Bearer "+testProviderCredential ||
 			request.Header.Get("X-Forwarded-Authorization") != "" || bytes.Contains(body, []byte("cwmg1_")) {
 			t.Fatalf("provider request url=%s headers=%v body=%s", request.URL, request.Header, body)
@@ -578,7 +609,7 @@ func TestHTTPBackendConstructsProviderAuthorizationWithoutRelayHeaders(t *testin
 		t.Fatal(err)
 	}
 	response, err := backend.Invoke(t.Context(), ProviderRequest{
-		Binding: ProfileBinding{Reference: reference, BaseURL: "https://provider.example.test/v1"},
+		Binding: ProfileBinding{Reference: reference, BaseURL: "https://provider.example.test/api/v1"},
 		Path:    PathChatCompletions, Body: []byte(`{"model":"gpt-test","max_tokens":1}`),
 	}, credential)
 	defer response.Destroy()

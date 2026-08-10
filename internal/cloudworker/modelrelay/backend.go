@@ -86,8 +86,14 @@ func providerTarget(baseURL, path string) (string, error) {
 	if err != nil {
 		return "", ErrInvalid
 	}
-	base.Path = strings.TrimSuffix(base.Path, "/") + strings.TrimPrefix(path, "/v1")
-	if base.Path != path || base.RawPath != "" || base.RawQuery != "" || base.Fragment != "" {
+	basePath := strings.TrimSuffix(base.Path, "/")
+	endpointPath := path
+	if strings.HasSuffix(basePath, "/v1") {
+		endpointPath = strings.TrimPrefix(path, "/v1")
+	}
+	targetPath := basePath + endpointPath
+	base.Path = targetPath
+	if base.RawPath != "" || base.RawQuery != "" || base.Fragment != "" {
 		return "", ErrInvalid
 	}
 	return base.String(), nil

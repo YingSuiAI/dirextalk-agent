@@ -20,7 +20,7 @@ func (resolve exactProfileReaderFunc) ResolveProfile(ctx context.Context, id str
 func TestExactModelResolverRequiresCompleteSnapshotAndReturnsDestroyableCredential(t *testing.T) {
 	profile := coremodel.Profile{
 		ID: uuid.NewString(), DisplayName: "Cloud model", Provider: coremodel.ProviderOpenAICompatible,
-		BaseURL: "https://model.example.test/v1", Model: "gpt-test", APIKey: "provider-key-value",
+		BaseURL: "https://openrouter.ai/api/v1", Model: "gpt-test", APIKey: "provider-key-value",
 		MaxOutputTokens: 4096, Revision: 7, CredentialVersion: 3,
 	}
 	snapshot := coremodel.SnapshotFromProfile(profile)
