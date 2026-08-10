@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"testing"
@@ -64,6 +65,49 @@ func TestOutboundProxyDialsOnlySealedProxyAndConnectsExactTarget(t *testing.T) {
 	}
 	if address := <-dialed; address != "proxy.example.test:443" {
 		t.Fatalf("dialed address = %q", address)
+	}
+}
+
+func TestOutboundProxyPreservesSquidConnectTunnelWithoutContentLength(t *testing.T) {
+	t.Parallel()
+	binding := outboundProxyBindingForTest(t)
+	proxy, err := NewOutboundProxy(binding, x509.NewCertPool(), x509.NewCertPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := "worker-control.example.test:443"
+	received := make(chan string, 1)
+	proxy.dialProxyTLS = func(context.Context, string, *tls.Config) (net.Conn, error) {
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			if _, readErr := http.ReadRequest(bufio.NewReader(server)); readErr != nil {
+				received <- "read request: " + readErr.Error()
+				return
+			}
+			if _, writeErr := server.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); writeErr != nil {
+				received <- "write response: " + writeErr.Error()
+				return
+			}
+			buffer := make([]byte, 4)
+			if _, readErr := io.ReadFull(server, buffer); readErr != nil {
+				received <- "read tunnel: " + readErr.Error()
+				return
+			}
+			received <- string(buffer)
+		}()
+		return client, nil
+	}
+	connection, err := proxy.DialTunnel(t.Context(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if _, err := connection.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if value := <-received; value != "ping" {
+		t.Fatalf("tunnel payload = %q", value)
 	}
 }
 

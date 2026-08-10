@@ -135,7 +135,7 @@ func (proxy *OutboundProxy) DialTunnel(
 	reader := bufio.NewReaderSize(connection, 16<<10)
 	response, err := http.ReadResponse(reader, request)
 	if err != nil || response == nil || response.StatusCode != http.StatusOK ||
-		reader.Buffered() != 0 || (response.Body != nil && response.Body != http.NoBody) {
+		reader.Buffered() != 0 || len(response.TransferEncoding) != 0 || response.ContentLength > 0 {
 		if response != nil && response.Body != nil {
 			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4<<10))
 			_ = response.Body.Close()
