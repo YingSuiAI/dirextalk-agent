@@ -85,7 +85,18 @@ type ExecutionSnapshot struct {
 
 func (s ExecutionSnapshot) canonicalWithoutDigest() ([]byte, error) {
 	s.Digest = ""
-	return json.Marshal(s)
+	// PostgreSQL jsonb may reorder object keys inside pinned RawMessage schemas.
+	// Normalize a deep copy so sealing and persisted read-back hash the same bytes.
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+	var normalized ExecutionSnapshot
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return nil, err
+	}
+	normalizeSnapshot(&normalized)
+	return json.Marshal(normalized)
 }
 
 func (s ExecutionSnapshot) ComputeDigest() (string, error) {

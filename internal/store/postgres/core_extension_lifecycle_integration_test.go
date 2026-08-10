@@ -298,7 +298,7 @@ func pinEchoToolCatalog(ctx context.Context, t *testing.T, pool *pgxpool.Pool, i
 	if err := json.Unmarshal(raw, &version); err != nil {
 		t.Fatal(err)
 	}
-	schema := json.RawMessage(`{"type":"object"}`)
+	schema := json.RawMessage(`{"additionalProperties":false,"properties":{"x":{"type":"integer"}},"required":["x"],"type":"object"}`)
 	version.Tools = []coreextension.Tool{{Name: "echo", Description: "echo", InputSchemaDigest: sha256Hex(string(schema)), InputSchema: schema}}
 	updated, err := json.Marshal(version)
 	if err != nil {
