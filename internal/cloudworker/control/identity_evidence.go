@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 	"time"
 )
@@ -88,18 +89,21 @@ func (reader *RevalidatingIdentityEvidenceReader) ReadIdentityEvidence(
 		!regionPattern.MatchString(attested.Region) ||
 		!instancePattern.MatchString(attested.InstanceID) || attested.RoleARN == "" ||
 		!iamIDPattern.MatchString(attested.RoleID) || attested.PendingTime.IsZero() {
+		logIdentityEvidenceRejected("input")
 		return IdentityClaims{}, ErrIdentityRejected
 	}
 	record, err := reader.ledger.LookupWorkerIdentity(
 		ctx, attested.AccountID, attested.Region, attested.InstanceID,
 	)
 	if err != nil {
+		logIdentityEvidenceRejected("ledger_lookup")
 		return IdentityClaims{}, ErrIdentityRejected
 	}
 	provider, err := reader.provider.ReadWorkerIdentity(
 		ctx, attested.AccountID, attested.Region, record.ProviderID, attested.InstanceID,
 	)
 	if err != nil {
+		logIdentityEvidenceRejected("provider_readback")
 		return IdentityClaims{}, ErrIdentityRejected
 	}
 	now := reader.now().UTC()
@@ -107,19 +111,30 @@ func (reader *RevalidatingIdentityEvidenceReader) ReadIdentityEvidence(
 		record.AccountID != attested.AccountID || record.Region != attested.Region || record.ProviderID == "" ||
 		record.InstanceID != attested.InstanceID || record.LaunchIdentity == "" ||
 		record.RoleARN != attested.RoleARN || record.RoleID != attested.RoleID ||
-		!iamIDPattern.MatchString(record.RoleID) || !iamIDPattern.MatchString(record.InstanceProfileID) || len(record.RequiredTags) == 0 ||
-		!provider.Exists || provider.AccountID != record.AccountID ||
+		!iamIDPattern.MatchString(record.RoleID) || !iamIDPattern.MatchString(record.InstanceProfileID) || len(record.RequiredTags) == 0 {
+		logIdentityEvidenceRejected("ledger_binding")
+		return IdentityClaims{}, ErrIdentityRejected
+	}
+	if !provider.Exists || provider.AccountID != record.AccountID ||
 		provider.Region != record.Region || provider.InstanceID != record.InstanceID ||
 		provider.LaunchIdentity != record.LaunchIdentity || provider.RoleARN != record.RoleARN ||
 		provider.RoleID != record.RoleID || provider.InstanceProfileID != record.InstanceProfileID ||
-		provider.LaunchTime.IsZero() || !provider.LaunchTime.Equal(attested.PendingTime) ||
-		provider.ObservedAt.IsZero() || provider.ObservedAt.After(now.Add(30*time.Second)) ||
-		now.Sub(provider.ObservedAt) > maximumIdentityEvidenceAge ||
-		provider.Tags["dirextalk:account_generation"] != strconv.FormatUint(record.AccountGeneration, 10) {
+		provider.LaunchTime.IsZero() || !provider.LaunchTime.Equal(attested.PendingTime) {
+		logIdentityEvidenceRejected("provider_binding")
+		return IdentityClaims{}, ErrIdentityRejected
+	}
+	if provider.ObservedAt.IsZero() || provider.ObservedAt.After(now.Add(30*time.Second)) ||
+		now.Sub(provider.ObservedAt) > maximumIdentityEvidenceAge {
+		logIdentityEvidenceRejected("provider_freshness")
+		return IdentityClaims{}, ErrIdentityRejected
+	}
+	if provider.Tags["dirextalk:account_generation"] != strconv.FormatUint(record.AccountGeneration, 10) {
+		logIdentityEvidenceRejected("account_generation_tag")
 		return IdentityClaims{}, ErrIdentityRejected
 	}
 	for key, value := range record.RequiredTags {
 		if provider.Tags[key] != value {
+			logIdentityEvidenceRejected("required_tags")
 			return IdentityClaims{}, ErrIdentityRejected
 		}
 	}
@@ -133,4 +148,8 @@ func (reader *RevalidatingIdentityEvidenceReader) ReadIdentityEvidence(
 		InstanceID: record.InstanceID, LaunchIdentity: record.LaunchIdentity,
 		RoleARN: record.RoleARN, RoleID: record.RoleID, InstanceProfileID: record.InstanceProfileID, Tags: tags,
 	}, nil
+}
+
+func logIdentityEvidenceRejected(stage string) {
+	slog.Warn("[cloud-worker.identity] evidence_rejected", "stage", stage)
 }

@@ -22,6 +22,41 @@ func (f fakeVerifier) Verify(_ context.Context, _ string, _ IdentityProof) (Iden
 	return f.claims, f.err
 }
 
+type retryVerifier struct {
+	mu          sync.Mutex
+	claims      IdentityClaims
+	errors      []error
+	alwaysError error
+	payloads    [][]byte
+}
+
+func (verifier *retryVerifier) Verify(
+	_ context.Context,
+	_ string,
+	proof IdentityProof,
+) (IdentityClaims, error) {
+	verifier.mu.Lock()
+	defer verifier.mu.Unlock()
+	verifier.payloads = append(verifier.payloads, append([]byte(nil), proof.Payload...))
+	clear(proof.Payload)
+	index := len(verifier.payloads) - 1
+	err := verifier.alwaysError
+	if err == nil && index < len(verifier.errors) {
+		err = verifier.errors[index]
+	}
+	return verifier.claims, err
+}
+
+func (verifier *retryVerifier) payloadSnapshot() [][]byte {
+	verifier.mu.Lock()
+	defer verifier.mu.Unlock()
+	result := make([][]byte, len(verifier.payloads))
+	for index := range verifier.payloads {
+		result[index] = append([]byte(nil), verifier.payloads[index]...)
+	}
+	return result
+}
+
 type fakeLeases struct {
 	fence TaskFence
 	stale bool
@@ -155,6 +190,177 @@ func TestChallengeReplayAndIdentityMismatchFailClosed(t *testing.T) {
 	if !errors.Is(err, ErrIdentityRejected) {
 		t.Fatalf("identity mismatch error=%v", err)
 	}
+}
+
+func TestClaimRetriesTransientIdentityVerificationWithPrivateProofCopies(t *testing.T) {
+	service, _, fence := newTestService(t)
+	expectation := testExpectation(fence)
+	claims := IdentityClaims{
+		AccountGeneration: expectation.AccountGeneration,
+		AccountID:         expectation.AccountID, Region: expectation.Region,
+		InstanceID: expectation.InstanceID, LaunchIdentity: expectation.LaunchIdentity,
+		RoleARN: expectation.RoleARN, RoleID: expectation.RoleID,
+		InstanceProfileID: expectation.InstanceProfileID,
+		Tags:              cloneTags(expectation.RequiredTags),
+	}
+	verifier := &retryVerifier{
+		claims: claims,
+		errors: []error{ErrIdentityRejected, ErrIdentityRejected},
+	}
+	service.verifier = verifier
+	now := service.clock()
+	service.clock = func() time.Time { return now }
+	service.identityRetry = identityVerificationRetryPolicy{
+		timeout: 10 * time.Second, initialBackoff: time.Second, maximumBackoff: 2 * time.Second,
+	}
+	var delays []time.Duration
+	service.waitForIdentityRetry = func(_ context.Context, delay time.Duration) error {
+		delays = append(delays, delay)
+		now = now.Add(delay)
+		return nil
+	}
+	challenge, err := service.IssueIdentityChallenge(
+		context.Background(),
+		IssueChallengeRequest{Fence: fence, Expectation: expectation},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proofPayload := []byte("signed")
+	claimed, err := service.Claim(context.Background(), ClaimRequest{
+		ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence,
+		Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: proofPayload},
+	})
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	defer claimed.Destroy()
+	if got, want := delays, []time.Duration{time.Second, 2 * time.Second}; !equalControlDurations(got, want) {
+		t.Fatalf("retry delays = %v, want %v", got, want)
+	}
+	for index, payload := range verifier.payloadSnapshot() {
+		if string(payload) != "signed" {
+			t.Fatalf("proof payload %d = %q, want private signed copy", index, payload)
+		}
+	}
+	if string(proofPayload) != string(make([]byte, len(proofPayload))) {
+		t.Fatalf("request proof was not destroyed after verification: %q", proofPayload)
+	}
+}
+
+func TestClaimStopsPermanentIdentityVerificationAtBoundedDeadline(t *testing.T) {
+	service, _, fence := newTestService(t)
+	verifier := &retryVerifier{alwaysError: ErrIdentityRejected}
+	service.verifier = verifier
+	now := service.clock()
+	service.clock = func() time.Time { return now }
+	service.identityRetry = identityVerificationRetryPolicy{
+		timeout: 3 * time.Second, initialBackoff: time.Second, maximumBackoff: 2 * time.Second,
+	}
+	var delays []time.Duration
+	service.waitForIdentityRetry = func(_ context.Context, delay time.Duration) error {
+		delays = append(delays, delay)
+		now = now.Add(delay)
+		return nil
+	}
+	challenge, err := service.IssueIdentityChallenge(
+		context.Background(),
+		IssueChallengeRequest{Fence: fence, Expectation: testExpectation(fence)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ClaimRequest{
+		ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence,
+		Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")},
+	}
+	if _, err := service.Claim(context.Background(), request); !errors.Is(err, ErrIdentityRejected) {
+		t.Fatalf("Claim() error = %v, want ErrIdentityRejected", err)
+	}
+	if got, want := delays, []time.Duration{time.Second, 2 * time.Second}; !equalControlDurations(got, want) {
+		t.Fatalf("retry delays = %v, want %v", got, want)
+	}
+	if got := len(verifier.payloadSnapshot()); got != 2 {
+		t.Fatalf("verification attempts = %d, want 2", got)
+	}
+
+	expectation := testExpectation(fence)
+	service.verifier = fakeVerifier{claims: IdentityClaims{
+		AccountGeneration: expectation.AccountGeneration,
+		AccountID:         expectation.AccountID, Region: expectation.Region,
+		InstanceID: expectation.InstanceID, LaunchIdentity: expectation.LaunchIdentity,
+		RoleARN: expectation.RoleARN, RoleID: expectation.RoleID,
+		InstanceProfileID: expectation.InstanceProfileID,
+		Tags:              cloneTags(expectation.RequiredTags),
+	}}
+	request.Proof.Payload = []byte("signed")
+	claimed, err := service.Claim(context.Background(), request)
+	if err != nil {
+		t.Fatalf("challenge was mutated by rejected verification: %v", err)
+	}
+	claimed.Destroy()
+}
+
+func TestClaimRevalidatesLeaseAfterIdentityVerificationRetry(t *testing.T) {
+	service, leases, fence := newTestService(t)
+	expectation := testExpectation(fence)
+	verifier := &retryVerifier{
+		claims: IdentityClaims{
+			AccountGeneration: expectation.AccountGeneration,
+			AccountID:         expectation.AccountID, Region: expectation.Region,
+			InstanceID: expectation.InstanceID, LaunchIdentity: expectation.LaunchIdentity,
+			RoleARN: expectation.RoleARN, RoleID: expectation.RoleID,
+			InstanceProfileID: expectation.InstanceProfileID,
+			Tags:              cloneTags(expectation.RequiredTags),
+		},
+		errors: []error{ErrIdentityRejected},
+	}
+	service.verifier = verifier
+	now := service.clock()
+	service.clock = func() time.Time { return now }
+	service.identityRetry = identityVerificationRetryPolicy{
+		timeout: 3 * time.Second, initialBackoff: time.Second, maximumBackoff: time.Second,
+	}
+	service.waitForIdentityRetry = func(_ context.Context, delay time.Duration) error {
+		now = now.Add(delay)
+		leases.stale = true
+		return nil
+	}
+	challenge, err := service.IssueIdentityChallenge(
+		context.Background(),
+		IssueChallengeRequest{Fence: fence, Expectation: expectation},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ClaimRequest{
+		ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence,
+		Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")},
+	}
+	if _, err := service.Claim(context.Background(), request); !errors.Is(err, ErrStaleLease) {
+		t.Fatalf("Claim() error = %v, want ErrStaleLease", err)
+	}
+
+	leases.stale = false
+	service.verifier = fakeVerifier{claims: verifier.claims}
+	request.Proof.Payload = []byte("signed")
+	claimed, err := service.Claim(context.Background(), request)
+	if err != nil {
+		t.Fatalf("stale post-verification lease consumed challenge: %v", err)
+	}
+	claimed.Destroy()
+}
+
+func equalControlDurations(left, right []time.Duration) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestStaleLeaseWrongTokenAndTerminalMutationRejected(t *testing.T) {

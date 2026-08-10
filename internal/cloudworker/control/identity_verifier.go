@@ -10,6 +10,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -94,30 +95,44 @@ func (verifier *STSSigV4IdentityVerifier) Verify(
 		len(proof.Payload) == 0 || len(proof.Payload) > maximumProofBytes ||
 		nonce == "" || nonce != strings.TrimSpace(nonce) || len(nonce) < 32 ||
 		len(nonce) > 1024 || strings.ContainsAny(nonce, "\r\n\x00") {
+		logIdentityVerificationRejected("request")
 		return IdentityClaims{}, ErrIdentityRejected
 	}
 	payload, err := identitywire.Decode(proof.Payload)
 	if err != nil {
+		logIdentityVerificationRejected("payload_decode")
 		return IdentityClaims{}, ErrIdentityRejected
 	}
 	defer payload.Destroy()
 	document, err := verifier.verifyPayload(payload, nonce)
 	if err != nil {
+		logIdentityVerificationRejected("payload_verify")
 		return IdentityClaims{}, ErrIdentityRejected
 	}
 	stsIdentity, err := verifier.replaySTS(ctx, payload)
 	if err != nil || stsIdentity.Account != document.AccountID {
+		logIdentityVerificationRejected("sts_replay")
 		return IdentityClaims{}, ErrIdentityRejected
 	}
 	roleARN, roleID, err := parseSTSRole(stsIdentity, document)
 	if err != nil {
+		logIdentityVerificationRejected("sts_role")
 		return IdentityClaims{}, ErrIdentityRejected
 	}
-	return verifier.evidence.ReadIdentityEvidence(ctx, AttestedInstance{
+	claims, err := verifier.evidence.ReadIdentityEvidence(ctx, AttestedInstance{
 		AccountID: document.AccountID, Region: document.Region,
 		InstanceID: document.InstanceID, RoleARN: roleARN,
 		RoleID: roleID, PendingTime: document.PendingTime,
 	})
+	if err != nil {
+		logIdentityVerificationRejected("identity_evidence")
+		return IdentityClaims{}, ErrIdentityRejected
+	}
+	return claims, nil
+}
+
+func logIdentityVerificationRejected(stage string) {
+	slog.Warn("[cloud-worker.identity] verification_rejected", "stage", stage)
 }
 
 type instanceIdentityDocument struct {
