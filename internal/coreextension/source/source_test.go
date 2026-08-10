@@ -53,6 +53,25 @@ func TestOfficialRegistryFixedResponses(t *testing.T) {
 	}
 }
 
+func TestBaseInspectionEmitsMaterializerCanonicalFieldOrder(t *testing.T) {
+	candidate := core.Candidate{
+		ID: "example/html", Kind: core.KindMCP, Source: core.SourceGitHub, Name: "example/html",
+		Pin:       core.SourcePin{GitCommit: strings.Repeat("a", 40), GitSHA256: strings.Repeat("b", 64)},
+		Transport: core.TransportStdioStatic,
+	}
+	inspection, artifact, err := baseInspection(candidate, []rawFile{{Path: "entry", Content: "fixture"}}, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"path":"entry","content":"Zml4dHVyZQ"}]`
+	if string(artifact) != want {
+		t.Fatalf("canonical artifact = %q, want %q", artifact, want)
+	}
+	if digestBytes(artifact) != inspection.ContentDigest {
+		t.Fatal("canonical artifact digest drift")
+	}
+}
+
 func TestOfficialRegistryRemoteRequiresExactHeaderFreeTransport(t *testing.T) {
 	for _, headers := range []any{nil, []any{}} {
 		manifest := map[string]any{"remotes": []any{map[string]any{"type": "streamable-http", "url": "https://mcp.example.test/mcp"}}}

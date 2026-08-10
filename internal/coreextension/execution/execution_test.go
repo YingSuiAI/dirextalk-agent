@@ -51,6 +51,23 @@ func TestMaterializerValidPathRejectsOnlyUnsafeCharacters(t *testing.T) {
 	}
 }
 
+func TestWriteImmutableSealsRequestedMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "entry")
+	if err := writeImmutable(path, []byte("fixture"), 0500); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0500 || info.Mode().Perm()&0222 != 0 {
+		t.Fatalf("immutable mode = %o", info.Mode().Perm())
+	}
+	if err := writeImmutable(filepath.Join(t.TempDir(), "bad"), []byte("fixture"), 0700); err == nil {
+		t.Fatal("writable final mode accepted")
+	}
+}
+
 func TestCanonicalArtifactFixtureIsExact(t *testing.T) {
 	root := t.TempDir()
 	content := []materialFile{{Path: "SKILL.md", Content: base64.RawStdEncoding.EncodeToString([]byte("hello"))}}
@@ -547,6 +564,30 @@ type capturingLocalRunner struct {
 	request         extensionrunner.RequestV2
 	calls           int
 	validateRequest bool
+}
+
+type fixedOutputLocalRunner struct{ stdout []byte }
+
+func (r fixedOutputLocalRunner) RunV2(_ context.Context, request extensionrunner.RequestV2, _ []*os.File) (extensionrunner.StatusV1, error) {
+	return extensionrunner.StatusV1{RunID: request.RunID, Phase: extensionrunner.PhaseTombstone, Status: "succeeded", Stdout: append([]byte(nil), r.stdout...)}, nil
+}
+
+func TestLocalExecutorListToolsCanonicalizesExactInputSchema(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	stdout := []byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"local_task","description":"bounded local task","inputSchema":{"z":{"type":"string"},"a":{"type":"integer"}}}]}}`)
+	executor := &LocalExecutor{Runner: fixedOutputLocalRunner{stdout: stdout}}
+	tools, err := executor.ListTools(context.Background(), LocalInvocation{
+		TaskID: uuid.NewString(), TaskFence: uuid.NewString(), InstallationID: uuid.NewString(), VersionID: uuid.NewString(),
+		InstallDigest: digest, ContentDigest: digest, ArtifactDigest: digest, EntryPath: "server", Workspace: t.TempDir(),
+		Timeout: time.Minute, Limits: LocalSandboxLimitsV2(),
+	})
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("tools=%+v err=%v", tools, err)
+	}
+	want := `{"a":{"type":"integer"},"z":{"type":"string"}}`
+	if string(tools[0].InputSchema) != want || tools[0].InputSchemaDigest != digestBytes([]byte(want)) {
+		t.Fatalf("tool=%+v", tools[0])
+	}
 }
 
 func (r *capturingLocalRunner) RunV2(_ context.Context, request extensionrunner.RequestV2, _ []*os.File) (extensionrunner.StatusV1, error) {

@@ -259,12 +259,12 @@ func (m *Materializer) Materialize(ctx context.Context, artifact core.FetchArtif
 		if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
 			return Materialized{}, err
 		}
-		mode := os.FileMode(0600)
+		mode := os.FileMode(0400)
 		if artifact.Inspection.Execution.Stdio != nil && f.Path == artifact.Inspection.Execution.Stdio.RelativePath {
-			mode = 0700
+			mode = 0500
 		}
 		if artifact.Inspection.Execution.Skill != nil && artifact.Inspection.Execution.Skill.Executable && f.Path == artifact.Inspection.Execution.Skill.RelativePath {
-			mode = 0700
+			mode = 0500
 		}
 		if err := writeImmutable(p, data, mode); err != nil {
 			return Materialized{}, err
@@ -412,12 +412,21 @@ func validPath(p string) bool {
 }
 
 func writeImmutable(path string, data []byte, mode os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, mode)
+	if mode&0o222 != 0 {
+		return errors.New("immutable file mode is writable")
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, mode|0o200)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
 		return err
 	}
 	return f.Sync()

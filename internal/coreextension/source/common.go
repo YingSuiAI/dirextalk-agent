@@ -298,6 +298,15 @@ type rawFile struct {
 	Symlink bool   `json:"symlink"`
 }
 
+// canonicalContentFile is the exact source-to-materializer wire shape. Keep
+// field order aligned with execution.materialFile: JSON object key order is
+// part of the content digest and the production materializer rejects any
+// alternate encoding.
+type canonicalContentFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
 func canonicalFiles(files []rawFile, max int64) ([]rawFile, []byte, error) {
 	seen := map[string]bool{}
 	var total int64
@@ -347,9 +356,9 @@ func baseInspectionLimit(c core.Candidate, files []rawFile, remoteURL string, re
 	if err != nil {
 		return core.Inspection{}, nil, err
 	}
-	contentObj := make([]map[string]string, 0, len(files))
+	contentObj := make([]canonicalContentFile, 0, len(files))
 	for _, f := range files {
-		contentObj = append(contentObj, map[string]string{"path": f.Path, "content": base64.RawStdEncoding.EncodeToString([]byte(f.Content))})
+		contentObj = append(contentObj, canonicalContentFile{Path: f.Path, Content: base64.RawStdEncoding.EncodeToString([]byte(f.Content))})
 	}
 	content, _ := json.Marshal(contentObj)
 	i := core.Inspection{Candidate: c, ContentDigest: digestBytes(content), ManifestDigest: digestBytes(manifest), ExecutionDigest: "", NetworkSchemaDigest: digestBytes([]byte("[]")), SecretSchemaDigest: digestBytes([]byte("[]"))}

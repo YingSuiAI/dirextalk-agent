@@ -93,10 +93,15 @@ func (e *LocalExecutor) ListTools(ctx context.Context, in LocalInvocation) ([]co
 	}
 	out := make([]core.Tool, 0, len(envelope.Result.Tools))
 	for _, tool := range envelope.Result.Tools {
-		if strings.TrimSpace(tool.Name) == "" || len(tool.InputSchema) == 0 || !json.Valid(tool.InputSchema) {
+		var schema map[string]any
+		if strings.TrimSpace(tool.Name) == "" || json.Unmarshal(tool.InputSchema, &schema) != nil || schema == nil {
 			return nil, core.ErrInvalid
 		}
-		out = append(out, core.Tool{Name: tool.Name, Description: tool.Description, InputSchemaDigest: digestJSON(json.RawMessage(tool.InputSchema)), InputSchema: append(json.RawMessage(nil), tool.InputSchema...)})
+		canonical, err := json.Marshal(schema)
+		if err != nil {
+			return nil, core.ErrInvalid
+		}
+		out = append(out, core.Tool{Name: tool.Name, Description: tool.Description, InputSchemaDigest: digestBytes(canonical), InputSchema: canonical})
 	}
 	return out, nil
 }
