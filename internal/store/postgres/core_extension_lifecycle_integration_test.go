@@ -8,6 +8,7 @@ import (
 	"errors"
 	coreconfirmation "github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	coreexecution "github.com/YingSuiAI/dirextalk-agent/internal/coreextension/execution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -576,8 +577,12 @@ func TestCoreExtensionPostgresUncertainAckRacesLifecycleMutations(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = coord.Resolve(ctx, claimed); err != nil {
+	invocation, err := coord.Resolve(ctx, claimed)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if invocation.Local == nil || invocation.Local.Limits != coreexecution.LocalSandboxLimitsV2() {
+		t.Fatalf("local invocation limits=%+v want=%+v", invocation.Local, coreexecution.LocalSandboxLimitsV2())
 	}
 	reclaimed, _, err := ts.ClaimNextDue(ctx, "race-reclaimer", time.Now().UTC().Add(2*time.Minute), time.Minute, 2)
 	if err != nil || reclaimed.ID != claimed.ID {

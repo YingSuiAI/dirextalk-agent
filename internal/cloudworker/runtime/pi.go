@@ -310,15 +310,27 @@ func supportedPiModel(model QualifiedModel) bool {
 }
 
 func writePiModelsConfig(configRoot string, task Task) error {
-	override := map[string]any{"maxTokens": task.MaxOutputTokens}
-	if task.ModelInterface == ModelOpenAICompatible {
-		override["compat"] = map[string]any{"maxTokensField": "max_tokens"}
+	model := map[string]any{
+		"id":        task.Model,
+		"reasoning": true,
+		"maxTokens": task.MaxOutputTokens,
+	}
+	var api string
+	switch task.ModelInterface {
+	case ModelOpenAIResponses:
+		api = "openai-responses"
+	case ModelOpenAICompatible:
+		api = "openai-completions"
+		model["compat"] = map[string]any{"maxTokensField": "max_tokens"}
+	default:
+		return ErrExecution
 	}
 	config := map[string]any{
 		"providers": map[string]any{
 			task.ModelProvider: map[string]any{
-				"baseUrl":        task.ModelRelayBaseURL,
-				"modelOverrides": map[string]any{task.Model: override},
+				"baseUrl": task.ModelRelayBaseURL,
+				"api":     api,
+				"models":  []any{model},
 			},
 		},
 	}

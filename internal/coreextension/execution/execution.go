@@ -44,12 +44,30 @@ type LocalInvocation struct {
 	ResultFiles                                                 []string
 	Stdin                                                       []byte
 }
+
+// LocalSandboxLimitsV2 is the single production budget for local MCP and
+// executable Skill processes. Callers must bind it explicitly to each
+// invocation; LocalExecutor intentionally does not repair zero limits.
+func LocalSandboxLimitsV2() extensionrunner.LimitsV2 {
+	return extensionrunner.LimitsV2{
+		CPUSeconds:  30,
+		MemoryBytes: 256 << 20,
+		Processes:   32,
+		FileBytes:   16 << 20,
+		OpenFiles:   64,
+	}
+}
+
+type LocalRunner interface {
+	RunV2(context.Context, extensionrunner.RequestV2, []*os.File) (extensionrunner.StatusV1, error)
+}
+
 type SecretBinding struct {
 	Name, InstallationID, VersionID, ReferenceID, Purpose, BindingDigest string
 }
 
 type LocalExecutor struct {
-	Runner  *extensionrunner.Client
+	Runner  LocalRunner
 	Secrets PurposeBoundSecretResolver
 }
 
@@ -181,7 +199,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, in LocalInvocation) (extens
 	if e == nil || e.Runner == nil || !coretask.ValidUUID(in.TaskID) || !coretask.ValidUUID(in.InstallationID) || !coretask.ValidUUID(in.VersionID) || in.TaskFence == "" || len(in.ContentDigest) != 64 || len(in.ArtifactDigest) != 64 || in.InstallDigest != in.ArtifactDigest || in.EntryPath == "" || in.Workspace == "" || !filepath.IsAbs(in.Workspace) || in.Timeout <= 0 {
 		return extensionrunner.StatusV1{}, extensionrunner.ErrInvalid
 	}
-	if filepath.IsAbs(in.EntryPath) || strings.Contains(in.EntryPath, "..") || strings.ContainsAny(in.EntryPath, `\\\x00\r\n`) {
+	if filepath.IsAbs(in.EntryPath) || strings.Contains(in.EntryPath, "..") || strings.ContainsAny(in.EntryPath, "\\\x00\r\n") {
 		return extensionrunner.StatusV1{}, extensionrunner.ErrInvalid
 	}
 	// The task workspace is runner-owned. The Agent may validate the opaque
@@ -228,6 +246,12 @@ func (e *LocalExecutor) Execute(ctx context.Context, in LocalInvocation) (extens
 	}
 	runID := StableRunID(in.TaskID, fence, in.InstallationID, in.VersionID, in.ContentDigest, in.ArtifactDigest, strings.Join(in.Argv, "\x00"))
 	request := extensionrunner.RequestV2{RunID: runID, TaskID: in.TaskID, TaskFence: fence, InstallDigest: in.InstallDigest, Entry: "entry", Argv: append([]string(nil), in.Argv...), Stdin: stdinRef, Secrets: secrets, ResultFiles: append([]string(nil), in.ResultFiles...), TimeoutMS: in.Timeout.Milliseconds(), Limits: in.Limits}
+	if err := extensionrunner.ValidateRequestV2(request); err != nil {
+		return extensionrunner.StatusV1{}, err
+	}
+	if err := extensionrunner.ValidateFDSet(request, len(files)); err != nil {
+		return extensionrunner.StatusV1{}, err
+	}
 	return e.Runner.RunV2(ctx, request, files)
 }
 
@@ -430,6 +454,7 @@ type SkillInvocation struct {
 	VersionID      string
 	ContentDigest  string
 	ArtifactDigest string
+	Limits         extensionrunner.LimitsV2
 	Secrets        []SecretBinding
 }
 
@@ -468,7 +493,7 @@ func (h *Handler) Handle(ctx context.Context, task coretask.Task) coreruntime.Ma
 				err = errors.New("local executor unavailable")
 				break
 			}
-			status, runErr := h.Local.Execute(ctx, LocalInvocation{TaskID: in.Skill.TaskID, TaskFence: in.Skill.TaskFence, InstallationID: in.Skill.InstallationID, VersionID: in.Skill.VersionID, InstallDigest: in.Skill.InstallDigest, ContentDigest: in.Skill.ContentDigest, ArtifactDigest: in.Skill.ArtifactDigest, EntryPath: in.Skill.Entry.RelativePath, Argv: append([]string(nil), in.Skill.Entry.Argv...), Workspace: in.Skill.Workspace, Timeout: 10 * time.Minute, Secrets: in.Skill.Secrets, Stdin: append([]byte(nil), in.Skill.Input...)})
+			status, runErr := h.Local.Execute(ctx, LocalInvocation{TaskID: in.Skill.TaskID, TaskFence: in.Skill.TaskFence, InstallationID: in.Skill.InstallationID, VersionID: in.Skill.VersionID, InstallDigest: in.Skill.InstallDigest, ContentDigest: in.Skill.ContentDigest, ArtifactDigest: in.Skill.ArtifactDigest, EntryPath: in.Skill.Entry.RelativePath, Argv: append([]string(nil), in.Skill.Entry.Argv...), Workspace: in.Skill.Workspace, Timeout: 10 * time.Minute, Limits: in.Skill.Limits, Secrets: in.Skill.Secrets, Stdin: append([]byte(nil), in.Skill.Input...)})
 			if runErr == nil && status.Error != extensionrunner.ErrorNone {
 				runErr = errors.New("isolated skill runner failed")
 			}

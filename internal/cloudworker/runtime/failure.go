@@ -9,6 +9,7 @@ const (
 	FailureCodeProcessTimeout         FailureCode = "process_timeout"
 	FailureCodeProcessOutputLimit     FailureCode = "process_output_limit"
 	FailureCodeProcessExitNonZero     FailureCode = "process_exit_nonzero"
+	FailureCodeProcessWait            FailureCode = "process_wait"
 	FailureCodeProcessTopology        FailureCode = "process_topology"
 	FailureCodeProviderAuthentication FailureCode = "provider_authentication"
 	FailureCodeProviderQuota          FailureCode = "provider_quota"
@@ -44,7 +45,7 @@ func (failure Failure) Valid() bool {
 		switch failure.Code {
 		case FailureCodeProcessStart, FailureCodeProcessTimeout,
 			FailureCodeProcessOutputLimit, FailureCodeProcessExitNonZero,
-			FailureCodeProcessTopology:
+			FailureCodeProcessWait, FailureCodeProcessTopology:
 			return true
 		}
 	case FailureStagePi:

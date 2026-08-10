@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -26,6 +27,8 @@ const (
 
 	defaultWorkerExecutable = "/usr/local/bin/dirextalk-cloud-worker"
 	defaultPiExecutable     = "/usr/local/lib/dirextalk-cloud-worker/pi/pi"
+	preActivationLifetime   = 5 * time.Second
+	terminalQuiescenceLimit = time.Second
 )
 
 type Config struct {
@@ -88,6 +91,8 @@ type policy struct {
 	policyDigest string
 	pi           ProcessIdentity
 	totalAllowed uint32
+	activeProof  bool
+	quiescenceAt time.Time
 	terminal     *Proof
 	violation    string
 	createdAt    time.Time
@@ -360,6 +365,11 @@ func (server *Server) handlePermissionEvent(event permissionEvent) {
 		server.mu.Unlock()
 		return
 	}
+	if current.violation != "" {
+		server.mu.Unlock()
+		allow = false
+		return
+	}
 	identity, identityErr := openedFileIdentity(event.File)
 	stat, statErr := processStat(event.PID)
 	if identityErr != nil || statErr != nil {
@@ -409,6 +419,10 @@ func decideExecutable(totalAllowed uint32, workerPID int32, pinned, candidate fi
 func (policy *policy) violateLocked(code string, offendingPID int32) {
 	if policy.violation == "" {
 		policy.violation = code
+		slog.Error(
+			"[cloud-worker-exec-gate] outcome=violation",
+			"code", code,
+		)
 	}
 	group := policy.pi.PID
 	if group < 1 {
@@ -432,8 +446,16 @@ func (server *Server) proof(peerPID int32, runID string, requestedPiPID int32, s
 		}
 		return *current.terminal, nil
 	}
+	if current.violation != "" {
+		return Proof{}, ErrViolation
+	}
 	workerCount, piCount, cgroupCount, members, err := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
 	if err != nil || workerCount != 1 || current.totalAllowed != 1 || current.pi.validate() != nil {
+		logTopologyFailure(
+			"proof_"+string(state), err == nil, workerCount, piCount,
+			cgroupCount, current.totalAllowed, current.pi.validate() == nil,
+			current.activeProof,
+		)
 		current.violateLocked("runtime_topology_invalid", current.pi.PID)
 	}
 	if requestedPiPID != 0 && requestedPiPID != current.pi.PID {
@@ -441,10 +463,6 @@ func (server *Server) proof(peerPID int32, runID string, requestedPiPID int32, s
 	}
 	if piCount > 1 {
 		current.violateLocked("multiple_pi_processes", current.pi.PID)
-	}
-	if state == ProofTerminal && cgroupCount != 1 {
-		current.violation = "orphan_descendants"
-		killMembers(members, current.workerPID)
 	}
 	if current.violation != "" {
 		return Proof{}, ErrViolation
@@ -460,11 +478,41 @@ func (server *Server) proof(peerPID int32, runID string, requestedPiPID int32, s
 		ActivePiProcesses: piCount, TotalAllowedPiExecs: current.totalAllowed,
 		ObservedAtUnixNano: server.config.Now().UTC().UnixNano(),
 	}
-	if state == ProofActive && piCount != 1 {
-		current.violateLocked("pi_not_active", current.pi.PID)
-		return Proof{}, ErrViolation
+	if state == ProofActive {
+		if piCount != 1 {
+			current.violateLocked("pi_not_active", current.pi.PID)
+			return Proof{}, ErrViolation
+		}
+		if proof.Validate() != nil {
+			return Proof{}, ErrViolation
+		}
+		current.quiescenceAt = time.Time{}
+		current.activeProof = true
+		return proof, nil
 	}
 	if state == ProofTerminal {
+		if !current.activeProof {
+			current.violateLocked("terminal_before_active", current.pi.PID)
+			killMembers(members, current.workerPID)
+			return Proof{}, ErrViolation
+		}
+		waiting, expired := activeQuiescenceState(
+			current, server.config.Now().UTC(), workerCount, piCount,
+			cgroupCount, err,
+		)
+		if waiting {
+			return Proof{}, ErrUnavailable
+		}
+		if expired || cgroupCount != 1 {
+			logTopologyFailure(
+				"proof_terminal", err == nil, workerCount, piCount,
+				cgroupCount, current.totalAllowed, current.pi.validate() == nil,
+				current.activeProof,
+			)
+			current.violateLocked("orphan_descendants", current.pi.PID)
+			killMembers(members, current.workerPID)
+			return Proof{}, ErrViolation
+		}
 		if piCount != 0 {
 			return Proof{}, ErrViolation
 		}
@@ -475,10 +523,7 @@ func (server *Server) proof(peerPID int32, runID string, requestedPiPID int32, s
 		current.terminal = &copy
 		return proof, nil
 	}
-	if proof.Validate() != nil {
-		return Proof{}, ErrViolation
-	}
-	return proof, nil
+	return Proof{}, ErrViolation
 }
 
 func (server *Server) cancel(peerPID int32, runID string) error {
@@ -503,16 +548,117 @@ func (server *Server) cancel(peerPID int32, runID string) error {
 func (server *Server) monitorPolicies() {
 	server.mu.Lock()
 	defer server.mu.Unlock()
+	now := server.config.Now().UTC()
 	for _, current := range server.policies {
-		if current.terminal != nil || current.violation != "" || current.totalAllowed == 0 {
+		if current.terminal != nil || current.violation != "" {
+			continue
+		}
+		if current.totalAllowed == 0 && !preActivationExpired(current, now) {
 			continue
 		}
 		workerCount, piCount, cgroupCount, members, err := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
-		if err != nil || workerCount != 1 || piCount > 1 || (piCount == 0 && cgroupCount != 1) {
-			current.violateLocked("runtime_topology_invalid", current.pi.PID)
+		violation := monitorTopologyViolation(
+			current, now, workerCount, piCount, cgroupCount, err,
+		)
+		if violation != "" {
+			logTopologyFailure(
+				"monitor", err == nil, workerCount, piCount,
+				cgroupCount, current.totalAllowed, current.pi.validate() == nil,
+				current.activeProof,
+			)
+			current.violateLocked(violation, current.pi.PID)
 			killMembers(members, current.workerPID)
 		}
 	}
+}
+
+func monitorTopologyViolation(
+	current *policy,
+	now time.Time,
+	workerCount, piCount, cgroupCount uint32,
+	scanErr error,
+) string {
+	if current == nil || preActivationExpired(current, now) {
+		return "pre_activation_expired"
+	}
+	if !current.activeProof && scanErr == nil && current.totalAllowed == 1 &&
+		current.pi.validate() == nil && workerCount == 2 && piCount == 0 &&
+		cgroupCount == 2 {
+		// FAN_ALLOW resumes execve before /proc exposes the new image. During
+		// this exact window the child still has the Worker image even though
+		// the one permitted Pi identity and process identity are already bound.
+		return ""
+	}
+	waiting, expired := activeQuiescenceState(
+		current, now, workerCount, piCount, cgroupCount, scanErr,
+	)
+	if waiting {
+		return ""
+	}
+	if expired {
+		return "runtime_topology_invalid"
+	}
+	if scanErr != nil || workerCount != 1 || current.totalAllowed != 1 ||
+		current.pi.validate() != nil || piCount > 1 ||
+		(piCount == 0 && cgroupCount != 1) {
+		return "runtime_topology_invalid"
+	}
+	return ""
+}
+
+func activeQuiescenceState(
+	current *policy,
+	now time.Time,
+	workerCount, piCount, cgroupCount uint32,
+	scanErr error,
+) (waiting, expired bool) {
+	if current == nil || !current.activeProof || current.totalAllowed != 1 ||
+		current.pi.validate() != nil || scanErr != nil || workerCount != 1 {
+		return false, false
+	}
+	if piCount == 1 {
+		current.quiescenceAt = time.Time{}
+		return false, false
+	}
+	if piCount != 0 || cgroupCount <= 1 {
+		return false, false
+	}
+	if now.IsZero() {
+		return false, true
+	}
+	if current.quiescenceAt.IsZero() {
+		current.quiescenceAt = now
+	}
+	if now.Before(current.quiescenceAt) ||
+		!now.Before(current.quiescenceAt.Add(terminalQuiescenceLimit)) {
+		return false, true
+	}
+	return true, false
+}
+
+func preActivationExpired(current *policy, now time.Time) bool {
+	if current == nil || current.activeProof {
+		return false
+	}
+	return current.createdAt.IsZero() || now.Before(current.createdAt) ||
+		!now.Before(current.createdAt.Add(preActivationLifetime))
+}
+
+func logTopologyFailure(
+	phase string,
+	scanOK bool,
+	workerCount, piCount, cgroupCount, totalAllowed uint32,
+	piIdentityOK, activeProof bool,
+) {
+	// Only fixed phases, booleans, and bounded counts are emitted. Process IDs,
+	// paths, cgroup names, digests, and task material remain private.
+	slog.Error(
+		"[cloud-worker-exec-gate] outcome=topology_invalid",
+		"phase", phase, "scan_ok", scanOK,
+		"worker_count", workerCount, "pi_count", piCount,
+		"cgroup_count", cgroupCount, "total_allowed", totalAllowed,
+		"pi_identity_ok", piIdentityOK, "active_proof", activeProof,
+	)
 }
 
 func unixPeerCredential(connection *net.UnixConn) (*unix.Ucred, error) {

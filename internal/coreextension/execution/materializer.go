@@ -110,7 +110,7 @@ func (p StagedLifecyclePromoter) Promote(ctx context.Context, version core.Versi
 	}
 	files := make([]extensionrunner.PublishFile, 0, len(disk.Entries))
 	for _, entry := range disk.Entries {
-		if entry.Path == "" || filepath.IsAbs(entry.Path) || strings.Contains(entry.Path, "..") || strings.ContainsAny(entry.Path, `\\\x00\r\n`) {
+		if entry.Path == "" || filepath.IsAbs(entry.Path) || strings.Contains(entry.Path, "..") || strings.ContainsAny(entry.Path, "\\\x00\r\n") {
 			return core.ErrInvalid
 		}
 		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(entry.Path)))

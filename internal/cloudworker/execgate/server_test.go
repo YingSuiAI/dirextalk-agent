@@ -1,12 +1,14 @@
 package execgate
 
 import (
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestExecutableDecisionAllowsPinnedPiOnceAndOrdinaryTools(t *testing.T) {
@@ -35,6 +37,137 @@ func TestExecutableDecisionRejectsSameNameReplacementBeforeBearerExec(t *testing
 		processStatValue{ParentPID: 100, ProcessGroup: 200, StartTimeTicks: 300}, 200)
 	if decision.launch || decision.violation != "initial_pi_identity_mismatch" {
 		t.Fatalf("replacement decision = %+v", decision)
+	}
+}
+
+func TestMonitorTopologyAllowsOnlyBoundedPreActivationImageTransition(t *testing.T) {
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	current := &policy{
+		totalAllowed: 1,
+		createdAt:    now,
+		pi: ProcessIdentity{
+			PID: 200, StartTimeTicks: 300, Device: 1, Inode: 20,
+			SHA256: strings.Repeat("2", 64),
+		},
+	}
+	if violation := monitorTopologyViolation(
+		current, now.Add(time.Second), 2, 0, 2, nil,
+	); violation != "" {
+		t.Fatalf("pre-activation Worker-to-Pi image transition violation=%q", violation)
+	}
+	if violation := monitorTopologyViolation(
+		current, now.Add(time.Second), 1, 1, 2, nil,
+	); violation != "" {
+		t.Fatalf("visible Pi image before Active proof violation=%q", violation)
+	}
+
+	current.activeProof = true
+	if violation := monitorTopologyViolation(
+		current, now.Add(2*preActivationLifetime), 2, 0, 2, nil,
+	); violation != "runtime_topology_invalid" {
+		t.Fatalf("post-Active transition violation=%q", violation)
+	}
+
+	current.activeProof = false
+	if violation := monitorTopologyViolation(
+		current, now.Add(preActivationLifetime), 2, 0, 2, nil,
+	); violation != "pre_activation_expired" {
+		t.Fatalf("expired transition violation=%q", violation)
+	}
+	if violation := monitorTopologyViolation(
+		current, now.Add(time.Second), 2, 0, 2, errors.New("scan failed"),
+	); violation != "runtime_topology_invalid" {
+		t.Fatalf("failed scan violation=%q", violation)
+	}
+}
+
+func TestPermissionEventRejectsExpiredOrViolatedPolicy(t *testing.T) {
+	raw, digest, err := processCgroup(int32(os.Getpid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open("/bin/sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := true
+	server := &Server{policies: map[string]*policy{
+		"run": {
+			cgroupRaw: raw, cgroupDigest: digest,
+			violation: "pre_activation_expired",
+		},
+	}}
+	server.handlePermissionEvent(permissionEvent{
+		PID: int32(os.Getpid()), File: file,
+		done: func(value bool) error {
+			allowed = value
+			return nil
+		},
+	})
+	if allowed {
+		t.Fatal("violated policy allowed a later Pi execution")
+	}
+}
+
+func TestActiveQuiescenceIsBoundedAndRejectsOtherTopologyDrift(t *testing.T) {
+	now := time.Date(2026, 8, 11, 1, 0, 0, 0, time.UTC)
+	validPi := ProcessIdentity{
+		PID: 200, StartTimeTicks: 300, Device: 1, Inode: 20,
+		SHA256: strings.Repeat("2", 64),
+	}
+	current := &policy{activeProof: true, totalAllowed: 1, pi: validPi}
+	waiting, expired := activeQuiescenceState(current, now, 1, 0, 3, nil)
+	if !waiting || expired {
+		t.Fatalf("initial quiescence waiting=%t expired=%t", waiting, expired)
+	}
+	if violation := monitorTopologyViolation(
+		current, now, 1, 0, 3, nil,
+	); violation != "" {
+		t.Fatalf("initial active quiescence violation=%q", violation)
+	}
+	if current.quiescenceAt != now {
+		t.Fatalf("quiescence start=%s want=%s", current.quiescenceAt, now)
+	}
+	if violation := monitorTopologyViolation(
+		current, now.Add(terminalQuiescenceLimit-time.Nanosecond), 1, 0, 2, nil,
+	); violation != "" {
+		t.Fatalf("bounded active quiescence violation=%q", violation)
+	}
+	if violation := monitorTopologyViolation(
+		current, now.Add(terminalQuiescenceLimit), 1, 0, 2, nil,
+	); violation != "runtime_topology_invalid" {
+		t.Fatalf("expired active quiescence violation=%q", violation)
+	}
+	waiting, expired = activeQuiescenceState(
+		current, now.Add(terminalQuiescenceLimit), 1, 0, 2, nil,
+	)
+	if waiting || !expired {
+		t.Fatalf("expired quiescence waiting=%t expired=%t", waiting, expired)
+	}
+
+	for _, test := range []struct {
+		name                          string
+		active                        bool
+		workerCount, piCount, cgCount uint32
+		scanErr                       error
+	}{
+		{name: "multiple Pi", active: true, workerCount: 1, piCount: 2, cgCount: 3},
+		{name: "missing Worker", active: true, piCount: 0, cgCount: 2},
+		{name: "scan error", active: true, workerCount: 1, cgCount: 2, scanErr: errors.New("scan failed")},
+		{name: "not activated", workerCount: 1, cgCount: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := &policy{
+				activeProof: test.active, totalAllowed: 1,
+				createdAt: now, pi: validPi,
+			}
+			if violation := monitorTopologyViolation(
+				candidate, now, test.workerCount, test.piCount,
+				test.cgCount, test.scanErr,
+			); violation != "runtime_topology_invalid" {
+				t.Fatalf("violation=%q", violation)
+			}
+		})
 	}
 }
 

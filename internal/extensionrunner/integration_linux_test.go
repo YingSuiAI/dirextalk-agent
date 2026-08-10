@@ -147,6 +147,85 @@ func TestLinuxIsolationIntegrationOptIn(t *testing.T) {
 	}
 }
 
+func TestLinuxIsolationServerClientHTMLResultOptIn(t *testing.T) {
+	if os.Getenv("DIREXTALK_EXTENSION_RUNNER_INTEGRATION") != "1" {
+		t.Skip("set DIREXTALK_EXTENSION_RUNNER_INTEGRATION=1 and DIREXTALK_EXTENSION_RUNNER_CGROUP_ROOT to a delegated cgroup-v2 subtree")
+	}
+	cgroupRoot := os.Getenv("DIREXTALK_EXTENSION_RUNNER_CGROUP_ROOT")
+	if !filepath.IsAbs(cgroupRoot) {
+		t.Fatal("DIREXTALK_EXTENSION_RUNNER_CGROUP_ROOT must be absolute")
+	}
+	runnerBinary := buildRunnerBinary(t)
+	backend := LinuxBackend{CgroupRoot: cgroupRoot, ProbeRoot: t.TempDir(), ReexecPath: runnerBinary}
+	if err := backend.Probe(context.Background()); err != nil {
+		t.Fatalf("real isolation kernel unavailable: %v", err)
+	}
+
+	probe := buildIsolationProbe(t)
+	installRoot, digest := materializeIntegrationInstall(t, probe)
+	workspaceRoot := t.TempDir()
+	socketPath := filepath.Join(t.TempDir(), "runner.sock")
+	listener, err := Listen(socketPath, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCtx, cancelServer := context.WithCancel(context.Background())
+	serveDone := make(chan error, 1)
+	server := Server{
+		Listener:        listener,
+		Authorizer:      UIDAllowlist{uint32(os.Geteuid()): {}},
+		RunnerUID:       uint32(os.Geteuid()),
+		Runner:          Runner{InstallResolver: DiskInstallResolver{Root: installRoot}, WorkspaceResolver: DiskWorkspaceResolver{Root: workspaceRoot}, V2Backend: backend},
+		Registry:        NewRunRegistry(),
+		PublicationRoot: installRoot,
+	}
+	go func() { serveDone <- server.ServeV2(serverCtx) }()
+	t.Cleanup(func() {
+		cancelServer()
+		select {
+		case serveErr := <-serveDone:
+			if serveErr != nil {
+				t.Errorf("serve: %v", serveErr)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("server did not stop")
+		}
+	})
+
+	client, err := NewClient(socketPath, uint32(os.Geteuid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := integrationRequest(digest)
+	request.RunID = "77777777-7777-4777-8777-777777777777"
+	request.TaskID = "88888888-8888-4888-8888-888888888888"
+	request.TaskFence = "99999999-9999-4999-8999-999999999999"
+	request.Argv = []string{"/app/entry", "html"}
+	request.ResultFiles = []string{"index.html"}
+	request.Limits = LimitsV2{CPUSeconds: 30, MemoryBytes: 256 << 20, Processes: 32, FileBytes: 16 << 20, OpenFiles: 64}
+	status, err := client.RunV2(context.Background(), request, nil)
+	if err != nil || status.Error != ErrorNone || status.Status != "succeeded" || len(status.ResultFiles) != 1 {
+		t.Fatalf("status=%+v err=%v stderr=%s", status, err, status.Stderr)
+	}
+	const wantHTML = "<h1>Hello from Dirextalk</h1>"
+	const wantSHA256 = "b0012fd52e5edc0ce0ac66a4e4020d45a6a5226229276c961744d0d826776b84"
+	result := status.ResultFiles[0]
+	if len(wantHTML) != 29 || result.Path != "index.html" || result.Size != int64(len(wantHTML)) || result.SHA256 != wantSHA256 {
+		t.Fatalf("result=%+v", result)
+	}
+	resultPath := filepath.Join(workspaceRoot, request.TaskID, request.TaskFence, "index.html")
+	body, err := os.ReadFile(resultPath)
+	if err != nil || string(body) != wantHTML {
+		t.Fatalf("index.html=%q err=%v", body, err)
+	}
+	if request.Limits != (LimitsV2{CPUSeconds: 30, MemoryBytes: 256 << 20, Processes: 32, FileBytes: 16 << 20, OpenFiles: 64}) {
+		t.Fatalf("request limits drifted: %+v", request.Limits)
+	}
+	if _, err := os.Stat(filepath.Join(cgroupRoot, request.RunID)); !os.IsNotExist(err) {
+		t.Fatalf("cgroup or child process remained: %v", err)
+	}
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil

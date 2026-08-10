@@ -71,6 +71,9 @@ func TestGuardedRunnerRequiresTerminalProofBeforeReturningOutput(t *testing.T) {
 	if err := os.Chown(directory, 0, 65532); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(directory, 0o770); err != nil {
+		t.Fatal(err)
+	}
 	sha, err := digestPath("/bin/sh")
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +103,94 @@ func TestGuardedRunnerRequiresTerminalProofBeforeReturningOutput(t *testing.T) {
 	}
 }
 
+func TestGuardedRunnerPreservesTopologyFailures(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-only setuid/setgid Worker qualification")
+	}
+	for _, test := range []struct {
+		name        string
+		activateErr error
+		terminalErr error
+	}{
+		{name: "activate", activateErr: execgate.ErrUnavailable},
+		{name: "terminal", terminalErr: execgate.ErrUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			if err := os.Chown(directory, 0, 65532); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(directory, 0o770); err != nil {
+				t.Fatal(err)
+			}
+			sha, err := digestPath("/bin/sh")
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding := ProcessBinding{
+				ExecutionID: "11111111-1111-4111-8111-111111111111",
+				TaskID:      "22222222-2222-4222-8222-222222222222",
+				Attempt:     1, LeaseEpoch: 2, RuntimeTaskSHA256: strings.Repeat("1", 64),
+			}
+			gate := &fakeProcessExecGate{}
+			gate.run.activateErr = test.activateErr
+			gate.run.terminalErr = test.terminalErr
+			runner := OSProcessRunner{uid: 65532, gid: 65532, gate: gate, state: &processRunnerState{}}
+			bound, err := runner.BindProcess(binding)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = bound.Run(t.Context(), ProcessSpec{
+				Executable: "/bin/sh", ExpectedExecutableSHA256: sha,
+				Arguments: []string{"-c", "printf guarded"}, Directory: directory,
+				Environment:    map[string]string{"PATH": "/usr/bin:/bin"},
+				MaxStdoutBytes: 1024, MaxStderrBytes: 1024,
+			})
+			failure, ok := FailureOf(err)
+			if !ok || failure.Stage != FailureStageProcess ||
+				failure.Code != FailureCodeProcessTopology {
+				t.Fatalf("failure=%+v ok=%t err=%v", failure, ok, err)
+			}
+		})
+	}
+}
+
+func TestGuardedRunnerPreservesStartFailureBeforeActivation(t *testing.T) {
+	directory := t.TempDir()
+	sha, err := digestPath("/bin/sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := ProcessBinding{
+		ExecutionID: "11111111-1111-4111-8111-111111111111",
+		TaskID:      "22222222-2222-4222-8222-222222222222",
+		Attempt:     1, LeaseEpoch: 2, RuntimeTaskSHA256: strings.Repeat("1", 64),
+	}
+	gate := &fakeProcessExecGate{}
+	runner := OSProcessRunner{uid: 65532, gid: 65532, gate: gate, state: &processRunnerState{}}
+	bound, err := runner.BindProcess(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = bound.Run(t.Context(), ProcessSpec{
+		Executable: "/bin/sh", ExpectedExecutableSHA256: sha,
+		Arguments: []string{"-c", "printf guarded"}, Directory: directory,
+		Environment:    map[string]string{"PATH": "/usr/bin:/bin"},
+		MaxStdoutBytes: 1024, MaxStderrBytes: 1024,
+	})
+	failure, ok := FailureOf(err)
+	if !ok || failure.Stage != FailureStageProcess ||
+		failure.Code != FailureCodeProcessStart {
+		t.Fatalf("failure=%+v ok=%t err=%v", failure, ok, err)
+	}
+	if gate.run.activatedPID != 0 || gate.run.terminalCalls != 0 || gate.run.cancelCalls != 1 {
+		t.Fatalf(
+			"activated_pid=%d terminal_calls=%d cancel_calls=%d",
+			gate.run.activatedPID, gate.run.terminalCalls, gate.run.cancelCalls,
+		)
+	}
+}
+
 type fakeProcessExecGate struct {
 	registration execgate.Registration
 	run          fakeProcessExecGateRun
@@ -116,12 +207,18 @@ type fakeProcessExecGateRun struct {
 	registration  execgate.Registration
 	activatedPID  int
 	terminalCalls int
+	cancelCalls   int
+	activateErr   error
+	terminalErr   error
 }
 
 func (run *fakeProcessExecGateRun) Activate(_ context.Context, pid int) (execgate.Proof, error) {
 	run.mu.Lock()
 	defer run.mu.Unlock()
 	run.activatedPID = pid
+	if run.activateErr != nil {
+		return execgate.Proof{}, run.activateErr
+	}
 	return execgate.Proof{}, nil
 }
 
@@ -129,6 +226,9 @@ func (run *fakeProcessExecGateRun) Terminal(context.Context) (execgate.Proof, er
 	run.mu.Lock()
 	defer run.mu.Unlock()
 	run.terminalCalls++
+	if run.terminalErr != nil {
+		return execgate.Proof{}, run.terminalErr
+	}
 	return execgate.Proof{
 		SchemaVersion: execgate.ProofSchemaV1, State: execgate.ProofTerminal,
 		RunID:       "33333333-3333-4333-8333-333333333333",
@@ -144,7 +244,12 @@ func (run *fakeProcessExecGateRun) Terminal(context.Context) (execgate.Proof, er
 	}, nil
 }
 
-func (*fakeProcessExecGateRun) Cancel(context.Context) error { return nil }
+func (run *fakeProcessExecGateRun) Cancel(context.Context) error {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	run.cancelCalls++
+	return nil
+}
 
 func digestPath(path string) (string, error) {
 	raw, err := os.ReadFile(path)

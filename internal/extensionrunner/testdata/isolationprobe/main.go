@@ -22,6 +22,12 @@ type result struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "html" {
+		if err := os.WriteFile("/work/index.html", []byte("<h1>Hello from Dirextalk</h1>"), 0o600); err != nil {
+			os.Exit(34)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "child" {
 		_ = os.WriteFile("/work/child-started", []byte("child-started"), 0o600)
 		for {

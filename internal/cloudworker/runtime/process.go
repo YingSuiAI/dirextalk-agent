@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -147,6 +148,7 @@ func (runner OSProcessRunner) Run(ctx context.Context, spec ProcessSpec) (Proces
 			PiExecutable:      spec.Executable, PiSHA256: spec.ExpectedExecutableSHA256,
 		})
 		if err != nil {
+			logProcessFailure("gate_register", FailureCodeProcessTopology)
 			return ProcessOutput{}, newFailure(FailureStageProcess, FailureCodeProcessTopology)
 		}
 		gateRun = registered
@@ -178,23 +180,26 @@ func (runner OSProcessRunner) Run(ctx context.Context, spec ProcessSpec) (Proces
 		clear(command.Env)
 		return ProcessOutput{}, err
 	}
-	err := startIsolatedProcess(command, runner.uid != 0)
-	if err == nil && gateRun != nil {
+	startErr := startIsolatedProcess(command, runner.uid != 0)
+	var waitErr, lifecycleErr error
+	if startErr == nil && gateRun != nil {
 		if _, activateErr := gateRun.Activate(processCtx, command.Process.Pid); activateErr != nil {
 			_ = command.Cancel()
-			_ = command.Wait()
-			err = newFailure(FailureStageProcess, FailureCodeProcessTopology)
+			waitErr = command.Wait()
+			logProcessFailure("gate_activate", FailureCodeProcessTopology)
+			lifecycleErr = newFailure(FailureStageProcess, FailureCodeProcessTopology)
 		}
 	}
-	if err == nil {
-		err = command.Wait()
+	if startErr == nil && lifecycleErr == nil {
+		waitErr = command.Wait()
 	}
-	if gateRun != nil {
+	if gateRun != nil && startErr == nil {
 		terminalCtx, cancelTerminal := context.WithTimeout(context.Background(), 2*time.Second)
 		proof, topologyErr := gateRun.Terminal(terminalCtx)
 		cancelTerminal()
 		if topologyErr != nil || proof.ValidateTerminal() != nil {
-			err = newFailure(FailureStageProcess, FailureCodeProcessTopology)
+			logProcessFailure("gate_terminal", FailureCodeProcessTopology)
+			lifecycleErr = newFailure(FailureStageProcess, FailureCodeProcessTopology)
 		} else {
 			terminalProof = proof
 			runner.state.mu.Lock()
@@ -210,32 +215,95 @@ func (runner OSProcessRunner) Run(ctx context.Context, spec ProcessSpec) (Proces
 		stdout.destroy()
 		return ProcessOutput{}, newFailure(FailureStageProcess, FailureCodeProcessOutputLimit)
 	}
-	if err != nil {
-		var exitError *exec.ExitError
-		if !errors.As(err, &exitError) ||
-			!allowedExitCode(exitError.ExitCode(), spec.AllowedExitCodes) {
+	if startErr != nil || waitErr != nil || lifecycleErr != nil {
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
 			stdout.destroy()
-			switch {
-			case errors.Is(ctx.Err(), context.DeadlineExceeded):
-				return ProcessOutput{}, errors.Join(
-					ctx.Err(),
-					newFailure(FailureStageProcess, FailureCodeProcessTimeout),
-				)
-			case ctx.Err() != nil:
-				return ProcessOutput{}, ctx.Err()
-			case errors.As(err, &exitError):
-				return ProcessOutput{}, newFailure(
-					FailureStageProcess,
-					FailureCodeProcessExitNonZero,
-				)
-			default:
-				return ProcessOutput{}, newFailure(FailureStageProcess, FailureCodeProcessStart)
+			return ProcessOutput{}, errors.Join(
+				ctx.Err(),
+				newFailure(FailureStageProcess, FailureCodeProcessTimeout),
+			)
+		case ctx.Err() != nil:
+			stdout.destroy()
+			return ProcessOutput{}, ctx.Err()
+		}
+	}
+	if lifecycleErr != nil {
+		stdout.destroy()
+		if _, ok := FailureOf(lifecycleErr); ok {
+			return ProcessOutput{}, lifecycleErr
+		}
+		return ProcessOutput{}, ErrExecution
+	}
+	if startErr != nil {
+		stdout.destroy()
+		if failure, ok := FailureOf(startErr); ok {
+			logProcessFailure("start", failure.Code)
+			return ProcessOutput{}, startErr
+		}
+		logProcessFailure("start", FailureCodeProcessStart)
+		return ProcessOutput{}, newFailure(FailureStageProcess, FailureCodeProcessStart)
+	}
+	if waitErr != nil {
+		var exitError *exec.ExitError
+		switch {
+		case errors.As(waitErr, &exitError) &&
+			allowedExitCode(exitError.ExitCode(), spec.AllowedExitCodes):
+			// The compiled runtime explicitly allowed this exit status.
+		case acceptPiEventsAfterWaitDelay(
+			waitErr,
+			command.ProcessState != nil && command.ProcessState.Success(),
+			terminalProof,
+			spec.StdoutPolicy,
+			stdout.exceededLimit() || stderr.exceeded,
+		):
+			// The Pi event parser remains responsible for proving a complete,
+			// valid terminal event stream after os/exec closed lingering pipes.
+			slog.Info(
+				"[cloud-worker.process] outcome=continued",
+				"phase", "wait", "code", "wait_delay_pi_events",
+			)
+		case errors.As(waitErr, &exitError):
+			stdout.destroy()
+			logProcessFailure("wait", FailureCodeProcessExitNonZero)
+			return ProcessOutput{}, newFailure(
+				FailureStageProcess,
+				FailureCodeProcessExitNonZero,
+			)
+		default:
+			stdout.destroy()
+			if failure, ok := FailureOf(waitErr); ok {
+				logProcessFailure("wait", failure.Code)
+				return ProcessOutput{}, waitErr
 			}
+			logProcessFailure("wait", FailureCodeProcessWait)
+			return ProcessOutput{}, newFailure(FailureStageProcess, FailureCodeProcessWait)
 		}
 	}
 	result := stdout.clone()
 	stdout.destroy()
 	return ProcessOutput{Stdout: result, RuntimeTopology: terminalProof}, nil
+}
+
+func logProcessFailure(phase string, code FailureCode) {
+	// Phases and closed failure codes are the only diagnostic values emitted;
+	// process errors, paths, arguments, environment, and output stay private.
+	slog.Error(
+		"[cloud-worker.process] outcome=failed",
+		"phase", phase, "code", string(code),
+	)
+}
+
+func acceptPiEventsAfterWaitDelay(
+	waitErr error,
+	processStateSuccess bool,
+	terminalProof execgate.Proof,
+	stdoutPolicy ProcessStdoutPolicy,
+	outputExceeded bool,
+) bool {
+	return errors.Is(waitErr, exec.ErrWaitDelay) && processStateSuccess &&
+		terminalProof.ValidateTerminal() == nil &&
+		stdoutPolicy == ProcessStdoutPiEventsV1 && !outputExceeded
 }
 
 func validateProcessSpec(spec ProcessSpec) error {

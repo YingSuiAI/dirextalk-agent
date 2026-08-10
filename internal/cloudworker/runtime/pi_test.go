@@ -19,6 +19,7 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 	t.Parallel()
 	contextJSON := []byte(`{"scope":"approved"}`)
 	task := validTask(contextJSON, WorkspaceWrite)
+	task.Model = "deepseek/deepseek-v4-flash-0731"
 	workspace := filepath.Join(t.TempDir(), "isolated-workspace")
 	if err := os.Mkdir(workspace, 0o700); err != nil {
 		t.Fatal(err)
@@ -88,6 +89,8 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 	}
 	if strings.Contains(arguments, task.Objective) || strings.Contains(arguments, string(credential)) ||
 		strings.Contains(strings.ToLower(arguments), "mcp") ||
+		argumentValue(process.spec.Arguments, "--provider") != task.ModelProvider ||
+		argumentValue(process.spec.Arguments, "--model") != task.Model ||
 		argumentValue(process.spec.Arguments, "--tools") !=
 			"read,bash,edit,write,grep,find,ls,"+PiResultToolName {
 		t.Fatalf("unsafe Pi arguments: %v", process.spec.Arguments)
@@ -109,23 +112,91 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 	}
 	var config struct {
 		Providers map[string]struct {
-			BaseURL        string `json:"baseUrl"`
-			ModelOverrides map[string]struct {
+			BaseURL string `json:"baseUrl"`
+			API     string `json:"api"`
+			Models  []struct {
+				ID        string `json:"id"`
+				Reasoning bool   `json:"reasoning"`
 				MaxTokens uint64 `json:"maxTokens"`
 				Compat    struct {
 					MaxTokensField string `json:"maxTokensField"`
 				} `json:"compat"`
-			} `json:"modelOverrides"`
+			} `json:"models"`
+			ModelOverrides json.RawMessage `json:"modelOverrides"`
 		} `json:"providers"`
 	}
 	if err := json.Unmarshal(process.modelsConfig, &config); err != nil {
 		t.Fatalf("models config=%q: %v", process.modelsConfig, err)
 	}
-	override := config.Providers[task.ModelProvider].ModelOverrides[task.Model]
-	if config.Providers[task.ModelProvider].BaseURL != task.ModelRelayBaseURL ||
-		override.MaxTokens != task.MaxOutputTokens ||
-		override.Compat.MaxTokensField != "max_tokens" {
-		t.Fatalf("model override=%+v", override)
+	provider := config.Providers[task.ModelProvider]
+	if provider.BaseURL != task.ModelRelayBaseURL || provider.API != "openai-completions" ||
+		len(provider.Models) != 1 || provider.Models[0].ID != task.Model ||
+		!provider.Models[0].Reasoning || provider.Models[0].MaxTokens != task.MaxOutputTokens ||
+		provider.Models[0].Compat.MaxTokensField != "max_tokens" || provider.ModelOverrides != nil {
+		t.Fatalf("provider config=%+v", provider)
+	}
+}
+
+func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, provider, model, api string
+		modelInterface             ModelInterface
+		wantMaxTokensField         string
+	}{
+		{
+			name: "openai_compatible", provider: "deepseek",
+			model: "deepseek/deepseek-v4-flash-0731", api: "openai-completions",
+			modelInterface: ModelOpenAICompatible, wantMaxTokensField: "max_tokens",
+		},
+		{
+			name: "openai_responses", provider: "openai",
+			model: "openai/gpt-test", api: "openai-responses",
+			modelInterface: ModelOpenAIResponses,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			directory := t.TempDir()
+			task := Task{
+				ModelProvider: test.provider, Model: test.model,
+				ModelInterface:    test.modelInterface,
+				ModelRelayBaseURL: "https://model-relay.dirextalk.invalid/v1",
+				MaxOutputTokens:   4096,
+			}
+			if err := writePiModelsConfig(directory, task); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(filepath.Join(directory, "models.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var config struct {
+				Providers map[string]struct {
+					API    string `json:"api"`
+					Models []struct {
+						ID        string `json:"id"`
+						Reasoning bool   `json:"reasoning"`
+						MaxTokens uint64 `json:"maxTokens"`
+						Compat    struct {
+							MaxTokensField string `json:"maxTokensField"`
+						} `json:"compat"`
+					} `json:"models"`
+					ModelOverrides json.RawMessage `json:"modelOverrides"`
+				} `json:"providers"`
+			}
+			if err := json.Unmarshal(raw, &config); err != nil {
+				t.Fatal(err)
+			}
+			provider := config.Providers[test.provider]
+			if provider.API != test.api || len(provider.Models) != 1 ||
+				provider.Models[0].ID != test.model || !provider.Models[0].Reasoning ||
+				provider.Models[0].MaxTokens != task.MaxOutputTokens ||
+				provider.Models[0].Compat.MaxTokensField != test.wantMaxTokensField ||
+				provider.ModelOverrides != nil {
+				t.Fatalf("provider config=%+v", provider)
+			}
+		})
 	}
 }
 

@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+const (
+	terminalRetryInterval = 25 * time.Millisecond
+	terminalRetryLimit    = 1500 * time.Millisecond
+)
+
 type Client struct {
 	socketPath string
 	timeout    time.Duration
@@ -68,16 +73,45 @@ func (run *Run) Proof(ctx context.Context) (Proof, error) {
 }
 
 func (run *Run) Terminal(ctx context.Context) (Proof, error) {
-	if run == nil || run.client == nil {
+	if run == nil || run.client == nil || ctx == nil {
 		return Proof{}, ErrInvalid
 	}
-	proof, err := run.proofCall(ctx, wireRequest{
+	deadline := time.Now().Add(terminalRetryLimit)
+	request := wireRequest{
 		Schema: ProtocolSchemaV1, Operation: operationTerminal, RunID: run.id,
-	}, ProofTerminal)
-	if err != nil || proof.ValidateTerminal() != nil {
-		return Proof{}, ErrViolation
 	}
-	return proof, nil
+	for {
+		proof, err := run.proofCall(ctx, request, ProofTerminal)
+		if err == nil {
+			if proof.ValidateTerminal() != nil {
+				return Proof{}, ErrViolation
+			}
+			return proof, nil
+		}
+		if !errors.Is(err, ErrUnavailable) {
+			return Proof{}, ErrViolation
+		}
+		if ctx.Err() != nil {
+			return Proof{}, ctx.Err()
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return Proof{}, ErrUnavailable
+		}
+		delay := min(terminalRetryInterval, remaining)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return Proof{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (run *Run) Cancel(ctx context.Context) error {

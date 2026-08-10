@@ -496,12 +496,12 @@ func (p *publicationFake) Publish(_ context.Context, entries []extensionrunner.M
 func TestStagedLifecyclePromoterPublishesAfterConfirmation(t *testing.T) {
 	root := t.TempDir()
 	body := []byte("instructions")
-	content := []materialFile{{Path: "SKILL.md", Content: base64.RawStdEncoding.EncodeToString(body)}}
+	content := []materialFile{{Path: "runner.md", Content: base64.RawStdEncoding.EncodeToString(body)}}
 	canonical, _ := json.Marshal(content)
 	contentDigest := digestBytes(canonical)
-	manifestDigest := digestJSON([]map[string]string{{"path": "SKILL.md", "digest": digestBytes(body)}})
+	manifestDigest := digestJSON([]map[string]string{{"path": "runner.md", "digest": digestBytes(body)}})
 	candidate := core.Candidate{ID: "skill", Kind: core.KindSkill, Source: core.SourceSkillsSh, Name: "skill", Pin: core.SourcePin{RegistryVersion: "1", RegistrySHA256: strings.Repeat("a", 64)}, Transport: core.TransportSkillStatic}
-	inspection := core.Inspection{Candidate: candidate, ContentDigest: contentDigest, ManifestDigest: manifestDigest, NetworkSchemaDigest: digestBytes([]byte("[]")), SecretSchemaDigest: digestBytes([]byte("[]")), Execution: core.ExecutionDescriptor{Skill: &core.SkillEntry{RelativePath: "SKILL.md", Digest: digestBytes(body)}}}
+	inspection := core.Inspection{Candidate: candidate, ContentDigest: contentDigest, ManifestDigest: manifestDigest, NetworkSchemaDigest: digestBytes([]byte("[]")), SecretSchemaDigest: digestBytes([]byte("[]")), Execution: core.ExecutionDescriptor{Skill: &core.SkillEntry{RelativePath: "runner.md", Digest: digestBytes(body)}}}
 	inspection.ExecutionDigest = digestJSON(inspection.Execution)
 	m, err := NewMaterializer(root)
 	if err != nil {
@@ -543,6 +543,23 @@ type fakeCoord struct {
 	err            error
 }
 
+type capturingLocalRunner struct {
+	request         extensionrunner.RequestV2
+	calls           int
+	validateRequest bool
+}
+
+func (r *capturingLocalRunner) RunV2(_ context.Context, request extensionrunner.RequestV2, _ []*os.File) (extensionrunner.StatusV1, error) {
+	r.calls++
+	r.request = request
+	if r.validateRequest {
+		if err := extensionrunner.ValidateRequestV2(request); err != nil {
+			return extensionrunner.StatusV1{}, err
+		}
+	}
+	return extensionrunner.StatusV1{RunID: request.RunID, Phase: extensionrunner.PhaseTombstone, Status: "succeeded", Stdout: []byte("ok")}, nil
+}
+
 func (f *fakeCoord) Resolve(context.Context, coretask.Task) (Invocation, error) {
 	if f.err != nil {
 		return Invocation{}, f.err
@@ -571,6 +588,54 @@ func TestHandlerTerminalOwnershipAndReplay(t *testing.T) {
 	out = (&Handler{Coordinator: f}).Handle(context.Background(), task)
 	if !out.TerminalOwned || !errors.Is(out.Err, ErrStaleFence) {
 		t.Fatalf("stale fence outcome=%#v", out)
+	}
+}
+
+func TestExecutableSkillHandlerBindsExactLocalSandboxLimits(t *testing.T) {
+	taskID := uuid.NewString()
+	installationID := uuid.NewString()
+	versionID := uuid.NewString()
+	digest := strings.Repeat("a", 64)
+	runner := &capturingLocalRunner{validateRequest: true}
+	coord := &fakeCoord{resolved: Invocation{Skill: &SkillInvocation{
+		Entry:          core.SkillEntry{RelativePath: "entry", Digest: digest, Executable: true, Argv: []string{"entry"}},
+		InstallDigest:  digest,
+		TaskID:         taskID,
+		TaskFence:      uuid.NewString(),
+		InstallationID: installationID,
+		VersionID:      versionID,
+		ContentDigest:  digest,
+		ArtifactDigest: digest,
+		Workspace:      t.TempDir(),
+		Limits:         LocalSandboxLimitsV2(),
+	}}}
+	out := (&Handler{Coordinator: coord, Local: &LocalExecutor{Runner: runner}}).Handle(context.Background(), coretask.Task{ID: taskID})
+	if out.Err != nil || !out.TerminalOwned || coord.complete != 1 || coord.fail != 0 {
+		t.Fatalf("out=%#v err=%v complete=%d fail=%d calls=%d", out, out.Err, coord.complete, coord.fail, runner.calls)
+	}
+	if runner.calls != 1 || runner.request.Limits != LocalSandboxLimitsV2() {
+		t.Fatalf("calls=%d limits=%+v want=%+v", runner.calls, runner.request.Limits, LocalSandboxLimitsV2())
+	}
+}
+
+func TestExecutableSkillHandlerDoesNotRepairMissingLimits(t *testing.T) {
+	taskID := uuid.NewString()
+	digest := strings.Repeat("a", 64)
+	runner := &capturingLocalRunner{validateRequest: true}
+	coord := &fakeCoord{resolved: Invocation{Skill: &SkillInvocation{
+		Entry:          core.SkillEntry{RelativePath: "entry", Digest: digest, Executable: true, Argv: []string{"entry"}},
+		InstallDigest:  digest,
+		TaskID:         taskID,
+		TaskFence:      uuid.NewString(),
+		InstallationID: uuid.NewString(),
+		VersionID:      uuid.NewString(),
+		ContentDigest:  digest,
+		ArtifactDigest: digest,
+		Workspace:      t.TempDir(),
+	}}}
+	out := (&Handler{Coordinator: coord, Local: &LocalExecutor{Runner: runner}}).Handle(context.Background(), coretask.Task{ID: taskID})
+	if out.Err == nil || !out.TerminalOwned || coord.complete != 0 || coord.fail != 1 || runner.calls != 0 {
+		t.Fatalf("out=%#v complete=%d fail=%d calls=%d", out, coord.complete, coord.fail, runner.calls)
 	}
 }
 

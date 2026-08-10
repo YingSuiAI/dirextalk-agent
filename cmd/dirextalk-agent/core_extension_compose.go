@@ -82,7 +82,16 @@ func extensionVersionPin(v coreextension.VersionRecord) string {
 	return strings.TrimSpace(v.Pin.GitCommit)
 }
 
-func conversationToolTaskHandler(store *postgres.CoreConversationStore, coord *postgres.PostgresExtensionExecutionCoordinator, local *execution.LocalExecutor, remote *execution.RemoteExecutor, skillReader skillArtifactReader) coreruntime.TaskHandler {
+type conversationToolAttemptStore interface {
+	BeginConversationTool(context.Context, coretask.Task) (coreconversation.ToolAttempt, error)
+	FinishConversationTool(context.Context, coretask.Task, string, json.RawMessage, string, string) error
+}
+
+type conversationToolInvocationResolver interface {
+	ResolveConversationInvocation(context.Context, coretask.Task) (execution.Invocation, error)
+}
+
+func conversationToolTaskHandler(store conversationToolAttemptStore, coord conversationToolInvocationResolver, local *execution.LocalExecutor, remote *execution.RemoteExecutor, skillReader skillArtifactReader) coreruntime.TaskHandler {
 	return func(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
 		if store == nil || coord == nil {
 			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
@@ -122,7 +131,7 @@ func conversationToolTaskHandler(store *postgres.CoreConversationStore, coord *p
 					err = coreextension.ErrInvalid
 				} else {
 					var status extensionrunner.StatusV1
-					status, err = local.Execute(ctx, execution.LocalInvocation{TaskID: invocation.Skill.TaskID, TaskFence: invocation.Skill.TaskFence, InstallationID: invocation.Skill.InstallationID, VersionID: invocation.Skill.VersionID, InstallDigest: invocation.Skill.InstallDigest, ContentDigest: invocation.Skill.ContentDigest, ArtifactDigest: invocation.Skill.ArtifactDigest, EntryPath: invocation.Skill.Entry.RelativePath, Argv: invocation.Skill.Entry.Argv, Workspace: invocation.Skill.Workspace, Timeout: 10 * time.Minute, Secrets: invocation.Skill.Secrets, Stdin: invocation.Skill.Input})
+					status, err = local.Execute(ctx, execution.LocalInvocation{TaskID: invocation.Skill.TaskID, TaskFence: invocation.Skill.TaskFence, InstallationID: invocation.Skill.InstallationID, VersionID: invocation.Skill.VersionID, InstallDigest: invocation.Skill.InstallDigest, ContentDigest: invocation.Skill.ContentDigest, ArtifactDigest: invocation.Skill.ArtifactDigest, EntryPath: invocation.Skill.Entry.RelativePath, Argv: invocation.Skill.Entry.Argv, Workspace: invocation.Skill.Workspace, Timeout: 10 * time.Minute, Limits: invocation.Skill.Limits, Secrets: invocation.Skill.Secrets, Stdin: invocation.Skill.Input})
 					if err == nil {
 						result = coretask.Result{Text: string(status.Stdout), Summary: "isolated skill execution"}
 					}
