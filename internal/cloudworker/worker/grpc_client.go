@@ -445,6 +445,12 @@ func mapControlRPCError(err error) error {
 	switch status.Code(err) {
 	case codes.Canceled:
 		return ErrCanceled
+	case codes.DeadlineExceeded:
+		// Preserve the transport deadline as a detectable cause while keeping
+		// the existing public classification unavailable. Workflow can then
+		// distinguish an in-flight heartbeat interrupted by its own local stop
+		// from the same deadline returned while the heartbeat context is active.
+		return errors.Join(ErrUnavailable, context.DeadlineExceeded)
 	case codes.InvalidArgument:
 		return ErrInvalid
 	case codes.NotFound:

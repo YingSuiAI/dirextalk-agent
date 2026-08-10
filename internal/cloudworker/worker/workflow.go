@@ -316,6 +316,15 @@ func (workflow *Workflow) heartbeatLoop(
 				claimed.SessionToken, sequence, uuid.NewString(),
 			)
 			if err != nil {
+				// A successful run stops the heartbeat context while an RPC may
+				// still be in flight. In that narrow case, transports can report
+				// either their context error or the equivalent Worker-domain
+				// cancellation/expiry. Preserve the context result so the normal
+				// shutdown path can ignore it. The same errors while ctx is still
+				// active remain authoritative and cancel the run below.
+				if ctx.Err() != nil && stoppedHeartbeatError(err) {
+					return ctx.Err()
+				}
 				cancelRun()
 				return controlError(err)
 			}
@@ -342,6 +351,13 @@ func (workflow *Workflow) heartbeatLoop(
 			}
 		}
 	}
+}
+
+func stoppedHeartbeatError(err error) bool {
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, ErrCanceled) ||
+		errors.Is(err, ErrExpired)
 }
 
 func (workflow *Workflow) revalidateIdentity(ctx context.Context) (InstanceIdentity, error) {

@@ -10,9 +10,13 @@ import (
 	"testing"
 	"time"
 
+	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
 	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestWorkflowRetriesOnlyNotReadyBeforeClaim(t *testing.T) {
@@ -108,6 +112,167 @@ func TestWorkflowDoesNotRetryStaleLease(t *testing.T) {
 			"delays/claim/executor = %v/%d/%d, want []/0/0",
 			clock.delaysSnapshot(), fixture.control.claimCount, fixture.executor.runCount,
 		)
+	}
+}
+
+func TestWorkflowIgnoresHeartbeatTerminationOnlyAfterLocalStop(t *testing.T) {
+	tests := map[string]error{
+		"context canceled":  context.Canceled,
+		"context deadline":  context.DeadlineExceeded,
+		"control canceled":  ErrCanceled,
+		"control timed out": ErrExpired,
+	}
+	for name, heartbeatErr := range tests {
+		t.Run(name, func(t *testing.T) {
+			fixture := newWorkflowRetryFixture(t)
+			fixture.control.heartbeatStarted = make(chan struct{}, 1)
+			fixture.control.heartbeatWaitForContext = true
+			fixture.control.heartbeatError = heartbeatErr
+			fixture.control.claimed.HeartbeatInterval = 100 * time.Millisecond
+			fixture.executor.beforeReturn = func(ctx context.Context) {
+				select {
+				case <-fixture.control.heartbeatStarted:
+				case <-ctx.Done():
+					t.Fatalf("heartbeat did not start before execution ended: %v", ctx.Err())
+				case <-time.After(5 * time.Second):
+					t.Fatal("heartbeat did not start before execution ended")
+				}
+			}
+
+			if err := fixture.workflow.Run(t.Context()); err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if fixture.control.heartbeatCount != 1 ||
+				fixture.uploader.uploadCount != 1 || fixture.control.completeCount != 1 {
+				t.Fatalf(
+					"heartbeat/upload/complete = %d/%d/%d, want 1/1/1",
+					fixture.control.heartbeatCount, fixture.uploader.uploadCount,
+					fixture.control.completeCount,
+				)
+			}
+		})
+	}
+}
+
+func TestWorkflowDoesNotIgnoreActiveHeartbeatFailure(t *testing.T) {
+	tests := map[string]error{
+		"context canceled":  context.Canceled,
+		"context deadline":  context.DeadlineExceeded,
+		"control canceled":  ErrCanceled,
+		"control timed out": ErrExpired,
+	}
+	for name, heartbeatErr := range tests {
+		t.Run(name, func(t *testing.T) {
+			fixture := newWorkflowRetryFixture(t)
+			fixture.control.heartbeatStarted = make(chan struct{}, 1)
+			fixture.control.heartbeatError = heartbeatErr
+			fixture.control.claimed.HeartbeatInterval = 100 * time.Millisecond
+			fixture.executor.beforeReturn = func(ctx context.Context) {
+				<-ctx.Done()
+			}
+
+			err := fixture.workflow.Run(t.Context())
+			if err == nil {
+				t.Fatal("Run() unexpectedly ignored an active heartbeat failure")
+			}
+			if fixture.control.heartbeatCount != 1 ||
+				fixture.uploader.uploadCount != 0 || fixture.control.completeCount != 0 {
+				t.Fatalf(
+					"heartbeat/upload/complete = %d/%d/%d, want 1/0/0",
+					fixture.control.heartbeatCount, fixture.uploader.uploadCount,
+					fixture.control.completeCount,
+				)
+			}
+		})
+	}
+}
+
+func TestWorkflowDoesNotIgnoreUnexpectedHeartbeatFailureAfterLocalStop(t *testing.T) {
+	fixture := newWorkflowRetryFixture(t)
+	fixture.control.heartbeatStarted = make(chan struct{}, 1)
+	fixture.control.heartbeatWaitForContext = true
+	fixture.control.heartbeatError = ErrUnavailable
+	fixture.control.claimed.HeartbeatInterval = 100 * time.Millisecond
+	fixture.executor.beforeReturn = func(ctx context.Context) {
+		select {
+		case <-fixture.control.heartbeatStarted:
+		case <-ctx.Done():
+			t.Fatalf("heartbeat did not start before execution ended: %v", ctx.Err())
+		case <-time.After(5 * time.Second):
+			t.Fatal("heartbeat did not start before execution ended")
+		}
+	}
+
+	err := fixture.workflow.Run(t.Context())
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Run() error = %v, want ErrUnavailable", err)
+	}
+	if fixture.control.heartbeatCount != 1 ||
+		fixture.uploader.uploadCount != 1 || fixture.control.completeCount != 0 {
+		t.Fatalf(
+			"heartbeat/upload/complete = %d/%d/%d, want 1/1/0",
+			fixture.control.heartbeatCount, fixture.uploader.uploadCount,
+			fixture.control.completeCount,
+		)
+	}
+}
+
+func TestWorkflowConsumesGRPCHeartbeatDeadlineOnlyAfterLocalStop(t *testing.T) {
+	tests := map[string]struct {
+		waitForLocalStop bool
+		wantComplete     int
+	}{
+		"local stop":      {waitForLocalStop: true, wantComplete: 1},
+		"active deadline": {waitForLocalStop: false, wantComplete: 0},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			fixture := newWorkflowRetryFixture(t)
+			fixture.control.claimed.HeartbeatInterval = 100 * time.Millisecond
+			rpc := &workflowHeartbeatRPC{
+				started:          make(chan struct{}, 1),
+				waitForLocalStop: test.waitForLocalStop,
+			}
+			client, err := newGRPCControlClient(
+				rpc, fixture.workflow.bootstrap, fixture.clock.Now,
+			)
+			if err != nil {
+				t.Fatalf("newGRPCControlClient() error = %v", err)
+			}
+			fixture.workflow.control = &workflowGRPCHeartbeatControl{
+				workflowRetryControl: fixture.control,
+				grpc:                 client,
+			}
+			if test.waitForLocalStop {
+				fixture.executor.beforeReturn = func(ctx context.Context) {
+					select {
+					case <-rpc.started:
+					case <-ctx.Done():
+						t.Fatalf("gRPC heartbeat did not start before execution ended: %v", ctx.Err())
+					case <-time.After(5 * time.Second):
+						t.Fatal("gRPC heartbeat did not start before execution ended")
+					}
+				}
+			} else {
+				fixture.executor.beforeReturn = func(ctx context.Context) {
+					<-ctx.Done()
+				}
+			}
+
+			runErr := fixture.workflow.Run(t.Context())
+			if test.waitForLocalStop && runErr != nil {
+				t.Fatalf("Run() local stop error = %v", runErr)
+			}
+			if !test.waitForLocalStop && !errors.Is(runErr, ErrUnavailable) {
+				t.Fatalf("Run() active deadline error = %v, want ErrUnavailable", runErr)
+			}
+			if rpc.callCount() != 1 || fixture.control.completeCount != test.wantComplete {
+				t.Fatalf(
+					"heartbeat/complete = %d/%d, want 1/%d",
+					rpc.callCount(), fixture.control.completeCount, test.wantComplete,
+				)
+			}
+		})
 	}
 }
 
@@ -319,17 +484,21 @@ func (workflowRetryProofs) Generate(
 }
 
 type workflowRetryControl struct {
-	mu                   sync.Mutex
-	identity             *workflowRetryIdentity
-	challenge            Challenge
-	claimed              ClaimedTask
-	challengeErrors      []error
-	alwaysChallengeError error
-	onChallenge          func()
-	requests             []ChallengeRequest
-	identityReads        []int
-	claimCount           int
-	completeCount        int
+	mu                      sync.Mutex
+	identity                *workflowRetryIdentity
+	challenge               Challenge
+	claimed                 ClaimedTask
+	challengeErrors         []error
+	alwaysChallengeError    error
+	onChallenge             func()
+	requests                []ChallengeRequest
+	identityReads           []int
+	claimCount              int
+	completeCount           int
+	heartbeatStarted        chan struct{}
+	heartbeatWaitForContext bool
+	heartbeatError          error
+	heartbeatCount          int
 }
 
 func (control *workflowRetryControl) IssueIdentityChallenge(
@@ -365,15 +534,33 @@ func (control *workflowRetryControl) Claim(
 	return control.claimed, nil
 }
 
-func (*workflowRetryControl) Heartbeat(
-	context.Context,
-	Fence,
-	string,
-	[]byte,
-	uint64,
-	string,
+func (control *workflowRetryControl) Heartbeat(
+	ctx context.Context,
+	_ Fence,
+	_ string,
+	_ []byte,
+	_ uint64,
+	_ string,
 ) (HeartbeatResult, error) {
-	return HeartbeatResult{}, errors.New("unexpected heartbeat")
+	control.mu.Lock()
+	control.heartbeatCount++
+	started := control.heartbeatStarted
+	waitForContext := control.heartbeatWaitForContext
+	heartbeatErr := control.heartbeatError
+	control.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if waitForContext {
+		<-ctx.Done()
+	}
+	if heartbeatErr == nil {
+		return HeartbeatResult{}, errors.New("unexpected heartbeat")
+	}
+	return HeartbeatResult{}, heartbeatErr
 }
 
 func (control *workflowRetryControl) Complete(context.Context, CompleteRequest) error {
@@ -394,12 +581,19 @@ func (control *workflowRetryControl) challengeSnapshot() ([]ChallengeRequest, []
 }
 
 type workflowRetryExecutor struct {
-	runCount int
-	topology execgate.Proof
+	runCount     int
+	topology     execgate.Proof
+	beforeReturn func(context.Context)
 }
 
-func (executor *workflowRetryExecutor) Run(context.Context, ClaimedTask) (cloudruntime.Result, error) {
+func (executor *workflowRetryExecutor) Run(ctx context.Context, _ ClaimedTask) (cloudruntime.Result, error) {
 	executor.runCount++
+	if executor.beforeReturn != nil {
+		executor.beforeReturn(ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		return cloudruntime.Result{}, err
+	}
 	return cloudruntime.Result{}, nil
 }
 
@@ -425,6 +619,58 @@ type workflowRetryClock struct {
 	mu     sync.Mutex
 	now    time.Time
 	delays []time.Duration
+}
+
+type workflowGRPCHeartbeatControl struct {
+	*workflowRetryControl
+	grpc *GRPCControlClient
+}
+
+func (control *workflowGRPCHeartbeatControl) Heartbeat(
+	ctx context.Context,
+	fence Fence,
+	sessionID string,
+	sessionToken []byte,
+	sequence uint64,
+	idempotencyKey string,
+) (HeartbeatResult, error) {
+	return control.grpc.Heartbeat(
+		ctx, fence, sessionID, sessionToken, sequence, idempotencyKey,
+	)
+}
+
+type workflowHeartbeatRPC struct {
+	agentv1.WorkerControlServiceClient
+	mu               sync.Mutex
+	started          chan struct{}
+	waitForLocalStop bool
+	calls            int
+}
+
+func (rpc *workflowHeartbeatRPC) Heartbeat(
+	ctx context.Context,
+	_ *agentv1.WorkerControlServiceHeartbeatRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.WorkerControlServiceHeartbeatResponse, error) {
+	rpc.mu.Lock()
+	rpc.calls++
+	started := rpc.started
+	waitForLocalStop := rpc.waitForLocalStop
+	rpc.mu.Unlock()
+	select {
+	case started <- struct{}{}:
+	default:
+	}
+	if waitForLocalStop {
+		<-ctx.Done()
+	}
+	return nil, status.Error(codes.DeadlineExceeded, "heartbeat deadline exceeded")
+}
+
+func (rpc *workflowHeartbeatRPC) callCount() int {
+	rpc.mu.Lock()
+	defer rpc.mu.Unlock()
+	return rpc.calls
 }
 
 func (clock *workflowRetryClock) Now() time.Time {
