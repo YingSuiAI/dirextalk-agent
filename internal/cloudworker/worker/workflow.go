@@ -176,9 +176,30 @@ func (workflow *Workflow) Run(ctx context.Context) error {
 	}
 	manifestClaim, err := workflow.uploader.Upload(runCtx, claimed, result)
 	if err != nil {
+		if runCtx.Err() != nil {
+			heartbeatErr := stopAndReadHeartbeat()
+			return heartbeatTerminalError(heartbeatErr, runCtx.Err())
+		}
+		identityErr := workflow.checkIdentity(runCtx)
 		heartbeatErr := stopAndReadHeartbeat()
 		if heartbeatErr != nil && !errors.Is(heartbeatErr, context.Canceled) {
 			return heartbeatTerminalError(heartbeatErr, runCtx.Err())
+		}
+		if identityErr != nil {
+			return identityErr
+		}
+		if runCtx.Err() != nil {
+			return heartbeatTerminalError(heartbeatErr, runCtx.Err())
+		}
+		terminalCtx, cancelTerminal := context.WithTimeout(runCtx, claimed.HeartbeatInterval)
+		failErr := workflow.control.Fail(terminalCtx, FailRequest{
+			Fence: binding.Fence(), SessionID: claimed.SessionID,
+			SessionToken: claimed.SessionToken, Code: uploadFailureCode(err),
+			IdempotencyKey: uuid.NewString(),
+		})
+		cancelTerminal()
+		if failErr != nil {
+			return controlError(failErr)
 		}
 		return err
 	}
@@ -449,6 +470,21 @@ func runtimeFailureCode(err error) string {
 		return string(failure.Stage) + "_" + string(failure.Code)
 	}
 	return "runtime_failed"
+}
+
+func uploadFailureCode(err error) string {
+	switch {
+	case errors.Is(err, ErrUploadUncertain):
+		return "upload_uncertain"
+	case errors.Is(err, ErrIdentityChanged):
+		return "identity_changed"
+	case errors.Is(err, ErrInvalid):
+		return "upload_invalid"
+	case errors.Is(err, ErrUnavailable):
+		return "upload_unavailable"
+	default:
+		return "upload_failed"
+	}
 }
 
 func heartbeatTerminalError(heartbeatErr, runErr error) error {

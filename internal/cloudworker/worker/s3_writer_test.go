@@ -122,7 +122,8 @@ func TestS3HTTPWriterPutsExactSSEKMSAndConsumesExactVersionHEAD(t *testing.T) {
 			response.Header().Set(s3DigestMetadataHeader, digestText)
 			response.Header().Set(s3SSEHeader, s3SSEKMSAlgorithm)
 			response.Header().Set(s3SSEKMSKeyIDHeader, kmsARN)
-			response.Header().Set(s3SSEBucketKeyHeader, s3SSEBucketKeyDisabled)
+			// Real S3 omits the bucket-key response header when its effective
+			// value is false, even when PUT explicitly requested false.
 			response.WriteHeader(http.StatusOK)
 		default:
 			response.WriteHeader(http.StatusMethodNotAllowed)
@@ -240,6 +241,30 @@ func TestS3HTTPWriterRejectsHEADEncryptionDrift(t *testing.T) {
 				t.Fatalf("HEAD drift error = %v", err)
 			}
 		})
+	}
+}
+
+func TestBucketKeyDisabledResponseMatchesS3Semantics(t *testing.T) {
+	for name, value := range map[string]string{
+		"omitted":        "",
+		"explicit_false": s3SSEBucketKeyDisabled,
+	} {
+		t.Run(name, func(t *testing.T) {
+			header := make(http.Header)
+			if value != "" {
+				header.Set(s3SSEBucketKeyHeader, value)
+			}
+			if !bucketKeyDisabledResponse(header) {
+				t.Fatalf("bucketKeyDisabledResponse(%q) = false", value)
+			}
+		})
+	}
+	for _, value := range []string{"true", "invalid"} {
+		header := make(http.Header)
+		header.Set(s3SSEBucketKeyHeader, value)
+		if bucketKeyDisabledResponse(header) {
+			t.Fatalf("bucketKeyDisabledResponse(%q) = true", value)
+		}
 	}
 }
 

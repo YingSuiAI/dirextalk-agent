@@ -117,6 +117,27 @@ func TestWorkflowBoundsBlockedFailAfterFreshHeartbeat(t *testing.T) {
 	}
 }
 
+func TestWorkflowReportsUploadUncertainBeforeReturning(t *testing.T) {
+	fixture := newWorkflowRetryFixture(t)
+	fixture.uploader.uploadError = ErrUploadUncertain
+	fixture.control.allowFail = true
+
+	err := fixture.workflow.Run(t.Context())
+	if !errors.Is(err, ErrUploadUncertain) {
+		t.Fatalf("Run() error=%v, want ErrUploadUncertain", err)
+	}
+	if fixture.control.completeCount != 0 || fixture.control.failCount != 1 {
+		t.Fatalf("complete/fail=%d/%d, want 0/1", fixture.control.completeCount, fixture.control.failCount)
+	}
+	if fixture.control.lastFail.Code != "upload_uncertain" ||
+		!canonicalUUID(fixture.control.lastFail.IdempotencyKey) {
+		t.Fatalf("Fail code/idempotency=%q/%q", fixture.control.lastFail.Code, fixture.control.lastFail.IdempotencyKey)
+	}
+	if sequences := fixture.control.heartbeatSnapshot(); len(sequences) == 0 || sequences[0] != 1 {
+		t.Fatalf("heartbeat sequences=%v, want initial sequence 1", sequences)
+	}
+}
+
 func TestWorkflowPermanentNotReadyStopsAtRetryDeadline(t *testing.T) {
 	fixture := newWorkflowRetryFixture(t)
 	fixture.control.alwaysChallengeError = ErrNotReady
@@ -574,6 +595,8 @@ type workflowRetryControl struct {
 	completeWaitForContext           bool
 	failWaitForContext               bool
 	failCount                        int
+	lastFail                         FailRequest
+	allowFail                        bool
 }
 
 func (control *workflowRetryControl) IssueIdentityChallenge(
@@ -658,14 +681,19 @@ func (control *workflowRetryControl) Complete(ctx context.Context, _ CompleteReq
 	return nil
 }
 
-func (control *workflowRetryControl) Fail(ctx context.Context, _ FailRequest) error {
+func (control *workflowRetryControl) Fail(ctx context.Context, request FailRequest) error {
 	control.mu.Lock()
 	control.failCount++
+	control.lastFail = request
 	waitForContext := control.failWaitForContext
+	allowFail := control.allowFail
 	control.mu.Unlock()
 	if waitForContext {
 		<-ctx.Done()
 		return ctx.Err()
+	}
+	if allowFail {
+		return nil
 	}
 	return errors.New("unexpected fail")
 }
@@ -707,6 +735,7 @@ func (executor *workflowRetryExecutor) TerminalRuntimeTopology() (execgate.Proof
 type workflowRetryUploader struct {
 	claim       cloudresult.ObjectClaim
 	uploadCount int
+	uploadError error
 }
 
 func (uploader *workflowRetryUploader) Upload(
@@ -715,7 +744,7 @@ func (uploader *workflowRetryUploader) Upload(
 	cloudruntime.Result,
 ) (cloudresult.ObjectClaim, error) {
 	uploader.uploadCount++
-	return uploader.claim, nil
+	return uploader.claim, uploader.uploadError
 }
 
 type workflowRetryClock struct {

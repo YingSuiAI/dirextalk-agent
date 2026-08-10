@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -126,12 +127,22 @@ func (writer *S3HTTPWriter) Put(
 	request.Header.Del("Authorization")
 	request.Header.Del("X-Amz-Security-Token")
 	if err != nil || response == nil || response.Body == nil {
+		logS3Failure("put", "transport", 0)
 		return cloudresult.ObjectClaim{}, ErrUploadUncertain
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 	closeErr := response.Body.Close()
 	versionID := strings.TrimSpace(response.Header.Get("X-Amz-Version-Id"))
-	if closeErr != nil || response.StatusCode != http.StatusOK || versionID == "" || versionID == "null" {
+	if closeErr != nil {
+		logS3Failure("put", "response_body", response.StatusCode)
+		return cloudresult.ObjectClaim{}, ErrUploadUncertain
+	}
+	if response.StatusCode != http.StatusOK {
+		logS3Failure("put", "response_status", response.StatusCode)
+		return cloudresult.ObjectClaim{}, ErrUploadUncertain
+	}
+	if versionID == "" || versionID == "null" {
+		logS3Failure("put", "version_missing", response.StatusCode)
 		return cloudresult.ObjectClaim{}, ErrUploadUncertain
 	}
 	claim := cloudresult.ObjectClaim{
@@ -173,6 +184,7 @@ func (writer *S3HTTPWriter) verifyHead(
 	request.Header.Del("Authorization")
 	request.Header.Del("X-Amz-Security-Token")
 	if err != nil || response == nil || response.Body == nil {
+		logS3Failure("head", "transport", 0)
 		return ErrUploadUncertain
 	}
 	closeErr := response.Body.Close()
@@ -180,16 +192,40 @@ func (writer *S3HTTPWriter) verifyHead(
 	if contentLength < 0 {
 		contentLength, _ = strconv.ParseInt(response.Header.Get("Content-Length"), 10, 64)
 	}
-	if closeErr != nil || response.StatusCode != http.StatusOK ||
-		strings.TrimSpace(response.Header.Get("X-Amz-Version-Id")) != claim.VersionID ||
+	if closeErr != nil {
+		logS3Failure("head", "response_body", response.StatusCode)
+		return ErrUploadUncertain
+	}
+	if response.StatusCode != http.StatusOK {
+		logS3Failure("head", "response_status", response.StatusCode)
+		return ErrUploadUncertain
+	}
+	if strings.TrimSpace(response.Header.Get("X-Amz-Version-Id")) != claim.VersionID ||
 		contentLength != claim.SizeBytes || response.Header.Get("Content-Type") != claim.MediaType ||
 		response.Header.Get(s3DigestMetadataHeader) != claim.SHA256 ||
 		response.Header.Get(s3SSEHeader) != s3SSEKMSAlgorithm ||
 		response.Header.Get(s3SSEKMSKeyIDHeader) != writer.artifactKMSKeyARN ||
-		response.Header.Get(s3SSEBucketKeyHeader) != s3SSEBucketKeyDisabled {
+		!bucketKeyDisabledResponse(response.Header) {
+		logS3Failure("head", "metadata_mismatch", response.StatusCode)
 		return ErrUploadUncertain
 	}
 	return nil
+}
+
+// S3 omits x-amz-server-side-encryption-bucket-key-enabled when the effective
+// value is false. An explicit false is also accepted; true or any other value
+// would violate the launch plan's exact encryption contract.
+func bucketKeyDisabledResponse(header http.Header) bool {
+	value := strings.TrimSpace(header.Get(s3SSEBucketKeyHeader))
+	return value == "" || value == s3SSEBucketKeyDisabled
+}
+
+func logS3Failure(operation, phase string, statusCode int) {
+	if statusCode > 0 {
+		slog.Error("[cloud-worker.s3] outcome=failed", "operation", operation, "phase", phase, "http_status", statusCode)
+		return
+	}
+	slog.Error("[cloud-worker.s3] outcome=failed", "operation", operation, "phase", phase)
 }
 
 func (writer *S3HTTPWriter) revalidate(ctx context.Context, binding Binding) error {
