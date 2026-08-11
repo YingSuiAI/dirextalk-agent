@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/artifactmedia"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/google/uuid"
 )
@@ -206,12 +207,7 @@ func validKind(kind Kind, name string) bool {
 }
 
 func validMediaType(value string) bool {
-	switch value {
-	case "application/json", "text/plain; charset=utf-8":
-		return true
-	default:
-		return false
-	}
+	return artifactmedia.Supported(value)
 }
 
 func canonicalUUID(value string) bool {

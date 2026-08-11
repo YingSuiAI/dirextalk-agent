@@ -19,16 +19,20 @@ func TestPiExecutorCollectsDeclaredWorkspaceArtifacts(t *testing.T) {
 	}
 	resultJSON := []byte(`{"prime_count":9592,"prime_sum":454396537}`)
 	report := []byte("# Prime report\n\nThe result was independently checked.\n")
+	presentation := validPPTXBytes(t, false)
 	if err := os.WriteFile(filepath.Join(workspace, "result.json"), resultJSON, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(workspace, "report.md"), report, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(workspace, "summary.pptx"), presentation, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	events := bytes.Replace(
 		validPiEventStream(),
 		[]byte(`"risks":[]}`),
-		[]byte(`"risks":[],"artifacts":["result.json","report.md"]}`),
+		[]byte(`"risks":[],"artifacts":["result.json","report.md","summary.pptx"]}`),
 		1,
 	)
 	executor := newTestPiExecutor(
@@ -45,14 +49,17 @@ func TestPiExecutorCollectsDeclaredWorkspaceArtifacts(t *testing.T) {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	defer destroyArtifacts(result.Artifacts)
-	if len(result.Artifacts) != 3 ||
+	if len(result.Artifacts) != 4 ||
 		result.Artifacts[0].Name != "final.json" ||
 		result.Artifacts[1].Name != "result.json" ||
 		result.Artifacts[1].MediaType != "application/json" ||
 		!bytes.Equal(result.Artifacts[1].Content, resultJSON) ||
 		result.Artifacts[2].Name != "report.md" ||
 		result.Artifacts[2].MediaType != "text/plain; charset=utf-8" ||
-		!bytes.Equal(result.Artifacts[2].Content, report) {
+		!bytes.Equal(result.Artifacts[2].Content, report) ||
+		result.Artifacts[3].Name != "summary.pptx" ||
+		result.Artifacts[3].MediaType != "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+		!bytes.Equal(result.Artifacts[3].Content, presentation) {
 		t.Fatalf("artifacts = %+v", result.Artifacts)
 	}
 }

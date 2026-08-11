@@ -26,7 +26,7 @@ const (
 const piSystemPrompt = `Execute one approved Dirextalk Worker role.
 Use only the enabled tools and the supplied workspace.
 Do not inspect credential locations or reveal private configuration.
-Retain user-facing JSON, Markdown, or text files in the workspace and list their relative paths in the artifacts field.
+Retain user-facing JSON, Markdown, text, or PPTX files in the workspace and list their relative paths in the artifacts field.
 Call dirextalk_submit_result exactly once as the final action.`
 
 type PiConfig struct {
@@ -386,7 +386,7 @@ func piPrompt(task TaskV1, contextJSON []byte) ([]byte, error) {
 	prompt.WriteString("Execute one approved remote Worker role.\n")
 	prompt.WriteString(
 		"Use dirextalk_submit_result exactly once as the final action. " +
-			"List each retained user-facing JSON, Markdown, or text file by its relative workspace path in artifacts.\n\n",
+			"List each retained user-facing JSON, Markdown, text, or PPTX file by its relative workspace path in artifacts.\n\n",
 	)
 	prompt.WriteString("Task ID: ")
 	prompt.WriteString(task.TaskID)

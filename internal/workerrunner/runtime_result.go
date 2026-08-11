@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	"github.com/YingSuiAI/dirextalk-agent/internal/artifactmedia"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/google/uuid"
@@ -402,13 +403,8 @@ func scopedRuntimeArtifactRef(
 		!runtimeArtifactNamePattern.MatchString(artifactName) {
 		return "", errors.New("Worker runtime artifact scope is invalid")
 	}
-	extension := ""
-	switch mediaType {
-	case "application/json":
-		extension = "json"
-	case "text/plain; charset=utf-8":
-		extension = "txt"
-	default:
+	extension, supported := artifactmedia.Extension(mediaType)
+	if !supported {
 		return "", errors.New("Worker runtime artifact media type is invalid")
 	}
 	nameDigest := sha256.Sum256([]byte(artifactName))

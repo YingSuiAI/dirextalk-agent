@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/artifactmedia"
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
@@ -175,9 +176,9 @@ func (claim ObjectClaim) Validate() error {
 	if claim.SHA256 == empty || claim.SizeBytes < 1 || claim.SizeBytes > MaximumObjectClaimBytes {
 		return fmt.Errorf("%w: Worker object digest or size is invalid", ErrInvalid)
 	}
-	switch claim.MediaType {
-	case "application/json", "application/cbor", "application/octet-stream", "text/plain; charset=utf-8":
-	default:
+	if claim.MediaType != "application/cbor" &&
+		claim.MediaType != "application/octet-stream" &&
+		!artifactmedia.Supported(claim.MediaType) {
 		return fmt.Errorf("%w: Worker object media type is invalid", ErrInvalid)
 	}
 	if security.ContainsLikelySecret(claim.MediaType) {

@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/artifactmedia"
 	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/google/uuid"
@@ -183,21 +184,22 @@ func (artifact Artifact) Validate() error {
 		security.ContainsLikelySecret(artifact.Name) {
 		return ErrInvalid
 	}
-	switch artifact.MediaType {
-	case "application/json", "text/plain; charset=utf-8":
-	default:
+	if !artifactmedia.Supported(artifact.MediaType) {
 		return ErrInvalid
 	}
-	if artifact.MediaType == "application/json" &&
+	if artifact.MediaType == artifactmedia.JSON &&
 		!json.Valid(artifact.Content) {
 		return ErrInvalid
 	}
-	if artifact.MediaType == "application/json" ||
-		artifact.MediaType == "text/plain; charset=utf-8" {
+	if artifactmedia.Textual(artifact.MediaType) {
 		if !utf8.Valid(artifact.Content) ||
 			security.ContainsLikelySecret(string(artifact.Content)) {
 			return ErrInvalid
 		}
+	}
+	if artifact.MediaType == artifactmedia.PPTX &&
+		validatePPTXArtifact(artifact.Content) != nil {
+		return ErrInvalid
 	}
 	return nil
 }
@@ -225,7 +227,7 @@ func (result Result) Validate() error {
 		}
 		seen[artifact.Name] = struct{}{}
 		if artifact.Name == "final.json" {
-			if artifact.MediaType != "application/json" ||
+			if artifact.MediaType != artifactmedia.JSON ||
 				len(artifact.Content) > MaxFinalArtifactBytes {
 				return ErrInvalid
 			}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/artifactmedia"
 )
 
 const maxPiArtifactPathBytes = 512
@@ -107,9 +109,11 @@ func validatePiArtifactPath(workspace, relative string) (string, string, error) 
 	mediaType := ""
 	switch filepath.Ext(name) {
 	case ".json":
-		mediaType = "application/json"
+		mediaType = artifactmedia.JSON
 	case ".md", ".txt":
-		mediaType = "text/plain; charset=utf-8"
+		mediaType = artifactmedia.Text
+	case ".pptx":
+		mediaType = artifactmedia.PPTX
 	default:
 		return "", "", ErrInvalid
 	}

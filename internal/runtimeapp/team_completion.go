@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/artifactmedia"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -487,6 +488,12 @@ func readObservedArtifactContents(
 		if reader == nil {
 			result[artifact.ArtifactID] = observedArtifactContent{
 				state: "not_loaded",
+			}
+			continue
+		}
+		if !artifactmedia.Textual(artifact.MediaType) {
+			result[artifact.ArtifactID] = observedArtifactContent{
+				state: "omitted_binary",
 			}
 			continue
 		}
