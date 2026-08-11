@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -84,8 +85,89 @@ type readOnlyTurnStore struct {
 	dispatchState string
 	dispatch      ModelRunResult
 	failedCode    string
+	dispatched    map[string]bool
 	prepareCalls  int
 	prepared      ToolAttempt
+}
+
+func (s *readOnlyTurnStore) RecordConversationToolCall(_ context.Context, _ TurnLease, call ToolCall) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, event := range s.events {
+		if event.ToolCall != nil && event.ToolCall.ID == call.ID {
+			if event.Kind == TurnEventToolCall && !reflect.DeepEqual(*event.ToolCall, call) {
+				return ErrConflict
+			}
+			if event.Kind == TurnEventToolCall {
+				return nil
+			}
+		}
+	}
+	s.turn.LastSequence++
+	s.events = append(s.events, TurnEvent{TurnID: s.turn.ID, Sequence: s.turn.LastSequence, Revision: s.turn.Revision, Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: time.Now().UTC()})
+	return nil
+}
+
+func (s *readOnlyTurnStore) BeginConversationToolDispatch(_ context.Context, _ TurnLease, call ToolCall) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var pending bool
+	for _, event := range s.events {
+		if event.ToolCall == nil || event.ToolCall.ID != call.ID {
+			continue
+		}
+		if !reflect.DeepEqual(*event.ToolCall, call) {
+			return false, ErrConflict
+		}
+		if event.Kind == TurnEventToolCall {
+			pending = true
+		}
+	}
+	if !pending {
+		return false, ErrConflict
+	}
+	if s.dispatched == nil {
+		s.dispatched = make(map[string]bool)
+	}
+	if s.dispatched[call.ID] {
+		return false, nil
+	}
+	s.dispatched[call.ID] = true
+	return true, nil
+}
+
+func (s *readOnlyTurnStore) RecordConversationToolResult(_ context.Context, _ TurnLease, result ToolResult) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, event := range s.events {
+		if event.ToolResult != nil && event.ToolResult.CallID == result.CallID {
+			return nil
+		}
+	}
+	s.turn.LastSequence++
+	s.events = append(s.events, TurnEvent{TurnID: s.turn.ID, Sequence: s.turn.LastSequence, Revision: s.turn.Revision, Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: time.Now().UTC()})
+	return nil
+}
+
+func (s *readOnlyTurnStore) FailConversationToolDispatch(_ context.Context, _ TurnLease, call ToolCall, code, summary string) (Turn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: summary, IsError: true}
+	s.turn.LastSequence++
+	s.events = append(s.events, TurnEvent{TurnID: s.turn.ID, Sequence: s.turn.LastSequence, Revision: s.turn.Revision, Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: time.Now().UTC()})
+	s.turn.LastSequence++
+	s.events = append(s.events, TurnEvent{TurnID: s.turn.ID, Sequence: s.turn.LastSequence, Revision: s.turn.Revision, Kind: TurnEventError, ErrorCode: code, ErrorSummary: summary, CreatedAt: time.Now().UTC()})
+	s.turn.State, s.failedCode = TurnFailed, code
+	return s.turn, nil
+}
+
+func (s *readOnlyTurnStore) CompleteConversationToolRound(_ context.Context, _ TurnLease) (Turn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.turn.State = TurnAccepted
+	s.turn.Revision++
+	s.dispatchState, s.dispatch = "", ModelRunResult{}
+	return s.turn, nil
 }
 
 func (s *readOnlyTurnStore) FailTurn(_ context.Context, _ TurnLease, code, _ string) (Turn, error) {
@@ -175,24 +257,6 @@ func (s *readOnlyTurnStore) RecordTurnModelResult(_ context.Context, _ TurnLease
 
 func (s *readOnlyTurnStore) MarkTurnModelUncertain(context.Context, TurnLease, string, string) error {
 	return ErrConflict
-}
-
-func (s *readOnlyTurnStore) ContinueTurnAfterReadOnlyTool(_ context.Context, _ TurnLease, call ToolCall, result ToolResult) (Turn, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.dispatchState != "completed" || result.CallID != call.ID {
-		return Turn{}, ErrConflict
-	}
-	now := time.Now().UTC()
-	for _, event := range []TurnEvent{{Kind: TurnEventToolCall, ToolCall: &call}, {Kind: TurnEventToolResult, ToolResult: &result}} {
-		s.turn.LastSequence++
-		event.TurnID, event.Sequence, event.CreatedAt = s.turn.ID, s.turn.LastSequence, now
-		s.events = append(s.events, event)
-	}
-	s.dispatchState, s.dispatch = "", ModelRunResult{}
-	s.turn.State = TurnAccepted
-	s.turn.Revision++
-	return s.turn, nil
 }
 
 func (s *readOnlyTurnStore) CommitTurn(_ context.Context, _ TurnLease, response ChatResponse) (Turn, error) {
@@ -665,7 +729,7 @@ func TestExecuteTurnPublishesCanonicalWaitingConfirmationForLocalTool(t *testing
 	}
 	if waitingCount != 1 || waiting == nil || waiting.ValidateWaitingConfirmationAuthority() != nil || waiting.Revision != 2 ||
 		waiting.ConfirmationID != attempt.ConfirmationID || waiting.ExecutionID != attempt.ExecutionID ||
-		waiting.Sequence != 3 {
+		waiting.Sequence != 4 {
 		t.Fatalf("canonical waiting event=%+v all=%+v", waiting, store.events)
 	}
 }
@@ -764,59 +828,99 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 	}
 }
 
-func TestExecuteTurnRejectsMultipleLocalOrCloudRouteCallsBeforeExecution(t *testing.T) {
-	tests := []struct {
-		name     string
-		calls    []ToolCall
-		wantCode string
-	}{
-		{
-			name: "multiple local tools",
-			calls: []ToolCall{
-				{ID: uuid.NewString(), Name: "local_task", Arguments: `{}`},
-				{ID: uuid.NewString(), Name: "local_task_two", Arguments: `{}`},
-			},
-			wantCode: "tool_batch_rejected",
-		},
-		{
-			name: "local and cloud routes",
-			calls: []ToolCall{
-				{ID: uuid.NewString(), Name: "local_task", Arguments: `{}`},
-				{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`},
-			},
-			wantCode: "intrinsic_batch_rejected",
-		},
+func TestExecuteTurnProcessesWebSearchBeforeLocalMCPFromSameModelRound(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	webSelection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "web-1", Digest: strings.Repeat("a", 64), AllowedTools: []string{"web_search"}}
+	webSnapshot := ExtensionExecutionSnapshot{Selection: webSelection, InstallationID: webSelection.ID, VersionID: webSelection.Version, Source: "builtin:web_search:tavily", ContentDigest: webSelection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64), ToolNames: []string{"web_search"}, ReadOnly: true}
+	localSelection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: uuid.NewString(), Digest: strings.Repeat("e", 64), AllowedTools: []string{"write_html"}}
+	localSnapshot := ExtensionExecutionSnapshot{Selection: localSelection, InstallationID: localSelection.ID, VersionID: localSelection.Version, Source: "mcp:local-html", ContentDigest: localSelection.Digest, ArtifactDigest: strings.Repeat("f", 64), ToolSchemaDigest: strings.Repeat("1", 64), NetworkBindingDigest: strings.Repeat("2", 64), ToolNames: []string{"write_html"}, ReadOnly: false}
+	webCall := ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"GitHub trending"}`}
+	localCall := ToolCall{ID: uuid.NewString(), Name: "write_html", Arguments: `{"content":"bounded"}`}
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID, Prompt: "search then render", ProfileID: profile.ProfileID, ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(), ExtensionSnapshots: []ExtensionExecutionSnapshot{webSnapshot, localSnapshot}, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{webSnapshot, localSnapshot}}.ExtensionSnapshotDigest(), State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC()}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	attempt := ToolAttempt{ID: uuid.NewString(), TurnID: turn.ID, TaskID: uuid.NewString(), ConfirmationID: uuid.NewString(), ExecutionID: uuid.NewString(), State: "waiting_confirmation"}
+	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn}, events: []TurnEvent{{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}}, prepared: attempt}
+	var executionOrder []string
+	resolvedWeb := ResolvedExtension{Selection: webSelection, Snapshot: webSnapshot, Tools: []coremodel.Tool{{Name: "web_search", InputSchema: map[string]any{"type": "object"}}}, Execute: func(context.Context, ToolExecutionRequest) (ToolResult, error) {
+		executionOrder = append(executionOrder, "web_search")
+		return ToolResult{CallID: webCall.ID, ToolName: webCall.Name, Content: `{"results":[]}`}, nil
+	}}
+	resolvedLocal := ResolvedExtension{Selection: localSelection, Snapshot: localSnapshot, Tools: []coremodel.Tool{{Name: "write_html", InputSchema: map[string]any{"type": "object"}}}}
+	service, err := NewService(store, fixedToolCallsTurnModel{calls: []ToolCall{webCall, localCall}}, extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+		return []ResolvedExtension{resolvedWeb, resolvedLocal}, nil
+	}), snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			profile := testTurnSnapshot()
-			turn := Turn{
-				ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(),
-				Prompt: "choose one execution route", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
-				ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 1, CreatedAt: time.Now().UTC(),
-			}
-			store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore(), turn: turn}}
-			service, err := NewService(store, fixedToolCallsTurnModel{calls: test.calls}, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
-			if err != nil {
-				t.Fatal(err)
-			}
-			intrinsicCalls := 0
-			service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
-				return []ResolvedIntrinsic{{
-					Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerProposeToolName, InputSchema: map[string]any{"type": "object"}},
-					Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
-						intrinsicCalls++
-						return IntrinsicExecutionResult{TurnCommitted: true}, nil
-					},
-				}}, nil
-			}))
 
-			service.executeTurn(context.Background(), turn.ID)
+	service.executeTurn(context.Background(), turn.ID)
 
-			if store.failedCode != test.wantCode || store.prepareCalls != 0 || intrinsicCalls != 0 {
-				t.Fatalf("failure=%q prepare_calls=%d intrinsic_calls=%d", store.failedCode, store.prepareCalls, intrinsicCalls)
-			}
-		})
+	if store.failedCode != "" || store.prepareCalls != 1 || len(executionOrder) != 1 || executionOrder[0] != "web_search" {
+		t.Fatalf("failure=%q prepare_calls=%d order=%v", store.failedCode, store.prepareCalls, executionOrder)
+	}
+	var kinds []TurnEventKind
+	for _, event := range store.events {
+		if event.Kind == TurnEventToolCall || event.Kind == TurnEventToolResult || event.Kind == TurnEventWaitingConfirmation {
+			kinds = append(kinds, event.Kind)
+		}
+	}
+	want := []TurnEventKind{TurnEventToolCall, TurnEventToolResult, TurnEventToolCall, TurnEventWaitingConfirmation}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("durable tool event order=%v want=%v", kinds, want)
+	}
+}
+
+func TestExecuteTurnRestartFailsUncertainWithoutRepeatingDispatchedReadOnlyTool(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "web-1", Digest: strings.Repeat("a", 64), AllowedTools: []string{"web_search"}}
+	snapshot := ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "builtin:web_search:tavily", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64), ToolNames: []string{"web_search"}, ReadOnly: true}
+	call := ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"durable fence"}`}
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID, Prompt: "search", ProfileID: profile.ProfileID, ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(), ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(), State: TurnAccepted, Revision: 1, LastSequence: 2, CreatedAt: time.Now().UTC()}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	modelResult := ModelRunResult{Message: Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: []ToolCall{call}, CreatedAt: time.Now().UTC()}, ToolCalls: []ToolCall{call}}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events: []TurnEvent{
+			{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt},
+			{TurnID: turn.ID, Sequence: 2, Revision: 1, Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: turn.CreatedAt.Add(time.Microsecond)},
+		},
+		dispatchState: "completed",
+		dispatch:      modelResult,
+		dispatched:    map[string]bool{call.ID: true},
+	}
+	model := &capturingTurnModel{}
+	executions := 0
+	resolved := ResolvedExtension{Selection: selection, Snapshot: snapshot, Tools: []coremodel.Tool{{Name: call.Name, InputSchema: map[string]any{"type": "object"}}}, Execute: func(context.Context, ToolExecutionRequest) (ToolResult, error) {
+		executions++
+		return ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{}`}, nil
+	}}
+	service, err := NewService(store, model, extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+		return []ResolvedExtension{resolved}, nil
+	}), snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	if model.runs != 0 || executions != 0 || store.failedCode != "tool_dispatch_uncertain" || store.turn.State != TurnFailed {
+		t.Fatalf("model_runs=%d executions=%d code=%q state=%s", model.runs, executions, store.failedCode, store.turn.State)
+	}
+	var results, terminalErrors int
+	for _, event := range store.events {
+		if event.Kind == TurnEventToolResult && event.ToolResult != nil && event.ToolResult.CallID == call.ID {
+			results++
+		}
+		if event.Kind == TurnEventError && event.ErrorCode == "tool_dispatch_uncertain" {
+			terminalErrors++
+		}
+	}
+	if results != 1 || terminalErrors != 1 {
+		t.Fatalf("terminal results=%d errors=%d events=%+v", results, terminalErrors, store.events)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func createSandboxLaneTask(t *testing.T, ctx context.Context, tasks *CoreTaskStore, target coretask.ExtensionExecutionTarget, availableAt time.Time) coretask.Task {
@@ -78,74 +79,108 @@ func createSandboxLaneTask(t *testing.T, ctx context.Context, tasks *CoreTaskSto
 }
 
 func TestCoreTaskLocalSandboxLaneSkipsBusyLocalAndReclaimsExpiredLease(t *testing.T) {
-	ctx, store, _, closeFixture := coreTaskScheduleFixture(t)
+	ctx, store, _, closeFixture := corePG18Fixture(t)
 	defer closeFixture()
 	tasks := NewCoreTaskStore(store)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	firstLocal := createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetLocalSandbox, now)
-	secondLocal := createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetLocalSandbox, now.Add(time.Millisecond))
-	staticSkill := createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetStaticSkill, now.Add(2*time.Millisecond))
-	remote := createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetRemoteExtension, now.Add(3*time.Millisecond))
+	locals := []coretask.Task{
+		createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetLocalSandbox, now),
+		createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetLocalSandbox, now.Add(time.Millisecond)),
+		createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetLocalSandbox, now.Add(2*time.Millisecond)),
+		createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetLocalSandbox, now.Add(3*time.Millisecond)),
+	}
+	staticSkill := createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetStaticSkill, now.Add(4*time.Millisecond))
+	remote := createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetRemoteExtension, now.Add(5*time.Millisecond))
 	// Change the mutable live projection after task creation. The sealed task
 	// must remain in the local lane even though the installation now advertises
 	// a different active shape.
-	if _, err := store.pool.Exec(ctx, `UPDATE core_extension_installations SET enabled=false WHERE installation_id=$1`, firstLocal.Spec.Payload.Extension.InstallationID); err != nil {
+	if _, err := store.pool.Exec(ctx, `UPDATE core_extension_installations SET enabled=false WHERE installation_id=$1`, locals[0].Spec.Payload.Extension.InstallationID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE core_extension_versions SET version_json=jsonb_set(version_json,'{execution}','{"remote":{"url":"https://changed.example/mcp"}}'::jsonb) WHERE installation_id=$1`, firstLocal.Spec.Payload.Extension.InstallationID); err != nil {
+	if _, err := store.pool.Exec(ctx, `UPDATE core_extension_versions SET version_json=jsonb_set(version_json,'{execution}','{"remote":{"url":"https://changed.example/mcp"}}'::jsonb) WHERE installation_id=$1`, locals[0].Spec.Payload.Extension.InstallationID); err != nil {
 		t.Fatal(err)
 	}
 
-	claimedLocal, firstLease, err := tasks.ClaimNextDue(ctx, "local-a", now.Add(time.Second), time.Minute, 4)
-	if err != nil || claimedLocal.ID != firstLocal.ID {
+	claimedLocal, firstLease, err := tasks.ClaimNextDue(ctx, "local-a", now.Add(time.Second), time.Minute, 8)
+	if err != nil || claimedLocal.ID != locals[0].ID {
 		t.Fatalf("first local claim=%+v err=%v", claimedLocal, err)
+	}
+	for i := 1; i < localSandboxMaxConcurrent; i++ {
+		claimed, _, claimErr := tasks.ClaimNextDue(ctx, "local-"+uuid.NewString(), now.Add(time.Second), 3*time.Minute, 8)
+		if claimErr != nil || claimed.ID != locals[i].ID {
+			t.Fatalf("local slot %d claim=%+v err=%v", i+1, claimed, claimErr)
+		}
 	}
 	// Recreate the store wrapper to prove the lane is entirely durable and does
 	// not rely on an in-memory semaphore surviving restart.
 	restarted := NewCoreTaskStore(store)
-	claimedStatic, _, err := restarted.ClaimNextDue(ctx, "static-skill-a", now.Add(time.Second), time.Minute, 4)
+	claimedStatic, _, err := restarted.ClaimNextDue(ctx, "static-skill-a", now.Add(time.Second), 3*time.Minute, 8)
 	if err != nil || claimedStatic.ID != staticSkill.ID {
 		t.Fatalf("static Skill bypass claim=%+v err=%v", claimedStatic, err)
 	}
-	claimedRemote, _, err := restarted.ClaimNextDue(ctx, "remote-a", now.Add(time.Second), time.Minute, 4)
+	claimedRemote, _, err := restarted.ClaimNextDue(ctx, "remote-a", now.Add(time.Second), 3*time.Minute, 8)
 	if err != nil || claimedRemote.ID != remote.ID {
 		t.Fatalf("remote bypass claim=%+v err=%v", claimedRemote, err)
 	}
-	if _, _, err = restarted.ClaimNextDue(ctx, "local-blocked", now.Add(time.Second), time.Minute, 4); !errors.Is(err, coretask.ErrNotFound) {
-		t.Fatalf("second local was not queued while lane busy: %v", err)
+	if _, _, err = restarted.ClaimNextDue(ctx, "local-blocked", now.Add(time.Second), time.Minute, 8); !errors.Is(err, coretask.ErrNotFound) {
+		t.Fatalf("fourth local was not queued while three slots were busy: %v", err)
 	}
-	queued, err := restarted.GetTask(ctx, secondLocal.ID)
+	queued, err := restarted.GetTask(ctx, locals[3].ID)
 	if err != nil || queued.Status != coretask.StatusQueued || queued.Lease != nil {
 		t.Fatalf("blocked local task=%+v err=%v", queued, err)
 	}
 
-	reclaimed, lease, err := restarted.ClaimNextDue(ctx, "local-reclaimer", now.Add(2*time.Minute), time.Minute, 4)
-	if err != nil || reclaimed.ID != firstLocal.ID || lease.Epoch <= firstLease.Epoch {
+	reclaimAt := now.Add(2 * time.Minute)
+	reclaimed, lease, err := restarted.ClaimNextDue(ctx, "local-reclaimer", reclaimAt, time.Minute, 8)
+	if err != nil || reclaimed.ID != locals[0].ID || lease.Epoch <= firstLease.Epoch {
 		t.Fatalf("expired local reclaim=%+v lease=%+v err=%v", reclaimed, lease, err)
+	}
+	var runningLocal int
+	if err = store.pool.QueryRow(ctx, `SELECT count(*) FROM core_tasks
+		WHERE deleted_at IS NULL AND status='running' AND lease_expires_at>$1
+		  AND task_kind='extension'
+		  AND payload_json#>>'{extension,execution_target}'='local_sandbox'`, reclaimAt).Scan(&runningLocal); err != nil {
+		t.Fatal(err)
+	}
+	if runningLocal != localSandboxMaxConcurrent {
+		t.Fatalf("reclaim oversold local lane: running=%d", runningLocal)
 	}
 }
 
-func TestCoreTaskLocalSandboxLaneConcurrentClaimsStartOneLocalTask(t *testing.T) {
-	ctx, store, _, closeFixture := coreTaskScheduleFixture(t)
+func TestCoreTaskLocalSandboxLaneConcurrentClaimsStartThreeLocalTasks(t *testing.T) {
+	if localSandboxMaxConcurrent != 3 {
+		t.Fatalf("local sandbox slots=%d, want 3", localSandboxMaxConcurrent)
+	}
+	ctx, store, _, closeFixture := corePG18Fixture(t)
 	defer closeFixture()
 	tasks := NewCoreTaskStore(store)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetLocalSandbox, now)
-	createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetLocalSandbox, now.Add(time.Millisecond))
+	for i := 0; i < localSandboxMaxConcurrent+1; i++ {
+		createSandboxLaneTask(t, ctx, tasks, coretask.ExtensionExecutionTargetLocalSandbox, now.Add(time.Duration(i)*time.Millisecond))
+	}
 
 	type claimResult struct {
 		task coretask.Task
 		err  error
 	}
 	start := make(chan struct{})
-	results := make(chan claimResult, 2)
+	results := make(chan claimResult, localSandboxMaxConcurrent+1)
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
+	for i := 0; i < localSandboxMaxConcurrent+1; i++ {
 		wg.Add(1)
 		go func(holder string) {
 			defer wg.Done()
 			<-start
-			task, _, err := NewCoreTaskStore(store).ClaimNextDue(ctx, holder, now.Add(time.Second), time.Minute, 4)
+			var task coretask.Task
+			var err error
+			for attempt := 0; attempt < 10; attempt++ {
+				task, _, err = NewCoreTaskStore(store).ClaimNextDue(ctx, holder, now.Add(time.Second), time.Minute, 8)
+				var pgErr *pgconn.PgError
+				if !errors.As(err, &pgErr) || (pgErr.Code != "40001" && pgErr.Code != "40P01") {
+					break
+				}
+				time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+			}
 			results <- claimResult{task: task, err: err}
 		}(uuid.NewString())
 	}
@@ -153,25 +188,34 @@ func TestCoreTaskLocalSandboxLaneConcurrentClaimsStartOneLocalTask(t *testing.T)
 	wg.Wait()
 	close(results)
 
-	succeeded := 0
+	succeeded, queued := 0, 0
+	claimedIDs := make(map[string]struct{})
 	for result := range results {
 		if result.err == nil {
 			succeeded++
 			if result.task.Spec.Payload.Extension == nil || result.task.Spec.Payload.Extension.ExecutionTarget != coretask.ExtensionExecutionTargetLocalSandbox {
 				t.Fatalf("claimed unexpected task=%+v", result.task)
 			}
+			if _, duplicate := claimedIDs[result.task.ID]; duplicate {
+				t.Fatalf("task claimed twice: %s", result.task.ID)
+			}
+			claimedIDs[result.task.ID] = struct{}{}
+		} else if errors.Is(result.err, coretask.ErrNotFound) {
+			queued++
+		} else {
+			t.Fatalf("concurrent claim failed: %v", result.err)
 		}
 	}
-	var running, queued int
+	var running, queuedRows int
 	if err := store.pool.QueryRow(ctx, `SELECT
 		count(*) FILTER (WHERE status='running'),
 		count(*) FILTER (WHERE status='queued')
 		FROM core_tasks
 		WHERE task_kind='extension'
-		  AND payload_json#>>'{extension,execution_target}'='local_sandbox'`).Scan(&running, &queued); err != nil {
+		  AND payload_json#>>'{extension,execution_target}'='local_sandbox'`).Scan(&running, &queuedRows); err != nil {
 		t.Fatal(err)
 	}
-	if succeeded != 1 || running != 1 || queued != 1 {
-		t.Fatalf("claims succeeded=%d running=%d queued=%d", succeeded, running, queued)
+	if succeeded != localSandboxMaxConcurrent || queued != 1 || running != localSandboxMaxConcurrent || queuedRows != 1 {
+		t.Fatalf("claims succeeded=%d not_found=%d running=%d queued=%d", succeeded, queued, running, queuedRows)
 	}
 }

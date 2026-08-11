@@ -223,9 +223,11 @@ Executable Extension and Conversation Tool Tasks seal one closed execution
 target into their durable payload when they are created: `local_sandbox` for
 stdio MCPs and executable Skills, `remote_extension` for remote MCP calls, or
 `static_skill` for non-executable Skill reads. Claiming never reclassifies a
-Task from mutable installation/version projections. At most one unexpired
-`local_sandbox` Task may run at a time; additional local work remains queued,
-while remote calls, static Skill reads, and unrelated Task kinds remain
+Task from mutable installation/version projections. The current fixed local
+sandbox capacity is three slots, shared by the durable claim lane and Extension
+Runner rather than exposed as another Task or YAML setting. At most three
+unexpired `local_sandbox` Tasks may run at a time; additional local work remains
+queued, while remote calls, static Skill reads, and unrelated Task kinds remain
 claimable. An expired local lease is reclaimable through the normal durable
 lease epoch path after restart.
 Schedules create independent Tasks for one-time or Cron occurrences. Core v1
@@ -250,6 +252,21 @@ terminal model response, cancellation, the task execution deadline/context,
 or a durable uncertain/error outcome ends execution. The nonnegative round
 ordinal is only durable ledger and replay identity. Core v1 does not expose
 Eino graphs as a user-authored workflow surface.
+
+A durable model round may return multiple tool calls. Core persists the exact
+model result once and processes calls in producer order, retaining that batch
+across read-only execution, confirmation pauses, restart, and retry. Built-in
+and remote calls do not consume a local-sandbox lane; executable local calls
+enter the existing durable Task lane and are admitted only by its configured
+concurrency limit. A model round is released for the next provider dispatch
+only after every call in the retained batch has a durable result.
+Immediate read-only dispatch uses a compact private pending/dispatched/terminal
+authority inside the current versioned turn-dispatch envelope; it never consumes
+or leaks a public conversation event sequence. Public history contains only the
+exact tool call and terminal result. This is a current-only envelope: rollout
+must first prove there are no nonterminal turns carrying the superseded raw
+model-result shape, or explicitly terminalize those turns before the new binary
+may claim them.
 
 Workload Tasks use that same revision/attempt/lease-epoch fencing path. The
 local runner receives only a descriptor request bound to the dispatch; it

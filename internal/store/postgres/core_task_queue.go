@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const localSandboxMaxConcurrent = 3
+
 // localSandboxTaskTargetSQL reads only the immutable execution target sealed
 // into the task payload at creation. Installation and version projections are
 // deliberately absent from claim-time scheduling.
@@ -35,8 +37,8 @@ func localSandboxTaskTargetSQL(alias string) string {
 // ClaimNextDue atomically dequeues FIFO work, reclaims expired leases, and
 // converges overdue waiting-user tasks before they can reach a provider. The
 // runtime-concurrency singleton is always locked before task candidates. That
-// same transaction derives the one-process local sandbox lane from durable,
-// unexpired running tasks, so restart cannot create a second local execution.
+// same transaction derives the three-slot local sandbox lane from durable,
+// unexpired running tasks, so restart cannot oversell local execution slots.
 func (s *CoreTaskStore) ClaimNextDue(ctx context.Context, holder string, at time.Time, ttl time.Duration, max int) (coretask.Task, coretask.Lease, error) {
 	if holder == "" || ttl <= 0 || max <= 0 || at.IsZero() {
 		return coretask.Task{}, coretask.Lease{}, coretask.ErrInvalid
@@ -62,18 +64,18 @@ func (s *CoreTaskStore) ClaimNextDue(ctx context.Context, holder string, at time
 		       OR (candidate.status='waiting_user' AND candidate.execution_deadline_at IS NOT NULL AND candidate.execution_deadline_at <= $1))
 		  AND (candidate.status='waiting_user'
 		       OR NOT %s
-		       OR NOT EXISTS (
-				SELECT 1
+		       OR (
+				SELECT count(*)
 				FROM core_tasks running_local
 				WHERE running_local.deleted_at IS NULL
 				  AND running_local.status='running'
 				  AND running_local.lease_expires_at > $1
 				  AND %s
-		       ))
+		       ) < $2)
 		ORDER BY CASE WHEN candidate.status='running' THEN 0 WHEN candidate.status='waiting_user' THEN 1 ELSE 2 END,
 		         candidate.available_at,candidate.created_at,candidate.task_id
 		FOR UPDATE OF candidate SKIP LOCKED LIMIT 1`, localSandboxTaskTargetSQL("candidate"), localSandboxTaskTargetSQL("running_local"))
-	e = tx.QueryRow(ctx, claimSQL, at.UTC()).Scan(&id)
+	e = tx.QueryRow(ctx, claimSQL, at.UTC(), localSandboxMaxConcurrent).Scan(&id)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return coretask.Task{}, coretask.Lease{}, coretask.ErrNotFound
 	}

@@ -86,7 +86,7 @@ func (s *PostgresStore) List(ctx context.Context, owner, kind string, filter map
 		index++
 	}
 	args = append(args, limit)
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(`SELECT owner_id,resource_type,resource_id::text,revision,status,digest,payload_json,created_at,updated_at FROM core_execution_v2_records WHERE %s ORDER BY resource_id LIMIT $%d`, where, index))
+	rows, err := s.pool.Query(ctx, fmt.Sprintf(`SELECT owner_id,resource_type,resource_id::text,revision,status,digest,payload_json,created_at,updated_at FROM core_execution_v2_records WHERE %s ORDER BY resource_id LIMIT $%d`, where, index), args...)
 	if err != nil {
 		return nil, "", err
 	}

@@ -1222,6 +1222,19 @@ func (s *Service) runTurnSupervisor(ctx context.Context, id string) {
 		if turn.State == TurnCompleted || turn.State == TurnCanceled || turn.State == TurnFailed {
 			return
 		}
+		if turn.State == TurnAccepted {
+			if recovery, ok := s.turns.(ConversationToolRecoveryStore); ok {
+				if attempt, observeErr := recovery.ObserveConversationTool(ctx, id); observeErr == nil && (attempt.State == "completed" || attempt.State == "denied" || attempt.State == "canceled") {
+					if resumeErr := recovery.ResumeConversationTurn(ctx, id); resumeErr != nil {
+						if !waitTurnSupervisor(ctx, backoff, wake) {
+							return
+						}
+						backoff = nextTurnSupervisorBackoff(backoff)
+						continue
+					}
+				}
+			}
+		}
 		if turn.State == TurnWaitingConfirmation {
 			if recovery, ok := s.turns.(ConversationToolRecoveryStore); ok {
 				attempt, observeErr := recovery.ObserveConversationTool(ctx, id)
@@ -1461,27 +1474,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
 		return
 	}
-	if err = s.appendReadOnlyTurnToolHistory(ctx, turn, &conv); err != nil {
+	toolCallAuthorities, err := s.appendTurnToolHistory(ctx, turn, &conv)
+	if err != nil {
 		_, _ = s.turns.FailTurn(ctx, lease, "tool_history_unavailable", "durable tool history is unavailable")
 		return
 	}
 	if turn.ExpectedRevision != nil && conv.Revision != *turn.ExpectedRevision {
 		_, _ = s.turns.FailTurn(ctx, lease, "revision_conflict", "conversation revision changed")
 		return
-	}
-	// A completed/denied conversation-tool attempt is part of the next model
-	// round's input. It is reconstructed from the bounded Agent-side result;
-	// the intermediate assistant/tool messages are not exposed as Message
-	// Server history until the final turn commit.
-	if recovery, ok := s.turns.(ConversationToolRecoveryStore); ok {
-		if attempt, observeErr := recovery.ObserveConversationTool(ctx, id); observeErr == nil && (attempt.State == "completed" || attempt.State == "denied" || attempt.State == "canceled") {
-			content := conversationToolAttemptContent(attempt)
-			assistant := Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "", ToolCalls: []ToolCall{{ID: attempt.CallID, Name: attempt.ToolName, Arguments: `{}`}}, CreatedAt: nextMessageTime(conv, s.clock()), ModelProfileID: turn.ProfileID}
-			tool := Message{ID: uuid.NewString(), Role: RoleTool, ToolResults: []ToolResult{{CallID: attempt.CallID, ToolName: attempt.ToolName, Content: content, IsError: attempt.State != "completed"}}, CreatedAt: nextMessageTime(conv, s.clock().Add(time.Nanosecond)), ModelProfileID: turn.ProfileID}
-			conv.Messages = append(conv.Messages, assistant, tool)
-			_ = recovery.ResumeConversationTurn(ctx, id)
-			turn.State = TurnAccepted
-		}
 	}
 	dispatchStore, durableDispatch := s.turns.(TurnDispatchStore)
 	child, cancel := context.WithCancel(ctx)
@@ -1625,119 +1625,149 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				if len(calls) == 0 {
 					calls = out.result.Message.ToolCalls
 				}
-				hasIntrinsic := false
-				for _, call := range calls {
-					if coremodel.IsIntrinsicToolName(call.Name) {
-						hasIntrinsic = true
-						break
+				seenCallIDs := make(map[string]struct{}, len(calls))
+				for index, call := range calls {
+					if call.Validate() != nil {
+						_, _ = s.turns.FailTurn(ctx, lease, "invalid_tool_call", "model returned an invalid tool call")
+						return
+					}
+					if _, duplicate := seenCallIDs[call.ID]; duplicate {
+						_, _ = s.turns.FailTurn(ctx, lease, "duplicate_tool_call", "model returned a duplicate tool call")
+						return
+					}
+					if previous, exists := toolCallAuthorities[call.ID]; exists && previous.state == turnToolCallTerminal && !replayed {
+						_, _ = s.turns.FailTurn(ctx, lease, "duplicate_tool_call", "model reused a completed tool call identity")
+						return
+					}
+					seenCallIDs[call.ID] = struct{}{}
+					if coremodel.IsIntrinsicToolName(call.Name) && index != len(calls)-1 {
+						_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_order_invalid", "Core intrinsic tool must be the final call in a model round")
+						return
 					}
 				}
-				if len(calls) != 1 {
-					if hasIntrinsic {
-						_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_batch_rejected", "Core intrinsic tool must be the only call in a model round")
-					} else {
-						_, _ = s.turns.FailTurn(ctx, lease, "tool_batch_rejected", "Conversation tool must be the only call in a durable model round")
+				if durableDispatch && !replayed {
+					if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
+						return
 					}
+				}
+				roundStore, ordered := s.turns.(OrderedConversationToolStore)
+				if !ordered {
+					_, _ = s.turns.FailTurn(ctx, lease, "tool_store_unavailable", "ordered conversation tool store is unavailable")
 					return
 				}
-				call := calls[0]
-				if coremodel.IsIntrinsicToolName(call.Name) {
-					var intrinsic *ResolvedIntrinsic
-					for index := range intrinsicTools {
-						if intrinsicTools[index].Tool.Name == call.Name {
-							intrinsic = &intrinsicTools[index]
+				for callIndex, call := range calls {
+					if previous, complete := toolCallAuthorities[call.ID]; complete && previous.state == turnToolCallTerminal {
+						continue
+					}
+					if coremodel.IsIntrinsicToolName(call.Name) {
+						var intrinsic *ResolvedIntrinsic
+						for index := range intrinsicTools {
+							if intrinsicTools[index].Tool.Name == call.Name {
+								intrinsic = &intrinsicTools[index]
+								break
+							}
+						}
+						if intrinsic == nil {
+							_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_unavailable", "Core intrinsic tool is unavailable")
+							return
+						}
+						arguments, argumentsErr := canonicalJSON(call.Arguments, MaxToolArgumentsBytes)
+						if argumentsErr != nil {
+							_, _ = s.turns.FailTurn(ctx, lease, "invalid_intrinsic_arguments", "Core intrinsic arguments are invalid")
+							return
+						}
+						intrinsicResult, intrinsicErr := intrinsic.Execute(ctx, IntrinsicExecutionRequest{
+							Lease: lease, Call: call, CanonicalArguments: arguments,
+							ConversationRevision: conv.Revision,
+						})
+						if intrinsicErr != nil || !intrinsicResult.TurnCommitted {
+							code, summary := intrinsicTerminalFailure(call.Name, intrinsicErr)
+							_, _ = s.turns.FailTurn(ctx, lease, code, summary)
+						}
+						return
+					}
+					toolStore, ok := s.turns.(ConversationToolStore)
+					if !ok || len(turn.ExtensionSnapshots) == 0 {
+						_, _ = s.turns.FailTurn(ctx, lease, "extensions_unavailable", "conversation tool store is unavailable")
+						return
+					}
+					var bound ExtensionExecutionSnapshot
+					var executable *ResolvedExtension
+					for _, candidate := range turn.ExtensionSnapshots {
+						if containsTool(candidate.ToolNames, call.Name) {
+							if bound.Selection.ID != "" {
+								_, _ = s.turns.FailTurn(ctx, lease, "tool_conflict", "tool name is not uniquely bound")
+								return
+							}
+							bound = candidate
+						}
+					}
+					if bound.Selection.ID == "" {
+						_, _ = s.turns.FailTurn(ctx, lease, "tool_unavailable", "requested tool is not in the accepted snapshot")
+						return
+					}
+					if err = roundStore.RecordConversationToolCall(ctx, lease, call); err != nil {
+						return
+					}
+					for index := range resolvedExtensions {
+						candidate := &resolvedExtensions[index]
+						if candidate.Selection.ID == bound.Selection.ID && containsTool(candidate.Snapshot.ToolNames, call.Name) {
+							executable = candidate
 							break
 						}
 					}
-					if intrinsic == nil {
-						_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_unavailable", "Core intrinsic tool is unavailable")
-						return
-					}
-					arguments, argumentsErr := canonicalJSON(call.Arguments, MaxToolArgumentsBytes)
-					if argumentsErr != nil {
-						_, _ = s.turns.FailTurn(ctx, lease, "invalid_intrinsic_arguments", "Core intrinsic arguments are invalid")
-						return
-					}
-					if durableDispatch && !replayed {
-						if recordErr := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); recordErr != nil {
+					if bound.ReadOnly && executable != nil && executable.Execute != nil {
+						execute, dispatchErr := roundStore.BeginConversationToolDispatch(ctx, lease, call)
+						if dispatchErr != nil {
 							return
 						}
-					}
-					intrinsicResult, intrinsicErr := intrinsic.Execute(ctx, IntrinsicExecutionRequest{
-						Lease: lease, Call: call, CanonicalArguments: arguments,
-						ConversationRevision: conv.Revision,
-					})
-					if intrinsicErr != nil || !intrinsicResult.TurnCommitted {
-						code, summary := intrinsicTerminalFailure(call.Name, intrinsicErr)
-						_, _ = s.turns.FailTurn(ctx, lease, code, summary)
-					}
-					return
-				}
-				toolStore, ok := s.turns.(ConversationToolStore)
-				if !ok || len(turn.ExtensionSnapshots) == 0 {
-					_, _ = s.turns.FailTurn(ctx, lease, "extensions_unavailable", "conversation tool store is unavailable")
-					return
-				}
-				var bound ExtensionExecutionSnapshot
-				var executable *ResolvedExtension
-				for _, candidate := range turn.ExtensionSnapshots {
-					if containsTool(candidate.ToolNames, call.Name) {
-						if bound.Selection.ID != "" {
-							_, _ = s.turns.FailTurn(ctx, lease, "tool_conflict", "tool name is not uniquely bound")
+						if !execute {
+							_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "tool_dispatch_uncertain", "read-only tool dispatch outcome is unknown")
 							return
 						}
-						bound = candidate
-					}
-				}
-				if bound.Selection.ID == "" {
-					_, _ = s.turns.FailTurn(ctx, lease, "tool_unavailable", "requested tool is not in the accepted snapshot")
-					return
-				}
-				for index := range resolvedExtensions {
-					candidate := &resolvedExtensions[index]
-					if candidate.Selection.ID == bound.Selection.ID && containsTool(candidate.Snapshot.ToolNames, call.Name) {
-						executable = candidate
-						break
-					}
-				}
-				if bound.ReadOnly && executable != nil && executable.Execute != nil {
-					if durableDispatch && !replayed {
-						if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
+						result, executeErr := executable.Execute(child, ToolExecutionRequest{Call: call})
+						if executeErr != nil {
+							_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "tool_execution_failed", "read-only tool execution failed")
 							return
 						}
+						if result.CallID == "" {
+							result.CallID = call.ID
+						}
+						result.ToolName = call.Name
+						if result.Validate() != nil || result.CallID != call.ID {
+							_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "invalid_tool_result", "read-only tool returned an invalid result")
+							return
+						}
+						if err = roundStore.RecordConversationToolResult(ctx, lease, result); err != nil {
+							return
+						}
+						toolCallAuthorities[call.ID] = turnToolCallAuthority{call: call, state: turnToolCallTerminal, result: &result}
+						continue
 					}
-					result, executeErr := executable.Execute(child, ToolExecutionRequest{Call: call})
-					if executeErr != nil {
-						_, _ = s.turns.FailTurn(ctx, lease, "tool_execution_failed", "read-only tool execution failed")
+					args, argsErr := canonicalJSON(call.Arguments, MaxToolArgumentsBytes)
+					if argsErr != nil {
+						_, _ = s.turns.FailTurn(ctx, lease, "invalid_tool_arguments", "tool arguments are invalid")
 						return
 					}
-					readOnlyStore, ok := s.turns.(ReadOnlyConversationToolStore)
-					if !ok {
-						_, _ = s.turns.FailTurn(ctx, lease, "tool_store_unavailable", "read-only tool store is unavailable")
-						return
+					argsDigest := digest(string(args))
+					attemptID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-tool:"+turn.RequestID+":"+call.ID)).String()
+					round := uint32(callIndex)
+					if recovery, recoveryOK := s.turns.(ConversationToolRecoveryStore); recoveryOK {
+						if previous, previousErr := recovery.ObserveConversationTool(ctx, id); previousErr == nil {
+							if previous.Round >= round {
+								round = previous.Round + 1
+							}
+						}
 					}
-					if _, err = readOnlyStore.ContinueTurnAfterReadOnlyTool(ctx, lease, call, result); err != nil {
+					attemptID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("conversation-tool:%s:%d:%s", turn.RequestID, round, call.ID))).String()
+					_, _, _, prepErr := toolStore.PrepareConversationTool(ctx, PrepareToolCommand{Lease: lease, Round: round, Call: call, Snapshot: bound, CanonicalArguments: args, ArgumentsDigest: argsDigest, SafeSummary: "conversation tool call " + call.Name, IdempotencyKey: attemptID, ExpiresAt: s.clock().Add(10 * time.Minute)})
+					if prepErr != nil {
+						_, _ = s.turns.FailTurn(ctx, lease, "tool_prepare_failed", "conversation tool preparation failed")
 						return
 					}
 					return
 				}
-				args, argsErr := canonicalJSON(call.Arguments, MaxToolArgumentsBytes)
-				if argsErr != nil {
-					_, _ = s.turns.FailTurn(ctx, lease, "invalid_tool_arguments", "tool arguments are invalid")
-					return
-				}
-				argsDigest := digest(string(args))
-				attemptID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-tool:"+turn.RequestID+":"+call.ID)).String()
-				round := uint32(0)
-				if recovery, recoveryOK := s.turns.(ConversationToolRecoveryStore); recoveryOK {
-					if previous, previousErr := recovery.ObserveConversationTool(ctx, id); previousErr == nil {
-						round = previous.Round + 1
-					}
-				}
-				attemptID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("conversation-tool:%s:%d:%s", turn.RequestID, round, call.ID))).String()
-				_, _, _, prepErr := toolStore.PrepareConversationTool(ctx, PrepareToolCommand{Lease: lease, Round: round, Call: call, Snapshot: bound, CanonicalArguments: args, ArgumentsDigest: argsDigest, SafeSummary: "conversation tool call " + call.Name, IdempotencyKey: attemptID, ExpiresAt: s.clock().Add(10 * time.Minute)})
-				if prepErr != nil {
-					_, _ = s.turns.FailTurn(ctx, lease, "tool_prepare_failed", "conversation tool preparation failed")
+				if _, err = roundStore.CompleteConversationToolRound(ctx, lease); err != nil {
 					return
 				}
 				return
@@ -1846,45 +1876,76 @@ func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots [
 	return resolved, nil
 }
 
-func (s *Service) appendReadOnlyTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation) error {
+type turnToolCallState uint8
+
+const (
+	turnToolCallPending turnToolCallState = iota + 1
+	turnToolCallTerminal
+)
+
+type turnToolCallAuthority struct {
+	call   ToolCall
+	state  turnToolCallState
+	result *ToolResult
+}
+
+func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation) (map[string]turnToolCallAuthority, error) {
 	if conversation == nil {
-		return ErrInvalid
+		return nil, ErrInvalid
 	}
-	hasReadOnly := false
-	for _, snapshot := range turn.ExtensionSnapshots {
-		if snapshot.ReadOnly {
-			hasReadOnly = true
+	if len(turn.ExtensionSnapshots) == 0 {
+		return make(map[string]turnToolCallAuthority), nil
+	}
+	const pageSize = 1000
+	var events []TurnEvent
+	for cursor := int64(0); ; {
+		page, err := s.turns.LoadTurnEvents(ctx, turn.ID, cursor, pageSize)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		events = append(events, page...)
+		next := page[len(page)-1].Sequence
+		if next <= cursor {
+			return nil, ErrConflict
+		}
+		cursor = next
+		if len(page) < pageSize {
 			break
 		}
 	}
-	if !hasReadOnly {
-		return nil
-	}
-	events, err := s.turns.LoadTurnEvents(ctx, turn.ID, 0, 1000)
-	if err != nil {
-		return err
-	}
-	calls := make(map[string]ToolCall)
+	authorities := make(map[string]turnToolCallAuthority)
 	for _, event := range events {
-		if event.Kind == TurnEventToolCall && event.ToolCall != nil {
-			calls[event.ToolCall.ID] = *event.ToolCall
-			continue
+		switch event.Kind {
+		case TurnEventToolCall:
+			if event.ToolCall == nil || event.ToolCall.Validate() != nil {
+				return nil, ErrConflict
+			}
+			if _, exists := authorities[event.ToolCall.ID]; exists {
+				return nil, ErrConflict
+			}
+			authorities[event.ToolCall.ID] = turnToolCallAuthority{call: *event.ToolCall, state: turnToolCallPending}
+		case TurnEventToolResult:
+			if event.ToolResult == nil || event.ToolResult.Validate() != nil {
+				return nil, ErrConflict
+			}
+			authority, exists := authorities[event.ToolResult.CallID]
+			if !exists || authority.state == turnToolCallTerminal || event.ToolResult.ToolName != authority.call.Name {
+				return nil, ErrConflict
+			}
+			result := *event.ToolResult
+			authority.state, authority.result = turnToolCallTerminal, &result
+			authorities[event.ToolResult.CallID] = authority
+			createdAt := nextMessageTime(*conversation, event.CreatedAt)
+			conversation.Messages = append(conversation.Messages,
+				Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-call:"+turn.ID+":"+authority.call.ID)).String(), Role: RoleAssistant, ToolCalls: []ToolCall{authority.call}, CreatedAt: createdAt, ModelProfileID: turn.ProfileID},
+				Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-result:"+turn.ID+":"+authority.call.ID)).String(), Role: RoleTool, ToolResults: []ToolResult{result}, CreatedAt: createdAt.Add(time.Nanosecond), ModelProfileID: turn.ProfileID},
+			)
 		}
-		if event.Kind != TurnEventToolResult || event.ToolResult == nil {
-			continue
-		}
-		call, ok := calls[event.ToolResult.CallID]
-		if !ok {
-			return ErrConflict
-		}
-		createdAt := nextMessageTime(*conversation, event.CreatedAt)
-		conversation.Messages = append(conversation.Messages,
-			Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-read-only-call:"+turn.ID+":"+call.ID)).String(), Role: RoleAssistant, ToolCalls: []ToolCall{call}, CreatedAt: createdAt, ModelProfileID: turn.ProfileID},
-			Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-read-only-result:"+turn.ID+":"+call.ID)).String(), Role: RoleTool, ToolResults: []ToolResult{*event.ToolResult}, CreatedAt: createdAt.Add(time.Nanosecond), ModelProfileID: turn.ProfileID},
-		)
-		delete(calls, call.ID)
 	}
-	return nil
+	return authorities, nil
 }
 
 func modelConversationForTurn(conv Conversation, insertAt int, turn Turn, recalledMemory string, now time.Time) (Conversation, error) {

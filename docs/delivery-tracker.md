@@ -36,8 +36,10 @@ contract](message-server-integration-development-contract.md), and
   `agent.image_tools.v1`, with dedicated bounded PostgreSQL uploads, atomic
   consume-and-byte-clear, strict Tool-profile image-modality gates, fixed safe
   prompts, and no conversation/history/Task persistence.
-- MCP/Skill lifecycle with isolated extension-runner execution. Official
-  Registry remotes are accepted only when the manifest declares exactly one
+- MCP/Skill lifecycle with isolated extension-runner execution and one fixed
+  three-slot local sandbox capacity shared by durable claim admission and the
+  runner process. Official Registry remotes are accepted only when the manifest
+  declares exactly one
   header-free `streamable-http` endpoint; other header or transport shapes
   fail closed because the current runtime cannot reproduce them losslessly.
 - Knowledge mounts, uploads, memory, indexing, semantic-search composition,
@@ -111,6 +113,19 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-11**, durable Native conversation rounds accepted ordered
+  multi-tool batches. Focused unit and PostgreSQL 18 tests covered a built-in
+  Web Search result followed by a confirmed local MCP call in the same retained
+  model result, a compact private at-most-once dispatch fence, real
+  confirm/claim/begin/finish service restart recovery, strict call/result
+  pairing, next-round release only after every result, and remote conversation
+  work bypassing the durable local sandbox lane. The rollout gate requires zero
+  nonterminal turns using the superseded raw dispatch-result shape.
+- On **2026-08-11**, focused PostgreSQL 18 + pgvector tests concurrently
+  claimed four local sandbox Tasks and proved exactly three running plus one
+  queued, remote/static lane bypass, durable restart behavior, and lease
+  reclaim without overselling. Extension Runner capacity and its aggregate
+  1 GiB container-memory bound also passed focused Linux tests.
 - On **2026-08-08**, the release catalog preflight checked all 66 current
   Message Server readiness-baseline actions against 11 actual Agent descriptor
   constructors with no remaining missing binding, operation, or schema digest.

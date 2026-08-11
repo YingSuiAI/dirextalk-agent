@@ -13,6 +13,55 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestServeV2ExecutionCapacityMatchesThreeSlotContainerBudget(t *testing.T) {
+	const containerMemoryBytes = 1 << 30
+	if serverMaxExecutions != 3 {
+		t.Fatalf("execution slots=%d, want 3", serverMaxExecutions)
+	}
+	if serverMaxExecutions*serverMaxExecutionMemoryBytes >= containerMemoryBytes {
+		t.Fatalf("execution memory budget leaves no runner headroom in 1 GiB: slots=%d per_slot=%d", serverMaxExecutions, serverMaxExecutionMemoryBytes)
+	}
+}
+
+func TestServeV2AllowsThirdExecutionSlot(t *testing.T) {
+	request := sandboxRequest()
+	packet, err := EncodeRequestV2(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientFD, serverConn := serverSocketpair(t)
+	defer unix.Close(clientFD)
+	if _, err = unix.SendmsgN(clientFD, packet, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	slots := make(chan struct{}, serverMaxExecutions)
+	for i := 0; i < serverMaxExecutions-1; i++ {
+		slots <- struct{}{}
+	}
+	done := make(chan struct{})
+	go func() {
+		(Server{Authorizer: UIDAllowlist{uint32(os.Geteuid()): {}}, Registry: NewRunRegistry()}).serveV2Connection(context.Background(), serverConn, slots)
+		close(done)
+	}()
+	buf := make([]byte, MaxV2PacketBytes)
+	n, err := unix.Read(clientFD, buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := ReadStatusV1Datagram(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.RunID != request.RunID || status.Phase != PhaseFailed || status.Error != ErrorUnavailableBackend || status.Status != "" {
+		t.Fatalf("third execution slot was rejected: %+v", status)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("third-slot request did not release connection")
+	}
+}
+
 func TestServeV2RejectsExecutionAboveCapacity(t *testing.T) {
 	request := sandboxRequest()
 	packet, err := EncodeRequestV2(request)

@@ -121,7 +121,7 @@ func (s *CoreTaskStore) ListTasks(ctx context.Context, q coretask.TaskListQuery)
 		}
 		cursor = string(b)
 	}
-	rows, e := s.store.pool.Query(ctx, taskSelect+` WHERE ($1 OR deleted_at IS NULL) AND ($2='' OR status=$2) AND ($3='' OR task_id>$3::uuid) ORDER BY task_id LIMIT $4`, q.IncludeDeleted, coreTaskStatusString(q.Status), cursor, q.Limit+1)
+	rows, e := s.store.pool.Query(ctx, taskSelect+` WHERE ($1 OR deleted_at IS NULL) AND ($2='' OR status=$2) AND ($3='' OR task_id>NULLIF($3, '')::uuid) ORDER BY task_id LIMIT $4`, q.IncludeDeleted, coreTaskStatusString(q.Status), cursor, q.Limit+1)
 	if e != nil {
 		return nil, "", e
 	}

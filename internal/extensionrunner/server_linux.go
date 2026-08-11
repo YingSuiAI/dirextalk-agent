@@ -22,7 +22,7 @@ import (
 
 const (
 	serverMaxConnections          = 64
-	serverMaxExecutions           = 1
+	serverMaxExecutions           = 3
 	serverSocketReadTimeout       = 5 * time.Second
 	serverSocketWriteTimeout      = 2 * time.Second
 	serverMaxExecutionTimeout     = 10 * time.Minute

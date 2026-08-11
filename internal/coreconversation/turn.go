@@ -220,8 +220,20 @@ type ConversationToolRecoveryStore interface {
 	ResumeConversationTurn(context.Context, string) error
 }
 
-type ReadOnlyConversationToolStore interface {
-	ContinueTurnAfterReadOnlyTool(context.Context, TurnLease, ToolCall, ToolResult) (Turn, error)
+// OrderedConversationToolStore persists model-authored tool calls in provider
+// order. Recording a call/result never releases the turn lease; the round is
+// released only after every call from the durable model result is complete.
+// Local-sandbox serialization remains a Core Task scheduler concern.
+type OrderedConversationToolStore interface {
+	RecordConversationToolCall(context.Context, TurnLease, ToolCall) error
+	// BeginConversationToolDispatch atomically changes a pending immediate
+	// call to dispatched. execute is true only for the transaction that made
+	// that change; a reclaimed dispatched call must fail uncertain, never run
+	// the provider again.
+	BeginConversationToolDispatch(context.Context, TurnLease, ToolCall) (execute bool, err error)
+	RecordConversationToolResult(context.Context, TurnLease, ToolResult) error
+	FailConversationToolDispatch(context.Context, TurnLease, ToolCall, string, string) (Turn, error)
+	CompleteConversationToolRound(context.Context, TurnLease) (Turn, error)
 }
 
 type TurnStore interface {

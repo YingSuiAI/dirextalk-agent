@@ -35,6 +35,10 @@ func TestCoreTaskStorePostgresInvariants(t *testing.T) {
 		return value
 	}
 	first := create("first", now)
+	listed, next, err := tasks.ListTasks(ctx, coretask.TaskListQuery{Limit: 50})
+	if err != nil || len(listed) != 1 || listed[0].ID != first.ID || next != "" {
+		t.Fatalf("first-page task list = %#v, next %q, err %v", listed, next, err)
+	}
 	// Exact replay returns its original durable response; digest mismatch cannot
 	// reuse the idempotency key for a different request.
 	digest := digests[first.ID]

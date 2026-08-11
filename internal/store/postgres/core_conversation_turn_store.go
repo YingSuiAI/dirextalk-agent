@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,10 +12,110 @@ import (
 	"time"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+const durableTurnDispatchEnvelopeVersion = 1
+
+type durableTurnToolCallState string
+
+const (
+	durableTurnToolCallPending    durableTurnToolCallState = "pending"
+	durableTurnToolCallDispatched durableTurnToolCallState = "dispatched"
+	durableTurnToolCallTerminal   durableTurnToolCallState = "terminal"
+)
+
+// durableTurnDispatchEnvelope is the sole current durable model-result shape.
+// Immediate tool dispatch authority is private to the turn row so it cannot
+// consume or leak a public conversation event sequence.
+type durableTurnDispatchEnvelope struct {
+	Version int                   `json:"version"`
+	Result  core.ModelRunResult   `json:"result"`
+	Calls   []durableTurnToolCall `json:"calls,omitempty"`
+}
+
+type durableTurnToolCall struct {
+	CallID       string                   `json:"call_id"`
+	State        durableTurnToolCallState `json:"state"`
+	ResultDigest string                   `json:"result_digest,omitempty"`
+}
+
+func durableTurnModelCalls(result core.ModelRunResult) []core.ToolCall {
+	if len(result.ToolCalls) != 0 {
+		return result.ToolCalls
+	}
+	return result.Message.ToolCalls
+}
+
+func durableTurnToolResultDigest(result core.ToolResult) string {
+	raw, _ := json.Marshal(result)
+	return sha256hexPG(raw)
+}
+
+func newDurableTurnDispatchEnvelope(result core.ModelRunResult) (durableTurnDispatchEnvelope, error) {
+	envelope := durableTurnDispatchEnvelope{Version: durableTurnDispatchEnvelopeVersion, Result: result}
+	calls := durableTurnModelCalls(result)
+	seen := make(map[string]struct{}, len(calls))
+	for _, call := range calls {
+		if call.Validate() != nil {
+			return durableTurnDispatchEnvelope{}, core.ErrInvalid
+		}
+		if _, duplicate := seen[call.ID]; duplicate {
+			return durableTurnDispatchEnvelope{}, core.ErrInvalid
+		}
+		seen[call.ID] = struct{}{}
+		envelope.Calls = append(envelope.Calls, durableTurnToolCall{CallID: call.ID, State: durableTurnToolCallPending})
+	}
+	return envelope, nil
+}
+
+func loadDurableTurnDispatchEnvelope(raw []byte) (durableTurnDispatchEnvelope, error) {
+	var envelope durableTurnDispatchEnvelope
+	if len(raw) == 0 || json.Unmarshal(raw, &envelope) != nil || envelope.Version != durableTurnDispatchEnvelopeVersion {
+		return durableTurnDispatchEnvelope{}, core.ErrConflict
+	}
+	expected, err := newDurableTurnDispatchEnvelope(envelope.Result)
+	if err != nil || len(expected.Calls) != len(envelope.Calls) {
+		return durableTurnDispatchEnvelope{}, core.ErrConflict
+	}
+	for index := range expected.Calls {
+		entry := envelope.Calls[index]
+		if entry.CallID != expected.Calls[index].CallID {
+			return durableTurnDispatchEnvelope{}, core.ErrConflict
+		}
+		switch entry.State {
+		case durableTurnToolCallPending, durableTurnToolCallDispatched:
+			if entry.ResultDigest != "" {
+				return durableTurnDispatchEnvelope{}, core.ErrConflict
+			}
+		case durableTurnToolCallTerminal:
+			digestBytes, digestErr := hex.DecodeString(entry.ResultDigest)
+			if digestErr != nil || len(digestBytes) != 32 || hex.EncodeToString(digestBytes) != entry.ResultDigest {
+				return durableTurnDispatchEnvelope{}, core.ErrConflict
+			}
+		default:
+			return durableTurnDispatchEnvelope{}, core.ErrConflict
+		}
+	}
+	return envelope, nil
+}
+
+func durableTurnToolCallIndex(envelope durableTurnDispatchEnvelope, call core.ToolCall) (int, error) {
+	calls := durableTurnModelCalls(envelope.Result)
+	for index := range envelope.Calls {
+		if envelope.Calls[index].CallID != call.ID {
+			continue
+		}
+		if index >= len(calls) || !reflect.DeepEqual(calls[index], call) {
+			return -1, core.ErrConflict
+		}
+		return index, nil
+	}
+	return -1, core.ErrConflict
+}
 
 // StartTurn stores the complete immutable request binding and its accepted
 // event in one transaction. A request UUID is the idempotency identity.
@@ -209,11 +310,12 @@ func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key str
 	}
 	out.TerminalCode, out.TerminalSummary = code, summary
 	out.DispatchState, out.DispatchEpoch = dispatchState, dispatchEpoch
-	if len(dispatchResult) > 0 {
-		var result core.ModelRunResult
-		if json.Unmarshal(dispatchResult, &result) == nil {
-			out.DispatchResult = &result
+	if len(dispatchResult) > 0 && (out.State == core.TurnAccepted || out.State == core.TurnRunning || out.State == core.TurnWaitingConfirmation) {
+		envelope, envelopeErr := loadDurableTurnDispatchEnvelope(dispatchResult)
+		if envelopeErr != nil {
+			return core.ErrConflict
 		}
+		out.DispatchResult = &envelope.Result
 	}
 	if len(responseRaw) > 0 {
 		var response core.ChatResponse
@@ -417,15 +519,19 @@ func (s *CoreConversationStore) LoadTurnModelResult(ctx context.Context, id stri
 	if state != "completed" || len(raw) == 0 {
 		return core.ModelRunResult{}, false, nil
 	}
-	var result core.ModelRunResult
-	if err := json.Unmarshal(raw, &result); err != nil {
+	envelope, err := loadDurableTurnDispatchEnvelope(raw)
+	if err != nil {
 		return core.ModelRunResult{}, false, err
 	}
-	return result, true, nil
+	return envelope.Result, true, nil
 }
 
 func (s *CoreConversationStore) RecordTurnModelResult(ctx context.Context, lease core.TurnLease, result core.ModelRunResult) error {
-	raw, _ := json.Marshal(result)
+	envelope, err := newDurableTurnDispatchEnvelope(result)
+	if err != nil {
+		return err
+	}
+	raw, _ := json.Marshal(envelope)
 	command, err := s.pool.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_state='completed',dispatch_result_json=$2,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$3 AND lease_epoch=$4 AND state='running' AND dispatch_state='dispatched'`, lease.Turn.ID, raw, lease.LeaseID, lease.Epoch)
 	if err != nil {
 		return err
@@ -436,8 +542,145 @@ func (s *CoreConversationStore) RecordTurnModelResult(ctx context.Context, lease
 	return nil
 }
 
-func (s *CoreConversationStore) ContinueTurnAfterReadOnlyTool(ctx context.Context, lease core.TurnLease, call core.ToolCall, result core.ToolResult) (core.Turn, error) {
-	if call.Validate() != nil || result.Validate() != nil || result.CallID != call.ID {
+func (s *CoreConversationStore) RecordConversationToolCall(ctx context.Context, lease core.TurnLease, call core.ToolCall) error {
+	if call.Validate() != nil {
+		return core.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var state, dispatchState string
+	var lastSequence int64
+	var dispatchRaw []byte
+	if err = tx.QueryRow(ctx, `SELECT state,dispatch_state,last_sequence,dispatch_result_json FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 FOR UPDATE`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&state, &dispatchState, &lastSequence, &dispatchRaw); err != nil || state != string(core.TurnRunning) || dispatchState != "completed" {
+		return core.ErrConflict
+	}
+	envelope, err := loadDurableTurnDispatchEnvelope(dispatchRaw)
+	if err != nil {
+		return err
+	}
+	if _, err = durableTurnToolCallIndex(envelope, call); err != nil {
+		return err
+	}
+	authority, err := conversationToolEventAuthorityTx(ctx, tx, lease.Turn.ID, call.ID)
+	if err != nil {
+		return err
+	}
+	if authority.state != conversationToolCallAbsent {
+		if !reflect.DeepEqual(authority.call, call) {
+			return core.ErrConflict
+		}
+		return tx.Commit(ctx)
+	}
+	now := time.Now().UTC()
+	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lastSequence+1, core.TurnEvent{Kind: core.TurnEventToolCall, ToolCall: &call}, now); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET last_sequence=$2,updated_at=$3 WHERE turn_id=$1`, lease.Turn.ID, lastSequence+1, now); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *CoreConversationStore) BeginConversationToolDispatch(ctx context.Context, lease core.TurnLease, call core.ToolCall) (bool, error) {
+	if call.Validate() != nil {
+		return false, core.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	var state, dispatchState string
+	var dispatchRaw []byte
+	if err = tx.QueryRow(ctx, `SELECT state,dispatch_state,dispatch_result_json FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 FOR UPDATE`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&state, &dispatchState, &dispatchRaw); err != nil || state != string(core.TurnRunning) || dispatchState != "completed" {
+		return false, core.ErrConflict
+	}
+	envelope, err := loadDurableTurnDispatchEnvelope(dispatchRaw)
+	if err != nil {
+		return false, err
+	}
+	index, err := durableTurnToolCallIndex(envelope, call)
+	if err != nil {
+		return false, err
+	}
+	switch envelope.Calls[index].State {
+	case durableTurnToolCallPending:
+		envelope.Calls[index].State = durableTurnToolCallDispatched
+		raw, _ := json.Marshal(envelope)
+		if _, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_result_json=$2,updated_at=clock_timestamp() WHERE turn_id=$1`, lease.Turn.ID, raw); err != nil {
+			return false, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return true, nil
+	case durableTurnToolCallDispatched:
+		if err = tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return false, nil
+	default:
+		return false, core.ErrConflict
+	}
+}
+
+func (s *CoreConversationStore) RecordConversationToolResult(ctx context.Context, lease core.TurnLease, result core.ToolResult) error {
+	if result.Validate() != nil {
+		return core.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var state, dispatchState string
+	var lastSequence int64
+	var dispatchRaw []byte
+	if err = tx.QueryRow(ctx, `SELECT state,dispatch_state,last_sequence,dispatch_result_json FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 FOR UPDATE`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&state, &dispatchState, &lastSequence, &dispatchRaw); err != nil || state != string(core.TurnRunning) || dispatchState != "completed" {
+		return core.ErrConflict
+	}
+	envelope, err := loadDurableTurnDispatchEnvelope(dispatchRaw)
+	if err != nil {
+		return err
+	}
+	index := -1
+	for candidate := range envelope.Calls {
+		if envelope.Calls[candidate].CallID == result.CallID {
+			index = candidate
+			break
+		}
+	}
+	calls := durableTurnModelCalls(envelope.Result)
+	if index < 0 || index >= len(calls) || result.ToolName != calls[index].Name {
+		return core.ErrConflict
+	}
+	if envelope.Calls[index].State == durableTurnToolCallTerminal {
+		if envelope.Calls[index].ResultDigest != durableTurnToolResultDigest(result) {
+			return core.ErrConflict
+		}
+		return tx.Commit(ctx)
+	}
+	if envelope.Calls[index].State != durableTurnToolCallDispatched {
+		return core.ErrConflict
+	}
+	envelope.Calls[index].State = durableTurnToolCallTerminal
+	envelope.Calls[index].ResultDigest = durableTurnToolResultDigest(result)
+	now := time.Now().UTC()
+	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lastSequence+1, core.TurnEvent{Kind: core.TurnEventToolResult, ToolResult: &result}, now); err != nil {
+		return err
+	}
+	raw, _ := json.Marshal(envelope)
+	if _, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_result_json=$2,updated_at=$3 WHERE turn_id=$1`, lease.Turn.ID, raw, now); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *CoreConversationStore) FailConversationToolDispatch(ctx context.Context, lease core.TurnLease, call core.ToolCall, code, summary string) (core.Turn, error) {
+	if call.Validate() != nil || strings.TrimSpace(code) != code || code == "" || len(code) > 128 || strings.TrimSpace(summary) != summary || summary == "" || len(summary) > 4096 {
 		return core.Turn{}, core.ErrInvalid
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -447,23 +690,135 @@ func (s *CoreConversationStore) ContinueTurnAfterReadOnlyTool(ctx context.Contex
 	defer tx.Rollback(ctx)
 	var state, dispatchState string
 	var lastSequence int64
-	if err = tx.QueryRow(ctx, `SELECT state,dispatch_state,last_sequence FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 FOR UPDATE`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&state, &dispatchState, &lastSequence); err != nil || state != string(core.TurnRunning) || dispatchState != "completed" {
+	var dispatchRaw []byte
+	if err = tx.QueryRow(ctx, `SELECT state,dispatch_state,last_sequence,dispatch_result_json FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 FOR UPDATE`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&state, &dispatchState, &lastSequence, &dispatchRaw); err != nil || state != string(core.TurnRunning) || dispatchState != "completed" {
 		return core.Turn{}, core.ErrConflict
 	}
+	envelope, err := loadDurableTurnDispatchEnvelope(dispatchRaw)
+	if err != nil {
+		return core.Turn{}, err
+	}
+	index, err := durableTurnToolCallIndex(envelope, call)
+	if err != nil || envelope.Calls[index].State != durableTurnToolCallDispatched {
+		return core.Turn{}, core.ErrConflict
+	}
+	result := core.ToolResult{CallID: call.ID, ToolName: call.Name, Content: summary, IsError: true}
+	if result.Validate() != nil {
+		return core.Turn{}, core.ErrInvalid
+	}
+	envelope.Calls[index].State, envelope.Calls[index].ResultDigest = durableTurnToolCallTerminal, durableTurnToolResultDigest(result)
+	raw, _ := json.Marshal(envelope)
 	now := time.Now().UTC()
-	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lastSequence+1, core.TurnEvent{Kind: core.TurnEventToolCall, ToolCall: &call}, now); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET state='failed',revision=revision+1,terminal_code=$2,terminal_summary=$3,dispatch_result_json=$4,lease_id=NULL,lease_expires_at=NULL,updated_at=$5 WHERE turn_id=$1`, lease.Turn.ID, code, summary, raw, now); err != nil {
 		return core.Turn{}, err
 	}
-	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lastSequence+2, core.TurnEvent{Kind: core.TurnEventToolResult, ToolResult: &result}, now); err != nil {
+	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lastSequence+1, core.TurnEvent{Kind: core.TurnEventToolResult, ToolResult: &result}, now); err != nil {
 		return core.Turn{}, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',dispatch_state='',dispatch_epoch=0,dispatch_result_json=NULL,lease_id=NULL,lease_expires_at=NULL,revision=revision+1,updated_at=$2 WHERE turn_id=$1`, lease.Turn.ID, now); err != nil {
+	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lastSequence+2, core.TurnEvent{Kind: core.TurnEventError, ErrorCode: code, ErrorSummary: summary}, now); err != nil {
 		return core.Turn{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return core.Turn{}, err
 	}
 	return s.GetTurn(ctx, lease.Turn.ID)
+}
+
+func (s *CoreConversationStore) CompleteConversationToolRound(ctx context.Context, lease core.TurnLease) (core.Turn, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.Turn{}, err
+	}
+	defer tx.Rollback(ctx)
+	var raw []byte
+	if err = tx.QueryRow(ctx, `SELECT dispatch_result_json FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='completed' FOR UPDATE`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&raw); err != nil {
+		return core.Turn{}, core.ErrConflict
+	}
+	envelope, err := loadDurableTurnDispatchEnvelope(raw)
+	if err != nil {
+		return core.Turn{}, core.ErrConflict
+	}
+	calls := durableTurnModelCalls(envelope.Result)
+	for index, entry := range envelope.Calls {
+		if index >= len(calls) {
+			return core.Turn{}, core.ErrConflict
+		}
+		call := calls[index]
+		if coremodel.IsIntrinsicToolName(call.Name) {
+			continue
+		}
+		if entry.State != durableTurnToolCallTerminal || entry.ResultDigest == "" {
+			return core.Turn{}, core.ErrConflict
+		}
+		authority, authorityErr := conversationToolEventAuthorityTx(ctx, tx, lease.Turn.ID, call.ID)
+		if authorityErr != nil || authority.state != conversationToolCallTerminal || !reflect.DeepEqual(authority.call, call) || authority.result == nil || durableTurnToolResultDigest(*authority.result) != entry.ResultDigest {
+			return core.Turn{}, core.ErrConflict
+		}
+	}
+	command, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',dispatch_state='',dispatch_epoch=0,dispatch_result_json=NULL,lease_id=NULL,lease_expires_at=NULL,revision=revision+1,updated_at=clock_timestamp() WHERE turn_id=$1`, lease.Turn.ID)
+	if err != nil || command.RowsAffected() != 1 {
+		if err != nil {
+			return core.Turn{}, err
+		}
+		return core.Turn{}, core.ErrConflict
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.Turn{}, err
+	}
+	return s.GetTurn(ctx, lease.Turn.ID)
+}
+
+type conversationToolCallState uint8
+
+const (
+	conversationToolCallAbsent conversationToolCallState = iota
+	conversationToolCallPending
+	conversationToolCallTerminal
+)
+
+type conversationToolEventAuthority struct {
+	state  conversationToolCallState
+	call   core.ToolCall
+	result *core.ToolResult
+}
+
+func conversationToolEventAuthorityTx(ctx context.Context, tx pgx.Tx, turnID, callID string) (conversationToolEventAuthority, error) {
+	rows, err := tx.Query(ctx, `SELECT payload_json FROM core_conversation_turn_events WHERE turn_id=$1 AND kind IN ($2,$3) ORDER BY sequence`, turnID, string(core.TurnEventToolCall), string(core.TurnEventToolResult))
+	if err != nil {
+		return conversationToolEventAuthority{}, err
+	}
+	defer rows.Close()
+	var authority conversationToolEventAuthority
+	for rows.Next() {
+		var raw []byte
+		if err = rows.Scan(&raw); err != nil {
+			return conversationToolEventAuthority{}, err
+		}
+		var event core.TurnEvent
+		if json.Unmarshal(raw, &event) != nil {
+			return conversationToolEventAuthority{}, core.ErrConflict
+		}
+		switch event.Kind {
+		case core.TurnEventToolCall:
+			if event.ToolCall == nil || event.ToolCall.ID != callID {
+				continue
+			}
+			if authority.state != conversationToolCallAbsent || event.ToolCall.Validate() != nil {
+				return conversationToolEventAuthority{}, core.ErrConflict
+			}
+			authority.call, authority.state = *event.ToolCall, conversationToolCallPending
+		case core.TurnEventToolResult:
+			if event.ToolResult == nil || event.ToolResult.CallID != callID {
+				continue
+			}
+			if authority.state != conversationToolCallPending || event.ToolResult.Validate() != nil || event.ToolResult.ToolName != authority.call.Name {
+				return conversationToolEventAuthority{}, core.ErrConflict
+			}
+			result := *event.ToolResult
+			authority.result, authority.state = &result, conversationToolCallTerminal
+		}
+	}
+	return authority, rows.Err()
 }
 
 func (s *CoreConversationStore) MarkTurnModelUncertain(ctx context.Context, lease core.TurnLease, code, summary string) error {
@@ -804,7 +1159,9 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 	var revision uint64
 	var lastSequence int64
 	var cancelRequested bool
-	if err = tx.QueryRow(ctx, `SELECT state,revision,last_sequence,cancel_requested FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, c.TurnID).Scan(&state, &revision, &lastSequence, &cancelRequested); err != nil {
+	var dispatchState string
+	var dispatchRaw []byte
+	if err = tx.QueryRow(ctx, `SELECT state,revision,last_sequence,cancel_requested,dispatch_state,dispatch_result_json FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, c.TurnID).Scan(&state, &revision, &lastSequence, &cancelRequested, &dispatchState, &dispatchRaw); err != nil {
 		return core.Turn{}, false, core.ErrConflict
 	}
 	rows, err := tx.Query(ctx, `SELECT payload_json FROM core_conversation_turn_events WHERE turn_id=$1 AND kind=$2 ORDER BY sequence`, c.TurnID, string(core.TurnEventSteered))
@@ -841,6 +1198,38 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 	rows.Close()
 	if cancelRequested || revision != c.ExpectedRevision || (state != string(core.TurnAccepted) && state != string(core.TurnRunning)) {
 		return core.Turn{}, false, core.ErrConflict
+	}
+	if dispatchState == "completed" {
+		envelope, envelopeErr := loadDurableTurnDispatchEnvelope(dispatchRaw)
+		if envelopeErr != nil {
+			return core.Turn{}, false, core.ErrConflict
+		}
+		calls := durableTurnModelCalls(envelope.Result)
+		for index, entry := range envelope.Calls {
+			if index >= len(calls) {
+				return core.Turn{}, false, core.ErrConflict
+			}
+			call := calls[index]
+			authority, authorityErr := conversationToolEventAuthorityTx(ctx, tx, c.TurnID, call.ID)
+			if authorityErr != nil {
+				return core.Turn{}, false, authorityErr
+			}
+			switch entry.State {
+			case durableTurnToolCallDispatched:
+				return core.Turn{}, false, core.ErrConflict
+			case durableTurnToolCallPending:
+				// A model-authored pending entry is safe to discard until its
+				// public tool_call has been appended. Once public, the exact
+				// batch must finish or terminalize before steering.
+				if authority.state != conversationToolCallAbsent {
+					return core.Turn{}, false, core.ErrConflict
+				}
+			case durableTurnToolCallTerminal:
+				if authority.state != conversationToolCallTerminal || authority.result == nil || durableTurnToolResultDigest(*authority.result) != entry.ResultDigest {
+					return core.Turn{}, false, core.ErrConflict
+				}
+			}
+		}
 	}
 	now := time.Now().UTC()
 	event := core.TurnEvent{
@@ -899,6 +1288,10 @@ func (s *CoreConversationStore) MarkTurnCanceled(ctx context.Context, lease core
 	}
 	defer tx.Rollback(ctx)
 	now := time.Now().UTC()
+	var lastSequence int64
+	if err = tx.QueryRow(ctx, `SELECT last_sequence FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' FOR UPDATE`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&lastSequence); err != nil {
+		return core.Turn{}, core.ErrConflict
+	}
 	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='canceled',revision=revision+1,lease_id=NULL,lease_expires_at=NULL,updated_at=$2 WHERE turn_id=$1 AND lease_id=$3 AND lease_epoch=$4 AND state='running'`, lease.Turn.ID, now, lease.LeaseID, lease.Epoch)
 	if err != nil {
 		return core.Turn{}, err
@@ -906,7 +1299,7 @@ func (s *CoreConversationStore) MarkTurnCanceled(ctx context.Context, lease core
 	if result.RowsAffected() != 1 {
 		return core.Turn{}, core.ErrConflict
 	}
-	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lease.Turn.LastSequence+1, core.TurnEvent{Kind: core.TurnEventCanceled}, now); err != nil {
+	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lastSequence+1, core.TurnEvent{Kind: core.TurnEventCanceled}, now); err != nil {
 		return core.Turn{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -976,6 +1369,10 @@ func (s *CoreConversationStore) FailTurn(ctx context.Context, lease core.TurnLea
 	}
 	defer tx.Rollback(ctx)
 	now := time.Now().UTC()
+	var lastSequence int64
+	if err = tx.QueryRow(ctx, `SELECT last_sequence FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' FOR UPDATE`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&lastSequence); err != nil {
+		return core.Turn{}, core.ErrConflict
+	}
 	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='failed',revision=revision+1,terminal_code=$2,terminal_summary=$3,lease_id=NULL,lease_expires_at=NULL,updated_at=$4 WHERE turn_id=$1 AND lease_id=$5 AND lease_epoch=$6 AND state='running'`, lease.Turn.ID, code, summary, now, lease.LeaseID, lease.Epoch)
 	if err != nil {
 		return core.Turn{}, err
@@ -983,7 +1380,7 @@ func (s *CoreConversationStore) FailTurn(ctx context.Context, lease core.TurnLea
 	if result.RowsAffected() != 1 {
 		return core.Turn{}, core.ErrConflict
 	}
-	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lease.Turn.LastSequence+1, core.TurnEvent{Kind: core.TurnEventError, ErrorCode: code, ErrorSummary: summary}, now); err != nil {
+	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lastSequence+1, core.TurnEvent{Kind: core.TurnEventError, ErrorCode: code, ErrorSummary: summary}, now); err != nil {
 		return core.Turn{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {

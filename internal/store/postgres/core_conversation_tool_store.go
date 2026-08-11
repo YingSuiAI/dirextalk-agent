@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"time"
 
@@ -244,8 +245,113 @@ func (s *CoreConversationStore) ResumeConversationTurn(ctx context.Context, turn
 	if s == nil || s.Store == nil || !coretask.ValidUUID(turnID) {
 		return core.ErrInvalid
 	}
-	_, err := s.pool.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',dispatch_state='',dispatch_epoch=0,dispatch_result_json=NULL,lease_id=NULL,lease_expires_at=NULL,revision=revision+1,updated_at=clock_timestamp() WHERE turn_id=$1 AND state='waiting_confirmation' AND cancel_requested=false`, turnID)
-	return err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var state string
+	var lastSequence int64
+	var dispatchRaw []byte
+	if err = tx.QueryRow(ctx, `SELECT state,last_sequence,dispatch_result_json FROM core_conversation_turns WHERE turn_id=$1 AND state IN ('accepted','waiting_confirmation') AND cancel_requested=false AND dispatch_state='completed' FOR UPDATE`, turnID).Scan(&state, &lastSequence, &dispatchRaw); errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	var attempt core.ToolAttempt
+	var resultRaw []byte
+	if err = tx.QueryRow(ctx, `SELECT a.attempt_id::text,a.task_id::text,a.round,t.payload_json#>>'{conversation_tool,call_id}',a.execution_id::text,a.tool_name,a.state,a.safe_summary,a.result_json
+		FROM core_conversation_tool_attempts a JOIN core_tasks t ON t.task_id=a.task_id
+		WHERE a.turn_id=$1 AND a.state IN ('completed','denied','canceled') ORDER BY a.round DESC,a.created_at DESC LIMIT 1`, turnID).
+		Scan(&attempt.ID, &attempt.TaskID, &attempt.Round, &attempt.CallID, &attempt.ExecutionID, &attempt.ToolName, &attempt.State, &attempt.SafeSummary, &resultRaw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return core.ErrConflict
+		}
+		return err
+	}
+	attempt.TurnID, attempt.Result = turnID, resultRaw
+	envelope, err := loadDurableTurnDispatchEnvelope(dispatchRaw)
+	if err != nil {
+		return err
+	}
+	callIndex := -1
+	for index := range envelope.Calls {
+		if envelope.Calls[index].CallID == attempt.CallID {
+			callIndex = index
+			break
+		}
+	}
+	calls := durableTurnModelCalls(envelope.Result)
+	if callIndex < 0 || callIndex >= len(calls) || calls[callIndex].Name != attempt.ToolName {
+		return core.ErrConflict
+	}
+	authority, err := conversationToolEventAuthorityTx(ctx, tx, turnID, attempt.CallID)
+	if err != nil || authority.state == conversationToolCallAbsent || authority.call.Name != attempt.ToolName {
+		if err != nil {
+			return err
+		}
+		return core.ErrConflict
+	}
+	now := time.Now().UTC()
+	result := core.ToolResult{CallID: attempt.CallID, ToolName: attempt.ToolName, Content: conversationToolAttemptContent(attempt), IsError: attempt.State != "completed"}
+	if result.Validate() != nil {
+		return core.ErrConflict
+	}
+	if authority.state != conversationToolCallTerminal {
+		// Durable local/remote calls carry their dispatch fence in the task
+		// attempt ledger. Their turn event remains pending until that terminal
+		// attempt is projected back as the tool result.
+		if authority.state != conversationToolCallPending {
+			return core.ErrConflict
+		}
+		if err = insertTurnEventTx(ctx, tx, turnID, lastSequence+1, core.TurnEvent{Kind: core.TurnEventToolResult, ToolResult: &result}, now); err != nil {
+			return err
+		}
+		lastSequence++
+	} else if authority.result == nil || !reflect.DeepEqual(*authority.result, result) {
+		return core.ErrConflict
+	}
+	entry := &envelope.Calls[callIndex]
+	if entry.State == durableTurnToolCallTerminal {
+		if entry.ResultDigest != durableTurnToolResultDigest(result) {
+			return core.ErrConflict
+		}
+	} else {
+		if entry.State != durableTurnToolCallPending && entry.State != durableTurnToolCallDispatched {
+			return core.ErrConflict
+		}
+		entry.State, entry.ResultDigest = durableTurnToolCallTerminal, durableTurnToolResultDigest(result)
+	}
+	dispatchRaw, _ = json.Marshal(envelope)
+	revisionIncrement := 0
+	if state == string(core.TurnWaitingConfirmation) {
+		revisionIncrement = 1
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',lease_id=NULL,lease_expires_at=NULL,revision=revision+$2,last_sequence=$3,dispatch_result_json=$4,updated_at=$5 WHERE turn_id=$1`, turnID, revisionIncrement, lastSequence, dispatchRaw, now); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func conversationToolAttemptContent(attempt core.ToolAttempt) string {
+	content := attempt.SafeSummary
+	if len(attempt.Result) > 0 {
+		var stored coretask.Result
+		if json.Unmarshal(attempt.Result, &stored) == nil && stored.Validate() == nil {
+			switch {
+			case stored.Text != "":
+				content = stored.Text
+			case len(stored.JSON) > 0:
+				content = string(stored.JSON)
+			case stored.Summary != "":
+				content = stored.Summary
+			}
+		}
+	}
+	if attempt.State != "completed" && content == "" {
+		return "tool call denied"
+	}
+	return content
 }
 
 // BeginConversationTool is the sole transition into provider dispatch.  It
