@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -33,10 +34,17 @@ func (s *localLimitsConversationStore) FinishConversationTool(_ context.Context,
 
 type localLimitsInvocationResolver struct {
 	invocation execution.Invocation
+	err        error
+	calls      int
+	cancel     context.CancelFunc
 }
 
-func (r localLimitsInvocationResolver) ResolveConversationInvocation(context.Context, coretask.Task) (execution.Invocation, error) {
-	return r.invocation, nil
+func (r *localLimitsInvocationResolver) ResolveConversationInvocation(context.Context, coretask.Task) (execution.Invocation, error) {
+	r.calls++
+	if r.cancel != nil {
+		r.cancel()
+	}
+	return r.invocation, r.err
 }
 
 type localLimitsRunner struct {
@@ -66,7 +74,7 @@ func TestConversationToolExecutableSkillDispatchBindsExactLocalSandboxLimits(t *
 	taskID := uuid.NewString()
 	digest := strings.Repeat("a", 64)
 	limits := execution.LocalSandboxLimitsV2()
-	resolver := localLimitsInvocationResolver{invocation: execution.Invocation{Kind: coreextension.KindSkill, Skill: &execution.SkillInvocation{
+	resolver := &localLimitsInvocationResolver{invocation: execution.Invocation{Kind: coreextension.KindSkill, Skill: &execution.SkillInvocation{
 		Entry:          coreextension.SkillEntry{RelativePath: "entry", Digest: digest, Executable: true, Argv: []string{"entry"}},
 		InstallDigest:  digest,
 		Workspace:      t.TempDir(),
@@ -97,7 +105,7 @@ func TestConversationToolLocalMCPDispatchUsesResolvedToolAndInput(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver := localLimitsInvocationResolver{invocation: execution.Invocation{Kind: coreextension.KindMCP, Local: &execution.LocalInvocation{
+	resolver := &localLimitsInvocationResolver{invocation: execution.Invocation{Kind: coreextension.KindMCP, Local: &execution.LocalInvocation{
 		TaskID: taskID, TaskFence: uuid.NewString(), InstallationID: uuid.NewString(), VersionID: uuid.NewString(),
 		InstallDigest: digest, ContentDigest: digest, ArtifactDigest: digest, EntryPath: "entry", Argv: []string{"entry"},
 		Tool: "write_html", Input: input, Workspace: t.TempDir(), Timeout: 30 * time.Second, Limits: execution.LocalSandboxLimitsV2(),
@@ -112,5 +120,44 @@ func TestConversationToolLocalMCPDispatchUsesResolvedToolAndInput(t *testing.T) 
 	lines := strings.Split(strings.TrimSpace(string(runner.stdin)), "\n")
 	if len(lines) != 3 || !strings.Contains(lines[2], `"method":"tools/call"`) || !strings.Contains(lines[2], `"name":"write_html"`) || !strings.Contains(lines[2], `"content":"\u003ch1\u003eHello from Dirextalk\u003c/h1\u003e"`) {
 		t.Fatalf("unexpected MCP stdin=%q", runner.stdin)
+	}
+}
+
+type recoveringConversationStore struct {
+	beginErr     error
+	finishState  string
+	finishCtxErr error
+	finishCalls  int
+}
+
+func (s *recoveringConversationStore) BeginConversationTool(context.Context, coretask.Task) (coreconversation.ToolAttempt, error) {
+	return coreconversation.ToolAttempt{}, s.beginErr
+}
+
+func (s *recoveringConversationStore) FinishConversationTool(ctx context.Context, _ coretask.Task, state string, _ json.RawMessage, _, _ string) error {
+	s.finishCalls++
+	s.finishState = state
+	s.finishCtxErr = ctx.Err()
+	return nil
+}
+
+func TestConversationToolReclaimTerminalizesDispatchedAttemptWithoutProviderReplay(t *testing.T) {
+	store := &recoveringConversationStore{beginErr: coreconversation.ErrToolDispatchStarted}
+	resolver := &localLimitsInvocationResolver{}
+	handler := conversationToolTaskHandler(store, resolver, nil, nil, nil)
+	out := handler(context.Background(), coretask.Task{ID: uuid.NewString()})
+	if out.Err != nil || !out.TerminalOwned || store.finishCalls != 1 || store.finishState != "uncertain" || store.finishCtxErr != nil || resolver.calls != 0 {
+		t.Fatalf("out=%+v finish_calls=%d finish_state=%q finish_ctx_err=%v resolver_calls=%d", out, store.finishCalls, store.finishState, store.finishCtxErr, resolver.calls)
+	}
+}
+
+func TestConversationToolPostDispatchFailureUsesDetachedTerminalContext(t *testing.T) {
+	store := &recoveringConversationStore{}
+	ctx, cancel := context.WithCancel(context.Background())
+	resolver := &localLimitsInvocationResolver{err: context.Canceled, cancel: cancel}
+	handler := conversationToolTaskHandler(store, resolver, nil, nil, nil)
+	out := handler(ctx, coretask.Task{ID: uuid.NewString()})
+	if !errors.Is(out.Err, context.Canceled) || !out.TerminalOwned || store.finishCalls != 1 || store.finishState != "uncertain" || store.finishCtxErr != nil || resolver.calls != 1 {
+		t.Fatalf("out=%+v finish_calls=%d finish_state=%q finish_ctx_err=%v resolver_calls=%d", out, store.finishCalls, store.finishState, store.finishCtxErr, resolver.calls)
 	}
 }

@@ -568,6 +568,7 @@ var (
 	ErrLeaseExpired            = errors.New("chat lease expired")
 	ErrDeleted                 = errors.New("conversation deleted")
 	ErrChatFailed              = errors.New("chat failed")
+	ErrToolDispatchStarted     = errors.New("conversation tool dispatch already started")
 	ErrMemoryRecallUnavailable = errors.New("long-term memory recall is unavailable")
 	ErrExtensionsUnsupported   = errors.New("conversation extensions require durable turn")
 )

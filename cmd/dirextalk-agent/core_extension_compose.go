@@ -140,13 +140,21 @@ func conversationToolTaskHandler(store conversationToolAttemptStore, coord conve
 		if store == nil || coord == nil {
 			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
 		}
-		attempt, err := store.BeginConversationTool(ctx, task)
+		finish := func(state string, result json.RawMessage, code, summary string) error {
+			finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			return store.FinishConversationTool(finishCtx, task, state, result, code, summary)
+		}
+		_, err := store.BeginConversationTool(ctx, task)
+		if errors.Is(err, coreconversation.ErrToolDispatchStarted) {
+			return coreruntime.ManagedOutcome{Err: finish("uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown"), TerminalOwned: true}
+		}
 		if err != nil {
 			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 		}
 		invocation, err := coord.ResolveConversationInvocation(ctx, task)
 		if err != nil {
-			_ = store.FinishConversationTool(ctx, task, "uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown")
+			_ = finish("uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown")
 			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 		}
 		var result coretask.Result
@@ -183,22 +191,22 @@ func conversationToolTaskHandler(store conversationToolAttemptStore, coord conve
 			err = coreextension.ErrInvalid
 		}
 		if err != nil {
-			_ = store.FinishConversationTool(ctx, task, "uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown")
+			_ = finish("uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown")
 			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 		}
 		if result.Validate() != nil {
-			_ = store.FinishConversationTool(ctx, task, "failed", nil, "tool_result_invalid", "tool returned an invalid result")
+			_ = finish("failed", nil, "tool_result_invalid", "tool returned an invalid result")
 			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
 		}
 		raw, _ := json.Marshal(result)
 		if len(raw) > coretask.MaxResultBytes {
+			_ = finish("failed", nil, "tool_result_invalid", "tool returned an invalid result")
 			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
 		}
-		if err = store.FinishConversationTool(ctx, task, "completed", raw, "", ""); err != nil {
-			_ = store.FinishConversationTool(ctx, task, "uncertain", nil, "tool_uncertain", "tool completion outcome is unknown")
+		if err = finish("completed", raw, "", ""); err != nil {
+			_ = finish("uncertain", nil, "tool_uncertain", "tool completion outcome is unknown")
 			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 		}
-		_ = attempt
 		return coreruntime.ManagedOutcome{Result: result, TerminalOwned: true}
 	}
 }

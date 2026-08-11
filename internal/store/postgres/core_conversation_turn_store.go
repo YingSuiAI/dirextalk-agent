@@ -710,21 +710,37 @@ func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.Tu
 	// cancel mutation therefore wins deterministically and compensates its
 	// waiting task/confirmation before exposing the terminal turn.
 	if turn.State == core.TurnWaitingConfirmation {
-		var taskID string
-		if err = tx.QueryRow(ctx, `SELECT task_id::text FROM core_conversation_tool_attempts WHERE turn_id=$1 AND state='waiting_confirmation' FOR UPDATE`, c.TurnID).Scan(&taskID); err != nil {
+		var taskID, lockedTaskID string
+		if err = tx.QueryRow(ctx, `SELECT task_id::text FROM core_conversation_tool_attempts WHERE turn_id=$1 AND state='waiting_confirmation'`, c.TurnID).Scan(&taskID); err != nil {
 			return core.Turn{}, core.ErrConflict
 		}
-		if _, err = tx.Exec(ctx, `UPDATE core_tasks SET status='canceled',failure_code='turn_canceled',failure_summary='turn canceled before tool dispatch',revision=revision+1,updated_at=$2 WHERE task_id=$1 AND status='waiting_user'`, taskID, now); err != nil {
-			return core.Turn{}, err
+		if err = tx.QueryRow(ctx, `SELECT task_id::text FROM core_tasks WHERE task_id=$1 FOR UPDATE`, taskID).Scan(&lockedTaskID); err != nil || lockedTaskID != taskID {
+			return core.Turn{}, core.ErrConflict
 		}
-		if err = terminalizeConfirmationForTaskTx(ctx, tx, taskID, "turn_canceled", now); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT task_id::text FROM core_conversation_tool_attempts WHERE turn_id=$1 AND task_id=$2 AND state='waiting_confirmation' FOR UPDATE`, c.TurnID, taskID).Scan(&lockedTaskID); err != nil || lockedTaskID != taskID {
+			return core.Turn{}, core.ErrConflict
+		}
+		taskUpdate, taskErr := tx.Exec(ctx, `UPDATE core_tasks SET status='canceled',failure_code='user_canceled',failure_summary='turn canceled before tool dispatch',revision=revision+1,updated_at=$2 WHERE task_id=$1 AND status='waiting_user'`, taskID, now)
+		if taskErr != nil || taskUpdate.RowsAffected() != 1 {
+			if taskErr != nil {
+				return core.Turn{}, taskErr
+			}
+			return core.Turn{}, core.ErrConflict
+		}
+		if err = terminalizeConfirmationForTaskModeTx(ctx, tx, taskID, "turn_canceled", now, false); err != nil {
 			return core.Turn{}, err
 		}
 	}
 	if turn.State == core.TurnRunning {
-		var dispatchedTask string
-		if scanErr := tx.QueryRow(ctx, `SELECT task_id::text FROM core_conversation_tool_attempts WHERE turn_id=$1 AND state='dispatched' FOR UPDATE`, c.TurnID).Scan(&dispatchedTask); scanErr == nil {
-			if _, scanErr = tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state='uncertain',result_json=jsonb_build_object('status','uncertain','code','turn_canceled'),updated_at=$2 WHERE task_id=$1 AND state='dispatched'`, dispatchedTask, now); scanErr != nil {
+		var dispatchedTask, lockedTaskID string
+		if scanErr := tx.QueryRow(ctx, `SELECT task_id::text FROM core_conversation_tool_attempts WHERE turn_id=$1 AND state='dispatched'`, c.TurnID).Scan(&dispatchedTask); scanErr == nil {
+			if scanErr = tx.QueryRow(ctx, `SELECT task_id::text FROM core_tasks WHERE task_id=$1 FOR UPDATE`, dispatchedTask).Scan(&lockedTaskID); scanErr != nil || lockedTaskID != dispatchedTask {
+				return core.Turn{}, core.ErrConflict
+			}
+			if scanErr = tx.QueryRow(ctx, `SELECT task_id::text FROM core_conversation_tool_attempts WHERE turn_id=$1 AND task_id=$2 AND state='dispatched' FOR UPDATE`, c.TurnID, dispatchedTask).Scan(&lockedTaskID); scanErr != nil || lockedTaskID != dispatchedTask {
+				return core.Turn{}, core.ErrConflict
+			}
+			if _, scanErr = tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state='uncertain',result_json=NULL,updated_at=$2 WHERE task_id=$1 AND state='dispatched'`, dispatchedTask, now); scanErr != nil {
 				return core.Turn{}, scanErr
 			}
 			if _, scanErr = tx.Exec(ctx, `UPDATE core_tasks SET status='failed',failure_code='tool_uncertain',failure_summary='turn canceled after tool dispatch; reconciliation required',lease_holder='',lease_expires_at=NULL,revision=revision+1,updated_at=$2 WHERE task_id=$1 AND status='running'`, dispatchedTask, now); scanErr != nil {

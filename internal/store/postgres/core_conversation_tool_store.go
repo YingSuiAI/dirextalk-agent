@@ -191,7 +191,7 @@ func (s *CoreConversationStore) BeginConversationTool(ctx context.Context, task 
 	defer tx.Rollback(ctx)
 	var status, holder, attemptState, confirmationState string
 	var attempt int
-	var epoch, revision int64
+	var epoch, revision, dispatchedEpoch int64
 	var expiry time.Time
 	if err = tx.QueryRow(ctx, `SELECT status,attempt,lease_epoch,lease_holder,revision,lease_expires_at FROM core_tasks WHERE task_id=$1 FOR UPDATE`, task.ID).Scan(&status, &attempt, &epoch, &holder, &revision, &expiry); err != nil {
 		return core.ToolAttempt{}, err
@@ -201,16 +201,22 @@ func (s *CoreConversationStore) BeginConversationTool(ctx context.Context, task 
 	}
 	var a core.ToolAttempt
 	var storedCallID string
-	if err = tx.QueryRow(ctx, `SELECT attempt_id::text,turn_id::text,task_id::text,COALESCE(confirmation_id::text,''),round,call_id::text,execution_id::text,tool_name,state,arguments_digest,safe_summary FROM core_conversation_tool_attempts WHERE task_id=$1 FOR UPDATE`, task.ID).Scan(&a.ID, &a.TurnID, &a.TaskID, &a.ConfirmationID, &a.Round, &storedCallID, &a.ExecutionID, &a.ToolName, &attemptState, &a.ArgumentsDigest, &a.SafeSummary); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT attempt_id::text,turn_id::text,task_id::text,COALESCE(confirmation_id::text,''),round,call_id::text,execution_id::text,tool_name,state,arguments_digest,safe_summary,lease_epoch FROM core_conversation_tool_attempts WHERE task_id=$1 FOR UPDATE`, task.ID).Scan(&a.ID, &a.TurnID, &a.TaskID, &a.ConfirmationID, &a.Round, &storedCallID, &a.ExecutionID, &a.ToolName, &attemptState, &a.ArgumentsDigest, &a.SafeSummary, &dispatchedEpoch); err != nil {
 		return a, err
 	}
 	a.CallID = p.CallID
 	a.State = attemptState
-	if a.ID != p.AttemptID || storedCallID != a.ID || a.TurnID != p.TurnID || a.ConfirmationID != p.ConfirmationID || strings.TrimSpace(a.CallID) == "" || len(a.CallID) > core.MaxToolCallIDBytes || a.ArgumentsDigest != p.ArgumentsDigest || attemptState != "waiting_confirmation" {
+	if a.ID != p.AttemptID || storedCallID != a.ID || a.TurnID != p.TurnID || a.ConfirmationID != p.ConfirmationID || strings.TrimSpace(a.CallID) == "" || len(a.CallID) > core.MaxToolCallIDBytes || a.ArgumentsDigest != p.ArgumentsDigest || (attemptState != "waiting_confirmation" && attemptState != "dispatched") {
 		return a, coretask.ErrLeaseConflict
 	}
 	if err = tx.QueryRow(ctx, `SELECT state FROM core_confirmations WHERE confirmation_id=$1 AND task_id=$2 FOR UPDATE`, a.ConfirmationID, task.ID).Scan(&confirmationState); err != nil {
 		return a, err
+	}
+	if attemptState == "dispatched" {
+		if confirmationState != "consumed" || dispatchedEpoch <= 0 || dispatchedEpoch >= int64(task.LeaseEpoch) {
+			return a, coretask.ErrLeaseConflict
+		}
+		return a, core.ErrToolDispatchStarted
 	}
 	if confirmationState != "confirmed" {
 		return a, coretask.ErrLeaseConflict
@@ -252,15 +258,35 @@ func (s *CoreConversationStore) FinishConversationTool(ctx context.Context, task
 		code = "tool_uncertain"
 		summary = "tool dispatch outcome is unknown"
 	}
-	tag, err := tx.Exec(ctx, `UPDATE core_tasks SET status=$1,result_json=$2,failure_code=$3,failure_summary=$4,lease_holder='',lease_expires_at=NULL,revision=revision+1,updated_at=clock_timestamp() WHERE task_id=$5 AND status='running' AND attempt=$6 AND lease_epoch=$7 AND revision=$8 AND lease_expires_at>clock_timestamp()`, status, result, code, summary, task.ID, task.Attempt, task.LeaseEpoch, task.Revision)
+	now := time.Now().UTC()
+	tag, err := tx.Exec(ctx, `UPDATE core_tasks SET status=$1,result_json=$2,failure_code=$3,failure_summary=$4,lease_holder='',lease_expires_at=NULL,revision=revision+1,updated_at=$5 WHERE task_id=$6 AND status='running' AND attempt=$7 AND lease_epoch=$8 AND revision=$9 AND lease_expires_at>$5`, status, result, code, summary, now, task.ID, task.Attempt, task.LeaseEpoch, task.Revision)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != 1 {
 		return coretask.ErrLeaseConflict
 	}
-	if _, err = tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state=$2,result_json=CASE WHEN $2 IN ('completed','denied','canceled') THEN CASE WHEN $3::jsonb IS NULL THEN jsonb_build_object('status',$2,'code',$4) ELSE $3::jsonb END ELSE NULL END,updated_at=clock_timestamp() WHERE task_id=$1 AND state='dispatched'`, task.ID, attemptState, result, code); err != nil {
+	var turnID string
+	if err = tx.QueryRow(ctx, `UPDATE core_conversation_tool_attempts SET state=$2,result_json=CASE WHEN $2 IN ('completed','denied','canceled') THEN CASE WHEN $3::jsonb IS NULL THEN jsonb_build_object('status',$2,'code',$4::text) ELSE $3::jsonb END ELSE NULL END,updated_at=$5 WHERE task_id=$1 AND state='dispatched' RETURNING turn_id::text`, task.ID, attemptState, result, code, now).Scan(&turnID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return coretask.ErrLeaseConflict
+		}
 		return err
+	}
+	if turnID != task.Spec.Payload.ConversationTool.TurnID {
+		return coretask.ErrLeaseConflict
+	}
+	if state == "uncertain" {
+		var lastSequence int64
+		if err = tx.QueryRow(ctx, `UPDATE core_conversation_turns SET state='failed',terminal_code=$2,terminal_summary=$3,revision=revision+1,updated_at=$4 WHERE turn_id=$1 AND state='waiting_confirmation' RETURNING last_sequence`, turnID, code, summary, now).Scan(&lastSequence); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return coretask.ErrLeaseConflict
+			}
+			return err
+		}
+		if err = insertTurnEventTx(ctx, tx, turnID, lastSequence+1, core.TurnEvent{Kind: core.TurnEventError, ErrorCode: code, ErrorSummary: summary}, now); err != nil {
+			return err
+		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE core_tasks SET progress_sequence=progress_sequence+1 WHERE task_id=$1`, task.ID); err != nil {
 		return err

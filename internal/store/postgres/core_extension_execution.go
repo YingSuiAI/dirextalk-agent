@@ -416,7 +416,11 @@ func (c *PostgresExtensionExecutionCoordinator) ResolveConversationInvocation(ct
 	if err := c.store.pool.QueryRow(ctx, `SELECT state,confirmation_id,tool_name,tool_schema_digest,arguments_digest,arguments_json,extension_snapshot_digest,installation_revision FROM core_conversation_tool_attempts WHERE attempt_id=$1 AND turn_id=$2`, p.AttemptID, p.TurnID).Scan(&attemptState, &confirmationID, &toolName, &schemaDigest, &argsDigest, &argsJSON, &contentDigest, &attemptEpoch); err != nil {
 		return execution.Invocation{}, coretask.ErrNotFound
 	}
-	if attemptState != "dispatched" || attemptEpoch != int64(p.InstallationRevision) || toolName != p.ToolName || schemaDigest != p.ToolSchemaDigest || argsDigest != p.ArgumentsDigest || contentDigest != p.ExtensionSnapshotDigest || !json.Valid(argsJSON) {
+	if attemptState != "dispatched" || attemptEpoch != int64(p.InstallationRevision) || toolName != p.ToolName || schemaDigest != p.ToolSchemaDigest || argsDigest != p.ArgumentsDigest || contentDigest != p.ExtensionSnapshotDigest {
+		return execution.Invocation{}, coretask.ErrConflict
+	}
+	argsJSON, err := canonicalStoredJSON(argsJSON, coreconversation.MaxToolArgumentsBytes)
+	if err != nil || conversationArgsDigest(argsJSON) != argsDigest {
 		return execution.Invocation{}, coretask.ErrConflict
 	}
 	if confirmationID != "" {
@@ -619,4 +623,27 @@ func canonicalJSON(raw json.RawMessage, max int) (json.RawMessage, error) {
 		return nil, coreextension.ErrInvalid
 	}
 	return out, nil
+}
+
+// canonicalStoredJSON restores the canonical bytes that PostgreSQL jsonb does
+// not preserve. Its digest is always rechecked by the caller before dispatch.
+func canonicalStoredJSON(raw json.RawMessage, max int) (json.RawMessage, error) {
+	// jsonb's text form adds insignificant whitespace and can therefore be
+	// larger than the admitted canonical input. Keep a bounded read envelope,
+	// then enforce the exact limit on the restored canonical bytes below.
+	if max <= 0 || len(raw) == 0 || len(raw) > max*2 || !json.Valid(raw) {
+		return nil, coreextension.ErrInvalid
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, coreextension.ErrInvalid
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return nil, coreextension.ErrInvalid
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil || len(canonical) > max {
+		return nil, coreextension.ErrInvalid
+	}
+	return canonical, nil
 }

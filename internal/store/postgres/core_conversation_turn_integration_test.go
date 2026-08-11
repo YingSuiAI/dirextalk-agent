@@ -3,14 +3,18 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -351,13 +355,28 @@ func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *
 	h := openTurnDB(t)
 	installationID, versionID := uuid.NewString(), uuid.NewString()
 	contentDigest := strings.Repeat("a", 64)
+	artifactDigest := strings.Repeat("b", 64)
+	versionRaw, err := json.Marshal(coreextension.VersionRecord{
+		VersionID: versionID, ContentDigest: contentDigest, ArtifactDigest: artifactDigest,
+		Execution: coreextension.ExecutionDescriptor{Stdio: &coreextension.StaticEntry{RelativePath: "entry", Digest: artifactDigest, Argv: []string{"entry"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err = h.pool.Exec(context.Background(), `INSERT INTO core_extension_installations(installation_id,candidate_json,kind,source,candidate_id,name,description,transport,revision,state,enabled,active_version_id,network_grants_json,secret_grants_json,created_at,updated_at) VALUES($1,'{}'::jsonb,'mcp','github','fixture','fixture','', 'stdio_static',4,'installed',true,$2,'[]'::jsonb,'[]'::jsonb,$3,$3)`, installationID, versionID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.pool.Exec(context.Background(), `INSERT INTO core_extension_versions(version_id,installation_id,version_json,created_at) VALUES($1,$2,$3,$4)`, versionID, installationID, versionRaw, now); err != nil {
+		t.Fatal(err)
+	}
 	snapshot := core.ExtensionExecutionSnapshot{
 		Selection: core.ExtensionSelection{
 			Kind: core.ExtensionMCP, ID: installationID, Version: versionID,
 			Digest: contentDigest, AllowedTools: []string{"write_html"},
 		},
 		InstallationID: installationID, VersionID: versionID, InstallationRevision: 4,
-		Source: "github", ContentDigest: contentDigest, ArtifactDigest: strings.Repeat("b", 64),
+		Source: "github", ContentDigest: contentDigest, ArtifactDigest: artifactDigest,
 		ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64),
 		SecretBindingDigest: strings.Repeat("e", 64), ToolNames: []string{"write_html"}, RequiresConfirmation: true,
 	}
@@ -432,5 +451,126 @@ func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *
 	}
 	if taskCount != 1 || attemptCount != 1 || confirmationCount != 1 {
 		t.Fatalf("replay duplicated rows: task=%d attempt=%d confirmation=%d", taskCount, attemptCount, confirmationCount)
+	}
+
+	confirmationService, err := coreconfirmation.NewService(NewCoreConfirmationStore(h.store.Store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmed, err := confirmationService.Confirm(context.Background(), coreconfirmation.ConfirmCommand{ConfirmationID: confirmation.ConfirmationID, IdempotencyKey: uuid.NewString(), ExpectedRevision: confirmation.Revision, At: time.Now().UTC()})
+	if err != nil || confirmed.State != coreconfirmation.StateConfirmed {
+		t.Fatalf("confirmed=%+v err=%v", confirmed, err)
+	}
+	tasks := NewCoreTaskStore(h.store.Store)
+	claimed, _, err := tasks.ClaimNextDue(context.Background(), "conversation-tool-test", time.Now().UTC(), time.Minute, 2)
+	if err != nil || claimed.ID != task.ID {
+		t.Fatalf("claimed=%+v err=%v", claimed, err)
+	}
+	if _, err = tasks.CancelTask(context.Background(), coretask.CancelCommand{TaskID: claimed.ID, Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("c", 64), ExpectedRevision: claimed.Revision}, At: time.Now().UTC()}); !errors.Is(err, coretask.ErrDispatchStarted) {
+		t.Fatalf("running conversation tool cancel err=%v", err)
+	}
+	if err = h.store.FinishConversationTool(context.Background(), claimed, "uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown"); !errors.Is(err, coretask.ErrLeaseConflict) {
+		t.Fatalf("pre-dispatch finish err=%v", err)
+	}
+	unchanged, err := tasks.GetTask(context.Background(), claimed.ID)
+	if err != nil || unchanged.Status != coretask.StatusRunning || unchanged.Revision != claimed.Revision {
+		t.Fatalf("pre-dispatch finish mutated task=%+v err=%v", unchanged, err)
+	}
+	var unchangedAttempt, unchangedConfirmation string
+	if err = h.pool.QueryRow(context.Background(), `SELECT a.state,c.state FROM core_conversation_tool_attempts a JOIN core_confirmations c ON c.confirmation_id=a.confirmation_id WHERE a.attempt_id=$1`, attempt.ID).Scan(&unchangedAttempt, &unchangedConfirmation); err != nil || unchangedAttempt != "waiting_confirmation" || unchangedConfirmation != "confirmed" {
+		t.Fatalf("pre-dispatch state attempt=%q confirmation=%q err=%v", unchangedAttempt, unchangedConfirmation, err)
+	}
+	if _, err = h.store.BeginConversationTool(context.Background(), claimed); err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := NewValidatedPostgresExtensionExecutionCoordinator(h.store.Store, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation, err := coordinator.ResolveConversationInvocation(context.Background(), claimed)
+	if err != nil || invocation.Local == nil {
+		t.Fatalf("invocation=%+v err=%v", invocation, err)
+	}
+	if string(invocation.Local.Input) != string(arguments) || conversationArgsDigest(invocation.Local.Input) != prepare.ArgumentsDigest {
+		t.Fatalf("non-canonical stored input digest=%s want=%s", conversationArgsDigest(invocation.Local.Input), prepare.ArgumentsDigest)
+	}
+	if _, err = h.pool.Exec(context.Background(), `UPDATE core_conversation_tool_attempts SET arguments_json='{"content":"tampered"}'::jsonb WHERE attempt_id=$1`, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = coordinator.ResolveConversationInvocation(context.Background(), claimed); !errors.Is(err, coretask.ErrConflict) {
+		t.Fatalf("tampered stored arguments err=%v", err)
+	}
+	if _, err = h.pool.Exec(context.Background(), `UPDATE core_conversation_tool_attempts SET arguments_json=$2 WHERE attempt_id=$1`, attempt.ID, arguments); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.pool.Exec(context.Background(), `UPDATE core_tasks SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE task_id=$1`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, _, err := tasks.ClaimNextDue(context.Background(), "conversation-tool-recovery", time.Now().UTC(), time.Minute, 2)
+	if err != nil || reclaimed.ID != task.ID || reclaimed.LeaseEpoch <= claimed.LeaseEpoch {
+		t.Fatalf("reclaimed=%+v err=%v", reclaimed, err)
+	}
+	if _, err = h.store.BeginConversationTool(context.Background(), reclaimed); !errors.Is(err, core.ErrToolDispatchStarted) {
+		t.Fatalf("reclaimed begin err=%v", err)
+	}
+	if err = h.store.FinishConversationTool(context.Background(), reclaimed, "uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown"); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := tasks.GetTask(context.Background(), task.ID)
+	if err != nil || terminal.Status != coretask.StatusFailed || terminal.FailureCode != "tool_uncertain" {
+		t.Fatalf("terminal=%+v err=%v", terminal, err)
+	}
+	var terminalAttempt string
+	if err = h.pool.QueryRow(context.Background(), `SELECT state FROM core_conversation_tool_attempts WHERE attempt_id=$1`, attempt.ID).Scan(&terminalAttempt); err != nil || terminalAttempt != "uncertain" {
+		t.Fatalf("attempt_state=%q err=%v", terminalAttempt, err)
+	}
+	terminalTurn, err := h.store.GetTurn(context.Background(), turn.ID)
+	if err != nil || terminalTurn.State != core.TurnFailed || terminalTurn.TerminalCode != "tool_uncertain" || terminalTurn.TerminalSummary != "tool dispatch outcome is unknown" {
+		t.Fatalf("terminal_turn=%+v err=%v", terminalTurn, err)
+	}
+	events, err := h.store.LoadTurnEvents(context.Background(), turn.ID, 0, 100)
+	if err != nil || len(events) == 0 || events[len(events)-1].Kind != core.TurnEventError || events[len(events)-1].ErrorCode != "tool_uncertain" {
+		t.Fatalf("terminal events=%+v err=%v", events, err)
+	}
+
+	cancelCmd := turnCommand()
+	cancelCmd.Extensions = []core.ExtensionSelection{snapshot.Selection}
+	cancelCmd.ExtensionSnapshots = []core.ExtensionExecutionSnapshot{snapshot}
+	cancelTurn, err := h.store.StartTurn(context.Background(), cancelCmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelLease, err := h.store.ClaimTurn(context.Background(), cancelTurn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelCall := core.ToolCall{ID: "call_deepseek_cancel_non_uuid_1", Name: "write_html", Arguments: string(arguments)}
+	cancelAttempt, cancelTask, cancelConfirmation, err := h.store.PrepareConversationTool(context.Background(), core.PrepareToolCommand{
+		Lease: cancelLease, Round: 0, Call: cancelCall, Snapshot: snapshot,
+		CanonicalArguments: arguments, ArgumentsDigest: conversationArgsDigest(arguments),
+		SafeSummary: "conversation tool call write_html", IdempotencyKey: uuid.NewString(),
+		ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitingTurn, err := h.store.GetTurn(context.Background(), cancelTurn.ID)
+	if err != nil || waitingTurn.State != core.TurnWaitingConfirmation {
+		t.Fatalf("waiting cancel turn=%+v err=%v", waitingTurn, err)
+	}
+	canceledTurn, err := h.store.RequestTurnCancel(context.Background(), core.TurnCancelCommand{RequestID: uuid.NewString(), TurnID: waitingTurn.ID, ExpectedRevision: waitingTurn.Revision})
+	if err != nil || canceledTurn.State != core.TurnCanceled || canceledTurn.Revision != waitingTurn.Revision+1 {
+		t.Fatalf("canceled turn=%+v err=%v", canceledTurn, err)
+	}
+	var canceledTaskState, canceledAttemptState, canceledConfirmationState string
+	if err = h.pool.QueryRow(context.Background(), `SELECT t.status,a.state,c.state FROM core_tasks t JOIN core_conversation_tool_attempts a ON a.task_id=t.task_id JOIN core_confirmations c ON c.confirmation_id=a.confirmation_id WHERE t.task_id=$1 AND a.attempt_id=$2 AND c.confirmation_id=$3`, cancelTask.ID, cancelAttempt.ID, cancelConfirmation.ConfirmationID).Scan(&canceledTaskState, &canceledAttemptState, &canceledConfirmationState); err != nil {
+		t.Fatal(err)
+	}
+	if canceledTaskState != "canceled" || canceledAttemptState != "canceled" || canceledConfirmationState != "expired" {
+		t.Fatalf("canceled tool state task=%q attempt=%q confirmation=%q", canceledTaskState, canceledAttemptState, canceledConfirmationState)
+	}
+	cancelEvents, err := h.store.LoadTurnEvents(context.Background(), cancelTurn.ID, 0, 100)
+	if err != nil || len(cancelEvents) == 0 || cancelEvents[len(cancelEvents)-1].Kind != core.TurnEventCanceled {
+		t.Fatalf("cancel events=%+v err=%v", cancelEvents, err)
 	}
 }

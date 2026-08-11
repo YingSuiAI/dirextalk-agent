@@ -383,7 +383,7 @@ func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, ownerID any, cur corec
 	if e := projectExecutionV2RunConfirmationTx(ctx, tx, cur, "expired", at); e != nil {
 		return cur, e
 	}
-	if e := terminalizeConversationToolTx(ctx, tx, cur, "denied", reason, at); e != nil {
+	if e := terminalizeConversationToolTx(ctx, tx, cur, "denied", reason, at, true); e != nil {
 		return cur, e
 	}
 	awsStatus, awsStage := "failed", "failed"
@@ -601,7 +601,7 @@ const confirmationSelect = `SELECT confirmation_id,binding_json,task_id,state,re
 // and task rows are locked by their owning lifecycle mutation. It makes a
 // rejected/expired/canceled approval incapable of later reaching a runner and
 // releases the turn for a bounded next model round.
-func terminalizeConversationToolTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.Confirmation, attemptState, reason string, at time.Time) error {
+func terminalizeConversationToolTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.Confirmation, attemptState, reason string, at time.Time, resumeTurn bool) error {
 	if cur.Binding.OperationDomain != "conversation_tool" {
 		return nil
 	}
@@ -609,13 +609,15 @@ func terminalizeConversationToolTx(ctx context.Context, tx pgx.Tx, cur coreconfi
 	if err := tx.QueryRow(ctx, `SELECT turn_id::text FROM core_conversation_tool_attempts WHERE task_id=$1 AND attempt_id=$2 FOR UPDATE`, cur.TaskID, cur.Binding.TargetID).Scan(&turnID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state=$2,result_json=jsonb_build_object('status',$2,'code',$3),updated_at=$4 WHERE task_id=$1 AND attempt_id=$5 AND state IN ('waiting_confirmation','prepared')`, cur.TaskID, attemptState, reason, at.UTC(), cur.Binding.TargetID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state=$2::text,result_json=jsonb_build_object('status',$2::text,'code',$3::text),updated_at=$4 WHERE task_id=$1 AND attempt_id=$5 AND state IN ('waiting_confirmation','prepared')`, cur.TaskID, attemptState, reason, at.UTC(), cur.Binding.TargetID); err != nil {
 		return err
 	}
-	// A user response is a durable wake: no worker holds this turn lease while
-	// waiting, so clearing it cannot race a provider dispatch.
-	if _, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',lease_id=NULL,lease_expires_at=NULL,revision=revision+1,updated_at=$2 WHERE turn_id=$1 AND state='waiting_confirmation' AND cancel_requested=false`, turnID, at.UTC()); err != nil {
-		return err
+	if resumeTurn {
+		// A user response is a durable wake: no worker holds this turn lease while
+		// waiting, so clearing it cannot race a provider dispatch.
+		if _, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',lease_id=NULL,lease_expires_at=NULL,revision=revision+1,updated_at=$2 WHERE turn_id=$1 AND state='waiting_confirmation' AND cancel_requested=false`, turnID, at.UTC()); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -623,6 +625,10 @@ func terminalizeConversationToolTx(ctx context.Context, tx pgx.Tx, cur coreconfi
 // terminalizeConfirmationForTaskTx compensates pending/confirmed work while
 // preserving consumed provider reservations for reconciliation.
 func terminalizeConfirmationForTaskTx(ctx context.Context, tx pgx.Tx, taskID, reason string, at time.Time) error {
+	return terminalizeConfirmationForTaskModeTx(ctx, tx, taskID, reason, at, true)
+}
+
+func terminalizeConfirmationForTaskModeTx(ctx context.Context, tx pgx.Tx, taskID, reason string, at time.Time, resumeConversationTurn bool) error {
 	cur, err := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE task_id=$1 AND state IN ('pending','confirmed','consumed') FOR UPDATE`, taskID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
@@ -644,7 +650,7 @@ func terminalizeConfirmationForTaskTx(ctx context.Context, tx pgx.Tx, taskID, re
 			return err
 		}
 	}
-	if err = terminalizeConversationToolTx(ctx, tx, cur, "canceled", reason, at); err != nil {
+	if err = terminalizeConversationToolTx(ctx, tx, cur, "canceled", reason, at, resumeConversationTurn); err != nil {
 		return err
 	}
 	if cur.Binding.OperationDomain == "aws" {

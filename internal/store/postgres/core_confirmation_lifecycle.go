@@ -360,7 +360,7 @@ func (s *CoreConfirmationStore) Reject(ctx context.Context, c coreconfirmation.R
 	if e = projectExecutionV2RunConfirmationTx(ctx, tx, cur, "rejected", c.At.UTC()); e != nil {
 		return cur, e
 	}
-	if e = terminalizeConversationToolTx(ctx, tx, cur, "denied", coreconfirmation.ReasonUserRejected, c.At.UTC()); e != nil {
+	if e = terminalizeConversationToolTx(ctx, tx, cur, "denied", coreconfirmation.ReasonUserRejected, c.At.UTC(), true); e != nil {
 		return cur, e
 	}
 	if cur.Binding.OperationDomain == "extension" {

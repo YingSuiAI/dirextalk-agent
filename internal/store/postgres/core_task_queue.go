@@ -346,7 +346,7 @@ func (s *CoreTaskStore) CancelTask(ctx context.Context, c coretask.CancelCommand
 			return coretask.Task{}, coretask.ErrTerminal
 		}
 		running := t.Status == coretask.StatusRunning
-		if running && t.Spec.Kind == coretask.TaskKindWorkload {
+		if running && (t.Spec.Kind == coretask.TaskKindWorkload || t.Spec.Kind == coretask.TaskKindConversationTool) {
 			return coretask.Task{}, coretask.ErrDispatchStarted
 		}
 		epoch := t.LeaseEpoch
