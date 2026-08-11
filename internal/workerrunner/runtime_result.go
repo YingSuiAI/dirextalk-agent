@@ -8,18 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/artifactmedia"
+	"github.com/YingSuiAI/dirextalk-agent/internal/artifactname"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/google/uuid"
-)
-
-var runtimeArtifactNamePattern = regexp.MustCompile(
-	`^[a-z][a-z0-9._-]{0,127}$`,
 )
 
 const ResultManifestSchemaV2 = 2
@@ -337,7 +333,7 @@ func validateRuntimeArtifactClaimScope(
 		artifact.LeaseEpoch > checkpointLeaseEpoch ||
 		(artifact.Attempt == checkpointAttempt &&
 			artifact.LeaseEpoch != checkpointLeaseEpoch) ||
-		!runtimeArtifactNamePattern.MatchString(artifact.Name) ||
+		!artifactname.Valid(artifact.Name) ||
 		artifact.SizeBytes < 1 ||
 		artifact.SizeBytes > workerruntime.MaxArtifactBytes {
 		return ErrInvalidBundle
@@ -400,7 +396,7 @@ func scopedRuntimeArtifactRef(
 ) (string, error) {
 	if access == nil || attempt < 1 || leaseEpoch < 1 ||
 		!actionIDPattern.MatchString(actionID) ||
-		!runtimeArtifactNamePattern.MatchString(artifactName) {
+		!artifactname.Valid(artifactName) {
 		return "", errors.New("Worker runtime artifact scope is invalid")
 	}
 	extension, supported := artifactmedia.Extension(mediaType)

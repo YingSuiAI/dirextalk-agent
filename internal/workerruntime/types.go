@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/artifactmedia"
+	"github.com/YingSuiAI/dirextalk-agent/internal/artifactname"
 	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/google/uuid"
@@ -34,12 +35,11 @@ var (
 	ErrUnsupported = errors.New("Worker runtime adapter is unsupported")
 	ErrExecution   = errors.New("Worker runtime execution failed")
 
-	digestPattern       = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
-	roleIDPattern       = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
-	releaseVersion      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
-	catalogNamePattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
-	credentialSlot      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
-	artifactNamePattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,127}$`)
+	digestPattern      = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	roleIDPattern      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
+	releaseVersion     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
+	catalogNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
+	credentialSlot     = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 )
 
 type Adapter string
@@ -178,7 +178,7 @@ type Artifact struct {
 }
 
 func (artifact Artifact) Validate() error {
-	if !artifactNamePattern.MatchString(artifact.Name) ||
+	if !artifactname.Valid(artifact.Name) ||
 		len(artifact.Content) == 0 ||
 		len(artifact.Content) > MaxArtifactBytes ||
 		security.ContainsLikelySecret(artifact.Name) {

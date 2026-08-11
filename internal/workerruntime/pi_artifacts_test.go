@@ -26,13 +26,13 @@ func TestPiExecutorCollectsDeclaredWorkspaceArtifacts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "report.md"), report, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(workspace, "summary.pptx"), presentation, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(workspace, "Dirextalk 商业计划书 2026.PPTX"), presentation, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	events := bytes.Replace(
 		validPiEventStream(),
 		[]byte(`"risks":[]}`),
-		[]byte(`"risks":[],"artifacts":["result.json","report.md","summary.pptx"]}`),
+		[]byte(`"risks":[],"artifacts":["result.json","report.md","Dirextalk 商业计划书 2026.PPTX"]}`),
 		1,
 	)
 	executor := newTestPiExecutor(
@@ -57,7 +57,7 @@ func TestPiExecutorCollectsDeclaredWorkspaceArtifacts(t *testing.T) {
 		result.Artifacts[2].Name != "report.md" ||
 		result.Artifacts[2].MediaType != "text/plain; charset=utf-8" ||
 		!bytes.Equal(result.Artifacts[2].Content, report) ||
-		result.Artifacts[3].Name != "summary.pptx" ||
+		result.Artifacts[3].Name != "Dirextalk 商业计划书 2026.PPTX" ||
 		result.Artifacts[3].MediaType != "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
 		!bytes.Equal(result.Artifacts[3].Content, presentation) {
 		t.Fatalf("artifacts = %+v", result.Artifacts)

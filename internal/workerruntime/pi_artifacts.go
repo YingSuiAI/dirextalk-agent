@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/artifactmedia"
+	"github.com/YingSuiAI/dirextalk-agent/internal/artifactname"
 )
 
 const maxPiArtifactPathBytes = 512
@@ -102,12 +103,12 @@ func validatePiArtifactPath(workspace, relative string) (string, string, error) 
 		}
 	}
 	name := parts[len(parts)-1]
-	if !artifactNamePattern.MatchString(name) ||
+	if !artifactname.Valid(name) ||
 		name == "final.json" || name == "changes.patch" {
 		return "", "", ErrInvalid
 	}
 	mediaType := ""
-	switch filepath.Ext(name) {
+	switch strings.ToLower(filepath.Ext(name)) {
 	case ".json":
 		mediaType = artifactmedia.JSON
 	case ".md", ".txt":

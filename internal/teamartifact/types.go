@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/artifactmedia"
+	"github.com/YingSuiAI/dirextalk-agent/internal/artifactname"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/google/uuid"
 )
@@ -43,7 +44,6 @@ var (
 	digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 	roleIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 	actionPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
-	namePattern   = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,127}$`)
 )
 
 // ArtifactV1 stores the exact object binding internally. Public projections
@@ -94,7 +94,7 @@ func (value ArtifactV1) Validate() error {
 		value.PlanRevision > uint64(math.MaxInt64) ||
 		!roleIDPattern.MatchString(value.RoleID) ||
 		!actionPattern.MatchString(value.ActionID) ||
-		!namePattern.MatchString(value.Name) ||
+		!artifactname.Valid(value.Name) ||
 		!validKind(value.Kind, value.Name) ||
 		!validMediaType(value.MediaType) ||
 		value.SizeBytes < 1 ||
