@@ -680,7 +680,7 @@ func TestLocalMCPHandlerSendsExactToolCallAndRequiresResult(t *testing.T) {
 		if json.Unmarshal(response, &envelope) != nil {
 			t.Fatal("invalid response fixture")
 		}
-		if out.Err != nil || !out.TerminalOwned || coord.complete != 1 || coord.fail != 0 || string(out.Result.JSON) != string(envelope.Result) {
+		if out.Err != nil || !out.TerminalOwned || coord.complete != 1 || coord.fail != 0 || out.Result.Summary != "local MCP tool result" || string(out.Result.JSON) != string(envelope.Result) {
 			t.Fatalf("out=%#v err=%v complete=%d fail=%d result=%s stdin=%q request=%+v", out, out.Err, coord.complete, coord.fail, out.Result.JSON, runner.stdin, runner.request)
 		}
 		lines := strings.Split(strings.TrimSpace(string(runner.stdin)), "\n")
@@ -704,6 +704,40 @@ func TestLocalMCPHandlerSendsExactToolCallAndRequiresResult(t *testing.T) {
 		coord := &fakeCoord{resolved: makeInvocation()}
 		out := (&Handler{Coordinator: coord, Local: &LocalExecutor{Runner: runner}}).Handle(context.Background(), coretask.Task{ID: taskID})
 		if out.Err == nil || !out.TerminalOwned || coord.complete != 0 || coord.fail != 1 {
+			t.Fatalf("out=%#v complete=%d fail=%d", out, coord.complete, coord.fail)
+		}
+	})
+
+	t.Run("JSON-RPC error fails", func(t *testing.T) {
+		runner := &mcpCallRunner{stdout: []byte(`{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"tool failed"}}`)}
+		coord := &fakeCoord{resolved: makeInvocation()}
+		out := (&Handler{Coordinator: coord, Local: &LocalExecutor{Runner: runner}}).Handle(context.Background(), coretask.Task{ID: taskID})
+		if out.Err == nil || !out.TerminalOwned || coord.complete != 0 || coord.fail != 1 {
+			t.Fatalf("out=%#v complete=%d fail=%d", out, coord.complete, coord.fail)
+		}
+	})
+
+	t.Run("result without content fails", func(t *testing.T) {
+		runner := &mcpCallRunner{stdout: []byte(`{"jsonrpc":"2.0","id":2,"result":{}}`)}
+		coord := &fakeCoord{resolved: makeInvocation()}
+		out := (&Handler{Coordinator: coord, Local: &LocalExecutor{Runner: runner}}).Handle(context.Background(), coretask.Task{ID: taskID})
+		if out.Err == nil || !out.TerminalOwned || coord.complete != 0 || coord.fail != 1 {
+			t.Fatalf("out=%#v complete=%d fail=%d", out, coord.complete, coord.fail)
+		}
+	})
+
+	t.Run("tool error completes with stable summary", func(t *testing.T) {
+		response := []byte(`{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"tool failed"}],"isError":true}}`)
+		runner := &mcpCallRunner{stdout: response}
+		coord := &fakeCoord{resolved: makeInvocation()}
+		out := (&Handler{Coordinator: coord, Local: &LocalExecutor{Runner: runner}}).Handle(context.Background(), coretask.Task{ID: taskID})
+		var envelope struct {
+			Result json.RawMessage `json:"result"`
+		}
+		if json.Unmarshal(response, &envelope) != nil {
+			t.Fatal("invalid response fixture")
+		}
+		if out.Err != nil || !out.TerminalOwned || coord.complete != 1 || coord.fail != 0 || out.Result.Summary != "local MCP tool returned an error" || string(out.Result.JSON) != string(envelope.Result) {
 			t.Fatalf("out=%#v complete=%d fail=%d", out, coord.complete, coord.fail)
 		}
 	})

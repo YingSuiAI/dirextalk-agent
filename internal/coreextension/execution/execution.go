@@ -109,8 +109,8 @@ func (e *LocalExecutor) ListTools(ctx context.Context, in LocalInvocation) ([]co
 }
 
 // CallTool performs an exact MCP tools/call over the isolated runner and
-// returns the provider's bounded JSON result. A provider error is surfaced as
-// a normal task result with a stable summary, never retried in-process.
+// returns the provider's bounded JSON result. A tool-declared error is surfaced
+// as a normal task result with a stable summary, never retried in-process.
 func (e *LocalExecutor) CallTool(ctx context.Context, in LocalInvocation, name string, input json.RawMessage) (coretask.Result, error) {
 	if strings.TrimSpace(name) == "" {
 		return coretask.Result{}, core.ErrInvalid
@@ -125,19 +125,22 @@ func (e *LocalExecutor) CallTool(ctx context.Context, in LocalInvocation, name s
 	}
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
 	}
 	if err := decodeMCPResponse(status.Stdout, 2, &envelope); err != nil {
 		return coretask.Result{}, err
 	}
-	if len(envelope.Error) > 0 {
-		result := coretask.Result{JSON: append([]byte(nil), envelope.Error...), Summary: "local MCP tool returned an error"}
-		return result, result.Validate()
+	var callResult struct {
+		Content []json.RawMessage `json:"content"`
+		IsError bool              `json:"isError"`
 	}
-	if len(envelope.Result) == 0 || !json.Valid(envelope.Result) {
+	if len(envelope.Result) == 0 || json.Unmarshal(envelope.Result, &callResult) != nil || callResult.Content == nil {
 		return coretask.Result{}, core.ErrInvalid
 	}
-	result := coretask.Result{JSON: append([]byte(nil), envelope.Result...), Summary: "local MCP tool result"}
+	summary := "local MCP tool result"
+	if callResult.IsError {
+		summary = "local MCP tool returned an error"
+	}
+	result := coretask.Result{JSON: append([]byte(nil), envelope.Result...), Summary: summary}
 	return result, result.Validate()
 }
 
