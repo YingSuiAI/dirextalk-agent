@@ -58,11 +58,44 @@ type capturingTurnModel struct {
 	runs    int
 }
 
+type delayedStreamingTurnModel struct {
+	delay       time.Duration
+	runCalls    int
+	streamCalls int
+}
+
+func (m *delayedStreamingTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
+	m.runCalls++
+	return ModelRunResult{}, context.DeadlineExceeded
+}
+
+func (m *delayedStreamingTurnModel) Stream(ctx context.Context, _ ModelRunRequest, emit func(ModelDelta) error) (ModelRunResult, error) {
+	m.streamCalls++
+	if emit == nil {
+		return ModelRunResult{}, ErrInvalid
+	}
+	if err := emit(ModelDelta{Text: "intermediate-only delta"}); err != nil {
+		return ModelRunResult{}, err
+	}
+	timer := time.NewTimer(m.delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return ModelRunResult{}, ctx.Err()
+	}
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", CreatedAt: time.Now().UTC()}}, nil
+}
+
 type fixedToolCallsTurnModel struct{ calls []ToolCall }
 
 func (m fixedToolCallsTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
 	message := Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: append([]ToolCall(nil), m.calls...), CreatedAt: time.Now().UTC()}
 	return ModelRunResult{Message: message, ToolCalls: append([]ToolCall(nil), m.calls...)}, nil
+}
+
+func (m fixedToolCallsTurnModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	return m.Run(ctx, request)
 }
 
 type twoRoundReadOnlyModel struct {
@@ -77,6 +110,10 @@ func (m *twoRoundReadOnlyModel) Run(_ context.Context, request ModelRunRequest) 
 		return ModelRunResult{Message: message, ToolCalls: []ToolCall{m.call}}, nil
 	}
 	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", CreatedAt: time.Now().UTC()}}, nil
+}
+
+func (m *twoRoundReadOnlyModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	return m.Run(ctx, request)
 }
 
 type readOnlyTurnStore struct {
@@ -288,6 +325,10 @@ func (m *capturingTurnModel) Run(_ context.Context, request ModelRunRequest) (Mo
 	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "ok", CreatedAt: time.Now().UTC()}}, nil
 }
 
+func (m *capturingTurnModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
 type memoryRecallFunc func(context.Context, string) (string, error)
 
 func (f memoryRecallFunc) RecallMemory(ctx context.Context, prompt string) (string, error) {
@@ -310,6 +351,10 @@ func (m *blockingTurnModel) Run(ctx context.Context, req ModelRunRequest) (Model
 	close(m.started)
 	<-m.release
 	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "ok", CreatedAt: time.Now().UTC()}}, nil
+}
+
+func (m *blockingTurnModel) Stream(ctx context.Context, req ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	return m.Run(ctx, req)
 }
 
 type activeTurnStore struct{ *supervisorTurnStore }
@@ -607,6 +652,52 @@ func TestExecuteTurnRecallsNewConversationBeforeModel(t *testing.T) {
 	}
 	if len(model.request.Conversation.Messages) != 2 || model.request.Conversation.Messages[0].Role != RoleUser || model.request.Conversation.Messages[1].Role != RoleUser || model.request.Conversation.Messages[1].Content != turn.Prompt {
 		t.Fatalf("model request omitted recall/current prompt: %+v", model.request.Conversation.Messages)
+	}
+}
+
+func TestExecuteTurnDurableUsesStreamingPathBeyondLegacyTotalWindow(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+		Prompt: "complete a long model turn", ProfileID: profile.ProfileID,
+		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+		State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC(),
+	}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}
+	const simulatedLegacyTotalWindow = 10 * time.Millisecond
+	model := &delayedStreamingTurnModel{delay: 4 * simulatedLegacyTotalWindow}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	service.executeTurn(context.Background(), turn.ID)
+	elapsed := time.Since(started)
+
+	terminal, err := store.GetTurn(context.Background(), turn.ID)
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "final answer" {
+		t.Fatalf("terminal=%+v err=%v", terminal, err)
+	}
+	if model.runCalls != 0 || model.streamCalls != 1 {
+		t.Fatalf("model Run calls=%d Stream calls=%d", model.runCalls, model.streamCalls)
+	}
+	if elapsed < model.delay || elapsed <= simulatedLegacyTotalWindow {
+		t.Fatalf("durable streaming elapsed=%s delay=%s legacy_window=%s", elapsed, model.delay, simulatedLegacyTotalWindow)
+	}
+	if len(store.events) != 3 || store.events[0].Kind != TurnEventAccepted || store.events[1].Kind != TurnEventStarted || store.events[2].Kind != TurnEventDone {
+		t.Fatalf("durable events=%+v", store.events)
+	}
+	for _, event := range store.events {
+		if event.Response != nil && strings.Contains(event.Response.Message.Content, "intermediate-only delta") {
+			t.Fatal("streaming delta was persisted in a durable event")
+		}
 	}
 }
 

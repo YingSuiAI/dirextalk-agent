@@ -11,11 +11,19 @@ import (
 	"github.com/google/uuid"
 )
 
-type timeoutTurnModel struct{ runs int }
+type timeoutTurnModel struct {
+	runCalls    int
+	streamCalls int
+}
 
 func (m *timeoutTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
-	m.runs++
-	return ModelRunResult{}, fmt.Errorf("provider request: %w", context.DeadlineExceeded)
+	m.runCalls++
+	return ModelRunResult{}, errors.New("non-streaming model path must not be used")
+}
+
+func (m *timeoutTurnModel) Stream(context.Context, ModelRunRequest, func(ModelDelta) error) (ModelRunResult, error) {
+	m.streamCalls++
+	return ModelRunResult{}, fmt.Errorf("provider request: %w", coremodel.ErrStreamIdleTimeout)
 }
 
 type timeoutTurnStore struct {
@@ -80,8 +88,8 @@ func TestExecuteTurnClassifiesProviderTimeoutWithoutReplay(t *testing.T) {
 	if store.uncertainCode != modelResponseTimeoutCode || store.uncertainSummary != modelResponseTimeoutSummary {
 		t.Fatalf("durable uncertain code=%q summary=%q", store.uncertainCode, store.uncertainSummary)
 	}
-	if model.runs != 1 {
-		t.Fatalf("model dispatch count=%d want=1", model.runs)
+	if model.runCalls != 0 || model.streamCalls != 1 {
+		t.Fatalf("model Run calls=%d Stream calls=%d", model.runCalls, model.streamCalls)
 	}
 }
 
@@ -121,7 +129,7 @@ func TestSupervisorPreservesPersistedTimeoutClassificationWithoutReplay(t *testi
 	if store.code != modelResponseTimeoutCode || store.summary != modelResponseTimeoutSummary {
 		t.Fatalf("recovered code=%q summary=%q", store.code, store.summary)
 	}
-	if model.runs != 0 {
-		t.Fatalf("uncertain provider dispatch replayed %d times", model.runs)
+	if model.runCalls != 0 || model.streamCalls != 0 {
+		t.Fatalf("uncertain provider dispatch replayed Run=%d Stream=%d", model.runCalls, model.streamCalls)
 	}
 }

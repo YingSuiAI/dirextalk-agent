@@ -763,6 +763,13 @@ func consumeDurableTurnStream(
 		case coreconversation.EventDone:
 			response = streamEvent.Response
 		case coreconversation.EventError:
+			projected, err := projectDurableChatStreamEvent(turn, event.Revision, *streamEvent)
+			if err != nil {
+				return nil, err
+			}
+			if err := emitCapabilityProgressValue(ctx, operationID, projected, progress); err != nil {
+				return nil, err
+			}
 			return nil, classifyDurableTurnFailure(streamEvent.ErrCode)
 		default:
 			projected, err := projectDurableChatStreamEvent(turn, event.Revision, *streamEvent)

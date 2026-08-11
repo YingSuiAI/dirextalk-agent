@@ -1571,7 +1571,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	} else {
 		go func() {
 			profile := turn.ProfileSnapshot.Profile()
-			result, runErr := s.models.Run(child, ModelRunRequest{
+			// Force the current streaming runner so active provider streams are
+			// bounded only by their inactivity watchdog. Durable events persist the
+			// completed result below; private content deltas are intentionally dropped.
+			result, runErr := s.runModel(child, ModelRunRequest{
 				Conversation: modelConversation,
 				Profile: ResolvedProfile{
 					ID:           profile.ID,
@@ -1585,7 +1588,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				Intrinsics:         append([]ResolvedIntrinsic(nil), intrinsicTools...),
 				Extensions:         resolvedExtensions,
 				ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...),
-			})
+			}, func(ModelDelta) error { return nil })
 			resultCh <- struct {
 				result ModelRunResult
 				err    error

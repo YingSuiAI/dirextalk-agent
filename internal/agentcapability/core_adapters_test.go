@@ -426,13 +426,14 @@ func TestDurableChatWireProjectionFailsClosedOnInvalidAuthority(t *testing.T) {
 func TestConsumeDurableTurnStreamProjectsTerminalFailureAndReplayGap(t *testing.T) {
 	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
 	tests := []struct {
-		name     string
-		event    coreconversation.TurnEvent
-		wantErr  error
-		wantCode string
+		name         string
+		event        coreconversation.TurnEvent
+		wantErr      error
+		wantCode     string
+		wantProgress int
 	}{
-		{name: "cancelled", event: coreconversation.TurnEvent{Kind: coreconversation.TurnEventCanceled, Revision: 2}, wantErr: coreconversation.ErrCanceled, wantCode: "canceled"},
-		{name: "failed", event: coreconversation.TurnEvent{Kind: coreconversation.TurnEventError, Revision: 2, ErrorCode: "provider_failed", ErrorSummary: "safe summary"}, wantErr: coreconversation.ErrChatFailed, wantCode: "provider_failed"},
+		{name: "cancelled", event: coreconversation.TurnEvent{Kind: coreconversation.TurnEventCanceled, Revision: 2}, wantErr: coreconversation.ErrCanceled, wantCode: "canceled", wantProgress: 1},
+		{name: "failed", event: coreconversation.TurnEvent{Kind: coreconversation.TurnEventError, Revision: 2, ErrorCode: "provider_failed", ErrorSummary: "safe summary"}, wantErr: coreconversation.ErrChatFailed, wantCode: "provider_failed", wantProgress: 1},
 		{name: "replay gap", event: coreconversation.TurnEvent{ReplayGap: true, FirstSequence: 4, LastSequence: 7}, wantErr: coreconversation.ErrChatFailed, wantCode: "replay_gap"},
 	}
 	for _, tt := range tests {
@@ -445,12 +446,21 @@ func TestConsumeDurableTurnStreamProjectsTerminalFailureAndReplayGap(t *testing.
 			events <- tt.event
 			close(events)
 			progressCalls := 0
-			_, err := consumeDurableTurnStream(context.Background(), "stream_chat", turn, events, func(context.Context, string, []byte) error {
+			var progress map[string]any
+			_, err := consumeDurableTurnStream(context.Background(), "stream_chat", turn, events, func(_ context.Context, operationID string, raw []byte) error {
+				if operationID != "stream_chat" {
+					t.Fatalf("operation id=%q", operationID)
+				}
 				progressCalls++
-				return nil
+				return json.Unmarshal(raw, &progress)
 			})
-			if !errors.Is(err, tt.wantErr) || progressCalls != 0 {
-				t.Fatalf("progress=%d err=%v", progressCalls, err)
+			if !errors.Is(err, tt.wantErr) || progressCalls != tt.wantProgress {
+				t.Fatalf("progress=%d payload=%+v err=%v", progressCalls, progress, err)
+			}
+			if tt.wantProgress == 1 && (progress["kind"] != "error" || progress["error_code"] != tt.wantCode ||
+				progress["idempotency_key"] != turn.RequestID || progress["conversation_id"] != turn.ConversationID || progress["turn_id"] != turn.ID ||
+				progress["revision"] != float64(tt.event.Revision)) {
+				t.Fatalf("terminal progress=%+v", progress)
 			}
 		})
 	}
