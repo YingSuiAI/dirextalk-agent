@@ -376,26 +376,34 @@ func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := core.ToolCall{ID: uuid.NewString(), Name: "write_html", Arguments: string(arguments)}
-	attempt, task, confirmation, err := h.store.PrepareConversationTool(context.Background(), core.PrepareToolCommand{
+	call := core.ToolCall{ID: "call_deepseek_non_uuid_1", Name: "write_html", Arguments: string(arguments)}
+	prepare := core.PrepareToolCommand{
 		Lease: lease, Round: 0, Call: call, Snapshot: snapshot,
 		CanonicalArguments: arguments, ArgumentsDigest: conversationArgsDigest(arguments),
 		SafeSummary: "conversation tool call write_html", IdempotencyKey: uuid.NewString(),
 		ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
-	})
+	}
+	attempt, task, confirmation, err := h.store.PrepareConversationTool(context.Background(), prepare)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if attempt.State != "waiting_confirmation" || attempt.TaskID != task.ID || attempt.ConfirmationID != confirmation.ConfirmationID || task.Spec.Kind != "conversation_tool" || confirmation.State != "pending" {
+	if attempt.State != "waiting_confirmation" || attempt.CallID != call.ID || attempt.TaskID != task.ID || attempt.ConfirmationID != confirmation.ConfirmationID || task.Spec.Kind != "conversation_tool" || confirmation.State != "pending" {
 		t.Fatalf("attempt=%+v task=%+v confirmation=%+v", attempt, task, confirmation)
 	}
-	var storedSummary, storedState string
+	var storedSummary, storedState, storedCallID, payloadCallID string
 	var createdAt, updatedAt time.Time
-	if err = h.pool.QueryRow(context.Background(), `SELECT safe_summary,state,created_at,updated_at FROM core_conversation_tool_attempts WHERE attempt_id=$1`, attempt.ID).Scan(&storedSummary, &storedState, &createdAt, &updatedAt); err != nil {
+	if err = h.pool.QueryRow(context.Background(), `SELECT a.safe_summary,a.state,a.call_id::text,t.payload_json#>>'{conversation_tool,call_id}',a.created_at,a.updated_at FROM core_conversation_tool_attempts a JOIN core_tasks t ON t.task_id=a.task_id WHERE a.attempt_id=$1`, attempt.ID).Scan(&storedSummary, &storedState, &storedCallID, &payloadCallID, &createdAt, &updatedAt); err != nil {
 		t.Fatal(err)
 	}
-	if storedSummary != "conversation tool call write_html" || storedState != "waiting_confirmation" || createdAt.IsZero() || !createdAt.Equal(updatedAt) {
-		t.Fatalf("summary=%q state=%q created_at=%s updated_at=%s", storedSummary, storedState, createdAt, updatedAt)
+	if storedSummary != "conversation tool call write_html" || storedState != "waiting_confirmation" || storedCallID != attempt.ID || payloadCallID != call.ID || createdAt.IsZero() || !createdAt.Equal(updatedAt) {
+		t.Fatalf("summary=%q state=%q stored_call_id=%q payload_call_id=%q created_at=%s updated_at=%s", storedSummary, storedState, storedCallID, payloadCallID, createdAt, updatedAt)
+	}
+	observed, err := h.store.ObserveConversationTool(context.Background(), turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.ID != attempt.ID || observed.CallID != call.ID {
+		t.Fatalf("observed attempt=%+v", observed)
 	}
 	storedTurn, err := h.store.GetTurn(context.Background(), turn.ID)
 	if err != nil {
@@ -410,5 +418,19 @@ func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *
 	}
 	if !leaseReleased {
 		t.Fatal("waiting confirmation retained its running lease")
+	}
+	replayedAttempt, replayedTask, replayedConfirmation, err := h.store.PrepareConversationTool(context.Background(), prepare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayedAttempt.ID != attempt.ID || replayedAttempt.CallID != call.ID || replayedTask.ID != task.ID || replayedTask.Spec.ConversationID != turn.ConversationID || replayedConfirmation.ConfirmationID != confirmation.ConfirmationID {
+		t.Fatalf("replayed attempt=%+v task=%+v confirmation=%+v", replayedAttempt, replayedTask, replayedConfirmation)
+	}
+	var taskCount, attemptCount, confirmationCount int
+	if err = h.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM core_tasks WHERE task_id=$1),(SELECT count(*) FROM core_conversation_tool_attempts WHERE attempt_id=$2),(SELECT count(*) FROM core_confirmations WHERE confirmation_id=$3)`, task.ID, attempt.ID, confirmation.ConfirmationID).Scan(&taskCount, &attemptCount, &confirmationCount); err != nil {
+		t.Fatal(err)
+	}
+	if taskCount != 1 || attemptCount != 1 || confirmationCount != 1 {
+		t.Fatalf("replay duplicated rows: task=%d attempt=%d confirmation=%d", taskCount, attemptCount, confirmationCount)
 	}
 }

@@ -47,6 +47,38 @@ func TestGenericTaskPayloadBranchesAndRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConversationToolTaskAcceptsBoundedOpaqueProviderCallID(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	spec := TaskSpec{
+		Kind: TaskKindConversationTool, Goal: "conversation tool write_html", ConversationID: uuid.NewString(), IdempotencyKey: uuid.NewString(),
+		Payload: TaskPayload{ConversationTool: &ConversationToolTaskPayload{
+			TurnID: uuid.NewString(), AttemptID: uuid.NewString(), Round: 0,
+			CallID: "call_deepseek_non_uuid_1", ExtensionSnapshotDigest: digest,
+			InstallationID: uuid.NewString(), VersionID: uuid.NewString(), InstallationRevision: 4,
+			ToolName: "write_html", ToolSchemaDigest: digest, ArgumentsDigest: digest,
+		}},
+	}
+	normalized, err := spec.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Payload.ConversationTool.CallID != "call_deepseek_non_uuid_1" {
+		t.Fatalf("provider call ID changed: %q", normalized.Payload.ConversationTool.CallID)
+	}
+	if normalized.ConversationID != spec.ConversationID {
+		t.Fatalf("conversation binding changed: %q", normalized.ConversationID)
+	}
+	tooLong := spec
+	tooLong.Payload.ConversationTool = &ConversationToolTaskPayload{
+		TurnID: uuid.NewString(), AttemptID: uuid.NewString(), CallID: strings.Repeat("x", MaxToolCallIDBytes+1),
+		ExtensionSnapshotDigest: digest, InstallationID: uuid.NewString(), VersionID: uuid.NewString(), InstallationRevision: 1,
+		ToolName: "write_html", ToolSchemaDigest: digest, ArgumentsDigest: digest,
+	}
+	if _, err = tooLong.Normalize(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("oversized provider call ID accepted: %v", err)
+	}
+}
+
 func TestCloudWorkerTaskCannotInheritLocalRuntimeBindings(t *testing.T) {
 	digest := strings.Repeat("a", 64)
 	payload := &CloudWorkerTaskPayload{
