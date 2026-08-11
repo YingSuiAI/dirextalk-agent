@@ -276,13 +276,85 @@ func TestRegistryRevocationPublisherAndOrganizationGates(
 			t.Fatal(err)
 		}
 		_, err = registry.ListApproved(
-			payload.ValidUntil,
+			*payload.ValidUntil,
 			"",
 		)
 		if !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("expired registry error=%v", err)
 		}
 	})
+}
+
+func TestPermanentOfficialRegistryRemainsAvailableUntilRevoked(t *testing.T) {
+	publicKey, privateKey := registryTestKey()
+	payload := validRegistryPayload(t, publicKey)
+	payload.SchemaVersion = RegistrySchemaV2
+	payload.ValidityPolicy = ValidityUntilRevoked
+	payload.ValidUntil = nil
+	payload.Publishers[0].VerificationPolicy = ValidityUntilRevoked
+	payload.Publishers[0].VerificationExpiresAt = nil
+	payload.Releases[0].Review.ValidityPolicy = ValidityUntilRevoked
+	payload.Releases[0].Review.ValidUntil = nil
+
+	registry, err := ParseRegistryJSON(
+		signRegistry(t, payload, privateKey),
+		publicKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := registry.ListApproved(
+		payload.GeneratedAt.Add(20*365*24*time.Hour),
+		"",
+	)
+	if err != nil || len(approved) != 1 ||
+		!registry.ValidUntil().IsZero() {
+		t.Fatalf(
+			"permanent approved=%#v valid_until=%v error=%v",
+			approved,
+			registry.ValidUntil(),
+			err,
+		)
+	}
+
+	nonOfficial := payload
+	nonOfficial.Publishers = append(
+		[]PublisherV1(nil),
+		payload.Publishers...,
+	)
+	nonOfficial.Publishers[0].Tier = PublisherVerifiedPartner
+	if _, err := canonicalPayload(nonOfficial); !errors.Is(
+		err,
+		ErrInvalid,
+	) {
+		t.Fatalf("permanent partner error=%v", err)
+	}
+
+	revoked := payload
+	revoked.Releases = append([]ReleaseV1(nil), payload.Releases...)
+	revokedRelease := &revoked.Releases[0]
+	revokedRelease.Status = ReleaseRevoked
+	revokedRelease.StatusChangedAt = payload.GeneratedAt
+	revokedRelease.Revocation = &RevocationV1{
+		RevocationID:   "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		RevokedAt:      payload.GeneratedAt,
+		ReasonCode:     "emergency_revoke",
+		EvidenceDigest: registryDigest("f"),
+	}
+	revokedRegistry, err := ParseRegistryJSON(
+		signRegistry(t, revoked, privateKey),
+		publicKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err = revokedRegistry.ListApproved(
+		payload.GeneratedAt.Add(20*365*24*time.Hour),
+		"",
+	)
+	if err != nil || len(approved) != 0 {
+		t.Fatalf("revoked permanent release=%#v error=%v", approved, err)
+	}
 }
 
 func TestLoadRegistryRequiresProtectedRegularFiles(t *testing.T) {
@@ -345,8 +417,10 @@ func validRegistryPayload(
 		IdentityEvidenceDigest: registryDigest("1"),
 		SigningIdentityDigest:  registryDigest("2"),
 		VerifiedAt:             generatedAt.Add(-24 * time.Hour),
-		VerificationExpiresAt:  generatedAt.Add(6 * 24 * time.Hour),
-		StatusChangedAt:        generatedAt.Add(-24 * time.Hour),
+		VerificationExpiresAt: registryTimePointer(
+			generatedAt.Add(6 * 24 * time.Hour),
+		),
+		StatusChangedAt: generatedAt.Add(-24 * time.Hour),
 	}
 	manifest := validMarketManifest()
 	manifestDigest, err := manifest.Digest()
@@ -374,12 +448,14 @@ func validRegistryPayload(
 		ReleasedAt:      releasedAt,
 		StatusChangedAt: reviewedAt,
 		Review: ReviewEvidenceV1{
-			ReviewID:                 "33333333-3333-4333-8333-333333333333",
-			PolicyRevision:           registryDigest("7"),
-			ReviewerID:               "dirextalk.security",
-			RiskClass:                "moderate",
-			ReviewedAt:               reviewedAt,
-			ValidUntil:               generatedAt.Add(4 * 24 * time.Hour),
+			ReviewID:       "33333333-3333-4333-8333-333333333333",
+			PolicyRevision: registryDigest("7"),
+			ReviewerID:     "dirextalk.security",
+			RiskClass:      "moderate",
+			ReviewedAt:     reviewedAt,
+			ValidUntil: registryTimePointer(
+				generatedAt.Add(4 * 24 * time.Hour),
+			),
 			PublisherIdentityDigest:  publisher.IdentityEvidenceDigest,
 			ManifestAnalysisDigest:   registryDigest("8"),
 			ImageSignatureDigest:     registryDigest("4"),
@@ -403,10 +479,16 @@ func validRegistryPayload(
 		RegistryID:    "44444444-4444-4444-8444-444444444444",
 		SignerKeyID:   SignerKeyID(publicKey),
 		GeneratedAt:   generatedAt,
-		ValidUntil:    generatedAt.Add(24 * time.Hour),
-		Publishers:    []PublisherV1{publisher},
-		Releases:      []ReleaseV1{release},
+		ValidUntil: registryTimePointer(
+			generatedAt.Add(24 * time.Hour),
+		),
+		Publishers: []PublisherV1{publisher},
+		Releases:   []ReleaseV1{release},
 	}
+}
+
+func registryTimePointer(value time.Time) *time.Time {
+	return &value
 }
 
 func validMarketManifest() workerprotocol.WorkerManifestV1 {

@@ -94,6 +94,18 @@ func TestTeamMarketplaceBindingProjectionIsCompleteAndDesecreted(
 		permissions.GetMaxTempDiskMib() != 4096 {
 		t.Fatalf("permission projection=%#v", permissions)
 	}
+
+	permanent := value.Clone()
+	permanent.PublisherTier = "dirextalk_official"
+	permanent.ReviewValidUntil = time.Time{}
+	projected, err = teamMarketplaceBindingToProto(&permanent)
+	if err != nil || projected.GetReviewValidUntil() != nil {
+		t.Fatalf("permanent Marketplace projection=%#v error=%v", projected, err)
+	}
+	permanent.PublisherTier = "verified_partner"
+	if _, err := teamMarketplaceBindingToProto(&permanent); err == nil {
+		t.Fatal("accepted permanent non-official Marketplace review")
+	}
 }
 
 func marketplaceCodecDigest(character string) string {

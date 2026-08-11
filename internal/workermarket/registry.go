@@ -28,12 +28,20 @@ import (
 
 const (
 	RegistrySchemaV1 = "dirextalk.worker.market-registry/v1"
+	RegistrySchemaV2 = "dirextalk.worker.market-registry/v2"
 
 	maximumRegistryBytes  = int64(8 << 20)
 	maximumPublicKeyBytes = int64(256)
 	maximumPublishers     = 256
 	maximumReleases       = 1024
 	maximumRegistryTTL    = 7 * 24 * time.Hour
+)
+
+type ValidityPolicy string
+
+const (
+	ValidityExpiresAt    ValidityPolicy = "expires_at"
+	ValidityUntilRevoked ValidityPolicy = "until_revoked"
 )
 
 var (
@@ -98,7 +106,8 @@ type PublisherV1 struct {
 	IdentityEvidenceDigest string          `json:"identity_evidence_digest"`
 	SigningIdentityDigest  string          `json:"signing_identity_digest"`
 	VerifiedAt             time.Time       `json:"verified_at"`
-	VerificationExpiresAt  time.Time       `json:"verification_expires_at"`
+	VerificationPolicy     ValidityPolicy  `json:"verification_policy,omitempty"`
+	VerificationExpiresAt  *time.Time      `json:"verification_expires_at"`
 	StatusChangedAt        time.Time       `json:"status_changed_at"`
 	StatusEvidenceDigest   string          `json:"status_evidence_digest,omitempty"`
 }
@@ -112,28 +121,29 @@ type OCIArtifactV1 struct {
 }
 
 type ReviewEvidenceV1 struct {
-	ReviewID                 string    `json:"review_id"`
-	PolicyRevision           string    `json:"policy_revision"`
-	ReviewerID               string    `json:"reviewer_id"`
-	RiskClass                string    `json:"risk_class"`
-	ReviewedAt               time.Time `json:"reviewed_at"`
-	ValidUntil               time.Time `json:"valid_until"`
-	PublisherIdentityDigest  string    `json:"publisher_identity_digest"`
-	ManifestAnalysisDigest   string    `json:"manifest_analysis_digest"`
-	ImageSignatureDigest     string    `json:"image_signature_digest"`
-	SBOMAnalysisDigest       string    `json:"sbom_analysis_digest"`
-	ProvenanceAnalysisDigest string    `json:"provenance_analysis_digest"`
-	VulnerabilityScanDigest  string    `json:"vulnerability_scan_digest"`
-	MalwareScanDigest        string    `json:"malware_scan_digest"`
-	LicenseDecisionDigest    string    `json:"license_decision_digest"`
-	StaticAnalysisDigest     string    `json:"static_analysis_digest"`
-	ContractTestDigest       string    `json:"contract_test_digest"`
-	SandboxBehaviorDigest    string    `json:"sandbox_behavior_digest"`
-	PermissionReviewDigest   string    `json:"permission_review_digest"`
-	NetworkPolicyDigest      string    `json:"network_policy_digest"`
-	PromptInjectionDigest    string    `json:"prompt_injection_digest"`
-	DataExfiltrationDigest   string    `json:"data_exfiltration_digest"`
-	ResourceBenchmarkDigest  string    `json:"resource_benchmark_digest"`
+	ReviewID                 string         `json:"review_id"`
+	PolicyRevision           string         `json:"policy_revision"`
+	ReviewerID               string         `json:"reviewer_id"`
+	RiskClass                string         `json:"risk_class"`
+	ReviewedAt               time.Time      `json:"reviewed_at"`
+	ValidityPolicy           ValidityPolicy `json:"validity_policy,omitempty"`
+	ValidUntil               *time.Time     `json:"valid_until"`
+	PublisherIdentityDigest  string         `json:"publisher_identity_digest"`
+	ManifestAnalysisDigest   string         `json:"manifest_analysis_digest"`
+	ImageSignatureDigest     string         `json:"image_signature_digest"`
+	SBOMAnalysisDigest       string         `json:"sbom_analysis_digest"`
+	ProvenanceAnalysisDigest string         `json:"provenance_analysis_digest"`
+	VulnerabilityScanDigest  string         `json:"vulnerability_scan_digest"`
+	MalwareScanDigest        string         `json:"malware_scan_digest"`
+	LicenseDecisionDigest    string         `json:"license_decision_digest"`
+	StaticAnalysisDigest     string         `json:"static_analysis_digest"`
+	ContractTestDigest       string         `json:"contract_test_digest"`
+	SandboxBehaviorDigest    string         `json:"sandbox_behavior_digest"`
+	PermissionReviewDigest   string         `json:"permission_review_digest"`
+	NetworkPolicyDigest      string         `json:"network_policy_digest"`
+	PromptInjectionDigest    string         `json:"prompt_injection_digest"`
+	DataExfiltrationDigest   string         `json:"data_exfiltration_digest"`
+	ResourceBenchmarkDigest  string         `json:"resource_benchmark_digest"`
 }
 
 type RevocationV1 struct {
@@ -161,13 +171,14 @@ type ReleaseV1 struct {
 }
 
 type RegistryPayloadV1 struct {
-	SchemaVersion string        `json:"schema_version"`
-	RegistryID    string        `json:"registry_id"`
-	SignerKeyID   string        `json:"signer_key_id"`
-	GeneratedAt   time.Time     `json:"generated_at"`
-	ValidUntil    time.Time     `json:"valid_until"`
-	Publishers    []PublisherV1 `json:"publishers"`
-	Releases      []ReleaseV1   `json:"releases"`
+	SchemaVersion  string         `json:"schema_version"`
+	RegistryID     string         `json:"registry_id"`
+	SignerKeyID    string         `json:"signer_key_id"`
+	GeneratedAt    time.Time      `json:"generated_at"`
+	ValidityPolicy ValidityPolicy `json:"validity_policy,omitempty"`
+	ValidUntil     *time.Time     `json:"valid_until"`
+	Publishers     []PublisherV1  `json:"publishers"`
+	Releases       []ReleaseV1    `json:"releases"`
 }
 
 type SignedRegistryDocumentV1 struct {
@@ -307,17 +318,18 @@ func (registry *Registry) GeneratedAt() time.Time {
 }
 
 func (registry *Registry) ValidUntil() time.Time {
-	if registry == nil {
+	if registry == nil || registry.payload.ValidUntil == nil {
 		return time.Time{}
 	}
-	return registry.payload.ValidUntil
+	return *registry.payload.ValidUntil
 }
 
 func (registry *Registry) ValidateAt(now time.Time) error {
 	if registry == nil ||
 		!utcSecond(now) ||
 		now.Before(registry.payload.GeneratedAt.Add(-5*time.Minute)) ||
-		!now.Before(registry.payload.ValidUntil) {
+		(registry.payload.ValidUntil != nil &&
+			!now.Before(*registry.payload.ValidUntil)) {
 		return ErrUnavailable
 	}
 	return nil
@@ -395,8 +407,10 @@ func (registry *Registry) releaseSelectable(
 		publisher.Status != PublisherActive ||
 		release.Status != ReleaseApproved ||
 		release.Revocation != nil ||
-		!now.Before(publisher.VerificationExpiresAt) ||
-		!now.Before(release.Review.ValidUntil) {
+		(publisher.VerificationExpiresAt != nil &&
+			!now.Before(*publisher.VerificationExpiresAt)) ||
+		(release.Review.ValidUntil != nil &&
+			!now.Before(*release.Review.ValidUntil)) {
 		return false
 	}
 	switch release.Visibility {
@@ -443,19 +457,29 @@ func normalizePayload(
 			return strings.Compare(left.ReleaseID, right.ReleaseID)
 		},
 	)
-	if payload.SchemaVersion != RegistrySchemaV1 ||
+	if (payload.SchemaVersion != RegistrySchemaV1 &&
+		payload.SchemaVersion != RegistrySchemaV2) ||
 		!canonicalUUID(payload.RegistryID) ||
 		!signerKeyPattern.MatchString(payload.SignerKeyID) ||
 		!utcSecond(payload.GeneratedAt) ||
-		!utcSecond(payload.ValidUntil) ||
-		!payload.ValidUntil.After(payload.GeneratedAt) ||
-		payload.ValidUntil.After(
-			payload.GeneratedAt.Add(maximumRegistryTTL),
-		) ||
 		len(payload.Publishers) == 0 ||
 		len(payload.Publishers) > maximumPublishers ||
 		len(payload.Releases) == 0 ||
 		len(payload.Releases) > maximumReleases {
+		return RegistryPayloadV1{}, nil, nil, ErrInvalid
+	}
+	if payload.SchemaVersion == RegistrySchemaV1 {
+		if payload.ValidityPolicy != "" ||
+			payload.ValidUntil == nil ||
+			!utcSecond(*payload.ValidUntil) ||
+			!payload.ValidUntil.After(payload.GeneratedAt) ||
+			payload.ValidUntil.After(
+				payload.GeneratedAt.Add(maximumRegistryTTL),
+			) {
+			return RegistryPayloadV1{}, nil, nil, ErrInvalid
+		}
+	} else if payload.ValidityPolicy != ValidityUntilRevoked ||
+		payload.ValidUntil != nil {
 		return RegistryPayloadV1{}, nil, nil, ErrInvalid
 	}
 	publishers := make(
@@ -466,6 +490,7 @@ func normalizePayload(
 		if validatePublisher(
 			publisher,
 			payload.GeneratedAt,
+			payload.SchemaVersion,
 			payload.ValidUntil,
 		) != nil {
 			return RegistryPayloadV1{}, nil, nil, ErrInvalid
@@ -484,6 +509,7 @@ func normalizePayload(
 				release,
 				publisher,
 				payload.GeneratedAt,
+				payload.SchemaVersion,
 				payload.ValidUntil,
 			) != nil {
 			return RegistryPayloadV1{}, nil, nil, ErrInvalid
@@ -569,6 +595,10 @@ func cloneRelease(value ReleaseV1) ReleaseV1 {
 		[]string(nil),
 		value.Manifest.RequestedPermissions.ToolScopes...,
 	)
+	if value.Review.ValidUntil != nil {
+		copy := *value.Review.ValidUntil
+		value.Review.ValidUntil = &copy
+	}
 	if value.Revocation != nil {
 		copy := *value.Revocation
 		value.Revocation = &copy

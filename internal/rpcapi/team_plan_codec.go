@@ -453,11 +453,19 @@ func teamMarketplaceBindingToProto(
 	if value == nil {
 		return nil, nil
 	}
-	reviewValidUntil, err := checkedTeamTimestamp(
-		value.ReviewValidUntil,
-	)
-	if err != nil {
-		return nil, err
+	var reviewValidUntil *timestamppb.Timestamp
+	if value.ReviewValidUntil.IsZero() {
+		if value.PublisherTier != "dirextalk_official" {
+			return nil, teamplan.ErrInvalid
+		}
+	} else {
+		var err error
+		reviewValidUntil, err = checkedTeamTimestamp(
+			value.ReviewValidUntil,
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 	networkServices := make(
 		[]string,

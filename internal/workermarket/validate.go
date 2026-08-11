@@ -9,8 +9,9 @@ import (
 
 func validatePublisher(
 	value PublisherV1,
-	generatedAt,
-	registryValidUntil time.Time,
+	generatedAt time.Time,
+	registrySchema string,
+	registryValidUntil *time.Time,
 ) error {
 	if !canonicalUUID(value.PublisherID) ||
 		!slugPattern.MatchString(value.Slug) ||
@@ -24,12 +25,29 @@ func validatePublisher(
 		!validDigest(value.IdentityEvidenceDigest) ||
 		!validDigest(value.SigningIdentityDigest) ||
 		!utcSecond(value.VerifiedAt) ||
-		!utcSecond(value.VerificationExpiresAt) ||
-		!value.VerificationExpiresAt.After(value.VerifiedAt) ||
 		value.VerifiedAt.After(generatedAt) ||
-		value.VerificationExpiresAt.Before(registryValidUntil) ||
 		!utcSecond(value.StatusChangedAt) ||
 		value.StatusChangedAt.After(generatedAt) {
+		return ErrInvalid
+	}
+	if registrySchema == RegistrySchemaV1 {
+		if value.VerificationPolicy != "" ||
+			value.VerificationExpiresAt == nil ||
+			!utcSecond(*value.VerificationExpiresAt) ||
+			!value.VerificationExpiresAt.After(value.VerifiedAt) ||
+			registryValidUntil == nil ||
+			value.VerificationExpiresAt.Before(*registryValidUntil) {
+			return ErrInvalid
+		}
+	} else if value.Tier == PublisherOfficial {
+		if value.VerificationPolicy != ValidityUntilRevoked ||
+			value.VerificationExpiresAt != nil {
+			return ErrInvalid
+		}
+	} else if value.VerificationPolicy != ValidityExpiresAt ||
+		value.VerificationExpiresAt == nil ||
+		!utcSecond(*value.VerificationExpiresAt) ||
+		!value.VerificationExpiresAt.After(value.VerifiedAt) {
 		return ErrInvalid
 	}
 	if value.Tier == PublisherOrganization {
@@ -52,8 +70,9 @@ func validatePublisher(
 func validateRelease(
 	value ReleaseV1,
 	publisher PublisherV1,
-	generatedAt,
-	registryValidUntil time.Time,
+	generatedAt time.Time,
+	registrySchema string,
+	registryValidUntil *time.Time,
 ) error {
 	manifestDigest, err := value.Manifest.Digest()
 	if !canonicalUUID(value.ReleaseID) ||
@@ -78,6 +97,7 @@ func validateRelease(
 			publisher,
 			value,
 			generatedAt,
+			registrySchema,
 			registryValidUntil,
 		) != nil {
 		return ErrInvalid
@@ -126,8 +146,9 @@ func validateReview(
 	value ReviewEvidenceV1,
 	publisher PublisherV1,
 	release ReleaseV1,
-	generatedAt,
-	registryValidUntil time.Time,
+	generatedAt time.Time,
+	registrySchema string,
+	registryValidUntil *time.Time,
 ) error {
 	if !canonicalUUID(value.ReviewID) ||
 		!validDigest(value.PolicyRevision) ||
@@ -136,13 +157,30 @@ func validateReview(
 			value.RiskClass != "moderate" &&
 			value.RiskClass != "high") ||
 		!utcSecond(value.ReviewedAt) ||
-		!utcSecond(value.ValidUntil) ||
 		value.ReviewedAt.Before(release.ReleasedAt) ||
 		value.ReviewedAt.After(generatedAt) ||
-		!value.ValidUntil.After(value.ReviewedAt) ||
-		value.ValidUntil.Before(registryValidUntil) ||
 		value.PublisherIdentityDigest !=
 			publisher.IdentityEvidenceDigest {
+		return ErrInvalid
+	}
+	if registrySchema == RegistrySchemaV1 {
+		if value.ValidityPolicy != "" ||
+			value.ValidUntil == nil ||
+			!utcSecond(*value.ValidUntil) ||
+			!value.ValidUntil.After(value.ReviewedAt) ||
+			registryValidUntil == nil ||
+			value.ValidUntil.Before(*registryValidUntil) {
+			return ErrInvalid
+		}
+	} else if publisher.Tier == PublisherOfficial {
+		if value.ValidityPolicy != ValidityUntilRevoked ||
+			value.ValidUntil != nil {
+			return ErrInvalid
+		}
+	} else if value.ValidityPolicy != ValidityExpiresAt ||
+		value.ValidUntil == nil ||
+		!utcSecond(*value.ValidUntil) ||
+		!value.ValidUntil.After(value.ReviewedAt) {
 		return ErrInvalid
 	}
 	digests := []string{

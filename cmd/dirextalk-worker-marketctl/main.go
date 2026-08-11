@@ -125,6 +125,10 @@ func runVerify(arguments []string, stdout, stderr io.Writer) int {
 		_, _ = io.WriteString(stderr, "worker market has no approved release\n")
 		return 1
 	}
+	validUntil := "none"
+	if !registry.ValidUntil().IsZero() {
+		validUntil = registry.ValidUntil().Format(time.RFC3339)
+	}
 	_, _ = fmt.Fprintf(
 		stdout,
 		"worker_market_registry_id=%s\n"+
@@ -133,7 +137,7 @@ func runVerify(arguments []string, stdout, stderr io.Writer) int {
 			"worker_market_approved_releases=%d\n",
 		registry.RegistryID(),
 		registry.Revision(),
-		registry.ValidUntil().Format(time.RFC3339),
+		validUntil,
 		len(releases),
 	)
 	return 0

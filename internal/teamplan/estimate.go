@@ -504,8 +504,14 @@ func validateMarketplaceBinding(
 		(value.ReviewRiskClass != "low" &&
 			value.ReviewRiskClass != "moderate" &&
 			value.ReviewRiskClass != "high") ||
-		!utcTimestamp(value.ReviewValidUntil) ||
 		value.GrantedPermissions.Validate() != nil {
+		return ErrInvalid
+	}
+	if value.ReviewValidUntil.IsZero() {
+		if value.PublisherTier != "dirextalk_official" {
+			return ErrInvalid
+		}
+	} else if !utcTimestamp(value.ReviewValidUntil) {
 		return ErrInvalid
 	}
 	if (value.PublisherTier == "organization_private") !=

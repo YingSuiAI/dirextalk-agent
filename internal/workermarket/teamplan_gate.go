@@ -142,6 +142,10 @@ func (gate *TeamPlanGate) BindAssignment(
 	if !found {
 		return teamplan.WorkerMarketplaceBindingV1{}, ErrNotApproved
 	}
+	reviewValidUntil := time.Time{}
+	if release.Review.ValidUntil != nil {
+		reviewValidUntil = *release.Review.ValidUntil
+	}
 	return teamplan.WorkerMarketplaceBindingV1{
 		SchemaVersion:            teamplan.WorkerMarketplaceBindingSchemaV1,
 		RegistryID:               gate.registry.RegistryID(),
@@ -161,7 +165,7 @@ func (gate *TeamPlanGate) BindAssignment(
 		ReviewID:                 release.Review.ReviewID,
 		ReviewPolicyRevision:     release.Review.PolicyRevision,
 		ReviewRiskClass:          release.Review.RiskClass,
-		ReviewValidUntil:         release.Review.ValidUntil,
+		ReviewValidUntil:         reviewValidUntil,
 		GrantedPermissions:       permissions,
 	}, nil
 }

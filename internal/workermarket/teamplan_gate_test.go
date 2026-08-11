@@ -155,7 +155,7 @@ func TestTeamPlanGateClassifiesExpiredRegistrySeparately(t *testing.T) {
 	}
 	if err := gate.VerifyRuntime(
 		marketRuntimeFixture(payload.Releases[0]),
-		payload.ValidUntil,
+		*payload.ValidUntil,
 	); !errors.Is(err, teamplan.ErrRuntimeRegistryUnavailable) {
 		t.Fatalf("expired registry error=%v", err)
 	}
