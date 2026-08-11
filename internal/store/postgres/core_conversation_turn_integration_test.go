@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"sync"
@@ -343,5 +344,71 @@ func TestCoreConversationTurnHistoryAndEventsAtomicPostgres(t *testing.T) {
 	events, err := h.store.LoadTurnEvents(context.Background(), turn.ID, 0, 10)
 	if err != nil || len(events) < 2 {
 		t.Fatalf("events=%d err=%v", len(events), err)
+	}
+}
+
+func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	installationID, versionID := uuid.NewString(), uuid.NewString()
+	contentDigest := strings.Repeat("a", 64)
+	snapshot := core.ExtensionExecutionSnapshot{
+		Selection: core.ExtensionSelection{
+			Kind: core.ExtensionMCP, ID: installationID, Version: versionID,
+			Digest: contentDigest, AllowedTools: []string{"write_html"},
+		},
+		InstallationID: installationID, VersionID: versionID, InstallationRevision: 4,
+		Source: "github", ContentDigest: contentDigest, ArtifactDigest: strings.Repeat("b", 64),
+		ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64),
+		SecretBindingDigest: strings.Repeat("e", 64), ToolNames: []string{"write_html"}, RequiresConfirmation: true,
+	}
+	cmd := turnCommand()
+	cmd.Extensions = []core.ExtensionSelection{snapshot.Selection}
+	cmd.ExtensionSnapshots = []core.ExtensionExecutionSnapshot{snapshot}
+	turn, err := h.store.StartTurn(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := json.Marshal(map[string]any{"content": "<h1>Hello from Dirextalk</h1>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := core.ToolCall{ID: uuid.NewString(), Name: "write_html", Arguments: string(arguments)}
+	attempt, task, confirmation, err := h.store.PrepareConversationTool(context.Background(), core.PrepareToolCommand{
+		Lease: lease, Round: 0, Call: call, Snapshot: snapshot,
+		CanonicalArguments: arguments, ArgumentsDigest: conversationArgsDigest(arguments),
+		SafeSummary: "conversation tool call write_html", IdempotencyKey: uuid.NewString(),
+		ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.State != "waiting_confirmation" || attempt.TaskID != task.ID || attempt.ConfirmationID != confirmation.ConfirmationID || task.Spec.Kind != "conversation_tool" || confirmation.State != "pending" {
+		t.Fatalf("attempt=%+v task=%+v confirmation=%+v", attempt, task, confirmation)
+	}
+	var storedSummary, storedState string
+	var createdAt, updatedAt time.Time
+	if err = h.pool.QueryRow(context.Background(), `SELECT safe_summary,state,created_at,updated_at FROM core_conversation_tool_attempts WHERE attempt_id=$1`, attempt.ID).Scan(&storedSummary, &storedState, &createdAt, &updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if storedSummary != "conversation tool call write_html" || storedState != "waiting_confirmation" || createdAt.IsZero() || !createdAt.Equal(updatedAt) {
+		t.Fatalf("summary=%q state=%q created_at=%s updated_at=%s", storedSummary, storedState, createdAt, updatedAt)
+	}
+	storedTurn, err := h.store.GetTurn(context.Background(), turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedTurn.State != core.TurnWaitingConfirmation || storedTurn.Revision != lease.Turn.Revision+1 {
+		t.Fatalf("turn=%+v", storedTurn)
+	}
+	var leaseReleased bool
+	if err = h.pool.QueryRow(context.Background(), `SELECT lease_id IS NULL AND lease_expires_at IS NULL FROM core_conversation_turns WHERE turn_id=$1`, turn.ID).Scan(&leaseReleased); err != nil {
+		t.Fatal(err)
+	}
+	if !leaseReleased {
+		t.Fatal("waiting confirmation retained its running lease")
 	}
 }
