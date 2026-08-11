@@ -11,7 +11,7 @@ func TestTextToolLedgerRedactsSelectedTextPersistsBoundedResultAndNeverRecoversB
 	defer db.Close()
 	manager := NewManager(db)
 	selected := "private selected text sentinel"
-	op := &Operation{ID: "text-tool-op", CapabilityID: "agent.text_tools.v1", OperationName: "execute", RequestJSON: []byte(`{"tool_id":"summary","selected_text":"` + selected + `"}`), RootRequestDigest: []byte("root"), RequestDigest: []byte("grant"), OwnerID: "owner", AccountGeneration: 1}
+	op := &Operation{ID: "text-tool-op", CapabilityID: "agent.text_tools.v1", OperationName: "execute", RequestJSON: []byte(`{"tool_id":"summary","selected_text":"` + selected + `","output_language":"zh"}`), RootRequestDigest: []byte("root"), RequestDigest: []byte("grant"), OwnerID: "owner", AccountGeneration: 1}
 	if _, created, err := manager.StartOrGet(context.Background(), op); err != nil || !created {
 		t.Fatalf("admit text tool: created=%v err=%v", created, err)
 	}
@@ -31,7 +31,7 @@ func TestTextToolLedgerRedactsSelectedTextPersistsBoundedResultAndNeverRecoversB
 		t.Fatalf("result receipt=%q err=%v", durableResult, err)
 	}
 
-	pending := &Operation{ID: "text-tool-pending", CapabilityID: "agent.text_tools.v1", OperationName: "execute", RequestJSON: []byte(`{"tool_id":"summary","selected_text":"other"}`), RootRequestDigest: []byte("root-2"), RequestDigest: []byte("grant-2"), OwnerID: "owner", AccountGeneration: 1}
+	pending := &Operation{ID: "text-tool-pending", CapabilityID: "agent.text_tools.v1", OperationName: "execute", RequestJSON: []byte(`{"tool_id":"summary","selected_text":"other","output_language":"en"}`), RootRequestDigest: []byte("root-2"), RequestDigest: []byte("grant-2"), OwnerID: "owner", AccountGeneration: 1}
 	if _, _, err := manager.StartOrGet(context.Background(), pending); err != nil {
 		t.Fatal(err)
 	}

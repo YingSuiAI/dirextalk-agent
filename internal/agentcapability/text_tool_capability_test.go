@@ -44,7 +44,7 @@ func TestTextToolDescriptorCanonicalSchemasAndOwnerAudience(t *testing.T) {
 	}{
 		"get_config":    {capv1.OperationType_OPERATION_TYPE_READ, "99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa", "ce1c828fed02c65c9ba92123d5e88f8087acec7ca3007c6fb57e6a1aa34eef56"},
 		"update_config": {capv1.OperationType_OPERATION_TYPE_MUTATION, "27e28f1ad68d20dc25e63264a830391adcd2fb9b24203fce8b9e311022f87e1e", "ce1c828fed02c65c9ba92123d5e88f8087acec7ca3007c6fb57e6a1aa34eef56"},
-		"execute":       {capv1.OperationType_OPERATION_TYPE_MUTATION, "59b37979b65e9e0b1bdc57bae5950f0d53533b10060741be7fc6a36529beb9bf", "fa162b3374031e87711fa47067322839256115b2818d73506e8d99a288c9a316"},
+		"execute":       {capv1.OperationType_OPERATION_TYPE_MUTATION, "3d3df6073341a0735f94a33d39515db75ce4f35afab82447e0088eb0dbddf29f", "fa162b3374031e87711fa47067322839256115b2818d73506e8d99a288c9a316"},
 	}
 	for _, operation := range descriptor.GetOperations() {
 		expected, ok := want[operation.GetOperationId()]
@@ -57,6 +57,21 @@ func TestTextToolDescriptorCanonicalSchemasAndOwnerAudience(t *testing.T) {
 		}
 		if len(operation.GetAudience()) != 1 || operation.GetAudience()[0] != capv1.Audience_AUDIENCE_OWNER_CLIENT {
 			t.Fatalf("unsafe audience for %s: %v", operation.GetOperationId(), operation.GetAudience())
+		}
+	}
+}
+
+func TestTextToolExecuteRequiresExactOutputLanguage(t *testing.T) {
+	service, _ := coretexttool.NewService(textToolTestRepository{}, textToolTestModels{}, nil, func(coremodel.Profile) (coremodel.Client, error) { return nil, nil })
+	capability := NewCoreTextToolCapability(service)
+	ctx := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{ChainId: "00000000-0000-4000-8000-000000000001", RootOperationId: "00000000-0000-4000-8000-000000000002"}, &capv1.PermissionContext{AuthenticatedOwnerId: "owner", AccountGeneration: 1})
+	for _, raw := range []string{
+		`{"tool_id":"translation","selected_text":"bonjour"}`,
+		`{"tool_id":"translation","selected_text":"bonjour","output_language":"fr"}`,
+		`{"tool_id":"translation","selected_text":"bonjour","output_language":"zh-CN"}`,
+	} {
+		if _, err := capability.HandleOperation(ctx, "execute", []byte(raw)); err == nil {
+			t.Fatalf("invalid output language accepted: %s", raw)
 		}
 	}
 }

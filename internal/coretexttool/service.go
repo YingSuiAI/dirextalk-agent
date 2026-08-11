@@ -29,6 +29,8 @@ const (
 	MaxSelectedText = 65536
 	MaxOutputBytes  = 65536
 	ExecutionLimit  = 60 * time.Second
+	OutputChinese   = "zh"
+	OutputEnglish   = "en"
 )
 
 var (
@@ -78,6 +80,7 @@ type ExecuteCommand struct {
 	AccountGeneration int64
 	ToolID            string
 	SelectedText      string
+	OutputLanguage    string
 }
 
 type Source struct {
@@ -128,7 +131,7 @@ func DefaultConfig(now time.Time) Config {
 		now = time.Now().UTC()
 	}
 	return Config{Tools: []Tool{
-		{ID: "translation", Name: "Translation", SystemPrompt: "Translate the selected text faithfully. Preserve meaning, tone, formatting, names, numbers, and code. Return only the translation in the language most useful from context.", Order: 0, Enabled: true},
+		{ID: "translation", Name: "Translation", SystemPrompt: "Translate the selected text faithfully into the output language required by the execution request. Preserve meaning, tone, formatting, names, numbers, and code. Return only the translation.", Order: 0, Enabled: true},
 		{ID: "summary", Name: "Summary", SystemPrompt: "Summarize the selected text accurately and concisely. Preserve material facts, qualifications, decisions, and action items. Do not invent information.", Order: 1, Enabled: true},
 		{ID: "explanation", Name: "Explanation", SystemPrompt: "Explain the selected text clearly and directly. Define important terms, make implicit reasoning explicit, and do not invent facts beyond the supplied text.", Order: 2, Enabled: true},
 		{ID: "search", Name: "Search", SystemPrompt: "Answer using the selected text and the separately supplied web evidence. Distinguish evidence from inference, do not invent citations, and keep the answer concise.", Order: 3, Enabled: false},
@@ -182,7 +185,8 @@ func (s *Service) Update(ctx context.Context, command UpdateCommand) (Config, er
 
 func (s *Service) Execute(ctx context.Context, command ExecuteCommand) (ExecuteResult, error) {
 	command.OwnerID, command.ToolID = strings.TrimSpace(command.OwnerID), strings.TrimSpace(command.ToolID)
-	if !validIdentity(command.OwnerID, command.AccountGeneration) || !ValidToolID(command.ToolID) || !validText(command.SelectedText, MaxSelectedText) {
+	command.OutputLanguage = strings.ToLower(strings.TrimSpace(command.OutputLanguage))
+	if !validIdentity(command.OwnerID, command.AccountGeneration) || !ValidToolID(command.ToolID) || !validText(command.SelectedText, MaxSelectedText) || !validOutputLanguage(command.OutputLanguage) {
 		return ExecuteResult{}, ErrInvalid
 	}
 	ctx, cancel := context.WithTimeout(ctx, ExecutionLimit)
@@ -237,7 +241,11 @@ func (s *Service) Execute(ctx context.Context, command ExecuteCommand) (ExecuteR
 	if err != nil {
 		return ExecuteResult{}, errors.Join(ErrModel, err)
 	}
-	messages := []coremodel.Message{{Role: coremodel.RoleSystem, Content: selected.SystemPrompt}}
+	systemPrompt := selected.SystemPrompt
+	if instruction := builtInOutputLanguageInstruction(selected.ID, command.OutputLanguage); instruction != "" {
+		systemPrompt += "\n\n" + instruction
+	}
+	messages := []coremodel.Message{{Role: coremodel.RoleSystem, Content: systemPrompt}}
 	sources := make([]Source, 0)
 	if selected.ID == "search" {
 		found, searchErr := s.webSearch.SearchResolved(ctx, command.OwnerID, command.AccountGeneration, searchConfig, command.SelectedText, 5)
@@ -322,6 +330,22 @@ func ValidToolID(value string) bool {
 		return true
 	}
 	return validCanonicalUUID(value)
+}
+
+func validOutputLanguage(value string) bool {
+	return value == OutputChinese || value == OutputEnglish
+}
+
+func builtInOutputLanguageInstruction(toolID, language string) string {
+	switch toolID {
+	case "translation", "summary", "explanation", "search":
+	default:
+		return ""
+	}
+	if language == OutputChinese {
+		return "The required response language is Simplified Chinese. For translation, translate into Simplified Chinese. For every other built-in tool, write the complete answer in Simplified Chinese."
+	}
+	return "The required response language is English. For translation, translate into English. For every other built-in tool, write the complete answer in English."
 }
 
 func validIdentity(owner string, generation int64) bool {

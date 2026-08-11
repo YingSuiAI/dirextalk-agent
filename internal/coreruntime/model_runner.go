@@ -6,11 +6,18 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/google/uuid"
 )
+
+// ConversationModelExecutionLimit bounds one provider round without cutting
+// off ordinary long responses at the core model client's historical 90-second
+// default. Durable turn fencing still treats an elapsed provider request as an
+// unknown outcome and never replays it automatically.
+const ConversationModelExecutionLimit = 5 * time.Minute
 
 var (
 	ErrUnsupportedTaskInput              = errors.New("unsupported task input in Core v1")

@@ -7,7 +7,7 @@ import (
 func adaptClientFactory(factory ClientFactory) ClientFactory {
 	if factory == nil {
 		factory = func(profile coremodel.Profile) (coremodel.Client, error) {
-			return coremodel.NewClient(profile)
+			return coremodel.NewClient(profile, coremodel.WithTimeout(ConversationModelExecutionLimit))
 		}
 	}
 	return func(profile coremodel.Profile) (coremodel.Client, error) {

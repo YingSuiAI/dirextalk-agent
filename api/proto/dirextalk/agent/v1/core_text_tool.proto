@@ -35,6 +35,9 @@ message CoreTextToolUpdateInput {
 message CoreTextToolExecuteInput {
   string tool_id = 1;
   string selected_text = 2;
+  // Current UI language, exactly zh or en. Built-in tools use it as their
+  // required response language; custom tools retain their authored prompt.
+  string output_language = 3;
 }
 
 message CoreTextToolSource {

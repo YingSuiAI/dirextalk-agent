@@ -70,6 +70,11 @@ multi-tenant model.
   `model_profile_id`/`model_profile_revision`/`credential_version` triple.
   Partial or stale pins fail before provider work; there is no default-profile
   fallback, and durable replays retain their original snapshot.
+- A Native conversation model round allows up to five minutes for the provider
+  response. If that deadline elapses after durable dispatch, the turn fails
+  with `provider_timeout` and a summary that says the outcome is unknown and a
+  new turn may be sent to retry. The timed-out dispatch is never replayed
+  automatically; recovery preserves the persisted timeout classification.
 - On the first turn of an empty Native conversation, `Chat`, `StreamChat`, and
   `StartTurn` perform an Agent-internal semantic recall over only ready memory
   sources whose current revision has a promoted embedding binding that exactly
@@ -185,8 +190,11 @@ multi-tenant model.
   Search with a valid server-side credential. Disabling either layer does not
   require a search credential. `execute` rechecks that fence and fails closed
   if Web Search is later disabled, cleared, rotated, or unavailable. `execute`
-  accepts only `tool_id` and
-  selected text, resolves the explicit `default_tool_client_profile_id`
+  accepts only `tool_id`, selected text, and the required current UI output
+  language (`zh` or `en`). Stable built-ins bind their complete response to
+  that language, so translation never guesses a target language from model
+  context; UUID custom tools retain their authored prompt. Execution resolves
+  the explicit `default_tool_client_profile_id`
   conversation profile and current credential server-side with no fallback,
   and never writes conversation, history, Task, or execution replay state.
   Search alone uses the fenced Tavily path with at most five results and sends

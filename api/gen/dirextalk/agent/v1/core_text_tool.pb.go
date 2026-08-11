@@ -239,11 +239,14 @@ func (x *CoreTextToolUpdateInput) GetTools() []*CoreTextToolItem {
 }
 
 type CoreTextToolExecuteInput struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ToolId        string                 `protobuf:"bytes,1,opt,name=tool_id,json=toolId,proto3" json:"tool_id,omitempty"`
-	SelectedText  string                 `protobuf:"bytes,2,opt,name=selected_text,json=selectedText,proto3" json:"selected_text,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	ToolId       string                 `protobuf:"bytes,1,opt,name=tool_id,json=toolId,proto3" json:"tool_id,omitempty"`
+	SelectedText string                 `protobuf:"bytes,2,opt,name=selected_text,json=selectedText,proto3" json:"selected_text,omitempty"`
+	// Current UI language, exactly zh or en. Built-in tools use it as their
+	// required response language; custom tools retain their authored prompt.
+	OutputLanguage string `protobuf:"bytes,3,opt,name=output_language,json=outputLanguage,proto3" json:"output_language,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CoreTextToolExecuteInput) Reset() {
@@ -286,6 +289,13 @@ func (x *CoreTextToolExecuteInput) GetToolId() string {
 func (x *CoreTextToolExecuteInput) GetSelectedText() string {
 	if x != nil {
 		return x.SelectedText
+	}
+	return ""
+}
+
+func (x *CoreTextToolExecuteInput) GetOutputLanguage() string {
+	if x != nil {
+		return x.OutputLanguage
 	}
 	return ""
 }
@@ -431,10 +441,11 @@ const file_dirextalk_agent_v1_core_text_tool_proto_rawDesc = "" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12+\n" +
 	"\x11expected_revision\x18\x02 \x01(\x03R\x10expectedRevision\x12\x18\n" +
 	"\aenabled\x18\x03 \x01(\bR\aenabled\x12:\n" +
-	"\x05tools\x18\x04 \x03(\v2$.dirextalk.agent.v1.CoreTextToolItemR\x05tools\"X\n" +
+	"\x05tools\x18\x04 \x03(\v2$.dirextalk.agent.v1.CoreTextToolItemR\x05tools\"\x81\x01\n" +
 	"\x18CoreTextToolExecuteInput\x12\x17\n" +
 	"\atool_id\x18\x01 \x01(\tR\x06toolId\x12#\n" +
-	"\rselected_text\x18\x02 \x01(\tR\fselectedText\"V\n" +
+	"\rselected_text\x18\x02 \x01(\tR\fselectedText\x12'\n" +
+	"\x0foutput_language\x18\x03 \x01(\tR\x0eoutputLanguage\"V\n" +
 	"\x12CoreTextToolSource\x12\x14\n" +
 	"\x05title\x18\x01 \x01(\tR\x05title\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12\x18\n" +

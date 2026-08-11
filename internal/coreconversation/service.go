@@ -1263,7 +1263,8 @@ func (s *Service) runTurnSupervisor(ctx context.Context, id string) {
 		}
 		if turn.DispatchState == "uncertain" {
 			if uncertainStore, ok := s.turns.(TurnUncertainStore); ok {
-				if _, uncertainErr := uncertainStore.FailTurnUncertain(ctx, id, "provider_uncertain", "model dispatch outcome is unknown"); uncertainErr == nil {
+				code, summary := uncertainModelFailure(turn)
+				if _, uncertainErr := uncertainStore.FailTurnUncertain(ctx, id, code, summary); uncertainErr == nil {
 					return
 				}
 			}
@@ -1607,10 +1608,11 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						_, _ = cancelStore.MarkTurnCanceledRequested(ctx, id)
 					}
 				} else {
+					code, summary := classifyModelDispatchFailure(out.err)
 					if durableDispatch {
-						_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, "provider_uncertain", "model dispatch outcome is unknown")
+						_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, code, summary)
 					}
-					_, _ = s.turns.FailTurn(ctx, lease, "provider_uncertain", "model dispatch outcome is unknown")
+					_, _ = s.turns.FailTurn(ctx, lease, code, summary)
 				}
 				return
 			}
@@ -1810,6 +1812,31 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			cancel()
 		}
 	}
+}
+
+const (
+	modelDispatchUncertainCode    = "provider_uncertain"
+	modelDispatchUncertainSummary = "model dispatch outcome is unknown"
+	modelResponseTimeoutCode      = "provider_timeout"
+	modelResponseTimeoutSummary   = "model response timed out; outcome is unknown; send a new turn to retry"
+)
+
+func classifyModelDispatchFailure(err error) (string, string) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return modelResponseTimeoutCode, modelResponseTimeoutSummary
+	}
+	var timeout interface{ Timeout() bool }
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return modelResponseTimeoutCode, modelResponseTimeoutSummary
+	}
+	return modelDispatchUncertainCode, modelDispatchUncertainSummary
+}
+
+func uncertainModelFailure(turn Turn) (string, string) {
+	if strings.TrimSpace(turn.TerminalCode) != "" && strings.TrimSpace(turn.TerminalSummary) != "" {
+		return turn.TerminalCode, turn.TerminalSummary
+	}
+	return modelDispatchUncertainCode, modelDispatchUncertainSummary
 }
 
 func conversationToolAttemptContent(attempt ToolAttempt) string {

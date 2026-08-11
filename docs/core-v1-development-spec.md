@@ -90,7 +90,10 @@ conversation, history, or Task rows. The shared Capability ledger still keeps
 its normal bounded result receipt (but discards selected-text request JSON),
 and restart recovery fences an interrupted call uncertain without replay. The
 four stable built-ins have server-side prompts, while canonical UUID items are
-model-only transforms. Search defaults disabled, and enabling it together with
+model-only transforms. Every execution carries the current UI output language
+(`zh` or `en`); built-ins answer in that language and translation uses it as
+the exact target instead of inferring a language from context. Search defaults
+disabled, and enabling it together with
 the global text-tool configuration requires an already enabled Tavily
 configuration with a valid server-side credential. Execution rechecks and
 reuses that encrypted Web Search snapshot and dispatch fence, so later

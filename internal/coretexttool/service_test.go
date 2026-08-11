@@ -169,27 +169,61 @@ func TestExecuteCustomIsModelOnlyAndSearchUsesSeparateEvidence(t *testing.T) {
 	client := &recordingClient{output: "answer"}
 	search := &fakeSearch{}
 	service := newTestService(t, repository, search, client)
-	custom, err := service.Execute(context.Background(), ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: customID, SelectedText: "selected"})
+	custom, err := service.Execute(context.Background(), ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: customID, SelectedText: "selected", OutputLanguage: OutputEnglish})
 	if err != nil || custom.Output != "answer" || search.max != 0 || len(client.request.Messages) != 2 || client.request.Messages[0].Role != coremodel.RoleSystem || client.request.Messages[1].Role != coremodel.RoleUser {
 		t.Fatalf("custom=%+v request=%+v max=%d err=%v", custom, client.request, search.max, err)
 	}
-	result, err := service.Execute(context.Background(), ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: "search", SelectedText: "query"})
+	result, err := service.Execute(context.Background(), ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: "search", SelectedText: "query", OutputLanguage: OutputEnglish})
 	if err != nil || search.max != 5 || len(result.Sources) != 1 || len(client.request.Messages) != 3 || client.request.Messages[1].Role != coremodel.RoleSystem || !strings.Contains(client.request.Messages[1].Content, "untrusted") || client.request.Messages[2].Content != "query" {
 		t.Fatalf("search=%+v request=%+v max=%d err=%v", result, client.request, search.max, err)
+	}
+}
+
+func TestBuiltInExecutionRequiresExactUILanguageAndTargetsChinese(t *testing.T) {
+	config := DefaultConfig(time.Now().UTC())
+	config.Enabled, config.Revision = true, 1
+	client := &recordingClient{output: "中文结果"}
+	service := newTestService(t, &memoryRepository{config: &config}, nil, client)
+
+	result, err := service.Execute(context.Background(), ExecuteCommand{
+		OwnerID:           "owner",
+		AccountGeneration: 1,
+		ToolID:            "translation",
+		SelectedText:      "Bonjour",
+		OutputLanguage:    OutputChinese,
+	})
+	if err != nil || result.Output != "中文结果" || len(client.request.Messages) != 2 {
+		t.Fatalf("result=%+v request=%+v err=%v", result, client.request, err)
+	}
+	if prompt := client.request.Messages[0].Content; !strings.Contains(prompt, "Simplified Chinese") || strings.Contains(prompt, "most useful from context") {
+		t.Fatalf("translation prompt does not bind Chinese output: %q", prompt)
+	}
+
+	for _, language := range []string{"", "fr", "zh-CN"} {
+		_, err = service.Execute(context.Background(), ExecuteCommand{
+			OwnerID:           "owner",
+			AccountGeneration: 1,
+			ToolID:            "translation",
+			SelectedText:      "Bonjour",
+			OutputLanguage:    language,
+		})
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("language %q error=%v", language, err)
+		}
 	}
 }
 
 func TestExecuteRejectsDisabledAndOversizedOutput(t *testing.T) {
 	repository := &memoryRepository{}
 	service := newTestService(t, repository, nil, &recordingClient{output: "ok"})
-	if _, err := service.Execute(context.Background(), ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: "summary", SelectedText: "x"}); !errors.Is(err, ErrDisabled) {
+	if _, err := service.Execute(context.Background(), ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: "summary", SelectedText: "x", OutputLanguage: OutputEnglish}); !errors.Is(err, ErrDisabled) {
 		t.Fatalf("disabled error=%v", err)
 	}
 	config := DefaultConfig(time.Now().UTC())
 	config.Enabled, config.Revision = true, 1
 	repository.config = &config
 	service = newTestService(t, repository, nil, &recordingClient{output: strings.Repeat("x", MaxOutputBytes+1)})
-	if _, err := service.Execute(context.Background(), ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: "summary", SelectedText: "x"}); !errors.Is(err, ErrModel) {
+	if _, err := service.Execute(context.Background(), ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: "summary", SelectedText: "x", OutputLanguage: OutputEnglish}); !errors.Is(err, ErrModel) {
 		t.Fatalf("oversized output error=%v", err)
 	}
 }
@@ -198,7 +232,7 @@ func TestExecuteSearchFailsClosedBeforeModelResolutionWithoutSearchCredential(t 
 	config := Config{Enabled: true, Revision: 1, UpdatedAt: time.Now().UTC(), Tools: []Tool{{ID: "search", Name: "Search", SystemPrompt: "Search", Order: 0, Enabled: true}}}
 	service := newTestService(t, &memoryRepository{config: &config}, &fakeSearch{resolveErr: corewebsearch.ErrNotConfigured}, &recordingClient{output: "must not run"})
 	service.models = profileResolver{}
-	if _, err := service.Execute(context.Background(), ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: "search", SelectedText: "query"}); !errors.Is(err, corewebsearch.ErrNotConfigured) {
+	if _, err := service.Execute(context.Background(), ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: "search", SelectedText: "query", OutputLanguage: OutputEnglish}); !errors.Is(err, corewebsearch.ErrNotConfigured) {
 		t.Fatalf("execute error=%v", err)
 	}
 }
@@ -207,7 +241,7 @@ func TestExecuteDistinguishesMissingToolModelFromModelAndRepositoryFailures(t *t
 	config := DefaultConfig(time.Now().UTC())
 	config.Enabled, config.Revision = true, 1
 	service := newTestService(t, &memoryRepository{config: &config}, nil, &recordingClient{output: "ok"})
-	command := ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: "summary", SelectedText: "selected"}
+	command := ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: "summary", SelectedText: "selected", OutputLanguage: OutputEnglish}
 
 	service.models = profileResolver{err: coremodel.ErrProfileNotFound}
 	if _, err := service.Execute(context.Background(), command); !errors.Is(err, ErrModelNotConfigured) || !errors.Is(err, coremodel.ErrProfileNotFound) || errors.Is(err, ErrModel) {
