@@ -11,6 +11,36 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestAgentLedgerAcceptsRoundBeyondLegacyLimit(t *testing.T) {
+	taskID := uuid.NewString()
+	model := ModelRoundLedger{
+		TaskID:       taskID,
+		Attempt:      1,
+		Round:        101,
+		LeaseEpoch:   1,
+		TaskRevision: 1,
+		InputDigest:  strings.Repeat("a", 64),
+		State:        ModelRoundPrepared,
+	}
+	if err := model.Validate(); err != nil {
+		t.Fatalf("model round 101 rejected: %v", err)
+	}
+	tool := ToolCallLedger{
+		TaskID:          taskID,
+		Attempt:         1,
+		Round:           101,
+		CallID:          "call-101",
+		LeaseEpoch:      1,
+		TaskRevision:    1,
+		ToolDigest:      strings.Repeat("b", 64),
+		ArgumentsDigest: strings.Repeat("c", 64),
+		State:           ToolCallPrepared,
+	}
+	if err := tool.Validate(); err != nil {
+		t.Fatalf("tool round 101 rejected: %v", err)
+	}
+}
+
 func TestExecutionSnapshotDigestCanonicalizesPinnedToolSchema(t *testing.T) {
 	schema := json.RawMessage(`{"additionalProperties":false,"properties":{"content":{"type":"string"}},"required":["content"],"type":"object"}`)
 	h := sha256.Sum256(schema)

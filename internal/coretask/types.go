@@ -419,7 +419,7 @@ func normalizePayload(s *TaskSpec) error {
 			return ErrInvalid
 		}
 		p := s.Payload.ConversationTool
-		if !ValidUUID(p.TurnID) || !ValidUUID(p.AttemptID) || strings.TrimSpace(p.CallID) == "" || len([]byte(p.CallID)) > MaxToolCallIDBytes || !utf8.ValidString(p.CallID) || p.Round > 100 || !ValidUUID(p.InstallationID) || !ValidUUID(p.VersionID) || p.InstallationRevision == 0 || strings.TrimSpace(p.ToolName) == "" || !ValidDigest(p.ExtensionSnapshotDigest) || !ValidDigest(p.ToolSchemaDigest) || !ValidDigest(p.ArgumentsDigest) || len([]byte(p.SafeSummary)) > MaxSummaryBytes {
+		if !ValidUUID(p.TurnID) || !ValidUUID(p.AttemptID) || strings.TrimSpace(p.CallID) == "" || len([]byte(p.CallID)) > MaxToolCallIDBytes || !utf8.ValidString(p.CallID) || !ValidUUID(p.InstallationID) || !ValidUUID(p.VersionID) || p.InstallationRevision == 0 || strings.TrimSpace(p.ToolName) == "" || !ValidDigest(p.ExtensionSnapshotDigest) || !ValidDigest(p.ToolSchemaDigest) || !ValidDigest(p.ArgumentsDigest) || len([]byte(p.SafeSummary)) > MaxSummaryBytes {
 			return ErrInvalid
 		}
 	case TaskKindKnowledgeIndex:

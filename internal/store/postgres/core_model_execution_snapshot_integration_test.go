@@ -151,3 +151,62 @@ func TestScheduledAgentTaskExecutesResolvedSnapshotThroughDurableLedger(t *testi
 		t.Fatalf("complete scheduled task: task=%+v err=%v", completed, err)
 	}
 }
+
+func TestCoreTaskLedgerPersistsRoundBeyondLegacyLimit(t *testing.T) {
+	ctx, store, profileID, closeFixture := coreTaskScheduleFixture(t)
+	defer closeFixture()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	key := uuid.NewString()
+	spec := coretask.TaskSpec{
+		Kind: coretask.TaskKindAgent, Goal: "persist a high durable round", ModelProfileID: profileID,
+		IdempotencyKey: key, AvailableAt: now.Add(-time.Second), TimeoutSeconds: 60,
+	}
+	digest, err := spec.MutationDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := NewCoreTaskStore(store)
+	created, err := tasks.CreateTask(ctx, coretask.CreateTaskCommand{Spec: spec, Mutation: coretask.MutationCommand{IdempotencyKey: key, RequestDigest: digest}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, lease, err := tasks.ClaimNextDue(ctx, "high-round-ledger", now, time.Minute, 1)
+	if err != nil || claimed.ID != created.ID {
+		t.Fatalf("claim: task=%+v err=%v", claimed, err)
+	}
+	fence := coretask.Fence{TaskID: claimed.ID, Attempt: lease.Attempt, LeaseEpoch: lease.Epoch, ExpectedRevision: claimed.Revision}
+	advance := func(revision uint64) { fence.ExpectedRevision = revision + 1 }
+	const round = uint32(101)
+
+	model, err := tasks.PrepareModelRound(ctx, coretask.ModelRoundCommand{Fence: fence, Round: round, InputDigest: strings.Repeat("a", 64), At: now.Add(time.Millisecond)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance(model.TaskRevision)
+	model, err = tasks.MarkModelDispatched(ctx, coretask.ModelRoundCommand{Fence: fence, Round: round, At: now.Add(2 * time.Millisecond)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance(model.TaskRevision)
+	model, err = tasks.CompleteModelRound(ctx, coretask.ModelResponseCommand{Fence: fence, Round: round, Response: []byte(`{"message":{"content":"ok"}}`), At: now.Add(3 * time.Millisecond)})
+	if err != nil || model.Round != round || model.State != coretask.ModelRoundCompleted {
+		t.Fatalf("complete model round: ledger=%+v err=%v", model, err)
+	}
+	advance(model.TaskRevision)
+
+	tool, err := tasks.PrepareToolCall(ctx, coretask.ToolCallCommand{Fence: fence, Round: round, CallID: "call-101", ToolDigest: strings.Repeat("b", 64), ArgumentsDigest: strings.Repeat("c", 64), At: now.Add(4 * time.Millisecond)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance(tool.TaskRevision)
+	tool, err = tasks.MarkToolDispatched(ctx, coretask.ToolCallCommand{Fence: fence, Round: round, CallID: "call-101", At: now.Add(5 * time.Millisecond)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance(tool.TaskRevision)
+	tool, err = tasks.CompleteToolCall(ctx, coretask.ToolResultCommand{Fence: fence, Round: round, CallID: "call-101", Result: []byte(`{"ok":true}`), At: now.Add(6 * time.Millisecond)})
+	if err != nil || tool.Round != round || tool.State != coretask.ToolCallCompleted {
+		t.Fatalf("complete tool round: ledger=%+v err=%v", tool, err)
+	}
+}

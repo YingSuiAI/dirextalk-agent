@@ -15,13 +15,12 @@ import (
 )
 
 var (
-	ErrAgentRoundLimit  = errors.New("agent_round_limit")
 	ErrToolUnauthorized = errors.New("tool_unauthorized")
 	ErrToolUnavailable  = errors.New("tool_unavailable")
 	ErrModelUncertain   = errors.New("model_uncertain")
 )
 
-func (e *TaskExecutor) executeBoundedAgent(ctx context.Context, task coretask.Task) (coretask.Result, error, *coretask.Fence) {
+func (e *TaskExecutor) executeAgentLoop(ctx context.Context, task coretask.Task) (coretask.Result, error, *coretask.Fence) {
 	if task.Snapshot == nil {
 		return coretask.Result{}, errors.New("execution snapshot is required"), nil
 	}
@@ -102,7 +101,10 @@ func (e *TaskExecutor) executeBoundedAgent(ctx context.Context, task coretask.Ta
 	if fence.Attempt == 0 {
 		fence.Attempt = 1
 	}
-	for round := uint32(0); round < coretask.MaxAgentRounds; round++ {
+	for round := uint32(0); ; round++ {
+		if err := ctx.Err(); err != nil {
+			return coretask.Result{}, err, &fence
+		}
 		input := coremodel.CompletionRequest{Messages: cloneMessages(messages), Tools: snapshotTools(*snap)}
 		inputDigest := digestJSON(input)
 		var completion coremodel.Completion
@@ -282,7 +284,6 @@ func (e *TaskExecutor) executeBoundedAgent(ctx context.Context, task coretask.Ta
 			messages = append(messages, coremodel.Message{Role: coremodel.RoleTool, ToolCallID: call.ID, Name: call.Function.Name, Content: content})
 		}
 	}
-	return coretask.Result{}, ErrAgentRoundLimit, &fence
 }
 
 func (e *TaskExecutor) markModelUncertain(ctx context.Context, fence coretask.Fence, round uint32) (coretask.ModelRoundLedger, error) {

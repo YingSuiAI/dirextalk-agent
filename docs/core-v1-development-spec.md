@@ -236,8 +236,11 @@ schedule without its conversation receipt or a receipt without its schedule.
 
 Eino adapts each model round, while the Agent-owned Task ledger remains the
 durable orchestrator for model dispatch, tool calls, retries, recovery, and
-uncertain outcomes. Core v1 does not expose Eino graphs as a user-authored
-workflow surface.
+uncertain outcomes. Task orchestration has no fixed model/tool round count: a
+terminal model response, cancellation, the task execution deadline/context,
+or a durable uncertain/error outcome ends execution. The nonnegative round
+ordinal is only durable ledger and replay identity. Core v1 does not expose
+Eino graphs as a user-authored workflow surface.
 
 Workload Tasks use that same revision/attempt/lease-epoch fencing path. The
 local runner receives only a descriptor request bound to the dispatch; it

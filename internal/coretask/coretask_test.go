@@ -68,6 +68,20 @@ func TestConversationToolTaskAcceptsBoundedOpaqueProviderCallID(t *testing.T) {
 	if normalized.ConversationID != spec.ConversationID {
 		t.Fatalf("conversation binding changed: %q", normalized.ConversationID)
 	}
+	highRound := spec
+	highRoundPayload := *spec.Payload.ConversationTool
+	highRoundPayload.Round = 101
+	highRound.Payload.ConversationTool = &highRoundPayload
+	highRoundNormalized, err := highRound.Normalize()
+	if err != nil {
+		t.Fatalf("conversation tool round 101 rejected: %v", err)
+	}
+	if highRoundNormalized.Payload.ConversationTool.Round != 101 {
+		t.Fatalf("conversation tool round=%d, want 101", highRoundNormalized.Payload.ConversationTool.Round)
+	}
+	if err = highRoundNormalized.Validate(); err != nil {
+		t.Fatalf("normalized conversation tool round 101 invalid: %v", err)
+	}
 	tooLong := spec
 	tooLong.Payload.ConversationTool = &ConversationToolTaskPayload{
 		TurnID: uuid.NewString(), AttemptID: uuid.NewString(), CallID: strings.Repeat("x", MaxToolCallIDBytes+1),

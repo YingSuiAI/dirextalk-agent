@@ -546,7 +546,7 @@ func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *
 	}
 	cancelCall := core.ToolCall{ID: "call_deepseek_cancel_non_uuid_1", Name: "write_html", Arguments: string(arguments)}
 	cancelAttempt, cancelTask, cancelConfirmation, err := h.store.PrepareConversationTool(context.Background(), core.PrepareToolCommand{
-		Lease: cancelLease, Round: 0, Call: cancelCall, Snapshot: snapshot,
+		Lease: cancelLease, Round: 101, Call: cancelCall, Snapshot: snapshot,
 		CanonicalArguments: arguments, ArgumentsDigest: conversationArgsDigest(arguments),
 		SafeSummary: "conversation tool call write_html", IdempotencyKey: uuid.NewString(),
 		ExpiresAt: time.Now().UTC().Add(10 * time.Minute),

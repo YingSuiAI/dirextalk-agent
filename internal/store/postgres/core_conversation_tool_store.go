@@ -26,7 +26,7 @@ func conversationArgsDigest(raw []byte) string {
 }
 
 func (s *CoreConversationStore) PrepareConversationTool(ctx context.Context, c core.PrepareToolCommand) (core.ToolAttempt, coretask.Task, coreconfirmation.Confirmation, error) {
-	if s == nil || c.Lease.Turn.ID == "" || c.Lease.LeaseID == "" || c.Lease.Epoch == 0 || c.Round > 100 || c.Call.Validate() != nil || !coretask.ValidUUID(c.IdempotencyKey) || c.ExpiresAt.IsZero() || !c.ExpiresAt.After(time.Now().UTC()) || len(c.SafeSummary) > coretask.MaxSummaryBytes {
+	if s == nil || c.Lease.Turn.ID == "" || c.Lease.LeaseID == "" || c.Lease.Epoch == 0 || c.Call.Validate() != nil || !coretask.ValidUUID(c.IdempotencyKey) || c.ExpiresAt.IsZero() || !c.ExpiresAt.After(time.Now().UTC()) || len(c.SafeSummary) > coretask.MaxSummaryBytes {
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrInvalid
 	}
 	args, err := canonicalJSON(c.CanonicalArguments, core.MaxToolArgumentsBytes)

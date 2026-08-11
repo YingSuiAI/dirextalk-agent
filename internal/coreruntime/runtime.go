@@ -347,10 +347,6 @@ func (p *WorkerPool) execute(parent context.Context, task coretask.Task, lease c
 		errorCode = "model_uncertain"
 		errorSummary = "model execution outcome is uncertain; replay is forbidden"
 	}
-	if errors.Is(err, ErrAgentRoundLimit) {
-		errorCode = "agent_round_limit"
-		errorSummary = "agent round limit exceeded"
-	}
 	if errors.Is(err, ErrToolUnauthorized) {
 		errorCode = "tool_unauthorized"
 		errorSummary = "tool is not authorized by execution snapshot"

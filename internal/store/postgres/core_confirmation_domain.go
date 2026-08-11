@@ -600,7 +600,7 @@ const confirmationSelect = `SELECT confirmation_id,binding_json,task_id,state,re
 // terminalizeConversationToolTx is deliberately called while the confirmation
 // and task rows are locked by their owning lifecycle mutation. It makes a
 // rejected/expired/canceled approval incapable of later reaching a runner and
-// releases the turn for a bounded next model round.
+// releases the turn for the next model round.
 func terminalizeConversationToolTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.Confirmation, attemptState, reason string, at time.Time, resumeTurn bool) error {
 	if cur.Binding.OperationDomain != "conversation_tool" {
 		return nil

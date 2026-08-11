@@ -3,12 +3,39 @@ package coreconversation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+type repeatedToolModel struct {
+	toolRounds int
+	runs       int
+}
+
+func (m *repeatedToolModel) Run(_ context.Context, _ ModelRunRequest) (ModelRunResult, error) {
+	m.runs++
+	if m.runs <= m.toolRounds {
+		callID := fmt.Sprintf("call-%d", m.runs)
+		return ModelRunResult{Message: Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: []ToolCall{{ID: callID, Name: "echo", Arguments: `{"x":1}`}}, CreatedAt: time.Now().UTC()}}, nil
+	}
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "done", CreatedAt: time.Now().UTC()}}, nil
+}
+
+func (m *repeatedToolModel) Stream(ctx context.Context, request ModelRunRequest, emit func(ModelDelta) error) (ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
+type repeatedToolExtension struct{}
+
+func (repeatedToolExtension) ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+	return []ResolvedExtension{{Selection: ExtensionSelection{ID: uuid.NewString(), Kind: ExtensionMCP, Version: "1", Digest: "sha256:x", AllowedTools: []string{"echo"}}, Execute: func(_ context.Context, request ToolExecutionRequest) (ToolResult, error) {
+		return ToolResult{CallID: request.Call.ID, Content: "echoed"}, nil
+	}}}, nil
+}
 
 type capturingChatModel struct {
 	request ModelRunRequest
@@ -263,6 +290,24 @@ func TestAtomicCompletionAndToolExchange(t *testing.T) {
 	}
 	if !r.Done || st.committed != 1 || m.runs != 2 || len(st.results) != 1 {
 		t.Fatalf("response=%+v committed=%d runs=%d results=%d", r, st.committed, m.runs, len(st.results))
+	}
+}
+
+func TestChatToolExchangeContinuesPastEightRounds(t *testing.T) {
+	store := newFakeStore()
+	model := &repeatedToolModel{toolRounds: 12}
+	service, err := NewService(store, model, repeatedToolExtension{}, fakeProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	response, err := service.Chat(ctx, command())
+	if err != nil || !response.Done || response.Message.Content != "done" {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+	if model.runs != 13 || len(store.results) != 12 || store.committed != 1 {
+		t.Fatalf("model_runs=%d tool_results=%d commits=%d", model.runs, len(store.results), store.committed)
 	}
 }
 

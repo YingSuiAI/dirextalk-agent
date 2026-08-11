@@ -463,7 +463,7 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 	var relatedPlans []string
 	var references []Reference
 	var toolSummaries []string
-	for round := 0; round < 8; round++ {
+	for round := 0; ; round++ {
 		if err := ctx.Err(); err != nil {
 			return ChatResponse{}, ErrCanceled
 		}
@@ -714,7 +714,6 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 			}
 		}
 	}
-	return ChatResponse{}, errors.New("tool exchange exceeded limit")
 }
 
 func (s *Service) StreamChat(ctx context.Context, cmd ChatCommand) (<-chan StreamEvent, error) {

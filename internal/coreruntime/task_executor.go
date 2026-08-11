@@ -241,6 +241,6 @@ func (e *TaskExecutor) executeAgentManaged(ctx context.Context, task coretask.Ta
 	if err := ctx.Err(); err != nil {
 		return coretask.Result{}, err, nil
 	}
-	result, err, fence := e.executeBoundedAgent(ctx, task)
+	result, err, fence := e.executeAgentLoop(ctx, task)
 	return result, err, fence
 }

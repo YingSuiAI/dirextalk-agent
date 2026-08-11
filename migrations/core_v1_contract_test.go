@@ -6,11 +6,11 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 6 {
-		t.Fatalf("CurrentVersion = %d, want 6", CurrentVersion)
+	if CurrentVersion != 7 {
+		t.Fatalf("CurrentVersion = %d, want 7", CurrentVersion)
 	}
 	entries := Entries()
-	if len(entries) != 6 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" {
+	if len(entries) != 7 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" || entries[6] != "000007_unbounded_agent_rounds.up.sql" {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
 	script, err := Files.ReadFile(entries[0])

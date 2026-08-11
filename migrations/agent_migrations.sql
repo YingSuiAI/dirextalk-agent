@@ -2249,3 +2249,19 @@ CREATE TABLE core_image_tool_replays (
     PRIMARY KEY(operation,idempotency_key)
 );
 -- dirextalk-agent migration end 000006_image_tools_v1.up.sql
+-- dirextalk-agent migration begin 000007_unbounded_agent_rounds.up.sql
+-- Agent orchestration is bounded by its execution deadline/context and
+-- terminal outcomes. Round ordinals are durable ledger identities only.
+ALTER TABLE core_task_model_rounds
+    DROP CONSTRAINT core_task_model_rounds_round_check,
+    ADD CONSTRAINT core_task_model_rounds_round_check CHECK (round >= 0);
+ALTER TABLE core_task_tool_calls
+    DROP CONSTRAINT core_task_tool_calls_round_check,
+    ADD CONSTRAINT core_task_tool_calls_round_check CHECK (round >= 0);
+ALTER TABLE core_conversation_model_rounds
+    DROP CONSTRAINT core_conversation_model_rounds_round_check,
+    ADD CONSTRAINT core_conversation_model_rounds_round_check CHECK (round >= 0);
+ALTER TABLE core_conversation_tool_attempts
+    DROP CONSTRAINT core_conversation_tool_attempts_round_check,
+    ADD CONSTRAINT core_conversation_tool_attempts_round_check CHECK (round >= 0);
+-- dirextalk-agent migration end 000007_unbounded_agent_rounds.up.sql

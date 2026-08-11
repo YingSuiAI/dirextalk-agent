@@ -20,6 +20,8 @@ func TestCommittedMigrationBytesRemainImmutable(t *testing.T) {
 		{"000003_aws_credential_test_claims.up.sql", 1855, "563f8f2b4a49c1e66e33f3a8ab6fdf606f21674fc45fad4c36add6ddc81f615a"},
 		{"000004_knowledge_pgvector.up.sql", 1941, "a9c7f8f495b4b5dc967f4534a94ccb8563cdd0d7b32f6b9d34fd471459156ad6"},
 		{"000005_cloud_worker_v1.up.sql", 47971, "cb2c08c8799161ae8dcc39f6c9940b618bf61702a8f676d9d75e51a056041fde"},
+		{"000006_image_tools_v1.up.sql", 2633, "81067d9cb67fe4960c67fd34aa7e92ff088825716cec2619fd253c0e07dc5d34"},
+		{"000007_unbounded_agent_rounds.up.sql", 850, "447dadc7f9298d0ce187d322f0261e90427251f524d660c15e206300c2662125"},
 	}
 	ordered := Ordered()
 	if len(ordered) < len(expected) {
@@ -36,7 +38,7 @@ func TestCommittedMigrationBytesRemainImmutable(t *testing.T) {
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 6 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" {
+	if len(entries) != 7 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" || entries[6] != "000007_unbounded_agent_rounds.up.sql" {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Cloud Worker migrations", entries)
 	}
 	migration := Ordered()[0]
@@ -68,6 +70,20 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	imageTools := Ordered()[5]
 	if imageTools.Version != 6 || !bytes.Contains(imageTools.Script, []byte("CREATE TABLE core_image_tool_uploads")) {
 		t.Fatal("image tools migration missing ephemeral source store")
+	}
+	unboundedRounds := Ordered()[6]
+	if unboundedRounds.Version != 7 || len(unboundedRounds.Script) == 0 || unboundedRounds.Script[len(unboundedRounds.Script)-1] != '\n' {
+		t.Fatal("unbounded agent rounds migration lost its source newline")
+	}
+	for _, constraint := range []string{
+		"core_task_model_rounds_round_check",
+		"core_task_tool_calls_round_check",
+		"core_conversation_model_rounds_round_check",
+		"core_conversation_tool_attempts_round_check",
+	} {
+		if !bytes.Contains(unboundedRounds.Script, []byte("DROP CONSTRAINT "+constraint)) || !bytes.Contains(unboundedRounds.Script, []byte("ADD CONSTRAINT "+constraint+" CHECK (round >= 0)")) {
+			t.Fatalf("unbounded agent rounds migration missing replacement for %q", constraint)
+		}
 	}
 	if !bytes.Contains(cloudWorker.Script, []byte(cloudworker.PostgresOutputJournalSchemaRequirement)) {
 		t.Fatal("Cloud Worker migration drifted from the output journal schema requirement")

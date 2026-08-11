@@ -1,6 +1,6 @@
 package coretask
 
-// Durable execution bindings and ledgers for the bounded Core agent loop.
+// Durable execution bindings and ledgers for the deadline-governed Core agent loop.
 // These types deliberately contain no secret material.  SecretRef identifies
 // a separately protected profile secret; it is never resolved or serialized by
 // task events/results.
@@ -16,8 +16,6 @@ import (
 	"strings"
 	"time"
 )
-
-const MaxAgentRounds = 8
 
 type ModelProfileSnapshot struct {
 	ProfileID       string   `json:"profile_id"`
@@ -289,7 +287,7 @@ type ToolCallLedger struct {
 }
 
 func (m ModelRoundLedger) Validate() error {
-	if !ValidUUID(m.TaskID) || m.Attempt == 0 || m.Round >= MaxAgentRounds || m.LeaseEpoch == 0 || m.TaskRevision == 0 || len(m.InputDigest) != 64 || !validModelState(m.State) {
+	if !ValidUUID(m.TaskID) || m.Attempt == 0 || m.LeaseEpoch == 0 || m.TaskRevision == 0 || len(m.InputDigest) != 64 || !validModelState(m.State) {
 		return ErrInvalid
 	}
 	if m.State == ModelRoundCompleted && len(m.Response) == 0 {
@@ -304,7 +302,7 @@ func (m ModelRoundLedger) Validate() error {
 	return nil
 }
 func (t ToolCallLedger) Validate() error {
-	if !ValidUUID(t.TaskID) || t.Attempt == 0 || t.Round >= MaxAgentRounds || t.LeaseEpoch == 0 || t.TaskRevision == 0 || strings.TrimSpace(t.CallID) == "" || len(t.ToolDigest) != 64 || len(t.ArgumentsDigest) != 64 || !validToolState(t.State) {
+	if !ValidUUID(t.TaskID) || t.Attempt == 0 || t.LeaseEpoch == 0 || t.TaskRevision == 0 || strings.TrimSpace(t.CallID) == "" || len(t.ToolDigest) != 64 || len(t.ArgumentsDigest) != 64 || !validToolState(t.State) {
 		return ErrInvalid
 	}
 	if t.State == ToolCallCompleted && len(t.Result) == 0 {

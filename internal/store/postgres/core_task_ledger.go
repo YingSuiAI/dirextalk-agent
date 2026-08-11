@@ -14,7 +14,7 @@ import (
 )
 
 func (s *CoreTaskStore) PrepareModelRound(ctx context.Context, c coretask.ModelRoundCommand) (coretask.ModelRoundLedger, error) {
-	if c.At.IsZero() || len(c.InputDigest) != 64 || c.Round >= coretask.MaxAgentRounds {
+	if c.At.IsZero() || len(c.InputDigest) != 64 {
 		return coretask.ModelRoundLedger{}, coretask.ErrInvalid
 	}
 	return s.modelRoundMutation(ctx, c.Fence, c.Round, c.At.UTC(), func(tx pgx.Tx, now time.Time) (coretask.ModelRoundLedger, error) {
@@ -25,7 +25,7 @@ func (s *CoreTaskStore) PrepareModelRound(ctx context.Context, c coretask.ModelR
 	})
 }
 func (s *CoreTaskStore) MarkModelDispatched(ctx context.Context, c coretask.ModelRoundCommand) (coretask.ModelRoundLedger, error) {
-	if c.At.IsZero() || c.Round >= coretask.MaxAgentRounds {
+	if c.At.IsZero() {
 		return coretask.ModelRoundLedger{}, coretask.ErrInvalid
 	}
 	return s.modelRoundMutation(ctx, c.Fence, c.Round, c.At.UTC(), func(tx pgx.Tx, now time.Time) (coretask.ModelRoundLedger, error) {
@@ -46,7 +46,7 @@ func (s *CoreTaskStore) MarkModelDispatched(ctx context.Context, c coretask.Mode
 	})
 }
 func (s *CoreTaskStore) CompleteModelRound(ctx context.Context, c coretask.ModelResponseCommand) (coretask.ModelRoundLedger, error) {
-	if c.At.IsZero() || c.Round >= coretask.MaxAgentRounds || len(c.Response) == 0 || !json.Valid(c.Response) {
+	if c.At.IsZero() || len(c.Response) == 0 || !json.Valid(c.Response) {
 		return coretask.ModelRoundLedger{}, coretask.ErrInvalid
 	}
 	return s.modelRoundMutation(ctx, c.Fence, c.Round, c.At.UTC(), func(tx pgx.Tx, now time.Time) (coretask.ModelRoundLedger, error) {
@@ -68,7 +68,7 @@ func (s *CoreTaskStore) CompleteModelRound(ctx context.Context, c coretask.Model
 }
 
 func (s *CoreTaskStore) MarkModelUncertain(ctx context.Context, c coretask.ModelUncertainCommand) (coretask.ModelRoundLedger, error) {
-	if c.At.IsZero() || c.Round >= coretask.MaxAgentRounds || strings.TrimSpace(c.ErrorCode) == "" || strings.TrimSpace(c.ErrorSummary) == "" {
+	if c.At.IsZero() || strings.TrimSpace(c.ErrorCode) == "" || strings.TrimSpace(c.ErrorSummary) == "" {
 		return coretask.ModelRoundLedger{}, coretask.ErrInvalid
 	}
 	return s.modelRoundMutation(ctx, c.Fence, c.Round, c.At.UTC(), func(tx pgx.Tx, now time.Time) (coretask.ModelRoundLedger, error) {
@@ -137,7 +137,7 @@ func (s *CoreTaskStore) modelRoundTx(ctx context.Context, tx rowQuerier, taskID 
 }
 
 func (s *CoreTaskStore) PrepareToolCall(ctx context.Context, c coretask.ToolCallCommand) (coretask.ToolCallLedger, error) {
-	if c.At.IsZero() || c.Round >= coretask.MaxAgentRounds || len(c.ToolDigest) != 64 || len(c.ArgumentsDigest) != 64 || c.CallID == "" {
+	if c.At.IsZero() || len(c.ToolDigest) != 64 || len(c.ArgumentsDigest) != 64 || c.CallID == "" {
 		return coretask.ToolCallLedger{}, coretask.ErrInvalid
 	}
 	return s.toolMutation(ctx, c.Fence, c.Round, c.CallID, c.At.UTC(), func(tx pgx.Tx, now time.Time) (coretask.ToolCallLedger, error) {
@@ -202,7 +202,7 @@ func (s *CoreTaskStore) MarkToolUncertain(ctx context.Context, c coretask.ToolUn
 	})
 }
 func (s *CoreTaskStore) toolMutation(ctx context.Context, f coretask.Fence, round uint32, callID string, at time.Time, apply func(pgx.Tx, time.Time) (coretask.ToolCallLedger, error)) (coretask.ToolCallLedger, error) {
-	if !coretask.ValidUUID(f.TaskID) || f.Attempt == 0 || f.LeaseEpoch == 0 || f.ExpectedRevision == 0 || round >= coretask.MaxAgentRounds || callID == "" {
+	if !coretask.ValidUUID(f.TaskID) || f.Attempt == 0 || f.LeaseEpoch == 0 || f.ExpectedRevision == 0 || callID == "" {
 		return coretask.ToolCallLedger{}, coretask.ErrInvalid
 	}
 	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
