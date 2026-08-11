@@ -37,6 +37,8 @@ type LocalInvocation struct {
 	ContentDigest, ArtifactDigest                               string
 	EntryPath                                                   string
 	Argv                                                        []string
+	Tool                                                        string
+	Input                                                       json.RawMessage
 	Workspace                                                   string
 	Timeout                                                     time.Duration
 	Limits                                                      extensionrunner.LimitsV2
@@ -160,7 +162,14 @@ func (e *LocalExecutor) executeMCP(ctx context.Context, in LocalInvocation, requ
 		data = append(data, '\n')
 	}
 	in.Stdin = data
-	return e.Execute(ctx, in)
+	status, err := e.Execute(ctx, in)
+	if err != nil {
+		return extensionrunner.StatusV1{}, err
+	}
+	if status.Phase != extensionrunner.PhaseTombstone || status.Error != extensionrunner.ErrorNone {
+		return extensionrunner.StatusV1{}, core.ErrConflict
+	}
+	return status, nil
 }
 
 type mcpWire struct {
@@ -258,47 +267,6 @@ func (e *LocalExecutor) Execute(ctx context.Context, in LocalInvocation) (extens
 		return extensionrunner.StatusV1{}, err
 	}
 	return e.Runner.RunV2(ctx, request, files)
-}
-
-func (e *LocalExecutor) ExecuteTask(ctx context.Context, in LocalInvocation) (coretask.Result, error) {
-	status, err := e.Execute(ctx, in)
-	if err != nil {
-		return coretask.Result{}, err
-	}
-	if status.Error != extensionrunner.ErrorNone || status.Phase == extensionrunner.PhaseFailed {
-		return coretask.Result{}, errors.New("extension runner execution failed")
-	}
-	result := coretask.Result{Text: string(status.Stdout), Summary: boundSummary(string(status.Status))}
-	if result.Text == "" && len(status.Stderr) > 0 {
-		result.Text = string(status.Stderr)
-	}
-	if len(status.Stdout) > 0 && json.Valid(status.Stdout) {
-		var rpc struct {
-			JSONRPC string          `json:"jsonrpc"`
-			Result  json.RawMessage `json:"result"`
-			Error   json.RawMessage `json:"error"`
-		}
-		if json.Unmarshal(status.Stdout, &rpc) != nil || rpc.JSONRPC != "2.0" || (len(rpc.Result) == 0 && len(rpc.Error) == 0) {
-			return coretask.Result{}, errors.New("invalid MCP JSON-RPC result")
-		}
-		var v any
-		if json.Unmarshal(status.Stdout, &v) == nil {
-			if b, e := json.Marshal(v); e == nil && string(b) == string(status.Stdout) {
-				result.JSON = append([]byte(nil), status.Stdout...)
-				result.Text = ""
-			}
-		}
-		if len(rpc.Error) > 0 {
-			result.Summary = "extension returned an error"
-		}
-	}
-	for _, f := range status.ResultFiles {
-		result.Files = append(result.Files, coretask.FileRef{Path: f.Path, Digest: f.SHA256, Size: f.Size})
-	}
-	if err := result.Validate(); err != nil {
-		return coretask.Result{}, err
-	}
-	return result, nil
 }
 
 func StableRunID(parts ...string) string {
@@ -485,7 +453,7 @@ func (h *Handler) Handle(ctx context.Context, task coretask.Task) coreruntime.Ma
 			err = errors.New("local executor unavailable")
 			break
 		}
-		result, err = h.Local.ExecuteTask(ctx, *in.Local)
+		result, err = h.Local.CallTool(ctx, *in.Local, in.Local.Tool, in.Local.Input)
 	case in.Remote != nil:
 		if h.Remote == nil {
 			err = errors.New("remote executor unavailable")

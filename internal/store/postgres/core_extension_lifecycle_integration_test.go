@@ -93,11 +93,48 @@ func TestCoreExtensionPostgresInstallUpdateUninstallLifecycle(t *testing.T) {
 	latest, _ := ext.Get(ctx, res2.Installation.ID)
 	pinEchoToolCatalog(ctx, t, pool, latest.ID, latest.ActiveVersionID)
 	latest, _ = ext.Get(ctx, res2.Installation.ID)
+	tasks := NewCoreTaskStore(store)
+	executionCoord, e := NewValidatedPostgresExtensionExecutionCoordinator(store, t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	executionResult, e := executionCoord.RequestTask(ctx, coreextension.ExecuteRequest{OwnerID: "@owner:example.test", AccountGeneration: 1, InstallationID: latest.ID, ExpectedRevision: latest.Revision, ToolName: "echo", Input: json.RawMessage(`{"x":1}`), IdempotencyKey: uuid.NewString()})
+	if e != nil {
+		t.Fatal(e)
+	}
+	confirmationService, e := coreconfirmation.NewService(cs)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = confirmationService.ConfirmAuthorized(ctx, coreconfirmation.Authority{OwnerID: "@owner:example.test", AccountGeneration: 1}, coreconfirmation.ConfirmCommand{ConfirmationID: executionResult.ConfirmationID, IdempotencyKey: uuid.NewString(), ExpectedRevision: 1, At: time.Now().UTC()}); e != nil {
+		t.Fatal(e)
+	}
+	claimed, _, e := tasks.ClaimNextDue(ctx, "local-mcp-execution", time.Now().UTC(), time.Minute, 2)
+	if e != nil {
+		t.Fatal(e)
+	}
+	invocation, e := executionCoord.Resolve(ctx, claimed)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if invocation.Local == nil || invocation.Local.Tool != "echo" || string(invocation.Local.Input) != `{"x":1}` || len(invocation.Local.Stdin) != 0 {
+		t.Fatalf("local MCP invocation=%#v", invocation)
+	}
+	localResult := coretask.Result{JSON: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), Summary: "local MCP tool result"}
+	if committed, completeErr := executionCoord.Complete(ctx, claimed, localResult); completeErr != nil || !committed {
+		t.Fatalf("complete local MCP committed=%v err=%v", committed, completeErr)
+	}
+	completedExecution, e := tasks.GetTask(ctx, executionResult.TaskID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = tasks.DeleteTask(ctx, coretask.DeleteTaskCommand{TaskID: completedExecution.ID, Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("c", 64), ExpectedRevision: completedExecution.Revision}, At: time.Now().UTC()}); e != nil {
+		t.Fatalf("delete completed local MCP task: %v", e)
+	}
 	// A queued execution snapshot pins the active immutable artifact. Removal
 	// must reject while that task can still execute, then succeed once the task
 	// is terminalized.
 	active := latest.Versions[len(latest.Versions)-1]
-	tasks := NewCoreTaskStore(store)
 	key := uuid.NewString()
 	spec := coretask.TaskSpec{Kind: coretask.TaskKindExtension, Goal: "pinned execution", IdempotencyKey: key, Payload: coretask.TaskPayload{Extension: &coretask.ExtensionTaskPayload{
 		Operation:          coretask.ExtensionOperationExecuteTool,

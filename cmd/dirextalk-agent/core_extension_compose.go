@@ -154,14 +154,8 @@ func conversationToolTaskHandler(store conversationToolAttemptStore, coord conve
 		case invocation.Local != nil:
 			if local == nil {
 				err = coreextension.ErrInvalid
-			} else if payload := task.Spec.Payload.ConversationTool; payload != nil {
-				var toolResult coretask.Result
-				toolResult, err = local.CallTool(ctx, *invocation.Local, payload.ToolName, invocation.Local.Stdin)
-				if err == nil {
-					result = toolResult
-				}
 			} else {
-				result, err = local.ExecuteTask(ctx, *invocation.Local)
+				result, err = local.CallTool(ctx, *invocation.Local, invocation.Local.Tool, invocation.Local.Input)
 			}
 		case invocation.Remote != nil:
 			if remote == nil {

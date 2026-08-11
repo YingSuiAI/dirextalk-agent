@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -572,6 +573,26 @@ func (r fixedOutputLocalRunner) RunV2(_ context.Context, request extensionrunner
 	return extensionrunner.StatusV1{RunID: request.RunID, Phase: extensionrunner.PhaseTombstone, Status: "succeeded", Stdout: append([]byte(nil), r.stdout...)}, nil
 }
 
+type mcpCallRunner struct {
+	request extensionrunner.RequestV2
+	stdin   []byte
+	stdout  []byte
+}
+
+func (r *mcpCallRunner) RunV2(_ context.Context, request extensionrunner.RequestV2, files []*os.File) (extensionrunner.StatusV1, error) {
+	r.request = request
+	if request.Stdin != nil {
+		if request.Stdin.Index < 0 || request.Stdin.Index >= len(files) {
+			return extensionrunner.StatusV1{}, extensionrunner.ErrInvalid
+		}
+		r.stdin = make([]byte, request.Stdin.Size)
+		if _, err := files[request.Stdin.Index].ReadAt(r.stdin, 0); err != nil {
+			return extensionrunner.StatusV1{}, err
+		}
+	}
+	return extensionrunner.StatusV1{RunID: request.RunID, Phase: extensionrunner.PhaseTombstone, Status: "succeeded", Stdout: append([]byte(nil), r.stdout...)}, nil
+}
+
 func TestLocalExecutorListToolsCanonicalizesExactInputSchema(t *testing.T) {
 	digest := strings.Repeat("a", 64)
 	stdout := []byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"local_task","description":"bounded local task","inputSchema":{"z":{"type":"string"},"a":{"type":"integer"}}}]}}`)
@@ -630,6 +651,62 @@ func TestHandlerTerminalOwnershipAndReplay(t *testing.T) {
 	if !out.TerminalOwned || !errors.Is(out.Err, ErrStaleFence) {
 		t.Fatalf("stale fence outcome=%#v", out)
 	}
+}
+
+func TestLocalMCPHandlerSendsExactToolCallAndRequiresResult(t *testing.T) {
+	taskID, installationID, versionID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	digest := strings.Repeat("a", 64)
+	input, err := json.Marshal(map[string]any{"content": "<h1>Hello from Dirextalk</h1>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := []byte(`{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"<h1>Hello from Dirextalk</h1>"}],"structuredContent":{"path":"index.html","size":29,"sha256":"b0012fd52e5edc0ce0ac66a4e4020d45a6a5226229276c961744d0d826776b84"}}}`)
+	makeInvocation := func() Invocation {
+		return Invocation{Kind: core.KindMCP, Local: &LocalInvocation{
+			TaskID: taskID, TaskFence: uuid.NewString(), InstallationID: installationID, VersionID: versionID,
+			InstallDigest: digest, ContentDigest: digest, ArtifactDigest: digest, EntryPath: "entry",
+			Tool: "write_html", Input: append(json.RawMessage(nil), input...), Workspace: t.TempDir(),
+			Timeout: time.Minute, Limits: LocalSandboxLimitsV2(),
+		}}
+	}
+
+	t.Run("success", func(t *testing.T) {
+		runner := &mcpCallRunner{stdout: response}
+		coord := &fakeCoord{resolved: makeInvocation()}
+		out := (&Handler{Coordinator: coord, Local: &LocalExecutor{Runner: runner}}).Handle(context.Background(), coretask.Task{ID: taskID})
+		var envelope struct {
+			Result json.RawMessage `json:"result"`
+		}
+		if json.Unmarshal(response, &envelope) != nil {
+			t.Fatal("invalid response fixture")
+		}
+		if out.Err != nil || !out.TerminalOwned || coord.complete != 1 || coord.fail != 0 || string(out.Result.JSON) != string(envelope.Result) {
+			t.Fatalf("out=%#v err=%v complete=%d fail=%d result=%s stdin=%q request=%+v", out, out.Err, coord.complete, coord.fail, out.Result.JSON, runner.stdin, runner.request)
+		}
+		lines := strings.Split(strings.TrimSpace(string(runner.stdin)), "\n")
+		if len(lines) != 3 {
+			t.Fatalf("MCP request lines=%d stdin=%q", len(lines), runner.stdin)
+		}
+		var initialize, initialized, call map[string]any
+		if json.Unmarshal([]byte(lines[0]), &initialize) != nil || json.Unmarshal([]byte(lines[1]), &initialized) != nil || json.Unmarshal([]byte(lines[2]), &call) != nil {
+			t.Fatal("MCP request is not valid NDJSON")
+		}
+		params, _ := call["params"].(map[string]any)
+		if initialize["method"] != "initialize" || initialize["id"] != float64(1) || initialized["method"] != "notifications/initialized" ||
+			call["method"] != "tools/call" || call["id"] != float64(2) || params["name"] != "write_html" ||
+			!reflect.DeepEqual(params["arguments"], map[string]any{"content": "<h1>Hello from Dirextalk</h1>"}) {
+			t.Fatalf("unexpected MCP protocol: initialize=%#v initialized=%#v call=%#v", initialize, initialized, call)
+		}
+	})
+
+	t.Run("empty response fails", func(t *testing.T) {
+		runner := &mcpCallRunner{}
+		coord := &fakeCoord{resolved: makeInvocation()}
+		out := (&Handler{Coordinator: coord, Local: &LocalExecutor{Runner: runner}}).Handle(context.Background(), coretask.Task{ID: taskID})
+		if out.Err == nil || !out.TerminalOwned || coord.complete != 0 || coord.fail != 1 {
+			t.Fatalf("out=%#v complete=%d fail=%d", out, coord.complete, coord.fail)
+		}
+	})
 }
 
 func TestExecutableSkillHandlerBindsExactLocalSandboxLimits(t *testing.T) {

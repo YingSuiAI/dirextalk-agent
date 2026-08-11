@@ -307,7 +307,7 @@ func (c *PostgresExtensionExecutionCoordinator) Resolve(ctx context.Context, tas
 		return execution.Invocation{Kind: coreextension.KindMCP, Local: &execution.LocalInvocation{
 			TaskID: task.ID, TaskFence: execution.StableRunID(task.ID, fmt.Sprintf("%d", task.Attempt), fmt.Sprintf("%d", task.LeaseEpoch)), InstallationID: p.InstallationID, VersionID: pinned.VersionID, InstallDigest: p.ArtifactDigest, ContentDigest: p.Digest, ArtifactDigest: p.ArtifactDigest,
 			EntryPath: version.Execution.Stdio.RelativePath, Argv: append([]string(nil), version.Execution.Stdio.Argv...), Workspace: workspace, Timeout: 10 * time.Minute,
-			Limits: execution.LocalSandboxLimitsV2(), Secrets: secretBindings(p.InstallationID, pinned.VersionID, version), ResultFiles: nil,
+			Tool: p.ToolName, Input: append(json.RawMessage(nil), p.CanonicalInputJSON...), Limits: execution.LocalSandboxLimitsV2(), Secrets: secretBindings(p.InstallationID, pinned.VersionID, version), ResultFiles: nil,
 		}}, nil
 	}
 	if version.Execution.Remote != nil {
@@ -443,7 +443,7 @@ func (c *PostgresExtensionExecutionCoordinator) ResolveConversationInvocation(ct
 		if c.WorkspaceRoot == "" {
 			return execution.Invocation{}, coretask.ErrInvalid
 		}
-		return execution.Invocation{Kind: coreextension.KindMCP, Local: &execution.LocalInvocation{TaskID: task.ID, TaskFence: execution.StableRunID(task.ID, fmt.Sprintf("%d", task.Attempt), fmt.Sprintf("%d", task.LeaseEpoch)), InstallationID: p.InstallationID, VersionID: p.VersionID, InstallDigest: artifactDigest, ContentDigest: contentDigest, ArtifactDigest: artifactDigest, EntryPath: version.Execution.Stdio.RelativePath, Argv: append([]string(nil), version.Execution.Stdio.Argv...), Workspace: filepath.Join(c.WorkspaceRoot, task.ID), Timeout: 10 * time.Minute, Limits: execution.LocalSandboxLimitsV2(), Secrets: secretBindings(p.InstallationID, p.VersionID, version), Stdin: append([]byte(nil), argsJSON...)}}, nil
+		return execution.Invocation{Kind: coreextension.KindMCP, Local: &execution.LocalInvocation{TaskID: task.ID, TaskFence: execution.StableRunID(task.ID, fmt.Sprintf("%d", task.Attempt), fmt.Sprintf("%d", task.LeaseEpoch)), InstallationID: p.InstallationID, VersionID: p.VersionID, InstallDigest: artifactDigest, ContentDigest: contentDigest, ArtifactDigest: artifactDigest, EntryPath: version.Execution.Stdio.RelativePath, Argv: append([]string(nil), version.Execution.Stdio.Argv...), Tool: toolName, Input: append(json.RawMessage(nil), argsJSON...), Workspace: filepath.Join(c.WorkspaceRoot, task.ID), Timeout: 10 * time.Minute, Limits: execution.LocalSandboxLimitsV2(), Secrets: secretBindings(p.InstallationID, p.VersionID, version)}}, nil
 	}
 	if version.Execution.Remote != nil {
 		if toolName == "" {
