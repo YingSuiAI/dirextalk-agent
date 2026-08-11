@@ -171,6 +171,7 @@ func TestLinuxIsolationServerClientHTMLResultOptIn(t *testing.T) {
 	}
 	serverCtx, cancelServer := context.WithCancel(context.Background())
 	serveDone := make(chan error, 1)
+	registry := NewRunRegistry()
 	server := Server{
 		Listener:           listener,
 		Authorizer:         UIDAllowlist{uint32(os.Geteuid()): {}},
@@ -181,7 +182,7 @@ func TestLinuxIsolationServerClientHTMLResultOptIn(t *testing.T) {
 			WorkspaceResolver: DiskWorkspaceResolver{Root: workspaceRoot, SharedGID: sharedWorkspaceGID},
 			V2Backend:         backend,
 		},
-		Registry:        NewRunRegistry(),
+		Registry:        registry,
 		PublicationRoot: installRoot,
 	}
 	go func() { serveDone <- server.ServeV2(serverCtx) }()
@@ -229,6 +230,74 @@ func TestLinuxIsolationServerClientHTMLResultOptIn(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(cgroupRoot, request.RunID)); !os.IsNotExist(err) {
 		t.Fatalf("cgroup or child process remained: %v", err)
 	}
+
+	outputRequest := integrationRequest(digest)
+	outputRequest.RunID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	outputRequest.TaskID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	outputRequest.TaskFence = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	outputRequest.Argv = []string{"/app/entry", "output-over"}
+	outputRequest.Limits = localIntegrationLimitsV2()
+	outputStatus, err := client.RunV2(context.Background(), outputRequest, nil)
+	if err != nil || outputStatus.Phase != PhaseFailed || outputStatus.Error != ErrorExecution || outputStatus.Status != "output_limit" || len(outputStatus.Stdout) != MaxOutputBytes {
+		t.Fatalf("output threshold+1 status=%+v err=%v", outputStatus, err)
+	}
+	if _, err := os.Stat(filepath.Join(cgroupRoot, outputRequest.RunID)); !os.IsNotExist(err) {
+		t.Fatalf("output-limit cgroup remained: %v", err)
+	}
+
+	filesRequest := integrationRequest(digest)
+	filesRequest.RunID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	filesRequest.TaskID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	filesRequest.TaskFence = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+	filesRequest.Argv = []string{"/app/entry", "files-over"}
+	filesRequest.TimeoutMS = 30_000
+	filesRequest.Limits = localIntegrationLimitsV2()
+	filesStatus, err := client.RunV2(context.Background(), filesRequest, nil)
+	if err != nil || filesStatus.Phase != PhaseFailed || filesStatus.Error != ErrorCleanup {
+		t.Fatalf("workspace threshold+1 status=%+v err=%v", filesStatus, err)
+	}
+	if _, err := os.Stat(filepath.Join(cgroupRoot, filesRequest.RunID)); !os.IsNotExist(err) {
+		t.Fatalf("file-limit cgroup remained: %v", err)
+	}
+
+	slowRequest := integrationRequest(digest)
+	slowRequest.RunID = "12345678-1234-4234-8234-123456789abc"
+	slowRequest.TaskID = "23456789-2345-4345-8345-23456789abcd"
+	slowRequest.TaskFence = "3456789a-3456-4456-8456-3456789abcde"
+	slowRequest.Argv = []string{"/app/entry", "output-over"}
+	slowRequest.Limits = localIntegrationLimitsV2()
+	slowPacket, err := EncodeRequestV2(slowRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slowFD, err := unix.Socket(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(slowFD)
+	if err := unix.Connect(slowFD, &unix.SockaddrUnix{Name: socketPath}); err != nil && err != unix.EINPROGRESS {
+		t.Fatal(err)
+	}
+	if err := waitFD(context.Background(), slowFD, unix.POLLOUT, time.Now().Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := unix.SendmsgN(slowFD, slowPacket, nil, nil, 0); err != nil || n != len(slowPacket) {
+		t.Fatalf("slow send n=%d err=%v", n, err)
+	}
+	poll := []unix.PollFd{{Fd: int32(slowFD), Events: unix.POLLHUP}}
+	if n, err := unix.Poll(poll, int((serverSocketWriteTimeout + 3*time.Second).Milliseconds())); err != nil || n == 0 || poll[0].Revents&unix.POLLHUP == 0 {
+		t.Fatalf("slow consumer connection not bounded: n=%d revents=%#x err=%v", n, poll[0].Revents, err)
+	}
+	if tombstone, ok := registry.TombstoneOf(slowRequest.RunID); !ok || tombstone.Status.Phase != PhaseFailed || tombstone.Status.Error != ErrorExecution {
+		t.Fatalf("slow consumer tombstone=%+v ok=%v", tombstone, ok)
+	}
+	if _, err := os.Stat(filepath.Join(cgroupRoot, slowRequest.RunID)); !os.IsNotExist(err) {
+		t.Fatalf("slow-consumer cgroup remained: %v", err)
+	}
+}
+
+func localIntegrationLimitsV2() LimitsV2 {
+	return LimitsV2{CPUSeconds: 30, MemoryBytes: 256 << 20, Processes: 32, FileBytes: 16 << 20, OpenFiles: 64}
 }
 
 func fileExists(path string) bool {

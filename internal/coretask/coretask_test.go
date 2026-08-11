@@ -14,7 +14,7 @@ import (
 )
 
 func TestGenericTaskPayloadBranchesAndRoundTrip(t *testing.T) {
-	s := TaskSpec{Kind: TaskKindExtension, Goal: "run", IdempotencyKey: testID, Payload: TaskPayload{Extension: &ExtensionTaskPayload{Operation: ExtensionOperationExecuteTool, InstallationID: testID2, ExpectedRevision: 2, Version: "1.0.0", Digest: strings.Repeat("a", 64), ConfirmationID: uuid.NewString(), ToolName: "echo", CanonicalInputJSON: json.RawMessage(`{"z":1,"a":2}`)}}}
+	s := TaskSpec{Kind: TaskKindExtension, Goal: "run", IdempotencyKey: testID, Payload: TaskPayload{Extension: &ExtensionTaskPayload{Operation: ExtensionOperationExecuteTool, ExecutionTarget: ExtensionExecutionTargetLocalSandbox, InstallationID: testID2, ExpectedRevision: 2, Version: "1.0.0", Digest: strings.Repeat("a", 64), ConfirmationID: uuid.NewString(), ToolName: "echo", CanonicalInputJSON: json.RawMessage(`{"z":1,"a":2}`)}}}
 	n, err := s.Normalize()
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +34,7 @@ func TestGenericTaskPayloadBranchesAndRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed := n
-	changed.Payload.Extension = &ExtensionTaskPayload{Operation: n.Payload.Extension.Operation, InstallationID: n.Payload.Extension.InstallationID, ExpectedRevision: n.Payload.Extension.ExpectedRevision, Version: n.Payload.Extension.Version, Digest: n.Payload.Extension.Digest, ConfirmationID: n.Payload.Extension.ConfirmationID, ToolName: "other", CanonicalInputJSON: append([]byte(nil), n.Payload.Extension.CanonicalInputJSON...)}
+	changed.Payload.Extension = &ExtensionTaskPayload{Operation: n.Payload.Extension.Operation, ExecutionTarget: n.Payload.Extension.ExecutionTarget, InstallationID: n.Payload.Extension.InstallationID, ExpectedRevision: n.Payload.Extension.ExpectedRevision, Version: n.Payload.Extension.Version, Digest: n.Payload.Extension.Digest, ConfirmationID: n.Payload.Extension.ConfirmationID, ToolName: "other", CanonicalInputJSON: append([]byte(nil), n.Payload.Extension.CanonicalInputJSON...)}
 	d1, _ := n.MutationDigest()
 	d2, _ := changed.MutationDigest()
 	if d1 == d2 {
@@ -44,6 +44,20 @@ func TestGenericTaskPayloadBranchesAndRoundTrip(t *testing.T) {
 	bad.Payload.AWSChange = &AWSChangeTaskPayload{ChangeID: testID}
 	if _, err := bad.Normalize(); !errors.Is(err, ErrInvalid) {
 		t.Fatal("multiple payload branches accepted")
+	}
+	missingTarget := n
+	missingPayload := *n.Payload.Extension
+	missingPayload.ExecutionTarget = ""
+	missingTarget.Payload.Extension = &missingPayload
+	if _, err := missingTarget.Normalize(); !errors.Is(err, ErrInvalid) {
+		t.Fatal("executable extension task without a sealed target was accepted")
+	}
+	unknownTarget := n
+	unknownPayload := *n.Payload.Extension
+	unknownPayload.ExecutionTarget = "local_maybe"
+	unknownTarget.Payload.Extension = &unknownPayload
+	if _, err := unknownTarget.Normalize(); !errors.Is(err, ErrInvalid) {
+		t.Fatal("unknown executable extension target was accepted")
 	}
 }
 
@@ -55,7 +69,7 @@ func TestConversationToolTaskAcceptsBoundedOpaqueProviderCallID(t *testing.T) {
 			TurnID: uuid.NewString(), AttemptID: uuid.NewString(), Round: 0,
 			CallID: "call_deepseek_non_uuid_1", ExtensionSnapshotDigest: digest,
 			InstallationID: uuid.NewString(), VersionID: uuid.NewString(), InstallationRevision: 4,
-			ToolName: "write_html", ToolSchemaDigest: digest, ArgumentsDigest: digest,
+			ToolName: "write_html", ToolSchemaDigest: digest, ArgumentsDigest: digest, ExecutionTarget: ExtensionExecutionTargetLocalSandbox,
 		}},
 	}
 	normalized, err := spec.Normalize()
@@ -86,7 +100,7 @@ func TestConversationToolTaskAcceptsBoundedOpaqueProviderCallID(t *testing.T) {
 	tooLong.Payload.ConversationTool = &ConversationToolTaskPayload{
 		TurnID: uuid.NewString(), AttemptID: uuid.NewString(), CallID: strings.Repeat("x", MaxToolCallIDBytes+1),
 		ExtensionSnapshotDigest: digest, InstallationID: uuid.NewString(), VersionID: uuid.NewString(), InstallationRevision: 1,
-		ToolName: "write_html", ToolSchemaDigest: digest, ArgumentsDigest: digest,
+		ToolName: "write_html", ToolSchemaDigest: digest, ArgumentsDigest: digest, ExecutionTarget: ExtensionExecutionTargetLocalSandbox,
 	}
 	if _, err = tooLong.Normalize(); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("oversized provider call ID accepted: %v", err)

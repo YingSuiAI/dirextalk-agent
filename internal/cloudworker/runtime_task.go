@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 )
 
@@ -26,13 +27,23 @@ type RuntimeTaskFence struct {
 // RuntimeQualification is image-owned release evidence. It is resolved from
 // the exact AMI qualification record, never from user input or the model.
 type RuntimeQualification struct {
-	PiRuntimeDigest       string
-	PiVersion             string
-	PiExecutableSHA256    string
-	ResultExtensionSHA256 string
+	WorkerProtocolVersion  string
+	RuntimeContractVersion string
+	PiRuntimeDigest        string
+	PiVersion              string
+	PiExecutableSHA256     string
+	ResultExtensionSHA256  string
+}
+
+func (value RuntimeQualification) protocolVersions() cloudprotocol.Versions {
+	return cloudprotocol.Versions{
+		WorkerProtocolVersion:  value.WorkerProtocolVersion,
+		RuntimeContractVersion: value.RuntimeContractVersion,
+	}
 }
 
 type RuntimeTaskMaterial struct {
+	ProtocolVersions     cloudprotocol.Versions
 	Task                 cloudruntime.Task
 	RuntimeTaskJSON      []byte
 	RuntimeTaskSHA256    string
@@ -67,6 +78,7 @@ func (material RuntimeTaskMaterial) CloneForFence(fence RuntimeTaskFence) (Runti
 	taskDigest, err := task.Digest()
 	inputDigest := sha256.Sum256(material.InputManifestJSON)
 	if err != nil || taskDigest != material.RuntimeTaskSHA256 ||
+		!material.ProtocolVersions.IsCurrent() ||
 		hex.EncodeToString(inputDigest[:]) != material.InputManifestSHA256 ||
 		cloudruntime.ValidateInputManifestJSON(material.InputManifestJSON, material.InputManifestSHA256) != nil ||
 		!validDigest(material.SourceManifestSHA256) || !validDigest(material.StagedManifestSHA256) {
@@ -172,7 +184,8 @@ func BuildRuntimeTask(
 		return RuntimeTaskMaterial{}, ErrInvalid
 	}
 	return RuntimeTaskMaterial{
-		Task: task, RuntimeTaskJSON: runtimeJSON, RuntimeTaskSHA256: taskDigest,
+		ProtocolVersions: qualification.protocolVersions(),
+		Task:             task, RuntimeTaskJSON: runtimeJSON, RuntimeTaskSHA256: taskDigest,
 		InputManifestJSON: inputJSON, InputManifestSHA256: inputDigest,
 		SourceManifestSHA256: sealedPlan.InputManifestDigest,
 		StagedManifestSHA256: stagedDigest, Fence: fence,
@@ -285,7 +298,7 @@ func validateRuntimeTaskFence(fence RuntimeTaskFence, plan Plan) error {
 }
 
 func validateRuntimeQualification(value RuntimeQualification, plan Plan) error {
-	if !validDigest(value.PiRuntimeDigest) ||
+	if !value.protocolVersions().IsCurrent() || !validDigest(value.PiRuntimeDigest) ||
 		value.PiRuntimeDigest != plan.Compute.PiRuntimeDigest ||
 		strings.TrimSpace(value.PiVersion) == "" ||
 		!validDigest(value.PiExecutableSHA256) ||

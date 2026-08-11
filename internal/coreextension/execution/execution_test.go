@@ -558,6 +558,8 @@ func TestSkillExecutorPinnedDigestAndBound(t *testing.T) {
 type fakeCoord struct {
 	resolved       Invocation
 	complete, fail int
+	failCode       string
+	failSummary    string
 	err            error
 }
 
@@ -632,9 +634,108 @@ func (f *fakeCoord) Complete(context.Context, coretask.Task, coretask.Result) (b
 	f.complete++
 	return true, nil
 }
-func (f *fakeCoord) Fail(context.Context, coretask.Task, string, string) (bool, error) {
+func (f *fakeCoord) Fail(_ context.Context, _ coretask.Task, code, summary string) (bool, error) {
 	f.fail++
+	f.failCode = code
+	f.failSummary = summary
 	return true, nil
+}
+
+type fixedStatusLocalRunner struct {
+	status extensionrunner.StatusV1
+	err    error
+}
+
+func (r fixedStatusLocalRunner) RunV2(_ context.Context, request extensionrunner.RequestV2, _ []*os.File) (extensionrunner.StatusV1, error) {
+	status := r.status
+	status.RunID = request.RunID
+	return status, r.err
+}
+
+func validLocalResourceInvocation(t *testing.T) LocalInvocation {
+	t.Helper()
+	digest := strings.Repeat("a", 64)
+	return LocalInvocation{
+		TaskID: uuid.NewString(), TaskFence: uuid.NewString(), InstallationID: uuid.NewString(), VersionID: uuid.NewString(),
+		InstallDigest: digest, ContentDigest: digest, ArtifactDigest: digest, EntryPath: "entry", Workspace: t.TempDir(),
+		Timeout: time.Minute, Limits: LocalSandboxLimitsV2(),
+	}
+}
+
+func TestLocalExecutorClassifiesOnlyKnownTerminalResourceFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		status extensionrunner.StatusV1
+		runErr error
+		want   error
+	}{
+		{name: "capacity", status: extensionrunner.StatusV1{Phase: extensionrunner.PhaseFailed, Error: extensionrunner.ErrorUnavailableBackend, Status: "capacity"}, want: ErrLocalResourceBusy},
+		{name: "request limits", status: extensionrunner.StatusV1{Phase: extensionrunner.PhaseFailed, Error: extensionrunner.ErrorInvalidRequest, Status: "limits"}, want: ErrLocalResourceExhausted},
+		{name: "wall timeout", status: extensionrunner.StatusV1{Phase: extensionrunner.PhaseFailed, Error: extensionrunner.ErrorTimeout}, want: ErrLocalResourceExhausted},
+		{name: "cpu limit", status: extensionrunner.StatusV1{Phase: extensionrunner.PhaseFailed, Error: extensionrunner.ErrorExecution, Status: "cpu_limit"}, want: ErrLocalResourceExhausted},
+		{name: "output limit", status: extensionrunner.StatusV1{Phase: extensionrunner.PhaseFailed, Error: extensionrunner.ErrorExecution, Status: "output_limit"}, want: ErrLocalResourceExhausted},
+		{name: "transport remains unknown", runErr: context.DeadlineExceeded},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			executor := &LocalExecutor{Runner: fixedStatusLocalRunner{status: test.status, err: test.runErr}}
+			status, err := executor.Execute(context.Background(), validLocalResourceInvocation(t))
+			if test.want != nil {
+				if !errors.Is(err, test.want) || status.Phase != extensionrunner.PhaseFailed {
+					t.Fatalf("status=%+v err=%v want=%v", status, err, test.want)
+				}
+				return
+			}
+			if !errors.Is(err, test.runErr) || !errors.Is(err, ErrLocalOutcomeUncertain) || errors.Is(err, ErrLocalResourceBusy) || errors.Is(err, ErrLocalResourceExhausted) {
+				t.Fatalf("status=%+v err=%v", status, err)
+			}
+		})
+	}
+}
+
+func TestHandlerPublishesSafeLocalResourceFailures(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      extensionrunner.StatusV1
+		wantErr     error
+		wantCode    string
+		wantSummary string
+	}{
+		{name: "busy", status: extensionrunner.StatusV1{Phase: extensionrunner.PhaseFailed, Error: extensionrunner.ErrorUnavailableBackend, Status: "capacity", Stderr: []byte("protected detail")}, wantErr: ErrLocalResourceBusy, wantCode: LocalResourceBusyCode, wantSummary: LocalResourceBusySummary},
+		{name: "request limits", status: extensionrunner.StatusV1{Phase: extensionrunner.PhaseFailed, Error: extensionrunner.ErrorInvalidRequest, Status: "limits", Stderr: []byte("protected detail")}, wantErr: ErrLocalResourceExhausted, wantCode: LocalResourceExhaustedCode, wantSummary: LocalResourceExhaustedSummary},
+		{name: "exhausted", status: extensionrunner.StatusV1{Phase: extensionrunner.PhaseFailed, Error: extensionrunner.ErrorExecution, Status: "output_limit", Stderr: []byte("protected detail")}, wantErr: ErrLocalResourceExhausted, wantCode: LocalResourceExhaustedCode, wantSummary: LocalResourceExhaustedSummary},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			invocation := validLocalResourceInvocation(t)
+			invocation.Tool = "write_html"
+			invocation.Input = json.RawMessage(`{"content":"ok"}`)
+			coord := &fakeCoord{resolved: Invocation{Kind: core.KindMCP, Local: &invocation}}
+			local := &LocalExecutor{Runner: fixedStatusLocalRunner{status: test.status}}
+			out := (&Handler{Coordinator: coord, Local: local}).Handle(context.Background(), coretask.Task{ID: invocation.TaskID})
+			if !errors.Is(out.Err, test.wantErr) || !out.TerminalOwned || coord.complete != 0 || coord.fail != 1 || coord.failCode != test.wantCode || coord.failSummary != test.wantSummary {
+				t.Fatalf("out=%+v complete=%d fail=%d code=%q summary=%q", out, coord.complete, coord.fail, coord.failCode, coord.failSummary)
+			}
+			if strings.Contains(coord.failSummary, "protected detail") {
+				t.Fatalf("runner diagnostics leaked in summary %q", coord.failSummary)
+			}
+		})
+	}
+}
+
+func TestHandlerPersistsUnknownLocalTransportOutcomeForReconciliation(t *testing.T) {
+	invocation := validLocalResourceInvocation(t)
+	invocation.Tool = "write_html"
+	invocation.Input = json.RawMessage(`{"content":"ok"}`)
+	coord := &fakeCoord{resolved: Invocation{Kind: core.KindMCP, Local: &invocation}}
+	transportErr := errors.New("runner transport closed: protected detail")
+	out := (&Handler{Coordinator: coord, Local: &LocalExecutor{Runner: fixedStatusLocalRunner{err: transportErr}}}).Handle(context.Background(), coretask.Task{ID: invocation.TaskID})
+	if !errors.Is(out.Err, ErrLocalOutcomeUncertain) || !errors.Is(out.Err, transportErr) || !out.TerminalOwned || coord.complete != 0 || coord.fail != 1 || coord.failCode != "extension_execution_uncertain" || coord.failSummary != "execution outcome is uncertain; reconciliation required" {
+		t.Fatalf("out=%+v complete=%d fail=%d code=%q summary=%q", out, coord.complete, coord.fail, coord.failCode, coord.failSummary)
+	}
+	if strings.Contains(coord.failSummary, "protected detail") {
+		t.Fatalf("transport diagnostic leaked in summary %q", coord.failSummary)
+	}
 }
 
 func TestHandlerTerminalOwnershipAndReplay(t *testing.T) {

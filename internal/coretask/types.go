@@ -105,40 +105,53 @@ const (
 	ExtensionOperationExecuteSkill ExtensionOperation = "execute_skill"
 )
 
+// ExtensionExecutionTarget is the immutable scheduler lane selected when an
+// extension work task is created. It is deliberately not inferred from
+// the mutable installation projection while claiming work.
+type ExtensionExecutionTarget string
+
+const (
+	ExtensionExecutionTargetLocalSandbox    ExtensionExecutionTarget = "local_sandbox"
+	ExtensionExecutionTargetRemoteExtension ExtensionExecutionTarget = "remote_extension"
+	ExtensionExecutionTargetStaticSkill     ExtensionExecutionTarget = "static_skill"
+)
+
 const (
 	MaxCanonicalInputBytes = 64 << 10
 	MaxSourceIDCount       = 128
 )
 
 type ExtensionTaskPayload struct {
-	Operation          ExtensionOperation `json:"operation"`
-	InstallationID     string             `json:"installation_id"`
-	ExpectedRevision   uint64             `json:"expected_revision,omitempty"`
-	Version            string             `json:"version"`
-	Digest             string             `json:"digest"`
-	ArtifactDigest     string             `json:"artifact_digest,omitempty"`
-	ConfirmationID     string             `json:"confirmation_id,omitempty"`
-	ToolName           string             `json:"tool_name,omitempty"`
-	CanonicalInputJSON json.RawMessage    `json:"input_json,omitempty"`
+	Operation          ExtensionOperation       `json:"operation"`
+	ExecutionTarget    ExtensionExecutionTarget `json:"execution_target,omitempty"`
+	InstallationID     string                   `json:"installation_id"`
+	ExpectedRevision   uint64                   `json:"expected_revision,omitempty"`
+	Version            string                   `json:"version"`
+	Digest             string                   `json:"digest"`
+	ArtifactDigest     string                   `json:"artifact_digest,omitempty"`
+	ConfirmationID     string                   `json:"confirmation_id,omitempty"`
+	ToolName           string                   `json:"tool_name,omitempty"`
+	CanonicalInputJSON json.RawMessage          `json:"input_json,omitempty"`
 }
 
 // ConversationToolTaskPayload is the exact durable handoff from a turn to
 // the common task/runner path. It contains only IDs and digests; arguments
 // are represented by their digest and a bounded safe summary.
 type ConversationToolTaskPayload struct {
-	TurnID                  string `json:"turn_id"`
-	AttemptID               string `json:"attempt_id"`
-	Round                   uint32 `json:"round"`
-	CallID                  string `json:"call_id"`
-	ExtensionSnapshotDigest string `json:"extension_snapshot_digest"`
-	InstallationID          string `json:"installation_id"`
-	VersionID               string `json:"version_id"`
-	InstallationRevision    uint64 `json:"installation_revision"`
-	ToolName                string `json:"tool_name"`
-	ToolSchemaDigest        string `json:"tool_schema_digest"`
-	ArgumentsDigest         string `json:"arguments_digest"`
-	ConfirmationID          string `json:"confirmation_id,omitempty"`
-	SafeSummary             string `json:"safe_summary,omitempty"`
+	TurnID                  string                   `json:"turn_id"`
+	AttemptID               string                   `json:"attempt_id"`
+	Round                   uint32                   `json:"round"`
+	CallID                  string                   `json:"call_id"`
+	ExtensionSnapshotDigest string                   `json:"extension_snapshot_digest"`
+	InstallationID          string                   `json:"installation_id"`
+	VersionID               string                   `json:"version_id"`
+	InstallationRevision    uint64                   `json:"installation_revision"`
+	ToolName                string                   `json:"tool_name"`
+	ToolSchemaDigest        string                   `json:"tool_schema_digest"`
+	ArgumentsDigest         string                   `json:"arguments_digest"`
+	ConfirmationID          string                   `json:"confirmation_id,omitempty"`
+	SafeSummary             string                   `json:"safe_summary,omitempty"`
+	ExecutionTarget         ExtensionExecutionTarget `json:"execution_target"`
 }
 
 type KnowledgeIndexTaskPayload struct {
@@ -395,12 +408,16 @@ func normalizePayload(s *TaskSpec) error {
 		p.Digest = strings.TrimSpace(p.Digest)
 		lifecycle := p.Operation == ExtensionOperationInstall || p.Operation == ExtensionOperationUpdate || p.Operation == ExtensionOperationUninstall
 		if lifecycle {
-			if !ValidUUID(strings.TrimSpace(p.ConfirmationID)) || p.ToolName != "" || len(p.CanonicalInputJSON) != 0 {
+			if !ValidUUID(strings.TrimSpace(p.ConfirmationID)) || p.ExecutionTarget != "" || p.ToolName != "" || len(p.CanonicalInputJSON) != 0 {
 				return ErrInvalid
 			}
 			p.ConfirmationID = strings.TrimSpace(p.ConfirmationID)
 		} else {
-			if p.ExpectedRevision == 0 || (p.ConfirmationID != "" && !ValidUUID(strings.TrimSpace(p.ConfirmationID))) || len(p.CanonicalInputJSON) == 0 || len(p.CanonicalInputJSON) > MaxCanonicalInputBytes || !json.Valid(p.CanonicalInputJSON) {
+			if p.ExpectedRevision == 0 || !validExtensionExecutionTarget(p.ExecutionTarget) || (p.ConfirmationID != "" && !ValidUUID(strings.TrimSpace(p.ConfirmationID))) || len(p.CanonicalInputJSON) == 0 || len(p.CanonicalInputJSON) > MaxCanonicalInputBytes || !json.Valid(p.CanonicalInputJSON) {
+				return ErrInvalid
+			}
+			if (p.Operation == ExtensionOperationExecuteTool && p.ExecutionTarget == ExtensionExecutionTargetStaticSkill) ||
+				(p.Operation == ExtensionOperationExecuteSkill && p.ExecutionTarget == ExtensionExecutionTargetRemoteExtension) {
 				return ErrInvalid
 			}
 			var v any
@@ -419,7 +436,7 @@ func normalizePayload(s *TaskSpec) error {
 			return ErrInvalid
 		}
 		p := s.Payload.ConversationTool
-		if !ValidUUID(p.TurnID) || !ValidUUID(p.AttemptID) || strings.TrimSpace(p.CallID) == "" || len([]byte(p.CallID)) > MaxToolCallIDBytes || !utf8.ValidString(p.CallID) || !ValidUUID(p.InstallationID) || !ValidUUID(p.VersionID) || p.InstallationRevision == 0 || strings.TrimSpace(p.ToolName) == "" || !ValidDigest(p.ExtensionSnapshotDigest) || !ValidDigest(p.ToolSchemaDigest) || !ValidDigest(p.ArgumentsDigest) || len([]byte(p.SafeSummary)) > MaxSummaryBytes {
+		if !ValidUUID(p.TurnID) || !ValidUUID(p.AttemptID) || strings.TrimSpace(p.CallID) == "" || len([]byte(p.CallID)) > MaxToolCallIDBytes || !utf8.ValidString(p.CallID) || !ValidUUID(p.InstallationID) || !ValidUUID(p.VersionID) || p.InstallationRevision == 0 || strings.TrimSpace(p.ToolName) == "" || !ValidDigest(p.ExtensionSnapshotDigest) || !ValidDigest(p.ToolSchemaDigest) || !ValidDigest(p.ArgumentsDigest) || len([]byte(p.SafeSummary)) > MaxSummaryBytes || !validExtensionExecutionTarget(p.ExecutionTarget) {
 			return ErrInvalid
 		}
 	case TaskKindKnowledgeIndex:
@@ -565,6 +582,15 @@ func validExtensionOperation(op ExtensionOperation) bool {
 		return true
 	}
 	return false
+}
+
+func validExtensionExecutionTarget(target ExtensionExecutionTarget) bool {
+	switch target {
+	case ExtensionExecutionTargetLocalSandbox, ExtensionExecutionTargetRemoteExtension, ExtensionExecutionTargetStaticSkill:
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeRefs(refs []string) ([]string, error) {

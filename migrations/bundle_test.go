@@ -38,7 +38,7 @@ func TestCommittedMigrationBytesRemainImmutable(t *testing.T) {
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 7 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" || entries[6] != "000007_unbounded_agent_rounds.up.sql" {
+	if len(entries) != 8 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" || entries[6] != "000007_unbounded_agent_rounds.up.sql" || entries[7] != "000008_cloud_worker_progress_events.up.sql" {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Cloud Worker migrations", entries)
 	}
 	migration := Ordered()[0]
@@ -74,6 +74,26 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	unboundedRounds := Ordered()[6]
 	if unboundedRounds.Version != 7 || len(unboundedRounds.Script) == 0 || unboundedRounds.Script[len(unboundedRounds.Script)-1] != '\n' {
 		t.Fatal("unbounded agent rounds migration lost its source newline")
+	}
+	outputHistoryIndexes := Ordered()[7]
+	for _, index := range []string{
+		"core_cloud_worker_completion_outbox_delivered_idx",
+		"core_cloud_worker_output_journals_execution_history_idx",
+		"core_cloud_worker_output_versions_execution_history_idx",
+		"core_cloud_worker_aws_ledger_execution_history_idx",
+		"core_cloud_worker_input_staging_execution_history_idx",
+	} {
+		if outputHistoryIndexes.Version != 8 || !bytes.Contains(outputHistoryIndexes.Script, []byte(index)) {
+			t.Fatalf("output history migration missing %q", index)
+		}
+	}
+	for _, currentConstraint := range []string{
+		"CHECK (state IN ('waiting_confirmation','dispatched','completed','denied','canceled','uncertain'))",
+		"CHECK (dispatch_state IN ('','dispatched','completed','uncertain'))",
+	} {
+		if !bytes.Contains(outputHistoryIndexes.Script, []byte(currentConstraint)) {
+			t.Fatalf("current conversation contract migration missing %q", currentConstraint)
+		}
 	}
 	for _, constraint := range []string{
 		"core_task_model_rounds_round_check",

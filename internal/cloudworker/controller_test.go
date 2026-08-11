@@ -11,6 +11,7 @@ import (
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/modelrelay"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
@@ -626,6 +627,7 @@ func newControllerTestFixture(t *testing.T) *controllerTestFixture {
 		t.Fatal(err)
 	}
 	qualification := RuntimeQualification{
+		WorkerProtocolVersion: cloudprotocol.WorkerProtocolVersion, RuntimeContractVersion: cloudprotocol.RuntimeContractVersion,
 		PiRuntimeDigest: plan.Compute.PiRuntimeDigest, PiVersion: "0.83.0",
 		PiExecutableSHA256: digestValue("controller-pi"), ResultExtensionSHA256: digestValue("controller-result-extension"),
 	}

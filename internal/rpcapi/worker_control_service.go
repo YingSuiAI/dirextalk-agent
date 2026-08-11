@@ -10,6 +10,7 @@ import (
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
 	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 	"github.com/google/uuid"
@@ -35,6 +36,7 @@ type WorkerLaunchResolver interface {
 // created. Implementations issue a short-lived relay bearer; they never return
 // the underlying provider credential.
 type WorkerClaimMaterial struct {
+	ProtocolVersions    cloudprotocol.Versions
 	RuntimeTaskJSON     []byte
 	RuntimeTaskDigest   string
 	InputManifestJSON   []byte
@@ -56,7 +58,9 @@ func (material *WorkerClaimMaterial) Destroy() {
 }
 
 type WorkerClaimMaterialIssuer interface {
-	IssueWorkerClaimMaterial(context.Context, control.Session) (WorkerClaimMaterial, error)
+	// IssueWorkerClaimMaterial must compare requested with the immutable
+	// qualification before activating or returning a model grant.
+	IssueWorkerClaimMaterial(context.Context, control.Session, cloudprotocol.Versions) (WorkerClaimMaterial, error)
 	ValidateWorkerResultClaim(context.Context, control.TaskFence, control.ObjectClaim) error
 	ValidateWorkerRuntimeTopology(context.Context, control.TaskFence, execgate.Proof) error
 }
@@ -131,6 +135,13 @@ func (service *WorkerControlService) Claim(
 	if service == nil || request == nil || request.Proof == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid Worker claim request")
 	}
+	versions := cloudprotocol.Versions{
+		WorkerProtocolVersion:  request.WorkerProtocolVersion,
+		RuntimeContractVersion: request.RuntimeContractVersion,
+	}
+	if !versions.IsCurrent() {
+		return nil, status.Error(codes.FailedPrecondition, "unsupported Worker protocol versions")
+	}
 	fence, err := workerFenceFromProto(request.Fence)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid Worker task fence")
@@ -139,18 +150,19 @@ func (service *WorkerControlService) Claim(
 	defer clear(proofPayload)
 	claimed, err := service.control.Claim(ctx, control.ClaimRequest{
 		ChallengeID: request.ChallengeId, Nonce: request.Nonce, Fence: fence,
-		Proof: control.IdentityProof{Method: request.Proof.Method, Payload: proofPayload},
+		Proof:    control.IdentityProof{Method: request.Proof.Method, Payload: proofPayload},
+		Versions: versions,
 	})
 	if err != nil {
 		return nil, workerControlError(err)
 	}
 	defer claimed.Destroy()
-	material, err := service.materials.IssueWorkerClaimMaterial(ctx, claimed.Session)
+	material, err := service.materials.IssueWorkerClaimMaterial(ctx, claimed.Session, versions)
 	if err != nil {
 		return nil, workerControlError(err)
 	}
 	defer material.Destroy()
-	if err := validateWorkerClaimMaterial(claimed.Session, claimed.SessionToken, material, service.now().UTC()); err != nil {
+	if material.ProtocolVersions != versions || validateWorkerClaimMaterial(claimed.Session, claimed.SessionToken, material, service.now().UTC()) != nil {
 		return nil, status.Error(codes.FailedPrecondition, "Worker launch material changed")
 	}
 	grantExpiry := time.Unix(material.ModelGrant.ExpiresAtUnix, 0).UTC()
@@ -168,6 +180,8 @@ func (service *WorkerControlService) Claim(
 		ArtifactBucket: material.ArtifactScope.Bucket, ArtifactKeyPrefix: material.ArtifactScope.KeyPrefix,
 		HeartbeatIntervalMillis: uint64(material.HeartbeatInterval / time.Millisecond),
 		NotAfter:                timestamppb.New(material.NotAfter),
+		WorkerProtocolVersion:   material.ProtocolVersions.WorkerProtocolVersion,
+		RuntimeContractVersion:  material.ProtocolVersions.RuntimeContractVersion,
 	}, nil
 }
 
@@ -175,18 +189,22 @@ func (service *WorkerControlService) Heartbeat(
 	ctx context.Context,
 	request *agentv1.WorkerControlServiceHeartbeatRequest,
 ) (*agentv1.WorkerControlServiceHeartbeatResponse, error) {
-	if service == nil || request == nil {
+	if service == nil || request == nil || request.Progress == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid Worker heartbeat request")
 	}
 	fence, err := workerFenceFromProto(request.Fence)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid Worker task fence")
 	}
+	progress, err := workerProgressFromProto(request.Progress)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid Worker progress snapshot")
+	}
 	sessionToken := bytes.Clone(request.SessionToken)
 	defer clear(sessionToken)
 	session, err := service.control.Heartbeat(ctx, control.HeartbeatRequest{
 		SessionID: request.SessionId, SessionToken: sessionToken, Fence: fence,
-		ProgressSequence: request.ProgressSequence, IdempotencyKey: request.IdempotencyKey,
+		ProgressSequence: request.ProgressSequence, Progress: progress, IdempotencyKey: request.IdempotencyKey,
 	})
 	if err != nil {
 		return nil, workerControlError(err)
@@ -198,7 +216,7 @@ func (service *WorkerControlService) Complete(
 	ctx context.Context,
 	request *agentv1.WorkerControlServiceCompleteRequest,
 ) (*agentv1.WorkerControlServiceCompleteResponse, error) {
-	if service == nil || request == nil || request.Claim == nil || request.RuntimeTopology == nil {
+	if service == nil || request == nil || request.Claim == nil || request.RuntimeTopology == nil || request.Progress == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid Worker completion request")
 	}
 	fence, err := workerFenceFromProto(request.Fence)
@@ -219,13 +237,19 @@ func (service *WorkerControlService) Complete(
 	if err := service.materials.ValidateWorkerResultClaim(ctx, fence, claim); err != nil {
 		return nil, workerControlError(err)
 	}
+	progress, err := workerProgressFromProto(request.Progress)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid Worker progress snapshot")
+	}
 	sessionToken := bytes.Clone(request.SessionToken)
 	defer clear(sessionToken)
 	session, err := service.control.Complete(ctx, control.CompleteRequest{
 		SessionID: request.SessionId, SessionToken: sessionToken, Fence: fence,
-		Claim:           claim,
-		RuntimeTopology: topology,
-		IdempotencyKey:  request.IdempotencyKey,
+		Claim:            claim,
+		RuntimeTopology:  topology,
+		ProgressSequence: request.ProgressSequence,
+		Progress:         progress,
+		IdempotencyKey:   request.IdempotencyKey,
 	})
 	if err != nil {
 		return nil, workerControlError(err)
@@ -237,18 +261,23 @@ func (service *WorkerControlService) Fail(
 	ctx context.Context,
 	request *agentv1.WorkerControlServiceFailRequest,
 ) (*agentv1.WorkerControlServiceFailResponse, error) {
-	if service == nil || request == nil {
+	if service == nil || request == nil || request.Progress == nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid Worker failure request")
 	}
 	fence, err := workerFenceFromProto(request.Fence)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid Worker task fence")
 	}
+	progress, err := workerProgressFromProto(request.Progress)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid Worker progress snapshot")
+	}
 	sessionToken := bytes.Clone(request.SessionToken)
 	defer clear(sessionToken)
 	session, err := service.control.Fail(ctx, control.FailRequest{
 		SessionID: request.SessionId, SessionToken: sessionToken, Fence: fence,
-		Code: request.Code, Summary: request.Summary, IdempotencyKey: request.IdempotencyKey,
+		Code: request.Code, Summary: request.Summary, ProgressSequence: request.ProgressSequence,
+		Progress: progress, IdempotencyKey: request.IdempotencyKey,
 	})
 	if err != nil {
 		return nil, workerControlError(err)
@@ -257,7 +286,7 @@ func (service *WorkerControlService) Fail(
 }
 
 func validateWorkerClaimMaterial(session control.Session, sessionToken []byte, material WorkerClaimMaterial, now time.Time) error {
-	if session.State != control.SessionActive || len(sessionToken) < 32 || len(sessionToken) > 256 ||
+	if session.State != control.SessionActive || !material.ProtocolVersions.IsCurrent() || len(sessionToken) < 32 || len(sessionToken) > 256 ||
 		len(material.RuntimeTaskJSON) == 0 || len(material.RuntimeTaskJSON) > maximumWorkerControlMaterialBytes ||
 		len(material.InputManifestJSON) == 0 || len(material.InputManifestJSON) > maximumWorkerControlMaterialBytes ||
 		material.ArtifactScope.Validate() != nil || material.HeartbeatInterval < time.Second ||
@@ -321,6 +350,9 @@ func workerSessionProto(value control.Session) *agentv1.CoreCloudWorkerSession {
 		result.RuntimeTopology = workerRuntimeTopologyProto(*value.RuntimeTopology)
 		result.RuntimeTopologyDigest = value.TopologyDigest
 	}
+	if value.LatestProgress != nil {
+		result.LatestProgress = workerProgressProto(*value.LatestProgress)
+	}
 	if !value.ClaimedAt.IsZero() {
 		result.ClaimedAt = timestamppb.New(value.ClaimedAt)
 	}
@@ -331,6 +363,55 @@ func workerSessionProto(value control.Session) *agentv1.CoreCloudWorkerSession {
 		result.FinishedAt = timestamppb.New(value.FinishedAt)
 	}
 	return result
+}
+
+func workerProgressProto(value control.ProgressSnapshot) *agentv1.CoreCloudWorkerProgressSnapshot {
+	phase := agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_UNSPECIFIED
+	switch value.Phase {
+	case control.ProgressClaimed:
+		phase = agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_CLAIMED
+	case control.ProgressPreparingInputs:
+		phase = agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_PREPARING_INPUTS
+	case control.ProgressRunningPi:
+		phase = agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_RUNNING_PI
+	case control.ProgressUploadingResult:
+		phase = agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_UPLOADING_RESULT
+	case control.ProgressCompleting:
+		phase = agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_COMPLETING
+	}
+	return &agentv1.CoreCloudWorkerProgressSnapshot{
+		Phase: phase, ElapsedMs: value.ElapsedMS, LastActivityAt: timestamppb.New(value.LastActivityAt),
+		CpuTimeMs: value.CPUTimeMS, MemoryHighWaterBytes: value.MemoryHighWaterBytes,
+		InvocationCount: value.InvocationCount, UploadedBytes: value.UploadedBytes,
+		OutputTruncated: value.OutputTruncated,
+	}
+}
+
+func workerProgressFromProto(value *agentv1.CoreCloudWorkerProgressSnapshot) (control.ProgressSnapshot, error) {
+	if value == nil || (value.LastActivityAt != nil && value.LastActivityAt.CheckValid() != nil) {
+		return control.ProgressSnapshot{}, errors.New("missing Worker progress")
+	}
+	phase := control.ProgressPhase("")
+	switch value.Phase {
+	case agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_CLAIMED:
+		phase = control.ProgressClaimed
+	case agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_PREPARING_INPUTS:
+		phase = control.ProgressPreparingInputs
+	case agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_RUNNING_PI:
+		phase = control.ProgressRunningPi
+	case agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_UPLOADING_RESULT:
+		phase = control.ProgressUploadingResult
+	case agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_COMPLETING:
+		phase = control.ProgressCompleting
+	default:
+		return control.ProgressSnapshot{}, errors.New("invalid Worker progress phase")
+	}
+	return control.ProgressSnapshot{
+		Phase: phase, ElapsedMS: value.ElapsedMs,
+		CPUTimeMS: value.CpuTimeMs, MemoryHighWaterBytes: value.MemoryHighWaterBytes,
+		InvocationCount: value.InvocationCount, UploadedBytes: value.UploadedBytes,
+		OutputTruncated: value.OutputTruncated,
+	}, nil
 }
 
 func workerRuntimeTopologyProto(proof execgate.Proof) *agentv1.CoreCloudWorkerRuntimeTopologyProof {

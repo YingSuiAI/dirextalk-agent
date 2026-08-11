@@ -15,6 +15,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -62,6 +63,9 @@ func (s *CoreConversationStore) PrepareConversationTool(ctx context.Context, c c
 			return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrConflict
 		}
 		a.CallID = t.Spec.Payload.ConversationTool.CallID
+		if e := validateConversationToolWaitingEventTx(ctx, tx, a); e != nil {
+			return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, e
+		}
 		conf, e := NewCoreConfirmationStore(s.Store).Get(ctx, a.ConfirmationID)
 		if e != nil {
 			return a, t, conf, e
@@ -75,8 +79,9 @@ func (s *CoreConversationStore) PrepareConversationTool(ctx context.Context, c c
 	}
 	var extensionRaw []byte
 	var turnRevision uint64
+	var lastSequence int64
 	var state string
-	if err = tx.QueryRow(ctx, `SELECT extension_snapshot_json,revision,state FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 FOR UPDATE`, c.Lease.Turn.ID, c.Lease.LeaseID, c.Lease.Epoch).Scan(&extensionRaw, &turnRevision, &state); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT extension_snapshot_json,revision,last_sequence,state FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 FOR UPDATE`, c.Lease.Turn.ID, c.Lease.LeaseID, c.Lease.Epoch).Scan(&extensionRaw, &turnRevision, &lastSequence, &state); err != nil {
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrConflict
 	}
 	if state != string(core.TurnRunning) || turnRevision != c.Lease.Turn.Revision {
@@ -95,9 +100,24 @@ func (s *CoreConversationStore) PrepareConversationTool(ctx context.Context, c c
 	if !matched {
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrConflict
 	}
+	// Seal the exact version's execution lane into the task payload now. The
+	// scheduler must never reclassify this task from a later installation or
+	// version projection while claiming it.
+	var versionRaw []byte
+	if err = tx.QueryRow(ctx, `SELECT version_json FROM core_extension_versions WHERE installation_id=$1 AND version_id=$2`, c.Snapshot.InstallationID, c.Snapshot.VersionID).Scan(&versionRaw); err != nil {
+		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrConflict
+	}
+	var version coreextension.VersionRecord
+	if json.Unmarshal(versionRaw, &version) != nil || version.ContentDigest != c.Snapshot.ContentDigest || version.ArtifactDigest != c.Snapshot.ArtifactDigest {
+		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrConflict
+	}
+	executionTarget, targetErr := extensionExecutionTarget(version.Execution)
+	if targetErr != nil {
+		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrConflict
+	}
 	now := time.Now().UTC()
 	attemptID, taskID, confID, executionID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	payload := coretask.ConversationToolTaskPayload{TurnID: c.Lease.Turn.ID, AttemptID: attemptID, Round: c.Round, CallID: c.Call.ID, ExtensionSnapshotDigest: c.Snapshot.ContentDigest, InstallationID: c.Snapshot.InstallationID, VersionID: c.Snapshot.VersionID, InstallationRevision: c.Snapshot.InstallationRevision, ToolName: c.Call.Name, ToolSchemaDigest: c.Snapshot.ToolSchemaDigest, ArgumentsDigest: c.ArgumentsDigest, ConfirmationID: confID, SafeSummary: c.SafeSummary}
+	payload := coretask.ConversationToolTaskPayload{TurnID: c.Lease.Turn.ID, AttemptID: attemptID, Round: c.Round, CallID: c.Call.ID, ExtensionSnapshotDigest: c.Snapshot.ContentDigest, InstallationID: c.Snapshot.InstallationID, VersionID: c.Snapshot.VersionID, InstallationRevision: c.Snapshot.InstallationRevision, ToolName: c.Call.Name, ToolSchemaDigest: c.Snapshot.ToolSchemaDigest, ArgumentsDigest: c.ArgumentsDigest, ConfirmationID: confID, SafeSummary: c.SafeSummary, ExecutionTarget: executionTarget}
 	spec := coretask.TaskSpec{Kind: coretask.TaskKindConversationTool, Goal: "conversation tool " + c.Call.Name, ConversationID: c.Lease.Turn.ConversationID, IdempotencyKey: c.IdempotencyKey, Payload: coretask.TaskPayload{ConversationTool: &payload}, AvailableAt: now}
 	raw, _ := json.Marshal(spec.Payload)
 	if _, err = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,create_idempotency_key,attachment_refs,extensions_json,knowledge_refs,timeout_seconds,status,attempt,progress_sequence,available_at,revision,created_at,updated_at,task_kind,payload_json) VALUES($1,$2,$3,$4,'[]','[]','[]',0,'waiting_user',1,1,$5,1,$5,$5,'conversation_tool',$6)`, taskID, spec.Goal, c.Lease.Turn.ConversationID, c.IdempotencyKey, now, raw); err != nil {
@@ -122,7 +142,28 @@ func (s *CoreConversationStore) PrepareConversationTool(ctx context.Context, c c
 	if _, err = tx.Exec(ctx, `INSERT INTO core_confirmation_current_bindings(operation_domain,target_id,target_revision,binding_json,updated_at) VALUES('conversation_tool',$1,1,$2,$3)`, attemptID, braw, now); err != nil {
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET state='waiting_confirmation',lease_id=NULL,lease_expires_at=NULL,revision=revision+1,updated_at=$2 WHERE turn_id=$1`, c.Lease.Turn.ID, now); err != nil {
+	waitingEvent, waitingErr := core.NewWaitingConfirmationTurnEvent(confID, executionID)
+	if waitingErr != nil {
+		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrInvalid
+	}
+	waitingEvent.TurnID, waitingEvent.Sequence, waitingEvent.Revision, waitingEvent.CreatedAt =
+		c.Lease.Turn.ID, lastSequence+1, turnRevision+1, now
+	if waitingEvent.ValidateWaitingConfirmationAuthority() != nil {
+		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrInvalid
+	}
+	turnUpdate, updateErr := tx.Exec(ctx, `UPDATE core_conversation_turns
+		SET state='waiting_confirmation',lease_id=NULL,lease_expires_at=NULL,revision=revision+1,last_sequence=$6,updated_at=$2
+		WHERE turn_id=$1 AND state='running' AND lease_id=$3 AND lease_epoch=$4 AND revision=$5`,
+		c.Lease.Turn.ID, now, c.Lease.LeaseID, c.Lease.Epoch, turnRevision, waitingEvent.Sequence)
+	if updateErr != nil || turnUpdate.RowsAffected() != 1 {
+		if updateErr != nil {
+			return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, updateErr
+		}
+		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrConflict
+	}
+	waitingRaw, _ := json.Marshal(waitingEvent)
+	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at)
+		VALUES($1,$2,$3,$4,$5)`, waitingEvent.TurnID, waitingEvent.Sequence, string(waitingEvent.Kind), waitingRaw, now); err != nil {
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at) VALUES($1,1,$2,1,'waiting_user','confirmation','waiting for owner confirmation',$3)`, taskID, uuid.New(), now); err != nil {
@@ -144,6 +185,37 @@ func containsTool(in []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func validateConversationToolWaitingEventTx(ctx context.Context, tx pgx.Tx, attempt core.ToolAttempt) error {
+	rows, err := tx.Query(ctx, `SELECT payload_json FROM core_conversation_turn_events
+		WHERE turn_id=$1 AND kind=$2 ORDER BY sequence`, attempt.TurnID, string(core.TurnEventWaitingConfirmation))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	matches := 0
+	for rows.Next() {
+		var raw []byte
+		if err = rows.Scan(&raw); err != nil {
+			return err
+		}
+		var event core.TurnEvent
+		if json.Unmarshal(raw, &event) != nil || event.ValidateWaitingConfirmationAuthority() != nil ||
+			event.TurnID != attempt.TurnID || event.Sequence <= 0 || event.Revision == 0 {
+			return core.ErrConflict
+		}
+		if event.ConfirmationID == attempt.ConfirmationID && event.ExecutionID == attempt.ExecutionID {
+			matches++
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if matches != 1 {
+		return core.ErrConflict
+	}
+	return nil
 }
 
 func (s *CoreConversationStore) ObserveConversationTool(ctx context.Context, turnID string) (core.ToolAttempt, error) {
@@ -241,6 +313,25 @@ func (s *CoreConversationStore) FinishConversationTool(ctx context.Context, task
 	if s == nil || task.Spec.Kind != coretask.TaskKindConversationTool || task.Spec.Payload.ConversationTool == nil || task.Lease == nil || (state != "completed" && state != "failed" && state != "uncertain") || (state == "completed" && (!json.Valid(result) || len(result) == 0)) {
 		return coretask.ErrInvalid
 	}
+	taskResult := result
+	if state == "failed" {
+		// Known terminal failures are resumed through ToolAttempt.Result. Persist
+		// only the caller's already-classified safe summary in the common Result
+		// shape; runner stderr and raw provider errors never enter this record.
+		recovered := coretask.Result{Summary: summary}
+		if strings.TrimSpace(code) == "" || strings.TrimSpace(summary) == "" || strings.TrimSpace(summary) != summary || recovered.Validate() != nil {
+			return coretask.ErrInvalid
+		}
+		var marshalErr error
+		result, marshalErr = json.Marshal(recovered)
+		if marshalErr != nil {
+			return coretask.ErrInvalid
+		}
+		// The generic Task schema represents failure through code/summary and
+		// requires result_json to remain NULL. The attempt owns the recoverable
+		// tool result used by the next model round.
+		taskResult = nil
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -259,7 +350,7 @@ func (s *CoreConversationStore) FinishConversationTool(ctx context.Context, task
 		summary = "tool dispatch outcome is unknown"
 	}
 	now := time.Now().UTC()
-	tag, err := tx.Exec(ctx, `UPDATE core_tasks SET status=$1,result_json=$2,failure_code=$3,failure_summary=$4,lease_holder='',lease_expires_at=NULL,revision=revision+1,updated_at=$5 WHERE task_id=$6 AND status='running' AND attempt=$7 AND lease_epoch=$8 AND revision=$9 AND lease_expires_at>$5`, status, result, code, summary, now, task.ID, task.Attempt, task.LeaseEpoch, task.Revision)
+	tag, err := tx.Exec(ctx, `UPDATE core_tasks SET status=$1,result_json=$2,failure_code=$3,failure_summary=$4,lease_holder='',lease_expires_at=NULL,revision=revision+1,updated_at=$5 WHERE task_id=$6 AND status='running' AND attempt=$7 AND lease_epoch=$8 AND revision=$9 AND lease_expires_at>$5`, status, taskResult, code, summary, now, task.ID, task.Attempt, task.LeaseEpoch, task.Revision)
 	if err != nil {
 		return err
 	}

@@ -14,8 +14,29 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// localSandboxTaskTargetSQL reads only the immutable execution target sealed
+// into the task payload at creation. Installation and version projections are
+// deliberately absent from claim-time scheduling.
+func localSandboxTaskTargetSQL(alias string) string {
+	switch alias {
+	case "candidate", "running_local":
+	default:
+		panic("invalid local sandbox task SQL alias")
+	}
+	return fmt.Sprintf(`(
+		(%[1]s.task_kind='conversation_tool'
+		 AND %[1]s.payload_json#>>'{conversation_tool,execution_target}'='local_sandbox')
+		OR
+		(%[1]s.task_kind='extension'
+		 AND %[1]s.payload_json#>>'{extension,execution_target}'='local_sandbox')
+	)`, alias)
+}
+
 // ClaimNextDue atomically dequeues FIFO work, reclaims expired leases, and
-// converges overdue waiting-user tasks before they can reach a provider.
+// converges overdue waiting-user tasks before they can reach a provider. The
+// runtime-concurrency singleton is always locked before task candidates. That
+// same transaction derives the one-process local sandbox lane from durable,
+// unexpired running tasks, so restart cannot create a second local execution.
 func (s *CoreTaskStore) ClaimNextDue(ctx context.Context, holder string, at time.Time, ttl time.Duration, max int) (coretask.Task, coretask.Lease, error) {
 	if holder == "" || ttl <= 0 || max <= 0 || at.IsZero() {
 		return coretask.Task{}, coretask.Lease{}, coretask.ErrInvalid
@@ -33,7 +54,26 @@ func (s *CoreTaskStore) ClaimNextDue(ctx context.Context, holder string, at time
 		return coretask.Task{}, coretask.Lease{}, e
 	}
 	var id string
-	e = tx.QueryRow(ctx, `SELECT task_id FROM core_tasks WHERE deleted_at IS NULL AND ((status='running' AND lease_expires_at <= $1) OR (status='queued' AND available_at <= $1) OR (status='waiting_user' AND execution_deadline_at IS NOT NULL AND execution_deadline_at <= $1)) ORDER BY CASE WHEN status='running' THEN 0 WHEN status='waiting_user' THEN 1 ELSE 2 END, available_at,created_at,task_id FOR UPDATE SKIP LOCKED LIMIT 1`, at.UTC()).Scan(&id)
+	claimSQL := fmt.Sprintf(`SELECT candidate.task_id
+		FROM core_tasks candidate
+		WHERE candidate.deleted_at IS NULL
+		  AND ((candidate.status='running' AND candidate.lease_expires_at <= $1)
+		       OR (candidate.status='queued' AND candidate.available_at <= $1)
+		       OR (candidate.status='waiting_user' AND candidate.execution_deadline_at IS NOT NULL AND candidate.execution_deadline_at <= $1))
+		  AND (candidate.status='waiting_user'
+		       OR NOT %s
+		       OR NOT EXISTS (
+				SELECT 1
+				FROM core_tasks running_local
+				WHERE running_local.deleted_at IS NULL
+				  AND running_local.status='running'
+				  AND running_local.lease_expires_at > $1
+				  AND %s
+		       ))
+		ORDER BY CASE WHEN candidate.status='running' THEN 0 WHEN candidate.status='waiting_user' THEN 1 ELSE 2 END,
+		         candidate.available_at,candidate.created_at,candidate.task_id
+		FOR UPDATE OF candidate SKIP LOCKED LIMIT 1`, localSandboxTaskTargetSQL("candidate"), localSandboxTaskTargetSQL("running_local"))
+	e = tx.QueryRow(ctx, claimSQL, at.UTC()).Scan(&id)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return coretask.Task{}, coretask.Lease{}, coretask.ErrNotFound
 	}

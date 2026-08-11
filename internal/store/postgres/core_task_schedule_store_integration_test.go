@@ -147,7 +147,7 @@ func TestCoreTaskGenericPayloadPersistenceAndScheduleParity(t *testing.T) {
 	if _, err = store.pool.Exec(ctx, `INSERT INTO core_extension_versions(version_id,installation_id,version_json,created_at) VALUES($1,$2,$3,$4)`, versionID, extensionID, []byte(`{"version":"1.0.0","content_digest":"`+contentDigest+`","artifact_digest":"`+artifactDigest+`"}`), now); err != nil {
 		t.Fatal(err)
 	}
-	ext := create(coretask.TaskSpec{Kind: coretask.TaskKindExtension, Goal: "extension", IdempotencyKey: uuid.NewString(), Payload: coretask.TaskPayload{Extension: &coretask.ExtensionTaskPayload{Operation: coretask.ExtensionOperationExecuteTool, InstallationID: extensionID, ExpectedRevision: 1, Version: "1.0.0", Digest: contentDigest, ArtifactDigest: artifactDigest, ToolName: "echo", CanonicalInputJSON: []byte(`{"a":1}`)}}})
+	ext := create(coretask.TaskSpec{Kind: coretask.TaskKindExtension, Goal: "extension", IdempotencyKey: uuid.NewString(), Payload: coretask.TaskPayload{Extension: &coretask.ExtensionTaskPayload{Operation: coretask.ExtensionOperationExecuteTool, ExecutionTarget: coretask.ExtensionExecutionTargetLocalSandbox, InstallationID: extensionID, ExpectedRevision: 1, Version: "1.0.0", Digest: contentDigest, ArtifactDigest: artifactDigest, ToolName: "echo", CanonicalInputJSON: []byte(`{"a":1}`)}}})
 	got, err := tasks.GetTask(ctx, ext.ID)
 	if err != nil || got.Spec.Kind != coretask.TaskKindExtension || got.Spec.Payload.Extension == nil {
 		t.Fatalf("extension roundtrip=%+v err=%v", got, err)

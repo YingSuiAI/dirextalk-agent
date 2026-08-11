@@ -10,6 +10,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var errOutputLimitExceeded = errors.New("extension output limit exceeded")
+
 // RunCoreResultV1 is the internal Core Runner install path. Unlike RunV2 it
 // never exposes a host workspace to the command: the Linux child receives a
 // private tmpfs /work and only the trusted manager can fill this sealed memfd.
@@ -104,7 +106,7 @@ func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registr
 		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorDeniedRequest}, ErrDenied
 	}
 	defer unix.Close(workspaceFD)
-	baseline, err := SnapshotWorkspaceFD(workspaceFD)
+	baseline, err := SnapshotWorkspaceFD(workspaceFD, request.Limits.FileBytes)
 	if err != nil {
 		r.logDenied(request.RunID, "workspace_snapshot")
 		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorDeniedRequest}, ErrDenied
@@ -125,7 +127,7 @@ func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registr
 	defer closeV2Inputs(stdin, secrets)
 	p, err := r.V2Backend.StartV2(ctx, SandboxInvocationV2{Request: request, Install: install, WorkspaceFD: workspaceFD, StdinFD: stdin, SecretFDs: secrets})
 	if err != nil || p == nil {
-		if cleanupErr := CleanupWorkspaceFD(workspaceFD, baseline, nil); cleanupErr != nil {
+		if cleanupErr := CleanupWorkspaceFD(workspaceFD, baseline, nil, request.Limits.FileBytes); cleanupErr != nil {
 			code = ErrorCleanup
 		}
 		if err != nil {
@@ -135,7 +137,7 @@ func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registr
 	}
 	if err = registry.Transition(request.RunID, PhaseRunning, ErrorNone); err != nil {
 		killAndReap(p)
-		_ = CleanupWorkspaceFD(workspaceFD, baseline, nil)
+		_ = CleanupWorkspaceFD(workspaceFD, baseline, nil, request.Limits.FileBytes)
 		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorExecution}, err
 	}
 	waitCtx, cancelWait := context.WithTimeout(ctx, time.Duration(request.TimeoutMS)*time.Millisecond)
@@ -162,11 +164,22 @@ func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registr
 			waitErr = waitCtx.Err()
 		}
 	}
+	outputExceeded := len(stdout) > MaxOutputBytes || len(stderr) > MaxOutputBytes
+	if reporter, ok := p.(interface{ OutputExceeded() bool }); ok {
+		outputExceeded = outputExceeded || reporter.OutputExceeded()
+	}
 	if len(stdout) > MaxOutputBytes {
 		stdout = stdout[:MaxOutputBytes]
 	}
 	if len(stderr) > MaxOutputBytes {
 		stderr = stderr[:MaxOutputBytes]
+	}
+	// Output exhaustion is proven by the bounded collectors, independently of
+	// the process exit. Keep that deterministic resource terminal authoritative
+	// when a command also exits non-zero or its waiter reports another error.
+	if outputExceeded {
+		status = "output_limit"
+		waitErr = errOutputLimitExceeded
 	}
 	if waitErr != nil {
 		_ = p.KillGroup()
@@ -180,11 +193,11 @@ func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registr
 		default:
 			code = ErrorExecution
 		}
-		resultFiles, collectErr := CollectAvailableResultFilesFD(workspaceFD, request.ResultFiles)
+		resultFiles, collectErr := CollectAvailableResultFilesFD(workspaceFD, request.ResultFiles, request.Limits.FileBytes)
 		if collectErr != nil && code == ErrorNone {
 			code = ErrorExecution
 		}
-		if cleanupErr := CleanupWorkspaceFD(workspaceFD, baseline, resultFilePaths(resultFiles)); cleanupErr != nil {
+		if cleanupErr := CleanupWorkspaceFD(workspaceFD, baseline, resultFilePaths(resultFiles), request.Limits.FileBytes); cleanupErr != nil {
 			code = ErrorCleanup
 		}
 		return StatusV1{
@@ -199,22 +212,22 @@ func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registr
 		}, nil
 	}
 	if err = registry.Transition(request.RunID, PhaseCollecting, ErrorNone); err != nil {
-		_ = CleanupWorkspaceFD(workspaceFD, baseline, nil)
+		_ = CleanupWorkspaceFD(workspaceFD, baseline, nil, request.Limits.FileBytes)
 		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorExecution}, err
 	}
-	resultFiles, err := VerifyResultFilesFD(workspaceFD, request.ResultFiles)
+	resultFiles, err := VerifyResultFilesFD(workspaceFD, request.ResultFiles, request.Limits.FileBytes)
 	if err != nil {
 		code = ErrorExecution
-		if cleanupErr := CleanupWorkspaceFD(workspaceFD, baseline, resultFilePaths(resultFiles)); cleanupErr != nil {
+		if cleanupErr := CleanupWorkspaceFD(workspaceFD, baseline, resultFilePaths(resultFiles), request.Limits.FileBytes); cleanupErr != nil {
 			code = ErrorCleanup
 		}
 		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: code, Status: status, Stdout: stdout, Stderr: stderr, ExitCode: processExitCode(p), ResultFiles: resultFiles}, nil
 	}
 	if err = registry.Transition(request.RunID, PhaseExited, ErrorNone); err != nil {
-		_ = CleanupWorkspaceFD(workspaceFD, baseline, resultFilePaths(resultFiles))
+		_ = CleanupWorkspaceFD(workspaceFD, baseline, resultFilePaths(resultFiles), request.Limits.FileBytes)
 		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorExecution}, err
 	}
-	if err = CleanupWorkspaceFD(workspaceFD, baseline, resultFilePaths(resultFiles)); err != nil {
+	if err = CleanupWorkspaceFD(workspaceFD, baseline, resultFilePaths(resultFiles), request.Limits.FileBytes); err != nil {
 		code = ErrorCleanup
 		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: code, Status: status, Stdout: stdout, Stderr: stderr, ExitCode: processExitCode(p), ResultFiles: resultFiles}, nil
 	}

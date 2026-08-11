@@ -161,7 +161,7 @@ func TestServeV2ConnectionClosesReceivedFDs(t *testing.T) {
 					t.Fatal(e)
 				}
 				s := Server{Authorizer: UIDAllowlist{uint32(os.Getuid()): {}}, Registry: NewRunRegistry()}
-				s.serveV2Connection(context.Background(), c.(*net.UnixConn))
+				s.serveV2Connection(context.Background(), c.(*net.UnixConn), make(chan struct{}, serverMaxExecutions))
 				unix.Close(sv[0])
 			}
 			after, e := os.ReadDir("/proc/self/fd")
@@ -215,7 +215,7 @@ func TestServeV2ConnectionAcceptsSealedRightsAndClosesReceivedFD(t *testing.T) {
 	}
 	reg := NewRunRegistry()
 	s := Server{Authorizer: UIDAllowlist{uint32(os.Getuid()): {}}, Registry: reg}
-	s.serveV2Connection(context.Background(), c.(*net.UnixConn))
+	s.serveV2Connection(context.Background(), c.(*net.UnixConn), make(chan struct{}, serverMaxExecutions))
 	if _, ok := reg.TombstoneOf(r.RunID); !ok {
 		t.Fatal("valid rights request did not reach Runner")
 	}
@@ -253,7 +253,7 @@ func TestServeV2ConnectionRejectsNonRightsCmsgBeforeRunner(t *testing.T) {
 	}
 	reg := NewRunRegistry()
 	s := Server{Authorizer: UIDAllowlist{uint32(os.Getuid()): {}}, Registry: reg}
-	s.serveV2Connection(context.Background(), c.(*net.UnixConn))
+	s.serveV2Connection(context.Background(), c.(*net.UnixConn), make(chan struct{}, serverMaxExecutions))
 	if _, ok := reg.TombstoneOf(sandboxRequest().RunID); ok {
 		t.Fatal("non-rights cmsg reached Runner")
 	}
@@ -288,7 +288,7 @@ func TestServeV2ConnectionClosesRightsOnTruncation(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := Server{Authorizer: UIDAllowlist{uint32(os.Getuid()): {}}, Registry: NewRunRegistry()}
-	s.serveV2Connection(context.Background(), c.(*net.UnixConn))
+	s.serveV2Connection(context.Background(), c.(*net.UnixConn), make(chan struct{}, serverMaxExecutions))
 	if err := unix.Close(fd); !errors.Is(err, unix.EBADF) {
 		t.Fatalf("truncated rights fd leak: %v", err)
 	}

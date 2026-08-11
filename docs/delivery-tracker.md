@@ -199,6 +199,14 @@ support.
   immutable launch-expectation/session fences instead of the controller's newer
   lease epoch. Focused PG18 and Cloud Worker tests pass; a corrected AMI and a
   fresh successful live run remain required for acceptance.
+- On **2026-08-11**, WorkerControl Claim gained an exact bidirectional release
+  handshake bound by the current immutable runtime qualification. Missing or
+  unknown Worker protocol/runtime contract versions now fail before identity
+  verification or model-grant activation, and the Worker rejects response
+  drift before parsing the runtime task or executing Pi. Focused control,
+  RPC, Worker, qualification, and PostgreSQL 18 fresh-state/restart tests
+  passed without AWS mutation. A candidate AMI first Claim remains required
+  for live evidence.
 
 ## Remaining release gates
 

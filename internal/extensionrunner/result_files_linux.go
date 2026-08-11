@@ -15,20 +15,21 @@ import (
 // VerifyResultFilesFD performs the production result handoff without
 // reconstructing a host path. openat2 makes every component stay beneath the
 // already-authorized task workspace and rejects symlinks and magic links.
-func VerifyResultFilesFD(workspaceFD int, registered []string) ([]ResultFile, error) {
-	files, err := collectResultFilesFD(workspaceFD, registered, true)
+func VerifyResultFilesFD(workspaceFD int, registered []string, maxTotalBytes int64) ([]ResultFile, error) {
+	files, err := collectResultFilesFD(workspaceFD, registered, maxTotalBytes, true)
 	return files, err
 }
 
-func CollectAvailableResultFilesFD(workspaceFD int, registered []string) ([]ResultFile, error) {
-	return collectResultFilesFD(workspaceFD, registered, false)
+func CollectAvailableResultFilesFD(workspaceFD int, registered []string, maxTotalBytes int64) ([]ResultFile, error) {
+	return collectResultFilesFD(workspaceFD, registered, maxTotalBytes, false)
 }
 
-func collectResultFilesFD(workspaceFD int, registered []string, requireAll bool) ([]ResultFile, error) {
-	if workspaceFD < 0 {
+func collectResultFilesFD(workspaceFD int, registered []string, maxTotalBytes int64, requireAll bool) ([]ResultFile, error) {
+	if workspaceFD < 0 || maxTotalBytes <= 0 || len(registered) > maxV2ResultFiles {
 		return nil, ErrInvalid
 	}
 	files := make([]ResultFile, 0, len(registered))
+	var totalBytes int64
 	var result error
 	for _, rel := range registered {
 		if !safeRelativeSlash(rel) {
@@ -59,7 +60,8 @@ func collectResultFilesFD(workspaceFD int, registered []string, requireAll bool)
 		if err = unix.Fstat(fd, &stat); err != nil ||
 			stat.Mode&unix.S_IFMT != unix.S_IFREG ||
 			stat.Size < 0 ||
-			stat.Size > MaxOutputBytes {
+			stat.Size > MaxOutputBytes ||
+			totalBytes > maxTotalBytes-stat.Size {
 			_ = unix.Close(fd)
 			if requireAll {
 				return files, ErrInvalid
@@ -83,6 +85,7 @@ func collectResultFilesFD(workspaceFD int, registered []string, requireAll bool)
 			SHA256: hex.EncodeToString(hash.Sum(nil)),
 			Size:   n,
 		})
+		totalBytes += n
 	}
 	return files, result
 }

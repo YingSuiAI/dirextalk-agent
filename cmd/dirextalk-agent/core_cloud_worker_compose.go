@@ -42,6 +42,7 @@ type coreCloudWorkerComposition struct {
 	modelRelay    *cloudWorkerModelRelayServer
 	reaper        *cloudWorkerReaperLoop
 	retention     *cloudworker.ArtifactRetentionCleaner
+	outputHistory *cloudworker.OutputHistoryCleaner
 	completion    *cloudworker.CompletionLoop
 
 	mu      sync.Mutex
@@ -284,10 +285,17 @@ func composeCoreCloudWorker(
 	if err != nil {
 		return nil, fmt.Errorf("initialize Cloud Worker artifact retention cleaner: %w", err)
 	}
+	outputHistory, err := cloudworker.NewOutputHistoryCleaner(cloudworker.OutputHistoryCleanerConfig{
+		Store: cloudStore, PollInterval: worker.ReaperInterval, BatchSize: 32,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize Cloud Worker output history cleaner: %w", err)
+	}
 	return &coreCloudWorkerComposition{
 		domain: domain, intrinsic: intrinsic, executionPort: executionPort, taskHandler: controller.Handler(), outboxStore: cloudStore,
 		workerControl: workerControl, modelRelay: modelRelayServer,
 		reaper: newCloudWorkerReaperLoop(reaperDomain, worker.ReaperInterval), retention: retention,
+		outputHistory: outputHistory,
 	}, nil
 }
 
@@ -356,7 +364,20 @@ func (composition *coreCloudWorkerComposition) Cleaners() []coreLifecycleCleaner
 	if composition == nil {
 		return nil
 	}
-	return []coreLifecycleCleaner{composition.reaper, composition.retention, composition.completion}
+	cleaners := make([]coreLifecycleCleaner, 0, 4)
+	if composition.reaper != nil {
+		cleaners = append(cleaners, composition.reaper)
+	}
+	if composition.retention != nil {
+		cleaners = append(cleaners, composition.retention)
+	}
+	if composition.outputHistory != nil {
+		cleaners = append(cleaners, composition.outputHistory)
+	}
+	if composition.completion != nil {
+		cleaners = append(cleaners, composition.completion)
+	}
+	return cleaners
 }
 
 type fixedCloudWorkerOwnerResolver struct {

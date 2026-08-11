@@ -20,15 +20,19 @@ import (
 type localLimitsConversationStore struct {
 	finished string
 	result   json.RawMessage
+	code     string
+	summary  string
 }
 
 func (*localLimitsConversationStore) BeginConversationTool(context.Context, coretask.Task) (coreconversation.ToolAttempt, error) {
 	return coreconversation.ToolAttempt{}, nil
 }
 
-func (s *localLimitsConversationStore) FinishConversationTool(_ context.Context, _ coretask.Task, state string, result json.RawMessage, _, _ string) error {
+func (s *localLimitsConversationStore) FinishConversationTool(_ context.Context, _ coretask.Task, state string, result json.RawMessage, code, summary string) error {
 	s.finished = state
 	s.result = append(json.RawMessage(nil), result...)
+	s.code = code
+	s.summary = summary
 	return nil
 }
 
@@ -52,6 +56,8 @@ type localLimitsRunner struct {
 	calls   int
 	stdin   []byte
 	stdout  []byte
+	status  *extensionrunner.StatusV1
+	err     error
 }
 
 func (r *localLimitsRunner) RunV2(_ context.Context, request extensionrunner.RequestV2, files []*os.File) (extensionrunner.StatusV1, error) {
@@ -63,11 +69,71 @@ func (r *localLimitsRunner) RunV2(_ context.Context, request extensionrunner.Req
 			return extensionrunner.StatusV1{}, err
 		}
 	}
+	if r.status != nil {
+		status := *r.status
+		status.RunID = request.RunID
+		return status, r.err
+	}
+	if r.err != nil {
+		return extensionrunner.StatusV1{}, r.err
+	}
 	stdout := r.stdout
 	if stdout == nil {
 		stdout = []byte("ok")
 	}
 	return extensionrunner.StatusV1{RunID: request.RunID, Phase: extensionrunner.PhaseTombstone, Status: "succeeded", Stdout: stdout}, nil
+}
+
+func localMCPResourceInvocation(t *testing.T) execution.Invocation {
+	t.Helper()
+	digest := strings.Repeat("a", 64)
+	return execution.Invocation{Kind: coreextension.KindMCP, Local: &execution.LocalInvocation{
+		TaskID: uuid.NewString(), TaskFence: uuid.NewString(), InstallationID: uuid.NewString(), VersionID: uuid.NewString(),
+		InstallDigest: digest, ContentDigest: digest, ArtifactDigest: digest, EntryPath: "entry", Tool: "write_html",
+		Input: json.RawMessage(`{"content":"ok"}`), Workspace: t.TempDir(), Timeout: time.Minute, Limits: execution.LocalSandboxLimitsV2(),
+	}}
+}
+
+func TestConversationToolLocalResourceReceiptsAreDeterministicFailures(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      extensionrunner.StatusV1
+		wantErr     error
+		wantCode    string
+		wantSummary string
+	}{
+		{name: "busy", status: extensionrunner.StatusV1{Phase: extensionrunner.PhaseFailed, Error: extensionrunner.ErrorUnavailableBackend, Status: "capacity", Stderr: []byte("protected detail")}, wantErr: execution.ErrLocalResourceBusy, wantCode: execution.LocalResourceBusyCode, wantSummary: execution.LocalResourceBusySummary},
+		{name: "request limits", status: extensionrunner.StatusV1{Phase: extensionrunner.PhaseFailed, Error: extensionrunner.ErrorInvalidRequest, Status: "limits", Stderr: []byte("protected detail")}, wantErr: execution.ErrLocalResourceExhausted, wantCode: execution.LocalResourceExhaustedCode, wantSummary: execution.LocalResourceExhaustedSummary},
+		{name: "exhausted", status: extensionrunner.StatusV1{Phase: extensionrunner.PhaseFailed, Error: extensionrunner.ErrorExecution, Status: "output_limit", Stderr: []byte("protected detail")}, wantErr: execution.ErrLocalResourceExhausted, wantCode: execution.LocalResourceExhaustedCode, wantSummary: execution.LocalResourceExhaustedSummary},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			invocation := localMCPResourceInvocation(t)
+			store := &localLimitsConversationStore{}
+			resolver := &localLimitsInvocationResolver{invocation: invocation}
+			runner := &localLimitsRunner{status: &test.status}
+			handler := conversationToolTaskHandler(store, resolver, &execution.LocalExecutor{Runner: runner}, nil, nil)
+			out := handler(context.Background(), coretask.Task{ID: invocation.Local.TaskID})
+			if !errors.Is(out.Err, test.wantErr) || !out.TerminalOwned || runner.calls != 1 || store.finished != "failed" || store.code != test.wantCode || store.summary != test.wantSummary || len(store.result) != 0 {
+				t.Fatalf("out=%+v calls=%d state=%q code=%q summary=%q result=%s", out, runner.calls, store.finished, store.code, store.summary, store.result)
+			}
+			if strings.Contains(store.summary, "protected detail") {
+				t.Fatalf("runner diagnostics leaked in summary %q", store.summary)
+			}
+		})
+	}
+}
+
+func TestConversationToolLocalTransportFailureRemainsUncertain(t *testing.T) {
+	invocation := localMCPResourceInvocation(t)
+	store := &localLimitsConversationStore{}
+	resolver := &localLimitsInvocationResolver{invocation: invocation}
+	runner := &localLimitsRunner{err: context.DeadlineExceeded}
+	handler := conversationToolTaskHandler(store, resolver, &execution.LocalExecutor{Runner: runner}, nil, nil)
+	out := handler(context.Background(), coretask.Task{ID: invocation.Local.TaskID})
+	if !errors.Is(out.Err, context.DeadlineExceeded) || !errors.Is(out.Err, execution.ErrLocalOutcomeUncertain) || !out.TerminalOwned || runner.calls != 1 || store.finished != "uncertain" || store.code != "tool_uncertain" || store.summary != "tool dispatch outcome is unknown" {
+		t.Fatalf("out=%+v calls=%d state=%q code=%q summary=%q", out, runner.calls, store.finished, store.code, store.summary)
+	}
 }
 
 func TestConversationToolExecutableSkillDispatchBindsExactLocalSandboxLimits(t *testing.T) {

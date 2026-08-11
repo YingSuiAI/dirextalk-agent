@@ -387,17 +387,33 @@ type Artifact struct {
 }
 
 type Event struct {
-	OwnerID           string         `json:"owner_id"`
-	AccountGeneration uint64         `json:"account_generation"`
-	RunID             string         `json:"run_id"`
-	ExecutionID       string         `json:"execution_id"`
-	Sequence          uint64         `json:"sequence"`
-	EventID           string         `json:"event_id"`
-	Type              string         `json:"type"`
-	State             ExecutionState `json:"status,omitempty"`
-	Revision          uint64         `json:"revision"`
-	PayloadDigest     string         `json:"payload_digest"`
-	CreatedAt         time.Time      `json:"at"`
+	OwnerID           string          `json:"owner_id"`
+	AccountGeneration uint64          `json:"account_generation"`
+	RunID             string          `json:"run_id"`
+	ExecutionID       string          `json:"execution_id"`
+	Sequence          uint64          `json:"sequence"`
+	EventID           string          `json:"event_id"`
+	Type              string          `json:"type"`
+	State             ExecutionState  `json:"status,omitempty"`
+	Revision          uint64          `json:"revision"`
+	PayloadDigest     string          `json:"payload_digest"`
+	Progress          *WorkerProgress `json:"progress,omitempty"`
+	CreatedAt         time.Time       `json:"at"`
+}
+
+const MaxRetainedRunEvents uint64 = 4096
+
+// WorkerProgress is the public, secret-free projection of a private heartbeat.
+// It intentionally contains no model text, paths, environment, or object keys.
+type WorkerProgress struct {
+	Phase                string    `json:"phase"`
+	ElapsedMS            uint64    `json:"elapsed_ms"`
+	LastActivityAt       time.Time `json:"last_activity_at"`
+	CPUTimeMS            uint64    `json:"cpu_time_ms"`
+	MemoryHighWaterBytes uint64    `json:"memory_high_water_bytes"`
+	InvocationCount      uint64    `json:"invocation_count"`
+	UploadedBytes        uint64    `json:"uploaded_bytes"`
+	OutputTruncated      bool      `json:"output_truncated"`
 }
 
 // CompletionOutbox is the only payload allowed across the Agent -> Product

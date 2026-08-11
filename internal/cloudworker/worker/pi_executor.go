@@ -53,9 +53,10 @@ func NewPiTaskExecutor(config PiTaskExecutorConfig) (*PiTaskExecutor, error) {
 func (executor *PiTaskExecutor) Run(
 	ctx context.Context,
 	claimed ClaimedTask,
+	progress func(ProgressPhase) error,
 ) (cloudruntime.Result, error) {
 	if executor == nil || ctx == nil ||
-		validateClaimedTask(claimed, claimed.Binding, executor.config.Now()) != nil {
+		progress == nil || validateClaimedTask(claimed, claimed.Binding, executor.config.Now()) != nil {
 		return cloudruntime.Result{}, ErrInvalid
 	}
 	workspace, cleanup, err := executor.config.Workspaces.Prepare(ctx, claimed)
@@ -68,6 +69,10 @@ func (executor *PiTaskExecutor) Run(
 	resolver := &claimedInputResolver{
 		manifest:  bytes.Clone(claimed.InputManifestJSON),
 		workspace: workspace, cleanup: cleanup,
+	}
+	if err := progress(ProgressRunningPi); err != nil {
+		resolver.destroy()
+		return cloudruntime.Result{}, err
 	}
 	if err := executor.config.PiProxy.AuthorizeRelay(claimed.Task.ModelRelayBaseURL); err != nil {
 		resolver.destroy()

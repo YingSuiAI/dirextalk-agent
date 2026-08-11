@@ -219,6 +219,15 @@ Task kinds are Agent, Extension, Conversation Tool, Knowledge indexing,
 `AWS_CHANGE`, `WORKLOAD`, and `CLOUD_WORKER`. A Task is claimed with an
 attempt, lease epoch, and expected revision; only the fenced owner may
 checkpoint or terminalize it.
+Executable Extension and Conversation Tool Tasks seal one closed execution
+target into their durable payload when they are created: `local_sandbox` for
+stdio MCPs and executable Skills, `remote_extension` for remote MCP calls, or
+`static_skill` for non-executable Skill reads. Claiming never reclassifies a
+Task from mutable installation/version projections. At most one unexpired
+`local_sandbox` Task may run at a time; additional local work remains queued,
+while remote calls, static Skill reads, and unrelated Task kinds remain
+claimable. An expired local lease is reclaimable through the normal durable
+lease epoch path after restart.
 Schedules create independent Tasks for one-time or Cron occurrences. Core v1
 has no priority, DAG/graph, task dependency authoring, or cluster/pool
 scheduler.
@@ -291,6 +300,13 @@ write-only, version-bound secret grant. Skills use the pinned Skill artifact and
 instructions. Local code runs only through the separate Linux
 extension runner with another UID, namespaces, a task workspace, and explicit
 secrets. No in-process or unconfirmed fallback is allowed.
+The production runner admits one one-shot execution at a time. A verified
+capacity receipt fails with `local_resource_busy`; a verified fixed-limit,
+timeout, CPU, or output receipt fails with `local_resource_exhausted`. Both use
+sanitized summaries that ask the user to retry later or explicitly authorize a
+Cloud Worker, and neither route automatically starts paid cloud execution. A
+missing terminal runner receipt remains `extension_execution_uncertain` and
+keeps the existing reconciliation fence.
 The task workspace root is one runner-owned, Agent-group-writable boundary
 with exact identity `65531:65532` and mode `0770`; Agent and runner deployments
 mount the same volume, while extension staging remains Agent-private.
@@ -380,6 +396,18 @@ cancellation remain non-terminal until the Resource Ledger proves every AWS
 resource `verified_destroyed`. Unknown AWS responses and reclaimed leases use
 identity-bound read-back of the original dispatch; they cannot provision a
 second instance.
+
+Production starts artifact retention and output-history cleaners in the Core
+lifecycle. Artifact objects are deleted only by exact version after their
+retention authority expires and is revalidated. Output journal/version rows
+retain a 24-hour audit window and are pruned per execution only after the
+completion outbox is delivered, the execution is terminal without pending
+reconciliation, the AWS ledger, input-staging and provider-resource authority
+sets all exist with every row verified destroyed, every journal is verified
+clean, and every artifact row and retained artifact version is independently
+verified deleted before the cutoff. Unfinished, response-uncertain,
+unconsumed, missing-authority, or still-referenced data is never eligible;
+restart resumes from PostgreSQL state.
 
 The Worker receives no local MCP/Skill/Extension Runner state. It receives only
 the exact runtime task and versioned input manifest, short-lived model relay

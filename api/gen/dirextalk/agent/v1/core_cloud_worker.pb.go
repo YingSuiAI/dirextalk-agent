@@ -208,6 +208,64 @@ func (CoreCloudWorkerSessionState) EnumDescriptor() ([]byte, []int) {
 	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{2}
 }
 
+type CoreCloudWorkerProgressPhase int32
+
+const (
+	CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_UNSPECIFIED      CoreCloudWorkerProgressPhase = 0
+	CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_CLAIMED          CoreCloudWorkerProgressPhase = 1
+	CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_PREPARING_INPUTS CoreCloudWorkerProgressPhase = 2
+	CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_RUNNING_PI       CoreCloudWorkerProgressPhase = 3
+	CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_UPLOADING_RESULT CoreCloudWorkerProgressPhase = 4
+	CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_COMPLETING       CoreCloudWorkerProgressPhase = 5
+)
+
+// Enum value maps for CoreCloudWorkerProgressPhase.
+var (
+	CoreCloudWorkerProgressPhase_name = map[int32]string{
+		0: "CORE_CLOUD_WORKER_PROGRESS_PHASE_UNSPECIFIED",
+		1: "CORE_CLOUD_WORKER_PROGRESS_PHASE_CLAIMED",
+		2: "CORE_CLOUD_WORKER_PROGRESS_PHASE_PREPARING_INPUTS",
+		3: "CORE_CLOUD_WORKER_PROGRESS_PHASE_RUNNING_PI",
+		4: "CORE_CLOUD_WORKER_PROGRESS_PHASE_UPLOADING_RESULT",
+		5: "CORE_CLOUD_WORKER_PROGRESS_PHASE_COMPLETING",
+	}
+	CoreCloudWorkerProgressPhase_value = map[string]int32{
+		"CORE_CLOUD_WORKER_PROGRESS_PHASE_UNSPECIFIED":      0,
+		"CORE_CLOUD_WORKER_PROGRESS_PHASE_CLAIMED":          1,
+		"CORE_CLOUD_WORKER_PROGRESS_PHASE_PREPARING_INPUTS": 2,
+		"CORE_CLOUD_WORKER_PROGRESS_PHASE_RUNNING_PI":       3,
+		"CORE_CLOUD_WORKER_PROGRESS_PHASE_UPLOADING_RESULT": 4,
+		"CORE_CLOUD_WORKER_PROGRESS_PHASE_COMPLETING":       5,
+	}
+)
+
+func (x CoreCloudWorkerProgressPhase) Enum() *CoreCloudWorkerProgressPhase {
+	p := new(CoreCloudWorkerProgressPhase)
+	*p = x
+	return p
+}
+
+func (x CoreCloudWorkerProgressPhase) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CoreCloudWorkerProgressPhase) Descriptor() protoreflect.EnumDescriptor {
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_enumTypes[3].Descriptor()
+}
+
+func (CoreCloudWorkerProgressPhase) Type() protoreflect.EnumType {
+	return &file_dirextalk_agent_v1_core_cloud_worker_proto_enumTypes[3]
+}
+
+func (x CoreCloudWorkerProgressPhase) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CoreCloudWorkerProgressPhase.Descriptor instead.
+func (CoreCloudWorkerProgressPhase) EnumDescriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{3}
+}
+
 type CoreCloudWorkerRuntimeTopologyState int32
 
 const (
@@ -244,11 +302,11 @@ func (x CoreCloudWorkerRuntimeTopologyState) String() string {
 }
 
 func (CoreCloudWorkerRuntimeTopologyState) Descriptor() protoreflect.EnumDescriptor {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_enumTypes[3].Descriptor()
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_enumTypes[4].Descriptor()
 }
 
 func (CoreCloudWorkerRuntimeTopologyState) Type() protoreflect.EnumType {
-	return &file_dirextalk_agent_v1_core_cloud_worker_proto_enumTypes[3]
+	return &file_dirextalk_agent_v1_core_cloud_worker_proto_enumTypes[4]
 }
 
 func (x CoreCloudWorkerRuntimeTopologyState) Number() protoreflect.EnumNumber {
@@ -257,7 +315,7 @@ func (x CoreCloudWorkerRuntimeTopologyState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CoreCloudWorkerRuntimeTopologyState.Descriptor instead.
 func (CoreCloudWorkerRuntimeTopologyState) EnumDescriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{3}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{4}
 }
 
 type CoreCloudWorkerAwsProjection struct {
@@ -1743,13 +1801,15 @@ func (x *CoreCloudWorkerIdentityProof) GetPayload() []byte {
 }
 
 type WorkerControlServiceClaimRequest struct {
-	state         protoimpl.MessageState        `protogen:"open.v1"`
-	ChallengeId   string                        `protobuf:"bytes,1,opt,name=challenge_id,json=challengeId,proto3" json:"challenge_id,omitempty"`
-	Nonce         string                        `protobuf:"bytes,2,opt,name=nonce,proto3" json:"nonce,omitempty"`
-	Fence         *CoreCloudWorkerTaskFence     `protobuf:"bytes,3,opt,name=fence,proto3" json:"fence,omitempty"`
-	Proof         *CoreCloudWorkerIdentityProof `protobuf:"bytes,4,opt,name=proof,proto3" json:"proof,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                  protoimpl.MessageState        `protogen:"open.v1"`
+	ChallengeId            string                        `protobuf:"bytes,1,opt,name=challenge_id,json=challengeId,proto3" json:"challenge_id,omitempty"`
+	Nonce                  string                        `protobuf:"bytes,2,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	Fence                  *CoreCloudWorkerTaskFence     `protobuf:"bytes,3,opt,name=fence,proto3" json:"fence,omitempty"`
+	Proof                  *CoreCloudWorkerIdentityProof `protobuf:"bytes,4,opt,name=proof,proto3" json:"proof,omitempty"`
+	WorkerProtocolVersion  string                        `protobuf:"bytes,5,opt,name=worker_protocol_version,json=workerProtocolVersion,proto3" json:"worker_protocol_version,omitempty"`
+	RuntimeContractVersion string                        `protobuf:"bytes,6,opt,name=runtime_contract_version,json=runtimeContractVersion,proto3" json:"runtime_contract_version,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *WorkerControlServiceClaimRequest) Reset() {
@@ -1808,6 +1868,20 @@ func (x *WorkerControlServiceClaimRequest) GetProof() *CoreCloudWorkerIdentityPr
 		return x.Proof
 	}
 	return nil
+}
+
+func (x *WorkerControlServiceClaimRequest) GetWorkerProtocolVersion() string {
+	if x != nil {
+		return x.WorkerProtocolVersion
+	}
+	return ""
+}
+
+func (x *WorkerControlServiceClaimRequest) GetRuntimeContractVersion() string {
+	if x != nil {
+		return x.RuntimeContractVersion
+	}
+	return ""
 }
 
 type CoreCloudWorkerModelGrant struct {
@@ -1918,6 +1992,111 @@ func (x *CoreCloudWorkerModelGrant) GetLimitDigest() string {
 	return ""
 }
 
+// A bounded, secret-free Worker liveness snapshot. The existing
+// progress_sequence remains the session-local ordering and replay fence;
+// public consumers resume through the existing Execution V2 run-event cursor.
+type CoreCloudWorkerProgressSnapshot struct {
+	state          protoimpl.MessageState       `protogen:"open.v1"`
+	Phase          CoreCloudWorkerProgressPhase `protobuf:"varint,1,opt,name=phase,proto3,enum=dirextalk.agent.v1.CoreCloudWorkerProgressPhase" json:"phase,omitempty"`
+	ElapsedMs      uint64                       `protobuf:"varint,2,opt,name=elapsed_ms,json=elapsedMs,proto3" json:"elapsed_ms,omitempty"`
+	LastActivityAt *timestamppb.Timestamp       `protobuf:"bytes,3,opt,name=last_activity_at,json=lastActivityAt,proto3" json:"last_activity_at,omitempty"`
+	// Zero means unavailable; non-zero values must come from a verified runtime
+	// metrics source and remain monotonic for the session.
+	CpuTimeMs            uint64 `protobuf:"varint,4,opt,name=cpu_time_ms,json=cpuTimeMs,proto3" json:"cpu_time_ms,omitempty"`
+	MemoryHighWaterBytes uint64 `protobuf:"varint,5,opt,name=memory_high_water_bytes,json=memoryHighWaterBytes,proto3" json:"memory_high_water_bytes,omitempty"`
+	InvocationCount      uint64 `protobuf:"varint,6,opt,name=invocation_count,json=invocationCount,proto3" json:"invocation_count,omitempty"`
+	UploadedBytes        uint64 `protobuf:"varint,7,opt,name=uploaded_bytes,json=uploadedBytes,proto3" json:"uploaded_bytes,omitempty"`
+	OutputTruncated      bool   `protobuf:"varint,8,opt,name=output_truncated,json=outputTruncated,proto3" json:"output_truncated,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *CoreCloudWorkerProgressSnapshot) Reset() {
+	*x = CoreCloudWorkerProgressSnapshot{}
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CoreCloudWorkerProgressSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CoreCloudWorkerProgressSnapshot) ProtoMessage() {}
+
+func (x *CoreCloudWorkerProgressSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CoreCloudWorkerProgressSnapshot.ProtoReflect.Descriptor instead.
+func (*CoreCloudWorkerProgressSnapshot) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *CoreCloudWorkerProgressSnapshot) GetPhase() CoreCloudWorkerProgressPhase {
+	if x != nil {
+		return x.Phase
+	}
+	return CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_UNSPECIFIED
+}
+
+func (x *CoreCloudWorkerProgressSnapshot) GetElapsedMs() uint64 {
+	if x != nil {
+		return x.ElapsedMs
+	}
+	return 0
+}
+
+func (x *CoreCloudWorkerProgressSnapshot) GetLastActivityAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastActivityAt
+	}
+	return nil
+}
+
+func (x *CoreCloudWorkerProgressSnapshot) GetCpuTimeMs() uint64 {
+	if x != nil {
+		return x.CpuTimeMs
+	}
+	return 0
+}
+
+func (x *CoreCloudWorkerProgressSnapshot) GetMemoryHighWaterBytes() uint64 {
+	if x != nil {
+		return x.MemoryHighWaterBytes
+	}
+	return 0
+}
+
+func (x *CoreCloudWorkerProgressSnapshot) GetInvocationCount() uint64 {
+	if x != nil {
+		return x.InvocationCount
+	}
+	return 0
+}
+
+func (x *CoreCloudWorkerProgressSnapshot) GetUploadedBytes() uint64 {
+	if x != nil {
+		return x.UploadedBytes
+	}
+	return 0
+}
+
+func (x *CoreCloudWorkerProgressSnapshot) GetOutputTruncated() bool {
+	if x != nil {
+		return x.OutputTruncated
+	}
+	return false
+}
+
 type CoreCloudWorkerProcessIdentity struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Pid            int32                  `protobuf:"varint,1,opt,name=pid,proto3" json:"pid,omitempty"`
@@ -1931,7 +2110,7 @@ type CoreCloudWorkerProcessIdentity struct {
 
 func (x *CoreCloudWorkerProcessIdentity) Reset() {
 	*x = CoreCloudWorkerProcessIdentity{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[17]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1943,7 +2122,7 @@ func (x *CoreCloudWorkerProcessIdentity) String() string {
 func (*CoreCloudWorkerProcessIdentity) ProtoMessage() {}
 
 func (x *CoreCloudWorkerProcessIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[17]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1956,7 +2135,7 @@ func (x *CoreCloudWorkerProcessIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreCloudWorkerProcessIdentity.ProtoReflect.Descriptor instead.
 func (*CoreCloudWorkerProcessIdentity) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{17}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CoreCloudWorkerProcessIdentity) GetPid() int32 {
@@ -2024,7 +2203,7 @@ type CoreCloudWorkerRuntimeTopologyProof struct {
 
 func (x *CoreCloudWorkerRuntimeTopologyProof) Reset() {
 	*x = CoreCloudWorkerRuntimeTopologyProof{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[18]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2036,7 +2215,7 @@ func (x *CoreCloudWorkerRuntimeTopologyProof) String() string {
 func (*CoreCloudWorkerRuntimeTopologyProof) ProtoMessage() {}
 
 func (x *CoreCloudWorkerRuntimeTopologyProof) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[18]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2049,7 +2228,7 @@ func (x *CoreCloudWorkerRuntimeTopologyProof) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use CoreCloudWorkerRuntimeTopologyProof.ProtoReflect.Descriptor instead.
 func (*CoreCloudWorkerRuntimeTopologyProof) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{18}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CoreCloudWorkerRuntimeTopologyProof) GetSchemaVersion() string {
@@ -2206,7 +2385,7 @@ type CoreCloudWorkerObjectClaim struct {
 
 func (x *CoreCloudWorkerObjectClaim) Reset() {
 	*x = CoreCloudWorkerObjectClaim{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[19]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2218,7 +2397,7 @@ func (x *CoreCloudWorkerObjectClaim) String() string {
 func (*CoreCloudWorkerObjectClaim) ProtoMessage() {}
 
 func (x *CoreCloudWorkerObjectClaim) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[19]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2231,7 +2410,7 @@ func (x *CoreCloudWorkerObjectClaim) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreCloudWorkerObjectClaim.ProtoReflect.Descriptor instead.
 func (*CoreCloudWorkerObjectClaim) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{19}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CoreCloudWorkerObjectClaim) GetBucket() string {
@@ -2291,13 +2470,14 @@ type CoreCloudWorkerSession struct {
 	FinishedAt            *timestamppb.Timestamp               `protobuf:"bytes,11,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
 	RuntimeTopology       *CoreCloudWorkerRuntimeTopologyProof `protobuf:"bytes,12,opt,name=runtime_topology,json=runtimeTopology,proto3" json:"runtime_topology,omitempty"`
 	RuntimeTopologyDigest string                               `protobuf:"bytes,13,opt,name=runtime_topology_digest,json=runtimeTopologyDigest,proto3" json:"runtime_topology_digest,omitempty"`
+	LatestProgress        *CoreCloudWorkerProgressSnapshot     `protobuf:"bytes,14,opt,name=latest_progress,json=latestProgress,proto3" json:"latest_progress,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
 
 func (x *CoreCloudWorkerSession) Reset() {
 	*x = CoreCloudWorkerSession{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[20]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2309,7 +2489,7 @@ func (x *CoreCloudWorkerSession) String() string {
 func (*CoreCloudWorkerSession) ProtoMessage() {}
 
 func (x *CoreCloudWorkerSession) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[20]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2322,7 +2502,7 @@ func (x *CoreCloudWorkerSession) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreCloudWorkerSession.ProtoReflect.Descriptor instead.
 func (*CoreCloudWorkerSession) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{20}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *CoreCloudWorkerSession) GetSessionId() string {
@@ -2416,6 +2596,13 @@ func (x *CoreCloudWorkerSession) GetRuntimeTopologyDigest() string {
 	return ""
 }
 
+func (x *CoreCloudWorkerSession) GetLatestProgress() *CoreCloudWorkerProgressSnapshot {
+	if x != nil {
+		return x.LatestProgress
+	}
+	return nil
+}
+
 type WorkerControlServiceClaimResponse struct {
 	state        protoimpl.MessageState     `protogen:"open.v1"`
 	Session      *CoreCloudWorkerSession    `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
@@ -2432,13 +2619,15 @@ type WorkerControlServiceClaimResponse struct {
 	ArtifactKeyPrefix       string                 `protobuf:"bytes,9,opt,name=artifact_key_prefix,json=artifactKeyPrefix,proto3" json:"artifact_key_prefix,omitempty"`
 	HeartbeatIntervalMillis uint64                 `protobuf:"varint,10,opt,name=heartbeat_interval_millis,json=heartbeatIntervalMillis,proto3" json:"heartbeat_interval_millis,omitempty"`
 	NotAfter                *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=not_after,json=notAfter,proto3" json:"not_after,omitempty"`
+	WorkerProtocolVersion   string                 `protobuf:"bytes,12,opt,name=worker_protocol_version,json=workerProtocolVersion,proto3" json:"worker_protocol_version,omitempty"`
+	RuntimeContractVersion  string                 `protobuf:"bytes,13,opt,name=runtime_contract_version,json=runtimeContractVersion,proto3" json:"runtime_contract_version,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
 
 func (x *WorkerControlServiceClaimResponse) Reset() {
 	*x = WorkerControlServiceClaimResponse{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[21]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2450,7 +2639,7 @@ func (x *WorkerControlServiceClaimResponse) String() string {
 func (*WorkerControlServiceClaimResponse) ProtoMessage() {}
 
 func (x *WorkerControlServiceClaimResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[21]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2463,7 +2652,7 @@ func (x *WorkerControlServiceClaimResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use WorkerControlServiceClaimResponse.ProtoReflect.Descriptor instead.
 func (*WorkerControlServiceClaimResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{21}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *WorkerControlServiceClaimResponse) GetSession() *CoreCloudWorkerSession {
@@ -2543,20 +2732,35 @@ func (x *WorkerControlServiceClaimResponse) GetNotAfter() *timestamppb.Timestamp
 	return nil
 }
 
+func (x *WorkerControlServiceClaimResponse) GetWorkerProtocolVersion() string {
+	if x != nil {
+		return x.WorkerProtocolVersion
+	}
+	return ""
+}
+
+func (x *WorkerControlServiceClaimResponse) GetRuntimeContractVersion() string {
+	if x != nil {
+		return x.RuntimeContractVersion
+	}
+	return ""
+}
+
 type WorkerControlServiceHeartbeatRequest struct {
-	state            protoimpl.MessageState    `protogen:"open.v1"`
-	SessionId        string                    `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	SessionToken     []byte                    `protobuf:"bytes,2,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
-	Fence            *CoreCloudWorkerTaskFence `protobuf:"bytes,3,opt,name=fence,proto3" json:"fence,omitempty"`
-	ProgressSequence uint64                    `protobuf:"varint,4,opt,name=progress_sequence,json=progressSequence,proto3" json:"progress_sequence,omitempty"`
-	IdempotencyKey   string                    `protobuf:"bytes,5,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	state            protoimpl.MessageState           `protogen:"open.v1"`
+	SessionId        string                           `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SessionToken     []byte                           `protobuf:"bytes,2,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
+	Fence            *CoreCloudWorkerTaskFence        `protobuf:"bytes,3,opt,name=fence,proto3" json:"fence,omitempty"`
+	ProgressSequence uint64                           `protobuf:"varint,4,opt,name=progress_sequence,json=progressSequence,proto3" json:"progress_sequence,omitempty"`
+	IdempotencyKey   string                           `protobuf:"bytes,5,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	Progress         *CoreCloudWorkerProgressSnapshot `protobuf:"bytes,6,opt,name=progress,proto3" json:"progress,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WorkerControlServiceHeartbeatRequest) Reset() {
 	*x = WorkerControlServiceHeartbeatRequest{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[22]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2568,7 +2772,7 @@ func (x *WorkerControlServiceHeartbeatRequest) String() string {
 func (*WorkerControlServiceHeartbeatRequest) ProtoMessage() {}
 
 func (x *WorkerControlServiceHeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[22]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2581,7 +2785,7 @@ func (x *WorkerControlServiceHeartbeatRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use WorkerControlServiceHeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*WorkerControlServiceHeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{22}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *WorkerControlServiceHeartbeatRequest) GetSessionId() string {
@@ -2619,6 +2823,13 @@ func (x *WorkerControlServiceHeartbeatRequest) GetIdempotencyKey() string {
 	return ""
 }
 
+func (x *WorkerControlServiceHeartbeatRequest) GetProgress() *CoreCloudWorkerProgressSnapshot {
+	if x != nil {
+		return x.Progress
+	}
+	return nil
+}
+
 type WorkerControlServiceHeartbeatResponse struct {
 	state         protoimpl.MessageState  `protogen:"open.v1"`
 	Session       *CoreCloudWorkerSession `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
@@ -2628,7 +2839,7 @@ type WorkerControlServiceHeartbeatResponse struct {
 
 func (x *WorkerControlServiceHeartbeatResponse) Reset() {
 	*x = WorkerControlServiceHeartbeatResponse{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[23]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2640,7 +2851,7 @@ func (x *WorkerControlServiceHeartbeatResponse) String() string {
 func (*WorkerControlServiceHeartbeatResponse) ProtoMessage() {}
 
 func (x *WorkerControlServiceHeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[23]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2653,7 +2864,7 @@ func (x *WorkerControlServiceHeartbeatResponse) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use WorkerControlServiceHeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*WorkerControlServiceHeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{23}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *WorkerControlServiceHeartbeatResponse) GetSession() *CoreCloudWorkerSession {
@@ -2664,20 +2875,22 @@ func (x *WorkerControlServiceHeartbeatResponse) GetSession() *CoreCloudWorkerSes
 }
 
 type WorkerControlServiceCompleteRequest struct {
-	state           protoimpl.MessageState               `protogen:"open.v1"`
-	SessionId       string                               `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	SessionToken    []byte                               `protobuf:"bytes,2,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
-	Fence           *CoreCloudWorkerTaskFence            `protobuf:"bytes,3,opt,name=fence,proto3" json:"fence,omitempty"`
-	Claim           *CoreCloudWorkerObjectClaim          `protobuf:"bytes,4,opt,name=claim,proto3" json:"claim,omitempty"`
-	IdempotencyKey  string                               `protobuf:"bytes,5,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	RuntimeTopology *CoreCloudWorkerRuntimeTopologyProof `protobuf:"bytes,6,opt,name=runtime_topology,json=runtimeTopology,proto3" json:"runtime_topology,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state            protoimpl.MessageState               `protogen:"open.v1"`
+	SessionId        string                               `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SessionToken     []byte                               `protobuf:"bytes,2,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
+	Fence            *CoreCloudWorkerTaskFence            `protobuf:"bytes,3,opt,name=fence,proto3" json:"fence,omitempty"`
+	Claim            *CoreCloudWorkerObjectClaim          `protobuf:"bytes,4,opt,name=claim,proto3" json:"claim,omitempty"`
+	IdempotencyKey   string                               `protobuf:"bytes,5,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	RuntimeTopology  *CoreCloudWorkerRuntimeTopologyProof `protobuf:"bytes,6,opt,name=runtime_topology,json=runtimeTopology,proto3" json:"runtime_topology,omitempty"`
+	ProgressSequence uint64                               `protobuf:"varint,7,opt,name=progress_sequence,json=progressSequence,proto3" json:"progress_sequence,omitempty"`
+	Progress         *CoreCloudWorkerProgressSnapshot     `protobuf:"bytes,8,opt,name=progress,proto3" json:"progress,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WorkerControlServiceCompleteRequest) Reset() {
 	*x = WorkerControlServiceCompleteRequest{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[24]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2689,7 +2902,7 @@ func (x *WorkerControlServiceCompleteRequest) String() string {
 func (*WorkerControlServiceCompleteRequest) ProtoMessage() {}
 
 func (x *WorkerControlServiceCompleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[24]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2702,7 +2915,7 @@ func (x *WorkerControlServiceCompleteRequest) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use WorkerControlServiceCompleteRequest.ProtoReflect.Descriptor instead.
 func (*WorkerControlServiceCompleteRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{24}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *WorkerControlServiceCompleteRequest) GetSessionId() string {
@@ -2747,6 +2960,20 @@ func (x *WorkerControlServiceCompleteRequest) GetRuntimeTopology() *CoreCloudWor
 	return nil
 }
 
+func (x *WorkerControlServiceCompleteRequest) GetProgressSequence() uint64 {
+	if x != nil {
+		return x.ProgressSequence
+	}
+	return 0
+}
+
+func (x *WorkerControlServiceCompleteRequest) GetProgress() *CoreCloudWorkerProgressSnapshot {
+	if x != nil {
+		return x.Progress
+	}
+	return nil
+}
+
 type WorkerControlServiceCompleteResponse struct {
 	state         protoimpl.MessageState  `protogen:"open.v1"`
 	Session       *CoreCloudWorkerSession `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
@@ -2756,7 +2983,7 @@ type WorkerControlServiceCompleteResponse struct {
 
 func (x *WorkerControlServiceCompleteResponse) Reset() {
 	*x = WorkerControlServiceCompleteResponse{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[25]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2768,7 +2995,7 @@ func (x *WorkerControlServiceCompleteResponse) String() string {
 func (*WorkerControlServiceCompleteResponse) ProtoMessage() {}
 
 func (x *WorkerControlServiceCompleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[25]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2781,7 +3008,7 @@ func (x *WorkerControlServiceCompleteResponse) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use WorkerControlServiceCompleteResponse.ProtoReflect.Descriptor instead.
 func (*WorkerControlServiceCompleteResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{25}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *WorkerControlServiceCompleteResponse) GetSession() *CoreCloudWorkerSession {
@@ -2792,20 +3019,22 @@ func (x *WorkerControlServiceCompleteResponse) GetSession() *CoreCloudWorkerSess
 }
 
 type WorkerControlServiceFailRequest struct {
-	state          protoimpl.MessageState    `protogen:"open.v1"`
-	SessionId      string                    `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	SessionToken   []byte                    `protobuf:"bytes,2,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
-	Fence          *CoreCloudWorkerTaskFence `protobuf:"bytes,3,opt,name=fence,proto3" json:"fence,omitempty"`
-	Code           string                    `protobuf:"bytes,4,opt,name=code,proto3" json:"code,omitempty"`
-	Summary        string                    `protobuf:"bytes,5,opt,name=summary,proto3" json:"summary,omitempty"`
-	IdempotencyKey string                    `protobuf:"bytes,6,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state            protoimpl.MessageState           `protogen:"open.v1"`
+	SessionId        string                           `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SessionToken     []byte                           `protobuf:"bytes,2,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
+	Fence            *CoreCloudWorkerTaskFence        `protobuf:"bytes,3,opt,name=fence,proto3" json:"fence,omitempty"`
+	Code             string                           `protobuf:"bytes,4,opt,name=code,proto3" json:"code,omitempty"`
+	Summary          string                           `protobuf:"bytes,5,opt,name=summary,proto3" json:"summary,omitempty"`
+	IdempotencyKey   string                           `protobuf:"bytes,6,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	ProgressSequence uint64                           `protobuf:"varint,7,opt,name=progress_sequence,json=progressSequence,proto3" json:"progress_sequence,omitempty"`
+	Progress         *CoreCloudWorkerProgressSnapshot `protobuf:"bytes,8,opt,name=progress,proto3" json:"progress,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WorkerControlServiceFailRequest) Reset() {
 	*x = WorkerControlServiceFailRequest{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[26]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2817,7 +3046,7 @@ func (x *WorkerControlServiceFailRequest) String() string {
 func (*WorkerControlServiceFailRequest) ProtoMessage() {}
 
 func (x *WorkerControlServiceFailRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[26]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2830,7 +3059,7 @@ func (x *WorkerControlServiceFailRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerControlServiceFailRequest.ProtoReflect.Descriptor instead.
 func (*WorkerControlServiceFailRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{26}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *WorkerControlServiceFailRequest) GetSessionId() string {
@@ -2875,6 +3104,20 @@ func (x *WorkerControlServiceFailRequest) GetIdempotencyKey() string {
 	return ""
 }
 
+func (x *WorkerControlServiceFailRequest) GetProgressSequence() uint64 {
+	if x != nil {
+		return x.ProgressSequence
+	}
+	return 0
+}
+
+func (x *WorkerControlServiceFailRequest) GetProgress() *CoreCloudWorkerProgressSnapshot {
+	if x != nil {
+		return x.Progress
+	}
+	return nil
+}
+
 type WorkerControlServiceFailResponse struct {
 	state         protoimpl.MessageState  `protogen:"open.v1"`
 	Session       *CoreCloudWorkerSession `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
@@ -2884,7 +3127,7 @@ type WorkerControlServiceFailResponse struct {
 
 func (x *WorkerControlServiceFailResponse) Reset() {
 	*x = WorkerControlServiceFailResponse{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[27]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2896,7 +3139,7 @@ func (x *WorkerControlServiceFailResponse) String() string {
 func (*WorkerControlServiceFailResponse) ProtoMessage() {}
 
 func (x *WorkerControlServiceFailResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[27]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2909,7 +3152,7 @@ func (x *WorkerControlServiceFailResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerControlServiceFailResponse.ProtoReflect.Descriptor instead.
 func (*WorkerControlServiceFailResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{27}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *WorkerControlServiceFailResponse) GetSession() *CoreCloudWorkerSession {
@@ -3080,12 +3323,14 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"expires_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"P\n" +
 	"\x1cCoreCloudWorkerIdentityProof\x12\x16\n" +
 	"\x06method\x18\x01 \x01(\tR\x06method\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"\xe7\x01\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"\xd9\x02\n" +
 	" WorkerControlServiceClaimRequest\x12!\n" +
 	"\fchallenge_id\x18\x01 \x01(\tR\vchallengeId\x12\x14\n" +
 	"\x05nonce\x18\x02 \x01(\tR\x05nonce\x12B\n" +
 	"\x05fence\x18\x03 \x01(\v2,.dirextalk.agent.v1.CoreCloudWorkerTaskFenceR\x05fence\x12F\n" +
-	"\x05proof\x18\x04 \x01(\v20.dirextalk.agent.v1.CoreCloudWorkerIdentityProofR\x05proof\"\x80\x03\n" +
+	"\x05proof\x18\x04 \x01(\v20.dirextalk.agent.v1.CoreCloudWorkerIdentityProofR\x05proof\x126\n" +
+	"\x17worker_protocol_version\x18\x05 \x01(\tR\x15workerProtocolVersion\x128\n" +
+	"\x18runtime_contract_version\x18\x06 \x01(\tR\x16runtimeContractVersion\"\x80\x03\n" +
 	"\x19CoreCloudWorkerModelGrant\x12\x19\n" +
 	"\bgrant_id\x18\x01 \x01(\tR\agrantId\x12!\n" +
 	"\fbearer_token\x18\x02 \x01(\fR\vbearerToken\x120\n" +
@@ -3097,7 +3342,17 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\x14relay_binding_digest\x18\a \x01(\tR\x12relayBindingDigest\x12\x1d\n" +
 	"\n" +
 	"max_tokens\x18\b \x01(\x04R\tmaxTokens\x12!\n" +
-	"\flimit_digest\x18\t \x01(\tR\vlimitDigest\"\xa2\x01\n" +
+	"\flimit_digest\x18\t \x01(\tR\vlimitDigest\"\xa2\x03\n" +
+	"\x1fCoreCloudWorkerProgressSnapshot\x12F\n" +
+	"\x05phase\x18\x01 \x01(\x0e20.dirextalk.agent.v1.CoreCloudWorkerProgressPhaseR\x05phase\x12\x1d\n" +
+	"\n" +
+	"elapsed_ms\x18\x02 \x01(\x04R\telapsedMs\x12D\n" +
+	"\x10last_activity_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x0elastActivityAt\x12\x1e\n" +
+	"\vcpu_time_ms\x18\x04 \x01(\x04R\tcpuTimeMs\x125\n" +
+	"\x17memory_high_water_bytes\x18\x05 \x01(\x04R\x14memoryHighWaterBytes\x12)\n" +
+	"\x10invocation_count\x18\x06 \x01(\x04R\x0finvocationCount\x12%\n" +
+	"\x0euploaded_bytes\x18\a \x01(\x04R\ruploadedBytes\x12)\n" +
+	"\x10output_truncated\x18\b \x01(\bR\x0foutputTruncated\"\xa2\x01\n" +
 	"\x1eCoreCloudWorkerProcessIdentity\x12\x10\n" +
 	"\x03pid\x18\x01 \x01(\x05R\x03pid\x12(\n" +
 	"\x10start_time_ticks\x18\x02 \x01(\x04R\x0estartTimeTicks\x12\x16\n" +
@@ -3136,7 +3391,7 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\n" +
 	"size_bytes\x18\x05 \x01(\x03R\tsizeBytes\x12\x1d\n" +
 	"\n" +
-	"media_type\x18\x06 \x01(\tR\tmediaType\"\xf2\x05\n" +
+	"media_type\x18\x06 \x01(\tR\tmediaType\"\xd0\x06\n" +
 	"\x16CoreCloudWorkerSession\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12B\n" +
@@ -3154,7 +3409,8 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\vfinished_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"finishedAt\x12b\n" +
 	"\x10runtime_topology\x18\f \x01(\v27.dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProofR\x0fruntimeTopology\x126\n" +
-	"\x17runtime_topology_digest\x18\r \x01(\tR\x15runtimeTopologyDigest\"\xec\x04\n" +
+	"\x17runtime_topology_digest\x18\r \x01(\tR\x15runtimeTopologyDigest\x12\\\n" +
+	"\x0flatest_progress\x18\x0e \x01(\v23.dirextalk.agent.v1.CoreCloudWorkerProgressSnapshotR\x0elatestProgress\"\xde\x05\n" +
 	"!WorkerControlServiceClaimResponse\x12D\n" +
 	"\asession\x18\x01 \x01(\v2*.dirextalk.agent.v1.CoreCloudWorkerSessionR\asession\x12#\n" +
 	"\rsession_token\x18\x02 \x01(\fR\fsessionToken\x12N\n" +
@@ -3168,16 +3424,19 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\x13artifact_key_prefix\x18\t \x01(\tR\x11artifactKeyPrefix\x12:\n" +
 	"\x19heartbeat_interval_millis\x18\n" +
 	" \x01(\x04R\x17heartbeatIntervalMillis\x127\n" +
-	"\tnot_after\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\bnotAfter\"\x84\x02\n" +
+	"\tnot_after\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\bnotAfter\x126\n" +
+	"\x17worker_protocol_version\x18\f \x01(\tR\x15workerProtocolVersion\x128\n" +
+	"\x18runtime_contract_version\x18\r \x01(\tR\x16runtimeContractVersion\"\xd5\x02\n" +
 	"$WorkerControlServiceHeartbeatRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12#\n" +
 	"\rsession_token\x18\x02 \x01(\fR\fsessionToken\x12B\n" +
 	"\x05fence\x18\x03 \x01(\v2,.dirextalk.agent.v1.CoreCloudWorkerTaskFenceR\x05fence\x12+\n" +
 	"\x11progress_sequence\x18\x04 \x01(\x04R\x10progressSequence\x12'\n" +
-	"\x0fidempotency_key\x18\x05 \x01(\tR\x0eidempotencyKey\"m\n" +
+	"\x0fidempotency_key\x18\x05 \x01(\tR\x0eidempotencyKey\x12O\n" +
+	"\bprogress\x18\x06 \x01(\v23.dirextalk.agent.v1.CoreCloudWorkerProgressSnapshotR\bprogress\"m\n" +
 	"%WorkerControlServiceHeartbeatResponse\x12D\n" +
-	"\asession\x18\x01 \x01(\v2*.dirextalk.agent.v1.CoreCloudWorkerSessionR\asession\"\x80\x03\n" +
+	"\asession\x18\x01 \x01(\v2*.dirextalk.agent.v1.CoreCloudWorkerSessionR\asession\"\xfe\x03\n" +
 	"#WorkerControlServiceCompleteRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12#\n" +
@@ -3185,9 +3444,11 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\x05fence\x18\x03 \x01(\v2,.dirextalk.agent.v1.CoreCloudWorkerTaskFenceR\x05fence\x12D\n" +
 	"\x05claim\x18\x04 \x01(\v2..dirextalk.agent.v1.CoreCloudWorkerObjectClaimR\x05claim\x12'\n" +
 	"\x0fidempotency_key\x18\x05 \x01(\tR\x0eidempotencyKey\x12b\n" +
-	"\x10runtime_topology\x18\x06 \x01(\v27.dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProofR\x0fruntimeTopology\"l\n" +
+	"\x10runtime_topology\x18\x06 \x01(\v27.dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProofR\x0fruntimeTopology\x12+\n" +
+	"\x11progress_sequence\x18\a \x01(\x04R\x10progressSequence\x12O\n" +
+	"\bprogress\x18\b \x01(\v23.dirextalk.agent.v1.CoreCloudWorkerProgressSnapshotR\bprogress\"l\n" +
 	"$WorkerControlServiceCompleteResponse\x12D\n" +
-	"\asession\x18\x01 \x01(\v2*.dirextalk.agent.v1.CoreCloudWorkerSessionR\asession\"\x80\x02\n" +
+	"\asession\x18\x01 \x01(\v2*.dirextalk.agent.v1.CoreCloudWorkerSessionR\asession\"\xfe\x02\n" +
 	"\x1fWorkerControlServiceFailRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12#\n" +
@@ -3195,7 +3456,9 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\x05fence\x18\x03 \x01(\v2,.dirextalk.agent.v1.CoreCloudWorkerTaskFenceR\x05fence\x12\x12\n" +
 	"\x04code\x18\x04 \x01(\tR\x04code\x12\x18\n" +
 	"\asummary\x18\x05 \x01(\tR\asummary\x12'\n" +
-	"\x0fidempotency_key\x18\x06 \x01(\tR\x0eidempotencyKey\"h\n" +
+	"\x0fidempotency_key\x18\x06 \x01(\tR\x0eidempotencyKey\x12+\n" +
+	"\x11progress_sequence\x18\a \x01(\x04R\x10progressSequence\x12O\n" +
+	"\bprogress\x18\b \x01(\v23.dirextalk.agent.v1.CoreCloudWorkerProgressSnapshotR\bprogress\"h\n" +
 	" WorkerControlServiceFailResponse\x12D\n" +
 	"\asession\x18\x01 \x01(\v2*.dirextalk.agent.v1.CoreCloudWorkerSessionR\asession*\xd7\x01\n" +
 	"\x1cCoreCloudWorkerWorkspaceMode\x120\n" +
@@ -3223,7 +3486,14 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"+CORE_CLOUD_WORKER_SESSION_STATE_UNSPECIFIED\x10\x00\x12*\n" +
 	"&CORE_CLOUD_WORKER_SESSION_STATE_ACTIVE\x10\x01\x12-\n" +
 	")CORE_CLOUD_WORKER_SESSION_STATE_COMPLETED\x10\x02\x12*\n" +
-	"&CORE_CLOUD_WORKER_SESSION_STATE_FAILED\x10\x03*\x82\x02\n" +
+	"&CORE_CLOUD_WORKER_SESSION_STATE_FAILED\x10\x03*\xce\x02\n" +
+	"\x1cCoreCloudWorkerProgressPhase\x120\n" +
+	",CORE_CLOUD_WORKER_PROGRESS_PHASE_UNSPECIFIED\x10\x00\x12,\n" +
+	"(CORE_CLOUD_WORKER_PROGRESS_PHASE_CLAIMED\x10\x01\x125\n" +
+	"1CORE_CLOUD_WORKER_PROGRESS_PHASE_PREPARING_INPUTS\x10\x02\x12/\n" +
+	"+CORE_CLOUD_WORKER_PROGRESS_PHASE_RUNNING_PI\x10\x03\x125\n" +
+	"1CORE_CLOUD_WORKER_PROGRESS_PHASE_UPLOADING_RESULT\x10\x04\x12/\n" +
+	"+CORE_CLOUD_WORKER_PROGRESS_PHASE_COMPLETING\x10\x05*\x82\x02\n" +
 	"#CoreCloudWorkerRuntimeTopologyState\x128\n" +
 	"4CORE_CLOUD_WORKER_RUNTIME_TOPOLOGY_STATE_UNSPECIFIED\x10\x00\x123\n" +
 	"/CORE_CLOUD_WORKER_RUNTIME_TOPOLOGY_STATE_ACTIVE\x10\x01\x125\n" +
@@ -3248,104 +3518,112 @@ func file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP() []byte {
 	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescData
 }
 
-var file_dirextalk_agent_v1_core_cloud_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_dirextalk_agent_v1_core_cloud_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_dirextalk_agent_v1_core_cloud_worker_proto_goTypes = []any{
 	(CoreCloudWorkerWorkspaceMode)(0),                          // 0: dirextalk.agent.v1.CoreCloudWorkerWorkspaceMode
 	(CoreCloudWorkerExecutionState)(0),                         // 1: dirextalk.agent.v1.CoreCloudWorkerExecutionState
 	(CoreCloudWorkerSessionState)(0),                           // 2: dirextalk.agent.v1.CoreCloudWorkerSessionState
-	(CoreCloudWorkerRuntimeTopologyState)(0),                   // 3: dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyState
-	(*CoreCloudWorkerAwsProjection)(nil),                       // 4: dirextalk.agent.v1.CoreCloudWorkerAwsProjection
-	(*CoreCloudWorkerComputeProjection)(nil),                   // 5: dirextalk.agent.v1.CoreCloudWorkerComputeProjection
-	(*CoreCloudWorkerLimits)(nil),                              // 6: dirextalk.agent.v1.CoreCloudWorkerLimits
-	(*CoreCloudWorkerSecretGrantProjection)(nil),               // 7: dirextalk.agent.v1.CoreCloudWorkerSecretGrantProjection
-	(*CoreCloudWorkerModelAuthorizationProjection)(nil),        // 8: dirextalk.agent.v1.CoreCloudWorkerModelAuthorizationProjection
-	(*CoreCloudWorkerQuote)(nil),                               // 9: dirextalk.agent.v1.CoreCloudWorkerQuote
-	(*CoreCloudWorkerPlan)(nil),                                // 10: dirextalk.agent.v1.CoreCloudWorkerPlan
-	(*CoreCloudWorkerCleanupSummary)(nil),                      // 11: dirextalk.agent.v1.CoreCloudWorkerCleanupSummary
-	(*CoreCloudWorkerExecution)(nil),                           // 12: dirextalk.agent.v1.CoreCloudWorkerExecution
-	(*CoreCloudWorkerArtifact)(nil),                            // 13: dirextalk.agent.v1.CoreCloudWorkerArtifact
-	(*CoreCloudWorkerTaskFence)(nil),                           // 14: dirextalk.agent.v1.CoreCloudWorkerTaskFence
-	(*CoreCloudWorkerLaunchLookup)(nil),                        // 15: dirextalk.agent.v1.CoreCloudWorkerLaunchLookup
-	(*WorkerControlServiceIssueIdentityChallengeRequest)(nil),  // 16: dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeRequest
-	(*WorkerControlServiceIssueIdentityChallengeResponse)(nil), // 17: dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeResponse
-	(*CoreCloudWorkerIdentityProof)(nil),                       // 18: dirextalk.agent.v1.CoreCloudWorkerIdentityProof
-	(*WorkerControlServiceClaimRequest)(nil),                   // 19: dirextalk.agent.v1.WorkerControlServiceClaimRequest
-	(*CoreCloudWorkerModelGrant)(nil),                          // 20: dirextalk.agent.v1.CoreCloudWorkerModelGrant
-	(*CoreCloudWorkerProcessIdentity)(nil),                     // 21: dirextalk.agent.v1.CoreCloudWorkerProcessIdentity
-	(*CoreCloudWorkerRuntimeTopologyProof)(nil),                // 22: dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProof
-	(*CoreCloudWorkerObjectClaim)(nil),                         // 23: dirextalk.agent.v1.CoreCloudWorkerObjectClaim
-	(*CoreCloudWorkerSession)(nil),                             // 24: dirextalk.agent.v1.CoreCloudWorkerSession
-	(*WorkerControlServiceClaimResponse)(nil),                  // 25: dirextalk.agent.v1.WorkerControlServiceClaimResponse
-	(*WorkerControlServiceHeartbeatRequest)(nil),               // 26: dirextalk.agent.v1.WorkerControlServiceHeartbeatRequest
-	(*WorkerControlServiceHeartbeatResponse)(nil),              // 27: dirextalk.agent.v1.WorkerControlServiceHeartbeatResponse
-	(*WorkerControlServiceCompleteRequest)(nil),                // 28: dirextalk.agent.v1.WorkerControlServiceCompleteRequest
-	(*WorkerControlServiceCompleteResponse)(nil),               // 29: dirextalk.agent.v1.WorkerControlServiceCompleteResponse
-	(*WorkerControlServiceFailRequest)(nil),                    // 30: dirextalk.agent.v1.WorkerControlServiceFailRequest
-	(*WorkerControlServiceFailResponse)(nil),                   // 31: dirextalk.agent.v1.WorkerControlServiceFailResponse
-	(*timestamppb.Timestamp)(nil),                              // 32: google.protobuf.Timestamp
+	(CoreCloudWorkerProgressPhase)(0),                          // 3: dirextalk.agent.v1.CoreCloudWorkerProgressPhase
+	(CoreCloudWorkerRuntimeTopologyState)(0),                   // 4: dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyState
+	(*CoreCloudWorkerAwsProjection)(nil),                       // 5: dirextalk.agent.v1.CoreCloudWorkerAwsProjection
+	(*CoreCloudWorkerComputeProjection)(nil),                   // 6: dirextalk.agent.v1.CoreCloudWorkerComputeProjection
+	(*CoreCloudWorkerLimits)(nil),                              // 7: dirextalk.agent.v1.CoreCloudWorkerLimits
+	(*CoreCloudWorkerSecretGrantProjection)(nil),               // 8: dirextalk.agent.v1.CoreCloudWorkerSecretGrantProjection
+	(*CoreCloudWorkerModelAuthorizationProjection)(nil),        // 9: dirextalk.agent.v1.CoreCloudWorkerModelAuthorizationProjection
+	(*CoreCloudWorkerQuote)(nil),                               // 10: dirextalk.agent.v1.CoreCloudWorkerQuote
+	(*CoreCloudWorkerPlan)(nil),                                // 11: dirextalk.agent.v1.CoreCloudWorkerPlan
+	(*CoreCloudWorkerCleanupSummary)(nil),                      // 12: dirextalk.agent.v1.CoreCloudWorkerCleanupSummary
+	(*CoreCloudWorkerExecution)(nil),                           // 13: dirextalk.agent.v1.CoreCloudWorkerExecution
+	(*CoreCloudWorkerArtifact)(nil),                            // 14: dirextalk.agent.v1.CoreCloudWorkerArtifact
+	(*CoreCloudWorkerTaskFence)(nil),                           // 15: dirextalk.agent.v1.CoreCloudWorkerTaskFence
+	(*CoreCloudWorkerLaunchLookup)(nil),                        // 16: dirextalk.agent.v1.CoreCloudWorkerLaunchLookup
+	(*WorkerControlServiceIssueIdentityChallengeRequest)(nil),  // 17: dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeRequest
+	(*WorkerControlServiceIssueIdentityChallengeResponse)(nil), // 18: dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeResponse
+	(*CoreCloudWorkerIdentityProof)(nil),                       // 19: dirextalk.agent.v1.CoreCloudWorkerIdentityProof
+	(*WorkerControlServiceClaimRequest)(nil),                   // 20: dirextalk.agent.v1.WorkerControlServiceClaimRequest
+	(*CoreCloudWorkerModelGrant)(nil),                          // 21: dirextalk.agent.v1.CoreCloudWorkerModelGrant
+	(*CoreCloudWorkerProgressSnapshot)(nil),                    // 22: dirextalk.agent.v1.CoreCloudWorkerProgressSnapshot
+	(*CoreCloudWorkerProcessIdentity)(nil),                     // 23: dirextalk.agent.v1.CoreCloudWorkerProcessIdentity
+	(*CoreCloudWorkerRuntimeTopologyProof)(nil),                // 24: dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProof
+	(*CoreCloudWorkerObjectClaim)(nil),                         // 25: dirextalk.agent.v1.CoreCloudWorkerObjectClaim
+	(*CoreCloudWorkerSession)(nil),                             // 26: dirextalk.agent.v1.CoreCloudWorkerSession
+	(*WorkerControlServiceClaimResponse)(nil),                  // 27: dirextalk.agent.v1.WorkerControlServiceClaimResponse
+	(*WorkerControlServiceHeartbeatRequest)(nil),               // 28: dirextalk.agent.v1.WorkerControlServiceHeartbeatRequest
+	(*WorkerControlServiceHeartbeatResponse)(nil),              // 29: dirextalk.agent.v1.WorkerControlServiceHeartbeatResponse
+	(*WorkerControlServiceCompleteRequest)(nil),                // 30: dirextalk.agent.v1.WorkerControlServiceCompleteRequest
+	(*WorkerControlServiceCompleteResponse)(nil),               // 31: dirextalk.agent.v1.WorkerControlServiceCompleteResponse
+	(*WorkerControlServiceFailRequest)(nil),                    // 32: dirextalk.agent.v1.WorkerControlServiceFailRequest
+	(*WorkerControlServiceFailResponse)(nil),                   // 33: dirextalk.agent.v1.WorkerControlServiceFailResponse
+	(*timestamppb.Timestamp)(nil),                              // 34: google.protobuf.Timestamp
 }
 var file_dirextalk_agent_v1_core_cloud_worker_proto_depIdxs = []int32{
-	32, // 0: dirextalk.agent.v1.CoreCloudWorkerQuote.source_time:type_name -> google.protobuf.Timestamp
-	32, // 1: dirextalk.agent.v1.CoreCloudWorkerQuote.expires_at:type_name -> google.protobuf.Timestamp
+	34, // 0: dirextalk.agent.v1.CoreCloudWorkerQuote.source_time:type_name -> google.protobuf.Timestamp
+	34, // 1: dirextalk.agent.v1.CoreCloudWorkerQuote.expires_at:type_name -> google.protobuf.Timestamp
 	0,  // 2: dirextalk.agent.v1.CoreCloudWorkerPlan.workspace_mode:type_name -> dirextalk.agent.v1.CoreCloudWorkerWorkspaceMode
-	8,  // 3: dirextalk.agent.v1.CoreCloudWorkerPlan.model_authorization:type_name -> dirextalk.agent.v1.CoreCloudWorkerModelAuthorizationProjection
-	4,  // 4: dirextalk.agent.v1.CoreCloudWorkerPlan.aws:type_name -> dirextalk.agent.v1.CoreCloudWorkerAwsProjection
-	5,  // 5: dirextalk.agent.v1.CoreCloudWorkerPlan.compute:type_name -> dirextalk.agent.v1.CoreCloudWorkerComputeProjection
-	6,  // 6: dirextalk.agent.v1.CoreCloudWorkerPlan.limits:type_name -> dirextalk.agent.v1.CoreCloudWorkerLimits
-	7,  // 7: dirextalk.agent.v1.CoreCloudWorkerPlan.secret_grants:type_name -> dirextalk.agent.v1.CoreCloudWorkerSecretGrantProjection
-	9,  // 8: dirextalk.agent.v1.CoreCloudWorkerPlan.quote:type_name -> dirextalk.agent.v1.CoreCloudWorkerQuote
-	32, // 9: dirextalk.agent.v1.CoreCloudWorkerPlan.created_at:type_name -> google.protobuf.Timestamp
-	32, // 10: dirextalk.agent.v1.CoreCloudWorkerPlan.updated_at:type_name -> google.protobuf.Timestamp
-	32, // 11: dirextalk.agent.v1.CoreCloudWorkerCleanupSummary.verified_at:type_name -> google.protobuf.Timestamp
+	9,  // 3: dirextalk.agent.v1.CoreCloudWorkerPlan.model_authorization:type_name -> dirextalk.agent.v1.CoreCloudWorkerModelAuthorizationProjection
+	5,  // 4: dirextalk.agent.v1.CoreCloudWorkerPlan.aws:type_name -> dirextalk.agent.v1.CoreCloudWorkerAwsProjection
+	6,  // 5: dirextalk.agent.v1.CoreCloudWorkerPlan.compute:type_name -> dirextalk.agent.v1.CoreCloudWorkerComputeProjection
+	7,  // 6: dirextalk.agent.v1.CoreCloudWorkerPlan.limits:type_name -> dirextalk.agent.v1.CoreCloudWorkerLimits
+	8,  // 7: dirextalk.agent.v1.CoreCloudWorkerPlan.secret_grants:type_name -> dirextalk.agent.v1.CoreCloudWorkerSecretGrantProjection
+	10, // 8: dirextalk.agent.v1.CoreCloudWorkerPlan.quote:type_name -> dirextalk.agent.v1.CoreCloudWorkerQuote
+	34, // 9: dirextalk.agent.v1.CoreCloudWorkerPlan.created_at:type_name -> google.protobuf.Timestamp
+	34, // 10: dirextalk.agent.v1.CoreCloudWorkerPlan.updated_at:type_name -> google.protobuf.Timestamp
+	34, // 11: dirextalk.agent.v1.CoreCloudWorkerCleanupSummary.verified_at:type_name -> google.protobuf.Timestamp
 	1,  // 12: dirextalk.agent.v1.CoreCloudWorkerExecution.status:type_name -> dirextalk.agent.v1.CoreCloudWorkerExecutionState
 	0,  // 13: dirextalk.agent.v1.CoreCloudWorkerExecution.workspace_mode:type_name -> dirextalk.agent.v1.CoreCloudWorkerWorkspaceMode
-	11, // 14: dirextalk.agent.v1.CoreCloudWorkerExecution.cleanup:type_name -> dirextalk.agent.v1.CoreCloudWorkerCleanupSummary
-	32, // 15: dirextalk.agent.v1.CoreCloudWorkerExecution.created_at:type_name -> google.protobuf.Timestamp
-	32, // 16: dirextalk.agent.v1.CoreCloudWorkerExecution.updated_at:type_name -> google.protobuf.Timestamp
-	32, // 17: dirextalk.agent.v1.CoreCloudWorkerArtifact.created_at:type_name -> google.protobuf.Timestamp
-	15, // 18: dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeRequest.launch:type_name -> dirextalk.agent.v1.CoreCloudWorkerLaunchLookup
-	14, // 19: dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeResponse.fence:type_name -> dirextalk.agent.v1.CoreCloudWorkerTaskFence
-	32, // 20: dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeResponse.expires_at:type_name -> google.protobuf.Timestamp
-	14, // 21: dirextalk.agent.v1.WorkerControlServiceClaimRequest.fence:type_name -> dirextalk.agent.v1.CoreCloudWorkerTaskFence
-	18, // 22: dirextalk.agent.v1.WorkerControlServiceClaimRequest.proof:type_name -> dirextalk.agent.v1.CoreCloudWorkerIdentityProof
-	32, // 23: dirextalk.agent.v1.CoreCloudWorkerModelGrant.expires_at:type_name -> google.protobuf.Timestamp
-	3,  // 24: dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProof.state:type_name -> dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyState
-	21, // 25: dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProof.worker:type_name -> dirextalk.agent.v1.CoreCloudWorkerProcessIdentity
-	21, // 26: dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProof.pi:type_name -> dirextalk.agent.v1.CoreCloudWorkerProcessIdentity
-	14, // 27: dirextalk.agent.v1.CoreCloudWorkerSession.fence:type_name -> dirextalk.agent.v1.CoreCloudWorkerTaskFence
-	2,  // 28: dirextalk.agent.v1.CoreCloudWorkerSession.state:type_name -> dirextalk.agent.v1.CoreCloudWorkerSessionState
-	23, // 29: dirextalk.agent.v1.CoreCloudWorkerSession.result:type_name -> dirextalk.agent.v1.CoreCloudWorkerObjectClaim
-	32, // 30: dirextalk.agent.v1.CoreCloudWorkerSession.claimed_at:type_name -> google.protobuf.Timestamp
-	32, // 31: dirextalk.agent.v1.CoreCloudWorkerSession.heartbeat_at:type_name -> google.protobuf.Timestamp
-	32, // 32: dirextalk.agent.v1.CoreCloudWorkerSession.finished_at:type_name -> google.protobuf.Timestamp
-	22, // 33: dirextalk.agent.v1.CoreCloudWorkerSession.runtime_topology:type_name -> dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProof
-	24, // 34: dirextalk.agent.v1.WorkerControlServiceClaimResponse.session:type_name -> dirextalk.agent.v1.CoreCloudWorkerSession
-	20, // 35: dirextalk.agent.v1.WorkerControlServiceClaimResponse.model_grant:type_name -> dirextalk.agent.v1.CoreCloudWorkerModelGrant
-	32, // 36: dirextalk.agent.v1.WorkerControlServiceClaimResponse.not_after:type_name -> google.protobuf.Timestamp
-	14, // 37: dirextalk.agent.v1.WorkerControlServiceHeartbeatRequest.fence:type_name -> dirextalk.agent.v1.CoreCloudWorkerTaskFence
-	24, // 38: dirextalk.agent.v1.WorkerControlServiceHeartbeatResponse.session:type_name -> dirextalk.agent.v1.CoreCloudWorkerSession
-	14, // 39: dirextalk.agent.v1.WorkerControlServiceCompleteRequest.fence:type_name -> dirextalk.agent.v1.CoreCloudWorkerTaskFence
-	23, // 40: dirextalk.agent.v1.WorkerControlServiceCompleteRequest.claim:type_name -> dirextalk.agent.v1.CoreCloudWorkerObjectClaim
-	22, // 41: dirextalk.agent.v1.WorkerControlServiceCompleteRequest.runtime_topology:type_name -> dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProof
-	24, // 42: dirextalk.agent.v1.WorkerControlServiceCompleteResponse.session:type_name -> dirextalk.agent.v1.CoreCloudWorkerSession
-	14, // 43: dirextalk.agent.v1.WorkerControlServiceFailRequest.fence:type_name -> dirextalk.agent.v1.CoreCloudWorkerTaskFence
-	24, // 44: dirextalk.agent.v1.WorkerControlServiceFailResponse.session:type_name -> dirextalk.agent.v1.CoreCloudWorkerSession
-	16, // 45: dirextalk.agent.v1.WorkerControlService.IssueIdentityChallenge:input_type -> dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeRequest
-	19, // 46: dirextalk.agent.v1.WorkerControlService.Claim:input_type -> dirextalk.agent.v1.WorkerControlServiceClaimRequest
-	26, // 47: dirextalk.agent.v1.WorkerControlService.Heartbeat:input_type -> dirextalk.agent.v1.WorkerControlServiceHeartbeatRequest
-	28, // 48: dirextalk.agent.v1.WorkerControlService.Complete:input_type -> dirextalk.agent.v1.WorkerControlServiceCompleteRequest
-	30, // 49: dirextalk.agent.v1.WorkerControlService.Fail:input_type -> dirextalk.agent.v1.WorkerControlServiceFailRequest
-	17, // 50: dirextalk.agent.v1.WorkerControlService.IssueIdentityChallenge:output_type -> dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeResponse
-	25, // 51: dirextalk.agent.v1.WorkerControlService.Claim:output_type -> dirextalk.agent.v1.WorkerControlServiceClaimResponse
-	27, // 52: dirextalk.agent.v1.WorkerControlService.Heartbeat:output_type -> dirextalk.agent.v1.WorkerControlServiceHeartbeatResponse
-	29, // 53: dirextalk.agent.v1.WorkerControlService.Complete:output_type -> dirextalk.agent.v1.WorkerControlServiceCompleteResponse
-	31, // 54: dirextalk.agent.v1.WorkerControlService.Fail:output_type -> dirextalk.agent.v1.WorkerControlServiceFailResponse
-	50, // [50:55] is the sub-list for method output_type
-	45, // [45:50] is the sub-list for method input_type
-	45, // [45:45] is the sub-list for extension type_name
-	45, // [45:45] is the sub-list for extension extendee
-	0,  // [0:45] is the sub-list for field type_name
+	12, // 14: dirextalk.agent.v1.CoreCloudWorkerExecution.cleanup:type_name -> dirextalk.agent.v1.CoreCloudWorkerCleanupSummary
+	34, // 15: dirextalk.agent.v1.CoreCloudWorkerExecution.created_at:type_name -> google.protobuf.Timestamp
+	34, // 16: dirextalk.agent.v1.CoreCloudWorkerExecution.updated_at:type_name -> google.protobuf.Timestamp
+	34, // 17: dirextalk.agent.v1.CoreCloudWorkerArtifact.created_at:type_name -> google.protobuf.Timestamp
+	16, // 18: dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeRequest.launch:type_name -> dirextalk.agent.v1.CoreCloudWorkerLaunchLookup
+	15, // 19: dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeResponse.fence:type_name -> dirextalk.agent.v1.CoreCloudWorkerTaskFence
+	34, // 20: dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeResponse.expires_at:type_name -> google.protobuf.Timestamp
+	15, // 21: dirextalk.agent.v1.WorkerControlServiceClaimRequest.fence:type_name -> dirextalk.agent.v1.CoreCloudWorkerTaskFence
+	19, // 22: dirextalk.agent.v1.WorkerControlServiceClaimRequest.proof:type_name -> dirextalk.agent.v1.CoreCloudWorkerIdentityProof
+	34, // 23: dirextalk.agent.v1.CoreCloudWorkerModelGrant.expires_at:type_name -> google.protobuf.Timestamp
+	3,  // 24: dirextalk.agent.v1.CoreCloudWorkerProgressSnapshot.phase:type_name -> dirextalk.agent.v1.CoreCloudWorkerProgressPhase
+	34, // 25: dirextalk.agent.v1.CoreCloudWorkerProgressSnapshot.last_activity_at:type_name -> google.protobuf.Timestamp
+	4,  // 26: dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProof.state:type_name -> dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyState
+	23, // 27: dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProof.worker:type_name -> dirextalk.agent.v1.CoreCloudWorkerProcessIdentity
+	23, // 28: dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProof.pi:type_name -> dirextalk.agent.v1.CoreCloudWorkerProcessIdentity
+	15, // 29: dirextalk.agent.v1.CoreCloudWorkerSession.fence:type_name -> dirextalk.agent.v1.CoreCloudWorkerTaskFence
+	2,  // 30: dirextalk.agent.v1.CoreCloudWorkerSession.state:type_name -> dirextalk.agent.v1.CoreCloudWorkerSessionState
+	25, // 31: dirextalk.agent.v1.CoreCloudWorkerSession.result:type_name -> dirextalk.agent.v1.CoreCloudWorkerObjectClaim
+	34, // 32: dirextalk.agent.v1.CoreCloudWorkerSession.claimed_at:type_name -> google.protobuf.Timestamp
+	34, // 33: dirextalk.agent.v1.CoreCloudWorkerSession.heartbeat_at:type_name -> google.protobuf.Timestamp
+	34, // 34: dirextalk.agent.v1.CoreCloudWorkerSession.finished_at:type_name -> google.protobuf.Timestamp
+	24, // 35: dirextalk.agent.v1.CoreCloudWorkerSession.runtime_topology:type_name -> dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProof
+	22, // 36: dirextalk.agent.v1.CoreCloudWorkerSession.latest_progress:type_name -> dirextalk.agent.v1.CoreCloudWorkerProgressSnapshot
+	26, // 37: dirextalk.agent.v1.WorkerControlServiceClaimResponse.session:type_name -> dirextalk.agent.v1.CoreCloudWorkerSession
+	21, // 38: dirextalk.agent.v1.WorkerControlServiceClaimResponse.model_grant:type_name -> dirextalk.agent.v1.CoreCloudWorkerModelGrant
+	34, // 39: dirextalk.agent.v1.WorkerControlServiceClaimResponse.not_after:type_name -> google.protobuf.Timestamp
+	15, // 40: dirextalk.agent.v1.WorkerControlServiceHeartbeatRequest.fence:type_name -> dirextalk.agent.v1.CoreCloudWorkerTaskFence
+	22, // 41: dirextalk.agent.v1.WorkerControlServiceHeartbeatRequest.progress:type_name -> dirextalk.agent.v1.CoreCloudWorkerProgressSnapshot
+	26, // 42: dirextalk.agent.v1.WorkerControlServiceHeartbeatResponse.session:type_name -> dirextalk.agent.v1.CoreCloudWorkerSession
+	15, // 43: dirextalk.agent.v1.WorkerControlServiceCompleteRequest.fence:type_name -> dirextalk.agent.v1.CoreCloudWorkerTaskFence
+	25, // 44: dirextalk.agent.v1.WorkerControlServiceCompleteRequest.claim:type_name -> dirextalk.agent.v1.CoreCloudWorkerObjectClaim
+	24, // 45: dirextalk.agent.v1.WorkerControlServiceCompleteRequest.runtime_topology:type_name -> dirextalk.agent.v1.CoreCloudWorkerRuntimeTopologyProof
+	22, // 46: dirextalk.agent.v1.WorkerControlServiceCompleteRequest.progress:type_name -> dirextalk.agent.v1.CoreCloudWorkerProgressSnapshot
+	26, // 47: dirextalk.agent.v1.WorkerControlServiceCompleteResponse.session:type_name -> dirextalk.agent.v1.CoreCloudWorkerSession
+	15, // 48: dirextalk.agent.v1.WorkerControlServiceFailRequest.fence:type_name -> dirextalk.agent.v1.CoreCloudWorkerTaskFence
+	22, // 49: dirextalk.agent.v1.WorkerControlServiceFailRequest.progress:type_name -> dirextalk.agent.v1.CoreCloudWorkerProgressSnapshot
+	26, // 50: dirextalk.agent.v1.WorkerControlServiceFailResponse.session:type_name -> dirextalk.agent.v1.CoreCloudWorkerSession
+	17, // 51: dirextalk.agent.v1.WorkerControlService.IssueIdentityChallenge:input_type -> dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeRequest
+	20, // 52: dirextalk.agent.v1.WorkerControlService.Claim:input_type -> dirextalk.agent.v1.WorkerControlServiceClaimRequest
+	28, // 53: dirextalk.agent.v1.WorkerControlService.Heartbeat:input_type -> dirextalk.agent.v1.WorkerControlServiceHeartbeatRequest
+	30, // 54: dirextalk.agent.v1.WorkerControlService.Complete:input_type -> dirextalk.agent.v1.WorkerControlServiceCompleteRequest
+	32, // 55: dirextalk.agent.v1.WorkerControlService.Fail:input_type -> dirextalk.agent.v1.WorkerControlServiceFailRequest
+	18, // 56: dirextalk.agent.v1.WorkerControlService.IssueIdentityChallenge:output_type -> dirextalk.agent.v1.WorkerControlServiceIssueIdentityChallengeResponse
+	27, // 57: dirextalk.agent.v1.WorkerControlService.Claim:output_type -> dirextalk.agent.v1.WorkerControlServiceClaimResponse
+	29, // 58: dirextalk.agent.v1.WorkerControlService.Heartbeat:output_type -> dirextalk.agent.v1.WorkerControlServiceHeartbeatResponse
+	31, // 59: dirextalk.agent.v1.WorkerControlService.Complete:output_type -> dirextalk.agent.v1.WorkerControlServiceCompleteResponse
+	33, // 60: dirextalk.agent.v1.WorkerControlService.Fail:output_type -> dirextalk.agent.v1.WorkerControlServiceFailResponse
+	56, // [56:61] is the sub-list for method output_type
+	51, // [51:56] is the sub-list for method input_type
+	51, // [51:51] is the sub-list for extension type_name
+	51, // [51:51] is the sub-list for extension extendee
+	0,  // [0:51] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_core_cloud_worker_proto_init() }
@@ -3358,8 +3636,8 @@ func file_dirextalk_agent_v1_core_cloud_worker_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc), len(file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   28,
+			NumEnums:      5,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

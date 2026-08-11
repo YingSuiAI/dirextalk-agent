@@ -102,6 +102,10 @@ func TestCoreExtensionPostgresInstallUpdateUninstallLifecycle(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	proposedLocal, e := tasks.GetTask(ctx, executionResult.TaskID)
+	if e != nil || proposedLocal.Spec.Payload.Extension == nil || proposedLocal.Spec.Payload.Extension.ExecutionTarget != coretask.ExtensionExecutionTargetLocalSandbox {
+		t.Fatalf("sealed local execution target task=%+v err=%v", proposedLocal, e)
+	}
 	confirmationService, e := coreconfirmation.NewService(cs)
 	if e != nil {
 		t.Fatal(e)
@@ -138,6 +142,7 @@ func TestCoreExtensionPostgresInstallUpdateUninstallLifecycle(t *testing.T) {
 	key := uuid.NewString()
 	spec := coretask.TaskSpec{Kind: coretask.TaskKindExtension, Goal: "pinned execution", IdempotencyKey: key, Payload: coretask.TaskPayload{Extension: &coretask.ExtensionTaskPayload{
 		Operation:          coretask.ExtensionOperationExecuteTool,
+		ExecutionTarget:    coretask.ExtensionExecutionTargetLocalSandbox,
 		InstallationID:     latest.ID,
 		ExpectedRevision:   uint64(latest.Revision),
 		Version:            active.Pin.RegistryVersion,
@@ -403,6 +408,10 @@ func TestCoreExtensionPostgresExecutionFenceReplay(t *testing.T) {
 	execution, e := coord.RequestTask(ctx, coreextension.ExecuteRequest{OwnerID: "@owner:example.test", AccountGeneration: 1, InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: key})
 	if e != nil || execution.TaskID == "" || execution.ConfirmationID == "" {
 		t.Fatalf("execution proposal=%#v err=%v", execution, e)
+	}
+	proposedRemote, e := NewCoreTaskStore(store).GetTask(ctx, execution.TaskID)
+	if e != nil || proposedRemote.Spec.Payload.Extension == nil || proposedRemote.Spec.Payload.Extension.ExecutionTarget != coretask.ExtensionExecutionTargetRemoteExtension {
+		t.Fatalf("sealed remote execution target task=%+v err=%v", proposedRemote, e)
 	}
 	if _, e = coord.RequestTask(ctx, coreextension.ExecuteRequest{OwnerID: "@owner:example.test", AccountGeneration: 1, InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()}); !errors.Is(e, coreextension.ErrConflict) {
 		t.Fatalf("concurrent execution proposal was accepted: %v", e)

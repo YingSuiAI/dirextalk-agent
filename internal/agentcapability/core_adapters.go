@@ -579,7 +579,7 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 		if err != nil {
 			return nil, err
 		}
-		result, err := consumeDurableTurnStreamWithConversation(ctx, operationID, turn, events, c.service, c.progress)
+		result, err := consumeDurableTurnStream(ctx, operationID, turn, events, c.progress)
 		if errors.Is(context.Cause(ctx), capabilityoperation.ErrExplicitCancel) {
 			if cancelErr := cancelDurableTurn(c.service, turn); cancelErr != nil {
 				return nil, cancelErr
@@ -740,57 +740,24 @@ func consumeDurableTurnStream(
 	events <-chan coreconversation.TurnEvent,
 	progress func(context.Context, string, []byte) error,
 ) ([]byte, error) {
-	return consumeDurableTurnStreamWithConversation(ctx, operationID, turn, events, nil, progress)
-}
-
-type durableTurnConversationReader interface {
-	GetConversation(context.Context, string) (coreconversation.Conversation, error)
-}
-
-type durableTurnMetadataReader interface {
-	GetTurn(context.Context, string) (coreconversation.Turn, error)
-}
-
-func consumeDurableTurnStreamWithConversation(
-	ctx context.Context,
-	operationID string,
-	turn coreconversation.Turn,
-	events <-chan coreconversation.TurnEvent,
-	conversations durableTurnConversationReader,
-	progress func(context.Context, string, []byte) error,
-) ([]byte, error) {
 	var response *coreconversation.ChatResponse
 	for event := range events {
-		if event.Kind == coreconversation.TurnEventWaitingConfirmation && event.Message != nil {
-			if conversations == nil || event.Message.Validate() != nil || !coretask.ValidUUID(event.ConfirmationID) ||
-				!coretask.ValidUUID(event.ExecutionID) || len(event.RelatedTaskIDs) == 0 || len(event.RelatedPlanIDs) == 0 ||
-				len(event.References) != 3 {
-				return nil, coreconversation.ErrChatFailed
+		if event.Kind == coreconversation.TurnEventWaitingConfirmation {
+			projected, err := projectDurableWaitingConfirmationEvent(turn, event)
+			if err != nil {
+				return nil, err
 			}
-			conversation, err := conversations.GetConversation(ctx, turn.ConversationID)
-			if err != nil || conversation.ID != turn.ConversationID || conversation.Revision == 0 {
-				return nil, coreconversation.ErrChatFailed
-			}
-			response = &coreconversation.ChatResponse{
-				RequestID: turn.RequestID, ConversationID: turn.ConversationID,
-				Revision: conversation.Revision, Message: *event.Message, Done: true,
-				ModelProfileID: event.Message.ModelProfileID,
-				RelatedTaskIDs: append([]string(nil), event.RelatedTaskIDs...),
-				RelatedPlanIDs: append([]string(nil), event.RelatedPlanIDs...),
-				References:     append([]coreconversation.Reference(nil), event.References...),
+			if err := emitCapabilityProgressValue(ctx, operationID, projected, progress); err != nil {
+				return nil, err
 			}
 			continue
-		}
-		if reader, ok := conversations.(durableTurnMetadataReader); ok {
-			current, currentErr := reader.GetTurn(ctx, turn.ID)
-			if currentErr != nil || current.ID != turn.ID || current.RequestID != turn.RequestID || current.ConversationID != turn.ConversationID || current.Revision < turn.Revision {
-				return nil, coreconversation.ErrChatFailed
-			}
-			turn = current
 		}
 		streamEvent := durableTurnStreamEvent(turn, event)
 		if streamEvent == nil {
 			continue
+		}
+		if event.Kind != "" && event.Revision == 0 {
+			return nil, coreconversation.ErrChatFailed
 		}
 		switch streamEvent.Kind {
 		case coreconversation.EventDone:
@@ -798,7 +765,7 @@ func consumeDurableTurnStreamWithConversation(
 		case coreconversation.EventError:
 			return nil, classifyDurableTurnFailure(streamEvent.ErrCode)
 		default:
-			projected, err := projectDurableChatStreamEvent(turn, *streamEvent)
+			projected, err := projectDurableChatStreamEvent(turn, event.Revision, *streamEvent)
 			if err != nil {
 				return nil, err
 			}
@@ -848,6 +815,9 @@ type durableChatStreamEvent struct {
 	ToolResult     *coreconversation.ToolResult `json:"tool_result,omitempty"`
 	ErrorCode      string                       `json:"error_code,omitempty"`
 	ErrorSummary   string                       `json:"error_summary,omitempty"`
+	ConfirmationID string                       `json:"confirmation_id,omitempty"`
+	ExecutionID    string                       `json:"execution_id,omitempty"`
+	Status         string                       `json:"status,omitempty"`
 }
 
 func projectDurableChatStreamResult(turn coreconversation.Turn, response coreconversation.ChatResponse) (durableChatStreamResult, error) {
@@ -872,17 +842,34 @@ func projectDurableChatStreamResult(turn coreconversation.Turn, response corecon
 	}, nil
 }
 
-func projectDurableChatStreamEvent(turn coreconversation.Turn, event coreconversation.StreamEvent) (durableChatStreamEvent, error) {
-	if !coretask.ValidUUID(turn.ID) || !coretask.ValidUUID(turn.RequestID) || !coretask.ValidUUID(turn.ConversationID) || turn.Revision == 0 ||
+func projectDurableChatStreamEvent(turn coreconversation.Turn, revision uint64, event coreconversation.StreamEvent) (durableChatStreamEvent, error) {
+	if !coretask.ValidUUID(turn.ID) || !coretask.ValidUUID(turn.RequestID) || !coretask.ValidUUID(turn.ConversationID) || revision == 0 ||
 		event.RequestID != turn.RequestID || event.ConversationID != turn.ConversationID {
 		return durableChatStreamEvent{}, coreconversation.ErrChatFailed
 	}
 	return durableChatStreamEvent{
 		Kind: string(event.Kind), IdempotencyKey: turn.RequestID, ConversationID: turn.ConversationID,
-		TurnID: turn.ID, Revision: turn.Revision, Text: event.Text,
+		TurnID: turn.ID, Revision: revision, Text: event.Text,
 		ToolCall: event.ToolCall, ToolResult: event.ToolResult,
 		ErrorCode: event.ErrCode, ErrorSummary: event.ErrSummary,
 	}, nil
+}
+
+func projectDurableWaitingConfirmationEvent(turn coreconversation.Turn, event coreconversation.TurnEvent) (durableChatStreamEvent, error) {
+	if event.Revision == 0 || event.ValidateWaitingConfirmationAuthority() != nil {
+		return durableChatStreamEvent{}, coreconversation.ErrChatFailed
+	}
+	projected, err := projectDurableChatStreamEvent(turn, event.Revision, coreconversation.StreamEvent{
+		Kind:      coreconversation.StreamEventKind(coreconversation.TurnEventWaitingConfirmation),
+		RequestID: turn.RequestID, ConversationID: turn.ConversationID,
+	})
+	if err != nil {
+		return durableChatStreamEvent{}, err
+	}
+	projected.ConfirmationID = event.ConfirmationID
+	projected.ExecutionID = event.ExecutionID
+	projected.Status = event.Status
+	return projected, nil
 }
 
 func durableTurnStreamEvent(turn coreconversation.Turn, event coreconversation.TurnEvent) *coreconversation.StreamEvent {
@@ -894,7 +881,7 @@ func durableTurnStreamEvent(turn coreconversation.Turn, event coreconversation.T
 		base.Kind = coreconversation.EventStarted
 	case coreconversation.TurnEventDelta:
 		base.Kind, base.Text = coreconversation.EventDelta, event.Text
-	case coreconversation.TurnEventToolCall, coreconversation.TurnEventWaitingConfirmation:
+	case coreconversation.TurnEventToolCall:
 		base.Kind, base.ToolCall = coreconversation.EventToolCall, event.ToolCall
 	case coreconversation.TurnEventToolResult:
 		base.Kind, base.ToolResult = coreconversation.EventToolResult, event.ToolResult
@@ -2105,7 +2092,7 @@ const durableStreamExtensionSelectionSchema = `{"additionalProperties":false,"pr
 
 const durableChatStreamResultSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"done":{"const":true,"type":"boolean"},"idempotency_key":{"format":"uuid","type":"string"},"message":{"type":"object"},"model_profile_id":{"format":"uuid","type":"string"},"references":{"items":{"type":"object"},"type":"array"},"related_plan_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"related_task_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"revision":{"minimum":1,"type":"integer"},"tool_results":{"items":{"type":"object"},"type":"array"},"tool_summaries":{"items":{"type":"string"},"type":"array"}},"required":["idempotency_key","conversation_id","revision","message","done","model_profile_id"],"type":"object"}`
 
-const durableChatStreamEventSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"error_code":{"type":"string"},"error_summary":{"type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"kind":{"enum":["accepted","started","delta","tool_call","tool_result","done","error"],"type":"string"},"response":` + durableChatStreamResultSchema + `,"revision":{"minimum":1,"type":"integer"},"text":{"type":"string"},"tool_call":{"type":"object"},"tool_result":{"type":"object"},"turn_id":{"format":"uuid","type":"string"}},"required":["kind","idempotency_key","conversation_id","turn_id","revision"],"type":"object"}`
+const durableChatStreamEventSchema = `{"additionalProperties":false,"allOf":[{"if":{"properties":{"kind":{"const":"waiting_confirmation"}}},"then":{"not":{"anyOf":[{"required":["text"]},{"required":["tool_call"]},{"required":["tool_result"]},{"required":["response"]},{"required":["error_code"]},{"required":["error_summary"]}]},"required":["confirmation_id","execution_id","status"]},"else":{"not":{"anyOf":[{"required":["confirmation_id"]},{"required":["execution_id"]},{"required":["status"]}]}}}],"properties":{"confirmation_id":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"error_code":{"type":"string"},"error_summary":{"type":"string"},"execution_id":{"format":"uuid","type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"kind":{"enum":["accepted","started","delta","tool_call","tool_result","waiting_confirmation","done","error"],"type":"string"},"response":` + durableChatStreamResultSchema + `,"revision":{"minimum":1,"type":"integer"},"status":{"const":"waiting_confirmation","type":"string"},"text":{"type":"string"},"tool_call":{"type":"object"},"tool_result":{"type":"object"},"turn_id":{"format":"uuid","type":"string"}},"required":["kind","idempotency_key","conversation_id","turn_id","revision"],"type":"object"}`
 
 const memoryResultSchema = `{"additionalProperties":false,"properties":{"content":{"type":"string"},"created_at":{"format":"date-time","type":"string"},"embedding_indexed":{"type":"boolean"},"embedding_revision":{"minimum":0,"type":"integer"},"embedding_stale":{"type":"boolean"},"embedding_status":{"type":"string"},"error_code":{"type":"string"},"memory_id":{"format":"uuid","type":"string"},"replayed":{"type":"boolean"},"revision":{"minimum":1,"type":"integer"},"tags":{"items":{"type":"string"},"type":"array"},"title":{"type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["memory_id","title","content","tags","revision","created_at","updated_at","replayed","embedding_indexed","embedding_stale","embedding_status"],"type":"object"}`
 

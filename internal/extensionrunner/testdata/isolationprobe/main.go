@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,19 @@ type result struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "output-over" {
+		_, _ = os.Stdout.Write(bytes.Repeat([]byte{'x'}, (256<<10)+1))
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "files-over" {
+		for i := 0; i <= 8192; i++ {
+			name := fmt.Sprintf("/work/output-%04d", i)
+			if err := os.WriteFile(name, nil, 0o600); err != nil {
+				os.Exit(35)
+			}
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "html" {
 		if err := os.WriteFile("/work/index.html", []byte("<h1>Hello from Dirextalk</h1>"), 0o600); err != nil {
 			os.Exit(34)

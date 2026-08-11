@@ -16,6 +16,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -366,10 +367,11 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		}
 		return cloudworker.Offer{}, err
 	}
-	event := core.TurnEvent{Kind: core.TurnEventWaitingConfirmation, Message: &offerMessage,
-		ConfirmationID: plan.ConfirmationID, ExecutionID: plan.ExecutionID, Status: string(cloudworker.StateWaitingUser),
-		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, References: references}
-	event.TurnID, event.Sequence, event.CreatedAt = plan.TurnID, int64(turn.LastSequence+1), plan.CreatedAt
+	event, eventErr := core.NewWaitingConfirmationTurnEvent(plan.ConfirmationID, plan.ExecutionID)
+	if eventErr != nil {
+		return cloudworker.Offer{}, cloudworker.ErrInvalid
+	}
+	event.TurnID, event.Sequence, event.Revision, event.CreatedAt = plan.TurnID, int64(turn.LastSequence+1), command.ExpectedTurnRevision+1, plan.CreatedAt
 	eventRaw, _ := json.Marshal(event)
 	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at) VALUES($1,$2,$3,$4,$5)`,
 		plan.TurnID, event.Sequence, string(event.Kind), eventRaw, plan.CreatedAt); err != nil {
@@ -897,6 +899,55 @@ func saveCloudWorkerExecutionTx(ctx context.Context, tx pgx.Tx, previous, next c
 	_, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_events(execution_id,sequence,event_id,owner_id,kind,state,revision,payload_digest,payload_json,created_at)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, next.ExecutionID, sequence, event.EventID, next.OwnerID,
 		event.Type, event.State, event.Revision, event.PayloadDigest, payloadRaw, event.CreatedAt)
+	if err != nil {
+		return err
+	}
+	return pruneCloudWorkerEventsTx(ctx, tx, next.ExecutionID, sequence)
+}
+
+func appendCloudWorkerEventTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	event *cloudworker.Event,
+	sessionID string,
+	workerProgressSequence uint64,
+) error {
+	if event == nil || event.ExecutionID == "" || event.RunID != event.ExecutionID ||
+		event.EventID == "" || event.Type != "worker_progress" || sessionID == "" || workerProgressSequence == 0 {
+		return cloudworker.ErrInvalid
+	}
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence),0)+1
+		FROM core_cloud_worker_events WHERE execution_id=$1`, event.ExecutionID).Scan(&event.Sequence); err != nil {
+		return err
+	}
+	payloadRaw, err := json.Marshal(event)
+	if err != nil || len(payloadRaw) > 4096 {
+		return cloudworker.ErrInvalid
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_events(
+		execution_id,sequence,event_id,owner_id,kind,state,revision,payload_digest,payload_json,created_at,
+		session_id,worker_progress_sequence)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		event.ExecutionID, event.Sequence, event.EventID, event.OwnerID, event.Type, event.State,
+		event.Revision, event.PayloadDigest, payloadRaw, event.CreatedAt, sessionID, workerProgressSequence)
+	if err != nil {
+		return err
+	}
+	return pruneCloudWorkerEventsTx(ctx, tx, event.ExecutionID, event.Sequence)
+}
+
+func pruneCloudWorkerEventsTx(ctx context.Context, tx pgx.Tx, executionID string, newest uint64) error {
+	if newest <= cloudworker.MaxRetainedRunEvents {
+		return nil
+	}
+	truncatedThrough := newest - cloudworker.MaxRetainedRunEvents
+	if _, err := tx.Exec(ctx, `DELETE FROM core_cloud_worker_events
+		WHERE execution_id=$1 AND sequence<=$2`, executionID, truncatedThrough); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE core_cloud_worker_executions
+		SET event_history_truncated_through=GREATEST(event_history_truncated_through,$2)
+		WHERE execution_id=$1`, executionID, truncatedThrough)
 	return err
 }
 
@@ -959,7 +1010,7 @@ func (s *CloudWorkerStore) AuthorizeLaunch(ctx context.Context, command cloudwor
 	}
 	defer rebuilt.Destroy()
 	material := command.Material
-	if material.Task != rebuilt.Task || material.RuntimeTaskSHA256 != rebuilt.RuntimeTaskSHA256 ||
+	if material.ProtocolVersions != rebuilt.ProtocolVersions || material.Task != rebuilt.Task || material.RuntimeTaskSHA256 != rebuilt.RuntimeTaskSHA256 ||
 		material.InputManifestSHA256 != rebuilt.InputManifestSHA256 || material.SourceManifestSHA256 != rebuilt.SourceManifestSHA256 ||
 		material.StagedManifestSHA256 != rebuilt.StagedManifestSHA256 || material.Fence != rebuilt.Fence ||
 		!bytes.Equal(material.RuntimeTaskJSON, rebuilt.RuntimeTaskJSON) || !bytes.Equal(material.InputManifestJSON, rebuilt.InputManifestJSON) {
@@ -1097,7 +1148,9 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 			"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID, "execution_revision", execution.Revision)
 		return cloudworker.ResumeContext{}, cloudworker.ErrConflict
 	}
-	material := cloudworker.RuntimeTaskMaterial{RuntimeTaskJSON: bytes.Clone(runtimeRaw), RuntimeTaskSHA256: authorization.RuntimeTaskSHA256,
+	material := cloudworker.RuntimeTaskMaterial{ProtocolVersions: cloudprotocol.Versions{
+		WorkerProtocolVersion: qualification.WorkerProtocolVersion, RuntimeContractVersion: qualification.RuntimeContractVersion,
+	}, RuntimeTaskJSON: bytes.Clone(runtimeRaw), RuntimeTaskSHA256: authorization.RuntimeTaskSHA256,
 		InputManifestJSON: bytes.Clone(inputRaw), InputManifestSHA256: authorization.InputManifestSHA256,
 		SourceManifestSHA256: sourceDigest, StagedManifestSHA256: authorization.StagedManifestSHA256,
 		Fence: cloudworker.RuntimeTaskFence{ExecutionID: plan.ExecutionID, TaskID: plan.TaskID,
@@ -1110,7 +1163,7 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 	}
 	runtimeDigest, digestErr := material.Task.Digest()
 	inputDigest := sha256.Sum256(inputRaw)
-	if digestErr != nil || runtimeDigest != authorization.RuntimeTaskSHA256 || hex.EncodeToString(inputDigest[:]) != authorization.InputManifestSHA256 || sourceDigest != plan.InputManifestDigest {
+	if digestErr != nil || !material.ProtocolVersions.IsCurrent() || runtimeDigest != authorization.RuntimeTaskSHA256 || hex.EncodeToString(inputDigest[:]) != authorization.InputManifestSHA256 || sourceDigest != plan.InputManifestDigest {
 		material.Destroy()
 		logCloudWorkerResumeInvariant("runtime_task_digest", "reason", "runtime task/input/source digest drifted",
 			"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID, "execution_revision", execution.Revision)
@@ -2292,7 +2345,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		}
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
 	}
-	turnEvent := core.TurnEvent{TurnID: plan.TurnID, Sequence: int64(turnSequence + 1), Kind: core.TurnEventDone,
+	turnEvent := core.TurnEvent{TurnID: plan.TurnID, Sequence: int64(turnSequence + 1), Revision: turnRevision + 1, Kind: core.TurnEventDone,
 		Message: &resultMessage, Response: &response, ExecutionID: plan.ExecutionID, Status: string(terminal),
 		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, References: references, CreatedAt: now}
 	turnEventRaw, _ := json.Marshal(turnEvent)
@@ -2758,9 +2811,12 @@ func (s *CloudWorkerStore) ReplaceWithRequote(ctx context.Context, supplied core
 		insertCloudWorkerMessageTx(ctx, tx, plan.ConversationID, messageSequence, message) != nil {
 		return cloudworker.Offer{}, cloudworker.ErrConflict
 	}
-	turnEvent := core.TurnEvent{TurnID: plan.TurnID, Sequence: int64(turn.LastSequence + 1), Kind: core.TurnEventWaitingConfirmation,
-		Message: &message, ConfirmationID: plan.ConfirmationID, ExecutionID: plan.ExecutionID, Status: string(cloudworker.StateWaitingUser),
-		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, References: references, CreatedAt: plan.CreatedAt}
+	turnEvent, turnEventErr := core.NewWaitingConfirmationTurnEvent(plan.ConfirmationID, plan.ExecutionID)
+	if turnEventErr != nil {
+		return cloudworker.Offer{}, cloudworker.ErrInvalid
+	}
+	turnEvent.TurnID, turnEvent.Sequence, turnEvent.Revision, turnEvent.CreatedAt =
+		plan.TurnID, int64(turn.LastSequence+1), turn.Revision+1, plan.CreatedAt
 	turnEventRaw, _ := json.Marshal(turnEvent)
 	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at) VALUES($1,$2,$3,$4,$5)`,
 		plan.TurnID, turnEvent.Sequence, string(turnEvent.Kind), turnEventRaw, plan.CreatedAt); err != nil {

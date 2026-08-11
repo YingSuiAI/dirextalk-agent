@@ -91,7 +91,7 @@ func (a *cloudWorkerExecutionAdapter) RunEvents(ctx context.Context, request Clo
 	if a == nil || a.store == nil || !validCloudWorkerAuthority(request.Authority) || !coretask.ValidUUID(request.RunID) || request.Limit < 1 || request.Limit > 200 {
 		return CloudWorkerEventPage{}, ErrInvalid
 	}
-	events, next, err := a.store.EventsForAuthority(ctx, strings.TrimSpace(request.OwnerID), request.AccountGeneration, request.RunID, request.AfterSequence, request.Limit)
+	events, next, truncated, err := a.store.EventsForAuthority(ctx, strings.TrimSpace(request.OwnerID), request.AccountGeneration, request.RunID, request.AfterSequence, request.Limit)
 	if err != nil {
 		return CloudWorkerEventPage{}, mapCloudWorkerPortError(err)
 	}
@@ -99,7 +99,7 @@ func (a *cloudWorkerExecutionAdapter) RunEvents(ctx context.Context, request Clo
 	for _, event := range events {
 		items = append(items, cloudWorkerEventProjection(event))
 	}
-	return CloudWorkerEventPage{Events: items, NextSequence: next}, nil
+	return CloudWorkerEventPage{Events: items, NextSequence: next, HistoryTruncated: truncated}, nil
 }
 
 func (a *cloudWorkerExecutionAdapter) GetArtifact(ctx context.Context, request CloudWorkerArtifactGetRequest) (CloudWorkerObject, error) {
@@ -265,6 +265,17 @@ func cloudWorkerEventProjection(event cloudworker.Event) CloudWorkerObject {
 	}
 	if event.State != "" {
 		out["status"] = string(event.State)
+	}
+	if event.Progress != nil {
+		out["progress"] = map[string]any{
+			"phase": event.Progress.Phase, "elapsed_ms": event.Progress.ElapsedMS,
+			"last_activity_at":        formatCloudWorkerTime(event.Progress.LastActivityAt),
+			"cpu_time_ms":             event.Progress.CPUTimeMS,
+			"memory_high_water_bytes": event.Progress.MemoryHighWaterBytes,
+			"invocation_count":        event.Progress.InvocationCount,
+			"uploaded_bytes":          event.Progress.UploadedBytes,
+			"output_truncated":        event.Progress.OutputTruncated,
+		}
 	}
 	return out
 }

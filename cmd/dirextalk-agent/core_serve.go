@@ -1145,7 +1145,7 @@ func runCoreLifecycle(ctx context.Context, listener net.Listener, server coreLif
 			if cleaner != nil {
 				if err := cleaner.Wait(shutdownCtx); err != nil {
 					server.Stop()
-					return fmt.Errorf("stop Knowledge cleanup: %w", err)
+					return fmt.Errorf("stop Core lifecycle cleaner: %w", err)
 				}
 			}
 		}

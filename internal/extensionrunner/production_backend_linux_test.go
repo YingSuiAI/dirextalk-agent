@@ -270,7 +270,7 @@ func TestResultFilesStayBeneathWorkspaceFD(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unix.Close(fd)
-	files, err := VerifyResultFilesFD(fd, []string{"nested/result.txt"})
+	files, err := VerifyResultFilesFD(fd, []string{"nested/result.txt"}, 16<<20)
 	if err != nil || len(files) != 1 {
 		t.Fatalf("files=%+v err=%v", files, err)
 	}
@@ -278,7 +278,7 @@ func TestResultFilesStayBeneathWorkspaceFD(t *testing.T) {
 	if files[0].SHA256 != hex.EncodeToString(sum[:]) || files[0].Size != int64(len(content)) {
 		t.Fatalf("file=%+v", files[0])
 	}
-	if _, err = VerifyResultFilesFD(fd, []string{"escape"}); err == nil {
+	if _, err = VerifyResultFilesFD(fd, []string{"escape"}, 16<<20); err == nil {
 		t.Fatal("symlink escape accepted")
 	}
 }
@@ -300,7 +300,7 @@ func TestResultFilesRejectNonRegularWithoutBlocking(t *testing.T) {
 	defer unix.Close(fd)
 	for _, path := range []string{"result.fifo", "result.sock"} {
 		done := make(chan error, 1)
-		go func() { _, err := VerifyResultFilesFD(fd, []string{path}); done <- err }()
+		go func() { _, err := VerifyResultFilesFD(fd, []string{path}, 16<<20); done <- err }()
 		select {
 		case err := <-done:
 			if err == nil {
@@ -418,7 +418,7 @@ func TestAvailableResultsContinuePastInvalidAndPreserveLaterFiles(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer unix.Close(fd)
-	baseline, err := SnapshotWorkspaceFD(fd)
+	baseline, err := SnapshotWorkspaceFD(fd, 16<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,11 +430,11 @@ func TestAvailableResultsContinuePastInvalidAndPreserveLaterFiles(t *testing.T) 
 	if err := unix.Mkfifo(filepath.Join(root, "invalid.fifo"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	files, err := CollectAvailableResultFilesFD(fd, []string{"first.txt", "invalid.fifo", "last.txt"})
+	files, err := CollectAvailableResultFilesFD(fd, []string{"first.txt", "invalid.fifo", "last.txt"}, 16<<20)
 	if !errors.Is(err, ErrInvalid) || len(files) != 2 || files[0].Path != "first.txt" || files[1].Path != "last.txt" {
 		t.Fatalf("files=%+v err=%v", files, err)
 	}
-	if err := CleanupWorkspaceFD(fd, baseline, resultFilePaths(files)); err != nil {
+	if err := CleanupWorkspaceFD(fd, baseline, resultFilePaths(files), 16<<20); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"first.txt", "last.txt"} {
@@ -457,7 +457,7 @@ func TestWorkspaceCleanupPreservesBaselineAndRegisteredResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unix.Close(fd)
-	baseline, err := SnapshotWorkspaceFD(fd)
+	baseline, err := SnapshotWorkspaceFD(fd, 16<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +473,7 @@ func TestWorkspaceCleanupPreservesBaselineAndRegisteredResults(t *testing.T) {
 	if err := os.Symlink("/etc/passwd", filepath.Join(root, "discard-link")); err != nil {
 		t.Fatal(err)
 	}
-	if err := CleanupWorkspaceFD(fd, baseline, []string{"output/keep.txt"}); err != nil {
+	if err := CleanupWorkspaceFD(fd, baseline, []string{"output/keep.txt"}, 16<<20); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"input.txt", "output/keep.txt"} {
@@ -501,7 +501,7 @@ func TestWorkspaceCleanupRemovesReplacedBaselineIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unix.Close(fd)
-	baseline, err := SnapshotWorkspaceFD(fd)
+	baseline, err := SnapshotWorkspaceFD(fd, 16<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +514,7 @@ func TestWorkspaceCleanupRemovesReplacedBaselineIdentity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "parent", "baseline", "replacement.txt"), []byte("replacement"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := CleanupWorkspaceFD(fd, baseline, nil); err != nil {
+	if err := CleanupWorkspaceFD(fd, baseline, nil, 16<<20); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(filepath.Join(root, "parent")); err != nil {
@@ -535,7 +535,7 @@ func TestWorkspaceCleanupPreservesRegisteredBaselineReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unix.Close(fd)
-	baseline, err := SnapshotWorkspaceFD(fd)
+	baseline, err := SnapshotWorkspaceFD(fd, 16<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func TestWorkspaceCleanupPreservesRegisteredBaselineReplacement(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "result.txt"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := CleanupWorkspaceFD(fd, baseline, []string{"result.txt"}); err != nil {
+	if err := CleanupWorkspaceFD(fd, baseline, []string{"result.txt"}, 16<<20); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Lstat(filepath.Join(root, "result.txt")); err != nil || !info.IsDir() {
@@ -566,7 +566,7 @@ func TestWorkspaceCleanupPreservesNestedKeepUnderReplacedBaselineAncestor(t *tes
 		t.Fatal(err)
 	}
 	defer unix.Close(fd)
-	baseline, err := SnapshotWorkspaceFD(fd)
+	baseline, err := SnapshotWorkspaceFD(fd, 16<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +582,7 @@ func TestWorkspaceCleanupPreservesNestedKeepUnderReplacedBaselineAncestor(t *tes
 	if err := os.WriteFile(filepath.Join(root, "output", "discard.txt"), []byte("discard"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := CleanupWorkspaceFD(fd, baseline, []string{"output/result.json"}); err != nil {
+	if err := CleanupWorkspaceFD(fd, baseline, []string{"output/result.json"}, 16<<20); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(filepath.Join(root, "output", "result.json")); err != nil {
@@ -590,6 +590,97 @@ func TestWorkspaceCleanupPreservesNestedKeepUnderReplacedBaselineAncestor(t *tes
 	}
 	if _, err := os.Lstat(filepath.Join(root, "output", "discard.txt")); !os.IsNotExist(err) {
 		t.Fatalf("unregistered sibling remained: %v", err)
+	}
+}
+
+func TestWorkspaceEntryLimitAcceptsThresholdAndRejectsThresholdPlusOne(t *testing.T) {
+	root := t.TempDir()
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	for i := 0; i < maxWorkspaceSnapshotEntries; i++ {
+		name := fmt.Sprintf("entry-%04d", i)
+		if err := os.WriteFile(filepath.Join(root, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := SnapshotWorkspaceFD(fd, 16<<20); err != nil {
+		t.Fatalf("threshold workspace rejected: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "entry-over"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SnapshotWorkspaceFD(fd, 16<<20); !errors.Is(err, errWorkspaceTraversalLimit) {
+		t.Fatalf("threshold+1 workspace err=%v", err)
+	}
+}
+
+func TestWorkspaceCleanupRemovesAllUnregisteredFilesAfterEntryLimit(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "baseline"), []byte("baseline"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	baseline, err := SnapshotWorkspaceFD(fd, 16<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "keep"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i <= maxWorkspaceSnapshotEntries; i++ {
+		name := fmt.Sprintf("discard-%04d", i)
+		if err := os.WriteFile(filepath.Join(root, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := CleanupWorkspaceFD(fd, baseline, []string{"keep"}, 16<<20); !errors.Is(err, errWorkspaceTraversalLimit) {
+		t.Fatalf("cleanup err=%v", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0].Name() != "baseline" || entries[1].Name() != "keep" {
+		t.Fatalf("cleanup residue=%v", entries)
+	}
+}
+
+func TestWorkspaceAndResultAggregateBytesUseRequestBudget(t *testing.T) {
+	root := t.TempDir()
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	if err := os.WriteFile(filepath.Join(root, "first"), []byte("123"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "second"), []byte("456"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SnapshotWorkspaceFD(fd, 5); !errors.Is(err, errWorkspaceTraversalLimit) {
+		t.Fatalf("workspace aggregate err=%v", err)
+	}
+	files, err := VerifyResultFilesFD(fd, []string{"first", "second"}, 5)
+	if !errors.Is(err, ErrInvalid) || len(files) != 1 || files[0].Path != "first" {
+		t.Fatalf("result aggregate files=%+v err=%v", files, err)
+	}
+	request := clientProtocolRequest()
+	request.ResultFiles = []string{"first", "second"}
+	request.Limits.FileBytes = 5
+	status := StatusV1{RunID: request.RunID, Phase: PhaseTombstone, ResultFiles: []ResultFile{
+		{Path: "first", SHA256: strings.Repeat("a", 64), Size: 3},
+		{Path: "second", SHA256: strings.Repeat("b", 64), Size: 3},
+	}}
+	if err := ValidateStatusV1(request, status); err == nil {
+		t.Fatal("result aggregate larger than request file_bytes accepted")
 	}
 }
 

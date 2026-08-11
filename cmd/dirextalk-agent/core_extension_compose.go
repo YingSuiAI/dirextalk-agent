@@ -191,6 +191,10 @@ func conversationToolTaskHandler(store conversationToolAttemptStore, coord conve
 			err = coreextension.ErrInvalid
 		}
 		if err != nil {
+			if code, summary, resourceFailure := execution.LocalResourceFailure(err); resourceFailure {
+				finishErr := finish("failed", nil, code, summary)
+				return coreruntime.ManagedOutcome{Err: errors.Join(err, finishErr), TerminalOwned: true}
+			}
 			_ = finish("uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown")
 			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 		}

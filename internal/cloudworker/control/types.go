@@ -13,6 +13,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/identitywire"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/google/uuid"
@@ -211,6 +212,7 @@ type Session struct {
 	Identity         IdentityClaims
 	State            SessionState
 	ProgressSequence uint64
+	LatestProgress   *ProgressSnapshot
 	Result           *ObjectClaim
 	FailureCode      string
 	FailureSummary   string
@@ -246,6 +248,7 @@ type ClaimRequest struct {
 	Nonce       string
 	Fence       TaskFence
 	Proof       IdentityProof
+	Versions    cloudprotocol.Versions
 }
 
 type HeartbeatRequest struct {
@@ -253,25 +256,30 @@ type HeartbeatRequest struct {
 	SessionToken     []byte
 	Fence            TaskFence
 	ProgressSequence uint64
+	Progress         ProgressSnapshot
 	IdempotencyKey   string
 }
 
 type CompleteRequest struct {
-	SessionID       string
-	SessionToken    []byte
-	Fence           TaskFence
-	Claim           ObjectClaim
-	RuntimeTopology execgate.Proof
-	IdempotencyKey  string
+	SessionID        string
+	SessionToken     []byte
+	Fence            TaskFence
+	Claim            ObjectClaim
+	RuntimeTopology  execgate.Proof
+	ProgressSequence uint64
+	Progress         ProgressSnapshot
+	IdempotencyKey   string
 }
 
 type FailRequest struct {
-	SessionID      string
-	SessionToken   []byte
-	Fence          TaskFence
-	Code           string
-	Summary        string
-	IdempotencyKey string
+	SessionID        string
+	SessionToken     []byte
+	Fence            TaskFence
+	Code             string
+	Summary          string
+	ProgressSequence uint64
+	Progress         ProgressSnapshot
+	IdempotencyKey   string
 }
 
 type ClaimMutation struct {
@@ -289,6 +297,7 @@ type SessionMutation struct {
 	TokenDigest      [sha256.Size]byte
 	Fence            TaskFence
 	ProgressSequence uint64
+	Progress         *ProgressSnapshot
 	Claim            *ObjectClaim
 	RuntimeTopology  *execgate.Proof
 	TopologyDigest   string

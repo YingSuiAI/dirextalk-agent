@@ -154,10 +154,9 @@ func (s *MemoryStore) Heartbeat(_ context.Context, mutation SessionMutation) (Se
 	if err != nil || replayed {
 		return session, err
 	}
-	if mutation.ProgressSequence <= session.ProgressSequence {
+	if applyProgressMutation(&session, mutation) != nil {
 		return Session{}, ErrConflict
 	}
-	session.ProgressSequence = mutation.ProgressSequence
 	session.HeartbeatAt = mutation.At
 	session.Revision++
 	s.saveMutation("heartbeat", mutation, session)
@@ -170,6 +169,9 @@ func (s *MemoryStore) Complete(_ context.Context, mutation SessionMutation) (Ses
 	session, replayed, err := s.prepareMutation("complete", mutation)
 	if err != nil || replayed {
 		return session, err
+	}
+	if applyProgressMutation(&session, mutation) != nil {
+		return Session{}, ErrConflict
 	}
 	if mutation.Claim == nil || mutation.RuntimeTopology == nil ||
 		mutation.RuntimeTopology.ValidateTerminal() != nil ||
@@ -195,6 +197,9 @@ func (s *MemoryStore) Fail(_ context.Context, mutation SessionMutation) (Session
 	if err != nil || replayed {
 		return session, err
 	}
+	if applyProgressMutation(&session, mutation) != nil {
+		return Session{}, ErrConflict
+	}
 	if mutation.FailureCode == "" {
 		return Session{}, ErrInvalid
 	}
@@ -205,6 +210,18 @@ func (s *MemoryStore) Fail(_ context.Context, mutation SessionMutation) (Session
 	session.Revision++
 	s.saveMutation("fail", mutation, session)
 	return cloneSession(session), nil
+}
+
+func applyProgressMutation(session *Session, mutation SessionMutation) error {
+	if session == nil || mutation.Progress == nil || mutation.ProgressSequence != session.ProgressSequence+1 ||
+		validateProgressAdvance(session.LatestProgress, *mutation.Progress, session.ClaimedAt.UTC(), mutation.At.UTC()) != nil {
+		return ErrConflict
+	}
+	progress := *mutation.Progress
+	session.ProgressSequence = mutation.ProgressSequence
+	session.LatestProgress = &progress
+	session.HeartbeatAt = mutation.At.UTC()
+	return nil
 }
 
 func (s *MemoryStore) GetSession(_ context.Context, sessionID string) (Session, error) {
@@ -391,6 +408,10 @@ func cloneSession(source Session) Session {
 	if source.RuntimeTopology != nil {
 		topology := *source.RuntimeTopology
 		source.RuntimeTopology = &topology
+	}
+	if source.LatestProgress != nil {
+		progress := *source.LatestProgress
+		source.LatestProgress = &progress
 	}
 	source.FailureSummary = strings.Clone(source.FailureSummary)
 	return source

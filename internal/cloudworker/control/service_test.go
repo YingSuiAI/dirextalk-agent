@@ -10,15 +10,20 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/identitywire"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	"github.com/google/uuid"
 )
 
 type fakeVerifier struct {
 	claims IdentityClaims
 	err    error
+	calls  *int
 }
 
 func (f fakeVerifier) Verify(_ context.Context, _ string, _ IdentityProof) (IdentityClaims, error) {
+	if f.calls != nil {
+		(*f.calls)++
+	}
 	return f.claims, f.err
 }
 
@@ -88,11 +93,21 @@ func claimSession(t *testing.T, service *Service, fence TaskFence) ClaimResult {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.Claim(context.Background(), ClaimRequest{ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence, Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")}})
+	result, err := service.Claim(context.Background(), ClaimRequest{ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence, Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")}, Versions: cloudprotocol.Current()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return result
+}
+
+func testProgress() ProgressSnapshot {
+	return ProgressSnapshot{Phase: ProgressClaimed, LastActivityAt: time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC)}
+}
+
+func testProgressPhase(phase ProgressPhase) ProgressSnapshot {
+	progress := testProgress()
+	progress.Phase = phase
+	return progress
 }
 
 func TestChallengeClaimHeartbeatAndExactCompletion(t *testing.T) {
@@ -102,18 +117,18 @@ func TestChallengeClaimHeartbeatAndExactCompletion(t *testing.T) {
 		t.Fatalf("unexpected claim: %#v", claimed)
 	}
 	heartbeatKey := uuid.NewString()
-	heartbeat, err := service.Heartbeat(context.Background(), HeartbeatRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, ProgressSequence: 1, IdempotencyKey: heartbeatKey})
+	heartbeat, err := service.Heartbeat(context.Background(), HeartbeatRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, ProgressSequence: 1, Progress: testProgress(), IdempotencyKey: heartbeatKey})
 	if err != nil || heartbeat.ProgressSequence != 1 {
 		t.Fatalf("heartbeat: session=%#v err=%v", heartbeat, err)
 	}
-	replayed, err := service.Heartbeat(context.Background(), HeartbeatRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, ProgressSequence: 1, IdempotencyKey: heartbeatKey})
+	replayed, err := service.Heartbeat(context.Background(), HeartbeatRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, ProgressSequence: 1, Progress: testProgress(), IdempotencyKey: heartbeatKey})
 	if err != nil || replayed.Revision != heartbeat.Revision {
 		t.Fatalf("heartbeat replay: session=%#v err=%v", replayed, err)
 	}
 	claim := ObjectClaim{Bucket: "dirextalk-worker-results", Key: "executions/" + fence.ExecutionID + "/result.json", VersionID: "version-1", SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", SizeBytes: 128, MediaType: "application/json"}
 	topology := testRuntimeTopology(fence)
 	completeKey := uuid.NewString()
-	completed, err := service.Complete(context.Background(), CompleteRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, Claim: claim, RuntimeTopology: topology, IdempotencyKey: completeKey})
+	completed, err := service.Complete(context.Background(), CompleteRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, Claim: claim, RuntimeTopology: topology, ProgressSequence: 2, Progress: testProgressPhase(ProgressCompleting), IdempotencyKey: completeKey})
 	if err != nil || completed.State != SessionCompleted || completed.Result == nil || completed.Result.VersionID != "version-1" {
 		t.Fatalf("complete: session=%#v err=%v", completed, err)
 	}
@@ -123,8 +138,34 @@ func TestChallengeClaimHeartbeatAndExactCompletion(t *testing.T) {
 	}
 	drifted := topology
 	drifted.ObservedAtUnixNano++
-	if _, err := service.Complete(context.Background(), CompleteRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, Claim: claim, RuntimeTopology: drifted, IdempotencyKey: completeKey}); !errors.Is(err, ErrConflict) {
+	if _, err := service.Complete(context.Background(), CompleteRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, Claim: claim, RuntimeTopology: drifted, ProgressSequence: 2, Progress: testProgressPhase(ProgressCompleting), IdempotencyKey: completeKey}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("topology replay drift error=%v", err)
+	}
+}
+
+func TestHeartbeatUsesServerActivityTimeInsteadOfWorkerWallClock(t *testing.T) {
+	service, _, fence := newTestService(t)
+	claimed := claimSession(t, service, fence)
+	serverNow := testProgress().LastActivityAt
+	service.clock = func() time.Time { return serverNow }
+	workerFuture := testProgress()
+	workerFuture.LastActivityAt = workerFuture.LastActivityAt.Add(24 * time.Hour)
+	key := uuid.NewString()
+	session, err := service.Heartbeat(context.Background(), HeartbeatRequest{
+		SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence,
+		ProgressSequence: 1, Progress: workerFuture, IdempotencyKey: key,
+	})
+	if err != nil || session.LatestProgress == nil || session.LatestProgress.LastActivityAt != testProgress().LastActivityAt {
+		t.Fatalf("server activity time session=%#v err=%v", session, err)
+	}
+	serverNow = serverNow.Add(time.Second)
+	workerFuture.LastActivityAt = workerFuture.LastActivityAt.Add(time.Hour)
+	replayed, err := service.Heartbeat(context.Background(), HeartbeatRequest{
+		SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence,
+		ProgressSequence: 1, Progress: workerFuture, IdempotencyKey: key,
+	})
+	if err != nil || replayed.Revision != session.Revision || replayed.LatestProgress == nil || replayed.LatestProgress.LastActivityAt != session.LatestProgress.LastActivityAt {
+		t.Fatalf("server-timed replay session=%#v err=%v", replayed, err)
 	}
 }
 
@@ -134,7 +175,7 @@ func TestChallengeReplayAndIdentityMismatchFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := ClaimRequest{ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence, Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")}}
+	request := ClaimRequest{ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence, Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")}, Versions: cloudprotocol.Current()}
 	if _, err = service.Claim(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
@@ -151,16 +192,56 @@ func TestChallengeReplayAndIdentityMismatchFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = bad.Claim(context.Background(), ClaimRequest{ChallengeID: badChallenge.ChallengeID, Nonce: badChallenge.Nonce, Fence: fence, Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")}})
+	_, err = bad.Claim(context.Background(), ClaimRequest{ChallengeID: badChallenge.ChallengeID, Nonce: badChallenge.Nonce, Fence: fence, Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")}, Versions: cloudprotocol.Current()})
 	if !errors.Is(err, ErrIdentityRejected) {
 		t.Fatalf("identity mismatch error=%v", err)
+	}
+}
+
+func TestClaimRejectsProtocolDriftBeforeIdentityVerification(t *testing.T) {
+	service, _, fence := newTestService(t)
+	challenge, err := service.IssueIdentityChallenge(context.Background(), IssueChallengeRequest{Fence: fence, Expectation: testExpectation(fence)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyCalls := 0
+	expectation := testExpectation(fence)
+	service.verifier = fakeVerifier{calls: &verifyCalls, claims: IdentityClaims{
+		AccountGeneration: expectation.AccountGeneration, AccountID: expectation.AccountID,
+		Region: expectation.Region, InstanceID: expectation.InstanceID,
+		LaunchIdentity: expectation.LaunchIdentity, RoleARN: expectation.RoleARN,
+		RoleID: expectation.RoleID, InstanceProfileID: expectation.InstanceProfileID,
+		Tags: cloneTags(expectation.RequiredTags),
+	}}
+	request := ClaimRequest{
+		ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence,
+		Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")},
+	}
+	for name, versions := range map[string]cloudprotocol.Versions{
+		"missing": {},
+		"unknown Worker protocol": {
+			WorkerProtocolVersion: "unknown", RuntimeContractVersion: cloudprotocol.RuntimeContractVersion,
+		},
+		"unknown runtime contract": {
+			WorkerProtocolVersion: cloudprotocol.WorkerProtocolVersion, RuntimeContractVersion: "unknown",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request.Versions = versions
+			if _, claimErr := service.Claim(context.Background(), request); !errors.Is(claimErr, ErrInvalid) {
+				t.Fatalf("claim error = %v, want ErrInvalid", claimErr)
+			}
+		})
+	}
+	if verifyCalls != 0 {
+		t.Fatalf("identity verifier calls = %d, want 0", verifyCalls)
 	}
 }
 
 func TestStaleLeaseWrongTokenAndTerminalMutationRejected(t *testing.T) {
 	service, leases, fence := newTestService(t)
 	claimed := claimSession(t, service, fence)
-	request := HeartbeatRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, ProgressSequence: 1, IdempotencyKey: uuid.NewString()}
+	request := HeartbeatRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, ProgressSequence: 1, Progress: testProgress(), IdempotencyKey: uuid.NewString()}
 	leases.stale = true
 	if _, err := service.Heartbeat(context.Background(), request); !errors.Is(err, ErrStaleLease) {
 		t.Fatalf("stale lease error=%v", err)
@@ -171,7 +252,7 @@ func TestStaleLeaseWrongTokenAndTerminalMutationRejected(t *testing.T) {
 		t.Fatalf("wrong token error=%v", err)
 	}
 	request.SessionToken = claimed.SessionToken
-	failed, err := service.Fail(context.Background(), FailRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, Code: "runtime_failed", Summary: "bounded failure", IdempotencyKey: uuid.NewString()})
+	failed, err := service.Fail(context.Background(), FailRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, Code: "runtime_failed", Summary: "bounded failure", ProgressSequence: 1, Progress: testProgress(), IdempotencyKey: uuid.NewString()})
 	if err != nil || failed.State != SessionFailed {
 		t.Fatalf("fail: session=%#v err=%v", failed, err)
 	}
@@ -183,7 +264,7 @@ func TestStaleLeaseWrongTokenAndTerminalMutationRejected(t *testing.T) {
 func TestExactObjectClaimRejectsMissingVersionAndOversize(t *testing.T) {
 	service, _, fence := newTestService(t)
 	claimed := claimSession(t, service, fence)
-	base := CompleteRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, IdempotencyKey: uuid.NewString(), Claim: ObjectClaim{Bucket: "results", Key: "result.json", SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", SizeBytes: 1, MediaType: "application/json"}}
+	base := CompleteRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, ProgressSequence: 1, Progress: testProgress(), IdempotencyKey: uuid.NewString(), Claim: ObjectClaim{Bucket: "results", Key: "result.json", SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", SizeBytes: 1, MediaType: "application/json"}}
 	if _, err := service.Complete(context.Background(), base); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("missing version error=%v", err)
 	}
@@ -202,7 +283,7 @@ func TestExpiredChallengeStopsBeforeIdentityVerification(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.clock = func() time.Time { return now.Add(time.Second) }
-	_, err = service.Claim(context.Background(), ClaimRequest{ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence, Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")}})
+	_, err = service.Claim(context.Background(), ClaimRequest{ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence, Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")}, Versions: cloudprotocol.Current()})
 	if !errors.Is(err, ErrChallengeExpired) {
 		t.Fatalf("expired challenge error=%v", err)
 	}
@@ -214,7 +295,7 @@ func TestConcurrentClaimConsumesChallengeExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := ClaimRequest{ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence, Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")}}
+	request := ClaimRequest{ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence, Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")}, Versions: cloudprotocol.Current()}
 	var wg sync.WaitGroup
 	results := make(chan error, 2)
 	for range 2 {
@@ -255,10 +336,10 @@ func TestFreshChallengeAtomicallySupersedesLostClaimResponse(t *testing.T) {
 		t.Fatalf("old session was not fenced: session=%#v err=%v", old, err)
 	}
 	claim := ObjectClaim{Bucket: "dirextalk-worker-results", Key: "executions/" + fence.ExecutionID + "/result.json", VersionID: "version-1", SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", SizeBytes: 128, MediaType: "application/json"}
-	if _, err = service.Complete(context.Background(), CompleteRequest{SessionID: first.Session.SessionID, SessionToken: first.SessionToken, Fence: fence, Claim: claim, RuntimeTopology: testRuntimeTopology(fence), IdempotencyKey: uuid.NewString()}); !errors.Is(err, ErrTerminal) {
+	if _, err = service.Complete(context.Background(), CompleteRequest{SessionID: first.Session.SessionID, SessionToken: first.SessionToken, Fence: fence, Claim: claim, RuntimeTopology: testRuntimeTopology(fence), ProgressSequence: 1, Progress: testProgress(), IdempotencyKey: uuid.NewString()}); !errors.Is(err, ErrTerminal) {
 		t.Fatalf("superseded session completed work: %v", err)
 	}
-	completed, err := service.Complete(context.Background(), CompleteRequest{SessionID: second.Session.SessionID, SessionToken: second.SessionToken, Fence: fence, Claim: claim, RuntimeTopology: testRuntimeTopology(fence), IdempotencyKey: uuid.NewString()})
+	completed, err := service.Complete(context.Background(), CompleteRequest{SessionID: second.Session.SessionID, SessionToken: second.SessionToken, Fence: fence, Claim: claim, RuntimeTopology: testRuntimeTopology(fence), ProgressSequence: 1, Progress: testProgress(), IdempotencyKey: uuid.NewString()})
 	if err != nil || completed.State != SessionCompleted {
 		t.Fatalf("replacement session did not complete: session=%#v err=%v", completed, err)
 	}
@@ -267,14 +348,14 @@ func TestFreshChallengeAtomicallySupersedesLostClaimResponse(t *testing.T) {
 func TestTerminalFenceCannotBeClaimedAgain(t *testing.T) {
 	service, _, fence := newTestService(t)
 	claimed := claimSession(t, service, fence)
-	if _, err := service.Fail(context.Background(), FailRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, Code: "runtime_failed", Summary: "bounded failure", IdempotencyKey: uuid.NewString()}); err != nil {
+	if _, err := service.Fail(context.Background(), FailRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, Code: "runtime_failed", Summary: "bounded failure", ProgressSequence: 1, Progress: testProgress(), IdempotencyKey: uuid.NewString()}); err != nil {
 		t.Fatal(err)
 	}
 	challenge, err := service.IssueIdentityChallenge(context.Background(), IssueChallengeRequest{Fence: fence, Expectation: testExpectation(fence)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = service.Claim(context.Background(), ClaimRequest{ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence, Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")}})
+	_, err = service.Claim(context.Background(), ClaimRequest{ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: fence, Proof: IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("signed")}, Versions: cloudprotocol.Current()})
 	if !errors.Is(err, ErrTerminal) {
 		t.Fatalf("terminal task fence accepted a new claim: %v", err)
 	}
@@ -291,7 +372,7 @@ func TestControllerFenceMakesActiveSessionTerminal(t *testing.T) {
 	if err != nil || observed.SessionID != fenced.SessionID || observed.Revision != fenced.Revision {
 		t.Fatalf("observe fenced session=%#v err=%v", observed, err)
 	}
-	request := HeartbeatRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, ProgressSequence: 1, IdempotencyKey: uuid.NewString()}
+	request := HeartbeatRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, ProgressSequence: 1, Progress: testProgress(), IdempotencyKey: uuid.NewString()}
 	if _, err = service.Heartbeat(context.Background(), request); !errors.Is(err, ErrTerminal) {
 		t.Fatalf("fenced session heartbeat error=%v", err)
 	}
@@ -306,7 +387,7 @@ func TestIdempotencyConflictDoesNotAdvanceProgress(t *testing.T) {
 	service, _, fence := newTestService(t)
 	claimed := claimSession(t, service, fence)
 	key := uuid.NewString()
-	request := HeartbeatRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, ProgressSequence: 1, IdempotencyKey: key}
+	request := HeartbeatRequest{SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: fence, ProgressSequence: 1, Progress: testProgress(), IdempotencyKey: key}
 	if _, err := service.Heartbeat(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}

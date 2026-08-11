@@ -240,6 +240,25 @@ const (
 	LeaseExpired  LeaseState = "expired"
 )
 
+type ProgressPhase string
+
+const (
+	ProgressClaimed         ProgressPhase = "claimed"
+	ProgressPreparingInputs ProgressPhase = "preparing_inputs"
+	ProgressRunningPi       ProgressPhase = "running_pi"
+	ProgressUploadingResult ProgressPhase = "uploading_result"
+	ProgressCompleting      ProgressPhase = "completing"
+)
+
+// ProgressReporter is an optional extension implemented by the real gRPC
+// control client. Keeping it separate preserves the small five-RPC test and
+// worker boundary while allowing Workflow to advance a closed progress phase.
+type ProgressReporter interface {
+	SetProgressPhase(ProgressPhase)
+	SetUploadedBytes(uint64)
+	SetOutputTruncated()
+}
+
 type ClaimedTask struct {
 	Binding           Binding
 	SessionID         string
@@ -289,6 +308,7 @@ type FailRequest struct {
 // carries no IdentityExpectation; the server resolves that from its durable
 // dispatch ledger and returns the current attempt/lease fence.
 type ControlClient interface {
+	ProgressReporter
 	IssueIdentityChallenge(context.Context, ChallengeRequest) (Challenge, error)
 	Claim(context.Context, Fence, string, *IdentityProof) (ClaimedTask, error)
 	Heartbeat(context.Context, Fence, string, []byte, uint64, string) (HeartbeatResult, error)
@@ -297,7 +317,7 @@ type ControlClient interface {
 }
 
 type TaskExecutor interface {
-	Run(context.Context, ClaimedTask) (cloudruntime.Result, error)
+	Run(context.Context, ClaimedTask, func(ProgressPhase) error) (cloudruntime.Result, error)
 }
 
 type RuntimeTopologySource interface {

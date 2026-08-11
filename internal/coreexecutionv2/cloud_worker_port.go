@@ -86,8 +86,9 @@ type CloudWorkerPage struct {
 }
 
 type CloudWorkerEventPage struct {
-	Events       []CloudWorkerObject
-	NextSequence uint64
+	Events           []CloudWorkerObject
+	NextSequence     uint64
+	HistoryTruncated bool
 }
 
 // CloudWorkerExecutionPort is the only bridge from public Execution V2 to
@@ -119,6 +120,6 @@ type CloudWorkerAuthorityStore interface {
 	GetExecutionForAuthority(context.Context, string, uint64, string) (cloudworker.Execution, error)
 	ListExecutionsForAuthority(context.Context, string, uint64, string, int) ([]cloudworker.Execution, string, error)
 	RequestCancel(context.Context, string, uint64, string, uint64, string) (cloudworker.Execution, error)
-	EventsForAuthority(context.Context, string, uint64, string, uint64, int) ([]cloudworker.Event, uint64, error)
+	EventsForAuthority(context.Context, string, uint64, string, uint64, int) ([]cloudworker.Event, uint64, bool, error)
 	GetArtifactForAuthority(context.Context, string, uint64, string) (cloudworker.Artifact, error)
 }

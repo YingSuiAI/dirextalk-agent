@@ -38,6 +38,14 @@ Local Agent/MCP/Skill/Knowledge work remains on the existing sandbox and worker
 pool. Only a confirmed `CLOUD_WORKER` Task can use the ephemeral AWS path; it
 never silently replaces or retries a local task.
 
+The durable scheduler allows one process-starting local sandbox Task at a
+time. The immutable Task payload identifies that lane at creation; Claim does
+not consult mutable extension projections. A second local execution stays
+queued, but remote MCP calls, non-executable static Skill reads, and unrelated
+Tasks can continue. Lease expiry and restart use the same persisted lane state,
+so no in-memory semaphore is an authority and no local failure automatically
+authorizes a paid Cloud Worker.
+
 ## Ownership
 
 - Agent owns its PostgreSQL database, files, credentials, model/conversation

@@ -2,9 +2,9 @@
 
 package extensionrunner
 
-func VerifyResultFilesFD(int, []string) ([]ResultFile, error) {
+func VerifyResultFilesFD(int, []string, int64) ([]ResultFile, error) {
 	return nil, ErrUnavailable
 }
-func CollectAvailableResultFilesFD(int, []string) ([]ResultFile, error) {
+func CollectAvailableResultFilesFD(int, []string, int64) ([]ResultFile, error) {
 	return nil, ErrUnavailable
 }

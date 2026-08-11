@@ -1,13 +1,34 @@
 package production
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
+
+func TestWorkerAuthorityRejectsProtocolDriftBeforeReadingTaskOrActivatingGrant(t *testing.T) {
+	authority := &WorkerAuthority{}
+	session := control.Session{
+		SessionID: "session", State: control.SessionActive,
+		Fence: control.TaskFence{
+			ExecutionID: "execution", TaskID: "task", AccountGeneration: 1,
+			Attempt: 1, LeaseEpoch: 1,
+		},
+	}
+	_, err := authority.IssueWorkerClaimMaterial(context.Background(), session, cloudprotocol.Versions{
+		WorkerProtocolVersion: "unknown", RuntimeContractVersion: cloudprotocol.RuntimeContractVersion,
+	})
+	if !errors.Is(err, control.ErrInvalid) {
+		t.Fatalf("IssueWorkerClaimMaterial() error = %v, want ErrInvalid", err)
+	}
+}
 
 func TestWorkerHardDeadlineUsesSmallestImmutableCeiling(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)

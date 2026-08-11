@@ -11,10 +11,12 @@ import (
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/identitywire"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
 	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type GRPCControlClient struct {
@@ -22,10 +24,18 @@ type GRPCControlClient struct {
 	bootstrap BootstrapBinding
 	now       func() time.Time
 
-	mu        sync.Mutex
-	sessionID string
-	fence     Fence
-	notAfter  time.Time
+	mu               sync.Mutex
+	sessionID        string
+	fence            Fence
+	notAfter         time.Time
+	claimedAt        time.Time
+	phase            ProgressPhase
+	progressSequence uint64
+	uploadedBytes    uint64
+	outputTruncated  bool
+	pendingProgress  *agentv1.CoreCloudWorkerProgressSnapshot
+	pendingSequence  uint64
+	pendingKey       string
 }
 
 func NewGRPCControlClient(
@@ -125,6 +135,8 @@ func (client *GRPCControlClient) Claim(
 		Proof: &agentv1.CoreCloudWorkerIdentityProof{
 			Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: payload,
 		},
+		WorkerProtocolVersion:  cloudprotocol.WorkerProtocolVersion,
+		RuntimeContractVersion: cloudprotocol.RuntimeContractVersion,
 	})
 	if err != nil {
 		return ClaimedTask{}, mapControlRPCError(err)
@@ -137,6 +149,10 @@ func (client *GRPCControlClient) Claim(
 	client.mu.Lock()
 	client.sessionID, client.fence, client.notAfter =
 		claimed.SessionID, claimed.Binding.Fence(), claimed.NotAfter
+	client.claimedAt = client.now()
+	client.phase = ProgressClaimed
+	client.progressSequence = 0
+	client.pendingProgress, client.pendingSequence, client.pendingKey = nil, 0, ""
 	client.mu.Unlock()
 	return claimed, nil
 }
@@ -146,7 +162,10 @@ func (client *GRPCControlClient) claimedTaskFromProto(
 	response *agentv1.WorkerControlServiceClaimResponse,
 ) (ClaimedTask, error) {
 	if response == nil || response.Session == nil || response.ModelGrant == nil ||
+		response.WorkerProtocolVersion != cloudprotocol.WorkerProtocolVersion ||
+		response.RuntimeContractVersion != cloudprotocol.RuntimeContractVersion ||
 		response.NotAfter == nil || response.NotAfter.CheckValid() != nil ||
+		response.Session.ClaimedAt == nil || response.Session.ClaimedAt.CheckValid() != nil ||
 		response.ModelGrant.ExpiresAt == nil ||
 		response.ModelGrant.ExpiresAt.CheckValid() != nil ||
 		response.RuntimeTaskDigest != binding.TaskSHA256 ||
@@ -220,17 +239,37 @@ func (client *GRPCControlClient) Heartbeat(
 		!canonicalUUID(idempotencyKey) {
 		return HeartbeatResult{}, ErrInvalid
 	}
+	progress, expectedSequence, err := client.nextProgressSnapshot()
+	if err != nil || sequence != expectedSequence {
+		return HeartbeatResult{}, ErrInvalid
+	}
 	rpcRequest := &agentv1.WorkerControlServiceHeartbeatRequest{
 		SessionId: sessionID, SessionToken: bytes.Clone(sessionToken), Fence: fenceToProto(fence),
 		ProgressSequence: sequence, IdempotencyKey: idempotencyKey,
+		Progress: progress,
 	}
+	client.mu.Lock()
+	if client.pendingProgress != nil {
+		client.mu.Unlock()
+		return HeartbeatResult{}, ErrInvalid
+	}
+	client.pendingProgress, client.pendingSequence, client.pendingKey = progress, sequence, idempotencyKey
+	client.mu.Unlock()
 	defer clear(rpcRequest.SessionToken)
 	response, err := client.rpc.Heartbeat(ctx, rpcRequest)
 	if err != nil {
 		return HeartbeatResult{}, mapControlRPCError(err)
 	}
 	if response == nil || response.Session == nil ||
-		response.Session.SessionId != sessionID || response.Session.ProgressSequence != sequence {
+		response.Session.SessionId != sessionID || response.Session.ProgressSequence != sequence ||
+		response.Session.LatestProgress == nil ||
+		response.Session.LatestProgress.Phase != rpcRequest.Progress.Phase ||
+		response.Session.LatestProgress.ElapsedMs != rpcRequest.Progress.ElapsedMs ||
+		response.Session.LatestProgress.UploadedBytes != rpcRequest.Progress.UploadedBytes ||
+		response.Session.LatestProgress.OutputTruncated != rpcRequest.Progress.OutputTruncated ||
+		response.Session.LatestProgress.InvocationCount < rpcRequest.Progress.InvocationCount ||
+		response.Session.LatestProgress.LastActivityAt == nil ||
+		response.Session.LatestProgress.LastActivityAt.CheckValid() != nil {
 		return HeartbeatResult{}, ErrInvalid
 	}
 	responseFence, err := fenceFromProto(response.Session.Fence)
@@ -244,6 +283,14 @@ func (client *GRPCControlClient) Heartbeat(
 	if !registered || notAfter.IsZero() {
 		return HeartbeatResult{}, ErrInvalid
 	}
+	client.mu.Lock()
+	if client.progressSequence+1 != sequence {
+		client.mu.Unlock()
+		return HeartbeatResult{}, ErrInvalid
+	}
+	client.progressSequence = sequence
+	client.pendingProgress, client.pendingSequence, client.pendingKey = nil, 0, ""
+	client.mu.Unlock()
 	state := LeaseActive
 	switch response.Session.State {
 	case agentv1.CoreCloudWorkerSessionState_CORE_CLOUD_WORKER_SESSION_STATE_ACTIVE:
@@ -253,6 +300,79 @@ func (client *GRPCControlClient) Heartbeat(
 		return HeartbeatResult{}, ErrInvalid
 	}
 	return HeartbeatResult{State: state, NotAfter: notAfter, Sequence: sequence}, nil
+}
+
+func (client *GRPCControlClient) nextProgressSnapshot() (*agentv1.CoreCloudWorkerProgressSnapshot, uint64, error) {
+	client.mu.Lock()
+	claimedAt, phase := client.claimedAt, client.phase
+	uploadedBytes, outputTruncated := client.uploadedBytes, client.outputTruncated
+	sequence := client.progressSequence + 1
+	client.mu.Unlock()
+	now := client.now()
+	if claimedAt.IsZero() || now.Before(claimedAt) || phase == "" || sequence == 0 {
+		return nil, 0, ErrInvalid
+	}
+	return &agentv1.CoreCloudWorkerProgressSnapshot{
+		Phase: progressPhaseProto(phase), ElapsedMs: uint64(now.Sub(claimedAt) / time.Millisecond),
+		LastActivityAt: timestamppb.New(now.UTC()), UploadedBytes: uploadedBytes,
+		OutputTruncated: outputTruncated,
+	}, sequence, nil
+}
+
+func (client *GRPCControlClient) SetProgressPhase(phase ProgressPhase) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if progressPhaseRank(phase) >= progressPhaseRank(client.phase) {
+		client.phase = phase
+	}
+}
+
+func (client *GRPCControlClient) SetUploadedBytes(value uint64) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if value >= client.uploadedBytes {
+		client.uploadedBytes = value
+	}
+}
+
+func (client *GRPCControlClient) SetOutputTruncated() {
+	client.mu.Lock()
+	client.outputTruncated = true
+	client.mu.Unlock()
+}
+
+func progressPhaseRank(phase ProgressPhase) int {
+	switch phase {
+	case ProgressClaimed:
+		return 1
+	case ProgressPreparingInputs:
+		return 2
+	case ProgressRunningPi:
+		return 3
+	case ProgressUploadingResult:
+		return 4
+	case ProgressCompleting:
+		return 5
+	default:
+		return 0
+	}
+}
+
+func progressPhaseProto(phase ProgressPhase) agentv1.CoreCloudWorkerProgressPhase {
+	switch phase {
+	case ProgressClaimed:
+		return agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_CLAIMED
+	case ProgressPreparingInputs:
+		return agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_PREPARING_INPUTS
+	case ProgressRunningPi:
+		return agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_RUNNING_PI
+	case ProgressUploadingResult:
+		return agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_UPLOADING_RESULT
+	case ProgressCompleting:
+		return agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_COMPLETING
+	default:
+		return agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_UNSPECIFIED
+	}
 }
 
 func (client *GRPCControlClient) Complete(
@@ -274,10 +394,18 @@ func (client *GRPCControlClient) Complete(
 	if err != nil {
 		return ErrInvalid
 	}
+	if err = client.resolvePendingHeartbeat(ctx, request.Fence, request.SessionID, request.SessionToken); err != nil {
+		return err
+	}
+	progress, progressSequence, err := client.nextProgressSnapshot()
+	if err != nil {
+		return err
+	}
 	rpcRequest := &agentv1.WorkerControlServiceCompleteRequest{
 		SessionId: request.SessionID, SessionToken: bytes.Clone(request.SessionToken),
 		Fence: request.FenceToProto(), Claim: objectClaimToProto(request.ManifestClaim),
 		IdempotencyKey: request.IdempotencyKey, RuntimeTopology: runtimeTopologyToProto(request.RuntimeTopology),
+		ProgressSequence: progressSequence, Progress: progress,
 	}
 	defer clear(rpcRequest.SessionToken)
 	response, err := client.rpc.Complete(ctx, rpcRequest)
@@ -294,6 +422,9 @@ func (client *GRPCControlClient) Complete(
 	if err != nil || returned != request.RuntimeTopology || response.GetSession().GetRuntimeTopologyDigest() != topologyDigest {
 		return ErrInvalid
 	}
+	if err = client.acceptTerminalProgress(response.GetSession(), progress, progressSequence); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -303,20 +434,91 @@ func (client *GRPCControlClient) Fail(ctx context.Context, request FailRequest) 
 		!canonicalUUID(request.IdempotencyKey) || request.Code == "" {
 		return ErrInvalid
 	}
+	if err := client.resolvePendingHeartbeat(ctx, request.Fence, request.SessionID, request.SessionToken); err != nil {
+		return err
+	}
+	progress, progressSequence, err := client.nextProgressSnapshot()
+	if err != nil {
+		return err
+	}
 	rpcRequest := &agentv1.WorkerControlServiceFailRequest{
 		SessionId: request.SessionID, SessionToken: bytes.Clone(request.SessionToken),
 		Fence: fenceToProto(request.Fence), Code: request.Code,
-		IdempotencyKey: request.IdempotencyKey,
+		IdempotencyKey:   request.IdempotencyKey,
+		ProgressSequence: progressSequence, Progress: progress,
 	}
 	defer clear(rpcRequest.SessionToken)
 	response, err := client.rpc.Fail(ctx, rpcRequest)
 	if err != nil {
 		return mapControlRPCError(err)
 	}
-	return validateTerminalSession(
+	if err = validateTerminalSession(
 		response.GetSession(), request.SessionID, request.Fence,
 		agentv1.CoreCloudWorkerSessionState_CORE_CLOUD_WORKER_SESSION_STATE_FAILED,
-	)
+	); err != nil {
+		return err
+	}
+	return client.acceptTerminalProgress(response.GetSession(), progress, progressSequence)
+}
+
+func (client *GRPCControlClient) acceptTerminalProgress(session *agentv1.CoreCloudWorkerSession, sent *agentv1.CoreCloudWorkerProgressSnapshot, sequence uint64) error {
+	if session == nil || sent == nil || session.ProgressSequence != sequence || session.LatestProgress == nil ||
+		session.LatestProgress.Phase != sent.Phase || session.LatestProgress.ElapsedMs != sent.ElapsedMs ||
+		session.LatestProgress.UploadedBytes != sent.UploadedBytes ||
+		session.LatestProgress.OutputTruncated != sent.OutputTruncated ||
+		session.LatestProgress.InvocationCount < sent.InvocationCount ||
+		session.LatestProgress.LastActivityAt == nil || session.LatestProgress.LastActivityAt.CheckValid() != nil {
+		return ErrInvalid
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.progressSequence+1 != sequence {
+		return ErrInvalid
+	}
+	client.progressSequence = sequence
+	return nil
+}
+
+func (client *GRPCControlClient) resolvePendingHeartbeat(ctx context.Context, fence Fence, sessionID string, sessionToken []byte) error {
+	client.mu.Lock()
+	progress, sequence, key := client.pendingProgress, client.pendingSequence, client.pendingKey
+	client.mu.Unlock()
+	if progress == nil {
+		return nil
+	}
+	request := &agentv1.WorkerControlServiceHeartbeatRequest{
+		SessionId: sessionID, SessionToken: bytes.Clone(sessionToken), Fence: fenceToProto(fence),
+		ProgressSequence: sequence, IdempotencyKey: key, Progress: progress,
+	}
+	defer clear(request.SessionToken)
+	response, err := client.rpc.Heartbeat(ctx, request)
+	if err != nil {
+		return mapControlRPCError(err)
+	}
+	if response == nil || response.Session == nil || response.Session.SessionId != sessionID ||
+		response.Session.State != agentv1.CoreCloudWorkerSessionState_CORE_CLOUD_WORKER_SESSION_STATE_ACTIVE ||
+		response.Session.ProgressSequence != sequence || response.Session.LatestProgress == nil ||
+		response.Session.LatestProgress.Phase != progress.Phase ||
+		response.Session.LatestProgress.ElapsedMs != progress.ElapsedMs ||
+		response.Session.LatestProgress.UploadedBytes != progress.UploadedBytes ||
+		response.Session.LatestProgress.OutputTruncated != progress.OutputTruncated ||
+		response.Session.LatestProgress.InvocationCount < progress.InvocationCount ||
+		response.Session.LatestProgress.LastActivityAt == nil ||
+		response.Session.LatestProgress.LastActivityAt.CheckValid() != nil {
+		return ErrInvalid
+	}
+	responseFence, err := fenceFromProto(response.Session.Fence)
+	if err != nil || responseFence != fence {
+		return ErrInvalid
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.pendingSequence != sequence || client.pendingKey != key || client.progressSequence+1 != sequence {
+		return ErrInvalid
+	}
+	client.progressSequence = sequence
+	client.pendingProgress, client.pendingSequence, client.pendingKey = nil, 0, ""
+	return nil
 }
 
 func (request CompleteRequest) FenceToProto() *agentv1.CoreCloudWorkerTaskFence {

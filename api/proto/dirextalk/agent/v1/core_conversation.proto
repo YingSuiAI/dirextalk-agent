@@ -203,6 +203,9 @@ message ConversationServiceWatchTurnEventsRequest {
   int32 limit = 3;
 }
 message CoreConversationTurnEvent {
+  reserved 13;
+  reserved "attempt_id";
+
   string turn_id = 1;
   int64 sequence = 2;
   string kind = 3;
@@ -215,13 +218,14 @@ message CoreConversationTurnEvent {
   bool replay_gap = 10;
   google.protobuf.Timestamp created_at = 11;
   string confirmation_id = 12;
-  string attempt_id = 13;
   string execution_id = 14;
   string status = 15;
   CoreToolResult tool_result = 16;
   repeated string related_task_ids = 17;
   repeated string related_plan_ids = 18;
   repeated CoreConversationReference references = 19;
+  // The positive turn revision captured atomically when this event was written.
+  uint64 revision = 20;
 }
 message ConversationServiceCancelTurnRequest {
   string idempotency_key = 1;

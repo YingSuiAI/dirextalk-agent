@@ -112,7 +112,7 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 	if err = consumeAcceptedTurnAttachments(ctx, tx, c, turnID); err != nil {
 		return core.Turn{}, err
 	}
-	payload, _ := json.Marshal(core.TurnEvent{TurnID: turnID, Sequence: 1, Kind: core.TurnEventAccepted, CreatedAt: now})
+	payload, _ := json.Marshal(core.TurnEvent{TurnID: turnID, Sequence: 1, Revision: 1, Kind: core.TurnEventAccepted, CreatedAt: now})
 	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at) VALUES($1,1,$2,$3,$4)`, turnID, string(core.TurnEventAccepted), payload, now); err != nil {
 		return core.Turn{}, err
 	}
@@ -397,7 +397,7 @@ func (s *CoreConversationStore) RenewTurn(ctx context.Context, id, lease string,
 
 func (s *CoreConversationStore) PrepareTurnModel(ctx context.Context, lease core.TurnLease) (core.Turn, error) {
 	var out core.Turn
-	err := s.pool.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state IN ('','prepared') RETURNING turn_id`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&out.ID)
+	err := s.pool.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='' RETURNING turn_id`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&out.ID)
 	if err != nil {
 		return core.Turn{}, core.ErrConflict
 	}
@@ -484,16 +484,20 @@ func (s *CoreConversationStore) AppendTurnEvent(ctx context.Context, id string, 
 	}
 	defer tx.Rollback(ctx)
 	var lastSequence int64
+	var revision uint64
 	var state string
-	if err = tx.QueryRow(ctx, `SELECT state,last_sequence FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, id).Scan(&state, &lastSequence); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT state,last_sequence,revision FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, id).Scan(&state, &lastSequence, &revision); err != nil {
 		return core.TurnEvent{}, err
 	}
 	if state == string(core.TurnCompleted) || state == string(core.TurnCanceled) || state == string(core.TurnFailed) {
 		return core.TurnEvent{}, core.ErrConflict
 	}
 	sequence := lastSequence + 1
-	event.TurnID, event.Sequence = id, sequence
+	event.TurnID, event.Sequence, event.Revision = id, sequence, revision
 	event.CreatedAt = time.Now().UTC()
+	if event.Kind == core.TurnEventWaitingConfirmation && event.ValidateWaitingConfirmationAuthority() != nil {
+		return core.TurnEvent{}, core.ErrInvalid
+	}
 	payload, _ := json.Marshal(event)
 	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at) VALUES($1,$2,$3,$4,$5)`, id, sequence, string(event.Kind), payload, event.CreatedAt); err != nil {
 		return core.TurnEvent{}, err
@@ -508,7 +512,17 @@ func (s *CoreConversationStore) AppendTurnEvent(ctx context.Context, id string, 
 }
 
 func insertTurnEventTx(ctx context.Context, tx pgx.Tx, id string, sequence int64, event core.TurnEvent, now time.Time) error {
-	event.TurnID, event.Sequence, event.CreatedAt = id, sequence, now
+	var revision uint64
+	if err := tx.QueryRow(ctx, `SELECT revision FROM core_conversation_turns WHERE turn_id=$1`, id).Scan(&revision); err != nil {
+		return err
+	}
+	if event.Revision != 0 && event.Revision != revision {
+		return core.ErrConflict
+	}
+	event.TurnID, event.Sequence, event.Revision, event.CreatedAt = id, sequence, revision, now
+	if event.Kind == core.TurnEventWaitingConfirmation && event.ValidateWaitingConfirmationAuthority() != nil {
+		return core.ErrInvalid
+	}
 	payload, _ := json.Marshal(event)
 	if _, err := tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at) VALUES($1,$2,$3,$4,$5)`, id, sequence, string(event.Kind), payload, now); err != nil {
 		return err
@@ -529,13 +543,19 @@ func (s *CoreConversationStore) LoadTurnEvents(ctx context.Context, id string, a
 	var out []core.TurnEvent
 	for rows.Next() {
 		var e core.TurnEvent
+		var sequence int64
 		var kind string
 		var raw []byte
-		if err = rows.Scan(&e.Sequence, &kind, &raw, &e.CreatedAt); err != nil {
+		var createdAt time.Time
+		if err = rows.Scan(&sequence, &kind, &raw, &createdAt); err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal(raw, &e)
-		e.TurnID, e.Kind = id, core.TurnEventKind(kind)
+		if json.Unmarshal(raw, &e) != nil || e.TurnID != id || e.Sequence != sequence ||
+			e.Kind != core.TurnEventKind(kind) || e.Revision == 0 ||
+			(e.Kind == core.TurnEventWaitingConfirmation && e.ValidateWaitingConfirmationAuthority() != nil) {
+			return nil, core.ErrConflict
+		}
+		e.CreatedAt = createdAt
 		out = append(out, e)
 	}
 	return out, rows.Err()

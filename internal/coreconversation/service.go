@@ -1475,20 +1475,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	// Server history until the final turn commit.
 	if recovery, ok := s.turns.(ConversationToolRecoveryStore); ok {
 		if attempt, observeErr := recovery.ObserveConversationTool(ctx, id); observeErr == nil && (attempt.State == "completed" || attempt.State == "denied" || attempt.State == "canceled") {
-			content := attempt.SafeSummary
-			if len(attempt.Result) > 0 {
-				var stored coretask.Result
-				if json.Unmarshal(attempt.Result, &stored) == nil {
-					if stored.Text != "" {
-						content = stored.Text
-					} else if len(stored.JSON) > 0 {
-						content = string(stored.JSON)
-					}
-				}
-			}
-			if attempt.State != "completed" && content == "" {
-				content = "tool call denied"
-			}
+			content := conversationToolAttemptContent(attempt)
 			assistant := Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "", ToolCalls: []ToolCall{{ID: attempt.CallID, Name: attempt.ToolName, Arguments: `{}`}}, CreatedAt: nextMessageTime(conv, s.clock()), ModelProfileID: turn.ProfileID}
 			tool := Message{ID: uuid.NewString(), Role: RoleTool, ToolResults: []ToolResult{{CallID: attempt.CallID, ToolName: attempt.ToolName, Content: content, IsError: attempt.State != "completed"}}, CreatedAt: nextMessageTime(conv, s.clock().Add(time.Nanosecond)), ModelProfileID: turn.ProfileID}
 			conv.Messages = append(conv.Messages, assistant, tool)
@@ -1748,12 +1735,11 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					}
 				}
 				attemptID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("conversation-tool:%s:%d:%s", turn.RequestID, round, call.ID))).String()
-				attempt, _, _, prepErr := toolStore.PrepareConversationTool(ctx, PrepareToolCommand{Lease: lease, Round: round, Call: call, Snapshot: bound, CanonicalArguments: args, ArgumentsDigest: argsDigest, SafeSummary: "conversation tool call " + call.Name, IdempotencyKey: attemptID, ExpiresAt: s.clock().Add(10 * time.Minute)})
+				_, _, _, prepErr := toolStore.PrepareConversationTool(ctx, PrepareToolCommand{Lease: lease, Round: round, Call: call, Snapshot: bound, CanonicalArguments: args, ArgumentsDigest: argsDigest, SafeSummary: "conversation tool call " + call.Name, IdempotencyKey: attemptID, ExpiresAt: s.clock().Add(10 * time.Minute)})
 				if prepErr != nil {
 					_, _ = s.turns.FailTurn(ctx, lease, "tool_prepare_failed", "conversation tool preparation failed")
 					return
 				}
-				_, _ = s.turns.AppendTurnEvent(ctx, id, TurnEvent{Kind: TurnEventWaitingConfirmation, ConfirmationID: attempt.ConfirmationID, AttemptID: attempt.ID, ExecutionID: attempt.ExecutionID, Status: attempt.State})
 				return
 			}
 			if durableDispatch && !replayed {
@@ -1794,6 +1780,27 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			cancel()
 		}
 	}
+}
+
+func conversationToolAttemptContent(attempt ToolAttempt) string {
+	content := attempt.SafeSummary
+	if len(attempt.Result) > 0 {
+		var stored coretask.Result
+		if json.Unmarshal(attempt.Result, &stored) == nil && stored.Validate() == nil {
+			switch {
+			case stored.Text != "":
+				content = stored.Text
+			case len(stored.JSON) > 0:
+				content = string(stored.JSON)
+			case stored.Summary != "":
+				content = stored.Summary
+			}
+		}
+	}
+	if attempt.State != "completed" && content == "" {
+		return "tool call denied"
+	}
+	return content
 }
 
 func intrinsicTerminalFailure(toolName string, err error) (string, string) {

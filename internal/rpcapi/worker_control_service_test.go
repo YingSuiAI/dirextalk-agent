@@ -13,6 +13,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/identitywire"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
 	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 	"github.com/google/uuid"
@@ -42,9 +43,14 @@ type workerControlTestMaterials struct {
 	material WorkerClaimMaterial
 	claim    control.ObjectClaim
 	topology execgate.Proof
+	issues   int
 }
 
-func (issuer *workerControlTestMaterials) IssueWorkerClaimMaterial(context.Context, control.Session) (WorkerClaimMaterial, error) {
+func (issuer *workerControlTestMaterials) IssueWorkerClaimMaterial(_ context.Context, _ control.Session, versions cloudprotocol.Versions) (WorkerClaimMaterial, error) {
+	issuer.issues++
+	if versions != issuer.material.ProtocolVersions {
+		return WorkerClaimMaterial{}, control.ErrInvalid
+	}
 	material := issuer.material
 	material.RuntimeTaskJSON = append([]byte(nil), material.RuntimeTaskJSON...)
 	material.InputManifestJSON = append([]byte(nil), material.InputManifestJSON...)
@@ -114,7 +120,8 @@ func TestWorkerControlServiceBindsLaunchClaimHeartbeatAndCompletion(t *testing.T
 	}
 	materials := &workerControlTestMaterials{
 		material: WorkerClaimMaterial{
-			RuntimeTaskJSON: taskJSON, RuntimeTaskDigest: taskDigest,
+			ProtocolVersions: cloudprotocol.Current(),
+			RuntimeTaskJSON:  taskJSON, RuntimeTaskDigest: taskDigest,
 			InputManifestJSON: manifestJSON, InputManifestDigest: hex.EncodeToString(manifestDigest[:]),
 			ArtifactScope: cloudresult.Scope{Bucket: resultClaim.Bucket, KeyPrefix: "owners/owner/executions/" + executionID + "/"},
 			ModelGrant:    grant, HeartbeatInterval: 10 * time.Second, NotAfter: now.Add(5 * time.Minute),
@@ -137,14 +144,39 @@ func TestWorkerControlServiceBindsLaunchClaimHeartbeatAndCompletion(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	for name, versions := range map[string]cloudprotocol.Versions{
+		"missing": {},
+		"unknown worker": {
+			WorkerProtocolVersion:  "unknown",
+			RuntimeContractVersion: cloudprotocol.RuntimeContractVersion,
+		},
+		"unknown runtime": {
+			WorkerProtocolVersion:  cloudprotocol.WorkerProtocolVersion,
+			RuntimeContractVersion: "unknown",
+		},
+	} {
+		t.Run("claim rejects "+name+" versions before material grant", func(t *testing.T) {
+			_, claimErr := adapter.Claim(context.Background(), &agentv1.WorkerControlServiceClaimRequest{
+				ChallengeId: challenge.ChallengeId, Nonce: challenge.Nonce, Fence: challenge.Fence,
+				Proof:                 &agentv1.CoreCloudWorkerIdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("proof")},
+				WorkerProtocolVersion: versions.WorkerProtocolVersion, RuntimeContractVersion: versions.RuntimeContractVersion,
+			})
+			if status.Code(claimErr) != codes.FailedPrecondition || materials.issues != 0 {
+				t.Fatalf("claim error/material issues = %v/%d", claimErr, materials.issues)
+			}
+		})
+	}
 	claimed, err := adapter.Claim(context.Background(), &agentv1.WorkerControlServiceClaimRequest{
 		ChallengeId: challenge.ChallengeId, Nonce: challenge.Nonce, Fence: challenge.Fence,
-		Proof: &agentv1.CoreCloudWorkerIdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("proof")},
+		Proof:                 &agentv1.CoreCloudWorkerIdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("proof")},
+		WorkerProtocolVersion: cloudprotocol.WorkerProtocolVersion, RuntimeContractVersion: cloudprotocol.RuntimeContractVersion,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if claimed.Session.GetState() != agentv1.CoreCloudWorkerSessionState_CORE_CLOUD_WORKER_SESSION_STATE_ACTIVE ||
+		claimed.WorkerProtocolVersion != cloudprotocol.WorkerProtocolVersion ||
+		claimed.RuntimeContractVersion != cloudprotocol.RuntimeContractVersion || materials.issues != 1 ||
 		claimed.RuntimeTaskDigest != taskDigest || claimed.InputManifestDigest != task.InputManifestSHA256 ||
 		claimed.ModelGrant.GetGrantId() != grant.GrantID || len(claimed.SessionToken) < 32 {
 		t.Fatalf("claim response lost a binding: %#v", claimed)
@@ -152,6 +184,10 @@ func TestWorkerControlServiceBindsLaunchClaimHeartbeatAndCompletion(t *testing.T
 	heartbeat, err := adapter.Heartbeat(context.Background(), &agentv1.WorkerControlServiceHeartbeatRequest{
 		SessionId: claimed.Session.SessionId, SessionToken: claimed.SessionToken, Fence: challenge.Fence,
 		ProgressSequence: 1, IdempotencyKey: uuid.NewString(),
+		Progress: &agentv1.CoreCloudWorkerProgressSnapshot{
+			Phase:          agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_CLAIMED,
+			LastActivityAt: claimed.Session.ClaimedAt,
+		},
 	})
 	if err != nil || heartbeat.Session.GetProgressSequence() != 1 {
 		t.Fatalf("heartbeat = %#v, %v", heartbeat, err)
@@ -163,6 +199,12 @@ func TestWorkerControlServiceBindsLaunchClaimHeartbeatAndCompletion(t *testing.T
 			Sha256: resultClaim.SHA256, SizeBytes: resultClaim.SizeBytes, MediaType: resultClaim.MediaType,
 		},
 		IdempotencyKey: uuid.NewString(), RuntimeTopology: workerRuntimeTopologyProto(topology),
+		ProgressSequence: 2,
+		Progress: &agentv1.CoreCloudWorkerProgressSnapshot{
+			Phase:          agentv1.CoreCloudWorkerProgressPhase_CORE_CLOUD_WORKER_PROGRESS_PHASE_COMPLETING,
+			LastActivityAt: claimed.Session.ClaimedAt,
+			UploadedBytes:  uint64(resultClaim.SizeBytes),
+		},
 	})
 	if err != nil || completed.Session.GetState() != agentv1.CoreCloudWorkerSessionState_CORE_CLOUD_WORKER_SESSION_STATE_COMPLETED {
 		t.Fatalf("complete = %#v, %v", completed, err)
@@ -207,7 +249,8 @@ func TestValidateWorkerClaimMaterialAllowsGrantAtWorkerHardDeadlineAndRejectsEar
 	manifestDigest := sha256.Sum256(manifestJSON)
 	hardDeadline := now.Add(5 * time.Minute)
 	material := WorkerClaimMaterial{
-		RuntimeTaskJSON: taskJSON, RuntimeTaskDigest: taskDigest,
+		ProtocolVersions: cloudprotocol.Current(),
+		RuntimeTaskJSON:  taskJSON, RuntimeTaskDigest: taskDigest,
 		InputManifestJSON: manifestJSON, InputManifestDigest: hex.EncodeToString(manifestDigest[:]),
 		ArtifactScope: cloudresult.Scope{Bucket: "dirextalk-worker-artifacts", KeyPrefix: "owners/owner/executions/" + executionID + "/"},
 		ModelGrant: cloudruntime.ModelGrant{

@@ -2,6 +2,7 @@ package coreconversation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -13,6 +14,24 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
+
+func TestConversationToolAttemptContentRestoresSafeFailureSummary(t *testing.T) {
+	const safeSummary = "local sandbox is busy; retry later or explicitly authorize Cloud Worker"
+	raw, err := json.Marshal(coretask.Result{Summary: safeSummary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := ToolAttempt{
+		State: "denied", Result: raw,
+		SafeSummary: "conversation tool call write_html",
+	}
+	if got := conversationToolAttemptContent(attempt); got != safeSummary {
+		t.Fatalf("recovered content=%q want=%q", got, safeSummary)
+	}
+	if strings.Contains(conversationToolAttemptContent(attempt), "stderr") {
+		t.Fatal("protected runner diagnostics leaked through recovered content")
+	}
+}
 
 type replayTurnStore struct {
 	*fakeStore
@@ -66,6 +85,7 @@ type readOnlyTurnStore struct {
 	dispatch      ModelRunResult
 	failedCode    string
 	prepareCalls  int
+	prepared      ToolAttempt
 }
 
 func (s *readOnlyTurnStore) FailTurn(_ context.Context, _ TurnLease, code, _ string) (Turn, error) {
@@ -75,6 +95,21 @@ func (s *readOnlyTurnStore) FailTurn(_ context.Context, _ TurnLease, code, _ str
 
 func (s *readOnlyTurnStore) PrepareConversationTool(context.Context, PrepareToolCommand) (ToolAttempt, coretask.Task, coreconfirmation.Confirmation, error) {
 	s.prepareCalls++
+	if s.prepared.ID != "" {
+		waiting, err := NewWaitingConfirmationTurnEvent(s.prepared.ConfirmationID, s.prepared.ExecutionID)
+		if err != nil || s.prepared.State != string(TurnWaitingConfirmation) {
+			return ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, ErrInvalid
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.turn.State = TurnWaitingConfirmation
+		s.turn.Revision++
+		s.turn.LastSequence++
+		waiting.TurnID, waiting.Sequence, waiting.Revision, waiting.CreatedAt =
+			s.turn.ID, s.turn.LastSequence, s.turn.Revision, time.Now().UTC()
+		s.events = append(s.events, waiting)
+		return s.prepared, coretask.Task{}, coreconfirmation.Confirmation{}, nil
+	}
 	return ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, ErrInvalid
 }
 
@@ -89,7 +124,7 @@ func (s *readOnlyTurnStore) AppendTurnEvent(_ context.Context, _ string, event T
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.turn.LastSequence++
-	event.TurnID, event.Sequence, event.CreatedAt = s.turn.ID, s.turn.LastSequence, time.Now().UTC()
+	event.TurnID, event.Sequence, event.Revision, event.CreatedAt = s.turn.ID, s.turn.LastSequence, s.turn.Revision, time.Now().UTC()
 	s.events = append(s.events, event)
 	return event, nil
 }
@@ -163,11 +198,11 @@ func (s *readOnlyTurnStore) ContinueTurnAfterReadOnlyTool(_ context.Context, _ T
 func (s *readOnlyTurnStore) CommitTurn(_ context.Context, _ TurnLease, response ChatResponse) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.turn.Revision++
 	s.turn.LastSequence++
-	s.events = append(s.events, TurnEvent{TurnID: s.turn.ID, Sequence: s.turn.LastSequence, Kind: TurnEventDone, Response: &response, CreatedAt: time.Now().UTC()})
+	s.events = append(s.events, TurnEvent{TurnID: s.turn.ID, Sequence: s.turn.LastSequence, Revision: s.turn.Revision, Kind: TurnEventDone, Response: &response, CreatedAt: time.Now().UTC()})
 	s.turn.State = TurnCompleted
 	s.turn.Response = &response
-	s.turn.Revision++
 	return s.turn, nil
 }
 
@@ -568,6 +603,81 @@ func TestDurableReadOnlyToolPersistsEventsAndCompletesSecondModelRound(t *testin
 	}
 	if toolCalls != 1 || toolResults != 1 || done != 1 {
 		t.Fatalf("durable events=%+v", store.events)
+	}
+}
+
+func TestExecuteTurnPublishesCanonicalWaitingConfirmationForLocalTool(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	selection := ExtensionSelection{
+		Kind: ExtensionMCP, ID: uuid.NewString(), Version: "config-1",
+		Digest: strings.Repeat("a", 64), AllowedTools: []string{"local_task"},
+	}
+	snapshot := ExtensionExecutionSnapshot{
+		Selection: selection, InstallationID: selection.ID, VersionID: selection.Version,
+		Source: "mcp:test", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64),
+		ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64),
+		ToolNames: []string{"local_task"}, ReadOnly: false,
+	}
+	call := ToolCall{ID: uuid.NewString(), Name: "local_task", Arguments: `{}`}
+	attempt := ToolAttempt{
+		ID: uuid.NewString(), TurnID: uuid.NewString(), TaskID: uuid.NewString(),
+		ConfirmationID: uuid.NewString(), ExecutionID: uuid.NewString(), State: "waiting_confirmation",
+	}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+		Prompt: "run the local task", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
+		ProfileSnapshotDigest: profile.Digest(), ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot},
+		ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(),
+		State:                   TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC(),
+	}
+	attempt.TurnID = turn.ID
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+		prepared:              attempt,
+	}
+	service, err := NewService(
+		store,
+		fixedToolCallsTurnModel{calls: []ToolCall{call}},
+		extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+			return []ResolvedExtension{{Selection: selection, Snapshot: snapshot}}, nil
+		}),
+		snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.executeTurn(context.Background(), turn.ID)
+
+	if store.failedCode != "" || store.prepareCalls != 1 {
+		t.Fatalf("failure=%q prepare_calls=%d", store.failedCode, store.prepareCalls)
+	}
+	var waiting *TurnEvent
+	waitingCount := 0
+	for index := range store.events {
+		if store.events[index].Kind == TurnEventWaitingConfirmation {
+			waitingCount++
+			waiting = &store.events[index]
+		}
+	}
+	if waitingCount != 1 || waiting == nil || waiting.ValidateWaitingConfirmationAuthority() != nil || waiting.Revision != 2 ||
+		waiting.ConfirmationID != attempt.ConfirmationID || waiting.ExecutionID != attempt.ExecutionID ||
+		waiting.Sequence != 3 {
+		t.Fatalf("canonical waiting event=%+v all=%+v", waiting, store.events)
+	}
+}
+
+func TestWaitingConfirmationAuthorityRejectsMixedSourceFields(t *testing.T) {
+	event, err := NewWaitingConfirmationTurnEvent(uuid.NewString(), uuid.NewString())
+	if err != nil || event.Status != string(TurnWaitingConfirmation) {
+		t.Fatalf("event=%+v err=%v", event, err)
+	}
+	event.RelatedTaskIDs = []string{uuid.NewString()}
+	if !errors.Is(event.ValidateWaitingConfirmationAuthority(), ErrInvalid) {
+		t.Fatalf("mixed waiting event accepted: %+v", event)
 	}
 }
 

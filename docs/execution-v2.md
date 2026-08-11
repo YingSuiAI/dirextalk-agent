@@ -104,6 +104,18 @@ authorities are:
 | Claim, heartbeat, completion | private WorkerControlService session |
 | App invalidation | Message Server's minimal completion receipt |
 
+Worker progress reuses the private session `progress_sequence` as its exact
+mutation/replay fence and the existing `agent.execution.v2.runs.events`
+sequence as the only public resume cursor. Snapshots contain only a closed
+phase plus bounded elapsed/activity, CPU, memory, invocation, upload, and
+truncation counters. Complete and Fail carry their final snapshot in the same
+serializable transaction as the terminal session mutation. PostgreSQL retains
+the latest 4096 run events as one contiguous suffix; an older cursor resumes at
+that suffix with `history_truncated=true`. Event pages remain
+`{events,next_sequence,history_truncated}` and fail closed on any internal gap.
+CPU and memory are bounded observations; `0` means the Worker has no verified
+runtime metrics source, not that the task consumed zero resources.
+
 One PostgreSQL transaction creates the plan, execution, waiting-user task,
 confirmation, assistant offer message, turn event, complete reference snapshot,
 and offer outbox. Confirm, reject, expiry, requote, and terminal conversation
@@ -201,6 +213,15 @@ reject replay, cancellation, and stale leases.
 
 Claim returns the exact runtime task, immutable input manifest, exact artifact
 scope, short-lived model relay grant, heartbeat interval, and not-after time.
+The immutable AMI qualification is the sole release record for the current
+`worker_protocol_version=dirextalk.agent.cloud-worker-control/v1` and
+`runtime_contract_version=dirextalk.agent.ephemeral-pi-runtime/v1`. The Worker
+declares both values in Claim and the Agent returns the same exact pair. A
+missing or different value is rejected before identity verification, session
+creation, model-grant activation, runtime-task parsing, or Pi execution. There
+is no version negotiation, fallback, or older qualification schema path; the
+current qualification document schema is
+`cloud_worker_runtime_qualification_v2`.
 The canonical Pi final result is bounded by the approved `max_tokens` and
 output bytes. Collection uses one exact versioned S3 object and verifies
 version, key/prefix, media type, size, digest, manifest, task/lease binding,

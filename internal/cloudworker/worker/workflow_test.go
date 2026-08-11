@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -56,15 +57,22 @@ func TestWorkflowRetriesOnlyNotReadyBeforeClaim(t *testing.T) {
 func TestWorkflowHeartbeatsImmediatelyBeforeInstantExecution(t *testing.T) {
 	fixture := newWorkflowRetryFixture(t)
 	fixture.executor.beforeReturn = func(context.Context) {
-		if sequences := fixture.control.heartbeatSnapshot(); len(sequences) != 1 || sequences[0] != 1 {
-			t.Fatalf("heartbeat sequences before execution return=%v, want [1]", sequences)
+		if sequences := fixture.control.heartbeatSnapshot(); !reflect.DeepEqual(sequences, []uint64{1, 2, 3}) {
+			t.Fatalf("heartbeat sequences before execution return=%v, want [1 2 3]", sequences)
 		}
 	}
 	if err := fixture.workflow.Run(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if sequences := fixture.control.heartbeatSnapshot(); len(sequences) != 1 || sequences[0] != 1 {
-		t.Fatalf("heartbeat sequences=%v, want [1]", sequences)
+	if sequences := fixture.control.heartbeatSnapshot(); !reflect.DeepEqual(sequences, []uint64{1, 2, 3, 4}) {
+		t.Fatalf("heartbeat sequences=%v, want [1 2 3 4] before terminal mutation", sequences)
+	}
+	fixture.control.mu.Lock()
+	phases := append([]ProgressPhase(nil), fixture.control.progressPhases...)
+	uploaded := fixture.control.uploadedBytes
+	fixture.control.mu.Unlock()
+	if !reflect.DeepEqual(phases, []ProgressPhase{ProgressPreparingInputs, ProgressRunningPi, ProgressUploadingResult, ProgressCompleting}) || uploaded != 2 {
+		t.Fatalf("progress phases/uploaded=%v/%d", phases, uploaded)
 	}
 }
 
@@ -330,6 +338,8 @@ func TestWorkflowConsumesGRPCHeartbeatDeadlineOnlyAfterLocalStop(t *testing.T) {
 			client.sessionID = fixture.control.claimed.SessionID
 			client.fence = fixture.control.claimed.Binding.Fence()
 			client.notAfter = fixture.control.claimed.NotAfter
+			client.claimedAt = fixture.clock.Now()
+			client.phase = ProgressClaimed
 			fixture.workflow.control = &workflowGRPCHeartbeatControl{
 				workflowRetryControl: fixture.control,
 				grpc:                 client,
@@ -592,11 +602,32 @@ type workflowRetryControl struct {
 	heartbeatCount                   int
 	heartbeatSuccessesBeforeBehavior int
 	heartbeatSequences               []uint64
+	progressPhases                   []ProgressPhase
+	uploadedBytes                    uint64
+	outputTruncated                  bool
 	completeWaitForContext           bool
 	failWaitForContext               bool
 	failCount                        int
 	lastFail                         FailRequest
 	allowFail                        bool
+}
+
+func (control *workflowRetryControl) SetProgressPhase(phase ProgressPhase) {
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	control.progressPhases = append(control.progressPhases, phase)
+}
+
+func (control *workflowRetryControl) SetUploadedBytes(value uint64) {
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	control.uploadedBytes = value
+}
+
+func (control *workflowRetryControl) SetOutputTruncated() {
+	control.mu.Lock()
+	control.outputTruncated = true
+	control.mu.Unlock()
 }
 
 func (control *workflowRetryControl) IssueIdentityChallenge(
@@ -717,8 +748,11 @@ type workflowRetryExecutor struct {
 	runError     error
 }
 
-func (executor *workflowRetryExecutor) Run(ctx context.Context, _ ClaimedTask) (cloudruntime.Result, error) {
+func (executor *workflowRetryExecutor) Run(ctx context.Context, _ ClaimedTask, progress func(ProgressPhase) error) (cloudruntime.Result, error) {
 	executor.runCount++
+	if err := progress(ProgressRunningPi); err != nil {
+		return cloudruntime.Result{}, err
+	}
 	if executor.beforeReturn != nil {
 		executor.beforeReturn(ctx)
 	}
@@ -796,6 +830,7 @@ func (rpc *workflowHeartbeatRPC) Heartbeat(
 				SessionId: request.SessionId, Fence: request.Fence,
 				State:            agentv1.CoreCloudWorkerSessionState_CORE_CLOUD_WORKER_SESSION_STATE_ACTIVE,
 				ProgressSequence: request.ProgressSequence,
+				LatestProgress:   request.Progress,
 			},
 		}, nil
 	}

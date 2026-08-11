@@ -21,7 +21,7 @@ var (
 
 const (
 	PricingCatalogFileSchema       = "cloud_worker_pricing_catalog_v1"
-	RuntimeQualificationFileSchema = "cloud_worker_runtime_qualification_v1"
+	RuntimeQualificationFileSchema = "cloud_worker_runtime_qualification_v2"
 	maximumProductionFileBytes     = 256 << 10
 )
 
@@ -88,6 +88,8 @@ type PinnedRuntimeQualification struct {
 
 type runtimeQualificationDocument struct {
 	Schema                  string `json:"schema"`
+	WorkerProtocolVersion   string `json:"worker_protocol_version"`
+	RuntimeContractVersion  string `json:"runtime_contract_version"`
 	AMIID                   string `json:"ami_id"`
 	AMIDigest               string `json:"ami_digest"`
 	WorkerReleaseDigest     string `json:"worker_release_digest"`
@@ -105,6 +107,7 @@ func NewPinnedRuntimeQualification(path, expectedSHA256 string) (*PinnedRuntimeQ
 		return nil, err
 	}
 	qualification := RuntimeQualification{
+		WorkerProtocolVersion: document.WorkerProtocolVersion, RuntimeContractVersion: document.RuntimeContractVersion,
 		PiRuntimeDigest: document.PiRuntimeDigest, PiVersion: document.PiVersion,
 		PiExecutableSHA256: document.PiExecutableSHA256, ResultExtensionSHA256: document.ResultExtensionSHA256,
 	}
@@ -130,14 +133,16 @@ func (resolver *PinnedRuntimeQualification) ResolveRuntimeQualification(ctx cont
 		return RuntimeQualification{}, ErrStaleAuthorization
 	}
 	return RuntimeQualification{
-		PiRuntimeDigest: resolver.document.PiRuntimeDigest, PiVersion: resolver.document.PiVersion,
+		WorkerProtocolVersion:  resolver.document.WorkerProtocolVersion,
+		RuntimeContractVersion: resolver.document.RuntimeContractVersion,
+		PiRuntimeDigest:        resolver.document.PiRuntimeDigest, PiVersion: resolver.document.PiVersion,
 		PiExecutableSHA256:    resolver.document.PiExecutableSHA256,
 		ResultExtensionSHA256: resolver.document.ResultExtensionSHA256,
 	}, nil
 }
 
 func validateRuntimeQualificationFields(value RuntimeQualification) error {
-	if !validDigest(value.PiRuntimeDigest) || strings.TrimSpace(value.PiVersion) == "" ||
+	if !value.protocolVersions().IsCurrent() || !validDigest(value.PiRuntimeDigest) || strings.TrimSpace(value.PiVersion) == "" ||
 		len(value.PiVersion) > 128 || strings.ContainsAny(value.PiVersion, "\r\n\x00") ||
 		!validDigest(value.PiExecutableSHA256) || !validDigest(value.ResultExtensionSHA256) {
 		return ErrInvalid

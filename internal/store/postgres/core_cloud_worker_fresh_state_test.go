@@ -17,6 +17,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/identitywire"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/modelrelay"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
 	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
@@ -341,7 +342,8 @@ func (sessions *freshStateWorkerSessions) SetLaunchExpectation(ctx context.Conte
 	sessions.setPhase = "claim"
 	claimed, err := service.Claim(ctx, control.ClaimRequest{
 		ChallengeID: challenge.ChallengeID, Nonce: challenge.Nonce, Fence: request.Fence,
-		Proof: control.IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("fresh-state-signed-iid")},
+		Proof:    control.IdentityProof{Method: identitywire.MethodSTSSigV4IMDSPKCS7V1, Payload: []byte("fresh-state-signed-iid")},
+		Versions: cloudprotocol.Current(),
 	})
 	if err != nil {
 		return err
@@ -351,7 +353,9 @@ func (sessions *freshStateWorkerSessions) SetLaunchExpectation(ctx context.Conte
 	sessions.setPhase = "heartbeat"
 	if _, err = service.Heartbeat(ctx, control.HeartbeatRequest{
 		SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: request.Fence,
-		ProgressSequence: 1, IdempotencyKey: uuid.NewString(),
+		ProgressSequence: 1, Progress: control.ProgressSnapshot{
+			Phase: control.ProgressClaimed, LastActivityAt: claimed.Session.ClaimedAt,
+		}, IdempotencyKey: uuid.NewString(),
 	}); err != nil {
 		return err
 	}
@@ -367,15 +371,49 @@ func (sessions *freshStateWorkerSessions) SetLaunchExpectation(ctx context.Conte
 		return err
 	}
 	sessions.setPhase = "complete"
-	completed, err := service.Complete(ctx, control.CompleteRequest{
+	completeRequest := control.CompleteRequest{
 		SessionID: claimed.Session.SessionID, SessionToken: claimed.SessionToken, Fence: request.Fence,
 		Claim: control.ObjectClaim{
 			Bucket: manifestClaim.Bucket, Key: manifestClaim.Key, VersionID: manifestClaim.VersionID,
 			SHA256: manifestClaim.SHA256, SizeBytes: manifestClaim.SizeBytes, MediaType: manifestClaim.MediaType,
 		},
-		RuntimeTopology: freshStateRuntimeTopology(resume, request.Fence),
-		IdempotencyKey:  uuid.NewString(),
-	})
+		RuntimeTopology:  freshStateRuntimeTopology(resume, request.Fence),
+		ProgressSequence: 2,
+		Progress: control.ProgressSnapshot{
+			Phase: control.ProgressCompleting, UploadedBytes: uint64(manifestClaim.SizeBytes),
+			LastActivityAt: claimed.Session.ClaimedAt,
+		},
+		IdempotencyKey: uuid.NewString(),
+	}
+	// Force the progress-event append to fail after the session UPDATE. The
+	// serializable terminal transaction must roll back progress, terminal state,
+	// and replay together; removing the injected collision then allows the exact
+	// same terminal request to succeed.
+	collisionID := uuid.NewString()
+	if _, err = sessions.controlStore.store.pool.Exec(ctx, `INSERT INTO core_cloud_worker_events(
+		execution_id,sequence,event_id,owner_id,kind,state,revision,payload_digest,payload_json,created_at,session_id,worker_progress_sequence)
+		SELECT execution_id,(SELECT COALESCE(MAX(sequence),0)+1 FROM core_cloud_worker_events WHERE execution_id=$1),
+			$2,owner_id,'worker_progress',state,revision,repeat('a',64),'{}'::jsonb,$3,$4,2
+		FROM core_cloud_worker_executions WHERE execution_id=$1`, request.Fence.ExecutionID, collisionID, time.Now().UTC(), claimed.Session.SessionID); err != nil {
+		return err
+	}
+	if _, injectedErr := service.Complete(ctx, completeRequest); injectedErr == nil {
+		return errors.New("injected terminal progress collision did not fail")
+	}
+	rolledBack, rollbackErr := sessions.controlStore.GetSession(ctx, claimed.Session.SessionID)
+	if rollbackErr != nil || rolledBack.State != control.SessionActive || rolledBack.ProgressSequence != 1 ||
+		rolledBack.LatestProgress == nil || rolledBack.LatestProgress.Phase != control.ProgressClaimed {
+		return errors.Join(errors.New("terminal progress transaction did not roll back"), rollbackErr)
+	}
+	var replayCount int
+	if err = sessions.controlStore.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_cloud_worker_session_replays
+		WHERE operation='complete' AND session_id=$1 AND idempotency_key=$2`, claimed.Session.SessionID, completeRequest.IdempotencyKey).Scan(&replayCount); err != nil || replayCount != 0 {
+		return errors.Join(errors.New("failed terminal progress persisted replay"), err)
+	}
+	if _, err = sessions.controlStore.store.pool.Exec(ctx, `DELETE FROM core_cloud_worker_events WHERE event_id=$1`, collisionID); err != nil {
+		return err
+	}
+	completed, err := service.Complete(ctx, completeRequest)
 	if err != nil || completed.State != control.SessionCompleted {
 		return errors.Join(control.ErrConflict, err)
 	}
@@ -562,6 +600,7 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 	}
 	grants := &freshStateModelGrants{}
 	qualification := cloudworker.RuntimeQualification{
+		WorkerProtocolVersion: cloudprotocol.WorkerProtocolVersion, RuntimeContractVersion: cloudprotocol.RuntimeContractVersion,
 		PiRuntimeDigest: plan.Compute.PiRuntimeDigest, PiVersion: "0.83.0",
 		PiExecutableSHA256:    pgCloudDigest("fresh-state-pi"),
 		ResultExtensionSHA256: pgCloudDigest("fresh-state-result-extension"),
@@ -573,7 +612,7 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 	}
 	storeTrace := &freshStateStoreTrace{Store: h.cloud}
 	controller, err := cloudworker.NewController(cloudworker.ControllerConfig{
-		Store: storeTrace,
+		Store: storeTrace, BaseLimits: plan.Limits,
 		Quoter: cloudworker.FakeQuoter{
 			AmountMicros: plan.Quote.AmountMicros, MaximumAuthorizedMicros: plan.Quote.MaximumAuthorizedCostMicros,
 			TTL: time.Hour, Now: func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) },

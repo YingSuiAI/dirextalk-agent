@@ -269,7 +269,18 @@ func (e *LocalExecutor) Execute(ctx context.Context, in LocalInvocation) (extens
 	if err := extensionrunner.ValidateFDSet(request, len(files)); err != nil {
 		return extensionrunner.StatusV1{}, err
 	}
-	return e.Runner.RunV2(ctx, request, files)
+	status, err := e.Runner.RunV2(ctx, request, files)
+	if err != nil {
+		// Once the descriptor request reaches the runner transport, an error
+		// without a verified terminal receipt cannot prove whether the isolated
+		// process ran. Preserve the underlying diagnostic for operators while
+		// giving durable callers a stable reconciliation classification.
+		return status, errors.Join(ErrLocalOutcomeUncertain, err)
+	}
+	if err = localRunnerResourceFailure(status); err != nil {
+		return status, err
+	}
+	return status, nil
 }
 
 func StableRunID(parts ...string) string {
@@ -486,7 +497,13 @@ func (h *Handler) Handle(ctx context.Context, task coretask.Task) coreruntime.Ma
 		err = core.ErrInvalid
 	}
 	if err != nil {
-		committed, failErr := h.Coordinator.Fail(ctx, task, "extension_execution_failed", "extension execution failed")
+		code, summary := "extension_execution_failed", "extension execution failed"
+		if resourceCode, resourceSummary, ok := LocalResourceFailure(err); ok {
+			code, summary = resourceCode, resourceSummary
+		} else if errors.Is(err, ErrLocalOutcomeUncertain) {
+			code, summary = "extension_execution_uncertain", "execution outcome is uncertain; reconciliation required"
+		}
+		committed, failErr := h.Coordinator.Fail(ctx, task, code, summary)
 		if failErr != nil {
 			return coreruntime.ManagedOutcome{Err: errors.Join(err, failErr), TerminalOwned: committed}
 		}

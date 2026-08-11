@@ -10,6 +10,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/modelrelay"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
@@ -59,10 +60,10 @@ func NewWorkerAuthority(tasks currentTaskReader, cloud resumeContextReader, rela
 	return &WorkerAuthority{tasks: tasks, cloud: cloud, relay: relay, heartbeatInterval: heartbeatInterval, now: clock}, nil
 }
 
-func (authority *WorkerAuthority) IssueWorkerClaimMaterial(ctx context.Context, session control.Session) (rpcapi.WorkerClaimMaterial, error) {
+func (authority *WorkerAuthority) IssueWorkerClaimMaterial(ctx context.Context, session control.Session, requested cloudprotocol.Versions) (rpcapi.WorkerClaimMaterial, error) {
 	if authority == nil || ctx == nil || session.State != control.SessionActive || session.SessionID == "" ||
 		session.Fence.ExecutionID == "" || session.Fence.TaskID == "" || session.Fence.AccountGeneration == 0 ||
-		session.Fence.Attempt == 0 || session.Fence.LeaseEpoch == 0 {
+		session.Fence.Attempt == 0 || session.Fence.LeaseEpoch == 0 || !requested.IsCurrent() {
 		return rpcapi.WorkerClaimMaterial{}, control.ErrInvalid
 	}
 	task, err := authority.tasks.GetTask(ctx, session.Fence.TaskID)
@@ -90,6 +91,9 @@ func (authority *WorkerAuthority) IssueWorkerClaimMaterial(ctx context.Context, 
 		return rpcapi.WorkerClaimMaterial{}, err
 	}
 	defer material.Destroy()
+	if material.ProtocolVersions != requested {
+		return rpcapi.WorkerClaimMaterial{}, control.ErrIdentityRejected
+	}
 	profile := modelrelay.ProfileReference{
 		OwnerID: resume.Plan.OwnerID, AccountGeneration: resume.Plan.AccountGeneration,
 		ProfileID:         resume.Plan.ModelAuthorization.ModelProfileID,
@@ -134,7 +138,8 @@ func (authority *WorkerAuthority) IssueWorkerClaimMaterial(ctx context.Context, 
 		return rpcapi.WorkerClaimMaterial{}, cloudworker.ErrStaleAuthorization
 	}
 	return rpcapi.WorkerClaimMaterial{
-		RuntimeTaskJSON: bytes.Clone(material.RuntimeTaskJSON), RuntimeTaskDigest: material.RuntimeTaskSHA256,
+		ProtocolVersions: material.ProtocolVersions,
+		RuntimeTaskJSON:  bytes.Clone(material.RuntimeTaskJSON), RuntimeTaskDigest: material.RuntimeTaskSHA256,
 		InputManifestJSON: bytes.Clone(material.InputManifestJSON), InputManifestDigest: material.InputManifestSHA256,
 		ArtifactScope: scope, ModelGrant: grant,
 		HeartbeatInterval: authority.heartbeatInterval, NotAfter: deadline,

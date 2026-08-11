@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -13,12 +14,14 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type pgCloudWorkerHarness struct {
@@ -184,6 +187,26 @@ func TestCloudWorkerPostgresCreateOfferAtomicRollbackAndReplay(t *testing.T) {
 		h := newPGCloudWorkerHarness(t)
 		defer h.cleanup()
 		first := h.propose(t)
+		var waitingRaw, messageRaw []byte
+		if err := h.store.pool.QueryRow(h.ctx, `SELECT payload_json FROM core_conversation_turn_events
+			WHERE turn_id=$1 AND kind=$2 ORDER BY sequence LIMIT 1`, first.Plan.TurnID, string(core.TurnEventWaitingConfirmation)).Scan(&waitingRaw); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.store.pool.QueryRow(h.ctx, `SELECT payload_json FROM core_messages WHERE message_id=$1`,
+			deterministicCloudWorkerUUID("cloud-worker-offer-message", first.Execution.ExecutionID)).Scan(&messageRaw); err != nil {
+			t.Fatal(err)
+		}
+		var waiting core.TurnEvent
+		var quoteMessage core.Message
+		if json.Unmarshal(waitingRaw, &waiting) != nil || waiting.ValidateWaitingConfirmationAuthority() != nil ||
+			waiting.ConfirmationID != first.Confirmation.ConfirmationID || waiting.ExecutionID != first.Execution.ExecutionID ||
+			waiting.Revision != h.lease.Turn.Revision+1 || waiting.Sequence != h.lease.Turn.LastSequence+1 {
+			t.Fatalf("canonical cloud waiting event=%+v", waiting)
+		}
+		if json.Unmarshal(messageRaw, &quoteMessage) != nil || quoteMessage.Validate() != nil ||
+			len(quoteMessage.RelatedTaskIDs) != 1 || len(quoteMessage.RelatedPlanIDs) != 1 || len(quoteMessage.References) != 3 {
+			t.Fatalf("cloud quote message lost ledger details: %+v", quoteMessage)
+		}
 		replayed, err := h.service.Propose(h.ctx, h.command)
 		if err != nil || replayed.Plan.PlanID != first.Plan.PlanID || replayed.Execution.ExecutionID != first.Execution.ExecutionID {
 			t.Fatalf("offer replay=%+v err=%v", replayed, err)
@@ -347,6 +370,13 @@ func TestCloudWorkerPostgresConfirmationAndPredispatchCancelProjection(t *testin
 				canceledTask.FailureCode != "user_canceled" || canceledTask.FailureSummary != "Cloud Worker task canceled" {
 				t.Fatalf("canceled task terminal contract mismatch: task=%+v err=%v", canceledTask, err)
 			}
+			turnEvents, err := h.conversation.LoadTurnEvents(h.ctx, offer.Plan.TurnID, 0, 10)
+			if err != nil || len(turnEvents) != 3 || turnEvents[0].Kind != core.TurnEventAccepted ||
+				turnEvents[0].Sequence != 1 || turnEvents[0].Revision != 1 ||
+				turnEvents[1].Kind != core.TurnEventWaitingConfirmation || turnEvents[1].Sequence != 2 || turnEvents[1].Revision != 2 ||
+				turnEvents[2].Kind != core.TurnEventDone || turnEvents[2].Sequence != 3 || turnEvents[2].Revision != 3 {
+				t.Fatalf("delayed turn replay lost event-time revision/sequence: events=%+v err=%v", turnEvents, err)
+			}
 			replayed, err = h.cloud.RequestCancel(h.ctx, h.owner, h.generation, current.ExecutionID, current.Revision, key)
 			if err != nil || replayed.State != cloudworker.StateCanceled || replayed.Revision != terminal.Revision {
 				t.Fatalf("terminal cancel replay=%+v err=%v", replayed, err)
@@ -387,7 +417,7 @@ func preparePGCloudLaunch(t *testing.T, h *pgCloudWorkerHarness) (cloudworker.Of
 		t.Fatal(err)
 	}
 	staged := cloudworker.StagedInputManifest{ExecutionID: begin.Plan.ExecutionID}
-	qualification := cloudworker.RuntimeQualification{PiRuntimeDigest: begin.Plan.Compute.PiRuntimeDigest, PiVersion: "pi-pg-test",
+	qualification := cloudworker.RuntimeQualification{WorkerProtocolVersion: cloudprotocol.WorkerProtocolVersion, RuntimeContractVersion: cloudprotocol.RuntimeContractVersion, PiRuntimeDigest: begin.Plan.Compute.PiRuntimeDigest, PiVersion: "pi-pg-test",
 		PiExecutableSHA256: pgCloudDigest("pi-executable"), ResultExtensionSHA256: pgCloudDigest("result-extension")}
 	fence := cloudworker.RuntimeTaskFence{ExecutionID: begin.Plan.ExecutionID, TaskID: begin.Plan.TaskID,
 		AccountGeneration: begin.Plan.AccountGeneration, Attempt: begin.Prerequisite.TaskAttempt, LeaseEpoch: begin.Prerequisite.LeaseEpoch}
@@ -753,6 +783,7 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 	}
 	if _, err = controlStore.Heartbeat(h.ctx, control.SessionMutation{SessionID: secondSession.SessionID,
 		TokenDigest: sha256.Sum256([]byte("second-token")), Fence: fence, ProgressSequence: 1,
+		Progress:       &control.ProgressSnapshot{Phase: control.ProgressClaimed, LastActivityAt: secondSession.ClaimedAt},
 		IdempotencyKey: uuid.NewString(), RequestDigest: pgCloudDigest("stale-heartbeat"), At: h.now.Add(6 * time.Minute)}); !errors.Is(err, control.ErrTerminal) {
 		t.Fatalf("fenced session heartbeat err=%v", err)
 	}
@@ -979,19 +1010,71 @@ func TestCloudWorkerPostgresAuthorityEventGenerationFence(t *testing.T) {
 	h := newPGCloudWorkerHarness(t)
 	defer h.cleanup()
 	offer := h.propose(t)
-	events, next, err := h.cloud.EventsForAuthority(h.ctx, h.owner, h.generation, offer.Execution.ExecutionID, 0, 10)
+	events, next, _, err := h.cloud.EventsForAuthority(h.ctx, h.owner, h.generation, offer.Execution.ExecutionID, 0, 10)
 	if err != nil || len(events) != 1 || next != 1 || events[0].AccountGeneration != h.generation {
 		t.Fatalf("events=%+v next=%d err=%v", events, next, err)
 	}
-	if _, _, err = h.cloud.EventsForAuthority(h.ctx, h.owner, h.generation+1, offer.Execution.ExecutionID, 0, 10); err != nil {
-		t.Fatal(err)
+	if _, _, _, err = h.cloud.EventsForAuthority(h.ctx, h.owner, h.generation+1, offer.Execution.ExecutionID, 0, 10); !errors.Is(err, cloudworker.ErrNotFound) {
+		t.Fatalf("foreign generation err=%v, want not found", err)
 	}
 	if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_cloud_worker_events SET payload_json=jsonb_set(payload_json,'{account_generation}','99'::jsonb)
 		WHERE execution_id=$1`, offer.Execution.ExecutionID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = h.cloud.EventsForAuthority(h.ctx, h.owner, h.generation, offer.Execution.ExecutionID, 0, 10); !errors.Is(err, cloudworker.ErrConflict) {
+	if _, _, _, err = h.cloud.EventsForAuthority(h.ctx, h.owner, h.generation, offer.Execution.ExecutionID, 0, 10); !errors.Is(err, cloudworker.ErrConflict) {
 		t.Fatalf("tampered event generation err=%v", err)
+	}
+}
+
+func TestCloudWorkerPostgresEventRetentionKeepsExact4096SuffixAndRejectsGap(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+	offer := h.propose(t)
+	if _, err := h.store.pool.Exec(h.ctx, `INSERT INTO core_cloud_worker_events(
+		execution_id,sequence,event_id,owner_id,kind,state,revision,payload_digest,payload_json,created_at)
+		SELECT $1::uuid,sequence,('00000000-0000-4000-8000-' || lpad(sequence::text,12,'0'))::uuid,
+			$2::text,'retention_fixture','waiting_user',1,repeat('a',64),
+			jsonb_build_object('owner_id',$2::text,'account_generation',$3::bigint,'run_id',$1::uuid::text,
+				'execution_id',$1::uuid::text,'sequence',sequence,
+				'event_id',('00000000-0000-4000-8000-' || lpad(sequence::text,12,'0')),
+				'type','retention_fixture','status','waiting_user','revision',1,
+				'payload_digest',repeat('a',64),'at',$4::timestamptz),$4::timestamptz
+		FROM generate_series(2,4097) AS sequence`, offer.Execution.ExecutionID, h.owner, h.generation, h.now); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := h.store.pool.BeginTx(h.ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(h.ctx)
+	if _, err = tx.Exec(h.ctx, `SELECT 1 FROM core_cloud_worker_executions WHERE execution_id=$1 FOR UPDATE`, offer.Execution.ExecutionID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pruneCloudWorkerEventsTx(h.ctx, tx, offer.Execution.ExecutionID, 4097); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	var count, minimum, maximum, watermark uint64
+	if err = h.store.pool.QueryRow(h.ctx, `SELECT count(*),min(sequence),max(sequence) FROM core_cloud_worker_events WHERE execution_id=$1`, offer.Execution.ExecutionID).Scan(&count, &minimum, &maximum); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.pool.QueryRow(h.ctx, `SELECT event_history_truncated_through FROM core_cloud_worker_executions WHERE execution_id=$1`, offer.Execution.ExecutionID).Scan(&watermark); err != nil {
+		t.Fatal(err)
+	}
+	if count != cloudworker.MaxRetainedRunEvents || minimum != 2 || maximum != 4097 || watermark != 1 {
+		t.Fatalf("retained count/min/max/watermark=%d/%d/%d/%d", count, minimum, maximum, watermark)
+	}
+	events, next, truncated, err := h.cloud.EventsForAuthority(h.ctx, h.owner, h.generation, offer.Execution.ExecutionID, 0, 2)
+	if err != nil || !truncated || len(events) != 2 || events[0].Sequence != 2 || events[1].Sequence != 3 || next != 3 {
+		t.Fatalf("suffix page events=%v next=%d truncated=%v err=%v", events, next, truncated, err)
+	}
+	if _, err = h.store.pool.Exec(h.ctx, `DELETE FROM core_cloud_worker_events WHERE execution_id=$1 AND sequence=3`, offer.Execution.ExecutionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err = h.cloud.EventsForAuthority(h.ctx, h.owner, h.generation, offer.Execution.ExecutionID, 0, 3); !errors.Is(err, cloudworker.ErrConflict) {
+		t.Fatalf("event gap error=%v, want conflict", err)
 	}
 }
 

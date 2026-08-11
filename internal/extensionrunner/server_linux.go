@@ -15,8 +15,22 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
+)
+
+const (
+	serverMaxConnections          = 64
+	serverMaxExecutions           = 1
+	serverSocketReadTimeout       = 5 * time.Second
+	serverSocketWriteTimeout      = 2 * time.Second
+	serverMaxExecutionTimeout     = 10 * time.Minute
+	serverMaxExecutionCPUSeconds  = 30
+	serverMaxExecutionMemoryBytes = 256 << 20
+	serverMaxExecutionProcesses   = 32
+	serverMaxExecutionFileBytes   = 16 << 20
+	serverMaxExecutionOpenFiles   = 64
 )
 
 // PeerAuthorizer is normally configured with the dedicated Agent service UID.
@@ -91,24 +105,52 @@ func (l *ManagedUnixListener) Close() error {
 // ServeV2 is the production descriptor-only protocol entry point. It consumes
 // exactly one length-prefixed seqpacket-style message plus SCM_RIGHTS descriptors.
 func (s Server) ServeV2(ctx context.Context) error {
-	if s.Listener == nil || s.Authorizer == nil || s.Registry == nil {
+	if ctx == nil || s.Listener == nil || s.Authorizer == nil || s.Registry == nil {
 		return ErrUnavailable
 	}
-	go func() { <-ctx.Done(); _ = s.Listener.Close() }()
+	serveCtx, cancelServe := context.WithCancel(ctx)
+	defer cancelServe()
+	connectionSlots := make(chan struct{}, serverMaxConnections)
+	executionSlots := make(chan struct{}, serverMaxExecutions)
+	var connections sync.WaitGroup
+	listenerCloserDone := make(chan struct{})
+	go func() {
+		select {
+		case <-serveCtx.Done():
+			_ = s.Listener.Close()
+		case <-listenerCloserDone:
+		}
+	}()
+	defer close(listenerCloserDone)
 	for {
 		conn, err := s.Listener.AcceptUnix()
 		if err != nil {
+			cancelServe()
+			connections.Wait()
 			if ctx.Err() != nil {
 				return nil
 			}
 			return err
 		}
-		go s.serveV2Connection(ctx, conn)
+		select {
+		case connectionSlots <- struct{}{}:
+			connections.Add(1)
+			go func() {
+				defer connections.Done()
+				defer func() { <-connectionSlots }()
+				s.serveV2Connection(serveCtx, conn, executionSlots)
+			}()
+		default:
+			_ = conn.Close()
+		}
 	}
 }
 
-func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn) {
+func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn, executionSlots chan struct{}) {
 	defer conn.Close()
+	if conn.SetReadDeadline(time.Now().Add(serverSocketReadTimeout)) != nil {
+		return
+	}
 	uid, err := peerUID(conn)
 	if err != nil {
 		return
@@ -116,6 +158,7 @@ func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn) {
 	buf := make([]byte, MaxV2PacketBytes)
 	oob := make([]byte, unix.CmsgSpace(4096*4))
 	n, oobn, flags, _, err := readMsgUnix(conn, buf, oob)
+	_ = conn.SetReadDeadline(time.Time{})
 	fds := []int{}
 	defer func() { closeReceivedFDs(fds) }()
 	fds, controlErr := collectRightsCmsgs(oob[:oobn])
@@ -151,11 +194,13 @@ func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn) {
 			ready := s.ready(ctx)
 			payload, encodeErr := EncodeProbeResponse(ProbeResponse{Ready: ready, Version: ProbeProtocolV1, Nonce: q.Nonce})
 			if encodeErr == nil {
+				_ = conn.SetWriteDeadline(time.Now().Add(serverSocketWriteTimeout))
 				_, _ = conn.Write(payload)
 			}
 			return
 		case "publish_v1":
 			resp := s.publish(packet, fds)
+			_ = conn.SetWriteDeadline(time.Now().Add(serverSocketWriteTimeout))
 			writePublicationResponse(conn, resp, -1)
 			return
 		case "remove_v1":
@@ -170,6 +215,7 @@ func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn) {
 			if removeErr != nil {
 				return
 			}
+			_ = conn.SetWriteDeadline(time.Now().Add(serverSocketWriteTimeout))
 			writePublicationResponse(conn, resp, -1)
 			return
 		case "read_v1":
@@ -185,6 +231,7 @@ func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn) {
 				return
 			}
 			defer file.Close()
+			_ = conn.SetWriteDeadline(time.Now().Add(serverSocketWriteTimeout))
 			writePublicationResponse(conn, resp, int(file.Fd()))
 			return
 		default:
@@ -193,6 +240,17 @@ func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn) {
 	}
 	r, err := ReadRequestV2Datagram(buf[:n], fds)
 	if err != nil {
+		return
+	}
+	if !validServerExecutionRequest(r) {
+		writeTerminalStatus(conn, StatusV1{RunID: r.RunID, Phase: PhaseFailed, Error: ErrorInvalidRequest, Status: "limits"})
+		return
+	}
+	select {
+	case executionSlots <- struct{}{}:
+		defer func() { <-executionSlots }()
+	default:
+		writeTerminalStatus(conn, StatusV1{RunID: r.RunID, Phase: PhaseFailed, Error: ErrorUnavailableBackend, Status: "capacity"})
 		return
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
@@ -212,14 +270,25 @@ func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn) {
 			status.Phase = PhaseFailed
 		}
 	}
+	writeTerminalStatus(conn, status)
+}
+
+func validServerExecutionRequest(request RequestV2) bool {
+	return request.TimeoutMS <= serverMaxExecutionTimeout.Milliseconds() &&
+		request.Limits.CPUSeconds <= serverMaxExecutionCPUSeconds &&
+		request.Limits.MemoryBytes <= serverMaxExecutionMemoryBytes &&
+		request.Limits.Processes <= serverMaxExecutionProcesses &&
+		request.Limits.FileBytes <= serverMaxExecutionFileBytes &&
+		request.Limits.OpenFiles <= serverMaxExecutionOpenFiles
+}
+
+func writeTerminalStatus(conn *net.UnixConn, status StatusV1) {
 	status = fitStatusV1Packet(status)
-	payload, e := EncodeStatusV1(status)
-	if e != nil {
+	payload, err := EncodeStatusV1(status)
+	if err != nil || conn.SetWriteDeadline(time.Now().Add(serverSocketWriteTimeout)) != nil {
 		return
 	}
-	if n, writeErr := conn.Write(payload); writeErr != nil || n != len(payload) {
-		return
-	}
+	_, _ = conn.Write(payload)
 }
 
 func (s Server) allowPeer(uid uint32, probe bool) bool {

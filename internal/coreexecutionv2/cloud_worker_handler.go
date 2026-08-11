@@ -91,7 +91,7 @@ func (s *Service) handleCloudWorker(ctx context.Context, authority Authority, ac
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"events": events, "next_sequence": page.NextSequence}, nil
+		return map[string]any{"events": events, "next_sequence": page.NextSequence, "history_truncated": page.HistoryTruncated}, nil
 	case "agent.execution.v2.artifacts.get":
 		artifactID, _ := idParam(in, "artifact_id")
 		value, err := s.cloudWorker.GetArtifact(ctx, CloudWorkerArtifactGetRequest{Authority: authority, ArtifactID: artifactID})
@@ -215,13 +215,20 @@ func validCloudWorkerPageToken(value string) bool {
 func validateCloudWorkerEvents(page CloudWorkerEventPage, authority Authority, runID string, after uint64) ([]any, error) {
 	events := make([]any, 0, len(page.Events))
 	sequence := after
+	if page.HistoryTruncated && len(page.Events) > 0 {
+		first := uintParam(page.Events[0], "sequence")
+		if first == 0 {
+			return nil, fmt.Errorf("%w: invalid truncated Cloud Worker event sequence", ErrUnsafeOutput)
+		}
+		sequence = first - 1
+	}
 	for _, value := range page.Events {
 		normalized, err := normalizeCloudWorkerObject(value)
 		if err != nil {
 			return nil, err
 		}
 		next := uintParam(normalized, "sequence")
-		if stringParam(normalized, "owner_id") != authority.OwnerID || uintParam(normalized, "account_generation") != authority.AccountGeneration || stringParam(normalized, "run_id") != runID || next <= sequence {
+		if stringParam(normalized, "owner_id") != authority.OwnerID || uintParam(normalized, "account_generation") != authority.AccountGeneration || stringParam(normalized, "run_id") != runID || next != sequence+1 {
 			return nil, fmt.Errorf("%w: invalid Cloud Worker event authority or sequence", ErrUnsafeOutput)
 		}
 		sequence = next

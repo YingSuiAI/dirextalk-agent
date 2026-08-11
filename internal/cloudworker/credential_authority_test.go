@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/google/uuid"
 )
@@ -143,7 +144,7 @@ func TestServiceProposalBindsOneEffectiveTokenLimitBeforeQuoteAndRuntimeTask(t *
 	material, err := BuildRuntimeTask(
 		offer.Plan, execution, staged,
 		RuntimeTaskFence{ExecutionID: offer.Plan.ExecutionID, TaskID: offer.Plan.TaskID, AccountGeneration: offer.Plan.AccountGeneration, Attempt: 1, LeaseEpoch: 1},
-		RuntimeQualification{PiRuntimeDigest: offer.Plan.Compute.PiRuntimeDigest, PiVersion: "0.83.0", PiExecutableSHA256: digestValue("pi-executable"), ResultExtensionSHA256: digestValue("result-extension")},
+		RuntimeQualification{WorkerProtocolVersion: cloudprotocol.WorkerProtocolVersion, RuntimeContractVersion: cloudprotocol.RuntimeContractVersion, PiRuntimeDigest: offer.Plan.Compute.PiRuntimeDigest, PiVersion: "0.83.0", PiExecutableSHA256: digestValue("pi-executable"), ResultExtensionSHA256: digestValue("result-extension")},
 	)
 	if err != nil {
 		t.Fatal(err)

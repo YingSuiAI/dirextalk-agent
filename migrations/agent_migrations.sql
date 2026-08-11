@@ -2265,3 +2265,51 @@ ALTER TABLE core_conversation_tool_attempts
     DROP CONSTRAINT core_conversation_tool_attempts_round_check,
     ADD CONSTRAINT core_conversation_tool_attempts_round_check CHECK (round >= 0);
 -- dirextalk-agent migration end 000007_unbounded_agent_rounds.up.sql
+-- dirextalk-agent migration begin 000008_cloud_worker_progress_events.up.sql
+-- Worker heartbeat snapshots are bounded, secret-free data on the existing
+-- Cloud Worker event stream. A per-run watermark makes suffix pruning honest.
+ALTER TABLE core_cloud_worker_sessions
+    ADD COLUMN latest_progress_json jsonb,
+    ADD CONSTRAINT core_cloud_worker_sessions_latest_progress_check CHECK (
+        latest_progress_json IS NULL OR
+        (jsonb_typeof(latest_progress_json) = 'object' AND pg_column_size(latest_progress_json) <= 4096)
+    );
+ALTER TABLE core_cloud_worker_executions
+    ADD COLUMN event_history_truncated_through bigint NOT NULL DEFAULT 0
+        CHECK (event_history_truncated_through >= 0);
+ALTER TABLE core_cloud_worker_events
+    ADD COLUMN session_id uuid REFERENCES core_cloud_worker_sessions(session_id) ON DELETE RESTRICT,
+    ADD COLUMN worker_progress_sequence bigint CHECK (worker_progress_sequence > 0),
+    ADD CONSTRAINT core_cloud_worker_events_bounded_payload_check
+        CHECK (kind <> 'worker_progress' OR pg_column_size(payload_json) <= 4096),
+    ADD CONSTRAINT core_cloud_worker_events_worker_progress_identity_check CHECK (
+        (kind = 'worker_progress') = (session_id IS NOT NULL AND worker_progress_sequence IS NOT NULL)
+    );
+CREATE UNIQUE INDEX core_cloud_worker_events_worker_progress_idx
+    ON core_cloud_worker_events(session_id, worker_progress_sequence)
+    WHERE kind = 'worker_progress';
+-- Terminal output history pruning is execution-scoped and starts from the
+-- delivered completion watermark. Full-state authority indexes cover both the
+-- mandatory presence proof and the fail-closed unsafe-row gates.
+CREATE INDEX core_cloud_worker_completion_outbox_delivered_idx
+    ON core_cloud_worker_completion_outbox(delivered_at, execution_id)
+    WHERE delivery_state = 'delivered';
+CREATE INDEX core_cloud_worker_output_journals_execution_history_idx
+    ON core_cloud_worker_output_journals(execution_id, state, verified_clean_at);
+CREATE INDEX core_cloud_worker_output_versions_execution_history_idx
+    ON core_cloud_worker_output_versions(execution_id, state, verified_deleted_at);
+CREATE INDEX core_cloud_worker_aws_ledger_execution_history_idx
+    ON core_cloud_worker_aws_ledger(execution_id, state);
+CREATE INDEX core_cloud_worker_input_staging_execution_history_idx
+    ON core_cloud_worker_input_staging(execution_id, state);
+-- Conversation tools are created atomically in waiting_confirmation. The
+-- former prepared attempt and dispatch states have no current writer.
+ALTER TABLE core_conversation_tool_attempts
+    DROP CONSTRAINT core_conversation_tool_attempts_state_check,
+    ADD CONSTRAINT core_conversation_tool_attempts_state_check
+        CHECK (state IN ('waiting_confirmation','dispatched','completed','denied','canceled','uncertain'));
+ALTER TABLE core_conversation_turns
+    DROP CONSTRAINT core_conversation_turns_dispatch_state_check,
+    ADD CONSTRAINT core_conversation_turns_dispatch_state_check
+        CHECK (dispatch_state IN ('','dispatched','completed','uncertain'));
+-- dirextalk-agent migration end 000008_cloud_worker_progress_events.up.sql

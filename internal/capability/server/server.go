@@ -96,7 +96,22 @@ type Server struct {
 	mutationGuard interface {
 		Enter(context.Context) (func(), error)
 	}
+
+	// Durable capability handlers outlive the admission RPC and its short
+	// CallContext deadline, but they must not outlive this server process. The
+	// mutex makes durableJobs.Add and shutdown's transition to Wait mutually
+	// exclusive: once durableStopping is true no new job can be registered.
+	durableMu           sync.Mutex
+	durableCtx          context.Context
+	durableCancel       context.CancelCauseFunc
+	durableJobs         sync.WaitGroup
+	durableActive       int
+	durableStopping     bool
+	durableDrained      chan struct{}
+	durableDrainedClose bool
 }
+
+var errCapabilityServerShutdown = errors.New("capability server is shutting down")
 
 // CapabilityRegistry 定义 capability 注册表接口
 type CapabilityRegistry interface {
@@ -169,6 +184,7 @@ func New(config *Config, registry CapabilityRegistry, opMgr *operation.Manager) 
 		watchSem:      make(chan struct{}, config.MaxConcurrentWatch),
 		ready:         true,
 	}
+	s.initializeDurableLifecycle()
 
 	// 加载 TLS 配置
 	tlsConfig, err := s.loadTLSConfig()
@@ -222,6 +238,14 @@ func (s *Server) loadTLSConfig() (*tls.Config, error) {
 
 // Start 启动服务器
 func (s *Server) Start() error {
+	if s == nil {
+		return errCapabilityServerShutdown
+	}
+	s.durableMu.Lock()
+	defer s.durableMu.Unlock()
+	if s.durableStopping {
+		return errCapabilityServerShutdown
+	}
 	listener, err := net.Listen("tcp", s.config.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", s.config.ListenAddr, err)
@@ -241,15 +265,34 @@ func (s *Server) Start() error {
 
 // Stop 停止服务器
 func (s *Server) Stop(ctx context.Context) error {
-	if s == nil || s.grpcServer == nil {
+	if s == nil {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.SetReady(false)
+	durableErr := s.stopDurableLifecycle(ctx)
+	if s.grpcServer == nil {
+		return durableErr
 	}
 	closeListener := func() {
 		if s.listener != nil {
 			_ = s.listener.Close()
 		}
 	}
-	// Graceful stop with timeout
+	// Once the shutdown budget is exhausted, do not start another unbounded
+	// graceful wait. Transport shutdown is still completed before returning.
+	if durableErr != nil || ctx.Err() != nil {
+		s.grpcServer.Stop()
+		closeListener()
+		if durableErr != nil {
+			return durableErr
+		}
+		return ctx.Err()
+	}
+	// Graceful transport stop uses the remainder of the caller's shutdown
+	// budget, after every cooperative durable handler has returned.
 	stopped := make(chan struct{})
 	go func() {
 		s.grpcServer.GracefulStop()
@@ -265,6 +308,88 @@ func (s *Server) Stop(ctx context.Context) error {
 		closeListener()
 		return ctx.Err()
 	}
+}
+
+func (s *Server) initializeDurableLifecycle() {
+	if s == nil {
+		return
+	}
+	s.durableMu.Lock()
+	defer s.durableMu.Unlock()
+	if s.durableCtx != nil || s.durableStopping {
+		return
+	}
+	s.durableCtx, s.durableCancel = context.WithCancelCause(context.Background())
+	s.durableDrained = make(chan struct{})
+}
+
+func (s *Server) beginDurableJob() (context.Context, bool) {
+	if s == nil {
+		return nil, false
+	}
+	s.durableMu.Lock()
+	defer s.durableMu.Unlock()
+	if s.durableStopping {
+		return nil, false
+	}
+	if s.durableCtx == nil {
+		s.durableCtx, s.durableCancel = context.WithCancelCause(context.Background())
+		s.durableDrained = make(chan struct{})
+	}
+	s.durableJobs.Add(1)
+	s.durableActive++
+	return s.durableCtx, true
+}
+
+func (s *Server) finishDurableJob() {
+	if s == nil {
+		return
+	}
+	s.durableJobs.Done()
+	s.durableMu.Lock()
+	defer s.durableMu.Unlock()
+	if s.durableActive > 0 {
+		s.durableActive--
+	}
+	if s.durableStopping && s.durableActive == 0 {
+		s.closeDurableDrainedLocked()
+	}
+}
+
+func (s *Server) stopDurableLifecycle(ctx context.Context) error {
+	s.durableMu.Lock()
+	if !s.durableStopping {
+		s.durableStopping = true
+		if s.durableCancel != nil {
+			s.durableCancel(errCapabilityServerShutdown)
+		}
+	}
+	if s.durableDrained == nil {
+		s.durableDrained = make(chan struct{})
+	}
+	if s.durableActive == 0 {
+		s.closeDurableDrainedLocked()
+	}
+	drained := s.durableDrained
+	s.durableMu.Unlock()
+
+	select {
+	case <-drained:
+		// No Add can race this Wait: shutdown fenced admission before the
+		// drained channel could close, and every admitted job has called Done.
+		s.durableJobs.Wait()
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Server) closeDurableDrainedLocked() {
+	if s.durableDrainedClose {
+		return
+	}
+	close(s.durableDrained)
+	s.durableDrainedClose = true
 }
 
 // SetReady 设置 readiness 状态

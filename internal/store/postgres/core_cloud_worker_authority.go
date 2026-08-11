@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/jackc/pgx/v5"
 )
@@ -97,38 +98,80 @@ func (s *CloudWorkerStore) ListExecutionsForAuthority(ctx context.Context, owner
 	return paginateCloudWorkerExecutions(result, limit)
 }
 
-func (s *CloudWorkerStore) EventsForAuthority(ctx context.Context, owner string, accountGeneration uint64, id string, after uint64, limit int) ([]cloudworker.Event, uint64, error) {
+func (s *CloudWorkerStore) EventsForAuthority(ctx context.Context, owner string, accountGeneration uint64, id string, after uint64, limit int) ([]cloudworker.Event, uint64, bool, error) {
 	owner = strings.TrimSpace(owner)
 	if s == nil || s.store == nil || owner == "" || accountGeneration == 0 || !coretask.ValidUUID(id) || limit < 1 || limit > 200 {
-		return nil, after, cloudworker.ErrInvalid
+		return nil, after, false, cloudworker.ErrInvalid
 	}
-	rows, err := s.store.pool.Query(ctx, `SELECT event.payload_json
+	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, after, false, err
+	}
+	defer tx.Rollback(ctx)
+	var truncatedThrough uint64
+	err = tx.QueryRow(ctx, `SELECT event_history_truncated_through FROM core_cloud_worker_executions
+		WHERE execution_id=$1 AND owner_id=$2 AND account_generation=$3`, id, owner, accountGeneration).Scan(&truncatedThrough)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, after, false, cloudworker.ErrNotFound
+	}
+	if err != nil {
+		return nil, after, false, err
+	}
+	historyTruncated := after < truncatedThrough
+	effectiveAfter := after
+	if historyTruncated {
+		effectiveAfter = truncatedThrough
+	}
+	rows, err := tx.Query(ctx, `SELECT event.kind,event.worker_progress_sequence,event.payload_json
 		FROM core_cloud_worker_events event
 		JOIN core_cloud_worker_executions execution ON execution.execution_id=event.execution_id
 		WHERE event.execution_id=$1 AND event.owner_id=$2 AND execution.owner_id=$2
 		AND execution.account_generation=$3 AND event.sequence>$4
-		ORDER BY event.sequence LIMIT $5`, id, owner, accountGeneration, after, limit)
+		ORDER BY event.sequence LIMIT $5`, id, owner, accountGeneration, effectiveAfter, limit)
 	if err != nil {
-		return nil, after, err
+		return nil, after, false, err
 	}
 	defer rows.Close()
 	result := make([]cloudworker.Event, 0, limit)
-	next := after
+	next := effectiveAfter
 	for rows.Next() {
+		var kind string
+		var workerProgressSequence *uint64
 		var raw []byte
 		var event cloudworker.Event
-		if err = rows.Scan(&raw); err != nil || json.Unmarshal(raw, &event) != nil ||
+		if err = rows.Scan(&kind, &workerProgressSequence, &raw); err != nil || json.Unmarshal(raw, &event) != nil ||
 			event.ExecutionID != id || event.RunID != id || event.OwnerID != owner ||
-			event.AccountGeneration != accountGeneration || event.Sequence <= next {
-			return nil, after, cloudworker.ErrConflict
+			event.AccountGeneration != accountGeneration || event.Sequence != next+1 || event.Type != kind ||
+			!validCloudWorkerPublicProgress(event, workerProgressSequence) {
+			return nil, after, false, cloudworker.ErrConflict
 		}
 		result = append(result, event)
 		next = event.Sequence
 	}
 	if err = rows.Err(); err != nil {
-		return nil, after, err
+		return nil, after, false, err
 	}
-	return result, next, nil
+	if err = tx.Commit(ctx); err != nil {
+		return nil, after, false, err
+	}
+	return result, next, historyTruncated, nil
+}
+
+func validCloudWorkerPublicProgress(event cloudworker.Event, workerSequence *uint64) bool {
+	if event.Type != "worker_progress" {
+		return event.Progress == nil && workerSequence == nil
+	}
+	if event.Progress == nil || workerSequence == nil || *workerSequence == 0 {
+		return false
+	}
+	progress := control.ProgressSnapshot{
+		Phase: control.ProgressPhase(event.Progress.Phase), ElapsedMS: event.Progress.ElapsedMS,
+		LastActivityAt: event.Progress.LastActivityAt, CPUTimeMS: event.Progress.CPUTimeMS,
+		MemoryHighWaterBytes: event.Progress.MemoryHighWaterBytes,
+		InvocationCount:      event.Progress.InvocationCount, UploadedBytes: event.Progress.UploadedBytes,
+		OutputTruncated: event.Progress.OutputTruncated,
+	}
+	return control.ValidateProgressSnapshot(progress, event.CreatedAt.UTC()) == nil
 }
 
 func (s *CloudWorkerStore) GetArtifactForAuthority(ctx context.Context, owner string, accountGeneration uint64, id string) (cloudworker.Artifact, error) {

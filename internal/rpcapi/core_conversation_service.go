@@ -77,8 +77,11 @@ func turnProto(t coreconversation.Turn) *agentv1.CoreConversationTurn {
 	return out
 }
 
-func turnEventProto(e coreconversation.TurnEvent) *agentv1.ConversationServiceWatchTurnEventsResponse {
-	out := &agentv1.CoreConversationTurnEvent{TurnId: e.TurnID, Sequence: e.Sequence, Kind: string(e.Kind), Text: e.Text, ErrorCode: e.ErrorCode, ErrorSummary: e.ErrorSummary, FirstSequence: e.FirstSequence, LastSequence: e.LastSequence, ReplayGap: e.ReplayGap, CreatedAt: timestamppb.New(e.CreatedAt), ConfirmationId: e.ConfirmationID, AttemptId: e.AttemptID, ExecutionId: e.ExecutionID, Status: e.Status, RelatedTaskIds: append([]string(nil), e.RelatedTaskIDs...), RelatedPlanIds: append([]string(nil), e.RelatedPlanIDs...), References: referenceProtos(e.References)}
+func turnEventProto(e coreconversation.TurnEvent) (*agentv1.ConversationServiceWatchTurnEventsResponse, error) {
+	if e.Revision == 0 || (e.Kind == coreconversation.TurnEventWaitingConfirmation && e.ValidateWaitingConfirmationAuthority() != nil) {
+		return nil, coreconversation.ErrChatFailed
+	}
+	out := &agentv1.CoreConversationTurnEvent{TurnId: e.TurnID, Sequence: e.Sequence, Revision: e.Revision, Kind: string(e.Kind), Text: e.Text, ErrorCode: e.ErrorCode, ErrorSummary: e.ErrorSummary, FirstSequence: e.FirstSequence, LastSequence: e.LastSequence, ReplayGap: e.ReplayGap, CreatedAt: timestamppb.New(e.CreatedAt), ConfirmationId: e.ConfirmationID, ExecutionId: e.ExecutionID, Status: e.Status, RelatedTaskIds: append([]string(nil), e.RelatedTaskIDs...), RelatedPlanIds: append([]string(nil), e.RelatedPlanIDs...), References: referenceProtos(e.References)}
 	if e.ToolResult != nil {
 		out.ToolResult = toolResultProto(*e.ToolResult)
 	}
@@ -89,7 +92,7 @@ func turnEventProto(e coreconversation.TurnEvent) *agentv1.ConversationServiceWa
 		}
 		out.Message = msgProto(*e.Message, e.Sequence, conversationID)
 	}
-	return &agentv1.ConversationServiceWatchTurnEventsResponse{Event: out}
+	return &agentv1.ConversationServiceWatchTurnEventsResponse{Event: out}, nil
 }
 
 func referenceProto(r coreconversation.Reference) *agentv1.CoreConversationReference {
@@ -336,7 +339,11 @@ func (s *CoreConversationService) WatchTurnEvents(r *agentv1.ConversationService
 		if event.Err != nil {
 			return mapErr(event.Err)
 		}
-		if e := stream.Send(turnEventProto(event)); e != nil {
+		response, projectionErr := turnEventProto(event)
+		if projectionErr != nil {
+			return mapErr(projectionErr)
+		}
+		if e := stream.Send(response); e != nil {
 			return e
 		}
 	}

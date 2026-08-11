@@ -289,7 +289,7 @@ func terminalizeCloudWorkerTurnTx(
 		return err
 	}
 	event := core.TurnEvent{
-		TurnID: plan.TurnID, Sequence: int64(turn.LastSequence + 1), Kind: eventKind,
+		TurnID: plan.TurnID, Sequence: int64(turn.LastSequence + 1), Revision: turn.Revision + 1, Kind: eventKind,
 		Message: &message, ConfirmationID: plan.ConfirmationID, ExecutionID: plan.ExecutionID,
 		Status: string(terminal), RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID},
 		References: references, ErrorCode: code, ErrorSummary: summary, CreatedAt: at,
@@ -609,8 +609,12 @@ func terminalizeConversationToolTx(ctx context.Context, tx pgx.Tx, cur coreconfi
 	if err := tx.QueryRow(ctx, `SELECT turn_id::text FROM core_conversation_tool_attempts WHERE task_id=$1 AND attempt_id=$2 FOR UPDATE`, cur.TaskID, cur.Binding.TargetID).Scan(&turnID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state=$2::text,result_json=jsonb_build_object('status',$2::text,'code',$3::text),updated_at=$4 WHERE task_id=$1 AND attempt_id=$5 AND state IN ('waiting_confirmation','prepared')`, cur.TaskID, attemptState, reason, at.UTC(), cur.Binding.TargetID); err != nil {
-		return err
+	attemptUpdate, err := tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state=$2::text,result_json=jsonb_build_object('status',$2::text,'code',$3::text),updated_at=$4 WHERE task_id=$1 AND attempt_id=$5 AND state='waiting_confirmation'`, cur.TaskID, attemptState, reason, at.UTC(), cur.Binding.TargetID)
+	if err != nil || attemptUpdate.RowsAffected() != 1 {
+		if err != nil {
+			return err
+		}
+		return coreconfirmation.ErrConflict
 	}
 	if resumeTurn {
 		// A user response is a durable wake: no worker holds this turn lease while

@@ -183,6 +183,22 @@ func TestCloudWorkerRoutingRejectsInvalidKindAuthorityAndProviderDrift(t *testin
 	}
 }
 
+func TestValidateCloudWorkerEventsRejectsZeroSequenceOnTruncatedPage(t *testing.T) {
+	authority := Authority{OwnerID: owner, AccountGeneration: cloudGeneration}
+	page := CloudWorkerEventPage{
+		Events: []CloudWorkerObject{{
+			"owner_id":           authority.OwnerID,
+			"account_generation": authority.AccountGeneration,
+			"run_id":             cloudRunID,
+			"sequence":           uint64(0),
+		}},
+		HistoryTruncated: true,
+	}
+	if _, err := validateCloudWorkerEvents(page, authority, cloudRunID, 0); !errors.Is(err, ErrUnsafeOutput) {
+		t.Fatalf("zero sequence on truncated page err=%v", err)
+	}
+}
+
 func TestCloudWorkerArtifactDownloadRejectsInvalidRangesBeforeProvider(t *testing.T) {
 	port := &cloudWorkerPortFake{calls: map[string]int{}}
 	service, _ := newCloudRoutingService(t, port)

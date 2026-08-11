@@ -155,33 +155,83 @@ func (s *Server) StartOperation(ctx context.Context, req *capv1.StartOperationRe
 		}
 	}
 	if shouldExecute {
-		// Build the value-bearing context first, then derive any deadline from
-		// it.  Deriving from context.Background() here would silently discard
-		// the authenticated CallContext/PermissionContext before the durable
-		// handler runs.
-		executionCtx := capabilityclient.WithCallContext(context.Background(), req.GetCallContext(), req.GetPermission())
-		executionCtx = operation.WithOperationID(executionCtx, req.GetOperationId())
-		if cc := req.GetCallContext(); cc != nil && cc.GetDeadlineUnixMs() > 0 {
-			remaining := time.Until(time.UnixMilli(cc.GetDeadlineUnixMs()))
-			if remaining > 0 {
-				var cancel context.CancelFunc
-				executionCtx, cancel = context.WithTimeout(executionCtx, remaining)
-				go func() {
-					defer cancel()
-					s.opMgr.Execute(executionCtx, req.GetOperationId(), func(handlerCtx context.Context, op *operation.Operation) ([]byte, error) {
-						return capability.HandleOperation(handlerCtx, req.GetOperation(), req.GetRequestJson())
-					})
-				}()
-			} else {
-				_ = s.opMgr.Fail(context.Background(), req.GetOperationId(), "UNCERTAIN", "call context deadline elapsed")
-			}
-		} else {
-			go s.opMgr.Execute(executionCtx, req.GetOperationId(), func(handlerCtx context.Context, op *operation.Operation) ([]byte, error) {
-				return capability.HandleOperation(handlerCtx, req.GetOperation(), req.GetRequestJson())
-			})
-		}
+		s.executeAcceptedOperation(req, opDesc, capability)
 	}
 	return startOperationResponse(accepted, created), nil
+}
+
+func (s *Server) executeAcceptedOperation(req *capv1.StartOperationRequest, descriptor *capv1.OperationDescriptor, capability Capability) {
+	buildExecutionContext := func(parent context.Context) context.Context {
+		// Build the value-bearing context first. Deriving it from the inbound RPC
+		// would transfer a transport/admission cancellation into durable work and
+		// silently discard the authenticated CallContext/PermissionContext.
+		executionCtx := capabilityclient.WithCallContext(parent, req.GetCallContext(), req.GetPermission())
+		return operation.WithOperationID(executionCtx, req.GetOperationId())
+	}
+	run := func(managerCtx context.Context, lifecycleCtx context.Context) {
+		s.opMgr.Execute(managerCtx, req.GetOperationId(), func(handlerCtx context.Context, _ *operation.Operation) ([]byte, error) {
+			executionHandlerCtx := handlerCtx
+			if lifecycleCtx != nil {
+				var cancel context.CancelCauseFunc
+				executionHandlerCtx, cancel = context.WithCancelCause(handlerCtx)
+				stopLifecycleCancel := context.AfterFunc(lifecycleCtx, func() {
+					cancel(context.Cause(lifecycleCtx))
+				})
+				defer func() {
+					stopLifecycleCancel()
+					cancel(nil)
+				}()
+			}
+			result, err := capability.HandleOperation(executionHandlerCtx, req.GetOperation(), req.GetRequestJson())
+			// Service shutdown is a lifecycle fence, not a user cancellation. A
+			// typed adapter may classify its closed event stream as CANCELLED; retain
+			// the lifecycle cancellation so Manager records an interrupted outcome
+			// without invoking the explicit-cancel business path.
+			if err != nil && errors.Is(context.Cause(executionHandlerCtx), errCapabilityServerShutdown) {
+				return nil, context.Canceled
+			}
+			return result, err
+		})
+	}
+
+	// A durable stream's CallContext deadline is an admission fence. Its
+	// accepted background lifecycle is ended by its domain terminal state or
+	// explicit operation cancellation, not by that short transport budget.
+	if descriptor.GetOperationType() == capv1.OperationType_OPERATION_TYPE_DURABLE_STREAM {
+		lifecycleCtx, admitted := s.beginDurableJob()
+		if !admitted {
+			_ = s.opMgr.Fail(context.Background(), req.GetOperationId(), "UNAVAILABLE", "capability server stopped before operation execution")
+			return
+		}
+		// Manager must be able to persist its running/terminal fences even when
+		// Stop wins immediately after job registration. Only the capability
+		// handler inherits lifecycle cancellation; authenticated values remain on
+		// the non-cancelled manager context.
+		executionCtx := buildExecutionContext(context.WithoutCancel(lifecycleCtx))
+		go func() {
+			defer s.finishDurableJob()
+			run(executionCtx, lifecycleCtx)
+		}()
+		return
+	}
+
+	// Mutations retain the existing bounded execution behavior.
+	executionCtx := buildExecutionContext(context.Background())
+	if cc := req.GetCallContext(); cc != nil && cc.GetDeadlineUnixMs() > 0 {
+		remaining := time.Until(time.UnixMilli(cc.GetDeadlineUnixMs()))
+		if remaining <= 0 {
+			_ = s.opMgr.Fail(context.Background(), req.GetOperationId(), "UNCERTAIN", "call context deadline elapsed")
+			return
+		}
+		var cancel context.CancelFunc
+		executionCtx, cancel = context.WithTimeout(executionCtx, remaining)
+		go func() {
+			defer cancel()
+			run(executionCtx, nil)
+		}()
+		return
+	}
+	go run(executionCtx, nil)
 }
 
 func startOperationResponse(accepted *operation.Operation, created bool) *capv1.StartOperationResponse {

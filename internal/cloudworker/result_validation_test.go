@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
 	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 )
@@ -141,6 +142,7 @@ func TestResultCollectionUsesCurrentSessionFenceAfterLeaseReclaim(t *testing.T) 
 		t.Fatal(err)
 	}
 	material, err := BuildRuntimeTask(plan, execution, staged, initialFence, RuntimeQualification{
+		WorkerProtocolVersion: cloudprotocol.WorkerProtocolVersion, RuntimeContractVersion: cloudprotocol.RuntimeContractVersion,
 		PiRuntimeDigest: plan.Compute.PiRuntimeDigest, PiVersion: "0.83.0",
 		PiExecutableSHA256: digestValue("pi-executable"), ResultExtensionSHA256: digestValue("result-extension"),
 	})

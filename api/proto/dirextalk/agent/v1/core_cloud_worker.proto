@@ -208,6 +208,8 @@ message WorkerControlServiceClaimRequest {
   string nonce = 2;
   CoreCloudWorkerTaskFence fence = 3;
   CoreCloudWorkerIdentityProof proof = 4;
+  string worker_protocol_version = 5;
+  string runtime_contract_version = 6;
 }
 
 message CoreCloudWorkerModelGrant {
@@ -227,6 +229,31 @@ enum CoreCloudWorkerSessionState {
   CORE_CLOUD_WORKER_SESSION_STATE_ACTIVE = 1;
   CORE_CLOUD_WORKER_SESSION_STATE_COMPLETED = 2;
   CORE_CLOUD_WORKER_SESSION_STATE_FAILED = 3;
+}
+
+enum CoreCloudWorkerProgressPhase {
+  CORE_CLOUD_WORKER_PROGRESS_PHASE_UNSPECIFIED = 0;
+  CORE_CLOUD_WORKER_PROGRESS_PHASE_CLAIMED = 1;
+  CORE_CLOUD_WORKER_PROGRESS_PHASE_PREPARING_INPUTS = 2;
+  CORE_CLOUD_WORKER_PROGRESS_PHASE_RUNNING_PI = 3;
+  CORE_CLOUD_WORKER_PROGRESS_PHASE_UPLOADING_RESULT = 4;
+  CORE_CLOUD_WORKER_PROGRESS_PHASE_COMPLETING = 5;
+}
+
+// A bounded, secret-free Worker liveness snapshot. The existing
+// progress_sequence remains the session-local ordering and replay fence;
+// public consumers resume through the existing Execution V2 run-event cursor.
+message CoreCloudWorkerProgressSnapshot {
+  CoreCloudWorkerProgressPhase phase = 1;
+  uint64 elapsed_ms = 2;
+  google.protobuf.Timestamp last_activity_at = 3;
+  // Zero means unavailable; non-zero values must come from a verified runtime
+  // metrics source and remain monotonic for the session.
+  uint64 cpu_time_ms = 4;
+  uint64 memory_high_water_bytes = 5;
+  uint64 invocation_count = 6;
+  uint64 uploaded_bytes = 7;
+  bool output_truncated = 8;
 }
 
 enum CoreCloudWorkerRuntimeTopologyState {
@@ -292,6 +319,7 @@ message CoreCloudWorkerSession {
   google.protobuf.Timestamp finished_at = 11;
   CoreCloudWorkerRuntimeTopologyProof runtime_topology = 12;
   string runtime_topology_digest = 13;
+  CoreCloudWorkerProgressSnapshot latest_progress = 14;
 }
 
 message WorkerControlServiceClaimResponse {
@@ -309,6 +337,8 @@ message WorkerControlServiceClaimResponse {
   string artifact_key_prefix = 9;
   uint64 heartbeat_interval_millis = 10;
   google.protobuf.Timestamp not_after = 11;
+  string worker_protocol_version = 12;
+  string runtime_contract_version = 13;
 }
 
 message WorkerControlServiceHeartbeatRequest {
@@ -317,6 +347,7 @@ message WorkerControlServiceHeartbeatRequest {
   CoreCloudWorkerTaskFence fence = 3;
   uint64 progress_sequence = 4;
   string idempotency_key = 5;
+  CoreCloudWorkerProgressSnapshot progress = 6;
 }
 message WorkerControlServiceHeartbeatResponse {
   CoreCloudWorkerSession session = 1;
@@ -329,6 +360,8 @@ message WorkerControlServiceCompleteRequest {
   CoreCloudWorkerObjectClaim claim = 4;
   string idempotency_key = 5;
   CoreCloudWorkerRuntimeTopologyProof runtime_topology = 6;
+  uint64 progress_sequence = 7;
+  CoreCloudWorkerProgressSnapshot progress = 8;
 }
 message WorkerControlServiceCompleteResponse {
   CoreCloudWorkerSession session = 1;
@@ -341,6 +374,8 @@ message WorkerControlServiceFailRequest {
   string code = 4;
   string summary = 5;
   string idempotency_key = 6;
+  uint64 progress_sequence = 7;
+  CoreCloudWorkerProgressSnapshot progress = 8;
 }
 message WorkerControlServiceFailResponse {
   CoreCloudWorkerSession session = 1;

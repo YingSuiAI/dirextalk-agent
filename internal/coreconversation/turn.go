@@ -78,6 +78,7 @@ type Turn struct {
 type TurnEvent struct {
 	TurnID           string
 	Sequence         int64
+	Revision         uint64
 	Kind             TurnEventKind
 	Text             string
 	Message          *Message
@@ -85,7 +86,6 @@ type TurnEvent struct {
 	ToolCall         *ToolCall
 	ToolResult       *ToolResult
 	ConfirmationID   string
-	AttemptID        string
 	ExecutionID      string
 	Status           string
 	RelatedTaskIDs   []string
@@ -100,6 +100,37 @@ type TurnEvent struct {
 	ExpectedRevision uint64
 	CreatedAt        time.Time
 	Err              error `json:"-"`
+}
+
+// NewWaitingConfirmationTurnEvent is the sole content constructor for a
+// durable confirmation wait. Quote/tool details live in their owning ledgers;
+// this event carries only the common confirmation authority.
+func NewWaitingConfirmationTurnEvent(confirmationID, executionID string) (TurnEvent, error) {
+	event := TurnEvent{
+		Kind:           TurnEventWaitingConfirmation,
+		ConfirmationID: confirmationID,
+		ExecutionID:    executionID,
+		Status:         string(TurnWaitingConfirmation),
+	}
+	if err := event.ValidateWaitingConfirmationAuthority(); err != nil {
+		return TurnEvent{}, err
+	}
+	return event, nil
+}
+
+// ValidateWaitingConfirmationAuthority rejects alternate or mixed event
+// shapes. TurnID, Sequence, Revision, and CreatedAt are persistence metadata
+// populated by the owning transaction and are intentionally allowed.
+func (e TurnEvent) ValidateWaitingConfirmationAuthority() error {
+	if e.Kind != TurnEventWaitingConfirmation || !validUUID(e.ConfirmationID) || !validUUID(e.ExecutionID) ||
+		e.Status != string(TurnWaitingConfirmation) || e.Text != "" || e.Message != nil || e.Response != nil ||
+		e.ToolCall != nil || e.ToolResult != nil || len(e.RelatedTaskIDs) != 0 ||
+		len(e.RelatedPlanIDs) != 0 || len(e.References) != 0 || e.ErrorCode != "" || e.ErrorSummary != "" ||
+		e.FirstSequence != 0 || e.LastSequence != 0 || e.ReplayGap || e.MutationID != "" ||
+		e.ExpectedRevision != 0 || e.Err != nil {
+		return ErrInvalid
+	}
+	return nil
 }
 
 type TurnStartCommand struct {
@@ -179,6 +210,8 @@ type PrepareToolCommand struct {
 }
 
 type ConversationToolStore interface {
+	// PrepareConversationTool atomically persists the task, attempt,
+	// confirmation, waiting turn transition, and waiting event.
 	PrepareConversationTool(context.Context, PrepareToolCommand) (ToolAttempt, coretask.Task, coreconfirmation.Confirmation, error)
 }
 

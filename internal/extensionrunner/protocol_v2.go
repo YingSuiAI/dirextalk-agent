@@ -223,14 +223,17 @@ func ValidateStatusV1(request RequestV2, status StatusV1) error {
 		allowed[p] = struct{}{}
 	}
 	seen := make(map[string]struct{}, len(status.ResultFiles))
+	var resultBytes int64
 	for _, f := range status.ResultFiles {
-		if _, ok := allowed[f.Path]; !ok || !safeRelativeSlash(f.Path) || f.Size < 0 || f.Size > MaxOutputBytes || !digestRE.MatchString(f.SHA256) {
+		if _, ok := allowed[f.Path]; !ok || !safeRelativeSlash(f.Path) || f.Size < 0 || f.Size > MaxOutputBytes ||
+			resultBytes > request.Limits.FileBytes-f.Size || !digestRE.MatchString(f.SHA256) {
 			return ErrProtocol
 		}
 		if _, ok := seen[f.Path]; ok {
 			return ErrProtocol
 		}
 		seen[f.Path] = struct{}{}
+		resultBytes += f.Size
 	}
 	return nil
 }

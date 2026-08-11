@@ -83,6 +83,10 @@ func (c *PostgresExtensionExecutionCoordinator) RequestTask(ctx context.Context,
 	if !found || len(version.ContentDigest) != 64 || len(version.ArtifactDigest) != 64 {
 		return coreextension.ExecuteResult{}, coreextension.ErrConflict
 	}
+	executionTarget, err := extensionExecutionTarget(version.Execution)
+	if err != nil {
+		return coreextension.ExecuteResult{}, err
+	}
 	operation := coretask.ExtensionOperationExecuteTool
 	goal := "extension tool " + in.ToolName
 	if installation.Kind == coreextension.KindSkill {
@@ -100,7 +104,7 @@ func (c *PostgresExtensionExecutionCoordinator) RequestTask(ctx context.Context,
 		return coreextension.ExecuteResult{}, err
 	}
 	confirmationID := uuid.New()
-	spec := coretask.TaskSpec{Kind: coretask.TaskKindExtension, Goal: goal, IdempotencyKey: in.IdempotencyKey, Payload: coretask.TaskPayload{Extension: &coretask.ExtensionTaskPayload{Operation: operation, InstallationID: installation.ID, ExpectedRevision: uint64(installation.Revision), Version: versionPin(version), Digest: version.ContentDigest, ArtifactDigest: version.ArtifactDigest, ConfirmationID: confirmationID.String(), ToolName: in.ToolName, CanonicalInputJSON: canonical}}}
+	spec := coretask.TaskSpec{Kind: coretask.TaskKindExtension, Goal: goal, IdempotencyKey: in.IdempotencyKey, Payload: coretask.TaskPayload{Extension: &coretask.ExtensionTaskPayload{Operation: operation, ExecutionTarget: executionTarget, InstallationID: installation.ID, ExpectedRevision: uint64(installation.Revision), Version: versionPin(version), Digest: version.ContentDigest, ArtifactDigest: version.ArtifactDigest, ConfirmationID: confirmationID.String(), ToolName: in.ToolName, CanonicalInputJSON: canonical}}}
 	digest, err := coretask.CanonicalMutationDigest(struct {
 		Binding coreconfirmation.Binding
 	}{binding})
@@ -157,6 +161,34 @@ func (c *PostgresExtensionExecutionCoordinator) RequestTask(ctx context.Context,
 		return coreextension.ExecuteResult{}, coreextension.ErrConflict
 	}
 	return coreextension.ExecuteResult{TaskID: task.ID, ConfirmationID: cid}, nil
+}
+
+func extensionExecutionTarget(descriptor coreextension.ExecutionDescriptor) (coretask.ExtensionExecutionTarget, error) {
+	branches := 0
+	if descriptor.Stdio != nil {
+		branches++
+	}
+	if descriptor.Skill != nil {
+		branches++
+	}
+	if descriptor.Remote != nil {
+		branches++
+	}
+	if branches != 1 {
+		return "", coreextension.ErrConflict
+	}
+	switch {
+	case descriptor.Stdio != nil:
+		return coretask.ExtensionExecutionTargetLocalSandbox, nil
+	case descriptor.Skill != nil && descriptor.Skill.Executable:
+		return coretask.ExtensionExecutionTargetLocalSandbox, nil
+	case descriptor.Skill != nil:
+		return coretask.ExtensionExecutionTargetStaticSkill, nil
+	case descriptor.Remote != nil:
+		return coretask.ExtensionExecutionTargetRemoteExtension, nil
+	default:
+		return "", coreextension.ErrConflict
+	}
 }
 
 func extensionExecutionBinding(ownerID string, accountGeneration uint64, installation coreextension.Installation, version coreextension.VersionRecord, tool string, input json.RawMessage) (coreconfirmation.Binding, error) {
@@ -291,6 +323,10 @@ func (c *PostgresExtensionExecutionCoordinator) Resolve(ctx context.Context, tas
 	}
 	var version coreextension.VersionRecord
 	if json.Unmarshal(raw, &version) != nil || version.ContentDigest != p.Digest {
+		return execution.Invocation{}, coretask.ErrConflict
+	}
+	resolvedTarget, targetErr := extensionExecutionTarget(version.Execution)
+	if targetErr != nil || resolvedTarget != p.ExecutionTarget {
 		return execution.Invocation{}, coretask.ErrConflict
 	}
 	if version.Execution.Stdio != nil {
@@ -440,6 +476,10 @@ func (c *PostgresExtensionExecutionCoordinator) ResolveConversationInvocation(ct
 	}
 	var version coreextension.VersionRecord
 	if json.Unmarshal(versionRaw, &version) != nil || version.ContentDigest == "" || version.ContentDigest != pinned.ContentDigest || version.ArtifactDigest != pinned.ArtifactDigest {
+		return execution.Invocation{}, coretask.ErrConflict
+	}
+	resolvedTarget, targetErr := extensionExecutionTarget(version.Execution)
+	if targetErr != nil || resolvedTarget != p.ExecutionTarget {
 		return execution.Invocation{}, coretask.ErrConflict
 	}
 	contentDigest, artifactDigest = version.ContentDigest, version.ArtifactDigest

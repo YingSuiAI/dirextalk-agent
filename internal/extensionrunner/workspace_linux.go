@@ -4,13 +4,19 @@ package extensionrunner
 
 import (
 	"errors"
+	"io"
 	"os"
 	"strings"
 
 	"golang.org/x/sys/unix"
 )
 
-const maxWorkspaceSnapshotEntries = 8192
+const (
+	maxWorkspaceSnapshotEntries = 8192
+	workspaceReadBatchSize      = 128
+)
+
+var errWorkspaceTraversalLimit = errors.New("extension workspace traversal limit exceeded")
 
 type workspaceIdentity struct {
 	Device uint64
@@ -20,18 +26,45 @@ type workspaceIdentity struct {
 
 type workspaceSnapshot map[string]workspaceIdentity
 
-func SnapshotWorkspaceFD(rootFD int) (workspaceSnapshot, error) {
-	if rootFD < 0 {
+type workspaceTraversalBudget struct {
+	entries  int
+	bytes    int64
+	maxBytes int64
+	strict   bool
+	exceeded bool
+}
+
+func (b *workspaceTraversalBudget) observe(stat unix.Stat_t) error {
+	b.entries++
+	violated := b.entries > maxWorkspaceSnapshotEntries || stat.Size < 0
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR && !violated {
+		violated = b.bytes > b.maxBytes-stat.Size
+		if !violated {
+			b.bytes += stat.Size
+		}
+	}
+	if violated {
+		b.exceeded = true
+		if b.strict {
+			return errWorkspaceTraversalLimit
+		}
+	}
+	return nil
+}
+
+func SnapshotWorkspaceFD(rootFD int, maxBytes int64) (workspaceSnapshot, error) {
+	if rootFD < 0 || maxBytes <= 0 {
 		return nil, ErrInvalid
 	}
 	snapshot := workspaceSnapshot{}
+	budget := &workspaceTraversalBudget{maxBytes: maxBytes, strict: true}
 	fd, err := unix.Openat(rootFD, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, ErrInvalid
 	}
 	if err := walkWorkspace(fd, "", func(path string, stat unix.Stat_t) error {
-		if len(snapshot) >= maxWorkspaceSnapshotEntries {
-			return ErrInvalid
+		if err := budget.observe(stat); err != nil {
+			return err
 		}
 		snapshot[path] = workspaceIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, Mode: stat.Mode}
 		return nil
@@ -41,8 +74,8 @@ func SnapshotWorkspaceFD(rootFD int) (workspaceSnapshot, error) {
 	return snapshot, nil
 }
 
-func CleanupWorkspaceFD(rootFD int, baseline workspaceSnapshot, keep []string) error {
-	if rootFD < 0 || baseline == nil {
+func CleanupWorkspaceFD(rootFD int, baseline workspaceSnapshot, keep []string, maxBytes int64) error {
+	if rootFD < 0 || baseline == nil || maxBytes <= 0 {
 		return ErrInvalid
 	}
 	protected := make(map[string]bool, len(baseline)+len(keep))
@@ -78,17 +111,18 @@ func CleanupWorkspaceFD(rootFD int, baseline workspaceSnapshot, keep []string) e
 	if err != nil {
 		return ErrInvalid
 	}
-	return cleanupWorkspaceDirectory(fd, "", baseline, protected, keepAncestors, keepExact)
+	budget := &workspaceTraversalBudget{maxBytes: maxBytes}
+	err = cleanupWorkspaceDirectory(fd, "", baseline, protected, keepAncestors, keepExact, budget)
+	if budget.exceeded {
+		err = errors.Join(err, errWorkspaceTraversalLimit)
+	}
+	return err
 }
 
 func walkWorkspace(dirFD int, prefix string, visit func(string, unix.Stat_t) error) error {
 	file := os.NewFile(uintptr(dirFD), prefix)
 	defer file.Close()
-	entries, err := file.ReadDir(-1)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
+	return readDirectoryBatches(file, func(entry os.DirEntry) error {
 		path := entry.Name()
 		if prefix != "" {
 			path = prefix + "/" + path
@@ -100,28 +134,22 @@ func walkWorkspace(dirFD int, prefix string, visit func(string, unix.Stat_t) err
 		if err := visit(path, stat); err != nil {
 			return err
 		}
-		if stat.Mode&unix.S_IFMT == unix.S_IFDIR {
-			child, err := unix.Openat(dirFD, entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-			if err != nil {
-				return err
-			}
-			if err := walkWorkspace(child, path, visit); err != nil {
-				return err
-			}
+		if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+			return nil
 		}
-	}
-	return nil
+		child, err := unix.Openat(dirFD, entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return err
+		}
+		return walkWorkspace(child, path, visit)
+	})
 }
 
-func cleanupWorkspaceDirectory(dirFD int, prefix string, baseline workspaceSnapshot, protected, keepAncestors, keepExact map[string]bool) error {
+func cleanupWorkspaceDirectory(dirFD int, prefix string, baseline workspaceSnapshot, protected, keepAncestors, keepExact map[string]bool, budget *workspaceTraversalBudget) error {
 	file := os.NewFile(uintptr(dirFD), prefix)
 	defer file.Close()
-	entries, err := file.ReadDir(-1)
-	if err != nil {
-		return err
-	}
 	var result error
-	for _, entry := range entries {
+	err := readDirectoryBatches(file, func(entry os.DirEntry) error {
 		name := entry.Name()
 		path := name
 		if prefix != "" {
@@ -130,7 +158,10 @@ func cleanupWorkspaceDirectory(dirFD int, prefix string, baseline workspaceSnaps
 		var stat unix.Stat_t
 		if err := unix.Fstatat(dirFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			result = errors.Join(result, err)
-			continue
+			return nil
+		}
+		if err := budget.observe(stat); err != nil {
+			return err
 		}
 		identity, existed := baseline[path]
 		same := existed &&
@@ -141,40 +172,61 @@ func cleanupWorkspaceDirectory(dirFD int, prefix string, baseline workspaceSnaps
 			// object. Other replacements are task output and must be removed,
 			// including below an unchanged baseline parent.
 		if existed && !same && !keepExact[path] && !keepAncestors[path] {
-			result = errors.Join(result, removeWorkspaceTreeAt(dirFD, name))
-			continue
+			removeErr := removeWorkspaceTreeAt(dirFD, name, budget, true)
+			if errors.Is(removeErr, errWorkspaceTraversalLimit) {
+				return removeErr
+			}
+			result = errors.Join(result, removeErr)
+			return nil
 		}
 		if stat.Mode&unix.S_IFMT == unix.S_IFDIR {
 			if !protected[path] && !same {
-				result = errors.Join(result, removeWorkspaceTreeAt(dirFD, name))
-				continue
+				removeErr := removeWorkspaceTreeAt(dirFD, name, budget, true)
+				if errors.Is(removeErr, errWorkspaceTraversalLimit) {
+					return removeErr
+				}
+				result = errors.Join(result, removeErr)
+				return nil
 			}
 			child, openErr := unix.Openat(dirFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			if openErr != nil {
 				result = errors.Join(result, openErr)
-				continue
+				return nil
 			}
-			result = errors.Join(result, cleanupWorkspaceDirectory(child, path, baseline, protected, keepAncestors, keepExact))
+			cleanupErr := cleanupWorkspaceDirectory(child, path, baseline, protected, keepAncestors, keepExact, budget)
+			if errors.Is(cleanupErr, errWorkspaceTraversalLimit) {
+				return cleanupErr
+			}
+			result = errors.Join(result, cleanupErr)
 			if !same && !protected[path] {
 				result = errors.Join(result, unix.Unlinkat(dirFD, name, unix.AT_REMOVEDIR))
 			}
-			continue
+			return nil
 		}
 		if same || keepExact[path] {
-			continue
+			return nil
 		}
 		result = errors.Join(result, unix.Unlinkat(dirFD, name, 0))
+		return nil
+	})
+	if err != nil {
+		return errors.Join(result, err)
 	}
 	return result
 }
 
-func removeWorkspaceTreeAt(parentFD int, name string) error {
+func removeWorkspaceTreeAt(parentFD int, name string, budget *workspaceTraversalBudget, rootObserved bool) error {
 	var stat unix.Stat_t
 	if err := unix.Fstatat(parentFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		if err == unix.ENOENT {
 			return nil
 		}
 		return err
+	}
+	if !rootObserved {
+		if err := budget.observe(stat); err != nil {
+			return err
+		}
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
 		return unix.Unlinkat(parentFD, name, 0)
@@ -184,18 +236,38 @@ func removeWorkspaceTreeAt(parentFD int, name string) error {
 		return err
 	}
 	file := os.NewFile(uintptr(fd), name)
-	entries, readErr := file.ReadDir(-1)
-	if readErr != nil {
-		_ = file.Close()
-		return readErr
-	}
 	var result error
-	for _, entry := range entries {
-		result = errors.Join(result, removeWorkspaceTreeAt(fd, entry.Name()))
+	readErr := readDirectoryBatches(file, func(entry os.DirEntry) error {
+		removeErr := removeWorkspaceTreeAt(fd, entry.Name(), budget, false)
+		if errors.Is(removeErr, errWorkspaceTraversalLimit) {
+			return removeErr
+		}
+		result = errors.Join(result, removeErr)
+		return nil
+	})
+	if readErr != nil {
+		result = errors.Join(result, readErr)
 	}
 	result = errors.Join(result, file.Close())
 	if result != nil {
 		return result
 	}
 	return unix.Unlinkat(parentFD, name, unix.AT_REMOVEDIR)
+}
+
+func readDirectoryBatches(file *os.File, visit func(os.DirEntry) error) error {
+	for {
+		entries, err := file.ReadDir(workspaceReadBatchSize)
+		for _, entry := range entries {
+			if visitErr := visit(entry); visitErr != nil {
+				return visitErr
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 }

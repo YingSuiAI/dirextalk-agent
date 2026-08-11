@@ -264,3 +264,67 @@ func TestRunnerDoesNotReportCancellationWhenCgroupCleanupIsUnproven(t *testing.T
 		t.Fatalf("status=%+v err=%v, want cleanup failure", status, err)
 	}
 }
+
+type outputLimitProcess struct {
+	stdout, stderr []byte
+	status         string
+	waitErr        error
+	exceeded       bool
+	exitCode       int
+	hasExitCode    bool
+}
+
+func (p outputLimitProcess) Wait() ([]byte, []byte, string, error) {
+	status := p.status
+	if status == "" {
+		status = "succeeded"
+	}
+	return p.stdout, p.stderr, status, p.waitErr
+}
+func (p outputLimitProcess) KillGroup() error     { return nil }
+func (p outputLimitProcess) OutputExceeded() bool { return p.exceeded }
+func (p outputLimitProcess) ExitCode() *int {
+	if !p.hasExitCode {
+		return nil
+	}
+	return &p.exitCode
+}
+
+type outputLimitBackend struct{ process Process }
+
+func (outputLimitBackend) Probe(context.Context) error { return nil }
+func (b outputLimitBackend) StartV2(context.Context, SandboxInvocationV2) (Process, error) {
+	return b.process, nil
+}
+
+func TestRunnerFailsWhenOutputExceedsLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		process Process
+	}{
+		{name: "returned_threshold_plus_one", process: outputLimitProcess{stdout: make([]byte, MaxOutputBytes+1)}},
+		{name: "bounded_backend_reports_overflow", process: outputLimitProcess{stdout: make([]byte, MaxOutputBytes), exceeded: true}},
+		{name: "wait_error_with_overflow", process: outputLimitProcess{stdout: make([]byte, MaxOutputBytes), status: "failed", waitErr: context.DeadlineExceeded, exceeded: true}},
+		{name: "nonzero_exit_with_overflow", process: outputLimitProcess{stdout: make([]byte, MaxOutputBytes), status: "failed", waitErr: errors.New("exit status 7"), exceeded: true, exitCode: 7, hasExitCode: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := clientProtocolRequest()
+			request.Limits.FileBytes = 16 << 20
+			runner := Runner{
+				InstallResolver:   stageInstallResolver{},
+				WorkspaceResolver: stageWorkspaceResolver{path: t.TempDir()},
+				V2Backend:         outputLimitBackend{process: tc.process},
+			}
+			status, err := runner.RunV2(context.Background(), request, nil, NewRunRegistry())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.Phase != PhaseFailed || status.Error != ErrorExecution || status.Status != "output_limit" || len(status.Stdout) != MaxOutputBytes {
+				t.Fatalf("threshold+1 output reported nonterminal success: %+v", status)
+			}
+			if tc.name == "nonzero_exit_with_overflow" && (status.ExitCode == nil || *status.ExitCode != 7) {
+				t.Fatalf("nonzero exit evidence lost: %+v", status)
+			}
+		})
+	}
+}

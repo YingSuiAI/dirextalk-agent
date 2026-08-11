@@ -8,6 +8,7 @@ import (
 	"time"
 
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 )
 
 func TestProjectAWSResourceGraphBindsEightResourcesAndNeverReplacesProviderIdentity(t *testing.T) {
@@ -228,6 +229,7 @@ func awsIntegrationFixture(t *testing.T) (Plan, Execution, cloudaws.Plan, clouda
 		t.Fatalf("build runtime fence: %v", err)
 	}
 	material, err := BuildRuntimeTask(plan, execution, staged, fence, RuntimeQualification{
+		WorkerProtocolVersion: cloudprotocol.WorkerProtocolVersion, RuntimeContractVersion: cloudprotocol.RuntimeContractVersion,
 		PiRuntimeDigest: plan.Compute.PiRuntimeDigest, PiVersion: "0.83.0",
 		PiExecutableSHA256: digestValue("pi-executable"), ResultExtensionSHA256: digestValue("result-extension"),
 	})

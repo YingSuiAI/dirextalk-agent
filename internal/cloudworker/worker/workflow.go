@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
 	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 	"github.com/google/uuid"
 )
@@ -121,22 +122,60 @@ func (workflow *Workflow) Run(ctx context.Context) error {
 	heartbeatCtx, stopHeartbeat := context.WithCancel(runCtx)
 	heartbeatFailure := make(chan error, 1)
 	heartbeatDone := make(chan struct{})
+	heartbeatFlush := make(chan chan error)
 	go func() {
 		defer close(heartbeatDone)
-		heartbeatFailure <- workflow.heartbeatLoop(heartbeatCtx, cancelRun, claimed, 1)
+		heartbeatFailure <- workflow.heartbeatLoop(heartbeatCtx, cancelRun, claimed, 1, heartbeatFlush)
 	}()
 	stopAndReadHeartbeat := func() error {
 		stopHeartbeat()
 		<-heartbeatDone
 		return <-heartbeatFailure
 	}
+	flushProgress := func(phase ProgressPhase) error {
+		workflow.control.SetProgressPhase(phase)
+		reply := make(chan error, 1)
+		wait := claimed.HeartbeatInterval / 16
+		if wait < 2*time.Millisecond {
+			wait = 2 * time.Millisecond
+		}
+		if wait > 100*time.Millisecond {
+			wait = 100 * time.Millisecond
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case heartbeatFlush <- reply:
+		case <-runCtx.Done():
+			return runCtx.Err()
+		case <-timer.C:
+			// A periodic heartbeat already owns the single mutation slot. Its
+			// completion or the next flush will observe the monotonic reporter;
+			// task execution must not be serialized behind a slow control RPC.
+			return nil
+		}
+		select {
+		case flushErr := <-reply:
+			return flushErr
+		case <-runCtx.Done():
+			return runCtx.Err()
+		case <-timer.C:
+			return nil
+		}
+	}
 
-	result, runErr := workflow.executor.Run(runCtx, claimed)
+	if flushErr := flushProgress(ProgressPreparingInputs); flushErr != nil {
+		return heartbeatTerminalError(stopAndReadHeartbeat(), runCtx.Err())
+	}
+	result, runErr := workflow.executor.Run(runCtx, claimed, flushProgress)
 	defer cloudruntime.DestroyResult(&result)
 	if runErr != nil {
 		if runCtx.Err() != nil {
 			heartbeatErr := stopAndReadHeartbeat()
 			return heartbeatTerminalError(heartbeatErr, runCtx.Err())
+		}
+		if failure, ok := cloudruntime.FailureOf(runErr); ok && failure.Code == cloudruntime.FailureCodeProcessOutputLimit {
+			workflow.control.SetOutputTruncated()
 		}
 		identityErr := workflow.checkIdentity(runCtx)
 		heartbeatErr := stopAndReadHeartbeat()
@@ -174,6 +213,9 @@ func (workflow *Workflow) Run(ctx context.Context) error {
 		_ = stopAndReadHeartbeat()
 		return err
 	}
+	if flushErr := flushProgress(ProgressUploadingResult); flushErr != nil {
+		return heartbeatTerminalError(stopAndReadHeartbeat(), runCtx.Err())
+	}
 	manifestClaim, err := workflow.uploader.Upload(runCtx, claimed, result)
 	if err != nil {
 		if runCtx.Err() != nil {
@@ -207,6 +249,11 @@ func (workflow *Workflow) Run(ctx context.Context) error {
 		heartbeatErr := stopAndReadHeartbeat()
 		return heartbeatTerminalError(heartbeatErr, runCtx.Err())
 	}
+	if manifestClaim.SizeBytes < 1 || manifestClaim.SizeBytes > cloudresult.MaxObjectBytes {
+		return ErrInvalid
+	}
+	workflow.control.SetUploadedBytes(uint64(manifestClaim.SizeBytes))
+	workflow.control.SetProgressPhase(ProgressCompleting)
 	identityErr := workflow.checkIdentity(runCtx)
 	heartbeatErr := stopAndReadHeartbeat()
 	if heartbeatErr != nil && !errors.Is(heartbeatErr, context.Canceled) {
@@ -330,6 +377,7 @@ func (workflow *Workflow) heartbeatLoop(
 	cancelRun context.CancelFunc,
 	claimed ClaimedTask,
 	sequence uint64,
+	flush <-chan chan error,
 ) error {
 	ticker := time.NewTicker(claimed.HeartbeatInterval)
 	defer ticker.Stop()
@@ -340,6 +388,17 @@ func (workflow *Workflow) heartbeatLoop(
 		case <-ticker.C:
 			sequence++
 			if err := workflow.heartbeatOnce(ctx, claimed, sequence); err != nil {
+				if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+					return err
+				}
+				cancelRun()
+				return err
+			}
+		case reply := <-flush:
+			sequence++
+			err := workflow.heartbeatOnce(ctx, claimed, sequence)
+			reply <- err
+			if err != nil {
 				if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 					return err
 				}

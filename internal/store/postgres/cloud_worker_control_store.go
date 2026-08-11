@@ -587,13 +587,13 @@ func (s *CloudWorkerControlStore) Claim(ctx context.Context, mutation control.Cl
 
 func scanControlSession(row interface{ Scan(...any) error }) (control.Session, []byte, error) {
 	var session control.Session
-	var token, expectationRaw, identityRaw, resultRaw, topologyRaw []byte
+	var token, expectationRaw, identityRaw, resultRaw, topologyRaw, progressRaw []byte
 	var topologyDigest *string
 	var state string
 	var finished *time.Time
 	err := row.Scan(&session.SessionID, &session.Fence.ExecutionID, &session.Fence.TaskID, &session.Fence.Attempt,
 		&session.Fence.LeaseEpoch, &session.Fence.AccountGeneration, &token, &expectationRaw, &identityRaw, &state,
-		&session.ProgressSequence, &resultRaw, &topologyRaw, &topologyDigest,
+		&session.ProgressSequence, &progressRaw, &resultRaw, &topologyRaw, &topologyDigest,
 		&session.FailureCode, &session.FailureSummary, &session.Revision,
 		&session.ClaimedAt, &session.HeartbeatAt, &finished)
 	if err != nil {
@@ -606,6 +606,13 @@ func scanControlSession(row interface{ Scan(...any) error }) (control.Session, [
 		return control.Session{}, nil, control.ErrConflict
 	}
 	session.State = control.SessionState(state)
+	if len(progressRaw) > 0 {
+		var progress control.ProgressSnapshot
+		if json.Unmarshal(progressRaw, &progress) != nil {
+			return control.Session{}, nil, control.ErrConflict
+		}
+		session.LatestProgress = &progress
+	}
 	if len(resultRaw) > 0 {
 		var claim control.ObjectClaim
 		if json.Unmarshal(resultRaw, &claim) != nil {
@@ -634,7 +641,8 @@ func scanControlSession(row interface{ Scan(...any) error }) (control.Session, [
 }
 
 const controlSessionSelect = `SELECT s.session_id::text,s.execution_id::text,s.task_id::text,s.task_attempt,s.lease_epoch,
-e.account_generation,s.token_digest,s.expectation_json,s.identity_json,s.state,s.progress_sequence,s.result_claim_json,
+e.account_generation,s.token_digest,s.expectation_json,s.identity_json,s.state,s.progress_sequence,s.latest_progress_json,
+s.result_claim_json,
 s.runtime_topology_json,s.runtime_topology_digest,
 s.failure_code,s.failure_summary,s.revision,s.claimed_at,s.heartbeat_at,s.finished_at
 FROM core_cloud_worker_sessions s JOIN core_cloud_worker_executions e ON e.execution_id=s.execution_id`
@@ -651,6 +659,22 @@ func (s *CloudWorkerControlStore) mutateSession(ctx context.Context, operation s
 	defer tx.Rollback(ctx)
 	if _, err = lockControlFenceTx(ctx, tx, mutation.Fence, mutation.At); err != nil {
 		return control.Session{}, err
+	}
+	var executionOwner, executionState string
+	var executionGeneration, executionRevision uint64
+	err = tx.QueryRow(ctx, `SELECT owner_id,account_generation,state,revision
+			FROM core_cloud_worker_executions WHERE execution_id=$1 AND task_id=$2 FOR UPDATE`,
+		mutation.Fence.ExecutionID, mutation.Fence.TaskID).Scan(
+		&executionOwner, &executionGeneration, &executionState, &executionRevision,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return control.Session{}, control.ErrStaleLease
+	}
+	if err != nil {
+		return control.Session{}, err
+	}
+	if executionGeneration != mutation.Fence.AccountGeneration {
+		return control.Session{}, control.ErrIdentityRejected
 	}
 	var replayDigest string
 	var replayRaw []byte
@@ -685,12 +709,27 @@ func (s *CloudWorkerControlStore) mutateSession(ctx context.Context, operation s
 	if err = tx.QueryRow(ctx, `SELECT count(*) FROM core_cloud_worker_session_fences WHERE execution_id=$1 AND task_id=$2 AND task_attempt=$3 AND lease_epoch=$4`, mutation.Fence.ExecutionID, mutation.Fence.TaskID, mutation.Fence.Attempt, mutation.Fence.LeaseEpoch).Scan(&fenced); err != nil || fenced != 0 {
 		return control.Session{}, control.ErrStaleLease
 	}
+	if mutation.Progress == nil || mutation.ProgressSequence != session.ProgressSequence+1 ||
+		control.ValidateProgressAdvance(session.LatestProgress, *mutation.Progress, session.ClaimedAt.UTC(), mutation.At.UTC()) != nil {
+		return control.Session{}, control.ErrConflict
+	}
+	progress := *mutation.Progress
+	var invocationCount uint64
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM core_cloud_worker_model_invocations invocation
+		JOIN core_cloud_worker_model_grants model_grant ON model_grant.grant_id=invocation.grant_id
+		WHERE model_grant.session_id=$1`, session.SessionID).Scan(&invocationCount); err != nil {
+		return control.Session{}, err
+	}
+	if invocationCount < progress.InvocationCount || invocationCount > control.MaximumProgressInvocationCount {
+		return control.Session{}, control.ErrConflict
+	}
+	progress.InvocationCount = invocationCount
+	if control.ValidateProgressAdvance(session.LatestProgress, progress, session.ClaimedAt.UTC(), mutation.At.UTC()) != nil {
+		return control.Session{}, control.ErrConflict
+	}
+	session.ProgressSequence, session.HeartbeatAt, session.LatestProgress = mutation.ProgressSequence, mutation.At.UTC(), &progress
 	switch operation {
 	case "heartbeat":
-		if mutation.ProgressSequence <= session.ProgressSequence {
-			return control.Session{}, control.ErrConflict
-		}
-		session.ProgressSequence, session.HeartbeatAt = mutation.ProgressSequence, mutation.At.UTC()
 	case "complete":
 		if mutation.Claim == nil || mutation.RuntimeTopology == nil ||
 			mutation.RuntimeTopology.ValidateTerminal() != nil ||
@@ -733,10 +772,14 @@ func (s *CloudWorkerControlStore) mutateSession(ctx context.Context, operation s
 		topologyRaw, _ = json.Marshal(session.RuntimeTopology)
 		storedTopologyDigest = session.TopologyDigest
 	}
-	tag, err := tx.Exec(ctx, `UPDATE core_cloud_worker_sessions SET state=$2,progress_sequence=$3,result_claim_json=$4,
-		runtime_topology_json=$5,runtime_topology_digest=$6,failure_code=$7,failure_summary=$8,revision=$9,
-		heartbeat_at=$10,finished_at=$11 WHERE session_id=$1 AND revision=$12 AND state='active'`,
-		session.SessionID, session.State, session.ProgressSequence, resultRaw, topologyRaw, storedTopologyDigest,
+	var progressRaw []byte
+	if session.LatestProgress != nil {
+		progressRaw, _ = json.Marshal(session.LatestProgress)
+	}
+	tag, err := tx.Exec(ctx, `UPDATE core_cloud_worker_sessions SET state=$2,progress_sequence=$3,latest_progress_json=$4,result_claim_json=$5,
+		runtime_topology_json=$6,runtime_topology_digest=$7,failure_code=$8,failure_summary=$9,revision=$10,
+		heartbeat_at=$11,finished_at=$12 WHERE session_id=$1 AND revision=$13 AND state='active'`,
+		session.SessionID, session.State, session.ProgressSequence, progressRaw, resultRaw, topologyRaw, storedTopologyDigest,
 		session.FailureCode, session.FailureSummary, session.Revision, session.HeartbeatAt,
 		nullableTimePG(session.FinishedAt), session.Revision-1)
 	if err != nil || tag.RowsAffected() != 1 {
@@ -745,6 +788,29 @@ func (s *CloudWorkerControlStore) mutateSession(ctx context.Context, operation s
 	replayRaw, _ = json.Marshal(session)
 	if _, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_session_replays(operation,session_id,idempotency_key,request_digest,response_json) VALUES($1,$2,$3,$4,$5)`, operation, session.SessionID, mutation.IdempotencyKey, mutation.RequestDigest, replayRaw); err != nil {
 		return control.Session{}, control.ErrConflict
+	}
+	if operation == "heartbeat" || operation == "complete" || operation == "fail" {
+		progress := session.LatestProgress
+		event := cloudworker.Event{
+			OwnerID: executionOwner, AccountGeneration: executionGeneration,
+			RunID: mutation.Fence.ExecutionID, ExecutionID: mutation.Fence.ExecutionID,
+			EventID: deterministicCloudWorkerUUID("worker-progress", fmt.Sprintf("%s:%d", session.SessionID, mutation.ProgressSequence)),
+			Type:    "worker_progress", State: cloudworker.ExecutionState(executionState), Revision: executionRevision,
+			Progress: &cloudworker.WorkerProgress{
+				Phase: string(progress.Phase), ElapsedMS: progress.ElapsedMS, LastActivityAt: progress.LastActivityAt,
+				CPUTimeMS: progress.CPUTimeMS, MemoryHighWaterBytes: progress.MemoryHighWaterBytes,
+				InvocationCount: progress.InvocationCount, UploadedBytes: progress.UploadedBytes,
+				OutputTruncated: progress.OutputTruncated,
+			}, CreatedAt: mutation.At.UTC(),
+		}
+		event.PayloadDigest = digestCloudWorkerValue(struct {
+			SessionID string
+			Sequence  uint64
+			Progress  cloudworker.WorkerProgress
+		}{session.SessionID, mutation.ProgressSequence, *event.Progress})
+		if err = appendCloudWorkerEventTx(ctx, tx, &event, session.SessionID, mutation.ProgressSequence); err != nil {
+			return control.Session{}, err
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return control.Session{}, err

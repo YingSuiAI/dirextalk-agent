@@ -68,7 +68,7 @@ func (s *Service) IssueIdentityChallenge(ctx context.Context, request IssueChall
 }
 
 func (s *Service) Claim(ctx context.Context, request ClaimRequest) (ClaimResult, error) {
-	if s == nil || !validUUID(request.ChallengeID) || request.Fence.validate() != nil || strings.TrimSpace(request.Nonce) != request.Nonce || len(request.Nonce) < 32 || validateProof(request.Proof) != nil {
+	if s == nil || !validUUID(request.ChallengeID) || request.Fence.validate() != nil || strings.TrimSpace(request.Nonce) != request.Nonce || len(request.Nonce) < 32 || validateProof(request.Proof) != nil || !request.Versions.IsCurrent() {
 		return ClaimResult{}, ErrInvalid
 	}
 	if err := s.leases.ValidateCloudWorkerLease(ctx, request.Fence); err != nil {
@@ -158,7 +158,12 @@ func claimErrorClass(err error) string {
 }
 
 func (s *Service) Heartbeat(ctx context.Context, request HeartbeatRequest) (Session, error) {
-	if s == nil || !validUUID(request.SessionID) || !validIdempotencyKey(request.IdempotencyKey) || request.Fence.validate() != nil || request.ProgressSequence == 0 {
+	if s == nil {
+		return Session{}, ErrInvalid
+	}
+	now := s.clock().UTC()
+	request.Progress.LastActivityAt = now
+	if !validUUID(request.SessionID) || !validIdempotencyKey(request.IdempotencyKey) || request.Fence.validate() != nil || request.ProgressSequence == 0 || request.Progress.validateAt(now) != nil {
 		return Session{}, ErrInvalid
 	}
 	if err := s.leases.ValidateCloudWorkerLease(ctx, request.Fence); err != nil {
@@ -166,14 +171,20 @@ func (s *Service) Heartbeat(ctx context.Context, request HeartbeatRequest) (Sess
 	}
 	mutation := SessionMutation{
 		SessionID: request.SessionID, TokenDigest: digestToken(request.SessionToken), Fence: request.Fence,
-		ProgressSequence: request.ProgressSequence, IdempotencyKey: request.IdempotencyKey, At: s.clock().UTC(),
+		ProgressSequence: request.ProgressSequence, Progress: &request.Progress,
+		IdempotencyKey: request.IdempotencyKey, At: now,
 	}
 	mutation.RequestDigest = mutationDigest("heartbeat", mutation)
 	return s.store.Heartbeat(ctx, mutation)
 }
 
 func (s *Service) Complete(ctx context.Context, request CompleteRequest) (Session, error) {
-	if s == nil || !validUUID(request.SessionID) || !validIdempotencyKey(request.IdempotencyKey) || request.Fence.validate() != nil {
+	if s == nil {
+		return Session{}, ErrInvalid
+	}
+	now := s.clock().UTC()
+	request.Progress.LastActivityAt = now
+	if !validUUID(request.SessionID) || !validIdempotencyKey(request.IdempotencyKey) || request.Fence.validate() != nil || request.ProgressSequence == 0 || request.Progress.validateAt(now) != nil {
 		return Session{}, ErrInvalid
 	}
 	claim, err := request.Claim.normalize()
@@ -196,15 +207,21 @@ func (s *Service) Complete(ctx context.Context, request CompleteRequest) (Sessio
 	}
 	mutation := SessionMutation{
 		SessionID: request.SessionID, TokenDigest: digestToken(request.SessionToken), Fence: request.Fence,
+		ProgressSequence: request.ProgressSequence, Progress: &request.Progress,
 		Claim: &claim, RuntimeTopology: &request.RuntimeTopology, TopologyDigest: topologyDigest,
-		IdempotencyKey: request.IdempotencyKey, At: s.clock().UTC(),
+		IdempotencyKey: request.IdempotencyKey, At: now,
 	}
 	mutation.RequestDigest = mutationDigest("complete", mutation)
 	return s.store.Complete(ctx, mutation)
 }
 
 func (s *Service) Fail(ctx context.Context, request FailRequest) (Session, error) {
-	if s == nil || !validUUID(request.SessionID) || !validIdempotencyKey(request.IdempotencyKey) || request.Fence.validate() != nil {
+	if s == nil {
+		return Session{}, ErrInvalid
+	}
+	now := s.clock().UTC()
+	request.Progress.LastActivityAt = now
+	if !validUUID(request.SessionID) || !validIdempotencyKey(request.IdempotencyKey) || request.Fence.validate() != nil || request.ProgressSequence == 0 || request.Progress.validateAt(now) != nil {
 		return Session{}, ErrInvalid
 	}
 	code, summary, err := normalizeFailure(request.Code, request.Summary)
@@ -216,7 +233,8 @@ func (s *Service) Fail(ctx context.Context, request FailRequest) (Session, error
 	}
 	mutation := SessionMutation{
 		SessionID: request.SessionID, TokenDigest: digestToken(request.SessionToken), Fence: request.Fence,
-		FailureCode: code, FailureSummary: summary, IdempotencyKey: request.IdempotencyKey, At: s.clock().UTC(),
+		ProgressSequence: request.ProgressSequence, Progress: &request.Progress,
+		FailureCode: code, FailureSummary: summary, IdempotencyKey: request.IdempotencyKey, At: now,
 	}
 	mutation.RequestDigest = mutationDigest("fail", mutation)
 	return s.store.Fail(ctx, mutation)
@@ -270,18 +288,28 @@ func (s *Service) randomBytes(size int) ([]byte, error) {
 
 func mutationDigest(operation string, mutation SessionMutation) string {
 	claim := mutation.Claim
+	var progress *ProgressSnapshot
+	if mutation.Progress != nil {
+		copy := *mutation.Progress
+		// The Agent assigns activity time. Excluding it keeps an exact
+		// idempotency replay stable while every Worker-controlled field remains
+		// part of the request digest.
+		copy.LastActivityAt = time.Time{}
+		progress = &copy
+	}
 	payload := struct {
 		Operation        string       `json:"operation"`
 		SessionID        string       `json:"session_id"`
 		TokenDigest      string       `json:"token_digest"`
 		Fence            TaskFence    `json:"fence"`
 		ProgressSequence uint64       `json:"progress_sequence,omitempty"`
+		Progress         any          `json:"progress,omitempty"`
 		Claim            *ObjectClaim `json:"claim,omitempty"`
 		RuntimeTopology  any          `json:"runtime_topology,omitempty"`
 		TopologyDigest   string       `json:"topology_digest,omitempty"`
 		FailureCode      string       `json:"failure_code,omitempty"`
 		FailureSummary   string       `json:"failure_summary,omitempty"`
-	}{operation, mutation.SessionID, digestHex(mutation.TokenDigest[:]), mutation.Fence, mutation.ProgressSequence, claim, mutation.RuntimeTopology, mutation.TopologyDigest, mutation.FailureCode, mutation.FailureSummary}
+	}{operation, mutation.SessionID, digestHex(mutation.TokenDigest[:]), mutation.Fence, mutation.ProgressSequence, progress, claim, mutation.RuntimeTopology, mutation.TopologyDigest, mutation.FailureCode, mutation.FailureSummary}
 	raw, _ := json.Marshal(payload)
 	return digestHex(raw)
 }

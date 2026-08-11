@@ -135,6 +135,12 @@ socket ownership before the Runner starts. The `extension-runner-data-init`
 service likewise repairs the runner-owned install/state roots to
 `65531:65531` mode `0700` and the shared execution workspace root to
 `65531:65532` mode `0770` before the Runner validates those trust boundaries.
+The runner container is capped at 2 CPUs, 1 GiB memory, and 256 processes; this
+outer service budget leaves headroom above the current 1-CPU, 256 MiB,
+32-process per-run cgroup. The Unix packet server admits at most 64 connections
+and one execution, applies fixed request-read and response-write deadlines, and
+fails a run when stdout, stderr, workspace, or declared result output exceeds
+its current request budget instead of reporting truncated success.
 
 ## Core Runner seam
 

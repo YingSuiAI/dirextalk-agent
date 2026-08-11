@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 )
 
 func writePinnedJSON(t *testing.T, name string, value any) (string, string) {
@@ -66,6 +68,7 @@ func TestPinnedRuntimeQualificationRequiresAuthorizedRelease(t *testing.T) {
 	plan, _, _, _ := stagingFixture(t, now)
 	document := runtimeQualificationDocument{
 		Schema: RuntimeQualificationFileSchema, AMIID: plan.Compute.AMIID,
+		WorkerProtocolVersion: cloudprotocol.WorkerProtocolVersion, RuntimeContractVersion: cloudprotocol.RuntimeContractVersion,
 		AMIDigest: plan.Compute.AMIDigest, WorkerReleaseDigest: plan.Compute.WorkerReleaseDigest,
 		PiRuntimeDigest: plan.Compute.PiRuntimeDigest, Architecture: plan.Compute.Architecture,
 		PiVersion: "0.44.0", PiExecutableSHA256: digestValue("pi-executable"),
@@ -78,11 +81,24 @@ func TestPinnedRuntimeQualificationRequiresAuthorizedRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	qualification, err := resolver.ResolveRuntimeQualification(context.Background(), plan)
-	if err != nil || qualification.PiRuntimeDigest != plan.Compute.PiRuntimeDigest || qualification.PiExecutableSHA256 != document.PiExecutableSHA256 {
+	if err != nil || qualification.WorkerProtocolVersion != cloudprotocol.WorkerProtocolVersion ||
+		qualification.RuntimeContractVersion != cloudprotocol.RuntimeContractVersion ||
+		qualification.PiRuntimeDigest != plan.Compute.PiRuntimeDigest || qualification.PiExecutableSHA256 != document.PiExecutableSHA256 {
 		t.Fatalf("qualification=%+v err=%v", qualification, err)
 	}
 	plan.Compute.WorkerReleaseDigest = digestValue("drift")
 	if _, err := resolver.ResolveRuntimeQualification(context.Background(), plan); err == nil {
 		t.Fatal("qualification accepted a drifted Worker release")
+	}
+	document.WorkerProtocolVersion = ""
+	path, digest = writePinnedJSON(t, "missing-protocol.json", document)
+	if _, err := NewPinnedRuntimeQualification(path, digest); err == nil {
+		t.Fatal("qualification accepted a missing Worker protocol version")
+	}
+	document.WorkerProtocolVersion = cloudprotocol.WorkerProtocolVersion
+	document.RuntimeContractVersion = "unknown"
+	path, digest = writePinnedJSON(t, "unknown-runtime.json", document)
+	if _, err := NewPinnedRuntimeQualification(path, digest); err == nil {
+		t.Fatal("qualification accepted an unknown runtime contract version")
 	}
 }

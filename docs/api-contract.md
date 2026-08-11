@@ -269,6 +269,19 @@ domains stay absent and fail closed when selected.
   qualification does not imply real AWS readiness; see
   [execution-v2.md](execution-v2.md).
 
+The private WorkerControl Claim has one exact bidirectional protocol handshake.
+Both peers must declare the current `worker_protocol_version` and
+`runtime_contract_version`; absent or unequal values fail before model-grant
+activation and have no compatibility or fallback route. The immutable AMI
+qualification binds the same pair.
+
+WorkerControl Heartbeat, Complete, and Fail carry one bounded, secret-free
+progress snapshot with an exact session-local sequence. The service replaces
+the Worker wall-clock activity timestamp with its own mutation time and
+enriches invocation count from the durable model-invocation ledger. Complete
+and Fail persist the final progress event atomically with session terminal
+state; no second progress API or cursor exists.
+
 Message Server reaches Agent through the authenticated Capability boundary and
 projects only its existing ProductCore action names and Native Agent stream
 frames to Flutter. Product Capability callbacks use their separate mTLS

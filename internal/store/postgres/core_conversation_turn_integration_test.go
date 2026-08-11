@@ -13,6 +13,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/execution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
@@ -330,6 +331,10 @@ func TestCoreConversationTurnHistoryAndEventsAtomicPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	started, err := h.store.AppendTurnEvent(context.Background(), turn.ID, core.TurnEvent{Kind: core.TurnEventStarted})
+	if err != nil || started.Sequence != 2 || started.Revision != turn.Revision {
+		t.Fatalf("started event=%+v err=%v", started, err)
+	}
 	response := core.ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 2, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "done", ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC()}}
 	if _, err = h.store.CommitTurn(context.Background(), lease, response); err != nil {
 		t.Fatal(err)
@@ -346,12 +351,40 @@ func TestCoreConversationTurnHistoryAndEventsAtomicPostgres(t *testing.T) {
 		t.Fatalf("turn timestamps are not persistably ordered: user=%s assistant=%s", userAt.Format(time.RFC3339Nano), assistantAt.Format(time.RFC3339Nano))
 	}
 	events, err := h.store.LoadTurnEvents(context.Background(), turn.ID, 0, 10)
-	if err != nil || len(events) < 2 {
-		t.Fatalf("events=%d err=%v", len(events), err)
+	if err != nil || len(events) != 3 || events[0].Sequence != 1 || events[0].Revision != 1 ||
+		events[1].Sequence != 2 || events[1].Revision != 1 || events[1].Kind != core.TurnEventStarted ||
+		events[2].Sequence != 3 || events[2].Revision != 2 || events[2].Kind != core.TurnEventDone {
+		t.Fatalf("delayed replay events=%+v err=%v", events, err)
 	}
 }
 
-func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *testing.T) {
+func TestCoreConversationTurnEventsRejectZeroRevisionPayloadPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	turn, err := h.store.StartTurn(context.Background(), turnCommand())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.pool.Exec(context.Background(), `UPDATE core_conversation_turn_events
+		SET payload_json=jsonb_set(payload_json,'{Revision}','0'::jsonb) WHERE turn_id=$1 AND sequence=1`, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.store.LoadTurnEvents(context.Background(), turn.ID, 0, 10); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("zero-revision event payload err=%v", err)
+	}
+}
+
+type conversationToolPrepareFixture struct {
+	h         *turnDBHarness
+	snapshot  core.ExtensionExecutionSnapshot
+	turn      core.Turn
+	lease     core.TurnLease
+	arguments []byte
+	call      core.ToolCall
+	prepare   core.PrepareToolCommand
+}
+
+func newConversationToolPrepareFixture(t *testing.T, callID string) *conversationToolPrepareFixture {
+	t.Helper()
 	h := openTurnDB(t)
 	installationID, versionID := uuid.NewString(), uuid.NewString()
 	contentDigest := strings.Repeat("a", 64)
@@ -395,13 +428,159 @@ func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := core.ToolCall{ID: "call_deepseek_non_uuid_1", Name: "write_html", Arguments: string(arguments)}
+	call := core.ToolCall{ID: callID, Name: "write_html", Arguments: string(arguments)}
 	prepare := core.PrepareToolCommand{
 		Lease: lease, Round: 0, Call: call, Snapshot: snapshot,
 		CanonicalArguments: arguments, ArgumentsDigest: conversationArgsDigest(arguments),
 		SafeSummary: "conversation tool call write_html", IdempotencyKey: uuid.NewString(),
 		ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
 	}
+	return &conversationToolPrepareFixture{
+		h: h, snapshot: snapshot, turn: turn, lease: lease,
+		arguments: arguments, call: call, prepare: prepare,
+	}
+}
+
+func TestCoreConversationToolPrepareWaitingEventFailureRollsBackPostgres(t *testing.T) {
+	fixture := newConversationToolPrepareFixture(t, "call_waiting_event_rollback")
+	if _, err := fixture.h.pool.Exec(context.Background(), `CREATE FUNCTION reject_conversation_tool_waiting_event() RETURNS trigger
+		LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced waiting event failure'; END $$;
+		CREATE TRIGGER reject_conversation_tool_waiting_event BEFORE INSERT ON core_conversation_turn_events
+		FOR EACH ROW WHEN (NEW.kind = 'waiting_confirmation') EXECUTE FUNCTION reject_conversation_tool_waiting_event()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := fixture.h.store.PrepareConversationTool(context.Background(), fixture.prepare); err == nil {
+		t.Fatal("forced waiting event failure unexpectedly committed preparation")
+	}
+
+	var state, leaseID string
+	var revision uint64
+	var lastSequence int64
+	var tasks, attempts, confirmations, targetBindings, currentBindings, taskEvents, waitingEvents int
+	if err := fixture.h.pool.QueryRow(context.Background(), `SELECT state,revision,last_sequence,lease_id::text,
+		(SELECT count(*) FROM core_tasks WHERE task_kind='conversation_tool'),
+		(SELECT count(*) FROM core_conversation_tool_attempts),
+		(SELECT count(*) FROM core_confirmations WHERE operation_domain='conversation_tool'),
+		(SELECT count(*) FROM core_confirmation_target_bindings),
+		(SELECT count(*) FROM core_confirmation_current_bindings WHERE operation_domain='conversation_tool'),
+		(SELECT count(*) FROM core_task_events),
+		(SELECT count(*) FROM core_conversation_turn_events WHERE kind='waiting_confirmation')
+		FROM core_conversation_turns WHERE turn_id=$1`, fixture.turn.ID).Scan(
+		&state, &revision, &lastSequence, &leaseID, &tasks, &attempts, &confirmations,
+		&targetBindings, &currentBindings, &taskEvents, &waitingEvents); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(core.TurnRunning) || revision != fixture.turn.Revision || lastSequence != fixture.turn.LastSequence ||
+		leaseID != fixture.lease.LeaseID || tasks+attempts+confirmations+targetBindings+currentBindings+taskEvents+waitingEvents != 0 {
+		t.Fatalf("prepare rollback state=%s revision=%d sequence=%d lease=%q rows=%d/%d/%d/%d/%d/%d/%d",
+			state, revision, lastSequence, leaseID, tasks, attempts, confirmations, targetBindings, currentBindings, taskEvents, waitingEvents)
+	}
+}
+
+func TestCoreConversationToolCurrentStatesRejectPreparedAndTerminalizeFailsClosedPostgres(t *testing.T) {
+	fixture := newConversationToolPrepareFixture(t, "call_current_tool_states")
+	attempt, task, confirmation, err := fixture.h.store.PrepareConversationTool(context.Background(), fixture.prepare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Spec.Payload.ConversationTool == nil || task.Spec.Payload.ConversationTool.ExecutionTarget != coretask.ExtensionExecutionTargetLocalSandbox {
+		t.Fatalf("sealed conversation tool target=%+v", task.Spec.Payload.ConversationTool)
+	}
+	if _, err = fixture.h.pool.Exec(context.Background(), `UPDATE core_conversation_tool_attempts SET state='prepared' WHERE attempt_id=$1`, attempt.ID); err == nil {
+		t.Fatal("current schema accepted removed conversation tool prepared state")
+	}
+	if _, err = fixture.h.pool.Exec(context.Background(), `UPDATE core_conversation_turns SET dispatch_state='prepared' WHERE turn_id=$1`, fixture.turn.ID); err == nil {
+		t.Fatal("current schema accepted removed conversation turn prepared dispatch state")
+	}
+	if _, err = fixture.h.pool.Exec(context.Background(), `UPDATE core_conversation_tool_attempts SET state='dispatched' WHERE attempt_id=$1`, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	confirmationService, err := coreconfirmation.NewService(NewCoreConfirmationStore(fixture.h.store.Store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = confirmationService.Reject(context.Background(), coreconfirmation.RejectCommand{
+		ConfirmationID:   confirmation.ConfirmationID,
+		IdempotencyKey:   uuid.NewString(),
+		ExpectedRevision: confirmation.Revision,
+		Reason:           "owner rejected",
+		At:               time.Now().UTC(),
+	}); !errors.Is(err, coreconfirmation.ErrConflict) {
+		t.Fatalf("mismatched attempt terminalization err=%v", err)
+	}
+	var attemptState, taskState, confirmationState, turnState string
+	if err = fixture.h.pool.QueryRow(context.Background(), `SELECT a.state,t.status,c.state,ct.state
+		FROM core_conversation_tool_attempts a
+		JOIN core_tasks t ON t.task_id=a.task_id
+		JOIN core_confirmations c ON c.confirmation_id=a.confirmation_id
+		JOIN core_conversation_turns ct ON ct.turn_id=a.turn_id
+		WHERE a.attempt_id=$1 AND t.task_id=$2`, attempt.ID, task.ID).Scan(
+		&attemptState, &taskState, &confirmationState, &turnState); err != nil {
+		t.Fatal(err)
+	}
+	if attemptState != "dispatched" || taskState != "waiting_user" || confirmationState != "pending" || turnState != "waiting_confirmation" {
+		t.Fatalf("failed-close rollback attempt/task/confirmation/turn=%q/%q/%q/%q",
+			attemptState, taskState, confirmationState, turnState)
+	}
+}
+
+func TestCoreConversationToolFailedResourceSummarySurvivesRestartPostgres(t *testing.T) {
+	fixture := newConversationToolPrepareFixture(t, "call_resource_summary_restart")
+	attempt, task, confirmation, err := fixture.h.store.PrepareConversationTool(context.Background(), fixture.prepare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmationService, err := coreconfirmation.NewService(NewCoreConfirmationStore(fixture.h.store.Store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = confirmationService.Confirm(context.Background(), coreconfirmation.ConfirmCommand{
+		ConfirmationID: confirmation.ConfirmationID, IdempotencyKey: uuid.NewString(),
+		ExpectedRevision: confirmation.Revision, At: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := NewCoreTaskStore(fixture.h.store.Store)
+	claimed, _, err := tasks.ClaimNextDue(context.Background(), "resource-summary-test", time.Now().UTC(), time.Minute, 2)
+	if err != nil || claimed.ID != task.ID {
+		t.Fatalf("claimed=%+v err=%v", claimed, err)
+	}
+	if _, err = fixture.h.store.BeginConversationTool(context.Background(), claimed); err != nil {
+		t.Fatal(err)
+	}
+	if err = fixture.h.store.FinishConversationTool(
+		context.Background(), claimed, "failed", nil,
+		execution.LocalResourceBusyCode, execution.LocalResourceBusySummary,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := NewCoreConversationStore(fixture.h.store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed, err := restarted.ObserveConversationTool(context.Background(), fixture.turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovered coretask.Result
+	if observed.ID != attempt.ID || observed.State != "denied" || json.Unmarshal(observed.Result, &recovered) != nil ||
+		recovered.Validate() != nil || recovered.Summary != execution.LocalResourceBusySummary ||
+		strings.Contains(string(observed.Result), "protected detail") {
+		t.Fatalf("restarted attempt=%+v recovered=%+v", observed, recovered)
+	}
+	terminal, err := tasks.GetTask(context.Background(), task.ID)
+	if err != nil || terminal.Status != coretask.StatusFailed || terminal.FailureCode != execution.LocalResourceBusyCode ||
+		terminal.FailureSummary != execution.LocalResourceBusySummary || terminal.Result != nil {
+		t.Fatalf("terminal task=%+v err=%v", terminal, err)
+	}
+}
+
+func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *testing.T) {
+	fixture := newConversationToolPrepareFixture(t, "call_deepseek_non_uuid_1")
+	h, snapshot, turn, lease := fixture.h, fixture.snapshot, fixture.turn, fixture.lease
+	arguments, call, prepare := fixture.arguments, fixture.call, fixture.prepare
+	var err error
 	attempt, task, confirmation, err := h.store.PrepareConversationTool(context.Background(), prepare)
 	if err != nil {
 		t.Fatal(err)
@@ -431,6 +610,15 @@ func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *
 	if storedTurn.State != core.TurnWaitingConfirmation || storedTurn.Revision != lease.Turn.Revision+1 {
 		t.Fatalf("turn=%+v", storedTurn)
 	}
+	preparedEvents, err := h.store.LoadTurnEvents(context.Background(), turn.ID, 0, 10)
+	if err != nil || len(preparedEvents) != 2 || preparedEvents[0].Kind != core.TurnEventAccepted ||
+		preparedEvents[0].Sequence != 1 || preparedEvents[0].Revision != turn.Revision ||
+		preparedEvents[1].Kind != core.TurnEventWaitingConfirmation || preparedEvents[1].Sequence != 2 ||
+		preparedEvents[1].Revision != storedTurn.Revision || preparedEvents[1].ConfirmationID != attempt.ConfirmationID ||
+		preparedEvents[1].ExecutionID != attempt.ExecutionID || preparedEvents[1].ValidateWaitingConfirmationAuthority() != nil {
+		t.Fatalf("atomic prepare events=%+v err=%v", preparedEvents, err)
+	}
+	originalWaitingRevision := preparedEvents[1].Revision
 	var leaseReleased bool
 	if err = h.pool.QueryRow(context.Background(), `SELECT lease_id IS NULL AND lease_expires_at IS NULL FROM core_conversation_turns WHERE turn_id=$1`, turn.ID).Scan(&leaseReleased); err != nil {
 		t.Fatal(err)
@@ -438,12 +626,21 @@ func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *
 	if !leaseReleased {
 		t.Fatal("waiting confirmation retained its running lease")
 	}
-	replayedAttempt, replayedTask, replayedConfirmation, err := h.store.PrepareConversationTool(context.Background(), prepare)
+	restarted, err := NewCoreConversationStore(h.store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedAttempt, replayedTask, replayedConfirmation, err := restarted.PrepareConversationTool(context.Background(), prepare)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if replayedAttempt.ID != attempt.ID || replayedAttempt.CallID != call.ID || replayedTask.ID != task.ID || replayedTask.Spec.ConversationID != turn.ConversationID || replayedConfirmation.ConfirmationID != confirmation.ConfirmationID {
 		t.Fatalf("replayed attempt=%+v task=%+v confirmation=%+v", replayedAttempt, replayedTask, replayedConfirmation)
+	}
+	replayedEvents, err := restarted.LoadTurnEvents(context.Background(), turn.ID, 0, 10)
+	if err != nil || len(replayedEvents) != 2 || replayedEvents[1].Kind != core.TurnEventWaitingConfirmation ||
+		replayedEvents[1].Revision != originalWaitingRevision || replayedEvents[1].Sequence != preparedEvents[1].Sequence {
+		t.Fatalf("restart replay duplicated or rewrote waiting event: before=%+v after=%+v err=%v", preparedEvents, replayedEvents, err)
 	}
 	var taskCount, attemptCount, confirmationCount int
 	if err = h.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM core_tasks WHERE task_id=$1),(SELECT count(*) FROM core_conversation_tool_attempts WHERE attempt_id=$2),(SELECT count(*) FROM core_confirmations WHERE confirmation_id=$3)`, task.ID, attempt.ID, confirmation.ConfirmationID).Scan(&taskCount, &attemptCount, &confirmationCount); err != nil {

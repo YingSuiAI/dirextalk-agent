@@ -2022,15 +2022,16 @@ type CoreConversationTurnEvent struct {
 	ReplayGap      bool                         `protobuf:"varint,10,opt,name=replay_gap,json=replayGap,proto3" json:"replay_gap,omitempty"`
 	CreatedAt      *timestamppb.Timestamp       `protobuf:"bytes,11,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	ConfirmationId string                       `protobuf:"bytes,12,opt,name=confirmation_id,json=confirmationId,proto3" json:"confirmation_id,omitempty"`
-	AttemptId      string                       `protobuf:"bytes,13,opt,name=attempt_id,json=attemptId,proto3" json:"attempt_id,omitempty"`
 	ExecutionId    string                       `protobuf:"bytes,14,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
 	Status         string                       `protobuf:"bytes,15,opt,name=status,proto3" json:"status,omitempty"`
 	ToolResult     *CoreToolResult              `protobuf:"bytes,16,opt,name=tool_result,json=toolResult,proto3" json:"tool_result,omitempty"`
 	RelatedTaskIds []string                     `protobuf:"bytes,17,rep,name=related_task_ids,json=relatedTaskIds,proto3" json:"related_task_ids,omitempty"`
 	RelatedPlanIds []string                     `protobuf:"bytes,18,rep,name=related_plan_ids,json=relatedPlanIds,proto3" json:"related_plan_ids,omitempty"`
 	References     []*CoreConversationReference `protobuf:"bytes,19,rep,name=references,proto3" json:"references,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The positive turn revision captured atomically when this event was written.
+	Revision      uint64 `protobuf:"varint,20,opt,name=revision,proto3" json:"revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CoreConversationTurnEvent) Reset() {
@@ -2147,13 +2148,6 @@ func (x *CoreConversationTurnEvent) GetConfirmationId() string {
 	return ""
 }
 
-func (x *CoreConversationTurnEvent) GetAttemptId() string {
-	if x != nil {
-		return x.AttemptId
-	}
-	return ""
-}
-
 func (x *CoreConversationTurnEvent) GetExecutionId() string {
 	if x != nil {
 		return x.ExecutionId
@@ -2194,6 +2188,13 @@ func (x *CoreConversationTurnEvent) GetReferences() []*CoreConversationReference
 		return x.References
 	}
 	return nil
+}
+
+func (x *CoreConversationTurnEvent) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
 }
 
 type ConversationServiceCancelTurnRequest struct {
@@ -2658,7 +2659,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	")ConversationServiceWatchTurnEventsRequest\x12\x17\n" +
 	"\aturn_id\x18\x01 \x01(\tR\x06turnId\x12%\n" +
 	"\x0eafter_sequence\x18\x02 \x01(\x03R\rafterSequence\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\x94\x06\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\xa3\x06\n" +
 	"\x19CoreConversationTurnEvent\x12\x17\n" +
 	"\aturn_id\x18\x01 \x01(\tR\x06turnId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x03R\bsequence\x12\x12\n" +
@@ -2675,9 +2676,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	" \x01(\bR\treplayGap\x129\n" +
 	"\n" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12'\n" +
-	"\x0fconfirmation_id\x18\f \x01(\tR\x0econfirmationId\x12\x1d\n" +
-	"\n" +
-	"attempt_id\x18\r \x01(\tR\tattemptId\x12!\n" +
+	"\x0fconfirmation_id\x18\f \x01(\tR\x0econfirmationId\x12!\n" +
 	"\fexecution_id\x18\x0e \x01(\tR\vexecutionId\x12\x16\n" +
 	"\x06status\x18\x0f \x01(\tR\x06status\x12C\n" +
 	"\vtool_result\x18\x10 \x01(\v2\".dirextalk.agent.v1.CoreToolResultR\n" +
@@ -2686,7 +2685,9 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\x10related_plan_ids\x18\x12 \x03(\tR\x0erelatedPlanIds\x12M\n" +
 	"\n" +
 	"references\x18\x13 \x03(\v2-.dirextalk.agent.v1.CoreConversationReferenceR\n" +
-	"references\"\x95\x01\n" +
+	"references\x12\x1a\n" +
+	"\brevision\x18\x14 \x01(\x04R\brevisionJ\x04\b\r\x10\x0eR\n" +
+	"attempt_id\"\x95\x01\n" +
 	"$ConversationServiceCancelTurnRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x17\n" +
 	"\aturn_id\x18\x02 \x01(\tR\x06turnId\x12+\n" +
