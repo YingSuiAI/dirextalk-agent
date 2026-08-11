@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,7 @@ var (
 	ErrProviderUnavailable = errors.New("model provider is unavailable")
 	ErrInvalidResponse     = errors.New("invalid model provider response")
 	ErrStreamTruncated     = errors.New("model provider stream terminated before completion")
+	ErrStreamIdleTimeout   = fmt.Errorf("model provider stream idle timeout: %w", context.DeadlineExceeded)
 )
 
 type HTTPClient interface {
@@ -34,8 +36,9 @@ type HTTPClient interface {
 }
 type ClientOption func(*httpOptions)
 type httpOptions struct {
-	client  HTTPClient
-	timeout time.Duration
+	client            HTTPClient
+	timeout           time.Duration
+	streamIdleTimeout time.Duration
 }
 
 func WithHTTPClient(c HTTPClient) ClientOption {
@@ -53,10 +56,23 @@ func WithTimeout(d time.Duration) ClientOption {
 	}
 }
 
+// WithStreamIdleTimeout replaces the streaming request's total deadline with
+// an inactivity deadline. Generate and connection-test requests keep their
+// existing total timeouts. Any bytes read from the provider stream, including
+// SSE keepalives, renew the inactivity deadline.
+func WithStreamIdleTimeout(d time.Duration) ClientOption {
+	return func(o *httpOptions) {
+		if d > 0 {
+			o.streamIdleTimeout = d
+		}
+	}
+}
+
 type providerClient struct {
-	profile Profile
-	http    HTTPClient
-	timeout time.Duration
+	profile           Profile
+	http              HTTPClient
+	timeout           time.Duration
+	streamIdleTimeout time.Duration
 }
 
 func NewClient(profile Profile, options ...ClientOption) (Client, error) {
@@ -74,9 +90,13 @@ func NewClient(profile Profile, options ...ClientOption) (Client, error) {
 		}
 	}
 	if opts.client == nil {
-		opts.client = &http.Client{Timeout: opts.timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		clientTimeout := opts.timeout
+		if opts.streamIdleTimeout > 0 {
+			clientTimeout = 0
+		}
+		opts.client = &http.Client{Timeout: clientTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	}
-	return &providerClient{profile: p, http: opts.client, timeout: opts.timeout}, nil
+	return &providerClient{profile: p, http: opts.client, timeout: opts.timeout, streamIdleTimeout: opts.streamIdleTimeout}, nil
 }
 
 func NewConnectionTester(options ...ClientOption) ConnectionTester {
@@ -211,7 +231,9 @@ func (c *providerClient) Generate(ctx context.Context, request CompletionRequest
 func (c *providerClient) Stream(ctx context.Context, request CompletionRequest) (Stream, error) {
 	var streamCtx context.Context
 	var cancel context.CancelFunc
-	if c.timeout > 0 {
+	if c.streamIdleTimeout > 0 {
+		streamCtx, cancel = context.WithCancel(ctx)
+	} else if c.timeout > 0 {
 		streamCtx, cancel = context.WithTimeout(ctx, c.timeout)
 	} else {
 		streamCtx, cancel = context.WithCancel(ctx)
@@ -255,21 +277,37 @@ func (c *providerClient) Stream(ctx context.Context, request CompletionRequest) 
 	req.Header.Set("Content-Type", "application/json")
 	setHeaders(req, c.profile)
 	req.Header.Set("Accept", "text/event-stream")
+	var idle *streamIdleWatchdog
+	if c.streamIdleTimeout > 0 {
+		idle = newStreamIdleWatchdog(c.streamIdleTimeout, cancel)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		if idle != nil {
+			idle.Stop()
+		}
 		cancel()
+		if idle != nil && idle.TimedOut() {
+			return nil, ErrStreamIdleTimeout
+		}
 		if streamCtx.Err() != nil {
 			return nil, streamCtx.Err()
 		}
 		return nil, ErrProviderUnavailable
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if idle != nil {
+			idle.Stop()
+		}
 		cancel()
 		resp.Body.Close()
 		return nil, ErrProviderUnavailable
 	}
 	source := &countingReader{r: io.LimitReader(resp.Body, maxResponseBytes+1)}
-	stream := &sseStream{reader: bufio.NewReader(source), body: resp.Body, provider: c.profile.Provider, cancel: cancel, source: source}
+	if idle != nil {
+		source.onRead = idle.Touch
+	}
+	stream := &sseStream{reader: bufio.NewReader(source), body: resp.Body, provider: c.profile.Provider, cancel: cancel, source: source, idle: idle}
 	cancel = nil // ownership transfers to the returned stream
 	return stream, nil
 }
@@ -669,22 +707,99 @@ type sseStream struct {
 	nextToolID int
 	cancel     context.CancelFunc
 	source     *countingReader
+	idle       *streamIdleWatchdog
 	terminal   bool
 }
 
 type countingReader struct {
-	r io.Reader
-	n int64
+	r      io.Reader
+	n      int64
+	onRead func()
 }
 
 func (r *countingReader) Read(p []byte) (int, error) {
 	n, err := r.r.Read(p)
 	r.n += int64(n)
+	if n > 0 && r.onRead != nil {
+		r.onRead()
+	}
 	return n, err
+}
+
+type streamIdleWatchdog struct {
+	mu         sync.Mutex
+	duration   time.Duration
+	cancel     context.CancelFunc
+	timer      *time.Timer
+	generation uint64
+	stopped    bool
+	timedOut   bool
+}
+
+func newStreamIdleWatchdog(duration time.Duration, cancel context.CancelFunc) *streamIdleWatchdog {
+	w := &streamIdleWatchdog{duration: duration, cancel: cancel}
+	w.resetLocked()
+	return w
+}
+
+func (w *streamIdleWatchdog) resetLocked() {
+	w.generation++
+	generation := w.generation
+	w.timer = time.AfterFunc(w.duration, func() {
+		w.expire(generation)
+	})
+}
+
+func (w *streamIdleWatchdog) expire(generation uint64) {
+	w.mu.Lock()
+	if w.stopped || generation != w.generation {
+		w.mu.Unlock()
+		return
+	}
+	w.stopped = true
+	w.timedOut = true
+	cancel := w.cancel
+	w.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (w *streamIdleWatchdog) Touch() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped {
+		return
+	}
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	w.resetLocked()
+}
+
+func (w *streamIdleWatchdog) Stop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped {
+		return
+	}
+	w.stopped = true
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+}
+
+func (w *streamIdleWatchdog) TimedOut() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.timedOut
 }
 
 func (s *sseStream) Close() error {
 	s.closed = true
+	if s.idle != nil {
+		s.idle.Stop()
+	}
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -693,6 +808,9 @@ func (s *sseStream) Close() error {
 func (s *sseStream) finish() {
 	if !s.closed {
 		s.closed = true
+		if s.idle != nil {
+			s.idle.Stop()
+		}
 		if s.cancel != nil {
 			s.cancel()
 		}
@@ -710,6 +828,10 @@ func (s *sseStream) Recv() (Delta, error) {
 		}
 		line, err := s.reader.ReadString('\n')
 		if err != nil {
+			if s.idle != nil && s.idle.TimedOut() {
+				s.finish()
+				return Delta{}, ErrStreamIdleTimeout
+			}
 			if errors.Is(err, io.EOF) {
 				s.finish()
 				if s.source != nil && s.source.n > maxResponseBytes {

@@ -70,11 +70,22 @@ multi-tenant model.
   `model_profile_id`/`model_profile_revision`/`credential_version` triple.
   Partial or stale pins fail before provider work; there is no default-profile
   fallback, and durable replays retain their original snapshot.
-- A Native conversation model round allows up to five minutes for the provider
-  response. If that deadline elapses after durable dispatch, the turn fails
-  with `provider_timeout` and a summary that says the outcome is unknown and a
-  new turn may be sent to retry. The timed-out dispatch is never replayed
-  automatically; recovery preserves the persisted timeout classification.
+- A Native conversation model stream has no total execution deadline. Its
+  five-minute safety limit measures only provider inactivity and is renewed by
+  every byte received from the SSE stream, including keepalives. Model output
+  and tool-call progress may therefore continue for longer than five minutes;
+  individual tool or sandbox executions keep their own resource limits. If a
+  dispatched provider stream produces no data for the full idle interval, the
+  turn fails with `provider_timeout` and an unknown-outcome summary. The
+  dispatch is never replayed automatically, and recovery preserves the
+  persisted timeout classification.
+- Native conversation progress publishes the existing `tool_call` event only
+  after the model step and tool identity are durable, and before the extension
+  is dispatched. A successful call is followed by its exact `tool_result`; a
+  failed dispatch retains the already-published call before the existing safe
+  terminal error. Durable turns persist the same public ordering while their
+  private pending/dispatched envelope remains the at-most-once authority and
+  is never exposed as an additional client event.
 - On the first turn of an empty Native conversation, `Chat`, `StreamChat`, and
   `StartTurn` perform an Agent-internal semantic recall over only ready memory
   sources whose current revision has a promoted embedding binding that exactly

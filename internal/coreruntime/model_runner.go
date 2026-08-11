@@ -13,11 +13,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// ConversationModelExecutionLimit bounds one provider round without cutting
-// off ordinary long responses at the core model client's historical 90-second
-// default. Durable turn fencing still treats an elapsed provider request as an
-// unknown outcome and never replays it automatically.
-const ConversationModelExecutionLimit = 5 * time.Minute
+// ConversationModelStreamIdleTimeout bounds only a provider stream with no
+// bytes arriving. Active SSE streams have no total execution deadline; tool
+// calls leave the provider stream and retain their own resource limits.
+const ConversationModelStreamIdleTimeout = 5 * time.Minute
 
 var (
 	ErrUnsupportedTaskInput              = errors.New("unsupported task input in Core v1")

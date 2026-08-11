@@ -582,18 +582,27 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 			if claimErr != nil {
 				return ChatResponse{}, claimErr
 			}
+			call.ExecutionID = tlease.ExecutionID
+			for i := range conv.Messages[len(conv.Messages)-1].ToolCalls {
+				if conv.Messages[len(conv.Messages)-1].ToolCalls[i].ID == call.ID {
+					conv.Messages[len(conv.Messages)-1].ToolCalls[i].ExecutionID = call.ExecutionID
+				}
+			}
+			// The model step and tool execution claim are durable at this point,
+			// but no extension has been dispatched. Publish the existing public
+			// tool_call now so a streaming client can show real progress while
+			// execution is in flight. The dispatched fence below still prevents
+			// recovery from repeating an unknown external mutation.
+			if emit != nil {
+				cc := call
+				emit(StreamEvent{Kind: EventToolCall, RequestID: cmd.RequestID, ConversationID: conv.ID, ToolCall: &cc})
+			}
 			if tlease.Status == ToolClaimCompleted && tlease.Result != nil {
 				if tlease.Result.CallID != call.ID {
 					return ChatResponse{}, ErrConflict
 				}
 				tr = *tlease.Result
 				found = true
-				call.ExecutionID = tlease.ExecutionID
-				for i := range conv.Messages[len(conv.Messages)-1].ToolCalls {
-					if conv.Messages[len(conv.Messages)-1].ToolCalls[i].ID == call.ID {
-						conv.Messages[len(conv.Messages)-1].ToolCalls[i].ExecutionID = call.ExecutionID
-					}
-				}
 			}
 			if tlease.Status == ToolClaimInFlight || tlease.Status == ToolClaimConflict {
 				return ChatResponse{}, ErrConflict
@@ -644,12 +653,6 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 					} else {
 						tlease = renewed
 					}
-					call.ExecutionID = tlease.ExecutionID
-					for i := range conv.Messages[len(conv.Messages)-1].ToolCalls {
-						if conv.Messages[len(conv.Messages)-1].ToolCalls[i].ID == call.ID {
-							conv.Messages[len(conv.Messages)-1].ToolCalls[i].ExecutionID = call.ExecutionID
-						}
-					}
 					if err := s.store.MarkToolDispatched(ctx, cmd.RequestID, call.ID, tlease.LeaseID, tlease.Epoch); err != nil {
 						return ChatResponse{}, err
 					}
@@ -689,10 +692,6 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 					return ChatResponse{}, err
 				}
 				toolCompleted = true
-			}
-			if emit != nil {
-				cc := call
-				emit(StreamEvent{Kind: EventToolCall, RequestID: cmd.RequestID, ConversationID: conv.ID, ToolCall: &cc})
 			}
 			tm := Message{ID: uuid.NewString(), Role: RoleTool, ToolResults: []ToolResult{tr}, CreatedAt: nextMessageTime(conv, s.clock()), ModelProfileID: cmd.ProfileID}
 			tm.RelatedTaskIDs = stableIDs(tr.RelatedTaskIDs)
@@ -1818,7 +1817,7 @@ const (
 	modelDispatchUncertainCode    = "provider_uncertain"
 	modelDispatchUncertainSummary = "model dispatch outcome is unknown"
 	modelResponseTimeoutCode      = "provider_timeout"
-	modelResponseTimeoutSummary   = "model response timed out; outcome is unknown; send a new turn to retry"
+	modelResponseTimeoutSummary   = "model stream stopped producing progress; outcome is unknown; send a new turn to retry"
 )
 
 func classifyModelDispatchFailure(err error) (string, string) {

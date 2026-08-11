@@ -224,6 +224,91 @@ func (fakeExtAllTools) ResolveExtensions(context.Context, []ExtensionSelection) 
 		return ToolResult{CallID: req.Call.ID, Content: req.Call.Name}, nil
 	}}}, nil
 }
+
+type blockingProgressExtension struct {
+	started chan struct{}
+	release chan struct{}
+	err     error
+}
+
+func (e blockingProgressExtension) ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+	return []ResolvedExtension{{Selection: ExtensionSelection{ID: uuid.NewString(), Kind: ExtensionMCP, Version: "1", Digest: "sha256:x", AllowedTools: []string{"echo"}}, Execute: func(ctx context.Context, request ToolExecutionRequest) (ToolResult, error) {
+		close(e.started)
+		select {
+		case <-e.release:
+		case <-ctx.Done():
+			return ToolResult{}, ctx.Err()
+		}
+		if e.err != nil {
+			return ToolResult{}, e.err
+		}
+		return ToolResult{CallID: request.Call.ID, Content: "echoed"}, nil
+	}}}, nil
+}
+
+func TestStreamChatPublishesToolCallWhileExecutionIsInFlight(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		executeErr   error
+		terminalKind StreamEventKind
+	}{
+		{name: "success", terminalKind: EventDone},
+		{name: "failure", executeErr: errors.New("private tool failure"), terminalKind: EventError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			started := make(chan struct{})
+			release := make(chan struct{})
+			service, err := NewService(newFakeStore(), &fakeModel{tool: true}, blockingProgressExtension{started: started, release: release, err: tc.executeErr}, fakeProfile{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream, err := service.StreamChat(context.Background(), command())
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("tool execution did not start")
+			}
+			var callEvent StreamEvent
+			deadline := time.After(time.Second)
+			for callEvent.Kind != EventToolCall {
+				select {
+				case event := <-stream:
+					if event.Kind == EventToolResult || event.Kind == EventDone || event.Kind == EventError {
+						t.Fatalf("terminal/result event arrived before tool call: %+v", event)
+					}
+					callEvent = event
+				case <-deadline:
+					t.Fatal("tool call was not published during execution")
+				}
+			}
+			if callEvent.ToolCall == nil || callEvent.ToolCall.ID != "call-1" || callEvent.ToolCall.ExecutionID == "" {
+				t.Fatalf("tool call event=%+v", callEvent)
+			}
+			close(release)
+			var kinds []StreamEventKind
+			for event := range stream {
+				kinds = append(kinds, event.Kind)
+			}
+			if len(kinds) == 0 || kinds[len(kinds)-1] != tc.terminalKind {
+				t.Fatalf("post-call events=%v want terminal=%s", kinds, tc.terminalKind)
+			}
+			if tc.terminalKind == EventDone {
+				if kinds[0] != EventToolResult {
+					t.Fatalf("successful call/result order=%v", kinds)
+				}
+			} else {
+				for _, kind := range kinds {
+					if kind == EventToolResult {
+						t.Fatalf("failed non-durable execution fabricated a result: %v", kinds)
+					}
+				}
+			}
+		})
+	}
+}
 func TestActiveAndExpiredLeaseReclaim(t *testing.T) {
 	st := newFakeStore()
 	svc, _ := NewService(st, &fakeModel{}, fakeExt{}, fakeProfile{})

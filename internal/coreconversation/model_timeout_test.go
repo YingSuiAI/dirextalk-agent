@@ -86,11 +86,16 @@ func TestExecuteTurnClassifiesProviderTimeoutWithoutReplay(t *testing.T) {
 }
 
 func TestModelDispatchFailureClassification(t *testing.T) {
-	code, summary := classifyModelDispatchFailure(fmt.Errorf("wrapped: %w", context.DeadlineExceeded))
-	if code != modelResponseTimeoutCode || summary != modelResponseTimeoutSummary {
-		t.Fatalf("timeout code=%q summary=%q", code, summary)
+	for _, failure := range []error{
+		fmt.Errorf("wrapped: %w", context.DeadlineExceeded),
+		fmt.Errorf("wrapped: %w", coremodel.ErrStreamIdleTimeout),
+	} {
+		code, summary := classifyModelDispatchFailure(failure)
+		if code != modelResponseTimeoutCode || summary != modelResponseTimeoutSummary {
+			t.Fatalf("timeout=%v code=%q summary=%q", failure, code, summary)
+		}
 	}
-	code, summary = classifyModelDispatchFailure(errors.New("provider unavailable"))
+	code, summary := classifyModelDispatchFailure(errors.New("provider unavailable"))
 	if code != modelDispatchUncertainCode || summary != modelDispatchUncertainSummary {
 		t.Fatalf("provider code=%q summary=%q", code, summary)
 	}

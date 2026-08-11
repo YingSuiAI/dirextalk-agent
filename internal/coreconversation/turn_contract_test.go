@@ -617,12 +617,20 @@ func TestDurableReadOnlyToolPersistsEventsAndCompletesSecondModelRound(t *testin
 	snapshot := ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "builtin:web_search:tavily", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64), ToolNames: []string{"web_search"}, ReadOnly: true}
 	call := ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"Dirextalk"}`}
 	executions := 0
+	executionStarted := make(chan struct{})
+	releaseExecution := make(chan struct{})
 	resolved := ResolvedExtension{
 		Selection: selection,
 		Snapshot:  snapshot,
 		Tools:     []coremodel.Tool{{Name: "web_search", InputSchema: map[string]any{"type": "object"}}},
-		Execute: func(context.Context, ToolExecutionRequest) (ToolResult, error) {
+		Execute: func(ctx context.Context, _ ToolExecutionRequest) (ToolResult, error) {
 			executions++
+			close(executionStarted)
+			select {
+			case <-releaseExecution:
+			case <-ctx.Done():
+				return ToolResult{}, ctx.Err()
+			}
 			return ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"answer":"found"}`, Summary: "search complete"}, nil
 		},
 	}
@@ -641,7 +649,36 @@ func TestDurableReadOnlyToolPersistsEventsAndCompletesSecondModelRound(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	service.executeTurn(context.Background(), turn.ID)
+	firstRoundDone := make(chan struct{})
+	go func() {
+		service.executeTurn(context.Background(), turn.ID)
+		close(firstRoundDone)
+	}()
+	select {
+	case <-executionStarted:
+	case <-time.After(time.Second):
+		t.Fatal("read-only tool execution did not start")
+	}
+	store.mu.Lock()
+	var callsBeforeRelease, resultsBeforeRelease int
+	for _, event := range store.events {
+		if event.Kind == TurnEventToolCall && event.ToolCall != nil && event.ToolCall.ID == call.ID {
+			callsBeforeRelease++
+		}
+		if event.Kind == TurnEventToolResult && event.ToolResult != nil && event.ToolResult.CallID == call.ID {
+			resultsBeforeRelease++
+		}
+	}
+	store.mu.Unlock()
+	if callsBeforeRelease != 1 || resultsBeforeRelease != 0 {
+		t.Fatalf("in-flight public events calls=%d results=%d", callsBeforeRelease, resultsBeforeRelease)
+	}
+	close(releaseExecution)
+	select {
+	case <-firstRoundDone:
+	case <-time.After(time.Second):
+		t.Fatal("read-only tool execution did not finish")
+	}
 	first, err := store.GetTurn(context.Background(), turn.ID)
 	if err != nil || first.State != TurnAccepted || store.dispatchState != "" || executions != 1 {
 		t.Fatalf("first round turn=%+v dispatch=%q executions=%d failed=%q err=%v", first, store.dispatchState, executions, store.failedCode, err)

@@ -437,6 +437,101 @@ func TestStreamCloseCancelsOwnedTimeout(t *testing.T) {
 	}
 }
 
+func TestStreamIdleTimeoutResetsOnProviderBytesPastTotalInterval(t *testing.T) {
+	body := &delayedStreamBody{
+		delay: 30 * time.Millisecond,
+		chunks: []string{
+			"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n",
+			"data: [DONE]\n\n",
+		},
+	}
+	client, err := NewClient(validProfile(ProviderOpenAICompatible, "https://example.com", "k"),
+		WithHTTPClient(roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body.ctx = r.Context()
+			return &http.Response{StatusCode: 200, Body: body, Header: make(http.Header)}, nil
+		})),
+		WithStreamIdleTimeout(70*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	stream, err := client.Stream(context.Background(), CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"a", "b"} {
+		delta, recvErr := stream.Recv()
+		if recvErr != nil || delta.Content != want {
+			t.Fatalf("delta=%#v err=%v want=%q", delta, recvErr, want)
+		}
+	}
+	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal err=%v", err)
+	}
+	if elapsed := time.Since(started); elapsed <= 70*time.Millisecond {
+		t.Fatalf("stream did not outlive one idle interval: %s", elapsed)
+	}
+}
+
+func TestStreamIdleTimeoutRemovesOnlyDefaultHTTPStreamDeadline(t *testing.T) {
+	client, err := NewClient(validProfile(ProviderOpenAICompatible, "https://example.com", "k"), WithStreamIdleTimeout(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := client.(*providerClient)
+	httpClient := provider.http.(*http.Client)
+	if httpClient.Timeout != 0 {
+		t.Fatalf("stream-capable HTTP client total timeout=%s", httpClient.Timeout)
+	}
+	if provider.timeout != 90*time.Second || provider.streamIdleTimeout != time.Minute {
+		t.Fatalf("generate timeout=%s stream idle timeout=%s", provider.timeout, provider.streamIdleTimeout)
+	}
+}
+
+func TestStreamIdleTimeoutCoversResponseHeadersAndSilentBody(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		do   roundTripFunc
+	}{
+		{
+			name: "headers",
+			do: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				<-r.Context().Done()
+				return nil, r.Context().Err()
+			}),
+		},
+		{
+			name: "body",
+			do: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Body: &contextBody{ctx: r.Context()}, Header: make(http.Header)}, nil
+			}),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, err := NewClient(validProfile(ProviderOpenAICompatible, "https://example.com", "k"), WithHTTPClient(tc.do), WithStreamIdleTimeout(20*time.Millisecond))
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream, err := client.Stream(context.Background(), CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+			if tc.name == "headers" {
+				if !errors.Is(err, ErrStreamIdleTimeout) || !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("header idle error=%v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stream.Close()
+			if _, err := stream.Recv(); !errors.Is(err, ErrStreamIdleTimeout) || !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("body idle error=%v", err)
+			}
+		})
+	}
+}
+
 type contextBody struct {
 	ctx     context.Context
 	ctxDone chan struct{}
@@ -445,6 +540,33 @@ type contextBody struct {
 
 func (b *contextBody) Read([]byte) (int, error) { <-b.ctx.Done(); return 0, b.ctx.Err() }
 func (b *contextBody) Close() error             { b.closed = true; return nil }
+
+type delayedStreamBody struct {
+	ctx    context.Context
+	delay  time.Duration
+	chunks []string
+	index  int
+	closed bool
+}
+
+func (b *delayedStreamBody) Read(p []byte) (int, error) {
+	if b.index >= len(b.chunks) {
+		return 0, io.EOF
+	}
+	select {
+	case <-time.After(b.delay):
+	case <-b.ctx.Done():
+		return 0, b.ctx.Err()
+	}
+	n := copy(p, b.chunks[b.index])
+	b.index++
+	return n, nil
+}
+
+func (b *delayedStreamBody) Close() error {
+	b.closed = true
+	return nil
+}
 
 func TestStreamProviderErrorAndResponseLimit(t *testing.T) {
 	for _, bodyText := range []string{"data: {\"error\":{\"message\":\"bad\"}}\n\n", "data: {\"type\":\"error\",\"error\":{}}\n\n"} {

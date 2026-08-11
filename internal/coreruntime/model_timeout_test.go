@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-func TestConversationModelExecutionLimitAllowsLongProviderRound(t *testing.T) {
-	if ConversationModelExecutionLimit <= 90*time.Second {
-		t.Fatalf("conversation model execution limit=%s", ConversationModelExecutionLimit)
+func TestConversationModelStreamIdleTimeoutAllowsLongActiveProviderRound(t *testing.T) {
+	if ConversationModelStreamIdleTimeout <= 90*time.Second {
+		t.Fatalf("conversation model stream idle timeout=%s", ConversationModelStreamIdleTimeout)
 	}
 }
