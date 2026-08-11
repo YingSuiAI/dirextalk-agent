@@ -397,10 +397,12 @@ func TestTeamPlanV3ContractKeepsSelectionServerOwnedAndOutputDesecreted(
 	service := agentv1.File_dirextalk_agent_v1_team_proto.
 		Services().
 		ByName("TeamPlanService")
-	if service == nil || service.Methods().Len() != 6 ||
+	if service == nil || service.Methods().Len() != 7 ||
 		service.Methods().
 			ByName("BootstrapFirstTeamApprovalDeviceV3") == nil ||
-		service.Methods().ByName("GetTeamExecutionV3") == nil {
+		service.Methods().ByName("GetTeamExecutionV3") == nil ||
+		service.Methods().ByName("DownloadTeamArtifactV3") == nil ||
+		!service.Methods().ByName("DownloadTeamArtifactV3").IsStreamingServer() {
 		t.Fatalf("TeamPlanService methods=%v", service)
 	}
 	deviceBootstrap := (&agentv1.BootstrapFirstTeamApprovalDeviceV3Request{}).

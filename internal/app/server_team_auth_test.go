@@ -13,6 +13,7 @@ func TestTeamPlanServiceScopesSeparateReadWriteAndApproval(t *testing.T) {
 		agentv1.TeamPlanService_PrepareTeamPlanV3_FullMethodName:                  "team.plan.write",
 		agentv1.TeamPlanService_GetTeamPlanV3_FullMethodName:                      "team.plan.read",
 		agentv1.TeamPlanService_GetTeamExecutionV3_FullMethodName:                 "team.plan.read",
+		agentv1.TeamPlanService_DownloadTeamArtifactV3_FullMethodName:             "team.artifact.read",
 		agentv1.TeamPlanService_BootstrapFirstTeamApprovalDeviceV3_FullMethodName: "team.approval_device.bootstrap",
 		agentv1.TeamPlanService_CreateTeamApprovalChallengeV3_FullMethodName:      "team.plan.approve",
 		agentv1.TeamPlanService_ApproveTeamPlanV3_FullMethodName:                  "team.plan.approve",

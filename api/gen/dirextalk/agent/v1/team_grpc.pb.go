@@ -25,6 +25,7 @@ const (
 	TeamPlanService_CreateTeamApprovalChallengeV3_FullMethodName      = "/dirextalk.agent.v1.TeamPlanService/CreateTeamApprovalChallengeV3"
 	TeamPlanService_ApproveTeamPlanV3_FullMethodName                  = "/dirextalk.agent.v1.TeamPlanService/ApproveTeamPlanV3"
 	TeamPlanService_GetTeamExecutionV3_FullMethodName                 = "/dirextalk.agent.v1.TeamPlanService/GetTeamExecutionV3"
+	TeamPlanService_DownloadTeamArtifactV3_FullMethodName             = "/dirextalk.agent.v1.TeamPlanService/DownloadTeamArtifactV3"
 )
 
 // TeamPlanServiceClient is the client API for TeamPlanService service.
@@ -40,6 +41,7 @@ type TeamPlanServiceClient interface {
 	CreateTeamApprovalChallengeV3(ctx context.Context, in *CreateTeamApprovalChallengeV3Request, opts ...grpc.CallOption) (*CreateTeamApprovalChallengeV3Response, error)
 	ApproveTeamPlanV3(ctx context.Context, in *ApproveTeamPlanV3Request, opts ...grpc.CallOption) (*ApproveTeamPlanV3Response, error)
 	GetTeamExecutionV3(ctx context.Context, in *GetTeamExecutionV3Request, opts ...grpc.CallOption) (*GetTeamExecutionV3Response, error)
+	DownloadTeamArtifactV3(ctx context.Context, in *DownloadTeamArtifactV3Request, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DownloadTeamArtifactV3Response], error)
 }
 
 type teamPlanServiceClient struct {
@@ -110,6 +112,25 @@ func (c *teamPlanServiceClient) GetTeamExecutionV3(ctx context.Context, in *GetT
 	return out, nil
 }
 
+func (c *teamPlanServiceClient) DownloadTeamArtifactV3(ctx context.Context, in *DownloadTeamArtifactV3Request, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DownloadTeamArtifactV3Response], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &TeamPlanService_ServiceDesc.Streams[0], TeamPlanService_DownloadTeamArtifactV3_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[DownloadTeamArtifactV3Request, DownloadTeamArtifactV3Response]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type TeamPlanService_DownloadTeamArtifactV3Client = grpc.ServerStreamingClient[DownloadTeamArtifactV3Response]
+
 // TeamPlanServiceServer is the server API for TeamPlanService service.
 // All implementations must embed UnimplementedTeamPlanServiceServer
 // for forward compatibility.
@@ -123,6 +144,7 @@ type TeamPlanServiceServer interface {
 	CreateTeamApprovalChallengeV3(context.Context, *CreateTeamApprovalChallengeV3Request) (*CreateTeamApprovalChallengeV3Response, error)
 	ApproveTeamPlanV3(context.Context, *ApproveTeamPlanV3Request) (*ApproveTeamPlanV3Response, error)
 	GetTeamExecutionV3(context.Context, *GetTeamExecutionV3Request) (*GetTeamExecutionV3Response, error)
+	DownloadTeamArtifactV3(*DownloadTeamArtifactV3Request, grpc.ServerStreamingServer[DownloadTeamArtifactV3Response]) error
 	mustEmbedUnimplementedTeamPlanServiceServer()
 }
 
@@ -150,6 +172,9 @@ func (UnimplementedTeamPlanServiceServer) ApproveTeamPlanV3(context.Context, *Ap
 }
 func (UnimplementedTeamPlanServiceServer) GetTeamExecutionV3(context.Context, *GetTeamExecutionV3Request) (*GetTeamExecutionV3Response, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTeamExecutionV3 not implemented")
+}
+func (UnimplementedTeamPlanServiceServer) DownloadTeamArtifactV3(*DownloadTeamArtifactV3Request, grpc.ServerStreamingServer[DownloadTeamArtifactV3Response]) error {
+	return status.Error(codes.Unimplemented, "method DownloadTeamArtifactV3 not implemented")
 }
 func (UnimplementedTeamPlanServiceServer) mustEmbedUnimplementedTeamPlanServiceServer() {}
 func (UnimplementedTeamPlanServiceServer) testEmbeddedByValue()                         {}
@@ -280,6 +305,17 @@ func _TeamPlanService_GetTeamExecutionV3_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TeamPlanService_DownloadTeamArtifactV3_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(DownloadTeamArtifactV3Request)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(TeamPlanServiceServer).DownloadTeamArtifactV3(m, &grpc.GenericServerStream[DownloadTeamArtifactV3Request, DownloadTeamArtifactV3Response]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type TeamPlanService_DownloadTeamArtifactV3Server = grpc.ServerStreamingServer[DownloadTeamArtifactV3Response]
+
 // TeamPlanService_ServiceDesc is the grpc.ServiceDesc for TeamPlanService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -312,6 +348,12 @@ var TeamPlanService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _TeamPlanService_GetTeamExecutionV3_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "DownloadTeamArtifactV3",
+			Handler:       _TeamPlanService_DownloadTeamArtifactV3_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "dirextalk/agent/v1/team.proto",
 }

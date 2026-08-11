@@ -123,6 +123,15 @@ func teamExecutionArtifactToProto(
 		artifact.PlanRevision != execution.Execution.PlanRevision {
 		return nil, teamexecution.ErrFactMismatch
 	}
+	return teamArtifactToProto(artifact)
+}
+
+func teamArtifactToProto(
+	artifact teamartifact.ArtifactV1,
+) (*agentv1.TeamExecutionArtifactV3, error) {
+	if artifact.Validate() != nil {
+		return nil, teamexecution.ErrFactMismatch
+	}
 	createdAt, err := checkedTeamTimestamp(artifact.CreatedAt)
 	if err != nil {
 		return nil, err

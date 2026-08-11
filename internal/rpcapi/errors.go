@@ -18,6 +18,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
@@ -45,6 +46,7 @@ func publicError(err error) error {
 		errors.Is(err, resource.ErrInvalid), errors.Is(err, worker.ErrInvalid),
 		errors.Is(err, teamorchestration.ErrInvalid),
 		errors.Is(err, teamexecution.ErrInvalid),
+		errors.Is(err, teamartifact.ErrInvalid),
 		errors.Is(err, teamplan.ErrInvalid),
 		errors.Is(err, teamapproval.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -59,7 +61,8 @@ func publicError(err error) error {
 		errors.Is(err, pairing.ErrNotFound),
 		errors.Is(err, resource.ErrNotFound), errors.Is(err, worker.ErrNotFound),
 		errors.Is(err, teamorchestration.ErrNotFound),
-		errors.Is(err, teamexecution.ErrNotFound):
+		errors.Is(err, teamexecution.ErrNotFound),
+		errors.Is(err, teamartifact.ErrNotFound):
 		if errors.Is(err, cloudstatus.ErrNotFound) || errors.Is(err, resource.ErrNotFound) || errors.Is(err, worker.ErrNotFound) {
 			return status.Error(codes.NotFound, "requested cloud status entity was not found")
 		}

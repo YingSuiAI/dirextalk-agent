@@ -28,9 +28,11 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamreport"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/google/uuid"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestTeamPlanServiceMapsTrustedPreparationAndRedactsCredentialReference(
@@ -567,6 +569,41 @@ func TestTeamPlanServiceReturnsCompletedExecutionReportWithoutObjectRefs(
 	}
 }
 
+func TestTeamPlanServiceStreamsVerifiedArtifactWithoutObjectRef(t *testing.T) {
+	t.Parallel()
+	execution, _, artifacts := rpcCompletedTeamExecution(t)
+	content := bytes.Repeat([]byte("p"), int(artifacts[0].SizeBytes))
+	digest := sha256.Sum256(content)
+	artifacts[0].SHA256 = "sha256:" + hex.EncodeToString(digest[:])
+	reader := &teamExecutionReadRPCStub{artifacts: artifacts}
+	contents := &teamArtifactContentRPCStub{content: content}
+	service := NewTeamPlanService(nil, nil).
+		WithArtifactReads(reader).
+		WithArtifactContentReads(contents)
+	stream := &teamArtifactDownloadStreamRPCStub{ctx: context.Background()}
+	err := service.DownloadTeamArtifactV3(
+		&agentv1.DownloadTeamArtifactV3Request{
+			OwnerId:    execution.Execution.OwnerID,
+			ArtifactId: artifacts[0].ArtifactID,
+		},
+		stream,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.sent) != 2 || stream.sent[0].GetArtifact() == nil ||
+		len(stream.sent[0].GetData()) != 0 ||
+		stream.sent[0].GetArtifact().GetArtifactId() != artifacts[0].ArtifactID ||
+		stream.sent[0].GetArtifact().GetSha256() != artifacts[0].SHA256 ||
+		stream.sent[0].GetArtifact().String() == "" ||
+		stream.sent[1].GetOffset() != 0 ||
+		!bytes.Equal(stream.sent[1].GetData(), content) ||
+		!stream.sent[1].GetComplete() ||
+		contents.maximum != artifacts[0].SizeBytes {
+		t.Fatalf("artifact stream=%#v contents=%#v", stream.sent, contents)
+	}
+}
+
 func TestTeamPlanServiceRejectsUnknownProposalEnumsAndUnsignedApproval(
 	t *testing.T,
 ) {
@@ -745,6 +782,40 @@ type teamExecutionReadRPCStub struct {
 	artifactCalls  int
 }
 
+type teamArtifactContentRPCStub struct {
+	content []byte
+	maximum int64
+}
+
+func (stub *teamArtifactContentRPCStub) ReadTeamArtifactContent(
+	_ context.Context,
+	_ teamartifact.ArtifactV1,
+	maximum int64,
+) ([]byte, error) {
+	stub.maximum = maximum
+	return append([]byte(nil), stub.content...), nil
+}
+
+type teamArtifactDownloadStreamRPCStub struct {
+	grpc.ServerStream
+	ctx  context.Context
+	sent []*agentv1.DownloadTeamArtifactV3Response
+}
+
+func (stub *teamArtifactDownloadStreamRPCStub) Context() context.Context {
+	return stub.ctx
+}
+
+func (stub *teamArtifactDownloadStreamRPCStub) Send(
+	response *agentv1.DownloadTeamArtifactV3Response,
+) error {
+	stub.sent = append(
+		stub.sent,
+		proto.Clone(response).(*agentv1.DownloadTeamArtifactV3Response),
+	)
+	return nil
+}
+
 type teamApprovalDeviceBootstrapRPCStub struct {
 	device  cloudapproval.DeviceKeyV1
 	command TeamApprovalDeviceBootstrapCommand
@@ -806,6 +877,20 @@ func (stub *teamExecutionReadRPCStub) ListTeamArtifacts(
 ) ([]teamartifact.ArtifactV1, error) {
 	stub.artifactCalls++
 	return append([]teamartifact.ArtifactV1(nil), stub.artifacts...), nil
+}
+
+func (stub *teamExecutionReadRPCStub) GetTeamArtifact(
+	_ context.Context,
+	ownerID,
+	artifactID string,
+) (teamartifact.ArtifactV1, error) {
+	stub.artifactCalls++
+	for _, artifact := range stub.artifacts {
+		if artifact.OwnerID == ownerID && artifact.ArtifactID == artifactID {
+			return artifact, nil
+		}
+	}
+	return teamartifact.ArtifactV1{}, teamartifact.ErrNotFound
 }
 
 func (stub *teamExecutionRPCStub) Materialize(

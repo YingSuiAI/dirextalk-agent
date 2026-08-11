@@ -655,6 +655,22 @@ message GetTeamExecutionV3Response {
   TeamExecutionV3 execution = 1;
 }
 
+message DownloadTeamArtifactV3Request {
+  string owner_id = 1;
+  string artifact_id = 2;
+}
+
+// DownloadTeamArtifactV3Response streams one verified deliverable without
+// exposing its cloud storage coordinates. The first response carries artifact
+// metadata and no data. Following responses carry contiguous bounded chunks;
+// complete is true only on the final chunk.
+message DownloadTeamArtifactV3Response {
+  TeamExecutionArtifactV3 artifact = 1;
+  int64 offset = 2;
+  bytes data = 3;
+  bool complete = 4;
+}
+
 service TeamPlanService {
   rpc PrepareTeamPlanV3(PrepareTeamPlanV3Request) returns (PrepareTeamPlanV3Response);
   rpc GetTeamPlanV3(GetTeamPlanV3Request) returns (GetTeamPlanV3Response);
@@ -665,4 +681,5 @@ service TeamPlanService {
   rpc CreateTeamApprovalChallengeV3(CreateTeamApprovalChallengeV3Request) returns (CreateTeamApprovalChallengeV3Response);
   rpc ApproveTeamPlanV3(ApproveTeamPlanV3Request) returns (ApproveTeamPlanV3Response);
   rpc GetTeamExecutionV3(GetTeamExecutionV3Request) returns (GetTeamExecutionV3Response);
+  rpc DownloadTeamArtifactV3(DownloadTeamArtifactV3Request) returns (stream DownloadTeamArtifactV3Response);
 }

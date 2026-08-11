@@ -2,6 +2,8 @@ package rpcapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -80,17 +82,31 @@ type TeamExecutionArtifactReader interface {
 		string,
 		string,
 	) ([]teamartifact.ArtifactV1, error)
+	GetTeamArtifact(
+		context.Context,
+		string,
+		string,
+	) (teamartifact.ArtifactV1, error)
+}
+
+type TeamArtifactContentReader interface {
+	ReadTeamArtifactContent(
+		context.Context,
+		teamartifact.ArtifactV1,
+		int64,
+	) ([]byte, error)
 }
 
 type TeamPlanService struct {
 	agentv1.UnimplementedTeamPlanServiceServer
-	preparation     TeamPlanPreparationCoordinator
-	plans           TeamPlanCoordinator
-	executions      TeamExecutionCoordinator
-	executionReads  TeamExecutionReader
-	reports         TeamExecutionReportReader
-	artifacts       TeamExecutionArtifactReader
-	deviceBootstrap TeamApprovalDeviceBootstrapper
+	preparation      TeamPlanPreparationCoordinator
+	plans            TeamPlanCoordinator
+	executions       TeamExecutionCoordinator
+	executionReads   TeamExecutionReader
+	reports          TeamExecutionReportReader
+	artifacts        TeamExecutionArtifactReader
+	artifactContents TeamArtifactContentReader
+	deviceBootstrap  TeamApprovalDeviceBootstrapper
 }
 
 func (service *TeamPlanService) WithArtifactReads(
@@ -98,6 +114,15 @@ func (service *TeamPlanService) WithArtifactReads(
 ) *TeamPlanService {
 	if service != nil {
 		service.artifacts = artifacts
+	}
+	return service
+}
+
+func (service *TeamPlanService) WithArtifactContentReads(
+	contents TeamArtifactContentReader,
+) *TeamPlanService {
+	if service != nil {
+		service.artifactContents = contents
 	}
 	return service
 }
@@ -419,6 +444,68 @@ func (service *TeamPlanService) GetTeamExecutionV3(
 	return &agentv1.GetTeamExecutionV3Response{
 		Execution: projected,
 	}, nil
+}
+
+const teamArtifactDownloadChunkBytes = 64 << 10
+
+func (service *TeamPlanService) DownloadTeamArtifactV3(
+	request *agentv1.DownloadTeamArtifactV3Request,
+	stream agentv1.TeamPlanService_DownloadTeamArtifactV3Server,
+) error {
+	if service == nil || service.artifacts == nil ||
+		service.artifactContents == nil || stream == nil {
+		return teamPlanUnavailable()
+	}
+	if request == nil || request.GetOwnerId() == "" ||
+		request.GetArtifactId() == "" {
+		return invalidTeamRequest("owner_id and artifact_id are required")
+	}
+	ctx := stream.Context()
+	artifact, err := service.artifacts.GetTeamArtifact(
+		ctx,
+		request.GetOwnerId(),
+		request.GetArtifactId(),
+	)
+	if err != nil {
+		return publicError(err)
+	}
+	projected, err := teamArtifactToProto(artifact)
+	if err != nil {
+		return invalidTeamProjection()
+	}
+	content, err := service.artifactContents.ReadTeamArtifactContent(
+		ctx,
+		artifact,
+		artifact.SizeBytes,
+	)
+	if err != nil {
+		return publicError(err)
+	}
+	defer clear(content)
+	digest := sha256.Sum256(content)
+	if int64(len(content)) != artifact.SizeBytes ||
+		fmt.Sprintf("sha256:%x", digest) != artifact.SHA256 {
+		return invalidTeamProjection()
+	}
+	if err := stream.Send(&agentv1.DownloadTeamArtifactV3Response{
+		Artifact: projected,
+	}); err != nil {
+		return err
+	}
+	for offset := 0; offset < len(content); offset += teamArtifactDownloadChunkBytes {
+		end := offset + teamArtifactDownloadChunkBytes
+		if end > len(content) {
+			end = len(content)
+		}
+		if err := stream.Send(&agentv1.DownloadTeamArtifactV3Response{
+			Offset:   int64(offset),
+			Data:     content[offset:end],
+			Complete: end == len(content),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func teamPrepareRequestFromProto(

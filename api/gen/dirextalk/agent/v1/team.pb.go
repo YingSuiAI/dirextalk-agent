@@ -5411,6 +5411,130 @@ func (x *GetTeamExecutionV3Response) GetExecution() *TeamExecutionV3 {
 	return nil
 }
 
+type DownloadTeamArtifactV3Request struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OwnerId       string                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	ArtifactId    string                 `protobuf:"bytes,2,opt,name=artifact_id,json=artifactId,proto3" json:"artifact_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DownloadTeamArtifactV3Request) Reset() {
+	*x = DownloadTeamArtifactV3Request{}
+	mi := &file_dirextalk_agent_v1_team_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DownloadTeamArtifactV3Request) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DownloadTeamArtifactV3Request) ProtoMessage() {}
+
+func (x *DownloadTeamArtifactV3Request) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_team_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DownloadTeamArtifactV3Request.ProtoReflect.Descriptor instead.
+func (*DownloadTeamArtifactV3Request) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_team_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *DownloadTeamArtifactV3Request) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+func (x *DownloadTeamArtifactV3Request) GetArtifactId() string {
+	if x != nil {
+		return x.ArtifactId
+	}
+	return ""
+}
+
+// DownloadTeamArtifactV3Response streams one verified deliverable without
+// exposing its cloud storage coordinates. The first response carries artifact
+// metadata and no data. Following responses carry contiguous bounded chunks;
+// complete is true only on the final chunk.
+type DownloadTeamArtifactV3Response struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	Artifact      *TeamExecutionArtifactV3 `protobuf:"bytes,1,opt,name=artifact,proto3" json:"artifact,omitempty"`
+	Offset        int64                    `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	Data          []byte                   `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	Complete      bool                     `protobuf:"varint,4,opt,name=complete,proto3" json:"complete,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DownloadTeamArtifactV3Response) Reset() {
+	*x = DownloadTeamArtifactV3Response{}
+	mi := &file_dirextalk_agent_v1_team_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DownloadTeamArtifactV3Response) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DownloadTeamArtifactV3Response) ProtoMessage() {}
+
+func (x *DownloadTeamArtifactV3Response) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_team_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DownloadTeamArtifactV3Response.ProtoReflect.Descriptor instead.
+func (*DownloadTeamArtifactV3Response) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_team_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *DownloadTeamArtifactV3Response) GetArtifact() *TeamExecutionArtifactV3 {
+	if x != nil {
+		return x.Artifact
+	}
+	return nil
+}
+
+func (x *DownloadTeamArtifactV3Response) GetOffset() int64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *DownloadTeamArtifactV3Response) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *DownloadTeamArtifactV3Response) GetComplete() bool {
+	if x != nil {
+		return x.Complete
+	}
+	return false
+}
+
 var File_dirextalk_agent_v1_team_proto protoreflect.FileDescriptor
 
 const file_dirextalk_agent_v1_team_proto_rawDesc = "" +
@@ -5909,7 +6033,16 @@ const file_dirextalk_agent_v1_team_proto_rawDesc = "" +
 	"\bowner_id\x18\x01 \x01(\tR\aownerId\x12!\n" +
 	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\"_\n" +
 	"\x1aGetTeamExecutionV3Response\x12A\n" +
-	"\texecution\x18\x01 \x01(\v2#.dirextalk.agent.v1.TeamExecutionV3R\texecution*\xd6\x02\n" +
+	"\texecution\x18\x01 \x01(\v2#.dirextalk.agent.v1.TeamExecutionV3R\texecution\"[\n" +
+	"\x1dDownloadTeamArtifactV3Request\x12\x19\n" +
+	"\bowner_id\x18\x01 \x01(\tR\aownerId\x12\x1f\n" +
+	"\vartifact_id\x18\x02 \x01(\tR\n" +
+	"artifactId\"\xb1\x01\n" +
+	"\x1eDownloadTeamArtifactV3Response\x12G\n" +
+	"\bartifact\x18\x01 \x01(\v2+.dirextalk.agent.v1.TeamExecutionArtifactV3R\bartifact\x12\x16\n" +
+	"\x06offset\x18\x02 \x01(\x03R\x06offset\x12\x12\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\x12\x1a\n" +
+	"\bcomplete\x18\x04 \x01(\bR\bcomplete*\xd6\x02\n" +
 	"\x10TeamPlanStatusV3\x12#\n" +
 	"\x1fTEAM_PLAN_STATUS_V3_UNSPECIFIED\x10\x00\x12.\n" +
 	"*TEAM_PLAN_STATUS_V3_READY_FOR_CONFIRMATION\x10\x01\x12 \n" +
@@ -6001,14 +6134,15 @@ const file_dirextalk_agent_v1_team_proto_rawDesc = "" +
 	"%TEAM_INPUT_SOURCE_KIND_V3_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fTEAM_INPUT_SOURCE_KIND_V3_EMPTY\x10\x01\x12/\n" +
 	"+TEAM_INPUT_SOURCE_KIND_V3_GITHUB_REPOSITORY\x10\x02\x12/\n" +
-	"+TEAM_INPUT_SOURCE_KIND_V3_WORKSPACE_ARCHIVE\x10\x032\x8d\x06\n" +
+	"+TEAM_INPUT_SOURCE_KIND_V3_WORKSPACE_ARCHIVE\x10\x032\x91\a\n" +
 	"\x0fTeamPlanService\x12p\n" +
 	"\x11PrepareTeamPlanV3\x12,.dirextalk.agent.v1.PrepareTeamPlanV3Request\x1a-.dirextalk.agent.v1.PrepareTeamPlanV3Response\x12d\n" +
 	"\rGetTeamPlanV3\x12(.dirextalk.agent.v1.GetTeamPlanV3Request\x1a).dirextalk.agent.v1.GetTeamPlanV3Response\x12\xa3\x01\n" +
 	"\"BootstrapFirstTeamApprovalDeviceV3\x12=.dirextalk.agent.v1.BootstrapFirstTeamApprovalDeviceV3Request\x1a>.dirextalk.agent.v1.BootstrapFirstTeamApprovalDeviceV3Response\x12\x94\x01\n" +
 	"\x1dCreateTeamApprovalChallengeV3\x128.dirextalk.agent.v1.CreateTeamApprovalChallengeV3Request\x1a9.dirextalk.agent.v1.CreateTeamApprovalChallengeV3Response\x12p\n" +
 	"\x11ApproveTeamPlanV3\x12,.dirextalk.agent.v1.ApproveTeamPlanV3Request\x1a-.dirextalk.agent.v1.ApproveTeamPlanV3Response\x12s\n" +
-	"\x12GetTeamExecutionV3\x12-.dirextalk.agent.v1.GetTeamExecutionV3Request\x1a..dirextalk.agent.v1.GetTeamExecutionV3ResponseBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
+	"\x12GetTeamExecutionV3\x12-.dirextalk.agent.v1.GetTeamExecutionV3Request\x1a..dirextalk.agent.v1.GetTeamExecutionV3Response\x12\x81\x01\n" +
+	"\x16DownloadTeamArtifactV3\x121.dirextalk.agent.v1.DownloadTeamArtifactV3Request\x1a2.dirextalk.agent.v1.DownloadTeamArtifactV3Response0\x01BIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
 
 var (
 	file_dirextalk_agent_v1_team_proto_rawDescOnce sync.Once
@@ -6023,7 +6157,7 @@ func file_dirextalk_agent_v1_team_proto_rawDescGZIP() []byte {
 }
 
 var file_dirextalk_agent_v1_team_proto_enumTypes = make([]protoimpl.EnumInfo, 12)
-var file_dirextalk_agent_v1_team_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
+var file_dirextalk_agent_v1_team_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
 var file_dirextalk_agent_v1_team_proto_goTypes = []any{
 	(TeamPlanStatusV3)(0),                              // 0: dirextalk.agent.v1.TeamPlanStatusV3
 	(TeamCloudProviderV3)(0),                           // 1: dirextalk.agent.v1.TeamCloudProviderV3
@@ -6082,7 +6216,9 @@ var file_dirextalk_agent_v1_team_proto_goTypes = []any{
 	(*TeamExecutionV3)(nil),                            // 54: dirextalk.agent.v1.TeamExecutionV3
 	(*GetTeamExecutionV3Request)(nil),                  // 55: dirextalk.agent.v1.GetTeamExecutionV3Request
 	(*GetTeamExecutionV3Response)(nil),                 // 56: dirextalk.agent.v1.GetTeamExecutionV3Response
-	(*timestamppb.Timestamp)(nil),                      // 57: google.protobuf.Timestamp
+	(*DownloadTeamArtifactV3Request)(nil),              // 57: dirextalk.agent.v1.DownloadTeamArtifactV3Request
+	(*DownloadTeamArtifactV3Response)(nil),             // 58: dirextalk.agent.v1.DownloadTeamArtifactV3Response
+	(*timestamppb.Timestamp)(nil),                      // 59: google.protobuf.Timestamp
 }
 var file_dirextalk_agent_v1_team_proto_depIdxs = []int32{
 	1,  // 0: dirextalk.agent.v1.TeamProviderScopeV3.provider:type_name -> dirextalk.agent.v1.TeamCloudProviderV3
@@ -6097,7 +6233,7 @@ var file_dirextalk_agent_v1_team_proto_depIdxs = []int32{
 	17, // 9: dirextalk.agent.v1.TeamRoleProposalV3.model_need:type_name -> dirextalk.agent.v1.TeamModelNeedV3
 	14, // 10: dirextalk.agent.v1.TeamRoleProposalV3.minimum_resources:type_name -> dirextalk.agent.v1.TeamMinimumResourcesV3
 	18, // 11: dirextalk.agent.v1.TeamProposalV3.roles:type_name -> dirextalk.agent.v1.TeamRoleProposalV3
-	57, // 12: dirextalk.agent.v1.TeamWorkerMarketplaceBindingV3.review_valid_until:type_name -> google.protobuf.Timestamp
+	59, // 12: dirextalk.agent.v1.TeamWorkerMarketplaceBindingV3.review_valid_until:type_name -> google.protobuf.Timestamp
 	20, // 13: dirextalk.agent.v1.TeamWorkerMarketplaceBindingV3.granted_permissions:type_name -> dirextalk.agent.v1.TeamWorkerPermissionSetV3
 	4,  // 14: dirextalk.agent.v1.TeamWorkerAssignmentV3.work_class:type_name -> dirextalk.agent.v1.TeamWorkClassV3
 	6,  // 15: dirextalk.agent.v1.TeamWorkerAssignmentV3.required_capabilities:type_name -> dirextalk.agent.v1.TeamCapabilityV3
@@ -6114,27 +6250,27 @@ var file_dirextalk_agent_v1_team_proto_depIdxs = []int32{
 	27, // 26: dirextalk.agent.v1.TeamTaskInputBindingV3.repository:type_name -> dirextalk.agent.v1.TeamGitRepositorySourceV3
 	26, // 27: dirextalk.agent.v1.TeamTaskInputBindingV3.workspace:type_name -> dirextalk.agent.v1.TeamInputSnapshotBindingV3
 	12, // 28: dirextalk.agent.v1.TeamPlanV3.provider_scope:type_name -> dirextalk.agent.v1.TeamProviderScopeV3
-	57, // 29: dirextalk.agent.v1.TeamPlanV3.quoted_at:type_name -> google.protobuf.Timestamp
-	57, // 30: dirextalk.agent.v1.TeamPlanV3.valid_until:type_name -> google.protobuf.Timestamp
+	59, // 29: dirextalk.agent.v1.TeamPlanV3.quoted_at:type_name -> google.protobuf.Timestamp
+	59, // 30: dirextalk.agent.v1.TeamPlanV3.valid_until:type_name -> google.protobuf.Timestamp
 	22, // 31: dirextalk.agent.v1.TeamPlanV3.assignments:type_name -> dirextalk.agent.v1.TeamWorkerAssignmentV3
 	25, // 32: dirextalk.agent.v1.TeamPlanV3.schedule:type_name -> dirextalk.agent.v1.TeamScheduleEstimateV3
 	24, // 33: dirextalk.agent.v1.TeamPlanV3.cost:type_name -> dirextalk.agent.v1.TeamCostEstimateV3
 	0,  // 34: dirextalk.agent.v1.TeamPlanV3.status:type_name -> dirextalk.agent.v1.TeamPlanStatusV3
-	57, // 35: dirextalk.agent.v1.TeamPlanV3.created_at:type_name -> google.protobuf.Timestamp
-	57, // 36: dirextalk.agent.v1.TeamPlanV3.updated_at:type_name -> google.protobuf.Timestamp
+	59, // 35: dirextalk.agent.v1.TeamPlanV3.created_at:type_name -> google.protobuf.Timestamp
+	59, // 36: dirextalk.agent.v1.TeamPlanV3.updated_at:type_name -> google.protobuf.Timestamp
 	26, // 37: dirextalk.agent.v1.TeamPlanV3.input_snapshot:type_name -> dirextalk.agent.v1.TeamInputSnapshotBindingV3
 	28, // 38: dirextalk.agent.v1.TeamPlanV3.task_input:type_name -> dirextalk.agent.v1.TeamTaskInputBindingV3
 	12, // 39: dirextalk.agent.v1.TeamApprovalChallengeV3.provider_scope:type_name -> dirextalk.agent.v1.TeamProviderScopeV3
-	57, // 40: dirextalk.agent.v1.TeamApprovalChallengeV3.quoted_at:type_name -> google.protobuf.Timestamp
-	57, // 41: dirextalk.agent.v1.TeamApprovalChallengeV3.quote_valid_until:type_name -> google.protobuf.Timestamp
-	57, // 42: dirextalk.agent.v1.TeamApprovalChallengeV3.issued_at:type_name -> google.protobuf.Timestamp
-	57, // 43: dirextalk.agent.v1.TeamApprovalChallengeV3.expires_at:type_name -> google.protobuf.Timestamp
-	57, // 44: dirextalk.agent.v1.TeamApprovalChallengeV3.consumed_at:type_name -> google.protobuf.Timestamp
-	57, // 45: dirextalk.agent.v1.TeamApprovalChallengeV3.created_at:type_name -> google.protobuf.Timestamp
-	57, // 46: dirextalk.agent.v1.TeamApprovalChallengeV3.updated_at:type_name -> google.protobuf.Timestamp
+	59, // 40: dirextalk.agent.v1.TeamApprovalChallengeV3.quoted_at:type_name -> google.protobuf.Timestamp
+	59, // 41: dirextalk.agent.v1.TeamApprovalChallengeV3.quote_valid_until:type_name -> google.protobuf.Timestamp
+	59, // 42: dirextalk.agent.v1.TeamApprovalChallengeV3.issued_at:type_name -> google.protobuf.Timestamp
+	59, // 43: dirextalk.agent.v1.TeamApprovalChallengeV3.expires_at:type_name -> google.protobuf.Timestamp
+	59, // 44: dirextalk.agent.v1.TeamApprovalChallengeV3.consumed_at:type_name -> google.protobuf.Timestamp
+	59, // 45: dirextalk.agent.v1.TeamApprovalChallengeV3.created_at:type_name -> google.protobuf.Timestamp
+	59, // 46: dirextalk.agent.v1.TeamApprovalChallengeV3.updated_at:type_name -> google.protobuf.Timestamp
 	32, // 47: dirextalk.agent.v1.TeamLaunchNetworkV3.egress:type_name -> dirextalk.agent.v1.TeamLaunchEgressRuleV3
 	9,  // 48: dirextalk.agent.v1.TeamLaunchWorkerImageV3.architecture:type_name -> dirextalk.agent.v1.TeamArchitectureV3
-	57, // 49: dirextalk.agent.v1.TeamLaunchWorkerImageV3.observed_at:type_name -> google.protobuf.Timestamp
+	59, // 49: dirextalk.agent.v1.TeamLaunchWorkerImageV3.observed_at:type_name -> google.protobuf.Timestamp
 	9,  // 50: dirextalk.agent.v1.TeamRoleLaunchAuthorizationV3.architecture:type_name -> dirextalk.agent.v1.TeamArchitectureV3
 	36, // 51: dirextalk.agent.v1.TeamRoleLaunchAuthorizationV3.root_storage:type_name -> dirextalk.agent.v1.TeamLaunchRootStorageV3
 	35, // 52: dirextalk.agent.v1.TeamRoleLaunchAuthorizationV3.worker_image:type_name -> dirextalk.agent.v1.TeamLaunchWorkerImageV3
@@ -6142,13 +6278,13 @@ var file_dirextalk_agent_v1_team_proto_depIdxs = []int32{
 	12, // 54: dirextalk.agent.v1.TeamLaunchAuthorizationV3.provider_scope:type_name -> dirextalk.agent.v1.TeamProviderScopeV3
 	33, // 55: dirextalk.agent.v1.TeamLaunchAuthorizationV3.network:type_name -> dirextalk.agent.v1.TeamLaunchNetworkV3
 	34, // 56: dirextalk.agent.v1.TeamLaunchAuthorizationV3.retention:type_name -> dirextalk.agent.v1.TeamLaunchRetentionV3
-	57, // 57: dirextalk.agent.v1.TeamLaunchAuthorizationV3.launch_not_before:type_name -> google.protobuf.Timestamp
-	57, // 58: dirextalk.agent.v1.TeamLaunchAuthorizationV3.launch_not_after:type_name -> google.protobuf.Timestamp
+	59, // 57: dirextalk.agent.v1.TeamLaunchAuthorizationV3.launch_not_before:type_name -> google.protobuf.Timestamp
+	59, // 58: dirextalk.agent.v1.TeamLaunchAuthorizationV3.launch_not_after:type_name -> google.protobuf.Timestamp
 	37, // 59: dirextalk.agent.v1.TeamLaunchAuthorizationV3.roles:type_name -> dirextalk.agent.v1.TeamRoleLaunchAuthorizationV3
 	19, // 60: dirextalk.agent.v1.PrepareTeamPlanV3Request.proposal:type_name -> dirextalk.agent.v1.TeamProposalV3
 	29, // 61: dirextalk.agent.v1.PrepareTeamPlanV3Response.plan:type_name -> dirextalk.agent.v1.TeamPlanV3
 	29, // 62: dirextalk.agent.v1.GetTeamPlanV3Response.plan:type_name -> dirextalk.agent.v1.TeamPlanV3
-	57, // 63: dirextalk.agent.v1.BootstrapFirstTeamApprovalDeviceV3Response.expires_at:type_name -> google.protobuf.Timestamp
+	59, // 63: dirextalk.agent.v1.BootstrapFirstTeamApprovalDeviceV3Response.expires_at:type_name -> google.protobuf.Timestamp
 	30, // 64: dirextalk.agent.v1.CreateTeamApprovalChallengeV3Response.challenge:type_name -> dirextalk.agent.v1.TeamApprovalChallengeV3
 	38, // 65: dirextalk.agent.v1.CreateTeamApprovalChallengeV3Response.authorization:type_name -> dirextalk.agent.v1.TeamLaunchAuthorizationV3
 	31, // 66: dirextalk.agent.v1.ApproveTeamPlanV3Request.approval:type_name -> dirextalk.agent.v1.TeamApprovalSignatureV3
@@ -6160,34 +6296,37 @@ var file_dirextalk_agent_v1_team_proto_depIdxs = []int32{
 	50, // 72: dirextalk.agent.v1.TeamExecutionRoleReportV3.finals:type_name -> dirextalk.agent.v1.TeamExecutionFinalV3
 	51, // 73: dirextalk.agent.v1.TeamExecutionReportV3.roles:type_name -> dirextalk.agent.v1.TeamExecutionRoleReportV3
 	49, // 74: dirextalk.agent.v1.TeamExecutionReportV3.total_usage:type_name -> dirextalk.agent.v1.TeamRuntimeUsageV3
-	57, // 75: dirextalk.agent.v1.TeamExecutionReportV3.generated_at:type_name -> google.protobuf.Timestamp
-	57, // 76: dirextalk.agent.v1.TeamExecutionArtifactV3.created_at:type_name -> google.protobuf.Timestamp
-	57, // 77: dirextalk.agent.v1.TeamExecutionArtifactV3.retention_expires_at:type_name -> google.protobuf.Timestamp
+	59, // 75: dirextalk.agent.v1.TeamExecutionReportV3.generated_at:type_name -> google.protobuf.Timestamp
+	59, // 76: dirextalk.agent.v1.TeamExecutionArtifactV3.created_at:type_name -> google.protobuf.Timestamp
+	59, // 77: dirextalk.agent.v1.TeamExecutionArtifactV3.retention_expires_at:type_name -> google.protobuf.Timestamp
 	10, // 78: dirextalk.agent.v1.TeamExecutionV3.status:type_name -> dirextalk.agent.v1.TeamExecutionStatusV3
-	57, // 79: dirextalk.agent.v1.TeamExecutionV3.created_at:type_name -> google.protobuf.Timestamp
-	57, // 80: dirextalk.agent.v1.TeamExecutionV3.updated_at:type_name -> google.protobuf.Timestamp
+	59, // 79: dirextalk.agent.v1.TeamExecutionV3.created_at:type_name -> google.protobuf.Timestamp
+	59, // 80: dirextalk.agent.v1.TeamExecutionV3.updated_at:type_name -> google.protobuf.Timestamp
 	52, // 81: dirextalk.agent.v1.TeamExecutionV3.report:type_name -> dirextalk.agent.v1.TeamExecutionReportV3
 	26, // 82: dirextalk.agent.v1.TeamExecutionV3.input_snapshot:type_name -> dirextalk.agent.v1.TeamInputSnapshotBindingV3
 	28, // 83: dirextalk.agent.v1.TeamExecutionV3.task_input:type_name -> dirextalk.agent.v1.TeamTaskInputBindingV3
 	53, // 84: dirextalk.agent.v1.TeamExecutionV3.artifacts:type_name -> dirextalk.agent.v1.TeamExecutionArtifactV3
 	54, // 85: dirextalk.agent.v1.GetTeamExecutionV3Response.execution:type_name -> dirextalk.agent.v1.TeamExecutionV3
-	39, // 86: dirextalk.agent.v1.TeamPlanService.PrepareTeamPlanV3:input_type -> dirextalk.agent.v1.PrepareTeamPlanV3Request
-	41, // 87: dirextalk.agent.v1.TeamPlanService.GetTeamPlanV3:input_type -> dirextalk.agent.v1.GetTeamPlanV3Request
-	43, // 88: dirextalk.agent.v1.TeamPlanService.BootstrapFirstTeamApprovalDeviceV3:input_type -> dirextalk.agent.v1.BootstrapFirstTeamApprovalDeviceV3Request
-	45, // 89: dirextalk.agent.v1.TeamPlanService.CreateTeamApprovalChallengeV3:input_type -> dirextalk.agent.v1.CreateTeamApprovalChallengeV3Request
-	47, // 90: dirextalk.agent.v1.TeamPlanService.ApproveTeamPlanV3:input_type -> dirextalk.agent.v1.ApproveTeamPlanV3Request
-	55, // 91: dirextalk.agent.v1.TeamPlanService.GetTeamExecutionV3:input_type -> dirextalk.agent.v1.GetTeamExecutionV3Request
-	40, // 92: dirextalk.agent.v1.TeamPlanService.PrepareTeamPlanV3:output_type -> dirextalk.agent.v1.PrepareTeamPlanV3Response
-	42, // 93: dirextalk.agent.v1.TeamPlanService.GetTeamPlanV3:output_type -> dirextalk.agent.v1.GetTeamPlanV3Response
-	44, // 94: dirextalk.agent.v1.TeamPlanService.BootstrapFirstTeamApprovalDeviceV3:output_type -> dirextalk.agent.v1.BootstrapFirstTeamApprovalDeviceV3Response
-	46, // 95: dirextalk.agent.v1.TeamPlanService.CreateTeamApprovalChallengeV3:output_type -> dirextalk.agent.v1.CreateTeamApprovalChallengeV3Response
-	48, // 96: dirextalk.agent.v1.TeamPlanService.ApproveTeamPlanV3:output_type -> dirextalk.agent.v1.ApproveTeamPlanV3Response
-	56, // 97: dirextalk.agent.v1.TeamPlanService.GetTeamExecutionV3:output_type -> dirextalk.agent.v1.GetTeamExecutionV3Response
-	92, // [92:98] is the sub-list for method output_type
-	86, // [86:92] is the sub-list for method input_type
-	86, // [86:86] is the sub-list for extension type_name
-	86, // [86:86] is the sub-list for extension extendee
-	0,  // [0:86] is the sub-list for field type_name
+	53, // 86: dirextalk.agent.v1.DownloadTeamArtifactV3Response.artifact:type_name -> dirextalk.agent.v1.TeamExecutionArtifactV3
+	39, // 87: dirextalk.agent.v1.TeamPlanService.PrepareTeamPlanV3:input_type -> dirextalk.agent.v1.PrepareTeamPlanV3Request
+	41, // 88: dirextalk.agent.v1.TeamPlanService.GetTeamPlanV3:input_type -> dirextalk.agent.v1.GetTeamPlanV3Request
+	43, // 89: dirextalk.agent.v1.TeamPlanService.BootstrapFirstTeamApprovalDeviceV3:input_type -> dirextalk.agent.v1.BootstrapFirstTeamApprovalDeviceV3Request
+	45, // 90: dirextalk.agent.v1.TeamPlanService.CreateTeamApprovalChallengeV3:input_type -> dirextalk.agent.v1.CreateTeamApprovalChallengeV3Request
+	47, // 91: dirextalk.agent.v1.TeamPlanService.ApproveTeamPlanV3:input_type -> dirextalk.agent.v1.ApproveTeamPlanV3Request
+	55, // 92: dirextalk.agent.v1.TeamPlanService.GetTeamExecutionV3:input_type -> dirextalk.agent.v1.GetTeamExecutionV3Request
+	57, // 93: dirextalk.agent.v1.TeamPlanService.DownloadTeamArtifactV3:input_type -> dirextalk.agent.v1.DownloadTeamArtifactV3Request
+	40, // 94: dirextalk.agent.v1.TeamPlanService.PrepareTeamPlanV3:output_type -> dirextalk.agent.v1.PrepareTeamPlanV3Response
+	42, // 95: dirextalk.agent.v1.TeamPlanService.GetTeamPlanV3:output_type -> dirextalk.agent.v1.GetTeamPlanV3Response
+	44, // 96: dirextalk.agent.v1.TeamPlanService.BootstrapFirstTeamApprovalDeviceV3:output_type -> dirextalk.agent.v1.BootstrapFirstTeamApprovalDeviceV3Response
+	46, // 97: dirextalk.agent.v1.TeamPlanService.CreateTeamApprovalChallengeV3:output_type -> dirextalk.agent.v1.CreateTeamApprovalChallengeV3Response
+	48, // 98: dirextalk.agent.v1.TeamPlanService.ApproveTeamPlanV3:output_type -> dirextalk.agent.v1.ApproveTeamPlanV3Response
+	56, // 99: dirextalk.agent.v1.TeamPlanService.GetTeamExecutionV3:output_type -> dirextalk.agent.v1.GetTeamExecutionV3Response
+	58, // 100: dirextalk.agent.v1.TeamPlanService.DownloadTeamArtifactV3:output_type -> dirextalk.agent.v1.DownloadTeamArtifactV3Response
+	94, // [94:101] is the sub-list for method output_type
+	87, // [87:94] is the sub-list for method input_type
+	87, // [87:87] is the sub-list for extension type_name
+	87, // [87:87] is the sub-list for extension extendee
+	0,  // [0:87] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_team_proto_init() }
@@ -6201,7 +6340,7 @@ func file_dirextalk_agent_v1_team_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_team_proto_rawDesc), len(file_dirextalk_agent_v1_team_proto_rawDesc)),
 			NumEnums:      12,
-			NumMessages:   45,
+			NumMessages:   47,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -704,6 +704,7 @@ func serve() error {
 	}
 	if cloudComposition != nil {
 		serverOptions = append(serverOptions,
+			app.WithTeamArtifactContents(cloudComposition.TeamArtifactContents),
 			app.WithCloudDestroy(cloudComposition.DestroyCoordinator),
 			app.WithCloudEntrypoint(cloudComposition.Entrypoint),
 			app.WithCloudFoundation(cloudComposition.FoundationLifecycle),

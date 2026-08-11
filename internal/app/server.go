@@ -35,6 +35,7 @@ type serverOptions struct {
 	teamPreparation         rpcapi.TeamPlanPreparationCoordinator
 	teamPlans               rpcapi.TeamPlanCoordinator
 	teamExecutions          rpcapi.TeamExecutionCoordinator
+	teamArtifactContents    rpcapi.TeamArtifactContentReader
 	secretBootstrap         rpcapi.SecretBootstrapManager
 	cloudCoordinator        cloudapp.Coordinator
 	cloudDestroy            rpcapi.CloudDestroyCoordinator
@@ -96,6 +97,14 @@ func WithTeamExecutions(
 ) ServerOption {
 	return func(options *serverOptions) {
 		options.teamExecutions = executions
+	}
+}
+
+func WithTeamArtifactContents(
+	contents rpcapi.TeamArtifactContentReader,
+) ServerOption {
+	return func(options *serverOptions) {
+		options.teamArtifactContents = contents
 	}
 }
 
@@ -330,6 +339,7 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		).
 			WithExecutionReads(store, store).
 			WithArtifactReads(store).
+			WithArtifactContentReads(options.teamArtifactContents).
 			WithApprovalDeviceBootstrap(
 				newTeamApprovalSignerRegistrar(
 					store,
@@ -390,6 +400,7 @@ func teamPlanServiceScopes() map[string]string {
 		agentv1.TeamPlanService_PrepareTeamPlanV3_FullMethodName:                  "team.plan.write",
 		agentv1.TeamPlanService_GetTeamPlanV3_FullMethodName:                      "team.plan.read",
 		agentv1.TeamPlanService_GetTeamExecutionV3_FullMethodName:                 "team.plan.read",
+		agentv1.TeamPlanService_DownloadTeamArtifactV3_FullMethodName:             "team.artifact.read",
 		agentv1.TeamPlanService_BootstrapFirstTeamApprovalDeviceV3_FullMethodName: "team.approval_device.bootstrap",
 		agentv1.TeamPlanService_CreateTeamApprovalChallengeV3_FullMethodName:      "team.plan.approve",
 		agentv1.TeamPlanService_ApproveTeamPlanV3_FullMethodName:                  "team.plan.approve",
