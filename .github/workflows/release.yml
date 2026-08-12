@@ -1,0 +1,171 @@
+name: Stable Agent release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Canonical stable Agent version on main (vX.Y.Z)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dirextalk-agent-release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: "123789"
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    outputs:
+      agent_commit: ${{ steps.identity.outputs.agent_commit }}
+      message_server_commit: ${{ steps.identity.outputs.message_server_commit }}
+    steps:
+      - name: Check out Agent main
+        uses: actions/checkout@v4
+        with:
+          path: agent
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out Message Server main
+        uses: actions/checkout@v4
+        with:
+          repository: YingSuiAI/dirextalk-message-server
+          path: message-server
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache: true
+          cache-dependency-path: agent/go.sum
+
+      - id: identity
+        name: Bind verified source commits
+        run: |
+          agent_commit=$(git -C agent rev-parse HEAD)
+          message_server_commit=$(git -C message-server rev-parse HEAD)
+          test "$agent_commit" = "$(git -C agent ls-remote --exit-code origin refs/heads/main | awk '{print $1}')"
+          test "$message_server_commit" = "$(git -C message-server ls-remote --exit-code origin refs/heads/main | awk '{print $1}')"
+          {
+            echo "agent_commit=$agent_commit"
+            echo "message_server_commit=$message_server_commit"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Prepare release
+        working-directory: agent
+        env:
+          RELEASE_VERSION_INPUT: ${{ inputs.version }}
+        run: bash scripts/release/prepare.sh "$RELEASE_VERSION_INPUT"
+
+      - name: Verify release
+        working-directory: agent
+        env:
+          AGENT_TEST_POSTGRES_DSN: postgres://postgres:123789@127.0.0.1:5432/postgres?sslmode=disable
+          DIREXTALK_MESSAGE_SERVER_ROOT: ${{ github.workspace }}/message-server
+          RELEASE_VERSION_INPUT: ${{ inputs.version }}
+        run: bash scripts/release/verify.sh "$RELEASE_VERSION_INPUT"
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: "123789"
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out exact verified Agent commit
+        uses: actions/checkout@v4
+        with:
+          path: agent
+          ref: ${{ needs.verify.outputs.agent_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out exact verified Message Server commit
+        uses: actions/checkout@v4
+        with:
+          repository: YingSuiAI/dirextalk-message-server
+          path: message-server
+          ref: ${{ needs.verify.outputs.message_server_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache: true
+          cache-dependency-path: agent/go.sum
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Require verified commits to remain current main
+        env:
+          VERIFIED_AGENT_COMMIT: ${{ needs.verify.outputs.agent_commit }}
+          VERIFIED_MESSAGE_SERVER_COMMIT: ${{ needs.verify.outputs.message_server_commit }}
+        run: |
+          test "$(git -C agent rev-parse HEAD)" = "$VERIFIED_AGENT_COMMIT"
+          test "$(git -C message-server rev-parse HEAD)" = "$VERIFIED_MESSAGE_SERVER_COMMIT"
+          test "$VERIFIED_AGENT_COMMIT" = "$(git -C agent ls-remote --exit-code origin refs/heads/main | awk '{print $1}')"
+          test "$VERIFIED_MESSAGE_SERVER_COMMIT" = "$(git -C message-server ls-remote --exit-code origin refs/heads/main | awk '{print $1}')"
+          git -C agent checkout -B main "$VERIFIED_AGENT_COMMIT"
+
+      - name: Recreate commit-bound verification evidence
+        working-directory: agent
+        env:
+          AGENT_TEST_POSTGRES_DSN: postgres://postgres:123789@127.0.0.1:5432/postgres?sslmode=disable
+          DIREXTALK_MESSAGE_SERVER_ROOT: ${{ github.workspace }}/message-server
+          RELEASE_VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          bash scripts/release/prepare.sh "$RELEASE_VERSION_INPUT"
+          bash scripts/release/verify.sh "$RELEASE_VERSION_INPUT"
+
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Configure release tag identity and Git authentication
+        working-directory: agent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          gh auth setup-git
+
+      - name: Publish version image and Release, then latest
+        working-directory: agent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION_INPUT: ${{ inputs.version }}
+        run: bash scripts/release/publish.sh "$RELEASE_VERSION_INPUT"

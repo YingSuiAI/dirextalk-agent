@@ -15,11 +15,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/buildinfo"
 	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
 	"golang.org/x/sys/unix"
 )
 
 func main() {
+	if buildinfo.IsVersionRequest(os.Args[1:]) {
+		_, _ = fmt.Fprintln(os.Stdout, buildinfo.Version())
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "__sandbox-child-v1" {
 		if err := extensionrunner.SandboxChildV1(); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, extensionrunner.SandboxFailureDiagnostic(err))

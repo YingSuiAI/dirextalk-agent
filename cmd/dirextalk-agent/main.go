@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -17,6 +18,10 @@ import (
 const defaultConfigPath = "/etc/dirextalk-agent/config.yaml"
 
 func main() {
+	if buildinfo.IsVersionRequest(os.Args[1:]) {
+		_, _ = fmt.Fprintln(os.Stdout, buildinfo.Version())
+		return
+	}
 	if err := run(os.Args[1:]); err != nil {
 		slog.Error("dirextalk-agent stopped", "error", safeError(err))
 		os.Exit(1)

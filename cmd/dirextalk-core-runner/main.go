@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/buildinfo"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/runner"
 	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
 	"os/signal"
@@ -20,6 +21,10 @@ import (
 )
 
 func main() {
+	if buildinfo.IsVersionRequest(os.Args[1:]) {
+		_, _ = fmt.Fprintln(os.Stdout, buildinfo.Version())
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "__probe-child-v1" {
 		probeChild()
 		return
