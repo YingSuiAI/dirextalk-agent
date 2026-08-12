@@ -196,6 +196,30 @@ func TestValidateCloudWorkerModelRelayEndpointRequiresExactV1Path(t *testing.T) 
 	}
 }
 
+func TestCloudWorkerArtifactRetentionIsPinnedToThirtyDays(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		retention time.Duration
+		wantError bool
+	}{
+		{name: "default", retention: 0},
+		{name: "exact", retention: cloudWorkerProductionArtifactRetention},
+		{name: "shorter", retention: time.Hour, wantError: true},
+		{name: "longer", retention: cloudWorkerProductionArtifactRetention + time.Second, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			worker := CloudWorker{ArtifactRetention: test.retention}
+			err := normalizeCloudWorkerArtifactRetention(&worker)
+			if (err != nil) != test.wantError {
+				t.Fatalf("retention=%s error=%v", test.retention, err)
+			}
+			if !test.wantError && worker.ArtifactRetention != cloudWorkerProductionArtifactRetention {
+				t.Fatalf("retention=%s", worker.ArtifactRetention)
+			}
+		})
+	}
+}
+
 func TestValidateCoreAWSRejectsSymlinkedMasterKey(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink permissions differ on Windows")

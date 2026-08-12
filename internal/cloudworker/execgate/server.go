@@ -28,6 +28,7 @@ const (
 	defaultWorkerExecutable = "/usr/local/bin/dirextalk-cloud-worker"
 	defaultPiExecutable     = "/usr/local/lib/dirextalk-cloud-worker/pi/pi"
 	preActivationLifetime   = 5 * time.Second
+	piForkHelperLifetime    = 2 * time.Second
 	terminalQuiescenceLimit = time.Second
 )
 
@@ -92,6 +93,8 @@ type policy struct {
 	pi           ProcessIdentity
 	totalAllowed uint32
 	activeProof  bool
+	helperPID    int32
+	helperSeenAt time.Time
 	quiescenceAt time.Time
 	terminal     *Proof
 	violation    string
@@ -557,8 +560,12 @@ func (server *Server) monitorPolicies() {
 			continue
 		}
 		workerCount, piCount, cgroupCount, members, piMembers, err := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
+		if err == nil && workerCount == 1 && piCount == 1 && cgroupCount == 2 {
+			current.helperPID = 0
+			current.helperSeenAt = time.Time{}
+		}
 		if activePiForkHelperAllowed(
-			current, workerCount, piCount, cgroupCount, piMembers, err, processStat,
+			current, now, workerCount, piCount, cgroupCount, piMembers, err, processStat,
 		) {
 			continue
 		}
@@ -579,6 +586,7 @@ func (server *Server) monitorPolicies() {
 
 func activePiForkHelperAllowed(
 	current *policy,
+	now time.Time,
 	workerCount, piCount, cgroupCount uint32,
 	piMembers []int32,
 	scanErr error,
@@ -586,7 +594,7 @@ func activePiForkHelperAllowed(
 ) bool {
 	if current == nil || !current.activeProof || current.totalAllowed != 1 ||
 		current.pi.validate() != nil || scanErr != nil || workerCount != 1 ||
-		piCount != 2 || cgroupCount < 3 || len(piMembers) != 2 || stat == nil {
+		piCount != 2 || cgroupCount != 3 || len(piMembers) != 2 || stat == nil {
 		return false
 	}
 	mainFound := false
@@ -602,7 +610,16 @@ func activePiForkHelperAllowed(
 		helperPID = pid
 	}
 	value, err := stat(helperPID)
-	return mainFound && helperPID > 0 && err == nil && value.ParentPID == current.pi.PID
+	if !mainFound || helperPID <= 0 || err != nil || value.ParentPID != current.pi.PID ||
+		now.IsZero() || now != now.UTC() {
+		return false
+	}
+	if current.helperSeenAt.IsZero() {
+		current.helperPID = helperPID
+		current.helperSeenAt = now
+	}
+	return current.helperPID == helperPID && !now.Before(current.helperSeenAt) &&
+		now.Before(current.helperSeenAt.Add(piForkHelperLifetime))
 }
 
 func monitorTopologyViolation(

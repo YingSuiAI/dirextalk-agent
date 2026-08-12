@@ -492,6 +492,9 @@ func (s *activeTurnStore) MarkTurnCanceledRequested(context.Context, string) (Tu
 func (s *activeTurnStore) AppendTurnEvent(context.Context, string, TurnEvent) (TurnEvent, error) {
 	return TurnEvent{}, nil
 }
+func (s *activeTurnStore) LoadTurnEvents(context.Context, string, int64, int) ([]TurnEvent, error) {
+	return nil, nil
+}
 
 func (s *watcherTurnStore) GetTurn(context.Context, string) (Turn, error) { return s.turn, nil }
 func (s *watcherTurnStore) TurnEventBounds(context.Context, string) (int64, int64, error) {

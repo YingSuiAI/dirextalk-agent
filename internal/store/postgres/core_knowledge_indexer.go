@@ -61,9 +61,7 @@ func (i *KnowledgeIndexer) currentBindingTx(ctx context.Context, tx pgx.Tx) (str
 }
 
 func NewKnowledgeIndexer(store *Store, embeddingProfileID, collectionConfigDigest string) (*KnowledgeIndexer, error) {
-	embeddingProfileID = strings.TrimSpace(embeddingProfileID)
-	profileReadyOrDisabled := coretask.ValidUUID(embeddingProfileID) || embeddingProfileID == uuid.Nil.String()
-	if store == nil || !profileReadyOrDisabled || len(collectionConfigDigest) != 64 {
+	if store == nil || (embeddingProfileID != uuid.Nil.String() && !coretask.ValidUUID(embeddingProfileID)) || len(collectionConfigDigest) != 64 {
 		return nil, coreknowledge.ErrInvalid
 	}
 	if _, err := hex.DecodeString(strings.ToLower(collectionConfigDigest)); err != nil || strings.ToLower(collectionConfigDigest) != collectionConfigDigest {

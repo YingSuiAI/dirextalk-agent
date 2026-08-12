@@ -98,8 +98,17 @@ func TestActivePiForkHelperAllowsOneDirectCloneOnly(t *testing.T) {
 		}
 		return processStatValue{ParentPID: 200, ProcessGroup: 201, StartTimeTicks: 301}, nil
 	}
-	if !activePiForkHelperAllowed(current, 1, 2, 7, []int32{200, 201}, nil, stat) {
+	if !activePiForkHelperAllowed(current, now, 1, 2, 3, []int32{200, 201}, nil, stat) {
 		t.Fatal("one direct Pi fork helper was rejected")
+	}
+	if activePiForkHelperAllowed(current, now.Add(piForkHelperLifetime), 1, 2, 3, []int32{200, 201}, nil, stat) {
+		t.Fatal("long-lived Pi fork helper was accepted")
+	}
+	replacementStat := func(pid int32) (processStatValue, error) {
+		return processStatValue{ParentPID: 200, ProcessGroup: pid, StartTimeTicks: 302}, nil
+	}
+	if activePiForkHelperAllowed(current, now.Add(time.Millisecond), 1, 2, 3, []int32{200, 202}, nil, replacementStat) {
+		t.Fatal("replacement Pi fork helper was accepted")
 	}
 
 	wrongParent := func(int32) (processStatValue, error) {
@@ -122,7 +131,7 @@ func TestActivePiForkHelperAllowsOneDirectCloneOnly(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if activePiForkHelperAllowed(
-				current, test.workerCount, test.piCount, test.cgroupCount,
+				current, now, test.workerCount, test.piCount, test.cgroupCount,
 				test.piMembers, test.scanErr, test.stat,
 			) {
 				t.Fatal("invalid Pi fork topology was allowed")

@@ -420,6 +420,8 @@ var (
 	cloudWorkerAWSIDRE   = regexp.MustCompile(`^(?:ami|vpc|subnet)-[0-9a-f]{8,17}$`)
 )
 
+const cloudWorkerProductionArtifactRetention = 30 * 24 * time.Hour
+
 // ValidateCoreCloudWorker makes the paid route an all-or-nothing opt-in. A
 // disabled block never affects the local sandbox/MCP/Skills path; an enabled
 // block cannot publish or start with a partial AWS, TLS, pricing, or release
@@ -539,8 +541,8 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 		!strings.HasPrefix(worker.ArtifactKMSKeyARN, "arn:aws:kms:"+worker.Region+":"+worker.AccountID+":key/") {
 		return errors.New("core_cloud_worker artifact binding is invalid")
 	}
-	if worker.ArtifactRetention <= 0 || worker.ArtifactRetention > 30*24*time.Hour {
-		return errors.New("core_cloud_worker artifact_retention must be between 1ns and 30d")
+	if err := normalizeCloudWorkerArtifactRetention(worker); err != nil {
+		return err
 	}
 	if worker.QuoteTTL == 0 {
 		worker.QuoteTTL = 5 * time.Minute
@@ -572,6 +574,19 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 	worker.CredentialID = strings.TrimSpace(worker.CredentialID)
 	worker.WorkerControlServerName = controlHost
 	worker.ModelRelayServerName = relayHost
+	return nil
+}
+
+func normalizeCloudWorkerArtifactRetention(worker *CloudWorker) error {
+	if worker == nil {
+		return errors.New("core_cloud_worker artifact retention is unavailable")
+	}
+	if worker.ArtifactRetention == 0 {
+		worker.ArtifactRetention = cloudWorkerProductionArtifactRetention
+	}
+	if worker.ArtifactRetention != cloudWorkerProductionArtifactRetention {
+		return errors.New("core_cloud_worker artifact_retention must be 30d")
+	}
 	return nil
 }
 

@@ -189,7 +189,7 @@ func cloudWorkerComposeConfig(t *testing.T) config.Config {
 			OutboundProxyURL: "https://proxy.example.test:443", OutboundProxyServerName: "proxy.example.test",
 			OutboundProxyTrustSHA256: digest("proxy-ca"), ArtifactBucket: "dirextalk-compose-test",
 			ArtifactBasePrefix: "executions/", ArtifactKMSKeyARN: "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111",
-			ArtifactRetention: time.Hour, WorkerControlListenAddress: "127.0.0.1:0",
+			ArtifactRetention: 30 * 24 * time.Hour, WorkerControlListenAddress: "127.0.0.1:0",
 			WorkerControlEndpoint: "https://worker.example.test:8443", WorkerControlServerName: "worker.example.test",
 			WorkerControlTLSCertFile: certFile, WorkerControlTLSKeyFile: keyFile, WorkerControlTrustSHA256: digest("worker-ca"),
 			WorkerControlMaxConcurrentRPC: 8, ModelRelayListenAddress: "localhost:0",

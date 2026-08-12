@@ -311,7 +311,7 @@ func TestPiRunnerReverifiesPinsBeforeInvocation(t *testing.T) {
 	}
 }
 
-func TestPiRunnerRejectsUsageBeyondExactAuthorizedMaxTokens(t *testing.T) {
+func TestPiRunnerAcceptsCumulativeUsageAcrossIndividuallyBoundedModelCalls(t *testing.T) {
 	t.Parallel()
 	contextJSON := []byte(`{"scope":"approved"}`)
 	task := validTask(contextJSON, WorkspaceNone)
@@ -323,10 +323,12 @@ func TestPiRunnerRejectsUsageBeyondExactAuthorizedMaxTokens(t *testing.T) {
 		InputManifestJSON: bytes.Clone(contextJSON),
 	}, process, nil)
 	result, err := executor.Run(t.Context(), task, validModelGrant(task))
-	DestroyResult(&result)
-	failure, ok := FailureOf(err)
-	if !ok || failure.Stage != FailureStageOutput || failure.Code != FailureCodeOutputInvalid {
-		t.Fatalf("over-budget output failure=%+v ok=%t err=%v", failure, ok, err)
+	if err != nil {
+		t.Fatalf("cumulative usage from multiple bounded calls was rejected: %v", err)
+	}
+	defer DestroyResult(&result)
+	if result.Usage.OutputTokens != 513 {
+		t.Fatalf("output tokens=%d", result.Usage.OutputTokens)
 	}
 }
 

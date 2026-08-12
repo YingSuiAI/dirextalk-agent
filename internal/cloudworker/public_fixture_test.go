@@ -87,7 +87,8 @@ func buildCloudWorkerPublicFixture(t *testing.T) cloudWorkerPublicFixture {
 		ModelAuthorization: ModelAuthorization{
 			ModelProfileID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", ModelProfileRevision: 4,
 			Provider: "openai", Model: "gpt-fixture", Interface: "openai_responses",
-			CredentialVersion: 9, CredentialBindingDigest: digestValue("fixture-model-credential"),
+			MaximumOutputTokens: 4096, CredentialVersion: 9,
+			CredentialBindingDigest: digestValue("fixture-model-credential"),
 		},
 	})
 	if err != nil || len(store.commands) != 1 {
