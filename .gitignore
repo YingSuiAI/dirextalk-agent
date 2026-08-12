@@ -20,6 +20,7 @@ coverage/
 .codex/
 .idea/
 .run.local/
+.release/
 .worktrees/
 .tmp/
 secrets/

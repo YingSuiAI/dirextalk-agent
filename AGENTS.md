@@ -17,6 +17,8 @@ MCP/Skills, Knowledge, AWS/Execution V2 state, and runner processes.
   product and implementation contract.
 - [Delivery tracker](docs/delivery-tracker.md) records implementation status
   and verification evidence.
+- [Stable release contract](docs/release-contract.md) and the repository-owned
+  `scripts/release/{prepare,verify,publish}.sh` define formal Agent releases.
 - Versioned Protobuf under `api/proto/dirextalk/agent/v1` and `migrations/`
   are executable contract authorities for API and schema changes.
 
@@ -86,3 +88,10 @@ go build ./cmd/...
 buf lint
 git diff --check
 ```
+
+Stable releases must use the repository-owned scripts in prepare, verify, then
+publish order. The maintained release gate is the clean synchronized `main`,
+matching source/image/binary version identity, matching Git tag and GitHub
+Release, followed by a pulled `latest` probe. Never reconstruct these release
+objects by hand or add digest, attestation, image-ID, or tag-history gates that
+are outside the stable release contract.

@@ -35,3 +35,14 @@ func TestInjectedReleaseVersion(t *testing.T) {
 		t.Fatalf("injected release version = %q, want %q", Version(), expected)
 	}
 }
+
+func TestVersionRequestIsExact(t *testing.T) {
+	if !IsVersionRequest([]string{"--version"}) {
+		t.Fatal("exact version request was not recognized")
+	}
+	for _, arguments := range [][]string{nil, {}, {"version"}, {"--version", "extra"}} {
+		if IsVersionRequest(arguments) {
+			t.Fatalf("accepted non-exact version request %#v", arguments)
+		}
+	}
+}

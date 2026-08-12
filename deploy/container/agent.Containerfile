@@ -15,8 +15,8 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     AGENT_EXPECT_RELEASE_VERSION="$VERSION" go test -run '^TestInjectedReleaseVersion$' -ldflags="-X github.com/YingSuiAI/dirextalk-agent/internal/buildinfo.ReleaseVersion=$VERSION" ./internal/buildinfo \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags="-s -w -buildid= -X github.com/YingSuiAI/dirextalk-agent/internal/buildinfo.ReleaseVersion=$VERSION" -o /out/usr/local/bin/dirextalk-agent ./cmd/dirextalk-agent \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags='-s -w -buildid=' -o /out/usr/local/bin/dirextalk-extension-runner ./cmd/dirextalk-extension-runner \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags='-s -w -buildid=' -o /out/usr/local/bin/dirextalk-core-runner ./cmd/dirextalk-core-runner
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags="-s -w -buildid= -X github.com/YingSuiAI/dirextalk-agent/internal/buildinfo.ReleaseVersion=$VERSION" -o /out/usr/local/bin/dirextalk-extension-runner ./cmd/dirextalk-extension-runner \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags="-s -w -buildid= -X github.com/YingSuiAI/dirextalk-agent/internal/buildinfo.ReleaseVersion=$VERSION" -o /out/usr/local/bin/dirextalk-core-runner ./cmd/dirextalk-core-runner
 RUN install -d -m 0755 /out/etc/ssl/certs /out/etc/dirextalk-agent /out/var/lib/dirextalk-agent \
     && install -d -m 0700 -o 65532 -g 65532 /out/var/lib/dirextalk-agent/extension-staging \
     && install -d -m 0770 -o 65531 -g 65532 /out/var/lib/dirextalk-agent/extension-workspaces \
@@ -37,9 +37,14 @@ RUN chmod -R a-w /out/usr/local/libexec/dirextalk-node-runtime
 FROM scratch
 ARG VERSION=dev
 ARG REVISION=unknown
+ARG BUILD_TIME=
 LABEL org.opencontainers.image.title="Dirextalk Agent" \
+      org.opencontainers.image.description="Private single-user Dirextalk Agent runtime" \
+      org.opencontainers.image.source="https://github.com/YingSuiAI/dirextalk-agent" \
+      org.opencontainers.image.vendor="YingSuiAI" \
       org.opencontainers.image.version="$VERSION" \
-      org.opencontainers.image.revision="$REVISION"
+      org.opencontainers.image.revision="$REVISION" \
+      org.opencontainers.image.created="$BUILD_TIME"
 COPY --from=build /out/ /
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 USER 65532:65532
