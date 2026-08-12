@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -663,6 +664,48 @@ func (service *Service) RequestCancel(ctx context.Context, deploymentID, reason 
 		return nil
 	})
 	return deployment.clone(), err
+}
+
+// ExpireLease converts an abandoned execution lease into an authoritative
+// timed-out completion. It is controller-only: the Worker session path cannot
+// call this method, and the exact deployment/attempt/epoch fence is projected
+// into the Task state machine before cleanup begins.
+func (service *Service) ExpireLease(ctx context.Context, deploymentID string) (Deployment, error) {
+	if service == nil || ctx == nil {
+		return Deployment{}, ErrInvalid
+	}
+	now := service.now().UTC()
+	deployment, err := service.repository.UpdateControl(ctx, deploymentID, func(deployment *Deployment) error {
+		if deployment.State == StateFinished {
+			return ErrTerminal
+		}
+		if deployment.State != StateLeased || deployment.Lease.ExpiresAt.IsZero() || now.Before(deployment.Lease.ExpiresAt) {
+			return ErrLeaseActive
+		}
+		deployment.State = StateFinished
+		deployment.Outcome = OutcomeTimedOut
+		deployment.CancelReason = "Worker lease expired before terminal completion"
+		deployment.Lease.ExpiresAt = time.Time{}
+		deployment.touch(now)
+		return nil
+	})
+	if errors.Is(err, ErrTerminal) {
+		deployment, err = service.repository.Get(ctx, strings.TrimSpace(deploymentID))
+		if err == nil && (deployment.State != StateFinished || deployment.Outcome != OutcomeTimedOut) {
+			return Deployment{}, ErrTerminal
+		}
+	}
+	if err != nil || service.taskExecution == nil {
+		return deployment.clone(), err
+	}
+	idempotencyKey := uuid.NewSHA1(
+		uuid.MustParse(deployment.DeploymentID),
+		[]byte(fmt.Sprintf("worker-expired-lease/v1\x00%d\x00%d", deployment.Lease.Attempt, deployment.Lease.Epoch)),
+	).String()
+	if err := service.taskExecution.Complete(ctx, taskExecutionCompletion(deployment, idempotencyKey)); err != nil {
+		return deployment.clone(), fmt.Errorf("synchronize expired Worker task: %w", err)
+	}
+	return deployment.clone(), nil
 }
 
 func (service *Service) Get(ctx context.Context, deploymentID string) (Deployment, error) {

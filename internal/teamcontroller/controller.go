@@ -678,6 +678,39 @@ func (controller *Controller) collectRoleResult(
 			teamdispatch.PhaseDestroying,
 		)
 	}
+	leaseExpired := deployment.State == worker.StateLeased &&
+		!deployment.Lease.ExpiresAt.IsZero() &&
+		!controller.now().Before(deployment.Lease.ExpiresAt)
+	// A timed-out deployment may already be durable while its Task projection
+	// failed transiently. Re-running ExpireLease reconciles that projection with
+	// the same deterministic idempotency key before resource destruction.
+	if leaseExpired ||
+		(deployment.State == worker.StateFinished &&
+			deployment.Outcome == worker.OutcomeTimedOut) {
+		expired, expireErr := controller.workers.ExpireLease(
+			ctx,
+			dispatch.Intent.DeploymentID,
+		)
+		if errors.Is(expireErr, worker.ErrTerminal) {
+			expired, expireErr = controller.workers.GetDeployment(
+				ctx,
+				dispatch.Intent.DeploymentID,
+			)
+		}
+		if expireErr != nil {
+			return fmt.Errorf("expire abandoned Worker lease: %w", expireErr)
+		}
+		if !roleDeploymentMatches(dispatch.Intent, expired) ||
+			expired.State != worker.StateFinished ||
+			expired.Outcome != worker.OutcomeTimedOut {
+			return ErrFactMismatch
+		}
+		return controller.advance(
+			ctx,
+			dispatch,
+			teamdispatch.PhaseDestroying,
+		)
+	}
 	if deployment.State != worker.StateFinished {
 		return nil
 	}

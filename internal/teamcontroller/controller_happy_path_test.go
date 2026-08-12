@@ -993,6 +993,28 @@ func (control *happyPathWorkerControl) RequestCancel(
 	return worker.Deployment{}, errors.New("unexpected cancellation")
 }
 
+func (control *happyPathWorkerControl) ExpireLease(
+	_ context.Context,
+	deploymentID string,
+) (worker.Deployment, error) {
+	if deploymentID != control.current.DeploymentID {
+		return worker.Deployment{}, worker.ErrNotFound
+	}
+	if control.current.State == worker.StateFinished {
+		return worker.Deployment{}, worker.ErrTerminal
+	}
+	if control.current.State != worker.StateLeased ||
+		control.current.Lease.ExpiresAt.IsZero() ||
+		control.now.Before(control.current.Lease.ExpiresAt) {
+		return worker.Deployment{}, worker.ErrLeaseActive
+	}
+	control.current.State = worker.StateFinished
+	control.current.Outcome = worker.OutcomeTimedOut
+	control.current.Lease.ExpiresAt = time.Time{}
+	control.current.Revision++
+	return control.current, nil
+}
+
 func (control *happyPathWorkerControl) finishSucceeded(
 	t *testing.T,
 	objects *happyPathObjectReader,

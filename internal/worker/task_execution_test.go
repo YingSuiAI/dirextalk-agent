@@ -121,11 +121,12 @@ func TestTaskExecutionHookReceivesHeartbeatCheckpointAndCompletion(t *testing.T)
 }
 
 type fakeTaskExecutionCoordinator struct {
-	claims      []TaskExecutionClaim
-	heartbeats  []TaskExecutionHeartbeat
-	checkpoints []TaskExecutionCheckpoint
-	completions []TaskExecutionCompletion
-	claimErrors []error
+	claims           []TaskExecutionClaim
+	heartbeats       []TaskExecutionHeartbeat
+	checkpoints      []TaskExecutionCheckpoint
+	completions      []TaskExecutionCompletion
+	claimErrors      []error
+	completionErrors []error
 }
 
 func (coordinator *fakeTaskExecutionCoordinator) Claim(_ context.Context, event TaskExecutionClaim) error {
@@ -150,5 +151,51 @@ func (coordinator *fakeTaskExecutionCoordinator) Checkpoint(_ context.Context, e
 
 func (coordinator *fakeTaskExecutionCoordinator) Complete(_ context.Context, event TaskExecutionCompletion) error {
 	coordinator.completions = append(coordinator.completions, event)
-	return nil
+	if len(coordinator.completionErrors) == 0 {
+		return nil
+	}
+	err := coordinator.completionErrors[0]
+	coordinator.completionErrors = coordinator.completionErrors[1:]
+	return err
+}
+
+func TestExpiredWorkerLeaseReplaysTimedOutTaskCompletion(t *testing.T) {
+	syncFailure := errors.New("task store temporarily unavailable")
+	coordinator := &fakeTaskExecutionCoordinator{
+		completionErrors: []error{syncFailure, nil},
+	}
+	fixture := newWorkerFixtureWithOptions(t, WithTaskExecutionCoordinator(coordinator))
+	defer fixture.enrollment.Destroy()
+	defer fixture.session.Destroy()
+	session := fixture.session.Reveal()
+	defer zero(session)
+	assignment, err := fixture.service.Claim(context.Background(), AuthenticatedRequest{
+		DeploymentID:     fixture.deploymentID,
+		WorkerID:         fixture.workerID,
+		IdempotencyKey:   uuid.NewString(),
+		ExpectedRevision: fixture.assignment.Revision,
+		Credential:       session,
+	}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*fixture.now = fixture.now.Add(2 * time.Minute)
+	if _, err := fixture.service.ExpireLease(context.Background(), fixture.deploymentID); !errors.Is(err, syncFailure) {
+		t.Fatalf("first ExpireLease() error = %v, want task sync failure", err)
+	}
+	persisted, err := fixture.service.Get(context.Background(), fixture.deploymentID)
+	if err != nil || persisted.State != StateFinished || persisted.Outcome != OutcomeTimedOut {
+		t.Fatalf("persisted timed-out deployment = %#v, %v", persisted, err)
+	}
+	replayed, err := fixture.service.ExpireLease(context.Background(), fixture.deploymentID)
+	if err != nil || replayed.State != StateFinished || replayed.Outcome != OutcomeTimedOut {
+		t.Fatalf("replayed ExpireLease() = %#v, %v", replayed, err)
+	}
+	if len(coordinator.completions) != 2 ||
+		coordinator.completions[0] != coordinator.completions[1] ||
+		coordinator.completions[0].Outcome != OutcomeTimedOut ||
+		coordinator.completions[0].Attempt != assignment.Attempt ||
+		coordinator.completions[0].LeaseEpoch != assignment.LeaseEpoch {
+		t.Fatalf("task completion replays = %#v", coordinator.completions)
+	}
 }

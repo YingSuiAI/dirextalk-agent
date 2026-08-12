@@ -48,3 +48,13 @@ func (adapter *WorkerServiceAdapter) RequestCancel(
 	}
 	return adapter.service.RequestCancel(ctx, deploymentID, reason)
 }
+
+func (adapter *WorkerServiceAdapter) ExpireLease(
+	ctx context.Context,
+	deploymentID string,
+) (worker.Deployment, error) {
+	if adapter == nil || adapter.service == nil || ctx == nil {
+		return worker.Deployment{}, ErrInvalid
+	}
+	return adapter.service.ExpireLease(ctx, deploymentID)
+}

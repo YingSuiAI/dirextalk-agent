@@ -39,6 +39,25 @@ func TestCanceledHeartbeatRecognizesGRPCContextTermination(t *testing.T) {
 	}
 }
 
+func TestRetryCallBoundsEachBlockedControlAttempt(t *testing.T) {
+	t.Parallel()
+	started := time.Now()
+	calls := 0
+	_, err := retryCallWithTimeout(
+		context.Background(),
+		10*time.Millisecond,
+		time.Millisecond,
+		func(ctx context.Context) (struct{}, error) {
+			calls++
+			<-ctx.Done()
+			return struct{}{}, ctx.Err()
+		},
+	)
+	if !errors.Is(err, context.DeadlineExceeded) || calls != 3 || time.Since(started) > time.Second {
+		t.Fatalf("retryCallWithTimeout() calls=%d elapsed=%s error=%v", calls, time.Since(started), err)
+	}
+}
+
 type runnerControlFake struct {
 	mu              sync.Mutex
 	assignment      *agentv1.WorkerAssignment
@@ -396,6 +415,21 @@ func TestRunnerFailsClosedBeforeActionWhenMilestoneLogIsUnavailable(t *testing.T
 	defer control.mu.Unlock()
 	if len(control.logs) != 1 || len(control.checkpoints) != 0 || control.completion != nil || len(objects.objects) != 2 {
 		t.Fatalf("unavailable milestone relay crossed action boundary: logs=%#v checkpoints=%#v completion=%#v objects=%d", control.logs, control.checkpoints, control.completion, len(objects.objects))
+	}
+}
+
+func TestRunnerCompletesWhenOnlyFinalMilestoneLogIsUnavailable(t *testing.T) {
+	runner, config, control, _ := runnerFixture(t, validNoopBundle(t, 0))
+	runner.Logs = &logSinkFake{failAt: 4}
+	result, err := runner.Run(t.Context(), config)
+	if err != nil || result.Outcome != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED {
+		t.Fatalf("Run() = (%#v, %v)", result, err)
+	}
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	if control.completion == nil ||
+		control.completion.GetOutcome() != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED {
+		t.Fatalf("completion = %#v", control.completion)
 	}
 }
 

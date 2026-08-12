@@ -46,7 +46,7 @@ func (store *Store) SuspendStepForSecrets(ctx context.Context, scope task.Mutati
 			return task.Attempt{}, task.ErrStaleLease
 		}
 
-		attempt, err := lockActiveAttempt(ctx, tx, command.TaskID, command.StepID, command.Attempt, command.LeaseEpoch, command.WorkerID)
+		attempt, err := lockActiveAttempt(ctx, tx, command.TaskID, command.StepID, command.Attempt, command.LeaseEpoch, command.WorkerID, false)
 		if err != nil {
 			return task.Attempt{}, err
 		}

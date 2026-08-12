@@ -97,6 +97,7 @@ type WorkerControl interface {
 		string,
 		string,
 	) (worker.Deployment, error)
+	ExpireLease(context.Context, string) (worker.Deployment, error)
 }
 
 type BootstrapPublisher interface {

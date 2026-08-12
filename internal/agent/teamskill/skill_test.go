@@ -329,6 +329,7 @@ func TestSkillGuidesNaturalLanguagePlanningWithCurrentRuntimeCapabilities(
 	description := tools[0].Definition.Description
 	for _, required := range []string{
 		"user does not need to mention Team Plan",
+		"do not give a substantial artifact-producing role a 15-minute maximum",
 		"Current qualified runtime families: pi",
 		"repository.write, shell, test",
 	} {

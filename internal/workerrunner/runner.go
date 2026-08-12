@@ -30,6 +30,11 @@ var ErrCancellationRequested = errors.New("Worker cancellation was requested")
 
 var workerObjectNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,191}$`)
 
+const (
+	workerControlCallTimeout = 5 * time.Second
+	failureMilestoneTimeout  = 5 * time.Second
+)
+
 type ControlClient interface {
 	Enroll(context.Context, []byte, *agentv1.EnrollRequest) (*agentv1.EnrollResponse, error)
 	GetCurrentAssignment(context.Context, []byte, *agentv1.WorkerControlServiceGetCurrentAssignmentRequest) (*agentv1.WorkerControlServiceGetCurrentAssignmentResponse, error)
@@ -88,8 +93,8 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 			DeploymentId: config.DeploymentID, WorkerId: config.WorkerID,
 			IdempotencyKey: config.EnrollmentIdempotencyKey, ExpectedRevision: config.EnrollmentExpectedRevision,
 		}
-		enrolled, err := retryCall(ctx, runner.retryDelay(), func() (*agentv1.EnrollResponse, error) {
-			return runner.Control.Enroll(ctx, config.EnrollmentToken, enrollmentRequest)
+		enrolled, err := retryCall(ctx, runner.retryDelay(), func(callCtx context.Context) (*agentv1.EnrollResponse, error) {
+			return runner.Control.Enroll(callCtx, config.EnrollmentToken, enrollmentRequest)
 		})
 		if err != nil {
 			return Result{}, fmt.Errorf("enroll Worker: %w", err)
@@ -113,8 +118,8 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 		DeploymentId: config.DeploymentID, WorkerId: config.WorkerID, IdempotencyKey: uuid.NewString(),
 		ExpectedRevision: currentAssignment.GetRevision(), LeaseDurationSeconds: int32(config.LeaseDuration / time.Second),
 	}
-	claimed, err := retryCall(ctx, runner.retryDelay(), func() (*agentv1.WorkerControlServiceClaimResponse, error) {
-		return runner.Control.Claim(ctx, sessionToken, claimRequest)
+	claimed, err := retryCall(ctx, runner.retryDelay(), func(callCtx context.Context) (*agentv1.WorkerControlServiceClaimResponse, error) {
+		return runner.Control.Claim(callCtx, sessionToken, claimRequest)
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("claim Worker execution: %w", err)
@@ -199,9 +204,9 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 
 	completeContext, cancelComplete := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancelComplete()
-	if err := runner.emitLog(completeContext, assignment, LogExecutionFinished, "", logOutcome(outcome)); err != nil {
-		return Result{Outcome: outcome, ResultRef: resultRef, CompletedActions: completedActions}, err
-	}
+	// Completion is the authoritative durable state transition. A telemetry
+	// outage must not prevent the Worker from reporting a valid terminal result.
+	_ = runner.emitLog(completeContext, assignment, LogExecutionFinished, "", logOutcome(outcome))
 	if err := lease.complete(completeContext, outcome, resultObject); err != nil {
 		return Result{Outcome: outcome, ResultRef: resultRef, CompletedActions: completedActions}, fmt.Errorf("complete Worker execution: %w", err)
 	}
@@ -225,8 +230,8 @@ func isCanceledHeartbeat(err error) bool {
 func (runner Runner) waitForClaimableAssignment(ctx context.Context, config Config, sessionToken []byte) (*agentv1.WorkerAssignment, error) {
 	request := &agentv1.WorkerControlServiceGetCurrentAssignmentRequest{DeploymentId: config.DeploymentID, WorkerId: config.WorkerID}
 	for {
-		response, err := retryCall(ctx, runner.retryDelay(), func() (*agentv1.WorkerControlServiceGetCurrentAssignmentResponse, error) {
-			return runner.Control.GetCurrentAssignment(ctx, sessionToken, request)
+		response, err := retryCall(ctx, runner.retryDelay(), func(callCtx context.Context) (*agentv1.WorkerControlServiceGetCurrentAssignmentResponse, error) {
+			return runner.Control.GetCurrentAssignment(callCtx, sessionToken, request)
 		})
 		if err != nil {
 			return nil, err
@@ -307,12 +312,16 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 		cancel()
 		if actionErr != nil {
 			destroyActionResult(&actionResult)
+			failureCtx, cancelFailure := context.WithTimeout(
+				context.WithoutCancel(ctx), failureMilestoneTimeout,
+			)
 			_ = runner.emitActionFailureLog(
-				context.WithoutCancel(ctx),
+				failureCtx,
 				assignment,
 				action.ID,
 				actionErr,
 			)
+			cancelFailure()
 			return completed, nil, fmt.Errorf("typed action %s failed: %w", action.ID, actionErr)
 		}
 		if !validActionResultStatus(action, actionResult.Status) {
@@ -694,8 +703,8 @@ func (runner Runner) emitLogWithFailure(
 		FailureCode:   failure.Code,
 		OccurredAt:    time.Now().UTC(),
 	}
-	_, err := retryCall(ctx, runner.retryDelay(), func() (struct{}, error) {
-		return struct{}{}, runner.Logs.Emit(ctx, event)
+	_, err := retryCall(ctx, runner.retryDelay(), func(callCtx context.Context) (struct{}, error) {
+		return struct{}{}, runner.Logs.Emit(callCtx, event)
 	})
 	if err != nil {
 		return errors.New("write Worker milestone log")
@@ -980,8 +989,8 @@ func (state *leaseState) heartbeat(ctx context.Context) error {
 		DeploymentId: state.deploymentID, WorkerId: state.workerID, LeaseEpoch: state.epoch,
 		IdempotencyKey: uuid.NewString(), ExpectedRevision: state.revision, LeaseDurationSeconds: int32(state.leaseDuration / time.Second),
 	}
-	response, err := retryCall(ctx, state.retryDelay, func() (*agentv1.HeartbeatResponse, error) {
-		return state.control.Heartbeat(ctx, state.token, request)
+	response, err := retryCall(ctx, state.retryDelay, func(callCtx context.Context) (*agentv1.HeartbeatResponse, error) {
+		return state.control.Heartbeat(callCtx, state.token, request)
 	})
 	if err != nil {
 		return err
@@ -1013,8 +1022,8 @@ func (state *leaseState) recordCheckpoint(ctx context.Context, object worker.Obj
 		IdempotencyKey: uuid.NewString(), ExpectedRevision: state.revision,
 		Kind: agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_CHECKPOINT, Object: workerObjectClaimToProto(object),
 	}
-	response, err := retryCall(ctx, state.retryDelay, func() (*agentv1.WorkerControlServiceRecordEvidenceResponse, error) {
-		return state.control.RecordEvidence(ctx, state.token, request)
+	response, err := retryCall(ctx, state.retryDelay, func(callCtx context.Context) (*agentv1.WorkerControlServiceRecordEvidenceResponse, error) {
+		return state.control.RecordEvidence(callCtx, state.token, request)
 	})
 	if err != nil {
 		return err
@@ -1034,8 +1043,8 @@ func (state *leaseState) recordLog(ctx context.Context, reference string) error 
 		IdempotencyKey: uuid.NewString(), ExpectedRevision: state.revision,
 		Kind: agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_LOG, Ref: reference,
 	}
-	response, err := retryCall(ctx, state.retryDelay, func() (*agentv1.WorkerControlServiceRecordEvidenceResponse, error) {
-		return state.control.RecordEvidence(ctx, state.token, request)
+	response, err := retryCall(ctx, state.retryDelay, func(callCtx context.Context) (*agentv1.WorkerControlServiceRecordEvidenceResponse, error) {
+		return state.control.RecordEvidence(callCtx, state.token, request)
 	})
 	if err != nil {
 		return err
@@ -1057,8 +1066,8 @@ func (state *leaseState) complete(ctx context.Context, outcome agentv1.WorkerOut
 	if resultObject != nil {
 		request.ResultObject = workerObjectClaimToProto(*resultObject)
 	}
-	response, err := retryCall(ctx, state.retryDelay, func() (*agentv1.WorkerControlServiceCompleteResponse, error) {
-		return state.control.Complete(ctx, state.token, request)
+	response, err := retryCall(ctx, state.retryDelay, func(callCtx context.Context) (*agentv1.WorkerControlServiceCompleteResponse, error) {
+		return state.control.Complete(callCtx, state.token, request)
 	})
 	if err != nil {
 		return err
@@ -1076,15 +1085,27 @@ func workerObjectClaimToProto(claim worker.ObjectClaim) *agentv1.WorkerObjectCla
 	}
 }
 
-func retryCall[T any](ctx context.Context, delay time.Duration, call func() (T, error)) (T, error) {
+func retryCall[T any](ctx context.Context, delay time.Duration, call func(context.Context) (T, error)) (T, error) {
+	return retryCallWithTimeout(ctx, workerControlCallTimeout, delay, call)
+}
+
+func retryCallWithTimeout[T any](ctx context.Context, callTimeout, delay time.Duration, call func(context.Context) (T, error)) (T, error) {
 	var zero T
+	if callTimeout <= 0 {
+		return zero, errors.New("Worker control call timeout is invalid")
+	}
 	for attempt := 0; attempt < 3; attempt++ {
-		result, err := call()
+		callCtx, cancel := context.WithTimeout(ctx, callTimeout)
+		result, err := call(callCtx)
+		cancel()
 		if err == nil {
 			return result, nil
 		}
 		code := status.Code(err)
-		if ctx.Err() != nil || (code != codes.Unavailable && code != codes.DeadlineExceeded) || attempt == 2 {
+		retryable := code == codes.Unavailable ||
+			code == codes.DeadlineExceeded ||
+			errors.Is(err, context.DeadlineExceeded)
+		if ctx.Err() != nil || !retryable || attempt == 2 {
 			return zero, err
 		}
 		timer := time.NewTimer(delay)

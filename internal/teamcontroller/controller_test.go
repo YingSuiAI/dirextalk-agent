@@ -497,6 +497,57 @@ func TestExpiredActiveEnrollmentCancelsWorkerAndAdvancesToDestroying(t *testing.
 	}
 }
 
+func TestExpiredActiveLeaseTimesOutWorkerAndAdvancesToDestroying(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 1, 10, 45, 0, 0, time.UTC)
+	intent := teamdispatch.IntentV1{
+		OwnerID:          "owner-controller",
+		OperationID:      uuid.NewString(),
+		TaskID:           uuid.NewString(),
+		TaskStepID:       uuid.NewString(),
+		DeploymentID:     uuid.NewString(),
+		ExpectedWorkerID: uuid.NewString(),
+	}
+	leased := worker.Deployment{
+		DeploymentID: intent.DeploymentID,
+		OwnerID:      intent.OwnerID,
+		TaskID:       intent.TaskID,
+		StepID:       intent.TaskStepID,
+		WorkerID:     intent.ExpectedWorkerID,
+		State:        worker.StateLeased,
+		Outcome:      worker.OutcomePending,
+		Lease:        worker.Lease{Attempt: 1, Epoch: 2, ExpiresAt: now.Add(-time.Second)},
+		Revision:     4,
+	}
+	timedOut := leased
+	timedOut.State = worker.StateFinished
+	timedOut.Outcome = worker.OutcomeTimedOut
+	timedOut.Lease.ExpiresAt = time.Time{}
+	timedOut.Revision++
+	dispatch := teamdispatch.Fact{
+		Intent:         intent,
+		Phase:          teamdispatch.PhaseActive,
+		RecordRevision: 9,
+	}
+	repository := &controllerRepositoryStub{}
+	workers := &workerControlStub{getResult: &leased, expireResult: timedOut}
+	controller := &Controller{
+		config:     Config{Now: func() time.Time { return now }},
+		dispatches: repository,
+		workers:    workers,
+	}
+	if err := controller.collectRoleResult(context.Background(), dispatch); err != nil {
+		t.Fatal(err)
+	}
+	if workers.expireCalls != 1 ||
+		workers.expireDeploymentID != intent.DeploymentID ||
+		repository.advanceCalls != 1 ||
+		repository.advance.FromPhase != teamdispatch.PhaseActive ||
+		repository.advance.ToPhase != teamdispatch.PhaseDestroying {
+		t.Fatalf("expire calls=%d deployment=%q advance=%#v", workers.expireCalls, workers.expireDeploymentID, repository.advance)
+	}
+}
+
 func TestActiveEnrollmentWaitsUntilDeadline(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 1, 10, 30, 0, 0, time.UTC)
@@ -809,6 +860,10 @@ type workerControlStub struct {
 	cancelErr          error
 	cancelDeploymentID string
 	cancelCalls        int
+	expireResult       worker.Deployment
+	expireErr          error
+	expireDeploymentID string
+	expireCalls        int
 }
 
 func (stub *workerControlStub) CreateDeployment(
@@ -840,4 +895,13 @@ func (stub *workerControlStub) RequestCancel(
 	stub.cancelCalls++
 	stub.cancelDeploymentID = deploymentID
 	return stub.cancelResult, stub.cancelErr
+}
+
+func (stub *workerControlStub) ExpireLease(
+	_ context.Context,
+	deploymentID string,
+) (worker.Deployment, error) {
+	stub.expireCalls++
+	stub.expireDeploymentID = deploymentID
+	return stub.expireResult, stub.expireErr
 }

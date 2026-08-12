@@ -388,7 +388,7 @@ func (store *Store) RenewStepLease(ctx context.Context, scope task.MutationScope
 		return task.Attempt{}, err
 	}
 	return store.mutateAttempt(ctx, caller, renewStepOperation, command.IdempotencyKey, command.Digest(), command.TaskID, func(ctx context.Context, tx pgx.Tx) (task.Attempt, error) {
-		attempt, err := lockActiveAttempt(ctx, tx, command.TaskID, command.StepID, command.Attempt, command.LeaseEpoch, command.WorkerID)
+		attempt, err := lockActiveAttempt(ctx, tx, command.TaskID, command.StepID, command.Attempt, command.LeaseEpoch, command.WorkerID, false)
 		if err != nil {
 			return task.Attempt{}, err
 		}
@@ -418,7 +418,7 @@ func (store *Store) CheckpointStep(ctx context.Context, scope task.MutationScope
 		return task.Attempt{}, err
 	}
 	return store.mutateAttempt(ctx, caller, checkpointStepOperation, command.IdempotencyKey, command.Digest(), command.TaskID, func(ctx context.Context, tx pgx.Tx) (task.Attempt, error) {
-		attempt, err := lockActiveAttempt(ctx, tx, command.TaskID, command.StepID, command.Attempt, command.LeaseEpoch, command.WorkerID)
+		attempt, err := lockActiveAttempt(ctx, tx, command.TaskID, command.StepID, command.Attempt, command.LeaseEpoch, command.WorkerID, false)
 		if err != nil {
 			return task.Attempt{}, err
 		}
@@ -452,7 +452,11 @@ func (store *Store) CompleteStep(ctx context.Context, scope task.MutationScope, 
 		return task.Attempt{}, err
 	}
 	return store.mutateAttempt(ctx, caller, completeStepOperation, command.IdempotencyKey, command.Digest(), command.TaskID, func(ctx context.Context, tx pgx.Tx) (task.Attempt, error) {
-		attempt, err := lockActiveAttempt(ctx, tx, command.TaskID, command.StepID, command.Attempt, command.LeaseEpoch, command.WorkerID)
+		attempt, err := lockActiveAttempt(
+			ctx, tx, command.TaskID, command.StepID, command.Attempt,
+			command.LeaseEpoch, command.WorkerID,
+			command.Outcome == task.OutcomeTimedOut,
+		)
 		if err != nil {
 			return task.Attempt{}, err
 		}
@@ -745,7 +749,7 @@ func insertAttempt(ctx context.Context, tx pgx.Tx, taskID, stepID, workerID uuid
 	return normalizeAttemptTimes(attempt), nil
 }
 
-func lockActiveAttempt(ctx context.Context, tx pgx.Tx, taskID, stepID string, attemptNumber int32, leaseEpoch int64, workerID string) (task.Attempt, error) {
+func lockActiveAttempt(ctx context.Context, tx pgx.Tx, taskID, stepID string, attemptNumber int32, leaseEpoch int64, workerID string, allowExpired bool) (task.Attempt, error) {
 	var attempt task.Attempt
 	var active bool
 	err := tx.QueryRow(ctx, `
@@ -770,7 +774,7 @@ func lockActiveAttempt(ctx context.Context, tx pgx.Tx, taskID, stepID string, at
 	if attempt.LeaseEpoch != leaseEpoch || attempt.WorkerID != normalizedUUIDString(workerID) || attempt.ExecutionStatus != task.ExecutionRunning || attempt.OutcomeStatus != task.OutcomePending {
 		return task.Attempt{}, task.ErrStaleLease
 	}
-	if !active {
+	if !active && !allowExpired {
 		return task.Attempt{}, task.ErrLeaseExpired
 	}
 	return normalizeAttemptTimes(attempt), nil
