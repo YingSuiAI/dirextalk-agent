@@ -31,7 +31,7 @@ func (s *CoreConversationStore) ListReleases(ctx context.Context, authority core
 		WHERE owner_id=$1 AND account_generation=$2 AND
 		($3::timestamptz IS NULL OR (created_at,release_id) < ($3::timestamptz,$4::uuid))
 		ORDER BY created_at DESC,release_id DESC LIMIT $5`, authority.OwnerID, authority.AccountGeneration,
-		cursorTime(cursor), cursor.ReleaseID, query.PageSize+1)
+		cursorTime(cursor), cursorReleaseID(cursor), query.PageSize+1)
 	if err != nil {
 		return corestaticsite.Page{}, err
 	}
@@ -154,6 +154,13 @@ func cursorTime(cursor staticSiteCursor) any {
 		return nil
 	}
 	return cursor.CreatedAt
+}
+
+func cursorReleaseID(cursor staticSiteCursor) any {
+	if cursor.ReleaseID == "" {
+		return nil
+	}
+	return cursor.ReleaseID
 }
 
 var _ corestaticsite.Repository = (*CoreConversationStore)(nil)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corestaticsite"
 	"github.com/google/uuid"
 )
 
@@ -35,6 +36,32 @@ func conversationStaticSiteCommand(t *testing.T, h *turnDBHarness) core.Conversa
 		Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "Published the static page: https://node.example.test" + receipt.PublicPath, ModelProfileID: turn.ProfileID, CreatedAt: now},
 	}
 	return core.ConversationStaticSiteCommand{Lease: lease, Receipt: receipt, PublicURL: "https://node.example.test" + receipt.PublicPath, Response: response}
+}
+
+func TestStaticSiteListFirstPageAndCursorPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	authority := corestaticsite.Authority{OwnerID: "@owner:example.test", AccountGeneration: 7}
+	for range 3 {
+		command := conversationStaticSiteCommand(t, h)
+		if _, err := h.store.CommitConversationStaticSite(context.Background(), command); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := h.store.ListReleases(context.Background(), authority, corestaticsite.ListQuery{PageSize: 2}, "https://node.example.test")
+	if err != nil || len(first.Releases) != 2 || first.NextPageToken == "" {
+		t.Fatalf("first page=%+v err=%v", first, err)
+	}
+	second, err := h.store.ListReleases(context.Background(), authority, corestaticsite.ListQuery{PageSize: 2, PageToken: first.NextPageToken}, "https://node.example.test")
+	if err != nil || len(second.Releases) != 1 || second.NextPageToken != "" {
+		t.Fatalf("second page=%+v err=%v", second, err)
+	}
+	seen := map[string]bool{}
+	for _, release := range append(first.Releases, second.Releases...) {
+		if seen[release.ReleaseID] || release.PublicURL != "https://node.example.test"+release.PublicPath {
+			t.Fatalf("invalid paginated release=%+v", release)
+		}
+		seen[release.ReleaseID] = true
+	}
 }
 
 func TestConversationStaticSiteCommitPersistsReceiptAndReplaysPostgres(t *testing.T) {
