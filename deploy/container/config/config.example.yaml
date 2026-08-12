@@ -27,6 +27,7 @@ core_extension_runner_uid: 65531
 # only that public subtree read-only at /.sites/.
 core_static_sites_enabled: false
 # core_static_sites_root: /var/lib/dirextalk-agent/static-sites
+# core_static_sites_public_origin: https://node.example.com
 # Keep disabled until the core-runner service has a private socket and genuinely
 # delegated cgroup-v2 subtree. Runner UID is 65530; Agent UID is 65532.
 # A failed runner nonce/full readiness probe keeps workload.core_runner absent.

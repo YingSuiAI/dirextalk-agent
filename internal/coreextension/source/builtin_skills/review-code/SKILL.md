@@ -1,5 +1,5 @@
 ---
-name: review-code
+name: dirextalk-review-code
 description: Review code changes for correctness, security, reliability, maintainability, and missing tests. Use for diffs, pull requests, patches, migrations, APIs, and deployment scripts.
 ---
 

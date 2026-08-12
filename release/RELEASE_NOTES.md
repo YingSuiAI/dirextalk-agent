@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.73
+
+1. Return absolute public URLs for generated static sites.
+2. Prefix all bundled Skill identifiers with `dirextalk-`.
+
 ## v1.0.72
 
 1. Allow long-running static-site publication to commit with the renewed current turn lease.

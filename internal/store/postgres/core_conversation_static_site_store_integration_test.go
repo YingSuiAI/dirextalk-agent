@@ -32,9 +32,9 @@ func conversationStaticSiteCommand(t *testing.T, h *turnDBHarness) core.Conversa
 	}
 	response := core.ChatResponse{
 		RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 2, Done: true, ModelProfileID: turn.ProfileID,
-		Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "Published the static page: " + receipt.PublicPath, ModelProfileID: turn.ProfileID, CreatedAt: now},
+		Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "Published the static page: https://node.example.test" + receipt.PublicPath, ModelProfileID: turn.ProfileID, CreatedAt: now},
 	}
-	return core.ConversationStaticSiteCommand{Lease: lease, Receipt: receipt, Response: response}
+	return core.ConversationStaticSiteCommand{Lease: lease, Receipt: receipt, PublicURL: "https://node.example.test" + receipt.PublicPath, Response: response}
 }
 
 func TestConversationStaticSiteCommitPersistsReceiptAndReplaysPostgres(t *testing.T) {

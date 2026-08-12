@@ -51,7 +51,7 @@ func TestStaticSiteIntrinsicPublishesSingleHTMLWithServerDerivedPath(t *testing.
 	publisher := &staticSitePublisherStub{}
 	store := &staticSiteStoreStub{}
 	raw, _ := json.Marshal(map[string]any{"html": "<!doctype html><style>td{padding:4px}</style><table><tr><td>项目</td></tr></table>"})
-	intrinsic := staticSiteIntrinsic(store, publisher, lease)
+	intrinsic := staticSiteIntrinsic(store, publisher, "https://s3.dirextalk.ai", lease)
 	request := IntrinsicExecutionRequest{
 		Lease: lease, Call: ToolCall{ID: "site-call", Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: string(raw)},
 		CanonicalArguments: raw, ConversationRevision: 4,
@@ -61,7 +61,8 @@ func TestStaticSiteIntrinsicPublishesSingleHTMLWithServerDerivedPath(t *testing.
 		t.Fatalf("result=%+v publications=%d commands=%d err=%v", result, len(publisher.publications), len(store.commands), err)
 	}
 	command := store.commands[0]
-	if command.Response.Revision != 5 || !strings.Contains(command.Response.Message.Content, command.Receipt.PublicPath) ||
+	if command.Response.Revision != 5 || command.PublicURL != "https://s3.dirextalk.ai"+command.Receipt.PublicPath ||
+		command.Response.Message.Content != "Published the static page: "+command.PublicURL ||
 		command.Receipt.PublicPath != "/.sites/"+command.Receipt.SiteID+"/"+command.Receipt.ReleaseID+"/" {
 		t.Fatalf("command=%+v", command)
 	}
@@ -79,7 +80,7 @@ func TestStaticSiteIntrinsicAcceptsRenewedLeaseAndCommitsCurrentEpoch(t *testing
 	store := &staticSiteStoreStub{}
 	raw, _ := json.Marshal(map[string]any{"html": "<!doctype html><h1>renewed</h1>"})
 
-	result, err := staticSiteIntrinsic(store, publisher, bound).Execute(context.Background(), IntrinsicExecutionRequest{
+	result, err := staticSiteIntrinsic(store, publisher, "https://s3.dirextalk.ai", bound).Execute(context.Background(), IntrinsicExecutionRequest{
 		Lease: renewed, Call: ToolCall{ID: "renewed-site-call", Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: string(raw)},
 		CanonicalArguments: raw, ConversationRevision: 4,
 	})
@@ -103,7 +104,7 @@ func TestStaticSiteIntrinsicRejectsArchivesPathsAndOversizeHTML(t *testing.T) {
 	}
 	for index, args := range cases {
 		raw, _ := json.Marshal(args)
-		_, err := staticSiteIntrinsic(store, publisher, lease).Execute(context.Background(), IntrinsicExecutionRequest{
+		_, err := staticSiteIntrinsic(store, publisher, "https://s3.dirextalk.ai", lease).Execute(context.Background(), IntrinsicExecutionRequest{
 			Lease: lease, Call: ToolCall{ID: "bad-call", Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: string(raw)},
 			CanonicalArguments: raw, ConversationRevision: uint64(index + 1),
 		})
@@ -133,12 +134,12 @@ func TestServiceExposesStaticSiteOnlyWithReadyPublisherAndStore(t *testing.T) {
 	if err != nil || len(tools) != 0 {
 		t.Fatalf("tool leaked before publisher readiness: tools=%+v err=%v", tools, err)
 	}
-	service.SetStaticSitePublisher(&staticSitePublisherStub{})
+	service.SetStaticSitePublisher(&staticSitePublisherStub{}, "https://s3.dirextalk.ai")
 	tools, err = service.resolveIntrinsicTools(context.Background(), lease)
 	if err != nil || len(tools) != 1 || tools[0].Tool.Name != coremodel.IntrinsicStaticSitePublishToolName {
 		t.Fatalf("tools=%+v err=%v", tools, err)
 	}
-	service.SetStaticSitePublisher(nil)
+	service.SetStaticSitePublisher(nil, "")
 	tools, err = service.resolveIntrinsicTools(context.Background(), lease)
 	if err != nil || len(tools) != 0 {
 		t.Fatalf("tool remained after publisher removal: tools=%+v err=%v", tools, err)

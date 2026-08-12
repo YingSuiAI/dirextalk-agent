@@ -150,7 +150,7 @@ func serveCore(cfg config.Config) error {
 		if publisherErr != nil {
 			return fmt.Errorf("initialize static-site publisher: %w", publisherErr)
 		}
-		conversation.SetStaticSitePublisher(publisher)
+		conversation.SetStaticSitePublisher(publisher, cfg.CoreStaticSitesPublicOrigin)
 		slog.Info("dirextalk-agent static-site publisher ready", "public_path", "/.sites/")
 	}
 	conversationService, err := rpcapi.NewCoreConversationService(conversation)

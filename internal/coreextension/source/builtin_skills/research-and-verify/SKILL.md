@@ -1,5 +1,5 @@
 ---
-name: research-and-verify
+name: dirextalk-research-and-verify
 description: Research current or unfamiliar topics, compare sources, and produce a concise evidence-backed answer. Use for web research, trend summaries, product comparisons, and claims that need verification or citations.
 ---
 

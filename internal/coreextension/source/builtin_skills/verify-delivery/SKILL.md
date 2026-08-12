@@ -1,5 +1,5 @@
 ---
-name: verify-delivery
+name: dirextalk-verify-delivery
 description: Verify that a feature, fix, build, or deployment is genuinely complete using observable acceptance evidence. Use for release readiness, regression testing, operational handoff, and claims that something works end to end.
 ---
 

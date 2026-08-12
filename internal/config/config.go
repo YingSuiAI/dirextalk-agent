@@ -90,6 +90,7 @@ type Config struct {
 	CoreCloudWorker                  CloudWorker   `yaml:"core_cloud_worker" mapstructure:"core_cloud_worker"`
 	CoreStaticSitesEnabled           bool          `yaml:"core_static_sites_enabled" mapstructure:"core_static_sites_enabled"`
 	CoreStaticSitesRoot              string        `yaml:"core_static_sites_root" mapstructure:"core_static_sites_root"`
+	CoreStaticSitesPublicOrigin      string        `yaml:"core_static_sites_public_origin" mapstructure:"core_static_sites_public_origin"`
 	CoreKnowledgeEnabled             bool          `yaml:"core_knowledge_enabled" mapstructure:"core_knowledge_enabled"`
 	CoreKnowledgeContentRoot         string        `yaml:"core_knowledge_content_root" mapstructure:"core_knowledge_content_root"`
 	CoreKnowledgeMountRoot           string        `yaml:"core_knowledge_mount_root" mapstructure:"core_knowledge_mount_root"`
@@ -1140,8 +1141,8 @@ func ValidateCoreStaticSites(cfg *Config) error {
 		return errors.New("config is required")
 	}
 	if !cfg.CoreStaticSitesEnabled {
-		if strings.TrimSpace(cfg.CoreStaticSitesRoot) != "" {
-			return errors.New("core_static_sites_root requires core_static_sites_enabled")
+		if strings.TrimSpace(cfg.CoreStaticSitesRoot) != "" || strings.TrimSpace(cfg.CoreStaticSitesPublicOrigin) != "" {
+			return errors.New("core_static_sites_root and core_static_sites_public_origin require core_static_sites_enabled")
 		}
 		return nil
 	}
@@ -1153,7 +1154,14 @@ func ValidateCoreStaticSites(cfg *Config) error {
 	if err != nil || !info.IsDir() {
 		return errors.New("core_static_sites_root must be an existing directory")
 	}
+	origin := strings.TrimSpace(cfg.CoreStaticSitesPublicOrigin)
+	parsedOrigin, err := url.Parse(origin)
+	if err != nil || (parsedOrigin.Scheme != "https" && !(parsedOrigin.Scheme == "http" && parsedOrigin.Hostname() == "localhost")) ||
+		parsedOrigin.Host == "" || parsedOrigin.User != nil || parsedOrigin.Path != "" || parsedOrigin.RawQuery != "" || parsedOrigin.Fragment != "" {
+		return errors.New("core_static_sites_public_origin must be an HTTPS origin or local HTTP origin")
+	}
 	cfg.CoreStaticSitesRoot = root
+	cfg.CoreStaticSitesPublicOrigin = origin
 	return nil
 }
 

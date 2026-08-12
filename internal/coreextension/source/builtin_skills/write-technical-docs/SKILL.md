@@ -1,5 +1,5 @@
 ---
-name: write-technical-docs
+name: dirextalk-write-technical-docs
 description: Create or update accurate technical documentation from current code and contracts. Use for API guides, architecture notes, runbooks, setup instructions, release notes, and troubleshooting material.
 ---
 

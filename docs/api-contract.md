@@ -145,7 +145,9 @@ multi-tenant model.
   derives immutable site/release UUIDs from the fenced owner, conversation,
   turn, request, and tool-call identities, publishes exactly `index.html`, and
   records its digest, size, and `/.sites/{site_id}/{release_id}/` path before
-  atomically completing the turn. Same-call recovery verifies and reuses the
+  atomically completing the turn with the absolute
+  `https://<node-domain>/.sites/{site_id}/{release_id}/` URL. Same-call
+  recovery verifies and reuses the
   exact file and PostgreSQL receipt. The embedded `publish-static-site` skill
   instructs the model to produce semantic, responsive, self-contained HTML;
   the edge sandbox CSP blocks scripts, forms, external subresources, and
@@ -278,7 +280,10 @@ lease epoch.
 `SkillService` exposes the same pinned lifecycle for `builtin`, `skills_sh`,
 and `github` sources. Empty Skill discovery selects `builtin`; empty MCP
 discovery selects `official_registry`. Built-in Skills are seeded exactly once
-as ordinary installed records. Uninstall keeps the seed fence, so a process
+as ordinary installed records under the public identifiers
+`dirextalk-research-and-verify`, `dirextalk-review-code`,
+`dirextalk-verify-delivery`, and `dirextalk-write-technical-docs`. Uninstall
+keeps the seed fence, so a process
 restart cannot recreate the installation; an owner may explicitly discover
 and reinstall the current built-in version.
 

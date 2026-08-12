@@ -380,13 +380,19 @@ func validCoreConfig(t *testing.T) Config {
 func TestValidateCoreStaticSitesRequiresExplicitExistingRoot(t *testing.T) {
 	cfg := validCoreConfig(t)
 	cfg.CoreStaticSitesRoot = t.TempDir()
-	if err := ValidateCoreStaticSites(&cfg); err == nil || !strings.Contains(err.Error(), "requires core_static_sites_enabled") {
+	if err := ValidateCoreStaticSites(&cfg); err == nil || !strings.Contains(err.Error(), "require core_static_sites_enabled") {
 		t.Fatalf("disabled partial config err=%v", err)
 	}
 	cfg.CoreStaticSitesEnabled = true
+	cfg.CoreStaticSitesPublicOrigin = "https://s3.dirextalk.ai"
 	if err := ValidateCoreStaticSites(&cfg); err != nil || !filepath.IsAbs(cfg.CoreStaticSitesRoot) {
 		t.Fatalf("enabled root=%q err=%v", cfg.CoreStaticSitesRoot, err)
 	}
+	cfg.CoreStaticSitesPublicOrigin = "/relative"
+	if err := ValidateCoreStaticSites(&cfg); err == nil {
+		t.Fatal("relative static-site public origin was accepted")
+	}
+	cfg.CoreStaticSitesPublicOrigin = "https://s3.dirextalk.ai"
 	cfg.CoreStaticSitesRoot = filepath.Join(t.TempDir(), "missing")
 	if err := ValidateCoreStaticSites(&cfg); err == nil {
 		t.Fatal("missing static-site root was accepted")

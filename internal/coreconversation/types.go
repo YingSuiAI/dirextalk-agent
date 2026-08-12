@@ -422,9 +422,10 @@ type StaticSitePublisher interface {
 // publication is deliberately outside PostgreSQL and is idempotent by the
 // server-derived site/release identity.
 type ConversationStaticSiteCommand struct {
-	Lease    TurnLease
-	Receipt  StaticSiteReceipt
-	Response ChatResponse
+	Lease     TurnLease
+	Receipt   StaticSiteReceipt
+	PublicURL string
+	Response  ChatResponse
 }
 
 func (c ConversationStaticSiteCommand) Validate() error {
@@ -433,7 +434,8 @@ func (c ConversationStaticSiteCommand) Validate() error {
 		c.Lease.LeaseID == "" || c.Lease.Epoch == 0 || c.Receipt.Validate() != nil ||
 		c.Response.RequestID != turn.RequestID || c.Response.ConversationID != turn.ConversationID ||
 		c.Response.ModelProfileID != turn.ProfileID || !c.Response.Done || c.Response.Message.ModelProfileID != turn.ProfileID ||
-		c.Response.Message.Content != "Published the static page: "+c.Receipt.PublicPath || c.Response.Message.Validate() != nil {
+		c.PublicURL == "" || !strings.HasSuffix(c.PublicURL, c.Receipt.PublicPath) ||
+		c.Response.Message.Content != "Published the static page: "+c.PublicURL || c.Response.Message.Validate() != nil {
 		return ErrInvalid
 	}
 	return nil

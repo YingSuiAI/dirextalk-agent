@@ -10,22 +10,22 @@ import (
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 )
 
-const builtinSkillVersion = "1.0.0"
+const builtinSkillVersion = "1.0.1"
 
 //go:embed builtin_skills/*/SKILL.md builtin_skills/*/agents/openai.yaml
 var builtinSkillFiles embed.FS
 
 type builtinSkillDefinition struct {
 	ID          string
-	Name        string
+	Directory   string
 	Description string
 }
 
 var builtinSkillDefinitions = []builtinSkillDefinition{
-	{ID: "research-and-verify", Name: "Research and Verify", Description: "Research current topics and verify claims with authoritative sources."},
-	{ID: "review-code", Name: "Review Code", Description: "Review code for correctness, security, reliability, and missing tests."},
-	{ID: "verify-delivery", Name: "Verify Delivery", Description: "Turn requirements into evidence-backed acceptance and release checks."},
-	{ID: "write-technical-docs", Name: "Write Technical Docs", Description: "Create accurate API guides, runbooks, and architecture documentation."},
+	{ID: "dirextalk-research-and-verify", Directory: "research-and-verify", Description: "Research current topics and verify claims with authoritative sources."},
+	{ID: "dirextalk-review-code", Directory: "review-code", Description: "Review code for correctness, security, reliability, and missing tests."},
+	{ID: "dirextalk-verify-delivery", Directory: "verify-delivery", Description: "Turn requirements into evidence-backed acceptance and release checks."},
+	{ID: "dirextalk-write-technical-docs", Directory: "write-technical-docs", Description: "Create accurate API guides, runbooks, and architecture documentation."},
 }
 
 // BuiltinSkills is the immutable, network-free source for Dirextalk-owned
@@ -41,13 +41,13 @@ var _ core.SourceAdapter = (*BuiltinSkills)(nil)
 func NewBuiltinSkills() (*BuiltinSkills, error) {
 	adapter := &BuiltinSkills{artifacts: make(map[string]core.FetchArtifact, len(builtinSkillDefinitions))}
 	for _, definition := range builtinSkillDefinitions {
-		files, err := readBuiltinSkillFiles(definition.ID)
+		files, err := readBuiltinSkillFiles(definition.Directory)
 		if err != nil {
 			return nil, err
 		}
 		candidate := core.Candidate{
 			ID: definition.ID, Kind: core.KindSkill, Source: core.SourceBuiltin,
-			Name: definition.Name, Description: definition.Description,
+			Name: definition.ID, Description: definition.Description,
 			Pin:       core.SourcePin{RegistryVersion: builtinSkillVersion, RegistrySHA256: strings.Repeat("0", 64)},
 			Transport: core.TransportSkillStatic,
 		}

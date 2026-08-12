@@ -23,7 +23,7 @@ type staticSiteIntrinsicArguments struct {
 	HTML string `json:"html"`
 }
 
-func staticSiteIntrinsic(store ConversationStaticSiteStore, publisher StaticSitePublisher, bound TurnLease) ResolvedIntrinsic {
+func staticSiteIntrinsic(store ConversationStaticSiteStore, publisher StaticSitePublisher, publicOrigin string, bound TurnLease) ResolvedIntrinsic {
 	return ResolvedIntrinsic{
 		Tool: coremodel.Tool{
 			Name:        coremodel.IntrinsicStaticSitePublishToolName,
@@ -37,16 +37,17 @@ func staticSiteIntrinsic(store ConversationStaticSiteStore, publisher StaticSite
 			},
 		},
 		Execute: func(ctx context.Context, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
-			return executeStaticSiteIntrinsic(ctx, store, publisher, bound, request)
+			return executeStaticSiteIntrinsic(ctx, store, publisher, publicOrigin, bound, request)
 		},
 	}
 }
 
-func executeStaticSiteIntrinsic(ctx context.Context, store ConversationStaticSiteStore, publisher StaticSitePublisher, bound TurnLease, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+func executeStaticSiteIntrinsic(ctx context.Context, store ConversationStaticSiteStore, publisher StaticSitePublisher, publicOrigin string, bound TurnLease, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
 	if ctx == nil || store == nil || publisher == nil || request.Lease.Turn.ID != bound.Turn.ID ||
 		request.Lease.Turn.RequestID != bound.Turn.RequestID || request.Lease.LeaseID != bound.LeaseID ||
 		request.Lease.Epoch < bound.Epoch || request.Call.Name != coremodel.IntrinsicStaticSitePublishToolName ||
-		request.Call.Validate() != nil || request.ConversationRevision == 0 || request.ConversationRevision == ^uint64(0) {
+		request.Call.Validate() != nil || request.ConversationRevision == 0 || request.ConversationRevision == ^uint64(0) ||
+		!strings.HasPrefix(publicOrigin, "http") || strings.HasSuffix(publicOrigin, "/") {
 		return IntrinsicExecutionResult{}, ErrInvalid
 	}
 	args, err := parseStaticSiteIntrinsicArguments(request.CanonicalArguments)
@@ -67,16 +68,17 @@ func executeStaticSiteIntrinsic(ctx context.Context, store ConversationStaticSit
 		return IntrinsicExecutionResult{}, ErrConflict
 	}
 	now := turn.CreatedAt.UTC().Add(time.Microsecond)
+	publicURL := publicOrigin + receipt.PublicPath
 	message := Message{
 		ID:   uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-static-site-message:"+turn.ID+":"+request.Call.ID)).String(),
-		Role: RoleAssistant, Content: fmt.Sprintf("Published the static page: %s", receipt.PublicPath),
+		Role: RoleAssistant, Content: fmt.Sprintf("Published the static page: %s", publicURL),
 		CreatedAt: now, ModelProfileID: turn.ProfileID,
 	}
 	response := ChatResponse{
 		RequestID: turn.RequestID, ConversationID: turn.ConversationID,
 		Revision: request.ConversationRevision + 1, Message: message, Done: true, ModelProfileID: turn.ProfileID,
 	}
-	command := ConversationStaticSiteCommand{Lease: request.Lease, Receipt: receipt, Response: response}
+	command := ConversationStaticSiteCommand{Lease: request.Lease, Receipt: receipt, PublicURL: publicURL, Response: response}
 	if command.Validate() != nil {
 		return IntrinsicExecutionResult{}, ErrInvalid
 	}

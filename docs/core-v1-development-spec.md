@@ -134,7 +134,9 @@ The Core v1 acceptance set covers these ten observable scenarios:
    concurrent mutation races preserve durable revisions.
 6. MCP discovery and lifecycle cover the official registry, Smithery, Glama,
    and GitHub sources with stdio and Streamable HTTP transports.
-7. Skill lifecycle covers Dirextalk built-ins, skills.sh, and GitHub pins; execution is isolated in
+7. Skill lifecycle covers the `dirextalk-research-and-verify`,
+   `dirextalk-review-code`, `dirextalk-verify-delivery`, and
+   `dirextalk-write-technical-docs` built-ins plus skills.sh and GitHub pins; execution is isolated in
    the extension runner, and cancellation proves the complete descendant
    process tree and delegated cgroup are gone before the task is cleaned.
 8. Knowledge covers Agent-owned mounts, bounded uploads, memory, indexing,
@@ -254,7 +256,8 @@ archive. Core derives all filesystem and URL identity, writes through a
 same-filesystem staging directory, fsyncs and atomically renames the release,
 then commits the verified SHA-256/size receipt and turn terminal state in one
 PostgreSQL transaction. Releases are immutable and replay-safe at
-`/.sites/{site_id}/{release_id}/`. The Agent owns the host root; the edge sees
+`/.sites/{site_id}/{release_id}/`; the terminal response uses the configured
+node HTTPS origin to return an absolute URL. The Agent owns the host root; the edge sees
 only `public/` read-only. The current embedded design skill produces
 responsive semantic HTML with inline CSS only. JavaScript, forms, external
 assets, network requests, and multi-file bundles are not part of the current

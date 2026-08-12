@@ -19,23 +19,24 @@ import (
 )
 
 type Service struct {
-	store           Store
-	models          ModelRunner
-	extensions      ExtensionResolver
-	intrinsics      IntrinsicResolver
-	staticSites     StaticSitePublisher
-	memoryRecall    MemoryRecallResolver
-	snapshots       SnapshotProfileResolver
-	now             func() time.Time
-	leaseTTL        time.Duration
-	turns           TurnStore
-	lifecycleCtx    context.Context
-	lifecycleCancel context.CancelFunc
-	workers         sync.WaitGroup
-	cancelMu        sync.Mutex
-	cancelSignals   map[string]chan struct{}
-	runtimeMu       sync.Mutex
-	runtime         map[string]*turnRuntime
+	store            Store
+	models           ModelRunner
+	extensions       ExtensionResolver
+	intrinsics       IntrinsicResolver
+	staticSites      StaticSitePublisher
+	staticSiteOrigin string
+	memoryRecall     MemoryRecallResolver
+	snapshots        SnapshotProfileResolver
+	now              func() time.Time
+	leaseTTL         time.Duration
+	turns            TurnStore
+	lifecycleCtx     context.Context
+	lifecycleCancel  context.CancelFunc
+	workers          sync.WaitGroup
+	cancelMu         sync.Mutex
+	cancelSignals    map[string]chan struct{}
+	runtimeMu        sync.Mutex
+	runtime          map[string]*turnRuntime
 }
 
 // MemoryRecallResolver supplies a bounded, already-delimited model-only
@@ -73,11 +74,12 @@ func (s *Service) SetIntrinsicResolver(resolver IntrinsicResolver) {
 // SetStaticSitePublisher exposes the Agent-owned, single-file static-site
 // intrinsic only after its immutable filesystem root has passed readiness.
 // A nil publisher removes the tool from the model catalog.
-func (s *Service) SetStaticSitePublisher(publisher StaticSitePublisher) {
+func (s *Service) SetStaticSitePublisher(publisher StaticSitePublisher, publicOrigin string) {
 	if s == nil {
 		return
 	}
 	s.staticSites = publisher
+	s.staticSiteOrigin = strings.TrimRight(strings.TrimSpace(publicOrigin), "/")
 }
 
 // SetMemoryRecallResolver wires the optional Agent-owned long-term-memory
