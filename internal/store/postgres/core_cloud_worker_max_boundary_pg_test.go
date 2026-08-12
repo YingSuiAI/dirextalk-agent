@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -27,6 +28,9 @@ func seedPGTerminalCloudWorkerExecutions(t *testing.T, base *pgCloudWorkerHarnes
 func TestCloudWorkerPostgresOutputHistoryMaximumBatchDrainsMultipleBatches(t *testing.T) {
 	h := newPGCloudWorkerHarness(t)
 	defer h.cleanup()
+	bulkCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	h.ctx = bulkCtx
 
 	const totalExecutions = 2*128 + 1
 	executionIDs := seedPGTerminalCloudWorkerExecutions(t, h, totalExecutions, true)
@@ -112,6 +116,9 @@ func TestCloudWorkerPostgresAuthorityEventsMaximumPagePreservesContinuityAndTrun
 func TestCloudWorkerPostgresCompletionOutboxMaximumBatchClaimsWithoutDuplicates(t *testing.T) {
 	h := newPGCloudWorkerHarness(t)
 	defer h.cleanup()
+	bulkCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	h.ctx = bulkCtx
 
 	const totalOutboxes = 201
 	seedPGTerminalCloudWorkerExecutions(t, h, totalOutboxes, false)

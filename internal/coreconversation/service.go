@@ -26,6 +26,7 @@ type Service struct {
 	staticSites      StaticSitePublisher
 	staticSiteOrigin string
 	memoryRecall     MemoryRecallResolver
+	titleGenerator   ConversationTitleGenerator
 	snapshots        SnapshotProfileResolver
 	now              func() time.Time
 	leaseTTL         time.Duration
@@ -461,6 +462,7 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 		emit(StreamEvent{Kind: EventStarted, RequestID: cmd.RequestID, ConversationID: conv.ID})
 	}
 	persistedMessageCount := len(conv.Messages)
+	conversationTitleUserText := firstConversationUserText(conv, cmd.Prompt)
 	var recalledMemory string
 	memoryRecallResolved := false
 	user := Message{ID: uuid.NewString(), Role: RoleUser, Content: cmd.Prompt, CreatedAt: nextMessageTime(conv, s.clock()), ModelProfileID: cmd.ProfileID}
@@ -562,6 +564,7 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 		if len(result.Message.ToolCalls) == 0 {
 			conv.Revision++
 			conv.UpdatedAt = s.clock()
+			conv.Title = s.automaticConversationTitle(ctx, conv.Title, conversationTitleUserText, result.Message.Content)
 			if err := conv.ValidateForPersistence(); err != nil {
 				return ChatResponse{}, fmt.Errorf("conversation: %w", err)
 			}
@@ -1482,6 +1485,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		conv = Conversation{ID: turn.ConversationID, Revision: 0, CreatedAt: s.clock(), UpdatedAt: s.clock()}
 	}
 	persistedMessageCount := len(conv.Messages)
+	conversationTitleUserText := firstConversationUserText(conv, turn.Prompt)
 	resolvedExtensions, err := s.resolveAcceptedTurnExtensions(ctx, turn.ExtensionSnapshots)
 	if err != nil {
 		_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
@@ -1815,7 +1819,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			conv.Messages = append(conv.Messages, Message{ID: uuid.NewString(), Role: RoleUser, Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: userTime}, m)
 			conv.Revision++
 			conv.UpdatedAt = s.clock()
-			response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision, Message: m, Done: true, ModelProfileID: turn.ProfileID, RelatedTaskIDs: append([]string(nil), m.RelatedTaskIDs...), RelatedPlanIDs: append([]string(nil), m.RelatedPlanIDs...), References: cloneReferences(m.References), ToolSummaries: append([]string(nil), m.ToolSummaries...)}
+			conversationTitle := s.automaticConversationTitle(ctx, conv.Title, conversationTitleUserText, m.Content)
+			response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision, Message: m, Done: true, ModelProfileID: turn.ProfileID, RelatedTaskIDs: append([]string(nil), m.RelatedTaskIDs...), RelatedPlanIDs: append([]string(nil), m.RelatedPlanIDs...), References: cloneReferences(m.References), ToolSummaries: append([]string(nil), m.ToolSummaries...), ConversationTitle: conversationTitle}
 			_, _ = s.turns.CommitTurn(ctx, lease, response)
 			return
 		case <-heartbeat.C:

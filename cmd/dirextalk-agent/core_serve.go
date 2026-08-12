@@ -145,6 +145,7 @@ func serveCore(cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("initialize conversation service: %w", err)
 	}
+	conversation.SetConversationTitleGenerator(coreConversationTitleGenerator{profiles: profiles})
 	if cfg.CoreStaticSitesEnabled {
 		publisher, publisherErr := staticsite.NewPublisher(cfg.CoreStaticSitesRoot)
 		if publisherErr != nil {

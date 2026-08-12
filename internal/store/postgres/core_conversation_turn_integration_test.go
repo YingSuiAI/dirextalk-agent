@@ -335,12 +335,12 @@ func TestCoreConversationTurnHistoryAndEventsAtomicPostgres(t *testing.T) {
 	if err != nil || started.Sequence != 2 || started.Revision != turn.Revision {
 		t.Fatalf("started event=%+v err=%v", started, err)
 	}
-	response := core.ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 2, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "done", ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC()}}
+	response := core.ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 2, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "done", ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC()}, ConversationTitle: "Generated title"}
 	if _, err = h.store.CommitTurn(context.Background(), lease, response); err != nil {
 		t.Fatal(err)
 	}
 	conversation, err := h.store.LoadConversation(context.Background(), turn.ConversationID)
-	if err != nil || len(conversation.Messages) != 2 {
+	if err != nil || conversation.Title != "Generated title" || len(conversation.Messages) != 2 {
 		t.Fatalf("conversation=%+v err=%v", conversation, err)
 	}
 	if err := conversation.ValidateForPersistence(); err != nil {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.74
+
+1. Generate a concise first-turn conversation title with the configured tool model and fall back to the first user sentence.
+2. Persist generated titles atomically for durable conversations without overwriting user-assigned titles.
+
 ## v1.0.73
 
 1. Return absolute public URLs for generated static sites.

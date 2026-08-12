@@ -202,6 +202,9 @@ type ChatResponse struct {
 	References     []Reference  `json:"references,omitempty"`
 	ToolSummaries  []string     `json:"tool_summaries,omitempty"`
 	ToolResults    []ToolResult `json:"tool_results,omitempty"`
+	// ConversationTitle is an internal atomic-commit projection. It is not
+	// part of the public chat or durable turn response contract.
+	ConversationTitle string `json:"-"`
 }
 
 type StreamEventKind string
