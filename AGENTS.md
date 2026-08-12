@@ -90,5 +90,8 @@ git diff --check
 ```
 
 Stable releases must use the repository-owned scripts in prepare, verify, then
-publish order. Never reconstruct the image tags, Git tag, or GitHub Release by
-hand.
+publish order. The maintained release gate is the clean synchronized `main`,
+matching source/image/binary version identity, matching Git tag and GitHub
+Release, followed by a pulled `latest` probe. Never reconstruct these release
+objects by hand or add digest, attestation, image-ID, or tag-history gates that
+are outside the stable release contract.

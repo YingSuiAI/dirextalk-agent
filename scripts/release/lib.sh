@@ -123,15 +123,13 @@ release_require_message_server() {
 }
 
 release_write_json() {
-  local path=$1 kind=$2 image_id=${3:-}
+  local path=$1 kind=$2
   mkdir -p "$RELEASE_OUTPUT_DIR"
-  python3 - "$path" "$kind" "$RELEASE_VERSION" "$RELEASE_COMMIT" "$RELEASE_BUILD_TIME" "$RELEASE_IMAGE" "$image_id" <<'PY'
+  python3 - "$path" "$kind" "$RELEASE_VERSION" "$RELEASE_COMMIT" "$RELEASE_BUILD_TIME" "$RELEASE_IMAGE" <<'PY'
 import json, os, pathlib, sys, tempfile
 path = pathlib.Path(sys.argv[1])
-keys = ("kind", "version", "commit", "build_time", "image", "image_id")
+keys = ("kind", "version", "commit", "build_time", "image")
 value = dict(zip(keys, sys.argv[2:]))
-if not value["image_id"]:
-    value.pop("image_id")
 data = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
 fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
 try:
@@ -145,15 +143,14 @@ PY
 }
 
 release_require_json() {
-  local path=$1 kind=$2 require_id=$3 values current_head
+  local path=$1 kind=$2 values current_head
   [[ -f "$path" ]] || release_die "missing $(basename "$path") evidence"
-  values=$(python3 - "$path" "$kind" "$require_id" <<'PY'
+  values=$(python3 - "$path" "$kind" <<'PY'
 import json, pathlib, re, sys
-path, expected_kind, require_id = sys.argv[1:]
+path, expected_kind = sys.argv[1:]
 raw = pathlib.Path(path).read_bytes()
 value = json.loads(raw)
 required = {"kind", "version", "commit", "build_time", "image"}
-if require_id == "yes": required.add("image_id")
 if set(value) != required or raw != json.dumps(value, separators=(",", ":"), sort_keys=True).encode():
     raise SystemExit("evidence is not canonical")
 patterns = {
@@ -162,10 +159,9 @@ patterns = {
     "build_time": r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\r\n]+$",
     "image": r"^dirextalk/agent:v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$",
 }
-if require_id == "yes": patterns["image_id"] = r"^sha256:[0-9a-f]{64}$"
 if value.get("kind") != expected_kind or any(not isinstance(value.get(k), str) or not re.fullmatch(p, value[k]) for k, p in patterns.items()):
     raise SystemExit("evidence value is invalid")
-for key in ("version", "commit", "build_time", "image", "image_id"):
+for key in ("version", "commit", "build_time", "image"):
     print(value.get(key, ""))
 PY
 ) || release_die "invalid $(basename "$path") evidence"
@@ -202,204 +198,4 @@ release_verify_image() {
       release_die "$binary version probe failed"
     [[ "$output" == "$RELEASE_VERSION" ]] || release_die "$binary reports a different version"
   done
-}
-
-release_probe_remote_index() {
-  [[ $# -eq 1 ]] || release_die 'internal error: remote index verification requires one image reference'
-  local ref=$1 inspection_file error_file digest status
-  RELEASE_REMOTE_INDEX_EXISTS=0
-  RELEASE_REMOTE_INDEX_DIGEST=
-  inspection_file=$(mktemp "${TMPDIR:-/tmp}/dirextalk-agent-oci-inspect.XXXXXX")
-  error_file=$(mktemp "${TMPDIR:-/tmp}/dirextalk-agent-oci-error.XXXXXX")
-  if docker buildx imagetools inspect "$ref" --format '{{json .}}' >"$inspection_file" 2>"$error_file"; then
-    status=0
-  else
-    status=$?
-  fi
-  if [[ "$status" -ne 0 ]]; then
-    if grep -Fqx "ERROR: docker.io/$ref: not found" "$error_file" || \
-       grep -Fqx "ERROR: $ref: not found" "$error_file"; then
-      rm -f "$inspection_file" "$error_file"
-      return
-    fi
-    rm -f "$inspection_file" "$error_file"
-    release_die "could not inspect remote OCI index: $ref"
-  fi
-
-  if digest=$(python3 - "$inspection_file" "$ref" <<'PY'
-import json, pathlib, re, sys
-
-path, ref = sys.argv[1:]
-try:
-    value = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
-except Exception as exc:
-    raise SystemExit(f"invalid imagetools response for {ref}: {exc}")
-
-manifest = value.get("manifest") if isinstance(value, dict) else None
-if not isinstance(manifest, dict):
-    raise SystemExit(f"imagetools response for {ref} has no manifest")
-if manifest.get("mediaType") != "application/vnd.oci.image.index.v1+json":
-    raise SystemExit(f"remote image is not an OCI index: {ref}")
-
-digest = manifest.get("digest")
-if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-    raise SystemExit(f"remote OCI index has an invalid digest: {ref}")
-
-descriptors = manifest.get("manifests")
-if not isinstance(descriptors, list):
-    raise SystemExit(f"remote OCI index has no platform manifests: {ref}")
-
-platforms = []
-platform_digests = []
-attestation_subjects = []
-for descriptor in descriptors:
-    if not isinstance(descriptor, dict):
-        raise SystemExit(f"remote OCI index has an invalid descriptor: {ref}")
-    if descriptor.get("mediaType") != "application/vnd.oci.image.manifest.v1+json":
-        raise SystemExit(f"remote OCI index has a non-OCI manifest descriptor: {ref}")
-    descriptor_digest = descriptor.get("digest")
-    if not isinstance(descriptor_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", descriptor_digest):
-        raise SystemExit(f"remote OCI index has an invalid descriptor digest: {ref}")
-    platform = descriptor.get("platform")
-    if not isinstance(platform, dict):
-        raise SystemExit(f"remote OCI index descriptor has no platform: {ref}")
-    os_name = platform.get("os")
-    architecture = platform.get("architecture")
-    if os_name == "unknown" and architecture == "unknown":
-        annotations = descriptor.get("annotations")
-        if not isinstance(annotations, dict) or annotations.get("vnd.docker.reference.type") != "attestation-manifest":
-            raise SystemExit(f"remote OCI index has an unexpected unknown platform descriptor: {ref}")
-        subject = annotations.get("vnd.docker.reference.digest")
-        if not isinstance(subject, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", subject):
-            raise SystemExit(f"remote OCI index has an unbound attestation descriptor: {ref}")
-        attestation_subjects.append(subject)
-        continue
-    platforms.append((os_name, architecture, platform.get("variant")))
-    platform_digests.append(descriptor_digest)
-
-if platforms != [("linux", "amd64", None)]:
-    raise SystemExit(f"remote OCI index must contain exactly linux/amd64: {ref}")
-if attestation_subjects != [platform_digests[0]]:
-    raise SystemExit(f"remote OCI index attestations are not bound to linux/amd64: {ref}")
-print(digest)
-print(platform_digests[0])
-PY
-  ); then
-    status=0
-  else
-    status=$?
-  fi
-  rm -f "$inspection_file" "$error_file"
-  [[ "$status" -eq 0 ]] || release_die "remote OCI index verification failed: $ref"
-  mapfile -t remote_index_fields <<<"$digest"
-  [[ "${#remote_index_fields[@]}" == 2 ]] || release_die "remote OCI index identity is incomplete: $ref"
-  RELEASE_REMOTE_INDEX_EXISTS=1
-  RELEASE_REMOTE_INDEX_DIGEST=${remote_index_fields[0]}
-  RELEASE_REMOTE_PLATFORM_DIGEST=${remote_index_fields[1]}
-  export RELEASE_REMOTE_INDEX_EXISTS RELEASE_REMOTE_INDEX_DIGEST RELEASE_REMOTE_PLATFORM_DIGEST
-}
-
-release_remote_index_digest() {
-  [[ $# -eq 1 ]] || release_die 'internal error: remote index verification requires one image reference'
-  release_probe_remote_index "$1"
-  [[ "$RELEASE_REMOTE_INDEX_EXISTS" == 1 ]] || release_die "remote OCI index is unavailable: $1"
-  printf '%s\n' "$RELEASE_REMOTE_INDEX_DIGEST"
-}
-
-release_remote_platform_config_digest() {
-  [[ $# -eq 1 && "$1" =~ ^sha256:[0-9a-f]{64}$ ]] || \
-    release_die 'remote platform manifest digest is invalid'
-  local manifest_ref="dirextalk/agent@$1" raw_file config_digest status
-  raw_file=$(mktemp "${TMPDIR:-/tmp}/dirextalk-agent-manifest.XXXXXX")
-  if docker buildx imagetools inspect "$manifest_ref" --raw >"$raw_file"; then
-    status=0
-  else
-    status=$?
-  fi
-  [[ "$status" -eq 0 ]] || {
-    rm -f "$raw_file"
-    release_die "could not inspect remote platform manifest: $manifest_ref"
-  }
-  if config_digest=$(python3 - "$raw_file" <<'PY'
-import json, pathlib, re, sys
-
-try:
-    value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-except Exception as exc:
-    raise SystemExit(f"invalid remote platform manifest: {exc}")
-if value.get("mediaType") != "application/vnd.oci.image.manifest.v1+json":
-    raise SystemExit("remote platform image is not an OCI manifest")
-config = value.get("config")
-digest = config.get("digest") if isinstance(config, dict) else None
-if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-    raise SystemExit("remote platform manifest has an invalid config digest")
-print(digest)
-PY
-  ); then
-    status=0
-  else
-    status=$?
-  fi
-  rm -f "$raw_file"
-  [[ "$status" -eq 0 ]] || release_die "remote platform manifest verification failed: $manifest_ref"
-  printf '%s\n' "$config_digest"
-}
-
-release_verify_remote_attestations() {
-  [[ $# -eq 2 && "$2" =~ ^sha256:[0-9a-f]{64}$ ]] || \
-    release_die 'remote attestation verification input is invalid'
-  local ref=$1 platform_digest=$2 kind output_file status
-  for kind in Provenance SBOM; do
-    output_file=$(mktemp "${TMPDIR:-/tmp}/dirextalk-agent-${kind,,}.XXXXXX")
-    if docker buildx imagetools inspect "$ref" --format "{{json .$kind}}" >"$output_file"; then
-      status=0
-    else
-      status=$?
-    fi
-    [[ "$status" -eq 0 ]] || {
-      rm -f "$output_file"
-      release_die "could not inspect remote $kind attestation: $ref"
-    }
-    if python3 - "$output_file" "$kind" "$platform_digest" <<'PY'
-import json, pathlib, sys
-
-path, kind, platform_digest = sys.argv[1:]
-try:
-    value = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
-except Exception as exc:
-    raise SystemExit(f"invalid {kind} attestation: {exc}")
-if not isinstance(value, dict) or not value:
-    raise SystemExit(f"remote {kind} attestation is empty")
-expected_key = "SLSA" if kind == "Provenance" else "SPDX"
-if expected_key not in value or not isinstance(value[expected_key], dict) or not value[expected_key]:
-    raise SystemExit(f"remote {kind} attestation lacks {expected_key}")
-subject = value.get("_subjectDigest")
-if subject is not None and subject != platform_digest:
-    raise SystemExit(f"remote {kind} attestation is bound to another manifest")
-PY
-    then
-      status=0
-    else
-      status=$?
-    fi
-    rm -f "$output_file"
-    [[ "$status" -eq 0 ]] || release_die "remote $kind attestation verification failed: $ref"
-  done
-}
-
-release_buildx_metadata_digest() {
-  [[ $# -eq 1 && -f "$1" ]] || release_die 'buildx metadata is unavailable'
-  python3 - "$1" <<'PY'
-import json, pathlib, re, sys
-
-path = pathlib.Path(sys.argv[1])
-try:
-    value = json.loads(path.read_text(encoding="utf-8"))
-except Exception as exc:
-    raise SystemExit(f"invalid buildx metadata: {exc}")
-digest = value.get("containerimage.digest") if isinstance(value, dict) else None
-if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-    raise SystemExit("buildx metadata has no canonical image digest")
-print(digest)
-PY
 }

@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 release_init "$@"
 release_preflight
-release_require_json "$RELEASE_CONTEXT" prepared no
+release_require_json "$RELEASE_CONTEXT" prepared
 release_require_tools go buf docker
 release_require_message_server
 [[ -n "${AGENT_TEST_POSTGRES_DSN:-}" ]] || release_die 'AGENT_TEST_POSTGRES_DSN is required for formal verification'
@@ -23,7 +23,5 @@ docker build --pull \
   --tag "$RELEASE_IMAGE" \
   --file deploy/container/agent.Containerfile .
 release_verify_image "$RELEASE_IMAGE"
-image_id=$(docker image inspect "$RELEASE_IMAGE" --format '{{.Id}}')
-[[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || release_die 'Agent image ID is invalid'
-release_write_json "$RELEASE_VERIFIED" verified "$image_id"
-printf 'Agent release verify passed for %s (%s)\n' "$RELEASE_VERSION" "$image_id"
+release_write_json "$RELEASE_VERIFIED" verified
+printf 'Agent release verify passed for %s\n' "$RELEASE_VERSION"

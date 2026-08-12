@@ -1,9 +1,8 @@
 # Stable Agent release contract
 
 The formal Agent version is canonical `vX.Y.Z`. One release binds one reviewed
-`main` commit, its RFC3339 commit timestamp, one single-platform OCI index under
-the Docker version tag, one annotated Git tag, and one matching formal GitHub
-Release.
+`main` commit, its RFC3339 commit timestamp, one `linux/amd64` Docker version
+tag, one annotated Git tag, and one matching formal GitHub Release.
 
 ## Repository authority
 
@@ -33,24 +32,23 @@ Prepare requires a clean Agent `main` whose `HEAD` exactly equals
 Go suite with the sibling Message Server catalog input, builds all commands,
 builds the unified image, checks its version/revision/created labels, and
 requires all three production binaries to print the requested version.
-Canonical local evidence is bound to the commit and image ID.
+Canonical local evidence is bound to the commit and version tag.
 
-Publish revalidates every precondition and refuses a local or remote tag,
-formal Release, image, notes, or evidence drift. Buildx publishes an OCI index
-containing exactly `linux/amd64` plus its standard attestations. Publication
-then requires its build metadata digest to equal the registry index digest,
-pulls that immutable digest, rechecks the OCI labels and all three binaries,
-creates or verifies the annotated Git tag and exact formal GitHub Release, and
-only then promotes that same index without a rebuild to
-`dirextalk/agent:latest`. The version and latest tags must resolve to the
-identical immutable digest. An exact retry reuses the already validated version
-index instead of rebuilding provenance; a conflicting duplicate fails before
-the mutable deployment tag moves. An already exact `latest` is not rewritten,
-and publication refuses to replace a newer canonical `latest` version with an
-older release. Docker Hub publication credentials are single-writer authority;
-the workflow concurrency lock plus immediate pre/postcondition checks detect
-external tag drift but cannot provide registry-side compare-and-swap.
+Publish revalidates the clean, synchronized `main` source and its prepare and
+verify evidence. Buildx publishes the requested `linux/amd64` version tag, then
+the script pulls that tag and rechecks its version/revision/created labels and
+all three production binaries. It creates or reuses the matching annotated Git
+tag and formal GitHub Release. Only after the GitHub Release succeeds does it
+move `dirextalk/agent:latest` to the released version tag, pull `latest`, and
+repeat the same label and binary probes. A failed build, pull, probe, tag push,
+or GitHub Release leaves `latest` untouched.
+
+The release contract deliberately does not require registry digest comparison,
+attestation or SBOM parsing, cross-job local image identity, `latest` history
+ordering, or registry race simulation. The checked-in version, source revision,
+image labels, executable versions, Git tag, GitHub Release, and pulled `latest`
+probe are the maintained release identity.
 
 The formal GitHub Release title is `Dirextalk Agent vX.Y.Z`, its body is the
-checked-in version section, and it has no assets. Publication requires explicit
-authorization; prepare and verify do not push or create external state.
+checked-in version section. Publication requires explicit authorization;
+prepare and verify do not push or create external state.
