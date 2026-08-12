@@ -127,6 +127,7 @@ func releaseBaselineDescriptors() map[string]*capv1.CapabilityDescriptor {
 		(&coreModelCapability{}).Descriptor(),
 		(&coreKnowledgeCapability{}).Descriptor(),
 		NewCoreMemoryCapability(nil).Descriptor(),
+		NewCoreStaticSiteCapability(nil).Descriptor(),
 		(&coreTaskCapability{}).Descriptor(),
 		(&coreScheduleCapability{}).Descriptor(),
 		(&coreConfirmationCapability{}).Descriptor(),
