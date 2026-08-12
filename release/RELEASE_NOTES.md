@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.80
+
+1. Dispatch Native Agent Product reads through the existing direct read-only path instead of extension preparation.
+2. Persist user-visible assistant text deltas for live durable conversation progress without exposing provider reasoning.
+
 ## v1.0.79
 
 1. Keep model profiles on the four current role-specific defaults and remove the superseded generic default field.
