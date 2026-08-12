@@ -393,3 +393,20 @@ func TestMiscDescriptorsCarrySchemaDigests(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeConfigUsesOnlyModeSpecificIdentity(t *testing.T) {
+	capability := NewConfigCapability(releaseConfigStore{})
+	descriptor := capability.Descriptor()
+	for _, operation := range descriptor.GetOperations() {
+		if strings.Contains(operation.GetInputSchemaJson(), `"display_name"`) &&
+			!strings.Contains(operation.GetInputSchemaJson(), `"native_agent_identity"`) {
+			t.Fatalf("%s retains a flat identity input: %s", operation.GetOperationId(), operation.GetInputSchemaJson())
+		}
+		if strings.Contains(operation.GetResultSchemaJson(), `"required":["revision","display_name"`) {
+			t.Fatalf("%s retains flat identity result fields: %s", operation.GetOperationId(), operation.GetResultSchemaJson())
+		}
+	}
+	if _, err := capability.HandleOperation(capabilityTestContext(), "update", []byte(`{"idempotency_key":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","display_name":"old"}`)); err == nil {
+		t.Fatal("flat display_name update was accepted")
+	}
+}

@@ -2487,3 +2487,7 @@ WHERE fact.fact_id = timeline.fact_id;
 ALTER TABLE core_memory_timeline
     ALTER COLUMN effective_at SET NOT NULL;
 -- dirextalk-agent migration end 000014_memory_controls.up.sql
+-- dirextalk-agent migration begin 000015_remove_default_client_profile_alias.up.sql
+ALTER TABLE core_model_profile_defaults
+    DROP COLUMN default_client_profile_id;
+-- dirextalk-agent migration end 000015_remove_default_client_profile_alias.up.sql

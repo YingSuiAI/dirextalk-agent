@@ -471,8 +471,8 @@ func TestCoreModelCatalogClientProfileIDUsesDurableProfileSecret(t *testing.T) {
 	}
 	const key = "stored-client-profile-key"
 	if _, err := profiles.Sync(context.Background(), coremodel.SyncProfileCommand{
-		IdempotencyKey:         "33333333-3333-4333-8333-333333333333",
-		DefaultClientProfileID: "chat",
+		IdempotencyKey:               "33333333-3333-4333-8333-333333333333",
+		DefaultConversationProfileID: "chat",
 		Entries: []coremodel.SyncProfileEntry{{
 			ClientProfileID: "chat", DisplayName: "Chat", Provider: coremodel.ProviderOpenAICompatible,
 			ModelKind: coremodel.ModelKindConversation, BaseURL: "https://models.example/v1", Model: "chat", APIKey: stringPtrCatalog(key),

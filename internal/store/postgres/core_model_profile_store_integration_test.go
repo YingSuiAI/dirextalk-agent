@@ -304,9 +304,9 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := store.SyncProfiles(ctx, uuid.NewString(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", coremodel.SyncProfileCommand{
-		DefaultClientProfileID: "one",
-		DefaultToolProfileID:   "two",
-		Entries:                []coremodel.SyncProfileEntry{syncStoreEntry("one", "One", "one-secret"), syncStoreEntry("two", "Two", "two-secret")},
+		DefaultConversationProfileID: "one",
+		DefaultToolProfileID:         "two",
+		Entries:                      []coremodel.SyncProfileEntry{syncStoreEntry("one", "One", "one-secret"), syncStoreEntry("two", "Two", "two-secret")},
 	})
 	if err != nil || len(created.Profiles) != 2 || created.Profiles[0].ClientProfileID != "one" || created.Profiles[1].ClientProfileID != "two" {
 		t.Fatalf("create sync=%+v err=%v", created, err)
@@ -322,7 +322,7 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	if !errors.Is(err, coremodel.ErrInvalidProfile) {
 		t.Fatalf("PostgreSQL accepted embedding tool default: %v", err)
 	}
-	updated, err := store.SyncProfiles(ctx, uuid.NewString(), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", coremodel.SyncProfileCommand{DefaultClientProfileID: "two", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(1), DisplayName: "Two rotated", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: stringPtrStore("rotated")}}})
+	updated, err := store.SyncProfiles(ctx, uuid.NewString(), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", coremodel.SyncProfileCommand{DefaultConversationProfileID: "two", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(1), DisplayName: "Two rotated", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: stringPtrStore("rotated")}}})
 	if err != nil || len(updated.Profiles) != 1 || updated.Profiles[0].Revision != 2 {
 		t.Fatalf("update sync=%+v err=%v", updated, err)
 	}
@@ -330,26 +330,26 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	if err != nil || resolved.APIKey != "rotated" {
 		t.Fatalf("rotated key=%q err=%v", resolved.APIKey, err)
 	}
-	_, err = store.SyncProfiles(ctx, uuid.NewString(), "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", coremodel.SyncProfileCommand{DefaultClientProfileID: "missing", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(2), DisplayName: "should rollback", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}})
+	_, err = store.SyncProfiles(ctx, uuid.NewString(), "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", coremodel.SyncProfileCommand{DefaultConversationProfileID: "missing", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(2), DisplayName: "should rollback", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}})
 	if !errors.Is(err, coremodel.ErrProfileNotFound) {
 		t.Fatalf("invalid default err=%v", err)
 	}
 	var defaultID string
-	if err = pool.QueryRow(ctx, `SELECT default_client_profile_id FROM core_model_profile_defaults WHERE singleton=true`).Scan(&defaultID); err != nil || defaultID != "two" {
+	if err = pool.QueryRow(ctx, `SELECT default_conversation_client_profile_id FROM core_model_profile_defaults WHERE singleton=true`).Scan(&defaultID); err != nil || defaultID != "two" {
 		t.Fatalf("default changed after failed batch: default=%q err=%v", defaultID, err)
 	}
-	_, err = store.SyncProfiles(ctx, uuid.NewString(), "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", coremodel.SyncProfileCommand{DefaultClientProfileID: "one", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "one", ExpectedRevision: int64PtrStore(1), DisplayName: "should rollback", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}, {ClientProfileID: "two", ExpectedRevision: int64PtrStore(99), DisplayName: "stale", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}})
+	_, err = store.SyncProfiles(ctx, uuid.NewString(), "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", coremodel.SyncProfileCommand{DefaultConversationProfileID: "one", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "one", ExpectedRevision: int64PtrStore(1), DisplayName: "should rollback", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}, {ClientProfileID: "two", ExpectedRevision: int64PtrStore(99), DisplayName: "stale", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}})
 	if !errors.Is(err, coremodel.ErrRevisionConflict) {
 		t.Fatalf("stale sync err=%v", err)
 	}
-	if err = pool.QueryRow(ctx, `SELECT default_client_profile_id FROM core_model_profile_defaults WHERE singleton=true`).Scan(&defaultID); err != nil || defaultID != "two" {
+	if err = pool.QueryRow(ctx, `SELECT default_conversation_client_profile_id FROM core_model_profile_defaults WHERE singleton=true`).Scan(&defaultID); err != nil || defaultID != "two" {
 		t.Fatalf("default changed after stale batch: default=%q err=%v", defaultID, err)
 	}
 	one, _ := store.GetProfile(ctx, created.Profiles[0].ID)
 	if one.Revision != 1 || one.DisplayName != "One" {
 		t.Fatalf("stale batch changed one=%+v", one)
 	}
-	replayCommand := coremodel.SyncProfileCommand{DefaultClientProfileID: "two", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(2), DisplayName: "Two rotated", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}}
+	replayCommand := coremodel.SyncProfileCommand{DefaultConversationProfileID: "two", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(2), DisplayName: "Two rotated", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}}
 	replayKey := uuid.NewString()
 	replay, err := store.SyncProfiles(ctx, replayKey, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", replayCommand)
 	if err != nil {

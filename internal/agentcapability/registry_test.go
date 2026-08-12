@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
@@ -184,5 +185,26 @@ func TestCloudWorkerExecutionV2CoexistsWithLocalSkillsAndMCP(t *testing.T) {
 	}
 	if _, ok := r.Get("agent.skills.v1"); !ok {
 		t.Fatal("Cloud Worker publication displaced the local Skills/MCP capability")
+	}
+}
+
+func TestProductOnlyRegistryPublishesTheCompleteSkillsCapability(t *testing.T) {
+	r := NewCoreRegistry(CoreBindings{Product: &capabilityclient.Client{}})
+	capability, ok := r.Get("agent.skills.v1")
+	if !ok {
+		t.Fatal("product-only registry did not publish agent.skills.v1")
+	}
+
+	operations := map[string]bool{}
+	for _, operation := range capability.Descriptor().GetOperations() {
+		operations[operation.GetOperationId()] = true
+	}
+	for _, operation := range []string{"discover_skill", "list_mcp", "execute_mcp", "invoke_product"} {
+		if !operations[operation] {
+			t.Fatalf("complete agent.skills.v1 descriptor is missing %s", operation)
+		}
+	}
+	if _, err := capability.HandleOperation(context.Background(), "discover_skill", []byte(`{}`)); !errors.Is(err, coreextension.ErrNotFound) {
+		t.Fatalf("unbound extension operation err=%v, want ErrNotFound", err)
 	}
 }

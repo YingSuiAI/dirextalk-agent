@@ -115,13 +115,8 @@ func NewCoreRegistry(bindings CoreBindings) *Registry {
 	if bindings.Memory != nil {
 		r.Register(NewCoreMemoryCapability(bindings.Memory))
 	}
-	if bindings.Extensions != nil {
+	if bindings.Extensions != nil || bindings.Product != nil {
 		r.Register(&coreExtensionCapability{service: bindings.Extensions, product: bindings.Product})
-	} else if bindings.Product != nil {
-		// Product bridge remains available in the minimal deployment profile;
-		// extension lifecycle/runner operations are not advertised without the
-		// Core Extension service.
-		r.Register(&coreProductBridgeCapability{coreExtensionCapability: &coreExtensionCapability{product: bindings.Product}})
 	}
 	if bindings.Deprovision != nil && bindings.DeprovisionPurge != nil {
 		r.Register(&coreAccountCapability{service: bindings.Deprovision, purge: bindings.DeprovisionPurge})
@@ -1188,7 +1183,6 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 		for _, entry := range entries {
 			cmd.Entries = append(cmd.Entries, entry.command())
 		}
-		cmd.DefaultClientProfileID = stringValue(in, "default_client_profile_id")
 		cmd.DefaultConversationProfileID = stringValue(in, "default_conversation_client_profile_id")
 		cmd.DefaultToolProfileID = stringValue(in, "default_tool_client_profile_id")
 		cmd.DefaultEmbeddingProfileID = stringValue(in, "default_embedding_client_profile_id")
@@ -1224,7 +1218,7 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 		if err != nil {
 			return nil, err
 		}
-		return marshalResult(map[string]any{"profiles": p.Profiles, "next_page_token": p.NextCursor, "default_client_profile_id": p.Defaults.ConversationClientProfileID, "default_conversation_client_profile_id": p.Defaults.ConversationClientProfileID, "default_tool_client_profile_id": p.Defaults.ToolClientProfileID, "default_embedding_client_profile_id": p.Defaults.EmbeddingClientProfileID, "default_speech_client_profile_id": p.Defaults.SpeechClientProfileID}, nil)
+		return marshalResult(map[string]any{"profiles": p.Profiles, "next_page_token": p.NextCursor, "default_conversation_client_profile_id": p.Defaults.ConversationClientProfileID, "default_tool_client_profile_id": p.Defaults.ToolClientProfileID, "default_embedding_client_profile_id": p.Defaults.EmbeddingClientProfileID, "default_speech_client_profile_id": p.Defaults.SpeechClientProfileID}, nil)
 	case "get_model":
 		p, err := c.service.Get(ctx, stringValue(in, "profile_id"))
 		return marshalResult(p, err)
@@ -1641,12 +1635,6 @@ type coreExtensionCapability struct {
 	product *capabilityclient.Client
 }
 
-type coreProductBridgeCapability struct{ *coreExtensionCapability }
-
-func (c *coreProductBridgeCapability) Descriptor() *capv1.CapabilityDescriptor {
-	return descriptor("agent.skills.v1", "Product Capability Bridge", "Owner-scoped message-server Product capabilities", []opSpec{{"invoke_product", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:product:execute"}})
-}
-
 func (c *coreExtensionCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.skills.v1", "Skills and MCP", "Core isolated Skills/MCP operations", []opSpec{
 		{"discover_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"get_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"list_skills", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"inspect_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"install_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"update_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"remove_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"list_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"discover_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"get_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"inspect_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"install_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"update_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"remove_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"list_tools", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"invoke_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:execute"}, {"execute_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:execute"}, {"invoke_product", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:product:execute"},
@@ -1656,6 +1644,19 @@ func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operation
 	var in map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
+	}
+	known := false
+	for _, operation := range c.Descriptor().GetOperations() {
+		if operation.GetOperationId() == operationID {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return nil, fmt.Errorf("unknown skill operation %q", operationID)
+	}
+	if operationID != "invoke_product" && (c == nil || c.service == nil) {
+		return nil, coreextension.ErrNotFound
 	}
 	key := valueOrUUID(in, "idempotency_key")
 	switch operationID {
@@ -2013,9 +2014,9 @@ func operationResultSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:stream_chat":
 		return durableChatStreamResultSchema
 	case "agent.models.v1:sync_models":
-		return `{"additionalProperties":false,"properties":{"default_client_profile_id":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"profiles":{"type":"array"}},"required":["profiles","default_client_profile_id","default_conversation_client_profile_id","default_tool_client_profile_id","default_embedding_client_profile_id","default_speech_client_profile_id"],"type":"object"}`
+		return `{"additionalProperties":false,"properties":{"default_conversation_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"profiles":{"type":"array"}},"required":["profiles","default_conversation_client_profile_id","default_tool_client_profile_id","default_embedding_client_profile_id","default_speech_client_profile_id"],"type":"object"}`
 	case "agent.models.v1:list_models":
-		return `{"additionalProperties":false,"properties":{"default_client_profile_id":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"next_page_token":{"type":"string"},"profiles":{"type":"array"}},"required":["profiles","next_page_token","default_client_profile_id","default_conversation_client_profile_id","default_tool_client_profile_id","default_embedding_client_profile_id","default_speech_client_profile_id"],"type":"object"}`
+		return `{"additionalProperties":false,"properties":{"default_conversation_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"next_page_token":{"type":"string"},"profiles":{"type":"array"}},"required":["profiles","next_page_token","default_conversation_client_profile_id","default_tool_client_profile_id","default_embedding_client_profile_id","default_speech_client_profile_id"],"type":"object"}`
 	default:
 		return `{"type":"object"}`
 	}
@@ -2063,7 +2064,7 @@ func operationInputSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:stream_chat":
 		return `{"additionalProperties":false,"type":"object","properties":{"accepted_attachment_ids":{"items":{"format":"uuid","type":"string"},"maxItems":4,"uniqueItems":true,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"message":{"minLength":1,"type":"string"},"model_profile_id":{"format":"uuid","type":"string"},"model_profile_revision":{"minimum":1,"type":"integer"},"credential_version":{"minimum":1,"type":"integer"},"extensions":{"items":` + durableStreamExtensionSelectionSchema + `,"maxItems":64,"minItems":1,"type":"array","uniqueItems":true}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
 	case "agent.models.v1:sync_models":
-		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"default_client_profile_id":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"entries":{"type":"array"}},"required":["idempotency_key","entries"]}`
+		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"entries":{"type":"array"}},"required":["idempotency_key","entries"]}`
 	case "agent.models.v1:list_models":
 		return `{"additionalProperties":false,"properties":{"page_size":{"maximum":100,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"}},"type":"object"}`
 	case "agent.knowledge.v1:list_sources":

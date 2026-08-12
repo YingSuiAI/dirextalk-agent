@@ -93,15 +93,15 @@ func TestModelProfileRPCSyncPresenceAndOrder(t *testing.T) {
 	}
 	service, _ := NewModelProfileService(domain)
 	first, err := service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
-		IdempotencyKey:             "a0000000-0000-4000-8000-000000000040",
-		DefaultClientProfileId:     "two",
-		DefaultToolClientProfileId: "one",
+		IdempotencyKey:                     "a0000000-0000-4000-8000-000000000040",
+		DefaultConversationClientProfileId: "two",
+		DefaultToolClientProfileId:         "one",
 		Entries: []*agentv1.CoreModelProfileSyncEntry{
 			{ClientProfileId: "one", DisplayName: "One", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, ModelKind: coremodel.ModelKindConversation, InputModalities: []string{"text", "image"}, Model: "model", ApiKey: stringPtrRPC("one-secret")},
 			{ClientProfileId: "two", DisplayName: "Two", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "model", ApiKey: stringPtrRPC("two-secret")},
 		},
 	})
-	if err != nil || len(first.Profiles) != 2 || first.Profiles[0].ClientProfileId != "one" || first.Profiles[0].ModelKind != coremodel.ModelKindConversation || len(first.Profiles[0].InputModalities) != 2 || first.DefaultClientProfileId != "two" || first.DefaultToolClientProfileId != "one" {
+	if err != nil || len(first.Profiles) != 2 || first.Profiles[0].ClientProfileId != "one" || first.Profiles[0].ModelKind != coremodel.ModelKindConversation || len(first.Profiles[0].InputModalities) != 2 || first.DefaultConversationClientProfileId != "two" || first.DefaultToolClientProfileId != "one" {
 		t.Fatalf("sync=%+v err=%v", first, err)
 	}
 	listed, err := service.List(context.Background(), &agentv1.ModelProfileServiceListRequest{PageSize: 10})
@@ -112,14 +112,14 @@ func TestModelProfileRPCSyncPresenceAndOrder(t *testing.T) {
 		t.Fatal("sync response leaked API key")
 	}
 	second, err := service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
-		IdempotencyKey: "a0000000-0000-4000-8000-000000000041", DefaultClientProfileId: "two",
+		IdempotencyKey: "a0000000-0000-4000-8000-000000000041", DefaultConversationClientProfileId: "two",
 		Entries: []*agentv1.CoreModelProfileSyncEntry{{ClientProfileId: "two", ExpectedRevision: int64PtrRPC(1), DisplayName: "Two v2", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "model"}},
 	})
 	if err != nil || len(second.Profiles) != 1 || second.Profiles[0].Revision != 2 {
 		t.Fatalf("preserve sync=%+v err=%v", second, err)
 	}
 	_, err = service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
-		IdempotencyKey: "a0000000-0000-4000-8000-000000000042", DefaultClientProfileId: "two",
+		IdempotencyKey: "a0000000-0000-4000-8000-000000000042", DefaultConversationClientProfileId: "two",
 		Entries: []*agentv1.CoreModelProfileSyncEntry{{ClientProfileId: "two", ExpectedRevision: int64PtrRPC(2), DisplayName: "Two v3", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "model", ApiKey: stringPtrRPC("")}},
 	})
 	if status.Code(err) != codes.InvalidArgument {

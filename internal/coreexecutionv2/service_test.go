@@ -92,6 +92,19 @@ func TestExecutionV2AnalysisReplayAndOwnerIsolation(t *testing.T) {
 	}
 }
 
+func TestExecutionV2PaginationUsesOnlyCurrentFields(t *testing.T) {
+	service, _ := newTestService(t, Providers{})
+	if _, err := service.Handle(context.Background(), owner, "agent.execution.v2.plans.list", map[string]any{"limit": 1}); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "unknown field limit") {
+		t.Fatalf("list accepted obsolete limit field: %v", err)
+	}
+	if _, err := service.Handle(context.Background(), owner, "agent.execution.v2.plans.list", map[string]any{"page_size": 1}); err != nil {
+		t.Fatalf("list rejected page_size: %v", err)
+	}
+	if _, err := service.Handle(context.Background(), owner, "agent.execution.v2.runs.events", map[string]any{"run_id": projectID, "limit": 1}); err != nil {
+		t.Fatalf("events rejected current limit field: %v", err)
+	}
+}
+
 func TestExecutionV2PlanCompilesAndRevisionsRemainDurable(t *testing.T) {
 	service, _ := newTestService(t, Providers{})
 	input := map[string]any{

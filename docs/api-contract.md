@@ -316,8 +316,7 @@ clients use `agent.execution.v2.plans.get/list`,
 `agent.execution.v2.runs.get/list/cancel/events`, and
 `agent.execution.v2.artifacts.get/download`; they use
 `agent.core.confirmations.get/list/confirm/reject` for authorization. The
-Execution V2 confirmation aliases and public `runs.reconcile` operation do not
-exist. The durable controller performs provider reconciliation and cleanup.
+durable controller performs provider reconciliation and cleanup.
 
 `agent.chat.v1/upload_attachment_begin` requires `kind` (`image`, `file`, or
 `workspace_archive`) and a matching approved `mime_type`. A turn accepts at

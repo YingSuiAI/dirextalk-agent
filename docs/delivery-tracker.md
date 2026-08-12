@@ -109,8 +109,7 @@ contract](message-server-integration-development-contract.md), and
   Reaper cleanup. It does not replace the local sandbox, MCP, Skills,
   Knowledge, Conversation Tools, Extension Runner, or light-task worker pool.
 - Generic Execution V2 run creation/retry now uses a real
-  `EXECUTION_V2_RUN` CoreTask and CoreConfirmation. The public confirmation
-  aliases and public `runs.reconcile` operation are absent; provider recovery is
+  `EXECUTION_V2_RUN` CoreTask and CoreConfirmation; provider recovery is
   controller-owned.
 
 ## Verification commands

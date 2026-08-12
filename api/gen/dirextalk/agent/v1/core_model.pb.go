@@ -837,7 +837,6 @@ type ModelProfileServiceListResponse struct {
 	state                              protoimpl.MessageState `protogen:"open.v1"`
 	Profiles                           []*CoreModelProfile    `protobuf:"bytes,1,rep,name=profiles,proto3" json:"profiles,omitempty"`
 	NextPageToken                      string                 `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
-	DefaultClientProfileId             string                 `protobuf:"bytes,3,opt,name=default_client_profile_id,json=defaultClientProfileId,proto3" json:"default_client_profile_id,omitempty"`
 	DefaultConversationClientProfileId string                 `protobuf:"bytes,4,opt,name=default_conversation_client_profile_id,json=defaultConversationClientProfileId,proto3" json:"default_conversation_client_profile_id,omitempty"`
 	DefaultToolClientProfileId         string                 `protobuf:"bytes,5,opt,name=default_tool_client_profile_id,json=defaultToolClientProfileId,proto3" json:"default_tool_client_profile_id,omitempty"`
 	DefaultEmbeddingClientProfileId    string                 `protobuf:"bytes,6,opt,name=default_embedding_client_profile_id,json=defaultEmbeddingClientProfileId,proto3" json:"default_embedding_client_profile_id,omitempty"`
@@ -886,13 +885,6 @@ func (x *ModelProfileServiceListResponse) GetProfiles() []*CoreModelProfile {
 func (x *ModelProfileServiceListResponse) GetNextPageToken() string {
 	if x != nil {
 		return x.NextPageToken
-	}
-	return ""
-}
-
-func (x *ModelProfileServiceListResponse) GetDefaultClientProfileId() string {
-	if x != nil {
-		return x.DefaultClientProfileId
 	}
 	return ""
 }
@@ -1360,7 +1352,6 @@ func (x *ModelProfileServiceTestConnectionResponse) GetErrorCode() string {
 type ModelProfileServiceSyncRequest struct {
 	state                              protoimpl.MessageState       `protogen:"open.v1"`
 	IdempotencyKey                     string                       `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	DefaultClientProfileId             string                       `protobuf:"bytes,2,opt,name=default_client_profile_id,json=defaultClientProfileId,proto3" json:"default_client_profile_id,omitempty"`
 	Entries                            []*CoreModelProfileSyncEntry `protobuf:"bytes,3,rep,name=entries,proto3" json:"entries,omitempty"`
 	DefaultConversationClientProfileId string                       `protobuf:"bytes,4,opt,name=default_conversation_client_profile_id,json=defaultConversationClientProfileId,proto3" json:"default_conversation_client_profile_id,omitempty"`
 	DefaultToolClientProfileId         string                       `protobuf:"bytes,5,opt,name=default_tool_client_profile_id,json=defaultToolClientProfileId,proto3" json:"default_tool_client_profile_id,omitempty"`
@@ -1407,13 +1398,6 @@ func (x *ModelProfileServiceSyncRequest) GetIdempotencyKey() string {
 	return ""
 }
 
-func (x *ModelProfileServiceSyncRequest) GetDefaultClientProfileId() string {
-	if x != nil {
-		return x.DefaultClientProfileId
-	}
-	return ""
-}
-
 func (x *ModelProfileServiceSyncRequest) GetEntries() []*CoreModelProfileSyncEntry {
 	if x != nil {
 		return x.Entries
@@ -1452,7 +1436,6 @@ func (x *ModelProfileServiceSyncRequest) GetDefaultSpeechClientProfileId() strin
 type ModelProfileServiceSyncResponse struct {
 	state                              protoimpl.MessageState `protogen:"open.v1"`
 	Profiles                           []*CoreModelProfile    `protobuf:"bytes,1,rep,name=profiles,proto3" json:"profiles,omitempty"`
-	DefaultClientProfileId             string                 `protobuf:"bytes,2,opt,name=default_client_profile_id,json=defaultClientProfileId,proto3" json:"default_client_profile_id,omitempty"`
 	DefaultConversationClientProfileId string                 `protobuf:"bytes,3,opt,name=default_conversation_client_profile_id,json=defaultConversationClientProfileId,proto3" json:"default_conversation_client_profile_id,omitempty"`
 	DefaultToolClientProfileId         string                 `protobuf:"bytes,4,opt,name=default_tool_client_profile_id,json=defaultToolClientProfileId,proto3" json:"default_tool_client_profile_id,omitempty"`
 	DefaultEmbeddingClientProfileId    string                 `protobuf:"bytes,5,opt,name=default_embedding_client_profile_id,json=defaultEmbeddingClientProfileId,proto3" json:"default_embedding_client_profile_id,omitempty"`
@@ -1496,13 +1479,6 @@ func (x *ModelProfileServiceSyncResponse) GetProfiles() []*CoreModelProfile {
 		return x.Profiles
 	}
 	return nil
-}
-
-func (x *ModelProfileServiceSyncResponse) GetDefaultClientProfileId() string {
-	if x != nil {
-		return x.DefaultClientProfileId
-	}
-	return ""
 }
 
 func (x *ModelProfileServiceSyncResponse) GetDefaultConversationClientProfileId() string {
@@ -1619,11 +1595,10 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\x1eModelProfileServiceListRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +
-	"page_token\x18\x02 \x01(\tR\tpageToken\"\xf4\x03\n" +
+	"page_token\x18\x02 \x01(\tR\tpageToken\"\xb9\x03\n" +
 	"\x1fModelProfileServiceListResponse\x12@\n" +
 	"\bprofiles\x18\x01 \x03(\v2$.dirextalk.agent.v1.CoreModelProfileR\bprofiles\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x129\n" +
-	"\x19default_client_profile_id\x18\x03 \x01(\tR\x16defaultClientProfileId\x12R\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x12R\n" +
 	"&default_conversation_client_profile_id\x18\x04 \x01(\tR\"defaultConversationClientProfileId\x12B\n" +
 	"\x1edefault_tool_client_profile_id\x18\x05 \x01(\tR\x1adefaultToolClientProfileId\x12L\n" +
 	"#default_embedding_client_profile_id\x18\x06 \x01(\tR\x1fdefaultEmbeddingClientProfileId\x12F\n" +
@@ -1670,18 +1645,16 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	")ModelProfileServiceTestConnectionResponse\x12\x1c\n" +
 	"\treachable\x18\x01 \x01(\bR\treachable\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\x02 \x01(\tR\terrorCode\"\xfb\x03\n" +
+	"error_code\x18\x02 \x01(\tR\terrorCode\"\xc0\x03\n" +
 	"\x1eModelProfileServiceSyncRequest\x12'\n" +
-	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x129\n" +
-	"\x19default_client_profile_id\x18\x02 \x01(\tR\x16defaultClientProfileId\x12G\n" +
+	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12G\n" +
 	"\aentries\x18\x03 \x03(\v2-.dirextalk.agent.v1.CoreModelProfileSyncEntryR\aentries\x12R\n" +
 	"&default_conversation_client_profile_id\x18\x04 \x01(\tR\"defaultConversationClientProfileId\x12B\n" +
 	"\x1edefault_tool_client_profile_id\x18\x05 \x01(\tR\x1adefaultToolClientProfileId\x12L\n" +
 	"#default_embedding_client_profile_id\x18\x06 \x01(\tR\x1fdefaultEmbeddingClientProfileId\x12F\n" +
-	" default_speech_client_profile_id\x18\a \x01(\tR\x1cdefaultSpeechClientProfileId\"\xcc\x03\n" +
+	" default_speech_client_profile_id\x18\a \x01(\tR\x1cdefaultSpeechClientProfileId\"\x91\x03\n" +
 	"\x1fModelProfileServiceSyncResponse\x12@\n" +
-	"\bprofiles\x18\x01 \x03(\v2$.dirextalk.agent.v1.CoreModelProfileR\bprofiles\x129\n" +
-	"\x19default_client_profile_id\x18\x02 \x01(\tR\x16defaultClientProfileId\x12R\n" +
+	"\bprofiles\x18\x01 \x03(\v2$.dirextalk.agent.v1.CoreModelProfileR\bprofiles\x12R\n" +
 	"&default_conversation_client_profile_id\x18\x03 \x01(\tR\"defaultConversationClientProfileId\x12B\n" +
 	"\x1edefault_tool_client_profile_id\x18\x04 \x01(\tR\x1adefaultToolClientProfileId\x12L\n" +
 	"#default_embedding_client_profile_id\x18\x05 \x01(\tR\x1fdefaultEmbeddingClientProfileId\x12F\n" +

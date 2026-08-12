@@ -130,6 +130,20 @@ func TestExecutionV2RunCreateRetryPublishedWithoutRemovedAliases(t *testing.T) {
 	}
 }
 
+func TestCapabilityRejectsActionNameAsOperationID(t *testing.T) {
+	domain, err := coreexecutionv2.NewService(coreexecutionv2.Config{Store: coreexecutionv2.NewMemoryStore(), Typed: fullyReadyTypedPorts()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := NewCapability(domain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capability.HandleOperation(context.Background(), "agent.execution.v2.plans.get", []byte(`{}`)); !errors.Is(err, coreexecutionv2.ErrUnsupported) {
+		t.Fatalf("action name accepted as operation ID: %v", err)
+	}
+}
+
 func TestDescriptorPublishesOnlyReadyOperationRoutes(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -408,9 +408,6 @@ func (s *Service) handleRead(ctx context.Context, owner, action string, in map[s
 	}
 	if action == "agent.execution.v2.targets.list" || action == "agent.execution.v2.plans.list" || action == "agent.execution.v2.deployments.list" || action == "agent.execution.v2.runs.list" || action == "agent.execution.v2.service_bindings.list" || action == "agent.execution.v2.secrets.list" {
 		limit := intParam(in, "page_size", 100)
-		if limit == 0 {
-			limit = intParam(in, "limit", 100)
-		}
 		if limit < 1 || limit > 200 {
 			return nil, ErrInvalid
 		}

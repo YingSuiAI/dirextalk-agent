@@ -13,18 +13,18 @@ func TestSyncProfilesIsAtomicAndBatchIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := "a0000000-0000-4000-8000-000000000001"
-	first, err := service.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: key, DefaultClientProfileID: "primary", Entries: []SyncProfileEntry{{ClientProfileID: "primary", DisplayName: "Primary", Provider: ProviderOpenAICompatible, Model: "gpt", APIKey: stringPtr("secret")}}})
+	first, err := service.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: key, DefaultConversationProfileID: "primary", Entries: []SyncProfileEntry{{ClientProfileID: "primary", DisplayName: "Primary", Provider: ProviderOpenAICompatible, Model: "gpt", APIKey: stringPtr("secret")}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(first.Profiles) != 1 || first.Profiles[0].APIKeyConfigured != true || first.Profiles[0].ClientProfileID != "primary" {
 		t.Fatalf("result=%+v", first)
 	}
-	replay, err := service.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: key, DefaultClientProfileID: "primary", Entries: []SyncProfileEntry{{ClientProfileID: "primary", DisplayName: "Primary", Provider: ProviderOpenAICompatible, Model: "gpt", APIKey: stringPtr("secret")}}})
+	replay, err := service.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: key, DefaultConversationProfileID: "primary", Entries: []SyncProfileEntry{{ClientProfileID: "primary", DisplayName: "Primary", Provider: ProviderOpenAICompatible, Model: "gpt", APIKey: stringPtr("secret")}}})
 	if err != nil || !replay.Replay || replay.Profiles[0].Revision != first.Profiles[0].Revision {
 		t.Fatalf("replay=%+v err=%v", replay, err)
 	}
-	_, err = service.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: "a0000000-0000-4000-8000-000000000002", DefaultClientProfileID: "primary", Entries: []SyncProfileEntry{{ClientProfileID: "primary", ExpectedRevision: int64Ptr(1), DisplayName: "Changed", Provider: ProviderOpenAICompatible, Model: "gpt", APIKey: stringPtr("rotated")}, {ClientProfileID: "bad", DisplayName: "", Provider: ProviderOpenAICompatible, Model: "gpt", APIKey: stringPtr("key")}}})
+	_, err = service.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: "a0000000-0000-4000-8000-000000000002", DefaultConversationProfileID: "primary", Entries: []SyncProfileEntry{{ClientProfileID: "primary", ExpectedRevision: int64Ptr(1), DisplayName: "Changed", Provider: ProviderOpenAICompatible, Model: "gpt", APIKey: stringPtr("rotated")}, {ClientProfileID: "bad", DisplayName: "", Provider: ProviderOpenAICompatible, Model: "gpt", APIKey: stringPtr("key")}}})
 	if !errors.Is(err, ErrInvalidProfile) {
 		t.Fatalf("invalid batch err=%v", err)
 	}
@@ -141,7 +141,7 @@ func TestSyncProfilesPreservesAndReplacesProviderSecrets(t *testing.T) {
 func TestSyncProfilesStaleAndDefaultFailuresRollBackBatch(t *testing.T) {
 	svc := newSyncTestService(t)
 	created := mustSync(t, svc, "a0000000-0000-4000-8000-000000000020", "one", syncEntry("one", "One", "one-key"), syncEntry("two", "Two", "two-key"))
-	_, err := svc.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: "a0000000-0000-4000-8000-000000000021", DefaultClientProfileID: "one", Entries: []SyncProfileEntry{
+	_, err := svc.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: "a0000000-0000-4000-8000-000000000021", DefaultConversationProfileID: "one", Entries: []SyncProfileEntry{
 		{ClientProfileID: "one", ExpectedRevision: int64Ptr(1), DisplayName: "One changed", Provider: ProviderOpenAICompatible, Model: "model", APIKey: nil},
 		{ClientProfileID: "two", ExpectedRevision: int64Ptr(99), DisplayName: "Two changed", Provider: ProviderOpenAICompatible, Model: "model", APIKey: nil},
 	}})
@@ -153,7 +153,7 @@ func TestSyncProfilesStaleAndDefaultFailuresRollBackBatch(t *testing.T) {
 	if one.DisplayName != "One" || two.DisplayName != "Two" || one.Revision != 1 || two.Revision != 1 {
 		t.Fatalf("stale batch partially applied: one=%+v two=%+v", one, two)
 	}
-	_, err = svc.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: "a0000000-0000-4000-8000-000000000022", DefaultClientProfileID: "missing", Entries: []SyncProfileEntry{{ClientProfileID: "one", ExpectedRevision: int64Ptr(1), DisplayName: "One changed", Provider: ProviderOpenAICompatible, Model: "model", APIKey: nil}}})
+	_, err = svc.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: "a0000000-0000-4000-8000-000000000022", DefaultConversationProfileID: "missing", Entries: []SyncProfileEntry{{ClientProfileID: "one", ExpectedRevision: int64Ptr(1), DisplayName: "One changed", Provider: ProviderOpenAICompatible, Model: "model", APIKey: nil}}})
 	if !errors.Is(err, ErrProfileNotFound) {
 		t.Fatalf("default batch err=%v", err)
 	}
@@ -166,7 +166,7 @@ func TestSyncProfilesStaleAndDefaultFailuresRollBackBatch(t *testing.T) {
 func TestSyncProfilesDigestConflictAndOverlappingRevisionFence(t *testing.T) {
 	svc := newSyncTestService(t)
 	created := mustSync(t, svc, "a0000000-0000-4000-8000-000000000030", "one", syncEntry("one", "One", "key"))
-	request := SyncProfileCommand{IdempotencyKey: "a0000000-0000-4000-8000-000000000031", DefaultClientProfileID: "one", Entries: []SyncProfileEntry{{ClientProfileID: "one", ExpectedRevision: int64Ptr(1), DisplayName: "One v2", Provider: ProviderOpenAICompatible, Model: "model", APIKey: nil}}}
+	request := SyncProfileCommand{IdempotencyKey: "a0000000-0000-4000-8000-000000000031", DefaultConversationProfileID: "one", Entries: []SyncProfileEntry{{ClientProfileID: "one", ExpectedRevision: int64Ptr(1), DisplayName: "One v2", Provider: ProviderOpenAICompatible, Model: "model", APIKey: nil}}}
 	first, err := svc.Sync(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -240,7 +240,7 @@ func syncEntry(id, name, key string) SyncProfileEntry {
 
 func mustSync(t *testing.T, svc *Service, key, defaultID string, entries ...SyncProfileEntry) SyncProfileResult {
 	t.Helper()
-	result, err := svc.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: key, DefaultClientProfileID: defaultID, Entries: entries})
+	result, err := svc.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: key, DefaultConversationProfileID: defaultID, Entries: entries})
 	if err != nil {
 		t.Fatal(err)
 	}

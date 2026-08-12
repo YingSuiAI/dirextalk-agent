@@ -100,23 +100,19 @@ type Config struct {
 	// Native Voice is an optional Agent-owned capability.  Credentials are
 	// mounted-file references only; the values are read request-locally and
 	// never written to the Agent database or returned by the capability API.
-	CoreVoiceEnabled                bool   `yaml:"core_voice_enabled" mapstructure:"core_voice_enabled"`
-	CoreVoiceProvider               string `yaml:"core_voice_provider" mapstructure:"core_voice_provider"`
-	CoreVoiceHost                   string `yaml:"core_voice_host" mapstructure:"core_voice_host"`
-	CoreVoiceRegion                 string `yaml:"core_voice_region" mapstructure:"core_voice_region"`
-	CoreVoiceAppID                  string `yaml:"core_voice_app_id" mapstructure:"core_voice_app_id"`
-	CoreVoiceChatAppID              string `yaml:"core_voice_chat_app_id" mapstructure:"core_voice_chat_app_id"`
-	CoreVoiceAIUserID               string `yaml:"core_voice_ai_user_id" mapstructure:"core_voice_ai_user_id"`
-	CoreVoiceAccessKeyIDFile        string `yaml:"core_voice_access_key_id_file" mapstructure:"core_voice_access_key_id_file"`
-	CoreVoiceSecretAccessKeyFile    string `yaml:"core_voice_secret_access_key_file" mapstructure:"core_voice_secret_access_key_file"`
-	CoreVoiceRTCAppKeyFile          string `yaml:"core_voice_rtc_app_key_file" mapstructure:"core_voice_rtc_app_key_file"`
-	CoreVoiceWebhookURL             string `yaml:"core_voice_webhook_url" mapstructure:"core_voice_webhook_url"`
-	CoreVoiceWebhookSecretFile      string `yaml:"core_voice_webhook_secret_file" mapstructure:"core_voice_webhook_secret_file"`
-	CoreVoiceCallbackRelayTokenFile string `yaml:"core_voice_callback_relay_token_file" mapstructure:"core_voice_callback_relay_token_file"`
-	// CoreVoiceRelayTokenFile is retained as an in-process alias for callers
-	// constructing Config values directly. YAML deployments should use the
-	// explicit callback name above so it matches the split compose contract.
-	CoreVoiceRelayTokenFile          string        `yaml:"core_voice_relay_token_file" mapstructure:"core_voice_relay_token_file"`
+	CoreVoiceEnabled                 bool          `yaml:"core_voice_enabled" mapstructure:"core_voice_enabled"`
+	CoreVoiceProvider                string        `yaml:"core_voice_provider" mapstructure:"core_voice_provider"`
+	CoreVoiceHost                    string        `yaml:"core_voice_host" mapstructure:"core_voice_host"`
+	CoreVoiceRegion                  string        `yaml:"core_voice_region" mapstructure:"core_voice_region"`
+	CoreVoiceAppID                   string        `yaml:"core_voice_app_id" mapstructure:"core_voice_app_id"`
+	CoreVoiceChatAppID               string        `yaml:"core_voice_chat_app_id" mapstructure:"core_voice_chat_app_id"`
+	CoreVoiceAIUserID                string        `yaml:"core_voice_ai_user_id" mapstructure:"core_voice_ai_user_id"`
+	CoreVoiceAccessKeyIDFile         string        `yaml:"core_voice_access_key_id_file" mapstructure:"core_voice_access_key_id_file"`
+	CoreVoiceSecretAccessKeyFile     string        `yaml:"core_voice_secret_access_key_file" mapstructure:"core_voice_secret_access_key_file"`
+	CoreVoiceRTCAppKeyFile           string        `yaml:"core_voice_rtc_app_key_file" mapstructure:"core_voice_rtc_app_key_file"`
+	CoreVoiceWebhookURL              string        `yaml:"core_voice_webhook_url" mapstructure:"core_voice_webhook_url"`
+	CoreVoiceWebhookSecretFile       string        `yaml:"core_voice_webhook_secret_file" mapstructure:"core_voice_webhook_secret_file"`
+	CoreVoiceCallbackRelayTokenFile  string        `yaml:"core_voice_callback_relay_token_file" mapstructure:"core_voice_callback_relay_token_file"`
 	CoreVoiceCustomLLMURL            string        `yaml:"core_voice_custom_llm_url" mapstructure:"core_voice_custom_llm_url"`
 	CoreVoiceConversationProfileID   string        `yaml:"core_voice_conversation_profile_id" mapstructure:"core_voice_conversation_profile_id"`
 	CoreVoiceSpeechProfileID         string        `yaml:"core_voice_speech_profile_id" mapstructure:"core_voice_speech_profile_id"`
@@ -671,9 +667,6 @@ func ValidateCoreVoice(cfg *Config) error {
 		return errors.New("core_voice credential files are required")
 	}
 	if strings.TrimSpace(cfg.CoreVoiceCallbackRelayTokenFile) == "" {
-		cfg.CoreVoiceCallbackRelayTokenFile = cfg.CoreVoiceRelayTokenFile
-	}
-	if strings.TrimSpace(cfg.CoreVoiceCallbackRelayTokenFile) == "" {
 		return errors.New("core_voice_callback_relay_token_file is required")
 	}
 	for name, value := range map[string]string{
@@ -703,7 +696,6 @@ func ValidateCoreVoice(cfg *Config) error {
 			cfg.CoreVoiceCallbackRelayTokenFile = resolved
 		}
 	}
-	cfg.CoreVoiceRelayTokenFile = cfg.CoreVoiceCallbackRelayTokenFile
 	for name, raw := range map[string]string{
 		"core_voice_host":           cfg.CoreVoiceHost,
 		"core_voice_webhook_url":    cfg.CoreVoiceWebhookURL,

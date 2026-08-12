@@ -88,7 +88,6 @@ message ModelProfileServiceListRequest {
 message ModelProfileServiceListResponse {
   repeated CoreModelProfile profiles = 1;
   string next_page_token = 2;
-  string default_client_profile_id = 3;
   string default_conversation_client_profile_id = 4;
   string default_tool_client_profile_id = 5;
   string default_embedding_client_profile_id = 6;
@@ -134,7 +133,6 @@ message ModelProfileServiceTestConnectionResponse {
 
 message ModelProfileServiceSyncRequest {
   string idempotency_key = 1;
-  string default_client_profile_id = 2;
   repeated CoreModelProfileSyncEntry entries = 3;
   string default_conversation_client_profile_id = 4;
   string default_tool_client_profile_id = 5;
@@ -143,7 +141,6 @@ message ModelProfileServiceSyncRequest {
 }
 message ModelProfileServiceSyncResponse {
   repeated CoreModelProfile profiles = 1;
-  string default_client_profile_id = 2;
   string default_conversation_client_profile_id = 3;
   string default_tool_client_profile_id = 4;
   string default_embedding_client_profile_id = 5;

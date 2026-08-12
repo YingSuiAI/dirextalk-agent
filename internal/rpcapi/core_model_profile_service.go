@@ -58,7 +58,7 @@ func (s *ModelProfileService) List(ctx context.Context, req *agentv1.ModelProfil
 	if err != nil {
 		return nil, grpcProfileError(err)
 	}
-	out := &agentv1.ModelProfileServiceListResponse{NextPageToken: page.NextCursor, Profiles: make([]*agentv1.CoreModelProfile, 0, len(page.Profiles)), DefaultClientProfileId: page.Defaults.ConversationClientProfileID, DefaultConversationClientProfileId: page.Defaults.ConversationClientProfileID, DefaultToolClientProfileId: page.Defaults.ToolClientProfileID, DefaultEmbeddingClientProfileId: page.Defaults.EmbeddingClientProfileID, DefaultSpeechClientProfileId: page.Defaults.SpeechClientProfileID}
+	out := &agentv1.ModelProfileServiceListResponse{NextPageToken: page.NextCursor, Profiles: make([]*agentv1.CoreModelProfile, 0, len(page.Profiles)), DefaultConversationClientProfileId: page.Defaults.ConversationClientProfileID, DefaultToolClientProfileId: page.Defaults.ToolClientProfileID, DefaultEmbeddingClientProfileId: page.Defaults.EmbeddingClientProfileID, DefaultSpeechClientProfileId: page.Defaults.SpeechClientProfileID}
 	for _, p := range page.Profiles {
 		out.Profiles = append(out.Profiles, publicProfileProto(p))
 	}
@@ -106,7 +106,7 @@ func (s *ModelProfileService) Sync(ctx context.Context, req *agentv1.ModelProfil
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
-	cmd := coremodel.SyncProfileCommand{IdempotencyKey: req.IdempotencyKey, DefaultClientProfileID: req.DefaultClientProfileId, DefaultConversationProfileID: req.DefaultConversationClientProfileId, DefaultToolProfileID: req.DefaultToolClientProfileId, DefaultEmbeddingProfileID: req.DefaultEmbeddingClientProfileId, DefaultSpeechProfileID: req.DefaultSpeechClientProfileId, Entries: make([]coremodel.SyncProfileEntry, 0, len(req.Entries))}
+	cmd := coremodel.SyncProfileCommand{IdempotencyKey: req.IdempotencyKey, DefaultConversationProfileID: req.DefaultConversationClientProfileId, DefaultToolProfileID: req.DefaultToolClientProfileId, DefaultEmbeddingProfileID: req.DefaultEmbeddingClientProfileId, DefaultSpeechProfileID: req.DefaultSpeechClientProfileId, Entries: make([]coremodel.SyncProfileEntry, 0, len(req.Entries))}
 	for _, entry := range req.Entries {
 		if entry == nil {
 			return nil, grpcProfileError(coremodel.ErrInvalidProfile)
@@ -127,7 +127,7 @@ func (s *ModelProfileService) Sync(ctx context.Context, req *agentv1.ModelProfil
 	if err != nil {
 		return nil, grpcProfileError(err)
 	}
-	out := &agentv1.ModelProfileServiceSyncResponse{DefaultClientProfileId: result.DefaultClientProfileID, DefaultConversationClientProfileId: result.DefaultConversationProfileID, DefaultToolClientProfileId: result.DefaultToolProfileID, DefaultEmbeddingClientProfileId: result.DefaultEmbeddingProfileID, DefaultSpeechClientProfileId: result.DefaultSpeechProfileID, Profiles: make([]*agentv1.CoreModelProfile, 0, len(result.Profiles))}
+	out := &agentv1.ModelProfileServiceSyncResponse{DefaultConversationClientProfileId: result.DefaultConversationProfileID, DefaultToolClientProfileId: result.DefaultToolProfileID, DefaultEmbeddingClientProfileId: result.DefaultEmbeddingProfileID, DefaultSpeechClientProfileId: result.DefaultSpeechProfileID, Profiles: make([]*agentv1.CoreModelProfile, 0, len(result.Profiles))}
 	for _, p := range result.Profiles {
 		out.Profiles = append(out.Profiles, publicProfileProto(p))
 	}

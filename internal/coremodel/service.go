@@ -53,8 +53,7 @@ type ProfilePage struct {
 }
 
 // ProfileDefaults are stable role bindings used by conversation, tool,
-// embedding, and speech runtimes. The default_client_profile_id field aliases the
-// conversation role at the capability boundary.
+// embedding, and speech runtimes.
 type ProfileDefaults struct {
 	ConversationClientProfileID string `json:"default_conversation_client_profile_id"`
 	ToolClientProfileID         string `json:"default_tool_client_profile_id"`
@@ -318,17 +317,10 @@ func (s *Service) Sync(ctx context.Context, cmd SyncProfileCommand) (SyncProfile
 			return SyncProfileResult{}, err
 		}
 	}
-	cmd.DefaultClientProfileID = strings.TrimSpace(cmd.DefaultClientProfileID)
 	cmd.DefaultConversationProfileID = strings.TrimSpace(cmd.DefaultConversationProfileID)
 	cmd.DefaultToolProfileID = strings.TrimSpace(cmd.DefaultToolProfileID)
 	cmd.DefaultEmbeddingProfileID = strings.TrimSpace(cmd.DefaultEmbeddingProfileID)
 	cmd.DefaultSpeechProfileID = strings.TrimSpace(cmd.DefaultSpeechProfileID)
-	if cmd.DefaultConversationProfileID == "" {
-		cmd.DefaultConversationProfileID = cmd.DefaultClientProfileID
-	}
-	if cmd.DefaultClientProfileID == "" {
-		cmd.DefaultClientProfileID = cmd.DefaultConversationProfileID
-	}
 	for _, defaultID := range []string{cmd.DefaultConversationProfileID, cmd.DefaultToolProfileID, cmd.DefaultEmbeddingProfileID, cmd.DefaultSpeechProfileID} {
 		if defaultID == "" {
 			continue
@@ -339,9 +331,6 @@ func (s *Service) Sync(ctx context.Context, cmd SyncProfileCommand) (SyncProfile
 				return SyncProfileResult{}, err
 			}
 		}
-	}
-	if err := s.validateSyncDefaultKind(ctx, cmd.DefaultClientProfileID, ModelKindConversation, cmd.Entries); err != nil {
-		return SyncProfileResult{}, err
 	}
 	if err := s.validateSyncDefaultKind(ctx, cmd.DefaultConversationProfileID, ModelKindConversation, cmd.Entries); err != nil {
 		return SyncProfileResult{}, err
@@ -719,13 +708,12 @@ func profileSpecDigest(op, id string, revision int64, spec ProfileSpec) (string,
 
 func syncProfileDigest(cmd SyncProfileCommand) (string, error) {
 	canonical := struct {
-		Default             string `json:"default_client_profile_id"`
 		ConversationDefault string `json:"default_conversation_client_profile_id"`
 		ToolDefault         string `json:"default_tool_client_profile_id"`
 		EmbeddingDefault    string `json:"default_embedding_client_profile_id"`
 		SpeechDefault       string `json:"default_speech_client_profile_id"`
 		Entries             []any  `json:"entries"`
-	}{Default: cmd.DefaultClientProfileID, ConversationDefault: cmd.DefaultConversationProfileID, ToolDefault: cmd.DefaultToolProfileID, EmbeddingDefault: cmd.DefaultEmbeddingProfileID, SpeechDefault: cmd.DefaultSpeechProfileID}
+	}{ConversationDefault: cmd.DefaultConversationProfileID, ToolDefault: cmd.DefaultToolProfileID, EmbeddingDefault: cmd.DefaultEmbeddingProfileID, SpeechDefault: cmd.DefaultSpeechProfileID}
 	for _, e := range cmd.Entries {
 		keyHash := ""
 		if e.APIKey != nil {
@@ -1118,7 +1106,7 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 	for id, p := range r.profiles {
 		work[id] = cloneProfile(p)
 	}
-	out := SyncProfileResult{DefaultClientProfileID: cmd.DefaultClientProfileID, Profiles: make([]PublicProfile, 0, len(cmd.Entries))}
+	out := SyncProfileResult{DefaultConversationProfileID: cmd.DefaultConversationProfileID, Profiles: make([]PublicProfile, 0, len(cmd.Entries))}
 	for _, e := range cmd.Entries {
 		id, exists := byClient[e.ClientProfileID]
 		if exists {
@@ -1170,12 +1158,6 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 		work[id] = p
 		out.Profiles = append(out.Profiles, p.Public())
 	}
-	if cmd.DefaultConversationProfileID == "" {
-		cmd.DefaultConversationProfileID = cmd.DefaultClientProfileID
-	}
-	if cmd.DefaultClientProfileID == "" {
-		cmd.DefaultClientProfileID = cmd.DefaultConversationProfileID
-	}
 	for _, defaultID := range []string{cmd.DefaultConversationProfileID, cmd.DefaultToolProfileID, cmd.DefaultEmbeddingProfileID, cmd.DefaultSpeechProfileID} {
 		if defaultID == "" {
 			continue
@@ -1208,7 +1190,6 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 			return SyncProfileResult{}, ErrInvalidProfile
 		}
 	}
-	out.DefaultClientProfileID = cmd.DefaultClientProfileID
 	out.DefaultConversationProfileID = cmd.DefaultConversationProfileID
 	out.DefaultToolProfileID = cmd.DefaultToolProfileID
 	out.DefaultEmbeddingProfileID = cmd.DefaultEmbeddingProfileID

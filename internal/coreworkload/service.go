@@ -58,37 +58,11 @@ func (s *Service) Quote(ctx context.Context, planID string) (Quote, error) {
 type RequestApplyInput struct{ PlanID, WorkloadID, IdempotencyKey string }
 type RequestDestroyInput struct{ PlanID, WorkloadID, IdempotencyKey string }
 
-// RequestApply accepts the structured input used by Go callers. The legacy
-// three-string form remains accepted for small adapters while the API settles.
-func (s *Service) RequestApply(ctx context.Context, input interface{}, rest ...string) (RequestResult, error) {
-	c := RequestCommand{Kind: OperationApply}
-	switch v := input.(type) {
-	case RequestApplyInput:
-		c.PlanID, c.WorkloadID, c.IdempotencyKey = v.PlanID, v.WorkloadID, v.IdempotencyKey
-	case string:
-		if len(rest) != 2 {
-			return RequestResult{}, ErrInvalid
-		}
-		c.PlanID, c.WorkloadID, c.IdempotencyKey = v, rest[0], rest[1]
-	default:
-		return RequestResult{}, ErrInvalid
-	}
-	return s.request(ctx, c)
+func (s *Service) RequestApply(ctx context.Context, input RequestApplyInput) (RequestResult, error) {
+	return s.request(ctx, RequestCommand{Kind: OperationApply, PlanID: input.PlanID, WorkloadID: input.WorkloadID, IdempotencyKey: input.IdempotencyKey})
 }
-func (s *Service) RequestDestroy(ctx context.Context, input interface{}, rest ...string) (RequestResult, error) {
-	c := RequestCommand{Kind: OperationDestroy}
-	switch v := input.(type) {
-	case RequestDestroyInput:
-		c.PlanID, c.WorkloadID, c.IdempotencyKey = v.PlanID, v.WorkloadID, v.IdempotencyKey
-	case string:
-		if len(rest) != 2 {
-			return RequestResult{}, ErrInvalid
-		}
-		c.PlanID, c.WorkloadID, c.IdempotencyKey = v, rest[0], rest[1]
-	default:
-		return RequestResult{}, ErrInvalid
-	}
-	return s.request(ctx, c)
+func (s *Service) RequestDestroy(ctx context.Context, input RequestDestroyInput) (RequestResult, error) {
+	return s.request(ctx, RequestCommand{Kind: OperationDestroy, PlanID: input.PlanID, WorkloadID: input.WorkloadID, IdempotencyKey: input.IdempotencyKey})
 }
 func (s *Service) Cancel(ctx context.Context, operationID, idempotencyKey string, expected uint64) (Operation, error) {
 	if !ValidUUID(operationID) || !ValidUUID(idempotencyKey) {

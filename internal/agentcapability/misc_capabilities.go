@@ -68,8 +68,8 @@ type InfoProvider interface {
 	Backends(context.Context) (BackendsSnapshot, error)
 }
 
-// ModelCatalogProvider owns the provider/runtime model catalog behind the
-// legacy agent.models.list action.  It is deliberately separate from the
+// ModelCatalogProvider owns the provider/runtime model catalog behind
+// agent.info.v1/list_models. It is deliberately separate from the
 // Core model-profile store: profile CRUD returns encrypted profile metadata,
 // whereas this operation discovers provider models for a requested kind.
 type ModelCatalogProvider interface {
@@ -441,9 +441,8 @@ func (c *configCapability) HandleOperation(ctx context.Context, operationID stri
 func decodeNativeConfigUpdate(input map[string]json.RawMessage) (coreconfig.Update, error) {
 	var update coreconfig.Update
 	allowed := map[string]struct{}{
-		"idempotency_key": {}, "expected_revision": {}, "display_name": {}, "avatar_url": {},
-		"native_agent_identity": {}, "context_window": {}, "enabled": {}, "model": {},
-		"system_prompt": {}, "mcp_blocked_room_ids": {},
+		"idempotency_key": {}, "expected_revision": {}, "native_agent_identity": {},
+		"enabled": {}, "mcp_blocked_room_ids": {},
 	}
 	for key := range input {
 		if _, ok := allowed[key]; !ok {
@@ -458,20 +457,6 @@ func decodeNativeConfigUpdate(input map[string]json.RawMessage) (coreconfig.Upda
 			return update, coreconfig.ErrInvalid
 		}
 	}
-	if raw := input["display_name"]; len(raw) > 0 {
-		var value string
-		if json.Unmarshal(raw, &value) != nil {
-			return update, coreconfig.ErrInvalid
-		}
-		update.DisplayName = &value
-	}
-	if raw := input["avatar_url"]; len(raw) > 0 {
-		var value string
-		if json.Unmarshal(raw, &value) != nil {
-			return update, coreconfig.ErrInvalid
-		}
-		update.AvatarURL = &value
-	}
 	if raw := input["native_agent_identity"]; len(raw) > 0 {
 		var value coreconfig.Identity
 		if json.Unmarshal(raw, &value) != nil {
@@ -479,33 +464,12 @@ func decodeNativeConfigUpdate(input map[string]json.RawMessage) (coreconfig.Upda
 		}
 		update.NativeIdentity = &value
 	}
-	if raw := input["context_window"]; len(raw) > 0 {
-		var value int64
-		if json.Unmarshal(raw, &value) != nil {
-			return update, coreconfig.ErrInvalid
-		}
-		update.ContextWindow = &value
-	}
 	if raw := input["enabled"]; len(raw) > 0 {
 		var value bool
 		if json.Unmarshal(raw, &value) != nil {
 			return update, coreconfig.ErrInvalid
 		}
 		update.Enabled = &value
-	}
-	if raw := input["model"]; len(raw) > 0 {
-		var value string
-		if json.Unmarshal(raw, &value) != nil {
-			return update, coreconfig.ErrInvalid
-		}
-		update.Model = &value
-	}
-	if raw := input["system_prompt"]; len(raw) > 0 {
-		var value string
-		if json.Unmarshal(raw, &value) != nil {
-			return update, coreconfig.ErrInvalid
-		}
-		update.SystemPrompt = &value
 	}
 	if raw := input["mcp_blocked_room_ids"]; len(raw) > 0 {
 		var value []string
@@ -1076,8 +1040,8 @@ const (
 	modelCatalogSchema               = `{"additionalProperties":false,"properties":{"api_key":{"type":"string","writeOnly":true},"base_url":{"type":"string"},"client_model_profile_id":{"type":"string"},"model_kind":{"default":"conversation","enum":["conversation","embedding","speech"],"type":"string"},"model_profile_id":{"type":"string"},"provider":{"type":"string"}},"type":"object"}`
 	modelCatalogResultSchemaTemplate = `{"additionalProperties":false,"properties":{"models":{"items":{"additionalProperties":false,"properties":{"context_length":{"type":"integer"},"context_window":{"type":"integer"},"created":{"type":"number"},"created_at":{"type":"string"},"id":{"type":"string"},"input_modalities":{"items":{"type":"string"},"type":"array"},"input_token_limit":{"type":"integer"},"max_input_tokens":{"type":"integer"},"max_output_tokens":{"type":"integer"},"max_tokens":{"type":"integer"},"name":{"type":"string"},"object":{"type":"string"},"output_modalities":{"items":{"enum":__OUTPUT_MODALITIES_ENUM__,"type":"string"},"type":"array"},"output_token_limit":{"type":"integer"},"owned_by":{"type":"string"},"provider":{"type":"string"},"type":{"type":"string"}},"required":["id","provider"],"type":"object"},"type":"array"},"providers":{"items":{"additionalProperties":false,"properties":{"default_base_url":{"type":"string"},"dynamic_models":{"type":"boolean"},"provider":{"type":"string"},"requires_api_key":{"type":"boolean"}},"required":["provider","requires_api_key","dynamic_models"],"type":"object"},"type":"array"}},"required":["models","providers"],"type":"object"}`
 	nativeConfigGetSchema            = `{"additionalProperties":false,"properties":{},"type":"object"}`
-	nativeConfigUpdateSchema         = `{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"context_window":{"maximum":4194304,"minimum":1,"type":"integer"},"display_name":{"type":"string"},"enabled":{"type":"boolean"},"expected_revision":{"minimum":0,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"mcp_blocked_room_ids":{"items":{"type":"string"},"maxItems":512,"type":"array"},"model":{"type":"string"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"type":"object"},"system_prompt":{"type":"string"}},"required":["idempotency_key"],"type":"object"}`
-	nativeConfigResultSchema         = `{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"context_window":{"type":"integer"},"display_name":{"type":"string"},"enabled":{"type":"boolean"},"mcp_blocked_room_ids":{"items":{"type":"string"},"type":"array"},"model":{"type":"string"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"required":["display_name","avatar_url"],"type":"object"},"revision":{"type":"integer"},"system_prompt":{"type":"string"}},"required":["revision","display_name","avatar_url","native_agent_identity","context_window","enabled","model","system_prompt","mcp_blocked_room_ids"],"type":"object"}`
+	nativeConfigUpdateSchema         = `{"additionalProperties":false,"properties":{"enabled":{"type":"boolean"},"expected_revision":{"minimum":0,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"mcp_blocked_room_ids":{"items":{"type":"string"},"maxItems":512,"type":"array"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"type":"object"}},"required":["idempotency_key"],"type":"object"}`
+	nativeConfigResultSchema         = `{"additionalProperties":false,"properties":{"enabled":{"type":"boolean"},"mcp_blocked_room_ids":{"items":{"type":"string"},"type":"array"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"required":["display_name","avatar_url"],"type":"object"},"revision":{"type":"integer"}},"required":["revision","native_agent_identity","enabled","mcp_blocked_room_ids"],"type":"object"}`
 )
 
 var modelCatalogResultSchema = strings.ReplaceAll(modelCatalogResultSchemaTemplate, "__OUTPUT_MODALITIES_ENUM__", ModelCatalogOutputModalitiesJSON)

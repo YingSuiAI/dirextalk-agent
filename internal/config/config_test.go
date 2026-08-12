@@ -311,7 +311,7 @@ func TestValidateCoreVoiceRequiresProtectedFreshOnlyBinding(t *testing.T) {
 	cfg.CoreVoiceSecretAccessKeyFile = write("voice-secret", "secret")
 	cfg.CoreVoiceRTCAppKeyFile = write("voice-rtc", "rtc")
 	cfg.CoreVoiceWebhookSecretFile = write("voice-webhook", "callback-secret")
-	cfg.CoreVoiceRelayTokenFile = write("voice-relay", "relay-secret")
+	cfg.CoreVoiceCallbackRelayTokenFile = write("voice-relay", "relay-secret")
 	if err := ValidateCore(&cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestValidateCoreVoiceRejectsInsecureCallbackURL(t *testing.T) {
 		case "webhook":
 			cfg.CoreVoiceWebhookSecretFile = path
 		case "relay":
-			cfg.CoreVoiceRelayTokenFile = path
+			cfg.CoreVoiceCallbackRelayTokenFile = path
 		}
 	}
 	if err := ValidateCore(&cfg); err == nil || !strings.Contains(err.Error(), "core_voice_webhook_url") {

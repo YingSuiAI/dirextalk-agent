@@ -259,7 +259,6 @@ func isDigest(value string) bool {
 
 type SourceDocument struct {
 	ID          string
-	SourceID    string // SourceID is accepted as an explicit alias for ID.
 	Revision    int64
 	MediaType   string
 	Reader      io.Reader
@@ -334,12 +333,6 @@ func (e *IndexEngine) index(ctx context.Context, document SourceDocument, genera
 		return ErrInvalid
 	}
 	sourceID := strings.TrimSpace(document.ID)
-	if sourceID == "" {
-		sourceID = strings.TrimSpace(document.SourceID)
-	}
-	if document.ID != "" && document.SourceID != "" && strings.TrimSpace(document.ID) != strings.TrimSpace(document.SourceID) {
-		return ErrInvalid
-	}
 	if validateText(sourceID, 256, true) != nil {
 		return ErrInvalid
 	}
@@ -425,14 +418,6 @@ func (e *IndexEngine) index(ctx context.Context, document SourceDocument, genera
 		}
 	}
 	return nil
-}
-
-func (e *IndexEngine) IndexSource(ctx context.Context, document SourceDocument) error {
-	return e.Index(ctx, document)
-}
-
-func (e *IndexEngine) IndexDocument(ctx context.Context, document SourceDocument) error {
-	return e.Index(ctx, document)
 }
 
 var _ coreknowledge.SearchResolver = (*SearchResolver)(nil)

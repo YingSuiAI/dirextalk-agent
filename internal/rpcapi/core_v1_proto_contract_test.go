@@ -58,7 +58,7 @@ func TestCoreV1ServiceDescriptorsAndPrivacy(t *testing.T) {
 		(&agentv1.ModelProfileServiceSyncRequest{}).ProtoReflect().Descriptor(),
 		(&agentv1.ModelProfileServiceSyncResponse{}).ProtoReflect().Descriptor(),
 	} {
-		for _, name := range []protoreflect.Name{"default_client_profile_id", "default_conversation_client_profile_id", "default_tool_client_profile_id", "default_embedding_client_profile_id", "default_speech_client_profile_id"} {
+		for _, name := range []protoreflect.Name{"default_conversation_client_profile_id", "default_tool_client_profile_id", "default_embedding_client_profile_id", "default_speech_client_profile_id"} {
 			if message.Fields().ByName(name) == nil {
 				t.Fatalf("%s missing %s", message.Name(), name)
 			}

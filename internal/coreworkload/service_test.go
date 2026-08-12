@@ -78,7 +78,7 @@ func TestWorkloadRequestConfirmConsumeAndTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := svc.RequestApply(context.Background(), pl.ID, "", "00000000-0000-4000-8000-000000000002")
+	r, err := svc.RequestApply(context.Background(), RequestApplyInput{PlanID: pl.ID, IdempotencyKey: "00000000-0000-4000-8000-000000000002"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestWorkloadPlanDigestAndFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := svc.RequestApply(context.Background(), pl.ID, "", "00000000-0000-4000-8000-000000000004")
+	r, err := svc.RequestApply(context.Background(), RequestApplyInput{PlanID: pl.ID, IdempotencyKey: "00000000-0000-4000-8000-000000000004"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestWorkloadPreDispatchTerminalizationIsAtomicAndFenced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := svc.RequestApply(context.Background(), plan.ID, "", "00000000-0000-4000-8000-000000000022")
+	r, err := svc.RequestApply(context.Background(), RequestApplyInput{PlanID: plan.ID, IdempotencyKey: "00000000-0000-4000-8000-000000000022"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestWorkloadTerminalReplayIsStructStable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r, err := svc.RequestApply(context.Background(), plan.ID, "", uuid.NewString())
+			r, err := svc.RequestApply(context.Background(), RequestApplyInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -194,7 +194,7 @@ func TestWorkloadRecoverClaimsDispatchedFenceWithoutRedispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := svc.RequestApply(context.Background(), pl.ID, "", "00000000-0000-4000-8000-000000000006")
+	r, err := svc.RequestApply(context.Background(), RequestApplyInput{PlanID: pl.ID, IdempotencyKey: "00000000-0000-4000-8000-000000000006"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestWorkloadProviderErrorReconcilesByReadback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := svc.RequestApply(context.Background(), pl.ID, "", "00000000-0000-4000-8000-000000000008")
+	r, err := svc.RequestApply(context.Background(), RequestApplyInput{PlanID: pl.ID, IdempotencyKey: "00000000-0000-4000-8000-000000000008"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestWorkloadProviderReadFailureLeavesUncertain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := svc.RequestApply(context.Background(), pl.ID, "", "00000000-0000-4000-8000-00000000000a")
+	r, err := svc.RequestApply(context.Background(), RequestApplyInput{PlanID: pl.ID, IdempotencyKey: "00000000-0000-4000-8000-00000000000a"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestWorkloadRecoveryEventFailureRetainsLeaseForTakeover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := svc.RequestApply(context.Background(), pl.ID, "", "00000000-0000-4000-8000-00000000000c")
+	r, err := svc.RequestApply(context.Background(), RequestApplyInput{PlanID: pl.ID, IdempotencyKey: "00000000-0000-4000-8000-00000000000c"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestWorkloadRenewFailurePreventsCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := svc.RequestApply(context.Background(), pl.ID, "", "00000000-0000-4000-8000-00000000000e")
+	r, err := svc.RequestApply(context.Background(), RequestApplyInput{PlanID: pl.ID, IdempotencyKey: "00000000-0000-4000-8000-00000000000e"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +364,7 @@ func TestWorkloadFencedHandlerPreservesWorkerLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := svc.RequestApply(context.Background(), pl.ID, "", uuid.NewString())
+	r, err := svc.RequestApply(context.Background(), RequestApplyInput{PlanID: pl.ID, IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestWorkloadFencedRecoveryReadsWithoutApplyAfterReclaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := svc.RequestApply(context.Background(), pl.ID, "", uuid.NewString())
+	r, err := svc.RequestApply(context.Background(), RequestApplyInput{PlanID: pl.ID, IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}

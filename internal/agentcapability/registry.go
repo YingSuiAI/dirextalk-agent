@@ -55,8 +55,3 @@ func (r *Registry) List() []*capv1.CapabilityDescriptor {
 	}
 	return descriptors
 }
-
-// IntegrateWithServer is deprecated - registry is now passed to server.New()
-func (r *Registry) IntegrateWithServer(s interface{}) {
-	// No-op: registry integration now happens via constructor
-}

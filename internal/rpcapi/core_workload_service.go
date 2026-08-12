@@ -98,7 +98,7 @@ func (s *WorkloadService) RequestApply(ctx context.Context, r *agentv1.WorkloadS
 	if r == nil || !validCoreUUID(r.GetPlanId()) || !validCoreUUID(r.GetIdempotencyKey()) {
 		return nil, status.Error(codes.InvalidArgument, "invalid apply request")
 	}
-	v, e := s.service.RequestApply(ctx, r.GetPlanId(), r.GetWorkloadId(), r.GetIdempotencyKey())
+	v, e := s.service.RequestApply(ctx, coreworkload.RequestApplyInput{PlanID: r.GetPlanId(), WorkloadID: r.GetWorkloadId(), IdempotencyKey: r.GetIdempotencyKey()})
 	if e != nil {
 		return nil, workloadRPCError(e)
 	}
@@ -108,7 +108,7 @@ func (s *WorkloadService) RequestDestroy(ctx context.Context, r *agentv1.Workloa
 	if r == nil || !validCoreUUID(r.GetPlanId()) || !validCoreUUID(r.GetIdempotencyKey()) {
 		return nil, status.Error(codes.InvalidArgument, "invalid destroy request")
 	}
-	v, e := s.service.RequestDestroy(ctx, r.GetPlanId(), r.GetWorkloadId(), r.GetIdempotencyKey())
+	v, e := s.service.RequestDestroy(ctx, coreworkload.RequestDestroyInput{PlanID: r.GetPlanId(), WorkloadID: r.GetWorkloadId(), IdempotencyKey: r.GetIdempotencyKey()})
 	if e != nil {
 		return nil, workloadRPCError(e)
 	}

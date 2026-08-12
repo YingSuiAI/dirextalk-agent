@@ -22,12 +22,6 @@ func NewProviderRegistry(routes map[TargetKind]Provider) (*ProviderRegistry, err
 	return r, nil
 }
 
-// NewMultiplexer is retained as a descriptive alias for callers that do not
-// own the registry lifecycle.
-func NewMultiplexer(routes map[TargetKind]Provider) (*ProviderRegistry, error) {
-	return NewProviderRegistry(routes)
-}
-
 func (r *ProviderRegistry) Register(kind TargetKind, provider Provider) error {
 	if r == nil || !validTarget(kind) || provider == nil {
 		return ErrInvalid

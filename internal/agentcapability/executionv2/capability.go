@@ -163,7 +163,7 @@ func isRead(action string) bool {
 
 func actionForOperation(operation string) (string, bool) {
 	for _, item := range operationActions {
-		if item.operation == operation || item.action == operation {
+		if item.operation == operation {
 			return item.action, true
 		}
 	}

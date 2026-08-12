@@ -471,7 +471,7 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 		return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
 	}
 	seen := make(map[string]struct{}, len(cmd.Entries))
-	out := coremodel.SyncProfileResult{DefaultClientProfileID: cmd.DefaultClientProfileID, DefaultConversationProfileID: cmd.DefaultConversationProfileID, DefaultToolProfileID: cmd.DefaultToolProfileID, DefaultEmbeddingProfileID: cmd.DefaultEmbeddingProfileID, DefaultSpeechProfileID: cmd.DefaultSpeechProfileID, Profiles: make([]coremodel.PublicProfile, 0, len(cmd.Entries))}
+	out := coremodel.SyncProfileResult{DefaultConversationProfileID: cmd.DefaultConversationProfileID, DefaultToolProfileID: cmd.DefaultToolProfileID, DefaultEmbeddingProfileID: cmd.DefaultEmbeddingProfileID, DefaultSpeechProfileID: cmd.DefaultSpeechProfileID, Profiles: make([]coremodel.PublicProfile, 0, len(cmd.Entries))}
 	for _, e := range cmd.Entries {
 		if e.APIKey != nil && *e.APIKey == "" {
 			return coremodel.SyncProfileResult{}, coremodel.ErrAPIKeyUnavailable
@@ -603,21 +603,6 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 		}
 		out.Profiles = append(out.Profiles, p.Public())
 	}
-	if out.DefaultClientProfileID != "" {
-		var exists bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL)`, out.DefaultClientProfileID).Scan(&exists); err != nil {
-			return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
-		}
-		if !exists {
-			return coremodel.SyncProfileResult{}, coremodel.ErrProfileNotFound
-		}
-	}
-	if out.DefaultConversationProfileID == "" {
-		out.DefaultConversationProfileID = out.DefaultClientProfileID
-	}
-	if out.DefaultClientProfileID == "" {
-		out.DefaultClientProfileID = out.DefaultConversationProfileID
-	}
 	for _, binding := range []struct {
 		value string
 		kind  string
@@ -641,7 +626,7 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 			return coremodel.SyncProfileResult{}, coremodel.ErrInvalidProfile
 		}
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_defaults(singleton,default_client_profile_id,default_conversation_client_profile_id,default_tool_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id,updated_at) VALUES(true,$1,$2,$3,$4,$5,clock_timestamp()) ON CONFLICT (singleton) DO UPDATE SET default_client_profile_id=EXCLUDED.default_client_profile_id,default_conversation_client_profile_id=EXCLUDED.default_conversation_client_profile_id,default_tool_client_profile_id=EXCLUDED.default_tool_client_profile_id,default_embedding_client_profile_id=EXCLUDED.default_embedding_client_profile_id,default_speech_client_profile_id=EXCLUDED.default_speech_client_profile_id,updated_at=EXCLUDED.updated_at`, nullableClientProfileID(out.DefaultClientProfileID), nullableClientProfileID(out.DefaultConversationProfileID), nullableClientProfileID(out.DefaultToolProfileID), nullableClientProfileID(out.DefaultEmbeddingProfileID), nullableClientProfileID(out.DefaultSpeechProfileID)); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_defaults(singleton,default_conversation_client_profile_id,default_tool_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id,updated_at) VALUES(true,$1,$2,$3,$4,clock_timestamp()) ON CONFLICT (singleton) DO UPDATE SET default_conversation_client_profile_id=EXCLUDED.default_conversation_client_profile_id,default_tool_client_profile_id=EXCLUDED.default_tool_client_profile_id,default_embedding_client_profile_id=EXCLUDED.default_embedding_client_profile_id,default_speech_client_profile_id=EXCLUDED.default_speech_client_profile_id,updated_at=EXCLUDED.updated_at`, nullableClientProfileID(out.DefaultConversationProfileID), nullableClientProfileID(out.DefaultToolProfileID), nullableClientProfileID(out.DefaultEmbeddingProfileID), nullableClientProfileID(out.DefaultSpeechProfileID)); err != nil {
 		return coremodel.SyncProfileResult{}, mapProfileDBError(err)
 	}
 	encoded, err := json.Marshal(out)

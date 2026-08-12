@@ -14,11 +14,10 @@ Agent turn by the built-in `cloud_worker_propose` tool. A client cannot create
 an AWS Cloud Worker plan or run directly.
 
 There is one confirmation authority:
-`agent.core.confirmations.get/list/confirm/reject`. Execution V2 does not
-publish confirmation aliases. Provider progression is owned by the durable
-Agent controller, so `agent.execution.v2.runs.reconcile` is not a public
-operation. Uncertain provider responses are reconciled internally by immutable
-read-back; they are never treated as permission to repeat a mutation.
+`agent.core.confirmations.get/list/confirm/reject`. Provider progression is
+owned by the durable Agent controller. Uncertain provider responses are
+reconciled internally by immutable read-back; they are never treated as
+permission to repeat a mutation.
 
 For a non-Cloud-Worker run, create/retry atomically writes the run, first
 stage, real `EXECUTION_V2_RUN` CoreTask, and real CoreConfirmation. Confirming
@@ -27,9 +26,8 @@ rejecting or expiring the confirmation terminalizes all three before any
 provider call. There is no Execution V2 confirmation record or reconciliation
 shadow to repair after a restart.
 
-This is a fresh-state contract. There is no Team/role/assignment/DAG surface,
-old Worker API, approval-device path, compatibility alias, version selector,
-dual read, or dual write.
+This is a fresh-state contract. Execution plans, confirmations, provider
+progression, and read-back each have one authoritative path.
 
 ## Local and cloud execution boundary
 
