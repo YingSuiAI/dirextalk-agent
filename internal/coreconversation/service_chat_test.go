@@ -97,6 +97,38 @@ func TestStreamChatRecallsOnlyIntoModelRequestForNewConversation(t *testing.T) {
 	}
 }
 
+func TestChatRefreshesLongTermMemoryOnEveryTurn(t *testing.T) {
+	store := newFakeStore()
+	model := &capturingChatModel{}
+	service, err := NewService(store, model, fakeExt{}, fakeProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prompts []string
+	service.SetMemoryRecallResolver(memoryRecallFunc(func(_ context.Context, prompt string) (string, error) {
+		prompts = append(prompts, prompt)
+		return "[AGENT LONG-TERM MEMORY]\n- current fact\n[END AGENT LONG-TERM MEMORY]", nil
+	}))
+	first := command()
+	response, err := service.Chat(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.RequestID = uuid.NewString()
+	second.ConversationID = response.ConversationID
+	second.Prompt = "follow up"
+	if _, err = service.Chat(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 2 || prompts[0] != "hello" || prompts[1] != "follow up" {
+		t.Fatalf("recall prompts=%v", prompts)
+	}
+	if messages := model.request.Conversation.Messages; len(messages) != 4 || !strings.Contains(messages[2].Content, "current fact") || messages[3].Content != "follow up" {
+		t.Fatalf("second-turn model context=%+v", model.request.Conversation.Messages)
+	}
+}
+
 func TestChatFailsClosedBeforeModelWhenMemoryRecallUnavailable(t *testing.T) {
 	store := newFakeStore()
 	model := &capturingChatModel{}

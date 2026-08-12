@@ -1026,6 +1026,14 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 			}
 		}
 	}
+	userParts := make([]string, 0, len(steers)+1)
+	userParts = append(userParts, lease.Turn.Prompt)
+	for _, steer := range steers {
+		userParts = append(userParts, steer.Instruction)
+	}
+	if err = s.enqueueMemoryObservationTx(ctx, tx, lease.Turn.RequestID, response.ConversationID, lease.Turn.ProfileID, strings.Join(userParts, "\n"), response.Message.Content, now); err != nil {
+		return err
+	}
 	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, turn.LastSequence+1, core.TurnEvent{Kind: core.TurnEventDone, Message: &response.Message, Response: &response}, now); err != nil {
 		return err
 	}

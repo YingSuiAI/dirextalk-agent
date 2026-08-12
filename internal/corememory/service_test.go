@@ -1,0 +1,129 @@
+package corememory
+
+import (
+	"context"
+	"errors"
+	"math"
+	"testing"
+	"time"
+)
+
+type testStore struct {
+	lease      ObservationLease
+	facts      []Fact
+	applied    []Candidate
+	retryCode  string
+	claim      bool
+	applyCalls int
+	snapshot   Snapshot
+}
+
+func (s *testStore) ClaimObservation(context.Context, time.Time, time.Duration) (ObservationLease, bool, error) {
+	return s.lease, s.claim, nil
+}
+func (s *testStore) ListActiveFacts(context.Context, int) ([]Fact, error) {
+	return append([]Fact(nil), s.facts...), nil
+}
+func (s *testStore) ApplyObservation(_ context.Context, _ ObservationLease, candidates []Candidate, _ time.Time) error {
+	s.applyCalls++
+	s.applied = append([]Candidate(nil), candidates...)
+	return nil
+}
+func (s *testStore) RetryObservation(_ context.Context, _ ObservationLease, code string, _ time.Time) error {
+	s.retryCode = code
+	return nil
+}
+func (s *testStore) Recall(_ context.Context, facts, events int) (Snapshot, error) {
+	if facts != MaxActiveFacts || events != DefaultRecallEvents {
+		return Snapshot{}, ErrInvalid
+	}
+	return s.snapshot, nil
+}
+
+type extractorFunc func(context.Context, Observation, []Fact) ([]Candidate, error)
+
+func (f extractorFunc) Extract(ctx context.Context, observation Observation, facts []Fact) ([]Candidate, error) {
+	return f(ctx, observation, facts)
+}
+
+func TestProcessNextNormalizesDurableUserFact(t *testing.T) {
+	store := &testStore{claim: true, lease: ObservationLease{Observation: Observation{ID: "11111111-1111-4111-8111-111111111111", UserText: "I moved"}, LeaseID: "22222222-2222-4222-8222-222222222222", Attempt: 1}}
+	service, err := NewService(store, extractorFunc(func(_ context.Context, observation Observation, _ []Fact) ([]Candidate, error) {
+		if observation.UserText != "I moved" {
+			t.Fatalf("observation=%+v", observation)
+		}
+		return []Candidate{{Operation: " UPSERT ", Subject: "", Predicate: "Home_City", Value: "  Beijing  ", Kind: "Context", Confidence: .9}}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	processed, err := service.ProcessNext(context.Background())
+	if err != nil || !processed || store.applyCalls != 1 || len(store.applied) != 1 {
+		t.Fatalf("processed=%v applied=%+v err=%v", processed, store.applied, err)
+	}
+	fact := store.applied[0]
+	if fact.Subject != "user" || fact.Predicate != "home_city" || fact.Value != "Beijing" || fact.Kind != "context" {
+		t.Fatalf("normalized fact=%+v", fact)
+	}
+}
+
+func TestProcessNextRetriesInvalidOrUnavailableExtractionWithoutFailingChatPath(t *testing.T) {
+	store := &testStore{claim: true, lease: ObservationLease{Observation: Observation{ID: "11111111-1111-4111-8111-111111111111"}, LeaseID: "22222222-2222-4222-8222-222222222222", Attempt: 2}}
+	service, err := NewService(store, extractorFunc(func(context.Context, Observation, []Fact) ([]Candidate, error) {
+		return nil, errors.New("private provider error")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	processed, err := service.ProcessNext(context.Background())
+	if err != nil || !processed || store.retryCode != "memory_consolidation_failed" || store.applyCalls != 0 {
+		t.Fatalf("processed=%v retry=%q applies=%d err=%v", processed, store.retryCode, store.applyCalls, err)
+	}
+}
+
+func TestCandidateRejectsNonUserSubjectAndUnstablePredicate(t *testing.T) {
+	for _, candidate := range []Candidate{
+		{Operation: "upsert", Subject: "assistant", Predicate: "home_city", Value: "Paris", Confidence: .8},
+		{Operation: "upsert", Subject: "user", Predicate: "Home City", Value: "Paris", Confidence: .8},
+		{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: "Paris", Confidence: 1.1},
+		{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: "Paris", Kind: "unknown", Confidence: .8},
+		{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: "Paris", Confidence: math.NaN()},
+	} {
+		if err := candidate.Normalize(); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("candidate %+v accepted: %v", candidate, err)
+		}
+	}
+}
+
+func TestProcessNextDropsCredentialShapedCandidates(t *testing.T) {
+	store := &testStore{claim: true, lease: ObservationLease{Observation: Observation{ID: "11111111-1111-4111-8111-111111111111"}, LeaseID: "22222222-2222-4222-8222-222222222222", Attempt: 1}}
+	service, err := NewService(store, extractorFunc(func(context.Context, Observation, []Fact) ([]Candidate, error) {
+		return []Candidate{
+			{Operation: "upsert", Subject: "user", Predicate: "api_key", Value: "sk-0123456789abcdefghijkl", Confidence: 1},
+			{Operation: "upsert", Subject: "user", Predicate: "favorite_color", Value: "blue", Confidence: .9},
+		}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ProcessNext(context.Background()); err != nil || len(store.applied) != 1 || store.applied[0].Predicate != "favorite_color" {
+		t.Fatalf("applied=%+v err=%v", store.applied, err)
+	}
+}
+
+func TestRecallRanksRelevantFactAheadOfNewerUnrelatedFacts(t *testing.T) {
+	facts := make([]Fact, 0, DefaultRecallFacts+1)
+	for index := 0; index < DefaultRecallFacts; index++ {
+		facts = append(facts, Fact{Predicate: "unrelated", Value: "value", LastConfirmedAt: time.Now().Add(-time.Duration(index) * time.Minute)})
+	}
+	facts = append(facts, Fact{Predicate: "home_city", Value: "Beijing", LastConfirmedAt: time.Now().Add(-time.Hour)})
+	store := &testStore{snapshot: Snapshot{Facts: facts}}
+	service, err := NewService(store, extractorFunc(func(context.Context, Observation, []Fact) ([]Candidate, error) { return nil, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.Recall(context.Background(), "What is my home city?")
+	if err != nil || len(snapshot.Facts) != DefaultRecallFacts || snapshot.Facts[0].Predicate != "home_city" {
+		t.Fatalf("ranked facts=%+v err=%v", snapshot.Facts, err)
+	}
+}

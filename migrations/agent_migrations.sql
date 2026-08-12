@@ -2403,3 +2403,56 @@ ALTER TABLE core_extension_artifact_cleanup
         (node_artifact = true AND cleanup_token IS NOT NULL AND jsonb_typeof(version_json) = 'object' AND pg_column_size(version_json) <= 262144)
     );
 -- dirextalk-agent migration end 000012_managed_node_prepared_cleanup.up.sql
+-- dirextalk-agent migration begin 000013_structured_memory_v2.up.sql
+-- Conversation working context remains in core_conversation_contexts. These
+-- tables own the second layer: durable user facts plus an append-only history
+-- of confirmations, replacements, and retractions.
+CREATE TABLE core_memory_observations (
+    observation_id uuid PRIMARY KEY,
+    conversation_id uuid NOT NULL REFERENCES core_conversations(conversation_id) ON DELETE RESTRICT,
+    profile_id uuid NOT NULL REFERENCES core_model_profiles(profile_id) ON DELETE RESTRICT,
+    user_text text NOT NULL CHECK (length(user_text) BETWEEN 1 AND 1048576),
+    assistant_text text NOT NULL CHECK (length(assistant_text) <= 1048576),
+    observed_at timestamptz NOT NULL,
+    state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','processing','completed','dead')),
+    attempt integer NOT NULL DEFAULT 0 CHECK (attempt BETWEEN 0 AND 5),
+    next_attempt_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    lease_id uuid,
+    lease_expires_at timestamptz,
+    last_error text NOT NULL DEFAULT '' CHECK (length(last_error) <= 128),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    CHECK ((state='processing') = (lease_id IS NOT NULL AND lease_expires_at IS NOT NULL))
+);
+CREATE INDEX core_memory_observations_due_idx ON core_memory_observations(state,next_attempt_at,observed_at,observation_id);
+
+CREATE TABLE core_memory_facts (
+    fact_id uuid PRIMARY KEY,
+    subject text NOT NULL CHECK (subject='user'),
+    predicate text NOT NULL CHECK (predicate ~ '^[a-z0-9][a-z0-9_.-]{0,127}$'),
+    value text NOT NULL CHECK (length(value) BETWEEN 1 AND 2048),
+    kind text NOT NULL CHECK (kind IN ('identity','preference','relationship','goal','constraint','context','fact')),
+    confidence double precision NOT NULL CHECK (confidence BETWEEN 0 AND 1),
+    state text NOT NULL CHECK (state IN ('active','superseded','retracted')),
+    valid_from timestamptz NOT NULL,
+    valid_to timestamptz,
+    last_confirmed_at timestamptz NOT NULL,
+    source_observation_id uuid NOT NULL REFERENCES core_memory_observations(observation_id) ON DELETE RESTRICT,
+    supersedes_fact_id uuid REFERENCES core_memory_facts(fact_id) ON DELETE RESTRICT,
+    created_at timestamptz NOT NULL,
+    CHECK ((state='active') = (valid_to IS NULL))
+);
+CREATE UNIQUE INDEX core_memory_facts_active_key_idx ON core_memory_facts(subject,predicate) WHERE state='active';
+CREATE INDEX core_memory_facts_recall_idx ON core_memory_facts(last_confirmed_at DESC,fact_id) WHERE state='active';
+
+CREATE TABLE core_memory_timeline (
+    event_id uuid PRIMARY KEY,
+    observation_id uuid NOT NULL REFERENCES core_memory_observations(observation_id) ON DELETE RESTRICT,
+    event_kind text NOT NULL CHECK (event_kind IN ('added','confirmed','replaced','retracted')),
+    fact_id uuid NOT NULL REFERENCES core_memory_facts(fact_id) ON DELETE RESTRICT,
+    previous_fact_id uuid REFERENCES core_memory_facts(fact_id) ON DELETE RESTRICT,
+    summary text NOT NULL CHECK (length(summary) BETWEEN 1 AND 4096),
+    occurred_at timestamptz NOT NULL
+);
+CREATE INDEX core_memory_timeline_recent_idx ON core_memory_timeline(occurred_at DESC,event_id);
+-- dirextalk-agent migration end 000013_structured_memory_v2.up.sql

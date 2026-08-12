@@ -65,6 +65,16 @@ func (s *CoreConversationStore) CommitChatCompletion(ctx context.Context, a core
 			}
 		}
 	}
+	var userText string
+	for i := len(a.Conversation.Messages) - 1; i >= 0; i-- {
+		if a.Conversation.Messages[i].Role == core.RoleUser {
+			userText = a.Conversation.Messages[i].Content
+			break
+		}
+	}
+	if e = s.enqueueMemoryObservationTx(ctx, tx, a.RequestID, a.Conversation.ID, a.Response.ModelProfileID, userText, a.Response.Message.Content, a.Conversation.UpdatedAt); e != nil {
+		return core.ChatResponse{}, e
+	}
 	if e = tx.Commit(ctx); e != nil {
 		return core.ChatResponse{}, e
 	}

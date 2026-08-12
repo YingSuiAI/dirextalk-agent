@@ -396,6 +396,17 @@ fences in-flight indexing, and removes promoted vectors while preserving source
 files and memory text. A later embedding binding automatically reconciles those
 ready, unindexed sources without a migration or content fallback.
 
+Conversation memory is a separate two-layer projection. Working memory is the
+existing bounded conversation summary and recent transcript. After a chat
+commit, a transactionally enqueued observation is consolidated into
+Agent-owned structured user facts and an append-only fact timeline. The active
+`subject + predicate` row is the current truth projection; a changed value
+atomically closes and supersedes the prior row instead of deleting history.
+Per-turn recall ranks current facts against the prompt, then adds a bounded
+recent timeline and exact-binding semantic Knowledge passages. This internal
+projection does not change the Message Server action envelope or make the
+Message Server an Agent-memory database.
+
 ### AWS
 
 Typed AWS credentials, `TestCredentialIdentity` identity checks, plans, quotes,

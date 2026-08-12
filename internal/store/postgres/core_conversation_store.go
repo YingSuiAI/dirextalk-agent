@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
@@ -14,13 +15,24 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type CoreConversationStore struct{ *Store }
+type CoreConversationStore struct {
+	*Store
+	memoryCapture atomic.Bool
+}
 
 func NewCoreConversationStore(store *Store) (*CoreConversationStore, error) {
 	if store == nil {
 		return nil, errors.New("postgres store is required")
 	}
 	return &CoreConversationStore{Store: store}, nil
+}
+
+// EnableMemoryCapture starts the durable post-turn consolidation outbox only
+// after the complete Knowledge/memory composition has passed readiness.
+func (s *CoreConversationStore) EnableMemoryCapture() {
+	if s != nil {
+		s.memoryCapture.Store(true)
+	}
 }
 
 func (s *CoreConversationStore) CreateConversationMutation(ctx context.Context, c core.CreateConversationCommand) (core.ConversationMutationResponse, error) {
