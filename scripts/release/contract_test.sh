@@ -260,7 +260,7 @@ if run_script "$fixture" prepare.sh "$version" env; then fail 'prepare accepted 
 # version-tag bound, without carrying a local Docker image ID across workflow jobs.
 fixture=$(make_fixture verify)
 prepare_and_verify "$fixture"
-grep -F "go message_server_root=$fixture/message-server test -p 1 ./... -count=1" "$fixture/commands.log" >/dev/null || \
+grep -F "go message_server_root=$fixture/message-server test -p 1 -parallel 1 ./... -count=1" "$fixture/commands.log" >/dev/null || \
   fail 'verify omitted the Agent test suite'
 grep -F 'docker build --pull' "$fixture/commands.log" >/dev/null || fail 'verify omitted the local image build'
 for binary in dirextalk-agent dirextalk-extension-runner dirextalk-core-runner; do

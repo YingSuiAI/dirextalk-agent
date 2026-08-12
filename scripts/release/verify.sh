@@ -12,7 +12,7 @@ release_require_message_server
 [[ -n "${AGENT_TEST_POSTGRES_DSN:-}" ]] || release_die 'AGENT_TEST_POSTGRES_DSN is required for formal verification'
 cd "$RELEASE_REPO_ROOT"
 
-DIREXTALK_MESSAGE_SERVER_ROOT="$RELEASE_MESSAGE_SERVER_ROOT" go test -p 1 ./... -count=1
+DIREXTALK_MESSAGE_SERVER_ROOT="$RELEASE_MESSAGE_SERVER_ROOT" go test -p 1 -parallel 1 ./... -count=1
 go build ./cmd/...
 buf lint
 
