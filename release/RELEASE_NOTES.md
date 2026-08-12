@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## v1.0.77
+## v1.0.78
 
 1. Add exact update and delete operations for active structured memory facts.
 2. Remove superseded Knowledge-memory CRUD, capability aliases, and legacy parameter fallbacks.

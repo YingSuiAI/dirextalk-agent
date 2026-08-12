@@ -177,5 +177,6 @@ jobs:
         working-directory: agent
         env:
           GH_TOKEN: ${{ github.token }}
+          DIREXTALK_MESSAGE_SERVER_ROOT: ${{ github.workspace }}/message-server
           RELEASE_VERSION_INPUT: ${{ inputs.version }}
         run: bash scripts/release/publish.sh "$RELEASE_VERSION_INPUT"
