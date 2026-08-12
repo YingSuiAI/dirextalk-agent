@@ -466,7 +466,7 @@ fi
 fixture=$(make_fixture verify-contract)
 run_script "$fixture" prepare.sh "$version" env
 run_script "$fixture" verify.sh "$version" env
-grep -F "go message_server_root=$fixture/message-server test ./... -count=1" "$fixture/commands.log" >/dev/null || \
+grep -F "go message_server_root=$fixture/message-server test -p 1 ./... -count=1" "$fixture/commands.log" >/dev/null || \
   fail 'verify did not run the Agent suite with the Message Server catalog input'
 grep -F "go message_server_root=$fixture/message-server build ./cmd/..." "$fixture/commands.log" >/dev/null || \
   fail 'verify did not build all Agent commands'
