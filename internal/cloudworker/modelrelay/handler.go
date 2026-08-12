@@ -133,7 +133,7 @@ func (s *Service) serveHTTP(writer http.ResponseWriter, request *http.Request) e
 	if settled.State != GrantActive {
 		return ErrFenced
 	}
-	contentType, err := safeProviderContentType(response.ContentType, parsed.streaming)
+	contentType, err := safeProviderContentType(response.ContentType, parsed.streaming, response.StatusCode)
 	if err != nil {
 		s.fenceGrant(request.Context(), grant.Fence, "provider_content_type", false)
 		return err
@@ -264,16 +264,19 @@ func (s *Service) refundAndFence(ctx context.Context, fence Fence, invocationID,
 	s.fenceGrant(ctx, fence, reason, false)
 }
 
-func safeProviderContentType(raw string, streaming bool) (string, error) {
+func safeProviderContentType(raw string, streaming bool, statusCode int) (string, error) {
 	mediaType, _, err := mime.ParseMediaType(raw)
 	if err != nil {
 		return "", ErrProviderProtocol
 	}
 	if streaming {
-		if mediaType != "text/event-stream" {
-			return "", ErrProviderProtocol
+		if mediaType == "text/event-stream" {
+			return "text/event-stream", nil
 		}
-		return "text/event-stream", nil
+		if statusCode >= 300 && mediaType == "application/json" {
+			return "application/json", nil
+		}
+		return "", ErrProviderProtocol
 	}
 	if mediaType != "application/json" {
 		return "", ErrProviderProtocol

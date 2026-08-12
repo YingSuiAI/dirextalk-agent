@@ -619,6 +619,18 @@ func TestHTTPBackendConstructsProviderAuthorizationWithoutRelayHeaders(t *testin
 	}
 }
 
+func TestSafeProviderContentTypeAllowsStreamingJSONErrorOnly(t *testing.T) {
+	if got, err := safeProviderContentType("application/json", true, http.StatusBadRequest); err != nil || got != "application/json" {
+		t.Fatalf("streaming JSON provider error content_type=%q err=%v", got, err)
+	}
+	if _, err := safeProviderContentType("application/json", true, http.StatusOK); !errors.Is(err, ErrProviderProtocol) {
+		t.Fatalf("streaming JSON success accepted: %v", err)
+	}
+	if got, err := safeProviderContentType("text/event-stream", true, http.StatusOK); err != nil || got != "text/event-stream" {
+		t.Fatalf("streaming SSE content_type=%q err=%v", got, err)
+	}
+}
+
 func providerSSE(tokens uint64) ProviderResponse {
 	body := fmt.Sprintf("data: {\"id\":\"x\",\"choices\":[{\"delta\":{}}],\"usage\":{\"completion_tokens\":%d}}\n\ndata: [DONE]\n\n", tokens)
 	return ProviderResponse{

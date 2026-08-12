@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corestaticsite"
 	"github.com/google/uuid"
 )
 
@@ -52,6 +54,34 @@ func TestPublisherPublishesSingleHTMLWithoutArchiveAndReplaysExactly(t *testing.
 	stageEntries, err := os.ReadDir(filepath.Join(root, ".staging"))
 	if err != nil || len(stageEntries) != 0 {
 		t.Fatalf("staging=%v err=%v", stageEntries, err)
+	}
+}
+
+func TestPublisherDeleteQuarantinesAndRestoresOnCommitFailure(t *testing.T) {
+	root := t.TempDir()
+	publisher, err := NewPublisher(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication := core.StaticSitePublication{SiteID: uuid.NewString(), ReleaseID: uuid.NewString(), HTML: []byte("<h1>delete me</h1>")}
+	receipt, err := publisher.PublishSingleHTML(context.Background(), publication)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := corestaticsite.Release{SiteID: receipt.SiteID, ReleaseID: receipt.ReleaseID, ConversationID: uuid.NewString(), PublicPath: receipt.PublicPath, PublicURL: "https://example.test" + receipt.PublicPath, SizeBytes: receipt.SizeBytes, CreatedAt: time.Now().UTC()}
+	commitFailure := errors.New("commit failed")
+	if err = publisher.DeleteRelease(context.Background(), release, func() error { return commitFailure }); !errors.Is(err, commitFailure) {
+		t.Fatalf("delete failure=%v", err)
+	}
+	indexPath := filepath.Join(root, "public", publication.SiteID, publication.ReleaseID, indexFileName)
+	if raw, readErr := os.ReadFile(indexPath); readErr != nil || string(raw) != string(publication.HTML) {
+		t.Fatalf("release was not restored: raw=%q err=%v", raw, readErr)
+	}
+	if err = publisher.DeleteRelease(context.Background(), release, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(indexPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("release remains after committed delete: %v", statErr)
 	}
 }
 

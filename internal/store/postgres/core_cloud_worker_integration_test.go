@@ -876,7 +876,7 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 		offer.Execution.ExecutionID, offer.Confirmation.ConfirmationID).Scan(&resultMessages, &completionRows, &activeReservations, &runningCount); err != nil {
 		t.Fatal(err)
 	}
-	if resultMessages != 1 || completionRows != 1 || activeReservations != 0 || runningCount != 0 {
+	if resultMessages != 0 || completionRows != 1 || activeReservations != 0 || runningCount != 0 {
 		t.Fatalf("terminal invariants message=%d outbox=%d reservation=%d running=%d",
 			resultMessages, completionRows, activeReservations, runningCount)
 	}

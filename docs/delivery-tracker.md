@@ -249,14 +249,9 @@ support.
 - Generic non-Cloud-Worker Execution V2 provider mutations still require their
   exact typed route, target proof, and configured CloudFormation service role;
   live generic AWS provision/read-back acceptance is not recorded.
-- Production `cloud_worker_propose` accepts an explicit cloud command and one
-  structural local-budget case: the frozen turn contains a validated workspace
-  archive, while the versioned Native runtime policy has no general workspace
-  executor. Its deterministic evidence binds owner/account generation,
-  turn/request/conversation/revision, prompt digest, profile snapshot, attachment
-  snapshot, and policy revision. All other budget cases remain fail-closed;
-  transient concurrency, model arguments, timeouts, and failed local execution
-  never become budget evidence.
+- Production `cloud_worker_propose` accepts only an explicit cloud command.
+  Local budget conditions, model arguments, timeouts, and failed local
+  execution never create a paid offer.
 - A Worker AMI built from the immutable `deploy/cloud-worker` inputs passed the
   earlier offline and boot checks, but the first live run proved those checks
   did not exercise the Worker-UID Gate client path. It is not production-ready;

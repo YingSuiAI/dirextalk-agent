@@ -20,7 +20,7 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrCloudIntentRequired = errors.New("cloudworker: explicit cloud intent or trusted local budget evidence is required")
+var ErrCloudIntentRequired = errors.New("cloudworker: explicit cloud intent is required")
 
 const (
 	englishCloudTarget = `(?:aws(?:\s+cloud)?(?:\s+worker)?|ec2|cloud\s+worker)`
@@ -82,24 +82,17 @@ type IntrinsicManifestResolver interface {
 	ResolveCloudWorkerManifest(context.Context, coreconversation.TurnLease, WorkspaceMode, []string) (InputManifest, error)
 }
 
-// IntrinsicBudgetResolver is the sole authority for local-budget exhaustion.
-// A model assertion and a failed local task are intentionally not inputs.
-type IntrinsicBudgetResolver interface {
-	ResolveCloudWorkerBudgetEvidence(context.Context, coreconversation.TurnLease) (*LocalBudgetEvidence, error)
-}
-
 type ProposeIntrinsic struct {
 	service   *Service
 	owners    IntrinsicOwnerResolver
 	manifests IntrinsicManifestResolver
-	budgets   IntrinsicBudgetResolver
 }
 
-func NewProposeIntrinsic(service *Service, owners IntrinsicOwnerResolver, manifests IntrinsicManifestResolver, budgets IntrinsicBudgetResolver) (*ProposeIntrinsic, error) {
+func NewProposeIntrinsic(service *Service, owners IntrinsicOwnerResolver, manifests IntrinsicManifestResolver) (*ProposeIntrinsic, error) {
 	if service == nil || owners == nil {
 		return nil, ErrInvalid
 	}
-	return &ProposeIntrinsic{service: service, owners: owners, manifests: manifests, budgets: budgets}, nil
+	return &ProposeIntrinsic{service: service, owners: owners, manifests: manifests}, nil
 }
 
 type proposeIntrinsicArguments struct {
@@ -122,7 +115,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(_ context.Context, lease coreco
 	}
 	tool := coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerProposeToolName,
-		Description: "Create a priced, owner-confirmed ephemeral AWS Pi Worker offer. Use only when the user explicitly requests cloud execution or Core reports an exhausted local runtime budget. This tool never runs a failed local task in the cloud automatically.",
+		Description: "Create a priced, owner-confirmed ephemeral AWS Pi Worker offer. Use only when the user explicitly requests cloud execution.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -175,22 +168,8 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
 	mode := WorkspaceMode(arguments.WorkspaceMode)
-	explicit := hasExplicitCloudIntent(bound.Turn.Prompt)
-	var budget *LocalBudgetEvidence
-	reason := ProposalReasonExplicitUserCloud
-	if !explicit {
-		if hasCloudExecutionVeto(bound.Turn.Prompt) || mode == WorkspaceNone ||
-			!turnAllowsSelectedWorkspaceArchive(bound.Turn, arguments.AttachmentIDs) {
-			return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
-		}
-		if p.budgets == nil {
-			return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
-		}
-		budget, err = p.budgets.ResolveCloudWorkerBudgetEvidence(ctx, bound)
-		if err != nil || budget == nil {
-			return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
-		}
-		reason = ProposalReasonLocalBudgetExceeded
+	if !hasExplicitCloudIntent(bound.Turn.Prompt) || hasCloudExecutionVeto(bound.Turn.Prompt) {
+		return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
 	}
 	if strings.TrimSpace(bound.Turn.OwnerID) == "" || bound.Turn.AccountGeneration == 0 {
 		return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
@@ -227,7 +206,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		TurnID: bound.Turn.ID, TurnLeaseID: bound.LeaseID, TurnLeaseEpoch: bound.Epoch,
 		ExpectedTurnRevision: bound.Turn.Revision, Objective: arguments.Objective,
 		ObjectiveSummary: arguments.Objective, UserPromptDigest: hex.EncodeToString(promptDigest[:]),
-		ProposalReason: reason, LocalBudgetEvidence: budget, InputManifest: manifest,
+		ProposalReason: ProposalReasonExplicitUserCloud, InputManifest: manifest,
 		WorkspaceMode:      mode,
 		ModelAuthorization: modelAuthorization,
 	})
@@ -236,7 +215,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 			"class", intrinsicProposalErrorClass(err),
 			"turn_id", bound.Turn.ID,
 			"workspace_mode", mode,
-			"proposal_reason", reason)
+			"proposal_reason", ProposalReasonExplicitUserCloud)
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
 	if offer.Plan.TurnID != bound.Turn.ID || offer.Plan.ConversationID != bound.Turn.ConversationID || offer.Plan.AccountGeneration != owner.AccountGeneration || offer.Task.ID != offer.Plan.TaskID || offer.Confirmation.ConfirmationID != offer.Plan.ConfirmationID {

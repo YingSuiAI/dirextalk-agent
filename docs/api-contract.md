@@ -157,6 +157,14 @@ multi-tenant model.
   instructs the model to produce semantic, responsive, self-contained HTML;
   the edge sandbox CSP blocks scripts, forms, external subresources, and
   programmatic network access even when generated markup drifts.
+- Ready static-site composition publishes `agent.static_sites.v1` for the
+  authenticated owner. `list_releases` accepts only bounded page input and
+  returns `site_id`, `release_id`, `conversation_id`, server-produced
+  `public_url`/`public_path`, `size_bytes`, and `created_at`.
+  `delete_release` accepts exactly `release_id` plus a UUID
+  `idempotency_key`, removes only the receipt-derived release, and returns
+  `{release_id,deleted,replayed}`. Public page bytes remain available through
+  the absolute URL; no second download operation exists.
 - Capability conversation reads use a closed Flutter-facing projection.
   Conversations expose only id/title/revision/timestamps/status; history
   exposes only user/assistant messages with durable sequence, terminal status,
@@ -319,6 +327,10 @@ clients use `agent.execution.v2.plans.get/list`,
 `agent.execution.v2.artifacts.get/download`; they use
 `agent.core.confirmations.get/list/confirm/reject` for authorization. The
 durable controller performs provider reconciliation and cleanup.
+Only explicit user cloud requests are eligible. Terminal Worker output returns
+to the same durable turn as a tool result with related task/plan IDs, strict
+references, verified artifact metadata, and bounded deliverable context;
+Central resumes the turn and authors the final user-facing answer.
 
 `agent.chat.v1/upload_attachment_begin` requires `kind` (`image`, `file`, or
 `workspace_archive`) and a matching approved `mime_type`. A turn accepts at

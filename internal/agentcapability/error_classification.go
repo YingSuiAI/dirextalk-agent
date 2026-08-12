@@ -13,6 +13,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corestaticsite"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
@@ -102,6 +103,7 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coreknowledge.ErrPathTraversal),
 		errors.Is(err, coreknowledge.ErrLimitExceeded),
 		errors.Is(err, corememory.ErrInvalid),
+		errors.Is(err, corestaticsite.ErrInvalid),
 		errors.Is(err, coreknowledge.ErrCursorConflict),
 		errors.Is(err, coretexttool.ErrInvalid),
 		errors.Is(err, coreimagetool.ErrInvalid),
@@ -116,6 +118,10 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coretask.ErrNotFound),
 		errors.Is(err, coreknowledge.ErrNotFound),
 		errors.Is(err, coretexttool.ErrNotFound):
+		// Static-site receipts are owner-scoped and intentionally indistinguishable
+		// from a missing foreign release.
+		return capabilityoperation.NewFailure("NOT_FOUND", "Agent resource was not found", err)
+	case errors.Is(err, corestaticsite.ErrNotFound):
 		// Image sources intentionally cease to exist after expiry cleanup.
 		// A consumed source is classified as conflict below.
 		return capabilityoperation.NewFailure("NOT_FOUND", "Agent resource was not found", err)
@@ -145,6 +151,8 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coretexttool.ErrIdempotencyConflict),
 		errors.Is(err, corewebsearch.ErrRevisionConflict),
 		errors.Is(err, corewebsearch.ErrIdempotencyConflict):
+		return capabilityoperation.NewFailure("CONFLICT", "Agent state changed; refresh and retry", err)
+	case errors.Is(err, corestaticsite.ErrConflict):
 		return capabilityoperation.NewFailure("CONFLICT", "Agent state changed; refresh and retry", err)
 	case errors.Is(err, coreimagetool.ErrConflict), errors.Is(err, coreimagetool.ErrConsumed):
 		return capabilityoperation.NewFailure("CONFLICT", "Agent state changed; refresh and retry", err)
@@ -181,6 +189,7 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coreimagetool.ErrRepository), errors.Is(err, coreimagetool.ErrModel),
 		errors.Is(err, corewebsearch.ErrRepository),
 		errors.Is(err, corememory.ErrRepository),
+		errors.Is(err, corestaticsite.ErrRepository),
 		errors.Is(err, corewebsearch.ErrProvider):
 		return capabilityoperation.NewFailure("UNAVAILABLE", "Agent dependency is unavailable", err)
 	default:

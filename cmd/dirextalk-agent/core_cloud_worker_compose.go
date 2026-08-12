@@ -136,7 +136,7 @@ func composeCoreCloudWorker(
 		return nil, fmt.Errorf("initialize Cloud Worker domain: %w", err)
 	}
 	ownerResolver := fixedCloudWorkerOwnerResolver{base: conversationStore, accountGeneration: accountGeneration}
-	intrinsic, err := cloudworker.NewProposeIntrinsic(domain, ownerResolver, conversationStore, conversationStore)
+	intrinsic, err := cloudworker.NewProposeIntrinsic(domain, ownerResolver, conversationStore)
 	if err != nil {
 		return nil, fmt.Errorf("initialize cloud_worker_propose: %w", err)
 	}

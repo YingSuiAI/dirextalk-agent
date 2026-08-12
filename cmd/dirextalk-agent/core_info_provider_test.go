@@ -51,6 +51,7 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 		coreInfoDescriptor("agent.web_search.v1", true, "get_config", "update_config", "test"),
 		coreInfoDescriptor("agent.text_tools.v1", true, "get_config", "update_config", "execute"),
 		coreInfoDescriptor("agent.image_tools.v1", true, coreImageToolsRequiredOperations...),
+		coreInfoDescriptor("agent.static_sites.v1", true, coreStaticSitesRequiredOperations...),
 		coreInfoDescriptor("agent.confirmations.v1", true),
 		coreInfoDescriptor("agent.skills.v1", true, append(
 			append([]string{"invoke_product"}, coreMCPRequiredOperations...),
@@ -98,6 +99,7 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 		"schedule",
 		"schedules.server",
 		"skills.server",
+		"static_sites.server",
 		"task",
 		"text_tools.server",
 		"voice.server",
@@ -129,6 +131,18 @@ func TestCoreInfoProviderRequiresCompleteImageToolOperations(t *testing.T) {
 	}
 	if got := coreDescriptorTokens(coreInfoDescriptor("agent.image_tools.v1", true, coreImageToolsRequiredOperations...)); !reflect.DeepEqual(got, []string{"image_tools.server"}) {
 		t.Fatalf("complete image tool descriptor tokens=%v", got)
+	}
+}
+
+func TestCoreInfoProviderRequiresCompleteStaticSiteOperations(t *testing.T) {
+	for _, missing := range coreStaticSitesRequiredOperations {
+		descriptor := coreInfoDescriptor("agent.static_sites.v1", true, coreInfoOperationsWithout(coreStaticSitesRequiredOperations, missing)...)
+		if got := coreDescriptorTokens(descriptor); len(got) != 0 {
+			t.Fatalf("missing %s projected static sites: %v", missing, got)
+		}
+	}
+	if got := coreDescriptorTokens(coreInfoDescriptor("agent.static_sites.v1", true, coreStaticSitesRequiredOperations...)); !reflect.DeepEqual(got, []string{"static_sites.server"}) {
+		t.Fatalf("complete static-site descriptor tokens=%v", got)
 	}
 }
 

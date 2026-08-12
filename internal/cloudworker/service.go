@@ -136,9 +136,22 @@ func (resolve fixedAWSBindingResolver) ResolveExactAWSBinding(_ context.Context,
 }
 
 type ProviderResult struct {
-	Resources []Resource `json:"resources"`
-	Artifacts []Artifact `json:"artifacts"`
-	Summary   string     `json:"summary"`
+	Resources                 []Resource           `json:"resources"`
+	Artifacts                 []Artifact           `json:"artifacts"`
+	Summary                   string               `json:"summary"`
+	DeliverableContext        []DeliverableContext `json:"deliverable_context,omitempty"`
+	DeliverableContextOmitted uint64               `json:"deliverable_context_omitted,omitempty"`
+}
+
+// DeliverableContext is a bounded, secret-screened view of a verified Worker
+// artifact. Exact bytes remain on the existing artifact download path.
+type DeliverableContext struct {
+	ArtifactName         string `json:"artifact_name"`
+	Path                 string `json:"path"`
+	MediaType            string `json:"media_type"`
+	SizeBytes            uint64 `json:"size_bytes"`
+	TextPreview          string `json:"text_preview,omitempty"`
+	TextPreviewTruncated bool   `json:"text_preview_truncated,omitempty"`
 }
 
 type Defaults struct {

@@ -92,12 +92,6 @@ func (r *intrinsicOwner) ResolveCloudWorkerOwner(_ context.Context, lease coreco
 	return r.owner, nil
 }
 
-type intrinsicBudget struct{ evidence *LocalBudgetEvidence }
-
-func (r intrinsicBudget) ResolveCloudWorkerBudgetEvidence(context.Context, coreconversation.TurnLease) (*LocalBudgetEvidence, error) {
-	return r.evidence, nil
-}
-
 type intrinsicManifest struct {
 	allowed    map[string]bool
 	archiveIDs map[string]bool
@@ -135,7 +129,7 @@ func intrinsicDefaults(now time.Time) Defaults {
 	}
 }
 
-func intrinsicFixture(t *testing.T, prompt string, manifests IntrinsicManifestResolver, budgets IntrinsicBudgetResolver) (*ProposeIntrinsic, *intrinsicStore, coreconversation.TurnLease) {
+func intrinsicFixture(t *testing.T, prompt string, manifests IntrinsicManifestResolver, _ any) (*ProposeIntrinsic, *intrinsicStore, coreconversation.TurnLease) {
 	t.Helper()
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	store := &intrinsicStore{}
@@ -144,7 +138,7 @@ func intrinsicFixture(t *testing.T, prompt string, manifests IntrinsicManifestRe
 		t.Fatal(err)
 	}
 	owner := &intrinsicOwner{owner: IntrinsicOwnerContext{OwnerID: "@owner:example.test", AccountGeneration: 7}}
-	intrinsic, err := NewProposeIntrinsic(service, owner, manifests, budgets)
+	intrinsic, err := NewProposeIntrinsic(service, owner, manifests)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,62 +312,13 @@ func TestIntrinsicIsCoreOwnedStrictAndBindsDurableTurn(t *testing.T) {
 	}
 }
 
-func TestIntrinsicRequiresTrustedBudgetEvidenceWhenCloudIntentIsAbsent(t *testing.T) {
+func TestIntrinsicRejectsCloudExecutionWithoutExplicitRequest(t *testing.T) {
 	intrinsic, store, lease := intrinsicFixture(t, "请分析这项任务", nil, nil)
 	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "analyze", "workspace_mode": "none"}, "call-1"); !errors.Is(err, ErrCloudIntentRequired) {
-		t.Fatalf("missing evidence err=%v", err)
+		t.Fatalf("implicit cloud err=%v", err)
 	}
 	if len(store.commands) != 0 {
-		t.Fatal("offer was created without authorization policy evidence")
-	}
-	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 2, Digest: digestValue("scheduler-evidence")}
-	archiveID := uuid.NewString()
-	resolver := &intrinsicManifest{allowed: map[string]bool{archiveID: true}, archiveIDs: map[string]bool{archiveID: true}}
-	intrinsic, store, lease = intrinsicFixture(t, "请分析这项任务", resolver, intrinsicBudget{evidence: evidence})
-	bindIntrinsicWorkspaceArchive(t, &lease, archiveID)
-	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "analyze", "workspace_mode": "read_only", "attachment_ids": []string{archiveID}}, "call-2"); err != nil {
-		t.Fatal(err)
-	}
-	if len(store.commands) != 1 || store.commands[0].Plan.ProposalReason != ProposalReasonLocalBudgetExceeded || store.commands[0].Plan.LocalBudgetEvidence == nil || store.commands[0].Plan.LocalBudgetEvidence.Digest != evidence.Digest {
-		t.Fatalf("trusted budget evidence was not bound: %+v", store.commands)
-	}
-}
-
-func TestBudgetBackedIntrinsicRequiresSelectedArchiveAndNoCloudVeto(t *testing.T) {
-	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("workspace-budget")}
-	archiveID, fileID := uuid.NewString(), uuid.NewString()
-	for name, test := range map[string]struct {
-		prompt   string
-		mode     string
-		selected []string
-	}{
-		"none mode":          {prompt: "分析这个工程", mode: "none"},
-		"ordinary file only": {prompt: "分析这个工程", mode: "read_only", selected: []string{fileID}},
-		"chinese veto":       {prompt: "不要用云，只在本机执行", mode: "read_only", selected: []string{archiveID}},
-		"english veto":       {prompt: "Do not use cloud; run this locally", mode: "read_only", selected: []string{archiveID}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			resolver := &intrinsicManifest{allowed: map[string]bool{archiveID: true, fileID: true}, archiveIDs: map[string]bool{archiveID: true}}
-			intrinsic, store, lease := intrinsicFixture(t, test.prompt, resolver, intrinsicBudget{evidence: evidence})
-			bindIntrinsicWorkspaceArchive(t, &lease, archiveID)
-			if len(test.selected) == 1 && test.selected[0] == fileID {
-				file := coreconversation.TurnAttachment{SourceID: fileID, Revision: 1, TurnRequestID: lease.Turn.RequestID,
-					Kind: coreconversation.TurnAttachmentKindFile, Name: "input.txt", MediaType: "text/plain", SizeBytes: 4,
-					SHA256: strings.Repeat("b", 64), Status: coreconversation.TurnAttachmentCommitted, ExpiresAt: lease.ExpiresAt.Add(30 * time.Minute).UTC()}
-				lease.Turn.AttachmentSources = append(lease.Turn.AttachmentSources, file)
-				lease.Turn.AttachmentSnapshotDigest = coreconversation.TurnAttachmentSnapshotDigest(lease.Turn.AttachmentSources)
-			}
-			arguments := map[string]any{"objective": "analyze", "workspace_mode": test.mode}
-			if test.selected != nil {
-				arguments["attachment_ids"] = test.selected
-			}
-			if err := executeIntrinsic(t, intrinsic, lease, arguments, "call-1"); !errors.Is(err, ErrCloudIntentRequired) {
-				t.Fatalf("budget gate error = %v", err)
-			}
-			if len(store.commands) != 0 {
-				t.Fatal("vetoed budget path created an offer")
-			}
-		})
+		t.Fatal("implicit cloud request created an offer")
 	}
 }
 

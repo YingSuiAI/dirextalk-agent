@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corestaticsite"
 	"github.com/google/uuid"
 )
 
@@ -20,6 +21,68 @@ type Publisher struct {
 	root       string
 	publicRoot string
 	stageRoot  string
+}
+
+// DeleteRelease removes only the server-derived release directory. The
+// PostgreSQL receipt is the authority for site/release identity; callers
+// cannot supply a path. A missing directory is accepted so an interrupted
+// delete can finish its durable receipt transaction on retry.
+func (p *Publisher) DeleteRelease(ctx context.Context, release corestaticsite.Release, commit func() error) error {
+	if p == nil || ctx == nil || release.Validate() != nil || commit == nil {
+		return corestaticsite.ErrInvalid
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	releaseRoot := filepath.Join(p.publicRoot, release.SiteID, release.ReleaseID)
+	if filepath.Clean(releaseRoot) != releaseRoot {
+		return corestaticsite.ErrInvalid
+	}
+	quarantine := filepath.Join(p.stageRoot, "delete-"+release.ReleaseID)
+	if info, err := os.Lstat(quarantine); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return corestaticsite.ErrConflict
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	} else if info, err = os.Lstat(releaseRoot); errors.Is(err, os.ErrNotExist) {
+		// The authoritative receipt still proves the exact release. This is the
+		// crash-recovery case after bytes were removed but before DB commit.
+		return commit()
+	} else if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return corestaticsite.ErrConflict
+	} else {
+		entries, readErr := os.ReadDir(releaseRoot)
+		if readErr != nil || len(entries) != 1 || entries[0].Name() != indexFileName || entries[0].Type()&os.ModeSymlink != 0 {
+			return corestaticsite.ErrConflict
+		}
+		indexInfo, statErr := os.Lstat(filepath.Join(releaseRoot, indexFileName))
+		if statErr != nil || !indexInfo.Mode().IsRegular() || indexInfo.Size() != release.SizeBytes {
+			return corestaticsite.ErrConflict
+		}
+		if err = os.Rename(releaseRoot, quarantine); err != nil {
+			return err
+		}
+		if err = syncDirectory(filepath.Join(p.publicRoot, release.SiteID)); err != nil {
+			_ = os.Rename(quarantine, releaseRoot)
+			return err
+		}
+	}
+	if err := commit(); err != nil {
+		if _, statErr := os.Lstat(releaseRoot); errors.Is(statErr, os.ErrNotExist) {
+			_ = os.Rename(quarantine, releaseRoot)
+			_ = syncDirectory(filepath.Join(p.publicRoot, release.SiteID))
+		}
+		return err
+	}
+	// The authoritative receipt is already committed. Quarantine cleanup is
+	// best-effort and must not turn a successful idempotent delete into a false
+	// client failure; a same-release retry is served by the durable replay.
+	_ = os.RemoveAll(quarantine)
+	_ = syncDirectory(p.stageRoot)
+	return nil
 }
 
 func NewPublisher(root string) (*Publisher, error) {
@@ -202,3 +265,4 @@ func digestBytes(raw []byte) string {
 }
 
 var _ core.StaticSitePublisher = (*Publisher)(nil)
+var _ corestaticsite.FileStore = (*Publisher)(nil)

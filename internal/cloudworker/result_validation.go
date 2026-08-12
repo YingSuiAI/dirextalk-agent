@@ -1,13 +1,19 @@
 package cloudworker
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
@@ -16,6 +22,12 @@ import (
 )
 
 var privateWorkerResultPattern = regexp.MustCompile(`(?i)(?:s3://|arn:(?:aws|aws-cn|aws-us-gov):|\bi-[0-9a-f]{8,32}\b|\b(?:launch|provider|session|lease)[_-]?id\b|169\.254\.169\.254|\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com)`)
+
+const (
+	maximumCentralDeliverableEntries     = 128
+	maximumCentralDeliverablePreview     = 96 << 10
+	maximumCentralDeliverableFilePreview = 12 << 10
+)
 
 // ResultValidator is the sole Worker result -> Core projection. It verifies
 // exact S3 versions, the complete execution/session fence, canonical Pi
@@ -133,7 +145,158 @@ func (validator *ResultValidator) Collect(
 		}
 		artifacts[len(artifacts)-1].Retention = &retention
 	}
-	return ProviderResult{Artifacts: artifacts, Summary: centrallyQualifiedSummary(collected.Final)}, nil
+	deliverables, omitted, err := buildDeliverableContext(collected, material.InputManifestSHA256, plan.Limits.MaxOutputBytes)
+	if err != nil {
+		return ProviderResult{}, err
+	}
+	return ProviderResult{Artifacts: artifacts, Summary: centrallyQualifiedSummary(collected.Final), DeliverableContext: deliverables, DeliverableContextOmitted: omitted}, nil
+}
+
+func buildDeliverableContext(collected cloudresult.Collected, inputManifestSHA256 string, maximumExpandedBytes uint64) ([]DeliverableContext, uint64, error) {
+	items := make([]DeliverableContext, 0, 16)
+	var omitted uint64
+	remaining := maximumCentralDeliverablePreview
+	for _, artifact := range collected.Artifacts {
+		switch artifact.Claim.Name {
+		case "final.json":
+			continue
+		case cloudruntime.WorkspaceDeltaArtifactName:
+			values, skipped, err := workspaceDeliverableContext(artifact.Content, inputManifestSHA256, maximumExpandedBytes, maximumCentralDeliverableEntries-len(items), &remaining)
+			if err != nil {
+				return nil, 0, err
+			}
+			items, omitted = append(items, values...), omitted+skipped
+		default:
+			if len(items) >= maximumCentralDeliverableEntries {
+				omitted++
+				continue
+			}
+			items = append(items, deliverableContextForBytes(artifact.Claim.Name, artifact.Claim.Name, artifact.Claim.MediaType, artifact.Content, &remaining))
+		}
+	}
+	return items, omitted, nil
+}
+
+func workspaceDeliverableContext(raw []byte, inputManifestSHA256 string, maximumExpandedBytes uint64, maximumEntries int, remaining *int) ([]DeliverableContext, uint64, error) {
+	if maximumEntries < 0 || remaining == nil || cloudruntime.ValidateWorkspaceDeltaArchive(raw, inputManifestSHA256, maximumExpandedBytes) != nil {
+		return nil, 0, ErrInvalid
+	}
+	compressed := bytes.NewReader(raw)
+	gzipReader, err := gzip.NewReader(compressed)
+	if err != nil {
+		return nil, 0, ErrInvalid
+	}
+	gzipReader.Multistream(false)
+	archive := tar.NewReader(gzipReader)
+	items := make([]DeliverableContext, 0, min(maximumEntries, 16))
+	var omitted uint64
+	for {
+		header, nextErr := archive.Next()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil || header.Size < 0 {
+			_ = gzipReader.Close()
+			return nil, 0, ErrInvalid
+		}
+		if header.Typeflag == tar.TypeDir || header.Name == "meta/delta.json" {
+			continue
+		}
+		if header.Typeflag != tar.TypeReg || !strings.HasPrefix(header.Name, "files/") {
+			_ = gzipReader.Close()
+			return nil, 0, ErrInvalid
+		}
+		path := strings.TrimPrefix(header.Name, "files/")
+		if path == "" || !centralDeliverablePath(path) {
+			continue
+		}
+		if len(items) >= maximumEntries {
+			omitted++
+			continue
+		}
+		capture := min(int(header.Size), min(maximumCentralDeliverableFilePreview, *remaining)+1)
+		content := make([]byte, capture)
+		if capture > 0 {
+			if _, err = io.ReadFull(archive, content); err != nil {
+				return nil, 0, ErrInvalid
+			}
+		}
+		item := deliverableContextForBytes(cloudruntime.WorkspaceDeltaArtifactName, path, mediaTypeForDeliverable(path), content, remaining)
+		item.SizeBytes = uint64(header.Size)
+		item.TextPreviewTruncated = item.TextPreview != "" && header.Size > int64(len(item.TextPreview))
+		clear(content)
+		items = append(items, item)
+	}
+	if err = gzipReader.Close(); err != nil || compressed.Len() != 0 {
+		return nil, 0, ErrInvalid
+	}
+	return items, omitted, nil
+}
+
+func centralDeliverablePath(path string) bool {
+	lower := strings.ToLower(path)
+	for _, segment := range strings.Split(lower, "/") {
+		switch segment {
+		case "__pycache__", ".dart_tool", ".mypy_cache", ".pytest_cache", ".ruff_cache":
+			return false
+		}
+	}
+	name := filepath.Base(lower)
+	return name != ".ds_store" && name != "thumbs.db" && !strings.HasSuffix(name, ".pyc") && !strings.HasSuffix(name, ".pyo")
+}
+
+func deliverableContextForBytes(artifactName, path, mediaType string, content []byte, remaining *int) DeliverableContext {
+	item := DeliverableContext{ArtifactName: artifactName, Path: path, MediaType: mediaType, SizeBytes: uint64(len(content))}
+	if remaining == nil || *remaining <= 0 || !textualDeliverable(path, mediaType) || bytes.IndexByte(content, 0) >= 0 {
+		return item
+	}
+	limit := min(len(content), maximumCentralDeliverableFilePreview, *remaining)
+	preview := content[:limit]
+	for len(preview) > 0 && !utf8.Valid(preview) {
+		preview = preview[:len(preview)-1]
+	}
+	value := string(preview)
+	if value == "" || security.ContainsLikelySecret(value) {
+		return item
+	}
+	item.TextPreview, item.TextPreviewTruncated = value, len(content) > len(preview)
+	*remaining -= len(preview)
+	return item
+}
+
+func textualDeliverable(path, mediaType string) bool {
+	mediaType = strings.ToLower(strings.TrimSpace(strings.Split(mediaType, ";")[0]))
+	if strings.HasPrefix(mediaType, "text/") || mediaType == "application/json" || mediaType == "application/xml" || mediaType == "application/yaml" {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".c", ".cc", ".cpp", ".css", ".csv", ".dart", ".go", ".h", ".html", ".java", ".js", ".json", ".kt", ".md", ".py", ".rb", ".rs", ".sh", ".sql", ".swift", ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml", ".yml":
+		return true
+	default:
+		return false
+	}
+}
+
+func mediaTypeForDeliverable(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
+	case ".pdf":
+		return "application/pdf"
+	case ".json":
+		return "application/json"
+	case ".csv":
+		return "text/csv; charset=utf-8"
+	default:
+		if textualDeliverable(path, "") {
+			return "text/plain; charset=utf-8"
+		}
+		return "application/octet-stream"
+	}
 }
 
 func validateResultCollectionAuthority(plan Plan, execution Execution, authorization LaunchAuthorization, material RuntimeTaskMaterial, session control.Session) error {

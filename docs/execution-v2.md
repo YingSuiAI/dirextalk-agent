@@ -36,16 +36,10 @@ light-task worker pool, MCP, Skills, Knowledge, Conversation Tools, and
 Extension Runner remain available. Only a `CLOUD_WORKER` CoreTask crosses the
 AWS boundary.
 
-The built-in proposal tool is eligible only when a trusted turn policy proves
-one of these facts:
-
-- the user explicitly requested cloud execution; or
-- the local scheduler supplied immutable evidence that the current local
-  execution budget cannot satisfy the request.
-
-A model assertion and a local execution failure are not budget evidence. A
-local failure never silently upgrades to paid cloud execution, and a cloud
-failure never falls back to a hidden local rerun.
+The built-in proposal tool is eligible only when the user explicitly requests
+cloud execution. A model assertion, local budget condition, or local execution
+failure never upgrades to paid cloud execution, and a cloud failure never
+falls back to a hidden local rerun.
 
 Cloud intent is evaluated by punctuation-delimited command clause. A negative
 local directive paired with an independent explicit cloud command (for
@@ -136,6 +130,13 @@ task, plan, run/execution, confirmation, revision, quote, binding, and execution
 digests. It is an invalidation/link, not mutation authority. Clients must read
 the current Plan, Run, and CoreConfirmation and verify their linkage before
 confirming, rejecting, or cancelling.
+
+Terminal Worker output is appended to the original turn as the durable
+`cloud_worker_propose` tool result, including related task/plan IDs, strict
+references, verified artifact metadata, and bounded deliverable context. The
+turn then resumes so the Central Agent produces the user-facing answer from
+the original conversation. Artifact bytes remain on
+`agent.execution.v2.artifacts.download`.
 
 ## Authorization-bound plan
 

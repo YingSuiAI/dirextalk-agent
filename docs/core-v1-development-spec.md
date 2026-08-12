@@ -263,6 +263,13 @@ responsive semantic HTML with inline CSS only. JavaScript, forms, external
 assets, network requests, and multi-file bundles are not part of the current
 contract.
 
+The authenticated owner manages those same releases through
+`agent.static_sites.v1/list_releases` and `delete_release`. List returns the
+server-produced absolute public URL and receipt fields only. Delete accepts one
+release UUID plus an idempotency UUID and derives the exact filesystem identity
+from the owner/account-generation receipt. Public downloads continue to use
+the release URL; there is no duplicate byte-download capability.
+
 Eino adapts each model round, while the Agent-owned Task ledger remains the
 durable orchestrator for model dispatch, tool calls, retries, recovery, and
 uncertain outcomes. Task orchestration has no fixed model/tool round count: a
@@ -457,9 +464,8 @@ evidence and remaining verification are recorded in the
 The Native Agent remains local-first and retains its local sandbox, worker
 pool, MCP, Skills, Knowledge, Conversation Tools, and Extension Runner. The
 Core intrinsic `cloud_worker_propose` may create a paid offer only from a turn
-whose trusted policy proves an explicit user cloud request or immutable local
-budget insufficiency. A local failure is not proof and never triggers an
-automatic upgrade.
+with an explicit user cloud request. Local budget conditions and local failures
+never trigger an automatic upgrade.
 
 The only recipe is `ephemeral-pi-task` with adapter `pi_json_task_v1`. One
 confirmed execution creates exactly one EC2 instance, one Worker, and one Pi

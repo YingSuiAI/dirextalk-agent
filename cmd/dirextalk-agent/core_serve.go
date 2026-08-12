@@ -38,6 +38,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corestaticsite"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corevoice"
@@ -146,12 +147,17 @@ func serveCore(cfg config.Config) error {
 		return fmt.Errorf("initialize conversation service: %w", err)
 	}
 	conversation.SetConversationTitleGenerator(coreConversationTitleGenerator{profiles: profiles})
+	var staticSiteService *corestaticsite.Service
 	if cfg.CoreStaticSitesEnabled {
 		publisher, publisherErr := staticsite.NewPublisher(cfg.CoreStaticSitesRoot)
 		if publisherErr != nil {
 			return fmt.Errorf("initialize static-site publisher: %w", publisherErr)
 		}
 		conversation.SetStaticSitePublisher(publisher, cfg.CoreStaticSitesPublicOrigin)
+		staticSiteService, publisherErr = corestaticsite.NewService(conversationStore, publisher, cfg.CoreStaticSitesPublicOrigin)
+		if publisherErr != nil {
+			return fmt.Errorf("initialize static-site service: %w", publisherErr)
+		}
 		slog.Info("dirextalk-agent static-site publisher ready", "public_path", "/.sites/")
 	}
 	conversationService, err := rpcapi.NewCoreConversationService(conversation)
@@ -541,6 +547,7 @@ func serveCore(cfg config.Config) error {
 				}
 				return knowledgeComposition.memory
 			}(),
+			StaticSites: staticSiteService,
 			Extensions: func() coreextension.Service {
 				if extensionComposition == nil {
 					return nil
