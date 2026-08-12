@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.81
+
+1. Return completed Cloud Worker results to the originating durable conversation with related tasks, plans, references, artifacts, and bounded deliverable context.
+2. Add current static-site release listing and exact owner-scoped deletion through the Agent capability catalog.
+3. Keep Cloud Worker execution explicit and remove the retired local-budget fallback path.
+
 ## v1.0.80
 
 1. Dispatch Native Agent Product reads through the existing direct read-only path instead of extension preparation.
