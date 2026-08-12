@@ -771,8 +771,8 @@ func TestDurableReadOnlyToolPersistsEventsAndCompletesSecondModelRound(t *testin
 		t.Fatal("read-only tool execution did not finish")
 	}
 	first, err := store.GetTurn(context.Background(), turn.ID)
-	if err != nil || first.State != TurnAccepted || store.dispatchState != "" || executions != 1 {
-		t.Fatalf("first round turn=%+v dispatch=%q executions=%d failed=%q err=%v", first, store.dispatchState, executions, store.failedCode, err)
+	if err != nil || first.State != TurnAccepted || store.dispatchState != "" || executions != 1 || store.prepareCalls != 0 {
+		t.Fatalf("first round turn=%+v dispatch=%q executions=%d prepare_calls=%d failed=%q err=%v", first, store.dispatchState, executions, store.prepareCalls, store.failedCode, err)
 	}
 	service.executeTurn(context.Background(), turn.ID)
 	terminal, err := store.GetTurn(context.Background(), turn.ID)

@@ -32,7 +32,6 @@ type productConversationTool struct {
 	capabilityVer   string
 	protocolVersion int32
 	operation       string
-	readOnly        bool
 	schemaDigest    []byte
 }
 
@@ -83,7 +82,7 @@ func (r *productConversationResolver) ResolveExtensions(ctx context.Context, sel
 			}
 			tools = append(tools, coremodel.Tool{Name: name, Description: operation.GetDescription(), InputSchema: schema})
 			allowedNames = append(allowedNames, name)
-			bindings[name] = productConversationTool{capabilityID: capability.GetCapabilityId(), capabilityVer: capability.GetSemanticVersion(), protocolVersion: capability.GetProtocolVersion(), operation: operation.GetOperationId(), readOnly: operation.GetOperationType() == capv1.OperationType_OPERATION_TYPE_READ, schemaDigest: schemaDigest}
+			bindings[name] = productConversationTool{capabilityID: capability.GetCapabilityId(), capabilityVer: capability.GetSemanticVersion(), protocolVersion: capability.GetProtocolVersion(), operation: operation.GetOperationId(), schemaDigest: schemaDigest}
 		}
 	}
 	if len(tools) == 0 {
@@ -95,7 +94,7 @@ func (r *productConversationResolver) ResolveExtensions(ctx context.Context, sel
 	artifactDigest := digestBytes([]byte("product-capability-artifact:" + digest))
 	resolved = append(resolved, coreconversation.ResolvedExtension{
 		Selection: selection,
-		Snapshot:  coreconversation.ExtensionExecutionSnapshot{Selection: selection, InstallationID: selectionID, VersionID: "1.0.0", Source: "product-capability", ContentDigest: digest, ArtifactDigest: artifactDigest, ToolSchemaDigest: schemaDigest, ToolNames: allowedNames, RequiresConfirmation: false},
+		Snapshot:  productConversationSnapshot(selection, digest, artifactDigest, schemaDigest, allowedNames),
 		Tools:     tools,
 		Execute: func(toolCtx context.Context, request coreconversation.ToolExecutionRequest) (coreconversation.ToolResult, error) {
 			binding, exists := bindings[request.Call.Name]
@@ -123,95 +122,29 @@ func (r *productConversationResolver) ResolveExtensions(ctx context.Context, sel
 			if err != nil {
 				return coreconversation.ToolResult{}, err
 			}
-			operationID := ""
-			targetKind := capv1.ExchangeProductTargetKind_EXCHANGE_PRODUCT_TARGET_KIND_QUERY
-			if !binding.readOnly {
-				targetKind = capv1.ExchangeProductTargetKind_EXCHANGE_PRODUCT_TARGET_KIND_START_OPERATION
-				operationID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("product-operation:"+request.RequestID+":"+request.Call.ID)).String()
-			}
-			delegation, err := r.product.ExchangeProductDelegation(toolCtx, parent, targetKind, operationID, binding.capabilityID, binding.operation, canonicalRequest, 0, grant)
+			delegation, err := r.product.ExchangeProductDelegation(toolCtx, parent, capv1.ExchangeProductTargetKind_EXCHANGE_PRODUCT_TARGET_KIND_QUERY, "", binding.capabilityID, binding.operation, canonicalRequest, 0, grant)
 			if err != nil {
 				return coreconversation.ToolResult{}, err
 			}
 			if !bytes.Equal(rootDigest, delegation.RootRequestDigest) {
 				return coreconversation.ToolResult{}, fmt.Errorf("product delegation root digest mismatch")
 			}
-			childPermission := delegation.Permission
-			if binding.readOnly {
-				result, callErr := r.product.QueryWithPermission(toolCtx, parent, binding.capabilityID, binding.operation, canonicalRequest, childPermission)
-				if callErr != nil {
-					return coreconversation.ToolResult{}, callErr
-				}
-				return coreconversation.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: string(result)}, nil
-			}
-			grantDigest := sha256.Sum256(childPermission.GetCapabilityGrant())
-			requestDigest, err := capv1.ComputeRequestDigest(binding.protocolVersion, binding.capabilityID, binding.capabilityVer, binding.schemaDigest, binding.operation, 0, businessInput, nil, grantDigest[:])
-			if err != nil {
-				return coreconversation.ToolResult{}, err
-			}
-			started, callErr := r.product.StartOperationWithPermission(toolCtx, parent, operationID, binding.capabilityID, binding.operation, canonicalRequest, requestDigest, 0, childPermission)
+			result, callErr := r.product.QueryWithPermission(toolCtx, parent, binding.capabilityID, binding.operation, canonicalRequest, delegation.Permission)
 			if callErr != nil {
 				return coreconversation.ToolResult{}, callErr
 			}
-			watchPermission, err := capabilityclient.PermissionWithControlGrant(childPermission, started, "watch")
-			if err != nil {
-				// Exchange a fresh child delegation before replaying Start with
-				// the same operation ID and root business digest. Agent never
-				// mints or caches cross-boundary authorization.
-				delegation, err = r.product.ExchangeProductDelegation(toolCtx, parent, targetKind, operationID, binding.capabilityID, binding.operation, canonicalRequest, 0, grant)
-				if err != nil || !bytes.Equal(rootDigest, delegation.RootRequestDigest) {
-					if err != nil {
-						return coreconversation.ToolResult{}, err
-					}
-					return coreconversation.ToolResult{}, fmt.Errorf("product delegation root digest mismatch")
-				}
-				childPermission = delegation.Permission
-				grantDigest := sha256.Sum256(childPermission.GetCapabilityGrant())
-				requestDigest, err = capv1.ComputeRequestDigest(binding.protocolVersion, binding.capabilityID, binding.capabilityVer, binding.schemaDigest, binding.operation, 0, businessInput, nil, grantDigest[:])
-				if err != nil {
-					return coreconversation.ToolResult{}, err
-				}
-				started, err = r.product.StartOperationWithPermission(toolCtx, parent, operationID, binding.capabilityID, binding.operation, canonicalRequest, requestDigest, 0, childPermission)
-				if err != nil {
-					return coreconversation.ToolResult{}, err
-				}
-				if started.GetError() != nil {
-					return coreconversation.ToolResult{}, fmt.Errorf("product operation rejected: %s", started.GetError().GetMessage())
-				}
-				watchPermission, err = capabilityclient.PermissionWithControlGrant(childPermission, started, "watch")
-				if err != nil {
-					return coreconversation.ToolResult{}, err
-				}
-			}
-			stream, callErr := r.product.WatchOperation(toolCtx, parent, started.GetOperationId(), 0, watchPermission)
-			if callErr != nil {
-				return coreconversation.ToolResult{}, callErr
-			}
-			defer func() {
-				if closer, ok := stream.(interface{ Close() }); ok {
-					closer.Close()
-				}
-			}()
-			for {
-				event, recvErr := stream.Recv()
-				if recvErr != nil {
-					return coreconversation.ToolResult{}, recvErr
-				}
-				switch value := event.GetEvent().(type) {
-				case *capv1.WatchOperationEvent_Result:
-					return coreconversation.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: string(value.Result.GetResultJson())}, nil
-				case *capv1.WatchOperationEvent_Error:
-					if value.Error != nil && value.Error.Error != nil {
-						return coreconversation.ToolResult{}, fmt.Errorf("product operation failed: %s", value.Error.Error.GetMessage())
-					}
-					return coreconversation.ToolResult{}, fmt.Errorf("product operation failed")
-				case *capv1.WatchOperationEvent_Cancelled:
-					return coreconversation.ToolResult{}, fmt.Errorf("product operation cancelled: %s", value.Cancelled.GetReason())
-				}
-			}
+			return coreconversation.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: string(result)}, nil
 		},
 	})
 	return resolved, nil
+}
+
+func productConversationSnapshot(selection coreconversation.ExtensionSelection, contentDigest, artifactDigest, schemaDigest string, toolNames []string) coreconversation.ExtensionExecutionSnapshot {
+	return coreconversation.ExtensionExecutionSnapshot{
+		Selection: selection, InstallationID: selection.ID, VersionID: selection.Version,
+		Source: "product-capability", ContentDigest: contentDigest, ArtifactDigest: artifactDigest,
+		ToolSchemaDigest: schemaDigest, ToolNames: append([]string(nil), toolNames...), ReadOnly: true,
+	}
 }
 
 func productToolName(capabilityID, operation string) string {
@@ -262,7 +195,7 @@ func deterministicProductCatalogBytes(catalog *capv1.DescribeCapabilitiesRespons
 }
 
 func productOperationAllowed(operation *capv1.OperationDescriptor, permission *capv1.PermissionContext) bool {
-	if operation == nil || operation.GetOperationId() == "" || operation.GetOperationType() == capv1.OperationType_OPERATION_TYPE_UNSPECIFIED || permission == nil || len(operation.GetRequiredScopes()) == 0 || len(permission.GetGrantedScopes()) == 0 {
+	if operation == nil || operation.GetOperationId() == "" || operation.GetOperationType() != capv1.OperationType_OPERATION_TYPE_READ || permission == nil || len(operation.GetRequiredScopes()) == 0 || len(permission.GetGrantedScopes()) == 0 {
 		return false
 	}
 	if !containsProductAudience(operation.GetAudience(), capv1.Audience_AUDIENCE_NATIVE_AGENT) {
@@ -277,7 +210,7 @@ func productOperationAllowed(operation *capv1.OperationDescriptor, permission *c
 			return false
 		}
 	}
-	if operation.GetOperationType() != capv1.OperationType_OPERATION_TYPE_READ && (operation.GetRiskLevel() >= capv1.RiskLevel_RISK_LEVEL_HIGH || len(operation.GetRequiredGrants()) > 0) {
+	if operation.GetRiskLevel() >= capv1.RiskLevel_RISK_LEVEL_HIGH || len(operation.GetRequiredGrants()) > 0 {
 		return false
 	}
 	return true

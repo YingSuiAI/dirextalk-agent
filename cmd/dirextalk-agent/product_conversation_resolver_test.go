@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"testing"
-	"time"
 
-	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -23,9 +24,8 @@ func TestProductOperationAllowedUsesReadinessAudienceScopesAndRisk(t *testing.T)
 			op.Audience = []capv1.Audience{capv1.Audience_AUDIENCE_OWNER_CLIENT}
 		},
 		"missing scope": func(op *capv1.OperationDescriptor) { op.RequiredScopes = []string{"contacts:delete"} },
-		"high risk": func(op *capv1.OperationDescriptor) {
+		"mutation": func(op *capv1.OperationDescriptor) {
 			op.OperationType = capv1.OperationType_OPERATION_TYPE_MUTATION
-			op.RiskLevel = capv1.RiskLevel_RISK_LEVEL_HIGH
 		},
 		"required grant": func(op *capv1.OperationDescriptor) {
 			op.OperationType = capv1.OperationType_OPERATION_TYPE_MUTATION
@@ -42,6 +42,20 @@ func TestProductOperationAllowedUsesReadinessAudienceScopesAndRisk(t *testing.T)
 	}
 	if productOperationAllowed(&capv1.OperationDescriptor{OperationId: "x", OperationType: capv1.OperationType_OPERATION_TYPE_READ, Audience: []capv1.Audience{capv1.Audience_AUDIENCE_NATIVE_AGENT}, RequiredScopes: []string{"contacts:read", "contacts:write"}}, &capv1.PermissionContext{GrantedScopes: []string{"contacts:read"}}) {
 		t.Fatal("partial scope grant was accepted")
+	}
+}
+
+func TestProductConversationSnapshotIsReadOnlySyntheticTool(t *testing.T) {
+	selection := coreconversation.ExtensionSelection{
+		Kind: coreconversation.ExtensionMCP, ID: uuid.NewString(), Version: "1.0.0",
+		Digest: strings.Repeat("a", 64), AllowedTools: []string{"product_product_rooms_v1_list"},
+	}
+	snapshot := productConversationSnapshot(selection, selection.Digest, strings.Repeat("b", 64), strings.Repeat("c", 64), selection.AllowedTools)
+	if !snapshot.ReadOnly || snapshot.Source != "product-capability" || snapshot.VersionID != selection.Version {
+		t.Fatalf("product snapshot is not a read-only synthetic tool: %+v", snapshot)
+	}
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("product snapshot is invalid: %v", err)
 	}
 }
 
@@ -92,21 +106,5 @@ func TestProductToolSchemaRequiresAdvertisedDigestAndNonEmptySchema(t *testing.T
 	}
 	if _, _, ok := productToolSchema(&capv1.OperationDescriptor{}); ok {
 		t.Fatal("empty schema was accepted")
-	}
-}
-
-func TestPermissionWithProductControlGrantBindsWatchAction(t *testing.T) {
-	base := &capv1.PermissionContext{AuthenticatedOwnerId: "owner", AccountGeneration: 4, CapabilityGrant: []byte("start-grant"), GrantedScopes: []string{"contacts:write"}}
-	started := &capv1.StartOperationResponse{ControlGrants: []*capv1.OperationControlGrantEnvelope{{Action: "watch", Grant: []byte("watch-grant"), ExpiresAtUnixMs: time.Now().Add(time.Minute).UnixMilli()}, {Action: "cancel", Grant: []byte("cancel-grant"), ExpiresAtUnixMs: time.Now().Add(time.Minute).UnixMilli()}}}
-	permission, err := capabilityclient.PermissionWithControlGrant(base, started, "watch")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(permission.GetCapabilityGrant()) != "watch-grant" || string(base.GetCapabilityGrant()) != "start-grant" {
-		t.Fatal("control grant did not replace only the cloned permission")
-	}
-	started.ControlGrants[0].ExpiresAtUnixMs = time.Now().Add(-time.Minute).UnixMilli()
-	if _, err := capabilityclient.PermissionWithControlGrant(base, started, "watch"); err == nil {
-		t.Fatal("expired control grant accepted")
 	}
 }
