@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-version=v1.0.69
+version=v1.0.70
 head_commit=1111111111111111111111111111111111111111
 other_commit=2222222222222222222222222222222222222222
 
@@ -192,7 +192,7 @@ make_fixture() {
   cp "$repo_root/internal/buildinfo/version.go" "$fixture/repo/internal/buildinfo/version.go"
   cp "$repo_root/migrations/embed.go" "$fixture/repo/migrations/embed.go"
   printf '# Agent releases\n\n## %s\n\nStable Agent release.\n' "$version" >"$fixture/repo/release/RELEASE_NOTES.md"
-  printf '{"version":"%s","schema_version":12,"schema_compat_version":1}\n' "$version" \
+  printf '{"version":"%s","schema_version":14,"schema_compat_version":1}\n' "$version" \
     >"$fixture/repo/release/$version.json"
   touch "$fixture/message-server/p2p/native_agent_catalog.go" \
     "$fixture/message-server/internal/agentgateway/runner.go" \
@@ -253,7 +253,7 @@ if run_script "$fixture" prepare.sh "$version" env FAKE_AGENT_REMOTE_HEAD="$othe
 fi
 
 fixture=$(make_fixture source-version)
-sed -i 's/v1\.0\.69/v9.9.9/' "$fixture/repo/internal/buildinfo/version.go"
+sed -i 's/v1\.0\.70/v9.9.9/' "$fixture/repo/internal/buildinfo/version.go"
 if run_script "$fixture" prepare.sh "$version" env; then fail 'prepare accepted source version drift'; fi
 
 # Verification builds and probes the three real entry points. Evidence is commit and
