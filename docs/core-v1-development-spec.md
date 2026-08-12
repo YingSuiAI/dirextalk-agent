@@ -139,7 +139,7 @@ The Core v1 acceptance set covers these ten observable scenarios:
    `dirextalk-write-technical-docs` built-ins plus skills.sh and GitHub pins; execution is isolated in
    the extension runner, and cancellation proves the complete descendant
    process tree and delegated cgroup are gone before the task is cleaned.
-8. Knowledge covers Agent-owned mounts, bounded uploads, memory, indexing,
+8. Knowledge covers Agent-owned mounts, bounded uploads, indexing,
    and semantic search with revision and digest checks.
 9. Core CloudControl and single Pi Cloud Worker fake-provider flows cover
    quote/confirmation, durable recovery, exact result validation, cancellation,
@@ -368,7 +368,7 @@ mount the same volume, while extension staging remains Agent-private.
 
 ### Knowledge
 
-Knowledge supports Agent-owned mounts, bounded uploads, memory, source status,
+Knowledge supports Agent-owned mounts, bounded uploads, source status,
 indexing, and semantic search. Semantic vectors and their staged/promoted
 generations live in the Agent-owned PostgreSQL database through pgvector; no
 external vector service or fallback is part of Core v1. Content is opened
@@ -396,7 +396,7 @@ same provenance even if the current default embedding profile is rebound.
 projection, without API keys or provider secret material.
 Clearing the default embedding profile disables semantic search, cancels and
 fences in-flight indexing, and removes promoted vectors while preserving source
-files and memory text. A later embedding binding automatically reconciles those
+documents. A later embedding binding automatically reconciles those
 ready, unindexed sources without a migration or content fallback.
 
 Conversation memory is a separate two-layer projection. Working memory is the
@@ -414,15 +414,19 @@ conversation history. Removing the active embedding binding atomically turns
 automatic memory off, so a later model binding never silently opts the owner
 back in. Owner-client `agent.memory.v1` operations expose config, revision,
 embedding readiness/model identity, bounded current facts, the append-only
-timeline, and pending/failed observation counters without secret material.
+timeline, pending/failed observation counters, and exact-fact update/delete
+mutations without secret material. Updates create an active replacement and
+preserve the fact key and kind; deletes retract the selected active fact. The
+immutable fact ID is the stale-write fence and UUID idempotency keys make
+retries durable. Knowledge source CRUD is not a second memory surface.
 Per-turn recall ranks current facts against the prompt, then adds a bounded
-recent timeline and exact-binding semantic Knowledge passages. This internal
+recent timeline. This internal
 projection does not change the Message Server action envelope or make the
 Message Server an Agent-memory database.
 
 ### AWS
 
-Typed AWS credentials, `TestCredentialIdentity` identity checks, plans, quotes,
+Typed AWS credentials, revision-fenced idempotent Capability identity checks, plans, quotes,
 and CloudFormation change requests are exposed through
 `CoreCloudControlService`. Provider calls use typed SDK clients and durable
 fencing. Confirmation is mandatory for mutating or spend/exposure operations;

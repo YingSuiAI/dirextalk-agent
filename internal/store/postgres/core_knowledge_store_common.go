@@ -303,19 +303,15 @@ func scanKnowledgeSource(row knowledgeSourceScanner) (coreknowledge.Source, erro
 	var s coreknowledge.Source
 	var kind, status string
 	var contentRef string
-	var tagsRaw []byte
-	if err := row.Scan(&s.ID, &kind, &status, &s.Title, &s.RelativePath, &s.Digest, &s.SizeBytes, &s.MediaType, &s.Revision, &contentRef, &s.ErrorCode, &tagsRaw, &s.CreatedAt, &s.UpdatedAt); err != nil {
+	if err := row.Scan(&s.ID, &kind, &status, &s.Title, &s.RelativePath, &s.Digest, &s.SizeBytes, &s.MediaType, &s.Revision, &contentRef, &s.ErrorCode, &s.CreatedAt, &s.UpdatedAt); err != nil {
 		return s, err
 	}
 	s.Kind, s.Status = coreknowledge.SourceKind(kind), coreknowledge.SourceStatus(status)
 	s.ContentRef = contentRef
-	if len(tagsRaw) > 0 && json.Unmarshal(tagsRaw, &s.Tags) != nil {
-		return s, coreknowledge.ErrConflict
-	}
 	s.CreatedAt, s.UpdatedAt = s.CreatedAt.UTC(), s.UpdatedAt.UTC()
 	return s, nil
 }
 
-const knowledgeSourceSelect = `SELECT source_id,kind,status,title,relative_path,digest,size_bytes,media_type,revision,content_ref,error_code,tags_json,created_at,updated_at FROM core_knowledge_sources`
+const knowledgeSourceSelect = `SELECT source_id,kind,status,title,relative_path,digest,size_bytes,media_type,revision,content_ref,error_code,created_at,updated_at FROM core_knowledge_sources`
 
 var _ coreknowledge.Repository = (*CoreKnowledgeStore)(nil)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
 	"github.com/google/uuid"
@@ -135,6 +136,143 @@ func (s *CoreMemoryStore) UpdateConfig(ctx context.Context, mutation corememory.
 		return corememory.Config{}, corememory.ErrRepository
 	}
 	return next, nil
+}
+
+func (s *CoreMemoryStore) UpdateFact(ctx context.Context, mutation corememory.FactMutation) (corememory.Fact, error) {
+	if ctx == nil || uuid.Validate(mutation.IdempotencyKey) != nil || uuid.Validate(mutation.FactID) != nil || len(mutation.RequestDigest) != 64 || strings.TrimSpace(mutation.Value) == "" || !utf8.ValidString(mutation.Value) || utf8.RuneCountInString(strings.TrimSpace(mutation.Value)) > 2048 || mutation.Now.IsZero() {
+		return corememory.Fact{}, corememory.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return corememory.Fact{}, corememory.ErrRepository
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "memory.fact.update:"+mutation.IdempotencyKey); err != nil {
+		return corememory.Fact{}, corememory.ErrRepository
+	}
+	var storedDigest string
+	var storedResponse []byte
+	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE operation='memory.fact.update' AND idempotency_key=$1 FOR UPDATE`, mutation.IdempotencyKey).Scan(&storedDigest, &storedResponse)
+	if err == nil {
+		if storedDigest != mutation.RequestDigest {
+			return corememory.Fact{}, corememory.ErrIdempotencyConflict
+		}
+		var replay corememory.Fact
+		if json.Unmarshal(storedResponse, &replay) != nil {
+			return corememory.Fact{}, corememory.ErrRepository
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return corememory.Fact{}, corememory.ErrRepository
+		}
+		return replay, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return corememory.Fact{}, corememory.ErrRepository
+	}
+	var current corememory.Fact
+	var observationID string
+	err = tx.QueryRow(ctx, `SELECT fact_id::text,subject,predicate,value,kind,confidence,valid_from,last_confirmed_at,source_observation_id::text FROM core_memory_facts WHERE fact_id=$1 AND state='active' FOR UPDATE`, mutation.FactID).
+		Scan(&current.ID, &current.Subject, &current.Predicate, &current.Value, &current.Kind, &current.Confidence, &current.ValidFrom, &current.LastConfirmedAt, &observationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return corememory.Fact{}, corememory.ErrRevisionConflict
+	}
+	if err != nil {
+		return corememory.Fact{}, corememory.ErrRepository
+	}
+	now := mutation.Now.UTC().Truncate(time.Microsecond)
+	validTo := now
+	if validTo.Before(current.ValidFrom) {
+		validTo = current.ValidFrom
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_memory_facts SET state='superseded',valid_to=$2 WHERE fact_id=$1 AND state='active'`, current.ID, validTo); err != nil {
+		return corememory.Fact{}, corememory.ErrRepository
+	}
+	replacement := current
+	replacement.ID, replacement.Value, replacement.ValidFrom, replacement.LastConfirmedAt = uuid.NewString(), strings.TrimSpace(mutation.Value), now, now
+	if _, err = tx.Exec(ctx, `INSERT INTO core_memory_facts(fact_id,subject,predicate,value,kind,confidence,state,valid_from,last_confirmed_at,source_observation_id,supersedes_fact_id,created_at)
+		VALUES($1,$2,$3,$4,$5,$6,'active',$7,$7,$8,$9,$7)`, replacement.ID, replacement.Subject, replacement.Predicate, replacement.Value, replacement.Kind, replacement.Confidence, now, observationID, current.ID); err != nil {
+		return corememory.Fact{}, corememory.ErrRepository
+	}
+	if err = insertMemoryTimeline(ctx, tx, observationID, "replaced", replacement.ID, current.ID, memorySummary(replacement.Subject, replacement.Predicate, replacement.Value), now, now); err != nil {
+		return corememory.Fact{}, corememory.ErrRepository
+	}
+	response, err := json.Marshal(replacement)
+	if err != nil {
+		return corememory.Fact{}, corememory.ErrRepository
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_mutation_replays(operation,idempotency_key,request_hash,response_json,created_at) VALUES('memory.fact.update',$1,$2,$3,$4)`, mutation.IdempotencyKey, mutation.RequestDigest, response, now); err != nil {
+		return corememory.Fact{}, corememory.ErrRepository
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return corememory.Fact{}, corememory.ErrRepository
+	}
+	return replacement, nil
+}
+
+func (s *CoreMemoryStore) DeleteFact(ctx context.Context, mutation corememory.FactMutation) (corememory.FactDeletion, error) {
+	if ctx == nil || uuid.Validate(mutation.IdempotencyKey) != nil || uuid.Validate(mutation.FactID) != nil || len(mutation.RequestDigest) != 64 || mutation.Now.IsZero() {
+		return corememory.FactDeletion{}, corememory.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return corememory.FactDeletion{}, corememory.ErrRepository
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "memory.fact.delete:"+mutation.IdempotencyKey); err != nil {
+		return corememory.FactDeletion{}, corememory.ErrRepository
+	}
+	var storedDigest string
+	var storedResponse []byte
+	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE operation='memory.fact.delete' AND idempotency_key=$1 FOR UPDATE`, mutation.IdempotencyKey).Scan(&storedDigest, &storedResponse)
+	if err == nil {
+		if storedDigest != mutation.RequestDigest {
+			return corememory.FactDeletion{}, corememory.ErrIdempotencyConflict
+		}
+		var replay corememory.FactDeletion
+		if json.Unmarshal(storedResponse, &replay) != nil {
+			return corememory.FactDeletion{}, corememory.ErrRepository
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return corememory.FactDeletion{}, corememory.ErrRepository
+		}
+		return replay, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return corememory.FactDeletion{}, corememory.ErrRepository
+	}
+	var fact corememory.Fact
+	var observationID string
+	err = tx.QueryRow(ctx, `SELECT fact_id::text,subject,predicate,value,kind,confidence,valid_from,last_confirmed_at,source_observation_id::text FROM core_memory_facts WHERE fact_id=$1 AND state='active' FOR UPDATE`, mutation.FactID).
+		Scan(&fact.ID, &fact.Subject, &fact.Predicate, &fact.Value, &fact.Kind, &fact.Confidence, &fact.ValidFrom, &fact.LastConfirmedAt, &observationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return corememory.FactDeletion{}, corememory.ErrRevisionConflict
+	}
+	if err != nil {
+		return corememory.FactDeletion{}, corememory.ErrRepository
+	}
+	now := mutation.Now.UTC().Truncate(time.Microsecond)
+	validTo := now
+	if validTo.Before(fact.ValidFrom) {
+		validTo = fact.ValidFrom
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_memory_facts SET state='retracted',valid_to=$2 WHERE fact_id=$1 AND state='active'`, fact.ID, validTo); err != nil {
+		return corememory.FactDeletion{}, corememory.ErrRepository
+	}
+	if err = insertMemoryTimeline(ctx, tx, observationID, "retracted", fact.ID, "", memorySummary(fact.Subject, fact.Predicate, fact.Value), now, now); err != nil {
+		return corememory.FactDeletion{}, corememory.ErrRepository
+	}
+	deletion := corememory.FactDeletion{FactID: fact.ID, Deleted: true}
+	response, err := json.Marshal(deletion)
+	if err != nil {
+		return corememory.FactDeletion{}, corememory.ErrRepository
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_mutation_replays(operation,idempotency_key,request_hash,response_json,created_at) VALUES('memory.fact.delete',$1,$2,$3,$4)`, mutation.IdempotencyKey, mutation.RequestDigest, response, now); err != nil {
+		return corememory.FactDeletion{}, corememory.ErrRepository
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return corememory.FactDeletion{}, corememory.ErrRepository
+	}
+	return deletion, nil
 }
 
 func (s *CoreConversationStore) enqueueMemoryObservationTx(ctx context.Context, tx pgx.Tx, observationID, conversationID, profileID, userText, assistantText string, observedAt time.Time) error {
@@ -331,8 +469,9 @@ func insertMemoryTimeline(ctx context.Context, tx pgx.Tx, observationID, kind, f
 
 func memorySummary(subject, predicate, value string) string {
 	value = strings.TrimSpace(value)
-	if len(value) > 2048 {
-		value = value[:2048]
+	runes := []rune(value)
+	if len(runes) > 2048 {
+		value = string(runes[:2048])
 	}
 	return fmt.Sprintf("%s.%s = %s", subject, predicate, value)
 }

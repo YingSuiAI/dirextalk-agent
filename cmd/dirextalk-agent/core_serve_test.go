@@ -23,7 +23,6 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge/semantic"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
-	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
@@ -35,12 +34,6 @@ func (testKnowledgeSearchResolver) Search(context.Context, coreknowledge.SearchQ
 	return coreknowledge.SearchPage{}, nil
 }
 
-type memoryRecallSearchFunc func(context.Context, string, int) (coreknowledge.SearchPage, error)
-
-func (f memoryRecallSearchFunc) RecallMemory(ctx context.Context, prompt string, limit int) (coreknowledge.SearchPage, error) {
-	return f(ctx, prompt, limit)
-}
-
 type memorySnapshotFunc func(context.Context, string) (corememory.Snapshot, error)
 
 func (f memorySnapshotFunc) Recall(ctx context.Context, prompt string) (corememory.Snapshot, error) {
@@ -48,29 +41,25 @@ func (f memorySnapshotFunc) Recall(ctx context.Context, prompt string) (corememo
 }
 
 func TestCoreMemoryRecallResolverReturnsBoundedModelOnlyEnvelope(t *testing.T) {
-	sourceID := "11111111-1111-4111-8111-111111111111"
-	resolver := coreMemoryRecallResolver{service: memoryRecallSearchFunc(func(_ context.Context, prompt string, limit int) (coreknowledge.SearchPage, error) {
-		if prompt != "where do I live" || limit != coreMemoryRecallLimit {
-			t.Fatalf("prompt=%q limit=%d", prompt, limit)
+	resolver := coreMemoryRecallResolver{structured: memorySnapshotFunc(func(_ context.Context, prompt string) (corememory.Snapshot, error) {
+		if prompt != "where do I live" {
+			t.Fatalf("prompt=%q", prompt)
 		}
-		return coreknowledge.SearchPage{Matches: []coreknowledge.SearchMatch{
-			{SourceID: sourceID, Snippet: "lives in Shanghai"},
-			{SourceID: "22222222-2222-4222-8222-222222222222", Snippet: strings.Repeat("界", coreMemoryRecallMaxBytes)},
-		}}, nil
+		return corememory.Snapshot{Facts: []corememory.Fact{{Predicate: "home_city", Value: "Shanghai"}, {Predicate: "long", Value: strings.Repeat("界", coreMemoryRecallMaxBytes)}}}, nil
 	})}
 	value, err := resolver.RecallMemory(context.Background(), " where do I live ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(value, "[AGENT LONG-TERM MEMORY]") || !strings.HasSuffix(value, "[END AGENT LONG-TERM MEMORY]") || !strings.Contains(value, "lives in Shanghai") {
+	if !strings.HasPrefix(value, "[AGENT LONG-TERM MEMORY]") || !strings.HasSuffix(value, "[END AGENT LONG-TERM MEMORY]") || !strings.Contains(value, "home_city: Shanghai") {
 		t.Fatalf("recall envelope=%q", value)
 	}
-	if strings.Contains(value, sourceID) || len(value) > coreMemoryRecallMaxBytes || !utf8.ValidString(value) {
+	if len(value) > coreMemoryRecallMaxBytes || !utf8.ValidString(value) {
 		t.Fatalf("recall leaked metadata or exceeded bounds: bytes=%d valid=%v", len(value), utf8.ValidString(value))
 	}
 }
 
-func TestCoreMemoryRecallResolverRendersCurrentFactBeforeConflictingSemanticHistory(t *testing.T) {
+func TestCoreMemoryRecallResolverRendersCurrentFactBeforeTimeline(t *testing.T) {
 	resolver := coreMemoryRecallResolver{
 		structured: memorySnapshotFunc(func(_ context.Context, prompt string) (corememory.Snapshot, error) {
 			if prompt != "where do I live" {
@@ -78,24 +67,21 @@ func TestCoreMemoryRecallResolverRendersCurrentFactBeforeConflictingSemanticHist
 			}
 			return corememory.Snapshot{Facts: []corememory.Fact{{Predicate: "home_city", Value: "Beijing"}}, Events: []corememory.TimelineEvent{{Kind: "replaced", Summary: "user.home_city = Beijing", EffectiveAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), OccurredAt: time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC)}}}, nil
 		}),
-		service: memoryRecallSearchFunc(func(context.Context, string, int) (coreknowledge.SearchPage, error) {
-			return coreknowledge.SearchPage{Matches: []coreknowledge.SearchMatch{{Snippet: "home city was Shanghai"}}}, nil
-		}),
 	}
 	value, err := resolver.RecallMemory(context.Background(), "where do I live")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fact := strings.Index(value, "home_city: Beijing")
-	stale := strings.Index(value, "home city was Shanghai")
-	if fact < 0 || stale < 0 || fact >= stale || !strings.Contains(value, "current facts above take precedence") || !strings.Contains(value, "effective=2025-01-01T00:00:00Z replaced user.home_city = Beijing") {
+	timeline := strings.Index(value, "effective=2025-01-01T00:00:00Z replaced user.home_city = Beijing")
+	if fact < 0 || timeline < 0 || fact >= timeline {
 		t.Fatalf("conflict-aware recall envelope=%q", value)
 	}
 }
 
 func TestCoreMemoryRecallResolverTreatsEmptyMemoryAsEmptyContext(t *testing.T) {
-	resolver := coreMemoryRecallResolver{service: memoryRecallSearchFunc(func(context.Context, string, int) (coreknowledge.SearchPage, error) {
-		return coreknowledge.SearchPage{}, nil
+	resolver := coreMemoryRecallResolver{structured: memorySnapshotFunc(func(context.Context, string) (corememory.Snapshot, error) {
+		return corememory.Snapshot{}, nil
 	})}
 	value, err := resolver.RecallMemory(context.Background(), "nothing")
 	if err != nil || value != "" {
@@ -103,19 +89,9 @@ func TestCoreMemoryRecallResolverTreatsEmptyMemoryAsEmptyContext(t *testing.T) {
 	}
 }
 
-func TestCoreMemoryRecallResolverTreatsUnavailableEmbeddingAsEmptyContext(t *testing.T) {
-	resolver := coreMemoryRecallResolver{service: memoryRecallSearchFunc(func(context.Context, string, int) (coreknowledge.SearchPage, error) {
-		return coreknowledge.SearchPage{}, coreknowledge.ErrNotFound
-	})}
-	value, err := resolver.RecallMemory(context.Background(), "remember")
-	if err != nil || value != "" {
-		t.Fatalf("value=%q err=%v", value, err)
-	}
-}
-
 func TestCoreMemoryRecallResolverPreservesInfrastructureAndIntegrityFailures(t *testing.T) {
-	resolver := coreMemoryRecallResolver{service: memoryRecallSearchFunc(func(context.Context, string, int) (coreknowledge.SearchPage, error) {
-		return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
+	resolver := coreMemoryRecallResolver{structured: memorySnapshotFunc(func(context.Context, string) (corememory.Snapshot, error) {
+		return corememory.Snapshot{}, coreknowledge.ErrConflict
 	})}
 	if _, err := resolver.RecallMemory(context.Background(), "remember"); !errors.Is(err, coreknowledge.ErrConflict) {
 		t.Fatalf("failure was not preserved: %v", err)
@@ -129,81 +105,6 @@ func TestComposeCoreKnowledgeDisabledDoesNotCreateProductionFallback(t *testing.
 	}
 	if composition != nil {
 		t.Fatal("disabled Knowledge unexpectedly created a composition")
-	}
-}
-
-type reconcileKnowledgeOpener struct{}
-
-func (reconcileKnowledgeOpener) OpenManaged(context.Context, string) (io.ReadCloser, error) {
-	return io.NopCloser(strings.NewReader("")), nil
-}
-
-type reconcileKnowledgeFence struct{}
-
-func (reconcileKnowledgeFence) AcquireDeleteFence(context.Context, string) (coreknowledge.DeleteFenceToken, error) {
-	return coreknowledge.DeleteFenceToken{Token: "reconcile"}, nil
-}
-func (reconcileKnowledgeFence) ReleaseDeleteFence(context.Context, coreknowledge.DeleteFenceToken) error {
-	return nil
-}
-func (reconcileKnowledgeFence) ConsumeDelete(_ context.Context, _ coreknowledge.DeleteFenceToken, _ string, _ int64, transition func() error) error {
-	return transition()
-}
-
-func TestKnowledgeEmbeddingReconcileDisablesBindingWithoutDurableModelDefault(t *testing.T) {
-	repo, err := coreknowledge.NewMemoryRepository(time.Now, reconcileKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), reconcileKnowledgeFence{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	initial := coreknowledge.EmbeddingConfig{EmbeddingProfileID: "11111111-1111-4111-8111-111111111111", Dimension: 2, Collection: "knowledge", CollectionConfigDigest: strings.Repeat("a", 64), Revision: 1}
-	if _, err := repo.EnsureEmbeddingConfig(context.Background(), initial); err != nil {
-		t.Fatal(err)
-	}
-	domain, err := coreknowledge.NewService(repo, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	profiles, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	composition := &coreKnowledgeComposition{domain: domain, profiles: profiles}
-	if err := composition.reconcileEmbeddingBinding(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	current, err := domain.GetEmbeddingConfig(context.Background())
-	if err != nil || current.EmbeddingProfileID != uuid.Nil.String() || current.Revision != initial.Revision+1 {
-		t.Fatalf("orphaned provisioned binding was not disabled: %+v err=%v", current, err)
-	}
-}
-
-func TestKnowledgeEmbeddingReconcileBindsValidatedEmbeddingDefault(t *testing.T) {
-	repo, err := coreknowledge.NewMemoryRepository(time.Now, reconcileKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), reconcileKnowledgeFence{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := repo.EnsureEmbeddingConfig(context.Background(), coreknowledge.EmbeddingConfig{EmbeddingProfileID: "11111111-1111-4111-8111-111111111111", Dimension: 2, Collection: "knowledge", CollectionConfigDigest: strings.Repeat("b", 64), Revision: 1}); err != nil {
-		t.Fatal(err)
-	}
-	profiles, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := "embedding-secret"
-	if _, err := profiles.Sync(context.Background(), coremodel.SyncProfileCommand{IdempotencyKey: "22222222-2222-4222-8222-222222222222", DefaultEmbeddingProfileID: "embed", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "embed", DisplayName: "Embedding", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://example.invalid/v1", Model: "embed", APIKey: &key}}}); err != nil {
-		t.Fatal(err)
-	}
-	domain, err := coreknowledge.NewService(repo, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	composition := &coreKnowledgeComposition{domain: domain, profiles: profiles}
-	if err := composition.reconcileEmbeddingBinding(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	current, err := domain.GetEmbeddingConfig(context.Background())
-	if err != nil || current.EmbeddingProfileID != coremodel.SyncProfileID("embed") || current.Revision != 2 {
-		t.Fatalf("embedding default was not bound: %+v err=%v", current, err)
 	}
 }
 

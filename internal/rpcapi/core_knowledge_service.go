@@ -137,17 +137,6 @@ func (s *CoreKnowledgeService) AbortUpload(ctx context.Context, r *agentv1.CoreK
 	return &agentv1.CoreKnowledgeServiceAbortUploadResponse{}, nil
 }
 
-func (s *CoreKnowledgeService) CreateMemory(ctx context.Context, r *agentv1.CoreKnowledgeServiceCreateMemoryRequest) (*agentv1.CoreKnowledgeServiceCreateMemoryResponse, error) {
-	if r == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
-	}
-	v, err := s.service.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: r.GetIdempotencyKey(), SourceID: r.GetSourceId(), Title: r.GetTitle(), Content: r.GetContent(), ContentSHA256: r.GetContentSha256(), MediaType: r.GetMediaType()})
-	if err != nil {
-		return nil, coreKnowledgeRPCError(err)
-	}
-	return &agentv1.CoreKnowledgeServiceCreateMemoryResponse{Source: coreKnowledgeSourceProto(v)}, nil
-}
-
 func (s *CoreKnowledgeService) ListSources(ctx context.Context, r *agentv1.CoreKnowledgeServiceListSourcesRequest) (*agentv1.CoreKnowledgeServiceListSourcesResponse, error) {
 	if r == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
@@ -256,8 +245,6 @@ func coreKnowledgeKindProto(v coreknowledge.SourceKind) agentv1.CoreKnowledgeSou
 		return agentv1.CoreKnowledgeSourceKind_CORE_KNOWLEDGE_SOURCE_KIND_MOUNT
 	case coreknowledge.SourceKindUpload:
 		return agentv1.CoreKnowledgeSourceKind_CORE_KNOWLEDGE_SOURCE_KIND_UPLOAD
-	case coreknowledge.SourceKindMemory:
-		return agentv1.CoreKnowledgeSourceKind_CORE_KNOWLEDGE_SOURCE_KIND_MEMORY
 	}
 	return agentv1.CoreKnowledgeSourceKind_CORE_KNOWLEDGE_SOURCE_KIND_UNSPECIFIED
 }
@@ -267,8 +254,6 @@ func coreKnowledgeKindFromProto(v agentv1.CoreKnowledgeSourceKind) (coreknowledg
 		return coreknowledge.SourceKindMount, true
 	case agentv1.CoreKnowledgeSourceKind_CORE_KNOWLEDGE_SOURCE_KIND_UPLOAD:
 		return coreknowledge.SourceKindUpload, true
-	case agentv1.CoreKnowledgeSourceKind_CORE_KNOWLEDGE_SOURCE_KIND_MEMORY:
-		return coreknowledge.SourceKindMemory, true
 	}
 	return "", false
 }

@@ -65,18 +65,6 @@ func TestCoreAWSPostgresFakeProviderAcceptanceRPC(t *testing.T) {
 		// stored secret value.
 		t.Fatalf("credential secret exposure/configuration mismatch: %+v", cred)
 	}
-	identity, err := cloudRPC.TestCredentialIdentity(ctx, &agentv1.CoreCloudControlServiceTestCredentialIdentityRequest{CredentialId: cred.GetCredentialId()})
-	if err != nil || identity.GetAccountId() != "123456789012" {
-		t.Fatalf("credential identity=%+v err=%v", identity, err)
-	}
-	storedCred, err := awsStore.GetCredential(ctx, cred.GetCredentialId())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if storedCred.AccountID != "123456789012" || storedCred.UserARN == "" {
-		t.Fatalf("identity was not persisted: %+v", storedCred)
-	}
-
 	createPlan, err := cloudRPC.CreatePlan(ctx, &agentv1.CoreCloudControlServiceCreatePlanRequest{
 		IdempotencyKey: acceptanceUUID(), CredentialId: cred.GetCredentialId(), StackName: "fake-acceptance-stack",
 		Operation: agentv1.CoreAWSOperation_CORE_AWS_OPERATION_CREATE, Template: acceptanceTemplate("create"),

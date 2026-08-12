@@ -108,9 +108,6 @@ func TestCoreAWSRealProviderLifecycle(t *testing.T) {
 		t.Fatal("save runtime AWS credential")
 	}
 	credID := credResp.GetCredential().GetCredentialId()
-	if _, err = cloudRPC.TestCredentialIdentity(ctx, &agentv1.CoreCloudControlServiceTestCredentialIdentityRequest{CredentialId: credID}); err != nil {
-		t.Fatal("verify runtime AWS credential identity")
-	}
 	template := []byte(`{"Resources":{"Queue":{"Type":"AWS::SQS::Queue","Properties":{"Tags":[{"Key":"dirextalk_corev1","Value":"real-acceptance"},{"Key":"ephemeral","Value":"true"}]}}}}`)
 	planResp, err := cloudRPC.CreatePlan(ctx, &agentv1.CoreCloudControlServiceCreatePlanRequest{IdempotencyKey: uuid.NewString(), CredentialId: credID, Region: region, StackName: stackName, Operation: agentv1.CoreAWSOperation_CORE_AWS_OPERATION_CREATE, Template: template, Tags: map[string]string{"dirextalk_corev1": "real-acceptance", "ephemeral": "true"}})
 	if err != nil || planResp.GetPlan() == nil {

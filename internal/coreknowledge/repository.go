@@ -11,8 +11,6 @@ type Repository interface {
 	AppendUploadChunk(context.Context, UploadChunk) (Upload, error)
 	CommitUpload(context.Context, CommitUploadCommand) (Upload, Source, error)
 	AbortUpload(context.Context, AbortUploadCommand) error
-	CreateMemory(context.Context, MemoryCommand) (Source, error)
-	UpdateMemory(context.Context, UpdateMemoryCommand) (Source, error)
 	Get(context.Context, string) (Source, error)
 	List(context.Context, ListQuery) (Page, error)
 	Delete(context.Context, DeleteCommand) (Source, error)
@@ -28,14 +26,6 @@ type Repository interface {
 // implementations that do not expose resumable uploads.
 type UploadReader interface {
 	GetUpload(context.Context, string) (Upload, error)
-}
-
-// MemoryReader supplies the public memory projection, including bounded tags
-// and readable content. It is optional so metadata-only Knowledge repositories
-// remain valid for deployments that do not expose memory reads.
-type MemoryReader interface {
-	GetMemory(context.Context, string) (Memory, error)
-	ListMemories(context.Context, ListQuery) (MemoryPage, error)
 }
 
 // AutoIndexCandidateReader exposes the durable reconciliation projection for

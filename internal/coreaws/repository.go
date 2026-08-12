@@ -61,7 +61,7 @@ type Repository interface {
 // boundary for credential tests. Implementations commit a claim before the
 // provider call and commit the tested identity plus replay receipt afterward;
 // no provider callback runs inside the repository transaction. The legacy gRPC
-// TestCredentialIdentity path deliberately does not use this optional
+// Credential verification deliberately does not use this optional
 // interface and remains non-keyed.
 type CredentialIdentityIdempotencyRepository interface {
 	BeginCredentialTest(context.Context, string, int64, string, ...time.Time) (CredentialTestClaim, *CredentialTest, error)

@@ -40,9 +40,6 @@ const (
 	MaxSourceBytes           int64 = 16 << 20
 	MaxUploadBytes           int64 = MaxSourceBytes
 	MaxUploadChunkBytes      int   = 1 << 20
-	MaxMemoryBytes           int   = 1 << 20
-	MaxMemoryTags            int   = 16
-	MaxMemoryTagBytes        int   = 64
 	MaxSnippetBytes          int   = 4096
 	MaxSearchResults         int   = 100
 )
@@ -52,7 +49,6 @@ type SourceKind string
 const (
 	SourceKindMount  SourceKind = "mount"
 	SourceKindUpload SourceKind = "upload"
-	SourceKindMemory SourceKind = "memory"
 )
 
 type SourceStatus string
@@ -81,30 +77,6 @@ type Source struct {
 	UpdatedAt    time.Time
 	ErrorCode    string
 	ContentRef   string
-	// Tags are meaningful only for memory sources. Source listings use
-	// explicit adapter DTOs and never include content bytes.
-	Tags []string
-}
-
-// Memory is the public long-term-memory projection. Content is deliberately
-// available only from memory get/list operations, never generic source lists.
-type Memory struct {
-	ID               string    `json:"memory_id"`
-	Title            string    `json:"title"`
-	Content          string    `json:"content"`
-	Tags             []string  `json:"tags"`
-	Revision         int64     `json:"revision"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	EmbeddingIndexed bool      `json:"embedding_indexed"`
-	EmbeddingStale   bool      `json:"embedding_stale"`
-	EmbeddingStatus  string    `json:"embedding_status"`
-	ErrorCode        string    `json:"error_code,omitempty"`
-}
-
-type MemoryPage struct {
-	Items         []Memory `json:"items"`
-	NextPageToken string   `json:"next_page_token"`
 }
 
 // ContentReference identifies immutable bytes finalized by the content port.
@@ -151,40 +123,6 @@ type MountCommand struct {
 	SizeBytes      int64
 	MediaType      string
 	FileOpener     ManagedFileOpener
-}
-
-type MemoryCommand struct {
-	IdempotencyKey string
-	SourceID       string
-	Title          string
-	Content        string
-	ContentSHA256  string
-	MediaType      string
-	Tags           []string
-}
-
-// NormalizeMemoryCommand applies the domain default before validation and
-// replay digest computation.  Service and repository entry points both call
-// it so omitted titles have identical Memory/PostgreSQL semantics.
-func NormalizeMemoryCommand(command MemoryCommand) MemoryCommand {
-	if strings.TrimSpace(command.Title) == "" {
-		command.Title = "memory"
-	}
-	return command
-}
-
-// UpdateMemoryCommand replaces one memory's immutable content and metadata.
-// Revision and idempotency are checked in the same repository transaction so
-// a stale client cannot overwrite a newer memory revision.
-type UpdateMemoryCommand struct {
-	IdempotencyKey   string
-	SourceID         string
-	ExpectedRevision int64
-	Title            string
-	Content          string
-	ContentSHA256    string
-	MediaType        string
-	Tags             []string
 }
 
 type UploadMetadata struct {
@@ -359,7 +297,7 @@ type EmbeddingConfigStore interface {
 }
 
 // EmbeddingProfileDisabler invalidates semantic search/index state for one
-// exact active profile while preserving source files and memory text.
+// exact active profile while preserving source documents.
 type EmbeddingProfileDisabler interface {
 	DisableEmbeddingProfile(context.Context, string) (EmbeddingConfig, error)
 }
@@ -405,7 +343,7 @@ type ManagedFileOpener interface {
 	OpenManaged(context.Context, string) (io.ReadCloser, error)
 }
 
-// ContentSink is the bounded adapter port for streaming memory/upload content.
+// ContentSink is the bounded adapter port for streaming upload content.
 // Implementations hash and count bytes while writing; callers must compare
 // Size and SHA256 against the declared metadata before committing.
 type ContentSink interface {
@@ -422,8 +360,7 @@ type StreamingContentPort interface {
 }
 
 // ContentReader is optional on content ports that can safely reopen a
-// finalized immutable object. Public memory get/list projections require it;
-// ordinary source metadata operations do not read content bytes.
+// finalized immutable object.
 type ContentReader interface {
 	OpenContent(context.Context, ContentReference) (io.ReadCloser, error)
 }
@@ -512,48 +449,6 @@ func (m MountCommand) validate() error {
 	}
 	return nil
 }
-func (m MemoryCommand) validate() error {
-	if !validUUID(m.IdempotencyKey) || (m.SourceID != "" && !validUUID(m.SourceID)) || strings.TrimSpace(m.Content) == "" || m.MediaType == "" || !validMemoryTags(m.Tags) {
-		return ErrInvalid
-	}
-	if len([]byte(m.Content)) > MaxMemoryBytes {
-		return ErrLimitExceeded
-	}
-	if m.ContentSHA256 != "" && !validDigest(m.ContentSHA256) {
-		return ErrInvalid
-	}
-	return nil
-}
-func (m UpdateMemoryCommand) validate() error {
-	if !validUUID(m.IdempotencyKey) || !validUUID(m.SourceID) || m.ExpectedRevision < 1 || strings.TrimSpace(m.Content) == "" || m.MediaType == "" || !validMemoryTags(m.Tags) {
-		return ErrInvalid
-	}
-	if len([]byte(m.Content)) > MaxMemoryBytes {
-		return ErrLimitExceeded
-	}
-	if m.ContentSHA256 != "" && !validDigest(m.ContentSHA256) {
-		return ErrInvalid
-	}
-	return nil
-}
-
-func validMemoryTags(tags []string) bool {
-	if len(tags) > MaxMemoryTags {
-		return false
-	}
-	seen := make(map[string]struct{}, len(tags))
-	for _, raw := range tags {
-		tag := strings.TrimSpace(raw)
-		if tag == "" || len([]byte(tag)) > MaxMemoryTagBytes || strings.ContainsAny(tag, "\x00\r\n") {
-			return false
-		}
-		if _, ok := seen[tag]; ok {
-			return false
-		}
-		seen[tag] = struct{}{}
-	}
-	return true
-}
 func (m UploadMetadata) validate() error {
 	if !validUUID(m.IdempotencyKey) || (m.UploadID != "" && !validUUID(m.UploadID)) || (m.SourceID != "" && !validUUID(m.SourceID)) || m.DeclaredSize <= 0 || m.MediaType == "" || !validDigest(m.ContentSHA256) {
 		return ErrInvalid
@@ -575,7 +470,7 @@ func (c UploadChunk) validate() error {
 	return nil
 }
 func (c DeleteCommand) validate() error {
-	if !validUUID(c.IdempotencyKey) || !validUUID(c.SourceID) || c.ExpectedRevision < 1 || c.Kind != "" && c.Kind != SourceKindMount && c.Kind != SourceKindUpload && c.Kind != SourceKindMemory {
+	if !validUUID(c.IdempotencyKey) || !validUUID(c.SourceID) || c.ExpectedRevision < 1 || c.Kind != "" && c.Kind != SourceKindMount && c.Kind != SourceKindUpload {
 		return ErrInvalid
 	}
 	return nil
@@ -590,7 +485,7 @@ func (q ListQuery) validate() error {
 	if q.PageSize < 0 || q.PageSize > 100 {
 		return ErrInvalid
 	}
-	if q.Kind != "" && q.Kind != SourceKindMount && q.Kind != SourceKindUpload && q.Kind != SourceKindMemory {
+	if q.Kind != "" && q.Kind != SourceKindMount && q.Kind != SourceKindUpload {
 		return ErrInvalid
 	}
 	if q.Status != "" && q.Status != SourceStatusReady && q.Status != SourceStatusUploading && q.Status != SourceStatusIndexing && q.Status != SourceStatusFailed && q.Status != SourceStatusDeleting && q.Status != SourceStatusCleanupPending && q.Status != SourceStatusDeleted {
@@ -600,7 +495,7 @@ func (q ListQuery) validate() error {
 	return err
 }
 func (q SearchQuery) validate() error {
-	if strings.TrimSpace(q.Query) == "" || q.Limit < 0 || q.Limit > MaxSearchResults || q.Kind != "" && q.Kind != SourceKindMount && q.Kind != SourceKindUpload && q.Kind != SourceKindMemory {
+	if strings.TrimSpace(q.Query) == "" || q.Limit < 0 || q.Limit > MaxSearchResults || q.Kind != "" && q.Kind != SourceKindMount && q.Kind != SourceKindUpload {
 		return ErrInvalid
 	}
 	if _, err := decodePageCursor(q.PageToken); err != nil {
@@ -624,12 +519,10 @@ func (r UploadMetadata) String() string { return fmt.Sprintf("%s:%s", r.UploadID
 // The repository adapter uses these explicit boundary validators without
 // exposing the package's internal validation implementation.
 func (m MountCommand) ValidateForRepository() error        { return m.validate() }
-func (m MemoryCommand) ValidateForRepository() error       { return m.validate() }
 func (m UploadMetadata) ValidateForRepository() error      { return m.validate() }
 func (c UploadChunk) ValidateForRepository() error         { return c.validate() }
 func (c CommitUploadCommand) ValidateForRepository() error { return c.validate() }
 func (c DeleteCommand) ValidateForRepository() error       { return c.validate() }
-func (m UpdateMemoryCommand) ValidateForRepository() error { return m.validate() }
 func (q ListQuery) ValidateForRepository() error           { return q.validate() }
 func (q SearchQuery) ValidateForRepository() error         { return q.validate() }
 

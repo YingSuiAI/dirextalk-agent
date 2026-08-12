@@ -64,27 +64,6 @@ func (s *Service) AbortUpload(ctx context.Context, command AbortUploadCommand) e
 	}
 	return s.repository.AbortUpload(ctx, command)
 }
-func (s *Service) CreateMemory(ctx context.Context, command MemoryCommand) (Source, error) {
-	command = NormalizeMemoryCommand(command)
-	if err := command.validate(); err != nil {
-		return Source{}, err
-	}
-	value, err := s.repository.CreateMemory(ctx, command)
-	if err == nil {
-		s.requestAutomaticIndex(ctx, value)
-	}
-	return value, safeError(err)
-}
-func (s *Service) UpdateMemory(ctx context.Context, command UpdateMemoryCommand) (Source, error) {
-	if err := command.validate(); err != nil {
-		return Source{}, err
-	}
-	value, err := s.repository.UpdateMemory(ctx, command)
-	if err == nil {
-		s.requestAutomaticIndex(ctx, value)
-	}
-	return value, safeError(err)
-}
 func (s *Service) Get(ctx context.Context, id string) (Source, error) {
 	value, err := s.repository.Get(ctx, id)
 	return value, safeError(err)
@@ -101,57 +80,6 @@ func (s *Service) GetUpload(ctx context.Context, id string) (Upload, error) {
 	return value, safeError(err)
 }
 
-func (s *Service) GetMemory(ctx context.Context, id string) (Memory, error) {
-	reader, ok := s.repository.(MemoryReader)
-	if !ok {
-		return Memory{}, ErrNotFound
-	}
-	value, err := reader.GetMemory(ctx, id)
-	if err != nil {
-		return Memory{}, safeError(err)
-	}
-	return s.withMemoryEmbeddingStatus(ctx, value), nil
-}
-
-func (s *Service) ListMemories(ctx context.Context, query ListQuery) (MemoryPage, error) {
-	if query.Kind == "" {
-		query.Kind = SourceKindMemory
-	}
-	if err := query.validate(); err != nil {
-		return MemoryPage{}, err
-	}
-	reader, ok := s.repository.(MemoryReader)
-	if !ok {
-		return MemoryPage{}, ErrNotFound
-	}
-	value, err := reader.ListMemories(ctx, query)
-	if err != nil {
-		return MemoryPage{}, safeError(err)
-	}
-	for index := range value.Items {
-		value.Items[index] = s.withMemoryEmbeddingStatus(ctx, value.Items[index])
-	}
-	return value, nil
-}
-
-// withMemoryEmbeddingStatus adds the authoritative, secret-free per-source
-// vector projection without making readable memory content depend on semantic
-// indexing availability. Unknown means the repository cannot currently prove
-// a binding; stale remains true so consumers never mistake it for indexed.
-func (s *Service) withMemoryEmbeddingStatus(ctx context.Context, memory Memory) Memory {
-	memory.Tags = append([]string{}, memory.Tags...)
-	memory.EmbeddingIndexed = false
-	memory.EmbeddingStale = true
-	memory.EmbeddingStatus = "unknown"
-	status, err := s.SourceEmbeddingStatus(ctx, memory.ID)
-	if err != nil {
-		return memory
-	}
-	memory.EmbeddingIndexed = status.Indexed
-	memory.EmbeddingStale = status.Stale
-	memory.EmbeddingStatus = string(status.Status)
-	return memory
-}
 func (s *Service) List(ctx context.Context, query ListQuery) (Page, error) {
 	if err := query.validate(); err != nil {
 		return Page{}, err

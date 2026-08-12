@@ -17,10 +17,10 @@ var coreSupportedModelProviders = []string{
 
 var (
 	coreMCPRequiredOperations = []string{
-		"discover_mcp", "get_mcp", "list_mcp", "inspect_mcp", "install_mcp", "update_mcp", "remove_mcp", "enable_mcp", "disable_mcp", "list_tools", "execute_mcp",
+		"discover_mcp", "get_mcp", "list_mcp", "inspect_mcp", "install_mcp", "update_mcp", "remove_mcp", "list_tools", "execute_mcp",
 	}
 	coreSkillsRequiredOperations = []string{
-		"discover_skill", "get_skill", "list_skills", "inspect_skill", "install_skill", "update_skill", "remove_skill", "enable_skill", "disable_skill", "invoke_skill",
+		"discover_skill", "get_skill", "list_skills", "inspect_skill", "install_skill", "update_skill", "remove_skill", "invoke_skill",
 	}
 	coreTextToolsRequiredOperations  = []string{"get_config", "update_config", "execute"}
 	coreImageToolsRequiredOperations = []string{"upload_begin", "upload_append", "upload_commit", "extract_text", "translate_text"}
@@ -46,9 +46,6 @@ func newCoreInfoProvider(instanceID string, descriptorSource func() []*capv1.Cap
 				Embedded: embedded,
 				Core:     coreBackendInfo(instanceID, descriptorSource),
 			}, nil
-		},
-		StatusFunc: func(context.Context) (agentcapability.BackendInfo, error) {
-			return coreBackendInfo(instanceID, descriptorSource), nil
 		},
 		ModelsFunc: newCoreModelCatalog(profiles).ListModels,
 	}

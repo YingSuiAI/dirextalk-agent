@@ -66,7 +66,6 @@ type BackendsSnapshot struct {
 // context and therefore cannot be keyed by an owner value supplied in JSON.
 type InfoProvider interface {
 	Backends(context.Context) (BackendsSnapshot, error)
-	Status(context.Context) (BackendInfo, error)
 }
 
 // ModelCatalogProvider owns the provider/runtime model catalog behind the
@@ -102,7 +101,6 @@ type ModelCatalogResult struct {
 // tests without creating a second persistence implementation.
 type InfoProviderFunc struct {
 	BackendsFunc func(context.Context) (BackendsSnapshot, error)
-	StatusFunc   func(context.Context) (BackendInfo, error)
 	ModelsFunc   func(context.Context, ModelCatalogRequest) (ModelCatalogResult, error)
 }
 
@@ -111,13 +109,6 @@ func (f InfoProviderFunc) Backends(ctx context.Context) (BackendsSnapshot, error
 		return BackendsSnapshot{}, errors.New("agent backend provider is unavailable")
 	}
 	return f.BackendsFunc(ctx)
-}
-
-func (f InfoProviderFunc) Status(ctx context.Context) (BackendInfo, error) {
-	if f.StatusFunc == nil {
-		return BackendInfo{}, errors.New("agent status provider is unavailable")
-	}
-	return f.StatusFunc(ctx)
 }
 
 func (f InfoProviderFunc) ListModels(ctx context.Context, request ModelCatalogRequest) (ModelCatalogResult, error) {
@@ -137,7 +128,7 @@ func NewInfoCapability(provider InfoProvider) Capability {
 }
 
 func (c *infoCapability) Descriptor() *capv1.CapabilityDescriptor {
-	return capabilityDescriptor(infoCapabilityID, "Agent Info", "Agent backend readiness and safe instance status", []capabilityOperation{
+	return capabilityDescriptor(infoCapabilityID, "Agent Info", "Agent backend readiness and provider model discovery", []capabilityOperation{
 		{
 			ID:           "get_backends",
 			DisplayName:  "Get backends",
@@ -146,15 +137,6 @@ func (c *infoCapability) Descriptor() *capv1.CapabilityDescriptor {
 			Scope:        "agent:info:read",
 			InputSchema:  `{"additionalProperties":false,"properties":{},"type":"object"}`,
 			ResultSchema: `{"additionalProperties":false,"properties":{"core":{"$ref":"#/$defs/backend"},"embedded":{"$ref":"#/$defs/backend"}},"required":["core","embedded"],"$defs":{"backend":{"additionalProperties":false,"properties":{"api_version":{"type":"string"},"available":{"type":"boolean"},"capabilities":{"items":{"type":"string"},"type":"array"},"configured":{"type":"boolean"},"instance_id":{"type":"string"},"release_version":{"type":"string"},"status":{"type":"string"},"supported_model_providers":{"items":{"type":"string"},"type":"array"}},"required":["available","configured","status","capabilities","supported_model_providers"],"type":"object"}},"type":"object"}`,
-		},
-		{
-			ID:           "get_status",
-			DisplayName:  "Get status",
-			Description:  "Return the authenticated Agent's non-secret readiness status.",
-			Type:         capv1.OperationType_OPERATION_TYPE_READ,
-			Scope:        "agent:info:read",
-			InputSchema:  `{"additionalProperties":false,"properties":{},"type":"object"}`,
-			ResultSchema: `{"additionalProperties":false,"properties":{"api_version":{"type":"string"},"available":{"type":"boolean"},"capabilities":{"items":{"type":"string"},"type":"array"},"configured":{"type":"boolean"},"instance_id":{"type":"string"},"release_version":{"type":"string"},"status":{"type":"string"},"supported_model_providers":{"items":{"type":"string"},"type":"array"}},"required":["available","configured","status","capabilities","supported_model_providers"],"type":"object"}`,
 		},
 		{
 			ID:           "list_models",
@@ -187,15 +169,6 @@ func (c *infoCapability) HandleOperation(ctx context.Context, operationID string
 		value.Embedded = normalizeBackendInfo(value.Embedded)
 		value.Core = normalizeBackendInfo(value.Core)
 		return json.Marshal(value)
-	case "get_status":
-		if err := requireEmptyObject(raw); err != nil {
-			return nil, err
-		}
-		value, err := c.provider.Status(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(normalizeBackendInfo(value))
 	case "list_models":
 		provider, ok := c.provider.(ModelCatalogProvider)
 		if !ok || provider == nil {
@@ -403,52 +376,23 @@ func (c *runtimeCapability) HandleOperation(ctx context.Context, operationID str
 	}
 }
 
-// ConfigProposalPort is optional.  If it is nil the capability still
-// produces a validated proposal; applying it remains a separate, confirmed
-// Core extension/configuration operation.  This prevents a Native Agent from
-// rewriting process configuration as a side effect of a proposal request.
-type ConfigProposalPort interface {
-	ProposeConfigPatch(context.Context, ConfigPatchRequest) (ConfigPatchResult, error)
-}
-
-type ConfigPatchRequest struct {
-	Kind      string         `json:"kind"`
-	Skill     map[string]any `json:"skill,omitempty"`
-	MCPServer map[string]any `json:"mcp_server,omitempty"`
-}
-
-type ConfigPatchResult struct {
-	RequiresConfirmation bool           `json:"requires_confirmation"`
-	ConfigPatch          map[string]any `json:"config_patch"`
-}
-
 type configCapability struct {
-	port  ConfigProposalPort
 	store coreconfig.Store
 }
 
-// NewConfigCapability keeps the original one-argument construction form for
-// standalone proposal tests while allowing production composition to provide
-// the durable owner-scoped config store.
-func NewConfigCapability(port ConfigProposalPort, stores ...coreconfig.Store) Capability {
-	var store coreconfig.Store
-	if len(stores) > 0 {
-		store = stores[0]
-	}
-	return &configCapability{port: port, store: store}
+func NewConfigCapability(store coreconfig.Store) Capability {
+	return &configCapability{store: store}
 }
 
 func (c *configCapability) Descriptor() *capv1.CapabilityDescriptor {
-	operations := []capabilityOperation{
-		{ID: "propose_patch", DisplayName: "Propose config patch", Description: "Create a confirmation-bound config proposal; never apply it.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:config:write", Risk: capv1.RiskLevel_RISK_LEVEL_MEDIUM, InputSchema: configProposalSchema, ResultSchema: configProposalResultSchema},
-	}
+	operations := []capabilityOperation{}
 	if c != nil && c.store != nil {
 		operations = append(operations,
 			capabilityOperation{ID: "get", DisplayName: "Get Native Agent config", Description: "Read owner-scoped Native Agent configuration without Online Matrix identity.", Type: capv1.OperationType_OPERATION_TYPE_READ, Scope: "agent:config:read", InputSchema: nativeConfigGetSchema, ResultSchema: nativeConfigResultSchema},
 			capabilityOperation{ID: "update", DisplayName: "Update Native Agent config", Description: "Update owner-scoped Native Agent configuration with an idempotency key.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:config:write", Risk: capv1.RiskLevel_RISK_LEVEL_MEDIUM, InputSchema: nativeConfigUpdateSchema, ResultSchema: nativeConfigResultSchema},
 		)
 	}
-	return capabilityDescriptor(configCapabilityID, "Agent Config", "Owner-scoped Native Agent configuration and confirmation-bound proposals", operations)
+	return capabilityDescriptor(configCapabilityID, "Agent Config", "Owner-scoped Native Agent configuration", operations)
 }
 
 func (c *configCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
@@ -491,34 +435,7 @@ func (c *configCapability) HandleOperation(ctx context.Context, operationID stri
 		}
 		return json.Marshal(value.Normalize())
 	}
-	if operationID != "propose_patch" {
-		return nil, fmt.Errorf("unknown agent config operation %q", operationID)
-	}
-	var request ConfigPatchRequest
-	if err := decodeStrictObject(raw, &request); err != nil {
-		return nil, err
-	}
-	sanitized, err := sanitizeConfigProposal(request)
-	if err != nil {
-		return nil, err
-	}
-	if c != nil && c.port != nil {
-		result, err := c.port.ProposeConfigPatch(ctx, sanitized)
-		if err != nil {
-			return nil, err
-		}
-		result.ConfigPatch = redactConfigMap(result.ConfigPatch)
-		result.RequiresConfirmation = true
-		return json.Marshal(result)
-	}
-	patch := map[string]any{}
-	switch sanitized.Kind {
-	case "skill":
-		patch["skills_add"] = []any{sanitized.Skill}
-	case "mcp_server":
-		patch["mcp_servers_add"] = []any{sanitized.MCPServer}
-	}
-	return json.Marshal(ConfigPatchResult{RequiresConfirmation: true, ConfigPatch: patch})
+	return nil, fmt.Errorf("unknown agent config operation %q", operationID)
 }
 
 func decodeNativeConfigUpdate(input map[string]json.RawMessage) (coreconfig.Update, error) {
@@ -624,16 +541,15 @@ func RegisterMiscCapabilities(r *Registry, bindings MiscBindings) error {
 	if bindings.Runtime != nil {
 		registerUnique(r, NewRuntimeCapability(bindings.Runtime))
 	}
-	// Config proposals have a safe local implementation even without a
-	// persistence port, so always publish the capability for a configured Core.
-	registerUnique(r, NewConfigCapability(bindings.Config, bindings.ConfigStore))
+	if bindings.ConfigStore != nil {
+		registerUnique(r, NewConfigCapability(bindings.ConfigStore))
+	}
 	return nil
 }
 
 type MiscBindings struct {
 	Info        InfoProvider
 	Runtime     RuntimePort
-	Config      ConfigProposalPort
 	ConfigStore coreconfig.Store
 }
 
@@ -1094,124 +1010,6 @@ func redactSecretError(err error, secret string) error {
 	return errors.New(message)
 }
 
-func sanitizeConfigProposal(request ConfigPatchRequest) (ConfigPatchRequest, error) {
-	request.Kind = strings.ToLower(strings.TrimSpace(request.Kind))
-	if request.Kind != "skill" && request.Kind != "mcp_server" {
-		return ConfigPatchRequest{}, errors.New("kind must be skill or mcp_server")
-	}
-	if request.Kind == "skill" {
-		value, err := sanitizeConfigMap(request.Skill, allowedSkillConfigKeys)
-		if err != nil {
-			return ConfigPatchRequest{}, fmt.Errorf("skill: %w", err)
-		}
-		if len(value) == 0 {
-			return ConfigPatchRequest{}, errors.New("skill proposal is empty")
-		}
-		request.Skill = value
-		request.MCPServer = nil
-		return request, nil
-	}
-	value, err := sanitizeConfigMap(request.MCPServer, allowedMCPConfigKeys)
-	if err != nil {
-		return ConfigPatchRequest{}, fmt.Errorf("mcp_server: %w", err)
-	}
-	if len(value) == 0 {
-		return ConfigPatchRequest{}, errors.New("mcp_server proposal is empty")
-	}
-	request.MCPServer = value
-	request.Skill = nil
-	return request, nil
-}
-
-var allowedSkillConfigKeys = map[string]bool{"name": true, "version": true, "source": true, "description": true, "entrypoint": true, "args": true, "permissions": true}
-var allowedMCPConfigKeys = map[string]bool{"name": true, "version": true, "source": true, "description": true, "transport": true, "url": true, "command": true, "args": true, "timeout_ms": true, "tool_allowlist": true}
-
-func sanitizeConfigMap(input map[string]any, allowed map[string]bool) (map[string]any, error) {
-	if input == nil {
-		return nil, errors.New("object is required")
-	}
-	out := make(map[string]any, len(input))
-	for key, value := range input {
-		key = strings.TrimSpace(key)
-		if !allowed[key] {
-			return nil, fmt.Errorf("field %q is not allowed", key)
-		}
-		if strings.Contains(strings.ToLower(key), "secret") || strings.Contains(strings.ToLower(key), "token") || strings.Contains(strings.ToLower(key), "password") || strings.Contains(strings.ToLower(key), "api_key") || strings.Contains(strings.ToLower(key), "env") || strings.Contains(strings.ToLower(key), "shell") || strings.Contains(strings.ToLower(key), "cwd") {
-			return nil, fmt.Errorf("field %q is not allowed", key)
-		}
-		if key == "command" {
-			argv, ok := value.([]any)
-			if !ok || len(argv) == 0 || len(argv) > maxRuntimeArgs {
-				return nil, errors.New("command must be an argv array")
-			}
-			if err := validateNonShellArgv(argv); err != nil {
-				return nil, err
-			}
-		}
-		if err := rejectNestedSecretKeys(value); err != nil {
-			return nil, err
-		}
-		out[key] = value
-	}
-	return out, nil
-}
-
-func validateNonShellArgv(argv []any) error {
-	for index, item := range argv {
-		value, ok := item.(string)
-		if !ok || len(value) == 0 || len(value) > maxRuntimeArgBytes || strings.IndexByte(value, 0) >= 0 {
-			return fmt.Errorf("command argument %d is invalid", index)
-		}
-		if index == 0 {
-			base := strings.ToLower(strings.TrimSpace(value))
-			if base == "sh" || base == "bash" || base == "zsh" || base == "fish" || base == "cmd" || base == "cmd.exe" || base == "powershell" || base == "pwsh" {
-				return errors.New("shell interpreters are not allowed")
-			}
-		}
-		if index > 0 && (value == "-c" || value == "-Command" || value == "/c" || value == "/C") {
-			return errors.New("shell evaluation arguments are not allowed")
-		}
-	}
-	return nil
-}
-
-func rejectNestedSecretKeys(value any) error {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, item := range typed {
-			lower := strings.ToLower(strings.TrimSpace(key))
-			if strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "password") || strings.Contains(lower, "api_key") || strings.Contains(lower, "authorization") || strings.Contains(lower, "env") || strings.Contains(lower, "shell") || strings.Contains(lower, "cwd") {
-				return fmt.Errorf("field %q is not allowed", key)
-			}
-			if err := rejectNestedSecretKeys(item); err != nil {
-				return err
-			}
-		}
-	case []any:
-		for _, item := range typed {
-			if err := rejectNestedSecretKeys(item); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func redactConfigMap(input map[string]any) map[string]any {
-	if input == nil {
-		return map[string]any{}
-	}
-	out := make(map[string]any, len(input))
-	for key, value := range input {
-		lower := strings.ToLower(key)
-		if strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "password") || strings.Contains(lower, "api_key") {
-			continue
-		}
-		out[key] = value
-	}
-	return out
-}
-
 type capabilityOperation struct {
 	ID           string
 	DisplayName  string
@@ -1277,8 +1075,6 @@ const (
 	runtimeRunResultSchema           = `{"additionalProperties":false,"properties":{"duration_ms":{"type":"integer"},"exit_code":{"type":"integer"},"stderr":{"type":"string"},"stdout":{"type":"string"},"tool":{"type":"string"}},"required":["exit_code","tool"],"type":"object"}`
 	modelCatalogSchema               = `{"additionalProperties":false,"properties":{"api_key":{"type":"string","writeOnly":true},"base_url":{"type":"string"},"client_model_profile_id":{"type":"string"},"model_kind":{"default":"conversation","enum":["conversation","embedding","speech"],"type":"string"},"model_profile_id":{"type":"string"},"provider":{"type":"string"}},"type":"object"}`
 	modelCatalogResultSchemaTemplate = `{"additionalProperties":false,"properties":{"models":{"items":{"additionalProperties":false,"properties":{"context_length":{"type":"integer"},"context_window":{"type":"integer"},"created":{"type":"number"},"created_at":{"type":"string"},"id":{"type":"string"},"input_modalities":{"items":{"type":"string"},"type":"array"},"input_token_limit":{"type":"integer"},"max_input_tokens":{"type":"integer"},"max_output_tokens":{"type":"integer"},"max_tokens":{"type":"integer"},"name":{"type":"string"},"object":{"type":"string"},"output_modalities":{"items":{"enum":__OUTPUT_MODALITIES_ENUM__,"type":"string"},"type":"array"},"output_token_limit":{"type":"integer"},"owned_by":{"type":"string"},"provider":{"type":"string"},"type":{"type":"string"}},"required":["id","provider"],"type":"object"},"type":"array"},"providers":{"items":{"additionalProperties":false,"properties":{"default_base_url":{"type":"string"},"dynamic_models":{"type":"boolean"},"provider":{"type":"string"},"requires_api_key":{"type":"boolean"}},"required":["provider","requires_api_key","dynamic_models"],"type":"object"},"type":"array"}},"required":["models","providers"],"type":"object"}`
-	configProposalSchema             = `{"additionalProperties":false,"properties":{"kind":{"enum":["mcp_server","skill"],"type":"string"},"mcp_server":{"additionalProperties":true,"type":"object"},"skill":{"additionalProperties":true,"type":"object"}},"required":["kind"],"type":"object"}`
-	configProposalResultSchema       = `{"additionalProperties":false,"properties":{"config_patch":{"additionalProperties":true,"type":"object"},"requires_confirmation":{"const":true,"type":"boolean"}},"required":["requires_confirmation","config_patch"],"type":"object"}`
 	nativeConfigGetSchema            = `{"additionalProperties":false,"properties":{},"type":"object"}`
 	nativeConfigUpdateSchema         = `{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"context_window":{"maximum":4194304,"minimum":1,"type":"integer"},"display_name":{"type":"string"},"enabled":{"type":"boolean"},"expected_revision":{"minimum":0,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"mcp_blocked_room_ids":{"items":{"type":"string"},"maxItems":512,"type":"array"},"model":{"type":"string"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"type":"object"},"system_prompt":{"type":"string"}},"required":["idempotency_key"],"type":"object"}`
 	nativeConfigResultSchema         = `{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"context_window":{"type":"integer"},"display_name":{"type":"string"},"enabled":{"type":"boolean"},"mcp_blocked_room_ids":{"items":{"type":"string"},"type":"array"},"model":{"type":"string"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"required":["display_name","avatar_url"],"type":"object"},"revision":{"type":"integer"},"system_prompt":{"type":"string"}},"required":["revision","display_name","avatar_url","native_agent_identity","context_window","enabled","model","system_prompt","mcp_blocked_room_ids"],"type":"object"}`

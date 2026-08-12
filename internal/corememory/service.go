@@ -132,6 +132,8 @@ var ErrInvalid = errors.New("core memory input is invalid")
 type Store interface {
 	GetConfig(context.Context) (Config, error)
 	UpdateConfig(context.Context, ConfigMutation) (Config, error)
+	UpdateFact(context.Context, FactMutation) (Fact, error)
+	DeleteFact(context.Context, FactMutation) (FactDeletion, error)
 	Status(context.Context, int, int) (Status, error)
 	ClaimObservation(context.Context, time.Time, time.Duration) (ObservationLease, bool, error)
 	ListActiveFacts(context.Context, int) ([]Fact, error)

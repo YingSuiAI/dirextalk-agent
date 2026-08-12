@@ -110,8 +110,11 @@ func TestCoreV1ServiceDescriptorsAndPrivacy(t *testing.T) {
 	if cloud.Methods().ByName("TestCredential") != nil {
 		t.Fatal("legacy TestCredential alias must not be exposed")
 	}
-	if cloud.Methods().ByName("TestCredentialIdentity") == nil {
-		t.Fatal("TestCredentialIdentity must remain exposed")
+	if cloud.Methods().ByName("TestCredentialIdentity") != nil {
+		t.Fatal("legacy TestCredentialIdentity must not be exposed")
+	}
+	if cloud.Methods().ByName("GetChangeStatus") != nil {
+		t.Fatal("duplicate GetChangeStatus must not be exposed")
 	}
 	for _, req := range []protoreflect.MessageDescriptor{(&agentv1.ConversationServiceChatRequest{}).ProtoReflect().Descriptor(), (&agentv1.ConversationServiceStreamChatRequest{}).ProtoReflect().Descriptor()} {
 		if req.Fields().ByName("extensions") == nil || req.Fields().ByName("mcp_server_ids") != nil || req.Fields().ByName("skill_ids") != nil {

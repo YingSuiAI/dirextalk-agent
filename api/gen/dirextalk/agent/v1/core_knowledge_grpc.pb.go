@@ -23,7 +23,6 @@ const (
 	CoreKnowledgeService_Upload_FullMethodName       = "/dirextalk.agent.v1.CoreKnowledgeService/Upload"
 	CoreKnowledgeService_CommitUpload_FullMethodName = "/dirextalk.agent.v1.CoreKnowledgeService/CommitUpload"
 	CoreKnowledgeService_AbortUpload_FullMethodName  = "/dirextalk.agent.v1.CoreKnowledgeService/AbortUpload"
-	CoreKnowledgeService_CreateMemory_FullMethodName = "/dirextalk.agent.v1.CoreKnowledgeService/CreateMemory"
 	CoreKnowledgeService_ListSources_FullMethodName  = "/dirextalk.agent.v1.CoreKnowledgeService/ListSources"
 	CoreKnowledgeService_GetSource_FullMethodName    = "/dirextalk.agent.v1.CoreKnowledgeService/GetSource"
 	CoreKnowledgeService_DeleteSource_FullMethodName = "/dirextalk.agent.v1.CoreKnowledgeService/DeleteSource"
@@ -40,7 +39,6 @@ type CoreKnowledgeServiceClient interface {
 	Upload(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[CoreKnowledgeServiceUploadRequest, CoreKnowledgeServiceUploadResponse], error)
 	CommitUpload(ctx context.Context, in *CoreKnowledgeServiceCommitUploadRequest, opts ...grpc.CallOption) (*CoreKnowledgeServiceCommitUploadResponse, error)
 	AbortUpload(ctx context.Context, in *CoreKnowledgeServiceAbortUploadRequest, opts ...grpc.CallOption) (*CoreKnowledgeServiceAbortUploadResponse, error)
-	CreateMemory(ctx context.Context, in *CoreKnowledgeServiceCreateMemoryRequest, opts ...grpc.CallOption) (*CoreKnowledgeServiceCreateMemoryResponse, error)
 	ListSources(ctx context.Context, in *CoreKnowledgeServiceListSourcesRequest, opts ...grpc.CallOption) (*CoreKnowledgeServiceListSourcesResponse, error)
 	GetSource(ctx context.Context, in *CoreKnowledgeServiceGetSourceRequest, opts ...grpc.CallOption) (*CoreKnowledgeServiceGetSourceResponse, error)
 	DeleteSource(ctx context.Context, in *CoreKnowledgeServiceDeleteSourceRequest, opts ...grpc.CallOption) (*CoreKnowledgeServiceDeleteSourceResponse, error)
@@ -94,16 +92,6 @@ func (c *coreKnowledgeServiceClient) AbortUpload(ctx context.Context, in *CoreKn
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CoreKnowledgeServiceAbortUploadResponse)
 	err := c.cc.Invoke(ctx, CoreKnowledgeService_AbortUpload_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *coreKnowledgeServiceClient) CreateMemory(ctx context.Context, in *CoreKnowledgeServiceCreateMemoryRequest, opts ...grpc.CallOption) (*CoreKnowledgeServiceCreateMemoryResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreKnowledgeServiceCreateMemoryResponse)
-	err := c.cc.Invoke(ctx, CoreKnowledgeService_CreateMemory_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +166,6 @@ type CoreKnowledgeServiceServer interface {
 	Upload(grpc.ClientStreamingServer[CoreKnowledgeServiceUploadRequest, CoreKnowledgeServiceUploadResponse]) error
 	CommitUpload(context.Context, *CoreKnowledgeServiceCommitUploadRequest) (*CoreKnowledgeServiceCommitUploadResponse, error)
 	AbortUpload(context.Context, *CoreKnowledgeServiceAbortUploadRequest) (*CoreKnowledgeServiceAbortUploadResponse, error)
-	CreateMemory(context.Context, *CoreKnowledgeServiceCreateMemoryRequest) (*CoreKnowledgeServiceCreateMemoryResponse, error)
 	ListSources(context.Context, *CoreKnowledgeServiceListSourcesRequest) (*CoreKnowledgeServiceListSourcesResponse, error)
 	GetSource(context.Context, *CoreKnowledgeServiceGetSourceRequest) (*CoreKnowledgeServiceGetSourceResponse, error)
 	DeleteSource(context.Context, *CoreKnowledgeServiceDeleteSourceRequest) (*CoreKnowledgeServiceDeleteSourceResponse, error)
@@ -206,9 +193,6 @@ func (UnimplementedCoreKnowledgeServiceServer) CommitUpload(context.Context, *Co
 }
 func (UnimplementedCoreKnowledgeServiceServer) AbortUpload(context.Context, *CoreKnowledgeServiceAbortUploadRequest) (*CoreKnowledgeServiceAbortUploadResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AbortUpload not implemented")
-}
-func (UnimplementedCoreKnowledgeServiceServer) CreateMemory(context.Context, *CoreKnowledgeServiceCreateMemoryRequest) (*CoreKnowledgeServiceCreateMemoryResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method CreateMemory not implemented")
 }
 func (UnimplementedCoreKnowledgeServiceServer) ListSources(context.Context, *CoreKnowledgeServiceListSourcesRequest) (*CoreKnowledgeServiceListSourcesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListSources not implemented")
@@ -306,24 +290,6 @@ func _CoreKnowledgeService_AbortUpload_Handler(srv interface{}, ctx context.Cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(CoreKnowledgeServiceServer).AbortUpload(ctx, req.(*CoreKnowledgeServiceAbortUploadRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _CoreKnowledgeService_CreateMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreKnowledgeServiceCreateMemoryRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(CoreKnowledgeServiceServer).CreateMemory(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: CoreKnowledgeService_CreateMemory_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreKnowledgeServiceServer).CreateMemory(ctx, req.(*CoreKnowledgeServiceCreateMemoryRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -454,10 +420,6 @@ var CoreKnowledgeService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AbortUpload",
 			Handler:    _CoreKnowledgeService_AbortUpload_Handler,
-		},
-		{
-			MethodName: "CreateMemory",
-			Handler:    _CoreKnowledgeService_CreateMemory_Handler,
 		},
 		{
 			MethodName: "ListSources",

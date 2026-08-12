@@ -775,134 +775,6 @@ func (*CoreCloudControlServiceDeleteCredentialResponse) Descriptor() ([]byte, []
 	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{10}
 }
 
-type CoreCloudControlServiceTestCredentialIdentityRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CredentialId  string                 `protobuf:"bytes,1,opt,name=credential_id,json=credentialId,proto3" json:"credential_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityRequest) Reset() {
-	*x = CoreCloudControlServiceTestCredentialIdentityRequest{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[11]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CoreCloudControlServiceTestCredentialIdentityRequest) ProtoMessage() {}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[11]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CoreCloudControlServiceTestCredentialIdentityRequest.ProtoReflect.Descriptor instead.
-func (*CoreCloudControlServiceTestCredentialIdentityRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{11}
-}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityRequest) GetCredentialId() string {
-	if x != nil {
-		return x.CredentialId
-	}
-	return ""
-}
-
-type CoreCloudControlServiceTestCredentialIdentityResponse struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	CredentialId       string                 `protobuf:"bytes,1,opt,name=credential_id,json=credentialId,proto3" json:"credential_id,omitempty"`
-	AccountId          string                 `protobuf:"bytes,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
-	UserArn            string                 `protobuf:"bytes,3,opt,name=user_arn,json=userArn,proto3" json:"user_arn,omitempty"`
-	PrincipalId        string                 `protobuf:"bytes,4,opt,name=principal_id,json=principalId,proto3" json:"principal_id,omitempty"`
-	CredentialRevision int64                  `protobuf:"varint,5,opt,name=credential_revision,json=credentialRevision,proto3" json:"credential_revision,omitempty"`
-	TestedAt           *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=tested_at,json=testedAt,proto3" json:"tested_at,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
-}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityResponse) Reset() {
-	*x = CoreCloudControlServiceTestCredentialIdentityResponse{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[12]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CoreCloudControlServiceTestCredentialIdentityResponse) ProtoMessage() {}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[12]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CoreCloudControlServiceTestCredentialIdentityResponse.ProtoReflect.Descriptor instead.
-func (*CoreCloudControlServiceTestCredentialIdentityResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{12}
-}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityResponse) GetCredentialId() string {
-	if x != nil {
-		return x.CredentialId
-	}
-	return ""
-}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityResponse) GetAccountId() string {
-	if x != nil {
-		return x.AccountId
-	}
-	return ""
-}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityResponse) GetUserArn() string {
-	if x != nil {
-		return x.UserArn
-	}
-	return ""
-}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityResponse) GetPrincipalId() string {
-	if x != nil {
-		return x.PrincipalId
-	}
-	return ""
-}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityResponse) GetCredentialRevision() int64 {
-	if x != nil {
-		return x.CredentialRevision
-	}
-	return 0
-}
-
-func (x *CoreCloudControlServiceTestCredentialIdentityResponse) GetTestedAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.TestedAt
-	}
-	return nil
-}
-
 type CoreAWSPlan struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	PlanId         string                 `protobuf:"bytes,1,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
@@ -922,7 +794,7 @@ type CoreAWSPlan struct {
 
 func (x *CoreAWSPlan) Reset() {
 	*x = CoreAWSPlan{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[13]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -934,7 +806,7 @@ func (x *CoreAWSPlan) String() string {
 func (*CoreAWSPlan) ProtoMessage() {}
 
 func (x *CoreAWSPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[13]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -947,7 +819,7 @@ func (x *CoreAWSPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreAWSPlan.ProtoReflect.Descriptor instead.
 func (*CoreAWSPlan) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{13}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CoreAWSPlan) GetPlanId() string {
@@ -1044,7 +916,7 @@ type CoreCloudControlServiceCreatePlanRequest struct {
 
 func (x *CoreCloudControlServiceCreatePlanRequest) Reset() {
 	*x = CoreCloudControlServiceCreatePlanRequest{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[14]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1056,7 +928,7 @@ func (x *CoreCloudControlServiceCreatePlanRequest) String() string {
 func (*CoreCloudControlServiceCreatePlanRequest) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceCreatePlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[14]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1069,7 +941,7 @@ func (x *CoreCloudControlServiceCreatePlanRequest) ProtoReflect() protoreflect.M
 
 // Deprecated: Use CoreCloudControlServiceCreatePlanRequest.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceCreatePlanRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{14}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CoreCloudControlServiceCreatePlanRequest) GetIdempotencyKey() string {
@@ -1144,7 +1016,7 @@ type CoreCloudControlServiceCreatePlanResponse struct {
 
 func (x *CoreCloudControlServiceCreatePlanResponse) Reset() {
 	*x = CoreCloudControlServiceCreatePlanResponse{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[15]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1156,7 +1028,7 @@ func (x *CoreCloudControlServiceCreatePlanResponse) String() string {
 func (*CoreCloudControlServiceCreatePlanResponse) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceCreatePlanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[15]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1169,7 +1041,7 @@ func (x *CoreCloudControlServiceCreatePlanResponse) ProtoReflect() protoreflect.
 
 // Deprecated: Use CoreCloudControlServiceCreatePlanResponse.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceCreatePlanResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{15}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CoreCloudControlServiceCreatePlanResponse) GetPlan() *CoreAWSPlan {
@@ -1188,7 +1060,7 @@ type CoreCloudControlServiceGetPlanRequest struct {
 
 func (x *CoreCloudControlServiceGetPlanRequest) Reset() {
 	*x = CoreCloudControlServiceGetPlanRequest{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[16]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1200,7 +1072,7 @@ func (x *CoreCloudControlServiceGetPlanRequest) String() string {
 func (*CoreCloudControlServiceGetPlanRequest) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceGetPlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[16]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1213,7 +1085,7 @@ func (x *CoreCloudControlServiceGetPlanRequest) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use CoreCloudControlServiceGetPlanRequest.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceGetPlanRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{16}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CoreCloudControlServiceGetPlanRequest) GetPlanId() string {
@@ -1232,7 +1104,7 @@ type CoreCloudControlServiceGetPlanResponse struct {
 
 func (x *CoreCloudControlServiceGetPlanResponse) Reset() {
 	*x = CoreCloudControlServiceGetPlanResponse{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[17]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1244,7 +1116,7 @@ func (x *CoreCloudControlServiceGetPlanResponse) String() string {
 func (*CoreCloudControlServiceGetPlanResponse) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceGetPlanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[17]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1257,7 +1129,7 @@ func (x *CoreCloudControlServiceGetPlanResponse) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use CoreCloudControlServiceGetPlanResponse.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceGetPlanResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{17}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *CoreCloudControlServiceGetPlanResponse) GetPlan() *CoreAWSPlan {
@@ -1277,7 +1149,7 @@ type CoreCloudControlServiceListPlansRequest struct {
 
 func (x *CoreCloudControlServiceListPlansRequest) Reset() {
 	*x = CoreCloudControlServiceListPlansRequest{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[18]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1289,7 +1161,7 @@ func (x *CoreCloudControlServiceListPlansRequest) String() string {
 func (*CoreCloudControlServiceListPlansRequest) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceListPlansRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[18]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1302,7 +1174,7 @@ func (x *CoreCloudControlServiceListPlansRequest) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use CoreCloudControlServiceListPlansRequest.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceListPlansRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{18}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *CoreCloudControlServiceListPlansRequest) GetPageSize() int32 {
@@ -1329,7 +1201,7 @@ type CoreCloudControlServiceListPlansResponse struct {
 
 func (x *CoreCloudControlServiceListPlansResponse) Reset() {
 	*x = CoreCloudControlServiceListPlansResponse{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[19]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1341,7 +1213,7 @@ func (x *CoreCloudControlServiceListPlansResponse) String() string {
 func (*CoreCloudControlServiceListPlansResponse) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceListPlansResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[19]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1354,7 +1226,7 @@ func (x *CoreCloudControlServiceListPlansResponse) ProtoReflect() protoreflect.M
 
 // Deprecated: Use CoreCloudControlServiceListPlansResponse.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceListPlansResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{19}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CoreCloudControlServiceListPlansResponse) GetPlans() []*CoreAWSPlan {
@@ -1389,7 +1261,7 @@ type CoreAWSQuote struct {
 
 func (x *CoreAWSQuote) Reset() {
 	*x = CoreAWSQuote{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[20]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1401,7 +1273,7 @@ func (x *CoreAWSQuote) String() string {
 func (*CoreAWSQuote) ProtoMessage() {}
 
 func (x *CoreAWSQuote) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[20]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1414,7 +1286,7 @@ func (x *CoreAWSQuote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreAWSQuote.ProtoReflect.Descriptor instead.
 func (*CoreAWSQuote) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{20}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CoreAWSQuote) GetPlanId() string {
@@ -1496,7 +1368,7 @@ type CoreCloudControlServiceQuoteRequest struct {
 
 func (x *CoreCloudControlServiceQuoteRequest) Reset() {
 	*x = CoreCloudControlServiceQuoteRequest{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[21]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1508,7 +1380,7 @@ func (x *CoreCloudControlServiceQuoteRequest) String() string {
 func (*CoreCloudControlServiceQuoteRequest) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceQuoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[21]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1521,7 +1393,7 @@ func (x *CoreCloudControlServiceQuoteRequest) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use CoreCloudControlServiceQuoteRequest.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceQuoteRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{21}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CoreCloudControlServiceQuoteRequest) GetPlanId() string {
@@ -1540,7 +1412,7 @@ type CoreCloudControlServiceQuoteResponse struct {
 
 func (x *CoreCloudControlServiceQuoteResponse) Reset() {
 	*x = CoreCloudControlServiceQuoteResponse{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[22]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1552,7 +1424,7 @@ func (x *CoreCloudControlServiceQuoteResponse) String() string {
 func (*CoreCloudControlServiceQuoteResponse) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceQuoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[22]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1565,7 +1437,7 @@ func (x *CoreCloudControlServiceQuoteResponse) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use CoreCloudControlServiceQuoteResponse.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceQuoteResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{22}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CoreCloudControlServiceQuoteResponse) GetQuote() *CoreAWSQuote {
@@ -1598,7 +1470,7 @@ type CoreAWSChange struct {
 
 func (x *CoreAWSChange) Reset() {
 	*x = CoreAWSChange{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[23]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1610,7 +1482,7 @@ func (x *CoreAWSChange) String() string {
 func (*CoreAWSChange) ProtoMessage() {}
 
 func (x *CoreAWSChange) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[23]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1623,7 +1495,7 @@ func (x *CoreAWSChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreAWSChange.ProtoReflect.Descriptor instead.
 func (*CoreAWSChange) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{23}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *CoreAWSChange) GetChangeId() string {
@@ -1741,7 +1613,7 @@ type CoreCloudControlServiceRequestChangeRequest struct {
 
 func (x *CoreCloudControlServiceRequestChangeRequest) Reset() {
 	*x = CoreCloudControlServiceRequestChangeRequest{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[24]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1753,7 +1625,7 @@ func (x *CoreCloudControlServiceRequestChangeRequest) String() string {
 func (*CoreCloudControlServiceRequestChangeRequest) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceRequestChangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[24]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1766,7 +1638,7 @@ func (x *CoreCloudControlServiceRequestChangeRequest) ProtoReflect() protoreflec
 
 // Deprecated: Use CoreCloudControlServiceRequestChangeRequest.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceRequestChangeRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{24}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CoreCloudControlServiceRequestChangeRequest) GetIdempotencyKey() string {
@@ -1794,7 +1666,7 @@ type CoreCloudControlServiceRequestChangeResponse struct {
 
 func (x *CoreCloudControlServiceRequestChangeResponse) Reset() {
 	*x = CoreCloudControlServiceRequestChangeResponse{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[25]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1806,7 +1678,7 @@ func (x *CoreCloudControlServiceRequestChangeResponse) String() string {
 func (*CoreCloudControlServiceRequestChangeResponse) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceRequestChangeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[25]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1819,7 +1691,7 @@ func (x *CoreCloudControlServiceRequestChangeResponse) ProtoReflect() protorefle
 
 // Deprecated: Use CoreCloudControlServiceRequestChangeResponse.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceRequestChangeResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{25}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *CoreCloudControlServiceRequestChangeResponse) GetChange() *CoreAWSChange {
@@ -1852,7 +1724,7 @@ type CoreCloudControlServiceGetChangeRequest struct {
 
 func (x *CoreCloudControlServiceGetChangeRequest) Reset() {
 	*x = CoreCloudControlServiceGetChangeRequest{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[26]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1864,7 +1736,7 @@ func (x *CoreCloudControlServiceGetChangeRequest) String() string {
 func (*CoreCloudControlServiceGetChangeRequest) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceGetChangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[26]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1877,7 +1749,7 @@ func (x *CoreCloudControlServiceGetChangeRequest) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use CoreCloudControlServiceGetChangeRequest.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceGetChangeRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{26}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *CoreCloudControlServiceGetChangeRequest) GetChangeId() string {
@@ -1896,7 +1768,7 @@ type CoreCloudControlServiceGetChangeResponse struct {
 
 func (x *CoreCloudControlServiceGetChangeResponse) Reset() {
 	*x = CoreCloudControlServiceGetChangeResponse{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[27]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1908,7 +1780,7 @@ func (x *CoreCloudControlServiceGetChangeResponse) String() string {
 func (*CoreCloudControlServiceGetChangeResponse) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceGetChangeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[27]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1921,7 +1793,7 @@ func (x *CoreCloudControlServiceGetChangeResponse) ProtoReflect() protoreflect.M
 
 // Deprecated: Use CoreCloudControlServiceGetChangeResponse.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceGetChangeResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{27}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CoreCloudControlServiceGetChangeResponse) GetChange() *CoreAWSChange {
@@ -1942,7 +1814,7 @@ type CoreCloudControlServiceListChangesRequest struct {
 
 func (x *CoreCloudControlServiceListChangesRequest) Reset() {
 	*x = CoreCloudControlServiceListChangesRequest{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[28]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1954,7 +1826,7 @@ func (x *CoreCloudControlServiceListChangesRequest) String() string {
 func (*CoreCloudControlServiceListChangesRequest) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceListChangesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[28]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1967,7 +1839,7 @@ func (x *CoreCloudControlServiceListChangesRequest) ProtoReflect() protoreflect.
 
 // Deprecated: Use CoreCloudControlServiceListChangesRequest.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceListChangesRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{28}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CoreCloudControlServiceListChangesRequest) GetPageSize() int32 {
@@ -2001,7 +1873,7 @@ type CoreCloudControlServiceListChangesResponse struct {
 
 func (x *CoreCloudControlServiceListChangesResponse) Reset() {
 	*x = CoreCloudControlServiceListChangesResponse{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[29]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2013,7 +1885,7 @@ func (x *CoreCloudControlServiceListChangesResponse) String() string {
 func (*CoreCloudControlServiceListChangesResponse) ProtoMessage() {}
 
 func (x *CoreCloudControlServiceListChangesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[29]
+	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2026,7 +1898,7 @@ func (x *CoreCloudControlServiceListChangesResponse) ProtoReflect() protoreflect
 
 // Deprecated: Use CoreCloudControlServiceListChangesResponse.ProtoReflect.Descriptor instead.
 func (*CoreCloudControlServiceListChangesResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{29}
+	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *CoreCloudControlServiceListChangesResponse) GetChanges() []*CoreAWSChange {
@@ -2039,110 +1911,6 @@ func (x *CoreCloudControlServiceListChangesResponse) GetChanges() []*CoreAWSChan
 func (x *CoreCloudControlServiceListChangesResponse) GetNextPageToken() string {
 	if x != nil {
 		return x.NextPageToken
-	}
-	return ""
-}
-
-type CoreCloudControlServiceGetChangeStatusRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ChangeId      string                 `protobuf:"bytes,1,opt,name=change_id,json=changeId,proto3" json:"change_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CoreCloudControlServiceGetChangeStatusRequest) Reset() {
-	*x = CoreCloudControlServiceGetChangeStatusRequest{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[30]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CoreCloudControlServiceGetChangeStatusRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CoreCloudControlServiceGetChangeStatusRequest) ProtoMessage() {}
-
-func (x *CoreCloudControlServiceGetChangeStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[30]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CoreCloudControlServiceGetChangeStatusRequest.ProtoReflect.Descriptor instead.
-func (*CoreCloudControlServiceGetChangeStatusRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{30}
-}
-
-func (x *CoreCloudControlServiceGetChangeStatusRequest) GetChangeId() string {
-	if x != nil {
-		return x.ChangeId
-	}
-	return ""
-}
-
-type CoreCloudControlServiceGetChangeStatusResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Change        *CoreAWSChange         `protobuf:"bytes,1,opt,name=change,proto3" json:"change,omitempty"`
-	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
-	Stage         string                 `protobuf:"bytes,3,opt,name=stage,proto3" json:"stage,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CoreCloudControlServiceGetChangeStatusResponse) Reset() {
-	*x = CoreCloudControlServiceGetChangeStatusResponse{}
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[31]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CoreCloudControlServiceGetChangeStatusResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CoreCloudControlServiceGetChangeStatusResponse) ProtoMessage() {}
-
-func (x *CoreCloudControlServiceGetChangeStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_aws_proto_msgTypes[31]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CoreCloudControlServiceGetChangeStatusResponse.ProtoReflect.Descriptor instead.
-func (*CoreCloudControlServiceGetChangeStatusResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP(), []int{31}
-}
-
-func (x *CoreCloudControlServiceGetChangeStatusResponse) GetChange() *CoreAWSChange {
-	if x != nil {
-		return x.Change
-	}
-	return nil
-}
-
-func (x *CoreCloudControlServiceGetChangeStatusResponse) GetStatus() string {
-	if x != nil {
-		return x.Status
-	}
-	return ""
-}
-
-func (x *CoreCloudControlServiceGetChangeStatusResponse) GetStage() string {
-	if x != nil {
-		return x.Stage
 	}
 	return ""
 }
@@ -2211,17 +1979,7 @@ const file_dirextalk_agent_v1_core_aws_proto_rawDesc = "" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12#\n" +
 	"\rcredential_id\x18\x02 \x01(\tR\fcredentialId\x12+\n" +
 	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\"1\n" +
-	"/CoreCloudControlServiceDeleteCredentialResponse\"[\n" +
-	"4CoreCloudControlServiceTestCredentialIdentityRequest\x12#\n" +
-	"\rcredential_id\x18\x01 \x01(\tR\fcredentialId\"\xa3\x02\n" +
-	"5CoreCloudControlServiceTestCredentialIdentityResponse\x12#\n" +
-	"\rcredential_id\x18\x01 \x01(\tR\fcredentialId\x12\x1d\n" +
-	"\n" +
-	"account_id\x18\x02 \x01(\tR\taccountId\x12\x19\n" +
-	"\buser_arn\x18\x03 \x01(\tR\auserArn\x12!\n" +
-	"\fprincipal_id\x18\x04 \x01(\tR\vprincipalId\x12/\n" +
-	"\x13credential_revision\x18\x05 \x01(\x03R\x12credentialRevision\x127\n" +
-	"\ttested_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\btestedAt\"\xf2\x04\n" +
+	"/CoreCloudControlServiceDeleteCredentialResponse\"\xf2\x04\n" +
 	"\vCoreAWSPlan\x12\x17\n" +
 	"\aplan_id\x18\x01 \x01(\tR\x06planId\x12#\n" +
 	"\rcredential_id\x18\x02 \x01(\tR\fcredentialId\x12\x16\n" +
@@ -2333,25 +2091,18 @@ const file_dirextalk_agent_v1_core_aws_proto_rawDesc = "" +
 	"\aplan_id\x18\x03 \x01(\tR\x06planId\"\x91\x01\n" +
 	"*CoreCloudControlServiceListChangesResponse\x12;\n" +
 	"\achanges\x18\x01 \x03(\v2!.dirextalk.agent.v1.CoreAWSChangeR\achanges\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"L\n" +
-	"-CoreCloudControlServiceGetChangeStatusRequest\x12\x1b\n" +
-	"\tchange_id\x18\x01 \x01(\tR\bchangeId\"\x99\x01\n" +
-	".CoreCloudControlServiceGetChangeStatusResponse\x129\n" +
-	"\x06change\x18\x01 \x01(\v2!.dirextalk.agent.v1.CoreAWSChangeR\x06change\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\x12\x14\n" +
-	"\x05stage\x18\x03 \x01(\tR\x05stage*\x93\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken*\x93\x01\n" +
 	"\x10CoreAWSOperation\x12\"\n" +
 	"\x1eCORE_AWS_OPERATION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19CORE_AWS_OPERATION_CREATE\x10\x01\x12\x1d\n" +
 	"\x19CORE_AWS_OPERATION_UPDATE\x10\x02\x12\x1d\n" +
-	"\x19CORE_AWS_OPERATION_DELETE\x10\x032\xaf\x10\n" +
+	"\x19CORE_AWS_OPERATION_DELETE\x10\x032\xe4\r\n" +
 	"\x17CoreCloudControlService\x12\x9b\x01\n" +
 	"\x10CreateCredential\x12B.dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialRequest\x1aC.dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialResponse\x12\x92\x01\n" +
 	"\rGetCredential\x12?.dirextalk.agent.v1.CoreCloudControlServiceGetCredentialRequest\x1a@.dirextalk.agent.v1.CoreCloudControlServiceGetCredentialResponse\x12\x98\x01\n" +
 	"\x0fListCredentials\x12A.dirextalk.agent.v1.CoreCloudControlServiceListCredentialsRequest\x1aB.dirextalk.agent.v1.CoreCloudControlServiceListCredentialsResponse\x12\x9b\x01\n" +
 	"\x10UpdateCredential\x12B.dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialRequest\x1aC.dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialResponse\x12\x9b\x01\n" +
-	"\x10DeleteCredential\x12B.dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialRequest\x1aC.dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialResponse\x12\xad\x01\n" +
-	"\x16TestCredentialIdentity\x12H.dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityRequest\x1aI.dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityResponse\x12\x89\x01\n" +
+	"\x10DeleteCredential\x12B.dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialRequest\x1aC.dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialResponse\x12\x89\x01\n" +
 	"\n" +
 	"CreatePlan\x12<.dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest\x1a=.dirextalk.agent.v1.CoreCloudControlServiceCreatePlanResponse\x12\x80\x01\n" +
 	"\aGetPlan\x129.dirextalk.agent.v1.CoreCloudControlServiceGetPlanRequest\x1a:.dirextalk.agent.v1.CoreCloudControlServiceGetPlanResponse\x12\x86\x01\n" +
@@ -2359,8 +2110,7 @@ const file_dirextalk_agent_v1_core_aws_proto_rawDesc = "" +
 	"\x05Quote\x127.dirextalk.agent.v1.CoreCloudControlServiceQuoteRequest\x1a8.dirextalk.agent.v1.CoreCloudControlServiceQuoteResponse\x12\x92\x01\n" +
 	"\rRequestChange\x12?.dirextalk.agent.v1.CoreCloudControlServiceRequestChangeRequest\x1a@.dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse\x12\x86\x01\n" +
 	"\tGetChange\x12;.dirextalk.agent.v1.CoreCloudControlServiceGetChangeRequest\x1a<.dirextalk.agent.v1.CoreCloudControlServiceGetChangeResponse\x12\x8c\x01\n" +
-	"\vListChanges\x12=.dirextalk.agent.v1.CoreCloudControlServiceListChangesRequest\x1a>.dirextalk.agent.v1.CoreCloudControlServiceListChangesResponse\x12\x98\x01\n" +
-	"\x0fGetChangeStatus\x12A.dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusRequest\x1aB.dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusResponseBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
+	"\vListChanges\x12=.dirextalk.agent.v1.CoreCloudControlServiceListChangesRequest\x1a>.dirextalk.agent.v1.CoreCloudControlServiceListChangesResponseBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
 
 var (
 	file_dirextalk_agent_v1_core_aws_proto_rawDescOnce sync.Once
@@ -2375,110 +2125,100 @@ func file_dirextalk_agent_v1_core_aws_proto_rawDescGZIP() []byte {
 }
 
 var file_dirextalk_agent_v1_core_aws_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_dirextalk_agent_v1_core_aws_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
+var file_dirextalk_agent_v1_core_aws_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_dirextalk_agent_v1_core_aws_proto_goTypes = []any{
-	(CoreAWSOperation)(0),                                         // 0: dirextalk.agent.v1.CoreAWSOperation
-	(*CoreAWSCredential)(nil),                                     // 1: dirextalk.agent.v1.CoreAWSCredential
-	(*CoreCloudControlServiceCreateCredentialRequest)(nil),        // 2: dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialRequest
-	(*CoreCloudControlServiceCreateCredentialResponse)(nil),       // 3: dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialResponse
-	(*CoreCloudControlServiceGetCredentialRequest)(nil),           // 4: dirextalk.agent.v1.CoreCloudControlServiceGetCredentialRequest
-	(*CoreCloudControlServiceGetCredentialResponse)(nil),          // 5: dirextalk.agent.v1.CoreCloudControlServiceGetCredentialResponse
-	(*CoreCloudControlServiceListCredentialsRequest)(nil),         // 6: dirextalk.agent.v1.CoreCloudControlServiceListCredentialsRequest
-	(*CoreCloudControlServiceListCredentialsResponse)(nil),        // 7: dirextalk.agent.v1.CoreCloudControlServiceListCredentialsResponse
-	(*CoreCloudControlServiceUpdateCredentialRequest)(nil),        // 8: dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialRequest
-	(*CoreCloudControlServiceUpdateCredentialResponse)(nil),       // 9: dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialResponse
-	(*CoreCloudControlServiceDeleteCredentialRequest)(nil),        // 10: dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialRequest
-	(*CoreCloudControlServiceDeleteCredentialResponse)(nil),       // 11: dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialResponse
-	(*CoreCloudControlServiceTestCredentialIdentityRequest)(nil),  // 12: dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityRequest
-	(*CoreCloudControlServiceTestCredentialIdentityResponse)(nil), // 13: dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityResponse
-	(*CoreAWSPlan)(nil), // 14: dirextalk.agent.v1.CoreAWSPlan
-	(*CoreCloudControlServiceCreatePlanRequest)(nil),       // 15: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest
-	(*CoreCloudControlServiceCreatePlanResponse)(nil),      // 16: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanResponse
-	(*CoreCloudControlServiceGetPlanRequest)(nil),          // 17: dirextalk.agent.v1.CoreCloudControlServiceGetPlanRequest
-	(*CoreCloudControlServiceGetPlanResponse)(nil),         // 18: dirextalk.agent.v1.CoreCloudControlServiceGetPlanResponse
-	(*CoreCloudControlServiceListPlansRequest)(nil),        // 19: dirextalk.agent.v1.CoreCloudControlServiceListPlansRequest
-	(*CoreCloudControlServiceListPlansResponse)(nil),       // 20: dirextalk.agent.v1.CoreCloudControlServiceListPlansResponse
-	(*CoreAWSQuote)(nil),                                   // 21: dirextalk.agent.v1.CoreAWSQuote
-	(*CoreCloudControlServiceQuoteRequest)(nil),            // 22: dirextalk.agent.v1.CoreCloudControlServiceQuoteRequest
-	(*CoreCloudControlServiceQuoteResponse)(nil),           // 23: dirextalk.agent.v1.CoreCloudControlServiceQuoteResponse
-	(*CoreAWSChange)(nil),                                  // 24: dirextalk.agent.v1.CoreAWSChange
-	(*CoreCloudControlServiceRequestChangeRequest)(nil),    // 25: dirextalk.agent.v1.CoreCloudControlServiceRequestChangeRequest
-	(*CoreCloudControlServiceRequestChangeResponse)(nil),   // 26: dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse
-	(*CoreCloudControlServiceGetChangeRequest)(nil),        // 27: dirextalk.agent.v1.CoreCloudControlServiceGetChangeRequest
-	(*CoreCloudControlServiceGetChangeResponse)(nil),       // 28: dirextalk.agent.v1.CoreCloudControlServiceGetChangeResponse
-	(*CoreCloudControlServiceListChangesRequest)(nil),      // 29: dirextalk.agent.v1.CoreCloudControlServiceListChangesRequest
-	(*CoreCloudControlServiceListChangesResponse)(nil),     // 30: dirextalk.agent.v1.CoreCloudControlServiceListChangesResponse
-	(*CoreCloudControlServiceGetChangeStatusRequest)(nil),  // 31: dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusRequest
-	(*CoreCloudControlServiceGetChangeStatusResponse)(nil), // 32: dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusResponse
-	nil,                           // 33: dirextalk.agent.v1.CoreAWSPlan.ParametersEntry
-	nil,                           // 34: dirextalk.agent.v1.CoreAWSPlan.TagsEntry
-	nil,                           // 35: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.ParametersEntry
-	nil,                           // 36: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.TagsEntry
-	(*timestamppb.Timestamp)(nil), // 37: google.protobuf.Timestamp
-	(*CoreConfirmation)(nil),      // 38: dirextalk.agent.v1.CoreConfirmation
+	(CoreAWSOperation)(0),                                   // 0: dirextalk.agent.v1.CoreAWSOperation
+	(*CoreAWSCredential)(nil),                               // 1: dirextalk.agent.v1.CoreAWSCredential
+	(*CoreCloudControlServiceCreateCredentialRequest)(nil),  // 2: dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialRequest
+	(*CoreCloudControlServiceCreateCredentialResponse)(nil), // 3: dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialResponse
+	(*CoreCloudControlServiceGetCredentialRequest)(nil),     // 4: dirextalk.agent.v1.CoreCloudControlServiceGetCredentialRequest
+	(*CoreCloudControlServiceGetCredentialResponse)(nil),    // 5: dirextalk.agent.v1.CoreCloudControlServiceGetCredentialResponse
+	(*CoreCloudControlServiceListCredentialsRequest)(nil),   // 6: dirextalk.agent.v1.CoreCloudControlServiceListCredentialsRequest
+	(*CoreCloudControlServiceListCredentialsResponse)(nil),  // 7: dirextalk.agent.v1.CoreCloudControlServiceListCredentialsResponse
+	(*CoreCloudControlServiceUpdateCredentialRequest)(nil),  // 8: dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialRequest
+	(*CoreCloudControlServiceUpdateCredentialResponse)(nil), // 9: dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialResponse
+	(*CoreCloudControlServiceDeleteCredentialRequest)(nil),  // 10: dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialRequest
+	(*CoreCloudControlServiceDeleteCredentialResponse)(nil), // 11: dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialResponse
+	(*CoreAWSPlan)(nil),                                     // 12: dirextalk.agent.v1.CoreAWSPlan
+	(*CoreCloudControlServiceCreatePlanRequest)(nil),        // 13: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest
+	(*CoreCloudControlServiceCreatePlanResponse)(nil),       // 14: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanResponse
+	(*CoreCloudControlServiceGetPlanRequest)(nil),           // 15: dirextalk.agent.v1.CoreCloudControlServiceGetPlanRequest
+	(*CoreCloudControlServiceGetPlanResponse)(nil),          // 16: dirextalk.agent.v1.CoreCloudControlServiceGetPlanResponse
+	(*CoreCloudControlServiceListPlansRequest)(nil),         // 17: dirextalk.agent.v1.CoreCloudControlServiceListPlansRequest
+	(*CoreCloudControlServiceListPlansResponse)(nil),        // 18: dirextalk.agent.v1.CoreCloudControlServiceListPlansResponse
+	(*CoreAWSQuote)(nil),                                    // 19: dirextalk.agent.v1.CoreAWSQuote
+	(*CoreCloudControlServiceQuoteRequest)(nil),             // 20: dirextalk.agent.v1.CoreCloudControlServiceQuoteRequest
+	(*CoreCloudControlServiceQuoteResponse)(nil),            // 21: dirextalk.agent.v1.CoreCloudControlServiceQuoteResponse
+	(*CoreAWSChange)(nil),                                   // 22: dirextalk.agent.v1.CoreAWSChange
+	(*CoreCloudControlServiceRequestChangeRequest)(nil),     // 23: dirextalk.agent.v1.CoreCloudControlServiceRequestChangeRequest
+	(*CoreCloudControlServiceRequestChangeResponse)(nil),    // 24: dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse
+	(*CoreCloudControlServiceGetChangeRequest)(nil),         // 25: dirextalk.agent.v1.CoreCloudControlServiceGetChangeRequest
+	(*CoreCloudControlServiceGetChangeResponse)(nil),        // 26: dirextalk.agent.v1.CoreCloudControlServiceGetChangeResponse
+	(*CoreCloudControlServiceListChangesRequest)(nil),       // 27: dirextalk.agent.v1.CoreCloudControlServiceListChangesRequest
+	(*CoreCloudControlServiceListChangesResponse)(nil),      // 28: dirextalk.agent.v1.CoreCloudControlServiceListChangesResponse
+	nil,                           // 29: dirextalk.agent.v1.CoreAWSPlan.ParametersEntry
+	nil,                           // 30: dirextalk.agent.v1.CoreAWSPlan.TagsEntry
+	nil,                           // 31: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.ParametersEntry
+	nil,                           // 32: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.TagsEntry
+	(*timestamppb.Timestamp)(nil), // 33: google.protobuf.Timestamp
+	(*CoreConfirmation)(nil),      // 34: dirextalk.agent.v1.CoreConfirmation
 }
 var file_dirextalk_agent_v1_core_aws_proto_depIdxs = []int32{
-	37, // 0: dirextalk.agent.v1.CoreAWSCredential.created_at:type_name -> google.protobuf.Timestamp
-	37, // 1: dirextalk.agent.v1.CoreAWSCredential.updated_at:type_name -> google.protobuf.Timestamp
-	37, // 2: dirextalk.agent.v1.CoreAWSCredential.tested_at:type_name -> google.protobuf.Timestamp
+	33, // 0: dirextalk.agent.v1.CoreAWSCredential.created_at:type_name -> google.protobuf.Timestamp
+	33, // 1: dirextalk.agent.v1.CoreAWSCredential.updated_at:type_name -> google.protobuf.Timestamp
+	33, // 2: dirextalk.agent.v1.CoreAWSCredential.tested_at:type_name -> google.protobuf.Timestamp
 	1,  // 3: dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialResponse.credential:type_name -> dirextalk.agent.v1.CoreAWSCredential
 	1,  // 4: dirextalk.agent.v1.CoreCloudControlServiceGetCredentialResponse.credential:type_name -> dirextalk.agent.v1.CoreAWSCredential
 	1,  // 5: dirextalk.agent.v1.CoreCloudControlServiceListCredentialsResponse.credentials:type_name -> dirextalk.agent.v1.CoreAWSCredential
 	1,  // 6: dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialResponse.credential:type_name -> dirextalk.agent.v1.CoreAWSCredential
-	37, // 7: dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityResponse.tested_at:type_name -> google.protobuf.Timestamp
-	0,  // 8: dirextalk.agent.v1.CoreAWSPlan.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
-	33, // 9: dirextalk.agent.v1.CoreAWSPlan.parameters:type_name -> dirextalk.agent.v1.CoreAWSPlan.ParametersEntry
-	34, // 10: dirextalk.agent.v1.CoreAWSPlan.tags:type_name -> dirextalk.agent.v1.CoreAWSPlan.TagsEntry
-	37, // 11: dirextalk.agent.v1.CoreAWSPlan.created_at:type_name -> google.protobuf.Timestamp
-	0,  // 12: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
-	35, // 13: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.parameters:type_name -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.ParametersEntry
-	36, // 14: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.tags:type_name -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.TagsEntry
-	14, // 15: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanResponse.plan:type_name -> dirextalk.agent.v1.CoreAWSPlan
-	14, // 16: dirextalk.agent.v1.CoreCloudControlServiceGetPlanResponse.plan:type_name -> dirextalk.agent.v1.CoreAWSPlan
-	14, // 17: dirextalk.agent.v1.CoreCloudControlServiceListPlansResponse.plans:type_name -> dirextalk.agent.v1.CoreAWSPlan
-	0,  // 18: dirextalk.agent.v1.CoreAWSQuote.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
-	21, // 19: dirextalk.agent.v1.CoreCloudControlServiceQuoteResponse.quote:type_name -> dirextalk.agent.v1.CoreAWSQuote
-	0,  // 20: dirextalk.agent.v1.CoreAWSChange.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
-	37, // 21: dirextalk.agent.v1.CoreAWSChange.created_at:type_name -> google.protobuf.Timestamp
-	37, // 22: dirextalk.agent.v1.CoreAWSChange.updated_at:type_name -> google.protobuf.Timestamp
-	24, // 23: dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse.change:type_name -> dirextalk.agent.v1.CoreAWSChange
-	38, // 24: dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse.confirmation:type_name -> dirextalk.agent.v1.CoreConfirmation
-	24, // 25: dirextalk.agent.v1.CoreCloudControlServiceGetChangeResponse.change:type_name -> dirextalk.agent.v1.CoreAWSChange
-	24, // 26: dirextalk.agent.v1.CoreCloudControlServiceListChangesResponse.changes:type_name -> dirextalk.agent.v1.CoreAWSChange
-	24, // 27: dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusResponse.change:type_name -> dirextalk.agent.v1.CoreAWSChange
-	2,  // 28: dirextalk.agent.v1.CoreCloudControlService.CreateCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialRequest
-	4,  // 29: dirextalk.agent.v1.CoreCloudControlService.GetCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetCredentialRequest
-	6,  // 30: dirextalk.agent.v1.CoreCloudControlService.ListCredentials:input_type -> dirextalk.agent.v1.CoreCloudControlServiceListCredentialsRequest
-	8,  // 31: dirextalk.agent.v1.CoreCloudControlService.UpdateCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialRequest
-	10, // 32: dirextalk.agent.v1.CoreCloudControlService.DeleteCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialRequest
-	12, // 33: dirextalk.agent.v1.CoreCloudControlService.TestCredentialIdentity:input_type -> dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityRequest
-	15, // 34: dirextalk.agent.v1.CoreCloudControlService.CreatePlan:input_type -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest
-	17, // 35: dirextalk.agent.v1.CoreCloudControlService.GetPlan:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetPlanRequest
-	19, // 36: dirextalk.agent.v1.CoreCloudControlService.ListPlans:input_type -> dirextalk.agent.v1.CoreCloudControlServiceListPlansRequest
-	22, // 37: dirextalk.agent.v1.CoreCloudControlService.Quote:input_type -> dirextalk.agent.v1.CoreCloudControlServiceQuoteRequest
-	25, // 38: dirextalk.agent.v1.CoreCloudControlService.RequestChange:input_type -> dirextalk.agent.v1.CoreCloudControlServiceRequestChangeRequest
-	27, // 39: dirextalk.agent.v1.CoreCloudControlService.GetChange:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeRequest
-	29, // 40: dirextalk.agent.v1.CoreCloudControlService.ListChanges:input_type -> dirextalk.agent.v1.CoreCloudControlServiceListChangesRequest
-	31, // 41: dirextalk.agent.v1.CoreCloudControlService.GetChangeStatus:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusRequest
-	3,  // 42: dirextalk.agent.v1.CoreCloudControlService.CreateCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialResponse
-	5,  // 43: dirextalk.agent.v1.CoreCloudControlService.GetCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetCredentialResponse
-	7,  // 44: dirextalk.agent.v1.CoreCloudControlService.ListCredentials:output_type -> dirextalk.agent.v1.CoreCloudControlServiceListCredentialsResponse
-	9,  // 45: dirextalk.agent.v1.CoreCloudControlService.UpdateCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialResponse
-	11, // 46: dirextalk.agent.v1.CoreCloudControlService.DeleteCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialResponse
-	13, // 47: dirextalk.agent.v1.CoreCloudControlService.TestCredentialIdentity:output_type -> dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityResponse
-	16, // 48: dirextalk.agent.v1.CoreCloudControlService.CreatePlan:output_type -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanResponse
-	18, // 49: dirextalk.agent.v1.CoreCloudControlService.GetPlan:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetPlanResponse
-	20, // 50: dirextalk.agent.v1.CoreCloudControlService.ListPlans:output_type -> dirextalk.agent.v1.CoreCloudControlServiceListPlansResponse
-	23, // 51: dirextalk.agent.v1.CoreCloudControlService.Quote:output_type -> dirextalk.agent.v1.CoreCloudControlServiceQuoteResponse
-	26, // 52: dirextalk.agent.v1.CoreCloudControlService.RequestChange:output_type -> dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse
-	28, // 53: dirextalk.agent.v1.CoreCloudControlService.GetChange:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeResponse
-	30, // 54: dirextalk.agent.v1.CoreCloudControlService.ListChanges:output_type -> dirextalk.agent.v1.CoreCloudControlServiceListChangesResponse
-	32, // 55: dirextalk.agent.v1.CoreCloudControlService.GetChangeStatus:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusResponse
-	42, // [42:56] is the sub-list for method output_type
-	28, // [28:42] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	0,  // 7: dirextalk.agent.v1.CoreAWSPlan.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
+	29, // 8: dirextalk.agent.v1.CoreAWSPlan.parameters:type_name -> dirextalk.agent.v1.CoreAWSPlan.ParametersEntry
+	30, // 9: dirextalk.agent.v1.CoreAWSPlan.tags:type_name -> dirextalk.agent.v1.CoreAWSPlan.TagsEntry
+	33, // 10: dirextalk.agent.v1.CoreAWSPlan.created_at:type_name -> google.protobuf.Timestamp
+	0,  // 11: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
+	31, // 12: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.parameters:type_name -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.ParametersEntry
+	32, // 13: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.tags:type_name -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.TagsEntry
+	12, // 14: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanResponse.plan:type_name -> dirextalk.agent.v1.CoreAWSPlan
+	12, // 15: dirextalk.agent.v1.CoreCloudControlServiceGetPlanResponse.plan:type_name -> dirextalk.agent.v1.CoreAWSPlan
+	12, // 16: dirextalk.agent.v1.CoreCloudControlServiceListPlansResponse.plans:type_name -> dirextalk.agent.v1.CoreAWSPlan
+	0,  // 17: dirextalk.agent.v1.CoreAWSQuote.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
+	19, // 18: dirextalk.agent.v1.CoreCloudControlServiceQuoteResponse.quote:type_name -> dirextalk.agent.v1.CoreAWSQuote
+	0,  // 19: dirextalk.agent.v1.CoreAWSChange.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
+	33, // 20: dirextalk.agent.v1.CoreAWSChange.created_at:type_name -> google.protobuf.Timestamp
+	33, // 21: dirextalk.agent.v1.CoreAWSChange.updated_at:type_name -> google.protobuf.Timestamp
+	22, // 22: dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse.change:type_name -> dirextalk.agent.v1.CoreAWSChange
+	34, // 23: dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse.confirmation:type_name -> dirextalk.agent.v1.CoreConfirmation
+	22, // 24: dirextalk.agent.v1.CoreCloudControlServiceGetChangeResponse.change:type_name -> dirextalk.agent.v1.CoreAWSChange
+	22, // 25: dirextalk.agent.v1.CoreCloudControlServiceListChangesResponse.changes:type_name -> dirextalk.agent.v1.CoreAWSChange
+	2,  // 26: dirextalk.agent.v1.CoreCloudControlService.CreateCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialRequest
+	4,  // 27: dirextalk.agent.v1.CoreCloudControlService.GetCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetCredentialRequest
+	6,  // 28: dirextalk.agent.v1.CoreCloudControlService.ListCredentials:input_type -> dirextalk.agent.v1.CoreCloudControlServiceListCredentialsRequest
+	8,  // 29: dirextalk.agent.v1.CoreCloudControlService.UpdateCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialRequest
+	10, // 30: dirextalk.agent.v1.CoreCloudControlService.DeleteCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialRequest
+	13, // 31: dirextalk.agent.v1.CoreCloudControlService.CreatePlan:input_type -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest
+	15, // 32: dirextalk.agent.v1.CoreCloudControlService.GetPlan:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetPlanRequest
+	17, // 33: dirextalk.agent.v1.CoreCloudControlService.ListPlans:input_type -> dirextalk.agent.v1.CoreCloudControlServiceListPlansRequest
+	20, // 34: dirextalk.agent.v1.CoreCloudControlService.Quote:input_type -> dirextalk.agent.v1.CoreCloudControlServiceQuoteRequest
+	23, // 35: dirextalk.agent.v1.CoreCloudControlService.RequestChange:input_type -> dirextalk.agent.v1.CoreCloudControlServiceRequestChangeRequest
+	25, // 36: dirextalk.agent.v1.CoreCloudControlService.GetChange:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeRequest
+	27, // 37: dirextalk.agent.v1.CoreCloudControlService.ListChanges:input_type -> dirextalk.agent.v1.CoreCloudControlServiceListChangesRequest
+	3,  // 38: dirextalk.agent.v1.CoreCloudControlService.CreateCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialResponse
+	5,  // 39: dirextalk.agent.v1.CoreCloudControlService.GetCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetCredentialResponse
+	7,  // 40: dirextalk.agent.v1.CoreCloudControlService.ListCredentials:output_type -> dirextalk.agent.v1.CoreCloudControlServiceListCredentialsResponse
+	9,  // 41: dirextalk.agent.v1.CoreCloudControlService.UpdateCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialResponse
+	11, // 42: dirextalk.agent.v1.CoreCloudControlService.DeleteCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialResponse
+	14, // 43: dirextalk.agent.v1.CoreCloudControlService.CreatePlan:output_type -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanResponse
+	16, // 44: dirextalk.agent.v1.CoreCloudControlService.GetPlan:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetPlanResponse
+	18, // 45: dirextalk.agent.v1.CoreCloudControlService.ListPlans:output_type -> dirextalk.agent.v1.CoreCloudControlServiceListPlansResponse
+	21, // 46: dirextalk.agent.v1.CoreCloudControlService.Quote:output_type -> dirextalk.agent.v1.CoreCloudControlServiceQuoteResponse
+	24, // 47: dirextalk.agent.v1.CoreCloudControlService.RequestChange:output_type -> dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse
+	26, // 48: dirextalk.agent.v1.CoreCloudControlService.GetChange:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeResponse
+	28, // 49: dirextalk.agent.v1.CoreCloudControlService.ListChanges:output_type -> dirextalk.agent.v1.CoreCloudControlServiceListChangesResponse
+	38, // [38:50] is the sub-list for method output_type
+	26, // [26:38] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_core_aws_proto_init() }
@@ -2493,7 +2233,7 @@ func file_dirextalk_agent_v1_core_aws_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_core_aws_proto_rawDesc), len(file_dirextalk_agent_v1_core_aws_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   36,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

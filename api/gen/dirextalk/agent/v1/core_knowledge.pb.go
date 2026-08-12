@@ -28,7 +28,6 @@ const (
 	CoreKnowledgeSourceKind_CORE_KNOWLEDGE_SOURCE_KIND_UNSPECIFIED CoreKnowledgeSourceKind = 0
 	CoreKnowledgeSourceKind_CORE_KNOWLEDGE_SOURCE_KIND_MOUNT       CoreKnowledgeSourceKind = 1
 	CoreKnowledgeSourceKind_CORE_KNOWLEDGE_SOURCE_KIND_UPLOAD      CoreKnowledgeSourceKind = 2
-	CoreKnowledgeSourceKind_CORE_KNOWLEDGE_SOURCE_KIND_MEMORY      CoreKnowledgeSourceKind = 3
 )
 
 // Enum value maps for CoreKnowledgeSourceKind.
@@ -37,13 +36,11 @@ var (
 		0: "CORE_KNOWLEDGE_SOURCE_KIND_UNSPECIFIED",
 		1: "CORE_KNOWLEDGE_SOURCE_KIND_MOUNT",
 		2: "CORE_KNOWLEDGE_SOURCE_KIND_UPLOAD",
-		3: "CORE_KNOWLEDGE_SOURCE_KIND_MEMORY",
 	}
 	CoreKnowledgeSourceKind_value = map[string]int32{
 		"CORE_KNOWLEDGE_SOURCE_KIND_UNSPECIFIED": 0,
 		"CORE_KNOWLEDGE_SOURCE_KIND_MOUNT":       1,
 		"CORE_KNOWLEDGE_SOURCE_KIND_UPLOAD":      2,
-		"CORE_KNOWLEDGE_SOURCE_KIND_MEMORY":      3,
 	}
 )
 
@@ -1076,134 +1073,6 @@ func (*CoreKnowledgeServiceAbortUploadResponse) Descriptor() ([]byte, []int) {
 	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{12}
 }
 
-type CoreKnowledgeServiceCreateMemoryRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	IdempotencyKey string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	SourceId       string                 `protobuf:"bytes,2,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
-	Title          string                 `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
-	Content        string                 `protobuf:"bytes,4,opt,name=content,proto3" json:"content,omitempty"`
-	ContentSha256  string                 `protobuf:"bytes,5,opt,name=content_sha256,json=contentSha256,proto3" json:"content_sha256,omitempty"`
-	MediaType      string                 `protobuf:"bytes,6,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *CoreKnowledgeServiceCreateMemoryRequest) Reset() {
-	*x = CoreKnowledgeServiceCreateMemoryRequest{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[13]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CoreKnowledgeServiceCreateMemoryRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CoreKnowledgeServiceCreateMemoryRequest) ProtoMessage() {}
-
-func (x *CoreKnowledgeServiceCreateMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[13]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CoreKnowledgeServiceCreateMemoryRequest.ProtoReflect.Descriptor instead.
-func (*CoreKnowledgeServiceCreateMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{13}
-}
-
-func (x *CoreKnowledgeServiceCreateMemoryRequest) GetIdempotencyKey() string {
-	if x != nil {
-		return x.IdempotencyKey
-	}
-	return ""
-}
-
-func (x *CoreKnowledgeServiceCreateMemoryRequest) GetSourceId() string {
-	if x != nil {
-		return x.SourceId
-	}
-	return ""
-}
-
-func (x *CoreKnowledgeServiceCreateMemoryRequest) GetTitle() string {
-	if x != nil {
-		return x.Title
-	}
-	return ""
-}
-
-func (x *CoreKnowledgeServiceCreateMemoryRequest) GetContent() string {
-	if x != nil {
-		return x.Content
-	}
-	return ""
-}
-
-func (x *CoreKnowledgeServiceCreateMemoryRequest) GetContentSha256() string {
-	if x != nil {
-		return x.ContentSha256
-	}
-	return ""
-}
-
-func (x *CoreKnowledgeServiceCreateMemoryRequest) GetMediaType() string {
-	if x != nil {
-		return x.MediaType
-	}
-	return ""
-}
-
-type CoreKnowledgeServiceCreateMemoryResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Source        *CoreKnowledgeSource   `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CoreKnowledgeServiceCreateMemoryResponse) Reset() {
-	*x = CoreKnowledgeServiceCreateMemoryResponse{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[14]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CoreKnowledgeServiceCreateMemoryResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CoreKnowledgeServiceCreateMemoryResponse) ProtoMessage() {}
-
-func (x *CoreKnowledgeServiceCreateMemoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[14]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CoreKnowledgeServiceCreateMemoryResponse.ProtoReflect.Descriptor instead.
-func (*CoreKnowledgeServiceCreateMemoryResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{14}
-}
-
-func (x *CoreKnowledgeServiceCreateMemoryResponse) GetSource() *CoreKnowledgeSource {
-	if x != nil {
-		return x.Source
-	}
-	return nil
-}
-
 type CoreKnowledgeServiceListSourcesRequest struct {
 	state         protoimpl.MessageState    `protogen:"open.v1"`
 	PageSize      int32                     `protobuf:"varint,1,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
@@ -1216,7 +1085,7 @@ type CoreKnowledgeServiceListSourcesRequest struct {
 
 func (x *CoreKnowledgeServiceListSourcesRequest) Reset() {
 	*x = CoreKnowledgeServiceListSourcesRequest{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[15]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1228,7 +1097,7 @@ func (x *CoreKnowledgeServiceListSourcesRequest) String() string {
 func (*CoreKnowledgeServiceListSourcesRequest) ProtoMessage() {}
 
 func (x *CoreKnowledgeServiceListSourcesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[15]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1241,7 +1110,7 @@ func (x *CoreKnowledgeServiceListSourcesRequest) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use CoreKnowledgeServiceListSourcesRequest.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeServiceListSourcesRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{15}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CoreKnowledgeServiceListSourcesRequest) GetPageSize() int32 {
@@ -1282,7 +1151,7 @@ type CoreKnowledgeServiceListSourcesResponse struct {
 
 func (x *CoreKnowledgeServiceListSourcesResponse) Reset() {
 	*x = CoreKnowledgeServiceListSourcesResponse{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[16]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1294,7 +1163,7 @@ func (x *CoreKnowledgeServiceListSourcesResponse) String() string {
 func (*CoreKnowledgeServiceListSourcesResponse) ProtoMessage() {}
 
 func (x *CoreKnowledgeServiceListSourcesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[16]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1307,7 +1176,7 @@ func (x *CoreKnowledgeServiceListSourcesResponse) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use CoreKnowledgeServiceListSourcesResponse.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeServiceListSourcesResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{16}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CoreKnowledgeServiceListSourcesResponse) GetSources() []*CoreKnowledgeSource {
@@ -1333,7 +1202,7 @@ type CoreKnowledgeServiceGetSourceRequest struct {
 
 func (x *CoreKnowledgeServiceGetSourceRequest) Reset() {
 	*x = CoreKnowledgeServiceGetSourceRequest{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[17]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1345,7 +1214,7 @@ func (x *CoreKnowledgeServiceGetSourceRequest) String() string {
 func (*CoreKnowledgeServiceGetSourceRequest) ProtoMessage() {}
 
 func (x *CoreKnowledgeServiceGetSourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[17]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1358,7 +1227,7 @@ func (x *CoreKnowledgeServiceGetSourceRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use CoreKnowledgeServiceGetSourceRequest.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeServiceGetSourceRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{17}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *CoreKnowledgeServiceGetSourceRequest) GetSourceId() string {
@@ -1377,7 +1246,7 @@ type CoreKnowledgeServiceGetSourceResponse struct {
 
 func (x *CoreKnowledgeServiceGetSourceResponse) Reset() {
 	*x = CoreKnowledgeServiceGetSourceResponse{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[18]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1389,7 +1258,7 @@ func (x *CoreKnowledgeServiceGetSourceResponse) String() string {
 func (*CoreKnowledgeServiceGetSourceResponse) ProtoMessage() {}
 
 func (x *CoreKnowledgeServiceGetSourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[18]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1402,7 +1271,7 @@ func (x *CoreKnowledgeServiceGetSourceResponse) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use CoreKnowledgeServiceGetSourceResponse.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeServiceGetSourceResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{18}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *CoreKnowledgeServiceGetSourceResponse) GetSource() *CoreKnowledgeSource {
@@ -1423,7 +1292,7 @@ type CoreKnowledgeServiceDeleteSourceRequest struct {
 
 func (x *CoreKnowledgeServiceDeleteSourceRequest) Reset() {
 	*x = CoreKnowledgeServiceDeleteSourceRequest{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[19]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1435,7 +1304,7 @@ func (x *CoreKnowledgeServiceDeleteSourceRequest) String() string {
 func (*CoreKnowledgeServiceDeleteSourceRequest) ProtoMessage() {}
 
 func (x *CoreKnowledgeServiceDeleteSourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[19]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1448,7 +1317,7 @@ func (x *CoreKnowledgeServiceDeleteSourceRequest) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use CoreKnowledgeServiceDeleteSourceRequest.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeServiceDeleteSourceRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{19}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CoreKnowledgeServiceDeleteSourceRequest) GetIdempotencyKey() string {
@@ -1481,7 +1350,7 @@ type CoreKnowledgeServiceDeleteSourceResponse struct {
 
 func (x *CoreKnowledgeServiceDeleteSourceResponse) Reset() {
 	*x = CoreKnowledgeServiceDeleteSourceResponse{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[20]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1493,7 +1362,7 @@ func (x *CoreKnowledgeServiceDeleteSourceResponse) String() string {
 func (*CoreKnowledgeServiceDeleteSourceResponse) ProtoMessage() {}
 
 func (x *CoreKnowledgeServiceDeleteSourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[20]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1506,7 +1375,7 @@ func (x *CoreKnowledgeServiceDeleteSourceResponse) ProtoReflect() protoreflect.M
 
 // Deprecated: Use CoreKnowledgeServiceDeleteSourceResponse.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeServiceDeleteSourceResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{20}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CoreKnowledgeServiceDeleteSourceResponse) GetSource() *CoreKnowledgeSource {
@@ -1524,7 +1393,7 @@ type CoreKnowledgeServiceGetStatusRequest struct {
 
 func (x *CoreKnowledgeServiceGetStatusRequest) Reset() {
 	*x = CoreKnowledgeServiceGetStatusRequest{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[21]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1536,7 +1405,7 @@ func (x *CoreKnowledgeServiceGetStatusRequest) String() string {
 func (*CoreKnowledgeServiceGetStatusRequest) ProtoMessage() {}
 
 func (x *CoreKnowledgeServiceGetStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[21]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1549,7 +1418,7 @@ func (x *CoreKnowledgeServiceGetStatusRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use CoreKnowledgeServiceGetStatusRequest.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeServiceGetStatusRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{21}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{19}
 }
 
 type CoreKnowledgeServiceGetStatusResponse struct {
@@ -1566,7 +1435,7 @@ type CoreKnowledgeServiceGetStatusResponse struct {
 
 func (x *CoreKnowledgeServiceGetStatusResponse) Reset() {
 	*x = CoreKnowledgeServiceGetStatusResponse{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[22]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1578,7 +1447,7 @@ func (x *CoreKnowledgeServiceGetStatusResponse) String() string {
 func (*CoreKnowledgeServiceGetStatusResponse) ProtoMessage() {}
 
 func (x *CoreKnowledgeServiceGetStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[22]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1591,7 +1460,7 @@ func (x *CoreKnowledgeServiceGetStatusResponse) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use CoreKnowledgeServiceGetStatusResponse.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeServiceGetStatusResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{22}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CoreKnowledgeServiceGetStatusResponse) GetReadyCount() int32 {
@@ -1646,7 +1515,7 @@ type CoreKnowledgeServiceIndexRequest struct {
 
 func (x *CoreKnowledgeServiceIndexRequest) Reset() {
 	*x = CoreKnowledgeServiceIndexRequest{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[23]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1658,7 +1527,7 @@ func (x *CoreKnowledgeServiceIndexRequest) String() string {
 func (*CoreKnowledgeServiceIndexRequest) ProtoMessage() {}
 
 func (x *CoreKnowledgeServiceIndexRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[23]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1671,7 +1540,7 @@ func (x *CoreKnowledgeServiceIndexRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreKnowledgeServiceIndexRequest.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeServiceIndexRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{23}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *CoreKnowledgeServiceIndexRequest) GetIdempotencyKey() string {
@@ -1697,7 +1566,7 @@ type CoreKnowledgeServiceIndexResponse struct {
 
 func (x *CoreKnowledgeServiceIndexResponse) Reset() {
 	*x = CoreKnowledgeServiceIndexResponse{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[24]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1709,7 +1578,7 @@ func (x *CoreKnowledgeServiceIndexResponse) String() string {
 func (*CoreKnowledgeServiceIndexResponse) ProtoMessage() {}
 
 func (x *CoreKnowledgeServiceIndexResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[24]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1722,7 +1591,7 @@ func (x *CoreKnowledgeServiceIndexResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CoreKnowledgeServiceIndexResponse.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeServiceIndexResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{24}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CoreKnowledgeServiceIndexResponse) GetTask() *CoreKnowledgeTaskReference {
@@ -1744,7 +1613,7 @@ type CoreKnowledgeServiceSearchRequest struct {
 
 func (x *CoreKnowledgeServiceSearchRequest) Reset() {
 	*x = CoreKnowledgeServiceSearchRequest{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[25]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1756,7 +1625,7 @@ func (x *CoreKnowledgeServiceSearchRequest) String() string {
 func (*CoreKnowledgeServiceSearchRequest) ProtoMessage() {}
 
 func (x *CoreKnowledgeServiceSearchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[25]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1769,7 +1638,7 @@ func (x *CoreKnowledgeServiceSearchRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CoreKnowledgeServiceSearchRequest.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeServiceSearchRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{25}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *CoreKnowledgeServiceSearchRequest) GetQuery() string {
@@ -1812,7 +1681,7 @@ type CoreKnowledgeSearchMatch struct {
 
 func (x *CoreKnowledgeSearchMatch) Reset() {
 	*x = CoreKnowledgeSearchMatch{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[26]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1824,7 +1693,7 @@ func (x *CoreKnowledgeSearchMatch) String() string {
 func (*CoreKnowledgeSearchMatch) ProtoMessage() {}
 
 func (x *CoreKnowledgeSearchMatch) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[26]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1837,7 +1706,7 @@ func (x *CoreKnowledgeSearchMatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreKnowledgeSearchMatch.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeSearchMatch) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{26}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *CoreKnowledgeSearchMatch) GetSourceId() string {
@@ -1885,7 +1754,7 @@ type CoreKnowledgeServiceSearchResponse struct {
 
 func (x *CoreKnowledgeServiceSearchResponse) Reset() {
 	*x = CoreKnowledgeServiceSearchResponse{}
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[27]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1897,7 +1766,7 @@ func (x *CoreKnowledgeServiceSearchResponse) String() string {
 func (*CoreKnowledgeServiceSearchResponse) ProtoMessage() {}
 
 func (x *CoreKnowledgeServiceSearchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[27]
+	mi := &file_dirextalk_agent_v1_core_knowledge_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1910,7 +1779,7 @@ func (x *CoreKnowledgeServiceSearchResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use CoreKnowledgeServiceSearchResponse.ProtoReflect.Descriptor instead.
 func (*CoreKnowledgeServiceSearchResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{27}
+	return file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CoreKnowledgeServiceSearchResponse) GetMatches() []*CoreKnowledgeSearchMatch {
@@ -2046,17 +1915,7 @@ const file_dirextalk_agent_v1_core_knowledge_proto_rawDesc = "" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x1b\n" +
 	"\tupload_id\x18\x02 \x01(\tR\buploadId\x12+\n" +
 	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\")\n" +
-	"'CoreKnowledgeServiceAbortUploadResponse\"\xe5\x01\n" +
-	"'CoreKnowledgeServiceCreateMemoryRequest\x12'\n" +
-	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x1b\n" +
-	"\tsource_id\x18\x02 \x01(\tR\bsourceId\x12\x14\n" +
-	"\x05title\x18\x03 \x01(\tR\x05title\x12\x18\n" +
-	"\acontent\x18\x04 \x01(\tR\acontent\x12%\n" +
-	"\x0econtent_sha256\x18\x05 \x01(\tR\rcontentSha256\x12\x1d\n" +
-	"\n" +
-	"media_type\x18\x06 \x01(\tR\tmediaType\"k\n" +
-	"(CoreKnowledgeServiceCreateMemoryResponse\x12?\n" +
-	"\x06source\x18\x01 \x01(\v2'.dirextalk.agent.v1.CoreKnowledgeSourceR\x06source\"\xec\x01\n" +
+	"'CoreKnowledgeServiceAbortUploadResponse\"\xec\x01\n" +
 	"&CoreKnowledgeServiceListSourcesRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +
@@ -2111,12 +1970,11 @@ const file_dirextalk_agent_v1_core_knowledge_proto_rawDesc = "" +
 	"\x1aembedding_profile_revision\x18\x04 \x01(\x03R\x18embeddingProfileRevision\x12'\n" +
 	"\x0fembedding_model\x18\x05 \x01(\tR\x0eembeddingModel\x121\n" +
 	"\x14embedding_generation\x18\x06 \x01(\tR\x13embeddingGeneration\x128\n" +
-	"\x18collection_config_digest\x18\a \x01(\tR\x16collectionConfigDigest*\xb9\x01\n" +
+	"\x18collection_config_digest\x18\a \x01(\tR\x16collectionConfigDigest*\x92\x01\n" +
 	"\x17CoreKnowledgeSourceKind\x12*\n" +
 	"&CORE_KNOWLEDGE_SOURCE_KIND_UNSPECIFIED\x10\x00\x12$\n" +
 	" CORE_KNOWLEDGE_SOURCE_KIND_MOUNT\x10\x01\x12%\n" +
-	"!CORE_KNOWLEDGE_SOURCE_KIND_UPLOAD\x10\x02\x12%\n" +
-	"!CORE_KNOWLEDGE_SOURCE_KIND_MEMORY\x10\x03*\xf8\x02\n" +
+	"!CORE_KNOWLEDGE_SOURCE_KIND_UPLOAD\x10\x02*\xf8\x02\n" +
 	"\x19CoreKnowledgeSourceStatus\x12,\n" +
 	"(CORE_KNOWLEDGE_SOURCE_STATUS_UNSPECIFIED\x10\x00\x12*\n" +
 	"&CORE_KNOWLEDGE_SOURCE_STATUS_UPLOADING\x10\x01\x12&\n" +
@@ -2125,13 +1983,13 @@ const file_dirextalk_agent_v1_core_knowledge_proto_rawDesc = "" +
 	"#CORE_KNOWLEDGE_SOURCE_STATUS_FAILED\x10\x04\x12)\n" +
 	"%CORE_KNOWLEDGE_SOURCE_STATUS_DELETING\x10\x05\x120\n" +
 	",CORE_KNOWLEDGE_SOURCE_STATUS_CLEANUP_PENDING\x10\x06\x12(\n" +
-	"$CORE_KNOWLEDGE_SOURCE_STATUS_DELETED\x10\a2\xc5\v\n" +
+	"$CORE_KNOWLEDGE_SOURCE_STATUS_DELETED\x10\a2\xb9\n" +
+	"\n" +
 	"\x14CoreKnowledgeService\x12\x86\x01\n" +
 	"\vCreateMount\x12:.dirextalk.agent.v1.CoreKnowledgeServiceCreateMountRequest\x1a;.dirextalk.agent.v1.CoreKnowledgeServiceCreateMountResponse\x12y\n" +
 	"\x06Upload\x125.dirextalk.agent.v1.CoreKnowledgeServiceUploadRequest\x1a6.dirextalk.agent.v1.CoreKnowledgeServiceUploadResponse(\x01\x12\x89\x01\n" +
 	"\fCommitUpload\x12;.dirextalk.agent.v1.CoreKnowledgeServiceCommitUploadRequest\x1a<.dirextalk.agent.v1.CoreKnowledgeServiceCommitUploadResponse\x12\x86\x01\n" +
-	"\vAbortUpload\x12:.dirextalk.agent.v1.CoreKnowledgeServiceAbortUploadRequest\x1a;.dirextalk.agent.v1.CoreKnowledgeServiceAbortUploadResponse\x12\x89\x01\n" +
-	"\fCreateMemory\x12;.dirextalk.agent.v1.CoreKnowledgeServiceCreateMemoryRequest\x1a<.dirextalk.agent.v1.CoreKnowledgeServiceCreateMemoryResponse\x12\x86\x01\n" +
+	"\vAbortUpload\x12:.dirextalk.agent.v1.CoreKnowledgeServiceAbortUploadRequest\x1a;.dirextalk.agent.v1.CoreKnowledgeServiceAbortUploadResponse\x12\x86\x01\n" +
 	"\vListSources\x12:.dirextalk.agent.v1.CoreKnowledgeServiceListSourcesRequest\x1a;.dirextalk.agent.v1.CoreKnowledgeServiceListSourcesResponse\x12\x80\x01\n" +
 	"\tGetSource\x128.dirextalk.agent.v1.CoreKnowledgeServiceGetSourceRequest\x1a9.dirextalk.agent.v1.CoreKnowledgeServiceGetSourceResponse\x12\x89\x01\n" +
 	"\fDeleteSource\x12;.dirextalk.agent.v1.CoreKnowledgeServiceDeleteSourceRequest\x1a<.dirextalk.agent.v1.CoreKnowledgeServiceDeleteSourceResponse\x12\x80\x01\n" +
@@ -2152,7 +2010,7 @@ func file_dirextalk_agent_v1_core_knowledge_proto_rawDescGZIP() []byte {
 }
 
 var file_dirextalk_agent_v1_core_knowledge_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_dirextalk_agent_v1_core_knowledge_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_dirextalk_agent_v1_core_knowledge_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_dirextalk_agent_v1_core_knowledge_proto_goTypes = []any{
 	(CoreKnowledgeSourceKind)(0),                     // 0: dirextalk.agent.v1.CoreKnowledgeSourceKind
 	(CoreKnowledgeSourceStatus)(0),                   // 1: dirextalk.agent.v1.CoreKnowledgeSourceStatus
@@ -2169,28 +2027,26 @@ var file_dirextalk_agent_v1_core_knowledge_proto_goTypes = []any{
 	(*CoreKnowledgeServiceCommitUploadResponse)(nil), // 12: dirextalk.agent.v1.CoreKnowledgeServiceCommitUploadResponse
 	(*CoreKnowledgeServiceAbortUploadRequest)(nil),   // 13: dirextalk.agent.v1.CoreKnowledgeServiceAbortUploadRequest
 	(*CoreKnowledgeServiceAbortUploadResponse)(nil),  // 14: dirextalk.agent.v1.CoreKnowledgeServiceAbortUploadResponse
-	(*CoreKnowledgeServiceCreateMemoryRequest)(nil),  // 15: dirextalk.agent.v1.CoreKnowledgeServiceCreateMemoryRequest
-	(*CoreKnowledgeServiceCreateMemoryResponse)(nil), // 16: dirextalk.agent.v1.CoreKnowledgeServiceCreateMemoryResponse
-	(*CoreKnowledgeServiceListSourcesRequest)(nil),   // 17: dirextalk.agent.v1.CoreKnowledgeServiceListSourcesRequest
-	(*CoreKnowledgeServiceListSourcesResponse)(nil),  // 18: dirextalk.agent.v1.CoreKnowledgeServiceListSourcesResponse
-	(*CoreKnowledgeServiceGetSourceRequest)(nil),     // 19: dirextalk.agent.v1.CoreKnowledgeServiceGetSourceRequest
-	(*CoreKnowledgeServiceGetSourceResponse)(nil),    // 20: dirextalk.agent.v1.CoreKnowledgeServiceGetSourceResponse
-	(*CoreKnowledgeServiceDeleteSourceRequest)(nil),  // 21: dirextalk.agent.v1.CoreKnowledgeServiceDeleteSourceRequest
-	(*CoreKnowledgeServiceDeleteSourceResponse)(nil), // 22: dirextalk.agent.v1.CoreKnowledgeServiceDeleteSourceResponse
-	(*CoreKnowledgeServiceGetStatusRequest)(nil),     // 23: dirextalk.agent.v1.CoreKnowledgeServiceGetStatusRequest
-	(*CoreKnowledgeServiceGetStatusResponse)(nil),    // 24: dirextalk.agent.v1.CoreKnowledgeServiceGetStatusResponse
-	(*CoreKnowledgeServiceIndexRequest)(nil),         // 25: dirextalk.agent.v1.CoreKnowledgeServiceIndexRequest
-	(*CoreKnowledgeServiceIndexResponse)(nil),        // 26: dirextalk.agent.v1.CoreKnowledgeServiceIndexResponse
-	(*CoreKnowledgeServiceSearchRequest)(nil),        // 27: dirextalk.agent.v1.CoreKnowledgeServiceSearchRequest
-	(*CoreKnowledgeSearchMatch)(nil),                 // 28: dirextalk.agent.v1.CoreKnowledgeSearchMatch
-	(*CoreKnowledgeServiceSearchResponse)(nil),       // 29: dirextalk.agent.v1.CoreKnowledgeServiceSearchResponse
-	(*timestamppb.Timestamp)(nil),                    // 30: google.protobuf.Timestamp
+	(*CoreKnowledgeServiceListSourcesRequest)(nil),   // 15: dirextalk.agent.v1.CoreKnowledgeServiceListSourcesRequest
+	(*CoreKnowledgeServiceListSourcesResponse)(nil),  // 16: dirextalk.agent.v1.CoreKnowledgeServiceListSourcesResponse
+	(*CoreKnowledgeServiceGetSourceRequest)(nil),     // 17: dirextalk.agent.v1.CoreKnowledgeServiceGetSourceRequest
+	(*CoreKnowledgeServiceGetSourceResponse)(nil),    // 18: dirextalk.agent.v1.CoreKnowledgeServiceGetSourceResponse
+	(*CoreKnowledgeServiceDeleteSourceRequest)(nil),  // 19: dirextalk.agent.v1.CoreKnowledgeServiceDeleteSourceRequest
+	(*CoreKnowledgeServiceDeleteSourceResponse)(nil), // 20: dirextalk.agent.v1.CoreKnowledgeServiceDeleteSourceResponse
+	(*CoreKnowledgeServiceGetStatusRequest)(nil),     // 21: dirextalk.agent.v1.CoreKnowledgeServiceGetStatusRequest
+	(*CoreKnowledgeServiceGetStatusResponse)(nil),    // 22: dirextalk.agent.v1.CoreKnowledgeServiceGetStatusResponse
+	(*CoreKnowledgeServiceIndexRequest)(nil),         // 23: dirextalk.agent.v1.CoreKnowledgeServiceIndexRequest
+	(*CoreKnowledgeServiceIndexResponse)(nil),        // 24: dirextalk.agent.v1.CoreKnowledgeServiceIndexResponse
+	(*CoreKnowledgeServiceSearchRequest)(nil),        // 25: dirextalk.agent.v1.CoreKnowledgeServiceSearchRequest
+	(*CoreKnowledgeSearchMatch)(nil),                 // 26: dirextalk.agent.v1.CoreKnowledgeSearchMatch
+	(*CoreKnowledgeServiceSearchResponse)(nil),       // 27: dirextalk.agent.v1.CoreKnowledgeServiceSearchResponse
+	(*timestamppb.Timestamp)(nil),                    // 28: google.protobuf.Timestamp
 }
 var file_dirextalk_agent_v1_core_knowledge_proto_depIdxs = []int32{
 	0,  // 0: dirextalk.agent.v1.CoreKnowledgeSource.kind:type_name -> dirextalk.agent.v1.CoreKnowledgeSourceKind
 	1,  // 1: dirextalk.agent.v1.CoreKnowledgeSource.status:type_name -> dirextalk.agent.v1.CoreKnowledgeSourceStatus
-	30, // 2: dirextalk.agent.v1.CoreKnowledgeSource.created_at:type_name -> google.protobuf.Timestamp
-	30, // 3: dirextalk.agent.v1.CoreKnowledgeSource.updated_at:type_name -> google.protobuf.Timestamp
+	28, // 2: dirextalk.agent.v1.CoreKnowledgeSource.created_at:type_name -> google.protobuf.Timestamp
+	28, // 3: dirextalk.agent.v1.CoreKnowledgeSource.updated_at:type_name -> google.protobuf.Timestamp
 	2,  // 4: dirextalk.agent.v1.CoreKnowledgeServiceCreateMountResponse.source:type_name -> dirextalk.agent.v1.CoreKnowledgeSource
 	7,  // 5: dirextalk.agent.v1.CoreKnowledgeServiceUploadRequest.metadata:type_name -> dirextalk.agent.v1.CoreKnowledgeUploadMetadata
 	8,  // 6: dirextalk.agent.v1.CoreKnowledgeServiceUploadRequest.chunk:type_name -> dirextalk.agent.v1.CoreKnowledgeUploadChunk
@@ -2200,42 +2056,39 @@ var file_dirextalk_agent_v1_core_knowledge_proto_depIdxs = []int32{
 	2,  // 10: dirextalk.agent.v1.CoreKnowledgeServiceCommitUploadResponse.source:type_name -> dirextalk.agent.v1.CoreKnowledgeSource
 	3,  // 11: dirextalk.agent.v1.CoreKnowledgeServiceCommitUploadResponse.index_task:type_name -> dirextalk.agent.v1.CoreKnowledgeTaskReference
 	4,  // 12: dirextalk.agent.v1.CoreKnowledgeServiceCommitUploadResponse.session:type_name -> dirextalk.agent.v1.CoreKnowledgeUploadSession
-	2,  // 13: dirextalk.agent.v1.CoreKnowledgeServiceCreateMemoryResponse.source:type_name -> dirextalk.agent.v1.CoreKnowledgeSource
-	0,  // 14: dirextalk.agent.v1.CoreKnowledgeServiceListSourcesRequest.kind:type_name -> dirextalk.agent.v1.CoreKnowledgeSourceKind
-	1,  // 15: dirextalk.agent.v1.CoreKnowledgeServiceListSourcesRequest.status:type_name -> dirextalk.agent.v1.CoreKnowledgeSourceStatus
-	2,  // 16: dirextalk.agent.v1.CoreKnowledgeServiceListSourcesResponse.sources:type_name -> dirextalk.agent.v1.CoreKnowledgeSource
-	2,  // 17: dirextalk.agent.v1.CoreKnowledgeServiceGetSourceResponse.source:type_name -> dirextalk.agent.v1.CoreKnowledgeSource
-	2,  // 18: dirextalk.agent.v1.CoreKnowledgeServiceDeleteSourceResponse.source:type_name -> dirextalk.agent.v1.CoreKnowledgeSource
-	30, // 19: dirextalk.agent.v1.CoreKnowledgeServiceGetStatusResponse.checked_at:type_name -> google.protobuf.Timestamp
-	3,  // 20: dirextalk.agent.v1.CoreKnowledgeServiceIndexResponse.task:type_name -> dirextalk.agent.v1.CoreKnowledgeTaskReference
-	28, // 21: dirextalk.agent.v1.CoreKnowledgeServiceSearchResponse.matches:type_name -> dirextalk.agent.v1.CoreKnowledgeSearchMatch
-	5,  // 22: dirextalk.agent.v1.CoreKnowledgeService.CreateMount:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceCreateMountRequest
-	9,  // 23: dirextalk.agent.v1.CoreKnowledgeService.Upload:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceUploadRequest
-	11, // 24: dirextalk.agent.v1.CoreKnowledgeService.CommitUpload:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceCommitUploadRequest
-	13, // 25: dirextalk.agent.v1.CoreKnowledgeService.AbortUpload:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceAbortUploadRequest
-	15, // 26: dirextalk.agent.v1.CoreKnowledgeService.CreateMemory:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceCreateMemoryRequest
-	17, // 27: dirextalk.agent.v1.CoreKnowledgeService.ListSources:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceListSourcesRequest
-	19, // 28: dirextalk.agent.v1.CoreKnowledgeService.GetSource:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceGetSourceRequest
-	21, // 29: dirextalk.agent.v1.CoreKnowledgeService.DeleteSource:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceDeleteSourceRequest
-	23, // 30: dirextalk.agent.v1.CoreKnowledgeService.GetStatus:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceGetStatusRequest
-	25, // 31: dirextalk.agent.v1.CoreKnowledgeService.Index:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceIndexRequest
-	27, // 32: dirextalk.agent.v1.CoreKnowledgeService.Search:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceSearchRequest
-	6,  // 33: dirextalk.agent.v1.CoreKnowledgeService.CreateMount:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceCreateMountResponse
-	10, // 34: dirextalk.agent.v1.CoreKnowledgeService.Upload:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceUploadResponse
-	12, // 35: dirextalk.agent.v1.CoreKnowledgeService.CommitUpload:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceCommitUploadResponse
-	14, // 36: dirextalk.agent.v1.CoreKnowledgeService.AbortUpload:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceAbortUploadResponse
-	16, // 37: dirextalk.agent.v1.CoreKnowledgeService.CreateMemory:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceCreateMemoryResponse
-	18, // 38: dirextalk.agent.v1.CoreKnowledgeService.ListSources:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceListSourcesResponse
-	20, // 39: dirextalk.agent.v1.CoreKnowledgeService.GetSource:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceGetSourceResponse
-	22, // 40: dirextalk.agent.v1.CoreKnowledgeService.DeleteSource:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceDeleteSourceResponse
-	24, // 41: dirextalk.agent.v1.CoreKnowledgeService.GetStatus:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceGetStatusResponse
-	26, // 42: dirextalk.agent.v1.CoreKnowledgeService.Index:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceIndexResponse
-	29, // 43: dirextalk.agent.v1.CoreKnowledgeService.Search:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceSearchResponse
-	33, // [33:44] is the sub-list for method output_type
-	22, // [22:33] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	0,  // 13: dirextalk.agent.v1.CoreKnowledgeServiceListSourcesRequest.kind:type_name -> dirextalk.agent.v1.CoreKnowledgeSourceKind
+	1,  // 14: dirextalk.agent.v1.CoreKnowledgeServiceListSourcesRequest.status:type_name -> dirextalk.agent.v1.CoreKnowledgeSourceStatus
+	2,  // 15: dirextalk.agent.v1.CoreKnowledgeServiceListSourcesResponse.sources:type_name -> dirextalk.agent.v1.CoreKnowledgeSource
+	2,  // 16: dirextalk.agent.v1.CoreKnowledgeServiceGetSourceResponse.source:type_name -> dirextalk.agent.v1.CoreKnowledgeSource
+	2,  // 17: dirextalk.agent.v1.CoreKnowledgeServiceDeleteSourceResponse.source:type_name -> dirextalk.agent.v1.CoreKnowledgeSource
+	28, // 18: dirextalk.agent.v1.CoreKnowledgeServiceGetStatusResponse.checked_at:type_name -> google.protobuf.Timestamp
+	3,  // 19: dirextalk.agent.v1.CoreKnowledgeServiceIndexResponse.task:type_name -> dirextalk.agent.v1.CoreKnowledgeTaskReference
+	26, // 20: dirextalk.agent.v1.CoreKnowledgeServiceSearchResponse.matches:type_name -> dirextalk.agent.v1.CoreKnowledgeSearchMatch
+	5,  // 21: dirextalk.agent.v1.CoreKnowledgeService.CreateMount:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceCreateMountRequest
+	9,  // 22: dirextalk.agent.v1.CoreKnowledgeService.Upload:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceUploadRequest
+	11, // 23: dirextalk.agent.v1.CoreKnowledgeService.CommitUpload:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceCommitUploadRequest
+	13, // 24: dirextalk.agent.v1.CoreKnowledgeService.AbortUpload:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceAbortUploadRequest
+	15, // 25: dirextalk.agent.v1.CoreKnowledgeService.ListSources:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceListSourcesRequest
+	17, // 26: dirextalk.agent.v1.CoreKnowledgeService.GetSource:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceGetSourceRequest
+	19, // 27: dirextalk.agent.v1.CoreKnowledgeService.DeleteSource:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceDeleteSourceRequest
+	21, // 28: dirextalk.agent.v1.CoreKnowledgeService.GetStatus:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceGetStatusRequest
+	23, // 29: dirextalk.agent.v1.CoreKnowledgeService.Index:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceIndexRequest
+	25, // 30: dirextalk.agent.v1.CoreKnowledgeService.Search:input_type -> dirextalk.agent.v1.CoreKnowledgeServiceSearchRequest
+	6,  // 31: dirextalk.agent.v1.CoreKnowledgeService.CreateMount:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceCreateMountResponse
+	10, // 32: dirextalk.agent.v1.CoreKnowledgeService.Upload:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceUploadResponse
+	12, // 33: dirextalk.agent.v1.CoreKnowledgeService.CommitUpload:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceCommitUploadResponse
+	14, // 34: dirextalk.agent.v1.CoreKnowledgeService.AbortUpload:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceAbortUploadResponse
+	16, // 35: dirextalk.agent.v1.CoreKnowledgeService.ListSources:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceListSourcesResponse
+	18, // 36: dirextalk.agent.v1.CoreKnowledgeService.GetSource:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceGetSourceResponse
+	20, // 37: dirextalk.agent.v1.CoreKnowledgeService.DeleteSource:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceDeleteSourceResponse
+	22, // 38: dirextalk.agent.v1.CoreKnowledgeService.GetStatus:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceGetStatusResponse
+	24, // 39: dirextalk.agent.v1.CoreKnowledgeService.Index:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceIndexResponse
+	27, // 40: dirextalk.agent.v1.CoreKnowledgeService.Search:output_type -> dirextalk.agent.v1.CoreKnowledgeServiceSearchResponse
+	31, // [31:41] is the sub-list for method output_type
+	21, // [21:31] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_core_knowledge_proto_init() }
@@ -2253,7 +2106,7 @@ func file_dirextalk_agent_v1_core_knowledge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_core_knowledge_proto_rawDesc), len(file_dirextalk_agent_v1_core_knowledge_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   28,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

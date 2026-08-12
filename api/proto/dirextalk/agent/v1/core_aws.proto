@@ -64,16 +64,6 @@ message CoreCloudControlServiceDeleteCredentialRequest {
   int64 expected_revision = 3;
 }
 message CoreCloudControlServiceDeleteCredentialResponse {}
-message CoreCloudControlServiceTestCredentialIdentityRequest { string credential_id = 1; }
-message CoreCloudControlServiceTestCredentialIdentityResponse {
-  string credential_id = 1;
-  string account_id = 2;
-  string user_arn = 3;
-  string principal_id = 4;
-  int64 credential_revision = 5;
-  google.protobuf.Timestamp tested_at = 6;
-}
-
 message CoreAWSPlan {
   string plan_id = 1;
   string credential_id = 2;
@@ -159,20 +149,12 @@ message CoreCloudControlServiceListChangesResponse {
   repeated CoreAWSChange changes = 1;
   string next_page_token = 2;
 }
-message CoreCloudControlServiceGetChangeStatusRequest { string change_id = 1; }
-message CoreCloudControlServiceGetChangeStatusResponse {
-  CoreAWSChange change = 1;
-  string status = 2;
-  string stage = 3;
-}
-
 service CoreCloudControlService {
   rpc CreateCredential(CoreCloudControlServiceCreateCredentialRequest) returns (CoreCloudControlServiceCreateCredentialResponse);
   rpc GetCredential(CoreCloudControlServiceGetCredentialRequest) returns (CoreCloudControlServiceGetCredentialResponse);
   rpc ListCredentials(CoreCloudControlServiceListCredentialsRequest) returns (CoreCloudControlServiceListCredentialsResponse);
   rpc UpdateCredential(CoreCloudControlServiceUpdateCredentialRequest) returns (CoreCloudControlServiceUpdateCredentialResponse);
   rpc DeleteCredential(CoreCloudControlServiceDeleteCredentialRequest) returns (CoreCloudControlServiceDeleteCredentialResponse);
-  rpc TestCredentialIdentity(CoreCloudControlServiceTestCredentialIdentityRequest) returns (CoreCloudControlServiceTestCredentialIdentityResponse);
   rpc CreatePlan(CoreCloudControlServiceCreatePlanRequest) returns (CoreCloudControlServiceCreatePlanResponse);
   rpc GetPlan(CoreCloudControlServiceGetPlanRequest) returns (CoreCloudControlServiceGetPlanResponse);
   rpc ListPlans(CoreCloudControlServiceListPlansRequest) returns (CoreCloudControlServiceListPlansResponse);
@@ -180,5 +162,4 @@ service CoreCloudControlService {
   rpc RequestChange(CoreCloudControlServiceRequestChangeRequest) returns (CoreCloudControlServiceRequestChangeResponse);
   rpc GetChange(CoreCloudControlServiceGetChangeRequest) returns (CoreCloudControlServiceGetChangeResponse);
   rpc ListChanges(CoreCloudControlServiceListChangesRequest) returns (CoreCloudControlServiceListChangesResponse);
-  rpc GetChangeStatus(CoreCloudControlServiceGetChangeStatusRequest) returns (CoreCloudControlServiceGetChangeStatusResponse);
 }

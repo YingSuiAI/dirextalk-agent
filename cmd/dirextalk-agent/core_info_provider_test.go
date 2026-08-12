@@ -106,13 +106,6 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 	if !reflect.DeepEqual(backends.Core.Capabilities, want) {
 		t.Fatalf("Core capabilities = %#v, want %#v", backends.Core.Capabilities, want)
 	}
-	status, err := provider.Status(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(status.Capabilities, want) {
-		t.Fatalf("Core status capabilities = %#v, want %#v", status.Capabilities, want)
-	}
 }
 
 func TestCoreInfoProviderRequiresCompleteTextToolOperations(t *testing.T) {
@@ -163,16 +156,6 @@ func TestCoreSkillsTokensRequireCompleteTypedLifecycles(t *testing.T) {
 		want       []string
 	}{
 		{
-			name:       "mcp missing enable",
-			operations: coreInfoOperationsWithout(coreMCPRequiredOperations, "enable_mcp"),
-			want:       nil,
-		},
-		{
-			name:       "mcp missing disable",
-			operations: coreInfoOperationsWithout(coreMCPRequiredOperations, "disable_mcp"),
-			want:       nil,
-		},
-		{
 			name:       "mcp missing execute",
 			operations: coreInfoOperationsWithout(coreMCPRequiredOperations, "execute_mcp"),
 			want:       nil,
@@ -181,16 +164,6 @@ func TestCoreSkillsTokensRequireCompleteTypedLifecycles(t *testing.T) {
 			name:       "mcp complete",
 			operations: coreMCPRequiredOperations,
 			want:       []string{"mcp"},
-		},
-		{
-			name:       "skills missing enable",
-			operations: coreInfoOperationsWithout(coreSkillsRequiredOperations, "enable_skill"),
-			want:       nil,
-		},
-		{
-			name:       "skills missing disable",
-			operations: coreInfoOperationsWithout(coreSkillsRequiredOperations, "disable_skill"),
-			want:       nil,
 		},
 		{
 			name:       "skills missing execute",

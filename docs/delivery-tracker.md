@@ -60,7 +60,7 @@ contract](message-server-integration-development-contract.md), and
   removed across restart, while explicit reinstall continues through the
   reviewed confirmation lifecycle. GitHub and skills.sh remain available as
   separately pinned external sources.
-- Knowledge mounts, uploads, memory, indexing, semantic-search composition,
+- Knowledge mounts, uploads, indexing, semantic-search composition,
   and the bounded read-only `knowledge_search` Native conversation tool.
   Semantic generations now use pgvector inside Agent PostgreSQL with exact
   binding-filtered cosine search, fixed 64 MiB aggregate/16 MiB source content
@@ -79,7 +79,7 @@ contract](message-server-integration-development-contract.md), and
   and Core Runner; the latter has nonce/full readiness and descriptor-only
   sealed-result boundaries.
 - Unified image builds validate and inject the immutable release version into
-  the Core binary; authenticated instance info and `agent.info.v1` status
+  the Core binary; authenticated instance info and `agent.info.v1/get_backends`
   report it separately from the `v1` API protocol version.
 - Versioned, Buf-lint-clean Protobufs and focused Core contract tests.
 - Durable model role defaults include an independent conversation-kind tool

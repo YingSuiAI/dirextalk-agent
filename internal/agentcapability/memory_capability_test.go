@@ -22,6 +22,12 @@ func (s *memoryCapabilityStore) UpdateConfig(_ context.Context, mutation coremem
 	s.config.Revision++
 	return s.config, nil
 }
+func (s *memoryCapabilityStore) UpdateFact(_ context.Context, mutation corememory.FactMutation) (corememory.Fact, error) {
+	return corememory.Fact{ID: "33333333-3333-4333-8333-333333333333", Subject: "user", Predicate: "city", Value: mutation.Value, Kind: "fact", Confidence: 1, ValidFrom: mutation.Now, LastConfirmedAt: mutation.Now}, nil
+}
+func (s *memoryCapabilityStore) DeleteFact(_ context.Context, mutation corememory.FactMutation) (corememory.FactDeletion, error) {
+	return corememory.FactDeletion{FactID: mutation.FactID, Deleted: true}, nil
+}
 func (s *memoryCapabilityStore) Status(context.Context, int, int) (corememory.Status, error) {
 	return s.status, nil
 }
@@ -52,8 +58,17 @@ func TestMemoryCapabilityPublishesClosedOwnerOperations(t *testing.T) {
 	}
 	capability := NewCoreMemoryCapability(service)
 	descriptor := capability.Descriptor()
-	if descriptor.CapabilityId != "agent.memory.v1" || len(descriptor.Operations) != 3 {
+	if descriptor.CapabilityId != "agent.memory.v1" || len(descriptor.Operations) != 5 {
 		t.Fatalf("descriptor=%+v", descriptor)
+	}
+	operations := make(map[string]bool, len(descriptor.Operations))
+	for _, operation := range descriptor.Operations {
+		operations[operation.OperationId] = true
+	}
+	for _, operationID := range []string{"get_config", "update_config", "status", "update_fact", "delete_fact"} {
+		if !operations[operationID] {
+			t.Fatalf("missing operation %q", operationID)
+		}
 	}
 	ctx := capabilityTestContext()
 	if _, err = capability.HandleOperation(ctx, "get_config", []byte(`{"unexpected":true}`)); err == nil {
@@ -66,6 +81,12 @@ func TestMemoryCapabilityPublishesClosedOwnerOperations(t *testing.T) {
 	var config corememory.Config
 	if json.Unmarshal(raw, &config) != nil || !config.Enabled || config.Revision != 1 {
 		t.Fatalf("config=%s", raw)
+	}
+	if _, err = capability.HandleOperation(ctx, "update_fact", []byte(`{"fact_id":"11111111-1111-4111-8111-111111111111","idempotency_key":"44444444-4444-4444-8444-444444444444","value":"Beijing"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = capability.HandleOperation(ctx, "delete_fact", []byte(`{"fact_id":"33333333-3333-4333-8333-333333333333","idempotency_key":"55555555-5555-4555-8555-555555555555"}`)); err != nil {
+		t.Fatal(err)
 	}
 	if _, err = capability.HandleOperation(context.Background(), "status", []byte(`{}`)); err == nil {
 		t.Fatal("status accepted unauthenticated context")

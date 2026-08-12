@@ -101,17 +101,6 @@ func (s *CoreCloudControlService) DeleteCredential(ctx context.Context, r *agent
 	return &agentv1.CoreCloudControlServiceDeleteCredentialResponse{}, nil
 }
 
-func (s *CoreCloudControlService) TestCredentialIdentity(ctx context.Context, r *agentv1.CoreCloudControlServiceTestCredentialIdentityRequest) (*agentv1.CoreCloudControlServiceTestCredentialIdentityResponse, error) {
-	if r == nil || !validCoreUUID(r.GetCredentialId()) {
-		return nil, status.Error(codes.InvalidArgument, "credential_id is invalid")
-	}
-	v, err := s.service.TestCredential(ctx, r.GetCredentialId())
-	if err != nil {
-		return nil, coreAWSRPCError(err)
-	}
-	return &agentv1.CoreCloudControlServiceTestCredentialIdentityResponse{CredentialId: v.CredentialID, AccountId: v.Identity.AccountID, UserArn: v.Identity.UserARN, PrincipalId: v.Identity.PrincipalID, CredentialRevision: v.CredentialRevision, TestedAt: timestamppb.New(v.TestedAt.UTC())}, nil
-}
-
 func (s *CoreCloudControlService) CreatePlan(ctx context.Context, r *agentv1.CoreCloudControlServiceCreatePlanRequest) (*agentv1.CoreCloudControlServiceCreatePlanResponse, error) {
 	if r == nil || !validCoreUUID(r.GetIdempotencyKey()) || !validCoreUUID(r.GetCredentialId()) {
 		return nil, status.Error(codes.InvalidArgument, "invalid plan creation")
@@ -210,17 +199,6 @@ func (s *CoreCloudControlService) ListChanges(ctx context.Context, r *agentv1.Co
 		out.Changes = append(out.Changes, changeProto(v))
 	}
 	return out, nil
-}
-
-func (s *CoreCloudControlService) GetChangeStatus(ctx context.Context, r *agentv1.CoreCloudControlServiceGetChangeStatusRequest) (*agentv1.CoreCloudControlServiceGetChangeStatusResponse, error) {
-	if r == nil || !validCoreUUID(r.GetChangeId()) {
-		return nil, status.Error(codes.InvalidArgument, "change_id is invalid")
-	}
-	v, err := s.service.GetChange(ctx, r.GetChangeId())
-	if err != nil {
-		return nil, coreAWSRPCError(err)
-	}
-	return &agentv1.CoreCloudControlServiceGetChangeStatusResponse{Change: changeProto(v), Status: string(v.Status), Stage: string(v.Stage)}, nil
 }
 
 func credentialProto(v coreaws.CredentialView) *agentv1.CoreAWSCredential {

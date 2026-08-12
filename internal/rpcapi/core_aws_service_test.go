@@ -44,10 +44,6 @@ func TestCoreCloudControlServiceCredentialsAndPlan(t *testing.T) {
 	if err != nil || quote.Quote.GetPlanDigest() == "" {
 		t.Fatalf("quote: %#v %v", quote, err)
 	}
-	identity, err := s.TestCredentialIdentity(ctx, &agentv1.CoreCloudControlServiceTestCredentialIdentityRequest{CredentialId: credResp.Credential.GetCredentialId()})
-	if err != nil || identity.GetAccountId() != "123456789012" {
-		t.Fatalf("identity: %#v %v", identity, err)
-	}
 }
 
 func TestCoreCloudControlServiceChangeReadsSurviveServiceRecreation(t *testing.T) {

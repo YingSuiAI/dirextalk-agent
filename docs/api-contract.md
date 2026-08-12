@@ -35,8 +35,8 @@ Capability service after their production graph and readiness proof pass.
 Health and reflection are optional. Core has no REST API, admin UI, or
 multi-user authorization surface.
 
-`AgentService.GetInstanceInfo` and authenticated `agent.info.v1` status expose
-the immutable image `release_version` separately from `api_version`. Release
+`AgentService.GetInstanceInfo` and authenticated `agent.info.v1/get_backends`
+expose the immutable image `release_version` separately from `api_version`. Release
 builds inject a v-prefixed semantic version (for example `v1.0.0`) into the
 Agent binary; local builds report `dev`. This field contains no revision,
 credential, endpoint, or other secret deployment metadata.
@@ -89,15 +89,13 @@ multi-tenant model.
 - On every Native conversation turn, `Chat`, `StreamChat`, and `StartTurn`
   compose two memory layers before model dispatch. Working memory remains the
   durable conversation summary plus recent transcript window. Long-term memory
-  combines relevance-ranked current user facts, a bounded newest-first fact
-  timeline, and semantic passages from ready memory sources whose promoted
-  binding exactly matches the active embedding profile ID, profile revision,
-  and collection configuration digest. Current facts take precedence over
-  older timeline or semantic passages. The bounded envelope is inserted as
+  combines relevance-ranked current user facts with a bounded newest-first
+  fact timeline. Current facts take precedence over older timeline entries.
+  The bounded envelope is inserted as
   explicitly delimited model-only reference data before the current prompt; it
   is never copied into conversation messages, turn/event payloads, public
   Knowledge cursor snapshots, logs, or Capability results. An unavailable
-  recall dependency fails closed before model dispatch; an empty recall is a
+  structured-memory dependency fails closed before model dispatch; an empty recall is a
   successful empty context.
 - Every successfully committed Native exchange atomically creates a private
   consolidation observation. A restart-safe worker uses the selected
@@ -110,12 +108,17 @@ multi-tenant model.
   chat. Secrets, assistant assertions, transient requests, guesses, and
   sensitive inferences are excluded by the extraction contract.
 - Automatic structured conversation memory starts disabled. The owner-client
-  `agent.memory.v1/get_config`, `update_config`, and `status` operations use
-  revision fencing and UUID idempotency. Enabling requires the current
+  `agent.memory.v1/get_config`, `update_config`, `status`, `update_fact`, and
+  `delete_fact` operations expose the only long-term-memory surface. Config
+  changes use revision fencing; fact edits and retractions fence the exact
+  immutable active fact ID. Mutations use UUID idempotency. Editing preserves
+  subject, predicate, kind, and confidence while creating a replacement fact
+  plus a `replaced` timeline event; deleting retracts the exact active fact and
+  appends a `retracted` event. Enabling requires the current
   Knowledge embedding binding to resolve to a non-deleted embedding profile
   with configured credentials. Disabling preserves facts and the complete
   conflict timeline but returns an empty structured-memory recall and stops new
-  observations; semantic Knowledge and durable conversation history keep their
+  observations; Knowledge search and durable conversation history keep their
   independent contracts. Timeline events publish separate RFC3339
   `effective_at` and `observed_at` clocks.
 - Authenticated Native conversations also receive one Agent-owned, read-only
@@ -200,8 +203,7 @@ multi-tenant model.
   receipt; an abandoned or completion-uncertain claim becomes fail-closed and
   is never taken over for a second STS request. Credential verification
   timestamps and replay receipts are monotonic when different keys complete
-  out of order. The legacy gRPC `TestCredentialIdentity` method remains the
-  separate non-keyed seam.
+  out of order. There is no separate non-keyed credential test RPC.
 - Neutral Capability model-profile mutations and conversation mutations also
   require explicit canonical UUID idempotency keys. Missing or malformed keys
   are rejected rather than replaced with adapter-generated identities.

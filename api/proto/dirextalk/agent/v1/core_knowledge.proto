@@ -10,7 +10,6 @@ enum CoreKnowledgeSourceKind {
   CORE_KNOWLEDGE_SOURCE_KIND_UNSPECIFIED = 0;
   CORE_KNOWLEDGE_SOURCE_KIND_MOUNT = 1;
   CORE_KNOWLEDGE_SOURCE_KIND_UPLOAD = 2;
-  CORE_KNOWLEDGE_SOURCE_KIND_MEMORY = 3;
 }
 
 enum CoreKnowledgeSourceStatus {
@@ -107,16 +106,6 @@ message CoreKnowledgeServiceAbortUploadRequest {
 }
 message CoreKnowledgeServiceAbortUploadResponse {}
 
-message CoreKnowledgeServiceCreateMemoryRequest {
-  string idempotency_key = 1;
-  string source_id = 2;
-  string title = 3;
-  string content = 4;
-  string content_sha256 = 5;
-  string media_type = 6;
-}
-message CoreKnowledgeServiceCreateMemoryResponse { CoreKnowledgeSource source = 1; }
-
 message CoreKnowledgeServiceListSourcesRequest {
   int32 page_size = 1;
   string page_token = 2;
@@ -181,7 +170,6 @@ service CoreKnowledgeService {
   rpc Upload(stream CoreKnowledgeServiceUploadRequest) returns (CoreKnowledgeServiceUploadResponse);
   rpc CommitUpload(CoreKnowledgeServiceCommitUploadRequest) returns (CoreKnowledgeServiceCommitUploadResponse);
   rpc AbortUpload(CoreKnowledgeServiceAbortUploadRequest) returns (CoreKnowledgeServiceAbortUploadResponse);
-  rpc CreateMemory(CoreKnowledgeServiceCreateMemoryRequest) returns (CoreKnowledgeServiceCreateMemoryResponse);
   rpc ListSources(CoreKnowledgeServiceListSourcesRequest) returns (CoreKnowledgeServiceListSourcesResponse);
   rpc GetSource(CoreKnowledgeServiceGetSourceRequest) returns (CoreKnowledgeServiceGetSourceResponse);
   rpc DeleteSource(CoreKnowledgeServiceDeleteSourceRequest) returns (CoreKnowledgeServiceDeleteSourceResponse);

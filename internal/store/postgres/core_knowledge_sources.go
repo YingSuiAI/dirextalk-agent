@@ -11,7 +11,6 @@ import (
 	"path"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/google/uuid"
@@ -130,62 +129,6 @@ func (r *CoreKnowledgeStore) Get(ctx context.Context, id string) (coreknowledge.
 		return coreknowledge.Source{}, coreknowledge.ErrConflict
 	}
 	return s, nil
-}
-
-func (r *CoreKnowledgeStore) GetMemory(ctx context.Context, id string) (coreknowledge.Memory, error) {
-	s, err := r.Get(ctx, id)
-	if err != nil {
-		return coreknowledge.Memory{}, err
-	}
-	if s.Kind != coreknowledge.SourceKindMemory {
-		return coreknowledge.Memory{}, coreknowledge.ErrNotFound
-	}
-	content, err := r.readMemoryContent(ctx, s)
-	if err != nil {
-		return coreknowledge.Memory{}, err
-	}
-	return coreknowledge.Memory{ID: s.ID, Title: s.Title, Content: content, Tags: append([]string(nil), s.Tags...), Revision: s.Revision, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, ErrorCode: s.ErrorCode}, nil
-}
-
-func (r *CoreKnowledgeStore) ListMemories(ctx context.Context, q coreknowledge.ListQuery) (coreknowledge.MemoryPage, error) {
-	q.Kind = coreknowledge.SourceKindMemory
-	page, err := r.List(ctx, q)
-	if err != nil {
-		return coreknowledge.MemoryPage{}, err
-	}
-	items := make([]coreknowledge.Memory, 0, len(page.Sources))
-	for _, source := range page.Sources {
-		// Deleted memories intentionally retain a tombstone row for exact-once
-		// deletion replay, but their immutable content has already been removed.
-		// A normal memory list must therefore hide the tombstone instead of
-		// attempting to reopen a content reference that no longer exists.
-		if source.Status == coreknowledge.SourceStatusDeleted {
-			continue
-		}
-		content, readErr := r.readMemoryContent(ctx, source)
-		if readErr != nil {
-			return coreknowledge.MemoryPage{}, readErr
-		}
-		items = append(items, coreknowledge.Memory{ID: source.ID, Title: source.Title, Content: content, Tags: append([]string(nil), source.Tags...), Revision: source.Revision, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt, ErrorCode: source.ErrorCode})
-	}
-	return coreknowledge.MemoryPage{Items: items, NextPageToken: page.NextPageToken}, nil
-}
-
-func (r *CoreKnowledgeStore) readMemoryContent(ctx context.Context, source coreknowledge.Source) (string, error) {
-	reader, ok := r.content.(coreknowledge.ContentReader)
-	if !ok || strings.TrimSpace(source.ContentRef) == "" {
-		return "", coreknowledge.ErrFilesystemUnavailable
-	}
-	file, err := reader.OpenContent(ctx, coreknowledge.ContentReference{Ref: source.ContentRef, Digest: source.Digest, SizeBytes: source.SizeBytes})
-	if err != nil || file == nil {
-		return "", coreknowledge.ErrFilesystemUnavailable
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, int64(coreknowledge.MaxMemoryBytes)+1))
-	if err != nil || len(data) > coreknowledge.MaxMemoryBytes || int64(len(data)) != source.SizeBytes || !strings.EqualFold(digestBytesKnowledge(data), source.Digest) || !utf8.Valid(data) {
-		return "", coreknowledge.ErrChecksumMismatch
-	}
-	return string(data), nil
 }
 
 type knowledgeCursor struct {

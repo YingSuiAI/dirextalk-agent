@@ -46,12 +46,6 @@ func (r *knowledgeRPCRepo) CommitUpload(context.Context, coreknowledge.CommitUpl
 func (r *knowledgeRPCRepo) AbortUpload(context.Context, coreknowledge.AbortUploadCommand) error {
 	return nil
 }
-func (r *knowledgeRPCRepo) CreateMemory(context.Context, coreknowledge.MemoryCommand) (coreknowledge.Source, error) {
-	return coreknowledge.Source{}, nil
-}
-func (r *knowledgeRPCRepo) UpdateMemory(context.Context, coreknowledge.UpdateMemoryCommand) (coreknowledge.Source, error) {
-	return coreknowledge.Source{}, nil
-}
 func (r *knowledgeRPCRepo) Get(context.Context, string) (coreknowledge.Source, error) {
 	return coreknowledge.Source{}, nil
 }

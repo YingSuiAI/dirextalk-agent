@@ -9,7 +9,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -400,9 +399,6 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 		return nil, err
 	}
 	key := stringValue(in, "idempotency_key")
-	if key == "" {
-		key = stringValue(in, "request_id")
-	}
 	if chatOperationRequiresKey(operationID) && !coretask.ValidUUID(key) {
 		return nil, coreconversation.ErrInvalid
 	}
@@ -438,7 +434,7 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 		messages, next, err := pageConversationMessages(conversationID, value.Messages, pageToken, limit)
 		return marshalResult(map[string]any{"conversation": projectConversation(value), "messages": messages, "next_page_token": next}, err)
 	case "list_conversations":
-		limit, err := boundedIntValue(in, "limit", 50, 1, 100)
+		limit, err := boundedIntValue(in, "page_size", 50, 1, 100)
 		if err != nil {
 			return nil, err
 		}
@@ -1100,7 +1096,7 @@ func (c *coreConfirmationCapability) HandleOperation(ctx context.Context, operat
 		for _, value := range stringSlice(in, "states") {
 			states = append(states, coreconfirmation.State(value))
 		}
-		page, err := c.service.ListAuthorized(ctx, authority, coreconfirmation.ListQuery{PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token"), Domain: stringValue(in, "operation_domain"), TargetID: stringValue(in, "target_id"), States: states})
+		page, err := c.service.ListAuthorized(ctx, authority, coreconfirmation.ListQuery{PageSize: pageSize(in, 50), PageToken: stringValue(in, "page_token"), Domain: stringValue(in, "operation_domain"), TargetID: stringValue(in, "target_id"), States: states})
 		publicConfirmations := make([]coreconfirmation.PublicConfirmation, 0, len(page.Confirmations))
 		for _, value := range page.Confirmations {
 			publicConfirmations = append(publicConfirmations, value.Public())
@@ -1164,7 +1160,7 @@ func (v syncProfileInput) command() coremodel.SyncProfileEntry {
 
 func (c *coreModelCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.models.v1", "Model Profiles", "Core model profile operations", []opSpec{
-		{"list_models", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"}, {"get_model", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"}, {"sync_models", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:models:write"}, {"create_model", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:models:write"}, {"update_model", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:models:write"}, {"delete_model", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:models:write"}, {"test_model", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"},
+		{"list_models", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"}, {"get_model", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"}, {"sync_models", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:models:write"}, {"delete_model", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:models:write"}, {"test_model", capv1.OperationType_OPERATION_TYPE_READ, "agent:models:read"},
 	})
 }
 func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
@@ -1224,7 +1220,7 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 		}
 		return marshalResult(result, nil)
 	case "list_models":
-		p, err := c.service.List(ctx, coremodel.ListProfileCommand{Cursor: stringValue(in, "page_token"), Limit: intValue(in, "limit", 50)})
+		p, err := c.service.List(ctx, coremodel.ListProfileCommand{Cursor: stringValue(in, "page_token"), Limit: pageSize(in, 50)})
 		if err != nil {
 			return nil, err
 		}
@@ -1234,20 +1230,6 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 		return marshalResult(p, err)
 	case "test_model":
 		p, err := c.service.TestConnectionWithIdempotency(ctx, stringValue(in, "profile_id"), key)
-		return marshalResult(p, err)
-	case "create_model":
-		spec, err := profileSpec(in, false)
-		if err != nil {
-			return nil, err
-		}
-		p, err := c.service.Create(ctx, coremodel.CreateProfileCommand{IdempotencyKey: key, Spec: spec})
-		return marshalResult(p, err)
-	case "update_model":
-		spec, err := profileSpec(in, true)
-		if err != nil {
-			return nil, err
-		}
-		p, err := c.service.Update(ctx, coremodel.UpdateProfileCommand{ID: stringValue(in, "profile_id"), IdempotencyKey: key, ExpectedRevision: int64(intValue(in, "expected_revision", 0)), Spec: spec})
 		return marshalResult(p, err)
 	case "delete_model":
 		p, err := c.service.Delete(ctx, coremodel.DeleteProfileCommand{ID: stringValue(in, "profile_id"), IdempotencyKey: key, ExpectedRevision: int64(intValue(in, "expected_revision", 0))})
@@ -1322,10 +1304,10 @@ func (c *coreTaskCapability) HandleOperation(ctx context.Context, operationID st
 			v := coretask.Status(rawStatus)
 			taskStatus = &v
 		}
-		items, next, err := c.service.ListTasks(ctx, coretask.TaskListQuery{Cursor: stringValue(in, "page_token"), Limit: pageLimit(in, 50), Status: taskStatus, IncludeDeleted: boolValue(in, "include_deleted")})
+		items, next, err := c.service.ListTasks(ctx, coretask.TaskListQuery{Cursor: stringValue(in, "page_token"), Limit: pageSize(in, 50), Status: taskStatus, IncludeDeleted: boolValue(in, "include_deleted")})
 		return marshalResult(map[string]any{"tasks": items, "next_page_token": next}, err)
 	case "list_task_events":
-		items, next, err := c.service.ListProgress(ctx, stringValue(in, "task_id"), uint64Value(in, "after_sequence"), pageLimit(in, 100))
+		items, next, err := c.service.ListProgress(ctx, stringValue(in, "task_id"), uint64Value(in, "after_sequence"), intValue(in, "limit", 100))
 		if err != nil {
 			return nil, err
 		}
@@ -1466,7 +1448,7 @@ func mergeSearchProvenance(value map[string]any, page coreknowledge.SearchPage) 
 
 func (c *coreKnowledgeCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.knowledge.v1", "Knowledge and Memory", "Core Knowledge, embeddings and long-term memory", []opSpec{
-		{"get_config", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"}, {"update_config", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"create_memory", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"list_sources", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"}, {"get_source", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"}, {"delete_source", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"start_upload", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"append_upload_chunk", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"commit_upload", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"list_memories", capv1.OperationType_OPERATION_TYPE_READ, "agent:memory:read"}, {"get_memory", capv1.OperationType_OPERATION_TYPE_READ, "agent:memory:read"}, {"update_memory", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:memory:write"}, {"delete_memory", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:memory:write"}, {"search_knowledge", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"}, {"search_memory", capv1.OperationType_OPERATION_TYPE_READ, "agent:memory:read"}, {"index_sources", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"status", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"},
+		{"get_config", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"}, {"update_config", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"list_sources", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"}, {"get_source", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"}, {"delete_source", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"start_upload", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"append_upload_chunk", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"commit_upload", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"search_knowledge", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"}, {"index_sources", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"status", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"},
 	})
 }
 func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
@@ -1508,9 +1490,6 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 		}
 		profileID := stringValue(in, "embedding_profile_id")
 		if profileID == "" {
-			profileID = stringValue(in, "profile_id")
-		}
-		if profileID == "" {
 			profileID = current.EmbeddingProfileID
 		}
 		dimension := intValue(in, "dimension", current.Dimension)
@@ -1542,30 +1521,8 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 			return nil, coreknowledge.ErrConflict
 		}
 		return marshalResult(mergeKnowledgeProjection(projection, currentProjection), nil)
-	case "create_memory":
-		content := stringValue(in, "content")
-		mediaType := stringValue(in, "media_type")
-		if mediaType == "" {
-			mediaType = "text/plain"
-		}
-		sum := sha256.Sum256([]byte(content))
-		sourceID := stringValue(in, "source_id")
-		if !coretask.ValidUUID(sourceID) {
-			sourceID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("memory:"+key)).String()
-		}
-		source, err := c.service.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: key, SourceID: sourceID, Title: stringValue(in, "title"), Content: content, ContentSHA256: hex.EncodeToString(sum[:]), MediaType: mediaType, Tags: stringSlice(in, "tags")})
-		if err != nil {
-			return nil, err
-		}
-		memory, readErr := c.service.GetMemory(ctx, source.ID)
-		if readErr != nil {
-			return nil, readErr
-		}
-		value := memoryJSON(memory, false)
-		c.mergeEmbeddingSourceProjection(ctx, value, source.ID)
-		return marshalResult(mergeKnowledgeProjection(value, c.embeddingProjection(ctx)), nil)
 	case "list_sources":
-		p, err := c.service.List(ctx, coreknowledge.ListQuery{PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token"), Kind: coreknowledge.SourceKind(stringValue(in, "kind")), Status: coreknowledge.SourceStatus(stringValue(in, "status"))})
+		p, err := c.service.List(ctx, coreknowledge.ListQuery{PageSize: pageSize(in, 50), PageToken: stringValue(in, "page_token"), Kind: coreknowledge.SourceKind(stringValue(in, "kind")), Status: coreknowledge.SourceStatus(stringValue(in, "status"))})
 		if err != nil {
 			return nil, err
 		}
@@ -1591,9 +1548,6 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 		return marshalResult(map[string]any{"source": value, "replayed": false}, err)
 	case "start_upload":
 		declared := int64Value(in, "declared_size")
-		if declared == 0 {
-			declared = int64Value(in, "size")
-		}
 		title := stringValue(in, "title")
 		// Upload titles are optional at the capability boundary. PostgreSQL
 		// stores a non-empty source label, so use a stable generic label when
@@ -1602,9 +1556,6 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 			title = "upload"
 		}
 		meta := coreknowledge.UploadMetadata{IdempotencyKey: key, UploadID: stringValue(in, "upload_id"), SourceID: stringValue(in, "source_id"), Title: title, RelativePath: stringValue(in, "relative_path"), MediaType: stringValue(in, "media_type")}
-		if meta.MediaType == "" {
-			meta.MediaType = stringValue(in, "mime_type")
-		}
 		meta.DeclaredSize, meta.ContentSHA256 = declared, stringValue(in, "content_sha256")
 		u, err := c.service.StartUpload(ctx, meta)
 		return marshalResult(uploadJSON(u, true), err)
@@ -1612,9 +1563,6 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 		uploadID := stringValue(in, "upload_id")
 		ordinal := int32(int64Value(in, "ordinal"))
 		offset := int64Value(in, "offset_bytes")
-		if offset == 0 {
-			offset = int64Value(in, "offset")
-		}
 		if ordinal == 0 && offset > 0 {
 			ordinal = int32(offset / int64(coreknowledge.MaxUploadChunkBytes))
 		}
@@ -1627,73 +1575,12 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 	case "commit_upload":
 		uploadID := stringValue(in, "upload_id")
 		expected := int64Value(in, "expected_revision")
-		if expected == 0 {
-			u, readErr := c.service.GetUpload(ctx, uploadID)
-			if readErr != nil {
-				return nil, readErr
-			}
-			expected = u.Revision
-		}
 		u, source, err := c.service.CommitUpload(ctx, coreknowledge.CommitUploadCommand{IdempotencyKey: key, UploadID: uploadID, ExpectedRevision: expected, ContentSHA256: stringValue(in, "content_sha256")})
 		value := sourceJSON(source)
 		c.mergeEmbeddingSourceProjection(ctx, value, source.ID)
 		return marshalResult(map[string]any{"upload": uploadJSON(u, false), "source": value}, err)
-	case "list_memories":
-		p, err := c.service.ListMemories(ctx, coreknowledge.ListQuery{PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token"), Kind: coreknowledge.SourceKindMemory, Status: coreknowledge.SourceStatus(stringValue(in, "status"))})
-		return marshalResult(p, err)
-	case "get_memory":
-		memory, err := c.service.GetMemory(ctx, stringValue(in, "memory_id"))
-		if err != nil {
-			return nil, err
-		}
-		value := memoryJSON(memory, false)
-		c.mergeEmbeddingSourceProjection(ctx, value, memory.ID)
-		return marshalResult(value, nil)
-	case "update_memory":
-		memoryID := stringValue(in, "memory_id")
-		if memoryID == "" {
-			memoryID = stringValue(in, "source_id")
-		}
-		content := stringValue(in, "content")
-		mediaType := stringValue(in, "media_type")
-		if mediaType == "" {
-			mediaType = "text/plain"
-		}
-		digest := stringValue(in, "content_sha256")
-		if digest == "" {
-			sum := sha256.Sum256([]byte(content))
-			digest = hex.EncodeToString(sum[:])
-		}
-		s, err := c.service.UpdateMemory(ctx, coreknowledge.UpdateMemoryCommand{IdempotencyKey: key, SourceID: memoryID, ExpectedRevision: int64Value(in, "expected_revision"), Title: stringValue(in, "title"), Content: content, ContentSHA256: digest, MediaType: mediaType, Tags: stringSlice(in, "tags")})
-		if err != nil {
-			return nil, err
-		}
-		memory, readErr := c.service.GetMemory(ctx, s.ID)
-		if readErr != nil {
-			return nil, readErr
-		}
-		value := memoryJSON(memory, false)
-		c.mergeEmbeddingSourceProjection(ctx, value, s.ID)
-		return marshalResult(value, nil)
-	case "delete_memory":
-		memoryID := stringValue(in, "memory_id")
-		before, beforeErr := c.service.GetMemory(ctx, memoryID)
-		if beforeErr != nil {
-			return nil, beforeErr
-		}
-		s, err := c.service.Delete(ctx, coreknowledge.DeleteCommand{IdempotencyKey: key, SourceID: memoryID, ExpectedRevision: int64Value(in, "expected_revision"), Kind: coreknowledge.SourceKindMemory})
-		if err != nil {
-			return nil, err
-		}
-		before.Revision, before.UpdatedAt = s.Revision, s.UpdatedAt
-		value := memoryJSON(before, false)
-		c.mergeEmbeddingSourceProjection(ctx, value, before.ID)
-		return marshalResult(value, nil)
-	case "search_knowledge", "search_memory":
+	case "search_knowledge":
 		kind := coreknowledge.SourceKind(stringValue(in, "kind"))
-		if operationID == "search_memory" {
-			kind = coreknowledge.SourceKindMemory
-		}
 		p, err := c.service.Search(ctx, coreknowledge.SearchQuery{Query: stringValue(in, "query"), SourceIDs: stringSlice(in, "source_ids"), Limit: intValue(in, "limit", 20), PageToken: stringValue(in, "page_token"), Kind: kind})
 		if err == nil {
 			p.SearchMode = "semantic"
@@ -1762,7 +1649,7 @@ func (c *coreProductBridgeCapability) Descriptor() *capv1.CapabilityDescriptor {
 
 func (c *coreExtensionCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.skills.v1", "Skills and MCP", "Core isolated Skills/MCP operations", []opSpec{
-		{"discover_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"get_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"list_skills", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"inspect_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"install_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"update_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"remove_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"enable_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"disable_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"list_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"discover_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"get_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"inspect_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"install_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"update_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"remove_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"enable_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"disable_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"list_tools", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"invoke_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:execute"}, {"execute_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:execute"}, {"invoke_product", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:product:execute"},
+		{"discover_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"get_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"list_skills", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"inspect_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"install_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"update_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"remove_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"list_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"discover_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"get_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"inspect_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"install_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"update_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"remove_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"list_tools", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"invoke_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:execute"}, {"execute_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:execute"}, {"invoke_product", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:product:execute"},
 	})
 }
 func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
@@ -1785,13 +1672,13 @@ func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operation
 				source = coreextension.SourceOfficialRegistry
 			}
 		}
-		page, err := c.service.Search(ctx, coreextension.SearchQuery{Kind: kind, Source: source, Text: stringValue(in, "query"), PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token")})
+		page, err := c.service.Search(ctx, coreextension.SearchQuery{Kind: kind, Source: source, Text: stringValue(in, "query"), PageSize: pageSize(in, 50), PageToken: stringValue(in, "page_token")})
 		return marshalResult(map[string]any{"candidates": page.Candidates, "next_page_token": page.NextPageToken}, err)
 	case "list_skills":
-		p, err := c.service.List(ctx, coreextension.ListQuery{Kind: coreextension.KindSkill, Source: coreextension.Source(stringValue(in, "source")), PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token"), State: coreextension.State(stringValue(in, "state"))})
+		p, err := c.service.List(ctx, coreextension.ListQuery{Kind: coreextension.KindSkill, Source: coreextension.Source(stringValue(in, "source")), PageSize: pageSize(in, 50), PageToken: stringValue(in, "page_token"), State: coreextension.State(stringValue(in, "state"))})
 		return marshalResult(p.Public(), err)
 	case "list_mcp":
-		p, err := c.service.List(ctx, coreextension.ListQuery{Kind: coreextension.KindMCP, PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token"), Source: coreextension.Source(stringValue(in, "source")), State: coreextension.State(stringValue(in, "state"))})
+		p, err := c.service.List(ctx, coreextension.ListQuery{Kind: coreextension.KindMCP, PageSize: pageSize(in, 50), PageToken: stringValue(in, "page_token"), Source: coreextension.Source(stringValue(in, "source")), State: coreextension.State(stringValue(in, "state"))})
 		return marshalResult(p.Public(), err)
 	case "get_skill":
 		x, err := c.service.Get(ctx, stringValue(in, "installation_id"))
@@ -1837,30 +1724,6 @@ func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operation
 	case "remove_skill", "remove_mcp":
 		mutation := coreextension.Mutation{IdempotencyKey: key, InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision")}
 		x, err := c.service.RequestUninstall(ctx, mutation)
-		return marshalResult(x.Public(), err)
-	case "enable_skill", "skills_enable":
-		x, err := c.service.Enable(ctx, coreextension.ToggleCommand{IdempotencyKey: key, InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision")})
-		if err == nil && x.Kind != coreextension.KindSkill {
-			err = coreextension.ErrInvalid
-		}
-		return marshalResult(x.Public(), err)
-	case "disable_skill", "skills_disable":
-		x, err := c.service.Disable(ctx, coreextension.ToggleCommand{IdempotencyKey: key, InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision")})
-		if err == nil && x.Kind != coreextension.KindSkill {
-			err = coreextension.ErrInvalid
-		}
-		return marshalResult(x.Public(), err)
-	case "enable_mcp", "mcp_enable":
-		x, err := c.service.Enable(ctx, coreextension.ToggleCommand{IdempotencyKey: key, InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision")})
-		if err == nil && x.Kind != coreextension.KindMCP {
-			err = coreextension.ErrInvalid
-		}
-		return marshalResult(x.Public(), err)
-	case "disable_mcp", "mcp_disable":
-		x, err := c.service.Disable(ctx, coreextension.ToggleCommand{IdempotencyKey: key, InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision")})
-		if err == nil && x.Kind != coreextension.KindMCP {
-			err = coreextension.ErrInvalid
-		}
 		return marshalResult(x.Public(), err)
 	case "list_tools":
 		x, err := c.service.ListTools(ctx, stringValue(in, "installation_id"), int64Value(in, "expected_revision"))
@@ -2122,14 +1985,6 @@ const durableChatStreamResultSchema = `{"additionalProperties":false,"properties
 
 const durableChatStreamEventSchema = `{"additionalProperties":false,"allOf":[{"if":{"properties":{"kind":{"const":"waiting_confirmation"}}},"then":{"not":{"anyOf":[{"required":["text"]},{"required":["tool_call"]},{"required":["tool_result"]},{"required":["response"]},{"required":["error_code"]},{"required":["error_summary"]}]},"required":["confirmation_id","execution_id","status"]},"else":{"not":{"anyOf":[{"required":["confirmation_id"]},{"required":["execution_id"]},{"required":["status"]}]}}}],"properties":{"confirmation_id":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"error_code":{"type":"string"},"error_summary":{"type":"string"},"execution_id":{"format":"uuid","type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"kind":{"enum":["accepted","started","delta","tool_call","tool_result","waiting_confirmation","done","error"],"type":"string"},"response":` + durableChatStreamResultSchema + `,"revision":{"minimum":1,"type":"integer"},"status":{"const":"waiting_confirmation","type":"string"},"text":{"type":"string"},"tool_call":{"type":"object"},"tool_result":{"type":"object"},"turn_id":{"format":"uuid","type":"string"}},"required":["kind","idempotency_key","conversation_id","turn_id","revision"],"type":"object"}`
 
-const memoryResultSchema = `{"additionalProperties":false,"properties":{"content":{"type":"string"},"created_at":{"format":"date-time","type":"string"},"embedding_indexed":{"type":"boolean"},"embedding_revision":{"minimum":0,"type":"integer"},"embedding_stale":{"type":"boolean"},"embedding_status":{"type":"string"},"error_code":{"type":"string"},"memory_id":{"format":"uuid","type":"string"},"replayed":{"type":"boolean"},"revision":{"minimum":1,"type":"integer"},"tags":{"items":{"type":"string"},"type":"array"},"title":{"type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["memory_id","title","content","tags","revision","created_at","updated_at","replayed","embedding_indexed","embedding_stale","embedding_status"],"type":"object"}`
-
-const memoryCreateResultSchema = `{"additionalProperties":false,"properties":{"content":{"type":"string"},"created_at":{"format":"date-time","type":"string"},"embedding_indexed":{"type":"boolean"},"embedding_model":{"type":"string"},"embedding_profile_id":{"format":"uuid","type":"string"},"embedding_profile_revision":{"minimum":1,"type":"integer"},"embedding_revision":{"minimum":0,"type":"integer"},"embedding_stale":{"type":"boolean"},"embedding_status":{"type":"string"},"error_code":{"type":"string"},"memory_id":{"format":"uuid","type":"string"},"replayed":{"type":"boolean"},"revision":{"minimum":1,"type":"integer"},"tags":{"items":{"type":"string"},"type":"array"},"title":{"type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["memory_id","title","content","tags","revision","created_at","updated_at","replayed","embedding_indexed","embedding_stale","embedding_status"],"type":"object"}`
-
-const memoryListItemSchema = `{"additionalProperties":false,"properties":{"content":{"type":"string"},"created_at":{"format":"date-time","type":"string"},"embedding_indexed":{"type":"boolean"},"embedding_stale":{"type":"boolean"},"embedding_status":{"type":"string"},"error_code":{"type":"string"},"memory_id":{"format":"uuid","type":"string"},"revision":{"minimum":1,"type":"integer"},"tags":{"items":{"type":"string"},"type":"array"},"title":{"type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["memory_id","title","content","tags","revision","created_at","updated_at","embedding_indexed","embedding_stale","embedding_status"],"type":"object"}`
-
-const memoryListResultSchema = `{"additionalProperties":false,"properties":{"items":{"items":` + memoryListItemSchema + `,"type":"array"},"next_page_token":{"type":"string"}},"required":["items","next_page_token"],"type":"object"}`
-
 func operationEventSchema(capabilityID, operation string) string {
 	if capabilityID == "agent.chat.v1" && operation == "stream_chat" {
 		return durableChatStreamEventSchema
@@ -2141,14 +1996,8 @@ func operationResultSchema(capabilityID, operation string) string {
 	switch capabilityID + ":" + operation {
 	case "agent.knowledge.v1:get_config", "agent.knowledge.v1:update_config":
 		return `{"type":"object","properties":{"embedding_profile_id":{"type":"string"},"embedding_profile_revision":{"type":"integer"},"embedding_model":{"type":"string"},"dimension":{"type":"integer"},"collection":{"type":"string"},"collection_config_digest":{"type":"string"},"revision":{"type":"integer"},"updated_at":{"type":"string"}},"required":["embedding_profile_id","embedding_profile_revision","embedding_model","collection_config_digest","revision"]}`
-	case "agent.knowledge.v1:search_knowledge", "agent.knowledge.v1:search_memory":
+	case "agent.knowledge.v1:search_knowledge":
 		return `{"type":"object","properties":{"items":{"type":"array"},"next_cursor":{"type":"string"},"search_mode":{"type":"string"},"embedding_profile_id":{"type":"string"},"embedding_profile_revision":{"type":"integer"},"embedding_model":{"type":"string"},"embedding_generation":{"type":"string"},"collection_config_digest":{"type":"string"}},"required":["items","next_cursor","search_mode"]}`
-	case "agent.knowledge.v1:create_memory":
-		return memoryCreateResultSchema
-	case "agent.knowledge.v1:list_memories":
-		return memoryListResultSchema
-	case "agent.knowledge.v1:get_memory", "agent.knowledge.v1:update_memory", "agent.knowledge.v1:delete_memory":
-		return memoryResultSchema
 	case "agent.knowledge.v1:status":
 		return `{"additionalProperties":false,"properties":{"checked_at":{"format":"date-time","type":"string"},"cleanup_pending_count":{"minimum":0,"type":"integer"},"count":{"minimum":0,"type":"integer"},"embedding_indexed":{"minimum":0,"type":"integer"},"embedding_model":{"type":"string"},"embedding_profile_id":{"format":"uuid","type":"string"},"embedding_profile_revision":{"minimum":1,"type":"integer"},"embedding_stale":{"minimum":0,"type":"integer"},"failed_count":{"minimum":0,"type":"integer"},"indexing_count":{"minimum":0,"type":"integer"},"max_source_bytes":{"const":16777216,"type":"integer"},"quota_limit_bytes":{"const":67108864,"type":"integer"},"quota_remaining_bytes":{"minimum":0,"type":"integer"},"quota_used_bytes":{"minimum":0,"type":"integer"},"ready_count":{"minimum":0,"type":"integer"},"supported":{"type":"boolean"},"uploading_count":{"minimum":0,"type":"integer"}},"required":["supported","count","embedding_indexed","embedding_stale","ready_count","uploading_count","indexing_count","failed_count","cleanup_pending_count","checked_at","quota_used_bytes","quota_limit_bytes","quota_remaining_bytes","max_source_bytes"],"type":"object"}`
 	case "agent.chat.v1:list_turns":
@@ -2188,7 +2037,7 @@ func operationInputSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:get_conversation":
 		return `{"type":"object","properties":{"conversation_id":{"type":"string"},"page_token":{"type":"string"},"limit":{"type":"integer"}},"required":["conversation_id"]}`
 	case "agent.chat.v1:list_conversations":
-		return `{"type":"object","properties":{"page_token":{"type":"string"},"page_size":{"type":"integer"},"limit":{"type":"integer"}}}`
+		return `{"additionalProperties":false,"properties":{"page_size":{"maximum":100,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"}},"type":"object"}`
 	case "agent.chat.v1:rename_conversation":
 		return `{"type":"object","properties":{"conversation_id":{"type":"string"},"title":{"type":"string"},"expected_revision":{"type":"integer"},"idempotency_key":{"type":"string"}},"required":["conversation_id","title","expected_revision","idempotency_key"]}`
 	case "agent.chat.v1:delete_conversation":
@@ -2215,32 +2064,28 @@ func operationInputSchema(capabilityID, operation string) string {
 		return `{"additionalProperties":false,"type":"object","properties":{"accepted_attachment_ids":{"items":{"format":"uuid","type":"string"},"maxItems":4,"uniqueItems":true,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"message":{"minLength":1,"type":"string"},"model_profile_id":{"format":"uuid","type":"string"},"model_profile_revision":{"minimum":1,"type":"integer"},"credential_version":{"minimum":1,"type":"integer"},"extensions":{"items":` + durableStreamExtensionSelectionSchema + `,"maxItems":64,"minItems":1,"type":"array","uniqueItems":true}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
 	case "agent.models.v1:sync_models":
 		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"default_client_profile_id":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"entries":{"type":"array"}},"required":["idempotency_key","entries"]}`
+	case "agent.models.v1:list_models":
+		return `{"additionalProperties":false,"properties":{"page_size":{"maximum":100,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"}},"type":"object"}`
 	case "agent.knowledge.v1:list_sources":
-		return `{"type":"object","properties":{"page_token":{"type":"string"},"page_size":{"type":"integer"},"limit":{"type":"integer"},"kind":{"type":"string"},"status":{"type":"string"}}}`
+		return `{"additionalProperties":false,"properties":{"kind":{"type":"string"},"page_size":{"maximum":100,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"},"status":{"type":"string"}},"type":"object"}`
 	case "agent.knowledge.v1:get_config":
 		return `{"type":"object","additionalProperties":false}`
 	case "agent.knowledge.v1:delete_source":
 		return `{"type":"object","properties":{"source_id":{"type":"string"},"expected_revision":{"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["source_id","expected_revision","idempotency_key"]}`
 	case "agent.knowledge.v1:update_config":
-		return `{"type":"object","properties":{"idempotency_key":{"format":"uuid","type":"string"},"expected_revision":{"type":"integer"},"embedding_profile_id":{"type":"string"},"profile_id":{"type":"string"},"dimension":{"type":"integer"},"collection":{"type":"string"},"collection_config_digest":{"type":"string"}},"required":["idempotency_key","expected_revision"]}`
+		return `{"additionalProperties":false,"properties":{"collection":{"type":"string"},"collection_config_digest":{"type":"string"},"dimension":{"type":"integer"},"embedding_profile_id":{"format":"uuid","type":"string"},"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["idempotency_key","expected_revision"],"type":"object"}`
 	case "agent.knowledge.v1:start_upload":
 		return `{"type":"object","properties":{"upload_id":{"type":"string"},"source_id":{"type":"string"},"title":{"type":"string"},"relative_path":{"type":"string"},"media_type":{"type":"string"},"declared_size":{"type":"integer"},"content_sha256":{"type":"string"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["declared_size","content_sha256","idempotency_key"]}`
 	case "agent.knowledge.v1:append_upload_chunk":
 		return `{"type":"object","properties":{"upload_id":{"type":"string"},"ordinal":{"type":"integer"},"offset_bytes":{"type":"integer"},"data":{"type":"string"},"chunk_sha256":{"type":"string"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["upload_id","data","chunk_sha256","idempotency_key"]}`
 	case "agent.knowledge.v1:commit_upload":
-		return `{"type":"object","properties":{"upload_id":{"type":"string"},"expected_revision":{"type":"integer"},"content_sha256":{"type":"string"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["upload_id","content_sha256","idempotency_key"]}`
-	case "agent.knowledge.v1:list_memories":
-		return `{"type":"object","properties":{"page_token":{"type":"string"},"page_size":{"type":"integer"},"limit":{"type":"integer"},"status":{"type":"string"}}}`
-	case "agent.knowledge.v1:create_memory":
-		return `{"type":"object","properties":{"source_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"content_sha256":{"type":"string"},"media_type":{"type":"string"},"tags":{"type":"array"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["content","idempotency_key"]}`
-	case "agent.knowledge.v1:update_memory":
-		return `{"type":"object","properties":{"memory_id":{"type":"string"},"source_id":{"type":"string"},"expected_revision":{"type":"integer"},"title":{"type":"string"},"content":{"type":"string"},"content_sha256":{"type":"string"},"media_type":{"type":"string"},"tags":{"type":"array"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["memory_id","expected_revision","content","idempotency_key"]}`
-	case "agent.knowledge.v1:get_memory":
-		return `{"type":"object","properties":{"memory_id":{"type":"string"}},"required":["memory_id"]}`
-	case "agent.knowledge.v1:delete_memory":
-		return `{"type":"object","properties":{"memory_id":{"type":"string"},"expected_revision":{"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["memory_id","expected_revision","idempotency_key"]}`
-	case "agent.knowledge.v1:search_memory":
-		return `{"type":"object","properties":{"query":{"type":"string"},"source_ids":{"type":"array"},"limit":{"type":"integer"},"page_token":{"type":"string"}},"required":["query"]}`
+		return `{"additionalProperties":false,"properties":{"content_sha256":{"pattern":"^[a-f0-9]{64}$","type":"string"},"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"upload_id":{"format":"uuid","type":"string"}},"required":["upload_id","expected_revision","content_sha256","idempotency_key"],"type":"object"}`
+	case "agent.skills.v1:discover_skill", "agent.skills.v1:discover_mcp":
+		return `{"additionalProperties":false,"properties":{"page_size":{"maximum":100,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"},"query":{"type":"string"},"source":{"type":"string"}},"type":"object"}`
+	case "agent.skills.v1:list_skills", "agent.skills.v1:list_mcp":
+		return `{"additionalProperties":false,"properties":{"page_size":{"maximum":100,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"},"source":{"type":"string"},"state":{"type":"string"}},"type":"object"}`
+	case "agent.tasks.v1:list_tasks":
+		return `{"additionalProperties":false,"properties":{"page_size":{"maximum":100,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"},"status":{"type":"string"}},"type":"object"}`
 	case "agent.knowledge.v1:search_knowledge":
 		return `{"type":"object","properties":{"query":{"type":"string"},"source_ids":{"type":"array"},"kind":{"type":"string"},"limit":{"type":"integer"},"page_token":{"type":"string"}},"required":["query"]}`
 	case "agent.knowledge.v1:index_sources":
@@ -2273,7 +2118,7 @@ func operationInputSchema(capabilityID, operation string) string {
 		return `{"type":"object","additionalProperties":false,"properties":{"plan_id":{"type":"string"}},"required":["plan_id"]}`
 	case "agent.aws.v1:request_change":
 		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"plan_id":{"type":"string"}},"required":["idempotency_key","plan_id"]}`
-	case "agent.aws.v1:get_change", "agent.aws.v1:get_change_status":
+	case "agent.aws.v1:get_change":
 		return `{"type":"object","additionalProperties":false,"properties":{"change_id":{"type":"string"}},"required":["change_id"]}`
 	case "agent.aws.v1:list_changes":
 		return `{"type":"object","additionalProperties":false,"properties":{"page_size":{"type":"integer"},"page_token":{"type":"string"},"plan_id":{"type":"string"}}}`
@@ -2366,25 +2211,6 @@ func uploadJSON(upload coreknowledge.Upload, includeReplay bool) map[string]any 
 	return value
 }
 
-func memoryJSON(memory coreknowledge.Memory, replayed bool) map[string]any {
-	value := map[string]any{
-		"memory_id":         memory.ID,
-		"title":             memory.Title,
-		"content":           memory.Content,
-		"tags":              append([]string{}, memory.Tags...),
-		"revision":          memory.Revision,
-		"created_at":        memory.CreatedAt,
-		"updated_at":        memory.UpdatedAt,
-		"replayed":          replayed,
-		"embedding_indexed": memory.EmbeddingIndexed,
-		"embedding_stale":   memory.EmbeddingStale,
-		"embedding_status":  memory.EmbeddingStatus,
-	}
-	if memory.ErrorCode != "" {
-		value["error_code"] = memory.ErrorCode
-	}
-	return value
-}
 func stringValue(m map[string]json.RawMessage, key string) string {
 	var v string
 	_ = json.Unmarshal(m[key], &v)
@@ -2419,10 +2245,7 @@ func optionalBoundedString(m map[string]json.RawMessage, key string, max int) (s
 	}
 	return strings.TrimSpace(value), nil
 }
-func pageLimit(m map[string]json.RawMessage, def int) int {
-	if value := intValue(m, "limit", 0); value > 0 {
-		return value
-	}
+func pageSize(m map[string]json.RawMessage, def int) int {
 	return intValue(m, "page_size", def)
 }
 func int64Value(m map[string]json.RawMessage, key string) int64 {
@@ -2460,7 +2283,7 @@ func valueOrUUID(m map[string]json.RawMessage, key string) string {
 
 func modelMutationOperation(operation string) bool {
 	switch operation {
-	case "sync_models", "create_model", "update_model", "delete_model":
+	case "sync_models", "delete_model":
 		return true
 	default:
 		return false
@@ -2469,7 +2292,7 @@ func modelMutationOperation(operation string) bool {
 
 func knowledgeMutationOperation(operation string) bool {
 	switch operation {
-	case "update_config", "create_memory", "delete_source", "start_upload", "append_upload_chunk", "commit_upload", "update_memory", "delete_memory", "index_sources":
+	case "update_config", "delete_source", "start_upload", "append_upload_chunk", "commit_upload", "index_sources":
 		return true
 	default:
 		return false
@@ -2482,61 +2305,4 @@ func requiredKnowledgeUUID(in map[string]json.RawMessage, key string) (string, e
 		return "", coreknowledge.ErrInvalid
 	}
 	return value, nil
-}
-
-func profileSpec(in map[string]json.RawMessage, patch bool) (coremodel.ProfileSpec, error) {
-	p := coremodel.ProfileSpec{ID: stringValue(in, "profile_id"), Patch: patch, DisplayName: stringValue(in, "display_name"), ModelKind: stringValue(in, "model_kind"), BaseURL: stringValue(in, "base_url"), Model: stringValue(in, "model"), SystemPrompt: stringValue(in, "system_prompt"), MaxOutputTokens: intValue(in, "max_output_tokens", 0), ContextWindow: intValue(in, "context_window", 0), ReasoningEffort: stringValue(in, "reasoning_effort"), InputModalities: stringSlice(in, "input_modalities")}
-	provider := stringValue(in, "provider")
-	if provider != "" {
-		p.Provider = coremodel.ModelProvider(provider)
-	}
-	if raw, present := in["api_key"]; present {
-		var key string
-		if err := json.Unmarshal(raw, &key); err != nil {
-			return coremodel.ProfileSpec{}, coremodel.ErrInvalidProfile
-		}
-		p.APIKey = &key
-	}
-	p.APIKeyClear = boolValue(in, "api_key_clear")
-	if raw := in["provider_config"]; len(raw) > 0 {
-		if json.Unmarshal(raw, &p.ProviderConfig) != nil {
-			return coremodel.ProfileSpec{}, coremodel.ErrInvalidProfile
-		}
-	}
-	if raw := in["provider_secrets"]; len(raw) > 0 {
-		if json.Unmarshal(raw, &p.ProviderSecrets) != nil {
-			return coremodel.ProfileSpec{}, coremodel.ErrInvalidProfile
-		}
-	}
-	for key, destination := range map[string]**float64{"temperature": &p.Temperature, "top_p": &p.TopP} {
-		raw, present := in[key]
-		if !present {
-			continue
-		}
-		if strings.TrimSpace(string(raw)) != "null" {
-			var value float64
-			if err := json.Unmarshal(raw, &value); err != nil {
-				return coremodel.ProfileSpec{}, coremodel.ErrInvalidProfile
-			}
-			*destination = &value
-		}
-		if key == "temperature" {
-			p.TemperatureSet = *destination != nil
-			p.TemperatureClear = *destination == nil
-		} else {
-			p.TopPSet = *destination != nil
-			p.TopPClear = *destination == nil
-		}
-	}
-	if patch {
-		_, p.DisplayNameSet = in["display_name"]
-		_, p.BaseURLSet = in["base_url"]
-		_, p.ModelSet = in["model"]
-		_, p.SystemPromptSet = in["system_prompt"]
-		_, p.ProviderSet = in["provider"]
-		_, p.MaxOutputTokensSet = in["max_output_tokens"]
-		_, p.ContextWindowSet = in["context_window"]
-		_, p.ReasoningEffortSet = in["reasoning_effort"]
-	}
-	return p, nil
 }

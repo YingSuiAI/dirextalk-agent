@@ -4,15 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
-
-const knowledgeMemoryReplaceCleanup = "memory_replace"
 
 func (r *CoreKnowledgeStore) Delete(ctx context.Context, command coreknowledge.DeleteCommand) (coreknowledge.Source, error) {
 	if err := command.ValidateForRepository(); err != nil {
@@ -53,19 +50,8 @@ func (r *CoreKnowledgeStore) Delete(ctx context.Context, command coreknowledge.D
 		_ = tx.Rollback(ctx)
 		return r.resumeKnowledgeCleanup(ctx, command, s)
 	}
-	// A memory replacement reserves the single cleanup row for the old
-	// immutable object. Resolve that intent before converting the source to a
-	// delete, otherwise the delete finalization could discard the replacement
-	// ledger while the old object is still consuming content quota.
 	var pendingOperation string
 	if err := tx.QueryRow(ctx, `SELECT operation FROM core_knowledge_cleanup WHERE source_id=$1`, s.ID).Scan(&pendingOperation); err == nil {
-		if pendingOperation == knowledgeMemoryReplaceCleanup {
-			_ = tx.Rollback(ctx)
-			if cleanupErr := r.resumeMemoryReplacementCleanup(ctx, s.ID); cleanupErr != nil {
-				return s, coreknowledge.ErrCleanupPending
-			}
-			return r.Delete(ctx, command)
-		}
 		if pendingOperation != "delete" {
 			return coreknowledge.Source{}, coreknowledge.ErrCleanupPending
 		}
@@ -307,23 +293,6 @@ func (r *CoreKnowledgeStore) RecoverPendingCleanup(ctx context.Context) error {
 		return err
 	}
 	rows.Close()
-	memoryRows, err := r.store.pool.Query(ctx, `SELECT s.source_id FROM core_knowledge_sources s JOIN core_knowledge_cleanup c ON c.source_id=s.source_id WHERE c.operation=$1 AND s.status='ready' AND c.next_attempt_at<=clock_timestamp() ORDER BY c.next_attempt_at,s.source_id`, knowledgeMemoryReplaceCleanup)
-	if err != nil {
-		return coreknowledge.ErrConflict
-	}
-	for memoryRows.Next() {
-		var sourceID string
-		if err := memoryRows.Scan(&sourceID); err != nil {
-			memoryRows.Close()
-			return coreknowledge.ErrConflict
-		}
-		_ = r.resumeMemoryReplacementCleanup(ctx, sourceID)
-	}
-	if err := memoryRows.Err(); err != nil {
-		memoryRows.Close()
-		return coreknowledge.ErrConflict
-	}
-	memoryRows.Close()
 	urows, err := r.store.pool.Query(ctx, `SELECT u.upload_id,u.source_id,u.metadata_json,u.status,u.received_size,u.next_ordinal,u.revision,u.created_at,u.updated_at FROM core_knowledge_uploads u JOIN core_knowledge_cleanup c ON c.source_id=u.source_id WHERE c.operation='upload_abort' AND c.next_attempt_at<=clock_timestamp() ORDER BY c.next_attempt_at,u.upload_id`)
 	if err != nil {
 		return coreknowledge.ErrConflict
@@ -340,61 +309,6 @@ func (r *CoreKnowledgeStore) RecoverPendingCleanup(ctx context.Context) error {
 		_ = r.cleanupAbortedUpload(ctx, u)
 	}
 	return urows.Err()
-}
-
-// resumeMemoryReplacementCleanup retries deletion of an immutable object that
-// was replaced by a committed memory update. The metadata transaction never
-// waits for this external side effect; the cleanup ledger is the durable
-// retry boundary used by startup recovery and the periodic sweep.
-func (r *CoreKnowledgeStore) resumeMemoryReplacementCleanup(ctx context.Context, sourceID string) error {
-	if r == nil || r.store == nil || r.content == nil || strings.TrimSpace(sourceID) == "" {
-		return coreknowledge.ErrInvalid
-	}
-	var contentRef, contentDigest string
-	var contentSize int64
-	if err := r.store.pool.QueryRow(ctx, `SELECT content_ref,content_digest,content_size_bytes FROM core_knowledge_cleanup WHERE source_id=$1 AND operation=$2`, sourceID, knowledgeMemoryReplaceCleanup).Scan(&contentRef, &contentDigest, &contentSize); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		return coreknowledge.ErrCleanupPending
-	}
-	cleanupErr := r.content.Delete(ctx, coreknowledge.ContentReference{Ref: contentRef, Digest: contentDigest, SizeBytes: contentSize})
-	if errors.Is(cleanupErr, coreknowledge.ErrNotFound) {
-		cleanupErr = nil
-	}
-	tx, err := r.store.pool.Begin(ctx)
-	if err != nil {
-		return coreknowledge.ErrCleanupPending
-	}
-	defer tx.Rollback(ctx)
-	if err := lockKnowledgeKey(ctx, tx, "memory.cleanup", sourceID); err != nil {
-		return coreknowledge.ErrCleanupPending
-	}
-	if cleanupErr != nil {
-		now := r.nowUTC()
-		message := cleanupErr.Error()
-		if len(message) > 4096 {
-			message = message[:4096]
-		}
-		tag, updateErr := tx.Exec(ctx, `UPDATE core_knowledge_cleanup SET attempts=attempts+1,last_error=$2,next_attempt_at=$3,updated_at=$3 WHERE source_id=$1 AND operation=$4 AND content_ref=$5`, sourceID, message, now, knowledgeMemoryReplaceCleanup, contentRef)
-		if updateErr != nil {
-			return coreknowledge.ErrCleanupPending
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return coreknowledge.ErrCleanupPending
-		}
-		if tag.RowsAffected() == 0 {
-			return nil
-		}
-		return coreknowledge.ErrCleanupPending
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM core_knowledge_cleanup WHERE source_id=$1 AND operation=$2 AND content_ref=$3`, sourceID, knowledgeMemoryReplaceCleanup, contentRef); err != nil {
-		return coreknowledge.ErrCleanupPending
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return coreknowledge.ErrCleanupPending
-	}
-	return nil
 }
 
 func (r *CoreKnowledgeStore) Status(ctx context.Context) (coreknowledge.Status, error) {

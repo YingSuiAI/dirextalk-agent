@@ -42,7 +42,6 @@ func (c *coreAWSCapability) Descriptor() *capv1.CapabilityDescriptor {
 		{"request_change", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:aws:changes:write"},
 		{"get_change", capv1.OperationType_OPERATION_TYPE_READ, "agent:aws:changes:read"},
 		{"list_changes", capv1.OperationType_OPERATION_TYPE_READ, "agent:aws:changes:read"},
-		{"get_change_status", capv1.OperationType_OPERATION_TYPE_READ, "agent:aws:changes:read"},
 	})
 	for _, operation := range d.GetOperations() {
 		resultSchema := awsResultSchema(operation.GetOperationId())
@@ -252,13 +251,6 @@ func (c *coreAWSCapability) HandleOperation(ctx context.Context, operationID str
 			items = append(items, awsChangeView(change))
 		}
 		return marshalResult(map[string]any{"changes": items, "next_page_token": page.NextPageToken}, nil)
-	case "get_change_status":
-		id, err := requiredAWSUUID(in, "change_id")
-		if err != nil {
-			return nil, err
-		}
-		change, err := c.service.GetChange(ctx, id)
-		return marshalResult(map[string]any{"change": awsChangeView(change), "status": string(change.Status), "stage": string(change.Stage)}, err)
 	default:
 		return nil, coreaws.ErrInvalid
 	}
@@ -285,7 +277,7 @@ func awsFields(operation string) map[string]struct{} {
 		"delete_credential": {"idempotency_key", "credential_id", "expected_revision"}, "test_credential": {"credential_id", "expected_revision", "idempotency_key"},
 		"create_plan": {"idempotency_key", "credential_id", "region", "stack_name", "operation", "template", "parameters", "tags", "capabilities"},
 		"get_plan":    {"plan_id"}, "list_plans": {"page_size", "page_token"}, "quote_plan": {"plan_id"},
-		"request_change": {"idempotency_key", "plan_id"}, "get_change": {"change_id"}, "list_changes": {"page_size", "page_token", "plan_id"}, "get_change_status": {"change_id"},
+		"request_change": {"idempotency_key", "plan_id"}, "get_change": {"change_id"}, "list_changes": {"page_size", "page_token", "plan_id"},
 	}
 	out := map[string]struct{}{}
 	for _, key := range values[operation] {

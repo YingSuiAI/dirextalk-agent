@@ -4,23 +4,33 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
 
 type testStore struct {
-	lease      ObservationLease
-	facts      []Fact
-	applied    []Candidate
-	retryCode  string
-	claim      bool
-	applyCalls int
-	snapshot   Snapshot
+	lease        ObservationLease
+	facts        []Fact
+	applied      []Candidate
+	retryCode    string
+	claim        bool
+	applyCalls   int
+	snapshot     Snapshot
+	factMutation FactMutation
 }
 
 func (s *testStore) GetConfig(context.Context) (Config, error) { return DefaultConfig(), nil }
 func (s *testStore) UpdateConfig(_ context.Context, mutation ConfigMutation) (Config, error) {
 	return Config{Enabled: mutation.Enabled, Revision: mutation.ExpectedRevision + 1}, nil
+}
+func (s *testStore) UpdateFact(_ context.Context, mutation FactMutation) (Fact, error) {
+	s.factMutation = mutation
+	return Fact{ID: mutation.FactID, Value: mutation.Value}, nil
+}
+func (s *testStore) DeleteFact(_ context.Context, mutation FactMutation) (FactDeletion, error) {
+	s.factMutation = mutation
+	return FactDeletion{FactID: mutation.FactID, Deleted: true}, nil
 }
 func (s *testStore) Status(context.Context, int, int) (Status, error) { return Status{}, nil }
 
@@ -70,6 +80,28 @@ func TestProcessNextNormalizesDurableUserFact(t *testing.T) {
 	fact := store.applied[0]
 	if fact.Subject != "user" || fact.Predicate != "home_city" || fact.Value != "Beijing" || fact.Kind != "context" {
 		t.Fatalf("normalized fact=%+v", fact)
+	}
+}
+
+func TestOwnerFactMutationsValidateAndBindReplayDigest(t *testing.T) {
+	store := &testStore{}
+	service, err := NewService(store, extractorFunc(func(context.Context, Observation, []Fact) ([]Candidate, error) { return nil, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return time.Unix(123, 0).UTC() }
+	factID := "11111111-1111-4111-8111-111111111111"
+	key := "22222222-2222-4222-8222-222222222222"
+	fact, err := service.UpdateFact(context.Background(), UpdateFactCommand{FactID: factID, IdempotencyKey: key, Value: "  Beijing  "})
+	if err != nil || fact.Value != "Beijing" || store.factMutation.FactID != factID || store.factMutation.Value != "Beijing" || len(store.factMutation.RequestDigest) != 64 {
+		t.Fatalf("fact=%+v mutation=%+v err=%v", fact, store.factMutation, err)
+	}
+	if _, err = service.UpdateFact(context.Background(), UpdateFactCommand{FactID: factID, IdempotencyKey: key, Value: strings.Repeat("x", 2049)}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("oversized update err=%v", err)
+	}
+	deleted, err := service.DeleteFact(context.Background(), DeleteFactCommand{FactID: factID, IdempotencyKey: key})
+	if err != nil || !deleted.Deleted || deleted.FactID != factID || len(store.factMutation.RequestDigest) != 64 {
+		t.Fatalf("deletion=%+v mutation=%+v err=%v", deleted, store.factMutation, err)
 	}
 }
 

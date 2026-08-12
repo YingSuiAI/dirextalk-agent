@@ -21,7 +21,6 @@ func TestInfoCapabilityUsesAuthenticatedContextAndNormalizesOutput(t *testing.T)
 		BackendsFunc: func(context.Context) (BackendsSnapshot, error) {
 			return BackendsSnapshot{Embedded: BackendInfo{Status: "READY", Capabilities: []string{"memory.server", "memory.server", "agent.info"}}, Core: BackendInfo{Status: "future-secret-status", ReleaseVersion: " v1.0.0 ", Capabilities: []string{"z", "a"}}}, nil
 		},
-		StatusFunc: func(context.Context) (BackendInfo, error) { return BackendInfo{Status: "ready"}, nil },
 		ModelsFunc: func(_ context.Context, request ModelCatalogRequest) (ModelCatalogResult, error) {
 			if request.ModelKind != "conversation" || (request.Provider != "" && request.APIKey != "secret-key") {
 				t.Fatalf("catalog request = %#v", request)
@@ -30,20 +29,13 @@ func TestInfoCapabilityUsesAuthenticatedContextAndNormalizesOutput(t *testing.T)
 		},
 	})
 	var catalogSchema string
-	var statusSchema string
 	for _, operation := range capability.Descriptor().GetOperations() {
 		if operation.GetOperationId() == "list_models" {
 			catalogSchema = operation.GetInputSchemaJson()
 		}
-		if operation.GetOperationId() == "get_status" {
-			statusSchema = operation.GetResultSchemaJson()
-		}
 	}
 	if !strings.Contains(catalogSchema, `"writeOnly":true`) || strings.Contains(catalogSchema, `"write_only"`) {
 		t.Fatalf("model catalog API key schema is not standard writeOnly: %s", catalogSchema)
-	}
-	if !strings.Contains(statusSchema, `"release_version":{"type":"string"}`) {
-		t.Fatalf("Agent status schema omitted release_version: %s", statusSchema)
 	}
 	result, err := capability.HandleOperation(capabilityTestContext(), "get_backends", []byte(`{}`))
 	if err != nil {
@@ -82,7 +74,6 @@ func TestInfoCapabilitySanitizesClosedCatalogConsumerProjection(t *testing.T) {
 	var gotRequest ModelCatalogRequest
 	capability := NewInfoCapability(InfoProviderFunc{
 		BackendsFunc: func(context.Context) (BackendsSnapshot, error) { return BackendsSnapshot{}, nil },
-		StatusFunc:   func(context.Context) (BackendInfo, error) { return BackendInfo{}, nil },
 		ModelsFunc: func(_ context.Context, request ModelCatalogRequest) (ModelCatalogResult, error) {
 			gotRequest = request
 			return ModelCatalogResult{
@@ -225,7 +216,6 @@ func TestInfoCapabilitySanitizesClosedCatalogConsumerProjection(t *testing.T) {
 func TestInfoCapabilityRetainsClosedModelNumericTokenFields(t *testing.T) {
 	capability := NewInfoCapability(InfoProviderFunc{
 		BackendsFunc: func(context.Context) (BackendsSnapshot, error) { return BackendsSnapshot{}, nil },
-		StatusFunc:   func(context.Context) (BackendInfo, error) { return BackendInfo{}, nil },
 		ModelsFunc: func(context.Context, ModelCatalogRequest) (ModelCatalogResult, error) {
 			return ModelCatalogResult{Models: []map[string]any{{
 				"id":                 "typed-model",
@@ -320,7 +310,6 @@ func TestInfoCapabilityKeepsProfileAndEmptyAPIKeyErrorsIntact(t *testing.T) {
 	providerError := errors.New("provider profile lookup failed")
 	capability := NewInfoCapability(InfoProviderFunc{
 		BackendsFunc: func(context.Context) (BackendsSnapshot, error) { return BackendsSnapshot{}, nil },
-		StatusFunc:   func(context.Context) (BackendInfo, error) { return BackendInfo{}, nil },
 		ModelsFunc: func(context.Context, ModelCatalogRequest) (ModelCatalogResult, error) {
 			return ModelCatalogResult{}, providerError
 		},
@@ -379,37 +368,13 @@ func TestRuntimeCapabilityRejectsShell(t *testing.T) {
 	}
 }
 
-func TestConfigProposalIsConfirmationBoundAndDoesNotApply(t *testing.T) {
-	capability := NewConfigCapability(nil)
-	result, err := capability.HandleOperation(capabilityTestContext(), "propose_patch", []byte(`{"kind":"skill","skill":{"name":"safe","source":"registry","args":["--help"]}}`))
-	if err != nil {
-		t.Fatalf("proposal: %v", err)
-	}
-	var value ConfigPatchResult
-	if err := json.Unmarshal(result, &value); err != nil {
-		t.Fatalf("decode proposal: %v", err)
-	}
-	if !value.RequiresConfirmation || value.ConfigPatch["skills_add"] == nil {
-		t.Fatalf("proposal = %#v", value)
-	}
-	if _, err := capability.HandleOperation(capabilityTestContext(), "propose_patch", []byte(`{"kind":"mcp_server","mcp_server":{"name":"unsafe","api_key":"secret"}}`)); err == nil {
-		t.Fatal("secret-bearing config proposal was accepted")
-	}
-	if _, err := capability.HandleOperation(capabilityTestContext(), "propose_patch", []byte(`{"kind":"mcp_server","mcp_server":{"name":"unsafe","command":"sh -c pwned"}}`)); err == nil {
-		t.Fatal("shell command proposal was accepted")
-	}
-	if _, err := capability.HandleOperation(capabilityTestContext(), "propose_patch", []byte(`{"kind":"mcp_server","mcp_server":{"name":"unsafe","command":["sh","-c","pwned"]}}`)); err == nil {
-		t.Fatal("shell interpreter proposal was accepted")
-	}
-}
-
 func TestRegisterMiscCapabilitiesDoesNotPublishUnavailableRuntime(t *testing.T) {
 	r := NewRegistry()
 	if err := RegisterMiscCapabilities(r, MiscBindings{}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, ok := r.Get(configCapabilityID); !ok {
-		t.Fatal("config proposal capability missing")
+	if _, ok := r.Get(configCapabilityID); ok {
+		t.Fatal("unconfigured config capability was published")
 	}
 	if _, ok := r.Get(infoCapabilityID); ok {
 		t.Fatal("unconfigured info capability was published")
@@ -420,7 +385,7 @@ func TestRegisterMiscCapabilitiesDoesNotPublishUnavailableRuntime(t *testing.T) 
 }
 
 func TestMiscDescriptorsCarrySchemaDigests(t *testing.T) {
-	for _, capability := range []Capability{NewInfoCapability(InfoProviderFunc{}), NewRuntimeCapability(&runtimePortFake{}), NewConfigCapability(nil)} {
+	for _, capability := range []Capability{NewInfoCapability(InfoProviderFunc{}), NewRuntimeCapability(&runtimePortFake{})} {
 		for _, operation := range capability.Descriptor().GetOperations() {
 			if len(operation.GetInputSchemaDigest()) != 32 || len(operation.GetResultSchemaDigest()) != 32 {
 				t.Fatalf("missing schema digest for %s/%s", capability.Descriptor().GetCapabilityId(), operation.GetOperationId())

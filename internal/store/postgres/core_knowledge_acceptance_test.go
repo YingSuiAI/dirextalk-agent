@@ -146,16 +146,11 @@ func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 	if err != nil || uploaded.Status != coreknowledge.SourceStatusReady {
 		t.Fatalf("commit = %+v err=%v", uploaded, err)
 	}
-	memoryText := "durable semantic memory text"
-	memory, err := service.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Title: "memory", Content: memoryText, ContentSHA256: digestBytesKnowledge([]byte(memoryText)), MediaType: "text/plain"})
-	if err != nil || memory.Status != coreknowledge.SourceStatusReady {
-		t.Fatalf("memory = %+v err=%v", memory, err)
-	}
 	if _, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: collectionDigest, Revision: 1}); err != nil {
 		t.Fatal(err)
 	}
 
-	ids := []string{mount.ID, uploaded.ID, memory.ID}
+	ids := []string{mount.ID, uploaded.ID}
 	ref, err := service.Index(ctx, coreknowledge.IndexRequest{IdempotencyKey: uuid.NewString(), SourceIDs: ids})
 	if err != nil {
 		t.Fatal(err)
@@ -179,11 +174,11 @@ func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 	if err != nil || storedTask.Status != "succeeded" {
 		t.Fatalf("stored task = %+v err=%v", storedTask, err)
 	}
-	search, err := service.Search(ctx, coreknowledge.SearchQuery{Query: "semantic", SourceIDs: []string{memory.ID}, Limit: 5})
-	if err != nil || len(search.Matches) == 0 || search.Matches[0].SourceID != memory.ID {
+	search, err := service.Search(ctx, coreknowledge.SearchQuery{Query: "semantic", SourceIDs: []string{uploaded.ID}, Limit: 5})
+	if err != nil || len(search.Matches) == 0 || search.Matches[0].SourceID != uploaded.ID {
 		t.Fatalf("semantic search = %+v err=%v", search, err)
 	}
-	if embeddingCalls < 4 { // mount file + upload + memory + query
+	if embeddingCalls < 3 { // mount file + upload + query
 		t.Fatalf("embedding calls = %d, want source indexing and query", embeddingCalls)
 	}
 
@@ -217,14 +212,14 @@ func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persisted, err := restartedService.Get(ctx, memory.ID); err != nil || persisted.Digest != memory.Digest {
+	if persisted, err := restartedService.Get(ctx, uploaded.ID); err != nil || persisted.Digest != uploaded.Digest {
 		t.Fatalf("restart source = %+v err=%v", persisted, err)
 	}
-	if _, err := restartedService.Delete(ctx, coreknowledge.DeleteCommand{IdempotencyKey: uuid.NewString(), SourceID: memory.ID, ExpectedRevision: memory.Revision}); err != nil {
+	if _, err := restartedService.Delete(ctx, coreknowledge.DeleteCommand{IdempotencyKey: uuid.NewString(), SourceID: uploaded.ID, ExpectedRevision: uploaded.Revision}); err != nil {
 		t.Fatal(err)
 	}
 	var contentRef string
-	if err := baseRepo.store.pool.QueryRow(ctx, `SELECT content_ref FROM core_knowledge_sources WHERE source_id=$1`, memory.ID).Scan(&contentRef); err == nil && contentRef != "" {
+	if err := baseRepo.store.pool.QueryRow(ctx, `SELECT content_ref FROM core_knowledge_sources WHERE source_id=$1`, uploaded.ID).Scan(&contentRef); err == nil && contentRef != "" {
 		if _, statErr := os.Stat(filepath.Join(contentRoot, contentRef)); !os.IsNotExist(statErr) {
 			t.Fatalf("deleted content remains: %v", statErr)
 		}

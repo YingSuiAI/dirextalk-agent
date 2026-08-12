@@ -19,20 +19,18 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	CoreCloudControlService_CreateCredential_FullMethodName       = "/dirextalk.agent.v1.CoreCloudControlService/CreateCredential"
-	CoreCloudControlService_GetCredential_FullMethodName          = "/dirextalk.agent.v1.CoreCloudControlService/GetCredential"
-	CoreCloudControlService_ListCredentials_FullMethodName        = "/dirextalk.agent.v1.CoreCloudControlService/ListCredentials"
-	CoreCloudControlService_UpdateCredential_FullMethodName       = "/dirextalk.agent.v1.CoreCloudControlService/UpdateCredential"
-	CoreCloudControlService_DeleteCredential_FullMethodName       = "/dirextalk.agent.v1.CoreCloudControlService/DeleteCredential"
-	CoreCloudControlService_TestCredentialIdentity_FullMethodName = "/dirextalk.agent.v1.CoreCloudControlService/TestCredentialIdentity"
-	CoreCloudControlService_CreatePlan_FullMethodName             = "/dirextalk.agent.v1.CoreCloudControlService/CreatePlan"
-	CoreCloudControlService_GetPlan_FullMethodName                = "/dirextalk.agent.v1.CoreCloudControlService/GetPlan"
-	CoreCloudControlService_ListPlans_FullMethodName              = "/dirextalk.agent.v1.CoreCloudControlService/ListPlans"
-	CoreCloudControlService_Quote_FullMethodName                  = "/dirextalk.agent.v1.CoreCloudControlService/Quote"
-	CoreCloudControlService_RequestChange_FullMethodName          = "/dirextalk.agent.v1.CoreCloudControlService/RequestChange"
-	CoreCloudControlService_GetChange_FullMethodName              = "/dirextalk.agent.v1.CoreCloudControlService/GetChange"
-	CoreCloudControlService_ListChanges_FullMethodName            = "/dirextalk.agent.v1.CoreCloudControlService/ListChanges"
-	CoreCloudControlService_GetChangeStatus_FullMethodName        = "/dirextalk.agent.v1.CoreCloudControlService/GetChangeStatus"
+	CoreCloudControlService_CreateCredential_FullMethodName = "/dirextalk.agent.v1.CoreCloudControlService/CreateCredential"
+	CoreCloudControlService_GetCredential_FullMethodName    = "/dirextalk.agent.v1.CoreCloudControlService/GetCredential"
+	CoreCloudControlService_ListCredentials_FullMethodName  = "/dirextalk.agent.v1.CoreCloudControlService/ListCredentials"
+	CoreCloudControlService_UpdateCredential_FullMethodName = "/dirextalk.agent.v1.CoreCloudControlService/UpdateCredential"
+	CoreCloudControlService_DeleteCredential_FullMethodName = "/dirextalk.agent.v1.CoreCloudControlService/DeleteCredential"
+	CoreCloudControlService_CreatePlan_FullMethodName       = "/dirextalk.agent.v1.CoreCloudControlService/CreatePlan"
+	CoreCloudControlService_GetPlan_FullMethodName          = "/dirextalk.agent.v1.CoreCloudControlService/GetPlan"
+	CoreCloudControlService_ListPlans_FullMethodName        = "/dirextalk.agent.v1.CoreCloudControlService/ListPlans"
+	CoreCloudControlService_Quote_FullMethodName            = "/dirextalk.agent.v1.CoreCloudControlService/Quote"
+	CoreCloudControlService_RequestChange_FullMethodName    = "/dirextalk.agent.v1.CoreCloudControlService/RequestChange"
+	CoreCloudControlService_GetChange_FullMethodName        = "/dirextalk.agent.v1.CoreCloudControlService/GetChange"
+	CoreCloudControlService_ListChanges_FullMethodName      = "/dirextalk.agent.v1.CoreCloudControlService/ListChanges"
 )
 
 // CoreCloudControlServiceClient is the client API for CoreCloudControlService service.
@@ -44,7 +42,6 @@ type CoreCloudControlServiceClient interface {
 	ListCredentials(ctx context.Context, in *CoreCloudControlServiceListCredentialsRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceListCredentialsResponse, error)
 	UpdateCredential(ctx context.Context, in *CoreCloudControlServiceUpdateCredentialRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceUpdateCredentialResponse, error)
 	DeleteCredential(ctx context.Context, in *CoreCloudControlServiceDeleteCredentialRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceDeleteCredentialResponse, error)
-	TestCredentialIdentity(ctx context.Context, in *CoreCloudControlServiceTestCredentialIdentityRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceTestCredentialIdentityResponse, error)
 	CreatePlan(ctx context.Context, in *CoreCloudControlServiceCreatePlanRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceCreatePlanResponse, error)
 	GetPlan(ctx context.Context, in *CoreCloudControlServiceGetPlanRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceGetPlanResponse, error)
 	ListPlans(ctx context.Context, in *CoreCloudControlServiceListPlansRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceListPlansResponse, error)
@@ -52,7 +49,6 @@ type CoreCloudControlServiceClient interface {
 	RequestChange(ctx context.Context, in *CoreCloudControlServiceRequestChangeRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceRequestChangeResponse, error)
 	GetChange(ctx context.Context, in *CoreCloudControlServiceGetChangeRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceGetChangeResponse, error)
 	ListChanges(ctx context.Context, in *CoreCloudControlServiceListChangesRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceListChangesResponse, error)
-	GetChangeStatus(ctx context.Context, in *CoreCloudControlServiceGetChangeStatusRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceGetChangeStatusResponse, error)
 }
 
 type coreCloudControlServiceClient struct {
@@ -107,16 +103,6 @@ func (c *coreCloudControlServiceClient) DeleteCredential(ctx context.Context, in
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CoreCloudControlServiceDeleteCredentialResponse)
 	err := c.cc.Invoke(ctx, CoreCloudControlService_DeleteCredential_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *coreCloudControlServiceClient) TestCredentialIdentity(ctx context.Context, in *CoreCloudControlServiceTestCredentialIdentityRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceTestCredentialIdentityResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreCloudControlServiceTestCredentialIdentityResponse)
-	err := c.cc.Invoke(ctx, CoreCloudControlService_TestCredentialIdentity_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -193,16 +179,6 @@ func (c *coreCloudControlServiceClient) ListChanges(ctx context.Context, in *Cor
 	return out, nil
 }
 
-func (c *coreCloudControlServiceClient) GetChangeStatus(ctx context.Context, in *CoreCloudControlServiceGetChangeStatusRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceGetChangeStatusResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreCloudControlServiceGetChangeStatusResponse)
-	err := c.cc.Invoke(ctx, CoreCloudControlService_GetChangeStatus_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // CoreCloudControlServiceServer is the server API for CoreCloudControlService service.
 // All implementations must embed UnimplementedCoreCloudControlServiceServer
 // for forward compatibility.
@@ -212,7 +188,6 @@ type CoreCloudControlServiceServer interface {
 	ListCredentials(context.Context, *CoreCloudControlServiceListCredentialsRequest) (*CoreCloudControlServiceListCredentialsResponse, error)
 	UpdateCredential(context.Context, *CoreCloudControlServiceUpdateCredentialRequest) (*CoreCloudControlServiceUpdateCredentialResponse, error)
 	DeleteCredential(context.Context, *CoreCloudControlServiceDeleteCredentialRequest) (*CoreCloudControlServiceDeleteCredentialResponse, error)
-	TestCredentialIdentity(context.Context, *CoreCloudControlServiceTestCredentialIdentityRequest) (*CoreCloudControlServiceTestCredentialIdentityResponse, error)
 	CreatePlan(context.Context, *CoreCloudControlServiceCreatePlanRequest) (*CoreCloudControlServiceCreatePlanResponse, error)
 	GetPlan(context.Context, *CoreCloudControlServiceGetPlanRequest) (*CoreCloudControlServiceGetPlanResponse, error)
 	ListPlans(context.Context, *CoreCloudControlServiceListPlansRequest) (*CoreCloudControlServiceListPlansResponse, error)
@@ -220,7 +195,6 @@ type CoreCloudControlServiceServer interface {
 	RequestChange(context.Context, *CoreCloudControlServiceRequestChangeRequest) (*CoreCloudControlServiceRequestChangeResponse, error)
 	GetChange(context.Context, *CoreCloudControlServiceGetChangeRequest) (*CoreCloudControlServiceGetChangeResponse, error)
 	ListChanges(context.Context, *CoreCloudControlServiceListChangesRequest) (*CoreCloudControlServiceListChangesResponse, error)
-	GetChangeStatus(context.Context, *CoreCloudControlServiceGetChangeStatusRequest) (*CoreCloudControlServiceGetChangeStatusResponse, error)
 	mustEmbedUnimplementedCoreCloudControlServiceServer()
 }
 
@@ -246,9 +220,6 @@ func (UnimplementedCoreCloudControlServiceServer) UpdateCredential(context.Conte
 func (UnimplementedCoreCloudControlServiceServer) DeleteCredential(context.Context, *CoreCloudControlServiceDeleteCredentialRequest) (*CoreCloudControlServiceDeleteCredentialResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteCredential not implemented")
 }
-func (UnimplementedCoreCloudControlServiceServer) TestCredentialIdentity(context.Context, *CoreCloudControlServiceTestCredentialIdentityRequest) (*CoreCloudControlServiceTestCredentialIdentityResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method TestCredentialIdentity not implemented")
-}
 func (UnimplementedCoreCloudControlServiceServer) CreatePlan(context.Context, *CoreCloudControlServiceCreatePlanRequest) (*CoreCloudControlServiceCreatePlanResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreatePlan not implemented")
 }
@@ -269,9 +240,6 @@ func (UnimplementedCoreCloudControlServiceServer) GetChange(context.Context, *Co
 }
 func (UnimplementedCoreCloudControlServiceServer) ListChanges(context.Context, *CoreCloudControlServiceListChangesRequest) (*CoreCloudControlServiceListChangesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListChanges not implemented")
-}
-func (UnimplementedCoreCloudControlServiceServer) GetChangeStatus(context.Context, *CoreCloudControlServiceGetChangeStatusRequest) (*CoreCloudControlServiceGetChangeStatusResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetChangeStatus not implemented")
 }
 func (UnimplementedCoreCloudControlServiceServer) mustEmbedUnimplementedCoreCloudControlServiceServer() {
 }
@@ -381,24 +349,6 @@ func _CoreCloudControlService_DeleteCredential_Handler(srv interface{}, ctx cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(CoreCloudControlServiceServer).DeleteCredential(ctx, req.(*CoreCloudControlServiceDeleteCredentialRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _CoreCloudControlService_TestCredentialIdentity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreCloudControlServiceTestCredentialIdentityRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(CoreCloudControlServiceServer).TestCredentialIdentity(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: CoreCloudControlService_TestCredentialIdentity_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreCloudControlServiceServer).TestCredentialIdentity(ctx, req.(*CoreCloudControlServiceTestCredentialIdentityRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -529,24 +479,6 @@ func _CoreCloudControlService_ListChanges_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
-func _CoreCloudControlService_GetChangeStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreCloudControlServiceGetChangeStatusRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(CoreCloudControlServiceServer).GetChangeStatus(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: CoreCloudControlService_GetChangeStatus_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreCloudControlServiceServer).GetChangeStatus(ctx, req.(*CoreCloudControlServiceGetChangeStatusRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // CoreCloudControlService_ServiceDesc is the grpc.ServiceDesc for CoreCloudControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -575,10 +507,6 @@ var CoreCloudControlService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _CoreCloudControlService_DeleteCredential_Handler,
 		},
 		{
-			MethodName: "TestCredentialIdentity",
-			Handler:    _CoreCloudControlService_TestCredentialIdentity_Handler,
-		},
-		{
 			MethodName: "CreatePlan",
 			Handler:    _CoreCloudControlService_CreatePlan_Handler,
 		},
@@ -605,10 +533,6 @@ var CoreCloudControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListChanges",
 			Handler:    _CoreCloudControlService_ListChanges_Handler,
-		},
-		{
-			MethodName: "GetChangeStatus",
-			Handler:    _CoreCloudControlService_GetChangeStatus_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
