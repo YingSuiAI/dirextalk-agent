@@ -147,6 +147,26 @@ func (s pgKnowledgeProvenanceSearch) Search(_ context.Context, q coreknowledge.S
 	}, nil
 }
 
+func createTestEmbeddingProfile(ctx context.Context, t *testing.T, store *Store, id, model, apiKey string) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := store.CreateProfile(ctx, coremodel.Profile{
+		ID:            id,
+		DisplayName:   "test embedding",
+		Provider:      coremodel.ProviderOpenAICompatible,
+		ModelKind:     coremodel.ModelKindEmbedding,
+		BaseURL:       "https://example.invalid",
+		Model:         model,
+		APIKey:        apiKey,
+		ContextWindow: 32768,
+		Revision:      1,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}, uuid.NewString(), strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func knowledgePGFixture(t *testing.T) (context.Context, *CoreKnowledgeStore, func()) {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("DIREXTALK_TEST_DATABASE_URL"))

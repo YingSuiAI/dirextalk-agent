@@ -195,7 +195,12 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = runner.Run(ctx, core.ModelRunRequest{Snapshot: renewed.ProfileSnapshot}); e != nil {
+	if _, e = runner.Run(ctx, core.ModelRunRequest{
+		Snapshot: renewed.ProfileSnapshot,
+		Conversation: core.Conversation{Messages: []core.Message{{
+			Role: core.RoleUser, Content: "integration snapshot check",
+		}}},
+	}); e != nil {
 		t.Fatal(e)
 	}
 	if built.Model != snapshot.Model || built.APIKey != snapshot.APIKey || built.SystemPrompt != snapshot.SystemPrompt || built.Provider != snapshot.Provider || built.BaseURL != snapshot.BaseURL || built.MaxOutputTokens != snapshot.MaxOutputTokens || built.ContextWindow != snapshot.ContextWindow || built.ReasoningEffort != snapshot.ReasoningEffort || built.Temperature == nil || *built.Temperature != *snapshot.Temperature || built.TopP == nil || *built.TopP != *snapshot.TopP {

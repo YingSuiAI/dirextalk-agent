@@ -259,8 +259,8 @@ func TestCoreExtensionPostgresSecretPromotionAndExpiryRollback(t *testing.T) {
 	ref := uuid.NewString()
 	fingerprint := sha256Hex("secret-value")
 	c, i := extensionFixture()
-	i.SecretGrants = []coreextension.SecretGrantDescriptor{{ReferenceID: ref, Purpose: coreextension.SecretPurposeSkillSecret, BindingDigest: fingerprint}}
-	m := coreextension.Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: i, SecretInputs: []coreextension.SecretInput{{ReferenceID: ref, Purpose: coreextension.SecretPurposeSkillSecret, Value: "secret-value"}}}
+	i.SecretGrants = []coreextension.SecretGrantDescriptor{{ReferenceID: ref, Purpose: coreextension.SecretPurposeMCPCredential, BindingDigest: fingerprint}}
+	m := coreextension.Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: i, SecretInputs: []coreextension.SecretInput{{ReferenceID: ref, Purpose: coreextension.SecretPurposeMCPCredential, Value: "secret-value"}}}
 	res, e := ext.CreateMutation(ctx, m)
 	if e != nil {
 		t.Fatal(e)
@@ -270,7 +270,7 @@ func TestCoreExtensionPostgresSecretPromotionAndExpiryRollback(t *testing.T) {
 		t.Fatalf("staged state=%q err=%v", staged, e)
 	}
 	secrets := NewCoreExtensionSecretStore(store)
-	if _, e = secrets.ResolveExactBound(ctx, res.Installation.ID, res.Installation.ProposedVersionID, ref, string(coreextension.SecretPurposeSkillSecret), fingerprint); !errors.Is(e, coreextension.ErrConflict) {
+	if _, e = secrets.ResolveExactBound(ctx, res.Installation.ID, res.Installation.ProposedVersionID, ref, string(coreextension.SecretPurposeMCPCredential), fingerprint); !errors.Is(e, coreextension.ErrConflict) {
 		t.Fatalf("pre-confirm secret resolve=%v", e)
 	}
 	rec, _ := ext.Get(ctx, res.Installation.ID)
@@ -279,22 +279,22 @@ func TestCoreExtensionPostgresSecretPromotionAndExpiryRollback(t *testing.T) {
 		t.Fatal(e)
 	}
 	installed, _ := ext.Get(ctx, res.Installation.ID)
-	if got, e := secrets.ResolveExactBound(ctx, installed.ID, installed.ActiveVersionID, ref, string(coreextension.SecretPurposeSkillSecret), fingerprint); e != nil || string(got) != "secret-value" {
+	if got, e := secrets.ResolveExactBound(ctx, installed.ID, installed.ActiveVersionID, ref, string(coreextension.SecretPurposeMCPCredential), fingerprint); e != nil || string(got) != "secret-value" {
 		t.Fatalf("promoted secret=%q err=%v", got, e)
 	}
-	if _, e = secrets.ResolveExactBound(ctx, installed.ID, uuid.NewString(), ref, string(coreextension.SecretPurposeSkillSecret), fingerprint); !errors.Is(e, coreextension.ErrNotFound) && !errors.Is(e, coreextension.ErrConflict) {
+	if _, e = secrets.ResolveExactBound(ctx, installed.ID, uuid.NewString(), ref, string(coreextension.SecretPurposeMCPCredential), fingerprint); !errors.Is(e, coreextension.ErrNotFound) && !errors.Is(e, coreextension.ErrConflict) {
 		t.Fatalf("wrong version error=%v", e)
 	}
-	if _, e = secrets.ResolveExactBound(ctx, uuid.NewString(), installed.ActiveVersionID, ref, string(coreextension.SecretPurposeSkillSecret), fingerprint); !errors.Is(e, coreextension.ErrNotFound) && !errors.Is(e, coreextension.ErrConflict) {
+	if _, e = secrets.ResolveExactBound(ctx, uuid.NewString(), installed.ActiveVersionID, ref, string(coreextension.SecretPurposeMCPCredential), fingerprint); !errors.Is(e, coreextension.ErrNotFound) && !errors.Is(e, coreextension.ErrConflict) {
 		t.Fatalf("wrong installation error=%v", e)
 	}
-	if _, e = secrets.ResolveExactBound(ctx, installed.ID, installed.ActiveVersionID, ref, string(coreextension.SecretPurposeMCPCredential), fingerprint); !errors.Is(e, coreextension.ErrConflict) {
+	if _, e = secrets.ResolveExactBound(ctx, installed.ID, installed.ActiveVersionID, ref, string(coreextension.SecretPurposeSkillSecret), fingerprint); !errors.Is(e, coreextension.ErrConflict) {
 		t.Fatalf("wrong purpose error=%v", e)
 	}
 	if _, e = secrets.ResolveExactBound(ctx, installed.ID, installed.ActiveVersionID, ref, "", fingerprint); !errors.Is(e, coreextension.ErrInvalid) && !errors.Is(e, coreextension.ErrConflict) {
 		t.Fatalf("empty purpose error=%v", e)
 	}
-	if _, e = secrets.ResolveExactBound(ctx, installed.ID, installed.ActiveVersionID, ref, string(coreextension.SecretPurposeSkillSecret), strings.Repeat("b", 64)); !errors.Is(e, coreextension.ErrConflict) {
+	if _, e = secrets.ResolveExactBound(ctx, installed.ID, installed.ActiveVersionID, ref, string(coreextension.SecretPurposeMCPCredential), strings.Repeat("b", 64)); !errors.Is(e, coreextension.ErrConflict) {
 		t.Fatalf("wrong binding error=%v", e)
 	}
 	m.IdempotencyKey = uuid.NewString()
@@ -308,6 +308,7 @@ func TestCoreExtensionPostgresSecretPromotionAndExpiryRollback(t *testing.T) {
 	m.Inspection.NetworkSchemaDigest = strings.Repeat("b", 64)
 	m.Inspection.SecretSchemaDigest = strings.Repeat("b", 64)
 	m.ArtifactDigest = strings.Repeat("b", 64)
+	m.ArtifactPath = m.ArtifactDigest
 	upd, e := ext.UpdateMutation(ctx, m, coreextension.StateUpdating)
 	if e != nil {
 		t.Fatal(e)

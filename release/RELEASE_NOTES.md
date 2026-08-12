@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## v1.0.70
+## v1.0.71
 
 1. Establish the independent Agent Core runtime, durable conversations, Tasks, schedules, Knowledge and long-term memory.
 2. Add pinned MCP and Skills lifecycle management, four default built-in Skills, and isolated three-slot local execution.

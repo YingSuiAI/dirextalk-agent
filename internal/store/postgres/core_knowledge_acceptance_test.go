@@ -70,7 +70,7 @@ func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 		t.Fatal(err)
 	}
 	profileID := uuid.NewString()
-	createTestProfile(ctx, t, baseRepo.store, profileID, "acceptance-embed", "acceptance-secret")
+	createTestEmbeddingProfile(ctx, t, baseRepo.store, profileID, "acceptance-embed", "acceptance-secret")
 
 	var embeddingCalls int
 	embedding := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -150,6 +150,9 @@ func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 	memory, err := service.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Title: "memory", Content: memoryText, ContentSHA256: digestBytesKnowledge([]byte(memoryText)), MediaType: "text/plain"})
 	if err != nil || memory.Status != coreknowledge.SourceStatusReady {
 		t.Fatalf("memory = %+v err=%v", memory, err)
+	}
+	if _, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: collectionDigest, Revision: 1}); err != nil {
+		t.Fatal(err)
 	}
 
 	ids := []string{mount.ID, uploaded.ID, memory.ID}

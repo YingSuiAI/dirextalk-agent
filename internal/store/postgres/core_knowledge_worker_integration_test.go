@@ -77,12 +77,15 @@ func TestCoreKnowledgeWorkerPostgresRequestClaimPromoteAndSearchBinding(t *testi
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
 	profileID := uuid.NewString()
-	createTestProfile(ctx, t, repo.store, profileID, "embed", "test")
+	createTestEmbeddingProfile(ctx, t, repo.store, profileID, "embed", "test")
 	mem, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), Title: "w", Content: "worker content", MediaType: "text/plain"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	configDigest := strings.Repeat("a", 64)
+	if _, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: configDigest, Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
 	idx, err := NewKnowledgeIndexer(repo.store, profileID, configDigest)
 	if err != nil {
 		t.Fatal(err)

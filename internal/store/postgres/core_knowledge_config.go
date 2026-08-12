@@ -300,9 +300,6 @@ func (r *CoreKnowledgeStore) retireEmbeddingProfileTx(ctx context.Context, tx pg
 	if _, err = tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs WHERE owner_kind='knowledge_generation' AND profile_id=$1`, profileID); err != nil {
 		return coreknowledge.ErrConflict
 	}
-	if _, err = tx.Exec(ctx, `DELETE FROM core_knowledge_list_snapshots`); err != nil {
-		return coreknowledge.ErrConflict
-	}
 	return nil
 }
 

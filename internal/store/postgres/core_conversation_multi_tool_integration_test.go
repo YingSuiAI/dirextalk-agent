@@ -30,6 +30,10 @@ func (m *countingConversationModel) Run(context.Context, core.ModelRunRequest) (
 	return m.result, nil
 }
 
+func (m *countingConversationModel) Stream(ctx context.Context, request core.ModelRunRequest, _ func(core.ModelDelta) error) (core.ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
 func (m *countingConversationModel) count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
