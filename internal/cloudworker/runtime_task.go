@@ -139,6 +139,11 @@ func BuildRuntimeTask(
 		clear(inputJSON)
 		return RuntimeTaskMaterial{}, err
 	}
+	maximumOutputTokens, err := effectiveModelOutputTokens(sealedPlan.ModelAuthorization)
+	if err != nil {
+		clear(inputJSON)
+		return RuntimeTaskMaterial{}, err
+	}
 	relayDigest := sha256.Sum256([]byte(sealedPlan.ModelRelay.Endpoint))
 	task := cloudruntime.Task{
 		SchemaVersion: cloudruntime.TaskSchemaV1,
@@ -160,7 +165,7 @@ func BuildRuntimeTask(
 		ModelRelayBaseURL:        sealedPlan.ModelRelay.Endpoint,
 		ModelRelayEndpointSHA256: hex.EncodeToString(relayDigest[:]),
 		ModelRelayBindingSHA256:  sealedPlan.ModelRelay.BindingDigest,
-		MaxOutputTokens:          sealedPlan.Limits.MaxTokens,
+		MaxOutputTokens:          maximumOutputTokens,
 		MaxOutputBytes:           sealedPlan.Limits.MaxOutputBytes,
 	}
 	if sealedPlan.WorkspaceMode != WorkspaceNone {

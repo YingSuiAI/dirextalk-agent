@@ -1490,6 +1490,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		_, _ = s.turns.FailTurn(ctx, lease, "tool_history_unavailable", "durable tool history is unavailable")
 		return
 	}
+	cloudWorkerResult, cloudWorkerExecutionID, hasCloudWorkerResult := completedCloudWorkerToolResult(toolCallAuthorities)
+	promptAlreadyPersisted := turnPromptAlreadyPersisted(conv, turn)
 	if turn.ExpectedRevision != nil && conv.Revision != *turn.ExpectedRevision {
 		_, _ = s.turns.FailTurn(ctx, lease, "revision_conflict", "conversation revision changed")
 		return
@@ -1526,7 +1528,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	}
 	var modelConversation Conversation
 	if !replayed {
-		modelConversation, err = modelConversationForTurn(conv, persistedMessageCount, turn, recalledMemory, s.clock())
+		if promptAlreadyPersisted {
+			modelConversation = conv.Snapshot()
+			if modelConversation.Validate() != nil {
+				err = ErrInvalid
+			}
+		} else {
+			modelConversation, err = modelConversationForTurn(conv, persistedMessageCount, turn, recalledMemory, s.clock())
+		}
 		if err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "model context is invalid")
 			return
@@ -1550,6 +1559,15 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		return
 	}
 	if len(intrinsicTools) != 0 {
+		if hasCloudWorkerResult {
+			filtered := intrinsicTools[:0]
+			for _, intrinsic := range intrinsicTools {
+				if intrinsic.Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
+					filtered = append(filtered, intrinsic)
+				}
+			}
+			intrinsicTools = filtered
+		}
 		seen := make(map[string]struct{}, len(intrinsicTools))
 		for _, intrinsic := range intrinsicTools {
 			if !coremodel.IsIntrinsicToolName(intrinsic.Tool.Name) || intrinsic.Tool.InputSchema == nil || intrinsic.Execute == nil {
@@ -1801,6 +1819,13 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			m.RelatedPlanIDs = stableIDs(append(m.RelatedPlanIDs, out.result.RelatedPlanIDs...))
 			m.References = stableReferences(append(m.References, out.result.References...))
 			m.ToolSummaries = stableStrings(append(m.ToolSummaries, out.result.ToolSummaries...))
+			if hasCloudWorkerResult {
+				m.ID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("cloud-worker-result-message:"+cloudWorkerExecutionID)).String()
+				m.RelatedTaskIDs = stableIDs(append(m.RelatedTaskIDs, cloudWorkerResult.RelatedTaskIDs...))
+				m.RelatedPlanIDs = stableIDs(append(m.RelatedPlanIDs, cloudWorkerResult.RelatedPlanIDs...))
+				m.References = stableReferences(append(m.References, cloudWorkerResult.References...))
+				m.ToolSummaries = stableStrings(append(m.ToolSummaries, cloudWorkerResult.Summary))
+			}
 			userTime := nextMessageTime(conv, s.clock())
 			m.ModelProfileID, m.Role, m.CreatedAt = turn.ProfileID, RoleAssistant, userTime.Add(time.Microsecond)
 			if m.ID == "" {
@@ -1810,7 +1835,11 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_result", "model returned invalid message")
 				return
 			}
-			conv.Messages = append(conv.Messages, Message{ID: uuid.NewString(), Role: RoleUser, Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: userTime}, m)
+			if promptAlreadyPersisted {
+				conv.Messages = append(conv.Messages, m)
+			} else {
+				conv.Messages = append(conv.Messages, Message{ID: uuid.NewString(), Role: RoleUser, Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: userTime}, m)
+			}
 			conv.Revision++
 			conv.UpdatedAt = s.clock()
 			response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision, Message: m, Done: true, ModelProfileID: turn.ProfileID, RelatedTaskIDs: append([]string(nil), m.RelatedTaskIDs...), RelatedPlanIDs: append([]string(nil), m.RelatedPlanIDs...), References: cloneReferences(m.References), ToolSummaries: append([]string(nil), m.ToolSummaries...)}
@@ -1943,9 +1972,6 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 	if conversation == nil {
 		return nil, ErrInvalid
 	}
-	if len(turn.ExtensionSnapshots) == 0 {
-		return make(map[string]turnToolCallAuthority), nil
-	}
 	const pageSize = 1000
 	var events []TurnEvent
 	for cursor := int64(0); ; {
@@ -1996,6 +2022,40 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		}
 	}
 	return authorities, nil
+}
+
+func turnPromptAlreadyPersisted(conversation Conversation, turn Turn) bool {
+	expectedID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-user:"+turn.RequestID)).String()
+	for _, message := range conversation.Messages {
+		if message.ID == expectedID {
+			return message.Role == RoleUser && message.Content == turn.Prompt && message.ModelProfileID == turn.ProfileID
+		}
+	}
+	return false
+}
+
+func completedCloudWorkerToolResult(authorities map[string]turnToolCallAuthority) (ToolResult, string, bool) {
+	callIDs := make([]string, 0, len(authorities))
+	for callID := range authorities {
+		callIDs = append(callIDs, callID)
+	}
+	sort.Strings(callIDs)
+	for index := len(callIDs) - 1; index >= 0; index-- {
+		authority := authorities[callIDs[index]]
+		if authority.state != turnToolCallTerminal || authority.result == nil {
+			continue
+		}
+		result := *authority.result
+		if result.ToolName != coremodel.IntrinsicCloudWorkerProposeToolName || len(result.References) == 0 {
+			continue
+		}
+		for _, reference := range result.References {
+			if reference.Kind == "execution_run" && validUUID(reference.ExecutionID) {
+				return result, reference.ExecutionID, true
+			}
+		}
+	}
+	return ToolResult{}, "", false
 }
 
 func modelConversationForTurn(conv Conversation, insertAt int, turn Turn, recalledMemory string, now time.Time) (Conversation, error) {

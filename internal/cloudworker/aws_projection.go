@@ -76,8 +76,11 @@ func BuildAWSDispatch(plan Plan, execution Execution, authorization LaunchAuthor
 	if err != nil || recordedAt.Before(authorization.AuthorizedAt) || !recordedAt.Before(copy.Quote.ExpiresAt) {
 		return cloudaws.Plan{}, cloudaws.DispatchIntent{}, ErrStaleAuthorization
 	}
-	quoteAge := copy.Quote.ExpiresAt.Sub(copy.Quote.SourceTime)
-	if quoteAge <= 0 || quoteAge > time.Hour {
+	// SourceTime identifies the pinned rate catalog, not the issuance time of
+	// this offer. A long-lived operator-pinned catalog may be older than the
+	// short-lived quote while the quote itself is still valid and owner-bound.
+	quoteLifetime := copy.Quote.ExpiresAt.Sub(copy.CreatedAt)
+	if quoteLifetime <= 0 || quoteLifetime > time.Hour {
 		return cloudaws.Plan{}, cloudaws.DispatchIntent{}, ErrStaleAuthorization
 	}
 	if copy.ArtifactGrant.KMSKeyARN == "" {
@@ -135,8 +138,8 @@ func BuildAWSDispatch(plan Plan, execution Execution, authorization LaunchAuthor
 	binding := cloudaws.AuthorizationBinding{
 		AuthorizedQuoteDigest: copy.Quote.Digest, FreshQuoteDigest: freshQuote.Digest,
 		ExpectedConfirmationDigest: string(expectedBinding.Digest), ConfirmationDigest: authorization.ConfirmationBindingDigest,
-		FreshQuotedAt: copy.Quote.SourceTime, QuoteExpiresAt: copy.Quote.ExpiresAt, ConfirmedAt: authorization.ConfirmedAt,
-		MaximumQuoteAgeSeconds: uint32(quoteAge / time.Second),
+		FreshQuotedAt: copy.CreatedAt, QuoteExpiresAt: copy.Quote.ExpiresAt, ConfirmedAt: authorization.ConfirmedAt,
+		MaximumQuoteAgeSeconds: uint32(quoteLifetime / time.Second),
 	}
 	intent, err := cloudaws.NewDispatchIntent(projected, binding, recordedAt)
 	if err != nil {

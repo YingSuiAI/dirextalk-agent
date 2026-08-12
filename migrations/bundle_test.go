@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
 	"testing"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
@@ -38,7 +39,23 @@ func TestCommittedMigrationBytesRemainImmutable(t *testing.T) {
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 12 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" || entries[6] != "000007_unbounded_agent_rounds.up.sql" || entries[7] != "000008_cloud_worker_progress_events.up.sql" || entries[8] != "000009_static_site_releases.up.sql" || entries[9] != "000010_builtin_skill_seeds.up.sql" || entries[10] != "000011_managed_node_mcp_quotas.up.sql" || entries[11] != "000012_managed_node_prepared_cleanup.up.sql" {
+	wantEntries := []string{
+		"000001_core_v1_fresh.up.sql",
+		"000002_knowledge_search_provenance.up.sql",
+		"000003_aws_credential_test_claims.up.sql",
+		"000004_knowledge_pgvector.up.sql",
+		"000005_cloud_worker_v1.up.sql",
+		"000006_image_tools_v1.up.sql",
+		"000007_unbounded_agent_rounds.up.sql",
+		"000008_cloud_worker_progress_events.up.sql",
+		"000009_static_site_releases.up.sql",
+		"000010_builtin_skill_seeds.up.sql",
+		"000011_managed_node_mcp_quotas.up.sql",
+		"000012_managed_node_prepared_cleanup.up.sql",
+		"000013_cloud_worker_model_grant_snapshot.up.sql",
+		"000014_cloud_worker_central_completion.up.sql",
+	}
+	if !slices.Equal(entries, wantEntries) {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Cloud Worker migrations", entries)
 	}
 	migration := Ordered()[0]
@@ -120,6 +137,14 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 		if !bytes.Contains(unboundedRounds.Script, []byte("DROP CONSTRAINT "+constraint)) || !bytes.Contains(unboundedRounds.Script, []byte("ADD CONSTRAINT "+constraint+" CHECK (round >= 0)")) {
 			t.Fatalf("unbounded agent rounds migration missing replacement for %q", constraint)
 		}
+	}
+	grantSnapshot := Ordered()[12]
+	if grantSnapshot.Version != 13 || !bytes.Contains(grantSnapshot.Script, []byte("model_maximum_output_tokens")) {
+		t.Fatal("Cloud Worker model grant snapshot migration missing immutable model maximum")
+	}
+	centralCompletion := Ordered()[13]
+	if centralCompletion.Version != 14 || !bytes.Contains(centralCompletion.Script, []byte("DROP CONSTRAINT IF EXISTS core_cloud_worker_completion_outbox_result_message_id_fkey")) {
+		t.Fatal("Central completion migration did not release the premature result-message foreign key")
 	}
 	if !bytes.Contains(cloudWorker.Script, []byte(cloudworker.PostgresOutputJournalSchemaRequirement)) {
 		t.Fatal("Cloud Worker migration drifted from the output journal schema requirement")

@@ -218,13 +218,15 @@ type publicConversation struct {
 }
 
 type publicConversationMessage struct {
-	MessageID  string                       `json:"message_id"`
-	Role       string                       `json:"role"`
-	Content    string                       `json:"content"`
-	CreatedAt  time.Time                    `json:"created_at"`
-	MessageSeq int64                        `json:"message_seq"`
-	Status     string                       `json:"status"`
-	References []coreconversation.Reference `json:"references"`
+	MessageID      string                       `json:"message_id"`
+	Role           string                       `json:"role"`
+	Content        string                       `json:"content"`
+	CreatedAt      time.Time                    `json:"created_at"`
+	MessageSeq     int64                        `json:"message_seq"`
+	Status         string                       `json:"status"`
+	References     []coreconversation.Reference `json:"references"`
+	RelatedTaskIDs []string                     `json:"related_task_ids,omitempty"`
+	RelatedPlanIDs []string                     `json:"related_plan_ids,omitempty"`
 }
 
 type conversationMessageCursor struct {
@@ -263,13 +265,15 @@ func projectConversationMessages(values []coreconversation.Message) []publicConv
 			references = make([]coreconversation.Reference, 0)
 		}
 		result = append(result, publicConversationMessage{
-			MessageID:  value.ID,
-			Role:       string(value.Role),
-			Content:    value.Content,
-			CreatedAt:  value.CreatedAt,
-			MessageSeq: sequence,
-			Status:     "done",
-			References: references,
+			MessageID:      value.ID,
+			Role:           string(value.Role),
+			Content:        value.Content,
+			CreatedAt:      value.CreatedAt,
+			MessageSeq:     sequence,
+			Status:         "done",
+			References:     references,
+			RelatedTaskIDs: append([]string(nil), value.RelatedTaskIDs...),
+			RelatedPlanIDs: append([]string(nil), value.RelatedPlanIDs...),
 		})
 	}
 	return result

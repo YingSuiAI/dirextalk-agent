@@ -982,7 +982,22 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 	}
 	transcript := make([]core.Message, 0, len(steers)+2)
 	firstUserAt := response.Message.CreatedAt.Add(-time.Duration(len(steers)+1) * time.Microsecond)
-	transcript = append(transcript, core.Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-user:"+lease.Turn.RequestID)).String(), Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: firstUserAt})
+	userMessage := core.Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-user:"+lease.Turn.RequestID)).String(), Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: firstUserAt}
+	var existingConversation, existingRole, existingContent string
+	var existingProfile *uuid.UUID
+	userAlreadyPersisted := false
+	if userErr := tx.QueryRow(ctx, `SELECT conversation_id::text,role,content,model_profile_id FROM core_messages WHERE message_id=$1`, userMessage.ID).Scan(&existingConversation, &existingRole, &existingContent, &existingProfile); userErr == nil {
+		profileMatches := (existingProfile == nil && userMessage.ModelProfileID == "") || (existingProfile != nil && existingProfile.String() == userMessage.ModelProfileID)
+		if existingConversation != response.ConversationID || existingRole != string(userMessage.Role) || existingContent != userMessage.Content || !profileMatches {
+			return core.ErrConflict
+		}
+		userAlreadyPersisted = true
+	} else if !errors.Is(userErr, pgx.ErrNoRows) {
+		return userErr
+	}
+	if !userAlreadyPersisted {
+		transcript = append(transcript, userMessage)
+	}
 	for index, steer := range steers {
 		transcript = append(transcript, core.Message{
 			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-steer-user:"+steer.RequestID)).String(),

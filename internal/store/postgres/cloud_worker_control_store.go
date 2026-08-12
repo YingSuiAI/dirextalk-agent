@@ -709,8 +709,7 @@ func (s *CloudWorkerControlStore) mutateSession(ctx context.Context, operation s
 	if err = tx.QueryRow(ctx, `SELECT count(*) FROM core_cloud_worker_session_fences WHERE execution_id=$1 AND task_id=$2 AND task_attempt=$3 AND lease_epoch=$4`, mutation.Fence.ExecutionID, mutation.Fence.TaskID, mutation.Fence.Attempt, mutation.Fence.LeaseEpoch).Scan(&fenced); err != nil || fenced != 0 {
 		return control.Session{}, control.ErrStaleLease
 	}
-	if mutation.Progress == nil || mutation.ProgressSequence != session.ProgressSequence+1 ||
-		control.ValidateProgressAdvance(session.LatestProgress, *mutation.Progress, session.ClaimedAt.UTC(), mutation.At.UTC()) != nil {
+	if mutation.Progress == nil || mutation.ProgressSequence != session.ProgressSequence+1 {
 		return control.Session{}, control.ErrConflict
 	}
 	progress := *mutation.Progress
@@ -720,11 +719,11 @@ func (s *CloudWorkerControlStore) mutateSession(ctx context.Context, operation s
 		WHERE model_grant.session_id=$1`, session.SessionID).Scan(&invocationCount); err != nil {
 		return control.Session{}, err
 	}
-	if invocationCount < progress.InvocationCount || invocationCount > control.MaximumProgressInvocationCount {
-		return control.Session{}, control.ErrConflict
-	}
-	progress.InvocationCount = invocationCount
-	if control.ValidateProgressAdvance(session.LatestProgress, progress, session.ClaimedAt.UTC(), mutation.At.UTC()) != nil {
+	progress, err = reconcileControlProgress(
+		session.LatestProgress, progress, invocationCount,
+		session.ClaimedAt.UTC(), mutation.At.UTC(),
+	)
+	if err != nil {
 		return control.Session{}, control.ErrConflict
 	}
 	session.ProgressSequence, session.HeartbeatAt, session.LatestProgress = mutation.ProgressSequence, mutation.At.UTC(), &progress
@@ -816,6 +815,24 @@ func (s *CloudWorkerControlStore) mutateSession(ctx context.Context, operation s
 		return control.Session{}, err
 	}
 	return session, nil
+}
+
+func reconcileControlProgress(
+	previous *control.ProgressSnapshot,
+	reported control.ProgressSnapshot,
+	authoritativeInvocationCount uint64,
+	claimedAt time.Time,
+	at time.Time,
+) (control.ProgressSnapshot, error) {
+	if authoritativeInvocationCount < reported.InvocationCount ||
+		authoritativeInvocationCount > control.MaximumProgressInvocationCount {
+		return control.ProgressSnapshot{}, control.ErrConflict
+	}
+	reported.InvocationCount = authoritativeInvocationCount
+	if control.ValidateProgressAdvance(previous, reported, claimedAt, at) != nil {
+		return control.ProgressSnapshot{}, control.ErrConflict
+	}
+	return reported, nil
 }
 
 func (s *CloudWorkerControlStore) Heartbeat(ctx context.Context, mutation control.SessionMutation) (control.Session, error) {

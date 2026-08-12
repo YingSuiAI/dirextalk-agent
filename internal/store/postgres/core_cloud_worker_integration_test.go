@@ -143,11 +143,26 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 
 func (h *pgCloudWorkerHarness) propose(t *testing.T) cloudworker.Offer {
 	t.Helper()
+	arguments, _ := json.Marshal(map[string]any{
+		"objective": h.command.Objective, "workspace_mode": string(h.command.WorkspaceMode),
+	})
+	h.recordProposalModelResult(t, uuid.NewString(), arguments)
 	offer, err := h.service.Propose(h.ctx, h.command)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return offer
+}
+
+func (h *pgCloudWorkerHarness) recordProposalModelResult(t *testing.T, callID string, arguments []byte) {
+	t.Helper()
+	if _, err := h.conversation.PrepareTurnModel(h.ctx, h.lease); err != nil {
+		t.Fatal(err)
+	}
+	call := core.ToolCall{ID: callID, Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(arguments)}
+	if err := h.conversation.RecordTurnModelResult(h.ctx, h.lease, core.ModelRunResult{ToolCalls: []core.ToolCall{call}}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCloudWorkerPostgresCreateOfferAtomicRollbackAndReplay(t *testing.T) {
@@ -392,7 +407,7 @@ func TestCloudWorkerPostgresConfirmationAndPredispatchCancelProjection(t *testin
 				&beginCount, &launchCount, &ledgerCount, &resourceCount, &resultMessages); err != nil {
 				t.Fatal(err)
 			}
-			if beginCount+launchCount+ledgerCount+resourceCount != 0 || resultMessages != 1 {
+			if beginCount+launchCount+ledgerCount+resourceCount != 0 || resultMessages != 0 {
 				t.Fatalf("cancel graph begin=%d launch=%d ledger=%d resources=%d result_messages=%d",
 					beginCount, launchCount, ledgerCount, resourceCount, resultMessages)
 			}
@@ -876,7 +891,7 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 		offer.Execution.ExecutionID, offer.Confirmation.ConfirmationID).Scan(&resultMessages, &completionRows, &activeReservations, &runningCount); err != nil {
 		t.Fatal(err)
 	}
-	if resultMessages != 1 || completionRows != 1 || activeReservations != 0 || runningCount != 0 {
+	if resultMessages != 0 || completionRows != 1 || activeReservations != 0 || runningCount != 0 {
 		t.Fatalf("terminal invariants message=%d outbox=%d reservation=%d running=%d",
 			resultMessages, completionRows, activeReservations, runningCount)
 	}

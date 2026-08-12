@@ -122,8 +122,9 @@ func TestServiceProposalBindsOneEffectiveTokenLimitBeforeQuoteAndRuntimeTask(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens
-	if offer.Plan.Limits.MaxTokens != want || quoter.last.Limits.MaxTokens != want ||
+	wantRequestMax := runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens
+	if offer.Plan.Limits.MaxTokens != defaults.Limits.MaxTokens ||
+		quoter.last.Limits.MaxTokens != defaults.Limits.MaxTokens ||
 		offer.Plan.Quote.BasisDigest != offer.Plan.AuthorizationBasisDigest ||
 		offer.Execution.PlanDigest != offer.Plan.Digest ||
 		offer.Execution.ExecutionDigest != offer.Plan.ExecutionDigest {
@@ -150,8 +151,8 @@ func TestServiceProposalBindsOneEffectiveTokenLimitBeforeQuoteAndRuntimeTask(t *
 		t.Fatal(err)
 	}
 	defer material.Destroy()
-	if material.Task.MaxOutputTokens != offer.Plan.Limits.MaxTokens {
-		t.Fatalf("runtime task max = %d, plan max = %d", material.Task.MaxOutputTokens, offer.Plan.Limits.MaxTokens)
+	if material.Task.MaxOutputTokens != wantRequestMax {
+		t.Fatalf("runtime task request max = %d, want %d", material.Task.MaxOutputTokens, wantRequestMax)
 	}
 }
 
@@ -202,8 +203,8 @@ func TestRequoteRecomputesEffectiveTokenLimitFromServerBase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if offer.Plan.Limits.MaxTokens != test.oldMaximum {
-				t.Fatalf("old effective max = %d", offer.Plan.Limits.MaxTokens)
+			if offer.Plan.Limits.MaxTokens != defaults.Limits.MaxTokens {
+				t.Fatalf("old cumulative budget = %d", offer.Plan.Limits.MaxTokens)
 			}
 			current := offer.Plan.ModelAuthorization
 			current.ModelProfileRevision++
@@ -220,7 +221,7 @@ func TestRequoteRecomputesEffectiveTokenLimitFromServerBase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if command.Plan.Limits.MaxTokens != test.newMaximum ||
+			if command.Plan.Limits.MaxTokens != defaults.Limits.MaxTokens ||
 				command.Plan.Quote.BasisDigest != command.Plan.AuthorizationBasisDigest ||
 				command.Plan.Digest == offer.Plan.Digest {
 				t.Fatalf("replacement limit/digest drift: old=%+v replacement=%+v", offer.Plan, command.Plan)

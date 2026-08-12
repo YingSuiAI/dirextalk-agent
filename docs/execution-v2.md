@@ -290,6 +290,11 @@ digest, and complete SHA-256, then repeats both PostgreSQL and AWS fences before
 returning a non-empty chunk. A concurrent cleaner claim, expiry, credential
 drift, object drift, or stale owner generation fails closed. Downloads neither
 create a lease nor extend retention, and public results contain no S3 address.
+The production renderer pins that immutable retention authorization to 30
+days, the protocol maximum. The App derives the availability deadline from the
+sealed Plan and artifact creation time, disables expired downloads, and states
+that the deliverable is no longer available instead of reporting a generic
+verification failure.
 
 ## Completion callback and App recovery
 

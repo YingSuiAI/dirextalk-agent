@@ -260,6 +260,9 @@ func classifyPiProviderFailure(message string) error {
 		strings.Contains(normalized, "insufficient_balance"),
 		strings.Contains(normalized, "quota"), strings.Contains(normalized, "billing"):
 		code = FailureCodeProviderQuota
+	case strings.Contains(normalized, "token_budget_exhausted"),
+		strings.Contains(normalized, "budget_exhausted"):
+		code = FailureCodeModelBudgetExhausted
 	case strings.HasPrefix(normalized, "429"), strings.Contains(normalized, "rate_limit"):
 		code = FailureCodeProviderRateLimit
 	case strings.HasPrefix(normalized, "400"), strings.HasPrefix(normalized, "404"),

@@ -3,6 +3,7 @@ package cloudworker
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,6 +79,75 @@ func TestValidateCollectedLimitsRequiresInputBoundWorkspaceDelta(t *testing.T) {
 	withoutDelta.Artifacts = withoutDelta.Artifacts[:1]
 	if err := validateCollectedLimits(plan, material, withoutDelta); err == nil {
 		t.Fatal("write result without an authoritative delta archive was accepted")
+	}
+}
+
+func TestBuildDeliverableContextExposesFilesAndScreensSecrets(t *testing.T) {
+	t.Parallel()
+	inputDigest := digestValue("deliverable-context-input")
+	workspace := t.TempDir()
+	collector := cloudruntime.FilesystemOutputCollector{}
+	baseline, err := collector.Snapshot(t.Context(), workspace, inputDigest, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer baseline.Destroy()
+	files := map[string][]byte{
+		"README.md":                        []byte("# LogScope\n\nThe command groups errors by time window.\n"),
+		"report.csv":                       []byte("category,count\ntimeout,7\n"),
+		"preview.png":                      {0x89, 'P', 'N', 'G', 0, 1, 2},
+		"secret.txt":                       []byte("api_key=sk-abcdefghijklmnopqrstuvwxyz123456"),
+		"__pycache__/logscope.cpython.pyc": {0, 1, 2},
+	}
+	for name, content := range files {
+		if err = os.MkdirAll(filepath.Dir(filepath.Join(workspace, name)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(filepath.Join(workspace, name), content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	artifacts, err := collector.Collect(t.Context(), workspace, baseline, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collected := cloudresult.Collected{}
+	for _, artifact := range artifacts {
+		collected.Artifacts = append(collected.Artifacts, cloudresult.CollectedArtifact{
+			Claim: cloudresult.ObjectClaim{
+				Name: artifact.Name, MediaType: artifact.MediaType,
+				SizeBytes: int64(len(artifact.Content)),
+			},
+			Content: artifact.Content,
+		})
+	}
+	collected.Artifacts = append(collected.Artifacts, cloudresult.CollectedArtifact{
+		Claim: cloudresult.ObjectClaim{
+			Name: "changes.patch", MediaType: "text/plain; charset=utf-8", SizeBytes: 22,
+		},
+		Content: []byte("diff --git a/a b/a\n+ok\n"),
+	})
+	contextItems, omitted, err := buildDeliverableContext(collected, inputDigest, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if omitted != 0 {
+		t.Fatalf("unexpected omitted deliverables: %d", omitted)
+	}
+	byPath := make(map[string]DeliverableContext, len(contextItems))
+	for _, item := range contextItems {
+		byPath[item.Path] = item
+	}
+	if len(byPath) != 5 || byPath["README.md"].TextPreview != string(files["README.md"]) ||
+		byPath["report.csv"].MediaType != "text/csv; charset=utf-8" ||
+		byPath["preview.png"].MediaType != "image/png" || byPath["preview.png"].TextPreview != "" ||
+		byPath["secret.txt"].TextPreview != "" || byPath["changes.patch"].TextPreview == "" {
+		t.Fatalf("unexpected Central deliverable context: %+v", contextItems)
+	}
+	for _, item := range contextItems {
+		if strings.Contains(item.Path, "meta/") || strings.Contains(item.Path, "files/") {
+			t.Fatalf("internal archive path leaked into deliverables: %+v", item)
+		}
 	}
 }
 

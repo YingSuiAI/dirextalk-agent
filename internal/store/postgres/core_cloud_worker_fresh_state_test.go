@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -526,6 +527,7 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 		"workspace_mode": string(cloudworker.WorkspaceNone),
 	})
 	callID := uuid.NewString()
+	h.recordProposalModelResult(t, callID, arguments)
 	result, err := resolved[0].Execute(h.ctx, core.IntrinsicExecutionRequest{
 		Lease:              h.lease,
 		Call:               core.ToolCall{ID: callID, Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(arguments)},
@@ -687,28 +689,34 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 		&verifiedResources, &ledgerDestroyed, &outputJournals, &resultRows); err != nil {
 		t.Fatal(err)
 	}
-	resultMessageCount := 0
-	if len(outboxes) == 1 {
-		for _, message := range conversation.Messages {
-			if message.ID == outboxes[0].ResultMessageID {
-				resultMessageCount++
-				if message.Content == "" || len(message.RelatedTaskIDs) != 1 || message.RelatedTaskIDs[0] != plan.TaskID ||
-					len(message.RelatedPlanIDs) != 1 || message.RelatedPlanIDs[0] != plan.PlanID {
-					t.Fatalf("result message lost authority references: %+v", message)
-				}
+	events, err := h.conversation.LoadTurnEvents(h.ctx, plan.TurnID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var completionCalls, completionResults int
+	for _, event := range events {
+		if event.Kind == core.TurnEventToolCall && event.ToolCall != nil && event.ToolCall.Name == coremodel.IntrinsicCloudWorkerProposeToolName {
+			completionCalls++
+		}
+		if event.Kind == core.TurnEventToolResult && event.ToolResult != nil && event.ToolResult.ToolName == coremodel.IntrinsicCloudWorkerProposeToolName {
+			completionResults++
+			if len(event.ToolResult.RelatedTaskIDs) != 1 || event.ToolResult.RelatedTaskIDs[0] != plan.TaskID ||
+				len(event.ToolResult.RelatedPlanIDs) != 1 || event.ToolResult.RelatedPlanIDs[0] != plan.PlanID ||
+				!strings.Contains(event.ToolResult.Content, "dirextalk.cloud-worker-completion/v1") {
+				t.Fatalf("completion tool result lost authority: %+v", event.ToolResult)
 			}
 		}
 	}
 	if terminal.State != cloudworker.StateSucceeded || !terminal.Cleanup.VerifiedDestroyed ||
 		terminal.Cleanup.ResourcesTotal != uint64(len(cloudaws.AllResourceKinds())) ||
 		terminal.Cleanup.ResourcesVerifiedDestroyed != uint64(len(cloudaws.AllResourceKinds())) ||
-		terminalTask.Status != coretask.StatusSucceeded || turn.State != core.TurnCompleted ||
-		len(conversation.Messages) != 3 || len(outboxes) != 1 || outboxes[0].TerminalState != string(cloudworker.StateSucceeded) ||
+		terminalTask.Status != coretask.StatusSucceeded || turn.State != core.TurnAccepted ||
+		len(conversation.Messages) != 2 || len(outboxes) != 1 || outboxes[0].TerminalState != string(cloudworker.StateSucceeded) ||
 		verifiedResources != len(cloudaws.AllResourceKinds()) || ledgerDestroyed != 1 || outputJournals != 1 ||
-		outputObjects.inventoryCalls != 2 || outputObjects.deleteCalls != 1 || resultRows != 1 || resultMessageCount != 1 {
-		t.Fatalf("terminal graph execution=%+v task=%s turn=%s messages=%d outboxes=%+v resources=%d ledger=%d result_rows=%d result_messages=%d",
+		outputObjects.inventoryCalls != 2 || outputObjects.deleteCalls != 1 || resultRows != 0 || completionCalls != 1 || completionResults != 1 {
+		t.Fatalf("terminal graph execution=%+v task=%s turn=%s messages=%d outboxes=%+v resources=%d ledger=%d result_rows=%d tool_calls=%d tool_results=%d",
 			terminal, terminalTask.Status, turn.State, len(conversation.Messages), outboxes,
-			verifiedResources, ledgerDestroyed, resultRows, resultMessageCount)
+			verifiedResources, ledgerDestroyed, resultRows, completionCalls, completionResults)
 	}
 	if provider.prepareCalls != 1 || provider.ensureCalls != 1 || provider.observeCalls != 1 || provider.destroyCalls != 1 ||
 		workerSessions.setCalls != 1 || workerSessions.claimCalls != 1 || workerSessions.completeCalls != 1 ||

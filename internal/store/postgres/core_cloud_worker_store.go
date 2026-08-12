@@ -19,6 +19,7 @@ import (
 	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -2304,15 +2305,13 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrStaleAuthorization
 	}
 
-	var requestID, turnState, profileID string
-	var turnRevision, turnSequence uint64
-	if err = tx.QueryRow(ctx, `SELECT request_id::text,state,profile_id::text,revision,last_sequence FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, plan.TurnID).Scan(&requestID, &turnState, &profileID, &turnRevision, &turnSequence); err != nil || turnState != "waiting_confirmation" {
+	var turnState, dispatchState string
+	var turnRevision uint64
+	var turnSequence int64
+	var dispatchResultRaw []byte
+	if err = tx.QueryRow(ctx, `SELECT state,revision,last_sequence,dispatch_state,dispatch_result_json FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, plan.TurnID).Scan(&turnState, &turnRevision, &turnSequence, &dispatchState, &dispatchResultRaw); err != nil || turnState != "waiting_confirmation" || dispatchState != "completed" {
 		logCloudWorkerTerminalInvariant("conversation_turn")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrConflict
-	}
-	var conversationRevision uint64
-	if err = tx.QueryRow(ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1 AND deleted_at IS NULL FOR UPDATE`, plan.ConversationID).Scan(&conversationRevision); err != nil {
-		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
 	}
 	binding, err := cloudworker.BindingForPlan(plan)
 	if err != nil {
@@ -2323,36 +2322,25 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrStaleAuthorization
 	}
 	references := cloudWorkerReferences(plan, next, binding, confirmationReferenceRevision, confirmationReferenceState)
-	resultMessage := core.Message{ID: deterministicCloudWorkerUUID("cloud-worker-result-message", plan.ExecutionID), Role: core.RoleAssistant,
-		Content: summary, ModelProfileID: profileID, RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID},
-		References: references, CreatedAt: now}
-	if resultMessage.Validate() != nil {
-		logCloudWorkerTerminalInvariant("result_message")
+	toolCall, toolResult, err := cloudWorkerContinuation(dispatchResultRaw, plan, next, terminal, summary, providerResult, references)
+	if err != nil {
+		logCloudWorkerTerminalInvariant("continuation")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrInvalid
 	}
-	var messageSequence int64
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence),0)+1 FROM core_messages WHERE conversation_id=$1`, plan.ConversationID).Scan(&messageSequence); err != nil || insertCloudWorkerMessageTx(ctx, tx, plan.ConversationID, messageSequence, resultMessage) != nil {
-		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrConflict
-	}
-	response := core.ChatResponse{RequestID: requestID, ConversationID: plan.ConversationID,
-		Revision: conversationRevision + 1, Message: resultMessage, Done: true, ModelProfileID: profileID,
-		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, References: references}
-	responseRaw, _ := json.Marshal(response)
-	conversationUpdate, err := tx.Exec(ctx, `UPDATE core_conversations SET revision=revision+1,updated_at=$2 WHERE conversation_id=$1 AND revision=$3`, plan.ConversationID, now, conversationRevision)
-	if err != nil || conversationUpdate.RowsAffected() != 1 {
-		if err == nil {
-			err = cloudworker.ErrConflict
-		}
+	if err = insertTurnEventTx(ctx, tx, plan.TurnID, turnSequence+1, core.TurnEvent{Kind: core.TurnEventToolCall, ToolCall: &toolCall}, now); err != nil {
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
 	}
-	turnEvent := core.TurnEvent{TurnID: plan.TurnID, Sequence: int64(turnSequence + 1), Revision: turnRevision + 1, Kind: core.TurnEventDone,
-		Message: &resultMessage, Response: &response, ExecutionID: plan.ExecutionID, Status: string(terminal),
-		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, References: references, CreatedAt: now}
-	turnEventRaw, _ := json.Marshal(turnEvent)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at) VALUES($1,$2,$3,$4,$5)`, plan.TurnID, turnEvent.Sequence, string(turnEvent.Kind), turnEventRaw, now); err != nil {
+	if err = insertTurnEventTx(ctx, tx, plan.TurnID, turnSequence+2, core.TurnEvent{Kind: core.TurnEventToolResult, ToolResult: &toolResult}, now); err != nil {
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
 	}
-	turnUpdate, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='completed',response_json=$2,revision=revision+1,last_sequence=$3,updated_at=$4 WHERE turn_id=$1 AND state='waiting_confirmation' AND revision=$5`, plan.TurnID, responseRaw, turnEvent.Sequence, now, turnRevision)
+	// Worker completion is a durable tool result, not an assistant reply. Clear
+	// the first model dispatch and let the original turn continue with its full
+	// conversation context so Central owns the only user-facing final message.
+	turnUpdate, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',response_json=NULL,
+		dispatch_state='',dispatch_epoch=0,dispatch_result_json=NULL,lease_id=NULL,lease_expires_at=NULL,
+		revision=revision+1,last_sequence=$2,updated_at=$3
+		WHERE turn_id=$1 AND state='waiting_confirmation' AND revision=$4 AND cancel_requested=false`,
+		plan.TurnID, turnSequence+2, now, turnRevision)
 	if err != nil || turnUpdate.RowsAffected() != 1 {
 		logCloudWorkerTerminalInvariant("turn_projection")
 		if err == nil {
@@ -2362,7 +2350,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 	}
 	outbox := cloudworker.CompletionOutbox{EventID: deterministicCloudWorkerUUID("completion-outbox", plan.ExecutionID),
 		ExecutionID: plan.ExecutionID, RunID: plan.ExecutionID, ConversationID: plan.ConversationID,
-		TurnID: plan.TurnID, ResultMessageID: resultMessage.ID, TerminalState: string(terminal), CompletedAt: now}
+		TurnID: plan.TurnID, ResultMessageID: deterministicCloudWorkerUUID("cloud-worker-result-message", plan.ExecutionID), TerminalState: string(terminal), CompletedAt: now}
 	outbox.PayloadDigest = cloudworker.CompletionDigest(outbox)
 	if outbox.Validate() != nil {
 		logCloudWorkerTerminalInvariant("completion_outbox")
@@ -2386,6 +2374,104 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 
 func logCloudWorkerTerminalInvariant(stage string) {
 	slog.Warn("[cloud-worker.store] terminal_invariant_deferred", "stage", stage)
+}
+
+type cloudWorkerContinuationPayload struct {
+	Schema                    string                           `json:"schema"`
+	ExecutionID               string                           `json:"execution_id"`
+	Status                    string                           `json:"status"`
+	IntegrityVerified         bool                             `json:"integrity_verified"`
+	WorkerReport              string                           `json:"worker_report"`
+	Artifacts                 []cloudWorkerArtifactBrief       `json:"artifacts"`
+	DeliverableContext        []cloudworker.DeliverableContext `json:"deliverable_context,omitempty"`
+	DeliverableContextOmitted uint64                           `json:"deliverable_context_omitted,omitempty"`
+	CentralInstruction        string                           `json:"central_instruction"`
+}
+
+type cloudWorkerArtifactBrief struct {
+	ArtifactID string `json:"artifact_id"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	MediaType  string `json:"media_type"`
+	SizeBytes  uint64 `json:"size_bytes"`
+	SHA256     string `json:"sha256"`
+}
+
+// cloudWorkerContinuation converts the terminal Worker projection into a
+// bounded tool result. Worker prose remains attributed as a report; Central
+// receives an explicit instruction to synthesize the user-facing answer from
+// this result and the original conversation instead of echoing a template.
+func cloudWorkerContinuation(
+	dispatchResultRaw []byte,
+	plan cloudworker.Plan,
+	execution cloudworker.Execution,
+	terminal cloudworker.ExecutionState,
+	summary string,
+	providerResult *cloudworker.ProviderResult,
+	references []core.Reference,
+) (core.ToolCall, core.ToolResult, error) {
+	envelope, err := loadDurableTurnDispatchEnvelope(dispatchResultRaw)
+	if err != nil {
+		return core.ToolCall{}, core.ToolResult{}, cloudworker.ErrInvalid
+	}
+	modelResult := envelope.Result
+	calls := modelResult.ToolCalls
+	if len(calls) == 0 {
+		calls = modelResult.Message.ToolCalls
+	}
+	if len(calls) != 1 || calls[0].Name != coremodel.IntrinsicCloudWorkerProposeToolName || calls[0].Validate() != nil {
+		return core.ToolCall{}, core.ToolResult{}, cloudworker.ErrInvalid
+	}
+	artifacts := make([]cloudWorkerArtifactBrief, 0)
+	if providerResult != nil {
+		artifacts = make([]cloudWorkerArtifactBrief, 0, len(providerResult.Artifacts))
+		for _, artifact := range providerResult.Artifacts {
+			artifacts = append(artifacts, cloudWorkerArtifactBrief{
+				ArtifactID: artifact.ArtifactID, Kind: artifact.Kind, Name: artifact.Name,
+				MediaType: artifact.MediaType, SizeBytes: artifact.SizeBytes, SHA256: artifact.SHA256,
+			})
+		}
+	}
+	payload := cloudWorkerContinuationPayload{
+		Schema: "dirextalk.cloud-worker-completion/v1", ExecutionID: execution.ExecutionID,
+		Status: string(terminal), IntegrityVerified: terminal == cloudworker.StateSucceeded,
+		WorkerReport: summary, Artifacts: artifacts,
+		DeliverableContext:        providerResultDeliverableContext(providerResult),
+		DeliverableContextOmitted: providerResultDeliverableContextOmitted(providerResult),
+		CentralInstruction:        "Continue the current conversation as Central Agent. Use the original user request and prior messages, independently select and summarize the important conclusions, distinguish Worker-reported claims from integrity-verified artifacts, mention the useful deliverables by name, and ask for a user decision only when one is genuinely needed. Do not expose infrastructure details or repeat a fixed completion template.",
+	}
+	content, err := json.Marshal(payload)
+	if err != nil {
+		return core.ToolCall{}, core.ToolResult{}, err
+	}
+	resultSummary := "Cloud Worker completed; Central synthesis required"
+	if terminal != cloudworker.StateSucceeded {
+		resultSummary = "Cloud Worker ended without a verified successful result; Central explanation required"
+	}
+	result := core.ToolResult{
+		CallID: calls[0].ID, ToolName: coremodel.IntrinsicCloudWorkerProposeToolName,
+		Content: string(content), IsError: terminal != cloudworker.StateSucceeded,
+		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID},
+		References: references, Summary: resultSummary,
+	}
+	if result.Validate() != nil {
+		return core.ToolCall{}, core.ToolResult{}, cloudworker.ErrInvalid
+	}
+	return calls[0], result, nil
+}
+
+func providerResultDeliverableContext(result *cloudworker.ProviderResult) []cloudworker.DeliverableContext {
+	if result == nil {
+		return nil
+	}
+	return result.DeliverableContext
+}
+
+func providerResultDeliverableContextOmitted(result *cloudworker.ProviderResult) uint64 {
+	if result == nil {
+		return 0
+	}
+	return result.DeliverableContextOmitted
 }
 
 func scanCloudWorkerCompletionOutbox(row cloudWorkerRowScanner) (cloudworker.CompletionOutbox, error) {

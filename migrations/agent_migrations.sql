@@ -2403,3 +2403,33 @@ ALTER TABLE core_extension_artifact_cleanup
         (node_artifact = true AND cleanup_token IS NOT NULL AND jsonb_typeof(version_json) = 'object' AND pg_column_size(version_json) <= 262144)
     );
 -- dirextalk-agent migration end 000012_managed_node_prepared_cleanup.up.sql
+-- dirextalk-agent migration begin 000013_cloud_worker_model_grant_snapshot.up.sql
+ALTER TABLE core_cloud_worker_model_grants
+    ADD COLUMN model_maximum_output_tokens bigint;
+
+UPDATE core_cloud_worker_model_grants AS g
+SET model_maximum_output_tokens =
+    (plan.plan_json #>> '{model_authorization,maximum_output_tokens}')::bigint
+FROM core_cloud_worker_executions AS execution
+JOIN core_cloud_worker_plans AS plan
+  ON plan.plan_id = execution.plan_id
+ AND plan.execution_id = execution.execution_id
+ AND plan.revision = execution.plan_revision
+ AND plan.digest = execution.plan_digest
+WHERE execution.execution_id = g.execution_id;
+
+ALTER TABLE core_cloud_worker_model_grants
+    ALTER COLUMN model_maximum_output_tokens SET NOT NULL,
+    ADD CONSTRAINT core_cloud_worker_model_grants_model_maximum_output_tokens_check
+        CHECK (model_maximum_output_tokens BETWEEN 0 AND 10000000);
+-- dirextalk-agent migration end 000013_cloud_worker_model_grant_snapshot.up.sql
+-- dirextalk-agent migration begin 000014_cloud_worker_central_completion.up.sql
+-- Worker completion now resumes the durable turn before Central writes its
+-- model-generated reply. The deterministic result_message_id is therefore an
+-- eventual correlation ID and must be allowed to precede the message row.
+ALTER TABLE core_cloud_worker_completion_outbox
+    DROP CONSTRAINT IF EXISTS core_cloud_worker_completion_outbox_result_message_id_fkey;
+
+COMMENT ON COLUMN core_cloud_worker_completion_outbox.result_message_id IS
+    'Deterministic ID reserved for the Central-generated terminal reply; the message may be created after this outbox row.';
+-- dirextalk-agent migration end 000014_cloud_worker_central_completion.up.sql

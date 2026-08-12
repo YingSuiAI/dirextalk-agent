@@ -119,7 +119,12 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 				Reasoning bool   `json:"reasoning"`
 				MaxTokens uint64 `json:"maxTokens"`
 				Compat    struct {
-					MaxTokensField string `json:"maxTokensField"`
+					MaxTokensField                              string `json:"maxTokensField"`
+					SupportsStore                               bool   `json:"supportsStore"`
+					SupportsDeveloperRole                       bool   `json:"supportsDeveloperRole"`
+					SupportsReasoningEffort                     bool   `json:"supportsReasoningEffort"`
+					ThinkingFormat                              string `json:"thinkingFormat"`
+					RequiresReasoningContentOnAssistantMessages bool   `json:"requiresReasoningContentOnAssistantMessages"`
 				} `json:"compat"`
 			} `json:"models"`
 			ModelOverrides json.RawMessage `json:"modelOverrides"`
@@ -132,7 +137,13 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 	if provider.BaseURL != task.ModelRelayBaseURL || provider.API != "openai-completions" ||
 		len(provider.Models) != 1 || provider.Models[0].ID != task.Model ||
 		!provider.Models[0].Reasoning || provider.Models[0].MaxTokens != task.MaxOutputTokens ||
-		provider.Models[0].Compat.MaxTokensField != "max_tokens" || provider.ModelOverrides != nil {
+		provider.Models[0].Compat.MaxTokensField != "max_tokens" ||
+		provider.Models[0].Compat.SupportsStore ||
+		provider.Models[0].Compat.SupportsDeveloperRole ||
+		!provider.Models[0].Compat.SupportsReasoningEffort ||
+		provider.Models[0].Compat.ThinkingFormat != "deepseek" ||
+		!provider.Models[0].Compat.RequiresReasoningContentOnAssistantMessages ||
+		provider.ModelOverrides != nil {
 		t.Fatalf("provider config=%+v", provider)
 	}
 }
@@ -143,11 +154,13 @@ func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
 		name, provider, model, api string
 		modelInterface             ModelInterface
 		wantMaxTokensField         string
+		wantDeepSeekCompatibility  bool
 	}{
 		{
 			name: "openai_compatible", provider: "deepseek",
 			model: "deepseek/deepseek-v4-flash-0731", api: "openai-completions",
 			modelInterface: ModelOpenAICompatible, wantMaxTokensField: "max_tokens",
+			wantDeepSeekCompatibility: true,
 		},
 		{
 			name: "openai_responses", provider: "openai",
@@ -179,7 +192,12 @@ func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
 						Reasoning bool   `json:"reasoning"`
 						MaxTokens uint64 `json:"maxTokens"`
 						Compat    struct {
-							MaxTokensField string `json:"maxTokensField"`
+							MaxTokensField                              string `json:"maxTokensField"`
+							SupportsStore                               bool   `json:"supportsStore"`
+							SupportsDeveloperRole                       bool   `json:"supportsDeveloperRole"`
+							SupportsReasoningEffort                     bool   `json:"supportsReasoningEffort"`
+							ThinkingFormat                              string `json:"thinkingFormat"`
+							RequiresReasoningContentOnAssistantMessages bool   `json:"requiresReasoningContentOnAssistantMessages"`
 						} `json:"compat"`
 					} `json:"models"`
 					ModelOverrides json.RawMessage `json:"modelOverrides"`
@@ -195,6 +213,13 @@ func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
 				provider.Models[0].Compat.MaxTokensField != test.wantMaxTokensField ||
 				provider.ModelOverrides != nil {
 				t.Fatalf("provider config=%+v", provider)
+			}
+			compat := provider.Models[0].Compat
+			if test.wantDeepSeekCompatibility &&
+				(compat.SupportsStore || compat.SupportsDeveloperRole ||
+					!compat.SupportsReasoningEffort || compat.ThinkingFormat != "deepseek" ||
+					!compat.RequiresReasoningContentOnAssistantMessages) {
+				t.Fatalf("deepseek compatibility=%+v", compat)
 			}
 		})
 	}
@@ -380,6 +405,14 @@ func TestPiContractsRejectUnboundedOrUnsafeOutput(t *testing.T) {
 	if !ok || failure.Code != FailureCodeProviderAuthentication ||
 		strings.Contains(err.Error(), "sensitive-canary") {
 		t.Fatalf("provider failure=%+v ok=%t err=%v", failure, ok, err)
+	}
+	_, _, err = ParsePiEvents(piFailureEventStream(
+		"error", `429 {"error":{"code":"token_budget_exhausted"}}`,
+	))
+	failure, ok = FailureOf(err)
+	if !ok || failure.Code != FailureCodeModelBudgetExhausted ||
+		failure.Stage != FailureStagePi {
+		t.Fatalf("budget failure=%+v ok=%t err=%v", failure, ok, err)
 	}
 }
 

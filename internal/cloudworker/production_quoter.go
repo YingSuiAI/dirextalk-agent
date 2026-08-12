@@ -80,7 +80,10 @@ func (snapshot PricingCatalogSnapshot) validate(request PricingCatalogRequest, n
 		snapshot.SourceTime != snapshot.SourceTime.UTC() || snapshot.ExpiresAt != snapshot.ExpiresAt.UTC() || now.Before(snapshot.SourceTime) {
 		return ErrInvalid
 	}
-	if now.Sub(snapshot.SourceTime) > maximumAge || !now.Before(snapshot.ExpiresAt) {
+	// A zero maximum age selects the operator-pinned catalog mode. The file is
+	// still SHA-256 pinned at startup, but its rates do not expire merely
+	// because the Agent has been running for more than a few minutes.
+	if maximumAge > 0 && (now.Sub(snapshot.SourceTime) > maximumAge || !now.Before(snapshot.ExpiresAt)) {
 		return ErrPricingCatalogStale
 	}
 	return nil
@@ -95,7 +98,7 @@ type ProductionQuoterConfig struct {
 }
 
 func (config ProductionQuoterConfig) validate() error {
-	if config.QuoteTTL <= 0 || config.QuoteTTL > 15*time.Minute || config.MaximumCatalogAge <= 0 || config.MaximumCatalogAge > 15*time.Minute ||
+	if config.QuoteTTL <= 0 || config.QuoteTTL > 15*time.Minute || config.MaximumCatalogAge < 0 || config.MaximumCatalogAge > 15*time.Minute ||
 		config.CleanupReserveSeconds != EphemeralCleanupReserveSeconds || config.ContingencyBasisPoints > 10_000 ||
 		config.AbsoluteHardLimitMicros <= 0 {
 		return ErrInvalid
@@ -144,7 +147,8 @@ func (quoter *ProductionQuoter) Validate(ctx context.Context, plan Plan) (Quote,
 		return Quote{}, err
 	}
 	now := quoter.now().UTC()
-	if plan.Quote.ExpiresAt.After(now) && plan.Quote.SourceTime.Add(quoter.config.MaximumCatalogAge).After(now) &&
+	catalogFresh := quoter.config.MaximumCatalogAge == 0 || plan.Quote.SourceTime.Add(quoter.config.MaximumCatalogAge).After(now)
+	if plan.Quote.ExpiresAt.After(now) && catalogFresh &&
 		plan.Quote.AmountMicros == fresh.AmountMicros && plan.Quote.MaximumAuthorizedCostMicros == fresh.MaximumAuthorizedCostMicros &&
 		plan.Quote.Currency == fresh.Currency && plan.Quote.BasisDigest == fresh.BasisDigest &&
 		plan.Quote.CatalogRevisionDigest == fresh.CatalogRevisionDigest {
@@ -179,7 +183,7 @@ func (quoter *ProductionQuoter) quote(ctx context.Context, request QuoteRequest)
 		return Quote{}, ErrInvalid
 	}
 	expires := now.Add(quoter.config.QuoteTTL)
-	if snapshot.ExpiresAt.Before(expires) {
+	if quoter.config.MaximumCatalogAge > 0 && snapshot.ExpiresAt.Before(expires) {
 		expires = snapshot.ExpiresAt
 	}
 	quote := Quote{AmountMicros: int64(amount), Currency: "USD", SourceTime: snapshot.SourceTime, ExpiresAt: expires,
@@ -195,7 +199,7 @@ func validateProductionQuoteRequest(request QuoteRequest) error {
 	if request.OwnerID == "" || request.AccountGeneration == 0 || !validDigest(request.ObjectiveDigest) || !validDigest(request.UserPromptDigest) ||
 		!validDigest(request.InputManifestDigest) || !validDigest(request.ModelBindingDigest) || !validDigest(request.AuthorizationBasisDigest) ||
 		!validateWorkspaceMode(request.WorkspaceMode) || validateAWS(request.AWS) != nil || validateCompute(request.Compute) != nil ||
-		validateLimits(request.Limits) != nil || (request.ProposalReason != ProposalReasonExplicitUserCloud && request.ProposalReason != ProposalReasonLocalBudgetExceeded) {
+		validateLimits(request.Limits) != nil || !validProposalReason(request.ProposalReason) {
 		return ErrInvalid
 	}
 	return nil

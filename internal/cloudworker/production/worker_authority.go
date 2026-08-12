@@ -117,7 +117,7 @@ func (authority *WorkerAuthority) IssueWorkerClaimMaterial(ctx context.Context, 
 		LimitDigest:        material.Task.ModelGrantLimitSHA256,
 		RelayURL:           resume.Plan.ModelRelay.Endpoint,
 		RelayBindingDigest: resume.Plan.ModelRelay.BindingDigest,
-		MaxTokens:          material.Task.MaxOutputTokens,
+		MaxTokens:          resume.Plan.Limits.MaxTokens,
 		// Grant and Worker execution end at the same second. Letting the grant
 		// cross the smallest hard deadline would silently extend authorization.
 		ExpiresAt: deadline,
@@ -126,7 +126,7 @@ func (authority *WorkerAuthority) IssueWorkerClaimMaterial(ctx context.Context, 
 		return rpcapi.WorkerClaimMaterial{}, err
 	}
 	defer issued.Destroy()
-	grant, err := issued.RuntimeModelGrant()
+	grant, err := issued.RuntimeModelGrant(material.Task.MaxOutputTokens)
 	if err != nil {
 		_ = authority.relay.FenceExecution(ctx, relayFence, "claim_material_invalid", false)
 		return rpcapi.WorkerClaimMaterial{}, err

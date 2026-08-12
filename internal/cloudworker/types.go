@@ -58,6 +58,7 @@ type ProposalReason string
 
 const (
 	ProposalReasonExplicitUserCloud   ProposalReason = "explicit_user_cloud"
+	ProposalReasonCentralDelegation   ProposalReason = "central_delegation"
 	ProposalReasonLocalBudgetExceeded ProposalReason = "local_budget_exceeded"
 )
 
@@ -728,7 +729,7 @@ func (p *Plan) Seal() error {
 
 func (p *Plan) sealAuthorizationBasis() error {
 	switch p.ProposalReason {
-	case ProposalReasonExplicitUserCloud:
+	case ProposalReasonExplicitUserCloud, ProposalReasonCentralDelegation:
 		if p.LocalBudgetEvidence != nil {
 			return ErrInvalid
 		}
@@ -745,7 +746,7 @@ func (p *Plan) sealAuthorizationBasis() error {
 	}
 	p.InputManifestDigest = manifestDigest
 	p.InputManifestItemCount = uint64(len(p.InputManifest.Items))
-	if (p.WorkspaceMode == WorkspaceNone) != (p.InputManifestItemCount == 0) {
+	if !validWorkspaceInputCardinality(p.WorkspaceMode, len(p.InputManifest.Items)) {
 		return ErrInvalid
 	}
 	if err := p.ModelAuthorization.Seal(); err != nil {
@@ -838,6 +839,19 @@ func (p *Plan) sealInfrastructure() error {
 
 func validateWorkspaceMode(mode WorkspaceMode) bool {
 	return mode == WorkspaceNone || mode == WorkspaceReadOnly || mode == WorkspaceWrite
+}
+
+func validWorkspaceInputCardinality(mode WorkspaceMode, count int) bool {
+	switch mode {
+	case WorkspaceNone:
+		return count == 0
+	case WorkspaceReadOnly:
+		return count > 0
+	case WorkspaceWrite:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateAWS(value AWSBinding) error {

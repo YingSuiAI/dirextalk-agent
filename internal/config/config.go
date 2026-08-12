@@ -545,9 +545,6 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 	if worker.QuoteTTL == 0 {
 		worker.QuoteTTL = 5 * time.Minute
 	}
-	if worker.MaximumCatalogAge == 0 {
-		worker.MaximumCatalogAge = 5 * time.Minute
-	}
 	if worker.ControllerPollInterval == 0 {
 		worker.ControllerPollInterval = 500 * time.Millisecond
 	}
@@ -560,7 +557,7 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 	if worker.CompletionOutboxInterval == 0 {
 		worker.CompletionOutboxInterval = time.Second
 	}
-	if worker.QuoteTTL <= 0 || worker.QuoteTTL > 15*time.Minute || worker.MaximumCatalogAge <= 0 || worker.MaximumCatalogAge > 15*time.Minute ||
+	if worker.QuoteTTL <= 0 || worker.QuoteTTL > 15*time.Minute || worker.MaximumCatalogAge < 0 || worker.MaximumCatalogAge > 15*time.Minute ||
 		worker.ContingencyBasisPoints > 10_000 || worker.AbsoluteHardLimitMicros <= 0 ||
 		worker.MaxRuntime < time.Minute || worker.MaxRuntime > 24*time.Hour || worker.MaxRuntime%time.Second != 0 ||
 		worker.MaxTokens == 0 || worker.MaxTokens > 10_000_000 || worker.MaxOutputBytes == 0 || worker.MaxOutputBytes > cloudworker.MaxCloudWorkerOutputBytes ||

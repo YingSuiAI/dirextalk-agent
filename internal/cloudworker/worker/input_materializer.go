@@ -113,7 +113,7 @@ func (preparer *FilesystemWorkspacePreparer) Prepare(
 		}
 		return cloudruntime.Workspace{}, nil, nil
 	}
-	if len(manifest.Items) == 0 {
+	if len(manifest.Items) == 0 && claimed.Task.WorkspaceMode != cloudruntime.WorkspaceWrite {
 		return cloudruntime.Workspace{}, nil, ErrInvalid
 	}
 	directory, err := os.MkdirTemp(preparer.root, "workspace-")

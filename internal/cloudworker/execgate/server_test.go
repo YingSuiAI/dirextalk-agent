@@ -81,6 +81,59 @@ func TestMonitorTopologyAllowsOnlyBoundedPreActivationImageTransition(t *testing
 	}
 }
 
+func TestActivePiForkHelperAllowsOneDirectCloneOnly(t *testing.T) {
+	now := time.Date(2026, 8, 11, 8, 0, 0, 0, time.UTC)
+	current := &policy{
+		workerPID:    100,
+		activeProof:  true,
+		totalAllowed: 1,
+		pi: ProcessIdentity{
+			PID: 200, StartTimeTicks: 300, Device: 1, Inode: 20,
+			SHA256: strings.Repeat("2", 64),
+		},
+	}
+	stat := func(pid int32) (processStatValue, error) {
+		if pid != 201 {
+			return processStatValue{}, ErrUnavailable
+		}
+		return processStatValue{ParentPID: 200, ProcessGroup: 201, StartTimeTicks: 301}, nil
+	}
+	if !activePiForkHelperAllowed(current, 1, 2, 7, []int32{200, 201}, nil, stat) {
+		t.Fatal("one direct Pi fork helper was rejected")
+	}
+
+	wrongParent := func(int32) (processStatValue, error) {
+		return processStatValue{ParentPID: 100, ProcessGroup: 201, StartTimeTicks: 301}, nil
+	}
+	for _, test := range []struct {
+		name        string
+		workerCount uint32
+		piCount     uint32
+		cgroupCount uint32
+		piMembers   []int32
+		scanErr     error
+		stat        func(int32) (processStatValue, error)
+	}{
+		{name: "wrong parent", workerCount: 1, piCount: 2, cgroupCount: 3, piMembers: []int32{200, 201}, stat: wrongParent},
+		{name: "missing main", workerCount: 1, piCount: 2, cgroupCount: 3, piMembers: []int32{201, 202}, stat: stat},
+		{name: "second helper", workerCount: 1, piCount: 3, cgroupCount: 4, piMembers: []int32{200, 201, 202}, stat: stat},
+		{name: "missing worker", workerCount: 0, piCount: 2, cgroupCount: 3, piMembers: []int32{200, 201}, stat: stat},
+		{name: "scan error", workerCount: 1, piCount: 2, cgroupCount: 3, piMembers: []int32{200, 201}, scanErr: ErrUnavailable, stat: stat},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if activePiForkHelperAllowed(
+				current, test.workerCount, test.piCount, test.cgroupCount,
+				test.piMembers, test.scanErr, test.stat,
+			) {
+				t.Fatal("invalid Pi fork topology was allowed")
+			}
+		})
+	}
+	if violation := monitorTopologyViolation(current, now, 1, 2, 3, nil); violation != "runtime_topology_invalid" {
+		t.Fatalf("unrelated duplicate fallback violation=%q", violation)
+	}
+}
+
 func TestPermissionEventRejectsExpiredOrViolatedPolicy(t *testing.T) {
 	raw, digest, err := processCgroup(int32(os.Getpid()))
 	if err != nil {

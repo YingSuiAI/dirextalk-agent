@@ -46,9 +46,10 @@ CREATE TABLE core_cloud_worker_model_grants (
     session_id uuid NOT NULL REFERENCES core_cloud_worker_sessions(session_id) ON DELETE RESTRICT,
     token_digest bytea NOT NULL UNIQUE CHECK (octet_length(token_digest) = 32),
     model_profile_id uuid NOT NULL,
-    model_profile_revision bigint NOT NULL CHECK (model_profile_revision > 0),
-    credential_version bigint NOT NULL CHECK (credential_version > 0),
-    provider text NOT NULL CHECK (provider IN ('openai','openai_compatible')),
+	    model_profile_revision bigint NOT NULL CHECK (model_profile_revision > 0),
+	    credential_version bigint NOT NULL CHECK (credential_version > 0),
+	    model_maximum_output_tokens bigint NOT NULL CHECK (model_maximum_output_tokens BETWEEN 0 AND 10000000),
+	    provider text NOT NULL CHECK (provider IN ('openai','openai_compatible')),
     model_interface text NOT NULL CHECK (model_interface IN ('openai_responses','openai_compatible')),
     model_name text NOT NULL CHECK (length(model_name) BETWEEN 1 AND 256),
     credential_binding_digest char(64) NOT NULL CHECK (credential_binding_digest ~ '^[a-f0-9]{64}$'),
@@ -96,8 +97,8 @@ CREATE INDEX core_cloud_worker_model_invocations_grant_idx
     ON core_cloud_worker_model_invocations(grant_id, state, created_at);`
 
 const grantColumns = `grant_id::text,owner_id,account_generation,execution_id::text,task_id::text,
-task_attempt,lease_epoch,session_id::text,model_profile_id::text,model_profile_revision,
-credential_version,provider,model_interface,model_name,credential_binding_digest,
+	task_attempt,lease_epoch,session_id::text,model_profile_id::text,model_profile_revision,
+	credential_version,model_maximum_output_tokens,provider,model_interface,model_name,credential_binding_digest,
 model_binding_digest,audience_digest,limit_digest,relay_url,relay_binding_digest,
 max_tokens,reserved_tokens,settled_tokens,state,reason_code,expires_at,activated_at,
 updated_at,fenced_at,terminal_at,revision`
@@ -186,15 +187,16 @@ WHERE execution_id=$1 AND state='active'`, mutation.Grant.Fence.ExecutionID, mut
 	g := mutation.Grant
 	_, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_model_grants
 (grant_id,owner_id,account_generation,execution_id,task_id,task_attempt,lease_epoch,session_id,
- token_digest,model_profile_id,model_profile_revision,credential_version,provider,model_interface,
+	 token_digest,model_profile_id,model_profile_revision,credential_version,model_maximum_output_tokens,provider,model_interface,
  model_name,credential_binding_digest,model_binding_digest,audience_digest,limit_digest,relay_url,
  relay_binding_digest,max_tokens,reserved_tokens,settled_tokens,state,reason_code,expires_at,
  activated_at,updated_at,fenced_at,terminal_at,revision)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,0,0,$23,'',$24,$25,$25,NULL,NULL,1)`,
+	VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,0,0,$24,'',$25,$26,$26,NULL,NULL,1)`,
 		g.GrantID, g.Fence.OwnerID, int64(g.Fence.AccountGeneration), g.Fence.ExecutionID,
 		g.Fence.TaskID, int32(g.Fence.Attempt), int64(g.Fence.LeaseEpoch), g.Fence.SessionID,
 		mutation.TokenDigest[:], g.Profile.ProfileID, int64(g.Profile.ProfileRevision),
-		int64(g.Profile.CredentialVersion), g.Profile.Provider, g.Profile.Interface, g.Profile.Model,
+		int64(g.Profile.CredentialVersion), int64(g.Profile.MaximumOutputTokens),
+		g.Profile.Provider, g.Profile.Interface, g.Profile.Model,
 		g.Profile.CredentialBindingDigest, g.Profile.ModelBindingDigest, g.AudienceDigest,
 		g.LimitDigest, g.RelayURL, g.RelayBindingDigest, int64(g.MaxTokens), string(g.State),
 		g.ExpiresAt, g.ActivatedAt)
@@ -596,7 +598,7 @@ type rowScanner interface{ Scan(...any) error }
 
 func scanGrant(row rowScanner) (Grant, error) {
 	var grant Grant
-	var accountGeneration, leaseEpoch, profileRevision, credentialVersion int64
+	var accountGeneration, leaseEpoch, profileRevision, credentialVersion, maximumOutputTokens int64
 	var maxTokens, reservedTokens, settledTokens, revision int64
 	var attempt int32
 	var state string
@@ -604,7 +606,7 @@ func scanGrant(row rowScanner) (Grant, error) {
 	err := row.Scan(&grant.GrantID, &grant.Fence.OwnerID, &accountGeneration,
 		&grant.Fence.ExecutionID, &grant.Fence.TaskID, &attempt, &leaseEpoch,
 		&grant.Fence.SessionID, &grant.Profile.ProfileID, &profileRevision,
-		&credentialVersion, &grant.Profile.Provider, &grant.Profile.Interface,
+		&credentialVersion, &maximumOutputTokens, &grant.Profile.Provider, &grant.Profile.Interface,
 		&grant.Profile.Model, &grant.Profile.CredentialBindingDigest,
 		&grant.Profile.ModelBindingDigest, &grant.AudienceDigest, &grant.LimitDigest,
 		&grant.RelayURL, &grant.RelayBindingDigest, &maxTokens, &reservedTokens,
@@ -614,7 +616,7 @@ func scanGrant(row rowScanner) (Grant, error) {
 		return Grant{}, err
 	}
 	if accountGeneration <= 0 || leaseEpoch <= 0 || profileRevision <= 0 ||
-		credentialVersion <= 0 || maxTokens <= 0 || reservedTokens < 0 || settledTokens < 0 ||
+		credentialVersion <= 0 || maximumOutputTokens < 0 || maxTokens <= 0 || reservedTokens < 0 || settledTokens < 0 ||
 		revision <= 0 || attempt <= 0 {
 		return Grant{}, ErrConflict
 	}
@@ -625,6 +627,7 @@ func scanGrant(row rowScanner) (Grant, error) {
 	grant.Profile.AccountGeneration = grant.Fence.AccountGeneration
 	grant.Profile.ProfileRevision = uint64(profileRevision)
 	grant.Profile.CredentialVersion = uint64(credentialVersion)
+	grant.Profile.MaximumOutputTokens = uint64(maximumOutputTokens)
 	grant.MaxTokens, grant.ReservedTokens, grant.SettledTokens = uint64(maxTokens), uint64(reservedTokens), uint64(settledTokens)
 	grant.State, grant.Revision = GrantState(state), uint64(revision)
 	if fencedAt != nil {

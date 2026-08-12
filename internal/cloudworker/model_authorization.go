@@ -34,31 +34,40 @@ func ModelAuthorizationFromSnapshot(snapshot coremodel.ExecutionSnapshot) (Model
 	return authorization, nil
 }
 
-// effectivePlanLimits derives the one output-token limit signed by the Plan,
-// priced by the quote, granted by Model Relay, and sent by Pi. A zero profile
-// limit means the profile did not narrow the server-owned default.
+// effectivePlanLimits validates the model's per-request output limit while
+// preserving the server-owned cumulative token budget signed and priced by
+// the Plan. Pi may make several model calls during one execution.
 func effectivePlanLimits(defaults Limits, authorization ModelAuthorization) (Limits, error) {
 	copy := authorization
 	if validateLimits(defaults) != nil || copy.Seal() != nil {
 		return Limits{}, ErrInvalid
 	}
-	maximum := defaults.MaxTokens
-	if copy.MaximumOutputTokens > 0 && copy.MaximumOutputTokens < maximum {
-		maximum = copy.MaximumOutputTokens
+	if _, err := effectiveModelOutputTokens(copy); err != nil {
+		return Limits{}, err
 	}
+	return defaults, nil
+}
+
+// effectiveModelOutputTokens returns the model-qualified ceiling for one Pi
+// request. It is separate from the execution-wide budget in Plan.Limits.
+func effectiveModelOutputTokens(authorization ModelAuthorization) (uint64, error) {
+	copy := authorization
+	if copy.Seal() != nil {
+		return 0, ErrInvalid
+	}
+	maximum := copy.MaximumOutputTokens
 	if copy.Provider == "openai_compatible" && copy.Interface == "openai_compatible" {
-		if maximum > runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens {
+		if maximum == 0 || maximum > runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens {
 			maximum = runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens
 		}
 		if maximum < runtimebounds.PiOpenAICompatibleMinimumOutputTokens {
-			return Limits{}, ErrInvalid
+			return 0, ErrInvalid
 		}
 	}
-	defaults.MaxTokens = maximum
-	if validateLimits(defaults) != nil {
-		return Limits{}, ErrInvalid
+	if maximum == 0 || maximum > runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens {
+		return 0, ErrInvalid
 	}
-	return defaults, nil
+	return maximum, nil
 }
 
 // ModelAuthorizationResolver re-reads the current secret-bearing model

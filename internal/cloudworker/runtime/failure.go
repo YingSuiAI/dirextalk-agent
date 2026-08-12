@@ -14,6 +14,7 @@ const (
 	FailureCodeProviderAuthentication FailureCode = "provider_authentication"
 	FailureCodeProviderQuota          FailureCode = "provider_quota"
 	FailureCodeProviderRateLimit      FailureCode = "provider_rate_limit"
+	FailureCodeModelBudgetExhausted   FailureCode = "model_budget_exhausted"
 	FailureCodeProviderRequest        FailureCode = "provider_request"
 	FailureCodeProviderServer         FailureCode = "provider_server"
 	FailureCodeProviderNetwork        FailureCode = "provider_network"
@@ -51,7 +52,8 @@ func (failure Failure) Valid() bool {
 	case FailureStagePi:
 		switch failure.Code {
 		case FailureCodeProviderAuthentication, FailureCodeProviderQuota,
-			FailureCodeProviderRateLimit, FailureCodeProviderRequest,
+			FailureCodeProviderRateLimit, FailureCodeModelBudgetExhausted,
+			FailureCodeProviderRequest,
 			FailureCodeProviderServer, FailureCodeProviderNetwork,
 			FailureCodeProviderUnknown, FailureCodePiAborted,
 			FailureCodePiEventInvalid, FailureCodePiFinalMissing:

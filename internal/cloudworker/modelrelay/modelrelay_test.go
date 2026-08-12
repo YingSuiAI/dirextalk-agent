@@ -192,7 +192,7 @@ func TestActivatePersistsOnlyDigestAndBuildsRuntimeGrant(t *testing.T) {
 	if !fixture.credentials.lastWasCleared() {
 		t.Fatal("activation credential plaintext was not cleared")
 	}
-	runtimeGrant, err := fixture.issued.RuntimeModelGrant()
+	runtimeGrant, err := fixture.issued.RuntimeModelGrant(fixture.activation.MaxTokens)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestActivatePersistsOnlyDigestAndBuildsRuntimeGrant(t *testing.T) {
 func TestQualifiedPiMaximumPropagatesUnchangedIntoRuntimeGrant(t *testing.T) {
 	fixture := newRelayFixture(t, runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens)
 	defer fixture.issued.Destroy()
-	runtimeGrant, err := fixture.issued.RuntimeModelGrant()
+	runtimeGrant, err := fixture.issued.RuntimeModelGrant(runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,6 +277,30 @@ func TestHandlerAtomicallyClampsAndSettlesCumulativeTokenBudget(t *testing.T) {
 	if grant.SettledTokens != 50 || grant.ReservedTokens != 0 || grant.AvailableTokens() != 50 ||
 		!fixture.credentials.lastWasCleared() {
 		t.Fatalf("budget=%+v credential_cleared=%t", grant, fixture.credentials.lastWasCleared())
+	}
+}
+
+func TestHandlerPassesJSONProviderErrorForStreamingRequest(t *testing.T) {
+	fixture := newRelayFixture(t, 40)
+	defer fixture.issued.Destroy()
+	fixture.backend.responses = []ProviderResponse{{
+		StatusCode:  http.StatusBadRequest,
+		ContentType: "application/json; charset=utf-8",
+		Body:        []byte(`{"error":{"message":"unsupported stream option"}}`),
+		Outcome:     ProviderAccepted,
+	}}
+	response := fixture.request(t, `{"model":"gpt-test","max_tokens":40,"stream":true}`)
+	if response.Code != http.StatusBadRequest ||
+		response.Header().Get("Content-Type") != "application/json" ||
+		!strings.Contains(response.Body.String(), "unsupported stream option") {
+		t.Fatalf("status=%d content_type=%q body=%s", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+	grant, err := fixture.store.GetGrant(t.Context(), fixture.issued.Grant.GrantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.State != GrantActive || grant.SettledTokens != 40 || grant.ReservedTokens != 0 {
+		t.Fatalf("grant=%+v", grant)
 	}
 }
 

@@ -83,6 +83,29 @@ func TestProductionQuoterFailsClosedOnStaleDriftAndHardLimit(t *testing.T) {
 	}
 }
 
+func TestProductionQuoterAllowsPinnedCatalogWithoutAgeExpiry(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	catalog := &pricingCatalogFake{now: &now, sourceOffset: -24 * time.Hour, rates: PricingCatalogRates{
+		ComputeMicrosPerHour: 1_000_000, EBSStorageMicrosPerGiBMonth: 1_000,
+		PublicIPv4MicrosPerHour: 10_000, ModelMicrosPerThousandTokens: 1_000,
+	}}
+	quoter, err := NewProductionQuoter(catalog, ProductionQuoterConfig{
+		QuoteTTL: time.Minute, MaximumCatalogAge: 0,
+		CleanupReserveSeconds:  EphemeralCleanupReserveSeconds,
+		ContingencyBasisPoints: 1_000, AbsoluteHardLimitMicros: 10_000_000,
+	}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	quote, err := quoter.Quote(context.Background(), productionQuoteRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quote.SourceTime != now.Add(-24*time.Hour) || quote.ExpiresAt != now.Add(time.Minute) {
+		t.Fatalf("pinned catalog quote = %+v", quote)
+	}
+}
+
 func TestProductionQuoterRequotesSamePriceCatalogRevisionDrift(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	plan, _, _, source := stagingFixture(t, now)

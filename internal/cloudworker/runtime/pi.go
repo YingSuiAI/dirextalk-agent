@@ -217,10 +217,6 @@ func (executor *PiExecutor) Run(
 	if err != nil {
 		return Result{}, err
 	}
-	if usage.OutputTokens > int64(task.MaxOutputTokens) {
-		clear(finalJSON)
-		return Result{}, newFailure(FailureStageOutput, FailureCodeOutputInvalid)
-	}
 	artifacts := []Artifact{{
 		Name: "final.json", MediaType: "application/json", Content: finalJSON,
 	}}
@@ -321,7 +317,17 @@ func writePiModelsConfig(configRoot string, task Task) error {
 		api = "openai-responses"
 	case ModelOpenAICompatible:
 		api = "openai-completions"
-		model["compat"] = map[string]any{"maxTokensField": "max_tokens"}
+		compat := map[string]any{"maxTokensField": "max_tokens"}
+		if task.ModelProvider == "deepseek" {
+			// The relay URL intentionally hides the upstream provider, so Pi
+			// cannot infer DeepSeek's Chat Completions compatibility flags.
+			compat["supportsStore"] = false
+			compat["supportsDeveloperRole"] = false
+			compat["supportsReasoningEffort"] = true
+			compat["thinkingFormat"] = "deepseek"
+			compat["requiresReasoningContentOnAssistantMessages"] = true
+		}
+		model["compat"] = compat
 	default:
 		return ErrExecution
 	}

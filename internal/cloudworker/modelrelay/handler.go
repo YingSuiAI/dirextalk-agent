@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
@@ -69,17 +70,20 @@ func (s *Service) serveHTTP(writer http.ResponseWriter, request *http.Request) e
 	}
 	grant, invocation, err := s.store.BeginInvocation(request.Context(), begin)
 	if err != nil {
+		logRelayRejection("begin_invocation", err, begin.InvocationID)
 		return err
 	}
 	if grant.Validate() != nil || invocation.Validate() != nil ||
 		grant.State != GrantActive || parsed.path != grant.Profile.Path() ||
 		parsed.model != grant.Profile.Model {
 		s.refundInvocation(request.Context(), invocation.InvocationID)
+		logRelayRejection("grant_binding", ErrUnauthorized, invocation.InvocationID)
 		return ErrUnauthorized
 	}
 	providerBody, err := parsed.authorizedBody(invocation.ReservedTokens)
 	if err != nil {
 		s.refundInvocation(request.Context(), invocation.InvocationID)
+		logRelayRejection("authorize_body", err, invocation.InvocationID)
 		return err
 	}
 	defer clear(providerBody)
@@ -87,6 +91,7 @@ func (s *Service) serveHTTP(writer http.ResponseWriter, request *http.Request) e
 	if err != nil {
 		credential.Destroy()
 		s.refundAndFence(request.Context(), grant.Fence, invocation.InvocationID, "profile_drift")
+		logRelayRejection("resolve_exact", err, invocation.InvocationID)
 		return err
 	}
 	response, backendErr := s.backend.Invoke(request.Context(), ProviderRequest{
@@ -98,8 +103,10 @@ func (s *Service) serveHTTP(writer http.ResponseWriter, request *http.Request) e
 	if backendErr != nil {
 		if response.Outcome == ProviderNotSent {
 			s.refundInvocation(request.Context(), invocation.InvocationID)
+			logRelayRejection("provider_not_sent", backendErr, invocation.InvocationID)
 		} else {
 			s.settleInvocation(request.Context(), invocation.InvocationID, invocation.ReservedTokens)
+			logRelayRejection("provider_uncertain", backendErr, invocation.InvocationID)
 		}
 		if errors.Is(backendErr, ErrProviderProtocol) {
 			s.fenceGrant(request.Context(), grant.Fence, "provider_protocol_violation", false)
@@ -115,33 +122,170 @@ func (s *Service) serveHTTP(writer http.ResponseWriter, request *http.Request) e
 		// own bearer in the model prompt and having the provider echo it.
 		s.settleInvocation(request.Context(), invocation.InvocationID, invocation.ReservedTokens)
 		s.fenceGrant(request.Context(), grant.Fence, "provider_protocol_violation", false)
+		logRelayRejection("provider_response", ErrProviderProtocol, invocation.InvocationID)
 		return ErrProviderProtocol
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		logRelayProviderError(
+			invocation.InvocationID, response.StatusCode, response.ContentType,
+			len(response.Body), parsed.streaming, providerErrorCategory(response.Body),
+		)
 	}
 	actual, usageFound := providerOutputTokens(parsed.path, response.ContentType, response.Body)
 	if !usageFound {
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
 			s.settleInvocation(request.Context(), invocation.InvocationID, invocation.ReservedTokens)
 			s.fenceGrant(request.Context(), grant.Fence, "provider_usage_missing", false)
+			logRelayRejection("provider_usage", ErrProviderProtocol, invocation.InvocationID)
 			return ErrProviderProtocol
 		}
 		actual = invocation.ReservedTokens
 	}
 	settled, settleErr := s.settleInvocation(request.Context(), invocation.InvocationID, actual)
 	if settleErr != nil {
+		logRelayRejection("settle_invocation", settleErr, invocation.InvocationID)
 		return settleErr
 	}
 	if settled.State != GrantActive {
+		logRelayRejection("settled_grant", ErrFenced, invocation.InvocationID)
 		return ErrFenced
 	}
-	contentType, err := safeProviderContentType(response.ContentType, parsed.streaming)
+	contentType, err := safeProviderContentType(
+		response.ContentType, parsed.streaming, response.StatusCode,
+	)
 	if err != nil {
 		s.fenceGrant(request.Context(), grant.Fence, "provider_content_type", false)
+		logRelayProviderResponseRejection(
+			"provider_content_type", err, invocation.InvocationID,
+			response.StatusCode, response.ContentType, len(response.Body), parsed.streaming,
+		)
 		return err
 	}
 	writer.Header().Set("Content-Type", contentType)
 	writer.WriteHeader(response.StatusCode)
 	_, _ = writer.Write(response.Body)
 	return nil
+}
+
+func logRelayRejection(phase string, err error, invocationID string) {
+	slog.Warn(
+		"[cloud-worker.model-relay] request_rejected",
+		"phase", phase,
+		"class", relayErrorClass(err),
+		"invocation_id", invocationID,
+	)
+}
+
+func logRelayProviderResponseRejection(
+	phase string,
+	err error,
+	invocationID string,
+	statusCode int,
+	contentType string,
+	responseBytes int,
+	streaming bool,
+) {
+	slog.Warn(
+		"[cloud-worker.model-relay] request_rejected",
+		"phase", phase,
+		"class", relayErrorClass(err),
+		"invocation_id", invocationID,
+		"provider_status", statusCode,
+		"provider_media_type", providerMediaTypeForLog(contentType),
+		"provider_response_bytes", responseBytes,
+		"streaming", streaming,
+	)
+}
+
+func logRelayProviderError(
+	invocationID string,
+	statusCode int,
+	contentType string,
+	responseBytes int,
+	streaming bool,
+	category string,
+) {
+	slog.Warn(
+		"[cloud-worker.model-relay] provider_error",
+		"invocation_id", invocationID,
+		"provider_status", statusCode,
+		"provider_media_type", providerMediaTypeForLog(contentType),
+		"provider_response_bytes", responseBytes,
+		"streaming", streaming,
+		"category", category,
+	)
+}
+
+func providerMediaTypeForLog(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || len(mediaType) > 64 {
+		return "invalid"
+	}
+	return mediaType
+}
+
+func providerErrorCategory(body []byte) string {
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if len(body) == 0 || json.Unmarshal(body, &envelope) != nil {
+		return "unavailable"
+	}
+	message := strings.ToLower(envelope.Error.Message)
+	switch {
+	case strings.Contains(message, "stream_options"):
+		return "stream_options"
+	case strings.Contains(message, "reasoning_effort"), strings.Contains(message, "reasoning"):
+		return "reasoning"
+	case strings.Contains(message, "max_tokens"), strings.Contains(message, "max_completion_tokens"):
+		return "token_field"
+	case strings.Contains(message, "model"):
+		return "model"
+	case strings.Contains(message, "message"):
+		return "messages"
+	case strings.Contains(message, "parameter"), strings.Contains(message, "unsupported"),
+		strings.Contains(message, "invalid request"):
+		return "request_schema"
+	default:
+		return "unspecified"
+	}
+}
+
+func relayErrorClass(err error) string {
+	switch {
+	case errors.Is(err, ErrInvalid):
+		return "invalid"
+	case errors.Is(err, ErrUnauthorized):
+		return "unauthorized"
+	case errors.Is(err, ErrExpired):
+		return "expired"
+	case errors.Is(err, ErrFenced):
+		return "fenced"
+	case errors.Is(err, ErrTerminal):
+		return "terminal"
+	case errors.Is(err, ErrStaleFence):
+		return "stale_fence"
+	case errors.Is(err, ErrBudgetExhausted):
+		return "budget_exhausted"
+	case errors.Is(err, ErrProfileDrift):
+		return "profile_drift"
+	case errors.Is(err, ErrCredentialUnavailable):
+		return "credential_unavailable"
+	case errors.Is(err, ErrProviderProtocol):
+		return "provider_protocol"
+	case errors.Is(err, ErrProviderUnavailable):
+		return "provider_unavailable"
+	case errors.Is(err, ErrConflict):
+		return "conflict"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	default:
+		return "unknown"
+	}
 }
 
 func relayBearer(values []string) ([]byte, error) {
@@ -264,16 +408,19 @@ func (s *Service) refundAndFence(ctx context.Context, fence Fence, invocationID,
 	s.fenceGrant(ctx, fence, reason, false)
 }
 
-func safeProviderContentType(raw string, streaming bool) (string, error) {
+func safeProviderContentType(raw string, streaming bool, statusCode int) (string, error) {
 	mediaType, _, err := mime.ParseMediaType(raw)
 	if err != nil {
 		return "", ErrProviderProtocol
 	}
 	if streaming {
-		if mediaType != "text/event-stream" {
-			return "", ErrProviderProtocol
+		if mediaType == "text/event-stream" {
+			return "text/event-stream", nil
 		}
-		return "text/event-stream", nil
+		if statusCode >= 300 && mediaType == "application/json" {
+			return "application/json", nil
+		}
+		return "", ErrProviderProtocol
 	}
 	if mediaType != "application/json" {
 		return "", ErrProviderProtocol

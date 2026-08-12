@@ -873,6 +873,75 @@ func TestWaitingConfirmationAuthorityRejectsMixedSourceFields(t *testing.T) {
 	}
 }
 
+func TestCloudWorkerCompletionContinuesOriginalTurnThroughCentralModel(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID, requestID, turnID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	taskID, planID, executionID, confirmationID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	digest := strings.Repeat("a", 64)
+	createdAt := time.Now().UTC().Add(-time.Minute)
+	user := Message{
+		ID:   uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-user:"+requestID)).String(),
+		Role: RoleUser, Content: "build the report in AWS", ModelProfileID: profile.ProfileID, CreatedAt: createdAt,
+	}
+	offer := Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "Cloud Worker quote is ready for confirmation.", ModelProfileID: profile.ProfileID, CreatedAt: createdAt.Add(time.Microsecond)}
+	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{"objective":"build the report","workspace_mode":"write"}`}
+	runReference := Reference{
+		Kind: "execution_run", AccountGeneration: 7, TaskID: taskID, PlanID: planID, PlanRevision: 1,
+		PlanDigest: digest, RunID: executionID, RunRevision: 3, RunDigest: digest, ExecutionID: executionID,
+		ConfirmationID: confirmationID, ConfirmationRevision: 2, BindingDigest: digest,
+		QuoteDigest: digest, ExecutionDigest: digest, Status: "succeeded",
+	}
+	result := ToolResult{
+		CallID: call.ID, ToolName: call.Name, Content: `{"schema":"dirextalk.cloud-worker-completion/v1","status":"succeeded","worker_report":"completed the report"}`,
+		RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID}, References: []Reference{runReference},
+		Summary: "Cloud Worker completed; Central synthesis required",
+	}
+	if user.Validate() != nil || offer.Validate() != nil || call.Validate() != nil || result.Validate() != nil {
+		t.Fatal("invalid cloud completion fixture")
+	}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt, Messages: []Message{user, offer}}
+	turn := Turn{ID: turnID, RequestID: requestID, ConversationID: conversationID, Prompt: user.Content, ProfileID: profile.ProfileID, ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 3, LastSequence: 3, CreatedAt: createdAt}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events: []TurnEvent{
+			{TurnID: turnID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: createdAt},
+			{TurnID: turnID, Sequence: 2, Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: createdAt.Add(2 * time.Microsecond)},
+			{TurnID: turnID, Sequence: 3, Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: createdAt.Add(3 * time.Microsecond)},
+		},
+	}
+	model := &capturingTurnModel{}
+	cloudTool := ResolvedIntrinsic{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerProposeToolName, InputSchema: map[string]any{"type": "object"}}, Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+		return IntrinsicExecutionResult{}, ErrInvalid
+	}}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+		return []ResolvedIntrinsic{cloudTool}, nil
+	}))
+	service.executeTurn(context.Background(), turnID)
+	terminal, err := store.GetTurn(context.Background(), turnID)
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || model.runs != 1 {
+		t.Fatalf("terminal=%+v model_runs=%d err=%v failed=%s", terminal, model.runs, err, store.failedCode)
+	}
+	messages := model.request.Conversation.Messages
+	if len(messages) != 4 || messages[0].ID != user.ID || messages[1].ID != offer.ID ||
+		len(messages[2].ToolCalls) != 1 || messages[2].ToolCalls[0].ID != call.ID ||
+		len(messages[3].ToolResults) != 1 || messages[3].ToolResults[0].Content != result.Content {
+		t.Fatalf("Central model did not receive original context and Worker result: %+v", messages)
+	}
+	if len(model.request.Intrinsics) != 0 {
+		t.Fatalf("completed Worker proposal remained callable: %+v", model.request.Intrinsics)
+	}
+	response := terminal.Response.Message
+	wantMessageID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("cloud-worker-result-message:"+executionID)).String()
+	if response.ID != wantMessageID || response.Content != "ok" || len(response.RelatedTaskIDs) != 1 || response.RelatedTaskIDs[0] != taskID || len(response.References) != 1 || response.References[0] != runReference {
+		t.Fatalf("Central response lost Worker authority: %+v", response)
+	}
+}
+
 func TestResolveAcceptedTurnExtensionsRebuildsKnowledgeBuiltinFromPinnedSource(t *testing.T) {
 	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1.0.0", Digest: strings.Repeat("a", 64), AllowedTools: []string{"knowledge_search"}}
 	snapshot := ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "builtin:knowledge:semantic", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64), ToolNames: []string{"knowledge_search"}, ReadOnly: true}

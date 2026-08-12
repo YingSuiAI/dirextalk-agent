@@ -20,11 +20,11 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrCloudIntentRequired = errors.New("cloudworker: explicit cloud intent or trusted local budget evidence is required")
+var ErrCloudIntentRequired = errors.New("cloudworker: cloud proposal is not allowed for this turn")
 
 const (
-	englishCloudTarget = `(?:aws(?:\s+cloud)?(?:\s+worker)?|ec2|cloud\s+worker)`
-	chineseCloudTarget = `(?:(?:aws\s*)?(?:云端|云上|云\s*worker|cloud\s*worker)|ec2|aws)`
+	englishCloudTarget = `(?:aws(?:\s+cloud)?(?:\s+(?:pi\s+)?worker)?|ec2|cloud\s+(?:pi\s+)?worker|pi\s+worker)`
+	chineseCloudTarget = `(?:(?:aws\s*)?(?:(?:云端|云上)(?:\s*pi)?(?:\s*worker)?|云\s*(?:pi\s*)?worker|cloud\s*(?:pi\s*)?worker|pi\s*worker)|ec2|aws)`
 )
 
 var (
@@ -122,7 +122,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(_ context.Context, lease coreco
 	}
 	tool := coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerProposeToolName,
-		Description: "Create a priced, owner-confirmed ephemeral AWS Pi Worker offer. Use only when the user explicitly requests cloud execution or Core reports an exhausted local runtime budget. This tool never runs a failed local task in the cloud automatically.",
+		Description: "Propose a priced ephemeral AWS Pi Worker for a substantial delegated task that benefits from isolated execution, durable file delivery, tests, or long-running compute. Central may propose this without explicit cloud wording. Do not use it for ordinary conversation, simple reasoning, or when the user requires local execution or forbids cloud use. This creates only an offer; AWS resources start only after the user reviews and confirms it.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -179,18 +179,19 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 	var budget *LocalBudgetEvidence
 	reason := ProposalReasonExplicitUserCloud
 	if !explicit {
-		if hasCloudExecutionVeto(bound.Turn.Prompt) || mode == WorkspaceNone ||
-			!turnAllowsSelectedWorkspaceArchive(bound.Turn, arguments.AttachmentIDs) {
+		if hasCloudExecutionVeto(bound.Turn.Prompt) {
 			return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
 		}
-		if p.budgets == nil {
-			return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
+		reason = ProposalReasonCentralDelegation
+		if mode != WorkspaceNone && turnAllowsSelectedWorkspaceArchive(bound.Turn, arguments.AttachmentIDs) && p.budgets != nil {
+			budget, err = p.budgets.ResolveCloudWorkerBudgetEvidence(ctx, bound)
+			if err != nil {
+				return coreconversation.IntrinsicExecutionResult{}, err
+			}
+			if budget != nil {
+				reason = ProposalReasonLocalBudgetExceeded
+			}
 		}
-		budget, err = p.budgets.ResolveCloudWorkerBudgetEvidence(ctx, bound)
-		if err != nil || budget == nil {
-			return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
-		}
-		reason = ProposalReasonLocalBudgetExceeded
 	}
 	if strings.TrimSpace(bound.Turn.OwnerID) == "" || bound.Turn.AccountGeneration == 0 {
 		return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
@@ -200,8 +201,8 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
 	manifest := InputManifest{Schema: InputManifestSchema}
-	if mode != WorkspaceNone {
-		if p.manifests == nil || len(arguments.AttachmentIDs) == 0 || !turnAllowsAttachments(bound.Turn, arguments.AttachmentIDs) {
+	if len(arguments.AttachmentIDs) > 0 {
+		if p.manifests == nil || !turnAllowsAttachments(bound.Turn, arguments.AttachmentIDs) {
 			return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 		}
 		manifest, err = p.manifests.ResolveCloudWorkerManifest(ctx, bound, mode, arguments.AttachmentIDs)
@@ -290,7 +291,7 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 		}
 		seen[id] = struct{}{}
 	}
-	if (WorkspaceMode(arguments.WorkspaceMode) == WorkspaceNone) != (len(arguments.AttachmentIDs) == 0) {
+	if !validWorkspaceInputCardinality(WorkspaceMode(arguments.WorkspaceMode), len(arguments.AttachmentIDs)) {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
 	// JSON whitespace and object-key order carry no authority. The semantic

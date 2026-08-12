@@ -51,6 +51,67 @@ func TestProjectAWSResourceGraphBindsEightResourcesAndNeverReplacesProviderIdent
 	}
 }
 
+func TestBuildAWSDispatchAllowsPinnedCatalogOlderThanFreshQuote(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	plan, _, _, sourceRead := stagingFixture(t, now)
+	defer sourceRead.Body.Close()
+
+	plan.Quote.SourceTime = now.Add(-24 * time.Hour)
+	plan.Quote.Digest = ""
+	if err := plan.Quote.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	plan.Digest, plan.ExecutionDigest = "", ""
+	if err := plan.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	execution, err := NewExecution(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err = execution.Transition(StateQueued, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err = execution.Transition(StateProvisioning, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source := plan.InputManifest.Items[0]
+	staged := StagedInputManifest{Schema: StagedInputManifestSchemaV1, ExecutionID: plan.ExecutionID, SourceManifestDigest: plan.InputManifestDigest,
+		Items: []StagedInputManifestItem{{InputID: source.InputID, MountPath: source.MountPath, MediaType: source.MediaType,
+			SizeBytes: source.SizeBytes, SHA256: source.SHA256, S3Bucket: plan.ArtifactGrant.Bucket,
+			S3Key: plan.ArtifactGrant.KeyPrefix + "inputs/" + source.InputID, S3VersionID: "version-1"}}}
+	if _, err = staged.Seal(plan.InputManifest); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := BindingForPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prerequisite := LaunchPrerequisite{ConfirmationBindingDigest: string(binding.Digest), ConfirmationRevision: 3,
+		ConfirmedAt: now, TaskAttempt: 1, LeaseEpoch: 1, AccountGeneration: plan.AccountGeneration}
+	fence, err := prerequisite.RuntimeFence(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	material, err := BuildRuntimeTask(plan, execution, staged, fence, RuntimeQualification{
+		PiRuntimeDigest: plan.Compute.PiRuntimeDigest, PiVersion: "0.83.0",
+		PiExecutableSHA256: digestValue("pi-executable"), ResultExtensionSHA256: digestValue("result-extension"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer material.Destroy()
+	authorization := LaunchAuthorization{LaunchPrerequisite: prerequisite, RuntimeTaskSHA256: material.RuntimeTaskSHA256,
+		InputManifestSHA256: material.InputManifestSHA256, StagedManifestSHA256: material.StagedManifestSHA256,
+		AuthorizedAt: now.Add(time.Second)}
+	if _, _, err = BuildAWSDispatch(plan, execution, authorization, staged, material, plan.Quote, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("fresh quote backed by pinned catalog was rejected: %v", err)
+	}
+}
+
 func TestProjectAWSProvisioningGraphCreatesStableEmptyTombstones(t *testing.T) {
 	plan, execution, awsPlan, intent := awsIntegrationFixture(t)
 	graph := cloudaws.ObservedGraph{

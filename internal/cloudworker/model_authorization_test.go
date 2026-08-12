@@ -38,14 +38,16 @@ func TestEffectivePlanLimitsBindProfileAndPiRequestCeilings(t *testing.T) {
 				t.Fatalf("profile maximum = %d", authorization.MaximumOutputTokens)
 			}
 			limits, err := effectivePlanLimits(defaults, authorization)
+			requestMaximum, requestErr := effectiveModelOutputTokens(authorization)
 			if test.wantErr {
-				if !errors.Is(err, ErrInvalid) {
-					t.Fatalf("effectivePlanLimits() error = %v, want ErrInvalid", err)
+				if !errors.Is(err, ErrInvalid) || !errors.Is(requestErr, ErrInvalid) {
+					t.Fatalf("effective limits errors = %v / %v, want ErrInvalid", err, requestErr)
 				}
 				return
 			}
-			if err != nil || limits.MaxTokens != test.want {
-				t.Fatalf("effective limits = %+v, error = %v", limits, err)
+			if err != nil || requestErr != nil || limits.MaxTokens != defaults.MaxTokens ||
+				requestMaximum != test.want {
+				t.Fatalf("effective limits = %+v request_max=%d errors=%v/%v", limits, requestMaximum, err, requestErr)
 			}
 		})
 	}

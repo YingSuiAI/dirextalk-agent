@@ -449,7 +449,7 @@ func (server *Server) proof(peerPID int32, runID string, requestedPiPID int32, s
 	if current.violation != "" {
 		return Proof{}, ErrViolation
 	}
-	workerCount, piCount, cgroupCount, members, err := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
+	workerCount, piCount, cgroupCount, members, _, err := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
 	if err != nil || workerCount != 1 || current.totalAllowed != 1 || current.pi.validate() != nil {
 		logTopologyFailure(
 			"proof_"+string(state), err == nil, workerCount, piCount,
@@ -534,7 +534,7 @@ func (server *Server) cancel(peerPID int32, runID string) error {
 		return ErrViolation
 	}
 	for attempt := 0; attempt < 20; attempt++ {
-		_, _, cgroupCount, members, scanErr := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
+		_, _, cgroupCount, members, _, scanErr := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
 		if scanErr == nil && cgroupCount == 1 {
 			delete(server.policies, runID)
 			return nil
@@ -556,7 +556,12 @@ func (server *Server) monitorPolicies() {
 		if current.totalAllowed == 0 && !preActivationExpired(current, now) {
 			continue
 		}
-		workerCount, piCount, cgroupCount, members, err := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
+		workerCount, piCount, cgroupCount, members, piMembers, err := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
+		if activePiForkHelperAllowed(
+			current, workerCount, piCount, cgroupCount, piMembers, err, processStat,
+		) {
+			continue
+		}
 		violation := monitorTopologyViolation(
 			current, now, workerCount, piCount, cgroupCount, err,
 		)
@@ -570,6 +575,34 @@ func (server *Server) monitorPolicies() {
 			killMembers(members, current.workerPID)
 		}
 	}
+}
+
+func activePiForkHelperAllowed(
+	current *policy,
+	workerCount, piCount, cgroupCount uint32,
+	piMembers []int32,
+	scanErr error,
+	stat func(int32) (processStatValue, error),
+) bool {
+	if current == nil || !current.activeProof || current.totalAllowed != 1 ||
+		current.pi.validate() != nil || scanErr != nil || workerCount != 1 ||
+		piCount != 2 || cgroupCount < 3 || len(piMembers) != 2 || stat == nil {
+		return false
+	}
+	mainFound := false
+	helperPID := int32(0)
+	for _, pid := range piMembers {
+		if pid == current.pi.PID {
+			mainFound = true
+			continue
+		}
+		if helperPID != 0 {
+			return false
+		}
+		helperPID = pid
+	}
+	value, err := stat(helperPID)
+	return mainFound && helperPID > 0 && err == nil && value.ParentPID == current.pi.PID
 }
 
 func monitorTopologyViolation(
@@ -819,13 +852,13 @@ func openedFileIdentity(file *os.File) (fileIdentity, error) {
 	return fileIdentity{Device: uint64(stat.Dev), Inode: uint64(stat.Ino), SHA256: hex.EncodeToString(hasher.Sum(nil))}, nil
 }
 
-func scanExactTopology(cgroupRaw string, worker ProcessIdentity, pi fileIdentity) (uint32, uint32, uint32, []int32, error) {
+func scanExactTopology(cgroupRaw string, worker ProcessIdentity, pi fileIdentity) (uint32, uint32, uint32, []int32, []int32, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return 0, 0, 0, nil, ErrUnavailable
+		return 0, 0, 0, nil, nil, ErrUnavailable
 	}
 	var workerCount, piCount, cgroupCount uint32
-	var members []int32
+	var members, piMembers []int32
 	for _, entry := range entries {
 		pidValue, parseErr := strconv.ParseInt(entry.Name(), 10, 32)
 		if parseErr != nil || pidValue < 1 {
@@ -852,9 +885,10 @@ func scanExactTopology(cgroupRaw string, worker ProcessIdentity, pi fileIdentity
 		}
 		if identity.SHA256 == pi.SHA256 {
 			piCount++
+			piMembers = append(piMembers, pid)
 		}
 	}
-	return workerCount, piCount, cgroupCount, members, nil
+	return workerCount, piCount, cgroupCount, members, piMembers, nil
 }
 
 func killMembers(members []int32, workerPID int32) {

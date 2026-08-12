@@ -126,10 +126,13 @@ func (s *Service) resolveExact(
 	return binding, credential, nil
 }
 
-func (issued IssuedGrant) RuntimeModelGrant() (cloudruntime.ModelGrant, error) {
+func (issued IssuedGrant) RuntimeModelGrant(maxOutputTokens uint64) (cloudruntime.ModelGrant, error) {
 	if issued.Grant.Validate() != nil || issued.Grant.State != GrantActive ||
 		len(issued.BearerToken) < len(relayTokenPrefix)+32 ||
-		!bytes.HasPrefix(issued.BearerToken, []byte(relayTokenPrefix)) {
+		!bytes.HasPrefix(issued.BearerToken, []byte(relayTokenPrefix)) ||
+		maxOutputTokens == 0 || maxOutputTokens > MaximumTokens ||
+		(issued.Grant.Profile.MaximumOutputTokens > 0 &&
+			maxOutputTokens > issued.Grant.Profile.MaximumOutputTokens) {
 		return cloudruntime.ModelGrant{}, ErrInvalid
 	}
 	return cloudruntime.ModelGrant{
@@ -140,7 +143,7 @@ func (issued IssuedGrant) RuntimeModelGrant() (cloudruntime.ModelGrant, error) {
 		LimitSHA256:        issued.Grant.LimitDigest,
 		RelayBaseURL:       issued.Grant.RelayURL,
 		RelayBindingSHA256: issued.Grant.RelayBindingDigest,
-		MaxOutputTokens:    issued.Grant.MaxTokens,
+		MaxOutputTokens:    maxOutputTokens,
 	}, nil
 }
 

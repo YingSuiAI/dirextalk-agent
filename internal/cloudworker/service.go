@@ -136,9 +136,23 @@ func (resolve fixedAWSBindingResolver) ResolveExactAWSBinding(_ context.Context,
 }
 
 type ProviderResult struct {
-	Resources []Resource `json:"resources"`
-	Artifacts []Artifact `json:"artifacts"`
-	Summary   string     `json:"summary"`
+	Resources                 []Resource           `json:"resources"`
+	Artifacts                 []Artifact           `json:"artifacts"`
+	Summary                   string               `json:"summary"`
+	DeliverableContext        []DeliverableContext `json:"deliverable_context,omitempty"`
+	DeliverableContextOmitted uint64               `json:"deliverable_context_omitted,omitempty"`
+}
+
+// DeliverableContext is a bounded, secret-screened view of a verified Worker
+// artifact. It gives Central enough evidence to discuss the actual output while
+// the exact artifact bytes remain behind the owner-scoped download action.
+type DeliverableContext struct {
+	ArtifactName         string `json:"artifact_name"`
+	Path                 string `json:"path"`
+	MediaType            string `json:"media_type"`
+	SizeBytes            uint64 `json:"size_bytes"`
+	TextPreview          string `json:"text_preview,omitempty"`
+	TextPreviewTruncated bool   `json:"text_preview_truncated,omitempty"`
 }
 
 type Defaults struct {
@@ -290,7 +304,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	if err != nil {
 		return Offer{}, ErrInvalid
 	}
-	if (command.WorkspaceMode == WorkspaceNone) != (len(command.InputManifest.Items) == 0) {
+	if !validWorkspaceInputCardinality(command.WorkspaceMode, len(command.InputManifest.Items)) {
 		return Offer{}, ErrInvalid
 	}
 	if err := command.ModelAuthorization.Seal(); err != nil {
@@ -406,12 +420,21 @@ func (q FakeQuoter) clock() time.Time {
 }
 
 func (q FakeQuoter) Quote(_ context.Context, request QuoteRequest) (Quote, error) {
-	if strings.TrimSpace(request.OwnerID) == "" || request.AccountGeneration == 0 || !validDigest(request.ObjectiveDigest) || !validDigest(request.UserPromptDigest) || !validDigest(request.InputManifestDigest) || !validDigest(request.ModelBindingDigest) || !validDigest(request.AuthorizationBasisDigest) || !validateWorkspaceMode(request.WorkspaceMode) || (request.ProposalReason != ProposalReasonExplicitUserCloud && request.ProposalReason != ProposalReasonLocalBudgetExceeded) || q.TTL <= 0 || q.AmountMicros < 0 || q.MaximumAuthorizedMicros < q.AmountMicros {
+	if strings.TrimSpace(request.OwnerID) == "" || request.AccountGeneration == 0 || !validDigest(request.ObjectiveDigest) || !validDigest(request.UserPromptDigest) || !validDigest(request.InputManifestDigest) || !validDigest(request.ModelBindingDigest) || !validDigest(request.AuthorizationBasisDigest) || !validateWorkspaceMode(request.WorkspaceMode) || !validProposalReason(request.ProposalReason) || q.TTL <= 0 || q.AmountMicros < 0 || q.MaximumAuthorizedMicros < q.AmountMicros {
 		return Quote{}, ErrInvalid
 	}
 	now := q.clock()
 	quote := Quote{AmountMicros: q.AmountMicros, Currency: "USD", SourceTime: now, ExpiresAt: now.Add(q.TTL), MaximumAuthorizedCostMicros: q.MaximumAuthorizedMicros, BasisDigest: request.AuthorizationBasisDigest, CatalogRevisionDigest: digestValue("fake-pricing-catalog/v1")}
 	return quote, quote.Seal()
+}
+
+func validProposalReason(reason ProposalReason) bool {
+	switch reason {
+	case ProposalReasonExplicitUserCloud, ProposalReasonCentralDelegation, ProposalReasonLocalBudgetExceeded:
+		return true
+	default:
+		return false
+	}
 }
 
 func (q FakeQuoter) Validate(ctx context.Context, plan Plan) (Quote, error) {

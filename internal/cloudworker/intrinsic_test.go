@@ -206,6 +206,7 @@ func TestExplicitCloudIntentIsDeterministicAndNegationWins(t *testing.T) {
 		{name: "use worker command", prompt: "Use an AWS cloud worker to edit these files", want: true},
 		{name: "polite question as request", prompt: "Could you run this workload on AWS?", want: true},
 		{name: "chinese worker command", prompt: "请用 AWS 云 Worker 处理这些文件", want: true},
+		{name: "chinese pi worker product name", prompt: "请明确使用 AWS 云端 Pi Worker 执行，不要在本地完成：创建一个新项目", want: true},
 		{name: "chinese handoff command", prompt: "把这项任务交给云 Worker 执行", want: true},
 		{name: "cloud command with how objective", prompt: "Run an analysis of how this code works on AWS.", want: true},
 		{name: "cloud command with chinese how objective", prompt: "请在 AWS 云端执行，分析如何修复这个问题。", want: true},
@@ -214,6 +215,7 @@ func TestExplicitCloudIntentIsDeterministicAndNegationWins(t *testing.T) {
 		{name: "chinese local veto before cloud command", prompt: "不要在本地执行；请使用 AWS Cloud Worker 执行这个任务。", want: true},
 		{name: "english local veto before cloud command", prompt: "Do not run locally; run this task on AWS.", want: true},
 		{name: "english explicit worker command", prompt: "Explicitly use an AWS cloud worker to execute this task.", want: true},
+		{name: "english pi worker product name", prompt: "Use an AWS cloud Pi Worker to build this project.", want: true},
 
 		{name: "local only", prompt: "本机执行即可"},
 		{name: "chinese cloud negation", prompt: "不要用云端执行"},
@@ -269,6 +271,26 @@ func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
 	if err != nil || arguments.Objective != "run once" || arguments.WorkspaceMode != string(WorkspaceNone) || len(arguments.AttachmentIDs) != 0 {
 		t.Fatalf("arguments=%+v err=%v", arguments, err)
 	}
+	arguments, err = parseProposeIntrinsicArguments([]byte(`{"objective":"create a project","workspace_mode":"write"}`))
+	if err != nil || arguments.WorkspaceMode != string(WorkspaceWrite) || len(arguments.AttachmentIDs) != 0 {
+		t.Fatalf("empty write workspace arguments=%+v err=%v", arguments, err)
+	}
+	if _, err = parseProposeIntrinsicArguments([]byte(`{"objective":"inspect","workspace_mode":"read_only"}`)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty read-only workspace accepted: %v", err)
+	}
+}
+
+func TestIntrinsicCreatesEmptyWriteWorkspaceForNewProject(t *testing.T) {
+	intrinsic, store, lease := intrinsicFixture(t, "Use an AWS cloud worker to build this project", nil, nil)
+	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{
+		"objective": "create a new project", "workspace_mode": "write",
+	}, "call-empty-write"); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.commands) != 1 || store.commands[0].Plan.WorkspaceMode != WorkspaceWrite ||
+		store.commands[0].Plan.InputManifestItemCount != 0 || len(store.commands[0].Plan.InputManifest.Items) != 0 {
+		t.Fatalf("empty write workspace proposal=%+v", store.commands)
+	}
 }
 
 func TestIntrinsicProposalErrorClass(t *testing.T) {
@@ -318,20 +340,23 @@ func TestIntrinsicIsCoreOwnedStrictAndBindsDurableTurn(t *testing.T) {
 	}
 }
 
-func TestIntrinsicRequiresTrustedBudgetEvidenceWhenCloudIntentIsAbsent(t *testing.T) {
-	intrinsic, store, lease := intrinsicFixture(t, "请分析这项任务", nil, nil)
-	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "analyze", "workspace_mode": "none"}, "call-1"); !errors.Is(err, ErrCloudIntentRequired) {
-		t.Fatalf("missing evidence err=%v", err)
+func TestIntrinsicAllowsCentralDelegationWithoutCloudWording(t *testing.T) {
+	intrinsic, store, lease := intrinsicFixture(t, "实现并测试一个完整的日志分析工具，交付源码、测试和文档", nil, nil)
+	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "build and test the project", "workspace_mode": "write"}, "call-1"); err != nil {
+		t.Fatal(err)
 	}
-	if len(store.commands) != 0 {
-		t.Fatal("offer was created without authorization policy evidence")
+	if len(store.commands) != 1 || store.commands[0].Plan.ProposalReason != ProposalReasonCentralDelegation || store.commands[0].Plan.LocalBudgetEvidence != nil {
+		t.Fatalf("central delegation was not bound: %+v", store.commands)
 	}
+}
+
+func TestIntrinsicPrefersTrustedBudgetEvidenceWhenAvailable(t *testing.T) {
 	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 2, Digest: digestValue("scheduler-evidence")}
 	archiveID := uuid.NewString()
 	resolver := &intrinsicManifest{allowed: map[string]bool{archiveID: true}, archiveIDs: map[string]bool{archiveID: true}}
-	intrinsic, store, lease = intrinsicFixture(t, "请分析这项任务", resolver, intrinsicBudget{evidence: evidence})
+	intrinsic, store, lease := intrinsicFixture(t, "请分析这项任务", resolver, intrinsicBudget{evidence: evidence})
 	bindIntrinsicWorkspaceArchive(t, &lease, archiveID)
-	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "analyze", "workspace_mode": "read_only", "attachment_ids": []string{archiveID}}, "call-2"); err != nil {
+	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "analyze", "workspace_mode": "read_only", "attachment_ids": []string{archiveID}}, "call-1"); err != nil {
 		t.Fatal(err)
 	}
 	if len(store.commands) != 1 || store.commands[0].Plan.ProposalReason != ProposalReasonLocalBudgetExceeded || store.commands[0].Plan.LocalBudgetEvidence == nil || store.commands[0].Plan.LocalBudgetEvidence.Digest != evidence.Digest {
@@ -339,30 +364,21 @@ func TestIntrinsicRequiresTrustedBudgetEvidenceWhenCloudIntentIsAbsent(t *testin
 	}
 }
 
-func TestBudgetBackedIntrinsicRequiresSelectedArchiveAndNoCloudVeto(t *testing.T) {
+func TestIntrinsicRejectsCentralDelegationWhenUserVetoesCloud(t *testing.T) {
 	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("workspace-budget")}
-	archiveID, fileID := uuid.NewString(), uuid.NewString()
+	archiveID := uuid.NewString()
 	for name, test := range map[string]struct {
 		prompt   string
 		mode     string
 		selected []string
 	}{
-		"none mode":          {prompt: "分析这个工程", mode: "none"},
-		"ordinary file only": {prompt: "分析这个工程", mode: "read_only", selected: []string{fileID}},
-		"chinese veto":       {prompt: "不要用云，只在本机执行", mode: "read_only", selected: []string{archiveID}},
-		"english veto":       {prompt: "Do not use cloud; run this locally", mode: "read_only", selected: []string{archiveID}},
+		"chinese veto": {prompt: "不要用云，只在本机执行", mode: "read_only", selected: []string{archiveID}},
+		"english veto": {prompt: "Do not use cloud; run this locally", mode: "read_only", selected: []string{archiveID}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			resolver := &intrinsicManifest{allowed: map[string]bool{archiveID: true, fileID: true}, archiveIDs: map[string]bool{archiveID: true}}
+			resolver := &intrinsicManifest{allowed: map[string]bool{archiveID: true}, archiveIDs: map[string]bool{archiveID: true}}
 			intrinsic, store, lease := intrinsicFixture(t, test.prompt, resolver, intrinsicBudget{evidence: evidence})
 			bindIntrinsicWorkspaceArchive(t, &lease, archiveID)
-			if len(test.selected) == 1 && test.selected[0] == fileID {
-				file := coreconversation.TurnAttachment{SourceID: fileID, Revision: 1, TurnRequestID: lease.Turn.RequestID,
-					Kind: coreconversation.TurnAttachmentKindFile, Name: "input.txt", MediaType: "text/plain", SizeBytes: 4,
-					SHA256: strings.Repeat("b", 64), Status: coreconversation.TurnAttachmentCommitted, ExpiresAt: lease.ExpiresAt.Add(30 * time.Minute).UTC()}
-				lease.Turn.AttachmentSources = append(lease.Turn.AttachmentSources, file)
-				lease.Turn.AttachmentSnapshotDigest = coreconversation.TurnAttachmentSnapshotDigest(lease.Turn.AttachmentSources)
-			}
 			arguments := map[string]any{"objective": "analyze", "workspace_mode": test.mode}
 			if test.selected != nil {
 				arguments["attachment_ids"] = test.selected

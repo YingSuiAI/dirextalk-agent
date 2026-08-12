@@ -43,7 +43,8 @@ func TestPostgresStorePersistsReservationAcrossRestartAndConcurrentClamp(t *test
 		t.Fatal(err)
 	}
 	persisted, err := restarted.GetGrant(fixture.ctx, grant.GrantID)
-	if err != nil || persisted.ReservedTokens != 40 || persisted.SettledTokens != 0 {
+	if err != nil || persisted.Profile != fixture.profile ||
+		persisted.ReservedTokens != 40 || persisted.SettledTokens != 0 {
 		t.Fatalf("restart grant=%+v err=%v", persisted, err)
 	}
 
@@ -434,6 +435,7 @@ func newPostgresRelayFixture(t *testing.T) postgresRelayFixture {
 		ProfileID: uuid.NewString(), ProfileRevision: 1, CredentialVersion: 1,
 		Provider: ProviderOpenAICompatible, Interface: InterfaceOpenAICompatible,
 		Model:                   "relay-integration-model",
+		MaximumOutputTokens:     4096,
 		CredentialBindingDigest: relayIntegrationDigest("credential-binding"),
 		ModelBindingDigest:      relayIntegrationDigest("model-binding"),
 	}

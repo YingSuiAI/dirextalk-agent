@@ -511,11 +511,13 @@ func TestCancelDurableTurnUsesCurrentRevisionAndDeterministicRequestIdentity(t *
 func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrder(t *testing.T) {
 	conversationID := uuid.NewString()
 	profileID := uuid.NewString()
+	taskID := uuid.NewString()
+	planID := uuid.NewString()
 	now := time.Now().UTC()
 	messages := []coreconversation.Message{
 		{ID: uuid.NewString(), Sequence: 1, Role: coreconversation.RoleUser, Content: "first", ModelProfileID: profileID, CreatedAt: now},
 		{ID: uuid.NewString(), Sequence: 2, Role: coreconversation.RoleTool, ToolResults: []coreconversation.ToolResult{{CallID: "call", Content: "private tool payload"}}, ModelProfileID: profileID, CreatedAt: now.Add(time.Second)},
-		{ID: uuid.NewString(), Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second)},
+		{ID: uuid.NewString(), Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ModelProfileID: profileID, RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID}, CreatedAt: now.Add(2 * time.Second)},
 		{ID: uuid.NewString(), Sequence: 4, Role: coreconversation.RoleSystem, Content: "private system context", ModelProfileID: profileID, CreatedAt: now.Add(3 * time.Second)},
 		{ID: uuid.NewString(), Sequence: 5, Role: coreconversation.RoleUser, Content: "third", ModelProfileID: profileID, CreatedAt: now.Add(4 * time.Second)},
 	}
@@ -525,6 +527,10 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 	}
 	if len(page) != 2 || page[0].MessageSeq != 3 || page[1].MessageSeq != 5 || next == "" {
 		t.Fatalf("first page=%+v next=%q", page, next)
+	}
+	if len(page[0].RelatedTaskIDs) != 1 || page[0].RelatedTaskIDs[0] != taskID ||
+		len(page[0].RelatedPlanIDs) != 1 || page[0].RelatedPlanIDs[0] != planID {
+		t.Fatalf("assistant linkage was not projected: %+v", page[0])
 	}
 	raw, err := json.Marshal(page)
 	if err != nil {
