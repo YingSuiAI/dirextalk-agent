@@ -210,16 +210,22 @@ type memoryObjects struct {
 }
 
 type logSinkFake struct {
-	mu     sync.Mutex
-	events []LogEventV1
-	failAt int
+	mu      sync.Mutex
+	events  []LogEventV1
+	failAt  int
+	blockAt int
 }
 
-func (sink *logSinkFake) Emit(_ context.Context, event LogEventV1) error {
+func (sink *logSinkFake) Emit(ctx context.Context, event LogEventV1) error {
 	sink.mu.Lock()
-	defer sink.mu.Unlock()
 	sink.events = append(sink.events, event)
-	if sink.failAt > 0 && len(sink.events) == sink.failAt {
+	eventCount := len(sink.events)
+	sink.mu.Unlock()
+	if sink.blockAt > 0 && eventCount == sink.blockAt {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if sink.failAt > 0 && eventCount == sink.failAt {
 		return errors.New("provider error containing sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	}
 	return nil
@@ -424,6 +430,25 @@ func TestRunnerCompletesWhenOnlyFinalMilestoneLogIsUnavailable(t *testing.T) {
 	result, err := runner.Run(t.Context(), config)
 	if err != nil || result.Outcome != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED {
 		t.Fatalf("Run() = (%#v, %v)", result, err)
+	}
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	if control.completion == nil ||
+		control.completion.GetOutcome() != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED {
+		t.Fatalf("completion = %#v", control.completion)
+	}
+}
+
+func TestRunnerCompletesWhenFinalMilestoneLogBlocks(t *testing.T) {
+	runner, config, control, _ := runnerFixture(t, validNoopBundle(t, 0))
+	runner.Logs = &logSinkFake{blockAt: 4}
+	started := time.Now()
+	result, err := runner.Run(t.Context(), config)
+	if err != nil || result.Outcome != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED {
+		t.Fatalf("Run() = (%#v, %v)", result, err)
+	}
+	if elapsed := time.Since(started); elapsed < finalMilestoneTimeout || elapsed > finalMilestoneTimeout+time.Second {
+		t.Fatalf("final milestone budget elapsed = %s", elapsed)
 	}
 	control.mu.Lock()
 	defer control.mu.Unlock()

@@ -33,6 +33,7 @@ var workerObjectNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,191}$`)
 const (
 	workerControlCallTimeout = 5 * time.Second
 	failureMilestoneTimeout  = 5 * time.Second
+	finalMilestoneTimeout    = 2 * time.Second
 )
 
 type ControlClient interface {
@@ -202,11 +203,13 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 		}
 	}
 
-	completeContext, cancelComplete := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-	defer cancelComplete()
 	// Completion is the authoritative durable state transition. A telemetry
 	// outage must not prevent the Worker from reporting a valid terminal result.
-	_ = runner.emitLog(completeContext, assignment, LogExecutionFinished, "", logOutcome(outcome))
+	finalLogContext, cancelFinalLog := context.WithTimeout(context.WithoutCancel(ctx), finalMilestoneTimeout)
+	_ = runner.emitLog(finalLogContext, assignment, LogExecutionFinished, "", logOutcome(outcome))
+	cancelFinalLog()
+	completeContext, cancelComplete := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancelComplete()
 	if err := lease.complete(completeContext, outcome, resultObject); err != nil {
 		return Result{Outcome: outcome, ResultRef: resultRef, CompletedActions: completedActions}, fmt.Errorf("complete Worker execution: %w", err)
 	}
