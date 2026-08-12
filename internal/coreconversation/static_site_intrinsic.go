@@ -45,7 +45,7 @@ func staticSiteIntrinsic(store ConversationStaticSiteStore, publisher StaticSite
 func executeStaticSiteIntrinsic(ctx context.Context, store ConversationStaticSiteStore, publisher StaticSitePublisher, bound TurnLease, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
 	if ctx == nil || store == nil || publisher == nil || request.Lease.Turn.ID != bound.Turn.ID ||
 		request.Lease.Turn.RequestID != bound.Turn.RequestID || request.Lease.LeaseID != bound.LeaseID ||
-		request.Lease.Epoch != bound.Epoch || request.Call.Name != coremodel.IntrinsicStaticSitePublishToolName ||
+		request.Lease.Epoch < bound.Epoch || request.Call.Name != coremodel.IntrinsicStaticSitePublishToolName ||
 		request.Call.Validate() != nil || request.ConversationRevision == 0 || request.ConversationRevision == ^uint64(0) {
 		return IntrinsicExecutionResult{}, ErrInvalid
 	}
@@ -76,7 +76,7 @@ func executeStaticSiteIntrinsic(ctx context.Context, store ConversationStaticSit
 		RequestID: turn.RequestID, ConversationID: turn.ConversationID,
 		Revision: request.ConversationRevision + 1, Message: message, Done: true, ModelProfileID: turn.ProfileID,
 	}
-	command := ConversationStaticSiteCommand{Lease: bound, Receipt: receipt, Response: response}
+	command := ConversationStaticSiteCommand{Lease: request.Lease, Receipt: receipt, Response: response}
 	if command.Validate() != nil {
 		return IntrinsicExecutionResult{}, ErrInvalid
 	}

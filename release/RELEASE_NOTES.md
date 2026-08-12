@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.72
+
+1. Allow long-running static-site publication to commit with the renewed current turn lease.
+
 ## v1.0.71
 
 1. Establish the independent Agent Core runtime, durable conversations, Tasks, schedules, Knowledge and long-term memory.

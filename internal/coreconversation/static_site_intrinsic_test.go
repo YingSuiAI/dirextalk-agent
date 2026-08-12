@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 )
@@ -66,6 +67,27 @@ func TestStaticSiteIntrinsicPublishesSingleHTMLWithServerDerivedPath(t *testing.
 	}
 	if _, err = intrinsic.Execute(context.Background(), request); err != nil || publisher.publications[1].SiteID != publisher.publications[0].SiteID || publisher.publications[1].ReleaseID != publisher.publications[0].ReleaseID {
 		t.Fatalf("deterministic replay err=%v publications=%+v", err, publisher.publications)
+	}
+}
+
+func TestStaticSiteIntrinsicAcceptsRenewedLeaseAndCommitsCurrentEpoch(t *testing.T) {
+	bound := scheduleIntrinsicLease()
+	renewed := bound
+	renewed.Epoch++
+	renewed.ExpiresAt = renewed.ExpiresAt.Add(time.Minute)
+	publisher := &staticSitePublisherStub{}
+	store := &staticSiteStoreStub{}
+	raw, _ := json.Marshal(map[string]any{"html": "<!doctype html><h1>renewed</h1>"})
+
+	result, err := staticSiteIntrinsic(store, publisher, bound).Execute(context.Background(), IntrinsicExecutionRequest{
+		Lease: renewed, Call: ToolCall{ID: "renewed-site-call", Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: string(raw)},
+		CanonicalArguments: raw, ConversationRevision: 4,
+	})
+	if err != nil || !result.TurnCommitted || len(store.commands) != 1 {
+		t.Fatalf("result=%+v commands=%d err=%v", result, len(store.commands), err)
+	}
+	if store.commands[0].Lease.LeaseID != renewed.LeaseID || store.commands[0].Lease.Epoch != renewed.Epoch {
+		t.Fatalf("committed lease=%+v want renewed lease=%+v", store.commands[0].Lease, renewed)
 	}
 }
 
