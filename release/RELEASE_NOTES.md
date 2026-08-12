@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.79
+
+1. Keep model profiles on the four current role-specific defaults and remove the superseded generic default field.
+2. Remove retired capability aliases and stale Agent configuration fields.
+
 ## v1.0.78
 
 1. Add exact update and delete operations for active structured memory facts.
