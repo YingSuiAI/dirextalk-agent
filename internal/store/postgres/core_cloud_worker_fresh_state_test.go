@@ -521,14 +521,10 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 	if err != nil || len(resolved) != 1 || resolved[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
 		t.Fatalf("resolve cloud_worker_propose: tools=%+v err=%v", resolved, err)
 	}
-	arguments, _ := json.Marshal(map[string]any{
-		"objective":      "Produce a centrally verified fresh-state result",
-		"workspace_mode": string(cloudworker.WorkspaceNone),
-	})
-	callID := uuid.NewString()
+	arguments := json.RawMessage(h.call.Arguments)
 	result, err := resolved[0].Execute(h.ctx, core.IntrinsicExecutionRequest{
 		Lease:              h.lease,
-		Call:               core.ToolCall{ID: callID, Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(arguments)},
+		Call:               h.call,
 		CanonicalArguments: arguments,
 	})
 	if err != nil || !result.TurnCommitted {
@@ -671,7 +667,7 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(outboxes) != 1 || replayedOutbox.EventID != outboxes[0].EventID || replayedOutbox.ResultMessageID != outboxes[0].ResultMessageID {
+	if len(outboxes) != 1 || replayedOutbox.EventID != outboxes[0].EventID {
 		t.Fatalf("completion replay created a second result: replay=%+v pending=%+v", replayedOutbox, outboxes)
 	}
 	var verifiedResources, ledgerDestroyed, outputJournals int

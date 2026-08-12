@@ -34,6 +34,7 @@ type pgCloudWorkerHarness struct {
 	conversation  *CoreConversationStore
 	service       *cloudworker.Service
 	lease         core.TurnLease
+	call          core.ToolCall
 	command       cloudworker.ProposeCommand
 	now           time.Time
 	owner         string
@@ -136,9 +137,21 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 		ObjectiveSummary: "Verified cloud result", UserPromptDigest: pgCloudDigest(lease.Turn.Prompt),
 		ProposalReason: cloudworker.ProposalReasonExplicitUserCloud, InputManifest: cloudworker.InputManifest{},
 		WorkspaceMode: cloudworker.WorkspaceNone, ModelAuthorization: authorization}
+	arguments, _ := json.Marshal(map[string]any{
+		"objective": command.Objective, "workspace_mode": string(command.WorkspaceMode),
+	})
+	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(arguments)}
+	if _, err = conversation.PrepareTurnModel(ctx, lease); err != nil {
+		cleanup()
+		t.Fatal(err)
+	}
+	if err = conversation.RecordTurnModelResult(ctx, lease, core.ModelRunResult{ToolCalls: []core.ToolCall{call}}); err != nil {
+		cleanup()
+		t.Fatal(err)
+	}
 	return &pgCloudWorkerHarness{ctx: ctx, store: store, cloud: cloudStore, tasks: NewCoreTaskStore(store),
 		confirmations: confirmationStore, confirmation: confirmationService, conversation: conversation,
-		service: service, lease: lease, command: command, now: now, owner: owner, generation: generation, cleanup: cleanup}
+		service: service, lease: lease, call: call, command: command, now: now, owner: owner, generation: generation, cleanup: cleanup}
 }
 
 func (h *pgCloudWorkerHarness) propose(t *testing.T) cloudworker.Offer {
@@ -371,10 +384,11 @@ func TestCloudWorkerPostgresConfirmationAndPredispatchCancelProjection(t *testin
 				t.Fatalf("canceled task terminal contract mismatch: task=%+v err=%v", canceledTask, err)
 			}
 			turnEvents, err := h.conversation.LoadTurnEvents(h.ctx, offer.Plan.TurnID, 0, 10)
-			if err != nil || len(turnEvents) != 3 || turnEvents[0].Kind != core.TurnEventAccepted ||
+			if err != nil || len(turnEvents) != 4 || turnEvents[0].Kind != core.TurnEventAccepted ||
 				turnEvents[0].Sequence != 1 || turnEvents[0].Revision != 1 ||
 				turnEvents[1].Kind != core.TurnEventWaitingConfirmation || turnEvents[1].Sequence != 2 || turnEvents[1].Revision != 2 ||
-				turnEvents[2].Kind != core.TurnEventDone || turnEvents[2].Sequence != 3 || turnEvents[2].Revision != 3 {
+				turnEvents[2].Kind != core.TurnEventToolCall || turnEvents[2].Sequence != 3 ||
+				turnEvents[3].Kind != core.TurnEventToolResult || turnEvents[3].Sequence != 4 {
 				t.Fatalf("delayed turn replay lost event-time revision/sequence: events=%+v err=%v", turnEvents, err)
 			}
 			replayed, err = h.cloud.RequestCancel(h.ctx, h.owner, h.generation, current.ExecutionID, current.Revision, key)
@@ -382,19 +396,18 @@ func TestCloudWorkerPostgresConfirmationAndPredispatchCancelProjection(t *testin
 				t.Fatalf("terminal cancel replay=%+v err=%v", replayed, err)
 			}
 
-			var beginCount, launchCount, ledgerCount, resourceCount, resultMessages int
+			var beginCount, launchCount, ledgerCount, resourceCount int
 			if err = h.store.pool.QueryRow(h.ctx, `SELECT
 				(SELECT count(*) FROM core_cloud_worker_begin_authorizations WHERE execution_id=$1),
 				(SELECT count(*) FROM core_cloud_worker_launch_material WHERE execution_id=$1),
 				(SELECT count(*) FROM core_cloud_worker_aws_ledger WHERE execution_id=$1),
-				(SELECT count(*) FROM core_cloud_worker_resources WHERE execution_id=$1),
-				(SELECT count(*) FROM core_messages WHERE message_id=$2)`, current.ExecutionID, outbox.ResultMessageID).Scan(
-				&beginCount, &launchCount, &ledgerCount, &resourceCount, &resultMessages); err != nil {
+				(SELECT count(*) FROM core_cloud_worker_resources WHERE execution_id=$1)`, current.ExecutionID).Scan(
+				&beginCount, &launchCount, &ledgerCount, &resourceCount); err != nil {
 				t.Fatal(err)
 			}
-			if beginCount+launchCount+ledgerCount+resourceCount != 0 || resultMessages != 1 {
-				t.Fatalf("cancel graph begin=%d launch=%d ledger=%d resources=%d result_messages=%d",
-					beginCount, launchCount, ledgerCount, resourceCount, resultMessages)
+			if beginCount+launchCount+ledgerCount+resourceCount != 0 {
+				t.Fatalf("cancel graph begin=%d launch=%d ledger=%d resources=%d",
+					beginCount, launchCount, ledgerCount, resourceCount)
 			}
 		})
 	}
@@ -867,18 +880,17 @@ func TestCloudWorkerPostgresResumeControlCleanupAndTerminalOutbox(t *testing.T) 
 	if err != nil || replayedTerminal.Revision != terminal.Revision || replayedOutbox.EventID != outbox.EventID {
 		t.Fatalf("lost-response replay terminal=%+v outbox=%+v err=%v", replayedTerminal, replayedOutbox, err)
 	}
-	var resultMessages, completionRows, activeReservations, runningCount int
+	var completionRows, activeReservations, runningCount int
 	if err = h.store.pool.QueryRow(h.ctx, `SELECT
-		(SELECT count(*) FROM core_messages WHERE message_id=$1),
-		(SELECT count(*) FROM core_cloud_worker_completion_outbox WHERE execution_id=$2),
-		(SELECT count(*) FROM core_confirmation_reservations WHERE confirmation_id=$3 AND active=true),
-		(SELECT running_count FROM core_task_runtime_concurrency WHERE singleton=true)`, outbox.ResultMessageID,
-		offer.Execution.ExecutionID, offer.Confirmation.ConfirmationID).Scan(&resultMessages, &completionRows, &activeReservations, &runningCount); err != nil {
+		(SELECT count(*) FROM core_cloud_worker_completion_outbox WHERE execution_id=$1),
+		(SELECT count(*) FROM core_confirmation_reservations WHERE confirmation_id=$2 AND active=true),
+		(SELECT running_count FROM core_task_runtime_concurrency WHERE singleton=true)`,
+		offer.Execution.ExecutionID, offer.Confirmation.ConfirmationID).Scan(&completionRows, &activeReservations, &runningCount); err != nil {
 		t.Fatal(err)
 	}
-	if resultMessages != 0 || completionRows != 1 || activeReservations != 0 || runningCount != 0 {
-		t.Fatalf("terminal invariants message=%d outbox=%d reservation=%d running=%d",
-			resultMessages, completionRows, activeReservations, runningCount)
+	if completionRows != 1 || activeReservations != 0 || runningCount != 0 {
+		t.Fatalf("terminal invariants outbox=%d reservation=%d running=%d",
+			completionRows, activeReservations, runningCount)
 	}
 }
 

@@ -169,8 +169,7 @@ func buildCloudWorkerPublicFixture(t *testing.T) cloudWorkerPublicFixture {
 		EventID:     uuid.NewSHA1(uuid.NameSpaceOID, []byte("cloud-worker-public-fixture-completion")).String(),
 		ExecutionID: execution.ExecutionID, RunID: execution.RunID,
 		ConversationID: plan.ConversationID, TurnID: plan.TurnID,
-		ResultMessageID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("cloud-worker-public-fixture-result-message")).String(),
-		TerminalState:   string(StateSucceeded), CompletedAt: verifiedAt,
+		TerminalState: string(StateSucceeded), CompletedAt: verifiedAt,
 	}
 	completion.PayloadDigest = CompletionDigest(completion)
 	if err := completion.Validate(); err != nil {

@@ -420,15 +420,14 @@ type WorkerProgress struct {
 // Capability completion boundary. Plan/task/artifact details are read back
 // from Agent authority after this invalidation is received.
 type CompletionOutbox struct {
-	EventID         string    `json:"event_id"`
-	ExecutionID     string    `json:"execution_id"`
-	RunID           string    `json:"run_id"`
-	ConversationID  string    `json:"conversation_id"`
-	TurnID          string    `json:"turn_id"`
-	ResultMessageID string    `json:"result_message_id"`
-	TerminalState   string    `json:"terminal_state"`
-	CompletedAt     time.Time `json:"completed_at"`
-	PayloadDigest   string    `json:"payload_digest"`
+	EventID        string    `json:"event_id"`
+	ExecutionID    string    `json:"execution_id"`
+	RunID          string    `json:"run_id"`
+	ConversationID string    `json:"conversation_id"`
+	TurnID         string    `json:"turn_id"`
+	TerminalState  string    `json:"terminal_state"`
+	CompletedAt    time.Time `json:"completed_at"`
+	PayloadDigest  string    `json:"payload_digest"`
 }
 
 type Offer struct {
@@ -1212,19 +1211,18 @@ func BindingForPlan(plan Plan) (coreconfirmation.Binding, error) {
 
 func CompletionDigest(value CompletionOutbox) string {
 	return digestValue(struct {
-		EventID         string `json:"event_id"`
-		ExecutionID     string `json:"execution_id"`
-		RunID           string `json:"run_id"`
-		ConversationID  string `json:"conversation_id"`
-		TurnID          string `json:"turn_id"`
-		ResultMessageID string `json:"result_message_id"`
-		TerminalState   string `json:"terminal_state"`
-		CompletedAt     string `json:"completed_at"`
-	}{value.EventID, value.ExecutionID, value.RunID, value.ConversationID, value.TurnID, value.ResultMessageID, value.TerminalState, value.CompletedAt.UTC().Format(time.RFC3339Nano)})
+		EventID        string `json:"event_id"`
+		ExecutionID    string `json:"execution_id"`
+		RunID          string `json:"run_id"`
+		ConversationID string `json:"conversation_id"`
+		TurnID         string `json:"turn_id"`
+		TerminalState  string `json:"terminal_state"`
+		CompletedAt    string `json:"completed_at"`
+	}{value.EventID, value.ExecutionID, value.RunID, value.ConversationID, value.TurnID, value.TerminalState, value.CompletedAt.UTC().Format(time.RFC3339Nano)})
 }
 
 func (o CompletionOutbox) Validate() error {
-	if !validUUID(o.EventID) || !validUUID(o.ExecutionID) || o.RunID != o.ExecutionID || !validUUID(o.ConversationID) || !validUUID(o.TurnID) || !validUUID(o.ResultMessageID) || o.CompletedAt.IsZero() || o.CompletedAt.Location() != time.UTC || !validDigest(o.PayloadDigest) || o.PayloadDigest != CompletionDigest(o) {
+	if !validUUID(o.EventID) || !validUUID(o.ExecutionID) || o.RunID != o.ExecutionID || !validUUID(o.ConversationID) || !validUUID(o.TurnID) || o.CompletedAt.IsZero() || o.CompletedAt.Location() != time.UTC || !validDigest(o.PayloadDigest) || o.PayloadDigest != CompletionDigest(o) {
 		return ErrInvalid
 	}
 	switch o.TerminalState {

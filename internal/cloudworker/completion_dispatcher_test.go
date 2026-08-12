@@ -20,20 +20,19 @@ func (function completionClientFunc) RecordAgentExecutionCompletion(ctx context.
 
 func validCompletionOutbox() CompletionOutbox {
 	value := CompletionOutbox{
-		EventID:         "11111111-1111-4111-8111-111111111111",
-		ExecutionID:     "22222222-2222-4222-8222-222222222222",
-		RunID:           "22222222-2222-4222-8222-222222222222",
-		ConversationID:  "33333333-3333-4333-8333-333333333333",
-		TurnID:          "44444444-4444-4444-8444-444444444444",
-		ResultMessageID: "55555555-5555-4555-8555-555555555555",
-		TerminalState:   string(StateSucceeded),
-		CompletedAt:     time.Date(2026, 8, 7, 6, 0, 0, 123, time.UTC),
+		EventID:        "11111111-1111-4111-8111-111111111111",
+		ExecutionID:    "22222222-2222-4222-8222-222222222222",
+		RunID:          "22222222-2222-4222-8222-222222222222",
+		ConversationID: "33333333-3333-4333-8333-333333333333",
+		TurnID:         "44444444-4444-4444-8444-444444444444",
+		TerminalState:  string(StateSucceeded),
+		CompletedAt:    time.Date(2026, 8, 7, 6, 0, 0, 123, time.UTC),
 	}
 	value.PayloadDigest = CompletionDigest(value)
 	return value
 }
 
-func TestProductCompletionDispatcherSendsCanonicalNineFieldReceipt(t *testing.T) {
+func TestProductCompletionDispatcherSendsCanonicalReceipt(t *testing.T) {
 	outbox := validCompletionOutbox()
 	called := 0
 	dispatcher, err := NewProductCompletionDispatcher(completionClientFunc(func(_ context.Context, operationID string, request, digest []byte) (*capv1.StartOperationResponse, error) {
@@ -50,7 +49,7 @@ func TestProductCompletionDispatcherSendsCanonicalNineFieldReceipt(t *testing.T)
 			t.Fatal("request digest does not bind canonical request")
 		}
 		var object map[string]any
-		if decodeErr := json.Unmarshal(request, &object); decodeErr != nil || len(object) != 9 {
+		if decodeErr := json.Unmarshal(request, &object); decodeErr != nil || len(object) != 8 {
 			t.Fatalf("completion shape = %v, err=%v", object, decodeErr)
 		}
 		return &capv1.StartOperationResponse{OperationId: operationID, State: capv1.OperationState_OPERATION_STATE_COMPLETED, Replayed: true}, nil

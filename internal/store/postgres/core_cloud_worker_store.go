@@ -2346,16 +2346,16 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 	}
 	outbox := cloudworker.CompletionOutbox{EventID: deterministicCloudWorkerUUID("completion-outbox", plan.ExecutionID),
 		ExecutionID: plan.ExecutionID, RunID: plan.ExecutionID, ConversationID: plan.ConversationID,
-		TurnID: plan.TurnID, ResultMessageID: deterministicCloudWorkerUUID("cloud-worker-result-message", plan.ExecutionID), TerminalState: string(terminal), CompletedAt: now}
+		TurnID: plan.TurnID, TerminalState: string(terminal), CompletedAt: now}
 	outbox.PayloadDigest = cloudworker.CompletionDigest(outbox)
 	if outbox.Validate() != nil {
 		logCloudWorkerTerminalInvariant("completion_outbox")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrInvalid
 	}
 	outboxRaw, _ := json.Marshal(outbox)
-	outboxInsert, insertErr := tx.Exec(ctx, `INSERT INTO core_cloud_worker_completion_outbox(event_id,execution_id,conversation_id,turn_id,result_message_id,terminal_state,payload_digest,payload_json,created_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, outbox.EventID, outbox.ExecutionID, outbox.ConversationID,
-		outbox.TurnID, outbox.ResultMessageID, outbox.TerminalState, outbox.PayloadDigest, outboxRaw, outbox.CompletedAt)
+	outboxInsert, insertErr := tx.Exec(ctx, `INSERT INTO core_cloud_worker_completion_outbox(event_id,execution_id,conversation_id,turn_id,terminal_state,payload_digest,payload_json,created_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, outbox.EventID, outbox.ExecutionID, outbox.ConversationID,
+		outbox.TurnID, outbox.TerminalState, outbox.PayloadDigest, outboxRaw, outbox.CompletedAt)
 	if insertErr != nil || outboxInsert.RowsAffected() != 1 {
 		if insertErr != nil {
 			return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, insertErr

@@ -2491,3 +2491,7 @@ ALTER TABLE core_memory_timeline
 ALTER TABLE core_model_profile_defaults
     DROP COLUMN default_client_profile_id;
 -- dirextalk-agent migration end 000015_remove_default_client_profile_alias.up.sql
+-- dirextalk-agent migration begin 000016_remove_cloud_worker_result_message.up.sql
+ALTER TABLE core_cloud_worker_completion_outbox
+    DROP COLUMN result_message_id;
+-- dirextalk-agent migration end 000016_remove_cloud_worker_result_message.up.sql

@@ -134,10 +134,20 @@ func newSharedPGCloudWorkerHarness(t *testing.T, base *pgCloudWorkerHarness) *pg
 		ProposalReason: cloudworker.ProposalReasonExplicitUserCloud, InputManifest: cloudworker.InputManifest{},
 		WorkspaceMode: cloudworker.WorkspaceNone, ModelAuthorization: authorization,
 	}
+	arguments, _ := json.Marshal(map[string]any{
+		"objective": command.Objective, "workspace_mode": string(command.WorkspaceMode),
+	})
+	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(arguments)}
+	if _, err = base.conversation.PrepareTurnModel(base.ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	if err = base.conversation.RecordTurnModelResult(base.ctx, lease, core.ModelRunResult{ToolCalls: []core.ToolCall{call}}); err != nil {
+		t.Fatal(err)
+	}
 	return &pgCloudWorkerHarness{
 		ctx: base.ctx, store: base.store, cloud: cloudStore, tasks: NewCoreTaskStore(base.store),
 		confirmations: confirmationStore, confirmation: confirmationService, conversation: base.conversation,
-		service: service, lease: lease, command: command, now: now, owner: base.owner, generation: base.generation,
+		service: service, lease: lease, call: call, command: command, now: now, owner: base.owner, generation: base.generation,
 		cleanup: func() {},
 	}
 }

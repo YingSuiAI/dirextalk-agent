@@ -17,7 +17,7 @@ type CompletionOperationClient interface {
 	RecordAgentExecutionCompletion(context.Context, string, []byte, []byte) (*capv1.StartOperationResponse, error)
 }
 
-// ProductCompletionDispatcher delivers the nine-field completion
+// ProductCompletionDispatcher delivers the current completion
 // invalidation. The result body remains Agent-owned and is never copied into
 // Message Server storage.
 type ProductCompletionDispatcher struct {
