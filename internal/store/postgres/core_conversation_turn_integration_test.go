@@ -335,6 +335,10 @@ func TestCoreConversationTurnHistoryAndEventsAtomicPostgres(t *testing.T) {
 	if err != nil || started.Sequence != 2 || started.Revision != turn.Revision {
 		t.Fatalf("started event=%+v err=%v", started, err)
 	}
+	delta, err := h.store.AppendTurnEvent(context.Background(), turn.ID, core.TurnEvent{Kind: core.TurnEventDelta, Text: "visible progress"})
+	if err != nil || delta.Sequence != 3 || delta.Revision != turn.Revision || delta.Text != "visible progress" {
+		t.Fatalf("delta event=%+v err=%v", delta, err)
+	}
 	response := core.ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 2, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "done", ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC()}, ConversationTitle: "Generated title"}
 	if _, err = h.store.CommitTurn(context.Background(), lease, response); err != nil {
 		t.Fatal(err)
@@ -351,9 +355,10 @@ func TestCoreConversationTurnHistoryAndEventsAtomicPostgres(t *testing.T) {
 		t.Fatalf("turn timestamps are not persistably ordered: user=%s assistant=%s", userAt.Format(time.RFC3339Nano), assistantAt.Format(time.RFC3339Nano))
 	}
 	events, err := h.store.LoadTurnEvents(context.Background(), turn.ID, 0, 10)
-	if err != nil || len(events) != 3 || events[0].Sequence != 1 || events[0].Revision != 1 ||
+	if err != nil || len(events) != 4 || events[0].Sequence != 1 || events[0].Revision != 1 ||
 		events[1].Sequence != 2 || events[1].Revision != 1 || events[1].Kind != core.TurnEventStarted ||
-		events[2].Sequence != 3 || events[2].Revision != 2 || events[2].Kind != core.TurnEventDone {
+		events[2].Sequence != 3 || events[2].Revision != 1 || events[2].Kind != core.TurnEventDelta || events[2].Text != "visible progress" ||
+		events[3].Sequence != 4 || events[3].Revision != 2 || events[3].Kind != core.TurnEventDone {
 		t.Fatalf("delayed replay events=%+v err=%v", events, err)
 	}
 }

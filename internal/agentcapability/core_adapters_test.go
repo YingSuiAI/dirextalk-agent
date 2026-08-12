@@ -328,10 +328,11 @@ func TestConsumeDurableTurnStreamPersistsReplayableProgressAndTerminal(t *testin
 	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: operationID, ConversationID: uuid.NewString(), Revision: 1}
 	message := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "complete", CreatedAt: time.Now().UTC(), ModelProfileID: profileID}
 	response := &coreconversation.ChatResponse{RequestID: operationID, ConversationID: turn.ConversationID, Revision: 2, Message: message, Done: true, ModelProfileID: profileID}
-	events := make(chan coreconversation.TurnEvent, 3)
+	events := make(chan coreconversation.TurnEvent, 4)
 	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: coreconversation.TurnEventAccepted}
 	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 2, Revision: 1, Kind: coreconversation.TurnEventStarted}
-	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 3, Revision: 2, Kind: coreconversation.TurnEventDone, Response: response}
+	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 3, Revision: 1, Kind: coreconversation.TurnEventDelta, Text: "visible progress"}
+	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 4, Revision: 2, Kind: coreconversation.TurnEventDone, Response: response}
 	close(events)
 
 	var progressIDs []string
@@ -349,7 +350,7 @@ func TestConsumeDurableTurnStreamPersistsReplayableProgressAndTerminal(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(progressEvents) != 2 || len(progressIDs) != 2 {
+	if len(progressEvents) != 3 || len(progressIDs) != 3 {
 		t.Fatalf("progress ids=%v events=%+v", progressIDs, progressEvents)
 	}
 	for index, event := range progressEvents {
@@ -364,7 +365,8 @@ func TestConsumeDurableTurnStreamPersistsReplayableProgressAndTerminal(t *testin
 			t.Fatalf("progress[%d] leaked Core turn_sequence: %+v", index, event)
 		}
 	}
-	if progressEvents[0]["kind"] != "accepted" || progressEvents[1]["kind"] != "started" {
+	if progressEvents[0]["kind"] != "accepted" || progressEvents[1]["kind"] != "started" ||
+		progressEvents[2]["kind"] != "delta" || progressEvents[2]["text"] != "visible progress" {
 		t.Fatalf("progress events=%+v", progressEvents)
 	}
 	var result map[string]any

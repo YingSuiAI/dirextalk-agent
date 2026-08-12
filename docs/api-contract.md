@@ -79,13 +79,15 @@ multi-tenant model.
   turn fails with `provider_timeout` and an unknown-outcome summary. The
   dispatch is never replayed automatically, and recovery preserves the
   persisted timeout classification.
-- Native conversation progress publishes the existing `tool_call` event only
-  after the model step and tool identity are durable, and before the extension
-  is dispatched. A successful call is followed by its exact `tool_result`; a
-  failed dispatch retains the already-published call before the existing safe
-  terminal error. Durable turns persist the same public ordering while their
-  private pending/dispatched envelope remains the at-most-once authority and
-  is never exposed as an additional client event.
+- Native conversation progress durably publishes visible assistant `delta`
+  text as it arrives from the provider, followed by the terminal response; it
+  never publishes provider reasoning content. It publishes the existing
+  `tool_call` event only after the model step and tool identity are durable,
+  and before the extension is dispatched. A successful call is followed by its
+  exact `tool_result`; a failed dispatch retains the already-published call
+  before the existing safe terminal error. Durable turns persist the same
+  public ordering while their private pending/dispatched envelope remains the
+  at-most-once authority and is never exposed as an additional client event.
 - On every Native conversation turn, `Chat`, `StreamChat`, and `StartTurn`
   compose two memory layers before model dispatch. Working memory remains the
   durable conversation summary plus recent transcript window. Long-term memory

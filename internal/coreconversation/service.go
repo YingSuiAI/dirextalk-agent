@@ -1593,8 +1593,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				systemPrompt = staticSiteSystemPrompt(systemPrompt)
 			}
 			// Force the current streaming runner so active provider streams are
-			// bounded only by their inactivity watchdog. Durable events persist the
-			// completed result below; private content deltas are intentionally dropped.
+			// bounded only by their inactivity watchdog. Persist only user-visible
+			// assistant text as durable deltas; provider reasoning content is never
+			// part of ModelDelta and remains outside the conversation contract.
 			result, runErr := s.runModel(child, ModelRunRequest{
 				Conversation: modelConversation,
 				Profile: ResolvedProfile{
@@ -1609,7 +1610,16 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				Intrinsics:         append([]ResolvedIntrinsic(nil), intrinsicTools...),
 				Extensions:         resolvedExtensions,
 				ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...),
-			}, func(ModelDelta) error { return nil })
+			}, func(delta ModelDelta) error {
+				if delta.Text == "" {
+					return nil
+				}
+				_, appendErr := s.turns.AppendTurnEvent(ctx, id, TurnEvent{
+					Kind: TurnEventDelta,
+					Text: delta.Text,
+				})
+				return appendErr
+			})
 			resultCh <- struct {
 				result ModelRunResult
 				err    error
