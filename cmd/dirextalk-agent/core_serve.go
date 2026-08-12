@@ -534,6 +534,12 @@ func serveCore(cfg config.Config) error {
 				}
 				return knowledgeComposition.domain
 			}(),
+			Memory: func() *corememory.Service {
+				if knowledgeComposition == nil {
+					return nil
+				}
+				return knowledgeComposition.memory
+			}(),
 			Extensions: func() coreextension.Service {
 				if extensionComposition == nil {
 					return nil
@@ -777,7 +783,7 @@ func (r coreMemoryRecallResolver) RecallMemory(ctx context.Context, prompt strin
 	if len(snapshot.Events) > 0 {
 		appendLine("\n[RECENT MEMORY TIMELINE]\n", "newest first")
 		for _, event := range snapshot.Events {
-			appendLine("\n- ", event.OccurredAt.UTC().Format(time.RFC3339)+" "+event.Kind+" "+event.Summary)
+			appendLine("\n- ", "observed="+event.OccurredAt.UTC().Format(time.RFC3339)+" effective="+event.EffectiveAt.UTC().Format(time.RFC3339)+" "+event.Kind+" "+event.Summary)
 		}
 	}
 	if len(page.Matches) > 0 {

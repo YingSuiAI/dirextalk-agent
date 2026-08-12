@@ -10,6 +10,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"google.golang.org/grpc/codes"
@@ -144,6 +145,14 @@ func TestClassifyCapabilityErrorMapsCoreTaskScheduleErrors(t *testing.T) {
 				t.Fatalf("code=%q classified=%v err=%v", code, ok, classified)
 			}
 		})
+	}
+}
+
+func TestClassifyCapabilityErrorMapsMemoryEmbeddingPrecondition(t *testing.T) {
+	classified := classifyCapabilityError(corememory.ErrEmbeddingNotConfigured)
+	code, message, ok := capabilityoperation.FailureDetails(classified)
+	if !ok || code != "PRECONDITION_FAILED" || message != "Configure an embedding model before enabling memory" || !errors.Is(classified, corememory.ErrEmbeddingNotConfigured) {
+		t.Fatalf("code=%q message=%q classified=%v ok=%v", code, message, classified, ok)
 	}
 }
 

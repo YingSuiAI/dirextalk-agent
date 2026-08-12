@@ -54,8 +54,10 @@ type Fact struct {
 }
 
 type TimelineEvent struct {
-	Kind, Summary string
-	OccurredAt    time.Time
+	Kind        string    `json:"kind"`
+	Summary     string    `json:"summary"`
+	EffectiveAt time.Time `json:"effective_at"`
+	OccurredAt  time.Time `json:"observed_at"`
 }
 
 type Snapshot struct {
@@ -67,12 +69,13 @@ type Snapshot struct {
 // conflict resolution: an upsert with the same subject/predicate supersedes
 // the prior value atomically while retaining its timeline event.
 type Candidate struct {
-	Operation  string  `json:"operation"`
-	Subject    string  `json:"subject"`
-	Predicate  string  `json:"predicate"`
-	Value      string  `json:"value"`
-	Kind       string  `json:"kind"`
-	Confidence float64 `json:"confidence"`
+	Operation   string  `json:"operation"`
+	Subject     string  `json:"subject"`
+	Predicate   string  `json:"predicate"`
+	Value       string  `json:"value"`
+	Kind        string  `json:"kind"`
+	Confidence  float64 `json:"confidence"`
+	EffectiveAt string  `json:"effective_at,omitempty"`
 }
 
 func (c *Candidate) Normalize() error {
@@ -81,6 +84,7 @@ func (c *Candidate) Normalize() error {
 	c.Predicate = strings.ToLower(strings.TrimSpace(c.Predicate))
 	c.Value = strings.Join(strings.Fields(c.Value), " ")
 	c.Kind = strings.ToLower(strings.TrimSpace(c.Kind))
+	c.EffectiveAt = strings.TrimSpace(c.EffectiveAt)
 	if c.Subject == "" {
 		c.Subject = "user"
 	}
@@ -93,7 +97,25 @@ func (c *Candidate) Normalize() error {
 	if c.Operation == "upsert" && c.Value == "" {
 		return ErrInvalid
 	}
+	if c.EffectiveAt != "" {
+		effective, err := time.Parse(time.RFC3339, c.EffectiveAt)
+		if err != nil {
+			return ErrInvalid
+		}
+		c.EffectiveAt = effective.UTC().Format(time.RFC3339)
+	}
 	return nil
+}
+
+func (c Candidate) EffectiveTime(fallback time.Time) time.Time {
+	if c.EffectiveAt == "" {
+		return fallback.UTC()
+	}
+	effective, err := time.Parse(time.RFC3339, c.EffectiveAt)
+	if err != nil {
+		return fallback.UTC()
+	}
+	return effective.UTC()
 }
 
 func validFactKind(kind string) bool {
@@ -108,6 +130,9 @@ func validFactKind(kind string) bool {
 var ErrInvalid = errors.New("core memory input is invalid")
 
 type Store interface {
+	GetConfig(context.Context) (Config, error)
+	UpdateConfig(context.Context, ConfigMutation) (Config, error)
+	Status(context.Context, int, int) (Status, error)
 	ClaimObservation(context.Context, time.Time, time.Duration) (ObservationLease, bool, error)
 	ListActiveFacts(context.Context, int) ([]Fact, error)
 	ApplyObservation(context.Context, ObservationLease, []Candidate, time.Time) error
@@ -150,12 +175,19 @@ func (s *Service) ProcessNext(ctx context.Context) (bool, error) {
 			err = ErrInvalid
 		} else {
 			safe := candidates[:0]
+			seen := make(map[string]struct{}, len(candidates))
 			for i := range candidates {
 				if candidateErr := candidates[i].Normalize(); candidateErr != nil {
 					err = candidateErr
 					break
 				}
 				if !candidateContainsCredential(candidates[i]) {
+					key := candidates[i].Subject + "\x00" + candidates[i].Predicate
+					if _, duplicate := seen[key]; duplicate {
+						err = ErrInvalid
+						break
+					}
+					seen[key] = struct{}{}
 					safe = append(safe, candidates[i])
 				}
 			}

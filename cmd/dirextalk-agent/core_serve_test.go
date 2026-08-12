@@ -76,7 +76,7 @@ func TestCoreMemoryRecallResolverRendersCurrentFactBeforeConflictingSemanticHist
 			if prompt != "where do I live" {
 				t.Fatalf("structured recall prompt=%q", prompt)
 			}
-			return corememory.Snapshot{Facts: []corememory.Fact{{Predicate: "home_city", Value: "Beijing"}}, Events: []corememory.TimelineEvent{{Kind: "replaced", Summary: "user.home_city = Beijing", OccurredAt: time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC)}}}, nil
+			return corememory.Snapshot{Facts: []corememory.Fact{{Predicate: "home_city", Value: "Beijing"}}, Events: []corememory.TimelineEvent{{Kind: "replaced", Summary: "user.home_city = Beijing", EffectiveAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), OccurredAt: time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC)}}}, nil
 		}),
 		service: memoryRecallSearchFunc(func(context.Context, string, int) (coreknowledge.SearchPage, error) {
 			return coreknowledge.SearchPage{Matches: []coreknowledge.SearchMatch{{Snippet: "home city was Shanghai"}}}, nil
@@ -88,7 +88,7 @@ func TestCoreMemoryRecallResolverRendersCurrentFactBeforeConflictingSemanticHist
 	}
 	fact := strings.Index(value, "home_city: Beijing")
 	stale := strings.Index(value, "home city was Shanghai")
-	if fact < 0 || stale < 0 || fact >= stale || !strings.Contains(value, "current facts above take precedence") || !strings.Contains(value, "replaced user.home_city = Beijing") {
+	if fact < 0 || stale < 0 || fact >= stale || !strings.Contains(value, "current facts above take precedence") || !strings.Contains(value, "effective=2025-01-01T00:00:00Z replaced user.home_city = Beijing") {
 		t.Fatalf("conflict-aware recall envelope=%q", value)
 	}
 }

@@ -64,6 +64,14 @@ identity, prompts, or chat attachment identifiers. `image_request_id` is
 established at begin, must equal execute `idempotency_key`, and source revision
 is exactly one.
 
+Automatic conversation memory crosses only as the owner-client
+`agent.memory.v1` descriptor. Message Server maps it to
+`agent.memory.config.get`, `agent.memory.config.update`, and
+`agent.memory.status`, validates the closed payloads, and projects no internal
+fields. The Agent owns the default-off toggle, embedding prerequisite,
+revision/idempotency fence, facts, timeline, and observation counters. Message
+Server does not extract, persist, edit, merge, or recall facts.
+
 The one Cloud Worker terminal callback is the fixed private
 `product.agent_execution.v1/record_completion` operation. Agent dispatches it
 only from a durable outbox after the result message is frozen and all recorded

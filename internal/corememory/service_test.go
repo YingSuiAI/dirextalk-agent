@@ -18,6 +18,12 @@ type testStore struct {
 	snapshot   Snapshot
 }
 
+func (s *testStore) GetConfig(context.Context) (Config, error) { return DefaultConfig(), nil }
+func (s *testStore) UpdateConfig(_ context.Context, mutation ConfigMutation) (Config, error) {
+	return Config{Enabled: mutation.Enabled, Revision: mutation.ExpectedRevision + 1}, nil
+}
+func (s *testStore) Status(context.Context, int, int) (Status, error) { return Status{}, nil }
+
 func (s *testStore) ClaimObservation(context.Context, time.Time, time.Duration) (ObservationLease, bool, error) {
 	return s.lease, s.claim, nil
 }
@@ -88,10 +94,34 @@ func TestCandidateRejectsNonUserSubjectAndUnstablePredicate(t *testing.T) {
 		{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: "Paris", Confidence: 1.1},
 		{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: "Paris", Kind: "unknown", Confidence: .8},
 		{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: "Paris", Confidence: math.NaN()},
+		{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: "Paris", Confidence: .8, EffectiveAt: "last year"},
 	} {
 		if err := candidate.Normalize(); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("candidate %+v accepted: %v", candidate, err)
 		}
+	}
+}
+
+func TestProcessNextRejectsDuplicateFactKeysFromOneExtraction(t *testing.T) {
+	store := &testStore{claim: true, lease: ObservationLease{Observation: Observation{ID: "11111111-1111-4111-8111-111111111111"}, LeaseID: "22222222-2222-4222-8222-222222222222", Attempt: 1}}
+	service, err := NewService(store, extractorFunc(func(context.Context, Observation, []Fact) ([]Candidate, error) {
+		return []Candidate{
+			{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: "Shanghai", Confidence: .8},
+			{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: "Beijing", Confidence: .9},
+		}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ProcessNext(context.Background()); err != nil || store.applyCalls != 0 || store.retryCode != "memory_consolidation_failed" {
+		t.Fatalf("applies=%d retry=%q err=%v", store.applyCalls, store.retryCode, err)
+	}
+}
+
+func TestCandidateCanonicalizesExplicitEffectiveTime(t *testing.T) {
+	candidate := Candidate{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: "Beijing", Confidence: .9, EffectiveAt: "2025-01-02T03:04:05+08:00"}
+	if err := candidate.Normalize(); err != nil || candidate.EffectiveAt != "2025-01-01T19:04:05Z" || !candidate.EffectiveTime(time.Time{}).Equal(time.Date(2025, 1, 1, 19, 4, 5, 0, time.UTC)) {
+		t.Fatalf("candidate=%+v err=%v", candidate, err)
 	}
 }
 

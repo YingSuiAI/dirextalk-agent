@@ -402,6 +402,16 @@ commit, a transactionally enqueued observation is consolidated into
 Agent-owned structured user facts and an append-only fact timeline. The active
 `subject + predicate` row is the current truth projection; a changed value
 atomically closes and supersedes the prior row instead of deleting history.
+Automatic conversation memory is disabled by default. The owner may enable it
+only after Knowledge has a live embedding profile with a configured credential;
+the store rechecks that prerequisite in the update transaction. Disabling it
+stops observation capture, consolidation, structured-fact recall, and timeline
+recall while preserving facts, observations, history, Knowledge content, and
+conversation history. Removing the active embedding binding atomically turns
+automatic memory off, so a later model binding never silently opts the owner
+back in. Owner-client `agent.memory.v1` operations expose config, revision,
+embedding readiness/model identity, bounded current facts, the append-only
+timeline, and pending/failed observation counters without secret material.
 Per-turn recall ranks current facts against the prompt, then adds a bounded
 recent timeline and exact-binding semantic Knowledge passages. This internal
 projection does not change the Message Server action envelope or make the

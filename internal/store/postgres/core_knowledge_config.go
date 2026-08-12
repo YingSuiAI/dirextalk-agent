@@ -101,6 +101,9 @@ func (r *CoreKnowledgeStore) EnsureEmbeddingConfig(ctx context.Context, config c
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('knowledge:embedding-config',0))`); err != nil {
 		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
 	}
+	if err = lockMemoryConfig(ctx, tx, false); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
 	now := time.Now().UTC()
 	_, err = tx.Exec(ctx, `INSERT INTO core_knowledge_embedding_config(singleton,embedding_profile_id,dimension,collection,collection_config_digest,revision,updated_at) VALUES(true,$1,$2,$3,$4,1,$5) ON CONFLICT(singleton) DO NOTHING`, config.EmbeddingProfileID, config.Dimension, config.Collection, digest, now)
 	if err != nil {
@@ -193,6 +196,9 @@ func (r *CoreKnowledgeStore) DisableEmbeddingProfile(ctx context.Context, profil
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('knowledge:embedding-config',0))`); err != nil {
 		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
 	}
+	if err = lockMemoryConfig(ctx, tx, false); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
 	current, err := r.loadEmbeddingConfig(ctx, tx.QueryRow(ctx, `SELECT embedding_profile_id::text,dimension,collection,collection_config_digest,revision,updated_at FROM core_knowledge_embedding_config WHERE singleton=true FOR UPDATE`))
 	if err != nil {
 		return coreknowledge.EmbeddingConfig{}, err
@@ -211,6 +217,9 @@ func (r *CoreKnowledgeStore) DisableEmbeddingProfile(ctx context.Context, profil
 		return coreknowledge.EmbeddingConfig{}, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_embedding_config SET embedding_profile_id=$1,revision=revision+1,updated_at=$2 WHERE singleton=true`, uuid.Nil, now); err != nil {
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_memory_configs SET enabled=false,revision=revision+1,updated_at=$1 WHERE singleton=true AND enabled=true`, now); err != nil {
 		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
 	}
 	current.EmbeddingProfileID = uuid.Nil.String()

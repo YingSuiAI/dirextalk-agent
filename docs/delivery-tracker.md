@@ -26,6 +26,12 @@ contract](message-server-integration-development-contract.md), and
   values confirm, changed values supersede with validity history, and explicit
   retractions close the active fact. Provider failures retry without rolling
   back the already committed conversation.
+- Structured conversation memory is owner opt-in and disabled on fresh state.
+  `agent.memory.v1` exposes the current toggle, embedding readiness/model,
+  revision, bounded facts, conflict timeline, and pending/failed observation
+  counters. Enabling without a configured embedding profile fails with a typed
+  precondition; disabling capture/recall preserves durable memory data, and
+  clearing the active embedding binding also turns the opt-in off.
 - Neutral `agent.chat.v1/stream_chat` now executes through the same durable
   conversation-turn ledger used by list, cancellation, replay, and recovery;
   its Capability operation identity is the public turn identity while the

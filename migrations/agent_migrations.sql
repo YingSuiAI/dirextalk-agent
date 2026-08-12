@@ -2456,3 +2456,34 @@ CREATE TABLE core_memory_timeline (
 );
 CREATE INDEX core_memory_timeline_recent_idx ON core_memory_timeline(occurred_at DESC,event_id);
 -- dirextalk-agent migration end 000013_structured_memory_v2.up.sql
+-- dirextalk-agent migration begin 000014_memory_controls.up.sql
+-- Automatic conversation memory is owner-configurable. Disabling capture and
+-- recall preserves facts, history, and queued observations for later reuse.
+CREATE TABLE core_memory_configs (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+    enabled boolean NOT NULL DEFAULT false,
+    revision bigint NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE TABLE core_memory_config_replays (
+    idempotency_key uuid PRIMARY KEY,
+    request_digest char(64) NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json)='object'),
+    created_at timestamptz NOT NULL
+);
+
+-- Timeline events own both clocks. occurred_at records when the Agent
+-- observed the change; effective_at records when the user said it took
+-- effect. Keeping the latter on the event avoids deriving confirmations and
+-- retractions from a fact's original valid_from value.
+ALTER TABLE core_memory_timeline
+    ADD COLUMN effective_at timestamptz;
+UPDATE core_memory_timeline timeline
+SET effective_at = fact.valid_from
+FROM core_memory_facts fact
+WHERE fact.fact_id = timeline.fact_id;
+ALTER TABLE core_memory_timeline
+    ALTER COLUMN effective_at SET NOT NULL;
+-- dirextalk-agent migration end 000014_memory_controls.up.sql

@@ -109,6 +109,15 @@ multi-tenant model.
   are retried with a bounded durable lease and never roll back the completed
   chat. Secrets, assistant assertions, transient requests, guesses, and
   sensitive inferences are excluded by the extraction contract.
+- Automatic structured conversation memory starts disabled. The owner-client
+  `agent.memory.v1/get_config`, `update_config`, and `status` operations use
+  revision fencing and UUID idempotency. Enabling requires the current
+  Knowledge embedding binding to resolve to a non-deleted embedding profile
+  with configured credentials. Disabling preserves facts and the complete
+  conflict timeline but returns an empty structured-memory recall and stops new
+  observations; semantic Knowledge and durable conversation history keep their
+  independent contracts. Timeline events publish separate RFC3339
+  `effective_at` and `observed_at` clocks.
 - Authenticated Native conversations also receive one Agent-owned, read-only
   `knowledge_search` model tool when Knowledge is enabled. It searches only
   ready sources with promoted bindings that match the active embedding

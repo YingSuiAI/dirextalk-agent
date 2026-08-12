@@ -11,6 +11,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreimagetool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
@@ -100,6 +101,7 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coreknowledge.ErrChecksumMismatch),
 		errors.Is(err, coreknowledge.ErrPathTraversal),
 		errors.Is(err, coreknowledge.ErrLimitExceeded),
+		errors.Is(err, corememory.ErrInvalid),
 		errors.Is(err, coreknowledge.ErrCursorConflict),
 		errors.Is(err, coretexttool.ErrInvalid),
 		errors.Is(err, coreimagetool.ErrInvalid),
@@ -137,6 +139,8 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coreknowledge.ErrIdempotencyConflict),
 		errors.Is(err, coreknowledge.ErrRevisionConflict),
 		errors.Is(err, coreknowledge.ErrSourceReferenced),
+		errors.Is(err, corememory.ErrRevisionConflict),
+		errors.Is(err, corememory.ErrIdempotencyConflict),
 		errors.Is(err, coretexttool.ErrRevisionConflict),
 		errors.Is(err, coretexttool.ErrIdempotencyConflict),
 		errors.Is(err, corewebsearch.ErrRevisionConflict),
@@ -152,7 +156,13 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coretexttool.ErrToolDisabled),
 		errors.Is(err, coreimagetool.ErrDisabled),
 		errors.Is(err, corewebsearch.ErrNotConfigured),
-		errors.Is(err, corewebsearch.ErrDisabled):
+		errors.Is(err, corewebsearch.ErrDisabled),
+		errors.Is(err, corememory.ErrEmbeddingNotConfigured):
+		// Automatic conversation memory requires a configured embedding model
+		// before the owner may enable it.
+		if errors.Is(err, corememory.ErrEmbeddingNotConfigured) {
+			return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Configure an embedding model before enabling memory", err)
+		}
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent configuration is not ready", err)
 	case errors.Is(err, coretask.ErrTerminal), errors.Is(err, coretask.ErrTimedOut):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent task cannot be changed in its current state", err)
@@ -170,6 +180,7 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coretexttool.ErrRepository),
 		errors.Is(err, coreimagetool.ErrRepository), errors.Is(err, coreimagetool.ErrModel),
 		errors.Is(err, corewebsearch.ErrRepository),
+		errors.Is(err, corememory.ErrRepository),
 		errors.Is(err, corewebsearch.ErrProvider):
 		return capabilityoperation.NewFailure("UNAVAILABLE", "Agent dependency is unavailable", err)
 	default:
