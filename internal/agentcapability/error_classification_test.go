@@ -8,6 +8,7 @@ import (
 
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -48,6 +49,32 @@ func TestClassifyCapabilityErrorMapsProductGRPCStatus(t *testing.T) {
 				t.Fatal("classified failure did not retain its internal cause")
 			}
 		})
+	}
+}
+
+func TestClassifyCapabilityErrorPublishesStableExtensionAdmissionCodes(t *testing.T) {
+	tests := []struct {
+		err         error
+		wantCode    string
+		wantMessage string
+		wantDetail  string
+	}{
+		{coreextension.ErrInstallBusy, "PRECONDITION_FAILED", capabilityoperation.ExtensionInstallBusyMessage, "extension_install_busy"},
+		{coreextension.ErrInstallationLimit, "RESOURCE_EXHAUSTED", capabilityoperation.ExtensionInstallationLimitMessage, "extension_installation_limit"},
+		{coreextension.ErrNodeStorageQuota, "RESOURCE_EXHAUSTED", capabilityoperation.ExtensionNodeStorageQuotaMessage, "extension_node_storage_quota"},
+	}
+	for _, test := range tests {
+		classified := classifyCapabilityError(test.err)
+		code, message, ok := capabilityoperation.FailureDetails(classified)
+		if !ok || code != test.wantCode || message != test.wantMessage || !errors.Is(classified, test.err) {
+			t.Fatalf("error=%v code=%q message=%q classified=%v ok=%v", test.err, code, message, classified, ok)
+		}
+		if details := capabilityoperation.SafeFailureDetails(code, message); details["code"] != test.wantDetail {
+			t.Fatalf("error=%v safe details=%v", test.err, details)
+		}
+		if strings.Contains(classified.Error(), test.err.Error()) {
+			t.Fatalf("safe extension failure leaked raw sentinel %q", classified.Error())
+		}
 	}
 }
 

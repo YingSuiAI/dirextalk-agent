@@ -334,6 +334,115 @@ func TestUninstallUsesActiveVersionAndClearsVersions(t *testing.T) {
 		t.Fatalf("uninstall: %#v %v", out, err)
 	}
 }
+
+func TestUninstallReconstructsActiveVersionRejectsPoisonAndReplaysRawRequest(t *testing.T) {
+	r := NewMemoryRepository()
+	c1, i1 := testInspection(t, KindMCP, SourceOfficialRegistry)
+	d1 := strings.Repeat("1", 64)
+	c1.Pin = SourcePin{RegistryVersion: "1.0.0", RegistrySHA256: d1}
+	i1 = versionedInspection(i1, c1, d1)
+	v1 := Mutation{IdempotencyKey: uuid.NewString(), Candidate: c1, Inspection: i1, ArtifactPath: d1, ArtifactDigest: d1, ArtifactCleanupToken: uuid.NewString()}
+	installedRequest, err := r.CreateMutation(context.Background(), v1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = completeInstall(t, r, installedRequest, true)
+
+	current, _ := r.Get(context.Background(), installedRequest.Installation.ID)
+	c2 := c1
+	d2 := strings.Repeat("2", 64)
+	c2.Pin = SourcePin{RegistryVersion: "2.0.0", RegistrySHA256: d2}
+	i2 := versionedInspection(i1, c2, d2)
+	v2 := Mutation{IdempotencyKey: uuid.NewString(), InstallationID: current.ID, ExpectedRevision: current.Revision, Candidate: c2, Inspection: i2, ArtifactPath: d2, ArtifactDigest: d2, ArtifactCleanupToken: uuid.NewString()}
+	update2, err := r.UpdateMutation(context.Background(), v2, StateUpdating)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeMemoryLifecycle(t, r, update2, OperationUpdate, true)
+
+	current, _ = r.Get(context.Background(), current.ID)
+	c3 := c1
+	d3 := strings.Repeat("3", 64)
+	c3.Pin = SourcePin{RegistryVersion: "3.0.0", RegistrySHA256: d3}
+	i3 := versionedInspection(i1, c3, d3)
+	v3 := Mutation{IdempotencyKey: uuid.NewString(), InstallationID: current.ID, ExpectedRevision: current.Revision, Candidate: c3, Inspection: i3, ArtifactPath: d3, ArtifactDigest: d3, ArtifactCleanupToken: uuid.NewString()}
+	update3, err := r.UpdateMutation(context.Background(), v3, StateUpdating)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeMemoryLifecycle(t, r, update3, OperationUpdate, false)
+	current, _ = r.Get(context.Background(), current.ID)
+	active := current.Versions[1]
+	if active.VersionID != current.ActiveVersionID || active.Pin.RegistryVersion != "2.0.0" {
+		t.Fatalf("failed v3 changed active version: %+v", current)
+	}
+
+	poison := Mutation{IdempotencyKey: uuid.NewString(), InstallationID: current.ID, ExpectedRevision: current.Revision, ArtifactDigest: strings.Repeat("f", 64), SecretInputs: []SecretInput{{ReferenceID: uuid.NewString(), Purpose: SecretPurposeMCPCredential, Value: "must-not-stage"}}}
+	if _, err = r.RemoveMutation(context.Background(), poison); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("poisoned uninstall err=%v", err)
+	}
+	afterPoison, _ := r.Get(context.Background(), current.ID)
+	if afterPoison.Revision != current.Revision || afterPoison.State != current.State {
+		t.Fatalf("poisoned uninstall mutated projection: %+v", afterPoison)
+	}
+
+	raw := Mutation{IdempotencyKey: uuid.NewString(), InstallationID: current.ID, ExpectedRevision: current.Revision}
+	uninstall, err := r.RemoveMutation(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := r.RemoveMutation(context.Background(), raw)
+	if err != nil || replay.TaskID != uninstall.TaskID {
+		t.Fatalf("raw replay=%+v err=%v", replay, err)
+	}
+	changed := raw
+	changed.ArtifactDigest = strings.Repeat("e", 64)
+	if _, err = r.RemoveMutation(context.Background(), changed); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("changed replay err=%v", err)
+	}
+	stale := raw
+	stale.IdempotencyKey = uuid.NewString()
+	if _, err = r.RemoveMutation(context.Background(), stale); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("stale uninstall err=%v", err)
+	}
+	record, _ := r.GetLifecycleRecord(context.Background(), current.ID)
+	if record.Binding.SourceVersion != "2.0.0" || string(record.Binding.ContentDigest) != d2 {
+		t.Fatalf("uninstall binding did not use v2: %+v", record.Binding)
+	}
+	authoritative := mutationForUninstall(raw, current)
+	if authoritative.ArtifactPath != active.ArtifactPath || authoritative.ArtifactDigest != active.ArtifactDigest || authoritative.ArtifactCleanupToken != active.ArtifactCleanupToken || authoritative.NodeArtifact != nil || authoritative.Inspection.SecretGrants == nil && active.SecretGrants != nil {
+		t.Fatalf("authoritative uninstall mutation=%+v active=%+v", authoritative, active)
+	}
+}
+
+func versionedInspection(base Inspection, candidate Candidate, digest string) Inspection {
+	base.Candidate = candidate
+	base.ContentDigest, base.ManifestDigest, base.ExecutionDigest = digest, digest, digest
+	base.NetworkSchemaDigest, base.SecretSchemaDigest = digest, digest
+	base.Execution = ExecutionDescriptor{Stdio: &StaticEntry{RelativePath: "bin/run", Digest: digest, Argv: []string{"run"}}}
+	return base
+}
+
+func completeMemoryLifecycle(t *testing.T, r *MemoryRepository, result MutationResult, operation string, success bool) Installation {
+	t.Helper()
+	record, err := r.GetLifecycleRecord(context.Background(), result.Installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = r.ConfirmLifecycle(context.Background(), coreconfirmation.ConfirmCommand{ConfirmationID: result.ConfirmationID, IdempotencyKey: uuid.NewString(), ExpectedRevision: 1, Binding: record.Binding}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetTaskFence(coreconfirmation.TaskFence{TaskID: result.TaskID, State: "running", Attempt: 1, LeaseEpoch: 1, Revision: 2})
+	if _, err = r.ConsumeLifecycle(context.Background(), coreconfirmation.ConsumeCommand{ConfirmationID: result.ConfirmationID, IdempotencyKey: uuid.NewString(), TaskID: result.TaskID, Attempt: 1, LeaseEpoch: 1, ExpectedRevision: 2, ExpectedTaskRevision: 2, Binding: record.Binding}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetTerminalTaskFence(result.TaskID, 1, 2, 3)
+	out, err := r.CompleteLifecycle(context.Background(), Completion{InstallationID: result.Installation.ID, Operation: operation, ConfirmationID: result.ConfirmationID, TaskID: result.TaskID, Attempt: 1, LeaseEpoch: 1, AcquiredTaskRevision: 2, TerminalAttempt: 1, TerminalLeaseEpoch: 2, TerminalTaskRevision: 3, ExpectedRevision: result.Installation.Revision, OutcomeDigest: strings.Repeat("c", 64), Success: success})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
 func TestCandidateIdentityDescriptionMismatchRejected(t *testing.T) {
 	r := NewMemoryRepository()
 	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)

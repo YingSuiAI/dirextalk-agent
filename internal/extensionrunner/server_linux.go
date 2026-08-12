@@ -48,6 +48,8 @@ type Server struct {
 	Runner             Runner
 	Registry           *RunRegistry
 	PublicationRoot    string
+	NodeBuilder        *NodeOfflineBuilder
+	NodeInstallSlots   chan struct{}
 }
 type UnixListener interface {
 	AcceptUnix() (*net.UnixConn, error)
@@ -112,6 +114,9 @@ func (s Server) ServeV2(ctx context.Context) error {
 	defer cancelServe()
 	connectionSlots := make(chan struct{}, serverMaxConnections)
 	executionSlots := make(chan struct{}, serverMaxExecutions)
+	if s.NodeBuilder != nil && s.NodeInstallSlots == nil {
+		s.NodeInstallSlots = make(chan struct{}, 1)
+	}
 	var connections sync.WaitGroup
 	listenerCloserDone := make(chan struct{})
 	go func() {
@@ -200,6 +205,33 @@ func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn, execu
 			return
 		case "publish_v1":
 			resp := s.publish(packet, fds)
+			_ = conn.SetWriteDeadline(time.Now().Add(serverSocketWriteTimeout))
+			writePublicationResponse(conn, resp, -1)
+			return
+		case "build_node_v1":
+			resp := s.buildNode(ctx, packet, fds)
+			_ = conn.SetWriteDeadline(time.Now().Add(serverSocketWriteTimeout))
+			writePublicationResponse(conn, resp, -1)
+			return
+		case "promote_node_v1":
+			if len(fds) != 0 {
+				return
+			}
+			resp, promoteErr := s.promoteNode(packet)
+			if promoteErr != nil {
+				return
+			}
+			_ = conn.SetWriteDeadline(time.Now().Add(serverSocketWriteTimeout))
+			writePublicationResponse(conn, resp, -1)
+			return
+		case "remove_node_v1":
+			if len(fds) != 0 {
+				return
+			}
+			resp, removeErr := s.removeNode(packet)
+			if removeErr != nil {
+				return
+			}
 			_ = conn.SetWriteDeadline(time.Now().Add(serverSocketWriteTimeout))
 			writePublicationResponse(conn, resp, -1)
 			return
@@ -312,6 +344,9 @@ func (s Server) ready(ctx context.Context) bool {
 		if resolver.SharedGID == 0 || resolver.SharedGID != s.SharedWorkspaceGID || !safeSharedRunnerRoot(resolver.Root, resolver.SharedGID) {
 			return false
 		}
+	}
+	if s.NodeBuilder != nil && (!safeRunnerRoot(s.NodeBuilder.PreparedRoot) || !safeRunnerRoot(s.NodeBuilder.PublicationRoot) || !safeNodeRuntimeRoot(s.NodeBuilder.RuntimeRoot) || s.NodeInstallSlots == nil || cap(s.NodeInstallSlots) != 1) {
+		return false
 	}
 	return true
 }

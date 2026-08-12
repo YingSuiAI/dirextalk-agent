@@ -2313,3 +2313,93 @@ ALTER TABLE core_conversation_turns
     ADD CONSTRAINT core_conversation_turns_dispatch_state_check
         CHECK (dispatch_state IN ('','dispatched','completed','uncertain'));
 -- dirextalk-agent migration end 000008_cloud_worker_progress_events.up.sql
+-- dirextalk-agent migration begin 000009_static_site_releases.up.sql
+-- Static pages are immutable single-file releases. The model never supplies
+-- these identities or paths; the Agent derives them from the durable turn and
+-- records the verified filesystem receipt before committing the turn.
+CREATE TABLE core_static_site_releases (
+    release_id uuid PRIMARY KEY,
+    site_id uuid NOT NULL,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    conversation_id uuid NOT NULL,
+    turn_id uuid NOT NULL UNIQUE REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    request_id uuid NOT NULL UNIQUE,
+    public_path text NOT NULL UNIQUE,
+    content_sha256 char(64) NOT NULL CHECK (content_sha256 ~ '^[a-f0-9]{64}$'),
+    size_bytes bigint NOT NULL CHECK (size_bytes BETWEEN 1 AND 196608),
+    created_at timestamptz NOT NULL,
+    CHECK (public_path = '/.sites/' || site_id::text || '/' || release_id::text || '/')
+);
+CREATE INDEX core_static_site_releases_owner_idx
+    ON core_static_site_releases(owner_id, account_generation, created_at DESC, release_id);
+CREATE INDEX core_static_site_releases_site_idx
+    ON core_static_site_releases(site_id, created_at DESC, release_id);
+-- dirextalk-agent migration end 000009_static_site_releases.up.sql
+-- dirextalk-agent migration begin 000010_builtin_skill_seeds.up.sql
+-- A seed record is a durable one-time decision, not an execution fallback.
+-- Removing the linked installation leaves this row in place so restart never
+-- silently reinstalls a Skill the owner removed.
+CREATE TABLE core_builtin_skill_seeds (
+    candidate_id text PRIMARY KEY CHECK (length(candidate_id) BETWEEN 1 AND 128),
+    registry_version text NOT NULL CHECK (length(registry_version) BETWEEN 1 AND 64),
+    content_digest char(64) NOT NULL CHECK (content_digest ~ '^[a-f0-9]{64}$'),
+    artifact_digest char(64) NOT NULL CHECK (artifact_digest ~ '^[a-f0-9]{64}$'),
+    installation_id uuid NOT NULL UNIQUE REFERENCES core_extension_installations(installation_id) ON DELETE RESTRICT,
+    seeded_at timestamptz NOT NULL
+);
+-- dirextalk-agent migration end 000010_builtin_skill_seeds.up.sql
+-- dirextalk-agent migration begin 000011_managed_node_mcp_quotas.up.sql
+-- Managed Node MCP artifact facts are relational so promotion can enforce
+-- durable quotas without trusting or parsing caller-owned JSON.
+ALTER TABLE core_extension_versions
+    ADD COLUMN artifact_bytes bigint NOT NULL DEFAULT 0 CHECK (artifact_bytes BETWEEN 0 AND 67108864),
+    ADD COLUMN file_count integer NOT NULL DEFAULT 0 CHECK (file_count BETWEEN 0 AND 8192),
+	ADD COLUMN lifecycle_scripts_disabled boolean NOT NULL DEFAULT false,
+    ADD COLUMN native_addons_absent boolean NOT NULL DEFAULT false,
+    ADD COLUMN published_at timestamptz,
+    ADD CONSTRAINT core_extension_versions_node_artifact_shape_check CHECK (
+		(artifact_bytes = 0 AND file_count = 0 AND lifecycle_scripts_disabled = false AND native_addons_absent = false)
+        OR
+		(artifact_bytes BETWEEN 1 AND 67108864 AND file_count BETWEEN 1 AND 8192 AND lifecycle_scripts_disabled = true AND native_addons_absent = true)
+    );
+CREATE INDEX core_extension_versions_node_quota_idx
+    ON core_extension_versions(published_at, installation_id)
+    WHERE published_at IS NOT NULL AND artifact_bytes > 0;
+-- Retired active Node references are removed only after the lifecycle commit.
+-- The cleanup token is the durable ABA fence understood by the runner.
+CREATE TABLE core_extension_node_artifact_cleanup (
+    cleanup_id uuid PRIMARY KEY,
+    installation_id uuid NOT NULL REFERENCES core_extension_installations(installation_id) ON DELETE RESTRICT,
+    version_id uuid NOT NULL REFERENCES core_extension_versions(version_id) ON DELETE RESTRICT,
+    artifact_digest char(64) NOT NULL CHECK (artifact_digest ~ '^[a-f0-9]{64}$'),
+    cleanup_token uuid NOT NULL,
+    installation_revision bigint NOT NULL CHECK (installation_revision > 0),
+    version_json jsonb NOT NULL CHECK (jsonb_typeof(version_json) = 'object' AND pg_column_size(version_json) <= 262144),
+    state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','running','succeeded','failed')),
+    attempt integer NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+    next_attempt_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    last_error text NOT NULL DEFAULT '' CHECK (length(last_error) <= 4096),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    completed_at timestamptz,
+    UNIQUE (installation_id,version_id,artifact_digest,cleanup_token)
+);
+CREATE INDEX core_extension_node_artifact_cleanup_due_idx
+    ON core_extension_node_artifact_cleanup(state,next_attempt_at,cleanup_id);
+-- dirextalk-agent migration end 000011_managed_node_mcp_quotas.up.sql
+-- dirextalk-agent migration begin 000012_managed_node_prepared_cleanup.up.sql
+-- Failed, rejected, and expired managed Node proposals live in the runner's
+-- prepared root, not Agent staging. Persist the cleanup-token ABA fence and
+-- immutable version receipt so a restarted cleaner can remove the exact
+-- prepared generation through the same authenticated runner boundary.
+ALTER TABLE core_extension_artifact_cleanup
+    ADD COLUMN cleanup_token uuid,
+    ADD COLUMN node_artifact boolean NOT NULL DEFAULT false,
+    ADD COLUMN version_json jsonb,
+    ADD CONSTRAINT core_extension_artifact_cleanup_node_shape_check CHECK (
+        (node_artifact = false AND cleanup_token IS NULL AND version_json IS NULL)
+        OR
+        (node_artifact = true AND cleanup_token IS NOT NULL AND jsonb_typeof(version_json) = 'object' AND pg_column_size(version_json) <= 262144)
+    );
+-- dirextalk-agent migration end 000012_managed_node_prepared_cleanup.up.sql

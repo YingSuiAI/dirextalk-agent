@@ -132,6 +132,10 @@ services:
       - "65532"
       - --install-root
       - /var/lib/dirextalk-agent/extension-install
+      - --prepared-root
+      - /var/lib/dirextalk-agent/extension-install/.prepared
+      - --node-runtime-root
+      - /usr/local/libexec/dirextalk-node-runtime
       - --workspace-root
       - /var/lib/dirextalk-agent/extension-workspaces
       - --cgroup-root
@@ -175,6 +179,9 @@ services:
       - >-
         chown ${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}:${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID} /install /state;
         chmod 0700 /install /state;
+        mkdir -p /install/.prepared;
+        chown ${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}:${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID} /install/.prepared;
+        chmod 0700 /install/.prepared;
         chown ${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}:65532 /workspace;
         chmod 0770 /workspace
     volumes:

@@ -70,7 +70,7 @@ func (r *PostgresExtensionToolRuntime) discoverTools(ctx context.Context, i core
 		return r.local.ListTools(ctx, execution.LocalInvocation{
 			TaskID: i.ID, TaskFence: fence, InstallationID: i.ID, VersionID: v.VersionID,
 			InstallDigest: v.ArtifactDigest, ContentDigest: v.ContentDigest, ArtifactDigest: v.ArtifactDigest,
-			EntryPath: v.Execution.Stdio.RelativePath, Argv: append([]string(nil), v.Execution.Stdio.Argv...),
+			EntryPath: v.Execution.Stdio.RelativePath, EntrySHA256: v.Execution.Stdio.Digest, Runtime: v.Execution.Stdio.Runtime, Argv: append([]string(nil), v.Execution.Stdio.Argv...),
 			Workspace: filepath.Join(r.coord.WorkspaceRoot, i.ID), Timeout: 30 * time.Second,
 			Limits: execution.LocalSandboxLimitsV2(), Secrets: secretBindings(i.ID, v.VersionID, v),
 		})

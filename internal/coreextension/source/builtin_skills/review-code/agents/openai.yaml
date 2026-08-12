@@ -1,0 +1,3 @@
+interface:
+  display_name: "Review Code"
+  short_description: "Find concrete correctness, security, and reliability issues"

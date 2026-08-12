@@ -14,6 +14,7 @@ import (
 const (
 	maxV2ResultFiles              = 128
 	v2StatusDiagnosticReserveByte = 4 << 10 // per stream, after base64 encoding budget is checked below
+	sandboxRootAnchorPrefix       = ".dirextalk-sandbox-root-"
 )
 
 // RequestV2 is the only request understood by the deployed seqpacket server.
@@ -26,7 +27,9 @@ type RequestV2 struct {
 	TaskID        string     `json:"task_id"`
 	TaskFence     string     `json:"task_fence"`
 	InstallDigest string     `json:"install_digest"`
+	Runtime       string     `json:"runtime,omitempty"`
 	Entry         string     `json:"entry"`
+	EntrySHA256   string     `json:"entry_sha256,omitempty"`
 	Argv          []string   `json:"argv"`
 	Stdin         *FDRef     `json:"stdin,omitempty"`
 	Secrets       []SecretFD `json:"secrets,omitempty"`
@@ -67,7 +70,18 @@ func ValidateRequestV2(r RequestV2) error {
 			return ErrInvalid
 		}
 	}
-	if !digestRE.MatchString(r.InstallDigest) || r.Entry != "entry" || len(r.Argv) > 128 || len(r.ResultFiles) > maxV2ResultFiles || r.TimeoutMS <= 0 || r.TimeoutMS > 24*60*60*1000 || !validLimitsV2(r.Limits) {
+	if !digestRE.MatchString(r.InstallDigest) || len(r.Argv) > 128 || len(r.ResultFiles) > maxV2ResultFiles || r.TimeoutMS <= 0 || r.TimeoutMS > 24*60*60*1000 || !validLimitsV2(r.Limits) {
+		return ErrInvalid
+	}
+	if r.Runtime == "" {
+		if r.Entry != "entry" || r.EntrySHA256 != "" {
+			return ErrInvalid
+		}
+	} else if r.Runtime == "node" {
+		if !safeRelativeSlash(r.Entry) || !digestRE.MatchString(r.EntrySHA256) {
+			return ErrInvalid
+		}
+	} else {
 		return ErrInvalid
 	}
 	for _, a := range r.Argv {
@@ -77,7 +91,7 @@ func ValidateRequestV2(r RequestV2) error {
 	}
 	seenResults := map[string]bool{}
 	for _, p := range r.ResultFiles {
-		if !safeRelativeSlash(p) || seenResults[p] {
+		if !safeRelativeSlash(p) || sandboxReservedResultPath(p) || seenResults[p] {
 			return ErrInvalid
 		}
 		seenResults[p] = true
@@ -141,6 +155,11 @@ func validateFDRef(f FDRef) error {
 }
 func safeRelativeSlash(p string) bool {
 	return p != "" && !strings.ContainsAny(p, "\\\x00") && !strings.HasPrefix(p, "/") && path.Clean(p) == p && p != "." && p != ".." && !strings.HasPrefix(p, "../")
+}
+
+func sandboxReservedResultPath(p string) bool {
+	first, _, _ := strings.Cut(p, "/")
+	return strings.HasPrefix(first, sandboxRootAnchorPrefix)
 }
 
 func ValidateFDSet(r RequestV2, fdCount int) error {

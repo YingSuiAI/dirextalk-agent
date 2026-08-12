@@ -32,7 +32,7 @@ func collectResultFilesFD(workspaceFD int, registered []string, maxTotalBytes in
 	var totalBytes int64
 	var result error
 	for _, rel := range registered {
-		if !safeRelativeSlash(rel) {
+		if !safeRelativeSlash(rel) || sandboxReservedResultPath(rel) {
 			if requireAll {
 				return files, ErrInvalid
 			}

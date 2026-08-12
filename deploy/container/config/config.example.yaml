@@ -22,6 +22,11 @@ core_extension_staging_root: /var/lib/dirextalk-agent/extension-staging
 core_extension_workspace_root: /var/lib/dirextalk-agent/extension-workspaces
 core_extension_runner_socket: /run/dirextalk-agent/extension-runner.sock
 core_extension_runner_uid: 65531
+# Optional single-file static-site publication. The host provisioner owns this
+# bind mount; Agent writes immutable releases beneath public/, while Caddy sees
+# only that public subtree read-only at /.sites/.
+core_static_sites_enabled: false
+# core_static_sites_root: /var/lib/dirextalk-agent/static-sites
 # Keep disabled until the core-runner service has a private socket and genuinely
 # delegated cgroup-v2 subtree. Runner UID is 65530; Agent UID is 65532.
 # A failed runner nonce/full readiness probe keeps workload.core_runner absent.

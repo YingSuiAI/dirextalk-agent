@@ -56,16 +56,22 @@ func TestPeerDisconnectCancelsRunContext(t *testing.T) {
 func TestSandboxBootstrapMustBeCanonicalAndSealed(t *testing.T) {
 	request := sandboxRequest()
 	value := bootstrapV1{
-		Request:     request,
-		SecretCount: 0,
-		HasStdin:    false,
-		RootDev:     1,
-		RootIno:     2,
-		EntryDev:    3,
-		EntryIno:    4,
-		EntryMode:   unix.S_IFREG | 0o555,
-		EntrySize:   12,
-		EntrySHA256: DigestBytes([]byte("entry")),
+		Request:        request,
+		SecretCount:    0,
+		HasStdin:       false,
+		RootDev:        1,
+		RootIno:        2,
+		EntryDev:       3,
+		EntryIno:       4,
+		EntryMode:      unix.S_IFREG | 0o555,
+		EntrySize:      12,
+		EntrySHA256:    DigestBytes([]byte("entry")),
+		RootTargetName: sandboxRootTargetName(request.RunID),
+		RootTargetDev:  9,
+		RootTargetIno:  10,
+		RootTargetMode: unix.S_IFDIR,
+		TargetRootDev:  11,
+		TargetRootIno:  12,
 	}
 	body, err := json.Marshal(value)
 	if err != nil {
@@ -108,6 +114,8 @@ func TestCoreSandboxBootstrapBindsManagerIdentity(t *testing.T) {
 	value := bootstrapV1{
 		Request: request, RootDev: 1, RootIno: 2, EntryDev: 3, EntryIno: 4,
 		EntryMode: unix.S_IFREG | 0o555, EntrySize: 12, EntrySHA256: DigestBytes([]byte("entry")),
+		RootTargetName: sandboxRootTargetName(request.RunID), RootTargetDev: 9, RootTargetIno: 10,
+		RootTargetMode: unix.S_IFDIR, TargetRootDev: 11, TargetRootIno: 12,
 		ManagerBase: "dirextalk-core-runner", ManagerRootDev: 5, ManagerRootIno: 6,
 		ManagerDev: 7, ManagerIno: 8, ManagerMode: unix.S_IFREG | 0o555,
 		ManagerSize: 13, ManagerSHA256: DigestBytes([]byte("manager")), CoreTmpfsBytes: 1 << 20,

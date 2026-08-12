@@ -29,7 +29,7 @@ func main() {
 	}
 	if len(os.Args) == 2 && os.Args[1] == "__sandbox-child-v1" {
 		if err := extensionrunner.SandboxChildV1(); err != nil {
-			die("sandbox child failed")
+			die(extensionrunner.SandboxFailureDiagnostic(err))
 		}
 		return
 	}

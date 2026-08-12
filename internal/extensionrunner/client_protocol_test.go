@@ -2,6 +2,7 @@ package extensionrunner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -98,5 +99,18 @@ func TestRunnerRejectsSixHundredResultFilesBeforeExecution(t *testing.T) {
 	status, err := (Runner{}).RunV2(context.Background(), request, nil, NewRunRegistry())
 	if err == nil || status.Error != ErrorInvalidRequest {
 		t.Fatalf("oversize result registration reached execution: status=%+v err=%v", status, err)
+	}
+}
+
+func TestRequestRejectsSandboxRootAnchorAsResult(t *testing.T) {
+	for _, result := range []string{
+		sandboxRootAnchorPrefix + "11111111-1111-4111-8111-111111111111",
+		sandboxRootAnchorPrefix + "11111111-1111-4111-8111-111111111111/result",
+	} {
+		request := clientProtocolRequest()
+		request.ResultFiles = []string{result}
+		if err := ValidateRequestV2(request); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("reserved result %q error = %v, want ErrInvalid", result, err)
+		}
 	}
 }

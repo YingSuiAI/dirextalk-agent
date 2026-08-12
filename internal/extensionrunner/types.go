@@ -60,6 +60,9 @@ type V2Backend interface {
 type InstallResolver interface {
 	ResolveInstall(string) (*AdmittedInstall, error)
 }
+type NodeInstallResolver interface {
+	ResolveNodeInstall(digest, entryPath, entrySHA256 string) (*AdmittedInstall, error)
+}
 type WorkspaceResolver interface {
 	ResolveWorkspace(taskID, taskFence string) (int, error)
 }

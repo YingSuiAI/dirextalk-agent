@@ -12,7 +12,8 @@ contract](message-server-integration-development-contract.md), and
 - Core-only `dirextalk-agent` entrypoint with `migrate` and `serve`.
 - TLS 1.3 gRPC authentication, health/reflection, capability discovery, and
   PostgreSQL-backed profiles, conversations, Tasks, events, schedules,
-  confirmations, and fenced recovery.
+  confirmations, and fenced recovery. The private outbound Product Capability
+  mTLS client explicitly bypasses ambient HTTP(S) proxy settings.
 - Provider-backed model catalog and durable Eino conversation/Task execution.
 - Native Chat/StreamChat and durable StartTurn now include the current prompt
   in the provider request and perform first-conversation long-term-memory
@@ -42,6 +43,11 @@ contract](message-server-integration-development-contract.md), and
   declares exactly one
   header-free `streamable-http` endpoint; other header or transport shapes
   fail closed because the current runtime cannot reproduce them losslessly.
+- Four immutable, network-free Dirextalk built-in Skills use the existing
+  extension installation model. Fresh state seeds them once; removal remains
+  removed across restart, while explicit reinstall continues through the
+  reviewed confirmation lifecycle. GitHub and skills.sh remain available as
+  separately pinned external sources.
 - Knowledge mounts, uploads, memory, indexing, semantic-search composition,
   and the bounded read-only `knowledge_search` Native conversation tool.
   Semantic generations now use pgvector inside Agent PostgreSQL with exact

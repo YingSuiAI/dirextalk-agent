@@ -16,7 +16,7 @@ import (
 )
 
 func (s *CoreExtensionStore) CreateMutation(ctx context.Context, m coreextension.Mutation) (coreextension.MutationResult, error) {
-	if m.Candidate.Validate() != nil || m.Inspection.Validate() != nil || m.Candidate.ID != m.Inspection.Candidate.ID || uuid.Validate(m.IdempotencyKey) != nil {
+	if m.Candidate.Validate() != nil || m.Inspection.Validate() != nil || m.Candidate.ID != m.Inspection.Candidate.ID || uuid.Validate(m.IdempotencyKey) != nil || m.ValidateArtifactReceipt() != nil {
 		return coreextension.MutationResult{}, coreextension.ErrInvalid
 	}
 	if err := validateSecretInputsPG(m); err != nil {
@@ -34,6 +34,10 @@ func (s *CoreExtensionStore) CreateMutation(ctx context.Context, m coreextension
 	return out, nil
 }
 func (s *CoreExtensionStore) UpdateMutation(ctx context.Context, m coreextension.Mutation, state coreextension.State) (coreextension.MutationResult, error) {
+	return s.updateMutation(ctx, m, state)
+}
+
+func (s *CoreExtensionStore) updateMutation(ctx context.Context, m coreextension.Mutation, state coreextension.State, requestDigest ...string) (coreextension.MutationResult, error) {
 	if uuid.Validate(m.InstallationID) != nil || m.ExpectedRevision < 1 {
 		return coreextension.MutationResult{}, coreextension.ErrInvalid
 	}
@@ -45,6 +49,9 @@ func (s *CoreExtensionStore) UpdateMutation(ctx context.Context, m coreextension
 		return coreextension.MutationResult{}, coreextension.ErrRevisionConflict
 	}
 	if state == coreextension.StateUpdating {
+		if m.ValidateArtifactReceipt() != nil {
+			return coreextension.MutationResult{}, coreextension.ErrInvalid
+		}
 		if err := validateSecretInputsPG(m); err != nil {
 			return coreextension.MutationResult{}, err
 		}
@@ -58,11 +65,15 @@ func (s *CoreExtensionStore) UpdateMutation(ctx context.Context, m coreextension
 	cur.Revision++
 	cur.State = state
 	cur.UpdatedAt = time.Now().UTC()
-	return s.request(ctx, m.IdempotencyKey, opForPG(state), cur, m)
+	return s.request(ctx, m.IdempotencyKey, opForPG(state), cur, m, requestDigest...)
 }
 func (s *CoreExtensionStore) RemoveMutation(ctx context.Context, m coreextension.Mutation) (coreextension.MutationResult, error) {
-	if uuid.Validate(m.InstallationID) != nil {
-		return coreextension.MutationResult{}, coreextension.ErrInvalid
+	rawDigest := digestPG(m, coreextension.OperationUninstall)
+	if replay, found, err := s.extensionMutationReplay(ctx, coreextension.OperationUninstall, m.IdempotencyKey, rawDigest); found || err != nil {
+		return replay, err
+	}
+	if err := m.ValidateUninstallRequest(); err != nil {
+		return coreextension.MutationResult{}, err
 	}
 	current, err := s.Get(ctx, m.InstallationID)
 	if err != nil {
@@ -75,11 +86,77 @@ func (s *CoreExtensionStore) RemoveMutation(ctx context.Context, m coreextension
 			}
 		}
 	}
-	return s.UpdateMutation(ctx, m, coreextension.StateUninstalling)
+	m = mutationForUninstallPG(m, current)
+	if m.Inspection.Validate() != nil || m.ValidateArtifactReceipt() != nil {
+		return coreextension.MutationResult{}, coreextension.ErrConflict
+	}
+	result, err := s.updateMutation(ctx, m, coreextension.StateUninstalling, rawDigest)
+	if err != nil {
+		if replay, found, replayErr := s.extensionMutationReplay(ctx, coreextension.OperationUninstall, m.IdempotencyKey, rawDigest); found || replayErr != nil {
+			return replay, replayErr
+		}
+	}
+	return result, err
+}
+
+// mutationForUninstallPG binds confirmation to the authoritative active
+// version. The public uninstall request intentionally carries only the
+// installation identity and revision, so an empty caller inspection must
+// never become a stale/invalid confirmation binding.
+func mutationForUninstallPG(m coreextension.Mutation, current coreextension.Installation) coreextension.Mutation {
+	for _, version := range current.Versions {
+		if version.VersionID != current.ActiveVersionID {
+			continue
+		}
+		m.Candidate = coreextension.Candidate{ID: current.CandidateID, Kind: current.Kind, Source: current.Source, Name: current.Name, Description: current.Description, Pin: version.Pin, Transport: current.Transport}
+		m.Inspection = coreextension.Inspection{
+			Candidate: m.Candidate, ContentDigest: version.ContentDigest, ManifestDigest: version.ManifestDigest,
+			ExecutionDigest: version.ExecutionDigest, NetworkSchemaDigest: version.NetworkSchemaDigest,
+			SecretSchemaDigest: version.SecretSchemaDigest, Execution: version.Execution,
+			NetworkGrants: append([]coreextension.NetworkGrant(nil), version.NetworkGrants...),
+			SecretGrants:  append([]coreextension.SecretGrantDescriptor(nil), version.SecretGrants...),
+		}
+		m.ArtifactPath, m.ArtifactDigest = version.ArtifactPath, version.ArtifactDigest
+		m.ArtifactCleanupToken = version.ArtifactCleanupToken
+		if version.NodeArtifact != nil {
+			receipt := *version.NodeArtifact
+			m.NodeArtifact = &receipt
+		}
+		break
+	}
+	return m
+}
+
+func (s *CoreExtensionStore) extensionMutationReplay(ctx context.Context, operation, key, requestDigest string) (coreextension.MutationResult, bool, error) {
+	if s == nil || s.store == nil || uuid.Validate(key) != nil {
+		return coreextension.MutationResult{}, false, coreextension.ErrInvalid
+	}
+	var storedDigest string
+	var raw []byte
+	err := s.store.pool.QueryRow(ctx, `SELECT request_hash,response_json FROM core_extension_replays WHERE operation=$1 AND idempotency_key=$2`, operation, key).Scan(&storedDigest, &raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coreextension.MutationResult{}, false, nil
+	}
+	if err != nil {
+		return coreextension.MutationResult{}, false, err
+	}
+	if storedDigest != requestDigest {
+		return coreextension.MutationResult{}, false, coreextension.ErrIdempotencyConflict
+	}
+	var result coreextension.MutationResult
+	if json.Unmarshal(raw, &result) != nil {
+		return coreextension.MutationResult{}, false, coreextension.ErrConflict
+	}
+	return result, true, nil
 }
 
 func (s *CoreExtensionStore) hasPinnedVersion(ctx context.Context, installationID, versionID, artifactDigest string) bool {
-	rows, err := s.store.pool.Query(ctx, `SELECT s.snapshot_json FROM core_task_execution_snapshots s JOIN core_tasks t ON t.task_id=s.task_id WHERE t.deleted_at IS NULL`)
+	// Only a task that can still execute owns an artifact pin. Terminal
+	// snapshots remain durable audit evidence, but cannot be retried in place.
+	rows, err := s.store.pool.Query(ctx, `SELECT s.snapshot_json
+		FROM core_task_execution_snapshots s
+		JOIN core_tasks t ON t.task_id=s.task_id
+		WHERE t.deleted_at IS NULL AND t.status IN ('queued','running','waiting_user')`)
 	if err != nil {
 		return true
 	}
@@ -102,8 +179,11 @@ func (s *CoreExtensionStore) hasPinnedVersion(ctx context.Context, installationI
 	return rows.Err() != nil
 }
 
-func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i coreextension.Installation, m coreextension.Mutation) (coreextension.MutationResult, error) {
+func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i coreextension.Installation, m coreextension.Mutation, requestDigest ...string) (coreextension.MutationResult, error) {
 	d := digestPG(m, op)
+	if len(requestDigest) > 0 {
+		d = requestDigest[0]
+	}
 	tx, e := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if e != nil {
 		return coreextension.MutationResult{}, fmt.Errorf("insert extension installation: %w", e)
@@ -131,6 +211,31 @@ func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i core
 		return coreextension.MutationResult{}, fmt.Errorf("extension replay lookup: %w", e)
 	}
 	e = nil
+	if op == coreextension.OperationInstall || op == coreextension.OperationUpdate {
+		if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `core_extension_install_quota`); e != nil {
+			return coreextension.MutationResult{}, fmt.Errorf("extension install quota lock: %w", e)
+		}
+		var installActive bool
+		if e = tx.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM core_extension_lifecycles
+			WHERE operation IN ('install','update')
+			  AND state NOT IN ('succeeded','failed','canceled','expired')
+		)`).Scan(&installActive); e != nil {
+			return coreextension.MutationResult{}, fmt.Errorf("extension install admission: %w", e)
+		}
+		if installActive {
+			return coreextension.MutationResult{}, coreextension.ErrInstallBusy
+		}
+		if op == coreextension.OperationInstall {
+			var installationCount int
+			if e = tx.QueryRow(ctx, `SELECT COUNT(*) FROM core_extension_installations WHERE state NOT IN ('removed','failed')`).Scan(&installationCount); e != nil {
+				return coreextension.MutationResult{}, fmt.Errorf("extension installation quota: %w", e)
+			}
+			if installationCount >= coreextension.MaxInstallations {
+				return coreextension.MutationResult{}, coreextension.ErrInstallationLimit
+			}
+		}
+	}
 	var activeLifecycle bool
 	if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_extension_lifecycles WHERE installation_id=$1 AND state NOT IN ('succeeded','failed','canceled','expired'))`, i.ID).Scan(&activeLifecycle); e != nil {
 		return coreextension.MutationResult{}, e
@@ -228,7 +333,7 @@ func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i core
 			}
 		}
 	}
-	payloadObj := coretask.TaskPayload{Extension: &coretask.ExtensionTaskPayload{Operation: coretask.ExtensionOperation(op), InstallationID: i.ID, ExpectedRevision: uint64(i.Revision), Version: versionID, Digest: digest, ConfirmationID: cid.String()}}
+	payloadObj := coretask.TaskPayload{Extension: &coretask.ExtensionTaskPayload{Operation: coretask.ExtensionOperation(op), InstallationID: i.ID, ExpectedRevision: uint64(i.Revision), Version: versionID, Digest: digest, ArtifactDigest: m.ArtifactDigest, ConfirmationID: cid.String()}}
 	payload, _ := json.Marshal(payloadObj)
 	if _, e = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,model_profile_id,create_idempotency_key,task_kind,payload_json,status,available_at,revision,created_at,updated_at) VALUES($1,$2,NULL,$3,'extension',$4,'waiting_user',$5,1,$5,$5)`, taskID, b.Task.Goal, key, payload, time.Now().UTC()); e != nil {
 		return coreextension.MutationResult{}, fmt.Errorf("insert extension task: %w", e)

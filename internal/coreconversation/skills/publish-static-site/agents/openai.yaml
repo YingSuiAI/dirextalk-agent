@@ -1,0 +1,4 @@
+interface:
+  display_name: "静态页面设计"
+  short_description: "生成并发布安全、美观、响应式的单文件静态 HTML 页面"
+  default_prompt: "根据用户内容设计自包含、响应式、无脚本的静态 HTML 页面，并通过 static_site_publish 发布。"

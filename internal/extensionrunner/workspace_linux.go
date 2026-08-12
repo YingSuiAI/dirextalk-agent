@@ -94,7 +94,7 @@ func CleanupWorkspaceFD(rootFD int, baseline workspaceSnapshot, keep []string, m
 		protectParents(path)
 	}
 	for _, path := range keep {
-		if !safeRelativeSlash(path) {
+		if !safeRelativeSlash(path) || sandboxReservedResultPath(path) {
 			return ErrInvalid
 		}
 		protectParents(path)

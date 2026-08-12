@@ -5,6 +5,9 @@ package extensionrunner
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +19,7 @@ import (
 
 func TestUnavailableAtUsesSafeStableStages(t *testing.T) {
 	for _, stage := range []string{
-		"validate/probe", "child_start", "release",
+		"validate_probe", "child_start", "release", "root_target_cleanup",
 		"cgroup_create", "cgroup_memory", "cgroup_swap", "cgroup_oom", "cgroup_pids", "cgroup_cpu", "cgroup_attach",
 	} {
 		t.Run(stage, func(t *testing.T) {
@@ -32,6 +35,112 @@ func TestUnavailableAtUsesSafeStableStages(t *testing.T) {
 	}
 }
 
+func TestAvailabilityStageIsTypedAndRejectsRuntimeDetail(t *testing.T) {
+	err := errors.Join(errors.New("outer"), unavailableAt("sandbox_wait_manager-hide_denied"))
+	stage, ok := AvailabilityStage(err)
+	if !ok || stage != "sandbox_wait_manager-hide_denied" || !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("stage=%q ok=%v err=%v", stage, ok, err)
+	}
+	unsafe := unavailableAt("/run/secrets/private")
+	stage, ok = AvailabilityStage(unsafe)
+	if !ok || stage != "unavailable" {
+		t.Fatalf("unsafe stage=%q ok=%v", stage, ok)
+	}
+	if strings.Contains(unsafe.Error(), "/run/") || strings.Contains(unsafe.Error(), "private") {
+		t.Fatalf("unsafe availability error leaked detail: %q", unsafe)
+	}
+}
+
+func TestCoreSandboxWaitErrorUsesOnlyAllowlistedChildStage(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stderr string
+		want   string
+	}{
+		{name: "empty", stderr: "", want: "sandbox_wait"},
+		{name: "generic", stderr: "sandbox child failed\n", want: "sandbox_wait"},
+		{name: "manager stage", stderr: "manager-hide:denied\n", want: "sandbox_wait_manager-hide_denied"},
+		{name: "raw prefix safe final", stderr: "raw /private/path\nmanager-hide:denied\n", want: "sandbox_wait_manager-hide_denied"},
+		{name: "safe final before blank lines", stderr: "raw /private/path\nmanager-hide:denied\n\n \t\n", want: "sandbox_wait_manager-hide_denied"},
+		{name: "unknown", stderr: "unknown:permission\n", want: "sandbox_wait"},
+		{name: "unknown final", stderr: "manager-hide:denied\nunknown:permission\n", want: "sandbox_wait"},
+		{name: "generic final", stderr: "manager-hide:denied\nsandbox child failed\n", want: "sandbox_wait"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := coreSandboxWaitError([]byte(tc.stderr), errors.New("raw /private/path"))
+			stage, ok := AvailabilityStage(err)
+			if !ok || stage != tc.want {
+				t.Fatalf("stage=%q ok=%v err=%v", stage, ok, err)
+			}
+			if strings.Contains(err.Error(), "private") || strings.Contains(err.Error(), "secret") {
+				t.Fatalf("core wait error leaked runtime detail: %q", err)
+			}
+		})
+	}
+}
+
+func TestSandboxFinalWaitStageUsesOnlyLastNonEmptyAllowlistedDiagnostic(t *testing.T) {
+	for _, tc := range []struct {
+		stderr string
+		want   string
+	}{
+		{"", "sandbox_wait"},
+		{"\n\t\n", "sandbox_wait"},
+		{"sandbox child failed\n", "sandbox_wait"},
+		{"raw /private/path\nmanager-hide:denied\n", "sandbox_wait_manager-hide_denied"},
+		{"raw /private/path\nmanager-hide:denied\n\n \t\n", "sandbox_wait_manager-hide_denied"},
+		{"manager-hide:denied\nunknown:permission\n", "sandbox_wait"},
+	} {
+		if got := sandboxFinalWaitStage([]byte(tc.stderr)); got != tc.want {
+			t.Fatalf("sandboxFinalWaitStage(%q) = %q, want %q", tc.stderr, got, tc.want)
+		}
+	}
+}
+
+func TestCoreSandboxWaitErrorPreservesTypedCleanupStage(t *testing.T) {
+	source := errors.Join(errors.New("child failed"), unavailableAt("cgroup_empty"))
+	err := coreSandboxWaitError([]byte("manager-hide:denied\n"), source)
+	stage, ok := AvailabilityStage(err)
+	if !ok || stage != "cgroup_empty" {
+		t.Fatalf("stage=%q ok=%v err=%v", stage, ok, err)
+	}
+}
+
+func TestWaitSandboxControlAcceptsOnlyMountedSignal(t *testing.T) {
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fds[0])
+	defer unix.Close(fds[1])
+	if _, err := unix.Write(fds[0], []byte{sandboxControlMounted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitSandboxControl(context.Background(), fds[1], sandboxControlMounted); err != nil {
+		t.Fatalf("mounted signal rejected: %v", err)
+	}
+	if _, err := unix.Write(fds[0], []byte{sandboxControlRelease}); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitSandboxControl(context.Background(), fds[1], sandboxControlMounted); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("wrong control signal error = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestWaitSandboxControlHonorsCancelledContext(t *testing.T) {
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fds[0])
+	defer unix.Close(fds[1])
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitSandboxControl(ctx, fds[1], sandboxControlMounted); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled control wait error = %v", err)
+	}
+}
+
 func TestReadinessStagesContainNoRuntimeDetail(t *testing.T) {
 	for _, stage := range []string{
 		"probe_context", "cgroup_root", "cgroup_filesystem", "cgroup_controllers", "cgroup_delegation",
@@ -39,6 +148,7 @@ func TestReadinessStagesContainNoRuntimeDetail(t *testing.T) {
 		"probe_child_start", "probe_cgroup_attach", "probe_child_wait", "probe_cgroup_empty", "probe_cgroup_remove",
 		"sandbox_root", "sandbox_install_root", "sandbox_workspace_root", "sandbox_executable", "sandbox_entry",
 		"sandbox_publish", "sandbox_admit", "sandbox_workspace", "sandbox_identity", "sandbox_request", "sandbox_start", "sandbox_wait",
+		"root_target",
 	} {
 		err := unavailableAt(stage)
 		if !errors.Is(err, ErrUnavailable) {
@@ -58,10 +168,13 @@ func TestSandboxProbeWaitStageAllowsOnlyFixedChildDiagnostics(t *testing.T) {
 		want   string
 	}{
 		{"app-clone:permission\n", "sandbox_wait_app-clone_permission"},
+		{"root-bind:invalid\n", "sandbox_wait_root-bind_invalid"},
+		{"root-verify:denied\n", "sandbox_wait_root-verify_denied"},
 		{"map-namespace:unsupported", "sandbox_wait_map-namespace_unsupported"},
 		{"app-clone:/private/path", "sandbox_wait"},
 		{"unknown:permission", "sandbox_wait"},
 		{"app-clone:permission\nsecret", "sandbox_wait"},
+		{"raw /private/path\nmanager-hide:denied\n", "sandbox_wait"},
 	} {
 		if got := sandboxProbeWaitStage([]byte(tc.stderr)); got != tc.want {
 			t.Fatalf("sandboxProbeWaitStage(%q) = %q, want %q", tc.stderr, got, tc.want)
@@ -110,6 +223,57 @@ func TestCoreCgroupLimitsIncludeTrustedManagerOverhead(t *testing.T) {
 	}
 	if core.MemoryBytes != base.MemoryBytes+coreManagerMemoryOverheadBytes || core.Processes != base.Processes+coreManagerProcessOverhead {
 		t.Fatalf("core limits = %+v", core)
+	}
+}
+
+func TestSandboxReadinessBudgetCoversGoReexecStartup(t *testing.T) {
+	if sandboxProbeMemoryBytes < 64<<20 || sandboxProbeProcesses < 16 || sandboxProbeTimeoutMS < 5000 {
+		t.Fatalf("sandbox probe budget too small: memory=%d processes=%d timeout_ms=%d", sandboxProbeMemoryBytes, sandboxProbeProcesses, sandboxProbeTimeoutMS)
+	}
+}
+
+func TestStartPrerequisitesRejectCancelledContextBeforeMutation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := (LinuxBackend{CgroupRoot: "/sys/fs/cgroup"}).validateCgroupPrerequisites(ctx)
+	stage, ok := AvailabilityStage(err)
+	if !ok || stage != "probe_context" {
+		t.Fatalf("cancelled prerequisite stage=%q ok=%v err=%v", stage, ok, err)
+	}
+}
+
+func TestStartV2DoesNotRepeatTheActiveSandboxProbe(t *testing.T) {
+	parsed, err := parser.ParseFile(token.NewFileSet(), "backend_linux.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundStart, foundPrerequisites := false, false
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "StartV2" || function.Recv == nil {
+			continue
+		}
+		foundStart = true
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			switch selector.Sel.Name {
+			case "Probe":
+				t.Fatal("StartV2 repeated the active sandbox Probe")
+			case "validateCgroupPrerequisites":
+				foundPrerequisites = true
+			}
+			return true
+		})
+	}
+	if !foundStart || !foundPrerequisites {
+		t.Fatalf("StartV2 contract not found: start=%t prerequisites=%t", foundStart, foundPrerequisites)
 	}
 }
 

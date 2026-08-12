@@ -44,6 +44,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
+	"github.com/YingSuiAI/dirextalk-agent/internal/staticsite"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
@@ -142,6 +143,14 @@ func serveCore(cfg config.Config) error {
 	conversation, err := coreconversation.NewService(conversationStore, modelRunner, nil, coreconversation.AdaptProfileResolver(profiles))
 	if err != nil {
 		return fmt.Errorf("initialize conversation service: %w", err)
+	}
+	if cfg.CoreStaticSitesEnabled {
+		publisher, publisherErr := staticsite.NewPublisher(cfg.CoreStaticSitesRoot)
+		if publisherErr != nil {
+			return fmt.Errorf("initialize static-site publisher: %w", publisherErr)
+		}
+		conversation.SetStaticSitePublisher(publisher)
+		slog.Info("dirextalk-agent static-site publisher ready", "public_path", "/.sites/")
 	}
 	conversationService, err := rpcapi.NewCoreConversationService(conversation)
 	if err != nil {

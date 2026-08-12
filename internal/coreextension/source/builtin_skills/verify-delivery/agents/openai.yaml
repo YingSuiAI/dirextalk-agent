@@ -1,0 +1,3 @@
+interface:
+  display_name: "Verify Delivery"
+  short_description: "Turn requirements into evidence-backed acceptance checks"

@@ -26,9 +26,12 @@ type scheduleIntrinsicArguments struct {
 }
 
 func (s *Service) resolveIntrinsicTools(ctx context.Context, lease TurnLease) ([]ResolvedIntrinsic, error) {
-	tools := make([]ResolvedIntrinsic, 0, 2)
+	tools := make([]ResolvedIntrinsic, 0, 3)
 	if schedules, ok := s.turns.(ConversationScheduleStore); ok && strings.TrimSpace(lease.Turn.OwnerID) != "" && lease.Turn.AccountGeneration != 0 {
 		tools = append(tools, scheduleIntrinsic(schedules, lease))
+	}
+	if sites, ok := s.turns.(ConversationStaticSiteStore); ok && s.staticSites != nil && strings.TrimSpace(lease.Turn.OwnerID) != "" && lease.Turn.AccountGeneration != 0 {
+		tools = append(tools, staticSiteIntrinsic(sites, s.staticSites, lease))
 	}
 	if s.intrinsics != nil {
 		external, err := s.intrinsics.ResolveIntrinsicTools(ctx, lease)

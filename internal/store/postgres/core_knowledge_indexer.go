@@ -41,7 +41,13 @@ func (i *KnowledgeIndexer) currentBindingTx(ctx context.Context, tx pgx.Tx) (str
 	if i.configReader != nil {
 		if err := tx.QueryRow(ctx, `SELECT embedding_profile_id::text,collection_config_digest FROM core_knowledge_embedding_config WHERE singleton=true FOR SHARE`).Scan(&profileID, &configDigest); errors.Is(err, pgx.ErrNoRows) {
 			return "", "", 0, coreknowledge.ErrNotFound
-		} else if err != nil || !coretask.ValidUUID(profileID) || len(configDigest) != 64 {
+		} else if err != nil || len(configDigest) != 64 {
+			return "", "", 0, coreknowledge.ErrConflict
+		}
+		if profileID == uuid.Nil.String() {
+			return "", "", 0, coreknowledge.ErrNotFound
+		}
+		if !coretask.ValidUUID(profileID) {
 			return "", "", 0, coreknowledge.ErrConflict
 		}
 	}
@@ -55,7 +61,7 @@ func (i *KnowledgeIndexer) currentBindingTx(ctx context.Context, tx pgx.Tx) (str
 }
 
 func NewKnowledgeIndexer(store *Store, embeddingProfileID, collectionConfigDigest string) (*KnowledgeIndexer, error) {
-	if store == nil || !coretask.ValidUUID(embeddingProfileID) || len(collectionConfigDigest) != 64 {
+	if store == nil || (embeddingProfileID != uuid.Nil.String() && !coretask.ValidUUID(embeddingProfileID)) || len(collectionConfigDigest) != 64 {
 		return nil, coreknowledge.ErrInvalid
 	}
 	if _, err := hex.DecodeString(strings.ToLower(collectionConfigDigest)); err != nil || strings.ToLower(collectionConfigDigest) != collectionConfigDigest {

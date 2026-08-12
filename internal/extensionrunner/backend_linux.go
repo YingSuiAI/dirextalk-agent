@@ -35,6 +35,9 @@ type LinuxBackend struct {
 	// filesystem because container overlayfs directories cannot be open_tree
 	// cloned on every supported kernel.
 	ManagerRoot string
+	// NodeRuntimeRoot is the immutable, image-bundled Node/npm tree. It is
+	// mounted read-only only for managed Node requests.
+	NodeRuntimeRoot string
 	// ReexecPath is a trusted integration seam. Production leaves it empty and
 	// always re-executes /proc/self/exe.
 	ReexecPath string
@@ -43,17 +46,101 @@ type LinuxBackend struct {
 const (
 	coreManagerMemoryOverheadBytes int64 = 32 << 20
 	coreManagerProcessOverhead     int64 = 8
+	sandboxMountHandshakeTimeout         = 5 * time.Second
+	sandboxProbeMemoryBytes        int64 = 64 << 20
+	sandboxProbeProcesses          int64 = 16
+	sandboxProbeTimeoutMS          int64 = 5000
 )
+
+type availabilityError struct{ stage string }
+
+func (e availabilityError) Error() string {
+	return fmt.Sprintf("extension runner unavailable at %s: %s", e.stage, ErrUnavailable)
+}
+func (e availabilityError) Unwrap() error { return ErrUnavailable }
 
 // unavailableAt keeps Linux isolation diagnostics low-cardinality and safe to
 // return to trusted local callers. It deliberately excludes paths, errno, and
 // underlying OS error text.
 func unavailableAt(stage string) error {
-	return fmt.Errorf("extension runner unavailable at %s: %w", stage, ErrUnavailable)
+	if !safeAvailabilityStage(stage) {
+		stage = "unavailable"
+	}
+	return availabilityError{stage: stage}
 }
 
-func (b LinuxBackend) Probe(ctx context.Context) error {
+// AvailabilityStage exposes only the redacted, low-cardinality stage carried
+// by this package's typed availability errors. Callers must never recover a
+// stage by parsing Error strings.
+func AvailabilityStage(err error) (string, bool) {
+	var target availabilityError
+	if !errors.As(err, &target) || !safeAvailabilityStage(target.stage) {
+		return "", false
+	}
+	return target.stage, true
+}
+
+func safeAvailabilityStage(stage string) bool {
+	if stage == "" || len(stage) > 160 {
+		return false
+	}
+	for _, r := range stage {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func waitSandboxControl(ctx context.Context, fd int, want byte) error {
+	if ctx == nil || fd < 0 {
+		return ErrUnavailable
+	}
+	deadline := time.Now().Add(sandboxMountHandshakeTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return context.DeadlineExceeded
+		}
+		timeout := 100 * time.Millisecond
+		if remaining < timeout {
+			timeout = remaining
+		}
+		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN | unix.POLLHUP | unix.POLLERR}}
+		n, err := unix.Poll(poll, int((timeout+time.Millisecond-1)/time.Millisecond))
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			continue
+		}
+		var message [1]byte
+		read, err := unix.Read(fd, message[:])
+		if err != nil {
+			return err
+		}
+		if read != 1 || message[0] != want {
+			return ErrUnavailable
+		}
+		return nil
+	}
+}
+
+func (b LinuxBackend) validateCgroupPrerequisites(ctx context.Context) error {
 	if ctx == nil {
+		return unavailableAt("probe_context")
+	}
+	if err := ctx.Err(); err != nil {
 		return unavailableAt("probe_context")
 	}
 	if b.CgroupRoot == "" || !filepath.IsAbs(b.CgroupRoot) {
@@ -72,6 +159,14 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 			return unavailableAt("cgroup_delegation")
 		}
 	}
+	return nil
+}
+
+func (b LinuxBackend) Probe(ctx context.Context) error {
+	if err := b.validateCgroupPrerequisites(ctx); err != nil {
+		return err
+	}
+	var e error
 	nameBytes := make([]byte, 16)
 	if _, e = rand.Read(nameBytes); e != nil {
 		return unavailableAt("probe_identity")
@@ -172,7 +267,7 @@ func (b LinuxBackend) probeSandbox(ctx context.Context) error {
 	if err != nil {
 		return unavailableAt("sandbox_identity")
 	}
-	request := RequestV2{RunID: runID, TaskID: taskID, TaskFence: fence, InstallDigest: manifestDigest, Entry: "entry", Argv: []string{"entry", "__sandbox-probe-v1"}, TimeoutMS: 2000, Limits: LimitsV2{CPUSeconds: 1, MemoryBytes: 16 << 20, Processes: 8, FileBytes: 16 << 20, OpenFiles: 64}}
+	request := RequestV2{RunID: runID, TaskID: taskID, TaskFence: fence, InstallDigest: manifestDigest, Entry: "entry", Argv: []string{"entry", "__sandbox-probe-v1"}, TimeoutMS: sandboxProbeTimeoutMS, Limits: LimitsV2{CPUSeconds: 2, MemoryBytes: sandboxProbeMemoryBytes, Processes: sandboxProbeProcesses, FileBytes: 16 << 20, OpenFiles: 64}}
 	if err := ValidateRequestV2(request); err != nil {
 		return unavailableAt("sandbox_request")
 	}
@@ -180,7 +275,17 @@ func (b LinuxBackend) probeSandbox(ctx context.Context) error {
 	if err != nil {
 		return unavailableAt("sandbox_start")
 	}
-	if _, stderr, _, err := process.Wait(); err != nil {
+	waitCtx, cancelWait := context.WithTimeout(ctx, time.Duration(request.TimeoutMS)*time.Millisecond)
+	defer cancelWait()
+	var stderr []byte
+	if waiter, ok := process.(interface {
+		WaitContext(context.Context) ([]byte, []byte, string, error)
+	}); ok {
+		_, stderr, _, err = waiter.WaitContext(waitCtx)
+	} else {
+		_, stderr, _, err = process.Wait()
+	}
+	if err != nil {
 		return unavailableAt(sandboxProbeWaitStage(stderr))
 	}
 	return nil
@@ -192,21 +297,50 @@ func sandboxProbeWaitStage(stderr []byte) string {
 	if strings.Count(value, ":") != 1 {
 		return fallback
 	}
+	stage, cause, ok := parseSandboxChildDiagnostic(value)
+	if !ok {
+		return fallback
+	}
+	return fallback + "_" + stage + "_" + cause
+}
+
+func sandboxFinalWaitStage(stderr []byte) string {
+	const fallback = "sandbox_wait"
+	lines := strings.Split(string(stderr), "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		value := strings.TrimSpace(lines[index])
+		if value == "" {
+			continue
+		}
+		stage, cause, ok := parseSandboxChildDiagnostic(value)
+		if !ok {
+			return fallback
+		}
+		return fallback + "_" + stage + "_" + cause
+	}
+	return fallback
+}
+
+func parseSandboxChildDiagnostic(value string) (string, string, bool) {
+	if strings.Count(value, ":") != 1 {
+		return "", "", false
+	}
 	stage, cause, _ := strings.Cut(value, ":")
 	switch stage {
-	case "bootstrap", "descriptors", "release", "null", "map-fs", "map-namespace", "map-root", "map-pwd", "map-verify",
-		"mounts", "root-tmpfs", "root-remount", "layout", "app-clone", "app-bind", "app-remount",
+	case "bootstrap", "descriptors", "release", "mount-ready", "null", "map-fs", "map-namespace", "mount-private", "map-root", "map-pwd", "map-verify",
+		"mounts", "root-target", "root-tmpfs", "root-bind", "root-verify", "root-remount", "layout", "app-clone", "app-bind", "app-remount",
+		"runtime-clone", "runtime-bind", "runtime-remount",
 		"work-clone", "work-bind", "work-remount", "work-tmpfs", "manager-clone", "manager-bind", "manager-remount",
 		"manager", "manager-hide", "manager-release", "hide-scratch", "hide-remount", "secrets-tmpfs", "secrets-copy", "secrets-remount",
 		"root-switch", "stdin", "rlimits", "capabilities", "no-new-privs", "seccomp", "close-fds", "command", "exec", "result-export":
 	default:
-		return fallback
+		return "", "", false
 	}
 	switch cause {
 	case "denied", "permission", "missing", "busy", "invalid", "unsupported", "other":
-		return fallback + "_" + stage + "_" + cause
+		return stage, cause, true
 	default:
-		return fallback
+		return "", "", false
 	}
 }
 
@@ -328,6 +462,14 @@ type bootstrapV1 struct {
 	EntryMode      uint32    `json:"entry_mode"`
 	EntrySize      int64     `json:"entry_size"`
 	EntrySHA256    string    `json:"entry_sha256"`
+	RootTargetName string    `json:"root_target_name"`
+	RootTargetDev  uint64    `json:"root_target_dev"`
+	RootTargetIno  uint64    `json:"root_target_ino"`
+	RootTargetMode uint32    `json:"root_target_mode"`
+	TargetRootDev  uint64    `json:"target_root_dev"`
+	TargetRootIno  uint64    `json:"target_root_ino"`
+	RuntimeRootDev uint64    `json:"runtime_root_dev,omitempty"`
+	RuntimeRootIno uint64    `json:"runtime_root_ino,omitempty"`
 	ManagerBase    string    `json:"manager_base"`
 	ManagerRootDev uint64    `json:"manager_root_dev"`
 	ManagerRootIno uint64    `json:"manager_root_ino"`
@@ -341,13 +483,21 @@ type bootstrapV1 struct {
 }
 
 func (b LinuxBackend) StartV2(ctx context.Context, inv SandboxInvocationV2) (Process, error) {
-	if b.Probe(ctx) != nil || inv.Install == nil || inv.WorkspaceFD < 0 {
-		return nil, unavailableAt("validate/probe")
+	// Active readiness is owned by the runner startup/operation boundary. Do not
+	// launch a second disposable sandbox inside every real StartV2: the actual
+	// cgroup creation, namespace handshake and mount construction below already
+	// fail closed. Retain this non-mutating cgroup-v2 prerequisite check so a
+	// direct caller can never execute against an ordinary directory.
+	if err := b.validateCgroupPrerequisites(ctx); err != nil {
+		return nil, err
+	}
+	if inv.Install == nil || inv.WorkspaceFD < 0 {
+		return nil, unavailableAt("validate_probe")
 	}
 	return b.startV2(ctx, inv)
 }
 
-func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Process, error) {
+func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (process Process, retErr error) {
 	self := b.ReexecPath
 	if self == "" {
 		self = "/proc/self/exe"
@@ -367,6 +517,16 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		return nil, unavailableAt("reexec")
 	}
 	var managerRoot, managerFD int = -1, -1
+	var runtimeRoot int = -1
+	var runtimeStat unix.Stat_t
+	if inv.Request.Runtime == "node" {
+		var runtimeErr error
+		runtimeRoot, runtimeStat, runtimeErr = openNodeRuntimeRoot(b.NodeRuntimeRoot)
+		if runtimeErr != nil {
+			return nil, unavailableAt("node_runtime")
+		}
+		defer unix.Close(runtimeRoot)
+	}
 	var managerBase, managerDigest string
 	var managerRootStat, managerStat unix.Stat_t
 	var managerErr error
@@ -378,6 +538,16 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		defer unix.Close(managerRoot)
 		defer unix.Close(managerFD)
 	}
+	sandboxTarget, err := createSandboxRootTarget(inv.Request.RunID)
+	if err != nil {
+		return nil, unavailableAt("root_target")
+	}
+	defer func() {
+		if sandboxTarget != nil {
+			retErr = errors.Join(retErr, sandboxTarget.cleanup())
+			sandboxTarget.close()
+		}
+	}()
 	bs, err := json.Marshal(bootstrapV1{
 		Request:        inv.Request,
 		SecretCount:    len(inv.SecretFDs),
@@ -389,6 +559,14 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		EntryMode:      inv.Install.EntryMode,
 		EntrySize:      inv.Install.EntrySize,
 		EntrySHA256:    inv.Install.EntrySHA256,
+		RootTargetName: sandboxTarget.name,
+		RootTargetDev:  uint64(sandboxTarget.target.Dev),
+		RootTargetIno:  sandboxTarget.target.Ino,
+		RootTargetMode: sandboxTarget.target.Mode,
+		TargetRootDev:  uint64(sandboxTarget.parent.Dev),
+		TargetRootIno:  sandboxTarget.parent.Ino,
+		RuntimeRootDev: uint64(runtimeStat.Dev),
+		RuntimeRootIno: runtimeStat.Ino,
 		ManagerBase:    managerBase,
 		ManagerRootDev: uint64(managerRootStat.Dev),
 		ManagerRootIno: managerRootStat.Ino,
@@ -408,20 +586,21 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		return nil, unavailableAt("bootstrap")
 	}
 	defer unix.Close(boot)
-	releaseR, releaseW, err := os.Pipe()
+	controlFDs, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return nil, unavailableAt("release_pipe")
 	}
-	defer releaseW.Close()
+	childControl := os.NewFile(uintptr(controlFDs[0]), "sandbox-control-child")
+	parentControl := os.NewFile(uintptr(controlFDs[1]), "sandbox-control-parent")
+	defer childControl.Close()
+	defer parentControl.Close()
 	root, err := inv.Install.DupRootFD()
 	if err != nil {
-		releaseR.Close()
 		return nil, unavailableAt("install_fd")
 	}
 	defer unix.Close(root)
 	entry, err := inv.Install.DupEntryFD()
 	if err != nil {
-		releaseR.Close()
 		return nil, unavailableAt("install_fd")
 	}
 	defer unix.Close(entry)
@@ -449,16 +628,22 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	for _, item := range []struct {
 		fd   int
 		name string
-	}{{boot, "bootstrap"}, {int(releaseR.Fd()), "release"}, {root, "install"}, {entry, "entry"}, {inv.WorkspaceFD, "workspace"}} {
+	}{{boot, "bootstrap"}, {int(childControl.Fd()), "control"}, {root, "install"}, {entry, "entry"}, {inv.WorkspaceFD, "workspace"}} {
 		f, e := extra(item.fd, item.name)
 		if e != nil {
-			releaseR.Close()
 			for _, x := range files {
 				_ = x.Close()
 			}
 			return nil, unavailableAt("extra_files")
 		}
 		files = append(files, f)
+	}
+	if inv.Request.Runtime == "node" {
+		runtimeFile, e := extra(runtimeRoot, "node-runtime")
+		if e != nil {
+			return nil, unavailableAt("node_runtime")
+		}
+		files = append(files, runtimeFile)
 	}
 	if inv.CoreTmpfsBytes > 0 {
 		manager, e := extra(managerRoot, "manager-root")
@@ -480,7 +665,6 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	if inv.StdinFD >= 0 {
 		f, e := extra(inv.StdinFD, "stdin")
 		if e != nil {
-			releaseR.Close()
 			for _, x := range files {
 				_ = x.Close()
 			}
@@ -491,7 +675,6 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	for _, fd := range inv.SecretFDs {
 		f, e := extra(fd, "secret")
 		if e != nil {
-			releaseR.Close()
 			for _, x := range files {
 				_ = x.Close()
 			}
@@ -519,10 +702,9 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	cmd.Stdout = &out
 	cmd.Stderr = &er
 	if err = cmd.Start(); err != nil {
-		releaseR.Close()
 		return nil, unavailableAt("child_start")
 	}
-	releaseR.Close()
+	_ = childControl.Close()
 	cg := filepath.Join(b.CgroupRoot, inv.Request.RunID)
 	if err = setupCgroup(cg, cgroupLimits, cmd.Process.Pid); err != nil {
 		_ = unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0)
@@ -530,7 +712,7 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		_ = unix.Close(pidfd)
 		return nil, err
 	}
-	if _, err = releaseW.Write([]byte{1}); err != nil {
+	if _, err = parentControl.Write([]byte{sandboxControlRelease}); err != nil {
 		ops := defaultCgroupOps()
 		killErr := killCgroup(ops, cg)
 		if killErr != nil {
@@ -540,8 +722,41 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		_ = unix.Close(pidfd)
 		return nil, errors.Join(unavailableAt("release"), killErr, cleanupSetupCgroup(ops, cg))
 	}
-	_ = releaseW.Close()
-	process := &reexecProcess{
+	if err = waitSandboxControl(ctx, int(parentControl.Fd()), sandboxControlMounted); err != nil {
+		ops := defaultCgroupOps()
+		killErr := killCgroup(ops, cg)
+		if killErr != nil {
+			_ = unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0)
+		}
+		_ = cmd.Wait()
+		_ = unix.Close(pidfd)
+		return nil, errors.Join(unavailableAt(sandboxProbeWaitStage(er.Snapshot())), killErr, cleanupSetupCgroup(ops, cg))
+	}
+	if err = sandboxTarget.cleanup(); err != nil {
+		ops := defaultCgroupOps()
+		killErr := killCgroup(ops, cg)
+		if killErr != nil {
+			_ = unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0)
+		}
+		_ = cmd.Wait()
+		_ = unix.Close(pidfd)
+		retryErr := sandboxTarget.cleanup()
+		return nil, errors.Join(unavailableAt("root_target_cleanup"), err, retryErr, killErr, cleanupSetupCgroup(ops, cg))
+	}
+	sandboxTarget.close()
+	sandboxTarget = nil
+	if _, err = parentControl.Write([]byte{sandboxControlContinue}); err != nil {
+		ops := defaultCgroupOps()
+		killErr := killCgroup(ops, cg)
+		if killErr != nil {
+			_ = unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0)
+		}
+		_ = cmd.Wait()
+		_ = unix.Close(pidfd)
+		return nil, errors.Join(unavailableAt("release"), killErr, cleanupSetupCgroup(ops, cg))
+	}
+	_ = parentControl.Close()
+	reexec := &reexecProcess{
 		cmd:           cmd,
 		pidfd:         pidfd,
 		cgroup:        cg,
@@ -553,7 +768,8 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		cpuBudgetUsec: uint64(inv.Request.Limits.CPUSeconds) * 1_000_000,
 		cgroupOps:     defaultCgroupOps(),
 	}
-	go process.monitorCPU()
+	process = reexec
+	go reexec.monitorCPU()
 	return process, nil
 }
 
@@ -1046,8 +1262,9 @@ func (p *reexecProcess) WaitContext(ctx context.Context) ([]byte, []byte, string
 	case <-ctx.Done():
 		killErr := p.KillGroup()
 		<-p.waitDone
-		if errors.Is(errors.Join(killErr, p.waitErr), errCgroupCleanup) {
-			return p.waitResult(errors.Join(killErr, p.waitErr))
+		joined := errors.Join(killErr, p.waitErr)
+		if errors.Is(joined, errCgroupCleanup) {
+			return p.waitResult(joined)
 		}
 		return p.out.Snapshot(), p.err.Snapshot(), "failed", ctx.Err()
 	}

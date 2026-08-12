@@ -52,11 +52,15 @@ type Materializer struct {
 type ArtifactStoreAdapter struct {
 	Materializer *Materializer
 	RemoveFunc   func(context.Context, string, string) error
+	NodeBuilder  NodeArtifactBuilder
 }
 
 func (a ArtifactStoreAdapter) Materialize(ctx context.Context, f core.FetchArtifact) (core.ArtifactReceipt, error) {
 	if a.Materializer == nil {
 		return core.ArtifactReceipt{}, core.ErrInvalid
+	}
+	if f.Inspection.Execution.Stdio != nil && f.Inspection.Execution.Stdio.Runtime == "node" {
+		return a.materializeNode(ctx, f)
 	}
 	m, err := a.Materializer.Materialize(ctx, f)
 	if err != nil {
@@ -69,9 +73,72 @@ func (a ArtifactStoreAdapter) Remove(ctx context.Context, r core.ArtifactReceipt
 		return core.ErrInvalid
 	}
 	if a.RemoveFunc == nil {
+		if r.NodeArtifact != nil && a.NodeBuilder != nil {
+			return a.NodeBuilder.RemoveNode(ctx, "prepared", r.ArtifactDigest, r.CleanupToken)
+		}
 		return errors.New("runner cleanup unavailable")
 	}
+	if r.NodeArtifact != nil {
+		if a.NodeBuilder == nil {
+			return errors.New("runner cleanup unavailable")
+		}
+		return a.NodeBuilder.RemoveNode(ctx, "prepared", r.ArtifactDigest, r.CleanupToken)
+	}
 	return a.RemoveFunc(ctx, r.ArtifactDigest, r.CleanupToken)
+}
+
+type NodeArtifactBuilder interface {
+	BuildNode(context.Context, extensionrunner.NodeBuildRequestV1, []byte) (extensionrunner.NodeBuildReceiptV1, error)
+	PromoteNode(context.Context, string, extensionrunner.NodeBuildReceiptV1) error
+	RemoveNode(context.Context, string, string, string) error
+}
+
+type nodeSourceMetadata struct {
+	SchemaVersion  string `json:"schema_version"`
+	PackageName    string `json:"package_name"`
+	PackageVersion string `json:"package_version"`
+	EntryPath      string `json:"entry_path"`
+	EntrySHA256    string `json:"entry_sha256"`
+	LockSHA256     string `json:"lock_sha256"`
+}
+
+func (a ArtifactStoreAdapter) materializeNode(ctx context.Context, artifact core.FetchArtifact) (core.ArtifactReceipt, error) {
+	if a.NodeBuilder == nil || artifact.Validate() != nil || artifact.Inspection.Execution.Stdio == nil || artifact.Inspection.Execution.Stdio.Runtime != "node" {
+		return core.ArtifactReceipt{}, core.ErrInvalid
+	}
+	files, err := decodeCanonicalLimit(artifact.Content, int(core.MaxNodeArtifactFiles), extensionrunner.MaxNodeSourceBytes)
+	if err != nil {
+		return core.ArtifactReceipt{}, err
+	}
+	var metadata nodeSourceMetadata
+	for _, file := range files {
+		if file.Path != ".dirextalk-node-source-v1.json" {
+			continue
+		}
+		body, decodeErr := base64.RawStdEncoding.DecodeString(file.Content)
+		if decodeErr != nil || json.Unmarshal(body, &metadata) != nil {
+			return core.ArtifactReceipt{}, core.ErrInvalid
+		}
+	}
+	entry := artifact.Inspection.Execution.Stdio
+	if metadata.SchemaVersion != "dirextalk.node-source/v1" || metadata.EntryPath != entry.RelativePath || metadata.EntrySHA256 != entry.Digest || metadata.PackageName == "" || metadata.PackageVersion == "" || len(metadata.LockSHA256) != 64 {
+		return core.ArtifactReceipt{}, core.ErrInvalid
+	}
+	token := uuid.NewString()
+	request := extensionrunner.NodeBuildRequestV1{Op: "build_node_v1", InputDigest: artifact.ContentDigest, CleanupToken: token, ContentSize: int64(len(artifact.Content)), ContentSHA256: artifact.ContentDigest, EntryPath: metadata.EntryPath, EntrySHA256: metadata.EntrySHA256, PackageName: metadata.PackageName, PackageVersion: metadata.PackageVersion, LockSHA256: metadata.LockSHA256}
+	receipt, err := a.NodeBuilder.BuildNode(ctx, request, artifact.Content)
+	if err != nil {
+		if errors.Is(err, extensionrunner.ErrNodeInstallCapacity) {
+			return core.ArtifactReceipt{}, core.ErrInstallBusy
+		}
+		return core.ArtifactReceipt{}, err
+	}
+	node := &core.NodeArtifactReceipt{InputDigest: receipt.InputDigest, ArtifactDigest: receipt.ArtifactDigest, ArtifactBytes: receipt.ArtifactBytes, FileCount: receipt.FileCount, EntryPath: receipt.EntryPath, EntrySHA256: receipt.EntrySHA256, PackageName: receipt.PackageName, PackageVersion: receipt.PackageVersion, LockSHA256: receipt.LockSHA256, NodeVersion: receipt.NodeVersion, NPMVersion: receipt.NPMVersion, LifecycleScriptsDisabled: receipt.LifecycleScriptsDisabled, NativeAddonsAbsent: receipt.NativeAddonsAbsent}
+	if node.Validate(artifact.Candidate, artifact.Inspection.Execution, receipt.ArtifactDigest) != nil {
+		_ = a.NodeBuilder.RemoveNode(ctx, "prepared", receipt.ArtifactDigest, token)
+		return core.ArtifactReceipt{}, core.ErrConflict
+	}
+	return core.ArtifactReceipt{RelativePath: receipt.ArtifactDigest, ContentDigest: artifact.ContentDigest, ArtifactDigest: receipt.ArtifactDigest, CleanupToken: token, NodeArtifact: node}, nil
 }
 
 type Publisher interface {
@@ -83,12 +150,20 @@ type Publisher interface {
 // tree is never executed directly and Remove is kept as a separate idempotent
 // runner operation.
 type StagedLifecyclePromoter struct {
-	Root       string
-	Publisher  Publisher
-	RemoveFunc func(context.Context, string) error
+	Root        string
+	Publisher   Publisher
+	RemoveFunc  func(context.Context, string) error
+	NodeBuilder NodeArtifactBuilder
 }
 
 func (p StagedLifecyclePromoter) Promote(ctx context.Context, version core.VersionRecord) error {
+	if version.NodeArtifact != nil {
+		if p.NodeBuilder == nil || version.ArtifactCleanupToken == "" {
+			return core.ErrInvalid
+		}
+		r := version.NodeArtifact
+		return p.NodeBuilder.PromoteNode(ctx, version.ArtifactCleanupToken, extensionrunner.NodeBuildReceiptV1{InputDigest: r.InputDigest, ArtifactDigest: r.ArtifactDigest, ArtifactBytes: r.ArtifactBytes, FileCount: r.FileCount, EntryPath: r.EntryPath, EntrySHA256: r.EntrySHA256, PackageName: r.PackageName, PackageVersion: r.PackageVersion, LockSHA256: r.LockSHA256, NodeVersion: r.NodeVersion, NPMVersion: r.NPMVersion, LifecycleScriptsDisabled: r.LifecycleScriptsDisabled, NativeAddonsAbsent: r.NativeAddonsAbsent})
+	}
 	if p.Publisher == nil || !filepath.IsAbs(p.Root) || filepath.Clean(p.Root) != p.Root || len(version.ArtifactDigest) != 64 || version.ArtifactPath == "" || filepath.Base(version.ArtifactPath) != version.ArtifactDigest {
 		return core.ErrInvalid
 	}
@@ -109,6 +184,7 @@ func (p StagedLifecyclePromoter) Promote(ctx context.Context, version core.Versi
 		return core.ErrConflict
 	}
 	files := make([]extensionrunner.PublishFile, 0, len(disk.Entries))
+	var publishedBytes uint64
 	for _, entry := range disk.Entries {
 		if entry.Path == "" || filepath.IsAbs(entry.Path) || strings.Contains(entry.Path, "..") || strings.ContainsAny(entry.Path, "\\\x00\r\n") {
 			return core.ErrInvalid
@@ -118,6 +194,13 @@ func (p StagedLifecyclePromoter) Promote(ctx context.Context, version core.Versi
 			return core.ErrConflict
 		}
 		files = append(files, extensionrunner.PublishFile{Path: entry.Path, Data: data})
+		publishedBytes += uint64(len(data))
+	}
+	if version.NodeArtifact != nil {
+		receipt := version.NodeArtifact
+		if version.Execution.Stdio == nil || receipt.ArtifactDigest != version.ArtifactDigest || receipt.InputDigest != version.ContentDigest || receipt.ArtifactBytes != publishedBytes || receipt.FileCount != uint32(len(disk.Entries)) || receipt.EntryPath != version.Execution.Stdio.RelativePath || receipt.EntrySHA256 != version.Execution.Stdio.Digest || !receipt.LifecycleScriptsDisabled || !receipt.NativeAddonsAbsent {
+			return core.ErrConflict
+		}
 	}
 	response, err := p.Publisher.Publish(ctx, disk.Entries, files)
 	if err != nil {
@@ -130,6 +213,12 @@ func (p StagedLifecyclePromoter) Promote(ctx context.Context, version core.Versi
 }
 
 func (p StagedLifecyclePromoter) Remove(ctx context.Context, version core.VersionRecord) error {
+	if version.NodeArtifact != nil {
+		if p.NodeBuilder == nil || version.ArtifactCleanupToken == "" {
+			return core.ErrInvalid
+		}
+		return p.NodeBuilder.RemoveNode(ctx, "active", version.ArtifactDigest, version.ArtifactCleanupToken)
+	}
 	if p.RemoveFunc == nil || len(version.ArtifactDigest) != 64 {
 		return core.ErrInvalid
 	}
@@ -318,13 +407,17 @@ func verifyDiskManifest(root, digest string) error {
 }
 
 func decodeCanonical(data []byte) ([]materialFile, error) {
-	if len(data) == 0 || len(data) > maxArtifactBytes {
+	return decodeCanonicalLimit(data, maxArtifactFiles, maxArtifactBytes)
+}
+
+func decodeCanonicalLimit(data []byte, maxFiles int, maxBytes int64) ([]materialFile, error) {
+	if len(data) == 0 || int64(len(data)) > maxBytes {
 		return nil, errors.New("invalid artifact size")
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var files []materialFile
-	if err := dec.Decode(&files); err != nil || files == nil || len(files) == 0 || len(files) > maxArtifactFiles {
+	if err := dec.Decode(&files); err != nil || files == nil || len(files) == 0 || len(files) > maxFiles {
 		return nil, errors.New("invalid artifact file list")
 	}
 	var extra any

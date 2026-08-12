@@ -381,6 +381,68 @@ type ConversationScheduleStore interface {
 	CommitConversationSchedule(context.Context, ConversationScheduleCommand) (coretask.Schedule, error)
 }
 
+const MaxStaticSiteHTMLBytes = 192 << 10
+
+// StaticSitePublication contains only server-derived path authority. The
+// model supplies HTML content but can never choose a filesystem path or URL.
+type StaticSitePublication struct {
+	SiteID    string
+	ReleaseID string
+	HTML      []byte
+}
+
+type StaticSiteReceipt struct {
+	SiteID        string
+	ReleaseID     string
+	PublicPath    string
+	SHA256        string
+	SizeBytes     int64
+	AlreadyExists bool
+}
+
+func (r StaticSiteReceipt) Validate() error {
+	if !validUUID(r.SiteID) || !validUUID(r.ReleaseID) || r.PublicPath != "/.sites/"+r.SiteID+"/"+r.ReleaseID+"/" ||
+		len(r.SHA256) != 64 || r.SizeBytes <= 0 || r.SizeBytes > MaxStaticSiteHTMLBytes {
+		return ErrInvalid
+	}
+	for _, c := range r.SHA256 {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+
+type StaticSitePublisher interface {
+	PublishSingleHTML(context.Context, StaticSitePublication) (StaticSiteReceipt, error)
+}
+
+// ConversationStaticSiteCommand commits the immutable publication receipt
+// and terminal chat response under the exact turn lease. The filesystem
+// publication is deliberately outside PostgreSQL and is idempotent by the
+// server-derived site/release identity.
+type ConversationStaticSiteCommand struct {
+	Lease    TurnLease
+	Receipt  StaticSiteReceipt
+	Response ChatResponse
+}
+
+func (c ConversationStaticSiteCommand) Validate() error {
+	turn := c.Lease.Turn
+	if turn.ID == "" || turn.RequestID == "" || strings.TrimSpace(turn.OwnerID) == "" || turn.AccountGeneration == 0 ||
+		c.Lease.LeaseID == "" || c.Lease.Epoch == 0 || c.Receipt.Validate() != nil ||
+		c.Response.RequestID != turn.RequestID || c.Response.ConversationID != turn.ConversationID ||
+		c.Response.ModelProfileID != turn.ProfileID || !c.Response.Done || c.Response.Message.ModelProfileID != turn.ProfileID ||
+		c.Response.Message.Content != "Published the static page: "+c.Receipt.PublicPath || c.Response.Message.Validate() != nil {
+		return ErrInvalid
+	}
+	return nil
+}
+
+type ConversationStaticSiteStore interface {
+	CommitConversationStaticSite(context.Context, ConversationStaticSiteCommand) (StaticSiteReceipt, error)
+}
+
 // ExtensionSnapshotResolver may resolve an already-pinned snapshot to an
 // executable dispatcher without consulting mutable active installation state.
 // It is intentionally optional so the basic conversation path remains usable.

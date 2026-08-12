@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/google/uuid"
@@ -12,7 +14,27 @@ import (
 )
 
 func (s *CoreExtensionStore) CompleteLifecycle(ctx context.Context, c coreextension.Completion) (coreextension.Installation, error) {
+	return s.completeLifecycle(ctx, c, false)
+}
+
+// completeLifecycle records whether the proposed managed Node artifact was
+// already promoted by the runner. A failed terminal transition persists the
+// exact active-reference cleanup in the same transaction; the external remove
+// is never allowed to precede that durable decision.
+func (s *CoreExtensionStore) completeLifecycle(ctx context.Context, c coreextension.Completion, artifactPromoted bool) (coreextension.Installation, error) {
 	if uuid.Validate(c.InstallationID) != nil || uuid.Validate(c.ConfirmationID) != nil || uuid.Validate(c.TaskID) != nil || c.ExpectedRevision < 1 || c.Attempt == 0 || c.LeaseEpoch == 0 || c.AcquiredTaskRevision < 1 || c.TerminalAttempt == 0 || c.TerminalLeaseEpoch == 0 || c.TerminalTaskRevision < 1 {
+		return coreextension.Installation{}, coreextension.ErrInvalid
+	}
+	if artifactPromoted && c.Success {
+		return coreextension.Installation{}, coreextension.ErrInvalid
+	}
+	if c.Success {
+		if c.FailureCode != "" || c.FailureSummary != "" {
+			return coreextension.Installation{}, coreextension.ErrInvalid
+		}
+	} else if c.FailureCode == "" && c.FailureSummary == "" {
+		c.FailureCode, c.FailureSummary = coreextension.LifecycleFailureDetails(nil)
+	} else if !coreextension.ValidLifecycleFailureDetails(c.FailureCode, c.FailureSummary) {
 		return coreextension.Installation{}, coreextension.ErrInvalid
 	}
 	tx, e := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -70,9 +92,42 @@ func (s *CoreExtensionStore) CompleteLifecycle(ctx context.Context, c coreextens
 	if e = tx.QueryRow(ctx, `SELECT task_id::text,acquired_attempt,acquired_lease_epoch,active FROM core_confirmation_reservations WHERE confirmation_id=$1 FOR UPDATE`, c.ConfirmationID).Scan(&rtask, &rattempt, &rlease, &activeRes); e != nil || !activeRes || rtask != c.TaskID || rattempt != int(c.Attempt) || rlease != int64(c.LeaseEpoch) {
 		return coreextension.Installation{}, coreextension.ErrConflict
 	}
+	if c.Success {
+		if op != coreextension.OperationUninstall {
+			if e = validateExtensionPromotionQuotaTx(ctx, tx, c.InstallationID, proposed); e != nil {
+				return coreextension.Installation{}, e
+			}
+		}
+		keepVersionID := proposed
+		if op == coreextension.OperationUninstall {
+			keepVersionID = ""
+		}
+		if e = retirePublishedNodeVersionsTx(ctx, tx, c.InstallationID, keepVersionID, rev+1); e != nil {
+			return coreextension.Installation{}, e
+		}
+	}
 	newState := coreextension.StateFailed
 	newActive := active
 	newProposed := proposed
+	if !c.Success && proposed != "" {
+		var proposedRaw []byte
+		if e = tx.QueryRow(ctx, `SELECT version_json FROM core_extension_versions WHERE installation_id=$1 AND version_id=$2 FOR UPDATE`, c.InstallationID, proposed).Scan(&proposedRaw); e != nil {
+			return coreextension.Installation{}, coreextension.ErrConflict
+		}
+		var failedProposal coreextension.VersionRecord
+		if json.Unmarshal(proposedRaw, &failedProposal) != nil {
+			return coreextension.Installation{}, coreextension.ErrConflict
+		}
+		if artifactPromoted {
+			if e = enqueuePromotedNodeCleanupTx(ctx, tx, c.InstallationID, failedProposal, rev+1); e != nil {
+				return coreextension.Installation{}, e
+			}
+		} else {
+			if e = enqueueArtifactCleanupTx(ctx, tx, c.InstallationID, failedProposal, "failure"); e != nil {
+				return coreextension.Installation{}, e
+			}
+		}
+	}
 	if c.Success {
 		newState = coreextension.StateInstalled
 		if op == coreextension.OperationUninstall {
@@ -148,7 +203,7 @@ func (s *CoreExtensionStore) CompleteLifecycle(ctx context.Context, c coreextens
 		if _, e = tx.Exec(ctx, `UPDATE core_tasks SET status='succeeded',attempt=GREATEST(attempt,1),lease_holder='',lease_expires_at=NULL,result_json=$2,progress_sequence=progress_sequence+1,revision=$3,updated_at=clock_timestamp() WHERE task_id=$1`, c.TaskID, []byte(`{"outcome_digest":"`+c.OutcomeDigest+`"}`), c.TerminalTaskRevision); e != nil {
 			return coreextension.Installation{}, e
 		}
-	} else if _, e = tx.Exec(ctx, `UPDATE core_tasks SET status='failed',attempt=GREATEST(attempt,1),lease_holder='',lease_expires_at=NULL,failure_code='extension_failed',failure_summary='extension lifecycle failed',progress_sequence=progress_sequence+1,revision=$2,updated_at=clock_timestamp() WHERE task_id=$1`, c.TaskID, c.TerminalTaskRevision); e != nil {
+	} else if _, e = tx.Exec(ctx, `UPDATE core_tasks SET status='failed',attempt=GREATEST(attempt,1),lease_holder='',lease_expires_at=NULL,failure_code=$3,failure_summary=$4,progress_sequence=progress_sequence+1,revision=$2,updated_at=clock_timestamp() WHERE task_id=$1`, c.TaskID, c.TerminalTaskRevision, c.FailureCode, c.FailureSummary); e != nil {
 		return coreextension.Installation{}, e
 	}
 	if _, e = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,result_json,error_code,error_summary,occurred_at) SELECT task_id,progress_sequence,$2,attempt,$3,'extension_lifecycle',$4,result_json,failure_code,failure_summary,clock_timestamp() FROM core_tasks WHERE task_id=$1`, c.TaskID, uuid.New(), statusTask, statusTask); e != nil {
@@ -169,6 +224,135 @@ func (s *CoreExtensionStore) CompleteLifecycle(ctx context.Context, c coreextens
 	return s.Get(ctx, c.InstallationID)
 }
 
+func validateExtensionPromotionQuotaTx(ctx context.Context, tx pgx.Tx, installationID, proposedVersionID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `core_extension_install_quota`); err != nil {
+		return fmt.Errorf("extension promotion quota lock: %w", err)
+	}
+	var installationCount int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM core_extension_installations WHERE state NOT IN ('removed','failed')`).Scan(&installationCount); err != nil {
+		return fmt.Errorf("extension promotion installation quota: %w", err)
+	}
+	if installationCount > coreextension.MaxInstallations {
+		return coreextension.ErrInstallationLimit
+	}
+	var transport string
+	var candidateRaw []byte
+	if err := tx.QueryRow(ctx, `SELECT transport,candidate_json FROM core_extension_installations WHERE installation_id=$1`, installationID).Scan(&transport, &candidateRaw); err != nil {
+		return coreextension.ErrNotFound
+	}
+	if transport != string(coreextension.TransportStdioNode) {
+		return nil
+	}
+	var candidate coreextension.Candidate
+	if json.Unmarshal(candidateRaw, &candidate) != nil {
+		return coreextension.ErrConflict
+	}
+	var versionRaw []byte
+	if err := tx.QueryRow(ctx, `SELECT version_json FROM core_extension_versions WHERE installation_id=$1 AND version_id=$2 FOR UPDATE`, installationID, proposedVersionID).Scan(&versionRaw); err != nil {
+		return coreextension.ErrConflict
+	}
+	var version coreextension.VersionRecord
+	if json.Unmarshal(versionRaw, &version) != nil || version.NodeArtifact == nil || version.NodeArtifact.Validate(candidate, version.Execution, version.ArtifactDigest) != nil || version.NodeArtifact.InputDigest != version.ContentDigest {
+		return coreextension.ErrConflict
+	}
+	artifactBytes := version.NodeArtifact.ArtifactBytes
+	var publishedBytes int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(v.artifact_bytes),0)
+		FROM core_extension_versions v
+		JOIN core_extension_installations i ON i.installation_id=v.installation_id
+		WHERE i.transport=$1 AND v.published_at IS NOT NULL`, string(coreextension.TransportStdioNode)).Scan(&publishedBytes); err != nil {
+		return fmt.Errorf("extension Node storage quota: %w", err)
+	}
+	if publishedBytes < 0 || uint64(publishedBytes)+artifactBytes > coreextension.MaxNodeStorageBytes {
+		return coreextension.ErrNodeStorageQuota
+	}
+	publishedAt := time.Now().UTC()
+	version.PublishedAt = publishedAt
+	updatedVersion, err := json.Marshal(version)
+	if err != nil {
+		return coreextension.ErrConflict
+	}
+	if _, err := tx.Exec(ctx, `UPDATE core_extension_versions
+		SET version_json=$3,artifact_bytes=$4,file_count=$5,lifecycle_scripts_disabled=true,native_addons_absent=true,published_at=COALESCE(published_at,$6)
+		WHERE installation_id=$1 AND version_id=$2`, installationID, proposedVersionID, updatedVersion, artifactBytes, version.NodeArtifact.FileCount, publishedAt); err != nil {
+		return fmt.Errorf("publish extension Node artifact receipt: %w", err)
+	}
+	return nil
+}
+
+func retirePublishedNodeVersionsTx(ctx context.Context, tx pgx.Tx, installationID, keepVersionID string, installationRevision int64) error {
+	if installationRevision < 1 {
+		return coreextension.ErrInvalid
+	}
+	var transport string
+	if err := tx.QueryRow(ctx, `SELECT transport FROM core_extension_installations WHERE installation_id=$1`, installationID).Scan(&transport); err != nil {
+		return coreextension.ErrNotFound
+	}
+	if transport != string(coreextension.TransportStdioNode) {
+		return nil
+	}
+	rows, err := tx.Query(ctx, `SELECT version_id::text,version_json FROM core_extension_versions WHERE installation_id=$1 AND published_at IS NOT NULL AND version_id IS DISTINCT FROM NULLIF($2,'')::uuid FOR UPDATE`, installationID, keepVersionID)
+	if err != nil {
+		return err
+	}
+	type retainedVersion struct {
+		id  string
+		raw []byte
+	}
+	var retiring []retainedVersion
+	for rows.Next() {
+		var version retainedVersion
+		if err = rows.Scan(&version.id, &version.raw); err != nil {
+			rows.Close()
+			return err
+		}
+		retiring = append(retiring, version)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, retired := range retiring {
+		var version coreextension.VersionRecord
+		if json.Unmarshal(retired.raw, &version) != nil || version.NodeArtifact == nil || uuid.Validate(version.ArtifactCleanupToken) != nil || version.ArtifactDigest != version.NodeArtifact.ArtifactDigest {
+			return coreextension.ErrConflict
+		}
+		cleanupID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk-agent/core-extension-node-cleanup/v1\x00"+installationID+"\x00"+version.VersionID+"\x00"+version.ArtifactDigest+"\x00"+version.ArtifactCleanupToken))
+		if _, err = tx.Exec(ctx, `INSERT INTO core_extension_node_artifact_cleanup(cleanup_id,installation_id,version_id,artifact_digest,cleanup_token,installation_revision,version_json) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (cleanup_id) DO NOTHING`, cleanupID, installationID, version.VersionID, version.ArtifactDigest, version.ArtifactCleanupToken, installationRevision, retired.raw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func enqueuePromotedNodeCleanupTx(ctx context.Context, tx pgx.Tx, installationID string, version coreextension.VersionRecord, installationRevision int64) error {
+	if uuid.Validate(installationID) != nil || uuid.Validate(version.VersionID) != nil || uuid.Validate(version.ArtifactCleanupToken) != nil || installationRevision < 1 || version.NodeArtifact == nil || version.ArtifactDigest != version.NodeArtifact.ArtifactDigest || !version.PublishedAt.IsZero() {
+		return coreextension.ErrInvalid
+	}
+	publishedAt := time.Now().UTC()
+	version.PublishedAt = publishedAt
+	versionRaw, err := json.Marshal(version)
+	if err != nil {
+		return coreextension.ErrInvalid
+	}
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `core_extension_install_quota`); err != nil {
+		return fmt.Errorf("promoted Node cleanup quota lock: %w", err)
+	}
+	publishedTag, err := tx.Exec(ctx, `UPDATE core_extension_versions
+		SET version_json=$3,artifact_bytes=$4,file_count=$5,lifecycle_scripts_disabled=true,native_addons_absent=true,published_at=$6
+		WHERE installation_id=$1 AND version_id=$2 AND published_at IS NULL`, installationID, version.VersionID, versionRaw, version.NodeArtifact.ArtifactBytes, version.NodeArtifact.FileCount, publishedAt)
+	if err != nil {
+		return fmt.Errorf("persist promoted Node artifact receipt: %w", err)
+	}
+	if publishedTag.RowsAffected() != 1 {
+		return coreextension.ErrConflict
+	}
+	cleanupID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk-agent/core-extension-node-cleanup/v1\x00"+installationID+"\x00"+version.VersionID+"\x00"+version.ArtifactDigest+"\x00"+version.ArtifactCleanupToken))
+	_, err = tx.Exec(ctx, `INSERT INTO core_extension_node_artifact_cleanup(cleanup_id,installation_id,version_id,artifact_digest,cleanup_token,installation_revision,version_json) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (cleanup_id) DO NOTHING`, cleanupID, installationID, version.VersionID, version.ArtifactDigest, version.ArtifactCleanupToken, installationRevision, versionRaw)
+	return err
+}
+
 // rollbackExtensionLifecycleTx is called by confirmation expiry/staleness
 // while the confirmation, task, projection, and staged secrets share one
 // transaction. It is deliberately a no-op for non-extension confirmations.
@@ -183,9 +367,22 @@ func rollbackExtensionLifecycleTx(ctx context.Context, tx pgx.Tx, confirmationID
 		}
 		return err
 	}
-	var active string
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 FOR UPDATE`, installationID).Scan(&active); err != nil {
+	var active, proposed string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(active_version_id::text,''),COALESCE(proposed_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 FOR UPDATE`, installationID).Scan(&active, &proposed); err != nil {
 		return err
+	}
+	if proposed != "" {
+		var proposedRaw []byte
+		if err := tx.QueryRow(ctx, `SELECT version_json FROM core_extension_versions WHERE installation_id=$1 AND version_id=$2 FOR UPDATE`, installationID, proposed).Scan(&proposedRaw); err != nil {
+			return err
+		}
+		var failedProposal coreextension.VersionRecord
+		if json.Unmarshal(proposedRaw, &failedProposal) != nil {
+			return coreextension.ErrConflict
+		}
+		if err := enqueueArtifactCleanupTx(ctx, tx, installationID, failedProposal, "failure"); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE core_extension_secret_revisions SET state='rolled_back',updated_at=clock_timestamp() WHERE installation_id=$1 AND state='staged'`, installationID); err != nil {
 		return err
@@ -211,11 +408,6 @@ func rollbackExtensionLifecycleTx(ctx context.Context, tx pgx.Tx, confirmationID
 		if json.Unmarshal(raw, &v) != nil {
 			return coreextension.ErrConflict
 		}
-		if len(v.ArtifactDigest) == 64 && v.ArtifactPath != "" {
-			if err := enqueueArtifactCleanupTx(ctx, tx, installationID, v, "failure"); err != nil {
-				return err
-			}
-		}
 		ng, _ := json.Marshal(v.NetworkGrants)
 		sg, _ := json.Marshal(v.SecretGrants)
 		state := "failed"
@@ -235,6 +427,20 @@ func enqueueArtifactCleanupTx(ctx context.Context, tx pgx.Tx, installationID str
 		return coreextension.ErrInvalid
 	}
 	cleanupID := extensionArtifactCleanupID(installationID, version.VersionID, version.ArtifactDigest)
-	_, err := tx.Exec(ctx, `INSERT INTO core_extension_artifact_cleanup(cleanup_id,installation_id,version_id,artifact_digest,staging_relative_path,reason) VALUES($1,$2,$3,$4,$4,$5) ON CONFLICT (cleanup_id) DO NOTHING`, cleanupID, installationID, version.VersionID, version.ArtifactDigest, reason)
+	var cleanupToken any
+	var versionJSON any
+	nodeArtifact := version.NodeArtifact != nil
+	if nodeArtifact {
+		if uuid.Validate(version.ArtifactCleanupToken) != nil || version.NodeArtifact.ArtifactDigest != version.ArtifactDigest {
+			return coreextension.ErrInvalid
+		}
+		raw, err := json.Marshal(version)
+		if err != nil {
+			return coreextension.ErrInvalid
+		}
+		cleanupToken = version.ArtifactCleanupToken
+		versionJSON = raw
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO core_extension_artifact_cleanup(cleanup_id,installation_id,version_id,artifact_digest,staging_relative_path,reason,cleanup_token,node_artifact,version_json) VALUES($1,$2,$3,$4,$4,$5,$6,$7,$8) ON CONFLICT (cleanup_id) DO NOTHING`, cleanupID, installationID, version.VersionID, version.ArtifactDigest, reason, cleanupToken, nodeArtifact, versionJSON)
 	return err
 }

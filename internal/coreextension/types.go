@@ -69,6 +69,8 @@ const (
 	SourceGlama            Source = "glama"
 	SourceGitHub           Source = "github"
 	SourceSkillsSh         Source = "skills_sh"
+	SourceBuiltin          Source = "builtin"
+	SourceNPM              Source = "npm"
 )
 
 type Transport string
@@ -77,6 +79,16 @@ const (
 	TransportStdioStatic    Transport = "stdio_static"
 	TransportStreamableHTTP Transport = "streamable_http"
 	TransportSkillStatic    Transport = "skill_static"
+	TransportStdioNode      Transport = "stdio_node"
+)
+
+const (
+	MaxInstallations          = 32
+	MaxNodeSourceBytes        = uint64(64 << 20)
+	MaxNodeArtifactBytes      = uint64(64 << 20)
+	MaxNodeStorageBytes       = uint64(512 << 20)
+	MaxNodeArtifactFiles      = uint32(8192)
+	MaxNodeInstallConcurrency = 1
 )
 
 type State string
@@ -97,13 +109,54 @@ var (
 	ErrConflict            = errors.New("extension conflict")
 	ErrIdempotencyConflict = errors.New("extension idempotency conflict")
 	ErrRevisionConflict    = errors.New("extension revision conflict")
+	ErrInstallBusy         = errors.New("extension install busy")
+	ErrInstallationLimit   = errors.New("extension installation limit")
+	ErrNodeStorageQuota    = errors.New("extension node storage quota")
 )
 
 var shaRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
+var exactSemverRE = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
+var npmNamePartRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
 func validDigest(s string) bool { return shaRE.MatchString(s) }
 func validUUID(s string) bool   { _, e := uuid.Parse(strings.TrimSpace(s)); return e == nil }
+
+func validExactSemver(value string) bool {
+	match := exactSemverRE.FindStringSubmatch(value)
+	if match == nil {
+		return false
+	}
+	if match[4] == "" {
+		return true
+	}
+	for _, identifier := range strings.Split(match[4], ".") {
+		if len(identifier) > 1 && identifier[0] == '0' {
+			numeric := true
+			for _, char := range identifier {
+				if char < '0' || char > '9' {
+					numeric = false
+					break
+				}
+			}
+			if numeric {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validNPMPackageName(value string) bool {
+	if value == "" || len(value) > 214 || value != strings.ToLower(value) || strings.Contains(value, "..") {
+		return false
+	}
+	if strings.HasPrefix(value, "@") {
+		parts := strings.Split(value[1:], "/")
+		return len(parts) == 2 && npmNamePartRE.MatchString(parts[0]) && npmNamePartRE.MatchString(parts[1])
+	}
+	return !strings.Contains(value, "/") && npmNamePartRE.MatchString(value)
+}
 
 // SourcePin must identify an immutable registry release or Git commit.
 type SourcePin struct {
@@ -136,6 +189,7 @@ type StaticEntry struct {
 	RelativePath string   `json:"relative_path"`
 	Digest       string   `json:"digest"`
 	Argv         []string `json:"argv"`
+	Runtime      string   `json:"runtime,omitempty"`
 }
 type RemoteEndpoint struct {
 	URL                   string `json:"url"`
@@ -171,7 +225,11 @@ func (e ExecutionDescriptor) Validate(kind Kind, transport Transport) error {
 	}
 	switch transport {
 	case TransportStdioStatic:
-		if kind != KindMCP || e.Stdio == nil || !validStatic(*e.Stdio) {
+		if kind != KindMCP || e.Stdio == nil || !validStatic(*e.Stdio) || e.Stdio.Runtime != "" {
+			return ErrInvalid
+		}
+	case TransportStdioNode:
+		if kind != KindMCP || e.Stdio == nil || !validNodeStatic(*e.Stdio) {
 			return ErrInvalid
 		}
 	case TransportStreamableHTTP:
@@ -196,6 +254,17 @@ func validStatic(s StaticEntry) bool {
 	}
 	for _, a := range s.Argv {
 		if a == "" || strings.ContainsAny(a, "\r\n") {
+			return false
+		}
+	}
+	return true
+}
+func validNodeStatic(s StaticEntry) bool {
+	if !validPath(s.RelativePath) || !validDigest(s.Digest) || s.Runtime != "node" || len(s.Argv) > 128 {
+		return false
+	}
+	for _, a := range s.Argv {
+		if a == "" || strings.ContainsAny(a, "\x00\r\n") || len(a) > 16<<10 {
 			return false
 		}
 	}
@@ -322,6 +391,16 @@ func (c Candidate) Validate() error {
 	} else if c.Pin.RegistryVersion == "" {
 		return ErrInvalid
 	}
+	if c.Transport == TransportStdioNode {
+		if c.Kind != KindMCP || c.Source != SourceGitHub && c.Source != SourceNPM {
+			return ErrInvalid
+		}
+		if c.Source == SourceNPM && (!validNPMPackageName(c.ID) || !validExactSemver(c.Pin.RegistryVersion)) {
+			return ErrInvalid
+		}
+	} else if c.Source == SourceNPM {
+		return ErrInvalid
+	}
 	return nil
 }
 
@@ -420,20 +499,23 @@ func (f FetchArtifact) Validate() error {
 func digestBytes(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 
 type VersionRecord struct {
-	VersionID           string                  `json:"version_id"`
-	Pin                 SourcePin               `json:"pin"`
-	ContentDigest       string                  `json:"content_digest"`
-	ManifestDigest      string                  `json:"manifest_digest"`
-	ExecutionDigest     string                  `json:"execution_digest"`
-	NetworkSchemaDigest string                  `json:"network_schema_digest"`
-	SecretSchemaDigest  string                  `json:"secret_schema_digest"`
-	Execution           ExecutionDescriptor     `json:"execution"`
-	Tools               []Tool                  `json:"tools,omitempty"`
-	NetworkGrants       []NetworkGrant          `json:"network_grants,omitempty"`
-	SecretGrants        []SecretGrantDescriptor `json:"secret_grants,omitempty"`
-	ArtifactPath        string                  `json:"artifact_path,omitempty"`
-	ArtifactDigest      string                  `json:"artifact_digest,omitempty"`
-	CreatedAt           time.Time               `json:"created_at"`
+	VersionID            string                  `json:"version_id"`
+	Pin                  SourcePin               `json:"pin"`
+	ContentDigest        string                  `json:"content_digest"`
+	ManifestDigest       string                  `json:"manifest_digest"`
+	ExecutionDigest      string                  `json:"execution_digest"`
+	NetworkSchemaDigest  string                  `json:"network_schema_digest"`
+	SecretSchemaDigest   string                  `json:"secret_schema_digest"`
+	Execution            ExecutionDescriptor     `json:"execution"`
+	Tools                []Tool                  `json:"tools,omitempty"`
+	NetworkGrants        []NetworkGrant          `json:"network_grants,omitempty"`
+	SecretGrants         []SecretGrantDescriptor `json:"secret_grants,omitempty"`
+	ArtifactPath         string                  `json:"artifact_path,omitempty"`
+	ArtifactDigest       string                  `json:"artifact_digest,omitempty"`
+	ArtifactCleanupToken string                  `json:"artifact_cleanup_token,omitempty"`
+	NodeArtifact         *NodeArtifactReceipt    `json:"node_artifact,omitempty"`
+	PublishedAt          time.Time               `json:"published_at,omitempty"`
+	CreatedAt            time.Time               `json:"created_at"`
 }
 type Installation struct {
 	ID          string    `json:"id"`
@@ -455,6 +537,53 @@ type Installation struct {
 	Versions          []VersionRecord         `json:"versions,omitempty"`
 	NetworkGrants     []NetworkGrant          `json:"network_grants,omitempty"`
 	SecretGrants      []SecretGrantDescriptor `json:"secret_grants,omitempty"`
+	CreatedAt         time.Time               `json:"created_at"`
+	UpdatedAt         time.Time               `json:"updated_at"`
+}
+
+type PublicNodeArtifactReceipt struct {
+	PackageName              string `json:"package_name"`
+	PackageVersion           string `json:"package_version"`
+	ArtifactBytes            uint64 `json:"artifact_bytes"`
+	FileCount                uint32 `json:"file_count"`
+	NodeVersion              string `json:"node_version"`
+	NPMVersion               string `json:"npm_version"`
+	LifecycleScriptsDisabled bool   `json:"lifecycle_scripts_disabled"`
+	NativeAddonsAbsent       bool   `json:"native_addons_absent"`
+}
+
+type PublicVersionRecord struct {
+	VersionID           string                     `json:"version_id"`
+	Pin                 SourcePin                  `json:"pin"`
+	ContentDigest       string                     `json:"content_digest"`
+	ManifestDigest      string                     `json:"manifest_digest"`
+	ExecutionDigest     string                     `json:"execution_digest"`
+	NetworkSchemaDigest string                     `json:"network_schema_digest"`
+	SecretSchemaDigest  string                     `json:"secret_schema_digest"`
+	Execution           ExecutionDescriptor        `json:"execution"`
+	NetworkGrants       []NetworkGrant             `json:"network_grants"`
+	SecretGrants        []SecretGrantDescriptor    `json:"secret_grants"`
+	NodeArtifact        *PublicNodeArtifactReceipt `json:"node_artifact,omitempty"`
+	CreatedAt           time.Time                  `json:"created_at"`
+}
+
+type PublicInstallation struct {
+	ID                string                  `json:"id"`
+	Candidate         Candidate               `json:"candidate"`
+	Kind              Kind                    `json:"kind"`
+	Source            Source                  `json:"source"`
+	CandidateID       string                  `json:"candidate_id"`
+	Name              string                  `json:"name"`
+	Description       string                  `json:"description,omitempty"`
+	Transport         Transport               `json:"transport"`
+	Revision          int64                   `json:"revision"`
+	State             State                   `json:"state"`
+	Enabled           bool                    `json:"enabled"`
+	ActiveVersionID   string                  `json:"active_version_id,omitempty"`
+	ProposedVersionID string                  `json:"proposed_version_id,omitempty"`
+	Versions          []PublicVersionRecord   `json:"versions,omitempty"`
+	NetworkGrants     []NetworkGrant          `json:"network_grants"`
+	SecretGrants      []SecretGrantDescriptor `json:"secret_grants"`
 	CreatedAt         time.Time               `json:"created_at"`
 	UpdatedAt         time.Time               `json:"updated_at"`
 }
@@ -484,7 +613,14 @@ func (i Installation) Validate() error {
 		return ErrInvalid
 	}
 	for _, v := range i.Versions {
-		if v.Pin.Validate() != nil || !validDigest(v.ContentDigest) || !validDigest(v.ManifestDigest) || !validDigest(v.ExecutionDigest) || !validDigest(v.NetworkSchemaDigest) || !validDigest(v.SecretSchemaDigest) || v.Execution.Validate(i.Kind, transportFor(i.Kind, v.Execution)) != nil {
+		if v.Pin.Validate() != nil || !validDigest(v.ContentDigest) || !validDigest(v.ManifestDigest) || !validDigest(v.ExecutionDigest) || !validDigest(v.NetworkSchemaDigest) || !validDigest(v.SecretSchemaDigest) || v.Execution.Validate(i.Kind, i.Transport) != nil {
+			return ErrInvalid
+		}
+		if i.Transport == TransportStdioNode {
+			if v.NodeArtifact == nil || !validUUID(v.ArtifactCleanupToken) || v.NodeArtifact.Validate(i.Candidate, v.Execution, v.ArtifactDigest) != nil {
+				return ErrInvalid
+			}
+		} else if v.NodeArtifact != nil {
 			return ErrInvalid
 		}
 		for _, g := range v.NetworkGrants {
@@ -514,26 +650,17 @@ func (i Installation) Validate() error {
 	}
 	return nil
 }
-func transportFor(k Kind, e ExecutionDescriptor) Transport {
-	if k == KindSkill {
-		return TransportSkillStatic
-	}
-	if e.Remote != nil {
-		return TransportStreamableHTTP
-	}
-	return TransportStdioStatic
-}
 func validKindSource(k Kind, s Source) bool {
 	switch k {
 	case KindMCP:
-		return s == SourceOfficialRegistry || s == SourceSmithery || s == SourceGlama || s == SourceGitHub
+		return s == SourceOfficialRegistry || s == SourceSmithery || s == SourceGlama || s == SourceGitHub || s == SourceNPM
 	case KindSkill:
-		return s == SourceSkillsSh || s == SourceGitHub
+		return s == SourceSkillsSh || s == SourceGitHub || s == SourceBuiltin
 	}
 	return false
 }
 func validTransport(k Kind, t Transport) bool {
-	return (k == KindMCP && (t == TransportStdioStatic || t == TransportStreamableHTTP)) || (k == KindSkill && t == TransportSkillStatic)
+	return (k == KindMCP && (t == TransportStdioStatic || t == TransportStreamableHTTP || t == TransportStdioNode)) || (k == KindSkill && t == TransportSkillStatic)
 }
 func validState(s State) bool {
 	switch s {
@@ -543,9 +670,53 @@ func validState(s State) bool {
 	return false
 }
 func (i Installation) Redacted() Installation {
-	x := i
-	x.SecretGrants = append([]SecretGrantDescriptor(nil), i.SecretGrants...)
+	x := cloneInstallation(i)
+	for index := range x.Versions {
+		x.Versions[index].ArtifactPath = ""
+		x.Versions[index].ArtifactCleanupToken = ""
+		x.Versions[index].NodeArtifact = nil
+	}
 	return x
+}
+func (i Installation) Public() PublicInstallation {
+	x := cloneInstallation(i)
+	out := PublicInstallation{ID: x.ID, Candidate: x.Candidate, Kind: x.Kind, Source: x.Source, CandidateID: x.CandidateID, Name: x.Name, Description: x.Description, Transport: x.Transport, Revision: x.Revision, State: x.State, Enabled: x.Enabled, ActiveVersionID: x.ActiveVersionID, ProposedVersionID: x.ProposedVersionID, NetworkGrants: append([]NetworkGrant{}, x.NetworkGrants...), SecretGrants: append([]SecretGrantDescriptor{}, x.SecretGrants...), CreatedAt: x.CreatedAt, UpdatedAt: x.UpdatedAt}
+	for _, version := range x.Versions {
+		execution := cloneExecution(version.Execution)
+		if execution.Stdio != nil && execution.Stdio.Argv == nil {
+			execution.Stdio.Argv = []string{}
+		}
+		publicVersion := PublicVersionRecord{VersionID: version.VersionID, Pin: version.Pin, ContentDigest: version.ContentDigest, ManifestDigest: version.ManifestDigest, ExecutionDigest: version.ExecutionDigest, NetworkSchemaDigest: version.NetworkSchemaDigest, SecretSchemaDigest: version.SecretSchemaDigest, Execution: execution, NetworkGrants: append([]NetworkGrant{}, version.NetworkGrants...), SecretGrants: append([]SecretGrantDescriptor{}, version.SecretGrants...), CreatedAt: version.CreatedAt}
+		if version.NodeArtifact != nil && !version.PublishedAt.IsZero() {
+			receipt := version.NodeArtifact
+			publicVersion.NodeArtifact = &PublicNodeArtifactReceipt{PackageName: receipt.PackageName, PackageVersion: receipt.PackageVersion, ArtifactBytes: receipt.ArtifactBytes, FileCount: receipt.FileCount, NodeVersion: receipt.NodeVersion, NPMVersion: receipt.NPMVersion, LifecycleScriptsDisabled: receipt.LifecycleScriptsDisabled, NativeAddonsAbsent: receipt.NativeAddonsAbsent}
+		}
+		out.Versions = append(out.Versions, publicVersion)
+	}
+	return out
+}
+
+type PublicInstallationPage struct {
+	Installations []PublicInstallation `json:"installations"`
+	NextPageToken string               `json:"next_page_token"`
+}
+
+func (p InstallationPage) Public() PublicInstallationPage {
+	out := PublicInstallationPage{NextPageToken: p.NextPageToken, Installations: make([]PublicInstallation, len(p.Installations))}
+	for index := range p.Installations {
+		out.Installations[index] = p.Installations[index].Public()
+	}
+	return out
+}
+
+type PublicMutationResult struct {
+	Installation   PublicInstallation `json:"installation"`
+	ConfirmationID string             `json:"confirmation_id,omitempty"`
+	TaskID         string             `json:"task_id,omitempty"`
+}
+
+func (m MutationResult) Public() PublicMutationResult {
+	return PublicMutationResult{Installation: m.Installation.Public(), ConfirmationID: m.ConfirmationID, TaskID: m.TaskID}
 }
 func (i Installation) String() string   { b, _ := json.Marshal(i.Redacted()); return string(b) }
 func (i Installation) GoString() string { return i.String() }
@@ -568,15 +739,47 @@ type InspectRequest struct {
 	Pin    SourcePin
 }
 type Mutation struct {
-	IdempotencyKey   string
-	InstallationID   string
-	ExpectedRevision int64
-	Candidate        Candidate
-	Inspection       Inspection
-	SecretInputs     []SecretInput
-	ArtifactPath     string
-	ArtifactDigest   string
+	IdempotencyKey       string
+	InstallationID       string
+	ExpectedRevision     int64
+	Candidate            Candidate
+	Inspection           Inspection
+	SecretInputs         []SecretInput
+	ArtifactPath         string
+	ArtifactDigest       string
+	ArtifactCleanupToken string
+	NodeArtifact         *NodeArtifactReceipt
 }
+
+// ValidateUninstallRequest accepts only the public uninstall identity tuple.
+// Candidate, inspection, secret, and artifact facts are always reconstructed
+// from the authoritative active VersionRecord inside the repository.
+func (m Mutation) ValidateUninstallRequest() error {
+	if !validUUID(m.IdempotencyKey) || !validUUID(m.InstallationID) || m.ExpectedRevision < 1 ||
+		m.Candidate != (Candidate{}) || m.Inspection.Candidate != (Candidate{}) ||
+		m.Inspection.ContentDigest != "" || m.Inspection.ManifestDigest != "" || m.Inspection.ExecutionDigest != "" ||
+		m.Inspection.NetworkSchemaDigest != "" || m.Inspection.SecretSchemaDigest != "" ||
+		m.Inspection.Execution.Stdio != nil || m.Inspection.Execution.Remote != nil || m.Inspection.Execution.Skill != nil ||
+		len(m.Inspection.NetworkGrants) != 0 || len(m.Inspection.SecretGrants) != 0 || len(m.SecretInputs) != 0 ||
+		m.ArtifactPath != "" || m.ArtifactDigest != "" || m.ArtifactCleanupToken != "" || m.NodeArtifact != nil {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func (m Mutation) ValidateArtifactReceipt() error {
+	if m.Candidate.Transport != TransportStdioNode {
+		if m.NodeArtifact != nil {
+			return ErrInvalid
+		}
+		return nil
+	}
+	if m.NodeArtifact == nil || !validUUID(m.ArtifactCleanupToken) || m.NodeArtifact.InputDigest != m.Inspection.ContentDigest || m.NodeArtifact.Validate(m.Candidate, m.Inspection.Execution, m.ArtifactDigest) != nil {
+		return ErrInvalid
+	}
+	return nil
+}
+
 type MutationResult struct {
 	Installation   Installation `json:"installation"`
 	ConfirmationID string       `json:"confirmation_id,omitempty"`
@@ -620,7 +823,47 @@ type ArtifactReceipt struct {
 	ArtifactDigest string
 	// CleanupToken fences removal of this materialization generation.
 	CleanupToken string
+	// NodeArtifact is an authoritative receipt from the network-disabled,
+	// scripts-disabled offline Node build. Source inspection never supplies it.
+	NodeArtifact *NodeArtifactReceipt
 }
+
+const (
+	ManagedNodeVersion = "v24.18.1"
+	ManagedNPMVersion  = "11.16.0"
+)
+
+// NodeArtifactReceipt binds an exact source input to the expanded immutable
+// tree produced by the managed offline Node builder.
+type NodeArtifactReceipt struct {
+	InputDigest              string `json:"input_digest"`
+	ArtifactDigest           string `json:"artifact_digest"`
+	ArtifactBytes            uint64 `json:"artifact_bytes"`
+	FileCount                uint32 `json:"file_count"`
+	EntryPath                string `json:"entry_path"`
+	EntrySHA256              string `json:"entry_sha256"`
+	PackageName              string `json:"package_name"`
+	PackageVersion           string `json:"package_version"`
+	LockSHA256               string `json:"lock_sha256"`
+	NodeVersion              string `json:"node_version"`
+	NPMVersion               string `json:"npm_version"`
+	LifecycleScriptsDisabled bool   `json:"lifecycle_scripts_disabled"`
+	NativeAddonsAbsent       bool   `json:"native_addons_absent"`
+}
+
+func (r NodeArtifactReceipt) Validate(candidate Candidate, execution ExecutionDescriptor, artifactDigest string) error {
+	if candidate.Transport != TransportStdioNode || execution.Stdio == nil || execution.Stdio.Runtime != "node" || !validDigest(r.InputDigest) || !validDigest(r.ArtifactDigest) || r.ArtifactDigest != artifactDigest || r.ArtifactBytes == 0 || r.ArtifactBytes > MaxNodeArtifactBytes || r.FileCount == 0 || r.FileCount > MaxNodeArtifactFiles || !validPath(r.EntryPath) || !validDigest(r.EntrySHA256) || r.EntryPath != execution.Stdio.RelativePath || r.EntrySHA256 != execution.Stdio.Digest || r.PackageName == "" || !validExactSemver(r.PackageVersion) || !validDigest(r.LockSHA256) || r.NodeVersion != ManagedNodeVersion || r.NPMVersion != ManagedNPMVersion || !r.LifecycleScriptsDisabled || !r.NativeAddonsAbsent {
+		return ErrInvalid
+	}
+	if !validNPMPackageName(r.PackageName) {
+		return ErrInvalid
+	}
+	if candidate.Source == SourceNPM && (r.PackageName != candidate.ID || r.PackageVersion != candidate.Pin.RegistryVersion) {
+		return ErrInvalid
+	}
+	return nil
+}
+
 type ArtifactStore interface {
 	Materialize(context.Context, FetchArtifact) (ArtifactReceipt, error)
 	Remove(context.Context, ArtifactReceipt) error

@@ -330,6 +330,17 @@ func TestCoreKnowledgePostgresDisableFirstGenerationAndReaddEmbeddingProfile(t *
 	if err != nil || disabled.EmbeddingProfileID != uuid.Nil.String() {
 		t.Fatalf("disabled=%+v err=%v", disabled, err)
 	}
+	// A disabled binding is a durable product state, not a one-process state.
+	// Recomposition after restart must keep Knowledge available for text
+	// memory while semantic indexing remains honestly unavailable.
+	restartedIndexer, err := NewKnowledgeIndexer(repo.store, disabled.EmbeddingProfileID, disabled.CollectionConfigDigest)
+	if err != nil {
+		t.Fatalf("restart disabled Knowledge indexer: %v", err)
+	}
+	restartedIndexer.SetEmbeddingConfigReader(repo)
+	if _, err = restartedIndexer.RequestIndex(ctx, coreknowledge.IndexRequest{IdempotencyKey: uuid.NewString(), SourceIDs: []string{memory.ID}}); !errors.Is(err, coreknowledge.ErrNotFound) {
+		t.Fatalf("disabled restart index err=%v, want embedding unavailable", err)
+	}
 	kept, err := knowledge.GetMemory(ctx, memory.ID)
 	if err != nil || kept.Content != "keep this memory text" {
 		t.Fatalf("kept=%+v err=%v", kept, err)

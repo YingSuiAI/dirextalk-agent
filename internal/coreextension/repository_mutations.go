@@ -3,6 +3,7 @@ package coreextension
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"time"
 
@@ -57,7 +58,7 @@ func (r *MemoryRepository) CreateMutation(ctx context.Context, m Mutation) (Muta
 		return x, e
 	}
 	r.mu.Unlock()
-	if !validUUID(m.IdempotencyKey) || m.Candidate.Validate() != nil || m.Inspection.Validate() != nil || !equalCandidate(m.Candidate, m.Inspection.Candidate) {
+	if !validUUID(m.IdempotencyKey) || m.Candidate.Validate() != nil || m.Inspection.Validate() != nil || !equalCandidate(m.Candidate, m.Inspection.Candidate) || m.ValidateArtifactReceipt() != nil {
 		return MutationResult{}, ErrInvalid
 	}
 	if err := validateSecretInputs(m); err != nil {
@@ -73,6 +74,8 @@ func (r *MemoryRepository) CreateMutation(ctx context.Context, m Mutation) (Muta
 	id := uuid.New().String()
 	v := versionFromInspection(m.Inspection, now)
 	v.ArtifactPath, v.ArtifactDigest = m.ArtifactPath, m.ArtifactDigest
+	v.ArtifactCleanupToken = m.ArtifactCleanupToken
+	v.NodeArtifact = cloneNodeArtifactReceipt(m.NodeArtifact)
 	i := Installation{ID: id, Kind: m.Candidate.Kind, Source: m.Candidate.Source, CandidateID: m.Candidate.ID, Name: m.Candidate.Name, Description: m.Candidate.Description, Transport: m.Candidate.Transport, Revision: 1, State: StateInstalling, Enabled: false, ProposedVersionID: v.VersionID, Versions: []VersionRecord{v}, CreatedAt: now, UpdatedAt: now}
 	i.Candidate = m.Candidate
 	req := lifecycleFor(m, i, OperationInstall)
@@ -98,12 +101,15 @@ func (r *MemoryRepository) UpdateMutation(ctx context.Context, m Mutation, state
 		return x, e
 	}
 	r.mu.Unlock()
-	if state == StateUpdating {
+	if state == StateUninstalling {
+		if err := m.ValidateUninstallRequest(); err != nil {
+			return MutationResult{}, err
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if state == StateUpdating {
-		if m.Candidate.Validate() != nil || m.Inspection.Validate() != nil || !equalCandidate(m.Candidate, m.Inspection.Candidate) {
+		if m.Candidate.Validate() != nil || m.Inspection.Validate() != nil || !equalCandidate(m.Candidate, m.Inspection.Candidate) || m.ValidateArtifactReceipt() != nil {
 			return MutationResult{}, ErrInvalid
 		}
 		if err := validateSecretInputs(m); err != nil {
@@ -132,6 +138,8 @@ func (r *MemoryRepository) UpdateMutation(ctx context.Context, m Mutation, state
 	if state == StateUpdating {
 		v := versionFromInspection(m.Inspection, r.now().UTC())
 		v.ArtifactPath, v.ArtifactDigest = m.ArtifactPath, m.ArtifactDigest
+		v.ArtifactCleanupToken = m.ArtifactCleanupToken
+		v.NodeArtifact = cloneNodeArtifactReceipt(m.NodeArtifact)
 		staged.Versions = append(staged.Versions, v)
 		staged.ProposedVersionID = v.VersionID
 		staged.Candidate = m.Candidate
@@ -160,6 +168,14 @@ func operationForState(state State) string {
 }
 func versionFromInspection(in Inspection, now time.Time) VersionRecord {
 	return VersionRecord{VersionID: uuid.New().String(), Pin: in.Candidate.Pin, ContentDigest: in.ContentDigest, ManifestDigest: in.ManifestDigest, ExecutionDigest: in.ExecutionDigest, NetworkSchemaDigest: in.NetworkSchemaDigest, SecretSchemaDigest: in.SecretSchemaDigest, Execution: cloneExecution(in.Execution), NetworkGrants: append([]NetworkGrant(nil), in.NetworkGrants...), SecretGrants: redactedSecretGrants(in.SecretGrants), CreatedAt: now}
+}
+
+func cloneNodeArtifactReceipt(in *NodeArtifactReceipt) *NodeArtifactReceipt {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }
 func redactedSecretGrants(in []SecretGrantDescriptor) []SecretGrantDescriptor {
 	out := append([]SecretGrantDescriptor(nil), in...)
@@ -247,7 +263,10 @@ func mutationForUninstall(m Mutation, i Installation) Mutation {
 	for _, v := range i.Versions {
 		if v.VersionID == i.ActiveVersionID {
 			m.Candidate = Candidate{ID: i.CandidateID, Kind: i.Kind, Source: i.Source, Name: i.Name, Description: i.Description, Pin: v.Pin, Transport: i.Transport}
-			m.Inspection = Inspection{Candidate: m.Candidate, ContentDigest: v.ContentDigest, ManifestDigest: v.ManifestDigest, ExecutionDigest: v.ExecutionDigest, NetworkSchemaDigest: v.NetworkSchemaDigest, SecretSchemaDigest: v.SecretSchemaDigest, Execution: cloneExecution(v.Execution), NetworkGrants: append([]NetworkGrant(nil), v.NetworkGrants...), SecretGrants: append([]SecretGrantDescriptor(nil), i.SecretGrants...)}
+			m.Inspection = Inspection{Candidate: m.Candidate, ContentDigest: v.ContentDigest, ManifestDigest: v.ManifestDigest, ExecutionDigest: v.ExecutionDigest, NetworkSchemaDigest: v.NetworkSchemaDigest, SecretSchemaDigest: v.SecretSchemaDigest, Execution: cloneExecution(v.Execution), NetworkGrants: append([]NetworkGrant(nil), v.NetworkGrants...), SecretGrants: append([]SecretGrantDescriptor(nil), v.SecretGrants...)}
+			m.ArtifactPath, m.ArtifactDigest = v.ArtifactPath, v.ArtifactDigest
+			m.ArtifactCleanupToken = v.ArtifactCleanupToken
+			m.NodeArtifact = cloneNodeArtifactReceipt(v.NodeArtifact)
 			return m
 		}
 	}
@@ -271,12 +290,49 @@ type Completion struct {
 	ExpectedRevision     int64
 	OutcomeDigest        string
 	Success              bool
+	FailureCode          string
+	FailureSummary       string
+}
+
+const (
+	FailureCodeExtensionLifecycle    = "extension_failed"
+	FailureCodeInstallationLimit     = "extension_installation_limit"
+	FailureCodeNodeStorageQuota      = "extension_node_storage_quota"
+	FailureSummaryExtensionLifecycle = "Extension lifecycle failed"
+	FailureSummaryInstallationLimit  = "Extension installation capacity is exhausted"
+	FailureSummaryNodeStorageQuota   = "Managed Node extension storage quota is exhausted"
+)
+
+func LifecycleFailureDetails(err error) (string, string) {
+	switch {
+	case errors.Is(err, ErrInstallationLimit):
+		return FailureCodeInstallationLimit, FailureSummaryInstallationLimit
+	case errors.Is(err, ErrNodeStorageQuota):
+		return FailureCodeNodeStorageQuota, FailureSummaryNodeStorageQuota
+	default:
+		return FailureCodeExtensionLifecycle, FailureSummaryExtensionLifecycle
+	}
+}
+
+func ValidLifecycleFailureDetails(code, summary string) bool {
+	return code == FailureCodeExtensionLifecycle && summary == FailureSummaryExtensionLifecycle ||
+		code == FailureCodeInstallationLimit && summary == FailureSummaryInstallationLimit ||
+		code == FailureCodeNodeStorageQuota && summary == FailureSummaryNodeStorageQuota
 }
 
 func (r *MemoryRepository) CompleteLifecycle(_ context.Context, c Completion) (Installation, error) {
 	id := c.InstallationID
 	expectedRevision := c.ExpectedRevision
 	success := c.Success
+	if success {
+		if c.FailureCode != "" || c.FailureSummary != "" {
+			return Installation{}, ErrInvalid
+		}
+	} else if c.FailureCode == "" && c.FailureSummary == "" {
+		c.FailureCode, c.FailureSummary = LifecycleFailureDetails(nil)
+	} else if !ValidLifecycleFailureDetails(c.FailureCode, c.FailureSummary) {
+		return Installation{}, ErrInvalid
+	}
 	if !validUUID(id) || !validUUID(c.ConfirmationID) || !validUUID(c.TaskID) || expectedRevision < 1 || !validDigest(c.OutcomeDigest) || c.Attempt == 0 || c.LeaseEpoch == 0 || c.AcquiredTaskRevision < 1 || c.TerminalAttempt == 0 || c.TerminalLeaseEpoch == 0 || c.TerminalTaskRevision < 1 {
 		return Installation{}, ErrInvalid
 	}
@@ -373,6 +429,9 @@ func (r *MemoryRepository) CompleteLifecycle(_ context.Context, c Completion) (I
 	i.UpdatedAt = r.now().UTC()
 	r.items[id] = i
 	task.State = map[bool]string{true: "succeeded", false: "failed"}[success]
+	if !success {
+		task.FailureCode = c.FailureCode
+	}
 	if c.TerminalTaskRevision > 0 {
 		task.Revision = c.TerminalTaskRevision
 	} else {

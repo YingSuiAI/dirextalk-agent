@@ -1,0 +1,62 @@
+package main
+
+import (
+	"context"
+	"testing"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/source"
+	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
+)
+
+type builtinSeedStoreFake struct {
+	seeded  map[string]bool
+	ensured int
+}
+
+func (s *builtinSeedStoreFake) BuiltinSkillSeeded(_ context.Context, candidateID string) (bool, error) {
+	return s.seeded[candidateID], nil
+}
+
+func (s *builtinSeedStoreFake) EnsureBuiltinSkill(_ context.Context, artifact coreextension.FetchArtifact, digest string) (coreextension.Installation, error) {
+	s.ensured++
+	s.seeded[artifact.Candidate.ID] = true
+	return coreextension.Installation{
+		ID: "00000000-0000-4000-8000-000000000001", Candidate: artifact.Candidate,
+		Kind: coreextension.KindSkill, Source: coreextension.SourceBuiltin,
+		CandidateID: artifact.Candidate.ID, State: coreextension.StateInstalled,
+		Enabled: true, ActiveVersionID: "00000000-0000-4000-8000-000000000002",
+	}, nil
+}
+
+type builtinPublisherFake struct{ calls int }
+
+func (p *builtinPublisherFake) Publish(_ context.Context, entries []extensionrunner.ManifestEntry, _ []extensionrunner.PublishFile) (extensionrunner.PublishResponse, error) {
+	p.calls++
+	return extensionrunner.PublishResponse{Digest: extensionrunner.ManifestDigest(entries)}, nil
+}
+
+func TestEnsureDefaultBuiltinSkillsSeedsOnceAndHonorsRemovalFence(t *testing.T) {
+	catalog, err := source.NewBuiltinSkills()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &builtinSeedStoreFake{seeded: map[string]bool{}}
+	publisher := &builtinPublisherFake{}
+	if err := ensureDefaultBuiltinSkills(context.Background(), store, catalog, t.TempDir(), publisher); err != nil {
+		t.Fatal(err)
+	}
+	if store.ensured != 4 || publisher.calls != 4 {
+		t.Fatalf("first seed ensured=%d published=%d", store.ensured, publisher.calls)
+	}
+	// The durable seed survives uninstall. A restart must neither republish nor
+	// recreate a removed default Skill.
+	store.ensured = 0
+	publisher.calls = 0
+	if err := ensureDefaultBuiltinSkills(context.Background(), store, catalog, t.TempDir(), publisher); err != nil {
+		t.Fatal(err)
+	}
+	if store.ensured != 0 || publisher.calls != 0 {
+		t.Fatalf("restart recreated defaults: ensured=%d published=%d", store.ensured, publisher.calls)
+	}
+}

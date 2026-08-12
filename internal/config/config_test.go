@@ -376,3 +376,19 @@ func validCoreConfig(t *testing.T) Config {
 	}
 	return Config{InstanceID: "00000000-0000-4000-8000-000000000000", DatabaseURLFile: write("db", "postgres://core"), TLSCertFile: write("tls.crt", "cert"), TLSKeyFile: write("tls.key", "key"), ServiceTokenFile: write("token", strings.Repeat("A", 43)), CoreSecretMasterKeyFile: keyPath, CoreTaskMaxConcurrency: 4, CoreTaskLeaseTTL: 30 * time.Second, CoreScheduleSweepInterval: time.Second, CoreShutdownGrace: 30 * time.Second}
 }
+
+func TestValidateCoreStaticSitesRequiresExplicitExistingRoot(t *testing.T) {
+	cfg := validCoreConfig(t)
+	cfg.CoreStaticSitesRoot = t.TempDir()
+	if err := ValidateCoreStaticSites(&cfg); err == nil || !strings.Contains(err.Error(), "requires core_static_sites_enabled") {
+		t.Fatalf("disabled partial config err=%v", err)
+	}
+	cfg.CoreStaticSitesEnabled = true
+	if err := ValidateCoreStaticSites(&cfg); err != nil || !filepath.IsAbs(cfg.CoreStaticSitesRoot) {
+		t.Fatalf("enabled root=%q err=%v", cfg.CoreStaticSitesRoot, err)
+	}
+	cfg.CoreStaticSitesRoot = filepath.Join(t.TempDir(), "missing")
+	if err := ValidateCoreStaticSites(&cfg); err == nil {
+		t.Fatal("missing static-site root was accepted")
+	}
+}

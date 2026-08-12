@@ -36,6 +36,8 @@ type LocalInvocation struct {
 	TaskID, TaskFence, InstallationID, VersionID, InstallDigest string
 	ContentDigest, ArtifactDigest                               string
 	EntryPath                                                   string
+	EntrySHA256                                                 string
+	Runtime                                                     string
 	Argv                                                        []string
 	Tool                                                        string
 	Input                                                       json.RawMessage
@@ -262,7 +264,15 @@ func (e *LocalExecutor) Execute(ctx context.Context, in LocalInvocation) (extens
 		fence = StableRunID(in.TaskID, fence)
 	}
 	runID := StableRunID(in.TaskID, fence, in.InstallationID, in.VersionID, in.ContentDigest, in.ArtifactDigest, strings.Join(in.Argv, "\x00"))
-	request := extensionrunner.RequestV2{RunID: runID, TaskID: in.TaskID, TaskFence: fence, InstallDigest: in.InstallDigest, Entry: "entry", Argv: append([]string(nil), in.Argv...), Stdin: stdinRef, Secrets: secrets, ResultFiles: append([]string(nil), in.ResultFiles...), TimeoutMS: in.Timeout.Milliseconds(), Limits: in.Limits}
+	entry := "entry"
+	entrySHA256 := ""
+	if in.Runtime == "node" {
+		entry = in.EntryPath
+		entrySHA256 = in.EntrySHA256
+	} else if in.Runtime != "" {
+		return extensionrunner.StatusV1{}, extensionrunner.ErrInvalid
+	}
+	request := extensionrunner.RequestV2{RunID: runID, TaskID: in.TaskID, TaskFence: fence, InstallDigest: in.InstallDigest, Runtime: in.Runtime, Entry: entry, EntrySHA256: entrySHA256, Argv: append([]string(nil), in.Argv...), Stdin: stdinRef, Secrets: secrets, ResultFiles: append([]string(nil), in.ResultFiles...), TimeoutMS: in.Timeout.Milliseconds(), Limits: in.Limits}
 	if err := extensionrunner.ValidateRequestV2(request); err != nil {
 		return extensionrunner.StatusV1{}, err
 	}

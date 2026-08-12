@@ -229,6 +229,10 @@ func New(config *Config) (*Client, error) {
 	conn, err := grpc.NewClient(
 		config.ServerAddr,
 		grpc.WithTransportCredentials(creds),
+		// Product Capability is a private service-to-service mTLS channel.
+		// Ambient HTTP(S)_PROXY settings belong to outbound web traffic and
+		// must never redirect this authenticated peer connection.
+		grpc.WithNoProxy(),
 		grpc.WithConnectParams(grpc.ConnectParams{
 			MinConnectTimeout: 3 * time.Second,
 		}),

@@ -30,6 +30,7 @@ func cloneInstallation(i Installation) Installation {
 		}
 		v.NetworkGrants = append([]NetworkGrant(nil), v.NetworkGrants...)
 		v.SecretGrants = append([]SecretGrantDescriptor(nil), v.SecretGrants...)
+		v.NodeArtifact = cloneNodeArtifactReceipt(v.NodeArtifact)
 		for j := range v.Tools {
 			v.Tools[j].InputSchema = append([]byte(nil), v.Tools[j].InputSchema...)
 		}
@@ -201,12 +202,16 @@ func mutationDigest(m Mutation) string {
 	}
 	sort.Strings(secrets)
 	b, _ := json.Marshal(struct {
-		Candidate        Candidate
-		Inspection       Inspection
-		InstallationID   string
-		ExpectedRevision int64
-		Secrets          []string
-	}{m.Candidate, m.Inspection, m.InstallationID, m.ExpectedRevision, secrets})
+		Candidate            Candidate
+		Inspection           Inspection
+		InstallationID       string
+		ExpectedRevision     int64
+		Secrets              []string
+		ArtifactPath         string
+		ArtifactDigest       string
+		ArtifactCleanupToken string
+		NodeArtifact         *NodeArtifactReceipt
+	}{m.Candidate, m.Inspection, m.InstallationID, m.ExpectedRevision, secrets, m.ArtifactPath, m.ArtifactDigest, m.ArtifactCleanupToken, m.NodeArtifact})
 	return digestBytes(b)
 }
 

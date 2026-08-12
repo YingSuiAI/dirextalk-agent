@@ -129,11 +129,8 @@ func TestCoreExtensionPostgresInstallUpdateUninstallLifecycle(t *testing.T) {
 		t.Fatalf("complete local MCP committed=%v err=%v", committed, completeErr)
 	}
 	completedExecution, e := tasks.GetTask(ctx, executionResult.TaskID)
-	if e != nil {
+	if e != nil || completedExecution.Status != coretask.StatusSucceeded {
 		t.Fatal(e)
-	}
-	if _, e = tasks.DeleteTask(ctx, coretask.DeleteTaskCommand{TaskID: completedExecution.ID, Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("c", 64), ExpectedRevision: completedExecution.Revision}, At: time.Now().UTC()}); e != nil {
-		t.Fatalf("delete completed local MCP task: %v", e)
 	}
 	// A queued execution snapshot pins the active immutable artifact. Removal
 	// must reject while that task can still execute, then succeed once the task
@@ -156,9 +153,10 @@ func TestCoreExtensionPostgresInstallUpdateUninstallLifecycle(t *testing.T) {
 	if e != nil {
 		t.Fatalf("create pinned task: %v", e)
 	}
-	m.IdempotencyKey = uuid.NewString()
-	m.InstallationID = latest.ID
-	m.ExpectedRevision = latest.Revision
+	// Public uninstall carries only identity and revision. PostgreSQL must bind
+	// confirmation to the authoritative active version rather than relying on
+	// a stale caller-supplied candidate/inspection from an earlier mutation.
+	m = coreextension.Mutation{IdempotencyKey: uuid.NewString(), InstallationID: latest.ID, ExpectedRevision: latest.Revision}
 	res3, e := ext.RemoveMutation(ctx, m)
 	if !errors.Is(e, coreextension.ErrConflict) {
 		t.Fatalf("remove with pinned task error=%v", e)
@@ -166,9 +164,8 @@ func TestCoreExtensionPostgresInstallUpdateUninstallLifecycle(t *testing.T) {
 	if _, e = tasks.CancelTask(ctx, coretask.CancelCommand{TaskID: pinned.ID, Reason: "release pin", Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("d", 64), ExpectedRevision: pinned.Revision}, At: time.Now().UTC()}); e != nil {
 		t.Fatalf("cancel pinned task: %v", e)
 	}
-	if _, e = tasks.DeleteTask(ctx, coretask.DeleteTaskCommand{TaskID: pinned.ID, Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("e", 64), ExpectedRevision: pinned.Revision + 1}, At: time.Now().UTC()}); e != nil {
-		t.Fatalf("delete pinned task: %v", e)
-	}
+	// Terminal task snapshots remain durable audit records, but can no longer
+	// execute and therefore must not pin an immutable runtime artifact forever.
 	m.IdempotencyKey = uuid.NewString()
 	res3, e = ext.RemoveMutation(ctx, m)
 	if e != nil {
@@ -676,7 +673,8 @@ func TestCoreExtensionPostgresUncertainAckRacesLifecycleMutations(t *testing.T) 
 		t.Fatalf("update bypassed active uncertain reservation: %v", err)
 	}
 	preflight.IdempotencyKey = uuid.NewString()
-	if _, err = ext.RemoveMutation(ctx, preflight); !errors.Is(err, coreextension.ErrConflict) {
+	removePreflight := coreextension.Mutation{IdempotencyKey: preflight.IdempotencyKey, InstallationID: preflight.InstallationID, ExpectedRevision: preflight.ExpectedRevision}
+	if _, err = ext.RemoveMutation(ctx, removePreflight); !errors.Is(err, coreextension.ErrConflict) {
 		t.Fatalf("remove bypassed active uncertain reservation: %v", err)
 	}
 	ackCommand := coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand{OwnerID: "@owner:example.test", AccountGeneration: 1, ConfirmationID: execution.ConfirmationID, TaskID: execution.TaskID, InstallationID: installed.ID, ExpectedTaskRevision: int64(uncertainTask.Revision), ExpectedConfirmationRevision: uncertainConfirmation.Revision, Resolution: coreconfirmation.ExtensionUncertainAcknowledgedUnknownNoRetry, IdempotencyKey: uuid.NewString()}
@@ -693,7 +691,7 @@ func TestCoreExtensionPostgresUncertainAckRacesLifecycleMutations(t *testing.T) 
 		<-start
 		mutation := coreextension.Mutation{IdempotencyKey: uuid.NewString(), InstallationID: installed.ID, ExpectedRevision: installed.Revision, Candidate: candidate, Inspection: inspection, ArtifactPath: filepath.Join(t.TempDir(), name), ArtifactDigest: strings.Repeat("b", 64)}
 		if remove {
-			_, e := ext.RemoveMutation(ctx, mutation)
+			_, e := ext.RemoveMutation(ctx, coreextension.Mutation{IdempotencyKey: mutation.IdempotencyKey, InstallationID: mutation.InstallationID, ExpectedRevision: mutation.ExpectedRevision})
 			results <- lifecycleResult{name: name, err: e}
 			return
 		}

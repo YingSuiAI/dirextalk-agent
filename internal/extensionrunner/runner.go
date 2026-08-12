@@ -34,15 +34,16 @@ func RunCoreResultV1(ctx context.Context, backend LinuxBackend, invocation Sandb
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, time.Duration(invocation.Request.TimeoutMS)*time.Millisecond)
 	defer cancel()
+	var stderr []byte
 	if waiter, ok := p.(interface {
 		WaitContext(context.Context) ([]byte, []byte, string, error)
 	}); ok {
-		_, _, _, err = waiter.WaitContext(waitCtx)
+		_, stderr, _, err = waiter.WaitContext(waitCtx)
 	} else {
-		_, _, _, err = p.Wait()
+		_, stderr, _, err = p.Wait()
 	}
 	if err != nil {
-		return nil, err
+		return nil, coreSandboxWaitError(stderr, err)
 	}
 	seals, err := unix.FcntlInt(uintptr(fd), unix.F_GET_SEALS, 0)
 	required := unix.F_SEAL_SEAL | unix.F_SEAL_SHRINK | unix.F_SEAL_GROW | unix.F_SEAL_WRITE
@@ -60,16 +61,35 @@ func RunCoreResultV1(ctx context.Context, backend LinuxBackend, invocation Sandb
 	return b, nil
 }
 
+func coreSandboxWaitError(stderr []byte, waitErr error) error {
+	if waitErr == nil {
+		return nil
+	}
+	if stage, ok := AvailabilityStage(waitErr); ok {
+		return unavailableAt(stage)
+	}
+	return unavailableAt(sandboxFinalWaitStage(stderr))
+}
+
 type Runner struct {
-	InstallResolver   InstallResolver
-	WorkspaceResolver WorkspaceResolver
-	V2Backend         V2Backend
-	Logger            *slog.Logger
+	InstallResolver     InstallResolver
+	NodeInstallResolver NodeInstallResolver
+	WorkspaceResolver   WorkspaceResolver
+	V2Backend           V2Backend
+	Logger              *slog.Logger
 }
 
 // RunV2 is the descriptor-only execution path.
 func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registry *RunRegistry) (terminal StatusV1, retErr error) {
 	if err := ValidateRequestFDs(request, fds); err != nil {
+		if r.Logger != nil {
+			r.Logger.Warn("extension runner request rejected", "stage", "fd_validate", "error_code", ErrorInvalidRequest, "fd_count", len(fds), "stdin_bytes", func() int64 {
+				if request.Stdin == nil {
+					return 0
+				}
+				return request.Stdin.Size
+			}())
+		}
 		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorInvalidRequest}, err
 	}
 	if registry == nil {
@@ -82,7 +102,7 @@ func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registr
 	} else if ok {
 		return replay, nil
 	}
-	if r.InstallResolver == nil || r.WorkspaceResolver == nil || r.V2Backend == nil {
+	if r.InstallResolver == nil || r.WorkspaceResolver == nil || r.V2Backend == nil || (request.Runtime == "node" && r.NodeInstallResolver == nil) {
 		_ = registry.Abort(request.RunID, ErrorUnavailableBackend)
 		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorUnavailableBackend}, ErrUnavailable
 	}
@@ -94,7 +114,13 @@ func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registr
 			_ = registry.Abort(request.RunID, code)
 		}
 	}()
-	install, err := r.InstallResolver.ResolveInstall(request.InstallDigest)
+	var install *AdmittedInstall
+	var err error
+	if request.Runtime == "node" {
+		install, err = r.NodeInstallResolver.ResolveNodeInstall(request.InstallDigest, request.Entry, request.EntrySHA256)
+	} else {
+		install, err = r.InstallResolver.ResolveInstall(request.InstallDigest)
+	}
 	if err != nil {
 		r.logDenied(request.RunID, "install_resolve")
 		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorDeniedRequest}, ErrDenied
@@ -122,6 +148,18 @@ func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registr
 	}
 	stdin, secrets, err := duplicateV2Inputs(request, fds)
 	if err != nil {
+		if r.Logger != nil {
+			reason := "other"
+			switch {
+			case errors.Is(err, unix.EBADF):
+				reason = "bad_fd"
+			case errors.Is(err, unix.EMFILE), errors.Is(err, unix.ENFILE):
+				reason = "fd_limit"
+			case errors.Is(err, unix.EINTR):
+				reason = "interrupted"
+			}
+			r.Logger.Warn("extension runner request rejected", "stage", "input_duplicate", "class", reason, "error_code", ErrorInvalidRequest, "fd_count", len(fds))
+		}
 		return StatusV1{RunID: request.RunID, Phase: PhaseFailed, Error: ErrorInvalidRequest}, err
 	}
 	defer closeV2Inputs(stdin, secrets)
@@ -184,7 +222,7 @@ func (r Runner) RunV2(ctx context.Context, request RequestV2, fds []int, registr
 	if waitErr != nil {
 		_ = p.KillGroup()
 		switch {
-		case errors.Is(waitErr, errCgroupCleanup):
+		case errors.Is(waitErr, errCgroupCleanup), errors.Is(waitErr, errSandboxRootCleanup):
 			code = ErrorCleanup
 		case errors.Is(waitErr, context.DeadlineExceeded):
 			code = ErrorTimeout
@@ -285,14 +323,14 @@ func duplicateV2Inputs(r RequestV2, fds []int) (int, []int, error) {
 		var e error
 		stdin, e = unix.Dup(fds[r.Stdin.Index])
 		if e != nil {
-			return -1, secrets, ErrInvalid
+			return -1, secrets, errors.Join(ErrInvalid, e)
 		}
 	}
 	for i, s := range r.Secrets {
 		fd, e := unix.Dup(fds[s.Index])
 		if e != nil {
 			closeV2Inputs(stdin, secrets)
-			return -1, nil, ErrInvalid
+			return -1, nil, errors.Join(ErrInvalid, e)
 		}
 		secrets[i] = fd
 	}

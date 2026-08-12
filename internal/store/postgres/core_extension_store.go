@@ -20,7 +20,7 @@ type CoreExtensionStore struct{ store *Store }
 func NewCoreExtensionStore(s *Store) *CoreExtensionStore { return &CoreExtensionStore{store: s} }
 
 func versionFromInspectionPG(in coreextension.Inspection, id uuid.UUID, now time.Time, m coreextension.Mutation) coreextension.VersionRecord {
-	return coreextension.VersionRecord{VersionID: id.String(), Pin: in.Candidate.Pin, ContentDigest: in.ContentDigest, ManifestDigest: in.ManifestDigest, ExecutionDigest: in.ExecutionDigest, NetworkSchemaDigest: in.NetworkSchemaDigest, SecretSchemaDigest: in.SecretSchemaDigest, Execution: in.Execution, NetworkGrants: in.NetworkGrants, SecretGrants: configuredGrants(in.SecretGrants), ArtifactPath: m.ArtifactPath, ArtifactDigest: m.ArtifactDigest, CreatedAt: now}
+	return coreextension.VersionRecord{VersionID: id.String(), Pin: in.Candidate.Pin, ContentDigest: in.ContentDigest, ManifestDigest: in.ManifestDigest, ExecutionDigest: in.ExecutionDigest, NetworkSchemaDigest: in.NetworkSchemaDigest, SecretSchemaDigest: in.SecretSchemaDigest, Execution: in.Execution, NetworkGrants: in.NetworkGrants, SecretGrants: configuredGrants(in.SecretGrants), ArtifactPath: m.ArtifactPath, ArtifactDigest: m.ArtifactDigest, ArtifactCleanupToken: m.ArtifactCleanupToken, NodeArtifact: m.NodeArtifact, CreatedAt: now}
 }
 func configuredGrants(g []coreextension.SecretGrantDescriptor) []coreextension.SecretGrantDescriptor {
 	o := append([]coreextension.SecretGrantDescriptor(nil), g...)
@@ -65,7 +65,11 @@ func opForPG(s coreextension.State) string {
 	return coreextension.OperationUninstall
 }
 func bindingPG(i coreextension.Installation, m coreextension.Mutation) coreconfirmation.Binding {
-	b := coreconfirmation.Binding{OperationDomain: "extension", TargetID: i.ID, TargetRevision: i.Revision, SourceVersion: i.Candidate.Pin.RegistryVersion, SourceCommit: i.Candidate.Pin.GitCommit, ContentDigest: coreconfirmation.Digest(m.Inspection.ContentDigest), ParameterDigest: coreconfirmation.Digest(digestPG(m, "params")), NetworkDigest: coreconfirmation.Digest(digestPG(m.Inspection.NetworkGrants, "network-schema")), SecretGrantDigest: coreconfirmation.Digest(digestPG(m.Inspection.SecretGrants, "secret-schema"))}
+	// The mutation is the repository-sealed lifecycle plan. In particular,
+	// uninstall reconstructs it from the exact active immutable version; the
+	// mutable installation projection must not be allowed to substitute a
+	// newer, failed, or otherwise stale source pin in the confirmation binding.
+	b := coreconfirmation.Binding{OperationDomain: "extension", TargetID: i.ID, TargetRevision: i.Revision, SourceVersion: m.Candidate.Pin.RegistryVersion, SourceCommit: m.Candidate.Pin.GitCommit, ContentDigest: coreconfirmation.Digest(m.Inspection.ContentDigest), ParameterDigest: coreconfirmation.Digest(digestPG(m, "params")), NetworkDigest: coreconfirmation.Digest(digestPG(m.Inspection.NetworkGrants, "network-schema")), SecretGrantDigest: coreconfirmation.Digest(digestPG(m.Inspection.SecretGrants, "secret-schema"))}
 	for _, g := range m.Inspection.NetworkGrants {
 		b.NetworkGrants = append(b.NetworkGrants, fmt.Sprintf("%s://%s:%d%s:%s", g.Scheme, g.Host, g.Port, g.PathPrefix, g.Digest))
 	}

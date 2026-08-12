@@ -12,7 +12,7 @@ type Registry struct {
 
 func NewRegistry() *Registry { return &Registry{adapters: map[Source]SourceAdapter{}} }
 func (r *Registry) Register(source Source, a SourceAdapter) error {
-	if !validKindSource(KindMCP, source) && source != SourceSkillsSh {
+	if !validKindSource(KindMCP, source) && source != SourceSkillsSh && source != SourceBuiltin {
 		return ErrInvalid
 	}
 	if a == nil {

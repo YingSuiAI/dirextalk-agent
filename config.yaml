@@ -9,4 +9,5 @@ enable_reflection: true
 core_knowledge_enabled: false
 core_workload_enabled: false
 core_extension_enabled: false
+core_static_sites_enabled: false
 core_aws_enabled: false

@@ -40,6 +40,13 @@ type LinuxExecutor struct{ InstallRoot, WorkspaceRoot, CgroupRoot, StaticShell s
 
 const maxServiceBytes = 16 << 20
 
+const (
+	coreReadinessMemoryMB  int64 = 64
+	coreReadinessProcesses int64 = 16
+	coreReadinessTimeoutS  int64 = 5
+	coreReadinessDeadline        = 30 * time.Second
+)
+
 func (e LinuxExecutor) Execute(ctx context.Context, q Request) (string, error) {
 	r, err := e.ApplyPersistent(ctx, q)
 	return r.State, err
@@ -49,15 +56,15 @@ func (e LinuxExecutor) ApplyPersistent(ctx context.Context, q Request) (Receipt,
 	if q.Action != "apply" || len(q.NetworkGrants) != 0 || len(q.SecretDescriptors) != 0 || !e.validLimits(q) {
 		return Receipt{}, ErrDenied
 	}
-	if err := e.runInstall(ctx, q); err != nil {
-		return Receipt{}, err
-	}
 	staged := true
 	defer func() {
 		if staged {
 			_ = e.removeWorkspace(q)
 		}
 	}()
+	if err := e.runInstall(ctx, q); err != nil {
+		return Receipt{}, ErrDenied
+	}
 	service, err := e.readWorkspaceService(q)
 	if err != nil {
 		return Receipt{}, ErrDenied
@@ -225,16 +232,19 @@ func (e LinuxExecutor) Probe() error {
 		return unavailableAt("identity")
 	}
 	id := hex.EncodeToString(token[:])
-	q := Request{Action: "apply", WorkloadID: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], OperationID: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], PlanDigest: strings.Repeat("0", 64), PlanRevision: 1, DispatchClaim: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], DispatchEpoch: 1, CommandSteps: []string{"printf '#!/bin/sh\\nexit 0\\n' > readiness-service"}, Service: "readiness-service", Limits: coreworkload.ResourceLimits{CPU: 1, MemoryMB: 16, Processes: 8, DiskMB: 16, TimeoutS: 1, OutputMB: 1}}
+	q := Request{Action: "apply", WorkloadID: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], OperationID: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], PlanDigest: strings.Repeat("0", 64), PlanRevision: 1, DispatchClaim: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], DispatchEpoch: 1, CommandSteps: []string{"printf '#!/bin/sh\\nexit 0\\n' > readiness-service"}, Service: "readiness-service", Limits: coreworkload.ResourceLimits{CPU: 2, MemoryMB: coreReadinessMemoryMB, Processes: coreReadinessProcesses, DiskMB: 16, TimeoutS: coreReadinessTimeoutS, OutputMB: 1}}
 	if q.Validate() != nil {
 		return unavailableAt("request")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), coreReadinessDeadline)
 	defer cancel()
+	defer e.removeWorkspace(q)
 	if err := e.runInstall(ctx, q); err != nil {
+		if stage, ok := installReadinessStage(err); ok {
+			return unavailableAt("install_" + stage)
+		}
 		return unavailableAt("install")
 	}
-	defer e.removeWorkspace(q)
 	service, err := e.readWorkspaceService(q)
 	if err != nil {
 		return unavailableAt("result")
@@ -251,7 +261,10 @@ func (e LinuxExecutor) Probe() error {
 	}
 	defer unix.Close(workspace)
 	p, err := extensionrunner.StartPersistentServiceV1(ctx, e.backend(), extensionrunner.SandboxInvocationV2{Request: e.request(q, digest, argv), Install: install, WorkspaceFD: workspace, StdinFD: -1, CoreTmpfsBytes: q.Limits.DiskMB * 1024 * 1024}, time.Millisecond, q.Limits.OutputMB*1024*1024)
-	if err != nil || p == nil || !e.identityOwned(p.Identity()) {
+	if err != nil {
+		return unavailableAt(sandboxReadinessStage(err))
+	}
+	if p == nil || !e.identityOwned(p.Identity()) {
 		return unavailableAt("sandbox")
 	}
 	if p.Destroy(context.Background()) != nil {
@@ -261,6 +274,25 @@ func (e LinuxExecutor) Probe() error {
 }
 
 type readinessError struct{ stage string }
+
+type installReadinessError struct {
+	stage string
+}
+
+func (e installReadinessError) Error() string { return "core install unavailable" }
+func (e installReadinessError) Unwrap() error { return ErrDenied }
+
+func installUnavailableAt(stage string) error {
+	return installReadinessError{stage: stage}
+}
+
+func installReadinessStage(err error) (string, bool) {
+	var target installReadinessError
+	if !errors.As(err, &target) {
+		return "", false
+	}
+	return target.stage, true
+}
 
 func (e readinessError) Error() string { return "core runner unavailable at " + e.stage }
 func (e readinessError) Unwrap() error { return ErrDenied }
@@ -314,11 +346,11 @@ func (e LinuxExecutor) request(q Request, digest string, argv []string) extensio
 
 func (e LinuxExecutor) runInstall(ctx context.Context, q Request) error {
 	if err := e.publishShell(); err != nil {
-		return ErrDenied
+		return installUnavailableAt("publish_shell")
 	}
 	b, err := os.ReadFile(e.StaticShell)
 	if err != nil {
-		return ErrDenied
+		return installUnavailableAt("read_shell")
 	}
 	m := []extensionrunner.ManifestEntry{{Path: "entry", SHA256: extensionrunner.DigestBytes(b), Size: int64(len(b))}}
 	d := extensionrunner.ManifestDigest(m)
@@ -326,25 +358,39 @@ func (e LinuxExecutor) runInstall(ctx context.Context, q Request) error {
 	r.ResultFiles = []string{q.Service}
 	install, err := (extensionrunner.DiskInstallResolver{Root: e.InstallRoot}).ResolveInstall(d)
 	if err != nil {
-		return ErrDenied
+		return installUnavailableAt("resolve_install")
 	}
 	defer install.Close()
 	workspace, err := (extensionrunner.DiskWorkspaceResolver{Root: e.WorkspaceRoot}).ResolveWorkspace(q.OperationID, q.DispatchClaim)
 	if err != nil {
-		return ErrDenied
+		return installUnavailableAt("resolve_workspace")
 	}
 	defer unix.Close(workspace)
 	service, err := extensionrunner.RunCoreResultV1(ctx, e.backend(), extensionrunner.SandboxInvocationV2{Request: r, Install: install, WorkspaceFD: workspace, StdinFD: -1}, q.Limits.DiskMB*1024*1024, q.Service)
-	if err != nil || len(service) == 0 {
-		return ErrDenied
+	if err != nil {
+		return installSandboxUnavailable(err)
+	}
+	if len(service) == 0 {
+		return installUnavailableAt("empty_result")
 	}
 	// The private tmpfs was destroyed with the manager. Publish only the
 	// validated sealed export into the runner-owned staging workspace.
 	path := filepath.Join(e.WorkspaceRoot, q.OperationID, q.DispatchClaim, q.Service)
 	if err := os.WriteFile(path, service, 0600); err != nil {
-		return ErrDenied
+		return installUnavailableAt("write_result")
 	}
 	return nil
+}
+
+func installSandboxUnavailable(err error) error {
+	return installUnavailableAt(sandboxReadinessStage(err))
+}
+
+func sandboxReadinessStage(err error) string {
+	if stage, ok := extensionrunner.AvailabilityStage(err); ok {
+		return "sandbox_" + stage
+	}
+	return "sandbox"
 }
 
 func (e LinuxExecutor) backend() extensionrunner.LinuxBackend {

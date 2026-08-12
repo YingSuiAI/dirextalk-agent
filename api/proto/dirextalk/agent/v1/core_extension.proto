@@ -4,23 +4,24 @@ option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agen
 import "google/protobuf/timestamp.proto";
 
 enum CoreExtensionKind { CORE_EXTENSION_KIND_UNSPECIFIED = 0; CORE_EXTENSION_KIND_MCP = 1; CORE_EXTENSION_KIND_SKILL = 2; }
-enum CoreExtensionSource { CORE_EXTENSION_SOURCE_UNSPECIFIED = 0; CORE_EXTENSION_SOURCE_OFFICIAL_REGISTRY = 1; CORE_EXTENSION_SOURCE_SMITHERY = 2; CORE_EXTENSION_SOURCE_GLAMA = 3; CORE_EXTENSION_SOURCE_GITHUB = 4; CORE_EXTENSION_SOURCE_SKILLS_SH = 5; }
-enum CoreExtensionTransport { CORE_EXTENSION_TRANSPORT_UNSPECIFIED = 0; CORE_EXTENSION_TRANSPORT_STDIO_STATIC = 1; CORE_EXTENSION_TRANSPORT_STREAMABLE_HTTP = 2; CORE_EXTENSION_TRANSPORT_SKILL_STATIC = 3; }
+enum CoreExtensionSource { CORE_EXTENSION_SOURCE_UNSPECIFIED = 0; CORE_EXTENSION_SOURCE_OFFICIAL_REGISTRY = 1; CORE_EXTENSION_SOURCE_SMITHERY = 2; CORE_EXTENSION_SOURCE_GLAMA = 3; CORE_EXTENSION_SOURCE_GITHUB = 4; CORE_EXTENSION_SOURCE_SKILLS_SH = 5; CORE_EXTENSION_SOURCE_BUILTIN = 6; CORE_EXTENSION_SOURCE_NPM = 7; }
+enum CoreExtensionTransport { CORE_EXTENSION_TRANSPORT_UNSPECIFIED = 0; CORE_EXTENSION_TRANSPORT_STDIO_STATIC = 1; CORE_EXTENSION_TRANSPORT_STREAMABLE_HTTP = 2; CORE_EXTENSION_TRANSPORT_SKILL_STATIC = 3; CORE_EXTENSION_TRANSPORT_STDIO_NODE = 4; }
 enum CoreExtensionState { CORE_EXTENSION_STATE_UNSPECIFIED = 0; CORE_EXTENSION_STATE_DRAFT = 1; CORE_EXTENSION_STATE_INSTALLING = 2; CORE_EXTENSION_STATE_INSTALLED = 3; CORE_EXTENSION_STATE_UPDATING = 4; CORE_EXTENSION_STATE_UNINSTALLING = 5; CORE_EXTENSION_STATE_REMOVED = 6; CORE_EXTENSION_STATE_FAILED = 7; }
 enum CoreSecretPurpose { CORE_SECRET_PURPOSE_UNSPECIFIED = 0; CORE_SECRET_PURPOSE_MCP_CREDENTIAL = 1; CORE_SECRET_PURPOSE_SKILL_SECRET = 2; }
 
 message CoreSourcePin { string registry_version = 1; string registry_sha256 = 2; string git_commit = 3; string git_sha256 = 4; }
-message CoreStaticEntry { string relative_path = 1; string digest = 2; repeated string argv = 3; }
+message CoreStaticEntry { string relative_path = 1; string digest = 2; repeated string argv = 3; string runtime = 4; }
 // credential_reference_id is empty for public Streamable HTTP endpoints.
 message CoreRemoteEndpoint { string url = 1; string credential_reference_id = 2; }
 message CoreSkillEntry { string relative_path = 1; string digest = 2; bool executable = 3; repeated string argv = 4; }
 message CoreExtensionSecretGrantDescriptor { string reference_id = 1; CoreSecretPurpose purpose = 2; string binding_digest = 3; bool configured = 4; }
+message CoreNodeArtifactReceipt { string package_name = 1; string package_version = 2; uint64 artifact_bytes = 3; uint32 file_count = 4; string node_version = 5; string npm_version = 6; bool lifecycle_scripts_disabled = 7; bool native_addons_absent = 8; }
 message CoreExecution { oneof descriptor { CoreStaticEntry stdio = 1; CoreRemoteEndpoint remote = 2; CoreSkillEntry skill = 3; } }
 message CoreNetworkGrant { string scheme = 1; string host = 2; uint32 port = 3; string path_prefix = 4; string digest = 5; }
 
 message CoreExtensionCandidate { string id = 1; CoreExtensionKind kind = 2; CoreExtensionSource source = 3; string name = 4; string description = 5; CoreSourcePin pin = 6; CoreExtensionTransport transport = 7; }
 message CoreExtensionInspection { CoreExtensionCandidate candidate = 1; string content_digest = 2; string manifest_digest = 3; string execution_digest = 4; string network_schema_digest = 5; string secret_schema_digest = 6; CoreExecution execution = 7; repeated CoreNetworkGrant network_grants = 8; repeated CoreExtensionSecretGrantDescriptor secret_grants = 9; }
-message CoreExtensionVersion { string version_id = 1; CoreSourcePin pin = 2; string content_digest = 3; string manifest_digest = 4; string execution_digest = 5; string network_schema_digest = 6; string secret_schema_digest = 7; CoreExecution execution = 8; google.protobuf.Timestamp created_at = 9; repeated CoreNetworkGrant network_grants = 10; repeated CoreExtensionSecretGrantDescriptor secret_grants = 11; }
+message CoreExtensionVersion { string version_id = 1; CoreSourcePin pin = 2; string content_digest = 3; string manifest_digest = 4; string execution_digest = 5; string network_schema_digest = 6; string secret_schema_digest = 7; CoreExecution execution = 8; google.protobuf.Timestamp created_at = 9; repeated CoreNetworkGrant network_grants = 10; repeated CoreExtensionSecretGrantDescriptor secret_grants = 11; CoreNodeArtifactReceipt node_artifact = 12; }
 message CoreInstallation { string installation_id = 1; CoreExtensionKind kind = 2; CoreExtensionSource source = 3; string name = 4; int64 revision = 5; CoreExtensionState state = 6; string active_version_id = 7; repeated CoreExtensionVersion versions = 8; repeated CoreExtensionSecretGrantDescriptor secret_grants = 9; google.protobuf.Timestamp created_at = 10; google.protobuf.Timestamp updated_at = 11; string proposed_version_id = 12; string candidate_id = 13; string description = 14; CoreExtensionTransport transport = 15; repeated CoreNetworkGrant network_grants = 16; }
 
 message CoreExtensionSecretInput { string reference_id = 1; CoreSecretPurpose purpose = 2; string secret_value = 3; }

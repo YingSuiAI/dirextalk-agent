@@ -120,7 +120,7 @@ func AdmitInstall(root, digest string, manifest []ManifestEntry) error {
 // OpenAdmittedInstall verifies each manifest member through the trusted root
 // FD and retains the verified root and entry descriptors for later execution.
 func OpenAdmittedInstall(root, digest string, manifest []ManifestEntry) (_ *AdmittedInstall, retErr error) {
-	return openAdmittedBundle(root, digest, manifest, true)
+	return openAdmittedBundle(root, digest, manifest, "entry", true)
 }
 
 // OpenAdmittedBundle verifies an immutable published bundle without requiring
@@ -128,10 +128,28 @@ func OpenAdmittedInstall(root, digest string, manifest []ManifestEntry) (_ *Admi
 // execution continues to use OpenAdmittedInstall and therefore requires the
 // statically linked ELF entry.
 func OpenAdmittedBundle(root, digest string, manifest []ManifestEntry) (_ *AdmittedInstall, retErr error) {
-	return openAdmittedBundle(root, digest, manifest, false)
+	return openAdmittedBundle(root, digest, manifest, "", false)
 }
 
-func openAdmittedBundle(root, digest string, manifest []ManifestEntry, requireEntry bool) (_ *AdmittedInstall, retErr error) {
+// OpenAdmittedNodeInstall retains an exact JavaScript entry descriptor while
+// preserving the same immutable whole-tree verification as native installs.
+// The interpreter is supplied only by the runner's fixed runtime mount.
+func OpenAdmittedNodeInstall(root, digest string, manifest []ManifestEntry, entryPath, entrySHA256 string) (_ *AdmittedInstall, retErr error) {
+	if !safeRelativeSlash(entryPath) || !digestRE.MatchString(entrySHA256) {
+		return nil, ErrInvalid
+	}
+	a, err := openAdmittedBundle(root, digest, manifest, entryPath, false)
+	if err != nil {
+		return nil, err
+	}
+	if a.EntrySHA256 != entrySHA256 {
+		_ = a.Close()
+		return nil, ErrInvalid
+	}
+	return a, nil
+}
+
+func openAdmittedBundle(root, digest string, manifest []ManifestEntry, admissionEntry string, requireStaticELF bool) (_ *AdmittedInstall, retErr error) {
 	if !filepath.IsAbs(root) || !digestRE.MatchString(digest) || len(manifest) == 0 {
 		return nil, ErrInvalid
 	}
@@ -182,44 +200,50 @@ func openAdmittedBundle(root, digest string, manifest []ManifestEntry, requireEn
 			_ = f.Close()
 			return nil, ErrInvalid
 		}
-		if m.Path == "entry" {
-			if st.Mode&0o111 == 0 {
+		if m.Path == admissionEntry {
+			if requireStaticELF && st.Mode&0o111 == 0 {
 				_ = f.Close()
 				return nil, ErrInvalid
+			}
+			if requireStaticELF {
+				if _, err := f.Seek(0, io.SeekStart); err != nil {
+					_ = f.Close()
+					return nil, ErrInvalid
+				}
+				elfFile, err := elf.NewFile(f)
+				if err != nil {
+					_ = f.Close()
+					return nil, ErrInvalid
+				}
+				if elfFile.FileHeader.Type != elf.ET_EXEC && elfFile.FileHeader.Type != elf.ET_DYN {
+					elfFile.Close()
+					_ = f.Close()
+					return nil, ErrInvalid
+				}
+				if elfFile.FileHeader.Class != elf.ELFCLASS64 || elfFile.FileHeader.Data != elf.ELFDATA2LSB || (elfFile.FileHeader.OSABI != elf.ELFOSABI_NONE && elfFile.FileHeader.OSABI != elf.ELFOSABI_LINUX) || !supportedMachine(elfFile.FileHeader.Machine) {
+					elfFile.Close()
+					_ = f.Close()
+					return nil, ErrInvalid
+				}
+				for _, prog := range elfFile.Progs {
+					if prog.Type == elf.PT_INTERP {
+						elfFile.Close()
+						_ = f.Close()
+						return nil, ErrInvalid
+					}
+				}
+				if needed, e := elfFile.DynString(elf.DT_NEEDED); e == nil && len(needed) > 0 {
+					elfFile.Close()
+					_ = f.Close()
+					return nil, ErrInvalid
+				}
+				a.EntryELF = elfFile.FileHeader
+				elfFile.Close()
 			}
 			if _, err := f.Seek(0, io.SeekStart); err != nil {
 				_ = f.Close()
 				return nil, ErrInvalid
 			}
-			elfFile, err := elf.NewFile(f)
-			if err != nil {
-				_ = f.Close()
-				return nil, ErrInvalid
-			}
-			if elfFile.FileHeader.Type != elf.ET_EXEC && elfFile.FileHeader.Type != elf.ET_DYN {
-				elfFile.Close()
-				_ = f.Close()
-				return nil, ErrInvalid
-			}
-			if elfFile.FileHeader.Class != elf.ELFCLASS64 || elfFile.FileHeader.Data != elf.ELFDATA2LSB || (elfFile.FileHeader.OSABI != elf.ELFOSABI_NONE && elfFile.FileHeader.OSABI != elf.ELFOSABI_LINUX) || !supportedMachine(elfFile.FileHeader.Machine) {
-				elfFile.Close()
-				_ = f.Close()
-				return nil, ErrInvalid
-			}
-			for _, prog := range elfFile.Progs {
-				if prog.Type == elf.PT_INTERP {
-					elfFile.Close()
-					_ = f.Close()
-					return nil, ErrInvalid
-				}
-			}
-			if needed, e := elfFile.DynString(elf.DT_NEEDED); e == nil && len(needed) > 0 {
-				elfFile.Close()
-				_ = f.Close()
-				return nil, ErrInvalid
-			}
-			a.EntryELF = elfFile.FileHeader
-			elfFile.Close()
 			a.EntryDev, a.EntryIno = uint64(st.Dev), st.Ino
 			a.EntryMode, a.EntrySize, a.EntrySHA256 = st.Mode, st.Size, m.SHA256
 			a.entryFile = f
@@ -229,7 +253,7 @@ func openAdmittedBundle(root, digest string, manifest []ManifestEntry, requireEn
 			return nil, ErrInvalid
 		}
 	}
-	if requireEntry && a.entryFile == nil {
+	if admissionEntry != "" && a.entryFile == nil {
 		return nil, ErrInvalid
 	}
 	if ManifestDigest(entries) != digest {

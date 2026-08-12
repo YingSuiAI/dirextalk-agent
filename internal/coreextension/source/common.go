@@ -94,7 +94,13 @@ func newClient(cfg HTTPConfig) (*client, error) {
 		return nil, fmt.Errorf("custom dialer requires test-only mode")
 	}
 	if hc == nil {
-		t := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, Proxy: http.ProxyFromEnvironment}
+		// Provider requests enforce their destination through safeDialer. An
+		// ambient process proxy would replace that destination with the proxy
+		// address, either bypassing the public-IP fence or making a private
+		// deployment proxy fail every provider request. Keep this security
+		// boundary direct; a future managed proxy must be an explicit, validated
+		// product configuration rather than inherited process state.
+		t := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 		if !cfg.TestOnly && !cfg.AllowHTTP {
 			t.DialContext = safeDialer(cfg.Resolver)
 		}

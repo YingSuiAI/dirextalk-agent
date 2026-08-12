@@ -8,6 +8,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreimagetool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -50,6 +51,14 @@ func classifyCapabilityError(err error) error {
 	}
 	if _, _, classified := capabilityoperation.FailureDetails(err); classified {
 		return err
+	}
+	switch {
+	case errors.Is(err, coreextension.ErrInstallBusy):
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", capabilityoperation.ExtensionInstallBusyMessage, err)
+	case errors.Is(err, coreextension.ErrInstallationLimit):
+		return capabilityoperation.NewFailure("RESOURCE_EXHAUSTED", capabilityoperation.ExtensionInstallationLimitMessage, err)
+	case errors.Is(err, coreextension.ErrNodeStorageQuota):
+		return capabilityoperation.NewFailure("RESOURCE_EXHAUSTED", capabilityoperation.ExtensionNodeStorageQuotaMessage, err)
 	}
 	// A missing or unusable explicit tool-model binding is a configuration
 	// prerequisite even when its retained internal cause is a more general

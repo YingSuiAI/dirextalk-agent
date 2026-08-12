@@ -38,7 +38,7 @@ func TestCommittedMigrationBytesRemainImmutable(t *testing.T) {
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 8 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" || entries[6] != "000007_unbounded_agent_rounds.up.sql" || entries[7] != "000008_cloud_worker_progress_events.up.sql" {
+	if len(entries) != 12 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" || entries[6] != "000007_unbounded_agent_rounds.up.sql" || entries[7] != "000008_cloud_worker_progress_events.up.sql" || entries[8] != "000009_static_site_releases.up.sql" || entries[9] != "000010_builtin_skill_seeds.up.sql" || entries[10] != "000011_managed_node_mcp_quotas.up.sql" || entries[11] != "000012_managed_node_prepared_cleanup.up.sql" {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Cloud Worker migrations", entries)
 	}
 	migration := Ordered()[0]
@@ -70,6 +70,22 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	imageTools := Ordered()[5]
 	if imageTools.Version != 6 || !bytes.Contains(imageTools.Script, []byte("CREATE TABLE core_image_tool_uploads")) {
 		t.Fatal("image tools migration missing ephemeral source store")
+	}
+	builtinSkills := Ordered()[9]
+	if builtinSkills.Version != 10 || !bytes.Contains(builtinSkills.Script, []byte("CREATE TABLE core_builtin_skill_seeds")) || !bytes.Contains(builtinSkills.Script, []byte("installation_id uuid NOT NULL UNIQUE")) {
+		t.Fatal("builtin Skill seed migration missing durable one-time fence")
+	}
+	managedNode := Ordered()[10]
+	for _, needle := range []string{"artifact_bytes", "file_count", "lifecycle_scripts_disabled", "native_addons_absent", "published_at", "core_extension_versions_node_quota_idx"} {
+		if managedNode.Version != 11 || !bytes.Contains(managedNode.Script, []byte(needle)) {
+			t.Fatalf("managed Node MCP quota migration missing %q", needle)
+		}
+	}
+	preparedNodeCleanup := Ordered()[11]
+	for _, needle := range []string{"cleanup_token", "node_artifact", "version_json", "core_extension_artifact_cleanup_node_shape_check"} {
+		if preparedNodeCleanup.Version != 12 || !bytes.Contains(preparedNodeCleanup.Script, []byte(needle)) {
+			t.Fatalf("managed Node prepared cleanup migration missing %q", needle)
+		}
 	}
 	unboundedRounds := Ordered()[6]
 	if unboundedRounds.Version != 7 || len(unboundedRounds.Script) == 0 || unboundedRounds.Script[len(unboundedRounds.Script)-1] != '\n' {

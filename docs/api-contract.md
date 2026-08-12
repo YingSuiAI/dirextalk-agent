@@ -118,6 +118,18 @@ multi-tenant model.
   one transaction. Schedule and idempotency identities are deterministic from
   the accepted turn/request/tool-call identity, so an uncertain same-call retry
   replays without creating another schedule.
+- Authenticated durable Native turns receive `static_site_publish` only when
+  the Agent-owned static-site root passes startup readiness. The model supplies
+  one self-contained UTF-8 `html` document of at most 192 KiB; it never
+  supplies a path, URL, site identity, archive, or storage credential. Core
+  derives immutable site/release UUIDs from the fenced owner, conversation,
+  turn, request, and tool-call identities, publishes exactly `index.html`, and
+  records its digest, size, and `/.sites/{site_id}/{release_id}/` path before
+  atomically completing the turn. Same-call recovery verifies and reuses the
+  exact file and PostgreSQL receipt. The embedded `publish-static-site` skill
+  instructs the model to produce semantic, responsive, self-contained HTML;
+  the edge sandbox CSP blocks scripts, forms, external subresources, and
+  programmatic network access even when generated markup drifts.
 - Capability conversation reads use a closed Flutter-facing projection.
   Conversations expose only id/title/revision/timestamps/status; history
   exposes only user/assistant messages with durable sequence, terminal status,
@@ -242,6 +254,34 @@ ephemeral Pi path uses `CLOUD_WORKER`; its payload pins plan/revision/digest,
 confirmation, conversation/turn, quote, execution digest, and account generation;
 while the real CoreTask claim and launch material separately pin attempt and
 lease epoch.
+
+`SkillService` exposes the same pinned lifecycle for `builtin`, `skills_sh`,
+and `github` sources. Empty Skill discovery selects `builtin`; empty MCP
+discovery selects `official_registry`. Built-in Skills are seeded exactly once
+as ordinary installed records. Uninstall keeps the seed fence, so a process
+restart cannot recreate the installation; an owner may explicitly discover
+and reinstall the current built-in version.
+
+Managed Node MCP is current-only `stdio_node`. `npm` candidates require one
+exact package version and verified immutable integrity; GitHub candidates
+require one exact commit. Lifecycle script declarations stay bound to the
+immutable source, while both lock-only resolution and offline installation
+disable script execution. Runtime network, native add-ons, mutable tags/ranges,
+and host Git are rejected. Provider and dependency-resolution HTTP clients use
+the public-IP-fenced direct transport and ignore ambient process proxy
+variables; a managed outbound proxy requires a future explicit validated
+contract. Durable limits are 32 live
+extensions, one install/update lifecycle, 64 MiB and 8,192 files per published
+Node artifact, and 512 MiB total Node storage. Admission failures publish only
+`extension_install_busy`, `extension_installation_limit`, or
+`extension_node_storage_quota`. Installed version output contains the closed
+eight-field `node_artifact` receipt with `lifecycle_scripts_disabled=true` and
+never exposes prepared paths, cleanup tokens, tools, or internal
+artifact/input/entry/lock digests. Empty installation/version grants and Node
+stdio arguments are canonical JSON arrays, never `null` or omitted. Only
+queued, running, and waiting-user task snapshots pin an installed artifact;
+terminal task snapshots remain audit records and do not block a
+revision-fenced uninstall.
 
 Cloud Worker offers are created only by the Core intrinsic
 `cloud_worker_propose` during an authoritative conversation turn. Public

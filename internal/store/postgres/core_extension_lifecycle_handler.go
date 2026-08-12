@@ -77,17 +77,32 @@ func NewCoreExtensionLifecycleHandlerWithPromoter(s *CoreExtensionStore, promote
 				break
 			}
 		}
-		if promoter != nil {
-			if !foundVersion || len(version.ArtifactDigest) != 64 {
-				return completeLifecycleFailure(ctx, s, p, task, coreextension.ErrConflict)
+		var retiringNodeVersions []coreextension.VersionRecord
+		if installation.Transport == coreextension.TransportStdioNode && (p.Operation == coretask.ExtensionOperationUpdate || p.Operation == coretask.ExtensionOperationUninstall) {
+			retiringNodeVersions = publishedNodeVersionsForRemoval(installation, installation.ProposedVersionID, p.Operation == coretask.ExtensionOperationUninstall)
+			for _, retired := range retiringNodeVersions {
+				if s.hasPinnedVersion(ctx, installation.ID, retired.VersionID, retired.ArtifactDigest) {
+					return completeLifecycleFailure(ctx, s, p, task, coreextension.ErrConflict)
+				}
 			}
+		}
+		if promoter != nil {
 			var promoteErr error
-			if p.Operation == coretask.ExtensionOperationUninstall {
+			if p.Operation == coretask.ExtensionOperationUninstall && installation.Transport == coreextension.TransportStdioNode {
+				// Node active references remain available until CompleteLifecycle
+				// atomically commits the removed projection and durable cleanup intents.
+			} else if p.Operation == coretask.ExtensionOperationUninstall {
+				if !foundVersion || len(version.ArtifactDigest) != 64 {
+					return completeLifecycleFailure(ctx, s, p, task, coreextension.ErrConflict)
+				}
 				if s.hasPinnedVersion(ctx, installation.ID, version.VersionID, version.ArtifactDigest) {
 					return completeLifecycleFailure(ctx, s, p, task, coreextension.ErrConflict)
 				}
 				promoteErr = promoter.Remove(ctx, version)
 			} else {
+				if !foundVersion || len(version.ArtifactDigest) != 64 {
+					return completeLifecycleFailure(ctx, s, p, task, coreextension.ErrConflict)
+				}
 				promoteErr = promoter.Promote(ctx, version)
 			}
 			if promoteErr != nil {
@@ -96,7 +111,7 @@ func NewCoreExtensionLifecycleHandlerWithPromoter(s *CoreExtensionStore, promote
 				}
 				return coreruntime.ManagedOutcome{Err: errors.Join(promoteErr, context.Canceled)}
 			}
-			if len(version.ArtifactDigest) == 64 && version.ArtifactPath != "" {
+			if version.NodeArtifact == nil && len(version.ArtifactDigest) == 64 && version.ArtifactPath != "" {
 				cleaner := CoreExtensionArtifactCleaner{Store: s.store}
 				if err := cleaner.Enqueue(ctx, version, installation.ID, "promotion_success"); err != nil {
 					return coreruntime.ManagedOutcome{Err: errors.Join(err, context.Canceled)}
@@ -106,19 +121,72 @@ func NewCoreExtensionLifecycleHandlerWithPromoter(s *CoreExtensionStore, promote
 		outcome := digestPG(struct{ Task, Operation string }{task.ID, string(p.Operation)}, "lifecycle-outcome")
 		_, err = s.CompleteLifecycle(ctx, coreextension.Completion{InstallationID: p.InstallationID, Operation: string(p.Operation), ConfirmationID: p.ConfirmationID, TaskID: task.ID, Attempt: task.Attempt, LeaseEpoch: task.LeaseEpoch, AcquiredTaskRevision: int64(task.Revision), TerminalAttempt: task.Attempt, TerminalLeaseEpoch: task.LeaseEpoch, TerminalTaskRevision: int64(task.Revision) + 1, ExpectedRevision: int64(p.ExpectedRevision), OutcomeDigest: outcome, Success: true})
 		if err != nil {
+			if promoter != nil && p.Operation != coretask.ExtensionOperationUninstall && (errors.Is(err, coreextension.ErrInstallationLimit) || errors.Is(err, coreextension.ErrNodeStorageQuota)) {
+				if installation.Transport != coreextension.TransportStdioNode {
+					if removeErr := promoter.Remove(ctx, version); removeErr != nil {
+						return coreruntime.ManagedOutcome{Err: errors.Join(err, removeErr, context.Canceled)}
+					}
+					return completeLifecycleFailure(ctx, s, p, task, err)
+				}
+				failure := completePromotedLifecycleFailure(ctx, s, p, task, err)
+				if failure.TerminalOwned && installation.Transport == coreextension.TransportStdioNode {
+					cleaner := CoreExtensionArtifactCleaner{Store: s.store, lifecyclePromoter: promoter}
+					// The failure terminal transition and exact cleanup authority are
+					// already durable. Cleanup failure remains restart-retryable and
+					// must not rewrite the terminal task.
+					_, _ = cleaner.SweepNode(ctx, 128)
+				}
+				return failure
+			}
 			return coreruntime.ManagedOutcome{Err: errors.Join(err, context.Canceled)}
+		}
+		if promoter != nil && installation.Transport == coreextension.TransportStdioNode {
+			cleaner := CoreExtensionArtifactCleaner{Store: s.store, lifecyclePromoter: promoter}
+			// Completion is already durable. A cleanup error remains pending for
+			// the background cleaner and must not rewrite the terminal task.
+			_, _ = cleaner.SweepNode(ctx, 128)
 		}
 		return coreruntime.ManagedOutcome{Result: coretask.Result{Summary: "extension lifecycle completed"}, TerminalOwned: true}
 	}
 }
 
 func completeLifecycleFailure(ctx context.Context, s *CoreExtensionStore, p *coretask.ExtensionTaskPayload, task coretask.Task, cause error) coreruntime.ManagedOutcome {
+	return completeLifecycleFailureWithPromotion(ctx, s, p, task, cause, false)
+}
+
+func completePromotedLifecycleFailure(ctx context.Context, s *CoreExtensionStore, p *coretask.ExtensionTaskPayload, task coretask.Task, cause error) coreruntime.ManagedOutcome {
+	return completeLifecycleFailureWithPromotion(ctx, s, p, task, cause, true)
+}
+
+func completeLifecycleFailureWithPromotion(ctx context.Context, s *CoreExtensionStore, p *coretask.ExtensionTaskPayload, task coretask.Task, cause error, artifactPromoted bool) coreruntime.ManagedOutcome {
 	outcome := digestPG(struct{ Task, Operation string }{task.ID, string(p.Operation)}, "lifecycle-failed")
-	_, err := s.CompleteLifecycle(ctx, coreextension.Completion{InstallationID: p.InstallationID, Operation: string(p.Operation), ConfirmationID: p.ConfirmationID, TaskID: task.ID, Attempt: task.Attempt, LeaseEpoch: task.LeaseEpoch, AcquiredTaskRevision: int64(task.Revision), TerminalAttempt: task.Attempt, TerminalLeaseEpoch: task.LeaseEpoch, TerminalTaskRevision: int64(task.Revision) + 1, ExpectedRevision: int64(p.ExpectedRevision), OutcomeDigest: outcome, Success: false})
+	failureCode, failureSummary := coreextension.LifecycleFailureDetails(cause)
+	_, err := s.completeLifecycle(ctx, coreextension.Completion{InstallationID: p.InstallationID, Operation: string(p.Operation), ConfirmationID: p.ConfirmationID, TaskID: task.ID, Attempt: task.Attempt, LeaseEpoch: task.LeaseEpoch, AcquiredTaskRevision: int64(task.Revision), TerminalAttempt: task.Attempt, TerminalLeaseEpoch: task.LeaseEpoch, TerminalTaskRevision: int64(task.Revision) + 1, ExpectedRevision: int64(p.ExpectedRevision), OutcomeDigest: outcome, Success: false, FailureCode: failureCode, FailureSummary: failureSummary}, artifactPromoted)
 	if err != nil {
 		return coreruntime.ManagedOutcome{Err: errors.Join(cause, err, context.Canceled)}
 	}
 	return coreruntime.ManagedOutcome{Err: cause, TerminalOwned: true}
+}
+
+func publishedNodeVersionsForRemoval(installation coreextension.Installation, proposedVersionID string, uninstall bool) []coreextension.VersionRecord {
+	var ordinary []coreextension.VersionRecord
+	var active *coreextension.VersionRecord
+	for index := range installation.Versions {
+		version := installation.Versions[index]
+		if version.NodeArtifact == nil || version.PublishedAt.IsZero() || !uninstall && version.VersionID == proposedVersionID {
+			continue
+		}
+		if version.VersionID == installation.ActiveVersionID {
+			copy := version
+			active = &copy
+		} else {
+			ordinary = append(ordinary, version)
+		}
+	}
+	if active != nil {
+		ordinary = append(ordinary, *active)
+	}
+	return ordinary
 }
 
 // reacquireLifecycleReservation repairs the lease-bound reservation after a

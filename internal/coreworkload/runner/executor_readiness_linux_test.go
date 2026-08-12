@@ -3,12 +3,15 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
 	"golang.org/x/sys/unix"
 )
 
@@ -25,6 +28,47 @@ func TestReadinessDiagnosticIsLowCardinality(t *testing.T) {
 		if strings.Contains(err.Error(), forbidden) {
 			t.Fatalf("diagnostic leaked forbidden detail %q: %q", forbidden, err)
 		}
+	}
+}
+
+func TestInstallReadinessDiagnosticIsFixedAndRedacted(t *testing.T) {
+	err := installUnavailableAt("sandbox")
+	stage, ok := installReadinessStage(err)
+	if !ok || stage != "sandbox" || !errors.Is(err, ErrDenied) {
+		t.Fatalf("stage=%q ok=%v err=%v", stage, ok, err)
+	}
+	if err.Error() != "core install unavailable" || strings.Contains(err.Error(), "/") || strings.Contains(err.Error(), "permission") {
+		t.Fatalf("install diagnostic leaked detail: %q", err.Error())
+	}
+}
+
+func TestInstallSandboxUnavailablePreservesOnlyTypedExtensionStage(t *testing.T) {
+	source := (extensionrunner.LinuxBackend{}).Probe(context.Background())
+	err := installSandboxUnavailable(source)
+	stage, ok := installReadinessStage(err)
+	if !ok || stage != "sandbox_cgroup_root" || !errors.Is(err, ErrDenied) {
+		t.Fatalf("stage=%q ok=%v err=%v", stage, ok, err)
+	}
+	err = installSandboxUnavailable(errors.New("raw /private/path"))
+	stage, ok = installReadinessStage(err)
+	if !ok || stage != "sandbox" || strings.Contains(err.Error(), "private") {
+		t.Fatalf("fallback stage=%q ok=%v err=%v", stage, ok, err)
+	}
+}
+
+func TestSandboxReadinessStageUsesOnlyTypedExtensionStage(t *testing.T) {
+	source := (extensionrunner.LinuxBackend{}).Probe(context.Background())
+	if got := sandboxReadinessStage(source); got != "sandbox_cgroup_root" {
+		t.Fatalf("typed stage=%q", got)
+	}
+	if got := sandboxReadinessStage(errors.New("raw /private/path")); got != "sandbox" {
+		t.Fatalf("raw stage=%q", got)
+	}
+}
+
+func TestCoreReadinessBudgetCoversRealSandboxStartup(t *testing.T) {
+	if coreReadinessMemoryMB < 64 || coreReadinessProcesses < 16 || coreReadinessTimeoutS < 5 || coreReadinessDeadline < 30*time.Second {
+		t.Fatalf("readiness budget too small: memory_mb=%d processes=%d timeout_s=%d deadline=%s", coreReadinessMemoryMB, coreReadinessProcesses, coreReadinessTimeoutS, coreReadinessDeadline)
 	}
 }
 

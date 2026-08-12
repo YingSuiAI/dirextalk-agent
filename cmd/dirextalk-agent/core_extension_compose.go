@@ -366,6 +366,17 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 		return nil, fmt.Errorf("extension runner readiness: %w", err)
 	}
 	registry := coreextension.NewRegistry()
+	builtinSkills, err := source.NewBuiltinSkills()
+	if err != nil {
+		return nil, err
+	}
+	if err := registry.Register(coreextension.SourceBuiltin, builtinSkills); err != nil {
+		return nil, err
+	}
+	nodeResolver, err := source.NewProductionNodeDependencyResolver(source.NodeDependencyResolverConfig{})
+	if err != nil {
+		return nil, err
+	}
 	adapters := []struct {
 		source coreextension.Source
 		build  func(source.HTTPConfig) (coreextension.SourceAdapter, error)
@@ -373,7 +384,10 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 		{coreextension.SourceOfficialRegistry, func(c source.HTTPConfig) (coreextension.SourceAdapter, error) { return source.NewOfficialRegistry(c) }},
 		{coreextension.SourceSmithery, func(c source.HTTPConfig) (coreextension.SourceAdapter, error) { return source.NewSmithery(c) }},
 		{coreextension.SourceGlama, func(c source.HTTPConfig) (coreextension.SourceAdapter, error) { return source.NewGlama(c) }},
-		{coreextension.SourceGitHub, func(c source.HTTPConfig) (coreextension.SourceAdapter, error) { return source.NewGitHub(c) }},
+		{coreextension.SourceGitHub, func(c source.HTTPConfig) (coreextension.SourceAdapter, error) {
+			return source.NewGitHubWithNodeResolver(c, nodeResolver)
+		}},
+		{coreextension.SourceNPM, func(c source.HTTPConfig) (coreextension.SourceAdapter, error) { return source.NewNPM(c, nodeResolver) }},
 		{coreextension.SourceSkillsSh, func(c source.HTTPConfig) (coreextension.SourceAdapter, error) { return source.NewSkillsSh(c) }},
 	}
 	baseURLs := map[coreextension.Source]string{
@@ -381,6 +395,7 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 		coreextension.SourceSmithery:         source.SmitheryAuthority,
 		coreextension.SourceGlama:            source.GlamaAuthority,
 		coreextension.SourceGitHub:           source.GitHubAuthority,
+		coreextension.SourceNPM:              source.NPMRegistryAuthority,
 		coreextension.SourceSkillsSh:         source.SkillsShAuthority,
 	}
 	for _, item := range adapters {
@@ -394,6 +409,11 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	}
 
 	extStore := postgres.NewCoreExtensionStore(store)
+	seedCtx, cancelSeed := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelSeed()
+	if err := ensureDefaultBuiltinSkills(seedCtx, extStore, builtinSkills, cfg.CoreExtensionStagingRoot, runner); err != nil {
+		return nil, fmt.Errorf("default builtin Skills: %w", err)
+	}
 	secretStore := postgres.NewCoreExtensionSecretStore(store)
 	execCoord, err := postgres.NewValidatedPostgresExtensionExecutionCoordinator(store, cfg.CoreExtensionWorkspaceRoot, secretStore)
 	if err != nil {
@@ -403,7 +423,7 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	if err != nil {
 		return nil, err
 	}
-	artifacts := execution.ArtifactStoreAdapter{Materializer: materializer, RemoveFunc: coreExtensionArtifactRemoveFunc(cfg.CoreExtensionStagingRoot)}
+	artifacts := execution.ArtifactStoreAdapter{Materializer: materializer, RemoveFunc: coreExtensionArtifactRemoveFunc(cfg.CoreExtensionStagingRoot), NodeBuilder: runner}
 	local := &execution.LocalExecutor{Runner: runner, Secrets: secretStore}
 	remote := &execution.RemoteExecutor{Secrets: secretStore}
 	runtime := postgres.NewPostgresExtensionRunnerToolRuntime(store, execCoord, local, remote)
@@ -413,7 +433,7 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	}
 	mcpService := rpcapi.NewMCPService(service)
 	skillService := rpcapi.NewSkillService(service)
-	promoter := execution.StagedLifecyclePromoter{Root: cfg.CoreExtensionStagingRoot, Publisher: runner, RemoveFunc: runner.Remove}
+	promoter := execution.StagedLifecyclePromoter{Root: cfg.CoreExtensionStagingRoot, Publisher: runner, RemoveFunc: runner.Remove, NodeBuilder: runner}
 	lifecycleHandler := postgres.NewCoreExtensionLifecycleHandlerWithPromoter(extStore, promoter)
 	cleanupInterval := cfg.CoreKnowledgeSweepInterval
 	if cleanupInterval <= 0 {
@@ -423,6 +443,8 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	if err != nil {
 		return nil, err
 	}
+	artifactCleaner.SetLifecyclePromoter(promoter)
+	artifactCleaner.SetArtifactStore(artifacts)
 	// Skill instruction reads come back through the authenticated runner's
 	// digest-addressed publication store. The Agent never reads the staging
 	// tree as an execution fallback.
@@ -449,6 +471,42 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 		}
 	}
 	return &coreExtensionComposition{domain: service, mcpService: mcpService, skillService: skillService, taskHandler: dispatch, lifecycleHandler: lifecycleHandler, executionHandler: executionHandler, conversationToolHandler: conversationToolHandler, conversationResolver: conversationExtensionResolver{store: extStore}, toolDispatcher: &pinnedExtensionDispatcher{tasks: postgres.NewCoreTaskStore(store), store: extStore, coord: execCoord, local: local, remote: remote}, skillResolver: &pinnedSkillResolver{store: extStore, runner: runner}, artifactCleaner: artifactCleaner}, nil
+}
+
+type builtinSkillSeedStore interface {
+	BuiltinSkillSeeded(context.Context, string) (bool, error)
+	EnsureBuiltinSkill(context.Context, coreextension.FetchArtifact, string) (coreextension.Installation, error)
+}
+
+func ensureDefaultBuiltinSkills(ctx context.Context, store builtinSkillSeedStore, catalog *source.BuiltinSkills, stagingRoot string, publisher execution.Publisher) error {
+	if store == nil || catalog == nil || publisher == nil {
+		return coreextension.ErrInvalid
+	}
+	materializer, err := execution.NewMaterializerWithPublisher(stagingRoot, publisher)
+	if err != nil {
+		return err
+	}
+	for _, artifact := range catalog.Artifacts() {
+		seeded, err := store.BuiltinSkillSeeded(ctx, artifact.Candidate.ID)
+		if err != nil {
+			return err
+		}
+		if seeded {
+			continue
+		}
+		materialized, err := materializer.Materialize(ctx, artifact)
+		if err != nil {
+			return err
+		}
+		installed, err := store.EnsureBuiltinSkill(ctx, artifact, materialized.Digest)
+		if err != nil {
+			return err
+		}
+		if installed.State != coreextension.StateInstalled || !installed.Enabled || installed.Source != coreextension.SourceBuiltin || installed.CandidateID != artifact.Candidate.ID || installed.ActiveVersionID == "" {
+			return coreextension.ErrConflict
+		}
+	}
+	return nil
 }
 
 func coreExtensionArtifactRemoveFunc(root string) func(context.Context, string, string) error {

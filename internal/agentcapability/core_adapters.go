@@ -1772,26 +1772,42 @@ func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operation
 		if operationID == "discover_mcp" {
 			kind = coreextension.KindMCP
 		}
-		page, err := c.service.Search(ctx, coreextension.SearchQuery{Kind: kind, Source: coreextension.Source(stringValue(in, "source")), Text: stringValue(in, "query"), PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token")})
+		source := coreextension.Source(stringValue(in, "source"))
+		if source == "" {
+			if kind == coreextension.KindSkill {
+				source = coreextension.SourceBuiltin
+			} else {
+				source = coreextension.SourceOfficialRegistry
+			}
+		}
+		page, err := c.service.Search(ctx, coreextension.SearchQuery{Kind: kind, Source: source, Text: stringValue(in, "query"), PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token")})
 		return marshalResult(map[string]any{"candidates": page.Candidates, "next_page_token": page.NextPageToken}, err)
 	case "list_skills":
-		p, err := c.service.List(ctx, coreextension.ListQuery{Kind: coreextension.KindSkill, PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token"), State: coreextension.State(stringValue(in, "state"))})
-		return marshalResult(p, err)
+		p, err := c.service.List(ctx, coreextension.ListQuery{Kind: coreextension.KindSkill, Source: coreextension.Source(stringValue(in, "source")), PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token"), State: coreextension.State(stringValue(in, "state"))})
+		return marshalResult(p.Public(), err)
 	case "list_mcp":
 		p, err := c.service.List(ctx, coreextension.ListQuery{Kind: coreextension.KindMCP, PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token"), Source: coreextension.Source(stringValue(in, "source")), State: coreextension.State(stringValue(in, "state"))})
-		return marshalResult(p, err)
+		return marshalResult(p.Public(), err)
 	case "get_skill":
 		x, err := c.service.Get(ctx, stringValue(in, "installation_id"))
-		return marshalResult(x, err)
+		return marshalResult(x.Public(), err)
 	case "get_mcp":
 		x, err := c.service.Get(ctx, stringValue(in, "installation_id"))
-		return marshalResult(x, err)
+		return marshalResult(x.Public(), err)
 	case "inspect_skill", "inspect_mcp":
 		candidate, err := candidateFromInput(in)
 		if err != nil {
 			return nil, err
 		}
 		x, err := c.service.Inspect(ctx, coreextension.InspectRequest{Kind: candidate.Kind, Source: candidate.Source, ID: candidate.ID, Pin: candidate.Pin})
+		if err == nil {
+			if x.NetworkGrants == nil {
+				x.NetworkGrants = make([]coreextension.NetworkGrant, 0)
+			}
+			if x.SecretGrants == nil {
+				x.SecretGrants = make([]coreextension.SecretGrantDescriptor, 0)
+			}
+		}
 		return marshalResult(map[string]any{"inspection": x}, err)
 	case "install_skill", "install_mcp":
 		mutation, err := mutationFromInput(in)
@@ -1802,7 +1818,7 @@ func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operation
 			return nil, coreextension.ErrInvalid
 		}
 		x, err := c.service.RequestInstall(ctx, mutation)
-		return marshalResult(x, err)
+		return marshalResult(x.Public(), err)
 	case "update_skill", "update_mcp":
 		mutation, err := mutationFromInput(in)
 		if err != nil {
@@ -1812,35 +1828,35 @@ func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operation
 			return nil, coreextension.ErrInvalid
 		}
 		x, err := c.service.RequestUpdate(ctx, mutation)
-		return marshalResult(x, err)
+		return marshalResult(x.Public(), err)
 	case "remove_skill", "remove_mcp":
 		mutation := coreextension.Mutation{IdempotencyKey: key, InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision")}
 		x, err := c.service.RequestUninstall(ctx, mutation)
-		return marshalResult(x, err)
+		return marshalResult(x.Public(), err)
 	case "enable_skill", "skills_enable":
 		x, err := c.service.Enable(ctx, coreextension.ToggleCommand{IdempotencyKey: key, InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision")})
 		if err == nil && x.Kind != coreextension.KindSkill {
 			err = coreextension.ErrInvalid
 		}
-		return marshalResult(x, err)
+		return marshalResult(x.Public(), err)
 	case "disable_skill", "skills_disable":
 		x, err := c.service.Disable(ctx, coreextension.ToggleCommand{IdempotencyKey: key, InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision")})
 		if err == nil && x.Kind != coreextension.KindSkill {
 			err = coreextension.ErrInvalid
 		}
-		return marshalResult(x, err)
+		return marshalResult(x.Public(), err)
 	case "enable_mcp", "mcp_enable":
 		x, err := c.service.Enable(ctx, coreextension.ToggleCommand{IdempotencyKey: key, InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision")})
 		if err == nil && x.Kind != coreextension.KindMCP {
 			err = coreextension.ErrInvalid
 		}
-		return marshalResult(x, err)
+		return marshalResult(x.Public(), err)
 	case "disable_mcp", "mcp_disable":
 		x, err := c.service.Disable(ctx, coreextension.ToggleCommand{IdempotencyKey: key, InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision")})
 		if err == nil && x.Kind != coreextension.KindMCP {
 			err = coreextension.ErrInvalid
 		}
-		return marshalResult(x, err)
+		return marshalResult(x.Public(), err)
 	case "list_tools":
 		x, err := c.service.ListTools(ctx, stringValue(in, "installation_id"), int64Value(in, "expected_revision"))
 		return marshalResult(map[string]any{"tools": x}, err)

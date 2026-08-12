@@ -111,6 +111,7 @@ func (s *PersistentServiceV1) Destroy(ctx context.Context) error {
 		var exitErr *exec.ExitError
 		if errors.As(e, &exitErr) &&
 			!errors.Is(e, errCgroupCleanup) &&
+			!errors.Is(e, errSandboxRootCleanup) &&
 			!errors.Is(e, errCPULimitExceeded) &&
 			!errors.Is(e, errCPUAccounting) {
 			return nil

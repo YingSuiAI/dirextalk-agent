@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -36,9 +38,24 @@ func extErr(e error) error {
 		return status.Error(codes.Aborted, e.Error())
 	case errors.Is(e, coreextension.ErrIdempotencyConflict):
 		return status.Error(codes.AlreadyExists, e.Error())
+	case errors.Is(e, coreextension.ErrInstallBusy):
+		return extensionAdmissionStatus(codes.FailedPrecondition, capabilityoperation.ExtensionInstallBusyMessage, "extension_install_busy")
+	case errors.Is(e, coreextension.ErrInstallationLimit):
+		return extensionAdmissionStatus(codes.ResourceExhausted, capabilityoperation.ExtensionInstallationLimitMessage, "extension_installation_limit")
+	case errors.Is(e, coreextension.ErrNodeStorageQuota):
+		return extensionAdmissionStatus(codes.ResourceExhausted, capabilityoperation.ExtensionNodeStorageQuotaMessage, "extension_node_storage_quota")
 	default:
 		return status.Error(codes.Internal, e.Error())
 	}
+}
+
+func extensionAdmissionStatus(code codes.Code, message, reason string) error {
+	base := status.New(code, message)
+	withDetails, err := base.WithDetails(&errdetails.ErrorInfo{Reason: reason, Domain: "dirextalk.agent.extension"})
+	if err != nil {
+		return base.Err()
+	}
+	return withDetails.Err()
 }
 func candFrom(p *agentv1.CoreExtensionCandidate) coreextension.Candidate {
 	if p == nil {
@@ -71,7 +88,7 @@ func executionFrom(p *agentv1.CoreExecution) coreextension.ExecutionDescriptor {
 		return coreextension.ExecutionDescriptor{}
 	}
 	if x := p.GetStdio(); x != nil {
-		return coreextension.ExecutionDescriptor{Stdio: &coreextension.StaticEntry{RelativePath: x.RelativePath, Digest: x.Digest, Argv: append([]string(nil), x.Argv...)}}
+		return coreextension.ExecutionDescriptor{Stdio: &coreextension.StaticEntry{RelativePath: x.RelativePath, Digest: x.Digest, Argv: append([]string(nil), x.Argv...), Runtime: x.Runtime}}
 	}
 	if x := p.GetRemote(); x != nil {
 		return coreextension.ExecutionDescriptor{Remote: &coreextension.RemoteEndpoint{URL: x.Url, CredentialReferenceID: x.CredentialReferenceId}}
@@ -127,6 +144,10 @@ func sourceProto(v agentv1.CoreExtensionSource) coreextension.Source {
 		return coreextension.SourceGitHub
 	case agentv1.CoreExtensionSource_CORE_EXTENSION_SOURCE_SKILLS_SH:
 		return coreextension.SourceSkillsSh
+	case agentv1.CoreExtensionSource_CORE_EXTENSION_SOURCE_BUILTIN:
+		return coreextension.SourceBuiltin
+	case agentv1.CoreExtensionSource_CORE_EXTENSION_SOURCE_NPM:
+		return coreextension.SourceNPM
 	}
 	return coreextension.SourceOfficialRegistry
 }
@@ -136,6 +157,8 @@ func transportProto(v agentv1.CoreExtensionTransport) coreextension.Transport {
 		return coreextension.TransportStreamableHTTP
 	case agentv1.CoreExtensionTransport_CORE_EXTENSION_TRANSPORT_SKILL_STATIC:
 		return coreextension.TransportSkillStatic
+	case agentv1.CoreExtensionTransport_CORE_EXTENSION_TRANSPORT_STDIO_NODE:
+		return coreextension.TransportStdioNode
 	}
 	return coreextension.TransportStdioStatic
 }
@@ -161,22 +184,20 @@ func candTo(c coreextension.Candidate) *agentv1.CoreExtensionCandidate {
 	return p
 }
 func installTo(i coreextension.Installation) *agentv1.CoreInstallation {
-	p := &agentv1.CoreInstallation{InstallationId: i.ID, Kind: agentv1.CoreExtensionKind(agentv1.CoreExtensionKind_value["CORE_EXTENSION_KIND_"+strings.ToUpper(string(i.Kind))]), Source: agentv1.CoreExtensionSource(agentv1.CoreExtensionSource_value["CORE_EXTENSION_SOURCE_"+strings.ToUpper(string(i.Source))]), Name: i.Name, Description: i.Description, CandidateId: i.CandidateID, Transport: agentv1.CoreExtensionTransport(agentv1.CoreExtensionTransport_value["CORE_EXTENSION_TRANSPORT_"+strings.ToUpper(string(i.Transport))]), Revision: i.Revision, State: agentv1.CoreExtensionState(agentv1.CoreExtensionState_value["CORE_EXTENSION_STATE_"+strings.ToUpper(string(i.State))]), ActiveVersionId: i.ActiveVersionID, ProposedVersionId: i.ProposedVersionID, CreatedAt: timestamppb.New(i.CreatedAt), UpdatedAt: timestamppb.New(i.UpdatedAt)}
-	for _, g := range i.NetworkGrants {
-		p.NetworkGrants = append(p.NetworkGrants, &agentv1.CoreNetworkGrant{Scheme: g.Scheme, Host: g.Host, Port: g.Port, PathPrefix: g.PathPrefix, Digest: g.Digest})
-	}
-	for _, g := range i.SecretGrants {
-		p.SecretGrants = append(p.SecretGrants, &agentv1.CoreExtensionSecretGrantDescriptor{ReferenceId: g.ReferenceID, Purpose: purposeProto(g.Purpose), BindingDigest: g.BindingDigest, Configured: g.Configured})
-	}
+	p := &agentv1.CoreInstallation{InstallationId: i.ID, Kind: agentv1.CoreExtensionKind(agentv1.CoreExtensionKind_value["CORE_EXTENSION_KIND_"+strings.ToUpper(string(i.Kind))]), Source: agentv1.CoreExtensionSource(agentv1.CoreExtensionSource_value["CORE_EXTENSION_SOURCE_"+strings.ToUpper(string(i.Source))]), Name: i.Name, Description: i.Description, CandidateId: i.CandidateID, Transport: agentv1.CoreExtensionTransport(agentv1.CoreExtensionTransport_value["CORE_EXTENSION_TRANSPORT_"+strings.ToUpper(string(i.Transport))]), Revision: i.Revision, State: agentv1.CoreExtensionState(agentv1.CoreExtensionState_value["CORE_EXTENSION_STATE_"+strings.ToUpper(string(i.State))]), ActiveVersionId: i.ActiveVersionID, ProposedVersionId: i.ProposedVersionID, NetworkGrants: networkGrantsTo(i.NetworkGrants), SecretGrants: secretGrantsTo(i.SecretGrants), CreatedAt: timestamppb.New(i.CreatedAt), UpdatedAt: timestamppb.New(i.UpdatedAt)}
 	for _, v := range i.Versions {
-		p.Versions = append(p.Versions, &agentv1.CoreExtensionVersion{VersionId: v.VersionID, ContentDigest: v.ContentDigest, ManifestDigest: v.ManifestDigest, ExecutionDigest: v.ExecutionDigest, NetworkSchemaDigest: v.NetworkSchemaDigest, SecretSchemaDigest: v.SecretSchemaDigest, Pin: &agentv1.CoreSourcePin{RegistryVersion: v.Pin.RegistryVersion, RegistrySha256: v.Pin.RegistrySHA256, GitCommit: v.Pin.GitCommit, GitSha256: v.Pin.GitSHA256}, CreatedAt: timestamppb.New(v.CreatedAt), Execution: executionTo(v.Execution)})
+		version := &agentv1.CoreExtensionVersion{VersionId: v.VersionID, ContentDigest: v.ContentDigest, ManifestDigest: v.ManifestDigest, ExecutionDigest: v.ExecutionDigest, NetworkSchemaDigest: v.NetworkSchemaDigest, SecretSchemaDigest: v.SecretSchemaDigest, Pin: &agentv1.CoreSourcePin{RegistryVersion: v.Pin.RegistryVersion, RegistrySha256: v.Pin.RegistrySHA256, GitCommit: v.Pin.GitCommit, GitSha256: v.Pin.GitSHA256}, CreatedAt: timestamppb.New(v.CreatedAt), Execution: executionTo(v.Execution), NetworkGrants: networkGrantsTo(v.NetworkGrants), SecretGrants: secretGrantsTo(v.SecretGrants)}
+		if v.NodeArtifact != nil && !v.PublishedAt.IsZero() {
+			version.NodeArtifact = &agentv1.CoreNodeArtifactReceipt{PackageName: v.NodeArtifact.PackageName, PackageVersion: v.NodeArtifact.PackageVersion, ArtifactBytes: v.NodeArtifact.ArtifactBytes, FileCount: v.NodeArtifact.FileCount, NodeVersion: v.NodeArtifact.NodeVersion, NpmVersion: v.NodeArtifact.NPMVersion, LifecycleScriptsDisabled: v.NodeArtifact.LifecycleScriptsDisabled, NativeAddonsAbsent: v.NodeArtifact.NativeAddonsAbsent}
+		}
+		p.Versions = append(p.Versions, version)
 	}
 	return p
 }
 func executionTo(e coreextension.ExecutionDescriptor) *agentv1.CoreExecution {
 	switch {
 	case e.Stdio != nil:
-		return &agentv1.CoreExecution{Descriptor_: &agentv1.CoreExecution_Stdio{Stdio: &agentv1.CoreStaticEntry{RelativePath: e.Stdio.RelativePath, Digest: e.Stdio.Digest, Argv: append([]string(nil), e.Stdio.Argv...)}}}
+		return &agentv1.CoreExecution{Descriptor_: &agentv1.CoreExecution_Stdio{Stdio: &agentv1.CoreStaticEntry{RelativePath: e.Stdio.RelativePath, Digest: e.Stdio.Digest, Argv: append([]string(nil), e.Stdio.Argv...), Runtime: e.Stdio.Runtime}}}
 	case e.Remote != nil:
 		return &agentv1.CoreExecution{Descriptor_: &agentv1.CoreExecution_Remote{Remote: &agentv1.CoreRemoteEndpoint{Url: e.Remote.URL, CredentialReferenceId: e.Remote.CredentialReferenceID}}}
 	case e.Skill != nil:
@@ -185,14 +206,21 @@ func executionTo(e coreextension.ExecutionDescriptor) *agentv1.CoreExecution {
 	return nil
 }
 func inspectionTo(i coreextension.Inspection) *agentv1.CoreExtensionInspection {
-	p := &agentv1.CoreExtensionInspection{Candidate: candTo(i.Candidate), ContentDigest: i.ContentDigest, ManifestDigest: i.ManifestDigest, ExecutionDigest: i.ExecutionDigest, NetworkSchemaDigest: i.NetworkSchemaDigest, SecretSchemaDigest: i.SecretSchemaDigest, Execution: executionTo(i.Execution)}
-	for _, g := range i.NetworkGrants {
-		p.NetworkGrants = append(p.NetworkGrants, &agentv1.CoreNetworkGrant{Scheme: g.Scheme, Host: g.Host, Port: g.Port, PathPrefix: g.PathPrefix, Digest: g.Digest})
+	return &agentv1.CoreExtensionInspection{Candidate: candTo(i.Candidate), ContentDigest: i.ContentDigest, ManifestDigest: i.ManifestDigest, ExecutionDigest: i.ExecutionDigest, NetworkSchemaDigest: i.NetworkSchemaDigest, SecretSchemaDigest: i.SecretSchemaDigest, Execution: executionTo(i.Execution), NetworkGrants: networkGrantsTo(i.NetworkGrants), SecretGrants: secretGrantsTo(i.SecretGrants)}
+}
+func networkGrantsTo(grants []coreextension.NetworkGrant) []*agentv1.CoreNetworkGrant {
+	out := make([]*agentv1.CoreNetworkGrant, 0, len(grants))
+	for _, g := range grants {
+		out = append(out, &agentv1.CoreNetworkGrant{Scheme: g.Scheme, Host: g.Host, Port: g.Port, PathPrefix: g.PathPrefix, Digest: g.Digest})
 	}
-	for _, g := range i.SecretGrants {
-		p.SecretGrants = append(p.SecretGrants, &agentv1.CoreExtensionSecretGrantDescriptor{ReferenceId: g.ReferenceID, Purpose: purposeProto(g.Purpose), BindingDigest: g.BindingDigest, Configured: g.Configured})
+	return out
+}
+func secretGrantsTo(grants []coreextension.SecretGrantDescriptor) []*agentv1.CoreExtensionSecretGrantDescriptor {
+	out := make([]*agentv1.CoreExtensionSecretGrantDescriptor, 0, len(grants))
+	for _, g := range grants {
+		out = append(out, &agentv1.CoreExtensionSecretGrantDescriptor{ReferenceId: g.ReferenceID, Purpose: purposeProto(g.Purpose), BindingDigest: g.BindingDigest, Configured: g.Configured})
 	}
-	return p
+	return out
 }
 func mutFrom(k string, id string, rev int64, c *agentv1.CoreExtensionCandidate, in *agentv1.CoreExtensionInspection, inputs []*agentv1.CoreExtensionSecretInput) coreextension.Mutation {
 	m := coreextension.Mutation{IdempotencyKey: k, InstallationID: id, ExpectedRevision: rev, Candidate: candidateProto(c)}

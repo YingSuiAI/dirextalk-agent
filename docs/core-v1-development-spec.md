@@ -134,7 +134,7 @@ The Core v1 acceptance set covers these ten observable scenarios:
    concurrent mutation races preserve durable revisions.
 6. MCP discovery and lifecycle cover the official registry, Smithery, Glama,
    and GitHub sources with stdio and Streamable HTTP transports.
-7. Skill lifecycle covers skills.sh and GitHub pins; execution is isolated in
+7. Skill lifecycle covers Dirextalk built-ins, skills.sh, and GitHub pins; execution is isolated in
    the extension runner, and cancellation proves the complete descendant
    process tree and delegated cgroup are gone before the task is cleaned.
 8. Knowledge covers Agent-owned mounts, bounded uploads, memory, indexing,
@@ -248,6 +248,18 @@ The PostgreSQL boundary atomically commits the schedule, idempotency replay,
 turn response/event, and transcript, so recovery cannot expose either a
 schedule without its conversation receipt or a receipt without its schedule.
 
+Single-page static publication uses the Core-owned `static_site_publish`
+intrinsic. One HTML file is published directly and is not wrapped in an
+archive. Core derives all filesystem and URL identity, writes through a
+same-filesystem staging directory, fsyncs and atomically renames the release,
+then commits the verified SHA-256/size receipt and turn terminal state in one
+PostgreSQL transaction. Releases are immutable and replay-safe at
+`/.sites/{site_id}/{release_id}/`. The Agent owns the host root; the edge sees
+only `public/` read-only. The current embedded design skill produces
+responsive semantic HTML with inline CSS only. JavaScript, forms, external
+assets, network requests, and multi-file bundles are not part of the current
+contract.
+
 Eino adapts each model round, while the Agent-owned Task ledger remains the
 durable orchestrator for model dispatch, tool calls, retries, recovery, and
 uncertain outcomes. Task orchestration has no fixed model/tool round count: a
@@ -320,7 +332,27 @@ write-only, version-bound secret grant. Skills use the pinned Skill artifact and
 instructions. Local code runs only through the separate Linux
 extension runner with another UID, namespaces, a task workspace, and explicit
 secrets. No in-process or unconfirmed fallback is allowed.
-The production runner admits one one-shot execution at a time. A verified
+Four Dirextalk-owned general Skills are bundled as a network-free `builtin`
+source and seeded once as ordinary installed extensions: research and
+verification, code review, technical documentation, and delivery verification.
+The durable seed survives uninstall, so restart never silently reinstalls a
+Skill the owner removed; reinstall uses the same discover, inspect,
+confirmation, and lifecycle path as skills.sh or GitHub. Built-ins have no
+network or secret grants and contain no executable entry.
+Managed Node MCP uses the explicit `stdio_node` transport and only `npm` exact
+package versions plus verified integrity, or GitHub exact commits. Source
+inspection binds the immutable lock/tarball input; a network-disabled offline
+builder and the lock-only resolver both disable lifecycle script execution,
+while preserving script declarations in the immutable source, and the builder
+rejects native add-ons. Only
+its digest- and generation-fenced receipt may be promoted. There may be at
+most 32 non-failed/non-removed extensions, one active install/update lifecycle,
+64 MiB per expanded Node artifact, 8,192 files per artifact, and 512 MiB across
+published Node artifacts. The installed public receipt exposes only package,
+version, byte/file counts, fixed Node/npm versions, the scripts-disabled fact,
+and the native-absence fact; prepared paths, cleanup tokens, and internal
+digests remain private.
+The production runner admits three one-shot executions at a time. A verified
 capacity receipt fails with `local_resource_busy`; a verified fixed-limit,
 timeout, CPU, or output receipt fails with `local_resource_exhausted`. Both use
 sanitized summaries that ask the user to retry later or explicitly authorize a

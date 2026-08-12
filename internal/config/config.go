@@ -88,6 +88,8 @@ type Config struct {
 	CoreExecutionV2ProbeTimeout      time.Duration `yaml:"core_execution_v2_probe_timeout" mapstructure:"core_execution_v2_probe_timeout"`
 	CoreExecutionV2BindingOperations []string      `yaml:"core_execution_v2_binding_operations" mapstructure:"core_execution_v2_binding_operations"`
 	CoreCloudWorker                  CloudWorker   `yaml:"core_cloud_worker" mapstructure:"core_cloud_worker"`
+	CoreStaticSitesEnabled           bool          `yaml:"core_static_sites_enabled" mapstructure:"core_static_sites_enabled"`
+	CoreStaticSitesRoot              string        `yaml:"core_static_sites_root" mapstructure:"core_static_sites_root"`
 	CoreKnowledgeEnabled             bool          `yaml:"core_knowledge_enabled" mapstructure:"core_knowledge_enabled"`
 	CoreKnowledgeContentRoot         string        `yaml:"core_knowledge_content_root" mapstructure:"core_knowledge_content_root"`
 	CoreKnowledgeMountRoot           string        `yaml:"core_knowledge_mount_root" mapstructure:"core_knowledge_mount_root"`
@@ -281,6 +283,9 @@ func ValidateCore(cfg *Config) error {
 		return err
 	}
 	if err := ValidateCoreCloudWorker(cfg); err != nil {
+		return err
+	}
+	if err := ValidateCoreStaticSites(cfg); err != nil {
 		return err
 	}
 	if err := ValidateCoreVoice(cfg); err != nil {
@@ -1125,6 +1130,31 @@ func canonicalPath(path string) (string, error) {
 		return "", err
 	}
 	return filepath.Clean(resolved), nil
+}
+
+// ValidateCoreStaticSites makes the immutable static publication root an
+// explicit opt-in. The directory must already exist so startup never creates
+// a host bind mount at an unintended path.
+func ValidateCoreStaticSites(cfg *Config) error {
+	if cfg == nil {
+		return errors.New("config is required")
+	}
+	if !cfg.CoreStaticSitesEnabled {
+		if strings.TrimSpace(cfg.CoreStaticSitesRoot) != "" {
+			return errors.New("core_static_sites_root requires core_static_sites_enabled")
+		}
+		return nil
+	}
+	root, err := canonicalPath(cfg.CoreStaticSitesRoot)
+	if err != nil {
+		return fmt.Errorf("canonicalize core_static_sites_root: %w", err)
+	}
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return errors.New("core_static_sites_root must be an existing directory")
+	}
+	cfg.CoreStaticSitesRoot = root
+	return nil
 }
 
 func pathsOverlap(left, right string) bool {

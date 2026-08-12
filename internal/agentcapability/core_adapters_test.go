@@ -1490,21 +1490,93 @@ func TestExtensionMutationSchemasPublishOnlyWriteOnlySecretValue(t *testing.T) {
 
 type capturingExtensionService struct {
 	coreextension.Service
-	mutation coreextension.Mutation
-	execute  coreextension.ExecuteRequest
-	calls    int
+	mutation       coreextension.Mutation
+	mutationResult coreextension.MutationResult
+	execute        coreextension.ExecuteRequest
+	inspect        coreextension.Inspection
+	calls          int
+}
+
+func (s *capturingExtensionService) Inspect(_ context.Context, _ coreextension.InspectRequest) (coreextension.Inspection, error) {
+	s.calls++
+	return s.inspect, nil
 }
 
 func (s *capturingExtensionService) RequestInstall(_ context.Context, mutation coreextension.Mutation) (coreextension.MutationResult, error) {
 	s.calls++
 	s.mutation = mutation
-	return coreextension.MutationResult{}, nil
+	return s.mutationResult, nil
 }
 
 func (s *capturingExtensionService) Execute(_ context.Context, request coreextension.ExecuteRequest) (coreextension.ExecuteResult, error) {
 	s.calls++
 	s.execute = request
 	return coreextension.ExecuteResult{TaskID: "task-id", ConfirmationID: "confirmation-id"}, nil
+}
+
+func TestExtensionInspectProjectsEmptyGrantArrays(t *testing.T) {
+	service := &capturingExtensionService{}
+	raw := []byte(`{"candidate":{"id":"mcp-mx-calculator","kind":"mcp","source":"npm","name":"mcp-mx-calculator","pin":{"registry_version":"1.0.1","registry_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"transport":"stdio_node"}}`)
+	result, err := (&coreExtensionCapability{service: service}).HandleOperation(context.Background(), "inspect_mcp", raw)
+	if err != nil || service.calls != 1 {
+		t.Fatalf("inspect calls=%d err=%v", service.calls, err)
+	}
+	var projection struct {
+		Inspection struct {
+			NetworkGrants []coreextension.NetworkGrant          `json:"network_grants"`
+			SecretGrants  []coreextension.SecretGrantDescriptor `json:"secret_grants"`
+		} `json:"inspection"`
+	}
+	if json.Unmarshal(result, &projection) != nil || projection.Inspection.NetworkGrants == nil || projection.Inspection.SecretGrants == nil || len(projection.Inspection.NetworkGrants) != 0 || len(projection.Inspection.SecretGrants) != 0 {
+		t.Fatalf("inspect grant arrays are not explicit empty arrays: %s", result)
+	}
+}
+
+func TestExtensionInstallProjectsCanonicalPublicInstallation(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	candidate := coreextension.Candidate{ID: "mcp-mx-calculator", Kind: coreextension.KindMCP, Source: coreextension.SourceNPM, Name: "mcp-mx-calculator", Pin: coreextension.SourcePin{RegistryVersion: "1.0.1", RegistrySHA256: digest}, Transport: coreextension.TransportStdioNode}
+	inspection := coreextension.Inspection{
+		Candidate: candidate, ContentDigest: digest, ManifestDigest: digest, ExecutionDigest: digest, NetworkSchemaDigest: digest, SecretSchemaDigest: digest,
+		Execution: coreextension.ExecutionDescriptor{Stdio: &coreextension.StaticEntry{RelativePath: "dist/index.js", Digest: digest, Runtime: "node"}},
+	}
+	service := &capturingExtensionService{mutationResult: coreextension.MutationResult{
+		Installation:   coreextension.Installation{ID: uuid.NewString(), Candidate: candidate, Kind: candidate.Kind, Source: candidate.Source, CandidateID: candidate.ID, Name: candidate.Name, Transport: candidate.Transport, Revision: 1, State: coreextension.StateInstalling, ProposedVersionID: uuid.NewString(), Versions: []coreextension.VersionRecord{{VersionID: uuid.NewString(), Pin: candidate.Pin, ContentDigest: digest, ManifestDigest: digest, ExecutionDigest: digest, NetworkSchemaDigest: digest, SecretSchemaDigest: digest, Execution: inspection.Execution, Tools: []coreextension.Tool{{Name: "private"}}, ArtifactDigest: digest}}},
+		ConfirmationID: uuid.NewString(), TaskID: uuid.NewString(),
+	}}
+	raw, err := json.Marshal(map[string]any{"idempotency_key": uuid.NewString(), "candidate": candidate, "inspection": inspection, "secret_inputs": []any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&coreExtensionCapability{service: service}).HandleOperation(context.Background(), "install_mcp", raw)
+	if err != nil || service.calls != 1 {
+		t.Fatalf("install calls=%d err=%v", service.calls, err)
+	}
+	var projection map[string]any
+	if json.Unmarshal(result, &projection) != nil {
+		t.Fatalf("install result is invalid JSON: %s", result)
+	}
+	installation := projection["installation"].(map[string]any)
+	for _, field := range []string{"network_grants", "secret_grants"} {
+		if value, ok := installation[field].([]any); !ok || len(value) != 0 {
+			t.Fatalf("installation %s is not an explicit empty array: %s", field, result)
+		}
+	}
+	version := installation["versions"].([]any)[0].(map[string]any)
+	for _, forbidden := range []string{"artifact_digest", "artifact_path", "artifact_cleanup_token", "published_at", "tools"} {
+		if _, present := version[forbidden]; present {
+			t.Fatalf("install response exposed %s: %s", forbidden, result)
+		}
+	}
+	for _, field := range []string{"network_grants", "secret_grants"} {
+		if value, ok := version[field].([]any); !ok || len(value) != 0 {
+			t.Fatalf("version %s is not an explicit empty array: %s", field, result)
+		}
+	}
+	execution := version["execution"].(map[string]any)
+	stdio := execution["stdio"].(map[string]any)
+	if argv, ok := stdio["argv"].([]any); !ok || len(argv) != 0 {
+		t.Fatalf("Node stdio argv is not an explicit empty array: %s", result)
+	}
 }
 
 func TestExtensionExecuteUsesAuthenticatedOwner(t *testing.T) {

@@ -24,16 +24,23 @@ const coreResultMaxBytes = 16 << 20
 var coreResultPathRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$`)
 
 const (
-	sandboxBootstrapFD = 3
-	sandboxReleaseFD   = 4
-	sandboxInstallFD   = 5
-	sandboxEntryFD     = 6
-	sandboxWorkspaceFD = 7
-	sandboxStdinFD     = 8
+	sandboxBootstrapFD   = 3
+	sandboxReleaseFD     = 4
+	sandboxInstallFD     = 5
+	sandboxEntryFD       = 6
+	sandboxWorkspaceFD   = 7
+	sandboxStdinFD       = 8
+	sandboxNodeRuntimeFD = 8
 	// Core mode forbids stdin and secret descriptors, so its two manager-only
 	// descriptors occupy the otherwise-unused fd 8 and 9 slots.
 	sandboxManagerFD = 8
 	sandboxResultFD  = 9
+)
+
+const (
+	sandboxControlRelease  byte = 1
+	sandboxControlMounted  byte = 2
+	sandboxControlContinue byte = 3
 )
 
 // sandboxChildStageError intentionally discards the underlying error. The
@@ -50,6 +57,19 @@ func sandboxChildFailure(stage string, err error) error {
 		return err
 	}
 	return sandboxChildStageError{stage: stage, cause: sandboxChildCause(err)}
+}
+
+// SandboxFailureDiagnostic is the only child-entry diagnostic allowed onto
+// the runner's stderr boundary. Arbitrary errors are never stringified.
+func SandboxFailureDiagnostic(err error) string {
+	var safe sandboxChildStageError
+	if !errors.As(err, &safe) {
+		return "bootstrap:denied"
+	}
+	if _, _, ok := parseSandboxChildDiagnostic(safe.Error()); !ok {
+		return "bootstrap:denied"
+	}
+	return safe.Error()
 }
 
 func sandboxChildCause(err error) string {
@@ -115,6 +135,17 @@ func readSandboxBootstrap(fd int) (bootstrapV1, error) {
 	} else if value.ManagerBase != "" || value.ManagerRootDev != 0 || value.ManagerRootIno != 0 || value.ManagerDev != 0 || value.ManagerIno != 0 || value.ManagerMode != 0 || value.ManagerSize != 0 || value.ManagerSHA256 != "" {
 		return empty, ErrDenied
 	}
+	if value.Request.Runtime == "node" {
+		if value.RuntimeRootDev == 0 || value.RuntimeRootIno == 0 || value.CoreTmpfsBytes != 0 {
+			return empty, ErrDenied
+		}
+	} else if value.RuntimeRootDev != 0 || value.RuntimeRootIno != 0 {
+		return empty, ErrDenied
+	}
+	if value.RootTargetName != sandboxRootTargetName(value.Request.RunID) || value.RootTargetDev == 0 || value.RootTargetIno == 0 ||
+		value.RootTargetMode != unix.S_IFDIR || value.TargetRootDev == 0 || value.TargetRootIno == 0 {
+		return empty, ErrDenied
+	}
 	return value, nil
 }
 
@@ -136,7 +167,7 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	var release [1]byte
 	if n, err := unix.Read(sandboxReleaseFD, release[:]); err != nil {
 		return sandboxChildFailure("release", err)
-	} else if n != 1 || release[0] != 1 {
+	} else if n != 1 || release[0] != sandboxControlRelease {
 		return sandboxChildFailure("release", ErrDenied)
 	}
 	if err := unix.Unshare(unix.CLONE_FS); err != nil {
@@ -150,11 +181,23 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
 		return sandboxChildFailure("map-namespace", err)
 	}
+	// Never inherit propagation from the outer container. Every subsequent
+	// attach is confined to this one sandbox child's mount namespace even if a
+	// future runtime supplies a shared root mount.
+	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+		return sandboxChildFailure("mount-private", err)
+	}
+	targetParentFD, targetFD, err := openSandboxRootTarget(bootstrap)
+	if err != nil {
+		return sandboxChildFailure("root-target", err)
+	}
+	defer unix.Close(targetParentFD)
+	defer unix.Close(targetFD)
 	installMountFD, err := cloneSandboxTree(sandboxInstallFD)
 	if err != nil {
 		return sandboxChildFailure("app-clone", err)
 	}
-	workspaceMountFD, managerMountFD := -1, -1
+	workspaceMountFD, managerMountFD, runtimeMountFD := -1, -1, -1
 	defer func() {
 		if installMountFD >= 0 {
 			_ = unix.Close(installMountFD)
@@ -165,6 +208,9 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 		if managerMountFD >= 0 {
 			_ = unix.Close(managerMountFD)
 		}
+		if runtimeMountFD >= 0 {
+			_ = unix.Close(runtimeMountFD)
+		}
 	}()
 	if bootstrap.CoreTmpfsBytes > 0 {
 		managerMountFD, err = cloneSandboxTree(sandboxManagerFD)
@@ -172,6 +218,12 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 			return sandboxChildFailure("manager-clone", err)
 		}
 	} else {
+		if bootstrap.Request.Runtime == "node" {
+			runtimeMountFD, err = cloneSandboxTree(sandboxNodeRuntimeFD)
+			if err != nil {
+				return sandboxChildFailure("runtime-clone", err)
+			}
+		}
 		workspaceMountFD, err = cloneSandboxTree(sandboxWorkspaceFD)
 		if err != nil {
 			return sandboxChildFailure("work-clone", err)
@@ -207,7 +259,7 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	if err := verifyMappedSandboxDirs(mappedInstallFD, mappedWorkspaceFD); err != nil {
 		return sandboxChildFailure("map-verify", err)
 	}
-	rootFD, err := prepareSandboxMounts(bootstrap, installMountFD, workspaceMountFD, managerMountFD)
+	rootFD, err := prepareSandboxMounts(bootstrap, mappedWorkspaceFD, targetParentFD, targetFD, installMountFD, workspaceMountFD, managerMountFD, runtimeMountFD)
 	if err != nil {
 		return sandboxChildFailure("mounts", err)
 	}
@@ -216,7 +268,7 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 			_ = unix.Close(rootFD)
 		}
 	}()
-	for _, fd := range []*int{&installMountFD, &workspaceMountFD, &managerMountFD} {
+	for _, fd := range []*int{&installMountFD, &workspaceMountFD, &managerMountFD, &runtimeMountFD} {
 		if *fd >= 0 {
 			_ = unix.Close(*fd)
 			*fd = -1
@@ -224,6 +276,8 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	}
 	if bootstrap.CoreTmpfsBytes > 0 {
 		_ = unix.Close(sandboxManagerFD)
+	} else if bootstrap.Request.Runtime == "node" {
+		_ = unix.Close(sandboxNodeRuntimeFD)
 	}
 	if err := unix.Fchdir(rootFD); err != nil {
 		return sandboxChildFailure("root-switch", err)
@@ -234,12 +288,12 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	if err := unix.Chdir("/work"); err != nil {
 		return sandboxChildFailure("root-switch", err)
 	}
-	closeAfterRoot := []int{sandboxBootstrapFD, sandboxReleaseFD, sandboxInstallFD, sandboxEntryFD, sandboxWorkspaceFD, mappedInstallFD, mappedWorkspaceFD, rootFD}
+	closeAfterRoot := []int{sandboxBootstrapFD, sandboxInstallFD, sandboxEntryFD, sandboxWorkspaceFD, mappedInstallFD, mappedWorkspaceFD, rootFD}
 	if bootstrap.CoreTmpfsBytes > 0 {
 		// The manager child retains only bootstrap/result descriptors. Its
 		// trusted parent keeps the detached sandbox-root handle just long enough
 		// to cover the manager mount after exec; it closes every host descriptor.
-		closeAfterRoot = []int{sandboxReleaseFD, sandboxInstallFD, sandboxEntryFD, sandboxWorkspaceFD, mappedInstallFD, mappedWorkspaceFD}
+		closeAfterRoot = []int{sandboxInstallFD, sandboxEntryFD, sandboxWorkspaceFD, mappedInstallFD, mappedWorkspaceFD}
 	}
 	for _, fd := range closeAfterRoot {
 		_ = unix.Close(fd)
@@ -248,24 +302,29 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	if bootstrap.CoreTmpfsBytes == 0 {
 		rootFD = -1
 	}
+	stdinFD := sandboxInputStartFD(bootstrap)
 	if bootstrap.HasStdin {
-		if err := unix.Dup2(sandboxStdinFD, 0); err != nil {
+		if err := unix.Dup2(stdinFD, 0); err != nil {
 			return sandboxChildFailure("stdin", err)
 		}
 	} else if err := unix.Dup2(nullFD, 0); err != nil {
 		return sandboxChildFailure("stdin", err)
 	}
 	if bootstrap.HasStdin {
-		_ = unix.Close(sandboxStdinFD)
+		_ = unix.Close(stdinFD)
 	}
 	for i := 0; i < bootstrap.SecretCount; i++ {
-		_ = unix.Close(sandboxStdinFD + btoi(bootstrap.HasStdin) + i)
+		_ = unix.Close(stdinFD + btoi(bootstrap.HasStdin) + i)
 	}
 	if bootstrap.CoreTmpfsBytes > 0 {
 		managerRootFD := rootFD
 		rootFD = -1
-		return runSandboxManager(bootstrap, managerRootFD)
+		return runSandboxManager(bootstrap, managerRootFD, sandboxReleaseFD)
 	}
+	if err := completeSandboxMountHandshake(sandboxReleaseFD); err != nil {
+		return sandboxChildFailure("mount-ready", err)
+	}
+	_ = unix.Close(sandboxReleaseFD)
 	if err := verifySandboxStandardFDs(); err != nil {
 		return sandboxChildFailure("close-fds", err)
 	}
@@ -288,21 +347,76 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	// /app/entry may be a BusyBox multi-call binary.  Exec selects its applet
 	// from argv[0], so the first admitted argument is the executable name, not
 	// a positional argument passed after the binary path.
-	argv := sandboxExecArgv(bootstrap.Request.Argv)
-	if err := unix.Exec("/app/entry", argv, []string{}); err != nil {
+	executable, argv, env := sandboxExecutionCommand(bootstrap.Request)
+	if err := unix.Exec(executable, argv, env); err != nil {
 		return sandboxChildFailure("exec", err)
 	}
 	return nil
 }
 
-func runSandboxManager(bootstrap bootstrapV1, rootFD int) error {
+func completeSandboxMountHandshake(fd int) error {
+	if n, err := unix.Write(fd, []byte{sandboxControlMounted}); err != nil {
+		return err
+	} else if n != 1 {
+		return ErrDenied
+	}
+	var ack [1]byte
+	if n, err := unix.Read(fd, ack[:]); err != nil {
+		return err
+	} else if n != 1 || ack[0] != sandboxControlContinue {
+		return ErrDenied
+	}
+	return nil
+}
+
+type sandboxManagerBoundaryOps struct {
+	hideManager       func() error
+	verifyHidden      func() error
+	mountReady        func() error
+	clearCapabilities func() error
+	noNewPrivileges   func() error
+	releaseCommand    func() error
+	abortCommand      func()
+}
+
+func applySandboxManagerBoundary(ops sandboxManagerBoundaryOps) error {
+	fail := func(stage string, err error) error {
+		ops.abortCommand()
+		return sandboxChildFailure(stage, err)
+	}
+	if err := ops.hideManager(); err != nil {
+		return fail("manager-hide", err)
+	}
+	if err := ops.verifyHidden(); err != nil {
+		return fail("manager-hide", err)
+	}
+	// The outer parent may remove the exact sandbox-root anchor only after all
+	// mount mutations are complete. The nested command remains blocked until
+	// that removal is acknowledged by the continue half of this handshake.
+	if err := ops.mountReady(); err != nil {
+		return fail("mount-ready", err)
+	}
+	if err := ops.clearCapabilities(); err != nil {
+		return fail("capabilities", err)
+	}
+	if err := ops.noNewPrivileges(); err != nil {
+		return fail("no-new-privs", err)
+	}
+	if err := ops.releaseCommand(); err != nil {
+		return fail("manager-release", err)
+	}
+	return nil
+}
+
+func runSandboxManager(bootstrap bootstrapV1, rootFD, controlFD int) error {
 	// The manager deliberately retains only its sealed bootstrap and optional
 	// result memfd. The immutable reexec image is reachable only through the
 	// temporary /run/manager mount; the command receives only bootstrap fd 3.
-	if bootstrap.CoreTmpfsBytes <= 0 || rootFD < 0 {
+	if bootstrap.CoreTmpfsBytes <= 0 || rootFD < 0 || controlFD < 0 {
 		return sandboxChildFailure("manager", ErrDenied)
 	}
 	defer unix.Close(rootFD)
+	defer unix.Close(controlFD)
 	boot, err := unix.Dup(sandboxBootstrapFD)
 	if err != nil {
 		return sandboxChildFailure("manager", err)
@@ -334,25 +448,34 @@ func runSandboxManager(bootstrap bootstrapV1, rootFD int) error {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	}
-	if err := hideSandboxManagerMount(rootFD); err != nil {
-		abort()
+	if err := applySandboxManagerBoundary(sandboxManagerBoundaryOps{
+		hideManager: func() error {
+			return hideSandboxManagerMount(rootFD)
+		},
+		verifyHidden: func() error {
+			if _, err := os.Lstat(managerPath); !errors.Is(err, os.ErrNotExist) {
+				return ErrDenied
+			}
+			return nil
+		},
+		mountReady:        func() error { return completeSandboxMountHandshake(controlFD) },
+		clearCapabilities: clearSandboxCapabilities,
+		noNewPrivileges: func() error {
+			return unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+		},
+		releaseCommand: func() error {
+			n, err := releaseW.Write([]byte{1})
+			if err != nil {
+				return err
+			}
+			if n != 1 {
+				return ErrDenied
+			}
+			return nil
+		},
+		abortCommand: abort,
+	}); err != nil {
 		return err
-	}
-	if _, err := os.Lstat(managerPath); !errors.Is(err, os.ErrNotExist) {
-		abort()
-		return sandboxChildFailure("manager-hide", ErrDenied)
-	}
-	if err := clearSandboxCapabilities(); err != nil {
-		abort()
-		return sandboxChildFailure("capabilities", err)
-	}
-	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-		abort()
-		return sandboxChildFailure("no-new-privs", err)
-	}
-	if n, err := releaseW.Write([]byte{1}); err != nil || n != 1 {
-		abort()
-		return sandboxChildFailure("manager-release", ErrDenied)
 	}
 	_ = releaseW.Close()
 	if cmd.Wait() != nil {
@@ -396,6 +519,23 @@ func sandboxExecArgv(args []string) []string {
 		return []string{"/app/entry"}
 	}
 	return append([]string(nil), args...)
+}
+
+func sandboxInputStartFD(bootstrap bootstrapV1) int {
+	if bootstrap.Request.Runtime == "node" {
+		return sandboxNodeRuntimeFD + 1
+	}
+	return sandboxStdinFD
+}
+
+func sandboxExecutionCommand(request RequestV2) (string, []string, []string) {
+	if request.Runtime != "node" {
+		return "/app/entry", sandboxExecArgv(request.Argv), []string{}
+	}
+	loader := "/runtime/lib/ld-musl-x86_64.so.1"
+	argv := []string{loader, "--library-path", "/runtime/usr/lib", "/runtime/usr/local/bin/node", "/app/" + request.Entry}
+	argv = append(argv, request.Argv...)
+	return loader, argv, []string{"HOME=/work", "TMPDIR=/work", "NODE_OPTIONS=--max-old-space-size=192"}
 }
 
 func exportSandboxResult(resultFD int, name string) error {
@@ -477,8 +617,10 @@ func verifySandboxDescriptors(bootstrap bootstrapV1) error {
 	var entryStat unix.Stat_t
 	if err := unix.Fstat(sandboxEntryFD, &entryStat); err != nil ||
 		entryStat.Mode != bootstrap.EntryMode ||
-		entryStat.Mode&0o111 == 0 ||
 		entryStat.Mode&0o222 != 0 {
+		return ErrDenied
+	}
+	if bootstrap.Request.Runtime == "" && entryStat.Mode&0o111 == 0 {
 		return ErrDenied
 	}
 	sum, err := digestDescriptor(sandboxEntryFD, bootstrap.EntrySize)
@@ -492,7 +634,7 @@ func verifySandboxDescriptors(bootstrap bootstrapV1) error {
 		workspace.Uid != 0 {
 		return ErrDenied
 	}
-	nextFD := sandboxStdinFD
+	nextFD := sandboxInputStartFD(bootstrap)
 	if bootstrap.HasStdin {
 		if err := VerifySealedFD(nextFD, bootstrap.Request.Stdin.Size, bootstrap.Request.Stdin.SHA256); err != nil {
 			return ErrDenied
@@ -520,6 +662,12 @@ func verifySandboxDescriptors(bootstrap bootstrapV1) error {
 		}
 		digest, err := digestDescriptor(fd, st.Size)
 		if err != nil || digest != bootstrap.ManagerSHA256 {
+			return ErrDenied
+		}
+	}
+	if bootstrap.Request.Runtime == "node" {
+		var runtimeStat unix.Stat_t
+		if unix.Fstat(sandboxNodeRuntimeFD, &runtimeStat) != nil || runtimeStat.Mode&unix.S_IFMT != unix.S_IFDIR || uint64(runtimeStat.Dev) != bootstrap.RuntimeRootDev || runtimeStat.Ino != bootstrap.RuntimeRootIno || runtimeStat.Mode&0o022 != 0 {
 			return ErrDenied
 		}
 	}

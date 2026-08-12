@@ -2,6 +2,8 @@
 # VERSION/REVISION from the release job; no source or dependency is fetched at
 # runtime. Runner services select explicit entrypoints from this same image;
 # Compose still supplies their UID, network, mount, and cgroup boundaries.
+FROM --platform=linux/amd64 docker.io/library/node:24.18.1-alpine3.23@sha256:ba63d8e0b5d4cbc6db9da12ea77ddb35a4783ad653a092ef115cc383526d4369 AS node_runtime
+
 FROM --platform=linux/amd64 docker.io/library/golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS build
 WORKDIR /src
 ARG GOPROXY=https://proxy.golang.org,direct
@@ -25,6 +27,12 @@ RUN install -d -m 0755 /out/etc/ssl/certs /out/etc/dirextalk-agent /out/var/lib/
     && install -d -m 0755 /out/cgroup \
     && install -d -m 1777 /out/tmp \
     && cp /etc/ssl/certs/ca-certificates.crt /out/etc/ssl/certs/ca-certificates.crt
+COPY --from=node_runtime /usr/local/bin/node /out/usr/local/libexec/dirextalk-node-runtime/usr/local/bin/node
+COPY --from=node_runtime /usr/local/lib/node_modules/npm /out/usr/local/libexec/dirextalk-node-runtime/usr/local/lib/node_modules/npm
+COPY --from=node_runtime /lib/ld-musl-x86_64.so.1 /out/usr/local/libexec/dirextalk-node-runtime/lib/ld-musl-x86_64.so.1
+COPY --from=node_runtime /usr/lib/libstdc++.so.6 /out/usr/local/libexec/dirextalk-node-runtime/usr/lib/libstdc++.so.6
+COPY --from=node_runtime /usr/lib/libgcc_s.so.1 /out/usr/local/libexec/dirextalk-node-runtime/usr/lib/libgcc_s.so.1
+RUN chmod -R a-w /out/usr/local/libexec/dirextalk-node-runtime
 
 FROM scratch
 ARG VERSION=dev

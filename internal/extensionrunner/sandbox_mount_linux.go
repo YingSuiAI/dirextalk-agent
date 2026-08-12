@@ -3,16 +3,32 @@
 package extensionrunner
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
 
 const sandboxMountBaseAttrs = unix.MOUNT_ATTR_NODEV | unix.MOUNT_ATTR_NOSUID
 
-func prepareSandboxMounts(bootstrap bootstrapV1, installMountFD, workspaceMountFD, managerMountFD int) (int, error) {
+const (
+	sandboxRootTargetRoot = "/tmp"
+)
+
+var errSandboxRootCleanup = errors.New("sandbox root target cleanup failed")
+
+type sandboxRootTarget struct {
+	parentFD int
+	targetFD int
+	name     string
+	parent   unix.Stat_t
+	target   unix.Stat_t
+}
+
+func prepareSandboxMounts(bootstrap bootstrapV1, previousRootFD, targetParentFD, targetFD, installMountFD, workspaceMountFD, managerMountFD, runtimeMountFD int) (int, error) {
 	rootBytes := bootstrap.Request.Limits.MemoryBytes / 4
 	if rootBytes < 1<<20 {
 		rootBytes = 1 << 20
@@ -20,9 +36,9 @@ func prepareSandboxMounts(bootstrap bootstrapV1, installMountFD, workspaceMountF
 	if rootBytes > 64<<20 {
 		rootBytes = 64 << 20
 	}
-	rootFD, err := newSandboxTmpfs(rootBytes, 0o700, sandboxMountBaseAttrs)
+	rootFD, err := mountSandboxRoot(rootBytes, previousRootFD, targetParentFD, targetFD, bootstrap)
 	if err != nil {
-		return -1, sandboxChildFailure("root-tmpfs", err)
+		return -1, err
 	}
 	if err := createSandboxLayout(rootFD); err != nil {
 		unix.Close(rootFD)
@@ -45,6 +61,16 @@ func prepareSandboxMounts(bootstrap bootstrapV1, installMountFD, workspaceMountF
 	if err := mountDetachedSandboxTree(installMountFD, rootFD, "app", sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY, "app-remount", "app-bind"); err != nil {
 		unix.Close(rootFD)
 		return -1, err
+	}
+	if bootstrap.Request.Runtime == "node" {
+		if runtimeMountFD < 0 {
+			unix.Close(rootFD)
+			return -1, sandboxChildFailure("runtime-clone", ErrDenied)
+		}
+		if err := mountDetachedSandboxTree(runtimeMountFD, rootFD, "runtime", sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY, "runtime-remount", "runtime-bind"); err != nil {
+			unix.Close(rootFD)
+			return -1, err
+		}
 	}
 	if bootstrap.CoreTmpfsBytes > 0 {
 		work, e := newSandboxTmpfs(bootstrap.CoreTmpfsBytes, 0o700, sandboxMountBaseAttrs|unix.MOUNT_ATTR_NOEXEC)
@@ -88,8 +114,261 @@ func prepareSandboxMounts(bootstrap bootstrapV1, installMountFD, workspaceMountF
 	return rootFD, nil
 }
 
+func mountSandboxRoot(size int64, previousRootFD, targetParentFD, targetFD int, bootstrap bootstrapV1) (int, error) {
+	if size <= 0 || previousRootFD < 0 || targetParentFD < 0 || targetFD < 0 {
+		return -1, sandboxChildFailure("root-tmpfs", ErrDenied)
+	}
+	var previous unix.Stat_t
+	if err := unix.Fstat(previousRootFD, &previous); err != nil || previous.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return -1, sandboxChildFailure("root-verify", ErrDenied)
+	}
+	currentRootFD, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, sandboxChildFailure("root-verify", err)
+	}
+	var current unix.Stat_t
+	if err := unix.Fstat(currentRootFD, &current); err != nil {
+		unix.Close(currentRootFD)
+		return -1, sandboxChildFailure("root-verify", err)
+	}
+	unix.Close(currentRootFD)
+	if !sameSandboxRootIdentity(previous, current) {
+		return -1, sandboxChildFailure("root-verify", ErrDenied)
+	}
+	rootFD, err := newSandboxTmpfs(size, 0o700, sandboxMountBaseAttrs)
+	if err != nil {
+		return -1, sandboxChildFailure("root-tmpfs", err)
+	}
+	// Revalidate the strongest sealed identities immediately before the mount
+	// mutation. The descriptors already prevent path redirection; this second
+	// check also rejects metadata or namespace drift during source cloning.
+	if err := verifySandboxRootTargetForMount(targetParentFD, targetFD, bootstrap); err != nil {
+		unix.Close(rootFD)
+		return -1, sandboxChildFailure("root-target", err)
+	}
+	if err := moveSandboxMount(rootFD, targetFD); err != nil {
+		unix.Close(rootFD)
+		return -1, sandboxChildFailure("root-bind", err)
+	}
+	attachedFD, err := openSandboxRootTargetAt(targetParentFD, bootstrap.RootTargetName)
+	if err != nil {
+		unix.Close(rootFD)
+		return -1, sandboxChildFailure("root-verify", err)
+	}
+	var root, attached unix.Stat_t
+	var filesystem unix.Statfs_t
+	if err := unix.Fstat(rootFD, &root); err != nil || unix.Fstat(attachedFD, &attached) != nil {
+		unix.Close(attachedFD)
+		unix.Close(rootFD)
+		return -1, sandboxChildFailure("root-verify", ErrDenied)
+	}
+	if err := unix.Fstatfs(attachedFD, &filesystem); err != nil {
+		unix.Close(attachedFD)
+		unix.Close(rootFD)
+		return -1, sandboxChildFailure("root-verify", err)
+	}
+	if !sameSandboxRootIdentity(root, attached) {
+		unix.Close(attachedFD)
+		unix.Close(rootFD)
+		return -1, sandboxChildFailure("root-verify", ErrDenied)
+	}
+	if err := validateSandboxRootMetadata(previous, attached, filesystem); err != nil {
+		unix.Close(attachedFD)
+		unix.Close(rootFD)
+		return -1, sandboxChildFailure("root-verify", err)
+	}
+	unix.Close(rootFD)
+	return attachedFD, nil
+}
+
+func sandboxRootTargetName(runID string) string { return sandboxRootAnchorPrefix + runID }
+
+func openSandboxRootTargetAt(parentFD int, name string) (int, error) {
+	runID := strings.TrimPrefix(name, sandboxRootAnchorPrefix)
+	if parentFD < 0 || runID == name {
+		return -1, ErrDenied
+	}
+	canonical, err := idPathPart(runID)
+	if err != nil || canonical != runID || name != sandboxRootTargetName(runID) {
+		return -1, ErrDenied
+	}
+	return unix.Openat2(parentFD, name, &unix.OpenHow{
+		Flags:   unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW,
+		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
+	})
+}
+
+func createSandboxRootTarget(runID string) (*sandboxRootTarget, error) {
+	if _, err := idPathPart(runID); err != nil {
+		return nil, ErrDenied
+	}
+	name := sandboxRootTargetName(runID)
+	parentFD, parent, err := openSandboxRootTargetParent(false)
+	if err != nil {
+		return nil, err
+	}
+	if err = unix.Mkdirat(parentFD, name, 0); err != nil {
+		unix.Close(parentFD)
+		return nil, err
+	}
+	created := true
+	defer func() {
+		if created {
+			_ = unix.Unlinkat(parentFD, name, unix.AT_REMOVEDIR)
+			_ = unix.Close(parentFD)
+		}
+	}()
+	targetFD, err := openSandboxRootTargetAt(parentFD, name)
+	if err != nil {
+		return nil, err
+	}
+	var target unix.Stat_t
+	statErr := unix.Fstat(targetFD, &target)
+	if statErr != nil || !validSandboxRootTarget(parent, target, uint32(os.Geteuid()), uint32(os.Getegid())) {
+		unix.Close(targetFD)
+		return nil, ErrDenied
+	}
+	created = false
+	return &sandboxRootTarget{parentFD: parentFD, targetFD: targetFD, name: name, parent: parent, target: target}, nil
+}
+
+func (t *sandboxRootTarget) cleanup() error {
+	if t == nil {
+		return nil
+	}
+	if t.parentFD < 0 && t.targetFD < 0 {
+		return nil
+	}
+	var parent, retained unix.Stat_t
+	var filesystem unix.Statfs_t
+	if unix.Fstat(t.parentFD, &parent) != nil || unix.Fstatfs(t.parentFD, &filesystem) != nil ||
+		!sameSandboxRootIdentity(t.parent, parent) || !validSandboxRootTargetParent(parent, filesystem, false) ||
+		unix.Fstat(t.targetFD, &retained) != nil || !sameSandboxRootIdentity(t.target, retained) {
+		return errors.Join(errSandboxRootCleanup, ErrDenied)
+	}
+	fd, err := openSandboxRootTargetAt(t.parentFD, t.name)
+	if err == unix.ENOENT {
+		if retained.Nlink == 0 {
+			return nil
+		}
+		return errors.Join(errSandboxRootCleanup, ErrDenied)
+	}
+	if err != nil {
+		return errors.Join(errSandboxRootCleanup, err)
+	}
+	var current unix.Stat_t
+	statErr := unix.Fstat(fd, &current)
+	unix.Close(fd)
+	if statErr != nil || !sameSandboxRootIdentity(t.target, current) {
+		return errors.Join(errSandboxRootCleanup, ErrDenied)
+	}
+	if err := unix.Unlinkat(t.parentFD, t.name, unix.AT_REMOVEDIR); err != nil {
+		return errors.Join(errSandboxRootCleanup, err)
+	}
+	var linked unix.Stat_t
+	if err := unix.Fstatat(t.parentFD, t.name, &linked, unix.AT_SYMLINK_NOFOLLOW); err != unix.ENOENT {
+		return errors.Join(errSandboxRootCleanup, ErrDenied)
+	}
+	if unix.Fstat(t.targetFD, &retained) != nil || retained.Nlink != 0 || !sameSandboxRootIdentity(t.target, retained) {
+		return errors.Join(errSandboxRootCleanup, ErrDenied)
+	}
+	return nil
+}
+
+func (t *sandboxRootTarget) close() {
+	if t == nil {
+		return
+	}
+	if t.targetFD >= 0 {
+		_ = unix.Close(t.targetFD)
+		t.targetFD = -1
+	}
+	if t.parentFD >= 0 {
+		_ = unix.Close(t.parentFD)
+		t.parentFD = -1
+	}
+}
+
+func openSandboxRootTargetParent(child bool) (int, unix.Stat_t, error) {
+	var empty unix.Stat_t
+	fd, err := unix.Open(sandboxRootTargetRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, empty, err
+	}
+	var stat unix.Stat_t
+	var filesystem unix.Statfs_t
+	if unix.Fstat(fd, &stat) != nil || unix.Fstatfs(fd, &filesystem) != nil || !validSandboxRootTargetParent(stat, filesystem, child) {
+		unix.Close(fd)
+		return -1, empty, ErrDenied
+	}
+	return fd, stat, nil
+}
+
+func openSandboxRootTarget(bootstrap bootstrapV1) (int, int, error) {
+	parentFD, parent, err := openSandboxRootTargetParent(true)
+	if err != nil {
+		return -1, -1, err
+	}
+	if uint64(parent.Dev) != bootstrap.TargetRootDev || parent.Ino != bootstrap.TargetRootIno {
+		unix.Close(parentFD)
+		return -1, -1, ErrDenied
+	}
+	targetFD, err := openSandboxRootTargetAt(parentFD, bootstrap.RootTargetName)
+	if err != nil {
+		unix.Close(parentFD)
+		return -1, -1, err
+	}
+	var target unix.Stat_t
+	if unix.Fstat(targetFD, &target) != nil || uint64(target.Dev) != bootstrap.RootTargetDev || target.Ino != bootstrap.RootTargetIno ||
+		target.Mode != bootstrap.RootTargetMode || target.Uid != 0 || target.Gid != 0 {
+		unix.Close(targetFD)
+		unix.Close(parentFD)
+		return -1, -1, ErrDenied
+	}
+	return parentFD, targetFD, nil
+}
+
+func validSandboxRootTarget(parent, target unix.Stat_t, uid, gid uint32) bool {
+	return target.Mode == unix.S_IFDIR && target.Uid == uid && target.Gid == gid &&
+		target.Dev == parent.Dev && target.Ino != parent.Ino
+}
+
+func validSandboxRootTargetParent(stat unix.Stat_t, filesystem unix.Statfs_t, child bool) bool {
+	const requiredFlags = unix.ST_NODEV | unix.ST_NOSUID | unix.ST_NOEXEC
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o7777 != 0o1777 || filesystem.Type != unix.TMPFS_MAGIC || filesystem.Flags&requiredFlags != requiredFlags {
+		return false
+	}
+	return child || stat.Uid == 0 && stat.Gid == 0
+}
+
+func verifySandboxRootTargetForMount(parentFD, targetFD int, bootstrap bootstrapV1) error {
+	var parent, target unix.Stat_t
+	var filesystem unix.Statfs_t
+	if unix.Fstat(parentFD, &parent) != nil || unix.Fstatfs(parentFD, &filesystem) != nil ||
+		!validSandboxRootTargetParent(parent, filesystem, true) || uint64(parent.Dev) != bootstrap.TargetRootDev || parent.Ino != bootstrap.TargetRootIno ||
+		unix.Fstat(targetFD, &target) != nil || uint64(target.Dev) != bootstrap.RootTargetDev || target.Ino != bootstrap.RootTargetIno ||
+		target.Mode != bootstrap.RootTargetMode || target.Uid != 0 || target.Gid != 0 {
+		return ErrDenied
+	}
+	return nil
+}
+
+func sameSandboxRootIdentity(admitted, current unix.Stat_t) bool {
+	return admitted.Dev == current.Dev && admitted.Ino == current.Ino && admitted.Mode == current.Mode &&
+		admitted.Uid == current.Uid && admitted.Gid == current.Gid && current.Mode&unix.S_IFMT == unix.S_IFDIR
+}
+
+func validateSandboxRootMetadata(previous, root unix.Stat_t, filesystem unix.Statfs_t) error {
+	const requiredFlags = unix.ST_NODEV | unix.ST_NOSUID
+	if root.Mode&unix.S_IFMT != unix.S_IFDIR || root.Mode&0o777 != 0o700 || root.Uid != 0 || root.Gid != 0 ||
+		root.Dev == previous.Dev || filesystem.Type != unix.TMPFS_MAGIC || filesystem.Flags&requiredFlags != requiredFlags {
+		return ErrDenied
+	}
+	return nil
+}
+
 func createSandboxLayout(rootFD int) error {
-	for _, name := range []string{"app", "work", "run", "dev"} {
+	for _, name := range []string{"app", "work", "run", "dev", "runtime"} {
 		if err := unix.Mkdirat(rootFD, name, 0o700); err != nil {
 			return err
 		}
@@ -155,9 +434,9 @@ func moveSandboxMount(mountFD, targetFD int) error {
 }
 
 func hideSandboxManagerMount(rootFD int) error {
-	// The sandbox root remains a detached mount tree, so umount2 by pathname
-	// returns EINVAL even though the manager is a mount within that tree. Cover
-	// it with an empty immutable mount before capabilities are cleared instead.
+	// The sandbox root is attached only inside this private mount namespace.
+	// Cover the trusted manager with an empty immutable mount before
+	// capabilities are cleared instead of relying on pathname unmount behavior.
 	coverFD, err := newSandboxTmpfs(1<<20, 0o700, sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY|unix.MOUNT_ATTR_NOEXEC)
 	if err != nil {
 		return sandboxChildFailure("manager-hide", err)
@@ -251,7 +530,7 @@ func mountSandboxSecrets(rootFD int, bootstrap bootstrapV1) error {
 	if err = verifySandboxDirectoryFD(secretsMountFD); err != nil {
 		return sandboxChildFailure("secrets-copy", err)
 	}
-	fd := sandboxStdinFD
+	fd := sandboxInputStartFD(bootstrap)
 	if bootstrap.HasStdin {
 		fd++
 	}

@@ -23,6 +23,7 @@ type Service struct {
 	models          ModelRunner
 	extensions      ExtensionResolver
 	intrinsics      IntrinsicResolver
+	staticSites     StaticSitePublisher
 	memoryRecall    MemoryRecallResolver
 	snapshots       SnapshotProfileResolver
 	now             func() time.Time
@@ -67,6 +68,16 @@ func (s *Service) SetIntrinsicResolver(resolver IntrinsicResolver) {
 		return
 	}
 	s.intrinsics = resolver
+}
+
+// SetStaticSitePublisher exposes the Agent-owned, single-file static-site
+// intrinsic only after its immutable filesystem root has passed readiness.
+// A nil publisher removes the tool from the model catalog.
+func (s *Service) SetStaticSitePublisher(publisher StaticSitePublisher) {
+	if s == nil {
+		return
+	}
+	s.staticSites = publisher
 }
 
 // SetMemoryRecallResolver wires the optional Agent-owned long-term-memory
@@ -1571,6 +1582,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	} else {
 		go func() {
 			profile := turn.ProfileSnapshot.Profile()
+			systemPrompt := profile.SystemPrompt
+			if containsStaticSiteIntrinsic(intrinsicTools) {
+				systemPrompt = staticSiteSystemPrompt(systemPrompt)
+			}
 			// Force the current streaming runner so active provider streams are
 			// bounded only by their inactivity watchdog. Durable events persist the
 			// completed result below; private content deltas are intentionally dropped.
@@ -1581,7 +1596,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					DisplayName:  profile.DisplayName,
 					Provider:     string(profile.Provider),
 					Model:        profile.Model,
-					SystemPrompt: profile.SystemPrompt,
+					SystemPrompt: systemPrompt,
 				},
 				Snapshot:           turn.ProfileSnapshot,
 				ProfileSnapshot:    turn.ProfileSnapshot,
@@ -1868,6 +1883,12 @@ func intrinsicTerminalFailure(toolName string, err error) (string, string) {
 			return "invalid_intrinsic_arguments", "Core intrinsic arguments are invalid"
 		}
 		return "schedule_persistence_failed", "Schedule could not be saved"
+	}
+	if toolName == coremodel.IntrinsicStaticSitePublishToolName {
+		if errors.Is(err, ErrInvalid) {
+			return "invalid_intrinsic_arguments", "Core intrinsic arguments are invalid"
+		}
+		return "static_site_publish_failed", "Static page could not be published"
 	}
 	return "intrinsic_failed", "Core intrinsic operation failed"
 }

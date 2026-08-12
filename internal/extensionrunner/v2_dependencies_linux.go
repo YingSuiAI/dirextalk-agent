@@ -18,6 +18,44 @@ func (r DiskInstallResolver) ResolveInstall(digest string) (*AdmittedInstall, er
 	return resolveDiskBundle(r.Root, digest, true)
 }
 
+type DiskNodeInstallResolver struct{ Root string }
+
+func (r DiskNodeInstallResolver) ResolveNodeInstall(digest, entryPath, entrySHA256 string) (*AdmittedInstall, error) {
+	if !filepath.IsAbs(r.Root) || !digestRE.MatchString(digest) || !safeRelativeSlash(entryPath) || !digestRE.MatchString(entrySHA256) {
+		return nil, ErrInvalid
+	}
+	manifest, err := readDiskBundleManifest(r.Root, digest)
+	if err != nil {
+		return nil, err
+	}
+	return OpenAdmittedNodeInstall(filepath.Join(r.Root, digest), digest, manifest, entryPath, entrySHA256)
+}
+
+func readDiskBundleManifest(rootPath, digest string) ([]ManifestEntry, error) {
+	root, err := unix.Open(rootPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	defer unix.Close(root)
+	installFD, err := unix.Openat(root, digest, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	defer unix.Close(installFD)
+	fd, err := unix.Openat(installFD, installManifestName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	f := os.NewFile(uintptr(fd), installManifestName)
+	defer f.Close()
+	body, err := io.ReadAll(io.LimitReader(f, MaxMessageBytes+1))
+	var manifest DiskInstallManifestV1
+	if err != nil || json.Unmarshal(bytes.TrimSuffix(body, []byte{'\n'}), &manifest) != nil || manifest.SchemaVersion != installManifestSchemaV1 || !validManifestEntries(manifest.Entries) || ManifestDigest(manifest.Entries) != digest {
+		return nil, ErrInvalid
+	}
+	return manifest.Entries, nil
+}
+
 type DiskBundleResolver struct{ Root string }
 
 func (r DiskBundleResolver) ResolveBundle(digest string) (*AdmittedInstall, error) {

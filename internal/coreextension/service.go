@@ -99,7 +99,32 @@ func (s *service) Inspect(ctx context.Context, q InspectRequest) (Inspection, er
 	if e != nil {
 		return Inspection{}, e
 	}
-	return a.Inspect(ctx, q)
+	inspection, err := a.Inspect(ctx, q)
+	if err != nil {
+		return Inspection{}, err
+	}
+	return canonicalInspection(inspection), nil
+}
+
+// canonicalInspection fixes the public confirmation shape before it is shown
+// to an owner and again before a pinned Fetch is compared with that reviewed
+// value. JSON distinguishes nil from an empty array, while the extension
+// contract requires explicit empty grant/argv arrays; normalizing both sides
+// keeps the drift fence strict without creating a false mismatch.
+func canonicalInspection(inspection Inspection) Inspection {
+	inspection.NetworkGrants = append([]NetworkGrant{}, inspection.NetworkGrants...)
+	inspection.SecretGrants = append([]SecretGrantDescriptor{}, inspection.SecretGrants...)
+	if inspection.Execution.Stdio != nil {
+		entry := *inspection.Execution.Stdio
+		entry.Argv = append([]string{}, entry.Argv...)
+		inspection.Execution.Stdio = &entry
+	}
+	if inspection.Execution.Skill != nil {
+		entry := *inspection.Execution.Skill
+		entry.Argv = append([]string{}, entry.Argv...)
+		inspection.Execution.Skill = &entry
+	}
+	return inspection
 }
 func (s *service) RequestInstall(ctx context.Context, m Mutation) (MutationResult, error) {
 	m, receipt, err := s.prepareMutation(ctx, m)
@@ -133,6 +158,7 @@ func (s *service) prepareMutation(ctx context.Context, m Mutation) (Mutation, Ar
 	if s.registry == nil || s.artifacts == nil || s.secrets == nil {
 		return Mutation{}, ArtifactReceipt{}, ErrInvalid
 	}
+	m.Inspection = canonicalInspection(m.Inspection)
 	if !validUUID(m.IdempotencyKey) || m.Candidate.Validate() != nil || m.Inspection.Validate() != nil || !equalCandidate(m.Candidate, m.Inspection.Candidate) {
 		return Mutation{}, ArtifactReceipt{}, ErrInvalid
 	}
@@ -170,6 +196,7 @@ func (s *service) prepareMutation(ctx context.Context, m Mutation) (Mutation, Ar
 	if e != nil {
 		return m, ArtifactReceipt{}, e
 	}
+	f.Inspection = canonicalInspection(f.Inspection)
 	if e = f.Validate(); e != nil {
 		return m, ArtifactReceipt{}, ErrConflict
 	}
@@ -185,9 +212,15 @@ func (s *service) prepareMutation(ctx context.Context, m Mutation) (Mutation, Ar
 		return Mutation{}, ArtifactReceipt{}, ErrInvalid
 	}
 	m.ArtifactPath, m.ArtifactDigest = receipt.RelativePath, receipt.ArtifactDigest
+	m.ArtifactCleanupToken = receipt.CleanupToken
+	m.NodeArtifact = cloneNodeArtifactReceipt(receipt.NodeArtifact)
 	m.Candidate = f.Candidate
 	m.Inspection = f.Inspection
 	m.Inspection.SecretGrants = bound
+	if m.ValidateArtifactReceipt() != nil {
+		_ = s.artifacts.Remove(context.WithoutCancel(ctx), receipt)
+		return Mutation{}, ArtifactReceipt{}, ErrInvalid
+	}
 	receipts, e := s.secrets.Bind(ctx, m.SecretInputs)
 	if e != nil {
 		_ = s.artifacts.Remove(context.WithoutCancel(ctx), receipt)

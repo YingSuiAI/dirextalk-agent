@@ -41,9 +41,11 @@ It is test-only tooling and introduces no runtime cross-repository dependency;
 all missing and mismatched baseline actions are reported together.
 
 The Agent-to-Message-Server direction is the separate Product Capability
-callback over its authenticated mTLS channel. Callbacks do not become a second
-Agent database or execution ledger, and neither direction accepts raw Agent
-secrets from Flutter.
+callback over its authenticated mTLS channel. This private service connection
+explicitly bypasses ambient `HTTP_PROXY`/`HTTPS_PROXY` settings; those settings
+belong to controlled outbound web traffic and cannot redirect the authenticated
+peer channel. Callbacks do not become a second Agent database or execution
+ledger, and neither direction accepts raw Agent secrets from Flutter.
 
 Text tools cross only as the owner-client `agent.text_tools.v1` descriptor.
 Message Server forwards the canonical typed config/update/execute payloads and
