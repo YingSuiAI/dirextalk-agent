@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.82
+
+1. Bind the empty static-site list cursor as SQL NULL so the authenticated first page and subsequent cursor pages load correctly on PostgreSQL.
+
 ## v1.0.81
 
 1. Return completed Cloud Worker results to the originating durable conversation with related tasks, plans, references, artifacts, and bounded deliverable context.
