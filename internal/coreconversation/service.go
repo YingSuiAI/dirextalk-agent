@@ -39,7 +39,7 @@ type Service struct {
 }
 
 // MemoryRecallResolver supplies a bounded, already-delimited model-only
-// context for a new conversation. Implementations must never return raw
+// context for the current turn. Implementations must never return raw
 // credentials, source metadata, or unbounded content.
 type MemoryRecallResolver interface {
 	RecallMemory(context.Context, string) (string, error)
@@ -500,7 +500,7 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 			return ChatResponse{}, err
 		}
 		if !replayed {
-			if persistedMessageCount == 0 && !memoryRecallResolved && s.memoryRecall != nil {
+			if !memoryRecallResolved && s.memoryRecall != nil {
 				recallCtx, recallCancel := context.WithTimeout(ctx, 15*time.Second)
 				recalledMemory, err = s.memoryRecall.RecallMemory(recallCtx, cmd.Prompt)
 				recallCancel()
@@ -1515,7 +1515,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		}
 	}
 	var recalledMemory string
-	if !replayed && persistedMessageCount == 0 && s.memoryRecall != nil {
+	if !replayed && s.memoryRecall != nil {
 		recallCtx, recallCancel := context.WithTimeout(ctx, 15*time.Second)
 		recalledMemory, err = s.memoryRecall.RecallMemory(recallCtx, turn.Prompt)
 		recallCancel()

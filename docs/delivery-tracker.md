@@ -16,10 +16,22 @@ contract](message-server-integration-development-contract.md), and
   mTLS client explicitly bypasses ambient HTTP(S) proxy settings.
 - Provider-backed model catalog and durable Eino conversation/Task execution.
 - Native Chat/StreamChat and durable StartTurn now include the current prompt
-  in the provider request and perform first-conversation long-term-memory
-  recall through a private, snapshot-free semantic read. Recall is bounded,
-  memory-only, exact-promoted-revision, user-level untrusted context and is not
-  persisted or returned.
+  in the provider request and perform bounded long-term-memory recall on every
+  turn. The model-only envelope combines relevance-ranked current user facts,
+  their recent conflict-preserving timeline, and exact-promoted-revision
+  semantic Knowledge passages; current facts explicitly outrank stale
+  passages and the envelope is not persisted or returned.
+- Successful exchanges atomically enqueue restart-safe memory consolidation.
+  A bounded model extraction records explicit durable user facts only; repeated
+  values confirm, changed values supersede with validity history, and explicit
+  retractions close the active fact. Provider failures retry without rolling
+  back the already committed conversation.
+- Structured conversation memory is owner opt-in and disabled on fresh state.
+  `agent.memory.v1` exposes the current toggle, embedding readiness/model,
+  revision, bounded facts, conflict timeline, and pending/failed observation
+  counters. Enabling without a configured embedding profile fails with a typed
+  precondition; disabling capture/recall preserves durable memory data, and
+  clearing the active embedding binding also turns the opt-in off.
 - Neutral `agent.chat.v1/stream_chat` now executes through the same durable
   conversation-turn ledger used by list, cancellation, replay, and recovery;
   its Capability operation identity is the public turn identity while the

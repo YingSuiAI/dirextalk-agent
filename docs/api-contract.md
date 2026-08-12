@@ -86,18 +86,38 @@ multi-tenant model.
   terminal error. Durable turns persist the same public ordering while their
   private pending/dispatched envelope remains the at-most-once authority and
   is never exposed as an additional client event.
-- On the first turn of an empty Native conversation, `Chat`, `StreamChat`, and
-  `StartTurn` perform an Agent-internal semantic recall over only ready memory
-  sources whose current revision has a promoted embedding binding that exactly
-  matches the active embedding profile ID, profile revision, and collection
-  configuration digest. Sources awaiting reindex after an embedding-profile
-  change are stale recall candidates and are skipped until promotion. The
-  bounded result is inserted as explicitly untrusted user-level reference data
-  before the current prompt for that model request only. It is never written to
-  conversation messages, turn/event payloads, public Knowledge cursor
-  snapshots, logs, or Capability results. An unavailable recall dependency
-  fails closed before model dispatch; an empty recall is a successful empty
-  context.
+- On every Native conversation turn, `Chat`, `StreamChat`, and `StartTurn`
+  compose two memory layers before model dispatch. Working memory remains the
+  durable conversation summary plus recent transcript window. Long-term memory
+  combines relevance-ranked current user facts, a bounded newest-first fact
+  timeline, and semantic passages from ready memory sources whose promoted
+  binding exactly matches the active embedding profile ID, profile revision,
+  and collection configuration digest. Current facts take precedence over
+  older timeline or semantic passages. The bounded envelope is inserted as
+  explicitly delimited model-only reference data before the current prompt; it
+  is never copied into conversation messages, turn/event payloads, public
+  Knowledge cursor snapshots, logs, or Capability results. An unavailable
+  recall dependency fails closed before model dispatch; an empty recall is a
+  successful empty context.
+- Every successfully committed Native exchange atomically creates a private
+  consolidation observation. A restart-safe worker uses the selected
+  conversation model to extract only explicit durable user facts. Facts use a
+  stable subject/predicate identity: the same value confirms the current fact,
+  a different value supersedes it, and an explicit negation retracts it. The
+  previous row is retained with a validity end time and an append-only
+  `added`, `confirmed`, `replaced`, or `retracted` event. Extraction failures
+  are retried with a bounded durable lease and never roll back the completed
+  chat. Secrets, assistant assertions, transient requests, guesses, and
+  sensitive inferences are excluded by the extraction contract.
+- Automatic structured conversation memory starts disabled. The owner-client
+  `agent.memory.v1/get_config`, `update_config`, and `status` operations use
+  revision fencing and UUID idempotency. Enabling requires the current
+  Knowledge embedding binding to resolve to a non-deleted embedding profile
+  with configured credentials. Disabling preserves facts and the complete
+  conflict timeline but returns an empty structured-memory recall and stops new
+  observations; semantic Knowledge and durable conversation history keep their
+  independent contracts. Timeline events publish separate RFC3339
+  `effective_at` and `observed_at` clocks.
 - Authenticated Native conversations also receive one Agent-owned, read-only
   `knowledge_search` model tool when Knowledge is enabled. It searches only
   ready sources with promoted bindings that match the active embedding

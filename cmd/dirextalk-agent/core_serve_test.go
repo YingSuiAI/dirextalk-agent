@@ -22,6 +22,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/execution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge/semantic"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -40,6 +41,12 @@ func (f memoryRecallSearchFunc) RecallMemory(ctx context.Context, prompt string,
 	return f(ctx, prompt, limit)
 }
 
+type memorySnapshotFunc func(context.Context, string) (corememory.Snapshot, error)
+
+func (f memorySnapshotFunc) Recall(ctx context.Context, prompt string) (corememory.Snapshot, error) {
+	return f(ctx, prompt)
+}
+
 func TestCoreMemoryRecallResolverReturnsBoundedModelOnlyEnvelope(t *testing.T) {
 	sourceID := "11111111-1111-4111-8111-111111111111"
 	resolver := coreMemoryRecallResolver{service: memoryRecallSearchFunc(func(_ context.Context, prompt string, limit int) (coreknowledge.SearchPage, error) {
@@ -55,11 +62,34 @@ func TestCoreMemoryRecallResolverReturnsBoundedModelOnlyEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(value, "[UNTRUSTED LONG-TERM MEMORY]") || !strings.HasSuffix(value, "[END UNTRUSTED LONG-TERM MEMORY]") || !strings.Contains(value, "lives in Shanghai") {
+	if !strings.HasPrefix(value, "[AGENT LONG-TERM MEMORY]") || !strings.HasSuffix(value, "[END AGENT LONG-TERM MEMORY]") || !strings.Contains(value, "lives in Shanghai") {
 		t.Fatalf("recall envelope=%q", value)
 	}
 	if strings.Contains(value, sourceID) || len(value) > coreMemoryRecallMaxBytes || !utf8.ValidString(value) {
 		t.Fatalf("recall leaked metadata or exceeded bounds: bytes=%d valid=%v", len(value), utf8.ValidString(value))
+	}
+}
+
+func TestCoreMemoryRecallResolverRendersCurrentFactBeforeConflictingSemanticHistory(t *testing.T) {
+	resolver := coreMemoryRecallResolver{
+		structured: memorySnapshotFunc(func(_ context.Context, prompt string) (corememory.Snapshot, error) {
+			if prompt != "where do I live" {
+				t.Fatalf("structured recall prompt=%q", prompt)
+			}
+			return corememory.Snapshot{Facts: []corememory.Fact{{Predicate: "home_city", Value: "Beijing"}}, Events: []corememory.TimelineEvent{{Kind: "replaced", Summary: "user.home_city = Beijing", EffectiveAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), OccurredAt: time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC)}}}, nil
+		}),
+		service: memoryRecallSearchFunc(func(context.Context, string, int) (coreknowledge.SearchPage, error) {
+			return coreknowledge.SearchPage{Matches: []coreknowledge.SearchMatch{{Snippet: "home city was Shanghai"}}}, nil
+		}),
+	}
+	value, err := resolver.RecallMemory(context.Background(), "where do I live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact := strings.Index(value, "home_city: Beijing")
+	stale := strings.Index(value, "home city was Shanghai")
+	if fact < 0 || stale < 0 || fact >= stale || !strings.Contains(value, "current facts above take precedence") || !strings.Contains(value, "effective=2025-01-01T00:00:00Z replaced user.home_city = Beijing") {
+		t.Fatalf("conflict-aware recall envelope=%q", value)
 	}
 }
 

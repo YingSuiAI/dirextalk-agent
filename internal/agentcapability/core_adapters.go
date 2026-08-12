@@ -30,6 +30,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreimagetool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
@@ -46,6 +47,7 @@ type CoreBindings struct {
 	Tasks         coretask.Service
 	Schedules     coretask.ScheduleStore
 	Knowledge     *coreknowledge.Service
+	Memory        *corememory.Service
 	Extensions    coreextension.Service
 	Product       *capabilityclient.Client
 	// CapabilityProgress persists bounded stream events in the capability
@@ -110,6 +112,9 @@ func NewCoreRegistry(bindings CoreBindings) *Registry {
 	}
 	if bindings.Knowledge != nil {
 		r.Register(&coreKnowledgeCapability{service: bindings.Knowledge, models: bindings.Models})
+	}
+	if bindings.Memory != nil {
+		r.Register(NewCoreMemoryCapability(bindings.Memory))
 	}
 	if bindings.Extensions != nil {
 		r.Register(&coreExtensionCapability{service: bindings.Extensions, product: bindings.Product})

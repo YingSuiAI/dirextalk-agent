@@ -38,7 +38,7 @@ func TestCommittedMigrationBytesRemainImmutable(t *testing.T) {
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 12 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" || entries[6] != "000007_unbounded_agent_rounds.up.sql" || entries[7] != "000008_cloud_worker_progress_events.up.sql" || entries[8] != "000009_static_site_releases.up.sql" || entries[9] != "000010_builtin_skill_seeds.up.sql" || entries[10] != "000011_managed_node_mcp_quotas.up.sql" || entries[11] != "000012_managed_node_prepared_cleanup.up.sql" {
+	if len(entries) != 14 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" || entries[6] != "000007_unbounded_agent_rounds.up.sql" || entries[7] != "000008_cloud_worker_progress_events.up.sql" || entries[8] != "000009_static_site_releases.up.sql" || entries[9] != "000010_builtin_skill_seeds.up.sql" || entries[10] != "000011_managed_node_mcp_quotas.up.sql" || entries[11] != "000012_managed_node_prepared_cleanup.up.sql" || entries[12] != "000013_structured_memory_v2.up.sql" || entries[13] != "000014_memory_controls.up.sql" {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Cloud Worker migrations", entries)
 	}
 	migration := Ordered()[0]
@@ -85,6 +85,18 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	for _, needle := range []string{"cleanup_token", "node_artifact", "version_json", "core_extension_artifact_cleanup_node_shape_check"} {
 		if preparedNodeCleanup.Version != 12 || !bytes.Contains(preparedNodeCleanup.Script, []byte(needle)) {
 			t.Fatalf("managed Node prepared cleanup migration missing %q", needle)
+		}
+	}
+	structuredMemory := Ordered()[12]
+	for _, needle := range []string{"core_memory_observations", "core_memory_facts", "core_memory_timeline", "core_memory_facts_active_key_idx"} {
+		if structuredMemory.Version != 13 || !bytes.Contains(structuredMemory.Script, []byte(needle)) {
+			t.Fatalf("structured memory migration missing %q", needle)
+		}
+	}
+	memoryControls := Ordered()[13]
+	for _, needle := range []string{"core_memory_configs", "core_memory_config_replays", "enabled boolean NOT NULL DEFAULT false"} {
+		if memoryControls.Version != 14 || !bytes.Contains(memoryControls.Script, []byte(needle)) {
+			t.Fatalf("memory controls migration missing %q", needle)
 		}
 	}
 	unboundedRounds := Ordered()[6]
