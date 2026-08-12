@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.75
+
+1. Add exact update and delete operations for active structured memory facts.
+2. Remove superseded Knowledge-memory CRUD, capability aliases, and legacy parameter fallbacks.
+3. Keep the Agent capability catalog aligned with the current Message Server product actions.
+
 ## v1.0.74
 
 1. Generate a concise first-turn conversation title with the configured tool model and fall back to the first user sentence.
