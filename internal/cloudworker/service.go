@@ -175,7 +175,13 @@ type Defaults struct {
 }
 
 func (d Defaults) Validate() error {
-	if validateAWS(d.AWS) != nil || validateCompute(d.Compute) != nil || !validAWSID(d.Placement.VPCID, "vpc") || !validAWSID(d.Placement.SubnetID, "subnet") || d.Placement.IAMPolicyDigest != "" || validateLimits(d.Limits) != nil || d.ArtifactRetentionSeconds == 0 || d.QuoteTTL <= 0 || d.QuoteTTL > 24*time.Hour || d.QuoteAmountMicros < 0 || d.MaximumAuthorizedMicros < d.QuoteAmountMicros {
+	if validateCompute(d.Compute) != nil || validateLimits(d.Limits) != nil || d.ArtifactRetentionSeconds == 0 || d.QuoteTTL <= 0 || d.QuoteTTL > 24*time.Hour || d.QuoteAmountMicros < 0 || d.MaximumAuthorizedMicros < d.QuoteAmountMicros {
+		return ErrInvalid
+	}
+	if d.Placement == (PlacementSpec{}) && networkPolicyEmpty(d.NetworkPolicy) && d.ArtifactBucket == "" && d.ArtifactBasePrefix == "" && d.ArtifactKMSKeyARN == "" && !d.ArtifactVersioned && d.WorkerBootstrap == (WorkerBootstrap{}) && d.ModelRelay == (ModelRelayBinding{}) && len(d.NetworkGrants) == 0 && len(d.SecretGrants) == 0 {
+		return nil
+	}
+	if validateAWS(d.AWS) != nil || !validAWSID(d.Placement.VPCID, "vpc") || !validAWSID(d.Placement.SubnetID, "subnet") || d.Placement.IAMPolicyDigest != "" {
 		return ErrInvalid
 	}
 	network := d.NetworkPolicy
@@ -208,6 +214,17 @@ type Service struct {
 	quoter      Quoter
 	awsBindings AWSBindingResolver
 	now         func() time.Time
+}
+
+// ProposalReady performs the same request-local credential authority read used
+// by Propose. It is intentionally dynamic so uploading, testing, rotating, or
+// deleting the sole AWS credential changes tool publication without restart.
+func (s *Service) ProposalReady(ctx context.Context) bool {
+	if s == nil || s.awsBindings == nil || ctx == nil {
+		return false
+	}
+	binding, err := s.awsBindings.ResolveCurrentAWSBinding(ctx)
+	return err == nil && validateAWS(binding) == nil
 }
 
 func NewService(store Store, defaults Defaults, quoter Quoter, clocks ...func() time.Time) (*Service, error) {

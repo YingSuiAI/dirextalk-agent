@@ -210,7 +210,7 @@ func serveCore(cfg config.Config) error {
 		return fmt.Errorf("initialize task executor: %w", err)
 	}
 	taskExecutor.SetAgentLedger(taskStore)
-	cloudComposition, err := composeCoreCloudWorker(processCtx, cfg, store, conversationStore, profiles, taskStore)
+	cloudComposition, err := composeDynamicCloudWorkerProposal(cfg, store, conversationStore)
 	if err != nil {
 		return fmt.Errorf("initialize Cloud Worker composition: %w", err)
 	}
@@ -272,7 +272,7 @@ func serveCore(cfg config.Config) error {
 			confirmationReader:  genericRunStore,
 		}
 	}()
-	if cloudComposition != nil {
+	if cloudComposition != nil && cloudComposition.executionPort != nil {
 		executionDeps.cloudWorker = cloudComposition.executionPort
 	}
 	executionComposition, err := composeCoreExecutionV2(cfg, executionStore, executionDeps)
@@ -291,7 +291,7 @@ func serveCore(cfg config.Config) error {
 			return fmt.Errorf("register Execution V2 run task handler: %w", err)
 		}
 	}
-	if cloudComposition != nil {
+	if cloudComposition != nil && cloudComposition.taskHandler != nil {
 		if err := taskExecutor.RegisterHandler(coretask.TaskKindCloudWorker, cloudComposition.taskHandler); err != nil {
 			return fmt.Errorf("register Cloud Worker task handler: %w", err)
 		}
@@ -443,7 +443,7 @@ func serveCore(cfg config.Config) error {
 		}
 		slog.Info("dirextalk-agent Product Capability client ready", "server", cfg.ProductCapabilityAddress)
 	}
-	if cloudComposition != nil {
+	if cloudComposition != nil && cloudComposition.taskHandler != nil {
 		if productCapabilityClient == nil {
 			return fmt.Errorf("Cloud Worker completion callback requires Product Capability")
 		}
@@ -454,6 +454,8 @@ func serveCore(cfg config.Config) error {
 			return fmt.Errorf("start Cloud Worker private listeners: %w", err)
 		}
 		cloudPrivateStarted = true
+	}
+	if cloudComposition != nil {
 		conversation.SetIntrinsicResolver(cloudComposition.intrinsic)
 	}
 	defer func() {

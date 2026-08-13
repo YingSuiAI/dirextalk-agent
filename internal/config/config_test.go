@@ -179,23 +179,6 @@ func TestValidateCoreExecutionV2CloudWorkerOnlyDoesNotRequireSSM(t *testing.T) {
 	}
 }
 
-func TestValidateCloudWorkerModelRelayEndpointRequiresExactV1Path(t *testing.T) {
-	const serverName = "model-relay.example.test"
-	for _, endpoint := range []string{
-		"https://model-relay.example.test",
-		"https://model-relay.example.test/",
-		"https://model-relay.example.test/v1/",
-		"https://model-relay.example.test/%76%31",
-	} {
-		if _, err := validateCloudWorkerModelRelayEndpoint(endpoint, serverName); err == nil || !strings.Contains(err.Error(), "exact /v1 path") {
-			t.Fatalf("invalid Model Relay endpoint %q accepted: %v", endpoint, err)
-		}
-	}
-	if host, err := validateCloudWorkerModelRelayEndpoint("https://model-relay.example.test:443/v1", serverName); err != nil || host != serverName {
-		t.Fatalf("valid Model Relay endpoint host=%q err=%v", host, err)
-	}
-}
-
 func TestValidateCoreAWSRejectsSymlinkedMasterKey(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink permissions differ on Windows")

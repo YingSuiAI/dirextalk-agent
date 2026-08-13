@@ -23,6 +23,7 @@ import (
 	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
@@ -266,5 +267,23 @@ func TestComposeCoreCloudWorkerConstructsAndRunsProductionCleaners(t *testing.T)
 	}
 	if !composition.stopped {
 		t.Fatal("production Cloud Worker private composition did not stop")
+	}
+}
+
+func TestComposeDynamicCloudWorkerProposalNeedsNoDeploymentBlock(t *testing.T) {
+	store, cleanup := cloudWorkerComposePGStore(t)
+	defer cleanup()
+	cfg := config.Config{CoreAWSEnabled: true, CapabilityEnabled: true, CapabilityAccountGeneration: 7}
+	conversation, err := postgres.NewCoreConversationStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composition, err := composeDynamicCloudWorkerProposal(cfg, store, conversation)
+	if err != nil || composition == nil || composition.intrinsic == nil || composition.taskHandler != nil || composition.executionPort != nil {
+		t.Fatalf("dynamic composition=%+v err=%v", composition, err)
+	}
+	lease := coreconversation.TurnLease{Turn: coreconversation.Turn{ID: uuid.NewString()}, LeaseID: uuid.NewString(), Epoch: 1}
+	if tools, resolveErr := composition.intrinsic.ResolveIntrinsicTools(context.Background(), lease); resolveErr != nil || len(tools) != 0 {
+		t.Fatalf("credential-free tools=%v err=%v", tools, resolveErr)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/google/uuid"
 )
@@ -97,6 +99,36 @@ func TestServiceProposalFailsClosedWhenCredentialAuthorityIsStale(t *testing.T) 
 	}
 	if resolver.calls != 1 || len(store.commands) != 0 {
 		t.Fatalf("stale credential authority persisted an offer: calls=%d commands=%d", resolver.calls, len(store.commands))
+	}
+}
+
+func TestProposeIntrinsicPublicationTracksCredentialReadinessWithoutRestart(t *testing.T) {
+	now := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
+	defaults := intrinsicDefaults(now)
+	resolver := &proposalAWSBindingResolver{binding: defaults.AWS, err: ErrStaleAuthorization}
+	service, err := NewServiceWithAWSBindingResolver(
+		&intrinsicStore{}, defaults,
+		FakeQuoter{AmountMicros: 1000, MaximumAuthorizedMicros: 2000, TTL: 5 * time.Minute, Now: func() time.Time { return now }},
+		resolver, func() time.Time { return now },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intrinsic, err := NewProposeIntrinsic(service, &intrinsicOwner{owner: IntrinsicOwnerContext{OwnerID: "@owner:example.test", AccountGeneration: 7}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := coreconversation.TurnLease{Turn: coreconversation.Turn{ID: uuid.NewString()}, LeaseID: uuid.NewString(), Epoch: 1}
+	if tools, resolveErr := intrinsic.ResolveIntrinsicTools(context.Background(), lease); resolveErr != nil || len(tools) != 0 {
+		t.Fatalf("unready tools=%v err=%v", tools, resolveErr)
+	}
+	resolver.err = nil
+	if tools, resolveErr := intrinsic.ResolveIntrinsicTools(context.Background(), lease); resolveErr != nil || len(tools) != 1 || tools[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
+		t.Fatalf("ready tools=%v err=%v", tools, resolveErr)
+	}
+	resolver.err = ErrStaleAuthorization
+	if tools, resolveErr := intrinsic.ResolveIntrinsicTools(context.Background(), lease); resolveErr != nil || len(tools) != 0 {
+		t.Fatalf("revoked tools=%v err=%v", tools, resolveErr)
 	}
 }
 

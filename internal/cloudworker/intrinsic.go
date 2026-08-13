@@ -108,9 +108,12 @@ type proposeIntrinsicArguments struct {
 	WorkspaceMode string   `json:"workspace_mode"`
 }
 
-func (p *ProposeIntrinsic) ResolveIntrinsicTools(_ context.Context, lease coreconversation.TurnLease) ([]coreconversation.ResolvedIntrinsic, error) {
+func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease coreconversation.TurnLease) ([]coreconversation.ResolvedIntrinsic, error) {
 	if p == nil || p.service == nil || p.owners == nil || lease.Turn.ID == "" || lease.LeaseID == "" || lease.Epoch == 0 {
 		return nil, ErrInvalid
+	}
+	if !p.service.ProposalReady(ctx) {
+		return nil, nil
 	}
 	bound := lease
 	properties := map[string]any{

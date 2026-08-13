@@ -790,7 +790,18 @@ func (p *Plan) sealAuthorizationBasis() error {
 }
 
 func (p *Plan) sealInfrastructure() error {
-	if p == nil || !validAWSID(p.Placement.VPCID, "vpc") || !validAWSID(p.Placement.SubnetID, "subnet") {
+	if p == nil {
+		return ErrInvalid
+	}
+	if p.Placement == (PlacementSpec{}) && networkPolicyEmpty(p.NetworkPolicy) && p.ArtifactGrant == (ArtifactGrant{}) && p.WorkerBootstrap == (WorkerBootstrap{}) && p.ModelRelay == (ModelRelayBinding{}) {
+		p.AWSInfrastructureDigest = digestValue(struct {
+			AccountGeneration uint64
+			AWS               AWSBinding
+			Compute           ComputeSpec
+		}{p.AccountGeneration, p.AWS, p.Compute})
+		return nil
+	}
+	if !validAWSID(p.Placement.VPCID, "vpc") || !validAWSID(p.Placement.SubnetID, "subnet") {
 		return ErrInvalid
 	}
 	if err := p.NetworkPolicy.Seal(); err != nil {
@@ -833,6 +844,10 @@ func (p *Plan) sealInfrastructure() error {
 	}
 	p.AWSInfrastructureDigest = infrastructureDigest
 	return nil
+}
+
+func networkPolicyEmpty(value NetworkPolicy) bool {
+	return len(value.DNSResolverCIDRs) == 0 && len(value.TLSProxyCIDRs) == 0 && len(value.AllowedFQDNs) == 0 && value.OutboundProxyURL == "" && value.OutboundProxyServerName == "" && value.OutboundProxyTrustBundleSHA256 == ""
 }
 
 func validateWorkspaceMode(mode WorkspaceMode) bool {
