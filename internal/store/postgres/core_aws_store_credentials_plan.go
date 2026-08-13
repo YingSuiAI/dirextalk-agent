@@ -162,6 +162,16 @@ func (s *CoreAWSStore) CreateCredential(ctx context.Context, c coreaws.Credentia
 		return coreaws.Credentials{}, e
 	}
 	defer tx.Rollback(ctx)
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "core_aws:active_credential"); e != nil {
+		return coreaws.Credentials{}, e
+	}
+	var active bool
+	if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_aws_credentials WHERE disabled_at IS NULL)`).Scan(&active); e != nil {
+		return coreaws.Credentials{}, e
+	}
+	if active {
+		return coreaws.Credentials{}, coreaws.ErrActiveCredentialExists
+	}
 	if _, e = tx.Exec(ctx, `INSERT INTO core_aws_credentials(credential_id,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, c.ID, c.Name, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, nullableCredentialTime(c.TestedAt), c.CreatedAt, c.UpdatedAt); e != nil {
 		return coreaws.Credentials{}, e
 	}

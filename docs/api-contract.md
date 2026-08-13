@@ -202,6 +202,8 @@ multi-tenant model.
 - Stored credentials are write-only from ordinary read/list APIs. Responses
   expose status, fingerprints, revisions, or binding digests, never secret
   bytes. Agent-owned secret fields use the configured encrypted-at-rest store.
+  Exactly one credential may be active: concurrent creates are serialized and
+  a second create is rejected until the current credential is deleted.
 - Every `agent.knowledge.v1` mutation, including `index_sources`, requires an
   explicit canonical UUID `idempotency_key`; missing or malformed keys are
   rejected, while read operations do not require one. Neutral

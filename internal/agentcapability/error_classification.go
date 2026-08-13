@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
@@ -61,6 +62,8 @@ func classifyCapabilityError(err error) error {
 		return capabilityoperation.NewFailure("RESOURCE_EXHAUSTED", capabilityoperation.ExtensionInstallationLimitMessage, err)
 	case errors.Is(err, coreextension.ErrNodeStorageQuota):
 		return capabilityoperation.NewFailure("RESOURCE_EXHAUSTED", capabilityoperation.ExtensionNodeStorageQuotaMessage, err)
+	case errors.Is(err, coreaws.ErrActiveCredentialExists):
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Delete the active AWS credential before adding another", err)
 	}
 	// A missing or unusable explicit tool-model binding is a configuration
 	// prerequisite even when its retained internal cause is a more general

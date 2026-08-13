@@ -6,6 +6,8 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type rpcAWSTestSTS struct{}
@@ -43,6 +45,19 @@ func TestCoreCloudControlServiceCredentialsAndPlan(t *testing.T) {
 	quote, err := s.Quote(ctx, &agentv1.CoreCloudControlServiceQuoteRequest{PlanId: planResp.Plan.GetPlanId()})
 	if err != nil || quote.Quote.GetPlanDigest() == "" {
 		t.Fatalf("quote: %#v %v", quote, err)
+	}
+}
+
+func TestCoreCloudControlServiceRejectsSecondActiveCredential(t *testing.T) {
+	service, ctx := newRPCAWSFixture(t)
+	request := func(key, name string) *agentv1.CoreCloudControlServiceCreateCredentialRequest {
+		return &agentv1.CoreCloudControlServiceCreateCredentialRequest{IdempotencyKey: key, Name: name, Region: "us-east-1", AccessKeyId: "access", SecretAccessKey: "secret"}
+	}
+	if _, err := service.CreateCredential(ctx, request("31111111-1111-4111-8111-111111111111", "first")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateCredential(ctx, request("32222222-2222-4222-8222-222222222222", "second")); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("second active credential code=%s err=%v", status.Code(err), err)
 	}
 }
 

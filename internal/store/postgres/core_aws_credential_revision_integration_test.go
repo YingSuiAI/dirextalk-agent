@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -194,6 +195,57 @@ func TestCoreAWSUpdateCredentialReturnsCommittedValueWhenContextCancelsAfterComm
 	persisted, err := awsStore.GetCredential(ctx, id)
 	if err != nil || persisted.Name != updated.Name || persisted.Region != updated.Region || persisted.Revision != updated.Revision {
 		t.Fatalf("persisted credential = %#v err=%v", persisted, err)
+	}
+}
+
+func TestCoreAWSStoreAllowsOnlyOneActiveCredential(t *testing.T) {
+	ctx, store, _, cleanup := corePG18Fixture(t)
+	defer cleanup()
+	awsStore := NewCoreAWSStore(store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	credentials := []coreaws.Credentials{
+		coreaws.RehydrateCredentials(uuid.NewString(), "first", "us-east-1", "", "", []byte("AKIAFIRST"), []byte("first-secret"), nil, 0, 1, now, now),
+		coreaws.RehydrateCredentials(uuid.NewString(), "second", "us-east-1", "", "", []byte("AKIASECOND"), []byte("second-secret"), nil, 0, 1, now, now),
+	}
+
+	start := make(chan struct{})
+	errs := make([]error, len(credentials))
+	var group sync.WaitGroup
+	for index := range credentials {
+		group.Add(1)
+		go func(index int) {
+			defer group.Done()
+			<-start
+			_, errs[index] = awsStore.CreateCredential(ctx, credentials[index])
+		}(index)
+	}
+	close(start)
+	group.Wait()
+
+	var created int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			created++
+		case errors.Is(err, coreaws.ErrActiveCredentialExists):
+		default:
+			t.Fatalf("concurrent create error = %v", err)
+		}
+	}
+	if created != 1 {
+		t.Fatalf("successful concurrent creates = %d, errors=%v", created, errs)
+	}
+	page, err := awsStore.ListCredentials(ctx, 10, "")
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("active credentials = %+v err=%v", page.Items, err)
+	}
+	active := page.Items[0]
+	if err = awsStore.DeleteCredential(ctx, active.ID, active.Revision); err != nil {
+		t.Fatal(err)
+	}
+	replacement := coreaws.RehydrateCredentials(uuid.NewString(), "replacement", "ap-northeast-1", "", "", []byte("AKIAREPLACEMENT"), []byte("replacement-secret"), nil, 0, 1, now, now)
+	if _, err = awsStore.CreateCredential(ctx, replacement); err != nil {
+		t.Fatalf("create after deleting active credential: %v", err)
 	}
 }
 

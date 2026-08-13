@@ -12,6 +12,7 @@ import (
 	"time"
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
+	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
@@ -40,6 +41,23 @@ func TestCoreAWSCapabilityUsesLowerSnakeRedactedCredentialDTO(t *testing.T) {
 	}
 	if _, ok := credential["ID"]; ok {
 		t.Fatalf("default Go field name leaked into DTO: %s", result)
+	}
+}
+
+func TestCoreAWSCapabilityRejectsSecondActiveCredential(t *testing.T) {
+	service := coreaws.NewService(coreaws.NewMemoryRepository(), nil, nil, nil, nil, nil)
+	capability := &errorClassifyingCapability{inner: NewCoreAWSCapability(service)}
+	ctx := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, &capv1.PermissionContext{AuthenticatedOwnerId: "owner", AccountGeneration: 1})
+	request := func(key, name string) []byte {
+		return []byte(`{"idempotency_key":"` + key + `","name":"` + name + `","region":"us-east-1","access_key_id":"access","secret_access_key":"secret"}`)
+	}
+	if _, err := capability.HandleOperation(ctx, "create_credential", request(uuid.NewString(), "first")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := capability.HandleOperation(ctx, "create_credential", request(uuid.NewString(), "second"))
+	code, message, classified := capabilityoperation.FailureDetails(err)
+	if !classified || code != "PRECONDITION_FAILED" || message != "Delete the active AWS credential before adding another" || !errors.Is(err, coreaws.ErrActiveCredentialExists) {
+		t.Fatalf("second active credential error=%v code=%q message=%q classified=%v", err, code, message, classified)
 	}
 }
 

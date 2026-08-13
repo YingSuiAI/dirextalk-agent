@@ -182,6 +182,11 @@ func (r *MemoryRepository) saveCredentialIdempotent(_ context.Context, c Credent
 	if _, ok := r.credentials[c.ID]; ok {
 		return CredentialView{}, ErrConflict
 	}
+	for id := range r.credentials {
+		if r.disabledCredentials[id].IsZero() {
+			return CredentialView{}, ErrActiveCredentialExists
+		}
+	}
 	r.credentials[c.ID] = cloneCredential(c)
 	if r.credentialRevisions == nil {
 		r.credentialRevisions = map[string]map[int64]Credentials{}
@@ -279,6 +284,11 @@ func (r *MemoryRepository) CreateCredential(_ context.Context, c Credentials) (C
 	defer r.mu.Unlock()
 	if _, ok := r.credentials[c.ID]; ok {
 		return Credentials{}, ErrConflict
+	}
+	for id := range r.credentials {
+		if r.disabledCredentials[id].IsZero() {
+			return Credentials{}, ErrActiveCredentialExists
+		}
 	}
 	r.credentials[c.ID] = cloneCredential(c)
 	if r.credentialRevisions == nil {

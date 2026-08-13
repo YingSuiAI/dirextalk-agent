@@ -22,6 +22,7 @@ var (
 	ErrInvalid                        = errors.New("coreaws: invalid")
 	ErrNotFound                       = errors.New("coreaws: not found")
 	ErrConflict                       = errors.New("coreaws: conflict")
+	ErrActiveCredentialExists         = errors.New("coreaws: an active credential already exists")
 	ErrRevisionConflict               = errors.New("coreaws: revision conflict")
 	ErrIdempotencyConflict            = errors.New("coreaws: idempotency conflict")
 	ErrProvider                       = errors.New("coreaws: provider operation failed")

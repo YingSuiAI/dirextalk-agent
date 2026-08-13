@@ -253,6 +253,8 @@ func coreAWSRPCError(err error) error {
 		return status.Error(codes.Aborted, "AWS revision conflict")
 	case errors.Is(err, coreaws.ErrUnconfirmed):
 		return status.Error(codes.FailedPrecondition, "AWS change requires confirmation")
+	case errors.Is(err, coreaws.ErrActiveCredentialExists):
+		return status.Error(codes.FailedPrecondition, "delete the active AWS credential before adding another")
 	case errors.Is(err, coreaws.ErrConflict):
 		return status.Error(codes.FailedPrecondition, "AWS state conflict")
 	case errors.Is(err, coreaws.ErrResponseUncertain), errors.Is(err, coreaws.ErrProvider):

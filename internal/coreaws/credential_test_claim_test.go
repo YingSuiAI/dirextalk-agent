@@ -295,10 +295,8 @@ func TestMemoryCredentialDisablePreservesCredentialTestClaims(t *testing.T) {
 	const completedKey = "88888888-8888-4888-8888-888888888888"
 	const uncertainID = "99999999-9999-4999-8999-999999999999"
 	const uncertainKey = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-	for _, id := range []string{completedID, uncertainID} {
-		if _, err := repo.CreateCredential(context.Background(), RehydrateCredentials(id, "delete-claims", "us-east-1", "", "", []byte("access"), []byte("secret"), nil, 0, 1, time.Unix(1, 0), time.Unix(1, 0))); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := repo.CreateCredential(context.Background(), RehydrateCredentials(completedID, "delete-claims", "us-east-1", "", "", []byte("access"), []byte("secret"), nil, 0, 1, time.Unix(1, 0), time.Unix(1, 0))); err != nil {
+		t.Fatal(err)
 	}
 	completedClaim, _, err := repo.BeginCredentialTest(context.Background(), completedID, 1, completedKey)
 	if err != nil {
@@ -308,14 +306,17 @@ func TestMemoryCredentialDisablePreservesCredentialTestClaims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := repo.DeleteCredential(context.Background(), completedID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.CreateCredential(context.Background(), RehydrateCredentials(uncertainID, "delete-claims", "us-east-1", "", "", []byte("access"), []byte("secret"), nil, 0, 1, time.Unix(1, 0), time.Unix(1, 0))); err != nil {
+		t.Fatal(err)
+	}
 	uncertainClaim, _, err := repo.BeginCredentialTest(context.Background(), uncertainID, 1, uncertainKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.MarkCredentialTestUncertain(context.Background(), uncertainClaim); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.DeleteCredential(context.Background(), completedID, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.DeleteCredential(context.Background(), uncertainID, 1); err != nil {

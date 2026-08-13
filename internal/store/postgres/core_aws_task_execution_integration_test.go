@@ -262,16 +262,12 @@ func TestCoreAWSPostgresCredentialReplaceCASAndPagination(t *testing.T) {
 	defer cleanup()
 	aws := NewCoreAWSStore(store)
 	now := time.Now().UTC()
-	var credentialIDs []string
-	for i := 0; i < 3; i++ {
-		id := uuid.NewString()
-		credentialIDs = append(credentialIDs, id)
-		credential := coreaws.RehydrateCredentials(id, "credential-"+string(rune('a'+i)), "us-east-1", "", "", []byte("AKIA-old"), []byte("secret-old"), []byte("session-old"), 0, 1, now, now)
-		if _, err := aws.CreateCredential(ctx, credential); err != nil {
-			t.Fatal(err)
-		}
+	credentialID := uuid.NewString()
+	credential := coreaws.RehydrateCredentials(credentialID, "credential", "us-east-1", "", "", []byte("AKIA-old"), []byte("secret-old"), []byte("session-old"), 0, 1, now, now)
+	if _, err := aws.CreateCredential(ctx, credential); err != nil {
+		t.Fatal(err)
 	}
-	old, err := aws.GetCredential(ctx, credentialIDs[0])
+	old, err := aws.GetCredential(ctx, credentialID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +300,7 @@ func TestCoreAWSPostgresCredentialReplaceCASAndPagination(t *testing.T) {
 		}
 		token = page.NextPageToken
 	}
-	if len(seen) != 3 {
+	if len(seen) != 1 {
 		t.Fatalf("credential pagination lost rows: %v", seen)
 	}
 	for i := 0; i < 3; i++ {
@@ -312,7 +308,7 @@ func TestCoreAWSPostgresCredentialReplaceCASAndPagination(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = aws.CreatePlan(ctx, coreaws.Plan{ID: uuid.NewString(), CredentialID: credentialIDs[0], Region: "us-east-1", StackName: "page-" + uuid.NewString()[:8], Operation: coreaws.OperationCreate, Template: template, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Revision: 1, CreatedAt: now}); err != nil {
+		if _, err = aws.CreatePlan(ctx, coreaws.Plan{ID: uuid.NewString(), CredentialID: credentialID, Region: "us-east-1", StackName: "page-" + uuid.NewString()[:8], Operation: coreaws.OperationCreate, Template: template, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Revision: 1, CreatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
