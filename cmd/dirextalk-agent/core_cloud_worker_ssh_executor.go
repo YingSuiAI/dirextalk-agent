@@ -167,11 +167,11 @@ func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider 
 	if err != nil {
 		return err
 	}
-	if err = provider.SetPublicPort(ctx, worker, service.Port, true); err != nil {
+	if err = executor.workloads.PutService(ctx, sshworkload.Service{Worker: worker, TaskID: taskID,
+		WorkloadID: service.WorkloadID, Port: service.Port, HealthPath: service.HealthPath}); err != nil {
 		return err
 	}
-	return executor.workloads.PutService(ctx, sshworkload.Service{Worker: worker, TaskID: taskID,
-		WorkloadID: service.WorkloadID, Port: service.Port, HealthPath: service.HealthPath})
+	return provider.SetPublicPort(ctx, worker, service.Port, true)
 }
 
 func (executor *sshWorkerExecutor) HasIdleWorker(ctx context.Context, binding cloudworker.AWSBinding, compute cloudworker.ComputeSpec) (bool, error) {
@@ -263,14 +263,6 @@ func (executor *sshWorkerExecutor) DestroyWorker(ctx context.Context, request ss
 type sshWorkerDomains struct{ executor *sshWorkerExecutor }
 
 func (domains sshWorkerDomains) BindDomain(ctx context.Context, command workercap.DomainCommand) (workercap.DomainStatus, error) {
-	return domains.change(ctx, command, remoteservice.DNSUpsertA)
-}
-
-func (domains sshWorkerDomains) UnbindDomain(ctx context.Context, command workercap.DomainCommand) (workercap.DomainStatus, error) {
-	return domains.change(ctx, command, remoteservice.DNSDeleteA)
-}
-
-func (domains sshWorkerDomains) change(ctx context.Context, command workercap.DomainCommand, action remoteservice.DNSAction) (workercap.DomainStatus, error) {
 	provider, err := domains.executor.providerForIdentity(ctx, command.Worker.Credential)
 	if err != nil {
 		return workercap.DomainStatus{}, err
@@ -283,16 +275,6 @@ func (domains sshWorkerDomains) change(ctx context.Context, command workercap.Do
 	if err != nil {
 		return workercap.DomainStatus{}, err
 	}
-	if action == remoteservice.DNSDeleteA {
-		if service.Domain == nil || service.Domain.ZoneID != command.ZoneID || service.Domain.Hostname != command.Hostname || service.Domain.TTL != command.TTL {
-			return workercap.DomainStatus{}, sshworkload.ErrIdentity
-		}
-		domain := *service.Domain
-		if err = domains.executor.deleteDomain(ctx, service, command.Confirmation); err != nil {
-			return workercap.DomainStatus{}, err
-		}
-		return projectDomain(&domain, "current"), nil
-	}
 	if runtime, observeErr := provider.ObserveService(ctx, command.Worker, service.TaskID); observeErr != nil || runtime.Health != "healthy" {
 		return workercap.DomainStatus{}, errors.Join(sshworker.ErrInvalid, observeErr)
 	}
@@ -301,7 +283,7 @@ func (domains sshWorkerDomains) change(ctx context.Context, command workercap.Do
 		return workercap.DomainStatus{}, remoteservice.ErrInvalid
 	}
 	domain := &sshworkload.Domain{ZoneID: command.ZoneID, Hostname: command.Hostname, TTL: command.TTL, BoundIPv4: status.PublicIP, PublicPort: service.Port}
-	mutation := remoteservice.DNSMutation{Action: action, AccountID: command.Worker.Credential.AccountID, WorkerID: command.Worker.WorkerID,
+	mutation := remoteservice.DNSMutation{Action: remoteservice.DNSUpsertA, AccountID: command.Worker.Credential.AccountID, WorkerID: command.Worker.WorkerID,
 		WorkloadID: command.WorkloadID, Record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}}
 	if err = remoteservice.ReconcileLiteral(ctx, dns, mutation, command.Confirmation); err != nil {
 		return workercap.DomainStatus{}, err
@@ -310,6 +292,21 @@ func (domains sshWorkerDomains) change(ctx context.Context, command workercap.Do
 		return workercap.DomainStatus{}, err
 	}
 	return projectDomain(domain, "current"), nil
+}
+
+func (domains sshWorkerDomains) UnbindDomain(ctx context.Context, command workercap.DomainCommand) (workercap.DomainStatus, error) {
+	service, err := domains.executor.workloads.Get(ctx, command.Worker, command.WorkloadID)
+	if err != nil {
+		return workercap.DomainStatus{}, err
+	}
+	if service.Domain == nil || service.Domain.ZoneID != command.ZoneID || service.Domain.Hostname != command.Hostname || service.Domain.TTL != command.TTL {
+		return workercap.DomainStatus{}, sshworkload.ErrIdentity
+	}
+	domain := *service.Domain
+	if err = domains.executor.deleteDomain(ctx, service, command.Confirmation); err != nil {
+		return workercap.DomainStatus{}, err
+	}
+	return projectDomain(&domain, "current"), nil
 }
 
 func (executor *sshWorkerExecutor) deleteDomain(ctx context.Context, service sshworkload.Service, confirmation string) error {

@@ -109,8 +109,7 @@ func run(taskID string) error {
 	defer report.Close()
 	prompt := "Complete the supplied objective on this retained remote host. This is a " + spec.Workload + " workload. Use shell and workspace tools as needed. Write every deliverable under " + artifactRoot + ". Your final response must concisely report work, deployment flow, verification, actual server load, and artifact paths. Never expose credentials or hidden configuration."
 	if spec.Workload == "service" && spec.Service != nil {
-		contract := taskPath(taskID, "service.json")
-		prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits. It must listen on 0.0.0.0 port " + strconv.Itoa(int(spec.Service.Port)) + " and return HTTP success at " + spec.Service.HealthPath + ". After it is running, write exactly this JSON contract to " + contract + ": {\"workload_id\":\"" + spec.Service.WorkloadID + "\",\"port\":" + strconv.Itoa(int(spec.Service.Port)) + ",\"health_path\":\"" + spec.Service.HealthPath + "\"}. Do not write that contract until the persistent service is healthy."
+		prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits. It must listen on 0.0.0.0 port " + strconv.Itoa(int(spec.Service.Port)) + " and return HTTP success at " + spec.Service.HealthPath + "."
 	}
 	arguments := []string{"--mode", "text", "--print", "--no-session", "--provider", "dirextalk-worker", "--model", spec.Model, "--thinking", "medium", "--tools", "read,bash,edit,write,grep,find,ls", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt}
 	command := exec.Command(filepath.Join(root, "runtime", "pi"), arguments...)
@@ -121,15 +120,12 @@ func run(taskID string) error {
 	command.Env = append(os.Environ(), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb")
 	err = command.Run(); code := 0
 	if err != nil { code = 1; var exit *exec.ExitError; if errors.As(err, &exit) { code = exit.ExitCode() } }
-	if err == nil && spec.Workload == "service" { err = verifyService(taskID, spec); if err != nil { code = 1 } }
+	if err == nil && spec.Workload == "service" { err = verifyService(spec); if err != nil { code = 1 } }
 	return finish(taskID, current, code, err)
 }
 
-func verifyService(taskID string, spec taskSpec) error {
+func verifyService(spec taskSpec) error {
 	if spec.Service == nil || spec.Service.WorkloadID == "" || spec.Service.Port == 0 || !strings.HasPrefix(spec.Service.HealthPath, "/") { return errors.New("invalid service spec") }
-	var contract serviceSpec
-	body, err := os.ReadFile(taskPath(taskID, "service.json")); if err == nil { err = json.Unmarshal(body, &contract) }
-	if err != nil || contract != *spec.Service { return errors.New("service contract is missing or changed") }
 	client := http.Client{Timeout: 5 * time.Second}
 	response, err := client.Get("http://127.0.0.1:" + strconv.Itoa(int(spec.Service.Port)) + spec.Service.HealthPath)
 	if err != nil { return err }; defer response.Body.Close()
@@ -140,7 +136,7 @@ func verifyService(taskID string, spec taskSpec) error {
 func serviceStatus(taskID string) error {
 	spec, err := loadSpec(taskID); if err != nil || spec.Workload != "service" || spec.Service == nil { return errors.New("service workload not found") }
 	status := serviceRuntimeStatus{WorkloadID: spec.Service.WorkloadID, Kind: "service", Port: spec.Service.Port, HealthPath: spec.Service.HealthPath, ObservedAt: time.Now().UTC().Format(time.RFC3339), Phase: "stopped", ActiveState: "inactive", Health: "unhealthy"}
-	if err := verifyService(taskID, spec); err == nil { status.Phase, status.ActiveState, status.Health = "running", "active", "healthy" }
+	if err := verifyService(spec); err == nil { status.Phase, status.ActiveState, status.Health = "running", "active", "healthy" }
 	return json.NewEncoder(os.Stdout).Encode(status)
 }
 

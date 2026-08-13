@@ -5,9 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -143,13 +148,57 @@ func TestRuntimeProtocolCompilesResumableCommands(t *testing.T) {
 
 func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 	directory := t.TempDir()
+	root := filepath.Join(directory, "worker")
 	source := filepath.Join(directory, "runner.go")
-	if err := os.WriteFile(source, []byte(remoteRunnerSource), 0o600); err != nil {
+	body := strings.Replace(remoteRunnerSource, `const root = "/tmp/dirextalk-worker"`, `const root = `+strconv.Quote(root), 1)
+	if err := os.WriteFile(source, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command("go", "build", "-o", filepath.Join(directory, "runner"), source)
+	runner := filepath.Join(directory, "runner")
+	command := exec.Command("go", "build", "-o", runner, source)
 	command.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("embedded runner does not build: %v: %s", err, output)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/health" {
+			http.NotFound(response, request)
+			return
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	_, rawPort, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := "service-health"
+	taskRoot := filepath.Join(root, "tasks", taskID)
+	if err = os.MkdirAll(taskRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := json.Marshal(remoteTaskSpec{TaskID: taskID, Workload: WorkloadService, Model: "test",
+		Service: &RuntimeServiceSpec{WorkloadID: "web", Port: uint16(port), HealthPath: "/health"}})
+	if err = os.WriteFile(filepath.Join(taskRoot, "spec.json"), spec, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command(runner, "service-status", taskID).CombinedOutput()
+	if err != nil {
+		t.Fatalf("service status without duplicate contract failed: %v: %s", err, output)
+	}
+	var status struct {
+		Health string `json:"health"`
+		Phase  string `json:"phase"`
+	}
+	if json.Unmarshal(output, &status) != nil || status.Health != "healthy" || status.Phase != "running" {
+		t.Fatalf("service status=%s", output)
+	}
+	if _, err = os.Stat(filepath.Join(taskRoot, "service.json")); !os.IsNotExist(err) {
+		t.Fatalf("duplicate service contract was required or created: %v", err)
 	}
 }

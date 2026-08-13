@@ -74,9 +74,6 @@ func (repository *Repository) PutService(_ context.Context, service Service) err
 			return repository.writeLocked(service.Worker, services)
 		}
 	}
-	if len(services) > 0 {
-		return ErrIdentity
-	}
 	services = append(services, service)
 	return repository.writeLocked(service.Worker, services)
 }

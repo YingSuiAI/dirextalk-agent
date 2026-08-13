@@ -53,6 +53,24 @@ func TestRepositoryRejectsChangedStableServiceSpec(t *testing.T) {
 	}
 }
 
+func TestRepositoryPersistsMultipleServicesForRetainedWorker(t *testing.T) {
+	repository, _ := NewRepository(t.TempDir())
+	identity := workerFixture()
+	services := []Service{
+		{Worker: identity, TaskID: "task-a", WorkloadID: "memory-api", Port: 8080, HealthPath: "/health"},
+		{Worker: identity, TaskID: "task-b", WorkloadID: "reports", Port: 9090, HealthPath: "/ready"},
+	}
+	for _, service := range services {
+		if err := repository.PutService(context.Background(), service); err != nil {
+			t.Fatalf("put %s: %v", service.WorkloadID, err)
+		}
+	}
+	stored, err := repository.List(context.Background(), identity)
+	if err != nil || len(stored) != 2 || stored[0].WorkloadID != "memory-api" || stored[1].WorkloadID != "reports" {
+		t.Fatalf("services=%+v err=%v", stored, err)
+	}
+}
+
 func workerFixture() sshworker.WorkerIdentity {
 	return sshworker.WorkerIdentity{WorkerID: "worker-a", InstanceID: "i-worker-a", KeyPairID: "key-a", SecurityGroupID: "sg-a",
 		Credential: sshworker.CredentialIdentity{CredentialID: "credential-a", CredentialRevision: 1, AccountID: "123456789012", Region: "ap-northeast-1"}}

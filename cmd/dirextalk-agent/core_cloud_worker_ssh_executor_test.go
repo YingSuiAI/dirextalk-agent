@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	workercap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
@@ -88,7 +89,7 @@ func TestProjectDomainForWorkerReportsDriftWithoutChangingPersistedTarget(t *tes
 	}
 }
 
-func TestPublishServiceOpensPortBeforePersistence(t *testing.T) {
+func TestPublishServicePersistsBeforeOpeningPort(t *testing.T) {
 	repository, err := sshworkload.NewRepository(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -113,12 +114,12 @@ func TestPublishServiceOpensPortBeforePersistence(t *testing.T) {
 	if err = failedExecutor.publishService(context.Background(), worker, identity.Credential, identity.WorkerID, "task-b", service); err == nil {
 		t.Fatal("port failure was accepted")
 	}
-	if _, err = failedRepository.Get(context.Background(), identity, service.WorkloadID); !errors.Is(err, sshworkload.ErrNotFound) {
-		t.Fatalf("failed service persisted: %v", err)
+	if _, err = failedRepository.Get(context.Background(), identity, service.WorkloadID); err != nil {
+		t.Fatalf("port failure left service untracked: %v", err)
 	}
 }
 
-func TestUnbindDomainKeepsPublicServicePort(t *testing.T) {
+func TestUnbindDomainUsesPersistedAddressWithoutObservingWorker(t *testing.T) {
 	identity := workerIdentityFixture()
 	repository, err := sshworkload.NewRepository(t.TempDir())
 	if err != nil {
@@ -135,7 +136,9 @@ func TestUnbindDomainKeepsPublicServicePort(t *testing.T) {
 	service.Domain = domain
 	dns := &route53Stub{record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}, exists: true}
 	executor := &sshWorkerExecutor{workloads: repository, route53: map[sshworker.CredentialIdentity]remoteservice.Route53{identity.Credential: dns}}
-	if err = executor.deleteDomain(context.Background(), service, "unbind_domain"); err != nil {
+	_, err = (sshWorkerDomains{executor: executor}).UnbindDomain(context.Background(), workercap.DomainCommand{Worker: identity,
+		WorkloadID: service.WorkloadID, ZoneID: domain.ZoneID, Hostname: domain.Hostname, TTL: domain.TTL, Confirmation: "unbind_domain"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	stored, err := repository.Get(context.Background(), identity, service.WorkloadID)
