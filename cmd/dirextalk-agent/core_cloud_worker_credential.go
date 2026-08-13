@@ -2,55 +2,63 @@ package main
 
 import (
 	"context"
-	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 )
 
 // cloudWorkerCredentialAuthority performs a fresh, double-revision-fenced
-// read through the durable CoreAWS credential store. It binds production to
-// the configured credential identity while preventing a process that still
-// carries an old revision from proposing or dispatching paid work.
+// read through the durable CoreAWS credential store. A verified sole active
+// credential becomes proposal-ready immediately; no deployment binding is
+// cached in process configuration.
 type cloudWorkerCredentialAuthority struct {
 	credentials workaws.CredentialResolver
 	revisions   workaws.CredentialRevisionResolver
 	exact       workaws.ExactCredentialResolver
-	configured  cloudworker.AWSBinding
+	list        func(context.Context, int, string) (coreaws.CredentialPage, error)
 }
 
 func newCloudWorkerCredentialAuthority(
 	credentials workaws.CredentialResolver,
 	revisions workaws.CredentialRevisionResolver,
 	exact workaws.ExactCredentialResolver,
-	configured cloudworker.AWSBinding,
+	list func(context.Context, int, string) (coreaws.CredentialPage, error),
 ) (*cloudWorkerCredentialAuthority, error) {
-	if credentials == nil || revisions == nil || exact == nil || len(strings.TrimSpace(configured.AccountID)) != 12 ||
-		strings.TrimSpace(configured.Region) == "" || strings.TrimSpace(configured.CredentialID) == "" {
+	if credentials == nil || revisions == nil || exact == nil || list == nil {
 		return nil, cloudworker.ErrInvalid
 	}
-	return &cloudWorkerCredentialAuthority{credentials: credentials, revisions: revisions, exact: exact, configured: configured}, nil
+	return &cloudWorkerCredentialAuthority{credentials: credentials, revisions: revisions, exact: exact, list: list}, nil
 }
 
 func (authority *cloudWorkerCredentialAuthority) ResolveCurrentAWSBinding(ctx context.Context) (cloudworker.AWSBinding, error) {
 	if authority == nil || authority.credentials == nil || authority.revisions == nil || authority.exact == nil || ctx == nil {
 		return cloudworker.AWSBinding{}, cloudworker.ErrInvalid
 	}
-	before, err := authority.revisions.CredentialRevision(ctx, authority.configured.CredentialID)
+	page, err := authority.list(ctx, 2, "")
+	if err != nil || len(page.Items) != 1 || page.NextPageToken != "" {
+		return cloudworker.AWSBinding{}, cloudworker.ErrStaleAuthorization
+	}
+	view := page.Items[0]
+	if view.Revision <= 0 || view.VerifiedRevision != view.Revision || view.TestedAt.IsZero() {
+		return cloudworker.AWSBinding{}, cloudworker.ErrStaleAuthorization
+	}
+	credentialID := view.ID
+	before, err := authority.revisions.CredentialRevision(ctx, credentialID)
 	if err != nil || before == 0 {
 		return cloudworker.AWSBinding{}, cloudworker.ErrStaleAuthorization
 	}
-	credential, err := authority.credentials.ResolveCredential(ctx, authority.configured.CredentialID)
+	credential, err := authority.credentials.ResolveCredential(ctx, credentialID)
 	if err != nil {
 		return cloudworker.AWSBinding{}, cloudworker.ErrStaleAuthorization
 	}
-	after, err := authority.revisions.CredentialRevision(ctx, authority.configured.CredentialID)
+	after, err := authority.revisions.CredentialRevision(ctx, credentialID)
 	binding := cloudworker.AWSBinding{AccountID: credential.AccountID, Region: credential.Region,
 		CredentialID: credential.ReferenceID, CredentialRevision: after}
 	if err != nil || before != after || credential.Validate() != nil ||
-		binding.AccountID != authority.configured.AccountID || binding.Region != authority.configured.Region ||
-		binding.CredentialID != authority.configured.CredentialID {
+		binding.AccountID != view.AccountID || binding.Region != view.Region || binding.CredentialID != view.ID ||
+		int64(binding.CredentialRevision) != view.Revision {
 		return cloudworker.AWSBinding{}, cloudworker.ErrStaleAuthorization
 	}
 	return binding, nil
@@ -65,9 +73,7 @@ func (authority *cloudWorkerCredentialAuthority) ResolveExactAWSBinding(ctx cont
 }
 
 func (authority *cloudWorkerCredentialAuthority) ResolveExactCredential(ctx context.Context, expected cloudworker.AWSBinding) (workaws.CredentialHandle, error) {
-	if authority == nil || authority.exact == nil || ctx == nil || expected.CredentialRevision == 0 ||
-		expected.AccountID != authority.configured.AccountID || expected.Region != authority.configured.Region ||
-		expected.CredentialID != authority.configured.CredentialID {
+	if authority == nil || authority.exact == nil || ctx == nil || expected.CredentialRevision == 0 {
 		return workaws.CredentialHandle{}, cloudworker.ErrInvalid
 	}
 	credential, err := authority.exact.ResolveCredentialRevision(ctx, expected.CredentialID, expected.CredentialRevision)

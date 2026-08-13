@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -16,6 +18,7 @@ import (
 
 type cloudWorkerCredentialResolverFake struct {
 	handle          workaws.CredentialHandle
+	views           []coreaws.CredentialView
 	revisions       []uint64
 	revisionCalls   int
 	credentialCalls int
@@ -63,7 +66,13 @@ func cloudWorkerCredentialAuthorityFixture(t *testing.T) (*cloudWorkerCredential
 		exactRevision: binding.CredentialRevision,
 		revisions:     []uint64{binding.CredentialRevision, binding.CredentialRevision},
 	}
-	authority, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, binding)
+	resolver.views = []coreaws.CredentialView{{
+		ID: binding.CredentialID, Region: binding.Region, AccountID: binding.AccountID,
+		Revision: int64(binding.CredentialRevision), VerifiedRevision: int64(binding.CredentialRevision), TestedAt: time.Now().UTC(),
+	}}
+	authority, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, func(context.Context, int, string) (coreaws.CredentialPage, error) {
+		return coreaws.CredentialPage{Items: resolver.views}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +82,7 @@ func cloudWorkerCredentialAuthorityFixture(t *testing.T) (*cloudWorkerCredential
 func TestCloudWorkerCredentialAuthorityDoubleFencesRevisionAndIdentity(t *testing.T) {
 	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
 	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
-	if err != nil || binding != authority.configured || resolver.revisionCalls != 2 || resolver.credentialCalls != 1 {
+	if err != nil || binding.CredentialID != resolver.handle.ReferenceID || resolver.revisionCalls != 2 || resolver.credentialCalls != 1 {
 		t.Fatalf("exact authority binding=%+v revision_calls=%d credential_calls=%d err=%v",
 			binding, resolver.revisionCalls, resolver.credentialCalls, err)
 	}
@@ -99,8 +108,9 @@ func TestCloudWorkerCredentialAuthorityDoubleFencesRevisionAndIdentity(t *testin
 
 func TestCloudWorkerCredentialAuthorityKeepsExactRevisionAfterRotateAndDisable(t *testing.T) {
 	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
-	expected := authority.configured
+	expected := cloudworker.AWSBinding{AccountID: resolver.handle.AccountID, Region: resolver.handle.Region, CredentialID: resolver.handle.ReferenceID, CredentialRevision: resolver.exactRevision}
 	resolver.revisions = []uint64{4, 4}
+	resolver.views[0].Revision, resolver.views[0].VerifiedRevision = 4, 4
 	if current, err := authority.ResolveCurrentAWSBinding(context.Background()); err != nil || current.CredentialRevision != 4 {
 		t.Fatalf("rotated current binding=%+v err=%v", current, err)
 	}
@@ -133,13 +143,17 @@ func (client *cloudWorkerCredentialHTTPClient) Do(*http.Request) (*http.Response
 
 func TestCloudWorkerAWSCredentialsProviderRevalidatesBeforeEverySDKRequest(t *testing.T) {
 	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
-	provider, err := newCloudWorkerAWSCredentialsProvider(authority, authority.configured)
+	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := newCloudWorkerAWSCredentialsProvider(authority, binding)
 	if err != nil {
 		t.Fatal(err)
 	}
 	httpClient := &cloudWorkerCredentialHTTPClient{}
 	sdkConfig := awssdk.Config{
-		Region: authority.configured.Region, Credentials: provider, HTTPClient: httpClient,
+		Region: binding.Region, Credentials: provider, HTTPClient: httpClient,
 		Retryer: func() awssdk.Retryer { return awssdk.NopRetryer{} },
 	}
 	client := sts.NewFromConfig(sdkConfig)
@@ -149,7 +163,7 @@ func TestCloudWorkerAWSCredentialsProviderRevalidatesBeforeEverySDKRequest(t *te
 	if _, err = client.GetCallerIdentity(context.Background(), &sts.GetCallerIdentityInput{}); err != nil {
 		t.Fatalf("second exact signed request: %v", err)
 	}
-	if resolver.exactCalls != 2 || resolver.credentialCalls != 0 || httpClient.calls != 2 {
+	if resolver.exactCalls != 2 || resolver.credentialCalls != 1 || httpClient.calls != 2 {
 		t.Fatalf("exact_calls=%d credential_calls=%d http_calls=%d",
 			resolver.exactCalls, resolver.credentialCalls, httpClient.calls)
 	}
@@ -165,9 +179,10 @@ func TestCloudWorkerSDKFactoryReconstructsExactRevisionFromPersistedProviderID(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	providerID := cloudWorkerCredentialProviderID(authority.configured)
+	binding := cloudworker.AWSBinding{AccountID: resolver.handle.AccountID, Region: resolver.handle.Region, CredentialID: resolver.handle.ReferenceID, CredentialRevision: resolver.exactRevision}
+	providerID := cloudWorkerCredentialProviderID(binding)
 	sdkConfig, adapter, err := factory.sdkForProvider(
-		context.Background(), authority.configured.AccountID, authority.configured.Region, providerID,
+		context.Background(), binding.AccountID, binding.Region, providerID,
 	)
 	if err != nil || adapter.ProviderID != providerID || adapter.AccountGeneration != 7 {
 		t.Fatalf("reconstructed adapter=%+v err=%v", adapter, err)
@@ -180,8 +195,8 @@ func TestCloudWorkerSDKFactoryReconstructsExactRevisionFromPersistedProviderID(t
 		t.Fatalf("current revision_calls=%d credential_calls=%d exact_calls=%d",
 			resolver.revisionCalls, resolver.credentialCalls, resolver.exactCalls)
 	}
-	if _, _, err = factory.sdkForProvider(context.Background(), authority.configured.AccountID,
-		authority.configured.Region, "credential:"+authority.configured.CredentialID+":revision:4"); !errors.Is(err, cloudworker.ErrStaleAuthorization) {
+	if _, _, err = factory.sdkForProvider(context.Background(), binding.AccountID,
+		binding.Region, "credential:"+binding.CredentialID+":revision:4"); !errors.Is(err, cloudworker.ErrStaleAuthorization) {
 		t.Fatalf("unpersisted exact revision accepted: %v", err)
 	}
 }

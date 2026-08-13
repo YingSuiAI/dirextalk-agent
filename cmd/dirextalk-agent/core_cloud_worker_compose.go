@@ -72,19 +72,6 @@ func composeCoreCloudWorker(
 	cloudStore := postgres.NewCloudWorkerStore(store)
 	controlStore := postgres.NewCloudWorkerControlStore(store)
 
-	pricing, err := cloudworker.NewPinnedPricingCatalog(worker.PricingCatalogFile, worker.PricingCatalogSHA256)
-	if err != nil {
-		return nil, fmt.Errorf("load Cloud Worker pricing catalog: %w", err)
-	}
-	quoter, err := cloudworker.NewProductionQuoter(pricing, cloudworker.ProductionQuoterConfig{
-		QuoteTTL: worker.QuoteTTL, MaximumCatalogAge: worker.MaximumCatalogAge,
-		CleanupReserveSeconds:   cloudworker.EphemeralCleanupReserveSeconds,
-		ContingencyBasisPoints:  worker.ContingencyBasisPoints,
-		AbsoluteHardLimitMicros: worker.AbsoluteHardLimitMicros,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("initialize Cloud Worker production quoter: %w", err)
-	}
 	qualification, err := cloudworker.NewPinnedRuntimeQualification(worker.RuntimeQualificationFile, worker.RuntimeQualificationSHA256)
 	if err != nil {
 		return nil, fmt.Errorf("load Cloud Worker runtime qualification: %w", err)
@@ -115,7 +102,8 @@ func composeCoreCloudWorker(
 		NetworkGrants: append([]string(nil), worker.AllowedFQDNs...), ArtifactRetentionSeconds: uint64(worker.ArtifactRetention / time.Second),
 		QuoteAmountMicros: 0, MaximumAuthorizedMicros: worker.AbsoluteHardLimitMicros, QuoteTTL: worker.QuoteTTL,
 	}
-	credentialResolver, err := postgres.NewCoreWorkloadCredentialResolver(postgres.NewCoreAWSStore(store))
+	awsCredentialStore := postgres.NewCoreAWSStore(store)
+	credentialResolver, err := postgres.NewCoreWorkloadCredentialResolver(awsCredentialStore)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Cloud Worker credential resolver: %w", err)
 	}
@@ -127,7 +115,20 @@ func composeCoreCloudWorker(
 	if !ok {
 		return nil, fmt.Errorf("Cloud Worker exact credential authority is unavailable")
 	}
-	credentialAuthority, err := newCloudWorkerCredentialAuthority(credentialResolver, credentialRevisionResolver, exactCredentialResolver, defaults.AWS)
+	pricing, err := cloudworker.NewAWSLivePricingCatalog(exactCredentialResolver, cloudworker.SDKAWSPriceListFactory{}, worker.QuoteTTL)
+	if err != nil {
+		return nil, fmt.Errorf("initialize Cloud Worker live AWS pricing: %w", err)
+	}
+	quoter, err := cloudworker.NewProductionQuoter(pricing, cloudworker.ProductionQuoterConfig{
+		QuoteTTL: worker.QuoteTTL, MaximumCatalogAge: worker.QuoteTTL,
+		CleanupReserveSeconds:   cloudworker.EphemeralCleanupReserveSeconds,
+		ContingencyBasisPoints:  worker.ContingencyBasisPoints,
+		AbsoluteHardLimitMicros: worker.AbsoluteHardLimitMicros,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize Cloud Worker production quoter: %w", err)
+	}
+	credentialAuthority, err := newCloudWorkerCredentialAuthority(credentialResolver, credentialRevisionResolver, exactCredentialResolver, awsCredentialStore.ListCredentials)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Cloud Worker credential authority: %w", err)
 	}

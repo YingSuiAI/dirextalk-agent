@@ -20,19 +20,21 @@ type PricingCatalog interface {
 }
 
 type PricingCatalogRequest struct {
-	AccountID         string        `json:"account_id"`
-	AccountGeneration uint64        `json:"account_generation"`
-	Region            string        `json:"region"`
-	InstanceType      string        `json:"instance_type"`
-	Architecture      string        `json:"architecture"`
-	VolumeGiB         uint64        `json:"volume_gib"`
-	VolumeType        string        `json:"volume_type"`
-	VolumeIOPS        uint64        `json:"volume_iops"`
-	VolumeThroughput  uint64        `json:"volume_throughput_mib"`
-	MaxRuntimeSeconds uint64        `json:"max_runtime_seconds"`
-	MaxTokens         uint64        `json:"max_tokens"`
-	BasisDigest       string        `json:"basis_digest"`
-	WorkspaceMode     WorkspaceMode `json:"workspace_mode"`
+	AccountID          string        `json:"account_id"`
+	AccountGeneration  uint64        `json:"account_generation"`
+	Region             string        `json:"region"`
+	CredentialID       string        `json:"credential_id"`
+	CredentialRevision uint64        `json:"credential_revision"`
+	InstanceType       string        `json:"instance_type"`
+	Architecture       string        `json:"architecture"`
+	VolumeGiB          uint64        `json:"volume_gib"`
+	VolumeType         string        `json:"volume_type"`
+	VolumeIOPS         uint64        `json:"volume_iops"`
+	VolumeThroughput   uint64        `json:"volume_throughput_mib"`
+	MaxRuntimeSeconds  uint64        `json:"max_runtime_seconds"`
+	MaxTokens          uint64        `json:"max_tokens"`
+	BasisDigest        string        `json:"basis_digest"`
+	WorkspaceMode      WorkspaceMode `json:"workspace_mode"`
 }
 
 func (request PricingCatalogRequest) digest() string { return digestValue(request) }
@@ -61,8 +63,7 @@ func SealPricingCatalogSnapshot(snapshot PricingCatalogSnapshot) (PricingCatalog
 	snapshot.SourceTime = snapshot.SourceTime.UTC()
 	snapshot.ExpiresAt = snapshot.ExpiresAt.UTC()
 	if !validDigest(snapshot.RequestDigest) || snapshot.SourceTime.IsZero() || !snapshot.ExpiresAt.After(snapshot.SourceTime) ||
-		snapshot.Rates.ComputeMicrosPerHour == 0 || snapshot.Rates.EBSStorageMicrosPerGiBMonth == 0 ||
-		snapshot.Rates.PublicIPv4MicrosPerHour == 0 || snapshot.Rates.ModelMicrosPerThousandTokens == 0 {
+		snapshot.Rates.ComputeMicrosPerHour == 0 || snapshot.Rates.EBSStorageMicrosPerGiBMonth == 0 {
 		return PricingCatalogSnapshot{}, ErrInvalid
 	}
 	snapshot.RevisionDigest = ""
@@ -158,7 +159,8 @@ func (quoter *ProductionQuoter) quote(ctx context.Context, request QuoteRequest)
 		return Quote{}, err
 	}
 	catalogRequest := PricingCatalogRequest{AccountID: request.AWS.AccountID, AccountGeneration: request.AccountGeneration,
-		Region: request.AWS.Region, InstanceType: request.Compute.InstanceType, Architecture: request.Compute.Architecture,
+		Region: request.AWS.Region, CredentialID: request.AWS.CredentialID, CredentialRevision: request.AWS.CredentialRevision,
+		InstanceType: request.Compute.InstanceType, Architecture: request.Compute.Architecture,
 		VolumeGiB: request.Compute.VolumeGiB, VolumeType: request.Compute.VolumeType, VolumeIOPS: request.Compute.VolumeIOPS,
 		VolumeThroughput: request.Compute.VolumeThroughputMiB, MaxRuntimeSeconds: request.Limits.MaxRuntimeSeconds,
 		MaxTokens: request.Limits.MaxTokens, BasisDigest: request.AuthorizationBasisDigest, WorkspaceMode: request.WorkspaceMode}
