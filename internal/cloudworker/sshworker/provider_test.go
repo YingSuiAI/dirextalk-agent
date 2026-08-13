@@ -34,12 +34,10 @@ func (s *memoryStore) LoadWorker(_ context.Context, id string) (WorkerRecord, bo
 	r, ok := s.workers[id]
 	return r, ok, nil
 }
-func (s *memoryStore) ListWorkers(_ context.Context, c CredentialIdentity) ([]WorkerRecord, error) {
+func (s *memoryStore) ListWorkers(context.Context) ([]WorkerRecord, error) {
 	r := []WorkerRecord{}
 	for _, w := range s.workers {
-		if w.Credential == c {
-			r = append(r, w)
-		}
+		r = append(r, w)
 	}
 	return r, nil
 }
@@ -80,12 +78,15 @@ func (*fakeSink) StoreArtifact(context.Context, string, io.Reader, int64) error 
 type fakeSSH struct {
 	calls int
 	hosts []string
+	err   error
+	seen  []SSHRequest
 }
 
 func (s *fakeSSH) Execute(_ context.Context, r SSHRequest) (ExecutionResult, error) {
 	s.calls++
 	s.hosts = append(s.hosts, r.Host)
-	return ExecutionResult{ArtifactCount: 1}, nil
+	s.seen = append(s.seen, r)
+	return ExecutionResult{ArtifactCount: 1}, s.err
 }
 
 type fakeAWS struct {
@@ -95,6 +96,7 @@ type fakeAWS struct {
 	instances                     map[string]Instance
 	ambiguous                     bool
 	publicPorts                   map[uint16]bool
+	afterFindKey                  func()
 }
 
 func newFakeAWS() *fakeAWS {
@@ -115,6 +117,9 @@ func (a *fakeAWS) ListInstances(context.Context, CredentialIdentity, ResourceTag
 }
 func (a *fakeAWS) FindKeyPair(_ context.Context, _ CredentialIdentity, name string, _ ResourceTags) (KeyPair, bool, error) {
 	k, ok := a.keys[name]
+	if a.afterFindKey != nil {
+		a.afterFindKey()
+	}
 	return k, ok, nil
 }
 func (a *fakeAWS) ImportKeyPair(_ context.Context, _ CredentialIdentity, c Confirmation, name string, _ []byte, _ ResourceTags) (KeyPair, error) {
@@ -242,7 +247,7 @@ func TestCapacityFivePreventsSixthCreate(t *testing.T) {
 	cloud := newFakeAWS()
 	store := newMemoryStore()
 	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
-	for i := 0; i < MaxWorkersPerCredential; i++ {
+	for i := 0; i < MaxWorkers; i++ {
 		id := "worker-" + string(rune('a'+i))
 		store.workers[id] = WorkerRecord{WorkerID: id, Credential: credentialFixture(), Phase: WorkerBusy, CurrentExecutionID: id, InstanceType: "t3.small", Instance: Instance{ID: "i-" + id, State: "running"}}
 		cloud.instances[id] = store.workers[id].Instance
@@ -253,6 +258,120 @@ func TestCapacityFivePreventsSixthCreate(t *testing.T) {
 	}
 	if cloud.runs != 0 {
 		t.Fatal("created beyond capacity")
+	}
+}
+
+func TestCapacityFiveIsGlobalAcrossCredentialRevisions(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	for i := 0; i < MaxWorkers; i++ {
+		id := "worker-" + string(rune('a'+i))
+		credential := credentialFixture()
+		credential.CredentialRevision = uint64(i + 1)
+		store.workers[id] = WorkerRecord{WorkerID: id, Credential: credential, Phase: WorkerBusy, CurrentExecutionID: id,
+			InstanceType: "t3.small", Instance: Instance{ID: "i-" + id, State: "running"}}
+	}
+	if _, err := provider.Execute(context.Background(), requestFixture()); !errors.Is(err, ErrCapacity) {
+		t.Fatalf("global capacity error=%v", err)
+	}
+	if cloud.runs != 0 {
+		t.Fatal("created beyond global capacity")
+	}
+}
+
+func TestReuseOnlyNeverFallsThroughToCreate(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	request := requestFixture()
+	request.ReuseOnly = true
+	request.Confirmation = Confirmation{}
+	if _, err := provider.Execute(context.Background(), request); !errors.Is(err, ErrBusy) {
+		t.Fatalf("reuse-only race error=%v", err)
+	}
+	if cloud.mutations != 0 || len(store.workers) != 0 {
+		t.Fatalf("reuse-only created resources: mutations=%d workers=%#v", cloud.mutations, store.workers)
+	}
+}
+
+func TestProvisioningIntentResumesWithoutConsumingAnotherSlot(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	request := requestFixture()
+	store.workers[request.ExecutionID] = WorkerRecord{WorkerID: request.ExecutionID, Credential: request.Credential,
+		CreationProof: request.Confirmation.Proof, Phase: WorkerProvisioning, SSHUser: request.Discovery.SSHUser,
+		InstanceType: request.InstanceType, VolumeGiB: request.VolumeGiB, CreatedAt: time.Now().UTC()}
+	for i := 0; i < MaxWorkers-1; i++ {
+		id := "worker-" + string(rune('a'+i))
+		store.workers[id] = WorkerRecord{WorkerID: id, Credential: request.Credential, Phase: WorkerBusy,
+			CurrentExecutionID: id, InstanceType: request.InstanceType, Instance: Instance{ID: "i-" + id, State: "running"}}
+	}
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	if _, err := provider.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if cloud.runs != 1 || store.workers[request.ExecutionID].Phase != WorkerIdle {
+		t.Fatalf("provisioning retry runs=%d worker=%#v", cloud.runs, store.workers[request.ExecutionID])
+	}
+}
+
+func TestAmbiguousSSHExecutionKeepsWorkerBusyAndRunning(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	ssh := &fakeSSH{err: errors.Join(ErrAmbiguous, errors.New("status disconnected"))}
+	provider, _ := New(cloud, &fakeKeys{}, ssh, store)
+	request := requestFixture()
+	if _, err := provider.Execute(context.Background(), request); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("ambiguous execution error=%v", err)
+	}
+	worker := store.workers[request.ExecutionID]
+	execution := store.executions[request.ExecutionID]
+	if worker.Phase != WorkerBusy || worker.CurrentExecutionID != request.ExecutionID || execution.Phase != TaskRunning {
+		t.Fatalf("ambiguous state worker=%#v execution=%#v", worker, execution)
+	}
+	ssh.err = nil
+	if _, err := provider.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(ssh.seen) != 2 || ssh.seen[0].Resume || !ssh.seen[1].Resume {
+		t.Fatalf("resume flags=%#v", ssh.seen)
+	}
+}
+
+func TestSharedPoolSerializesCapacityAcrossProviders(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	pool := NewPool()
+	ssh := &blockingSSH{started: make(chan SSHRequest, 1), release: make(chan struct{})}
+	authorize := func(context.Context, CredentialIdentity) error { return nil }
+	first, _ := NewWithPool(cloud, &fakeKeys{}, ssh, store, pool, authorize)
+	second, _ := NewWithPool(cloud, &fakeKeys{}, &fakeSSH{}, store, pool, authorize)
+	for i := 0; i < MaxWorkers-1; i++ {
+		id := "worker-" + string(rune('a'+i))
+		store.workers[id] = WorkerRecord{WorkerID: id, Credential: credentialFixture(), Phase: WorkerBusy,
+			CurrentExecutionID: id, InstanceType: "t3.small", Instance: Instance{ID: "i-" + id, State: "running"}}
+	}
+	requests := []ExecuteRequest{requestFixture(), requestFixture()}
+	requests[1].ExecutionID = "execution-2"
+	requests[1].Runtime.TaskID = requests[1].ExecutionID
+	firstErr := make(chan error, 1)
+	go func() { _, err := first.Execute(context.Background(), requests[0]); firstErr <- err }()
+	select {
+	case <-ssh.started:
+	case <-time.After(time.Second):
+		t.Fatal("first execution did not hold its Worker busy")
+	}
+	if _, err := second.Execute(context.Background(), requests[1]); !errors.Is(err, ErrCapacity) {
+		close(ssh.release)
+		t.Fatalf("second admission error=%v", err)
+	}
+	close(ssh.release)
+	if err := <-firstErr; err != nil {
+		t.Fatal(err)
+	}
+	if cloud.runs != 1 {
+		t.Fatalf("shared admission runs=%d", cloud.runs)
 	}
 }
 
@@ -344,6 +463,111 @@ func TestAmbiguousCreateReconcilesAndDestroyRequiresExactAuthorization(t *testin
 	}
 	if cloud.terminations != 1 || keys.delete != 1 || store.workers[r.ExecutionID].Phase != WorkerDestroyed {
 		t.Fatalf("destroy incomplete")
+	}
+}
+
+func TestPartialProvisioningRecordCanBeDestroyedAndReleasesCapacity(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	keys := &fakeKeys{}
+	provider, _ := New(cloud, keys, &fakeSSH{}, store)
+	credential := credentialFixture()
+	worker := WorkerRecord{WorkerID: "partial-worker", Credential: credential, CreationProof: "confirmation-1",
+		Phase: WorkerProvisioning, InstanceType: "t3.small", VolumeGiB: 16, KeyPair: KeyPair{ID: "key-1", Name: "key-1"}}
+	store.workers[worker.WorkerID] = worker
+	cloud.keys[worker.KeyPair.Name] = worker.KeyPair
+	identity := workerIdentity(worker)
+	if err := provider.DestroyWorker(context.Background(), DestroyRequest{Identity: identity,
+		Authorization: DestroyAuthorization{Authorized: true, Proof: "destroy-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if store.workers[worker.WorkerID].Phase != WorkerDestroyed || len(cloud.keys) != 0 || keys.delete != 1 {
+		t.Fatalf("partial cleanup worker=%#v keys=%#v localDeletes=%d", store.workers[worker.WorkerID], cloud.keys, keys.delete)
+	}
+	for i := 0; i < MaxWorkers-1; i++ {
+		id := "worker-" + string(rune('a'+i))
+		store.workers[id] = WorkerRecord{WorkerID: id, Credential: credential, Phase: WorkerBusy, CurrentExecutionID: id,
+			InstanceType: "t3.small", Instance: Instance{ID: "i-" + id, State: "running"}}
+	}
+	if _, err := provider.Execute(context.Background(), requestFixture()); err != nil {
+		t.Fatalf("capacity remained consumed after partial cleanup: %v", err)
+	}
+}
+
+func TestDestroyResourcesStaysListableUntilFinalized(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	keys := &fakeKeys{}
+	provider, _ := New(cloud, keys, &fakeSSH{}, store)
+	request := requestFixture()
+	if _, err := provider.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	worker := store.workers[request.ExecutionID]
+	identity := workerIdentity(worker)
+	destroy := DestroyRequest{Identity: identity, Authorization: DestroyAuthorization{Authorized: true, Proof: "destroy-1"}}
+	if err := provider.DestroyWorkerResources(context.Background(), destroy); err != nil {
+		t.Fatal(err)
+	}
+	if store.workers[request.ExecutionID].Phase != WorkerDestroying || keys.delete != 0 {
+		t.Fatalf("resource phase=%s key deletes=%d", store.workers[request.ExecutionID].Phase, keys.delete)
+	}
+	statuses, err := provider.ListWorkers(context.Background(), request.Credential)
+	if err != nil || len(statuses) != 1 || statuses[0].WorkerPhase != WorkerDestroying {
+		t.Fatalf("destroying status=%#v err=%v", statuses, err)
+	}
+	if err := provider.DestroyWorkerResources(context.Background(), destroy); err != nil {
+		t.Fatalf("resource retry=%v", err)
+	}
+	if err := provider.FinalizeWorkerDestroy(context.Background(), destroy); err != nil {
+		t.Fatal(err)
+	}
+	if store.workers[request.ExecutionID].Phase != WorkerDestroyed || keys.delete != 1 {
+		t.Fatalf("final phase=%s key deletes=%d", store.workers[request.ExecutionID].Phase, keys.delete)
+	}
+}
+
+func TestCreateAuthorizerFencesFreshAndPartialProvisioning(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	denied := errors.New("credential rotated")
+	provider, err := NewWithPool(cloud, &fakeKeys{}, &fakeSSH{}, store, NewPool(), func(context.Context, CredentialIdentity) error { return denied })
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := requestFixture()
+	if _, err = provider.Execute(context.Background(), request); !errors.Is(err, denied) || cloud.mutations != 0 {
+		t.Fatalf("fresh create err=%v mutations=%d", err, cloud.mutations)
+	}
+	store.workers[request.ExecutionID] = WorkerRecord{WorkerID: request.ExecutionID, Credential: request.Credential,
+		CreationProof: request.Confirmation.Proof, Phase: WorkerProvisioning, SSHUser: request.Discovery.SSHUser,
+		InstanceType: request.InstanceType, VolumeGiB: request.VolumeGiB}
+	if _, err = provider.Execute(context.Background(), request); !errors.Is(err, denied) || cloud.mutations != 0 {
+		t.Fatalf("partial resume err=%v mutations=%d", err, cloud.mutations)
+	}
+}
+
+func TestCreateAuthorizerRevalidatesImmediatelyBeforeMutation(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	credentialRotated := false
+	rotated := errors.New("credential rotated after readback")
+	authorize := func(context.Context, CredentialIdentity) error {
+		if credentialRotated {
+			return rotated
+		}
+		return nil
+	}
+	cloud.afterFindKey = func() { credentialRotated = true }
+	provider, err := NewWithPool(cloud, &fakeKeys{}, &fakeSSH{}, store, NewPool(), authorize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.Execute(context.Background(), requestFixture()); !errors.Is(err, rotated) {
+		t.Fatalf("rotation error=%v", err)
+	}
+	if cloud.mutations != 0 {
+		t.Fatalf("mutated after rotation: %d", cloud.mutations)
 	}
 }
 

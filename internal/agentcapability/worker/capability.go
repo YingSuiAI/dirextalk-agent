@@ -41,13 +41,13 @@ const (
 // CredentialSource returns the one current verified AWS credential. The
 // implementation owns the exact verification and secret-handling policy.
 type CredentialSource interface {
-	CurrentVerifiedCredential(context.Context) (sshworker.CredentialIdentity, error)
 	HasCurrentVerifiedCredential(context.Context) bool
 }
 
-// Manager is implemented by sshworker.Provider.
+// Manager routes retained Workers through their exact credential revision.
 type Manager interface {
-	ListWorkers(context.Context, sshworker.CredentialIdentity) ([]sshworker.WorkerStatus, error)
+	HasManagedWorkers(context.Context) bool
+	ListWorkers(context.Context) ([]sshworker.WorkerStatus, error)
 	ObserveWorker(context.Context, sshworker.WorkerIdentity) (sshworker.WorkerStatus, error)
 	DestroyWorker(context.Context, sshworker.DestroyRequest) error
 }
@@ -111,9 +111,9 @@ func NewCapability(bindings Bindings) (*Capability, error) {
 func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 	ready := c != nil && c.bindings.Credentials != nil && c.bindings.Workers != nil && c.bindings.Domains != nil
 	reason := ""
-	if ready && !c.bindings.Credentials.HasCurrentVerifiedCredential(context.Background()) {
+	if ready && !c.bindings.Credentials.HasCurrentVerifiedCredential(context.Background()) && !c.bindings.Workers.HasManagedWorkers(context.Background()) {
 		ready = false
-		reason = "exactly one verified AWS credential is required"
+		reason = "a verified AWS credential or retained Worker is required"
 	}
 	descriptor := &capv1.CapabilityDescriptor{CapabilityId: CapabilityID, SemanticVersion: SemanticVersion, ProtocolVersion: 1, DisplayName: "Workers", Description: "Persistent SSH Worker management", Readiness: ready, ReadinessReason: reason}
 	specs := []operationSpec{
@@ -146,17 +146,13 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 	if err := requireOwner(ctx); err != nil {
 		return nil, err
 	}
-	credential, err := c.bindings.Credentials.CurrentVerifiedCredential(ctx)
-	if err != nil {
-		return nil, capabilityoperation.NewFailure("PRECONDITION_FAILED", "Exactly one verified AWS credential is required", err)
-	}
 	switch operationID {
 	case "list_workers":
 		var request struct{}
 		if err := decodeStrict(raw, &request); err != nil {
 			return nil, invalid(err)
 		}
-		statuses, err := c.bindings.Workers.ListWorkers(ctx, credential)
+		statuses, err := c.bindings.Workers.ListWorkers(ctx)
 		if err != nil {
 			return nil, managerFailure(err)
 		}
@@ -174,7 +170,7 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 		if err := decodeStrict(raw, &request); err != nil {
 			return nil, invalid(err)
 		}
-		identity, err := request.Identity.workerIdentity(credential)
+		identity, err := request.Identity.workerIdentity()
 		if err != nil {
 			return nil, managerFailure(err)
 		}
@@ -192,7 +188,7 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 		if err := decodeStrict(raw, &request); err != nil || request.Confirmation != "destroy_worker" {
 			return nil, invalid(errors.Join(err, errors.New("explicit destroy authorization is required")))
 		}
-		identity, err := request.Identity.workerIdentity(credential)
+		identity, err := request.Identity.workerIdentity()
 		if err != nil {
 			return nil, managerFailure(err)
 		}
@@ -207,7 +203,7 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 		if err := decodeStrict(raw, &request); err != nil || request.Confirmation != expectedConfirmation {
 			return nil, invalid(errors.Join(err, errors.New("explicit domain authorization is required")))
 		}
-		identity, err := request.WorkerIdentity.workerIdentity(credential)
+		identity, err := request.WorkerIdentity.workerIdentity()
 		if err != nil {
 			return nil, managerFailure(err)
 		}
@@ -257,11 +253,25 @@ type identityInput struct {
 	Region             string `json:"region"`
 }
 
-func (input identityInput) workerIdentity(current sshworker.CredentialIdentity) (sshworker.WorkerIdentity, error) {
-	if input.CredentialID != current.CredentialID || input.CredentialRevision != current.CredentialRevision || input.AccountID != current.AccountID || input.Region != current.Region {
+func (input identityInput) workerIdentity() (sshworker.WorkerIdentity, error) {
+	credential := sshworker.CredentialIdentity{CredentialID: input.CredentialID, CredentialRevision: input.CredentialRevision, AccountID: input.AccountID, Region: input.Region}
+	if strings.TrimSpace(input.WorkerID) == "" || strings.TrimSpace(credential.CredentialID) == "" || credential.CredentialRevision == 0 ||
+		!validAccountID(credential.AccountID) || strings.TrimSpace(credential.Region) == "" {
 		return sshworker.WorkerIdentity{}, sshworker.ErrIdentity
 	}
-	return sshworker.WorkerIdentity{WorkerID: input.WorkerID, InstanceID: input.InstanceID, KeyPairID: input.KeyPairID, SecurityGroupID: input.SecurityGroupID, Credential: current}, nil
+	return sshworker.WorkerIdentity{WorkerID: input.WorkerID, InstanceID: input.InstanceID, KeyPairID: input.KeyPairID, SecurityGroupID: input.SecurityGroupID, Credential: credential}, nil
+}
+
+func validAccountID(value string) bool {
+	if len(value) != 12 {
+		return false
+	}
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Capability) projectStatus(ctx context.Context, status sshworker.WorkerStatus) (map[string]any, error) {

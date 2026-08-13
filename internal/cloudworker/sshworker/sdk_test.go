@@ -19,9 +19,11 @@ func (stubSTS) GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, .
 }
 
 type mutationProbeEC2 struct {
-	importCalls, runCalls int
-	runInput              *ec2.RunInstancesInput
-	group                 ec2types.SecurityGroup
+	importCalls, runCalls, authorizeCalls int
+	runInput                              *ec2.RunInstancesInput
+	group                                 ec2types.SecurityGroup
+	authorizeErr                          error
+	applyAuthorizeOnError                 bool
 }
 
 func (*mutationProbeEC2) DescribeImages(context.Context, *ec2.DescribeImagesInput, ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
@@ -50,8 +52,11 @@ func (*mutationProbeEC2) CreateSecurityGroup(context.Context, *ec2.CreateSecurit
 	return nil, errors.New("unused")
 }
 func (probe *mutationProbeEC2) AuthorizeSecurityGroupIngress(_ context.Context, input *ec2.AuthorizeSecurityGroupIngressInput, _ ...func(*ec2.Options)) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
-	probe.group.IpPermissions = append(probe.group.IpPermissions, input.IpPermissions...)
-	return &ec2.AuthorizeSecurityGroupIngressOutput{}, nil
+	probe.authorizeCalls++
+	if probe.authorizeErr == nil || probe.applyAuthorizeOnError {
+		probe.group.IpPermissions = append(probe.group.IpPermissions, input.IpPermissions...)
+	}
+	return &ec2.AuthorizeSecurityGroupIngressOutput{}, probe.authorizeErr
 }
 func (probe *mutationProbeEC2) RevokeSecurityGroupIngress(_ context.Context, input *ec2.RevokeSecurityGroupIngressInput, _ ...func(*ec2.Options)) (*ec2.RevokeSecurityGroupIngressOutput, error) {
 	probe.group.IpPermissions = nil
@@ -109,6 +114,37 @@ func TestSDKAllowsExactConfirmedMutation(t *testing.T) {
 	key, err := client.ImportKeyPair(context.Background(), credentialFixture(), Confirmation{Confirmed: true, Proof: "confirmation-1"}, "key", []byte("public"), ResourceTags{"owner": "test"})
 	if err != nil || key.ID != "key-1" || probe.importCalls != 1 {
 		t.Fatalf("ImportKeyPair() = %#v, %v; calls=%d", key, err, probe.importCalls)
+	}
+}
+
+func TestSDKAuthorizeSSHReadsBeforeAndAfterMutation(t *testing.T) {
+	probe := &mutationProbeEC2{group: ec2types.SecurityGroup{GroupId: aws.String("sg-1")}}
+	client := newSDK("ap-east-1", probe, stubSTS{}, staticIP{})
+	group := SecurityGroup{ID: "sg-1", Name: "worker"}
+	confirmation := Confirmation{Confirmed: true, Proof: "confirmation-1"}
+	if err := client.AuthorizeSSH(context.Background(), credentialFixture(), confirmation, group, "198.51.100.7/32"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.AuthorizeSSH(context.Background(), credentialFixture(), confirmation, group, "198.51.100.7/32"); err != nil || probe.authorizeCalls != 1 {
+		t.Fatalf("idempotent retry err=%v calls=%d", err, probe.authorizeCalls)
+	}
+}
+
+func TestSDKAuthorizeSSHAcceptsLostSuccessAfterReadback(t *testing.T) {
+	probe := &mutationProbeEC2{group: ec2types.SecurityGroup{GroupId: aws.String("sg-1")}, authorizeErr: errors.New("connection reset"), applyAuthorizeOnError: true}
+	client := newSDK("ap-east-1", probe, stubSTS{}, staticIP{})
+	err := client.AuthorizeSSH(context.Background(), credentialFixture(), Confirmation{Confirmed: true, Proof: "confirmation-1"}, SecurityGroup{ID: "sg-1"}, "198.51.100.7/32")
+	if err != nil || probe.authorizeCalls != 1 {
+		t.Fatalf("lost success err=%v calls=%d", err, probe.authorizeCalls)
+	}
+}
+
+func TestSDKAuthorizeSSHReportsWriteFailureWhenRuleIsAbsent(t *testing.T) {
+	probe := &mutationProbeEC2{group: ec2types.SecurityGroup{GroupId: aws.String("sg-1")}, authorizeErr: errors.New("denied")}
+	client := newSDK("ap-east-1", probe, stubSTS{}, staticIP{})
+	err := client.AuthorizeSSH(context.Background(), credentialFixture(), Confirmation{Confirmed: true, Proof: "confirmation-1"}, SecurityGroup{ID: "sg-1"}, "198.51.100.7/32")
+	if !errors.Is(err, ErrAmbiguous) || probe.authorizeCalls != 1 {
+		t.Fatalf("write failure err=%v calls=%d", err, probe.authorizeCalls)
 	}
 }
 

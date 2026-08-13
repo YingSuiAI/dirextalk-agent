@@ -86,10 +86,7 @@ func (store *FileStore) LoadWorker(_ context.Context, workerID string) (WorkerRe
 	return record, true, nil
 }
 
-func (store *FileStore) ListWorkers(_ context.Context, credential CredentialIdentity) ([]WorkerRecord, error) {
-	if credential.validate() != nil {
-		return nil, ErrInvalid
-	}
+func (store *FileStore) ListWorkers(_ context.Context) ([]WorkerRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	entries, err := os.ReadDir(store.root)
@@ -109,11 +106,45 @@ func (store *FileStore) ListWorkers(_ context.Context, credential CredentialIden
 		if json.Unmarshal(body, &worker) != nil {
 			return nil, ErrIdentity
 		}
-		if worker.Credential == credential {
-			result = append(result, worker)
-		}
+		result = append(result, worker)
 	}
 	return result, nil
+}
+
+// ListCredentialIdentities returns the secret-free identities referenced by
+// retained Worker records so the manager can reopen each exact revision.
+func (store *FileStore) ListCredentialIdentities(ctx context.Context) ([]CredentialIdentity, error) {
+	workers, err := store.ListWorkers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[CredentialIdentity]struct{})
+	result := make([]CredentialIdentity, 0)
+	for _, worker := range workers {
+		if worker.Phase == WorkerDestroyed {
+			continue
+		}
+		if worker.Credential.validate() != nil {
+			return nil, ErrIdentity
+		}
+		if _, ok := seen[worker.Credential]; ok {
+			continue
+		}
+		seen[worker.Credential] = struct{}{}
+		result = append(result, worker.Credential)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CredentialID != result[j].CredentialID {
+			return result[i].CredentialID < result[j].CredentialID
+		}
+		return result[i].CredentialRevision < result[j].CredentialRevision
+	})
+	return result, nil
+}
+
+func (store *FileStore) HasManagedWorkers(ctx context.Context) bool {
+	identities, err := store.ListCredentialIdentities(ctx)
+	return err == nil && len(identities) > 0
 }
 
 func (store *FileStore) SaveWorker(_ context.Context, record WorkerRecord) error {
@@ -382,36 +413,43 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 	defer os.Remove(knownHosts.Name())
 	base := []string{"-i", request.PrivateKeyPath, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
 		"-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + knownHosts.Name(), request.User + "@" + request.Host}
-	if err := retrySSH(ctx, sshPath, base, "mkdir -p -- /tmp/dirextalk-worker/workspace /tmp/dirextalk-worker/artifacts"); err != nil {
-		return ExecutionResult{}, err
-	}
-	if request.WorkspacePath != "" {
-		archive, err := workspaceArchive(request.WorkspacePath, request.MaxWorkspaceBytes)
+	taskRoot := "/tmp/dirextalk-worker/tasks/" + request.ExecutionID
+	workspaceRoot := taskRoot + "/workspace"
+	artifactRoot := taskRoot + "/artifacts"
+	workerScript := taskRoot + "/worker.sh"
+	if !request.Resume {
+		prepare := "rm -rf -- " + shellQuote(taskRoot) + " && mkdir -p -- " + shellQuote(workspaceRoot) + " " + shellQuote(artifactRoot)
+		if err := retrySSH(ctx, sshPath, base, prepare); err != nil {
+			return ExecutionResult{}, err
+		}
+		if request.WorkspacePath != "" {
+			archive, err := workspaceArchive(request.WorkspacePath, request.MaxWorkspaceBytes)
+			if err != nil {
+				return ExecutionResult{}, err
+			}
+			if err := sshWithInput(ctx, sshPath, base, "tar -xpf - -C "+shellQuote(workspaceRoot), archive); err != nil {
+				return ExecutionResult{}, err
+			}
+		}
+		if err := sshWithInput(ctx, sshPath, base, "cat > "+shellQuote(workerScript)+" && chmod 700 "+shellQuote(workerScript), bytes.NewReader(request.WorkerScript)); err != nil {
+			return ExecutionResult{}, err
+		}
+		bootstrap := fmt.Sprintf("printf '%%s  %%s\\n' %s %s | sha256sum -c - && cd %s && /bin/bash %s",
+			shellQuote(request.WorkerScriptSHA256), shellQuote(workerScript), shellQuote(workspaceRoot), shellQuote(workerScript))
+		if output, err := exec.CommandContext(ctx, sshPath, append(base, bootstrap)...).CombinedOutput(); err != nil {
+			return ExecutionResult{}, fmt.Errorf("worker bootstrap failed: %w: %s", err, output)
+		}
+		start, err := request.Runtime.Start()
 		if err != nil {
 			return ExecutionResult{}, err
 		}
-		if err := sshWithInput(ctx, sshPath, base, "tar -xpf - -C /tmp/dirextalk-worker/workspace", archive); err != nil {
-			return ExecutionResult{}, err
+		if err = sshWithInput(ctx, sshPath, base, start.Shell, bytes.NewReader(start.Stdin)); err != nil {
+			return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
 		}
-	}
-	if err := sshWithInput(ctx, sshPath, base, "cat > /tmp/dirextalk-worker/worker.sh && chmod 700 /tmp/dirextalk-worker/worker.sh", bytes.NewReader(request.WorkerScript)); err != nil {
-		return ExecutionResult{}, err
-	}
-	bootstrap := fmt.Sprintf("printf '%%s  %%s\\n' %s /tmp/dirextalk-worker/worker.sh | sha256sum -c - && cd /tmp/dirextalk-worker/workspace && /bin/bash /tmp/dirextalk-worker/worker.sh",
-		shellQuote(request.WorkerScriptSHA256))
-	if output, err := exec.CommandContext(ctx, sshPath, append(base, bootstrap)...).CombinedOutput(); err != nil {
-		return ExecutionResult{}, fmt.Errorf("worker bootstrap failed: %w: %s", err, output)
-	}
-	start, err := request.Runtime.Start()
-	if err != nil {
-		return ExecutionResult{}, err
-	}
-	if err = sshWithInput(ctx, sshPath, base, start.Shell, bytes.NewReader(start.Stdin)); err != nil {
-		return ExecutionResult{}, err
 	}
 	status, err := executor.waitRuntime(ctx, sshPath, base, request.Runtime)
 	if err != nil {
-		return ExecutionResult{}, err
+		return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
 	}
 	logCommand, err := request.Runtime.Log(0)
 	if err != nil {
@@ -419,7 +457,7 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 	}
 	logBody, err := sshOutput(ctx, sshPath, base, logCommand.Shell, request.MaxResultBytes)
 	if err != nil {
-		return ExecutionResult{}, err
+		return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
 	}
 	if err := request.Sink.StoreText(ctx, logBody, nil, status.ExitCode); err != nil {
 		return ExecutionResult{}, err
@@ -467,7 +505,7 @@ func (executor CommandSSHExecutor) collectRuntimeArtifacts(ctx context.Context, 
 	}
 	body, err := sshOutput(ctx, sshPath, base, listCommand.Shell, 1<<20)
 	if err != nil {
-		return 0, err
+		return 0, errors.Join(ErrAmbiguous, err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	count, total := 0, int64(0)
@@ -476,7 +514,7 @@ func (executor CommandSSHExecutor) collectRuntimeArtifacts(ctx context.Context, 
 		if err = decoder.Decode(&artifact); errors.Is(err, io.EOF) {
 			return count, nil
 		}
-		if err != nil || artifact.Size < 0 || total+artifact.Size > request.MaxResultBytes {
+		if err != nil || artifact.Size < 0 || total+artifact.Size > request.MaxResultBytes || count >= MaxLinkedArtifacts-reservedTextArtifacts {
 			return count, ErrResultTooLarge
 		}
 		command, commandErr := request.Runtime.Artifact(artifact.Name)
@@ -484,8 +522,11 @@ func (executor CommandSSHExecutor) collectRuntimeArtifacts(ctx context.Context, 
 			return count, commandErr
 		}
 		data, commandErr := sshOutput(ctx, sshPath, base, command.Shell, artifact.Size)
-		if commandErr != nil || int64(len(data)) != artifact.Size {
-			return count, errors.Join(ErrInvalid, commandErr)
+		if commandErr != nil {
+			return count, errors.Join(ErrAmbiguous, commandErr)
+		}
+		if int64(len(data)) != artifact.Size {
+			return count, ErrInvalid
 		}
 		if err = request.Sink.StoreArtifact(ctx, artifact.Name, bytes.NewReader(data), artifact.Size); err != nil {
 			return count, err

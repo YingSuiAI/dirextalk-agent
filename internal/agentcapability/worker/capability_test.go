@@ -40,7 +40,9 @@ type managerStub struct {
 	err       error
 }
 
-func (stub *managerStub) ListWorkers(context.Context, sshworker.CredentialIdentity) ([]sshworker.WorkerStatus, error) {
+func (stub *managerStub) HasManagedWorkers(context.Context) bool { return len(stub.statuses) > 0 }
+
+func (stub *managerStub) ListWorkers(context.Context) ([]sshworker.WorkerStatus, error) {
 	return stub.statuses, stub.err
 }
 func (stub *managerStub) ObserveWorker(_ context.Context, identity sshworker.WorkerIdentity) (sshworker.WorkerStatus, error) {
@@ -139,6 +141,18 @@ func TestDescriptorTracksVerifiedCredentialWithoutRestart(t *testing.T) {
 	}
 }
 
+func TestDescriptorKeepsRetainedWorkersManageableWithoutCurrentCredential(t *testing.T) {
+	credential, status := fixture()
+	capability, err := NewCapability(Bindings{Credentials: credentialStub{credential: credential, ready: func() bool { return false }},
+		Workers: &managerStub{statuses: []sshworker.WorkerStatus{status}}, Domains: &domainStub{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if descriptor := capability.Descriptor(); !descriptor.GetReadiness() || descriptor.GetReadinessReason() != "" {
+		t.Fatalf("retained Worker descriptor=%+v", descriptor)
+	}
+}
+
 func TestCatalogTracksVerifiedCredentialWithoutRestart(t *testing.T) {
 	credential, _ := fixture()
 	ready := false
@@ -198,6 +212,31 @@ func TestDestroyAndDomainMutationsPassExactIdentityAndProofs(t *testing.T) {
 	result, err := capability.HandleOperation(ownerContext(), "unbind_domain", unbind)
 	if err != nil || domains.unbound.Worker != status.Identity || !bytes.Contains(result, []byte(`"unbound":true`)) {
 		t.Fatalf("unbind=%s command=%+v err=%v", result, domains.unbound, err)
+	}
+}
+
+func TestDestroyAcceptsHistoricalCredentialRevisionIdentity(t *testing.T) {
+	current, status := fixture()
+	historical := current
+	historical.CredentialRevision--
+	status.Identity.Credential = historical
+	manager := &managerStub{statuses: []sshworker.WorkerStatus{status}}
+	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: current}, Workers: manager, Domains: &domainStub{}})
+	identity, _ := json.Marshal(projectIdentity(status.Identity))
+	_, err := capability.HandleOperation(ownerContext(), "destroy_worker", []byte(`{"identity":`+string(identity)+`,"confirmation":"destroy_worker"}`))
+	if err != nil || manager.destroyed.Identity.Credential != historical {
+		t.Fatalf("historical destroy=%+v err=%v", manager.destroyed, err)
+	}
+}
+
+func TestWorkerIdentityRejectsNonNumericAccount(t *testing.T) {
+	_, status := fixture()
+	identity := projectIdentity(status.Identity)
+	identity["account_id"] = "12345678901x"
+	raw, _ := json.Marshal(identity)
+	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: status.Identity.Credential}, Workers: &managerStub{statuses: []sshworker.WorkerStatus{status}}, Domains: &domainStub{}})
+	if _, err := capability.HandleOperation(ownerContext(), "get_worker", []byte(`{"identity":`+string(raw)+`}`)); err == nil {
+		t.Fatal("non-numeric account identity was accepted")
 	}
 }
 

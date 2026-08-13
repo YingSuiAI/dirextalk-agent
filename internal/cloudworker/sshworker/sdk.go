@@ -197,8 +197,16 @@ func (client *SDK) AuthorizeSSH(ctx context.Context, identity CredentialIdentity
 	if err := client.beforeCreate(ctx, identity, confirmation); err != nil {
 		return err
 	}
-	_, err := client.ec2.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{GroupId: aws.String(group.ID), IpPermissions: []ec2types.IpPermission{{IpProtocol: aws.String("tcp"), FromPort: aws.Int32(22), ToPort: aws.Int32(22), IpRanges: []ec2types.IpRange{{CidrIp: aws.String(cidr), Description: aws.String("Dirextalk Agent egress IP")}}}}})
-	return err
+	current, err := client.portCIDRState(ctx, group.ID, 22, cidr)
+	if err != nil || current {
+		return err
+	}
+	_, writeErr := client.ec2.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{GroupId: aws.String(group.ID), IpPermissions: []ec2types.IpPermission{{IpProtocol: aws.String("tcp"), FromPort: aws.Int32(22), ToPort: aws.Int32(22), IpRanges: []ec2types.IpRange{{CidrIp: aws.String(cidr), Description: aws.String("Dirextalk Agent egress IP")}}}}})
+	current, err = client.portCIDRState(ctx, group.ID, 22, cidr)
+	if current {
+		return nil
+	}
+	return errors.Join(ErrAmbiguous, writeErr, err)
 }
 
 // SetPublicPort toggles direct public TCP access for one persisted service.
@@ -236,6 +244,10 @@ func (client *SDK) SetPublicPort(ctx context.Context, identity CredentialIdentit
 }
 
 func (client *SDK) publicPortState(ctx context.Context, groupID string, port uint16) (bool, error) {
+	return client.portCIDRState(ctx, groupID, port, "0.0.0.0/0")
+}
+
+func (client *SDK) portCIDRState(ctx context.Context, groupID string, port uint16, cidr string) (bool, error) {
 	output, err := client.ec2.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{GroupIds: []string{groupID}})
 	if err != nil {
 		return false, err
@@ -248,7 +260,7 @@ func (client *SDK) publicPortState(ctx context.Context, groupID string, port uin
 			continue
 		}
 		for _, ipRange := range permission.IpRanges {
-			if aws.ToString(ipRange.CidrIp) == "0.0.0.0/0" {
+			if aws.ToString(ipRange.CidrIp) == cidr {
 				return true, nil
 			}
 		}

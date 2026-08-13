@@ -27,10 +27,12 @@ var (
 )
 
 const (
-	MaxWorkersPerCredential = 5
-	maxWorkerScriptBytes    = 1 << 20
-	maxWorkspaceBytes       = 512 << 20
-	maxResultBytes          = 64 << 20
+	MaxWorkers            = 5
+	MaxLinkedArtifacts    = 128
+	reservedTextArtifacts = 2
+	maxWorkerScriptBytes  = 1 << 20
+	maxWorkspaceBytes     = 512 << 20
+	maxResultBytes        = 64 << 20
 )
 
 type CredentialIdentity struct {
@@ -110,6 +112,7 @@ type ExecuteRequest struct {
 	MaxWorkspaceBytes  int64
 	MaxResultBytes     int64
 	Sink               ResultSink
+	ReuseOnly          bool
 }
 
 func (request ExecuteRequest) validate() error {
@@ -166,6 +169,7 @@ type SSHRequest struct {
 	Runtime                                                                    RuntimeProtocol
 	MaxWorkspaceBytes, MaxResultBytes                                          int64
 	Sink                                                                       ResultSink
+	Resume                                                                     bool
 }
 type SSHExecutor interface {
 	Execute(context.Context, SSHRequest) (ExecutionResult, error)
@@ -240,7 +244,7 @@ type Store interface {
 	LoadExecution(context.Context, string) (ExecutionRecord, bool, error)
 	SaveExecution(context.Context, ExecutionRecord) error
 	LoadWorker(context.Context, string) (WorkerRecord, bool, error)
-	ListWorkers(context.Context, CredentialIdentity) ([]WorkerRecord, error)
+	ListWorkers(context.Context) ([]WorkerRecord, error)
 	SaveWorker(context.Context, WorkerRecord) error
 }
 
@@ -288,8 +292,8 @@ func resourceTags(workerID string, credential CredentialIdentity, creationProof 
 	return ResourceTags{"dirextalk:managed-by": "sshworker", "dirextalk:worker": workerID,
 		"dirextalk:credential-revision": fmt.Sprint(credential.CredentialRevision), "dirextalk:confirmation": creationProof}
 }
-func poolTags(credential CredentialIdentity) ResourceTags {
-	return ResourceTags{"dirextalk:managed-by": "sshworker", "dirextalk:credential-revision": fmt.Sprint(credential.CredentialRevision)}
+func poolTags() ResourceTags {
+	return ResourceTags{"dirextalk:managed-by": "sshworker"}
 }
 func validID(value string) bool {
 	if value == "" || len(value) > 128 {

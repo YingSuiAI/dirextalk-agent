@@ -11,26 +11,39 @@ import (
 )
 
 type Provider struct {
-	aws    AWS
-	keys   KeyMaterial
-	ssh    SSHExecutor
-	store  Store
-	target ConnectionTargetResolver
-	status StatusSource
-	now    func() time.Time
-	poolMu sync.Mutex
-	active map[string]struct{}
+	aws             AWS
+	keys            KeyMaterial
+	ssh             SSHExecutor
+	store           Store
+	target          ConnectionTargetResolver
+	status          StatusSource
+	now             func() time.Time
+	pool            *Pool
+	authorizeCreate CreateAuthorizer
+	active          map[string]struct{}
 }
 
+// Pool serializes owner-wide Worker admission across credential revisions.
+// SSH execution itself never holds this lock.
+type Pool struct{ mu sync.Mutex }
+type CreateAuthorizer func(context.Context, CredentialIdentity) error
+
+func NewPool() *Pool { return &Pool{} }
+
 func New(awsClient AWS, keys KeyMaterial, ssh SSHExecutor, store Store, status ...StatusSource) (*Provider, error) {
-	if awsClient == nil || keys == nil || ssh == nil || store == nil {
+	return NewWithPool(awsClient, keys, ssh, store, NewPool(), func(context.Context, CredentialIdentity) error { return nil }, status...)
+}
+
+func NewWithPool(awsClient AWS, keys KeyMaterial, ssh SSHExecutor, store Store, pool *Pool, authorizeCreate CreateAuthorizer, status ...StatusSource) (*Provider, error) {
+	if awsClient == nil || keys == nil || ssh == nil || store == nil || pool == nil || authorizeCreate == nil {
 		return nil, ErrInvalid
 	}
 	var source StatusSource
 	if len(status) > 0 {
 		source = status[0]
 	}
-	return &Provider{aws: awsClient, keys: keys, ssh: ssh, store: store, target: PublicIPTarget{}, status: source, now: time.Now, active: make(map[string]struct{})}, nil
+	return &Provider{aws: awsClient, keys: keys, ssh: ssh, store: store, target: PublicIPTarget{}, status: source, now: time.Now,
+		pool: pool, authorizeCreate: authorizeCreate, active: make(map[string]struct{})}, nil
 }
 
 func (provider *Provider) Discover(ctx context.Context, credential CredentialIdentity) (Discovery, error) {
@@ -56,12 +69,12 @@ func (provider *Provider) HasIdleWorker(ctx context.Context, credential Credenti
 	if err := provider.aws.VerifyIdentity(ctx, credential); err != nil {
 		return false, err
 	}
-	workers, err := provider.store.ListWorkers(ctx, credential)
+	workers, err := provider.store.ListWorkers(ctx)
 	if err != nil {
 		return false, err
 	}
 	for _, worker := range workers {
-		if worker.Phase != WorkerIdle || worker.InstanceType != instanceType {
+		if worker.Credential != credential || worker.Phase != WorkerIdle || worker.InstanceType != instanceType {
 			continue
 		}
 		observed, found, observeErr := provider.aws.ObserveInstance(ctx, credential, worker.Instance.ID, resourceTags(worker.WorkerID, worker.Credential, worker.CreationProof))
@@ -84,7 +97,7 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	if err := provider.aws.VerifyIdentity(ctx, request.Credential); err != nil {
 		return ExecutionResult{}, err
 	}
-	worker, execution, completed, err := provider.lease(ctx, request)
+	worker, execution, completed, resume, err := provider.lease(ctx, request)
 	if err != nil {
 		return ExecutionResult{}, err
 	}
@@ -104,8 +117,15 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	}
 	result, runErr := provider.ssh.Execute(ctx, SSHRequest{ExecutionID: request.ExecutionID, Host: target, User: worker.SSHUser,
 		PrivateKeyPath: privateKey, WorkerScript: request.WorkerScript, WorkerScriptSHA256: request.WorkerScriptSHA256,
-		Runtime: request.Runtime, WorkspacePath: request.WorkspacePath, MaxWorkspaceBytes: request.MaxWorkspaceBytes, MaxResultBytes: request.MaxResultBytes, Sink: request.Sink})
+		Runtime: request.Runtime, WorkspacePath: request.WorkspacePath, MaxWorkspaceBytes: request.MaxWorkspaceBytes, MaxResultBytes: request.MaxResultBytes, Sink: request.Sink,
+		Resume: resume})
 	if runErr != nil {
+		if errors.Is(runErr, ErrAmbiguous) {
+			provider.pool.mu.Lock()
+			delete(provider.active, execution.ExecutionID)
+			provider.pool.mu.Unlock()
+			return ExecutionResult{}, runErr
+		}
 		provider.failExecution(ctx, &execution, &worker)
 		return ExecutionResult{}, runErr
 	}
@@ -118,50 +138,64 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 
 // lease serializes only the pool decision and durable lease. SSH tasks run
 // without holding poolMu, so separate Workers can execute concurrently.
-func (provider *Provider) lease(ctx context.Context, request ExecuteRequest) (WorkerRecord, ExecutionRecord, bool, error) {
-	provider.poolMu.Lock()
-	defer provider.poolMu.Unlock()
+func (provider *Provider) lease(ctx context.Context, request ExecuteRequest) (WorkerRecord, ExecutionRecord, bool, bool, error) {
+	provider.pool.mu.Lock()
+	defer provider.pool.mu.Unlock()
 	execution, exists, err := provider.store.LoadExecution(ctx, request.ExecutionID)
 	if err != nil {
-		return WorkerRecord{}, ExecutionRecord{}, false, err
+		return WorkerRecord{}, ExecutionRecord{}, false, false, err
 	}
 	if exists && execution.Credential != request.Credential {
-		return WorkerRecord{}, ExecutionRecord{}, false, ErrIdentity
+		return WorkerRecord{}, ExecutionRecord{}, false, false, ErrIdentity
 	}
 	if exists && execution.Phase == TaskCompleted {
-		return WorkerRecord{}, execution, true, nil
+		return WorkerRecord{}, execution, true, false, nil
 	}
 	if _, running := provider.active[request.ExecutionID]; running {
-		return WorkerRecord{}, ExecutionRecord{}, false, ErrBusy
+		return WorkerRecord{}, ExecutionRecord{}, false, false, ErrBusy
 	}
+	resume := exists && execution.Phase == TaskRunning && execution.WorkerID != ""
 	worker, err := provider.acquire(ctx, request, execution)
 	if err != nil {
-		return WorkerRecord{}, ExecutionRecord{}, false, err
+		return WorkerRecord{}, ExecutionRecord{}, false, false, err
 	}
-	execution = ExecutionRecord{ExecutionID: request.ExecutionID, WorkerID: worker.WorkerID, Credential: request.Credential, Phase: TaskRunning}
-	if err := provider.saveExecution(ctx, &execution); err != nil {
-		_ = provider.releaseLocked(ctx, &worker, request.ExecutionID)
-		return WorkerRecord{}, ExecutionRecord{}, false, err
+	if !resume {
+		execution = ExecutionRecord{ExecutionID: request.ExecutionID, WorkerID: worker.WorkerID, Credential: request.Credential, Phase: TaskRunning}
+		if err := provider.saveExecution(ctx, &execution); err != nil {
+			_ = provider.releaseLocked(ctx, &worker, request.ExecutionID)
+			return WorkerRecord{}, ExecutionRecord{}, false, false, err
+		}
 	}
 	provider.active[request.ExecutionID] = struct{}{}
-	return worker, execution, false, nil
+	return worker, execution, false, resume, nil
 }
 
 func (provider *Provider) acquire(ctx context.Context, request ExecuteRequest, prior ExecutionRecord) (WorkerRecord, error) {
-	workers, err := provider.store.ListWorkers(ctx, request.Credential)
+	workers, err := provider.store.ListWorkers(ctx)
 	if err != nil {
 		return WorkerRecord{}, err
 	}
 	if prior.WorkerID != "" {
 		for _, worker := range workers {
-			if worker.WorkerID == prior.WorkerID && worker.Phase == WorkerBusy && worker.CurrentExecutionID == request.ExecutionID {
+			if worker.Credential == request.Credential && worker.WorkerID == prior.WorkerID && worker.Phase == WorkerBusy && worker.CurrentExecutionID == request.ExecutionID {
 				return worker, nil
 			}
 		}
 	}
+	for _, worker := range workers {
+		if worker.WorkerID == request.ExecutionID && worker.Credential == request.Credential && worker.Phase == WorkerProvisioning {
+			if request.ReuseOnly {
+				return WorkerRecord{}, ErrBusy
+			}
+			if err := provider.authorizeCreate(ctx, request.Credential); err != nil {
+				return WorkerRecord{}, err
+			}
+			return provider.create(ctx, request)
+		}
+	}
 	sort.Slice(workers, func(i, j int) bool { return workers[i].UpdatedAt.Before(workers[j].UpdatedAt) })
 	for _, worker := range workers {
-		if worker.Phase != WorkerIdle || worker.InstanceType != request.InstanceType {
+		if worker.Credential != request.Credential || worker.Phase != WorkerIdle || worker.InstanceType != request.InstanceType {
 			continue
 		}
 		observed, found, err := provider.aws.ObserveInstance(ctx, request.Credential, worker.Instance.ID, resourceTags(worker.WorkerID, worker.Credential, worker.CreationProof))
@@ -179,23 +213,35 @@ func (provider *Provider) acquire(ctx context.Context, request ExecuteRequest, p
 		}
 		return worker, nil
 	}
+	if request.ReuseOnly {
+		return WorkerRecord{}, ErrBusy
+	}
 	active := 0
+	tracked := make(map[string]struct{})
 	for _, worker := range workers {
 		if worker.Phase != WorkerDestroyed {
 			active++
+			if worker.Credential.AccountID == request.Credential.AccountID && worker.Credential.Region == request.Credential.Region && worker.Instance.ID != "" {
+				tracked[worker.Instance.ID] = struct{}{}
+			}
 		}
 	}
-	live, err := provider.aws.ListInstances(ctx, request.Credential, poolTags(request.Credential))
+	live, err := provider.aws.ListInstances(ctx, request.Credential, poolTags())
 	if err != nil {
 		return WorkerRecord{}, err
 	}
-	if len(live) > active {
-		active = len(live)
+	for _, instance := range live {
+		if _, ok := tracked[instance.ID]; !ok {
+			active++
+		}
 	}
-	if active >= MaxWorkersPerCredential {
+	if active >= MaxWorkers {
 		return WorkerRecord{}, ErrCapacity
 	}
 	if err := request.Confirmation.validate(); err != nil {
+		return WorkerRecord{}, err
+	}
+	if err := provider.authorizeCreate(ctx, request.Credential); err != nil {
 		return WorkerRecord{}, err
 	}
 	return provider.create(ctx, request)
@@ -212,6 +258,9 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 	if !exists {
 		worker = WorkerRecord{WorkerID: workerID, Credential: request.Credential, CreationProof: request.Confirmation.Proof,
 			Phase: WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, VolumeGiB: request.VolumeGiB, CreatedAt: provider.now().UTC()}
+		if err := provider.saveWorker(ctx, &worker); err != nil {
+			return WorkerRecord{}, err
+		}
 	}
 	if worker.Credential != request.Credential || worker.CreationProof != request.Confirmation.Proof {
 		return WorkerRecord{}, ErrIdentity
@@ -225,6 +274,9 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 		return WorkerRecord{}, err
 	}
 	if !found {
+		if err := provider.authorizeCreate(ctx, request.Credential); err != nil {
+			return WorkerRecord{}, err
+		}
 		key, err = provider.aws.ImportKeyPair(ctx, request.Credential, request.Confirmation, keyName, publicKey, tags)
 		if err != nil {
 			key, found, _ = provider.aws.FindKeyPair(ctx, request.Credential, keyName, tags)
@@ -242,6 +294,9 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 		return WorkerRecord{}, err
 	}
 	if !found {
+		if err := provider.authorizeCreate(ctx, request.Credential); err != nil {
+			return WorkerRecord{}, err
+		}
 		group, err = provider.aws.CreateSecurityGroup(ctx, request.Credential, request.Confirmation, groupName, request.Discovery.VPCID, tags)
 		if err != nil {
 			group, found, _ = provider.aws.FindSecurityGroup(ctx, request.Credential, groupName, tags)
@@ -254,6 +309,9 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 	if err := provider.saveWorker(ctx, &worker); err != nil {
 		return WorkerRecord{}, err
 	}
+	if err := provider.authorizeCreate(ctx, request.Credential); err != nil {
+		return WorkerRecord{}, err
+	}
 	if err := provider.aws.AuthorizeSSH(ctx, request.Credential, request.Confirmation, group, request.Discovery.PublicEgressCIDR); err != nil {
 		return WorkerRecord{}, err
 	}
@@ -262,6 +320,9 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 		return WorkerRecord{}, err
 	}
 	if !found {
+		if err := provider.authorizeCreate(ctx, request.Credential); err != nil {
+			return WorkerRecord{}, err
+		}
 		instance, err = provider.aws.RunInstance(ctx, request.Credential, request.Confirmation, LaunchRequest{WorkerID: workerID, ClientToken: clientToken,
 			Discovery: request.Discovery, InstanceType: request.InstanceType, VolumeGiB: request.VolumeGiB, KeyName: key.Name, SecurityGroupID: group.ID, Tags: tags})
 		if err != nil {
@@ -317,8 +378,8 @@ func (provider *Provider) releaseLocked(ctx context.Context, worker *WorkerRecor
 }
 
 func (provider *Provider) failExecution(ctx context.Context, execution *ExecutionRecord, worker *WorkerRecord) {
-	provider.poolMu.Lock()
-	defer provider.poolMu.Unlock()
+	provider.pool.mu.Lock()
+	defer provider.pool.mu.Unlock()
 	delete(provider.active, execution.ExecutionID)
 	execution.Phase = TaskFailed
 	_ = provider.saveExecution(ctx, execution)
@@ -326,8 +387,8 @@ func (provider *Provider) failExecution(ctx context.Context, execution *Executio
 }
 
 func (provider *Provider) completeExecution(ctx context.Context, execution *ExecutionRecord, worker *WorkerRecord, result ExecutionResult) error {
-	provider.poolMu.Lock()
-	defer provider.poolMu.Unlock()
+	provider.pool.mu.Lock()
+	defer provider.pool.mu.Unlock()
 	delete(provider.active, execution.ExecutionID)
 	execution.Result, execution.Phase = result, TaskCompleted
 	if err := provider.saveExecution(ctx, execution); err != nil {
@@ -337,6 +398,13 @@ func (provider *Provider) completeExecution(ctx context.Context, execution *Exec
 }
 
 func (provider *Provider) DestroyWorker(ctx context.Context, request DestroyRequest) error {
+	if err := provider.DestroyWorkerResources(ctx, request); err != nil {
+		return err
+	}
+	return provider.FinalizeWorkerDestroy(ctx, request)
+}
+
+func (provider *Provider) DestroyWorkerResources(ctx context.Context, request DestroyRequest) error {
 	if provider == nil || ctx == nil || request.Authorization.validate() != nil || request.Identity.Credential.validate() != nil || !validID(request.Identity.WorkerID) {
 		if request.Authorization.validate() != nil {
 			return ErrNotAuthorized
@@ -346,8 +414,8 @@ func (provider *Provider) DestroyWorker(ctx context.Context, request DestroyRequ
 	if err := provider.aws.VerifyIdentity(ctx, request.Identity.Credential); err != nil {
 		return err
 	}
-	provider.poolMu.Lock()
-	defer provider.poolMu.Unlock()
+	provider.pool.mu.Lock()
+	defer provider.pool.mu.Unlock()
 	worker, found, err := provider.store.LoadWorker(ctx, request.Identity.WorkerID)
 	if err != nil {
 		return err
@@ -373,6 +441,32 @@ func (provider *Provider) DestroyWorker(ctx context.Context, request DestroyRequ
 	if err := provider.destroy(ctx, request.Authorization, tags, &worker); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (provider *Provider) FinalizeWorkerDestroy(ctx context.Context, request DestroyRequest) error {
+	if provider == nil || ctx == nil || request.Authorization.validate() != nil || request.Identity.Credential.validate() != nil || !validID(request.Identity.WorkerID) {
+		if request.Authorization.validate() != nil {
+			return ErrNotAuthorized
+		}
+		return ErrInvalid
+	}
+	provider.pool.mu.Lock()
+	defer provider.pool.mu.Unlock()
+	worker, found, err := provider.store.LoadWorker(ctx, request.Identity.WorkerID)
+	if err != nil || !found {
+		return err
+	}
+	if worker.Credential != request.Identity.Credential || worker.Instance.ID != request.Identity.InstanceID || worker.KeyPair.ID != request.Identity.KeyPairID ||
+		worker.SecurityGroup.ID != request.Identity.SecurityGroupID {
+		return ErrIdentity
+	}
+	if worker.Phase == WorkerDestroyed {
+		return nil
+	}
+	if worker.Phase != WorkerDestroying {
+		return ErrBusy
+	}
 	worker.Phase = WorkerDestroyed
 	if err := provider.saveWorker(ctx, &worker); err != nil {
 		return err
@@ -381,31 +475,37 @@ func (provider *Provider) DestroyWorker(ctx context.Context, request DestroyRequ
 }
 
 func (provider *Provider) destroy(ctx context.Context, authorization DestroyAuthorization, tags ResourceTags, worker *WorkerRecord) error {
-	instance, found, err := provider.aws.ObserveInstance(ctx, worker.Credential, worker.Instance.ID, tags)
-	if err != nil {
-		return err
+	if worker.Instance.ID != "" {
+		instance, found, err := provider.aws.ObserveInstance(ctx, worker.Credential, worker.Instance.ID, tags)
+		if err != nil {
+			return err
+		}
+		if found && instance.State != "terminated" {
+			if err := provider.aws.TerminateInstance(ctx, worker.Credential, authorization, instance, tags); err != nil {
+				instance, found, _ = provider.aws.ObserveInstance(ctx, worker.Credential, worker.Instance.ID, tags)
+				if found && instance.State != "shutting-down" && instance.State != "terminated" {
+					return errors.Join(ErrAmbiguous, err)
+				}
+			}
+		}
+		if err := provider.waitTerminated(ctx, worker, tags); err != nil {
+			return err
+		}
 	}
-	if found && instance.State != "terminated" {
-		if err := provider.aws.TerminateInstance(ctx, worker.Credential, authorization, instance, tags); err != nil {
-			instance, found, _ = provider.aws.ObserveInstance(ctx, worker.Credential, worker.Instance.ID, tags)
-			if found && instance.State != "shutting-down" && instance.State != "terminated" {
+	if worker.SecurityGroup.ID != "" && worker.SecurityGroup.Name != "" {
+		if err := provider.aws.DeleteSecurityGroup(ctx, worker.Credential, authorization, worker.SecurityGroup, tags); err != nil {
+			_, found, _ := provider.aws.FindSecurityGroup(ctx, worker.Credential, worker.SecurityGroup.Name, tags)
+			if found {
 				return errors.Join(ErrAmbiguous, err)
 			}
 		}
 	}
-	if err := provider.waitTerminated(ctx, worker, tags); err != nil {
-		return err
-	}
-	if err := provider.aws.DeleteSecurityGroup(ctx, worker.Credential, authorization, worker.SecurityGroup, tags); err != nil {
-		_, found, _ := provider.aws.FindSecurityGroup(ctx, worker.Credential, worker.SecurityGroup.Name, tags)
-		if found {
-			return errors.Join(ErrAmbiguous, err)
-		}
-	}
-	if err := provider.aws.DeleteKeyPair(ctx, worker.Credential, authorization, worker.KeyPair, tags); err != nil {
-		_, found, _ := provider.aws.FindKeyPair(ctx, worker.Credential, worker.KeyPair.Name, tags)
-		if found {
-			return errors.Join(ErrAmbiguous, err)
+	if worker.KeyPair.ID != "" && worker.KeyPair.Name != "" {
+		if err := provider.aws.DeleteKeyPair(ctx, worker.Credential, authorization, worker.KeyPair, tags); err != nil {
+			_, found, _ := provider.aws.FindKeyPair(ctx, worker.Credential, worker.KeyPair.Name, tags)
+			if found {
+				return errors.Join(ErrAmbiguous, err)
+			}
 		}
 	}
 	return nil
@@ -437,18 +537,21 @@ func (provider *Provider) ListWorkers(ctx context.Context, credential Credential
 	if err := provider.aws.VerifyIdentity(ctx, credential); err != nil {
 		return nil, err
 	}
-	workers, err := provider.store.ListWorkers(ctx, credential)
+	workers, err := provider.store.ListWorkers(ctx)
 	if err != nil {
 		return nil, err
 	}
 	result := make([]WorkerStatus, 0, len(workers))
 	for _, worker := range workers {
-		if worker.Phase == WorkerDestroyed {
+		if worker.Credential != credential || worker.Phase == WorkerDestroyed {
 			continue
 		}
-		instance, found, err := provider.aws.ObserveInstance(ctx, credential, worker.Instance.ID, resourceTags(worker.WorkerID, worker.Credential, worker.CreationProof))
-		if err != nil {
-			return nil, err
+		instance, found := Instance{}, false
+		if worker.Instance.ID != "" {
+			instance, found, err = provider.aws.ObserveInstance(ctx, credential, worker.Instance.ID, resourceTags(worker.WorkerID, worker.Credential, worker.CreationProof))
+			if err != nil {
+				return nil, err
+			}
 		}
 		status := WorkerStatus{Identity: workerIdentity(worker), WorkerPhase: worker.Phase, CurrentExecutionID: worker.CurrentExecutionID, ObservedAt: provider.now().UTC()}
 		if found {
@@ -489,8 +592,8 @@ func (provider *Provider) WorkerIdentity(ctx context.Context, credential Credent
 }
 
 func (provider *Provider) ObserveService(ctx context.Context, identity WorkerIdentity, taskID string) (ServiceRuntimeStatus, error) {
-	provider.poolMu.Lock()
-	defer provider.poolMu.Unlock()
+	provider.pool.mu.Lock()
+	defer provider.pool.mu.Unlock()
 	worker, found, err := provider.store.LoadWorker(ctx, identity.WorkerID)
 	if err != nil {
 		return ServiceRuntimeStatus{}, err
@@ -508,8 +611,8 @@ func (provider *Provider) ObserveService(ctx context.Context, identity WorkerIde
 }
 
 func (provider *Provider) SetPublicPort(ctx context.Context, identity WorkerIdentity, port uint16, enabled bool) error {
-	provider.poolMu.Lock()
-	defer provider.poolMu.Unlock()
+	provider.pool.mu.Lock()
+	defer provider.pool.mu.Unlock()
 	worker, found, err := provider.store.LoadWorker(ctx, identity.WorkerID)
 	if err != nil {
 		return err
