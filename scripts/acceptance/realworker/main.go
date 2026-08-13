@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -205,7 +204,7 @@ func configFromEnv() (config, error) {
 		receipt: value("DIREXTALK_ACCEPTANCE_RECEIPT"), runDir: value("DIREXTALK_ACCEPTANCE_RUN_DIR"),
 		httpBase: value("DIREXTALK_ACCEPTANCE_HTTP_BASE"), token: value("DIREXTALK_ACCEPTANCE_OWNER_ACCESS_TOKEN"),
 		awsProfile: value("DIREXTALK_ACCEPTANCE_AWS_PROFILE"), region: value("DIREXTALK_ACCEPTANCE_AWS_REGION"),
-		modelProfileID: value("DIREXTALK_ACCEPTANCE_MODEL_PROFILE_ID"), timeout: 20 * time.Minute, poll: 3 * time.Second,
+		modelProfileID: value("DIREXTALK_ACCEPTANCE_MODEL_PROFILE_ID"), timeout: 70 * time.Minute, poll: 3 * time.Second,
 	}
 	if cfg.token == "" {
 		path := value("DIREXTALK_ACCEPTANCE_SESSION_FILE")
@@ -610,24 +609,21 @@ func (d *driver) selectProfile(ctx context.Context) (profile, error) {
 	if err != nil {
 		return profile{}, fmt.Errorf("list model profiles: %w", err)
 	}
-	var candidates []profile
+	targetID := d.cfg.modelProfileID
+	if targetID == "" {
+		targetID = stringValue(response, "default_conversation_client_profile_id")
+	}
 	for _, value := range objects(response["profiles"]) {
 		item := profile{
 			ProfileID: stringValue(value, "profile_id"), Provider: stringValue(value, "provider"),
 			ModelKind: stringValue(value, "model_kind"), APIKeyConfigured: boolean(value["api_key_configured"]),
 			Revision: integer(value["revision"]), CredentialVersion: integer(value["credential_version"]),
 		}
-		if item.ProfileID != "" && item.Provider == "openai_compatible" && item.ModelKind == "conversation" && item.APIKeyConfigured && item.Revision > 0 && item.CredentialVersion > 0 {
-			if d.cfg.modelProfileID == "" || item.ProfileID == d.cfg.modelProfileID {
-				candidates = append(candidates, item)
-			}
+		if item.ProfileID == targetID && item.Provider == "openai_compatible" && item.ModelKind == "conversation" && item.APIKeyConfigured && item.Revision > 0 && item.CredentialVersion > 0 {
+			return item, nil
 		}
 	}
-	if len(candidates) == 0 {
-		return profile{}, errors.New("no compatible openai_compatible conversation profile is configured")
-	}
-	sort.Slice(candidates, func(left, right int) bool { return candidates[left].ProfileID < candidates[right].ProfileID })
-	return candidates[0], nil
+	return profile{}, errors.New("the selected conversation profile is not configured and ready")
 }
 
 func chatParams(selected profile, conversationID, message string) map[string]any {
@@ -639,7 +635,7 @@ func chatParams(selected profile, conversationID, message string) map[string]any
 }
 
 func firstWorkerPrompt(marker string) string {
-	return "Deploy https://github.com/TencentCloud/TencentDB-Agent-Memory, record the deployment steps and the actual CPU, memory, and disk load of the machine that performs the work, then create exactly one text artifact named acceptance.txt containing " + marker + ". Keep the execution environment available after the task so I can continue working in it."
+	return "Deploy https://github.com/TencentCloud/TencentDB-Agent-Memory, record the deployment steps and the actual CPU, memory, and disk load of the machine that performs the work, then create a text artifact named acceptance.txt containing " + marker + ". Keep the execution environment available after the task so I can continue working in it."
 }
 
 func reuseWorkerPrompt() string {
@@ -1035,14 +1031,35 @@ func (client *httpProduct) Call(ctx context.Context, action string, params map[s
 }
 
 func (client *httpProduct) StartTurn(ctx context.Context, params map[string]any, stopAtConfirmation bool) (streamResult, error) {
+	var result streamResult
+	after := int64(0)
+	for attempt := 0; attempt < 5; attempt++ {
+		terminal, next, err := client.readTurn(ctx, params, stopAtConfirmation, after, &result)
+		if next > after {
+			after = next
+		}
+		if terminal {
+			return result, nil
+		}
+		if err == nil || ctx.Err() != nil || attempt == 4 {
+			return result, err
+		}
+		if err = waitPoll(ctx, time.Second); err != nil {
+			return result, err
+		}
+	}
+	return result, errors.New("durable stream reconnect attempts exhausted")
+}
+
+func (client *httpProduct) readTurn(ctx context.Context, params map[string]any, stopAtConfirmation bool, after int64, result *streamResult) (bool, int64, error) {
 	ticketResponse, err := client.Call(ctx, "realtime.ws_ticket.create", map[string]any{})
 	if err != nil {
-		return streamResult{}, err
+		return false, after, err
 	}
 	ticket := stringValue(ticketResponse, "ticket")
 	parsed, err := url.Parse(client.base)
 	if err != nil || ticket == "" {
-		return streamResult{}, errors.New("realtime ticket response is invalid")
+		return false, after, errors.New("realtime ticket response is invalid")
 	}
 	if parsed.Scheme == "http" {
 		parsed.Scheme = "ws"
@@ -1053,37 +1070,40 @@ func (client *httpProduct) StartTurn(ctx context.Context, params map[string]any,
 	parsed.RawQuery = url.Values{"ticket": []string{ticket}}.Encode()
 	connection, _, err := websocket.Dial(ctx, parsed.String(), nil)
 	if err != nil {
-		return streamResult{}, err
+		return false, after, err
 	}
 	defer connection.CloseNow()
 	if err = wsjson.Write(ctx, connection, map[string]any{"type": "client.hello", "since": 0}); err != nil {
-		return streamResult{}, err
+		return false, after, err
 	}
 	var ready map[string]any
 	if err = wsjson.Read(ctx, connection, &ready); err != nil || stringValue(ready, "type") != "server.ready" {
-		return streamResult{}, fmt.Errorf("expected server.ready: %w", err)
+		return false, after, fmt.Errorf("expected server.ready: %w", err)
 	}
 	streamID := "real-worker-" + uuid4()
 	requestParams := cloneMap(params)
-	requestParams["after_seq"] = int64(0)
+	requestParams["after_seq"] = after
 	if err = wsjson.Write(ctx, connection, map[string]any{"type": "client.native_agent_stream", "id": streamID, "action": "agent.chat", "params": requestParams}); err != nil {
-		return streamResult{}, err
+		return false, after, err
 	}
-	var result streamResult
+	maxSeq := after
 	for {
 		var frame map[string]any
 		if err = wsjson.Read(ctx, connection, &frame); err != nil {
-			return result, err
+			return false, maxSeq, err
 		}
 		if stringValue(frame, "id") != streamID {
 			continue
 		}
-		terminal, frameErr := applyStreamFrame(&result, frame, stopAtConfirmation)
+		if seq := integer(frame["seq"]); seq > maxSeq {
+			maxSeq = seq
+		}
+		terminal, frameErr := applyStreamFrame(result, frame, stopAtConfirmation)
 		if frameErr != nil {
-			return result, frameErr
+			return false, maxSeq, frameErr
 		}
 		if terminal {
-			return result, nil
+			return true, maxSeq, nil
 		}
 	}
 }

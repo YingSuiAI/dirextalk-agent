@@ -105,8 +105,8 @@ func TestComposeCoreExecutionV2BindsAllRoutesAfterReadiness(t *testing.T) {
 	}
 }
 
-func TestComposeCoreExecutionV2PublishesCloudWorkerWithoutSSM(t *testing.T) {
-	cfg := config.Config{CoreExecutionV2Enabled: true}
+func TestComposeCoreExecutionV2PublishesCloudWorkerWithoutIndependentExecutionToggle(t *testing.T) {
+	cfg := config.Config{}
 	composition, err := composeCoreExecutionV2(cfg, coreexecutionv2.NewMemoryStore(), coreExecutionV2ComposeDeps{cloudWorker: executionComposeCloudWorkerPort{}})
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ func TestComposeCoreExecutionV2RequiresDurableStore(t *testing.T) {
 	}
 }
 
-func TestComposeCoreExecutionV2DisabledDoesNotConstructProviders(t *testing.T) {
+func TestComposeCoreExecutionV2DisabledWithoutAnyProviderDoesNotPublish(t *testing.T) {
 	composition, err := composeCoreExecutionV2(config.Config{}, nil, coreExecutionV2ComposeDeps{})
 	if err != nil || composition != nil {
 		t.Fatalf("disabled execution.v2 composed unexpectedly: composition=%#v err=%v", composition, err)

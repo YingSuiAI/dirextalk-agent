@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.87
+
+1. Include the SSH client required by retained AWS Workers in the production Agent image.
+2. Publish the Cloud Worker plan, run, and artifact surface whenever the dynamic Worker runtime is composed, without requiring an unrelated deployment-time Execution V2 toggle.
+3. Resume real Worker acceptance streams from their durable sequence cursor and use the configured conversation model default.
+
 ## v1.0.86
 
 1. Use each Agent's verified AWS credential to quote and create SSH Workers without deployment-time Worker infrastructure, S3, KMS, or fixed AMI configuration.

@@ -39,11 +39,13 @@ type coreExecutionV2ComposeDeps struct {
 }
 
 func composeCoreExecutionV2(cfg config.Config, store coreexecutionv2.Store, deps coreExecutionV2ComposeDeps) (*coreExecutionV2Composition, error) {
-	if !cfg.CoreExecutionV2Enabled {
+	if !cfg.CoreExecutionV2Enabled && deps.cloudWorker == nil {
 		return nil, nil
 	}
-	if err := config.ValidateCoreExecutionV2(&cfg); err != nil {
-		return nil, err
+	if cfg.CoreExecutionV2Enabled {
+		if err := config.ValidateCoreExecutionV2(&cfg); err != nil {
+			return nil, err
+		}
 	}
 	if store == nil {
 		return nil, fmt.Errorf("%w: execution.v2 durable store is required", production.ErrInvalid)

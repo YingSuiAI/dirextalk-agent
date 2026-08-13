@@ -7,11 +7,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 type fakeProduct struct {
@@ -284,7 +290,7 @@ func TestReceiptRefusesPartialSuccess(t *testing.T) {
 	}
 }
 
-func TestProfileSelectionIsStableWithoutNeedlessSingleProfileGate(t *testing.T) {
+func TestProfileSelectionUsesConfiguredConversationDefault(t *testing.T) {
 	product := &fakeProduct{call: func(action string, _ map[string]any) (map[string]any, error) {
 		if action != "agent.model_profiles.list" {
 			return nil, errors.New("unexpected action")
@@ -292,11 +298,14 @@ func TestProfileSelectionIsStableWithoutNeedlessSingleProfileGate(t *testing.T) 
 		profileValue := func(id string) map[string]any {
 			return map[string]any{"profile_id": id, "provider": "openai_compatible", "model_kind": "conversation", "api_key_configured": true, "revision": int64(1), "credential_version": int64(1)}
 		}
-		return map[string]any{"profiles": []any{profileValue("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"), profileValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")}}, nil
+		return map[string]any{
+			"default_conversation_client_profile_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			"profiles":                               []any{profileValue("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"), profileValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")},
+		}, nil
 	}}
 	d := &driver{product: product}
 	selected, err := d.selectProfile(context.Background())
-	if err != nil || selected.ProfileID != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
+	if err != nil || selected.ProfileID != "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" {
 		t.Fatalf("selected profile = %+v, %v", selected, err)
 	}
 }
@@ -315,5 +324,74 @@ func TestWorkerPromptsExerciseAutomaticEscalationAndReuse(t *testing.T) {
 	if !strings.Contains(first, "TencentDB-Agent-Memory") || !strings.Contains(first, "acceptance-marker") ||
 		!strings.Contains(second, "retained from the previous task") {
 		t.Fatalf("prompts do not retain the acceptance objectives: first=%q second=%q", first, second)
+	}
+}
+
+func TestStartTurnResumesAfterWebSocketDisconnect(t *testing.T) {
+	var mu sync.Mutex
+	afterValues := make([]int64, 0, 2)
+	connections := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/_p2p/query" {
+			_ = json.NewEncoder(writer).Encode(map[string]any{"ticket": "ticket"})
+			return
+		}
+		if request.URL.Path != "/_p2p/ws" {
+			http.NotFound(writer, request)
+			return
+		}
+		connection, err := websocket.Accept(writer, request, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer connection.CloseNow()
+		ctx := request.Context()
+		var hello map[string]any
+		if err = wsjson.Read(ctx, connection, &hello); err != nil {
+			t.Error(err)
+			return
+		}
+		if err = wsjson.Write(ctx, connection, map[string]any{"type": "server.ready"}); err != nil {
+			t.Error(err)
+			return
+		}
+		var start map[string]any
+		if err = wsjson.Read(ctx, connection, &start); err != nil {
+			t.Error(err)
+			return
+		}
+		after := integer(object(start, "params")["after_seq"])
+		mu.Lock()
+		afterValues = append(afterValues, after)
+		connections++
+		current := connections
+		mu.Unlock()
+		frame := map[string]any{"type": "server.native_agent_stream.event", "id": stringValue(start, "id"), "turn_id": "turn-id"}
+		if current == 1 {
+			frame["event"], frame["seq"] = "delta", int64(2)
+			_ = wsjson.Write(ctx, connection, frame)
+			_ = connection.Close(websocket.StatusGoingAway, "test disconnect")
+			return
+		}
+		frame["event"], frame["seq"] = "done", int64(3)
+		if err = wsjson.Write(ctx, connection, frame); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+
+	product, err := newHTTPProduct(server.URL, "owner-token", 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := product.StartTurn(context.Background(), map[string]any{"conversation_id": "conversation-id", "idempotency_key": "idempotency-key"}, false)
+	if err != nil || !result.Done || result.TurnID != "turn-id" {
+		t.Fatalf("resumed result = %+v, %v", result, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(afterValues) != 2 || afterValues[0] != 0 || afterValues[1] != 2 {
+		t.Fatalf("after_seq values = %v, want [0 2]", afterValues)
 	}
 }

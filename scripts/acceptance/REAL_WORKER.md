@@ -32,7 +32,8 @@ Optional:
 - `DIREXTALK_ACCEPTANCE_MODEL_PROFILE_ID` when a particular compatible
   `openai_compatible` conversation profile should be used. Without it the
   stable first compatible profile ID is selected.
-- `DIREXTALK_ACCEPTANCE_REAL_WORKER_TIMEOUT_SECONDS` (60..7200, default 1200).
+- `DIREXTALK_ACCEPTANCE_REAL_WORKER_TIMEOUT_SECONDS` (60..7200, default 4200),
+  covering one valid 3600-second Worker task, reuse, and exact cleanup.
 
 Run it through the complete acceptance batch:
 
