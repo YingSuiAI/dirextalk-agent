@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	workercap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
@@ -42,15 +43,11 @@ type sshWorkerExecutor struct {
 	mu        sync.Mutex
 }
 
-func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.StagingSourceReader, root string) (*sshWorkerExecutor, error) {
-	if authority == nil || exact == nil || artifacts == nil || pricing == nil || sources == nil || !filepath.IsAbs(root) {
+func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.StagingSourceReader, state *sshworker.FileStore, root string) (*sshWorkerExecutor, error) {
+	if authority == nil || exact == nil || artifacts == nil || pricing == nil || sources == nil || state == nil || !filepath.IsAbs(root) {
 		return nil, sshworker.ErrInvalid
 	}
 	workloads, err := sshworkload.NewRepository(filepath.Join(root, "workloads"))
-	if err != nil {
-		return nil, err
-	}
-	state, err := sshworker.NewFileStore(filepath.Join(root, "state"))
 	if err != nil {
 		return nil, err
 	}
@@ -108,18 +105,19 @@ func (executor *sshWorkerExecutor) authorizeWorkerCreate(ctx context.Context, cr
 	return nil
 }
 
-func (executor *sshWorkerExecutor) hourlyQuote(ctx context.Context, identity sshworker.CredentialIdentity, instanceType string, volumeGiB int32) (sshworker.HourlyQuote, error) {
-	if executor == nil || executor.pricing == nil || volumeGiB <= 0 {
+func (executor *sshWorkerExecutor) hourlyQuote(ctx context.Context, worker sshworker.WorkerRecord) (sshworker.HourlyQuote, error) {
+	if executor == nil || executor.pricing == nil || worker.AccountGeneration == 0 || worker.VolumeGiB <= 0 {
 		return sshworker.HourlyQuote{}, sshworker.ErrInvalid
 	}
-	snapshot, err := executor.pricing.Snapshot(ctx, cloudworker.PricingCatalogRequest{AccountID: identity.AccountID, AccountGeneration: 1,
+	identity := worker.Credential
+	snapshot, err := executor.pricing.Snapshot(ctx, cloudworker.PricingCatalogRequest{AccountID: identity.AccountID, AccountGeneration: worker.AccountGeneration,
 		Region: identity.Region, CredentialID: identity.CredentialID, CredentialRevision: identity.CredentialRevision,
-		InstanceType: instanceType, Architecture: "x86_64", VolumeGiB: uint64(volumeGiB), VolumeType: "gp3", VolumeIOPS: 3000,
+		InstanceType: worker.InstanceType, Architecture: "x86_64", VolumeGiB: uint64(worker.VolumeGiB), VolumeType: "gp3", VolumeIOPS: 3000,
 		VolumeThroughput: 125, MaxRuntimeSeconds: 3600, MaxTokens: 1, BasisDigest: strings.Repeat("0", 64), WorkspaceMode: cloudworker.WorkspaceNone})
 	if err != nil {
 		return sshworker.HourlyQuote{}, err
 	}
-	storagePerHour := (snapshot.Rates.EBSStorageMicrosPerGiBMonth*uint64(volumeGiB) + 729) / 730
+	storagePerHour := (snapshot.Rates.EBSStorageMicrosPerGiBMonth*uint64(worker.VolumeGiB) + 729) / 730
 	return sshworker.HourlyQuote{Currency: snapshot.Currency,
 		MicrosPerHour: snapshot.Rates.ComputeMicrosPerHour + snapshot.Rates.PublicIPv4MicrosPerHour + storagePerHour,
 		ObservedAt:    snapshot.SourceTime, ExpiresAt: snapshot.ExpiresAt}, nil
@@ -164,7 +162,8 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	if request.ReuseOnly {
 		confirmation = sshworker.Confirmation{}
 	}
-	result, err := provider.Execute(ctx, sshworker.ExecuteRequest{ExecutionID: request.ExecutionID, Credential: identity,
+	result, err := provider.Execute(ctx, sshworker.ExecuteRequest{ExecutionID: request.ExecutionID,
+		Authority: sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, Credential: identity,
 		Confirmation: confirmation, Discovery: discovery, ReuseOnly: request.ReuseOnly,
 		InstanceType: request.Compute.InstanceType, VolumeGiB: int32(request.Compute.VolumeGiB), WorkerScript: material.WorkerScript,
 		WorkerScriptSHA256: material.WorkerScriptSHA256, Runtime: material.Protocol,
@@ -189,7 +188,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		return workerResult, fmt.Errorf("remote Worker exited with code %d", result.ExitCode)
 	}
 	if service != nil {
-		if err = executor.publishService(ctx, provider, identity, result.WorkerID, request.ExecutionID, *service); err != nil {
+		if err = executor.publishService(ctx, provider, sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, identity, result.WorkerID, request.ExecutionID, *service); err != nil {
 			return workerResult, err
 		}
 	}
@@ -322,12 +321,12 @@ func matchesSHA256(body []byte, expected string) bool {
 }
 
 type serviceWorker interface {
-	WorkerIdentity(context.Context, sshworker.CredentialIdentity, string) (sshworker.WorkerIdentity, error)
+	WorkerIdentity(context.Context, sshworker.OwnerAuthority, sshworker.CredentialIdentity, string) (sshworker.WorkerIdentity, error)
 	SetPublicPort(context.Context, sshworker.WorkerIdentity, uint16, bool) error
 }
 
-func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider serviceWorker, credential sshworker.CredentialIdentity, workerID, taskID string, service sshworker.RuntimeServiceSpec) error {
-	worker, err := provider.WorkerIdentity(ctx, credential, workerID)
+func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider serviceWorker, authority sshworker.OwnerAuthority, credential sshworker.CredentialIdentity, workerID, taskID string, service sshworker.RuntimeServiceSpec) error {
+	worker, err := provider.WorkerIdentity(ctx, authority, credential, workerID)
 	if err != nil {
 		return err
 	}
@@ -338,12 +337,12 @@ func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider 
 	return provider.SetPublicPort(ctx, worker, service.Port, true)
 }
 
-func (executor *sshWorkerExecutor) HasIdleWorker(ctx context.Context, binding cloudworker.AWSBinding, compute cloudworker.ComputeSpec) (bool, error) {
+func (executor *sshWorkerExecutor) HasIdleWorker(ctx context.Context, ownerID string, accountGeneration uint64, binding cloudworker.AWSBinding, compute cloudworker.ComputeSpec) (bool, error) {
 	provider, identity, err := executor.provider(ctx, binding)
 	if err != nil {
 		return false, err
 	}
-	return provider.HasIdleWorker(ctx, identity, compute.InstanceType)
+	return provider.HasIdleWorker(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, identity, compute.InstanceType)
 }
 
 func boundedWorkerSummary(value string) string {
@@ -384,38 +383,61 @@ func (executor *sshWorkerExecutor) HasManagedWorkers(ctx context.Context) bool {
 	return err == nil && len(identities) > 0
 }
 
-func (executor *sshWorkerExecutor) ListWorkers(ctx context.Context) ([]sshworker.WorkerStatus, error) {
-	if executor == nil || executor.state == nil || ctx == nil {
+func (executor *sshWorkerExecutor) ListWorkers(ctx context.Context, authority sshworker.OwnerAuthority) ([]sshworker.WorkerStatus, error) {
+	if executor == nil || executor.state == nil || ctx == nil || authority.OwnerID == "" || authority.AccountGeneration == 0 {
 		return nil, sshworker.ErrInvalid
 	}
-	identities, err := executor.state.ListCredentialIdentities(ctx)
+	records, err := executor.state.ListWorkers(ctx)
 	if err != nil {
 		return nil, err
 	}
 	result := make([]sshworker.WorkerStatus, 0)
-	for _, identity := range identities {
+	byCredential := make(map[sshworker.CredentialIdentity][]sshworker.WorkerRecord)
+	for _, worker := range records {
+		if worker.OwnerID == authority.OwnerID && worker.AccountGeneration == authority.AccountGeneration && worker.Phase != sshworker.WorkerDestroyed {
+			byCredential[worker.Credential] = append(byCredential[worker.Credential], worker)
+		}
+	}
+	for identity, retained := range byCredential {
 		provider, providerErr := executor.providerForIdentity(ctx, identity)
 		if providerErr != nil {
-			return nil, providerErr
+			for _, worker := range retained {
+				result = append(result, sshworker.UnavailableStatus(worker, time.Now(), "AWS credential revision is unavailable"))
+			}
+			continue
 		}
-		workers, listErr := provider.ListWorkers(ctx, identity)
+		workers, listErr := provider.ListWorkers(ctx, authority, identity)
 		if listErr != nil {
-			return nil, listErr
+			for _, worker := range retained {
+				result = append(result, sshworker.UnavailableStatus(worker, time.Now(), "Worker provider is unavailable"))
+			}
+			continue
 		}
 		result = append(result, workers...)
 	}
 	return result, nil
 }
 
-func (executor *sshWorkerExecutor) ObserveWorker(ctx context.Context, identity sshworker.WorkerIdentity) (sshworker.WorkerStatus, error) {
+func (executor *sshWorkerExecutor) ObserveWorker(ctx context.Context, authority sshworker.OwnerAuthority, identity sshworker.WorkerIdentity) (sshworker.WorkerStatus, error) {
+	identity.OwnerID, identity.AccountGeneration = authority.OwnerID, authority.AccountGeneration
+	worker, found, loadErr := executor.state.LoadWorker(ctx, identity.WorkerID)
+	if loadErr != nil || !found || worker.OwnerID != authority.OwnerID || worker.AccountGeneration != authority.AccountGeneration || worker.Credential != identity.Credential || worker.Instance.ID != identity.InstanceID || worker.KeyPair.ID != identity.KeyPairID || worker.SecurityGroup.ID != identity.SecurityGroupID || worker.Phase == sshworker.WorkerDestroyed {
+		return sshworker.WorkerStatus{}, errors.Join(sshworker.ErrIdentity, loadErr)
+	}
 	provider, err := executor.providerForIdentity(ctx, identity.Credential)
 	if err != nil {
-		return sshworker.WorkerStatus{}, err
+		return sshworker.UnavailableStatus(worker, time.Now(), "AWS credential revision is unavailable"), nil
 	}
 	return provider.ObserveWorker(ctx, identity)
 }
 
-func (executor *sshWorkerExecutor) DestroyWorker(ctx context.Context, request sshworker.DestroyRequest) error {
+func (executor *sshWorkerExecutor) DestroyWorker(ctx context.Context, authority sshworker.OwnerAuthority, request sshworker.DestroyRequest) error {
+	request.Identity.OwnerID, request.Identity.AccountGeneration = authority.OwnerID, authority.AccountGeneration
+	worker, found, err := executor.state.LoadWorker(ctx, request.Identity.WorkerID)
+	if err != nil || !found || worker.OwnerID != authority.OwnerID || worker.AccountGeneration != authority.AccountGeneration ||
+		worker.Credential != request.Identity.Credential || worker.Instance.ID != request.Identity.InstanceID || worker.KeyPair.ID != request.Identity.KeyPairID || worker.SecurityGroup.ID != request.Identity.SecurityGroupID {
+		return errors.Join(sshworker.ErrIdentity, err)
+	}
 	provider, err := executor.providerForIdentity(ctx, request.Identity.Credential)
 	if err != nil {
 		return err

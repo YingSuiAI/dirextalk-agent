@@ -28,21 +28,21 @@ func (c *retainedWorkerDeprovisionChecker) CheckDeprovision(ctx context.Context,
 	if c == nil || c.store == nil || ctx == nil || strings.TrimSpace(command.OwnerID) == "" || command.AccountGeneration <= 0 {
 		return coredeprovision.ErrInvalid
 	}
-	identities, err := c.store.ListCredentialIdentities(ctx)
+	retained, err := c.store.HasAnyRetainedWorkers(ctx)
 	if err != nil {
 		return fmt.Errorf("check retained Workers: %w", err)
 	}
-	if len(identities) != 0 {
+	if retained {
 		return coredeprovision.ErrRetainedWorkers
 	}
 	return nil
 }
 
-func (c *retainedWorkerDeprovisionChecker) HasRetainedWorkersForCredential(ctx context.Context, credentialID string, revision uint64) (bool, error) {
+func (c *retainedWorkerDeprovisionChecker) DeleteCredentialIfUnused(ctx context.Context, credentialID string, deleteCredential func() error) (bool, error) {
 	if c == nil || c.store == nil {
 		return false, coredeprovision.ErrInvalid
 	}
-	return c.store.HasRetainedWorkersForCredential(ctx, credentialID, revision)
+	return c.store.DeleteCredentialIfUnused(ctx, credentialID, deleteCredential)
 }
 
 // composeCoreExternalPurge binds all configured Agent-owned roots before the

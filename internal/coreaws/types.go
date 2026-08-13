@@ -29,6 +29,7 @@ var (
 	ErrUnconfirmed                    = errors.New("coreaws: change is not confirmed")
 	ErrResponseUncertain        error = responseUncertainError{}
 	ErrCredentialTestInProgress       = errors.New("coreaws: credential test in progress")
+	ErrCredentialInUse                = errors.New("coreaws: credential is used by a retained Worker")
 )
 
 type responseUncertainError struct{}

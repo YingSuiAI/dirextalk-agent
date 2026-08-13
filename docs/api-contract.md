@@ -208,8 +208,12 @@ multi-tenant model.
   `list_workers` and `get_worker` expose the exact
   AWS resource identity, observed EC2 state and ordinary auto-assigned public
   IPv4, Worker/task phase, server load and last-seen time, live hourly quote,
-  and optional workload/domain status. At most five retained Workers may exist
-  for that credential. A domain is optional per workload;
+  availability and optional workload/domain status. An unavailable historical
+  credential or one failed AWS observation is projected on that retained
+  Worker without hiding other records. At most five retained Workers may exist
+  for one authenticated owner/account generation across credential revisions;
+  a destroying Worker whose compute resources are already gone does not occupy
+  a slot while DNS cleanup is retried. A domain is optional per workload;
   `bind_domain` and `unbind_domain` pass their explicit confirmation literal
   to the Route53 port, which maps the A record to the current public IPv4 and
   performs read-back. Route53 support may be unavailable when the current
@@ -217,6 +221,9 @@ multi-tenant model.
   reuse, list, get, or destroy. There is no EIP field or operation. `destroy_worker`
   requires its explicit confirmation literal and the complete identity
   returned by list/get; a busy or changed resource identity fails closed.
+  If credentials rotate after a provisioning intent, recovery only discovers
+  and persists resources carrying that intent's exact tags so partial resources
+  remain destroyable; it never creates a missing resource or resumes execution.
   A successful retained-Worker completion durably records its exact
   `worker_id` and a structured `next_action` bound to that same ID asking
   whether to run `destroy_worker`; retain is the default and the completion
@@ -367,8 +374,9 @@ lacks the general project/shell executor required by a substantial task. The
 model may select it without cloud or remote wording, but model text and local
 failures are not capability evidence. Cloud/local-only vetoes remain binding,
 and AWS resources start only after the owner confirms the pending quote. The
-manager supports no more than five retained Workers for the current verified
-credential. It discovers the newest AWS-owned Amazon Linux 2023 image and the
+manager supports no more than five retained Workers for one authenticated
+owner/account generation across credential revisions. It discovers the newest
+AWS-owned Amazon Linux 2023 image and the
 default VPC/subnet at runtime, assigns an ordinary public IPv4, and uses
 outbound SSH. Image identity remains internal provider data. There is no EIP,
 custom AMI, S3/KMS, WorkerControl callback, model relay, Worker domain, or

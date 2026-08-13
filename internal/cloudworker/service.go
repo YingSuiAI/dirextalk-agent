@@ -43,7 +43,7 @@ type Store interface {
 // matching idle persistent Worker. It is read-only; a later lease race must
 // fail instead of falling through to Worker creation.
 type WorkerReuseResolver interface {
-	HasIdleWorker(context.Context, AWSBinding, ComputeSpec) (bool, error)
+	HasIdleWorker(context.Context, string, uint64, AWSBinding, ComputeSpec) (bool, error)
 }
 
 // BeginResult is the transactionally consumed confirmation plus the current
@@ -409,7 +409,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	objectiveDigest := digestValue(plan.Objective)
 	reuse := false
 	if s.workerReuse != nil {
-		reuse, err = s.workerReuse.HasIdleWorker(ctx, plan.AWS, plan.Compute)
+		reuse, err = s.workerReuse.HasIdleWorker(ctx, plan.OwnerID, plan.AccountGeneration, plan.AWS, plan.Compute)
 		if err != nil {
 			return Offer{}, err
 		}

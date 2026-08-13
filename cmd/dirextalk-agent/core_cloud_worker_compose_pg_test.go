@@ -21,6 +21,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
@@ -278,7 +279,11 @@ func TestComposeDynamicCloudWorkerProposalNeedsNoDeploymentBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	composition, err := composeDynamicCloudWorkerProposal(cfg, store, conversation)
+	workerState, err := sshworker.NewFileStore(filepath.Join(cfg.CoreExtensionStagingRoot, "cloud-worker", "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	composition, err := composeDynamicCloudWorkerProposal(cfg, store, conversation, workerState)
 	if err != nil || composition == nil || composition.intrinsic == nil || composition.taskHandler == nil || composition.executionPort == nil {
 		t.Fatalf("dynamic composition=%+v err=%v", composition, err)
 	}

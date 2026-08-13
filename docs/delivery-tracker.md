@@ -119,6 +119,10 @@ contract](message-server-integration-development-contract.md), and
   AWS-owned Amazon Linux 2023 image and default network live, and copies remote
   results into Agent-owned local artifact storage. It has no EIP, S3/KMS,
   custom AMI, WorkerControl, model relay, or deployment-time Worker binding.
+  Worker/execution records are bound to the authenticated owner/account
+  generation; historical provisioning recovery is read-only, partial cleanup
+  is retryable, and one unavailable AWS observation no longer hides the rest
+  of the retained inventory.
 - Generic Execution V2 run creation/retry now uses a real
   `EXECUTION_V2_RUN` CoreTask and CoreConfirmation; provider recovery is
   controller-owned.

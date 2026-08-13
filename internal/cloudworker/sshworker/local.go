@@ -53,14 +53,14 @@ func (store *FileStore) LoadExecution(_ context.Context, executionID string) (Ex
 		return ExecutionRecord{}, false, err
 	}
 	var record ExecutionRecord
-	if json.Unmarshal(body, &record) != nil || record.ExecutionID != executionID {
+	if json.Unmarshal(body, &record) != nil || record.ExecutionID != executionID || record.validate() != nil {
 		return ExecutionRecord{}, false, ErrIdentity
 	}
 	return record, true, nil
 }
 
 func (store *FileStore) SaveExecution(_ context.Context, record ExecutionRecord) error {
-	if !validID(record.ExecutionID) {
+	if record.validate() != nil {
 		return ErrInvalid
 	}
 	return store.save("execution-"+record.ExecutionID+".json", record)
@@ -80,7 +80,7 @@ func (store *FileStore) LoadWorker(_ context.Context, workerID string) (WorkerRe
 		return WorkerRecord{}, false, err
 	}
 	var record WorkerRecord
-	if json.Unmarshal(body, &record) != nil || record.WorkerID != workerID {
+	if json.Unmarshal(body, &record) != nil || record.WorkerID != workerID || record.validate() != nil {
 		return WorkerRecord{}, false, ErrIdentity
 	}
 	return record, true, nil
@@ -89,6 +89,10 @@ func (store *FileStore) LoadWorker(_ context.Context, workerID string) (WorkerRe
 func (store *FileStore) ListWorkers(_ context.Context) ([]WorkerRecord, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	return store.listWorkersLocked()
+}
+
+func (store *FileStore) listWorkersLocked() ([]WorkerRecord, error) {
 	entries, err := os.ReadDir(store.root)
 	if err != nil {
 		return nil, err
@@ -103,7 +107,7 @@ func (store *FileStore) ListWorkers(_ context.Context) ([]WorkerRecord, error) {
 			return nil, err
 		}
 		var worker WorkerRecord
-		if json.Unmarshal(body, &worker) != nil {
+		if json.Unmarshal(body, &worker) != nil || worker.validate() != nil || entry.Name() != "worker-"+worker.WorkerID+".json" {
 			return nil, ErrIdentity
 		}
 		result = append(result, worker)
@@ -147,20 +151,67 @@ func (store *FileStore) HasManagedWorkers(ctx context.Context) bool {
 	return err == nil && len(identities) > 0
 }
 
+func (store *FileStore) HasAnyRetainedWorkers(ctx context.Context) (bool, error) {
+	workers, err := store.ListWorkers(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, worker := range workers {
+		if worker.Phase != WorkerDestroyed {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (store *FileStore) DeleteCredentialIfUnused(_ context.Context, credentialID string, deleteCredential func() error) (bool, error) {
+	if strings.TrimSpace(credentialID) == "" || deleteCredential == nil {
+		return false, ErrInvalid
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	workers, err := store.listWorkersLocked()
+	if err != nil {
+		return false, err
+	}
+	for _, worker := range workers {
+		if worker.Phase != WorkerDestroyed && worker.Credential.CredentialID == credentialID {
+			return true, nil
+		}
+	}
+	return false, deleteCredential()
+}
+
 func (store *FileStore) SaveWorker(_ context.Context, record WorkerRecord) error {
-	if !validID(record.WorkerID) {
+	if record.validate() != nil {
 		return ErrInvalid
 	}
 	return store.save("worker-"+record.WorkerID+".json", record)
 }
 
+func (store *FileStore) SaveWorkerIntent(ctx context.Context, record WorkerRecord, authorize func(context.Context) error) error {
+	if record.validate() != nil || authorize == nil {
+		return ErrInvalid
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := authorize(ctx); err != nil {
+		return err
+	}
+	return store.saveLocked("worker-"+record.WorkerID+".json", record)
+}
+
 func (store *FileStore) save(name string, value any) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.saveLocked(name, value)
+}
+
+func (store *FileStore) saveLocked(name string, value any) error {
 	body, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
 	temporary, err := os.CreateTemp(store.root, ".record-*")
 	if err != nil {
 		return err
@@ -290,7 +341,7 @@ type CommandSSHExecutor struct {
 type CommandStatusSource struct {
 	SSHPath string
 	Keys    KeyMaterial
-	Quote   func(context.Context, CredentialIdentity, string, int32) (HourlyQuote, error)
+	Quote   func(context.Context, WorkerRecord) (HourlyQuote, error)
 }
 
 type remoteRuntimeStatus struct {
@@ -388,11 +439,11 @@ func (source CommandStatusSource) Observe(ctx context.Context, worker WorkerReco
 	return metrics, nil
 }
 
-func (source CommandStatusSource) HourlyQuote(ctx context.Context, credential CredentialIdentity, instanceType string, volumeGiB int32) (HourlyQuote, error) {
+func (source CommandStatusSource) HourlyQuote(ctx context.Context, worker WorkerRecord) (HourlyQuote, error) {
 	if source.Quote == nil {
 		return HourlyQuote{}, ErrInvalid
 	}
-	return source.Quote(ctx, credential, instanceType, volumeGiB)
+	return source.Quote(ctx, worker)
 }
 
 func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHRequest) (ExecutionResult, error) {

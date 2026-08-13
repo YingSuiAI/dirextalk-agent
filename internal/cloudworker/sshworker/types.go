@@ -42,6 +42,18 @@ type CredentialIdentity struct {
 	Region             string
 }
 
+type OwnerAuthority struct {
+	OwnerID           string `json:"owner_id"`
+	AccountGeneration uint64 `json:"account_generation"`
+}
+
+func (authority OwnerAuthority) validate() error {
+	if strings.TrimSpace(authority.OwnerID) == "" || authority.AccountGeneration == 0 {
+		return ErrInvalid
+	}
+	return nil
+}
+
 func (identity CredentialIdentity) validate() error {
 	if strings.TrimSpace(identity.CredentialID) == "" || identity.CredentialRevision == 0 || len(identity.AccountID) != 12 || strings.TrimSpace(identity.Region) == "" {
 		return ErrInvalid
@@ -100,6 +112,7 @@ func (discovery Discovery) validate() error {
 
 type ExecuteRequest struct {
 	ExecutionID        string
+	Authority          OwnerAuthority
 	Credential         CredentialIdentity
 	Confirmation       Confirmation // consumed only when a new worker is required
 	Discovery          Discovery
@@ -116,7 +129,7 @@ type ExecuteRequest struct {
 }
 
 func (request ExecuteRequest) validate() error {
-	if request.Credential.validate() != nil || request.Discovery.validate() != nil || !validID(request.ExecutionID) || strings.TrimSpace(request.InstanceType) == "" ||
+	if request.Authority.validate() != nil || request.Credential.validate() != nil || request.Discovery.validate() != nil || !validID(request.ExecutionID) || strings.TrimSpace(request.InstanceType) == "" ||
 		request.VolumeGiB < 8 || request.VolumeGiB > 16_384 || len(request.WorkerScript) == 0 || len(request.WorkerScript) > maxWorkerScriptBytes || !request.Runtime.valid() || request.Runtime.TaskID != request.ExecutionID ||
 		request.MaxWorkspaceBytes <= 0 || request.MaxWorkspaceBytes > maxWorkspaceBytes || request.MaxResultBytes <= 0 || request.MaxResultBytes > maxResultBytes || request.Sink == nil {
 		return ErrInvalid
@@ -219,6 +232,8 @@ const (
 
 type WorkerRecord struct {
 	WorkerID             string             `json:"worker_id"`
+	OwnerID              string             `json:"owner_id"`
+	AccountGeneration    uint64             `json:"account_generation"`
 	Credential           CredentialIdentity `json:"credential"`
 	CreationProof        string             `json:"creation_proof"`
 	Phase                WorkerPhase        `json:"phase"`
@@ -228,16 +243,20 @@ type WorkerRecord struct {
 	KeyPair              KeyPair            `json:"key_pair"`
 	SecurityGroup        SecurityGroup      `json:"security_group"`
 	Instance             Instance           `json:"instance"`
+	ResourcesDestroyed   bool               `json:"resources_destroyed,omitempty"`
 	CurrentExecutionID   string             `json:"current_execution_id,omitempty"`
 	CreatedAt, UpdatedAt time.Time
 }
 
 type ExecutionRecord struct {
-	ExecutionID, WorkerID string
-	Credential            CredentialIdentity
-	Phase                 TaskPhase
-	Result                ExecutionResult
-	UpdatedAt             time.Time
+	ExecutionID       string             `json:"execution_id"`
+	WorkerID          string             `json:"worker_id"`
+	OwnerID           string             `json:"owner_id"`
+	AccountGeneration uint64             `json:"account_generation"`
+	Credential        CredentialIdentity `json:"credential"`
+	Phase             TaskPhase          `json:"phase"`
+	Result            ExecutionResult    `json:"result"`
+	UpdatedAt         time.Time          `json:"updated_at"`
 }
 
 type Store interface {
@@ -246,11 +265,40 @@ type Store interface {
 	LoadWorker(context.Context, string) (WorkerRecord, bool, error)
 	ListWorkers(context.Context) ([]WorkerRecord, error)
 	SaveWorker(context.Context, WorkerRecord) error
+	SaveWorkerIntent(context.Context, WorkerRecord, func(context.Context) error) error
 }
 
 type WorkerIdentity struct {
 	WorkerID, InstanceID, KeyPairID, SecurityGroupID string
+	OwnerID                                          string
+	AccountGeneration                                uint64
 	Credential                                       CredentialIdentity
+}
+
+func (record WorkerRecord) authority() OwnerAuthority {
+	return OwnerAuthority{OwnerID: record.OwnerID, AccountGeneration: record.AccountGeneration}
+}
+
+func (record WorkerRecord) validate() error {
+	if !validID(record.WorkerID) || record.authority().validate() != nil || record.Credential.validate() != nil {
+		return ErrIdentity
+	}
+	return nil
+}
+
+func (record ExecutionRecord) authority() OwnerAuthority {
+	return OwnerAuthority{OwnerID: record.OwnerID, AccountGeneration: record.AccountGeneration}
+}
+
+func (record ExecutionRecord) validate() error {
+	if !validID(record.ExecutionID) || !validID(record.WorkerID) || record.authority().validate() != nil || record.Credential.validate() != nil {
+		return ErrIdentity
+	}
+	return nil
+}
+
+func (identity WorkerIdentity) authority() OwnerAuthority {
+	return OwnerAuthority{OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration}
 }
 
 type DestroyRequest struct {
@@ -269,11 +317,20 @@ type HourlyQuote struct {
 }
 type StatusSource interface {
 	Observe(context.Context, WorkerRecord) (RunnerMetrics, error)
-	HourlyQuote(context.Context, CredentialIdentity, string, int32) (HourlyQuote, error)
+	HourlyQuote(context.Context, WorkerRecord) (HourlyQuote, error)
 }
+
+type WorkerAvailability string
+
+const (
+	WorkerAvailable   WorkerAvailability = "available"
+	WorkerUnavailable WorkerAvailability = "unavailable"
+)
 
 type WorkerStatus struct {
 	Identity           WorkerIdentity
+	Availability       WorkerAvailability
+	Error              string
 	EC2State, PublicIP string
 	WorkerPhase        WorkerPhase
 	TaskPhase          TaskPhase
@@ -283,17 +340,26 @@ type WorkerStatus struct {
 	ObservedAt         time.Time
 }
 
+func UnavailableStatus(worker WorkerRecord, observedAt time.Time, message string) WorkerStatus {
+	return WorkerStatus{Identity: workerIdentity(worker), Availability: WorkerUnavailable, Error: message,
+		EC2State: "unknown", WorkerPhase: worker.Phase, CurrentExecutionID: worker.CurrentExecutionID, ObservedAt: observedAt.UTC()}
+}
+
 func resourceNames(workerID string) (string, string, string) {
 	digest := sha256.Sum256([]byte(workerID))
 	suffix := hex.EncodeToString(digest[:8])
 	return "dtx-worker-key-" + suffix, "dtx-worker-sg-" + suffix, "dtx-worker-" + suffix
 }
-func resourceTags(workerID string, credential CredentialIdentity, creationProof string) ResourceTags {
+func resourceTags(workerID string, authority OwnerAuthority, credential CredentialIdentity, creationProof string) ResourceTags {
+	ownerDigest := sha256.Sum256([]byte(authority.OwnerID))
 	return ResourceTags{"dirextalk:managed-by": "sshworker", "dirextalk:worker": workerID,
+		"dirextalk:owner": hex.EncodeToString(ownerDigest[:]), "dirextalk:account-generation": fmt.Sprint(authority.AccountGeneration),
 		"dirextalk:credential-revision": fmt.Sprint(credential.CredentialRevision), "dirextalk:confirmation": creationProof}
 }
-func poolTags() ResourceTags {
-	return ResourceTags{"dirextalk:managed-by": "sshworker"}
+func poolTags(authority OwnerAuthority) ResourceTags {
+	ownerDigest := sha256.Sum256([]byte(authority.OwnerID))
+	return ResourceTags{"dirextalk:managed-by": "sshworker", "dirextalk:owner": hex.EncodeToString(ownerDigest[:]),
+		"dirextalk:account-generation": fmt.Sprint(authority.AccountGeneration)}
 }
 func validID(value string) bool {
 	if value == "" || len(value) > 128 {

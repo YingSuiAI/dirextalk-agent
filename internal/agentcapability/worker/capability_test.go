@@ -37,23 +37,25 @@ type managerStub struct {
 	statuses  []sshworker.WorkerStatus
 	observed  sshworker.WorkerIdentity
 	destroyed sshworker.DestroyRequest
+	authority sshworker.OwnerAuthority
 	err       error
 }
 
 func (stub *managerStub) HasManagedWorkers(context.Context) bool { return len(stub.statuses) > 0 }
 
-func (stub *managerStub) ListWorkers(context.Context) ([]sshworker.WorkerStatus, error) {
+func (stub *managerStub) ListWorkers(_ context.Context, authority sshworker.OwnerAuthority) ([]sshworker.WorkerStatus, error) {
+	stub.authority = authority
 	return stub.statuses, stub.err
 }
-func (stub *managerStub) ObserveWorker(_ context.Context, identity sshworker.WorkerIdentity) (sshworker.WorkerStatus, error) {
-	stub.observed = identity
+func (stub *managerStub) ObserveWorker(_ context.Context, authority sshworker.OwnerAuthority, identity sshworker.WorkerIdentity) (sshworker.WorkerStatus, error) {
+	stub.authority, stub.observed = authority, identity
 	if stub.err != nil {
 		return sshworker.WorkerStatus{}, stub.err
 	}
 	return stub.statuses[0], nil
 }
-func (stub *managerStub) DestroyWorker(_ context.Context, request sshworker.DestroyRequest) error {
-	stub.destroyed = request
+func (stub *managerStub) DestroyWorker(_ context.Context, authority sshworker.OwnerAuthority, request sshworker.DestroyRequest) error {
+	stub.authority, stub.destroyed = authority, request
 	return stub.err
 }
 
@@ -81,8 +83,9 @@ func fixture() (sshworker.CredentialIdentity, sshworker.WorkerStatus) {
 	now := time.Date(2026, 8, 13, 1, 2, 3, 0, time.UTC)
 	credential := sshworker.CredentialIdentity{CredentialID: "11111111-1111-4111-8111-111111111111", CredentialRevision: 3, AccountID: "123456789012", Region: "us-east-1"}
 	status := sshworker.WorkerStatus{
-		Identity: sshworker.WorkerIdentity{WorkerID: "worker-1", InstanceID: "i-123", KeyPairID: "key-123", SecurityGroupID: "sg-123", Credential: credential},
-		EC2State: "running", PublicIP: "203.0.113.10", WorkerPhase: sshworker.WorkerBusy, TaskPhase: sshworker.TaskRunning,
+		Identity: sshworker.WorkerIdentity{WorkerID: "worker-1", InstanceID: "i-123", KeyPairID: "key-123", SecurityGroupID: "sg-123",
+			OwnerID: "owner", AccountGeneration: 1, Credential: credential},
+		Availability: sshworker.WorkerAvailable, EC2State: "running", PublicIP: "203.0.113.10", WorkerPhase: sshworker.WorkerBusy, TaskPhase: sshworker.TaskRunning,
 		CurrentExecutionID: "task-1", Runner: sshworker.RunnerMetrics{LastSeen: now, Load1: .1, Load5: .2, Load15: .3},
 		Quote: sshworker.HourlyQuote{Currency: "USD", MicrosPerHour: 25_000, ObservedAt: now, ExpiresAt: now.Add(5 * time.Minute)}, ObservedAt: now,
 	}
@@ -212,6 +215,18 @@ func TestDestroyAndDomainMutationsPassExactIdentityAndProofs(t *testing.T) {
 	result, err := capability.HandleOperation(ownerContext(), "unbind_domain", unbind)
 	if err != nil || domains.unbound.Worker != status.Identity || !bytes.Contains(result, []byte(`"unbound":true`)) {
 		t.Fatalf("unbind=%s command=%+v err=%v", result, domains.unbound, err)
+	}
+}
+
+func TestUnavailableWorkerProjectsWithoutWorkloadFailure(t *testing.T) {
+	credential, status := fixture()
+	status.Availability, status.Error, status.EC2State = sshworker.WorkerUnavailable, "AWS credential revision is unavailable", "unknown"
+	manager := &managerStub{statuses: []sshworker.WorkerStatus{status}}
+	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: credential}, Workers: manager,
+		Workloads: workloadStub{values: []WorkloadStatus{{WorkloadID: "should-not-project"}}}, Domains: &domainStub{}})
+	raw, err := capability.HandleOperation(ownerContext(), "list_workers", []byte(`{}`))
+	if err != nil || !bytes.Contains(raw, []byte(`"availability":"unavailable"`)) || !bytes.Contains(raw, []byte(`"error":"AWS credential revision is unavailable"`)) || bytes.Contains(raw, []byte("should-not-project")) {
+		t.Fatalf("unavailable projection=%s err=%v", raw, err)
 	}
 }
 

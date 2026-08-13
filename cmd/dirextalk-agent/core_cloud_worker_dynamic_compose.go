@@ -9,6 +9,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
@@ -17,11 +18,11 @@ import (
 
 const cloudWorkerDefaultQuoteTTL = 5 * time.Minute
 
-func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store, conversationStore *postgres.CoreConversationStore) (*coreCloudWorkerComposition, error) {
+func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store, conversationStore *postgres.CoreConversationStore, workerState *sshworker.FileStore) (*coreCloudWorkerComposition, error) {
 	if !cfg.CoreAWSEnabled || !cfg.CapabilityEnabled {
 		return nil, nil
 	}
-	if store == nil || conversationStore == nil {
+	if store == nil || conversationStore == nil || workerState == nil {
 		return nil, fmt.Errorf("dynamic Cloud Worker proposal dependencies are incomplete")
 	}
 	awsStore := postgres.NewCoreAWSStore(store)
@@ -68,7 +69,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker local artifacts: %w", err)
 	}
-	executor, err := newSSHWorkerExecutor(authority, exact, artifacts, pricing, conversationStore, root)
+	executor, err := newSSHWorkerExecutor(authority, exact, artifacts, pricing, conversationStore, workerState, root)
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker executor: %w", err)
 	}

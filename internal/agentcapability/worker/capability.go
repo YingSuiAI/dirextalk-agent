@@ -24,10 +24,10 @@ const (
 	identitySchema = `{"additionalProperties":false,"properties":{"account_id":{"type":"string"},"credential_id":{"type":"string"},"credential_revision":{"minimum":1,"type":"integer"},"instance_id":{"type":"string"},"key_pair_id":{"type":"string"},"region":{"type":"string"},"security_group_id":{"type":"string"},"worker_id":{"type":"string"}},"required":["worker_id","instance_id","key_pair_id","security_group_id","credential_id","credential_revision","account_id","region"],"type":"object"}`
 	domainSchema   = `{"additionalProperties":false,"properties":{"hostname":{"type":"string"},"mode":{"const":"route53_same_account","type":"string"},"record_status":{"enum":["pending","current","drifted","error"],"type":"string"},"target_ipv4":{"type":"string"},"ttl":{"type":"integer"},"zone_id":{"type":"string"}},"required":["mode","zone_id","hostname","target_ipv4","ttl","record_status"],"type":"object"}`
 	workloadSchema = `{"additionalProperties":false,"properties":{"active_state":{"type":"string"},"domain":` + domainSchema + `,"health":{"type":"string"},"kind":{"enum":["job","service"],"type":"string"},"phase":{"type":"string"},"port":{"type":"integer"},"workload_id":{"type":"string"}},"required":["workload_id","kind","phase","active_state","health"],"type":"object"}`
-	statusSchema   = `{"additionalProperties":false,"properties":{"current_task":{"additionalProperties":false,"properties":{"execution_id":{"type":"string"},"phase":{"type":"string"}},"required":["execution_id","phase"],"type":"object"},"ec2_state":{"type":"string"},"hourly_quote":{"additionalProperties":false,"properties":{"currency":{"type":"string"},"expires_at":{"format":"date-time","type":"string"},"micros_per_hour":{"minimum":0,"type":"integer"},"observed_at":{"format":"date-time","type":"string"}},"required":["currency","micros_per_hour","observed_at","expires_at"],"type":"object"},"identity":` + identitySchema + `,"observed_at":{"format":"date-time","type":"string"},"public_ipv4":{"type":"string"},"server":{"additionalProperties":false,"properties":{"last_seen":{"format":"date-time","type":"string"},"load_1":{"type":"number"},"load_15":{"type":"number"},"load_5":{"type":"number"}},"required":["last_seen","load_1","load_5","load_15"],"type":"object"},"worker_phase":{"type":"string"},"workloads":{"items":` + workloadSchema + `,"type":"array"}},"required":["identity","ec2_state","worker_phase","observed_at"],"type":"object"}`
+	statusSchema   = `{"additionalProperties":false,"properties":{"availability":{"enum":["available","unavailable"],"type":"string"},"current_task":{"additionalProperties":false,"properties":{"execution_id":{"type":"string"},"phase":{"type":"string"}},"required":["execution_id","phase"],"type":"object"},"ec2_state":{"type":"string"},"error":{"type":"string"},"hourly_quote":{"additionalProperties":false,"properties":{"currency":{"type":"string"},"expires_at":{"format":"date-time","type":"string"},"micros_per_hour":{"minimum":0,"type":"integer"},"observed_at":{"format":"date-time","type":"string"}},"required":["currency","micros_per_hour","observed_at","expires_at"],"type":"object"},"identity":` + identitySchema + `,"observed_at":{"format":"date-time","type":"string"},"public_ipv4":{"type":"string"},"server":{"additionalProperties":false,"properties":{"last_seen":{"format":"date-time","type":"string"},"load_1":{"type":"number"},"load_15":{"type":"number"},"load_5":{"type":"number"}},"required":["last_seen","load_1","load_5","load_15"],"type":"object"},"worker_phase":{"type":"string"},"workloads":{"items":` + workloadSchema + `,"type":"array"}},"required":["identity","availability","ec2_state","worker_phase","observed_at"],"type":"object"}`
 
 	listInputSchema         = `{"additionalProperties":false,"properties":{},"type":"object"}`
-	listResultSchema        = `{"additionalProperties":false,"properties":{"workers":{"items":` + statusSchema + `,"maxItems":5,"type":"array"}},"required":["workers"],"type":"object"}`
+	listResultSchema        = `{"additionalProperties":false,"properties":{"workers":{"items":` + statusSchema + `,"type":"array"}},"required":["workers"],"type":"object"}`
 	getInputSchema          = `{"additionalProperties":false,"properties":{"identity":` + identitySchema + `},"required":["identity"],"type":"object"}`
 	getResultSchema         = `{"additionalProperties":false,"properties":{"worker":` + statusSchema + `},"required":["worker"],"type":"object"}`
 	destroyInputSchema      = `{"additionalProperties":false,"properties":{"confirmation":{"const":"destroy_worker","type":"string"},"identity":` + identitySchema + `},"required":["identity","confirmation"],"type":"object"}`
@@ -47,9 +47,9 @@ type CredentialSource interface {
 // Manager routes retained Workers through their exact credential revision.
 type Manager interface {
 	HasManagedWorkers(context.Context) bool
-	ListWorkers(context.Context) ([]sshworker.WorkerStatus, error)
-	ObserveWorker(context.Context, sshworker.WorkerIdentity) (sshworker.WorkerStatus, error)
-	DestroyWorker(context.Context, sshworker.DestroyRequest) error
+	ListWorkers(context.Context, sshworker.OwnerAuthority) ([]sshworker.WorkerStatus, error)
+	ObserveWorker(context.Context, sshworker.OwnerAuthority, sshworker.WorkerIdentity) (sshworker.WorkerStatus, error)
+	DestroyWorker(context.Context, sshworker.OwnerAuthority, sshworker.DestroyRequest) error
 }
 
 type DomainStatus struct {
@@ -143,7 +143,8 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 	if c == nil || c.bindings.Credentials == nil || c.bindings.Workers == nil || c.bindings.Domains == nil {
 		return nil, capabilityoperation.NewFailure("PRECONDITION_FAILED", "Worker management is not ready", errors.New("worker capability dependencies are incomplete"))
 	}
-	if err := requireOwner(ctx); err != nil {
+	authority, err := ownerAuthority(ctx)
+	if err != nil {
 		return nil, err
 	}
 	switch operationID {
@@ -152,7 +153,7 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 		if err := decodeStrict(raw, &request); err != nil {
 			return nil, invalid(err)
 		}
-		statuses, err := c.bindings.Workers.ListWorkers(ctx)
+		statuses, err := c.bindings.Workers.ListWorkers(ctx, authority)
 		if err != nil {
 			return nil, managerFailure(err)
 		}
@@ -174,7 +175,8 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 		if err != nil {
 			return nil, managerFailure(err)
 		}
-		status, err := c.bindings.Workers.ObserveWorker(ctx, identity)
+		identity.OwnerID, identity.AccountGeneration = authority.OwnerID, authority.AccountGeneration
+		status, err := c.bindings.Workers.ObserveWorker(ctx, authority, identity)
 		if err != nil {
 			return nil, managerFailure(err)
 		}
@@ -192,8 +194,9 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 		if err != nil {
 			return nil, managerFailure(err)
 		}
+		identity.OwnerID, identity.AccountGeneration = authority.OwnerID, authority.AccountGeneration
 		authorization := sshworker.DestroyAuthorization{Authorized: true, Proof: "capability:destroy_worker"}
-		if err := c.bindings.Workers.DestroyWorker(ctx, sshworker.DestroyRequest{Identity: identity, Authorization: authorization}); err != nil {
+		if err := c.bindings.Workers.DestroyWorker(ctx, authority, sshworker.DestroyRequest{Identity: identity, Authorization: authorization}); err != nil {
 			return nil, managerFailure(err)
 		}
 		return json.Marshal(map[string]any{"identity": projectIdentity(identity), "destroyed": true})
@@ -207,6 +210,7 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 		if err != nil {
 			return nil, managerFailure(err)
 		}
+		identity.OwnerID, identity.AccountGeneration = authority.OwnerID, authority.AccountGeneration
 		command := DomainCommand{Worker: identity, WorkloadID: request.WorkloadID, ZoneID: request.ZoneID, Hostname: request.Hostname, TTL: request.TTL, Confirmation: request.Confirmation}
 		var domain DomainStatus
 		if operationID == "bind_domain" {
@@ -275,7 +279,10 @@ func validAccountID(value string) bool {
 }
 
 func (c *Capability) projectStatus(ctx context.Context, status sshworker.WorkerStatus) (map[string]any, error) {
-	value := map[string]any{"identity": projectIdentity(status.Identity), "ec2_state": status.EC2State, "worker_phase": status.WorkerPhase, "observed_at": status.ObservedAt.UTC()}
+	value := map[string]any{"identity": projectIdentity(status.Identity), "availability": status.Availability, "ec2_state": status.EC2State, "worker_phase": status.WorkerPhase, "observed_at": status.ObservedAt.UTC()}
+	if status.Error != "" {
+		value["error"] = status.Error
+	}
 	if status.PublicIP != "" {
 		value["public_ipv4"] = status.PublicIP
 	}
@@ -288,7 +295,7 @@ func (c *Capability) projectStatus(ctx context.Context, status sshworker.WorkerS
 	if status.Quote.Currency != "" && !status.Quote.ExpiresAt.IsZero() {
 		value["hourly_quote"] = map[string]any{"currency": status.Quote.Currency, "micros_per_hour": status.Quote.MicrosPerHour, "observed_at": status.Quote.ObservedAt.UTC(), "expires_at": status.Quote.ExpiresAt.UTC()}
 	}
-	if c.bindings.Workloads != nil {
+	if c.bindings.Workloads != nil && status.Availability == sshworker.WorkerAvailable {
 		workloads, err := c.bindings.Workloads.ListWorkerWorkloads(ctx, status)
 		if err != nil {
 			return nil, capabilityoperation.NewFailure("UNAVAILABLE", "Worker workload status is unavailable", err)
@@ -322,12 +329,12 @@ func decodeStrict(raw []byte, target any) error {
 	return nil
 }
 
-func requireOwner(ctx context.Context) error {
+func ownerAuthority(ctx context.Context) (sshworker.OwnerAuthority, error) {
 	permission, ok := capabilityclient.PermissionFromContext(ctx)
 	if !ok || permission == nil || strings.TrimSpace(permission.GetAuthenticatedOwnerId()) == "" || permission.GetAccountGeneration() <= 0 {
-		return capabilityoperation.NewFailure("PERMISSION_DENIED", "Authenticated owner context is required", errors.New("owner permission context is missing"))
+		return sshworker.OwnerAuthority{}, capabilityoperation.NewFailure("PERMISSION_DENIED", "Authenticated owner context is required", errors.New("owner permission context is missing"))
 	}
-	return nil
+	return sshworker.OwnerAuthority{OwnerID: permission.GetAuthenticatedOwnerId(), AccountGeneration: uint64(permission.GetAccountGeneration())}, nil
 }
 
 func invalid(err error) error {

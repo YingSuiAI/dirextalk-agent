@@ -136,14 +136,27 @@ func (s *Service) DeleteCredential(ctx context.Context, id string, expected int6
 	if !validUUID(key) {
 		return ErrInvalid
 	}
+	if !validUUID(id) || expected < 1 {
+		return ErrInvalid
+	}
 	digest := canonicalDigest(struct {
 		ID       string
 		Expected int64
 	}{id, expected})
-	if mr, ok := s.repo.(*MemoryRepository); ok {
-		return mr.deleteCredentialIdempotent(ctx, id, expected, key, digest)
+	deleteCredential := func() error {
+		if mr, ok := s.repo.(*MemoryRepository); ok {
+			return mr.deleteCredentialIdempotent(ctx, id, expected, key, digest)
+		}
+		return s.repo.DeleteCredential(ctx, id, expected)
 	}
-	return s.repo.DeleteCredential(ctx, id, expected)
+	if s.credentialDeleteGuard == nil {
+		return deleteCredential()
+	}
+	retained, err := s.credentialDeleteGuard.DeleteCredentialIfUnused(ctx, id, deleteCredential)
+	if retained {
+		return ErrCredentialInUse
+	}
+	return err
 }
 func (s *Service) TestCredential(ctx context.Context, id string) (CredentialTest, error) {
 	if s.sts == nil {

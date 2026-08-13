@@ -132,6 +132,17 @@ type Service struct {
 	coordinator                   ChangeCoordinator
 	now                           func() time.Time
 	credentialTestFinalizeTimeout time.Duration
+	credentialDeleteGuard         CredentialDeleteGuard
+}
+
+type CredentialDeleteGuard interface {
+	DeleteCredentialIfUnused(context.Context, string, func() error) (bool, error)
+}
+
+func (s *Service) SetCredentialDeleteGuard(guard CredentialDeleteGuard) {
+	if s != nil {
+		s.credentialDeleteGuard = guard
+	}
 }
 
 func NewService(repo Repository, confirmations ConfirmationPort, tasks TaskPort, sts STSProvider, provider CloudProvider, now func() time.Time) *Service {

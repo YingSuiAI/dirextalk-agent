@@ -31,7 +31,7 @@ type serviceWorkerStub struct {
 	err      error
 }
 
-func (worker *serviceWorkerStub) WorkerIdentity(context.Context, sshworker.CredentialIdentity, string) (sshworker.WorkerIdentity, error) {
+func (worker *serviceWorkerStub) WorkerIdentity(context.Context, sshworker.OwnerAuthority, sshworker.CredentialIdentity, string) (sshworker.WorkerIdentity, error) {
 	return worker.identity, nil
 }
 
@@ -126,16 +126,64 @@ func TestSSHWorkerHourlyQuoteUsesLiveInfrastructureRates(t *testing.T) {
 	}}
 	executor := &sshWorkerExecutor{pricing: catalog}
 	identity := sshworker.CredentialIdentity{CredentialID: "credential-1", CredentialRevision: 7, AccountID: "123456789012", Region: "ap-east-1"}
-	quote, err := executor.hourlyQuote(context.Background(), identity, "t3.small", 20)
+	worker := sshworker.WorkerRecord{OwnerID: "owner", AccountGeneration: 9, Credential: identity, InstanceType: "t3.small", VolumeGiB: 20}
+	quote, err := executor.hourlyQuote(context.Background(), worker)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if quote.Currency != "USD" || quote.MicrosPerHour != 27_992 || quote.ObservedAt != now || quote.ExpiresAt != now.Add(5*time.Minute) {
 		t.Fatalf("quote=%+v", quote)
 	}
-	if catalog.request.AccountID != identity.AccountID || catalog.request.Region != identity.Region || catalog.request.CredentialID != identity.CredentialID ||
+	if catalog.request.AccountGeneration != worker.AccountGeneration || catalog.request.AccountID != identity.AccountID || catalog.request.Region != identity.Region || catalog.request.CredentialID != identity.CredentialID ||
 		catalog.request.CredentialRevision != identity.CredentialRevision || catalog.request.InstanceType != "t3.small" || catalog.request.VolumeGiB != 20 || catalog.request.VolumeType != "gp3" {
 		t.Fatalf("pricing request=%+v", catalog.request)
+	}
+}
+
+func TestSSHWorkerListAndGetProjectUnavailableHistoricalCredential(t *testing.T) {
+	state, err := sshworker.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := workerIdentityFixture()
+	worker := sshworker.WorkerRecord{WorkerID: identity.WorkerID, OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration,
+		Credential: identity.Credential, Phase: sshworker.WorkerIdle, Instance: sshworker.Instance{ID: identity.InstanceID},
+		KeyPair: sshworker.KeyPair{ID: identity.KeyPairID}, SecurityGroup: sshworker.SecurityGroup{ID: identity.SecurityGroupID}}
+	if err = state.SaveWorker(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &cloudWorkerCredentialResolverFake{exactRevision: identity.Credential.CredentialRevision, exactErr: errors.New("historical secret unavailable")}
+	executor := &sshWorkerExecutor{exact: resolver, state: state}
+	authority := workerAuthorityFixture()
+	statuses, err := executor.ListWorkers(context.Background(), authority)
+	if err != nil || len(statuses) != 1 || statuses[0].Availability != sshworker.WorkerUnavailable || statuses[0].Error == "" {
+		t.Fatalf("list statuses=%+v err=%v", statuses, err)
+	}
+	status, err := executor.ObserveWorker(context.Background(), authority, identity)
+	if err != nil || status.Availability != sshworker.WorkerUnavailable || status.Identity != identity {
+		t.Fatalf("get status=%+v err=%v", status, err)
+	}
+}
+
+func TestSSHWorkerDestroyResolvesCredentialBeforeBusyState(t *testing.T) {
+	state, err := sshworker.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := workerIdentityFixture()
+	worker := sshworker.WorkerRecord{WorkerID: identity.WorkerID, OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration,
+		Credential: identity.Credential, Phase: sshworker.WorkerBusy, CurrentExecutionID: "execution-live",
+		Instance: sshworker.Instance{ID: identity.InstanceID}, KeyPair: sshworker.KeyPair{ID: identity.KeyPairID}, SecurityGroup: sshworker.SecurityGroup{ID: identity.SecurityGroupID}}
+	if err = state.SaveWorker(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	credentialErr := errors.New("historical secret unavailable")
+	resolver := &cloudWorkerCredentialResolverFake{exactRevision: identity.Credential.CredentialRevision, exactErr: credentialErr}
+	executor := &sshWorkerExecutor{exact: resolver, state: state}
+	err = executor.DestroyWorker(context.Background(), workerAuthorityFixture(), sshworker.DestroyRequest{Identity: identity,
+		Authorization: sshworker.DestroyAuthorization{Authorized: true, Proof: "destroy"}})
+	if !errors.Is(err, credentialErr) || errors.Is(err, sshworker.ErrBusy) {
+		t.Fatalf("destroy error=%v", err)
 	}
 }
 
@@ -194,7 +242,7 @@ func TestPublishServicePersistsBeforeOpeningPort(t *testing.T) {
 	executor := &sshWorkerExecutor{workloads: repository}
 	worker := &serviceWorkerStub{identity: identity}
 	service := sshworker.RuntimeServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health"}
-	if err = executor.publishService(context.Background(), worker, identity.Credential, identity.WorkerID, "task-a", service); err != nil {
+	if err = executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service); err != nil {
 		t.Fatal(err)
 	}
 	if !worker.open || worker.port != service.Port {
@@ -207,7 +255,7 @@ func TestPublishServicePersistsBeforeOpeningPort(t *testing.T) {
 	failedRepository, _ := sshworkload.NewRepository(t.TempDir())
 	failedExecutor := &sshWorkerExecutor{workloads: failedRepository}
 	worker.err = errors.New("open port failed")
-	if err = failedExecutor.publishService(context.Background(), worker, identity.Credential, identity.WorkerID, "task-b", service); err == nil {
+	if err = failedExecutor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-b", service); err == nil {
 		t.Fatal("port failure was accepted")
 	}
 	if _, err = failedRepository.Get(context.Background(), identity, service.WorkloadID); err != nil {
@@ -423,5 +471,10 @@ func workspaceArchiveFixture(t *testing.T, name string, body []byte) []byte {
 
 func workerIdentityFixture() sshworker.WorkerIdentity {
 	return sshworker.WorkerIdentity{WorkerID: "worker-a", InstanceID: "i-1", KeyPairID: "key-1", SecurityGroupID: "sg-1",
+		OwnerID: "owner", AccountGeneration: 1,
 		Credential: sshworker.CredentialIdentity{CredentialID: "credential-1", CredentialRevision: 1, AccountID: "123456789012", Region: "ap-east-1"}}
+}
+
+func workerAuthorityFixture() sshworker.OwnerAuthority {
+	return sshworker.OwnerAuthority{OwnerID: "owner", AccountGeneration: 1}
 }
