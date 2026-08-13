@@ -31,8 +31,10 @@ type RuntimeModel struct {
 }
 
 type RuntimeRequest struct {
+	TaskID       string
 	Objective    string
 	Architecture string
+	Workload     WorkloadKind
 	Model        RuntimeModel
 }
 
@@ -40,9 +42,10 @@ type RuntimeRequest struct {
 // runner must connect SecretStdin to that script's standard input and must not
 // log or persist it.
 type RuntimeMaterial struct {
+	TaskID             string
 	WorkerScript       []byte
 	WorkerScriptSHA256 string
-	SecretStdin        []byte
+	Protocol           RuntimeProtocol
 }
 
 // CompileRuntime builds the fixed bootstrap for an official Amazon Linux 2023
@@ -50,7 +53,8 @@ type RuntimeMaterial struct {
 // stdin; it is never evaluated by the shell.
 func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 	objective := strings.TrimSpace(request.Objective)
-	if objective == "" || len(objective) > maxObjectiveBytes {
+	if !validID(request.TaskID) || objective == "" || len(objective) > maxObjectiveBytes ||
+		!request.Workload.valid() {
 		return RuntimeMaterial{}, ErrInvalid
 	}
 	archive, archiveSHA256, err := piArchive(request.Architecture)
@@ -77,6 +81,12 @@ func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 	if err != nil {
 		return RuntimeMaterial{}, ErrInvalid
 	}
+	spec, err := json.Marshal(remoteTaskSpec{
+		TaskID: request.TaskID, Workload: request.Workload, Model: request.Model.Name,
+	})
+	if err != nil {
+		return RuntimeMaterial{}, ErrInvalid
+	}
 	script := fmt.Sprintf(`#!/bin/bash
 set -euo pipefail
 umask 077
@@ -87,9 +97,10 @@ readonly config_root="$worker_root/pi-config"
 readonly artifact_root="$worker_root/artifacts"
 readonly archive="$worker_root/pi.tar.gz"
 readonly pi_bin="$runtime_root/pi"
+readonly task_root="$worker_root/tasks/%s"
 
-mkdir -p -- "$runtime_root" "$config_root" "$artifact_root"
-sudo dnf -q -y install ca-certificates curl git gzip tar >/dev/null
+mkdir -p -- "$runtime_root" "$config_root" "$artifact_root" "$task_root"
+sudo dnf -q -y install ca-certificates curl git golang gzip tar >/dev/null
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
   --output "$archive" %s
 printf '%%s  %%s\n' %s "$archive" | sha256sum -c - >/dev/null
@@ -98,39 +109,31 @@ rm -f -- "$archive"
 test "$("$pi_bin" --version)" = %s
 
 printf '%%s' %s | base64 --decode > "$config_root/models.json"
-printf '%%s' %s | base64 --decode > "$worker_root/objective.txt"
-chmod 600 "$config_root/models.json" "$worker_root/objective.txt"
-
-IFS= read -r encoded_model_key
-model_key="$(printf '%%s' "$encoded_model_key" | base64 --decode)"
-test -n "$model_key"
-
-cd -- "$worker_root/workspace"
-DIREXTALK_MODEL_API_KEY="$model_key" \
-PI_CODING_AGENT_DIR="$config_root" \
-PI_TELEMETRY=0 NO_COLOR=1 TERM=dumb \
-  "$pi_bin" --mode text --print --no-session \
-  --provider dirextalk-worker --model %s \
-  --thinking medium --tools read,bash,edit,write,grep,find,ls \
-  --no-extensions --no-skills --no-prompt-templates --no-themes \
-  --no-context-files --no-approve \
-  --system-prompt %s \
-  < "$worker_root/objective.txt" | tee "$artifact_root/final-report.md"
-model_key=
+printf '%%s' %s | base64 --decode > "$task_root/objective.txt"
+printf '%%s' %s | base64 --decode > "$task_root/spec.json"
+printf '%%s' %s | base64 --decode > "$worker_root/runner.go"
+chmod 600 "$config_root/models.json" "$task_root/objective.txt" "$task_root/spec.json" "$worker_root/runner.go"
+cd -- "$worker_root"
+go build -trimpath -ldflags='-s -w' -o "$worker_root/dirextalk-worker-runner" "$worker_root/runner.go"
+chmod 700 "$worker_root/dirextalk-worker-runner"
+"$worker_root/dirextalk-worker-runner" server-status >/dev/null
 `,
+		shellQuote(request.TaskID),
 		shellQuote("https://github.com/earendil-works/pi/releases/download/v"+PiReleaseVersion+"/"+archive),
 		shellQuote(archiveSHA256), shellQuote(PiReleaseVersion),
 		shellQuote(base64.StdEncoding.EncodeToString(modelConfig)),
 		shellQuote(base64.StdEncoding.EncodeToString([]byte(objective))),
-		shellQuote(request.Model.Name),
-		shellQuote("Complete the supplied objective on this temporary remote host. Use the workspace and shell tools as needed. Write every user-facing deliverable under /tmp/dirextalk-worker/artifacts. Your final response must be a concise report of the work, deployment flow, verification, actual server load, and artifact paths. Never expose credentials or hidden configuration."),
+		shellQuote(base64.StdEncoding.EncodeToString(spec)),
+		shellQuote(base64.StdEncoding.EncodeToString([]byte(remoteRunnerSource))),
 	)
 	digest := sha256.Sum256([]byte(script))
-	secret := []byte(base64.StdEncoding.EncodeToString([]byte(request.Model.APIKey)) + "\n")
 	return RuntimeMaterial{
+		TaskID:             request.TaskID,
 		WorkerScript:       []byte(script),
 		WorkerScriptSHA256: hex.EncodeToString(digest[:]),
-		SecretStdin:        secret,
+		Protocol: RuntimeProtocol{
+			TaskID: request.TaskID, encodedModelKey: base64.StdEncoding.EncodeToString([]byte(request.Model.APIKey)),
+		},
 	}, nil
 }
 
