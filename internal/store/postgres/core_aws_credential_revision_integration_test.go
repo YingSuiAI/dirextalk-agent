@@ -1,14 +1,35 @@
 package postgres
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+type cancelAfterCommitTracer struct {
+	armed  atomic.Bool
+	cancel context.CancelFunc
+}
+
+func (tracer *cancelAfterCommitTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	return ctx
+}
+
+func (tracer *cancelAfterCommitTracer) TraceQueryEnd(_ context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if data.Err == nil && data.CommandTag.String() == "COMMIT" && tracer.armed.CompareAndSwap(true, false) {
+		tracer.cancel()
+	}
+}
 
 func TestCoreAWSCredentialRevisionsSurviveRotationDisableAndRestart(t *testing.T) {
 	ctx, store, _, cleanup := corePG18Fixture(t)
@@ -110,6 +131,69 @@ func TestCoreAWSCredentialRevisionsSurviveRotationDisableAndRestart(t *testing.T
 		)`, table).Scan(&protected); err != nil || !protected {
 			t.Fatalf("%s exact credential revision FK protected=%v err=%v", table, protected, err)
 		}
+	}
+}
+
+func TestCoreAWSUpdateCredentialReturnsCommittedValueWhenContextCancelsAfterCommit(t *testing.T) {
+	ctx, store, _, cleanup := corePG18Fixture(t)
+	defer cleanup()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	id := uuid.NewString()
+	credential := coreaws.RehydrateCredentials(
+		id, "cancel-after-commit", "us-east-1", "", "",
+		[]byte("AKIAORIGINAL"), []byte("original-secret"), nil,
+		0, 1, now, now,
+	)
+	awsStore := NewCoreAWSStore(store)
+	if _, err := awsStore.CreateCredential(ctx, credential); err != nil {
+		t.Fatal(err)
+	}
+
+	updateCtx, cancelUpdate := context.WithCancel(ctx)
+	defer cancelUpdate()
+	tracer := &cancelAfterCommitTracer{cancel: cancelUpdate}
+	config := store.Pool().Config()
+	config.ConnConfig.Tracer = tracer
+	tracedPool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tracedPool.Close()
+	if err = tracedPool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tracedStore, err := New(tracedPool, store.instanceID.String(), testSecretKeyring(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated := coreaws.RehydrateCredentials(
+		id, "committed", "ap-northeast-1", "", "",
+		[]byte("AKIACOMMITTED"), []byte("committed-secret"), []byte("committed-session"),
+		0, 2, now, now.Add(time.Second),
+	)
+	tracer.armed.Store(true)
+	got, err := NewCoreAWSStore(tracedStore).UpdateCredential(updateCtx, updated, 1)
+	if err != nil {
+		t.Fatalf("committed update reported failure: %v", err)
+	}
+	if !errors.Is(updateCtx.Err(), context.Canceled) {
+		t.Fatalf("update context error = %v, want canceled immediately after commit", updateCtx.Err())
+	}
+	if got.ID != updated.ID || got.Name != updated.Name || got.Region != updated.Region || got.Revision != updated.Revision {
+		t.Fatalf("returned credential = %#v, want committed value %#v", got, updated)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "AKIACOMMITTED") || strings.Contains(string(encoded), "committed-secret") || strings.Contains(string(encoded), "committed-session") {
+		t.Fatalf("returned credential JSON leaked secret: %s", encoded)
+	}
+	persisted, err := awsStore.GetCredential(ctx, id)
+	if err != nil || persisted.Name != updated.Name || persisted.Region != updated.Region || persisted.Revision != updated.Revision {
+		t.Fatalf("persisted credential = %#v err=%v", persisted, err)
 	}
 }
 

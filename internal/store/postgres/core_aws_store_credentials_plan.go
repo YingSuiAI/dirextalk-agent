@@ -247,7 +247,7 @@ func (s *CoreAWSStore) UpdateCredential(ctx context.Context, c coreaws.Credentia
 	if e = tx.Commit(ctx); e != nil {
 		return coreaws.Credentials{}, e
 	}
-	return s.GetCredential(ctx, c.ID)
+	return c, nil
 }
 func (s *CoreAWSStore) DeleteCredential(ctx context.Context, id string, expected int64) error {
 	tag, e := s.store.pool.Exec(ctx, `UPDATE core_aws_credentials SET disabled_at=clock_timestamp(),updated_at=clock_timestamp() WHERE credential_id=$1 AND revision=$2 AND disabled_at IS NULL`, id, expected)
