@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.85
+
+1. Resume durable turns without re-exposing intrinsic tools that were not accepted for the original model step.
+2. Let substantial project, shell, deployment, test, isolated-workspace, and long-running tasks propose a priced Cloud Worker without requiring cloud-specific wording, while preserving owner confirmation before AWS execution.
+3. Support an empty isolated writable Worker workspace for projects fetched from an authorized remote source; read-only workspaces still require exact current-turn inputs.
+
 ## v1.0.84
 
 1. Return committed AWS credential updates without a cancellable post-commit read, so successful uploads do not report a false failure.
