@@ -47,6 +47,34 @@ func (provider *Provider) Discover(ctx context.Context, credential CredentialIde
 	return discovery, nil
 }
 
+// HasIdleWorker performs the same instance read-back used by lease, without
+// reserving or mutating either AWS or the local pool.
+func (provider *Provider) HasIdleWorker(ctx context.Context, credential CredentialIdentity, instanceType string) (bool, error) {
+	if provider == nil || ctx == nil || credential.validate() != nil || strings.TrimSpace(instanceType) == "" {
+		return false, ErrInvalid
+	}
+	if err := provider.aws.VerifyIdentity(ctx, credential); err != nil {
+		return false, err
+	}
+	workers, err := provider.store.ListWorkers(ctx, credential)
+	if err != nil {
+		return false, err
+	}
+	for _, worker := range workers {
+		if worker.Phase != WorkerIdle || worker.InstanceType != instanceType {
+			continue
+		}
+		observed, found, observeErr := provider.aws.ObserveInstance(ctx, credential, worker.Instance.ID, resourceTags(worker.WorkerID, worker.Credential, worker.CreationProof))
+		if observeErr != nil {
+			return false, observeErr
+		}
+		if found && observed.State == "running" && observed.PublicIP != "" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Execute leases an idle persistent Worker or creates one after confirmation.
 // Task completion returns it to idle; it never destroys cloud resources.
 func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (ExecutionResult, error) {

@@ -37,6 +37,7 @@ type Request struct {
 	Limits            cloudworker.Limits
 	ConfirmationProof string
 	ModelSnapshot     coremodel.ExecutionSnapshot
+	ReuseOnly         bool
 }
 
 // Artifact is immutable metadata for bytes already collected under the
@@ -99,7 +100,7 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 		ExecutionID: run.Plan.ExecutionID, Objective: run.Plan.Objective,
 		AWS: run.Plan.AWS, Compute: run.Plan.Compute,
 		Limits:            run.Plan.Limits,
-		ConfirmationProof: run.ConfirmationProof, ModelSnapshot: run.ModelSnapshot,
+		ConfirmationProof: run.ConfirmationProof, ModelSnapshot: run.ModelSnapshot, ReuseOnly: run.Plan.PersistentWorkerReuse,
 	})
 	if executeErr != nil {
 		if strings.TrimSpace(result.WorkerID) == "" {

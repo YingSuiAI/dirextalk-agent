@@ -39,6 +39,13 @@ type Store interface {
 	CancelExecution(context.Context, coretask.Task, uint64, string, string) (Execution, CompletionOutbox, error)
 }
 
+// WorkerReuseResolver reports whether the current credential already owns a
+// matching idle persistent Worker. It is read-only; a later lease race must
+// fail instead of falling through to Worker creation.
+type WorkerReuseResolver interface {
+	HasIdleWorker(context.Context, AWSBinding, ComputeSpec) (bool, error)
+}
+
 // BeginResult is the transactionally consumed confirmation plus the current
 // CoreTask fence. It deliberately cannot authorize provider mutation: exact
 // input versions and the canonical Pi task do not exist until staging runs.
@@ -214,6 +221,15 @@ type Service struct {
 	quoter      Quoter
 	awsBindings AWSBindingResolver
 	now         func() time.Time
+	workerReuse WorkerReuseResolver
+}
+
+func (s *Service) EnablePersistentWorkerReuse(resolver WorkerReuseResolver) error {
+	if s == nil || resolver == nil {
+		return ErrInvalid
+	}
+	s.workerReuse = resolver
+	return nil
 }
 
 // ProposalReady performs the same request-local credential authority read used
@@ -388,9 +404,30 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		return Offer{}, err
 	}
 	objectiveDigest := digestValue(plan.Objective)
-	quote, err := s.quoter.Quote(ctx, QuoteRequest{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration, ObjectiveDigest: objectiveDigest, UserPromptDigest: plan.UserPromptDigest, InputManifestDigest: plan.InputManifestDigest, WorkspaceMode: plan.WorkspaceMode, ProposalReason: plan.ProposalReason, ModelBindingDigest: plan.ModelAuthorization.BindingDigest, AuthorizationBasisDigest: plan.AuthorizationBasisDigest, AWS: plan.AWS, Compute: plan.Compute, Limits: plan.Limits})
-	if err != nil {
+	reuse := false
+	if s.workerReuse != nil {
+		reuse, err = s.workerReuse.HasIdleWorker(ctx, plan.AWS, plan.Compute)
+		if err != nil {
+			return Offer{}, err
+		}
+	}
+	plan.PersistentWorkerReuse = reuse
+	if err := plan.sealAuthorizationBasis(); err != nil {
 		return Offer{}, err
+	}
+	var quote Quote
+	if reuse {
+		expires := now.Add(time.Duration(plan.Limits.MaxRuntimeSeconds+EphemeralCleanupReserveSeconds) * time.Second)
+		quote = Quote{Currency: "USD", SourceTime: now, ExpiresAt: expires, BasisDigest: plan.AuthorizationBasisDigest,
+			CatalogRevisionDigest: digestValue("persistent-worker-reuse/v1")}
+		if err = quote.Seal(); err != nil {
+			return Offer{}, err
+		}
+	} else {
+		quote, err = s.quoter.Quote(ctx, QuoteRequest{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration, ObjectiveDigest: objectiveDigest, UserPromptDigest: plan.UserPromptDigest, InputManifestDigest: plan.InputManifestDigest, WorkspaceMode: plan.WorkspaceMode, ProposalReason: plan.ProposalReason, ModelBindingDigest: plan.ModelAuthorization.BindingDigest, AuthorizationBasisDigest: plan.AuthorizationBasisDigest, AWS: plan.AWS, Compute: plan.Compute, Limits: plan.Limits})
+		if err != nil {
+			return Offer{}, err
+		}
 	}
 	plan.Quote = quote
 	if err := plan.Seal(); err != nil {
@@ -399,6 +436,12 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	execution, err := NewExecution(plan)
 	if err != nil {
 		return Offer{}, err
+	}
+	if reuse {
+		execution, err = execution.Transition(StateQueued, now)
+		if err != nil {
+			return Offer{}, err
+		}
 	}
 	binding, err := BindingForPlan(plan)
 	if err != nil {

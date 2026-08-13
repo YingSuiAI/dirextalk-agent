@@ -34,13 +34,14 @@ type CloudWorkerStore struct{ store *Store }
 func NewCloudWorkerStore(store *Store) *CloudWorkerStore { return &CloudWorkerStore{store: store} }
 
 type privateCloudWorkerPlan struct {
-	Objective       string                        `json:"objective"`
-	InputManifest   cloudworker.InputManifest     `json:"input_manifest"`
-	Placement       cloudworker.PlacementSpec     `json:"placement"`
-	NetworkPolicy   cloudworker.NetworkPolicy     `json:"network_policy"`
-	ArtifactGrant   cloudworker.ArtifactGrant     `json:"artifact_grant"`
-	WorkerBootstrap cloudworker.WorkerBootstrap   `json:"worker_bootstrap"`
-	ModelRelay      cloudworker.ModelRelayBinding `json:"model_relay"`
+	Objective             string                        `json:"objective"`
+	InputManifest         cloudworker.InputManifest     `json:"input_manifest"`
+	Placement             cloudworker.PlacementSpec     `json:"placement"`
+	NetworkPolicy         cloudworker.NetworkPolicy     `json:"network_policy"`
+	ArtifactGrant         cloudworker.ArtifactGrant     `json:"artifact_grant"`
+	WorkerBootstrap       cloudworker.WorkerBootstrap   `json:"worker_bootstrap"`
+	ModelRelay            cloudworker.ModelRelayBinding `json:"model_relay"`
+	PersistentWorkerReuse bool                          `json:"persistent_worker_reuse,omitempty"`
 }
 
 type cloudWorkerReplay struct {
@@ -60,7 +61,8 @@ func marshalCloudWorkerPlan(plan cloudworker.Plan) ([]byte, []byte, error) {
 		Objective: copy.Objective, InputManifest: copy.InputManifest,
 		Placement: copy.Placement, NetworkPolicy: copy.NetworkPolicy,
 		ArtifactGrant: copy.ArtifactGrant, WorkerBootstrap: copy.WorkerBootstrap,
-		ModelRelay: copy.ModelRelay,
+		ModelRelay:            copy.ModelRelay,
+		PersistentWorkerReuse: copy.PersistentWorkerReuse,
 	})
 	if err != nil || len(publicRaw) > 1<<20 || len(privateRaw) > 1<<20 {
 		return nil, nil, cloudworker.ErrInvalid
@@ -92,6 +94,7 @@ func scanCloudWorkerPlan(row cloudWorkerRowScanner) (cloudworker.Plan, error) {
 	plan.Objective, plan.InputManifest = private.Objective, private.InputManifest
 	plan.Placement, plan.NetworkPolicy = private.Placement, private.NetworkPolicy
 	plan.ArtifactGrant, plan.WorkerBootstrap, plan.ModelRelay = private.ArtifactGrant, private.WorkerBootstrap, private.ModelRelay
+	plan.PersistentWorkerReuse = private.PersistentWorkerReuse
 	if plan.Seal() != nil || plan.Revision != uint64(storedRevision) || plan.Digest != storedDigest ||
 		plan.ExecutionDigest != storedExecutionDigest || plan.AuthorizationBasisDigest != storedAuthorization ||
 		plan.Quote.Digest != storedQuote || plan.InputManifestDigest != storedManifest ||
@@ -153,6 +156,10 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		return cloudworker.Offer{}, cloudworker.ErrInvalid
 	}
 	plan, execution := command.Plan, command.Execution
+	expectedExecutionState := cloudworker.StateWaitingUser
+	if plan.PersistentWorkerReuse {
+		expectedExecutionState = cloudworker.StateQueued
+	}
 	if plan.Seal() != nil || execution.Seal() != nil || plan.ExecutionID != execution.ExecutionID ||
 		plan.TaskID != execution.TaskID || plan.ConfirmationID != execution.ConfirmationID ||
 		plan.Digest != execution.PlanDigest || plan.ExecutionDigest != execution.ExecutionDigest ||
@@ -160,7 +167,7 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		command.TaskPayload.PlanDigest != plan.Digest || command.TaskPayload.ConfirmationID != plan.ConfirmationID ||
 		command.TaskPayload.AccountGeneration != plan.AccountGeneration || command.TaskPayload.TurnID != plan.TurnID ||
 		command.TaskPayload.ConversationID != plan.ConversationID || command.TaskPayload.QuoteDigest != plan.Quote.Digest ||
-		command.TaskPayload.ExecutionDigest != plan.ExecutionDigest {
+		command.TaskPayload.ExecutionDigest != plan.ExecutionDigest || execution.State != expectedExecutionState {
 		return cloudworker.Offer{}, cloudworker.ErrInvalid
 	}
 	expectedBinding, err := cloudworker.BindingForPlan(plan)
@@ -278,12 +285,16 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	snapshotRaw, _ := json.Marshal(snapshot)
 	payloadRaw, _ := json.Marshal(spec.Payload)
 	emptyArray := []byte(`[]`)
+	taskStatus, taskPhase, taskMessage := "waiting_user", "confirmation", "waiting for owner confirmation"
+	if plan.PersistentWorkerReuse {
+		taskStatus, taskPhase, taskMessage = "queued", "worker_reuse", "existing Worker queued"
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,model_profile_id,create_idempotency_key,
 		attachment_refs,extensions_json,knowledge_refs,timeout_seconds,status,attempt,progress_sequence,lease_epoch,
 		lease_holder,available_at,revision,created_at,updated_at,task_kind,payload_json)
-		VALUES($1,$2,$3,$4,$5,$6,$6,$6,$7,'waiting_user',0,1,0,'',$8,1,$9,$9,'cloud_worker',$10)`,
+		VALUES($1,$2,$3,$4,$5,$6,$6,$6,$7,$8,0,1,0,'',$9,1,$10,$10,'cloud_worker',$11)`,
 		plan.TaskID, spec.Goal, spec.ConversationID, spec.ModelProfileID, spec.IdempotencyKey, emptyArray,
-		spec.TimeoutSeconds, spec.AvailableAt, plan.CreatedAt, payloadRaw); err != nil {
+		spec.TimeoutSeconds, taskStatus, spec.AvailableAt, plan.CreatedAt, payloadRaw); err != nil {
 		return cloudworker.Offer{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_task_execution_snapshots(task_id,snapshot_json,snapshot_digest) VALUES($1,$2,$3)`, plan.TaskID, snapshotRaw, snapshot.Digest); err != nil {
@@ -293,14 +304,20 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		return cloudworker.Offer{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at)
-		VALUES($1,1,$2,0,'waiting_user','confirmation','waiting for owner confirmation',$3)`, plan.TaskID, deterministicCloudWorkerUUID("task-event", plan.TaskID), plan.CreatedAt); err != nil {
+		VALUES($1,1,$2,0,$3,$4,$5,$6)`, plan.TaskID, deterministicCloudWorkerUUID("task-event", plan.TaskID), taskStatus, taskPhase, taskMessage, plan.CreatedAt); err != nil {
 		return cloudworker.Offer{}, err
+	}
+	confirmationState := "pending"
+	if plan.PersistentWorkerReuse {
+		// This confirmed row is an internal execution fence for using an existing
+		// Worker. It is never published as a pending owner confirmation.
+		confirmationState = "confirmed"
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_confirmations(confirmation_id,operation_domain,target_id,target_revision,binding_json,
 		task_id,state,consumed_released,revision,created_at,updated_at,expires_at)
-		VALUES($1,$2,$3,$4,$5,$6,'pending',false,1,$7,$7,$8)`, plan.ConfirmationID,
+		VALUES($1,$2,$3,$4,$5,$6,$7,false,1,$8,$8,$9)`, plan.ConfirmationID,
 		normalizedBinding.OperationDomain, normalizedBinding.TargetID, normalizedBinding.TargetRevision,
-		bindingRaw, plan.TaskID, plan.CreatedAt, plan.Quote.ExpiresAt); err != nil {
+		bindingRaw, plan.TaskID, confirmationState, plan.CreatedAt, plan.Quote.ExpiresAt); err != nil {
 		return cloudworker.Offer{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_confirmation_current_bindings(operation_domain,target_id,target_revision,binding_json,updated_at)
@@ -327,15 +344,16 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	if _, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_executions(execution_id,owner_id,account_generation,plan_id,
 		plan_revision,plan_digest,task_id,confirmation_id,conversation_id,turn_id,state,revision,digest,quote_digest,
 		execution_digest,provider_mutation_started,terminal_intent,needs_reconcile,execution_json,created_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'waiting_user',$11,$12,$13,$14,false,'',false,$15,$16,$17)`,
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,false,'',false,$16,$17,$18)`,
 		execution.ExecutionID, execution.OwnerID, execution.AccountGeneration, execution.PlanID, execution.PlanRevision,
 		execution.PlanDigest, execution.TaskID, execution.ConfirmationID, execution.ConversationID, execution.TurnID,
-		execution.Revision, execution.Digest, execution.QuoteDigest, execution.ExecutionDigest, executionRaw,
+		execution.State, execution.Revision, execution.Digest, execution.QuoteDigest, execution.ExecutionDigest, executionRaw,
 		execution.CreatedAt, execution.UpdatedAt); err != nil {
 		return cloudworker.Offer{}, err
 	}
 
-	references := cloudWorkerReferences(plan, execution, normalizedBinding, 1, "pending")
+	confirmationProjection := confirmationState
+	references := cloudWorkerReferences(plan, execution, normalizedBinding, 1, confirmationProjection)
 	userMessage := core.Message{ID: deterministicCloudWorkerUUID("conversation-turn-user", turn.RequestID), Role: core.RoleUser,
 		Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: plan.CreatedAt.Add(-time.Microsecond)}
 	offerMessage := core.Message{ID: deterministicCloudWorkerUUID("cloud-worker-offer-message", plan.ExecutionID), Role: core.RoleAssistant,
@@ -353,7 +371,11 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	if err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence),0)+1 FROM core_messages WHERE conversation_id=$1`, plan.ConversationID).Scan(&nextMessageSequence); err != nil {
 		return cloudworker.Offer{}, err
 	}
-	for index, message := range []core.Message{userMessage, offerMessage} {
+	messages := []core.Message{userMessage, offerMessage}
+	if plan.PersistentWorkerReuse {
+		messages = []core.Message{userMessage}
+	}
+	for index, message := range messages {
 		if err = insertCloudWorkerMessageTx(ctx, tx, plan.ConversationID, nextMessageSequence+int64(index), message); err != nil {
 			return cloudworker.Offer{}, err
 		}
@@ -368,20 +390,24 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		}
 		return cloudworker.Offer{}, err
 	}
-	event, eventErr := core.NewWaitingConfirmationTurnEvent(plan.ConfirmationID, plan.ExecutionID)
-	if eventErr != nil {
-		return cloudworker.Offer{}, cloudworker.ErrInvalid
-	}
-	event.TurnID, event.Sequence, event.Revision, event.CreatedAt = plan.TurnID, int64(turn.LastSequence+1), command.ExpectedTurnRevision+1, plan.CreatedAt
-	eventRaw, _ := json.Marshal(event)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at) VALUES($1,$2,$3,$4,$5)`,
-		plan.TurnID, event.Sequence, string(event.Kind), eventRaw, plan.CreatedAt); err != nil {
-		return cloudworker.Offer{}, err
+	nextTurnSequence := turn.LastSequence
+	if !plan.PersistentWorkerReuse {
+		event, eventErr := core.NewWaitingConfirmationTurnEvent(plan.ConfirmationID, plan.ExecutionID)
+		if eventErr != nil {
+			return cloudworker.Offer{}, cloudworker.ErrInvalid
+		}
+		event.TurnID, event.Sequence, event.Revision, event.CreatedAt = plan.TurnID, int64(turn.LastSequence+1), command.ExpectedTurnRevision+1, plan.CreatedAt
+		eventRaw, _ := json.Marshal(event)
+		if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at) VALUES($1,$2,$3,$4,$5)`,
+			plan.TurnID, event.Sequence, string(event.Kind), eventRaw, plan.CreatedAt); err != nil {
+			return cloudworker.Offer{}, err
+		}
+		nextTurnSequence = uint64(event.Sequence)
 	}
 	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='waiting_confirmation',revision=revision+1,
 		last_sequence=$2,lease_id=NULL,lease_expires_at=NULL,updated_at=$3
 		WHERE turn_id=$1 AND state='running' AND lease_id=$4 AND lease_epoch=$5 AND revision=$6 AND cancel_requested=false`,
-		plan.TurnID, event.Sequence, plan.CreatedAt, command.TurnLeaseID, command.TurnLeaseEpoch, command.ExpectedTurnRevision)
+		plan.TurnID, nextTurnSequence, plan.CreatedAt, command.TurnLeaseID, command.TurnLeaseEpoch, command.ExpectedTurnRevision)
 	if err != nil || result.RowsAffected() != 1 {
 		if err != nil {
 			return cloudworker.Offer{}, err
@@ -389,10 +415,14 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		return cloudworker.Offer{}, cloudworker.ErrLeaseConflict
 	}
 
+	executionEventType := "offer_created"
+	if plan.PersistentWorkerReuse {
+		executionEventType = "worker_reuse_queued"
+	}
 	executionEvent := cloudworker.Event{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration,
 		RunID: plan.ExecutionID, ExecutionID: plan.ExecutionID,
-		Sequence: 1, EventID: deterministicCloudWorkerUUID("execution-event-offer", plan.ExecutionID), Type: "offer_created",
-		State: cloudworker.StateWaitingUser, Revision: execution.Revision, CreatedAt: plan.CreatedAt}
+		Sequence: 1, EventID: deterministicCloudWorkerUUID("execution-event-offer", plan.ExecutionID), Type: executionEventType,
+		State: execution.State, Revision: execution.Revision, CreatedAt: plan.CreatedAt}
 	executionEvent.PayloadDigest = digestCloudWorkerValue(struct {
 		PlanID, TaskID, ConfirmationID, QuoteDigest string
 	}{plan.PlanID, plan.TaskID, plan.ConfirmationID, plan.Quote.Digest})
@@ -406,10 +436,12 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		PlanID, ExecutionID, TaskID, ConfirmationID string
 	}{plan.PlanID, plan.ExecutionID, plan.TaskID, plan.ConfirmationID})
 	offerOutboxDigest := sha256.Sum256(offerOutboxRaw)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_offer_outbox(event_id,plan_id,execution_id,conversation_id,turn_id,payload_digest,payload_json,created_at)
+	if !plan.PersistentWorkerReuse {
+		if _, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_offer_outbox(event_id,plan_id,execution_id,conversation_id,turn_id,payload_digest,payload_json,created_at)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, deterministicCloudWorkerUUID("offer-outbox", plan.ExecutionID), plan.PlanID,
-		plan.ExecutionID, plan.ConversationID, plan.TurnID, hex.EncodeToString(offerOutboxDigest[:]), offerOutboxRaw, plan.CreatedAt); err != nil {
-		return cloudworker.Offer{}, err
+			plan.ExecutionID, plan.ConversationID, plan.TurnID, hex.EncodeToString(offerOutboxDigest[:]), offerOutboxRaw, plan.CreatedAt); err != nil {
+			return cloudworker.Offer{}, err
+		}
 	}
 	replayRaw, _ = json.Marshal(cloudWorkerReplay{PlanID: plan.PlanID})
 	if _, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_offer_replays(idempotency_key,request_digest,plan_id,response_json,created_at) VALUES($1,$2,$3,$4,$5)`, command.IdempotencyKey, command.RequestDigest, plan.PlanID, replayRaw, plan.CreatedAt); err != nil {

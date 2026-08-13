@@ -73,6 +73,9 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker executor: %w", err)
 	}
+	if err = domain.EnablePersistentWorkerReuse(executor); err != nil {
+		return nil, fmt.Errorf("initialize SSH Worker reuse: %w", err)
+	}
 	flowStore, err := postgres.NewSSHWorkerStore(store, "cloud-worker/artifacts")
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker flow store: %w", err)

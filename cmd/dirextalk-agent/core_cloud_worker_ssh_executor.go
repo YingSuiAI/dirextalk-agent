@@ -104,8 +104,12 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	if err != nil {
 		return sshflow.Result{}, err
 	}
+	confirmation := sshworker.Confirmation{Confirmed: true, Proof: request.ConfirmationProof}
+	if request.ReuseOnly {
+		confirmation = sshworker.Confirmation{}
+	}
 	result, err := provider.Execute(ctx, sshworker.ExecuteRequest{ExecutionID: request.ExecutionID, Credential: identity,
-		Confirmation: sshworker.Confirmation{Confirmed: true, Proof: request.ConfirmationProof}, Discovery: discovery,
+		Confirmation: confirmation, Discovery: discovery,
 		InstanceType: request.Compute.InstanceType, VolumeGiB: int32(request.Compute.VolumeGiB), WorkerScript: material.WorkerScript,
 		WorkerScriptSHA256: material.WorkerScriptSHA256, Runtime: material.Protocol,
 		MaxWorkspaceBytes: 512 << 20, MaxResultBytes: int64(request.Limits.MaxOutputBytes), Sink: sink})
@@ -128,6 +132,14 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		return workerResult, fmt.Errorf("remote Worker exited with code %d", result.ExitCode)
 	}
 	return workerResult, nil
+}
+
+func (executor *sshWorkerExecutor) HasIdleWorker(ctx context.Context, binding cloudworker.AWSBinding, compute cloudworker.ComputeSpec) (bool, error) {
+	provider, identity, err := executor.provider(ctx, binding)
+	if err != nil {
+		return false, err
+	}
+	return provider.HasIdleWorker(ctx, identity, compute.InstanceType)
 }
 
 func boundedWorkerSummary(value string) string {

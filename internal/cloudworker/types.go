@@ -282,6 +282,7 @@ type Plan struct {
 	ArtifactGrant            ArtifactGrant        `json:"-"`
 	WorkerBootstrap          WorkerBootstrap      `json:"-"`
 	ModelRelay               ModelRelayBinding    `json:"-"`
+	PersistentWorkerReuse    bool                 `json:"-"`
 	AWSInfrastructureDigest  string               `json:"aws_infrastructure_digest"`
 	AuthorizationBasisDigest string               `json:"authorization_basis_digest"`
 	Limits                   Limits               `json:"limits"`
@@ -704,7 +705,7 @@ func (p *Plan) Seal() error {
 	if err := p.Quote.Seal(); err != nil {
 		return err
 	}
-	p.ExecutionDigest = digestValue(struct {
+	executionBasis := struct {
 		OwnerID, PlanID, ExecutionID, ConversationID, TurnID                 string
 		AccountGeneration, Revision                                          uint64
 		RecipeID, Adapter, ObjectiveDigest, UserPromptDigest, ManifestDigest string
@@ -720,7 +721,15 @@ func (p *Plan) Seal() error {
 		Secrets                                                              []SecretGrant
 		Retention                                                            uint64
 		QuoteDigest                                                          string
-	}{p.OwnerID, p.PlanID, p.ExecutionID, p.ConversationID, p.TurnID, p.AccountGeneration, p.Revision, p.RecipeID, p.Adapter, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.AWS, p.Compute, p.AWSInfrastructureDigest, p.Limits, p.NetworkGrants, p.SecretGrants, p.ArtifactRetentionSeconds, p.Quote.Digest})
+	}{p.OwnerID, p.PlanID, p.ExecutionID, p.ConversationID, p.TurnID, p.AccountGeneration, p.Revision, p.RecipeID, p.Adapter, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.AWS, p.Compute, p.AWSInfrastructureDigest, p.Limits, p.NetworkGrants, p.SecretGrants, p.ArtifactRetentionSeconds, p.Quote.Digest}
+	if p.PersistentWorkerReuse {
+		p.ExecutionDigest = digestValue(struct {
+			Basis                 any
+			PersistentWorkerReuse bool
+		}{executionBasis, true})
+	} else {
+		p.ExecutionDigest = digestValue(executionBasis)
+	}
 	p.Digest = digestValue(struct {
 		ExecutionDigest, TaskID, ConfirmationID string
 	}{p.ExecutionDigest, p.TaskID, p.ConfirmationID})
@@ -1226,7 +1235,12 @@ func BindingForPlan(plan Plan) (coreconfirmation.Binding, error) {
 	binding := coreconfirmation.Binding{
 		OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration, OperationDomain: OperationDomain,
 		TargetID: plan.ExecutionID, TargetRevision: int64(plan.Revision),
-		TargetKind: "ephemeral_pi_worker", SourceVersion: plan.RecipeID,
+		TargetKind: func() string {
+			if plan.PersistentWorkerReuse {
+				return "persistent_worker_reuse"
+			}
+			return "ephemeral_pi_worker"
+		}(), SourceVersion: plan.RecipeID,
 		SourceCommit:    plan.Compute.WorkerReleaseDigest,
 		ContentDigest:   coreconfirmation.Digest(plan.ObjectiveDigest),
 		ManifestDigest:  coreconfirmation.Digest(plan.InputManifestDigest),
