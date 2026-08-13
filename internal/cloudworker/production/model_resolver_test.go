@@ -156,7 +156,7 @@ func TestExactModelResolverCurrentAuthorizationFailsClosed(t *testing.T) {
 		},
 		"unsupported_provider": func(context.Context, string) (coremodel.Profile, error) {
 			unsupported := profile
-			unsupported.Provider = coremodel.ProviderAnthropic
+			unsupported.Provider = coremodel.ModelProvider("unsupported")
 			return unsupported, nil
 		},
 	} {
