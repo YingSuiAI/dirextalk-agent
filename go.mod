@@ -29,6 +29,8 @@ require (
 	github.com/smallstep/pkcs7 v0.2.3
 )
 
+require github.com/aws/aws-sdk-go-v2/service/kms v1.55.4
+
 require (
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.16 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.28 // indirect

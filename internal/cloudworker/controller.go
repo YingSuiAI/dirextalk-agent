@@ -83,6 +83,7 @@ type ControllerConfig struct {
 	Quoter              Quoter
 	BaseLimits          Limits
 	AWSBindings         AWSBindingResolver
+	ArtifactReadiness   ArtifactDestinationReadiness
 	ModelAuthorizations ModelAuthorizationResolver
 	Stager              ControllerInputStager
 	Outputs             ControllerOutputJournal
@@ -106,6 +107,7 @@ type Controller struct {
 	quoter              Quoter
 	baseLimits          Limits
 	awsBindings         AWSBindingResolver
+	artifactReadiness   ArtifactDestinationReadiness
 	modelAuthorizations ModelAuthorizationResolver
 	stager              ControllerInputStager
 	outputs             ControllerOutputJournal
@@ -123,7 +125,7 @@ type Controller struct {
 // Provider cannot be injected here, so production can never run Pi locally or
 // bypass WorkerControl/result collection.
 func NewController(config ControllerConfig) (*Controller, error) {
-	if config.Store == nil || config.Quoter == nil || validateLimits(config.BaseLimits) != nil || config.AWSBindings == nil || config.ModelAuthorizations == nil || config.Stager == nil || config.Outputs == nil || config.Qualifications == nil ||
+	if config.Store == nil || config.Quoter == nil || validateLimits(config.BaseLimits) != nil || config.AWSBindings == nil || config.ArtifactReadiness == nil || config.ModelAuthorizations == nil || config.Stager == nil || config.Outputs == nil || config.Qualifications == nil ||
 		config.AWS == nil || config.Sessions == nil || config.ModelGrants == nil || config.Results == nil {
 		return nil, ErrInvalid
 	}
@@ -143,7 +145,7 @@ func NewController(config ControllerConfig) (*Controller, error) {
 		return nil, ErrInvalid
 	}
 	return &Controller{
-		store: config.Store, quoter: config.Quoter, baseLimits: config.BaseLimits, awsBindings: config.AWSBindings, modelAuthorizations: config.ModelAuthorizations, stager: config.Stager, outputs: config.Outputs,
+		store: config.Store, quoter: config.Quoter, baseLimits: config.BaseLimits, awsBindings: config.AWSBindings, artifactReadiness: config.ArtifactReadiness, modelAuthorizations: config.ModelAuthorizations, stager: config.Stager, outputs: config.Outputs,
 		qualifications: config.Qualifications, aws: config.AWS,
 		sessions: config.Sessions, modelGrants: config.ModelGrants,
 		results: config.Results, now: config.Clock, pollInterval: config.PollInterval,
@@ -234,6 +236,9 @@ func (c *Controller) handleProduction(ctx context.Context, task coretask.Task) c
 	}
 	if current.requoteReason != "" {
 		return c.requote(ctx, task, run.plan, current.requoteReason)
+	}
+	if err := c.checkArtifactDestination(ctx, run.plan); err != nil {
+		return c.finish(ctx, task, &run, StateFailed, ProviderResult{}, "artifact_destination_unavailable", "Cloud Worker artifact storage is unavailable")
 	}
 
 	begin, err := c.store.BeginExecution(ctx, task)
@@ -392,6 +397,9 @@ func (c *Controller) prepareDispatch(ctx context.Context, task coretask.Task, ru
 	if current.requoteReason != "" {
 		return c.requoteRun(ctx, task, run, current.requoteReason)
 	}
+	if err := c.checkArtifactDestination(ctx, run.plan); err != nil {
+		return c.finish(ctx, task, run, StateFailed, ProviderResult{}, "artifact_destination_unavailable", "Cloud Worker artifact storage is unavailable")
+	}
 	fresh := current.quote
 	now := c.now().UTC()
 	if !run.hasAWSDispatch() {
@@ -478,6 +486,9 @@ func (c *Controller) finishPreDispatchCancellation(ctx context.Context, task cor
 }
 
 func (c *Controller) continueProduction(ctx context.Context, task coretask.Task, run *controllerRun) coreruntime.ManagedOutcome {
+	if err := c.checkArtifactDestination(ctx, run.plan); err != nil {
+		return c.finish(ctx, task, run, StateFailed, ProviderResult{}, "artifact_destination_unavailable", "Cloud Worker artifact storage is unavailable")
+	}
 	// This is the durable authorization boundary for every object a Worker can
 	// write. It precedes Ensure, so a crash or unknown Worker PutObject can
 	// always be recovered by execution-prefix inventory without inventing a
@@ -544,6 +555,16 @@ func (c *Controller) continueProduction(ctx context.Context, task coretask.Task,
 		return c.finish(ctx, task, run, StateFailed, ProviderResult{}, "worker_failed", "Cloud Worker execution or result validation failed")
 	}
 	return c.finish(ctx, task, run, StateSucceeded, result, "", result.Summary)
+}
+
+func (c *Controller) checkArtifactDestination(ctx context.Context, plan Plan) error {
+	if c == nil || c.artifactReadiness == nil || plan.Seal() != nil {
+		return ErrInvalid
+	}
+	if err := c.artifactReadiness.CheckArtifactDestination(ctx, plan.AWS, plan.ArtifactGrant.Bucket, plan.ArtifactGrant.KMSKeyARN); err != nil {
+		return errors.Join(ErrArtifactDestinationUnavailable, err)
+	}
+	return nil
 }
 
 func (c *Controller) ensureActive(ctx context.Context, task coretask.Task, run *controllerRun) (cloudaws.ObservedGraph, error) {

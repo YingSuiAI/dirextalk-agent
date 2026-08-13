@@ -100,6 +100,35 @@ func TestServiceProposalFailsClosedWhenCredentialAuthorityIsStale(t *testing.T) 
 	}
 }
 
+func TestServiceProposalChecksArtifactDestinationBeforeQuoteOrPersistence(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	defaults := intrinsicDefaults(now)
+	resolver := &proposalAWSBindingResolver{binding: defaults.AWS}
+	store := &intrinsicStore{}
+	quoter := &limitRecordingQuoter{base: FakeQuoter{
+		AmountMicros: 1000, MaximumAuthorizedMicros: 2000,
+		TTL: 5 * time.Minute, Now: func() time.Time { return now },
+	}}
+	readinessCalls := 0
+	service, err := NewServiceWithProductionDependencies(store, defaults, quoter, resolver,
+		ArtifactDestinationReadinessFunc(func(_ context.Context, binding AWSBinding, bucket, kmsKeyARN string) error {
+			readinessCalls++
+			if binding != defaults.AWS || bucket != defaults.ArtifactBucket || kmsKeyARN != defaults.ArtifactKMSKeyARN {
+				t.Fatalf("destination authority drift: binding=%+v bucket=%q kms=%q", binding, bucket, kmsKeyARN)
+			}
+			return errors.New("NoSuchBucket")
+		}), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Propose(context.Background(), credentialProposalCommand()); !errors.Is(err, ErrArtifactDestinationUnavailable) {
+		t.Fatalf("proposal error = %v", err)
+	}
+	if readinessCalls != 1 || len(store.commands) != 0 || quoter.last.OwnerID != "" {
+		t.Fatalf("unready destination crossed quote boundary: checks=%d offers=%d quote=%+v", readinessCalls, len(store.commands), quoter.last)
+	}
+}
+
 func TestServiceProposalBindsOneEffectiveTokenLimitBeforeQuoteAndRuntimeTask(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	defaults := intrinsicDefaults(now)

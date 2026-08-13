@@ -35,15 +35,16 @@ const (
 )
 
 var (
-	ErrInvalid             = errors.New("cloudworker: invalid")
-	ErrNotFound            = errors.New("cloudworker: not found")
-	ErrConflict            = errors.New("cloudworker: conflict")
-	ErrRevisionConflict    = errors.New("cloudworker: revision conflict")
-	ErrStaleAuthorization  = errors.New("cloudworker: stale authorization")
-	ErrQuoteExpired        = errors.New("cloudworker: quote expired")
-	ErrPricingCatalogStale = errors.New("cloudworker: pricing catalog stale")
-	ErrProviderUnavailable = errors.New("cloudworker: provider unavailable")
-	ErrLeaseConflict       = errors.New("cloudworker: task lease conflict")
+	ErrInvalid                        = errors.New("cloudworker: invalid")
+	ErrNotFound                       = errors.New("cloudworker: not found")
+	ErrConflict                       = errors.New("cloudworker: conflict")
+	ErrRevisionConflict               = errors.New("cloudworker: revision conflict")
+	ErrStaleAuthorization             = errors.New("cloudworker: stale authorization")
+	ErrQuoteExpired                   = errors.New("cloudworker: quote expired")
+	ErrPricingCatalogStale            = errors.New("cloudworker: pricing catalog stale")
+	ErrProviderUnavailable            = errors.New("cloudworker: provider unavailable")
+	ErrArtifactDestinationUnavailable = errors.New("cloudworker: artifact destination unavailable")
+	ErrLeaseConflict                  = errors.New("cloudworker: task lease conflict")
 )
 
 type WorkspaceMode string

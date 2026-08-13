@@ -135,6 +135,29 @@ func (resolve fixedAWSBindingResolver) ResolveExactAWSBinding(_ context.Context,
 	return resolve.binding, nil
 }
 
+// ArtifactDestinationReadiness keeps the Cloud Worker domain independent of
+// where durable deliverables live. Production adapters revalidate the exact
+// destination using the current immutable AWS binding before an offer is
+// persisted and again before external mutation.
+type ArtifactDestinationReadiness interface {
+	CheckArtifactDestination(context.Context, AWSBinding, string, string) error
+}
+
+type ArtifactDestinationReadinessFunc func(context.Context, AWSBinding, string, string) error
+
+func (check ArtifactDestinationReadinessFunc) CheckArtifactDestination(ctx context.Context, binding AWSBinding, bucket, kmsKeyARN string) error {
+	if check == nil {
+		return ErrArtifactDestinationUnavailable
+	}
+	return check(ctx, binding, bucket, kmsKeyARN)
+}
+
+type assumedArtifactDestinationReady struct{}
+
+func (assumedArtifactDestinationReady) CheckArtifactDestination(context.Context, AWSBinding, string, string) error {
+	return nil
+}
+
 type ProviderResult struct {
 	Resources                 []Resource           `json:"resources"`
 	Artifacts                 []Artifact           `json:"artifacts"`
@@ -204,11 +227,12 @@ func (d Defaults) Validate() error {
 }
 
 type Service struct {
-	store       Store
-	defaults    Defaults
-	quoter      Quoter
-	awsBindings AWSBindingResolver
-	now         func() time.Time
+	store             Store
+	defaults          Defaults
+	quoter            Quoter
+	awsBindings       AWSBindingResolver
+	artifactReadiness ArtifactDestinationReadiness
+	now               func() time.Time
 }
 
 func NewService(store Store, defaults Defaults, quoter Quoter, clocks ...func() time.Time) (*Service, error) {
@@ -219,14 +243,21 @@ func NewService(store Store, defaults Defaults, quoter Quoter, clocks ...func() 
 // resolver is intentionally separate from Defaults so a credential rotation
 // cannot leave proposal compilation using a startup-cached authority.
 func NewServiceWithAWSBindingResolver(store Store, defaults Defaults, quoter Quoter, awsBindings AWSBindingResolver, clocks ...func() time.Time) (*Service, error) {
-	if store == nil || quoter == nil || awsBindings == nil || defaults.Validate() != nil {
+	return NewServiceWithProductionDependencies(store, defaults, quoter, awsBindings, assumedArtifactDestinationReady{}, clocks...)
+}
+
+// NewServiceWithProductionDependencies requires a live deliverable-storage
+// verifier. The compatibility constructors retain deterministic unit-test and
+// development behavior; production composition must use this constructor.
+func NewServiceWithProductionDependencies(store Store, defaults Defaults, quoter Quoter, awsBindings AWSBindingResolver, artifactReadiness ArtifactDestinationReadiness, clocks ...func() time.Time) (*Service, error) {
+	if store == nil || quoter == nil || awsBindings == nil || artifactReadiness == nil || defaults.Validate() != nil {
 		return nil, ErrInvalid
 	}
 	clock := func() time.Time { return time.Now().UTC() }
 	if len(clocks) > 0 && clocks[0] != nil {
 		clock = clocks[0]
 	}
-	return &Service{store: store, defaults: defaults, quoter: quoter, awsBindings: awsBindings, now: clock}, nil
+	return &Service{store: store, defaults: defaults, quoter: quoter, awsBindings: awsBindings, artifactReadiness: artifactReadiness, now: clock}, nil
 }
 
 type ProposeCommand struct {
@@ -317,6 +348,9 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	awsBinding, err := s.awsBindings.ResolveCurrentAWSBinding(ctx)
 	if err != nil || validateAWS(awsBinding) != nil {
 		return Offer{}, errors.Join(ErrStaleAuthorization, err)
+	}
+	if err = s.artifactReadiness.CheckArtifactDestination(ctx, awsBinding, s.defaults.ArtifactBucket, s.defaults.ArtifactKMSKeyARN); err != nil {
+		return Offer{}, errors.Join(ErrArtifactDestinationUnavailable, err)
 	}
 	budgetEvidence := command.LocalBudgetEvidence
 	if budgetEvidence != nil {

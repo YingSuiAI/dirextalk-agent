@@ -77,6 +77,23 @@ func (factory *cloudWorkerSDKFactory) sdkForProvider(ctx context.Context, accoun
 
 type cloudWorkerAWSClientRouter struct{ factory *cloudWorkerSDKFactory }
 
+type cloudWorkerArtifactDestinationRouter struct{ factory *cloudWorkerSDKFactory }
+
+func (router cloudWorkerArtifactDestinationRouter) CheckArtifactDestination(ctx context.Context, binding cloudworker.AWSBinding, bucket, kmsKeyARN string) error {
+	if router.factory == nil {
+		return cloudworker.ErrInvalid
+	}
+	sdkConfig, adapter, err := router.factory.sdkForBinding(ctx, binding)
+	if err != nil {
+		return err
+	}
+	readiness, err := sdkclient.NewS3ArtifactDestinationReadiness(sdkConfig, adapter)
+	if err != nil {
+		return err
+	}
+	return readiness.Readiness(ctx, bucket, kmsKeyARN)
+}
+
 func (router cloudWorkerAWSClientRouter) client(ctx context.Context, identity cloudaws.ExecutionIdentity) (*sdkclient.Client, error) {
 	if router.factory == nil || identity.Validate() != nil {
 		return nil, cloudaws.ErrIdentityMismatch
@@ -281,6 +298,7 @@ func (router cloudWorkerOutputVersionStoreRouter) StoreForOutput(
 }
 
 var _ cloudaws.AWSClient = cloudWorkerAWSClientRouter{}
+var _ cloudworker.ArtifactDestinationReadiness = cloudWorkerArtifactDestinationRouter{}
 var _ control.ProviderIdentityReader = cloudWorkerAWSClientRouter{}
 var _ cloudworker.StagingObjectStore = cloudWorkerStagingStoreRouter{}
 var _ cloudworker.ResultObjectReaderFactory = cloudWorkerResultReaderRouter{}

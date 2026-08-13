@@ -131,7 +131,12 @@ func composeCoreCloudWorker(
 	if err != nil {
 		return nil, fmt.Errorf("initialize Cloud Worker credential authority: %w", err)
 	}
-	domain, err := cloudworker.NewServiceWithAWSBindingResolver(cloudStore, defaults, quoter, credentialAuthority)
+	sdkFactory, err := newCloudWorkerSDKFactory(credentialAuthority, accountGeneration)
+	if err != nil {
+		return nil, fmt.Errorf("initialize Cloud Worker revision-aware AWS SDK factory: %w", err)
+	}
+	artifactReadiness := cloudWorkerArtifactDestinationRouter{factory: sdkFactory}
+	domain, err := cloudworker.NewServiceWithProductionDependencies(cloudStore, defaults, quoter, credentialAuthority, artifactReadiness)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Cloud Worker domain: %w", err)
 	}
@@ -139,10 +144,6 @@ func composeCoreCloudWorker(
 	intrinsic, err := cloudworker.NewProposeIntrinsic(domain, ownerResolver, conversationStore, conversationStore)
 	if err != nil {
 		return nil, fmt.Errorf("initialize cloud_worker_propose: %w", err)
-	}
-	sdkFactory, err := newCloudWorkerSDKFactory(credentialAuthority, accountGeneration)
-	if err != nil {
-		return nil, fmt.Errorf("initialize Cloud Worker revision-aware AWS SDK factory: %w", err)
 	}
 	awsClient := cloudWorkerAWSClientRouter{factory: sdkFactory}
 	stagingObjects := cloudWorkerStagingStoreRouter{factory: sdkFactory}
@@ -266,7 +267,8 @@ func composeCoreCloudWorker(
 	}
 	controller, err := cloudworker.NewController(cloudworker.ControllerConfig{
 		Store: cloudStore, Quoter: quoter, BaseLimits: defaults.Limits, AWSBindings: credentialAuthority, ModelAuthorizations: modelResolver,
-		Stager: stager, Outputs: outputs, Qualifications: qualification,
+		ArtifactReadiness: artifactReadiness,
+		Stager:            stager, Outputs: outputs, Qualifications: qualification,
 		AWS: provider, Sessions: controlStore, ModelGrants: relay, Results: results,
 		PollInterval: worker.ControllerPollInterval, WorkerHeartbeatStaleAfter: 3 * worker.WorkerHeartbeatInterval,
 	})

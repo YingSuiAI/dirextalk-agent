@@ -623,6 +623,7 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 			awsBindingReads++
 			return plan.AWS, nil
 		}),
+		ArtifactReadiness: cloudworker.ArtifactDestinationReadinessFunc(func(context.Context, cloudworker.AWSBinding, string, string) error { return nil }),
 		ModelAuthorizations: cloudworker.ModelAuthorizationResolverFunc(func(context.Context, cloudworker.ModelAuthorization) (cloudworker.ModelAuthorization, error) {
 			return plan.ModelAuthorization, nil
 		}),
