@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -88,6 +89,36 @@ func (s *CoreTaskStore) ClaimNextDue(ctx context.Context, holder string, at time
 	}
 	if t.Status == coretask.StatusQueued && running >= max {
 		return coretask.Task{}, coretask.Lease{}, coretask.ErrNotFound
+	}
+	// Historical Cloud Worker v1 plans remain readable, but they cannot acquire
+	// a new runtime lease after the model-qualified v2 contract is deployed.
+	// Terminalize the old offer in this claim transaction so it cannot poison the
+	// queue and repeatedly stop the worker pool on every restart.
+	if t.Status == coretask.StatusQueued && t.Spec.Kind == coretask.TaskKindCloudWorker {
+		payload := t.Spec.Payload.CloudWorker
+		if payload == nil {
+			return coretask.Task{}, coretask.Lease{}, coretask.ErrInvalid
+		}
+		plan, planErr := scanCloudWorkerPlan(tx.QueryRow(ctx, cloudWorkerPlanSelect+` WHERE plan_id=$1 AND revision=$2`, payload.PlanID, payload.PlanRevision))
+		if planErr != nil {
+			return coretask.Task{}, coretask.Lease{}, planErr
+		}
+		if plan.ModelAuthorization.ContextWindow < cloudworker.MinimumPiContextWindow {
+			confirmation, confirmationErr := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1 FOR UPDATE`, plan.ConfirmationID))
+			if confirmationErr != nil || confirmation.TaskID != t.ID || confirmation.State != coreconfirmation.StateConfirmed {
+				if confirmationErr != nil {
+					return coretask.Task{}, coretask.Lease{}, confirmationErr
+				}
+				return coretask.Task{}, coretask.Lease{}, cloudworker.ErrStaleAuthorization
+			}
+			if _, confirmationErr = terminalizeExpiredTx(ctx, tx, s.store.instanceID, confirmation, at.UTC(), "runtime_contract_upgraded"); confirmationErr != nil {
+				return coretask.Task{}, coretask.Lease{}, confirmationErr
+			}
+			if confirmationErr = tx.Commit(ctx); confirmationErr != nil {
+				return coretask.Task{}, coretask.Lease{}, confirmationErr
+			}
+			return coretask.Task{}, coretask.Lease{}, coretask.ErrNotFound
+		}
 	}
 	// CLOUD_WORKER owns its execution and cleanup deadlines in the durable
 	// plan/controller state machine.  A generic timeout here would bypass the

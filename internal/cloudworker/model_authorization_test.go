@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
-	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/google/uuid"
 )
 
@@ -63,15 +62,18 @@ func TestEffectivePlanLimitsBindProfileAndPiRequestCeilings(t *testing.T) {
 		want       uint64
 		wantErr    bool
 	}{
-		{name: "unspecified profile uses context-derived ceiling", profileMax: 0, want: 16384},
+		{name: "unspecified profile is not guessed", profileMax: 0, wantErr: true},
 		{name: "profile narrows default", profileMax: 2048, want: 2048},
-		{name: "large profile uses Pi cap", profileMax: 1 << 20, want: runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens},
+		{name: "profile above qualified runtime ceiling", profileMax: 1 << 20, wantErr: true},
 		{name: "profile below qualified minimum", profileMax: 511, wantErr: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := testModelExecutionSnapshot(test.profileMax)
 			authorization, err := ModelAuthorizationFromSnapshot(snapshot)
+			if test.wantErr && errors.Is(err, ErrInvalid) {
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}

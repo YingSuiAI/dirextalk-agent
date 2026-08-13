@@ -148,6 +148,9 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 		provider.ModelOverrides != nil {
 		t.Fatalf("provider config=%+v", provider)
 	}
+	if string(process.settingsConfig) != piSettingsJSON {
+		t.Fatalf("settings config=%q", process.settingsConfig)
+	}
 }
 
 func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
@@ -226,6 +229,24 @@ func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
 				t.Fatalf("deepseek compatibility=%+v", compat)
 			}
 		})
+	}
+}
+
+func TestWritePiSettingsConfigDisablesIndependentAutoCompaction(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	if err := writePiSettingsConfig(directory); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(directory, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != piSettingsJSON {
+		t.Fatalf("settings=%s", raw)
+	}
+	if err = writePiSettingsConfig(directory); !errors.Is(err, ErrExecution) {
+		t.Fatalf("settings rewrite error=%v", err)
 	}
 }
 
@@ -427,6 +448,11 @@ func TestPiContractsRejectUnboundedOrUnsafeOutput(t *testing.T) {
 	if !ok || failure.Code != FailureCodeContextLimit || failure.Stage != FailureStagePi {
 		t.Fatalf("context failure=%+v ok=%t err=%v", failure, ok, err)
 	}
+	_, _, err = ParsePiEvents(piFailureEventStream("aborted", ""))
+	failure, ok = FailureOf(err)
+	if !ok || failure.Code != FailureCodeContextLimit || failure.Stage != FailureStagePi {
+		t.Fatalf("guard abort failure=%+v ok=%t err=%v", failure, ok, err)
+	}
 }
 
 func TestOSProcessRunnerBoundsOutputAndDoesNotInheritEnvironment(t *testing.T) {
@@ -468,11 +494,12 @@ func (resolver *fakeResolver) Resolve(context.Context, Task) (Inputs, error) {
 }
 
 type fakeProcess struct {
-	events        []byte
-	spec          ProcessSpec
-	modelsConfig  []byte
-	directoryMode os.FileMode
-	calls         int
+	events         []byte
+	spec           ProcessSpec
+	modelsConfig   []byte
+	settingsConfig []byte
+	directoryMode  os.FileMode
+	calls          int
 }
 
 func (process *fakeProcess) Run(_ context.Context, spec ProcessSpec) (ProcessOutput, error) {
@@ -498,6 +525,11 @@ func (process *fakeProcess) Run(_ context.Context, spec ProcessSpec) (ProcessOut
 		return ProcessOutput{}, err
 	}
 	process.modelsConfig = raw
+	settings, err := os.ReadFile(filepath.Join(spec.Environment["PI_CODING_AGENT_DIR"], "settings.json"))
+	if err != nil {
+		return ProcessOutput{}, err
+	}
+	process.settingsConfig = settings
 	return ProcessOutput{Stdout: bytes.Clone(process.events)}, nil
 }
 

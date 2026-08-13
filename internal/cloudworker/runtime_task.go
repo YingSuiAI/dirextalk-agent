@@ -68,6 +68,17 @@ func (material *RuntimeTaskMaterial) Destroy() {
 // digest. Attempt and lease epoch deliberately live outside RuntimeTaskJSON;
 // a lease reclaim must not invent a second authorized task or AWS dispatch.
 func (material RuntimeTaskMaterial) CloneForFence(fence RuntimeTaskFence) (RuntimeTaskMaterial, error) {
+	return material.cloneForFence(fence, false)
+}
+
+// CloneForRecoveryFence reads immutable v1 material only after it already
+// crossed the provider-mutation boundary. It cannot be used by Worker Claim,
+// which requires the current protocol pair before material is issued.
+func (material RuntimeTaskMaterial) CloneForRecoveryFence(fence RuntimeTaskFence) (RuntimeTaskMaterial, error) {
+	return material.cloneForFence(fence, true)
+}
+
+func (material RuntimeTaskMaterial) cloneForFence(fence RuntimeTaskFence, allowHistorical bool) (RuntimeTaskMaterial, error) {
 	if validateRuntimeTaskFenceForMaterial(fence, material) != nil {
 		return RuntimeTaskMaterial{}, ErrStaleAuthorization
 	}
@@ -78,7 +89,7 @@ func (material RuntimeTaskMaterial) CloneForFence(fence RuntimeTaskFence) (Runti
 	taskDigest, err := task.Digest()
 	inputDigest := sha256.Sum256(material.InputManifestJSON)
 	if err != nil || taskDigest != material.RuntimeTaskSHA256 ||
-		!material.ProtocolVersions.IsCurrent() ||
+		(!material.ProtocolVersions.IsCurrent() && !(allowHistorical && material.ProtocolVersions.IsReadable())) ||
 		hex.EncodeToString(inputDigest[:]) != material.InputManifestSHA256 ||
 		cloudruntime.ValidateInputManifestJSON(material.InputManifestJSON, material.InputManifestSHA256) != nil ||
 		!validDigest(material.SourceManifestSHA256) || !validDigest(material.StagedManifestSHA256) {

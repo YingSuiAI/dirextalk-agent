@@ -48,7 +48,7 @@ func credentialProposalCommand() ProposeCommand {
 		ModelAuthorization: ModelAuthorization{
 			ModelProfileID: uuid.NewString(), ModelProfileRevision: 2,
 			Provider: "openai_compatible", Model: "gpt-test", Interface: "openai_compatible",
-			ContextWindow:     65536,
+			MaximumOutputTokens: 4096, ContextWindow: 65536,
 			CredentialVersion: 4, CredentialBindingDigest: digestValue("model-credential"),
 		},
 	}
@@ -146,12 +146,12 @@ func TestServiceProposalBindsOneEffectiveTokenLimitBeforeQuoteAndRuntimeTask(t *
 		t.Fatal(err)
 	}
 	command := credentialProposalCommand()
-	command.ModelAuthorization.MaximumOutputTokens = 0
+	command.ModelAuthorization.MaximumOutputTokens = 8192
 	offer, err := service.Propose(context.Background(), command)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantRequestMax := command.ModelAuthorization.ContextWindow / 4
+	wantRequestMax := command.ModelAuthorization.MaximumOutputTokens
 	if offer.Plan.Limits.MaxTokens != defaults.Limits.MaxTokens ||
 		quoter.last.Limits.MaxTokens != defaults.Limits.MaxTokens ||
 		offer.Plan.Quote.BasisDigest != offer.Plan.AuthorizationBasisDigest ||

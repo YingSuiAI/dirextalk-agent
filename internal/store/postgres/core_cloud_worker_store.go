@@ -733,6 +733,9 @@ func (s *CloudWorkerStore) beginExecutionTx(ctx context.Context, tx pgx.Tx, curr
 	if err != nil {
 		return cloudworker.BeginResult{}, err
 	}
+	if plan.ModelAuthorization.ContextWindow < cloudworker.MinimumPiContextWindow {
+		return cloudworker.BeginResult{}, cloudworker.ErrStaleAuthorization
+	}
 	if plan.TaskID != current.ID || !plan.Quote.ExpiresAt.After(now) {
 		return cloudworker.BeginResult{}, cloudworker.ErrQuoteExpired
 	}
@@ -1164,7 +1167,7 @@ func (s *CloudWorkerStore) GetResumeContext(ctx context.Context, supplied coreta
 	}
 	runtimeDigest, digestErr := material.Task.Digest()
 	inputDigest := sha256.Sum256(inputRaw)
-	if digestErr != nil || !material.ProtocolVersions.IsCurrent() || runtimeDigest != authorization.RuntimeTaskSHA256 || hex.EncodeToString(inputDigest[:]) != authorization.InputManifestSHA256 || sourceDigest != plan.InputManifestDigest {
+	if digestErr != nil || !material.ProtocolVersions.IsReadable() || runtimeDigest != authorization.RuntimeTaskSHA256 || hex.EncodeToString(inputDigest[:]) != authorization.InputManifestSHA256 || sourceDigest != plan.InputManifestDigest {
 		material.Destroy()
 		logCloudWorkerResumeInvariant("runtime_task_digest", "reason", "runtime task/input/source digest drifted",
 			"task_id", currentTask.ID, "task_revision", currentTask.Revision, "execution_id", execution.ExecutionID, "execution_revision", execution.Revision)

@@ -175,6 +175,7 @@ type controllerRun struct {
 	dispatchIdentity cloudaws.ExecutionIdentity
 	resources        []Resource
 	workersFenced    bool
+	createDispatched bool
 }
 
 func (run *controllerRun) destroy() {
@@ -201,10 +202,30 @@ func (c *Controller) handleProduction(ctx context.Context, task coretask.Task) c
 	defer run.destroy()
 
 	if run.execution.State == StateCleaning {
-		if !run.execution.ProviderMutationStarted {
-			return c.resumeCleaningWithoutDispatch(ctx, task, &run)
-		}
 		return c.resumeCleaning(ctx, task, &run)
+	}
+	// A v1 execution whose CreateStack call may already have crossed the provider
+	// boundary may only reconcile its original dispatch. Intent-only v1 work is
+	// failed and cleaned without calling Ensure, so an upgrade can never launch a
+	// new Worker without the model-qualified context contract.
+	if run.plan.ModelAuthorization.ContextWindow < MinimumPiContextWindow {
+		resumeLoaded := false
+		if resume, resumeErr := c.store.GetResumeContext(ctx, task); resumeErr == nil {
+			defer resume.Destroy()
+			if err := c.loadResume(&run, resume); err != nil {
+				return c.owned(err)
+			}
+			resumeLoaded = true
+		} else if !errors.Is(resumeErr, ErrNotFound) && !errors.Is(resumeErr, ErrConflict) {
+			return c.owned(resumeErr)
+		}
+		if run.execution.TerminalIntent == string(StateCanceled) {
+			return c.finish(ctx, task, &run, StateCanceled, ProviderResult{}, "user_canceled", "Cloud Worker execution canceled")
+		}
+		if resumeLoaded && run.execution.ProviderMutationStarted && run.createDispatched {
+			return c.prepareDispatch(ctx, task, &run)
+		}
+		return c.finish(ctx, task, &run, StateFailed, ProviderResult{}, "runtime_contract_upgraded", "Cloud Worker task requires a new model context authorization")
 	}
 	// A provider-started execution, or a pre-dispatch crash for which the Store
 	// can recover immutable launch material, must resume before BeginExecution
@@ -339,7 +360,7 @@ func (c *Controller) loadResume(run *controllerRun, resume ResumeContext) error 
 	) != nil {
 		return ErrStaleAuthorization
 	}
-	material, err := resume.Material.CloneForFence(resume.CurrentFence)
+	material, err := resume.Material.CloneForRecoveryFence(resume.CurrentFence)
 	if err != nil {
 		return err
 	}
@@ -364,6 +385,7 @@ func (c *Controller) loadResume(run *controllerRun, resume ResumeContext) error 
 	}
 	run.awsPlan, run.intent = resume.AWSRecord.Plan, resume.AWSRecord.Intent
 	run.dispatchIdentity = resume.AWSRecord.Identity
+	run.createDispatched = resume.AWSRecord.CreateMayHaveCrossedProviderBoundary()
 	return nil
 }
 
@@ -735,7 +757,7 @@ func (c *Controller) awaitAndCollect(ctx context.Context, task coretask.Task, ru
 					return ProviderResult{}, err
 				}
 			}
-			material, cloneErr := run.material.CloneForFence(runtimeFenceForSession(session))
+			material, cloneErr := run.material.CloneForRecoveryFence(runtimeFenceForSession(session))
 			if cloneErr != nil {
 				return ProviderResult{}, cloneErr
 			}
@@ -1002,6 +1024,9 @@ func (c *Controller) requote(ctx context.Context, task coretask.Task, plan Plan,
 func (c *Controller) resumeCleaning(ctx context.Context, task coretask.Task, run *controllerRun) coreruntime.ManagedOutcome {
 	resume, err := c.store.GetResumeContext(ctx, task)
 	if err != nil {
+		if !run.execution.ProviderMutationStarted && errors.Is(err, ErrNotFound) {
+			return c.resumeCleaningWithoutDispatch(ctx, task, run)
+		}
 		slog.Warn("[cloud-worker.controller] terminalization_deferred", "stage", "resume_context", "class", controllerErrorClass(err))
 		return c.owned(err)
 	}

@@ -123,7 +123,10 @@ func ParsePiEvents(stream []byte) (Usage, []byte, error) {
 					return Usage{}, nil, classifyPiProviderFailure(message.ErrorMessage)
 				case "aborted":
 					clear(finalJSON)
-					return Usage{}, nil, newFailure(FailureStagePi, FailureCodePiAborted)
+					// The production Pi runtime is non-interactive and its only
+					// in-process abort source is the signed context/provider guard.
+					// External cancellation terminates Process.Run before event parsing.
+					return Usage{}, nil, newFailure(FailureStagePi, FailureCodeContextLimit)
 				}
 				if addPiUsage(&usage, message.Usage) != nil {
 					clear(finalJSON)

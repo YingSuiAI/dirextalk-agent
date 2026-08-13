@@ -418,6 +418,7 @@ func newWorkflowRetryFixture(t *testing.T) *workflowRetryFixture {
 		ModelRelayEndpointSHA256: workflowRetryDigest([]byte(relayURL)),
 		ModelRelayBindingSHA256:  strings.Repeat("6", 64),
 		MaxOutputTokens:          256,
+		ModelContextWindow:       65536,
 		MaxOutputBytes:           4096,
 	}
 	taskDigest, err := task.Digest()

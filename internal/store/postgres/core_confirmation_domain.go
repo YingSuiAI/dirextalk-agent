@@ -261,6 +261,9 @@ func terminalizeCloudWorkerTurnTx(
 		code = coreconfirmation.ReasonExpired
 	}
 	summary := "Cloud Worker offer expired before authorization. No AWS resources were created."
+	if code == "runtime_contract_upgraded" {
+		summary = "Cloud Worker task requires a new model context authorization. No AWS resources were created."
+	}
 	if terminal == cloudworker.StateRejected {
 		confirmationState = string(coreconfirmation.StateRejected)
 		turnState, eventKind = string(core.TurnCanceled), core.TurnEventCanceled
@@ -336,6 +339,10 @@ func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, ownerID any, cur corec
 		}
 		return terminalizeWorkloadBeforeDispatchTx(ctx, tx, ownerID, cur, "expired", status, "failed", reason, reason, at)
 	}
+	failureSummary := reason
+	if reason == "runtime_contract_upgraded" {
+		failureSummary = "Cloud Worker task requires a new model context authorization"
+	}
 	confirmationUpdate, e := tx.Exec(ctx, `UPDATE core_confirmations SET state='expired',revision=revision+1,
 		updated_at=$2,terminal_code=$3,terminal_reason=$3 WHERE confirmation_id=$1 AND state=$4 AND revision=$5`,
 		cur.ConfirmationID, at, reason, cur.State, cur.Revision)
@@ -349,7 +356,7 @@ func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, ownerID any, cur corec
 	if e := tx.QueryRow(ctx, `SELECT status FROM core_tasks WHERE task_id=$1 FOR UPDATE`, cur.TaskID).Scan(&st); e == nil && (st == "waiting_user" || st == "queued" || st == "running") {
 		taskUpdate, updateErr := tx.Exec(ctx, `UPDATE core_tasks SET status='failed',attempt=GREATEST(attempt,1),failure_code=$2,
 			failure_summary=$3,lease_holder='',lease_expires_at=NULL,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$4
-			WHERE task_id=$1 AND status=$5`, cur.TaskID, reason, reason, at, st)
+			WHERE task_id=$1 AND status=$5`, cur.TaskID, reason, failureSummary, at, st)
 		if updateErr != nil || taskUpdate.RowsAffected() != 1 {
 			if updateErr != nil {
 				return cur, updateErr
@@ -358,7 +365,7 @@ func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, ownerID any, cur corec
 		}
 		eventInsert, insertErr := tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,error_code,error_summary,occurred_at)
 			SELECT task_id,progress_sequence,$2,attempt,'failed',$3,$4,$5,$6 FROM core_tasks WHERE task_id=$1 AND status='failed'`,
-			cur.TaskID, uuid.New(), reason, reason, reason, at)
+			cur.TaskID, uuid.New(), reason, reason, failureSummary, at)
 		if insertErr != nil || eventInsert.RowsAffected() != 1 {
 			if insertErr != nil {
 				return cur, insertErr
@@ -491,6 +498,21 @@ func confirmationBindingMatchesTx(
 			return false, coreconfirmation.ErrBindingUnavailable
 		}
 		if err == nil && !cur.Binding.Equal(current) {
+			return false, nil
+		}
+	}
+	if cur.Binding.OperationDomain == cloudworker.OperationDomain {
+		plan, err := scanCloudWorkerPlan(tx.QueryRow(ctx, cloudWorkerPlanSelect+` WHERE plan_id=$1 FOR UPDATE`, cur.Binding.PlanID))
+		if err != nil {
+			return false, coreconfirmation.ErrBindingUnavailable
+		}
+		current, err := cloudworker.BindingForPlan(plan)
+		if err != nil || !cur.Binding.Equal(current) {
+			return false, nil
+		}
+		// Plans created before runtime v2 remain readable for history and
+		// artifact access, but can never become fresh launch authority.
+		if plan.ModelAuthorization.ContextWindow < cloudworker.MinimumPiContextWindow {
 			return false, nil
 		}
 	}

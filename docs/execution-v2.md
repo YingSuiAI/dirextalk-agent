@@ -226,13 +226,21 @@ The v2 runtime task binds the selected model profile's exact context window and
 maximum output tokens. Central reads both values from the immutable execution
 snapshot and includes them in the model authorization and task digest. The Pi
 model configuration receives those exact limits; before each provider request,
-the result extension may compact oversized tool output while preserving tool
-call/result identities and the original tool-call arguments. If the bounded
-results still cannot fit, Pi aborts the turn instead of sending an oversized
-request. Historical v1 authorizations remain readable for conversation and
-artifact history but cannot authorize a new dispatch. The Worker cannot infer,
-enlarge, or substitute either model limit, and an oversized relay request fails as
-`context_request_too_large` before model-budget reservation.
+the result extension combines Pi's model-neutral estimator with a conservative
+UTF-8 byte upper bound and the actual active system/tool overhead to compact
+oversized tool output while preserving tool call/result identities and the
+original tool-call arguments. It checks
+the final provider payload against the same authorized model/output limits and
+the relay's 2 MiB transport limit. The single-use Worker disables Pi's separate
+long-session auto-compaction so it cannot add a fixed reserve or an extra model
+summary call outside this authorization-derived policy. If the bounded results
+still cannot fit, Pi aborts the turn instead of sending an oversized request. Historical v1
+authorizations remain readable for conversation, artifact history, result
+recovery, and cleanup of an already-started dispatch, but a
+confirmation becomes stale before queueing and a previously confirmed task is
+rejected before begin authority can be created. The Worker cannot infer,
+enlarge, or substitute either model limit, and an oversized relay request fails
+as `context_request_too_large` before model-budget reservation.
 The canonical Pi final result is bounded by the approved `max_tokens` and
 output bytes. Collection uses one exact versioned S3 object and verifies
 version, key/prefix, media type, size, digest, manifest, task/lease binding,

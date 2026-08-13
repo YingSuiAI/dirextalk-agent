@@ -1,4 +1,8 @@
-import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  defineTool,
+  estimateTokens,
+  type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 interface DirextalkResultDetails {
@@ -10,9 +14,10 @@ interface DirextalkResultDetails {
 }
 
 const MIN_CONTEXT_WINDOW = 16384;
-const MIN_SAFETY_TOKENS = 4096;
-const MAX_SAFETY_TOKENS = 16384;
+const PROVIDER_PROTOCOL_TOKEN_RESERVE = 2048;
+const MODEL_RELAY_MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 const RECENT_TOOL_RESULTS = 2;
+const RECENT_TOOL_ROUNDS = 2;
 const OLD_TOOL_TEXT_CHARS = 1024;
 const RECENT_TOOL_TEXT_CHARS = 4096;
 
@@ -21,12 +26,28 @@ type ContextRecord = Record<string, unknown>;
 export function estimatedDirextalkContextTokens(value: unknown): number {
   try {
     const encoded = JSON.stringify(value) ?? "";
-    // One UTF-8 byte per token is deliberately conservative across model
-    // tokenizers, including code, identifiers, base64, and CJK text.
+    // Pi 0.83 has no tokenizer bound to the selected model. UTF-8 bytes are a
+    // conservative upper bound for byte-level provider tokenizers and avoid
+    // undercounting Base64, random identifiers, code, or uncommon CJK. This
+    // does not change Central's signed model window; it is only the fail-closed
+    // fallback used to fit a request when an exact tokenizer is unavailable.
     return new TextEncoder().encode(encoded).byteLength;
   } catch {
     return Number.MAX_SAFE_INTEGER;
   }
+}
+
+function estimatedDirextalkMessageTokens(messages: unknown[]): number {
+  return messages.reduce((total, message) => {
+    try {
+      return total + Math.max(
+        estimateTokens(message as Parameters<typeof estimateTokens>[0]),
+        estimatedDirextalkContextTokens(message),
+      );
+    } catch {
+      return Number.MAX_SAFE_INTEGER;
+    }
+  }, 0);
 }
 
 function boundedText(value: string, maximum: number): string {
@@ -59,21 +80,58 @@ function compactToolResult(message: ContextRecord, maximum: number): ContextReco
   return compacted;
 }
 
+interface ToolRound {
+  start: number;
+  end: number;
+}
+
+function completedToolRounds(messages: ContextRecord[]): ToolRound[] {
+  const rounds: ToolRound[] = [];
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+    const callIDs = new Set(
+      message.content
+        .filter((item) => item && typeof item === "object" && (item as ContextRecord).type === "toolCall")
+        .map((item) => (item as ContextRecord).id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    );
+    if (callIDs.size === 0) continue;
+
+    const matched = new Set<string>();
+    let end = index;
+    for (let cursor = index + 1; cursor < messages.length; cursor++) {
+      const candidate = messages[cursor];
+      if (candidate?.role !== "toolResult") break;
+      const resultID = candidate.toolCallId;
+      if (typeof resultID !== "string" || !callIDs.has(resultID)) break;
+      matched.add(resultID);
+      end = cursor;
+    }
+    if (matched.size === callIDs.size) {
+      rounds.push({ start: index, end });
+      index = end;
+    }
+  }
+  return rounds;
+}
+
 export function compactDirextalkContext<T>(
   messages: T[],
   contextWindow: number,
   maxTokens: number,
+  requestOverheadTokens: number,
 ): T[] {
   if (!Number.isFinite(contextWindow) || !Number.isFinite(maxTokens) ||
-      contextWindow < MIN_CONTEXT_WINDOW || maxTokens <= 0 || maxTokens >= contextWindow) {
-    return messages;
+      !Number.isFinite(requestOverheadTokens) || contextWindow < MIN_CONTEXT_WINDOW ||
+      maxTokens <= 0 || maxTokens >= contextWindow || requestOverheadTokens < 0) {
+    throw new Error("Dirextalk context guard received invalid authorized model limits");
   }
-  const safety = Math.max(
-    MIN_SAFETY_TOKENS,
-    Math.min(MAX_SAFETY_TOKENS, Math.floor(contextWindow / 4)),
-  );
-  const target = contextWindow - maxTokens - safety;
-  if (target <= 0 || estimatedDirextalkContextTokens(messages) <= target) return messages;
+  const target = contextWindow - maxTokens - requestOverheadTokens - PROVIDER_PROTOCOL_TOKEN_RESERVE;
+  if (target <= 0) {
+    throw new Error("Dirextalk request overhead leaves no authorized message context");
+  }
+  if (estimatedDirextalkMessageTokens(messages) <= target) return messages;
 
   const result = messages.slice() as unknown as ContextRecord[];
   const toolResultIndexes = result
@@ -87,13 +145,61 @@ export function compactDirextalkContext<T>(
 
   for (let index = 0; index < protectedStart; index++) {
     compactAt(toolResultIndexes[index], OLD_TOOL_TEXT_CHARS);
-    if (estimatedDirextalkContextTokens(result) <= target) return result as unknown as T[];
+    if (estimatedDirextalkMessageTokens(result) <= target) return result as unknown as T[];
   }
-  for (let index = protectedStart; index < toolResultIndexes.length; index++) {
-    compactAt(toolResultIndexes[index], RECENT_TOOL_TEXT_CHARS);
-    if (estimatedDirextalkContextTokens(result) <= target) return result as unknown as T[];
+
+  // Drop only complete historical tool rounds. Removing the assistant call and
+  // every paired result together preserves provider tool-call invariants while
+  // retaining the original user objective and the most recent working state.
+  for (;;) {
+    const rounds = completedToolRounds(result);
+    if (rounds.length <= RECENT_TOOL_ROUNDS) break;
+    const oldest = rounds[0];
+    result.splice(oldest.start, oldest.end - oldest.start + 1);
+    if (estimatedDirextalkMessageTokens(result) <= target) return result as unknown as T[];
+  }
+
+  const remainingToolResultIndexes = result
+    .map((message, index) => message?.role === "toolResult" ? index : -1)
+    .filter((index) => index >= 0);
+  for (const resultIndex of remainingToolResultIndexes) {
+    compactAt(resultIndex, RECENT_TOOL_TEXT_CHARS);
+    if (estimatedDirextalkMessageTokens(result) <= target) return result as unknown as T[];
   }
   throw new Error("Dirextalk context guard could not fit the conversation inside the authorized model window");
+}
+
+function providerOutputLimit(payload: unknown): number | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const value = payload as ContextRecord;
+  for (const key of ["max_output_tokens", "max_completion_tokens", "max_tokens"]) {
+    if (typeof value[key] === "number") return value[key];
+  }
+  return undefined;
+}
+
+export function validateDirextalkProviderPayload(
+  payload: unknown,
+  contextWindow: number,
+  maxTokens: number,
+): void {
+  if (!Number.isFinite(contextWindow) || !Number.isFinite(maxTokens) ||
+      contextWindow < MIN_CONTEXT_WINDOW || maxTokens <= 0 || maxTokens >= contextWindow) {
+    throw new Error("Dirextalk provider guard received invalid authorized model limits");
+  }
+  const outputLimit = providerOutputLimit(payload);
+  if (!Number.isFinite(outputLimit) || outputLimit! <= 0 || outputLimit! > maxTokens) {
+    throw new Error("Dirextalk provider payload is missing the authorized output limit");
+  }
+  const encoded = JSON.stringify(payload);
+  if (typeof encoded !== "string" ||
+      new TextEncoder().encode(encoded).byteLength > MODEL_RELAY_MAX_REQUEST_BYTES) {
+    throw new Error("Dirextalk provider payload exceeds the model relay transport limit");
+  }
+  const requestTokens = estimatedDirextalkContextTokens(payload) + PROVIDER_PROTOCOL_TOKEN_RESERVE;
+  if (requestTokens > contextWindow - outputLimit!) {
+    throw new Error("Dirextalk provider payload exceeds the authorized model context window");
+  }
 }
 
 const submitResult = defineTool({
@@ -135,17 +241,34 @@ const submitResult = defineTool({
 export default function registerDirextalkResult(pi: ExtensionAPI) {
   pi.registerTool(submitResult);
   pi.on("context", (event, ctx) => {
-    if (!ctx.model) return;
     try {
+      if (!ctx.model) throw new Error("Dirextalk context guard requires an authorized model");
+      const activeTools = new Set(pi.getActiveTools());
+      const requestOverheadTokens = estimatedDirextalkContextTokens({
+        systemPrompt: ctx.getSystemPrompt(),
+        tools: pi.getAllTools()
+          .filter((tool) => activeTools.has(tool.name))
+          .map(({ name, description, parameters }) => ({ name, description, parameters })),
+      });
       const messages = compactDirextalkContext(
         event.messages,
         ctx.model.contextWindow,
         ctx.model.maxTokens,
+        requestOverheadTokens,
       );
       if (messages !== event.messages) return { messages };
     } catch {
       ctx.abort();
       return { messages: [] };
     }
+  });
+  pi.on("before_provider_request", (event, ctx) => {
+    try {
+      if (!ctx.model) throw new Error("Dirextalk provider guard requires an authorized model");
+      validateDirextalkProviderPayload(event.payload, ctx.model.contextWindow, ctx.model.maxTokens);
+    } catch {
+      ctx.abort();
+    }
+    return event.payload;
   });
 }

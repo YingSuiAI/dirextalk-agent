@@ -29,6 +29,7 @@ import (
 const (
 	RecipeEphemeralPiTask       = "ephemeral-pi-task"
 	AdapterPiJSONTaskV1         = "pi_json_task_v1"
+	TaskSchemaV1                = "dirextalk.agent.cloud-worker-pi-task/v1"
 	TaskSchemaV2                = "dirextalk.agent.cloud-worker-pi-task/v2"
 	PiFinalSchemaV1             = "dirextalk.agent.pi-final/v1"
 	PiLoopbackProxyAddress      = "127.0.0.1:38081"
@@ -107,12 +108,26 @@ type Task struct {
 	ModelRelayEndpointSHA256 string         `json:"model_relay_endpoint_sha256"`
 	ModelRelayBindingSHA256  string         `json:"model_relay_binding_sha256"`
 	MaxOutputTokens          uint64         `json:"max_output_tokens"`
-	ModelContextWindow       uint64         `json:"model_context_window"`
+	ModelContextWindow       uint64         `json:"model_context_window,omitempty"`
 	MaxOutputBytes           uint64         `json:"max_output_bytes"`
 }
 
 func (task Task) Validate() error {
-	if task.SchemaVersion != TaskSchemaV2 ||
+	return task.validate(false)
+}
+
+// validateStored accepts v1 only for digest verification and recovery of work
+// that crossed the provider-mutation boundary before a v2 deployment. Runtime
+// execution continues to call Validate and therefore requires v2.
+func (task Task) validateStored() error {
+	return task.validate(true)
+}
+
+func (task Task) validate(allowHistorical bool) error {
+	currentSchema := task.SchemaVersion == TaskSchemaV2 && task.ModelContextWindow >= 16*1024 &&
+		task.ModelContextWindow <= MaxContextWindow && task.MaxOutputTokens < task.ModelContextWindow
+	historicalSchema := allowHistorical && task.SchemaVersion == TaskSchemaV1 && task.ModelContextWindow == 0
+	if (!currentSchema && !historicalSchema) ||
 		task.Recipe != RecipeEphemeralPiTask ||
 		task.Adapter != AdapterPiJSONTaskV1 ||
 		!canonicalUUID(task.TaskID) ||
@@ -136,9 +151,6 @@ func (task Task) Validate() error {
 		!validDigest(task.ModelRelayBindingSHA256) ||
 		task.MaxOutputTokens == 0 ||
 		task.MaxOutputTokens > MaxOutputTokens ||
-		task.ModelContextWindow < 16*1024 ||
-		task.ModelContextWindow > MaxContextWindow ||
-		task.MaxOutputTokens >= task.ModelContextWindow ||
 		task.MaxOutputBytes == 0 ||
 		task.MaxOutputBytes > MaxResultBytes {
 		return ErrInvalid
@@ -160,7 +172,7 @@ func (task Task) Validate() error {
 }
 
 func (task Task) Digest() (string, error) {
-	if err := task.Validate(); err != nil {
+	if err := task.validateStored(); err != nil {
 		return "", err
 	}
 	encoded, err := json.Marshal(task)
@@ -183,7 +195,7 @@ func ParseTask(raw []byte) (Task, error) {
 		return Task{}, ErrInvalid
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) || task.Validate() != nil {
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) || task.validateStored() != nil {
 		return Task{}, ErrInvalid
 	}
 	canonical, err := json.Marshal(task)

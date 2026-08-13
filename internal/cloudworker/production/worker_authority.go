@@ -198,7 +198,7 @@ func (authority *WorkerAuthority) ValidateWorkerRuntimeTopology(ctx context.Cont
 		return err
 	}
 	defer resume.Destroy()
-	material, err := resume.Material.CloneForFence(cloudworker.RuntimeTaskFence{
+	material, err := resume.Material.CloneForRecoveryFence(cloudworker.RuntimeTaskFence{
 		ExecutionID: fence.ExecutionID, TaskID: fence.TaskID,
 		AccountGeneration: fence.AccountGeneration, Attempt: fence.Attempt, LeaseEpoch: fence.LeaseEpoch,
 	})

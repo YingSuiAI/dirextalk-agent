@@ -15,7 +15,10 @@ const MinimumPiContextWindow uint64 = 16 * 1024
 // profile credential itself.
 func ModelAuthorizationFromSnapshot(snapshot coremodel.ExecutionSnapshot) (ModelAuthorization, error) {
 	if snapshot.Validate() != nil || snapshot.Revision <= 0 || snapshot.CredentialVersion <= 0 ||
-		uint64(snapshot.ContextWindow) < MinimumPiContextWindow {
+		uint64(snapshot.ContextWindow) < MinimumPiContextWindow || snapshot.MaxOutputTokens <= 0 ||
+		uint64(snapshot.MaxOutputTokens) < runtimebounds.PiOpenAICompatibleMinimumOutputTokens ||
+		uint64(snapshot.MaxOutputTokens) > runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens ||
+		snapshot.MaxOutputTokens >= snapshot.ContextWindow {
 		return ModelAuthorization{}, ErrInvalid
 	}
 	modelInterface := ""
@@ -62,18 +65,8 @@ func effectiveModelOutputTokens(authorization ModelAuthorization) (uint64, error
 		return 0, ErrInvalid
 	}
 	maximum := copy.MaximumOutputTokens
-	if copy.Provider == "openai_compatible" && copy.Interface == "openai_compatible" {
-		if maximum == 0 {
-			maximum = copy.ContextWindow / 4
-		}
-		if maximum > runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens {
-			maximum = runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens
-		}
-		if maximum < runtimebounds.PiOpenAICompatibleMinimumOutputTokens {
-			return 0, ErrInvalid
-		}
-	}
 	if maximum == 0 || maximum >= copy.ContextWindow ||
+		maximum < runtimebounds.PiOpenAICompatibleMinimumOutputTokens ||
 		maximum > runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens {
 		return 0, ErrInvalid
 	}

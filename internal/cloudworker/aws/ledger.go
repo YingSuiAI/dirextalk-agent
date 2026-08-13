@@ -111,6 +111,14 @@ type LedgerRecord struct {
 	UpdatedAt             time.Time                            `json:"updated_at"`
 }
 
+// CreateMayHaveCrossedProviderBoundary reports whether the durable create
+// call fence was opened. An intent-only record is safe to retire without ever
+// calling Ensure; once DispatchedAt is set, recovery must assume AWS may have
+// accepted the request even when no response or provider ID was persisted.
+func (record LedgerRecord) CreateMayHaveCrossedProviderBoundary() bool {
+	return !record.CreateMutation.DispatchedAt.IsZero()
+}
+
 func NewLedgerRecord(plan Plan, intent DispatchIntent, now time.Time) (LedgerRecord, error) {
 	if plan.Validate() != nil || intent.Validate(plan) != nil || now.IsZero() {
 		return LedgerRecord{}, ErrInvalid

@@ -84,7 +84,7 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 	owner, generation := "@cloud-owner:example.test", uint64(7)
 	snapshot := coremodel.ExecutionSnapshot{ProfileID: profileID, Revision: 1, CredentialVersion: 1,
 		Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation,
-		BaseURL: "https://example.invalid", Model: "test", APIKey: "test", ContextWindow: 32768}
+		BaseURL: "https://example.invalid", Model: "test", APIKey: "test", MaxOutputTokens: 4096, ContextWindow: 32768}
 	conversationID := uuid.NewString()
 	turn, err := conversation.StartTurn(ctx, core.TurnStartCommand{RequestID: uuid.NewString(), OwnerID: owner,
 		AccountGeneration: generation, ConversationID: conversationID, Prompt: "Run this heavy task on AWS.",
@@ -118,7 +118,7 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 		t.Fatal(err)
 	}
 	authorization := cloudworker.ModelAuthorization{ModelProfileID: profileID, ModelProfileRevision: 1,
-		Provider: "openai_compatible", Model: "test", Interface: "openai_compatible", ContextWindow: 65536, CredentialVersion: 1,
+		Provider: "openai_compatible", Model: "test", Interface: "openai_compatible", MaximumOutputTokens: 4096, ContextWindow: 65536, CredentialVersion: 1,
 		CredentialBindingDigest: pgCloudDigest("credential-binding")}
 	if err = authorization.Seal(); err != nil {
 		cleanup()
@@ -546,6 +546,172 @@ func TestCloudWorkerPostgresClaimAtomicallyConsumesConfirmationAndBeginsExecutio
 			reservationCount != 0 || beginCount != 0 {
 			t.Fatalf("rollback leaked state task=%s/%d confirmation=%s/%d execution=%s/%d reservation=%d begin=%d",
 				taskStatus, taskRevision, confirmationState, confirmationRevision, executionState, executionRevision, reservationCount, beginCount)
+		}
+	})
+}
+
+func convertOfferToLegacyV1(t *testing.T, h *pgCloudWorkerHarness, offer cloudworker.Offer) cloudworker.Offer {
+	t.Helper()
+	plan := offer.Plan
+	plan.ModelAuthorization.ContextWindow = 0
+	plan.ModelAuthorization.BindingDigest = ""
+	plan.ModelRelay.BindingDigest = ""
+	plan.Placement.IAMPolicyDigest = ""
+	plan.AWSInfrastructureDigest = ""
+	plan.AuthorizationBasisDigest = ""
+	plan.ExecutionDigest = ""
+	plan.Digest = ""
+	plan.Quote.BasisDigest = ""
+	plan.Quote.Digest = ""
+	if err := plan.Seal(); !errors.Is(err, cloudworker.ErrInvalid) || plan.AuthorizationBasisDigest == "" {
+		t.Fatalf("legacy basis preparation err=%v plan=%+v", err, plan)
+	}
+	plan.Quote.BasisDigest = plan.AuthorizationBasisDigest
+	if err := plan.Quote.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	execution, err := cloudworker.NewExecution(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := cloudworker.BindingForPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planRaw, privateRaw, err := marshalCloudWorkerPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionRaw, err := marshalCloudWorkerExecution(execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindingRaw, _ := json.Marshal(binding)
+	payloadRaw, _ := json.Marshal(coretask.TaskPayload{CloudWorker: &coretask.CloudWorkerTaskPayload{
+		ExecutionID: plan.ExecutionID, AccountGeneration: plan.AccountGeneration,
+		PlanID: plan.PlanID, PlanRevision: plan.Revision, PlanDigest: plan.Digest,
+		ConfirmationID: plan.ConfirmationID, TurnID: plan.TurnID,
+		ConversationID: plan.ConversationID, QuoteDigest: plan.Quote.Digest,
+		ExecutionDigest: plan.ExecutionDigest,
+	}})
+	tx, err := h.store.pool.Begin(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(h.ctx)
+	if _, err = tx.Exec(h.ctx, `UPDATE core_cloud_worker_plans SET digest=$2,execution_digest=$3,
+		authorization_basis_digest=$4,quote_digest=$5,model_binding_digest=$6,plan_json=$7,private_json=$8
+		WHERE plan_id=$1`, plan.PlanID, plan.Digest, plan.ExecutionDigest, plan.AuthorizationBasisDigest,
+		plan.Quote.Digest, plan.ModelAuthorization.BindingDigest, planRaw, privateRaw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(h.ctx, `UPDATE core_cloud_worker_executions SET plan_digest=$2,digest=$3,
+		quote_digest=$4,execution_digest=$5,execution_json=$6 WHERE execution_id=$1`, execution.ExecutionID,
+		execution.PlanDigest, execution.Digest, execution.QuoteDigest, execution.ExecutionDigest, executionRaw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(h.ctx, `UPDATE core_tasks SET payload_json=$2 WHERE task_id=$1`, plan.TaskID, payloadRaw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(h.ctx, `UPDATE core_confirmations SET target_revision=$2,binding_json=$3 WHERE confirmation_id=$1`,
+		plan.ConfirmationID, binding.TargetRevision, bindingRaw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(h.ctx, `UPDATE core_confirmation_target_bindings SET binding_json=$2 WHERE confirmation_id=$1`,
+		plan.ConfirmationID, bindingRaw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(h.ctx, `UPDATE core_confirmation_current_bindings SET target_revision=$3,binding_json=$4
+		WHERE operation_domain=$1 AND target_id=$2`, binding.OperationDomain, binding.TargetID,
+		binding.TargetRevision, bindingRaw); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	offer.Plan, offer.Execution, offer.Confirmation.Binding = plan, execution, binding
+	return offer
+}
+
+func TestCloudWorkerLegacyV1PlanIsReadOnlyAtConfirmationAndClaim(t *testing.T) {
+	t.Run("confirmation becomes stale before queueing", func(t *testing.T) {
+		h := newPGCloudWorkerHarness(t)
+		defer h.cleanup()
+		offer := convertOfferToLegacyV1(t, h, h.propose(t))
+		readback, err := h.cloud.GetPlan(h.ctx, h.owner, offer.Plan.PlanID, offer.Plan.Revision)
+		if err != nil || readback.ModelAuthorization.ContextWindow != 0 {
+			t.Fatalf("historical readback=%+v err=%v", readback, err)
+		}
+		if _, err = h.confirmation.Confirm(h.ctx, coreconfirmation.ConfirmCommand{
+			ConfirmationID: offer.Confirmation.ConfirmationID, IdempotencyKey: uuid.NewString(),
+			ExpectedRevision: offer.Confirmation.Revision, At: h.now.Add(time.Second),
+		}); !errors.Is(err, coreconfirmation.ErrStale) {
+			t.Fatalf("legacy confirm error=%v", err)
+		}
+		var confirmationState, taskStatus string
+		var beginCount, reservationCount int
+		if err = h.store.pool.QueryRow(h.ctx, `SELECT c.state,t.status,
+			(SELECT count(*) FROM core_cloud_worker_begin_authorizations WHERE execution_id=$2),
+			(SELECT count(*) FROM core_confirmation_reservations WHERE confirmation_id=$1)
+			FROM core_confirmations c JOIN core_tasks t ON t.task_id=c.task_id WHERE c.confirmation_id=$1`,
+			offer.Confirmation.ConfirmationID, offer.Execution.ExecutionID).Scan(
+			&confirmationState, &taskStatus, &beginCount, &reservationCount); err != nil {
+			t.Fatal(err)
+		}
+		if confirmationState != string(coreconfirmation.StateExpired) || taskStatus != string(coretask.StatusFailed) ||
+			beginCount != 0 || reservationCount != 0 {
+			t.Fatalf("legacy confirm leaked state confirmation=%s task=%s begin=%d reservations=%d",
+				confirmationState, taskStatus, beginCount, reservationCount)
+		}
+	})
+
+	t.Run("historical confirmed task cannot create begin authority", func(t *testing.T) {
+		h := newPGCloudWorkerHarness(t)
+		defer h.cleanup()
+		offer := convertOfferToLegacyV1(t, h, h.propose(t))
+		queued, err := offer.Execution.Transition(cloudworker.StateQueued, h.now.Add(time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		queuedRaw, err := marshalCloudWorkerExecution(queued)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_confirmations SET state='confirmed',revision=revision+1,
+			updated_at=$2 WHERE confirmation_id=$1`, offer.Confirmation.ConfirmationID, h.now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_tasks SET status='queued',revision=revision+1,
+			updated_at=$2 WHERE task_id=$1`, offer.Task.ID, h.now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_cloud_worker_executions SET state=$2,revision=$3,digest=$4,
+			execution_json=$5,updated_at=$6 WHERE execution_id=$1`, queued.ExecutionID, queued.State,
+			queued.Revision, queued.Digest, queuedRaw, queued.UpdatedAt); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = h.tasks.ClaimNextDue(h.ctx, "legacy-v1-claim", h.now.Add(2*time.Second), 30*time.Minute, 4); !errors.Is(err, coretask.ErrNotFound) {
+			t.Fatalf("legacy claim error=%v", err)
+		}
+		var confirmationState, taskStatus, taskFailure, executionState string
+		var beginCount, reservationCount int
+		if err = h.store.pool.QueryRow(h.ctx, `SELECT c.state,t.status,t.failure_code,e.state,
+			(SELECT count(*) FROM core_cloud_worker_begin_authorizations WHERE execution_id=$2),
+			(SELECT count(*) FROM core_confirmation_reservations WHERE confirmation_id=$1)
+			FROM core_confirmations c JOIN core_tasks t ON t.task_id=c.task_id
+			JOIN core_cloud_worker_executions e ON e.task_id=t.task_id WHERE c.confirmation_id=$1`,
+			offer.Confirmation.ConfirmationID, offer.Execution.ExecutionID).Scan(
+			&confirmationState, &taskStatus, &taskFailure, &executionState, &beginCount, &reservationCount); err != nil {
+			t.Fatal(err)
+		}
+		if confirmationState != string(coreconfirmation.StateExpired) || taskStatus != string(coretask.StatusFailed) ||
+			taskFailure != "runtime_contract_upgraded" || executionState != string(cloudworker.StateExpired) ||
+			beginCount != 0 || reservationCount != 0 {
+			t.Fatalf("legacy claim terminal state confirmation=%s task=%s failure=%s execution=%s begin=%d reservations=%d",
+				confirmationState, taskStatus, taskFailure, executionState, beginCount, reservationCount)
 		}
 	})
 }

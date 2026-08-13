@@ -169,7 +169,7 @@ func writeE2EPiConfig(t *testing.T, configRoot, baseURL string) {
 	for name, content := range map[string][]byte{
 		"models.json":   raw,
 		"auth.json":     []byte("{}"),
-		"settings.json": []byte(`{"enableInstallTelemetry":false}`),
+		"settings.json": []byte(`{"compaction":{"enabled":false},"enableInstallTelemetry":false}`),
 	} {
 		if err := os.WriteFile(filepath.Join(configRoot, name), content, 0o644); err != nil {
 			t.Fatal(err)

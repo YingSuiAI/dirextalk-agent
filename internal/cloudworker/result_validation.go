@@ -374,7 +374,7 @@ func validateResultCollectionAuthority(plan Plan, execution Execution, authoriza
 		material.Fence.ExecutionID != session.Fence.ExecutionID || material.Fence.TaskID != session.Fence.TaskID ||
 		material.Fence.AccountGeneration != session.Fence.AccountGeneration || material.Fence.Attempt != session.Fence.Attempt ||
 		material.Fence.LeaseEpoch != session.Fence.LeaseEpoch ||
-		!material.ProtocolVersions.IsCurrent() ||
+		!material.ProtocolVersions.IsReadable() ||
 		material.RuntimeTaskSHA256 != authorization.RuntimeTaskSHA256 || material.InputManifestSHA256 != authorization.InputManifestSHA256 {
 		return ErrStaleAuthorization
 	}

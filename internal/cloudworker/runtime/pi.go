@@ -13,6 +13,8 @@ import (
 
 const DefaultSearchPath = "/usr/local/bin:/usr/bin:/bin"
 
+const piSettingsJSON = `{"compaction":{"enabled":false},"enableInstallTelemetry":false}`
+
 const piSystemPrompt = `Execute exactly one authorized Dirextalk Cloud Worker task.
 Use only the enabled tools and supplied workspace. Never inspect credential locations or reveal private configuration.
 Call dirextalk_submit_result exactly once as the final action.`
@@ -143,7 +145,8 @@ func (executor *PiExecutor) Run(
 	home := filepath.Join(jobRoot, "home")
 	configRoot := filepath.Join(jobRoot, "config")
 	if os.Mkdir(home, 0o700) != nil || os.Mkdir(configRoot, 0o700) != nil ||
-		writePiModelsConfig(configRoot, task) != nil {
+		writePiModelsConfig(configRoot, task) != nil ||
+		writePiSettingsConfig(configRoot) != nil {
 		return Result{}, ErrExecution
 	}
 	if preparePiJobDirectories(jobRoot, home, configRoot, executor.runtimeGID) != nil {
@@ -254,13 +257,38 @@ func (executor *PiExecutor) Run(
 
 func preparePiJobDirectories(jobRoot, home, configRoot string, runtimeGID uint32) error {
 	models := filepath.Join(configRoot, "models.json")
-	for _, path := range []string{jobRoot, home, configRoot, models} {
+	settings := filepath.Join(configRoot, "settings.json")
+	for _, path := range []string{jobRoot, home, configRoot, models, settings} {
 		if os.Chown(path, -1, int(runtimeGID)) != nil {
 			return ErrExecution
 		}
 	}
 	if os.Chmod(jobRoot, 0o750) != nil || os.Chmod(home, 0o770) != nil ||
-		os.Chmod(configRoot, 0o550) != nil || os.Chmod(models, 0o440) != nil {
+		os.Chmod(configRoot, 0o550) != nil || os.Chmod(models, 0o440) != nil ||
+		os.Chmod(settings, 0o440) != nil {
+		return ErrExecution
+	}
+	return nil
+}
+
+func writePiSettingsConfig(configRoot string) error {
+	// Cloud Workers are single-use executions. Their deterministic context
+	// guard is bound to Central's model authorization, so Pi's long-session
+	// auto-compaction must not add a second fixed reserve or a summary call.
+	encoded := []byte(piSettingsJSON)
+	file, err := os.OpenFile(
+		filepath.Join(configRoot, "settings.json"),
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+		0o600,
+	)
+	if err != nil {
+		return ErrExecution
+	}
+	written, writeErr := file.Write(encoded)
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	clear(encoded)
+	if writeErr != nil || syncErr != nil || closeErr != nil || written != len(piSettingsJSON) {
 		return ErrExecution
 	}
 	return nil

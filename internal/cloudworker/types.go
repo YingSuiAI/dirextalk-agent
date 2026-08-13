@@ -536,7 +536,7 @@ func (a *ModelAuthorization) Seal() error {
 		a.Interface == "" || len(a.Interface) > 128 || strings.ContainsAny(a.Interface, "\r\n\x00") ||
 		a.MaximumOutputTokens > 10_000_000 ||
 		a.ContextWindow > 100_000_000 ||
-		(a.ContextWindow > 0 && a.MaximumOutputTokens > 0 && a.MaximumOutputTokens >= a.ContextWindow) ||
+		(a.ContextWindow > 0 && (a.MaximumOutputTokens == 0 || a.MaximumOutputTokens >= a.ContextWindow)) ||
 		!validDigest(a.CredentialBindingDigest) ||
 		!((a.Provider == "openai" && a.Interface == "openai_responses") ||
 			(a.Provider == "openai_compatible" && a.Interface == "openai_compatible")) {

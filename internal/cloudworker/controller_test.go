@@ -2,6 +2,9 @@ package cloudworker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"slices"
 	"sync"
@@ -12,6 +15,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/modelrelay"
 	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
+	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
@@ -152,7 +156,7 @@ func (store *controllerTestStore) GetResumeContext(_ context.Context, task coret
 	if !store.hasMaterial {
 		return ResumeContext{}, ErrNotFound
 	}
-	material, err := store.material.CloneForFence(store.material.Fence)
+	material, err := store.material.CloneForRecoveryFence(store.material.Fence)
 	if err != nil {
 		return ResumeContext{}, err
 	}
@@ -746,6 +750,147 @@ func (fixture *controllerTestFixture) primeAuthorized(t *testing.T, dispatchPrep
 	fixture.trace.entries = nil
 }
 
+func (fixture *controllerTestFixture) primeLegacyV1Authorized(t *testing.T) {
+	t.Helper()
+	plan := fixture.store.plan
+	plan.ModelAuthorization.ContextWindow = 0
+	plan.ModelAuthorization.BindingDigest = ""
+	plan.ModelRelay.BindingDigest = ""
+	plan.Placement.IAMPolicyDigest = ""
+	plan.AWSInfrastructureDigest = ""
+	plan.AuthorizationBasisDigest = ""
+	plan.ExecutionDigest = ""
+	plan.Digest = ""
+	plan.Quote.BasisDigest = ""
+	plan.Quote.Digest = ""
+	if err := plan.Seal(); !errors.Is(err, ErrInvalid) || plan.AuthorizationBasisDigest == "" {
+		t.Fatalf("prepare legacy plan: %v", err)
+	}
+	plan.Quote.BasisDigest = plan.AuthorizationBasisDigest
+	if err := plan.Quote.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	execution, err := NewExecution(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err = execution.Transition(StateQueued, fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err = execution.Transition(StateProvisioning, fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := BindingForPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prerequisite := fixture.store.prerequisite
+	prerequisite.ConfirmationBindingDigest = string(binding.Digest)
+	inputJSON, inputDigest, err := sanitizedRuntimeInputManifest(plan.InputManifest, fixture.store.staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	piProvider, piInterface, err := PiRelayModel(plan.ModelAuthorization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayDigest := sha256.Sum256([]byte(plan.ModelRelay.Endpoint))
+	runtimeTask := cloudruntime.Task{
+		SchemaVersion: cloudruntime.TaskSchemaV1, Recipe: cloudruntime.RecipeEphemeralPiTask,
+		Adapter: cloudruntime.AdapterPiJSONTaskV1, TaskID: plan.TaskID, ExecutionID: plan.ExecutionID,
+		Objective: plan.Objective, InputManifestSHA256: inputDigest,
+		WorkspaceMode: cloudruntime.WorkspaceMode(plan.WorkspaceMode), WorkspaceSHA256: inputDigest,
+		PiVersion:             fixture.store.qualification.PiVersion,
+		PiExecutableSHA256:    fixture.store.qualification.PiExecutableSHA256,
+		ResultExtensionSHA256: fixture.store.qualification.ResultExtensionSHA256,
+		ModelProfileID:        plan.ModelAuthorization.ModelProfileID,
+		ModelProfileRevision:  plan.ModelAuthorization.ModelProfileRevision,
+		ModelProvider:         piProvider, Model: plan.ModelAuthorization.Model, ModelInterface: piInterface,
+		CredentialVersion:        plan.ModelAuthorization.CredentialVersion,
+		ModelBindingSHA256:       plan.ModelAuthorization.BindingDigest,
+		ModelGrantAudienceSHA256: RuntimeGrantAudienceDigest(plan, runtimeFenceForTask(fixture.task, plan)),
+		ModelGrantLimitSHA256:    digestValue(plan.Limits), ModelRelayBaseURL: plan.ModelRelay.Endpoint,
+		ModelRelayEndpointSHA256: hex.EncodeToString(relayDigest[:]),
+		ModelRelayBindingSHA256:  plan.ModelRelay.BindingDigest,
+		MaxOutputTokens:          plan.ModelAuthorization.MaximumOutputTokens, MaxOutputBytes: plan.Limits.MaxOutputBytes,
+	}
+	runtimeJSON, err := json.Marshal(runtimeTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeDigest, err := runtimeTask.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagedDigest, err := fixture.store.staged.Seal(plan.InputManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := runtimeFenceForTask(fixture.task, plan)
+	material := RuntimeTaskMaterial{
+		ProtocolVersions: cloudprotocol.Versions{WorkerProtocolVersion: cloudprotocol.WorkerProtocolVersion, RuntimeContractVersion: cloudprotocol.RuntimeContractVersionV1},
+		Task:             runtimeTask, RuntimeTaskJSON: runtimeJSON, RuntimeTaskSHA256: runtimeDigest,
+		InputManifestJSON: inputJSON, InputManifestSHA256: inputDigest,
+		SourceManifestSHA256: plan.InputManifestDigest, StagedManifestSHA256: stagedDigest, Fence: fence,
+	}
+	if _, err = material.CloneForFence(fence); err == nil {
+		t.Fatal("historical material authorized a current Worker claim")
+	}
+	if recovered, recoveryErr := material.CloneForRecoveryFence(fence); recoveryErr != nil {
+		t.Fatalf("historical material is not recoverable: %v", recoveryErr)
+	} else {
+		recovered.Destroy()
+	}
+	authorization := LaunchAuthorization{LaunchPrerequisite: prerequisite,
+		RuntimeTaskSHA256: runtimeDigest, InputManifestSHA256: inputDigest,
+		StagedManifestSHA256: stagedDigest, AuthorizedAt: fixture.now}
+	awsPlan, intent, err := BuildAWSDispatch(plan, execution, authorization, fixture.store.staged, material, plan.Quote, fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := cloudaws.NewLedgerRecord(awsPlan, intent, intent.RecordedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.State = cloudaws.LifecycleCreateStarted
+	record.CreateMutation = cloudaws.MutationRecord{
+		Token: intent.ClientToken, StartedAt: fixture.now,
+		LeaseUntil: fixture.now.Add(time.Minute), DispatchedAt: fixture.now.Add(time.Second), Attempts: 1,
+	}
+	record.Revision++
+	record.UpdatedAt = fixture.now.Add(time.Second)
+	if err = record.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	fixture.store.plan, fixture.store.execution = plan, execution
+	fixture.store.prerequisite, fixture.store.authorization = prerequisite, authorization
+	fixture.store.qualification = RuntimeQualification{WorkerProtocolVersion: cloudprotocol.WorkerProtocolVersion,
+		RuntimeContractVersion: cloudprotocol.RuntimeContractVersionV1, PiRuntimeDigest: plan.Compute.PiRuntimeDigest,
+		PiVersion: runtimeTask.PiVersion, PiExecutableSHA256: runtimeTask.PiExecutableSHA256,
+		ResultExtensionSHA256: runtimeTask.ResultExtensionSHA256}
+	fixture.store.material, fixture.store.hasMaterial = material, true
+	fixture.store.awsRecord, fixture.store.hasAWSRecord = record, true
+	fixture.aws.bind(awsPlan, intent)
+	if _, err = fixture.store.MarkDispatchPrepared(context.Background(), fixture.task, fixture.store.execution.Revision,
+		record.Identity, record.Intent.IntentDigest); err != nil {
+		t.Fatal(err)
+	}
+	fixture.store.plan = plan
+	fixture.models.values = []ModelAuthorization{plan.ModelAuthorization}
+	fixture.task.Spec.Payload.CloudWorker = &coretask.CloudWorkerTaskPayload{
+		ExecutionID: plan.ExecutionID, AccountGeneration: plan.AccountGeneration,
+		PlanID: plan.PlanID, PlanRevision: plan.Revision, PlanDigest: plan.Digest,
+		ConfirmationID: plan.ConfirmationID, TurnID: plan.TurnID, ConversationID: plan.ConversationID,
+		QuoteDigest: plan.Quote.Digest, ExecutionDigest: plan.ExecutionDigest,
+	}
+	fixture.trace.entries = nil
+}
+
 func TestControllerTypedFakeQualificationUsesOneDispatchAndVerifiedCleanup(t *testing.T) {
 	fixture := newControllerTestFixture(t)
 	fixture.aws.ensureErrors = []error{cloudaws.ErrReconcilePending, nil}
@@ -765,6 +910,91 @@ func TestControllerTypedFakeQualificationUsesOneDispatchAndVerifiedCleanup(t *te
 	if fixture.trace.index("fence_sessions") < 0 || fixture.trace.index("fence_sessions") > fixture.trace.index("begin_cleanup") ||
 		fixture.trace.index("begin_cleanup") > fixture.trace.index("aws_destroy") || fixture.trace.index("aws_destroy") > fixture.trace.index("terminal:succeeded") {
 		t.Fatalf("unsafe completion order: %v", fixture.trace.entries)
+	}
+}
+
+func TestControllerLegacyV1StartedExecutionCanFinishAndCleanUp(t *testing.T) {
+	fixture := newControllerTestFixture(t)
+	fixture.primeLegacyV1Authorized(t)
+
+	outcome := fixture.controller(t, nil).Handle(context.Background(), fixture.task)
+	if outcome.Err != nil || fixture.store.execution.State != StateSucceeded ||
+		fixture.collector.calls != 1 || fixture.store.completeCalls != 1 {
+		t.Fatalf("legacy completion outcome=%+v state=%s collect=%d complete=%d trace=%v",
+			outcome, fixture.store.execution.State, fixture.collector.calls,
+			fixture.store.completeCalls, fixture.trace.entries)
+	}
+	if fixture.aws.prepareCalls != 0 || fixture.aws.ensureCalls != 1 || fixture.aws.destroyCalls != 1 ||
+		!fixture.store.execution.Cleanup.VerifiedDestroyed {
+		t.Fatalf("legacy completion recovery counts: prepare=%d ensure=%d destroy=%d cleanup=%+v trace=%v",
+			fixture.aws.prepareCalls, fixture.aws.ensureCalls, fixture.aws.destroyCalls, fixture.store.execution.Cleanup, fixture.trace.entries)
+	}
+}
+
+func TestControllerLegacyV1IntentOnlyExecutionNeverLaunchesWorker(t *testing.T) {
+	fixture := newControllerTestFixture(t)
+	fixture.primeLegacyV1Authorized(t)
+	fixture.store.awsRecord.State = cloudaws.LifecycleIntentRecorded
+	fixture.store.awsRecord.CreateMutation = cloudaws.MutationRecord{}
+	fixture.store.awsRecord.Revision++
+	fixture.store.awsRecord.UpdatedAt = fixture.now.Add(2 * time.Second)
+	if err := fixture.store.awsRecord.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome := fixture.controller(t, nil).Handle(context.Background(), fixture.task)
+	if outcome.Err == nil || fixture.store.execution.State != StateFailed ||
+		fixture.aws.prepareCalls != 0 || fixture.aws.ensureCalls != 0 || fixture.aws.destroyCalls != 1 ||
+		!fixture.store.execution.Cleanup.VerifiedDestroyed {
+		t.Fatalf("legacy intent-only outcome=%+v state=%s prepare=%d ensure=%d destroy=%d cleanup=%+v trace=%v",
+			outcome, fixture.store.execution.State, fixture.aws.prepareCalls, fixture.aws.ensureCalls,
+			fixture.aws.destroyCalls, fixture.store.execution.Cleanup, fixture.trace.entries)
+	}
+}
+
+func TestControllerLegacyV1IntentOnlyCleaningResumesLedgerCleanup(t *testing.T) {
+	fixture := newControllerTestFixture(t)
+	fixture.primeLegacyV1Authorized(t)
+	fixture.store.awsRecord.State = cloudaws.LifecycleIntentRecorded
+	fixture.store.awsRecord.CreateMutation = cloudaws.MutationRecord{}
+	fixture.store.awsRecord.Revision++
+	fixture.store.awsRecord.UpdatedAt = fixture.now.Add(2 * time.Second)
+	fixture.store.execution.ProviderMutationStarted = false
+	if err := fixture.store.execution.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.BeginCleanup(context.Background(), fixture.task, fixture.store.execution.Revision,
+		StateFailed, "runtime_contract_upgraded", "Cloud Worker runtime contract upgraded"); err != nil {
+		t.Fatal(err)
+	}
+	fixture.trace.entries = nil
+
+	outcome := fixture.controller(t, nil).Handle(context.Background(), fixture.task)
+	if outcome.Err == nil || fixture.store.execution.State != StateFailed || fixture.aws.ensureCalls != 0 ||
+		fixture.aws.destroyCalls != 1 || !fixture.store.execution.Cleanup.VerifiedDestroyed {
+		t.Fatalf("legacy intent cleanup outcome=%+v state=%s ensure=%d destroy=%d cleanup=%+v trace=%v",
+			outcome, fixture.store.execution.State, fixture.aws.ensureCalls, fixture.aws.destroyCalls,
+			fixture.store.execution.Cleanup, fixture.trace.entries)
+	}
+}
+
+func TestControllerLegacyV1CleaningExecutionCanResumeCleanup(t *testing.T) {
+	fixture := newControllerTestFixture(t)
+	fixture.primeLegacyV1Authorized(t)
+	fixture.sessions.session = control.Session{}
+	fixture.sessions.findErr = control.ErrNotFound
+	if _, err := fixture.store.BeginCleanup(context.Background(), fixture.task, fixture.store.execution.Revision,
+		StateFailed, "runtime_contract_upgraded", "Cloud Worker runtime contract upgraded"); err != nil {
+		t.Fatal(err)
+	}
+	fixture.trace.entries = nil
+
+	outcome := fixture.controller(t, nil).Handle(context.Background(), fixture.task)
+	if outcome.Err == nil || fixture.store.execution.State != StateFailed || fixture.store.failCalls != 1 ||
+		fixture.aws.destroyCalls != 1 || !fixture.store.execution.Cleanup.VerifiedDestroyed {
+		t.Fatalf("legacy cleanup outcome=%+v state=%s fail=%d destroy=%d cleanup=%+v trace=%v",
+			outcome, fixture.store.execution.State, fixture.store.failCalls, fixture.aws.destroyCalls,
+			fixture.store.execution.Cleanup, fixture.trace.entries)
 	}
 }
 
