@@ -26,15 +26,16 @@ const (
 	workloadSchema = `{"additionalProperties":false,"properties":{"active_state":{"type":"string"},"domain":` + domainSchema + `,"health":{"type":"string"},"kind":{"enum":["job","service"],"type":"string"},"phase":{"type":"string"},"port":{"type":"integer"},"workload_id":{"type":"string"}},"required":["workload_id","kind","phase","active_state","health"],"type":"object"}`
 	statusSchema   = `{"additionalProperties":false,"properties":{"current_task":{"additionalProperties":false,"properties":{"execution_id":{"type":"string"},"phase":{"type":"string"}},"required":["execution_id","phase"],"type":"object"},"ec2_state":{"type":"string"},"hourly_quote":{"additionalProperties":false,"properties":{"currency":{"type":"string"},"expires_at":{"format":"date-time","type":"string"},"micros_per_hour":{"minimum":0,"type":"integer"},"observed_at":{"format":"date-time","type":"string"}},"required":["currency","micros_per_hour","observed_at","expires_at"],"type":"object"},"identity":` + identitySchema + `,"observed_at":{"format":"date-time","type":"string"},"public_ipv4":{"type":"string"},"server":{"additionalProperties":false,"properties":{"last_seen":{"format":"date-time","type":"string"},"load_1":{"type":"number"},"load_15":{"type":"number"},"load_5":{"type":"number"}},"required":["last_seen","load_1","load_5","load_15"],"type":"object"},"worker_phase":{"type":"string"},"workloads":{"items":` + workloadSchema + `,"type":"array"}},"required":["identity","ec2_state","worker_phase","observed_at"],"type":"object"}`
 
-	listInputSchema     = `{"additionalProperties":false,"properties":{},"type":"object"}`
-	listResultSchema    = `{"additionalProperties":false,"properties":{"workers":{"items":` + statusSchema + `,"maxItems":5,"type":"array"}},"required":["workers"],"type":"object"}`
-	getInputSchema      = `{"additionalProperties":false,"properties":{"identity":` + identitySchema + `},"required":["identity"],"type":"object"}`
-	getResultSchema     = `{"additionalProperties":false,"properties":{"worker":` + statusSchema + `},"required":["worker"],"type":"object"}`
-	destroyInputSchema  = `{"additionalProperties":false,"properties":{"authorization_proof":{"type":"string"},"confirmation":{"const":"destroy_worker","type":"string"},"identity":` + identitySchema + `},"required":["identity","confirmation","authorization_proof"],"type":"object"}`
-	destroyResultSchema = `{"additionalProperties":false,"properties":{"destroyed":{"const":true,"type":"boolean"},"identity":` + identitySchema + `},"required":["identity","destroyed"],"type":"object"}`
-	domainInputSchema   = `{"additionalProperties":false,"properties":{"confirmation_digest":{"type":"string"},"confirmation_proof":{"type":"string"},"hostname":{"type":"string"},"ttl":{"type":"integer"},"worker_identity":` + identitySchema + `,"workload_id":{"type":"string"},"zone_id":{"type":"string"}},"required":["worker_identity","workload_id","zone_id","hostname","ttl","confirmation_digest","confirmation_proof"],"type":"object"}`
-	bindResultSchema    = `{"additionalProperties":false,"properties":{"domain":` + domainSchema + `,"worker_identity":` + identitySchema + `,"workload_id":{"type":"string"}},"required":["worker_identity","workload_id","domain"],"type":"object"}`
-	unbindResultSchema  = `{"additionalProperties":false,"properties":{"domain":` + domainSchema + `,"unbound":{"const":true,"type":"boolean"},"worker_identity":` + identitySchema + `,"workload_id":{"type":"string"}},"required":["worker_identity","workload_id","domain","unbound"],"type":"object"}`
+	listInputSchema         = `{"additionalProperties":false,"properties":{},"type":"object"}`
+	listResultSchema        = `{"additionalProperties":false,"properties":{"workers":{"items":` + statusSchema + `,"maxItems":5,"type":"array"}},"required":["workers"],"type":"object"}`
+	getInputSchema          = `{"additionalProperties":false,"properties":{"identity":` + identitySchema + `},"required":["identity"],"type":"object"}`
+	getResultSchema         = `{"additionalProperties":false,"properties":{"worker":` + statusSchema + `},"required":["worker"],"type":"object"}`
+	destroyInputSchema      = `{"additionalProperties":false,"properties":{"confirmation":{"const":"destroy_worker","type":"string"},"identity":` + identitySchema + `},"required":["identity","confirmation"],"type":"object"}`
+	destroyResultSchema     = `{"additionalProperties":false,"properties":{"destroyed":{"const":true,"type":"boolean"},"identity":` + identitySchema + `},"required":["identity","destroyed"],"type":"object"}`
+	bindDomainInputSchema   = `{"additionalProperties":false,"properties":{"confirmation":{"const":"bind_domain","type":"string"},"hostname":{"type":"string"},"ttl":{"type":"integer"},"worker_identity":` + identitySchema + `,"workload_id":{"type":"string"},"zone_id":{"type":"string"}},"required":["worker_identity","workload_id","zone_id","hostname","ttl","confirmation"],"type":"object"}`
+	unbindDomainInputSchema = `{"additionalProperties":false,"properties":{"confirmation":{"const":"unbind_domain","type":"string"},"hostname":{"type":"string"},"ttl":{"type":"integer"},"worker_identity":` + identitySchema + `,"workload_id":{"type":"string"},"zone_id":{"type":"string"}},"required":["worker_identity","workload_id","zone_id","hostname","ttl","confirmation"],"type":"object"}`
+	bindResultSchema        = `{"additionalProperties":false,"properties":{"domain":` + domainSchema + `,"worker_identity":` + identitySchema + `,"workload_id":{"type":"string"}},"required":["worker_identity","workload_id","domain"],"type":"object"}`
+	unbindResultSchema      = `{"additionalProperties":false,"properties":{"domain":` + domainSchema + `,"unbound":{"const":true,"type":"boolean"},"worker_identity":` + identitySchema + `,"workload_id":{"type":"string"}},"required":["worker_identity","workload_id","domain","unbound"],"type":"object"}`
 )
 
 // CredentialSource returns the one current verified AWS credential. The
@@ -75,13 +76,12 @@ type WorkloadSource interface {
 }
 
 type DomainCommand struct {
-	Worker             sshworker.WorkerIdentity
-	WorkloadID         string
-	ZoneID             string
-	Hostname           string
-	TTL                uint32
-	ConfirmationDigest string
-	ConfirmationProof  string
+	Worker       sshworker.WorkerIdentity
+	WorkloadID   string
+	ZoneID       string
+	Hostname     string
+	TTL          uint32
+	Confirmation string
 }
 
 // DomainManager owns Route53 mutation, exact confirmation validation, current
@@ -113,8 +113,8 @@ func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 		{"list_workers", "List Workers", capv1.OperationType_OPERATION_TYPE_READ, capv1.RiskLevel_RISK_LEVEL_SAFE, "agent:worker:read", listInputSchema, listResultSchema},
 		{"get_worker", "Get Worker", capv1.OperationType_OPERATION_TYPE_READ, capv1.RiskLevel_RISK_LEVEL_SAFE, "agent:worker:read", getInputSchema, getResultSchema},
 		{"destroy_worker", "Destroy Worker", capv1.OperationType_OPERATION_TYPE_MUTATION, capv1.RiskLevel_RISK_LEVEL_HIGH, "agent:worker:destroy", destroyInputSchema, destroyResultSchema},
-		{"bind_domain", "Bind Route53 domain", capv1.OperationType_OPERATION_TYPE_MUTATION, capv1.RiskLevel_RISK_LEVEL_HIGH, "agent:worker:domain", domainInputSchema, bindResultSchema},
-		{"unbind_domain", "Unbind Route53 domain", capv1.OperationType_OPERATION_TYPE_MUTATION, capv1.RiskLevel_RISK_LEVEL_HIGH, "agent:worker:domain", domainInputSchema, unbindResultSchema},
+		{"bind_domain", "Bind Route53 domain", capv1.OperationType_OPERATION_TYPE_MUTATION, capv1.RiskLevel_RISK_LEVEL_HIGH, "agent:worker:domain", bindDomainInputSchema, bindResultSchema},
+		{"unbind_domain", "Unbind Route53 domain", capv1.OperationType_OPERATION_TYPE_MUTATION, capv1.RiskLevel_RISK_LEVEL_HIGH, "agent:worker:domain", unbindDomainInputSchema, unbindResultSchema},
 	}
 	for _, spec := range specs {
 		inputDigest, resultDigest := sha256.Sum256([]byte(spec.input)), sha256.Sum256([]byte(spec.result))
@@ -182,28 +182,29 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 		return json.Marshal(map[string]any{"worker": worker})
 	case "destroy_worker":
 		var request destroyRequest
-		if err := decodeStrict(raw, &request); err != nil || request.Confirmation != "destroy_worker" || strings.TrimSpace(request.AuthorizationProof) == "" {
+		if err := decodeStrict(raw, &request); err != nil || request.Confirmation != "destroy_worker" {
 			return nil, invalid(errors.Join(err, errors.New("explicit destroy authorization is required")))
 		}
 		identity, err := request.Identity.workerIdentity(credential)
 		if err != nil {
 			return nil, managerFailure(err)
 		}
-		authorization := sshworker.DestroyAuthorization{Authorized: true, Proof: strings.TrimSpace(request.AuthorizationProof)}
+		authorization := sshworker.DestroyAuthorization{Authorized: true, Proof: "capability:destroy_worker"}
 		if err := c.bindings.Workers.DestroyWorker(ctx, sshworker.DestroyRequest{Identity: identity, Authorization: authorization}); err != nil {
 			return nil, managerFailure(err)
 		}
 		return json.Marshal(map[string]any{"identity": projectIdentity(identity), "destroyed": true})
 	case "bind_domain", "unbind_domain":
 		var request domainRequest
-		if err := decodeStrict(raw, &request); err != nil {
-			return nil, invalid(err)
+		expectedConfirmation := operationID
+		if err := decodeStrict(raw, &request); err != nil || request.Confirmation != expectedConfirmation {
+			return nil, invalid(errors.Join(err, errors.New("explicit domain authorization is required")))
 		}
 		identity, err := request.WorkerIdentity.workerIdentity(credential)
 		if err != nil {
 			return nil, managerFailure(err)
 		}
-		command := DomainCommand{Worker: identity, WorkloadID: request.WorkloadID, ZoneID: request.ZoneID, Hostname: request.Hostname, TTL: request.TTL, ConfirmationDigest: request.ConfirmationDigest, ConfirmationProof: request.ConfirmationProof}
+		command := DomainCommand{Worker: identity, WorkloadID: request.WorkloadID, ZoneID: request.ZoneID, Hostname: request.Hostname, TTL: request.TTL, Confirmation: request.Confirmation}
 		var domain DomainStatus
 		if operationID == "bind_domain" {
 			domain, err = c.bindings.Domains.BindDomain(ctx, command)
@@ -227,18 +228,16 @@ type identityRequest struct {
 	Identity identityInput `json:"identity"`
 }
 type destroyRequest struct {
-	Identity           identityInput `json:"identity"`
-	Confirmation       string        `json:"confirmation"`
-	AuthorizationProof string        `json:"authorization_proof"`
+	Identity     identityInput `json:"identity"`
+	Confirmation string        `json:"confirmation"`
 }
 type domainRequest struct {
-	WorkerIdentity     identityInput `json:"worker_identity"`
-	WorkloadID         string        `json:"workload_id"`
-	ZoneID             string        `json:"zone_id"`
-	Hostname           string        `json:"hostname"`
-	TTL                uint32        `json:"ttl"`
-	ConfirmationDigest string        `json:"confirmation_digest"`
-	ConfirmationProof  string        `json:"confirmation_proof"`
+	WorkerIdentity identityInput `json:"worker_identity"`
+	WorkloadID     string        `json:"workload_id"`
+	ZoneID         string        `json:"zone_id"`
+	Hostname       string        `json:"hostname"`
+	TTL            uint32        `json:"ttl"`
+	Confirmation   string        `json:"confirmation"`
 }
 type identityInput struct {
 	WorkerID           string `json:"worker_id"`

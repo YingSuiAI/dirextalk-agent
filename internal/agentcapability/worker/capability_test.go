@@ -128,15 +128,16 @@ func TestDestroyAndDomainMutationsPassExactIdentityAndProofs(t *testing.T) {
 	domains := &domainStub{status: DomainStatus{Mode: "route53_same_account", ZoneID: "Z123", Hostname: "app.example.com", TargetIPv4: status.PublicIP, TTL: 300, RecordStatus: "current"}}
 	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: credential}, Workers: manager, Domains: domains})
 	identity, _ := json.Marshal(projectIdentity(status.Identity))
-	destroy := []byte(`{"identity":` + string(identity) + `,"confirmation":"destroy_worker","authorization_proof":"destroy-proof"}`)
-	if _, err := capability.HandleOperation(ownerContext(), "destroy_worker", destroy); err != nil || manager.destroyed.Identity != status.Identity || manager.destroyed.Authorization.Proof != "destroy-proof" {
+	destroy := []byte(`{"identity":` + string(identity) + `,"confirmation":"destroy_worker"}`)
+	if _, err := capability.HandleOperation(ownerContext(), "destroy_worker", destroy); err != nil || manager.destroyed.Identity != status.Identity || manager.destroyed.Authorization.Proof != "capability:destroy_worker" {
 		t.Fatalf("destroy request=%+v err=%v", manager.destroyed, err)
 	}
-	domain := []byte(`{"worker_identity":` + string(identity) + `,"workload_id":"web","zone_id":"Z123","hostname":"app.example.com","ttl":300,"confirmation_digest":"digest","confirmation_proof":"domain-proof"}`)
-	if _, err := capability.HandleOperation(ownerContext(), "bind_domain", domain); err != nil || domains.bound.Worker != status.Identity || domains.bound.ConfirmationDigest != "digest" || domains.bound.ConfirmationProof != "domain-proof" {
+	domain := []byte(`{"worker_identity":` + string(identity) + `,"workload_id":"web","zone_id":"Z123","hostname":"app.example.com","ttl":300,"confirmation":"bind_domain"}`)
+	if _, err := capability.HandleOperation(ownerContext(), "bind_domain", domain); err != nil || domains.bound.Worker != status.Identity || domains.bound.Confirmation != "bind_domain" {
 		t.Fatalf("bind=%+v err=%v", domains.bound, err)
 	}
-	result, err := capability.HandleOperation(ownerContext(), "unbind_domain", domain)
+	unbind := bytes.Replace(domain, []byte(`"bind_domain"`), []byte(`"unbind_domain"`), 1)
+	result, err := capability.HandleOperation(ownerContext(), "unbind_domain", unbind)
 	if err != nil || domains.unbound.Worker != status.Identity || !bytes.Contains(result, []byte(`"unbound":true`)) {
 		t.Fatalf("unbind=%s command=%+v err=%v", result, domains.unbound, err)
 	}
@@ -153,12 +154,12 @@ func TestOwnerCredentialAndExactIdentityFailClosed(t *testing.T) {
 	identity["instance_id"] = "i-replaced"
 	rawIdentity, _ := json.Marshal(identity)
 	manager.err = sshworker.ErrIdentity
-	_, err := capability.HandleOperation(ownerContext(), "destroy_worker", []byte(`{"identity":`+string(rawIdentity)+`,"confirmation":"destroy_worker","authorization_proof":"proof"}`))
+	_, err := capability.HandleOperation(ownerContext(), "destroy_worker", []byte(`{"identity":`+string(rawIdentity)+`,"confirmation":"destroy_worker"}`))
 	code, _, classified := capabilityoperation.FailureDetails(err)
 	if !classified || code != "NOT_FOUND" || !errors.Is(err, sshworker.ErrIdentity) {
 		t.Fatalf("stale identity error=%v code=%s classified=%v", err, code, classified)
 	}
-	if _, err := capability.HandleOperation(ownerContext(), "destroy_worker", []byte(`{"identity":`+string(rawIdentity)+`,"confirmation":"destroy_worker","authorization_proof":"proof","worker_id":"other"}`)); err == nil {
+	if _, err := capability.HandleOperation(ownerContext(), "destroy_worker", []byte(`{"identity":`+string(rawIdentity)+`,"confirmation":"destroy_worker","worker_id":"other"}`)); err == nil {
 		t.Fatal("unknown request field was accepted")
 	}
 }
