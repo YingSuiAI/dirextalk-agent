@@ -201,7 +201,13 @@ func (client *SDK) AuthorizeSSH(ctx context.Context, identity CredentialIdentity
 	if err != nil || current {
 		return err
 	}
+	if err := client.VerifyIdentity(ctx, identity); err != nil {
+		return err
+	}
 	_, writeErr := client.ec2.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{GroupId: aws.String(group.ID), IpPermissions: []ec2types.IpPermission{{IpProtocol: aws.String("tcp"), FromPort: aws.Int32(22), ToPort: aws.Int32(22), IpRanges: []ec2types.IpRange{{CidrIp: aws.String(cidr), Description: aws.String("Dirextalk Agent egress IP")}}}}})
+	if err := client.VerifyIdentity(ctx, identity); err != nil {
+		return err
+	}
 	current, err = client.portCIDRState(ctx, group.ID, 22, cidr)
 	if current {
 		return nil
@@ -225,12 +231,18 @@ func (client *SDK) SetPublicPort(ctx context.Context, identity CredentialIdentit
 	}
 	permission := []ec2types.IpPermission{{IpProtocol: aws.String("tcp"), FromPort: aws.Int32(int32(port)), ToPort: aws.Int32(int32(port)),
 		IpRanges: []ec2types.IpRange{{CidrIp: aws.String("0.0.0.0/0"), Description: aws.String("Dirextalk persistent service")}}}}
+	if err := client.VerifyIdentity(ctx, identity); err != nil {
+		return err
+	}
 	if enabled {
 		_, err = client.ec2.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{GroupId: aws.String(group.ID), IpPermissions: permission})
 	} else {
 		_, err = client.ec2.RevokeSecurityGroupIngress(ctx, &ec2.RevokeSecurityGroupIngressInput{GroupId: aws.String(group.ID), IpPermissions: permission})
 	}
 	if err != nil {
+		return err
+	}
+	if err := client.VerifyIdentity(ctx, identity); err != nil {
 		return err
 	}
 	current, err = client.publicPortState(ctx, group.ID, port)
