@@ -7,6 +7,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
 )
 
 type workerStatusPricingCatalog struct {
@@ -39,5 +40,13 @@ func TestSSHWorkerHourlyQuoteUsesLiveInfrastructureRates(t *testing.T) {
 	if catalog.request.AccountID != identity.AccountID || catalog.request.Region != identity.Region || catalog.request.CredentialID != identity.CredentialID ||
 		catalog.request.CredentialRevision != identity.CredentialRevision || catalog.request.InstanceType != "t3.small" || catalog.request.VolumeGiB != 20 || catalog.request.VolumeType != "gp3" {
 		t.Fatalf("pricing request=%+v", catalog.request)
+	}
+}
+
+func TestProjectDomainForWorkerReportsDriftWithoutChangingPersistedTarget(t *testing.T) {
+	domain := &sshworkload.Domain{ZoneID: "Z123", Hostname: "app.example.test", BoundIPv4: "203.0.113.10", TTL: 300, PublicPort: 8080}
+	status := projectDomainForWorker(domain, "203.0.113.20")
+	if status.RecordStatus != "drifted" || status.TargetIPv4 != "203.0.113.10" || domain.BoundIPv4 != "203.0.113.10" {
+		t.Fatalf("status=%+v domain=%+v", status, domain)
 	}
 }

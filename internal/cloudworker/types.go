@@ -526,7 +526,9 @@ func (a *ModelAuthorization) Seal() error {
 		a.MaximumOutputTokens > 10_000_000 ||
 		!validDigest(a.CredentialBindingDigest) ||
 		!((a.Provider == "openai" && a.Interface == "openai_responses") ||
-			(a.Provider == "openai_compatible" && a.Interface == "openai_compatible")) {
+			(a.Provider == "openai_compatible" && a.Interface == "openai_compatible") ||
+			(a.Provider == "anthropic" && a.Interface == "anthropic-messages") ||
+			(a.Provider == "gemini" && a.Interface == "google-generative-ai")) {
 		return ErrInvalid
 	}
 	a.BindingDigest = digestValue(struct {

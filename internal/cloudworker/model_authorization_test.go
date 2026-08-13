@@ -67,6 +67,32 @@ func TestModelAuthorizationDigestBindsProfileOutputLimit(t *testing.T) {
 	}
 }
 
+func TestModelAuthorizationSupportsSSHWorkerProviders(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		provider      coremodel.ModelProvider
+		model         string
+		wantInterface string
+	}{
+		{provider: coremodel.ProviderOpenAICompatible, model: "gpt-test", wantInterface: "openai_compatible"},
+		{provider: coremodel.ProviderAnthropic, model: "claude-test", wantInterface: "anthropic-messages"},
+		{provider: coremodel.ProviderGemini, model: "gemini-test", wantInterface: "google-generative-ai"},
+	}
+	for _, test := range tests {
+		t.Run(string(test.provider), func(t *testing.T) {
+			snapshot := testModelExecutionSnapshot(2048)
+			snapshot.Provider, snapshot.Model = test.provider, test.model
+			authorization, err := ModelAuthorizationFromSnapshot(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if authorization.Provider != string(test.provider) || authorization.Interface != test.wantInterface {
+				t.Fatalf("authorization=%+v", authorization)
+			}
+		})
+	}
+}
+
 func testModelExecutionSnapshot(maximum int) coremodel.ExecutionSnapshot {
 	return coremodel.ExecutionSnapshot{
 		ProfileID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("cloud-worker-model-limit")).String(),

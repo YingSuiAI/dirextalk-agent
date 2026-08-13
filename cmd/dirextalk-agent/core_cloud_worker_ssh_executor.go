@@ -345,25 +345,19 @@ func (executor *sshWorkerExecutor) ListWorkerWorkloads(ctx context.Context, work
 			status.Phase, status.ActiveState, status.Health = runtime.Phase, runtime.ActiveState, runtime.Health
 		}
 		if service.Domain != nil {
-			if worker.PublicIP != "" && service.Domain.BoundIPv4 != worker.PublicIP {
-				dns := executor.route53For(worker.Identity.Credential)
-				mutation := remoteservice.DNSMutation{Action: remoteservice.DNSUpsertA, AccountID: worker.Identity.Credential.AccountID, WorkerID: worker.Identity.WorkerID,
-					WorkloadID: service.WorkloadID, Record: remoteservice.ARecord{ZoneID: service.Domain.ZoneID, Hostname: service.Domain.Hostname, IPv4: worker.PublicIP, TTL: service.Domain.TTL}}
-				if dns == nil || remoteservice.ReconcileLiteral(ctx, dns, mutation, "bind_domain") != nil {
-					status.Domain = ptrDomain(projectDomain(service.Domain, "error"))
-					result = append(result, status)
-					continue
-				}
-				service.Domain.BoundIPv4 = worker.PublicIP
-				if err = executor.workloads.SetDomain(ctx, worker.Identity, service.WorkloadID, service.Domain); err != nil {
-					return nil, err
-				}
-			}
-			status.Domain = ptrDomain(projectDomain(service.Domain, "current"))
+			status.Domain = ptrDomain(projectDomainForWorker(service.Domain, worker.PublicIP))
 		}
 		result = append(result, status)
 	}
 	return result, nil
+}
+
+func projectDomainForWorker(domain *sshworkload.Domain, currentPublicIP string) workercap.DomainStatus {
+	state := "current"
+	if domain != nil && currentPublicIP != "" && domain.BoundIPv4 != currentPublicIP {
+		state = "drifted"
+	}
+	return projectDomain(domain, state)
 }
 
 func ptrDomain(value workercap.DomainStatus) *workercap.DomainStatus { return &value }

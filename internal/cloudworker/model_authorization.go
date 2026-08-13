@@ -19,6 +19,10 @@ func ModelAuthorizationFromSnapshot(snapshot coremodel.ExecutionSnapshot) (Model
 	switch snapshot.Provider {
 	case coremodel.ProviderOpenAICompatible:
 		modelInterface = "openai_compatible"
+	case coremodel.ProviderAnthropic:
+		modelInterface = "anthropic-messages"
+	case coremodel.ProviderGemini:
+		modelInterface = "google-generative-ai"
 	default:
 		return ModelAuthorization{}, ErrInvalid
 	}
