@@ -13,32 +13,43 @@ type fakeRoute53 struct {
 	upserts      int
 	deletes      int
 	readMismatch bool
+	calls        []string
+	verifyErrAt  int
 }
 
 func (client *fakeRoute53) VerifyAccount(context.Context, string) error {
 	client.verifies++
+	client.calls = append(client.calls, "verify")
+	if client.verifies == client.verifyErrAt {
+		return errAccountDrift
+	}
 	return nil
 }
 
 func (client *fakeRoute53) UpsertA(_ context.Context, mutation DNSMutation) error {
 	client.upserts++
+	client.calls = append(client.calls, "upsert")
 	client.record, client.exists = mutation.Record, true
 	return nil
 }
 
 func (client *fakeRoute53) DeleteA(_ context.Context, _ DNSMutation) error {
 	client.deletes++
+	client.calls = append(client.calls, "delete")
 	client.exists = false
 	return nil
 }
 
 func (client *fakeRoute53) ReadA(context.Context, string, string) (ARecord, bool, error) {
+	client.calls = append(client.calls, "read")
 	record := client.record
 	if client.readMismatch {
 		record.IPv4 = "203.0.113.99"
 	}
 	return record, client.exists, nil
 }
+
+var errAccountDrift = errors.New("AWS account identity changed")
 
 func TestRoute53MutationRequiresExactConfirmationAndReadback(t *testing.T) {
 	mutation := dnsFixture(DNSUpsertA)
@@ -86,9 +97,35 @@ func TestRoute53LiteralCapabilityConfirmation(t *testing.T) {
 	if err := ReconcileLiteral(context.Background(), client, mutation, "bind_domain"); err != nil || !client.exists {
 		t.Fatalf("bind err=%v client=%#v", err, client)
 	}
+	assertCalls(t, client.calls, "verify", "upsert", "verify", "read")
+
+	client.calls = nil
 	mutation.Action = DNSDeleteA
 	if err := ReconcileLiteral(context.Background(), client, mutation, "unbind_domain"); err != nil || client.exists {
 		t.Fatalf("unbind err=%v client=%#v", err, client)
+	}
+	assertCalls(t, client.calls, "verify", "read", "verify", "delete", "verify", "read")
+}
+
+func TestRoute53LiteralStopsWhenAccountDrifts(t *testing.T) {
+	mutation := dnsFixture(DNSDeleteA)
+	client := &fakeRoute53{record: mutation.Record, exists: true, verifyErrAt: 2}
+	if err := ReconcileLiteral(context.Background(), client, mutation, "unbind_domain"); !errors.Is(err, errAccountDrift) {
+		t.Fatalf("delete drift error = %v", err)
+	}
+	assertCalls(t, client.calls, "verify", "read", "verify")
+	if client.deletes != 0 || !client.exists {
+		t.Fatalf("delete crossed account drift: %#v", client)
+	}
+
+	mutation.Action = DNSUpsertA
+	client = &fakeRoute53{verifyErrAt: 2}
+	if err := ReconcileLiteral(context.Background(), client, mutation, "bind_domain"); !errors.Is(err, errAccountDrift) {
+		t.Fatalf("upsert drift error = %v", err)
+	}
+	assertCalls(t, client.calls, "verify", "upsert", "verify")
+	if client.upserts != 1 {
+		t.Fatalf("upsert count = %d", client.upserts)
 	}
 }
 
@@ -140,5 +177,17 @@ func dnsFixture(action DNSAction) DNSMutation {
 	return DNSMutation{
 		Action: action, AccountID: "123456789012", WorkerID: "worker-a", WorkloadID: "api",
 		Record: ARecord{ZoneID: "Z0123456789", Hostname: "app.example.com", IPv4: "203.0.113.10", TTL: 300},
+	}
+}
+
+func assertCalls(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("calls = %v, want %v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("calls = %v, want %v", got, want)
+		}
 	}
 }

@@ -60,10 +60,16 @@ func ReconcileLiteral(ctx context.Context, client Route53, mutation DNSMutation,
 		if !sameRecord(current, mutation.Record) {
 			return ErrReadback
 		}
+		if err = client.VerifyAccount(ctx, mutation.AccountID); err != nil {
+			return err
+		}
 		if err = client.DeleteA(ctx, mutation); err != nil {
 			return err
 		}
 	} else if err := client.UpsertA(ctx, mutation); err != nil {
+		return err
+	}
+	if err := client.VerifyAccount(ctx, mutation.AccountID); err != nil {
 		return err
 	}
 	record, exists, err := client.ReadA(ctx, mutation.Record.ZoneID, canonicalHostname(mutation.Record.Hostname))
