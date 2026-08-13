@@ -73,8 +73,9 @@ contract](message-server-integration-development-contract.md), and
 - Optional `agent.worker.v1` has closed owner-client list/get/destroy and
   Route53 bind/unbind adapters for the maximum-five persistent SSH Worker
   pool. It reports the current ordinary public IPv4 and optional
-  workload/domain state, never EIP; production publication still requires the
-  Worker, verified-credential, and domain ports.
+  workload/domain state, never EIP. Worker creation, reuse, observation, and
+  destroy require the Worker manager and verified-credential ports; optional
+  Route53 operations additionally require a usable same-account hosted zone.
 - Neutral Capability Knowledge mutations now require explicit UUID idempotency
   keys, and AWS credential tests have durable, secret-free replay receipts.
   Provider tests use a persisted claim outside database locks; same-key active
@@ -110,12 +111,14 @@ contract](message-server-integration-development-contract.md), and
   supplies owner generation, conversation, and profile; PostgreSQL commits the
   schedule/replay and terminal transcript/event as one deterministic,
   replay-safe transaction.
-- The single Cloud Worker source path uses `ephemeral-pi-task` /
-  `pi_json_task_v1`, a real `CLOUD_WORKER` CoreTask and CoreConfirmation,
-  atomic conversation offer/outbox persistence, private WorkerControl fencing,
-  an exact-version result collector, and a typed eight-resource AWS ledger with
-  Reaper cleanup. It does not replace the local sandbox, MCP, Skills,
-  Knowledge, Conversation Tools, Extension Runner, or light-task worker pool.
+- The current Cloud Worker path uses a real `CLOUD_WORKER` CoreTask and
+  CoreConfirmation with the sole App-uploaded, STS-verified AWS credential.
+  New Worker creation uses a fresh EC2/EBS quote and exact owner confirmation;
+  retained idle Workers are reused without another creation. The manager
+  supports at most five ordinary-public-IPv4 EC2 Workers, discovers the current
+  AWS-owned Amazon Linux 2023 image and default network live, and copies remote
+  results into Agent-owned local artifact storage. It has no EIP, S3/KMS,
+  custom AMI, WorkerControl, model relay, or deployment-time Worker binding.
 - Generic Execution V2 run creation/retry now uses a real
   `EXECUTION_V2_RUN` CoreTask and CoreConfirmation; provider recovery is
   controller-owned.
@@ -247,6 +250,13 @@ support.
   RPC, Worker, qualification, and PostgreSQL 18 fresh-state/restart tests
   passed without AWS mutation. A candidate AMI first Claim remains required
   for live evidence.
+- On **2026-08-13**, the active implementation replaced that historical
+  inbound/custom-image path with the persistent SSH Worker manager. Focused
+  tests cover AWS-owned AL2023/default-network discovery, ordinary public IPv4,
+  maximum-five capacity, confirmed creation, retained idle reuse, explicit
+  destroy, reconnectable task status/log/artifact commands, live server-load
+  observation, and local artifact storage. This evidence is code-level and
+  does not claim a new live AWS mutation.
 
 ## Remaining release gates
 
@@ -267,20 +277,13 @@ support.
   Focused intrinsic, deterministic evidence-binding, empty-write materializer,
   command composition, and pure PostgreSQL package tests cover this path; live
   AWS mutation remains a separate authorized acceptance step.
-- A Worker AMI built from the immutable `deploy/cloud-worker` inputs passed the
-  earlier offline and boot checks, but the first live run proved those checks
-  did not exercise the Worker-UID Gate client path. It is not production-ready;
-  the corrected four-PASS qualification and fresh live run remain open.
-- One authorized, budget-bounded real Cloud Worker AWS mutation has been
-  executed in Tokyo. It proved provisioning and independent eight-kind cleanup,
-  but not Worker claim, Pi execution, artifact delivery, or successful terminal
-  completion.
-- The fresh-state real-cloud acceptance remains open: App conversation offer,
-  user confirmation, exactly one EC2/Worker/Pi, exact artifact collection,
-  verified cleanup, unique result delivery, and an independent post-run AWS
-  inventory proving zero temporary EC2, EBS, ENI, EIP, security group, IAM
-  role/profile, and stack resources. No inventory-zero evidence package exists
-  for Cloud Worker yet.
+- The fresh-state real-cloud acceptance for the current design remains open:
+  App credential upload and STS verification, a fresh live quote, exact owner
+  confirmation, creation of one AWS-owned-AL2023 EC2 Worker with ordinary
+  public IPv4, reconnectable Pi task execution, local artifact delivery,
+  retained idle reuse without another creation, live load observation, and
+  explicit manual destroy with EC2/key-pair/security-group absence read-back.
+  Route53 bind/unbind acceptance is optional and separate from Worker readiness.
 
 These gates are evidence requirements, not fallback behavior: a missing proof
 keeps the corresponding capability unpublished while planning and unrelated

@@ -20,10 +20,9 @@ Core gRPC composition may register:
 - `CoreCloudControlService`;
 - `WorkloadService` for durable workload planning and operations.
 
-`WorkerControlService` is not part of this public composition list. It is
-registered only on a dedicated TLS 1.3 Worker listener with Worker identity
-verification; Flutter, Message Server, and the Agent service token cannot call
-it.
+Cloud Workers expose no inbound Agent gRPC service. Their lifecycle and task
+observation use Agent-initiated SSH only; Flutter and Message Server continue
+to use the authenticated Capability boundary.
 
 Registration means only that an authenticated RPC endpoint is present; it does
 not publish a client capability or prove that an optional provider is ready.
@@ -205,14 +204,17 @@ multi-tenant model.
   Exactly one credential may be active: concurrent creates are serialized and
   a second create is rejected until the current credential is deleted.
 - Optional `agent.worker.v1` publishes only after the persistent SSH Worker
-  manager, the one current verified AWS credential source, and the Route53
-  domain port are composed. `list_workers` and `get_worker` expose the exact
+  manager and the sole current verified AWS credential source are composed.
+  `list_workers` and `get_worker` expose the exact
   AWS resource identity, observed EC2 state and ordinary auto-assigned public
   IPv4, Worker/task phase, server load and last-seen time, live hourly quote,
-  and optional workload/domain status. A domain is optional per workload;
+  and optional workload/domain status. At most five retained Workers may exist
+  for that credential. A domain is optional per workload;
   `bind_domain` and `unbind_domain` pass their explicit confirmation literal
   to the Route53 port, which maps the A record to the current public IPv4 and
-  performs read-back. There is no EIP field or operation. `destroy_worker`
+  performs read-back. Route53 support may be unavailable when the current
+  account/zone is not configured; this does not suppress Worker creation,
+  reuse, list, get, or destroy. There is no EIP field or operation. `destroy_worker`
   requires its explicit confirmation literal and the complete identity
   returned by list/get; a busy or changed resource identity fails closed.
 - Every `agent.knowledge.v1` mutation, including `index_sources`, requires an
@@ -343,18 +345,27 @@ Cloud Worker offers are created only by the Core intrinsic
 clients use `agent.execution.v2.plans.get/list`,
 `agent.execution.v2.runs.get/list/cancel/events`, and
 `agent.execution.v2.artifacts.get/download`; they use
-`agent.core.confirmations.get/list/confirm/reject` for authorization. The
-durable controller performs provider reconciliation and cleanup.
+`agent.core.confirmations.get/list/confirm/reject` for authorization. Every
+proposal or requote that would create a new Worker performs a fresh AWS Price
+List read for the selected EC2 instance and gp3 volume. The quote is not served
+from a persisted pricing catalog. Confirmation of that exact quote is required
+before key-pair, security-group, or EC2 creation. Reusing an already retained
+idle Worker performs no creation mutation and therefore needs no new creation
+quote. Worker destruction is a separate explicit owner-confirmed operation.
 The intrinsic may create a priced offer for an explicit cloud request or when
 trusted Native scheduler evidence proves that the local conversation runtime
 lacks the general project/shell executor required by a substantial task. The
 model may select it without cloud or remote wording, but model text and local
 failures are not capability evidence. Cloud/local-only vetoes remain binding,
-and AWS resources start only after the owner confirms the pending quote.
-Terminal Worker output returns to the same durable turn as a tool result with
-related task/plan IDs, strict references, verified artifact metadata, and
-bounded deliverable context; Central resumes the turn and authors the final
-user-facing answer.
+and AWS resources start only after the owner confirms the pending quote. The
+manager supports no more than five retained Workers for the current verified
+credential. It discovers the newest AWS-owned Amazon Linux 2023 image and the
+default VPC/subnet at runtime, assigns an ordinary public IPv4, and uses
+outbound SSH. Image identity remains internal provider data. There is no EIP,
+custom AMI, S3/KMS, WorkerControl callback, model relay, Worker domain, or
+deployment-time binding. Terminal Worker output returns to the same durable
+turn as a tool result with related task/plan IDs and local Agent-owned artifact
+metadata; Central resumes the turn and authors the final user-facing answer.
 
 `agent.chat.v1/upload_attachment_begin` requires `kind` (`image`, `file`, or
 `workspace_archive`) and a matching approved `mime_type`. A turn accepts at
@@ -363,15 +374,13 @@ each source remains immutably bound to owner, account generation, turn request,
 revision, size, and SHA-256. Workspace archives use the single constrained
 tar+gzip media type and are never exposed as arbitrary local paths.
 
-`agent.execution.v2.artifacts.download` is a safe read for retained,
-centrally verified Cloud Worker artifacts only. Its closed request contains
-`record_kind=cloud_worker`, one artifact UUID, a bounded offset below the
-8 MiB output ceiling, and a 1..512 KiB chunk limit. Each call revalidates the
-owner/account generation, retention revision and expiry, current AWS
-account/Region/credential revision, then reads and verifies the complete exact
-S3 object version before returning one non-empty top-level base64 chunk with
-chunk and whole-object SHA-256. It creates no download lease, extends no
-retention, and exposes no S3 identity.
+`agent.execution.v2.artifacts.download` is a safe read for retained Cloud
+Worker artifacts copied into the Agent-owned local artifact repository. Its
+closed request contains `record_kind=cloud_worker`, one artifact UUID, a
+bounded offset below the output ceiling, and a bounded chunk limit. Each call
+revalidates owner/account generation and the stored relative path, size, and
+SHA-256 before returning bytes. It does not contact AWS, create a download
+lease, or expose a Worker filesystem path.
 
 ## Capability and readiness semantics
 
@@ -386,24 +395,18 @@ domains stay absent and fail closed when selected.
   Startup performs no AWS calls; the first explicit provider action probes the
   exact target and returns a per-operation precondition on failure.
 - `agent.execution.v2` publishes only operations whose complete typed route is
-  ready. Cloud Worker mutation readiness additionally requires its PostgreSQL
-  store/controller, private WorkerControl listener, provider ledger/Reaper,
-  exact account/Region/credential/AMI pins, and completion outbox. Fake
-  qualification does not imply real AWS readiness; see
-  [execution-v2.md](execution-v2.md).
+  ready. Cloud Worker proposal and management readiness is evaluated from its
+  PostgreSQL task/confirmation stores, local artifact repository, SSH manager,
+  and the sole current STS-verified AWS credential. It does not depend on a
+  deploy-time account, Region, AMI, network, Route53 zone, private listener, or
+  artifact service. See [execution-v2.md](execution-v2.md).
 
-The private WorkerControl Claim has one exact bidirectional protocol handshake.
-Both peers must declare the current `worker_protocol_version` and
-`runtime_contract_version`; absent or unequal values fail before model-grant
-activation and have no compatibility or fallback route. The immutable AMI
-qualification binds the same pair.
-
-WorkerControl Heartbeat, Complete, and Fail carry one bounded, secret-free
-progress snapshot with an exact session-local sequence. The service replaces
-the Worker wall-clock activity timestamp with its own mutation time and
-enriches invocation count from the durable model-invocation ledger. Complete
-and Fail persist the final progress event atomically with session terminal
-state; no second progress API or cursor exists.
+The remote runner persists task state and logs by task ID. Agent uses separate,
+short SSH commands to start work, query status and server load, read logs from
+an offset, and list or download artifacts. SSH disconnect does not erase the
+remote task or require a long-lived callback connection. Job and service
+workloads share this protocol; service lifetime is independent of the
+conversation turn until the owner stops it or destroys its Worker.
 
 Message Server reaches Agent through the authenticated Capability boundary and
 projects only its existing ProductCore action names and Native Agent stream

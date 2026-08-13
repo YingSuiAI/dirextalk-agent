@@ -23,11 +23,9 @@ CoreServer (TLS token interceptor, optional health/reflection)
       +-- pgvector in Agent-owned PostgreSQL through the Knowledge semantic ports
       +-- extension-runner through an authenticated Unix socket
       +-- Core Runner through a separate authenticated Unix socket
-      +-- Cloud Worker controller / Resource Ledger / completion outbox
-      |
-      +-- dedicated TLS 1.3 WorkerControl listener
+      +-- persistent SSH Worker manager / local artifact repository
               |
-              +-- one ephemeral EC2 Worker + one Pi process
+              +-- outbound SSH to at most five ordinary EC2 Workers
 ```
 
 `serveCore` composes enabled domains before starting workers. Optional domains
@@ -35,8 +33,25 @@ are absent from the public registry until their composition and readiness
 checks pass. Background model, extension, Knowledge, and AWS work use the same
 durable Task/event path; the Agent never creates a parallel execution history.
 Local Agent/MCP/Skill/Knowledge work remains on the existing sandbox and worker
-pool. Only a confirmed `CLOUD_WORKER` Task can use the ephemeral AWS path; it
-never silently replaces or retries a local task.
+pool. Cloud Worker readiness is derived at request time from the sole active
+AWS credential uploaded and verified through the App; deployment configuration
+does not bind a Worker account, Region, image, network, domain, or credential.
+Before creating a new Worker, the Agent reads the current AWS EC2 and EBS price,
+presents the exact quote, and performs no AWS mutation until the owner confirms
+it. Reusing an existing idle Worker does not create infrastructure and does not
+require another creation quote. A retained Worker is destroyed only by an
+explicit owner action.
+
+The Worker manager supports at most five retained Workers for the current
+credential. It discovers the newest AWS-owned Amazon Linux 2023 image and the
+account's default VPC/subnet at runtime, creates one EC2 instance with an
+ordinary auto-assigned public IPv4, and connects from Agent by outbound SSH.
+There is no EIP, custom AMI, inbound Worker API, WorkerControl listener, model
+relay, S3/KMS artifact path, or deploy-time Worker injection. Jobs and service
+workloads persist status and logs on the Worker so a later SSH connection can
+resume observation. Result files are copied into the Agent-owned local artifact
+repository. Optional Route53 binding is an explicit management action and is
+not required to create, reuse, or observe a Worker.
 
 The durable scheduler and Extension Runner share the current fixed capacity of
 three process-starting local sandbox Tasks. The immutable Task payload
@@ -78,11 +93,13 @@ MCP and Skill execution uses a separate isolated extension runner. Core Runner
 work uses a separate descriptor-only boundary. Neither runner receives the
 Agent database connection or raw Agent credentials, and unavailable isolation
 fails closed rather than falling back in-process. A Cloud Worker receives no
-local MCP, Skills, Extension Runner, local credentials, or Agent database; its
-private WorkerControl session supplies only immutable task/input bindings,
-short-lived model authorization, and exact artifact scope. Container, socket,
-mount, network, identity, and cgroup separation is part of the deployment
-contract; see the [Message Server integration contract](message-server-integration-development-contract.md).
+Agent database, AWS secret, local MCP registry, Skills registry, or Extension
+Runner. The task's selected model credential is supplied only to the remote Pi
+process and is not written to the Worker script, logs, status, or artifacts.
+Natural-language objectives are passed to Pi as input data and are never
+executed as shell source. The Agent authenticates each outbound SSH connection
+with Agent-owned SSH key material and copies bounded results back to its own
+data root.
 
 ## Non-goals
 
