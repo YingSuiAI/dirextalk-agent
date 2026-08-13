@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v1.0.84
+
+1. Return committed AWS credential updates without a cancellable post-commit read, so successful uploads do not report a false failure.
+2. Enforce exactly one active AWS credential and reject concurrent or subsequent creates until the current credential is deleted.
+3. Disable implicit CloudFormation mutation retries and let durable state plus explicit readback resolve uncertain provider responses.
+4. Project model catalog entries from stable public fields before checking those fields for secret material.
+
 ## v1.0.83
 
 1. Seed two network-free, read-only MCP installations that return live server UTC time and kernel load information through the isolated extension runner.
