@@ -100,7 +100,7 @@ func staticAWSConfig(handle CredentialHandle) (aws.Config, error) {
 		return aws.Config{}, ErrInvalid
 	}
 	provider := credentials.NewStaticCredentialsProvider(handle.credential.accessKeyID, handle.credential.secretAccessKey, handle.credential.sessionToken)
-	return aws.Config{Region: handle.Region, Credentials: aws.NewCredentialsCache(provider), RetryMode: aws.RetryModeStandard, RetryMaxAttempts: 3}, nil
+	return aws.Config{Region: handle.Region, Credentials: aws.NewCredentialsCache(provider), Retryer: func() aws.Retryer { return aws.NopRetryer{} }}, nil
 }
 
 // StaticAWSConfig exposes the strict static-credential construction for

@@ -90,7 +90,7 @@ func (SDKCloudFormationFactory) New(h workaws.CredentialHandle) (CloudFormationC
 	if err := h.Validate(); err != nil {
 		return nil, err
 	}
-	cfg := aws.Config{Region: h.Region, Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(h.AccessKeyID, h.SecretAccessKey, h.SessionToken)), RetryMode: aws.RetryModeStandard, RetryMaxAttempts: 3}
+	cfg := aws.Config{Region: h.Region, Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(h.AccessKeyID, h.SecretAccessKey, h.SessionToken)), Retryer: func() aws.Retryer { return aws.NopRetryer{} }}
 	return cloudformation.NewFromConfig(cfg), nil
 }
 

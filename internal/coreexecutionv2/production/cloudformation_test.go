@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +16,30 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
 	cfn "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
 )
+
+func TestSDKCloudFormationFactoryDoesNotRetryMutationHTTP(t *testing.T) {
+	var calls atomic.Int64
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		http.Error(w, "retryable provider failure", http.StatusInternalServerError)
+	}))
+	defer endpoint.Close()
+
+	client, err := (SDKCloudFormationFactory{}).New(provisionTestCredential())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = client.ExecuteChangeSet(context.Background(), &cloudformation.ExecuteChangeSetInput{
+		StackName:          aws.String("retry-counter"),
+		ChangeSetName:      aws.String("retry-counter"),
+		ClientRequestToken: aws.String("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+	}, func(options *cloudformation.Options) {
+		options.BaseEndpoint = aws.String(endpoint.URL)
+	})
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("ExecuteChangeSet HTTP calls = %d, want one Agent submission", got)
+	}
+}
 
 type provisionCloudFormationFake struct {
 	createInput                                                                               *cloudformation.CreateChangeSetInput

@@ -2,7 +2,10 @@ package coreaws
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,6 +13,31 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
 	cloudformationtypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
 )
+
+func TestStaticAWSConfigDoesNotRetryMutationHTTP(t *testing.T) {
+	var calls atomic.Int64
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		http.Error(w, "retryable provider failure", http.StatusInternalServerError)
+	}))
+	defer endpoint.Close()
+
+	config, err := staticAWSConfig(safetyHandle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := cloudformation.NewFromConfig(config, func(options *cloudformation.Options) {
+		options.BaseEndpoint = aws.String(endpoint.URL)
+	})
+	_, _ = client.ExecuteChangeSet(context.Background(), &cloudformation.ExecuteChangeSetInput{
+		StackName:          aws.String("retry-counter"),
+		ChangeSetName:      aws.String("retry-counter"),
+		ClientRequestToken: aws.String("11111111-1111-4111-8111-111111111110"),
+	})
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("ExecuteChangeSet HTTP calls = %d, want one Agent submission", got)
+	}
+}
 
 type safetyCloudClient struct {
 	createDescription         string
