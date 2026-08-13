@@ -35,6 +35,8 @@ func (client *livePricingClient) GetProducts(_ context.Context, input *pricing.G
 	unit, amount, family := "Hrs", "0.0208", "Compute Instance"
 	if attributes["volumeApiName"] == "gp3" {
 		unit, amount, family = "GB-Mo", "0.08", "Storage"
+	} else if aws.ToString(input.ServiceCode) == "AmazonVPC" && attributes["group"] == "VPCPublicIPv4Address" {
+		unit, amount, family = "Hrs", "0.005", ""
 	}
 	product := map[string]any{
 		"product": map[string]any{"productFamily": family, "attributes": attributes},
@@ -78,7 +80,7 @@ func TestAWSLivePricingCatalogReadsAWSForEveryQuoteWithoutCatalogState(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if credential.calls != 2 || client.calls != 4 || first.Rates.ComputeMicrosPerHour != 20_800 ||
+	if credential.calls != 2 || client.calls != 6 || first.Rates.ComputeMicrosPerHour != 20_800 || first.Rates.PublicIPv4MicrosPerHour != 5_000 ||
 		first.Rates.EBSStorageMicrosPerGiBMonth != 80_000 || first.RevisionDigest != second.RevisionDigest {
 		t.Fatalf("credential_calls=%d price_calls=%d first=%+v second=%+v", credential.calls, client.calls, first, second)
 	}

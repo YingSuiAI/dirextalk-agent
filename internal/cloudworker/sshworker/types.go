@@ -219,6 +219,7 @@ type WorkerRecord struct {
 	Phase                WorkerPhase        `json:"phase"`
 	SSHUser              string             `json:"ssh_user"`
 	InstanceType         string             `json:"instance_type"`
+	VolumeGiB            int32              `json:"volume_gib"`
 	KeyPair              KeyPair            `json:"key_pair"`
 	SecurityGroup        SecurityGroup      `json:"security_group"`
 	Instance             Instance           `json:"instance"`
@@ -263,7 +264,7 @@ type HourlyQuote struct {
 }
 type StatusSource interface {
 	Observe(context.Context, WorkerRecord) (RunnerMetrics, error)
-	HourlyQuote(context.Context, CredentialIdentity, string) (HourlyQuote, error)
+	HourlyQuote(context.Context, CredentialIdentity, string, int32) (HourlyQuote, error)
 }
 
 type WorkerStatus struct {

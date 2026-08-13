@@ -238,6 +238,12 @@ type CommandSSHExecutor struct {
 	SSHPath string
 }
 
+type CommandStatusSource struct {
+	SSHPath string
+	Keys    KeyMaterial
+	Quote   func(context.Context, CredentialIdentity, string, int32) (HourlyQuote, error)
+}
+
 type remoteRuntimeStatus struct {
 	Phase    string `json:"phase"`
 	ExitCode int    `json:"exit_code"`
@@ -246,6 +252,57 @@ type remoteRuntimeStatus struct {
 type remoteArtifact struct {
 	Name string `json:"name"`
 	Size int64  `json:"size"`
+}
+
+type remoteServerStatus struct {
+	ObservedAt  time.Time `json:"observed_at"`
+	LoadAverage string    `json:"load_average"`
+}
+
+func (source CommandStatusSource) Observe(ctx context.Context, worker WorkerRecord) (RunnerMetrics, error) {
+	if source.Keys == nil || worker.Instance.PublicIP == "" {
+		return RunnerMetrics{}, ErrInvalid
+	}
+	key, _, err := source.Keys.Ensure(ctx, worker.WorkerID)
+	if err != nil {
+		return RunnerMetrics{}, err
+	}
+	sshPath := source.SSHPath
+	if sshPath == "" {
+		sshPath = "ssh"
+	}
+	base := []string{"-i", key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/dev/null", worker.SSHUser + "@" + worker.Instance.PublicIP}
+	body, err := sshOutput(ctx, sshPath, base, runnerCommand(RuntimeServerStatus), 64<<10)
+	if err != nil {
+		return RunnerMetrics{}, err
+	}
+	var status remoteServerStatus
+	if json.Unmarshal(body, &status) != nil || status.ObservedAt.IsZero() {
+		return RunnerMetrics{}, ErrInvalid
+	}
+	loads := strings.Fields(status.LoadAverage)
+	if len(loads) < 3 {
+		return RunnerMetrics{}, ErrInvalid
+	}
+	var metrics RunnerMetrics
+	metrics.LastSeen = status.ObservedAt.UTC()
+	if _, err = fmt.Sscan(loads[0], &metrics.Load1); err != nil {
+		return RunnerMetrics{}, ErrInvalid
+	}
+	if _, err = fmt.Sscan(loads[1], &metrics.Load5); err != nil {
+		return RunnerMetrics{}, ErrInvalid
+	}
+	if _, err = fmt.Sscan(loads[2], &metrics.Load15); err != nil {
+		return RunnerMetrics{}, ErrInvalid
+	}
+	return metrics, nil
+}
+
+func (source CommandStatusSource) HourlyQuote(ctx context.Context, credential CredentialIdentity, instanceType string, volumeGiB int32) (HourlyQuote, error) {
+	if source.Quote == nil {
+		return HourlyQuote{}, ErrInvalid
+	}
+	return source.Quote(ctx, credential, instanceType, volumeGiB)
 }
 
 func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHRequest) (ExecutionResult, error) {
@@ -506,3 +563,4 @@ func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'
 var _ Store = (*FileStore)(nil)
 var _ KeyMaterial = (*LocalKeyMaterial)(nil)
 var _ SSHExecutor = CommandSSHExecutor{}
+var _ StatusSource = CommandStatusSource{}

@@ -19,6 +19,7 @@ type Provider struct {
 	status StatusSource
 	now    func() time.Time
 	poolMu sync.Mutex
+	active map[string]struct{}
 }
 
 func New(awsClient AWS, keys KeyMaterial, ssh SSHExecutor, store Store, status ...StatusSource) (*Provider, error) {
@@ -29,7 +30,7 @@ func New(awsClient AWS, keys KeyMaterial, ssh SSHExecutor, store Store, status .
 	if len(status) > 0 {
 		source = status[0]
 	}
-	return &Provider{aws: awsClient, keys: keys, ssh: ssh, store: store, target: PublicIPTarget{}, status: source, now: time.Now}, nil
+	return &Provider{aws: awsClient, keys: keys, ssh: ssh, store: store, target: PublicIPTarget{}, status: source, now: time.Now, active: make(map[string]struct{})}, nil
 }
 
 func (provider *Provider) Discover(ctx context.Context, credential CredentialIdentity) (Discovery, error) {
@@ -55,29 +56,12 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	if err := provider.aws.VerifyIdentity(ctx, request.Credential); err != nil {
 		return ExecutionResult{}, err
 	}
-	// The Agent is single-process; serialize lease/capacity decisions so two
-	// turns cannot both claim one idle Worker or create a sixth Worker.
-	provider.poolMu.Lock()
-	defer provider.poolMu.Unlock()
-	execution, exists, err := provider.store.LoadExecution(ctx, request.ExecutionID)
+	worker, execution, completed, err := provider.lease(ctx, request)
 	if err != nil {
 		return ExecutionResult{}, err
 	}
-	if exists && execution.Credential != request.Credential {
-		return ExecutionResult{}, ErrIdentity
-	}
-	if exists && execution.Phase == TaskCompleted {
+	if completed {
 		return execution.Result, nil
-	}
-
-	worker, err := provider.acquire(ctx, request, execution)
-	if err != nil {
-		return ExecutionResult{}, err
-	}
-	execution = ExecutionRecord{ExecutionID: request.ExecutionID, WorkerID: worker.WorkerID, Credential: request.Credential, Phase: TaskRunning}
-	if err := provider.saveExecution(ctx, &execution); err != nil {
-		provider.release(ctx, &worker, request.ExecutionID)
-		return ExecutionResult{}, err
 	}
 
 	privateKey, _, err := provider.keys.Ensure(ctx, worker.WorkerID)
@@ -98,14 +82,41 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 		return ExecutionResult{}, runErr
 	}
 	result.WorkerID = worker.WorkerID
-	execution.Result, execution.Phase = result, TaskCompleted
-	if err := provider.saveExecution(ctx, &execution); err != nil {
-		return result, err
-	}
-	if err := provider.release(ctx, &worker, request.ExecutionID); err != nil {
+	if err := provider.completeExecution(ctx, &execution, &worker, result); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+// lease serializes only the pool decision and durable lease. SSH tasks run
+// without holding poolMu, so separate Workers can execute concurrently.
+func (provider *Provider) lease(ctx context.Context, request ExecuteRequest) (WorkerRecord, ExecutionRecord, bool, error) {
+	provider.poolMu.Lock()
+	defer provider.poolMu.Unlock()
+	execution, exists, err := provider.store.LoadExecution(ctx, request.ExecutionID)
+	if err != nil {
+		return WorkerRecord{}, ExecutionRecord{}, false, err
+	}
+	if exists && execution.Credential != request.Credential {
+		return WorkerRecord{}, ExecutionRecord{}, false, ErrIdentity
+	}
+	if exists && execution.Phase == TaskCompleted {
+		return WorkerRecord{}, execution, true, nil
+	}
+	if _, running := provider.active[request.ExecutionID]; running {
+		return WorkerRecord{}, ExecutionRecord{}, false, ErrBusy
+	}
+	worker, err := provider.acquire(ctx, request, execution)
+	if err != nil {
+		return WorkerRecord{}, ExecutionRecord{}, false, err
+	}
+	execution = ExecutionRecord{ExecutionID: request.ExecutionID, WorkerID: worker.WorkerID, Credential: request.Credential, Phase: TaskRunning}
+	if err := provider.saveExecution(ctx, &execution); err != nil {
+		_ = provider.releaseLocked(ctx, &worker, request.ExecutionID)
+		return WorkerRecord{}, ExecutionRecord{}, false, err
+	}
+	provider.active[request.ExecutionID] = struct{}{}
+	return worker, execution, false, nil
 }
 
 func (provider *Provider) acquire(ctx context.Context, request ExecuteRequest, prior ExecutionRecord) (WorkerRecord, error) {
@@ -172,7 +183,7 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 	}
 	if !exists {
 		worker = WorkerRecord{WorkerID: workerID, Credential: request.Credential, CreationProof: request.Confirmation.Proof,
-			Phase: WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, CreatedAt: provider.now().UTC()}
+			Phase: WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, VolumeGiB: request.VolumeGiB, CreatedAt: provider.now().UTC()}
 	}
 	if worker.Credential != request.Credential || worker.CreationProof != request.Confirmation.Proof {
 		return WorkerRecord{}, ErrIdentity
@@ -269,7 +280,7 @@ func (provider *Provider) waitRunning(ctx context.Context, worker *WorkerRecord)
 	}
 }
 
-func (provider *Provider) release(ctx context.Context, worker *WorkerRecord, executionID string) error {
+func (provider *Provider) releaseLocked(ctx context.Context, worker *WorkerRecord, executionID string) error {
 	if executionID != "" && worker.CurrentExecutionID != executionID {
 		return ErrIdentity
 	}
@@ -278,9 +289,23 @@ func (provider *Provider) release(ctx context.Context, worker *WorkerRecord, exe
 }
 
 func (provider *Provider) failExecution(ctx context.Context, execution *ExecutionRecord, worker *WorkerRecord) {
+	provider.poolMu.Lock()
+	defer provider.poolMu.Unlock()
+	delete(provider.active, execution.ExecutionID)
 	execution.Phase = TaskFailed
 	_ = provider.saveExecution(ctx, execution)
-	_ = provider.release(ctx, worker, execution.ExecutionID)
+	_ = provider.releaseLocked(ctx, worker, execution.ExecutionID)
+}
+
+func (provider *Provider) completeExecution(ctx context.Context, execution *ExecutionRecord, worker *WorkerRecord, result ExecutionResult) error {
+	provider.poolMu.Lock()
+	defer provider.poolMu.Unlock()
+	delete(provider.active, execution.ExecutionID)
+	execution.Result, execution.Phase = result, TaskCompleted
+	if err := provider.saveExecution(ctx, execution); err != nil {
+		return err
+	}
+	return provider.releaseLocked(ctx, worker, execution.ExecutionID)
 }
 
 func (provider *Provider) DestroyWorker(ctx context.Context, request DestroyRequest) error {
@@ -408,7 +433,7 @@ func (provider *Provider) ListWorkers(ctx context.Context, credential Credential
 		}
 		if provider.status != nil {
 			status.Runner, _ = provider.status.Observe(ctx, worker)
-			status.Quote, _ = provider.status.HourlyQuote(ctx, credential, worker.InstanceType)
+			status.Quote, _ = provider.status.HourlyQuote(ctx, credential, worker.InstanceType, worker.VolumeGiB)
 		}
 		result = append(result, status)
 	}

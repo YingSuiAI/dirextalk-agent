@@ -7,6 +7,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -45,13 +48,23 @@ func (s *memoryStore) SaveWorker(_ context.Context, r WorkerRecord) error {
 	return nil
 }
 
-type fakeKeys struct{ ensure, delete int }
+type fakeKeys struct {
+	mu             sync.Mutex
+	ensure, delete int
+}
 
 func (k *fakeKeys) Ensure(context.Context, string) (string, []byte, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	k.ensure++
 	return "/tmp/key", []byte("public"), nil
 }
-func (k *fakeKeys) Delete(context.Context, string) error { k.delete++; return nil }
+func (k *fakeKeys) Delete(context.Context, string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.delete++
+	return nil
+}
 
 type fakeSink struct{}
 
@@ -232,6 +245,66 @@ func TestCapacityFivePreventsSixthCreate(t *testing.T) {
 	}
 }
 
+type blockingSSH struct {
+	started chan SSHRequest
+	release chan struct{}
+}
+
+func (ssh *blockingSSH) Execute(_ context.Context, request SSHRequest) (ExecutionResult, error) {
+	ssh.started <- request
+	<-ssh.release
+	return ExecutionResult{ArtifactCount: 1}, nil
+}
+
+func TestExecuteRunsSeparateWorkerLeasesConcurrently(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	now := time.Now().UTC()
+	for index, workerID := range []string{"worker-a", "worker-b"} {
+		instance := Instance{ID: "i-" + workerID, PublicIP: "203.0.113." + string(rune('1'+index)), State: "running", ClientToken: workerID}
+		store.workers[workerID] = WorkerRecord{WorkerID: workerID, Credential: credentialFixture(), Phase: WorkerIdle, SSHUser: "ec2-user",
+			InstanceType: "t3.small", VolumeGiB: 16, Instance: instance, UpdatedAt: now.Add(time.Duration(index) * time.Second)}
+		cloud.instances[workerID] = instance
+	}
+	ssh := &blockingSSH{started: make(chan SSHRequest, 2), release: make(chan struct{})}
+	provider, _ := New(cloud, &fakeKeys{}, ssh, store)
+	errCh := make(chan error, 2)
+	for index := 0; index < 2; index++ {
+		request := requestFixture()
+		request.ExecutionID = "execution-" + string(rune('a'+index))
+		request.Runtime.TaskID = request.ExecutionID
+		request.Confirmation = Confirmation{}
+		go func() {
+			_, err := provider.Execute(context.Background(), request)
+			errCh <- err
+		}()
+	}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(ssh.release) }) }
+	defer release()
+	requests := make([]SSHRequest, 0, 2)
+	for len(requests) < 2 {
+		select {
+		case request := <-ssh.started:
+			requests = append(requests, request)
+		case <-time.After(time.Second):
+			t.Fatal("second Worker did not start while the first SSH task was running")
+		}
+	}
+	if requests[0].Host == requests[1].Host {
+		t.Fatalf("same idle Worker was leased twice: %#v", requests)
+	}
+	release()
+	for range requests {
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if store.workers["worker-a"].Phase != WorkerIdle || store.workers["worker-b"].Phase != WorkerIdle {
+		t.Fatalf("Workers were not released: %#v", store.workers)
+	}
+}
+
 func TestAmbiguousCreateReconcilesAndDestroyRequiresExactAuthorization(t *testing.T) {
 	cloud := newFakeAWS()
 	cloud.ambiguous = true
@@ -268,7 +341,7 @@ type fakeStatus struct{}
 func (fakeStatus) Observe(context.Context, WorkerRecord) (RunnerMetrics, error) {
 	return RunnerMetrics{LastSeen: time.Now(), Load1: 0.5}, nil
 }
-func (fakeStatus) HourlyQuote(context.Context, CredentialIdentity, string) (HourlyQuote, error) {
+func (fakeStatus) HourlyQuote(context.Context, CredentialIdentity, string, int32) (HourlyQuote, error) {
 	return HourlyQuote{Currency: "USD", MicrosPerHour: 25000}, nil
 }
 func TestListWorkersIncludesLiveEC2RunnerAndQuote(t *testing.T) {
@@ -282,6 +355,21 @@ func TestListWorkersIncludesLiveEC2RunnerAndQuote(t *testing.T) {
 	statuses, err := provider.ListWorkers(context.Background(), r.Credential)
 	if err != nil || len(statuses) != 1 || statuses[0].EC2State != "running" || statuses[0].PublicIP == "" || statuses[0].Runner.Load1 != 0.5 || statuses[0].Quote.MicrosPerHour != 25000 {
 		t.Fatalf("statuses=%#v err=%v", statuses, err)
+	}
+}
+
+func TestCommandStatusSourceReadsServerLoad(t *testing.T) {
+	sshPath := filepath.Join(t.TempDir(), "ssh")
+	body := []byte("#!/bin/sh\nprintf '%s\\n' '{\"observed_at\":\"2026-08-13T12:00:00Z\",\"load_average\":\"0.12 0.34 0.56 1/100 1234\"}'\n")
+	if err := os.WriteFile(sshPath, body, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	metrics, err := (CommandStatusSource{SSHPath: sshPath, Keys: &fakeKeys{}}).Observe(context.Background(), WorkerRecord{
+		WorkerID: "worker-a", SSHUser: "ec2-user", Instance: Instance{PublicIP: "203.0.113.10"},
+	})
+	if err != nil || !metrics.LastSeen.Equal(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)) ||
+		metrics.Load1 != 0.12 || metrics.Load5 != 0.34 || metrics.Load15 != 0.56 {
+		t.Fatalf("metrics=%+v err=%v", metrics, err)
 	}
 }
 

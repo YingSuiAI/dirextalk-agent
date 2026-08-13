@@ -24,15 +24,16 @@ type sshWorkerExecutor struct {
 	exact     workaws.ExactCredentialResolver
 	providers map[sshworker.CredentialIdentity]*sshworker.Provider
 	artifacts *localartifact.Repository
+	pricing   cloudworker.PricingCatalog
 	root      string
 	mu        sync.Mutex
 }
 
-func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, root string) (*sshWorkerExecutor, error) {
-	if authority == nil || exact == nil || artifacts == nil || !filepath.IsAbs(root) {
+func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, root string) (*sshWorkerExecutor, error) {
+	if authority == nil || exact == nil || artifacts == nil || pricing == nil || !filepath.IsAbs(root) {
 		return nil, sshworker.ErrInvalid
 	}
-	return &sshWorkerExecutor{authority: authority, exact: exact, providers: make(map[sshworker.CredentialIdentity]*sshworker.Provider), artifacts: artifacts, root: root}, nil
+	return &sshWorkerExecutor{authority: authority, exact: exact, providers: make(map[sshworker.CredentialIdentity]*sshworker.Provider), artifacts: artifacts, pricing: pricing, root: root}, nil
 }
 
 func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudworker.AWSBinding) (*sshworker.Provider, sshworker.CredentialIdentity, error) {
@@ -59,11 +60,28 @@ func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudwo
 	if err != nil {
 		return nil, identity, err
 	}
-	provider, err := sshworker.New(client, keys, sshworker.CommandSSHExecutor{}, store)
+	status := sshworker.CommandStatusSource{Keys: keys, Quote: executor.hourlyQuote}
+	provider, err := sshworker.New(client, keys, sshworker.CommandSSHExecutor{}, store, status)
 	if err == nil {
 		executor.providers[identity] = provider
 	}
 	return provider, identity, err
+}
+
+func (executor *sshWorkerExecutor) hourlyQuote(ctx context.Context, identity sshworker.CredentialIdentity, instanceType string, volumeGiB int32) (sshworker.HourlyQuote, error) {
+	if volumeGiB <= 0 {
+		return sshworker.HourlyQuote{}, sshworker.ErrInvalid
+	}
+	snapshot, err := executor.pricing.Snapshot(ctx, cloudworker.PricingCatalogRequest{AccountID: identity.AccountID, AccountGeneration: 1,
+		Region: identity.Region, CredentialID: identity.CredentialID, CredentialRevision: identity.CredentialRevision,
+		InstanceType: instanceType, Architecture: "x86_64", VolumeGiB: uint64(volumeGiB), VolumeType: "gp3", VolumeIOPS: 3000,
+		VolumeThroughput: 125, MaxRuntimeSeconds: 3600, MaxTokens: 1, BasisDigest: strings.Repeat("0", 64), WorkspaceMode: cloudworker.WorkspaceNone})
+	if err != nil {
+		return sshworker.HourlyQuote{}, err
+	}
+	storagePerHour := (snapshot.Rates.EBSStorageMicrosPerGiBMonth * uint64(volumeGiB)) / 730
+	return sshworker.HourlyQuote{Currency: snapshot.Currency, MicrosPerHour: snapshot.Rates.ComputeMicrosPerHour + snapshot.Rates.PublicIPv4MicrosPerHour + storagePerHour,
+		ObservedAt: snapshot.SourceTime, ExpiresAt: snapshot.ExpiresAt}, nil
 }
 
 func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.Request) (sshflow.Result, error) {

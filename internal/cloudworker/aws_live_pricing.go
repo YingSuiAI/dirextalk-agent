@@ -76,23 +76,29 @@ func (catalog *AWSLivePricingCatalog) Snapshot(ctx context.Context, request Pric
 	if err != nil || client == nil {
 		return PricingCatalogSnapshot{}, ErrProviderUnavailable
 	}
-	compute, err := liveAWSPriceMicros(ctx, client, map[string]string{
+	compute, err := liveAWSPriceMicros(ctx, client, "AmazonEC2", map[string]string{
 		"instanceType": request.InstanceType, "operatingSystem": "Linux", "tenancy": "Shared",
 		"preInstalledSw": "NA", "capacitystatus": "Used", "regionCode": request.Region,
 	}, "Hrs")
 	if err != nil {
 		return PricingCatalogSnapshot{}, err
 	}
-	storage, err := liveAWSPriceMicros(ctx, client, map[string]string{
+	storage, err := liveAWSPriceMicros(ctx, client, "AmazonEC2", map[string]string{
 		"volumeApiName": "gp3", "productFamily": "Storage", "regionCode": request.Region,
 	}, "GB-Mo")
+	if err != nil {
+		return PricingCatalogSnapshot{}, err
+	}
+	publicIPv4, err := liveAWSPriceMicros(ctx, client, "AmazonVPC", map[string]string{
+		"group": "VPCPublicIPv4Address", "groupDescription": "Hourly charge for In-use Public IPv4 Addresses", "regionCode": request.Region,
+	}, "Hrs")
 	if err != nil {
 		return PricingCatalogSnapshot{}, err
 	}
 	now := catalog.now().UTC()
 	return SealPricingCatalogSnapshot(PricingCatalogSnapshot{
 		RequestDigest: request.digest(), SourceTime: now, ExpiresAt: now.Add(catalog.ttl),
-		Rates: PricingCatalogRates{ComputeMicrosPerHour: compute, EBSStorageMicrosPerGiBMonth: storage},
+		Rates: PricingCatalogRates{ComputeMicrosPerHour: compute, EBSStorageMicrosPerGiBMonth: storage, PublicIPv4MicrosPerHour: publicIPv4},
 	})
 }
 
@@ -111,7 +117,7 @@ type awsPriceDocument struct {
 	} `json:"terms"`
 }
 
-func liveAWSPriceMicros(ctx context.Context, client AWSPriceListAPI, attributes map[string]string, unit string) (uint64, error) {
+func liveAWSPriceMicros(ctx context.Context, client AWSPriceListAPI, serviceCode string, attributes map[string]string, unit string) (uint64, error) {
 	keys := make([]string, 0, len(attributes))
 	for key := range attributes {
 		keys = append(keys, key)
@@ -122,7 +128,7 @@ func liveAWSPriceMicros(ctx context.Context, client AWSPriceListAPI, attributes 
 		filters = append(filters, pricingtypes.Filter{Field: aws.String(key), Type: pricingtypes.FilterTypeTermMatch, Value: aws.String(attributes[key])})
 	}
 	output, err := client.GetProducts(ctx, &pricing.GetProductsInput{
-		ServiceCode: aws.String("AmazonEC2"), Filters: filters, FormatVersion: aws.String("aws_v1"), MaxResults: aws.Int32(100),
+		ServiceCode: aws.String(serviceCode), Filters: filters, FormatVersion: aws.String("aws_v1"), MaxResults: aws.Int32(100),
 	})
 	if err != nil || output == nil || strings.TrimSpace(aws.ToString(output.NextToken)) != "" {
 		return 0, ErrProviderUnavailable
