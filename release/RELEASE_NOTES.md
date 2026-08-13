@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v1.0.86
+
+1. Use each Agent's verified AWS credential to quote and create SSH Workers without deployment-time Worker infrastructure, S3, KMS, or fixed AMI configuration.
+2. Reuse compatible idle Workers without a new-server quote, while preserving live pricing and owner confirmation before each new Worker is created.
+3. Support explicit job and persistent service workloads, live Worker load and cost status, and Agent-local result and artifact delivery.
+4. Support optional Route 53 A-record binding, public-port publication, IP reconciliation, unbinding, and DNS cleanup before Worker destruction.
+
 ## v1.0.85
 
 1. Resume durable turns without re-exposing intrinsic tools that were not accepted for the original model step.
