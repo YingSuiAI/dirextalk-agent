@@ -3,6 +3,7 @@ package operation
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -231,6 +232,32 @@ func TestManager_StartAdmissionRollsBackWhenAcceptedEventFails(t *testing.T) {
 	}
 	if _, created, err := manager.StartOrGet(context.Background(), op); err != nil || !created {
 		t.Fatalf("admission did not recover after event store became available: created=%v err=%v", created, err)
+	}
+}
+
+func TestRedactJSONPreservesCredentialMetadataEnvelope(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	payload := []byte(`{"credential":{"credential_id":"11111111-1111-4111-8111-111111111111","access_key_configured":true,"secret_access_key":"secret-bytes","session_token":"session-bytes"},"credentials":[{"credential_id":"22222222-2222-4222-8222-222222222222"}]}`)
+
+	redacted := manager.redactJSON("credential-metadata", payload)
+	var result map[string]any
+	if err := json.Unmarshal(redacted, &result); err != nil {
+		t.Fatal(err)
+	}
+	credential, ok := result["credential"].(map[string]any)
+	if !ok || credential["credential_id"] == nil || credential["access_key_configured"] != true {
+		t.Fatalf("credential metadata envelope was removed: %#v", result)
+	}
+	if _, leaked := credential["secret_access_key"]; leaked {
+		t.Fatalf("secret access key survived redaction: %#v", credential)
+	}
+	if _, leaked := credential["session_token"]; leaked {
+		t.Fatalf("session token survived redaction: %#v", credential)
+	}
+	if credentials, ok := result["credentials"].([]any); !ok || len(credentials) != 1 {
+		t.Fatalf("credential list envelope was removed: %#v", result)
 	}
 }
 

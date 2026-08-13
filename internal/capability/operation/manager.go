@@ -416,7 +416,7 @@ func sensitiveJSONKey(key string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(key))
 	normalized = strings.NewReplacer("_", "", "-", "", " ", "").Replace(normalized)
 	switch normalized {
-	case "apikey", "secret", "secretkey", "secretaccesskey", "accesstoken", "refreshtoken", "password", "credential", "credentials", "clientsecret", "webhooksecret":
+	case "apikey", "secret", "secretkey", "secretaccesskey", "sessiontoken", "accesstoken", "refreshtoken", "password", "clientsecret", "webhooksecret":
 		return true
 	default:
 		return false
