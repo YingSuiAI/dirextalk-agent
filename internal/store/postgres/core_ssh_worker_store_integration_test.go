@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
@@ -66,6 +68,24 @@ func TestSSHWorkerStoreLoadsConfirmedTurnSnapshotAndAtomicallyResumesConversatio
 		!strings.Contains(events[len(events)-1].ToolResult.Content, `"persistent_worker":true`) {
 		t.Fatalf("events=%+v err=%v", events, err)
 	}
+	var completion struct {
+		WorkerID         string `json:"worker_id"`
+		PersistentWorker bool   `json:"persistent_worker"`
+		NextAction       struct {
+			Kind      string `json:"kind"`
+			Operation string `json:"operation"`
+			WorkerID  string `json:"worker_id"`
+			Default   string `json:"default"`
+			Question  string `json:"question"`
+		} `json:"next_action"`
+	}
+	if err = json.Unmarshal([]byte(events[len(events)-1].ToolResult.Content), &completion); err != nil ||
+		completion.WorkerID != "i-0123456789abcdef0" || !completion.PersistentWorker ||
+		completion.NextAction.Kind != "confirm_destroy_worker" || completion.NextAction.Operation != "destroy_worker" ||
+		completion.NextAction.WorkerID != completion.WorkerID || completion.NextAction.Default != "retain" ||
+		!strings.Contains(completion.NextAction.Question, "whether to destroy") {
+		t.Fatalf("completion=%+v err=%v", completion, err)
+	}
 	var relativePath, executionID, workerState string
 	if err = h.store.pool.QueryRow(h.ctx, `SELECT payload_json->>'relative_path',payload_json->>'execution_id'
 		FROM core_execution_v2_records WHERE owner_id=$1 AND resource_type='artifact' AND resource_id=$2`,
@@ -79,5 +99,39 @@ func TestSSHWorkerStoreLoadsConfirmedTurnSnapshotAndAtomicallyResumesConversatio
 	if relativePath != artifact.RelativePath || executionID != offer.Execution.ExecutionID ||
 		workerState != string(cloudworker.StateSucceeded) {
 		t.Fatalf("artifact path=%q execution=%q state=%q", relativePath, executionID, workerState)
+	}
+}
+
+func TestSSHWorkerContinuationPersistsRetainedWorkerNextAction(t *testing.T) {
+	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
+	plan := cloudworker.Plan{TaskID: uuid.NewString(), PlanID: uuid.NewString(), ExecutionID: uuid.NewString()}
+	_, result, err := sshWorkerContinuation(
+		&core.ModelRunResult{ToolCalls: []core.ToolCall{call}},
+		plan,
+		cloudworker.StateSucceeded,
+		"deployment complete",
+		sshflow.Result{WorkerID: "worker-one"},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var completion struct {
+		WorkerID         string `json:"worker_id"`
+		PersistentWorker bool   `json:"persistent_worker"`
+		NextAction       struct {
+			Kind      string `json:"kind"`
+			Operation string `json:"operation"`
+			WorkerID  string `json:"worker_id"`
+			Default   string `json:"default"`
+			Question  string `json:"question"`
+		} `json:"next_action"`
+	}
+	if err = json.Unmarshal([]byte(result.Content), &completion); err != nil ||
+		completion.WorkerID != "worker-one" || !completion.PersistentWorker ||
+		completion.NextAction.Kind != "confirm_destroy_worker" || completion.NextAction.Operation != "destroy_worker" ||
+		completion.NextAction.WorkerID != completion.WorkerID || completion.NextAction.Default != "retain" ||
+		!strings.Contains(completion.NextAction.Question, "whether to destroy") {
+		t.Fatalf("completion=%+v err=%v", completion, err)
 	}
 }

@@ -217,6 +217,12 @@ multi-tenant model.
   reuse, list, get, or destroy. There is no EIP field or operation. `destroy_worker`
   requires its explicit confirmation literal and the complete identity
   returned by list/get; a busy or changed resource identity fails closed.
+  A successful retained-Worker completion durably records its exact
+  `worker_id` and a structured `next_action` bound to that same ID asking
+  whether to run `destroy_worker`; retain is the default and the completion
+  itself never destroys the Worker. The client resolves that ID through the
+  current Worker inventory before offering the existing identity-bound destroy
+  action.
 - Every `agent.knowledge.v1` mutation, including `index_sources`, requires an
   explicit canonical UUID `idempotency_key`; missing or malformed keys are
   rejected, while read operations do not require one. Neutral

@@ -321,10 +321,18 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 	if len(calls) != 1 || calls[0].Name != coremodel.IntrinsicCloudWorkerProposeToolName || calls[0].Validate() != nil {
 		return core.ToolCall{}, core.ToolResult{}, cloudworker.ErrConflict
 	}
-	payload, _ := json.Marshal(map[string]any{"schema": "dirextalk.ssh-worker-completion/v1",
+	completion := map[string]any{"schema": "dirextalk.ssh-worker-completion/v1",
 		"execution_id": plan.ExecutionID, "status": terminal, "worker_id": result.WorkerID,
 		"persistent_worker": true, "worker_report": summary, "artifacts": artifacts,
-		"central_instruction": "Continue the current conversation using the Worker report and local artifacts."})
+		"central_instruction": "Continue the current conversation using the Worker report and local artifacts."}
+	if terminal == cloudworker.StateSucceeded {
+		completion["next_action"] = map[string]any{
+			"kind": "confirm_destroy_worker", "operation": "destroy_worker", "worker_id": result.WorkerID, "default": "retain",
+			"question": "The Worker is retained for reuse. Ask the user whether to destroy it now.",
+		}
+		completion["central_instruction"] = "Continue the current conversation using the Worker report and local artifacts. Tell the user which Worker was retained and ask whether to destroy it now; do not destroy it without their explicit choice."
+	}
+	payload, _ := json.Marshal(completion)
 	toolResult := core.ToolResult{CallID: calls[0].ID, ToolName: coremodel.IntrinsicCloudWorkerProposeToolName,
 		Content: string(payload), IsError: terminal != cloudworker.StateSucceeded,
 		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, Summary: "Cloud Worker result returned"}
