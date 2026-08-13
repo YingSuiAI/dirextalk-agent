@@ -156,6 +156,7 @@ type AWS interface {
 
 type KeyMaterial interface {
 	Ensure(context.Context, string) (privateKeyPath string, authorizedKey []byte, err error)
+	LookupPrivate(context.Context, string) (privateKeyPath string, found bool, err error)
 	Delete(context.Context, string) error
 }
 
@@ -264,7 +265,6 @@ type HourlyQuote struct {
 }
 type StatusSource interface {
 	Observe(context.Context, WorkerRecord) (RunnerMetrics, error)
-	HourlyQuote(context.Context, CredentialIdentity, string, int32) (HourlyQuote, error)
 }
 
 type WorkerStatus struct {

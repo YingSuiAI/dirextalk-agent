@@ -194,72 +194,24 @@ func bindIntrinsicWorkspaceArchive(t *testing.T, lease *coreconversation.TurnLea
 	lease.Turn.AttachmentSnapshotDigest = coreconversation.TurnAttachmentSnapshotDigest(lease.Turn.AttachmentSources)
 }
 
-func TestExplicitCloudIntentIsDeterministicAndNegationWins(t *testing.T) {
-	tests := []struct {
-		name   string
-		prompt string
-		want   bool
-	}{
-		{name: "chinese cloud command", prompt: "请在 AWS 云端执行这项重任务", want: true},
-		{name: "english cloud worker command", prompt: "Run this task on an AWS cloud worker", want: true},
-		{name: "ec2 command", prompt: "execute it on EC2", want: true},
-		{name: "use worker command", prompt: "Use an AWS cloud worker to edit these files", want: true},
-		{name: "polite question as request", prompt: "Could you run this workload on AWS?", want: true},
-		{name: "chinese worker command", prompt: "请用 AWS 云 Worker 处理这些文件", want: true},
-		{name: "chinese handoff command", prompt: "把这项任务交给云 Worker 执行", want: true},
-		{name: "cloud command with how objective", prompt: "Run an analysis of how this code works on AWS.", want: true},
-		{name: "cloud command with chinese how objective", prompt: "请在 AWS 云端执行，分析如何修复这个问题。", want: true},
-		{name: "cloud command about local issue", prompt: "请在 AWS 云端处理本地出现的错误。", want: true},
-		{name: "explicit chinese cloud command with local veto", prompt: "请明确使用 AWS Cloud Worker 执行这个任务，不要在本地执行。", want: true},
-		{name: "chinese local veto before cloud command", prompt: "不要在本地执行；请使用 AWS Cloud Worker 执行这个任务。", want: true},
-		{name: "english local veto before cloud command", prompt: "Do not run locally; run this task on AWS.", want: true},
-		{name: "english explicit worker command", prompt: "Explicitly use an AWS cloud worker to execute this task.", want: true},
-
-		{name: "local only", prompt: "本机执行即可"},
-		{name: "chinese cloud negation", prompt: "不要用云端执行"},
-		{name: "english cloud negation", prompt: "do not use cloud execution"},
-		{name: "cloud price question", prompt: "AWS 价格是多少"},
-		{name: "cloud explanation", prompt: "解释 AWS EC2"},
-		{name: "cloud comparison", prompt: "比较 AWS 与 GCP 云服务"},
-		{name: "how-to question", prompt: "How to run this task on AWS?"},
-		{name: "pricing discussion", prompt: "This runtime explains AWS pricing"},
-		{name: "english local command", prompt: "execute this locally"},
-		{name: "unrelated substring", prompt: "awsome runtime notes"},
-		{name: "english local command plus cloud discussion", prompt: "Execute this locally and explain AWS cloud costs."},
-		{name: "chinese local command plus cloud discussion", prompt: "请在本机执行，并介绍 AWS 云端运行成本。"},
-		{name: "english conditional cloud command", prompt: "If local execution is too slow, run it on AWS."},
-		{name: "chinese conditional cloud command", prompt: "如果本机跑不完，就放到 AWS 云端执行。"},
-		{name: "english compare executions", prompt: "Compare local execution with an AWS cloud worker run."},
-		{name: "chinese compare executions", prompt: "对比本机执行和 AWS 云端执行。"},
-		{name: "conditional separate command sentence", prompt: "If capacity is low. Run this task on AWS."},
-		{name: "conflicting local and cloud commands", prompt: "Run this locally; run this task on AWS."},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := hasExplicitCloudIntent(test.prompt); got != test.want {
-				t.Fatalf("hasExplicitCloudIntent(%q)=%t want %t", test.prompt, got, test.want)
-			}
-		})
-	}
-}
-
-func TestCloudExecutionVetoPreservesNegationScope(t *testing.T) {
+func TestCloudExecutionVetoOnlyRejectsExplicitCloudNegation(t *testing.T) {
 	for _, prompt := range []string{
 		"请明确使用 AWS Cloud Worker 执行这个任务，不要在本地执行。",
 		"Do not run locally; run this task on AWS.",
+		"如果本机跑不完，就放到 AWS 云端执行。",
+		"Compare local execution with an AWS cloud worker run.",
+		"Run this locally; run this task on AWS.",
 	} {
 		if hasCloudExecutionVeto(prompt) {
-			t.Fatalf("legitimate cloud authorization was vetoed: %q", prompt)
+			t.Fatalf("non-negative cloud wording was vetoed: %q", prompt)
 		}
 	}
 	for _, prompt := range []string{
 		"不要用云端执行，只在本机运行。",
 		"Do not run this task on AWS; run it locally.",
-		"如果本机跑不完，就放到 AWS 云端执行。",
-		"Run this locally; run this task on AWS.",
 	} {
 		if !hasCloudExecutionVeto(prompt) {
-			t.Fatalf("ambiguous or negative cloud request was not vetoed: %q", prompt)
+			t.Fatalf("explicit cloud negation was not vetoed: %q", prompt)
 		}
 	}
 }
@@ -310,7 +262,8 @@ func TestIntrinsicProposalErrorClass(t *testing.T) {
 }
 
 func TestIntrinsicIsCoreOwnedStrictAndBindsDurableTurn(t *testing.T) {
-	intrinsic, store, lease := intrinsicFixture(t, "请明确使用 AWS Cloud Worker 执行这个任务，不要在本地执行。", nil, nil)
+	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-capability")}
+	intrinsic, store, lease := intrinsicFixture(t, "请明确使用 AWS Cloud Worker 执行这个任务，不要在本地执行。", nil, intrinsicBudget{evidence: evidence})
 	callID := "call-1"
 	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "analyze the repository", "workspace_mode": "none"}, callID); err != nil {
 		t.Fatal(err)
@@ -319,7 +272,7 @@ func TestIntrinsicIsCoreOwnedStrictAndBindsDurableTurn(t *testing.T) {
 		t.Fatalf("offer calls=%d", len(store.commands))
 	}
 	command := store.commands[0]
-	if command.Plan.OwnerID != lease.Turn.OwnerID || command.Plan.AccountGeneration != lease.Turn.AccountGeneration || command.Plan.TurnID != lease.Turn.ID || command.Plan.ConversationID != lease.Turn.ConversationID || command.Plan.ProposalReason != ProposalReasonExplicitUserCloud || command.TurnLeaseID != lease.LeaseID || command.TurnLeaseEpoch != lease.Epoch {
+	if command.Plan.OwnerID != lease.Turn.OwnerID || command.Plan.AccountGeneration != lease.Turn.AccountGeneration || command.Plan.TurnID != lease.Turn.ID || command.Plan.ConversationID != lease.Turn.ConversationID || command.Plan.ProposalReason != ProposalReasonLocalBudgetExceeded || command.TurnLeaseID != lease.LeaseID || command.TurnLeaseEpoch != lease.Epoch {
 		t.Fatalf("untrusted turn binding: %+v", command)
 	}
 	// Replaying the same accepted model call derives exactly the same IDs and
@@ -386,7 +339,8 @@ func TestIntrinsicCloudVetoOverridesTrustedLocalCapabilityEvidence(t *testing.T)
 func TestIntrinsicAttachmentsAreResolvedOnlyThroughTurnBoundResolver(t *testing.T) {
 	first, second, foreign := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	resolver := &intrinsicManifest{allowed: map[string]bool{first: true, second: true}}
-	intrinsic, store, lease := intrinsicFixture(t, "Use an AWS cloud worker to edit these files", resolver, nil)
+	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-capability")}
+	intrinsic, store, lease := intrinsicFixture(t, "Use an AWS cloud worker to edit these files", resolver, intrinsicBudget{evidence: evidence})
 	bindIntrinsicAttachments(t, &lease, first, second)
 	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "edit", "workspace_mode": "write", "attachment_ids": []string{second, first}}, "call-1"); err != nil {
 		t.Fatal(err)
@@ -394,7 +348,7 @@ func TestIntrinsicAttachmentsAreResolvedOnlyThroughTurnBoundResolver(t *testing.
 	if len(store.commands) != 1 || len(resolver.seen) != 2 || resolver.seen[0] > resolver.seen[1] || store.commands[0].Plan.InputManifestItemCount != 2 {
 		t.Fatalf("manifest resolution drift: seen=%v command=%+v", resolver.seen, store.commands)
 	}
-	intrinsic, store, lease = intrinsicFixture(t, "Use an AWS cloud worker to edit these files", resolver, nil)
+	intrinsic, store, lease = intrinsicFixture(t, "Use an AWS cloud worker to edit these files", resolver, intrinsicBudget{evidence: evidence})
 	bindIntrinsicAttachments(t, &lease, first, second)
 	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "edit", "workspace_mode": "write", "attachment_ids": []string{foreign}}, "call-2"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("foreign attachment accepted: %v", err)

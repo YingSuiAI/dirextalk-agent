@@ -213,6 +213,24 @@ func (keys *LocalKeyMaterial) Ensure(_ context.Context, executionID string) (str
 	return privatePath, authorized, nil
 }
 
+func (keys *LocalKeyMaterial) LookupPrivate(_ context.Context, executionID string) (string, bool, error) {
+	if !validID(executionID) {
+		return "", false, ErrInvalid
+	}
+	privatePath := filepath.Join(keys.root, executionID, "id_ed25519")
+	info, err := os.Stat(privatePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		return "", false, ErrInvalid
+	}
+	return privatePath, true, nil
+}
+
 func (keys *LocalKeyMaterial) Delete(_ context.Context, executionID string) error {
 	if !validID(executionID) {
 		return ErrInvalid
@@ -241,7 +259,6 @@ type CommandSSHExecutor struct {
 type CommandStatusSource struct {
 	SSHPath string
 	Keys    KeyMaterial
-	Quote   func(context.Context, CredentialIdentity, string, int32) (HourlyQuote, error)
 }
 
 type remoteRuntimeStatus struct {
@@ -274,9 +291,12 @@ func (source CommandStatusSource) ObserveService(ctx context.Context, worker Wor
 	if source.Keys == nil || worker.Instance.PublicIP == "" || !validID(taskID) {
 		return ServiceRuntimeStatus{}, ErrInvalid
 	}
-	key, _, err := source.Keys.Ensure(ctx, worker.WorkerID)
+	key, found, err := source.Keys.LookupPrivate(ctx, worker.WorkerID)
 	if err != nil {
 		return ServiceRuntimeStatus{}, err
+	}
+	if !found {
+		return ServiceRuntimeStatus{}, ErrInvalid
 	}
 	sshPath := source.SSHPath
 	if sshPath == "" {
@@ -298,9 +318,12 @@ func (source CommandStatusSource) Observe(ctx context.Context, worker WorkerReco
 	if source.Keys == nil || worker.Instance.PublicIP == "" {
 		return RunnerMetrics{}, ErrInvalid
 	}
-	key, _, err := source.Keys.Ensure(ctx, worker.WorkerID)
+	key, found, err := source.Keys.LookupPrivate(ctx, worker.WorkerID)
 	if err != nil {
 		return RunnerMetrics{}, err
+	}
+	if !found {
+		return RunnerMetrics{}, ErrInvalid
 	}
 	sshPath := source.SSHPath
 	if sshPath == "" {
@@ -331,13 +354,6 @@ func (source CommandStatusSource) Observe(ctx context.Context, worker WorkerReco
 		return RunnerMetrics{}, ErrInvalid
 	}
 	return metrics, nil
-}
-
-func (source CommandStatusSource) HourlyQuote(ctx context.Context, credential CredentialIdentity, instanceType string, volumeGiB int32) (HourlyQuote, error) {
-	if source.Quote == nil {
-		return HourlyQuote{}, ErrInvalid
-	}
-	return source.Quote(ctx, credential, instanceType, volumeGiB)
 }
 
 func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHRequest) (ExecutionResult, error) {

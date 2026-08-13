@@ -49,8 +49,8 @@ func (s *memoryStore) SaveWorker(_ context.Context, r WorkerRecord) error {
 }
 
 type fakeKeys struct {
-	mu             sync.Mutex
-	ensure, delete int
+	mu                     sync.Mutex
+	ensure, lookup, delete int
 }
 
 func (k *fakeKeys) Ensure(context.Context, string) (string, []byte, error) {
@@ -58,6 +58,12 @@ func (k *fakeKeys) Ensure(context.Context, string) (string, []byte, error) {
 	defer k.mu.Unlock()
 	k.ensure++
 	return "/tmp/key", []byte("public"), nil
+}
+func (k *fakeKeys) LookupPrivate(context.Context, string) (string, bool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.lookup++
+	return "/tmp/key", true, nil
 }
 func (k *fakeKeys) Delete(context.Context, string) error {
 	k.mu.Lock()
@@ -341,25 +347,35 @@ func TestAmbiguousCreateReconcilesAndDestroyRequiresExactAuthorization(t *testin
 	}
 }
 
-type fakeStatus struct{}
+type fakeStatus struct{ seen []WorkerRecord }
 
-func (fakeStatus) Observe(context.Context, WorkerRecord) (RunnerMetrics, error) {
+func (status *fakeStatus) Observe(_ context.Context, worker WorkerRecord) (RunnerMetrics, error) {
+	status.seen = append(status.seen, worker)
 	return RunnerMetrics{LastSeen: time.Now(), Load1: 0.5}, nil
 }
-func (fakeStatus) HourlyQuote(context.Context, CredentialIdentity, string, int32) (HourlyQuote, error) {
-	return HourlyQuote{Currency: "USD", MicrosPerHour: 25000}, nil
-}
-func TestListWorkersIncludesLiveEC2RunnerAndQuote(t *testing.T) {
+func TestListWorkersRefreshesPublicIPBeforeReadOnlyRunnerProbe(t *testing.T) {
 	cloud := newFakeAWS()
 	store := newMemoryStore()
+	keys := &fakeKeys{}
+	status := &fakeStatus{}
 	r := requestFixture()
-	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store, fakeStatus{})
+	provider, _ := New(cloud, keys, &fakeSSH{}, store, status)
 	if _, err := provider.Execute(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
+	ensureBeforeList := keys.ensure
+	worker := store.workers[r.ExecutionID]
+	worker.Instance.PublicIP = "203.0.113.10"
+	store.workers[r.ExecutionID] = worker
 	statuses, err := provider.ListWorkers(context.Background(), r.Credential)
-	if err != nil || len(statuses) != 1 || statuses[0].EC2State != "running" || statuses[0].PublicIP == "" || statuses[0].Runner.Load1 != 0.5 || statuses[0].Quote.MicrosPerHour != 25000 {
+	if err != nil || len(statuses) != 1 || statuses[0].EC2State != "running" || statuses[0].PublicIP != "203.0.113.20" || statuses[0].Runner.Load1 != 0.5 {
 		t.Fatalf("statuses=%#v err=%v", statuses, err)
+	}
+	if len(status.seen) != 1 || status.seen[0].Instance.PublicIP != "203.0.113.20" || store.workers[r.ExecutionID].Instance.PublicIP != "203.0.113.20" {
+		t.Fatalf("runner probe did not use persisted live IP: seen=%#v stored=%#v", status.seen, store.workers[r.ExecutionID])
+	}
+	if keys.ensure != ensureBeforeList || keys.lookup != 0 {
+		t.Fatalf("list created key material: ensure=%d lookup=%d", keys.ensure, keys.lookup)
 	}
 }
 
@@ -389,12 +405,16 @@ func TestCommandStatusSourceReadsServerLoad(t *testing.T) {
 	if err := os.WriteFile(sshPath, body, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	metrics, err := (CommandStatusSource{SSHPath: sshPath, Keys: &fakeKeys{}}).Observe(context.Background(), WorkerRecord{
+	keys := &fakeKeys{}
+	metrics, err := (CommandStatusSource{SSHPath: sshPath, Keys: keys}).Observe(context.Background(), WorkerRecord{
 		WorkerID: "worker-a", SSHUser: "ec2-user", Instance: Instance{PublicIP: "203.0.113.10"},
 	})
 	if err != nil || !metrics.LastSeen.Equal(time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)) ||
 		metrics.Load1 != 0.12 || metrics.Load5 != 0.34 || metrics.Load15 != 0.56 {
 		t.Fatalf("metrics=%+v err=%v", metrics, err)
+	}
+	if keys.ensure != 0 || keys.lookup != 1 {
+		t.Fatalf("status probe mutated key material: ensure=%d lookup=%d", keys.ensure, keys.lookup)
 	}
 }
 

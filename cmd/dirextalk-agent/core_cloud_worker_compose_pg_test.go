@@ -273,7 +273,7 @@ func TestComposeCoreCloudWorkerConstructsAndRunsProductionCleaners(t *testing.T)
 func TestComposeDynamicCloudWorkerProposalNeedsNoDeploymentBlock(t *testing.T) {
 	store, cleanup := cloudWorkerComposePGStore(t)
 	defer cleanup()
-	cfg := config.Config{CoreAWSEnabled: true, CapabilityEnabled: true, CapabilityAccountGeneration: 7}
+	cfg := config.Config{CoreAWSEnabled: true, CapabilityEnabled: true}
 	conversation, err := postgres.NewCoreConversationStore(store)
 	if err != nil {
 		t.Fatal(err)

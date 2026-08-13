@@ -21,7 +21,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if !cfg.CoreAWSEnabled || !cfg.CapabilityEnabled {
 		return nil, nil
 	}
-	if store == nil || conversationStore == nil || cfg.CapabilityAccountGeneration <= 0 {
+	if store == nil || conversationStore == nil {
 		return nil, fmt.Errorf("dynamic Cloud Worker proposal dependencies are incomplete")
 	}
 	awsStore := postgres.NewCoreAWSStore(store)
@@ -59,8 +59,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize dynamic Cloud Worker proposal: %w", err)
 	}
-	owner := fixedCloudWorkerOwnerResolver{base: conversationStore, accountGeneration: uint64(cfg.CapabilityAccountGeneration)}
-	intrinsic, err := cloudworker.NewProposeIntrinsic(domain, owner, conversationStore, conversationStore)
+	intrinsic, err := cloudworker.NewProposeIntrinsic(domain, conversationStore, conversationStore, conversationStore)
 	if err != nil {
 		return nil, fmt.Errorf("initialize dynamic cloud_worker_propose: %w", err)
 	}
@@ -69,7 +68,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker local artifacts: %w", err)
 	}
-	executor, err := newSSHWorkerExecutor(authority, exact, artifacts, pricing, root)
+	executor, err := newSSHWorkerExecutor(authority, exact, artifacts, root)
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker executor: %w", err)
 	}
