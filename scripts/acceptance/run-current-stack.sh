@@ -110,17 +110,7 @@ check_real_worker_receipt() {
   DIREXTALK_ACCEPTANCE_RECEIPT="$receipt" \
     DIREXTALK_ACCEPTANCE_RUN_DIR="$RUN_DIR" \
     "$REAL_WORKER_DRIVER" || return
-  jq -e '
-    .schema == "dirextalk.agent.worker.acceptance.v1" and
-    .credential.created and .credential.tested and .credential.listed and
-    .catalog.workers_server and
-    .quote.observed and .confirmation.confirmed and
-    .worker.created and .worker.status_observed and .worker.load_observed and
-    .artifact.downloaded and
-    .reuse.completed and .reuse.no_new_creation_confirmation and
-    .destroy.completed and .destroy.resources_absent and
-    (.s3_used == false)
-  ' "$receipt" >/dev/null
+  scripts/acceptance/check-real-worker-receipt.sh "$receipt"
 }
 
 groups=()
