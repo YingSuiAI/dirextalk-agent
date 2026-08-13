@@ -160,12 +160,46 @@ func (client *SDK) ImportKeyPair(ctx context.Context, identity CredentialIdentit
 	}
 	return KeyPair{ID: aws.ToString(output.KeyPairId), Name: aws.ToString(output.KeyName)}, nil
 }
-func (client *SDK) DeleteKeyPair(ctx context.Context, identity CredentialIdentity, auth DestroyAuthorization, key KeyPair, _ ResourceTags) error {
+func (client *SDK) DeleteKeyPair(ctx context.Context, identity CredentialIdentity, auth DestroyAuthorization, key KeyPair, tags ResourceTags) error {
+	if err := client.VerifyIdentity(ctx, identity); err != nil {
+		return err
+	}
+	observed, found, err := client.readKeyPair(ctx, key.ID, tags)
+	if err != nil {
+		return err
+	}
+	if !found || observed != key {
+		return ErrIdentity
+	}
 	if err := client.beforeDestroy(ctx, identity, auth); err != nil {
 		return err
 	}
-	_, err := client.ec2.DeleteKeyPair(ctx, &ec2.DeleteKeyPairInput{KeyPairId: aws.String(key.ID)})
-	return err
+	_, writeErr := client.ec2.DeleteKeyPair(ctx, &ec2.DeleteKeyPairInput{KeyPairId: aws.String(key.ID)})
+	if err := client.VerifyIdentity(ctx, identity); err != nil {
+		return err
+	}
+	_, found, err = client.readKeyPair(ctx, key.ID, tags)
+	if errors.Is(err, ErrIdentity) {
+		return err
+	}
+	if err != nil || found {
+		return errors.Join(ErrAmbiguous, writeErr, err)
+	}
+	return nil
+}
+
+func (client *SDK) readKeyPair(ctx context.Context, id string, tags ResourceTags) (KeyPair, bool, error) {
+	output, err := client.ec2.DescribeKeyPairs(ctx, &ec2.DescribeKeyPairsInput{Filters: []ec2types.Filter{{Name: aws.String("key-pair-id"), Values: []string{id}}}})
+	if err != nil {
+		return KeyPair{}, false, err
+	}
+	if output == nil || len(output.KeyPairs) == 0 {
+		return KeyPair{}, false, nil
+	}
+	if len(output.KeyPairs) != 1 || !hasTags(output.KeyPairs[0].Tags, tags) {
+		return KeyPair{}, false, ErrIdentity
+	}
+	return KeyPair{ID: aws.ToString(output.KeyPairs[0].KeyPairId), Name: aws.ToString(output.KeyPairs[0].KeyName)}, true, nil
 }
 func (client *SDK) FindSecurityGroup(ctx context.Context, identity CredentialIdentity, name string, tags ResourceTags) (SecurityGroup, bool, error) {
 	if err := client.VerifyIdentity(ctx, identity); err != nil {
@@ -218,14 +252,14 @@ func (client *SDK) AuthorizeSSH(ctx context.Context, identity CredentialIdentity
 // SetPublicPort toggles direct public TCP access for one persisted service.
 // It reads the current security group before and after the mutation, making
 // bind/unbind retries naturally idempotent without a separate mutation ledger.
-func (client *SDK) SetPublicPort(ctx context.Context, identity CredentialIdentity, group SecurityGroup, port uint16, enabled bool) error {
+func (client *SDK) SetPublicPort(ctx context.Context, identity CredentialIdentity, group SecurityGroup, tags ResourceTags, port uint16, enabled bool) error {
 	if client == nil || port == 0 || strings.TrimSpace(group.ID) == "" {
 		return ErrInvalid
 	}
 	if err := client.VerifyIdentity(ctx, identity); err != nil {
 		return err
 	}
-	current, err := client.publicPortState(ctx, group.ID, port)
+	current, err := client.publicPortState(ctx, group, tags, port)
 	if err != nil || current == enabled {
 		return err
 	}
@@ -239,24 +273,32 @@ func (client *SDK) SetPublicPort(ctx context.Context, identity CredentialIdentit
 	} else {
 		_, err = client.ec2.RevokeSecurityGroupIngress(ctx, &ec2.RevokeSecurityGroupIngressInput{GroupId: aws.String(group.ID), IpPermissions: permission})
 	}
-	if err != nil {
-		return err
-	}
+	writeErr := err
 	if err := client.VerifyIdentity(ctx, identity); err != nil {
 		return err
 	}
-	current, err = client.publicPortState(ctx, group.ID, port)
+	current, err = client.publicPortState(ctx, group, tags, port)
 	if err != nil {
-		return err
+		if errors.Is(err, ErrIdentity) {
+			return err
+		}
+		return errors.Join(ErrAmbiguous, writeErr, err)
 	}
 	if current != enabled {
-		return ErrAmbiguous
+		return errors.Join(ErrAmbiguous, writeErr)
 	}
 	return nil
 }
 
-func (client *SDK) publicPortState(ctx context.Context, groupID string, port uint16) (bool, error) {
-	return client.portCIDRState(ctx, groupID, port, "0.0.0.0/0")
+func (client *SDK) publicPortState(ctx context.Context, group SecurityGroup, tags ResourceTags, port uint16) (bool, error) {
+	observed, found, err := client.readSecurityGroup(ctx, group.ID, tags)
+	if err != nil {
+		return false, err
+	}
+	if !found || observed.SecurityGroup != group {
+		return false, ErrIdentity
+	}
+	return portCIDRState(observed.permissions, port, "0.0.0.0/0"), nil
 }
 
 func (client *SDK) portCIDRState(ctx context.Context, groupID string, port uint16, cidr string) (bool, error) {
@@ -267,24 +309,68 @@ func (client *SDK) portCIDRState(ctx context.Context, groupID string, port uint1
 	if output == nil || len(output.SecurityGroups) != 1 || aws.ToString(output.SecurityGroups[0].GroupId) != groupID {
 		return false, ErrIdentity
 	}
-	for _, permission := range output.SecurityGroups[0].IpPermissions {
+	return portCIDRState(output.SecurityGroups[0].IpPermissions, port, cidr), nil
+}
+
+func portCIDRState(permissions []ec2types.IpPermission, port uint16, cidr string) bool {
+	for _, permission := range permissions {
 		if aws.ToString(permission.IpProtocol) != "tcp" || aws.ToInt32(permission.FromPort) != int32(port) || aws.ToInt32(permission.ToPort) != int32(port) {
 			continue
 		}
 		for _, ipRange := range permission.IpRanges {
 			if aws.ToString(ipRange.CidrIp) == cidr {
-				return true, nil
+				return true
 			}
 		}
 	}
-	return false, nil
+	return false
 }
-func (client *SDK) DeleteSecurityGroup(ctx context.Context, identity CredentialIdentity, auth DestroyAuthorization, group SecurityGroup, _ ResourceTags) error {
+func (client *SDK) DeleteSecurityGroup(ctx context.Context, identity CredentialIdentity, auth DestroyAuthorization, group SecurityGroup, tags ResourceTags) error {
+	if err := client.VerifyIdentity(ctx, identity); err != nil {
+		return err
+	}
+	observed, found, err := client.readSecurityGroup(ctx, group.ID, tags)
+	if err != nil {
+		return err
+	}
+	if !found || observed.SecurityGroup != group {
+		return ErrIdentity
+	}
 	if err := client.beforeDestroy(ctx, identity, auth); err != nil {
 		return err
 	}
-	_, err := client.ec2.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{GroupId: aws.String(group.ID)})
-	return err
+	_, writeErr := client.ec2.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{GroupId: aws.String(group.ID)})
+	if err := client.VerifyIdentity(ctx, identity); err != nil {
+		return err
+	}
+	_, found, err = client.readSecurityGroup(ctx, group.ID, tags)
+	if errors.Is(err, ErrIdentity) {
+		return err
+	}
+	if err != nil || found {
+		return errors.Join(ErrAmbiguous, writeErr, err)
+	}
+	return nil
+}
+
+type observedSecurityGroup struct {
+	SecurityGroup
+	permissions []ec2types.IpPermission
+}
+
+func (client *SDK) readSecurityGroup(ctx context.Context, id string, tags ResourceTags) (observedSecurityGroup, bool, error) {
+	output, err := client.ec2.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{Filters: []ec2types.Filter{{Name: aws.String("group-id"), Values: []string{id}}}})
+	if err != nil {
+		return observedSecurityGroup{}, false, err
+	}
+	if output == nil || len(output.SecurityGroups) == 0 {
+		return observedSecurityGroup{}, false, nil
+	}
+	if len(output.SecurityGroups) != 1 || !hasTags(output.SecurityGroups[0].Tags, tags) {
+		return observedSecurityGroup{}, false, ErrIdentity
+	}
+	group := output.SecurityGroups[0]
+	return observedSecurityGroup{SecurityGroup: SecurityGroup{ID: aws.ToString(group.GroupId), Name: aws.ToString(group.GroupName)}, permissions: group.IpPermissions}, true, nil
 }
 
 func (client *SDK) FindInstance(ctx context.Context, identity CredentialIdentity, token string, tags ResourceTags) (Instance, bool, error) {
@@ -339,12 +425,35 @@ func (client *SDK) RunInstance(ctx context.Context, identity CredentialIdentity,
 	}
 	return sdkInstance(output.Instances[0]), nil
 }
-func (client *SDK) TerminateInstance(ctx context.Context, identity CredentialIdentity, auth DestroyAuthorization, instance Instance, _ ResourceTags) error {
+func (client *SDK) TerminateInstance(ctx context.Context, identity CredentialIdentity, auth DestroyAuthorization, instance Instance, tags ResourceTags) error {
+	if err := client.VerifyIdentity(ctx, identity); err != nil {
+		return err
+	}
+	observed, found, err := client.findInstance(ctx, []ec2types.Filter{{Name: aws.String("instance-id"), Values: []string{instance.ID}}}, tags)
+	if err != nil {
+		return err
+	}
+	if !found || observed != instance {
+		return ErrIdentity
+	}
 	if err := client.beforeDestroy(ctx, identity, auth); err != nil {
 		return err
 	}
-	_, err := client.ec2.TerminateInstances(ctx, &ec2.TerminateInstancesInput{InstanceIds: []string{instance.ID}})
-	return err
+	_, writeErr := client.ec2.TerminateInstances(ctx, &ec2.TerminateInstancesInput{InstanceIds: []string{instance.ID}})
+	if err := client.VerifyIdentity(ctx, identity); err != nil {
+		return err
+	}
+	observed, found, err = client.findInstance(ctx, []ec2types.Filter{{Name: aws.String("instance-id"), Values: []string{instance.ID}}}, tags)
+	if errors.Is(err, ErrIdentity) {
+		return err
+	}
+	if err != nil {
+		return errors.Join(ErrAmbiguous, writeErr, err)
+	}
+	if !found || observed.State == "shutting-down" || observed.State == "terminated" {
+		return nil
+	}
+	return errors.Join(ErrAmbiguous, writeErr)
 }
 func (client *SDK) beforeCreate(ctx context.Context, identity CredentialIdentity, confirmation Confirmation) error {
 	if err := confirmation.validate(); err != nil {

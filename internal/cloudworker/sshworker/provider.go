@@ -664,12 +664,13 @@ func (provider *Provider) SetPublicPort(ctx context.Context, identity WorkerIden
 		return ErrIdentity
 	}
 	manager, ok := provider.aws.(interface {
-		SetPublicPort(context.Context, CredentialIdentity, SecurityGroup, uint16, bool) error
+		SetPublicPort(context.Context, CredentialIdentity, SecurityGroup, ResourceTags, uint16, bool) error
 	})
 	if !ok {
 		return ErrInvalid
 	}
-	return manager.SetPublicPort(ctx, identity.Credential, worker.SecurityGroup, port, enabled)
+	return manager.SetPublicPort(ctx, identity.Credential, worker.SecurityGroup,
+		resourceTags(worker.WorkerID, worker.authority(), worker.Credential, worker.CreationProof), port, enabled)
 }
 
 func (provider *Provider) ObserveWorker(ctx context.Context, identity WorkerIdentity) (WorkerStatus, error) {

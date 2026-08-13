@@ -104,6 +104,7 @@ type fakeAWS struct {
 	instances                     map[string]Instance
 	ambiguous                     bool
 	publicPorts                   map[uint16]bool
+	publicPortTags                ResourceTags
 	afterFindKey                  func()
 	observeErr                    map[string]error
 }
@@ -171,7 +172,8 @@ func (a *fakeAWS) AuthorizeSSH(_ context.Context, _ CredentialIdentity, c Confir
 	a.mutations++
 	return nil
 }
-func (a *fakeAWS) SetPublicPort(_ context.Context, _ CredentialIdentity, _ SecurityGroup, port uint16, enabled bool) error {
+func (a *fakeAWS) SetPublicPort(_ context.Context, _ CredentialIdentity, _ SecurityGroup, tags ResourceTags, port uint16, enabled bool) error {
+	a.publicPortTags = tags
 	a.publicPorts[port] = enabled
 	return nil
 }
@@ -789,6 +791,15 @@ func TestProviderPublicPortRequiresExactWorkerIdentity(t *testing.T) {
 	}
 	if err := provider.SetPublicPort(context.Background(), identity, 8080, true); err != nil || !cloud.publicPorts[8080] {
 		t.Fatalf("public port err=%v ports=%v", err, cloud.publicPorts)
+	}
+	wantTags := resourceTags(worker.WorkerID, worker.authority(), worker.Credential, worker.CreationProof)
+	if len(cloud.publicPortTags) != len(wantTags) {
+		t.Fatalf("public port tags=%v want=%v", cloud.publicPortTags, wantTags)
+	}
+	for key, value := range wantTags {
+		if cloud.publicPortTags[key] != value {
+			t.Fatalf("public port tags=%v want=%v", cloud.publicPortTags, wantTags)
+		}
 	}
 }
 
