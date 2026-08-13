@@ -348,7 +348,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 	}
 	artifactMarker := "DIREXTALK_WORKER_ACCEPTANCE_" + marker()
 	firstStream, err := d.product.StartTurn(ctx, chatParams(selected, d.conversationID,
-		"Use the Cloud Worker tool for this remote job. Create exactly one text artifact named acceptance.txt containing "+artifactMarker+". Do not deploy a service, bind a domain, or use S3, EIP, KMS, or a custom AMI. Keep the Worker after completion."), true)
+		firstWorkerPrompt(artifactMarker)), true)
 	if err != nil || firstStream.ConfirmationID == "" || firstStream.ExecutionID == "" {
 		return out, fmt.Errorf("first durable Worker offer: %w", err)
 	}
@@ -405,7 +405,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 		return out, err
 	}
 	secondStream, err := d.product.StartTurn(ctx, chatParams(selected, d.conversationID,
-		"Use the already retained Cloud Worker for one minimal remote task and return its result. Do not create another Worker, request another creation confirmation, bind a domain, or use S3, EIP, KMS, or a custom AMI."), false)
+		reuseWorkerPrompt()), false)
 	if err != nil || !secondStream.Done {
 		return out, fmt.Errorf("retained Worker reuse turn: %w", err)
 	}
@@ -636,6 +636,14 @@ func chatParams(selected profile, conversationID, message string) map[string]any
 		"model_profile_id": selected.ProfileID, "model_profile_revision": selected.Revision,
 		"credential_version": selected.CredentialVersion,
 	}
+}
+
+func firstWorkerPrompt(marker string) string {
+	return "Deploy https://github.com/TencentCloud/TencentDB-Agent-Memory, record the deployment steps and the actual CPU, memory, and disk load of the machine that performs the work, then create exactly one text artifact named acceptance.txt containing " + marker + ". Keep the execution environment available after the task so I can continue working in it."
+}
+
+func reuseWorkerPrompt() string {
+	return "Continue in the execution environment retained from the previous task. Read its current UTC time and machine load, and return both values without creating a new environment."
 }
 
 func hasWorkersServer(response map[string]any) bool {

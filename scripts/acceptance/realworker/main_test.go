@@ -300,3 +300,20 @@ func TestProfileSelectionIsStableWithoutNeedlessSingleProfileGate(t *testing.T) 
 		t.Fatalf("selected profile = %+v, %v", selected, err)
 	}
 }
+
+func TestWorkerPromptsExerciseAutomaticEscalationAndReuse(t *testing.T) {
+	first := firstWorkerPrompt("acceptance-marker")
+	second := reuseWorkerPrompt()
+	for _, prompt := range []string{first, second} {
+		lower := strings.ToLower(strings.ReplaceAll(prompt, "https://github.com/TencentCloud/TencentDB-Agent-Memory", ""))
+		for _, directive := range []string{"aws", "cloud", "worker", "remote"} {
+			if strings.Contains(lower, directive) {
+				t.Fatalf("prompt names execution mechanism %q: %q", directive, prompt)
+			}
+		}
+	}
+	if !strings.Contains(first, "TencentDB-Agent-Memory") || !strings.Contains(first, "acceptance-marker") ||
+		!strings.Contains(second, "retained from the previous task") {
+		t.Fatalf("prompts do not retain the acceptance objectives: first=%q second=%q", first, second)
+	}
+}

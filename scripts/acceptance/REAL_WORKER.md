@@ -42,7 +42,9 @@ scripts/acceptance/run-current-stack.sh \
 ```
 
 The two actual tasks use the official durable `agent.chat.stream` WebSocket
-route. All other calls use `POST /_p2p/query`. The first task must expose and
+route. All other calls use `POST /_p2p/query`. Their user prompts do not name
+AWS, cloud, remote execution, or a Worker. The first substantial deployment
+task must therefore exercise automatic execution escalation, expose and
 receive the exact priced confirmation, return a verified artifact containing a
 new marker, and leave one idle Worker with live server load. The second task
 must automatically reuse that exact Worker with a zero-priced plan and no
