@@ -1718,7 +1718,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 							ConversationRevision: conv.Revision,
 						})
 						if intrinsicErr != nil || !intrinsicResult.TurnCommitted {
-							code, summary := intrinsicTerminalFailure(call.Name, intrinsicErr)
+							code, summary := resolvedIntrinsicTerminalFailure(*intrinsic, intrinsicErr)
 							_, _ = s.turns.FailTurn(ctx, lease, code, summary)
 						}
 						return
@@ -1920,6 +1920,18 @@ func intrinsicTerminalFailure(toolName string, err error) (string, string) {
 		return "static_site_publish_failed", "Static page could not be published"
 	}
 	return "intrinsic_failed", "Core intrinsic operation failed"
+}
+
+func resolvedIntrinsicTerminalFailure(intrinsic ResolvedIntrinsic, err error) (string, string) {
+	if intrinsic.TerminalFailure != nil {
+		code, summary := intrinsic.TerminalFailure(err)
+		code, summary = strings.TrimSpace(code), strings.TrimSpace(summary)
+		if code != "" && len(code) <= 128 && !strings.ContainsAny(code, "\r\n\x00") &&
+			summary != "" && len(summary) <= 1024 && !strings.ContainsAny(summary, "\r\n\x00") {
+			return code, summary
+		}
+	}
+	return intrinsicTerminalFailure(intrinsic.Tool.Name, err)
 }
 
 func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots []ExtensionExecutionSnapshot) ([]ResolvedExtension, error) {

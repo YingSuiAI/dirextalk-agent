@@ -293,6 +293,39 @@ func TestIntrinsicCreatesEmptyWriteWorkspaceForNewProject(t *testing.T) {
 	}
 }
 
+func TestIntrinsicAcceptsHeartbeatRenewalAndRejectsLeaseReplacement(t *testing.T) {
+	intrinsic, store, bound := intrinsicFixture(t, "Build and verify a presentation", nil, nil)
+	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), bound)
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("resolve intrinsic: tools=%d err=%v", len(tools), err)
+	}
+	raw, _ := json.Marshal(map[string]any{"objective": "create the final pptx", "workspace_mode": "write"})
+	call := coreconversation.ToolCall{ID: "call-after-heartbeat", Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(raw)}
+
+	renewed := bound
+	renewed.Epoch += 2
+	renewed.ExpiresAt = renewed.ExpiresAt.Add(time.Minute)
+	result, err := tools[0].Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
+		Lease: renewed, Call: call, CanonicalArguments: raw,
+	})
+	if err != nil || !result.TurnCommitted {
+		t.Fatalf("heartbeat renewal rejected: result=%+v err=%v", result, err)
+	}
+	if len(store.commands) != 1 || store.commands[0].TurnLeaseID != renewed.LeaseID || store.commands[0].TurnLeaseEpoch != renewed.Epoch {
+		t.Fatalf("proposal did not use renewed lease: %+v", store.commands)
+	}
+
+	replaced := renewed
+	replaced.LeaseID = uuid.NewString()
+	replaced.Epoch++
+	call.ID = "call-replaced-lease"
+	if _, err = tools[0].Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
+		Lease: replaced, Call: call, CanonicalArguments: raw,
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("replacement lease was not rejected: %v", err)
+	}
+}
+
 func TestIntrinsicProposalErrorClass(t *testing.T) {
 	tests := []struct {
 		err  error
@@ -301,6 +334,7 @@ func TestIntrinsicProposalErrorClass(t *testing.T) {
 		{ErrPricingCatalogStale, "pricing_catalog_stale"},
 		{ErrQuoteExpired, "quote_expired"},
 		{ErrStaleAuthorization, "stale_authorization"},
+		{ErrArtifactDestinationUnavailable, "artifact_destination_unavailable"},
 		{ErrCloudIntentRequired, "cloud_intent_required"},
 		{ErrLeaseConflict, "lease_conflict"},
 		{ErrConflict, "conflict"},
@@ -310,6 +344,26 @@ func TestIntrinsicProposalErrorClass(t *testing.T) {
 	for _, test := range tests {
 		if got := intrinsicProposalErrorClass(test.err); got != test.want {
 			t.Fatalf("intrinsicProposalErrorClass(%v)=%q want %q", test.err, got, test.want)
+		}
+	}
+}
+
+func TestCloudWorkerIntrinsicTerminalFailureIsSafeAndActionable(t *testing.T) {
+	tests := []struct {
+		err         error
+		wantCode    string
+		wantSummary string
+	}{
+		{ErrPricingCatalogStale, "cloud_worker_pricing_unavailable", "Cloud Worker pricing is unavailable"},
+		{ErrStaleAuthorization, "cloud_worker_authorization_stale", "Cloud Worker authorization changed; verify the configured AWS credentials and retry"},
+		{ErrArtifactDestinationUnavailable, "cloud_worker_artifact_storage_unavailable", "Cloud Worker deliverable storage is unavailable"},
+		{ErrInvalid, "invalid_intrinsic_arguments", "Cloud Worker proposal is invalid"},
+		{errors.New("private provider detail"), "cloud_worker_dependency_unavailable", "Cloud Worker proposal could not be prepared"},
+	}
+	for _, test := range tests {
+		code, summary := cloudWorkerIntrinsicTerminalFailure(test.err)
+		if code != test.wantCode || summary != test.wantSummary || strings.Contains(summary, test.err.Error()) {
+			t.Fatalf("classification=(%q,%q) want=(%q,%q)", code, summary, test.wantCode, test.wantSummary)
 		}
 	}
 }

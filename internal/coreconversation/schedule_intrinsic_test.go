@@ -177,6 +177,38 @@ func TestServiceComposesScheduleWithConfiguredCoreIntrinsics(t *testing.T) {
 	}
 }
 
+func TestValidateIntrinsicLeaseRenewalPreservesAuthority(t *testing.T) {
+	bound := scheduleIntrinsicLease()
+	renewed := bound
+	renewed.Epoch += 2
+	renewed.ExpiresAt = renewed.ExpiresAt.Add(time.Minute)
+	if err := ValidateIntrinsicLeaseRenewal(bound, renewed); err != nil {
+		t.Fatalf("valid heartbeat renewal rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*TurnLease)
+	}{
+		{"replacement lease", func(lease *TurnLease) { lease.LeaseID = uuid.NewString() }},
+		{"epoch rollback", func(lease *TurnLease) { lease.Epoch = bound.Epoch - 1 }},
+		{"owner drift", func(lease *TurnLease) { lease.Turn.OwnerID += "-changed" }},
+		{"profile drift", func(lease *TurnLease) { lease.Turn.ProfileSnapshotDigest = strings.Repeat("f", 64) }},
+		{"profile material drift", func(lease *TurnLease) { lease.Turn.ProfileSnapshot.APIKey += "-changed" }},
+		{"attachment drift", func(lease *TurnLease) { lease.Turn.AttachmentSnapshotDigest = strings.Repeat("e", 64) }},
+		{"canceled", func(lease *TurnLease) { lease.Turn.CancelRequested = true }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := renewed
+			test.mutate(&candidate)
+			if err := ValidateIntrinsicLeaseRenewal(bound, candidate); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("authority change accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestScheduleIntrinsicAcceptsOneTimeTriggerAndRejectsForgedOrAmbiguousInput(t *testing.T) {
 	lease := scheduleIntrinsicLease()
 	store := &conversationScheduleStoreStub{}

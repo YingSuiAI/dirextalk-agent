@@ -135,6 +135,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(_ context.Context, lease coreco
 		Execute: func(ctx context.Context, request coreconversation.IntrinsicExecutionRequest) (coreconversation.IntrinsicExecutionResult, error) {
 			return p.execute(ctx, bound, request)
 		},
+		TerminalFailure: cloudWorkerIntrinsicTerminalFailure,
 	}}, nil
 }
 
@@ -167,24 +168,26 @@ func frozenTurnAttachmentSchema(turn coreconversation.Turn) map[string]any {
 }
 
 func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.TurnLease, request coreconversation.IntrinsicExecutionRequest) (coreconversation.IntrinsicExecutionResult, error) {
-	if ctx == nil || request.Lease.Turn.ID != bound.Turn.ID || request.Lease.Turn.RequestID != bound.Turn.RequestID || request.Lease.LeaseID != bound.LeaseID || request.Lease.Epoch != bound.Epoch || request.Call.Name != coremodel.IntrinsicCloudWorkerProposeToolName || request.Call.Validate() != nil {
+	if ctx == nil || coreconversation.ValidateIntrinsicLeaseRenewal(bound, request.Lease) != nil ||
+		request.Call.Name != coremodel.IntrinsicCloudWorkerProposeToolName || request.Call.Validate() != nil {
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
+	lease := request.Lease
 	arguments, err := parseProposeIntrinsicArguments(request.CanonicalArguments)
 	if err != nil {
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
 	mode := WorkspaceMode(arguments.WorkspaceMode)
-	explicit := hasExplicitCloudIntent(bound.Turn.Prompt)
+	explicit := hasExplicitCloudIntent(lease.Turn.Prompt)
 	var budget *LocalBudgetEvidence
 	reason := ProposalReasonExplicitUserCloud
 	if !explicit {
-		if hasCloudExecutionVeto(bound.Turn.Prompt) {
+		if hasCloudExecutionVeto(lease.Turn.Prompt) {
 			return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
 		}
 		reason = ProposalReasonCentralDelegation
-		if mode != WorkspaceNone && turnAllowsSelectedWorkspaceArchive(bound.Turn, arguments.AttachmentIDs) && p.budgets != nil {
-			budget, err = p.budgets.ResolveCloudWorkerBudgetEvidence(ctx, bound)
+		if mode != WorkspaceNone && turnAllowsSelectedWorkspaceArchive(lease.Turn, arguments.AttachmentIDs) && p.budgets != nil {
+			budget, err = p.budgets.ResolveCloudWorkerBudgetEvidence(ctx, lease)
 			if err != nil {
 				return coreconversation.IntrinsicExecutionResult{}, err
 			}
@@ -193,25 +196,25 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 			}
 		}
 	}
-	if strings.TrimSpace(bound.Turn.OwnerID) == "" || bound.Turn.AccountGeneration == 0 {
+	if strings.TrimSpace(lease.Turn.OwnerID) == "" || lease.Turn.AccountGeneration == 0 {
 		return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
 	}
-	owner, err := p.owners.ResolveCloudWorkerOwner(ctx, bound)
-	if err != nil || strings.TrimSpace(owner.OwnerID) != strings.TrimSpace(bound.Turn.OwnerID) || owner.AccountGeneration != bound.Turn.AccountGeneration {
+	owner, err := p.owners.ResolveCloudWorkerOwner(ctx, lease)
+	if err != nil || strings.TrimSpace(owner.OwnerID) != strings.TrimSpace(lease.Turn.OwnerID) || owner.AccountGeneration != lease.Turn.AccountGeneration {
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
 	manifest := InputManifest{Schema: InputManifestSchema}
 	if len(arguments.AttachmentIDs) > 0 {
-		if p.manifests == nil || !turnAllowsAttachments(bound.Turn, arguments.AttachmentIDs) {
+		if p.manifests == nil || !turnAllowsAttachments(lease.Turn, arguments.AttachmentIDs) {
 			return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 		}
-		manifest, err = p.manifests.ResolveCloudWorkerManifest(ctx, bound, mode, arguments.AttachmentIDs)
+		manifest, err = p.manifests.ResolveCloudWorkerManifest(ctx, lease, mode, arguments.AttachmentIDs)
 		if err != nil {
 			return coreconversation.IntrinsicExecutionResult{}, err
 		}
 	}
-	snapshot := bound.Turn.ProfileSnapshot
-	if snapshot.Validate() != nil || snapshot.ProfileID != bound.Turn.ProfileID || snapshot.Revision <= 0 || snapshot.CredentialVersion <= 0 {
+	snapshot := lease.Turn.ProfileSnapshot
+	if snapshot.Validate() != nil || snapshot.ProfileID != lease.Turn.ProfileID || snapshot.Revision <= 0 || snapshot.CredentialVersion <= 0 {
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
 	modelAuthorization, err := ModelAuthorizationFromSnapshot(snapshot)
@@ -220,13 +223,13 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		// or future providers. Reject before a paid quote is created.
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
-	promptDigest := sha256.Sum256([]byte(bound.Turn.Prompt))
-	idempotencyKey := uuid.NewSHA1(uuid.NameSpaceOID, []byte("cloud-worker-propose:"+bound.Turn.ID+":"+request.Call.ID)).String()
+	promptDigest := sha256.Sum256([]byte(lease.Turn.Prompt))
+	idempotencyKey := uuid.NewSHA1(uuid.NameSpaceOID, []byte("cloud-worker-propose:"+lease.Turn.ID+":"+request.Call.ID)).String()
 	offer, err := p.service.Propose(ctx, ProposeCommand{
 		OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration,
-		IdempotencyKey: idempotencyKey, ConversationID: bound.Turn.ConversationID,
-		TurnID: bound.Turn.ID, TurnLeaseID: bound.LeaseID, TurnLeaseEpoch: bound.Epoch,
-		ExpectedTurnRevision: bound.Turn.Revision, Objective: arguments.Objective,
+		IdempotencyKey: idempotencyKey, ConversationID: lease.Turn.ConversationID,
+		TurnID: lease.Turn.ID, TurnLeaseID: lease.LeaseID, TurnLeaseEpoch: lease.Epoch,
+		ExpectedTurnRevision: lease.Turn.Revision, Objective: arguments.Objective,
 		ObjectiveSummary: arguments.Objective, UserPromptDigest: hex.EncodeToString(promptDigest[:]),
 		ProposalReason: reason, LocalBudgetEvidence: budget, InputManifest: manifest,
 		WorkspaceMode:      mode,
@@ -235,12 +238,12 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 	if err != nil {
 		slog.Warn("[cloud-worker.intrinsic] proposal_failed",
 			"class", intrinsicProposalErrorClass(err),
-			"turn_id", bound.Turn.ID,
+			"turn_id", lease.Turn.ID,
 			"workspace_mode", mode,
 			"proposal_reason", reason)
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
-	if offer.Plan.TurnID != bound.Turn.ID || offer.Plan.ConversationID != bound.Turn.ConversationID || offer.Plan.AccountGeneration != owner.AccountGeneration || offer.Task.ID != offer.Plan.TaskID || offer.Confirmation.ConfirmationID != offer.Plan.ConfirmationID {
+	if offer.Plan.TurnID != lease.Turn.ID || offer.Plan.ConversationID != lease.Turn.ConversationID || offer.Plan.AccountGeneration != owner.AccountGeneration || offer.Task.ID != offer.Plan.TaskID || offer.Confirmation.ConfirmationID != offer.Plan.ConfirmationID {
 		return coreconversation.IntrinsicExecutionResult{}, ErrConflict
 	}
 	return coreconversation.IntrinsicExecutionResult{TurnCommitted: true}, nil
@@ -311,6 +314,8 @@ func intrinsicProposalErrorClass(err error) string {
 		return "quote_expired"
 	case errors.Is(err, ErrStaleAuthorization):
 		return "stale_authorization"
+	case errors.Is(err, ErrArtifactDestinationUnavailable):
+		return "artifact_destination_unavailable"
 	case errors.Is(err, ErrCloudIntentRequired):
 		return "cloud_intent_required"
 	case errors.Is(err, ErrLeaseConflict):
@@ -321,6 +326,27 @@ func intrinsicProposalErrorClass(err error) string {
 		return "invalid"
 	default:
 		return "dependency_error"
+	}
+}
+
+func cloudWorkerIntrinsicTerminalFailure(err error) (string, string) {
+	switch {
+	case errors.Is(err, ErrPricingCatalogStale):
+		return "cloud_worker_pricing_unavailable", "Cloud Worker pricing is unavailable"
+	case errors.Is(err, ErrQuoteExpired):
+		return "cloud_worker_quote_expired", "Cloud Worker quote expired before it could be presented"
+	case errors.Is(err, ErrStaleAuthorization):
+		return "cloud_worker_authorization_stale", "Cloud Worker authorization changed; verify the configured AWS credentials and retry"
+	case errors.Is(err, ErrArtifactDestinationUnavailable):
+		return "cloud_worker_artifact_storage_unavailable", "Cloud Worker deliverable storage is unavailable"
+	case errors.Is(err, ErrCloudIntentRequired):
+		return "cloud_worker_authorization_required", "Cloud Worker execution is not authorized for this request"
+	case errors.Is(err, ErrLeaseConflict), errors.Is(err, ErrConflict):
+		return "cloud_worker_conflict", "Cloud Worker proposal state changed; retry the request"
+	case errors.Is(err, ErrInvalid):
+		return "invalid_intrinsic_arguments", "Cloud Worker proposal is invalid"
+	default:
+		return "cloud_worker_dependency_unavailable", "Cloud Worker proposal could not be prepared"
 	}
 }
 

@@ -325,8 +325,9 @@ type ResolvedExtension struct {
 // resolution. The executor must atomically commit the durable turn before it
 // reports success.
 type ResolvedIntrinsic struct {
-	Tool    coremodel.Tool
-	Execute func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error)
+	Tool            coremodel.Tool
+	Execute         func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error)
+	TerminalFailure func(error) (code, summary string)
 }
 
 type IntrinsicExecutionRequest struct {

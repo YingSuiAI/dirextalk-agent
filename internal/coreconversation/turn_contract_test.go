@@ -64,6 +64,11 @@ type delayedStreamingTurnModel struct {
 	streamCalls int
 }
 
+type delayedToolCallTurnModel struct {
+	delay time.Duration
+	call  ToolCall
+}
+
 func (m *delayedStreamingTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
 	m.runCalls++
 	return ModelRunResult{}, context.DeadlineExceeded
@@ -85,6 +90,22 @@ func (m *delayedStreamingTurnModel) Stream(ctx context.Context, _ ModelRunReques
 		return ModelRunResult{}, ctx.Err()
 	}
 	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", CreatedAt: time.Now().UTC()}}, nil
+}
+
+func (m delayedToolCallTurnModel) Run(ctx context.Context, request ModelRunRequest) (ModelRunResult, error) {
+	return m.Stream(ctx, request, func(ModelDelta) error { return nil })
+}
+
+func (m delayedToolCallTurnModel) Stream(ctx context.Context, _ ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	timer := time.NewTimer(m.delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return ModelRunResult{}, ctx.Err()
+	}
+	message := Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: []ToolCall{m.call}, CreatedAt: time.Now().UTC()}
+	return ModelRunResult{Message: message, ToolCalls: []ToolCall{m.call}}, nil
 }
 
 type fixedToolCallsTurnModel struct{ calls []ToolCall }
@@ -125,6 +146,22 @@ type readOnlyTurnStore struct {
 	dispatched    map[string]bool
 	prepareCalls  int
 	prepared      ToolAttempt
+}
+
+type heartbeatRenewingTurnStore struct {
+	*readOnlyTurnStore
+	renewals int
+}
+
+func (s *heartbeatRenewingTurnStore) RenewTurn(_ context.Context, id, leaseID string, epoch uint64, now time.Time, ttl time.Duration) (TurnLease, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id != s.turn.ID || leaseID != "read-only-lease" || epoch != uint64(s.renewals+1) {
+		return TurnLease{}, ErrConflict
+	}
+	s.renewals++
+	s.turn.State = TurnRunning
+	return TurnLease{Turn: s.turn, LeaseID: leaseID, Epoch: epoch + 1, ExpiresAt: now.Add(ttl)}, nil
 }
 
 func (s *readOnlyTurnStore) RecordConversationToolCall(_ context.Context, _ TurnLease, call ToolCall) error {
@@ -701,6 +738,54 @@ func TestExecuteTurnDurableUsesStreamingPathBeyondLegacyTotalWindow(t *testing.T
 		if event.Response != nil && strings.Contains(event.Response.Message.Content, "intermediate-only delta") {
 			t.Fatal("streaming delta was persisted in a durable event")
 		}
+	}
+}
+
+func TestExecuteTurnPassesRenewedLeaseToIntrinsicAfterSlowModel(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{"objective":"create the final pptx","workspace_mode":"write"}`}
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), RequestFingerprint: strings.Repeat("a", 64),
+		OwnerID: "@owner:example.test", AccountGeneration: 7, ConversationID: conversationID,
+		Prompt: "create a complete investor presentation", ProfileID: profile.ProfileID,
+		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+		State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC(),
+	}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: turn.CreatedAt, UpdatedAt: turn.CreatedAt}
+	readOnly := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}
+	store := &heartbeatRenewingTurnStore{readOnlyTurnStore: readOnly}
+	service, err := NewService(store, delayedToolCallTurnModel{delay: 35 * time.Millisecond, call: call}, nil,
+		snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.leaseTTL = 15 * time.Millisecond
+	var resolved TurnLease
+	var executed TurnLease
+	service.SetIntrinsicResolver(intrinsicResolverFunc(func(_ context.Context, lease TurnLease) ([]ResolvedIntrinsic, error) {
+		resolved = lease
+		return []ResolvedIntrinsic{{
+			Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerProposeToolName, InputSchema: map[string]any{"type": "object"}},
+			Execute: func(_ context.Context, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+				executed = request.Lease
+				return IntrinsicExecutionResult{TurnCommitted: true}, nil
+			},
+		}}, nil
+	}))
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	if store.renewals < 2 || resolved.Epoch != 1 || executed.Epoch <= resolved.Epoch ||
+		executed.Epoch != uint64(store.renewals+1) || executed.LeaseID != resolved.LeaseID {
+		t.Fatalf("lease handoff resolved=%+v executed=%+v renewals=%d", resolved, executed, store.renewals)
+	}
+	if store.failedCode != "" {
+		t.Fatalf("slow intrinsic turn failed: %s", store.failedCode)
 	}
 }
 

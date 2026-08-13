@@ -181,6 +181,39 @@ type TurnLease struct {
 	ExpiresAt time.Time
 }
 
+// ValidateIntrinsicLeaseRenewal proves that current is a heartbeat renewal of
+// the lease used to expose an intrinsic to the model. Heartbeats may advance
+// the epoch while a slow model is deciding which tool to call; they must not
+// invalidate the resulting call or loosen any immutable turn authority.
+func ValidateIntrinsicLeaseRenewal(bound, current TurnLease) error {
+	if bound.LeaseID == "" || current.LeaseID != bound.LeaseID || bound.Epoch == 0 || current.Epoch < bound.Epoch ||
+		current.Turn.State != TurnRunning || current.Turn.CancelRequested ||
+		current.Turn.ID != bound.Turn.ID || current.Turn.RequestID != bound.Turn.RequestID ||
+		current.Turn.RequestFingerprint != bound.Turn.RequestFingerprint ||
+		current.Turn.OwnerID != bound.Turn.OwnerID || current.Turn.AccountGeneration != bound.Turn.AccountGeneration ||
+		current.Turn.ConversationID != bound.Turn.ConversationID || current.Turn.Prompt != bound.Turn.Prompt ||
+		current.Turn.ProfileID != bound.Turn.ProfileID || current.Turn.Revision != bound.Turn.Revision ||
+		current.Turn.ProfileSnapshotDigest != bound.Turn.ProfileSnapshotDigest ||
+		current.Turn.ExtensionSnapshotDigest != bound.Turn.ExtensionSnapshotDigest ||
+		current.Turn.AttachmentSnapshotDigest != bound.Turn.AttachmentSnapshotDigest ||
+		current.Turn.ProfileSnapshot.Digest() != bound.Turn.ProfileSnapshot.Digest() ||
+		(TurnStartCommand{ExtensionSnapshots: current.Turn.ExtensionSnapshots}).ExtensionSnapshotDigest() !=
+			(TurnStartCommand{ExtensionSnapshots: bound.Turn.ExtensionSnapshots}).ExtensionSnapshotDigest() ||
+		TurnAttachmentSnapshotDigest(current.Turn.AttachmentSources) != TurnAttachmentSnapshotDigest(bound.Turn.AttachmentSources) ||
+		!sameOptionalRevision(current.Turn.ExpectedRevision, bound.Turn.ExpectedRevision) ||
+		!current.Turn.CreatedAt.Equal(bound.Turn.CreatedAt) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func sameOptionalRevision(left, right *uint64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
 // ToolAttempt is the non-secret projection of a durable extension invocation.
 // Canonical arguments are deliberately absent: they remain in the Agent DB.
 type ToolAttempt struct {
