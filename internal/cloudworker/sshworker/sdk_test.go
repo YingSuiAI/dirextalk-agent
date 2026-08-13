@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
@@ -17,7 +18,10 @@ func (stubSTS) GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, .
 	return &sts.GetCallerIdentityOutput{Account: aws.String("123456789012")}, nil
 }
 
-type mutationProbeEC2 struct{ importCalls int }
+type mutationProbeEC2 struct {
+	importCalls, runCalls int
+	runInput              *ec2.RunInstancesInput
+}
 
 func (*mutationProbeEC2) DescribeImages(context.Context, *ec2.DescribeImagesInput, ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
 	return nil, errors.New("unused")
@@ -53,8 +57,23 @@ func (*mutationProbeEC2) DeleteSecurityGroup(context.Context, *ec2.DeleteSecurit
 func (*mutationProbeEC2) DescribeInstances(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
 	return nil, errors.New("unused")
 }
-func (*mutationProbeEC2) RunInstances(context.Context, *ec2.RunInstancesInput, ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
-	return nil, errors.New("unused")
+func (probe *mutationProbeEC2) RunInstances(_ context.Context, input *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+	probe.runCalls++
+	probe.runInput = input
+	return &ec2.RunInstancesOutput{Instances: []ec2types.Instance{{InstanceId: aws.String("i-1"), PublicIpAddress: aws.String("203.0.113.20")}}}, nil
+}
+
+func TestSDKRunUsesAutoPublicIPv4WithoutEIP(t *testing.T) {
+	probe := &mutationProbeEC2{}
+	client := newSDK("ap-east-1", probe, stubSTS{}, staticIP{})
+	instance, err := client.RunInstance(context.Background(), credentialFixture(), Confirmation{Confirmed: true, Proof: "confirmation-1"}, LaunchRequest{
+		WorkerID: "worker-1", ClientToken: "token-1", InstanceType: "t3.small", VolumeGiB: 16, KeyName: "key", SecurityGroupID: "sg-1", Discovery: discoveryFixture(), Tags: ResourceTags{"owner": "test"}})
+	if err != nil || instance.PublicIP != "203.0.113.20" || probe.runCalls != 1 {
+		t.Fatalf("RunInstance=%#v,%v calls=%d", instance, err, probe.runCalls)
+	}
+	if probe.runInput == nil || len(probe.runInput.NetworkInterfaces) != 1 || !aws.ToBool(probe.runInput.NetworkInterfaces[0].AssociatePublicIpAddress) {
+		t.Fatalf("public IPv4 not requested: %#v", probe.runInput)
+	}
 }
 func (*mutationProbeEC2) TerminateInstances(context.Context, *ec2.TerminateInstancesInput, ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
 	return nil, errors.New("unused")

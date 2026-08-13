@@ -12,242 +12,288 @@ import (
 )
 
 type memoryStore struct {
-	record Record
-	exists bool
+	executions map[string]ExecutionRecord
+	workers    map[string]WorkerRecord
 }
 
-func (store *memoryStore) Load(_ context.Context, _ string) (Record, bool, error) {
-	return store.record, store.exists, nil
+func newMemoryStore() *memoryStore {
+	return &memoryStore{executions: map[string]ExecutionRecord{}, workers: map[string]WorkerRecord{}}
 }
-
-func (store *memoryStore) Save(_ context.Context, record Record) error {
-	store.record, store.exists = record, true
+func (s *memoryStore) LoadExecution(_ context.Context, id string) (ExecutionRecord, bool, error) {
+	r, ok := s.executions[id]
+	return r, ok, nil
+}
+func (s *memoryStore) SaveExecution(_ context.Context, r ExecutionRecord) error {
+	s.executions[r.ExecutionID] = r
+	return nil
+}
+func (s *memoryStore) LoadWorker(_ context.Context, id string) (WorkerRecord, bool, error) {
+	r, ok := s.workers[id]
+	return r, ok, nil
+}
+func (s *memoryStore) ListWorkers(_ context.Context, c CredentialIdentity) ([]WorkerRecord, error) {
+	r := []WorkerRecord{}
+	for _, w := range s.workers {
+		if w.Credential == c {
+			r = append(r, w)
+		}
+	}
+	return r, nil
+}
+func (s *memoryStore) SaveWorker(_ context.Context, r WorkerRecord) error {
+	s.workers[r.WorkerID] = r
 	return nil
 }
 
-type fakeKeys struct {
-	ensure int
-	delete int
+type fakeKeys struct{ ensure, delete int }
+
+func (k *fakeKeys) Ensure(context.Context, string) (string, []byte, error) {
+	k.ensure++
+	return "/tmp/key", []byte("public"), nil
 }
+func (k *fakeKeys) Delete(context.Context, string) error { k.delete++; return nil }
 
-func (keys *fakeKeys) Ensure(context.Context, string) (string, []byte, error) {
-	keys.ensure++
-	return "/tmp/id_ed25519", []byte("ssh-ed25519 key"), nil
-}
+type fakeSink struct{}
 
-func (keys *fakeKeys) Delete(context.Context, string) error { keys.delete++; return nil }
-
-type fakeSink struct {
-	stdout []byte
-	stderr []byte
-}
-
-func (sink *fakeSink) StoreText(_ context.Context, stdout, stderr []byte, _ int) error {
-	sink.stdout, sink.stderr = bytes.Clone(stdout), bytes.Clone(stderr)
-	return nil
-}
-
+func (*fakeSink) StoreText(context.Context, []byte, []byte, int) error          { return nil }
 func (*fakeSink) StoreArtifact(context.Context, string, io.Reader, int64) error { return nil }
 
-type fakeSSH struct{ calls int }
+type fakeSSH struct {
+	calls int
+	hosts []string
+}
 
-func (ssh *fakeSSH) Execute(_ context.Context, request SSHRequest) (ExecutionResult, error) {
-	ssh.calls++
-	if request.Host != "203.0.113.20" || request.WorkerScriptSHA256 == "" {
-		return ExecutionResult{}, ErrInvalid
-	}
-	return ExecutionResult{ExitCode: 0, StdoutBytes: 2, ArtifactCount: 1}, nil
+func (s *fakeSSH) Execute(_ context.Context, r SSHRequest) (ExecutionResult, error) {
+	s.calls++
+	s.hosts = append(s.hosts, r.Host)
+	return ExecutionResult{ArtifactCount: 1}, nil
 }
 
 type fakeAWS struct {
-	identityChecks int
-	discoveries    int
-	mutations      int
-	runs           int
-	terminations   int
-	key            KeyPair
-	group          SecurityGroup
-	instance       Instance
-	runAmbiguous   bool
-	authorizeErr   error
+	mutations, runs, terminations int
+	keys                          map[string]KeyPair
+	groups                        map[string]SecurityGroup
+	instances                     map[string]Instance
+	ambiguous                     bool
 }
 
-func (aws *fakeAWS) VerifyIdentity(context.Context, CredentialIdentity) error {
-	aws.identityChecks++
-	return nil
+func newFakeAWS() *fakeAWS {
+	return &fakeAWS{keys: map[string]KeyPair{}, groups: map[string]SecurityGroup{}, instances: map[string]Instance{}}
 }
-
-func (aws *fakeAWS) Discover(context.Context, CredentialIdentity) (Discovery, error) {
-	aws.discoveries++
+func (a *fakeAWS) VerifyIdentity(context.Context, CredentialIdentity) error { return nil }
+func (a *fakeAWS) Discover(context.Context, CredentialIdentity) (Discovery, error) {
 	return discoveryFixture(), nil
 }
-
-func (aws *fakeAWS) FindKeyPair(context.Context, CredentialIdentity, string, ResourceTags) (KeyPair, bool, error) {
-	return aws.key, aws.key.ID != "", nil
+func (a *fakeAWS) ListInstances(context.Context, CredentialIdentity, ResourceTags) ([]Instance, error) {
+	r := []Instance{}
+	for _, i := range a.instances {
+		if i.State != "terminated" {
+			r = append(r, i)
+		}
+	}
+	return r, nil
 }
-
-func (aws *fakeAWS) ImportKeyPair(_ context.Context, _ CredentialIdentity, confirmation Confirmation, name string, _ []byte, _ ResourceTags) (KeyPair, error) {
-	if confirmation.validate() != nil {
+func (a *fakeAWS) FindKeyPair(_ context.Context, _ CredentialIdentity, name string, _ ResourceTags) (KeyPair, bool, error) {
+	k, ok := a.keys[name]
+	return k, ok, nil
+}
+func (a *fakeAWS) ImportKeyPair(_ context.Context, _ CredentialIdentity, c Confirmation, name string, _ []byte, _ ResourceTags) (KeyPair, error) {
+	if c.validate() != nil {
 		return KeyPair{}, ErrNotConfirmed
 	}
-	aws.mutations++
-	aws.key = KeyPair{ID: "key-1", Name: name}
-	return aws.key, nil
+	a.mutations++
+	k := KeyPair{ID: "key-" + name, Name: name}
+	a.keys[name] = k
+	return k, nil
 }
-
-func (aws *fakeAWS) DeleteKeyPair(_ context.Context, _ CredentialIdentity, confirmation Confirmation, _ KeyPair, _ ResourceTags) error {
-	if confirmation.validate() != nil {
-		return ErrNotConfirmed
+func (a *fakeAWS) DeleteKeyPair(_ context.Context, _ CredentialIdentity, d DestroyAuthorization, k KeyPair, _ ResourceTags) error {
+	if d.validate() != nil {
+		return ErrNotAuthorized
 	}
-	aws.mutations++
-	aws.key = KeyPair{}
+	a.mutations++
+	delete(a.keys, k.Name)
 	return nil
 }
-
-func (aws *fakeAWS) FindSecurityGroup(context.Context, CredentialIdentity, string, ResourceTags) (SecurityGroup, bool, error) {
-	return aws.group, aws.group.ID != "", nil
+func (a *fakeAWS) FindSecurityGroup(_ context.Context, _ CredentialIdentity, name string, _ ResourceTags) (SecurityGroup, bool, error) {
+	g, ok := a.groups[name]
+	return g, ok, nil
 }
-
-func (aws *fakeAWS) CreateSecurityGroup(_ context.Context, _ CredentialIdentity, confirmation Confirmation, name, _ string, _ ResourceTags) (SecurityGroup, error) {
-	if confirmation.validate() != nil {
+func (a *fakeAWS) CreateSecurityGroup(_ context.Context, _ CredentialIdentity, c Confirmation, name, _ string, _ ResourceTags) (SecurityGroup, error) {
+	if c.validate() != nil {
 		return SecurityGroup{}, ErrNotConfirmed
 	}
-	aws.mutations++
-	aws.group = SecurityGroup{ID: "sg-1", Name: name}
-	return aws.group, nil
+	a.mutations++
+	g := SecurityGroup{ID: "sg-" + name, Name: name}
+	a.groups[name] = g
+	return g, nil
 }
-
-func (aws *fakeAWS) AuthorizeSSH(_ context.Context, _ CredentialIdentity, confirmation Confirmation, _ SecurityGroup, cidr string) error {
-	if confirmation.validate() != nil || cidr != "198.51.100.7/32" {
+func (a *fakeAWS) AuthorizeSSH(_ context.Context, _ CredentialIdentity, c Confirmation, _ SecurityGroup, cidr string) error {
+	if c.validate() != nil {
 		return ErrNotConfirmed
 	}
-	aws.mutations++
-	return aws.authorizeErr
-}
-
-func (aws *fakeAWS) DeleteSecurityGroup(_ context.Context, _ CredentialIdentity, confirmation Confirmation, _ SecurityGroup, _ ResourceTags) error {
-	if confirmation.validate() != nil {
-		return ErrNotConfirmed
+	if cidr != "198.51.100.7/32" {
+		return ErrInvalid
 	}
-	aws.mutations++
-	aws.group = SecurityGroup{}
+	a.mutations++
 	return nil
 }
-
-func (aws *fakeAWS) FindInstance(context.Context, CredentialIdentity, string, ResourceTags) (Instance, bool, error) {
-	return aws.instance, aws.instance.ID != "" && aws.instance.State != "terminated", nil
+func (a *fakeAWS) DeleteSecurityGroup(_ context.Context, _ CredentialIdentity, d DestroyAuthorization, g SecurityGroup, _ ResourceTags) error {
+	if d.validate() != nil {
+		return ErrNotAuthorized
+	}
+	a.mutations++
+	delete(a.groups, g.Name)
+	return nil
 }
-
-func (aws *fakeAWS) RunInstance(_ context.Context, _ CredentialIdentity, confirmation Confirmation, request LaunchRequest) (Instance, error) {
-	if confirmation.validate() != nil {
+func (a *fakeAWS) FindInstance(_ context.Context, _ CredentialIdentity, token string, _ ResourceTags) (Instance, bool, error) {
+	i, ok := a.instances[token]
+	return i, ok, nil
+}
+func (a *fakeAWS) RunInstance(_ context.Context, _ CredentialIdentity, c Confirmation, r LaunchRequest) (Instance, error) {
+	if c.validate() != nil {
 		return Instance{}, ErrNotConfirmed
 	}
-	aws.mutations++
-	aws.runs++
-	aws.instance = Instance{ID: "i-1", PublicIP: "203.0.113.20", State: "running", ClientToken: request.ClientToken}
-	if aws.runAmbiguous {
-		return Instance{}, errors.New("connection reset after send")
+	a.mutations++
+	a.runs++
+	i := Instance{ID: "i-" + r.ClientToken, PublicIP: "203.0.113.20", State: "running", ClientToken: r.ClientToken}
+	a.instances[r.ClientToken] = i
+	if a.ambiguous {
+		return Instance{}, errors.New("reset")
 	}
-	return aws.instance, nil
+	return i, nil
 }
-
-func (aws *fakeAWS) ObserveInstance(context.Context, CredentialIdentity, string, ResourceTags) (Instance, bool, error) {
-	return aws.instance, aws.instance.ID != "", nil
-}
-
-func (aws *fakeAWS) TerminateInstance(_ context.Context, _ CredentialIdentity, confirmation Confirmation, _ Instance, _ ResourceTags) error {
-	if confirmation.validate() != nil {
-		return ErrNotConfirmed
+func (a *fakeAWS) ObserveInstance(_ context.Context, _ CredentialIdentity, id string, _ ResourceTags) (Instance, bool, error) {
+	for _, i := range a.instances {
+		if i.ID == id {
+			return i, true, nil
+		}
 	}
-	aws.mutations++
-	aws.terminations++
-	aws.instance.State = "terminated"
+	return Instance{}, false, nil
+}
+func (a *fakeAWS) TerminateInstance(_ context.Context, _ CredentialIdentity, d DestroyAuthorization, i Instance, _ ResourceTags) error {
+	if d.validate() != nil {
+		return ErrNotAuthorized
+	}
+	a.mutations++
+	a.terminations++
+	i.State = "terminated"
+	a.instances[i.ClientToken] = i
 	return nil
 }
 
-func TestDiscoveryIsReadOnly(t *testing.T) {
-	cloud := &fakeAWS{}
-	provider, err := New(cloud, &fakeKeys{}, &fakeSSH{}, &memoryStore{})
-	if err != nil {
+func TestExecuteRequiresConfirmationOnlyWhenCreatingAndRetainsWorker(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	ssh := &fakeSSH{}
+	provider, _ := New(cloud, &fakeKeys{}, ssh, store)
+	r := requestFixture()
+	r.Confirmation = Confirmation{}
+	if _, err := provider.Execute(context.Background(), r); !errors.Is(err, ErrNotConfirmed) {
+		t.Fatalf("got %v", err)
+	}
+	if cloud.mutations != 0 {
+		t.Fatal("mutation before confirmation")
+	}
+	r = requestFixture()
+	if _, err := provider.Execute(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
-	discovery, err := provider.Discover(context.Background(), credentialFixture())
-	if err != nil || discovery.ImageID != "ami-official" {
-		t.Fatalf("Discover() = %#v, %v", discovery, err)
+	worker := store.workers[r.ExecutionID]
+	if worker.Phase != WorkerIdle || cloud.terminations != 0 || len(cloud.instances) != 1 {
+		t.Fatalf("worker not retained: %#v", worker)
 	}
-	if cloud.mutations != 0 || cloud.identityChecks != 1 || cloud.discoveries != 1 {
-		t.Fatalf("read-only discovery made mutations: %#v", cloud)
-	}
-}
-
-func TestExecuteRejectsUnconfirmedBeforeAWS(t *testing.T) {
-	cloud := &fakeAWS{}
-	keys := &fakeKeys{}
-	ssh := &fakeSSH{}
-	provider, _ := New(cloud, keys, ssh, &memoryStore{})
-	request := requestFixture()
-	request.Confirmation = Confirmation{}
-	_, err := provider.Execute(context.Background(), request)
-	if !errors.Is(err, ErrNotConfirmed) {
-		t.Fatalf("Execute() error = %v, want ErrNotConfirmed", err)
-	}
-	if cloud.identityChecks != 0 || cloud.mutations != 0 || keys.ensure != 0 || ssh.calls != 0 {
-		t.Fatalf("unconfirmed execution crossed a side-effect boundary: cloud=%#v keys=%#v ssh=%#v", cloud, keys, ssh)
-	}
-}
-
-func TestExecuteReconcilesAmbiguousLaunchAndCleansEverything(t *testing.T) {
-	cloud := &fakeAWS{runAmbiguous: true}
-	keys := &fakeKeys{}
-	ssh := &fakeSSH{}
-	store := &memoryStore{}
-	provider, _ := New(cloud, keys, ssh, store)
-	result, err := provider.Execute(context.Background(), requestFixture())
-	if err != nil {
+	second := requestFixture()
+	second.ExecutionID = "execution-2"
+	second.Confirmation = Confirmation{}
+	if _, err := provider.Execute(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
-	if result.ExitCode != 0 || result.ArtifactCount != 1 || cloud.runs != 1 || cloud.terminations != 1 || ssh.calls != 1 {
-		t.Fatalf("unexpected execution: result=%#v cloud=%#v ssh=%#v", result, cloud, ssh)
-	}
-	if cloud.instance.State != "terminated" || cloud.group.ID != "" || cloud.key.ID != "" || keys.delete != 1 || store.record.Phase != PhaseCompleted {
-		t.Fatalf("cleanup incomplete: cloud=%#v keys=%#v record=%#v", cloud, keys, store.record)
-	}
-
-	// A durable completed record makes a consumer retry read-only.
-	mutations := cloud.mutations
-	again, err := provider.Execute(context.Background(), requestFixture())
-	if err != nil || again != result || cloud.mutations != mutations || ssh.calls != 1 {
-		t.Fatalf("completed retry was not idempotent: result=%#v err=%v cloud=%#v", again, err, cloud)
+	if cloud.runs != 1 || ssh.calls != 2 || ssh.hosts[1] != "203.0.113.20" {
+		t.Fatalf("idle worker not reused: cloud=%#v ssh=%#v", cloud, ssh)
 	}
 }
 
-func TestProvisionFailureCleansCreatedResources(t *testing.T) {
-	cloud := &fakeAWS{authorizeErr: errors.New("ingress failed")}
-	keys := &fakeKeys{}
-	store := &memoryStore{}
-	provider, _ := New(cloud, keys, &fakeSSH{}, store)
+func TestCapacityFivePreventsSixthCreate(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	for i := 0; i < MaxWorkersPerCredential; i++ {
+		id := "worker-" + string(rune('a'+i))
+		store.workers[id] = WorkerRecord{WorkerID: id, Credential: credentialFixture(), Phase: WorkerBusy, CurrentExecutionID: id, InstanceType: "t3.small", Instance: Instance{ID: "i-" + id, State: "running"}}
+		cloud.instances[id] = store.workers[id].Instance
+	}
 	_, err := provider.Execute(context.Background(), requestFixture())
-	if err == nil || !errors.Is(err, cloud.authorizeErr) {
-		t.Fatalf("Execute() error = %v, want ingress failure", err)
+	if !errors.Is(err, ErrCapacity) {
+		t.Fatalf("got %v", err)
 	}
-	if cloud.key.ID != "" || cloud.group.ID != "" || keys.delete != 1 || !store.record.KeyPairGone || !store.record.SecurityGroupGone {
-		t.Fatalf("provision failure cleanup incomplete: cloud=%#v keys=%#v record=%#v", cloud, keys, store.record)
+	if cloud.runs != 0 {
+		t.Fatal("created beyond capacity")
+	}
+}
+
+func TestAmbiguousCreateReconcilesAndDestroyRequiresExactAuthorization(t *testing.T) {
+	cloud := newFakeAWS()
+	cloud.ambiguous = true
+	store := newMemoryStore()
+	keys := &fakeKeys{}
+	provider, _ := New(cloud, keys, &fakeSSH{}, store)
+	r := requestFixture()
+	if _, err := provider.Execute(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	worker := store.workers[r.ExecutionID]
+	identity := workerIdentity(worker)
+	if err := provider.DestroyWorker(context.Background(), DestroyRequest{Identity: identity}); !errors.Is(err, ErrNotAuthorized) {
+		t.Fatalf("got %v", err)
+	}
+	if cloud.terminations != 0 {
+		t.Fatal("destroyed without authorization")
+	}
+	bad := identity
+	bad.InstanceID = "i-wrong"
+	if err := provider.DestroyWorker(context.Background(), DestroyRequest{Identity: bad, Authorization: DestroyAuthorization{Authorized: true, Proof: "destroy-1"}}); !errors.Is(err, ErrIdentity) {
+		t.Fatalf("got %v", err)
+	}
+	if err := provider.DestroyWorker(context.Background(), DestroyRequest{Identity: identity, Authorization: DestroyAuthorization{Authorized: true, Proof: "destroy-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if cloud.terminations != 1 || keys.delete != 1 || store.workers[r.ExecutionID].Phase != WorkerDestroyed {
+		t.Fatalf("destroy incomplete")
+	}
+}
+
+type fakeStatus struct{}
+
+func (fakeStatus) Observe(context.Context, WorkerRecord) (RunnerMetrics, error) {
+	return RunnerMetrics{LastSeen: time.Now(), Load1: 0.5}, nil
+}
+func (fakeStatus) HourlyQuote(context.Context, CredentialIdentity, string) (HourlyQuote, error) {
+	return HourlyQuote{Currency: "USD", MicrosPerHour: 25000}, nil
+}
+func TestListWorkersIncludesLiveEC2RunnerAndQuote(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	r := requestFixture()
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store, fakeStatus{})
+	if _, err := provider.Execute(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	statuses, err := provider.ListWorkers(context.Background(), r.Credential)
+	if err != nil || len(statuses) != 1 || statuses[0].EC2State != "running" || statuses[0].PublicIP == "" || statuses[0].Runner.Load1 != 0.5 || statuses[0].Quote.MicrosPerHour != 25000 {
+		t.Fatalf("statuses=%#v err=%v", statuses, err)
 	}
 }
 
 func credentialFixture() CredentialIdentity {
-	return CredentialIdentity{CredentialID: "aws-1", CredentialRevision: 7, AccountID: "123456789012", Region: "ap-east-1"}
+	return CredentialIdentity{CredentialID: "aws-1", CredentialRevision: 1, AccountID: "123456789012", Region: "ap-east-1"}
 }
-
 func discoveryFixture() Discovery {
-	return Discovery{ImageID: "ami-official", ImageName: "al2023-ami", ImageCreatedAt: time.Now().UTC(), SSHUser: "ec2-user",
-		VPCID: "vpc-default", SubnetID: "subnet-default", PublicEgressCIDR: "198.51.100.7/32", ObservedAt: time.Now().UTC()}
+	return Discovery{ImageID: "ami-official", ImageName: "al2023", ImageCreatedAt: time.Now().UTC(), SSHUser: "ec2-user", VPCID: "vpc-default", SubnetID: "subnet-default", PublicEgressCIDR: "198.51.100.7/32", ObservedAt: time.Now().UTC()}
 }
-
 func requestFixture() ExecuteRequest {
 	script := []byte("echo ok")
-	digest := sha256.Sum256(script)
-	return ExecuteRequest{ExecutionID: "execution-1", Credential: credentialFixture(), Confirmation: Confirmation{Confirmed: true, Proof: "confirmation-1"},
-		Discovery: discoveryFixture(), InstanceType: "t3.small", VolumeGiB: 16, WorkerScript: script,
-		WorkerScriptSHA256: hex.EncodeToString(digest[:]), MaxWorkspaceBytes: 1 << 20, MaxResultBytes: 1 << 20, Sink: &fakeSink{}}
+	sum := sha256.Sum256(script)
+	return ExecuteRequest{ExecutionID: "execution-1", Credential: credentialFixture(), Confirmation: Confirmation{Confirmed: true, Proof: "confirmation-1"}, Discovery: discoveryFixture(), InstanceType: "t3.small", VolumeGiB: 16, WorkerScript: script, WorkerScriptSHA256: hex.EncodeToString(sum[:]), MaxWorkspaceBytes: 1 << 20, MaxResultBytes: 1 << 20, Sink: &fakeSink{}}
 }
+
+var _ = bytes.Clone

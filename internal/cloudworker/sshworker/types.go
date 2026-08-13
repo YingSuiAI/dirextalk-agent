@@ -1,8 +1,5 @@
-// Package sshworker runs one confirmed task on one temporary EC2 instance.
-//
-// The package deliberately has no S3, KMS, custom AMI, callback listener, or
-// pricing catalog dependency. Discovery is read-only. Every AWS mutation
-// carries the confirmation that authorized the exact execution.
+// Package sshworker runs confirmed tasks on a small persistent EC2 worker pool.
+// It deliberately has no S3, KMS, custom AMI, callback, or pricing-catalog dependency.
 package sshworker
 
 import (
@@ -20,16 +17,20 @@ import (
 
 var (
 	ErrInvalid        = errors.New("invalid ssh worker request")
-	ErrNotConfirmed   = errors.New("ssh worker execution is not confirmed")
-	ErrIdentity       = errors.New("AWS credential identity mismatch")
+	ErrNotConfirmed   = errors.New("ssh worker creation is not confirmed")
+	ErrNotAuthorized  = errors.New("ssh worker destruction is not authorized")
+	ErrIdentity       = errors.New("AWS worker identity mismatch")
 	ErrAmbiguous      = errors.New("AWS operation outcome is ambiguous")
+	ErrCapacity       = errors.New("AWS worker capacity reached")
+	ErrBusy           = errors.New("ssh worker is busy")
 	ErrResultTooLarge = errors.New("ssh worker result exceeds its limit")
 )
 
 const (
-	maxWorkerScriptBytes = 1 << 20
-	maxWorkspaceBytes    = 512 << 20
-	maxResultBytes       = 64 << 20
+	MaxWorkersPerCredential = 5
+	maxWorkerScriptBytes    = 1 << 20
+	maxWorkspaceBytes       = 512 << 20
+	maxResultBytes          = 64 << 20
 )
 
 type CredentialIdentity struct {
@@ -40,8 +41,7 @@ type CredentialIdentity struct {
 }
 
 func (identity CredentialIdentity) validate() error {
-	if strings.TrimSpace(identity.CredentialID) == "" || identity.CredentialRevision == 0 ||
-		len(identity.AccountID) != 12 || strings.TrimSpace(identity.Region) == "" {
+	if strings.TrimSpace(identity.CredentialID) == "" || identity.CredentialRevision == 0 || len(identity.AccountID) != 12 || strings.TrimSpace(identity.Region) == "" {
 		return ErrInvalid
 	}
 	for _, digit := range identity.AccountID {
@@ -52,8 +52,6 @@ func (identity CredentialIdentity) validate() error {
 	return nil
 }
 
-// Confirmation is created only after the owner accepts the live quote for an
-// exact execution. Proof is the durable confirmation identifier/digest.
 type Confirmation struct {
 	Confirmed bool
 	Proof     string
@@ -62,6 +60,18 @@ type Confirmation struct {
 func (confirmation Confirmation) validate() error {
 	if !confirmation.Confirmed || strings.TrimSpace(confirmation.Proof) == "" {
 		return ErrNotConfirmed
+	}
+	return nil
+}
+
+type DestroyAuthorization struct {
+	Authorized bool
+	Proof      string
+}
+
+func (authorization DestroyAuthorization) validate() error {
+	if !authorization.Authorized || strings.TrimSpace(authorization.Proof) == "" {
+		return ErrNotAuthorized
 	}
 	return nil
 }
@@ -79,10 +89,8 @@ type Discovery struct {
 
 func (discovery Discovery) validate() error {
 	prefix, err := netip.ParsePrefix(discovery.PublicEgressCIDR)
-	if err != nil || !prefix.Addr().Is4() || prefix.Bits() != 32 ||
-		strings.TrimSpace(discovery.ImageID) == "" || strings.TrimSpace(discovery.SSHUser) == "" ||
-		strings.TrimSpace(discovery.VPCID) == "" || strings.TrimSpace(discovery.SubnetID) == "" ||
-		discovery.ObservedAt.IsZero() {
+	if err != nil || !prefix.Addr().Is4() || prefix.Bits() != 32 || strings.TrimSpace(discovery.ImageID) == "" ||
+		strings.TrimSpace(discovery.SSHUser) == "" || strings.TrimSpace(discovery.VPCID) == "" || strings.TrimSpace(discovery.SubnetID) == "" || discovery.ObservedAt.IsZero() {
 		return ErrInvalid
 	}
 	return nil
@@ -91,7 +99,7 @@ func (discovery Discovery) validate() error {
 type ExecuteRequest struct {
 	ExecutionID        string
 	Credential         CredentialIdentity
-	Confirmation       Confirmation
+	Confirmation       Confirmation // consumed only when a new worker is required
 	Discovery          Discovery
 	InstanceType       string
 	VolumeGiB          int32
@@ -104,73 +112,45 @@ type ExecuteRequest struct {
 }
 
 func (request ExecuteRequest) validate() error {
-	if request.Credential.validate() != nil || request.Confirmation.validate() != nil || request.Discovery.validate() != nil ||
-		strings.TrimSpace(request.ExecutionID) == "" || len(request.ExecutionID) > 128 ||
-		strings.TrimSpace(request.InstanceType) == "" || request.VolumeGiB < 8 || request.VolumeGiB > 16_384 ||
-		len(request.WorkerScript) == 0 || len(request.WorkerScript) > maxWorkerScriptBytes ||
-		request.MaxWorkspaceBytes <= 0 || request.MaxWorkspaceBytes > maxWorkspaceBytes ||
-		request.MaxResultBytes <= 0 || request.MaxResultBytes > maxResultBytes || request.Sink == nil {
+	if request.Credential.validate() != nil || request.Discovery.validate() != nil || !validID(request.ExecutionID) || strings.TrimSpace(request.InstanceType) == "" ||
+		request.VolumeGiB < 8 || request.VolumeGiB > 16_384 || len(request.WorkerScript) == 0 || len(request.WorkerScript) > maxWorkerScriptBytes ||
+		request.MaxWorkspaceBytes <= 0 || request.MaxWorkspaceBytes > maxWorkspaceBytes || request.MaxResultBytes <= 0 || request.MaxResultBytes > maxResultBytes || request.Sink == nil {
 		return ErrInvalid
-	}
-	for _, character := range request.ExecutionID {
-		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
-			return ErrInvalid
-		}
 	}
 	digest := sha256.Sum256(request.WorkerScript)
-	if !strings.EqualFold(hex.EncodeToString(digest[:]), strings.TrimSpace(request.WorkerScriptSHA256)) {
-		return ErrInvalid
-	}
-	if request.WorkspacePath != "" && !filepath.IsAbs(request.WorkspacePath) {
+	if !strings.EqualFold(hex.EncodeToString(digest[:]), strings.TrimSpace(request.WorkerScriptSHA256)) || (request.WorkspacePath != "" && !filepath.IsAbs(request.WorkspacePath)) {
 		return ErrInvalid
 	}
 	return nil
 }
 
 type ResourceTags map[string]string
-
-type KeyPair struct {
-	ID   string
-	Name string
-}
-
-type SecurityGroup struct {
-	ID   string
-	Name string
-}
-
-type Instance struct {
-	ID          string
-	PublicIP    string
-	State       string
-	ClientToken string
-}
+type KeyPair struct{ ID, Name string }
+type SecurityGroup struct{ ID, Name string }
+type Instance struct{ ID, PrivateIP, PublicIP, State, ClientToken string }
 
 type LaunchRequest struct {
-	ExecutionID     string
-	ClientToken     string
-	Discovery       Discovery
-	InstanceType    string
-	VolumeGiB       int32
-	KeyName         string
-	SecurityGroupID string
-	Tags            ResourceTags
+	WorkerID, ClientToken, InstanceType, KeyName, SecurityGroupID string
+	Discovery                                                     Discovery
+	VolumeGiB                                                     int32
+	Tags                                                          ResourceTags
 }
 
 type AWS interface {
 	VerifyIdentity(context.Context, CredentialIdentity) error
 	Discover(context.Context, CredentialIdentity) (Discovery, error)
+	ListInstances(context.Context, CredentialIdentity, ResourceTags) ([]Instance, error)
 	FindKeyPair(context.Context, CredentialIdentity, string, ResourceTags) (KeyPair, bool, error)
 	ImportKeyPair(context.Context, CredentialIdentity, Confirmation, string, []byte, ResourceTags) (KeyPair, error)
-	DeleteKeyPair(context.Context, CredentialIdentity, Confirmation, KeyPair, ResourceTags) error
+	DeleteKeyPair(context.Context, CredentialIdentity, DestroyAuthorization, KeyPair, ResourceTags) error
 	FindSecurityGroup(context.Context, CredentialIdentity, string, ResourceTags) (SecurityGroup, bool, error)
 	CreateSecurityGroup(context.Context, CredentialIdentity, Confirmation, string, string, ResourceTags) (SecurityGroup, error)
 	AuthorizeSSH(context.Context, CredentialIdentity, Confirmation, SecurityGroup, string) error
-	DeleteSecurityGroup(context.Context, CredentialIdentity, Confirmation, SecurityGroup, ResourceTags) error
+	DeleteSecurityGroup(context.Context, CredentialIdentity, DestroyAuthorization, SecurityGroup, ResourceTags) error
 	FindInstance(context.Context, CredentialIdentity, string, ResourceTags) (Instance, bool, error)
 	RunInstance(context.Context, CredentialIdentity, Confirmation, LaunchRequest) (Instance, error)
 	ObserveInstance(context.Context, CredentialIdentity, string, ResourceTags) (Instance, bool, error)
-	TerminateInstance(context.Context, CredentialIdentity, Confirmation, Instance, ResourceTags) error
+	TerminateInstance(context.Context, CredentialIdentity, DestroyAuthorization, Instance, ResourceTags) error
 }
 
 type KeyMaterial interface {
@@ -179,75 +159,144 @@ type KeyMaterial interface {
 }
 
 type SSHRequest struct {
-	ExecutionID        string
-	Host               string
-	User               string
-	PrivateKeyPath     string
-	WorkerScript       []byte
-	WorkerScriptSHA256 string
-	WorkspacePath      string
-	MaxWorkspaceBytes  int64
-	MaxResultBytes     int64
-	Sink               ResultSink
+	ExecutionID, Host, User, PrivateKeyPath, WorkerScriptSHA256, WorkspacePath string
+	WorkerScript                                                               []byte
+	MaxWorkspaceBytes, MaxResultBytes                                          int64
+	Sink                                                                       ResultSink
 }
-
 type SSHExecutor interface {
 	Execute(context.Context, SSHRequest) (ExecutionResult, error)
+}
+type ConnectionTargetResolver interface {
+	Resolve(Instance) (string, error)
+}
+type PublicIPTarget struct{}
+
+func (PublicIPTarget) Resolve(instance Instance) (string, error) {
+	address, err := netip.ParseAddr(instance.PublicIP)
+	if err != nil || !address.Is4() {
+		return "", ErrInvalid
+	}
+	return address.String(), nil
 }
 
 type ResultSink interface {
 	StoreText(context.Context, []byte, []byte, int) error
 	StoreArtifact(context.Context, string, io.Reader, int64) error
 }
-
 type ExecutionResult struct {
-	ExitCode      int
-	StdoutBytes   int64
-	StderrBytes   int64
-	ArtifactCount int
+	ExitCode                 int
+	StdoutBytes, StderrBytes int64
+	ArtifactCount            int
 }
 
-type Phase string
+type WorkerPhase string
 
 const (
-	PhaseProvisioning Phase = "provisioning"
-	PhaseRunning      Phase = "running"
-	PhaseCleaning     Phase = "cleaning"
-	PhaseCompleted    Phase = "completed"
+	WorkerProvisioning WorkerPhase = "provisioning"
+	WorkerIdle         WorkerPhase = "idle"
+	WorkerBusy         WorkerPhase = "busy"
+	WorkerDestroying   WorkerPhase = "destroying"
+	WorkerDestroyed    WorkerPhase = "destroyed"
 )
 
-type Record struct {
-	ExecutionID       string             `json:"execution_id"`
-	Credential        CredentialIdentity `json:"credential"`
-	ConfirmationProof string             `json:"confirmation_proof"`
-	Phase             Phase              `json:"phase"`
-	KeyPair           KeyPair            `json:"key_pair"`
-	SecurityGroup     SecurityGroup      `json:"security_group"`
-	Instance          Instance           `json:"instance"`
-	Result            ExecutionResult    `json:"result"`
-	Executed          bool               `json:"executed"`
-	InstanceGone      bool               `json:"instance_gone"`
-	SecurityGroupGone bool               `json:"security_group_gone"`
-	KeyPairGone       bool               `json:"key_pair_gone"`
-	UpdatedAt         time.Time          `json:"updated_at"`
+type TaskPhase string
+
+const (
+	TaskRunning   TaskPhase = "running"
+	TaskCompleted TaskPhase = "completed"
+	TaskFailed    TaskPhase = "failed"
+)
+
+type WorkerRecord struct {
+	WorkerID             string             `json:"worker_id"`
+	Credential           CredentialIdentity `json:"credential"`
+	CreationProof        string             `json:"creation_proof"`
+	Phase                WorkerPhase        `json:"phase"`
+	SSHUser              string             `json:"ssh_user"`
+	InstanceType         string             `json:"instance_type"`
+	KeyPair              KeyPair            `json:"key_pair"`
+	SecurityGroup        SecurityGroup      `json:"security_group"`
+	Instance             Instance           `json:"instance"`
+	CurrentExecutionID   string             `json:"current_execution_id,omitempty"`
+	CreatedAt, UpdatedAt time.Time
+}
+
+type ExecutionRecord struct {
+	ExecutionID, WorkerID string
+	Credential            CredentialIdentity
+	Phase                 TaskPhase
+	Result                ExecutionResult
+	UpdatedAt             time.Time
 }
 
 type Store interface {
-	Load(context.Context, string) (Record, bool, error)
-	Save(context.Context, Record) error
+	LoadExecution(context.Context, string) (ExecutionRecord, bool, error)
+	SaveExecution(context.Context, ExecutionRecord) error
+	LoadWorker(context.Context, string) (WorkerRecord, bool, error)
+	ListWorkers(context.Context, CredentialIdentity) ([]WorkerRecord, error)
+	SaveWorker(context.Context, WorkerRecord) error
 }
 
-func resourceNames(executionID string) (string, string, string) {
-	digest := sha256.Sum256([]byte(executionID))
+type WorkerIdentity struct {
+	WorkerID, InstanceID, KeyPairID, SecurityGroupID string
+	Credential                                       CredentialIdentity
+}
+
+type DestroyRequest struct {
+	Identity      WorkerIdentity
+	Authorization DestroyAuthorization
+}
+
+type RunnerMetrics struct {
+	LastSeen             time.Time
+	Load1, Load5, Load15 float64
+}
+type HourlyQuote struct {
+	Currency              string
+	MicrosPerHour         uint64
+	ObservedAt, ExpiresAt time.Time
+}
+type StatusSource interface {
+	Observe(context.Context, WorkerRecord) (RunnerMetrics, error)
+	HourlyQuote(context.Context, CredentialIdentity, string) (HourlyQuote, error)
+}
+
+type WorkerStatus struct {
+	Identity           WorkerIdentity
+	EC2State, PublicIP string
+	WorkerPhase        WorkerPhase
+	TaskPhase          TaskPhase
+	CurrentExecutionID string
+	Runner             RunnerMetrics
+	Quote              HourlyQuote
+	ObservedAt         time.Time
+}
+
+func resourceNames(workerID string) (string, string, string) {
+	digest := sha256.Sum256([]byte(workerID))
 	suffix := hex.EncodeToString(digest[:8])
 	return "dtx-worker-key-" + suffix, "dtx-worker-sg-" + suffix, "dtx-worker-" + suffix
 }
-
-func resourceTags(request ExecuteRequest) ResourceTags {
-	return ResourceTags{
-		"dirextalk:managed-by":          "sshworker",
-		"dirextalk:execution":           request.ExecutionID,
-		"dirextalk:credential-revision": fmt.Sprint(request.Credential.CredentialRevision),
-		"dirextalk:confirmation":        request.Confirmation.Proof,
-	}
+func resourceTags(workerID string, credential CredentialIdentity, creationProof string) ResourceTags {
+	return ResourceTags{"dirextalk:managed-by": "sshworker", "dirextalk:worker": workerID,
+		"dirextalk:credential-revision": fmt.Sprint(credential.CredentialRevision), "dirextalk:confirmation": creationProof}
 }
+func poolTags(credential CredentialIdentity) ResourceTags {
+	return ResourceTags{"dirextalk:managed-by": "sshworker", "dirextalk:credential-revision": fmt.Sprint(credential.CredentialRevision)}
+}
+func validID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, c := range value {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// validExecutionID is retained for the adjacent immutable runtime-material
+// boundary; Worker and execution identifiers intentionally share one grammar.
+func validExecutionID(value string) bool { return validID(value) }

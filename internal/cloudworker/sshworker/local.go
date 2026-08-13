@@ -39,31 +39,92 @@ func NewFileStore(root string) (*FileStore, error) {
 	return &FileStore{root: root}, nil
 }
 
-func (store *FileStore) Load(_ context.Context, executionID string) (Record, bool, error) {
-	if !validExecutionID(executionID) {
-		return Record{}, false, ErrInvalid
+func (store *FileStore) LoadExecution(_ context.Context, executionID string) (ExecutionRecord, bool, error) {
+	if !validID(executionID) {
+		return ExecutionRecord{}, false, ErrInvalid
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	body, err := os.ReadFile(filepath.Join(store.root, executionID+".json"))
+	body, err := os.ReadFile(filepath.Join(store.root, "execution-"+executionID+".json"))
 	if errors.Is(err, os.ErrNotExist) {
-		return Record{}, false, nil
+		return ExecutionRecord{}, false, nil
 	}
 	if err != nil {
-		return Record{}, false, err
+		return ExecutionRecord{}, false, err
 	}
-	var record Record
+	var record ExecutionRecord
 	if json.Unmarshal(body, &record) != nil || record.ExecutionID != executionID {
-		return Record{}, false, ErrIdentity
+		return ExecutionRecord{}, false, ErrIdentity
 	}
 	return record, true, nil
 }
 
-func (store *FileStore) Save(_ context.Context, record Record) error {
-	if !validExecutionID(record.ExecutionID) {
+func (store *FileStore) SaveExecution(_ context.Context, record ExecutionRecord) error {
+	if !validID(record.ExecutionID) {
 		return ErrInvalid
 	}
-	body, err := json.Marshal(record)
+	return store.save("execution-"+record.ExecutionID+".json", record)
+}
+
+func (store *FileStore) LoadWorker(_ context.Context, workerID string) (WorkerRecord, bool, error) {
+	if !validID(workerID) {
+		return WorkerRecord{}, false, ErrInvalid
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	body, err := os.ReadFile(filepath.Join(store.root, "worker-"+workerID+".json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return WorkerRecord{}, false, nil
+	}
+	if err != nil {
+		return WorkerRecord{}, false, err
+	}
+	var record WorkerRecord
+	if json.Unmarshal(body, &record) != nil || record.WorkerID != workerID {
+		return WorkerRecord{}, false, ErrIdentity
+	}
+	return record, true, nil
+}
+
+func (store *FileStore) ListWorkers(_ context.Context, credential CredentialIdentity) ([]WorkerRecord, error) {
+	if credential.validate() != nil {
+		return nil, ErrInvalid
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	entries, err := os.ReadDir(store.root)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]WorkerRecord, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "worker-") || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(store.root, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var worker WorkerRecord
+		if json.Unmarshal(body, &worker) != nil {
+			return nil, ErrIdentity
+		}
+		if worker.Credential == credential {
+			result = append(result, worker)
+		}
+	}
+	return result, nil
+}
+
+func (store *FileStore) SaveWorker(_ context.Context, record WorkerRecord) error {
+	if !validID(record.WorkerID) {
+		return ErrInvalid
+	}
+	return store.save("worker-"+record.WorkerID+".json", record)
+}
+
+func (store *FileStore) save(name string, value any) error {
+	body, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
@@ -73,8 +134,8 @@ func (store *FileStore) Save(_ context.Context, record Record) error {
 	if err != nil {
 		return err
 	}
-	name := temporary.Name()
-	defer os.Remove(name)
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
 	if err := temporary.Chmod(0o600); err != nil {
 		temporary.Close()
 		return err
@@ -90,7 +151,7 @@ func (store *FileStore) Save(_ context.Context, record Record) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, filepath.Join(store.root, record.ExecutionID+".json"))
+	return os.Rename(temporaryName, filepath.Join(store.root, name))
 }
 
 type LocalKeyMaterial struct {
@@ -109,7 +170,7 @@ func NewLocalKeyMaterial(root string) (*LocalKeyMaterial, error) {
 }
 
 func (keys *LocalKeyMaterial) Ensure(_ context.Context, executionID string) (string, []byte, error) {
-	if !validExecutionID(executionID) {
+	if !validID(executionID) {
 		return "", nil, ErrInvalid
 	}
 	keys.mu.Lock()
@@ -153,7 +214,7 @@ func (keys *LocalKeyMaterial) Ensure(_ context.Context, executionID string) (str
 }
 
 func (keys *LocalKeyMaterial) Delete(_ context.Context, executionID string) error {
-	if !validExecutionID(executionID) {
+	if !validID(executionID) {
 		return ErrInvalid
 	}
 	keys.mu.Lock()
@@ -393,18 +454,6 @@ func (buffer *limitBuffer) Write(body []byte) (int, error) {
 	}
 	_, _ = buffer.Buffer.Write(accepted)
 	return len(body), nil
-}
-
-func validExecutionID(value string) bool {
-	if value == "" || len(value) > 128 {
-		return false
-	}
-	for _, character := range value {
-		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
-			return false
-		}
-	}
-	return true
 }
 
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
