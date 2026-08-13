@@ -653,7 +653,7 @@ func (i Installation) Validate() error {
 func validKindSource(k Kind, s Source) bool {
 	switch k {
 	case KindMCP:
-		return s == SourceOfficialRegistry || s == SourceSmithery || s == SourceGlama || s == SourceGitHub || s == SourceNPM
+		return s == SourceOfficialRegistry || s == SourceSmithery || s == SourceGlama || s == SourceGitHub || s == SourceNPM || s == SourceBuiltin
 	case KindSkill:
 		return s == SourceSkillsSh || s == SourceGitHub || s == SourceBuiltin
 	}

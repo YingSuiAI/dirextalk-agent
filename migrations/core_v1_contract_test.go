@@ -1,16 +1,18 @@
 package migrations
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 16 {
-		t.Fatalf("CurrentVersion = %d, want 16", CurrentVersion)
+	if CurrentVersion != 17 {
+		t.Fatalf("CurrentVersion = %d, want 17", CurrentVersion)
 	}
 	entries := Entries()
-	if len(entries) != 16 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" || entries[5] != "000006_image_tools_v1.up.sql" || entries[6] != "000007_unbounded_agent_rounds.up.sql" || entries[7] != "000008_cloud_worker_progress_events.up.sql" || entries[8] != "000009_static_site_releases.up.sql" || entries[9] != "000010_builtin_skill_seeds.up.sql" || entries[10] != "000011_managed_node_mcp_quotas.up.sql" || entries[11] != "000012_managed_node_prepared_cleanup.up.sql" || entries[12] != "000013_structured_memory_v2.up.sql" || entries[13] != "000014_memory_controls.up.sql" || entries[14] != "000015_remove_default_client_profile_alias.up.sql" || entries[15] != "000016_remove_cloud_worker_result_message.up.sql" {
+	wantEntries := []string{"000001_core_v1_fresh.up.sql", "000002_knowledge_search_provenance.up.sql", "000003_aws_credential_test_claims.up.sql", "000004_knowledge_pgvector.up.sql", "000005_cloud_worker_v1.up.sql", "000006_image_tools_v1.up.sql", "000007_unbounded_agent_rounds.up.sql", "000008_cloud_worker_progress_events.up.sql", "000009_static_site_releases.up.sql", "000010_builtin_skill_seeds.up.sql", "000011_managed_node_mcp_quotas.up.sql", "000012_managed_node_prepared_cleanup.up.sql", "000013_structured_memory_v2.up.sql", "000014_memory_controls.up.sql", "000015_remove_default_client_profile_alias.up.sql", "000016_remove_cloud_worker_result_message.up.sql", "000017_builtin_mcp_seeds.up.sql"}
+	if !reflect.DeepEqual(entries, wantEntries) {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
 	script, err := Files.ReadFile(entries[0])

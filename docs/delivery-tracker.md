@@ -60,6 +60,9 @@ contract](message-server-integration-development-contract.md), and
   removed across restart, while explicit reinstall continues through the
   reviewed confirmation lifecycle. GitHub and skills.sh remain available as
   separately pinned external sources.
+- Two default, network-free, read-only MCP installations expose live server
+  time and server load through the same isolated MCP lifecycle and durable
+  one-time seed semantics as other installed extensions.
 - Knowledge mounts, uploads, indexing, semantic-search composition,
   and the bounded read-only `knowledge_search` Native conversation tool.
   Semantic generations now use pgvector inside Agent PostgreSQL with exact

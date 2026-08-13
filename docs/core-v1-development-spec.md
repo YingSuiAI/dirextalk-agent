@@ -349,6 +349,11 @@ The durable seed survives uninstall, so restart never silently reinstalls a
 Skill the owner removed; reinstall uses the same discover, inspect,
 confirmation, and lifecycle path as skills.sh or GitHub. Built-ins have no
 network or secret grants and contain no executable entry.
+Two Dirextalk-owned read-only MCP servers are bundled separately and seeded
+once as ordinary installed extensions. `dirextalk-server-time` reads the UTC
+server clock and `dirextalk-server-load` reads kernel load, uptime, process,
+and memory totals. They have no network or secret grants and execute only
+through the isolated extension runner; their seed fence survives uninstall.
 Managed Node MCP uses the explicit `stdio_node` transport and only `npm` exact
 package versions plus verified integrity, or GitHub exact commits. Source
 inspection binds the immutable lock/tarball input; a network-disabled offline

@@ -298,6 +298,11 @@ as ordinary installed records under the public identifiers
 keeps the seed fence, so a process
 restart cannot recreate the installation; an owner may explicitly discover
 and reinstall the current built-in version.
+Two network-free, read-only built-in MCP installations are also seeded once:
+`dirextalk-server-time` exposes `server_time`, and `dirextalk-server-load`
+exposes `server_load`. They use ordinary installed-extension records, the
+isolated runner, MCP discovery, and MCP execution. Their durable seed fence
+has the same uninstall semantics as built-in Skills.
 
 Managed Node MCP is current-only `stdio_node`. `npm` candidates require one
 exact package version and verified immutable integrity; GitHub candidates

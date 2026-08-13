@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.83
+
+1. Seed two network-free, read-only MCP installations that return live server UTC time and kernel load information through the isolated extension runner.
+
 ## v1.0.82
 
 1. Bind the empty static-site list cursor as SQL NULL so the authenticated first page and subsequent cursor pages load correctly on PostgreSQL.

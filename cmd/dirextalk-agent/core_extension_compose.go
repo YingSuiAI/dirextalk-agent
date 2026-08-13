@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -370,7 +371,15 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	if err != nil {
 		return nil, err
 	}
-	if err := registry.Register(coreextension.SourceBuiltin, builtinSkills); err != nil {
+	builtinExecutable, err := os.ReadFile("/usr/local/libexec/dirextalk-builtin-mcp")
+	if err != nil {
+		return nil, fmt.Errorf("default builtin MCP executable: %w", err)
+	}
+	builtinMCPs, err := source.NewBuiltinMCPs(builtinExecutable)
+	if err != nil {
+		return nil, err
+	}
+	if err := registry.Register(coreextension.SourceBuiltin, &source.BuiltinCatalog{Skills: builtinSkills, MCPs: builtinMCPs}); err != nil {
 		return nil, err
 	}
 	nodeResolver, err := source.NewProductionNodeDependencyResolver(source.NodeDependencyResolverConfig{})
@@ -413,6 +422,9 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	defer cancelSeed()
 	if err := ensureDefaultBuiltinSkills(seedCtx, extStore, builtinSkills, cfg.CoreExtensionStagingRoot, runner); err != nil {
 		return nil, fmt.Errorf("default builtin Skills: %w", err)
+	}
+	if err := ensureDefaultBuiltinMCPs(seedCtx, extStore, builtinMCPs, cfg.CoreExtensionStagingRoot, runner); err != nil {
+		return nil, fmt.Errorf("default builtin MCPs: %w", err)
 	}
 	secretStore := postgres.NewCoreExtensionSecretStore(store)
 	execCoord, err := postgres.NewValidatedPostgresExtensionExecutionCoordinator(store, cfg.CoreExtensionWorkspaceRoot, secretStore)
@@ -471,6 +483,42 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 		}
 	}
 	return &coreExtensionComposition{domain: service, mcpService: mcpService, skillService: skillService, taskHandler: dispatch, lifecycleHandler: lifecycleHandler, executionHandler: executionHandler, conversationToolHandler: conversationToolHandler, conversationResolver: conversationExtensionResolver{store: extStore}, toolDispatcher: &pinnedExtensionDispatcher{tasks: postgres.NewCoreTaskStore(store), store: extStore, coord: execCoord, local: local, remote: remote}, skillResolver: &pinnedSkillResolver{store: extStore, runner: runner}, artifactCleaner: artifactCleaner}, nil
+}
+
+type builtinMCPSeedStore interface {
+	BuiltinMCPSeeded(context.Context, string) (bool, error)
+	EnsureBuiltinMCP(context.Context, coreextension.FetchArtifact, string) (coreextension.Installation, error)
+}
+
+func ensureDefaultBuiltinMCPs(ctx context.Context, store builtinMCPSeedStore, catalog *source.BuiltinMCPs, stagingRoot string, publisher execution.Publisher) error {
+	if store == nil || catalog == nil || publisher == nil {
+		return coreextension.ErrInvalid
+	}
+	materializer, err := execution.NewMaterializerWithPublisher(stagingRoot, publisher)
+	if err != nil {
+		return err
+	}
+	for _, artifact := range catalog.Artifacts() {
+		seeded, err := store.BuiltinMCPSeeded(ctx, artifact.Candidate.ID)
+		if err != nil {
+			return err
+		}
+		if seeded {
+			continue
+		}
+		materialized, err := materializer.Materialize(ctx, artifact)
+		if err != nil {
+			return err
+		}
+		installed, err := store.EnsureBuiltinMCP(ctx, artifact, materialized.Digest)
+		if err != nil {
+			return err
+		}
+		if installed.State != coreextension.StateInstalled || !installed.Enabled || installed.Source != coreextension.SourceBuiltin || installed.CandidateID != artifact.Candidate.ID || installed.ActiveVersionID == "" {
+			return coreextension.ErrConflict
+		}
+	}
+	return nil
 }
 
 type builtinSkillSeedStore interface {

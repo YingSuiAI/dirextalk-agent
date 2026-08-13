@@ -17,6 +17,8 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags="-s -w -buildid= -X github.com/YingSuiAI/dirextalk-agent/internal/buildinfo.ReleaseVersion=$VERSION" -o /out/usr/local/bin/dirextalk-agent ./cmd/dirextalk-agent \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags="-s -w -buildid= -X github.com/YingSuiAI/dirextalk-agent/internal/buildinfo.ReleaseVersion=$VERSION" -o /out/usr/local/bin/dirextalk-extension-runner ./cmd/dirextalk-extension-runner \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags="-s -w -buildid= -X github.com/YingSuiAI/dirextalk-agent/internal/buildinfo.ReleaseVersion=$VERSION" -o /out/usr/local/bin/dirextalk-core-runner ./cmd/dirextalk-core-runner
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags="-s -w -buildid= -X github.com/YingSuiAI/dirextalk-agent/internal/buildinfo.ReleaseVersion=$VERSION" -o /out/usr/local/libexec/dirextalk-builtin-mcp ./cmd/dirextalk-builtin-mcp
 RUN install -d -m 0755 /out/etc/ssl/certs /out/etc/dirextalk-agent /out/var/lib/dirextalk-agent \
     && install -d -m 0700 -o 65532 -g 65532 /out/var/lib/dirextalk-agent/extension-staging \
     && install -d -m 0770 -o 65531 -g 65532 /out/var/lib/dirextalk-agent/extension-workspaces \

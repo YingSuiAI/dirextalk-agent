@@ -2495,3 +2495,14 @@ ALTER TABLE core_model_profile_defaults
 ALTER TABLE core_cloud_worker_completion_outbox
     DROP COLUMN result_message_id;
 -- dirextalk-agent migration end 000016_remove_cloud_worker_result_message.up.sql
+-- dirextalk-agent migration begin 000017_builtin_mcp_seeds.up.sql
+-- Default MCPs use the same durable one-time removal fence as default Skills.
+CREATE TABLE core_builtin_mcp_seeds (
+    candidate_id text PRIMARY KEY CHECK (length(candidate_id) BETWEEN 1 AND 128),
+    registry_version text NOT NULL CHECK (length(registry_version) BETWEEN 1 AND 64),
+    content_digest char(64) NOT NULL CHECK (content_digest ~ '^[a-f0-9]{64}$'),
+    artifact_digest char(64) NOT NULL CHECK (artifact_digest ~ '^[a-f0-9]{64}$'),
+    installation_id uuid NOT NULL UNIQUE REFERENCES core_extension_installations(installation_id) ON DELETE RESTRICT,
+    seeded_at timestamptz NOT NULL
+);
+-- dirextalk-agent migration end 000017_builtin_mcp_seeds.up.sql
