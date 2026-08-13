@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
 
+	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/google/uuid"
@@ -30,10 +32,24 @@ type ClientFactory func(coremodel.Profile) (coremodel.Client, error)
 
 type ModelRunner struct {
 	factory ClientFactory
+	logger  *slog.Logger
 }
 
 func NewModelRunner(factory ClientFactory) (*ModelRunner, error) {
-	return &ModelRunner{factory: adaptClientFactory(factory)}, nil
+	return &ModelRunner{factory: adaptClientFactory(factory), logger: slog.Default()}, nil
+}
+
+func (r *ModelRunner) logProviderFailure(ctx context.Context, profileID string, err error) {
+	class := coremodel.SafeFailureClass(err)
+	if class == "" {
+		return
+	}
+	operationID, _ := capabilityoperation.OperationIDFromContext(ctx)
+	logger := r.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("Agent model request failed", "error_class", class, "operation_id", operationID, "profile_id", profileID)
 }
 
 func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRunRequest) (coremodel.Profile, coremodel.Client, coremodel.CompletionRequest, error) {
@@ -125,6 +141,7 @@ func (r *ModelRunner) Run(ctx context.Context, req coreconversation.ModelRunRequ
 	}
 	comp, err := client.Generate(ctx, cr)
 	if err != nil {
+		r.logProviderFailure(ctx, p.ID, err)
 		return coreconversation.ModelRunResult{}, err
 	}
 	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.Role(comp.Message.Role), Content: comp.Message.Content, ModelProfileID: p.ID}
@@ -141,6 +158,7 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 	}
 	stream, err := client.Stream(ctx, cr)
 	if err != nil {
+		r.logProviderFailure(ctx, p.ID, err)
 		return coreconversation.ModelRunResult{}, err
 	}
 	defer stream.Close()
@@ -152,6 +170,7 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 			if errors.Is(e, io.EOF) {
 				break
 			}
+			r.logProviderFailure(ctx, p.ID, e)
 			return coreconversation.ModelRunResult{}, e
 		}
 		if d.Content != "" {

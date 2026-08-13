@@ -31,6 +31,40 @@ var (
 	ErrStreamIdleTimeout   = fmt.Errorf("model provider stream idle timeout: %w", context.DeadlineExceeded)
 )
 
+type providerHTTPStatusError struct {
+	class string
+}
+
+func (e *providerHTTPStatusError) Error() string { return ErrProviderUnavailable.Error() }
+func (e *providerHTTPStatusError) Unwrap() error { return ErrProviderUnavailable }
+
+func providerHTTPStatusFailure(statusCode int) error {
+	return &providerHTTPStatusError{class: fmt.Sprintf("provider_http_%dxx", statusCode/100)}
+}
+
+// SafeFailureClass reduces model-provider failures to a stable diagnostic
+// category. It deliberately excludes provider URLs, response bodies, request
+// content, credentials, and transport details.
+func SafeFailureClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	var statusErr *providerHTTPStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.class
+	}
+	switch {
+	case errors.Is(err, ErrInvalidResponse):
+		return "provider_invalid_response"
+	case errors.Is(err, ErrStreamTruncated):
+		return "provider_stream_truncated"
+	case errors.Is(err, ErrProviderUnavailable):
+		return "provider_request_failure"
+	default:
+		return ""
+	}
+}
+
 type HTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
@@ -223,7 +257,7 @@ func (c *providerClient) Generate(ctx context.Context, request CompletionRequest
 		return Completion{}, err
 	}
 	if status < 200 || status >= 300 {
-		return Completion{}, ErrProviderUnavailable
+		return Completion{}, providerHTTPStatusFailure(status)
 	}
 	return decodeCompletion(c.profile.Provider, body, headers)
 }
@@ -301,7 +335,7 @@ func (c *providerClient) Stream(ctx context.Context, request CompletionRequest) 
 		}
 		cancel()
 		resp.Body.Close()
-		return nil, ErrProviderUnavailable
+		return nil, providerHTTPStatusFailure(resp.StatusCode)
 	}
 	source := &countingReader{r: io.LimitReader(resp.Body, maxResponseBytes+1)}
 	if idle != nil {

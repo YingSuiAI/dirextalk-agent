@@ -1,15 +1,18 @@
 package coreruntime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -42,6 +45,7 @@ type fakeClient struct {
 	calls int
 	block <-chan struct{}
 	tool  bool
+	err   error
 }
 
 type fakeStream struct {
@@ -67,6 +71,9 @@ func (f *fakeClient) Generate(ctx context.Context, r coremodel.CompletionRequest
 	f.mu.Lock()
 	f.calls++
 	f.mu.Unlock()
+	if f.err != nil {
+		return coremodel.Completion{}, f.err
+	}
 	if f.block != nil {
 		select {
 		case <-f.block:
@@ -79,6 +86,38 @@ func (f *fakeClient) Generate(ctx context.Context, r coremodel.CompletionRequest
 		msg.ToolCalls = []coremodel.ToolCall{{ID: "c", Function: coremodel.FunctionCall{Name: "f", Arguments: "{}"}}}
 	}
 	return coremodel.Completion{Message: msg}, nil
+}
+
+func TestModelRunnerLogsOnlySafeProviderFailureIdentity(t *testing.T) {
+	const requestID = "00000000-0000-4000-8000-000000000010"
+	const profileID = "00000000-0000-4000-8000-000000000011"
+	var output bytes.Buffer
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) {
+		return &fakeClient{err: coremodel.ErrProviderUnavailable}, nil
+	})
+	runner.logger = slog.New(slog.NewTextHandler(&output, nil))
+	ctx := capabilityoperation.WithOperationID(context.Background(), requestID)
+	_, err := runner.Run(ctx, coreconversation.ModelRunRequest{
+		Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{
+			ID: profileID, DisplayName: "private display", Provider: coremodel.ProviderOpenAICompatible,
+			BaseURL: "https://private.example", Model: "private-model", APIKey: "private-key", Revision: 1, CredentialVersion: 1,
+		}),
+		Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "private prompt"}}},
+	})
+	if !errors.Is(err, coremodel.ErrProviderUnavailable) {
+		t.Fatalf("Run() error=%v", err)
+	}
+	logLine := output.String()
+	for _, required := range []string{"Agent model request failed", "error_class=provider_request_failure", "operation_id=" + requestID, "profile_id=" + profileID} {
+		if !strings.Contains(logLine, required) {
+			t.Fatalf("log %q missing %q", logLine, required)
+		}
+	}
+	for _, forbidden := range []string{"private.example", "private-key", "private prompt", "private-model", "private display"} {
+		if strings.Contains(logLine, forbidden) {
+			t.Fatalf("log exposed protected value %q: %q", forbidden, logLine)
+		}
+	}
 }
 func (f *fakeClient) Stream(context.Context, coremodel.CompletionRequest) (coremodel.Stream, error) {
 	return &fakeStream{}, nil
