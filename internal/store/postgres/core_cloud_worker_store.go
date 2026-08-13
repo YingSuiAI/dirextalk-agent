@@ -2380,6 +2380,7 @@ type cloudWorkerContinuationPayload struct {
 	Schema                    string                           `json:"schema"`
 	ExecutionID               string                           `json:"execution_id"`
 	Status                    string                           `json:"status"`
+	UserApprovalCompleted     bool                             `json:"user_approval_completed"`
 	IntegrityVerified         bool                             `json:"integrity_verified"`
 	WorkerReport              string                           `json:"worker_report"`
 	Artifacts                 []cloudWorkerArtifactBrief       `json:"artifacts"`
@@ -2434,11 +2435,12 @@ func cloudWorkerContinuation(
 	}
 	payload := cloudWorkerContinuationPayload{
 		Schema: "dirextalk.cloud-worker-completion/v1", ExecutionID: execution.ExecutionID,
-		Status: string(terminal), IntegrityVerified: terminal == cloudworker.StateSucceeded,
+		UserApprovalCompleted: true,
+		Status:                string(terminal), IntegrityVerified: terminal == cloudworker.StateSucceeded,
 		WorkerReport: summary, Artifacts: artifacts,
 		DeliverableContext:        providerResultDeliverableContext(providerResult),
 		DeliverableContextOmitted: providerResultDeliverableContextOmitted(providerResult),
-		CentralInstruction:        "Continue the current conversation as Central Agent. Use the original user request and prior messages, independently select and summarize the important conclusions, distinguish Worker-reported claims from integrity-verified artifacts, mention the useful deliverables by name, and ask for a user decision only when one is genuinely needed. Do not expose infrastructure details or repeat a fixed completion template.",
+		CentralInstruction:        "Continue the current conversation as Central Agent. The user approval was completed before execution; do not claim that the Worker bypassed approval or started automatically. Use the original user request and prior messages, independently select and summarize the important conclusions, distinguish Worker-reported claims from integrity-verified artifacts, mention the useful deliverables by name, and ask for a user decision only when one is genuinely needed. Do not expose infrastructure details or repeat a fixed completion template.",
 	}
 	content, err := json.Marshal(payload)
 	if err != nil {

@@ -703,7 +703,8 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 			completionResults++
 			if len(event.ToolResult.RelatedTaskIDs) != 1 || event.ToolResult.RelatedTaskIDs[0] != plan.TaskID ||
 				len(event.ToolResult.RelatedPlanIDs) != 1 || event.ToolResult.RelatedPlanIDs[0] != plan.PlanID ||
-				!strings.Contains(event.ToolResult.Content, "dirextalk.cloud-worker-completion/v1") {
+				!strings.Contains(event.ToolResult.Content, "dirextalk.cloud-worker-completion/v1") ||
+				!strings.Contains(event.ToolResult.Content, `"user_approval_completed":true`) {
 				t.Fatalf("completion tool result lost authority: %+v", event.ToolResult)
 			}
 		}
