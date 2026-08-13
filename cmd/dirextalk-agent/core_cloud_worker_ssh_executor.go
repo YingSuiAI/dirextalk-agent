@@ -150,16 +150,28 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		return workerResult, fmt.Errorf("remote Worker exited with code %d", result.ExitCode)
 	}
 	if service != nil {
-		workerIdentity, identityErr := provider.WorkerIdentity(ctx, identity, result.WorkerID)
-		if identityErr != nil {
-			return workerResult, identityErr
-		}
-		if err = executor.workloads.PutService(ctx, sshworkload.Service{Worker: workerIdentity, TaskID: request.ExecutionID,
-			WorkloadID: service.WorkloadID, Port: service.Port, HealthPath: service.HealthPath}); err != nil {
+		if err = executor.publishService(ctx, provider, identity, result.WorkerID, request.ExecutionID, *service); err != nil {
 			return workerResult, err
 		}
 	}
 	return workerResult, nil
+}
+
+type serviceWorker interface {
+	WorkerIdentity(context.Context, sshworker.CredentialIdentity, string) (sshworker.WorkerIdentity, error)
+	SetPublicPort(context.Context, sshworker.WorkerIdentity, uint16, bool) error
+}
+
+func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider serviceWorker, credential sshworker.CredentialIdentity, workerID, taskID string, service sshworker.RuntimeServiceSpec) error {
+	worker, err := provider.WorkerIdentity(ctx, credential, workerID)
+	if err != nil {
+		return err
+	}
+	if err = provider.SetPublicPort(ctx, worker, service.Port, true); err != nil {
+		return err
+	}
+	return executor.workloads.PutService(ctx, sshworkload.Service{Worker: worker, TaskID: taskID,
+		WorkloadID: service.WorkloadID, Port: service.Port, HealthPath: service.HealthPath})
 }
 
 func (executor *sshWorkerExecutor) HasIdleWorker(ctx context.Context, binding cloudworker.AWSBinding, compute cloudworker.ComputeSpec) (bool, error) {
@@ -231,7 +243,7 @@ func (executor *sshWorkerExecutor) DestroyWorker(ctx context.Context, request ss
 		if service.Domain == nil {
 			continue
 		}
-		if err = executor.deleteDomain(ctx, provider, service, "destroy_worker"); err != nil {
+		if err = executor.deleteDomain(ctx, service, "destroy_worker"); err != nil {
 			return err
 		}
 	}
@@ -269,7 +281,7 @@ func (domains sshWorkerDomains) change(ctx context.Context, command workercap.Do
 			return workercap.DomainStatus{}, sshworkload.ErrIdentity
 		}
 		domain := *service.Domain
-		if err = domains.executor.deleteDomain(ctx, provider, service, command.Confirmation); err != nil {
+		if err = domains.executor.deleteDomain(ctx, service, command.Confirmation); err != nil {
 			return workercap.DomainStatus{}, err
 		}
 		return projectDomain(&domain, "current"), nil
@@ -282,13 +294,9 @@ func (domains sshWorkerDomains) change(ctx context.Context, command workercap.Do
 		return workercap.DomainStatus{}, remoteservice.ErrInvalid
 	}
 	domain := &sshworkload.Domain{ZoneID: command.ZoneID, Hostname: command.Hostname, TTL: command.TTL, BoundIPv4: status.PublicIP, PublicPort: service.Port}
-	if err = provider.SetPublicPort(ctx, command.Worker, service.Port, true); err != nil {
-		return workercap.DomainStatus{}, err
-	}
 	mutation := remoteservice.DNSMutation{Action: action, AccountID: command.Worker.Credential.AccountID, WorkerID: command.Worker.WorkerID,
 		WorkloadID: command.WorkloadID, Record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}}
 	if err = remoteservice.ReconcileLiteral(ctx, dns, mutation, command.Confirmation); err != nil {
-		_ = provider.SetPublicPort(ctx, command.Worker, service.Port, false)
 		return workercap.DomainStatus{}, err
 	}
 	if err = domains.executor.workloads.SetDomain(ctx, command.Worker, command.WorkloadID, domain); err != nil {
@@ -297,7 +305,7 @@ func (domains sshWorkerDomains) change(ctx context.Context, command workercap.Do
 	return projectDomain(domain, "current"), nil
 }
 
-func (executor *sshWorkerExecutor) deleteDomain(ctx context.Context, provider *sshworker.Provider, service sshworkload.Service, confirmation string) error {
+func (executor *sshWorkerExecutor) deleteDomain(ctx context.Context, service sshworkload.Service, confirmation string) error {
 	domain := service.Domain
 	if domain == nil {
 		return nil
@@ -309,9 +317,6 @@ func (executor *sshWorkerExecutor) deleteDomain(ctx context.Context, provider *s
 	mutation := remoteservice.DNSMutation{Action: remoteservice.DNSDeleteA, AccountID: service.Worker.Credential.AccountID, WorkerID: service.Worker.WorkerID,
 		WorkloadID: service.WorkloadID, Record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}}
 	if err := remoteservice.ReconcileLiteral(ctx, dns, mutation, confirmation); err != nil {
-		return err
-	}
-	if err := provider.SetPublicPort(ctx, service.Worker, service.Port, false); err != nil {
 		return err
 	}
 	if confirmation == "destroy_worker" {
