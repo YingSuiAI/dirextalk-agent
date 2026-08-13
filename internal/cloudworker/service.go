@@ -303,7 +303,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	if err != nil {
 		return Offer{}, ErrInvalid
 	}
-	if (command.WorkspaceMode == WorkspaceNone) != (len(command.InputManifest.Items) == 0) {
+	if !validWorkspaceInputCardinality(command.WorkspaceMode, len(command.InputManifest.Items)) {
 		return Offer{}, ErrInvalid
 	}
 	if err := command.ModelAuthorization.Seal(); err != nil {

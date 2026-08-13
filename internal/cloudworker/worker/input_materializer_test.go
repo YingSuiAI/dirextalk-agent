@@ -114,6 +114,36 @@ func TestFilesystemWorkspacePreparerSeparatesReadOnlyAndWriteModes(t *testing.T)
 	}
 }
 
+func TestFilesystemWorkspacePreparerCreatesEmptyWriteWorkspace(t *testing.T) {
+	t.Parallel()
+	raw, digest := inputManifestForTest(t, nil)
+	objects := &exactInputReaderForTest{}
+	root := filepath.Clean(t.TempDir())
+	runtimeGID := workspaceTestRuntimeGID()
+	preparer, err := NewFilesystemWorkspacePreparer(objects, root, runtimeGID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, cleanup, err := preparer.Prepare(t.Context(), ClaimedTask{
+		Task: cloudruntime.Task{
+			WorkspaceMode: cloudruntime.WorkspaceWrite, InputManifestSHA256: digest,
+			WorkspaceSHA256: digest,
+		},
+		InputManifestJSON: raw,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanup == nil || workspace.Directory == "" || workspace.ReadOnly || !workspace.Isolated || objects.calls != 0 {
+		t.Fatalf("workspace=%+v cleanup=%t object_calls=%d", workspace, cleanup != nil, objects.calls)
+	}
+	assertWorkspacePathForTest(t, workspace.Directory, runtimeGID, workspaceDirectoryMode(cloudruntime.WorkspaceWrite))
+	cleanup()
+	if _, err := os.Lstat(workspace.Directory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workspace cleanup error = %v", err)
+	}
+}
+
 func TestFilesystemWorkspacePreparerRejectsRootReplacement(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join(t.TempDir(), "workspaces")

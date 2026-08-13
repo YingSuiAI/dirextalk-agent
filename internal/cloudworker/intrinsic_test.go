@@ -87,6 +87,12 @@ type intrinsicOwner struct {
 	turnIDSeen string
 }
 
+type intrinsicBudget struct{ evidence *LocalBudgetEvidence }
+
+func (r intrinsicBudget) ResolveCloudWorkerBudgetEvidence(context.Context, coreconversation.TurnLease) (*LocalBudgetEvidence, error) {
+	return r.evidence, nil
+}
+
 func (r *intrinsicOwner) ResolveCloudWorkerOwner(_ context.Context, lease coreconversation.TurnLease) (IntrinsicOwnerContext, error) {
 	r.turnIDSeen = lease.Turn.ID
 	return r.owner, nil
@@ -129,7 +135,7 @@ func intrinsicDefaults(now time.Time) Defaults {
 	}
 }
 
-func intrinsicFixture(t *testing.T, prompt string, manifests IntrinsicManifestResolver, _ any) (*ProposeIntrinsic, *intrinsicStore, coreconversation.TurnLease) {
+func intrinsicFixture(t *testing.T, prompt string, manifests IntrinsicManifestResolver, budgets IntrinsicBudgetResolver) (*ProposeIntrinsic, *intrinsicStore, coreconversation.TurnLease) {
 	t.Helper()
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	store := &intrinsicStore{}
@@ -138,11 +144,11 @@ func intrinsicFixture(t *testing.T, prompt string, manifests IntrinsicManifestRe
 		t.Fatal(err)
 	}
 	owner := &intrinsicOwner{owner: IntrinsicOwnerContext{OwnerID: "@owner:example.test", AccountGeneration: 7}}
-	intrinsic, err := NewProposeIntrinsic(service, owner, manifests)
+	intrinsic, err := NewProposeIntrinsic(service, owner, manifests, budgets)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 2, CredentialVersion: 4, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://model.example.test/v1", Model: "gpt-test", APIKey: "test-secret"}
+	snapshot := coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 2, CredentialVersion: 4, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://model.example.test/v1", Model: "gpt-test", APIKey: "test-secret", MaxOutputTokens: 2048}
 	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: owner.owner.OwnerID, AccountGeneration: owner.owner.AccountGeneration, ConversationID: uuid.NewString(), Prompt: prompt, ProfileID: snapshot.ProfileID, Revision: 2, State: coreconversation.TurnRunning, ProfileSnapshot: snapshot}
 	return intrinsic, store, coreconversation.TurnLease{Turn: turn, LeaseID: uuid.NewString(), Epoch: 3, ExpiresAt: now.Add(time.Minute)}
 }
@@ -263,6 +269,13 @@ func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
 	if err != nil || arguments.Objective != "run once" || arguments.WorkspaceMode != string(WorkspaceNone) || len(arguments.AttachmentIDs) != 0 {
 		t.Fatalf("arguments=%+v err=%v", arguments, err)
 	}
+	arguments, err = parseProposeIntrinsicArguments([]byte(`{"objective":"create a project","workspace_mode":"write"}`))
+	if err != nil || arguments.WorkspaceMode != string(WorkspaceWrite) || len(arguments.AttachmentIDs) != 0 {
+		t.Fatalf("empty write workspace arguments=%+v err=%v", arguments, err)
+	}
+	if _, err = parseProposeIntrinsicArguments([]byte(`{"objective":"inspect","workspace_mode":"read_only"}`)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty read-only workspace accepted: %v", err)
+	}
 }
 
 func TestIntrinsicProposalErrorClass(t *testing.T) {
@@ -312,13 +325,51 @@ func TestIntrinsicIsCoreOwnedStrictAndBindsDurableTurn(t *testing.T) {
 	}
 }
 
-func TestIntrinsicRejectsCloudExecutionWithoutExplicitRequest(t *testing.T) {
+func TestIntrinsicAllowsTrustedLocalCapabilityEvidenceWithoutCloudWording(t *testing.T) {
+	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 2, Digest: digestValue("scheduler-evidence")}
+	if err := evidence.normalize(); err != nil {
+		t.Fatal(err)
+	}
+	intrinsic, store, lease := intrinsicFixture(t,
+		"帮我部署 https://github.com/TencentCloud/TencentDB-Agent-Memory 项目并生成 HTML 报告",
+		nil, intrinsicBudget{evidence: evidence})
+	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{
+		"objective": "deploy project and generate HTML report", "workspace_mode": "write",
+	}, "call-1"); err != nil {
+		t.Fatalf("proposal error=%v store_commands=%d", err, len(store.commands))
+	}
+	if len(store.commands) != 1 || store.commands[0].Plan.ProposalReason != ProposalReasonLocalBudgetExceeded ||
+		store.commands[0].Plan.LocalBudgetEvidence == nil || store.commands[0].Plan.LocalBudgetEvidence.Digest != evidence.Digest ||
+		store.commands[0].Plan.Status != string(StateWaitingUser) || store.commands[0].Execution.State != StateWaitingUser {
+		t.Fatalf("trusted local capability evidence was not bound to a waiting offer: %+v", store.commands)
+	}
+}
+
+func TestIntrinsicRequiresExplicitCloudOrTrustedLocalCapabilityEvidence(t *testing.T) {
 	intrinsic, store, lease := intrinsicFixture(t, "请分析这项任务", nil, nil)
 	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "analyze", "workspace_mode": "none"}, "call-1"); !errors.Is(err, ErrCloudIntentRequired) {
-		t.Fatalf("implicit cloud err=%v", err)
+		t.Fatalf("untrusted implicit cloud err=%v", err)
 	}
 	if len(store.commands) != 0 {
-		t.Fatal("implicit cloud request created an offer")
+		t.Fatal("untrusted implicit request created an offer")
+	}
+}
+
+func TestIntrinsicCloudVetoOverridesTrustedLocalCapabilityEvidence(t *testing.T) {
+	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-capability")}
+	for name, prompt := range map[string]string{
+		"chinese": "不要用云，只在本机执行",
+		"english": "Do not use cloud; run this locally",
+	} {
+		t.Run(name, func(t *testing.T) {
+			intrinsic, store, lease := intrinsicFixture(t, prompt, nil, intrinsicBudget{evidence: evidence})
+			if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "build", "workspace_mode": "write"}, "call-1"); !errors.Is(err, ErrCloudIntentRequired) {
+				t.Fatalf("cloud veto error=%v", err)
+			}
+			if len(store.commands) != 0 {
+				t.Fatal("vetoed request created an offer")
+			}
+		})
 	}
 }
 

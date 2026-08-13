@@ -20,7 +20,7 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrCloudIntentRequired = errors.New("cloudworker: explicit cloud intent is required")
+var ErrCloudIntentRequired = errors.New("cloudworker: cloud proposal is not allowed for this turn")
 
 const (
 	englishCloudTarget = `(?:aws(?:\s+cloud)?(?:\s+worker)?|ec2|cloud\s+worker)`
@@ -82,17 +82,24 @@ type IntrinsicManifestResolver interface {
 	ResolveCloudWorkerManifest(context.Context, coreconversation.TurnLease, WorkspaceMode, []string) (InputManifest, error)
 }
 
+// IntrinsicBudgetResolver is the sole authority for local-budget exhaustion.
+// A model assertion and a failed local task are intentionally not inputs.
+type IntrinsicBudgetResolver interface {
+	ResolveCloudWorkerBudgetEvidence(context.Context, coreconversation.TurnLease) (*LocalBudgetEvidence, error)
+}
+
 type ProposeIntrinsic struct {
 	service   *Service
 	owners    IntrinsicOwnerResolver
 	manifests IntrinsicManifestResolver
+	budgets   IntrinsicBudgetResolver
 }
 
-func NewProposeIntrinsic(service *Service, owners IntrinsicOwnerResolver, manifests IntrinsicManifestResolver) (*ProposeIntrinsic, error) {
+func NewProposeIntrinsic(service *Service, owners IntrinsicOwnerResolver, manifests IntrinsicManifestResolver, budgets IntrinsicBudgetResolver) (*ProposeIntrinsic, error) {
 	if service == nil || owners == nil {
 		return nil, ErrInvalid
 	}
-	return &ProposeIntrinsic{service: service, owners: owners, manifests: manifests}, nil
+	return &ProposeIntrinsic{service: service, owners: owners, manifests: manifests, budgets: budgets}, nil
 }
 
 type proposeIntrinsicArguments struct {
@@ -115,7 +122,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(_ context.Context, lease coreco
 	}
 	tool := coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerProposeToolName,
-		Description: "Create a priced, owner-confirmed ephemeral AWS Pi Worker offer. Use only when the user explicitly requests cloud execution.",
+		Description: "Propose a priced ephemeral AWS Pi Worker for a substantial project task that needs general project or shell execution, isolated execution, durable file delivery, tests, deployment work, or long-running compute that the local conversation runtime cannot provide. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. This creates only an offer; AWS resources start only after the owner reviews and confirms it.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -168,8 +175,24 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
 	mode := WorkspaceMode(arguments.WorkspaceMode)
-	if !hasExplicitCloudIntent(bound.Turn.Prompt) || hasCloudExecutionVeto(bound.Turn.Prompt) {
+	explicit := hasExplicitCloudIntent(bound.Turn.Prompt)
+	if hasCloudExecutionVeto(bound.Turn.Prompt) {
 		return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
+	}
+	var budget *LocalBudgetEvidence
+	reason := ProposalReasonExplicitUserCloud
+	if !explicit {
+		if p.budgets == nil {
+			return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
+		}
+		budget, err = p.budgets.ResolveCloudWorkerBudgetEvidence(ctx, bound)
+		if err != nil {
+			return coreconversation.IntrinsicExecutionResult{}, err
+		}
+		if budget == nil {
+			return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
+		}
+		reason = ProposalReasonLocalBudgetExceeded
 	}
 	if strings.TrimSpace(bound.Turn.OwnerID) == "" || bound.Turn.AccountGeneration == 0 {
 		return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
@@ -179,8 +202,8 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
 	manifest := InputManifest{Schema: InputManifestSchema}
-	if mode != WorkspaceNone {
-		if p.manifests == nil || len(arguments.AttachmentIDs) == 0 || !turnAllowsAttachments(bound.Turn, arguments.AttachmentIDs) {
+	if len(arguments.AttachmentIDs) > 0 {
+		if p.manifests == nil || !turnAllowsAttachments(bound.Turn, arguments.AttachmentIDs) {
 			return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 		}
 		manifest, err = p.manifests.ResolveCloudWorkerManifest(ctx, bound, mode, arguments.AttachmentIDs)
@@ -206,7 +229,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		TurnID: bound.Turn.ID, TurnLeaseID: bound.LeaseID, TurnLeaseEpoch: bound.Epoch,
 		ExpectedTurnRevision: bound.Turn.Revision, Objective: arguments.Objective,
 		ObjectiveSummary: arguments.Objective, UserPromptDigest: hex.EncodeToString(promptDigest[:]),
-		ProposalReason: ProposalReasonExplicitUserCloud, InputManifest: manifest,
+		ProposalReason: reason, LocalBudgetEvidence: budget, InputManifest: manifest,
 		WorkspaceMode:      mode,
 		ModelAuthorization: modelAuthorization,
 	})
@@ -215,7 +238,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 			"class", intrinsicProposalErrorClass(err),
 			"turn_id", bound.Turn.ID,
 			"workspace_mode", mode,
-			"proposal_reason", ProposalReasonExplicitUserCloud)
+			"proposal_reason", reason)
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
 	if offer.Plan.TurnID != bound.Turn.ID || offer.Plan.ConversationID != bound.Turn.ConversationID || offer.Plan.AccountGeneration != owner.AccountGeneration || offer.Task.ID != offer.Plan.TaskID || offer.Confirmation.ConfirmationID != offer.Plan.ConfirmationID {
@@ -269,7 +292,7 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 		}
 		seen[id] = struct{}{}
 	}
-	if (WorkspaceMode(arguments.WorkspaceMode) == WorkspaceNone) != (len(arguments.AttachmentIDs) == 0) {
+	if !validWorkspaceInputCardinality(WorkspaceMode(arguments.WorkspaceMode), len(arguments.AttachmentIDs)) {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
 	// JSON whitespace and object-key order carry no authority. The semantic

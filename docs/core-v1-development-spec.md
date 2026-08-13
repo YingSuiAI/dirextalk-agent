@@ -468,9 +468,15 @@ evidence and remaining verification are recorded in the
 
 The Native Agent remains local-first and retains its local sandbox, worker
 pool, MCP, Skills, Knowledge, Conversation Tools, and Extension Runner. The
-Core intrinsic `cloud_worker_propose` may create a paid offer only from a turn
-with an explicit user cloud request. Local budget conditions and local failures
-never trigger an automatic upgrade.
+Core intrinsic `cloud_worker_propose` may create a priced offer from an
+explicit user cloud request or from trusted Native scheduler evidence that the
+local conversation runtime lacks a general project/shell executor for the task
+selected by the model. This covers substantial project deployment, build,
+test, isolated workspace, durable delivery, and long-running compute work
+without requiring the user to name cloud or remote execution. Model text and
+local failures are never capability evidence. A cloud/local-only veto wins,
+and no AWS resource starts until the owner reviews and confirms the pending
+CoreConfirmation.
 
 The only recipe is `ephemeral-pi-task` with adapter `pi_json_task_v1`. One
 confirmed execution creates exactly one EC2 instance, one Worker, and one Pi
@@ -478,6 +484,9 @@ process. Its plan binds every cost/authority field, including immutable input,
 workspace mode, model and credential revisions, AWS/compute/AMI digests,
 limits, grants, retention, quote expiry, and hard cost ceiling. Any drift
 requires a fresh quote and CoreConfirmation.
+An empty input manifest is valid only for a writable workspace, allowing a
+new or remote-source project to begin in an isolated empty directory. A
+read-only workspace continues to require exact current-turn input material.
 
 The controller progresses the durable `CLOUD_WORKER` Task through
 `waiting_user`, `queued`, `provisioning`, `awaiting_worker`, `running`,

@@ -513,7 +513,7 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 
 	intrinsic, err := cloudworker.NewProposeIntrinsic(h.service, freshStateOwnerResolver{
 		ownerID: h.owner, accountGeneration: h.generation,
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

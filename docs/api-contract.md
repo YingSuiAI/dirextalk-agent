@@ -334,10 +334,16 @@ clients use `agent.execution.v2.plans.get/list`,
 `agent.execution.v2.artifacts.get/download`; they use
 `agent.core.confirmations.get/list/confirm/reject` for authorization. The
 durable controller performs provider reconciliation and cleanup.
-Only explicit user cloud requests are eligible. Terminal Worker output returns
-to the same durable turn as a tool result with related task/plan IDs, strict
-references, verified artifact metadata, and bounded deliverable context;
-Central resumes the turn and authors the final user-facing answer.
+The intrinsic may create a priced offer for an explicit cloud request or when
+trusted Native scheduler evidence proves that the local conversation runtime
+lacks the general project/shell executor required by a substantial task. The
+model may select it without cloud or remote wording, but model text and local
+failures are not capability evidence. Cloud/local-only vetoes remain binding,
+and AWS resources start only after the owner confirms the pending quote.
+Terminal Worker output returns to the same durable turn as a tool result with
+related task/plan IDs, strict references, verified artifact metadata, and
+bounded deliverable context; Central resumes the turn and authors the final
+user-facing answer.
 
 `agent.chat.v1/upload_attachment_begin` requires `kind` (`image`, `file`, or
 `workspace_archive`) and a matching approved `mime_type`. A turn accepts at

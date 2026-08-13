@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"strings"
 
@@ -12,8 +13,11 @@ import (
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workspacearchive"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+const cloudWorkerLocalProjectExecutionPolicyRevision uint64 = 1
 
 // ResolveCloudWorkerOwner revalidates the live durable turn lease before
 // returning owner authority. Model arguments are never an owner source.
@@ -24,6 +28,70 @@ func (s *CoreConversationStore) ResolveCloudWorkerOwner(ctx context.Context, lea
 	return cloudworker.IntrinsicOwnerContext{
 		OwnerID:           strings.TrimSpace(lease.Turn.OwnerID),
 		AccountGeneration: lease.Turn.AccountGeneration,
+	}, nil
+}
+
+// ResolveCloudWorkerBudgetEvidence reports a versioned structural capability
+// limit: the Native conversation runtime has no general project/shell executor.
+// It never classifies prompt text or treats a model assertion, timeout, or
+// failed local attempt as evidence.
+func (s *CoreConversationStore) ResolveCloudWorkerBudgetEvidence(ctx context.Context, lease core.TurnLease) (*cloudworker.LocalBudgetEvidence, error) {
+	if err := s.validateCloudWorkerTurnLease(ctx, lease); err != nil {
+		return nil, err
+	}
+	accepted := attachmentSourceIDs(lease.Turn.AttachmentSources)
+	if core.ValidateAcceptedTurnAttachments(lease.Turn.RequestID, accepted, lease.Turn.AttachmentSources) != nil ||
+		lease.Turn.AttachmentSnapshotDigest != core.TurnAttachmentSnapshotDigest(lease.Turn.AttachmentSources) {
+		return nil, cloudworker.ErrConflict
+	}
+	var prompt, profileID, profileDigest, attachmentDigest string
+	var revision uint64
+	if err := s.pool.QueryRow(ctx, `SELECT prompt,profile_id::text,profile_snapshot_digest,
+		attachment_snapshot_digest,revision FROM core_conversation_turns
+		WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3
+		AND state='running' AND cancel_requested=false AND lease_expires_at>clock_timestamp()`,
+		lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(
+		&prompt, &profileID, &profileDigest, &attachmentDigest, &revision); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, cloudworker.ErrStaleAuthorization
+		}
+		return nil, err
+	}
+	if prompt != lease.Turn.Prompt || profileID != lease.Turn.ProfileID ||
+		profileDigest != lease.Turn.ProfileSnapshotDigest || profileDigest != lease.Turn.ProfileSnapshot.Digest() ||
+		attachmentDigest != lease.Turn.AttachmentSnapshotDigest || revision != lease.Turn.Revision {
+		return nil, cloudworker.ErrStaleAuthorization
+	}
+	return newCloudWorkerProjectExecutionBudgetEvidence(lease.Turn, prompt, profileID, profileDigest)
+}
+
+func newCloudWorkerProjectExecutionBudgetEvidence(turn core.Turn, prompt, profileID, profileDigest string) (*cloudworker.LocalBudgetEvidence, error) {
+	promptSHA := sha256.Sum256([]byte(prompt))
+	binding := struct {
+		Policy            string `json:"policy"`
+		PolicyRevision    uint64 `json:"policy_revision"`
+		OwnerID           string `json:"owner_id"`
+		AccountGeneration uint64 `json:"account_generation"`
+		TurnID            string `json:"turn_id"`
+		TurnRevision      uint64 `json:"turn_revision"`
+		RequestID         string `json:"request_id"`
+		ConversationID    string `json:"conversation_id"`
+		PromptSHA256      string `json:"prompt_sha256"`
+		ProfileID         string `json:"profile_id"`
+		ProfileDigest     string `json:"profile_digest"`
+		AttachmentDigest  string `json:"attachment_digest"`
+	}{"native_runtime_no_general_project_executor", cloudWorkerLocalProjectExecutionPolicyRevision,
+		turn.OwnerID, turn.AccountGeneration, turn.ID, turn.Revision,
+		turn.RequestID, turn.ConversationID, hex.EncodeToString(promptSHA[:]),
+		profileID, profileDigest, turn.AttachmentSnapshotDigest}
+	raw, err := json.Marshal(binding)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(raw)
+	return &cloudworker.LocalBudgetEvidence{
+		BudgetID: uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk/local-budget/native-runtime-no-general-project-executor/v1")).String(),
+		Revision: cloudWorkerLocalProjectExecutionPolicyRevision, Digest: hex.EncodeToString(digest[:]),
 	}, nil
 }
 
@@ -217,4 +285,5 @@ func (body *attachmentSourceBody) Close() error {
 
 var _ cloudworker.IntrinsicOwnerResolver = (*CoreConversationStore)(nil)
 var _ cloudworker.IntrinsicManifestResolver = (*CoreConversationStore)(nil)
+var _ cloudworker.IntrinsicBudgetResolver = (*CoreConversationStore)(nil)
 var _ cloudworker.StagingSourceReader = (*CoreConversationStore)(nil)

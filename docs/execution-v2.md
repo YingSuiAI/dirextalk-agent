@@ -36,10 +36,19 @@ light-task worker pool, MCP, Skills, Knowledge, Conversation Tools, and
 Extension Runner remain available. Only a `CLOUD_WORKER` CoreTask crosses the
 AWS boundary.
 
-The built-in proposal tool is eligible only when the user explicitly requests
-cloud execution. A model assertion, local budget condition, or local execution
-failure never upgrades to paid cloud execution, and a cloud failure never
-falls back to a hidden local rerun.
+The built-in proposal tool may create a priced offer when the user explicitly
+requests cloud execution, or when the trusted Native scheduler proves the
+current local runtime lacks the general project/shell executor required by a
+substantial project task. The model may select the tool for deployment, build,
+test, isolated workspace, durable delivery, or long-running compute work
+without the user naming cloud or remote execution; model text is not itself
+the capability proof. A local execution failure never upgrades to paid cloud
+execution, and a cloud failure never falls back to a hidden local rerun.
+
+A proposal is not spend authority. It atomically creates the plan, execution,
+Task in `waiting_user`, and CoreConfirmation in `pending`; AWS resources start
+only after the owner reviews the quote and confirms it. An explicit cloud veto
+or local-only directive always rejects the proposal path.
 
 Cloud intent is evaluated by punctuation-delimited command clause. A negative
 local directive paired with an independent explicit cloud command (for
@@ -60,6 +69,9 @@ exec is forbidden. The Worker does not load the user's local MCP installations, 
 Extension Runner, local sandbox credentials, or Agent database. It receives
 only a short-lived model relay grant, exact versioned input objects, its exact
 artifact prefix, and the approved network/secret grant descriptors.
+`workspace_mode=write` may start from an empty input manifest for a new or
+remote-source project; the Worker creates an isolated writable workspace.
+`workspace_mode=read_only` still requires at least one exact current-turn input.
 The configured private Model Relay endpoint is an exact HTTPS base URL whose
 path is `/v1`; startup rejects a bare origin, encoded path, or trailing slash.
 

@@ -252,9 +252,16 @@ support.
 - Generic non-Cloud-Worker Execution V2 provider mutations still require their
   exact typed route, target proof, and configured CloudFormation service role;
   live generic AWS provision/read-back acceptance is not recorded.
-- Production `cloud_worker_propose` accepts only an explicit cloud command.
-  Local budget conditions, model arguments, timeouts, and failed local
-  execution never create a paid offer.
+- Production `cloud_worker_propose` accepts either an explicit cloud command
+  or versioned Native scheduler evidence that the local conversation runtime
+  lacks a general project/shell executor. The model may therefore propose a
+  priced Worker for a substantial project task without cloud wording. Model
+  arguments, timeouts, and failed local execution are not evidence; local-only
+  and cloud vetoes remain authoritative, and execution still waits for owner
+  confirmation before any AWS mutation.
+  Focused intrinsic, deterministic evidence-binding, empty-write materializer,
+  command composition, and pure PostgreSQL package tests cover this path; live
+  AWS mutation remains a separate authorized acceptance step.
 - A Worker AMI built from the immutable `deploy/cloud-worker` inputs passed the
   earlier offline and boot checks, but the first live run proved those checks
   did not exercise the Worker-UID Gate client path. It is not production-ready;

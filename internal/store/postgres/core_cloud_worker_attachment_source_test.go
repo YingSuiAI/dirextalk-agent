@@ -16,6 +16,48 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestCloudWorkerProjectExecutionBudgetEvidenceBindsCurrentTurn(t *testing.T) {
+	snapshot := coremodel.ExecutionSnapshot{
+		ProfileID: uuid.NewString(), Revision: 3, CredentialVersion: 4,
+		Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://model.example.test/v1",
+		Model: "model", APIKey: "secret", MaxOutputTokens: 2048,
+	}
+	turn := core.Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:example.test",
+		AccountGeneration: 7, ConversationID: uuid.NewString(), Revision: 5,
+		Prompt: "deploy the repository and generate an HTML report", ProfileID: snapshot.ProfileID,
+		ProfileSnapshot: snapshot, ProfileSnapshotDigest: snapshot.Digest(),
+	}
+	turn.AttachmentSnapshotDigest = core.TurnAttachmentSnapshotDigest(nil)
+	first, err := newCloudWorkerProjectExecutionBudgetEvidence(turn, turn.Prompt, turn.ProfileID, turn.ProfileSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newCloudWorkerProjectExecutionBudgetEvidence(turn, turn.Prompt, turn.ProfileID, turn.ProfileSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *first != *second || first.Revision != cloudWorkerLocalProjectExecutionPolicyRevision {
+		t.Fatalf("evidence is not deterministic: first=%+v second=%+v", first, second)
+	}
+	stale := turn
+	stale.Revision++
+	drifted, err := newCloudWorkerProjectExecutionBudgetEvidence(stale, stale.Prompt, stale.ProfileID, stale.ProfileSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if drifted.Digest == first.Digest {
+		t.Fatal("turn revision drift reused capability evidence")
+	}
+	changedPrompt, err := newCloudWorkerProjectExecutionBudgetEvidence(turn, turn.Prompt+" changed", turn.ProfileID, turn.ProfileSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedPrompt.Digest == first.Digest {
+		t.Fatal("prompt drift reused capability evidence")
+	}
+}
+
 func TestConversationAttachmentBecomesExactCloudWorkerSource(t *testing.T) {
 	ctx, store, profileID, cleanup := corePG18Fixture(t)
 	defer cleanup()
