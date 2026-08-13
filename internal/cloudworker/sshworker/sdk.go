@@ -161,14 +161,17 @@ func (client *SDK) ImportKeyPair(ctx context.Context, identity CredentialIdentit
 	return KeyPair{ID: aws.ToString(output.KeyPairId), Name: aws.ToString(output.KeyName)}, nil
 }
 func (client *SDK) DeleteKeyPair(ctx context.Context, identity CredentialIdentity, auth DestroyAuthorization, key KeyPair, tags ResourceTags) error {
-	if err := client.VerifyIdentity(ctx, identity); err != nil {
+	if err := client.beforeDestroy(ctx, identity, auth); err != nil {
 		return err
 	}
 	observed, found, err := client.readKeyPair(ctx, key.ID, tags)
 	if err != nil {
 		return err
 	}
-	if !found || observed != key {
+	if !found {
+		return nil
+	}
+	if observed != key {
 		return ErrIdentity
 	}
 	if err := client.beforeDestroy(ctx, identity, auth); err != nil {
@@ -326,14 +329,17 @@ func portCIDRState(permissions []ec2types.IpPermission, port uint16, cidr string
 	return false
 }
 func (client *SDK) DeleteSecurityGroup(ctx context.Context, identity CredentialIdentity, auth DestroyAuthorization, group SecurityGroup, tags ResourceTags) error {
-	if err := client.VerifyIdentity(ctx, identity); err != nil {
+	if err := client.beforeDestroy(ctx, identity, auth); err != nil {
 		return err
 	}
 	observed, found, err := client.readSecurityGroup(ctx, group.ID, tags)
 	if err != nil {
 		return err
 	}
-	if !found || observed.SecurityGroup != group {
+	if !found {
+		return nil
+	}
+	if observed.SecurityGroup != group {
 		return ErrIdentity
 	}
 	if err := client.beforeDestroy(ctx, identity, auth); err != nil {
@@ -426,14 +432,17 @@ func (client *SDK) RunInstance(ctx context.Context, identity CredentialIdentity,
 	return sdkInstance(output.Instances[0]), nil
 }
 func (client *SDK) TerminateInstance(ctx context.Context, identity CredentialIdentity, auth DestroyAuthorization, instance Instance, tags ResourceTags) error {
-	if err := client.VerifyIdentity(ctx, identity); err != nil {
+	if err := client.beforeDestroy(ctx, identity, auth); err != nil {
 		return err
 	}
 	observed, found, err := client.findInstance(ctx, []ec2types.Filter{{Name: aws.String("instance-id"), Values: []string{instance.ID}}}, tags)
 	if err != nil {
 		return err
 	}
-	if !found || observed != instance {
+	if !found {
+		return nil
+	}
+	if observed != instance {
 		return ErrIdentity
 	}
 	if err := client.beforeDestroy(ctx, identity, auth); err != nil {

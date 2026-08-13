@@ -349,6 +349,47 @@ func TestSDKDestroyMutationsRequireExactResourceAndReadBack(t *testing.T) {
 	})
 }
 
+func TestSDKDestroyRetryAcceptsAlreadyAbsentResourceAfterAuthorization(t *testing.T) {
+	tags := ResourceTags{"worker": "worker-1"}
+	auth := DestroyAuthorization{Authorized: true, Proof: "destroy-1"}
+	for _, test := range []struct {
+		name    string
+		destroy func(*SDK) error
+		writes  func(*mutationProbeEC2) int
+	}{
+		{"key pair", func(client *SDK) error {
+			return client.DeleteKeyPair(context.Background(), credentialFixture(), auth, KeyPair{ID: "key-1", Name: "worker"}, tags)
+		}, func(probe *mutationProbeEC2) int { return probe.deleteKeyCalls }},
+		{"security group", func(client *SDK) error {
+			return client.DeleteSecurityGroup(context.Background(), credentialFixture(), auth, SecurityGroup{ID: "sg-1", Name: "worker"}, tags)
+		}, func(probe *mutationProbeEC2) int { return probe.deleteGroupCalls }},
+		{"instance", func(client *SDK) error {
+			return client.TerminateInstance(context.Background(), credentialFixture(), auth, Instance{ID: "i-1"}, tags)
+		}, func(probe *mutationProbeEC2) int { return probe.terminateCalls }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			events := []string{}
+			probe := &mutationProbeEC2{events: &events}
+			identity := &identityProbeSTS{events: &events}
+			if err := test.destroy(newSDK("ap-east-1", probe, identity, staticIP{})); err != nil {
+				t.Fatal(err)
+			}
+			if want := []string{"verify", "read"}; !slices.Equal(events, want) || identity.calls != 1 || test.writes(probe) != 0 {
+				t.Fatalf("events=%v verifies=%d writes=%d want=%v,1,0", events, identity.calls, test.writes(probe), want)
+			}
+		})
+	}
+}
+
+func TestSDKDestroyAbsentResourceStillRequiresAuthorization(t *testing.T) {
+	probe := &mutationProbeEC2{}
+	identity := &identityProbeSTS{}
+	err := newSDK("ap-east-1", probe, identity, staticIP{}).DeleteKeyPair(context.Background(), credentialFixture(), DestroyAuthorization{}, KeyPair{ID: "key-1", Name: "worker"}, ResourceTags{"worker": "worker-1"})
+	if !errors.Is(err, ErrNotAuthorized) || identity.calls != 0 || probe.deleteKeyCalls != 0 {
+		t.Fatalf("error=%v verifies=%d writes=%d", err, identity.calls, probe.deleteKeyCalls)
+	}
+}
+
 func TestSDKDestroyRejectsMismatchedResourceWithoutMutation(t *testing.T) {
 	tags := ResourceTags{"worker": "worker-1"}
 	wrongTags := ResourceTags{"worker": "other"}
