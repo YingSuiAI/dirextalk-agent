@@ -39,6 +39,16 @@ func (resolver freshStateOwnerResolver) ResolveCloudWorkerOwner(context.Context,
 	}, nil
 }
 
+type freshStateBudgetResolver struct{}
+
+func (freshStateBudgetResolver) ResolveCloudWorkerBudgetEvidence(context.Context, core.TurnLease) (*cloudworker.LocalBudgetEvidence, error) {
+	return &cloudworker.LocalBudgetEvidence{
+		BudgetID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("fresh-state-local-budget")).String(),
+		Revision: 1,
+		Digest:   pgCloudDigest("fresh-state-local-budget"),
+	}, nil
+}
+
 // freshStateInputStager deliberately represents workspace_mode=none. It
 // exercises the same typed staging/cleanup ports as production without
 // creating an S3 object or making any external call.
@@ -513,7 +523,7 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 
 	intrinsic, err := cloudworker.NewProposeIntrinsic(h.service, freshStateOwnerResolver{
 		ownerID: h.owner, accountGeneration: h.generation,
-	}, nil, nil)
+	}, nil, freshStateBudgetResolver{})
 	if err != nil {
 		t.Fatal(err)
 	}

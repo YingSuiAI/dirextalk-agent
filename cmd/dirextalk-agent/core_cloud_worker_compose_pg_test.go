@@ -273,13 +273,13 @@ func TestComposeCoreCloudWorkerConstructsAndRunsProductionCleaners(t *testing.T)
 func TestComposeDynamicCloudWorkerProposalNeedsNoDeploymentBlock(t *testing.T) {
 	store, cleanup := cloudWorkerComposePGStore(t)
 	defer cleanup()
-	cfg := config.Config{CoreAWSEnabled: true, CapabilityEnabled: true}
+	cfg := config.Config{CoreAWSEnabled: true, CapabilityEnabled: true, CoreExtensionStagingRoot: t.TempDir()}
 	conversation, err := postgres.NewCoreConversationStore(store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	composition, err := composeDynamicCloudWorkerProposal(cfg, store, conversation)
-	if err != nil || composition == nil || composition.intrinsic == nil || composition.taskHandler != nil || composition.executionPort != nil {
+	if err != nil || composition == nil || composition.intrinsic == nil || composition.taskHandler == nil || composition.executionPort == nil {
 		t.Fatalf("dynamic composition=%+v err=%v", composition, err)
 	}
 	lease := coreconversation.TurnLease{Turn: coreconversation.Turn{ID: uuid.NewString()}, LeaseID: uuid.NewString(), Epoch: 1}
