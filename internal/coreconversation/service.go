@@ -1922,25 +1922,34 @@ func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots [
 		selections = append(selections, snapshot.Selection)
 	}
 	resolved, err := s.extensions.ResolveExtensions(ctx, selections)
-	if err != nil || len(resolved) != len(snapshots) {
+	if err != nil {
 		return nil, ErrConflict
 	}
-	remaining := make(map[string]string, len(snapshots))
+	expected := make(map[string]string, len(snapshots))
 	for _, snapshot := range snapshots {
-		remaining[snapshot.Selection.ID] = snapshot.ContentDigest + ":" + snapshot.ArtifactDigest + ":" + snapshot.ToolSchemaDigest
+		expected[snapshot.Selection.ID] = snapshot.ContentDigest + ":" + snapshot.ArtifactDigest + ":" + snapshot.ToolSchemaDigest
 	}
+	accepted := make([]ResolvedExtension, 0, len(snapshots))
+	matched := make(map[string]struct{}, len(snapshots))
 	for _, extension := range resolved {
 		snapshot := snapshotForResolved(extension)
-		want, ok := remaining[snapshot.Selection.ID]
-		if !ok || want != snapshot.ContentDigest+":"+snapshot.ArtifactDigest+":"+snapshot.ToolSchemaDigest {
+		want, ok := expected[snapshot.Selection.ID]
+		if !ok {
+			// Resolver chains may expose tools that became available after this
+			// turn was accepted. They are outside the immutable turn snapshot:
+			// exclude them without invalidating the accepted tools.
+			continue
+		}
+		if _, duplicate := matched[snapshot.Selection.ID]; duplicate || want != snapshot.ContentDigest+":"+snapshot.ArtifactDigest+":"+snapshot.ToolSchemaDigest {
 			return nil, ErrConflict
 		}
-		delete(remaining, snapshot.Selection.ID)
+		matched[snapshot.Selection.ID] = struct{}{}
+		accepted = append(accepted, extension)
 	}
-	if len(remaining) != 0 {
+	if len(matched) != len(expected) {
 		return nil, ErrConflict
 	}
-	return resolved, nil
+	return accepted, nil
 }
 
 type turnToolCallState uint8

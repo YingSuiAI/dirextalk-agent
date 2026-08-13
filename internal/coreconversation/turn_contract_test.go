@@ -959,6 +959,43 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 	}
 }
 
+func TestResolveAcceptedTurnExtensionsIgnoresToolsAddedAfterAcceptance(t *testing.T) {
+	acceptedSelection := ExtensionSelection{
+		Kind: ExtensionMCP, ID: uuid.NewString(), Version: uuid.NewString(),
+		Digest: strings.Repeat("a", 64), AllowedTools: []string{"accepted_lookup"},
+	}
+	acceptedSnapshot := ExtensionExecutionSnapshot{
+		Selection: acceptedSelection, InstallationID: acceptedSelection.ID, VersionID: acceptedSelection.Version,
+		Source: "mcp:accepted", ContentDigest: acceptedSelection.Digest, ArtifactDigest: strings.Repeat("b", 64),
+		ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64),
+		ToolNames: []string{"accepted_lookup"}, ReadOnly: true,
+	}
+	addedSelection := ExtensionSelection{
+		Kind: ExtensionMCP, ID: uuid.NewString(), Version: uuid.NewString(),
+		Digest: strings.Repeat("e", 64), AllowedTools: []string{"added_later"},
+	}
+	addedSnapshot := ExtensionExecutionSnapshot{
+		Selection: addedSelection, InstallationID: addedSelection.ID, VersionID: addedSelection.Version,
+		Source: "builtin:added-later", ContentDigest: addedSelection.Digest, ArtifactDigest: strings.Repeat("f", 64),
+		ToolSchemaDigest: strings.Repeat("1", 64), NetworkBindingDigest: strings.Repeat("2", 64),
+		ToolNames: []string{"added_later"}, ReadOnly: true,
+	}
+	service := &Service{extensions: extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+		return []ResolvedExtension{
+			{Selection: acceptedSelection, Snapshot: acceptedSnapshot},
+			{Selection: addedSelection, Snapshot: addedSnapshot},
+		}, nil
+	})}
+
+	resolved, err := service.resolveAcceptedTurnExtensions(context.Background(), []ExtensionExecutionSnapshot{acceptedSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0].Selection.ID != acceptedSelection.ID {
+		t.Fatalf("resolved extensions=%+v", resolved)
+	}
+}
+
 func TestExecuteTurnProcessesWebSearchBeforeLocalMCPFromSameModelRound(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
