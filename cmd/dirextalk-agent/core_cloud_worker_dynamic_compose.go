@@ -84,7 +84,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker task handler: %w", err)
 	}
-	management, err := workercap.NewCapability(workercap.Bindings{Credentials: sshWorkerCredentials{executor}, Workers: executor, Domains: sshWorkerDomains{executor}})
+	management, err := workercap.NewCapability(workercap.Bindings{Credentials: sshWorkerCredentials{executor}, Workers: executor, Workloads: executor, Domains: sshWorkerDomains{executor}})
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker management: %w", err)
 	}

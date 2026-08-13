@@ -453,6 +453,12 @@ func (provider *Provider) ListWorkers(ctx context.Context, credential Credential
 		status := WorkerStatus{Identity: workerIdentity(worker), WorkerPhase: worker.Phase, CurrentExecutionID: worker.CurrentExecutionID, ObservedAt: provider.now().UTC()}
 		if found {
 			status.EC2State, status.PublicIP = instance.State, instance.PublicIP
+			if worker.Instance != instance {
+				worker.Instance = instance
+				if err := provider.saveWorker(ctx, &worker); err != nil {
+					return nil, err
+				}
+			}
 		}
 		if worker.CurrentExecutionID != "" {
 			if execution, ok, _ := provider.store.LoadExecution(ctx, worker.CurrentExecutionID); ok {
@@ -466,6 +472,58 @@ func (provider *Provider) ListWorkers(ctx context.Context, credential Credential
 		result = append(result, status)
 	}
 	return result, nil
+}
+
+func (provider *Provider) WorkerIdentity(ctx context.Context, credential CredentialIdentity, workerID string) (WorkerIdentity, error) {
+	if provider == nil || credential.validate() != nil || !validID(workerID) {
+		return WorkerIdentity{}, ErrInvalid
+	}
+	worker, found, err := provider.store.LoadWorker(ctx, workerID)
+	if err != nil {
+		return WorkerIdentity{}, err
+	}
+	if !found || worker.Credential != credential || worker.Phase == WorkerDestroyed {
+		return WorkerIdentity{}, ErrIdentity
+	}
+	return workerIdentity(worker), nil
+}
+
+func (provider *Provider) ObserveService(ctx context.Context, identity WorkerIdentity, taskID string) (ServiceRuntimeStatus, error) {
+	provider.poolMu.Lock()
+	defer provider.poolMu.Unlock()
+	worker, found, err := provider.store.LoadWorker(ctx, identity.WorkerID)
+	if err != nil {
+		return ServiceRuntimeStatus{}, err
+	}
+	if !found || workerIdentity(worker) != identity || worker.Phase == WorkerDestroyed {
+		return ServiceRuntimeStatus{}, ErrIdentity
+	}
+	source, ok := provider.status.(interface {
+		ObserveService(context.Context, WorkerRecord, string) (ServiceRuntimeStatus, error)
+	})
+	if !ok {
+		return ServiceRuntimeStatus{}, ErrInvalid
+	}
+	return source.ObserveService(ctx, worker, taskID)
+}
+
+func (provider *Provider) SetPublicPort(ctx context.Context, identity WorkerIdentity, port uint16, enabled bool) error {
+	provider.poolMu.Lock()
+	defer provider.poolMu.Unlock()
+	worker, found, err := provider.store.LoadWorker(ctx, identity.WorkerID)
+	if err != nil {
+		return err
+	}
+	if !found || workerIdentity(worker) != identity || worker.Phase == WorkerDestroyed {
+		return ErrIdentity
+	}
+	manager, ok := provider.aws.(interface {
+		SetPublicPort(context.Context, CredentialIdentity, SecurityGroup, uint16, bool) error
+	})
+	if !ok {
+		return ErrInvalid
+	}
+	return manager.SetPublicPort(ctx, identity.Credential, worker.SecurityGroup, port, enabled)
 }
 
 func (provider *Provider) ObserveWorker(ctx context.Context, identity WorkerIdentity) (WorkerStatus, error) {

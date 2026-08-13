@@ -32,6 +32,8 @@ type Request struct {
 	AccountGeneration uint64
 	ExecutionID       string
 	Objective         string
+	WorkloadKind      cloudworker.WorkloadKind
+	Service           *cloudworker.ServiceSpec
 	AWS               cloudworker.AWSBinding
 	Compute           cloudworker.ComputeSpec
 	Limits            cloudworker.Limits
@@ -98,6 +100,7 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 	result, executeErr := handler.executor.Execute(ctx, Request{
 		OwnerID: run.Plan.OwnerID, AccountGeneration: run.Plan.AccountGeneration,
 		ExecutionID: run.Plan.ExecutionID, Objective: run.Plan.Objective,
+		WorkloadKind: run.Plan.WorkloadKind, Service: run.Plan.Service,
 		AWS: run.Plan.AWS, Compute: run.Plan.Compute,
 		Limits:            run.Plan.Limits,
 		ConfirmationProof: run.ConfirmationProof, ModelSnapshot: run.ModelSnapshot, ReuseOnly: run.Plan.PersistentWorkerReuse,

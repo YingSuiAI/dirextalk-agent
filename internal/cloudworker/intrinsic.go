@@ -106,6 +106,12 @@ type proposeIntrinsicArguments struct {
 	AttachmentIDs []string `json:"attachment_ids,omitempty"`
 	Objective     string   `json:"objective"`
 	WorkspaceMode string   `json:"workspace_mode"`
+	WorkloadKind  string   `json:"workload_kind,omitempty"`
+	Service       *struct {
+		WorkloadID string `json:"workload_id"`
+		Port       uint16 `json:"port"`
+		HealthPath string `json:"health_path"`
+	} `json:"service,omitempty"`
 }
 
 func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease coreconversation.TurnLease) ([]coreconversation.ResolvedIntrinsic, error) {
@@ -119,6 +125,10 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	properties := map[string]any{
 		"objective":      map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes},
 		"workspace_mode": map[string]any{"type": "string", "enum": []any{string(WorkspaceNone), string(WorkspaceReadOnly), string(WorkspaceWrite)}},
+		"workload_kind":  map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob)},
+		"service": map[string]any{"type": "object", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
+			"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "health_path": map[string]any{"type": "string", "minLength": 1, "maxLength": 2048},
+		}},
 	}
 	if attachmentSchema := frozenTurnAttachmentSchema(bound.Turn); attachmentSchema != nil {
 		properties["attachment_ids"] = attachmentSchema
@@ -232,6 +242,12 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		TurnID: bound.Turn.ID, TurnLeaseID: bound.LeaseID, TurnLeaseEpoch: bound.Epoch,
 		ExpectedTurnRevision: bound.Turn.Revision, Objective: arguments.Objective,
 		ObjectiveSummary: arguments.Objective, UserPromptDigest: hex.EncodeToString(promptDigest[:]),
+		WorkloadKind: WorkloadKind(arguments.WorkloadKind), Service: func() *ServiceSpec {
+			if arguments.Service == nil {
+				return nil
+			}
+			return &ServiceSpec{WorkloadID: arguments.Service.WorkloadID, Port: arguments.Service.Port, HealthPath: arguments.Service.HealthPath}
+		}(),
 		ProposalReason: reason, LocalBudgetEvidence: budget, InputManifest: manifest,
 		WorkspaceMode:      mode,
 		ModelAuthorization: modelAuthorization,
@@ -282,7 +298,14 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
 	arguments.Objective = strings.TrimSpace(arguments.Objective)
+	if arguments.WorkloadKind == "" {
+		arguments.WorkloadKind = string(WorkloadJob)
+	}
 	if arguments.Objective == "" || len(arguments.Objective) > coretask.MaxGoalBytes || !utf8.ValidString(arguments.Objective) || !validateWorkspaceMode(WorkspaceMode(arguments.WorkspaceMode)) || len(arguments.AttachmentIDs) > coreconversation.MaxTurnAttachments {
+		return proposeIntrinsicArguments{}, ErrInvalid
+	}
+	if (arguments.WorkloadKind == string(WorkloadJob) && arguments.Service != nil) || (arguments.WorkloadKind == string(WorkloadService) && (arguments.Service == nil || (ServiceSpec{WorkloadID: arguments.Service.WorkloadID, Port: arguments.Service.Port, HealthPath: arguments.Service.HealthPath}).validate() != nil)) ||
+		(arguments.WorkloadKind != string(WorkloadJob) && arguments.WorkloadKind != string(WorkloadService)) {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
 	seen := make(map[string]struct{}, len(arguments.AttachmentIDs))

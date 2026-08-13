@@ -18,11 +18,12 @@ func (kind WorkloadKind) valid() bool { return kind == WorkloadJob || kind == Wo
 type RuntimeAction string
 
 const (
-	RuntimeStart        RuntimeAction = "start"
-	RuntimeStatus       RuntimeAction = "status"
-	RuntimeLog          RuntimeAction = "log"
-	RuntimeArtifact     RuntimeAction = "artifact"
-	RuntimeServerStatus RuntimeAction = "server-status"
+	RuntimeStart         RuntimeAction = "start"
+	RuntimeStatus        RuntimeAction = "status"
+	RuntimeLog           RuntimeAction = "log"
+	RuntimeArtifact      RuntimeAction = "artifact"
+	RuntimeServerStatus  RuntimeAction = "server-status"
+	RuntimeServiceStatus RuntimeAction = "service-status"
 )
 
 type RuntimeCommand struct {
@@ -85,6 +86,13 @@ func (protocol RuntimeProtocol) ServerStatus() (RuntimeCommand, error) {
 	return RuntimeCommand{Shell: runnerCommand(RuntimeServerStatus)}, nil
 }
 
+func (protocol RuntimeProtocol) ServiceStatus() (RuntimeCommand, error) {
+	if !protocol.valid() {
+		return RuntimeCommand{}, ErrInvalid
+	}
+	return RuntimeCommand{Shell: runnerCommand(RuntimeServiceStatus, protocol.TaskID)}, nil
+}
+
 func (protocol RuntimeProtocol) valid() bool { return validID(protocol.TaskID) }
 
 func runnerCommand(action RuntimeAction, arguments ...string) string {
@@ -96,7 +104,8 @@ func runnerCommand(action RuntimeAction, arguments ...string) string {
 }
 
 type remoteTaskSpec struct {
-	TaskID   string       `json:"task_id"`
-	Workload WorkloadKind `json:"workload"`
-	Model    string       `json:"model"`
+	TaskID   string              `json:"task_id"`
+	Workload WorkloadKind        `json:"workload"`
+	Model    string              `json:"model"`
+	Service  *RuntimeServiceSpec `json:"service,omitempty"`
 }

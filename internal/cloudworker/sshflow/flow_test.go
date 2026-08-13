@@ -52,6 +52,7 @@ func TestHandlerPassesOnlyConfirmedMinimalExecutionInputAndOwnsTerminal(t *testi
 		Model: "test", APIKey: "secret"}
 	store := &flowStore{run: Run{Plan: cloudworker.Plan{OwnerID: "owner", AccountGeneration: 7,
 		ExecutionID: "33333333-3333-4333-8333-333333333333", Objective: "deploy service",
+		WorkloadKind: cloudworker.WorkloadService, Service: &cloudworker.ServiceSpec{WorkloadID: "memory-api", Port: 8080, HealthPath: "/health"},
 		AWS:     cloudworker.AWSBinding{AccountID: "123456789012", Region: "ap-east-1"},
 		Compute: cloudworker.ComputeSpec{InstanceType: "t3.small", VolumeGiB: 20}},
 		ConfirmationProof: "confirmed-proof", ModelSnapshot: snapshot}}
@@ -68,6 +69,9 @@ func TestHandlerPassesOnlyConfirmedMinimalExecutionInputAndOwnsTerminal(t *testi
 		executor.request.Compute.InstanceType != "t3.small" || executor.request.ConfirmationProof != "confirmed-proof" ||
 		executor.request.ModelSnapshot.APIKey != "secret" {
 		t.Fatalf("request=%+v", executor.request)
+	}
+	if executor.request.WorkloadKind != cloudworker.WorkloadService || executor.request.Service == nil || executor.request.Service.Port != 8080 {
+		t.Fatalf("service contract was not propagated: %+v", executor.request)
 	}
 }
 

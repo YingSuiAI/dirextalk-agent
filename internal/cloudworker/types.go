@@ -233,6 +233,32 @@ type Limits struct {
 	MaxOutputBytes    uint64 `json:"max_output_bytes"`
 }
 
+type WorkloadKind string
+
+const (
+	WorkloadJob     WorkloadKind = "job"
+	WorkloadService WorkloadKind = "service"
+)
+
+type ServiceSpec struct {
+	WorkloadID string `json:"workload_id"`
+	Port       uint16 `json:"port"`
+	HealthPath string `json:"health_path"`
+}
+
+func (spec ServiceSpec) validate() error {
+	if strings.TrimSpace(spec.WorkloadID) == "" || len(spec.WorkloadID) > 128 || spec.Port == 0 || len(spec.HealthPath) > 2048 ||
+		!strings.HasPrefix(spec.HealthPath, "/") || strings.HasPrefix(spec.HealthPath, "//") || strings.ContainsAny(spec.HealthPath, " \t\r\n#") {
+		return ErrInvalid
+	}
+	for _, current := range spec.WorkloadID {
+		if (current < 'a' || current > 'z') && (current < '0' || current > '9') && current != '-' {
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+
 type SecretGrant struct {
 	ReferenceID   string `json:"reference_id"`
 	Purpose       string `json:"purpose"`
@@ -267,6 +293,8 @@ type Plan struct {
 	Objective                string               `json:"-"`
 	ObjectiveSummary         string               `json:"objective_summary"`
 	ObjectiveDigest          string               `json:"objective_digest"`
+	WorkloadKind             WorkloadKind         `json:"workload_kind"`
+	Service                  *ServiceSpec         `json:"service,omitempty"`
 	UserPromptDigest         string               `json:"user_prompt_digest"`
 	ProposalReason           ProposalReason       `json:"proposal_reason"`
 	LocalBudgetEvidence      *LocalBudgetEvidence `json:"local_budget_evidence,omitempty"`
@@ -692,8 +720,15 @@ func (p *Plan) Seal() error {
 	p.RecipeID = strings.TrimSpace(p.RecipeID)
 	p.Adapter = strings.TrimSpace(p.Adapter)
 	p.Status = strings.TrimSpace(p.Status)
+	if p.WorkloadKind == "" {
+		p.WorkloadKind = WorkloadJob
+	}
 	p.CreatedAt, p.UpdatedAt = p.CreatedAt.UTC(), p.UpdatedAt.UTC()
 	if p.OwnerID == "" || len(p.OwnerID) > 512 || p.AccountGeneration == 0 || !validUUID(p.PlanID) || !validUUID(p.ExecutionID) || !validUUID(p.TaskID) || !validUUID(p.ConfirmationID) || !validUUID(p.ConversationID) || !validUUID(p.TurnID) || p.Revision == 0 || p.Status != string(StateWaitingUser) || p.RecipeID != RecipeEphemeralPiTask || p.Adapter != AdapterPiJSONTaskV1 || p.Objective == "" || len(p.Objective) > coretask.MaxGoalBytes || !utf8.ValidString(p.Objective) || p.ObjectiveSummary == "" || len(p.ObjectiveSummary) > coretask.MaxSummaryBytes || !utf8.ValidString(p.ObjectiveSummary) || !validDigest(p.UserPromptDigest) || !validateWorkspaceMode(p.WorkspaceMode) || p.ArtifactRetentionSeconds == 0 || p.ArtifactRetentionSeconds > uint64((30*24*time.Hour)/time.Second) || p.CreatedAt.IsZero() || p.UpdatedAt.IsZero() {
+		return ErrInvalid
+	}
+	if (p.WorkloadKind == WorkloadJob && p.Service != nil) || (p.WorkloadKind == WorkloadService && (p.Service == nil || p.Service.validate() != nil)) ||
+		(p.WorkloadKind != WorkloadJob && p.WorkloadKind != WorkloadService) {
 		return ErrInvalid
 	}
 	if err := p.sealAuthorizationBasis(); err != nil {
@@ -722,13 +757,21 @@ func (p *Plan) Seal() error {
 		Retention                                                            uint64
 		QuoteDigest                                                          string
 	}{p.OwnerID, p.PlanID, p.ExecutionID, p.ConversationID, p.TurnID, p.AccountGeneration, p.Revision, p.RecipeID, p.Adapter, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.AWS, p.Compute, p.AWSInfrastructureDigest, p.Limits, p.NetworkGrants, p.SecretGrants, p.ArtifactRetentionSeconds, p.Quote.Digest}
+	var executionDigestBasis any = executionBasis
+	if p.WorkloadKind == WorkloadService {
+		executionDigestBasis = struct {
+			Basis        any
+			WorkloadKind WorkloadKind
+			Service      *ServiceSpec
+		}{executionBasis, p.WorkloadKind, p.Service}
+	}
 	if p.PersistentWorkerReuse {
 		p.ExecutionDigest = digestValue(struct {
 			Basis                 any
 			PersistentWorkerReuse bool
-		}{executionBasis, true})
+		}{executionDigestBasis, true})
 	} else {
-		p.ExecutionDigest = digestValue(executionBasis)
+		p.ExecutionDigest = digestValue(executionDigestBasis)
 	}
 	p.Digest = digestValue(struct {
 		ExecutionDigest, TaskID, ConfirmationID string
@@ -737,6 +780,13 @@ func (p *Plan) Seal() error {
 }
 
 func (p *Plan) sealAuthorizationBasis() error {
+	if p.WorkloadKind == "" {
+		p.WorkloadKind = WorkloadJob
+	}
+	if (p.WorkloadKind == WorkloadJob && p.Service != nil) || (p.WorkloadKind == WorkloadService && (p.Service == nil || p.Service.validate() != nil)) ||
+		(p.WorkloadKind != WorkloadJob && p.WorkloadKind != WorkloadService) {
+		return ErrInvalid
+	}
 	switch p.ProposalReason {
 	case ProposalReasonExplicitUserCloud:
 		if p.LocalBudgetEvidence != nil {
@@ -781,7 +831,7 @@ func (p *Plan) sealAuthorizationBasis() error {
 	if err := normalizeSecretGrants(&p.SecretGrants); err != nil {
 		return err
 	}
-	p.AuthorizationBasisDigest = digestValue(struct {
+	authorizationBasis := struct {
 		OwnerID, ConversationID, TurnID, RecipeID, Adapter     string
 		AccountGeneration                                      uint64
 		ObjectiveDigest, UserPromptDigest, InputManifestDigest string
@@ -796,7 +846,16 @@ func (p *Plan) sealAuthorizationBasis() error {
 		Network                                                []string
 		Secrets                                                []SecretGrant
 		Retention                                              uint64
-	}{p.OwnerID, p.ConversationID, p.TurnID, p.RecipeID, p.Adapter, p.AccountGeneration, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.AWS, p.Compute, p.AWSInfrastructureDigest, p.Limits, p.NetworkGrants, p.SecretGrants, p.ArtifactRetentionSeconds})
+	}{p.OwnerID, p.ConversationID, p.TurnID, p.RecipeID, p.Adapter, p.AccountGeneration, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.AWS, p.Compute, p.AWSInfrastructureDigest, p.Limits, p.NetworkGrants, p.SecretGrants, p.ArtifactRetentionSeconds}
+	if p.WorkloadKind == WorkloadService {
+		p.AuthorizationBasisDigest = digestValue(struct {
+			Basis        any
+			WorkloadKind WorkloadKind
+			Service      *ServiceSpec
+		}{authorizationBasis, p.WorkloadKind, p.Service})
+	} else {
+		p.AuthorizationBasisDigest = digestValue(authorizationBasis)
+	}
 	return nil
 }
 

@@ -80,6 +80,18 @@ func TestRoute53DeleteReadsBackAbsence(t *testing.T) {
 	}
 }
 
+func TestRoute53LiteralCapabilityConfirmation(t *testing.T) {
+	mutation := dnsFixture(DNSUpsertA)
+	client := &fakeRoute53{}
+	if err := ReconcileLiteral(context.Background(), client, mutation, "bind_domain"); err != nil || !client.exists {
+		t.Fatalf("bind err=%v client=%#v", err, client)
+	}
+	mutation.Action = DNSDeleteA
+	if err := ReconcileLiteral(context.Background(), client, mutation, "unbind_domain"); err != nil || client.exists {
+		t.Fatalf("unbind err=%v client=%#v", err, client)
+	}
+}
+
 func TestRoute53DeleteRefusesToRemoveChangedRecord(t *testing.T) {
 	mutation := dnsFixture(DNSDeleteA)
 	digest, _ := mutation.Digest()

@@ -36,6 +36,52 @@ type ConfirmedDNSMutation struct {
 	Confirmation ExactConfirmation
 }
 
+// ReconcileLiteral applies an owner-authorized Worker domain operation and
+// verifies the resulting Route53 record. Capability operations already bind
+// the exact Worker/workload/record arguments and accept only the literal
+// bind_domain or unbind_domain confirmation.
+func ReconcileLiteral(ctx context.Context, client Route53, mutation DNSMutation, confirmation string) error {
+	if ctx == nil || client == nil || mutation.validate() != nil ||
+		(mutation.Action == DNSUpsertA && confirmation != "bind_domain") ||
+		(mutation.Action == DNSDeleteA && confirmation != "unbind_domain" && confirmation != "destroy_worker") {
+		return ErrNotConfirmed
+	}
+	if err := client.VerifyAccount(ctx, mutation.AccountID); err != nil {
+		return err
+	}
+	if mutation.Action == DNSDeleteA {
+		current, exists, err := client.ReadA(ctx, mutation.Record.ZoneID, canonicalHostname(mutation.Record.Hostname))
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return nil
+		}
+		if !sameRecord(current, mutation.Record) {
+			return ErrReadback
+		}
+		if err = client.DeleteA(ctx, mutation); err != nil {
+			return err
+		}
+	} else if err := client.UpsertA(ctx, mutation); err != nil {
+		return err
+	}
+	record, exists, err := client.ReadA(ctx, mutation.Record.ZoneID, canonicalHostname(mutation.Record.Hostname))
+	if err != nil {
+		return err
+	}
+	if mutation.Action == DNSDeleteA {
+		if exists {
+			return ErrReadback
+		}
+		return nil
+	}
+	if !exists || !sameRecord(record, mutation.Record) {
+		return ErrReadback
+	}
+	return nil
+}
+
 // Route53 is expected to be constructed from credentials for Mutation.AccountID.
 // ReconcileRoute53 verifies the exact confirmed record after every mutation.
 type Route53 interface {

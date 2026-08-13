@@ -21,6 +21,7 @@ func (stubSTS) GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, .
 type mutationProbeEC2 struct {
 	importCalls, runCalls int
 	runInput              *ec2.RunInstancesInput
+	group                 ec2types.SecurityGroup
 }
 
 func (*mutationProbeEC2) DescribeImages(context.Context, *ec2.DescribeImagesInput, ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
@@ -42,14 +43,19 @@ func (probe *mutationProbeEC2) ImportKeyPair(context.Context, *ec2.ImportKeyPair
 func (*mutationProbeEC2) DeleteKeyPair(context.Context, *ec2.DeleteKeyPairInput, ...func(*ec2.Options)) (*ec2.DeleteKeyPairOutput, error) {
 	return nil, errors.New("unused")
 }
-func (*mutationProbeEC2) DescribeSecurityGroups(context.Context, *ec2.DescribeSecurityGroupsInput, ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
-	return nil, errors.New("unused")
+func (probe *mutationProbeEC2) DescribeSecurityGroups(context.Context, *ec2.DescribeSecurityGroupsInput, ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
+	return &ec2.DescribeSecurityGroupsOutput{SecurityGroups: []ec2types.SecurityGroup{probe.group}}, nil
 }
 func (*mutationProbeEC2) CreateSecurityGroup(context.Context, *ec2.CreateSecurityGroupInput, ...func(*ec2.Options)) (*ec2.CreateSecurityGroupOutput, error) {
 	return nil, errors.New("unused")
 }
-func (*mutationProbeEC2) AuthorizeSecurityGroupIngress(context.Context, *ec2.AuthorizeSecurityGroupIngressInput, ...func(*ec2.Options)) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
-	return nil, errors.New("unused")
+func (probe *mutationProbeEC2) AuthorizeSecurityGroupIngress(_ context.Context, input *ec2.AuthorizeSecurityGroupIngressInput, _ ...func(*ec2.Options)) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
+	probe.group.IpPermissions = append(probe.group.IpPermissions, input.IpPermissions...)
+	return &ec2.AuthorizeSecurityGroupIngressOutput{}, nil
+}
+func (probe *mutationProbeEC2) RevokeSecurityGroupIngress(_ context.Context, input *ec2.RevokeSecurityGroupIngressInput, _ ...func(*ec2.Options)) (*ec2.RevokeSecurityGroupIngressOutput, error) {
+	probe.group.IpPermissions = nil
+	return &ec2.RevokeSecurityGroupIngressOutput{}, nil
 }
 func (*mutationProbeEC2) DeleteSecurityGroup(context.Context, *ec2.DeleteSecurityGroupInput, ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error) {
 	return nil, errors.New("unused")
@@ -103,5 +109,23 @@ func TestSDKAllowsExactConfirmedMutation(t *testing.T) {
 	key, err := client.ImportKeyPair(context.Background(), credentialFixture(), Confirmation{Confirmed: true, Proof: "confirmation-1"}, "key", []byte("public"), ResourceTags{"owner": "test"})
 	if err != nil || key.ID != "key-1" || probe.importCalls != 1 {
 		t.Fatalf("ImportKeyPair() = %#v, %v; calls=%d", key, err, probe.importCalls)
+	}
+}
+
+func TestSDKPublicServicePortBindAndUnbind(t *testing.T) {
+	probe := &mutationProbeEC2{group: ec2types.SecurityGroup{GroupId: aws.String("sg-1")}}
+	client := newSDK("ap-east-1", probe, stubSTS{}, staticIP{})
+	group := SecurityGroup{ID: "sg-1", Name: "worker"}
+	if err := client.SetPublicPort(context.Background(), credentialFixture(), group, 8080, true); err != nil {
+		t.Fatal(err)
+	}
+	if open, _ := client.publicPortState(context.Background(), group.ID, 8080); !open {
+		t.Fatal("service port was not opened")
+	}
+	if err := client.SetPublicPort(context.Background(), credentialFixture(), group, 8080, false); err != nil {
+		t.Fatal(err)
+	}
+	if open, _ := client.publicPortState(context.Background(), group.ID, 8080); open {
+		t.Fatal("service port was not revoked")
 	}
 }

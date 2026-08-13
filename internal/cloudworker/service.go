@@ -272,6 +272,8 @@ type ProposeCommand struct {
 	ExpectedTurnRevision uint64
 	Objective            string
 	ObjectiveSummary     string
+	WorkloadKind         WorkloadKind
+	Service              *ServiceSpec
 	UserPromptDigest     string
 	ProposalReason       ProposalReason
 	LocalBudgetEvidence  *LocalBudgetEvidence
@@ -371,6 +373,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		ConfirmationID: confirmationID, ConversationID: command.ConversationID,
 		TurnID: command.TurnID, RecipeID: RecipeEphemeralPiTask, Adapter: AdapterPiJSONTaskV1,
 		Objective: command.Objective, ObjectiveSummary: summary, UserPromptDigest: command.UserPromptDigest,
+		WorkloadKind: command.WorkloadKind, Service: command.Service,
 		ProposalReason: command.ProposalReason, LocalBudgetEvidence: budgetEvidence,
 		InputManifest: command.InputManifest, InputManifestDigest: manifestDigest, WorkspaceMode: command.WorkspaceMode,
 		ModelAuthorization: command.ModelAuthorization,

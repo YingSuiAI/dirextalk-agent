@@ -88,10 +88,11 @@ type fakeAWS struct {
 	groups                        map[string]SecurityGroup
 	instances                     map[string]Instance
 	ambiguous                     bool
+	publicPorts                   map[uint16]bool
 }
 
 func newFakeAWS() *fakeAWS {
-	return &fakeAWS{keys: map[string]KeyPair{}, groups: map[string]SecurityGroup{}, instances: map[string]Instance{}}
+	return &fakeAWS{keys: map[string]KeyPair{}, groups: map[string]SecurityGroup{}, instances: map[string]Instance{}, publicPorts: map[uint16]bool{}}
 }
 func (a *fakeAWS) VerifyIdentity(context.Context, CredentialIdentity) error { return nil }
 func (a *fakeAWS) Discover(context.Context, CredentialIdentity) (Discovery, error) {
@@ -148,6 +149,10 @@ func (a *fakeAWS) AuthorizeSSH(_ context.Context, _ CredentialIdentity, c Confir
 		return ErrInvalid
 	}
 	a.mutations++
+	return nil
+}
+func (a *fakeAWS) SetPublicPort(_ context.Context, _ CredentialIdentity, _ SecurityGroup, port uint16, enabled bool) error {
+	a.publicPorts[port] = enabled
 	return nil
 }
 func (a *fakeAWS) DeleteSecurityGroup(_ context.Context, _ CredentialIdentity, d DestroyAuthorization, g SecurityGroup, _ ResourceTags) error {
@@ -355,6 +360,26 @@ func TestListWorkersIncludesLiveEC2RunnerAndQuote(t *testing.T) {
 	statuses, err := provider.ListWorkers(context.Background(), r.Credential)
 	if err != nil || len(statuses) != 1 || statuses[0].EC2State != "running" || statuses[0].PublicIP == "" || statuses[0].Runner.Load1 != 0.5 || statuses[0].Quote.MicrosPerHour != 25000 {
 		t.Fatalf("statuses=%#v err=%v", statuses, err)
+	}
+}
+
+func TestProviderPublicPortRequiresExactWorkerIdentity(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	request := requestFixture()
+	if _, err := provider.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	worker := store.workers[request.ExecutionID]
+	identity := workerIdentity(worker)
+	changed := identity
+	changed.SecurityGroupID = "sg-wrong"
+	if err := provider.SetPublicPort(context.Background(), changed, 8080, true); !errors.Is(err, ErrIdentity) {
+		t.Fatalf("changed identity accepted: %v", err)
+	}
+	if err := provider.SetPublicPort(context.Background(), identity, 8080, true); err != nil || !cloud.publicPorts[8080] {
+		t.Fatalf("public port err=%v ports=%v", err, cloud.publicPorts)
 	}
 }
 

@@ -35,7 +35,19 @@ type RuntimeRequest struct {
 	Objective    string
 	Architecture string
 	Workload     WorkloadKind
+	Service      *RuntimeServiceSpec
 	Model        RuntimeModel
+}
+
+type RuntimeServiceSpec struct {
+	WorkloadID string `json:"workload_id"`
+	Port       uint16 `json:"port"`
+	HealthPath string `json:"health_path"`
+}
+
+func (spec RuntimeServiceSpec) valid() bool {
+	return validID(spec.WorkloadID) && spec.Port > 0 && strings.HasPrefix(spec.HealthPath, "/") &&
+		len(spec.HealthPath) <= 2048 && !strings.HasPrefix(spec.HealthPath, "//") && !strings.ContainsAny(spec.HealthPath, " \t\r\n#")
 }
 
 // RuntimeMaterial is ready to pass to ExecuteRequest.WorkerScript. The SSH
@@ -53,8 +65,9 @@ type RuntimeMaterial struct {
 // stdin; it is never evaluated by the shell.
 func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 	objective := strings.TrimSpace(request.Objective)
-	if !validID(request.TaskID) || objective == "" || len(objective) > maxObjectiveBytes ||
-		!request.Workload.valid() {
+	if !validID(request.TaskID) || objective == "" || len(objective) > maxObjectiveBytes || !request.Workload.valid() ||
+		(request.Workload == WorkloadJob && request.Service != nil) ||
+		(request.Workload == WorkloadService && (request.Service == nil || !request.Service.valid())) {
 		return RuntimeMaterial{}, ErrInvalid
 	}
 	archive, archiveSHA256, err := piArchive(request.Architecture)
@@ -82,7 +95,7 @@ func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 		return RuntimeMaterial{}, ErrInvalid
 	}
 	spec, err := json.Marshal(remoteTaskSpec{
-		TaskID: request.TaskID, Workload: request.Workload, Model: request.Model.Name,
+		TaskID: request.TaskID, Workload: request.Workload, Model: request.Model.Name, Service: request.Service,
 	})
 	if err != nil {
 		return RuntimeMaterial{}, ErrInvalid

@@ -27,6 +27,7 @@ type EC2API interface {
 	DescribeSecurityGroups(context.Context, *ec2.DescribeSecurityGroupsInput, ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error)
 	CreateSecurityGroup(context.Context, *ec2.CreateSecurityGroupInput, ...func(*ec2.Options)) (*ec2.CreateSecurityGroupOutput, error)
 	AuthorizeSecurityGroupIngress(context.Context, *ec2.AuthorizeSecurityGroupIngressInput, ...func(*ec2.Options)) (*ec2.AuthorizeSecurityGroupIngressOutput, error)
+	RevokeSecurityGroupIngress(context.Context, *ec2.RevokeSecurityGroupIngressInput, ...func(*ec2.Options)) (*ec2.RevokeSecurityGroupIngressOutput, error)
 	DeleteSecurityGroup(context.Context, *ec2.DeleteSecurityGroupInput, ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error)
 	DescribeInstances(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
 	RunInstances(context.Context, *ec2.RunInstancesInput, ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error)
@@ -198,6 +199,61 @@ func (client *SDK) AuthorizeSSH(ctx context.Context, identity CredentialIdentity
 	}
 	_, err := client.ec2.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{GroupId: aws.String(group.ID), IpPermissions: []ec2types.IpPermission{{IpProtocol: aws.String("tcp"), FromPort: aws.Int32(22), ToPort: aws.Int32(22), IpRanges: []ec2types.IpRange{{CidrIp: aws.String(cidr), Description: aws.String("Dirextalk Agent egress IP")}}}}})
 	return err
+}
+
+// SetPublicPort toggles direct public TCP access for one persisted service.
+// It reads the current security group before and after the mutation, making
+// bind/unbind retries naturally idempotent without a separate mutation ledger.
+func (client *SDK) SetPublicPort(ctx context.Context, identity CredentialIdentity, group SecurityGroup, port uint16, enabled bool) error {
+	if client == nil || port == 0 || strings.TrimSpace(group.ID) == "" {
+		return ErrInvalid
+	}
+	if err := client.VerifyIdentity(ctx, identity); err != nil {
+		return err
+	}
+	current, err := client.publicPortState(ctx, group.ID, port)
+	if err != nil || current == enabled {
+		return err
+	}
+	permission := []ec2types.IpPermission{{IpProtocol: aws.String("tcp"), FromPort: aws.Int32(int32(port)), ToPort: aws.Int32(int32(port)),
+		IpRanges: []ec2types.IpRange{{CidrIp: aws.String("0.0.0.0/0"), Description: aws.String("Dirextalk persistent service")}}}}
+	if enabled {
+		_, err = client.ec2.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{GroupId: aws.String(group.ID), IpPermissions: permission})
+	} else {
+		_, err = client.ec2.RevokeSecurityGroupIngress(ctx, &ec2.RevokeSecurityGroupIngressInput{GroupId: aws.String(group.ID), IpPermissions: permission})
+	}
+	if err != nil {
+		return err
+	}
+	current, err = client.publicPortState(ctx, group.ID, port)
+	if err != nil {
+		return err
+	}
+	if current != enabled {
+		return ErrAmbiguous
+	}
+	return nil
+}
+
+func (client *SDK) publicPortState(ctx context.Context, groupID string, port uint16) (bool, error) {
+	output, err := client.ec2.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{GroupIds: []string{groupID}})
+	if err != nil {
+		return false, err
+	}
+	if output == nil || len(output.SecurityGroups) != 1 || aws.ToString(output.SecurityGroups[0].GroupId) != groupID {
+		return false, ErrIdentity
+	}
+	for _, permission := range output.SecurityGroups[0].IpPermissions {
+		if aws.ToString(permission.IpProtocol) != "tcp" || aws.ToInt32(permission.FromPort) != int32(port) || aws.ToInt32(permission.ToPort) != int32(port) {
+			continue
+		}
+		for _, ipRange := range permission.IpRanges {
+			if aws.ToString(ipRange.CidrIp) == "0.0.0.0/0" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 func (client *SDK) DeleteSecurityGroup(ctx context.Context, identity CredentialIdentity, auth DestroyAuthorization, group SecurityGroup, _ ResourceTags) error {
 	if err := client.beforeDestroy(ctx, identity, auth); err != nil {

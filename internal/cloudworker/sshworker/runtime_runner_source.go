@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,24 @@ type taskSpec struct {
 	TaskID string ` + "`json:\"task_id\"`" + `
 	Workload string ` + "`json:\"workload\"`" + `
 	Model string ` + "`json:\"model\"`" + `
+	Service *serviceSpec ` + "`json:\"service,omitempty\"`" + `
+}
+
+type serviceSpec struct {
+	WorkloadID string ` + "`json:\"workload_id\"`" + `
+	Port uint16 ` + "`json:\"port\"`" + `
+	HealthPath string ` + "`json:\"health_path\"`" + `
+}
+
+type serviceRuntimeStatus struct {
+	WorkloadID string ` + "`json:\"workload_id\"`" + `
+	Kind string ` + "`json:\"kind\"`" + `
+	Phase string ` + "`json:\"phase\"`" + `
+	ActiveState string ` + "`json:\"active_state\"`" + `
+	Health string ` + "`json:\"health\"`" + `
+	Port uint16 ` + "`json:\"port\"`" + `
+	HealthPath string ` + "`json:\"health_path\"`" + `
+	ObservedAt string ` + "`json:\"observed_at\"`" + `
 }
 
 type taskStatus struct {
@@ -49,6 +68,7 @@ func main() {
 	case "log": err = logOutput(arg(2), arg(3))
 	case "artifact": err = artifact(arg(2), optionalArg(3))
 	case "server-status": err = serverStatus()
+	case "service-status": err = serviceStatus(arg(2))
 	default: err = errors.New("unknown action")
 	}
 	if err != nil { fatal(err.Error()) }
@@ -88,6 +108,10 @@ func run(taskID string) error {
 	if err != nil { return finish(taskID, current, 1, err) }
 	defer report.Close()
 	prompt := "Complete the supplied objective on this retained remote host. This is a " + spec.Workload + " workload. Use shell and workspace tools as needed. Write every deliverable under " + artifactRoot + ". Your final response must concisely report work, deployment flow, verification, actual server load, and artifact paths. Never expose credentials or hidden configuration."
+	if spec.Workload == "service" && spec.Service != nil {
+		contract := taskPath(taskID, "service.json")
+		prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits. It must listen on 0.0.0.0 port " + strconv.Itoa(int(spec.Service.Port)) + " and return HTTP success at " + spec.Service.HealthPath + ". After it is running, write exactly this JSON contract to " + contract + ": {\"workload_id\":\"" + spec.Service.WorkloadID + "\",\"port\":" + strconv.Itoa(int(spec.Service.Port)) + ",\"health_path\":\"" + spec.Service.HealthPath + "\"}. Do not write that contract until the persistent service is healthy."
+	}
 	arguments := []string{"--mode", "text", "--print", "--no-session", "--provider", "dirextalk-worker", "--model", spec.Model, "--thinking", "medium", "--tools", "read,bash,edit,write,grep,find,ls", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt}
 	command := exec.Command(filepath.Join(root, "runtime", "pi"), arguments...)
 	objective, err := os.Open(taskPath(taskID, "objective.txt")); if err != nil { return finish(taskID, current, 1, err) }
@@ -97,7 +121,27 @@ func run(taskID string) error {
 	command.Env = append(os.Environ(), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb")
 	err = command.Run(); code := 0
 	if err != nil { code = 1; var exit *exec.ExitError; if errors.As(err, &exit) { code = exit.ExitCode() } }
+	if err == nil && spec.Workload == "service" { err = verifyService(taskID, spec); if err != nil { code = 1 } }
 	return finish(taskID, current, code, err)
+}
+
+func verifyService(taskID string, spec taskSpec) error {
+	if spec.Service == nil || spec.Service.WorkloadID == "" || spec.Service.Port == 0 || !strings.HasPrefix(spec.Service.HealthPath, "/") { return errors.New("invalid service spec") }
+	var contract serviceSpec
+	body, err := os.ReadFile(taskPath(taskID, "service.json")); if err == nil { err = json.Unmarshal(body, &contract) }
+	if err != nil || contract != *spec.Service { return errors.New("service contract is missing or changed") }
+	client := http.Client{Timeout: 5 * time.Second}
+	response, err := client.Get("http://127.0.0.1:" + strconv.Itoa(int(spec.Service.Port)) + spec.Service.HealthPath)
+	if err != nil { return err }; defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 400 { return fmt.Errorf("service health returned %d", response.StatusCode) }
+	return nil
+}
+
+func serviceStatus(taskID string) error {
+	spec, err := loadSpec(taskID); if err != nil || spec.Workload != "service" || spec.Service == nil { return errors.New("service workload not found") }
+	status := serviceRuntimeStatus{WorkloadID: spec.Service.WorkloadID, Kind: "service", Port: spec.Service.Port, HealthPath: spec.Service.HealthPath, ObservedAt: time.Now().UTC().Format(time.RFC3339), Phase: "stopped", ActiveState: "inactive", Health: "unhealthy"}
+	if err := verifyService(taskID, spec); err == nil { status.Phase, status.ActiveState, status.Health = "running", "active", "healthy" }
+	return json.NewEncoder(os.Stdout).Encode(status)
 }
 
 func finish(taskID string, current taskStatus, code int, runErr error) error {
@@ -145,7 +189,7 @@ func serverStatus() error {
 
 func memorySummary(body string) map[string]string { result := map[string]string{}; for _, line := range strings.Split(body, "\n") { fields := strings.Fields(line); if len(fields) < 2 { continue }; key := strings.TrimSuffix(fields[0], ":"); if key == "MemTotal" || key == "MemAvailable" { result[key] = strings.Join(fields[1:], " ") } }; return result }
 func taskPath(taskID, name string) string { return filepath.Join(root, "tasks", taskID, name) }
-func loadSpec(taskID string) (taskSpec, error) { var value taskSpec; body, err := os.ReadFile(taskPath(taskID, "spec.json")); if err == nil { err = json.Unmarshal(body, &value) }; if err != nil || value.TaskID != taskID || (value.Workload != "job" && value.Workload != "service") { return taskSpec{}, errors.New("invalid task") }; return value, nil }
+func loadSpec(taskID string) (taskSpec, error) { var value taskSpec; body, err := os.ReadFile(taskPath(taskID, "spec.json")); if err == nil { err = json.Unmarshal(body, &value) }; if err != nil || value.TaskID != taskID || (value.Workload != "job" && value.Workload != "service") || (value.Workload == "job" && value.Service != nil) || (value.Workload == "service" && value.Service == nil) { return taskSpec{}, errors.New("invalid task") }; return value, nil }
 func loadStatus(taskID string) (taskStatus, error) { var value taskStatus; body, err := os.ReadFile(taskPath(taskID, "status.json")); if err == nil { err = json.Unmarshal(body, &value) }; return value, err }
 func saveStatus(taskID string, value taskStatus) error { body, err := json.Marshal(value); if err != nil { return err }; temporary := taskPath(taskID, "status.tmp"); if err = os.WriteFile(temporary, body, 0600); err != nil { return err }; return os.Rename(temporary, taskPath(taskID, "status.json")) }
 func alive(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }

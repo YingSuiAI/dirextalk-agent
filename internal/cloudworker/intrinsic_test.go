@@ -269,6 +269,16 @@ func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
 	if err != nil || arguments.Objective != "run once" || arguments.WorkspaceMode != string(WorkspaceNone) || len(arguments.AttachmentIDs) != 0 {
 		t.Fatalf("arguments=%+v err=%v", arguments, err)
 	}
+	if arguments.WorkloadKind != string(WorkloadJob) || arguments.Service != nil {
+		t.Fatalf("job defaults were not applied: %+v", arguments)
+	}
+	service, err := parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","workload_kind":"service","service":{"workload_id":"memory-api","port":8080,"health_path":"/health"}}`))
+	if err != nil || service.Service == nil || service.Service.WorkloadID != "memory-api" || service.Service.Port != 8080 {
+		t.Fatalf("service arguments=%+v err=%v", service, err)
+	}
+	if _, err = parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","workload_kind":"service"}`)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing service spec accepted: %v", err)
+	}
 	arguments, err = parseProposeIntrinsicArguments([]byte(`{"objective":"create a project","workspace_mode":"write"}`))
 	if err != nil || arguments.WorkspaceMode != string(WorkspaceWrite) || len(arguments.AttachmentIDs) != 0 {
 		t.Fatalf("empty write workspace arguments=%+v err=%v", arguments, err)

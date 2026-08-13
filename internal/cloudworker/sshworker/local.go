@@ -259,6 +259,41 @@ type remoteServerStatus struct {
 	LoadAverage string    `json:"load_average"`
 }
 
+type ServiceRuntimeStatus struct {
+	WorkloadID  string    `json:"workload_id"`
+	Kind        string    `json:"kind"`
+	Phase       string    `json:"phase"`
+	ActiveState string    `json:"active_state"`
+	Health      string    `json:"health"`
+	Port        uint16    `json:"port"`
+	HealthPath  string    `json:"health_path"`
+	ObservedAt  time.Time `json:"observed_at"`
+}
+
+func (source CommandStatusSource) ObserveService(ctx context.Context, worker WorkerRecord, taskID string) (ServiceRuntimeStatus, error) {
+	if source.Keys == nil || worker.Instance.PublicIP == "" || !validID(taskID) {
+		return ServiceRuntimeStatus{}, ErrInvalid
+	}
+	key, _, err := source.Keys.Ensure(ctx, worker.WorkerID)
+	if err != nil {
+		return ServiceRuntimeStatus{}, err
+	}
+	sshPath := source.SSHPath
+	if sshPath == "" {
+		sshPath = "ssh"
+	}
+	base := []string{"-i", key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/dev/null", worker.SSHUser + "@" + worker.Instance.PublicIP}
+	body, err := sshOutput(ctx, sshPath, base, runnerCommand(RuntimeServiceStatus, taskID), 64<<10)
+	if err != nil {
+		return ServiceRuntimeStatus{}, err
+	}
+	var status ServiceRuntimeStatus
+	if json.Unmarshal(body, &status) != nil || status.WorkloadID == "" || status.Kind != "service" || status.Port == 0 || status.ObservedAt.IsZero() {
+		return ServiceRuntimeStatus{}, ErrInvalid
+	}
+	return status, nil
+}
+
 func (source CommandStatusSource) Observe(ctx context.Context, worker WorkerRecord) (RunnerMetrics, error) {
 	if source.Keys == nil || worker.Instance.PublicIP == "" {
 		return RunnerMetrics{}, ErrInvalid

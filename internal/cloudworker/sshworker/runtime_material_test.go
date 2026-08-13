@@ -60,6 +60,7 @@ func TestCompileRuntimeTreatsObjectiveAsData(t *testing.T) {
 	objective := `deploy $(touch /tmp/not-executed) ; echo "done" && report`
 	material, err := CompileRuntime(RuntimeRequest{
 		TaskID: "task-002", Objective: objective, Architecture: "arm64", Workload: WorkloadService,
+		Service: &RuntimeServiceSpec{WorkloadID: "memory-api", Port: 8080, HealthPath: "/health"},
 		Model: RuntimeModel{Provider: "anthropic", BaseURL: "https://api.anthropic.com",
 			Name: "claude-test", APIKey: "secret", MaxOutputTokens: 4096},
 	})
@@ -112,7 +113,8 @@ func TestCompileRuntimeRejectsIncompleteOrUnsupportedInputs(t *testing.T) {
 func TestRuntimeProtocolCompilesResumableCommands(t *testing.T) {
 	material, err := CompileRuntime(RuntimeRequest{
 		TaskID: "task-004", Objective: "run a service", Architecture: "arm64", Workload: WorkloadService,
-		Model: RuntimeModel{Provider: "anthropic", BaseURL: "https://api.anthropic.com", Name: "claude", APIKey: "secret", MaxOutputTokens: 4096},
+		Service: &RuntimeServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health"},
+		Model:   RuntimeModel{Provider: "anthropic", BaseURL: "https://api.anthropic.com", Name: "claude", APIKey: "secret", MaxOutputTokens: 4096},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -122,12 +124,13 @@ func TestRuntimeProtocolCompilesResumableCommands(t *testing.T) {
 	list, _ := material.Protocol.Artifact("")
 	download, _ := material.Protocol.Artifact("reports/load.html")
 	server, _ := material.Protocol.ServerStatus()
-	for name, command := range map[string]RuntimeCommand{"status": status, "log": logCommand, "list": list, "download": download, "server": server} {
+	service, _ := material.Protocol.ServiceStatus()
+	for name, command := range map[string]RuntimeCommand{"status": status, "log": logCommand, "list": list, "download": download, "server": server, "service": service} {
 		if command.Shell == "" || len(command.Stdin) != 0 {
 			t.Fatalf("%s command is invalid: %#v", name, command)
 		}
 	}
-	if !strings.Contains(logCommand.Shell, "'512'") || !strings.Contains(download.Shell, "'reports/load.html'") || !strings.Contains(server.Shell, "'server-status'") {
+	if !strings.Contains(logCommand.Shell, "'512'") || !strings.Contains(download.Shell, "'reports/load.html'") || !strings.Contains(server.Shell, "'server-status'") || !strings.Contains(service.Shell, "'service-status'") {
 		t.Fatalf("unexpected protocol commands: %#v %#v %#v", logCommand, download, server)
 	}
 	if _, err := material.Protocol.Log(-1); err == nil {

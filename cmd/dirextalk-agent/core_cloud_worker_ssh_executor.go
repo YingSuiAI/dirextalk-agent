@@ -14,6 +14,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -25,6 +26,8 @@ type sshWorkerExecutor struct {
 	providers map[sshworker.CredentialIdentity]*sshworker.Provider
 	artifacts *localartifact.Repository
 	pricing   cloudworker.PricingCatalog
+	workloads *sshworkload.Repository
+	route53   map[sshworker.CredentialIdentity]remoteservice.Route53
 	root      string
 	mu        sync.Mutex
 }
@@ -33,7 +36,12 @@ func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact worka
 	if authority == nil || exact == nil || artifacts == nil || pricing == nil || !filepath.IsAbs(root) {
 		return nil, sshworker.ErrInvalid
 	}
-	return &sshWorkerExecutor{authority: authority, exact: exact, providers: make(map[sshworker.CredentialIdentity]*sshworker.Provider), artifacts: artifacts, pricing: pricing, root: root}, nil
+	workloads, err := sshworkload.NewRepository(filepath.Join(root, "workloads"))
+	if err != nil {
+		return nil, err
+	}
+	return &sshWorkerExecutor{authority: authority, exact: exact, providers: make(map[sshworker.CredentialIdentity]*sshworker.Provider), artifacts: artifacts,
+		pricing: pricing, workloads: workloads, route53: make(map[sshworker.CredentialIdentity]remoteservice.Route53), root: root}, nil
 }
 
 func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudworker.AWSBinding) (*sshworker.Provider, sshworker.CredentialIdentity, error) {
@@ -64,6 +72,9 @@ func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudwo
 	provider, err := sshworker.New(client, keys, sshworker.CommandSSHExecutor{}, store, status)
 	if err == nil {
 		executor.providers[identity] = provider
+		if dns, dnsErr := remoteservice.NewRoute53SDK(config); dnsErr == nil {
+			executor.route53[identity] = dns
+		}
 	}
 	return provider, identity, err
 }
@@ -93,8 +104,14 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	if err != nil {
 		return sshflow.Result{}, err
 	}
+	workload := sshworker.WorkloadJob
+	var service *sshworker.RuntimeServiceSpec
+	if request.WorkloadKind == cloudworker.WorkloadService && request.Service != nil {
+		workload = sshworker.WorkloadService
+		service = &sshworker.RuntimeServiceSpec{WorkloadID: request.Service.WorkloadID, Port: request.Service.Port, HealthPath: request.Service.HealthPath}
+	}
 	material, err := sshworker.CompileRuntime(sshworker.RuntimeRequest{TaskID: request.ExecutionID, Objective: request.Objective,
-		Architecture: request.Compute.Architecture, Workload: sshworker.WorkloadJob,
+		Architecture: request.Compute.Architecture, Workload: workload, Service: service,
 		Model: sshworker.RuntimeModel{Provider: string(request.ModelSnapshot.Provider), BaseURL: request.ModelSnapshot.BaseURL,
 			Name: request.ModelSnapshot.Model, APIKey: request.ModelSnapshot.APIKey, MaxOutputTokens: request.ModelSnapshot.MaxOutputTokens}})
 	if err != nil {
@@ -130,6 +147,16 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	}
 	if result.ExitCode != 0 {
 		return workerResult, fmt.Errorf("remote Worker exited with code %d", result.ExitCode)
+	}
+	if service != nil {
+		workerIdentity, identityErr := provider.WorkerIdentity(ctx, identity, result.WorkerID)
+		if identityErr != nil {
+			return workerResult, identityErr
+		}
+		if err = executor.workloads.PutService(ctx, sshworkload.Service{Worker: workerIdentity, TaskID: request.ExecutionID,
+			WorkloadID: service.WorkloadID, Port: service.Port, HealthPath: service.HealthPath}); err != nil {
+			return workerResult, err
+		}
 	}
 	return workerResult, nil
 }
@@ -195,7 +222,22 @@ func (executor *sshWorkerExecutor) DestroyWorker(ctx context.Context, request ss
 	if err != nil {
 		return err
 	}
-	return provider.DestroyWorker(ctx, request)
+	services, err := executor.workloads.List(ctx, request.Identity)
+	if err != nil {
+		return err
+	}
+	for _, service := range services {
+		if service.Domain == nil {
+			continue
+		}
+		if err = executor.deleteDomain(ctx, provider, service, "destroy_worker"); err != nil {
+			return err
+		}
+	}
+	if err = provider.DestroyWorker(ctx, request); err != nil {
+		return err
+	}
+	return executor.workloads.RemoveWorker(ctx, request.Identity)
 }
 
 type sshWorkerDomains struct{ executor *sshWorkerExecutor }
@@ -209,7 +251,124 @@ func (domains sshWorkerDomains) UnbindDomain(ctx context.Context, command worker
 }
 
 func (domains sshWorkerDomains) change(ctx context.Context, command workercap.DomainCommand, action remoteservice.DNSAction) (workercap.DomainStatus, error) {
-	// Domain binding belongs to a persisted service workload. The current job
-	// contract does not create one, so no Route53 mutation is authorized yet.
-	return workercap.DomainStatus{}, remoteservice.ErrInvalid
+	provider, err := domains.executor.providerForIdentity(ctx, command.Worker.Credential)
+	if err != nil {
+		return workercap.DomainStatus{}, err
+	}
+	status, err := provider.ObserveWorker(ctx, command.Worker)
+	if err != nil || status.PublicIP == "" {
+		return workercap.DomainStatus{}, errors.Join(sshworker.ErrIdentity, err)
+	}
+	service, err := domains.executor.workloads.Get(ctx, command.Worker, command.WorkloadID)
+	if err != nil {
+		return workercap.DomainStatus{}, err
+	}
+	if action == remoteservice.DNSDeleteA {
+		if service.Domain == nil || service.Domain.ZoneID != command.ZoneID || service.Domain.Hostname != command.Hostname || service.Domain.TTL != command.TTL {
+			return workercap.DomainStatus{}, sshworkload.ErrIdentity
+		}
+		domain := *service.Domain
+		if err = domains.executor.deleteDomain(ctx, provider, service, command.Confirmation); err != nil {
+			return workercap.DomainStatus{}, err
+		}
+		return projectDomain(&domain, "current"), nil
+	}
+	if runtime, observeErr := provider.ObserveService(ctx, command.Worker, service.TaskID); observeErr != nil || runtime.Health != "healthy" {
+		return workercap.DomainStatus{}, errors.Join(sshworker.ErrInvalid, observeErr)
+	}
+	dns := domains.executor.route53For(command.Worker.Credential)
+	if dns == nil {
+		return workercap.DomainStatus{}, remoteservice.ErrInvalid
+	}
+	domain := &sshworkload.Domain{ZoneID: command.ZoneID, Hostname: command.Hostname, TTL: command.TTL, BoundIPv4: status.PublicIP, PublicPort: service.Port}
+	if err = provider.SetPublicPort(ctx, command.Worker, service.Port, true); err != nil {
+		return workercap.DomainStatus{}, err
+	}
+	mutation := remoteservice.DNSMutation{Action: action, AccountID: command.Worker.Credential.AccountID, WorkerID: command.Worker.WorkerID,
+		WorkloadID: command.WorkloadID, Record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}}
+	if err = remoteservice.ReconcileLiteral(ctx, dns, mutation, command.Confirmation); err != nil {
+		_ = provider.SetPublicPort(ctx, command.Worker, service.Port, false)
+		return workercap.DomainStatus{}, err
+	}
+	if err = domains.executor.workloads.SetDomain(ctx, command.Worker, command.WorkloadID, domain); err != nil {
+		return workercap.DomainStatus{}, err
+	}
+	return projectDomain(domain, "current"), nil
+}
+
+func (executor *sshWorkerExecutor) deleteDomain(ctx context.Context, provider *sshworker.Provider, service sshworkload.Service, confirmation string) error {
+	domain := service.Domain
+	if domain == nil {
+		return nil
+	}
+	dns := executor.route53For(service.Worker.Credential)
+	if dns == nil {
+		return remoteservice.ErrInvalid
+	}
+	mutation := remoteservice.DNSMutation{Action: remoteservice.DNSDeleteA, AccountID: service.Worker.Credential.AccountID, WorkerID: service.Worker.WorkerID,
+		WorkloadID: service.WorkloadID, Record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}}
+	if err := remoteservice.ReconcileLiteral(ctx, dns, mutation, confirmation); err != nil {
+		return err
+	}
+	if err := provider.SetPublicPort(ctx, service.Worker, service.Port, false); err != nil {
+		return err
+	}
+	if confirmation == "destroy_worker" {
+		return nil
+	}
+	return executor.workloads.SetDomain(ctx, service.Worker, service.WorkloadID, nil)
+}
+
+func projectDomain(domain *sshworkload.Domain, state string) workercap.DomainStatus {
+	if domain == nil {
+		return workercap.DomainStatus{}
+	}
+	return workercap.DomainStatus{Mode: "route53_same_account", ZoneID: domain.ZoneID, Hostname: domain.Hostname,
+		TargetIPv4: domain.BoundIPv4, TTL: domain.TTL, RecordStatus: state}
+}
+
+func (executor *sshWorkerExecutor) ListWorkerWorkloads(ctx context.Context, worker sshworker.WorkerStatus) ([]workercap.WorkloadStatus, error) {
+	services, err := executor.workloads.List(ctx, worker.Identity)
+	if err != nil {
+		return nil, err
+	}
+	provider, err := executor.providerForIdentity(ctx, worker.Identity.Credential)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]workercap.WorkloadStatus, 0, len(services))
+	for _, service := range services {
+		runtime, observeErr := provider.ObserveService(ctx, worker.Identity, service.TaskID)
+		status := workercap.WorkloadStatus{WorkloadID: service.WorkloadID, Kind: "service", Phase: "unavailable", ActiveState: "unknown", Health: "unknown", Port: service.Port}
+		if observeErr == nil {
+			status.Phase, status.ActiveState, status.Health = runtime.Phase, runtime.ActiveState, runtime.Health
+		}
+		if service.Domain != nil {
+			if worker.PublicIP != "" && service.Domain.BoundIPv4 != worker.PublicIP {
+				dns := executor.route53For(worker.Identity.Credential)
+				mutation := remoteservice.DNSMutation{Action: remoteservice.DNSUpsertA, AccountID: worker.Identity.Credential.AccountID, WorkerID: worker.Identity.WorkerID,
+					WorkloadID: service.WorkloadID, Record: remoteservice.ARecord{ZoneID: service.Domain.ZoneID, Hostname: service.Domain.Hostname, IPv4: worker.PublicIP, TTL: service.Domain.TTL}}
+				if dns == nil || remoteservice.ReconcileLiteral(ctx, dns, mutation, "bind_domain") != nil {
+					status.Domain = ptrDomain(projectDomain(service.Domain, "error"))
+					result = append(result, status)
+					continue
+				}
+				service.Domain.BoundIPv4 = worker.PublicIP
+				if err = executor.workloads.SetDomain(ctx, worker.Identity, service.WorkloadID, service.Domain); err != nil {
+					return nil, err
+				}
+			}
+			status.Domain = ptrDomain(projectDomain(service.Domain, "current"))
+		}
+		result = append(result, status)
+	}
+	return result, nil
+}
+
+func ptrDomain(value workercap.DomainStatus) *workercap.DomainStatus { return &value }
+
+func (executor *sshWorkerExecutor) route53For(identity sshworker.CredentialIdentity) remoteservice.Route53 {
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	return executor.route53[identity]
 }
