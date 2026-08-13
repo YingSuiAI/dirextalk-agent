@@ -41,6 +41,10 @@ type mutationProbeEC2 struct {
 	importCalls, runCalls, authorizeCalls int
 	deleteKeyCalls, deleteGroupCalls      int
 	terminateCalls                        int
+	describeImagesInput                   *ec2.DescribeImagesInput
+	images                                []ec2types.Image
+	vpcs                                  []ec2types.Vpc
+	subnets                               []ec2types.Subnet
 	runInput                              *ec2.RunInstancesInput
 	key                                   *ec2types.KeyPairInfo
 	group                                 ec2types.SecurityGroup
@@ -50,14 +54,15 @@ type mutationProbeEC2 struct {
 	events                                *[]string
 }
 
-func (*mutationProbeEC2) DescribeImages(context.Context, *ec2.DescribeImagesInput, ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
-	return nil, errors.New("unused")
+func (probe *mutationProbeEC2) DescribeImages(_ context.Context, input *ec2.DescribeImagesInput, _ ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
+	probe.describeImagesInput = input
+	return &ec2.DescribeImagesOutput{Images: probe.images}, nil
 }
-func (*mutationProbeEC2) DescribeVpcs(context.Context, *ec2.DescribeVpcsInput, ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error) {
-	return nil, errors.New("unused")
+func (probe *mutationProbeEC2) DescribeVpcs(context.Context, *ec2.DescribeVpcsInput, ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error) {
+	return &ec2.DescribeVpcsOutput{Vpcs: probe.vpcs}, nil
 }
-func (*mutationProbeEC2) DescribeSubnets(context.Context, *ec2.DescribeSubnetsInput, ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
-	return nil, errors.New("unused")
+func (probe *mutationProbeEC2) DescribeSubnets(context.Context, *ec2.DescribeSubnetsInput, ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
+	return &ec2.DescribeSubnetsOutput{Subnets: probe.subnets}, nil
 }
 func (probe *mutationProbeEC2) DescribeKeyPairs(context.Context, *ec2.DescribeKeyPairsInput, ...func(*ec2.Options)) (*ec2.DescribeKeyPairsOutput, error) {
 	if probe.events != nil {
@@ -157,6 +162,32 @@ type staticIP struct{}
 
 func (staticIP) PublicIP(context.Context) (netip.Addr, error) {
 	return netip.MustParseAddr("198.51.100.7"), nil
+}
+
+func TestSDKDiscoverUsesAmazonOwnerAliasAndNewestOfficialImage(t *testing.T) {
+	probe := &mutationProbeEC2{
+		images: []ec2types.Image{
+			{ImageId: aws.String("ami-older"), Name: aws.String("al2023-older"), CreationDate: aws.String("2026-08-01T00:00:00Z")},
+			{ImageId: aws.String("ami-newest"), Name: aws.String("al2023-newest"), CreationDate: aws.String("2026-08-02T00:00:00Z")},
+		},
+		vpcs: []ec2types.Vpc{{VpcId: aws.String("vpc-default")}},
+		subnets: []ec2types.Subnet{
+			{SubnetId: aws.String("subnet-z")},
+			{SubnetId: aws.String("subnet-a")},
+		},
+	}
+	credential := credentialFixture()
+	credential.Region = "region-under-test"
+	discovery, err := newSDK(credential.Region, probe, stubSTS{}, staticIP{}).Discover(context.Background(), credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.describeImagesInput == nil || !slices.Equal(probe.describeImagesInput.Owners, []string{"amazon"}) {
+		t.Fatalf("DescribeImages owners = %v, want AWS owner alias amazon", probe.describeImagesInput.Owners)
+	}
+	if discovery.ImageID != "ami-newest" || discovery.ImageName != "al2023-newest" || discovery.VPCID != "vpc-default" || discovery.SubnetID != "subnet-a" {
+		t.Fatalf("discovery = %#v", discovery)
+	}
 }
 
 func TestSDKBlocksMutationBeforeEC2WithoutConfirmation(t *testing.T) {

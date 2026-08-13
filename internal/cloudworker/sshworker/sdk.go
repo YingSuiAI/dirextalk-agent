@@ -100,7 +100,7 @@ func (client *SDK) Discover(ctx context.Context, identity CredentialIdentity) (D
 	if err := client.VerifyIdentity(ctx, identity); err != nil {
 		return Discovery{}, err
 	}
-	images, err := client.ec2.DescribeImages(ctx, &ec2.DescribeImagesInput{Owners: []string{"137112412989"}, Filters: []ec2types.Filter{
+	images, err := client.ec2.DescribeImages(ctx, &ec2.DescribeImagesInput{Owners: []string{"amazon"}, Filters: []ec2types.Filter{
 		{Name: aws.String("name"), Values: []string{"al2023-ami-2023*-x86_64"}}, {Name: aws.String("state"), Values: []string{"available"}},
 		{Name: aws.String("architecture"), Values: []string{"x86_64"}}, {Name: aws.String("root-device-type"), Values: []string{"ebs"}}, {Name: aws.String("virtualization-type"), Values: []string{"hvm"}}}})
 	if err != nil || len(images.Images) == 0 {
