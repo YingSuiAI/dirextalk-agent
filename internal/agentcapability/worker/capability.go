@@ -42,6 +42,7 @@ const (
 // implementation owns the exact verification and secret-handling policy.
 type CredentialSource interface {
 	CurrentVerifiedCredential(context.Context) (sshworker.CredentialIdentity, error)
+	HasCurrentVerifiedCredential(context.Context) bool
 }
 
 // Manager is implemented by sshworker.Provider.
@@ -108,7 +109,13 @@ func NewCapability(bindings Bindings) (*Capability, error) {
 }
 
 func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
-	descriptor := &capv1.CapabilityDescriptor{CapabilityId: CapabilityID, SemanticVersion: SemanticVersion, ProtocolVersion: 1, DisplayName: "Workers", Description: "Persistent SSH Worker management", Readiness: c != nil && c.bindings.Credentials != nil && c.bindings.Workers != nil && c.bindings.Domains != nil}
+	ready := c != nil && c.bindings.Credentials != nil && c.bindings.Workers != nil && c.bindings.Domains != nil
+	reason := ""
+	if ready && !c.bindings.Credentials.HasCurrentVerifiedCredential(context.Background()) {
+		ready = false
+		reason = "exactly one verified AWS credential is required"
+	}
+	descriptor := &capv1.CapabilityDescriptor{CapabilityId: CapabilityID, SemanticVersion: SemanticVersion, ProtocolVersion: 1, DisplayName: "Workers", Description: "Persistent SSH Worker management", Readiness: ready, ReadinessReason: reason}
 	specs := []operationSpec{
 		{"list_workers", "List Workers", capv1.OperationType_OPERATION_TYPE_READ, capv1.RiskLevel_RISK_LEVEL_SAFE, "agent:worker:read", listInputSchema, listResultSchema},
 		{"get_worker", "Get Worker", capv1.OperationType_OPERATION_TYPE_READ, capv1.RiskLevel_RISK_LEVEL_SAFE, "agent:worker:read", getInputSchema, getResultSchema},
@@ -133,7 +140,7 @@ type operationSpec struct {
 }
 
 func (c *Capability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
-	if c == nil || !c.Descriptor().GetReadiness() {
+	if c == nil || c.bindings.Credentials == nil || c.bindings.Workers == nil || c.bindings.Domains == nil {
 		return nil, capabilityoperation.NewFailure("PRECONDITION_FAILED", "Worker management is not ready", errors.New("worker capability dependencies are incomplete"))
 	}
 	if err := requireOwner(ctx); err != nil {

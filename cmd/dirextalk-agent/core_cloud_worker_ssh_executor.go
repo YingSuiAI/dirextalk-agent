@@ -196,6 +196,13 @@ func boundedWorkerSummary(value string) string {
 
 type sshWorkerCredentials struct{ executor *sshWorkerExecutor }
 
+func (source sshWorkerCredentials) HasCurrentVerifiedCredential(ctx context.Context) bool {
+	if source.executor == nil || source.executor.authority == nil {
+		return false
+	}
+	return source.executor.authority.HasCurrentVerifiedAWSBinding(ctx)
+}
+
 func (source sshWorkerCredentials) CurrentVerifiedCredential(ctx context.Context) (sshworker.CredentialIdentity, error) {
 	binding, err := source.executor.authority.ResolveCurrentAWSBinding(ctx)
 	if err != nil {

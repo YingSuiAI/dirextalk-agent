@@ -64,6 +64,18 @@ func (authority *cloudWorkerCredentialAuthority) ResolveCurrentAWSBinding(ctx co
 	return binding, nil
 }
 
+func (authority *cloudWorkerCredentialAuthority) HasCurrentVerifiedAWSBinding(ctx context.Context) bool {
+	if authority == nil || authority.list == nil || ctx == nil {
+		return false
+	}
+	page, err := authority.list(ctx, 2, "")
+	if err != nil || len(page.Items) != 1 || page.NextPageToken != "" {
+		return false
+	}
+	view := page.Items[0]
+	return view.Revision > 0 && view.VerifiedRevision == view.Revision && !view.TestedAt.IsZero()
+}
+
 func (authority *cloudWorkerCredentialAuthority) ResolveExactAWSBinding(ctx context.Context, expected cloudworker.AWSBinding) (cloudworker.AWSBinding, error) {
 	_, err := authority.ResolveExactCredential(ctx, expected)
 	if err != nil {

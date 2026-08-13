@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
@@ -18,10 +19,18 @@ import (
 type credentialStub struct {
 	credential sshworker.CredentialIdentity
 	err        error
+	ready      func() bool
 }
 
 func (stub credentialStub) CurrentVerifiedCredential(context.Context) (sshworker.CredentialIdentity, error) {
 	return stub.credential, stub.err
+}
+
+func (stub credentialStub) HasCurrentVerifiedCredential(context.Context) bool {
+	if stub.ready != nil {
+		return stub.ready()
+	}
+	return stub.err == nil && stub.credential.CredentialID != ""
 }
 
 type managerStub struct {
@@ -104,6 +113,55 @@ func TestDescriptorFreezesWorkerAndDomainOperations(t *testing.T) {
 		if bytes.Contains([]byte(operation.GetInputSchemaJson()), []byte("eip")) || bytes.Contains([]byte(operation.GetResultSchemaJson()), []byte("eip")) {
 			t.Fatalf("EIP leaked into %s", operation.GetOperationId())
 		}
+	}
+}
+
+func TestDescriptorTracksVerifiedCredentialWithoutRestart(t *testing.T) {
+	credential, _ := fixture()
+	ready := false
+	capability, err := NewCapability(Bindings{
+		Credentials: credentialStub{credential: credential, ready: func() bool { return ready }},
+		Workers:     &managerStub{}, Domains: &domainStub{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if descriptor := capability.Descriptor(); descriptor.GetReadiness() || descriptor.GetReadinessReason() == "" {
+		t.Fatalf("credential-free descriptor=%+v", descriptor)
+	}
+	ready = true
+	if descriptor := capability.Descriptor(); !descriptor.GetReadiness() || descriptor.GetReadinessReason() != "" {
+		t.Fatalf("verified descriptor=%+v", descriptor)
+	}
+	ready = false
+	if descriptor := capability.Descriptor(); descriptor.GetReadiness() || descriptor.GetReadinessReason() == "" {
+		t.Fatalf("removed credential descriptor=%+v", descriptor)
+	}
+}
+
+func TestCatalogTracksVerifiedCredentialWithoutRestart(t *testing.T) {
+	credential, _ := fixture()
+	ready := false
+	capability, err := NewCapability(Bindings{
+		Credentials: credentialStub{credential: credential, ready: func() bool { return ready }},
+		Workers:     &managerStub{}, Domains: &domainStub{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := agentcapability.NewRegistry()
+	registry.Register(capability)
+	readiness := func() bool { return registry.List()[0].GetReadiness() }
+	if readiness() {
+		t.Fatal("credential-free catalog published Workers")
+	}
+	ready = true
+	if !readiness() {
+		t.Fatal("verified credential did not publish Workers in the same process")
+	}
+	ready = false
+	if readiness() {
+		t.Fatal("removed credential did not withdraw Workers in the same process")
 	}
 }
 

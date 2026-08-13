@@ -106,6 +106,21 @@ func TestCloudWorkerCredentialAuthorityDoubleFencesRevisionAndIdentity(t *testin
 	}
 }
 
+func TestCloudWorkerCredentialReadinessTracksCurrentVerifiedView(t *testing.T) {
+	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	if !authority.HasCurrentVerifiedAWSBinding(context.Background()) {
+		t.Fatal("verified credential was not ready")
+	}
+	resolver.views[0].VerifiedRevision = 0
+	if authority.HasCurrentVerifiedAWSBinding(context.Background()) {
+		t.Fatal("unverified credential remained ready")
+	}
+	resolver.views = nil
+	if authority.HasCurrentVerifiedAWSBinding(context.Background()) {
+		t.Fatal("deleted credential remained ready")
+	}
+}
+
 func TestCloudWorkerCredentialAuthorityKeepsExactRevisionAfterRotateAndDisable(t *testing.T) {
 	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
 	expected := cloudworker.AWSBinding{AccountID: resolver.handle.AccountID, Region: resolver.handle.Region, CredentialID: resolver.handle.ReferenceID, CredentialRevision: resolver.exactRevision}
