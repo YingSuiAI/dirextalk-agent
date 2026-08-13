@@ -14,6 +14,7 @@ message CoreConversation {
   int64 revision = 3;
   google.protobuf.Timestamp created_at = 4;
   google.protobuf.Timestamp updated_at = 5;
+  int64 message_count = 6;
 }
 
 // A server-authored reference is the public, secret-free link from a durable

@@ -120,7 +120,7 @@ func toolResultProto(value coreconversation.ToolResult) *agentv1.CoreToolResult 
 	return &agentv1.CoreToolResult{ToolName: value.ToolName, Summary: value.Summary, RelatedTaskIds: append([]string(nil), value.RelatedTaskIDs...), ToolSummaries: summaryList(value.Summary), RelatedPlanIds: append([]string(nil), value.RelatedPlanIDs...), References: referenceProtos(value.References)}
 }
 func convProto(c coreconversation.Conversation) *agentv1.CoreConversation {
-	return &agentv1.CoreConversation{ConversationId: c.ID, Title: c.Title, Revision: int64(c.Revision), CreatedAt: timestamppb.New(c.CreatedAt), UpdatedAt: timestamppb.New(c.UpdatedAt)}
+	return &agentv1.CoreConversation{ConversationId: c.ID, Title: c.Title, Revision: int64(c.Revision), CreatedAt: timestamppb.New(c.CreatedAt), UpdatedAt: timestamppb.New(c.UpdatedAt), MessageCount: int64(c.MessageCount)}
 }
 func msgProto(m coreconversation.Message, seq int64, conversationID ...string) *agentv1.CoreConversationMessage {
 	payload := (*structpb.Struct)(nil)

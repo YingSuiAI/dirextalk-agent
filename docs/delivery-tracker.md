@@ -74,7 +74,8 @@ contract](message-server-integration-development-contract.md), and
   profile binding across memory/PostgreSQL stores, Protobuf, and
   `agent.models.v1` sync/list schemas and results; speech/embedding bindings
   are rejected and no conversation-default fallback is synthesized.
-- Closed Capability conversation/history DTOs, conversation-bound newest-first
+- Closed Capability conversation/history DTOs, list-level durable message counts
+  that avoid per-conversation empty-draft reads, conversation-bound newest-first
   history cursors, strict UUID mutation keys, typed/redacted domain failures,
   and post-composition durable-turn recovery.
 - Native durable turns expose the canonical public `turn_id` through

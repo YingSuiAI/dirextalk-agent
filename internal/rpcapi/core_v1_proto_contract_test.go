@@ -103,6 +103,10 @@ func TestCoreV1ServiceDescriptorsAndPrivacy(t *testing.T) {
 	if get.Fields().ByName("page_token") == nil || get.Fields().ByName("after_sequence") != nil {
 		t.Fatal("conversation history must use opaque page_token")
 	}
+	conversation := (&agentv1.CoreConversation{}).ProtoReflect().Descriptor()
+	if f := conversation.Fields().ByName("message_count"); f == nil || f.Kind() != protoreflect.Int64Kind {
+		t.Fatal("conversation message_count missing or wrong type")
+	}
 	cloud := agentv1.File_dirextalk_agent_v1_core_aws_proto.Services().ByName("CoreCloudControlService")
 	if cloud == nil {
 		t.Fatal("missing CoreCloudControlService")

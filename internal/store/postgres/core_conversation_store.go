@@ -286,6 +286,10 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 		_ = json.Unmarshal(sums, &m.ToolSummaries)
 		c.Messages = append(c.Messages, m)
 	}
+	if e = rows.Err(); e != nil {
+		return c, e
+	}
+	c.MessageCount = uint64(len(c.Messages))
 	for i := range c.Messages {
 		var persisted core.Message
 		var payload []byte
@@ -339,7 +343,7 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 	var rows pgx.Rows
 	var e error
 	if strings.TrimSpace(token) == "" {
-		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL ORDER BY c.updated_at DESC,c.conversation_id LIMIT $1`, limit)
+		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0),(SELECT COUNT(*) FROM core_messages m WHERE m.conversation_id=c.conversation_id) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL ORDER BY c.updated_at DESC,c.conversation_id LIMIT $1`, limit)
 	} else {
 		parts := strings.SplitN(token, "|", 2)
 		if len(parts) != 2 {
@@ -349,7 +353,7 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 		if pe != nil || !coreUUID(parts[1]) {
 			return nil, "", core.ErrInvalid
 		}
-		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL AND (c.updated_at < $1 OR (c.updated_at = $1 AND c.conversation_id > $2)) ORDER BY c.updated_at DESC,c.conversation_id ASC LIMIT $3`, ct, parts[1], limit)
+		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0),(SELECT COUNT(*) FROM core_messages m WHERE m.conversation_id=c.conversation_id) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL AND (c.updated_at < $1 OR (c.updated_at = $1 AND c.conversation_id > $2)) ORDER BY c.updated_at DESC,c.conversation_id ASC LIMIT $3`, ct, parts[1], limit)
 	}
 	if e != nil {
 		return nil, "", e
@@ -360,16 +364,19 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 		var c core.Conversation
 		var d *time.Time
 		var summary string
-		var offset int64
-		if e = rows.Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &d, &summary, &offset); e != nil {
+		var offset, messageCount int64
+		if e = rows.Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &d, &summary, &offset, &messageCount); e != nil {
 			return nil, "", e
 		}
 		normalizeConversationTimesPG(&c, d)
-		if offset < 0 {
+		if offset < 0 || messageCount < 0 {
 			return nil, "", core.ErrConflict
 		}
-		c.Summary, c.ContextMessageOffset = summary, uint64(offset)
+		c.Summary, c.ContextMessageOffset, c.MessageCount = summary, uint64(offset), uint64(messageCount)
 		out = append(out, c)
+	}
+	if e = rows.Err(); e != nil {
+		return nil, "", e
 	}
 	next := ""
 	if len(out) == limit {

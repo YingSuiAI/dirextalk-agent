@@ -120,6 +120,7 @@ type Conversation struct {
 	ID                   string     `json:"id"`
 	Title                string     `json:"title,omitempty"`
 	Revision             uint64     `json:"revision"`
+	MessageCount         uint64     `json:"message_count"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 	DeletedAt            *time.Time `json:"deleted_at,omitempty"`

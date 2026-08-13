@@ -554,13 +554,13 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 func TestConversationProjectionUsesOnlyFlutterPublicFields(t *testing.T) {
 	now := time.Now().UTC()
 	deletedAt := now.Add(time.Second)
-	projected := projectConversation(coreconversation.Conversation{ID: uuid.NewString(), Title: "title", Revision: 3, CreatedAt: now, UpdatedAt: deletedAt, DeletedAt: &deletedAt, Summary: "private", ContextMessageOffset: 9})
+	projected := projectConversation(coreconversation.Conversation{ID: uuid.NewString(), Title: "title", Revision: 3, MessageCount: 7, CreatedAt: now, UpdatedAt: deletedAt, DeletedAt: &deletedAt, Summary: "private", ContextMessageOffset: 9})
 	raw, err := json.Marshal(projected)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var fields map[string]any
-	if json.Unmarshal(raw, &fields) != nil || len(fields) != 6 || fields["status"] != "deleted" || fields["conversation_id"] == nil {
+	if json.Unmarshal(raw, &fields) != nil || len(fields) != 7 || fields["status"] != "deleted" || fields["conversation_id"] == nil || fields["message_count"] != float64(7) {
 		t.Fatalf("projection=%s", raw)
 	}
 	for _, forbidden := range []string{"id", "deleted_at", "summary", "context_message_offset", "messages"} {

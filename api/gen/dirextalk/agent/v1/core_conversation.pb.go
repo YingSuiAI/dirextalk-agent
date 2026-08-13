@@ -30,6 +30,7 @@ type CoreConversation struct {
 	Revision       int64                  `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
 	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt      *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	MessageCount   int64                  `protobuf:"varint,6,opt,name=message_count,json=messageCount,proto3" json:"message_count,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -97,6 +98,13 @@ func (x *CoreConversation) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *CoreConversation) GetMessageCount() int64 {
+	if x != nil {
+		return x.MessageCount
+	}
+	return 0
 }
 
 // A server-authored reference is the public, secret-free link from a durable
@@ -2461,7 +2469,7 @@ var File_dirextalk_agent_v1_core_conversation_proto protoreflect.FileDescriptor
 
 const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\n" +
-	"*dirextalk/agent/v1/core_conversation.proto\x12\x12dirextalk.agent.v1\x1a\"dirextalk/agent/v1/core_task.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe3\x01\n" +
+	"*dirextalk/agent/v1/core_conversation.proto\x12\x12dirextalk.agent.v1\x1a\"dirextalk/agent/v1/core_task.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x88\x02\n" +
 	"\x10CoreConversation\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1a\n" +
@@ -2469,7 +2477,8 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xf1\x05\n" +
+	"updated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12#\n" +
+	"\rmessage_count\x18\x06 \x01(\x03R\fmessageCount\"\xf1\x05\n" +
 	"\x19CoreConversationReference\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12-\n" +
 	"\x12account_generation\x18\x02 \x01(\x04R\x11accountGeneration\x12\x17\n" +

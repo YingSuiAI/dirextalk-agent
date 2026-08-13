@@ -212,6 +212,7 @@ type publicConversation struct {
 	ConversationID string    `json:"conversation_id"`
 	Title          string    `json:"title"`
 	Revision       uint64    `json:"revision"`
+	MessageCount   uint64    `json:"message_count"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 	Status         string    `json:"status"`
@@ -244,6 +245,7 @@ func projectConversation(value coreconversation.Conversation) publicConversation
 		ConversationID: value.ID,
 		Title:          value.Title,
 		Revision:       value.Revision,
+		MessageCount:   value.MessageCount,
 		CreatedAt:      value.CreatedAt,
 		UpdatedAt:      value.UpdatedAt,
 		Status:         status,

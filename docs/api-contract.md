@@ -131,7 +131,9 @@ multi-tenant model.
   the edge sandbox CSP blocks scripts, forms, external subresources, and
   programmatic network access even when generated markup drifts.
 - Capability conversation reads use a closed Flutter-facing projection.
-  Conversations expose only id/title/revision/timestamps/status; history
+  Conversations expose only id/title/revision/message count/timestamps/status;
+  the count is the exact number of durable transcript messages and lets clients
+  identify empty drafts without issuing one history read per conversation. History
   exposes only user/assistant messages with durable sequence, terminal status,
   and a references array. The first history page contains the newest bounded
   messages in ascending sequence order, and its opaque cursor is bound to the
