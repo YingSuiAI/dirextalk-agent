@@ -105,3 +105,27 @@ func TestPublisherRejectsSymlinkRootAndInvalidPublication(t *testing.T) {
 		t.Fatalf("oversize err=%v", err)
 	}
 }
+
+func TestPublisherRepairsOwnedDirectoryModesOnRestart(t *testing.T) {
+	root := t.TempDir()
+	if _, err := NewPublisher(root); err != nil {
+		t.Fatal(err)
+	}
+	publicRoot := filepath.Join(root, "public")
+	stageRoot := filepath.Join(root, ".staging")
+	if err := os.Chmod(publicRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stageRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewPublisher(root); err != nil {
+		t.Fatalf("restart with repairable owned directories: %v", err)
+	}
+	for path, want := range map[string]os.FileMode{publicRoot: 0o755, stageRoot: 0o700} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != want {
+			t.Fatalf("%s mode=%v want=%v err=%v", path, info.Mode().Perm(), want, err)
+		}
+	}
+}

@@ -218,11 +218,9 @@ func ensureOwnedDirectory(path string, mode os.FileMode) error {
 		if !errors.Is(err, os.ErrExist) {
 			return err
 		}
-		info, statErr := os.Lstat(path)
-		if statErr != nil || info.Mode().Perm() != mode.Perm() {
+		if validateErr := validateOwnedDirectory(path, 0); validateErr != nil {
 			return core.ErrInvalid
 		}
-		return validateOwnedDirectory(path, 0o777^mode.Perm())
 	}
 	if err = os.Chmod(path, mode); err != nil {
 		return err
