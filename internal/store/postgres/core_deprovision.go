@@ -58,8 +58,8 @@ const (
 	stateFailed                 = "failed"
 )
 
-func (s *CoreDeprovisionStore) Deprovision(ctx context.Context, command coredeprovision.Command, externalPurge func(context.Context) error) (coredeprovision.Result, error) {
-	if s == nil || s.pool == nil || ctx == nil {
+func (s *CoreDeprovisionStore) Deprovision(ctx context.Context, command coredeprovision.Command, checkPrecondition, externalPurge func(context.Context) error) (coredeprovision.Result, error) {
+	if s == nil || s.pool == nil || ctx == nil || checkPrecondition == nil || externalPurge == nil {
 		return coredeprovision.Result{}, coredeprovision.ErrInvalid
 	}
 	digest := deprovisionDigest(command)
@@ -77,6 +77,11 @@ func (s *CoreDeprovisionStore) Deprovision(ctx context.Context, command coredepr
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, deprovisionAdvisoryLockName); err != nil {
 		return coredeprovision.Result{}, fmt.Errorf("lock account deprovision fence: %w", err)
+	}
+	// Revalidate retained external state while holding the durable lifecycle
+	// lock and before claiming a receipt or deleting any Agent-owned row.
+	if err := checkPrecondition(ctx); err != nil {
+		return coredeprovision.Result{}, err
 	}
 	var state string
 	var existingDigest []byte

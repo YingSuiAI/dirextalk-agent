@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 )
 
 func TestCoreExternalPurgeRegistryPurgesConfiguredRootsWhenKnowledgeDisabled(t *testing.T) {
@@ -58,4 +61,86 @@ func TestCoreExternalPurgeRegistryPurgesConfiguredRootsWhenKnowledgeDisabled(t *
 			t.Fatalf("disabled Knowledge purge left %s entries: %v", name, entries)
 		}
 	}
+}
+
+func TestCoreExternalPurgeRejectsRetainedWorkersWithoutDeletingState(t *testing.T) {
+	for _, phase := range []string{"provisioning", "idle", "busy", "destroying"} {
+		t.Run(phase, func(t *testing.T) {
+			staging := t.TempDir()
+			checker, err := composeRetainedWorkerDeprovisionChecker(config.Config{CoreExtensionStagingRoot: staging})
+			if err != nil {
+				t.Fatal(err)
+			}
+			worker := retainedWorkerFixture(sshworker.WorkerPhase(phase), "owner", 7)
+			if err := checker.store.SaveWorker(context.Background(), worker); err != nil {
+				t.Fatal(err)
+			}
+			err = checker.CheckDeprovision(context.Background(), deprovisionCommand("owner", 7))
+			if !errors.Is(err, coredeprovision.ErrRetainedWorkers) {
+				t.Fatalf("phase=%q err=%v, want ErrRetainedWorkers", phase, err)
+			}
+			if _, _, err := checker.store.LoadWorker(context.Background(), worker.WorkerID); err != nil {
+				t.Fatalf("precondition check changed Worker state: %v", err)
+			}
+		})
+	}
+}
+
+func TestRetainedWorkerDeprovisionCheckerUsesExactOwnerGeneration(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		worker     *sshworker.WorkerRecord
+		owner      string
+		generation int64
+	}{
+		{name: "empty state", owner: "owner", generation: 7},
+		{name: "destroyed Worker", worker: workerFixturePtr(retainedWorkerFixture(sshworker.WorkerDestroyed, "owner", 7)), owner: "owner", generation: 7},
+		{name: "other owner", worker: workerFixturePtr(retainedWorkerFixture(sshworker.WorkerIdle, "other", 7)), owner: "owner", generation: 7},
+		{name: "other generation", worker: workerFixturePtr(retainedWorkerFixture(sshworker.WorkerIdle, "owner", 6)), owner: "owner", generation: 7},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			staging := t.TempDir()
+			checker, err := composeRetainedWorkerDeprovisionChecker(config.Config{CoreExtensionStagingRoot: staging})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.worker != nil {
+				if err := checker.store.SaveWorker(context.Background(), *test.worker); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := checker.CheckDeprovision(context.Background(), deprovisionCommand(test.owner, test.generation)); err != nil {
+				t.Fatalf("satisfied precondition rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestCoreExternalPurgeFailsClosedOnInvalidWorkerState(t *testing.T) {
+	staging := t.TempDir()
+	checker, err := composeRetainedWorkerDeprovisionChecker(config.Config{CoreExtensionStagingRoot: staging})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(staging, "cloud-worker", "state", "worker-worker-a.json")
+	if err := os.WriteFile(record, []byte(`not-json`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = checker.CheckDeprovision(context.Background(), deprovisionCommand("owner", 7))
+	if err == nil || errors.Is(err, coredeprovision.ErrRetainedWorkers) {
+		t.Fatalf("corrupt record err=%v, want infrastructure failure", err)
+	}
+}
+
+func retainedWorkerFixture(phase sshworker.WorkerPhase, owner string, generation uint64) sshworker.WorkerRecord {
+	return sshworker.WorkerRecord{
+		WorkerID: "worker-a", OwnerID: owner, AccountGeneration: generation, Phase: phase,
+		Credential: sshworker.CredentialIdentity{CredentialID: "credential-a", CredentialRevision: 3, AccountID: "123456789012", Region: "us-east-1"},
+	}
+}
+
+func workerFixturePtr(worker sshworker.WorkerRecord) *sshworker.WorkerRecord { return &worker }
+
+func deprovisionCommand(owner string, generation int64) coredeprovision.Command {
+	return coredeprovision.Command{OwnerID: owner, AccountGeneration: generation, IdempotencyKey: "00000000-0000-4000-8000-000000000001", Confirmation: coredeprovision.Confirmation}
 }

@@ -14,11 +14,14 @@ import (
 const Confirmation = "deprovision_account"
 
 var (
-	ErrInvalid       = errors.New("invalid account deprovision request")
-	ErrConflict      = errors.New("account deprovision idempotency conflict")
-	ErrNotReady      = errors.New("account deprovision is not ready")
-	ErrExternalPurge = errors.New("account external purge failed")
+	ErrInvalid         = errors.New("invalid account deprovision request")
+	ErrConflict        = errors.New("account deprovision idempotency conflict")
+	ErrNotReady        = errors.New("account deprovision is not ready")
+	ErrRetainedWorkers = errors.New("retained Workers must be destroyed before account deprovision")
+	ErrExternalPurge   = errors.New("account external purge failed")
 )
+
+const RetainedWorkersMessage = "Destroy all retained Workers before deprovisioning the Agent account"
 
 type Command struct {
 	OwnerID           string
@@ -38,7 +41,14 @@ type Result struct {
 // persists progress so a retry after a process restart resumes cleanup rather
 // than re-running arbitrary business operations.
 type Store interface {
-	Deprovision(context.Context, Command, func(context.Context) error) (Result, error)
+	Deprovision(context.Context, Command, func(context.Context) error, func(context.Context) error) (Result, error)
+}
+
+// DeprovisionPreconditionChecker validates external state that must survive
+// account deprovision. Implementations are read-only and must fail closed when
+// they cannot establish whether the precondition is satisfied.
+type DeprovisionPreconditionChecker interface {
+	CheckDeprovision(context.Context, Command) error
 }
 
 type AdmissionChecker interface {
@@ -50,8 +60,9 @@ type FenceStateReader interface {
 }
 
 type Service struct {
-	store Store
-	fence *LifecycleFence
+	store        Store
+	fence        *LifecycleFence
+	precondition DeprovisionPreconditionChecker
 }
 
 func NewService(store Store, fences ...*LifecycleFence) (*Service, error) {
@@ -65,15 +76,40 @@ func NewService(store Store, fences ...*LifecycleFence) (*Service, error) {
 	return &Service{store: store, fence: fence}, nil
 }
 
+// SetDeprovisionPrecondition binds the read-only external-state check before
+// the service is published. The service reuses the same check at admission
+// and at the store mutation boundary after process-local writers are drained.
+func (s *Service) SetDeprovisionPrecondition(checker DeprovisionPreconditionChecker) error {
+	if s == nil || s.store == nil || s.fence == nil || checker == nil {
+		return ErrInvalid
+	}
+	s.precondition = checker
+	return nil
+}
+
 func (s *Service) Deprovision(ctx context.Context, command Command, externalPurge func(context.Context) error) (Result, error) {
 	if s == nil || s.store == nil || s.fence == nil || ctx == nil || strings.TrimSpace(command.OwnerID) == "" || command.AccountGeneration <= 0 || !validUUID(command.IdempotencyKey) || command.Confirmation != Confirmation || externalPurge == nil {
 		return Result{}, ErrInvalid
+	}
+	checkPrecondition := func(checkCtx context.Context) error {
+		if s.precondition == nil {
+			// A restored durable fence means the database phase already committed;
+			// its replay must finish external cleanup without recreating state.
+			if s.fence.IsSealed() {
+				return nil
+			}
+			return ErrInvalid
+		}
+		return s.precondition.CheckDeprovision(checkCtx, command)
+	}
+	if err := checkPrecondition(ctx); err != nil {
+		return Result{}, err
 	}
 	lease, err := s.fence.BeginPurge(ctx)
 	if err != nil {
 		return Result{}, err
 	}
-	result, err := s.store.Deprovision(ctx, command, externalPurge)
+	result, err := s.store.Deprovision(ctx, command, checkPrecondition, externalPurge)
 	if err != nil {
 		if result.DatabasePurged {
 			lease.Finish()

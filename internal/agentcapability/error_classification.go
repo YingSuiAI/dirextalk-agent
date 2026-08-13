@@ -56,6 +56,8 @@ func classifyCapabilityError(err error) error {
 		return err
 	}
 	switch {
+	case errors.Is(err, coredeprovision.ErrRetainedWorkers):
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", coredeprovision.RetainedWorkersMessage, err)
 	case errors.Is(err, coreextension.ErrInstallBusy):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", capabilityoperation.ExtensionInstallBusyMessage, err)
 	case errors.Is(err, coreextension.ErrInstallationLimit):
@@ -64,6 +66,8 @@ func classifyCapabilityError(err error) error {
 		return capabilityoperation.NewFailure("RESOURCE_EXHAUSTED", capabilityoperation.ExtensionNodeStorageQuotaMessage, err)
 	case errors.Is(err, coreaws.ErrActiveCredentialExists):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Delete the active AWS credential before adding another", err)
+	case errors.Is(err, coreaws.ErrCredentialInUse):
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Destroy retained Workers before deleting this AWS credential", err)
 	}
 	// A missing or unusable explicit tool-model binding is a configuration
 	// prerequisite even when its retained internal cause is a more general

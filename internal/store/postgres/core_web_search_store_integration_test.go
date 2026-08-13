@@ -466,7 +466,7 @@ func TestCoreWebSearchDispatchGuardBlocksCoreDeprovisionUntilProviderFinishes(t 
 			deprovisionDone := make(chan error, 1)
 			deprovision := NewCoreDeprovisionStore(store.pool)
 			go func() {
-				_, deprovisionErr := deprovision.Deprovision(ctx, coredeprovision.Command{OwnerID: ownerID, AccountGeneration: generation, IdempotencyKey: uuid.NewString(), Confirmation: coredeprovision.Confirmation}, func(context.Context) error { return nil })
+				_, deprovisionErr := deprovision.Deprovision(ctx, coredeprovision.Command{OwnerID: ownerID, AccountGeneration: generation, IdempotencyKey: uuid.NewString(), Confirmation: coredeprovision.Confirmation}, func(context.Context) error { return nil }, func(context.Context) error { return nil })
 				deprovisionDone <- deprovisionErr
 			}()
 			select {

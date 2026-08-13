@@ -16,9 +16,28 @@ type fakeStore struct {
 	called  int
 }
 
-func (s *fakeStore) Deprovision(_ context.Context, command Command, external func(context.Context) error) (Result, error) {
+type allowDeprovision struct{}
+
+func (allowDeprovision) CheckDeprovision(context.Context, Command) error { return nil }
+
+func newTestService(t *testing.T, store Store) *Service {
+	t.Helper()
+	service, err := NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetDeprovisionPrecondition(allowDeprovision{}); err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+func (s *fakeStore) Deprovision(_ context.Context, command Command, precondition, external func(context.Context) error) (Result, error) {
 	s.command = command
 	s.called++
+	if err := precondition(context.Background()); err != nil {
+		return Result{}, err
+	}
 	if err := external(context.Background()); err != nil {
 		return Result{}, err
 	}
@@ -27,10 +46,7 @@ func (s *fakeStore) Deprovision(_ context.Context, command Command, external fun
 
 func TestServiceRequiresExplicitConfirmationAndIdentity(t *testing.T) {
 	store := &fakeStore{}
-	service, err := NewService(store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	service := newTestService(t, store)
 	base := Command{OwnerID: "owner", AccountGeneration: 4, IdempotencyKey: uuid.NewString(), Confirmation: Confirmation}
 	if _, err := service.Deprovision(context.Background(), base, func(context.Context) error { return nil }); err != nil {
 		t.Fatalf("valid request rejected: %v", err)
@@ -52,11 +68,20 @@ func TestServiceRequiresExplicitConfirmationAndIdentity(t *testing.T) {
 	}
 }
 
-func TestServicePropagatesExternalPurgeFailure(t *testing.T) {
-	service, err := NewService(&fakeStore{})
+func TestServiceRejectsDeprovisionWithoutBoundPrecondition(t *testing.T) {
+	store := &fakeStore{}
+	service, err := NewService(store)
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, err = service.Deprovision(context.Background(), Command{OwnerID: "owner", AccountGeneration: 1, IdempotencyKey: uuid.NewString(), Confirmation: Confirmation}, func(context.Context) error { return nil })
+	if !errors.Is(err, ErrInvalid) || store.called != 0 {
+		t.Fatalf("unbound precondition err=%v store calls=%d", err, store.called)
+	}
+}
+
+func TestServicePropagatesExternalPurgeFailure(t *testing.T) {
+	service := newTestService(t, &fakeStore{})
 	want := errors.New("external purge unavailable")
 	result, err := service.Deprovision(context.Background(), Command{OwnerID: "owner", AccountGeneration: 1, IdempotencyKey: uuid.NewString(), Confirmation: Confirmation}, func(context.Context) error { return want })
 	if !errors.Is(err, want) {
@@ -71,7 +96,7 @@ type fenceStateStore struct {
 	fenced bool
 }
 
-func (s fenceStateStore) Deprovision(context.Context, Command, func(context.Context) error) (Result, error) {
+func (s fenceStateStore) Deprovision(context.Context, Command, func(context.Context) error, func(context.Context) error) (Result, error) {
 	return Result{}, nil
 }
 func (s fenceStateStore) HasDeprovisionFence(context.Context) (bool, error) { return s.fenced, nil }
@@ -95,7 +120,10 @@ type fencedPurgeStore struct {
 	purgeSeen chan struct{}
 }
 
-func (s *fencedPurgeStore) Deprovision(_ context.Context, _ Command, external func(context.Context) error) (Result, error) {
+func (s *fencedPurgeStore) Deprovision(ctx context.Context, _ Command, precondition, external func(context.Context) error) (Result, error) {
+	if err := precondition(ctx); err != nil {
+		return Result{}, err
+	}
 	s.mu.Lock()
 	s.dbRows = 0
 	s.mu.Unlock()
@@ -106,6 +134,77 @@ func (s *fencedPurgeStore) Deprovision(_ context.Context, _ Command, external fu
 		return Result{DatabasePurged: true}, err
 	}
 	return Result{Status: "deprovisioned", DatabasePurged: true, ExternalPurged: true}, nil
+}
+
+type stagedPrecondition struct {
+	calls  int
+	failAt int
+}
+
+func (p *stagedPrecondition) CheckDeprovision(context.Context, Command) error {
+	p.calls++
+	if p.calls == p.failAt {
+		return ErrRetainedWorkers
+	}
+	return nil
+}
+
+func TestServiceChecksRetainedWorkersBeforeEveryMutationBoundary(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		failAt         int
+		wantStoreCalls int
+	}{
+		{name: "before lifecycle fence", failAt: 1},
+		{name: "inside durable store after lifecycle drain", failAt: 2, wantStoreCalls: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fakeStore{}
+			checker := &stagedPrecondition{failAt: test.failAt}
+			service, err := NewService(store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := service.SetDeprovisionPrecondition(checker); err != nil {
+				t.Fatal(err)
+			}
+			externalCalls := 0
+			_, err = service.Deprovision(context.Background(), Command{OwnerID: "owner", AccountGeneration: 1, IdempotencyKey: uuid.NewString(), Confirmation: Confirmation}, func(context.Context) error {
+				externalCalls++
+				return nil
+			})
+			if !errors.Is(err, ErrRetainedWorkers) {
+				t.Fatalf("deprovision err=%v, want ErrRetainedWorkers", err)
+			}
+			if store.called != test.wantStoreCalls || externalCalls != 0 {
+				t.Fatalf("store calls=%d external calls=%d", store.called, externalCalls)
+			}
+			release, enterErr := service.Enter(context.Background())
+			if enterErr != nil {
+				t.Fatalf("blocked deprovision sealed lifecycle fence: %v", enterErr)
+			}
+			release()
+		})
+	}
+}
+
+func TestServiceRunsAllRetainedWorkerChecksBeforePurge(t *testing.T) {
+	store := &fakeStore{}
+	checker := &stagedPrecondition{}
+	service, err := NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetDeprovisionPrecondition(checker); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Deprovision(context.Background(), Command{OwnerID: "owner", AccountGeneration: 1, IdempotencyKey: uuid.NewString(), Confirmation: Confirmation}, func(context.Context) error { return nil })
+	if err != nil || !result.DatabasePurged || !result.ExternalPurged {
+		t.Fatalf("deprovision result=%+v err=%v", result, err)
+	}
+	if checker.calls != 2 || store.called != 1 {
+		t.Fatalf("precondition calls=%d store calls=%d", checker.calls, store.called)
+	}
 }
 
 func TestServicePurgeDrainsAdmittedMutationBeforeDBAndExternalCleanup(t *testing.T) {
@@ -119,10 +218,7 @@ func TestServicePurgeDrainsAdmittedMutationBeforeDBAndExternalCleanup(t *testing
 		t.Fatal(err)
 	}
 	store := &fencedPurgeStore{dbRows: 1, purgeSeen: make(chan struct{})}
-	service, err := NewService(store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	service := newTestService(t, store)
 	release, err := service.Enter(context.Background())
 	if err != nil {
 		t.Fatal(err)

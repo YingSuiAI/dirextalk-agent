@@ -222,7 +222,9 @@ multi-tenant model.
   whether to run `destroy_worker`; retain is the default and the completion
   itself never destroys the Worker. The client resolves that ID through the
   current Worker inventory before offering the existing identity-bound destroy
-  action.
+  action. Deleting a credential revision or deprovisioning the account is
+  rejected before destructive mutation while an exact-scope retained Worker
+  is not destroyed; the owner must destroy every such Worker and retry.
 - Every `agent.knowledge.v1` mutation, including `index_sources`, requires an
   explicit canonical UUID `idempotency_key`; missing or malformed keys are
   rejected, while read operations do not require one. Neutral

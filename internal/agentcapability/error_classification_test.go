@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
@@ -50,6 +52,25 @@ func TestClassifyCapabilityErrorMapsProductGRPCStatus(t *testing.T) {
 				t.Fatal("classified failure did not retain its internal cause")
 			}
 		})
+	}
+}
+
+func TestClassifyCapabilityErrorPublishesRetainedWorkerPrecondition(t *testing.T) {
+	classified := classifyCapabilityError(coredeprovision.ErrRetainedWorkers)
+	code, message, ok := capabilityoperation.FailureDetails(classified)
+	if !ok || code != "PRECONDITION_FAILED" || message != coredeprovision.RetainedWorkersMessage || !errors.Is(classified, coredeprovision.ErrRetainedWorkers) {
+		t.Fatalf("code=%q message=%q classified=%v ok=%v", code, message, classified, ok)
+	}
+	if strings.Contains(classified.Error(), coredeprovision.ErrRetainedWorkers.Error()) {
+		t.Fatalf("classified error leaked internal detail: %q", classified.Error())
+	}
+}
+
+func TestClassifyCapabilityErrorPublishesCredentialRetainedWorkerPrecondition(t *testing.T) {
+	classified := classifyCapabilityError(coreaws.ErrCredentialInUse)
+	code, message, ok := capabilityoperation.FailureDetails(classified)
+	if !ok || code != "PRECONDITION_FAILED" || message != "Destroy retained Workers before deleting this AWS credential" || !errors.Is(classified, coreaws.ErrCredentialInUse) {
+		t.Fatalf("code=%q message=%q classified=%v ok=%v", code, message, classified, ok)
 	}
 }
 

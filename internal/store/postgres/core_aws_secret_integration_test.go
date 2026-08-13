@@ -125,6 +125,9 @@ func TestCoreAWSPostgresSecretEnvelopeAndDeprovision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := deprovision.SetDeprovisionPrecondition(allowCoreDeprovision{}); err != nil {
+		t.Fatal(err)
+	}
 	result, err := deprovision.Deprovision(ctx, coredeprovision.Command{OwnerID: "db-secret-sentinel", AccountGeneration: 1, IdempotencyKey: uuid.NewString(), Confirmation: coredeprovision.Confirmation}, func(context.Context) error { return nil })
 	if err != nil {
 		t.Fatal(err)
@@ -151,6 +154,12 @@ func TestCoreAWSPostgresSecretEnvelopeAndDeprovision(t *testing.T) {
 	if _, err := webSearchStore.Resolve(ctx, "db-secret-sentinel", 1); !errors.Is(err, corewebsearch.ErrNotConfigured) {
 		t.Fatalf("deprovision fence allowed stale Web Search resolve: %v", err)
 	}
+}
+
+type allowCoreDeprovision struct{}
+
+func (allowCoreDeprovision) CheckDeprovision(context.Context, coredeprovision.Command) error {
+	return nil
 }
 
 func clearTestBytes(values ...[]byte) {

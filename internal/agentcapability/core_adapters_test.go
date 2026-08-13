@@ -1526,8 +1526,11 @@ type fakeDeprovisionStore struct {
 	command coredeprovision.Command
 }
 
-func (s *fakeDeprovisionStore) Deprovision(_ context.Context, command coredeprovision.Command, external func(context.Context) error) (coredeprovision.Result, error) {
+func (s *fakeDeprovisionStore) Deprovision(_ context.Context, command coredeprovision.Command, precondition, external func(context.Context) error) (coredeprovision.Result, error) {
 	s.command = command
+	if err := precondition(context.Background()); err != nil {
+		return coredeprovision.Result{}, err
+	}
 	if err := external(context.Background()); err != nil {
 		return coredeprovision.Result{}, err
 	}
@@ -1538,6 +1541,9 @@ func TestAccountDeprovisionCapabilityUsesAuthenticatedOwnerAndRejectsBodyIdentit
 	store := &fakeDeprovisionStore{}
 	service, err := coredeprovision.NewService(store)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetDeprovisionPrecondition(fakeDeprovisionPrecondition{}); err != nil {
 		t.Fatal(err)
 	}
 	capability := &coreAccountCapability{service: service, purge: func(context.Context) error { return nil }}
@@ -1558,6 +1564,12 @@ func TestAccountDeprovisionCapabilityUsesAuthenticatedOwnerAndRejectsBodyIdentit
 	if _, err := capability.HandleOperation(ctx, "deprovision_account", []byte(`{"owner_id":"attacker","idempotency_key":"`+uuid.NewString()+`","confirmation":"deprovision_account"}`)); !errors.Is(err, coredeprovision.ErrInvalid) {
 		t.Fatalf("caller-supplied owner was accepted: %v", err)
 	}
+}
+
+type fakeDeprovisionPrecondition struct{}
+
+func (fakeDeprovisionPrecondition) CheckDeprovision(context.Context, coredeprovision.Command) error {
+	return nil
 }
 
 func TestAccountDeprovisionDescriptorIsNeutralAndExplicit(t *testing.T) {

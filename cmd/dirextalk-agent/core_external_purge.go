@@ -1,13 +1,49 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 )
+
+type retainedWorkerDeprovisionChecker struct {
+	store *sshworker.FileStore
+}
+
+func composeRetainedWorkerDeprovisionChecker(cfg config.Config) (*retainedWorkerDeprovisionChecker, error) {
+	store, err := sshworker.NewFileStore(filepath.Join(cfg.CoreExtensionStagingRoot, "cloud-worker", "state"))
+	if err != nil {
+		return nil, fmt.Errorf("open retained Worker state: %w", err)
+	}
+	return &retainedWorkerDeprovisionChecker{store: store}, nil
+}
+
+func (c *retainedWorkerDeprovisionChecker) CheckDeprovision(ctx context.Context, command coredeprovision.Command) error {
+	if c == nil || c.store == nil || ctx == nil || strings.TrimSpace(command.OwnerID) == "" || command.AccountGeneration <= 0 {
+		return coredeprovision.ErrInvalid
+	}
+	retained, err := c.store.HasRetainedWorkers(ctx, sshworker.OwnerAuthority{OwnerID: command.OwnerID, AccountGeneration: uint64(command.AccountGeneration)})
+	if err != nil {
+		return fmt.Errorf("check retained Workers: %w", err)
+	}
+	if retained {
+		return coredeprovision.ErrRetainedWorkers
+	}
+	return nil
+}
+
+func (c *retainedWorkerDeprovisionChecker) HasRetainedWorkersForCredential(ctx context.Context, credentialID string, revision uint64) (bool, error) {
+	if c == nil || c.store == nil {
+		return false, coredeprovision.ErrInvalid
+	}
+	return c.store.HasRetainedWorkersForCredential(ctx, credentialID, revision)
+}
 
 // composeCoreExternalPurge binds all configured Agent-owned roots before the
 // server publishes any capability. It intentionally runs independently of

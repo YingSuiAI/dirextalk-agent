@@ -105,6 +105,17 @@ func serveCore(cfg config.Config) error {
 	if err := deprovisionService.RestoreFence(processCtx); err != nil {
 		return fmt.Errorf("restore account deprovision fence: %w", err)
 	}
+	var retainedWorkers *retainedWorkerDeprovisionChecker
+	if !lifecycleFence.IsSealed() {
+		var checkerErr error
+		retainedWorkers, checkerErr = composeRetainedWorkerDeprovisionChecker(cfg)
+		if checkerErr != nil {
+			return checkerErr
+		}
+		if err := deprovisionService.SetDeprovisionPrecondition(retainedWorkers); err != nil {
+			return fmt.Errorf("bind account deprovision precondition: %w", err)
+		}
+	}
 	configStore := postgres.NewCoreAgentConfigStore(store)
 	webSearchService, err := corewebsearch.NewService(postgres.NewCoreWebSearchStore(store), corewebsearch.NewTavilyClient())
 	if err != nil {
@@ -227,6 +238,9 @@ func serveCore(cfg config.Config) error {
 			knowledgeComposition.Close()
 		}
 		return fmt.Errorf("initialize Core AWS composition: %w", err)
+	}
+	if awsComposition != nil && retainedWorkers != nil {
+		awsComposition.domain.SetCredentialDeleteGuard(retainedWorkers)
 	}
 	extensionComposition, err := composeCoreExtension(cfg, store)
 	if err != nil {
