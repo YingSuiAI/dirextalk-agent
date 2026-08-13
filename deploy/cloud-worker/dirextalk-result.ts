@@ -166,6 +166,17 @@ export function compactDirextalkContext<T>(
     compactAt(resultIndex, RECENT_TOOL_TEXT_CHARS);
     if (estimatedDirextalkMessageTokens(result) <= target) return result as unknown as T[];
   }
+
+  // Retain two recent rounds when the authorized window permits it. If their
+  // call arguments alone are too large, fall back to the newest complete
+  // round instead of aborting a request that can still fit safely.
+  for (;;) {
+    const rounds = completedToolRounds(result);
+    if (rounds.length <= 1) break;
+    const oldest = rounds[0];
+    result.splice(oldest.start, oldest.end - oldest.start + 1);
+    if (estimatedDirextalkMessageTokens(result) <= target) return result as unknown as T[];
+  }
   throw new Error("Dirextalk context guard could not fit the conversation inside the authorized model window");
 }
 

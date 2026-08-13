@@ -714,6 +714,60 @@ func TestCloudWorkerLegacyV1PlanIsReadOnlyAtConfirmationAndClaim(t *testing.T) {
 				confirmationState, taskStatus, taskFailure, executionState, beginCount, reservationCount)
 		}
 	})
+
+	t.Run("historical canceled task reaches zero mutation cleanup", func(t *testing.T) {
+		h := newPGCloudWorkerHarness(t)
+		defer h.cleanup()
+		offer := convertOfferToLegacyV1(t, h, h.propose(t))
+		queued, err := offer.Execution.Transition(cloudworker.StateQueued, h.now.Add(time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		queuedRaw, err := marshalCloudWorkerExecution(queued)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_confirmations SET state='confirmed',revision=revision+1,
+			updated_at=$2 WHERE confirmation_id=$1`, offer.Confirmation.ConfirmationID, h.now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_tasks SET status='queued',revision=revision+1,
+			updated_at=$2 WHERE task_id=$1`, offer.Task.ID, h.now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_cloud_worker_executions SET state=$2,revision=$3,digest=$4,
+			execution_json=$5,updated_at=$6 WHERE execution_id=$1`, queued.ExecutionID, queued.State,
+			queued.Revision, queued.Digest, queuedRaw, queued.UpdatedAt); err != nil {
+			t.Fatal(err)
+		}
+		requested, err := h.cloud.RequestCancel(h.ctx, h.owner, h.generation, queued.ExecutionID,
+			queued.Revision, uuid.NewString())
+		if err != nil || requested.TerminalIntent != string(cloudworker.StateCanceled) {
+			t.Fatalf("legacy cancel=%+v err=%v", requested, err)
+		}
+		claimed, _, err := h.tasks.ClaimNextDue(h.ctx, "legacy-v1-cancel", h.now.Add(2*time.Second), 30*time.Minute, 4)
+		if err != nil || claimed.ID != offer.Task.ID || claimed.Status != coretask.StatusRunning {
+			t.Fatalf("legacy canceled claim=%+v err=%v", claimed, err)
+		}
+		var beginCount int
+		if err = h.store.pool.QueryRow(h.ctx, `SELECT count(*) FROM core_cloud_worker_begin_authorizations
+			WHERE execution_id=$1`, offer.Execution.ExecutionID).Scan(&beginCount); err != nil {
+			t.Fatal(err)
+		}
+		if beginCount != 0 {
+			t.Fatalf("legacy canceled task created begin authority: %d", beginCount)
+		}
+		cleaning, err := h.cloud.BeginCleanup(h.ctx, claimed, requested.Revision, cloudworker.StateCanceled,
+			"user_canceled", "Cloud Worker task canceled")
+		if err != nil || cleaning.State != cloudworker.StateCleaning {
+			t.Fatalf("legacy canceled cleanup=%+v err=%v", cleaning, err)
+		}
+		terminal, outbox, err := h.cloud.CancelExecution(h.ctx, claimed, cleaning.Revision,
+			"user_canceled", "Cloud Worker task canceled")
+		if err != nil || terminal.State != cloudworker.StateCanceled || outbox.ExecutionID != offer.Execution.ExecutionID {
+			t.Fatalf("legacy canceled terminal=%+v outbox=%+v err=%v", terminal, outbox, err)
+		}
+	})
 }
 
 func TestCloudWorkerPostgresExpiredDomainDeadlineReclaimsLease(t *testing.T) {

@@ -104,20 +104,30 @@ func (s *CoreTaskStore) ClaimNextDue(ctx context.Context, holder string, at time
 			return coretask.Task{}, coretask.Lease{}, planErr
 		}
 		if plan.ModelAuthorization.ContextWindow < cloudworker.MinimumPiContextWindow {
-			confirmation, confirmationErr := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1 FOR UPDATE`, plan.ConfirmationID))
-			if confirmationErr != nil || confirmation.TaskID != t.ID || confirmation.State != coreconfirmation.StateConfirmed {
-				if confirmationErr != nil {
+			var terminalIntent string
+			if planErr = tx.QueryRow(ctx, `SELECT terminal_intent FROM core_cloud_worker_executions
+				WHERE execution_id=$1 AND task_id=$2`, plan.ExecutionID, t.ID).Scan(&terminalIntent); planErr != nil {
+				return coretask.Task{}, coretask.Lease{}, planErr
+			}
+			// Pre-dispatch cancellation intentionally leaves a queued task with an
+			// expired confirmation. Let the existing zero-mutation cleanup path
+			// claim it; it cannot create begin authority or launch a Worker.
+			if terminalIntent != string(cloudworker.StateCanceled) {
+				confirmation, confirmationErr := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1 FOR UPDATE`, plan.ConfirmationID))
+				if confirmationErr != nil || confirmation.TaskID != t.ID || confirmation.State != coreconfirmation.StateConfirmed {
+					if confirmationErr != nil {
+						return coretask.Task{}, coretask.Lease{}, confirmationErr
+					}
+					return coretask.Task{}, coretask.Lease{}, cloudworker.ErrStaleAuthorization
+				}
+				if _, confirmationErr = terminalizeExpiredTx(ctx, tx, s.store.instanceID, confirmation, at.UTC(), "runtime_contract_upgraded"); confirmationErr != nil {
 					return coretask.Task{}, coretask.Lease{}, confirmationErr
 				}
-				return coretask.Task{}, coretask.Lease{}, cloudworker.ErrStaleAuthorization
+				if confirmationErr = tx.Commit(ctx); confirmationErr != nil {
+					return coretask.Task{}, coretask.Lease{}, confirmationErr
+				}
+				return coretask.Task{}, coretask.Lease{}, coretask.ErrNotFound
 			}
-			if _, confirmationErr = terminalizeExpiredTx(ctx, tx, s.store.instanceID, confirmation, at.UTC(), "runtime_contract_upgraded"); confirmationErr != nil {
-				return coretask.Task{}, coretask.Lease{}, confirmationErr
-			}
-			if confirmationErr = tx.Commit(ctx); confirmationErr != nil {
-				return coretask.Task{}, coretask.Lease{}, confirmationErr
-			}
-			return coretask.Task{}, coretask.Lease{}, coretask.ErrNotFound
 		}
 	}
 	// CLOUD_WORKER owns its execution and cleanup deadlines in the durable
