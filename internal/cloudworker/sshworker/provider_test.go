@@ -347,11 +347,22 @@ func TestAmbiguousCreateReconcilesAndDestroyRequiresExactAuthorization(t *testin
 	}
 }
 
-type fakeStatus struct{ seen []WorkerRecord }
+type fakeStatus struct {
+	seen       []WorkerRecord
+	quoteCalls int
+	quoteErr   error
+}
 
 func (status *fakeStatus) Observe(_ context.Context, worker WorkerRecord) (RunnerMetrics, error) {
 	status.seen = append(status.seen, worker)
 	return RunnerMetrics{LastSeen: time.Now(), Load1: 0.5}, nil
+}
+func (status *fakeStatus) HourlyQuote(context.Context, CredentialIdentity, string, int32) (HourlyQuote, error) {
+	status.quoteCalls++
+	if status.quoteErr != nil {
+		return HourlyQuote{}, status.quoteErr
+	}
+	return HourlyQuote{Currency: "USD", MicrosPerHour: 25_000, ObservedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}, nil
 }
 func TestListWorkersRefreshesPublicIPBeforeReadOnlyRunnerProbe(t *testing.T) {
 	cloud := newFakeAWS()
@@ -368,14 +379,29 @@ func TestListWorkersRefreshesPublicIPBeforeReadOnlyRunnerProbe(t *testing.T) {
 	worker.Instance.PublicIP = "203.0.113.10"
 	store.workers[r.ExecutionID] = worker
 	statuses, err := provider.ListWorkers(context.Background(), r.Credential)
-	if err != nil || len(statuses) != 1 || statuses[0].EC2State != "running" || statuses[0].PublicIP != "203.0.113.20" || statuses[0].Runner.Load1 != 0.5 {
+	if err != nil || len(statuses) != 1 || statuses[0].EC2State != "running" || statuses[0].PublicIP != "203.0.113.20" || statuses[0].Runner.Load1 != 0.5 || statuses[0].Quote.MicrosPerHour != 25_000 {
 		t.Fatalf("statuses=%#v err=%v", statuses, err)
 	}
-	if len(status.seen) != 1 || status.seen[0].Instance.PublicIP != "203.0.113.20" || store.workers[r.ExecutionID].Instance.PublicIP != "203.0.113.20" {
+	if len(status.seen) != 1 || status.quoteCalls != 1 || status.seen[0].Instance.PublicIP != "203.0.113.20" || store.workers[r.ExecutionID].Instance.PublicIP != "203.0.113.20" {
 		t.Fatalf("runner probe did not use persisted live IP: seen=%#v stored=%#v", status.seen, store.workers[r.ExecutionID])
 	}
 	if keys.ensure != ensureBeforeList || keys.lookup != 0 {
 		t.Fatalf("list created key material: ensure=%d lookup=%d", keys.ensure, keys.lookup)
+	}
+}
+
+func TestListWorkersOmitsUnavailableLiveQuote(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	status := &fakeStatus{quoteErr: errors.New("pricing unavailable")}
+	request := requestFixture()
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store, status)
+	if _, err := provider.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	workers, err := provider.ListWorkers(context.Background(), request.Credential)
+	if err != nil || len(workers) != 1 || workers[0].Quote != (HourlyQuote{}) {
+		t.Fatalf("workers=%#v err=%v", workers, err)
 	}
 }
 

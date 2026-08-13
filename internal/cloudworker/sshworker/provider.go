@@ -467,6 +467,7 @@ func (provider *Provider) ListWorkers(ctx context.Context, credential Credential
 		}
 		if provider.status != nil {
 			status.Runner, _ = provider.status.Observe(ctx, worker)
+			status.Quote, _ = provider.status.HourlyQuote(ctx, credential, worker.InstanceType, worker.VolumeGiB)
 		}
 		result = append(result, status)
 	}

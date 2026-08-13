@@ -265,6 +265,7 @@ type HourlyQuote struct {
 }
 type StatusSource interface {
 	Observe(context.Context, WorkerRecord) (RunnerMetrics, error)
+	HourlyQuote(context.Context, CredentialIdentity, string, int32) (HourlyQuote, error)
 }
 
 type WorkerStatus struct {
