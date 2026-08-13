@@ -211,21 +211,20 @@ func (store *SSHWorkerStore) terminal(ctx context.Context, run sshflow.Run, work
 	next.ProviderMutationStarted = true
 	next.TerminalIntent = ""
 	next.ArtifactIDs = artifactIDs
+	next.WorkerID, next.PersistentWorker = workerResult.WorkerID, true
 	if terminal == cloudworker.StateFailed {
 		next.FailureCode, next.FailureSummary = code, summary
 	}
-	// Deliberately do not call the legacy Execution.Seal: its exact eight-item
-	// ephemeral cleanup invariant belongs to the removed S3/Worker-Control path.
-	// The simple SSH projection is persisted independently below.
-	projectionRaw, _ := json.Marshal(map[string]any{
-		"execution_id": plan.ExecutionID, "plan_id": plan.PlanID, "task_id": plan.TaskID,
-		"state": terminal, "worker_id": workerResult.WorkerID, "persistent_worker": true,
-		"artifact_ids": artifactIDs, "summary": summary, "failure_code": code, "updated_at": now,
-	})
-	digest := sha256.Sum256(projectionRaw)
+	if err = next.Seal(); err != nil {
+		return err
+	}
+	executionRaw, err := json.Marshal(next)
+	if err != nil {
+		return err
+	}
 	executionUpdate, err := tx.Exec(ctx, `UPDATE core_cloud_worker_executions SET state=$2,revision=revision+1,digest=$3,
 		provider_mutation_started=true,terminal_intent='',needs_reconcile=false,execution_json=$4,updated_at=$5
-		WHERE execution_id=$1 AND revision=$6`, plan.ExecutionID, terminal, hex.EncodeToString(digest[:]), projectionRaw, now, currentExecution.Revision)
+		WHERE execution_id=$1 AND revision=$6`, plan.ExecutionID, terminal, next.Digest, executionRaw, now, currentExecution.Revision)
 	if err != nil {
 		return err
 	}

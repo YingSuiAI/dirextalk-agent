@@ -238,9 +238,20 @@ type CommandSSHExecutor struct {
 	SSHPath string
 }
 
+type remoteRuntimeStatus struct {
+	Phase    string `json:"phase"`
+	ExitCode int    `json:"exit_code"`
+}
+
+type remoteArtifact struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
 func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHRequest) (ExecutionResult, error) {
 	if request.Host == "" || request.User == "" || !filepath.IsAbs(request.PrivateKeyPath) ||
-		len(request.WorkerScript) == 0 || request.MaxWorkspaceBytes <= 0 || request.MaxResultBytes <= 0 || request.Sink == nil {
+		len(request.WorkerScript) == 0 || !request.Runtime.valid() || request.Runtime.TaskID != request.ExecutionID ||
+		request.MaxWorkspaceBytes <= 0 || request.MaxResultBytes <= 0 || request.Sink == nil {
 		return ExecutionResult{}, ErrInvalid
 	}
 	sshPath := executor.SSHPath
@@ -270,83 +281,117 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 	if err := sshWithInput(ctx, sshPath, base, "cat > /tmp/dirextalk-worker/worker.sh && chmod 700 /tmp/dirextalk-worker/worker.sh", bytes.NewReader(request.WorkerScript)); err != nil {
 		return ExecutionResult{}, err
 	}
-	command := fmt.Sprintf("printf '%%s  %%s\\n' %s /tmp/dirextalk-worker/worker.sh | sha256sum -c - && cd /tmp/dirextalk-worker/workspace && /bin/bash /tmp/dirextalk-worker/worker.sh",
+	bootstrap := fmt.Sprintf("printf '%%s  %%s\\n' %s /tmp/dirextalk-worker/worker.sh | sha256sum -c - && cd /tmp/dirextalk-worker/workspace && /bin/bash /tmp/dirextalk-worker/worker.sh",
 		shellQuote(request.WorkerScriptSHA256))
-	stdout := &limitBuffer{limit: request.MaxResultBytes}
-	stderr := &limitBuffer{limit: request.MaxResultBytes}
-	process := exec.CommandContext(ctx, sshPath, append(base, command)...)
-	process.Stdout, process.Stderr = stdout, stderr
-	runErr := process.Run()
-	exitCode := 0
-	if runErr != nil {
-		var exitError *exec.ExitError
-		if errors.As(runErr, &exitError) {
-			exitCode = exitError.ExitCode()
-		} else {
-			return ExecutionResult{}, runErr
-		}
+	if output, err := exec.CommandContext(ctx, sshPath, append(base, bootstrap)...).CombinedOutput(); err != nil {
+		return ExecutionResult{}, fmt.Errorf("worker bootstrap failed: %w: %s", err, output)
 	}
-	if stdout.exceeded || stderr.exceeded {
-		return ExecutionResult{}, ErrResultTooLarge
-	}
-	if err := request.Sink.StoreText(ctx, stdout.Bytes(), stderr.Bytes(), exitCode); err != nil {
-		return ExecutionResult{}, err
-	}
-	artifactCount, err := executor.collectArtifacts(ctx, sshPath, base, request)
+	start, err := request.Runtime.Start()
 	if err != nil {
 		return ExecutionResult{}, err
 	}
-	return ExecutionResult{ExitCode: exitCode, StdoutBytes: int64(stdout.Len()), StderrBytes: int64(stderr.Len()), ArtifactCount: artifactCount}, nil
+	if err = sshWithInput(ctx, sshPath, base, start.Shell, bytes.NewReader(start.Stdin)); err != nil {
+		return ExecutionResult{}, err
+	}
+	status, err := executor.waitRuntime(ctx, sshPath, base, request.Runtime)
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+	logCommand, err := request.Runtime.Log(0)
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+	logBody, err := sshOutput(ctx, sshPath, base, logCommand.Shell, request.MaxResultBytes)
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+	if err := request.Sink.StoreText(ctx, logBody, nil, status.ExitCode); err != nil {
+		return ExecutionResult{}, err
+	}
+	artifactCount, err := executor.collectRuntimeArtifacts(ctx, sshPath, base, request)
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+	return ExecutionResult{Summary: strings.TrimSpace(string(logBody)), ExitCode: status.ExitCode, StdoutBytes: int64(len(logBody)), ArtifactCount: artifactCount}, nil
 }
 
-func (executor CommandSSHExecutor) collectArtifacts(ctx context.Context, sshPath string, base []string, request SSHRequest) (int, error) {
-	command := exec.CommandContext(ctx, sshPath, append(base, "tar -cf - -C /tmp/dirextalk-worker/artifacts .")...)
-	pipe, err := command.StdoutPipe()
+func (executor CommandSSHExecutor) waitRuntime(ctx context.Context, sshPath string, base []string, protocol RuntimeProtocol) (remoteRuntimeStatus, error) {
+	for {
+		command, err := protocol.Status()
+		if err != nil {
+			return remoteRuntimeStatus{}, err
+		}
+		body, err := sshOutput(ctx, sshPath, base, command.Shell, 64<<10)
+		if err != nil {
+			return remoteRuntimeStatus{}, err
+		}
+		var status remoteRuntimeStatus
+		if json.Unmarshal(body, &status) != nil {
+			return remoteRuntimeStatus{}, ErrInvalid
+		}
+		switch status.Phase {
+		case "completed", "failed":
+			return status, nil
+		case "running":
+		default:
+			return remoteRuntimeStatus{}, ErrInvalid
+		}
+		select {
+		case <-ctx.Done():
+			return remoteRuntimeStatus{}, ctx.Err()
+		case <-timeAfter(2):
+		}
+	}
+}
+
+func (executor CommandSSHExecutor) collectRuntimeArtifacts(ctx context.Context, sshPath string, base []string, request SSHRequest) (int, error) {
+	listCommand, err := request.Runtime.Artifact("")
 	if err != nil {
 		return 0, err
 	}
-	var stderr bytes.Buffer
-	command.Stderr = &stderr
-	if err := command.Start(); err != nil {
+	body, err := sshOutput(ctx, sshPath, base, listCommand.Shell, 1<<20)
+	if err != nil {
 		return 0, err
 	}
-	reader := tar.NewReader(io.LimitReader(pipe, request.MaxResultBytes+(2<<20)))
-	total := int64(0)
-	count := 0
-	entries := 0
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	count, total := 0, int64(0)
 	for {
-		header, err := reader.Next()
-		if errors.Is(err, io.EOF) {
-			break
+		var artifact remoteArtifact
+		if err = decoder.Decode(&artifact); errors.Is(err, io.EOF) {
+			return count, nil
 		}
-		if err != nil {
-			command.Wait()
-			return count, err
-		}
-		entries++
-		if entries > 1024 {
-			command.Wait()
+		if err != nil || artifact.Size < 0 || total+artifact.Size > request.MaxResultBytes {
 			return count, ErrResultTooLarge
 		}
-		if header.Typeflag == tar.TypeDir {
-			continue
+		command, commandErr := request.Runtime.Artifact(artifact.Name)
+		if commandErr != nil {
+			return count, commandErr
 		}
-		clean := filepath.ToSlash(filepath.Clean(header.Name))
-		if header.Typeflag != tar.TypeReg || clean == "." || strings.HasPrefix(clean, "../") || filepath.IsAbs(clean) || header.Size < 0 || total+header.Size > request.MaxResultBytes {
-			command.Wait()
-			return count, ErrResultTooLarge
+		data, commandErr := sshOutput(ctx, sshPath, base, command.Shell, artifact.Size)
+		if commandErr != nil || int64(len(data)) != artifact.Size {
+			return count, errors.Join(ErrInvalid, commandErr)
 		}
-		if err := request.Sink.StoreArtifact(ctx, clean, io.LimitReader(reader, header.Size), header.Size); err != nil {
-			command.Wait()
+		if err = request.Sink.StoreArtifact(ctx, artifact.Name, bytes.NewReader(data), artifact.Size); err != nil {
 			return count, err
 		}
-		total += header.Size
+		total += artifact.Size
 		count++
 	}
-	if err := command.Wait(); err != nil {
-		return count, fmt.Errorf("artifact collection failed: %w: %s", err, stderr.String())
+}
+
+func sshOutput(ctx context.Context, sshPath string, base []string, remote string, limit int64) ([]byte, error) {
+	buffer := &limitBuffer{limit: limit}
+	command := exec.CommandContext(ctx, sshPath, append(base, remote)...)
+	command.Stdout = buffer
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("SSH command failed: %w: %s", err, stderr.String())
 	}
-	return count, nil
+	if buffer.exceeded {
+		return nil, ErrResultTooLarge
+	}
+	return bytes.Clone(buffer.Bytes()), nil
 }
 
 func retrySSH(ctx context.Context, sshPath string, base []string, remote string) error {

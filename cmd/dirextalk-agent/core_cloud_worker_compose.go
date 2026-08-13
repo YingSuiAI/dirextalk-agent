@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
 	"github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
@@ -32,11 +33,12 @@ import (
 )
 
 type coreCloudWorkerComposition struct {
-	domain        *cloudworker.Service
-	intrinsic     coreconversation.IntrinsicResolver
-	executionPort coreexecutionv2.CloudWorkerExecutionPort
-	taskHandler   coreruntime.TaskHandler
-	outboxStore   cloudworker.CompletionOutboxStore
+	domain           *cloudworker.Service
+	intrinsic        coreconversation.IntrinsicResolver
+	executionPort    coreexecutionv2.CloudWorkerExecutionPort
+	taskHandler      coreruntime.TaskHandler
+	outboxStore      cloudworker.CompletionOutboxStore
+	workerCapability agentcapability.Capability
 
 	workerControl *controlserver.Server
 	modelRelay    *cloudWorkerModelRelayServer

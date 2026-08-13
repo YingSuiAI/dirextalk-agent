@@ -399,7 +399,6 @@ func serveCore(cfg config.Config) error {
 	var capabilityServer *capabilityserver.Server
 	var productCapabilityClient *capabilityclient.Client
 	var voiceCallbackServer *http.Server
-	cloudPrivateStarted := false
 	if cfg.CoreVoiceEnabled && cfg.CoreVoiceCallbackEnabled {
 		callbackHandler, callbackErr := corevoice.NewCallbackHandler(corevoice.CallbackHandlerConfig{
 			Service: voiceService, AccountGeneration: cfg.CapabilityAccountGeneration, ReadTimeout: cfg.CoreVoiceCallbackReadTimeout,
@@ -443,28 +442,9 @@ func serveCore(cfg config.Config) error {
 		}
 		slog.Info("dirextalk-agent Product Capability client ready", "server", cfg.ProductCapabilityAddress)
 	}
-	if cloudComposition != nil && cloudComposition.taskHandler != nil {
-		if productCapabilityClient == nil {
-			return fmt.Errorf("Cloud Worker completion callback requires Product Capability")
-		}
-		if err := cloudComposition.BindCompletion(productCapabilityClient, cfg.CoreCloudWorker.CompletionOutboxInterval); err != nil {
-			return fmt.Errorf("bind Cloud Worker completion outbox: %w", err)
-		}
-		if err := cloudComposition.StartPrivate(); err != nil {
-			return fmt.Errorf("start Cloud Worker private listeners: %w", err)
-		}
-		cloudPrivateStarted = true
-	}
 	if cloudComposition != nil {
 		conversation.SetIntrinsicResolver(cloudComposition.intrinsic)
 	}
-	defer func() {
-		if cloudPrivateStarted {
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), cfg.CoreShutdownGrace)
-			_ = cloudComposition.StopPrivate(closeCtx)
-			closeCancel()
-		}
-	}()
 	// Compose model-facing tools in one resolver chain. Agent-owned built-ins
 	// remain available without Product Capability, but inject tools only for an
 	// authenticated Capability call.
@@ -570,10 +550,16 @@ func serveCore(cfg config.Config) error {
 				}
 				return awsComposition.domain
 			}(),
-			WebSearch:   webSearchService,
-			TextTools:   textToolService,
-			ImageTools:  imageToolService,
-			Voice:       voiceService,
+			WebSearch:  webSearchService,
+			TextTools:  textToolService,
+			ImageTools: imageToolService,
+			Voice:      voiceService,
+			Worker: func() agentcapability.Capability {
+				if cloudComposition == nil {
+					return nil
+				}
+				return cloudComposition.workerCapability
+			}(),
 			Deprovision: deprovisionService,
 			DeprovisionPurge: func(ctx context.Context) error {
 				return externalPurge.Purge(ctx)
@@ -634,9 +620,6 @@ func serveCore(cfg config.Config) error {
 	}
 	return runCoreLifecycle(processCtx, listener, coreServer, scheduleLoop, workerPool, cfg.CoreShutdownGrace, func() {
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), cfg.CoreShutdownGrace)
-		if cloudPrivateStarted {
-			_ = cloudComposition.StopPrivate(closeCtx)
-		}
 		if capabilityServer != nil {
 			_ = capabilityServer.Stop(closeCtx)
 		}

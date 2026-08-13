@@ -105,6 +105,7 @@ type ExecuteRequest struct {
 	VolumeGiB          int32
 	WorkerScript       []byte
 	WorkerScriptSHA256 string
+	Runtime            RuntimeProtocol
 	WorkspacePath      string
 	MaxWorkspaceBytes  int64
 	MaxResultBytes     int64
@@ -113,7 +114,7 @@ type ExecuteRequest struct {
 
 func (request ExecuteRequest) validate() error {
 	if request.Credential.validate() != nil || request.Discovery.validate() != nil || !validID(request.ExecutionID) || strings.TrimSpace(request.InstanceType) == "" ||
-		request.VolumeGiB < 8 || request.VolumeGiB > 16_384 || len(request.WorkerScript) == 0 || len(request.WorkerScript) > maxWorkerScriptBytes ||
+		request.VolumeGiB < 8 || request.VolumeGiB > 16_384 || len(request.WorkerScript) == 0 || len(request.WorkerScript) > maxWorkerScriptBytes || !request.Runtime.valid() || request.Runtime.TaskID != request.ExecutionID ||
 		request.MaxWorkspaceBytes <= 0 || request.MaxWorkspaceBytes > maxWorkspaceBytes || request.MaxResultBytes <= 0 || request.MaxResultBytes > maxResultBytes || request.Sink == nil {
 		return ErrInvalid
 	}
@@ -161,6 +162,7 @@ type KeyMaterial interface {
 type SSHRequest struct {
 	ExecutionID, Host, User, PrivateKeyPath, WorkerScriptSHA256, WorkspacePath string
 	WorkerScript                                                               []byte
+	Runtime                                                                    RuntimeProtocol
 	MaxWorkspaceBytes, MaxResultBytes                                          int64
 	Sink                                                                       ResultSink
 }
@@ -185,6 +187,8 @@ type ResultSink interface {
 	StoreArtifact(context.Context, string, io.Reader, int64) error
 }
 type ExecutionResult struct {
+	WorkerID                 string
+	Summary                  string
 	ExitCode                 int
 	StdoutBytes, StderrBytes int64
 	ArtifactCount            int

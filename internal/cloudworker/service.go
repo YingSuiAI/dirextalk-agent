@@ -368,11 +368,14 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 			OutboundProxyServerName:        s.defaults.NetworkPolicy.OutboundProxyServerName,
 			OutboundProxyTrustBundleSHA256: s.defaults.NetworkPolicy.OutboundProxyTrustBundleSHA256,
 		},
-		ArtifactGrant: ArtifactGrant{
-			Bucket: strings.TrimSpace(s.defaults.ArtifactBucket), KeyPrefix: strings.TrimSpace(s.defaults.ArtifactBasePrefix) + executionID + "/",
-			KMSKeyARN: strings.TrimSpace(s.defaults.ArtifactKMSKeyARN), Versioned: s.defaults.ArtifactVersioned,
-			RetentionSeconds: s.defaults.ArtifactRetentionSeconds,
-		},
+		ArtifactGrant: func() ArtifactGrant {
+			if strings.TrimSpace(s.defaults.ArtifactBucket) == "" {
+				return ArtifactGrant{}
+			}
+			return ArtifactGrant{Bucket: strings.TrimSpace(s.defaults.ArtifactBucket), KeyPrefix: strings.TrimSpace(s.defaults.ArtifactBasePrefix) + executionID + "/",
+				KMSKeyARN: strings.TrimSpace(s.defaults.ArtifactKMSKeyARN), Versioned: s.defaults.ArtifactVersioned,
+				RetentionSeconds: s.defaults.ArtifactRetentionSeconds}
+		}(),
 		WorkerBootstrap:          s.defaults.WorkerBootstrap,
 		ModelRelay:               s.defaults.ModelRelay,
 		Limits:                   limits,

@@ -25,6 +25,7 @@ var (
 	coreTextToolsRequiredOperations   = []string{"get_config", "update_config", "execute"}
 	coreImageToolsRequiredOperations  = []string{"upload_begin", "upload_append", "upload_commit", "extract_text", "translate_text"}
 	coreStaticSitesRequiredOperations = []string{"list_releases", "delete_release"}
+	coreWorkersRequiredOperations     = []string{"list_workers", "get_worker", "destroy_worker", "bind_domain", "unbind_domain"}
 )
 
 // newCoreInfoProvider exposes only non-secret process metadata. The embedded
@@ -108,6 +109,11 @@ func coreDescriptorTokens(descriptor *capv1.CapabilityDescriptor) []string {
 		return []string{"model.profile", "model_profiles.server", "model_roles.server"}
 	case "agent.knowledge.v1":
 		return []string{"knowledge", "memory.server"}
+	case "agent.worker.v1":
+		if coreDescriptorHasOperations(descriptor, coreWorkersRequiredOperations) {
+			return []string{"workers.server"}
+		}
+		return nil
 	case "agent.schedules.v1":
 		return []string{"schedule", "schedules.server"}
 	case "agent.tasks.v1":

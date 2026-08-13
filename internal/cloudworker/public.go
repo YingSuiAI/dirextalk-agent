@@ -148,6 +148,8 @@ type PublicExecution struct {
 	WorkspaceMode         WorkspaceMode  `json:"workspace_mode"`
 	QuoteDigest           string         `json:"quote_digest"`
 	ExecutionDigest       string         `json:"execution_digest"`
+	WorkerID              string         `json:"worker_id,omitempty"`
+	PersistentWorker      bool           `json:"persistent_worker,omitempty"`
 	Cleanup               CleanupSummary `json:"cleanup"`
 	ArtifactIDs           []string       `json:"artifact_ids"`
 	FailureCode           string         `json:"failure_code"`
@@ -166,7 +168,7 @@ func (e Execution) Public() (PublicExecution, error) {
 		PlanID: e.PlanID, PlanRevision: e.PlanRevision, PlanDigest: e.PlanDigest, TaskID: e.TaskID,
 		ConfirmationID: e.ConfirmationID, ConversationID: e.ConversationID, TurnID: e.TurnID,
 		Status: e.State, Revision: e.Revision, Digest: e.Digest, WorkspaceMode: e.WorkspaceMode,
-		QuoteDigest: e.QuoteDigest, ExecutionDigest: e.ExecutionDigest, Cleanup: e.Cleanup,
+		QuoteDigest: e.QuoteDigest, ExecutionDigest: e.ExecutionDigest, WorkerID: e.WorkerID, PersistentWorker: e.PersistentWorker, Cleanup: e.Cleanup,
 		ArtifactIDs: append(make([]string, 0, len(e.ArtifactIDs)), e.ArtifactIDs...), FailureCode: e.FailureCode,
 		FailureSummary: e.FailureSummary, CancellationRequested: e.TerminalIntent == string(StateCanceled),
 		CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt,

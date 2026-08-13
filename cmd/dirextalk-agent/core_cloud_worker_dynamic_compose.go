@@ -2,10 +2,15 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
 
+	workercap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 )
@@ -59,5 +64,30 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize dynamic cloud_worker_propose: %w", err)
 	}
-	return &coreCloudWorkerComposition{domain: domain, intrinsic: intrinsic}, nil
+	root := filepath.Join(cfg.CoreExtensionStagingRoot, "cloud-worker")
+	artifacts, err := localartifact.NewRepository(filepath.Join(root, "artifacts"))
+	if err != nil {
+		return nil, fmt.Errorf("initialize SSH Worker local artifacts: %w", err)
+	}
+	executor, err := newSSHWorkerExecutor(authority, exact, artifacts, root)
+	if err != nil {
+		return nil, fmt.Errorf("initialize SSH Worker executor: %w", err)
+	}
+	flowStore, err := postgres.NewSSHWorkerStore(store, "cloud-worker/artifacts")
+	if err != nil {
+		return nil, fmt.Errorf("initialize SSH Worker flow store: %w", err)
+	}
+	handler, err := sshflow.NewHandler(flowStore, executor)
+	if err != nil {
+		return nil, fmt.Errorf("initialize SSH Worker task handler: %w", err)
+	}
+	management, err := workercap.NewCapability(workercap.Bindings{Credentials: sshWorkerCredentials{executor}, Workers: executor, Domains: sshWorkerDomains{executor}})
+	if err != nil {
+		return nil, fmt.Errorf("initialize SSH Worker management: %w", err)
+	}
+	executionPort, err := coreexecutionv2.NewLocalCloudWorkerExecutionPort(postgres.NewCloudWorkerStore(store), artifacts)
+	if err != nil {
+		return nil, fmt.Errorf("initialize SSH Worker Execution V2 reads: %w", err)
+	}
+	return &coreCloudWorkerComposition{domain: domain, intrinsic: intrinsic, taskHandler: handler.TaskHandler(), workerCapability: management, executionPort: executionPort}, nil
 }

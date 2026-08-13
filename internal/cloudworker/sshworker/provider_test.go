@@ -204,6 +204,7 @@ func TestExecuteRequiresConfirmationOnlyWhenCreatingAndRetainsWorker(t *testing.
 	}
 	second := requestFixture()
 	second.ExecutionID = "execution-2"
+	second.Runtime.TaskID = second.ExecutionID
 	second.Confirmation = Confirmation{}
 	if _, err := provider.Execute(context.Background(), second); err != nil {
 		t.Fatal(err)
@@ -293,7 +294,7 @@ func discoveryFixture() Discovery {
 func requestFixture() ExecuteRequest {
 	script := []byte("echo ok")
 	sum := sha256.Sum256(script)
-	return ExecuteRequest{ExecutionID: "execution-1", Credential: credentialFixture(), Confirmation: Confirmation{Confirmed: true, Proof: "confirmation-1"}, Discovery: discoveryFixture(), InstanceType: "t3.small", VolumeGiB: 16, WorkerScript: script, WorkerScriptSHA256: hex.EncodeToString(sum[:]), MaxWorkspaceBytes: 1 << 20, MaxResultBytes: 1 << 20, Sink: &fakeSink{}}
+	return ExecuteRequest{ExecutionID: "execution-1", Credential: credentialFixture(), Confirmation: Confirmation{Confirmed: true, Proof: "confirmation-1"}, Discovery: discoveryFixture(), InstanceType: "t3.small", VolumeGiB: 16, WorkerScript: script, WorkerScriptSHA256: hex.EncodeToString(sum[:]), Runtime: RuntimeProtocol{TaskID: "execution-1", encodedModelKey: "c2VjcmV0"}, MaxWorkspaceBytes: 1 << 20, MaxResultBytes: 1 << 20, Sink: &fakeSink{}}
 }
 
 var _ = bytes.Clone

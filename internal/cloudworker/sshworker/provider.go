@@ -92,11 +92,12 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	}
 	result, runErr := provider.ssh.Execute(ctx, SSHRequest{ExecutionID: request.ExecutionID, Host: target, User: worker.SSHUser,
 		PrivateKeyPath: privateKey, WorkerScript: request.WorkerScript, WorkerScriptSHA256: request.WorkerScriptSHA256,
-		WorkspacePath: request.WorkspacePath, MaxWorkspaceBytes: request.MaxWorkspaceBytes, MaxResultBytes: request.MaxResultBytes, Sink: request.Sink})
+		Runtime: request.Runtime, WorkspacePath: request.WorkspacePath, MaxWorkspaceBytes: request.MaxWorkspaceBytes, MaxResultBytes: request.MaxResultBytes, Sink: request.Sink})
 	if runErr != nil {
 		provider.failExecution(ctx, &execution, &worker)
 		return ExecutionResult{}, runErr
 	}
+	result.WorkerID = worker.WorkerID
 	execution.Result, execution.Phase = result, TaskCompleted
 	if err := provider.saveExecution(ctx, &execution); err != nil {
 		return result, err

@@ -7,12 +7,69 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
 
 type cloudWorkerExecutionAdapter struct {
 	store     CloudWorkerAuthorityStore
 	downloads CloudWorkerArtifactDownloader
+}
+
+type localCloudWorkerExecutionAdapter struct {
+	*cloudWorkerExecutionAdapter
+	artifacts *localartifact.Repository
+}
+
+// NewLocalCloudWorkerExecutionPort keeps SSH Worker output on this Agent.
+func NewLocalCloudWorkerExecutionPort(store CloudWorkerAuthorityStore, artifacts *localartifact.Repository) (CloudWorkerExecutionPort, error) {
+	if store == nil || artifacts == nil {
+		return nil, ErrInvalid
+	}
+	return &localCloudWorkerExecutionAdapter{cloudWorkerExecutionAdapter: &cloudWorkerExecutionAdapter{store: store}, artifacts: artifacts}, nil
+}
+
+func (adapter *localCloudWorkerExecutionAdapter) GetArtifact(ctx context.Context, request CloudWorkerArtifactGetRequest) (CloudWorkerObject, error) {
+	if adapter == nil || adapter.artifacts == nil || !validCloudWorkerAuthority(request.Authority) || !coretask.ValidUUID(request.ArtifactID) {
+		return nil, ErrInvalid
+	}
+	artifact, err := adapter.artifacts.Get(ctx, localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, request.ArtifactID)
+	if err != nil {
+		return nil, mapLocalArtifactError(err)
+	}
+	return CloudWorkerObject{"owner_id": artifact.OwnerID, "account_generation": artifact.AccountGeneration,
+		"artifact_id": artifact.ArtifactID, "execution_id": artifact.ExecutionID, "kind": artifact.Kind,
+		"name": artifact.Name, "media_type": artifact.MediaType, "size_bytes": uint64(artifact.SizeBytes),
+		"sha256": artifact.SHA256, "status": "verified", "created_at": formatCloudWorkerTime(artifact.CreatedAt)}, nil
+}
+
+func (adapter *localCloudWorkerExecutionAdapter) DownloadArtifact(ctx context.Context, request CloudWorkerArtifactDownloadRequest) (CloudWorkerArtifactChunk, error) {
+	if adapter == nil || adapter.artifacts == nil || !validCloudWorkerAuthority(request.Authority) || !coretask.ValidUUID(request.ArtifactID) ||
+		request.OffsetBytes > uint64(^uint64(0)>>1) || request.MaxChunkBytes == 0 || request.MaxChunkBytes > MaxCloudWorkerArtifactDownloadChunkBytes {
+		return CloudWorkerArtifactChunk{}, ErrInvalid
+	}
+	chunk, err := adapter.artifacts.Download(ctx, localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration},
+		request.ArtifactID, int64(request.OffsetBytes), int64(request.MaxChunkBytes))
+	if err != nil {
+		return CloudWorkerArtifactChunk{}, mapLocalArtifactError(err)
+	}
+	return CloudWorkerArtifactChunk{Authority: request.Authority, ArtifactID: chunk.Artifact.ArtifactID,
+		ExecutionID: chunk.Artifact.ExecutionID, OffsetBytes: uint64(chunk.OffsetBytes), Data: append([]byte(nil), chunk.Data...),
+		ChunkSHA256: chunk.ChunkSHA256, ArtifactSHA256: chunk.Artifact.SHA256, SizeBytes: uint64(chunk.Artifact.SizeBytes),
+		NextOffsetBytes: uint64(chunk.NextOffsetBytes), EOF: chunk.EOF}, nil
+}
+
+func mapLocalArtifactError(err error) error {
+	switch {
+	case errors.Is(err, localartifact.ErrInvalid):
+		return ErrInvalid
+	case errors.Is(err, localartifact.ErrNotFound):
+		return ErrNotFound
+	case errors.Is(err, localartifact.ErrConflict):
+		return ErrConflict
+	default:
+		return err
+	}
 }
 
 // NewCloudWorkerExecutionPort exposes only secret-free Cloud Worker
@@ -240,6 +297,7 @@ func cloudWorkerExecutionProjection(execution cloudworker.Execution) CloudWorker
 		"status": string(execution.State), "revision": execution.Revision, "digest": execution.Digest,
 		"workspace_mode": string(execution.WorkspaceMode), "quote_digest": execution.QuoteDigest,
 		"execution_digest": execution.ExecutionDigest, "cleanup": cleanup, "artifact_ids": artifactIDs,
+		"worker_id": execution.WorkerID, "persistent_worker": execution.PersistentWorker,
 		"failure_code": execution.FailureCode, "failure_summary": execution.FailureSummary,
 		"cancellation_requested": execution.TerminalIntent == string(cloudworker.StateCanceled),
 		"created_at":             formatCloudWorkerTime(execution.CreatedAt), "updated_at": formatCloudWorkerTime(execution.UpdatedAt),

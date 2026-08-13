@@ -58,6 +58,7 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 			coreSkillsRequiredOperations...,
 		)...),
 		coreInfoDescriptor("agent.aws.v1", true),
+		coreInfoDescriptor("agent.worker.v1", true, coreWorkersRequiredOperations...),
 		coreInfoDescriptor("agent.models.v1", true),
 		coreInfoDescriptor("agent.knowledge.v1", true),
 		coreInfoDescriptor("agent.schedules.v1", true),
@@ -104,6 +105,7 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 		"text_tools.server",
 		"voice.server",
 		"web_search.server",
+		"workers.server",
 	}
 	if !reflect.DeepEqual(backends.Core.Capabilities, want) {
 		t.Fatalf("Core capabilities = %#v, want %#v", backends.Core.Capabilities, want)

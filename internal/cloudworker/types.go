@@ -321,6 +321,8 @@ type Execution struct {
 	ModelBindingDigest      string         `json:"model_binding_digest"`
 	QuoteDigest             string         `json:"quote_digest"`
 	ExecutionDigest         string         `json:"execution_digest"`
+	WorkerID                string         `json:"worker_id,omitempty"`
+	PersistentWorker        bool           `json:"persistent_worker,omitempty"`
 	ProviderMutationStarted bool           `json:"-"`
 	TerminalIntent          string         `json:"-"`
 	NeedsReconcile          bool           `json:"-"`
@@ -875,7 +877,7 @@ func validateAWS(value AWSBinding) error {
 }
 
 func validateCompute(value ComputeSpec) error {
-	if strings.TrimSpace(value.InstanceType) == "" || (value.Architecture != "x86_64" && value.Architecture != "arm64") || !strings.HasPrefix(value.RootDeviceName, "/dev/") || len(value.RootDeviceName) > 64 || strings.ContainsAny(value.RootDeviceName, "\r\n\x00") || value.VolumeGiB < 8 || value.VolumeGiB > 16384 || value.VolumeType != "gp3" || value.VolumeIOPS < 3000 || value.VolumeIOPS > 16000 || value.VolumeThroughputMiB < 125 || value.VolumeThroughputMiB > 1000 || strings.TrimSpace(value.AMIID) == "" || !validDigest(value.AMIDigest) || !validDigest(value.WorkerReleaseDigest) || !validDigest(value.PiRuntimeDigest) || !validDigest(value.HostNetworkPolicySHA256) {
+	if strings.TrimSpace(value.InstanceType) == "" || (value.Architecture != "x86_64" && value.Architecture != "arm64") || !strings.HasPrefix(value.RootDeviceName, "/dev/") || len(value.RootDeviceName) > 64 || strings.ContainsAny(value.RootDeviceName, "\r\n\x00") || value.VolumeGiB < 8 || value.VolumeGiB > 16384 || value.VolumeType != "gp3" || value.VolumeIOPS < 3000 || value.VolumeIOPS > 16000 || value.VolumeThroughputMiB < 125 || value.VolumeThroughputMiB > 1000 {
 		return ErrInvalid
 	}
 	return nil
@@ -1106,25 +1108,28 @@ func (e *Execution) Seal() error {
 	}
 	e.ArtifactIDs = ids
 	fullyDestroyed := e.Cleanup.ResourcesTotal > 0 && e.Cleanup.ResourcesTotal == e.Cleanup.ResourcesVerifiedDestroyed
+	if e.PersistentWorker && strings.TrimSpace(e.WorkerID) == "" {
+		return ErrInvalid
+	}
 	if e.Cleanup.ResourcesVerifiedDestroyed > e.Cleanup.ResourcesTotal || e.Cleanup.VerifiedDestroyed != fullyDestroyed {
 		return ErrInvalid
 	}
 	if e.Cleanup.VerifiedDestroyed && e.Cleanup.VerifiedAt == nil {
 		return ErrInvalid
 	}
-	if e.Cleanup.ResourcesTotal > 0 && isTerminalExecutionState(e.State) && !e.Cleanup.VerifiedDestroyed {
+	if !e.PersistentWorker && e.Cleanup.ResourcesTotal > 0 && isTerminalExecutionState(e.State) && !e.Cleanup.VerifiedDestroyed {
 		return ErrInvalid
 	}
-	if isTerminalExecutionState(e.State) && e.ProviderMutationStarted &&
+	if !e.PersistentWorker && isTerminalExecutionState(e.State) && e.ProviderMutationStarted &&
 		e.Cleanup.ResourcesTotal != expectedEphemeralAWSResourceCount() {
 		return ErrInvalid
 	}
-	if (e.State == StateSucceeded && (!e.ProviderMutationStarted || !e.Cleanup.VerifiedDestroyed)) ||
+	if !e.PersistentWorker && ((e.State == StateSucceeded && (!e.ProviderMutationStarted || !e.Cleanup.VerifiedDestroyed)) ||
 		((e.State == StateFailed || e.State == StateCanceled) && e.ProviderMutationStarted && !e.Cleanup.VerifiedDestroyed) ||
-		((e.State == StateRejected || e.State == StateExpired) && (e.ProviderMutationStarted || e.Cleanup.ResourcesTotal != 0)) {
+		((e.State == StateRejected || e.State == StateExpired) && (e.ProviderMutationStarted || e.Cleanup.ResourcesTotal != 0))) {
 		return ErrInvalid
 	}
-	e.Digest = digestValue(struct {
+	baseDigest := struct {
 		ExecutionID, PlanDigest, ModelBindingDigest, QuoteDigest, ExecutionDigest string
 		AccountGeneration                                                         uint64
 		State                                                                     ExecutionState
@@ -1135,7 +1140,15 @@ func (e *Execution) Seal() error {
 		Cleanup                                                                   CleanupSummary
 		Artifacts                                                                 []string
 		FailureCode, FailureSummary                                               string
-	}{e.ExecutionID, e.PlanDigest, e.ModelBindingDigest, e.QuoteDigest, e.ExecutionDigest, e.AccountGeneration, e.State, e.Revision, e.ProviderMutationStarted, e.TerminalIntent, e.NeedsReconcile, e.Cleanup, e.ArtifactIDs, e.FailureCode, e.FailureSummary})
+	}{e.ExecutionID, e.PlanDigest, e.ModelBindingDigest, e.QuoteDigest, e.ExecutionDigest, e.AccountGeneration, e.State, e.Revision, e.ProviderMutationStarted, e.TerminalIntent, e.NeedsReconcile, e.Cleanup, e.ArtifactIDs, e.FailureCode, e.FailureSummary}
+	if e.PersistentWorker {
+		e.Digest = digestValue(struct {
+			Base     any
+			WorkerID string
+		}{baseDigest, e.WorkerID})
+	} else {
+		e.Digest = digestValue(baseDigest)
+	}
 	return nil
 }
 

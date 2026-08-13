@@ -34,6 +34,7 @@ type Request struct {
 	Objective         string
 	AWS               cloudworker.AWSBinding
 	Compute           cloudworker.ComputeSpec
+	Limits            cloudworker.Limits
 	ConfirmationProof string
 	ModelSnapshot     coremodel.ExecutionSnapshot
 }
@@ -97,9 +98,13 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 		OwnerID: run.Plan.OwnerID, AccountGeneration: run.Plan.AccountGeneration,
 		ExecutionID: run.Plan.ExecutionID, Objective: run.Plan.Objective,
 		AWS: run.Plan.AWS, Compute: run.Plan.Compute,
+		Limits:            run.Plan.Limits,
 		ConfirmationProof: run.ConfirmationProof, ModelSnapshot: run.ModelSnapshot,
 	})
 	if executeErr != nil {
+		if strings.TrimSpace(result.WorkerID) == "" {
+			result.WorkerID = run.Plan.ExecutionID
+		}
 		code := "ssh_worker_failed"
 		summary := strings.TrimSpace(executeErr.Error())
 		if summary == "" {
