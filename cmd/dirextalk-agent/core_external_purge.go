@@ -28,11 +28,11 @@ func (c *retainedWorkerDeprovisionChecker) CheckDeprovision(ctx context.Context,
 	if c == nil || c.store == nil || ctx == nil || strings.TrimSpace(command.OwnerID) == "" || command.AccountGeneration <= 0 {
 		return coredeprovision.ErrInvalid
 	}
-	retained, err := c.store.HasRetainedWorkers(ctx, sshworker.OwnerAuthority{OwnerID: command.OwnerID, AccountGeneration: uint64(command.AccountGeneration)})
+	identities, err := c.store.ListCredentialIdentities(ctx)
 	if err != nil {
 		return fmt.Errorf("check retained Workers: %w", err)
 	}
-	if retained {
+	if len(identities) != 0 {
 		return coredeprovision.ErrRetainedWorkers
 	}
 	return nil

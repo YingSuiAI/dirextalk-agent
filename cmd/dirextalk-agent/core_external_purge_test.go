@@ -86,17 +86,18 @@ func TestCoreExternalPurgeRejectsRetainedWorkersWithoutDeletingState(t *testing.
 	}
 }
 
-func TestRetainedWorkerDeprovisionCheckerUsesExactOwnerGeneration(t *testing.T) {
+func TestRetainedWorkerDeprovisionCheckerBlocksAnyWorkerScope(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		worker     *sshworker.WorkerRecord
-		owner      string
-		generation int64
+		name        string
+		worker      *sshworker.WorkerRecord
+		owner       string
+		generation  int64
+		wantBlocked bool
 	}{
 		{name: "empty state", owner: "owner", generation: 7},
 		{name: "destroyed Worker", worker: workerFixturePtr(retainedWorkerFixture(sshworker.WorkerDestroyed, "owner", 7)), owner: "owner", generation: 7},
-		{name: "other owner", worker: workerFixturePtr(retainedWorkerFixture(sshworker.WorkerIdle, "other", 7)), owner: "owner", generation: 7},
-		{name: "other generation", worker: workerFixturePtr(retainedWorkerFixture(sshworker.WorkerIdle, "owner", 6)), owner: "owner", generation: 7},
+		{name: "other owner", worker: workerFixturePtr(retainedWorkerFixture(sshworker.WorkerIdle, "other", 7)), owner: "owner", generation: 7, wantBlocked: true},
+		{name: "other generation", worker: workerFixturePtr(retainedWorkerFixture(sshworker.WorkerIdle, "owner", 6)), owner: "owner", generation: 7, wantBlocked: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			staging := t.TempDir()
@@ -109,7 +110,11 @@ func TestRetainedWorkerDeprovisionCheckerUsesExactOwnerGeneration(t *testing.T) 
 					t.Fatal(err)
 				}
 			}
-			if err := checker.CheckDeprovision(context.Background(), deprovisionCommand(test.owner, test.generation)); err != nil {
+			err = checker.CheckDeprovision(context.Background(), deprovisionCommand(test.owner, test.generation))
+			if test.wantBlocked && !errors.Is(err, coredeprovision.ErrRetainedWorkers) {
+				t.Fatalf("global retained Worker err=%v, want ErrRetainedWorkers", err)
+			}
+			if !test.wantBlocked && err != nil {
 				t.Fatalf("satisfied precondition rejected: %v", err)
 			}
 		})
