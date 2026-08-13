@@ -19,6 +19,15 @@ import (
 
 type registryErrorCapability struct{ err error }
 
+type registryWorkerCapability struct{}
+
+func (registryWorkerCapability) Descriptor() *capv1.CapabilityDescriptor {
+	return &capv1.CapabilityDescriptor{CapabilityId: "agent.worker.v1", Readiness: true}
+}
+func (registryWorkerCapability) HandleOperation(context.Context, string, []byte) ([]byte, error) {
+	return []byte(`{}`), nil
+}
+
 type registryCloudWorkerPort struct{}
 
 func (registryCloudWorkerPort) GetPlan(context.Context, coreexecutionv2.CloudWorkerPlanGetRequest) (coreexecutionv2.CloudWorkerObject, error) {
@@ -155,6 +164,15 @@ func TestCoreRegistryDoesNotPublishUnboundOrLegacyCapabilities(t *testing.T) {
 				t.Fatalf("production descriptor advertises an unimplemented operation: %s/%s", descriptor.GetCapabilityId(), operation.GetOperationId())
 			}
 		}
+	}
+}
+
+func TestCoreRegistryPublishesWorkerOnlyWhenComposed(t *testing.T) {
+	if _, ok := NewCoreRegistry(CoreBindings{}).Get("agent.worker.v1"); ok {
+		t.Fatal("unbound Worker capability was published")
+	}
+	if _, ok := NewCoreRegistry(CoreBindings{Worker: registryWorkerCapability{}}).Get("agent.worker.v1"); !ok {
+		t.Fatal("composed Worker capability was not published")
 	}
 }
 

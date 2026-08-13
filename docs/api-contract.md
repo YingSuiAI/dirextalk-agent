@@ -204,6 +204,17 @@ multi-tenant model.
   bytes. Agent-owned secret fields use the configured encrypted-at-rest store.
   Exactly one credential may be active: concurrent creates are serialized and
   a second create is rejected until the current credential is deleted.
+- Optional `agent.worker.v1` publishes only after the persistent SSH Worker
+  manager, the one current verified AWS credential source, and the Route53
+  domain port are composed. `list_workers` and `get_worker` expose the exact
+  AWS resource identity, observed EC2 state and ordinary auto-assigned public
+  IPv4, Worker/task phase, server load and last-seen time, live hourly quote,
+  and optional workload/domain status. A domain is optional per workload;
+  `bind_domain` and `unbind_domain` pass one exact confirmation digest/proof to
+  the Route53 port, which maps the A record to the current public IPv4 and
+  performs read-back. There is no EIP field or operation. `destroy_worker`
+  requires explicit authorization and the complete identity returned by
+  list/get; a busy or changed resource identity fails closed.
 - Every `agent.knowledge.v1` mutation, including `index_sources`, requires an
   explicit canonical UUID `idempotency_key`; missing or malformed keys are
   rejected, while read operations do not require one. Neutral

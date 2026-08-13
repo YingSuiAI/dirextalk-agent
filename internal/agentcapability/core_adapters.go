@@ -67,6 +67,7 @@ type CoreBindings struct {
 	Deprovision      *coredeprovision.Service
 	DeprovisionPurge func(context.Context) error
 	Misc             MiscBindings
+	Worker           Capability
 }
 
 func NewCoreRegistry(bindings CoreBindings) *Registry {
@@ -81,6 +82,9 @@ func NewCoreRegistry(bindings CoreBindings) *Registry {
 	}
 	if bindings.AWS != nil {
 		r.Register(NewCoreAWSCapability(bindings.AWS))
+	}
+	if bindings.Worker != nil {
+		r.Register(bindings.Worker)
 	}
 	if bindings.WebSearch != nil {
 		r.Register(NewCoreWebSearchCapability(bindings.WebSearch))

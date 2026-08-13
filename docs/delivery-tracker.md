@@ -70,6 +70,11 @@ contract](message-server-integration-development-contract.md), and
   limits, and the closed Knowledge quota status/error contract.
 - Typed Core AWS credentials, plans, confirmation-bound CloudControl changes,
   and `WorkloadService` planning/confirmation with a fenced `WORKLOAD` Task.
+- Optional `agent.worker.v1` has closed owner-client list/get/destroy and
+  Route53 bind/unbind adapters for the maximum-five persistent SSH Worker
+  pool. It reports the current ordinary public IPv4 and optional
+  workload/domain state, never EIP; production publication still requires the
+  Worker, verified-credential, and domain ports.
 - Neutral Capability Knowledge mutations now require explicit UUID idempotency
   keys, and AWS credential tests have durable, secret-free replay receipts.
   Provider tests use a persisted claim outside database locks; same-key active
