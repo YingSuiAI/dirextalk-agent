@@ -134,7 +134,7 @@ func stagingFixture(t *testing.T, now time.Time) (Plan, Execution, LaunchPrerequ
 	if err != nil {
 		t.Fatal(err)
 	}
-	model := ModelAuthorization{ModelProfileID: uuid.NewString(), ModelProfileRevision: 2, Provider: "openai_compatible", Model: "gpt-test", Interface: "openai_compatible", MaximumOutputTokens: 4096, CredentialVersion: 4, CredentialBindingDigest: digestValue("credential")}
+	model := ModelAuthorization{ModelProfileID: uuid.NewString(), ModelProfileRevision: 2, Provider: "openai_compatible", Model: "gpt-test", Interface: "openai_compatible", MaximumOutputTokens: 4096, ContextWindow: 65536, CredentialVersion: 4, CredentialBindingDigest: digestValue("credential")}
 	offer, err := service.Propose(context.Background(), ProposeCommand{
 		OwnerID: "@owner:example.test", AccountGeneration: 7, IdempotencyKey: uuid.NewString(), ConversationID: uuid.NewString(), TurnID: uuid.NewString(),
 		TurnLeaseID: uuid.NewString(), TurnLeaseEpoch: 2, ExpectedTurnRevision: 1, Objective: "edit input", ObjectiveSummary: "edit input",

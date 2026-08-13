@@ -21,13 +21,13 @@ func TestExactModelResolverRequiresCompleteSnapshotAndReturnsDestroyableCredenti
 	profile := coremodel.Profile{
 		ID: uuid.NewString(), DisplayName: "Cloud model", Provider: coremodel.ProviderOpenAICompatible,
 		BaseURL: "https://openrouter.ai/api/v1", Model: "gpt-test", APIKey: "provider-key-value",
-		MaxOutputTokens: 4096, Revision: 7, CredentialVersion: 3,
+		MaxOutputTokens: 4096, ContextWindow: 65536, Revision: 7, CredentialVersion: 3,
 	}
 	snapshot := coremodel.SnapshotFromProfile(profile)
 	authorization := cloudworker.ModelAuthorization{
 		ModelProfileID: profile.ID, ModelProfileRevision: uint64(profile.Revision),
 		Provider: string(profile.Provider), Interface: modelrelay.InterfaceOpenAICompatible,
-		Model: profile.Model, MaximumOutputTokens: uint64(profile.MaxOutputTokens), CredentialVersion: uint64(profile.CredentialVersion),
+		Model: profile.Model, MaximumOutputTokens: uint64(profile.MaxOutputTokens), ContextWindow: uint64(profile.ContextWindow), CredentialVersion: uint64(profile.CredentialVersion),
 		CredentialBindingDigest: snapshot.Digest(),
 	}
 	if err := authorization.Seal(); err != nil {
@@ -65,12 +65,12 @@ func TestExactModelResolverRejectsRevisionCredentialAndEndpointDrift(t *testing.
 	profile := coremodel.Profile{
 		ID: uuid.NewString(), DisplayName: "Cloud model", Provider: coremodel.ProviderOpenAICompatible,
 		BaseURL: "https://model.example.test/v1", Model: "gpt-test", APIKey: "provider-key-value",
-		MaxOutputTokens: 4096, Revision: 7, CredentialVersion: 3,
+		MaxOutputTokens: 4096, ContextWindow: 65536, Revision: 7, CredentialVersion: 3,
 	}
 	snapshot := coremodel.SnapshotFromProfile(profile)
 	authorization := cloudworker.ModelAuthorization{
 		ModelProfileID: profile.ID, ModelProfileRevision: 7, Provider: string(profile.Provider),
-		Interface: modelrelay.InterfaceOpenAICompatible, Model: profile.Model, MaximumOutputTokens: uint64(profile.MaxOutputTokens), CredentialVersion: 3,
+		Interface: modelrelay.InterfaceOpenAICompatible, Model: profile.Model, MaximumOutputTokens: uint64(profile.MaxOutputTokens), ContextWindow: uint64(profile.ContextWindow), CredentialVersion: 3,
 		CredentialBindingDigest: snapshot.Digest(),
 	}
 	if err := authorization.Seal(); err != nil {
@@ -106,7 +106,7 @@ func TestExactModelResolverRebuildsCurrentAuthorizationAfterRotation(t *testing.
 	profile := coremodel.Profile{
 		ID: uuid.NewString(), DisplayName: "Cloud model", Provider: coremodel.ProviderOpenAICompatible,
 		BaseURL: "https://model.example.test/v1", Model: "gpt-test", APIKey: "provider-key-value",
-		MaxOutputTokens: 4096, Revision: 7, CredentialVersion: 3,
+		MaxOutputTokens: 4096, ContextWindow: 65536, Revision: 7, CredentialVersion: 3,
 	}
 	previous, err := cloudworker.ModelAuthorizationFromSnapshot(coremodel.SnapshotFromProfile(profile))
 	if err != nil {
@@ -144,7 +144,7 @@ func TestExactModelResolverCurrentAuthorizationFailsClosed(t *testing.T) {
 	profile := coremodel.Profile{
 		ID: uuid.NewString(), DisplayName: "Cloud model", Provider: coremodel.ProviderOpenAICompatible,
 		BaseURL: "https://model.example.test/v1", Model: "gpt-test", APIKey: "provider-key-value",
-		MaxOutputTokens: 4096, Revision: 7, CredentialVersion: 3,
+		MaxOutputTokens: 4096, ContextWindow: 65536, Revision: 7, CredentialVersion: 3,
 	}
 	previous, err := cloudworker.ModelAuthorizationFromSnapshot(coremodel.SnapshotFromProfile(profile))
 	if err != nil {

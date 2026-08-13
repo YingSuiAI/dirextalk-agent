@@ -265,6 +265,9 @@ func classifyPiProviderFailure(message string) error {
 		code = FailureCodeModelBudgetExhausted
 	case strings.HasPrefix(normalized, "429"), strings.Contains(normalized, "rate_limit"):
 		code = FailureCodeProviderRateLimit
+	case strings.HasPrefix(normalized, "413"),
+		strings.Contains(normalized, "context_request_too_large"):
+		code = FailureCodeContextLimit
 	case strings.HasPrefix(normalized, "400"), strings.HasPrefix(normalized, "404"),
 		strings.HasPrefix(normalized, "422"), strings.Contains(normalized, "invalid_request"):
 		code = FailureCodeProviderRequest

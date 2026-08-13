@@ -282,7 +282,7 @@ func workerControlRuntimeFixture(t *testing.T, executionID, taskID string) (clou
 	relayURL := "https://model-relay.example.test/v1"
 	relayDigest := sha256.Sum256([]byte(relayURL))
 	task := cloudruntime.Task{
-		SchemaVersion: cloudruntime.TaskSchemaV1, Recipe: cloudruntime.RecipeEphemeralPiTask,
+		SchemaVersion: cloudruntime.TaskSchemaV2, Recipe: cloudruntime.RecipeEphemeralPiTask,
 		Adapter: cloudruntime.AdapterPiJSONTaskV1, TaskID: taskID, ExecutionID: executionID,
 		Objective: "Render the approved result", InputManifestSHA256: hex.EncodeToString(manifestDigest[:]),
 		WorkspaceMode: cloudruntime.WorkspaceNone, PiVersion: "1.0.0",

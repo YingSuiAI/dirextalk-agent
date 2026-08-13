@@ -307,9 +307,10 @@ func supportedPiModel(model QualifiedModel) bool {
 
 func writePiModelsConfig(configRoot string, task Task) error {
 	model := map[string]any{
-		"id":        task.Model,
-		"reasoning": true,
-		"maxTokens": task.MaxOutputTokens,
+		"id":            task.Model,
+		"reasoning":     true,
+		"maxTokens":     task.MaxOutputTokens,
+		"contextWindow": task.ModelContextWindow,
 	}
 	var api string
 	switch task.ModelInterface {

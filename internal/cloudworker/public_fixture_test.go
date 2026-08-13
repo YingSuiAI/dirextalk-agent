@@ -87,7 +87,7 @@ func buildCloudWorkerPublicFixture(t *testing.T) cloudWorkerPublicFixture {
 		ModelAuthorization: ModelAuthorization{
 			ModelProfileID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", ModelProfileRevision: 4,
 			Provider: "openai", Model: "gpt-fixture", Interface: "openai_responses",
-			MaximumOutputTokens: 4096, CredentialVersion: 9,
+			MaximumOutputTokens: 4096, ContextWindow: 65536, CredentialVersion: 9,
 			CredentialBindingDigest: digestValue("fixture-model-credential"),
 		},
 	})
@@ -200,6 +200,11 @@ func TestCloudWorkerPublicFixtureV1(t *testing.T) {
 	}
 	expected = append(expected, '\n')
 	path := filepath.Join("testdata", "cloud_worker_public_v1.json")
+	if os.Getenv("UPDATE_CLOUD_WORKER_PUBLIC_FIXTURE") == "1" {
+		if err := os.WriteFile(path, expected, 0o644); err != nil {
+			t.Fatalf("update public fixture: %v", err)
+		}
+	}
 	actual, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read public fixture: %v\nexpected fixture:\n%s", err, expected)

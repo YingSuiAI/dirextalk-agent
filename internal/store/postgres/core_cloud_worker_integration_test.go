@@ -118,7 +118,7 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 		t.Fatal(err)
 	}
 	authorization := cloudworker.ModelAuthorization{ModelProfileID: profileID, ModelProfileRevision: 1,
-		Provider: "openai_compatible", Model: "test", Interface: "openai_compatible", CredentialVersion: 1,
+		Provider: "openai_compatible", Model: "test", Interface: "openai_compatible", ContextWindow: 65536, CredentialVersion: 1,
 		CredentialBindingDigest: pgCloudDigest("credential-binding")}
 	if err = authorization.Seal(); err != nil {
 		cleanup()

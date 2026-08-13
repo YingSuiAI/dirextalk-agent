@@ -186,6 +186,52 @@ func (fixture *relayFixture) request(t *testing.T, raw string) *httptest.Respons
 	return response
 }
 
+func TestHandlerClassifiesOversizedRequestBeforeBudgetMutation(t *testing.T) {
+	fixture := newRelayFixture(t, 100)
+	defer fixture.issued.Destroy()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"https://relay.example.test/v1/chat/completions",
+		io.LimitReader(strings.NewReader(strings.Repeat("x", int(MaximumRequestBytes)+1)), MaximumRequestBytes+1),
+	)
+	request.ContentLength = MaximumRequestBytes + 1
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+string(fixture.issued.BearerToken))
+	response := httptest.NewRecorder()
+	fixture.service.ServeHTTP(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge ||
+		!strings.Contains(response.Body.String(), `"code":"context_request_too_large"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	grant, err := fixture.store.GetGrant(t.Context(), fixture.issued.Grant.GrantID)
+	if err != nil || grant.ReservedTokens != 0 || grant.SettledTokens != 0 {
+		t.Fatalf("oversized request mutated grant: grant=%+v err=%v", grant, err)
+	}
+}
+
+func TestHandlerClassifiesChunkedOversizedRequestBeforeBudgetMutation(t *testing.T) {
+	fixture := newRelayFixture(t, 100)
+	defer fixture.issued.Destroy()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"https://relay.example.test/v1/chat/completions",
+		io.LimitReader(strings.NewReader(strings.Repeat("x", int(MaximumRequestBytes)+1)), MaximumRequestBytes+1),
+	)
+	request.ContentLength = -1
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+string(fixture.issued.BearerToken))
+	response := httptest.NewRecorder()
+	fixture.service.ServeHTTP(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge ||
+		!strings.Contains(response.Body.String(), `"code":"context_request_too_large"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	grant, err := fixture.store.GetGrant(t.Context(), fixture.issued.Grant.GrantID)
+	if err != nil || grant.ReservedTokens != 0 || grant.SettledTokens != 0 {
+		t.Fatalf("chunked oversized request mutated grant: grant=%+v err=%v", grant, err)
+	}
+}
+
 func TestActivatePersistsOnlyDigestAndBuildsRuntimeGrant(t *testing.T) {
 	fixture := newRelayFixture(t, 100)
 	defer fixture.issued.Destroy()

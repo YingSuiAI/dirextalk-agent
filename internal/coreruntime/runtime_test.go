@@ -112,6 +112,42 @@ func TestModelRunnerToolDoneAndStreamError(t *testing.T) {
 	}
 }
 
+func TestModelRunnerMergesIncrementalAndCumulativeToolArguments(t *testing.T) {
+	id := "00000000-0000-4000-8000-000000000001"
+	snapshot := coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1})
+	request := coreconversation.ModelRunRequest{Snapshot: snapshot, Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "test"}}}}
+	tests := []struct {
+		name   string
+		second string
+	}{
+		{name: "incremental", second: `pptx"}`},
+		{name: "cumulative", second: `{"objective":"make pptx"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stream := &fakeStream{deltas: []coremodel.Delta{
+				{ToolCalls: []coremodel.ToolCall{{Index: 0, ID: "call-1", Function: coremodel.FunctionCall{Name: "cloud_worker_propose", Arguments: `{"objective":"make `}}}},
+				{ToolCalls: []coremodel.ToolCall{{Index: 0, Function: coremodel.FunctionCall{Arguments: test.second}}}},
+			}}
+			runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return &streamClient{stream: stream}, nil })
+			result, err := runner.Stream(context.Background(), request, nil)
+			if err != nil || len(result.ToolCalls) != 1 || result.ToolCalls[0].Arguments != `{"objective":"make pptx"}` {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestModelRunnerRejectsToolIdentityDriftWithinStream(t *testing.T) {
+	previous := coreconversation.ToolCall{ID: "call-1", Name: "cloud_worker_propose", Arguments: "{"}
+	if _, err := mergeStreamingToolCall(previous, coreconversation.ToolCall{ID: "call-2", Name: previous.Name}); !errors.Is(err, coremodel.ErrInvalidResponse) {
+		t.Fatalf("tool ID drift err=%v", err)
+	}
+	if _, err := mergeStreamingToolCall(previous, coreconversation.ToolCall{ID: previous.ID, Name: "other_tool"}); !errors.Is(err, coremodel.ErrInvalidResponse) {
+		t.Fatalf("tool name drift err=%v", err)
+	}
+}
+
 func TestModelRunnerFailsClosedForUnresolvedExtensionSnapshot(t *testing.T) {
 	id := "00000000-0000-4000-8000-000000000001"
 	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return &captureClient{}, nil })

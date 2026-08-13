@@ -7,7 +7,6 @@ import (
 	"time"
 
 	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
-	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/google/uuid"
 )
 
@@ -49,6 +48,7 @@ func credentialProposalCommand() ProposeCommand {
 		ModelAuthorization: ModelAuthorization{
 			ModelProfileID: uuid.NewString(), ModelProfileRevision: 2,
 			Provider: "openai_compatible", Model: "gpt-test", Interface: "openai_compatible",
+			ContextWindow:     65536,
 			CredentialVersion: 4, CredentialBindingDigest: digestValue("model-credential"),
 		},
 	}
@@ -151,7 +151,7 @@ func TestServiceProposalBindsOneEffectiveTokenLimitBeforeQuoteAndRuntimeTask(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantRequestMax := runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens
+	wantRequestMax := command.ModelAuthorization.ContextWindow / 4
 	if offer.Plan.Limits.MaxTokens != defaults.Limits.MaxTokens ||
 		quoter.last.Limits.MaxTokens != defaults.Limits.MaxTokens ||
 		offer.Plan.Quote.BasisDigest != offer.Plan.AuthorizationBasisDigest ||
@@ -180,8 +180,9 @@ func TestServiceProposalBindsOneEffectiveTokenLimitBeforeQuoteAndRuntimeTask(t *
 		t.Fatal(err)
 	}
 	defer material.Destroy()
-	if material.Task.MaxOutputTokens != wantRequestMax {
-		t.Fatalf("runtime task request max = %d, want %d", material.Task.MaxOutputTokens, wantRequestMax)
+	if material.Task.MaxOutputTokens != wantRequestMax ||
+		material.Task.ModelContextWindow != command.ModelAuthorization.ContextWindow {
+		t.Fatalf("runtime task model limits = output:%d context:%d", material.Task.MaxOutputTokens, material.Task.ModelContextWindow)
 	}
 }
 

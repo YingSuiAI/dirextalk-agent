@@ -43,9 +43,12 @@ func (s *Service) serveHTTP(writer http.ResponseWriter, request *http.Request) e
 		return ErrInvalid
 	}
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" ||
-		request.ContentLength > MaximumRequestBytes {
+	if err != nil || mediaType != "application/json" {
 		return ErrInvalid
+	}
+	if request.ContentLength > MaximumRequestBytes {
+		logRelayIngressRejection("content_length", ErrRequestTooLarge, request.ContentLength)
+		return ErrRequestTooLarge
 	}
 	token, err := relayBearer(request.Header.Values("Authorization"))
 	request.Header.Del("Authorization")
@@ -54,7 +57,16 @@ func (s *Service) serveHTTP(writer http.ResponseWriter, request *http.Request) e
 	}
 	defer clear(token)
 	body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, MaximumRequestBytes))
-	if err != nil || len(body) == 0 || bytes.Contains(body, token) {
+	if err != nil {
+		var maximumBytesError *http.MaxBytesError
+		if !errors.As(err, &maximumBytesError) {
+			return ErrInvalid
+		}
+		logRelayIngressRejection("read_body", ErrRequestTooLarge, request.ContentLength)
+		clear(body)
+		return ErrRequestTooLarge
+	}
+	if len(body) == 0 || bytes.Contains(body, token) {
 		clear(body)
 		return ErrInvalid
 	}
@@ -176,6 +188,15 @@ func logRelayRejection(phase string, err error, invocationID string) {
 	)
 }
 
+func logRelayIngressRejection(phase string, err error, declaredBytes int64) {
+	slog.Warn(
+		"[cloud-worker.model-relay] request_rejected",
+		"phase", phase,
+		"class", relayErrorClass(err),
+		"declared_request_bytes", declaredBytes,
+	)
+}
+
 func logRelayProviderResponseRejection(
 	phase string,
 	err error,
@@ -255,6 +276,8 @@ func providerErrorCategory(body []byte) string {
 
 func relayErrorClass(err error) string {
 	switch {
+	case errors.Is(err, ErrRequestTooLarge):
+		return "request_too_large"
 	case errors.Is(err, ErrInvalid):
 		return "invalid"
 	case errors.Is(err, ErrUnauthorized):
@@ -431,6 +454,8 @@ func safeProviderContentType(raw string, streaming bool, statusCode int) (string
 func writeRelayError(writer http.ResponseWriter, err error) {
 	statusCode, code := http.StatusInternalServerError, "relay_unavailable"
 	switch {
+	case errors.Is(err, ErrRequestTooLarge):
+		statusCode, code = http.StatusRequestEntityTooLarge, "context_request_too_large"
 	case errors.Is(err, ErrInvalid):
 		statusCode, code = http.StatusBadRequest, "invalid_request"
 	case errors.Is(err, ErrUnauthorized):

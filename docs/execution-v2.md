@@ -215,13 +215,24 @@ Claim returns the exact runtime task, immutable input manifest, exact artifact
 scope, short-lived model relay grant, heartbeat interval, and not-after time.
 The immutable AMI qualification is the sole release record for the current
 `worker_protocol_version=dirextalk.agent.cloud-worker-control/v1` and
-`runtime_contract_version=dirextalk.agent.ephemeral-pi-runtime/v1`. The Worker
+`runtime_contract_version=dirextalk.agent.ephemeral-pi-runtime/v2`. The Worker
 declares both values in Claim and the Agent returns the same exact pair. A
 missing or different value is rejected before identity verification, session
 creation, model-grant activation, runtime-task parsing, or Pi execution. There
 is no version negotiation, fallback, or older qualification schema path; the
 current qualification document schema is
 `cloud_worker_runtime_qualification_v2`.
+The v2 runtime task binds the selected model profile's exact context window and
+maximum output tokens. Central reads both values from the immutable execution
+snapshot and includes them in the model authorization and task digest. The Pi
+model configuration receives those exact limits; before each provider request,
+the result extension may compact oversized tool output while preserving tool
+call/result identities and the original tool-call arguments. If the bounded
+results still cannot fit, Pi aborts the turn instead of sending an oversized
+request. Historical v1 authorizations remain readable for conversation and
+artifact history but cannot authorize a new dispatch. The Worker cannot infer,
+enlarge, or substitute either model limit, and an oversized relay request fails as
+`context_request_too_large` before model-budget reservation.
 The canonical Pi final result is bounded by the approved `max_tokens` and
 output bytes. Collection uses one exact versioned S3 object and verifies
 version, key/prefix, media type, size, digest, manifest, task/lease binding,

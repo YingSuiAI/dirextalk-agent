@@ -80,17 +80,14 @@ func (resolver *ExactModelResolver) resolve(ctx context.Context, reference model
 	if resolver == nil || resolver.profiles == nil || ctx == nil || reference.Validate() != nil {
 		return coremodel.Profile{}, modelrelay.ErrInvalid
 	}
-	expected := cloudworker.ModelAuthorization{
-		ModelProfileID: reference.ProfileID, ModelProfileRevision: reference.ProfileRevision,
-		Provider: reference.Provider, Model: reference.Model, Interface: reference.Interface,
-		MaximumOutputTokens: reference.MaximumOutputTokens,
-		CredentialVersion:   reference.CredentialVersion, CredentialBindingDigest: reference.CredentialBindingDigest,
-	}
-	if expected.Seal() != nil || expected.BindingDigest != reference.ModelBindingDigest {
-		return coremodel.Profile{}, modelrelay.ErrProfileDrift
-	}
 	profile, current, err := resolver.current(ctx, reference.ProfileID)
-	if err != nil || current != expected {
+	if err != nil || current.ModelProfileID != reference.ProfileID ||
+		current.ModelProfileRevision != reference.ProfileRevision ||
+		current.CredentialVersion != reference.CredentialVersion ||
+		current.Provider != reference.Provider || current.Interface != reference.Interface ||
+		current.Model != reference.Model || current.MaximumOutputTokens != reference.MaximumOutputTokens ||
+		current.CredentialBindingDigest != reference.CredentialBindingDigest ||
+		current.BindingDigest != reference.ModelBindingDigest {
 		return coremodel.Profile{}, errors.Join(modelrelay.ErrProfileDrift, err)
 	}
 	return profile, nil

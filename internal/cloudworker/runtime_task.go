@@ -140,13 +140,14 @@ func BuildRuntimeTask(
 		return RuntimeTaskMaterial{}, err
 	}
 	maximumOutputTokens, err := effectiveModelOutputTokens(sealedPlan.ModelAuthorization)
-	if err != nil {
+	if err != nil || sealedPlan.ModelAuthorization.ContextWindow == 0 ||
+		maximumOutputTokens >= sealedPlan.ModelAuthorization.ContextWindow {
 		clear(inputJSON)
-		return RuntimeTaskMaterial{}, err
+		return RuntimeTaskMaterial{}, ErrInvalid
 	}
 	relayDigest := sha256.Sum256([]byte(sealedPlan.ModelRelay.Endpoint))
 	task := cloudruntime.Task{
-		SchemaVersion: cloudruntime.TaskSchemaV1,
+		SchemaVersion: cloudruntime.TaskSchemaV2,
 		Recipe:        cloudruntime.RecipeEphemeralPiTask, Adapter: cloudruntime.AdapterPiJSONTaskV1,
 		TaskID: sealedPlan.TaskID, ExecutionID: sealedPlan.ExecutionID,
 		Objective: sealedPlan.Objective, InputManifestSHA256: inputDigest,
@@ -166,6 +167,7 @@ func BuildRuntimeTask(
 		ModelRelayEndpointSHA256: hex.EncodeToString(relayDigest[:]),
 		ModelRelayBindingSHA256:  sealedPlan.ModelRelay.BindingDigest,
 		MaxOutputTokens:          maximumOutputTokens,
+		ModelContextWindow:       sealedPlan.ModelAuthorization.ContextWindow,
 		MaxOutputBytes:           sealedPlan.Limits.MaxOutputBytes,
 	}
 	if sealedPlan.WorkspaceMode != WorkspaceNone {

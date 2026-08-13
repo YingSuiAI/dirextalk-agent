@@ -81,9 +81,48 @@ type ModelAuthorization struct {
 	Model                   string `json:"model"`
 	Interface               string `json:"interface"`
 	MaximumOutputTokens     uint64 `json:"maximum_output_tokens"`
+	ContextWindow           uint64 `json:"context_window"`
 	CredentialVersion       uint64 `json:"credential_version"`
 	CredentialBindingDigest string `json:"credential_binding_digest"`
 	BindingDigest           string `json:"binding_digest"`
+}
+
+type modelAuthorizationPlanDigestV1 struct {
+	ModelProfileID          string `json:"model_profile_id"`
+	ModelProfileRevision    uint64 `json:"model_profile_revision"`
+	Provider                string `json:"provider"`
+	Model                   string `json:"model"`
+	Interface               string `json:"interface"`
+	MaximumOutputTokens     uint64 `json:"maximum_output_tokens"`
+	CredentialVersion       uint64 `json:"credential_version"`
+	CredentialBindingDigest string `json:"credential_binding_digest"`
+	BindingDigest           string `json:"binding_digest"`
+}
+
+type modelAuthorizationPlanDigestV2 struct {
+	ModelProfileID          string `json:"model_profile_id"`
+	ModelProfileRevision    uint64 `json:"model_profile_revision"`
+	Provider                string `json:"provider"`
+	Model                   string `json:"model"`
+	Interface               string `json:"interface"`
+	MaximumOutputTokens     uint64 `json:"maximum_output_tokens"`
+	ContextWindow           uint64 `json:"context_window"`
+	CredentialVersion       uint64 `json:"credential_version"`
+	CredentialBindingDigest string `json:"credential_binding_digest"`
+	BindingDigest           string `json:"binding_digest"`
+}
+
+func (a ModelAuthorization) planDigestProjection() any {
+	if a.ContextWindow == 0 {
+		return modelAuthorizationPlanDigestV1{
+			a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.Model, a.Interface,
+			a.MaximumOutputTokens, a.CredentialVersion, a.CredentialBindingDigest, a.BindingDigest,
+		}
+	}
+	return modelAuthorizationPlanDigestV2{
+		a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.Model, a.Interface,
+		a.MaximumOutputTokens, a.ContextWindow, a.CredentialVersion, a.CredentialBindingDigest, a.BindingDigest,
+	}
 }
 
 // InputManifest is the private authorization-time workspace authority. It
@@ -496,10 +535,25 @@ func (a *ModelAuthorization) Seal() error {
 		a.Model == "" || len(a.Model) > 256 || strings.ContainsAny(a.Model, "\r\n\x00") ||
 		a.Interface == "" || len(a.Interface) > 128 || strings.ContainsAny(a.Interface, "\r\n\x00") ||
 		a.MaximumOutputTokens > 10_000_000 ||
+		a.ContextWindow > 100_000_000 ||
+		(a.ContextWindow > 0 && a.MaximumOutputTokens > 0 && a.MaximumOutputTokens >= a.ContextWindow) ||
 		!validDigest(a.CredentialBindingDigest) ||
 		!((a.Provider == "openai" && a.Interface == "openai_responses") ||
 			(a.Provider == "openai_compatible" && a.Interface == "openai_compatible")) {
 		return ErrInvalid
+	}
+	if a.ContextWindow == 0 {
+		a.BindingDigest = digestValue(struct {
+			ModelProfileID          string
+			ModelProfileRevision    uint64
+			Provider                string
+			Model                   string
+			Interface               string
+			MaximumOutputTokens     uint64
+			CredentialVersion       uint64
+			CredentialBindingDigest string
+		}{a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.Model, a.Interface, a.MaximumOutputTokens, a.CredentialVersion, a.CredentialBindingDigest})
+		return nil
 	}
 	a.BindingDigest = digestValue(struct {
 		ModelProfileID          string
@@ -508,9 +562,10 @@ func (a *ModelAuthorization) Seal() error {
 		Model                   string
 		Interface               string
 		MaximumOutputTokens     uint64
+		ContextWindow           uint64
 		CredentialVersion       uint64
 		CredentialBindingDigest string
-	}{a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.Model, a.Interface, a.MaximumOutputTokens, a.CredentialVersion, a.CredentialBindingDigest})
+	}{a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.Model, a.Interface, a.MaximumOutputTokens, a.ContextWindow, a.CredentialVersion, a.CredentialBindingDigest})
 	return nil
 }
 
@@ -712,7 +767,7 @@ func (p *Plan) Seal() error {
 		ProposalReason                                                       ProposalReason
 		BudgetEvidence                                                       *LocalBudgetEvidence
 		WorkspaceMode                                                        WorkspaceMode
-		ModelAuthorization                                                   ModelAuthorization
+		ModelAuthorization                                                   any
 		AWS                                                                  AWSBinding
 		Compute                                                              ComputeSpec
 		AWSInfrastructureDigest                                              string
@@ -721,7 +776,7 @@ func (p *Plan) Seal() error {
 		Secrets                                                              []SecretGrant
 		Retention                                                            uint64
 		QuoteDigest                                                          string
-	}{p.OwnerID, p.PlanID, p.ExecutionID, p.ConversationID, p.TurnID, p.AccountGeneration, p.Revision, p.RecipeID, p.Adapter, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.AWS, p.Compute, p.AWSInfrastructureDigest, p.Limits, p.NetworkGrants, p.SecretGrants, p.ArtifactRetentionSeconds, p.Quote.Digest})
+	}{p.OwnerID, p.PlanID, p.ExecutionID, p.ConversationID, p.TurnID, p.AccountGeneration, p.Revision, p.RecipeID, p.Adapter, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization.planDigestProjection(), p.AWS, p.Compute, p.AWSInfrastructureDigest, p.Limits, p.NetworkGrants, p.SecretGrants, p.ArtifactRetentionSeconds, p.Quote.Digest})
 	p.Digest = digestValue(struct {
 		ExecutionDigest, TaskID, ConfirmationID string
 	}{p.ExecutionDigest, p.TaskID, p.ConfirmationID})
@@ -780,7 +835,7 @@ func (p *Plan) sealAuthorizationBasis() error {
 		ProposalReason                                         ProposalReason
 		BudgetEvidence                                         *LocalBudgetEvidence
 		WorkspaceMode                                          WorkspaceMode
-		ModelAuthorization                                     ModelAuthorization
+		ModelAuthorization                                     any
 		AWS                                                    AWSBinding
 		Compute                                                ComputeSpec
 		AWSInfrastructureDigest                                string
@@ -788,7 +843,7 @@ func (p *Plan) sealAuthorizationBasis() error {
 		Network                                                []string
 		Secrets                                                []SecretGrant
 		Retention                                              uint64
-	}{p.OwnerID, p.ConversationID, p.TurnID, p.RecipeID, p.Adapter, p.AccountGeneration, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.AWS, p.Compute, p.AWSInfrastructureDigest, p.Limits, p.NetworkGrants, p.SecretGrants, p.ArtifactRetentionSeconds})
+	}{p.OwnerID, p.ConversationID, p.TurnID, p.RecipeID, p.Adapter, p.AccountGeneration, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization.planDigestProjection(), p.AWS, p.Compute, p.AWSInfrastructureDigest, p.Limits, p.NetworkGrants, p.SecretGrants, p.ArtifactRetentionSeconds})
 	return nil
 }
 

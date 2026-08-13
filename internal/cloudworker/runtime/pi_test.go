@@ -115,10 +115,11 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 			BaseURL string `json:"baseUrl"`
 			API     string `json:"api"`
 			Models  []struct {
-				ID        string `json:"id"`
-				Reasoning bool   `json:"reasoning"`
-				MaxTokens uint64 `json:"maxTokens"`
-				Compat    struct {
+				ID            string `json:"id"`
+				Reasoning     bool   `json:"reasoning"`
+				MaxTokens     uint64 `json:"maxTokens"`
+				ContextWindow uint64 `json:"contextWindow"`
+				Compat        struct {
 					MaxTokensField                              string `json:"maxTokensField"`
 					SupportsStore                               bool   `json:"supportsStore"`
 					SupportsDeveloperRole                       bool   `json:"supportsDeveloperRole"`
@@ -137,6 +138,7 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 	if provider.BaseURL != task.ModelRelayBaseURL || provider.API != "openai-completions" ||
 		len(provider.Models) != 1 || provider.Models[0].ID != task.Model ||
 		!provider.Models[0].Reasoning || provider.Models[0].MaxTokens != task.MaxOutputTokens ||
+		provider.Models[0].ContextWindow != task.ModelContextWindow ||
 		provider.Models[0].Compat.MaxTokensField != "max_tokens" ||
 		provider.Models[0].Compat.SupportsStore ||
 		provider.Models[0].Compat.SupportsDeveloperRole ||
@@ -175,7 +177,7 @@ func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
 				ModelProvider: test.provider, Model: test.model,
 				ModelInterface:    test.modelInterface,
 				ModelRelayBaseURL: "https://model-relay.dirextalk.invalid/v1",
-				MaxOutputTokens:   4096,
+				MaxOutputTokens:   4096, ModelContextWindow: 65536,
 			}
 			if err := writePiModelsConfig(directory, task); err != nil {
 				t.Fatal(err)
@@ -188,10 +190,11 @@ func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
 				Providers map[string]struct {
 					API    string `json:"api"`
 					Models []struct {
-						ID        string `json:"id"`
-						Reasoning bool   `json:"reasoning"`
-						MaxTokens uint64 `json:"maxTokens"`
-						Compat    struct {
+						ID            string `json:"id"`
+						Reasoning     bool   `json:"reasoning"`
+						MaxTokens     uint64 `json:"maxTokens"`
+						ContextWindow uint64 `json:"contextWindow"`
+						Compat        struct {
 							MaxTokensField                              string `json:"maxTokensField"`
 							SupportsStore                               bool   `json:"supportsStore"`
 							SupportsDeveloperRole                       bool   `json:"supportsDeveloperRole"`
@@ -210,6 +213,7 @@ func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
 			if provider.API != test.api || len(provider.Models) != 1 ||
 				provider.Models[0].ID != test.model || !provider.Models[0].Reasoning ||
 				provider.Models[0].MaxTokens != task.MaxOutputTokens ||
+				provider.Models[0].ContextWindow != task.ModelContextWindow ||
 				provider.Models[0].Compat.MaxTokensField != test.wantMaxTokensField ||
 				provider.ModelOverrides != nil {
 				t.Fatalf("provider config=%+v", provider)
@@ -416,6 +420,13 @@ func TestPiContractsRejectUnboundedOrUnsafeOutput(t *testing.T) {
 		failure.Stage != FailureStagePi {
 		t.Fatalf("budget failure=%+v ok=%t err=%v", failure, ok, err)
 	}
+	_, _, err = ParsePiEvents(piFailureEventStream(
+		"error", `413 {"error":{"code":"context_request_too_large"}}`,
+	))
+	failure, ok = FailureOf(err)
+	if !ok || failure.Code != FailureCodeContextLimit || failure.Stage != FailureStagePi {
+		t.Fatalf("context failure=%+v ok=%t err=%v", failure, ok, err)
+	}
 }
 
 func TestOSProcessRunnerBoundsOutputAndDoesNotInheritEnvironment(t *testing.T) {
@@ -571,7 +582,7 @@ func validTask(contextJSON []byte, mode WorkspaceMode) Task {
 	binaryDigest := sha256.Sum256([]byte("#!/bin/false\n"))
 	extensionDigest := sha256.Sum256([]byte("export default function register() {}\n"))
 	task := Task{
-		SchemaVersion: TaskSchemaV1, Recipe: RecipeEphemeralPiTask,
+		SchemaVersion: TaskSchemaV2, Recipe: RecipeEphemeralPiTask,
 		Adapter:             AdapterPiJSONTaskV1,
 		TaskID:              "11111111-1111-4111-8111-111111111111",
 		ExecutionID:         "22222222-2222-4222-8222-222222222222",
@@ -588,6 +599,7 @@ func validTask(contextJSON []byte, mode WorkspaceMode) Task {
 		ModelGrantLimitSHA256:    strings.Repeat("d", 64),
 		ModelRelayBaseURL:        "https://model-relay.dirextalk.invalid/v1",
 		MaxOutputTokens:          777,
+		ModelContextWindow:       65536,
 		MaxOutputBytes:           MaxResultBytes,
 	}
 	relayDigest := sha256.Sum256([]byte(task.ModelRelayBaseURL))

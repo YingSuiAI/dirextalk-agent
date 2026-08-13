@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -153,7 +154,7 @@ func writeE2EPiConfig(t *testing.T, configRoot, baseURL string) {
 	config := map[string]any{"providers": map[string]any{"deepseek": map[string]any{
 		"baseUrl": baseURL, "api": "openai-completions", "apiKey": "$DEEPSEEK_API_KEY",
 		"models": []any{map[string]any{
-			"id": "deepseek-v4-pro", "reasoning": true, "maxTokens": 8192,
+			"id": "deepseek-v4-pro", "reasoning": true, "maxTokens": 4096, "contextWindow": 65536,
 			"compat": map[string]any{
 				"maxTokensField": "max_tokens", "supportsStore": false,
 				"supportsDeveloperRole": false, "supportsReasoningEffort": true,
@@ -182,6 +183,19 @@ func newPiToolLifecycleServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		defer request.Body.Close()
 		step := calls.Add(1)
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read Pi request: %v", err)
+			return
+		}
+		if step >= 4 && len(body) > 100<<10 {
+			t.Errorf("Pi request %d remained unbounded: %d bytes", step, len(body))
+			return
+		}
+		if err := validateE2EToolPairing(body); err != nil {
+			t.Errorf("Pi request %d tool pairing: %v", step, err)
+			return
+		}
 		response.Header().Set("Content-Type", "text/event-stream")
 		response.Header().Set("Cache-Control", "no-cache")
 		var name, arguments string
@@ -191,10 +205,13 @@ func newPiToolLifecycleServer(t *testing.T) *httptest.Server {
 			arguments = `{"path":"answer42.py","content":"def answer():\n    return 42\n\nif __name__ == '__main__':\n    print(answer())\n"}`
 		case 2:
 			name = "bash"
-			arguments = `{"command":"sleep 2\ncat > test_answer42.py <<'PY'\nimport unittest\nimport answer42\n\nclass Answer42Test(unittest.TestCase):\n    def test_answer(self):\n        self.assertEqual(answer42.answer(), 42)\n\nif __name__ == '__main__':\n    unittest.main()\nPY\nprintf '# Answer42\\n\\nRun with: python3 answer42.py\\n' > README.md\npython3 -m unittest -v"}`
-		case 3:
+			arguments = `{"command":"cat > test_answer42.py <<'PY'\nimport unittest\nimport answer42\n\nclass Answer42Test(unittest.TestCase):\n    def test_answer(self):\n        self.assertEqual(answer42.answer(), 42)\n\nif __name__ == '__main__':\n    unittest.main()\nPY\nprintf '# Answer42\\n\\nRun with: python3 answer42.py\\n' > README.md\npython3 -m unittest -v\npython3 -c \"print('x' * 50000)\""}`
+		case 3, 4, 5, 6, 7, 8, 9:
+			name = "bash"
+			arguments = fmt.Sprintf(`{"command":"python3 -c \"print('x' * 50000)\" # context-round-%d"}`, step)
+		case 10:
 			name = PiResultToolName
-			arguments = `{"status":"completed","summary":"Answer42 is implemented and tested.","deliverables":["answer42.py","test_answer42.py","README.md"],"tests":["python3 -m unittest -v"],"risks":[]}`
+			arguments = `{"status":"completed","summary":"Answer42 is implemented and tested through a bounded long-tool loop.","deliverables":["answer42.py","test_answer42.py","README.md"],"tests":["python3 -m unittest -v","eight 50 KiB tool-output rounds"],"risks":[]}`
 		default:
 			http.Error(response, "unexpected request", http.StatusBadRequest)
 			return
@@ -218,7 +235,7 @@ func newPiToolLifecycleServer(t *testing.T) *httptest.Server {
 			"id": fmt.Sprintf("chatcmpl-e2e-%d", step), "object": "chat.completion.chunk",
 			"created": time.Now().Unix(), "model": "deepseek-v4-pro",
 			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}},
-			"usage":   map[string]any{"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+			"usage":   map[string]any{"prompt_tokens": len(body) / 4, "completion_tokens": 20, "total_tokens": len(body)/4 + 20},
 		}
 		for _, value := range []any{chunk, terminal} {
 			raw, err := json.Marshal(value)
@@ -233,4 +250,51 @@ func newPiToolLifecycleServer(t *testing.T) *httptest.Server {
 			flusher.Flush()
 		}
 	}))
+}
+
+func validateE2EToolPairing(raw []byte) error {
+	var request struct {
+		Messages []struct {
+			Role       string `json:"role"`
+			ToolCallID string `json:"tool_call_id"`
+			ToolCalls  []struct {
+				ID       string `json:"id"`
+				Function struct {
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &request); err != nil {
+		return err
+	}
+	calls := make(map[string]bool)
+	results := make(map[string]bool)
+	for _, message := range request.Messages {
+		for _, call := range message.ToolCalls {
+			if call.ID == "" || calls[call.ID] || call.Function.Arguments == "" {
+				return fmt.Errorf("invalid or duplicate tool call %q", call.ID)
+			}
+			if strings.HasPrefix(call.ID, "call_e2e_") && strings.Contains(call.ID, "3") &&
+				!strings.Contains(call.Function.Arguments, "context-round-3") {
+				return fmt.Errorf("tool call %q arguments were rewritten", call.ID)
+			}
+			calls[call.ID] = true
+		}
+		if message.Role == "tool" {
+			if message.ToolCallID == "" || results[message.ToolCallID] {
+				return fmt.Errorf("invalid or duplicate tool result %q", message.ToolCallID)
+			}
+			results[message.ToolCallID] = true
+		}
+	}
+	if len(calls) != len(results) {
+		return fmt.Errorf("calls=%d results=%d", len(calls), len(results))
+	}
+	for id := range results {
+		if !calls[id] {
+			return fmt.Errorf("orphan tool result %q", id)
+		}
+	}
+	return nil
 }

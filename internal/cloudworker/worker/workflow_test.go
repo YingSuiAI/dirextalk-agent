@@ -394,7 +394,7 @@ func newWorkflowRetryFixture(t *testing.T) *workflowRetryFixture {
 	inputDigest := workflowRetryDigest(inputManifest)
 	relayURL := "https://relay.example.test/v1"
 	task := cloudruntime.Task{
-		SchemaVersion:            cloudruntime.TaskSchemaV1,
+		SchemaVersion:            cloudruntime.TaskSchemaV2,
 		Recipe:                   cloudruntime.RecipeEphemeralPiTask,
 		Adapter:                  cloudruntime.AdapterPiJSONTaskV1,
 		TaskID:                   "22222222-2222-4222-8222-222222222222",

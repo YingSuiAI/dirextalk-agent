@@ -29,7 +29,7 @@ import (
 const (
 	RecipeEphemeralPiTask       = "ephemeral-pi-task"
 	AdapterPiJSONTaskV1         = "pi_json_task_v1"
-	TaskSchemaV1                = "dirextalk.agent.cloud-worker-pi-task/v1"
+	TaskSchemaV2                = "dirextalk.agent.cloud-worker-pi-task/v2"
 	PiFinalSchemaV1             = "dirextalk.agent.pi-final/v1"
 	PiLoopbackProxyAddress      = "127.0.0.1:38081"
 	PiLoopbackProxyURL          = "http://" + PiLoopbackProxyAddress
@@ -45,6 +45,7 @@ const (
 	MaxArtifactBytes          = 8 << 20
 	MaxResultBytes            = 8 << 20
 	MaxOutputTokens           = 10_000_000
+	MaxContextWindow          = 100_000_000
 	MaxArtifactsPerResult     = 3
 	MinimumModelGrantLifetime = 30 * time.Second
 )
@@ -106,11 +107,12 @@ type Task struct {
 	ModelRelayEndpointSHA256 string         `json:"model_relay_endpoint_sha256"`
 	ModelRelayBindingSHA256  string         `json:"model_relay_binding_sha256"`
 	MaxOutputTokens          uint64         `json:"max_output_tokens"`
+	ModelContextWindow       uint64         `json:"model_context_window"`
 	MaxOutputBytes           uint64         `json:"max_output_bytes"`
 }
 
 func (task Task) Validate() error {
-	if task.SchemaVersion != TaskSchemaV1 ||
+	if task.SchemaVersion != TaskSchemaV2 ||
 		task.Recipe != RecipeEphemeralPiTask ||
 		task.Adapter != AdapterPiJSONTaskV1 ||
 		!canonicalUUID(task.TaskID) ||
@@ -134,6 +136,9 @@ func (task Task) Validate() error {
 		!validDigest(task.ModelRelayBindingSHA256) ||
 		task.MaxOutputTokens == 0 ||
 		task.MaxOutputTokens > MaxOutputTokens ||
+		task.ModelContextWindow < 16*1024 ||
+		task.ModelContextWindow > MaxContextWindow ||
+		task.MaxOutputTokens >= task.ModelContextWindow ||
 		task.MaxOutputBytes == 0 ||
 		task.MaxOutputBytes > MaxResultBytes {
 		return ErrInvalid

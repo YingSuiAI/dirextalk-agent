@@ -24,6 +24,7 @@ import (
 
 var (
 	ErrInvalid               = errors.New("invalid cloud Worker model relay request")
+	ErrRequestTooLarge       = errors.New("cloud Worker model relay request is too large")
 	ErrUnauthorized          = errors.New("cloud Worker model relay bearer rejected")
 	ErrExpired               = errors.New("cloud Worker model relay grant expired")
 	ErrFenced                = errors.New("cloud Worker model relay grant fenced")
@@ -82,9 +83,10 @@ func (f Fence) Validate() error {
 	return nil
 }
 
-// ProfileReference contains every immutable profile field named by the
-// authorization digest. The owner adapter must resolve exactly this revision
-// and credential version; resolving "latest" is never permitted.
+// ProfileReference contains the immutable profile routing fields required by
+// the relay. ModelBindingDigest also covers execution-only model capabilities,
+// such as context window size, which the exact owner adapter revalidates from
+// the same profile revision before resolving any credential.
 type ProfileReference struct {
 	OwnerID                 string `json:"owner_id"`
 	AccountGeneration       uint64 `json:"account_generation"`

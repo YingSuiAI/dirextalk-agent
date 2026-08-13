@@ -165,13 +165,10 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 		for _, tc := range d.ToolCalls {
 			c := coreconversation.ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments}
 			if prev, ok := callsByIndex[tc.Index]; ok {
-				if c.ID == "" {
-					c.ID = prev.ID
+				c, err = mergeStreamingToolCall(prev, c)
+				if err != nil {
+					return coreconversation.ModelRunResult{}, err
 				}
-				if c.Name == "" {
-					c.Name = prev.Name
-				}
-				c.Arguments = prev.Arguments + c.Arguments
 			}
 			callsByIndex[tc.Index] = c
 			if emit != nil {
@@ -192,6 +189,33 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 	}
 	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: content.String(), ToolCalls: calls, ModelProfileID: p.ID}
 	return coreconversation.ModelRunResult{Message: msg, ToolCalls: calls, Done: len(calls) == 0}, nil
+}
+
+func mergeStreamingToolCall(previous, current coreconversation.ToolCall) (coreconversation.ToolCall, error) {
+	if previous.ID != "" && current.ID != "" && previous.ID != current.ID {
+		return coreconversation.ToolCall{}, coremodel.ErrInvalidResponse
+	}
+	if previous.Name != "" && current.Name != "" && previous.Name != current.Name {
+		return coreconversation.ToolCall{}, coremodel.ErrInvalidResponse
+	}
+	if current.ID == "" {
+		current.ID = previous.ID
+	}
+	if current.Name == "" {
+		current.Name = previous.Name
+	}
+	switch {
+	case current.Arguments == "":
+		current.Arguments = previous.Arguments
+	case strings.HasPrefix(current.Arguments, previous.Arguments):
+		// Some OpenAI-compatible providers stream the complete argument snapshot
+		// seen so far instead of only the next fragment.
+	case strings.HasPrefix(previous.Arguments, current.Arguments):
+		current.Arguments = previous.Arguments
+	default:
+		current.Arguments = previous.Arguments + current.Arguments
+	}
+	return current, nil
 }
 
 var _ coreconversation.ModelRunner = (*ModelRunner)(nil)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -1665,6 +1666,13 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				seenCallIDs := make(map[string]struct{}, len(calls))
 				for index, call := range calls {
 					if call.Validate() != nil {
+						slog.Warn("[core-conversation.turn] invalid_model_tool_call",
+							"class", toolCallValidationClass(call),
+							"turn_id", turn.ID,
+							"call_index", index,
+							"id_bytes", len(call.ID),
+							"name_bytes", len(call.Name),
+							"arguments_bytes", len(call.Arguments))
 						_, _ = s.turns.FailTurn(ctx, lease, "invalid_tool_call", "model returned an invalid tool call")
 						return
 					}
@@ -1858,6 +1866,33 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			cancel()
 		}
 	}
+}
+
+func toolCallValidationClass(call ToolCall) string {
+	switch {
+	case strings.TrimSpace(call.ID) == "":
+		return "missing_id"
+	case strings.TrimSpace(call.Name) == "":
+		return "missing_name"
+	case len(call.ID) > MaxToolCallIDBytes:
+		return "id_too_large"
+	case len(call.Name) > MaxToolNameBytes:
+		return "name_too_large"
+	case len(call.ExecutionID) > MaxToolCallIDBytes:
+		return "execution_id_too_large"
+	case len(call.Arguments) > MaxToolArgumentsBytes:
+		return "arguments_too_large"
+	case !utf8.ValidString(call.ID) || !utf8.ValidString(call.Name) || !utf8.ValidString(call.ExecutionID) || !utf8.ValidString(call.Arguments):
+		return "invalid_utf8"
+	}
+	var value any
+	if json.Unmarshal([]byte(call.Arguments), &value) != nil {
+		return "arguments_invalid_json"
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return "arguments_not_object"
+	}
+	return "invalid"
 }
 
 const (

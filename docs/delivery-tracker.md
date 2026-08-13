@@ -229,6 +229,15 @@ support.
   RPC, Worker, qualification, and PostgreSQL 18 fresh-state/restart tests
   passed without AWS mutation. A candidate AMI first Claim remains required
   for live evidence.
+- On **2026-08-14**, the Pi runtime contract advanced to v2 so Central binds
+  the selected profile's exact context window into model authorization and the
+  canonical runtime task. The Worker writes that value into Pi's model config,
+  and the result extension bounds long tool-output loops before each provider
+  request without breaking tool call/result pairing. Relay ingress now reports
+  oversized context as a distinct 413 failure before budget mutation. A real
+  Pi 0.83.0 Linux x86 pressure run completed eight successive 50 KiB tool
+  results, submitted the canonical final result, and settled; fresh AMI and
+  live AWS task acceptance remain required.
 
 ## Remaining release gates
 

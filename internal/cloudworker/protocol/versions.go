@@ -3,7 +3,7 @@ package protocol
 
 const (
 	WorkerProtocolVersion  = "dirextalk.agent.cloud-worker-control/v1"
-	RuntimeContractVersion = "dirextalk.agent.ephemeral-pi-runtime/v1"
+	RuntimeContractVersion = "dirextalk.agent.ephemeral-pi-runtime/v2"
 )
 
 // Versions is declared by both peers during Claim. Only the current exact
