@@ -17,7 +17,6 @@ import (
 	"io"
 	"math"
 	"math/big"
-	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -689,7 +688,7 @@ func validateModelCatalogRequest(request ModelCatalogRequest) error {
 func sanitizeModelCatalogResult(value ModelCatalogResult, requestAPIKey string) ModelCatalogResult {
 	providers := make([]ModelCatalogProviderInfo, 0, len(value.Providers))
 	for _, provider := range value.Providers {
-		if modelCatalogValueContainsSecret(provider.Provider, requestAPIKey) || modelCatalogValueContainsSecret(provider.DefaultBaseURL, requestAPIKey) {
+		if containsSecret(provider.Provider, requestAPIKey) || containsSecret(provider.DefaultBaseURL, requestAPIKey) {
 			continue
 		}
 		provider.Provider = safeString(strings.ToLower(strings.TrimSpace(provider.Provider)), maxRuntimeNameBytes)
@@ -702,10 +701,13 @@ func sanitizeModelCatalogResult(value ModelCatalogResult, requestAPIKey string) 
 	sort.Slice(providers, func(i, j int) bool { return providers[i].Provider < providers[j].Provider })
 	models := make([]map[string]any, 0, len(value.Models))
 	for _, model := range value.Models {
-		if modelCatalogValueContainsSecret(model, requestAPIKey) {
+		clean := sanitizeModelMap(model)
+		// Check only the public projection. Provider-specific extension fields
+		// are discarded above and cannot leak, so their contents must not make an
+		// otherwise valid catalog entry disappear.
+		if modelCatalogProjectionContainsSecret(clean, requestAPIKey) {
 			continue
 		}
-		clean := sanitizeModelMap(model)
 		if _, ok := clean["id"].(string); !ok || clean["id"] == "" {
 			continue
 		}
@@ -893,57 +895,26 @@ func sanitizeModelIntegerNumber(value json.Number) (any, bool) {
 	return numerator.Int64(), true
 }
 
-func modelCatalogValueContainsSecret(value any, secret string) bool {
-	if secret == "" || value == nil {
-		return false
-	}
-	switch typed := value.(type) {
-	case string:
-		return strings.Contains(typed, secret)
-	case []byte:
-		return strings.Contains(string(typed), secret)
-	case []string:
-		for _, item := range typed {
-			if strings.Contains(item, secret) {
+func containsSecret(value, secret string) bool {
+	return secret != "" && strings.Contains(value, secret)
+}
+
+func modelCatalogProjectionContainsSecret(model map[string]any, secret string) bool {
+	for _, value := range model {
+		switch typed := value.(type) {
+		case string:
+			if containsSecret(typed, secret) {
 				return true
 			}
-		}
-		return false
-	case []any:
-		for _, item := range typed {
-			if modelCatalogValueContainsSecret(item, secret) {
-				return true
-			}
-		}
-		return false
-	case map[string]any:
-		for key, item := range typed {
-			if strings.Contains(key, secret) || modelCatalogValueContainsSecret(item, secret) {
-				return true
-			}
-		}
-		return false
-	default:
-		reflected := reflect.ValueOf(value)
-		switch reflected.Kind() {
-		case reflect.Map:
-			if reflected.Type().Key().Kind() == reflect.String {
-				iter := reflected.MapRange()
-				for iter.Next() {
-					if strings.Contains(iter.Key().String(), secret) || modelCatalogValueContainsSecret(iter.Value().Interface(), secret) {
-						return true
-					}
-				}
-			}
-		case reflect.Slice, reflect.Array:
-			for index := 0; index < reflected.Len(); index++ {
-				if modelCatalogValueContainsSecret(reflected.Index(index).Interface(), secret) {
+		case []string:
+			for _, item := range typed {
+				if containsSecret(item, secret) {
 					return true
 				}
 			}
 		}
-		return false
 	}
+	return false
 }
 
 func redactRuntimeText(value string) string {

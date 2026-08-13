@@ -138,8 +138,8 @@ func TestInfoCapabilitySanitizesClosedCatalogConsumerProjection(t *testing.T) {
 	if err := json.Unmarshal(result, &payload); err != nil {
 		t.Fatalf("decode list_models result: %v", err)
 	}
-	if len(payload.Models) != 2 {
-		t.Fatalf("models = %#v, want only valid and malformed entries", payload.Models)
+	if len(payload.Models) != 3 {
+		t.Fatalf("models = %#v, want valid entries including one whose discarded metadata echoed the request key", payload.Models)
 	}
 	if len(payload.Providers) != 2 {
 		t.Fatalf("providers = %#v, want credential-bearing provider omitted", payload.Providers)
@@ -195,6 +195,14 @@ func TestInfoCapabilitySanitizesClosedCatalogConsumerProjection(t *testing.T) {
 		if got, ok := malformed[key].(float64); !ok || got != want {
 			t.Fatalf("valid malformed-model numeric field %q = %#v, want %v", key, malformed[key], want)
 		}
+	}
+
+	metadataEcho := payload.Models[2]
+	if metadataEcho["id"] != "secret-in-nested" || metadataEcho["provider"] != "openrouter" {
+		t.Fatalf("metadata-echo model = %#v", metadataEcho)
+	}
+	if _, ok := metadataEcho["metadata"]; ok {
+		t.Fatalf("discarded provider metadata survived: %#v", metadataEcho)
 	}
 
 	wantProviderKeys := map[string]struct{}{"provider": {}, "default_base_url": {}, "requires_api_key": {}, "dynamic_models": {}}
