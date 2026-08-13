@@ -202,3 +202,20 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 		t.Fatalf("duplicate service contract was required or created: %v", err)
 	}
 }
+
+func TestEmbeddedRemoteRunnerUsesOnlyTaskScopedWorkspaceAndArtifacts(t *testing.T) {
+	for _, expected := range []string{
+		`workspaceRoot, artifactRoot := filepath.Join(taskRoot, "workspace"), filepath.Join(taskRoot, "artifacts")`,
+		`command.Dir = workspaceRoot`,
+		`directory := taskPath(taskID, "artifacts")`,
+	} {
+		if !strings.Contains(remoteRunnerSource, expected) {
+			t.Fatalf("runner does not contain task-scoped path %q", expected)
+		}
+	}
+	for _, forbidden := range []string{`command.Dir = filepath.Join(root, "workspace")`, `filepath.Join(root, "artifacts", taskID)`} {
+		if strings.Contains(remoteRunnerSource, forbidden) {
+			t.Fatalf("runner retains shared execution path %q", forbidden)
+		}
+	}
+}

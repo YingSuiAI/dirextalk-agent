@@ -1,10 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -15,9 +21,10 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workspacearchive"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 )
 
 type sshWorkerExecutor struct {
@@ -26,22 +33,30 @@ type sshWorkerExecutor struct {
 	providers map[sshworker.CredentialIdentity]*sshworker.Provider
 	artifacts *localartifact.Repository
 	pricing   cloudworker.PricingCatalog
+	sources   cloudworker.StagingSourceReader
+	state     *sshworker.FileStore
+	pool      *sshworker.Pool
 	workloads *sshworkload.Repository
 	route53   map[sshworker.CredentialIdentity]remoteservice.Route53
 	root      string
 	mu        sync.Mutex
 }
 
-func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, root string) (*sshWorkerExecutor, error) {
-	if authority == nil || exact == nil || artifacts == nil || pricing == nil || !filepath.IsAbs(root) {
+func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.StagingSourceReader, root string) (*sshWorkerExecutor, error) {
+	if authority == nil || exact == nil || artifacts == nil || pricing == nil || sources == nil || !filepath.IsAbs(root) {
 		return nil, sshworker.ErrInvalid
 	}
 	workloads, err := sshworkload.NewRepository(filepath.Join(root, "workloads"))
 	if err != nil {
 		return nil, err
 	}
+	state, err := sshworker.NewFileStore(filepath.Join(root, "state"))
+	if err != nil {
+		return nil, err
+	}
 	return &sshWorkerExecutor{authority: authority, exact: exact, providers: make(map[sshworker.CredentialIdentity]*sshworker.Provider), artifacts: artifacts,
-		pricing: pricing, workloads: workloads, route53: make(map[sshworker.CredentialIdentity]remoteservice.Route53), root: root}, nil
+		pricing: pricing, sources: sources, state: state, pool: sshworker.NewPool(), workloads: workloads,
+		route53: make(map[sshworker.CredentialIdentity]remoteservice.Route53), root: root}, nil
 }
 
 func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudworker.AWSBinding) (*sshworker.Provider, sshworker.CredentialIdentity, error) {
@@ -55,12 +70,13 @@ func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudwo
 	if provider := executor.providers[identity]; provider != nil {
 		return provider, identity, nil
 	}
-	config := awssdk.Config{Region: handle.Region, Credentials: credentials.NewStaticCredentialsProvider(handle.AccessKeyID, handle.SecretAccessKey, handle.SessionToken)}
-	client, err := sshworker.NewSDK(config, sshworker.HTTPPublicIPReader{})
+	credentialProvider, err := newCloudWorkerAWSCredentialsProvider(executor.authority, binding)
 	if err != nil {
 		return nil, identity, err
 	}
-	store, err := sshworker.NewFileStore(filepath.Join(executor.root, "state"))
+	config := awssdk.Config{Region: handle.Region, Credentials: credentialProvider}
+	handle.AccessKeyID, handle.SecretAccessKey, handle.SessionToken = "", "", ""
+	client, err := sshworker.NewSDK(config, sshworker.HTTPPublicIPReader{})
 	if err != nil {
 		return nil, identity, err
 	}
@@ -69,7 +85,7 @@ func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudwo
 		return nil, identity, err
 	}
 	status := sshworker.CommandStatusSource{Keys: keys, Quote: executor.hourlyQuote}
-	provider, err := sshworker.New(client, keys, sshworker.CommandSSHExecutor{}, store, status)
+	provider, err := sshworker.NewWithPool(client, keys, sshworker.CommandSSHExecutor{}, executor.state, executor.pool, executor.authorizeWorkerCreate, status)
 	if err == nil {
 		executor.providers[identity] = provider
 		if dns, dnsErr := remoteservice.NewRoute53SDK(config); dnsErr == nil {
@@ -77,6 +93,19 @@ func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudwo
 		}
 	}
 	return provider, identity, err
+}
+
+func (executor *sshWorkerExecutor) authorizeWorkerCreate(ctx context.Context, credential sshworker.CredentialIdentity) error {
+	if executor == nil || executor.authority == nil || ctx == nil {
+		return cloudworker.ErrStaleAuthorization
+	}
+	current, err := executor.authority.ResolveCurrentAWSBinding(ctx)
+	expected := cloudworker.AWSBinding{AccountID: credential.AccountID, Region: credential.Region,
+		CredentialID: credential.CredentialID, CredentialRevision: credential.CredentialRevision}
+	if err != nil || current != expected {
+		return errors.Join(cloudworker.ErrStaleAuthorization, err)
+	}
+	return nil
 }
 
 func (executor *sshWorkerExecutor) hourlyQuote(ctx context.Context, identity sshworker.CredentialIdentity, instanceType string, volumeGiB int32) (sshworker.HourlyQuote, error) {
@@ -97,6 +126,15 @@ func (executor *sshWorkerExecutor) hourlyQuote(ctx context.Context, identity ssh
 }
 
 func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.Request) (sshflow.Result, error) {
+	current, err := executor.authority.ResolveCurrentAWSBinding(ctx)
+	if err != nil || current != request.AWS {
+		return sshflow.Result{}, errors.Join(cloudworker.ErrStaleAuthorization, err)
+	}
+	workspacePath, cleanupWorkspace, err := executor.materializeWorkspace(ctx, request)
+	if err != nil {
+		return sshflow.Result{}, err
+	}
+	defer cleanupWorkspace()
 	provider, identity, err := executor.provider(ctx, request.AWS)
 	if err != nil {
 		return sshflow.Result{}, err
@@ -127,21 +165,22 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		confirmation = sshworker.Confirmation{}
 	}
 	result, err := provider.Execute(ctx, sshworker.ExecuteRequest{ExecutionID: request.ExecutionID, Credential: identity,
-		Confirmation: confirmation, Discovery: discovery,
+		Confirmation: confirmation, Discovery: discovery, ReuseOnly: request.ReuseOnly,
 		InstanceType: request.Compute.InstanceType, VolumeGiB: int32(request.Compute.VolumeGiB), WorkerScript: material.WorkerScript,
 		WorkerScriptSHA256: material.WorkerScriptSHA256, Runtime: material.Protocol,
-		MaxWorkspaceBytes: 512 << 20, MaxResultBytes: int64(request.Limits.MaxOutputBytes), Sink: sink})
+		WorkspacePath: workspacePath, MaxWorkspaceBytes: 512 << 20, MaxResultBytes: int64(request.Limits.MaxOutputBytes), Sink: sink})
 	workerResult := sshflow.Result{ExitCode: result.ExitCode, WorkerID: result.WorkerID}
-	if list, _, listErr := executor.artifacts.List(ctx, localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, request.ExecutionID, "", 200); listErr == nil {
-		for _, artifact := range list {
-			workerResult.Artifacts = append(workerResult.Artifacts, sshflow.Artifact{ArtifactID: artifact.ArtifactID, ExecutionID: artifact.ExecutionID,
-				Kind: artifact.Kind, Name: artifact.Name, MediaType: artifact.MediaType,
-				RelativePath: filepath.ToSlash(filepath.Join("cloud-worker/artifacts", request.ExecutionID, artifact.Name)), SizeBytes: artifact.SizeBytes, SHA256: artifact.SHA256})
-		}
+	artifacts, artifactErr := executor.executionArtifacts(ctx, localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, request.ExecutionID)
+	workerResult.Artifacts = artifacts
+	if artifactErr != nil {
+		err = errors.Join(err, artifactErr)
 	}
 	workerResult.Summary = boundedWorkerSummary(result.Summary)
 	if workerResult.Summary == "" {
 		workerResult.Summary = fmt.Sprintf("Cloud Worker %s completed with exit code %d and %d artifacts", workerResult.WorkerID, result.ExitCode, result.ArtifactCount)
+	}
+	if errors.Is(err, sshworker.ErrAmbiguous) {
+		err = errors.Join(sshflow.ErrExecutionUncertain, err)
 	}
 	if err != nil {
 		return workerResult, err
@@ -155,6 +194,131 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		}
 	}
 	return workerResult, nil
+}
+
+var errSSHWorkerArtifactLimit = fmt.Errorf("SSH Worker artifact count exceeds %d", coretask.MaxFileCount)
+
+func (executor *sshWorkerExecutor) executionArtifacts(ctx context.Context, authority localartifact.Authority, executionID string) ([]sshflow.Artifact, error) {
+	list, next, err := executor.artifacts.List(ctx, authority, executionID, "", coretask.MaxFileCount)
+	if err != nil {
+		return nil, err
+	}
+	if next != "" {
+		return nil, errSSHWorkerArtifactLimit
+	}
+	result := make([]sshflow.Artifact, 0, len(list))
+	for _, artifact := range list {
+		result = append(result, sshflow.Artifact{ArtifactID: artifact.ArtifactID, ExecutionID: artifact.ExecutionID,
+			Kind: artifact.Kind, Name: artifact.Name, MediaType: artifact.MediaType,
+			RelativePath: filepath.ToSlash(filepath.Join("cloud-worker/artifacts", executionID, artifact.Name)), SizeBytes: artifact.SizeBytes, SHA256: artifact.SHA256})
+	}
+	return result, nil
+}
+
+func (executor *sshWorkerExecutor) materializeWorkspace(ctx context.Context, request sshflow.Request) (string, func(), error) {
+	manifest := request.InputManifest
+	manifest.Items = append([]cloudworker.InputManifestItem(nil), request.InputManifest.Items...)
+	if _, err := manifest.Seal(); err != nil || !reflect.DeepEqual(manifest, request.InputManifest) {
+		return "", func() {}, errors.Join(sshworker.ErrInvalid, err)
+	}
+	switch request.WorkspaceMode {
+	case cloudworker.WorkspaceNone:
+		if len(manifest.Items) != 0 {
+			return "", func() {}, sshworker.ErrInvalid
+		}
+		return "", func() {}, nil
+	case cloudworker.WorkspaceReadOnly:
+		if len(manifest.Items) == 0 {
+			return "", func() {}, sshworker.ErrInvalid
+		}
+	case cloudworker.WorkspaceWrite:
+	default:
+		return "", func() {}, sshworker.ErrInvalid
+	}
+	inputRoot := filepath.Join(executor.root, "workspace-inputs")
+	if err := os.MkdirAll(inputRoot, 0o700); err != nil {
+		return "", func() {}, err
+	}
+	info, err := os.Lstat(inputRoot)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", func() {}, errors.Join(sshworker.ErrInvalid, err)
+	}
+	stagingRoot, err := os.MkdirTemp(inputRoot, request.ExecutionID+"-")
+	if err != nil {
+		return "", func() {}, err
+	}
+	cleanup := func() { cleanupWorkspaceInputs(stagingRoot) }
+	workspacePath := filepath.Join(stagingRoot, "workspace")
+	if err = os.Mkdir(workspacePath, 0o700); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	// Archives describe the workspace root and must be extracted while it is
+	// empty. Ordinary sealed inputs are then mounted below their exact paths.
+	for _, kind := range []string{"archive", "file"} {
+		for _, item := range manifest.Items {
+			if item.Kind != kind {
+				continue
+			}
+			if err = executor.materializeWorkspaceItem(ctx, request, workspacePath, item); err != nil {
+				cleanup()
+				return "", func() {}, err
+			}
+		}
+	}
+	return workspacePath, cleanup, nil
+}
+
+func (executor *sshWorkerExecutor) materializeWorkspaceItem(ctx context.Context, request sshflow.Request, workspacePath string, item cloudworker.InputManifestItem) error {
+	read, err := executor.sources.OpenSource(ctx, cloudworker.SourceRequest{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration, Input: item})
+	if err != nil || read.Body == nil {
+		return errors.Join(sshworker.ErrInvalid, err)
+	}
+	defer read.Body.Close()
+	if read.SourceRef != item.SourceRef || read.SourceRevision != item.SourceRevision || read.SizeBytes != item.SizeBytes || read.MediaType != item.MediaType {
+		return sshworker.ErrInvalid
+	}
+	if item.Kind == "archive" {
+		body, readErr := io.ReadAll(io.LimitReader(read.Body, int64(item.SizeBytes)+1))
+		defer clear(body)
+		if readErr != nil || uint64(len(body)) != item.SizeBytes || !matchesSHA256(body, item.SHA256) || workspacearchive.Extract(bytes.NewReader(body), workspacePath) != nil {
+			return errors.Join(sshworker.ErrInvalid, readErr)
+		}
+		return nil
+	}
+	target := filepath.Join(workspacePath, filepath.FromSlash(item.MountPath))
+	if !strings.HasPrefix(target, workspacePath+string(os.PathSeparator)) || filepath.Clean(target) != target || os.MkdirAll(filepath.Dir(target), 0o700) != nil {
+		return sshworker.ErrInvalid
+	}
+	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	hasher := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(file, hasher), io.LimitReader(read.Body, int64(item.SizeBytes)+1))
+	syncErr, closeErr := file.Sync(), file.Close()
+	if copyErr != nil || syncErr != nil || closeErr != nil || written != int64(item.SizeBytes) || !strings.EqualFold(hex.EncodeToString(hasher.Sum(nil)), item.SHA256) {
+		return errors.Join(sshworker.ErrInvalid, copyErr, syncErr, closeErr)
+	}
+	return nil
+}
+
+func cleanupWorkspaceInputs(root string) {
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return filepath.SkipDir
+		}
+		if entry.IsDir() {
+			_ = os.Chmod(path, 0o700)
+		}
+		return nil
+	})
+	_ = os.RemoveAll(root)
+}
+
+func matchesSHA256(body []byte, expected string) bool {
+	digest := sha256.Sum256(body)
+	return strings.EqualFold(hex.EncodeToString(digest[:]), expected)
 }
 
 type serviceWorker interface {
@@ -203,15 +367,6 @@ func (source sshWorkerCredentials) HasCurrentVerifiedCredential(ctx context.Cont
 	return source.executor.authority.HasCurrentVerifiedAWSBinding(ctx)
 }
 
-func (source sshWorkerCredentials) CurrentVerifiedCredential(ctx context.Context) (sshworker.CredentialIdentity, error) {
-	binding, err := source.executor.authority.ResolveCurrentAWSBinding(ctx)
-	if err != nil {
-		return sshworker.CredentialIdentity{}, err
-	}
-	_, identity, err := source.executor.provider(ctx, binding)
-	return identity, err
-}
-
 func (executor *sshWorkerExecutor) providerForIdentity(ctx context.Context, identity sshworker.CredentialIdentity) (*sshworker.Provider, error) {
 	provider, actual, err := executor.provider(ctx, cloudworker.AWSBinding{AccountID: identity.AccountID, Region: identity.Region,
 		CredentialID: identity.CredentialID, CredentialRevision: identity.CredentialRevision})
@@ -221,12 +376,35 @@ func (executor *sshWorkerExecutor) providerForIdentity(ctx context.Context, iden
 	return provider, nil
 }
 
-func (executor *sshWorkerExecutor) ListWorkers(ctx context.Context, identity sshworker.CredentialIdentity) ([]sshworker.WorkerStatus, error) {
-	provider, err := executor.providerForIdentity(ctx, identity)
+func (executor *sshWorkerExecutor) HasManagedWorkers(ctx context.Context) bool {
+	if executor == nil || executor.state == nil || ctx == nil {
+		return false
+	}
+	identities, err := executor.state.ListCredentialIdentities(ctx)
+	return err == nil && len(identities) > 0
+}
+
+func (executor *sshWorkerExecutor) ListWorkers(ctx context.Context) ([]sshworker.WorkerStatus, error) {
+	if executor == nil || executor.state == nil || ctx == nil {
+		return nil, sshworker.ErrInvalid
+	}
+	identities, err := executor.state.ListCredentialIdentities(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return provider.ListWorkers(ctx, identity)
+	result := make([]sshworker.WorkerStatus, 0)
+	for _, identity := range identities {
+		provider, providerErr := executor.providerForIdentity(ctx, identity)
+		if providerErr != nil {
+			return nil, providerErr
+		}
+		workers, listErr := provider.ListWorkers(ctx, identity)
+		if listErr != nil {
+			return nil, listErr
+		}
+		result = append(result, workers...)
+	}
+	return result, nil
 }
 
 func (executor *sshWorkerExecutor) ObserveWorker(ctx context.Context, identity sshworker.WorkerIdentity) (sshworker.WorkerStatus, error) {
@@ -242,22 +420,48 @@ func (executor *sshWorkerExecutor) DestroyWorker(ctx context.Context, request ss
 	if err != nil {
 		return err
 	}
+	return executor.destroyWorkerResources(ctx, provider, request)
+}
+
+type workerDestroyer interface {
+	DestroyWorkerResources(context.Context, sshworker.DestroyRequest) error
+	FinalizeWorkerDestroy(context.Context, sshworker.DestroyRequest) error
+}
+
+func (executor *sshWorkerExecutor) destroyWorkerResources(ctx context.Context, provider workerDestroyer, request sshworker.DestroyRequest) error {
+	if !completeWorkerResourceIdentity(request.Identity) {
+		if err := provider.DestroyWorkerResources(ctx, request); err != nil {
+			return err
+		}
+		return provider.FinalizeWorkerDestroy(ctx, request)
+	}
 	services, err := executor.workloads.List(ctx, request.Identity)
 	if err != nil {
 		return err
 	}
+	var dnsErr error
 	for _, service := range services {
 		if service.Domain == nil {
 			continue
 		}
-		if err = executor.deleteDomain(ctx, service, "destroy_worker"); err != nil {
-			return err
-		}
+		dnsErr = errors.Join(dnsErr, executor.deleteDomain(ctx, service, "destroy_worker"))
 	}
-	if err = provider.DestroyWorker(ctx, request); err != nil {
+	if err = provider.DestroyWorkerResources(ctx, request); err != nil {
 		return err
 	}
-	return executor.workloads.RemoveWorker(ctx, request.Identity)
+	if dnsErr != nil {
+		// The exact compute is gone, but retain the exact DNS/workload identity
+		// so a later owner-authorized cleanup can retry the unresolved record.
+		return dnsErr
+	}
+	if err = executor.workloads.RemoveWorker(ctx, request.Identity); err != nil {
+		return err
+	}
+	return provider.FinalizeWorkerDestroy(ctx, request)
+}
+
+func completeWorkerResourceIdentity(identity sshworker.WorkerIdentity) bool {
+	return strings.TrimSpace(identity.InstanceID) != "" && strings.TrimSpace(identity.KeyPairID) != "" && strings.TrimSpace(identity.SecurityGroupID) != ""
 }
 
 type sshWorkerDomains struct{ executor *sshWorkerExecutor }
@@ -338,6 +542,9 @@ func projectDomain(domain *sshworkload.Domain, state string) workercap.DomainSta
 }
 
 func (executor *sshWorkerExecutor) ListWorkerWorkloads(ctx context.Context, worker sshworker.WorkerStatus) ([]workercap.WorkloadStatus, error) {
+	if !completeWorkerResourceIdentity(worker.Identity) {
+		return nil, nil
+	}
 	services, err := executor.workloads.List(ctx, worker.Identity)
 	if err != nil {
 		return nil, err

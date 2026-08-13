@@ -102,7 +102,9 @@ func start(taskID string) error {
 func run(taskID string) error {
 	spec, err := loadSpec(taskID); if err != nil { return err }
 	current, err := awaitStarted(taskID, os.Getpid()); if err != nil { return err }
-	artifactRoot := filepath.Join(root, "artifacts", taskID)
+	taskRoot := filepath.Join(root, "tasks", taskID)
+	workspaceRoot, artifactRoot := filepath.Join(taskRoot, "workspace"), filepath.Join(taskRoot, "artifacts")
+	if err := requireDirectory(workspaceRoot); err != nil { return finish(taskID, current, 1, err) }
 	if err := os.MkdirAll(artifactRoot, 0700); err != nil { return finish(taskID, current, 1, err) }
 	report, err := os.OpenFile(filepath.Join(artifactRoot, "final-report.md"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil { return finish(taskID, current, 1, err) }
@@ -115,7 +117,7 @@ func run(taskID string) error {
 	command := exec.Command(filepath.Join(root, "runtime", "pi"), arguments...)
 	objective, err := os.Open(taskPath(taskID, "objective.txt")); if err != nil { return finish(taskID, current, 1, err) }
 	defer objective.Close()
-	command.Dir = filepath.Join(root, "workspace"); command.Stdin = objective
+	command.Dir = workspaceRoot; command.Stdin = objective
 	command.Stdout = io.MultiWriter(os.Stdout, report); command.Stderr = os.Stderr
 	command.Env = append(os.Environ(), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb")
 	err = command.Run(); code := 0
@@ -161,7 +163,7 @@ func logOutput(taskID, rawOffset string) error {
 }
 
 func artifact(taskID, name string) error {
-	directory := filepath.Join(root, "artifacts", taskID)
+	directory := taskPath(taskID, "artifacts")
 	if name == "" {
 		return filepath.WalkDir(directory, func(path string, entry os.DirEntry, err error) error {
 			if err != nil { return err }; if !entry.Type().IsRegular() { return nil }
@@ -185,6 +187,7 @@ func serverStatus() error {
 
 func memorySummary(body string) map[string]string { result := map[string]string{}; for _, line := range strings.Split(body, "\n") { fields := strings.Fields(line); if len(fields) < 2 { continue }; key := strings.TrimSuffix(fields[0], ":"); if key == "MemTotal" || key == "MemAvailable" { result[key] = strings.Join(fields[1:], " ") } }; return result }
 func taskPath(taskID, name string) string { return filepath.Join(root, "tasks", taskID, name) }
+func requireDirectory(path string) error { info, err := os.Lstat(path); if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 { return errors.New("task workspace unavailable") }; return nil }
 func loadSpec(taskID string) (taskSpec, error) { var value taskSpec; body, err := os.ReadFile(taskPath(taskID, "spec.json")); if err == nil { err = json.Unmarshal(body, &value) }; if err != nil || value.TaskID != taskID || (value.Workload != "job" && value.Workload != "service") || (value.Workload == "job" && value.Service != nil) || (value.Workload == "service" && value.Service == nil) { return taskSpec{}, errors.New("invalid task") }; return value, nil }
 func loadStatus(taskID string) (taskStatus, error) { var value taskStatus; body, err := os.ReadFile(taskPath(taskID, "status.json")); if err == nil { err = json.Unmarshal(body, &value) }; return value, err }
 func saveStatus(taskID string, value taskStatus) error { body, err := json.Marshal(value); if err != nil { return err }; temporary := taskPath(taskID, "status.tmp"); if err = os.WriteFile(temporary, body, 0600); err != nil { return err }; return os.Rename(temporary, taskPath(taskID, "status.json")) }

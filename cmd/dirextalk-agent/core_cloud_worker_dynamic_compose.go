@@ -68,7 +68,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker local artifacts: %w", err)
 	}
-	executor, err := newSSHWorkerExecutor(authority, exact, artifacts, pricing, root)
+	executor, err := newSSHWorkerExecutor(authority, exact, artifacts, pricing, conversationStore, root)
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker executor: %w", err)
 	}

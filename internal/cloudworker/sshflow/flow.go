@@ -14,7 +14,10 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
 
-var ErrInvalid = errors.New("invalid SSH Worker flow")
+var (
+	ErrInvalid            = errors.New("invalid SSH Worker flow")
+	ErrExecutionUncertain = errors.New("SSH Worker execution outcome is uncertain")
+)
 
 // Run is the exact durable authority loaded after confirmation consumption.
 // ModelSnapshot is the secret-bearing snapshot sealed with the original turn;
@@ -37,6 +40,8 @@ type Request struct {
 	AWS               cloudworker.AWSBinding
 	Compute           cloudworker.ComputeSpec
 	Limits            cloudworker.Limits
+	InputManifest     cloudworker.InputManifest
+	WorkspaceMode     cloudworker.WorkspaceMode
 	ConfirmationProof string
 	ModelSnapshot     coremodel.ExecutionSnapshot
 	ReuseOnly         bool
@@ -102,10 +107,17 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 		ExecutionID: run.Plan.ExecutionID, Objective: run.Plan.Objective,
 		WorkloadKind: run.Plan.WorkloadKind, Service: run.Plan.Service,
 		AWS: run.Plan.AWS, Compute: run.Plan.Compute,
-		Limits:            run.Plan.Limits,
+		Limits: run.Plan.Limits, InputManifest: run.Plan.InputManifest,
+		WorkspaceMode:     run.Plan.WorkspaceMode,
 		ConfirmationProof: run.ConfirmationProof, ModelSnapshot: run.ModelSnapshot, ReuseOnly: run.Plan.PersistentWorkerReuse,
 	})
 	if executeErr != nil {
+		// A detached remote process may still be running. Its durable task and
+		// busy Worker lease must remain available for later observation instead
+		// of being terminalized or automatically replayed.
+		if errors.Is(executeErr, ErrExecutionUncertain) {
+			return coreruntime.ManagedOutcome{Err: executeErr, TerminalOwned: true}
+		}
 		if strings.TrimSpace(result.WorkerID) == "" {
 			result.WorkerID = run.Plan.ExecutionID
 		}

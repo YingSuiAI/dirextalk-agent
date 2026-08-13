@@ -1,14 +1,25 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	workercap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
 )
@@ -30,9 +41,10 @@ func (worker *serviceWorkerStub) SetPublicPort(_ context.Context, _ sshworker.Wo
 }
 
 type route53Stub struct {
-	record  remoteservice.ARecord
-	exists  bool
-	deletes int
+	record    remoteservice.ARecord
+	exists    bool
+	deletes   int
+	deleteErr error
 }
 
 func (*route53Stub) VerifyAccount(context.Context, string) error { return nil }
@@ -41,7 +53,53 @@ func (*route53Stub) UpsertA(context.Context, remoteservice.DNSMutation) error {
 }
 func (route53 *route53Stub) DeleteA(context.Context, remoteservice.DNSMutation) error {
 	route53.deletes++
+	if route53.deleteErr != nil {
+		return route53.deleteErr
+	}
 	route53.exists = false
+	return nil
+}
+
+type workspaceSourceStub struct {
+	reads map[string]cloudworker.SourceRead
+	calls int
+}
+
+func (source *workspaceSourceStub) OpenSource(_ context.Context, request cloudworker.SourceRequest) (cloudworker.SourceRead, error) {
+	source.calls++
+	read, ok := source.reads[request.Input.SourceRef]
+	if !ok {
+		return cloudworker.SourceRead{}, cloudworker.ErrNotFound
+	}
+	body, err := io.ReadAll(read.Body)
+	if err != nil {
+		return cloudworker.SourceRead{}, err
+	}
+	_ = read.Body.Close()
+	read.Body = &workspaceReadSeekCloser{Reader: bytes.NewReader(body)}
+	return read, nil
+}
+
+type workspaceReadSeekCloser struct{ *bytes.Reader }
+
+func (*workspaceReadSeekCloser) Close() error { return nil }
+
+type workerDestroyerStub struct {
+	resourceCalls int
+	finalizeCalls int
+	request       sshworker.DestroyRequest
+	finalized     sshworker.WorkerIdentity
+}
+
+func (destroyer *workerDestroyerStub) DestroyWorkerResources(_ context.Context, request sshworker.DestroyRequest) error {
+	destroyer.resourceCalls++
+	destroyer.request = request
+	return nil
+}
+
+func (destroyer *workerDestroyerStub) FinalizeWorkerDestroy(_ context.Context, request sshworker.DestroyRequest) error {
+	destroyer.finalizeCalls++
+	destroyer.finalized = request.Identity
 	return nil
 }
 func (route53 *route53Stub) ReadA(context.Context, string, string) (remoteservice.ARecord, bool, error) {
@@ -78,6 +136,44 @@ func TestSSHWorkerHourlyQuoteUsesLiveInfrastructureRates(t *testing.T) {
 	if catalog.request.AccountID != identity.AccountID || catalog.request.Region != identity.Region || catalog.request.CredentialID != identity.CredentialID ||
 		catalog.request.CredentialRevision != identity.CredentialRevision || catalog.request.InstanceType != "t3.small" || catalog.request.VolumeGiB != 20 || catalog.request.VolumeType != "gp3" {
 		t.Fatalf("pricing request=%+v", catalog.request)
+	}
+}
+
+func TestSSHWorkerExecuteRejectsRotatedCurrentCredentialBeforeWorkspaceRead(t *testing.T) {
+	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	requestBinding, err := authority.ResolveCurrentAWSBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver.revisions = []uint64{4, 4}
+	resolver.views[0].Revision, resolver.views[0].VerifiedRevision = 4, 4
+	sources := &workspaceSourceStub{reads: make(map[string]cloudworker.SourceRead)}
+	executor := &sshWorkerExecutor{authority: authority, sources: sources, root: t.TempDir()}
+	_, err = executor.Execute(context.Background(), sshflow.Request{AWS: requestBinding})
+	if !errors.Is(err, cloudworker.ErrStaleAuthorization) {
+		t.Fatalf("rotated credential returned %v", err)
+	}
+	if sources.calls != 0 {
+		t.Fatal("workspace source was read before current credential revalidation")
+	}
+}
+
+func TestSSHWorkerCreateAuthorizationRechecksCurrentCredentialAtAdmission(t *testing.T) {
+	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &sshWorkerExecutor{authority: authority}
+	identity := sshworker.CredentialIdentity{AccountID: binding.AccountID, Region: binding.Region,
+		CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision}
+	if err = executor.authorizeWorkerCreate(context.Background(), identity); err != nil {
+		t.Fatalf("current exact binding was rejected: %v", err)
+	}
+	resolver.revisions = []uint64{4, 4}
+	resolver.views[0].Revision, resolver.views[0].VerifiedRevision = 4, 4
+	if err = executor.authorizeWorkerCreate(context.Background(), identity); !errors.Is(err, cloudworker.ErrStaleAuthorization) {
+		t.Fatalf("rotated binding was admitted for paid create: %v", err)
 	}
 }
 
@@ -145,6 +241,184 @@ func TestUnbindDomainUsesPersistedAddressWithoutObservingWorker(t *testing.T) {
 	if err != nil || stored.Domain != nil || dns.deletes != 1 {
 		t.Fatalf("stored=%+v deletes=%d err=%v", stored, dns.deletes, err)
 	}
+}
+
+func TestMaterializeWorkspaceUsesExactSealedSourcesAndCleansUp(t *testing.T) {
+	content := []byte("authorized input\n")
+	item := workspaceManifestItem("44444444-4444-4444-8444-444444444444", "55555555-5555-4555-8555-555555555555", "inputs/input.txt", "file", "text/plain", content)
+	manifest := sealedWorkspaceManifest(t, item)
+	sources := &workspaceSourceStub{reads: map[string]cloudworker.SourceRead{item.SourceRef: sourceRead(item, content)}}
+	executor := &sshWorkerExecutor{root: t.TempDir(), sources: sources}
+	path, cleanup, err := executor.materializeWorkspace(context.Background(), sshflowRequest(manifest, cloudworker.WorkspaceReadOnly))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagingRoot := filepath.Dir(path)
+	actual, err := os.ReadFile(filepath.Join(path, "inputs", "input.txt"))
+	if err != nil || !bytes.Equal(actual, content) {
+		t.Fatalf("materialized=%q err=%v", actual, err)
+	}
+	cleanup()
+	if _, err = os.Stat(stagingRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("execution staging directory remains: %v", err)
+	}
+}
+
+func TestMaterializeWorkspaceRejectsArchiveFileCollisionAndSourceMismatch(t *testing.T) {
+	archive := workspaceArchiveFixture(t, "inputs/input.txt", []byte("archive"))
+	archiveItem := workspaceManifestItem("44444444-4444-4444-8444-444444444444", "55555555-5555-4555-8555-555555555555", "workspace", "archive", "application/vnd.dirextalk.workspace+tar+gzip", archive)
+	fileContent := []byte("ordinary")
+	fileItem := workspaceManifestItem("66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777", "inputs/input.txt", "file", "text/plain", fileContent)
+	manifest := sealedWorkspaceManifest(t, archiveItem, fileItem)
+	sources := &workspaceSourceStub{reads: map[string]cloudworker.SourceRead{
+		archiveItem.SourceRef: sourceRead(archiveItem, archive), fileItem.SourceRef: sourceRead(fileItem, fileContent),
+	}}
+	executor := &sshWorkerExecutor{root: t.TempDir(), sources: sources}
+	if _, _, err := executor.materializeWorkspace(context.Background(), sshflowRequest(manifest, cloudworker.WorkspaceWrite)); err == nil {
+		t.Fatal("archive/file path collision was accepted")
+	}
+
+	mismatch := sealedWorkspaceManifest(t, fileItem)
+	badRead := sourceRead(fileItem, fileContent)
+	badRead.SourceRevision++
+	executor.sources = &workspaceSourceStub{reads: map[string]cloudworker.SourceRead{fileItem.SourceRef: badRead}}
+	if _, _, err := executor.materializeWorkspace(context.Background(), sshflowRequest(mismatch, cloudworker.WorkspaceWrite)); !errors.Is(err, sshworker.ErrInvalid) {
+		t.Fatalf("source identity mismatch returned %v", err)
+	}
+}
+
+func TestExecutionArtifactsRejectsMoreThanTerminalFileLimit(t *testing.T) {
+	repository, err := localartifact.NewRepository(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := localartifact.Authority{OwnerID: "owner", AccountGeneration: 1}
+	executionID := "33333333-3333-4333-8333-333333333333"
+	sink, err := repository.Bind(authority, executionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = sink.StoreText(context.Background(), nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 127; index++ {
+		name := fmt.Sprintf("artifact-%03d.txt", index)
+		if err = sink.StoreArtifact(context.Background(), name, bytes.NewReader([]byte{byte(index)}), 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor := &sshWorkerExecutor{artifacts: repository}
+	if artifacts, err := executor.executionArtifacts(context.Background(), authority, executionID); !errors.Is(err, errSSHWorkerArtifactLimit) || artifacts != nil {
+		t.Fatalf("artifacts=%d err=%v", len(artifacts), err)
+	}
+}
+
+func TestDestroyWorkerReportsDNSFailureAfterComputeDestruction(t *testing.T) {
+	identity := workerIdentityFixture()
+	repository, err := sshworkload.NewRepository(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := sshworkload.Service{Worker: identity, TaskID: "task-a", WorkloadID: "web", Port: 8080, HealthPath: "/health"}
+	domain := &sshworkload.Domain{ZoneID: "Z123", Hostname: "app.example.test", BoundIPv4: "203.0.113.10", TTL: 300, PublicPort: service.Port}
+	if err = repository.PutService(context.Background(), service); err != nil {
+		t.Fatal(err)
+	}
+	if err = repository.SetDomain(context.Background(), identity, service.WorkloadID, domain); err != nil {
+		t.Fatal(err)
+	}
+	dnsFailure := errors.New("Route53 delete failed")
+	dns := &route53Stub{record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}, exists: true, deleteErr: dnsFailure}
+	destroyer := &workerDestroyerStub{}
+	executor := &sshWorkerExecutor{workloads: repository, route53: map[sshworker.CredentialIdentity]remoteservice.Route53{identity.Credential: dns}}
+	request := sshworker.DestroyRequest{Identity: identity, Authorization: sshworker.DestroyAuthorization{Authorized: true, Proof: "destroy"}}
+	if err = executor.destroyWorkerResources(context.Background(), destroyer, request); !errors.Is(err, dnsFailure) {
+		t.Fatalf("destroy returned %v", err)
+	}
+	if destroyer.resourceCalls != 1 || destroyer.finalizeCalls != 0 || destroyer.request.Identity != identity {
+		t.Fatalf("exact compute destroy was not invoked: %+v", destroyer)
+	}
+	if services, listErr := repository.List(context.Background(), identity); listErr != nil || len(services) != 1 || services[0].Domain == nil {
+		t.Fatalf("unresolved DNS identity was not retained: %+v err=%v", services, listErr)
+	}
+	dns.deleteErr = nil
+	if err = executor.destroyWorkerResources(context.Background(), destroyer, request); err != nil {
+		t.Fatalf("exact DNS cleanup retry failed: %v", err)
+	}
+	if destroyer.resourceCalls != 2 || destroyer.finalizeCalls != 1 || destroyer.finalized != identity || dns.deletes != 2 {
+		t.Fatalf("cleanup retry did not finalize exactly once: destroyer=%+v dns=%+v", destroyer, dns)
+	}
+	if services, listErr := repository.List(context.Background(), identity); listErr != nil || len(services) != 0 {
+		t.Fatalf("resolved workload state remains: %+v err=%v", services, listErr)
+	}
+}
+
+func TestDestroyPartialWorkerSkipsWorkloadStoreAndUsesExactProviderIdentity(t *testing.T) {
+	destroyer := &workerDestroyerStub{}
+	executor := &sshWorkerExecutor{}
+	identity := workerIdentityFixture()
+	identity.InstanceID, identity.KeyPairID, identity.SecurityGroupID = "", "", ""
+	request := sshworker.DestroyRequest{Identity: identity, Authorization: sshworker.DestroyAuthorization{Authorized: true, Proof: "destroy"}}
+	if err := executor.destroyWorkerResources(context.Background(), destroyer, request); err != nil {
+		t.Fatal(err)
+	}
+	if destroyer.resourceCalls != 1 || destroyer.finalizeCalls != 1 || destroyer.request.Identity != identity || destroyer.finalized != identity {
+		t.Fatalf("partial exact identity was not passed through: %+v", destroyer)
+	}
+}
+
+func TestListWorkerWorkloadsReturnsEmptyForPartialWorkerIdentity(t *testing.T) {
+	executor := &sshWorkerExecutor{}
+	status := sshworker.WorkerStatus{Identity: workerIdentityFixture()}
+	status.Identity.SecurityGroupID = ""
+	workloads, err := executor.ListWorkerWorkloads(context.Background(), status)
+	if err != nil || len(workloads) != 0 {
+		t.Fatalf("workloads=%+v err=%v", workloads, err)
+	}
+}
+
+func workspaceManifestItem(inputID, sourceRef, mountPath, kind, mediaType string, body []byte) cloudworker.InputManifestItem {
+	digest := sha256.Sum256(body)
+	return cloudworker.InputManifestItem{InputID: inputID, Kind: kind, Name: filepath.Base(mountPath), MountPath: mountPath,
+		MediaType: mediaType, SizeBytes: uint64(len(body)), SHA256: hex.EncodeToString(digest[:]), SourceRef: sourceRef, SourceRevision: 1}
+}
+
+func sealedWorkspaceManifest(t *testing.T, items ...cloudworker.InputManifestItem) cloudworker.InputManifest {
+	t.Helper()
+	manifest := cloudworker.InputManifest{Schema: cloudworker.InputManifestSchema, Items: items}
+	if _, err := manifest.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	return manifest
+}
+
+func sourceRead(item cloudworker.InputManifestItem, body []byte) cloudworker.SourceRead {
+	return cloudworker.SourceRead{SourceRef: item.SourceRef, SourceRevision: item.SourceRevision, SizeBytes: item.SizeBytes,
+		MediaType: item.MediaType, Body: &workspaceReadSeekCloser{Reader: bytes.NewReader(body)}}
+}
+
+func sshflowRequest(manifest cloudworker.InputManifest, mode cloudworker.WorkspaceMode) sshflow.Request {
+	return sshflow.Request{OwnerID: "owner", AccountGeneration: 1, ExecutionID: "33333333-3333-4333-8333-333333333333", InputManifest: manifest, WorkspaceMode: mode}
+}
+
+func workspaceArchiveFixture(t *testing.T, name string, body []byte) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	gz := gzip.NewWriter(&output)
+	writer := tar.NewWriter(gz)
+	if err := writer.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(body))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
 }
 
 func workerIdentityFixture() sshworker.WorkerIdentity {

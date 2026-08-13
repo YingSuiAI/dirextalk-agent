@@ -50,9 +50,18 @@ func TestHandlerPassesOnlyConfirmedMinimalExecutionInputAndOwnsTerminal(t *testi
 	snapshot := coremodel.ExecutionSnapshot{ProfileID: "22222222-2222-4222-8222-222222222222", Revision: 3,
 		CredentialVersion: 4, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.test/v1",
 		Model: "test", APIKey: "secret"}
+	manifest := cloudworker.InputManifest{Schema: cloudworker.InputManifestSchema, Items: []cloudworker.InputManifestItem{{
+		InputID: "44444444-4444-4444-8444-444444444444", Kind: "file", Name: "input.txt", MountPath: "inputs/input.txt",
+		MediaType: "text/plain", SizeBytes: 4, SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SourceRef: "55555555-5555-4555-8555-555555555555", SourceRevision: 1,
+	}}}
+	if _, err := manifest.Seal(); err != nil {
+		t.Fatal(err)
+	}
 	store := &flowStore{run: Run{Plan: cloudworker.Plan{OwnerID: "owner", AccountGeneration: 7,
 		ExecutionID: "33333333-3333-4333-8333-333333333333", Objective: "deploy service",
 		WorkloadKind: cloudworker.WorkloadService, Service: &cloudworker.ServiceSpec{WorkloadID: "memory-api", Port: 8080, HealthPath: "/health"},
+		InputManifest: manifest, WorkspaceMode: cloudworker.WorkspaceReadOnly,
 		AWS:     cloudworker.AWSBinding{AccountID: "123456789012", Region: "ap-east-1"},
 		Compute: cloudworker.ComputeSpec{InstanceType: "t3.small", VolumeGiB: 20}},
 		ConfirmationProof: "confirmed-proof", ModelSnapshot: snapshot}}
@@ -73,6 +82,10 @@ func TestHandlerPassesOnlyConfirmedMinimalExecutionInputAndOwnsTerminal(t *testi
 	if executor.request.WorkloadKind != cloudworker.WorkloadService || executor.request.Service == nil || executor.request.Service.Port != 8080 {
 		t.Fatalf("service contract was not propagated: %+v", executor.request)
 	}
+	if executor.request.WorkspaceMode != cloudworker.WorkspaceReadOnly || len(executor.request.InputManifest.Items) != 1 ||
+		executor.request.InputManifest.Items[0] != manifest.Items[0] {
+		t.Fatalf("sealed workspace authority was not propagated: %+v", executor.request)
+	}
 }
 
 func TestHandlerTerminalizesFailureWithoutDestroyingPersistentWorker(t *testing.T) {
@@ -91,6 +104,16 @@ func TestHandlerRejectsSuccessWithoutWorkerIdentity(t *testing.T) {
 	handler, _ := NewHandler(store, executor)
 	outcome := handler.Handle(context.Background(), runningCloudTask())
 	if outcome.Err == nil || outcome.TerminalOwned || store.failed != 0 || store.completed != 0 {
+		t.Fatalf("outcome=%+v store=%+v", outcome, store)
+	}
+}
+
+func TestHandlerLeavesUncertainExecutionRecoverable(t *testing.T) {
+	store := &flowStore{run: Run{Plan: cloudworker.Plan{ExecutionID: "33333333-3333-4333-8333-333333333333"}}}
+	executor := &flowExecutor{result: Result{WorkerID: "worker-a"}, err: errors.Join(ErrExecutionUncertain, errors.New("SSH status unavailable"))}
+	handler, _ := NewHandler(store, executor)
+	outcome := handler.Handle(context.Background(), runningCloudTask())
+	if !errors.Is(outcome.Err, ErrExecutionUncertain) || !outcome.TerminalOwned || store.failed != 0 || store.completed != 0 {
 		t.Fatalf("outcome=%+v store=%+v", outcome, store)
 	}
 }
