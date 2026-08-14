@@ -183,35 +183,3 @@ func TestCloudWorkerAWSCredentialsProviderRevalidatesBeforeEverySDKRequest(t *te
 			resolver.exactCalls, resolver.credentialCalls, httpClient.calls)
 	}
 }
-
-func TestCloudWorkerSDKFactoryReconstructsExactRevisionFromPersistedProviderID(t *testing.T) {
-	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
-	// Simulate restart after the mutable current pointer was disabled. Existing
-	// cleanup/result/retention work has only its persisted ProviderID and must
-	// never consult or resurrect the current pointer.
-	resolver.revisions = nil
-	factory, err := newCloudWorkerSDKFactory(authority, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	binding := cloudworker.AWSBinding{AccountID: resolver.handle.AccountID, Region: resolver.handle.Region, CredentialID: resolver.handle.ReferenceID, CredentialRevision: resolver.exactRevision}
-	providerID := cloudWorkerCredentialProviderID(binding)
-	sdkConfig, adapter, err := factory.sdkForProvider(
-		context.Background(), binding.AccountID, binding.Region, providerID,
-	)
-	if err != nil || adapter.ProviderID != providerID || adapter.AccountGeneration != 7 {
-		t.Fatalf("reconstructed adapter=%+v err=%v", adapter, err)
-	}
-	credential, err := sdkConfig.Credentials.Retrieve(context.Background())
-	if err != nil || credential.AccessKeyID != resolver.handle.AccessKeyID || credential.SecretAccessKey != resolver.handle.SecretAccessKey {
-		t.Fatalf("reconstructed credential=%+v err=%v", credential, err)
-	}
-	if resolver.revisionCalls != 0 || resolver.credentialCalls != 0 || resolver.exactCalls != 2 {
-		t.Fatalf("current revision_calls=%d credential_calls=%d exact_calls=%d",
-			resolver.revisionCalls, resolver.credentialCalls, resolver.exactCalls)
-	}
-	if _, _, err = factory.sdkForProvider(context.Background(), binding.AccountID,
-		binding.Region, "credential:"+binding.CredentialID+":revision:4"); !errors.Is(err, cloudworker.ErrStaleAuthorization) {
-		t.Fatalf("unpersisted exact revision accepted: %v", err)
-	}
-}

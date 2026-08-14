@@ -453,76 +453,42 @@ the credential ID, revision, and secret field. Missing keys, wrong keys, and
 version mismatches fail closed. Provider code materializes credentials only
 for the request-local SDK call and never logs them.
 
-Fake-provider lifecycle tests and source-level typed-provider checks cover
-confirmation, read-back, and cleanup. Typed workload routes require their own
-exact readiness blocks and lazy target probes. Generic non-Cloud-Worker
-Execution V2 operations publish only when their own typed provider route is
-ready, including a dedicated CloudFormation service role where that operation
-requires one. The single Pi Cloud Worker route has its independent PostgreSQL,
-controller, provider-ledger/Reaper, private-listener, and completion-outbox
-readiness gate. The [API contract](api-contract.md) defines publication gates;
-evidence and remaining verification are recorded in the
+Cloud Worker readiness is independent of deploy-time infrastructure. It is
+derived at request time from the durable Task/confirmation stores, local
+artifact repository, persistent SSH Worker manager, and the sole active
+App-uploaded AWS credential. The [API contract](api-contract.md) defines
+publication gates; evidence and remaining verification are recorded in the
 [delivery tracker](delivery-tracker.md).
 
-### Single Pi Cloud Worker
+### Persistent SSH Cloud Worker
 
 The Native Agent remains local-first and retains its local sandbox, worker
 pool, MCP, Skills, Knowledge, Conversation Tools, and Extension Runner. The
-Core intrinsic `cloud_worker_propose` may create a priced offer from an
-explicit user cloud request or from trusted Native scheduler evidence that the
-local conversation runtime lacks a general project/shell executor for the task
-selected by the model. This covers substantial project deployment, build,
-test, isolated workspace, durable delivery, and long-running compute work
-without requiring the user to name cloud or remote execution. Model text and
-local failures are never capability evidence. A cloud/local-only veto wins,
-and no AWS resource starts until the owner reviews and confirms the pending
-CoreConfirmation.
+Core intrinsic `cloud_worker_propose` creates an offer when the user explicitly
+requests cloud work or trusted scheduler evidence shows that the selected
+substantial task exceeds the local runtime. Model wording and a local failure
+are not authority. A cloud or local-only veto wins.
 
-The only recipe is `ephemeral-pi-task` with adapter `pi_json_task_v1`. One
-confirmed execution creates exactly one EC2 instance, one Worker, and one Pi
-process. Its plan binds every cost/authority field, including immutable input,
-workspace mode, model and credential revisions, AWS/compute/AMI digests,
-limits, grants, retention, quote expiry, and hard cost ceiling. Any drift
-requires a fresh quote and CoreConfirmation.
-An empty input manifest is valid only for a writable workspace, allowing a
-new or remote-source project to begin in an isolated empty directory. A
-read-only workspace continues to require exact current-turn input material.
+A proposal atomically creates the plan, execution, `CLOUD_WORKER` Task and
+`CoreConfirmation`. Creating a Worker requires a fresh EC2/EBS price read and
+confirmation of that exact quote before any AWS mutation. Reusing an idle
+retained Worker performs no creation mutation and needs no new creation quote.
+Destroying a retained Worker is a separate explicit owner action.
 
-The controller progresses the durable `CLOUD_WORKER` Task through
-`waiting_user`, `queued`, `provisioning`, `awaiting_worker`, `running`,
-`collecting`, `validating`, and `cleaning`. It waits for the private durable
-WorkerControl session rather than running Pi itself. Success, failure, and
-cancellation remain non-terminal until the Resource Ledger proves every AWS
-resource `verified_destroyed`. Unknown AWS responses and reclaimed leases use
-identity-bound read-back of the original dispatch; they cannot provision a
-second instance.
+The manager keeps at most five Workers for the authenticated owner/account
+generation. It discovers the newest AWS-owned Amazon Linux 2023 image and the
+default VPC/subnet, launches an instance with an ordinary public IPv4, and
+connects by outbound SSH. Agent uses short SSH operations to start work, read
+status and load, stream logs by offset, and list or copy artifacts. A dropped
+connection does not erase remote state. Job and service workloads share this
+protocol, and a service may remain running across conversation turns.
 
-Production starts artifact retention and output-history cleaners in the Core
-lifecycle. Artifact objects are deleted only by exact version after their
-retention authority expires and is revalidated. Output journal/version rows
-retain a 24-hour audit window and are pruned per execution only after the
-completion outbox is delivered, the execution is terminal without pending
-reconciliation, the AWS ledger, input-staging and provider-resource authority
-sets all exist with every row verified destroyed, every journal is verified
-clean, and every artifact row and retained artifact version is independently
-verified deleted before the cutoff. Unfinished, response-uncertain,
-unconsumed, missing-authority, or still-referenced data is never eligible;
-restart resumes from PostgreSQL state.
-
-The Worker receives no local MCP/Skill/Extension Runner state. It receives only
-the exact runtime task and versioned input manifest, short-lived model relay
-grant, exact artifact S3 prefix, heartbeat deadline, and approved grants.
-Turn inputs use one owner/account-generation/request-bound upload authority for
-images, approved ordinary code/document files, and at most one constrained
-`application/vnd.dirextalk.workspace+tar+gzip` workspace archive. The Agent
-validates the archive before commit and again before staging; the Worker repeats
-validation while extracting into `workspace/`. Both boundaries reject links,
-special files, traversal/absolute paths, path/case collisions, duplicate
-entries, trailing data, excessive entries, and compressed expansion beyond
-256 MiB. `read_only` removes write permission after extraction; `write` uses a
-private copy and can return only centrally validated deltas/artifacts.
-Workspace `write` produces a patch/archive/artifact from an isolated copy and
-never writes into local files. The full contract is
+Worker results are copied into the Agent-owned local artifact repository and
+returned to the original durable turn. Optional Route53 binding is an explicit
+management action for workloads that need a domain. It is not required for
+Worker creation or execution. There is no EIP, custom AMI, S3/KMS artifact
+path, WorkerControl listener, model relay, or deploy-time Worker binding. The
+complete read, cancellation, event, artifact, and management contract is
 [Execution V2](execution-v2.md).
 
 ## Security and data rules

@@ -5,7 +5,6 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
 
@@ -32,20 +31,5 @@ func TestBoundedSummaryPreservesUTF8AndByteLimit(t *testing.T) {
 				break
 			}
 		})
-	}
-}
-
-func TestCentrallyQualifiedSummaryIsUTF8SafeAndBounded(t *testing.T) {
-	final := cloudruntime.PiFinalV1{
-		Status:       "completed",
-		Summary:      strings.Repeat("中文结果", coretask.MaxSummaryBytes),
-		Deliverables: []string{strings.Repeat("交付物", coretask.MaxSummaryBytes)},
-		Tests:        []string{strings.Repeat("检查", coretask.MaxSummaryBytes)},
-	}
-
-	got := centrallyQualifiedSummary(final)
-	if got == "" || len([]byte(got)) > coretask.MaxSummaryBytes || !utf8.ValidString(got) ||
-		!strings.HasPrefix(got, "Cloud Worker result") {
-		t.Fatalf("bounded summary: valid=%t bytes=%d value=%q", utf8.ValidString(got), len([]byte(got)), got)
 	}
 }

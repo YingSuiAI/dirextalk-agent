@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"reflect"
 	"testing"
-
-	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 )
 
 func TestCommittedMigrationBytesRemainImmutable(t *testing.T) {
@@ -138,9 +136,6 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 		if !bytes.Contains(unboundedRounds.Script, []byte("DROP CONSTRAINT "+constraint)) || !bytes.Contains(unboundedRounds.Script, []byte("ADD CONSTRAINT "+constraint+" CHECK (round >= 0)")) {
 			t.Fatalf("unbounded agent rounds migration missing replacement for %q", constraint)
 		}
-	}
-	if !bytes.Contains(cloudWorker.Script, []byte(cloudworker.PostgresOutputJournalSchemaRequirement)) {
-		t.Fatal("Cloud Worker migration drifted from the output journal schema requirement")
 	}
 	for _, needle := range []string{
 		"core_cloud_worker_plans",
