@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.93
+
+1. Isolate each durable confirmation expiry candidate so one stale Worker projection remains retryable while valid siblings commit and the Agent lifecycle stays available.
+2. Treat an expired memory-consolidation observation lease as record-scoped ownership loss without hiding repository failures or terminating the Knowledge cleaner.
+
 ## v1.0.92
 
 1. Finish expired Worker offers safely after their owning conversation has been deleted.

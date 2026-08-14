@@ -42,9 +42,11 @@ scripts/acceptance/run-current-stack.sh \
   --real-worker-driver "$PWD/scripts/acceptance/real-worker-driver.sh"
 ```
 
-The two actual tasks use the official durable `agent.chat.stream` WebSocket
-route. All other calls use `POST /_p2p/query`. Their user prompts do not name
-AWS, cloud, remote execution, or a Worker. The first substantial deployment
+Each actual task is admitted once through HTTP `POST /_p2p/query` for
+`agent.chat.stream`; progress is watched and resumed through durable SSE `GET`
+requests from the last acknowledged cursor. Other Product actions also use
+`POST /_p2p/query`. The task prompts do not name AWS, cloud, remote execution,
+or a Worker. The first substantial deployment
 task must therefore exercise automatic execution escalation, expose and
 receive the exact priced confirmation, return a verified artifact containing a
 new marker, and leave one idle Worker with live server load. The second task
