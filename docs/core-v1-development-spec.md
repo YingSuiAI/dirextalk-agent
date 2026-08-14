@@ -438,12 +438,12 @@ Message Server an Agent-memory database.
 
 ### AWS
 
-Typed AWS credentials, revision-fenced idempotent Capability identity checks, plans, quotes,
-and CloudFormation change requests are exposed through
-`CoreCloudControlService`. Provider calls use typed SDK clients and durable
-fencing. Confirmation is mandatory for mutating or spend/exposure operations;
-model and extension tools cannot bypass it. Provider evidence is tracked in the
-[delivery tracker](delivery-tracker.md).
+`CoreCloudControlService` owns the sole App-managed AWS credential. The neutral
+AWS Capability adds revision-fenced idempotent STS identity checks. Worker
+selection, live pricing, EC2 lifecycle, and Route53 remain behind the Cloud
+Worker domain rather than a generic AWS resource graph. Confirmation is
+mandatory for Worker spend or exposure operations; model and extension tools
+cannot bypass it.
 
 AWS credential access still requires `core_aws_enabled`; all durable Core secret
 envelopes require a raw 32-byte `core_secret_master_key_file` mounted with mode

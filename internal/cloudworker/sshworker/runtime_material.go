@@ -31,12 +31,13 @@ type RuntimeModel struct {
 }
 
 type RuntimeRequest struct {
-	TaskID       string
-	Objective    string
-	Architecture string
-	Workload     WorkloadKind
-	Service      *RuntimeServiceSpec
-	Model        RuntimeModel
+	TaskID            string
+	Objective         string
+	Architecture      string
+	Workload          WorkloadKind
+	MaxRuntimeSeconds uint64
+	Service           *RuntimeServiceSpec
+	Model             RuntimeModel
 }
 
 type RuntimeServiceSpec struct {
@@ -66,6 +67,7 @@ type RuntimeMaterial struct {
 func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 	objective := strings.TrimSpace(request.Objective)
 	if !validID(request.TaskID) || objective == "" || len(objective) > maxObjectiveBytes || !request.Workload.valid() ||
+		request.MaxRuntimeSeconds == 0 || request.MaxRuntimeSeconds > 24*60*60 ||
 		(request.Workload == WorkloadJob && request.Service != nil) ||
 		(request.Workload == WorkloadService && (request.Service == nil || !request.Service.valid())) {
 		return RuntimeMaterial{}, ErrInvalid
@@ -98,7 +100,8 @@ func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 		return RuntimeMaterial{}, ErrInvalid
 	}
 	spec, err := json.Marshal(remoteTaskSpec{
-		TaskID: request.TaskID, Workload: request.Workload, Model: request.Model.Name, Service: request.Service,
+		TaskID: request.TaskID, Workload: request.Workload, Model: request.Model.Name,
+		MaxRuntimeSeconds: request.MaxRuntimeSeconds, Service: request.Service,
 	})
 	if err != nil {
 		return RuntimeMaterial{}, ErrInvalid
@@ -134,7 +137,7 @@ go build -trimpath -ldflags='-s -w' -o "$worker_root/dirextalk-worker-runner" "$
 chmod 700 "$worker_root/dirextalk-worker-runner"
 "$worker_root/dirextalk-worker-runner" server-status >/dev/null
 `,
-		shellQuote(request.TaskID),
+		request.TaskID,
 		shellQuote("https://github.com/earendil-works/pi/releases/download/v"+PiReleaseVersion+"/"+archive),
 		shellQuote(archiveSHA256), shellQuote(PiReleaseVersion),
 		shellQuote(base64.StdEncoding.EncodeToString(modelConfig)),

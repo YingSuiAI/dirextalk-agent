@@ -15,6 +15,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/google/uuid"
 )
 
 type TurnState string
@@ -249,6 +250,12 @@ type TurnStore interface {
 	RequestTurnCancel(context.Context, TurnCancelCommand) (Turn, error)
 	MarkTurnCanceled(context.Context, TurnLease) (Turn, error)
 	FailTurn(context.Context, TurnLease, string, string) (Turn, error)
+}
+
+// TurnUserMessageID is the transcript identity used when a durable intrinsic
+// has already committed the current turn's user message before final response.
+func TurnUserMessageID(requestID string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-user:"+requestID)).String()
 }
 
 type TurnRequestLookup interface {

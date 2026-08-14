@@ -13,21 +13,26 @@ import (
 )
 
 type flowStore struct {
-	run       Run
-	completed int
-	failed    int
-	summary   string
+	run         Run
+	beginErr    error
+	completeErr error
+	failErr     error
+	completed   int
+	failed      int
+	summary     string
 }
 
-func (store *flowStore) Begin(context.Context, coretask.Task) (Run, error) { return store.run, nil }
+func (store *flowStore) Begin(context.Context, coretask.Task) (Run, error) {
+	return store.run, store.beginErr
+}
 func (store *flowStore) Complete(_ context.Context, _ Run, _ Result) error {
 	store.completed++
-	return nil
+	return store.completeErr
 }
 func (store *flowStore) Fail(_ context.Context, _ Run, _ Result, _, summary string) error {
 	store.failed++
 	store.summary = summary
-	return nil
+	return store.failErr
 }
 
 type flowExecutor struct {
@@ -109,8 +114,32 @@ func TestHandlerRejectsSuccessWithoutWorkerIdentity(t *testing.T) {
 	executor := &flowExecutor{result: Result{Summary: "done"}}
 	handler, _ := NewHandler(store, executor)
 	outcome := handler.Handle(context.Background(), runningCloudTask())
-	if outcome.Err == nil || outcome.TerminalOwned || store.failed != 0 || store.completed != 0 {
+	if outcome.Err == nil || !outcome.TerminalOwned || store.failed != 1 || store.completed != 0 {
 		t.Fatalf("outcome=%+v store=%+v", outcome, store)
+	}
+}
+
+func TestHandlerNeverFallsBackToTaskOnlyTerminalOnDomainStoreFailure(t *testing.T) {
+	tests := []struct {
+		name  string
+		store *flowStore
+		exec  *flowExecutor
+	}{
+		{name: "begin", store: &flowStore{beginErr: errors.New("begin unavailable")}, exec: &flowExecutor{}},
+		{name: "complete", store: &flowStore{run: Run{Plan: cloudworker.Plan{ExecutionID: "33333333-3333-4333-8333-333333333333"}}, completeErr: errors.New("commit unavailable")}, exec: &flowExecutor{result: Result{Summary: "done", WorkerID: "worker-a"}}},
+		{name: "fail", store: &flowStore{run: Run{Plan: cloudworker.Plan{ExecutionID: "33333333-3333-4333-8333-333333333333"}}, failErr: errors.New("failure commit unavailable")}, exec: &flowExecutor{err: errors.New("remote failed")}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler, err := NewHandler(test.store, test.exec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome := handler.Handle(context.Background(), runningCloudTask())
+			if outcome.Err == nil || !outcome.TerminalOwned {
+				t.Fatalf("outcome=%+v", outcome)
+			}
+		})
 	}
 }
 

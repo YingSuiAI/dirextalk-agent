@@ -27,7 +27,7 @@ func TestProviderRegistryRoutesExactKindWithoutFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = r.Apply(context.Background(), Plan{TargetKind: TargetAWSECS}, Operation{}); !errors.Is(err, ErrProvider) {
+	if _, err = r.Apply(context.Background(), Plan{TargetKind: TargetKind("RETIRED")}, Operation{}); !errors.Is(err, ErrProvider) {
 		t.Fatalf("unknown route err=%v", err)
 	}
 	if called != "" {

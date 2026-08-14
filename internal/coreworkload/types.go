@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,8 +21,6 @@ type TargetKind string
 
 const (
 	TargetCoreRunner TargetKind = "CORE_RUNNER"
-	TargetAWSEC2SSM  TargetKind = "AWS_EC2_SSM"
-	TargetAWSECS     TargetKind = "AWS_ECS"
 )
 
 type OperationKind string
@@ -56,49 +53,20 @@ type ResourceLimits struct {
 }
 
 type TargetSettings struct {
-	Identity             TargetIdentity    `json:"identity,omitempty" yaml:"identity,omitempty" mapstructure:"identity"`
-	Region               string            `json:"region,omitempty" yaml:"region,omitempty" mapstructure:"region"`
-	AccountID            string            `json:"account_id,omitempty" yaml:"account_id,omitempty" mapstructure:"account_id"`
-	Cluster              string            `json:"cluster,omitempty" yaml:"cluster,omitempty" mapstructure:"cluster"`
-	Service              string            `json:"service,omitempty" yaml:"service,omitempty" mapstructure:"service"`
-	InstanceID           string            `json:"instance_id,omitempty" yaml:"instance_id,omitempty" mapstructure:"instance_id"`
-	Ports                []int32           `json:"ports,omitempty"`
-	PortDetails          []Port            `json:"port_details,omitempty"`
-	NetworkGrantDetails  []NetworkGrant    `json:"network_grant_details,omitempty"`
-	Labels               map[string]string `json:"labels,omitempty"`
-	EC2DocumentVersion   string            `json:"ec2_document_version,omitempty" yaml:"ec2_document_version,omitempty" mapstructure:"ec2_document_version"`
-	EC2SystemdService    string            `json:"ec2_systemd_service,omitempty" yaml:"ec2_systemd_service,omitempty" mapstructure:"ec2_systemd_service"`
-	RequiredInstanceTags map[string]string `json:"required_instance_tags,omitempty" yaml:"required_instance_tags,omitempty" mapstructure:"required_instance_tags"`
-	ECSClusterARN        string            `json:"ecs_cluster_arn,omitempty" yaml:"ecs_cluster_arn,omitempty" mapstructure:"ecs_cluster_arn"`
-	ECSServiceName       string            `json:"ecs_service_name,omitempty" yaml:"ecs_service_name,omitempty" mapstructure:"ecs_service_name"`
-	ECSTaskFamily        string            `json:"ecs_task_family,omitempty" yaml:"ecs_task_family,omitempty" mapstructure:"ecs_task_family"`
-	ECSPlatformVersion   string            `json:"ecs_platform_version,omitempty" yaml:"ecs_platform_version,omitempty" mapstructure:"ecs_platform_version"`
-	ECSSubnetIDs         []string          `json:"ecs_subnet_ids,omitempty" yaml:"ecs_subnet_ids,omitempty" mapstructure:"ecs_subnet_ids"`
-	ECSSecurityGroupIDs  []string          `json:"ecs_security_group_ids,omitempty" yaml:"ecs_security_group_ids,omitempty" mapstructure:"ecs_security_group_ids"`
-	ECSAssignPublicIP    bool              `json:"ecs_assign_public_ip,omitempty" yaml:"ecs_assign_public_ip,omitempty" mapstructure:"ecs_assign_public_ip"`
-	ECSTargetGroupARN    string            `json:"ecs_target_group_arn,omitempty" yaml:"ecs_target_group_arn,omitempty" mapstructure:"ecs_target_group_arn"`
-	ECSTargetGroupPort   uint32            `json:"ecs_target_group_port,omitempty" yaml:"ecs_target_group_port,omitempty" mapstructure:"ecs_target_group_port"`
-	ECSTaskRoleARN       string            `json:"ecs_task_role_arn,omitempty" yaml:"ecs_task_role_arn,omitempty" mapstructure:"ecs_task_role_arn"`
-	ECSExecutionRoleARN  string            `json:"ecs_execution_role_arn,omitempty" yaml:"ecs_execution_role_arn,omitempty" mapstructure:"ecs_execution_role_arn"`
-	ECSDesiredCount      int64             `json:"ecs_desired_count,omitempty" yaml:"ecs_desired_count,omitempty" mapstructure:"ecs_desired_count"`
-	ECSImageURI          string            `json:"ecs_image_uri,omitempty" yaml:"ecs_image_uri,omitempty" mapstructure:"ecs_image_uri"`
+	Identity            TargetIdentity    `json:"identity,omitempty" yaml:"identity,omitempty" mapstructure:"identity"`
+	Ports               []int32           `json:"ports,omitempty"`
+	PortDetails         []Port            `json:"port_details,omitempty"`
+	NetworkGrantDetails []NetworkGrant    `json:"network_grant_details,omitempty"`
+	Labels              map[string]string `json:"labels,omitempty"`
 }
 
 // TargetIdentity is the provider-safe, exact identity used for readback
 // fencing. It contains no arbitrary provider payload or credentials.
 type TargetIdentity struct {
-	Kind                   TargetKind `json:"kind" yaml:"kind" mapstructure:"kind"`
-	CoreRunnerID           string     `json:"core_runner_id,omitempty"`
-	CoreRunnerService      string     `json:"core_runner_service,omitempty"`
-	ImageDigest            string     `json:"image_digest,omitempty"`
-	AccountID              string     `json:"account_id,omitempty" yaml:"account_id,omitempty" mapstructure:"account_id"`
-	Region                 string     `json:"region,omitempty" yaml:"region,omitempty" mapstructure:"region"`
-	InstanceID             string     `json:"instance_id,omitempty" yaml:"instance_id,omitempty" mapstructure:"instance_id"`
-	Cluster                string     `json:"cluster,omitempty" yaml:"cluster,omitempty" mapstructure:"cluster"`
-	Service                string     `json:"service,omitempty" yaml:"service,omitempty" mapstructure:"service"`
-	TaskDefinitionRevision string     `json:"task_definition_revision,omitempty" yaml:"task_definition_revision,omitempty" mapstructure:"task_definition_revision"`
-	DesiredCount           int64      `json:"desired_count,omitempty"`
-	Endpoint               string     `json:"endpoint,omitempty"`
+	Kind              TargetKind `json:"kind" yaml:"kind" mapstructure:"kind"`
+	CoreRunnerID      string     `json:"core_runner_id,omitempty"`
+	CoreRunnerService string     `json:"core_runner_service,omitempty"`
+	ImageDigest       string     `json:"image_digest,omitempty"`
 }
 
 func (i TargetIdentity) Validate(kind TargetKind) error {
@@ -108,18 +76,6 @@ func (i TargetIdentity) Validate(kind TargetKind) error {
 	switch kind {
 	case TargetCoreRunner:
 		if strings.TrimSpace(i.CoreRunnerID) == "" || strings.TrimSpace(i.CoreRunnerService) == "" {
-			return ErrInvalid
-		}
-	case TargetAWSEC2SSM:
-		if i.AccountID == "" || i.Region == "" || i.InstanceID == "" {
-			return ErrInvalid
-		}
-	case TargetAWSECS:
-		if i.AccountID == "" || i.Region == "" || i.Cluster == "" || i.Service == "" || i.TaskDefinitionRevision == "" {
-			return ErrInvalid
-		}
-		revision, err := strconv.ParseUint(i.TaskDefinitionRevision, 10, 64)
-		if err != nil || revision == 0 {
 			return ErrInvalid
 		}
 	default:
@@ -169,7 +125,6 @@ type Plan struct {
 	Source          string           `json:"source,omitempty"`
 	CommandSteps    []string         `json:"command_steps,omitempty"`
 	ImageDigest     string           `json:"image_digest,omitempty"`
-	ImageURI        string           `json:"image_uri,omitempty"`
 	TargetKind      TargetKind       `json:"target_kind"`
 	Target          TargetSettings   `json:"target"`
 	NetworkGrants   []string         `json:"network_grants,omitempty"`
@@ -279,7 +234,7 @@ func ValidDigest(v string) bool {
 	return e == nil
 }
 func validTarget(v TargetKind) bool {
-	return v == TargetCoreRunner || v == TargetAWSEC2SSM || v == TargetAWSECS
+	return v == TargetCoreRunner
 }
 
 func canonicalDigest(v any) string {
@@ -288,10 +243,6 @@ func canonicalDigest(v any) string {
 	return hex.EncodeToString(sum[:])
 }
 func planInputDigest(p Plan) string {
-	image := p.ImageDigest
-	if p.ImageURI != "" {
-		image += "\x00" + p.ImageURI
-	}
 	return canonicalDigest(struct {
 		Summary, Artifact, Source string
 		Commands                  []string
@@ -302,44 +253,9 @@ func planInputDigest(p Plan) string {
 		SecretRefs                []SecretGrantRef
 		Limits                    ResourceLimits
 		ExpiresAt                 time.Time
-	}{p.Summary, p.Artifact, p.Source, p.CommandSteps, image, p.TargetKind, p.Target, p.NetworkGrants, p.SecretGrants, p.SecretGrantRefs, p.ResourceLimits, p.ExpiresAt.UTC()})
+	}{p.Summary, p.Artifact, p.Source, p.CommandSteps, p.ImageDigest, p.TargetKind, p.Target, p.NetworkGrants, p.SecretGrants, p.SecretGrantRefs, p.ResourceLimits, p.ExpiresAt.UTC()})
 }
 func PlanInputDigest(p Plan) string { return planInputDigest(p) }
-
-// CanonicalAWSSecretARN accepts only reference-only Secrets Manager and SSM
-// Parameter Store ARNs. It intentionally does not resolve or read values.
-func CanonicalAWSSecretARN(v string) (string, bool) {
-	if v == "" || v != strings.TrimSpace(v) || strings.ContainsAny(v, "\r\n\x00 \t") {
-		return "", false
-	}
-	parts := strings.SplitN(v, ":", 6)
-	if len(parts) != 6 || parts[0] != "arn" || (parts[1] != "aws" && parts[1] != "aws-us-gov" && parts[1] != "aws-cn") || (parts[2] != "secretsmanager" && parts[2] != "ssm") || parts[3] == "" || len(parts[4]) != 12 || strings.ContainsAny(parts[3]+parts[4], "\r\n\x00 \t") || strings.Contains(parts[5], "//") {
-		return "", false
-	}
-	for _, r := range parts[4] {
-		if r < '0' || r > '9' {
-			return "", false
-		}
-	}
-	if parts[2] == "secretsmanager" && !strings.HasPrefix(parts[5], "secret:") || parts[2] == "ssm" && !strings.HasPrefix(parts[5], "parameter/") {
-		return "", false
-	}
-	return v, true
-}
-
-// SecretGrantBindingDigest is the stable confirmation binding for an ARN
-// reference. Legacy UUID references retain their historical digest behavior.
-func SecretGrantBindingDigest(reference string, purpose coreconfirmation.SecretPurpose) string {
-	arn, ok := CanonicalAWSSecretARN(reference)
-	if !ok {
-		return ""
-	}
-	return canonicalDigest(struct {
-		Version string
-		ARN     string
-		Purpose coreconfirmation.SecretPurpose
-	}{"aws-secret-binding-v1", arn, purpose})
-}
 
 func RedactText(s string) string {
 	if strings.TrimSpace(s) == "" {
@@ -380,29 +296,13 @@ func (p Plan) Normalize() (Plan, error) {
 	p.Artifact = strings.TrimSpace(p.Artifact)
 	p.Source = strings.TrimSpace(p.Source)
 	p.ImageDigest = strings.TrimSpace(p.ImageDigest)
-	p.ImageURI = strings.TrimSpace(p.ImageURI)
-	if p.ImageURI == "" && strings.Contains(p.ImageDigest, "@sha256:") {
-		p.ImageURI = p.ImageDigest
-	}
 	if p.ID != "" && !ValidUUID(p.ID) || p.Summary == "" || len(p.Summary) > 4096 || !validTarget(p.TargetKind) || p.Revision == 0 || p.ExpiresAt.IsZero() || p.ExpiresAt.Location() != time.UTC {
 		return Plan{}, ErrInvalid
 	}
-	if p.TargetKind == TargetCoreRunner && len(p.CommandSteps) == 0 && p.ImageDigest == "" {
+	if len(p.CommandSteps) == 0 && p.ImageDigest == "" {
 		return Plan{}, ErrInvalid
 	}
-	if p.TargetKind == TargetAWSECS {
-		// Legacy read-only plans may contain only ImageDigest.  Typed ECS
-		// mutation plans opt into the strict Fargate contract via ImageURI or
-		// any ECS target field; providers reject legacy mutation attempts.
-		typed := p.ImageURI != "" || p.Target.ECSClusterARN != "" || p.Target.ECSServiceName != ""
-		if typed && (p.ImageURI == "" || !validPinnedImageURI(p.ImageURI)) {
-			return Plan{}, ErrInvalid
-		}
-		if typed && !validFargateCPUAndMemory(p.ResourceLimits.CPU, p.ResourceLimits.MemoryMB) {
-			return Plan{}, ErrInvalid
-		}
-	}
-	if p.TargetKind != TargetAWSECS && p.ImageDigest != "" && !ValidDigest(p.ImageDigest) {
+	if p.ImageDigest != "" && !ValidDigest(p.ImageDigest) {
 		return Plan{}, ErrInvalid
 	}
 	if p.ExpiresAt.Before(time.Now().UTC()) { /* expiry is checked by service; retain historical plans */
@@ -421,25 +321,7 @@ func (p Plan) Normalize() (Plan, error) {
 		}
 	}
 	for _, ref := range p.SecretGrantRefs {
-		arnRef := false
-		if _, ok := CanonicalAWSSecretARN(ref.ReferenceID); ok {
-			arnRef = true
-		}
-		if (!ValidUUID(ref.ReferenceID) && !arnRef) || !ref.BindingDigest.Valid() || !validSecretPurpose(ref.Purpose) {
-			return Plan{}, ErrInvalid
-		}
-		if arnRef && string(ref.BindingDigest) != SecretGrantBindingDigest(ref.ReferenceID, ref.Purpose) {
-			return Plan{}, ErrInvalid
-		}
-	}
-	if p.TargetKind == TargetAWSEC2SSM || p.TargetKind == TargetAWSECS {
-		awsCredentials := 0
-		for _, ref := range p.SecretGrantRefs {
-			if ref.Purpose == coreconfirmation.SecretPurposeAWSCredential {
-				awsCredentials++
-			}
-		}
-		if awsCredentials != 1 {
+		if !ValidUUID(ref.ReferenceID) || !ref.BindingDigest.Valid() || !validSecretPurpose(ref.Purpose) {
 			return Plan{}, ErrInvalid
 		}
 	}
@@ -454,14 +336,7 @@ func (p Plan) Normalize() (Plan, error) {
 	if err := p.Target.Identity.Validate(p.TargetKind); err != nil {
 		return Plan{}, err
 	}
-	if err := validateTargetSettings(p.TargetKind, p.Target); err != nil {
-		return Plan{}, err
-	}
 	if p.Digest == "" {
-		image := p.ImageDigest
-		if p.ImageURI != "" {
-			image += "\x00" + p.ImageURI
-		}
 		p.Digest = canonicalDigest(struct {
 			Summary, Artifact, Source string
 			Commands                  []string
@@ -472,7 +347,7 @@ func (p Plan) Normalize() (Plan, error) {
 			SecretRefs                []SecretGrantRef
 			Limits                    ResourceLimits
 			ExpiresAt                 time.Time
-		}{p.Summary, p.Artifact, p.Source, p.CommandSteps, image, p.TargetKind, p.Target, p.NetworkGrants, p.SecretGrants, p.SecretGrantRefs, p.ResourceLimits, p.ExpiresAt.UTC()})
+		}{p.Summary, p.Artifact, p.Source, p.CommandSteps, p.ImageDigest, p.TargetKind, p.Target, p.NetworkGrants, p.SecretGrants, p.SecretGrantRefs, p.ResourceLimits, p.ExpiresAt.UTC()})
 	}
 	if !ValidDigest(p.Digest) {
 		return Plan{}, ErrInvalid
@@ -480,136 +355,6 @@ func (p Plan) Normalize() (Plan, error) {
 	return p, nil
 }
 
-func validPinnedImageURI(v string) bool {
-	v = strings.TrimSpace(v)
-	idx := strings.LastIndex(v, "@sha256:")
-	return idx > 0 && idx+len("@sha256:")+64 == len(v) && ValidDigest(v[idx+len("@sha256:"):]) && !strings.ContainsAny(v[:idx], "\r\n\x00 ")
-}
-
-func validFargateCPUAndMemory(cpu, memory int64) bool {
-	if cpu <= 0 || memory <= 0 {
-		return false
-	}
-	allowed := map[int64]map[int64]bool{
-		256:   {512: true, 1024: true, 1536: true, 2048: true},
-		512:   {1024: true, 2048: true, 3072: true, 4096: true},
-		1024:  {2048: true, 3072: true, 4096: true, 5120: true, 6144: true, 7168: true, 8192: true},
-		2048:  {4096: true, 5120: true, 6144: true, 7168: true, 8192: true, 9216: true, 10240: true, 11264: true, 12288: true, 13312: true, 14336: true, 15360: true, 16384: true},
-		4096:  {8192: true, 9216: true, 10240: true, 11264: true, 12288: true, 13312: true, 14336: true, 15360: true, 16384: true, 17408: true, 18432: true, 19456: true, 20480: true, 21504: true, 22528: true, 23552: true, 24576: true, 25600: true, 26624: true, 27648: true, 28672: true, 29696: true, 30720: true},
-		8192:  {16384: true, 17408: true, 18432: true, 19456: true, 20480: true, 21504: true, 22528: true, 23552: true, 24576: true, 25600: true, 26624: true, 27648: true, 28672: true, 29696: true, 30720: true, 32768: true, 34816: true, 36864: true, 38912: true, 40960: true, 43008: true, 45056: true, 47104: true, 49152: true, 51200: true, 53248: true, 55296: true, 57344: true, 59392: true, 61440: true},
-		16384: {32768: true, 34816: true, 36864: true, 38912: true, 40960: true, 43008: true, 45056: true, 47104: true, 49152: true, 51200: true, 53248: true, 55296: true, 57344: true, 59392: true, 61440: true, 65536: true, 69632: true, 73728: true, 77824: true, 81920: true, 86016: true, 90112: true, 94208: true, 98304: true, 102400: true, 106496: true, 110592: true, 114688: true, 118784: true, 122880: true},
-		32768: {65536: true, 69632: true, 73728: true, 77824: true, 81920: true, 86016: true, 90112: true, 94208: true, 98304: true, 102400: true, 106496: true, 110592: true, 114688: true, 118784: true, 122880: true},
-	}
-	return allowed[cpu][memory]
-}
-
-func validateTargetSettings(kind TargetKind, t TargetSettings) error {
-	switch kind {
-	case TargetAWSEC2SSM:
-		if !validDocumentVersion(t.EC2DocumentVersion) || !validSystemdService(t.EC2SystemdService) || len(t.RequiredInstanceTags) == 0 {
-			return ErrInvalid
-		}
-		for k, v := range t.RequiredInstanceTags {
-			if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" || len(k) > 128 || len(v) > 256 || strings.ContainsAny(k+v, "\r\n\x00") {
-				return ErrInvalid
-			}
-		}
-	case TargetAWSECS:
-		if !validARN(t.ECSClusterARN) || strings.TrimSpace(t.ECSServiceName) == "" || strings.TrimSpace(t.ECSTaskFamily) == "" || !validPlatformVersion(t.ECSPlatformVersion) || len(t.ECSSubnetIDs) == 0 || len(t.ECSSecurityGroupIDs) == 0 || t.ECSDesiredCount < 1 {
-			return ErrInvalid
-		}
-		if t.ECSTargetGroupARN != "" && (t.ECSTargetGroupPort < 1 || t.ECSTargetGroupPort > 65535 || !validARN(t.ECSTargetGroupARN)) {
-			return ErrInvalid
-		}
-		if t.ECSTaskRoleARN != "" && !validARN(t.ECSTaskRoleARN) || t.ECSExecutionRoleARN != "" && !validARN(t.ECSExecutionRoleARN) {
-			return ErrInvalid
-		}
-		for _, id := range append(append([]string{}, t.ECSSubnetIDs...), t.ECSSecurityGroupIDs...) {
-			if strings.TrimSpace(id) == "" || strings.ContainsAny(id, "\r\n\x00 ") {
-				return ErrInvalid
-			}
-		}
-	}
-	return nil
-}
-
-// ValidateCanonicalTarget rejects plans whose identity and provider settings
-// disagree. Provider clients must call this before constructing SDK clients.
-func (t TargetSettings) ValidateCanonicalTarget(kind TargetKind) error {
-	if err := t.Identity.Validate(kind); err != nil {
-		return err
-	}
-	if kind == TargetAWSEC2SSM {
-		if t.Region != "" && t.Region != t.Identity.Region || t.AccountID != "" && t.AccountID != t.Identity.AccountID || t.InstanceID != "" && t.InstanceID != t.Identity.InstanceID {
-			return ErrInvalid
-		}
-		if t.Region == "" || t.AccountID == "" || t.InstanceID == "" {
-			return ErrInvalid
-		}
-	}
-	if kind == TargetAWSECS {
-		if t.Region != "" && t.Region != t.Identity.Region || t.AccountID != "" && t.AccountID != t.Identity.AccountID || t.ECSClusterARN == "" || t.ECSServiceName == "" || t.ECSClusterARN != t.Identity.Cluster || t.ECSServiceName != t.Identity.Service {
-			return ErrInvalid
-		}
-		if t.Region == "" || t.AccountID == "" {
-			return ErrInvalid
-		}
-	}
-	return nil
-}
-
-// ValidateProviderTarget validates the complete typed target contract before
-// a provider is constructed or probed.  Readiness configuration uses this
-// boundary so a partial target remains disabled instead of being advertised.
-func (t TargetSettings) ValidateProviderTarget(kind TargetKind) error {
-	if err := t.ValidateCanonicalTarget(kind); err != nil {
-		return err
-	}
-	return validateTargetSettings(kind, t)
-}
-
-func validPlatformVersion(v string) bool {
-	parts := strings.Split(v, ".")
-	if len(parts) != 3 || v == "LATEST" {
-		return false
-	}
-	for _, part := range parts {
-		if part == "" {
-			return false
-		}
-		for _, r := range part {
-			if r < '0' || r > '9' {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func validDocumentVersion(v string) bool {
-	if v == "" || strings.ContainsAny(v, "$\r\n\x00 ") {
-		return false
-	}
-	_, err := strconv.ParseUint(v, 10, 64)
-	return err == nil
-}
-
-func validSystemdService(v string) bool {
-	v = strings.TrimSpace(v)
-	if len(v) < len("a.service") || len(v) > 255 || !strings.HasSuffix(v, ".service") || strings.ContainsAny(v, "/\\\r\n\x00 ") {
-		return false
-	}
-	for _, r := range v[:len(v)-len(".service")] {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
-			return false
-		}
-	}
-	return true
-}
-
-func validARN(v string) bool {
-	return strings.HasPrefix(strings.TrimSpace(v), "arn:aws:") && !strings.ContainsAny(v, "\r\n\x00 ") && len(v) <= 2048
-}
 func validSecretPurpose(v coreconfirmation.SecretPurpose) bool {
 	switch v {
 	case coreconfirmation.SecretPurposeModelAPIKey, coreconfirmation.SecretPurposeMCPCredential, coreconfirmation.SecretPurposeSkillSecret, coreconfirmation.SecretPurposeAWSCredential, coreconfirmation.SecretPurposeOtherExtensionSecret:

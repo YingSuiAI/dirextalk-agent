@@ -41,7 +41,7 @@ func TestGenericTaskPayloadBranchesAndRoundTrip(t *testing.T) {
 		t.Fatal("payload change must alter digest")
 	}
 	bad := n
-	bad.Payload.AWSChange = &AWSChangeTaskPayload{ChangeID: testID}
+	bad.Payload.CloudWorker = &CloudWorkerTaskPayload{}
 	if _, err := bad.Normalize(); !errors.Is(err, ErrInvalid) {
 		t.Fatal("multiple payload branches accepted")
 	}
@@ -442,7 +442,7 @@ func TestRetryRejectsUncertainProviderOutcome(t *testing.T) {
 
 func TestRetryRejectsNonAgentTask(t *testing.T) {
 	a := baseTask()
-	a.Spec.Kind = TaskKindAWSChange
+	a.Spec.Kind = TaskKindWorkload
 	a.Status = StatusFailed
 	if _, err := RetryTask(a, RetryRequest{TaskID: a.ID, IdempotencyKey: testID2, RequestDigest: strings.Repeat("d", 64), ExpectedRevision: a.Revision, At: a.UpdatedAt.Add(time.Second)}); err != ErrConflict {
 		t.Fatalf("non-Agent retry err=%v, want ErrConflict", err)

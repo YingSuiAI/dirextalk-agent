@@ -8,10 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -26,7 +24,6 @@ var (
 	ErrRevisionConflict               = errors.New("coreaws: revision conflict")
 	ErrIdempotencyConflict            = errors.New("coreaws: idempotency conflict")
 	ErrProvider                       = errors.New("coreaws: provider operation failed")
-	ErrUnconfirmed                    = errors.New("coreaws: change is not confirmed")
 	ErrResponseUncertain        error = responseUncertainError{}
 	ErrCredentialTestInProgress       = errors.New("coreaws: credential test in progress")
 	ErrCredentialInUse                = errors.New("coreaws: credential is used by a retained Worker")
@@ -51,49 +48,6 @@ func (e *CredentialTestInProgressError) Error() string {
 
 func (e *CredentialTestInProgressError) Is(target error) bool {
 	return target == ErrCredentialTestInProgress
-}
-
-type Operation string
-
-const (
-	OperationCreate Operation = "create"
-	OperationUpdate Operation = "update"
-	OperationDelete Operation = "delete"
-)
-
-type ChangeStage string
-
-const (
-	StageRequested         ChangeStage = "requested"
-	StageChangeSetCreating ChangeStage = "change_set_creating"
-	StageChangeSetReady    ChangeStage = "change_set_ready"
-	StageExecuting         ChangeStage = "executing"
-	StageReconciling       ChangeStage = "reconciling"
-	// StageReconciliationRequired records that a task terminalized after a
-	// provider request was issued. Only evidence-bound reconciliation may
-	// settle the provider outcome and release the consumed confirmation.
-	StageReconciliationRequired ChangeStage = "reconciliation_required"
-	StageSucceeded              ChangeStage = "succeeded"
-	StageFailed                 ChangeStage = "failed"
-	StageCanceled               ChangeStage = "canceled"
-)
-
-type ChangeStatus string
-
-const (
-	ChangeWaitingUser ChangeStatus = "waiting_user"
-	ChangeRunning     ChangeStatus = "running"
-	ChangeSucceeded   ChangeStatus = "succeeded"
-	ChangeFailed      ChangeStatus = "failed"
-	ChangeCanceled    ChangeStatus = "canceled"
-)
-
-func validStage(s ChangeStage) bool {
-	switch s {
-	case StageRequested, StageChangeSetCreating, StageChangeSetReady, StageExecuting, StageReconciling, StageReconciliationRequired, StageSucceeded, StageFailed, StageCanceled:
-		return true
-	}
-	return false
 }
 
 type Credentials struct {
@@ -193,92 +147,11 @@ func CredentialTestBindingDigest(credentialID string, expectedRevision int64) st
 	}{credentialID, expectedRevision})
 }
 
-type Plan struct {
-	ID             string
-	CredentialID   string
-	Region         string
-	StackName      string
-	Operation      Operation
-	Template       []byte
-	TemplateSHA256 string
-	Parameters     map[string]string
-	Tags           map[string]string
-	Capabilities   []string
-	Revision       int64
-	CreatedAt      time.Time
-}
-
-func (p Plan) Validate() error {
-	if !validUUID(p.ID) || !validUUID(p.CredentialID) || !validRegion(p.Region) || !validStackName(p.StackName) || !validOperation(p.Operation) || p.Revision < 1 || len(p.Template) == 0 || len(p.Template) > 51200 {
-		return ErrInvalid
-	}
-	norm, digest, err := normalizeTemplate(p.Template)
-	if err != nil || digest != p.TemplateSHA256 || len(norm) == 0 {
-		return ErrInvalid
-	}
-	if err := validateMap(p.Parameters, 64, 128, 2048); err != nil {
-		return err
-	}
-	if err := validateMap(p.Tags, 50, 128, 256); err != nil {
-		return err
-	}
-	if len(p.Capabilities) > 3 {
-		return ErrInvalid
-	}
-	seen := map[string]bool{}
-	for _, c := range p.Capabilities {
-		if c != "CAPABILITY_IAM" && c != "CAPABILITY_NAMED_IAM" && c != "CAPABILITY_AUTO_EXPAND" || seen[c] {
-			return ErrInvalid
-		}
-		seen[c] = true
-	}
-	return nil
-}
-
-type PlanView struct {
-	ID, CredentialID, Region, StackName, TemplateSHA256 string
-	Operation                                           Operation
-	Parameters, Tags                                    map[string]string
-	Capabilities                                        []string
-	Revision                                            int64
-	CreatedAt                                           time.Time
-}
-
-func (p Plan) View() PlanView {
-	return PlanView{ID: p.ID, CredentialID: p.CredentialID, Region: p.Region, StackName: p.StackName, TemplateSHA256: p.TemplateSHA256, Operation: p.Operation, Parameters: cloneMap(p.Parameters), Tags: cloneMap(p.Tags), Capabilities: append([]string(nil), p.Capabilities...), Revision: p.Revision, CreatedAt: p.CreatedAt}
-}
-
-type Quote struct {
-	PlanID                   string
-	Operation                Operation
-	Region, StackName        string
-	ResourceCount            int
-	ParameterCount, TagCount int
-	EstimatedMonthlyUSD      float64
-	Summary                  string
-	PlanDigest               string
-}
-
-type Change struct {
-	ID, PlanID, CredentialID, TaskID, ConfirmationID string
-	Operation                                        Operation
-	Status                                           ChangeStatus
-	Stage                                            ChangeStage
-	ChangeSetID                                      string
-	ProviderRequestDigest                            string
-	Revision                                         int64
-	ErrorCode, ErrorSummary                          string
-	ProviderToken                                    string
-	CreatedAt, UpdatedAt                             time.Time
-}
-
 type Page[T any] struct {
 	Items         []T
 	NextPageToken string
 }
 type CredentialPage = Page[CredentialView]
-type PlanPage = Page[PlanView]
-type ChangePage = Page[Change]
 
 type CredentialInput struct{ ID, Name, Region, AccessKeyID, SecretAccessKey, SessionToken, IdempotencyKey string }
 
@@ -313,53 +186,6 @@ func secretFingerprint(value string) string {
 	return hex.EncodeToString(s[:])
 }
 
-type PlanInput struct {
-	ID, CredentialID, Region, StackName string
-	Operation                           Operation
-	Template                            []byte
-	Parameters, Tags                    map[string]string
-	Capabilities                        []string
-	IdempotencyKey                      string
-}
-
-func normalizeTemplate(in []byte) ([]byte, string, error) {
-	b := []byte(strings.TrimSpace(string(in)))
-	if len(b) == 0 {
-		return nil, "", ErrInvalid
-	}
-	if json.Valid(b) {
-		var v any
-		if err := json.Unmarshal(b, &v); err != nil {
-			return nil, "", ErrInvalid
-		}
-		b, _ = json.Marshal(v)
-	}
-	s := sha256.Sum256(b)
-	return b, hex.EncodeToString(s[:]), nil
-}
-func NormalizeTemplate(in []byte) ([]byte, string, error) { return normalizeTemplate(in) }
-func validateMap(m map[string]string, max, keyLen, valLen int) error {
-	if len(m) > max {
-		return ErrInvalid
-	}
-	for k, v := range m {
-		if strings.TrimSpace(k) == "" || len(k) > keyLen || len(v) > valLen || strings.ContainsAny(k+v, "\r\n") {
-			return ErrInvalid
-		}
-	}
-	return nil
-}
-func cloneMap(m map[string]string) map[string]string {
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
-
-var stackNameRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{0,127}$`)
-
-func validStackName(s string) bool { return stackNameRE.MatchString(s) }
 func validRegion(s string) bool {
 	return regexp.MustCompile(`^[a-z]{2}(?:-gov)?-[a-z]+-\d$`).MatchString(strings.TrimSpace(s))
 }
@@ -367,37 +193,8 @@ func validUUID(s string) bool {
 	u, e := uuid.Parse(strings.TrimSpace(s))
 	return e == nil && u != uuid.Nil && u.String() == strings.TrimSpace(s)
 }
-func validOperation(o Operation) bool {
-	return o == OperationCreate || o == OperationUpdate || o == OperationDelete
-}
 func canonicalDigest(v any) string {
 	b, _ := json.Marshal(v)
 	s := sha256.Sum256(b)
 	return hex.EncodeToString(s[:])
-}
-func planDigest(p Plan) string {
-	return canonicalDigest(struct {
-		ID, CredentialID, Region, StackName string
-		Operation                           Operation
-		TemplateSHA256                      string
-		Parameters, Tags                    map[string]string
-		Capabilities                        []string
-	}{p.ID, p.CredentialID, p.Region, p.StackName, p.Operation, p.TemplateSHA256, p.Parameters, p.Tags, p.Capabilities})
-}
-func sortedKeys(m map[string]string) []string {
-	k := make([]string, 0, len(m))
-	for x := range m {
-		k = append(k, x)
-	}
-	sort.Strings(k)
-	return k
-}
-func quoteFor(p Plan) Quote {
-	resources := strings.Count(string(p.Template), "\"Type\"")
-	if resources == 0 {
-		resources = 1
-	}
-	est := float64(resources) * 0.01
-	summary := fmt.Sprintf("%s %s in %s (%d resources; deterministic estimate $%.2f/month)", p.Operation, p.StackName, p.Region, resources, est)
-	return Quote{PlanID: p.ID, Operation: p.Operation, Region: p.Region, StackName: p.StackName, ResourceCount: resources, ParameterCount: len(p.Parameters), TagCount: len(p.Tags), EstimatedMonthlyUSD: est, Summary: summary, PlanDigest: planDigest(p)}
 }

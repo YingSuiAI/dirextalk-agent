@@ -1066,31 +1066,56 @@ func (client *httpProduct) Call(ctx context.Context, action string, params map[s
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.base+"/_p2p/query", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Authorization", "Bearer "+client.token)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := client.client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(response.Body, 8<<20))
-	decoder.UseNumber()
-	var result map[string]any
-	if err = decoder.Decode(&result); err != nil {
-		return nil, fmt.Errorf("%s returned HTTP %d with invalid JSON", action, response.StatusCode)
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		message := stringValue(result, "error")
-		if message == "" {
-			message = stringValue(result, "message")
+	readOnly := acceptanceReadAction(action)
+	for attempt := 0; ; attempt++ {
+		request, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, client.base+"/_p2p/query", bytes.NewReader(body))
+		if requestErr != nil {
+			return nil, requestErr
 		}
-		return nil, fmt.Errorf("%s returned HTTP %d: %s", action, response.StatusCode, message)
+		request.Header.Set("Authorization", "Bearer "+client.token)
+		request.Header.Set("Content-Type", "application/json")
+		response, callErr := client.client.Do(request)
+		if callErr != nil {
+			if readOnly && attempt < 2 && waitPoll(ctx, 100*time.Millisecond) == nil {
+				continue
+			}
+			return nil, callErr
+		}
+		decoder := json.NewDecoder(io.LimitReader(response.Body, 8<<20))
+		decoder.UseNumber()
+		var result map[string]any
+		decodeErr := decoder.Decode(&result)
+		response.Body.Close()
+		if readOnly && attempt < 2 && (response.StatusCode == http.StatusBadGateway || response.StatusCode == http.StatusServiceUnavailable || response.StatusCode == http.StatusGatewayTimeout) {
+			if waitPoll(ctx, 100*time.Millisecond) == nil {
+				continue
+			}
+		}
+		if decodeErr != nil {
+			return nil, fmt.Errorf("%s returned HTTP %d with invalid JSON", action, response.StatusCode)
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			message := stringValue(result, "error")
+			if message == "" {
+				message = stringValue(result, "message")
+			}
+			return nil, fmt.Errorf("%s returned HTTP %d: %s", action, response.StatusCode, message)
+		}
+		return result, nil
 	}
-	return result, nil
+}
+
+func acceptanceReadAction(action string) bool {
+	switch action {
+	case "agent.backends.get", "agent.core.aws.credentials.list", "agent.model_profiles.list",
+		"agent.execution.v2.plans.list", "agent.core.confirmations.list",
+		"agent.execution.v2.runs.get", "agent.execution.v2.runs.list",
+		"agent.execution.v2.artifacts.get", "agent.execution.v2.artifacts.download",
+		"agent.workers.list", "agent.chat.conversations.get", "agent.chat.turns.list":
+		return true
+	default:
+		return false
+	}
 }
 
 func (client *httpProduct) StartTurn(ctx context.Context, params map[string]any, stopAtConfirmation bool) (streamResult, error) {

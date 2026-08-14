@@ -10,7 +10,7 @@ The intrinsic may propose cloud execution for an explicit request or when truste
 
 The intrinsic supplies minimum vCPU, memory, disk, and estimated runtime, never an AWS instance type. Agent reads current-generation Linux on-demand products, intersects them with actual regional EC2 offerings, and chooses the cheapest x86_64 shape satisfying the request. The plan and confirmation expose the selected exact shape, hourly compute price, estimated cost, and maximum authorized cost.
 
-Creating a Worker requires a fresh AWS Price List quote for EC2 and gp3 storage. The owner must confirm that exact quote before the Agent creates a key pair, security group, or instance. Agent reads live pricing again immediately before the first AWS write; quote expiry or changed price produces a replacement offer and confirmation with zero provider mutation. Reusing an idle retained Worker is allowed only when its actual vCPU, memory, and disk meet the new request. It needs no creation confirmation, but its ongoing hourly cost is still read live and displayed. Destroying a Worker is a separate owner-confirmed action.
+Creating a Worker requires a fresh AWS Price List quote for EC2 and gp3 storage. The owner confirms that exact quote once before the Agent creates a key pair, security group, or instance. Reusing an idle retained Worker is allowed only when its actual vCPU, memory, and disk meet the new request. It needs no creation confirmation, but its ongoing hourly cost is still read live and displayed. Destroying a Worker is a separate owner-confirmed action.
 
 ## Persistent SSH Workers
 
@@ -42,4 +42,10 @@ Clients read plans, runs, events, and artifacts through `agent.execution.v2.*`, 
 
 Task leases, confirmation state, run events, Worker inventory, remote task state, and local artifact records remain durable. Restart and reconnect observe the original Worker and task. An uncertain external response is resolved by reading the same provider or remote identity; it is never permission to create or start a replacement.
 
-Generic non-Cloud-Worker Execution V2 operations keep their existing typed provider routes and CoreConfirmation authority. Cloud Worker readiness depends only on its PostgreSQL stores, local artifact repository, SSH manager, and the current App-uploaded AWS credential. It does not depend on deploy-time account, Region, image, network, domain, or private listener configuration.
+Execution V2 exposes exactly eight Cloud Worker operations:
+`plans.get/list`, `runs.get/list/cancel/events`, and
+`artifacts.get/download`. There is no generic provider, CloudFormation,
+SSM/ECS workload, secret, deployment, target, or service-binding route.
+Readiness depends only on the Cloud Worker stores, local artifact repository,
+SSH manager, and current App-uploaded AWS credential. It does not depend on a
+deploy-time account, Region, image, network, domain, or private listener.

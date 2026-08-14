@@ -104,8 +104,9 @@ func runnerCommand(action RuntimeAction, arguments ...string) string {
 }
 
 type remoteTaskSpec struct {
-	TaskID   string              `json:"task_id"`
-	Workload WorkloadKind        `json:"workload"`
-	Model    string              `json:"model"`
-	Service  *RuntimeServiceSpec `json:"service,omitempty"`
+	TaskID            string              `json:"task_id"`
+	Workload          WorkloadKind        `json:"workload"`
+	Model             string              `json:"model"`
+	MaxRuntimeSeconds uint64              `json:"max_runtime_seconds"`
+	Service           *RuntimeServiceSpec `json:"service,omitempty"`
 }

@@ -41,7 +41,7 @@ func TestAgentScheduleAuthorityPayloadRejectsMissingOrMixedAuthority(t *testing.
 	base := TaskSpec{Kind: TaskKindAgent, Goal: "goal", ConversationID: uuid.NewString(), ModelProfileID: uuid.NewString(), IdempotencyKey: uuid.NewString(), AvailableAt: time.Now().UTC()}
 	for _, payload := range []TaskPayload{
 		{Agent: &AgentTaskPayload{}},
-		{Agent: &AgentTaskPayload{OwnerID: "owner", AccountGeneration: 1}, AWSChange: &AWSChangeTaskPayload{ChangeID: uuid.NewString()}},
+		{Agent: &AgentTaskPayload{OwnerID: "owner", AccountGeneration: 1}, Workload: &WorkloadTaskPayload{}},
 	} {
 		candidate := base
 		candidate.Payload = payload

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
-	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -249,7 +249,7 @@ func credentialRevisionResolvers(
 	store *CoreAWSStore,
 ) (workaws.CredentialResolver, workaws.ExactCredentialResolver, workaws.CredentialRevisionResolver) {
 	t.Helper()
-	resolver, err := NewCoreWorkloadCredentialResolver(store)
+	resolver, err := NewAWSCredentialResolver(store)
 	if err != nil {
 		t.Fatal(err)
 	}

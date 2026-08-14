@@ -980,9 +980,16 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 	if err != nil {
 		return err
 	}
+	userMessageID := core.TurnUserMessageID(lease.Turn.RequestID)
+	userAlreadyCommitted, err := turnUserMessageExistsTx(ctx, tx, userMessageID, lease.Turn)
+	if err != nil {
+		return err
+	}
 	transcript := make([]core.Message, 0, len(steers)+2)
 	firstUserAt := response.Message.CreatedAt.Add(-time.Duration(len(steers)+1) * time.Microsecond)
-	transcript = append(transcript, core.Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-user:"+lease.Turn.RequestID)).String(), Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: firstUserAt})
+	if !userAlreadyCommitted {
+		transcript = append(transcript, core.Message{ID: userMessageID, Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: firstUserAt})
+	}
 	for index, steer := range steers {
 		transcript = append(transcript, core.Message{
 			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-steer-user:"+steer.RequestID)).String(),
@@ -1038,6 +1045,24 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 		return err
 	}
 	return nil
+}
+
+func turnUserMessageExistsTx(ctx context.Context, tx pgx.Tx, messageID string, turn core.Turn) (bool, error) {
+	var conversationID, role, content string
+	var profileID *uuid.UUID
+	err := tx.QueryRow(ctx, `SELECT conversation_id::text,role,content,model_profile_id FROM core_messages WHERE message_id=$1`, messageID).
+		Scan(&conversationID, &role, &content, &profileID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if profileID == nil || conversationID != turn.ConversationID || role != string(core.RoleUser) ||
+		content != turn.Prompt || profileID.String() != turn.ProfileID {
+		return false, core.ErrConflict
+	}
+	return true, nil
 }
 
 func listTurnSteersTx(ctx context.Context, tx pgx.Tx, turnID string) ([]core.TurnSteer, error) {

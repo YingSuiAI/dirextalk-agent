@@ -1484,8 +1484,12 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if err != nil {
 		conv = Conversation{ID: turn.ConversationID, Revision: 0, CreatedAt: s.clock(), UpdatedAt: s.clock()}
 	}
-	persistedMessageCount := len(conv.Messages)
 	conversationTitleUserText := firstConversationUserText(conv, turn.Prompt)
+	conv, persistedMessageCount, currentUserCommitted, err := conversationForTurnContinuation(conv, turn)
+	if err != nil {
+		_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "durable conversation context is invalid")
+		return
+	}
 	resolvedExtensions, err := s.resolveAcceptedTurnExtensions(ctx, turn.ExtensionSnapshots)
 	if err != nil {
 		_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
@@ -1496,9 +1500,15 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		_, _ = s.turns.FailTurn(ctx, lease, "tool_history_unavailable", "durable tool history is unavailable")
 		return
 	}
-	if turn.ExpectedRevision != nil && conv.Revision != *turn.ExpectedRevision {
-		_, _ = s.turns.FailTurn(ctx, lease, "revision_conflict", "conversation revision changed")
-		return
+	if turn.ExpectedRevision != nil {
+		expectedRevision := *turn.ExpectedRevision
+		if currentUserCommitted {
+			expectedRevision++
+		}
+		if conv.Revision != expectedRevision {
+			_, _ = s.turns.FailTurn(ctx, lease, "revision_conflict", "conversation revision changed")
+			return
+		}
 	}
 	dispatchStore, durableDispatch := s.turns.(TurnDispatchStore)
 	child, cancel := context.WithCancel(ctx)
@@ -1816,10 +1826,11 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				}
 			}
 			m := out.result.Message
-			m.RelatedTaskIDs = stableIDs(append(m.RelatedTaskIDs, out.result.RelatedTaskIDs...))
-			m.RelatedPlanIDs = stableIDs(append(m.RelatedPlanIDs, out.result.RelatedPlanIDs...))
-			m.References = stableReferences(append(m.References, out.result.References...))
-			m.ToolSummaries = stableStrings(append(m.ToolSummaries, out.result.ToolSummaries...))
+			historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
+			m.RelatedTaskIDs = stableIDs(append(append(m.RelatedTaskIDs, out.result.RelatedTaskIDs...), historyTasks...))
+			m.RelatedPlanIDs = stableIDs(append(append(m.RelatedPlanIDs, out.result.RelatedPlanIDs...), historyPlans...))
+			m.References = stableReferences(append(append(m.References, out.result.References...), historyReferences...))
+			m.ToolSummaries = stableStrings(append(append(m.ToolSummaries, out.result.ToolSummaries...), historySummaries...))
 			userTime := nextMessageTime(conv, s.clock())
 			m.ModelProfileID, m.Role, m.CreatedAt = turn.ProfileID, RoleAssistant, userTime.Add(time.Microsecond)
 			if m.ID == "" {
@@ -1833,8 +1844,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			conv.Revision++
 			conv.UpdatedAt = s.clock()
 			conversationTitle := s.automaticConversationTitle(ctx, conv.Title, conversationTitleUserText, m.Content)
-			response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision, Message: m, Done: true, ModelProfileID: turn.ProfileID, RelatedTaskIDs: append([]string(nil), m.RelatedTaskIDs...), RelatedPlanIDs: append([]string(nil), m.RelatedPlanIDs...), References: cloneReferences(m.References), ToolSummaries: append([]string(nil), m.ToolSummaries...), ConversationTitle: conversationTitle}
-			_, _ = s.turns.CommitTurn(ctx, lease, response)
+			response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision, Message: m, Done: true, ModelProfileID: turn.ProfileID, RelatedTaskIDs: append([]string(nil), m.RelatedTaskIDs...), RelatedPlanIDs: append([]string(nil), m.RelatedPlanIDs...), References: cloneReferences(m.References), ToolSummaries: append([]string(nil), m.ToolSummaries...), ToolResults: historyResults, ConversationTitle: conversationTitle}
+			if _, commitErr := s.turns.CommitTurn(ctx, lease, response); commitErr != nil {
+				current, readErr := s.turns.GetTurn(ctx, turn.ID)
+				if readErr == nil && current.State == TurnCompleted {
+					return
+				}
+				_, _ = s.turns.FailTurn(ctx, lease, "turn_commit_failed", "conversation response could not be committed")
+			}
 			return
 		case <-heartbeat.C:
 			t, e := s.turns.GetTurn(ctx, id)
@@ -1972,9 +1989,6 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 	if conversation == nil {
 		return nil, ErrInvalid
 	}
-	if len(turn.ExtensionSnapshots) == 0 {
-		return make(map[string]turnToolCallAuthority), nil
-	}
 	const pageSize = 1000
 	var events []TurnEvent
 	for cursor := int64(0); ; {
@@ -2025,6 +2039,44 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		}
 	}
 	return authorities, nil
+}
+
+func conversationForTurnContinuation(conversation Conversation, turn Turn) (Conversation, int, bool, error) {
+	out := conversation.Snapshot()
+	currentUserID := TurnUserMessageID(turn.RequestID)
+	for index, message := range out.Messages {
+		if message.ID != currentUserID {
+			continue
+		}
+		if message.Role != RoleUser || message.Content != turn.Prompt || message.ModelProfileID != turn.ProfileID {
+			return Conversation{}, 0, false, ErrConflict
+		}
+		out.Messages = append([]Message(nil), out.Messages[:index]...)
+		return out, index, true, nil
+	}
+	return out, len(out.Messages), false, nil
+}
+
+func turnToolMetadata(messages []Message) ([]string, []string, []Reference, []string, []ToolResult) {
+	var taskIDs, planIDs []string
+	var references []Reference
+	var summaries []string
+	var results []ToolResult
+	for _, message := range messages {
+		for _, result := range message.ToolResults {
+			result.RelatedTaskIDs = append([]string(nil), result.RelatedTaskIDs...)
+			result.RelatedPlanIDs = append([]string(nil), result.RelatedPlanIDs...)
+			result.References = cloneReferences(result.References)
+			results = append(results, result)
+			taskIDs = append(taskIDs, result.RelatedTaskIDs...)
+			planIDs = append(planIDs, result.RelatedPlanIDs...)
+			references = append(references, result.References...)
+			if result.Summary != "" {
+				summaries = append(summaries, result.Summary)
+			}
+		}
+	}
+	return stableIDs(taskIDs), stableIDs(planIDs), stableReferences(references), stableStrings(summaries), results
 }
 
 func modelConversationForTurn(conv Conversation, insertAt int, turn Turn, recalledMemory string, now time.Time) (Conversation, error) {

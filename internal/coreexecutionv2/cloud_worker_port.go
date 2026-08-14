@@ -93,8 +93,8 @@ type CloudWorkerEventPage struct {
 
 // CloudWorkerExecutionPort is the only bridge from public Execution V2 to
 // the strongly typed Cloud Worker authority. Implementations must query the
-// Cloud Worker tables directly; they must not project through or dual-write
-// core_execution_v2_records.
+// typed Cloud Worker tables directly; there is no generic execution record
+// projection or dual-write path.
 type CloudWorkerExecutionPort interface {
 	GetPlan(context.Context, CloudWorkerPlanGetRequest) (CloudWorkerObject, error)
 	ListPlans(context.Context, CloudWorkerListRequest) (CloudWorkerPage, error)

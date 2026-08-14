@@ -27,8 +27,6 @@ type CoreWorkloadTargetKind int32
 const (
 	CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_UNSPECIFIED CoreWorkloadTargetKind = 0
 	CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER CoreWorkloadTargetKind = 1
-	CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_EC2_SSM CoreWorkloadTargetKind = 2
-	CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_ECS     CoreWorkloadTargetKind = 3
 )
 
 // Enum value maps for CoreWorkloadTargetKind.
@@ -36,14 +34,10 @@ var (
 	CoreWorkloadTargetKind_name = map[int32]string{
 		0: "CORE_WORKLOAD_TARGET_KIND_UNSPECIFIED",
 		1: "CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER",
-		2: "CORE_WORKLOAD_TARGET_KIND_AWS_EC2_SSM",
-		3: "CORE_WORKLOAD_TARGET_KIND_AWS_ECS",
 	}
 	CoreWorkloadTargetKind_value = map[string]int32{
 		"CORE_WORKLOAD_TARGET_KIND_UNSPECIFIED": 0,
 		"CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER": 1,
-		"CORE_WORKLOAD_TARGET_KIND_AWS_EC2_SSM": 2,
-		"CORE_WORKLOAD_TARGET_KIND_AWS_ECS":     3,
 	}
 )
 
@@ -182,40 +176,13 @@ func (CoreWorkloadSecretPurpose) EnumDescriptor() ([]byte, []int) {
 }
 
 type CoreWorkloadTargetIdentity struct {
-	state                  protoimpl.MessageState `protogen:"open.v1"`
-	Kind                   CoreWorkloadTargetKind `protobuf:"varint,1,opt,name=kind,proto3,enum=dirextalk.agent.v1.CoreWorkloadTargetKind" json:"kind,omitempty"`
-	CoreRunnerService      string                 `protobuf:"bytes,2,opt,name=core_runner_service,json=coreRunnerService,proto3" json:"core_runner_service,omitempty"`
-	ImageDigest            string                 `protobuf:"bytes,3,opt,name=image_digest,json=imageDigest,proto3" json:"image_digest,omitempty"`
-	AwsAccountId           string                 `protobuf:"bytes,4,opt,name=aws_account_id,json=awsAccountId,proto3" json:"aws_account_id,omitempty"`
-	AwsRegion              string                 `protobuf:"bytes,5,opt,name=aws_region,json=awsRegion,proto3" json:"aws_region,omitempty"`
-	InstanceId             string                 `protobuf:"bytes,6,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
-	Cluster                string                 `protobuf:"bytes,7,opt,name=cluster,proto3" json:"cluster,omitempty"`
-	Service                string                 `protobuf:"bytes,8,opt,name=service,proto3" json:"service,omitempty"`
-	TaskDefinitionRevision string                 `protobuf:"bytes,9,opt,name=task_definition_revision,json=taskDefinitionRevision,proto3" json:"task_definition_revision,omitempty"`
-	DesiredCount           int64                  `protobuf:"varint,10,opt,name=desired_count,json=desiredCount,proto3" json:"desired_count,omitempty"`
-	Endpoint               string                 `protobuf:"bytes,11,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
-	CoreRunnerId           string                 `protobuf:"bytes,12,opt,name=core_runner_id,json=coreRunnerId,proto3" json:"core_runner_id,omitempty"`
-	// Typed AWS EC2/SSM target facts.  These fields are intentionally explicit
-	// so providers never receive an arbitrary SDK payload.
-	AwsEc2DocumentVersion      string            `protobuf:"bytes,13,opt,name=aws_ec2_document_version,json=awsEc2DocumentVersion,proto3" json:"aws_ec2_document_version,omitempty"`
-	AwsEc2SystemdService       string            `protobuf:"bytes,14,opt,name=aws_ec2_systemd_service,json=awsEc2SystemdService,proto3" json:"aws_ec2_systemd_service,omitempty"`
-	AwsEc2RequiredInstanceTags map[string]string `protobuf:"bytes,15,rep,name=aws_ec2_required_instance_tags,json=awsEc2RequiredInstanceTags,proto3" json:"aws_ec2_required_instance_tags,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Typed AWS ECS/Fargate target facts.
-	AwsEcsClusterArn       string   `protobuf:"bytes,16,opt,name=aws_ecs_cluster_arn,json=awsEcsClusterArn,proto3" json:"aws_ecs_cluster_arn,omitempty"`
-	AwsEcsServiceName      string   `protobuf:"bytes,17,opt,name=aws_ecs_service_name,json=awsEcsServiceName,proto3" json:"aws_ecs_service_name,omitempty"`
-	AwsEcsTaskFamily       string   `protobuf:"bytes,18,opt,name=aws_ecs_task_family,json=awsEcsTaskFamily,proto3" json:"aws_ecs_task_family,omitempty"`
-	AwsEcsPlatformVersion  string   `protobuf:"bytes,19,opt,name=aws_ecs_platform_version,json=awsEcsPlatformVersion,proto3" json:"aws_ecs_platform_version,omitempty"`
-	AwsEcsSubnetIds        []string `protobuf:"bytes,20,rep,name=aws_ecs_subnet_ids,json=awsEcsSubnetIds,proto3" json:"aws_ecs_subnet_ids,omitempty"`
-	AwsEcsSecurityGroupIds []string `protobuf:"bytes,21,rep,name=aws_ecs_security_group_ids,json=awsEcsSecurityGroupIds,proto3" json:"aws_ecs_security_group_ids,omitempty"`
-	AwsEcsAssignPublicIp   bool     `protobuf:"varint,22,opt,name=aws_ecs_assign_public_ip,json=awsEcsAssignPublicIp,proto3" json:"aws_ecs_assign_public_ip,omitempty"`
-	AwsEcsTargetGroupArn   string   `protobuf:"bytes,23,opt,name=aws_ecs_target_group_arn,json=awsEcsTargetGroupArn,proto3" json:"aws_ecs_target_group_arn,omitempty"`
-	AwsEcsTargetGroupPort  uint32   `protobuf:"varint,24,opt,name=aws_ecs_target_group_port,json=awsEcsTargetGroupPort,proto3" json:"aws_ecs_target_group_port,omitempty"`
-	AwsEcsTaskRoleArn      string   `protobuf:"bytes,25,opt,name=aws_ecs_task_role_arn,json=awsEcsTaskRoleArn,proto3" json:"aws_ecs_task_role_arn,omitempty"`
-	AwsEcsExecutionRoleArn string   `protobuf:"bytes,26,opt,name=aws_ecs_execution_role_arn,json=awsEcsExecutionRoleArn,proto3" json:"aws_ecs_execution_role_arn,omitempty"`
-	AwsEcsDesiredCount     int64    `protobuf:"varint,27,opt,name=aws_ecs_desired_count,json=awsEcsDesiredCount,proto3" json:"aws_ecs_desired_count,omitempty"`
-	AwsEcsImageUri         string   `protobuf:"bytes,28,opt,name=aws_ecs_image_uri,json=awsEcsImageUri,proto3" json:"aws_ecs_image_uri,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Kind              CoreWorkloadTargetKind `protobuf:"varint,1,opt,name=kind,proto3,enum=dirextalk.agent.v1.CoreWorkloadTargetKind" json:"kind,omitempty"`
+	CoreRunnerService string                 `protobuf:"bytes,2,opt,name=core_runner_service,json=coreRunnerService,proto3" json:"core_runner_service,omitempty"`
+	ImageDigest       string                 `protobuf:"bytes,3,opt,name=image_digest,json=imageDigest,proto3" json:"image_digest,omitempty"`
+	CoreRunnerId      string                 `protobuf:"bytes,12,opt,name=core_runner_id,json=coreRunnerId,proto3" json:"core_runner_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CoreWorkloadTargetIdentity) Reset() {
@@ -269,177 +236,9 @@ func (x *CoreWorkloadTargetIdentity) GetImageDigest() string {
 	return ""
 }
 
-func (x *CoreWorkloadTargetIdentity) GetAwsAccountId() string {
-	if x != nil {
-		return x.AwsAccountId
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsRegion() string {
-	if x != nil {
-		return x.AwsRegion
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetInstanceId() string {
-	if x != nil {
-		return x.InstanceId
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetCluster() string {
-	if x != nil {
-		return x.Cluster
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetService() string {
-	if x != nil {
-		return x.Service
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetTaskDefinitionRevision() string {
-	if x != nil {
-		return x.TaskDefinitionRevision
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetDesiredCount() int64 {
-	if x != nil {
-		return x.DesiredCount
-	}
-	return 0
-}
-
-func (x *CoreWorkloadTargetIdentity) GetEndpoint() string {
-	if x != nil {
-		return x.Endpoint
-	}
-	return ""
-}
-
 func (x *CoreWorkloadTargetIdentity) GetCoreRunnerId() string {
 	if x != nil {
 		return x.CoreRunnerId
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEc2DocumentVersion() string {
-	if x != nil {
-		return x.AwsEc2DocumentVersion
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEc2SystemdService() string {
-	if x != nil {
-		return x.AwsEc2SystemdService
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEc2RequiredInstanceTags() map[string]string {
-	if x != nil {
-		return x.AwsEc2RequiredInstanceTags
-	}
-	return nil
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsClusterArn() string {
-	if x != nil {
-		return x.AwsEcsClusterArn
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsServiceName() string {
-	if x != nil {
-		return x.AwsEcsServiceName
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsTaskFamily() string {
-	if x != nil {
-		return x.AwsEcsTaskFamily
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsPlatformVersion() string {
-	if x != nil {
-		return x.AwsEcsPlatformVersion
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsSubnetIds() []string {
-	if x != nil {
-		return x.AwsEcsSubnetIds
-	}
-	return nil
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsSecurityGroupIds() []string {
-	if x != nil {
-		return x.AwsEcsSecurityGroupIds
-	}
-	return nil
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsAssignPublicIp() bool {
-	if x != nil {
-		return x.AwsEcsAssignPublicIp
-	}
-	return false
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsTargetGroupArn() string {
-	if x != nil {
-		return x.AwsEcsTargetGroupArn
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsTargetGroupPort() uint32 {
-	if x != nil {
-		return x.AwsEcsTargetGroupPort
-	}
-	return 0
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsTaskRoleArn() string {
-	if x != nil {
-		return x.AwsEcsTaskRoleArn
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsExecutionRoleArn() string {
-	if x != nil {
-		return x.AwsEcsExecutionRoleArn
-	}
-	return ""
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsDesiredCount() int64 {
-	if x != nil {
-		return x.AwsEcsDesiredCount
-	}
-	return 0
-}
-
-func (x *CoreWorkloadTargetIdentity) GetAwsEcsImageUri() string {
-	if x != nil {
-		return x.AwsEcsImageUri
 	}
 	return ""
 }
@@ -962,7 +761,6 @@ type CoreWorkloadPlan struct {
 	Source              string                        `protobuf:"bytes,6,opt,name=source,proto3" json:"source,omitempty"`
 	CommandSteps        []string                      `protobuf:"bytes,7,rep,name=command_steps,json=commandSteps,proto3" json:"command_steps,omitempty"`
 	ImageDigest         string                        `protobuf:"bytes,8,opt,name=image_digest,json=imageDigest,proto3" json:"image_digest,omitempty"`
-	ImageUri            string                        `protobuf:"bytes,19,opt,name=image_uri,json=imageUri,proto3" json:"image_uri,omitempty"`
 	TargetKind          CoreWorkloadTargetKind        `protobuf:"varint,9,opt,name=target_kind,json=targetKind,proto3,enum=dirextalk.agent.v1.CoreWorkloadTargetKind" json:"target_kind,omitempty"`
 	ExpiresAt           *timestamppb.Timestamp        `protobuf:"bytes,14,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	CreatedAt           *timestamppb.Timestamp        `protobuf:"bytes,15,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
@@ -1055,13 +853,6 @@ func (x *CoreWorkloadPlan) GetCommandSteps() []string {
 func (x *CoreWorkloadPlan) GetImageDigest() string {
 	if x != nil {
 		return x.ImageDigest
-	}
-	return ""
-}
-
-func (x *CoreWorkloadPlan) GetImageUri() string {
-	if x != nil {
-		return x.ImageUri
 	}
 	return ""
 }
@@ -1404,7 +1195,6 @@ type WorkloadServicePlanRequest struct {
 	Source              string                        `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
 	CommandSteps        []string                      `protobuf:"bytes,5,rep,name=command_steps,json=commandSteps,proto3" json:"command_steps,omitempty"`
 	ImageDigest         string                        `protobuf:"bytes,6,opt,name=image_digest,json=imageDigest,proto3" json:"image_digest,omitempty"`
-	ImageUri            string                        `protobuf:"bytes,16,opt,name=image_uri,json=imageUri,proto3" json:"image_uri,omitempty"`
 	TargetKind          CoreWorkloadTargetKind        `protobuf:"varint,7,opt,name=target_kind,json=targetKind,proto3,enum=dirextalk.agent.v1.CoreWorkloadTargetKind" json:"target_kind,omitempty"`
 	ExpiresAt           *timestamppb.Timestamp        `protobuf:"bytes,12,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	TypedTarget         *CoreWorkloadTargetSettings   `protobuf:"bytes,13,opt,name=typed_target,json=typedTarget,proto3" json:"typed_target,omitempty"`
@@ -1482,13 +1272,6 @@ func (x *WorkloadServicePlanRequest) GetCommandSteps() []string {
 func (x *WorkloadServicePlanRequest) GetImageDigest() string {
 	if x != nil {
 		return x.ImageDigest
-	}
-	return ""
-}
-
-func (x *WorkloadServicePlanRequest) GetImageUri() string {
-	if x != nil {
-		return x.ImageUri
 	}
 	return ""
 }
@@ -2652,42 +2435,12 @@ var File_dirextalk_agent_v1_core_workload_proto protoreflect.FileDescriptor
 
 const file_dirextalk_agent_v1_core_workload_proto_rawDesc = "" +
 	"\n" +
-	"&dirextalk/agent/v1/core_workload.proto\x12\x12dirextalk.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a*dirextalk/agent/v1/core_confirmation.proto\"\xe5\v\n" +
+	"&dirextalk/agent/v1/core_workload.proto\x12\x12dirextalk.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a*dirextalk/agent/v1/core_confirmation.proto\"\xd5\x01\n" +
 	"\x1aCoreWorkloadTargetIdentity\x12>\n" +
 	"\x04kind\x18\x01 \x01(\x0e2*.dirextalk.agent.v1.CoreWorkloadTargetKindR\x04kind\x12.\n" +
 	"\x13core_runner_service\x18\x02 \x01(\tR\x11coreRunnerService\x12!\n" +
 	"\fimage_digest\x18\x03 \x01(\tR\vimageDigest\x12$\n" +
-	"\x0eaws_account_id\x18\x04 \x01(\tR\fawsAccountId\x12\x1d\n" +
-	"\n" +
-	"aws_region\x18\x05 \x01(\tR\tawsRegion\x12\x1f\n" +
-	"\vinstance_id\x18\x06 \x01(\tR\n" +
-	"instanceId\x12\x18\n" +
-	"\acluster\x18\a \x01(\tR\acluster\x12\x18\n" +
-	"\aservice\x18\b \x01(\tR\aservice\x128\n" +
-	"\x18task_definition_revision\x18\t \x01(\tR\x16taskDefinitionRevision\x12#\n" +
-	"\rdesired_count\x18\n" +
-	" \x01(\x03R\fdesiredCount\x12\x1a\n" +
-	"\bendpoint\x18\v \x01(\tR\bendpoint\x12$\n" +
-	"\x0ecore_runner_id\x18\f \x01(\tR\fcoreRunnerId\x127\n" +
-	"\x18aws_ec2_document_version\x18\r \x01(\tR\x15awsEc2DocumentVersion\x125\n" +
-	"\x17aws_ec2_systemd_service\x18\x0e \x01(\tR\x14awsEc2SystemdService\x12\x92\x01\n" +
-	"\x1eaws_ec2_required_instance_tags\x18\x0f \x03(\v2N.dirextalk.agent.v1.CoreWorkloadTargetIdentity.AwsEc2RequiredInstanceTagsEntryR\x1aawsEc2RequiredInstanceTags\x12-\n" +
-	"\x13aws_ecs_cluster_arn\x18\x10 \x01(\tR\x10awsEcsClusterArn\x12/\n" +
-	"\x14aws_ecs_service_name\x18\x11 \x01(\tR\x11awsEcsServiceName\x12-\n" +
-	"\x13aws_ecs_task_family\x18\x12 \x01(\tR\x10awsEcsTaskFamily\x127\n" +
-	"\x18aws_ecs_platform_version\x18\x13 \x01(\tR\x15awsEcsPlatformVersion\x12+\n" +
-	"\x12aws_ecs_subnet_ids\x18\x14 \x03(\tR\x0fawsEcsSubnetIds\x12:\n" +
-	"\x1aaws_ecs_security_group_ids\x18\x15 \x03(\tR\x16awsEcsSecurityGroupIds\x126\n" +
-	"\x18aws_ecs_assign_public_ip\x18\x16 \x01(\bR\x14awsEcsAssignPublicIp\x126\n" +
-	"\x18aws_ecs_target_group_arn\x18\x17 \x01(\tR\x14awsEcsTargetGroupArn\x128\n" +
-	"\x19aws_ecs_target_group_port\x18\x18 \x01(\rR\x15awsEcsTargetGroupPort\x120\n" +
-	"\x15aws_ecs_task_role_arn\x18\x19 \x01(\tR\x11awsEcsTaskRoleArn\x12:\n" +
-	"\x1aaws_ecs_execution_role_arn\x18\x1a \x01(\tR\x16awsEcsExecutionRoleArn\x121\n" +
-	"\x15aws_ecs_desired_count\x18\x1b \x01(\x03R\x12awsEcsDesiredCount\x12)\n" +
-	"\x11aws_ecs_image_uri\x18\x1c \x01(\tR\x0eawsEcsImageUri\x1aM\n" +
-	"\x1fAwsEc2RequiredInstanceTagsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc8\x01\n" +
+	"\x0ecore_runner_id\x18\f \x01(\tR\fcoreRunnerId\"\xc8\x01\n" +
 	"\x1aCoreWorkloadResourceLimits\x12\x10\n" +
 	"\x03cpu\x18\x01 \x01(\x03R\x03cpu\x12\x1b\n" +
 	"\tmemory_mb\x18\x02 \x01(\x03R\bmemoryMb\x12\x1c\n" +
@@ -2734,7 +2487,7 @@ const file_dirextalk_agent_v1_core_workload_proto_rawDesc = "" +
 	"planDigest\x12F\n" +
 	"\x06target\x18\x04 \x01(\v2..dirextalk.agent.v1.CoreWorkloadTargetSettingsR\x06target\x12W\n" +
 	"\x0fresource_limits\x18\x05 \x01(\v2..dirextalk.agent.v1.CoreWorkloadResourceLimitsR\x0eresourceLimits\x12S\n" +
-	"\rsecret_grants\x18\x06 \x03(\v2..dirextalk.agent.v1.CoreWorkloadSecretGrantRefR\fsecretGrants\"\xec\x05\n" +
+	"\rsecret_grants\x18\x06 \x03(\v2..dirextalk.agent.v1.CoreWorkloadSecretGrantRefR\fsecretGrants\"\xcf\x05\n" +
 	"\x10CoreWorkloadPlan\x12\x17\n" +
 	"\aplan_id\x18\x01 \x01(\tR\x06planId\x12\x1a\n" +
 	"\brevision\x18\x02 \x01(\x03R\brevision\x12\x16\n" +
@@ -2743,8 +2496,7 @@ const file_dirextalk_agent_v1_core_workload_proto_rawDesc = "" +
 	"\bartifact\x18\x05 \x01(\tR\bartifact\x12\x16\n" +
 	"\x06source\x18\x06 \x01(\tR\x06source\x12#\n" +
 	"\rcommand_steps\x18\a \x03(\tR\fcommandSteps\x12!\n" +
-	"\fimage_digest\x18\b \x01(\tR\vimageDigest\x12\x1b\n" +
-	"\timage_uri\x18\x13 \x01(\tR\bimageUri\x12K\n" +
+	"\fimage_digest\x18\b \x01(\tR\vimageDigest\x12K\n" +
 	"\vtarget_kind\x18\t \x01(\x0e2*.dirextalk.agent.v1.CoreWorkloadTargetKindR\n" +
 	"targetKind\x129\n" +
 	"\n" +
@@ -2788,15 +2540,14 @@ const file_dirextalk_agent_v1_core_workload_proto_rawDesc = "" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12\x18\n" +
 	"\amessage\x18\x05 \x01(\tR\amessage\x12F\n" +
 	"\x06actual\x18\x06 \x01(\v2..dirextalk.agent.v1.CoreWorkloadActualSnapshotR\x06actual\x12*\n" +
-	"\x02at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\x02at\"\x97\x05\n" +
+	"\x02at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\x02at\"\xfa\x04\n" +
 	"\x1aWorkloadServicePlanRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x18\n" +
 	"\asummary\x18\x02 \x01(\tR\asummary\x12\x1a\n" +
 	"\bartifact\x18\x03 \x01(\tR\bartifact\x12\x16\n" +
 	"\x06source\x18\x04 \x01(\tR\x06source\x12#\n" +
 	"\rcommand_steps\x18\x05 \x03(\tR\fcommandSteps\x12!\n" +
-	"\fimage_digest\x18\x06 \x01(\tR\vimageDigest\x12\x1b\n" +
-	"\timage_uri\x18\x10 \x01(\tR\bimageUri\x12K\n" +
+	"\fimage_digest\x18\x06 \x01(\tR\vimageDigest\x12K\n" +
 	"\vtarget_kind\x18\a \x01(\x0e2*.dirextalk.agent.v1.CoreWorkloadTargetKindR\n" +
 	"targetKind\x129\n" +
 	"\n" +
@@ -2872,12 +2623,10 @@ const file_dirextalk_agent_v1_core_workload_proto_rawDesc = "" +
 	"\x1dWorkloadServiceCancelResponse\x12G\n" +
 	"\toperation\x18\x01 \x01(\v2).dirextalk.agent.v1.CoreWorkloadOperationR\toperation\x12H\n" +
 	"\fconfirmation\x18\x02 \x01(\v2$.dirextalk.agent.v1.CoreConfirmationR\fconfirmation\x12\x17\n" +
-	"\atask_id\x18\x03 \x01(\tR\x06taskId*\xc0\x01\n" +
+	"\atask_id\x18\x03 \x01(\tR\x06taskId*n\n" +
 	"\x16CoreWorkloadTargetKind\x12)\n" +
 	"%CORE_WORKLOAD_TARGET_KIND_UNSPECIFIED\x10\x00\x12)\n" +
-	"%CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER\x10\x01\x12)\n" +
-	"%CORE_WORKLOAD_TARGET_KIND_AWS_EC2_SSM\x10\x02\x12%\n" +
-	"!CORE_WORKLOAD_TARGET_KIND_AWS_ECS\x10\x03*\x9b\x01\n" +
+	"%CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER\x10\x01*\x9b\x01\n" +
 	"\x19CoreWorkloadOperationKind\x12,\n" +
 	"(CORE_WORKLOAD_OPERATION_KIND_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"CORE_WORKLOAD_OPERATION_KIND_APPLY\x10\x01\x12(\n" +
@@ -2917,7 +2666,7 @@ func file_dirextalk_agent_v1_core_workload_proto_rawDescGZIP() []byte {
 }
 
 var file_dirextalk_agent_v1_core_workload_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_dirextalk_agent_v1_core_workload_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
+var file_dirextalk_agent_v1_core_workload_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_dirextalk_agent_v1_core_workload_proto_goTypes = []any{
 	(CoreWorkloadTargetKind)(0),                   // 0: dirextalk.agent.v1.CoreWorkloadTargetKind
 	(CoreWorkloadOperationKind)(0),                // 1: dirextalk.agent.v1.CoreWorkloadOperationKind
@@ -2956,86 +2705,84 @@ var file_dirextalk_agent_v1_core_workload_proto_goTypes = []any{
 	(*WorkloadServiceListEventsResponse)(nil),     // 34: dirextalk.agent.v1.WorkloadServiceListEventsResponse
 	(*WorkloadServiceCancelRequest)(nil),          // 35: dirextalk.agent.v1.WorkloadServiceCancelRequest
 	(*WorkloadServiceCancelResponse)(nil),         // 36: dirextalk.agent.v1.WorkloadServiceCancelResponse
-	nil,                                           // 37: dirextalk.agent.v1.CoreWorkloadTargetIdentity.AwsEc2RequiredInstanceTagsEntry
-	nil,                                           // 38: dirextalk.agent.v1.CoreWorkloadTargetSettings.LabelsEntry
-	(*timestamppb.Timestamp)(nil),                 // 39: google.protobuf.Timestamp
-	(*CoreConfirmation)(nil),                      // 40: dirextalk.agent.v1.CoreConfirmation
+	nil,                                           // 37: dirextalk.agent.v1.CoreWorkloadTargetSettings.LabelsEntry
+	(*timestamppb.Timestamp)(nil),                 // 38: google.protobuf.Timestamp
+	(*CoreConfirmation)(nil),                      // 39: dirextalk.agent.v1.CoreConfirmation
 }
 var file_dirextalk_agent_v1_core_workload_proto_depIdxs = []int32{
 	0,  // 0: dirextalk.agent.v1.CoreWorkloadTargetIdentity.kind:type_name -> dirextalk.agent.v1.CoreWorkloadTargetKind
-	37, // 1: dirextalk.agent.v1.CoreWorkloadTargetIdentity.aws_ec2_required_instance_tags:type_name -> dirextalk.agent.v1.CoreWorkloadTargetIdentity.AwsEc2RequiredInstanceTagsEntry
-	2,  // 2: dirextalk.agent.v1.CoreWorkloadSecretGrantRef.purpose:type_name -> dirextalk.agent.v1.CoreWorkloadSecretPurpose
-	3,  // 3: dirextalk.agent.v1.CoreWorkloadTargetSettings.identity:type_name -> dirextalk.agent.v1.CoreWorkloadTargetIdentity
-	5,  // 4: dirextalk.agent.v1.CoreWorkloadTargetSettings.ports:type_name -> dirextalk.agent.v1.CoreWorkloadPort
-	6,  // 5: dirextalk.agent.v1.CoreWorkloadTargetSettings.network_grants:type_name -> dirextalk.agent.v1.CoreWorkloadNetworkGrant
-	38, // 6: dirextalk.agent.v1.CoreWorkloadTargetSettings.labels:type_name -> dirextalk.agent.v1.CoreWorkloadTargetSettings.LabelsEntry
-	3,  // 7: dirextalk.agent.v1.CoreWorkloadActualSnapshot.identity:type_name -> dirextalk.agent.v1.CoreWorkloadTargetIdentity
-	39, // 8: dirextalk.agent.v1.CoreWorkloadActualSnapshot.observed_at:type_name -> google.protobuf.Timestamp
-	39, // 9: dirextalk.agent.v1.CoreWorkloadActualSnapshot.updated_at:type_name -> google.protobuf.Timestamp
-	8,  // 10: dirextalk.agent.v1.CoreWorkloadOperationPlan.target:type_name -> dirextalk.agent.v1.CoreWorkloadTargetSettings
-	4,  // 11: dirextalk.agent.v1.CoreWorkloadOperationPlan.resource_limits:type_name -> dirextalk.agent.v1.CoreWorkloadResourceLimits
-	7,  // 12: dirextalk.agent.v1.CoreWorkloadOperationPlan.secret_grants:type_name -> dirextalk.agent.v1.CoreWorkloadSecretGrantRef
-	0,  // 13: dirextalk.agent.v1.CoreWorkloadPlan.target_kind:type_name -> dirextalk.agent.v1.CoreWorkloadTargetKind
-	39, // 14: dirextalk.agent.v1.CoreWorkloadPlan.expires_at:type_name -> google.protobuf.Timestamp
-	39, // 15: dirextalk.agent.v1.CoreWorkloadPlan.created_at:type_name -> google.protobuf.Timestamp
-	8,  // 16: dirextalk.agent.v1.CoreWorkloadPlan.typed_target:type_name -> dirextalk.agent.v1.CoreWorkloadTargetSettings
-	4,  // 17: dirextalk.agent.v1.CoreWorkloadPlan.typed_resource_limits:type_name -> dirextalk.agent.v1.CoreWorkloadResourceLimits
-	7,  // 18: dirextalk.agent.v1.CoreWorkloadPlan.typed_secret_grants:type_name -> dirextalk.agent.v1.CoreWorkloadSecretGrantRef
-	1,  // 19: dirextalk.agent.v1.CoreWorkloadOperation.kind:type_name -> dirextalk.agent.v1.CoreWorkloadOperationKind
-	0,  // 20: dirextalk.agent.v1.CoreWorkloadOperation.target_kind:type_name -> dirextalk.agent.v1.CoreWorkloadTargetKind
-	39, // 21: dirextalk.agent.v1.CoreWorkloadOperation.created_at:type_name -> google.protobuf.Timestamp
-	39, // 22: dirextalk.agent.v1.CoreWorkloadOperation.updated_at:type_name -> google.protobuf.Timestamp
-	10, // 23: dirextalk.agent.v1.CoreWorkloadOperation.desired_plan:type_name -> dirextalk.agent.v1.CoreWorkloadOperationPlan
-	9,  // 24: dirextalk.agent.v1.CoreWorkloadOperation.actual:type_name -> dirextalk.agent.v1.CoreWorkloadActualSnapshot
-	39, // 25: dirextalk.agent.v1.CoreWorkloadOperation.dispatch_lease_until:type_name -> google.protobuf.Timestamp
-	9,  // 26: dirextalk.agent.v1.CoreWorkloadEvent.actual:type_name -> dirextalk.agent.v1.CoreWorkloadActualSnapshot
-	39, // 27: dirextalk.agent.v1.CoreWorkloadEvent.at:type_name -> google.protobuf.Timestamp
-	0,  // 28: dirextalk.agent.v1.WorkloadServicePlanRequest.target_kind:type_name -> dirextalk.agent.v1.CoreWorkloadTargetKind
-	39, // 29: dirextalk.agent.v1.WorkloadServicePlanRequest.expires_at:type_name -> google.protobuf.Timestamp
-	8,  // 30: dirextalk.agent.v1.WorkloadServicePlanRequest.typed_target:type_name -> dirextalk.agent.v1.CoreWorkloadTargetSettings
-	4,  // 31: dirextalk.agent.v1.WorkloadServicePlanRequest.typed_resource_limits:type_name -> dirextalk.agent.v1.CoreWorkloadResourceLimits
-	7,  // 32: dirextalk.agent.v1.WorkloadServicePlanRequest.typed_secret_grants:type_name -> dirextalk.agent.v1.CoreWorkloadSecretGrantRef
-	11, // 33: dirextalk.agent.v1.WorkloadServicePlanResponse.plan:type_name -> dirextalk.agent.v1.CoreWorkloadPlan
-	11, // 34: dirextalk.agent.v1.WorkloadServiceGetResponse.plan:type_name -> dirextalk.agent.v1.CoreWorkloadPlan
-	11, // 35: dirextalk.agent.v1.WorkloadServiceListResponse.plans:type_name -> dirextalk.agent.v1.CoreWorkloadPlan
-	21, // 36: dirextalk.agent.v1.WorkloadServiceQuoteResponse.quote:type_name -> dirextalk.agent.v1.CoreWorkloadQuote
-	12, // 37: dirextalk.agent.v1.WorkloadServiceRequestApplyResponse.operation:type_name -> dirextalk.agent.v1.CoreWorkloadOperation
-	40, // 38: dirextalk.agent.v1.WorkloadServiceRequestApplyResponse.confirmation:type_name -> dirextalk.agent.v1.CoreConfirmation
-	12, // 39: dirextalk.agent.v1.WorkloadServiceRequestDestroyResponse.operation:type_name -> dirextalk.agent.v1.CoreWorkloadOperation
-	40, // 40: dirextalk.agent.v1.WorkloadServiceRequestDestroyResponse.confirmation:type_name -> dirextalk.agent.v1.CoreConfirmation
-	9,  // 41: dirextalk.agent.v1.WorkloadServiceGetWorkloadResponse.workload:type_name -> dirextalk.agent.v1.CoreWorkloadActualSnapshot
-	9,  // 42: dirextalk.agent.v1.WorkloadServiceListWorkloadsResponse.workloads:type_name -> dirextalk.agent.v1.CoreWorkloadActualSnapshot
-	12, // 43: dirextalk.agent.v1.WorkloadServiceGetOperationResponse.operation:type_name -> dirextalk.agent.v1.CoreWorkloadOperation
-	13, // 44: dirextalk.agent.v1.WorkloadServiceListEventsResponse.events:type_name -> dirextalk.agent.v1.CoreWorkloadEvent
-	12, // 45: dirextalk.agent.v1.WorkloadServiceCancelResponse.operation:type_name -> dirextalk.agent.v1.CoreWorkloadOperation
-	40, // 46: dirextalk.agent.v1.WorkloadServiceCancelResponse.confirmation:type_name -> dirextalk.agent.v1.CoreConfirmation
-	14, // 47: dirextalk.agent.v1.WorkloadService.Plan:input_type -> dirextalk.agent.v1.WorkloadServicePlanRequest
-	16, // 48: dirextalk.agent.v1.WorkloadService.Get:input_type -> dirextalk.agent.v1.WorkloadServiceGetRequest
-	18, // 49: dirextalk.agent.v1.WorkloadService.List:input_type -> dirextalk.agent.v1.WorkloadServiceListRequest
-	20, // 50: dirextalk.agent.v1.WorkloadService.Quote:input_type -> dirextalk.agent.v1.WorkloadServiceQuoteRequest
-	23, // 51: dirextalk.agent.v1.WorkloadService.RequestApply:input_type -> dirextalk.agent.v1.WorkloadServiceRequestApplyRequest
-	25, // 52: dirextalk.agent.v1.WorkloadService.RequestDestroy:input_type -> dirextalk.agent.v1.WorkloadServiceRequestDestroyRequest
-	27, // 53: dirextalk.agent.v1.WorkloadService.GetWorkload:input_type -> dirextalk.agent.v1.WorkloadServiceGetWorkloadRequest
-	29, // 54: dirextalk.agent.v1.WorkloadService.ListWorkloads:input_type -> dirextalk.agent.v1.WorkloadServiceListWorkloadsRequest
-	31, // 55: dirextalk.agent.v1.WorkloadService.GetOperation:input_type -> dirextalk.agent.v1.WorkloadServiceGetOperationRequest
-	33, // 56: dirextalk.agent.v1.WorkloadService.ListEvents:input_type -> dirextalk.agent.v1.WorkloadServiceListEventsRequest
-	35, // 57: dirextalk.agent.v1.WorkloadService.Cancel:input_type -> dirextalk.agent.v1.WorkloadServiceCancelRequest
-	15, // 58: dirextalk.agent.v1.WorkloadService.Plan:output_type -> dirextalk.agent.v1.WorkloadServicePlanResponse
-	17, // 59: dirextalk.agent.v1.WorkloadService.Get:output_type -> dirextalk.agent.v1.WorkloadServiceGetResponse
-	19, // 60: dirextalk.agent.v1.WorkloadService.List:output_type -> dirextalk.agent.v1.WorkloadServiceListResponse
-	22, // 61: dirextalk.agent.v1.WorkloadService.Quote:output_type -> dirextalk.agent.v1.WorkloadServiceQuoteResponse
-	24, // 62: dirextalk.agent.v1.WorkloadService.RequestApply:output_type -> dirextalk.agent.v1.WorkloadServiceRequestApplyResponse
-	26, // 63: dirextalk.agent.v1.WorkloadService.RequestDestroy:output_type -> dirextalk.agent.v1.WorkloadServiceRequestDestroyResponse
-	28, // 64: dirextalk.agent.v1.WorkloadService.GetWorkload:output_type -> dirextalk.agent.v1.WorkloadServiceGetWorkloadResponse
-	30, // 65: dirextalk.agent.v1.WorkloadService.ListWorkloads:output_type -> dirextalk.agent.v1.WorkloadServiceListWorkloadsResponse
-	32, // 66: dirextalk.agent.v1.WorkloadService.GetOperation:output_type -> dirextalk.agent.v1.WorkloadServiceGetOperationResponse
-	34, // 67: dirextalk.agent.v1.WorkloadService.ListEvents:output_type -> dirextalk.agent.v1.WorkloadServiceListEventsResponse
-	36, // 68: dirextalk.agent.v1.WorkloadService.Cancel:output_type -> dirextalk.agent.v1.WorkloadServiceCancelResponse
-	58, // [58:69] is the sub-list for method output_type
-	47, // [47:58] is the sub-list for method input_type
-	47, // [47:47] is the sub-list for extension type_name
-	47, // [47:47] is the sub-list for extension extendee
-	0,  // [0:47] is the sub-list for field type_name
+	2,  // 1: dirextalk.agent.v1.CoreWorkloadSecretGrantRef.purpose:type_name -> dirextalk.agent.v1.CoreWorkloadSecretPurpose
+	3,  // 2: dirextalk.agent.v1.CoreWorkloadTargetSettings.identity:type_name -> dirextalk.agent.v1.CoreWorkloadTargetIdentity
+	5,  // 3: dirextalk.agent.v1.CoreWorkloadTargetSettings.ports:type_name -> dirextalk.agent.v1.CoreWorkloadPort
+	6,  // 4: dirextalk.agent.v1.CoreWorkloadTargetSettings.network_grants:type_name -> dirextalk.agent.v1.CoreWorkloadNetworkGrant
+	37, // 5: dirextalk.agent.v1.CoreWorkloadTargetSettings.labels:type_name -> dirextalk.agent.v1.CoreWorkloadTargetSettings.LabelsEntry
+	3,  // 6: dirextalk.agent.v1.CoreWorkloadActualSnapshot.identity:type_name -> dirextalk.agent.v1.CoreWorkloadTargetIdentity
+	38, // 7: dirextalk.agent.v1.CoreWorkloadActualSnapshot.observed_at:type_name -> google.protobuf.Timestamp
+	38, // 8: dirextalk.agent.v1.CoreWorkloadActualSnapshot.updated_at:type_name -> google.protobuf.Timestamp
+	8,  // 9: dirextalk.agent.v1.CoreWorkloadOperationPlan.target:type_name -> dirextalk.agent.v1.CoreWorkloadTargetSettings
+	4,  // 10: dirextalk.agent.v1.CoreWorkloadOperationPlan.resource_limits:type_name -> dirextalk.agent.v1.CoreWorkloadResourceLimits
+	7,  // 11: dirextalk.agent.v1.CoreWorkloadOperationPlan.secret_grants:type_name -> dirextalk.agent.v1.CoreWorkloadSecretGrantRef
+	0,  // 12: dirextalk.agent.v1.CoreWorkloadPlan.target_kind:type_name -> dirextalk.agent.v1.CoreWorkloadTargetKind
+	38, // 13: dirextalk.agent.v1.CoreWorkloadPlan.expires_at:type_name -> google.protobuf.Timestamp
+	38, // 14: dirextalk.agent.v1.CoreWorkloadPlan.created_at:type_name -> google.protobuf.Timestamp
+	8,  // 15: dirextalk.agent.v1.CoreWorkloadPlan.typed_target:type_name -> dirextalk.agent.v1.CoreWorkloadTargetSettings
+	4,  // 16: dirextalk.agent.v1.CoreWorkloadPlan.typed_resource_limits:type_name -> dirextalk.agent.v1.CoreWorkloadResourceLimits
+	7,  // 17: dirextalk.agent.v1.CoreWorkloadPlan.typed_secret_grants:type_name -> dirextalk.agent.v1.CoreWorkloadSecretGrantRef
+	1,  // 18: dirextalk.agent.v1.CoreWorkloadOperation.kind:type_name -> dirextalk.agent.v1.CoreWorkloadOperationKind
+	0,  // 19: dirextalk.agent.v1.CoreWorkloadOperation.target_kind:type_name -> dirextalk.agent.v1.CoreWorkloadTargetKind
+	38, // 20: dirextalk.agent.v1.CoreWorkloadOperation.created_at:type_name -> google.protobuf.Timestamp
+	38, // 21: dirextalk.agent.v1.CoreWorkloadOperation.updated_at:type_name -> google.protobuf.Timestamp
+	10, // 22: dirextalk.agent.v1.CoreWorkloadOperation.desired_plan:type_name -> dirextalk.agent.v1.CoreWorkloadOperationPlan
+	9,  // 23: dirextalk.agent.v1.CoreWorkloadOperation.actual:type_name -> dirextalk.agent.v1.CoreWorkloadActualSnapshot
+	38, // 24: dirextalk.agent.v1.CoreWorkloadOperation.dispatch_lease_until:type_name -> google.protobuf.Timestamp
+	9,  // 25: dirextalk.agent.v1.CoreWorkloadEvent.actual:type_name -> dirextalk.agent.v1.CoreWorkloadActualSnapshot
+	38, // 26: dirextalk.agent.v1.CoreWorkloadEvent.at:type_name -> google.protobuf.Timestamp
+	0,  // 27: dirextalk.agent.v1.WorkloadServicePlanRequest.target_kind:type_name -> dirextalk.agent.v1.CoreWorkloadTargetKind
+	38, // 28: dirextalk.agent.v1.WorkloadServicePlanRequest.expires_at:type_name -> google.protobuf.Timestamp
+	8,  // 29: dirextalk.agent.v1.WorkloadServicePlanRequest.typed_target:type_name -> dirextalk.agent.v1.CoreWorkloadTargetSettings
+	4,  // 30: dirextalk.agent.v1.WorkloadServicePlanRequest.typed_resource_limits:type_name -> dirextalk.agent.v1.CoreWorkloadResourceLimits
+	7,  // 31: dirextalk.agent.v1.WorkloadServicePlanRequest.typed_secret_grants:type_name -> dirextalk.agent.v1.CoreWorkloadSecretGrantRef
+	11, // 32: dirextalk.agent.v1.WorkloadServicePlanResponse.plan:type_name -> dirextalk.agent.v1.CoreWorkloadPlan
+	11, // 33: dirextalk.agent.v1.WorkloadServiceGetResponse.plan:type_name -> dirextalk.agent.v1.CoreWorkloadPlan
+	11, // 34: dirextalk.agent.v1.WorkloadServiceListResponse.plans:type_name -> dirextalk.agent.v1.CoreWorkloadPlan
+	21, // 35: dirextalk.agent.v1.WorkloadServiceQuoteResponse.quote:type_name -> dirextalk.agent.v1.CoreWorkloadQuote
+	12, // 36: dirextalk.agent.v1.WorkloadServiceRequestApplyResponse.operation:type_name -> dirextalk.agent.v1.CoreWorkloadOperation
+	39, // 37: dirextalk.agent.v1.WorkloadServiceRequestApplyResponse.confirmation:type_name -> dirextalk.agent.v1.CoreConfirmation
+	12, // 38: dirextalk.agent.v1.WorkloadServiceRequestDestroyResponse.operation:type_name -> dirextalk.agent.v1.CoreWorkloadOperation
+	39, // 39: dirextalk.agent.v1.WorkloadServiceRequestDestroyResponse.confirmation:type_name -> dirextalk.agent.v1.CoreConfirmation
+	9,  // 40: dirextalk.agent.v1.WorkloadServiceGetWorkloadResponse.workload:type_name -> dirextalk.agent.v1.CoreWorkloadActualSnapshot
+	9,  // 41: dirextalk.agent.v1.WorkloadServiceListWorkloadsResponse.workloads:type_name -> dirextalk.agent.v1.CoreWorkloadActualSnapshot
+	12, // 42: dirextalk.agent.v1.WorkloadServiceGetOperationResponse.operation:type_name -> dirextalk.agent.v1.CoreWorkloadOperation
+	13, // 43: dirextalk.agent.v1.WorkloadServiceListEventsResponse.events:type_name -> dirextalk.agent.v1.CoreWorkloadEvent
+	12, // 44: dirextalk.agent.v1.WorkloadServiceCancelResponse.operation:type_name -> dirextalk.agent.v1.CoreWorkloadOperation
+	39, // 45: dirextalk.agent.v1.WorkloadServiceCancelResponse.confirmation:type_name -> dirextalk.agent.v1.CoreConfirmation
+	14, // 46: dirextalk.agent.v1.WorkloadService.Plan:input_type -> dirextalk.agent.v1.WorkloadServicePlanRequest
+	16, // 47: dirextalk.agent.v1.WorkloadService.Get:input_type -> dirextalk.agent.v1.WorkloadServiceGetRequest
+	18, // 48: dirextalk.agent.v1.WorkloadService.List:input_type -> dirextalk.agent.v1.WorkloadServiceListRequest
+	20, // 49: dirextalk.agent.v1.WorkloadService.Quote:input_type -> dirextalk.agent.v1.WorkloadServiceQuoteRequest
+	23, // 50: dirextalk.agent.v1.WorkloadService.RequestApply:input_type -> dirextalk.agent.v1.WorkloadServiceRequestApplyRequest
+	25, // 51: dirextalk.agent.v1.WorkloadService.RequestDestroy:input_type -> dirextalk.agent.v1.WorkloadServiceRequestDestroyRequest
+	27, // 52: dirextalk.agent.v1.WorkloadService.GetWorkload:input_type -> dirextalk.agent.v1.WorkloadServiceGetWorkloadRequest
+	29, // 53: dirextalk.agent.v1.WorkloadService.ListWorkloads:input_type -> dirextalk.agent.v1.WorkloadServiceListWorkloadsRequest
+	31, // 54: dirextalk.agent.v1.WorkloadService.GetOperation:input_type -> dirextalk.agent.v1.WorkloadServiceGetOperationRequest
+	33, // 55: dirextalk.agent.v1.WorkloadService.ListEvents:input_type -> dirextalk.agent.v1.WorkloadServiceListEventsRequest
+	35, // 56: dirextalk.agent.v1.WorkloadService.Cancel:input_type -> dirextalk.agent.v1.WorkloadServiceCancelRequest
+	15, // 57: dirextalk.agent.v1.WorkloadService.Plan:output_type -> dirextalk.agent.v1.WorkloadServicePlanResponse
+	17, // 58: dirextalk.agent.v1.WorkloadService.Get:output_type -> dirextalk.agent.v1.WorkloadServiceGetResponse
+	19, // 59: dirextalk.agent.v1.WorkloadService.List:output_type -> dirextalk.agent.v1.WorkloadServiceListResponse
+	22, // 60: dirextalk.agent.v1.WorkloadService.Quote:output_type -> dirextalk.agent.v1.WorkloadServiceQuoteResponse
+	24, // 61: dirextalk.agent.v1.WorkloadService.RequestApply:output_type -> dirextalk.agent.v1.WorkloadServiceRequestApplyResponse
+	26, // 62: dirextalk.agent.v1.WorkloadService.RequestDestroy:output_type -> dirextalk.agent.v1.WorkloadServiceRequestDestroyResponse
+	28, // 63: dirextalk.agent.v1.WorkloadService.GetWorkload:output_type -> dirextalk.agent.v1.WorkloadServiceGetWorkloadResponse
+	30, // 64: dirextalk.agent.v1.WorkloadService.ListWorkloads:output_type -> dirextalk.agent.v1.WorkloadServiceListWorkloadsResponse
+	32, // 65: dirextalk.agent.v1.WorkloadService.GetOperation:output_type -> dirextalk.agent.v1.WorkloadServiceGetOperationResponse
+	34, // 66: dirextalk.agent.v1.WorkloadService.ListEvents:output_type -> dirextalk.agent.v1.WorkloadServiceListEventsResponse
+	36, // 67: dirextalk.agent.v1.WorkloadService.Cancel:output_type -> dirextalk.agent.v1.WorkloadServiceCancelResponse
+	57, // [57:68] is the sub-list for method output_type
+	46, // [46:57] is the sub-list for method input_type
+	46, // [46:46] is the sub-list for extension type_name
+	46, // [46:46] is the sub-list for extension extendee
+	0,  // [0:46] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_core_workload_proto_init() }
@@ -3050,7 +2797,7 @@ func file_dirextalk_agent_v1_core_workload_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_core_workload_proto_rawDesc), len(file_dirextalk_agent_v1_core_workload_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   36,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

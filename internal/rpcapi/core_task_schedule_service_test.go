@@ -219,13 +219,6 @@ func TestCoreTaskProtoProjectsDurableSpecializedPayloads(t *testing.T) {
 				return value.GetKind() == agentv1.CoreTaskKind_CORE_TASK_KIND_CLOUD_WORKER && value.GetCloudWorker().GetExecutionId() == ids[0] && value.GetCloudWorker().GetAccountGeneration() == 7
 			},
 		},
-		{
-			name: "execution_v2_run",
-			task: coretask.Task{Spec: coretask.TaskSpec{Kind: coretask.TaskKindExecutionV2Run, Payload: coretask.TaskPayload{ExecutionV2Run: &coretask.ExecutionV2RunTaskPayload{OwnerID: "@owner:example.test", AccountGeneration: 9, RunID: ids[0], StageID: ids[1], PlanID: ids[2], PlanRevision: 5, PlanDigest: digest, ConfirmationID: ids[3], Operation: "deploy"}}}},
-			check: func(value *agentv1.CoreTask) bool {
-				return value.GetKind() == agentv1.CoreTaskKind_CORE_TASK_KIND_EXECUTION_V2_RUN && value.GetExecutionV2Run().GetRunId() == ids[0] && value.GetExecutionV2Run().GetAccountGeneration() == 9
-			},
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

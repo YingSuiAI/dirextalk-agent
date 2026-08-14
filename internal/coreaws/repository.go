@@ -36,9 +36,8 @@ func CredentialTestLeaseTimes(now time.Time, supplied ...time.Time) (time.Time, 
 	return leaseExpiresAt, completionGraceUntil, nil
 }
 
-// Repository is the persistence boundary for AWS profiles, immutable plans
-// and change records. Implementations must serialize mutations and replay
-// identical idempotency keys without exposing credential bytes.
+// Repository is the persistence boundary for the single App-managed AWS
+// credential and its immutable verified revisions.
 type Repository interface {
 	CreateCredential(context.Context, Credentials) (Credentials, error)
 	GetCredential(context.Context, string) (Credentials, error)
@@ -47,14 +46,6 @@ type Repository interface {
 	UpdateCredential(context.Context, Credentials, int64) (Credentials, error)
 	DeleteCredential(context.Context, string, int64) error
 	RecordCredentialIdentity(context.Context, string, int64, Identity, time.Time) (Credentials, error)
-	CreatePlan(context.Context, Plan) (Plan, error)
-	GetPlan(context.Context, string) (Plan, error)
-	ListPlans(context.Context, int, string) (PlanPage, error)
-	CreateChange(context.Context, Change) (Change, error)
-	GetChange(context.Context, string) (Change, error)
-	GetChangeByConfirmation(context.Context, string) (Change, error)
-	ListChanges(context.Context, int, string, string) (ChangePage, error)
-	UpdateChange(context.Context, Change, int64) (Change, error)
 }
 
 // CredentialIdentityIdempotencyRepository is the durable neutral-capability

@@ -119,8 +119,14 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 		return ExecutionResult{}, errors.Join(runErr, provider.failExecution(ctx, &execution, &worker))
 	}
 	result.WorkerID = worker.WorkerID
-	if err := provider.completeExecution(ctx, &execution, &worker, result); err != nil {
+	completionPersisted, err := provider.completeExecution(ctx, &execution, &worker, result)
+	if err != nil && !completionPersisted {
 		return result, err
+	}
+	if err != nil {
+		provider.pool.mu.Lock()
+		_ = provider.reconcileCompletedWorkerReleaseLocked(ctx, execution)
+		provider.pool.mu.Unlock()
 	}
 	return result, nil
 }
@@ -138,6 +144,7 @@ func (provider *Provider) lease(ctx context.Context, request ExecuteRequest) (Wo
 		return WorkerRecord{}, ExecutionRecord{}, false, false, ErrIdentity
 	}
 	if exists && execution.Phase == TaskCompleted {
+		_ = provider.reconcileCompletedWorkerReleaseLocked(ctx, execution)
 		return WorkerRecord{}, execution, true, false, nil
 	}
 	if _, running := provider.active[request.ExecutionID]; running {
@@ -211,27 +218,8 @@ func (provider *Provider) acquire(ctx context.Context, request ExecuteRequest, p
 	if request.ReuseOnly {
 		return WorkerRecord{}, ErrBusy
 	}
-	active := 0
-	tracked := make(map[string]struct{})
-	for _, worker := range workers {
-		if worker.authority() == request.Authority && worker.Phase != WorkerDestroyed && !(worker.Phase == WorkerDestroying && worker.ResourcesDestroyed) {
-			active++
-			if worker.Credential.AccountID == request.Credential.AccountID && worker.Credential.Region == request.Credential.Region && worker.Instance.ID != "" {
-				tracked[worker.Instance.ID] = struct{}{}
-			}
-		}
-	}
-	live, err := provider.aws.ListInstances(ctx, request.Credential, poolTags(request.Authority))
-	if err != nil {
+	if err := provider.checkCreateCapacity(ctx, request.Authority, request.Credential, workers); err != nil {
 		return WorkerRecord{}, err
-	}
-	for _, instance := range live {
-		if _, ok := tracked[instance.ID]; !ok {
-			active++
-		}
-	}
-	if active >= MaxWorkers {
-		return WorkerRecord{}, ErrCapacity
 	}
 	if err := request.Confirmation.validate(); err != nil {
 		return WorkerRecord{}, err
@@ -423,15 +411,83 @@ func (provider *Provider) failExecution(ctx context.Context, execution *Executio
 	return errors.Join(provider.saveExecution(cleanupCtx, execution), provider.releaseLocked(cleanupCtx, worker, execution.ExecutionID))
 }
 
-func (provider *Provider) completeExecution(ctx context.Context, execution *ExecutionRecord, worker *WorkerRecord, result ExecutionResult) error {
+func (provider *Provider) completeExecution(ctx context.Context, execution *ExecutionRecord, worker *WorkerRecord, result ExecutionResult) (bool, error) {
 	provider.pool.mu.Lock()
 	defer provider.pool.mu.Unlock()
 	delete(provider.active, execution.ExecutionID)
 	execution.Result, execution.Phase = result, TaskCompleted
 	if err := provider.saveExecution(ctx, execution); err != nil {
+		return false, errors.Join(ErrAmbiguous, err)
+	}
+	// Once the remote result is durable, releasing the retained Worker is
+	// bookkeeping. A transient release failure must not reclassify completed
+	// remote work as a failed workload.
+	return true, provider.releaseLocked(ctx, worker, execution.ExecutionID)
+}
+
+func (provider *Provider) reconcileCompletedWorkerReleaseLocked(ctx context.Context, execution ExecutionRecord) error {
+	if execution.Phase != TaskCompleted || execution.WorkerID == "" {
+		return ErrInvalid
+	}
+	worker, found, err := provider.store.LoadWorker(ctx, execution.WorkerID)
+	if err != nil {
 		return err
 	}
-	return provider.releaseLocked(ctx, worker, execution.ExecutionID)
+	if !found {
+		return ErrIdentity
+	}
+	if worker.Phase == WorkerIdle && worker.CurrentExecutionID == "" {
+		return nil
+	}
+	if worker.authority() != execution.authority() || worker.Credential != execution.Credential ||
+		worker.Phase != WorkerBusy || worker.CurrentExecutionID != execution.ExecutionID {
+		return ErrIdentity
+	}
+	next := worker
+	return provider.releaseLocked(ctx, &next, execution.ExecutionID)
+}
+
+// CheckCreateCapacity reports whether one more retained Worker may be created
+// after idle reuse has already failed. It includes live owner-tagged instances
+// that are not present in the local Worker store.
+func (provider *Provider) CheckCreateCapacity(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity) error {
+	if provider == nil || ctx == nil || authority.validate() != nil || credential.validate() != nil {
+		return ErrInvalid
+	}
+	provider.pool.mu.Lock()
+	defer provider.pool.mu.Unlock()
+	workers, err := provider.store.ListWorkers(ctx)
+	if err != nil {
+		return err
+	}
+	return provider.checkCreateCapacity(ctx, authority, credential, workers)
+}
+
+func (provider *Provider) checkCreateCapacity(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity, workers []WorkerRecord) error {
+	active := 0
+	tracked := make(map[string]struct{})
+	for _, worker := range workers {
+		if worker.authority() != authority || worker.Phase == WorkerDestroyed || (worker.Phase == WorkerDestroying && worker.ResourcesDestroyed) {
+			continue
+		}
+		active++
+		if worker.Credential.AccountID == credential.AccountID && worker.Credential.Region == credential.Region && worker.Instance.ID != "" {
+			tracked[worker.Instance.ID] = struct{}{}
+		}
+	}
+	live, err := provider.aws.ListInstances(ctx, credential, poolTags(authority))
+	if err != nil {
+		return err
+	}
+	for _, instance := range live {
+		if _, ok := tracked[instance.ID]; !ok {
+			active++
+		}
+	}
+	if active >= MaxWorkers {
+		return ErrCapacity
+	}
+	return nil
 }
 
 func (provider *Provider) DestroyWorker(ctx context.Context, request DestroyRequest) error {

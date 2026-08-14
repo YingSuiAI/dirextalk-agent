@@ -168,12 +168,12 @@ func TestTaskExecutorManagedDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ex.RegisterHandler(coretask.TaskKindAWSChange, func(context.Context, coretask.Task) ManagedOutcome {
+	if err := ex.RegisterHandler(coretask.TaskKindWorkload, func(context.Context, coretask.Task) ManagedOutcome {
 		return ManagedOutcome{Err: errors.New("owned"), TerminalOwned: true}
 	}); err != nil {
 		t.Fatal(err)
 	}
-	task := coretask.Task{Spec: coretask.TaskSpec{Kind: coretask.TaskKindAWSChange}}
+	task := coretask.Task{Spec: coretask.TaskSpec{Kind: coretask.TaskKindWorkload}}
 	out, err := ex.ExecuteManaged(context.Background(), task)
 	if err != nil || !out.TerminalOwned || out.Err == nil {
 		t.Fatalf("outcome=%+v err=%v", out, err)
@@ -225,14 +225,14 @@ func TestTaskExecutorAppliesDeadlineToManagedHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	entered := make(chan struct{})
-	if err := ex.RegisterHandler(coretask.TaskKindAWSChange, func(ctx context.Context, _ coretask.Task) ManagedOutcome {
+	if err := ex.RegisterHandler(coretask.TaskKindWorkload, func(ctx context.Context, _ coretask.Task) ManagedOutcome {
 		close(entered)
 		<-ctx.Done()
 		return ManagedOutcome{Result: coretask.Result{Text: "late", Summary: "late"}}
 	}); err != nil {
 		t.Fatal(err)
 	}
-	task := coretask.Task{Spec: coretask.TaskSpec{Kind: coretask.TaskKindAWSChange, TimeoutSeconds: 1}}
+	task := coretask.Task{Spec: coretask.TaskSpec{Kind: coretask.TaskKindWorkload, TimeoutSeconds: 1}}
 	deadline := time.Now().Add(10 * time.Millisecond)
 	task.ExecutionDeadlineAt = &deadline
 	done := make(chan ManagedOutcome, 1)
@@ -703,12 +703,12 @@ func TestWorkerPoolCompletesAndStops(t *testing.T) {
 	now := time.Now().UTC()
 	profileID := "00000000-0000-4000-8000-000000000001"
 	taskID := "00000000-0000-4000-8000-000000000002"
-	spec := coretask.TaskSpec{Goal: "g", Kind: coretask.TaskKindAWSChange, ModelProfileID: profileID, IdempotencyKey: "00000000-0000-4000-8000-000000000003"}
+	spec := coretask.TaskSpec{Goal: "g", Kind: coretask.TaskKindWorkload, ModelProfileID: profileID, IdempotencyKey: "00000000-0000-4000-8000-000000000003"}
 	task := coretask.Task{ID: taskID, Spec: spec, Status: coretask.StatusRunning, Attempt: 1, LeaseEpoch: 1, Revision: 1, CreatedAt: now, UpdatedAt: now, AvailableAt: now, Lease: &coretask.Lease{TaskID: taskID, Attempt: 1, Epoch: 1, Holder: "h", ExpiresAt: now.Add(time.Minute)}}
 	q := &fakeQueue{task: task, lease: *task.Lease}
 	client := &fakeClient{}
 	ex, _ := NewTaskExecutor(fakeProfiles{p: coremodel.Profile{ID: profileID, Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k"}}, func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
-	_ = ex.RegisterHandler(coretask.TaskKindAWSChange, func(context.Context, coretask.Task) ManagedOutcome {
+	_ = ex.RegisterHandler(coretask.TaskKindWorkload, func(context.Context, coretask.Task) ManagedOutcome {
 		return ManagedOutcome{Result: coretask.Result{Text: "ok", Summary: "ok"}}
 	})
 	pool, _ := NewWorkerPool(q, ex, 1, time.Second)

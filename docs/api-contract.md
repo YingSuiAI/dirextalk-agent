@@ -414,12 +414,8 @@ and required readiness proof are complete; configuration-disabled or partial
 domains stay absent and fail closed when selected.
 
 - `workload.core_runner` requires its nonce-backed full local isolation proof.
-- `workload.aws_ssm` and `workload.aws_ecs` require one exact configured
-  credential/target readiness block and the complete typed provider graph.
-  Startup performs no AWS calls; the first explicit provider action probes the
-  exact target and returns a per-operation precondition on failure.
-- `agent.execution.v2` publishes only operations whose complete typed route is
-  ready. Cloud Worker proposal and management readiness is evaluated from its
+- `agent.execution.v2` publishes only the eight Cloud Worker plan/run/artifact
+  operations listed above. Readiness is evaluated from its
   PostgreSQL task/confirmation stores, local artifact repository, SSH manager,
   and the sole current STS-verified AWS credential. It does not depend on a
   deploy-time account, Region, AMI, network, Route53 zone, private listener, or

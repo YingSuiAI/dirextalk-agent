@@ -10,8 +10,6 @@ import "dirextalk/agent/v1/core_confirmation.proto";
 enum CoreWorkloadTargetKind {
   CORE_WORKLOAD_TARGET_KIND_UNSPECIFIED = 0;
   CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER = 1;
-  CORE_WORKLOAD_TARGET_KIND_AWS_EC2_SSM = 2;
-  CORE_WORKLOAD_TARGET_KIND_AWS_ECS = 3;
 }
 enum CoreWorkloadOperationKind {
   CORE_WORKLOAD_OPERATION_KIND_UNSPECIFIED = 0;
@@ -30,34 +28,7 @@ message CoreWorkloadTargetIdentity {
   CoreWorkloadTargetKind kind = 1;
   string core_runner_service = 2;
   string image_digest = 3;
-  string aws_account_id = 4;
-  string aws_region = 5;
-  string instance_id = 6;
-  string cluster = 7;
-  string service = 8;
-  string task_definition_revision = 9;
-  int64 desired_count = 10;
-	string endpoint = 11;
 	string core_runner_id = 12;
-	// Typed AWS EC2/SSM target facts.  These fields are intentionally explicit
-	// so providers never receive an arbitrary SDK payload.
-	string aws_ec2_document_version = 13;
-	string aws_ec2_systemd_service = 14;
-	map<string,string> aws_ec2_required_instance_tags = 15;
-	// Typed AWS ECS/Fargate target facts.
-	string aws_ecs_cluster_arn = 16;
-	string aws_ecs_service_name = 17;
-	string aws_ecs_task_family = 18;
-	string aws_ecs_platform_version = 19;
-	repeated string aws_ecs_subnet_ids = 20;
-	repeated string aws_ecs_security_group_ids = 21;
-	bool aws_ecs_assign_public_ip = 22;
-	string aws_ecs_target_group_arn = 23;
-	uint32 aws_ecs_target_group_port = 24;
-	string aws_ecs_task_role_arn = 25;
-	string aws_ecs_execution_role_arn = 26;
-	int64 aws_ecs_desired_count = 27;
-	string aws_ecs_image_uri = 28;
 }
 message CoreWorkloadResourceLimits {
   int64 cpu = 1;
@@ -107,9 +78,8 @@ message CoreWorkloadPlan {
   string summary = 4;
   string artifact = 5;
   string source = 6;
-  repeated string command_steps = 7;
+	repeated string command_steps = 7;
 	string image_digest = 8;
-	string image_uri = 19;
   CoreWorkloadTargetKind target_kind = 9;
   google.protobuf.Timestamp expires_at = 14;
   google.protobuf.Timestamp created_at = 15;
@@ -153,9 +123,8 @@ message WorkloadServicePlanRequest {
   string summary = 2;
   string artifact = 3;
   string source = 4;
-  repeated string command_steps = 5;
+	repeated string command_steps = 5;
 	string image_digest = 6;
-	string image_uri = 16;
   CoreWorkloadTargetKind target_kind = 7;
   google.protobuf.Timestamp expires_at = 12;
   CoreWorkloadTargetSettings typed_target = 13;

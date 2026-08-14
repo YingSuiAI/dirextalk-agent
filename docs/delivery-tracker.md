@@ -70,8 +70,8 @@ contract](message-server-integration-development-contract.md), and
   Semantic generations now use pgvector inside Agent PostgreSQL with exact
   binding-filtered cosine search, fixed 64 MiB aggregate/16 MiB source content
   limits, and the closed Knowledge quota status/error contract.
-- Typed Core AWS credentials, plans, confirmation-bound CloudControl changes,
-  and `WorkloadService` planning/confirmation with a fenced `WORKLOAD` Task.
+- App-managed AWS credentials with STS identity verification, plus
+  `WorkloadService` planning/confirmation with a fenced `WORKLOAD` Task.
 - Optional `agent.worker.v1` has closed owner-client list/get/destroy and
   Route53 bind/unbind adapters for the maximum-five persistent SSH Worker
   pool. It reports the current ordinary public IPv4 and optional
@@ -129,9 +129,6 @@ contract](message-server-integration-development-contract.md), and
   A stale binding or CAS conflict remains unchanged and is reported for retry,
   while other expired confirmations in the same sweep still commit; repository
   and infrastructure failures continue to stop the cleaner.
-- Generic Execution V2 run creation/retry now uses a real
-  `EXECUTION_V2_RUN` CoreTask and CoreConfirmation; provider recovery is
-  controller-owned.
 
 ## Verification commands
 
@@ -198,13 +195,6 @@ support.
   change, reports them as stale rather than indexed, and requeues a source
   whose active embedding profile revision advanced. Empty exact-binding recall
   remained a successful empty context without calling the semantic backend.
-- On **2026-07-25**, the explicitly authorized real AWS lane used the typed
-  `CoreCloudControlService` in `us-east-1` to create and read back one tagged
-  idle SQS queue in one CloudFormation stack, then confirm/delete it. Independent
-  deletion verification and a post-run prefix audit found zero active stacks or
-  queues. This evidence covers Core CloudControl only. It is not Cloud Worker,
-  Worker AMI, one-EC2/one-Worker/one-Pi, artifact collection, or Cloud Worker
-  inventory-zero evidence and must not be used as such.
 - On **2026-08-14**, the current Cloud Worker tests cover proposal-time live
   selection and pricing, deterministic offer/confirmation binding, dynamic AWS
   credential readiness, SSH execution, retained Worker identity, local artifact
@@ -223,12 +213,7 @@ support.
 ## Remaining release gates
 
 - Two isolated Compose-project E2E verification is not recorded here.
-- Live `workload.aws_ssm` and `workload.aws_ecs` acceptance is not recorded;
-  their exact target/readiness probes remain per-operation gates.
 - Live `workload.core_runner` workload execution is not recorded.
-- Generic non-Cloud-Worker Execution V2 provider mutations still require their
-  exact typed route, target proof, and configured CloudFormation service role;
-  live generic AWS provision/read-back acceptance is not recorded.
 - Production `cloud_worker_propose` accepts either an explicit cloud command
   or versioned Native scheduler evidence that the local conversation runtime
   lacks a general project/shell executor. The model may therefore propose a

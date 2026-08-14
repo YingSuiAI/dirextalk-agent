@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
-	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
@@ -150,33 +149,6 @@ func (s *CoreConfirmationStore) UpsertCurrentTargetBinding(ctx context.Context, 
 }
 func bindingJSON(b coreconfirmation.Binding) ([]byte, error) { return json.Marshal(b) }
 
-func awsBindingTx(ctx context.Context, tx pgx.Tx, store *Store, confirmationID string, at time.Time) (coreconfirmation.Binding, error) {
-	if store == nil {
-		return coreconfirmation.Binding{}, coreconfirmation.ErrBindingUnavailable
-	}
-	var planID, credentialID, region, stack, operation, account, user string
-	var template, paramsRaw, tagsRaw, capsRaw []byte
-	var templateSHA string
-	var planRevision, credentialRevision, verifiedRevision int64
-	err := tx.QueryRow(ctx, `SELECT p.plan_id::text,p.credential_id::text,p.region,p.stack_name,p.operation,p.template,p.template_sha256,p.parameters_json,p.tags_json,p.capabilities_json,p.revision,c.account_id,c.user_arn,c.revision,c.verified_revision FROM core_aws_changes x JOIN core_aws_plans p ON p.plan_id=x.plan_id JOIN core_aws_credentials c ON c.credential_id=x.credential_id WHERE x.confirmation_id=$1 FOR UPDATE`, confirmationID).Scan(&planID, &credentialID, &region, &stack, &operation, &template, &templateSHA, &paramsRaw, &tagsRaw, &capsRaw, &planRevision, &account, &user, &credentialRevision, &verifiedRevision)
-	if err != nil {
-		return coreconfirmation.Binding{}, err
-	}
-	credential, err := NewCoreAWSStore(store).scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 FOR UPDATE`, credentialID))
-	if err != nil {
-		return coreconfirmation.Binding{}, err
-	}
-	if verifiedRevision != credentialRevision || account == "" || user == "" {
-		return coreconfirmation.Binding{}, coreconfirmation.ErrStale
-	}
-	var params, tags map[string]string
-	var caps []string
-	if json.Unmarshal(paramsRaw, &params) != nil || json.Unmarshal(tagsRaw, &tags) != nil || json.Unmarshal(capsRaw, &caps) != nil {
-		return coreconfirmation.Binding{}, coreconfirmation.ErrStale
-	}
-	plan := coreaws.Plan{ID: planID, CredentialID: credentialID, Region: region, StackName: stack, Operation: coreaws.Operation(operation), Template: template, TemplateSHA256: templateSHA, Parameters: params, Tags: tags, Capabilities: caps, Revision: planRevision}
-	return coreaws.BindingForPlan(plan, credential).Normalize()
-}
 func scanConfirmation(row interface{ Scan(...any) error }) (coreconfirmation.Confirmation, error) {
 	var c coreconfirmation.Confirmation
 	var braw []byte
@@ -193,24 +165,6 @@ func scanConfirmation(row interface{ Scan(...any) error }) (coreconfirmation.Con
 	// onto the public confirmation without duplicating a mutable owner column.
 	c.OwnerID = c.Binding.OwnerID
 	return c, nil
-}
-
-func projectAWSConfirmationTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.Confirmation, status, stage, code, summary, kind string, at time.Time) error {
-	if cur.Binding.OperationDomain != "aws" {
-		return nil
-	}
-	var changeID string
-	var revision int64
-	if err := tx.QueryRow(ctx, `SELECT change_id::text,revision FROM core_aws_changes WHERE confirmation_id=$1 AND task_id=$2 FOR UPDATE`, cur.ConfirmationID, cur.TaskID).Scan(&changeID, &revision); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		return err
-	}
-	if _, err := tx.Exec(ctx, `UPDATE core_aws_changes SET status=$2,stage=$3,error_code=$4,error_summary=$5,revision=revision+1,updated_at=$6 WHERE change_id=$1`, changeID, status, stage, code, summary, at); err != nil {
-		return err
-	}
-	return appendAWSAndTaskEvent(ctx, tx, changeID, cur.TaskID, kind, revision+1, 0, statusForTaskEvent(status), at)
 }
 
 func projectCloudWorkerConfirmationTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.Confirmation, next cloudworker.ExecutionState, kind string, at time.Time) error {
@@ -347,18 +301,6 @@ func terminalizeCloudWorkerTurnTx(
 	}
 	return nil
 }
-func statusForTaskEvent(changeStatus string) string {
-	switch changeStatus {
-	case "succeeded":
-		return "succeeded"
-	case "canceled":
-		return "canceled"
-	case "running":
-		return "queued"
-	default:
-		return "failed"
-	}
-}
 func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, ownerID any, cur coreconfirmation.Confirmation, at time.Time, reason string) (coreconfirmation.Confirmation, error) {
 	if cur.Binding.OperationDomain == "workload:apply" || cur.Binding.OperationDomain == "workload:destroy" {
 		status := "expired"
@@ -414,17 +356,7 @@ func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, ownerID any, cur corec
 			return cur, e
 		}
 	}
-	if e := projectExecutionV2RunConfirmationTx(ctx, tx, cur, "expired", at); e != nil {
-		return cur, e
-	}
 	if e := terminalizeConversationToolTx(ctx, tx, cur, "denied", reason, at, true); e != nil {
-		return cur, e
-	}
-	awsStatus, awsStage := "failed", "failed"
-	if reason == coreconfirmation.ReasonUserRejected {
-		awsStatus, awsStage = "canceled", "canceled"
-	}
-	if e := projectAWSConfirmationTx(ctx, tx, cur, awsStatus, awsStage, reason, reason, reason, at); e != nil {
 		return cur, e
 	}
 	if e := projectCloudWorkerConfirmationTx(ctx, tx, cur, cloudworker.StateExpired, "confirmation_expired", at); e != nil {
@@ -516,15 +448,6 @@ func confirmationBindingMatchesTx(
 			return false, coreconfirmation.ErrBindingUnavailable
 		}
 		if !cur.Binding.Equal(current) {
-			return false, nil
-		}
-	}
-	if cur.Binding.OperationDomain == "aws" {
-		current, err := awsBindingTx(ctx, tx, store, cur.ConfirmationID, at.UTC())
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return false, coreconfirmation.ErrBindingUnavailable
-		}
-		if err == nil && !cur.Binding.Equal(current) {
 			return false, nil
 		}
 	}
@@ -675,10 +598,7 @@ func terminalizeConfirmationForTaskModeTx(ctx context.Context, tx pgx.Tx, taskID
 		return err
 	}
 	if cur.State == coreconfirmation.StateConsumed {
-		if cur.Binding.OperationDomain == "aws" {
-			_, err = tx.Exec(ctx, `UPDATE core_aws_changes SET stage=$2,error_code=$3,error_summary='task terminalized; provider outcome requires reconciliation',revision=revision+1,updated_at=$4 WHERE confirmation_id=$1 AND status='running'`, cur.ConfirmationID, string(coreaws.StageReconciliationRequired), reason, at.UTC())
-		}
-		return err
+		return nil
 	}
 	if _, err = tx.Exec(ctx, `UPDATE core_confirmations SET state='expired',revision=revision+1,terminal_code=$2,terminal_reason=$2,updated_at=$3 WHERE confirmation_id=$1 AND state IN ('pending','confirmed')`, cur.ConfirmationID, reason, at.UTC()); err != nil {
 		return err
@@ -690,13 +610,6 @@ func terminalizeConfirmationForTaskModeTx(ctx context.Context, tx pgx.Tx, taskID
 	}
 	if err = terminalizeConversationToolTx(ctx, tx, cur, "canceled", reason, at, resumeConversationTurn); err != nil {
 		return err
-	}
-	if cur.Binding.OperationDomain == "aws" {
-		status, stage := "canceled", "canceled"
-		if reason == "task_timed_out" {
-			status, stage = "failed", "failed"
-		}
-		_, err = tx.Exec(ctx, `UPDATE core_aws_changes SET status=$2,stage=$3,error_code=$4,error_summary=$4,revision=revision+1,updated_at=$5 WHERE confirmation_id=$1`, cur.ConfirmationID, status, stage, reason, at.UTC())
 	}
 	if cur.Binding.OperationDomain == "workload:apply" || cur.Binding.OperationDomain == "workload:destroy" {
 		if _, err = tx.Exec(ctx, `UPDATE core_workload_operations SET status='canceled',revision=revision+1,failure_code='task_canceled',failure_summary='task canceled before dispatch',updated_at=$2 WHERE confirmation_id=$1 AND status='waiting_user'`, cur.ConfirmationID, at.UTC()); err != nil {

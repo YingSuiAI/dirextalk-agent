@@ -6,13 +6,13 @@ import (
 	"time"
 
 	workercap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/worker"
+	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
-	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 )
 
@@ -26,7 +26,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 		return nil, fmt.Errorf("dynamic Cloud Worker proposal dependencies are incomplete")
 	}
 	awsStore := postgres.NewCoreAWSStore(store)
-	credentials, err := postgres.NewCoreWorkloadCredentialResolver(awsStore)
+	credentials, err := postgres.NewAWSCredentialResolver(awsStore)
 	if err != nil {
 		return nil, fmt.Errorf("initialize dynamic Cloud Worker credential resolver: %w", err)
 	}
@@ -52,7 +52,6 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 		return nil, fmt.Errorf("initialize dynamic Cloud Worker quoter: %w", err)
 	}
 	defaults := cloudworker.Defaults{
-		Compute:                 cloudworker.ComputeSpec{InstanceType: "t3.small", Architecture: "x86_64", RootDeviceName: "/dev/xvda", VolumeGiB: 20, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125},
 		Limits:                  cloudworker.Limits{MaxRuntimeSeconds: 3600, MaxTokens: 100_000, MaxOutputBytes: cloudworker.MaxCloudWorkerOutputBytes},
 		MaximumAuthorizedMicros: 100_000_000, QuoteTTL: cloudWorkerDefaultQuoteTTL,
 	}
@@ -79,6 +78,9 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	executor, err := newSSHWorkerExecutor(authority, exact, artifacts, pricing, conversationStore, workerState, root)
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker executor: %w", err)
+	}
+	if err = intrinsic.EnableRetainedWorkerInventory(executor); err != nil {
+		return nil, fmt.Errorf("initialize retained Worker model inventory: %w", err)
 	}
 	if err = domain.EnablePersistentWorkerReuse(executor); err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker reuse: %w", err)

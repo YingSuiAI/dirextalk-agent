@@ -155,7 +155,7 @@ func (s *CoreWorkloadStore) CreatePlan(ctx context.Context, in coreworkload.Plan
 	if s == nil || s.store == nil || !coreworkload.ValidUUID(in.IdempotencyKey) {
 		return coreworkload.Plan{}, coreworkload.ErrInvalid
 	}
-	p := coreworkload.Plan{ID: uuid.New().String(), Revision: 1, Summary: in.Summary, Artifact: in.Artifact, Source: in.Source, CommandSteps: in.CommandSteps, ImageDigest: in.ImageDigest, ImageURI: in.ImageURI, TargetKind: in.TargetKind, Target: in.Target, NetworkGrants: in.NetworkGrants, SecretGrants: in.SecretGrants, SecretGrantRefs: in.SecretGrantRefs, ResourceLimits: in.ResourceLimits, ExpiresAt: in.ExpiresAt.UTC(), CreatedAt: time.Now().UTC()}
+	p := coreworkload.Plan{ID: uuid.New().String(), Revision: 1, Summary: in.Summary, Artifact: in.Artifact, Source: in.Source, CommandSteps: in.CommandSteps, ImageDigest: in.ImageDigest, TargetKind: in.TargetKind, Target: in.Target, NetworkGrants: in.NetworkGrants, SecretGrants: in.SecretGrants, SecretGrantRefs: in.SecretGrantRefs, ResourceLimits: in.ResourceLimits, ExpiresAt: in.ExpiresAt.UTC(), CreatedAt: time.Now().UTC()}
 	n, e := p.Normalize()
 	if e != nil {
 		return coreworkload.Plan{}, e

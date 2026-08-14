@@ -22,11 +22,11 @@ enum CoreTaskKind {
   CORE_TASK_KIND_AGENT = 1;
   CORE_TASK_KIND_EXTENSION = 2;
   CORE_TASK_KIND_KNOWLEDGE_INDEX = 3;
-  CORE_TASK_KIND_AWS_CHANGE = 4;
+  reserved 4;
   CORE_TASK_KIND_WORKLOAD = 5;
   CORE_TASK_KIND_CONVERSATION_TOOL = 6;
   CORE_TASK_KIND_CLOUD_WORKER = 7;
-  CORE_TASK_KIND_EXECUTION_V2_RUN = 8;
+  reserved 8;
 }
 
 message CoreExtensionSelection {
@@ -76,18 +76,6 @@ message CoreCloudWorkerTaskPayload {
   string execution_digest = 10;
 }
 
-message CoreExecutionV2RunTaskPayload {
-  string owner_id = 1;
-  uint64 account_generation = 2;
-  string run_id = 3;
-  string stage_id = 4;
-  string plan_id = 5;
-  uint64 plan_revision = 6;
-  string plan_digest = 7;
-  string confirmation_id = 8;
-  string operation = 9;
-}
-
 message CoreTaskTemplate {
   string goal = 1;
   string conversation_id = 2;
@@ -123,7 +111,7 @@ message CoreTask {
   CoreWorkloadTaskPayload workload = 24;
   CoreConversationToolTaskPayload conversation_tool = 25;
   CoreCloudWorkerTaskPayload cloud_worker = 26;
-  CoreExecutionV2RunTaskPayload execution_v2_run = 27;
+  reserved 27;
 }
 
 message TaskServiceCreateTaskRequest {

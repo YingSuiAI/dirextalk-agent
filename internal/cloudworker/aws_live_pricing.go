@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
+	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/pricing"

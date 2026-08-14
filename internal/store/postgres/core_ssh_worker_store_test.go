@@ -12,6 +12,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
 
@@ -85,15 +86,64 @@ func TestSSHWorkerStoreRebindsConsumedReservationAfterTaskReclaim(t *testing.T) 
 		t.Fatalf("reservation count=%d task=%s attempt=%d epoch=%d revision=%d expires=%s reclaimed=%+v",
 			reservationCount, taskID, attempt, epoch, revision, expiresAt, reclaimed)
 	}
+	if err = sshStore.Complete(h.ctx, secondRun, sshflow.Result{Summary: "deployment complete", WorkerID: "worker-one"}); err != nil {
+		t.Fatal(err)
+	}
+	var runEventKind, runEventState string
+	var runEventRevision uint64
+	if err = h.store.pool.QueryRow(h.ctx, `SELECT kind,state,revision FROM core_cloud_worker_events
+		WHERE execution_id=$1 ORDER BY sequence DESC LIMIT 1`, offer.Execution.ExecutionID).
+		Scan(&runEventKind, &runEventState, &runEventRevision); err != nil {
+		t.Fatal(err)
+	}
+	if runEventKind != "execution_succeeded" || runEventState != string(cloudworker.StateSucceeded) ||
+		runEventRevision != secondRun.Execution.Revision+1 {
+		t.Fatalf("terminal run event kind=%s state=%s revision=%d", runEventKind, runEventState, runEventRevision)
+	}
+	completed, err := tasks.GetTask(h.ctx, reclaimed.ID)
+	if err != nil || completed.Status != coretask.StatusSucceeded || completed.Result == nil || completed.Result.Summary != "deployment complete" || completed.FailureCode != "" || completed.FailureSummary != "" {
+		t.Fatalf("completed task=%+v err=%v", completed, err)
+	}
+	conversationStore, err := NewCoreConversationStore(h.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := conversationStore.GetTurn(h.ctx, offer.Plan.TurnID)
+	if err != nil || resumed.State != core.TurnAccepted {
+		t.Fatalf("resumed turn=%+v err=%v", resumed, err)
+	}
+	lease, err := conversationStore.ClaimTurn(h.ctx, resumed.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := conversationStore.LoadConversation(h.ctx, offer.Plan.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := core.ChatResponse{RequestID: resumed.RequestID, ConversationID: resumed.ConversationID,
+		Revision: conversation.Revision + 1, Done: true, ModelProfileID: resumed.ProfileID,
+		Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "deployment complete",
+			ModelProfileID: resumed.ProfileID, CreatedAt: time.Now().UTC()}}
+	if _, err = conversationStore.CommitTurn(h.ctx, lease, response); err != nil {
+		t.Fatalf("commit resumed Worker turn: %v", err)
+	}
+	conversation, err = conversationStore.LoadConversation(h.ctx, offer.Plan.ConversationID)
+	if err != nil || len(conversation.Messages) != 3 || conversation.Messages[0].Role != core.RoleUser ||
+		conversation.Messages[1].Content != "Cloud Worker quote is ready for confirmation." ||
+		conversation.Messages[2].Content != "deployment complete" {
+		t.Fatalf("terminal Worker transcript=%+v err=%v", conversation.Messages, err)
+	}
 }
 
 func TestSSHWorkerContinuationPersistsRetainedWorkerNextAction(t *testing.T) {
 	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
-	plan := cloudworker.Plan{TaskID: uuid.NewString(), PlanID: uuid.NewString(), ExecutionID: uuid.NewString()}
+	plan := cloudworker.Plan{TaskID: uuid.NewString(), PlanID: uuid.NewString(), ExecutionID: uuid.NewString(),
+		AccountGeneration: 1, Revision: 1, Status: string(cloudworker.StateWaitingUser)}
+	execution := cloudworker.Execution{RunID: uuid.NewString(), ExecutionID: plan.ExecutionID, Revision: 2, State: cloudworker.StateSucceeded}
 	_, result, err := sshWorkerContinuation(
 		&core.ModelRunResult{ToolCalls: []core.ToolCall{call}},
 		plan,
-		cloudworker.StateSucceeded,
+		execution,
 		"deployment complete",
 		sshflow.Result{WorkerID: "worker-one"},
 		nil,
@@ -118,5 +168,9 @@ func TestSSHWorkerContinuationPersistsRetainedWorkerNextAction(t *testing.T) {
 		completion.NextAction.WorkerID != completion.WorkerID || completion.NextAction.Default != "retain" ||
 		!strings.Contains(completion.NextAction.Question, "whether to destroy") {
 		t.Fatalf("completion=%+v err=%v", completion, err)
+	}
+	if len(result.References) != 2 || result.References[0].Kind != "execution_plan" ||
+		result.References[1].Kind != "execution_run" || result.References[1].RunID != execution.RunID {
+		t.Fatalf("completion references=%+v", result.References)
 	}
 }

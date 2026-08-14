@@ -374,8 +374,8 @@ func (c ConversationScheduleCommand) Validate() error {
 	if template.Kind != coretask.TaskKindAgent || template.ConversationID != turn.ConversationID || template.ModelProfileID != turn.ProfileID ||
 		len(template.AttachmentRefs) != 0 || len(template.Extensions) != 0 || len(template.KnowledgeRefs) != 0 || template.Payload.Agent == nil ||
 		template.Payload.Agent.OwnerID != strings.TrimSpace(turn.OwnerID) || template.Payload.Agent.AccountGeneration != turn.AccountGeneration ||
-		template.Payload.ConversationTool != nil || template.Payload.Extension != nil || template.Payload.KnowledgeIndex != nil || template.Payload.AWSChange != nil ||
-		template.Payload.Workload != nil || template.Payload.CloudWorker != nil || template.Payload.ExecutionV2Run != nil {
+		template.Payload.ConversationTool != nil || template.Payload.Extension != nil || template.Payload.KnowledgeIndex != nil ||
+		template.Payload.Workload != nil || template.Payload.CloudWorker != nil {
 		return ErrInvalid
 	}
 	return nil

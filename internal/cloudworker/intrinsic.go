@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
@@ -60,11 +61,67 @@ type IntrinsicBudgetResolver interface {
 	ResolveCloudWorkerBudgetEvidence(context.Context, coreconversation.TurnLease) (*LocalBudgetEvidence, error)
 }
 
+// RetainedWorkerInventoryResolver projects a bounded, live, owner-scoped view
+// of persistent Workers into the model's current round. It is read-only and
+// never exposes lifecycle mutations.
+type RetainedWorkerInventoryResolver interface {
+	ResolveRetainedWorkerInventory(context.Context, string, uint64) (RetainedWorkerInventory, error)
+}
+
+type RetainedWorkerInventory struct {
+	ObservedAt time.Time                `json:"observed_at"`
+	AtCapacity bool                     `json:"at_capacity"`
+	Workers    []RetainedWorkerSnapshot `json:"workers"`
+}
+
+type RetainedWorkerSnapshot struct {
+	WorkerID     string                   `json:"worker_id"`
+	Availability string                   `json:"availability"`
+	EC2State     string                   `json:"ec2_state"`
+	WorkerPhase  string                   `json:"worker_phase"`
+	PublicIPv4   string                   `json:"public_ipv4,omitempty"`
+	Error        string                   `json:"error,omitempty"`
+	CurrentTask  *RetainedWorkerTask      `json:"current_task,omitempty"`
+	Server       *RetainedWorkerServer    `json:"server,omitempty"`
+	HourlyQuote  *RetainedWorkerQuote     `json:"hourly_quote,omitempty"`
+	Workloads    []RetainedWorkerWorkload `json:"workloads,omitempty"`
+}
+
+type RetainedWorkerTask struct {
+	ExecutionID string `json:"execution_id"`
+	Phase       string `json:"phase"`
+}
+
+type RetainedWorkerServer struct {
+	LastSeen time.Time `json:"last_seen"`
+	Load1    float64   `json:"load_1"`
+	Load5    float64   `json:"load_5"`
+	Load15   float64   `json:"load_15"`
+}
+
+type RetainedWorkerQuote struct {
+	Currency      string    `json:"currency"`
+	MicrosPerHour uint64    `json:"micros_per_hour"`
+	ObservedAt    time.Time `json:"observed_at"`
+	ExpiresAt     time.Time `json:"expires_at"`
+}
+
+type RetainedWorkerWorkload struct {
+	WorkloadID  string `json:"workload_id"`
+	Kind        string `json:"kind"`
+	Phase       string `json:"phase"`
+	ActiveState string `json:"active_state"`
+	Health      string `json:"health"`
+	Port        uint16 `json:"port,omitempty"`
+	Hostname    string `json:"hostname,omitempty"`
+}
+
 type ProposeIntrinsic struct {
 	service   *Service
 	owners    IntrinsicOwnerResolver
 	manifests IntrinsicManifestResolver
 	budgets   IntrinsicBudgetResolver
+	workers   RetainedWorkerInventoryResolver
 }
 
 func NewProposeIntrinsic(service *Service, owners IntrinsicOwnerResolver, manifests IntrinsicManifestResolver, budgets IntrinsicBudgetResolver) (*ProposeIntrinsic, error) {
@@ -72,6 +129,14 @@ func NewProposeIntrinsic(service *Service, owners IntrinsicOwnerResolver, manife
 		return nil, ErrInvalid
 	}
 	return &ProposeIntrinsic{service: service, owners: owners, manifests: manifests, budgets: budgets}, nil
+}
+
+func (p *ProposeIntrinsic) EnableRetainedWorkerInventory(resolver RetainedWorkerInventoryResolver) error {
+	if p == nil || resolver == nil {
+		return ErrInvalid
+	}
+	p.workers = resolver
+	return nil
 }
 
 type proposeIntrinsicArguments struct {
@@ -113,9 +178,18 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	if attachmentSchema := frozenTurnAttachmentSchema(bound.Turn); attachmentSchema != nil {
 		properties["attachment_ids"] = attachmentSchema
 	}
+	description := "Run work in a suitable retained execution environment, or propose a priced reusable environment when none is available. Use it for substantial project or shell execution, deployment, build, test, durable file delivery, long-running compute, and actual follow-up work in a retained environment. Do not call this tool only to inspect status; answer status questions from the live retained_worker_inventory below. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. Reuse needs no creation confirmation; new resources start only after the owner reviews and confirms the offer."
+	inventory := `{"status":"unavailable"}`
+	if p.workers != nil && strings.TrimSpace(bound.Turn.OwnerID) != "" && bound.Turn.AccountGeneration != 0 {
+		if current, inventoryErr := p.workers.ResolveRetainedWorkerInventory(ctx, bound.Turn.OwnerID, bound.Turn.AccountGeneration); inventoryErr == nil {
+			if raw, marshalErr := json.Marshal(current); marshalErr == nil && len(raw) <= 64<<10 {
+				inventory = string(raw)
+			}
+		}
+	}
 	tool := coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerProposeToolName,
-		Description: "Propose a priced reusable AWS Worker for a substantial project task that needs general project or shell execution, isolated execution, durable file delivery, tests, deployment work, or long-running compute that the local conversation runtime cannot provide. The Worker may be retained and reused after the task. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. This creates only an offer; AWS resources start only after the owner reviews and confirms it.",
+		Description: description + "\nretained_worker_inventory=" + inventory,
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

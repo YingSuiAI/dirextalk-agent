@@ -40,6 +40,17 @@ type intrinsicOwner struct {
 
 type intrinsicBudget struct{ evidence *LocalBudgetEvidence }
 
+type intrinsicWorkerInventory struct {
+	value RetainedWorkerInventory
+	owner string
+	gen   uint64
+}
+
+func (resolver *intrinsicWorkerInventory) ResolveRetainedWorkerInventory(_ context.Context, owner string, generation uint64) (RetainedWorkerInventory, error) {
+	resolver.owner, resolver.gen = owner, generation
+	return resolver.value, nil
+}
+
 func (r intrinsicBudget) ResolveCloudWorkerBudgetEvidence(context.Context, coreconversation.TurnLease) (*LocalBudgetEvidence, error) {
 	return r.evidence, nil
 }
@@ -113,8 +124,8 @@ func executeIntrinsic(t *testing.T, intrinsic *ProposeIntrinsic, lease coreconve
 	if err != nil || len(tools) != 1 || tools[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
 		t.Fatalf("intrinsic catalog: tools=%+v err=%v", tools, err)
 	}
-	if !strings.Contains(tools[0].Tool.Description, "priced reusable AWS Worker") ||
-		!strings.Contains(tools[0].Tool.Description, "retained and reused") ||
+	if !strings.Contains(tools[0].Tool.Description, "retained execution environment") ||
+		!strings.Contains(tools[0].Tool.Description, "Reuse needs no creation confirmation") ||
 		strings.Contains(tools[0].Tool.Description, "ephemeral") {
 		t.Fatalf("stale Worker lifecycle description: %q", tools[0].Tool.Description)
 	}
@@ -196,6 +207,27 @@ func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
 	}
 	if _, err = parseProposeIntrinsicArguments([]byte(`{"objective":"inspect","workspace_mode":"read_only"}`)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("empty read-only workspace accepted: %v", err)
+	}
+}
+
+func TestIntrinsicDescriptionIncludesLiveRetainedWorkerInventory(t *testing.T) {
+	intrinsic, _, lease := intrinsicFixture(t, "check the retained worker load", nil, nil)
+	resolver := &intrinsicWorkerInventory{value: RetainedWorkerInventory{ObservedAt: time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC), Workers: []RetainedWorkerSnapshot{{WorkerID: "worker-1", Availability: "busy", EC2State: "running", WorkerPhase: "busy", PublicIPv4: "203.0.113.8", CurrentTask: &RetainedWorkerTask{ExecutionID: "execution-1", Phase: "running"}, Server: &RetainedWorkerServer{Load1: 0.5, Load5: 0.25, Load15: 0.1}}}}}
+	if err := intrinsic.EnableRetainedWorkerInventory(resolver); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("tools=%+v err=%v", tools, err)
+	}
+	description := tools[0].Tool.Description
+	for _, expected := range []string{`"worker_id":"worker-1"`, `"availability":"busy"`, `"public_ipv4":"203.0.113.8"`, `"load_1":0.5`} {
+		if !strings.Contains(description, expected) {
+			t.Fatalf("inventory description missing %s: %s", expected, description)
+		}
+	}
+	if resolver.owner != lease.Turn.OwnerID || resolver.gen != lease.Turn.AccountGeneration {
+		t.Fatalf("inventory authority=%q/%d", resolver.owner, resolver.gen)
 	}
 }
 

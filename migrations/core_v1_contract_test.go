@@ -7,11 +7,11 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 17 {
-		t.Fatalf("CurrentVersion = %d, want 17", CurrentVersion)
+	if CurrentVersion != 18 {
+		t.Fatalf("CurrentVersion = %d, want 18", CurrentVersion)
 	}
 	entries := Entries()
-	wantEntries := []string{"000001_core_v1_fresh.up.sql", "000002_knowledge_search_provenance.up.sql", "000003_aws_credential_test_claims.up.sql", "000004_knowledge_pgvector.up.sql", "000005_cloud_worker_v1.up.sql", "000006_image_tools_v1.up.sql", "000007_unbounded_agent_rounds.up.sql", "000008_cloud_worker_progress_events.up.sql", "000009_static_site_releases.up.sql", "000010_builtin_skill_seeds.up.sql", "000011_managed_node_mcp_quotas.up.sql", "000012_managed_node_prepared_cleanup.up.sql", "000013_structured_memory_v2.up.sql", "000014_memory_controls.up.sql", "000015_remove_default_client_profile_alias.up.sql", "000016_remove_cloud_worker_result_message.up.sql", "000017_builtin_mcp_seeds.up.sql"}
+	wantEntries := []string{"000001_core_v1_fresh.up.sql", "000002_knowledge_search_provenance.up.sql", "000003_aws_credential_test_claims.up.sql", "000004_knowledge_pgvector.up.sql", "000005_cloud_worker_v1.up.sql", "000006_image_tools_v1.up.sql", "000007_unbounded_agent_rounds.up.sql", "000008_cloud_worker_progress_events.up.sql", "000009_static_site_releases.up.sql", "000010_builtin_skill_seeds.up.sql", "000011_managed_node_mcp_quotas.up.sql", "000012_managed_node_prepared_cleanup.up.sql", "000013_structured_memory_v2.up.sql", "000014_memory_controls.up.sql", "000015_remove_default_client_profile_alias.up.sql", "000016_remove_cloud_worker_result_message.up.sql", "000017_builtin_mcp_seeds.up.sql", "000018_remove_legacy_cloud_worker_schema.up.sql"}
 	if !reflect.DeepEqual(entries, wantEntries) {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
@@ -95,11 +95,6 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 	for _, needle := range []string{
 		"CREATE TABLE core_cloud_worker_plans",
 		"CREATE TABLE core_cloud_worker_executions",
-		"'execution_v2_run'",
-		"'execution_v2_run_create','execution_v2_run_retry','execution_v2_run_cancel'",
-		"DROP CONSTRAINT core_task_replays_operation_check",
-		"DROP CONSTRAINT core_execution_v2_records_resource_type_check",
-		"resource_type IN ('analysis','target','plan','deployment','run','stage','artifact','binding','dispatch_intent')",
 	} {
 		if !strings.Contains(string(cloudWorker), needle) {
 			t.Errorf("Cloud Worker migration missing %q", needle)
@@ -117,7 +112,7 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 			t.Errorf("baseline contains removed legacy schema %q", forbidden)
 		}
 	}
-	for _, needle := range []string{"core_workload_plans", "core_workloads", "core_workload_operations", "core_workload_events", "core_workload_idempotency", "target_identity_json", "actual_snapshot_json", "desired_plan_json", "dispatch_lease_until", "core_tasks_task_kind_chk", "CORE_RUNNER", "AWS_EC2_SSM", "AWS_ECS", "agent_capability_operations", "agent_capability_operation_events", "core_voice_sessions", "core_voice_turns", "core_voice_events", "core_voice_replays", "tombstone_expires_at", "core_execution_v2_records", "core_execution_v2_revisions", "core_execution_v2_replays", "core_execution_v2_events", "dispatch_intent", "core_execution_v2_secrets"} {
+	for _, needle := range []string{"core_workload_plans", "core_workloads", "core_workload_operations", "core_workload_events", "core_workload_idempotency", "target_identity_json", "actual_snapshot_json", "desired_plan_json", "dispatch_lease_until", "core_tasks_task_kind_chk", "CORE_RUNNER", "agent_capability_operations", "agent_capability_operation_events", "core_voice_sessions", "core_voice_turns", "core_voice_events", "core_voice_replays", "tombstone_expires_at"} {
 		if !strings.Contains(contents, needle) {
 			t.Errorf("fresh Core v1 baseline missing %q", needle)
 		}

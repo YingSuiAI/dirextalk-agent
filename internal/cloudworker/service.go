@@ -26,6 +26,12 @@ type WorkerReuseResolver interface {
 	ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeSpec) (ComputeSpec, bool, error)
 }
 
+// WorkerCapacityPreflighter performs the provider's exact read-only pool
+// count after reuse has failed, before pricing can create an unusable offer.
+type WorkerCapacityPreflighter interface {
+	CheckCreateWorkerCapacity(context.Context, string, uint64, AWSBinding, ComputeSpec) error
+}
+
 // ComputeSelector chooses an exact region-available ordinary on-demand shape
 // from model-estimated provider-neutral requirements and live AWS prices.
 type ComputeSelector interface {
@@ -103,7 +109,7 @@ type Defaults struct {
 }
 
 func (d Defaults) Validate() error {
-	if validateCompute(d.Compute) != nil || validateLimits(d.Limits) != nil ||
+	if (d.Compute != (ComputeSpec{}) && validateCompute(d.Compute) != nil) || validateLimits(d.Limits) != nil ||
 		d.QuoteTTL <= 0 || d.QuoteTTL > 24*time.Hour ||
 		d.QuoteAmountMicros < 0 || d.MaximumAuthorizedMicros < d.QuoteAmountMicros {
 		return ErrInvalid
@@ -118,6 +124,7 @@ type Service struct {
 	awsBindings AWSBindingResolver
 	now         func() time.Time
 	workerReuse WorkerReuseResolver
+	capacity    WorkerCapacityPreflighter
 	selector    ComputeSelector
 }
 
@@ -125,7 +132,12 @@ func (s *Service) EnablePersistentWorkerReuse(resolver WorkerReuseResolver) erro
 	if s == nil || resolver == nil {
 		return ErrInvalid
 	}
+	capacity, ok := resolver.(WorkerCapacityPreflighter)
+	if !ok {
+		return ErrInvalid
+	}
 	s.workerReuse = resolver
+	s.capacity = capacity
 	return nil
 }
 
@@ -257,6 +269,8 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		if validateLimits(limits) != nil {
 			return Offer{}, ErrInvalid
 		}
+	} else if validateCompute(compute) != nil {
+		return Offer{}, ErrInvalid
 	}
 	budgetEvidence := command.LocalBudgetEvidence
 	if budgetEvidence != nil {
@@ -307,6 +321,11 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	plan.PersistentWorkerReuse = reuse
 	if err := plan.sealAuthorizationBasis(); err != nil {
 		return Offer{}, err
+	}
+	if !reuse && s.workerReuse != nil {
+		if err = s.capacity.CheckCreateWorkerCapacity(ctx, plan.OwnerID, plan.AccountGeneration, plan.AWS, plan.Compute); err != nil {
+			return Offer{}, err
+		}
 	}
 	var quote Quote
 	if reuse {

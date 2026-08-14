@@ -24,8 +24,8 @@ func TestCredentialInputRedactionAndDigest(t *testing.T) {
 
 func TestCredentialIdentityBindsRevisionAndReplacementInvalidates(t *testing.T) {
 	r := NewMemoryRepository()
-	sts := &FakeSTSProvider{Identity: Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/test"}}
-	s := NewService(r, nil, nil, sts, nil, nil)
+	sts := &FakeSTSProvider{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/test"}
+	s := NewService(r, sts, nil)
 	view, err := s.SaveCredential(context.Background(), CredentialInput{Name: "prod", Region: "us-east-1", AccessKeyID: "a", SecretAccessKey: "b", IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
@@ -40,36 +40,5 @@ func TestCredentialIdentityBindsRevisionAndReplacementInvalidates(t *testing.T) 
 	}
 	if updated.AccountID != "" || updated.UserARN != "" {
 		t.Fatal("identity survived replacement")
-	}
-}
-
-func TestAtomicFullWorkflowUsesSingleProviderToken(t *testing.T) {
-	s, repo, provider, plan := workflowFixture(t)
-	requested, err := s.RequestChange(context.Background(), RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if external := s.confirmations.(*testConfirm); external.c.ConfirmationID != "" {
-		t.Fatal("request delegated confirmation side effect")
-	}
-	confirmed := confirmAWSMemory(t, repo, requested)
-	if err := s.coordinator.(*MemoryChangeCoordinator).SetTaskRunning(requested.Task.ID, 1, 1, confirmed.Task.Revision); err != nil {
-		t.Fatal(err)
-	}
-	task, _ := repo.GetTask(context.Background(), requested.Task.ID)
-	reservation, err := s.ConsumeChange(context.Background(), ConsumeChangeCommand{ChangeID: requested.Change.ID, ConfirmationID: requested.Confirmation.ConfirmationID, TaskID: requested.Task.ID, IdempotencyKey: uuid.NewString(), Attempt: 1, LeaseEpoch: 1, ExpectedChangeRevision: confirmed.Change.Revision, ExpectedConfirmationRevision: confirmed.Confirmation.Revision, ExpectedTaskRevision: task.Revision, Binding: requested.Confirmation.Binding})
-	if err != nil || !reservation.Active {
-		t.Fatalf("consume: %#v %v", reservation, err)
-	}
-	completed, err := s.ExecuteChange(context.Background(), requested.Confirmation.ConfirmationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if completed.Status != ChangeSucceeded || len(provider.Calls) < 2 {
-		t.Fatalf("completion=%#v calls=%v", completed, provider.Calls)
-	}
-	finalReservation, _ := repo.GetReservation(context.Background(), requested.Confirmation.ConfirmationID)
-	if finalReservation.Active {
-		t.Fatal("reservation not released")
 	}
 }

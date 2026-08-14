@@ -15,7 +15,6 @@ type PlanInput struct {
 	Summary, Artifact, Source   string
 	CommandSteps                []string
 	ImageDigest                 string
-	ImageURI                    string
 	TargetKind                  TargetKind
 	Target                      TargetSettings
 	NetworkGrants, SecretGrants []string
@@ -137,7 +136,7 @@ func (s *MemoryStore) CreatePlan(_ context.Context, in PlanInput) (Plan, error) 
 	if s == nil || !ValidUUID(in.IdempotencyKey) {
 		return Plan{}, ErrInvalid
 	}
-	p := Plan{ID: uuid.New().String(), Revision: 1, Summary: in.Summary, Artifact: in.Artifact, Source: in.Source, CommandSteps: in.CommandSteps, ImageDigest: in.ImageDigest, ImageURI: in.ImageURI, TargetKind: in.TargetKind, Target: in.Target, NetworkGrants: in.NetworkGrants, SecretGrants: in.SecretGrants, SecretGrantRefs: in.SecretGrantRefs, ResourceLimits: in.ResourceLimits, ExpiresAt: in.ExpiresAt.UTC(), CreatedAt: s.now().UTC()}
+	p := Plan{ID: uuid.New().String(), Revision: 1, Summary: in.Summary, Artifact: in.Artifact, Source: in.Source, CommandSteps: in.CommandSteps, ImageDigest: in.ImageDigest, TargetKind: in.TargetKind, Target: in.Target, NetworkGrants: in.NetworkGrants, SecretGrants: in.SecretGrants, SecretGrantRefs: in.SecretGrantRefs, ResourceLimits: in.ResourceLimits, ExpiresAt: in.ExpiresAt.UTC(), CreatedAt: s.now().UTC()}
 	n, e := p.Normalize()
 	if e != nil {
 		return Plan{}, e

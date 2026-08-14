@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
+	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"

@@ -164,10 +164,6 @@ func TestCoreTaskGenericPayloadPersistenceAndScheduleParity(t *testing.T) {
 	if got, err = tasks.GetTask(ctx, knowledge.ID); err != nil || got.Spec.Kind != coretask.TaskKindKnowledgeIndex {
 		t.Fatalf("knowledge roundtrip=%+v err=%v", got, err)
 	}
-	aws := create(coretask.TaskSpec{Kind: coretask.TaskKindAWSChange, Goal: "change", IdempotencyKey: uuid.NewString(), Payload: coretask.TaskPayload{AWSChange: &coretask.AWSChangeTaskPayload{ChangeID: uuid.NewString()}}})
-	if got, err = tasks.GetTask(ctx, aws.ID); err != nil || got.Spec.Kind != coretask.TaskKindAWSChange {
-		t.Fatalf("aws roundtrip=%+v err=%v", got, err)
-	}
 	// Generic retries preserve discriminator and payload.
 	create(coretask.TaskSpec{Goal: "retry agent", ModelProfileID: profile, IdempotencyKey: uuid.NewString(), AvailableAt: now.Add(-time.Minute)})
 	claimed, lease, err := tasks.ClaimNextDue(ctx, "generic-retry", now.Add(time.Second), time.Minute, 4)
@@ -201,14 +197,14 @@ func TestCoreTaskGenericPayloadPersistenceAndScheduleParity(t *testing.T) {
 
 	schedules := NewCoreScheduleStore(store)
 	scheduleID := uuid.NewString()
-	spec := coretask.TaskTemplate{Kind: coretask.TaskKindAWSChange, Goal: "scheduled change", Payload: coretask.TaskPayload{AWSChange: &coretask.AWSChangeTaskPayload{ChangeID: uuid.NewString()}}}
+	spec := coretask.TaskTemplate{Kind: coretask.TaskKindKnowledgeIndex, Goal: "scheduled index", ModelProfileID: embeddingProfile, Payload: coretask.TaskPayload{KnowledgeIndex: &coretask.KnowledgeIndexTaskPayload{SourceIDs: []string{"source-a"}, ExpectedSourceRevision: []uint64{2}, CollectionConfigDigest: strings.Repeat("b", 64)}}}
 	schedule := coretask.Schedule{ID: scheduleID, Name: "generic", Spec: spec, RunAt: ptrTime(now.Add(time.Minute)), Timezone: "UTC", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	digest, _ := coretask.CanonicalMutationDigest(schedule)
 	if _, err = schedules.CreateSchedule(ctx, coretask.CreateScheduleCommand{Schedule: schedule, Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: digest}}); err != nil {
 		t.Fatal(err)
 	}
 	_, _, scheduled, err := schedules.TriggerNow(ctx, coretask.TriggerScheduleCommand{ScheduleID: scheduleID, Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: digest}, At: now.Add(2 * time.Minute)})
-	if err != nil || scheduled.Spec.Kind != coretask.TaskKindAWSChange {
+	if err != nil || scheduled.Spec.Kind != coretask.TaskKindKnowledgeIndex {
 		t.Fatalf("scheduled parity=%+v err=%v", scheduled, err)
 	}
 }

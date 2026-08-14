@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 
+	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
-	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 )
 

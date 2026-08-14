@@ -407,6 +407,33 @@ func TestStartTurnPostsOnceAndResumesSSEAfterDisconnect(t *testing.T) {
 	}
 }
 
+func TestProductQueryRetriesOnlyReadActions(t *testing.T) {
+	counts := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var envelope map[string]any
+		_ = json.NewDecoder(request.Body).Decode(&envelope)
+		action, _ := envelope["action"].(string)
+		counts[action]++
+		if counts[action] == 1 {
+			writer.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(writer).Encode(map[string]any{"error": "temporary"})
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"ok": true})
+	}))
+	defer server.Close()
+	product, err := newHTTPProduct(server.URL, "owner-token", 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = product.Call(context.Background(), "agent.execution.v2.runs.get", map[string]any{}); err != nil || counts["agent.execution.v2.runs.get"] != 2 {
+		t.Fatalf("read retry = count %d, error %v", counts["agent.execution.v2.runs.get"], err)
+	}
+	if _, err = product.Call(context.Background(), "agent.core.confirmations.confirm", map[string]any{}); err == nil || counts["agent.core.confirmations.confirm"] != 1 {
+		t.Fatalf("write retry = count %d, error %v", counts["agent.core.confirmations.confirm"], err)
+	}
+}
+
 func TestStartTurnDoesNotReconnectTerminalSSE(t *testing.T) {
 	for _, test := range []struct {
 		name, event, want string

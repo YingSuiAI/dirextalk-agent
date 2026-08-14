@@ -37,13 +37,19 @@ func TestCommittedMigrationBytesRemainImmutable(t *testing.T) {
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	wantEntries := []string{"000001_core_v1_fresh.up.sql", "000002_knowledge_search_provenance.up.sql", "000003_aws_credential_test_claims.up.sql", "000004_knowledge_pgvector.up.sql", "000005_cloud_worker_v1.up.sql", "000006_image_tools_v1.up.sql", "000007_unbounded_agent_rounds.up.sql", "000008_cloud_worker_progress_events.up.sql", "000009_static_site_releases.up.sql", "000010_builtin_skill_seeds.up.sql", "000011_managed_node_mcp_quotas.up.sql", "000012_managed_node_prepared_cleanup.up.sql", "000013_structured_memory_v2.up.sql", "000014_memory_controls.up.sql", "000015_remove_default_client_profile_alias.up.sql", "000016_remove_cloud_worker_result_message.up.sql", "000017_builtin_mcp_seeds.up.sql"}
+	wantEntries := []string{"000001_core_v1_fresh.up.sql", "000002_knowledge_search_provenance.up.sql", "000003_aws_credential_test_claims.up.sql", "000004_knowledge_pgvector.up.sql", "000005_cloud_worker_v1.up.sql", "000006_image_tools_v1.up.sql", "000007_unbounded_agent_rounds.up.sql", "000008_cloud_worker_progress_events.up.sql", "000009_static_site_releases.up.sql", "000010_builtin_skill_seeds.up.sql", "000011_managed_node_mcp_quotas.up.sql", "000012_managed_node_prepared_cleanup.up.sql", "000013_structured_memory_v2.up.sql", "000014_memory_controls.up.sql", "000015_remove_default_client_profile_alias.up.sql", "000016_remove_cloud_worker_result_message.up.sql", "000017_builtin_mcp_seeds.up.sql", "000018_remove_legacy_cloud_worker_schema.up.sql"}
 	if !reflect.DeepEqual(entries, wantEntries) {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Cloud Worker migrations", entries)
 	}
 	builtinMCPs := Ordered()[16]
 	if builtinMCPs.Version != 17 || !bytes.Contains(builtinMCPs.Script, []byte("CREATE TABLE core_builtin_mcp_seeds")) {
 		t.Fatal("builtin MCP seed migration missing durable one-time fence")
+	}
+	legacyWorkerRemoval := Ordered()[17]
+	for _, table := range []string{"core_cloud_worker_artifacts", "core_cloud_worker_aws_ledger", "core_cloud_worker_sessions", "core_cloud_worker_resources", "core_execution_v2_records", "core_aws_plans"} {
+		if legacyWorkerRemoval.Version != 18 || !bytes.Contains(legacyWorkerRemoval.Script, []byte("DROP TABLE "+table)) {
+			t.Fatalf("legacy Worker removal migration missing %q", table)
+		}
 	}
 	migration := Ordered()[0]
 	if migration.Version != 1 {
@@ -150,7 +156,6 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 		"CREATE TABLE core_workload_plans",
 		"CREATE TABLE agent_capability_operations",
 		"CREATE TABLE core_voice_sessions",
-		"CREATE TABLE core_execution_v2_secrets",
 		"CREATE TABLE agent_account_deprovisions",
 		"CREATE TABLE agent_native_configs",
 		"CREATE TABLE core_web_search_configs",

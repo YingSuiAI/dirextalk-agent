@@ -118,13 +118,15 @@ func (m *twoRoundReadOnlyModel) Stream(ctx context.Context, request ModelRunRequ
 
 type readOnlyTurnStore struct {
 	*publicActiveTurnStore
-	events        []TurnEvent
-	dispatchState string
-	dispatch      ModelRunResult
-	failedCode    string
-	dispatched    map[string]bool
-	prepareCalls  int
-	prepared      ToolAttempt
+	events          []TurnEvent
+	dispatchState   string
+	dispatch        ModelRunResult
+	failedCode      string
+	commitErr       error
+	commitCompletes bool
+	dispatched      map[string]bool
+	prepareCalls    int
+	prepared        ToolAttempt
 }
 
 func (s *readOnlyTurnStore) RecordConversationToolCall(_ context.Context, _ TurnLease, call ToolCall) error {
@@ -208,7 +210,10 @@ func (s *readOnlyTurnStore) CompleteConversationToolRound(_ context.Context, _ T
 }
 
 func (s *readOnlyTurnStore) FailTurn(_ context.Context, _ TurnLease, code, _ string) (Turn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.failedCode = code
+	s.turn.State = TurnFailed
 	return s.turn, nil
 }
 
@@ -299,12 +304,15 @@ func (s *readOnlyTurnStore) MarkTurnModelUncertain(context.Context, TurnLease, s
 func (s *readOnlyTurnStore) CommitTurn(_ context.Context, _ TurnLease, response ChatResponse) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.commitErr != nil && !s.commitCompletes {
+		return s.turn, s.commitErr
+	}
 	s.turn.Revision++
 	s.turn.LastSequence++
 	s.events = append(s.events, TurnEvent{TurnID: s.turn.ID, Sequence: s.turn.LastSequence, Revision: s.turn.Revision, Kind: TurnEventDone, Response: &response, CreatedAt: time.Now().UTC()})
 	s.turn.State = TurnCompleted
 	s.turn.Response = &response
-	return s.turn, nil
+	return s.turn, s.commitErr
 }
 
 type extensionResolverFunc func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error)
@@ -701,6 +709,126 @@ func TestExecuteTurnDurableUsesStreamingPathBeyondLegacyTotalWindow(t *testing.T
 	}
 	if strings.Contains(terminal.Response.Message.Content, "intermediate-only delta") {
 		t.Fatal("streaming delta leaked into terminal response")
+	}
+}
+
+func TestExecuteTurnContinuesIntrinsicHistoryWithoutDuplicatePublicMessages(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	requestID := uuid.NewString()
+	turnID := uuid.NewString()
+	createdAt := time.Now().UTC().Add(-time.Minute)
+	expectedRevision := uint64(1)
+	turn := Turn{ID: turnID, RequestID: requestID, ConversationID: conversationID,
+		Prompt: "deploy the service", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
+		ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 3,
+		LastSequence: 3, ExpectedRevision: &expectedRevision, CreatedAt: createdAt}
+	taskID, planID := uuid.NewString(), uuid.NewString()
+	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
+	reference := Reference{Kind: "execution_plan", AccountGeneration: 1, TaskID: taskID,
+		PlanID: planID, PlanRevision: 1, Status: "waiting_user"}
+	result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"status":"succeeded"}`,
+		RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID},
+		References: []Reference{reference}, Summary: "Cloud Worker result returned"}
+	prefix := Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "earlier answer",
+		ModelProfileID: profile.ProfileID, CreatedAt: createdAt.Add(-time.Minute)}
+	durableUser := Message{ID: TurnUserMessageID(requestID), Role: RoleUser, Content: turn.Prompt,
+		ModelProfileID: profile.ProfileID, CreatedAt: createdAt}
+	quote := Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "Cloud Worker quote is ready for confirmation.",
+		ModelProfileID: profile.ProfileID, CreatedAt: createdAt.Add(time.Microsecond)}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 2,
+		Messages: []Message{prefix, durableUser, quote}, CreatedAt: createdAt.Add(-time.Hour), UpdatedAt: createdAt}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events: []TurnEvent{
+			{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: createdAt},
+			{TurnID: turn.ID, Sequence: 2, Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: createdAt.Add(time.Second)},
+			{TurnID: turn.ID, Sequence: 3, Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: createdAt.Add(2 * time.Second)},
+		},
+	}
+	model := &capturingTurnModel{}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.executeTurn(context.Background(), turn.ID)
+
+	if model.runs != 1 || len(model.request.Conversation.Messages) != 4 {
+		t.Fatalf("model runs=%d context=%+v", model.runs, model.request.Conversation.Messages)
+	}
+	promptCount := 0
+	for _, message := range model.request.Conversation.Messages {
+		if message.Content == turn.Prompt {
+			promptCount++
+		}
+		if message.Content == quote.Content {
+			t.Fatal("synthetic quote leaked into continuation model context")
+		}
+	}
+	if promptCount != 1 || model.request.Conversation.Messages[0].ID != prefix.ID ||
+		model.request.Conversation.Messages[1].Role != RoleUser ||
+		len(model.request.Conversation.Messages[2].ToolCalls) != 1 ||
+		len(model.request.Conversation.Messages[3].ToolResults) != 1 {
+		t.Fatalf("continuation context=%+v prompt_count=%d", model.request.Conversation.Messages, promptCount)
+	}
+	terminal, err := store.GetTurn(context.Background(), turn.ID)
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil {
+		t.Fatalf("terminal=%+v err=%v", terminal, err)
+	}
+	response := terminal.Response
+	if !reflect.DeepEqual(response.RelatedTaskIDs, []string{taskID}) ||
+		!reflect.DeepEqual(response.RelatedPlanIDs, []string{planID}) ||
+		!reflect.DeepEqual(response.References, []Reference{reference}) ||
+		!reflect.DeepEqual(response.ToolSummaries, []string{result.Summary}) ||
+		len(response.ToolResults) != 1 || response.ToolResults[0].CallID != call.ID {
+		t.Fatalf("terminal response metadata=%+v", response)
+	}
+	started := 0
+	for _, event := range store.events {
+		if event.Kind == TurnEventStarted {
+			started++
+		}
+	}
+	if started != 1 {
+		t.Fatalf("continuation started events=%d events=%+v", started, store.events)
+	}
+}
+
+func TestExecuteTurnCommitErrorUsesTerminalReadback(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		commitCompletes bool
+		wantState       TurnState
+		wantFailure     string
+	}{
+		{name: "still running fails explicitly", wantState: TurnFailed, wantFailure: "turn_commit_failed"},
+		{name: "ambiguous commit already completed", commitCompletes: true, wantState: TurnCompleted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			profile := testTurnSnapshot()
+			conversationID := uuid.NewString()
+			turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+				Prompt: "answer once", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
+				ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 1, CreatedAt: time.Now().UTC()}
+			base := newFakeStore()
+			base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: turn.CreatedAt, UpdatedAt: turn.CreatedAt}
+			store := &readOnlyTurnStore{
+				publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+				commitErr:             errors.New("commit outcome unknown"),
+				commitCompletes:       test.commitCompletes,
+			}
+			model := &capturingTurnModel{}
+			service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			service.executeTurn(context.Background(), turn.ID)
+			current, err := store.GetTurn(context.Background(), turn.ID)
+			if err != nil || current.State != test.wantState || store.failedCode != test.wantFailure {
+				t.Fatalf("turn=%+v failure=%q err=%v", current, store.failedCode, err)
+			}
+		})
 	}
 }
 

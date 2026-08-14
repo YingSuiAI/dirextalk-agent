@@ -15,15 +15,17 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) {
 	secret := "model-secret-that-must-not-be-rendered"
 	material, err := CompileRuntime(RuntimeRequest{
-		TaskID:       "task-001",
-		Objective:    "Deploy the repository and report actual server load.",
-		Architecture: "x86_64",
-		Workload:     WorkloadJob,
+		TaskID:            "task-001",
+		Objective:         "Deploy the repository and report actual server load.",
+		Architecture:      "x86_64",
+		Workload:          WorkloadJob,
+		MaxRuntimeSeconds: 3600,
 		Model: RuntimeModel{
 			Provider: "openai_compatible", BaseURL: "https://models.example/v1",
 			Name: "test-model", APIKey: secret, MaxOutputTokens: 16_384,
@@ -37,6 +39,7 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 		"releases/download/v0.84.1/pi-linux-x64.tar.gz",
 		piLinuxX64SHA256,
 		"sudo dnf -q -y install ca-certificates git golang gzip tar",
+		`readonly task_root="$worker_root/tasks/task-001"`,
 		`dirextalk-worker-runner`,
 		`server-status`,
 		`artifact_root="$worker_root/artifacts"`,
@@ -67,7 +70,7 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 
 func TestCompileRuntimeOmitsUnsetModelOutputLimit(t *testing.T) {
 	material, err := CompileRuntime(RuntimeRequest{
-		TaskID: "task-default-limit", Objective: "deploy the service", Architecture: "x86_64", Workload: WorkloadJob,
+		TaskID: "task-default-limit", Objective: "deploy the service", Architecture: "x86_64", Workload: WorkloadJob, MaxRuntimeSeconds: 3600,
 		Model: RuntimeModel{Provider: "openai_compatible", BaseURL: "https://openrouter.ai/api/v1",
 			Name: "deepseek/deepseek-v4-flash", APIKey: "secret"},
 	})
@@ -84,7 +87,7 @@ func TestCompileRuntimeOmitsUnsetModelOutputLimit(t *testing.T) {
 func TestCompileRuntimeTreatsObjectiveAsData(t *testing.T) {
 	objective := `deploy $(touch /tmp/not-executed) ; echo "done" && report`
 	material, err := CompileRuntime(RuntimeRequest{
-		TaskID: "task-002", Objective: objective, Architecture: "arm64", Workload: WorkloadService,
+		TaskID: "task-002", Objective: objective, Architecture: "arm64", Workload: WorkloadService, MaxRuntimeSeconds: 3600,
 		Service: &RuntimeServiceSpec{WorkloadID: "memory-api", Port: 8080, HealthPath: "/health"},
 		Model: RuntimeModel{Provider: "anthropic", BaseURL: "https://api.anthropic.com",
 			Name: "claude-test", APIKey: "secret", MaxOutputTokens: 4096},
@@ -112,7 +115,7 @@ func TestCompileRuntimeTreatsObjectiveAsData(t *testing.T) {
 }
 
 func TestCompileRuntimeRejectsIncompleteOrUnsupportedInputs(t *testing.T) {
-	valid := RuntimeRequest{TaskID: "task-003", Objective: "work", Architecture: "amd64", Workload: WorkloadJob, Model: RuntimeModel{
+	valid := RuntimeRequest{TaskID: "task-003", Objective: "work", Architecture: "amd64", Workload: WorkloadJob, MaxRuntimeSeconds: 3600, Model: RuntimeModel{
 		Provider: "gemini", BaseURL: "https://generativelanguage.googleapis.com/v1beta",
 		Name: "gemini-test", APIKey: "secret", MaxOutputTokens: 4096,
 	}}
@@ -137,7 +140,7 @@ func TestCompileRuntimeRejectsIncompleteOrUnsupportedInputs(t *testing.T) {
 
 func TestRuntimeProtocolCompilesResumableCommands(t *testing.T) {
 	material, err := CompileRuntime(RuntimeRequest{
-		TaskID: "task-004", Objective: "run a service", Architecture: "arm64", Workload: WorkloadService,
+		TaskID: "task-004", Objective: "run a service", Architecture: "arm64", Workload: WorkloadService, MaxRuntimeSeconds: 3600,
 		Service: &RuntimeServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health"},
 		Model:   RuntimeModel{Provider: "anthropic", BaseURL: "https://api.anthropic.com", Name: "claude", APIKey: "secret", MaxOutputTokens: 4096},
 	})
@@ -202,7 +205,7 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 	if err = os.MkdirAll(taskRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	spec, _ := json.Marshal(remoteTaskSpec{TaskID: taskID, Workload: WorkloadService, Model: "test",
+	spec, _ := json.Marshal(remoteTaskSpec{TaskID: taskID, Workload: WorkloadService, Model: "test", MaxRuntimeSeconds: 3600,
 		Service: &RuntimeServiceSpec{WorkloadID: "web", Port: uint16(port), HealthPath: "/health"}})
 	if err = os.WriteFile(filepath.Join(taskRoot, "spec.json"), spec, 0o600); err != nil {
 		t.Fatal(err)
@@ -229,6 +232,42 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 	if _, err = os.Stat(filepath.Join(taskRoot, "service.json")); !os.IsNotExist(err) {
 		t.Fatalf("duplicate service contract was required or created: %v", err)
 	}
+
+	jobID := "job-timeout"
+	jobRoot := filepath.Join(root, "tasks", jobID)
+	if err = os.MkdirAll(filepath.Join(jobRoot, "workspace"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	jobSpec, _ := json.Marshal(remoteTaskSpec{TaskID: jobID, Workload: WorkloadJob, Model: "test", MaxRuntimeSeconds: 1})
+	for name, body := range map[string][]byte{"spec.json": jobSpec, "objective.txt": []byte("wait")} {
+		if err = os.WriteFile(filepath.Join(jobRoot, name), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtimeRoot := filepath.Join(root, "runtime")
+	if err = os.MkdirAll(runtimeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(runtimeRoot, "pi"), []byte("#!/bin/sh\nsleep 5\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start := exec.Command(runner, "start", jobID)
+	start.Stdin = strings.NewReader(base64.StdEncoding.EncodeToString([]byte("secret")) + "\n")
+	if output, err = start.CombinedOutput(); err != nil {
+		t.Fatalf("start timeout job: %v: %s", err, output)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		output, err = exec.Command(runner, "status", jobID).CombinedOutput()
+		if err == nil && json.Unmarshal(output, &taskStatus) == nil && taskStatus.Phase == "failed" {
+			if taskStatus.ExitCode != 124 {
+				t.Fatalf("timeout exit code = %d, want 124", taskStatus.ExitCode)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timeout job did not terminate: %s, %v", output, err)
 }
 
 func TestEmbeddedRemoteRunnerUsesOnlyTaskScopedWorkspaceAndArtifacts(t *testing.T) {

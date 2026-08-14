@@ -109,7 +109,7 @@ func TestComposeCoreKnowledgeDisabledDoesNotCreateProductionFallback(t *testing.
 }
 
 func TestComposeCoreAWSDisabledDoesNotCreateProductionFallback(t *testing.T) {
-	composition, err := composeCoreAWS(config.Config{}, nil, nil)
+	composition, err := composeCoreAWS(config.Config{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,19 +120,18 @@ func TestComposeCoreAWSDisabledDoesNotCreateProductionFallback(t *testing.T) {
 
 func TestComposeCoreAWSEnabledFailsClosedWithoutDurableDependencies(t *testing.T) {
 	cfg := config.Config{CoreAWSEnabled: true}
-	if _, err := composeCoreAWS(cfg, nil, nil); err == nil {
+	if _, err := composeCoreAWS(cfg, nil); err == nil {
 		t.Fatal("enabled Core AWS accepted missing durable dependencies")
 	}
 }
 
-func TestComposeCoreAWSGraphEnabledBuildsRPCAndTaskHandlerWithFakes(t *testing.T) {
+func TestComposeCoreAWSGraphEnabledBuildsCredentialRPC(t *testing.T) {
 	repository := coreaws.NewMemoryRepository()
-	coordinator := coreaws.NewMemoryChangeCoordinator(repository, nil, nil, time.Now)
-	composition, err := composeCoreAWSGraph(config.Config{CoreAWSEnabled: true}, repository, coordinator, nil, nil, &coreaws.FakeSTSProvider{}, coreaws.NewFakeProvider(), time.Now)
+	composition, err := composeCoreAWSGraph(config.Config{CoreAWSEnabled: true}, repository, &coreaws.FakeSTSProvider{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if composition == nil || composition.service == nil || composition.taskHandler == nil {
+	if composition == nil || composition.service == nil || composition.domain == nil {
 		t.Fatalf("incomplete Core AWS composition: %#v", composition)
 	}
 }

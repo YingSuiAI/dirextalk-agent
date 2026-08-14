@@ -121,10 +121,6 @@ func serveCore(cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("initialize Web Search service: %w", err)
 	}
-	executionStore, err := coreexecutionv2.NewPostgresStore(store.Pool(), secretMasterKey)
-	if err != nil {
-		return fmt.Errorf("initialize execution v2 store: %w", err)
-	}
 	profiles, err := coremodel.NewService(store, coremodel.NewConnectionTester())
 	if err != nil {
 		return fmt.Errorf("initialize model profile service: %w", err)
@@ -235,7 +231,7 @@ func serveCore(cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("initialize Knowledge composition: %w", err)
 	}
-	awsComposition, err := composeCoreAWS(cfg, store, confirmationDomain)
+	awsComposition, err := composeCoreAWS(cfg, store)
 	if err != nil {
 		if knowledgeComposition != nil {
 			knowledgeComposition.Close()
@@ -270,29 +266,11 @@ func serveCore(cfg config.Config) error {
 		workloadService = workloadComposition.service
 		taskExecutor.SetWorkloadHandler(workloadComposition.taskHandler)
 	}
-	genericRunStore := postgres.NewCoreExecutionV2RunStore(store)
-	executionDeps := func() coreExecutionV2ComposeDeps {
-		if workloadComposition == nil {
-			return coreExecutionV2ComposeDeps{runLifecycle: genericRunStore, confirmationReader: genericRunStore}
-		}
-		return coreExecutionV2ComposeDeps{
-			credentialResolver:  workloadComposition.executionCredentialResolver,
-			credentialRevision:  workloadComposition.executionCredentialRevision,
-			inspector:           workloadComposition.executionInspector,
-			reservations:        workloadComposition.executionReservations,
-			workload:            workloadComposition.executionWorkload,
-			provisioner:         workloadComposition.executionProvisioner,
-			importTarget:        workloadComposition.executionImportTarget,
-			credentialReference: workloadComposition.executionCredentialReference,
-			probe:               workloadComposition.executionProbe,
-			runLifecycle:        genericRunStore,
-			confirmationReader:  genericRunStore,
-		}
-	}()
+	var executionPort coreexecutionv2.CloudWorkerExecutionPort
 	if cloudComposition != nil && cloudComposition.executionPort != nil {
-		executionDeps.cloudWorker = cloudComposition.executionPort
+		executionPort = cloudComposition.executionPort
 	}
-	executionComposition, err := composeCoreExecutionV2(cfg, executionStore, executionDeps)
+	executionComposition, err := composeCoreExecutionV2(executionPort)
 	if err != nil {
 		return fmt.Errorf("initialize execution v2 composition: %w", err)
 	}
@@ -302,11 +280,6 @@ func serveCore(cfg config.Config) error {
 	if extensionComposition != nil {
 		taskExecutor.SetToolDispatcher(extensionComposition.toolDispatcher)
 		taskExecutor.SetSkillInstructionResolver(extensionComposition.skillResolver)
-	}
-	if executionComposition != nil && executionComposition.domain.ActionReady("agent.execution.v2.runs.create") {
-		if err := taskExecutor.RegisterHandler(coretask.TaskKindExecutionV2Run, executionComposition.domain.GenericRunHandler()); err != nil {
-			return fmt.Errorf("register Execution V2 run task handler: %w", err)
-		}
 	}
 	if cloudComposition != nil && cloudComposition.taskHandler != nil {
 		if err := taskExecutor.RegisterHandler(coretask.TaskKindCloudWorker, cloudComposition.taskHandler); err != nil {
@@ -324,14 +297,6 @@ func serveCore(cfg config.Config) error {
 		if cleanupErr != nil {
 			knowledgeComposition.Close()
 			return fmt.Errorf("initial Knowledge stage cleanup: %w", cleanupErr)
-		}
-	}
-	if awsComposition != nil {
-		if err := taskExecutor.RegisterHandler(coretask.TaskKindAWSChange, awsComposition.taskHandler); err != nil {
-			if knowledgeComposition != nil {
-				knowledgeComposition.Close()
-			}
-			return fmt.Errorf("register Core AWS task handler: %w", err)
 		}
 	}
 	if extensionComposition != nil {

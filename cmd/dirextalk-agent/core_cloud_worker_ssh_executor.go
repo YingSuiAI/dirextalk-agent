@@ -11,11 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	workercap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/worker"
+	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
@@ -24,7 +26,6 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
-	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workspacearchive"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 )
@@ -149,7 +150,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		service = &sshworker.RuntimeServiceSpec{WorkloadID: request.Service.WorkloadID, Port: request.Service.Port, HealthPath: request.Service.HealthPath}
 	}
 	material, err := sshworker.CompileRuntime(sshworker.RuntimeRequest{TaskID: request.ExecutionID, Objective: request.Objective,
-		Architecture: request.Compute.Architecture, Workload: workload, Service: service,
+		Architecture: request.Compute.Architecture, Workload: workload, MaxRuntimeSeconds: request.Limits.MaxRuntimeSeconds, Service: service,
 		Model: workerRuntimeModel(request.ModelSnapshot)})
 	if err != nil {
 		return sshflow.Result{}, err
@@ -357,6 +358,14 @@ func (executor *sshWorkerExecutor) ResolveIdleWorker(ctx context.Context, ownerI
 		RootDeviceName: "/dev/xvda", VolumeGiB: uint64(worker.VolumeGiB), VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}, true, nil
 }
 
+func (executor *sshWorkerExecutor) CheckCreateWorkerCapacity(ctx context.Context, ownerID string, accountGeneration uint64, binding cloudworker.AWSBinding, _ cloudworker.ComputeSpec) error {
+	provider, identity, err := executor.provider(ctx, binding)
+	if err != nil {
+		return err
+	}
+	return provider.CheckCreateCapacity(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, identity)
+}
+
 func boundedWorkerSummary(value string) string {
 	value = strings.TrimSpace(value)
 	if len(value) <= 3000 {
@@ -428,6 +437,49 @@ func (executor *sshWorkerExecutor) ListWorkers(ctx context.Context, authority ss
 		result = append(result, workers...)
 	}
 	return result, nil
+}
+
+func (executor *sshWorkerExecutor) ResolveRetainedWorkerInventory(ctx context.Context, ownerID string, accountGeneration uint64) (cloudworker.RetainedWorkerInventory, error) {
+	statuses, err := executor.ListWorkers(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration})
+	if err != nil {
+		return cloudworker.RetainedWorkerInventory{}, err
+	}
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].Identity.WorkerID < statuses[j].Identity.WorkerID })
+	inventory := cloudworker.RetainedWorkerInventory{ObservedAt: time.Now().UTC(), AtCapacity: len(statuses) >= sshworker.MaxWorkers,
+		Workers: make([]cloudworker.RetainedWorkerSnapshot, 0, len(statuses))}
+	for _, status := range statuses {
+		worker := cloudworker.RetainedWorkerSnapshot{WorkerID: status.Identity.WorkerID, Availability: string(status.Availability),
+			EC2State: status.EC2State, WorkerPhase: string(status.WorkerPhase), PublicIPv4: status.PublicIP, Error: status.Error}
+		if status.CurrentExecutionID != "" {
+			worker.CurrentTask = &cloudworker.RetainedWorkerTask{ExecutionID: status.CurrentExecutionID, Phase: string(status.TaskPhase)}
+		}
+		if !status.Runner.LastSeen.IsZero() {
+			worker.Server = &cloudworker.RetainedWorkerServer{LastSeen: status.Runner.LastSeen.UTC(), Load1: status.Runner.Load1,
+				Load5: status.Runner.Load5, Load15: status.Runner.Load15}
+		}
+		if status.Quote.Currency != "" && !status.Quote.ExpiresAt.IsZero() {
+			worker.HourlyQuote = &cloudworker.RetainedWorkerQuote{Currency: status.Quote.Currency, MicrosPerHour: status.Quote.MicrosPerHour,
+				ObservedAt: status.Quote.ObservedAt.UTC(), ExpiresAt: status.Quote.ExpiresAt.UTC()}
+		}
+		if status.Availability == sshworker.WorkerAvailable {
+			workloads, workloadErr := executor.ListWorkerWorkloads(ctx, status)
+			if workloadErr != nil {
+				return cloudworker.RetainedWorkerInventory{}, workloadErr
+			}
+			sort.Slice(workloads, func(i, j int) bool { return workloads[i].WorkloadID < workloads[j].WorkloadID })
+			worker.Workloads = make([]cloudworker.RetainedWorkerWorkload, 0, len(workloads))
+			for _, workload := range workloads {
+				item := cloudworker.RetainedWorkerWorkload{WorkloadID: workload.WorkloadID, Kind: workload.Kind, Phase: workload.Phase,
+					ActiveState: workload.ActiveState, Health: workload.Health, Port: workload.Port}
+				if workload.Domain != nil {
+					item.Hostname = workload.Domain.Hostname
+				}
+				worker.Workloads = append(worker.Workloads, item)
+			}
+		}
+		inventory.Workers = append(inventory.Workers, worker)
+	}
+	return inventory, nil
 }
 
 func (executor *sshWorkerExecutor) ObserveWorker(ctx context.Context, authority sshworker.OwnerAuthority, identity sshworker.WorkerIdentity) (sshworker.WorkerStatus, error) {

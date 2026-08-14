@@ -18,8 +18,27 @@ import (
 	"github.com/google/uuid"
 )
 
+type countingAWSTestSTS struct {
+	identity coreaws.Identity
+	mu       sync.Mutex
+	calls    int
+}
+
+func (provider *countingAWSTestSTS) GetCallerIdentity(context.Context, coreaws.CredentialHandle) (coreaws.Identity, error) {
+	provider.mu.Lock()
+	provider.calls++
+	provider.mu.Unlock()
+	return provider.identity, nil
+}
+
+func (provider *countingAWSTestSTS) Calls() int {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	return provider.calls
+}
+
 func TestCoreAWSCapabilityUsesLowerSnakeRedactedCredentialDTO(t *testing.T) {
-	service := coreaws.NewService(coreaws.NewMemoryRepository(), nil, nil, nil, nil, nil)
+	service := coreaws.NewService(coreaws.NewMemoryRepository(), nil, nil)
 	capability := NewCoreAWSCapability(service)
 	permission := &capv1.PermissionContext{AuthenticatedOwnerId: "owner", AccountGeneration: 1, GrantedScopes: []string{"agent:aws:credentials:write"}}
 	ctx := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, permission)
@@ -45,7 +64,7 @@ func TestCoreAWSCapabilityUsesLowerSnakeRedactedCredentialDTO(t *testing.T) {
 }
 
 func TestCoreAWSCapabilityRejectsSecondActiveCredential(t *testing.T) {
-	service := coreaws.NewService(coreaws.NewMemoryRepository(), nil, nil, nil, nil, nil)
+	service := coreaws.NewService(coreaws.NewMemoryRepository(), nil, nil)
 	capability := &errorClassifyingCapability{inner: NewCoreAWSCapability(service)}
 	ctx := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, &capv1.PermissionContext{AuthenticatedOwnerId: "owner", AccountGeneration: 1})
 	request := func(key, name string) []byte {
@@ -66,9 +85,9 @@ func TestCoreAWSCapabilityTestCredentialIsDurablyIdempotent(t *testing.T) {
 	const firstKey = "22222222-2222-4222-8222-222222222222"
 	const concurrentKey = "33333333-3333-4333-8333-333333333333"
 	ctx := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, &capv1.PermissionContext{AuthenticatedOwnerId: "owner", AccountGeneration: 1, GrantedScopes: []string{"agent:aws:credentials:write"}})
-	sts := &coreaws.FakeSTSProvider{Identity: coreaws.Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/test", PrincipalID: "principal"}}
+	sts := &countingAWSTestSTS{identity: coreaws.Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/test", PrincipalID: "principal"}}
 	now := time.Date(2026, time.August, 6, 1, 2, 3, 0, time.UTC)
-	service := coreaws.NewService(coreaws.NewMemoryRepository(), nil, nil, sts, nil, func() time.Time { return now })
+	service := coreaws.NewService(coreaws.NewMemoryRepository(), sts, func() time.Time { return now })
 	if _, err := service.SaveCredential(ctx, coreaws.CredentialInput{ID: credentialID, Name: "prod", Region: "us-east-1", AccessKeyID: "access", SecretAccessKey: "secret", IdempotencyKey: "44444444-4444-4444-8444-444444444444"}); err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +101,8 @@ func TestCoreAWSCapabilityTestCredentialIsDurablyIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replayed neutral test: %v", err)
 	}
-	if !bytes.Equal(first, second) || sts.Calls != 1 {
-		t.Fatalf("replay=%s/%s sts_calls=%d", first, second, sts.Calls)
+	if !bytes.Equal(first, second) || sts.Calls() != 1 {
+		t.Fatalf("replay=%s/%s sts_calls=%d", first, second, sts.Calls())
 	}
 	if _, err := capability.HandleOperation(ctx, "test_credential", []byte(`{"credential_id":"`+credentialID+`","expected_revision":2,"idempotency_key":"`+firstKey+`"}`)); !errors.Is(err, coreaws.ErrIdempotencyConflict) {
 		t.Fatalf("changed binding error=%v, want idempotency conflict", err)
@@ -125,14 +144,14 @@ func TestCoreAWSCapabilityTestCredentialIsDurablyIdempotent(t *testing.T) {
 	if successes != len(errs) {
 		t.Fatalf("concurrent claim outcomes successes=%d want=%d", successes, len(errs))
 	}
-	if sts.Calls != 2 {
-		t.Fatalf("same-key concurrent provider calls=%d, want 2 total provider calls", sts.Calls)
+	if sts.Calls() != 2 {
+		t.Fatalf("same-key concurrent provider calls=%d, want 2 total provider calls", sts.Calls())
 	}
 }
 
 func TestCoreAWSCapabilityDescriptorBindsAWSInputSchemas(t *testing.T) {
 	descriptor := (&coreAWSCapability{}).Descriptor()
-	if descriptor.GetCapabilityId() != "agent.aws.v1" || len(descriptor.GetOperations()) < 10 {
+	if descriptor.GetCapabilityId() != "agent.aws.v1" || len(descriptor.GetOperations()) != 6 {
 		t.Fatalf("unexpected AWS descriptor: %+v", descriptor)
 	}
 	for _, op := range descriptor.GetOperations() {

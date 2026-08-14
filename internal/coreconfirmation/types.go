@@ -208,11 +208,7 @@ func (b Binding) normalized() (Binding, error) {
 		quote.SourceTime, quote.ExpiresAt = quote.SourceTime.UTC(), quote.ExpiresAt.UTC()
 		b.Quote = &quote
 	}
-	if b.OperationDomain == "execution_v2.run" {
-		if b.OwnerID == "" || b.AccountGeneration == 0 || cloudFields || !validateUUID(b.TargetID) {
-			return Binding{}, ErrInvalid
-		}
-	} else if b.OperationDomain == "extension.execute" {
+	if b.OperationDomain == "extension.execute" {
 		if b.OwnerID == "" || b.AccountGeneration == 0 {
 			return Binding{}, ErrInvalid
 		}

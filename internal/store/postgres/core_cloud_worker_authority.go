@@ -122,7 +122,7 @@ func (s *CloudWorkerStore) EventsForAuthority(ctx context.Context, owner string,
 	if historyTruncated {
 		effectiveAfter = truncatedThrough
 	}
-	rows, err := tx.Query(ctx, `SELECT event.kind,event.worker_progress_sequence,event.payload_json
+	rows, err := tx.Query(ctx, `SELECT event.kind,event.payload_json
 		FROM core_cloud_worker_events event
 		JOIN core_cloud_worker_executions execution ON execution.execution_id=event.execution_id
 		WHERE event.execution_id=$1 AND event.owner_id=$2 AND execution.owner_id=$2
@@ -136,13 +136,12 @@ func (s *CloudWorkerStore) EventsForAuthority(ctx context.Context, owner string,
 	next := effectiveAfter
 	for rows.Next() {
 		var kind string
-		var workerProgressSequence *uint64
 		var raw []byte
 		var event cloudworker.Event
-		if err = rows.Scan(&kind, &workerProgressSequence, &raw); err != nil || json.Unmarshal(raw, &event) != nil ||
+		if err = rows.Scan(&kind, &raw); err != nil || json.Unmarshal(raw, &event) != nil ||
 			event.ExecutionID != executionID || event.RunID != id || event.OwnerID != owner ||
 			event.AccountGeneration != accountGeneration || event.Sequence != next+1 || event.Type != kind ||
-			workerProgressSequence != nil || event.Type == "worker_progress" {
+			event.Type == "worker_progress" {
 			return nil, after, false, cloudworker.ErrConflict
 		}
 		result = append(result, event)

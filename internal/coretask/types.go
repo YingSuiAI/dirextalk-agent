@@ -34,11 +34,9 @@ const (
 	TaskKindAgent            TaskKind = "agent"
 	TaskKindExtension        TaskKind = "extension"
 	TaskKindKnowledgeIndex   TaskKind = "knowledge_index"
-	TaskKindAWSChange        TaskKind = "aws_change"
 	TaskKindWorkload         TaskKind = "workload"
 	TaskKindConversationTool TaskKind = "conversation_tool"
 	TaskKindCloudWorker      TaskKind = "cloud_worker"
-	TaskKindExecutionV2Run   TaskKind = "execution_v2_run"
 )
 
 // AgentTaskPayload is optional for direct Task creation and required for a
@@ -77,22 +75,6 @@ type CloudWorkerTaskPayload struct {
 	ConversationID    string `json:"conversation_id"`
 	QuoteDigest       string `json:"quote_digest"`
 	ExecutionDigest   string `json:"execution_digest"`
-}
-
-// ExecutionV2RunTaskPayload is the durable handoff for a generic (non Cloud
-// Worker) Execution V2 run. It contains only authenticated owner authority,
-// immutable record identities, and the approved plan digest. Provider
-// credentials and executable plan material remain behind typed runtime ports.
-type ExecutionV2RunTaskPayload struct {
-	OwnerID           string `json:"owner_id"`
-	AccountGeneration uint64 `json:"account_generation"`
-	RunID             string `json:"run_id"`
-	StageID           string `json:"stage_id"`
-	PlanID            string `json:"plan_id"`
-	PlanRevision      uint64 `json:"plan_revision"`
-	PlanDigest        string `json:"plan_digest"`
-	ConfirmationID    string `json:"confirmation_id"`
-	Operation         string `json:"operation"`
 }
 
 type ExtensionOperation string
@@ -160,20 +142,14 @@ type KnowledgeIndexTaskPayload struct {
 	CollectionConfigDigest string   `json:"collection_config_digest"`
 }
 
-type AWSChangeTaskPayload struct {
-	ChangeID string `json:"change_id"`
-}
-
 // TaskPayload is a closed union; exactly one branch must match Kind.
 type TaskPayload struct {
 	Agent            *AgentTaskPayload            `json:"agent,omitempty"`
 	ConversationTool *ConversationToolTaskPayload `json:"conversation_tool,omitempty"`
 	Extension        *ExtensionTaskPayload        `json:"extension,omitempty"`
 	KnowledgeIndex   *KnowledgeIndexTaskPayload   `json:"knowledge_index,omitempty"`
-	AWSChange        *AWSChangeTaskPayload        `json:"aws_change,omitempty"`
 	Workload         *WorkloadTaskPayload         `json:"workload,omitempty"`
 	CloudWorker      *CloudWorkerTaskPayload      `json:"cloud_worker,omitempty"`
-	ExecutionV2Run   *ExecutionV2RunTaskPayload   `json:"execution_v2_run,omitempty"`
 }
 
 var (
@@ -366,9 +342,6 @@ func normalizePayload(s *TaskSpec) error {
 	if s.Payload.KnowledgeIndex != nil {
 		count++
 	}
-	if s.Payload.AWSChange != nil {
-		count++
-	}
 	if s.Payload.Workload != nil {
 		count++
 	}
@@ -376,9 +349,6 @@ func normalizePayload(s *TaskSpec) error {
 		count++
 	}
 	if s.Payload.CloudWorker != nil {
-		count++
-	}
-	if s.Payload.ExecutionV2Run != nil {
 		count++
 	}
 	switch s.Kind {
@@ -461,11 +431,6 @@ func normalizePayload(s *TaskSpec) error {
 				return ErrInvalid
 			}
 		}
-	case TaskKindAWSChange:
-		if count != 1 || s.Payload.AWSChange == nil || !ValidUUID(strings.TrimSpace(s.Payload.AWSChange.ChangeID)) {
-			return ErrInvalid
-		}
-		s.Payload.AWSChange.ChangeID = strings.TrimSpace(s.Payload.AWSChange.ChangeID)
 	case TaskKindWorkload:
 		if count != 1 || s.Payload.Workload == nil {
 			return ErrInvalid
@@ -502,37 +467,10 @@ func normalizePayload(s *TaskSpec) error {
 		p.ConversationID = strings.TrimSpace(p.ConversationID)
 		p.QuoteDigest = strings.TrimSpace(p.QuoteDigest)
 		p.ExecutionDigest = strings.TrimSpace(p.ExecutionDigest)
-	case TaskKindExecutionV2Run:
-		if count != 1 || s.Payload.ExecutionV2Run == nil {
-			return ErrInvalid
-		}
-		p := s.Payload.ExecutionV2Run
-		p.OwnerID = strings.TrimSpace(p.OwnerID)
-		p.RunID = strings.TrimSpace(p.RunID)
-		p.StageID = strings.TrimSpace(p.StageID)
-		p.PlanID = strings.TrimSpace(p.PlanID)
-		p.PlanDigest = strings.TrimSpace(p.PlanDigest)
-		p.ConfirmationID = strings.TrimSpace(p.ConfirmationID)
-		p.Operation = strings.TrimSpace(p.Operation)
-		if p.OwnerID == "" || p.AccountGeneration == 0 || !ValidUUID(p.RunID) ||
-			!ValidUUID(p.StageID) || !ValidUUID(p.PlanID) || p.PlanRevision == 0 ||
-			!ValidDigest(p.PlanDigest) || !ValidUUID(p.ConfirmationID) ||
-			!validExecutionV2Operation(p.Operation) {
-			return ErrInvalid
-		}
 	default:
 		return ErrInvalid
 	}
 	return nil
-}
-
-func validExecutionV2Operation(value string) bool {
-	switch value {
-	case "execute", "deploy", "upgrade", "repair", "destroy", "rollback":
-		return true
-	default:
-		return false
-	}
 }
 
 func ValidDigest(value string) bool {
@@ -545,7 +483,7 @@ func ValidDigest(value string) bool {
 
 func validWorkloadTarget(value string) bool {
 	switch strings.TrimSpace(value) {
-	case "CORE_RUNNER", "AWS_EC2_SSM", "AWS_ECS":
+	case "CORE_RUNNER":
 		return true
 	default:
 		return false

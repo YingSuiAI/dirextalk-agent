@@ -51,7 +51,7 @@ func authorizeConfirmation(value Confirmation, authority Authority) error {
 		// Do not disclose the existence of another owner's confirmation.
 		return ErrNotFound
 	}
-	if value.Binding.OperationDomain == "cloud_worker.execute" || value.Binding.OperationDomain == "execution_v2.run" || value.Binding.OperationDomain == "extension.execute" {
+	if value.Binding.OperationDomain == "cloud_worker.execute" || value.Binding.OperationDomain == "extension.execute" {
 		// Durable execution authorization is account-generation fenced because
 		// an owner identifier may be recreated after deprovisioning. A missing
 		// owner/generation is stale authority, not permission for the new account.

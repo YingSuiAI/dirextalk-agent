@@ -1,9 +1,8 @@
 package agentcapability
 
 // The neutral agent.aws.v1 capability is the only public adapter for the
-// Agent-owned Core AWS graph.  It exposes the existing typed credential,
-// immutable-plan and confirmation/change read surfaces without returning
-// credential bytes or allowing arbitrary CloudFormation requests.
+// Agent-owned AWS credential store. It never returns credential bytes or
+// permits arbitrary provider calls.
 
 import (
 	"context"
@@ -13,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
-	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
@@ -28,20 +26,13 @@ func NewCoreAWSCapability(service *coreaws.Service) Capability {
 }
 
 func (c *coreAWSCapability) Descriptor() *capv1.CapabilityDescriptor {
-	d := descriptor("agent.aws.v1", "AWS Cloud Control", "Owner-scoped typed AWS credentials, immutable plans and confirmation-bound changes", []opSpec{
+	d := descriptor("agent.aws.v1", "AWS Credentials", "Owner-scoped AWS credentials and identity verification", []opSpec{
 		{"create_credential", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:aws:credentials:write"},
 		{"get_credential", capv1.OperationType_OPERATION_TYPE_READ, "agent:aws:credentials:read"},
 		{"list_credentials", capv1.OperationType_OPERATION_TYPE_READ, "agent:aws:credentials:read"},
 		{"update_credential", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:aws:credentials:write"},
 		{"delete_credential", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:aws:credentials:write"},
 		{"test_credential", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:aws:credentials:write"},
-		{"create_plan", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:aws:plans:write"},
-		{"get_plan", capv1.OperationType_OPERATION_TYPE_READ, "agent:aws:plans:read"},
-		{"list_plans", capv1.OperationType_OPERATION_TYPE_READ, "agent:aws:plans:read"},
-		{"quote_plan", capv1.OperationType_OPERATION_TYPE_READ, "agent:aws:plans:read"},
-		{"request_change", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:aws:changes:write"},
-		{"get_change", capv1.OperationType_OPERATION_TYPE_READ, "agent:aws:changes:read"},
-		{"list_changes", capv1.OperationType_OPERATION_TYPE_READ, "agent:aws:changes:read"},
 	})
 	for _, operation := range d.GetOperations() {
 		resultSchema := awsResultSchema(operation.GetOperationId())
@@ -176,81 +167,6 @@ func (c *coreAWSCapability) HandleOperation(ctx context.Context, operationID str
 		}
 		test, err := c.service.TestCredentialIdempotent(ctx, id, expected, key)
 		return marshalResult(awsCredentialTest(test), err)
-	case "create_plan":
-		key, err := requiredAWSUUID(in, "idempotency_key")
-		if err != nil {
-			return nil, err
-		}
-		credentialID, err := requiredAWSUUID(in, "credential_id")
-		if err != nil {
-			return nil, err
-		}
-		template, err := awsBytes(in, "template")
-		if err != nil {
-			return nil, err
-		}
-		op, ok := awsOperation(stringValue(in, "operation"))
-		if !ok {
-			return nil, coreaws.ErrInvalid
-		}
-		view, err := c.service.CreatePlan(ctx, coreaws.PlanInput{IdempotencyKey: key, CredentialID: credentialID, Region: stringValue(in, "region"), StackName: stringValue(in, "stack_name"), Operation: op, Template: template, Parameters: awsStringMap(in, "parameters"), Tags: awsStringMap(in, "tags"), Capabilities: awsStringSlice(in, "capabilities")})
-		return marshalResult(map[string]any{"plan": awsPlanView(view)}, err)
-	case "get_plan":
-		id, err := requiredAWSUUID(in, "plan_id")
-		if err != nil {
-			return nil, err
-		}
-		view, err := c.service.GetPlan(ctx, id)
-		return marshalResult(map[string]any{"plan": awsPlanView(view)}, err)
-	case "list_plans":
-		page, err := c.service.ListPlans(ctx, awsPageLimit(in), stringValue(in, "page_token"))
-		if err != nil {
-			return nil, err
-		}
-		items := make([]map[string]any, 0, len(page.Items))
-		for _, view := range page.Items {
-			items = append(items, awsPlanView(view))
-		}
-		return marshalResult(map[string]any{"plans": items, "next_page_token": page.NextPageToken}, nil)
-	case "quote_plan":
-		id, err := requiredAWSUUID(in, "plan_id")
-		if err != nil {
-			return nil, err
-		}
-		quote, err := c.service.Quote(ctx, id)
-		return marshalResult(map[string]any{"quote": awsQuoteView(quote)}, err)
-	case "request_change":
-		key, err := requiredAWSUUID(in, "idempotency_key")
-		if err != nil {
-			return nil, err
-		}
-		planID, err := requiredAWSUUID(in, "plan_id")
-		if err != nil {
-			return nil, err
-		}
-		result, err := c.service.RequestChange(ctx, coreaws.RequestChangeInput{PlanID: planID, IdempotencyKey: key})
-		return marshalResult(map[string]any{"change": awsChangeView(result.Change), "task_id": result.Task.ID, "confirmation": awsConfirmationView(result.Confirmation)}, err)
-	case "get_change":
-		id, err := requiredAWSUUID(in, "change_id")
-		if err != nil {
-			return nil, err
-		}
-		change, err := c.service.GetChange(ctx, id)
-		return marshalResult(map[string]any{"change": awsChangeView(change)}, err)
-	case "list_changes":
-		planID := stringValue(in, "plan_id")
-		if planID != "" && !coretask.ValidUUID(planID) {
-			return nil, coreaws.ErrInvalid
-		}
-		page, err := c.service.ListChanges(ctx, awsPageLimit(in), planID, stringValue(in, "page_token"))
-		if err != nil {
-			return nil, err
-		}
-		items := make([]map[string]any, 0, len(page.Items))
-		for _, change := range page.Items {
-			items = append(items, awsChangeView(change))
-		}
-		return marshalResult(map[string]any{"changes": items, "next_page_token": page.NextPageToken}, nil)
 	default:
 		return nil, coreaws.ErrInvalid
 	}
@@ -275,9 +191,6 @@ func awsFields(operation string) map[string]struct{} {
 		"get_credential":    {"credential_id"}, "list_credentials": {"page_size", "page_token"},
 		"update_credential": {"idempotency_key", "credential_id", "expected_revision", "name", "region", "access_key_id", "secret_access_key", "session_token"},
 		"delete_credential": {"idempotency_key", "credential_id", "expected_revision"}, "test_credential": {"credential_id", "expected_revision", "idempotency_key"},
-		"create_plan": {"idempotency_key", "credential_id", "region", "stack_name", "operation", "template", "parameters", "tags", "capabilities"},
-		"get_plan":    {"plan_id"}, "list_plans": {"page_size", "page_token"}, "quote_plan": {"plan_id"},
-		"request_change": {"idempotency_key", "plan_id"}, "get_change": {"change_id"}, "list_changes": {"page_size", "page_token", "plan_id"},
 	}
 	out := map[string]struct{}{}
 	for _, key := range values[operation] {
@@ -321,43 +234,6 @@ func awsPageLimit(in map[string]json.RawMessage) int {
 	return limit
 }
 
-func awsBytes(in map[string]json.RawMessage, key string) ([]byte, error) {
-	var value []byte
-	if json.Unmarshal(in[key], &value) != nil || len(value) == 0 || len(value) > 51200 {
-		return nil, coreaws.ErrInvalid
-	}
-	var document map[string]any
-	if !json.Valid(value) || json.Unmarshal(value, &document) != nil || document == nil {
-		return nil, coreaws.ErrInvalid
-	}
-	return value, nil
-}
-
-func awsStringMap(in map[string]json.RawMessage, key string) map[string]string {
-	var value map[string]string
-	_ = json.Unmarshal(in[key], &value)
-	return value
-}
-
-func awsStringSlice(in map[string]json.RawMessage, key string) []string {
-	var value []string
-	_ = json.Unmarshal(in[key], &value)
-	return value
-}
-
-func awsOperation(value string) (coreaws.Operation, bool) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "create":
-		return coreaws.OperationCreate, true
-	case "update":
-		return coreaws.OperationUpdate, true
-	case "delete":
-		return coreaws.OperationDelete, true
-	default:
-		return "", false
-	}
-}
-
 func awsCredentialView(value coreaws.CredentialView) map[string]any {
 	view := map[string]any{"credential_id": value.ID, "name": value.Name, "region": value.Region, "account_id": value.AccountID, "user_arn": value.UserARN, "access_key_configured": value.HasAccessKey, "secret_access_key_configured": value.HasSecretKey, "session_token_configured": value.HasSessionToken, "revision": value.Revision, "verified_revision": value.VerifiedRevision, "created_at": value.CreatedAt.UTC(), "updated_at": value.UpdatedAt.UTC()}
 	if !value.TestedAt.IsZero() {
@@ -368,28 +244,4 @@ func awsCredentialView(value coreaws.CredentialView) map[string]any {
 
 func awsCredentialTest(value coreaws.CredentialTest) map[string]any {
 	return map[string]any{"credential_id": value.CredentialID, "account_id": value.Identity.AccountID, "user_arn": value.Identity.UserARN, "principal_id": value.Identity.PrincipalID, "credential_revision": value.CredentialRevision, "tested_at": value.TestedAt.UTC()}
-}
-
-func awsPlanView(value coreaws.PlanView) map[string]any {
-	return map[string]any{"plan_id": value.ID, "credential_id": value.CredentialID, "region": value.Region, "stack_name": value.StackName, "operation": string(value.Operation), "template_sha256": value.TemplateSHA256, "parameters": value.Parameters, "tags": value.Tags, "capabilities": value.Capabilities, "revision": value.Revision, "created_at": value.CreatedAt.UTC()}
-}
-
-func awsQuoteView(value coreaws.Quote) map[string]any {
-	return map[string]any{"plan_id": value.PlanID, "operation": string(value.Operation), "region": value.Region, "stack_name": value.StackName, "resource_count": value.ResourceCount, "parameter_count": value.ParameterCount, "tag_count": value.TagCount, "estimated_monthly_usd": value.EstimatedMonthlyUSD, "summary": value.Summary, "plan_digest": value.PlanDigest}
-}
-
-func awsChangeView(value coreaws.Change) map[string]any {
-	return map[string]any{"change_id": value.ID, "plan_id": value.PlanID, "credential_id": value.CredentialID, "task_id": value.TaskID, "confirmation_id": value.ConfirmationID, "operation": string(value.Operation), "status": string(value.Status), "stage": string(value.Stage), "change_set_id": value.ChangeSetID, "provider_request_digest": value.ProviderRequestDigest, "revision": value.Revision, "error_code": value.ErrorCode, "error_summary": value.ErrorSummary, "created_at": value.CreatedAt.UTC(), "updated_at": value.UpdatedAt.UTC()}
-}
-
-func awsConfirmationView(value coreconfirmation.Confirmation) map[string]any {
-	return map[string]any{"confirmation_id": value.ConfirmationID, "task_id": value.TaskID, "state": string(value.State), "revision": value.Revision, "binding": awsBindingView(value.Binding), "created_at": value.CreatedAt.UTC(), "updated_at": value.UpdatedAt.UTC(), "expires_at": value.ExpiresAt.UTC(), "terminal_code": value.TerminalCode, "terminal_note": value.TerminalNote, "terminal_reason": value.TerminalReason}
-}
-
-func awsBindingView(value coreconfirmation.Binding) map[string]any {
-	grants := make([]map[string]any, 0, len(value.SecretGrants))
-	for _, grant := range value.SecretGrants {
-		grants = append(grants, map[string]any{"reference_id": grant.ReferenceID, "purpose": string(grant.Purpose), "binding_digest": string(grant.BindingDigest)})
-	}
-	return map[string]any{"operation_domain": value.OperationDomain, "target_id": value.TargetID, "target_revision": value.TargetRevision, "target_kind": value.TargetKind, "source_version": value.SourceVersion, "source_commit": value.SourceCommit, "content_digest": string(value.ContentDigest), "manifest_digest": string(value.ManifestDigest), "execution_digest": string(value.ExecutionDigest), "permission_digest": string(value.PermissionDigest), "parameter_digest": string(value.ParameterDigest), "network_digest": string(value.NetworkDigest), "secret_grant_digest": string(value.SecretGrantDigest), "selected_tool": value.SelectedTool, "selected_command": append([]string(nil), value.SelectedCommand...), "network_grants": append([]string(nil), value.NetworkGrants...), "secret_grants": grants}
 }

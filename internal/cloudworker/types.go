@@ -1,4 +1,4 @@
-// Package cloudworker owns the single ephemeral Pi Worker execution domain.
+// Package cloudworker owns the retained SSH Worker execution domain.
 // It deliberately keeps provider credentials, secret values and executable
 // command text out of durable plans, task payloads and public projections.
 package cloudworker

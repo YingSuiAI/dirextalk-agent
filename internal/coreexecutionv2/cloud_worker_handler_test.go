@@ -7,7 +7,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 )
 
 const (
@@ -15,6 +14,7 @@ const (
 	cloudPlanID     = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	cloudRunID      = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	cloudArtifactID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	owner           = "@owner:example.test"
 )
 
 type cloudWorkerPortFake struct {
@@ -96,19 +96,18 @@ func (f *cloudWorkerPortFake) DownloadArtifact(_ context.Context, request CloudW
 	return chunk, nil
 }
 
-func newCloudRoutingService(t *testing.T, port CloudWorkerExecutionPort) (*Service, *MemoryStore) {
+func newCloudRoutingService(t *testing.T, port CloudWorkerExecutionPort) *Service {
 	t.Helper()
-	store := NewMemoryStore()
-	service, err := NewService(Config{Store: store, CloudWorker: port, Now: func() time.Time { return time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC) }})
+	service, err := NewService(port)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return service, store
+	return service
 }
 
 func TestCloudWorkerRecordKindRoutesEveryPublicReadAndCancel(t *testing.T) {
 	port := &cloudWorkerPortFake{calls: map[string]int{}}
-	service, _ := newCloudRoutingService(t, port)
+	service := newCloudRoutingService(t, port)
 	authority := Authority{OwnerID: owner, AccountGeneration: cloudGeneration}
 	tests := []struct {
 		action string
@@ -136,30 +135,9 @@ func TestCloudWorkerRecordKindRoutesEveryPublicReadAndCancel(t *testing.T) {
 	}
 }
 
-func TestCloudWorkerRoutingNeverFallsBackToGenericStore(t *testing.T) {
-	port := &cloudWorkerPortFake{calls: map[string]int{}}
-	service, store := newCloudRoutingService(t, port)
-	now := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := store.Create(context.Background(), Record{OwnerID: owner, Kind: "plan", ID: cloudPlanID, Revision: 1, Status: "generic", Digest: "generic", Payload: map[string]any{"plan_id": cloudPlanID, "status": "generic"}, CreatedAt: now, UpdatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	generic, err := service.Handle(context.Background(), owner, "agent.execution.v2.plans.get", map[string]any{"plan_id": cloudPlanID})
-	if err != nil || generic["plan"].(map[string]any)["status"] != "generic" || port.calls["plans.get"] != 0 {
-		t.Fatalf("generic route value=%v err=%v calls=%d", generic, err, port.calls["plans.get"])
-	}
-	cloud, err := service.HandleWithAuthority(context.Background(), Authority{OwnerID: owner, AccountGeneration: cloudGeneration}, "agent.execution.v2.plans.get", map[string]any{"record_kind": RecordKindCloudWorker, "plan_id": cloudPlanID})
-	if err != nil || cloud["plan"].(map[string]any)["status"] != "waiting_user" || port.calls["plans.get"] != 1 {
-		t.Fatalf("cloud route value=%v err=%v calls=%d", cloud, err, port.calls["plans.get"])
-	}
-	service, _ = newCloudRoutingService(t, nil)
-	if _, err := service.HandleWithAuthority(context.Background(), Authority{OwnerID: owner, AccountGeneration: cloudGeneration}, "agent.execution.v2.plans.get", map[string]any{"record_kind": RecordKindCloudWorker, "plan_id": cloudPlanID}); !errors.Is(err, ErrMissingPort) {
-		t.Fatalf("missing cloud port err=%v", err)
-	}
-}
-
 func TestCloudWorkerRoutingRejectsInvalidKindAuthorityAndProviderDrift(t *testing.T) {
 	port := &cloudWorkerPortFake{calls: map[string]int{}}
-	service, _ := newCloudRoutingService(t, port)
+	service := newCloudRoutingService(t, port)
 	for _, kind := range []any{"", "legacy", 1} {
 		if _, err := service.HandleWithAuthority(context.Background(), Authority{OwnerID: owner, AccountGeneration: cloudGeneration}, "agent.execution.v2.plans.get", map[string]any{"record_kind": kind, "plan_id": cloudPlanID}); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("record_kind=%v err=%v", kind, err)
@@ -201,7 +179,7 @@ func TestValidateCloudWorkerEventsRejectsZeroSequenceOnTruncatedPage(t *testing.
 
 func TestCloudWorkerArtifactDownloadRejectsInvalidRangesBeforeProvider(t *testing.T) {
 	port := &cloudWorkerPortFake{calls: map[string]int{}}
-	service, _ := newCloudRoutingService(t, port)
+	service := newCloudRoutingService(t, port)
 	authority := Authority{OwnerID: owner, AccountGeneration: cloudGeneration}
 	tests := []struct {
 		name  string
@@ -244,7 +222,7 @@ func TestCloudWorkerArtifactDownloadRejectsUnsafeProviderChunk(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			port := &cloudWorkerPortFake{calls: map[string]int{}, mutateChunk: test.mutate}
-			service, _ := newCloudRoutingService(t, port)
+			service := newCloudRoutingService(t, port)
 			if _, err := service.HandleWithAuthority(context.Background(), authority, "agent.execution.v2.artifacts.download", map[string]any{
 				"record_kind": RecordKindCloudWorker, "artifact_id": cloudArtifactID,
 				"offset_bytes": uint64(0), "max_chunk_bytes": uint64(len("cloud-worker-chunk")),

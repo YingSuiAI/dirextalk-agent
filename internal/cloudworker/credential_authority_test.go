@@ -28,6 +28,20 @@ type proposalAWSBindingResolver struct {
 	calls   int
 }
 
+type capacityReuseResolver struct {
+	err   error
+	calls int
+}
+
+func (resolver *capacityReuseResolver) ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeSpec) (ComputeSpec, bool, error) {
+	return ComputeSpec{}, false, nil
+}
+
+func (resolver *capacityReuseResolver) CheckCreateWorkerCapacity(context.Context, string, uint64, AWSBinding, ComputeSpec) error {
+	resolver.calls++
+	return resolver.err
+}
+
 func (resolver *proposalAWSBindingResolver) ResolveCurrentAWSBinding(context.Context) (AWSBinding, error) {
 	resolver.calls++
 	return resolver.binding, resolver.err
@@ -94,6 +108,28 @@ func TestServiceProposalFailsClosedWhenCredentialAuthorityIsStale(t *testing.T) 
 	}
 	if resolver.calls != 1 || len(store.commands) != 0 {
 		t.Fatalf("stale credential authority persisted an offer: calls=%d commands=%d", resolver.calls, len(store.commands))
+	}
+}
+
+func TestServiceChecksWorkerCapacityBeforeQuote(t *testing.T) {
+	now := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	defaults := intrinsicDefaults(now)
+	store := &intrinsicStore{}
+	quoter := &limitRecordingQuoter{base: FakeQuoter{AmountMicros: 1000, MaximumAuthorizedMicros: 2000, TTL: 5 * time.Minute, Now: func() time.Time { return now }}}
+	service, err := NewServiceWithAWSBindingResolver(store, defaults, quoter, &proposalAWSBindingResolver{binding: defaults.AWS}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	capacityErr := errors.New("worker pool is full")
+	reuse := &capacityReuseResolver{err: capacityErr}
+	if err = service.EnablePersistentWorkerReuse(reuse); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Propose(context.Background(), credentialProposalCommand()); !errors.Is(err, capacityErr) {
+		t.Fatalf("proposal error=%v", err)
+	}
+	if reuse.calls != 1 || quoter.last.OwnerID != "" || len(store.commands) != 0 {
+		t.Fatalf("capacity failure crossed quote/store boundary: calls=%d quote=%+v offers=%d", reuse.calls, quoter.last, len(store.commands))
 	}
 }
 

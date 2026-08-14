@@ -7,6 +7,7 @@ const remoteRunnerSource = `package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,7 @@ type taskSpec struct {
 	TaskID string ` + "`json:\"task_id\"`" + `
 	Workload string ` + "`json:\"workload\"`" + `
 	Model string ` + "`json:\"model\"`" + `
+	MaxRuntimeSeconds uint64 ` + "`json:\"max_runtime_seconds\"`" + `
 	Service *serviceSpec ` + "`json:\"service,omitempty\"`" + `
 }
 
@@ -114,14 +116,18 @@ func run(taskID string) error {
 		prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits. It must listen on 0.0.0.0 port " + strconv.Itoa(int(spec.Service.Port)) + " and return HTTP success at " + spec.Service.HealthPath + "."
 	}
 	arguments := []string{"--mode", "text", "--print", "--no-session", "--provider", "dirextalk-worker", "--model", spec.Model, "--thinking", "medium", "--tools", "read,bash,edit,write,grep,find,ls", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt}
-	command := exec.Command(filepath.Join(root, "runtime", "pi"), arguments...)
+	runContext, cancel := context.WithTimeout(context.Background(), time.Duration(spec.MaxRuntimeSeconds)*time.Second); defer cancel()
+	command := exec.CommandContext(runContext, filepath.Join(root, "runtime", "pi"), arguments...)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error { if command.Process == nil { return os.ErrProcessDone }; return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
 	objective, err := os.Open(taskPath(taskID, "objective.txt")); if err != nil { return finish(taskID, current, 1, err) }
 	defer objective.Close()
 	command.Dir = workspaceRoot; command.Stdin = objective
 	command.Stdout = io.MultiWriter(os.Stdout, report); command.Stderr = os.Stderr
 	command.Env = append(os.Environ(), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb")
 	err = command.Run(); code := 0
-	if err != nil { code = 1; var exit *exec.ExitError; if errors.As(err, &exit) { code = exit.ExitCode() } }
+	if errors.Is(runContext.Err(), context.DeadlineExceeded) { code, err = 124, errors.New("maximum runtime exceeded")
+	} else if err != nil { code = 1; var exit *exec.ExitError; if errors.As(err, &exit) { code = exit.ExitCode() } }
 	if err == nil && spec.Workload == "service" { err = verifyService(spec); if err != nil { code = 1 } }
 	return finish(taskID, current, code, err)
 }
@@ -190,7 +196,7 @@ func serverStatus() error {
 func memorySummary(body string) map[string]string { result := map[string]string{}; for _, line := range strings.Split(body, "\n") { fields := strings.Fields(line); if len(fields) < 2 { continue }; key := strings.TrimSuffix(fields[0], ":"); if key == "MemTotal" || key == "MemAvailable" { result[key] = strings.Join(fields[1:], " ") } }; return result }
 func taskPath(taskID, name string) string { return filepath.Join(root, "tasks", taskID, name) }
 func requireDirectory(path string) error { info, err := os.Lstat(path); if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 { return errors.New("task workspace unavailable") }; return nil }
-func loadSpec(taskID string) (taskSpec, error) { var value taskSpec; body, err := os.ReadFile(taskPath(taskID, "spec.json")); if err == nil { err = json.Unmarshal(body, &value) }; if err != nil || value.TaskID != taskID || (value.Workload != "job" && value.Workload != "service") || (value.Workload == "job" && value.Service != nil) || (value.Workload == "service" && value.Service == nil) { return taskSpec{}, errors.New("invalid task") }; return value, nil }
+func loadSpec(taskID string) (taskSpec, error) { var value taskSpec; body, err := os.ReadFile(taskPath(taskID, "spec.json")); if err == nil { err = json.Unmarshal(body, &value) }; if err != nil || value.TaskID != taskID || value.MaxRuntimeSeconds == 0 || value.MaxRuntimeSeconds > 24*60*60 || (value.Workload != "job" && value.Workload != "service") || (value.Workload == "job" && value.Service != nil) || (value.Workload == "service" && value.Service == nil) { return taskSpec{}, errors.New("invalid task") }; return value, nil }
 func loadStatus(taskID string) (taskStatus, error) { var value taskStatus; body, err := os.ReadFile(taskPath(taskID, "status.json")); if err == nil { err = json.Unmarshal(body, &value) }; return value, err }
 func saveStatus(taskID string, value taskStatus) error { body, err := json.Marshal(value); if err != nil { return err }; temporary := taskPath(taskID, "status.tmp"); if err = os.WriteFile(temporary, body, 0600); err != nil { return err }; return os.Rename(temporary, taskPath(taskID, "status.json")) }
 func alive(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }

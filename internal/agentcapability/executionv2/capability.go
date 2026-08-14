@@ -33,13 +33,14 @@ func (c *Capability) Service() *coreexecutionv2.Service {
 }
 
 var operationActions = []struct{ action, operation string }{
-	{"agent.execution.v2.projects.analyze", "projects_analyze"}, {"agent.execution.v2.analyses.get", "analyses_get"},
-	{"agent.execution.v2.targets.list", "targets_list"}, {"agent.execution.v2.targets.get", "targets_get"}, {"agent.execution.v2.targets.import", "targets_import"}, {"agent.execution.v2.targets.reserve", "targets_reserve"}, {"agent.execution.v2.targets.observe", "targets_observe"},
-	{"agent.execution.v2.plans.create", "plans_create"}, {"agent.execution.v2.plans.revise", "plans_revise"}, {"agent.execution.v2.plans.get", "plans_get"}, {"agent.execution.v2.plans.list", "plans_list"},
-	{"agent.execution.v2.deployments.list", "deployments_list"}, {"agent.execution.v2.deployments.get", "deployments_get"}, {"agent.execution.v2.deployments.events", "deployments_events"},
-	{"agent.execution.v2.runs.create", "runs_create"}, {"agent.execution.v2.runs.get", "runs_get"}, {"agent.execution.v2.runs.list", "runs_list"}, {"agent.execution.v2.runs.cancel", "runs_cancel"}, {"agent.execution.v2.runs.retry", "runs_retry"}, {"agent.execution.v2.runs.events", "runs_events"},
-	{"agent.execution.v2.artifacts.get", "artifacts_get"}, {"agent.execution.v2.artifacts.download", "artifacts_download"}, {"agent.execution.v2.service_bindings.list", "service_bindings_list"}, {"agent.execution.v2.service_bindings.get", "service_bindings_get"}, {"agent.execution.v2.service_bindings.invoke", "service_bindings_invoke"},
-	{"agent.execution.v2.secrets.create", "secrets_create"}, {"agent.execution.v2.secrets.get", "secrets_get"}, {"agent.execution.v2.secrets.list", "secrets_list"}, {"agent.execution.v2.secrets.revoke", "secrets_revoke"},
+	{"agent.execution.v2.plans.get", "plans_get"},
+	{"agent.execution.v2.plans.list", "plans_list"},
+	{"agent.execution.v2.runs.get", "runs_get"},
+	{"agent.execution.v2.runs.list", "runs_list"},
+	{"agent.execution.v2.runs.cancel", "runs_cancel"},
+	{"agent.execution.v2.runs.events", "runs_events"},
+	{"agent.execution.v2.artifacts.get", "artifacts_get"},
+	{"agent.execution.v2.artifacts.download", "artifacts_download"},
 }
 
 func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
@@ -47,15 +48,9 @@ func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 	reason := ""
 	if c != nil && c.service != nil {
 		reason = c.service.ReadinessReason()
-		if ready {
-			reason = "configured; exact AWS readiness probe is deferred until the first explicit provider action"
-		}
 	}
-	descriptor := &capv1.CapabilityDescriptor{CapabilityId: coreexecutionv2.CapabilityID, SemanticVersion: coreexecutionv2.SemanticVersion, ProtocolVersion: 1, DisplayName: "Execution Plan v2", Description: "Agent-owned immutable analysis, planning, deployment and AWS execution control", Readiness: ready, ReadinessReason: reason}
+	descriptor := &capv1.CapabilityDescriptor{CapabilityId: coreexecutionv2.CapabilityID, SemanticVersion: coreexecutionv2.SemanticVersion, ProtocolVersion: 1, DisplayName: "Cloud Worker Execution", Description: "Agent-owned Cloud Worker plans, runs, events and artifacts", Readiness: ready, ReadinessReason: reason}
 	for _, item := range operationActions {
-		// The neutral catalog may be composed as Cloud-only, Generic-only, or
-		// both. Advertise only operations whose exact route is ready; a known
-		// but unconfigured mutation must never appear callable in the catalog.
 		if !ready || !c.service.ActionReady(item.action) {
 			continue
 		}
@@ -75,20 +70,9 @@ func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 
 func inputSchema(action string) string {
 	fields := map[string][]string{
-		"agent.execution.v2.projects.analyze": {"project_id", "source", "idempotency_key"},
-		"agent.execution.v2.analyses.get":     {"analysis_id"},
-		"agent.execution.v2.targets.list":     {"page_size", "page_token"},
-		"agent.execution.v2.targets.get":      {"target_id", "revision"},
-		"agent.execution.v2.targets.import":   {"credential_id", "credential_revision", "instance_id", "idempotency_key"},
-		"agent.execution.v2.targets.reserve":  {"credential_id", "credential_revision", "instance_type", "volume_gib", "idempotency_key"},
-		"agent.execution.v2.targets.observe":  {"target_id", "target_revision", "idempotency_key"},
-		"agent.execution.v2.plans.create":     {"project_id", "analysis_id", "intent", "recipe_id", "target_id", "target_revision", "purpose", "ai_configuration", "idempotency_key"},
-		"agent.execution.v2.plans.revise":     {"plan_id", "intent", "recipe_id", "target_id", "target_revision", "purpose", "ai_configuration", "idempotency_key", "expected_revision"},
-		"agent.execution.v2.plans.get":        {"record_kind", "plan_id", "revision"}, "agent.execution.v2.plans.list": {"record_kind", "page_size", "page_token"},
-		"agent.execution.v2.deployments.list": {"project_id", "page_size", "page_token"}, "agent.execution.v2.deployments.get": {"deployment_id"}, "agent.execution.v2.deployments.events": {"deployment_id", "after_sequence", "limit"},
-		"agent.execution.v2.runs.create": {"plan_id", "plan_revision", "operation", "trigger_kind", "rollback_of_run_id", "idempotency_key"}, "agent.execution.v2.runs.get": {"record_kind", "run_id"}, "agent.execution.v2.runs.list": {"record_kind", "project_id", "deployment_id", "page_size", "page_token"}, "agent.execution.v2.runs.cancel": {"record_kind", "run_id", "idempotency_key", "expected_revision"}, "agent.execution.v2.runs.retry": {"run_id", "idempotency_key", "expected_revision"}, "agent.execution.v2.runs.events": {"record_kind", "run_id", "after_sequence", "limit"},
-		"agent.execution.v2.artifacts.get": {"record_kind", "artifact_id"}, "agent.execution.v2.artifacts.download": {"record_kind", "artifact_id", "offset_bytes", "max_chunk_bytes"}, "agent.execution.v2.service_bindings.list": {"project_id", "page_size", "page_token"}, "agent.execution.v2.service_bindings.get": {"binding_id"}, "agent.execution.v2.service_bindings.invoke": {"binding_id", "operation", "idempotency_key", "expected_revision", "input"},
-		"agent.execution.v2.secrets.create": {"provider", "purpose", "value", "idempotency_key"}, "agent.execution.v2.secrets.get": {"secret_ref", "revision"}, "agent.execution.v2.secrets.list": {"page_size", "page_token"}, "agent.execution.v2.secrets.revoke": {"secret_ref", "expected_revision", "idempotency_key"},
+		"agent.execution.v2.plans.get": {"record_kind", "plan_id", "revision"}, "agent.execution.v2.plans.list": {"record_kind", "page_size", "page_token"},
+		"agent.execution.v2.runs.get": {"record_kind", "run_id"}, "agent.execution.v2.runs.list": {"record_kind", "page_size", "page_token"}, "agent.execution.v2.runs.cancel": {"record_kind", "run_id", "idempotency_key", "expected_revision"}, "agent.execution.v2.runs.events": {"record_kind", "run_id", "after_sequence", "limit"},
+		"agent.execution.v2.artifacts.get": {"record_kind", "artifact_id"}, "agent.execution.v2.artifacts.download": {"record_kind", "artifact_id", "offset_bytes", "max_chunk_bytes"},
 	}
 	properties := map[string]any{}
 	for _, field := range fields[action] {
@@ -97,9 +81,7 @@ func inputSchema(action string) string {
 	if _, ok := properties["record_kind"]; ok {
 		properties["record_kind"] = map[string]any{"enum": []string{coreexecutionv2.RecordKindCloudWorker}, "type": "string"}
 	}
-	// Numeric and object fields are represented explicitly so generic clients
-	// can construct requests without relying on the implementation decoder.
-	for _, field := range []string{"page_size", "revision", "credential_revision", "volume_gib", "target_revision", "expected_revision", "plan_revision", "after_sequence", "limit", "offset_bytes", "max_chunk_bytes"} {
+	for _, field := range []string{"page_size", "revision", "expected_revision", "after_sequence", "limit", "offset_bytes", "max_chunk_bytes"} {
 		if _, ok := properties[field]; ok {
 			properties[field] = map[string]string{"type": "integer"}
 		}
@@ -110,17 +92,10 @@ func inputSchema(action string) string {
 	if _, ok := properties["max_chunk_bytes"]; ok {
 		properties["max_chunk_bytes"] = map[string]any{"type": "integer", "minimum": 1, "maximum": coreexecutionv2.MaxCloudWorkerArtifactDownloadChunkBytes}
 	}
-	for _, field := range []string{"source", "ai_configuration", "input"} {
-		if _, ok := properties[field]; ok {
-			properties[field] = map[string]string{"type": "object"}
-		}
-	}
-	if _, ok := properties["states"]; ok {
-		properties["states"] = map[string]string{"type": "array"}
-	}
 	required := map[string][]string{
-		"agent.execution.v2.projects.analyze": {"project_id", "source", "idempotency_key"}, "agent.execution.v2.analyses.get": {"analysis_id"}, "agent.execution.v2.targets.get": {"target_id"}, "agent.execution.v2.targets.import": {"credential_id", "credential_revision", "instance_id", "idempotency_key"}, "agent.execution.v2.targets.reserve": {"credential_id", "credential_revision", "instance_type", "volume_gib", "idempotency_key"}, "agent.execution.v2.targets.observe": {"target_id", "target_revision", "idempotency_key"},
-		"agent.execution.v2.plans.create": {"project_id", "analysis_id", "intent", "recipe_id", "target_id", "target_revision", "purpose", "idempotency_key"}, "agent.execution.v2.plans.revise": {"plan_id", "intent", "recipe_id", "target_id", "target_revision", "purpose", "idempotency_key", "expected_revision"}, "agent.execution.v2.plans.get": {"plan_id"}, "agent.execution.v2.deployments.get": {"deployment_id"}, "agent.execution.v2.deployments.events": {"deployment_id"}, "agent.execution.v2.runs.create": {"plan_id", "plan_revision", "operation", "idempotency_key"}, "agent.execution.v2.runs.get": {"run_id"}, "agent.execution.v2.runs.cancel": {"run_id", "idempotency_key", "expected_revision"}, "agent.execution.v2.runs.retry": {"run_id", "idempotency_key", "expected_revision"}, "agent.execution.v2.runs.events": {"run_id"}, "agent.execution.v2.artifacts.get": {"artifact_id"}, "agent.execution.v2.artifacts.download": {"record_kind", "artifact_id", "offset_bytes", "max_chunk_bytes"}, "agent.execution.v2.service_bindings.get": {"binding_id"}, "agent.execution.v2.service_bindings.invoke": {"binding_id", "operation", "idempotency_key", "expected_revision", "input"}, "agent.execution.v2.secrets.create": {"provider", "purpose", "value", "idempotency_key"}, "agent.execution.v2.secrets.get": {"secret_ref"}, "agent.execution.v2.secrets.revoke": {"secret_ref", "expected_revision", "idempotency_key"},
+		"agent.execution.v2.plans.get": {"record_kind", "plan_id"}, "agent.execution.v2.plans.list": {"record_kind"},
+		"agent.execution.v2.runs.get": {"record_kind", "run_id"}, "agent.execution.v2.runs.list": {"record_kind"}, "agent.execution.v2.runs.cancel": {"record_kind", "run_id", "idempotency_key", "expected_revision"}, "agent.execution.v2.runs.events": {"record_kind", "run_id"},
+		"agent.execution.v2.artifacts.get": {"record_kind", "artifact_id"}, "agent.execution.v2.artifacts.download": {"record_kind", "artifact_id", "offset_bytes", "max_chunk_bytes"},
 	}
 	schema := map[string]any{"additionalProperties": false, "properties": properties, "type": "object"}
 	if values := required[action]; len(values) > 0 {
@@ -159,9 +134,6 @@ func resultSchema(action string) string {
 	default:
 		return `{"type":"object","additionalProperties":true}`
 	}
-	// These operations also serve generic Execution V2 records when
-	// record_kind is omitted. Publish the Cloud Worker fields for discovery
-	// without claiming that the generic projection has the same closed shape.
 	raw, _ := json.Marshal(map[string]any{"additionalProperties": true, "properties": properties, "type": "object"})
 	return string(raw)
 }
@@ -228,7 +200,7 @@ func artifactDownloadResultSchema() string {
 
 func isRead(action string) bool {
 	switch action {
-	case "agent.execution.v2.analyses.get", "agent.execution.v2.targets.list", "agent.execution.v2.targets.get", "agent.execution.v2.plans.get", "agent.execution.v2.plans.list", "agent.execution.v2.deployments.list", "agent.execution.v2.deployments.get", "agent.execution.v2.deployments.events", "agent.execution.v2.runs.get", "agent.execution.v2.runs.list", "agent.execution.v2.runs.events", "agent.execution.v2.artifacts.get", "agent.execution.v2.artifacts.download", "agent.execution.v2.service_bindings.list", "agent.execution.v2.service_bindings.get", "agent.execution.v2.secrets.get", "agent.execution.v2.secrets.list":
+	case "agent.execution.v2.plans.get", "agent.execution.v2.plans.list", "agent.execution.v2.runs.get", "agent.execution.v2.runs.list", "agent.execution.v2.runs.events", "agent.execution.v2.artifacts.get", "agent.execution.v2.artifacts.download":
 		return true
 	default:
 		return false
@@ -275,16 +247,6 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 		return nil, err
 	}
 	return json.Marshal(result)
-}
-
-// HandleAsOwner is a narrow non-transport hook for unit tests and the typed
-// Core adapter. Production capability RPCs should use HandleOperation so the
-// owner always comes from the authenticated PermissionContext.
-func (c *Capability) HandleAsOwner(ctx context.Context, owner, action string, input map[string]any) (map[string]any, error) {
-	if c == nil || c.service == nil {
-		return nil, coreexecutionv2.ErrNotReady
-	}
-	return c.service.Handle(ctx, owner, action, input)
 }
 
 // HandleAsAuthority is the non-transport hook for composition and focused

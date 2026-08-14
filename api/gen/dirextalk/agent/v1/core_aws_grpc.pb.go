@@ -24,13 +24,6 @@ const (
 	CoreCloudControlService_ListCredentials_FullMethodName  = "/dirextalk.agent.v1.CoreCloudControlService/ListCredentials"
 	CoreCloudControlService_UpdateCredential_FullMethodName = "/dirextalk.agent.v1.CoreCloudControlService/UpdateCredential"
 	CoreCloudControlService_DeleteCredential_FullMethodName = "/dirextalk.agent.v1.CoreCloudControlService/DeleteCredential"
-	CoreCloudControlService_CreatePlan_FullMethodName       = "/dirextalk.agent.v1.CoreCloudControlService/CreatePlan"
-	CoreCloudControlService_GetPlan_FullMethodName          = "/dirextalk.agent.v1.CoreCloudControlService/GetPlan"
-	CoreCloudControlService_ListPlans_FullMethodName        = "/dirextalk.agent.v1.CoreCloudControlService/ListPlans"
-	CoreCloudControlService_Quote_FullMethodName            = "/dirextalk.agent.v1.CoreCloudControlService/Quote"
-	CoreCloudControlService_RequestChange_FullMethodName    = "/dirextalk.agent.v1.CoreCloudControlService/RequestChange"
-	CoreCloudControlService_GetChange_FullMethodName        = "/dirextalk.agent.v1.CoreCloudControlService/GetChange"
-	CoreCloudControlService_ListChanges_FullMethodName      = "/dirextalk.agent.v1.CoreCloudControlService/ListChanges"
 )
 
 // CoreCloudControlServiceClient is the client API for CoreCloudControlService service.
@@ -42,13 +35,6 @@ type CoreCloudControlServiceClient interface {
 	ListCredentials(ctx context.Context, in *CoreCloudControlServiceListCredentialsRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceListCredentialsResponse, error)
 	UpdateCredential(ctx context.Context, in *CoreCloudControlServiceUpdateCredentialRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceUpdateCredentialResponse, error)
 	DeleteCredential(ctx context.Context, in *CoreCloudControlServiceDeleteCredentialRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceDeleteCredentialResponse, error)
-	CreatePlan(ctx context.Context, in *CoreCloudControlServiceCreatePlanRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceCreatePlanResponse, error)
-	GetPlan(ctx context.Context, in *CoreCloudControlServiceGetPlanRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceGetPlanResponse, error)
-	ListPlans(ctx context.Context, in *CoreCloudControlServiceListPlansRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceListPlansResponse, error)
-	Quote(ctx context.Context, in *CoreCloudControlServiceQuoteRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceQuoteResponse, error)
-	RequestChange(ctx context.Context, in *CoreCloudControlServiceRequestChangeRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceRequestChangeResponse, error)
-	GetChange(ctx context.Context, in *CoreCloudControlServiceGetChangeRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceGetChangeResponse, error)
-	ListChanges(ctx context.Context, in *CoreCloudControlServiceListChangesRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceListChangesResponse, error)
 }
 
 type coreCloudControlServiceClient struct {
@@ -109,76 +95,6 @@ func (c *coreCloudControlServiceClient) DeleteCredential(ctx context.Context, in
 	return out, nil
 }
 
-func (c *coreCloudControlServiceClient) CreatePlan(ctx context.Context, in *CoreCloudControlServiceCreatePlanRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceCreatePlanResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreCloudControlServiceCreatePlanResponse)
-	err := c.cc.Invoke(ctx, CoreCloudControlService_CreatePlan_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *coreCloudControlServiceClient) GetPlan(ctx context.Context, in *CoreCloudControlServiceGetPlanRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceGetPlanResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreCloudControlServiceGetPlanResponse)
-	err := c.cc.Invoke(ctx, CoreCloudControlService_GetPlan_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *coreCloudControlServiceClient) ListPlans(ctx context.Context, in *CoreCloudControlServiceListPlansRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceListPlansResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreCloudControlServiceListPlansResponse)
-	err := c.cc.Invoke(ctx, CoreCloudControlService_ListPlans_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *coreCloudControlServiceClient) Quote(ctx context.Context, in *CoreCloudControlServiceQuoteRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceQuoteResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreCloudControlServiceQuoteResponse)
-	err := c.cc.Invoke(ctx, CoreCloudControlService_Quote_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *coreCloudControlServiceClient) RequestChange(ctx context.Context, in *CoreCloudControlServiceRequestChangeRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceRequestChangeResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreCloudControlServiceRequestChangeResponse)
-	err := c.cc.Invoke(ctx, CoreCloudControlService_RequestChange_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *coreCloudControlServiceClient) GetChange(ctx context.Context, in *CoreCloudControlServiceGetChangeRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceGetChangeResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreCloudControlServiceGetChangeResponse)
-	err := c.cc.Invoke(ctx, CoreCloudControlService_GetChange_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *coreCloudControlServiceClient) ListChanges(ctx context.Context, in *CoreCloudControlServiceListChangesRequest, opts ...grpc.CallOption) (*CoreCloudControlServiceListChangesResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreCloudControlServiceListChangesResponse)
-	err := c.cc.Invoke(ctx, CoreCloudControlService_ListChanges_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // CoreCloudControlServiceServer is the server API for CoreCloudControlService service.
 // All implementations must embed UnimplementedCoreCloudControlServiceServer
 // for forward compatibility.
@@ -188,13 +104,6 @@ type CoreCloudControlServiceServer interface {
 	ListCredentials(context.Context, *CoreCloudControlServiceListCredentialsRequest) (*CoreCloudControlServiceListCredentialsResponse, error)
 	UpdateCredential(context.Context, *CoreCloudControlServiceUpdateCredentialRequest) (*CoreCloudControlServiceUpdateCredentialResponse, error)
 	DeleteCredential(context.Context, *CoreCloudControlServiceDeleteCredentialRequest) (*CoreCloudControlServiceDeleteCredentialResponse, error)
-	CreatePlan(context.Context, *CoreCloudControlServiceCreatePlanRequest) (*CoreCloudControlServiceCreatePlanResponse, error)
-	GetPlan(context.Context, *CoreCloudControlServiceGetPlanRequest) (*CoreCloudControlServiceGetPlanResponse, error)
-	ListPlans(context.Context, *CoreCloudControlServiceListPlansRequest) (*CoreCloudControlServiceListPlansResponse, error)
-	Quote(context.Context, *CoreCloudControlServiceQuoteRequest) (*CoreCloudControlServiceQuoteResponse, error)
-	RequestChange(context.Context, *CoreCloudControlServiceRequestChangeRequest) (*CoreCloudControlServiceRequestChangeResponse, error)
-	GetChange(context.Context, *CoreCloudControlServiceGetChangeRequest) (*CoreCloudControlServiceGetChangeResponse, error)
-	ListChanges(context.Context, *CoreCloudControlServiceListChangesRequest) (*CoreCloudControlServiceListChangesResponse, error)
 	mustEmbedUnimplementedCoreCloudControlServiceServer()
 }
 
@@ -219,27 +128,6 @@ func (UnimplementedCoreCloudControlServiceServer) UpdateCredential(context.Conte
 }
 func (UnimplementedCoreCloudControlServiceServer) DeleteCredential(context.Context, *CoreCloudControlServiceDeleteCredentialRequest) (*CoreCloudControlServiceDeleteCredentialResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteCredential not implemented")
-}
-func (UnimplementedCoreCloudControlServiceServer) CreatePlan(context.Context, *CoreCloudControlServiceCreatePlanRequest) (*CoreCloudControlServiceCreatePlanResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method CreatePlan not implemented")
-}
-func (UnimplementedCoreCloudControlServiceServer) GetPlan(context.Context, *CoreCloudControlServiceGetPlanRequest) (*CoreCloudControlServiceGetPlanResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetPlan not implemented")
-}
-func (UnimplementedCoreCloudControlServiceServer) ListPlans(context.Context, *CoreCloudControlServiceListPlansRequest) (*CoreCloudControlServiceListPlansResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ListPlans not implemented")
-}
-func (UnimplementedCoreCloudControlServiceServer) Quote(context.Context, *CoreCloudControlServiceQuoteRequest) (*CoreCloudControlServiceQuoteResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Quote not implemented")
-}
-func (UnimplementedCoreCloudControlServiceServer) RequestChange(context.Context, *CoreCloudControlServiceRequestChangeRequest) (*CoreCloudControlServiceRequestChangeResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method RequestChange not implemented")
-}
-func (UnimplementedCoreCloudControlServiceServer) GetChange(context.Context, *CoreCloudControlServiceGetChangeRequest) (*CoreCloudControlServiceGetChangeResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetChange not implemented")
-}
-func (UnimplementedCoreCloudControlServiceServer) ListChanges(context.Context, *CoreCloudControlServiceListChangesRequest) (*CoreCloudControlServiceListChangesResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ListChanges not implemented")
 }
 func (UnimplementedCoreCloudControlServiceServer) mustEmbedUnimplementedCoreCloudControlServiceServer() {
 }
@@ -353,132 +241,6 @@ func _CoreCloudControlService_DeleteCredential_Handler(srv interface{}, ctx cont
 	return interceptor(ctx, in, info, handler)
 }
 
-func _CoreCloudControlService_CreatePlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreCloudControlServiceCreatePlanRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(CoreCloudControlServiceServer).CreatePlan(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: CoreCloudControlService_CreatePlan_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreCloudControlServiceServer).CreatePlan(ctx, req.(*CoreCloudControlServiceCreatePlanRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _CoreCloudControlService_GetPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreCloudControlServiceGetPlanRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(CoreCloudControlServiceServer).GetPlan(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: CoreCloudControlService_GetPlan_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreCloudControlServiceServer).GetPlan(ctx, req.(*CoreCloudControlServiceGetPlanRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _CoreCloudControlService_ListPlans_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreCloudControlServiceListPlansRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(CoreCloudControlServiceServer).ListPlans(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: CoreCloudControlService_ListPlans_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreCloudControlServiceServer).ListPlans(ctx, req.(*CoreCloudControlServiceListPlansRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _CoreCloudControlService_Quote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreCloudControlServiceQuoteRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(CoreCloudControlServiceServer).Quote(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: CoreCloudControlService_Quote_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreCloudControlServiceServer).Quote(ctx, req.(*CoreCloudControlServiceQuoteRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _CoreCloudControlService_RequestChange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreCloudControlServiceRequestChangeRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(CoreCloudControlServiceServer).RequestChange(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: CoreCloudControlService_RequestChange_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreCloudControlServiceServer).RequestChange(ctx, req.(*CoreCloudControlServiceRequestChangeRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _CoreCloudControlService_GetChange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreCloudControlServiceGetChangeRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(CoreCloudControlServiceServer).GetChange(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: CoreCloudControlService_GetChange_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreCloudControlServiceServer).GetChange(ctx, req.(*CoreCloudControlServiceGetChangeRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _CoreCloudControlService_ListChanges_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreCloudControlServiceListChangesRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(CoreCloudControlServiceServer).ListChanges(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: CoreCloudControlService_ListChanges_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreCloudControlServiceServer).ListChanges(ctx, req.(*CoreCloudControlServiceListChangesRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // CoreCloudControlService_ServiceDesc is the grpc.ServiceDesc for CoreCloudControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -505,34 +267,6 @@ var CoreCloudControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteCredential",
 			Handler:    _CoreCloudControlService_DeleteCredential_Handler,
-		},
-		{
-			MethodName: "CreatePlan",
-			Handler:    _CoreCloudControlService_CreatePlan_Handler,
-		},
-		{
-			MethodName: "GetPlan",
-			Handler:    _CoreCloudControlService_GetPlan_Handler,
-		},
-		{
-			MethodName: "ListPlans",
-			Handler:    _CoreCloudControlService_ListPlans_Handler,
-		},
-		{
-			MethodName: "Quote",
-			Handler:    _CoreCloudControlService_Quote_Handler,
-		},
-		{
-			MethodName: "RequestChange",
-			Handler:    _CoreCloudControlService_RequestChange_Handler,
-		},
-		{
-			MethodName: "GetChange",
-			Handler:    _CoreCloudControlService_GetChange_Handler,
-		},
-		{
-			MethodName: "ListChanges",
-			Handler:    _CoreCloudControlService_ListChanges_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

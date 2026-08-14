@@ -17,6 +17,17 @@ type blockingCredentialSTS struct {
 	calls       int
 }
 
+type credentialSTSStub struct {
+	identity Identity
+	err      error
+	calls    int
+}
+
+func (p *credentialSTSStub) GetCallerIdentity(context.Context, CredentialHandle) (Identity, error) {
+	p.calls++
+	return p.identity, p.err
+}
+
 func (p *blockingCredentialSTS) GetCallerIdentity(context.Context, CredentialHandle) (Identity, error) {
 	p.mu.Lock()
 	p.calls++
@@ -43,15 +54,15 @@ func TestMemoryCredentialTestClaimFailsClosedAfterUncertainCrash(t *testing.T) {
 	if err != nil || replay != nil || claim.ClaimID == "" {
 		t.Fatalf("begin claim=%+v replay=%+v err=%v", claim, replay, err)
 	}
-	sts := &FakeSTSProvider{Identity: Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/claim", PrincipalID: "claim"}}
-	service := NewService(repo, nil, nil, sts, nil, func() time.Time { return time.Unix(2, 0) })
+	sts := &credentialSTSStub{identity: Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/claim", PrincipalID: "claim"}}
+	service := NewService(repo, sts, func() time.Time { return time.Unix(2, 0) })
 	if _, err := service.TestCredentialIdempotent(context.Background(), credentialID, 1, key); !errors.Is(err, ErrResponseUncertain) {
 		t.Fatalf("retry after abandoned claim=%v, want response uncertain", err)
 	}
-	if sts.Calls != 0 {
-		t.Fatalf("retry invoked provider %d times", sts.Calls)
+	if sts.calls != 0 {
+		t.Fatalf("retry invoked provider %d times", sts.calls)
 	}
-	completed, err := repo.CompleteCredentialTest(context.Background(), claim, sts.Identity, time.Unix(2, 0))
+	completed, err := repo.CompleteCredentialTest(context.Background(), claim, sts.identity, time.Unix(2, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +70,8 @@ func TestMemoryCredentialTestClaimFailsClosedAfterUncertainCrash(t *testing.T) {
 	if err != nil || replayed != completed {
 		t.Fatalf("completed replay=%+v completed=%+v err=%v", replayed, completed, err)
 	}
-	if sts.Calls != 0 {
-		t.Fatalf("completed replay invoked provider %d times", sts.Calls)
+	if sts.calls != 0 {
+		t.Fatalf("completed replay invoked provider %d times", sts.calls)
 	}
 }
 
@@ -72,7 +83,7 @@ func TestMemoryCredentialTestProviderRunsOutsideRepositoryMutex(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &blockingCredentialSTS{started: make(chan struct{}), release: make(chan struct{}), identity: Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/outside", PrincipalID: "outside"}}
-	service := NewService(repo, nil, nil, provider, nil, func() time.Time { return time.Unix(2, 0) })
+	service := NewService(repo, provider, func() time.Time { return time.Unix(2, 0) })
 	result := make(chan error, 1)
 	go func() {
 		_, err := service.TestCredentialIdempotent(context.Background(), credentialID, 1, key)
@@ -111,7 +122,7 @@ func TestMemoryCredentialTestSameKeyWaitersReplayAfterSlowProvider(t *testing.T)
 		t.Fatal(err)
 	}
 	provider := &blockingCredentialSTS{started: make(chan struct{}), release: make(chan struct{}), identity: Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/slow", PrincipalID: "slow"}}
-	service := NewService(repo, nil, nil, provider, nil, time.Now)
+	service := NewService(repo, provider, time.Now)
 	const waiterCount = 8
 	results := make([]CredentialTest, waiterCount)
 	errs := make([]error, waiterCount)
@@ -170,8 +181,8 @@ func TestMemoryCredentialTestFinalizeUsesBoundedContextAndKeepsFence(t *testing.
 		name     string
 		provider STSProvider
 	}{
-		{name: "provider failure", provider: &FakeSTSProvider{Err: errors.New("provider unavailable")}},
-		{name: "completion failure", provider: &FakeSTSProvider{Identity: Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/finalize", PrincipalID: "finalize"}}},
+		{name: "provider failure", provider: &credentialSTSStub{err: errors.New("provider unavailable")}},
+		{name: "completion failure", provider: &credentialSTSStub{identity: Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/finalize", PrincipalID: "finalize"}}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			base := NewMemoryRepository()
@@ -182,7 +193,7 @@ func TestMemoryCredentialTestFinalizeUsesBoundedContextAndKeepsFence(t *testing.
 			if _, err := base.CreateCredential(context.Background(), RehydrateCredentials(credentialID, "bounded-finalize", "us-east-1", "", "", []byte("access"), []byte("secret"), nil, 0, 1, createdAt, createdAt)); err != nil {
 				t.Fatal(err)
 			}
-			service := NewService(repo, nil, nil, testCase.provider, nil, time.Now)
+			service := NewService(repo, testCase.provider, time.Now)
 			service.credentialTestFinalizeTimeout = 20 * time.Millisecond
 			started := time.Now()
 			if _, err := service.TestCredentialIdempotent(context.Background(), credentialID, 1, key); !errors.Is(err, ErrResponseUncertain) {
@@ -210,15 +221,15 @@ func TestMemoryCredentialTestInProgressCancellationDoesNotMutateClaim(t *testing
 	if err != nil || replay != nil || claim.ClaimID == "" {
 		t.Fatalf("begin claim=%+v replay=%+v err=%v", claim, replay, err)
 	}
-	provider := &FakeSTSProvider{Identity: Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/cancel", PrincipalID: "cancel"}}
-	service := NewService(repo, nil, nil, provider, nil, time.Now)
+	provider := &credentialSTSStub{identity: Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/cancel", PrincipalID: "cancel"}}
+	service := NewService(repo, provider, time.Now)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := service.TestCredentialIdempotent(ctx, credentialID, 1, key); !errors.Is(err, ErrResponseUncertain) {
 		t.Fatalf("canceled in-progress retry=%v, want response uncertain", err)
 	}
-	if provider.Calls != 0 {
-		t.Fatalf("canceled retry invoked provider %d times", provider.Calls)
+	if provider.calls != 0 {
+		t.Fatalf("canceled retry invoked provider %d times", provider.calls)
 	}
 	if _, _, err := repo.BeginCredentialTest(context.Background(), credentialID, 1, key); !errors.Is(err, ErrCredentialTestInProgress) {
 		t.Fatalf("canceled retry mutated claim: %v", err)
@@ -232,16 +243,16 @@ func TestMemoryCredentialTestProviderFailureHasExactReplayReceipt(t *testing.T) 
 	if _, err := repo.CreateCredential(context.Background(), RehydrateCredentials(credentialID, "failed-receipt", "us-east-1", "", "", []byte("access"), []byte("secret"), nil, 0, 1, time.Unix(1, 0), time.Unix(1, 0))); err != nil {
 		t.Fatal(err)
 	}
-	provider := &FakeSTSProvider{Err: errors.New("provider unavailable")}
-	service := NewService(repo, nil, nil, provider, nil, time.Now)
+	provider := &credentialSTSStub{err: errors.New("provider unavailable")}
+	service := NewService(repo, provider, time.Now)
 	if _, err := service.TestCredentialIdempotent(context.Background(), credentialID, 1, key); !errors.Is(err, ErrProvider) {
 		t.Fatalf("first provider failure=%v, want provider error", err)
 	}
 	if _, err := service.TestCredentialIdempotent(context.Background(), credentialID, 1, key); !errors.Is(err, ErrProvider) {
 		t.Fatalf("replayed provider failure=%v, want exact provider error", err)
 	}
-	if provider.Calls != 1 {
-		t.Fatalf("provider calls=%d, want one durable failure attempt", provider.Calls)
+	if provider.calls != 1 {
+		t.Fatalf("provider calls=%d, want one durable failure attempt", provider.calls)
 	}
 }
 

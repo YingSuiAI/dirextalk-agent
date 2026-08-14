@@ -17,7 +17,7 @@ Message Server ProductCore + Native Agent stream facade
 CoreServer (TLS token interceptor, optional health/reflection)
       |
       +-- model profiles / conversations / Tasks / schedules
-      +-- confirmations / MCP / Skills / Knowledge / typed AWS
+      +-- confirmations / MCP / Skills / Knowledge / AWS credentials
       +-- worker pool and scheduler
       +-- PostgreSQL for durable state, snapshots, leases, events, digests
       +-- pgvector in Agent-owned PostgreSQL through the Knowledge semantic ports
@@ -65,7 +65,8 @@ Worker.
 ## Ownership
 
 - Agent owns its PostgreSQL database, files, credentials, model/conversation
-  state, Tasks, confirmations, Knowledge, Web Search, AWS, Execution V2, and
+  state, Tasks, confirmations, Knowledge, Web Search, AWS credentials, Cloud
+  Worker execution views, and
   runner processes.
 - Message Server owns owner authentication, ProductCore action envelopes,
   Native Agent stream frames, and Product Capability callbacks. It does not

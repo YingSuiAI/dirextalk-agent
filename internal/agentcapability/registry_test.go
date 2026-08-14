@@ -176,21 +176,8 @@ func TestCoreRegistryPublishesWorkerOnlyWhenComposed(t *testing.T) {
 	}
 }
 
-func TestCoreRegistryDoesNotPublishExecutionV2WithoutTypedProvider(t *testing.T) {
-	domain, err := coreexecutionv2.NewService(coreexecutionv2.Config{Store: coreexecutionv2.NewMemoryStore()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := NewCoreRegistry(CoreBindings{ExecutionV2: domain})
-	if _, ok := r.Get(coreexecutionv2.CapabilityID); ok {
-		t.Fatal("execution.v2 published without a typed provider readiness proof")
-	}
-}
-
 func TestCloudWorkerExecutionV2CoexistsWithLocalSkillsAndMCP(t *testing.T) {
-	domain, err := coreexecutionv2.NewServiceWithProviderInterfacesAndCloudWorker(
-		coreexecutionv2.NewMemoryStore(), coreexecutionv2.ProviderInterfaces{}, registryCloudWorkerPort{}, nil,
-	)
+	domain, err := coreexecutionv2.NewService(registryCloudWorkerPort{})
 	if err != nil {
 		t.Fatal(err)
 	}

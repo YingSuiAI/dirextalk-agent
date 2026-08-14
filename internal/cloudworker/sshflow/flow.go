@@ -100,7 +100,7 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 	}
 	run, err := handler.store.Begin(ctx, task)
 	if err != nil {
-		return coreruntime.ManagedOutcome{Err: err}
+		return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 	}
 	result, executeErr := handler.executor.Execute(ctx, Request{
 		OwnerID: run.Plan.OwnerID, AccountGeneration: run.Plan.AccountGeneration,
@@ -127,15 +127,22 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 			summary = code
 		}
 		if err = handler.store.Fail(ctx, run, result, code, summary); err != nil {
-			return coreruntime.ManagedOutcome{Err: errors.Join(executeErr, err)}
+			return coreruntime.ManagedOutcome{Err: errors.Join(executeErr, err), TerminalOwned: true}
 		}
 		return coreruntime.ManagedOutcome{Err: executeErr, TerminalOwned: true}
 	}
 	if strings.TrimSpace(result.Summary) == "" || strings.TrimSpace(result.WorkerID) == "" {
-		return coreruntime.ManagedOutcome{Err: ErrInvalid}
+		if strings.TrimSpace(result.WorkerID) == "" {
+			result.WorkerID = run.Plan.ExecutionID
+		}
+		const summary = "SSH Worker returned an invalid result"
+		if err = handler.store.Fail(ctx, run, result, "ssh_worker_invalid_result", summary); err != nil {
+			return coreruntime.ManagedOutcome{Err: errors.Join(ErrInvalid, err), TerminalOwned: true}
+		}
+		return coreruntime.ManagedOutcome{Err: ErrInvalid, TerminalOwned: true}
 	}
 	if err = handler.store.Complete(ctx, run, result); err != nil {
-		return coreruntime.ManagedOutcome{Err: err}
+		return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 	}
 	return coreruntime.ManagedOutcome{Result: coretask.Result{Text: result.Summary, Summary: result.Summary}, TerminalOwned: true}
 }

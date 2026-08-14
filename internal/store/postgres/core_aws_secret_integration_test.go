@@ -225,7 +225,7 @@ func TestCoreAWSPostgresNeutralCredentialTestReplaySurvivesRestart(t *testing.T)
 	}
 	provider := &countingCredentialTestSTS{identity: coreaws.Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/neutral", PrincipalID: "neutral-principal"}}
 	firstAt := createdAt.Add(time.Minute)
-	service := coreaws.NewService(credentialStore, nil, nil, provider, nil, func() time.Time { return firstAt })
+	service := coreaws.NewService(credentialStore, provider, func() time.Time { return firstAt })
 	const key = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	first, err := service.TestCredentialIdempotent(ctx, credentialID, 1, key)
 	if err != nil {
@@ -261,7 +261,7 @@ func TestCoreAWSPostgresNeutralCredentialTestReplaySurvivesRestart(t *testing.T)
 		t.Fatal(err)
 	}
 	restartedStore := NewCoreAWSStore(restartedRawStore)
-	restarted := coreaws.NewService(restartedStore, nil, nil, provider, nil, func() time.Time { return firstAt.Add(time.Hour) })
+	restarted := coreaws.NewService(restartedStore, provider, func() time.Time { return firstAt.Add(time.Hour) })
 	afterRestart, err := restarted.TestCredentialIdempotent(ctx, credentialID, 1, key)
 	if err != nil || afterRestart != first {
 		t.Fatalf("restart replay=%+v first=%+v err=%v", afterRestart, first, err)
@@ -294,7 +294,7 @@ func TestCoreAWSPostgresNeutralCredentialTestClaimFailsClosedAfterCrash(t *testi
 		t.Fatalf("begin claim=%+v replay=%+v err=%v", claim, replay, err)
 	}
 	provider := &countingCredentialTestSTS{identity: coreaws.Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/claim", PrincipalID: "claim"}}
-	service := coreaws.NewService(credentialStore, nil, nil, provider, nil, func() time.Time { return createdAt.Add(time.Minute) })
+	service := coreaws.NewService(credentialStore, provider, func() time.Time { return createdAt.Add(time.Minute) })
 	if _, err := service.TestCredentialIdempotent(ctx, credentialID, 1, key); !errors.Is(err, coreaws.ErrResponseUncertain) {
 		t.Fatalf("retry after abandoned claim=%v, want response uncertain", err)
 	}
@@ -325,7 +325,7 @@ func TestCoreAWSPostgresNeutralCredentialTestSameKeyWaitersReplayAfterSlowProvid
 		t.Fatal(err)
 	}
 	provider := &blockingCredentialTestSTS{started: make(chan struct{}), release: make(chan struct{}), identity: coreaws.Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/slow", PrincipalID: "slow"}}
-	service := coreaws.NewService(credentialStore, nil, nil, provider, nil, time.Now)
+	service := coreaws.NewService(credentialStore, provider, time.Now)
 	const waiterCount = 8
 	key := uuid.NewString()
 	results := make([]coreaws.CredentialTest, waiterCount)

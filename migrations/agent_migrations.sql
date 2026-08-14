@@ -2506,3 +2506,67 @@ CREATE TABLE core_builtin_mcp_seeds (
     seeded_at timestamptz NOT NULL
 );
 -- dirextalk-agent migration end 000017_builtin_mcp_seeds.up.sql
+-- dirextalk-agent migration begin 000018_remove_legacy_cloud_worker_schema.up.sql
+-- The persistent SSH Worker stores artifacts locally and owns EC2 lifecycle
+-- through its exact file-backed identity. Remove the superseded S3/KMS,
+-- custom-runtime session, and resource-graph schema instead of retaining an
+-- unused second implementation.
+ALTER TABLE core_cloud_worker_events
+    DROP CONSTRAINT core_cloud_worker_events_bounded_payload_check,
+    DROP CONSTRAINT core_cloud_worker_events_worker_progress_identity_check,
+    DROP COLUMN session_id,
+    DROP COLUMN worker_progress_sequence;
+
+ALTER TABLE core_cloud_worker_executions
+    DROP COLUMN provider_mutation_started,
+    DROP COLUMN terminal_intent,
+    DROP COLUMN needs_reconcile;
+
+ALTER TABLE core_workload_plans
+    DROP CONSTRAINT core_workload_plans_target_kind_check,
+    ADD CONSTRAINT core_workload_plans_target_kind_check CHECK (target_kind = 'CORE_RUNNER');
+ALTER TABLE core_workloads
+    DROP CONSTRAINT core_workloads_target_kind_check,
+    ADD CONSTRAINT core_workloads_target_kind_check CHECK (target_kind = 'CORE_RUNNER');
+ALTER TABLE core_workload_operations
+    DROP CONSTRAINT core_workload_operations_target_kind_check,
+    ADD CONSTRAINT core_workload_operations_target_kind_check CHECK (target_kind = 'CORE_RUNNER');
+
+ALTER TABLE core_task_replays
+    DROP CONSTRAINT core_task_replays_operation_check,
+    ADD CONSTRAINT core_task_replays_operation_check CHECK (operation IN ('create','cancel','retry','delete'));
+ALTER TABLE core_tasks DROP CONSTRAINT core_tasks_task_kind_chk;
+ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_task_kind_chk
+    CHECK (task_kind IN ('agent','extension','knowledge_index','workload','conversation_tool','cloud_worker'));
+
+DROP TABLE core_execution_v2_events;
+DROP TABLE core_execution_v2_revisions;
+DROP TABLE core_execution_v2_replays;
+DROP TABLE core_execution_v2_secrets;
+DROP TABLE core_execution_v2_records;
+
+DROP TABLE core_aws_events;
+DROP TABLE core_aws_changes;
+DROP TABLE core_aws_plans;
+DROP TABLE core_aws_replays;
+
+DROP TABLE core_cloud_worker_session_replays;
+DROP TABLE core_cloud_worker_model_invocations;
+DROP TABLE core_cloud_worker_model_grants;
+DROP TABLE core_cloud_worker_model_budgets;
+DROP TABLE core_cloud_worker_challenge_replays;
+DROP TABLE core_cloud_worker_sessions;
+DROP TABLE core_cloud_worker_session_fences;
+DROP TABLE core_cloud_worker_identity_challenges;
+DROP TABLE core_cloud_worker_launch_expectations;
+DROP TABLE core_cloud_worker_output_versions;
+DROP TABLE core_cloud_worker_output_journals;
+DROP TABLE core_cloud_worker_input_staging;
+DROP TABLE core_cloud_worker_aws_ledger;
+DROP TABLE core_cloud_worker_launch_material;
+DROP TABLE core_cloud_worker_begin_authorizations;
+DROP TABLE core_cloud_worker_completion_outbox;
+DROP TABLE core_cloud_worker_offer_outbox;
+DROP TABLE core_cloud_worker_artifacts;
+DROP TABLE core_cloud_worker_resources;
+-- dirextalk-agent migration end 000018_remove_legacy_cloud_worker_schema.up.sql

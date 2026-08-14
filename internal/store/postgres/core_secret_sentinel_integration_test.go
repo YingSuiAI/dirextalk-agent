@@ -9,7 +9,6 @@ import (
 	"time"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
-	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
 	"github.com/google/uuid"
@@ -72,17 +71,6 @@ func TestCoreSecretSentinelAcrossAgentTables(t *testing.T) {
 	}
 	turnCommand := core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "sentinel", ProfileID: profileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ProfileSnapshot: snapshot}
 	if _, err := conversationStore.StartTurn(ctx, turnCommand); err != nil {
-		t.Fatal(err)
-	}
-
-	executionStore, err := coreexecutionv2.NewPostgresStore(store.Pool(), testSecretKeyring(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := executionStore.SaveSecret(ctx, coreexecutionv2.Secret{
-		OwnerID: "sentinel-owner", Ref: uuid.NewString(), Revision: 1, Provider: "openai",
-		Purpose: "ai_provider_api_key", Value: canary, BindingDigest: strings.Repeat("c", 64), Status: "active", CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
 		t.Fatal(err)
 	}
 

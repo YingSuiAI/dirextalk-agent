@@ -6,8 +6,6 @@ package postgres
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -172,20 +170,22 @@ func (store *SSHWorkerStore) terminal(ctx context.Context, run sshflow.Run, work
 	}
 	taskResultRaw, _ := json.Marshal(taskResult)
 	taskStatus := string(coretask.StatusSucceeded)
+	failureSummary := ""
 	if terminal == cloudworker.StateFailed {
 		taskStatus = string(coretask.StatusFailed)
 		taskResultRaw = nil
+		failureSummary = summary
 	}
 	updated, err := tx.Exec(ctx, `UPDATE core_tasks SET status=$2,result_json=$3,failure_code=$4,failure_summary=$5,
 		lease_holder='',lease_expires_at=NULL,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$6
 		WHERE task_id=$1 AND status='running' AND attempt=$7 AND lease_epoch=$8 AND revision=$9 AND lease_expires_at>$6`,
-		plan.TaskID, taskStatus, taskResultRaw, code, summary, now, currentTask.Attempt, currentTask.LeaseEpoch, currentTask.Revision)
+		plan.TaskID, taskStatus, taskResultRaw, code, failureSummary, now, currentTask.Attempt, currentTask.LeaseEpoch, currentTask.Revision)
 	if err != nil || updated.RowsAffected() != 1 {
 		return cloudworker.ErrLeaseConflict
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,result_json,error_code,error_summary,occurred_at)
 		SELECT task_id,progress_sequence,$2,attempt,$3,'ssh_worker_terminal',$4,$5,$6,$7 FROM core_tasks WHERE task_id=$1`,
-		plan.TaskID, sshWorkerUUID("task-terminal", plan.ExecutionID), taskStatus, taskResultRaw, code, summary, now); err != nil {
+		plan.TaskID, sshWorkerUUID("task-terminal", plan.ExecutionID), taskStatus, taskResultRaw, code, failureSummary, now); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE core_task_runtime_concurrency SET running_count=GREATEST(0,running_count-1),revision=revision+1,updated_at=$1 WHERE singleton=true`, now); err != nil {
@@ -206,8 +206,10 @@ func (store *SSHWorkerStore) terminal(ctx context.Context, run sshflow.Run, work
 	if confirmationUpdate.RowsAffected() != 1 {
 		return cloudworker.ErrStaleAuthorization
 	}
-	next := currentExecution
-	next.State, next.Status, next.Revision, next.UpdatedAt = terminal, terminal, currentExecution.Revision+1, now
+	next, err := currentExecution.Transition(terminal, now)
+	if err != nil {
+		return err
+	}
 	next.ArtifactIDs = artifactIDs
 	next.WorkerID, next.PersistentWorker = workerResult.WorkerID, true
 	if terminal == cloudworker.StateFailed {
@@ -216,20 +218,14 @@ func (store *SSHWorkerStore) terminal(ctx context.Context, run sshflow.Run, work
 	if err = next.Seal(); err != nil {
 		return err
 	}
-	executionRaw, err := json.Marshal(next)
-	if err != nil {
+	eventType := "execution_succeeded"
+	if terminal == cloudworker.StateFailed {
+		eventType = "execution_failed"
+	}
+	if err = saveCloudWorkerExecutionTx(ctx, tx, currentExecution, next, eventType); err != nil {
 		return err
 	}
-	executionUpdate, err := tx.Exec(ctx, `UPDATE core_cloud_worker_executions SET state=$2,revision=revision+1,digest=$3,
-		provider_mutation_started=true,terminal_intent='',needs_reconcile=false,execution_json=$4,updated_at=$5
-		WHERE execution_id=$1 AND revision=$6`, plan.ExecutionID, terminal, next.Digest, executionRaw, now, currentExecution.Revision)
-	if err != nil {
-		return err
-	}
-	if executionUpdate.RowsAffected() != 1 {
-		return cloudworker.ErrConflict
-	}
-	toolCall, toolResult, err := sshWorkerContinuation(turn.DispatchResult, plan, terminal, summary, workerResult, artifacts)
+	toolCall, toolResult, err := sshWorkerContinuation(turn.DispatchResult, plan, next, summary, workerResult, artifacts)
 	if err != nil {
 		return err
 	}
@@ -284,36 +280,12 @@ func (store *SSHWorkerStore) persistArtifactsTx(ctx context.Context, tx pgx.Tx, 
 			return nil, errSSHWorkerStoreInvalid
 		}
 		seen[artifact.ArtifactID] = struct{}{}
-		payload, _ := json.Marshal(map[string]any{"artifact_id": artifact.ArtifactID, "execution_id": artifact.ExecutionID,
-			"kind": artifact.Kind, "name": artifact.Name, "media_type": artifact.MediaType,
-			"relative_path": artifact.RelativePath, "size_bytes": artifact.SizeBytes, "sha256": artifact.SHA256})
-		digest := sha256.Sum256(payload)
-		result, err := tx.Exec(ctx, `INSERT INTO core_execution_v2_records(owner_id,resource_type,resource_id,revision,status,digest,payload_json,created_at,updated_at)
-			VALUES($1,'artifact',$2,1,'ready',$3,$4,$5,$5) ON CONFLICT(owner_id,resource_type,resource_id) DO NOTHING`,
-			plan.OwnerID, artifact.ArtifactID, hex.EncodeToString(digest[:]), payload, at)
-		if err != nil {
-			return nil, err
-		}
-		if result.RowsAffected() == 0 {
-			var existing []byte
-			if err = tx.QueryRow(ctx, `SELECT payload_json FROM core_execution_v2_records WHERE owner_id=$1 AND resource_type='artifact' AND resource_id=$2`, plan.OwnerID, artifact.ArtifactID).Scan(&existing); err != nil || !jsonEquivalent(existing, payload) {
-				return nil, cloudworker.ErrConflict
-			}
-		} else if _, err = tx.Exec(ctx, `INSERT INTO core_execution_v2_revisions(owner_id,resource_type,resource_id,revision,status,digest,payload_json,created_at)
-			VALUES($1,'artifact',$2,1,'ready',$3,$4,$5)`, plan.OwnerID, artifact.ArtifactID, hex.EncodeToString(digest[:]), payload, at); err != nil {
-			return nil, err
-		}
 		out = append(out, artifact)
 	}
 	return out, nil
 }
 
-func jsonEquivalent(left, right []byte) bool {
-	var leftValue, rightValue any
-	return json.Unmarshal(left, &leftValue) == nil && json.Unmarshal(right, &rightValue) == nil && reflect.DeepEqual(leftValue, rightValue)
-}
-
-func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan, terminal cloudworker.ExecutionState, summary string, result sshflow.Result, artifacts []sshflow.Artifact) (core.ToolCall, core.ToolResult, error) {
+func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan, execution cloudworker.Execution, summary string, result sshflow.Result, artifacts []sshflow.Artifact) (core.ToolCall, core.ToolResult, error) {
 	if dispatch == nil {
 		return core.ToolCall{}, core.ToolResult{}, cloudworker.ErrConflict
 	}
@@ -324,6 +296,7 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 	if len(calls) != 1 || calls[0].Name != coremodel.IntrinsicCloudWorkerProposeToolName || calls[0].Validate() != nil {
 		return core.ToolCall{}, core.ToolResult{}, cloudworker.ErrConflict
 	}
+	terminal := execution.State
 	completion := map[string]any{"schema": "dirextalk.ssh-worker-completion/v1",
 		"execution_id": plan.ExecutionID, "status": terminal, "worker_id": result.WorkerID,
 		"persistent_worker": true, "worker_report": summary, "artifacts": artifacts,
@@ -338,7 +311,15 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 	payload, _ := json.Marshal(completion)
 	toolResult := core.ToolResult{CallID: calls[0].ID, ToolName: coremodel.IntrinsicCloudWorkerProposeToolName,
 		Content: string(payload), IsError: terminal != cloudworker.StateSucceeded,
-		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, Summary: "Cloud Worker result returned"}
+		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, Summary: "Cloud Worker result returned",
+		References: []core.Reference{
+			{Kind: "execution_plan", AccountGeneration: plan.AccountGeneration, TaskID: plan.TaskID,
+				PlanID: plan.PlanID, PlanRevision: plan.Revision, Status: plan.Status},
+			{Kind: "execution_run", AccountGeneration: plan.AccountGeneration, TaskID: plan.TaskID,
+				PlanID: plan.PlanID, PlanRevision: plan.Revision, RunID: execution.RunID,
+				RunRevision: execution.Revision, ExecutionID: execution.ExecutionID, Status: string(execution.State)},
+		},
+	}
 	if toolResult.Validate() != nil {
 		return core.ToolCall{}, core.ToolResult{}, errSSHWorkerStoreInvalid
 	}

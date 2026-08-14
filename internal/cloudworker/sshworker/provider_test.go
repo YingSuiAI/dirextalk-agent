@@ -21,6 +21,23 @@ type memoryStore struct {
 
 type contextAwareStore struct{ *memoryStore }
 
+type releaseFailingStore struct {
+	*memoryStore
+	failIdleSaves int
+	idleSaveCalls int
+}
+
+func (store *releaseFailingStore) SaveWorker(ctx context.Context, record WorkerRecord) error {
+	if record.Phase == WorkerIdle {
+		store.idleSaveCalls++
+		if store.failIdleSaves > 0 {
+			store.failIdleSaves--
+			return errors.New("worker release unavailable")
+		}
+	}
+	return store.memoryStore.SaveWorker(ctx, record)
+}
+
 func (store *contextAwareStore) SaveExecution(ctx context.Context, record ExecutionRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -292,6 +309,22 @@ func TestCapacityFivePreventsSixthCreate(t *testing.T) {
 	}
 }
 
+func TestCheckCreateCapacityCountsUntrackedTaggedInstance(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	request := requestFixture()
+	for i := 0; i < MaxWorkers-1; i++ {
+		id := "worker-" + string(rune('a'+i))
+		store.workers[id] = withBusyInstance(workerRecordFixture(id, request.Credential, WorkerBusy), id)
+		cloud.instances[id] = store.workers[id].Instance
+	}
+	cloud.instances["untracked"] = Instance{ID: "untracked", State: "running", PublicIP: "203.0.113.99"}
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	if err := provider.CheckCreateCapacity(context.Background(), request.Authority, request.Credential); !errors.Is(err, ErrCapacity) {
+		t.Fatalf("capacity error=%v", err)
+	}
+}
+
 func TestCapacityFiveIsGlobalAcrossCredentialRevisions(t *testing.T) {
 	cloud := newFakeAWS()
 	store := newMemoryStore()
@@ -390,6 +423,28 @@ func TestFailExecutionUsesFreshContextAfterCancellation(t *testing.T) {
 	}
 	if _, active := provider.active[execution.ExecutionID]; active {
 		t.Fatal("canceled execution remained active")
+	}
+}
+
+func TestPersistedRemoteSuccessSurvivesWorkerReleaseFailure(t *testing.T) {
+	base := newMemoryStore()
+	store := &releaseFailingStore{memoryStore: base, failIdleSaves: 1}
+	provider, err := New(newFakeAWS(), &fakeKeys{}, &fakeSSH{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := requestFixture()
+	result, err := provider.Execute(context.Background(), request)
+	if err != nil || result.WorkerID == "" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	execution := base.executions[request.ExecutionID]
+	worker := base.workers[request.ExecutionID]
+	if execution.Phase != TaskCompleted || worker.Phase != WorkerIdle || worker.CurrentExecutionID != "" || store.idleSaveCalls != 2 {
+		t.Fatalf("execution=%+v worker=%+v", execution, worker)
+	}
+	if _, active := provider.active[request.ExecutionID]; active {
+		t.Fatal("completed execution remained active")
 	}
 }
 

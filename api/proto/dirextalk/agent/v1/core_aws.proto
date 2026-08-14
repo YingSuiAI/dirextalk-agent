@@ -5,15 +5,8 @@ package dirextalk.agent.v1;
 option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
 
 import "google/protobuf/timestamp.proto";
-import "dirextalk/agent/v1/core_confirmation.proto";
 
-// CoreCloudControlService is the Core v1 AWS surface.
-enum CoreAWSOperation {
-  CORE_AWS_OPERATION_UNSPECIFIED = 0;
-  CORE_AWS_OPERATION_CREATE = 1;
-  CORE_AWS_OPERATION_UPDATE = 2;
-  CORE_AWS_OPERATION_DELETE = 3;
-}
+// CoreCloudControlService stores the sole App-managed AWS credential.
 
 message CoreAWSCredential {
   string credential_id = 1;
@@ -64,102 +57,10 @@ message CoreCloudControlServiceDeleteCredentialRequest {
   int64 expected_revision = 3;
 }
 message CoreCloudControlServiceDeleteCredentialResponse {}
-message CoreAWSPlan {
-  string plan_id = 1;
-  string credential_id = 2;
-  string region = 3;
-  string stack_name = 4;
-  CoreAWSOperation operation = 5;
-  string template_sha256 = 6;
-  map<string, string> parameters = 7;
-  map<string, string> tags = 8;
-  repeated string capabilities = 9;
-  int64 revision = 10;
-  google.protobuf.Timestamp created_at = 11;
-}
-message CoreCloudControlServiceCreatePlanRequest {
-  string idempotency_key = 1;
-  string credential_id = 2;
-  string region = 3;
-  string stack_name = 4;
-  CoreAWSOperation operation = 5;
-  bytes template = 6;
-  map<string, string> parameters = 7;
-  map<string, string> tags = 8;
-  repeated string capabilities = 9;
-}
-message CoreCloudControlServiceCreatePlanResponse { CoreAWSPlan plan = 1; }
-message CoreCloudControlServiceGetPlanRequest { string plan_id = 1; }
-message CoreCloudControlServiceGetPlanResponse { CoreAWSPlan plan = 1; }
-message CoreCloudControlServiceListPlansRequest { int32 page_size = 1; string page_token = 2; }
-message CoreCloudControlServiceListPlansResponse {
-  repeated CoreAWSPlan plans = 1;
-  string next_page_token = 2;
-}
-
-message CoreAWSQuote {
-  string plan_id = 1;
-  CoreAWSOperation operation = 2;
-  string region = 3;
-  string stack_name = 4;
-  int32 resource_count = 5;
-  int32 parameter_count = 6;
-  int32 tag_count = 7;
-  double estimated_monthly_usd = 8;
-  string summary = 9;
-  string plan_digest = 10;
-}
-message CoreCloudControlServiceQuoteRequest { string plan_id = 1; }
-message CoreCloudControlServiceQuoteResponse { CoreAWSQuote quote = 1; }
-
-message CoreAWSChange {
-  string change_id = 1;
-  string plan_id = 2;
-  string credential_id = 3;
-  string task_id = 4;
-  string confirmation_id = 5;
-  CoreAWSOperation operation = 6;
-  string status = 7;
-  string stage = 8;
-  string change_set_id = 9;
-  string provider_request_digest = 10;
-  int64 revision = 11;
-  string error_code = 12;
-  string error_summary = 13;
-  google.protobuf.Timestamp created_at = 14;
-  google.protobuf.Timestamp updated_at = 15;
-}
-message CoreCloudControlServiceRequestChangeRequest {
-  string idempotency_key = 1;
-  string plan_id = 2;
-}
-message CoreCloudControlServiceRequestChangeResponse {
-  CoreAWSChange change = 1;
-  CoreConfirmation confirmation = 2;
-  string task_id = 3;
-}
-message CoreCloudControlServiceGetChangeRequest { string change_id = 1; }
-message CoreCloudControlServiceGetChangeResponse { CoreAWSChange change = 1; }
-message CoreCloudControlServiceListChangesRequest {
-  int32 page_size = 1;
-  string page_token = 2;
-  string plan_id = 3;
-}
-message CoreCloudControlServiceListChangesResponse {
-  repeated CoreAWSChange changes = 1;
-  string next_page_token = 2;
-}
 service CoreCloudControlService {
   rpc CreateCredential(CoreCloudControlServiceCreateCredentialRequest) returns (CoreCloudControlServiceCreateCredentialResponse);
   rpc GetCredential(CoreCloudControlServiceGetCredentialRequest) returns (CoreCloudControlServiceGetCredentialResponse);
   rpc ListCredentials(CoreCloudControlServiceListCredentialsRequest) returns (CoreCloudControlServiceListCredentialsResponse);
   rpc UpdateCredential(CoreCloudControlServiceUpdateCredentialRequest) returns (CoreCloudControlServiceUpdateCredentialResponse);
   rpc DeleteCredential(CoreCloudControlServiceDeleteCredentialRequest) returns (CoreCloudControlServiceDeleteCredentialResponse);
-  rpc CreatePlan(CoreCloudControlServiceCreatePlanRequest) returns (CoreCloudControlServiceCreatePlanResponse);
-  rpc GetPlan(CoreCloudControlServiceGetPlanRequest) returns (CoreCloudControlServiceGetPlanResponse);
-  rpc ListPlans(CoreCloudControlServiceListPlansRequest) returns (CoreCloudControlServiceListPlansResponse);
-  rpc Quote(CoreCloudControlServiceQuoteRequest) returns (CoreCloudControlServiceQuoteResponse);
-  rpc RequestChange(CoreCloudControlServiceRequestChangeRequest) returns (CoreCloudControlServiceRequestChangeResponse);
-  rpc GetChange(CoreCloudControlServiceGetChangeRequest) returns (CoreCloudControlServiceGetChangeResponse);
-  rpc ListChanges(CoreCloudControlServiceListChangesRequest) returns (CoreCloudControlServiceListChangesResponse);
 }

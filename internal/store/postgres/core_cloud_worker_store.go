@@ -19,8 +19,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// CloudWorkerStore is the PostgreSQL authority for the single ephemeral Pi
-// Worker execution path. It deliberately shares Store's pool so offer,
+// CloudWorkerStore is the PostgreSQL authority for the retained SSH Worker
+// execution path. It deliberately shares Store's pool so offer,
 // confirmation, task, conversation and execution mutations can be committed
 // in one PostgreSQL transaction.
 type CloudWorkerStore struct{ store *Store }
@@ -108,10 +108,9 @@ func marshalCloudWorkerExecution(execution cloudworker.Execution) ([]byte, error
 func scanCloudWorkerExecution(row cloudWorkerRowScanner) (cloudworker.Execution, error) {
 	var execution cloudworker.Execution
 	var raw []byte
-	var state, digest, terminalIntent string
+	var state, digest string
 	var revision int64
-	var providerStarted, needsReconcile bool
-	err := row.Scan(&raw, &state, &revision, &digest, &providerStarted, &terminalIntent, &needsReconcile)
+	err := row.Scan(&raw, &state, &revision, &digest)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return execution, cloudworker.ErrNotFound
@@ -123,17 +122,13 @@ func scanCloudWorkerExecution(row cloudWorkerRowScanner) (cloudworker.Execution,
 	}
 	execution.State, execution.Status = cloudworker.ExecutionState(state), cloudworker.ExecutionState(state)
 	execution.Revision = uint64(revision)
-	_ = providerStarted
-	_ = terminalIntent
-	_ = needsReconcile
 	if execution.Seal() != nil || execution.Digest != digest {
 		return cloudworker.Execution{}, cloudworker.ErrConflict
 	}
 	return execution, nil
 }
 
-const cloudWorkerExecutionSelect = `SELECT execution_json,state,revision,digest,
-provider_mutation_started,terminal_intent,needs_reconcile FROM core_cloud_worker_executions`
+const cloudWorkerExecutionSelect = `SELECT execution_json,state,revision,digest FROM core_cloud_worker_executions`
 
 func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.CreateOfferCommand) (cloudworker.Offer, error) {
 	if s == nil || s.store == nil || !coretask.ValidUUID(command.IdempotencyKey) ||
@@ -329,8 +324,8 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_executions(execution_id,owner_id,account_generation,plan_id,
 		plan_revision,plan_digest,task_id,confirmation_id,conversation_id,turn_id,state,revision,digest,quote_digest,
-		execution_digest,provider_mutation_started,terminal_intent,needs_reconcile,execution_json,created_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,false,'',false,$16,$17,$18)`,
+		execution_digest,execution_json,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
 		execution.ExecutionID, execution.OwnerID, execution.AccountGeneration, execution.PlanID, execution.PlanRevision,
 		execution.PlanDigest, execution.TaskID, execution.ConfirmationID, execution.ConversationID, execution.TurnID,
 		execution.State, execution.Revision, execution.Digest, execution.QuoteDigest, execution.ExecutionDigest, executionRaw,
@@ -417,17 +412,6 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		VALUES($1,1,$2,$3,$4,$5,$6,$7,$8,$9)`, plan.ExecutionID, executionEvent.EventID, plan.OwnerID,
 		executionEvent.Type, executionEvent.State, executionEvent.Revision, executionEvent.PayloadDigest, executionEventRaw, executionEvent.CreatedAt); err != nil {
 		return cloudworker.Offer{}, err
-	}
-	offerOutboxRaw, _ := json.Marshal(struct {
-		PlanID, ExecutionID, TaskID, ConfirmationID string
-	}{plan.PlanID, plan.ExecutionID, plan.TaskID, plan.ConfirmationID})
-	offerOutboxDigest := sha256.Sum256(offerOutboxRaw)
-	if !plan.PersistentWorkerReuse {
-		if _, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_offer_outbox(event_id,plan_id,execution_id,conversation_id,turn_id,payload_digest,payload_json,created_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, deterministicCloudWorkerUUID("offer-outbox", plan.ExecutionID), plan.PlanID,
-			plan.ExecutionID, plan.ConversationID, plan.TurnID, hex.EncodeToString(offerOutboxDigest[:]), offerOutboxRaw, plan.CreatedAt); err != nil {
-			return cloudworker.Offer{}, err
-		}
 	}
 	replayRaw, _ = json.Marshal(cloudWorkerReplay{PlanID: plan.PlanID})
 	if _, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_offer_replays(idempotency_key,request_digest,plan_id,response_json,created_at) VALUES($1,$2,$3,$4,$5)`, command.IdempotencyKey, command.RequestDigest, plan.PlanID, replayRaw, plan.CreatedAt); err != nil {
@@ -623,7 +607,7 @@ func saveCloudWorkerExecutionTx(ctx context.Context, tx pgx.Tx, previous, next c
 		return err
 	}
 	result, err := tx.Exec(ctx, `UPDATE core_cloud_worker_executions SET state=$2,revision=$3,digest=$4,
-		provider_mutation_started=false,terminal_intent='',needs_reconcile=false,execution_json=$5,updated_at=$6
+		execution_json=$5,updated_at=$6
 		WHERE execution_id=$1 AND revision=$7 AND digest=$8`, next.ExecutionID, next.State, next.Revision,
 		next.Digest, raw, next.UpdatedAt, previous.Revision, previous.Digest)
 	if err != nil {

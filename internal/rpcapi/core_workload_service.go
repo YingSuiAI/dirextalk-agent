@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -35,9 +33,6 @@ func (s *WorkloadService) Plan(ctx context.Context, r *agentv1.WorkloadServicePl
 		return nil, status.Error(codes.InvalidArgument, "typed_target is required")
 	}
 	target := targetSettingsFromTypedProto(typedTarget)
-	if target.ECSImageURI == "" {
-		target.ECSImageURI = r.GetImageUri()
-	}
 	refs := make([]coreworkload.SecretGrantRef, 0, len(r.GetTypedSecretGrants()))
 	for _, ref := range r.GetTypedSecretGrants() {
 		if ref != nil {
@@ -50,7 +45,7 @@ func (s *WorkloadService) Plan(ctx context.Context, r *agentv1.WorkloadServicePl
 			network = append(network, grant.GetReferenceId())
 		}
 	}
-	v, e := s.service.CreatePlan(ctx, coreworkload.PlanInput{IdempotencyKey: r.GetIdempotencyKey(), Summary: r.GetSummary(), Artifact: r.GetArtifact(), Source: r.GetSource(), CommandSteps: r.GetCommandSteps(), ImageDigest: r.GetImageDigest(), ImageURI: r.GetImageUri(), TargetKind: workloadTarget(r.GetTargetKind()), Target: target, NetworkGrants: network, SecretGrantRefs: refs, ResourceLimits: resourceLimitsFromTypedProto(r.GetTypedResourceLimits()), ExpiresAt: r.GetExpiresAt().AsTime().UTC()})
+	v, e := s.service.CreatePlan(ctx, coreworkload.PlanInput{IdempotencyKey: r.GetIdempotencyKey(), Summary: r.GetSummary(), Artifact: r.GetArtifact(), Source: r.GetSource(), CommandSteps: r.GetCommandSteps(), ImageDigest: r.GetImageDigest(), TargetKind: workloadTarget(r.GetTargetKind()), Target: target, NetworkGrants: network, SecretGrantRefs: refs, ResourceLimits: resourceLimitsFromTypedProto(r.GetTypedResourceLimits()), ExpiresAt: r.GetExpiresAt().AsTime().UTC()})
 	if e != nil {
 		return nil, workloadRPCError(e)
 	}
@@ -165,7 +160,7 @@ func (s *WorkloadService) ListEvents(ctx context.Context, r *agentv1.WorkloadSer
 		item := &agentv1.CoreWorkloadEvent{OperationId: ev.OperationID, Sequence: int64(ev.Sequence), Kind: ev.Kind, Status: string(ev.Status), Message: ev.Message, At: timestamppb.New(ev.At)}
 		var rb coreworkload.Readback
 		if len(ev.Readback) > 0 && json.Unmarshal(ev.Readback, &rb) == nil && rb.WorkloadID != "" {
-			item.Actual = &agentv1.CoreWorkloadActualSnapshot{WorkloadId: rb.WorkloadID, State: rb.State, Identity: &agentv1.CoreWorkloadTargetIdentity{Kind: map[coreworkload.TargetKind]agentv1.CoreWorkloadTargetKind{coreworkload.TargetCoreRunner: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER, coreworkload.TargetAWSEC2SSM: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_EC2_SSM, coreworkload.TargetAWSECS: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_ECS}[rb.Identity.Kind], CoreRunnerService: rb.Identity.CoreRunnerService, ImageDigest: rb.Identity.ImageDigest, AwsRegion: rb.Identity.Region, AwsAccountId: rb.Identity.AccountID, InstanceId: rb.Identity.InstanceID, Cluster: rb.Identity.Cluster, Service: rb.Identity.Service, TaskDefinitionRevision: rb.Identity.TaskDefinitionRevision, DesiredCount: rb.Identity.DesiredCount, Endpoint: rb.Identity.Endpoint}, ReadbackDigest: rb.Digest, ProviderVersion: rb.ProviderVersion, ObservedAt: timestamppb.New(rb.At)}
+			item.Actual = &agentv1.CoreWorkloadActualSnapshot{WorkloadId: rb.WorkloadID, State: rb.State, Identity: &agentv1.CoreWorkloadTargetIdentity{Kind: workloadTargetProto(rb.Identity.Kind), CoreRunnerId: rb.Identity.CoreRunnerID, CoreRunnerService: rb.Identity.CoreRunnerService, ImageDigest: rb.Identity.ImageDigest}, ReadbackDigest: rb.Digest, ProviderVersion: rb.ProviderVersion, ObservedAt: timestamppb.New(rb.At)}
 		}
 		out.Events = append(out.Events, item)
 	}
@@ -199,12 +194,15 @@ func workloadTarget(v agentv1.CoreWorkloadTargetKind) coreworkload.TargetKind {
 	switch v {
 	case agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER:
 		return coreworkload.TargetCoreRunner
-	case agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_EC2_SSM:
-		return coreworkload.TargetAWSEC2SSM
-	case agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_ECS:
-		return coreworkload.TargetAWSECS
 	}
 	return ""
+}
+
+func workloadTargetProto(v coreworkload.TargetKind) agentv1.CoreWorkloadTargetKind {
+	if v == coreworkload.TargetCoreRunner {
+		return agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER
+	}
+	return agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_UNSPECIFIED
 }
 func coreworkloadSecretPurpose(v agentv1.CoreWorkloadSecretPurpose) coreconfirmation.SecretPurpose {
 	switch v {
@@ -243,20 +241,7 @@ func targetSettingsFromTypedProto(v *agentv1.CoreWorkloadTargetSettings) corewor
 	}
 	out := coreworkload.TargetSettings{Labels: map[string]string{}}
 	if id := v.GetIdentity(); id != nil {
-		out.Identity = coreworkload.TargetIdentity{Kind: workloadTarget(id.GetKind()), CoreRunnerID: id.GetCoreRunnerId(), CoreRunnerService: id.GetCoreRunnerService(), ImageDigest: id.GetImageDigest(), AccountID: id.GetAwsAccountId(), Region: id.GetAwsRegion(), InstanceID: id.GetInstanceId(), Cluster: id.GetCluster(), Service: id.GetService(), TaskDefinitionRevision: id.GetTaskDefinitionRevision(), DesiredCount: id.GetDesiredCount(), Endpoint: id.GetEndpoint()}
-		out.Region, out.AccountID, out.Cluster, out.Service, out.InstanceID = id.GetAwsRegion(), id.GetAwsAccountId(), id.GetCluster(), id.GetService(), id.GetInstanceId()
-		out.EC2DocumentVersion, out.EC2SystemdService = id.GetAwsEc2DocumentVersion(), id.GetAwsEc2SystemdService()
-		out.RequiredInstanceTags = id.GetAwsEc2RequiredInstanceTags()
-		out.ECSClusterARN, out.ECSServiceName, out.ECSTaskFamily = id.GetAwsEcsClusterArn(), id.GetAwsEcsServiceName(), id.GetAwsEcsTaskFamily()
-		if out.Identity.Cluster == "" {
-			out.Identity.Cluster = out.ECSClusterARN
-		}
-		if out.Identity.Service == "" {
-			out.Identity.Service = out.ECSServiceName
-		}
-		out.ECSPlatformVersion, out.ECSSubnetIDs, out.ECSSecurityGroupIDs = id.GetAwsEcsPlatformVersion(), append([]string(nil), id.GetAwsEcsSubnetIds()...), append([]string(nil), id.GetAwsEcsSecurityGroupIds()...)
-		out.ECSAssignPublicIP, out.ECSTargetGroupARN, out.ECSTargetGroupPort = id.GetAwsEcsAssignPublicIp(), id.GetAwsEcsTargetGroupArn(), id.GetAwsEcsTargetGroupPort()
-		out.ECSTaskRoleARN, out.ECSExecutionRoleARN, out.ECSDesiredCount, out.ECSImageURI = id.GetAwsEcsTaskRoleArn(), id.GetAwsEcsExecutionRoleArn(), id.GetAwsEcsDesiredCount(), id.GetAwsEcsImageUri()
+		out.Identity = coreworkload.TargetIdentity{Kind: workloadTarget(id.GetKind()), CoreRunnerID: id.GetCoreRunnerId(), CoreRunnerService: id.GetCoreRunnerService(), ImageDigest: id.GetImageDigest()}
 	}
 	for _, p := range v.GetPorts() {
 		if p != nil {
@@ -279,7 +264,7 @@ func workloadPlanProto(p coreworkload.Plan) *agentv1.CoreWorkloadPlan {
 	for _, ref := range p.SecretGrantRefs {
 		refs = append(refs, &agentv1.CoreWorkloadSecretGrantRef{ReferenceId: ref.ReferenceID, Purpose: workloadSecretPurposeProto(ref.Purpose), BindingDigest: string(ref.BindingDigest)})
 	}
-	return &agentv1.CoreWorkloadPlan{PlanId: p.ID, Revision: int64(p.Revision), Digest: p.Digest, Summary: p.Summary, Artifact: p.Artifact, Source: p.Source, CommandSteps: p.CommandSteps, ImageDigest: p.ImageDigest, ImageUri: p.ImageURI, TargetKind: map[coreworkload.TargetKind]agentv1.CoreWorkloadTargetKind{coreworkload.TargetCoreRunner: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER, coreworkload.TargetAWSEC2SSM: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_EC2_SSM, coreworkload.TargetAWSECS: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_ECS}[p.TargetKind], TypedTarget: typedTargetProto(p), TypedResourceLimits: typedLimitsProto(p.ResourceLimits), TypedSecretGrants: refs, ExpiresAt: timestamppb.New(p.ExpiresAt), CreatedAt: timestamppb.New(p.CreatedAt)}
+	return &agentv1.CoreWorkloadPlan{PlanId: p.ID, Revision: int64(p.Revision), Digest: p.Digest, Summary: p.Summary, Artifact: p.Artifact, Source: p.Source, CommandSteps: p.CommandSteps, ImageDigest: p.ImageDigest, TargetKind: workloadTargetProto(p.TargetKind), TypedTarget: typedTargetProto(p), TypedResourceLimits: typedLimitsProto(p.ResourceLimits), TypedSecretGrants: refs, ExpiresAt: timestamppb.New(p.ExpiresAt), CreatedAt: timestamppb.New(p.CreatedAt)}
 }
 func resourceLimitsFromTypedProto(v *agentv1.CoreWorkloadResourceLimits) coreworkload.ResourceLimits {
 	if v == nil {
@@ -292,28 +277,10 @@ func typedTargetProto(p coreworkload.Plan) *agentv1.CoreWorkloadTargetSettings {
 	if id.Kind == "" {
 		id.Kind = p.TargetKind
 	}
-	if id.Region == "" {
-		id.Region = p.Target.Region
-	}
-	if id.AccountID == "" {
-		id.AccountID = p.Target.AccountID
-	}
-	if id.Cluster == "" {
-		id.Cluster = p.Target.Cluster
-	}
-	if id.Service == "" {
-		id.Service = p.Target.Service
-	}
-	if id.InstanceID == "" {
-		id.InstanceID = p.Target.InstanceID
-	}
 	if id.ImageDigest == "" {
 		id.ImageDigest = p.ImageDigest
 	}
-	if p.Target.ECSImageURI == "" {
-		p.Target.ECSImageURI = p.ImageURI
-	}
-	out := &agentv1.CoreWorkloadTargetSettings{Identity: &agentv1.CoreWorkloadTargetIdentity{Kind: map[coreworkload.TargetKind]agentv1.CoreWorkloadTargetKind{coreworkload.TargetCoreRunner: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER, coreworkload.TargetAWSEC2SSM: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_EC2_SSM, coreworkload.TargetAWSECS: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_ECS}[id.Kind], CoreRunnerId: id.CoreRunnerID, CoreRunnerService: id.CoreRunnerService, ImageDigest: id.ImageDigest, AwsRegion: id.Region, AwsAccountId: id.AccountID, InstanceId: id.InstanceID, Cluster: id.Cluster, Service: id.Service, TaskDefinitionRevision: id.TaskDefinitionRevision, DesiredCount: id.DesiredCount, Endpoint: id.Endpoint, AwsEc2DocumentVersion: p.Target.EC2DocumentVersion, AwsEc2SystemdService: p.Target.EC2SystemdService, AwsEc2RequiredInstanceTags: p.Target.RequiredInstanceTags, AwsEcsClusterArn: p.Target.ECSClusterARN, AwsEcsServiceName: p.Target.ECSServiceName, AwsEcsTaskFamily: p.Target.ECSTaskFamily, AwsEcsPlatformVersion: p.Target.ECSPlatformVersion, AwsEcsSubnetIds: p.Target.ECSSubnetIDs, AwsEcsSecurityGroupIds: p.Target.ECSSecurityGroupIDs, AwsEcsAssignPublicIp: p.Target.ECSAssignPublicIP, AwsEcsTargetGroupArn: p.Target.ECSTargetGroupARN, AwsEcsTargetGroupPort: p.Target.ECSTargetGroupPort, AwsEcsTaskRoleArn: p.Target.ECSTaskRoleARN, AwsEcsExecutionRoleArn: p.Target.ECSExecutionRoleARN, AwsEcsDesiredCount: p.Target.ECSDesiredCount, AwsEcsImageUri: p.Target.ECSImageURI}, Labels: p.Target.Labels}
+	out := &agentv1.CoreWorkloadTargetSettings{Identity: &agentv1.CoreWorkloadTargetIdentity{Kind: workloadTargetProto(id.Kind), CoreRunnerId: id.CoreRunnerID, CoreRunnerService: id.CoreRunnerService, ImageDigest: id.ImageDigest}, Labels: p.Target.Labels}
 	for _, port := range p.Target.PortDetails {
 		out.Ports = append(out.Ports, &agentv1.CoreWorkloadPort{Port: port.Port})
 	}
@@ -344,74 +311,11 @@ func workloadActualProto(w coreworkload.Workload) *agentv1.CoreWorkloadActualSna
 	if id.Kind == "" {
 		id.Kind = w.TargetKind
 	}
-	return &agentv1.CoreWorkloadActualSnapshot{WorkloadId: w.ID, Revision: w.Revision, State: w.State, AppliedPlanId: w.PlanID, AppliedPlanDigest: w.PlanDigest, UpdatedAt: timestamppb.New(w.UpdatedAt), Identity: &agentv1.CoreWorkloadTargetIdentity{Kind: map[coreworkload.TargetKind]agentv1.CoreWorkloadTargetKind{coreworkload.TargetCoreRunner: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER, coreworkload.TargetAWSEC2SSM: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_EC2_SSM, coreworkload.TargetAWSECS: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_ECS}[id.Kind], CoreRunnerId: id.CoreRunnerID, CoreRunnerService: id.CoreRunnerService, ImageDigest: id.ImageDigest, AwsRegion: id.Region, AwsAccountId: id.AccountID, InstanceId: id.InstanceID, Cluster: id.Cluster, Service: id.Service, TaskDefinitionRevision: id.TaskDefinitionRevision, DesiredCount: id.DesiredCount, Endpoint: id.Endpoint}}
+	return &agentv1.CoreWorkloadActualSnapshot{WorkloadId: w.ID, Revision: w.Revision, State: w.State, AppliedPlanId: w.PlanID, AppliedPlanDigest: w.PlanDigest, UpdatedAt: timestamppb.New(w.UpdatedAt), Identity: &agentv1.CoreWorkloadTargetIdentity{Kind: workloadTargetProto(id.Kind), CoreRunnerId: id.CoreRunnerID, CoreRunnerService: id.CoreRunnerService, ImageDigest: id.ImageDigest}}
 }
 
-func targetSettingsFromProto(s *structpb.Struct) coreworkload.TargetSettings {
-	var out coreworkload.TargetSettings
-	if s == nil {
-		return out
-	}
-	m := s.AsMap()
-	if v, ok := m["region"].(string); ok {
-		out.Region = v
-	}
-	if v, ok := m["account_id"].(string); ok {
-		out.AccountID = v
-	}
-	if v, ok := m["cluster"].(string); ok {
-		out.Cluster = v
-	}
-	if v, ok := m["service"].(string); ok {
-		out.Service = v
-	}
-	if v, ok := m["instance_id"].(string); ok {
-		out.InstanceID = v
-	}
-	if vs, ok := m["ports"].([]any); ok {
-		for _, v := range vs {
-			if n, ok := v.(float64); ok && math.IsNaN(n) == false && math.IsInf(n, 0) == false && math.Trunc(n) == n && n >= 1 && n <= 65535 {
-				out.Ports = append(out.Ports, int32(n))
-			} else {
-				out.Ports = append(out.Ports, -1)
-			}
-		}
-	}
-	if labels, ok := m["labels"].(map[string]any); ok {
-		out.Labels = map[string]string{}
-		for k, v := range labels {
-			if x, ok := v.(string); ok {
-				out.Labels[k] = x
-			}
-		}
-	}
-	return out
-}
-func resourceLimitsFromProto(s *structpb.Struct) coreworkload.ResourceLimits {
-	var out coreworkload.ResourceLimits
-	if s == nil {
-		return out
-	}
-	m := s.AsMap()
-	n := func(k string) int64 {
-		if v, ok := m[k].(float64); ok && math.IsNaN(v) == false && math.IsInf(v, 0) == false && math.Trunc(v) == v && v >= 0 && v <= math.MaxInt64 {
-			return int64(v)
-		}
-		if _, present := m[k]; present {
-			return -1
-		}
-		return 0
-	}
-	out.CPU = n("cpu")
-	out.MemoryMB = n("memory_mb")
-	out.Processes = n("processes")
-	out.DiskMB = n("disk_mb")
-	out.TimeoutS = n("timeout_seconds")
-	out.OutputMB = n("output_mb")
-	return out
-}
 func workloadOperationProto(o coreworkload.Operation) *agentv1.CoreWorkloadOperation {
-	return &agentv1.CoreWorkloadOperation{OperationId: o.ID, WorkloadId: o.WorkloadID, PlanId: o.PlanID, Kind: map[coreworkload.OperationKind]agentv1.CoreWorkloadOperationKind{coreworkload.OperationApply: agentv1.CoreWorkloadOperationKind_CORE_WORKLOAD_OPERATION_KIND_APPLY, coreworkload.OperationDestroy: agentv1.CoreWorkloadOperationKind_CORE_WORKLOAD_OPERATION_KIND_DESTROY}[o.Kind], PlanRevision: int64(o.PlanRevision), PlanDigest: o.PlanDigest, TargetKind: map[coreworkload.TargetKind]agentv1.CoreWorkloadTargetKind{coreworkload.TargetCoreRunner: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_CORE_RUNNER, coreworkload.TargetAWSEC2SSM: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_EC2_SSM, coreworkload.TargetAWSECS: agentv1.CoreWorkloadTargetKind_CORE_WORKLOAD_TARGET_KIND_AWS_ECS}[o.TargetKind], TaskId: o.TaskID, ConfirmationId: o.ConfirmationID, Status: string(o.Status), Revision: int64(o.Revision), FailureCode: o.FailureCode, FailureSummary: o.FailureSummary, DispatchClaim: o.DispatchClaim, DispatchEpoch: o.DispatchEpoch, DispatchLeaseUntil: timestamppb.New(o.DispatchLeaseUntil), CreatedAt: timestamppb.New(o.CreatedAt), UpdatedAt: timestamppb.New(o.UpdatedAt)}
+	return &agentv1.CoreWorkloadOperation{OperationId: o.ID, WorkloadId: o.WorkloadID, PlanId: o.PlanID, Kind: map[coreworkload.OperationKind]agentv1.CoreWorkloadOperationKind{coreworkload.OperationApply: agentv1.CoreWorkloadOperationKind_CORE_WORKLOAD_OPERATION_KIND_APPLY, coreworkload.OperationDestroy: agentv1.CoreWorkloadOperationKind_CORE_WORKLOAD_OPERATION_KIND_DESTROY}[o.Kind], PlanRevision: int64(o.PlanRevision), PlanDigest: o.PlanDigest, TargetKind: workloadTargetProto(o.TargetKind), TaskId: o.TaskID, ConfirmationId: o.ConfirmationID, Status: string(o.Status), Revision: int64(o.Revision), FailureCode: o.FailureCode, FailureSummary: o.FailureSummary, DispatchClaim: o.DispatchClaim, DispatchEpoch: o.DispatchEpoch, DispatchLeaseUntil: timestamppb.New(o.DispatchLeaseUntil), CreatedAt: timestamppb.New(o.CreatedAt), UpdatedAt: timestamppb.New(o.UpdatedAt)}
 }
 func workloadRPCError(e error) error {
 	switch {

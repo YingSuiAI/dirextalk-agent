@@ -45,8 +45,8 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 	descriptors := []*capv1.CapabilityDescriptor{
 		coreInfoDescriptor("agent.info.v1", true),
 		coreInfoDescriptor("agent.execution.v2", true,
-			"service_bindings_invoke", "targets_import", "targets_reserve", "targets_observe",
-			"plans_list", "runs_list", "secrets_list"),
+			"plans_get", "plans_list", "runs_get", "runs_list", "runs_cancel", "runs_events",
+			"artifacts_get", "artifacts_download"),
 		coreInfoDescriptor("agent.voice.v1", true),
 		coreInfoDescriptor("agent.web_search.v1", true, "get_config", "update_config", "test"),
 		coreInfoDescriptor("agent.text_tools.v1", true, "get_config", "update_config", "execute"),
@@ -82,14 +82,8 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 		"confirmation",
 		"conversation",
 		"execution.v2",
-		"execution.v2.bindings",
-		"execution.v2.observe",
 		"execution.v2.plan",
-		"execution.v2.provision",
 		"execution.v2.run",
-		"execution.v2.secrets",
-		"execution.v2.transport.aws_ssm",
-		"execution.v2.transport.http_api",
 		"image_tools.server",
 		"knowledge",
 		"mcp",
@@ -148,7 +142,7 @@ func TestCoreInfoProviderRequiresCompleteStaticSiteOperations(t *testing.T) {
 	}
 }
 
-func TestCoreInfoProviderDoesNotInferSkillsOrExecutionTokens(t *testing.T) {
+func TestCoreInfoProviderDoesNotInferSkillsOrRetiredExecutionTokens(t *testing.T) {
 	provider := newCoreInfoProvider("instance", func() []*capv1.CapabilityDescriptor {
 		return []*capv1.CapabilityDescriptor{
 			coreInfoDescriptor("agent.skills.v1", true, "invoke_product"),
@@ -159,7 +153,7 @@ func TestCoreInfoProviderDoesNotInferSkillsOrExecutionTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"execution.v2", "execution.v2.bindings", "execution.v2.transport.http_api"}
+	want := []string{"execution.v2"}
 	if !reflect.DeepEqual(backends.Core.Capabilities, want) {
 		t.Fatalf("Core capabilities = %#v, want %#v", backends.Core.Capabilities, want)
 	}

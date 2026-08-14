@@ -56,51 +56,6 @@ func TestLoadAcceptsExplicitVoiceCallbackRelayTokenField(t *testing.T) {
 	}
 }
 
-func TestLoadAWSReadinessUsesExplicitSnakeCaseTargetSchema(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	contents := `core_aws_ssm_readiness:
-  credential_reference: 00000000-0000-4000-8000-000000000001
-  target:
-    region: ap-northeast-3
-    account_id: "123456789012"
-    instance_id: i-0123456789abcdef0
-    identity:
-      kind: AWS_EC2_SSM
-      region: ap-northeast-3
-      account_id: "123456789012"
-      instance_id: i-0123456789abcdef0
-    ec2_document_version: "1"
-    ec2_systemd_service: dirextalk-agent.service
-    required_instance_tags:
-      managed: "true"
-`
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.CoreAWSSSMReadiness == nil || cfg.CoreAWSSSMReadiness.Target.EC2SystemdService != "dirextalk-agent.service" || cfg.CoreAWSSSMReadiness.Target.Identity.InstanceID == "" {
-		t.Fatalf("readiness schema not decoded: %#v", cfg.CoreAWSSSMReadiness)
-	}
-}
-
-func TestLoadCloudFormationRoleARNFromExplicitEnvironmentFallback(t *testing.T) {
-	t.Setenv("DIREXTALK_CORE_AWS_CLOUDFORMATION_SERVICE_ROLE_ARN", "arn:aws:iam::123456789012:role/dirextalk-cfn-execution")
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("core_execution_v2_enabled: false\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.CoreAWSCloudFormationServiceRoleARN == "" {
-		t.Fatal("explicit role ARN environment fallback was not loaded")
-	}
-}
-
 func TestValidateCoreRequiresTokenAndBounds(t *testing.T) {
 	cfg := validCoreConfig(t)
 	if err := ValidateCore(&cfg); err != nil {
@@ -144,38 +99,6 @@ func TestValidateCoreAWSDisabledDoesNotReadKeyFile(t *testing.T) {
 	cfg.CoreSecretMasterKeyFile = filepath.Join(t.TempDir(), "missing")
 	if err := ValidateCoreAWS(&cfg); err != nil {
 		t.Fatalf("disabled AWS unexpectedly required key: %v", err)
-	}
-}
-
-func TestValidateCoreExecutionV2RequiresDedicatedCloudFormationRole(t *testing.T) {
-	cfg := validCoreConfig(t)
-	cfg.CoreExecutionV2Enabled = true
-	cfg.CoreAWSEnabled = true
-	cfg.CoreExecutionV2ProbeTimeout = time.Second
-	cfg.CoreExecutionV2BindingOperations = []string{"target.observe"}
-	cfg.CoreAWSSSMReadiness = &AWSWorkloadReadiness{}
-	if err := ValidateCoreExecutionV2(&cfg); err == nil || !strings.Contains(err.Error(), "cloudformation_service_role_arn") {
-		t.Fatalf("missing service role accepted: %v", err)
-	}
-	cfg.CoreAWSCloudFormationServiceRoleARN = "arn:aws:iam::123456789012:role/dirextalk-cfn-execution"
-	if err := ValidateCoreExecutionV2(&cfg); err != nil {
-		t.Fatalf("valid service role rejected: %v", err)
-	}
-	cfg.CoreAWSCloudFormationServiceRoleARN = "arn:aws:iam::123456789012:role/*"
-	if err := ValidateCoreExecutionV2(&cfg); err == nil {
-		t.Fatal("wildcard service role accepted")
-	}
-}
-
-func TestValidateCoreExecutionV2CloudWorkerOnlyDoesNotRequireSSM(t *testing.T) {
-	cfg := validCoreConfig(t)
-	cfg.CoreExecutionV2Enabled = true
-	cfg.CoreAWSSSMReadiness = nil
-	cfg.CoreExecutionV2ProbeTimeout = 0
-	cfg.CoreExecutionV2BindingOperations = nil
-	cfg.CoreAWSCloudFormationServiceRoleARN = ""
-	if err := ValidateCoreExecutionV2(&cfg); err != nil {
-		t.Fatalf("Cloud Worker-only Execution V2 rejected: %v", err)
 	}
 }
 

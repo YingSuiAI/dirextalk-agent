@@ -259,12 +259,6 @@ func (s *CoreConfirmationStore) Confirm(ctx context.Context, c coreconfirmation.
 			return cur, coreconfirmation.ErrConflict
 		}
 	}
-	if e = projectExecutionV2RunConfirmationTx(ctx, tx, cur, "queued", c.At.UTC()); e != nil {
-		return cur, e
-	}
-	if e = projectAWSConfirmationTx(ctx, tx, cur, "running", "confirmed", "", "", "confirmed", c.At.UTC()); e != nil {
-		return cur, e
-	}
 	if e = projectCloudWorkerConfirmationTx(ctx, tx, cur, cloudworker.StateQueued, "confirmation_confirmed", c.At.UTC()); e != nil {
 		return cur, e
 	}
@@ -357,9 +351,6 @@ func (s *CoreConfirmationStore) Reject(ctx context.Context, c coreconfirmation.R
 		}
 		return cur, coreconfirmation.ErrConflict
 	}
-	if e = projectExecutionV2RunConfirmationTx(ctx, tx, cur, "rejected", c.At.UTC()); e != nil {
-		return cur, e
-	}
 	if e = terminalizeConversationToolTx(ctx, tx, cur, "denied", coreconfirmation.ReasonUserRejected, c.At.UTC(), true); e != nil {
 		return cur, e
 	}
@@ -367,9 +358,6 @@ func (s *CoreConfirmationStore) Reject(ctx context.Context, c coreconfirmation.R
 		if e = rollbackExtensionLifecycleTx(ctx, tx, cur.ConfirmationID); e != nil {
 			return cur, e
 		}
-	}
-	if e = projectAWSConfirmationTx(ctx, tx, cur, "canceled", "canceled", coreconfirmation.ReasonUserRejected, coreconfirmation.ReasonUserRejected, coreconfirmation.ReasonUserRejected, c.At.UTC()); e != nil {
-		return cur, e
 	}
 	if e = projectCloudWorkerConfirmationTx(ctx, tx, cur, cloudworker.StateRejected, "confirmation_rejected", c.At.UTC()); e != nil {
 		return cur, e

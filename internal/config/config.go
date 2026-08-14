@@ -9,14 +9,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
-	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
@@ -38,62 +36,53 @@ type Config struct {
 	// may reuse the Core certificate/token when no separate material is
 	// mounted, but production deployments should provide an independent
 	// directional token file.
-	CapabilityEnabled                   bool                  `yaml:"capability_enabled" mapstructure:"capability_enabled"`
-	CapabilityListenAddress             string                `yaml:"capability_grpc_listen" mapstructure:"capability_grpc_listen"`
-	CapabilityCACertFile                string                `yaml:"capability_ca_cert_file" mapstructure:"capability_ca_cert_file"`
-	CapabilityTLSCertFile               string                `yaml:"capability_tls_cert_file" mapstructure:"capability_tls_cert_file"`
-	CapabilityTLSKeyFile                string                `yaml:"capability_tls_key_file" mapstructure:"capability_tls_key_file"`
-	CapabilityTokenFile                 string                `yaml:"capability_token_file" mapstructure:"capability_token_file"`
-	CapabilityGrantPublicKeyFile        string                `yaml:"capability_grant_public_key_file" mapstructure:"capability_grant_public_key_file"`
-	CapabilityPeerCommonName            string                `yaml:"capability_peer_common_name" mapstructure:"capability_peer_common_name"`
-	CapabilityPeerInstanceID            string                `yaml:"capability_peer_instance_id" mapstructure:"capability_peer_instance_id"`
-	CapabilityAccountGeneration         int64                 `yaml:"capability_account_generation" mapstructure:"capability_account_generation"`
-	CapabilityMaxConcurrentQuery        int                   `yaml:"capability_max_concurrent_query" mapstructure:"capability_max_concurrent_query"`
-	CapabilityMaxConcurrentWatch        int                   `yaml:"capability_max_concurrent_watch" mapstructure:"capability_max_concurrent_watch"`
-	ProductCapabilityEnabled            bool                  `yaml:"product_capability_enabled" mapstructure:"product_capability_enabled"`
-	ProductCapabilityAddress            string                `yaml:"product_capability_address" mapstructure:"product_capability_address"`
-	ProductCapabilityCACertFile         string                `yaml:"product_capability_ca_cert_file" mapstructure:"product_capability_ca_cert_file"`
-	ProductCapabilityTLSCertFile        string                `yaml:"product_capability_tls_cert_file" mapstructure:"product_capability_tls_cert_file"`
-	ProductCapabilityTLSKeyFile         string                `yaml:"product_capability_tls_key_file" mapstructure:"product_capability_tls_key_file"`
-	ProductCapabilityTokenFile          string                `yaml:"product_capability_token_file" mapstructure:"product_capability_token_file"`
-	ProductCapabilityServerName         string                `yaml:"product_capability_server_name" mapstructure:"product_capability_server_name"`
-	ProductCapabilityInstanceID         string                `yaml:"product_capability_instance_id" mapstructure:"product_capability_instance_id"`
-	ProductCapabilityAccountGeneration  int64                 `yaml:"product_capability_account_generation" mapstructure:"product_capability_account_generation"`
-	EnableHealthService                 bool                  `yaml:"enable_health_service" mapstructure:"enable_health_service"`
-	EnableReflection                    bool                  `yaml:"enable_reflection" mapstructure:"enable_reflection"`
-	CoreTaskMaxConcurrency              int                   `yaml:"core_task_max_concurrency" mapstructure:"core_task_max_concurrency"`
-	CoreTaskLeaseTTL                    time.Duration         `yaml:"core_task_lease_ttl" mapstructure:"core_task_lease_ttl"`
-	CoreScheduleSweepInterval           time.Duration         `yaml:"core_schedule_sweep_interval" mapstructure:"core_schedule_sweep_interval"`
-	CoreShutdownGrace                   time.Duration         `yaml:"core_shutdown_grace" mapstructure:"core_shutdown_grace"`
-	CoreAWSEnabled                      bool                  `yaml:"core_aws_enabled" mapstructure:"core_aws_enabled"`
-	CoreSecretMasterKeyFile             string                `yaml:"core_secret_master_key_file" mapstructure:"core_secret_master_key_file"`
-	CoreSecretMasterKeyVersion          uint32                `yaml:"core_secret_master_key_version" mapstructure:"core_secret_master_key_version"`
-	CoreAWSSSMReadiness                 *AWSWorkloadReadiness `yaml:"core_aws_ssm_readiness" mapstructure:"core_aws_ssm_readiness"`
-	CoreAWSECSReadiness                 *AWSWorkloadReadiness `yaml:"core_aws_ecs_readiness" mapstructure:"core_aws_ecs_readiness"`
-	CoreAWSCloudFormationServiceRoleARN string                `yaml:"core_aws_cloudformation_service_role_arn" mapstructure:"core_aws_cloudformation_service_role_arn"`
-	CoreExtensionEnabled                bool                  `yaml:"core_extension_enabled" mapstructure:"core_extension_enabled"`
-	CoreExtensionStagingRoot            string                `yaml:"core_extension_staging_root" mapstructure:"core_extension_staging_root"`
-	CoreExtensionWorkspaceRoot          string                `yaml:"core_extension_workspace_root" mapstructure:"core_extension_workspace_root"`
-	CoreExtensionRunnerSocket           string                `yaml:"core_extension_runner_socket" mapstructure:"core_extension_runner_socket"`
-	CoreExtensionRunnerUID              uint32                `yaml:"core_extension_runner_uid" mapstructure:"core_extension_runner_uid"`
-	CoreWorkloadEnabled                 bool                  `yaml:"core_workload_enabled" mapstructure:"core_workload_enabled"`
-	CoreWorkloadRunnerSocket            string                `yaml:"core_workload_runner_socket" mapstructure:"core_workload_runner_socket"`
-	CoreWorkloadRunnerUID               uint32                `yaml:"core_workload_runner_uid" mapstructure:"core_workload_runner_uid"`
-	// execution.v2 is Agent-owned. Cloud Worker reads/cancellation are composed
-	// independently; an optional SSM target enables the generic imported-target
-	// routes only after their own typed readiness proof succeeds.
-	CoreExecutionV2Enabled           bool          `yaml:"core_execution_v2_enabled" mapstructure:"core_execution_v2_enabled"`
-	CoreExecutionV2ProbeTimeout      time.Duration `yaml:"core_execution_v2_probe_timeout" mapstructure:"core_execution_v2_probe_timeout"`
-	CoreExecutionV2BindingOperations []string      `yaml:"core_execution_v2_binding_operations" mapstructure:"core_execution_v2_binding_operations"`
-	CoreStaticSitesEnabled           bool          `yaml:"core_static_sites_enabled" mapstructure:"core_static_sites_enabled"`
-	CoreStaticSitesRoot              string        `yaml:"core_static_sites_root" mapstructure:"core_static_sites_root"`
-	CoreStaticSitesPublicOrigin      string        `yaml:"core_static_sites_public_origin" mapstructure:"core_static_sites_public_origin"`
-	CoreKnowledgeEnabled             bool          `yaml:"core_knowledge_enabled" mapstructure:"core_knowledge_enabled"`
-	CoreKnowledgeContentRoot         string        `yaml:"core_knowledge_content_root" mapstructure:"core_knowledge_content_root"`
-	CoreKnowledgeMountRoot           string        `yaml:"core_knowledge_mount_root" mapstructure:"core_knowledge_mount_root"`
-	CoreKnowledgeEmbeddingProfileID  string        `yaml:"core_knowledge_embedding_profile_id" mapstructure:"core_knowledge_embedding_profile_id"`
-	CoreKnowledgeVectorDimension     int           `yaml:"core_knowledge_vector_dimension" mapstructure:"core_knowledge_vector_dimension"`
-	CoreKnowledgeSweepInterval       time.Duration `yaml:"core_knowledge_sweep_interval" mapstructure:"core_knowledge_sweep_interval"`
+	CapabilityEnabled                  bool          `yaml:"capability_enabled" mapstructure:"capability_enabled"`
+	CapabilityListenAddress            string        `yaml:"capability_grpc_listen" mapstructure:"capability_grpc_listen"`
+	CapabilityCACertFile               string        `yaml:"capability_ca_cert_file" mapstructure:"capability_ca_cert_file"`
+	CapabilityTLSCertFile              string        `yaml:"capability_tls_cert_file" mapstructure:"capability_tls_cert_file"`
+	CapabilityTLSKeyFile               string        `yaml:"capability_tls_key_file" mapstructure:"capability_tls_key_file"`
+	CapabilityTokenFile                string        `yaml:"capability_token_file" mapstructure:"capability_token_file"`
+	CapabilityGrantPublicKeyFile       string        `yaml:"capability_grant_public_key_file" mapstructure:"capability_grant_public_key_file"`
+	CapabilityPeerCommonName           string        `yaml:"capability_peer_common_name" mapstructure:"capability_peer_common_name"`
+	CapabilityPeerInstanceID           string        `yaml:"capability_peer_instance_id" mapstructure:"capability_peer_instance_id"`
+	CapabilityAccountGeneration        int64         `yaml:"capability_account_generation" mapstructure:"capability_account_generation"`
+	CapabilityMaxConcurrentQuery       int           `yaml:"capability_max_concurrent_query" mapstructure:"capability_max_concurrent_query"`
+	CapabilityMaxConcurrentWatch       int           `yaml:"capability_max_concurrent_watch" mapstructure:"capability_max_concurrent_watch"`
+	ProductCapabilityEnabled           bool          `yaml:"product_capability_enabled" mapstructure:"product_capability_enabled"`
+	ProductCapabilityAddress           string        `yaml:"product_capability_address" mapstructure:"product_capability_address"`
+	ProductCapabilityCACertFile        string        `yaml:"product_capability_ca_cert_file" mapstructure:"product_capability_ca_cert_file"`
+	ProductCapabilityTLSCertFile       string        `yaml:"product_capability_tls_cert_file" mapstructure:"product_capability_tls_cert_file"`
+	ProductCapabilityTLSKeyFile        string        `yaml:"product_capability_tls_key_file" mapstructure:"product_capability_tls_key_file"`
+	ProductCapabilityTokenFile         string        `yaml:"product_capability_token_file" mapstructure:"product_capability_token_file"`
+	ProductCapabilityServerName        string        `yaml:"product_capability_server_name" mapstructure:"product_capability_server_name"`
+	ProductCapabilityInstanceID        string        `yaml:"product_capability_instance_id" mapstructure:"product_capability_instance_id"`
+	ProductCapabilityAccountGeneration int64         `yaml:"product_capability_account_generation" mapstructure:"product_capability_account_generation"`
+	EnableHealthService                bool          `yaml:"enable_health_service" mapstructure:"enable_health_service"`
+	EnableReflection                   bool          `yaml:"enable_reflection" mapstructure:"enable_reflection"`
+	CoreTaskMaxConcurrency             int           `yaml:"core_task_max_concurrency" mapstructure:"core_task_max_concurrency"`
+	CoreTaskLeaseTTL                   time.Duration `yaml:"core_task_lease_ttl" mapstructure:"core_task_lease_ttl"`
+	CoreScheduleSweepInterval          time.Duration `yaml:"core_schedule_sweep_interval" mapstructure:"core_schedule_sweep_interval"`
+	CoreShutdownGrace                  time.Duration `yaml:"core_shutdown_grace" mapstructure:"core_shutdown_grace"`
+	CoreAWSEnabled                     bool          `yaml:"core_aws_enabled" mapstructure:"core_aws_enabled"`
+	CoreSecretMasterKeyFile            string        `yaml:"core_secret_master_key_file" mapstructure:"core_secret_master_key_file"`
+	CoreSecretMasterKeyVersion         uint32        `yaml:"core_secret_master_key_version" mapstructure:"core_secret_master_key_version"`
+	CoreExtensionEnabled               bool          `yaml:"core_extension_enabled" mapstructure:"core_extension_enabled"`
+	CoreExtensionStagingRoot           string        `yaml:"core_extension_staging_root" mapstructure:"core_extension_staging_root"`
+	CoreExtensionWorkspaceRoot         string        `yaml:"core_extension_workspace_root" mapstructure:"core_extension_workspace_root"`
+	CoreExtensionRunnerSocket          string        `yaml:"core_extension_runner_socket" mapstructure:"core_extension_runner_socket"`
+	CoreExtensionRunnerUID             uint32        `yaml:"core_extension_runner_uid" mapstructure:"core_extension_runner_uid"`
+	CoreWorkloadEnabled                bool          `yaml:"core_workload_enabled" mapstructure:"core_workload_enabled"`
+	CoreWorkloadRunnerSocket           string        `yaml:"core_workload_runner_socket" mapstructure:"core_workload_runner_socket"`
+	CoreWorkloadRunnerUID              uint32        `yaml:"core_workload_runner_uid" mapstructure:"core_workload_runner_uid"`
+	CoreStaticSitesEnabled             bool          `yaml:"core_static_sites_enabled" mapstructure:"core_static_sites_enabled"`
+	CoreStaticSitesRoot                string        `yaml:"core_static_sites_root" mapstructure:"core_static_sites_root"`
+	CoreStaticSitesPublicOrigin        string        `yaml:"core_static_sites_public_origin" mapstructure:"core_static_sites_public_origin"`
+	CoreKnowledgeEnabled               bool          `yaml:"core_knowledge_enabled" mapstructure:"core_knowledge_enabled"`
+	CoreKnowledgeContentRoot           string        `yaml:"core_knowledge_content_root" mapstructure:"core_knowledge_content_root"`
+	CoreKnowledgeMountRoot             string        `yaml:"core_knowledge_mount_root" mapstructure:"core_knowledge_mount_root"`
+	CoreKnowledgeEmbeddingProfileID    string        `yaml:"core_knowledge_embedding_profile_id" mapstructure:"core_knowledge_embedding_profile_id"`
+	CoreKnowledgeVectorDimension       int           `yaml:"core_knowledge_vector_dimension" mapstructure:"core_knowledge_vector_dimension"`
+	CoreKnowledgeSweepInterval         time.Duration `yaml:"core_knowledge_sweep_interval" mapstructure:"core_knowledge_sweep_interval"`
 	// Native Voice is an optional Agent-owned capability.  Credentials are
 	// mounted-file references only; the values are read request-locally and
 	// never written to the Agent database or returned by the capability API.
@@ -122,14 +111,6 @@ type Config struct {
 	CoreVoiceCallbackWriteTimeout    time.Duration `yaml:"core_voice_callback_write_timeout" mapstructure:"core_voice_callback_write_timeout"`
 }
 
-// AWSWorkloadReadiness is non-secret, explicit startup proof configuration.
-// Credentials are resolved from the Agent database by reference only; a
-// missing or stale target leaves the capability disabled.
-type AWSWorkloadReadiness struct {
-	CredentialReference string                      `yaml:"credential_reference" mapstructure:"credential_reference"`
-	Target              coreworkload.TargetSettings `yaml:"target" mapstructure:"target"`
-}
-
 const (
 	defaultCoreTaskMaxConcurrency    = 4
 	defaultCoreTaskLeaseTTL          = 30 * time.Second
@@ -156,7 +137,6 @@ func Load(path string) (Config, error) {
 	v.SetDefault("core_schedule_sweep_interval", defaultCoreScheduleSweepInterval)
 	v.SetDefault("core_shutdown_grace", defaultCoreShutdownGrace)
 	v.SetDefault("core_knowledge_sweep_interval", defaultKnowledgeSweepInterval)
-	v.SetDefault("core_execution_v2_probe_timeout", 10*time.Second)
 	v.SetDefault("core_secret_master_key_version", uint32(1))
 	v.SetDefault("core_voice_callback_read_timeout", 5*time.Second)
 	v.SetDefault("core_voice_callback_write_timeout", 15*time.Second)
@@ -166,9 +146,6 @@ func Load(path string) (Config, error) {
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
 		return Config{}, fmt.Errorf("viper config decode: %w", err)
-	}
-	if strings.TrimSpace(cfg.CoreAWSCloudFormationServiceRoleARN) == "" {
-		cfg.CoreAWSCloudFormationServiceRoleARN = strings.TrimSpace(os.Getenv("DIREXTALK_CORE_AWS_CLOUDFORMATION_SERVICE_ROLE_ARN"))
 	}
 	var strictCfg Config
 	decoder := yaml.NewDecoder(bytes.NewReader(contents))
@@ -207,9 +184,6 @@ func ValidateCore(cfg *Config) error {
 		return err
 	}
 	if err := ValidateCoreWorkload(cfg); err != nil {
-		return err
-	}
-	if err := ValidateCoreExecutionV2(cfg); err != nil {
 		return err
 	}
 	if err := ValidateCoreStaticSites(cfg); err != nil {
@@ -299,48 +273,6 @@ func ValidateCoreAWS(cfg *Config) error {
 	}
 	return ValidateCoreSecretMasterKey(cfg)
 }
-
-// ValidateCoreExecutionV2 keeps the production execution capability opt-in.
-// The composition root performs the stronger dependency/readiness checks;
-// this function only validates process-level values that can be checked
-// without opening a database or contacting AWS.
-func ValidateCoreExecutionV2(cfg *Config) error {
-	if cfg == nil || !cfg.CoreExecutionV2Enabled {
-		return nil
-	}
-	// No SSM readiness block means this process is publishing only the
-	// strongly typed Cloud Worker routes. Their complete dependency proof is
-	// performed by the composition root, which has access to the store/port.
-	if cfg.CoreAWSSSMReadiness == nil {
-		return nil
-	}
-	if cfg.CoreExecutionV2ProbeTimeout <= 0 || cfg.CoreExecutionV2ProbeTimeout > 2*time.Minute {
-		return errors.New("core_execution_v2_probe_timeout must be between 1ns and 2m")
-	}
-	if len(cfg.CoreExecutionV2BindingOperations) == 0 {
-		return errors.New("core_execution_v2_binding_operations must explicitly allow at least one operation")
-	}
-	seen := map[string]struct{}{}
-	for _, operation := range cfg.CoreExecutionV2BindingOperations {
-		operation = strings.TrimSpace(operation)
-		if operation == "" || len(operation) > 64 || strings.ContainsAny(operation, "\r\n\x00 ") {
-			return errors.New("core_execution_v2_binding_operations contains an invalid operation")
-		}
-		if _, ok := seen[operation]; ok {
-			return errors.New("core_execution_v2_binding_operations contains a duplicate operation")
-		}
-		seen[operation] = struct{}{}
-	}
-	if cfg.CoreAWSEnabled == false {
-		return errors.New("core_aws_ssm_readiness requires core_aws_enabled")
-	}
-	if !awsServiceRoleARNRE.MatchString(strings.TrimSpace(cfg.CoreAWSCloudFormationServiceRoleARN)) {
-		return errors.New("core_aws_cloudformation_service_role_arn must be an explicit IAM role ARN")
-	}
-	return nil
-}
-
-var awsServiceRoleARNRE = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]{1,512}$`)
 
 // ValidateCoreVoice validates the optional Agent-owned Native Voice graph.
 // Disabled mode deliberately leaves all voice fields untouched so an Agent
