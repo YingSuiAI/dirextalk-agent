@@ -240,7 +240,8 @@ func TestGRPCTerminalResolvesUnknownHeartbeatBeforeNextProgressSequence(t *testi
 				client.SetOutputTruncated()
 				err = client.Fail(t.Context(), FailRequest{
 					Fence: claimed.Binding.Fence(), SessionID: claimed.SessionID, SessionToken: claimed.SessionToken,
-					Code: "process_process_output_limit", IdempotencyKey: uuid.NewString(),
+					Code: "process_process_output_limit", Summary: "pi execution gate: runtime_topology_invalid",
+					IdempotencyKey: uuid.NewString(),
 				})
 			}
 			if err != nil {
@@ -255,7 +256,8 @@ func TestGRPCTerminalResolvesUnknownHeartbeatBeforeNextProgressSequence(t *testi
 					rpc.completes[0].Progress.UploadedBytes != uint64(fixture.uploader.claim.SizeBytes) {
 					t.Fatalf("complete requests=%#v fail requests=%#v", rpc.completes, rpc.fails)
 				}
-			} else if len(rpc.fails) != 1 || len(rpc.completes) != 0 || rpc.fails[0].ProgressSequence != 2 || !rpc.fails[0].Progress.OutputTruncated {
+			} else if len(rpc.fails) != 1 || len(rpc.completes) != 0 || rpc.fails[0].ProgressSequence != 2 ||
+				!rpc.fails[0].Progress.OutputTruncated || rpc.fails[0].Summary != "pi execution gate: runtime_topology_invalid" {
 				t.Fatalf("fail requests=%#v complete requests=%#v", rpc.fails, rpc.completes)
 			}
 		})

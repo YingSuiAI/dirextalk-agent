@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
 	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 	"github.com/google/uuid"
@@ -193,6 +194,7 @@ func (workflow *Workflow) Run(ctx context.Context) error {
 		failErr := workflow.control.Fail(terminalCtx, FailRequest{
 			Fence: binding.Fence(), SessionID: claimed.SessionID,
 			SessionToken: claimed.SessionToken, Code: failureCode,
+			Summary:        runtimeFailureSummary(runErr),
 			IdempotencyKey: uuid.NewString(),
 		})
 		cancelTerminal()
@@ -529,6 +531,13 @@ func runtimeFailureCode(err error) string {
 		return string(failure.Stage) + "_" + string(failure.Code)
 	}
 	return "runtime_failed"
+}
+
+func runtimeFailureSummary(err error) string {
+	if code, ok := execgate.ViolationCode(err); ok {
+		return "pi execution gate: " + code
+	}
+	return ""
 }
 
 func uploadFailureCode(err error) string {

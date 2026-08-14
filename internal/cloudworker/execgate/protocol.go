@@ -10,12 +10,13 @@ import (
 type operation string
 
 const (
-	operationPing     operation = "ping"
-	operationRegister operation = "register"
-	operationActivate operation = "activate"
-	operationProof    operation = "proof"
-	operationTerminal operation = "terminal"
-	operationCancel   operation = "cancel"
+	operationPing       operation = "ping"
+	operationRegister   operation = "register"
+	operationActivate   operation = "activate"
+	operationProof      operation = "proof"
+	operationTerminal   operation = "terminal"
+	operationCancel     operation = "cancel"
+	wireViolationPrefix           = "violation_"
 )
 
 type wireRequest struct {

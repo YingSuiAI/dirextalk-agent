@@ -149,7 +149,9 @@ func (runner OSProcessRunner) Run(ctx context.Context, spec ProcessSpec) (Proces
 		})
 		if err != nil {
 			logProcessFailure("gate_register", FailureCodeProcessTopology)
-			return ProcessOutput{}, newFailure(FailureStageProcess, FailureCodeProcessTopology)
+			return ProcessOutput{}, errors.Join(
+				newFailure(FailureStageProcess, FailureCodeProcessTopology), err,
+			)
 		}
 		gateRun = registered
 	}
@@ -187,7 +189,9 @@ func (runner OSProcessRunner) Run(ctx context.Context, spec ProcessSpec) (Proces
 			_ = command.Cancel()
 			waitErr = command.Wait()
 			logProcessFailure("gate_activate", FailureCodeProcessTopology)
-			lifecycleErr = newFailure(FailureStageProcess, FailureCodeProcessTopology)
+			lifecycleErr = errors.Join(
+				newFailure(FailureStageProcess, FailureCodeProcessTopology), activateErr,
+			)
 		}
 	}
 	if startErr == nil && lifecycleErr == nil {
@@ -197,7 +201,9 @@ func (runner OSProcessRunner) Run(ctx context.Context, spec ProcessSpec) (Proces
 		proof, topologyErr := gateRun.Terminal(ctx)
 		if topologyErr != nil || proof.ValidateTerminal() != nil {
 			logProcessFailure("gate_terminal", FailureCodeProcessTopology)
-			lifecycleErr = newFailure(FailureStageProcess, FailureCodeProcessTopology)
+			lifecycleErr = errors.Join(
+				newFailure(FailureStageProcess, FailureCodeProcessTopology), topologyErr,
+			)
 		} else {
 			terminalProof = proof
 			runner.state.mu.Lock()

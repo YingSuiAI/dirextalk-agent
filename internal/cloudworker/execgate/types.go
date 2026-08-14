@@ -28,8 +28,32 @@ var (
 	ErrUnavailable = errors.New("Pi execution gate unavailable")
 	ErrViolation   = errors.New("Pi execution topology violated")
 
-	digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	digestPattern    = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	violationPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,47}$`)
 )
+
+// Violation carries one closed, non-sensitive execution-gate reason across the
+// private Worker/Gate boundary.
+type Violation struct{ Code string }
+
+func (*Violation) Error() string { return ErrViolation.Error() }
+func (*Violation) Unwrap() error { return ErrViolation }
+
+func newViolation(code string) error {
+	if !violationPattern.MatchString(code) {
+		return ErrViolation
+	}
+	return &Violation{Code: code}
+}
+
+// ViolationCode returns only a closed, non-sensitive execution-gate reason.
+func ViolationCode(err error) (string, bool) {
+	var typed *Violation
+	if !errors.As(err, &typed) || typed == nil || !violationPattern.MatchString(typed.Code) {
+		return "", false
+	}
+	return typed.Code, true
+}
 
 type ProofState string
 
@@ -79,7 +103,8 @@ func (value ProcessIdentity) validate() error {
 
 // Proof is a private WorkerControl fact. WorkerProcessCount and
 // ActivePiProcesses use the pinned executable identities. TotalAllowedPiExecs
-// is an audit count of authorized pinned-image execs, not a concurrency limit.
+// is a saturating audit count of authorized pinned-image execs, not a
+// concurrency limit.
 // CgroupProcessCount and ActiveDescendants cover every process in the Worker
 // cgroup so a terminal proof cannot ignore a surviving Pi/bash/git/tool child.
 type Proof struct {

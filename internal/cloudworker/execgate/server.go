@@ -89,7 +89,6 @@ type policy struct {
 	piPinned          fileIdentity
 	policyDigest      string
 	pi                ProcessIdentity
-	authorizedPi      map[int32]ProcessIdentity
 	authorizedPiExecs uint32
 	activeProof       bool
 	terminal          *Proof
@@ -267,6 +266,9 @@ func failedResponse(err error) wireResponse {
 	case errors.Is(err, ErrViolation):
 		code = "violation"
 	}
+	if violation, ok := ViolationCode(err); ok {
+		code = wireViolationPrefix + violation
+	}
 	return wireResponse{Schema: ProtocolSchemaV1, Code: code}
 }
 
@@ -377,15 +379,9 @@ func (server *Server) handlePermissionEvent(event permissionEvent) {
 		allow = false
 		return
 	}
-	fromPiTree := current.authorizedPiExecs > 0 && piExecCallerAuthorized(
-		current, event.PID, stat, processStat, func(pid int32) bool {
-			raw, digest, memberErr := processCgroup(pid)
-			return memberErr == nil && raw == current.cgroupRaw && digest == current.cgroupDigest
-		},
-	)
 	decision := decideExecutable(
 		current.authorizedPiExecs, current.workerPID, current.piPinned,
-		identity, stat, event.PID, fromPiTree,
+		identity, stat, event.PID,
 	)
 	if decision.violation != "" {
 		current.violateLocked(decision.violation, event.PID)
@@ -394,21 +390,13 @@ func (server *Server) handlePermissionEvent(event permissionEvent) {
 		return
 	}
 	if decision.launch {
-		if current.authorizedPiExecs == ^uint32(0) {
-			current.violateLocked("pi_exec_counter_overflow", event.PID)
-			server.mu.Unlock()
-			allow = false
-			return
+		if current.authorizedPiExecs < ^uint32(0) {
+			current.authorizedPiExecs++
 		}
 		launched := ProcessIdentity{
 			PID: event.PID, StartTimeTicks: stat.StartTimeTicks,
 			Device: identity.Device, Inode: identity.Inode, SHA256: identity.SHA256,
 		}
-		current.authorizedPiExecs++
-		if current.authorizedPi == nil {
-			current.authorizedPi = make(map[int32]ProcessIdentity)
-		}
-		current.authorizedPi[event.PID] = launched
 		if current.authorizedPiExecs == 1 {
 			current.pi = launched
 		}
@@ -427,7 +415,6 @@ func decideExecutable(
 	pinned, candidate fileIdentity,
 	stat processStatValue,
 	pid int32,
-	fromPiTree bool,
 ) executableDecision {
 	if authorizedPiExecs == 0 {
 		if stat.ParentPID != workerPID || stat.ProcessGroup != pid {
@@ -444,64 +431,7 @@ func decideExecutable(
 		}
 		return executableDecision{}
 	}
-	if !fromPiTree {
-		return executableDecision{violation: "pi_exec_outside_authorized_tree"}
-	}
 	return executableDecision{launch: true}
-}
-
-func piExecCallerAuthorized(
-	current *policy,
-	pid int32,
-	value processStatValue,
-	stat func(int32) (processStatValue, error),
-	member func(int32) bool,
-) bool {
-	if current == nil || len(current.authorizedPi) == 0 || stat == nil || member == nil || pid < 1 {
-		return false
-	}
-	if authorized, ok := current.authorizedPi[pid]; ok {
-		return authorizedPiProcessMatches(pid, value, authorized, member)
-	}
-	return processDescendsFromAuthorizedPi(value.ParentPID, current.authorizedPi, stat, member)
-}
-
-func processDescendsFromAuthorizedPi(
-	pid int32,
-	authorized map[int32]ProcessIdentity,
-	stat func(int32) (processStatValue, error),
-	member func(int32) bool,
-) bool {
-	if pid < 1 || len(authorized) == 0 || stat == nil || member == nil {
-		return false
-	}
-	visited := make(map[int32]struct{})
-	for pid > 0 {
-		if _, duplicate := visited[pid]; duplicate || !member(pid) {
-			return false
-		}
-		visited[pid] = struct{}{}
-		value, err := stat(pid)
-		if err != nil {
-			return false
-		}
-		if identity, ok := authorized[pid]; ok &&
-			authorizedPiProcessMatches(pid, value, identity, member) {
-			return true
-		}
-		pid = value.ParentPID
-	}
-	return false
-}
-
-func authorizedPiProcessMatches(
-	pid int32,
-	value processStatValue,
-	identity ProcessIdentity,
-	member func(int32) bool,
-) bool {
-	return pid > 0 && member != nil && member(pid) && identity.validate() == nil &&
-		identity.PID == pid && identity.StartTimeTicks == value.StartTimeTicks
 }
 
 func (policy *policy) violateLocked(code string, offendingPID int32) {
@@ -535,11 +465,11 @@ func (server *Server) proof(peerPID int32, runID string, requestedPiPID int32, s
 		return *current.terminal, nil
 	}
 	if current.violation != "" {
-		return Proof{}, ErrViolation
+		return Proof{}, newViolation(current.violation)
 	}
-	workerCount, piCount, cgroupCount, members, piMembers, err := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
+	workerCount, piCount, cgroupCount, members, piProcesses, err := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
 	if err != nil || workerCount != 1 || cgroupCount < workerCount ||
-		current.authorizedPiExecs == 0 || current.pi.validate() != nil || len(current.authorizedPi) == 0 {
+		current.authorizedPiExecs == 0 || current.pi.validate() != nil {
 		logTopologyFailure(
 			"proof_"+string(state), err == nil, workerCount, piCount,
 			cgroupCount, current.authorizedPiExecs, current.pi.validate() == nil,
@@ -551,7 +481,7 @@ func (server *Server) proof(peerPID int32, runID string, requestedPiPID int32, s
 		current.violateLocked("pi_pid_mismatch", requestedPiPID)
 	}
 	if current.violation != "" {
-		return Proof{}, ErrViolation
+		return Proof{}, newViolation(current.violation)
 	}
 	proof := Proof{
 		SchemaVersion: ProofSchemaV2, State: state, RunID: current.runID,
@@ -565,11 +495,11 @@ func (server *Server) proof(peerPID int32, runID string, requestedPiPID int32, s
 		ObservedAtUnixNano: server.config.Now().UTC().UnixNano(),
 	}
 	if state == ProofActive {
-		if !piProcessTreeValid(
-			current, workerCount, piCount, cgroupCount, members, piMembers, err, processStat,
-		) {
-			current.violateLocked("pi_not_active", current.pi.PID)
-			return Proof{}, ErrViolation
+		if violation := piProcessTreeViolation(
+			current, workerCount, piCount, cgroupCount, members, piProcesses, err,
+		); violation != "" {
+			current.violateLocked(violation, current.pi.PID)
+			return Proof{}, newViolation(current.violation)
 		}
 		if proof.Validate() != nil {
 			return Proof{}, ErrViolation
@@ -581,19 +511,19 @@ func (server *Server) proof(peerPID int32, runID string, requestedPiPID int32, s
 		if !current.activeProof {
 			current.violateLocked("terminal_before_active", current.pi.PID)
 			killMembers(members, current.workerPID)
-			return Proof{}, ErrViolation
+			return Proof{}, newViolation(current.violation)
 		}
-		if piCount > 0 && !piProcessTreeValid(
-			current, workerCount, piCount, cgroupCount, members, piMembers, err, processStat,
-		) {
+		if violation := piProcessTreeViolation(
+			current, workerCount, piCount, cgroupCount, members, piProcesses, err,
+		); piCount > 0 && violation != "" {
 			logTopologyFailure(
 				"proof_terminal", err == nil, workerCount, piCount,
 				cgroupCount, current.authorizedPiExecs, current.pi.validate() == nil,
 				current.activeProof,
 			)
-			current.violateLocked("runtime_topology_invalid", current.pi.PID)
+			current.violateLocked(violation, current.pi.PID)
 			killMembers(members, current.workerPID)
-			return Proof{}, ErrViolation
+			return Proof{}, newViolation(current.violation)
 		}
 		if piCount > 0 || cgroupCount > 1 {
 			return Proof{}, ErrUnavailable
@@ -641,13 +571,16 @@ func (server *Server) monitorPolicies() {
 		if current.authorizedPiExecs == 0 && !preActivationExpired(current, now) {
 			continue
 		}
-		workerCount, piCount, cgroupCount, members, piMembers, err := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
-		piTreeValid := piProcessTreeValid(
-			current, workerCount, piCount, cgroupCount, members, piMembers, err, processStat,
+		workerCount, piCount, cgroupCount, members, piProcesses, err := scanExactTopology(current.cgroupRaw, current.worker, current.piPinned)
+		piTreeViolation := piProcessTreeViolation(
+			current, workerCount, piCount, cgroupCount, members, piProcesses, err,
 		)
 		violation := monitorTopologyViolation(
-			current, now, workerCount, piCount, cgroupCount, err, piTreeValid,
+			current, now, workerCount, piCount, cgroupCount, err, piTreeViolation == "",
 		)
+		if violation == "runtime_topology_invalid" && piTreeViolation != "" {
+			violation = piTreeViolation
+		}
 		if violation != "" {
 			logTopologyFailure(
 				"monitor", err == nil, workerCount, piCount,
@@ -660,41 +593,35 @@ func (server *Server) monitorPolicies() {
 	}
 }
 
-func piProcessTreeValid(
+func piProcessTreeViolation(
 	current *policy,
 	workerCount, piCount, cgroupCount uint32,
 	members []int32,
-	piMembers []int32,
+	piProcesses []ProcessIdentity,
 	scanErr error,
-	stat func(int32) (processStatValue, error),
-) bool {
-	if current == nil || current.authorizedPiExecs == 0 ||
-		current.pi.validate() != nil || scanErr != nil || workerCount != 1 ||
-		piCount == 0 || uint32(len(piMembers)) != piCount ||
-		uint32(len(members)) != cgroupCount || cgroupCount < 2 || stat == nil {
-		return false
+) string {
+	if current == nil || current.authorizedPiExecs == 0 || current.pi.validate() != nil {
+		return "pi_policy_uninitialized"
 	}
-	memberSet := make(map[int32]struct{}, len(members))
-	for _, pid := range members {
-		if pid < 1 {
-			return false
-		}
-		memberSet[pid] = struct{}{}
+	if scanErr != nil {
+		return "pi_topology_scan_failed"
 	}
-	member := func(pid int32) bool {
-		_, ok := memberSet[pid]
-		return ok
+	if workerCount != 1 {
+		return "worker_count_invalid"
 	}
-	for _, pid := range piMembers {
-		value, err := stat(pid)
-		identity, authorized := current.authorizedPi[pid]
-		if err != nil || !authorized || identity.Device != current.piPinned.Device ||
-			identity.Inode != current.piPinned.Inode || identity.SHA256 != current.piPinned.SHA256 ||
-			!authorizedPiProcessMatches(pid, value, identity, member) {
-			return false
+	if piCount == 0 || uint32(len(piProcesses)) != piCount {
+		return "pi_count_invalid"
+	}
+	if uint32(len(members)) != cgroupCount || cgroupCount < 2 {
+		return "cgroup_count_invalid"
+	}
+	for _, observed := range piProcesses {
+		if observed.PID < 1 || observed.Device != current.piPinned.Device ||
+			observed.Inode != current.piPinned.Inode || observed.SHA256 != current.piPinned.SHA256 {
+			return "pi_identity_mismatch"
 		}
 	}
-	return true
+	return ""
 }
 
 func monitorTopologyViolation(
@@ -726,7 +653,7 @@ func monitorTopologyViolation(
 		return ""
 	}
 	if scanErr != nil || workerCount != 1 || current.authorizedPiExecs == 0 ||
-		current.pi.validate() != nil || len(current.authorizedPi) == 0 ||
+		current.pi.validate() != nil ||
 		piCount > 0 || !current.activeProof || cgroupCount != 1 {
 		return "runtime_topology_invalid"
 	}
@@ -917,13 +844,14 @@ func openedFileIdentity(file *os.File) (fileIdentity, error) {
 	return fileIdentity{Device: uint64(stat.Dev), Inode: uint64(stat.Ino), SHA256: hex.EncodeToString(hasher.Sum(nil))}, nil
 }
 
-func scanExactTopology(cgroupRaw string, worker ProcessIdentity, pi fileIdentity) (uint32, uint32, uint32, []int32, []int32, error) {
+func scanExactTopology(cgroupRaw string, worker ProcessIdentity, pi fileIdentity) (uint32, uint32, uint32, []int32, []ProcessIdentity, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return 0, 0, 0, nil, nil, ErrUnavailable
 	}
 	var workerCount, piCount, cgroupCount uint32
-	var members, piMembers []int32
+	var members []int32
+	var piProcesses []ProcessIdentity
 	for _, entry := range entries {
 		pidValue, parseErr := strconv.ParseInt(entry.Name(), 10, 32)
 		if parseErr != nil || pidValue < 1 {
@@ -950,10 +878,10 @@ func scanExactTopology(cgroupRaw string, worker ProcessIdentity, pi fileIdentity
 		}
 		if identity.SHA256 == pi.SHA256 {
 			piCount++
-			piMembers = append(piMembers, pid)
+			piProcesses = append(piProcesses, identity)
 		}
 	}
-	return workerCount, piCount, cgroupCount, members, piMembers, nil
+	return workerCount, piCount, cgroupCount, members, piProcesses, nil
 }
 
 func killMembers(members []int32, workerPID int32) {

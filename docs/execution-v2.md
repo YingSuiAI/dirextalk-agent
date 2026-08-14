@@ -258,12 +258,13 @@ only the UID/GID transition capabilities and Pi holds none. Gate registration
 is authenticated with kernel `SO_PEERCRED` and binds the Worker UID/PID, boot
 identity, process start ticks, exact cgroup, execution/task/attempt, and lease
 epoch. The first Worker child must be the pinned Pi device/inode/SHA-256.
-Further pinned Pi execs are accepted only from a currently authorized Pi or
-one of its live descendants. Every authorized Pi is bound to its kernel PID
-and start time, so child Agents remain valid and may continue dispatching after
-the root Pi exits without allowing PID reuse. No process count, tree depth, or
-child lifetime is prescribed; the approved task deadline and cancellation are
-the lifecycle boundaries. A copied
+After that active proof, the exact task cgroup is the delegation boundary:
+ordinary tools and any number of exact pinned-image Pi child Agents may run,
+including fork-to-exec transition windows and children that outlive the root.
+The Gate verifies the live device/inode/SHA-256 of every visible Pi image rather
+than treating a historical PID ancestry chain as authority. No process count,
+tree depth, or child lifetime is prescribed; the approved task deadline and
+cancellation are the lifecycle boundaries. A copied
 executable with the same digest is denied while ordinary task tools remain
 available. Path replacement before the first exec is also denied because the
 permission event validates the kernel-opened FD rather than a mutable pathname.

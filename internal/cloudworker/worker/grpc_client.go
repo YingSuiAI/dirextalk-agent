@@ -443,7 +443,7 @@ func (client *GRPCControlClient) Fail(ctx context.Context, request FailRequest) 
 	}
 	rpcRequest := &agentv1.WorkerControlServiceFailRequest{
 		SessionId: request.SessionID, SessionToken: bytes.Clone(request.SessionToken),
-		Fence: fenceToProto(request.Fence), Code: request.Code,
+		Fence: fenceToProto(request.Fence), Code: request.Code, Summary: request.Summary,
 		IdempotencyKey:   request.IdempotencyKey,
 		ProgressSequence: progressSequence, Progress: progress,
 	}

@@ -143,9 +143,9 @@ image process with `CAP_SYS_ADMIN` (plus `CAP_KILL` for fenced cleanup and
 `/proc/<pid>/exe`). The
 long-running Worker retains only `CAP_SETUID`/`CAP_SETGID`, and Pi receives no
 capability. The Gate uses `FAN_OPEN_EXEC_PERM` against the executable file
-already opened by the kernel, verifies device/inode/SHA-256, permits one root
-Pi plus any number of pinned-image descendants in that root's task process
-tree, and binds registration to the Worker UID/PID, boot ID,
+already opened by the kernel, verifies device/inode/SHA-256, proves the first
+root Pi, then permits ordinary tools and any number of exact pinned-image Pi
+children inside the delegated task cgroup. It binds registration to the Worker UID/PID, boot ID,
 process start ticks, exact systemd cgroup, execution/task/attempt, and lease
 epoch. A missing Gate, missing `nft`, or failed unit assertion makes the
 required service fail; it is never an optional skipped prerequisite.
@@ -162,11 +162,20 @@ and through its interpreter, then checks the live Pi groups and descriptors.
 Before result parsing or workspace collection, the Worker requires a canonical
 terminal proof with at least one authorized pinned Pi exec, only the Worker
 remaining in the cgroup, and zero Pi/tool descendants. Pi child Agents have no
-artificial count, depth, or lifetime cap. A Pi exec outside the root Pi process
-tree, a copied executable, path replacement, stale lease, daemonized descendant,
+artificial count, depth, or lifetime cap. A copied executable, path replacement,
+cgroup identity drift, stale lease, daemonized descendant,
 cancellation, or Gate failure is fail-closed. The Gate kills fenced cgroup
 members other than the Worker during cancellation and never exposes its proof
 as public Execution V2 diagnostics.
+
+Every x86 release candidate also runs the tagged
+`TestRealUnlimitedPinnedPiProcessTreeUnderExecGate` qualification with separate
+Gate and Worker executables in a dedicated systemd cgroup. The fixture launches
+nested pinned-image processes and ordinary tools, lets the root exit first, and
+requires the terminal proof to wait for every child to drain. This keeps the
+no-count/no-depth/no-child-lifetime contract covered by the real Linux
+`fanotify`, UID transition, cgroup, and process lifecycle rather than only by a
+mock.
 
 The final AMI process must:
 

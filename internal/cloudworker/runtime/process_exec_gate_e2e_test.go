@@ -140,6 +140,76 @@ func TestRealPiBashLifecycleUnderExecGate(t *testing.T) {
 	}
 }
 
+func TestRealUnlimitedPinnedPiProcessTreeUnderExecGate(t *testing.T) {
+	if os.Getenv("DIREXTALK_EXEC_GATE_E2E_PROCESS_TREE") != "1" {
+		t.Skip("exec-gate process-tree mode is disabled")
+	}
+	if os.Geteuid() != execGateE2EWorkerUID {
+		t.Fatalf("effective uid=%d, want %d", os.Geteuid(), execGateE2EWorkerUID)
+	}
+	piPath := requiredE2EPath(t, "DIREXTALK_EXEC_GATE_E2E_PI")
+	piSHA256, err := digestPath(piPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp("/tmp", "dirextalk-exec-gate-tree-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	if err := os.Chmod(root, 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	runner, err := NewOSProcessRunner(execGateE2EPiUID, execGateE2EPiUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := runner.BindProcess(ProcessBinding{
+		ExecutionID:       "11111111-1111-4111-8111-111111111111",
+		TaskID:            "22222222-2222-4222-8222-222222222222",
+		Attempt:           1,
+		LeaseEpoch:        1,
+		RuntimeTaskSHA256: strings.Repeat("1", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	started := time.Now()
+	output, err := bound.Run(ctx, ProcessSpec{
+		Executable:               piPath,
+		ExpectedExecutableSHA256: piSHA256,
+		Arguments: []string{"-c", `
+"$PINNED_PI" -c '"$PINNED_PI" -c "sleep 1.1" & sleep 0.9; wait' &
+"$PINNED_PI" -c 'sleep 1.2' &
+sleep 1.0 &
+sleep 0.3
+printf root-finished
+`},
+		Directory: root,
+		Environment: map[string]string{
+			"PATH": "/usr/local/bin:/usr/bin:/bin", "PINNED_PI": piPath,
+		},
+		StdoutPolicy:   ProcessStdoutRaw,
+		MaxStdoutBytes: 1024,
+		MaxStderrBytes: 1024,
+	})
+	if err != nil {
+		t.Fatalf("guarded nested Pi lifecycle failed: %v", err)
+	}
+	if string(output.Stdout) != "root-finished" || output.RuntimeTopology.ValidateTerminal() != nil {
+		t.Fatalf("output=%q topology=%+v", output.Stdout, output.RuntimeTopology)
+	}
+	if output.RuntimeTopology.TotalAllowedPiExecs < 4 {
+		t.Fatalf("authorized Pi exec audit=%d, want at least 4", output.RuntimeTopology.TotalAllowedPiExecs)
+	}
+	if elapsed := time.Since(started); elapsed < time.Second {
+		t.Fatalf("terminal proof returned before child Agents drained: %s", elapsed)
+	}
+}
+
 func requiredE2EPath(t *testing.T, name string) string {
 	t.Helper()
 	value := os.Getenv(name)

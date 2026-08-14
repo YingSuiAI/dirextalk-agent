@@ -125,6 +125,16 @@ func TestWorkflowBoundsBlockedFailAfterFreshHeartbeat(t *testing.T) {
 	}
 }
 
+func TestRuntimeFailureSummaryContainsOnlyClosedGateReason(t *testing.T) {
+	err := &execgate.Violation{Code: "runtime_topology_invalid"}
+	if summary := runtimeFailureSummary(err); summary != "pi execution gate: runtime_topology_invalid" {
+		t.Fatalf("summary=%q", summary)
+	}
+	if summary := runtimeFailureSummary(errors.New("secret provider diagnostic")); summary != "" {
+		t.Fatalf("untyped diagnostic escaped into summary: %q", summary)
+	}
+}
+
 func TestWorkflowReportsUploadUncertainBeforeReturning(t *testing.T) {
 	fixture := newWorkflowRetryFixture(t)
 	fixture.uploader.uploadError = ErrUploadUncertain

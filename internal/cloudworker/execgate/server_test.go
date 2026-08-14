@@ -11,24 +11,21 @@ import (
 	"time"
 )
 
-func TestExecutableDecisionAllowsPinnedPiProcessTreeAndOrdinaryTools(t *testing.T) {
+func TestExecutableDecisionAllowsUnlimitedPinnedPiAndOrdinaryTools(t *testing.T) {
 	pinned := fileIdentity{Device: 1, Inode: 10, SHA256: strings.Repeat("1", 64)}
 	launchStat := processStatValue{ParentPID: 100, ProcessGroup: 200, StartTimeTicks: 300}
-	if decision := decideExecutable(0, 100, pinned, pinned, launchStat, 200, false); !decision.launch || decision.violation != "" {
+	if decision := decideExecutable(0, 100, pinned, pinned, launchStat, 200); !decision.launch || decision.violation != "" {
 		t.Fatalf("first pinned Pi decision = %+v", decision)
 	}
 	ordinary := fileIdentity{Device: 1, Inode: 20, SHA256: strings.Repeat("2", 64)}
-	if decision := decideExecutable(1, 100, pinned, ordinary, processStatValue{}, 201, true); decision.launch || decision.violation != "" {
+	if decision := decideExecutable(1, 100, pinned, ordinary, processStatValue{}, 201); decision.launch || decision.violation != "" {
 		t.Fatalf("ordinary tool decision = %+v", decision)
 	}
-	if decision := decideExecutable(1, 100, pinned, pinned, processStatValue{}, 202, true); !decision.launch || decision.violation != "" {
+	if decision := decideExecutable(1, 100, pinned, pinned, processStatValue{}, 202); !decision.launch || decision.violation != "" {
 		t.Fatalf("authorized child Pi decision = %+v", decision)
 	}
-	if decision := decideExecutable(2, 100, pinned, pinned, processStatValue{}, 203, false); decision.violation != "pi_exec_outside_authorized_tree" {
-		t.Fatalf("unrelated pinned Pi decision = %+v", decision)
-	}
 	copyIdentity := fileIdentity{Device: 9, Inode: 99, SHA256: pinned.SHA256}
-	if decision := decideExecutable(2, 100, pinned, copyIdentity, processStatValue{}, 204, true); decision.violation != "pi_exec_identity_mismatch" {
+	if decision := decideExecutable(2, 100, pinned, copyIdentity, processStatValue{}, 204); decision.violation != "pi_exec_identity_mismatch" {
 		t.Fatalf("same-digest copy decision = %+v", decision)
 	}
 }
@@ -37,7 +34,7 @@ func TestExecutableDecisionRejectsSameNameReplacementBeforeBearerExec(t *testing
 	pinned := fileIdentity{Device: 1, Inode: 10, SHA256: strings.Repeat("1", 64)}
 	replacement := fileIdentity{Device: 1, Inode: 11, SHA256: strings.Repeat("2", 64)}
 	decision := decideExecutable(0, 100, pinned, replacement,
-		processStatValue{ParentPID: 100, ProcessGroup: 200, StartTimeTicks: 300}, 200, false)
+		processStatValue{ParentPID: 100, ProcessGroup: 200, StartTimeTicks: 300}, 200)
 	if decision.launch || decision.violation != "initial_pi_identity_mismatch" {
 		t.Fatalf("replacement decision = %+v", decision)
 	}
@@ -53,7 +50,6 @@ func TestMonitorTopologyAllowsOnlyBoundedPreActivationImageTransition(t *testing
 			SHA256: strings.Repeat("2", 64),
 		},
 	}
-	current.authorizedPi = map[int32]ProcessIdentity{200: current.pi}
 	if violation := monitorTopologyViolation(
 		current, now.Add(time.Second), 2, 0, 2, nil, false,
 	); violation != "" {
@@ -85,7 +81,7 @@ func TestMonitorTopologyAllowsOnlyBoundedPreActivationImageTransition(t *testing
 	}
 }
 
-func TestPiProcessTreeAllowsUnlimitedNestedAgents(t *testing.T) {
+func TestPiProcessTreeAllowsUnlimitedTaskCgroupAgentsAndForkTransitions(t *testing.T) {
 	piIdentity := func(pid int32, started uint64) ProcessIdentity {
 		return ProcessIdentity{
 			PID: pid, StartTimeTicks: started, Device: 1, Inode: 20,
@@ -98,78 +94,38 @@ func TestPiProcessTreeAllowsUnlimitedNestedAgents(t *testing.T) {
 		authorizedPiExecs: 4,
 		piPinned:          fileIdentity{Device: 1, Inode: 20, SHA256: strings.Repeat("2", 64)},
 		pi:                piIdentity(200, 300),
-		authorizedPi: map[int32]ProcessIdentity{
-			200: piIdentity(200, 300),
-			201: piIdentity(201, 301),
-			204: piIdentity(204, 304),
-			205: piIdentity(205, 305),
-		},
-	}
-	parents := map[int32]processStatValue{
-		100: {ParentPID: 1, StartTimeTicks: 100},
-		200: {ParentPID: 100, StartTimeTicks: 300},
-		201: {ParentPID: 200, StartTimeTicks: 301},
-		202: {ParentPID: 201, StartTimeTicks: 302},
-		203: {ParentPID: 202, StartTimeTicks: 303},
-		204: {ParentPID: 203, StartTimeTicks: 304},
-		205: {ParentPID: 200, StartTimeTicks: 305},
-	}
-	stat := func(pid int32) (processStatValue, error) {
-		value, ok := parents[pid]
-		if !ok {
-			return processStatValue{}, ErrUnavailable
-		}
-		return value, nil
 	}
 	members := []int32{100, 200, 201, 202, 203, 204, 205}
-	piMembers := []int32{200, 201, 204, 205}
-	if !piProcessTreeValid(current, 1, 4, 7, members, piMembers, nil, stat) {
-		t.Fatal("valid nested Pi Agent process tree was rejected")
+	// PID 202 models a forked Pi image observed before its ordinary tool exec
+	// completes. It is valid even though it did not increment the Pi exec audit.
+	piProcesses := []ProcessIdentity{
+		piIdentity(200, 300), piIdentity(201, 301), piIdentity(202, 302),
+		piIdentity(204, 304), piIdentity(205, 305),
 	}
-	memberSet := make(map[int32]bool, len(members))
-	for _, pid := range members {
-		memberSet[pid] = true
-	}
-	member := func(pid int32) bool { return memberSet[pid] }
-	if !piExecCallerAuthorized(
-		current, 204, parents[204], stat, member,
-	) {
-		t.Fatal("nested Pi Agent exec caller was rejected")
+	if violation := piProcessTreeViolation(current, 1, 5, 7, members, piProcesses, nil); violation != "" {
+		t.Fatalf("valid nested Pi Agent process tree was rejected: %s", violation)
 	}
 	if violation := monitorTopologyViolation(
-		current, time.Now().UTC(), 1, 4, 7, nil, true,
+		current, time.Now().UTC(), 1, 5, 7, nil, true,
 	); violation != "" {
 		t.Fatalf("valid nested Pi Agent topology violation=%q", violation)
 	}
 
-	parents[206] = processStatValue{ParentPID: 100, StartTimeTicks: 306}
-	for _, pid := range []int32{206} {
-		members = append(members, pid)
-		memberSet[pid] = true
+	copied := ProcessIdentity{
+		PID: 206, StartTimeTicks: 306, Device: 9, Inode: 99,
+		SHA256: current.piPinned.SHA256,
 	}
-	if piProcessTreeValid(current, 1, 5, 8, members, append(piMembers, 206), nil, stat) {
-		t.Fatal("Pi process outside the authorized root tree was accepted")
-	}
-	if piExecCallerAuthorized(current, 206, parents[206], stat, member) {
-		t.Fatal("unrelated Pi exec caller was accepted")
+	if violation := piProcessTreeViolation(current, 1, 6, 8, append(members, 206), append(piProcesses, copied), nil); violation != "pi_identity_mismatch" {
+		t.Fatalf("same-digest Pi executable copy violation=%q", violation)
 	}
 
-	// The root Pi may exit before an authorized child Agent. The child's
-	// kernel-bound identity remains valid and it can continue spawning Pi.
 	rootlessMembers := []int32{100, 201, 202, 203, 204, 205}
-	rootlessPi := []int32{201, 204, 205}
-	if !piProcessTreeValid(current, 1, 3, 6, rootlessMembers, rootlessPi, nil, stat) {
-		t.Fatal("authorized child Agent tree was rejected after root Pi exited")
+	rootlessPi := []ProcessIdentity{
+		piIdentity(201, 301), piIdentity(202, 302),
+		piIdentity(204, 304), piIdentity(205, 305),
 	}
-	delete(memberSet, 200)
-	if !piExecCallerAuthorized(current, 204, parents[204], stat, member) {
-		t.Fatal("authorized child Agent could not spawn after root Pi exited")
-	}
-
-	reused := parents[204]
-	reused.StartTimeTicks++
-	if piExecCallerAuthorized(current, 204, reused, stat, member) {
-		t.Fatal("reused PID was accepted as an authorized child Agent")
+	if violation := piProcessTreeViolation(current, 1, 4, 6, rootlessMembers, rootlessPi, nil); violation != "" {
+		t.Fatalf("authorized child Agent tree was rejected after root Pi exited: %s", violation)
 	}
 }
 
@@ -209,7 +165,6 @@ func TestActiveDescendantsDrainWithoutLocalLifetimeLimit(t *testing.T) {
 	}
 	current := &policy{
 		activeProof: true, authorizedPiExecs: 1, pi: validPi,
-		authorizedPi: map[int32]ProcessIdentity{200: validPi},
 	}
 	if violation := monitorTopologyViolation(
 		current, now, 1, 0, 3, nil, false,
@@ -242,7 +197,6 @@ func TestActiveDescendantsDrainWithoutLocalLifetimeLimit(t *testing.T) {
 			candidate := &policy{
 				activeProof: test.active, authorizedPiExecs: 1,
 				createdAt: now, pi: validPi,
-				authorizedPi: map[int32]ProcessIdentity{200: validPi},
 			}
 			if violation := monitorTopologyViolation(
 				candidate, now, test.workerCount, test.piCount,

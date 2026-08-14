@@ -301,6 +301,7 @@ type FailRequest struct {
 	SessionID      string
 	SessionToken   []byte
 	Code           string
+	Summary        string
 	IdempotencyKey string
 }
 

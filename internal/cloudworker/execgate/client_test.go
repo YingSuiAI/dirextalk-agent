@@ -150,3 +150,50 @@ func TestTerminalHasNoLocalChildAgentLifetimeDeadline(t *testing.T) {
 		t.Fatalf("terminal returned before delayed child drain: %s", elapsed)
 	}
 }
+
+func TestClientPreservesClosedViolationReason(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "gate.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		defer listener.Close()
+		connection, acceptErr := listener.AcceptUnix()
+		if acceptErr != nil {
+			done <- acceptErr
+			return
+		}
+		defer connection.Close()
+		raw, readErr := io.ReadAll(io.LimitReader(connection, MaximumWireBytes+1))
+		var request wireRequest
+		if readErr != nil || decodeCanonical(raw, &request) != nil || request.Operation != operationTerminal {
+			clear(raw)
+			done <- errors.New("invalid terminal request")
+			return
+		}
+		clear(raw)
+		response, encodeErr := encodeCanonical(wireResponse{
+			Schema: ProtocolSchemaV1, Code: wireViolationPrefix + "runtime_topology_invalid",
+		})
+		if encodeErr == nil {
+			_, encodeErr = connection.Write(response)
+		}
+		clear(response)
+		done <- encodeErr
+	}()
+
+	client := &Client{socketPath: socketPath, timeout: time.Second}
+	run := &Run{client: client, id: "11111111-1111-4111-8111-111111111111"}
+	_, err = run.Terminal(t.Context())
+	if serverErr := <-done; serverErr != nil {
+		t.Fatal(serverErr)
+	}
+	if !errors.Is(err, ErrViolation) {
+		t.Fatalf("call() error=%v, want violation", err)
+	}
+	if code, ok := ViolationCode(err); !ok || code != "runtime_topology_invalid" {
+		t.Fatalf("violation code=%q ok=%t", code, ok)
+	}
+}

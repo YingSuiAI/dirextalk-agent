@@ -436,9 +436,11 @@ automatic upgrade.
 The only recipe is `ephemeral-pi-task` with adapter `pi_json_task_v1`. One
 confirmed execution creates exactly one EC2 instance, one Worker, and one root
 Pi process tree. The root Pi may dispatch any number of pinned-image child
-Agents without a count, depth, or child-lifetime cap. Each authorized Pi keeps
-its own kernel-bound identity, so a child Agent may outlive the root and continue
-dispatching until the approved task deadline or cancellation. Its plan binds every cost/authority field, including immutable input,
+Agents without a count, depth, or child-lifetime cap. After the root Pi is
+proved active, the exact task cgroup becomes the delegation boundary; the Gate
+checks every visible Pi image against the pinned device/inode/SHA-256, so child
+Agents may outlive the root and continue dispatching until the approved task
+deadline or cancellation. Its plan binds every cost/authority field, including immutable input,
 workspace mode, model and credential revisions, AWS/compute/AMI digests,
 limits, grants, retention, quote expiry, and hard cost ceiling. Any drift
 requires a fresh quote and CoreConfirmation.

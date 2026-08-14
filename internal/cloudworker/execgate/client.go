@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -85,6 +86,9 @@ func (run *Run) Terminal(ctx context.Context) (Proof, error) {
 				return Proof{}, ErrViolation
 			}
 			return proof, nil
+		}
+		if errors.Is(err, ErrViolation) {
+			return Proof{}, err
 		}
 		if !errors.Is(err, ErrUnavailable) {
 			return Proof{}, ErrViolation
@@ -186,6 +190,9 @@ func (client *Client) call(ctx context.Context, request wireRequest) (wireRespon
 		case "violation":
 			return wireResponse{}, ErrViolation
 		default:
+			if strings.HasPrefix(response.Code, wireViolationPrefix) {
+				return wireResponse{}, newViolation(strings.TrimPrefix(response.Code, wireViolationPrefix))
+			}
 			return wireResponse{}, ErrUnavailable
 		}
 	}

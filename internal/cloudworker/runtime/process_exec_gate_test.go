@@ -111,9 +111,10 @@ func TestGuardedRunnerPreservesTopologyFailures(t *testing.T) {
 		name        string
 		activateErr error
 		terminalErr error
+		violation   string
 	}{
 		{name: "activate", activateErr: execgate.ErrUnavailable},
-		{name: "terminal", terminalErr: execgate.ErrUnavailable},
+		{name: "terminal", terminalErr: &execgate.Violation{Code: "runtime_topology_invalid"}, violation: "runtime_topology_invalid"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			directory := t.TempDir()
@@ -150,6 +151,9 @@ func TestGuardedRunnerPreservesTopologyFailures(t *testing.T) {
 			if !ok || failure.Stage != FailureStageProcess ||
 				failure.Code != FailureCodeProcessTopology {
 				t.Fatalf("failure=%+v ok=%t err=%v", failure, ok, err)
+			}
+			if code, present := execgate.ViolationCode(err); present != (test.violation != "") || code != test.violation {
+				t.Fatalf("violation=%q present=%t err=%v", code, present, err)
 			}
 		})
 	}
