@@ -159,6 +159,11 @@ func executeIntrinsic(t *testing.T, intrinsic *ProposeIntrinsic, lease coreconve
 	if err != nil || len(tools) != 1 || tools[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
 		t.Fatalf("intrinsic catalog: tools=%+v err=%v", tools, err)
 	}
+	if !strings.Contains(tools[0].Tool.Description, "priced reusable AWS Worker") ||
+		!strings.Contains(tools[0].Tool.Description, "retained and reused") ||
+		strings.Contains(tools[0].Tool.Description, "ephemeral") {
+		t.Fatalf("stale Worker lifecycle description: %q", tools[0].Tool.Description)
+	}
 	raw, _ := json.Marshal(arguments)
 	result, err := tools[0].Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{Lease: lease, Call: coreconversation.ToolCall{ID: callID, Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(raw)}, CanonicalArguments: raw})
 	if err == nil && !result.TurnCommitted {

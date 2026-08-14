@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.89
+
+1. Route substantial project, shell, deployment, build, test, artifact, and long-running tasks to the priced Cloud Worker offer when the published local toolset cannot execute them, without requiring cloud-specific wording.
+2. Stop real Worker acceptance immediately when a durable turn completes without the expected priced offer instead of reconnecting and masking the terminal result.
+
 ## v1.0.88
 
 1. Close a caught-up capability operation watch immediately when the authoritative operation is already terminal, so durable clients cannot hang after observing the terminal cursor.

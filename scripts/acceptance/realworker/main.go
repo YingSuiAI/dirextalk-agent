@@ -1203,7 +1203,7 @@ func applyStreamFrame(result *streamResult, frame map[string]any, stopAtConfirma
 		return true, nil
 	case "done":
 		if stopAtConfirmation || result.TurnID == "" {
-			return false, errors.New("durable stream completed without the expected Worker offer")
+			return true, errors.New("durable stream completed without the expected Worker offer")
 		}
 		result.Done = true
 		return true, nil

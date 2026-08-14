@@ -894,6 +894,7 @@ func TestResolveAcceptedTurnExtensionsRebuildsKnowledgeBuiltinFromPinnedSource(t
 
 func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testing.T) {
 	profile := testTurnSnapshot()
+	profile.SystemPrompt = "existing profile instruction"
 	conversationID := uuid.NewString()
 	selection := ExtensionSelection{
 		Kind: ExtensionMCP, ID: uuid.NewString(), Version: "config-1",
@@ -954,7 +955,10 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 
 	if model.runs != 1 || len(model.request.Intrinsics) != 1 ||
 		model.request.Intrinsics[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
-		len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != selection.ID {
+		len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != selection.ID ||
+		!strings.HasPrefix(model.request.Profile.SystemPrompt, profile.SystemPrompt+"\n\n") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "call cloud_worker_propose") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "does not need to mention AWS") {
 		t.Fatalf("model request lost intrinsic or extension: %+v", model.request)
 	}
 }

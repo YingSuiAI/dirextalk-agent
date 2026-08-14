@@ -408,41 +408,50 @@ func TestStartTurnPostsOnceAndResumesSSEAfterDisconnect(t *testing.T) {
 }
 
 func TestStartTurnDoesNotReconnectTerminalSSE(t *testing.T) {
-	postCount, watchCount := 0, 0
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.Method {
-		case http.MethodPost:
-			postCount++
-			writer.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(writer).Encode(map[string]any{
-				"turn_id": "turn-id", "conversation_id": "conversation-id", "seq": int64(1),
-			})
-		case http.MethodGet:
-			watchCount++
-			writer.Header().Set("Content-Type", "text/event-stream")
-			frame := map[string]any{
-				"event": "error", "seq": int64(2), "turn_id": "turn-id", "conversation_id": "conversation-id",
-				"data": map[string]any{"error_code": "provider_uncertain", "error_summary": "model dispatch outcome is unknown"},
-			}
-			_, _ = fmt.Fprintf(writer, "id: 2\nevent: error\ndata: %s\n\n", mustJSON(frame))
-		default:
-			http.NotFound(writer, request)
-		}
-	}))
-	defer server.Close()
+	for _, test := range []struct {
+		name, event, want string
+		data              map[string]any
+	}{
+		{name: "error", event: "error", data: map[string]any{"error_code": "provider_uncertain", "error_summary": "model dispatch outcome is unknown"}, want: "durable turn ended error: provider_uncertain: model dispatch outcome is unknown"},
+		{name: "completed without offer", event: "done", data: map[string]any{}, want: "durable stream completed without the expected Worker offer"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			postCount, watchCount := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.Method {
+				case http.MethodPost:
+					postCount++
+					writer.WriteHeader(http.StatusAccepted)
+					_ = json.NewEncoder(writer).Encode(map[string]any{
+						"turn_id": "turn-id", "conversation_id": "conversation-id", "seq": int64(1),
+					})
+				case http.MethodGet:
+					watchCount++
+					writer.Header().Set("Content-Type", "text/event-stream")
+					frame := map[string]any{
+						"event": test.event, "seq": int64(2), "turn_id": "turn-id", "conversation_id": "conversation-id", "data": test.data,
+					}
+					_, _ = fmt.Fprintf(writer, "id: 2\nevent: %s\ndata: %s\n\n", test.event, mustJSON(frame))
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer server.Close()
 
-	product, err := newHTTPProduct(server.URL, "owner-token", 10*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = product.StartTurn(context.Background(), map[string]any{
-		"conversation_id": "conversation-id", "idempotency_key": "idempotency-key",
-	}, false)
-	if err == nil || err.Error() != "durable turn ended error: provider_uncertain: model dispatch outcome is unknown" {
-		t.Fatalf("terminal error = %v", err)
-	}
-	if postCount != 1 || watchCount != 1 {
-		t.Fatalf("terminal request counts = POST %d, watch %d; want 1, 1", postCount, watchCount)
+			product, err := newHTTPProduct(server.URL, "owner-token", 10*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = product.StartTurn(context.Background(), map[string]any{
+				"conversation_id": "conversation-id", "idempotency_key": "idempotency-key",
+			}, true)
+			if err == nil || err.Error() != test.want {
+				t.Fatalf("terminal error = %v, want %q", err, test.want)
+			}
+			if postCount != 1 || watchCount != 1 {
+				t.Fatalf("terminal request counts = POST %d, watch %d; want 1, 1", postCount, watchCount)
+			}
+		})
 	}
 }
 

@@ -107,7 +107,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	}
 	tool := coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerProposeToolName,
-		Description: "Propose a priced ephemeral AWS Pi Worker for a substantial project task that needs general project or shell execution, isolated execution, durable file delivery, tests, deployment work, or long-running compute that the local conversation runtime cannot provide. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. This creates only an offer; AWS resources start only after the owner reviews and confirms it.",
+		Description: "Propose a priced reusable AWS Worker for a substantial project task that needs general project or shell execution, isolated execution, durable file delivery, tests, deployment work, or long-running compute that the local conversation runtime cannot provide. The Worker may be retained and reused after the task. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. This creates only an offer; AWS resources start only after the owner reviews and confirms it.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

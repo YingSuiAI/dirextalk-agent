@@ -1592,6 +1592,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			if containsStaticSiteIntrinsic(intrinsicTools) {
 				systemPrompt = staticSiteSystemPrompt(systemPrompt)
 			}
+			if containsCloudWorkerIntrinsic(intrinsicTools) {
+				systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
+			}
 			// Force the current streaming runner so active provider streams are
 			// bounded only by their inactivity watchdog. Persist only user-visible
 			// assistant text as durable deltas; provider reasoning content is never
