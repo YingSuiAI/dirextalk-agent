@@ -62,4 +62,49 @@ describe("Dirextalk Pi output continuation", () => {
     handlers.get("turn_end")?.({ message: { stopReason: "length" } });
     expect(sent).toHaveLength(1);
   });
+
+  test("compacts older length-stopped assistant text against the signed model window", () => {
+    const objective = "Create the exact requested deliverables.";
+    const latest = "L".repeat(30000);
+    const messages = [
+      { role: "user", content: objective },
+      { role: "assistant", content: "O".repeat(30000) },
+      { role: "user", content: "Continue without repeating completed work." },
+      { role: "assistant", content: latest },
+    ];
+
+    const compacted = extension.compactDirextalkContext(
+      messages,
+      65536,
+      8192,
+      2048,
+    );
+
+    expect(compacted[0]).toEqual(messages[0]);
+    expect((compacted[1] as { content: string }).content.length).toBeLessThan(
+      30000,
+    );
+    expect(compacted[2]).toEqual(messages[2]);
+    expect(compacted[3]).toEqual(messages[3]);
+  });
+
+  test("bounds the newest assistant text only when the exact request target requires it", () => {
+    const objective = "O".repeat(30000);
+    const messages = [
+      { role: "user", content: objective },
+      { role: "assistant", content: "A".repeat(30000) },
+    ];
+
+    const compacted = extension.compactDirextalkContext(
+      messages,
+      65536,
+      8192,
+      2048,
+    );
+
+    expect(compacted[0]).toEqual(messages[0]);
+    expect(
+      (compacted[1] as { content: string }).content.length,
+    ).toBeLessThanOrEqual(8192);
+  });
 });

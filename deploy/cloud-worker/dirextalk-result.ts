@@ -20,6 +20,9 @@ const RECENT_TOOL_RESULTS = 2;
 const RECENT_TOOL_ROUNDS = 2;
 const OLD_TOOL_TEXT_CHARS = 1024;
 const RECENT_TOOL_TEXT_CHARS = 4096;
+const RECENT_ASSISTANT_MESSAGES = 1;
+const OLD_ASSISTANT_TEXT_CHARS = 2048;
+const RECENT_ASSISTANT_TEXT_CHARS = 8192;
 
 type ContextRecord = Record<string, unknown>;
 
@@ -40,9 +43,12 @@ export function estimatedDirextalkContextTokens(value: unknown): number {
 function estimatedDirextalkMessageTokens(messages: unknown[]): number {
   return messages.reduce((total, message) => {
     try {
-      return total + Math.max(
-        estimateTokens(message as Parameters<typeof estimateTokens>[0]),
-        estimatedDirextalkContextTokens(message),
+      return (
+        total +
+        Math.max(
+          estimateTokens(message as Parameters<typeof estimateTokens>[0]),
+          estimatedDirextalkContextTokens(message),
+        )
       );
     } catch {
       return Number.MAX_SAFE_INTEGER;
@@ -55,14 +61,26 @@ function boundedText(value: string, maximum: number): string {
   const notice = `\n[Dirextalk context guard: ${value.length - maximum} characters omitted; re-read the source file or rerun the command if needed.]\n`;
   const available = Math.max(0, maximum - notice.length);
   const head = Math.ceil(available / 2);
-  return value.slice(0, head) + notice + value.slice(value.length - (available - head));
+  return (
+    value.slice(0, head) +
+    notice +
+    value.slice(value.length - (available - head))
+  );
 }
 
-function compactToolResult(message: ContextRecord, maximum: number): ContextRecord {
-  const toolName = typeof message.toolName === "string" ? message.toolName : "tool";
+function compactToolResult(
+  message: ContextRecord,
+  maximum: number,
+): ContextRecord {
+  const toolName =
+    typeof message.toolName === "string" ? message.toolName : "tool";
   const content = Array.isArray(message.content)
     ? message.content.map((item) => {
-        if (item && typeof item === "object" && (item as ContextRecord).type === "text") {
+        if (
+          item &&
+          typeof item === "object" &&
+          (item as ContextRecord).type === "text"
+        ) {
           const text = (item as ContextRecord).text;
           return {
             ...(item as ContextRecord),
@@ -74,9 +92,46 @@ function compactToolResult(message: ContextRecord, maximum: number): ContextReco
           text: `[Dirextalk context guard: older ${toolName} binary/image output omitted; reopen the workspace file if needed.]`,
         };
       })
-    : [{ type: "text", text: `[Dirextalk context guard: older ${toolName} output omitted.]` }];
+    : [
+        {
+          type: "text",
+          text: `[Dirextalk context guard: older ${toolName} output omitted.]`,
+        },
+      ];
   const compacted = { ...message, content };
   delete compacted.details;
+  return compacted;
+}
+
+function compactAssistantText(
+  message: ContextRecord,
+  maximum: number,
+): ContextRecord {
+  if (message.role !== "assistant") return message;
+  const compacted = { ...message };
+  if (typeof compacted.content === "string") {
+    compacted.content = boundedText(compacted.content, maximum);
+  } else if (Array.isArray(compacted.content)) {
+    compacted.content = compacted.content.map((item) => {
+      if (
+        !item ||
+        typeof item !== "object" ||
+        (item as ContextRecord).type !== "text"
+      ) {
+        return item;
+      }
+      const text = (item as ContextRecord).text;
+      return {
+        ...(item as ContextRecord),
+        text: boundedText(typeof text === "string" ? text : "", maximum),
+      };
+    });
+  }
+  for (const key of ["reasoning_content", "reasoningContent"]) {
+    if (typeof compacted[key] === "string") {
+      compacted[key] = boundedText(compacted[key] as string, maximum);
+    }
+  }
   return compacted;
 }
 
@@ -89,10 +144,16 @@ function completedToolRounds(messages: ContextRecord[]): ToolRound[] {
   const rounds: ToolRound[] = [];
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index];
-    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+    if (message?.role !== "assistant" || !Array.isArray(message.content))
+      continue;
     const callIDs = new Set(
       message.content
-        .filter((item) => item && typeof item === "object" && (item as ContextRecord).type === "toolCall")
+        .filter(
+          (item) =>
+            item &&
+            typeof item === "object" &&
+            (item as ContextRecord).type === "toolCall",
+        )
         .map((item) => (item as ContextRecord).id)
         .filter((id): id is string => typeof id === "string" && id.length > 0),
     );
@@ -122,22 +183,39 @@ export function compactDirextalkContext<T>(
   maxTokens: number,
   requestOverheadTokens: number,
 ): T[] {
-  if (!Number.isFinite(contextWindow) || !Number.isFinite(maxTokens) ||
-      !Number.isFinite(requestOverheadTokens) || contextWindow < MIN_CONTEXT_WINDOW ||
-      maxTokens <= 0 || maxTokens >= contextWindow || requestOverheadTokens < 0) {
-    throw new Error("Dirextalk context guard received invalid authorized model limits");
+  if (
+    !Number.isFinite(contextWindow) ||
+    !Number.isFinite(maxTokens) ||
+    !Number.isFinite(requestOverheadTokens) ||
+    contextWindow < MIN_CONTEXT_WINDOW ||
+    maxTokens <= 0 ||
+    maxTokens >= contextWindow ||
+    requestOverheadTokens < 0
+  ) {
+    throw new Error(
+      "Dirextalk context guard received invalid authorized model limits",
+    );
   }
-  const target = contextWindow - maxTokens - requestOverheadTokens - PROVIDER_PROTOCOL_TOKEN_RESERVE;
+  const target =
+    contextWindow -
+    maxTokens -
+    requestOverheadTokens -
+    PROVIDER_PROTOCOL_TOKEN_RESERVE;
   if (target <= 0) {
-    throw new Error("Dirextalk request overhead leaves no authorized message context");
+    throw new Error(
+      "Dirextalk request overhead leaves no authorized message context",
+    );
   }
   if (estimatedDirextalkMessageTokens(messages) <= target) return messages;
 
   const result = messages.slice() as unknown as ContextRecord[];
   const toolResultIndexes = result
-    .map((message, index) => message?.role === "toolResult" ? index : -1)
+    .map((message, index) => (message?.role === "toolResult" ? index : -1))
     .filter((index) => index >= 0);
-  const protectedStart = Math.max(0, toolResultIndexes.length - RECENT_TOOL_RESULTS);
+  const protectedStart = Math.max(
+    0,
+    toolResultIndexes.length - RECENT_TOOL_RESULTS,
+  );
 
   const compactAt = (resultIndex: number, maximum: number) => {
     result[resultIndex] = compactToolResult(result[resultIndex], maximum);
@@ -145,7 +223,29 @@ export function compactDirextalkContext<T>(
 
   for (let index = 0; index < protectedStart; index++) {
     compactAt(toolResultIndexes[index], OLD_TOOL_TEXT_CHARS);
-    if (estimatedDirextalkMessageTokens(result) <= target) return result as unknown as T[];
+    if (estimatedDirextalkMessageTokens(result) <= target)
+      return result as unknown as T[];
+  }
+
+  // Length-stopped turns can contain large assistant text even when they have
+  // little or no tool output. Preserve the newest working response verbatim,
+  // while bounding older prose/code against this model's exact request target.
+  // Tool-call blocks and their paired results are left structurally intact.
+  const assistantIndexes = result
+    .map((message, index) => (message?.role === "assistant" ? index : -1))
+    .filter((index) => index >= 0);
+  const protectedAssistantStart = Math.max(
+    0,
+    assistantIndexes.length - RECENT_ASSISTANT_MESSAGES,
+  );
+  for (let index = 0; index < protectedAssistantStart; index++) {
+    const messageIndex = assistantIndexes[index];
+    result[messageIndex] = compactAssistantText(
+      result[messageIndex],
+      OLD_ASSISTANT_TEXT_CHARS,
+    );
+    if (estimatedDirextalkMessageTokens(result) <= target)
+      return result as unknown as T[];
   }
 
   // Drop only complete historical tool rounds. Removing the assistant call and
@@ -156,15 +256,17 @@ export function compactDirextalkContext<T>(
     if (rounds.length <= RECENT_TOOL_ROUNDS) break;
     const oldest = rounds[0];
     result.splice(oldest.start, oldest.end - oldest.start + 1);
-    if (estimatedDirextalkMessageTokens(result) <= target) return result as unknown as T[];
+    if (estimatedDirextalkMessageTokens(result) <= target)
+      return result as unknown as T[];
   }
 
   const remainingToolResultIndexes = result
-    .map((message, index) => message?.role === "toolResult" ? index : -1)
+    .map((message, index) => (message?.role === "toolResult" ? index : -1))
     .filter((index) => index >= 0);
   for (const resultIndex of remainingToolResultIndexes) {
     compactAt(resultIndex, RECENT_TOOL_TEXT_CHARS);
-    if (estimatedDirextalkMessageTokens(result) <= target) return result as unknown as T[];
+    if (estimatedDirextalkMessageTokens(result) <= target)
+      return result as unknown as T[];
   }
 
   // Retain two recent rounds when the authorized window permits it. If their
@@ -175,15 +277,36 @@ export function compactDirextalkContext<T>(
     if (rounds.length <= 1) break;
     const oldest = rounds[0];
     result.splice(oldest.start, oldest.end - oldest.start + 1);
-    if (estimatedDirextalkMessageTokens(result) <= target) return result as unknown as T[];
+    if (estimatedDirextalkMessageTokens(result) <= target)
+      return result as unknown as T[];
   }
-  throw new Error("Dirextalk context guard could not fit the conversation inside the authorized model window");
+
+  // If the newest length-stopped answer alone is unusually large, retain a
+  // bounded tail of it. The original user objective and all user messages are
+  // never rewritten, so the next turn can recover exact requirements and
+  // inspect durable workspace files for omitted implementation detail.
+  for (let index = result.length - 1; index >= 0; index--) {
+    if (result[index]?.role !== "assistant") continue;
+    result[index] = compactAssistantText(
+      result[index],
+      RECENT_ASSISTANT_TEXT_CHARS,
+    );
+    if (estimatedDirextalkMessageTokens(result) <= target)
+      return result as unknown as T[];
+  }
+  throw new Error(
+    "Dirextalk context guard could not fit the conversation inside the authorized model window",
+  );
 }
 
 function providerOutputLimit(payload: unknown): number | undefined {
   if (!payload || typeof payload !== "object") return undefined;
   const value = payload as ContextRecord;
-  for (const key of ["max_output_tokens", "max_completion_tokens", "max_tokens"]) {
+  for (const key of [
+    "max_output_tokens",
+    "max_completion_tokens",
+    "max_tokens",
+  ]) {
     if (typeof value[key] === "number") return value[key];
   }
   return undefined;
@@ -194,22 +317,42 @@ export function validateDirextalkProviderPayload(
   contextWindow: number,
   maxTokens: number,
 ): void {
-  if (!Number.isFinite(contextWindow) || !Number.isFinite(maxTokens) ||
-      contextWindow < MIN_CONTEXT_WINDOW || maxTokens <= 0 || maxTokens >= contextWindow) {
-    throw new Error("Dirextalk provider guard received invalid authorized model limits");
+  if (
+    !Number.isFinite(contextWindow) ||
+    !Number.isFinite(maxTokens) ||
+    contextWindow < MIN_CONTEXT_WINDOW ||
+    maxTokens <= 0 ||
+    maxTokens >= contextWindow
+  ) {
+    throw new Error(
+      "Dirextalk provider guard received invalid authorized model limits",
+    );
   }
   const outputLimit = providerOutputLimit(payload);
-  if (!Number.isFinite(outputLimit) || outputLimit! <= 0 || outputLimit! > maxTokens) {
-    throw new Error("Dirextalk provider payload is missing the authorized output limit");
+  if (
+    !Number.isFinite(outputLimit) ||
+    outputLimit! <= 0 ||
+    outputLimit! > maxTokens
+  ) {
+    throw new Error(
+      "Dirextalk provider payload is missing the authorized output limit",
+    );
   }
   const encoded = JSON.stringify(payload);
-  if (typeof encoded !== "string" ||
-      new TextEncoder().encode(encoded).byteLength > MODEL_RELAY_MAX_REQUEST_BYTES) {
-    throw new Error("Dirextalk provider payload exceeds the model relay transport limit");
+  if (
+    typeof encoded !== "string" ||
+    new TextEncoder().encode(encoded).byteLength > MODEL_RELAY_MAX_REQUEST_BYTES
+  ) {
+    throw new Error(
+      "Dirextalk provider payload exceeds the model relay transport limit",
+    );
   }
-  const requestTokens = estimatedDirextalkContextTokens(payload) + PROVIDER_PROTOCOL_TOKEN_RESERVE;
+  const requestTokens =
+    estimatedDirextalkContextTokens(payload) + PROVIDER_PROTOCOL_TOKEN_RESERVE;
   if (requestTokens > contextWindow - outputLimit!) {
-    throw new Error("Dirextalk provider payload exceeds the authorized model context window");
+    throw new Error(
+      "Dirextalk provider payload exceeds the authorized model context window",
+    );
   }
 }
 
@@ -261,11 +404,14 @@ export function shouldContinueDirextalkTurn(
 
 export default function registerDirextalkResult(pi: ExtensionAPI) {
   let finalSubmitted = false;
-  pi.registerTool(createSubmitResult(() => {
-    finalSubmitted = true;
-  }));
+  pi.registerTool(
+    createSubmitResult(() => {
+      finalSubmitted = true;
+    }),
+  );
   pi.on("turn_end", (event) => {
-    if (!shouldContinueDirextalkTurn(event.message.stopReason, finalSubmitted)) return;
+    if (!shouldContinueDirextalkTurn(event.message.stopReason, finalSubmitted))
+      return;
     pi.sendUserMessage(
       "Continue the same task from the exact point where the previous response reached its per-request output limit. Do not repeat completed work. Inspect the workspace as needed, finish and verify every required deliverable, then call dirextalk_submit_result exactly once.",
       { deliverAs: "followUp" },
@@ -273,13 +419,19 @@ export default function registerDirextalkResult(pi: ExtensionAPI) {
   });
   pi.on("context", (event, ctx) => {
     try {
-      if (!ctx.model) throw new Error("Dirextalk context guard requires an authorized model");
+      if (!ctx.model)
+        throw new Error("Dirextalk context guard requires an authorized model");
       const activeTools = new Set(pi.getActiveTools());
       const requestOverheadTokens = estimatedDirextalkContextTokens({
         systemPrompt: ctx.getSystemPrompt(),
-        tools: pi.getAllTools()
+        tools: pi
+          .getAllTools()
           .filter((tool) => activeTools.has(tool.name))
-          .map(({ name, description, parameters }) => ({ name, description, parameters })),
+          .map(({ name, description, parameters }) => ({
+            name,
+            description,
+            parameters,
+          })),
       });
       const messages = compactDirextalkContext(
         event.messages,
@@ -295,8 +447,15 @@ export default function registerDirextalkResult(pi: ExtensionAPI) {
   });
   pi.on("before_provider_request", (event, ctx) => {
     try {
-      if (!ctx.model) throw new Error("Dirextalk provider guard requires an authorized model");
-      validateDirextalkProviderPayload(event.payload, ctx.model.contextWindow, ctx.model.maxTokens);
+      if (!ctx.model)
+        throw new Error(
+          "Dirextalk provider guard requires an authorized model",
+        );
+      validateDirextalkProviderPayload(
+        event.payload,
+        ctx.model.contextWindow,
+        ctx.model.maxTokens,
+      );
     } catch {
       ctx.abort();
     }

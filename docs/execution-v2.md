@@ -229,8 +229,9 @@ snapshot and includes them in the model authorization and task digest. The Pi
 model configuration receives those exact limits; before each provider request,
 the result extension combines Pi's model-neutral estimator with a conservative
 UTF-8 byte upper bound and the actual active system/tool overhead to compact
-oversized tool output while preserving tool call/result identities and the
-original tool-call arguments. It checks
+oversized tool output and older length-stopped assistant text while preserving
+the original user objective, recent working state, tool call/result identities,
+and the original tool-call arguments. It checks
 the final provider payload against the same authorized model/output limits and
 the relay's 2 MiB transport limit. The single-use Worker disables Pi's separate
 long-session auto-compaction so it cannot add a fixed reserve or an extra model

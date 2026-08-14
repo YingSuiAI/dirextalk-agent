@@ -233,8 +233,9 @@ support.
   the selected profile's exact context window into model authorization and the
   canonical runtime task. The Worker writes that value into Pi's model config,
   and the result extension uses Pi's estimator, a conservative UTF-8 byte upper
-  bound, plus active request overhead to
-  bound long tool-output loops without breaking tool call/result pairing. The
+  bound, plus active request overhead to bound long tool-output loops and older
+  length-stopped assistant text without breaking tool call/result pairing or
+  rewriting the original user objective. The
   final provider payload is checked against the same authorized context/output
   limits and the Relay ingress limit. Pi's separate long-session auto-compaction
   is disabled for this single-use runtime, avoiding its fixed 16K reserve and
