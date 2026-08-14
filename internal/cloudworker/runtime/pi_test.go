@@ -232,7 +232,7 @@ func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
 	}
 }
 
-func TestWritePiSettingsConfigDisablesIndependentAutoCompaction(t *testing.T) {
+func TestWritePiSettingsConfigEnablesPiSemanticAutoCompaction(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	if err := writePiSettingsConfig(directory); err != nil {
@@ -242,8 +242,20 @@ func TestWritePiSettingsConfigDisablesIndependentAutoCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(raw) != piSettingsJSON {
-		t.Fatalf("settings=%s", raw)
+	var settings struct {
+		Compaction struct {
+			Enabled          bool    `json:"enabled"`
+			ReserveTokens    *uint64 `json:"reserveTokens"`
+			KeepRecentTokens *uint64 `json:"keepRecentTokens"`
+		} `json:"compaction"`
+		EnableInstallTelemetry bool `json:"enableInstallTelemetry"`
+	}
+	if err = json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("settings=%s: %v", raw, err)
+	}
+	if !settings.Compaction.Enabled || settings.Compaction.ReserveTokens != nil ||
+		settings.Compaction.KeepRecentTokens != nil || settings.EnableInstallTelemetry {
+		t.Fatalf("settings=%+v", settings)
 	}
 	if err = writePiSettingsConfig(directory); !errors.Is(err, ErrExecution) {
 		t.Fatalf("settings rewrite error=%v", err)

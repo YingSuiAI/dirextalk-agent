@@ -13,7 +13,7 @@ import (
 
 const DefaultSearchPath = "/usr/local/bin:/usr/bin:/bin"
 
-const piSettingsJSON = `{"compaction":{"enabled":false},"enableInstallTelemetry":false}`
+const piSettingsJSON = `{"compaction":{"enabled":true},"enableInstallTelemetry":false}`
 
 const piSystemPrompt = `Execute exactly one authorized Dirextalk Cloud Worker task.
 Use only the enabled tools and supplied workspace. Never inspect credential locations or reveal private configuration.
@@ -272,9 +272,9 @@ func preparePiJobDirectories(jobRoot, home, configRoot string, runtimeGID uint32
 }
 
 func writePiSettingsConfig(configRoot string) error {
-	// Cloud Workers are single-use executions. Their deterministic context
-	// guard is bound to Central's model authorization, so Pi's long-session
-	// auto-compaction must not add a second fixed reserve or a summary call.
+	// Pi owns semantic context management. The exact model context and output
+	// limits are supplied in models.json; Pi uses them to compact near the
+	// active model's boundary and recover once from a provider overflow.
 	encoded := []byte(piSettingsJSON)
 	file, err := os.OpenFile(
 		filepath.Join(configRoot, "settings.json"),

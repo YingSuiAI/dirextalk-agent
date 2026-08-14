@@ -226,17 +226,19 @@ current qualification document schema is
 The v2 runtime task binds the selected model profile's exact context window and
 maximum output tokens. Central reads both values from the immutable execution
 snapshot and includes them in the model authorization and task digest. The Pi
-model configuration receives those exact limits; before each provider request,
-the result extension combines Pi's model-neutral estimator with a conservative
-UTF-8 byte upper bound and the actual active system/tool overhead to compact
+model configuration receives those exact limits. Pi's native semantic
+auto-compaction remains enabled and uses the active model's context window to
+compact near its boundary; after a provider overflow it may compact and retry
+once. This is Pi's own working-context decision, not a Central-generated summary
+or a cumulative token budget. Before each provider request, the result extension
+uses Pi's model-neutral estimator, a conservative UTF-8 byte upper bound, and the
+actual active system/tool overhead only as a final transport guard. It can bound
 oversized tool output and older length-stopped assistant text while preserving
 the original user objective, recent working state, tool call/result identities,
-and the original tool-call arguments. It checks
-the final provider payload against the same authorized model/output limits and
-the relay's 2 MiB transport limit. The single-use Worker disables Pi's separate
-long-session auto-compaction so it cannot add a fixed reserve or an extra model
-summary call outside this authorization-derived policy. If the bounded results
-still cannot fit, Pi aborts the turn instead of sending an oversized request. Historical v1
+and the original tool-call arguments. The final provider payload is checked
+against the same authorized model/output limits and the relay's 2 MiB transport
+limit. If the guarded request still cannot fit, Pi aborts the turn instead of
+sending an oversized request. Historical v1
 authorizations remain readable for conversation, artifact history, result
 recovery, and cleanup of an already-started dispatch, but a
 confirmation becomes stale before queueing and a previously confirmed task is

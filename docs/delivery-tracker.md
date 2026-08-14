@@ -231,18 +231,18 @@ support.
   for live evidence.
 - On **2026-08-14**, the Pi runtime contract advanced to v2 so Central binds
   the selected profile's exact context window into model authorization and the
-  canonical runtime task. The Worker writes that value into Pi's model config,
-  and the result extension uses Pi's estimator, a conservative UTF-8 byte upper
-  bound, plus active request overhead to bound long tool-output loops and older
-  length-stopped assistant text without breaking tool call/result pairing or
-  rewriting the original user objective. The
-  final provider payload is checked against the same authorized context/output
-  limits and the Relay ingress limit. Pi's separate long-session auto-compaction
-  is disabled for this single-use runtime, avoiding its fixed 16K reserve and
-  extra summary request. Historical v1 plans are now read-only at
-  both confirmation and task claim while already-started execution recovery and
-  AWS cleanup remain available. Relay ingress reports oversized context as
-  a distinct 413 failure before budget mutation. A real
+  canonical runtime task. The Worker writes that value into Pi's model config
+  and leaves Pi's native semantic auto-compaction enabled, so Pi decides when to
+  compact against the active model window and can compact-and-retry once after
+  overflow. The result extension uses Pi's estimator, a conservative UTF-8 byte
+  upper bound, plus active request overhead only as a final transport guard. It
+  can bound long tool-output loops and older length-stopped assistant text
+  without breaking tool call/result pairing or rewriting the original user
+  objective. The final provider payload is checked against the same authorized
+  context/output limits and the Relay ingress limit. Historical v1 plans are now
+  read-only at both confirmation and task claim while already-started execution
+  recovery and AWS cleanup remain available. Relay ingress reports oversized
+  context as a distinct 413 failure before budget mutation. A real
   Pi 0.83.0 Linux x86 pressure run completed eight successive 50 KiB tool
   results, submitted the canonical final result, and settled; fresh AMI and
   live AWS task acceptance remain required.
