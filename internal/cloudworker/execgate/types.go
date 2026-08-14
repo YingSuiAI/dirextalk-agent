@@ -17,7 +17,7 @@ import (
 
 const (
 	ProtocolSchemaV1 = "dirextalk.agent.pi-exec-gate/v1"
-	ProofSchemaV1    = "dirextalk.agent.pi-runtime-topology/v1"
+	ProofSchemaV2    = "dirextalk.agent.pi-runtime-topology/v2"
 
 	DefaultSocketPath = "/run/dirextalk-cloud-worker-exec-gate/control.sock"
 	MaximumWireBytes  = 64 << 10
@@ -78,9 +78,10 @@ func (value ProcessIdentity) validate() error {
 }
 
 // Proof is a private WorkerControl fact. WorkerProcessCount and
-// ActivePiProcesses use the pinned executable identities; CgroupProcessCount
-// and ActiveDescendants cover every process in the Worker cgroup so a terminal
-// proof cannot ignore a surviving bash/git/tool descendant.
+// ActivePiProcesses use the pinned executable identities. TotalAllowedPiExecs
+// is an audit count of authorized pinned-image execs, not a concurrency limit.
+// CgroupProcessCount and ActiveDescendants cover every process in the Worker
+// cgroup so a terminal proof cannot ignore a surviving Pi/bash/git/tool child.
 type Proof struct {
 	SchemaVersion       string          `json:"schema_version"`
 	State               ProofState      `json:"state"`
@@ -105,20 +106,21 @@ type Proof struct {
 }
 
 func (proof Proof) Validate() error {
-	if proof.SchemaVersion != ProofSchemaV1 || !canonicalUUID(proof.RunID) ||
+	if proof.SchemaVersion != ProofSchemaV2 || !canonicalUUID(proof.RunID) ||
 		!canonicalUUID(proof.ExecutionID) || !canonicalUUID(proof.TaskID) ||
 		proof.Attempt == 0 || proof.LeaseEpoch == 0 ||
 		!validDigest(proof.RuntimeTaskSHA256) || !canonicalUUID(proof.BootID) ||
 		!validDigest(proof.CgroupSHA256) || !validDigest(proof.PolicySHA256) ||
 		proof.Worker.validate() != nil || proof.Pi.validate() != nil ||
 		proof.ObservedAtUnixNano <= 0 || proof.WorkerProcessCount != 1 ||
-		proof.TotalAllowedPiExecs != 1 || len(proof.ViolationCode) > 64 {
+		proof.TotalAllowedPiExecs == 0 || len(proof.ViolationCode) > 64 {
 		return ErrInvalid
 	}
 	switch proof.State {
 	case ProofActive:
-		if proof.ActivePiProcesses != 1 || proof.CgroupProcessCount < 2 ||
+		if proof.ActivePiProcesses == 0 || proof.CgroupProcessCount < 2 ||
 			proof.ActiveDescendants != proof.CgroupProcessCount-1 || proof.ActiveDescendants < 1 ||
+			proof.ActivePiProcesses > proof.ActiveDescendants ||
 			proof.ViolationCode != "" {
 			return ErrInvalid
 		}
@@ -139,7 +141,7 @@ func (proof Proof) Validate() error {
 
 func (proof Proof) ValidateTerminal() error {
 	if proof.Validate() != nil || proof.State != ProofTerminal ||
-		proof.TotalAllowedPiExecs != 1 || proof.ActivePiProcesses != 0 {
+		proof.TotalAllowedPiExecs == 0 || proof.ActivePiProcesses != 0 {
 		return ErrInvalid
 	}
 	return nil

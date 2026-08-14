@@ -1,4 +1,4 @@
-// dirextalk-cloud-worker executes exactly one confirmed ephemeral Pi task and
+// dirextalk-cloud-worker executes exactly one confirmed ephemeral Pi task tree and
 // exits. It has no Agent configuration, database, MCP, Skill, Knowledge,
 // extension-runner, local fallback, installer, maintenance, or inbound server.
 package main

@@ -143,8 +143,9 @@ image process with `CAP_SYS_ADMIN` (plus `CAP_KILL` for fenced cleanup and
 `/proc/<pid>/exe`). The
 long-running Worker retains only `CAP_SETUID`/`CAP_SETGID`, and Pi receives no
 capability. The Gate uses `FAN_OPEN_EXEC_PERM` against the executable file
-already opened by the kernel, verifies device/inode/SHA-256, permits exactly
-one pinned Pi exec, and binds registration to the Worker UID/PID, boot ID,
+already opened by the kernel, verifies device/inode/SHA-256, permits one root
+Pi plus any number of pinned-image descendants in that root's task process
+tree, and binds registration to the Worker UID/PID, boot ID,
 process start ticks, exact systemd cgroup, execution/task/attempt, and lease
 epoch. A missing Gate, missing `nft`, or failed unit assertion makes the
 required service fail; it is never an optional skipped prerequisite.
@@ -152,19 +153,20 @@ required service fail; it is never an optional skipped prerequisite.
 The pinned Pi ELF is `root:dirextalk-cloud-worker` mode `0551`. The Worker can
 read and hash it through its supplementary Worker group, while the Pi UID is
 execute-only and is spawned with an empty supplementary-group set. This is a
-required part of the one-Pi fence: Linux fanotify does not emit an executable
-permission event when a task invokes the ELF `PT_INTERP` directly and supplies
-Pi as ordinary input. The execute-only boundary makes that input open fail,
+required part of the pinned-image fence: Linux fanotify does not emit an
+executable permission event when a task invokes the ELF `PT_INTERP` directly
+and supplies Pi as ordinary input. The execute-only boundary makes that input open fail,
 and the offline AMI qualification runs the fixed-SHA Pi 0.83.0 both directly
 and through its interpreter, then checks the live Pi groups and descriptors.
 
 Before result parsing or workspace collection, the Worker requires a canonical
-terminal proof with exactly one allowed Pi exec, only the Worker remaining in
-the cgroup, and zero Pi/tool descendants. A repeated or copied Pi executable,
-path replacement, stale lease, daemonized descendant, cancellation, or Gate
-failure is fail-closed. The Gate kills fenced cgroup members other than the
-Worker during cancellation and never exposes its proof as public Execution V2
-diagnostics.
+terminal proof with at least one authorized pinned Pi exec, only the Worker
+remaining in the cgroup, and zero Pi/tool descendants. Pi child Agents have no
+artificial count, depth, or lifetime cap. A Pi exec outside the root Pi process
+tree, a copied executable, path replacement, stale lease, daemonized descendant,
+cancellation, or Gate failure is fail-closed. The Gate kills fenced cgroup
+members other than the Worker during cancellation and never exposes its proof
+as public Execution V2 diagnostics.
 
 The final AMI process must:
 
@@ -201,9 +203,9 @@ cloud-worker candidate boot prequalification: PASS
 The boot graph requires the network and Gate units active before the
 qualification service and the qualification service complete before the
 Worker. It verifies exact Gate and Worker process capabilities, the
-root/65531 Gate socket boundary, the bounded Gate task limit with runtime
-headroom for the Go scheduler and request handlers, the exact default-drop Pi
-nftables chain, and no non-loopback TCP or UDP listener. It has no skip path.
+root/65531 Gate socket boundary, unlimited Worker/Gate process accounting, the
+exact default-drop Pi nftables chain, and no non-loopback TCP or UDP listener.
+It has no skip path.
 The Packer build SG is never reused at runtime.
 Independently read back the candidate Worker Security Group and require zero
 ingress rules; a host listener check cannot prove AWS policy.

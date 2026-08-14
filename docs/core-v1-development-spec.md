@@ -139,7 +139,7 @@ The Core v1 acceptance set covers these ten observable scenarios:
    process tree and delegated cgroup are gone before the task is cleaned.
 8. Knowledge covers Agent-owned mounts, bounded uploads, memory, indexing,
    and semantic search with revision and digest checks.
-9. Core CloudControl and single Pi Cloud Worker fake-provider flows cover
+9. Core CloudControl and Pi Worker fake-provider flows cover
    quote/confirmation, durable recovery, exact result validation, cancellation,
    and verified cleanup; provider acceptance evidence is recorded in the
    [delivery tracker](delivery-tracker.md).
@@ -418,13 +418,13 @@ confirmation, read-back, and cleanup. Typed workload routes require their own
 exact readiness blocks and lazy target probes. Generic non-Cloud-Worker
 Execution V2 operations publish only when their own typed provider route is
 ready, including a dedicated CloudFormation service role where that operation
-requires one. The single Pi Cloud Worker route has its independent PostgreSQL,
+requires one. The Pi Worker route has its independent PostgreSQL,
 controller, provider-ledger/Reaper, private-listener, and completion-outbox
 readiness gate. The [API contract](api-contract.md) defines publication gates;
 evidence and remaining verification are recorded in the
 [delivery tracker](delivery-tracker.md).
 
-### Single Pi Cloud Worker
+### Pi Cloud Worker
 
 The Native Agent remains local-first and retains its local sandbox, worker
 pool, MCP, Skills, Knowledge, Conversation Tools, and Extension Runner. The
@@ -434,8 +434,9 @@ budget insufficiency. A local failure is not proof and never triggers an
 automatic upgrade.
 
 The only recipe is `ephemeral-pi-task` with adapter `pi_json_task_v1`. One
-confirmed execution creates exactly one EC2 instance, one Worker, and one Pi
-process. Its plan binds every cost/authority field, including immutable input,
+confirmed execution creates exactly one EC2 instance, one Worker, and one root
+Pi process tree. The root Pi may dispatch any number of pinned-image child
+Agents without a count, depth, or child-lifetime cap. Its plan binds every cost/authority field, including immutable input,
 workspace mode, model and credential revisions, AWS/compute/AMI digests,
 limits, grants, retention, quote expiry, and hard cost ceiling. Any drift
 requires a fresh quote and CoreConfirmation.

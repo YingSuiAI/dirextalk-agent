@@ -18,7 +18,7 @@ RuntimeDirectoryMode=0750
 UMask=0007
 StandardOutput=journal+console
 StandardError=journal+console
-TasksMax=64
+TasksMax=infinity
 
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_KILL

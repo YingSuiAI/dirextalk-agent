@@ -172,7 +172,7 @@ support.
   idle SQS queue in one CloudFormation stack, then confirm/delete it. Independent
   deletion verification and a post-run prefix audit found zero active stacks or
   queues. This evidence covers Core CloudControl only. It is not Cloud Worker,
-  Worker AMI, one-EC2/one-Worker/one-Pi, artifact collection, or Cloud Worker
+  Worker AMI, one-EC2/one-Worker/one-Pi-tree, artifact collection, or Cloud Worker
   inventory-zero evidence and must not be used as such.
 - On **2026-08-07**, `go test ./internal/cloudworker/... -count=1` passed. The
   fake/provider qualification covers deterministic plan/quote binding and hard

@@ -230,7 +230,7 @@ func (run *fakeProcessExecGateRun) Terminal(context.Context) (execgate.Proof, er
 		return execgate.Proof{}, run.terminalErr
 	}
 	return execgate.Proof{
-		SchemaVersion: execgate.ProofSchemaV1, State: execgate.ProofTerminal,
+		SchemaVersion: execgate.ProofSchemaV2, State: execgate.ProofTerminal,
 		RunID:       "33333333-3333-4333-8333-333333333333",
 		ExecutionID: run.registration.ExecutionID, TaskID: run.registration.TaskID,
 		Attempt: run.registration.Attempt, LeaseEpoch: run.registration.LeaseEpoch,

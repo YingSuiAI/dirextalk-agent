@@ -55,7 +55,7 @@ func testExpectation(fence TaskFence) IdentityExpectation {
 
 func testRuntimeTopology(fence TaskFence) execgate.Proof {
 	return execgate.Proof{
-		SchemaVersion: execgate.ProofSchemaV1, State: execgate.ProofTerminal,
+		SchemaVersion: execgate.ProofSchemaV2, State: execgate.ProofTerminal,
 		RunID: uuid.NewString(), ExecutionID: fence.ExecutionID, TaskID: fence.TaskID,
 		Attempt: fence.Attempt, LeaseEpoch: fence.LeaseEpoch, RuntimeTaskSHA256: strings.Repeat("1", 64),
 		BootID: uuid.NewString(), CgroupSHA256: strings.Repeat("2", 64), PolicySHA256: strings.Repeat("3", 64),

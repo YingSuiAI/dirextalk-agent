@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
@@ -16,6 +18,23 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func TestRuntimeTopologyProtoRoundTripAllowsMultiplePiExecs(t *testing.T) {
+	proof := execgate.Proof{
+		SchemaVersion: execgate.ProofSchemaV2, State: execgate.ProofTerminal,
+		RunID: uuid.NewString(), ExecutionID: uuid.NewString(), TaskID: uuid.NewString(),
+		Attempt: 1, LeaseEpoch: 2, RuntimeTaskSHA256: strings.Repeat("1", 64),
+		BootID: uuid.NewString(), CgroupSHA256: strings.Repeat("2", 64), PolicySHA256: strings.Repeat("3", 64),
+		Worker:             execgate.ProcessIdentity{PID: 10, StartTimeTicks: 100, Device: 1, Inode: 10, SHA256: strings.Repeat("4", 64)},
+		Pi:                 execgate.ProcessIdentity{PID: 11, StartTimeTicks: 101, Device: 1, Inode: 11, SHA256: strings.Repeat("5", 64)},
+		WorkerProcessCount: 1, CgroupProcessCount: 1,
+		TotalAllowedPiExecs: 7, ObservedAtUnixNano: time.Now().UTC().UnixNano(),
+	}
+	got, err := runtimeTopologyFromProto(runtimeTopologyToProto(proof))
+	if err != nil || got != proof {
+		t.Fatalf("multi-Agent topology round trip = %+v, %v", got, err)
+	}
+}
 
 type claimVersionRPC struct {
 	agentv1.WorkerControlServiceClient

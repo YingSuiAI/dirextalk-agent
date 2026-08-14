@@ -492,7 +492,7 @@ func newWorkflowRetryFixture(t *testing.T) *workflowRetryFixture {
 		claimed: claimed,
 	}
 	executor := &workflowRetryExecutor{topology: execgate.Proof{
-		SchemaVersion: execgate.ProofSchemaV1, State: execgate.ProofTerminal,
+		SchemaVersion: execgate.ProofSchemaV2, State: execgate.ProofTerminal,
 		RunID:       "66666666-6666-4666-8666-666666666666",
 		ExecutionID: task.ExecutionID, TaskID: task.TaskID, Attempt: fence.Attempt, LeaseEpoch: fence.LeaseEpoch,
 		RuntimeTaskSHA256: taskDigest, BootID: "77777777-7777-4777-8777-777777777777",

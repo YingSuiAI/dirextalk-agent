@@ -27,7 +27,7 @@ CoreServer (TLS token interceptor, optional health/reflection)
       |
       +-- dedicated TLS 1.3 WorkerControl listener
               |
-              +-- one ephemeral EC2 Worker + one Pi process
+              +-- one ephemeral EC2 Worker + one root Pi process tree
 ```
 
 `serveCore` composes enabled domains before starting workers. Optional domains

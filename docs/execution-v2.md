@@ -62,10 +62,11 @@ recipe  = ephemeral-pi-task
 adapter = pi_json_task_v1
 ```
 
-Every execution owns exactly one EC2 instance, one Worker process, and one Pi
-process invocation. Pi may invoke ordinary approved tools, but a second Pi
-exec is forbidden. The Worker does not load the user's local MCP installations, Skills,
-Extension Runner, local sandbox credentials, or Agent database. It receives
+Every execution owns exactly one EC2 instance, one Worker process, and one root
+Pi process tree. Pi may invoke ordinary approved tools and dispatch any number
+of pinned-image child Agents inside that task tree. The Worker does not load
+the user's local MCP installations, Skills, Extension Runner, local sandbox
+credentials, or Agent database. It receives
 only a short-lived model relay grant, exact versioned input objects, its exact
 artifact prefix, and the approved network/secret grant descriptors.
 The configured private Model Relay endpoint is an exact HTTPS base URL whose
@@ -256,19 +257,20 @@ Pi execution is guarded by an independent root-owned systemd service using
 only the UID/GID transition capabilities and Pi holds none. Gate registration
 is authenticated with kernel `SO_PEERCRED` and binds the Worker UID/PID, boot
 identity, process start ticks, exact cgroup, execution/task/attempt, and lease
-epoch. The first Worker child must be the pinned Pi device/inode/SHA-256; a
-second exec of the same inode or a copied executable with the same digest is
-denied while ordinary task tools remain available. Path replacement before
-the first exec is also denied because the permission event validates the
-kernel-opened FD rather than a mutable pathname.
+epoch. The first Worker child must be the pinned Pi device/inode/SHA-256.
+Further pinned Pi execs are accepted only from descendants of that root Pi;
+no process count, tree depth, or child lifetime is prescribed. A copied
+executable with the same digest is denied while ordinary task tools remain
+available. Path replacement before the first exec is also denied because the
+permission event validates the kernel-opened FD rather than a mutable pathname.
 
 WorkerControl completion carries the canonical terminal topology proof. The
 Agent revalidates its current task lease/fence, runtime-task digest, Worker
 release digest, Pi digest, and future clock skew. Proof age alone is not an
 authorization boundary because bounded result upload happens after proof
-creation. Completion requires exactly one allowed Pi exec, zero active Pi
-processes or descendants, and exactly the Worker remaining in its cgroup;
-result parsing and `write` workspace collection cannot precede that proof.
+creation. Completion requires at least one authorized pinned Pi exec, zero
+active Pi processes or descendants, and exactly the Worker remaining in its
+cgroup; result parsing and `write` workspace collection cannot precede that proof.
 Gate loss, daemon/orphan residue, replay drift, or cancellation fails closed.
 
 ## AWS provider and cleanup

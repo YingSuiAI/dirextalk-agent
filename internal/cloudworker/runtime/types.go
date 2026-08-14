@@ -79,7 +79,7 @@ const (
 	ModelOpenAICompatible ModelInterface = "openai_compatible"
 )
 
-// Task is the immutable, authorization-covered input to one Pi process. It
+// Task is the immutable, authorization-covered input to one root Pi process tree. It
 // contains no executable path, arbitrary environment variable, endpoint, or
 // credential value.
 type Task struct {

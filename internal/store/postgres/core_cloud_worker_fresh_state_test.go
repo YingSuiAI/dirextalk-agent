@@ -428,7 +428,7 @@ func freshStateRuntimeTopology(
 	fence control.TaskFence,
 ) execgate.Proof {
 	return execgate.Proof{
-		SchemaVersion: execgate.ProofSchemaV1, State: execgate.ProofTerminal,
+		SchemaVersion: execgate.ProofSchemaV2, State: execgate.ProofTerminal,
 		RunID: uuid.NewString(), ExecutionID: fence.ExecutionID, TaskID: fence.TaskID,
 		Attempt: fence.Attempt, LeaseEpoch: fence.LeaseEpoch,
 		RuntimeTaskSHA256: resume.Material.RuntimeTaskSHA256,
