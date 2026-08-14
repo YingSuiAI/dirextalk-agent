@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.97
+
+1. Rebind the existing Cloud Worker confirmation reservation when an expired task lease is reclaimed, so the same durable execution resumes instead of being mislabeled as a model failure.
+2. Retry transient SSH status, log, and artifact reads, resume an idempotent remote start only when it is definitively absent, and release local Worker state after cancellation.
+
 ## v1.0.96
 
 1. Use the curl already provided by Amazon Linux 2023 and bound oversized SSH bootstrap errors before durable terminalization, preventing package conflicts from leaving Worker runs stuck in provisioning.
