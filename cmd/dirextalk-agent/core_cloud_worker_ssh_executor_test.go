@@ -22,6 +22,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 )
 
 type serviceWorkerStub struct {
@@ -203,6 +204,19 @@ func TestSSHWorkerExecuteRejectsRotatedCurrentCredentialBeforeWorkspaceRead(t *t
 	}
 	if sources.calls != 0 {
 		t.Fatal("workspace source was read before current credential revalidation")
+	}
+}
+
+func TestSSHWorkerRuntimeUsesPlanLimitWhenProfileHasNoExplicitLimit(t *testing.T) {
+	snapshot := coremodel.ExecutionSnapshot{Provider: coremodel.ProviderOpenAICompatible,
+		BaseURL: "https://openrouter.example.test/v1", Model: "deepseek/test", APIKey: "secret"}
+	model := workerRuntimeModel(snapshot, cloudworker.Limits{MaxTokens: 100_000})
+	if model.MaxOutputTokens != 100_000 {
+		t.Fatalf("max output tokens = %d", model.MaxOutputTokens)
+	}
+	if _, err := sshworker.CompileRuntime(sshworker.RuntimeRequest{TaskID: "33333333-3333-4333-8333-333333333333",
+		Objective: "deploy the service", Architecture: "x86_64", Workload: sshworker.WorkloadJob, Model: model}); err != nil {
+		t.Fatalf("compile unbounded profile with authorized plan limit: %v", err)
 	}
 }
 

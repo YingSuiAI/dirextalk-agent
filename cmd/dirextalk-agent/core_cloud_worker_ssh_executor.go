@@ -22,6 +22,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workspacearchive"
@@ -149,8 +150,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	}
 	material, err := sshworker.CompileRuntime(sshworker.RuntimeRequest{TaskID: request.ExecutionID, Objective: request.Objective,
 		Architecture: request.Compute.Architecture, Workload: workload, Service: service,
-		Model: sshworker.RuntimeModel{Provider: string(request.ModelSnapshot.Provider), BaseURL: request.ModelSnapshot.BaseURL,
-			Name: request.ModelSnapshot.Model, APIKey: request.ModelSnapshot.APIKey, MaxOutputTokens: request.ModelSnapshot.MaxOutputTokens}})
+		Model: workerRuntimeModel(request.ModelSnapshot, request.Limits)})
 	if err != nil {
 		return sshflow.Result{}, err
 	}
@@ -194,6 +194,11 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		}
 	}
 	return workerResult, nil
+}
+
+func workerRuntimeModel(snapshot coremodel.ExecutionSnapshot, limits cloudworker.Limits) sshworker.RuntimeModel {
+	return sshworker.RuntimeModel{Provider: string(snapshot.Provider), BaseURL: snapshot.BaseURL,
+		Name: snapshot.Model, APIKey: snapshot.APIKey, MaxOutputTokens: int(limits.MaxTokens)}
 }
 
 var errSSHWorkerArtifactLimit = fmt.Errorf("SSH Worker artifact count exceeds %d", coretask.MaxFileCount)
