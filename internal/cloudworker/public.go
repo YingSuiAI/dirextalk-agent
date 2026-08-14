@@ -74,6 +74,8 @@ type PublicAWSBinding struct {
 
 type PublicCompute struct {
 	InstanceType        string `json:"instance_type"`
+	VCPU                uint32 `json:"vcpu"`
+	MemoryGiB           uint32 `json:"memory_gib"`
 	VolumeGiB           uint64 `json:"volume_gib"`
 	VolumeType          string `json:"volume_type"`
 	VolumeIOPS          uint64 `json:"volume_iops"`
@@ -88,6 +90,7 @@ type PublicLimits struct {
 // confirmation window. Internal quote and pricing identities stay private.
 type PublicQuote struct {
 	AmountMicros                int64     `json:"amount_micros"`
+	ComputeMicrosPerHour        uint64    `json:"compute_micros_per_hour"`
 	Currency                    string    `json:"currency"`
 	SourceTime                  time.Time `json:"source_time"`
 	ExpiresAt                   time.Time `json:"expires_at"`
@@ -106,13 +109,13 @@ func (p Plan) Public() (PublicPlan, error) {
 		ObjectiveSummary: p.ObjectiveSummary, ProposalReason: p.ProposalReason,
 		PersistentWorkerReuse: p.PersistentWorkerReuse, WorkspaceMode: p.WorkspaceMode,
 		AWS: PublicAWSBinding{AccountID: p.AWS.AccountID, Region: p.AWS.Region},
-		Compute: PublicCompute{InstanceType: p.Compute.InstanceType, VolumeGiB: p.Compute.VolumeGiB,
+		Compute: PublicCompute{InstanceType: p.Compute.InstanceType, VCPU: p.Compute.VCPU, MemoryGiB: p.Compute.MemoryGiB, VolumeGiB: p.Compute.VolumeGiB,
 			VolumeType: p.Compute.VolumeType, VolumeIOPS: p.Compute.VolumeIOPS, VolumeThroughputMiB: p.Compute.VolumeThroughputMiB},
 		Limits:                   PublicLimits{MaxRuntimeSeconds: p.Limits.MaxRuntimeSeconds},
 		NetworkGrants:            append(make([]string, 0, len(p.NetworkGrants)), p.NetworkGrants...),
 		SecretGrants:             ProjectPublicSecretGrants(p.SecretGrants),
 		ArtifactRetentionSeconds: p.ArtifactRetentionSeconds,
-		Quote: PublicQuote{AmountMicros: p.Quote.AmountMicros, Currency: p.Quote.Currency,
+		Quote: PublicQuote{AmountMicros: p.Quote.AmountMicros, ComputeMicrosPerHour: p.Quote.ComputeMicrosPerHour, Currency: p.Quote.Currency,
 			SourceTime: p.Quote.SourceTime, ExpiresAt: p.Quote.ExpiresAt,
 			MaximumAuthorizedCostMicros: p.Quote.MaximumAuthorizedCostMicros},
 		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,

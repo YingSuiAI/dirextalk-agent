@@ -19,6 +19,12 @@ import (
 
 type intrinsicStore struct{ commands []CreateOfferCommand }
 
+type intrinsicComputeSelector struct{ compute ComputeSpec }
+
+func (selector intrinsicComputeSelector) SelectCompute(context.Context, AWSBinding, ComputeRequirements) (ComputeSpec, error) {
+	return selector.compute, nil
+}
+
 func (s *intrinsicStore) CreateOffer(_ context.Context, command CreateOfferCommand) (Offer, error) {
 	s.commands = append(s.commands, command)
 	return Offer{
@@ -143,6 +149,9 @@ func intrinsicFixture(t *testing.T, prompt string, manifests IntrinsicManifestRe
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = service.EnableDynamicComputeSelection(intrinsicComputeSelector{compute: ComputeSpec{InstanceType: "t3.small", Architecture: "x86_64", VCPU: 2, MemoryGiB: 2, RootDeviceName: "/dev/xvda", VolumeGiB: 20, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}}); err != nil {
+		t.Fatal(err)
+	}
 	owner := &intrinsicOwner{owner: IntrinsicOwnerContext{OwnerID: "@owner:example.test", AccountGeneration: 7}}
 	intrinsic, err := NewProposeIntrinsic(service, owner, manifests, budgets)
 	if err != nil {
@@ -155,6 +164,11 @@ func intrinsicFixture(t *testing.T, prompt string, manifests IntrinsicManifestRe
 
 func executeIntrinsic(t *testing.T, intrinsic *ProposeIntrinsic, lease coreconversation.TurnLease, arguments map[string]any, callID string) error {
 	t.Helper()
+	for key, value := range map[string]any{"min_vcpu": 2, "min_memory_gib": 2, "disk_gib": 20, "estimated_runtime_minutes": 60} {
+		if _, exists := arguments[key]; !exists {
+			arguments[key] = value
+		}
+	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
 	if err != nil || len(tools) != 1 || tools[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
 		t.Fatalf("intrinsic catalog: tools=%+v err=%v", tools, err)
@@ -222,21 +236,21 @@ func TestCloudExecutionVetoOnlyRejectsExplicitCloudNegation(t *testing.T) {
 }
 
 func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
-	arguments, err := parseProposeIntrinsicArguments([]byte("{\n  \"workspace_mode\": \"none\", \"objective\": \"run once\"\n}"))
+	arguments, err := parseProposeIntrinsicArguments([]byte("{\n  \"workspace_mode\": \"none\", \"objective\": \"run once\", \"min_vcpu\":2, \"min_memory_gib\":2, \"disk_gib\":20, \"estimated_runtime_minutes\":60\n}"))
 	if err != nil || arguments.Objective != "run once" || arguments.WorkspaceMode != string(WorkspaceNone) || len(arguments.AttachmentIDs) != 0 {
 		t.Fatalf("arguments=%+v err=%v", arguments, err)
 	}
 	if arguments.WorkloadKind != string(WorkloadJob) || arguments.Service != nil {
 		t.Fatalf("job defaults were not applied: %+v", arguments)
 	}
-	service, err := parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","workload_kind":"service","service":{"workload_id":"memory-api","port":8080,"health_path":"/health"}}`))
+	service, err := parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"memory-api","port":8080,"health_path":"/health"}}`))
 	if err != nil || service.Service == nil || service.Service.WorkloadID != "memory-api" || service.Service.Port != 8080 {
 		t.Fatalf("service arguments=%+v err=%v", service, err)
 	}
 	if _, err = parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","workload_kind":"service"}`)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("missing service spec accepted: %v", err)
 	}
-	arguments, err = parseProposeIntrinsicArguments([]byte(`{"objective":"create a project","workspace_mode":"write"}`))
+	arguments, err = parseProposeIntrinsicArguments([]byte(`{"objective":"create a project","workspace_mode":"write","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60}`))
 	if err != nil || arguments.WorkspaceMode != string(WorkspaceWrite) || len(arguments.AttachmentIDs) != 0 {
 		t.Fatalf("empty write workspace arguments=%+v err=%v", arguments, err)
 	}

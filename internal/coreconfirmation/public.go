@@ -49,6 +49,7 @@ type PublicBinding struct {
 
 type PublicQuote struct {
 	AmountMicros                int64     `json:"amount_micros"`
+	ComputeMicrosPerHour        uint64    `json:"compute_micros_per_hour"`
 	Currency                    string    `json:"currency"`
 	SourceTime                  time.Time `json:"source_time"`
 	ExpiresAt                   time.Time `json:"expires_at"`
@@ -78,7 +79,7 @@ func (b Binding) Public() PublicBinding {
 	if b.OperationDomain == "cloud_worker.execute" {
 		var quote *PublicQuote
 		if b.Quote != nil {
-			quote = &PublicQuote{AmountMicros: b.Quote.AmountMicros, Currency: b.Quote.Currency,
+			quote = &PublicQuote{AmountMicros: b.Quote.AmountMicros, ComputeMicrosPerHour: b.Quote.ComputeMicrosPerHour, Currency: b.Quote.Currency,
 				SourceTime: b.Quote.SourceTime, ExpiresAt: b.Quote.ExpiresAt,
 				MaximumAuthorizedCostMicros: b.Quote.MaximumAuthorizedCostMicros}
 		}

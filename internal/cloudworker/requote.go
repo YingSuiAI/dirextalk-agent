@@ -59,12 +59,14 @@ func compileRequoteOffer(
 	plan.Status = string(StateWaitingUser)
 	plan.CreatedAt, plan.UpdatedAt = now, now
 
-	if strings.Count(plan.ArtifactGrant.KeyPrefix, old.ExecutionID) != 1 {
-		return RequoteOfferCommand{}, ErrInvalid
+	if plan.ArtifactGrant != (ArtifactGrant{}) {
+		if strings.Count(plan.ArtifactGrant.KeyPrefix, old.ExecutionID) != 1 {
+			return RequoteOfferCommand{}, ErrInvalid
+		}
+		plan.ArtifactGrant.KeyPrefix = strings.Replace(
+			plan.ArtifactGrant.KeyPrefix, old.ExecutionID, plan.ExecutionID, 1,
+		)
 	}
-	plan.ArtifactGrant.KeyPrefix = strings.Replace(
-		plan.ArtifactGrant.KeyPrefix, old.ExecutionID, plan.ExecutionID, 1,
-	)
 	// All derived values are recomputed from the replacement's exact IDs and
 	// grants before requesting a price sample.
 	plan.Digest = ""

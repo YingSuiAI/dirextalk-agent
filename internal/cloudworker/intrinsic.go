@@ -75,11 +75,15 @@ func NewProposeIntrinsic(service *Service, owners IntrinsicOwnerResolver, manife
 }
 
 type proposeIntrinsicArguments struct {
-	AttachmentIDs []string `json:"attachment_ids,omitempty"`
-	Objective     string   `json:"objective"`
-	WorkspaceMode string   `json:"workspace_mode"`
-	WorkloadKind  string   `json:"workload_kind,omitempty"`
-	Service       *struct {
+	AttachmentIDs           []string `json:"attachment_ids,omitempty"`
+	Objective               string   `json:"objective"`
+	WorkspaceMode           string   `json:"workspace_mode"`
+	MinVCPU                 uint32   `json:"min_vcpu"`
+	MinMemoryGiB            uint32   `json:"min_memory_gib"`
+	DiskGiB                 uint64   `json:"disk_gib"`
+	EstimatedRuntimeMinutes uint64   `json:"estimated_runtime_minutes"`
+	WorkloadKind            string   `json:"workload_kind,omitempty"`
+	Service                 *struct {
 		WorkloadID string `json:"workload_id"`
 		Port       uint16 `json:"port"`
 		HealthPath string `json:"health_path"`
@@ -95,9 +99,13 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	}
 	bound := lease
 	properties := map[string]any{
-		"objective":      map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes},
-		"workspace_mode": map[string]any{"type": "string", "enum": []any{string(WorkspaceNone), string(WorkspaceReadOnly), string(WorkspaceWrite)}},
-		"workload_kind":  map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob)},
+		"objective":                 map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes},
+		"workspace_mode":            map[string]any{"type": "string", "enum": []any{string(WorkspaceNone), string(WorkspaceReadOnly), string(WorkspaceWrite)}},
+		"workload_kind":             map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob)},
+		"min_vcpu":                  map[string]any{"type": "integer", "minimum": 1, "maximum": 128},
+		"min_memory_gib":            map[string]any{"type": "integer", "minimum": 1, "maximum": 1024},
+		"disk_gib":                  map[string]any{"type": "integer", "minimum": 8, "maximum": 16384},
+		"estimated_runtime_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440},
 		"service": map[string]any{"type": "object", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
 			"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "health_path": map[string]any{"type": "string", "minLength": 1, "maxLength": 2048},
 		}},
@@ -111,7 +119,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"required":             []any{"objective", "workspace_mode"},
+			"required":             []any{"objective", "workspace_mode", "min_vcpu", "min_memory_gib", "disk_gib", "estimated_runtime_minutes"},
 			"properties":           properties,
 		},
 	}
@@ -218,6 +226,8 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		ProposalReason: reason, LocalBudgetEvidence: budget, InputManifest: manifest,
 		WorkspaceMode:      mode,
 		ModelAuthorization: modelAuthorization,
+		ComputeRequirements: ComputeRequirements{MinVCPU: arguments.MinVCPU, MinMemoryGiB: arguments.MinMemoryGiB,
+			DiskGiB: arguments.DiskGiB, EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes},
 	})
 	if err != nil {
 		slog.Warn("[cloud-worker.intrinsic] proposal_failed",
@@ -269,6 +279,10 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 		arguments.WorkloadKind = string(WorkloadJob)
 	}
 	if arguments.Objective == "" || len(arguments.Objective) > coretask.MaxGoalBytes || !utf8.ValidString(arguments.Objective) || !validateWorkspaceMode(WorkspaceMode(arguments.WorkspaceMode)) || len(arguments.AttachmentIDs) > coreconversation.MaxTurnAttachments {
+		return proposeIntrinsicArguments{}, ErrInvalid
+	}
+	if (ComputeRequirements{MinVCPU: arguments.MinVCPU, MinMemoryGiB: arguments.MinMemoryGiB, DiskGiB: arguments.DiskGiB,
+		EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes}).validate() != nil {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
 	if (arguments.WorkloadKind == string(WorkloadJob) && arguments.Service != nil) || (arguments.WorkloadKind == string(WorkloadService) && (arguments.Service == nil || (ServiceSpec{WorkloadID: arguments.Service.WorkloadID, Port: arguments.Service.Port, HealthPath: arguments.Service.HealthPath}).validate() != nil)) ||

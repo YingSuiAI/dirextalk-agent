@@ -28,14 +28,25 @@ func (store *flowStore) Fail(_ context.Context, _ Run, _ Result, _, _ string) er
 }
 
 type flowExecutor struct {
+	calls   int
 	request Request
 	result  Result
 	err     error
 }
 
 func (executor *flowExecutor) Execute(_ context.Context, request Request) (Result, error) {
+	executor.calls++
 	executor.request = request
 	return executor.result, executor.err
+}
+
+type flowPreflight struct {
+	requoted bool
+	err      error
+}
+
+func (preflight flowPreflight) PreflightLaunch(context.Context, coretask.Task, cloudworker.Plan, coremodel.ExecutionSnapshot) (bool, error) {
+	return preflight.requoted, preflight.err
 }
 
 func runningCloudTask() coretask.Task {
@@ -66,7 +77,7 @@ func TestHandlerPassesOnlyConfirmedMinimalExecutionInputAndOwnsTerminal(t *testi
 		Compute: cloudworker.ComputeSpec{InstanceType: "t3.small", VolumeGiB: 20}},
 		ConfirmationProof: "confirmed-proof", ModelSnapshot: snapshot}}
 	executor := &flowExecutor{result: Result{Summary: "done", WorkerID: "i-0123456789abcdef0"}}
-	handler, err := NewHandler(store, executor)
+	handler, err := NewHandler(store, flowPreflight{}, executor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +102,7 @@ func TestHandlerPassesOnlyConfirmedMinimalExecutionInputAndOwnsTerminal(t *testi
 func TestHandlerTerminalizesFailureWithoutDestroyingPersistentWorker(t *testing.T) {
 	store := &flowStore{run: Run{Plan: cloudworker.Plan{ExecutionID: "33333333-3333-4333-8333-333333333333"}}}
 	executor := &flowExecutor{result: Result{WorkerID: "i-0123456789abcdef0"}, err: errors.New("remote command failed")}
-	handler, _ := NewHandler(store, executor)
+	handler, _ := NewHandler(store, flowPreflight{}, executor)
 	outcome := handler.Handle(context.Background(), runningCloudTask())
 	if outcome.Err == nil || !outcome.TerminalOwned || store.completed != 0 || store.failed != 1 {
 		t.Fatalf("outcome=%+v store=%+v", outcome, store)
@@ -101,7 +112,7 @@ func TestHandlerTerminalizesFailureWithoutDestroyingPersistentWorker(t *testing.
 func TestHandlerRejectsSuccessWithoutWorkerIdentity(t *testing.T) {
 	store := &flowStore{run: Run{Plan: cloudworker.Plan{ExecutionID: "33333333-3333-4333-8333-333333333333"}}}
 	executor := &flowExecutor{result: Result{Summary: "done"}}
-	handler, _ := NewHandler(store, executor)
+	handler, _ := NewHandler(store, flowPreflight{}, executor)
 	outcome := handler.Handle(context.Background(), runningCloudTask())
 	if outcome.Err == nil || outcome.TerminalOwned || store.failed != 0 || store.completed != 0 {
 		t.Fatalf("outcome=%+v store=%+v", outcome, store)
@@ -111,9 +122,19 @@ func TestHandlerRejectsSuccessWithoutWorkerIdentity(t *testing.T) {
 func TestHandlerLeavesUncertainExecutionRecoverable(t *testing.T) {
 	store := &flowStore{run: Run{Plan: cloudworker.Plan{ExecutionID: "33333333-3333-4333-8333-333333333333"}}}
 	executor := &flowExecutor{result: Result{WorkerID: "worker-a"}, err: errors.Join(ErrExecutionUncertain, errors.New("SSH status unavailable"))}
-	handler, _ := NewHandler(store, executor)
+	handler, _ := NewHandler(store, flowPreflight{}, executor)
 	outcome := handler.Handle(context.Background(), runningCloudTask())
 	if !errors.Is(outcome.Err, ErrExecutionUncertain) || !outcome.TerminalOwned || store.failed != 0 || store.completed != 0 {
 		t.Fatalf("outcome=%+v store=%+v", outcome, store)
+	}
+}
+
+func TestHandlerStopsBeforeExecutorWhenQuoteWasReplaced(t *testing.T) {
+	store := &flowStore{run: Run{Plan: cloudworker.Plan{ExecutionID: "33333333-3333-4333-8333-333333333333"}}}
+	executor := &flowExecutor{result: Result{Summary: "must not run", WorkerID: "worker-a"}}
+	handler, _ := NewHandler(store, flowPreflight{requoted: true}, executor)
+	outcome := handler.Handle(context.Background(), runningCloudTask())
+	if !errors.Is(outcome.Err, cloudworker.ErrQuoteExpired) || !outcome.TerminalOwned || executor.calls != 0 || store.failed != 0 || store.completed != 0 {
+		t.Fatalf("outcome=%+v calls=%d store=%+v", outcome, executor.calls, store)
 	}
 }

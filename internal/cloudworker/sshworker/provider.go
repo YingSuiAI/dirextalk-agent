@@ -57,29 +57,30 @@ func (provider *Provider) Discover(ctx context.Context, credential CredentialIde
 	return discovery, nil
 }
 
-// HasIdleWorker performs the same instance read-back used by lease, without
-// reserving or mutating either AWS or the local pool.
-func (provider *Provider) HasIdleWorker(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity, instanceType string) (bool, error) {
-	if provider == nil || ctx == nil || authority.validate() != nil || credential.validate() != nil || strings.TrimSpace(instanceType) == "" {
-		return false, ErrInvalid
+// ResolveIdleWorker performs the same instance read-back used by lease,
+// without reserving or mutating either AWS or the local pool.
+func (provider *Provider) ResolveIdleWorker(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity, instanceType string, minVCPU, minMemoryGiB uint32, minVolumeGiB int32) (WorkerRecord, bool, error) {
+	if provider == nil || ctx == nil || authority.validate() != nil || credential.validate() != nil || strings.TrimSpace(instanceType) == "" || minVCPU == 0 || minMemoryGiB == 0 || minVolumeGiB < 8 {
+		return WorkerRecord{}, false, ErrInvalid
 	}
 	workers, err := provider.store.ListWorkers(ctx)
 	if err != nil {
-		return false, err
+		return WorkerRecord{}, false, err
 	}
 	for _, worker := range workers {
-		if worker.authority() != authority || worker.Credential != credential || worker.Phase != WorkerIdle || worker.InstanceType != instanceType {
+		if worker.authority() != authority || worker.Credential != credential || worker.Phase != WorkerIdle || worker.VCPU < minVCPU || worker.MemoryGiB < minMemoryGiB || worker.VolumeGiB < minVolumeGiB {
 			continue
 		}
 		observed, found, observeErr := provider.aws.ObserveInstance(ctx, credential, worker.Instance.ID, resourceTags(worker.WorkerID, authority, worker.Credential, worker.CreationProof))
 		if observeErr != nil {
-			return false, observeErr
+			return WorkerRecord{}, false, observeErr
 		}
 		if found && observed.State == "running" && observed.PublicIP != "" {
-			return true, nil
+			worker.Instance = observed
+			return worker, true, nil
 		}
 	}
-	return false, nil
+	return WorkerRecord{}, false, nil
 }
 
 // Execute leases an idle persistent Worker or creates one after confirmation.
@@ -192,7 +193,7 @@ func (provider *Provider) acquire(ctx context.Context, request ExecuteRequest, p
 	}
 	sort.Slice(workers, func(i, j int) bool { return workers[i].UpdatedAt.Before(workers[j].UpdatedAt) })
 	for _, worker := range workers {
-		if worker.authority() != request.Authority || worker.Credential != request.Credential || worker.Phase != WorkerIdle || worker.InstanceType != request.InstanceType {
+		if worker.authority() != request.Authority || worker.Credential != request.Credential || worker.Phase != WorkerIdle || worker.VCPU < request.VCPU || worker.MemoryGiB < request.MemoryGiB || worker.VolumeGiB < request.VolumeGiB {
 			continue
 		}
 		observed, found, err := provider.aws.ObserveInstance(ctx, request.Credential, worker.Instance.ID, resourceTags(worker.WorkerID, request.Authority, worker.Credential, worker.CreationProof))
@@ -255,7 +256,7 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 	if !exists {
 		worker = WorkerRecord{WorkerID: workerID, OwnerID: request.Authority.OwnerID, AccountGeneration: request.Authority.AccountGeneration,
 			Credential: request.Credential, CreationProof: request.Confirmation.Proof,
-			Phase: WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, VolumeGiB: request.VolumeGiB, CreatedAt: provider.now().UTC()}
+			Phase: WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, VCPU: request.VCPU, MemoryGiB: request.MemoryGiB, VolumeGiB: request.VolumeGiB, CreatedAt: provider.now().UTC()}
 		worker.UpdatedAt = provider.now().UTC()
 		if err := provider.store.SaveWorkerIntent(ctx, worker, func(ctx context.Context) error {
 			return provider.authorizeCreate(ctx, request.Credential)

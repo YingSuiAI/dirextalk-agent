@@ -469,10 +469,20 @@ requests cloud work or trusted scheduler evidence shows that the selected
 substantial task exceeds the local runtime. Model wording and a local failure
 are not authority. A cloud or local-only veto wins.
 
+A proposal carries provider-neutral minimum vCPU, memory, disk, and estimated
+runtime requirements. Agent intersects current-generation x86_64 on-demand
+products with the Region's actual EC2 offerings and selects the cheapest shape
+that satisfies them. The plan and confirmation expose that exact shape, its
+live hourly compute price, estimated cost, and maximum authorized cost.
+
 A proposal atomically creates the plan, execution, `CLOUD_WORKER` Task and
 `CoreConfirmation`. Creating a Worker requires a fresh EC2/EBS price read and
-confirmation of that exact quote before any AWS mutation. Reusing an idle
-retained Worker performs no creation mutation and needs no new creation quote.
+confirmation of that exact quote before any AWS mutation. The price is read
+again immediately before the first AWS write; expiry or drift atomically
+creates a replacement offer and confirmation without creating a key pair,
+security group, or instance. Reusing a sufficiently large idle retained Worker
+performs no creation mutation and needs no new creation confirmation, while a
+live hourly read still reports its ongoing server cost.
 Destroying a retained Worker is a separate explicit owner action.
 
 The manager keeps at most five Workers for the authenticated owner/account

@@ -147,8 +147,9 @@ func (quoter *ProductionQuoter) Validate(ctx context.Context, plan Plan) (Quote,
 	now := quoter.now().UTC()
 	if plan.Quote.ExpiresAt.After(now) && plan.Quote.SourceTime.Add(quoter.config.MaximumCatalogAge).After(now) &&
 		plan.Quote.AmountMicros == fresh.AmountMicros && plan.Quote.MaximumAuthorizedCostMicros == fresh.MaximumAuthorizedCostMicros &&
+		plan.Quote.ComputeMicrosPerHour == fresh.ComputeMicrosPerHour &&
 		plan.Quote.Currency == fresh.Currency && plan.Quote.BasisDigest == fresh.BasisDigest &&
-		plan.Quote.CatalogRevisionDigest == fresh.CatalogRevisionDigest {
+		fresh.ExpiresAt.After(now) {
 		return plan.Quote, nil
 	}
 	return fresh, nil
@@ -184,7 +185,7 @@ func (quoter *ProductionQuoter) quote(ctx context.Context, request QuoteRequest)
 	if snapshot.ExpiresAt.Before(expires) {
 		expires = snapshot.ExpiresAt
 	}
-	quote := Quote{AmountMicros: int64(amount), Currency: "USD", SourceTime: snapshot.SourceTime, ExpiresAt: expires,
+	quote := Quote{AmountMicros: int64(amount), ComputeMicrosPerHour: snapshot.Rates.ComputeMicrosPerHour, Currency: "USD", SourceTime: snapshot.SourceTime, ExpiresAt: expires,
 		MaximumAuthorizedCostMicros: int64(hard), BasisDigest: request.AuthorizationBasisDigest,
 		CatalogRevisionDigest: snapshot.RevisionDigest}
 	if !quote.ExpiresAt.After(now) {

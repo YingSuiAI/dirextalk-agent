@@ -60,6 +60,13 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize dynamic Cloud Worker proposal: %w", err)
 	}
+	selector, err := cloudworker.NewAWSComputeSelector(exact, cloudworker.SDKAWSComputeSelectionFactory{})
+	if err != nil {
+		return nil, fmt.Errorf("initialize dynamic Cloud Worker compute selection: %w", err)
+	}
+	if err = domain.EnableDynamicComputeSelection(selector); err != nil {
+		return nil, fmt.Errorf("enable dynamic Cloud Worker compute selection: %w", err)
+	}
 	intrinsic, err := cloudworker.NewProposeIntrinsic(domain, conversationStore, conversationStore, conversationStore)
 	if err != nil {
 		return nil, fmt.Errorf("initialize dynamic cloud_worker_propose: %w", err)
@@ -80,7 +87,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker flow store: %w", err)
 	}
-	handler, err := sshflow.NewHandler(flowStore, executor)
+	handler, err := sshflow.NewHandler(flowStore, domain, executor)
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker task handler: %w", err)
 	}

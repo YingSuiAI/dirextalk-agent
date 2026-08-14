@@ -405,7 +405,7 @@ func TestExecuteRunsSeparateWorkerLeasesConcurrently(t *testing.T) {
 	for index, workerID := range []string{"worker-a", "worker-b"} {
 		instance := Instance{ID: "i-" + workerID, PublicIP: "203.0.113." + string(rune('1'+index)), State: "running", ClientToken: workerID}
 		store.workers[workerID] = WorkerRecord{WorkerID: workerID, OwnerID: authorityFixture().OwnerID, AccountGeneration: authorityFixture().AccountGeneration, Credential: credentialFixture(), Phase: WorkerIdle, SSHUser: "ec2-user",
-			InstanceType: "t3.small", VolumeGiB: 16, Instance: instance, UpdatedAt: now.Add(time.Duration(index) * time.Second)}
+			InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 16, Instance: instance, UpdatedAt: now.Add(time.Duration(index) * time.Second)}
 		cloud.instances[workerID] = instance
 	}
 	ssh := &blockingSSH{started: make(chan SSHRequest, 2), release: make(chan struct{})}
@@ -934,7 +934,7 @@ func credentialFixture() CredentialIdentity {
 func authorityFixture() OwnerAuthority { return OwnerAuthority{OwnerID: "owner", AccountGeneration: 7} }
 func workerRecordFixture(id string, credential CredentialIdentity, phase WorkerPhase) WorkerRecord {
 	return WorkerRecord{WorkerID: id, OwnerID: authorityFixture().OwnerID, AccountGeneration: authorityFixture().AccountGeneration,
-		Credential: credential, Phase: phase, InstanceType: "t3.small", VolumeGiB: 16}
+		Credential: credential, Phase: phase, InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 16}
 }
 func withBusyInstance(worker WorkerRecord, id string) WorkerRecord {
 	worker.CurrentExecutionID = id
@@ -947,7 +947,7 @@ func discoveryFixture() Discovery {
 func requestFixture() ExecuteRequest {
 	script := []byte("echo ok")
 	sum := sha256.Sum256(script)
-	return ExecuteRequest{ExecutionID: "execution-1", Authority: authorityFixture(), Credential: credentialFixture(), Confirmation: Confirmation{Confirmed: true, Proof: "confirmation-1"}, Discovery: discoveryFixture(), InstanceType: "t3.small", VolumeGiB: 16, WorkerScript: script, WorkerScriptSHA256: hex.EncodeToString(sum[:]), Runtime: RuntimeProtocol{TaskID: "execution-1", encodedModelKey: "c2VjcmV0"}, MaxWorkspaceBytes: 1 << 20, MaxResultBytes: 1 << 20, Sink: &fakeSink{}}
+	return ExecuteRequest{ExecutionID: "execution-1", Authority: authorityFixture(), Credential: credentialFixture(), Confirmation: Confirmation{Confirmed: true, Proof: "confirmation-1"}, Discovery: discoveryFixture(), InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 16, WorkerScript: script, WorkerScriptSHA256: hex.EncodeToString(sum[:]), Runtime: RuntimeProtocol{TaskID: "execution-1", encodedModelKey: "c2VjcmV0"}, MaxWorkspaceBytes: 1 << 20, MaxResultBytes: 1 << 20, Sink: &fakeSink{}}
 }
 
 var _ = bytes.Clone

@@ -215,6 +215,8 @@ type ModelRelayBinding struct {
 type ComputeSpec struct {
 	InstanceType            string `json:"instance_type"`
 	Architecture            string `json:"architecture"`
+	VCPU                    uint32 `json:"vcpu"`
+	MemoryGiB               uint32 `json:"memory_gib"`
 	RootDeviceName          string `json:"root_device_name"`
 	VolumeGiB               uint64 `json:"volume_gib"`
 	VolumeType              string `json:"volume_type"`
@@ -231,6 +233,23 @@ type Limits struct {
 	MaxRuntimeSeconds uint64 `json:"max_runtime_seconds"`
 	MaxTokens         uint64 `json:"max_tokens"`
 	MaxOutputBytes    uint64 `json:"max_output_bytes"`
+}
+
+// ComputeRequirements are model-estimated task needs. They deliberately do
+// not expose provider-specific instance types to the model.
+type ComputeRequirements struct {
+	MinVCPU                 uint32 `json:"min_vcpu"`
+	MinMemoryGiB            uint32 `json:"min_memory_gib"`
+	DiskGiB                 uint64 `json:"disk_gib"`
+	EstimatedRuntimeMinutes uint64 `json:"estimated_runtime_minutes"`
+}
+
+func (requirements ComputeRequirements) validate() error {
+	if requirements.MinVCPU == 0 || requirements.MinVCPU > 128 || requirements.MinMemoryGiB == 0 || requirements.MinMemoryGiB > 1024 ||
+		requirements.DiskGiB < 8 || requirements.DiskGiB > 16_384 || requirements.EstimatedRuntimeMinutes == 0 || requirements.EstimatedRuntimeMinutes > 24*60 {
+		return ErrInvalid
+	}
+	return nil
 }
 
 type WorkloadKind string
@@ -267,6 +286,7 @@ type SecretGrant struct {
 
 type Quote struct {
 	AmountMicros                int64     `json:"amount_micros"`
+	ComputeMicrosPerHour        uint64    `json:"compute_micros_per_hour"`
 	Currency                    string    `json:"currency"`
 	SourceTime                  time.Time `json:"source_time"`
 	ExpiresAt                   time.Time `json:"expires_at"`
@@ -705,10 +725,11 @@ func (q *Quote) Seal() error {
 	}
 	q.Digest = digestValue(struct {
 		AmountMicros, MaximumAuthorizedCostMicros int64
+		ComputeMicrosPerHour                      uint64
 		Currency                                  string
 		SourceTime, ExpiresAt                     time.Time
 		BasisDigest, CatalogRevisionDigest        string
-	}{q.AmountMicros, q.MaximumAuthorizedCostMicros, q.Currency, q.SourceTime, q.ExpiresAt, q.BasisDigest, q.CatalogRevisionDigest})
+	}{q.AmountMicros, q.MaximumAuthorizedCostMicros, q.ComputeMicrosPerHour, q.Currency, q.SourceTime, q.ExpiresAt, q.BasisDigest, q.CatalogRevisionDigest})
 	return nil
 }
 
@@ -948,6 +969,9 @@ func validateAWS(value AWSBinding) error {
 
 func validateCompute(value ComputeSpec) error {
 	if strings.TrimSpace(value.InstanceType) == "" || (value.Architecture != "x86_64" && value.Architecture != "arm64") || !strings.HasPrefix(value.RootDeviceName, "/dev/") || len(value.RootDeviceName) > 64 || strings.ContainsAny(value.RootDeviceName, "\r\n\x00") || value.VolumeGiB < 8 || value.VolumeGiB > 16384 || value.VolumeType != "gp3" || value.VolumeIOPS < 3000 || value.VolumeIOPS > 16000 || value.VolumeThroughputMiB < 125 || value.VolumeThroughputMiB > 1000 {
+		return ErrInvalid
+	}
+	if (value.VCPU == 0) != (value.MemoryGiB == 0) || value.VCPU > 128 || value.MemoryGiB > 1024 {
 		return ErrInvalid
 	}
 	return nil
@@ -1320,7 +1344,7 @@ func BindingForPlan(plan Plan) (coreconfirmation.Binding, error) {
 		SecretGrants:      secretGrants,
 		ExecutionID:       plan.ExecutionID, PlanID: plan.PlanID, PlanRevision: int64(plan.Revision), PlanDigest: coreconfirmation.Digest(plan.Digest),
 		RunID: execution.RunID, RunRevision: int64(execution.Revision), RunDigest: coreconfirmation.Digest(execution.Digest), QuoteDigest: coreconfirmation.Digest(plan.Quote.Digest),
-		Quote: &coreconfirmation.LiveQuote{AmountMicros: plan.Quote.AmountMicros, Currency: plan.Quote.Currency,
+		Quote: &coreconfirmation.LiveQuote{AmountMicros: plan.Quote.AmountMicros, ComputeMicrosPerHour: plan.Quote.ComputeMicrosPerHour, Currency: plan.Quote.Currency,
 			SourceTime: plan.Quote.SourceTime, ExpiresAt: plan.Quote.ExpiresAt,
 			MaximumAuthorizedCostMicros: plan.Quote.MaximumAuthorizedCostMicros},
 	}

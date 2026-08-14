@@ -117,6 +117,8 @@ type ExecuteRequest struct {
 	Confirmation       Confirmation // consumed only when a new worker is required
 	Discovery          Discovery
 	InstanceType       string
+	VCPU               uint32
+	MemoryGiB          uint32
 	VolumeGiB          int32
 	WorkerScript       []byte
 	WorkerScriptSHA256 string
@@ -129,7 +131,7 @@ type ExecuteRequest struct {
 }
 
 func (request ExecuteRequest) validate() error {
-	if request.Authority.validate() != nil || request.Credential.validate() != nil || request.Discovery.validate() != nil || !validID(request.ExecutionID) || strings.TrimSpace(request.InstanceType) == "" ||
+	if request.Authority.validate() != nil || request.Credential.validate() != nil || request.Discovery.validate() != nil || !validID(request.ExecutionID) || strings.TrimSpace(request.InstanceType) == "" || request.VCPU == 0 || request.MemoryGiB == 0 ||
 		request.VolumeGiB < 8 || request.VolumeGiB > 16_384 || len(request.WorkerScript) == 0 || len(request.WorkerScript) > maxWorkerScriptBytes || !request.Runtime.valid() || request.Runtime.TaskID != request.ExecutionID ||
 		request.MaxWorkspaceBytes <= 0 || request.MaxWorkspaceBytes > maxWorkspaceBytes || request.MaxResultBytes <= 0 || request.MaxResultBytes > maxResultBytes || request.Sink == nil {
 		return ErrInvalid
@@ -239,6 +241,8 @@ type WorkerRecord struct {
 	Phase                WorkerPhase        `json:"phase"`
 	SSHUser              string             `json:"ssh_user"`
 	InstanceType         string             `json:"instance_type"`
+	VCPU                 uint32             `json:"vcpu,omitempty"`
+	MemoryGiB            uint32             `json:"memory_gib,omitempty"`
 	VolumeGiB            int32              `json:"volume_gib"`
 	KeyPair              KeyPair            `json:"key_pair"`
 	SecurityGroup        SecurityGroup      `json:"security_group"`

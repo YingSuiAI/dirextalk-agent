@@ -11,6 +11,7 @@ import (
 	"time"
 
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
@@ -39,11 +40,17 @@ type Store interface {
 	CancelExecution(context.Context, coretask.Task, uint64, string, string) (Execution, CompletionOutbox, error)
 }
 
-// WorkerReuseResolver reports whether the current credential already owns a
-// matching idle persistent Worker. It is read-only; a later lease race must
-// fail instead of falling through to Worker creation.
+// WorkerReuseResolver reports the actual compute of a matching idle Worker.
+// It is read-only; a later lease race must fail instead of falling through to
+// Worker creation.
 type WorkerReuseResolver interface {
-	HasIdleWorker(context.Context, string, uint64, AWSBinding, ComputeSpec) (bool, error)
+	ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeSpec) (ComputeSpec, bool, error)
+}
+
+// ComputeSelector chooses an exact region-available ordinary on-demand shape
+// from model-estimated provider-neutral requirements and live AWS prices.
+type ComputeSelector interface {
+	SelectCompute(context.Context, AWSBinding, ComputeRequirements) (ComputeSpec, error)
 }
 
 // BeginResult is the transactionally consumed confirmation plus the current
@@ -222,6 +229,7 @@ type Service struct {
 	awsBindings AWSBindingResolver
 	now         func() time.Time
 	workerReuse WorkerReuseResolver
+	selector    ComputeSelector
 }
 
 func (s *Service) EnablePersistentWorkerReuse(resolver WorkerReuseResolver) error {
@@ -229,6 +237,14 @@ func (s *Service) EnablePersistentWorkerReuse(resolver WorkerReuseResolver) erro
 		return ErrInvalid
 	}
 	s.workerReuse = resolver
+	return nil
+}
+
+func (s *Service) EnableDynamicComputeSelection(selector ComputeSelector) error {
+	if s == nil || selector == nil {
+		return ErrInvalid
+	}
+	s.selector = selector
 	return nil
 }
 
@@ -280,6 +296,7 @@ type ProposeCommand struct {
 	InputManifest        InputManifest
 	WorkspaceMode        WorkspaceMode
 	ModelAuthorization   ModelAuthorization
+	ComputeRequirements  ComputeRequirements
 }
 
 type CreateOfferCommand struct {
@@ -352,6 +369,21 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	if err != nil || validateAWS(awsBinding) != nil {
 		return Offer{}, errors.Join(ErrStaleAuthorization, err)
 	}
+	compute := s.defaults.Compute
+	if command.ComputeRequirements != (ComputeRequirements{}) {
+		if command.ComputeRequirements.validate() != nil || s.selector == nil {
+			return Offer{}, ErrInvalid
+		}
+		compute, err = s.selector.SelectCompute(ctx, awsBinding, command.ComputeRequirements)
+		if err != nil || validateCompute(compute) != nil || compute.VCPU < command.ComputeRequirements.MinVCPU ||
+			compute.MemoryGiB < command.ComputeRequirements.MinMemoryGiB || compute.VolumeGiB < command.ComputeRequirements.DiskGiB {
+			return Offer{}, errors.Join(ErrProviderUnavailable, err)
+		}
+		limits.MaxRuntimeSeconds = command.ComputeRequirements.EstimatedRuntimeMinutes * 60
+		if validateLimits(limits) != nil {
+			return Offer{}, ErrInvalid
+		}
+	}
 	budgetEvidence := command.LocalBudgetEvidence
 	if budgetEvidence != nil {
 		copy := *budgetEvidence
@@ -377,7 +409,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		ProposalReason: command.ProposalReason, LocalBudgetEvidence: budgetEvidence,
 		InputManifest: command.InputManifest, InputManifestDigest: manifestDigest, WorkspaceMode: command.WorkspaceMode,
 		ModelAuthorization: command.ModelAuthorization,
-		AWS:                awsBinding, Compute: s.defaults.Compute,
+		AWS:                awsBinding, Compute: compute,
 		Placement: s.defaults.Placement,
 		NetworkPolicy: NetworkPolicy{
 			DNSResolverCIDRs:               append([]string(nil), s.defaults.NetworkPolicy.DNSResolverCIDRs...),
@@ -409,9 +441,17 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	objectiveDigest := digestValue(plan.Objective)
 	reuse := false
 	if s.workerReuse != nil {
-		reuse, err = s.workerReuse.HasIdleWorker(ctx, plan.OwnerID, plan.AccountGeneration, plan.AWS, plan.Compute)
+		var reusedCompute ComputeSpec
+		reusedCompute, reuse, err = s.workerReuse.ResolveIdleWorker(ctx, plan.OwnerID, plan.AccountGeneration, plan.AWS, plan.Compute)
 		if err != nil {
 			return Offer{}, err
+		}
+		if reuse {
+			if validateCompute(reusedCompute) != nil || reusedCompute.VCPU < plan.Compute.VCPU || reusedCompute.MemoryGiB < plan.Compute.MemoryGiB || reusedCompute.VolumeGiB < plan.Compute.VolumeGiB {
+				return Offer{}, ErrInvalid
+			}
+			plan.Compute = reusedCompute
+			plan.AWSInfrastructureDigest = ""
 		}
 	}
 	plan.PersistentWorkerReuse = reuse
@@ -420,9 +460,12 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	}
 	var quote Quote
 	if reuse {
-		expires := now.Add(time.Duration(plan.Limits.MaxRuntimeSeconds+EphemeralCleanupReserveSeconds) * time.Second)
-		quote = Quote{Currency: "USD", SourceTime: now, ExpiresAt: expires, BasisDigest: plan.AuthorizationBasisDigest,
-			CatalogRevisionDigest: digestValue("persistent-worker-reuse/v1")}
+		live, quoteErr := s.quoter.Quote(ctx, QuoteRequest{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration, ObjectiveDigest: objectiveDigest, UserPromptDigest: plan.UserPromptDigest, InputManifestDigest: plan.InputManifestDigest, WorkspaceMode: plan.WorkspaceMode, ProposalReason: plan.ProposalReason, ModelBindingDigest: plan.ModelAuthorization.BindingDigest, AuthorizationBasisDigest: plan.AuthorizationBasisDigest, AWS: plan.AWS, Compute: plan.Compute, Limits: plan.Limits})
+		if quoteErr != nil || live.ComputeMicrosPerHour == 0 {
+			return Offer{}, errors.Join(ErrProviderUnavailable, quoteErr)
+		}
+		quote = Quote{Currency: live.Currency, ComputeMicrosPerHour: live.ComputeMicrosPerHour, SourceTime: live.SourceTime,
+			ExpiresAt: live.ExpiresAt, BasisDigest: plan.AuthorizationBasisDigest, CatalogRevisionDigest: live.CatalogRevisionDigest}
 		if err = quote.Seal(); err != nil {
 			return Offer{}, err
 		}
@@ -464,15 +507,68 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		ProposalReason                                                                                                                  ProposalReason
 		BudgetEvidence                                                                                                                  *LocalBudgetEvidence
 		WorkspaceMode                                                                                                                   WorkspaceMode
-	}{plan.OwnerID, plan.ConversationID, plan.TurnID, plan.Objective, plan.UserPromptDigest, plan.InputManifestDigest, plan.ModelAuthorization.BindingDigest, plan.AuthorizationBasisDigest, plan.AccountGeneration, plan.ProposalReason, plan.LocalBudgetEvidence, plan.WorkspaceMode})
+		ComputeRequirements                                                                                                             ComputeRequirements
+	}{plan.OwnerID, plan.ConversationID, plan.TurnID, plan.Objective, plan.UserPromptDigest, plan.InputManifestDigest, plan.ModelAuthorization.BindingDigest, plan.AuthorizationBasisDigest, plan.AccountGeneration, plan.ProposalReason, plan.LocalBudgetEvidence, plan.WorkspaceMode, command.ComputeRequirements})
 	sum := sha256.Sum256(requestRaw)
 	return s.store.CreateOffer(ctx, CreateOfferCommand{IdempotencyKey: command.IdempotencyKey, RequestDigest: hex.EncodeToString(sum[:]), TurnLeaseID: command.TurnLeaseID, TurnLeaseEpoch: command.TurnLeaseEpoch, ExpectedTurnRevision: command.ExpectedTurnRevision, Plan: plan, Execution: execution, BindingJSON: bindingRaw, TaskPayload: payload})
+}
+
+// PreflightLaunch re-reads live pricing at the last safe point before the SSH
+// provider can mutate AWS. A changed or expired quote is replaced with the
+// existing durable requote flow and requires a fresh user confirmation.
+func (s *Service) PreflightLaunch(ctx context.Context, task coretask.Task, plan Plan, snapshot coremodel.ExecutionSnapshot) (bool, error) {
+	if s == nil || s.store == nil || s.quoter == nil || s.awsBindings == nil || ctx == nil || plan.Seal() != nil {
+		return false, ErrInvalid
+	}
+	// Reuse does not create or modify AWS resources. Its live hourly value is
+	// informational and does not authorize a new provider mutation.
+	if plan.PersistentWorkerReuse {
+		return false, nil
+	}
+	fresh, err := s.quoter.Validate(ctx, plan)
+	if err != nil {
+		return false, err
+	}
+	freshDigest := fresh.Digest
+	if fresh.Seal() != nil || fresh.Digest != freshDigest || fresh.BasisDigest != plan.AuthorizationBasisDigest {
+		return false, ErrStaleAuthorization
+	}
+	now := s.now().UTC()
+	if now.IsZero() || !now.Before(fresh.ExpiresAt) {
+		return false, ErrStaleAuthorization
+	}
+	reason := ""
+	if !now.Before(plan.Quote.ExpiresAt) {
+		reason = RequoteReasonExpired
+	} else if fresh.Digest != plan.Quote.Digest {
+		reason = RequoteReasonDrift
+	}
+	if reason == "" {
+		return false, nil
+	}
+	currentAWS, err := s.awsBindings.ResolveCurrentAWSBinding(ctx)
+	if err != nil || validateAWS(currentAWS) != nil {
+		return false, errors.Join(ErrStaleAuthorization, err)
+	}
+	modelAuthorization, err := ModelAuthorizationFromSnapshot(snapshot)
+	if err != nil {
+		return false, err
+	}
+	command, err := compileRequoteOffer(ctx, s.quoter, s.defaults.Limits, plan, reason, now, currentAWS, modelAuthorization)
+	if err != nil {
+		return false, err
+	}
+	if _, err = s.store.ReplaceWithRequote(ctx, task, command); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // FakeQuoter is explicit test/dev infrastructure. It never performs an AWS
 // read or mutation and must not be selected as a production price source.
 type FakeQuoter struct {
 	AmountMicros, MaximumAuthorizedMicros int64
+	ComputeMicrosPerHour                  uint64
 	TTL                                   time.Duration
 	Now                                   func() time.Time
 }
@@ -489,7 +585,7 @@ func (q FakeQuoter) Quote(_ context.Context, request QuoteRequest) (Quote, error
 		return Quote{}, ErrInvalid
 	}
 	now := q.clock()
-	quote := Quote{AmountMicros: q.AmountMicros, Currency: "USD", SourceTime: now, ExpiresAt: now.Add(q.TTL), MaximumAuthorizedCostMicros: q.MaximumAuthorizedMicros, BasisDigest: request.AuthorizationBasisDigest, CatalogRevisionDigest: digestValue("fake-pricing-catalog/v1")}
+	quote := Quote{AmountMicros: q.AmountMicros, ComputeMicrosPerHour: q.ComputeMicrosPerHour, Currency: "USD", SourceTime: now, ExpiresAt: now.Add(q.TTL), MaximumAuthorizedCostMicros: q.MaximumAuthorizedMicros, BasisDigest: request.AuthorizationBasisDigest, CatalogRevisionDigest: digestValue("fake-pricing-catalog/v1")}
 	return quote, quote.Seal()
 }
 
@@ -499,7 +595,7 @@ func (q FakeQuoter) Validate(ctx context.Context, plan Plan) (Quote, error) {
 	if err := copy.sealAuthorizationBasis(); err != nil {
 		return Quote{}, err
 	}
-	if plan.Quote.ExpiresAt.After(now) && plan.Quote.AmountMicros == q.AmountMicros && plan.Quote.MaximumAuthorizedCostMicros == q.MaximumAuthorizedMicros && plan.Quote.BasisDigest == copy.AuthorizationBasisDigest && plan.Quote.CatalogRevisionDigest == digestValue("fake-pricing-catalog/v1") {
+	if plan.Quote.ExpiresAt.After(now) && plan.Quote.AmountMicros == q.AmountMicros && plan.Quote.ComputeMicrosPerHour == q.ComputeMicrosPerHour && plan.Quote.MaximumAuthorizedCostMicros == q.MaximumAuthorizedMicros && plan.Quote.BasisDigest == copy.AuthorizationBasisDigest && plan.Quote.CatalogRevisionDigest == digestValue("fake-pricing-catalog/v1") {
 		return plan.Quote, nil
 	}
 	return q.Quote(ctx, QuoteRequest{OwnerID: copy.OwnerID, AccountGeneration: copy.AccountGeneration, ObjectiveDigest: copy.ObjectiveDigest, UserPromptDigest: copy.UserPromptDigest, InputManifestDigest: copy.InputManifestDigest, WorkspaceMode: copy.WorkspaceMode, ProposalReason: copy.ProposalReason, ModelBindingDigest: copy.ModelAuthorization.BindingDigest, AuthorizationBasisDigest: copy.AuthorizationBasisDigest, AWS: copy.AWS, Compute: copy.Compute, Limits: copy.Limits})

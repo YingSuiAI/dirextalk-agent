@@ -136,6 +136,31 @@ func TestProductionQuoterRequotesSamePriceCatalogRevisionDrift(t *testing.T) {
 	}
 }
 
+func TestProductionQuoterKeepsAuthorizationWhenOnlyLiveObservationTimeChanges(t *testing.T) {
+	now := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+	plan, _, _, source := stagingFixture(t, now)
+	defer source.Body.Close()
+	catalog := &pricingCatalogFake{now: &now, rates: PricingCatalogRates{ComputeMicrosPerHour: 30_000, EBSStorageMicrosPerGiBMonth: 80_000, PublicIPv4MicrosPerHour: 5_000}}
+	quoter, err := NewProductionQuoter(catalog, ProductionQuoterConfig{QuoteTTL: 5 * time.Minute, MaximumCatalogAge: 5 * time.Minute,
+		CleanupReserveSeconds: EphemeralCleanupReserveSeconds, ContingencyBasisPoints: 1_000, AbsoluteHardLimitMicros: 10_000_000}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := quoter.Quote(context.Background(), quoteRequestForPlan(plan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Quote = first
+	if err = plan.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(10 * time.Second)
+	current, err := quoter.Validate(context.Background(), plan)
+	if err != nil || current.Digest != first.Digest {
+		t.Fatalf("unchanged live price forced requote: first=%+v current=%+v err=%v", first, current, err)
+	}
+}
+
 func quoteRequestForPlan(plan Plan) QuoteRequest {
 	return QuoteRequest{
 		OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration,

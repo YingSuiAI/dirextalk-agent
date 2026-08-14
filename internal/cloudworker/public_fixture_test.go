@@ -60,13 +60,14 @@ func buildCloudWorkerPublicFixture(t *testing.T) cloudWorkerPublicFixture {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 123456000, time.UTC)
 	store := &intrinsicStore{}
 	defaults := intrinsicDefaults(now)
+	defaults.Compute.VCPU, defaults.Compute.MemoryGiB = 2, 4
 	defaults.NetworkGrants = []string{"controlled_https_egress"}
 	defaults.SecretGrants = []SecretGrant{
 		{ReferenceID: "11111111-1111-4111-8111-111111111111", Purpose: string(coreconfirmation.SecretPurposeModelAPIKey), BindingDigest: digestValue("fixture-secret-one")},
 		{ReferenceID: "22222222-2222-4222-8222-222222222222", Purpose: string(coreconfirmation.SecretPurposeModelAPIKey), BindingDigest: digestValue("fixture-secret-two")},
 	}
 	service, err := NewService(store, defaults, FakeQuoter{
-		AmountMicros: 230000, MaximumAuthorizedMicros: 300000,
+		AmountMicros: 230000, MaximumAuthorizedMicros: 300000, ComputeMicrosPerHour: 100000,
 		TTL: 15 * time.Minute, Now: func() time.Time { return now },
 	}, func() time.Time { return now })
 	if err != nil {

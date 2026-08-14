@@ -165,7 +165,8 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	result, err := provider.Execute(ctx, sshworker.ExecuteRequest{ExecutionID: request.ExecutionID,
 		Authority: sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, Credential: identity,
 		Confirmation: confirmation, Discovery: discovery, ReuseOnly: request.ReuseOnly,
-		InstanceType: request.Compute.InstanceType, VolumeGiB: int32(request.Compute.VolumeGiB), WorkerScript: material.WorkerScript,
+		InstanceType: request.Compute.InstanceType, VCPU: request.Compute.VCPU, MemoryGiB: request.Compute.MemoryGiB,
+		VolumeGiB: int32(request.Compute.VolumeGiB), WorkerScript: material.WorkerScript,
 		WorkerScriptSHA256: material.WorkerScriptSHA256, Runtime: material.Protocol,
 		WorkspacePath: workspacePath, MaxWorkspaceBytes: 512 << 20, MaxResultBytes: int64(request.Limits.MaxOutputBytes), Sink: sink})
 	workerResult := sshflow.Result{ExitCode: result.ExitCode, WorkerID: result.WorkerID}
@@ -337,12 +338,18 @@ func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider 
 	return provider.SetPublicPort(ctx, worker, service.Port, true)
 }
 
-func (executor *sshWorkerExecutor) HasIdleWorker(ctx context.Context, ownerID string, accountGeneration uint64, binding cloudworker.AWSBinding, compute cloudworker.ComputeSpec) (bool, error) {
+func (executor *sshWorkerExecutor) ResolveIdleWorker(ctx context.Context, ownerID string, accountGeneration uint64, binding cloudworker.AWSBinding, compute cloudworker.ComputeSpec) (cloudworker.ComputeSpec, bool, error) {
 	provider, identity, err := executor.provider(ctx, binding)
 	if err != nil {
-		return false, err
+		return cloudworker.ComputeSpec{}, false, err
 	}
-	return provider.HasIdleWorker(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, identity, compute.InstanceType)
+	worker, found, err := provider.ResolveIdleWorker(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, identity,
+		compute.InstanceType, compute.VCPU, compute.MemoryGiB, int32(compute.VolumeGiB))
+	if err != nil || !found {
+		return cloudworker.ComputeSpec{}, false, err
+	}
+	return cloudworker.ComputeSpec{InstanceType: worker.InstanceType, Architecture: "x86_64", VCPU: worker.VCPU, MemoryGiB: worker.MemoryGiB,
+		RootDeviceName: "/dev/xvda", VolumeGiB: uint64(worker.VolumeGiB), VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}, true, nil
 }
 
 func boundedWorkerSummary(value string) string {
