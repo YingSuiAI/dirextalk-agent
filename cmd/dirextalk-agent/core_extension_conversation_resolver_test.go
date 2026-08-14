@@ -83,6 +83,26 @@ func TestConversationExtensionResolverAutomaticallyAddsOwnedLocalSandbox(t *test
 	}
 }
 
+func TestConversationExtensionResolverSelectsActiveRecordWhenHistoricalVersionHasSamePin(t *testing.T) {
+	installation := conversationResolverInstallation()
+	active := installation.Versions[0]
+	historical := active
+	historical.VersionID = "00000000-0000-4000-8000-000000000003"
+	historical.ContentDigest = strings.Repeat("e", 64)
+	historical.ArtifactDigest = strings.Repeat("f", 64)
+	installation.Versions = []coreextension.VersionRecord{historical, active}
+	selection := conversationResolverSelection(installation)
+	selection.Digest = active.ContentDigest
+
+	resolved, err := (conversationExtensionResolver{store: compositionExtensionStore{installation: installation}}).ResolveExtensions(context.Background(), []coreconversation.ExtensionSelection{selection})
+	if err != nil || len(resolved) != 1 {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	if snapshot := resolved[0].Snapshot; snapshot.VersionID != active.VersionID || snapshot.ContentDigest != active.ContentDigest || snapshot.ArtifactDigest != active.ArtifactDigest {
+		t.Fatalf("resolver selected historical version: %+v", snapshot)
+	}
+}
+
 func TestConversationExtensionResolverRejectsMutableOrInexactSelections(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -70,13 +70,13 @@ func (r conversationExtensionResolver) ResolveExtensions(ctx context.Context, se
 		var version *coreextension.VersionRecord
 		for i := range installation.Versions {
 			candidate := &installation.Versions[i]
-			if extensionVersionPin(*candidate) == selection.Version {
+			if candidate.VersionID == installation.ActiveVersionID {
 				version = candidate
 				break
 			}
 		}
-		if version == nil || version.ContentDigest != selection.Digest || !coretask.ValidDigest(version.ContentDigest) ||
-			!coretask.ValidDigest(version.ArtifactDigest) || installation.ActiveVersionID != version.VersionID {
+		if version == nil || extensionVersionPin(*version) != selection.Version || version.ContentDigest != selection.Digest ||
+			!coretask.ValidDigest(version.ContentDigest) || !coretask.ValidDigest(version.ArtifactDigest) {
 			return nil, coreextension.ErrConflict
 		}
 		descriptors := make(map[string]coreextension.Tool, len(version.Tools))
