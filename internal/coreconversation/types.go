@@ -693,19 +693,32 @@ func (r Reference) Validate() error {
 
 func validateCloudWorkerReference(r Reference) error {
 	if hasConversationReferenceFields(r) || r.AccountGeneration == 0 || !validUUID(r.TaskID) ||
-		!validUUID(r.PlanID) || r.PlanRevision == 0 || !validUUID(r.RunID) || r.RunID != r.ExecutionID || r.RunRevision == 0 ||
-		!validUUID(r.ConfirmationID) || r.ConfirmationRevision == 0 || (r.WorkerID != "" && !validUUID(r.WorkerID)) ||
+		!validUUID(r.PlanID) || r.PlanRevision == 0 ||
 		r.PlanDigest != "" || r.RunDigest != "" || r.BindingDigest != "" || r.QuoteDigest != "" || r.ExecutionDigest != "" ||
 		r.DeploymentID != "" || r.StageID != "" || r.StageRevision != 0 || r.StageDigest != "" ||
 		r.TargetID != "" || r.TargetRevision != 0 || r.TargetDigest != "" || r.PreviewDigest != "" ||
 		r.RiskLevel != "" || r.GateType != "" || r.BindingID != "" || r.BindingRevision != 0 || r.ProjectID != "" {
 		return ErrInvalid
 	}
-	if r.Kind == "execution_confirmation" {
-		if r.Status != "" || !validConfirmationReferenceState(r.State) {
+	switch r.Kind {
+	case "execution_plan":
+		if r.RunID != "" || r.RunRevision != 0 || r.ExecutionID != "" || r.WorkerID != "" ||
+			r.ConfirmationID != "" || r.ConfirmationRevision != 0 || r.State != "" || !validExecutionReferenceStatus(r.Status) {
 			return ErrInvalid
 		}
-	} else if r.State != "" || !validExecutionReferenceStatus(r.Status) {
+	case "execution_run":
+		if !validUUID(r.RunID) || r.RunRevision == 0 || !validUUID(r.ExecutionID) ||
+			(r.WorkerID != "" && !validUUID(r.WorkerID)) || r.ConfirmationID != "" ||
+			r.ConfirmationRevision != 0 || r.State != "" || !validExecutionReferenceStatus(r.Status) {
+			return ErrInvalid
+		}
+	case "execution_confirmation":
+		if r.RunID != "" || r.RunRevision != 0 || r.ExecutionID != "" || r.WorkerID != "" ||
+			!validUUID(r.ConfirmationID) || r.ConfirmationRevision == 0 || r.Status != "" ||
+			!validConfirmationReferenceState(r.State) {
+			return ErrInvalid
+		}
+	default:
 		return ErrInvalid
 	}
 	return nil

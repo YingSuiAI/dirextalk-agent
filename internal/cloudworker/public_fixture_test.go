@@ -148,17 +148,14 @@ func buildCloudWorkerPublicFixture(t *testing.T) cloudWorkerPublicFixture {
 		TaskID: plan.TaskID, State: coreconfirmation.StateConsumed, Revision: 3,
 		CreatedAt: now, UpdatedAt: now.Add(time.Minute), ExpiresAt: plan.Quote.ExpiresAt,
 	}
-	baseReference := coreconversation.Reference{
-		AccountGeneration: plan.AccountGeneration, TaskID: plan.TaskID,
-		PlanID: plan.PlanID, PlanRevision: plan.Revision,
-		RunID: execution.RunID, RunRevision: execution.Revision,
-		ExecutionID: execution.ExecutionID, ConfirmationID: confirmation.ConfirmationID,
-		ConfirmationRevision: uint64(confirmation.Revision),
-	}
+	baseReference := coreconversation.Reference{AccountGeneration: plan.AccountGeneration, TaskID: plan.TaskID,
+		PlanID: plan.PlanID, PlanRevision: plan.Revision}
 	planReference, runReference, confirmationReference := baseReference, baseReference, baseReference
 	planReference.Kind, planReference.Status = "execution_plan", plan.Status
-	runReference.Kind, runReference.Status = "execution_run", string(execution.State)
-	confirmationReference.Kind, confirmationReference.State = "execution_confirmation", string(confirmation.State)
+	runReference.Kind, runReference.RunID, runReference.RunRevision = "execution_run", execution.RunID, execution.Revision
+	runReference.ExecutionID, runReference.Status = execution.ExecutionID, string(execution.State)
+	confirmationReference.Kind, confirmationReference.ConfirmationID = "execution_confirmation", confirmation.ConfirmationID
+	confirmationReference.ConfirmationRevision, confirmationReference.State = uint64(confirmation.Revision), string(confirmation.State)
 	for _, reference := range []coreconversation.Reference{planReference, runReference, confirmationReference} {
 		if err := reference.Validate(); err != nil {
 			t.Fatalf("fixture reference: %#v: %v", reference, err)
@@ -208,6 +205,10 @@ func TestCloudWorkerPublicFixtureV1(t *testing.T) {
 	if err := json.Unmarshal(actual, &raw); err != nil {
 		t.Fatal(err)
 	}
+	references := raw["references"].(map[string]any)
+	assertFixtureKeys(t, references["plan"].(map[string]any), "kind", "account_generation", "task_id", "plan_id", "plan_revision", "status")
+	assertFixtureKeys(t, references["run"].(map[string]any), "kind", "account_generation", "task_id", "plan_id", "plan_revision", "run_id", "run_revision", "execution_id", "status")
+	assertFixtureKeys(t, references["confirmation"].(map[string]any), "kind", "account_generation", "task_id", "plan_id", "plan_revision", "confirmation_id", "confirmation_revision", "state")
 	for _, forbidden := range []string{
 		"credential_id", "credential_binding_digest", "objective", "user_prompt_digest",
 		"input_manifest", "source_ref", "source_revision", "placement", "network_policy",
@@ -275,6 +276,18 @@ func TestCloudWorkerPublicFixtureV1(t *testing.T) {
 	if !ok || confirmationQuote["amount_micros"] != float64(230000) || confirmationQuote["currency"] != "USD" ||
 		confirmationQuote["maximum_authorized_cost_micros"] != float64(300000) {
 		t.Fatalf("public Cloud Worker confirmation quote=%v", confirmationQuote)
+	}
+}
+
+func assertFixtureKeys(t *testing.T, object map[string]any, expected ...string) {
+	t.Helper()
+	if len(object) != len(expected) {
+		t.Fatalf("fixture keys=%v, want %v", object, expected)
+	}
+	for _, key := range expected {
+		if _, ok := object[key]; !ok {
+			t.Fatalf("fixture omits %q: %v", key, object)
+		}
 	}
 }
 

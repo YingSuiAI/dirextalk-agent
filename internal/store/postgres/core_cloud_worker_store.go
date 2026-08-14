@@ -517,14 +517,16 @@ func insertCloudWorkerMessageTx(ctx context.Context, tx pgx.Tx, conversationID s
 }
 
 func cloudWorkerReferences(plan cloudworker.Plan, execution cloudworker.Execution, confirmationRevision uint64, confirmationState string) []core.Reference {
-	base := core.Reference{AccountGeneration: plan.AccountGeneration, TaskID: plan.TaskID, PlanID: plan.PlanID,
-		PlanRevision: plan.Revision, RunID: execution.RunID, RunRevision: execution.Revision,
-		ExecutionID: execution.ExecutionID, WorkerID: execution.WorkerID, ConfirmationID: plan.ConfirmationID,
-		ConfirmationRevision: confirmationRevision}
-	planReference, runReference, confirmationReference := base, base, base
-	planReference.Kind, planReference.Status = "execution_plan", string(execution.State)
-	runReference.Kind, runReference.Status = "execution_run", string(execution.State)
-	confirmationReference.Kind, confirmationReference.State = "execution_confirmation", confirmationState
+	base := core.Reference{AccountGeneration: plan.AccountGeneration, TaskID: plan.TaskID,
+		PlanID: plan.PlanID, PlanRevision: plan.Revision}
+	planReference := base
+	planReference.Kind, planReference.Status = "execution_plan", plan.Status
+	runReference := base
+	runReference.Kind, runReference.RunID, runReference.RunRevision = "execution_run", execution.RunID, execution.Revision
+	runReference.ExecutionID, runReference.WorkerID, runReference.Status = execution.ExecutionID, execution.WorkerID, string(execution.State)
+	confirmationReference := base
+	confirmationReference.Kind, confirmationReference.ConfirmationID = "execution_confirmation", plan.ConfirmationID
+	confirmationReference.ConfirmationRevision, confirmationReference.State = confirmationRevision, confirmationState
 	return []core.Reference{planReference, runReference, confirmationReference}
 }
 
