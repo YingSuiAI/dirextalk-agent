@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v1.0.90
+
+1. Publish the current reusable Worker plan and run DTOs without retired digests, infrastructure details, or private credential references.
+2. Expose the exact pre-run Worker identity and live quote in owner confirmation while keeping internal authorization material private.
+3. Keep plan, run, and confirmation chat references kind-specific and digest-free.
+4. Treat the public run identity independently from the internal execution identity across reads, events, cancellation, and completion delivery.
+
 ## v1.0.89
 
 1. Route substantial project, shell, deployment, build, test, artifact, and long-running tasks to the priced Cloud Worker offer when the published local toolset cannot execute them, without requiring cloud-specific wording.
