@@ -1122,3 +1122,19 @@ func TestManager_StreamHandlerFailsWhenProgressPersistenceFails(t *testing.T) {
 		t.Fatalf("progress failure did not terminalize operation: %+v", state)
 	}
 }
+
+func TestManagerHandlerErrorDetailUnwrapsAndRedacts(t *testing.T) {
+	manager := &Manager{}
+	operationID := "op-handler-log"
+	secret := "provider-secret-canary"
+	manager.rememberSecrets(operationID, []byte(`{"api_key":"`+secret+`"}`))
+	err := NewFailure("UPSTREAM_FAILED", "Agent operation failed", fmt.Errorf("resolve automatic extension with %s: %w", secret, ErrInvalid))
+	if detail := manager.handlerErrorDetail(operationID, err); detail != "resolve automatic extension with [redacted]: "+ErrInvalid.Error() {
+		t.Fatalf("handler error detail=%q", detail)
+	}
+
+	err = NewFailure("UPSTREAM_FAILED", "Agent operation failed", errors.New("provider rejected "+secret))
+	if detail := manager.handlerErrorDetail(operationID, err); detail != "provider rejected [redacted]" {
+		t.Fatalf("redacted handler error detail=%q", detail)
+	}
+}

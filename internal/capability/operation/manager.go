@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -325,6 +326,20 @@ func (m *Manager) redactString(operationID, value string) string {
 		}
 	}
 	return value
+}
+
+func (m *Manager) handlerErrorDetail(operationID string, err error) string {
+	if err == nil {
+		return ""
+	}
+	for {
+		failure, ok := err.(*Failure)
+		if !ok || failure.cause == nil {
+			break
+		}
+		err = failure.cause
+	}
+	return m.redactString(operationID, err.Error())
 }
 
 func (m *Manager) redactJSON(operationID string, payload []byte) []byte {
@@ -1061,6 +1076,12 @@ func (m *Manager) Execute(parent context.Context, operationID string, handler Ha
 		_ = m.markUncertain(context.Background(), operationID, "operation outcome requires external reconciliation; side effect was not retried")
 		return
 	}
+	slog.Error("capability operation handler failed",
+		"operation_id", operationID,
+		"capability_id", op.CapabilityID,
+		"operation", op.OperationName,
+		"error", m.handlerErrorDetail(operationID, err),
+	)
 	if code, message, ok := FailureDetails(err); ok {
 		if code == "CANCELLED" {
 			_ = m.terminal(context.Background(), operationID, StateCancelled, nil, "", message)
