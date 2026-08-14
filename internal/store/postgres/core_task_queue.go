@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -134,14 +135,40 @@ func (s *CoreTaskStore) ClaimNextDue(ctx context.Context, holder string, at time
 	// The first Cloud Worker lease is also the durable launch claim. Keeping the
 	// task lease, confirmation consumption/reservation, begin authorization and
 	// queued -> provisioning transition in this transaction removes the window
-	// where a handler error could strand an unconsumed confirmation.
-	if t.Status == coretask.StatusQueued && t.Spec.Kind == coretask.TaskKindCloudWorker {
+	// where a handler error could strand an unconsumed confirmation. A reclaim
+	// moves that same reservation to the new lease fence without consuming the
+	// confirmation or authorizing another provider mutation.
+	if t.Spec.Kind == coretask.TaskKindCloudWorker {
 		claimed, claimErr := s.taskTxLocked(ctx, tx, id, false)
 		if claimErr != nil {
 			return coretask.Task{}, coretask.Lease{}, claimErr
 		}
-		if _, claimErr = NewCloudWorkerStore(s.store).beginExecutionTx(ctx, tx, claimed, at.UTC().Truncate(time.Microsecond)); claimErr != nil {
-			return coretask.Task{}, coretask.Lease{}, claimErr
+		if t.Status == coretask.StatusQueued {
+			if _, claimErr = NewCloudWorkerStore(s.store).beginExecutionTx(ctx, tx, claimed, at.UTC().Truncate(time.Microsecond)); claimErr != nil {
+				return coretask.Task{}, coretask.Lease{}, claimErr
+			}
+		} else if t.Status == coretask.StatusRunning {
+			payload := claimed.Spec.Payload.CloudWorker
+			if payload == nil || claimed.Lease == nil {
+				return coretask.Task{}, coretask.Lease{}, cloudworker.ErrStaleAuthorization
+			}
+			rebound, rebindErr := tx.Exec(ctx, `UPDATE core_confirmation_reservations AS reservation SET
+				acquired_attempt=$3,acquired_lease_epoch=$4,task_revision=$5,acquired_lease_expires_at=$6
+				FROM core_confirmations AS confirmation
+				WHERE reservation.confirmation_id=$1 AND reservation.task_id=$2 AND reservation.active=true
+				  AND reservation.acquired_attempt=$7 AND reservation.acquired_lease_epoch=$8
+				  AND reservation.task_revision=$9 AND reservation.acquired_lease_expires_at<=$10
+				  AND confirmation.confirmation_id=reservation.confirmation_id
+				  AND confirmation.task_id=reservation.task_id
+				  AND confirmation.state='consumed' AND confirmation.consumed_released=false`,
+				payload.ConfirmationID, claimed.ID, claimed.Attempt, claimed.LeaseEpoch, claimed.Revision,
+				claimed.Lease.ExpiresAt, t.Attempt, t.LeaseEpoch, t.Revision, at.UTC())
+			if rebindErr != nil {
+				return coretask.Task{}, coretask.Lease{}, rebindErr
+			}
+			if rebound.RowsAffected() != 1 {
+				return coretask.Task{}, coretask.Lease{}, cloudworker.ErrStaleAuthorization
+			}
 		}
 	}
 	if _, e = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at) SELECT task_id,progress_sequence+1,$2,attempt,'running','claimed','task claimed',$3 FROM core_tasks WHERE task_id=$1`, id, uuid.New(), at.UTC()); e != nil {
