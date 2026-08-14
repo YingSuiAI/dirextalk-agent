@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.95
+
+1. Keep the Cloud Worker pricing and authorization token ceiling separate from Pi request configuration, so an unset profile uses Pi's maintained 16,384-token default instead of an unrelated quote limit.
+
 ## v1.0.94
 
 1. Use the quote-bound Worker token limit when a model profile leaves its output-token limit unset, so ordinary provider-default profiles can execute confirmed remote tasks.
