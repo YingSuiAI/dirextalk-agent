@@ -3,6 +3,7 @@ package sshflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ type flowStore struct {
 	run       Run
 	completed int
 	failed    int
+	summary   string
 }
 
 func (store *flowStore) Begin(context.Context, coretask.Task) (Run, error) { return store.run, nil }
@@ -22,8 +24,9 @@ func (store *flowStore) Complete(_ context.Context, _ Run, _ Result) error {
 	store.completed++
 	return nil
 }
-func (store *flowStore) Fail(_ context.Context, _ Run, _ Result, _, _ string) error {
+func (store *flowStore) Fail(_ context.Context, _ Run, _ Result, _, summary string) error {
 	store.failed++
+	store.summary = summary
 	return nil
 }
 
@@ -92,10 +95,11 @@ func TestHandlerPassesOnlyConfirmedMinimalExecutionInputAndOwnsTerminal(t *testi
 
 func TestHandlerTerminalizesFailureWithoutDestroyingPersistentWorker(t *testing.T) {
 	store := &flowStore{run: Run{Plan: cloudworker.Plan{ExecutionID: "33333333-3333-4333-8333-333333333333"}}}
-	executor := &flowExecutor{result: Result{WorkerID: "i-0123456789abcdef0"}, err: errors.New("remote command failed")}
+	executor := &flowExecutor{result: Result{WorkerID: "i-0123456789abcdef0"}, err: errors.New("remote command failed: " + strings.Repeat("detail", 1000))}
 	handler, _ := NewHandler(store, executor)
 	outcome := handler.Handle(context.Background(), runningCloudTask())
-	if outcome.Err == nil || !outcome.TerminalOwned || store.completed != 0 || store.failed != 1 {
+	if outcome.Err == nil || !outcome.TerminalOwned || store.completed != 0 || store.failed != 1 ||
+		len([]byte(store.summary)) != coretask.MaxSummaryBytes || !strings.HasPrefix(store.summary, "remote command failed") {
 		t.Fatalf("outcome=%+v store=%+v", outcome, store)
 	}
 }

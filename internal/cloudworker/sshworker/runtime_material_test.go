@@ -36,6 +36,7 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 	for _, expected := range []string{
 		"releases/download/v0.84.1/pi-linux-x64.tar.gz",
 		piLinuxX64SHA256,
+		"sudo dnf -q -y install ca-certificates git golang gzip tar",
 		`dirextalk-worker-runner`,
 		`server-status`,
 		`artifact_root="$worker_root/artifacts"`,
@@ -43,6 +44,9 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 		if !strings.Contains(script, expected) {
 			t.Fatalf("script does not contain %q", expected)
 		}
+	}
+	if strings.Contains(script, "install ca-certificates curl") {
+		t.Fatal("bootstrap replaces the Amazon Linux curl-minimal package")
 	}
 	if strings.Contains(script, secret) || strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(secret))) {
 		t.Fatal("model credential leaked into worker script")

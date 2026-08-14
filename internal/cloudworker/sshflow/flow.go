@@ -122,7 +122,7 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 			result.WorkerID = run.Plan.ExecutionID
 		}
 		code := "ssh_worker_failed"
-		summary := strings.TrimSpace(executeErr.Error())
+		summary := boundedSummary(executeErr.Error())
 		if summary == "" {
 			summary = code
 		}
@@ -141,3 +141,20 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 }
 
 func (handler *Handler) TaskHandler() coreruntime.TaskHandler { return handler.Handle }
+
+func boundedSummary(value string) string {
+	value = strings.TrimSpace(value)
+	if len([]byte(value)) <= coretask.MaxSummaryBytes {
+		return value
+	}
+	var bounded strings.Builder
+	bounded.Grow(coretask.MaxSummaryBytes)
+	for _, current := range value {
+		width := len(string(current))
+		if bounded.Len()+width > coretask.MaxSummaryBytes {
+			break
+		}
+		bounded.WriteRune(current)
+	}
+	return bounded.String()
+}

@@ -116,7 +116,7 @@ readonly pi_bin="$runtime_root/pi"
 readonly task_root="$worker_root/tasks/%s"
 
 mkdir -p -- "$runtime_root" "$config_root" "$artifact_root" "$task_root"
-sudo dnf -q -y install ca-certificates curl git golang gzip tar >/dev/null
+sudo dnf -q -y install ca-certificates git golang gzip tar >/dev/null
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
   --output "$archive" %s
 printf '%%s  %%s\n' %s "$archive" | sha256sum -c - >/dev/null
