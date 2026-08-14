@@ -959,7 +959,7 @@ func (d *driver) downloadMarkedArtifact(ctx context.Context, current run, marker
 			return "", "", err
 		}
 		artifact := object(response, "artifact")
-		if stringValue(artifact, "artifact_id") != artifactID || stringValue(artifact, "execution_id") != current.RunID || stringValue(artifact, "status") != "verified" {
+		if stringValue(artifact, "artifact_id") != artifactID || stringValue(artifact, "execution_id") != current.ExecutionID || stringValue(artifact, "status") != "verified" {
 			return "", "", errors.New("artifact projection identity/status mismatch")
 		}
 		expectedSize := integer(artifact["size_bytes"])

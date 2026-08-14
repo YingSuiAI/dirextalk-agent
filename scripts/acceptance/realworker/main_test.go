@@ -224,6 +224,12 @@ func TestDownloadArtifactVerifiesEveryChunkAndFullDigest(t *testing.T) {
 	full := sha256.Sum256(body)
 	fullHex := hex.EncodeToString(full[:])
 	product := &fakeProduct{call: func(action string, params map[string]any) (map[string]any, error) {
+		if action == "agent.execution.v2.artifacts.get" {
+			return map[string]any{"artifact": map[string]any{
+				"artifact_id": "artifact-id", "execution_id": "execution-id", "status": "verified",
+				"size_bytes": int64(len(body)), "sha256": fullHex,
+			}}, nil
+		}
 		if action != "agent.execution.v2.artifacts.download" {
 			return nil, errors.New("unexpected action")
 		}
@@ -240,7 +246,13 @@ func TestDownloadArtifactVerifiesEveryChunkAndFullDigest(t *testing.T) {
 			"next_offset_bytes": end, "eof": end == int64(len(body)),
 		}, nil
 	}}
-	d := &driver{product: product}
+	d := &driver{cfg: config{runDir: t.TempDir()}, product: product}
+	artifactID, artifactSHA, err := d.downloadMarkedArtifact(context.Background(), run{
+		RunID: "run-id", ExecutionID: "execution-id", ArtifactIDs: []string{"artifact-id"},
+	}, "DIREXTALK_WORKER_ACCEPTANCE_test")
+	if err != nil || artifactID != "artifact-id" || artifactSHA != fullHex {
+		t.Fatalf("marked artifact = %q, %q, %v", artifactID, artifactSHA, err)
+	}
 	got, err := d.downloadArtifact(context.Background(), "artifact-id", int64(len(body)), fullHex)
 	if err != nil || string(got) != string(body) {
 		t.Fatalf("download = %q, %v", got, err)
