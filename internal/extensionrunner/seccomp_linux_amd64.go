@@ -104,6 +104,9 @@ func sandboxAllowedSyscalls() []uint32 {
 		unix.SYS_SCHED_SETAFFINITY,
 		unix.SYS_SCHED_GETAFFINITY,
 		unix.SYS_CLONE,
+		// Static BusyBox ash uses fork to feed heredoc content. The child
+		// inherits this filter and the sandbox cgroup enforces pids.max.
+		unix.SYS_FORK,
 		unix.SYS_EXECVE,
 		unix.SYS_EXIT,
 		unix.SYS_WAIT4,

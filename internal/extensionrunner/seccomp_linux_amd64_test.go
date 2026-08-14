@@ -6,11 +6,40 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
+
+func TestSeccompAllowsStaticBusyBoxHeredoc(t *testing.T) {
+	if os.Getenv("DIREXTALK_SECCOMP_BUSYBOX_HELPER") == "1" {
+		shell := os.Getenv("DIREXTALK_SECCOMP_BUSYBOX")
+		bin := os.Getenv("DIREXTALK_SECCOMP_BUSYBOX_BIN")
+		if unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != nil || installSandboxSeccomp() != nil {
+			os.Exit(20)
+		}
+		if err := unix.Exec(shell, []string{"busybox", "sh", "-c", "cat <<'EOF'\nHEREDOC_OK\nEOF"}, []string{"PATH=" + bin}); err != nil {
+			os.Exit(21)
+		}
+	}
+
+	shell := os.Getenv("DIREXTALK_SECCOMP_BUSYBOX")
+	if shell == "" {
+		t.Skip("set DIREXTALK_SECCOMP_BUSYBOX to the production static BusyBox")
+	}
+	bin := t.TempDir()
+	if err := os.Symlink(shell, filepath.Join(bin, "cat")); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSeccompAllowsStaticBusyBoxHeredoc$")
+	cmd.Env = append(os.Environ(), "DIREXTALK_SECCOMP_BUSYBOX_HELPER=1", "DIREXTALK_SECCOMP_BUSYBOX_BIN="+bin)
+	output, err := cmd.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(output)) != "HEREDOC_OK" {
+		t.Fatalf("static BusyBox heredoc under seccomp failed: %v: %s", err, output)
+	}
+}
 
 func TestSeccompAllowsLegacyOpenForStaticShellWrites(t *testing.T) {
 	if os.Getenv("DIREXTALK_SECCOMP_OPEN_HELPER") == "1" {

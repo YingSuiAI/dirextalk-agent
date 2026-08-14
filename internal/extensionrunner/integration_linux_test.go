@@ -373,7 +373,7 @@ func TestBuiltinLocalSandboxShellOptIn(t *testing.T) {
 	request.ResultFiles = []string{"acceptance.html"}
 	request.TimeoutMS = 30_000
 	request.Limits = LimitsV2{CPUSeconds: 30, MemoryBytes: 256 << 20, Processes: 32, FileBytes: 16 << 20, OpenFiles: 64}
-	stdin := []byte("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"local_sandbox_run\",\"arguments\":{\"script\":\"printf LOCAL_SANDBOX_ACCEPTANCE > acceptance.html; cat acceptance.html\",\"result_paths\":[\"acceptance.html\"]}}}\n")
+	stdin := []byte("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"local_sandbox_run\",\"arguments\":{\"script\":\"cat > acceptance.html <<'EOF'\\nLOCAL_SANDBOX_ACCEPTANCE\\nEOF\\ncat acceptance.html\",\"result_paths\":[\"acceptance.html\"]}}}\n")
 	stdinFD, err := sealedMemfd("stdin", stdin)
 	if err != nil {
 		t.Fatal(err)
@@ -386,7 +386,7 @@ func TestBuiltinLocalSandboxShellOptIn(t *testing.T) {
 		t.Fatalf("status=%+v err=%v stdout=%s stderr=%s", status, err, status.Stdout, status.Stderr)
 	}
 	body, err := os.ReadFile(filepath.Join(workspaceRoot, request.TaskID, request.TaskFence, "acceptance.html"))
-	if err != nil || string(body) != "LOCAL_SANDBOX_ACCEPTANCE" {
+	if err != nil || string(body) != "LOCAL_SANDBOX_ACCEPTANCE\n" {
 		t.Fatalf("artifact=%q err=%v", body, err)
 	}
 }
