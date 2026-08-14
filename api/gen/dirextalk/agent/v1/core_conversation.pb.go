@@ -129,6 +129,12 @@ type CoreConversationReference struct {
 	PostId               string                 `protobuf:"bytes,21,opt,name=post_id,json=postId,proto3" json:"post_id,omitempty"`
 	Title                string                 `protobuf:"bytes,22,opt,name=title,proto3" json:"title,omitempty"`
 	Preview              string                 `protobuf:"bytes,23,opt,name=preview,proto3" json:"preview,omitempty"`
+	RecordKind           string                 `protobuf:"bytes,24,opt,name=record_kind,json=recordKind,proto3" json:"record_kind,omitempty"`
+	ArtifactId           string                 `protobuf:"bytes,25,opt,name=artifact_id,json=artifactId,proto3" json:"artifact_id,omitempty"`
+	Name                 string                 `protobuf:"bytes,26,opt,name=name,proto3" json:"name,omitempty"`
+	MediaType            string                 `protobuf:"bytes,27,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
+	SizeBytes            *uint64                `protobuf:"varint,28,opt,name=size_bytes,json=sizeBytes,proto3,oneof" json:"size_bytes,omitempty"`
+	Sha256               string                 `protobuf:"bytes,29,opt,name=sha256,proto3" json:"sha256,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -320,6 +326,48 @@ func (x *CoreConversationReference) GetTitle() string {
 func (x *CoreConversationReference) GetPreview() string {
 	if x != nil {
 		return x.Preview
+	}
+	return ""
+}
+
+func (x *CoreConversationReference) GetRecordKind() string {
+	if x != nil {
+		return x.RecordKind
+	}
+	return ""
+}
+
+func (x *CoreConversationReference) GetArtifactId() string {
+	if x != nil {
+		return x.ArtifactId
+	}
+	return ""
+}
+
+func (x *CoreConversationReference) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CoreConversationReference) GetMediaType() string {
+	if x != nil {
+		return x.MediaType
+	}
+	return ""
+}
+
+func (x *CoreConversationReference) GetSizeBytes() uint64 {
+	if x != nil && x.SizeBytes != nil {
+		return *x.SizeBytes
+	}
+	return 0
+}
+
+func (x *CoreConversationReference) GetSha256() string {
+	if x != nil {
+		return x.Sha256
 	}
 	return ""
 }
@@ -2469,7 +2517,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xf1\x05\n" +
+	"updated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xb1\a\n" +
 	"\x19CoreConversationReference\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12-\n" +
 	"\x12account_generation\x18\x02 \x01(\x04R\x11accountGeneration\x12\x17\n" +
@@ -2497,7 +2545,18 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"channel_id\x18\x14 \x01(\tR\tchannelId\x12\x17\n" +
 	"\apost_id\x18\x15 \x01(\tR\x06postId\x12\x14\n" +
 	"\x05title\x18\x16 \x01(\tR\x05title\x12\x18\n" +
-	"\apreview\x18\x17 \x01(\tR\apreview\"\x8d\x04\n" +
+	"\apreview\x18\x17 \x01(\tR\apreview\x12\x1f\n" +
+	"\vrecord_kind\x18\x18 \x01(\tR\n" +
+	"recordKind\x12\x1f\n" +
+	"\vartifact_id\x18\x19 \x01(\tR\n" +
+	"artifactId\x12\x12\n" +
+	"\x04name\x18\x1a \x01(\tR\x04name\x12\x1d\n" +
+	"\n" +
+	"media_type\x18\x1b \x01(\tR\tmediaType\x12\"\n" +
+	"\n" +
+	"size_bytes\x18\x1c \x01(\x04H\x00R\tsizeBytes\x88\x01\x01\x12\x16\n" +
+	"\x06sha256\x18\x1d \x01(\tR\x06sha256B\r\n" +
+	"\v_size_bytes\"\x8d\x04\n" +
 	"\x17CoreConversationMessage\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\tR\tmessageId\x12'\n" +
@@ -2839,6 +2898,7 @@ func file_dirextalk_agent_v1_core_conversation_proto_init() {
 		return
 	}
 	file_dirextalk_agent_v1_core_task_proto_init()
+	file_dirextalk_agent_v1_core_conversation_proto_msgTypes[1].OneofWrappers = []any{}
 	file_dirextalk_agent_v1_core_conversation_proto_msgTypes[11].OneofWrappers = []any{}
 	file_dirextalk_agent_v1_core_conversation_proto_msgTypes[13].OneofWrappers = []any{}
 	file_dirextalk_agent_v1_core_conversation_proto_msgTypes[18].OneofWrappers = []any{

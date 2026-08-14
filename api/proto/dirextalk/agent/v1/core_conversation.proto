@@ -45,6 +45,12 @@ message CoreConversationReference {
   string post_id = 21;
   string title = 22;
   string preview = 23;
+  string record_kind = 24;
+  string artifact_id = 25;
+  string name = 26;
+  string media_type = 27;
+  optional uint64 size_bytes = 28;
+  string sha256 = 29;
 }
 
 message CoreConversationMessage {

@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
 func conversationResolverInstallation() coreextension.Installation {
@@ -54,6 +56,30 @@ func TestConversationExtensionResolverPublishesOnlyExactAllowedToolSchemas(t *te
 	properties, ok := extension.Tools[0].InputSchema["properties"].(map[string]any)
 	if !ok || properties["text"] == nil || extension.Snapshot.ToolSchemaDigest != toolSchemaDigest(installation.Versions[0].Tools[:1]) {
 		t.Fatalf("exact schema was not preserved: tool=%+v snapshot=%+v", extension.Tools[0], extension.Snapshot)
+	}
+}
+
+func TestConversationExtensionResolverAutomaticallyAddsOwnedLocalSandbox(t *testing.T) {
+	installation := conversationResolverInstallation()
+	installation.Source = coreextension.SourceBuiltin
+	installation.CandidateID = coreextension.BuiltinLocalSandboxCandidateID
+	installation.Versions[0].Tools = installation.Versions[0].Tools[:1]
+	installation.Versions[0].Tools[0].Name = coreextension.BuiltinLocalSandboxToolName
+	installation.Versions[0].Tools[0].InputSchemaDigest = schemaDigest(installation.Versions[0].Tools[0].InputSchema)
+	selection := conversationResolverSelection(installation)
+	selection.AllowedTools = []string{coreextension.BuiltinLocalSandboxToolName}
+	resolver := conversationExtensionResolver{store: compositionExtensionStore{installation: installation}, automatic: &selection}
+	ctx := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{ChainId: "00000000-0000-4000-8000-000000000010", RootOperationId: "00000000-0000-4000-8000-000000000011"}, &capv1.PermissionContext{AuthenticatedOwnerId: "owner", AccountGeneration: 1})
+	merged, err := resolver.MergeAutomaticExtensions(ctx, nil)
+	if err != nil || len(merged) != 1 || !sameExtensionSelection(merged[0], selection) {
+		t.Fatalf("merged=%+v err=%v", merged, err)
+	}
+	resolved, err := resolver.ResolveExtensions(ctx, nil)
+	if err != nil || len(resolved) != 1 || resolved[0].Snapshot.RequiresConfirmation || resolved[0].Tools[0].Name != coreextension.BuiltinLocalSandboxToolName {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	if unauthenticated, err := resolver.MergeAutomaticExtensions(context.Background(), nil); err != nil || len(unauthenticated) != 0 {
+		t.Fatalf("unauthenticated merge=%+v err=%v", unauthenticated, err)
 	}
 }
 

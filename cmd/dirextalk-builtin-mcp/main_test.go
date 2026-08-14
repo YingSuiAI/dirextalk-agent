@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os/exec"
 	"testing"
 	"time"
 )
@@ -33,5 +34,34 @@ func TestToolCallRejectsArgumentsAndWrongName(t *testing.T) {
 		if _, err := call("server_time", json.RawMessage(raw)); err == nil {
 			t.Fatalf("accepted %s", raw)
 		}
+	}
+}
+
+func TestLocalSandboxToolReturnsBoundedShellResult(t *testing.T) {
+	original := newLocalSandboxCommand
+	t.Cleanup(func() { newLocalSandboxCommand = original })
+	work := t.TempDir()
+	newLocalSandboxCommand = func(script string) *exec.Cmd {
+		cmd := exec.Command("/bin/sh", "-c", script)
+		cmd.Dir = work
+		return cmd
+	}
+	definition := tool(localSandboxKind)
+	if definition["name"] != localSandboxToolName {
+		t.Fatalf("local sandbox definition=%#v", definition)
+	}
+	result, err := call(localSandboxKind, json.RawMessage(`{"name":"local_sandbox_run","arguments":{"script":"printf stdout; printf stderr >&2; printf artifact > result.txt","result_paths":["result.txt"]}}`))
+	if err != nil || result["isError"] != false {
+		t.Fatalf("local sandbox result=%#v err=%v", result, err)
+	}
+	payload := result["structuredContent"].(map[string]any)
+	if payload["stdout"] != "stdout" || payload["stderr"] != "stderr" || payload["exit_code"] != 0 {
+		t.Fatalf("local sandbox payload=%#v", payload)
+	}
+}
+
+func TestLocalSandboxToolRejectsUnsafeResultPath(t *testing.T) {
+	if _, err := call(localSandboxKind, json.RawMessage(`{"name":"local_sandbox_run","arguments":{"script":"true","result_paths":["../escape"]}}`)); err == nil {
+		t.Fatal("unsafe result path accepted")
 	}
 }

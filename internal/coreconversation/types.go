@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -60,43 +61,49 @@ type ToolResult struct {
 }
 
 type Reference struct {
-	Kind                 string `json:"kind"`
-	AccountGeneration    uint64 `json:"account_generation,omitempty"`
-	TaskID               string `json:"task_id,omitempty"`
-	PlanID               string `json:"plan_id,omitempty"`
-	PlanRevision         uint64 `json:"plan_revision,omitempty"`
-	PlanDigest           string `json:"plan_digest,omitempty"`
-	RunID                string `json:"run_id,omitempty"`
-	RunRevision          uint64 `json:"run_revision,omitempty"`
-	RunDigest            string `json:"run_digest,omitempty"`
-	DeploymentID         string `json:"deployment_id,omitempty"`
-	ExecutionID          string `json:"execution_id,omitempty"`
-	WorkerID             string `json:"worker_id,omitempty"`
-	ConfirmationID       string `json:"confirmation_id,omitempty"`
-	ConfirmationRevision uint64 `json:"confirmation_revision,omitempty"`
-	StageID              string `json:"stage_id,omitempty"`
-	StageRevision        uint64 `json:"stage_revision,omitempty"`
-	StageDigest          string `json:"stage_digest,omitempty"`
-	TargetID             string `json:"target_id,omitempty"`
-	TargetRevision       uint64 `json:"target_revision,omitempty"`
-	TargetDigest         string `json:"target_digest,omitempty"`
-	PreviewDigest        string `json:"preview_digest,omitempty"`
-	BindingDigest        string `json:"binding_digest,omitempty"`
-	QuoteDigest          string `json:"quote_digest,omitempty"`
-	ExecutionDigest      string `json:"execution_digest,omitempty"`
-	RiskLevel            string `json:"risk_level,omitempty"`
-	GateType             string `json:"gate_type,omitempty"`
-	BindingID            string `json:"binding_id,omitempty"`
-	BindingRevision      uint64 `json:"binding_revision,omitempty"`
-	ProjectID            string `json:"project_id,omitempty"`
-	Status               string `json:"status,omitempty"`
-	State                string `json:"state,omitempty"`
-	RoomID               string `json:"room_id,omitempty"`
-	RoomType             string `json:"room_type,omitempty"`
-	ChannelID            string `json:"channel_id,omitempty"`
-	PostID               string `json:"post_id,omitempty"`
-	Title                string `json:"title,omitempty"`
-	Preview              string `json:"preview,omitempty"`
+	Kind                 string  `json:"kind"`
+	AccountGeneration    uint64  `json:"account_generation,omitempty"`
+	TaskID               string  `json:"task_id,omitempty"`
+	PlanID               string  `json:"plan_id,omitempty"`
+	PlanRevision         uint64  `json:"plan_revision,omitempty"`
+	PlanDigest           string  `json:"plan_digest,omitempty"`
+	RunID                string  `json:"run_id,omitempty"`
+	RunRevision          uint64  `json:"run_revision,omitempty"`
+	RunDigest            string  `json:"run_digest,omitempty"`
+	DeploymentID         string  `json:"deployment_id,omitempty"`
+	ExecutionID          string  `json:"execution_id,omitempty"`
+	WorkerID             string  `json:"worker_id,omitempty"`
+	ConfirmationID       string  `json:"confirmation_id,omitempty"`
+	ConfirmationRevision uint64  `json:"confirmation_revision,omitempty"`
+	StageID              string  `json:"stage_id,omitempty"`
+	StageRevision        uint64  `json:"stage_revision,omitempty"`
+	StageDigest          string  `json:"stage_digest,omitempty"`
+	TargetID             string  `json:"target_id,omitempty"`
+	TargetRevision       uint64  `json:"target_revision,omitempty"`
+	TargetDigest         string  `json:"target_digest,omitempty"`
+	PreviewDigest        string  `json:"preview_digest,omitempty"`
+	BindingDigest        string  `json:"binding_digest,omitempty"`
+	QuoteDigest          string  `json:"quote_digest,omitempty"`
+	ExecutionDigest      string  `json:"execution_digest,omitempty"`
+	RiskLevel            string  `json:"risk_level,omitempty"`
+	GateType             string  `json:"gate_type,omitempty"`
+	BindingID            string  `json:"binding_id,omitempty"`
+	BindingRevision      uint64  `json:"binding_revision,omitempty"`
+	ProjectID            string  `json:"project_id,omitempty"`
+	Status               string  `json:"status,omitempty"`
+	State                string  `json:"state,omitempty"`
+	RoomID               string  `json:"room_id,omitempty"`
+	RoomType             string  `json:"room_type,omitempty"`
+	ChannelID            string  `json:"channel_id,omitempty"`
+	PostID               string  `json:"post_id,omitempty"`
+	Title                string  `json:"title,omitempty"`
+	Preview              string  `json:"preview,omitempty"`
+	RecordKind           string  `json:"record_kind,omitempty"`
+	ArtifactID           string  `json:"artifact_id,omitempty"`
+	Name                 string  `json:"name,omitempty"`
+	MediaType            string  `json:"media_type,omitempty"`
+	SizeBytes            *uint64 `json:"size_bytes,omitempty"`
+	SHA256               string  `json:"sha256,omitempty"`
 }
 
 type Message struct {
@@ -564,6 +571,13 @@ type ExtensionResolver interface {
 	ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error)
 }
 
+// AutomaticExtensionSelector merges server-owned tools before a durable turn
+// fingerprint is checked. Client selections remain exact inputs; the selector
+// may only add its deterministic server-owned selection.
+type AutomaticExtensionSelector interface {
+	MergeAutomaticExtensions(context.Context, []ExtensionSelection) ([]ExtensionSelection, error)
+}
+
 // SnapshotProfileResolver is used only to bind a new request. Recovery uses
 // the immutable snapshot persisted on its ChatLease.
 type SnapshotProfileResolver interface {
@@ -661,6 +675,8 @@ func (r Reference) Validate() error {
 		return ErrInvalid
 	}
 	switch kind {
+	case "execution_artifact":
+		return validateExecutionArtifactReference(r)
 	case "execution_plan", "execution_run", "execution_confirmation":
 		if r.TaskID != "" {
 			return validateCloudWorkerReference(r)
@@ -690,6 +706,23 @@ func (r Reference) Validate() error {
 	default:
 		return ErrInvalid
 	}
+}
+
+func validateExecutionArtifactReference(r Reference) error {
+	if r.AccountGeneration == 0 || r.RecordKind != "local_sandbox" || !validUUID(r.ArtifactID) || !validUUID(r.ExecutionID) ||
+		r.Name == "" || r.Name != strings.TrimSpace(r.Name) || len(r.Name) > 1024 || !utf8.ValidString(r.Name) ||
+		path.IsAbs(r.Name) || path.Clean(r.Name) != r.Name || r.Name == "." || strings.HasPrefix(r.Name, "../") || strings.ContainsAny(r.Name, "\\\r\n\x00") ||
+		r.MediaType == "" || r.MediaType != strings.TrimSpace(r.MediaType) || len(r.MediaType) > 255 || !utf8.ValidString(r.MediaType) || strings.ContainsAny(r.MediaType, "\r\n\x00") ||
+		r.SizeBytes == nil || *r.SizeBytes > uint64(64<<20) || !validReferenceDigest(r.SHA256) {
+		return ErrInvalid
+	}
+	copy := r
+	copy.Kind, copy.RecordKind, copy.ArtifactID, copy.ExecutionID, copy.Name, copy.MediaType, copy.SHA256 = "", "", "", "", "", "", ""
+	copy.AccountGeneration, copy.SizeBytes = 0, nil
+	if copy != (Reference{}) {
+		return ErrInvalid
+	}
+	return nil
 }
 
 func validateCloudWorkerReference(r Reference) error {
@@ -791,7 +824,8 @@ func hasExecutionReferenceFields(r Reference) bool {
 		r.ConfirmationID != "" || r.ConfirmationRevision != 0 || r.StageID != "" || r.StageRevision != 0 ||
 		r.StageDigest != "" || r.TargetID != "" || r.TargetRevision != 0 || r.TargetDigest != "" ||
 		r.PreviewDigest != "" || r.BindingDigest != "" || r.RiskLevel != "" || r.GateType != "" ||
-		r.BindingID != "" || r.BindingRevision != 0 || r.ProjectID != "" || r.Status != "" || r.State != ""
+		r.BindingID != "" || r.BindingRevision != 0 || r.ProjectID != "" || r.Status != "" || r.State != "" ||
+		r.RecordKind != "" || r.ArtifactID != "" || r.Name != "" || r.MediaType != "" || r.SizeBytes != nil || r.SHA256 != ""
 }
 
 func validReferencePresentation(r Reference) bool {
@@ -840,7 +874,14 @@ func validConfirmationReferenceState(value string) bool {
 }
 
 func cloneReferences(values []Reference) []Reference {
-	return append([]Reference(nil), values...)
+	out := append([]Reference(nil), values...)
+	for index := range out {
+		if out[index].SizeBytes != nil {
+			value := *out[index].SizeBytes
+			out[index].SizeBytes = &value
+		}
+	}
+	return out
 }
 func validateText(s string, max int) error {
 	if strings.TrimSpace(s) == "" || len(s) > max || !utf8.ValidString(s) {

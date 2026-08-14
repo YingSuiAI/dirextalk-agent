@@ -19,6 +19,7 @@ type builtinMCPDefinition struct {
 }
 
 var builtinMCPDefinitions = []builtinMCPDefinition{
+	{ID: core.BuiltinLocalSandboxCandidateID, Description: "Run a small offline shell task in the local isolated sandbox (30 CPU seconds, 256 MiB memory, 32 processes, 16 MiB files, no network).", Argv: []string{"entry", "local_sandbox"}},
 	{ID: "dirextalk-server-load", Description: "Read the server load, uptime, process count, and memory totals.", Argv: []string{"entry", "server_load"}},
 	{ID: "dirextalk-server-time", Description: "Read the current server time in UTC.", Argv: []string{"entry", "server_time"}},
 }
@@ -33,8 +34,8 @@ type BuiltinMCPs struct {
 
 var _ core.SourceAdapter = (*BuiltinMCPs)(nil)
 
-func NewBuiltinMCPs(executable []byte) (*BuiltinMCPs, error) {
-	if len(executable) == 0 {
+func NewBuiltinMCPs(executable, shell []byte) (*BuiltinMCPs, error) {
+	if len(executable) == 0 || len(shell) == 0 {
 		return nil, ErrMalformed
 	}
 	adapter := &BuiltinMCPs{artifacts: make(map[string]core.FetchArtifact, len(builtinMCPDefinitions))}
@@ -45,12 +46,12 @@ func NewBuiltinMCPs(executable []byte) (*BuiltinMCPs, error) {
 			Pin:       core.SourcePin{RegistryVersion: builtinMCPVersion, RegistrySHA256: strings.Repeat("0", 64)},
 			Transport: core.TransportStdioStatic,
 		}
-		artifact, err := builtinMCPArtifact(candidate, executable, definition.Argv)
+		artifact, err := builtinMCPArtifact(candidate, executable, shell, definition.Argv)
 		if err != nil {
 			return nil, err
 		}
 		candidate.Pin.RegistrySHA256 = artifact.ContentDigest
-		artifact, err = builtinMCPArtifact(candidate, executable, definition.Argv)
+		artifact, err = builtinMCPArtifact(candidate, executable, shell, definition.Argv)
 		if err != nil {
 			return nil, err
 		}
@@ -64,17 +65,23 @@ func NewBuiltinMCPs(executable []byte) (*BuiltinMCPs, error) {
 	return adapter, nil
 }
 
-func builtinMCPArtifact(candidate core.Candidate, executable []byte, argv []string) (core.FetchArtifact, error) {
+func builtinMCPArtifact(candidate core.Candidate, executable, shell []byte, argv []string) (core.FetchArtifact, error) {
 	identity := []byte(candidate.ID + "\n")
 	entryDigest := digestBytes(executable)
-	manifest, _ := json.Marshal([]map[string]string{
+	manifestFiles := []map[string]string{
 		{"path": "entry", "digest": entryDigest},
 		{"path": "identity", "digest": digestBytes(identity)},
-	})
-	content, _ := json.Marshal([]canonicalContentFile{
+	}
+	contentFiles := []canonicalContentFile{
 		{Path: "entry", Content: base64.RawStdEncoding.EncodeToString(executable)},
 		{Path: "identity", Content: base64.RawStdEncoding.EncodeToString(identity)},
-	})
+	}
+	if candidate.ID == core.BuiltinLocalSandboxCandidateID {
+		manifestFiles = append(manifestFiles, map[string]string{"path": "shell", "digest": digestBytes(shell)})
+		contentFiles = append(contentFiles, canonicalContentFile{Path: "shell", Content: base64.RawStdEncoding.EncodeToString(shell)})
+	}
+	manifest, _ := json.Marshal(manifestFiles)
+	content, _ := json.Marshal(contentFiles)
 	execution := core.ExecutionDescriptor{Stdio: &core.StaticEntry{RelativePath: "entry", Digest: entryDigest, Argv: append([]string(nil), argv...)}}
 	inspection := core.Inspection{
 		Candidate: candidate, ContentDigest: digestBytes(content), ManifestDigest: digestBytes(manifest),

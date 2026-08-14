@@ -12,6 +12,50 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// OpenVerifiedResultFilesFD reopens runner-verified outputs beneath the exact
+// workspace descriptor and proves their size and digest again before handing
+// read-only descriptors to the authenticated Agent client.
+func OpenVerifiedResultFilesFD(workspaceFD int, verified []ResultFile) ([]*os.File, error) {
+	if workspaceFD < 0 || len(verified) > maxV2ResultFiles {
+		return nil, ErrInvalid
+	}
+	files := make([]*os.File, 0, len(verified))
+	closeFiles := func() {
+		for _, file := range files {
+			_ = file.Close()
+		}
+	}
+	for _, result := range verified {
+		if !safeRelativeSlash(result.Path) || sandboxReservedResultPath(result.Path) || result.Size < 0 || result.Size > MaxOutputBytes || !digestRE.MatchString(result.SHA256) {
+			closeFiles()
+			return nil, ErrInvalid
+		}
+		how := &unix.OpenHow{Flags: uint64(unix.O_RDONLY | unix.O_NONBLOCK | unix.O_CLOEXEC | unix.O_NOFOLLOW), Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS}
+		fd, err := unix.Openat2(workspaceFD, result.Path, how)
+		if err != nil {
+			closeFiles()
+			return nil, ErrInvalid
+		}
+		file := os.NewFile(uintptr(fd), result.Path)
+		var stat unix.Stat_t
+		hash := sha256.New()
+		n, readErr := io.Copy(hash, io.LimitReader(file, MaxOutputBytes+1))
+		if unix.Fstat(fd, &stat) != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Size != result.Size ||
+			readErr != nil || n != result.Size || hex.EncodeToString(hash.Sum(nil)) != result.SHA256 {
+			_ = file.Close()
+			closeFiles()
+			return nil, ErrInvalid
+		}
+		if _, err = file.Seek(0, io.SeekStart); err != nil {
+			_ = file.Close()
+			closeFiles()
+			return nil, ErrInvalid
+		}
+		files = append(files, file)
+	}
+	return files, nil
+}
+
 // VerifyResultFilesFD performs the production result handoff without
 // reconstructing a host path. openat2 makes every component stay beneath the
 // already-authorized task workspace and rejects symlinks and magic links.

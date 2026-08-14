@@ -5,8 +5,11 @@ package extensionrunner
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -77,28 +80,39 @@ func NewClient(socketPath string, expectedRunnerUID uint32) (*Client, error) {
 // RunV2 sends one descriptor-only request.  Caller-owned files remain open:
 // SCM_RIGHTS duplicates them in the kernel and this method never closes them.
 func (c *Client) RunV2(ctx context.Context, request RequestV2, files []*os.File) (StatusV1, error) {
+	status, results, err := c.RunV2WithResultFiles(ctx, request, files)
+	for _, result := range results {
+		_ = result.Close()
+	}
+	return status, err
+}
+
+// RunV2WithResultFiles returns read-only descriptors that the runner reopened
+// beneath its verified workspace after execution. Descriptor order is bound
+// to StatusV1.ResultFiles and every descriptor is re-hashed by this client.
+func (c *Client) RunV2WithResultFiles(ctx context.Context, request RequestV2, files []*os.File) (StatusV1, []*os.File, error) {
 	if c == nil || ctx == nil || ValidateFDSet(request, len(files)) != nil {
-		return StatusV1{}, ErrInvalid
+		return StatusV1{}, nil, ErrInvalid
 	}
 	if err := ValidateRequestV2(request); err != nil {
-		return StatusV1{}, err
+		return StatusV1{}, nil, err
 	}
 	fds := make([]int, len(files))
 	for i, f := range files {
 		if f == nil {
-			return StatusV1{}, ErrInvalid
+			return StatusV1{}, nil, ErrInvalid
 		}
 		fds[i] = int(f.Fd())
 		if fds[i] < 0 {
-			return StatusV1{}, ErrInvalid
+			return StatusV1{}, nil, ErrInvalid
 		}
 	}
 	if err := ValidateRequestFDs(request, fds); err != nil {
-		return StatusV1{}, err
+		return StatusV1{}, nil, err
 	}
 	payload, err := EncodeRequestV2(request)
 	if err != nil {
-		return StatusV1{}, err
+		return StatusV1{}, nil, err
 	}
 	// TimeoutMS is enforced by the runner.  Keep the transport alive long
 	// enough for its kill, reap, collection, cleanup, and terminal status write;
@@ -109,42 +123,75 @@ func (c *Client) RunV2(ctx context.Context, request RequestV2, files []*os.File)
 	}
 	fd, before, err := c.connect(ctx, deadline)
 	if err != nil {
-		return StatusV1{}, err
+		return StatusV1{}, nil, err
 	}
 	defer unix.Close(fd) // Closing on cancellation/disconnect is the server cancel signal.
 	after, err := socketIdentity(c.path, c.uid)
 	if err != nil || before != after {
-		return StatusV1{}, ErrDenied
+		return StatusV1{}, nil, ErrDenied
 	}
 	if err := waitFD(ctx, fd, unix.POLLOUT, deadline); err != nil {
-		return StatusV1{}, err
+		return StatusV1{}, nil, err
 	}
 	if n, err := unix.SendmsgN(fd, payload, unix.UnixRights(fds...), nil, 0); err != nil || n != len(payload) {
 		if err != nil {
-			return StatusV1{}, err
+			return StatusV1{}, nil, err
 		}
-		return StatusV1{}, ErrProtocol
+		return StatusV1{}, nil, ErrProtocol
 	}
 	if err := waitFD(ctx, fd, unix.POLLIN, deadline); err != nil {
-		return StatusV1{}, err
+		return StatusV1{}, nil, err
 	}
 	buf := make([]byte, MaxV2PacketBytes)
-	oob := make([]byte, unix.CmsgSpace(4*4096))
+	oob := make([]byte, unix.CmsgSpace(4*maxV2ResultFiles))
 	n, oobn, flags, _, err := unix.Recvmsg(fd, buf, oob, unix.MSG_CMSG_CLOEXEC)
-	if oobn > 0 {
-		closeControlFDs(oob[:oobn])
+	received, controlErr := collectRightsCmsgs(oob[:oobn])
+	closeReceived := func() {
+		for _, resultFD := range received {
+			_ = unix.Close(resultFD)
+		}
 	}
-	if err != nil || n <= 0 || oobn != 0 || flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
-		return StatusV1{}, ErrProtocol
+	if err != nil || controlErr != nil || n <= 0 || flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
+		closeReceived()
+		return StatusV1{}, nil, ErrProtocol
 	}
 	status, err := ReadStatusV1Datagram(buf[:n])
 	if err != nil {
-		return StatusV1{}, err
+		closeReceived()
+		return StatusV1{}, nil, err
 	}
 	if err := ValidateStatusV1(request, status); err != nil {
-		return StatusV1{}, err
+		closeReceived()
+		return StatusV1{}, nil, err
 	}
-	return status, nil
+	if len(received) != len(status.ResultFiles) {
+		closeReceived()
+		return StatusV1{}, nil, ErrProtocol
+	}
+	resultFiles := make([]*os.File, len(received))
+	for index, resultFD := range received {
+		resultFiles[index] = os.NewFile(uintptr(resultFD), status.ResultFiles[index].Path)
+	}
+	for index, result := range resultFiles {
+		var stat unix.Stat_t
+		hash := sha256.New()
+		n, readErr := io.Copy(hash, io.LimitReader(result, MaxOutputBytes+1))
+		metadata := status.ResultFiles[index]
+		if unix.Fstat(int(result.Fd()), &stat) != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Size != metadata.Size ||
+			readErr != nil || n != metadata.Size || hex.EncodeToString(hash.Sum(nil)) != metadata.SHA256 {
+			for _, file := range resultFiles {
+				_ = file.Close()
+			}
+			return StatusV1{}, nil, ErrProtocol
+		}
+		if _, err = result.Seek(0, io.SeekStart); err != nil {
+			for _, file := range resultFiles {
+				_ = file.Close()
+			}
+			return StatusV1{}, nil, ErrProtocol
+		}
+	}
+	return status, resultFiles, nil
 }
 
 type socketID struct{ dev, ino uint64 }

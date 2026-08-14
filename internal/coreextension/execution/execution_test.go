@@ -576,9 +576,10 @@ func (r fixedOutputLocalRunner) RunV2(_ context.Context, request extensionrunner
 }
 
 type mcpCallRunner struct {
-	request extensionrunner.RequestV2
-	stdin   []byte
-	stdout  []byte
+	request     extensionrunner.RequestV2
+	stdin       []byte
+	stdout      []byte
+	resultFiles []extensionrunner.ResultFile
 }
 
 func (r *mcpCallRunner) RunV2(_ context.Context, request extensionrunner.RequestV2, files []*os.File) (extensionrunner.StatusV1, error) {
@@ -592,7 +593,7 @@ func (r *mcpCallRunner) RunV2(_ context.Context, request extensionrunner.Request
 			return extensionrunner.StatusV1{}, err
 		}
 	}
-	return extensionrunner.StatusV1{RunID: request.RunID, Phase: extensionrunner.PhaseTombstone, Status: "succeeded", Stdout: append([]byte(nil), r.stdout...)}, nil
+	return extensionrunner.StatusV1{RunID: request.RunID, Phase: extensionrunner.PhaseTombstone, Status: "succeeded", Stdout: append([]byte(nil), r.stdout...), ResultFiles: append([]extensionrunner.ResultFile(nil), r.resultFiles...)}, nil
 }
 
 func TestLocalExecutorListToolsCanonicalizesExactInputSchema(t *testing.T) {
@@ -842,6 +843,35 @@ func TestLocalMCPHandlerSendsExactToolCallAndRequiresResult(t *testing.T) {
 			t.Fatalf("out=%#v complete=%d fail=%d", out, coord.complete, coord.fail)
 		}
 	})
+}
+
+func TestLocalSandboxCallReturnsRunnerVerifiedResultFileMetadata(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	response := []byte(`{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"done"}],"structuredContent":{"stdout":"done","stderr":"","exit_code":0,"result_files":[]},"isError":false}}`)
+	runner := &mcpCallRunner{stdout: response, resultFiles: []extensionrunner.ResultFile{{Path: "report.html", SHA256: strings.Repeat("b", 64), Size: 42}}}
+	input := json.RawMessage(`{"result_paths":["report.html"],"script":"printf report \u003e report.html"}`)
+	executor := &LocalExecutor{Runner: runner}
+	invocation := LocalInvocation{
+		TaskID: uuid.NewString(), TaskFence: uuid.NewString(), InstallationID: uuid.NewString(), VersionID: uuid.NewString(),
+		InstallDigest: digest, ContentDigest: digest, ArtifactDigest: digest, EntryPath: "entry", Argv: []string{"entry", "local_sandbox"},
+		Workspace: t.TempDir(), Timeout: 30 * time.Second, Limits: LocalSandboxLimitsV2(), ResultFiles: []string{"report.html"},
+	}
+	result, err := executor.CallTool(context.Background(), invocation, core.BuiltinLocalSandboxToolName, input)
+	if err != nil || len(result.Files) != 1 || result.Files[0].Path != "report.html" || result.Files[0].Digest != strings.Repeat("b", 64) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	var payload struct {
+		Structured struct {
+			ResultFiles []struct {
+				Path   string `json:"path"`
+				SHA256 string `json:"sha256"`
+				Size   int64  `json:"size"`
+			} `json:"result_files"`
+		} `json:"structuredContent"`
+	}
+	if json.Unmarshal(result.JSON, &payload) != nil || len(payload.Structured.ResultFiles) != 1 || payload.Structured.ResultFiles[0].Path != "report.html" || payload.Structured.ResultFiles[0].Size != 42 {
+		t.Fatalf("result JSON=%s", result.JSON)
+	}
 }
 
 func TestExecutableSkillHandlerBindsExactLocalSandboxLimits(t *testing.T) {

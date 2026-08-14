@@ -39,6 +39,22 @@ type replayTurnStore struct {
 	turn Turn
 }
 
+type replayAutomaticResolver struct{ selection ExtensionSelection }
+
+func (r replayAutomaticResolver) MergeAutomaticExtensions(_ context.Context, selections []ExtensionSelection) ([]ExtensionSelection, error) {
+	out := append([]ExtensionSelection(nil), selections...)
+	for _, selection := range out {
+		if selection.ID == r.selection.ID {
+			return out, nil
+		}
+	}
+	return append(out, r.selection), nil
+}
+
+func (replayAutomaticResolver) ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+	return nil, ErrInvalid
+}
+
 type supervisorTurnStore struct {
 	*replayTurnStore
 	claimed, canceled, uncertain bool
@@ -1270,6 +1286,23 @@ func TestStartTurnReplayDoesNotResolveRotatedProfile(t *testing.T) {
 	}
 	if resolved != 0 {
 		t.Fatal("replay resolved mutable current profile")
+	}
+}
+
+func TestStartTurnReplayMergesAutomaticSelectionBeforeFingerprint(t *testing.T) {
+	snapshot := testTurnSnapshot()
+	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1.0.0", Digest: strings.Repeat("a", 64), AllowedTools: []string{"local_sandbox_run"}}
+	extensionSnapshot := ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: uuid.NewString(), InstallationRevision: 1, Source: "builtin", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64), SecretBindingDigest: strings.Repeat("e", 64), ToolNames: append([]string(nil), selection.AllowedTools...)}
+	cmd := TurnStartCommand{TurnID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: snapshot.ProfileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ProfileSnapshot: snapshot, Extensions: []ExtensionSelection{selection}, ExtensionSnapshots: []ExtensionExecutionSnapshot{extensionSnapshot}}
+	store := &replayTurnStore{fakeStore: newFakeStore(), turn: Turn{ID: cmd.TurnID, RequestID: cmd.RequestID, RequestFingerprint: cmd.Fingerprint(), ConversationID: cmd.ConversationID, Prompt: cmd.Prompt, ProfileID: cmd.ProfileID, State: TurnCompleted, ProfileSnapshot: snapshot, ProfileSnapshotDigest: snapshot.Digest(), ExtensionSnapshots: []ExtensionExecutionSnapshot{extensionSnapshot}}}
+	service, err := NewService(store, &fakeModel{}, replayAutomaticResolver{selection: selection}, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+		return coremodel.ExecutionSnapshot{}, errors.New("must not resolve")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.StartTurn(context.Background(), TurnStartCommand{TurnID: cmd.TurnID, RequestID: cmd.RequestID, ConversationID: cmd.ConversationID, Prompt: cmd.Prompt, ProfileID: cmd.ProfileID, ExpectedProfileRevision: cmd.ExpectedProfileRevision, ExpectedCredentialVersion: cmd.ExpectedCredentialVersion}); err != nil {
+		t.Fatal(err)
 	}
 }
 

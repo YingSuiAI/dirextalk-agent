@@ -77,7 +77,7 @@ func TestEnsureDefaultBuiltinSkillsSeedsOnceAndHonorsRemovalFence(t *testing.T) 
 }
 
 func TestEnsureDefaultBuiltinMCPsSeedsOnce(t *testing.T) {
-	catalog, err := source.NewBuiltinMCPs([]byte("ELF fixture"))
+	catalog, err := source.NewBuiltinMCPs([]byte("ELF fixture"), []byte("shell fixture"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestEnsureDefaultBuiltinMCPsSeedsOnce(t *testing.T) {
 	if err := ensureDefaultBuiltinMCPs(context.Background(), store, catalog, t.TempDir(), publisher); err != nil {
 		t.Fatal(err)
 	}
-	if store.ensured != 2 || publisher.calls != 2 {
+	if store.ensured != 3 || publisher.calls != 3 {
 		t.Fatalf("first seed ensured=%d published=%d", store.ensured, publisher.calls)
 	}
 	store.ensured = 0

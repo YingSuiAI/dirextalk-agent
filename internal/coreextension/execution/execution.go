@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -66,6 +67,36 @@ type LocalRunner interface {
 	RunV2(context.Context, extensionrunner.RequestV2, []*os.File) (extensionrunner.StatusV1, error)
 }
 
+type localResultRunner interface {
+	RunV2WithResultFiles(context.Context, extensionrunner.RequestV2, []*os.File) (extensionrunner.StatusV1, []*os.File, error)
+}
+
+type localResultCaptureRunner struct {
+	runner localResultRunner
+	files  []*os.File
+}
+
+func (runner *localResultCaptureRunner) RunV2(ctx context.Context, request extensionrunner.RequestV2, files []*os.File) (extensionrunner.StatusV1, error) {
+	status, results, err := runner.runner.RunV2WithResultFiles(ctx, request, files)
+	runner.files = results
+	return status, err
+}
+
+type LocalToolReceipt struct {
+	Result      coretask.Result
+	ResultFiles []*os.File
+}
+
+func (receipt *LocalToolReceipt) Close() {
+	if receipt == nil {
+		return
+	}
+	for _, file := range receipt.ResultFiles {
+		_ = file.Close()
+	}
+	receipt.ResultFiles = nil
+}
+
 type SecretBinding struct {
 	Name, InstallationID, VersionID, ReferenceID, Purpose, BindingDigest string
 }
@@ -114,36 +145,114 @@ func (e *LocalExecutor) ListTools(ctx context.Context, in LocalInvocation) ([]co
 // returns the provider's bounded JSON result. A tool-declared error is surfaced
 // as a normal task result with a stable summary, never retried in-process.
 func (e *LocalExecutor) CallTool(ctx context.Context, in LocalInvocation, name string, input json.RawMessage) (coretask.Result, error) {
+	receipt, err := e.callTool(ctx, in, name, input, false)
+	defer receipt.Close()
+	return receipt.Result, err
+}
+
+// CallToolWithResultFiles is the durable local-sandbox handoff. Only runner-
+// verified result descriptors are returned and ownership passes to the caller.
+func (e *LocalExecutor) CallToolWithResultFiles(ctx context.Context, in LocalInvocation, name string, input json.RawMessage) (LocalToolReceipt, error) {
+	return e.callTool(ctx, in, name, input, true)
+}
+
+func (e *LocalExecutor) callTool(ctx context.Context, in LocalInvocation, name string, input json.RawMessage, withResultFiles bool) (LocalToolReceipt, error) {
 	if strings.TrimSpace(name) == "" {
-		return coretask.Result{}, core.ErrInvalid
+		return LocalToolReceipt{}, core.ErrInvalid
 	}
 	canonical, err := canonicalJSON(input, coretask.MaxCanonicalInputBytes)
 	if err != nil {
-		return coretask.Result{}, err
+		return LocalToolReceipt{}, err
 	}
-	status, err := e.executeMCP(ctx, in, mcpRequest{Method: "tools/call", ID: 2, Params: map[string]any{"name": name, "arguments": json.RawMessage(canonical)}})
+	status, resultFiles, err := e.executeMCPWithResultFiles(ctx, in, mcpRequest{Method: "tools/call", ID: 2, Params: map[string]any{"name": name, "arguments": json.RawMessage(canonical)}}, withResultFiles)
 	if err != nil {
-		return coretask.Result{}, err
+		return LocalToolReceipt{}, err
+	}
+	receipt := LocalToolReceipt{ResultFiles: resultFiles}
+	fail := func(err error) (LocalToolReceipt, error) {
+		receipt.Close()
+		return LocalToolReceipt{}, err
 	}
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
 	}
 	if err := decodeMCPResponse(status.Stdout, 2, &envelope); err != nil {
-		return coretask.Result{}, err
+		return fail(err)
+	}
+	files := make([]coretask.FileRef, 0, len(status.ResultFiles))
+	for _, file := range status.ResultFiles {
+		files = append(files, coretask.FileRef{Path: file.Path, Digest: file.SHA256, Size: file.Size})
+	}
+	if name == core.BuiltinLocalSandboxToolName {
+		envelope.Result, err = attachLocalSandboxResultFiles(envelope.Result, files)
+		if err != nil {
+			return fail(err)
+		}
 	}
 	var callResult struct {
 		Content []json.RawMessage `json:"content"`
 		IsError bool              `json:"isError"`
 	}
 	if len(envelope.Result) == 0 || json.Unmarshal(envelope.Result, &callResult) != nil || callResult.Content == nil {
-		return coretask.Result{}, core.ErrInvalid
+		return fail(core.ErrInvalid)
 	}
 	summary := "local MCP tool result"
 	if callResult.IsError {
 		summary = "local MCP tool returned an error"
 	}
-	result := coretask.Result{JSON: append([]byte(nil), envelope.Result...), Summary: summary}
-	return result, result.Validate()
+	receipt.Result = coretask.Result{JSON: append([]byte(nil), envelope.Result...), Files: files, Summary: summary}
+	if err = receipt.Result.Validate(); err != nil {
+		return fail(err)
+	}
+	if withResultFiles && len(receipt.ResultFiles) != len(files) {
+		return fail(core.ErrInvalid)
+	}
+	return receipt, nil
+}
+
+func LocalSandboxResultFiles(tool string, input json.RawMessage) ([]string, error) {
+	if tool != core.BuiltinLocalSandboxToolName {
+		return nil, nil
+	}
+	var arguments struct {
+		ResultPaths []string `json:"result_paths"`
+	}
+	if json.Unmarshal(input, &arguments) != nil || len(arguments.ResultPaths) > 16 {
+		return nil, core.ErrInvalid
+	}
+	seen := make(map[string]struct{}, len(arguments.ResultPaths))
+	for _, value := range arguments.ResultPaths {
+		if value == "" || len(value) > 512 || strings.HasPrefix(value, "/") || strings.ContainsAny(value, "\\\x00") || path.Clean(value) != value || value == "." || value == ".." || strings.HasPrefix(value, "../") {
+			return nil, core.ErrInvalid
+		}
+		if _, duplicate := seen[value]; duplicate {
+			return nil, core.ErrInvalid
+		}
+		seen[value] = struct{}{}
+	}
+	return append([]string(nil), arguments.ResultPaths...), nil
+}
+
+func attachLocalSandboxResultFiles(raw json.RawMessage, files []coretask.FileRef) (json.RawMessage, error) {
+	var result map[string]any
+	if json.Unmarshal(raw, &result) != nil {
+		return nil, core.ErrInvalid
+	}
+	structured, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		return nil, core.ErrInvalid
+	}
+	metadata := make([]any, 0, len(files))
+	for _, file := range files {
+		metadata = append(metadata, map[string]any{"path": file.Path, "sha256": file.Digest, "size": file.Size})
+	}
+	structured["result_files"] = metadata
+	result["structuredContent"] = structured
+	out, err := json.Marshal(result)
+	if err != nil {
+		return nil, core.ErrInvalid
+	}
+	return out, nil
 }
 
 type mcpRequest struct {
@@ -153,6 +262,14 @@ type mcpRequest struct {
 }
 
 func (e *LocalExecutor) executeMCP(ctx context.Context, in LocalInvocation, request mcpRequest) (extensionrunner.StatusV1, error) {
+	status, files, err := e.executeMCPWithResultFiles(ctx, in, request, false)
+	for _, file := range files {
+		_ = file.Close()
+	}
+	return status, err
+}
+
+func (e *LocalExecutor) executeMCPWithResultFiles(ctx context.Context, in LocalInvocation, request mcpRequest, withResultFiles bool) (extensionrunner.StatusV1, []*os.File, error) {
 	params := map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "dirextalk-agent", "version": "core-v1"}}
 	initialize := mcpWire{JSONRPC: "2.0", ID: 1, Method: "initialize", Params: params}
 	initialized := mcpWire{JSONRPC: "2.0", Method: "notifications/initialized", Params: map[string]any{}}
@@ -161,20 +278,23 @@ func (e *LocalExecutor) executeMCP(ctx context.Context, in LocalInvocation, requ
 	for _, message := range []mcpWire{initialize, initialized, call} {
 		line, err := json.Marshal(message)
 		if err != nil {
-			return extensionrunner.StatusV1{}, core.ErrInvalid
+			return extensionrunner.StatusV1{}, nil, core.ErrInvalid
 		}
 		data = append(data, line...)
 		data = append(data, '\n')
 	}
 	in.Stdin = data
-	status, err := e.Execute(ctx, in)
+	status, files, err := e.execute(ctx, in, withResultFiles)
 	if err != nil {
-		return extensionrunner.StatusV1{}, err
+		return extensionrunner.StatusV1{}, nil, err
 	}
 	if status.Phase != extensionrunner.PhaseTombstone || status.Error != extensionrunner.ErrorNone {
-		return extensionrunner.StatusV1{}, core.ErrConflict
+		for _, file := range files {
+			_ = file.Close()
+		}
+		return extensionrunner.StatusV1{}, nil, core.ErrConflict
 	}
-	return status, nil
+	return status, files, nil
 }
 
 type mcpWire struct {
@@ -212,6 +332,28 @@ func decodeMCPResponse(stdout []byte, id int, out any) error {
 		return nil
 	}
 	return core.ErrInvalid
+}
+
+func (e *LocalExecutor) execute(ctx context.Context, in LocalInvocation, withResultFiles bool) (extensionrunner.StatusV1, []*os.File, error) {
+	if !withResultFiles || len(in.ResultFiles) == 0 {
+		status, err := e.Execute(ctx, in)
+		return status, nil, err
+	}
+	runner, ok := e.Runner.(localResultRunner)
+	if !ok {
+		return extensionrunner.StatusV1{}, nil, extensionrunner.ErrUnavailable
+	}
+	capture := &localResultCaptureRunner{runner: runner}
+	copy := *e
+	copy.Runner = capture
+	status, err := copy.Execute(ctx, in)
+	if err != nil {
+		for _, file := range capture.files {
+			_ = file.Close()
+		}
+		return status, nil, err
+	}
+	return status, capture.files, nil
 }
 
 func (e *LocalExecutor) Execute(ctx context.Context, in LocalInvocation) (extensionrunner.StatusV1, error) {
@@ -425,10 +567,12 @@ type Coordinator interface {
 	Fail(context.Context, coretask.Task, string, string) (bool, error)
 }
 type Invocation struct {
-	Kind   core.Kind
-	Local  *LocalInvocation
-	Remote *RemoteInvocation
-	Skill  *SkillInvocation
+	Kind              core.Kind
+	OwnerID           string
+	AccountGeneration uint64
+	Local             *LocalInvocation
+	Remote            *RemoteInvocation
+	Skill             *SkillInvocation
 }
 type RemoteInvocation struct {
 	Endpoint       core.RemoteEndpoint

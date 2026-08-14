@@ -275,14 +275,14 @@ func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn, execu
 		return
 	}
 	if !validServerExecutionRequest(r) {
-		writeTerminalStatus(conn, StatusV1{RunID: r.RunID, Phase: PhaseFailed, Error: ErrorInvalidRequest, Status: "limits"})
+		writeTerminalStatus(conn, StatusV1{RunID: r.RunID, Phase: PhaseFailed, Error: ErrorInvalidRequest, Status: "limits"}, nil)
 		return
 	}
 	select {
 	case executionSlots <- struct{}{}:
 		defer func() { <-executionSlots }()
 	default:
-		writeTerminalStatus(conn, StatusV1{RunID: r.RunID, Phase: PhaseFailed, Error: ErrorUnavailableBackend, Status: "capacity"})
+		writeTerminalStatus(conn, StatusV1{RunID: r.RunID, Phase: PhaseFailed, Error: ErrorUnavailableBackend, Status: "capacity"}, nil)
 		return
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
@@ -302,7 +302,23 @@ func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn, execu
 			status.Phase = PhaseFailed
 		}
 	}
-	writeTerminalStatus(conn, status)
+	var resultFiles []*os.File
+	if len(status.ResultFiles) > 0 {
+		workspaceFD, resolveErr := s.Runner.WorkspaceResolver.ResolveWorkspace(r.TaskID, r.TaskFence)
+		if resolveErr == nil {
+			resultFiles, resolveErr = OpenVerifiedResultFilesFD(workspaceFD, status.ResultFiles)
+			_ = unix.Close(workspaceFD)
+		}
+		if resolveErr != nil {
+			status = StatusV1{RunID: r.RunID, Phase: PhaseFailed, Error: ErrorCleanup, Status: "result_handoff"}
+		}
+	}
+	defer func() {
+		for _, file := range resultFiles {
+			_ = file.Close()
+		}
+	}()
+	writeTerminalStatus(conn, status, resultFiles)
 }
 
 func validServerExecutionRequest(request RequestV2) bool {
@@ -314,13 +330,24 @@ func validServerExecutionRequest(request RequestV2) bool {
 		request.Limits.OpenFiles <= serverMaxExecutionOpenFiles
 }
 
-func writeTerminalStatus(conn *net.UnixConn, status StatusV1) {
+func writeTerminalStatus(conn *net.UnixConn, status StatusV1, resultFiles []*os.File) {
 	status = fitStatusV1Packet(status)
 	payload, err := EncodeStatusV1(status)
 	if err != nil || conn.SetWriteDeadline(time.Now().Add(serverSocketWriteTimeout)) != nil {
 		return
 	}
-	_, _ = conn.Write(payload)
+	if len(resultFiles) == 0 {
+		_, _ = conn.Write(payload)
+		return
+	}
+	fds := make([]int, len(resultFiles))
+	for index, file := range resultFiles {
+		if file == nil {
+			return
+		}
+		fds[index] = int(file.Fd())
+	}
+	_, _, _ = conn.WriteMsgUnix(payload, unix.UnixRights(fds...), nil)
 }
 
 func (s Server) allowPeer(uid uint32, probe bool) bool {
@@ -555,7 +582,7 @@ func (s Server) publish(payload []byte, fds []int) any {
 			}{Error: "denied"}
 		}
 		mode := os.FileMode(0400)
-		if e.Path == "entry" {
+		if e.Path == "entry" || e.Path == "shell" {
 			mode = 0500
 		}
 		if er = os.WriteFile(p, b, 0600); er != nil || os.Chmod(p, mode) != nil {

@@ -29,11 +29,11 @@ func TestCloudWorkerProjectExecutionBudgetEvidenceBindsCurrentTurn(t *testing.T)
 		ProfileSnapshot: snapshot, ProfileSnapshotDigest: snapshot.Digest(),
 	}
 	turn.AttachmentSnapshotDigest = core.TurnAttachmentSnapshotDigest(nil)
-	first, err := newCloudWorkerProjectExecutionBudgetEvidence(turn, turn.Prompt, turn.ProfileID, turn.ProfileSnapshotDigest)
+	first, err := newCloudWorkerLocalSandboxBudgetEvidence(turn, turn.Prompt, turn.ProfileID, turn.ProfileSnapshotDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := newCloudWorkerProjectExecutionBudgetEvidence(turn, turn.Prompt, turn.ProfileID, turn.ProfileSnapshotDigest)
+	second, err := newCloudWorkerLocalSandboxBudgetEvidence(turn, turn.Prompt, turn.ProfileID, turn.ProfileSnapshotDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,14 +42,14 @@ func TestCloudWorkerProjectExecutionBudgetEvidenceBindsCurrentTurn(t *testing.T)
 	}
 	stale := turn
 	stale.Revision++
-	drifted, err := newCloudWorkerProjectExecutionBudgetEvidence(stale, stale.Prompt, stale.ProfileID, stale.ProfileSnapshotDigest)
+	drifted, err := newCloudWorkerLocalSandboxBudgetEvidence(stale, stale.Prompt, stale.ProfileID, stale.ProfileSnapshotDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if drifted.Digest == first.Digest {
 		t.Fatal("turn revision drift reused capability evidence")
 	}
-	changedPrompt, err := newCloudWorkerProjectExecutionBudgetEvidence(turn, turn.Prompt+" changed", turn.ProfileID, turn.ProfileSnapshotDigest)
+	changedPrompt, err := newCloudWorkerLocalSandboxBudgetEvidence(turn, turn.Prompt+" changed", turn.ProfileID, turn.ProfileSnapshotDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

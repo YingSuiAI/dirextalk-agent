@@ -50,7 +50,7 @@ func TestCoreExtensionBuiltinMCPSeedIsOneTimeAndRemovalSurvivesRestart(t *testin
 		t.Fatal(err)
 	}
 	repository := NewCoreExtensionStore(store)
-	catalog, err := source.NewBuiltinMCPs([]byte("ELF fixture"))
+	catalog, err := source.NewBuiltinMCPs([]byte("ELF fixture"), []byte("shell fixture"))
 	if err != nil {
 		t.Fatal(err)
 	}

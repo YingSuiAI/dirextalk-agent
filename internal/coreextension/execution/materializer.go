@@ -352,6 +352,9 @@ func (m *Materializer) Materialize(ctx context.Context, artifact core.FetchArtif
 		if artifact.Inspection.Execution.Stdio != nil && f.Path == artifact.Inspection.Execution.Stdio.RelativePath {
 			mode = 0500
 		}
+		if artifact.Candidate.ID == core.BuiltinLocalSandboxCandidateID && f.Path == "shell" {
+			mode = 0500
+		}
 		if artifact.Inspection.Execution.Skill != nil && artifact.Inspection.Execution.Skill.Executable && f.Path == artifact.Inspection.Execution.Skill.RelativePath {
 			mode = 0500
 		}

@@ -1006,6 +1006,13 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if cmd.TurnID == "" {
 		cmd.TurnID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn:"+cmd.RequestID)).String()
 	}
+	if automatic, ok := s.extensions.(AutomaticExtensionSelector); ok {
+		var mergeErr error
+		cmd.Extensions, mergeErr = automatic.MergeAutomaticExtensions(ctx, cmd.Extensions)
+		if mergeErr != nil {
+			return Turn{}, mergeErr
+		}
+	}
 	cmd.AcceptedAttachmentIDs = append([]string(nil), cmd.AcceptedAttachmentIDs...)
 	if lookup, ok := s.turns.(TurnRequestLookup); ok {
 		if existing, lookupErr := lookup.GetTurnByRequestID(ctx, cmd.RequestID); lookupErr == nil {
@@ -2109,7 +2116,7 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 			createdAt := nextMessageTime(*conversation, event.CreatedAt)
 			conversation.Messages = append(conversation.Messages,
 				Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-call:"+turn.ID+":"+authority.call.ID)).String(), Role: RoleAssistant, ToolCalls: []ToolCall{authority.call}, CreatedAt: createdAt, ModelProfileID: turn.ProfileID},
-				Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-result:"+turn.ID+":"+authority.call.ID)).String(), Role: RoleTool, ToolResults: []ToolResult{result}, CreatedAt: createdAt.Add(time.Nanosecond), ModelProfileID: turn.ProfileID},
+				Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-result:"+turn.ID+":"+authority.call.ID)).String(), Role: RoleTool, ToolResults: []ToolResult{result}, References: cloneReferences(result.References), CreatedAt: createdAt.Add(time.Nanosecond), ModelProfileID: turn.ProfileID},
 			)
 		}
 	}

@@ -4,15 +4,37 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/buildinfo"
 	"golang.org/x/sys/unix"
 )
+
+const (
+	localSandboxKind           = "local_sandbox"
+	localSandboxToolName       = "local_sandbox_run"
+	localSandboxShellPath      = "/app/shell"
+	localSandboxWorkDir        = "/work"
+	localSandboxMaxScriptBytes = 64 << 10
+	localSandboxMaxResultPaths = 16
+	localSandboxMaxOutputBytes = 64 << 10
+)
+
+var newLocalSandboxCommand = func(script string) *exec.Cmd {
+	cmd := exec.Command(localSandboxShellPath, "sh", "-c", script)
+	cmd.Args[0] = "busybox"
+	cmd.Dir = localSandboxWorkDir
+	cmd.Env = []string{"HOME=/work", "TMPDIR=/work", "PATH=/app"}
+	return cmd
+}
 
 type request struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -26,8 +48,8 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stdout, buildinfo.Version())
 		return
 	}
-	if len(os.Args) != 2 || os.Args[1] != "server_time" && os.Args[1] != "server_load" {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: dirextalk-builtin-mcp <server_time|server_load>")
+	if len(os.Args) != 2 || os.Args[1] != "server_time" && os.Args[1] != "server_load" && os.Args[1] != localSandboxKind {
+		_, _ = fmt.Fprintln(os.Stderr, "usage: dirextalk-builtin-mcp <server_time|server_load|local_sandbox>")
 		os.Exit(2)
 	}
 	if err := serve(os.Args[1]); err != nil {
@@ -76,6 +98,20 @@ func tool(kind string) map[string]any {
 	if kind == "server_load" {
 		description = "Return the current server load, uptime, process count, and memory totals."
 	}
+	if kind == localSandboxKind {
+		return map[string]any{
+			"name":        localSandboxToolName,
+			"description": "Run a small offline shell script in an ephemeral isolated workspace. Use only for tasks that fit 30 CPU seconds, 256 MiB memory, 32 processes, and 16 MiB total files. Network access is unavailable; use cloud_worker_propose for network, build, deploy, long-running, or larger tasks.",
+			"inputSchema": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"script":       map[string]any{"type": "string", "minLength": 1, "maxLength": localSandboxMaxScriptBytes},
+					"result_paths": map[string]any{"type": "array", "maxItems": localSandboxMaxResultPaths, "uniqueItems": true, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 512}},
+				},
+				"required": []string{"script"},
+			},
+		}
+	}
 	return map[string]any{"name": kind, "description": description, "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}}
 }
 
@@ -84,7 +120,16 @@ func call(kind string, raw json.RawMessage) (map[string]any, error) {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
 	}
-	if json.Unmarshal(raw, &params) != nil || params.Name != kind || len(params.Arguments) != 0 {
+	if json.Unmarshal(raw, &params) != nil {
+		return nil, errors.New("invalid tool arguments")
+	}
+	if kind == localSandboxKind {
+		if params.Name != localSandboxToolName {
+			return nil, errors.New("invalid tool arguments")
+		}
+		return runLocalSandbox(params.Arguments)
+	}
+	if params.Name != kind || len(params.Arguments) != 0 {
 		return nil, errors.New("invalid tool arguments")
 	}
 	var payload map[string]any
@@ -115,4 +160,67 @@ func call(kind string, raw json.RawMessage) (map[string]any, error) {
 		return nil, err
 	}
 	return map[string]any{"content": []any{map[string]any{"type": "text", "text": string(encoded)}}, "structuredContent": payload, "isError": false}, nil
+}
+
+func runLocalSandbox(arguments map[string]any) (map[string]any, error) {
+	if len(arguments) == 0 || len(arguments) > 2 {
+		return nil, errors.New("invalid tool arguments")
+	}
+	script, ok := arguments["script"].(string)
+	if !ok || strings.TrimSpace(script) == "" || len(script) > localSandboxMaxScriptBytes {
+		return nil, errors.New("invalid tool arguments")
+	}
+	if raw, exists := arguments["result_paths"]; exists {
+		values, ok := raw.([]any)
+		if !ok || len(values) > localSandboxMaxResultPaths {
+			return nil, errors.New("invalid tool arguments")
+		}
+		seen := make(map[string]struct{}, len(values))
+		for _, value := range values {
+			item, ok := value.(string)
+			if !ok || !validResultPath(item) {
+				return nil, errors.New("invalid tool arguments")
+			}
+			if _, duplicate := seen[item]; duplicate {
+				return nil, errors.New("invalid tool arguments")
+			}
+			seen[item] = struct{}{}
+		}
+	}
+	cmd := newLocalSandboxCommand(script)
+	stdout, stderr := &boundedOutput{}, &boundedOutput{}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return nil, err
+		}
+		exitCode = exitErr.ExitCode()
+	}
+	payload := map[string]any{"stdout": stdout.String(), "stderr": stderr.String(), "exit_code": exitCode, "result_files": []any{}}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"content": []any{map[string]any{"type": "text", "text": string(encoded)}}, "structuredContent": payload, "isError": exitCode != 0}, nil
+}
+
+type boundedOutput struct{ bytes.Buffer }
+
+func (w *boundedOutput) Write(p []byte) (int, error) {
+	n := len(p)
+	remaining := localSandboxMaxOutputBytes - w.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		_, _ = w.Buffer.Write(p)
+	}
+	return n, nil
+}
+
+func validResultPath(value string) bool {
+	return value != "" && len(value) <= 512 && !strings.HasPrefix(value, "/") && !strings.ContainsAny(value, "\\\x00") && path.Clean(value) == value && value != "." && value != ".." && !strings.HasPrefix(value, "../")
 }

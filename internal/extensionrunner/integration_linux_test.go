@@ -5,6 +5,7 @@ package extensionrunner
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -209,15 +210,27 @@ func TestLinuxIsolationServerClientHTMLResultOptIn(t *testing.T) {
 	request.Argv = []string{"/app/entry", "html"}
 	request.ResultFiles = []string{"index.html"}
 	request.Limits = LimitsV2{CPUSeconds: 30, MemoryBytes: 256 << 20, Processes: 32, FileBytes: 16 << 20, OpenFiles: 64}
-	status, err := client.RunV2(context.Background(), request, nil)
+	status, resultFiles, err := client.RunV2WithResultFiles(context.Background(), request, nil)
 	if err != nil || status.Error != ErrorNone || status.Status != "succeeded" || len(status.ResultFiles) != 1 {
 		t.Fatalf("status=%+v err=%v stderr=%s", status, err, status.Stderr)
 	}
+	defer func() {
+		for _, file := range resultFiles {
+			_ = file.Close()
+		}
+	}()
 	const wantHTML = "<h1>Hello from Dirextalk</h1>"
 	const wantSHA256 = "b0012fd52e5edc0ce0ac66a4e4020d45a6a5226229276c961744d0d826776b84"
 	result := status.ResultFiles[0]
 	if len(wantHTML) != 29 || result.Path != "index.html" || result.Size != int64(len(wantHTML)) || result.SHA256 != wantSHA256 {
 		t.Fatalf("result=%+v", result)
+	}
+	if len(resultFiles) != 1 {
+		t.Fatalf("result descriptors=%d", len(resultFiles))
+	}
+	handedOff, err := io.ReadAll(resultFiles[0])
+	if err != nil || string(handedOff) != wantHTML {
+		t.Fatalf("handed-off index.html=%q err=%v", handedOff, err)
 	}
 	resultPath := filepath.Join(workspaceRoot, request.TaskID, request.TaskFence, "index.html")
 	body, err := os.ReadFile(resultPath)

@@ -37,7 +37,7 @@ func (s *CoreExtensionStore) EnsureBuiltinMCP(ctx context.Context, artifact core
 	if s == nil || s.store == nil || artifact.Validate() != nil || artifact.Candidate.Kind != coreextension.KindMCP || artifact.Candidate.Source != coreextension.SourceBuiltin || !coretask.ValidDigest(artifactDigest) {
 		return coreextension.Installation{}, coreextension.ErrInvalid
 	}
-	installationID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:builtin-mcp:installation:"+artifact.Candidate.ID))
+	installationID := uuid.MustParse(coreextension.BuiltinMCPInstallationID(artifact.Candidate.ID))
 	versionID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:builtin-mcp:version:"+artifact.Candidate.ID+":"+artifact.Candidate.Pin.RegistryVersion+":"+artifact.ContentDigest))
 	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {

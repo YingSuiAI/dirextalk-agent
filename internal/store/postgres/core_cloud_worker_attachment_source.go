@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const cloudWorkerLocalProjectExecutionPolicyRevision uint64 = 1
+const cloudWorkerLocalProjectExecutionPolicyRevision uint64 = 2
 
 // ResolveCloudWorkerOwner revalidates the live durable turn lease before
 // returning owner authority. Model arguments are never an owner source.
@@ -31,10 +31,9 @@ func (s *CoreConversationStore) ResolveCloudWorkerOwner(ctx context.Context, lea
 	}, nil
 }
 
-// ResolveCloudWorkerBudgetEvidence reports a versioned structural capability
-// limit: the Native conversation runtime has no general project/shell executor.
-// It never classifies prompt text or treats a model assertion, timeout, or
-// failed local attempt as evidence.
+// ResolveCloudWorkerBudgetEvidence binds the fixed local sandbox envelope used
+// when the model selects a larger or networked Worker task. It never turns a
+// local failure into an automatic paid fallback.
 func (s *CoreConversationStore) ResolveCloudWorkerBudgetEvidence(ctx context.Context, lease core.TurnLease) (*cloudworker.LocalBudgetEvidence, error) {
 	if err := s.validateCloudWorkerTurnLease(ctx, lease); err != nil {
 		return nil, err
@@ -62,10 +61,10 @@ func (s *CoreConversationStore) ResolveCloudWorkerBudgetEvidence(ctx context.Con
 		attachmentDigest != lease.Turn.AttachmentSnapshotDigest || revision != lease.Turn.Revision {
 		return nil, cloudworker.ErrStaleAuthorization
 	}
-	return newCloudWorkerProjectExecutionBudgetEvidence(lease.Turn, prompt, profileID, profileDigest)
+	return newCloudWorkerLocalSandboxBudgetEvidence(lease.Turn, prompt, profileID, profileDigest)
 }
 
-func newCloudWorkerProjectExecutionBudgetEvidence(turn core.Turn, prompt, profileID, profileDigest string) (*cloudworker.LocalBudgetEvidence, error) {
+func newCloudWorkerLocalSandboxBudgetEvidence(turn core.Turn, prompt, profileID, profileDigest string) (*cloudworker.LocalBudgetEvidence, error) {
 	promptSHA := sha256.Sum256([]byte(prompt))
 	binding := struct {
 		Policy            string `json:"policy"`
@@ -80,17 +79,22 @@ func newCloudWorkerProjectExecutionBudgetEvidence(turn core.Turn, prompt, profil
 		ProfileID         string `json:"profile_id"`
 		ProfileDigest     string `json:"profile_digest"`
 		AttachmentDigest  string `json:"attachment_digest"`
-	}{"native_runtime_no_general_project_executor", cloudWorkerLocalProjectExecutionPolicyRevision,
+		CPUSeconds        uint64 `json:"cpu_seconds"`
+		MemoryMiB         uint64 `json:"memory_mib"`
+		Processes         uint64 `json:"processes"`
+		FileMiB           uint64 `json:"file_mib"`
+		Network           bool   `json:"network"`
+	}{"native_local_sandbox_fixed_budget", cloudWorkerLocalProjectExecutionPolicyRevision,
 		turn.OwnerID, turn.AccountGeneration, turn.ID, turn.Revision,
 		turn.RequestID, turn.ConversationID, hex.EncodeToString(promptSHA[:]),
-		profileID, profileDigest, turn.AttachmentSnapshotDigest}
+		profileID, profileDigest, turn.AttachmentSnapshotDigest, 30, 256, 32, 16, false}
 	raw, err := json.Marshal(binding)
 	if err != nil {
 		return nil, err
 	}
 	digest := sha256.Sum256(raw)
 	return &cloudworker.LocalBudgetEvidence{
-		BudgetID: uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk/local-budget/native-runtime-no-general-project-executor/v1")).String(),
+		BudgetID: uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk/local-budget/native-local-sandbox-fixed-budget/v2")).String(),
 		Revision: cloudWorkerLocalProjectExecutionPolicyRevision, Digest: hex.EncodeToString(digest[:]),
 	}, nil
 }

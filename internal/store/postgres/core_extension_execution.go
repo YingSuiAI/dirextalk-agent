@@ -427,8 +427,13 @@ func (c *PostgresExtensionExecutionCoordinator) ResolveConversationInvocation(ct
 		return execution.Invocation{}, coretask.ErrLeaseConflict
 	}
 	var turnSnapshot []byte
-	if err := c.store.pool.QueryRow(ctx, `SELECT extension_snapshot_json FROM core_conversation_turns WHERE turn_id=$1`, p.TurnID).Scan(&turnSnapshot); err != nil {
+	var ownerID string
+	var accountGeneration int64
+	if err := c.store.pool.QueryRow(ctx, `SELECT owner_id,account_generation,extension_snapshot_json FROM core_conversation_turns WHERE turn_id=$1`, p.TurnID).Scan(&ownerID, &accountGeneration, &turnSnapshot); err != nil {
 		return execution.Invocation{}, coretask.ErrNotFound
+	}
+	if strings.TrimSpace(ownerID) == "" || ownerID != strings.TrimSpace(ownerID) || accountGeneration <= 0 {
+		return execution.Invocation{}, coretask.ErrConflict
 	}
 	var snapshots []coreconversation.ExtensionExecutionSnapshot
 	if json.Unmarshal(turnSnapshot, &snapshots) != nil {
@@ -449,7 +454,7 @@ func (c *PostgresExtensionExecutionCoordinator) ResolveConversationInvocation(ct
 	var attemptState, confirmationID, toolName, argsDigest, schemaDigest, contentDigest, artifactDigest string
 	var argsJSON []byte
 	var attemptEpoch int64
-	if err := c.store.pool.QueryRow(ctx, `SELECT state,confirmation_id,tool_name,tool_schema_digest,arguments_digest,arguments_json,extension_snapshot_digest,installation_revision FROM core_conversation_tool_attempts WHERE attempt_id=$1 AND turn_id=$2`, p.AttemptID, p.TurnID).Scan(&attemptState, &confirmationID, &toolName, &schemaDigest, &argsDigest, &argsJSON, &contentDigest, &attemptEpoch); err != nil {
+	if err := c.store.pool.QueryRow(ctx, `SELECT state,COALESCE(confirmation_id::text,''),tool_name,tool_schema_digest,arguments_digest,arguments_json,extension_snapshot_digest,installation_revision FROM core_conversation_tool_attempts WHERE attempt_id=$1 AND turn_id=$2`, p.AttemptID, p.TurnID).Scan(&attemptState, &confirmationID, &toolName, &schemaDigest, &argsDigest, &argsJSON, &contentDigest, &attemptEpoch); err != nil {
 		return execution.Invocation{}, coretask.ErrNotFound
 	}
 	if attemptState != "dispatched" || attemptEpoch != int64(p.InstallationRevision) || toolName != p.ToolName || schemaDigest != p.ToolSchemaDigest || argsDigest != p.ArgumentsDigest || contentDigest != p.ExtensionSnapshotDigest {
@@ -487,7 +492,11 @@ func (c *PostgresExtensionExecutionCoordinator) ResolveConversationInvocation(ct
 		if c.WorkspaceRoot == "" {
 			return execution.Invocation{}, coretask.ErrInvalid
 		}
-		return execution.Invocation{Kind: coreextension.KindMCP, Local: &execution.LocalInvocation{TaskID: task.ID, TaskFence: execution.StableRunID(task.ID, fmt.Sprintf("%d", task.Attempt), fmt.Sprintf("%d", task.LeaseEpoch)), InstallationID: p.InstallationID, VersionID: p.VersionID, InstallDigest: artifactDigest, ContentDigest: contentDigest, ArtifactDigest: artifactDigest, EntryPath: version.Execution.Stdio.RelativePath, EntrySHA256: version.Execution.Stdio.Digest, Runtime: version.Execution.Stdio.Runtime, Argv: append([]string(nil), version.Execution.Stdio.Argv...), Tool: toolName, Input: append(json.RawMessage(nil), argsJSON...), Workspace: filepath.Join(c.WorkspaceRoot, task.ID), Timeout: 10 * time.Minute, Limits: execution.LocalSandboxLimitsV2(), Secrets: secretBindings(p.InstallationID, p.VersionID, version)}}, nil
+		resultFiles, resultErr := execution.LocalSandboxResultFiles(toolName, argsJSON)
+		if resultErr != nil {
+			return execution.Invocation{}, coretask.ErrConflict
+		}
+		return execution.Invocation{Kind: coreextension.KindMCP, OwnerID: ownerID, AccountGeneration: uint64(accountGeneration), Local: &execution.LocalInvocation{TaskID: task.ID, TaskFence: execution.StableRunID(task.ID, fmt.Sprintf("%d", task.Attempt), fmt.Sprintf("%d", task.LeaseEpoch)), InstallationID: p.InstallationID, VersionID: p.VersionID, InstallDigest: artifactDigest, ContentDigest: contentDigest, ArtifactDigest: artifactDigest, EntryPath: version.Execution.Stdio.RelativePath, EntrySHA256: version.Execution.Stdio.Digest, Runtime: version.Execution.Stdio.Runtime, Argv: append([]string(nil), version.Execution.Stdio.Argv...), Tool: toolName, Input: append(json.RawMessage(nil), argsJSON...), Workspace: filepath.Join(c.WorkspaceRoot, task.ID), Timeout: 30 * time.Second, Limits: execution.LocalSandboxLimitsV2(), Secrets: secretBindings(p.InstallationID, p.VersionID, version), ResultFiles: resultFiles}}, nil
 	}
 	if version.Execution.Remote != nil {
 		if toolName == "" {
@@ -497,7 +506,7 @@ func (c *PostgresExtensionExecutionCoordinator) ResolveConversationInvocation(ct
 		if bindErr != nil {
 			return execution.Invocation{}, bindErr
 		}
-		return execution.Invocation{Kind: coreextension.KindMCP, Remote: &execution.RemoteInvocation{Endpoint: *version.Execution.Remote, InstallationID: p.InstallationID, VersionID: p.VersionID, Purpose: purpose, BindingDigest: binding, Tool: toolName, Input: append(json.RawMessage(nil), argsJSON...)}}, nil
+		return execution.Invocation{Kind: coreextension.KindMCP, OwnerID: ownerID, AccountGeneration: uint64(accountGeneration), Remote: &execution.RemoteInvocation{Endpoint: *version.Execution.Remote, InstallationID: p.InstallationID, VersionID: p.VersionID, Purpose: purpose, BindingDigest: binding, Tool: toolName, Input: append(json.RawMessage(nil), argsJSON...)}}, nil
 	}
 	if version.Execution.Skill != nil {
 		if version.Execution.Skill.Executable && c.WorkspaceRoot == "" {
@@ -507,7 +516,7 @@ func (c *PostgresExtensionExecutionCoordinator) ResolveConversationInvocation(ct
 		if version.Execution.Skill.Executable {
 			skill.Workspace = filepath.Join(c.WorkspaceRoot, task.ID)
 		}
-		return execution.Invocation{Kind: coreextension.KindSkill, Skill: skill}, nil
+		return execution.Invocation{Kind: coreextension.KindSkill, OwnerID: ownerID, AccountGeneration: uint64(accountGeneration), Skill: skill}, nil
 	}
 	return execution.Invocation{}, coretask.ErrConflict
 }

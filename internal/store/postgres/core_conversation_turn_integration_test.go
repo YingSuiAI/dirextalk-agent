@@ -852,3 +852,34 @@ func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *
 		t.Fatalf("cancel events=%+v err=%v", cancelEvents, err)
 	}
 }
+
+func TestCoreConversationToolServerOwnedSandboxQueuesWithoutConfirmationPostgres(t *testing.T) {
+	fixture := newConversationToolPrepareFixture(t, "call_local_sandbox_no_confirmation")
+	fixture.snapshot.RequiresConfirmation = false
+	fixture.prepare.Snapshot = fixture.snapshot
+	snapshots, err := json.Marshal([]core.ExtensionExecutionSnapshot{fixture.snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.h.pool.Exec(context.Background(), `UPDATE core_conversation_turns SET extension_snapshot_json=$2 WHERE turn_id=$1`, fixture.turn.ID, snapshots); err != nil {
+		t.Fatal(err)
+	}
+	attempt, task, confirmation, err := fixture.h.store.PrepareConversationTool(context.Background(), fixture.prepare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != coretask.StatusQueued || task.Spec.Payload.ConversationTool == nil || task.Spec.Payload.ConversationTool.ConfirmationID != "" || attempt.ConfirmationID != "" || confirmation.ConfirmationID != "" {
+		t.Fatalf("attempt=%+v task=%+v confirmation=%+v", attempt, task, confirmation)
+	}
+	events, err := fixture.h.store.LoadTurnEvents(context.Background(), fixture.turn.ID, 0, 10)
+	if err != nil || len(events) != 1 || events[0].Kind != core.TurnEventAccepted {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+	claimed, _, err := NewCoreTaskStore(fixture.h.store.Store).ClaimNextDue(context.Background(), "local-sandbox-test", time.Now().UTC(), time.Minute, 4)
+	if err != nil || claimed.ID != task.ID {
+		t.Fatalf("claimed=%+v err=%v", claimed, err)
+	}
+	if _, err = fixture.h.store.BeginConversationTool(context.Background(), claimed); err != nil {
+		t.Fatal(err)
+	}
+}

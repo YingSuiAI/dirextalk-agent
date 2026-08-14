@@ -114,6 +114,15 @@ var (
 	ErrNodeStorageQuota    = errors.New("extension node storage quota")
 )
 
+const (
+	BuiltinLocalSandboxCandidateID = "dirextalk-local-sandbox"
+	BuiltinLocalSandboxToolName    = "local_sandbox_run"
+)
+
+func BuiltinMCPInstallationID(candidateID string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:builtin-mcp:installation:"+candidateID)).String()
+}
+
 var shaRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var exactSemverRE = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)

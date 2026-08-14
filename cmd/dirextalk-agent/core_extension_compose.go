@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
@@ -40,11 +43,19 @@ type coreExtensionComposition struct {
 	conversationResolver    coreconversation.ExtensionResolver
 }
 
-type conversationExtensionResolver struct{ store extensionGetter }
+type conversationExtensionResolver struct {
+	store     extensionGetter
+	automatic *coreconversation.ExtensionSelection
+}
 
 func (r conversationExtensionResolver) ResolveExtensions(ctx context.Context, selections []coreconversation.ExtensionSelection) ([]coreconversation.ResolvedExtension, error) {
 	if r.store == nil {
 		return nil, coreextension.ErrInvalid
+	}
+	var err error
+	selections, err = r.MergeAutomaticExtensions(ctx, selections)
+	if err != nil {
+		return nil, err
 	}
 	out := make([]coreconversation.ResolvedExtension, 0, len(selections))
 	for _, selection := range selections {
@@ -100,6 +111,10 @@ func (r conversationExtensionResolver) ResolveExtensions(ctx context.Context, se
 		normalizedSelection := selection
 		normalizedSelection.AllowedTools = allowed
 		toolSchema := toolSchemaDigest(selectedDescriptors)
+		requiresConfirmation := true
+		if r.automatic != nil && sameExtensionSelection(normalizedSelection, *r.automatic) {
+			requiresConfirmation = false
+		}
 		out = append(out, coreconversation.ResolvedExtension{
 			Selection: normalizedSelection,
 			Snapshot: coreconversation.ExtensionExecutionSnapshot{
@@ -107,12 +122,48 @@ func (r conversationExtensionResolver) ResolveExtensions(ctx context.Context, se
 				InstallationRevision: uint64(installation.Revision), Source: string(installation.Source),
 				ContentDigest: version.ContentDigest, ArtifactDigest: version.ArtifactDigest, ToolSchemaDigest: toolSchema,
 				NetworkBindingDigest: version.NetworkSchemaDigest, SecretBindingDigest: version.SecretSchemaDigest,
-				ToolNames: allowed, RequiresConfirmation: true,
+				ToolNames: allowed, RequiresConfirmation: requiresConfirmation,
 			},
 			Tools: modelTools,
 		})
 	}
 	return out, nil
+}
+
+func (r conversationExtensionResolver) MergeAutomaticExtensions(ctx context.Context, selections []coreconversation.ExtensionSelection) ([]coreconversation.ExtensionSelection, error) {
+	selections = append([]coreconversation.ExtensionSelection(nil), selections...)
+	if r.automatic != nil {
+		found := false
+		for _, selection := range selections {
+			if selection.ID != r.automatic.ID {
+				continue
+			}
+			if !sameExtensionSelection(selection, *r.automatic) {
+				return nil, coreextension.ErrConflict
+			}
+			found = true
+		}
+		permission, authenticated := capabilityclient.PermissionFromContext(ctx)
+		if !found && authenticated && permission != nil && strings.TrimSpace(permission.GetAuthenticatedOwnerId()) != "" && permission.GetAccountGeneration() > 0 {
+			selections = append(selections, *r.automatic)
+		}
+	}
+	return selections, nil
+}
+
+func sameExtensionSelection(a, b coreconversation.ExtensionSelection) bool {
+	if a.Kind != b.Kind || a.ID != b.ID || a.Version != b.Version || a.Digest != b.Digest || len(a.AllowedTools) != len(b.AllowedTools) {
+		return false
+	}
+	aTools, bTools := append([]string(nil), a.AllowedTools...), append([]string(nil), b.AllowedTools...)
+	sort.Strings(aTools)
+	sort.Strings(bTools)
+	for i := range aTools {
+		if aTools[i] != bTools[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func toolSchemaDigest(tools []coreextension.Tool) string {
@@ -136,7 +187,7 @@ type conversationToolInvocationResolver interface {
 	ResolveConversationInvocation(context.Context, coretask.Task) (execution.Invocation, error)
 }
 
-func conversationToolTaskHandler(store conversationToolAttemptStore, coord conversationToolInvocationResolver, local *execution.LocalExecutor, remote *execution.RemoteExecutor, skillReader skillArtifactReader) coreruntime.TaskHandler {
+func conversationToolTaskHandler(store conversationToolAttemptStore, coord conversationToolInvocationResolver, local *execution.LocalExecutor, remote *execution.RemoteExecutor, skillReader skillArtifactReader, artifacts *localartifact.Repository) coreruntime.TaskHandler {
 	return func(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
 		if store == nil || coord == nil {
 			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
@@ -146,7 +197,7 @@ func conversationToolTaskHandler(store conversationToolAttemptStore, coord conve
 			defer cancel()
 			return store.FinishConversationTool(finishCtx, task, state, result, code, summary)
 		}
-		_, err := store.BeginConversationTool(ctx, task)
+		attempt, err := store.BeginConversationTool(ctx, task)
 		if errors.Is(err, coreconversation.ErrToolDispatchStarted) {
 			return coreruntime.ManagedOutcome{Err: finish("uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown"), TerminalOwned: true}
 		}
@@ -163,6 +214,13 @@ func conversationToolTaskHandler(store conversationToolAttemptStore, coord conve
 		case invocation.Local != nil:
 			if local == nil {
 				err = coreextension.ErrInvalid
+			} else if invocation.Local.Tool == coreextension.BuiltinLocalSandboxToolName {
+				var receipt execution.LocalToolReceipt
+				receipt, err = local.CallToolWithResultFiles(ctx, *invocation.Local, invocation.Local.Tool, invocation.Local.Input)
+				if err == nil {
+					defer receipt.Close()
+					result, err = collectLocalSandboxArtifacts(ctx, artifacts, invocation.OwnerID, invocation.AccountGeneration, attempt.ExecutionID, &receipt)
+				}
 			} else {
 				result, err = local.CallTool(ctx, *invocation.Local, invocation.Local.Tool, invocation.Local.Input)
 			}
@@ -375,7 +433,11 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	if err != nil {
 		return nil, fmt.Errorf("default builtin MCP executable: %w", err)
 	}
-	builtinMCPs, err := source.NewBuiltinMCPs(builtinExecutable)
+	builtinShell, err := os.ReadFile("/usr/local/libexec/dirextalk-core-shell")
+	if err != nil {
+		return nil, fmt.Errorf("default builtin local shell: %w", err)
+	}
+	builtinMCPs, err := source.NewBuiltinMCPs(builtinExecutable, builtinShell)
 	if err != nil {
 		return nil, err
 	}
@@ -443,6 +505,10 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	if err != nil {
 		return nil, err
 	}
+	localSandboxSelection, err := resolveBuiltinLocalSandboxSelection(seedCtx, service, extStore)
+	if err != nil {
+		return nil, fmt.Errorf("default builtin local sandbox: %w", err)
+	}
 	mcpService := rpcapi.NewMCPService(service)
 	skillService := rpcapi.NewSkillService(service)
 	promoter := execution.StagedLifecyclePromoter{Root: cfg.CoreExtensionStagingRoot, Publisher: runner, RemoveFunc: runner.Remove, NodeBuilder: runner}
@@ -465,7 +531,11 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	if err != nil {
 		return nil, err
 	}
-	conversationToolHandler := conversationToolTaskHandler(conversationStore, execCoord, local, remote, runner)
+	localArtifacts, err := localartifact.NewRepository(filepath.Join(cfg.CoreExtensionStagingRoot, "cloud-worker", "artifacts"))
+	if err != nil {
+		return nil, fmt.Errorf("local sandbox artifacts: %w", err)
+	}
+	conversationToolHandler := conversationToolTaskHandler(conversationStore, execCoord, local, remote, runner, localArtifacts)
 	dispatch := func(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
 		if task.Spec.Kind == coretask.TaskKindConversationTool {
 			return conversationToolHandler(ctx, task)
@@ -482,7 +552,31 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
 		}
 	}
-	return &coreExtensionComposition{domain: service, mcpService: mcpService, skillService: skillService, taskHandler: dispatch, lifecycleHandler: lifecycleHandler, executionHandler: executionHandler, conversationToolHandler: conversationToolHandler, conversationResolver: conversationExtensionResolver{store: extStore}, toolDispatcher: &pinnedExtensionDispatcher{tasks: postgres.NewCoreTaskStore(store), store: extStore, coord: execCoord, local: local, remote: remote}, skillResolver: &pinnedSkillResolver{store: extStore, runner: runner}, artifactCleaner: artifactCleaner}, nil
+	return &coreExtensionComposition{domain: service, mcpService: mcpService, skillService: skillService, taskHandler: dispatch, lifecycleHandler: lifecycleHandler, executionHandler: executionHandler, conversationToolHandler: conversationToolHandler, conversationResolver: conversationExtensionResolver{store: extStore, automatic: &localSandboxSelection}, toolDispatcher: &pinnedExtensionDispatcher{tasks: postgres.NewCoreTaskStore(store), store: extStore, coord: execCoord, local: local, remote: remote}, skillResolver: &pinnedSkillResolver{store: extStore, runner: runner}, artifactCleaner: artifactCleaner}, nil
+}
+
+func resolveBuiltinLocalSandboxSelection(ctx context.Context, service coreextension.Service, store extensionGetter) (coreconversation.ExtensionSelection, error) {
+	if service == nil || store == nil {
+		return coreconversation.ExtensionSelection{}, coreextension.ErrInvalid
+	}
+	installation, err := store.Get(ctx, coreextension.BuiltinMCPInstallationID(coreextension.BuiltinLocalSandboxCandidateID))
+	if err != nil || installation.State != coreextension.StateInstalled || !installation.Enabled || installation.ActiveVersionID == "" {
+		return coreconversation.ExtensionSelection{}, coreextension.ErrConflict
+	}
+	tools, err := service.ListTools(ctx, installation.ID, installation.Revision)
+	if err != nil || len(tools) != 1 || tools[0].Name != coreextension.BuiltinLocalSandboxToolName {
+		return coreconversation.ExtensionSelection{}, coreextension.ErrConflict
+	}
+	installation, err = store.Get(ctx, installation.ID)
+	if err != nil {
+		return coreconversation.ExtensionSelection{}, err
+	}
+	for _, version := range installation.Versions {
+		if version.VersionID == installation.ActiveVersionID && len(version.Tools) == 1 && version.Tools[0].Name == coreextension.BuiltinLocalSandboxToolName {
+			return coreconversation.ExtensionSelection{Kind: coreconversation.ExtensionMCP, ID: installation.ID, Version: extensionVersionPin(version), Digest: version.ContentDigest, AllowedTools: []string{coreextension.BuiltinLocalSandboxToolName}}, nil
+		}
+	}
+	return coreconversation.ExtensionSelection{}, coreextension.ErrConflict
 }
 
 type builtinMCPSeedStore interface {

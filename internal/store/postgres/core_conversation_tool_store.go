@@ -2,7 +2,7 @@ package postgres
 
 // This file is deliberately a single transaction boundary.  A conversation
 // tool may not become observable as queued unless the turn, attempt, task and
-// confirmation all describe the same immutable invocation.
+// optional confirmation all describe the same immutable invocation.
 
 import (
 	"context"
@@ -67,9 +67,12 @@ func (s *CoreConversationStore) PrepareConversationTool(ctx context.Context, c c
 		if e := validateConversationToolWaitingEventTx(ctx, tx, a); e != nil {
 			return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, e
 		}
-		conf, e := NewCoreConfirmationStore(s.Store).Get(ctx, a.ConfirmationID)
-		if e != nil {
-			return a, t, conf, e
+		var conf coreconfirmation.Confirmation
+		if a.ConfirmationID != "" {
+			conf, e = NewCoreConfirmationStore(s.Store).Get(ctx, a.ConfirmationID)
+			if e != nil {
+				return a, t, conf, e
+			}
 		}
 		if e = tx.Commit(ctx); e != nil {
 			return a, t, conf, e
@@ -117,65 +120,83 @@ func (s *CoreConversationStore) PrepareConversationTool(ctx context.Context, c c
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrConflict
 	}
 	now := time.Now().UTC()
-	attemptID, taskID, confID, executionID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	attemptID, taskID, executionID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	confID := ""
+	if c.Snapshot.RequiresConfirmation {
+		confID = uuid.NewString()
+	}
 	payload := coretask.ConversationToolTaskPayload{TurnID: c.Lease.Turn.ID, AttemptID: attemptID, Round: c.Round, CallID: c.Call.ID, ExtensionSnapshotDigest: c.Snapshot.ContentDigest, InstallationID: c.Snapshot.InstallationID, VersionID: c.Snapshot.VersionID, InstallationRevision: c.Snapshot.InstallationRevision, ToolName: c.Call.Name, ToolSchemaDigest: c.Snapshot.ToolSchemaDigest, ArgumentsDigest: c.ArgumentsDigest, ConfirmationID: confID, SafeSummary: c.SafeSummary, ExecutionTarget: executionTarget}
 	spec := coretask.TaskSpec{Kind: coretask.TaskKindConversationTool, Goal: "conversation tool " + c.Call.Name, ConversationID: c.Lease.Turn.ConversationID, IdempotencyKey: c.IdempotencyKey, Payload: coretask.TaskPayload{ConversationTool: &payload}, AvailableAt: now}
 	raw, _ := json.Marshal(spec.Payload)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,create_idempotency_key,attachment_refs,extensions_json,knowledge_refs,timeout_seconds,status,attempt,progress_sequence,available_at,revision,created_at,updated_at,task_kind,payload_json) VALUES($1,$2,$3,$4,'[]','[]','[]',0,'waiting_user',1,1,$5,1,$5,$5,'conversation_tool',$6)`, taskID, spec.Goal, c.Lease.Turn.ConversationID, c.IdempotencyKey, now, raw); err != nil {
+	taskStatus := coretask.StatusWaitingUser
+	if !c.Snapshot.RequiresConfirmation {
+		taskStatus = coretask.StatusQueued
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,create_idempotency_key,attachment_refs,extensions_json,knowledge_refs,timeout_seconds,status,attempt,progress_sequence,available_at,revision,created_at,updated_at,task_kind,payload_json) VALUES($1,$2,$3,$4,'[]','[]','[]',0,$7,1,1,$5,1,$5,$5,'conversation_tool',$6)`, taskID, spec.Goal, c.Lease.Turn.ConversationID, c.IdempotencyKey, now, raw, string(taskStatus)); err != nil {
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_tool_attempts(turn_id,attempt_id,task_id,round,call_id,execution_id,extension_snapshot_digest,installation_id,version_id,installation_revision,tool_name,tool_schema_digest,arguments_digest,arguments_json,confirmation_id,state,safe_summary,created_at,updated_at,lease_epoch) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'waiting_confirmation',$16,$17,$17,1)`, c.Lease.Turn.ID, attemptID, taskID, c.Round, attemptID, executionID, c.Snapshot.ContentDigest, c.Snapshot.InstallationID, c.Snapshot.VersionID, c.Snapshot.InstallationRevision, c.Call.Name, c.Snapshot.ToolSchemaDigest, c.ArgumentsDigest, args, confID, c.SafeSummary, now); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_tool_attempts(turn_id,attempt_id,task_id,round,call_id,execution_id,extension_snapshot_digest,installation_id,version_id,installation_revision,tool_name,tool_schema_digest,arguments_digest,arguments_json,confirmation_id,state,safe_summary,created_at,updated_at,lease_epoch) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'waiting_confirmation',$16,$17,$17,1)`, c.Lease.Turn.ID, attemptID, taskID, c.Round, attemptID, executionID, c.Snapshot.ContentDigest, c.Snapshot.InstallationID, c.Snapshot.VersionID, c.Snapshot.InstallationRevision, c.Call.Name, c.Snapshot.ToolSchemaDigest, c.ArgumentsDigest, args, nullableUUIDPG(confID), c.SafeSummary, now); err != nil {
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
 	}
-	b := coreconfirmation.Binding{OperationDomain: "conversation_tool", TargetID: attemptID, TargetRevision: 1, SourceVersion: c.Snapshot.VersionID, SourceCommit: c.Snapshot.ArtifactDigest, ContentDigest: coreconfirmation.Digest(c.Snapshot.ContentDigest), ParameterDigest: coreconfirmation.Digest(c.ArgumentsDigest), NetworkDigest: coreconfirmation.Digest(c.Snapshot.NetworkBindingDigest), SecretGrantDigest: coreconfirmation.Digest(c.Snapshot.SecretBindingDigest)}
-	br, be := b.Normalize()
-	if be != nil {
-		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, be
-	}
-	b = br
-	braw, _ := json.Marshal(b)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_confirmations(confirmation_id,operation_domain,target_id,target_revision,binding_json,task_id,state,revision,created_at,updated_at,expires_at) VALUES($1,'conversation_tool',$2,1,$3,$4,'pending',1,$5,$5,$6)`, confID, attemptID, braw, taskID, now, c.ExpiresAt.UTC()); err != nil {
-		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_confirmation_target_bindings(confirmation_id,binding_json,updated_at) VALUES($1,$2,$3)`, confID, braw, now); err != nil {
-		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_confirmation_current_bindings(operation_domain,target_id,target_revision,binding_json,updated_at) VALUES('conversation_tool',$1,1,$2,$3)`, attemptID, braw, now); err != nil {
-		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
-	}
-	waitingEvent, waitingErr := core.NewWaitingConfirmationTurnEvent(confID, executionID)
-	if waitingErr != nil {
-		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrInvalid
-	}
-	waitingEvent.TurnID, waitingEvent.Sequence, waitingEvent.Revision, waitingEvent.CreatedAt =
-		c.Lease.Turn.ID, lastSequence+1, turnRevision+1, now
-	if waitingEvent.ValidateWaitingConfirmationAuthority() != nil {
-		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrInvalid
+	var binding coreconfirmation.Binding
+	var waitingEvent core.TurnEvent
+	nextSequence := lastSequence
+	if c.Snapshot.RequiresConfirmation {
+		binding = coreconfirmation.Binding{OperationDomain: "conversation_tool", TargetID: attemptID, TargetRevision: 1, SourceVersion: c.Snapshot.VersionID, SourceCommit: c.Snapshot.ArtifactDigest, ContentDigest: coreconfirmation.Digest(c.Snapshot.ContentDigest), ParameterDigest: coreconfirmation.Digest(c.ArgumentsDigest), NetworkDigest: coreconfirmation.Digest(c.Snapshot.NetworkBindingDigest), SecretGrantDigest: coreconfirmation.Digest(c.Snapshot.SecretBindingDigest)}
+		binding, err = binding.Normalize()
+		if err != nil {
+			return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
+		}
+		braw, _ := json.Marshal(binding)
+		if _, err = tx.Exec(ctx, `INSERT INTO core_confirmations(confirmation_id,operation_domain,target_id,target_revision,binding_json,task_id,state,revision,created_at,updated_at,expires_at) VALUES($1,'conversation_tool',$2,1,$3,$4,'pending',1,$5,$5,$6)`, confID, attemptID, braw, taskID, now, c.ExpiresAt.UTC()); err != nil {
+			return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO core_confirmation_target_bindings(confirmation_id,binding_json,updated_at) VALUES($1,$2,$3)`, confID, braw, now); err != nil {
+			return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO core_confirmation_current_bindings(operation_domain,target_id,target_revision,binding_json,updated_at) VALUES('conversation_tool',$1,1,$2,$3)`, attemptID, braw, now); err != nil {
+			return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
+		}
+		waitingEvent, err = core.NewWaitingConfirmationTurnEvent(confID, executionID)
+		if err != nil {
+			return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrInvalid
+		}
+		nextSequence++
+		waitingEvent.TurnID, waitingEvent.Sequence, waitingEvent.Revision, waitingEvent.CreatedAt = c.Lease.Turn.ID, nextSequence, turnRevision+1, now
 	}
 	turnUpdate, updateErr := tx.Exec(ctx, `UPDATE core_conversation_turns
 		SET state='waiting_confirmation',lease_id=NULL,lease_expires_at=NULL,revision=revision+1,last_sequence=$6,updated_at=$2
 		WHERE turn_id=$1 AND state='running' AND lease_id=$3 AND lease_epoch=$4 AND revision=$5`,
-		c.Lease.Turn.ID, now, c.Lease.LeaseID, c.Lease.Epoch, turnRevision, waitingEvent.Sequence)
+		c.Lease.Turn.ID, now, c.Lease.LeaseID, c.Lease.Epoch, turnRevision, nextSequence)
 	if updateErr != nil || turnUpdate.RowsAffected() != 1 {
 		if updateErr != nil {
 			return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, updateErr
 		}
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, core.ErrConflict
 	}
-	waitingRaw, _ := json.Marshal(waitingEvent)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at)
-		VALUES($1,$2,$3,$4,$5)`, waitingEvent.TurnID, waitingEvent.Sequence, string(waitingEvent.Kind), waitingRaw, now); err != nil {
-		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
+	if c.Snapshot.RequiresConfirmation {
+		waitingRaw, _ := json.Marshal(waitingEvent)
+		if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at)
+			VALUES($1,$2,$3,$4,$5)`, waitingEvent.TurnID, waitingEvent.Sequence, string(waitingEvent.Kind), waitingRaw, now); err != nil {
+			return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
+		}
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at) VALUES($1,1,$2,1,'waiting_user','confirmation','waiting for owner confirmation',$3)`, taskID, uuid.New(), now); err != nil {
+	phase, message := "confirmation", "waiting for owner confirmation"
+	if !c.Snapshot.RequiresConfirmation {
+		phase, message = "queued", "local sandbox task queued"
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at) VALUES($1,1,$2,1,$3,$4,$5,$6)`, taskID, uuid.New(), string(taskStatus), phase, message, now); err != nil {
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
 	}
 	a := core.ToolAttempt{ID: attemptID, TurnID: c.Lease.Turn.ID, TaskID: taskID, ConfirmationID: confID, Round: c.Round, CallID: c.Call.ID, ExecutionID: executionID, ToolName: c.Call.Name, State: "waiting_confirmation", ArgumentsDigest: c.ArgumentsDigest, SafeSummary: c.SafeSummary}
-	t := coretask.Task{ID: taskID, Spec: spec, Status: coretask.StatusWaitingUser, Attempt: 1, Revision: 1, CreatedAt: now, UpdatedAt: now, AvailableAt: now}
-	conf := coreconfirmation.Confirmation{ConfirmationID: confID, Binding: b, TaskID: taskID, State: coreconfirmation.StatePending, Revision: 1, CreatedAt: now, UpdatedAt: now, ExpiresAt: c.ExpiresAt.UTC()}
+	t := coretask.Task{ID: taskID, Spec: spec, Status: taskStatus, Attempt: 1, Revision: 1, CreatedAt: now, UpdatedAt: now, AvailableAt: now}
+	conf := coreconfirmation.Confirmation{}
+	if c.Snapshot.RequiresConfirmation {
+		conf = coreconfirmation.Confirmation{ConfirmationID: confID, Binding: binding, TaskID: taskID, State: coreconfirmation.StatePending, Revision: 1, CreatedAt: now, UpdatedAt: now, ExpiresAt: c.ExpiresAt.UTC()}
+	}
 	return a, t, conf, nil
 }
 
@@ -213,7 +234,11 @@ func validateConversationToolWaitingEventTx(ctx context.Context, tx pgx.Tx, atte
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	if matches != 1 {
+	want := 1
+	if attempt.ConfirmationID == "" {
+		want = 0
+	}
+	if matches != want {
 		return core.ErrConflict
 	}
 	return nil
@@ -293,7 +318,11 @@ func (s *CoreConversationStore) ResumeConversationTurn(ctx context.Context, turn
 		return core.ErrConflict
 	}
 	now := time.Now().UTC()
-	result := core.ToolResult{CallID: attempt.CallID, ToolName: attempt.ToolName, Content: conversationToolAttemptContent(attempt), IsError: attempt.State != "completed"}
+	references, referenceErr := conversationToolAttemptReferences(attempt)
+	if referenceErr != nil {
+		return core.ErrConflict
+	}
+	result := core.ToolResult{CallID: attempt.CallID, ToolName: attempt.ToolName, Content: conversationToolAttemptContent(attempt), IsError: attempt.State != "completed", References: references}
 	if result.Validate() != nil {
 		return core.ErrConflict
 	}
@@ -354,6 +383,44 @@ func conversationToolAttemptContent(attempt core.ToolAttempt) string {
 	return content
 }
 
+func conversationToolAttemptReferences(attempt core.ToolAttempt) ([]core.Reference, error) {
+	if attempt.ToolName != coreextension.BuiltinLocalSandboxToolName || len(attempt.Result) == 0 {
+		return nil, nil
+	}
+	var stored coretask.Result
+	if json.Unmarshal(attempt.Result, &stored) != nil || stored.Validate() != nil {
+		return nil, core.ErrConflict
+	}
+	var payload struct {
+		Structured struct {
+			Artifacts []struct {
+				AccountGeneration uint64  `json:"account_generation"`
+				RecordKind        string  `json:"record_kind"`
+				ArtifactID        string  `json:"artifact_id"`
+				ExecutionID       string  `json:"execution_id"`
+				Name              string  `json:"name"`
+				MediaType         string  `json:"media_type"`
+				SizeBytes         *uint64 `json:"size_bytes"`
+				SHA256            string  `json:"sha256"`
+			} `json:"artifacts"`
+		} `json:"structuredContent"`
+	}
+	if json.Unmarshal(stored.JSON, &payload) != nil || len(payload.Structured.Artifacts) == 0 || len(payload.Structured.Artifacts) > core.MaxReferences {
+		return nil, core.ErrConflict
+	}
+	result := make([]core.Reference, 0, len(payload.Structured.Artifacts))
+	for _, artifact := range payload.Structured.Artifacts {
+		reference := core.Reference{Kind: "execution_artifact", AccountGeneration: artifact.AccountGeneration,
+			RecordKind: artifact.RecordKind, ArtifactID: artifact.ArtifactID, ExecutionID: artifact.ExecutionID,
+			Name: artifact.Name, MediaType: artifact.MediaType, SizeBytes: artifact.SizeBytes, SHA256: artifact.SHA256}
+		if reference.Validate() != nil {
+			return nil, core.ErrConflict
+		}
+		result = append(result, reference)
+	}
+	return result, nil
+}
+
 // BeginConversationTool is the sole transition into provider dispatch.  It
 // consumes the exact confirmation only after the queue has granted this task
 // holder/attempt/epoch/revision fence.
@@ -387,14 +454,29 @@ func (s *CoreConversationStore) BeginConversationTool(ctx context.Context, task 
 	if a.ID != p.AttemptID || storedCallID != a.ID || a.TurnID != p.TurnID || a.ConfirmationID != p.ConfirmationID || strings.TrimSpace(a.CallID) == "" || len(a.CallID) > core.MaxToolCallIDBytes || a.ArgumentsDigest != p.ArgumentsDigest || (attemptState != "waiting_confirmation" && attemptState != "dispatched") {
 		return a, coretask.ErrLeaseConflict
 	}
-	if err = tx.QueryRow(ctx, `SELECT state FROM core_confirmations WHERE confirmation_id=$1 AND task_id=$2 FOR UPDATE`, a.ConfirmationID, task.ID).Scan(&confirmationState); err != nil {
-		return a, err
+	if a.ConfirmationID != "" {
+		if err = tx.QueryRow(ctx, `SELECT state FROM core_confirmations WHERE confirmation_id=$1 AND task_id=$2 FOR UPDATE`, a.ConfirmationID, task.ID).Scan(&confirmationState); err != nil {
+			return a, err
+		}
 	}
 	if attemptState == "dispatched" {
-		if confirmationState != "consumed" || dispatchedEpoch <= 0 || dispatchedEpoch >= int64(task.LeaseEpoch) {
+		if (a.ConfirmationID != "" && confirmationState != "consumed") || dispatchedEpoch <= 0 || dispatchedEpoch >= int64(task.LeaseEpoch) {
 			return a, coretask.ErrLeaseConflict
 		}
 		return a, core.ErrToolDispatchStarted
+	}
+	if a.ConfirmationID == "" {
+		if p.ConfirmationID != "" {
+			return a, coretask.ErrLeaseConflict
+		}
+		if _, err = tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state='dispatched',lease_epoch=$2,updated_at=clock_timestamp() WHERE task_id=$1 AND state='waiting_confirmation' AND confirmation_id IS NULL`, task.ID, task.LeaseEpoch); err != nil {
+			return a, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return a, err
+		}
+		a.State = "dispatched"
+		return a, nil
 	}
 	if confirmationState != "confirmed" {
 		return a, coretask.ErrLeaseConflict
