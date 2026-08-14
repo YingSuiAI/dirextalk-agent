@@ -37,15 +37,17 @@ var newLocalSandboxCommand = func(script string) *exec.Cmd {
 	return cmd
 }
 
+var errLocalSandboxApplets = errors.New("local sandbox applets unavailable")
+
 var prepareLocalSandboxApplets = func() error {
 	list := exec.Command(localSandboxShellPath, "--list")
 	list.Args[0] = "busybox"
 	output, err := list.Output()
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: list", errLocalSandboxApplets)
 	}
 	if err = os.Mkdir(localSandboxBinDir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		return err
+		return fmt.Errorf("%w: directory", errLocalSandboxApplets)
 	}
 	for _, name := range strings.Fields(string(output)) {
 		if name == "" || strings.Contains(name, "/") {
@@ -53,7 +55,7 @@ var prepareLocalSandboxApplets = func() error {
 		}
 		link := path.Join(localSandboxBinDir, name)
 		if err = os.Symlink(localSandboxShellPath, link); err != nil && !errors.Is(err, os.ErrExist) {
-			return err
+			return fmt.Errorf("%w: links", errLocalSandboxApplets)
 		}
 	}
 	return nil
@@ -96,13 +98,17 @@ func serve(kind string) error {
 		response := map[string]any{"jsonrpc": "2.0", "id": input.ID}
 		switch input.Method {
 		case "initialize":
-			response["result"] = map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "dirextalk-" + kind, "version": "1.0.0"}}
+			response["result"] = map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "dirextalk-" + kind, "version": buildinfo.Version()}}
 		case "tools/list":
 			response["result"] = map[string]any{"tools": []any{tool(kind)}}
 		case "tools/call":
 			result, err := call(kind, input.Params)
 			if err != nil {
-				response["error"] = map[string]any{"code": -32602, "message": "invalid tool call"}
+				message := "invalid tool call"
+				if errors.Is(err, errLocalSandboxApplets) {
+					message = err.Error()
+				}
+				response["error"] = map[string]any{"code": -32602, "message": message}
 			} else {
 				response["result"] = result
 			}

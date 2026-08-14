@@ -716,8 +716,8 @@ func TestSeccompAllowlistOmitsHostEscapeSyscalls(t *testing.T) {
 			t.Fatalf("%s unexpectedly allowed", name)
 		}
 	}
-	if !allowed[uint32(unix.SYS_EXECVE)] || !allowed[uint32(unix.SYS_EXIT_GROUP)] {
-		t.Fatal("basic static process syscalls missing")
+	if !allowed[uint32(unix.SYS_EXECVE)] || !allowed[uint32(unix.SYS_EXIT_GROUP)] || !allowed[uint32(unix.SYS_WAITID)] {
+		t.Fatal("basic child process syscalls missing")
 	}
 	filters := sandboxSeccompFilters()
 	if len(filters) < 10 || filters[len(filters)-1].K != uint32(unix.SECCOMP_RET_ERRNO)|uint32(unix.EPERM) {

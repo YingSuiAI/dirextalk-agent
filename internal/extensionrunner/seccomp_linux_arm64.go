@@ -83,6 +83,7 @@ func sandboxAllowedSyscalls() []uint32 {
 		unix.SYS_EXECVE,
 		unix.SYS_EXIT,
 		unix.SYS_WAIT4,
+		unix.SYS_WAITID,
 		unix.SYS_KILL,
 		unix.SYS_UNAME,
 		unix.SYS_FCHOWN,

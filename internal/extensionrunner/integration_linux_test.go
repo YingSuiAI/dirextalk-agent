@@ -3,6 +3,7 @@
 package extensionrunner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -306,6 +307,87 @@ func TestLinuxIsolationServerClientHTMLResultOptIn(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cgroupRoot, slowRequest.RunID)); !os.IsNotExist(err) {
 		t.Fatalf("slow-consumer cgroup remained: %v", err)
+	}
+}
+
+func TestBuiltinLocalSandboxShellOptIn(t *testing.T) {
+	if os.Getenv("DIREXTALK_BUILTIN_LOCAL_SANDBOX_INTEGRATION") != "1" {
+		t.Skip("set DIREXTALK_BUILTIN_LOCAL_SANDBOX_INTEGRATION=1 with the production runner paths")
+	}
+	cgroupRoot := os.Getenv("DIREXTALK_EXTENSION_RUNNER_CGROUP_ROOT")
+	entryPath := os.Getenv("DIREXTALK_BUILTIN_LOCAL_SANDBOX_ENTRY")
+	runnerSource := os.Getenv("DIREXTALK_EXTENSION_RUNNER_BINARY")
+	if !filepath.IsAbs(cgroupRoot) || !filepath.IsAbs(entryPath) || !filepath.IsAbs(runnerSource) {
+		t.Fatal("production runner paths must be absolute")
+	}
+	entry, err := os.ReadFile(entryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell, err := os.ReadFile("/usr/local/libexec/dirextalk-core-shell")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerBytes, err := os.ReadFile(runnerSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerPath := filepath.Join(t.TempDir(), "dirextalk-extension-runner")
+	if err = os.WriteFile(runnerPath, runnerBytes, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	entries := []ManifestEntry{
+		{Path: "entry", SHA256: DigestBytes(entry), Size: int64(len(entry))},
+		{Path: "shell", SHA256: DigestBytes(shell), Size: int64(len(shell))},
+	}
+	digest := ManifestDigest(entries)
+	installRoot := t.TempDir()
+	install := filepath.Join(installRoot, digest)
+	if err = os.Mkdir(install, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(install, 0o700) })
+	if err = os.WriteFile(filepath.Join(install, "entry"), entry, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(install, "shell"), shell, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	manifest, _ := json.Marshal(DiskInstallManifestV1{SchemaVersion: installManifestSchemaV1, Entries: entries})
+	if err = os.WriteFile(filepath.Join(install, installManifestName), append(manifest, '\n'), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(install, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	backend := LinuxBackend{CgroupRoot: cgroupRoot, ProbeRoot: t.TempDir(), ReexecPath: runnerPath}
+	if err = backend.Probe(context.Background()); err != nil {
+		t.Fatalf("production isolation unavailable: %v", err)
+	}
+	workspaceRoot := t.TempDir()
+	request := integrationRequest(digest)
+	request.RunID = "12345678-aaaa-4aaa-8aaa-123456789abc"
+	request.TaskID = "23456789-bbbb-4bbb-8bbb-23456789abcd"
+	request.TaskFence = "3456789a-cccc-4ccc-8ccc-3456789abcde"
+	request.Argv = []string{"entry", "local_sandbox"}
+	request.ResultFiles = []string{"acceptance.html"}
+	request.TimeoutMS = 30_000
+	request.Limits = LimitsV2{CPUSeconds: 30, MemoryBytes: 256 << 20, Processes: 32, FileBytes: 16 << 20, OpenFiles: 64}
+	stdin := []byte("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"local_sandbox_run\",\"arguments\":{\"script\":\"printf LOCAL_SANDBOX_ACCEPTANCE > acceptance.html; cat acceptance.html\",\"result_paths\":[\"acceptance.html\"]}}}\n")
+	stdinFD, err := sealedMemfd("stdin", stdin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(stdinFD)
+	request.Stdin = &FDRef{Index: 0, Size: int64(len(stdin)), SHA256: DigestBytes(stdin)}
+	runner := Runner{InstallResolver: DiskInstallResolver{Root: installRoot}, WorkspaceResolver: DiskWorkspaceResolver{Root: workspaceRoot}, V2Backend: backend}
+	status, err := runner.RunV2(context.Background(), request, []int{stdinFD}, NewRunRegistry())
+	if err != nil || status.Phase != PhaseTombstone || status.Error != ErrorNone || !bytes.Contains(status.Stdout, []byte(`"isError":false`)) {
+		t.Fatalf("status=%+v err=%v stdout=%s stderr=%s", status, err, status.Stdout, status.Stderr)
+	}
+	body, err := os.ReadFile(filepath.Join(workspaceRoot, request.TaskID, request.TaskFence, "acceptance.html"))
+	if err != nil || string(body) != "LOCAL_SANDBOX_ACCEPTANCE" {
+		t.Fatalf("artifact=%q err=%v", body, err)
 	}
 }
 
