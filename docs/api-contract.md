@@ -365,12 +365,12 @@ clients use `agent.execution.v2.plans.get/list`,
 proposal carries minimum vCPU, memory, disk, and estimated runtime rather than
 an AWS instance type. Agent intersects current-generation Linux on-demand
 products with actual regional offerings and selects the cheapest satisfying
-x86_64 shape. Every proposal or requote that would create a new Worker performs
-a fresh AWS Price List read for that exact EC2 shape and gp3 volume. The quote
-is not served from a persisted pricing catalog. Confirmation exposes the exact
-shape, hourly compute price, estimated cost, and maximum authorized cost. Agent
-reads live pricing again immediately before key-pair, security-group, or EC2
-creation; expiry or drift produces a replacement offer with zero AWS mutation.
+x86_64 shape. Every proposal performs a fresh AWS Price List read for that
+exact EC2 shape and gp3 volume. The quote is not served from a persisted pricing
+catalog. Confirmation exposes the exact shape, hourly compute price, estimated
+cost, and maximum authorized cost. Confirmation validates the offer revision
+and expiry; after confirmation the task executes directly without a second
+pricing or replacement-offer pass.
 Reusing an already retained idle Worker requires its actual vCPU, memory, and
 disk to satisfy the request. It needs no creation confirmation, but Agent still
 reads and displays its live ongoing hourly cost. Worker destruction is a

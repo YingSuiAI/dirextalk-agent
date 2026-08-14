@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
-	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/jackc/pgx/v5"
 )
@@ -143,7 +142,7 @@ func (s *CloudWorkerStore) EventsForAuthority(ctx context.Context, owner string,
 		if err = rows.Scan(&kind, &workerProgressSequence, &raw); err != nil || json.Unmarshal(raw, &event) != nil ||
 			event.ExecutionID != executionID || event.RunID != id || event.OwnerID != owner ||
 			event.AccountGeneration != accountGeneration || event.Sequence != next+1 || event.Type != kind ||
-			!validCloudWorkerPublicProgress(event, workerProgressSequence) {
+			workerProgressSequence != nil || event.Type == "worker_progress" {
 			return nil, after, false, cloudworker.ErrConflict
 		}
 		result = append(result, event)
@@ -156,47 +155,6 @@ func (s *CloudWorkerStore) EventsForAuthority(ctx context.Context, owner string,
 		return nil, after, false, err
 	}
 	return result, next, historyTruncated, nil
-}
-
-func validCloudWorkerPublicProgress(event cloudworker.Event, workerSequence *uint64) bool {
-	if event.Type != "worker_progress" {
-		return event.Progress == nil && workerSequence == nil
-	}
-	if event.Progress == nil || workerSequence == nil || *workerSequence == 0 {
-		return false
-	}
-	progress := control.ProgressSnapshot{
-		Phase: control.ProgressPhase(event.Progress.Phase), ElapsedMS: event.Progress.ElapsedMS,
-		LastActivityAt: event.Progress.LastActivityAt, CPUTimeMS: event.Progress.CPUTimeMS,
-		MemoryHighWaterBytes: event.Progress.MemoryHighWaterBytes,
-		InvocationCount:      event.Progress.InvocationCount, UploadedBytes: event.Progress.UploadedBytes,
-		OutputTruncated: event.Progress.OutputTruncated,
-	}
-	return control.ValidateProgressSnapshot(progress, event.CreatedAt.UTC()) == nil
-}
-
-func (s *CloudWorkerStore) GetArtifactForAuthority(ctx context.Context, owner string, accountGeneration uint64, id string) (cloudworker.Artifact, error) {
-	owner = strings.TrimSpace(owner)
-	if s == nil || s.store == nil || owner == "" || accountGeneration == 0 || !coretask.ValidUUID(id) {
-		return cloudworker.Artifact{}, cloudworker.ErrInvalid
-	}
-	var raw []byte
-	err := s.store.pool.QueryRow(ctx, `SELECT artifact.artifact_json
-		FROM core_cloud_worker_artifacts artifact
-		JOIN core_cloud_worker_executions execution ON execution.execution_id=artifact.execution_id
-		WHERE artifact.artifact_id=$1 AND execution.owner_id=$2 AND execution.account_generation=$3`,
-		id, owner, accountGeneration).Scan(&raw)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return cloudworker.Artifact{}, cloudworker.ErrNotFound
-	}
-	if err != nil {
-		return cloudworker.Artifact{}, err
-	}
-	var artifact cloudworker.Artifact
-	if json.Unmarshal(raw, &artifact) != nil || artifact.ArtifactID != id || !coretask.ValidUUID(artifact.ExecutionID) {
-		return cloudworker.Artifact{}, cloudworker.ErrConflict
-	}
-	return artifact, nil
 }
 
 func decodeCloudWorkerAuthorityCursor(value string) (cloudWorkerListCursor, error) {

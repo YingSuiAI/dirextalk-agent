@@ -6,12 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"net/url"
 	"strings"
 	"time"
 
-	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
-	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
@@ -20,24 +17,6 @@ import (
 // Provider calls always happen outside Store transactions.
 type Store interface {
 	CreateOffer(context.Context, CreateOfferCommand) (Offer, error)
-	GetPlan(context.Context, string, string, uint64) (Plan, error)
-	GetExecution(context.Context, string, string) (Execution, error)
-	ListExecutions(context.Context, string, string, int) ([]Execution, string, error)
-	GetArtifact(context.Context, string, string) (Artifact, error)
-	Events(context.Context, string, string, uint64, int) ([]Event, uint64, error)
-	GetControllerContext(context.Context, coretask.Task) (ControllerContext, error)
-	BeginExecution(context.Context, coretask.Task) (BeginResult, error)
-	AuthorizeLaunch(context.Context, AuthorizeLaunchCommand) (LaunchAuthorization, error)
-	GetResumeContext(context.Context, coretask.Task) (ResumeContext, error)
-	ReplaceWithRequote(context.Context, coretask.Task, RequoteOfferCommand) (Offer, error)
-	MarkDispatchPrepared(context.Context, coretask.Task, uint64, cloudaws.ExecutionIdentity, string) (Execution, error)
-	TransitionExecution(context.Context, coretask.Task, uint64, ExecutionState) (Execution, error)
-	RecordResources(context.Context, coretask.Task, uint64, []Resource, ExecutionState) (Execution, error)
-	RecordArtifacts(context.Context, coretask.Task, uint64, []Artifact, ExecutionState) (Execution, error)
-	BeginCleanup(context.Context, coretask.Task, uint64, ExecutionState, string, string) (Execution, error)
-	CompleteExecution(context.Context, coretask.Task, uint64, ProviderResult) (Execution, CompletionOutbox, error)
-	FailExecution(context.Context, coretask.Task, uint64, string, string) (Execution, CompletionOutbox, error)
-	CancelExecution(context.Context, coretask.Task, uint64, string, string) (Execution, CompletionOutbox, error)
 }
 
 // WorkerReuseResolver reports the actual compute of a matching idle Worker.
@@ -51,36 +30,6 @@ type WorkerReuseResolver interface {
 // from model-estimated provider-neutral requirements and live AWS prices.
 type ComputeSelector interface {
 	SelectCompute(context.Context, AWSBinding, ComputeRequirements) (ComputeSpec, error)
-}
-
-// BeginResult is the transactionally consumed confirmation plus the current
-// CoreTask fence. It deliberately cannot authorize provider mutation: exact
-// input versions and the canonical Pi task do not exist until staging runs.
-type BeginResult struct {
-	Plan         Plan               `json:"plan"`
-	Execution    Execution          `json:"execution"`
-	Prerequisite LaunchPrerequisite `json:"launch_prerequisite"`
-}
-
-// AuthorizeLaunchCommand closes the second transaction boundary after input
-// staging. The Store must rebuild RuntimeTaskMaterial from its locked Plan,
-// Execution, task fence, staged manifest and qualification and accept only an
-// exact byte/digest match before persisting launch material.
-type AuthorizeLaunchCommand struct {
-	Task                      coretask.Task
-	ExpectedExecutionRevision uint64
-	StagedManifest            StagedInputManifest
-	Qualification             RuntimeQualification
-	Material                  RuntimeTaskMaterial
-}
-
-// CompletionDispatcher is intentionally the service-originated Product
-// Capability port for product.agent_execution.v1/record_completion with scope
-// product:agent_execution:write. Authentication is the configured mTLS,
-// direction-token, peer-instance and account-generation boundary; the outbox
-// never stores a user grant, CallContext, service key or direct-gRPC secret.
-type CompletionDispatcher interface {
-	RecordCompletion(context.Context, CompletionOutbox) error
 }
 
 type QuoteRequest struct {
@@ -98,14 +47,9 @@ type QuoteRequest struct {
 	Limits                   Limits
 }
 
-// Quoter is called once while compiling an offer and again immediately before
-// the first provider mutation. Validate returns the already-authorized quote
-// only while it is still current; otherwise it returns a fresh sealed quote
-// which is compiled against replacement identities and atomically persisted by
-// ReplaceWithRequote as a new offer/Task/Confirmation.
+// Quoter reads live provider pricing while compiling an offer.
 type Quoter interface {
 	Quote(context.Context, QuoteRequest) (Quote, error)
-	Validate(context.Context, Plan) (Quote, error)
 }
 
 // AWSBindingResolver revalidates the exact durable AWS credential authority
@@ -149,77 +93,22 @@ func (resolve fixedAWSBindingResolver) ResolveExactAWSBinding(_ context.Context,
 	return resolve.binding, nil
 }
 
-type ProviderResult struct {
-	Resources                 []Resource           `json:"resources"`
-	Artifacts                 []Artifact           `json:"artifacts"`
-	Summary                   string               `json:"summary"`
-	DeliverableContext        []DeliverableContext `json:"deliverable_context,omitempty"`
-	DeliverableContextOmitted uint64               `json:"deliverable_context_omitted,omitempty"`
-}
-
-// DeliverableContext is a bounded, secret-screened view of a verified Worker
-// artifact. Exact bytes remain on the existing artifact download path.
-type DeliverableContext struct {
-	ArtifactName         string `json:"artifact_name"`
-	Path                 string `json:"path"`
-	MediaType            string `json:"media_type"`
-	SizeBytes            uint64 `json:"size_bytes"`
-	TextPreview          string `json:"text_preview,omitempty"`
-	TextPreviewTruncated bool   `json:"text_preview_truncated,omitempty"`
-}
-
 type Defaults struct {
-	AWS                      AWSBinding
-	Compute                  ComputeSpec
-	Placement                PlacementSpec
-	NetworkPolicy            NetworkPolicy
-	ArtifactBucket           string
-	ArtifactBasePrefix       string
-	ArtifactKMSKeyARN        string
-	ArtifactVersioned        bool
-	WorkerBootstrap          WorkerBootstrap
-	ModelRelay               ModelRelayBinding
-	Limits                   Limits
-	NetworkGrants            []string
-	SecretGrants             []SecretGrant
-	ArtifactRetentionSeconds uint64
-	QuoteAmountMicros        int64
-	MaximumAuthorizedMicros  int64
-	QuoteTTL                 time.Duration
+	AWS                     AWSBinding
+	Compute                 ComputeSpec
+	Limits                  Limits
+	QuoteAmountMicros       int64
+	MaximumAuthorizedMicros int64
+	QuoteTTL                time.Duration
 }
 
 func (d Defaults) Validate() error {
-	if validateCompute(d.Compute) != nil || validateLimits(d.Limits) != nil || d.ArtifactRetentionSeconds == 0 || d.QuoteTTL <= 0 || d.QuoteTTL > 24*time.Hour || d.QuoteAmountMicros < 0 || d.MaximumAuthorizedMicros < d.QuoteAmountMicros {
+	if validateCompute(d.Compute) != nil || validateLimits(d.Limits) != nil ||
+		d.QuoteTTL <= 0 || d.QuoteTTL > 24*time.Hour ||
+		d.QuoteAmountMicros < 0 || d.MaximumAuthorizedMicros < d.QuoteAmountMicros {
 		return ErrInvalid
 	}
-	if d.Placement == (PlacementSpec{}) && networkPolicyEmpty(d.NetworkPolicy) && d.ArtifactBucket == "" && d.ArtifactBasePrefix == "" && d.ArtifactKMSKeyARN == "" && !d.ArtifactVersioned && d.WorkerBootstrap == (WorkerBootstrap{}) && d.ModelRelay == (ModelRelayBinding{}) && len(d.NetworkGrants) == 0 && len(d.SecretGrants) == 0 {
-		return nil
-	}
-	if validateAWS(d.AWS) != nil || !validAWSID(d.Placement.VPCID, "vpc") || !validAWSID(d.Placement.SubnetID, "subnet") || d.Placement.IAMPolicyDigest != "" {
-		return ErrInvalid
-	}
-	network := d.NetworkPolicy
-	if err := network.Seal(); err != nil {
-		return err
-	}
-	bootstrap := d.WorkerBootstrap
-	if err := bootstrap.Seal(network); err != nil {
-		return err
-	}
-	// Model binding is request-scoped, so Defaults can only validate the relay
-	// transport shape here. The complete audience binding is sealed per plan.
-	parsedRelay, err := url.Parse(strings.TrimSpace(d.ModelRelay.Endpoint))
-	if err != nil || parsedRelay.Scheme != "https" || parsedRelay.Hostname() != strings.ToLower(strings.TrimSpace(d.ModelRelay.TLSServerName)) || !validDigest(strings.TrimSpace(d.ModelRelay.TrustBundleDigest)) {
-		return ErrInvalid
-	}
-	if len(strings.TrimSpace(d.ArtifactBucket)) < 3 || len(strings.TrimSpace(d.ArtifactBucket)) > 63 || strings.TrimSpace(d.ArtifactBasePrefix) == "" || !strings.HasSuffix(strings.TrimSpace(d.ArtifactBasePrefix), "/") || strings.HasPrefix(strings.TrimSpace(d.ArtifactBasePrefix), "/") || strings.Contains(strings.TrimSpace(d.ArtifactBasePrefix), "..") || !d.ArtifactVersioned || !strings.HasPrefix(strings.TrimSpace(d.ArtifactKMSKeyARN), "arn:aws:kms:") {
-		return ErrInvalid
-	}
-	if _, err := normalizeStrings(d.NetworkGrants, 64); err != nil {
-		return err
-	}
-	grants := append([]SecretGrant(nil), d.SecretGrants...)
-	return normalizeSecretGrants(&grants)
+	return nil
 }
 
 type Service struct {
@@ -311,21 +200,6 @@ type CreateOfferCommand struct {
 	TaskPayload          coretask.CloudWorkerTaskPayload
 }
 
-// RequoteOfferCommand carries a complete, newly quoted replacement. The
-// Store never changes IDs, authorization basis, quote basis or digests; it
-// only validates and atomically swaps the pre-mutation execution after all
-// old staging/provider resources are proven destroyed.
-type RequoteOfferCommand struct {
-	IdempotencyKey string
-	RequestDigest  string
-	OldExecutionID string
-	Reason         string
-	Plan           Plan
-	Execution      Execution
-	BindingJSON    json.RawMessage
-	TaskPayload    coretask.CloudWorkerTaskPayload
-}
-
 func deterministicID(seed, key string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(seed+":"+key)).String()
 }
@@ -409,31 +283,8 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		ProposalReason: command.ProposalReason, LocalBudgetEvidence: budgetEvidence,
 		InputManifest: command.InputManifest, InputManifestDigest: manifestDigest, WorkspaceMode: command.WorkspaceMode,
 		ModelAuthorization: command.ModelAuthorization,
-		AWS:                awsBinding, Compute: compute,
-		Placement: s.defaults.Placement,
-		NetworkPolicy: NetworkPolicy{
-			DNSResolverCIDRs:               append([]string(nil), s.defaults.NetworkPolicy.DNSResolverCIDRs...),
-			TLSProxyCIDRs:                  append([]string(nil), s.defaults.NetworkPolicy.TLSProxyCIDRs...),
-			AllowedFQDNs:                   append([]string(nil), s.defaults.NetworkPolicy.AllowedFQDNs...),
-			OutboundProxyURL:               s.defaults.NetworkPolicy.OutboundProxyURL,
-			OutboundProxyServerName:        s.defaults.NetworkPolicy.OutboundProxyServerName,
-			OutboundProxyTrustBundleSHA256: s.defaults.NetworkPolicy.OutboundProxyTrustBundleSHA256,
-		},
-		ArtifactGrant: func() ArtifactGrant {
-			if strings.TrimSpace(s.defaults.ArtifactBucket) == "" {
-				return ArtifactGrant{}
-			}
-			return ArtifactGrant{Bucket: strings.TrimSpace(s.defaults.ArtifactBucket), KeyPrefix: strings.TrimSpace(s.defaults.ArtifactBasePrefix) + executionID + "/",
-				KMSKeyARN: strings.TrimSpace(s.defaults.ArtifactKMSKeyARN), Versioned: s.defaults.ArtifactVersioned,
-				RetentionSeconds: s.defaults.ArtifactRetentionSeconds}
-		}(),
-		WorkerBootstrap:          s.defaults.WorkerBootstrap,
-		ModelRelay:               s.defaults.ModelRelay,
-		Limits:                   limits,
-		NetworkGrants:            append([]string(nil), s.defaults.NetworkGrants...),
-		SecretGrants:             append([]SecretGrant(nil), s.defaults.SecretGrants...),
-		ArtifactRetentionSeconds: s.defaults.ArtifactRetentionSeconds,
-		CreatedAt:                now, UpdatedAt: now,
+		AWS:                awsBinding, Compute: compute, Limits: limits,
+		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := plan.sealAuthorizationBasis(); err != nil {
 		return Offer{}, err
@@ -451,7 +302,6 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 				return Offer{}, ErrInvalid
 			}
 			plan.Compute = reusedCompute
-			plan.AWSInfrastructureDigest = ""
 		}
 	}
 	plan.PersistentWorkerReuse = reuse
@@ -513,57 +363,6 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	return s.store.CreateOffer(ctx, CreateOfferCommand{IdempotencyKey: command.IdempotencyKey, RequestDigest: hex.EncodeToString(sum[:]), TurnLeaseID: command.TurnLeaseID, TurnLeaseEpoch: command.TurnLeaseEpoch, ExpectedTurnRevision: command.ExpectedTurnRevision, Plan: plan, Execution: execution, BindingJSON: bindingRaw, TaskPayload: payload})
 }
 
-// PreflightLaunch re-reads live pricing at the last safe point before the SSH
-// provider can mutate AWS. A changed or expired quote is replaced with the
-// existing durable requote flow and requires a fresh user confirmation.
-func (s *Service) PreflightLaunch(ctx context.Context, task coretask.Task, plan Plan, snapshot coremodel.ExecutionSnapshot) (bool, error) {
-	if s == nil || s.store == nil || s.quoter == nil || s.awsBindings == nil || ctx == nil || plan.Seal() != nil {
-		return false, ErrInvalid
-	}
-	// Reuse does not create or modify AWS resources. Its live hourly value is
-	// informational and does not authorize a new provider mutation.
-	if plan.PersistentWorkerReuse {
-		return false, nil
-	}
-	fresh, err := s.quoter.Validate(ctx, plan)
-	if err != nil {
-		return false, err
-	}
-	freshDigest := fresh.Digest
-	if fresh.Seal() != nil || fresh.Digest != freshDigest || fresh.BasisDigest != plan.AuthorizationBasisDigest {
-		return false, ErrStaleAuthorization
-	}
-	now := s.now().UTC()
-	if now.IsZero() || !now.Before(fresh.ExpiresAt) {
-		return false, ErrStaleAuthorization
-	}
-	reason := ""
-	if !now.Before(plan.Quote.ExpiresAt) {
-		reason = RequoteReasonExpired
-	} else if fresh.Digest != plan.Quote.Digest {
-		reason = RequoteReasonDrift
-	}
-	if reason == "" {
-		return false, nil
-	}
-	currentAWS, err := s.awsBindings.ResolveCurrentAWSBinding(ctx)
-	if err != nil || validateAWS(currentAWS) != nil {
-		return false, errors.Join(ErrStaleAuthorization, err)
-	}
-	modelAuthorization, err := ModelAuthorizationFromSnapshot(snapshot)
-	if err != nil {
-		return false, err
-	}
-	command, err := compileRequoteOffer(ctx, s.quoter, s.defaults.Limits, plan, reason, now, currentAWS, modelAuthorization)
-	if err != nil {
-		return false, err
-	}
-	if _, err = s.store.ReplaceWithRequote(ctx, task, command); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
 // FakeQuoter is explicit test/dev infrastructure. It never performs an AWS
 // read or mutation and must not be selected as a production price source.
 type FakeQuoter struct {
@@ -587,51 +386,4 @@ func (q FakeQuoter) Quote(_ context.Context, request QuoteRequest) (Quote, error
 	now := q.clock()
 	quote := Quote{AmountMicros: q.AmountMicros, ComputeMicrosPerHour: q.ComputeMicrosPerHour, Currency: "USD", SourceTime: now, ExpiresAt: now.Add(q.TTL), MaximumAuthorizedCostMicros: q.MaximumAuthorizedMicros, BasisDigest: request.AuthorizationBasisDigest, CatalogRevisionDigest: digestValue("fake-pricing-catalog/v1")}
 	return quote, quote.Seal()
-}
-
-func (q FakeQuoter) Validate(ctx context.Context, plan Plan) (Quote, error) {
-	now := q.clock()
-	copy := plan
-	if err := copy.sealAuthorizationBasis(); err != nil {
-		return Quote{}, err
-	}
-	if plan.Quote.ExpiresAt.After(now) && plan.Quote.AmountMicros == q.AmountMicros && plan.Quote.ComputeMicrosPerHour == q.ComputeMicrosPerHour && plan.Quote.MaximumAuthorizedCostMicros == q.MaximumAuthorizedMicros && plan.Quote.BasisDigest == copy.AuthorizationBasisDigest && plan.Quote.CatalogRevisionDigest == digestValue("fake-pricing-catalog/v1") {
-		return plan.Quote, nil
-	}
-	return q.Quote(ctx, QuoteRequest{OwnerID: copy.OwnerID, AccountGeneration: copy.AccountGeneration, ObjectiveDigest: copy.ObjectiveDigest, UserPromptDigest: copy.UserPromptDigest, InputManifestDigest: copy.InputManifestDigest, WorkspaceMode: copy.WorkspaceMode, ProposalReason: copy.ProposalReason, ModelBindingDigest: copy.ModelAuthorization.BindingDigest, AuthorizationBasisDigest: copy.AuthorizationBasisDigest, AWS: copy.AWS, Compute: copy.Compute, Limits: copy.Limits})
-}
-
-func (s *Service) GetPlan(ctx context.Context, owner, id string, revision uint64) (Plan, error) {
-	if s == nil || strings.TrimSpace(owner) == "" || !validUUID(id) {
-		return Plan{}, ErrInvalid
-	}
-	return s.store.GetPlan(ctx, strings.TrimSpace(owner), id, revision)
-}
-
-func (s *Service) GetExecution(ctx context.Context, owner, id string) (Execution, error) {
-	if s == nil || strings.TrimSpace(owner) == "" || !validUUID(id) {
-		return Execution{}, ErrInvalid
-	}
-	return s.store.GetExecution(ctx, strings.TrimSpace(owner), id)
-}
-
-func (s *Service) GetArtifact(ctx context.Context, owner, id string) (Artifact, error) {
-	if s == nil || strings.TrimSpace(owner) == "" || !validUUID(id) {
-		return Artifact{}, ErrInvalid
-	}
-	return s.store.GetArtifact(ctx, strings.TrimSpace(owner), id)
-}
-
-func (s *Service) ListExecutions(ctx context.Context, owner, cursor string, limit int) ([]Execution, string, error) {
-	if s == nil || strings.TrimSpace(owner) == "" || limit < 1 || limit > 200 {
-		return nil, "", ErrInvalid
-	}
-	return s.store.ListExecutions(ctx, strings.TrimSpace(owner), cursor, limit)
-}
-
-func (s *Service) Events(ctx context.Context, owner, id string, after uint64, limit int) ([]Event, uint64, error) {
-	if s == nil || strings.TrimSpace(owner) == "" || !validUUID(id) || limit < 1 || limit > 200 {
-		return nil, 0, ErrInvalid
-	}
-	return s.store.Events(ctx, strings.TrimSpace(owner), id, after, limit)
 }

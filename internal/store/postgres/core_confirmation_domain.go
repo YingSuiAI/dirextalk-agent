@@ -194,8 +194,7 @@ func projectCloudWorkerConfirmationTx(ctx context.Context, tx pgx.Tx, cur coreco
 		return err
 	}
 	if execution.TaskID != cur.TaskID || execution.ConfirmationID != cur.ConfirmationID || execution.PlanID != cur.Binding.PlanID ||
-		execution.PlanDigest != string(cur.Binding.PlanDigest) || execution.ExecutionDigest != string(cur.Binding.ExecutionDigest) ||
-		execution.ProviderMutationStarted {
+		execution.PlanDigest != string(cur.Binding.PlanDigest) || execution.ExecutionDigest != string(cur.Binding.ExecutionDigest) {
 		return coreconfirmation.ErrStale
 	}
 	transitioned, err := execution.Transition(next, at.UTC())
@@ -228,8 +227,7 @@ func terminalizeCloudWorkerTurnTx(
 	terminal cloudworker.ExecutionState,
 	at time.Time,
 ) error {
-	if execution.ProviderMutationStarted || execution.Cleanup.ResourcesTotal != 0 ||
-		(terminal != cloudworker.StateRejected && terminal != cloudworker.StateExpired && terminal != cloudworker.StateCanceled) {
+	if terminal != cloudworker.StateRejected && terminal != cloudworker.StateExpired && terminal != cloudworker.StateCanceled {
 		return coreconfirmation.ErrStale
 	}
 	var turn struct {

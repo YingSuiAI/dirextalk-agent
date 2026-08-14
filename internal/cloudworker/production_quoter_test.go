@@ -37,12 +37,12 @@ func TestProductionQuoterUsesFreshBoundCatalogAndHardMaximum(t *testing.T) {
 
 	catalog.rates.ComputeMicrosPerHour++
 	now = now.Add(10 * time.Second)
-	requoted, err := quoter.Quote(context.Background(), request)
+	second, err := quoter.Quote(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requoted.AmountMicros == quote.AmountMicros || requoted.Digest == quote.Digest || catalog.calls != 2 {
-		t.Fatalf("price drift did not force a fresh quote: old=%+v new=%+v calls=%d", quote, requoted, catalog.calls)
+	if second.AmountMicros == quote.AmountMicros || second.Digest == quote.Digest || catalog.calls != 2 {
+		t.Fatalf("a new proposal reused stale pricing: first=%+v second=%+v calls=%d", quote, second, catalog.calls)
 	}
 }
 
@@ -83,84 +83,6 @@ func TestProductionQuoterFailsClosedOnStaleDriftAndHardLimit(t *testing.T) {
 	}
 }
 
-func TestProductionQuoterRequotesSamePriceCatalogRevisionDrift(t *testing.T) {
-	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
-	plan, _, _, source := stagingFixture(t, now)
-	defer source.Body.Close()
-	rates := PricingCatalogRates{
-		ComputeMicrosPerHour: 3_600_000, EBSStorageMicrosPerGiBMonth: 1_000,
-		EBSIOPSMicrosPerMonth: 2, EBSThroughputMicrosPerMonth: 10,
-		PublicIPv4MicrosPerHour: 360_000, ModelMicrosPerThousandTokens: 1_000,
-		FixedRequestOverheadMicros: 100,
-	}
-	catalog := &pricingCatalogFake{now: &now, rates: rates}
-	quoter, err := NewProductionQuoter(catalog, ProductionQuoterConfig{QuoteTTL: 5 * time.Minute, MaximumCatalogAge: time.Minute,
-		CleanupReserveSeconds: EphemeralCleanupReserveSeconds, ContingencyBasisPoints: 2_000, AbsoluteHardLimitMicros: 10_000_000}, func() time.Time { return now })
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := quoteRequestForPlan(plan)
-	first, err := quoter.Quote(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan.Quote = first
-	if err := plan.Seal(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Change a real catalog rate, then offset the exact aggregate delta in
-	// fixed overhead. The price and hard maximum stay byte-identical while the
-	// sealed catalog revision changes.
-	changed := rates
-	changed.ComputeMicrosPerHour--
-	before, err := estimateMaximumCost(rates, plan.Compute, plan.Limits, EphemeralCleanupReserveSeconds)
-	if err != nil {
-		t.Fatal(err)
-	}
-	after, err := estimateMaximumCost(changed, plan.Compute, plan.Limits, EphemeralCleanupReserveSeconds)
-	if err != nil || after > before {
-		t.Fatalf("unexpected catalog delta: before=%d after=%d err=%v", before, after, err)
-	}
-	changed.FixedRequestOverheadMicros += before - after
-	catalog.rates = changed
-	fresh, err := quoter.Validate(context.Background(), plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fresh.AmountMicros != first.AmountMicros || fresh.MaximumAuthorizedCostMicros != first.MaximumAuthorizedCostMicros {
-		t.Fatalf("test did not preserve price: first=%+v fresh=%+v", first, fresh)
-	}
-	if fresh.CatalogRevisionDigest == first.CatalogRevisionDigest || fresh.Digest == first.Digest {
-		t.Fatalf("same-price catalog revision drift reused authorization: first=%+v fresh=%+v", first, fresh)
-	}
-}
-
-func TestProductionQuoterKeepsAuthorizationWhenOnlyLiveObservationTimeChanges(t *testing.T) {
-	now := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
-	plan, _, _, source := stagingFixture(t, now)
-	defer source.Body.Close()
-	catalog := &pricingCatalogFake{now: &now, rates: PricingCatalogRates{ComputeMicrosPerHour: 30_000, EBSStorageMicrosPerGiBMonth: 80_000, PublicIPv4MicrosPerHour: 5_000}}
-	quoter, err := NewProductionQuoter(catalog, ProductionQuoterConfig{QuoteTTL: 5 * time.Minute, MaximumCatalogAge: 5 * time.Minute,
-		CleanupReserveSeconds: EphemeralCleanupReserveSeconds, ContingencyBasisPoints: 1_000, AbsoluteHardLimitMicros: 10_000_000}, func() time.Time { return now })
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := quoter.Quote(context.Background(), quoteRequestForPlan(plan))
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan.Quote = first
-	if err = plan.Seal(); err != nil {
-		t.Fatal(err)
-	}
-	now = now.Add(10 * time.Second)
-	current, err := quoter.Validate(context.Background(), plan)
-	if err != nil || current.Digest != first.Digest {
-		t.Fatalf("unchanged live price forced requote: first=%+v current=%+v err=%v", first, current, err)
-	}
-}
-
 func quoteRequestForPlan(plan Plan) QuoteRequest {
 	return QuoteRequest{
 		OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration,
@@ -179,8 +101,7 @@ func productionQuoteRequest() QuoteRequest {
 		ModelBindingDigest: digestValue("model"), AuthorizationBasisDigest: digestValue("basis"),
 		AWS: AWSBinding{AccountID: "123456789012", Region: "us-east-1", CredentialID: "11111111-1111-4111-8111-111111111111", CredentialRevision: 7},
 		Compute: ComputeSpec{InstanceType: "c7i.large", Architecture: "x86_64", RootDeviceName: "/dev/xvda", VolumeGiB: 32,
-			VolumeType: "gp3", VolumeIOPS: 4000, VolumeThroughputMiB: 250, AMIID: "ami-0123456789abcdef0", AMIDigest: digestValue("ami"),
-			WorkerReleaseDigest: digestValue("worker"), PiRuntimeDigest: digestValue("pi"), HostNetworkPolicySHA256: digestValue("host-network-policy")},
+			VolumeType: "gp3", VolumeIOPS: 4000, VolumeThroughputMiB: 250},
 		Limits: Limits{MaxRuntimeSeconds: 3600, MaxTokens: 2000, MaxOutputBytes: 1 << 20},
 	}
 }

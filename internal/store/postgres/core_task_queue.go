@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -141,16 +140,8 @@ func (s *CoreTaskStore) ClaimNextDue(ctx context.Context, holder string, at time
 		if claimErr != nil {
 			return coretask.Task{}, coretask.Lease{}, claimErr
 		}
-		var terminalIntent string
-		if claimErr = tx.QueryRow(ctx, `SELECT terminal_intent FROM core_cloud_worker_executions WHERE task_id=$1`, id).Scan(&terminalIntent); claimErr != nil {
+		if _, claimErr = NewCloudWorkerStore(s.store).beginExecutionTx(ctx, tx, claimed, at.UTC().Truncate(time.Microsecond)); claimErr != nil {
 			return coretask.Task{}, coretask.Lease{}, claimErr
-		}
-		// A pre-dispatch cancellation deliberately requeues a task with an expired
-		// confirmation so the controller can perform zero-mutation cleanup.
-		if terminalIntent != string(cloudworker.StateCanceled) {
-			if _, claimErr = NewCloudWorkerStore(s.store).beginExecutionTx(ctx, tx, claimed, at.UTC().Truncate(time.Microsecond)); claimErr != nil {
-				return coretask.Task{}, coretask.Lease{}, claimErr
-			}
 		}
 	}
 	if _, e = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at) SELECT task_id,progress_sequence+1,$2,attempt,'running','claimed','task claimed',$3 FROM core_tasks WHERE task_id=$1`, id, uuid.New(), at.UTC()); e != nil {

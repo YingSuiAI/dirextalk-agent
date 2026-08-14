@@ -46,7 +46,7 @@ func TestPersistentWorkerExecutionProjection(t *testing.T) {
 		ConversationID: "00000000-0000-4000-8000-000000000005", TurnID: "00000000-0000-4000-8000-000000000006",
 		Status: cloudworker.StateSucceeded, State: cloudworker.StateSucceeded, Revision: 2, WorkspaceMode: cloudworker.WorkspaceNone,
 		ModelBindingDigest: strings.Repeat("b", 64), QuoteDigest: strings.Repeat("c", 64), ExecutionDigest: strings.Repeat("d", 64),
-		WorkerID: cloudRunID, PersistentWorker: true, ProviderMutationStarted: true, ArtifactIDs: []string{}, CreatedAt: now, UpdatedAt: now}
+		WorkerID: cloudRunID, PersistentWorker: true, ArtifactIDs: []string{}, CreatedAt: now, UpdatedAt: now}
 	if err := execution.Seal(); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestPersistentWorkerExecutionProjection(t *testing.T) {
 	assertCloudWorkerProjectionKeys(t, projection, []string{
 		"owner_id", "account_generation", "run_id", "execution_id", "plan_id", "plan_revision", "task_id",
 		"confirmation_id", "conversation_id", "turn_id", "status", "revision", "worker_id", "persistent_worker",
-		"cleanup", "artifact_ids", "failure_code", "failure_summary", "cancellation_requested", "created_at", "updated_at",
+		"artifact_ids", "failure_code", "failure_summary", "created_at", "updated_at",
 	})
 }
 
@@ -67,9 +67,9 @@ func TestCloudWorkerPlanProjectionContainsOnlyCurrentUIFields(t *testing.T) {
 		ConversationID: "00000000-0000-4000-8000-000000000005", TurnID: "00000000-0000-4000-8000-000000000006",
 		ObjectiveSummary: "deploy service", ProposalReason: cloudworker.ProposalReasonLocalBudgetExceeded, PersistentWorkerReuse: true,
 		WorkspaceMode: cloudworker.WorkspaceWrite, AWS: cloudworker.AWSBinding{AccountID: "123456789012", Region: "ap-east-1"},
-		Compute: cloudworker.ComputeSpec{InstanceType: "t3.small", VolumeGiB: 20, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125},
-		Limits:  cloudworker.Limits{MaxRuntimeSeconds: 3600}, NetworkGrants: []string{}, SecretGrants: []cloudworker.SecretGrant{},
-		ArtifactRetentionSeconds: 3600, Quote: cloudworker.Quote{Currency: "USD", SourceTime: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), ExpiresAt: time.Date(2026, 8, 13, 12, 5, 0, 0, time.UTC)},
+		Compute:   cloudworker.ComputeSpec{InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 20, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125},
+		Limits:    cloudworker.Limits{MaxRuntimeSeconds: 3600},
+		Quote:     cloudworker.Quote{ComputeMicrosPerHour: 25_000, Currency: "USD", SourceTime: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), ExpiresAt: time.Date(2026, 8, 13, 12, 5, 0, 0, time.UTC)},
 		CreatedAt: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)}
 	projection := cloudWorkerPlanProjection(plan)
 	if projection["persistent_worker_reuse"] != true {
@@ -78,7 +78,7 @@ func TestCloudWorkerPlanProjectionContainsOnlyCurrentUIFields(t *testing.T) {
 	assertCloudWorkerProjectionKeys(t, projection, []string{
 		"owner_id", "account_generation", "plan_id", "revision", "status", "execution_id", "task_id", "confirmation_id",
 		"conversation_id", "turn_id", "objective_summary", "proposal_reason", "persistent_worker_reuse", "workspace_mode",
-		"aws", "compute", "limits", "network_grants", "secret_grants", "artifact_retention_seconds", "quote", "created_at", "updated_at",
+		"aws", "compute", "limits", "quote", "created_at", "updated_at",
 	})
 }
 

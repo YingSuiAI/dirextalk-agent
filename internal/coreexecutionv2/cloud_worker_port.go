@@ -52,7 +52,7 @@ type CloudWorkerArtifactGetRequest struct {
 	ArtifactID string
 }
 
-const MaxCloudWorkerArtifactDownloadChunkBytes = cloudworker.MaxArtifactDownloadChunkBytes
+const MaxCloudWorkerArtifactDownloadChunkBytes uint64 = 512 << 10
 const MaxCloudWorkerArtifactDownloadOffsetBytes = cloudworker.MaxCloudWorkerOutputBytes - 1
 
 type CloudWorkerArtifactDownloadRequest struct {
@@ -106,10 +106,6 @@ type CloudWorkerExecutionPort interface {
 	DownloadArtifact(context.Context, CloudWorkerArtifactDownloadRequest) (CloudWorkerArtifactChunk, error)
 }
 
-type CloudWorkerArtifactDownloader interface {
-	DownloadArtifact(context.Context, cloudworker.ArtifactDownloadRequest) (cloudworker.ArtifactDownloadChunk, error)
-}
-
 // CloudWorkerAuthorityStore is the persistence boundary used by the public
 // adapter. Every read carries account_generation into the database predicate;
 // checking the generation only after loading a same-owner row would leak an
@@ -121,5 +117,4 @@ type CloudWorkerAuthorityStore interface {
 	ListExecutionsForAuthority(context.Context, string, uint64, string, int) ([]cloudworker.Execution, string, error)
 	RequestCancel(context.Context, string, uint64, string, uint64, string) (cloudworker.Execution, error)
 	EventsForAuthority(context.Context, string, uint64, string, uint64, int) ([]cloudworker.Event, uint64, bool, error)
-	GetArtifactForAuthority(context.Context, string, uint64, string) (cloudworker.Artifact, error)
 }

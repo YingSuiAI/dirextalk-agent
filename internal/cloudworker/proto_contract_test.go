@@ -7,26 +7,29 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-func TestCloudWorkerPublicProtoUsesStrictSecretAndAuthorityProjections(t *testing.T) {
+func TestCloudWorkerPublicProtoMatchesDynamicSSHPublicProjection(t *testing.T) {
 	file := agentv1.File_dirextalk_agent_v1_core_cloud_worker_proto
 	if file == nil {
 		t.Fatal("Cloud Worker descriptor is missing")
 	}
-	grant := file.Messages().ByName("CoreCloudWorkerSecretGrantProjection")
-	if grant == nil || grant.Fields().Len() != 1 {
-		t.Fatalf("public secret grant shape=%v", grant)
+	plan := file.Messages().ByName("CoreCloudWorkerPlan")
+	for _, retired := range []protoreflect.Name{"network_grants", "secret_grants", "artifact_retention_seconds"} {
+		if plan.Fields().ByName(retired) != nil {
+			t.Fatalf("plan retains %s", retired)
+		}
 	}
-	purpose := grant.Fields().ByName("purpose")
-	if purpose == nil || purpose.Kind() != protoreflect.StringKind {
-		t.Fatal("public secret grant must expose only a string purpose")
+	compute := file.Messages().ByName("CoreCloudWorkerComputeProjection")
+	if compute.Fields().ByName("vcpu") == nil || compute.Fields().ByName("memory_gib") == nil || compute.Fields().ByName("ami_id") != nil {
+		t.Fatalf("compute projection=%v", compute)
 	}
-	planGrant := file.Messages().ByName("CoreCloudWorkerPlan").Fields().ByName("secret_grants")
-	if planGrant == nil || planGrant.Message() != grant || planGrant.Number() != 26 {
-		t.Fatalf("plan secret grant field=%v", planGrant)
+	quote := file.Messages().ByName("CoreCloudWorkerQuote")
+	if hourly := quote.Fields().ByName("compute_micros_per_hour"); hourly == nil || hourly.Kind() != protoreflect.Uint64Kind {
+		t.Fatalf("hourly compute price=%v", hourly)
 	}
-	cancellation := file.Messages().ByName("CoreCloudWorkerExecution").Fields().ByName("cancellation_requested")
-	if cancellation == nil || cancellation.Number() != 25 || cancellation.Kind() != protoreflect.BoolKind {
-		t.Fatalf("execution cancellation field=%v", cancellation)
+	execution := file.Messages().ByName("CoreCloudWorkerExecution")
+	if execution.Fields().ByName("cleanup") != nil || execution.Fields().ByName("cancellation_requested") != nil ||
+		execution.Fields().ByName("worker_id") == nil || execution.Fields().ByName("persistent_worker") == nil {
+		t.Fatalf("execution projection=%v", execution)
 	}
 	artifact := file.Messages().ByName("CoreCloudWorkerArtifact")
 	if owner := artifact.Fields().ByName("owner_id"); owner == nil || owner.Kind() != protoreflect.StringKind {

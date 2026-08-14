@@ -109,8 +109,8 @@ func TestCloudWorkerCatalogDescribesCurrentPlanAndRunProjection(t *testing.T) {
 	}
 	capability, _ := NewCapability(domain)
 	want := map[string][]string{
-		"plans_get":   {"persistent_worker_reuse", "maximum_authorized_cost_micros"},
-		"plans_list":  {"persistent_worker_reuse", "maximum_authorized_cost_micros"},
+		"plans_get":   {"persistent_worker_reuse", "vcpu", "memory_gib", "compute_micros_per_hour", "maximum_authorized_cost_micros"},
+		"plans_list":  {"persistent_worker_reuse", "vcpu", "memory_gib", "compute_micros_per_hour", "maximum_authorized_cost_micros"},
 		"runs_get":    {"worker_id", "persistent_worker", "artifact_ids"},
 		"runs_list":   {"worker_id", "persistent_worker", "artifact_ids"},
 		"runs_cancel": {"worker_id", "persistent_worker", "artifact_ids"},
@@ -126,7 +126,7 @@ func TestCloudWorkerCatalogDescribesCurrentPlanAndRunProjection(t *testing.T) {
 				t.Errorf("%s schema omits %s: %s", operation.GetOperationId(), field, schema)
 			}
 		}
-		for _, retired := range []string{"recipe_id", "adapter", "input_manifest_digest", "ami_id", "worker_release_digest", "plan_digest", "quote_digest", "execution_digest"} {
+		for _, retired := range []string{"recipe_id", "adapter", "input_manifest_digest", "ami_id", "worker_release_digest", "plan_digest", "quote_digest", "execution_digest", "network_grants", "secret_grants", "artifact_retention_seconds", "cleanup", "cancellation_requested"} {
 			if strings.Contains(schema, `"`+retired+`"`) {
 				t.Errorf("%s schema retains %s: %s", operation.GetOperationId(), retired, schema)
 			}

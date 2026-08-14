@@ -77,55 +77,43 @@ func (CoreCloudWorkerWorkspaceMode) EnumDescriptor() ([]byte, []int) {
 type CoreCloudWorkerExecutionState int32
 
 const (
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_UNSPECIFIED     CoreCloudWorkerExecutionState = 0
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_WAITING_USER    CoreCloudWorkerExecutionState = 1
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_QUEUED          CoreCloudWorkerExecutionState = 2
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_PROVISIONING    CoreCloudWorkerExecutionState = 3
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_AWAITING_WORKER CoreCloudWorkerExecutionState = 4
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_RUNNING         CoreCloudWorkerExecutionState = 5
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_COLLECTING      CoreCloudWorkerExecutionState = 6
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_VALIDATING      CoreCloudWorkerExecutionState = 7
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_CLEANING        CoreCloudWorkerExecutionState = 8
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_SUCCEEDED       CoreCloudWorkerExecutionState = 9
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_FAILED          CoreCloudWorkerExecutionState = 10
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_CANCELED        CoreCloudWorkerExecutionState = 11
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_REJECTED        CoreCloudWorkerExecutionState = 12
-	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_EXPIRED         CoreCloudWorkerExecutionState = 13
+	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_UNSPECIFIED  CoreCloudWorkerExecutionState = 0
+	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_WAITING_USER CoreCloudWorkerExecutionState = 1
+	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_QUEUED       CoreCloudWorkerExecutionState = 2
+	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_PROVISIONING CoreCloudWorkerExecutionState = 3
+	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_CLEANING     CoreCloudWorkerExecutionState = 4
+	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_SUCCEEDED    CoreCloudWorkerExecutionState = 5
+	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_FAILED       CoreCloudWorkerExecutionState = 6
+	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_CANCELED     CoreCloudWorkerExecutionState = 7
+	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_REJECTED     CoreCloudWorkerExecutionState = 8
+	CoreCloudWorkerExecutionState_CORE_CLOUD_WORKER_EXECUTION_STATE_EXPIRED      CoreCloudWorkerExecutionState = 9
 )
 
 // Enum value maps for CoreCloudWorkerExecutionState.
 var (
 	CoreCloudWorkerExecutionState_name = map[int32]string{
-		0:  "CORE_CLOUD_WORKER_EXECUTION_STATE_UNSPECIFIED",
-		1:  "CORE_CLOUD_WORKER_EXECUTION_STATE_WAITING_USER",
-		2:  "CORE_CLOUD_WORKER_EXECUTION_STATE_QUEUED",
-		3:  "CORE_CLOUD_WORKER_EXECUTION_STATE_PROVISIONING",
-		4:  "CORE_CLOUD_WORKER_EXECUTION_STATE_AWAITING_WORKER",
-		5:  "CORE_CLOUD_WORKER_EXECUTION_STATE_RUNNING",
-		6:  "CORE_CLOUD_WORKER_EXECUTION_STATE_COLLECTING",
-		7:  "CORE_CLOUD_WORKER_EXECUTION_STATE_VALIDATING",
-		8:  "CORE_CLOUD_WORKER_EXECUTION_STATE_CLEANING",
-		9:  "CORE_CLOUD_WORKER_EXECUTION_STATE_SUCCEEDED",
-		10: "CORE_CLOUD_WORKER_EXECUTION_STATE_FAILED",
-		11: "CORE_CLOUD_WORKER_EXECUTION_STATE_CANCELED",
-		12: "CORE_CLOUD_WORKER_EXECUTION_STATE_REJECTED",
-		13: "CORE_CLOUD_WORKER_EXECUTION_STATE_EXPIRED",
+		0: "CORE_CLOUD_WORKER_EXECUTION_STATE_UNSPECIFIED",
+		1: "CORE_CLOUD_WORKER_EXECUTION_STATE_WAITING_USER",
+		2: "CORE_CLOUD_WORKER_EXECUTION_STATE_QUEUED",
+		3: "CORE_CLOUD_WORKER_EXECUTION_STATE_PROVISIONING",
+		4: "CORE_CLOUD_WORKER_EXECUTION_STATE_CLEANING",
+		5: "CORE_CLOUD_WORKER_EXECUTION_STATE_SUCCEEDED",
+		6: "CORE_CLOUD_WORKER_EXECUTION_STATE_FAILED",
+		7: "CORE_CLOUD_WORKER_EXECUTION_STATE_CANCELED",
+		8: "CORE_CLOUD_WORKER_EXECUTION_STATE_REJECTED",
+		9: "CORE_CLOUD_WORKER_EXECUTION_STATE_EXPIRED",
 	}
 	CoreCloudWorkerExecutionState_value = map[string]int32{
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_UNSPECIFIED":     0,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_WAITING_USER":    1,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_QUEUED":          2,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_PROVISIONING":    3,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_AWAITING_WORKER": 4,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_RUNNING":         5,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_COLLECTING":      6,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_VALIDATING":      7,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_CLEANING":        8,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_SUCCEEDED":       9,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_FAILED":          10,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_CANCELED":        11,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_REJECTED":        12,
-		"CORE_CLOUD_WORKER_EXECUTION_STATE_EXPIRED":         13,
+		"CORE_CLOUD_WORKER_EXECUTION_STATE_UNSPECIFIED":  0,
+		"CORE_CLOUD_WORKER_EXECUTION_STATE_WAITING_USER": 1,
+		"CORE_CLOUD_WORKER_EXECUTION_STATE_QUEUED":       2,
+		"CORE_CLOUD_WORKER_EXECUTION_STATE_PROVISIONING": 3,
+		"CORE_CLOUD_WORKER_EXECUTION_STATE_CLEANING":     4,
+		"CORE_CLOUD_WORKER_EXECUTION_STATE_SUCCEEDED":    5,
+		"CORE_CLOUD_WORKER_EXECUTION_STATE_FAILED":       6,
+		"CORE_CLOUD_WORKER_EXECUTION_STATE_CANCELED":     7,
+		"CORE_CLOUD_WORKER_EXECUTION_STATE_REJECTED":     8,
+		"CORE_CLOUD_WORKER_EXECUTION_STATE_EXPIRED":      9,
 	}
 )
 
@@ -217,21 +205,18 @@ func (x *CoreCloudWorkerAwsProjection) GetCredentialRevision() uint64 {
 }
 
 type CoreCloudWorkerComputeProjection struct {
-	state                   protoimpl.MessageState `protogen:"open.v1"`
-	InstanceType            string                 `protobuf:"bytes,1,opt,name=instance_type,json=instanceType,proto3" json:"instance_type,omitempty"`
-	Architecture            string                 `protobuf:"bytes,2,opt,name=architecture,proto3" json:"architecture,omitempty"`
-	RootDeviceName          string                 `protobuf:"bytes,3,opt,name=root_device_name,json=rootDeviceName,proto3" json:"root_device_name,omitempty"`
-	VolumeGib               uint64                 `protobuf:"varint,4,opt,name=volume_gib,json=volumeGib,proto3" json:"volume_gib,omitempty"`
-	VolumeType              string                 `protobuf:"bytes,5,opt,name=volume_type,json=volumeType,proto3" json:"volume_type,omitempty"`
-	VolumeIops              uint64                 `protobuf:"varint,6,opt,name=volume_iops,json=volumeIops,proto3" json:"volume_iops,omitempty"`
-	VolumeThroughputMib     uint64                 `protobuf:"varint,7,opt,name=volume_throughput_mib,json=volumeThroughputMib,proto3" json:"volume_throughput_mib,omitempty"`
-	AmiId                   string                 `protobuf:"bytes,8,opt,name=ami_id,json=amiId,proto3" json:"ami_id,omitempty"`
-	AmiDigest               string                 `protobuf:"bytes,9,opt,name=ami_digest,json=amiDigest,proto3" json:"ami_digest,omitempty"`
-	WorkerReleaseDigest     string                 `protobuf:"bytes,10,opt,name=worker_release_digest,json=workerReleaseDigest,proto3" json:"worker_release_digest,omitempty"`
-	PiRuntimeDigest         string                 `protobuf:"bytes,11,opt,name=pi_runtime_digest,json=piRuntimeDigest,proto3" json:"pi_runtime_digest,omitempty"`
-	HostNetworkPolicySha256 string                 `protobuf:"bytes,12,opt,name=host_network_policy_sha256,json=hostNetworkPolicySha256,proto3" json:"host_network_policy_sha256,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	InstanceType        string                 `protobuf:"bytes,1,opt,name=instance_type,json=instanceType,proto3" json:"instance_type,omitempty"`
+	Architecture        string                 `protobuf:"bytes,2,opt,name=architecture,proto3" json:"architecture,omitempty"`
+	RootDeviceName      string                 `protobuf:"bytes,3,opt,name=root_device_name,json=rootDeviceName,proto3" json:"root_device_name,omitempty"`
+	VolumeGib           uint64                 `protobuf:"varint,4,opt,name=volume_gib,json=volumeGib,proto3" json:"volume_gib,omitempty"`
+	VolumeType          string                 `protobuf:"bytes,5,opt,name=volume_type,json=volumeType,proto3" json:"volume_type,omitempty"`
+	VolumeIops          uint64                 `protobuf:"varint,6,opt,name=volume_iops,json=volumeIops,proto3" json:"volume_iops,omitempty"`
+	VolumeThroughputMib uint64                 `protobuf:"varint,7,opt,name=volume_throughput_mib,json=volumeThroughputMib,proto3" json:"volume_throughput_mib,omitempty"`
+	Vcpu                uint32                 `protobuf:"varint,8,opt,name=vcpu,proto3" json:"vcpu,omitempty"`
+	MemoryGib           uint32                 `protobuf:"varint,9,opt,name=memory_gib,json=memoryGib,proto3" json:"memory_gib,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *CoreCloudWorkerComputeProjection) Reset() {
@@ -313,39 +298,18 @@ func (x *CoreCloudWorkerComputeProjection) GetVolumeThroughputMib() uint64 {
 	return 0
 }
 
-func (x *CoreCloudWorkerComputeProjection) GetAmiId() string {
+func (x *CoreCloudWorkerComputeProjection) GetVcpu() uint32 {
 	if x != nil {
-		return x.AmiId
+		return x.Vcpu
 	}
-	return ""
+	return 0
 }
 
-func (x *CoreCloudWorkerComputeProjection) GetAmiDigest() string {
+func (x *CoreCloudWorkerComputeProjection) GetMemoryGib() uint32 {
 	if x != nil {
-		return x.AmiDigest
+		return x.MemoryGib
 	}
-	return ""
-}
-
-func (x *CoreCloudWorkerComputeProjection) GetWorkerReleaseDigest() string {
-	if x != nil {
-		return x.WorkerReleaseDigest
-	}
-	return ""
-}
-
-func (x *CoreCloudWorkerComputeProjection) GetPiRuntimeDigest() string {
-	if x != nil {
-		return x.PiRuntimeDigest
-	}
-	return ""
-}
-
-func (x *CoreCloudWorkerComputeProjection) GetHostNetworkPolicySha256() string {
-	if x != nil {
-		return x.HostNetworkPolicySha256
-	}
-	return ""
+	return 0
 }
 
 type CoreCloudWorkerLimits struct {
@@ -408,53 +372,6 @@ func (x *CoreCloudWorkerLimits) GetMaxOutputBytes() uint64 {
 	return 0
 }
 
-// Public Cloud Worker grants expose only their approved purpose. Private
-// reference IDs and per-reference binding digests are sealed into aggregate
-// authorization digests and are not representable here.
-type CoreCloudWorkerSecretGrantProjection struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Purpose       string                 `protobuf:"bytes,1,opt,name=purpose,proto3" json:"purpose,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CoreCloudWorkerSecretGrantProjection) Reset() {
-	*x = CoreCloudWorkerSecretGrantProjection{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CoreCloudWorkerSecretGrantProjection) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CoreCloudWorkerSecretGrantProjection) ProtoMessage() {}
-
-func (x *CoreCloudWorkerSecretGrantProjection) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CoreCloudWorkerSecretGrantProjection.ProtoReflect.Descriptor instead.
-func (*CoreCloudWorkerSecretGrantProjection) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *CoreCloudWorkerSecretGrantProjection) GetPurpose() string {
-	if x != nil {
-		return x.Purpose
-	}
-	return ""
-}
-
 type CoreCloudWorkerModelAuthorizationProjection struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	ModelProfileId       string                 `protobuf:"bytes,1,opt,name=model_profile_id,json=modelProfileId,proto3" json:"model_profile_id,omitempty"`
@@ -469,7 +386,7 @@ type CoreCloudWorkerModelAuthorizationProjection struct {
 
 func (x *CoreCloudWorkerModelAuthorizationProjection) Reset() {
 	*x = CoreCloudWorkerModelAuthorizationProjection{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[4]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -481,7 +398,7 @@ func (x *CoreCloudWorkerModelAuthorizationProjection) String() string {
 func (*CoreCloudWorkerModelAuthorizationProjection) ProtoMessage() {}
 
 func (x *CoreCloudWorkerModelAuthorizationProjection) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[4]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -494,7 +411,7 @@ func (x *CoreCloudWorkerModelAuthorizationProjection) ProtoReflect() protoreflec
 
 // Deprecated: Use CoreCloudWorkerModelAuthorizationProjection.ProtoReflect.Descriptor instead.
 func (*CoreCloudWorkerModelAuthorizationProjection) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{4}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *CoreCloudWorkerModelAuthorizationProjection) GetModelProfileId() string {
@@ -546,6 +463,7 @@ type CoreCloudWorkerQuote struct {
 	SourceTime                  *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=source_time,json=sourceTime,proto3" json:"source_time,omitempty"`
 	ExpiresAt                   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	MaximumAuthorizedCostMicros int64                  `protobuf:"varint,5,opt,name=maximum_authorized_cost_micros,json=maximumAuthorizedCostMicros,proto3" json:"maximum_authorized_cost_micros,omitempty"`
+	ComputeMicrosPerHour        uint64                 `protobuf:"varint,6,opt,name=compute_micros_per_hour,json=computeMicrosPerHour,proto3" json:"compute_micros_per_hour,omitempty"`
 	Digest                      string                 `protobuf:"bytes,7,opt,name=digest,proto3" json:"digest,omitempty"`
 	unknownFields               protoimpl.UnknownFields
 	sizeCache                   protoimpl.SizeCache
@@ -553,7 +471,7 @@ type CoreCloudWorkerQuote struct {
 
 func (x *CoreCloudWorkerQuote) Reset() {
 	*x = CoreCloudWorkerQuote{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[5]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -565,7 +483,7 @@ func (x *CoreCloudWorkerQuote) String() string {
 func (*CoreCloudWorkerQuote) ProtoMessage() {}
 
 func (x *CoreCloudWorkerQuote) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[5]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -578,7 +496,7 @@ func (x *CoreCloudWorkerQuote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreCloudWorkerQuote.ProtoReflect.Descriptor instead.
 func (*CoreCloudWorkerQuote) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{5}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *CoreCloudWorkerQuote) GetAmountMicros() int64 {
@@ -616,6 +534,13 @@ func (x *CoreCloudWorkerQuote) GetMaximumAuthorizedCostMicros() int64 {
 	return 0
 }
 
+func (x *CoreCloudWorkerQuote) GetComputeMicrosPerHour() uint64 {
+	if x != nil {
+		return x.ComputeMicrosPerHour
+	}
+	return 0
+}
+
 func (x *CoreCloudWorkerQuote) GetDigest() string {
 	if x != nil {
 		return x.Digest
@@ -623,47 +548,43 @@ func (x *CoreCloudWorkerQuote) GetDigest() string {
 	return ""
 }
 
-// This is a public, secret-free projection. Credential IDs, exact S3
-// locations, provider IDs, bootstrap tokens and private input manifests are
-// deliberately not representable.
+// This is a public, secret-free projection. Credential IDs, storage locations,
+// provider IDs, SSH material and private input manifests are not representable.
 type CoreCloudWorkerPlan struct {
-	state                    protoimpl.MessageState                       `protogen:"open.v1"`
-	OwnerId                  string                                       `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
-	AccountGeneration        uint64                                       `protobuf:"varint,2,opt,name=account_generation,json=accountGeneration,proto3" json:"account_generation,omitempty"`
-	PlanId                   string                                       `protobuf:"bytes,3,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
-	Revision                 uint64                                       `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
-	Status                   string                                       `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
-	Digest                   string                                       `protobuf:"bytes,6,opt,name=digest,proto3" json:"digest,omitempty"`
-	ExecutionId              string                                       `protobuf:"bytes,7,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
-	TaskId                   string                                       `protobuf:"bytes,8,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	ConfirmationId           string                                       `protobuf:"bytes,9,opt,name=confirmation_id,json=confirmationId,proto3" json:"confirmation_id,omitempty"`
-	ConversationId           string                                       `protobuf:"bytes,10,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	TurnId                   string                                       `protobuf:"bytes,11,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
-	RecipeId                 string                                       `protobuf:"bytes,12,opt,name=recipe_id,json=recipeId,proto3" json:"recipe_id,omitempty"`
-	Adapter                  string                                       `protobuf:"bytes,13,opt,name=adapter,proto3" json:"adapter,omitempty"`
-	ObjectiveSummary         string                                       `protobuf:"bytes,14,opt,name=objective_summary,json=objectiveSummary,proto3" json:"objective_summary,omitempty"`
-	ProposalReason           string                                       `protobuf:"bytes,17,opt,name=proposal_reason,json=proposalReason,proto3" json:"proposal_reason,omitempty"`
-	InputManifestDigest      string                                       `protobuf:"bytes,18,opt,name=input_manifest_digest,json=inputManifestDigest,proto3" json:"input_manifest_digest,omitempty"`
-	InputManifestItemCount   uint64                                       `protobuf:"varint,19,opt,name=input_manifest_item_count,json=inputManifestItemCount,proto3" json:"input_manifest_item_count,omitempty"`
-	WorkspaceMode            CoreCloudWorkerWorkspaceMode                 `protobuf:"varint,20,opt,name=workspace_mode,json=workspaceMode,proto3,enum=dirextalk.agent.v1.CoreCloudWorkerWorkspaceMode" json:"workspace_mode,omitempty"`
-	ModelAuthorization       *CoreCloudWorkerModelAuthorizationProjection `protobuf:"bytes,21,opt,name=model_authorization,json=modelAuthorization,proto3" json:"model_authorization,omitempty"`
-	Aws                      *CoreCloudWorkerAwsProjection                `protobuf:"bytes,22,opt,name=aws,proto3" json:"aws,omitempty"`
-	Compute                  *CoreCloudWorkerComputeProjection            `protobuf:"bytes,23,opt,name=compute,proto3" json:"compute,omitempty"`
-	Limits                   *CoreCloudWorkerLimits                       `protobuf:"bytes,24,opt,name=limits,proto3" json:"limits,omitempty"`
-	NetworkGrants            []string                                     `protobuf:"bytes,25,rep,name=network_grants,json=networkGrants,proto3" json:"network_grants,omitempty"`
-	SecretGrants             []*CoreCloudWorkerSecretGrantProjection      `protobuf:"bytes,26,rep,name=secret_grants,json=secretGrants,proto3" json:"secret_grants,omitempty"`
-	ArtifactRetentionSeconds uint64                                       `protobuf:"varint,27,opt,name=artifact_retention_seconds,json=artifactRetentionSeconds,proto3" json:"artifact_retention_seconds,omitempty"`
-	Quote                    *CoreCloudWorkerQuote                        `protobuf:"bytes,28,opt,name=quote,proto3" json:"quote,omitempty"`
-	ExecutionDigest          string                                       `protobuf:"bytes,31,opt,name=execution_digest,json=executionDigest,proto3" json:"execution_digest,omitempty"`
-	CreatedAt                *timestamppb.Timestamp                       `protobuf:"bytes,32,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt                *timestamppb.Timestamp                       `protobuf:"bytes,33,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	state                  protoimpl.MessageState                       `protogen:"open.v1"`
+	OwnerId                string                                       `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	AccountGeneration      uint64                                       `protobuf:"varint,2,opt,name=account_generation,json=accountGeneration,proto3" json:"account_generation,omitempty"`
+	PlanId                 string                                       `protobuf:"bytes,3,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
+	Revision               uint64                                       `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
+	Status                 string                                       `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	Digest                 string                                       `protobuf:"bytes,6,opt,name=digest,proto3" json:"digest,omitempty"`
+	ExecutionId            string                                       `protobuf:"bytes,7,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	TaskId                 string                                       `protobuf:"bytes,8,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	ConfirmationId         string                                       `protobuf:"bytes,9,opt,name=confirmation_id,json=confirmationId,proto3" json:"confirmation_id,omitempty"`
+	ConversationId         string                                       `protobuf:"bytes,10,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	TurnId                 string                                       `protobuf:"bytes,11,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
+	RecipeId               string                                       `protobuf:"bytes,12,opt,name=recipe_id,json=recipeId,proto3" json:"recipe_id,omitempty"`
+	Adapter                string                                       `protobuf:"bytes,13,opt,name=adapter,proto3" json:"adapter,omitempty"`
+	ObjectiveSummary       string                                       `protobuf:"bytes,14,opt,name=objective_summary,json=objectiveSummary,proto3" json:"objective_summary,omitempty"`
+	ProposalReason         string                                       `protobuf:"bytes,17,opt,name=proposal_reason,json=proposalReason,proto3" json:"proposal_reason,omitempty"`
+	InputManifestDigest    string                                       `protobuf:"bytes,18,opt,name=input_manifest_digest,json=inputManifestDigest,proto3" json:"input_manifest_digest,omitempty"`
+	InputManifestItemCount uint64                                       `protobuf:"varint,19,opt,name=input_manifest_item_count,json=inputManifestItemCount,proto3" json:"input_manifest_item_count,omitempty"`
+	WorkspaceMode          CoreCloudWorkerWorkspaceMode                 `protobuf:"varint,20,opt,name=workspace_mode,json=workspaceMode,proto3,enum=dirextalk.agent.v1.CoreCloudWorkerWorkspaceMode" json:"workspace_mode,omitempty"`
+	ModelAuthorization     *CoreCloudWorkerModelAuthorizationProjection `protobuf:"bytes,21,opt,name=model_authorization,json=modelAuthorization,proto3" json:"model_authorization,omitempty"`
+	Aws                    *CoreCloudWorkerAwsProjection                `protobuf:"bytes,22,opt,name=aws,proto3" json:"aws,omitempty"`
+	Compute                *CoreCloudWorkerComputeProjection            `protobuf:"bytes,23,opt,name=compute,proto3" json:"compute,omitempty"`
+	Limits                 *CoreCloudWorkerLimits                       `protobuf:"bytes,24,opt,name=limits,proto3" json:"limits,omitempty"`
+	Quote                  *CoreCloudWorkerQuote                        `protobuf:"bytes,25,opt,name=quote,proto3" json:"quote,omitempty"`
+	ExecutionDigest        string                                       `protobuf:"bytes,26,opt,name=execution_digest,json=executionDigest,proto3" json:"execution_digest,omitempty"`
+	CreatedAt              *timestamppb.Timestamp                       `protobuf:"bytes,27,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt              *timestamppb.Timestamp                       `protobuf:"bytes,28,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *CoreCloudWorkerPlan) Reset() {
 	*x = CoreCloudWorkerPlan{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[6]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -675,7 +596,7 @@ func (x *CoreCloudWorkerPlan) String() string {
 func (*CoreCloudWorkerPlan) ProtoMessage() {}
 
 func (x *CoreCloudWorkerPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[6]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -688,7 +609,7 @@ func (x *CoreCloudWorkerPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreCloudWorkerPlan.ProtoReflect.Descriptor instead.
 func (*CoreCloudWorkerPlan) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{6}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *CoreCloudWorkerPlan) GetOwnerId() string {
@@ -845,27 +766,6 @@ func (x *CoreCloudWorkerPlan) GetLimits() *CoreCloudWorkerLimits {
 	return nil
 }
 
-func (x *CoreCloudWorkerPlan) GetNetworkGrants() []string {
-	if x != nil {
-		return x.NetworkGrants
-	}
-	return nil
-}
-
-func (x *CoreCloudWorkerPlan) GetSecretGrants() []*CoreCloudWorkerSecretGrantProjection {
-	if x != nil {
-		return x.SecretGrants
-	}
-	return nil
-}
-
-func (x *CoreCloudWorkerPlan) GetArtifactRetentionSeconds() uint64 {
-	if x != nil {
-		return x.ArtifactRetentionSeconds
-	}
-	return 0
-}
-
 func (x *CoreCloudWorkerPlan) GetQuote() *CoreCloudWorkerQuote {
 	if x != nil {
 		return x.Quote
@@ -894,107 +794,39 @@ func (x *CoreCloudWorkerPlan) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
-type CoreCloudWorkerCleanupSummary struct {
-	state                      protoimpl.MessageState `protogen:"open.v1"`
-	VerifiedDestroyed          bool                   `protobuf:"varint,1,opt,name=verified_destroyed,json=verifiedDestroyed,proto3" json:"verified_destroyed,omitempty"`
-	VerifiedAt                 *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=verified_at,json=verifiedAt,proto3" json:"verified_at,omitempty"`
-	ResourcesTotal             uint64                 `protobuf:"varint,3,opt,name=resources_total,json=resourcesTotal,proto3" json:"resources_total,omitempty"`
-	ResourcesVerifiedDestroyed uint64                 `protobuf:"varint,4,opt,name=resources_verified_destroyed,json=resourcesVerifiedDestroyed,proto3" json:"resources_verified_destroyed,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
-}
-
-func (x *CoreCloudWorkerCleanupSummary) Reset() {
-	*x = CoreCloudWorkerCleanupSummary{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CoreCloudWorkerCleanupSummary) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CoreCloudWorkerCleanupSummary) ProtoMessage() {}
-
-func (x *CoreCloudWorkerCleanupSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[7]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CoreCloudWorkerCleanupSummary.ProtoReflect.Descriptor instead.
-func (*CoreCloudWorkerCleanupSummary) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *CoreCloudWorkerCleanupSummary) GetVerifiedDestroyed() bool {
-	if x != nil {
-		return x.VerifiedDestroyed
-	}
-	return false
-}
-
-func (x *CoreCloudWorkerCleanupSummary) GetVerifiedAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.VerifiedAt
-	}
-	return nil
-}
-
-func (x *CoreCloudWorkerCleanupSummary) GetResourcesTotal() uint64 {
-	if x != nil {
-		return x.ResourcesTotal
-	}
-	return 0
-}
-
-func (x *CoreCloudWorkerCleanupSummary) GetResourcesVerifiedDestroyed() uint64 {
-	if x != nil {
-		return x.ResourcesVerifiedDestroyed
-	}
-	return 0
-}
-
 type CoreCloudWorkerExecution struct {
-	state                 protoimpl.MessageState         `protogen:"open.v1"`
-	OwnerId               string                         `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
-	AccountGeneration     uint64                         `protobuf:"varint,2,opt,name=account_generation,json=accountGeneration,proto3" json:"account_generation,omitempty"`
-	RunId                 string                         `protobuf:"bytes,3,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	ExecutionId           string                         `protobuf:"bytes,4,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
-	PlanId                string                         `protobuf:"bytes,5,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
-	PlanRevision          uint64                         `protobuf:"varint,6,opt,name=plan_revision,json=planRevision,proto3" json:"plan_revision,omitempty"`
-	PlanDigest            string                         `protobuf:"bytes,7,opt,name=plan_digest,json=planDigest,proto3" json:"plan_digest,omitempty"`
-	TaskId                string                         `protobuf:"bytes,8,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	ConfirmationId        string                         `protobuf:"bytes,9,opt,name=confirmation_id,json=confirmationId,proto3" json:"confirmation_id,omitempty"`
-	ConversationId        string                         `protobuf:"bytes,10,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	TurnId                string                         `protobuf:"bytes,11,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
-	Status                CoreCloudWorkerExecutionState  `protobuf:"varint,12,opt,name=status,proto3,enum=dirextalk.agent.v1.CoreCloudWorkerExecutionState" json:"status,omitempty"`
-	Revision              uint64                         `protobuf:"varint,13,opt,name=revision,proto3" json:"revision,omitempty"`
-	Digest                string                         `protobuf:"bytes,14,opt,name=digest,proto3" json:"digest,omitempty"`
-	WorkspaceMode         CoreCloudWorkerWorkspaceMode   `protobuf:"varint,15,opt,name=workspace_mode,json=workspaceMode,proto3,enum=dirextalk.agent.v1.CoreCloudWorkerWorkspaceMode" json:"workspace_mode,omitempty"`
-	QuoteDigest           string                         `protobuf:"bytes,17,opt,name=quote_digest,json=quoteDigest,proto3" json:"quote_digest,omitempty"`
-	ExecutionDigest       string                         `protobuf:"bytes,18,opt,name=execution_digest,json=executionDigest,proto3" json:"execution_digest,omitempty"`
-	Cleanup               *CoreCloudWorkerCleanupSummary `protobuf:"bytes,19,opt,name=cleanup,proto3" json:"cleanup,omitempty"`
-	ArtifactIds           []string                       `protobuf:"bytes,20,rep,name=artifact_ids,json=artifactIds,proto3" json:"artifact_ids,omitempty"`
-	FailureCode           string                         `protobuf:"bytes,21,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`
-	FailureSummary        string                         `protobuf:"bytes,22,opt,name=failure_summary,json=failureSummary,proto3" json:"failure_summary,omitempty"`
-	CreatedAt             *timestamppb.Timestamp         `protobuf:"bytes,23,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt             *timestamppb.Timestamp         `protobuf:"bytes,24,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	CancellationRequested bool                           `protobuf:"varint,25,opt,name=cancellation_requested,json=cancellationRequested,proto3" json:"cancellation_requested,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	state             protoimpl.MessageState        `protogen:"open.v1"`
+	OwnerId           string                        `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	AccountGeneration uint64                        `protobuf:"varint,2,opt,name=account_generation,json=accountGeneration,proto3" json:"account_generation,omitempty"`
+	RunId             string                        `protobuf:"bytes,3,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	ExecutionId       string                        `protobuf:"bytes,4,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	PlanId            string                        `protobuf:"bytes,5,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
+	PlanRevision      uint64                        `protobuf:"varint,6,opt,name=plan_revision,json=planRevision,proto3" json:"plan_revision,omitempty"`
+	PlanDigest        string                        `protobuf:"bytes,7,opt,name=plan_digest,json=planDigest,proto3" json:"plan_digest,omitempty"`
+	TaskId            string                        `protobuf:"bytes,8,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	ConfirmationId    string                        `protobuf:"bytes,9,opt,name=confirmation_id,json=confirmationId,proto3" json:"confirmation_id,omitempty"`
+	ConversationId    string                        `protobuf:"bytes,10,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	TurnId            string                        `protobuf:"bytes,11,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
+	Status            CoreCloudWorkerExecutionState `protobuf:"varint,12,opt,name=status,proto3,enum=dirextalk.agent.v1.CoreCloudWorkerExecutionState" json:"status,omitempty"`
+	Revision          uint64                        `protobuf:"varint,13,opt,name=revision,proto3" json:"revision,omitempty"`
+	Digest            string                        `protobuf:"bytes,14,opt,name=digest,proto3" json:"digest,omitempty"`
+	WorkspaceMode     CoreCloudWorkerWorkspaceMode  `protobuf:"varint,15,opt,name=workspace_mode,json=workspaceMode,proto3,enum=dirextalk.agent.v1.CoreCloudWorkerWorkspaceMode" json:"workspace_mode,omitempty"`
+	QuoteDigest       string                        `protobuf:"bytes,17,opt,name=quote_digest,json=quoteDigest,proto3" json:"quote_digest,omitempty"`
+	ExecutionDigest   string                        `protobuf:"bytes,18,opt,name=execution_digest,json=executionDigest,proto3" json:"execution_digest,omitempty"`
+	ArtifactIds       []string                      `protobuf:"bytes,19,rep,name=artifact_ids,json=artifactIds,proto3" json:"artifact_ids,omitempty"`
+	FailureCode       string                        `protobuf:"bytes,20,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`
+	FailureSummary    string                        `protobuf:"bytes,21,opt,name=failure_summary,json=failureSummary,proto3" json:"failure_summary,omitempty"`
+	CreatedAt         *timestamppb.Timestamp        `protobuf:"bytes,22,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt         *timestamppb.Timestamp        `protobuf:"bytes,23,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	WorkerId          string                        `protobuf:"bytes,24,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	PersistentWorker  bool                          `protobuf:"varint,25,opt,name=persistent_worker,json=persistentWorker,proto3" json:"persistent_worker,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CoreCloudWorkerExecution) Reset() {
 	*x = CoreCloudWorkerExecution{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[8]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1006,7 +838,7 @@ func (x *CoreCloudWorkerExecution) String() string {
 func (*CoreCloudWorkerExecution) ProtoMessage() {}
 
 func (x *CoreCloudWorkerExecution) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[8]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1019,7 +851,7 @@ func (x *CoreCloudWorkerExecution) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreCloudWorkerExecution.ProtoReflect.Descriptor instead.
 func (*CoreCloudWorkerExecution) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{8}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CoreCloudWorkerExecution) GetOwnerId() string {
@@ -1141,13 +973,6 @@ func (x *CoreCloudWorkerExecution) GetExecutionDigest() string {
 	return ""
 }
 
-func (x *CoreCloudWorkerExecution) GetCleanup() *CoreCloudWorkerCleanupSummary {
-	if x != nil {
-		return x.Cleanup
-	}
-	return nil
-}
-
 func (x *CoreCloudWorkerExecution) GetArtifactIds() []string {
 	if x != nil {
 		return x.ArtifactIds
@@ -1183,9 +1008,16 @@ func (x *CoreCloudWorkerExecution) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
-func (x *CoreCloudWorkerExecution) GetCancellationRequested() bool {
+func (x *CoreCloudWorkerExecution) GetWorkerId() string {
 	if x != nil {
-		return x.CancellationRequested
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *CoreCloudWorkerExecution) GetPersistentWorker() bool {
+	if x != nil {
+		return x.PersistentWorker
 	}
 	return false
 }
@@ -1209,7 +1041,7 @@ type CoreCloudWorkerArtifact struct {
 
 func (x *CoreCloudWorkerArtifact) Reset() {
 	*x = CoreCloudWorkerArtifact{}
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[9]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1221,7 +1053,7 @@ func (x *CoreCloudWorkerArtifact) String() string {
 func (*CoreCloudWorkerArtifact) ProtoMessage() {}
 
 func (x *CoreCloudWorkerArtifact) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[9]
+	mi := &file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1234,7 +1066,7 @@ func (x *CoreCloudWorkerArtifact) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreCloudWorkerArtifact.ProtoReflect.Descriptor instead.
 func (*CoreCloudWorkerArtifact) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{9}
+	return file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CoreCloudWorkerArtifact) GetArtifactId() string {
@@ -1323,7 +1155,7 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\n" +
 	"account_id\x18\x01 \x01(\tR\taccountId\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12/\n" +
-	"\x13credential_revision\x18\x03 \x01(\x04R\x12credentialRevision\"\xfd\x03\n" +
+	"\x13credential_revision\x18\x03 \x01(\x04R\x12credentialRevision\"\xdd\x02\n" +
 	" CoreCloudWorkerComputeProjection\x12#\n" +
 	"\rinstance_type\x18\x01 \x01(\tR\finstanceType\x12\"\n" +
 	"\farchitecture\x18\x02 \x01(\tR\farchitecture\x12(\n" +
@@ -1334,28 +1166,22 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"volumeType\x12\x1f\n" +
 	"\vvolume_iops\x18\x06 \x01(\x04R\n" +
 	"volumeIops\x122\n" +
-	"\x15volume_throughput_mib\x18\a \x01(\x04R\x13volumeThroughputMib\x12\x15\n" +
-	"\x06ami_id\x18\b \x01(\tR\x05amiId\x12\x1d\n" +
+	"\x15volume_throughput_mib\x18\a \x01(\x04R\x13volumeThroughputMib\x12\x12\n" +
+	"\x04vcpu\x18\b \x01(\rR\x04vcpu\x12\x1d\n" +
 	"\n" +
-	"ami_digest\x18\t \x01(\tR\tamiDigest\x122\n" +
-	"\x15worker_release_digest\x18\n" +
-	" \x01(\tR\x13workerReleaseDigest\x12*\n" +
-	"\x11pi_runtime_digest\x18\v \x01(\tR\x0fpiRuntimeDigest\x12;\n" +
-	"\x1ahost_network_policy_sha256\x18\f \x01(\tR\x17hostNetworkPolicySha256\"\x90\x01\n" +
+	"memory_gib\x18\t \x01(\rR\tmemoryGib\"\x90\x01\n" +
 	"\x15CoreCloudWorkerLimits\x12.\n" +
 	"\x13max_runtime_seconds\x18\x01 \x01(\x04R\x11maxRuntimeSeconds\x12\x1d\n" +
 	"\n" +
 	"max_tokens\x18\x02 \x01(\x04R\tmaxTokens\x12(\n" +
-	"\x10max_output_bytes\x18\x03 \x01(\x04R\x0emaxOutputBytes\"@\n" +
-	"$CoreCloudWorkerSecretGrantProjection\x12\x18\n" +
-	"\apurpose\x18\x01 \x01(\tR\apurpose\"\x92\x02\n" +
+	"\x10max_output_bytes\x18\x03 \x01(\x04R\x0emaxOutputBytes\"\x92\x02\n" +
 	"+CoreCloudWorkerModelAuthorizationProjection\x12(\n" +
 	"\x10model_profile_id\x18\x01 \x01(\tR\x0emodelProfileId\x124\n" +
 	"\x16model_profile_revision\x18\x02 \x01(\x04R\x14modelProfileRevision\x12\x1a\n" +
 	"\bprovider\x18\x03 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05model\x18\x04 \x01(\tR\x05model\x12\x1c\n" +
 	"\tinterface\x18\x05 \x01(\tR\tinterface\x12-\n" +
-	"\x12credential_version\x18\x06 \x01(\x04R\x11credentialVersionJ\x04\b\a\x10\b\"\xb2\x02\n" +
+	"\x12credential_version\x18\x06 \x01(\x04R\x11credentialVersionJ\x04\b\a\x10\b\"\xe3\x02\n" +
 	"\x14CoreCloudWorkerQuote\x12#\n" +
 	"\ramount_micros\x18\x01 \x01(\x03R\famountMicros\x12\x1a\n" +
 	"\bcurrency\x18\x02 \x01(\tR\bcurrency\x12;\n" +
@@ -1363,8 +1189,9 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"sourceTime\x129\n" +
 	"\n" +
 	"expires_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12C\n" +
-	"\x1emaximum_authorized_cost_micros\x18\x05 \x01(\x03R\x1bmaximumAuthorizedCostMicros\x12\x16\n" +
-	"\x06digest\x18\a \x01(\tR\x06digestJ\x04\b\x06\x10\a\"\xc6\v\n" +
+	"\x1emaximum_authorized_cost_micros\x18\x05 \x01(\x03R\x1bmaximumAuthorizedCostMicros\x125\n" +
+	"\x17compute_micros_per_hour\x18\x06 \x01(\x04R\x14computeMicrosPerHour\x12\x16\n" +
+	"\x06digest\x18\a \x01(\tR\x06digest\"\xf6\t\n" +
 	"\x13CoreCloudWorkerPlan\x12\x19\n" +
 	"\bowner_id\x18\x01 \x01(\tR\aownerId\x12-\n" +
 	"\x12account_generation\x18\x02 \x01(\x04R\x11accountGeneration\x12\x17\n" +
@@ -1388,22 +1215,13 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\x13model_authorization\x18\x15 \x01(\v2?.dirextalk.agent.v1.CoreCloudWorkerModelAuthorizationProjectionR\x12modelAuthorization\x12B\n" +
 	"\x03aws\x18\x16 \x01(\v20.dirextalk.agent.v1.CoreCloudWorkerAwsProjectionR\x03aws\x12N\n" +
 	"\acompute\x18\x17 \x01(\v24.dirextalk.agent.v1.CoreCloudWorkerComputeProjectionR\acompute\x12A\n" +
-	"\x06limits\x18\x18 \x01(\v2).dirextalk.agent.v1.CoreCloudWorkerLimitsR\x06limits\x12%\n" +
-	"\x0enetwork_grants\x18\x19 \x03(\tR\rnetworkGrants\x12]\n" +
-	"\rsecret_grants\x18\x1a \x03(\v28.dirextalk.agent.v1.CoreCloudWorkerSecretGrantProjectionR\fsecretGrants\x12<\n" +
-	"\x1aartifact_retention_seconds\x18\x1b \x01(\x04R\x18artifactRetentionSeconds\x12>\n" +
-	"\x05quote\x18\x1c \x01(\v2(.dirextalk.agent.v1.CoreCloudWorkerQuoteR\x05quote\x12)\n" +
-	"\x10execution_digest\x18\x1f \x01(\tR\x0fexecutionDigest\x129\n" +
+	"\x06limits\x18\x18 \x01(\v2).dirextalk.agent.v1.CoreCloudWorkerLimitsR\x06limits\x12>\n" +
+	"\x05quote\x18\x19 \x01(\v2(.dirextalk.agent.v1.CoreCloudWorkerQuoteR\x05quote\x12)\n" +
+	"\x10execution_digest\x18\x1a \x01(\tR\x0fexecutionDigest\x129\n" +
 	"\n" +
-	"created_at\x18  \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
+	"created_at\x18\x1b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18! \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtJ\x04\b\x0f\x10\x10J\x04\b\x10\x10\x11J\x04\b\x1d\x10\x1eJ\x04\b\x1e\x10\x1f\"\xf6\x01\n" +
-	"\x1dCoreCloudWorkerCleanupSummary\x12-\n" +
-	"\x12verified_destroyed\x18\x01 \x01(\bR\x11verifiedDestroyed\x12;\n" +
-	"\vverified_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"verifiedAt\x12'\n" +
-	"\x0fresources_total\x18\x03 \x01(\x04R\x0eresourcesTotal\x12@\n" +
-	"\x1cresources_verified_destroyed\x18\x04 \x01(\x04R\x1aresourcesVerifiedDestroyed\"\x96\b\n" +
+	"updated_at\x18\x1c \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtJ\x04\b\x0f\x10\x10J\x04\b\x10\x10\x11\"\xdc\a\n" +
 	"\x18CoreCloudWorkerExecution\x12\x19\n" +
 	"\bowner_id\x18\x01 \x01(\tR\aownerId\x12-\n" +
 	"\x12account_generation\x18\x02 \x01(\x04R\x11accountGeneration\x12\x15\n" +
@@ -1423,16 +1241,16 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\x06digest\x18\x0e \x01(\tR\x06digest\x12W\n" +
 	"\x0eworkspace_mode\x18\x0f \x01(\x0e20.dirextalk.agent.v1.CoreCloudWorkerWorkspaceModeR\rworkspaceMode\x12!\n" +
 	"\fquote_digest\x18\x11 \x01(\tR\vquoteDigest\x12)\n" +
-	"\x10execution_digest\x18\x12 \x01(\tR\x0fexecutionDigest\x12K\n" +
-	"\acleanup\x18\x13 \x01(\v21.dirextalk.agent.v1.CoreCloudWorkerCleanupSummaryR\acleanup\x12!\n" +
-	"\fartifact_ids\x18\x14 \x03(\tR\vartifactIds\x12!\n" +
-	"\ffailure_code\x18\x15 \x01(\tR\vfailureCode\x12'\n" +
-	"\x0ffailure_summary\x18\x16 \x01(\tR\x0efailureSummary\x129\n" +
+	"\x10execution_digest\x18\x12 \x01(\tR\x0fexecutionDigest\x12!\n" +
+	"\fartifact_ids\x18\x13 \x03(\tR\vartifactIds\x12!\n" +
+	"\ffailure_code\x18\x14 \x01(\tR\vfailureCode\x12'\n" +
+	"\x0ffailure_summary\x18\x15 \x01(\tR\x0efailureSummary\x129\n" +
 	"\n" +
-	"created_at\x18\x17 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
+	"created_at\x18\x16 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x125\n" +
-	"\x16cancellation_requested\x18\x19 \x01(\bR\x15cancellationRequestedJ\x04\b\x10\x10\x11\"\xf8\x02\n" +
+	"updated_at\x18\x17 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1b\n" +
+	"\tworker_id\x18\x18 \x01(\tR\bworkerId\x12+\n" +
+	"\x11persistent_worker\x18\x19 \x01(\bR\x10persistentWorkerJ\x04\b\x10\x10\x11\"\xf8\x02\n" +
 	"\x17CoreCloudWorkerArtifact\x12\x1f\n" +
 	"\vartifact_id\x18\x01 \x01(\tR\n" +
 	"artifactId\x12!\n" +
@@ -1454,23 +1272,18 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	",CORE_CLOUD_WORKER_WORKSPACE_MODE_UNSPECIFIED\x10\x00\x12)\n" +
 	"%CORE_CLOUD_WORKER_WORKSPACE_MODE_NONE\x10\x01\x12.\n" +
 	"*CORE_CLOUD_WORKER_WORKSPACE_MODE_READ_ONLY\x10\x02\x12*\n" +
-	"&CORE_CLOUD_WORKER_WORKSPACE_MODE_WRITE\x10\x03*\xd0\x05\n" +
+	"&CORE_CLOUD_WORKER_WORKSPACE_MODE_WRITE\x10\x03*\x86\x04\n" +
 	"\x1dCoreCloudWorkerExecutionState\x121\n" +
 	"-CORE_CLOUD_WORKER_EXECUTION_STATE_UNSPECIFIED\x10\x00\x122\n" +
 	".CORE_CLOUD_WORKER_EXECUTION_STATE_WAITING_USER\x10\x01\x12,\n" +
 	"(CORE_CLOUD_WORKER_EXECUTION_STATE_QUEUED\x10\x02\x122\n" +
-	".CORE_CLOUD_WORKER_EXECUTION_STATE_PROVISIONING\x10\x03\x125\n" +
-	"1CORE_CLOUD_WORKER_EXECUTION_STATE_AWAITING_WORKER\x10\x04\x12-\n" +
-	")CORE_CLOUD_WORKER_EXECUTION_STATE_RUNNING\x10\x05\x120\n" +
-	",CORE_CLOUD_WORKER_EXECUTION_STATE_COLLECTING\x10\x06\x120\n" +
-	",CORE_CLOUD_WORKER_EXECUTION_STATE_VALIDATING\x10\a\x12.\n" +
-	"*CORE_CLOUD_WORKER_EXECUTION_STATE_CLEANING\x10\b\x12/\n" +
-	"+CORE_CLOUD_WORKER_EXECUTION_STATE_SUCCEEDED\x10\t\x12,\n" +
-	"(CORE_CLOUD_WORKER_EXECUTION_STATE_FAILED\x10\n" +
-	"\x12.\n" +
-	"*CORE_CLOUD_WORKER_EXECUTION_STATE_CANCELED\x10\v\x12.\n" +
-	"*CORE_CLOUD_WORKER_EXECUTION_STATE_REJECTED\x10\f\x12-\n" +
-	")CORE_CLOUD_WORKER_EXECUTION_STATE_EXPIRED\x10\rBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
+	".CORE_CLOUD_WORKER_EXECUTION_STATE_PROVISIONING\x10\x03\x12.\n" +
+	"*CORE_CLOUD_WORKER_EXECUTION_STATE_CLEANING\x10\x04\x12/\n" +
+	"+CORE_CLOUD_WORKER_EXECUTION_STATE_SUCCEEDED\x10\x05\x12,\n" +
+	"(CORE_CLOUD_WORKER_EXECUTION_STATE_FAILED\x10\x06\x12.\n" +
+	"*CORE_CLOUD_WORKER_EXECUTION_STATE_CANCELED\x10\a\x12.\n" +
+	"*CORE_CLOUD_WORKER_EXECUTION_STATE_REJECTED\x10\b\x12-\n" +
+	")CORE_CLOUD_WORKER_EXECUTION_STATE_EXPIRED\x10\tBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
 
 var (
 	file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescOnce sync.Once
@@ -1485,46 +1298,41 @@ func file_dirextalk_agent_v1_core_cloud_worker_proto_rawDescGZIP() []byte {
 }
 
 var file_dirextalk_agent_v1_core_cloud_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_dirextalk_agent_v1_core_cloud_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_dirextalk_agent_v1_core_cloud_worker_proto_goTypes = []any{
 	(CoreCloudWorkerWorkspaceMode)(0),                   // 0: dirextalk.agent.v1.CoreCloudWorkerWorkspaceMode
 	(CoreCloudWorkerExecutionState)(0),                  // 1: dirextalk.agent.v1.CoreCloudWorkerExecutionState
 	(*CoreCloudWorkerAwsProjection)(nil),                // 2: dirextalk.agent.v1.CoreCloudWorkerAwsProjection
 	(*CoreCloudWorkerComputeProjection)(nil),            // 3: dirextalk.agent.v1.CoreCloudWorkerComputeProjection
 	(*CoreCloudWorkerLimits)(nil),                       // 4: dirextalk.agent.v1.CoreCloudWorkerLimits
-	(*CoreCloudWorkerSecretGrantProjection)(nil),        // 5: dirextalk.agent.v1.CoreCloudWorkerSecretGrantProjection
-	(*CoreCloudWorkerModelAuthorizationProjection)(nil), // 6: dirextalk.agent.v1.CoreCloudWorkerModelAuthorizationProjection
-	(*CoreCloudWorkerQuote)(nil),                        // 7: dirextalk.agent.v1.CoreCloudWorkerQuote
-	(*CoreCloudWorkerPlan)(nil),                         // 8: dirextalk.agent.v1.CoreCloudWorkerPlan
-	(*CoreCloudWorkerCleanupSummary)(nil),               // 9: dirextalk.agent.v1.CoreCloudWorkerCleanupSummary
-	(*CoreCloudWorkerExecution)(nil),                    // 10: dirextalk.agent.v1.CoreCloudWorkerExecution
-	(*CoreCloudWorkerArtifact)(nil),                     // 11: dirextalk.agent.v1.CoreCloudWorkerArtifact
-	(*timestamppb.Timestamp)(nil),                       // 12: google.protobuf.Timestamp
+	(*CoreCloudWorkerModelAuthorizationProjection)(nil), // 5: dirextalk.agent.v1.CoreCloudWorkerModelAuthorizationProjection
+	(*CoreCloudWorkerQuote)(nil),                        // 6: dirextalk.agent.v1.CoreCloudWorkerQuote
+	(*CoreCloudWorkerPlan)(nil),                         // 7: dirextalk.agent.v1.CoreCloudWorkerPlan
+	(*CoreCloudWorkerExecution)(nil),                    // 8: dirextalk.agent.v1.CoreCloudWorkerExecution
+	(*CoreCloudWorkerArtifact)(nil),                     // 9: dirextalk.agent.v1.CoreCloudWorkerArtifact
+	(*timestamppb.Timestamp)(nil),                       // 10: google.protobuf.Timestamp
 }
 var file_dirextalk_agent_v1_core_cloud_worker_proto_depIdxs = []int32{
-	12, // 0: dirextalk.agent.v1.CoreCloudWorkerQuote.source_time:type_name -> google.protobuf.Timestamp
-	12, // 1: dirextalk.agent.v1.CoreCloudWorkerQuote.expires_at:type_name -> google.protobuf.Timestamp
+	10, // 0: dirextalk.agent.v1.CoreCloudWorkerQuote.source_time:type_name -> google.protobuf.Timestamp
+	10, // 1: dirextalk.agent.v1.CoreCloudWorkerQuote.expires_at:type_name -> google.protobuf.Timestamp
 	0,  // 2: dirextalk.agent.v1.CoreCloudWorkerPlan.workspace_mode:type_name -> dirextalk.agent.v1.CoreCloudWorkerWorkspaceMode
-	6,  // 3: dirextalk.agent.v1.CoreCloudWorkerPlan.model_authorization:type_name -> dirextalk.agent.v1.CoreCloudWorkerModelAuthorizationProjection
+	5,  // 3: dirextalk.agent.v1.CoreCloudWorkerPlan.model_authorization:type_name -> dirextalk.agent.v1.CoreCloudWorkerModelAuthorizationProjection
 	2,  // 4: dirextalk.agent.v1.CoreCloudWorkerPlan.aws:type_name -> dirextalk.agent.v1.CoreCloudWorkerAwsProjection
 	3,  // 5: dirextalk.agent.v1.CoreCloudWorkerPlan.compute:type_name -> dirextalk.agent.v1.CoreCloudWorkerComputeProjection
 	4,  // 6: dirextalk.agent.v1.CoreCloudWorkerPlan.limits:type_name -> dirextalk.agent.v1.CoreCloudWorkerLimits
-	5,  // 7: dirextalk.agent.v1.CoreCloudWorkerPlan.secret_grants:type_name -> dirextalk.agent.v1.CoreCloudWorkerSecretGrantProjection
-	7,  // 8: dirextalk.agent.v1.CoreCloudWorkerPlan.quote:type_name -> dirextalk.agent.v1.CoreCloudWorkerQuote
-	12, // 9: dirextalk.agent.v1.CoreCloudWorkerPlan.created_at:type_name -> google.protobuf.Timestamp
-	12, // 10: dirextalk.agent.v1.CoreCloudWorkerPlan.updated_at:type_name -> google.protobuf.Timestamp
-	12, // 11: dirextalk.agent.v1.CoreCloudWorkerCleanupSummary.verified_at:type_name -> google.protobuf.Timestamp
-	1,  // 12: dirextalk.agent.v1.CoreCloudWorkerExecution.status:type_name -> dirextalk.agent.v1.CoreCloudWorkerExecutionState
-	0,  // 13: dirextalk.agent.v1.CoreCloudWorkerExecution.workspace_mode:type_name -> dirextalk.agent.v1.CoreCloudWorkerWorkspaceMode
-	9,  // 14: dirextalk.agent.v1.CoreCloudWorkerExecution.cleanup:type_name -> dirextalk.agent.v1.CoreCloudWorkerCleanupSummary
-	12, // 15: dirextalk.agent.v1.CoreCloudWorkerExecution.created_at:type_name -> google.protobuf.Timestamp
-	12, // 16: dirextalk.agent.v1.CoreCloudWorkerExecution.updated_at:type_name -> google.protobuf.Timestamp
-	12, // 17: dirextalk.agent.v1.CoreCloudWorkerArtifact.created_at:type_name -> google.protobuf.Timestamp
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	6,  // 7: dirextalk.agent.v1.CoreCloudWorkerPlan.quote:type_name -> dirextalk.agent.v1.CoreCloudWorkerQuote
+	10, // 8: dirextalk.agent.v1.CoreCloudWorkerPlan.created_at:type_name -> google.protobuf.Timestamp
+	10, // 9: dirextalk.agent.v1.CoreCloudWorkerPlan.updated_at:type_name -> google.protobuf.Timestamp
+	1,  // 10: dirextalk.agent.v1.CoreCloudWorkerExecution.status:type_name -> dirextalk.agent.v1.CoreCloudWorkerExecutionState
+	0,  // 11: dirextalk.agent.v1.CoreCloudWorkerExecution.workspace_mode:type_name -> dirextalk.agent.v1.CoreCloudWorkerWorkspaceMode
+	10, // 12: dirextalk.agent.v1.CoreCloudWorkerExecution.created_at:type_name -> google.protobuf.Timestamp
+	10, // 13: dirextalk.agent.v1.CoreCloudWorkerExecution.updated_at:type_name -> google.protobuf.Timestamp
+	10, // 14: dirextalk.agent.v1.CoreCloudWorkerArtifact.created_at:type_name -> google.protobuf.Timestamp
+	15, // [15:15] is the sub-list for method output_type
+	15, // [15:15] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_core_cloud_worker_proto_init() }
@@ -1538,7 +1346,7 @@ func file_dirextalk_agent_v1_core_cloud_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc), len(file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   10,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

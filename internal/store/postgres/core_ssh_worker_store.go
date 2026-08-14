@@ -208,8 +208,6 @@ func (store *SSHWorkerStore) terminal(ctx context.Context, run sshflow.Run, work
 	}
 	next := currentExecution
 	next.State, next.Status, next.Revision, next.UpdatedAt = terminal, terminal, currentExecution.Revision+1, now
-	next.ProviderMutationStarted = true
-	next.TerminalIntent = ""
 	next.ArtifactIDs = artifactIDs
 	next.WorkerID, next.PersistentWorker = workerResult.WorkerID, true
 	if terminal == cloudworker.StateFailed {
@@ -308,6 +306,11 @@ func (store *SSHWorkerStore) persistArtifactsTx(ctx context.Context, tx pgx.Tx, 
 		out = append(out, artifact)
 	}
 	return out, nil
+}
+
+func jsonEquivalent(left, right []byte) bool {
+	var leftValue, rightValue any
+	return json.Unmarshal(left, &leftValue) == nil && json.Unmarshal(right, &rightValue) == nil && reflect.DeepEqual(leftValue, rightValue)
 }
 
 func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan, terminal cloudworker.ExecutionState, summary string, result sshflow.Result, artifacts []sshflow.Artifact) (core.ToolCall, core.ToolResult, error) {

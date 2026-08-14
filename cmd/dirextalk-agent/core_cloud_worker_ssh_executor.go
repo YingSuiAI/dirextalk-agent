@@ -34,7 +34,7 @@ type sshWorkerExecutor struct {
 	providers map[sshworker.CredentialIdentity]*sshworker.Provider
 	artifacts *localartifact.Repository
 	pricing   cloudworker.PricingCatalog
-	sources   cloudworker.StagingSourceReader
+	sources   cloudworker.SourceReader
 	state     *sshworker.FileStore
 	pool      *sshworker.Pool
 	workloads *sshworkload.Repository
@@ -43,7 +43,7 @@ type sshWorkerExecutor struct {
 	mu        sync.Mutex
 }
 
-func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.StagingSourceReader, state *sshworker.FileStore, root string) (*sshWorkerExecutor, error) {
+func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.SourceReader, state *sshworker.FileStore, root string) (*sshWorkerExecutor, error) {
 	if authority == nil || exact == nil || artifacts == nil || pricing == nil || sources == nil || state == nil || !filepath.IsAbs(root) {
 		return nil, sshworker.ErrInvalid
 	}

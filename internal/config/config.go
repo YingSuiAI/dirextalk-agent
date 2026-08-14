@@ -85,7 +85,6 @@ type Config struct {
 	CoreExecutionV2Enabled           bool          `yaml:"core_execution_v2_enabled" mapstructure:"core_execution_v2_enabled"`
 	CoreExecutionV2ProbeTimeout      time.Duration `yaml:"core_execution_v2_probe_timeout" mapstructure:"core_execution_v2_probe_timeout"`
 	CoreExecutionV2BindingOperations []string      `yaml:"core_execution_v2_binding_operations" mapstructure:"core_execution_v2_binding_operations"`
-	CoreCloudWorker                  CloudWorker   `yaml:"core_cloud_worker" mapstructure:"core_cloud_worker"`
 	CoreStaticSitesEnabled           bool          `yaml:"core_static_sites_enabled" mapstructure:"core_static_sites_enabled"`
 	CoreStaticSitesRoot              string        `yaml:"core_static_sites_root" mapstructure:"core_static_sites_root"`
 	CoreStaticSitesPublicOrigin      string        `yaml:"core_static_sites_public_origin" mapstructure:"core_static_sites_public_origin"`
@@ -121,70 +120,6 @@ type Config struct {
 	CoreVoiceCallbackTLSKeyFile      string        `yaml:"core_voice_callback_tls_key_file" mapstructure:"core_voice_callback_tls_key_file"`
 	CoreVoiceCallbackReadTimeout     time.Duration `yaml:"core_voice_callback_read_timeout" mapstructure:"core_voice_callback_read_timeout"`
 	CoreVoiceCallbackWriteTimeout    time.Duration `yaml:"core_voice_callback_write_timeout" mapstructure:"core_voice_callback_write_timeout"`
-}
-
-// CloudWorker is the non-secret, exact production binding for the single
-// ephemeral Pi Worker route. Credential material remains in CoreAWS storage;
-// this block pins only its durable ID and verified revision.
-type CloudWorker struct {
-	Enabled                       bool          `yaml:"enabled" mapstructure:"enabled"`
-	AccountID                     string        `yaml:"account_id" mapstructure:"account_id"`
-	Region                        string        `yaml:"region" mapstructure:"region"`
-	CredentialID                  string        `yaml:"credential_id" mapstructure:"credential_id"`
-	CredentialRevision            uint64        `yaml:"credential_revision" mapstructure:"credential_revision"`
-	InstanceType                  string        `yaml:"instance_type" mapstructure:"instance_type"`
-	Architecture                  string        `yaml:"architecture" mapstructure:"architecture"`
-	RootDeviceName                string        `yaml:"root_device_name" mapstructure:"root_device_name"`
-	VolumeGiB                     uint64        `yaml:"volume_gib" mapstructure:"volume_gib"`
-	VolumeType                    string        `yaml:"volume_type" mapstructure:"volume_type"`
-	VolumeIOPS                    uint64        `yaml:"volume_iops" mapstructure:"volume_iops"`
-	VolumeThroughputMiB           uint64        `yaml:"volume_throughput_mib" mapstructure:"volume_throughput_mib"`
-	AMIID                         string        `yaml:"ami_id" mapstructure:"ami_id"`
-	AMIDigest                     string        `yaml:"ami_digest" mapstructure:"ami_digest"`
-	WorkerReleaseDigest           string        `yaml:"worker_release_digest" mapstructure:"worker_release_digest"`
-	PiRuntimeDigest               string        `yaml:"pi_runtime_digest" mapstructure:"pi_runtime_digest"`
-	HostNetworkPolicySHA256       string        `yaml:"host_network_policy_sha256" mapstructure:"host_network_policy_sha256"`
-	VPCID                         string        `yaml:"vpc_id" mapstructure:"vpc_id"`
-	SubnetID                      string        `yaml:"subnet_id" mapstructure:"subnet_id"`
-	DNSResolverCIDRs              []string      `yaml:"dns_resolver_cidrs" mapstructure:"dns_resolver_cidrs"`
-	TLSProxyCIDRs                 []string      `yaml:"tls_proxy_cidrs" mapstructure:"tls_proxy_cidrs"`
-	AllowedFQDNs                  []string      `yaml:"allowed_fqdns" mapstructure:"allowed_fqdns"`
-	OutboundProxyURL              string        `yaml:"outbound_proxy_url" mapstructure:"outbound_proxy_url"`
-	OutboundProxyServerName       string        `yaml:"outbound_proxy_server_name" mapstructure:"outbound_proxy_server_name"`
-	OutboundProxyTrustSHA256      string        `yaml:"outbound_proxy_trust_bundle_sha256" mapstructure:"outbound_proxy_trust_bundle_sha256"`
-	ArtifactBucket                string        `yaml:"artifact_bucket" mapstructure:"artifact_bucket"`
-	ArtifactBasePrefix            string        `yaml:"artifact_base_prefix" mapstructure:"artifact_base_prefix"`
-	ArtifactKMSKeyARN             string        `yaml:"artifact_kms_key_arn" mapstructure:"artifact_kms_key_arn"`
-	ArtifactRetention             time.Duration `yaml:"artifact_retention" mapstructure:"artifact_retention"`
-	WorkerControlListenAddress    string        `yaml:"worker_control_listen" mapstructure:"worker_control_listen"`
-	WorkerControlEndpoint         string        `yaml:"worker_control_endpoint" mapstructure:"worker_control_endpoint"`
-	WorkerControlServerName       string        `yaml:"worker_control_server_name" mapstructure:"worker_control_server_name"`
-	WorkerControlTLSCertFile      string        `yaml:"worker_control_tls_cert_file" mapstructure:"worker_control_tls_cert_file"`
-	WorkerControlTLSKeyFile       string        `yaml:"worker_control_tls_key_file" mapstructure:"worker_control_tls_key_file"`
-	WorkerControlTrustSHA256      string        `yaml:"worker_control_trust_bundle_sha256" mapstructure:"worker_control_trust_bundle_sha256"`
-	WorkerControlMaxConcurrentRPC int           `yaml:"worker_control_max_concurrent_rpc" mapstructure:"worker_control_max_concurrent_rpc"`
-	ModelRelayListenAddress       string        `yaml:"model_relay_listen" mapstructure:"model_relay_listen"`
-	ModelRelayEndpoint            string        `yaml:"model_relay_endpoint" mapstructure:"model_relay_endpoint"`
-	ModelRelayServerName          string        `yaml:"model_relay_server_name" mapstructure:"model_relay_server_name"`
-	ModelRelayTLSCertFile         string        `yaml:"model_relay_tls_cert_file" mapstructure:"model_relay_tls_cert_file"`
-	ModelRelayTLSKeyFile          string        `yaml:"model_relay_tls_key_file" mapstructure:"model_relay_tls_key_file"`
-	ModelRelayTrustSHA256         string        `yaml:"model_relay_trust_bundle_sha256" mapstructure:"model_relay_trust_bundle_sha256"`
-	IIDCertificateFile            string        `yaml:"iid_certificate_file" mapstructure:"iid_certificate_file"`
-	PricingCatalogFile            string        `yaml:"pricing_catalog_file" mapstructure:"pricing_catalog_file"`
-	PricingCatalogSHA256          string        `yaml:"pricing_catalog_sha256" mapstructure:"pricing_catalog_sha256"`
-	RuntimeQualificationFile      string        `yaml:"runtime_qualification_file" mapstructure:"runtime_qualification_file"`
-	RuntimeQualificationSHA256    string        `yaml:"runtime_qualification_sha256" mapstructure:"runtime_qualification_sha256"`
-	QuoteTTL                      time.Duration `yaml:"quote_ttl" mapstructure:"quote_ttl"`
-	MaximumCatalogAge             time.Duration `yaml:"maximum_catalog_age" mapstructure:"maximum_catalog_age"`
-	ContingencyBasisPoints        uint32        `yaml:"contingency_basis_points" mapstructure:"contingency_basis_points"`
-	AbsoluteHardLimitMicros       int64         `yaml:"absolute_hard_limit_micros" mapstructure:"absolute_hard_limit_micros"`
-	MaxRuntime                    time.Duration `yaml:"max_runtime" mapstructure:"max_runtime"`
-	MaxTokens                     uint64        `yaml:"max_tokens" mapstructure:"max_tokens"`
-	MaxOutputBytes                uint64        `yaml:"max_output_bytes" mapstructure:"max_output_bytes"`
-	ControllerPollInterval        time.Duration `yaml:"controller_poll_interval" mapstructure:"controller_poll_interval"`
-	WorkerHeartbeatInterval       time.Duration `yaml:"worker_heartbeat_interval" mapstructure:"worker_heartbeat_interval"`
-	ReaperInterval                time.Duration `yaml:"reaper_interval" mapstructure:"reaper_interval"`
-	CompletionOutboxInterval      time.Duration `yaml:"completion_outbox_interval" mapstructure:"completion_outbox_interval"`
 }
 
 // AWSWorkloadReadiness is non-secret, explicit startup proof configuration.
@@ -275,9 +210,6 @@ func ValidateCore(cfg *Config) error {
 		return err
 	}
 	if err := ValidateCoreExecutionV2(cfg); err != nil {
-		return err
-	}
-	if err := ValidateCoreCloudWorker(cfg); err != nil {
 		return err
 	}
 	if err := ValidateCoreStaticSites(cfg); err != nil {
@@ -407,9 +339,6 @@ func ValidateCoreExecutionV2(cfg *Config) error {
 	}
 	return nil
 }
-
-// Cloud Worker is credential-driven and has no deployment binding.
-func ValidateCoreCloudWorker(*Config) error { return nil }
 
 var awsServiceRoleARNRE = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]{1,512}$`)
 

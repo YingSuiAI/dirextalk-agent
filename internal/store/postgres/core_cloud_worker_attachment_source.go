@@ -96,7 +96,7 @@ func newCloudWorkerProjectExecutionBudgetEvidence(turn core.Turn, prompt, profil
 }
 
 // ResolveCloudWorkerManifest maps only sources frozen on this turn to private
-// exact-revision descriptors. It does not read bytes or expose database/S3
+// exact-revision descriptors. It does not read bytes or expose storage
 // locations to the model.
 func (s *CoreConversationStore) ResolveCloudWorkerManifest(ctx context.Context, lease core.TurnLease, mode cloudworker.WorkspaceMode, sourceIDs []string) (cloudworker.InputManifest, error) {
 	if s == nil || s.pool == nil || ctx == nil || (mode != cloudworker.WorkspaceReadOnly && mode != cloudworker.WorkspaceWrite) ||
@@ -286,4 +286,4 @@ func (body *attachmentSourceBody) Close() error {
 var _ cloudworker.IntrinsicOwnerResolver = (*CoreConversationStore)(nil)
 var _ cloudworker.IntrinsicManifestResolver = (*CoreConversationStore)(nil)
 var _ cloudworker.IntrinsicBudgetResolver = (*CoreConversationStore)(nil)
-var _ cloudworker.StagingSourceReader = (*CoreConversationStore)(nil)
+var _ cloudworker.SourceReader = (*CoreConversationStore)(nil)

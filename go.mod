@@ -23,17 +23,11 @@ require (
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2/service/iam v1.58.1
 	github.com/aws/aws-sdk-go-v2/service/pricing v1.44.2
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.0
 	github.com/pgvector/pgvector-go/pgx v0.4.1
-	github.com/smallstep/pkcs7 v0.2.3
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.16 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.28 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.36 // indirect
 	github.com/pgvector/pgvector-go v0.4.1
 	github.com/x448/float16 v0.8.4 // indirect
 )
@@ -92,6 +86,6 @@ require (
 	golang.org/x/exp v0.0.0-20230905200255-921286631fa9 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/text v0.34.0
 	gopkg.in/ini.v1 v1.67.0 // indirect
 )

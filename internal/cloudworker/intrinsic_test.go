@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -32,60 +31,6 @@ func (s *intrinsicStore) CreateOffer(_ context.Context, command CreateOfferComma
 		Task:         coretask.Task{ID: command.Plan.TaskID, Status: coretask.StatusWaitingUser},
 		Confirmation: coreconfirmation.Confirmation{ConfirmationID: command.Plan.ConfirmationID, OwnerID: command.Plan.OwnerID, TaskID: command.Plan.TaskID, State: coreconfirmation.StatePending},
 	}, nil
-}
-func (*intrinsicStore) GetPlan(context.Context, string, string, uint64) (Plan, error) {
-	return Plan{}, ErrNotFound
-}
-func (*intrinsicStore) GetExecution(context.Context, string, string) (Execution, error) {
-	return Execution{}, ErrNotFound
-}
-func (*intrinsicStore) ListExecutions(context.Context, string, string, int) ([]Execution, string, error) {
-	return nil, "", nil
-}
-func (*intrinsicStore) GetArtifact(context.Context, string, string) (Artifact, error) {
-	return Artifact{}, ErrNotFound
-}
-func (*intrinsicStore) Events(context.Context, string, string, uint64, int) ([]Event, uint64, error) {
-	return nil, 0, nil
-}
-func (*intrinsicStore) GetControllerContext(context.Context, coretask.Task) (ControllerContext, error) {
-	return ControllerContext{}, ErrNotFound
-}
-func (*intrinsicStore) BeginExecution(context.Context, coretask.Task) (BeginResult, error) {
-	return BeginResult{}, ErrNotFound
-}
-func (*intrinsicStore) AuthorizeLaunch(context.Context, AuthorizeLaunchCommand) (LaunchAuthorization, error) {
-	return LaunchAuthorization{}, ErrNotFound
-}
-func (*intrinsicStore) GetResumeContext(context.Context, coretask.Task) (ResumeContext, error) {
-	return ResumeContext{}, ErrNotFound
-}
-func (*intrinsicStore) ReplaceWithRequote(context.Context, coretask.Task, RequoteOfferCommand) (Offer, error) {
-	return Offer{}, ErrNotFound
-}
-func (*intrinsicStore) MarkDispatchPrepared(context.Context, coretask.Task, uint64, cloudaws.ExecutionIdentity, string) (Execution, error) {
-	return Execution{}, ErrNotFound
-}
-func (*intrinsicStore) TransitionExecution(context.Context, coretask.Task, uint64, ExecutionState) (Execution, error) {
-	return Execution{}, ErrNotFound
-}
-func (*intrinsicStore) RecordResources(context.Context, coretask.Task, uint64, []Resource, ExecutionState) (Execution, error) {
-	return Execution{}, ErrNotFound
-}
-func (*intrinsicStore) RecordArtifacts(context.Context, coretask.Task, uint64, []Artifact, ExecutionState) (Execution, error) {
-	return Execution{}, ErrNotFound
-}
-func (*intrinsicStore) BeginCleanup(context.Context, coretask.Task, uint64, ExecutionState, string, string) (Execution, error) {
-	return Execution{}, ErrNotFound
-}
-func (*intrinsicStore) CompleteExecution(context.Context, coretask.Task, uint64, ProviderResult) (Execution, CompletionOutbox, error) {
-	return Execution{}, CompletionOutbox{}, ErrNotFound
-}
-func (*intrinsicStore) FailExecution(context.Context, coretask.Task, uint64, string, string) (Execution, CompletionOutbox, error) {
-	return Execution{}, CompletionOutbox{}, ErrNotFound
-}
-func (*intrinsicStore) CancelExecution(context.Context, coretask.Task, uint64, string, string) (Execution, CompletionOutbox, error) {
-	return Execution{}, CompletionOutbox{}, ErrNotFound
 }
 
 type intrinsicOwner struct {
@@ -129,14 +74,9 @@ func (r *intrinsicManifest) ResolveCloudWorkerManifest(_ context.Context, _ core
 
 func intrinsicDefaults(now time.Time) Defaults {
 	return Defaults{
-		AWS:            AWSBinding{AccountID: "123456789012", Region: "us-east-1", CredentialID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("aws-credential")).String(), CredentialRevision: 3},
-		Compute:        ComputeSpec{InstanceType: "c7i.large", Architecture: "x86_64", RootDeviceName: "/dev/xvda", VolumeGiB: 32, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125, AMIID: "ami-0123456789abcdef0", AMIDigest: digestValue("ami"), WorkerReleaseDigest: digestValue("worker"), PiRuntimeDigest: digestValue("pi"), HostNetworkPolicySHA256: digestValue("host-network-policy")},
-		Placement:      PlacementSpec{VPCID: "vpc-01234567", SubnetID: "subnet-01234567"},
-		NetworkPolicy:  NetworkPolicy{DNSResolverCIDRs: []string{"10.0.0.2/32"}, TLSProxyCIDRs: []string{"10.0.0.3/32"}, AllowedFQDNs: []string{"worker.example.test", "relay.example.test"}, OutboundProxyURL: "https://proxy.example.test:443", OutboundProxyServerName: "proxy.example.test", OutboundProxyTrustBundleSHA256: digestValue("proxy-ca")},
-		ArtifactBucket: "dirextalk-worker-artifacts", ArtifactBasePrefix: "executions/", ArtifactKMSKeyARN: "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111", ArtifactVersioned: true,
-		WorkerBootstrap: WorkerBootstrap{Protocol: WorkerControlProtocolV1, Endpoint: "https://worker.example.test:8443", TLSServerName: "worker.example.test", TrustBundleDigest: digestValue("worker-ca")},
-		ModelRelay:      ModelRelayBinding{Endpoint: "https://relay.example.test/v1", TLSServerName: "relay.example.test", TrustBundleDigest: digestValue("relay-ca")},
-		Limits:          Limits{MaxRuntimeSeconds: 3600, MaxTokens: 2000, MaxOutputBytes: 1 << 20}, ArtifactRetentionSeconds: 3600,
+		AWS:               AWSBinding{AccountID: "123456789012", Region: "us-east-1", CredentialID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("aws-credential")).String(), CredentialRevision: 3},
+		Compute:           ComputeSpec{InstanceType: "c7i.large", Architecture: "x86_64", RootDeviceName: "/dev/xvda", VolumeGiB: 32, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125},
+		Limits:            Limits{MaxRuntimeSeconds: 3600, MaxTokens: 2000, MaxOutputBytes: 1 << 20},
 		QuoteAmountMicros: 1000, MaximumAuthorizedMicros: 2000, QuoteTTL: 5 * time.Minute,
 	}
 }

@@ -18,16 +18,12 @@ enum CoreCloudWorkerExecutionState {
   CORE_CLOUD_WORKER_EXECUTION_STATE_WAITING_USER = 1;
   CORE_CLOUD_WORKER_EXECUTION_STATE_QUEUED = 2;
   CORE_CLOUD_WORKER_EXECUTION_STATE_PROVISIONING = 3;
-  CORE_CLOUD_WORKER_EXECUTION_STATE_AWAITING_WORKER = 4;
-  CORE_CLOUD_WORKER_EXECUTION_STATE_RUNNING = 5;
-  CORE_CLOUD_WORKER_EXECUTION_STATE_COLLECTING = 6;
-  CORE_CLOUD_WORKER_EXECUTION_STATE_VALIDATING = 7;
-  CORE_CLOUD_WORKER_EXECUTION_STATE_CLEANING = 8;
-  CORE_CLOUD_WORKER_EXECUTION_STATE_SUCCEEDED = 9;
-  CORE_CLOUD_WORKER_EXECUTION_STATE_FAILED = 10;
-  CORE_CLOUD_WORKER_EXECUTION_STATE_CANCELED = 11;
-  CORE_CLOUD_WORKER_EXECUTION_STATE_REJECTED = 12;
-  CORE_CLOUD_WORKER_EXECUTION_STATE_EXPIRED = 13;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_CLEANING = 4;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_SUCCEEDED = 5;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_FAILED = 6;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_CANCELED = 7;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_REJECTED = 8;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_EXPIRED = 9;
 }
 
 message CoreCloudWorkerAwsProjection {
@@ -44,24 +40,14 @@ message CoreCloudWorkerComputeProjection {
   string volume_type = 5;
   uint64 volume_iops = 6;
   uint64 volume_throughput_mib = 7;
-  string ami_id = 8;
-  string ami_digest = 9;
-  string worker_release_digest = 10;
-  string pi_runtime_digest = 11;
-  string host_network_policy_sha256 = 12;
+  uint32 vcpu = 8;
+  uint32 memory_gib = 9;
 }
 
 message CoreCloudWorkerLimits {
   uint64 max_runtime_seconds = 1;
   uint64 max_tokens = 2;
   uint64 max_output_bytes = 3;
-}
-
-// Public Cloud Worker grants expose only their approved purpose. Private
-// reference IDs and per-reference binding digests are sealed into aggregate
-// authorization digests and are not representable here.
-message CoreCloudWorkerSecretGrantProjection {
-  string purpose = 1;
 }
 
 message CoreCloudWorkerModelAuthorizationProjection {
@@ -80,13 +66,12 @@ message CoreCloudWorkerQuote {
   google.protobuf.Timestamp source_time = 3;
   google.protobuf.Timestamp expires_at = 4;
   int64 maximum_authorized_cost_micros = 5;
-  reserved 6;
+  uint64 compute_micros_per_hour = 6;
   string digest = 7;
 }
 
-// This is a public, secret-free projection. Credential IDs, exact S3
-// locations, provider IDs, bootstrap tokens and private input manifests are
-// deliberately not representable.
+// This is a public, secret-free projection. Credential IDs, storage locations,
+// provider IDs, SSH material and private input manifests are not representable.
 message CoreCloudWorkerPlan {
   string owner_id = 1;
   uint64 account_generation = 2;
@@ -111,21 +96,10 @@ message CoreCloudWorkerPlan {
   CoreCloudWorkerAwsProjection aws = 22;
   CoreCloudWorkerComputeProjection compute = 23;
   CoreCloudWorkerLimits limits = 24;
-  repeated string network_grants = 25;
-  repeated CoreCloudWorkerSecretGrantProjection secret_grants = 26;
-  uint64 artifact_retention_seconds = 27;
-  CoreCloudWorkerQuote quote = 28;
-  reserved 29, 30;
-  string execution_digest = 31;
-  google.protobuf.Timestamp created_at = 32;
-  google.protobuf.Timestamp updated_at = 33;
-}
-
-message CoreCloudWorkerCleanupSummary {
-  bool verified_destroyed = 1;
-  google.protobuf.Timestamp verified_at = 2;
-  uint64 resources_total = 3;
-  uint64 resources_verified_destroyed = 4;
+  CoreCloudWorkerQuote quote = 25;
+  string execution_digest = 26;
+  google.protobuf.Timestamp created_at = 27;
+  google.protobuf.Timestamp updated_at = 28;
 }
 
 message CoreCloudWorkerExecution {
@@ -147,13 +121,13 @@ message CoreCloudWorkerExecution {
   reserved 16;
   string quote_digest = 17;
   string execution_digest = 18;
-  CoreCloudWorkerCleanupSummary cleanup = 19;
-  repeated string artifact_ids = 20;
-  string failure_code = 21;
-  string failure_summary = 22;
-  google.protobuf.Timestamp created_at = 23;
-  google.protobuf.Timestamp updated_at = 24;
-  bool cancellation_requested = 25;
+  repeated string artifact_ids = 19;
+  string failure_code = 20;
+  string failure_summary = 21;
+  google.protobuf.Timestamp created_at = 22;
+  google.protobuf.Timestamp updated_at = 23;
+  string worker_id = 24;
+  bool persistent_worker = 25;
 }
 
 message CoreCloudWorkerArtifact {

@@ -199,61 +199,13 @@ support.
   queues. This evidence covers Core CloudControl only. It is not Cloud Worker,
   Worker AMI, one-EC2/one-Worker/one-Pi, artifact collection, or Cloud Worker
   inventory-zero evidence and must not be used as such.
-- On **2026-08-07**, `go test ./internal/cloudworker/... -count=1` passed. The
-  fake/provider qualification covers deterministic plan/quote binding and hard
-  cost ceilings, requote/drift fences, one-dispatch recovery, Worker identity
-  and stale-lease rejection, Pi canonical-final/token limits, exact-version S3
-  staging/result collection, controlled egress contracts, eight-resource
-  cleanup, Reaper fault injection, and bounded public artifact download. The
-  download lane verifies complete exact-version content before slicing, strict
-  chunk/range/digest output, owner/account-generation isolation, retention and
-  Cleaner races, and AWS credential drift before and after the read. These
+- On **2026-08-14**, the current Cloud Worker tests cover proposal-time live
+  selection and pricing, deterministic offer/confirmation binding, dynamic AWS
+  credential readiness, SSH execution, retained Worker identity, local artifact
+  reads/downloads, and owner/account-generation isolation. The retired custom
+  AMI, S3/KMS staging/result, WorkerControl, model-relay, provider-graph,
+  pre-launch repricing, and automatic cleanup paths have been removed. These
   tests use fakes or SDK test doubles and perform no AWS mutation.
-- On **2026-08-07**, `go test ./internal/store/postgres -run 'CloudWorker' -count=1`
-  passed against the local PostgreSQL 18 test service. In particular,
-  `TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation`
-  passed the fresh-state path from `cloud_worker_propose` through atomic offer,
-  owner confirmation, one fake provider dispatch, real PostgreSQL-backed
-  WorkerControl challenge/claim/heartbeat/complete, canonical Pi final parsing,
-  exact-version central validation, eight `verified_destroyed` resource
-  projections, one conversation result message, and one durable completion
-  outbox record. The provider in this test deliberately constructs no AWS SDK
-  client, so this is fake/provider qualification rather than live-cloud proof.
-- On **2026-08-08**, the complete Agent suite passed with PostgreSQL 18:
-  `GOFLAGS=-buildvcs=false go test ./...`, `go vet ./...`,
-  `GOFLAGS=-buildvcs=false go build ./cmd/...`, `buf lint`, and
-  `git diff --check`. The `GOFLAGS` override disables only Go VCS stamping,
-  which otherwise resolves the parent `/home/adam` Git directory instead of
-  this linked worktree; it does not change compiled source or test behavior.
-- On **2026-08-09**, successful Cloud Worker CoreTasks began retaining their
-  stable Worker/stack name, Region, optional observed private/public IPs, and
-  sealed non-secret Worker configuration in the existing result JSON across
-  verified resource cleanup. Focused Cloud Worker and PostgreSQL package tests
-  cover display without account/generation/provider-instance prerequisites.
-  Failed and canceled tasks keep `result_json` null and use the existing
-  CoreTask failure fields, matching the immutable schema constraint.
-  Focused fresh-state tests additionally covered atomic Cloud Worker offer
-  creation, exact credential-revision restart recovery, output-version journal
-  cleanup, and the final second S3 inventory proof. No real AWS mutation was
-  performed.
-- On **2026-08-10**, an authorized fresh Tokyo API run proved immutable EIP
-  AllocationId projection and cancellation cleanup of all eight resource kinds.
-  The Worker did not claim because the execution Gate could not read the
-  cross-UID Worker `/proc/<pid>/exe` identity without `CAP_SYS_PTRACE`; the AMI
-  contract now grants that exact capability and the Worker unit performs a real
-  Worker-UID Gate ping before startup. The same run also exposed terminal cleanup
-  retry after a CoreTask lease reclaim: terminalization now validates the
-  immutable launch-expectation/session fences instead of the controller's newer
-  lease epoch. Focused PG18 and Cloud Worker tests pass; a corrected AMI and a
-  fresh successful live run remain required for acceptance.
-- On **2026-08-11**, WorkerControl Claim gained an exact bidirectional release
-  handshake bound by the current immutable runtime qualification. Missing or
-  unknown Worker protocol/runtime contract versions now fail before identity
-  verification or model-grant activation, and the Worker rejects response
-  drift before parsing the runtime task or executing Pi. Focused control,
-  RPC, Worker, qualification, and PostgreSQL 18 fresh-state/restart tests
-  passed without AWS mutation. A candidate AMI first Claim remains required
-  for live evidence.
 - On **2026-08-13**, the active implementation replaced that historical
   inbound/custom-image path with the persistent SSH Worker manager. Focused
   tests cover AWS-owned AL2023/default-network discovery, ordinary public IPv4,

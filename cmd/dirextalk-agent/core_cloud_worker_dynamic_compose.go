@@ -52,9 +52,9 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 		return nil, fmt.Errorf("initialize dynamic Cloud Worker quoter: %w", err)
 	}
 	defaults := cloudworker.Defaults{
-		Compute:                  cloudworker.ComputeSpec{InstanceType: "t3.small", Architecture: "x86_64", RootDeviceName: "/dev/xvda", VolumeGiB: 20, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125},
-		Limits:                   cloudworker.Limits{MaxRuntimeSeconds: 3600, MaxTokens: 100_000, MaxOutputBytes: cloudworker.MaxCloudWorkerOutputBytes},
-		ArtifactRetentionSeconds: 7 * 24 * 3600, MaximumAuthorizedMicros: 100_000_000, QuoteTTL: cloudWorkerDefaultQuoteTTL,
+		Compute:                 cloudworker.ComputeSpec{InstanceType: "t3.small", Architecture: "x86_64", RootDeviceName: "/dev/xvda", VolumeGiB: 20, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125},
+		Limits:                  cloudworker.Limits{MaxRuntimeSeconds: 3600, MaxTokens: 100_000, MaxOutputBytes: cloudworker.MaxCloudWorkerOutputBytes},
+		MaximumAuthorizedMicros: 100_000_000, QuoteTTL: cloudWorkerDefaultQuoteTTL,
 	}
 	domain, err := cloudworker.NewServiceWithAWSBindingResolver(postgres.NewCloudWorkerStore(store), defaults, quoter, authority)
 	if err != nil {
@@ -87,7 +87,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker flow store: %w", err)
 	}
-	handler, err := sshflow.NewHandler(flowStore, domain, executor)
+	handler, err := sshflow.NewHandler(flowStore, executor)
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker task handler: %w", err)
 	}

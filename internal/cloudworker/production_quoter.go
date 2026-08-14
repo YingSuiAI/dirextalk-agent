@@ -128,33 +128,6 @@ func (quoter *ProductionQuoter) Quote(ctx context.Context, request QuoteRequest)
 	return quoter.quote(ctx, request)
 }
 
-func (quoter *ProductionQuoter) Validate(ctx context.Context, plan Plan) (Quote, error) {
-	if quoter == nil || ctx == nil {
-		return Quote{}, ErrInvalid
-	}
-	copy := plan
-	if err := copy.sealAuthorizationBasis(); err != nil {
-		return Quote{}, err
-	}
-	request := QuoteRequest{OwnerID: copy.OwnerID, AccountGeneration: copy.AccountGeneration, ObjectiveDigest: copy.ObjectiveDigest,
-		UserPromptDigest: copy.UserPromptDigest, InputManifestDigest: copy.InputManifestDigest, WorkspaceMode: copy.WorkspaceMode,
-		ProposalReason: copy.ProposalReason, ModelBindingDigest: copy.ModelAuthorization.BindingDigest,
-		AuthorizationBasisDigest: copy.AuthorizationBasisDigest, AWS: copy.AWS, Compute: copy.Compute, Limits: copy.Limits}
-	fresh, err := quoter.quote(ctx, request)
-	if err != nil {
-		return Quote{}, err
-	}
-	now := quoter.now().UTC()
-	if plan.Quote.ExpiresAt.After(now) && plan.Quote.SourceTime.Add(quoter.config.MaximumCatalogAge).After(now) &&
-		plan.Quote.AmountMicros == fresh.AmountMicros && plan.Quote.MaximumAuthorizedCostMicros == fresh.MaximumAuthorizedCostMicros &&
-		plan.Quote.ComputeMicrosPerHour == fresh.ComputeMicrosPerHour &&
-		plan.Quote.Currency == fresh.Currency && plan.Quote.BasisDigest == fresh.BasisDigest &&
-		fresh.ExpiresAt.After(now) {
-		return plan.Quote, nil
-	}
-	return fresh, nil
-}
-
 func (quoter *ProductionQuoter) quote(ctx context.Context, request QuoteRequest) (Quote, error) {
 	if err := validateProductionQuoteRequest(request); err != nil {
 		return Quote{}, err

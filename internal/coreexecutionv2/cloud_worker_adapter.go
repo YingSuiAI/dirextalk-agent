@@ -12,8 +12,7 @@ import (
 )
 
 type cloudWorkerExecutionAdapter struct {
-	store     CloudWorkerAuthorityStore
-	downloads CloudWorkerArtifactDownloader
+	store CloudWorkerAuthorityStore
 }
 
 type localCloudWorkerExecutionAdapter struct {
@@ -70,15 +69,6 @@ func mapLocalArtifactError(err error) error {
 	default:
 		return err
 	}
-}
-
-// NewCloudWorkerExecutionPort exposes only secret-free Cloud Worker
-// projections through the existing Execution V2 product surface.
-func NewCloudWorkerExecutionPort(store CloudWorkerAuthorityStore, downloads CloudWorkerArtifactDownloader) (CloudWorkerExecutionPort, error) {
-	if store == nil || downloads == nil {
-		return nil, ErrInvalid
-	}
-	return &cloudWorkerExecutionAdapter{store: store, downloads: downloads}, nil
 }
 
 func (a *cloudWorkerExecutionAdapter) GetPlan(ctx context.Context, request CloudWorkerPlanGetRequest) (CloudWorkerObject, error) {
@@ -159,47 +149,6 @@ func (a *cloudWorkerExecutionAdapter) RunEvents(ctx context.Context, request Clo
 	return CloudWorkerEventPage{Events: items, NextSequence: next, HistoryTruncated: truncated}, nil
 }
 
-func (a *cloudWorkerExecutionAdapter) GetArtifact(ctx context.Context, request CloudWorkerArtifactGetRequest) (CloudWorkerObject, error) {
-	if a == nil || a.store == nil || !validCloudWorkerAuthority(request.Authority) || !coretask.ValidUUID(request.ArtifactID) {
-		return nil, ErrInvalid
-	}
-	artifact, err := a.store.GetArtifactForAuthority(ctx, strings.TrimSpace(request.OwnerID), request.AccountGeneration, request.ArtifactID)
-	if err != nil {
-		return nil, mapCloudWorkerPortError(err)
-	}
-	return cloudWorkerArtifactProjection(artifact, request.Authority), nil
-}
-
-func (a *cloudWorkerExecutionAdapter) DownloadArtifact(ctx context.Context, request CloudWorkerArtifactDownloadRequest) (CloudWorkerArtifactChunk, error) {
-	if a == nil || a.downloads == nil || !validCloudWorkerAuthority(request.Authority) ||
-		!coretask.ValidUUID(request.ArtifactID) || request.OffsetBytes >= cloudworker.MaxCloudWorkerOutputBytes ||
-		request.MaxChunkBytes == 0 || request.MaxChunkBytes > MaxCloudWorkerArtifactDownloadChunkBytes {
-		return CloudWorkerArtifactChunk{}, ErrInvalid
-	}
-	chunk, err := a.downloads.DownloadArtifact(ctx, cloudworker.ArtifactDownloadRequest{
-		OwnerID: strings.TrimSpace(request.OwnerID), AccountGeneration: request.AccountGeneration,
-		ArtifactID: request.ArtifactID, OffsetBytes: request.OffsetBytes, MaxChunkBytes: request.MaxChunkBytes,
-	})
-	if err != nil {
-		return CloudWorkerArtifactChunk{}, mapCloudWorkerPortError(err)
-	}
-	public := CloudWorkerArtifactChunk{
-		Authority:  Authority{OwnerID: chunk.OwnerID, AccountGeneration: chunk.AccountGeneration},
-		ArtifactID: chunk.ArtifactID, ExecutionID: chunk.ExecutionID, OffsetBytes: chunk.OffsetBytes,
-		Data: append([]byte(nil), chunk.Data...), ChunkSHA256: chunk.ChunkSHA256,
-		ArtifactSHA256: chunk.ArtifactSHA256, SizeBytes: chunk.SizeBytes,
-		NextOffsetBytes: chunk.NextOffsetBytes, EOF: chunk.EOF,
-	}
-	if chunk.ValidateFor(cloudworker.ArtifactDownloadRequest{
-		OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration, ArtifactID: request.ArtifactID,
-		OffsetBytes: request.OffsetBytes, MaxChunkBytes: request.MaxChunkBytes,
-	}) != nil {
-		clear(public.Data)
-		return CloudWorkerArtifactChunk{}, ErrUnsafeOutput
-	}
-	return public, nil
-}
-
 func validCloudWorkerAuthority(authority Authority) bool {
 	return strings.TrimSpace(authority.OwnerID) != "" && authority.AccountGeneration > 0
 }
@@ -226,15 +175,6 @@ func mapCloudWorkerPortError(err error) error {
 }
 
 func cloudWorkerPlanProjection(plan cloudworker.Plan) CloudWorkerObject {
-	publicGrants := cloudworker.ProjectPublicSecretGrants(plan.SecretGrants)
-	secretGrants := make([]any, 0, len(publicGrants))
-	for _, grant := range publicGrants {
-		secretGrants = append(secretGrants, map[string]any{"purpose": grant.Purpose})
-	}
-	networkGrants := make([]any, 0, len(plan.NetworkGrants))
-	for _, grant := range plan.NetworkGrants {
-		networkGrants = append(networkGrants, grant)
-	}
 	return CloudWorkerObject{
 		"owner_id": plan.OwnerID, "account_generation": plan.AccountGeneration,
 		"plan_id": plan.PlanID, "revision": plan.Revision, "status": plan.Status,
@@ -246,17 +186,17 @@ func cloudWorkerPlanProjection(plan cloudworker.Plan) CloudWorkerObject {
 			"account_id": plan.AWS.AccountID, "region": plan.AWS.Region,
 		},
 		"compute": map[string]any{
-			"instance_type": plan.Compute.InstanceType, "volume_gib": plan.Compute.VolumeGiB,
+			"instance_type": plan.Compute.InstanceType, "vcpu": plan.Compute.VCPU,
+			"memory_gib": plan.Compute.MemoryGiB, "volume_gib": plan.Compute.VolumeGiB,
 			"volume_type": plan.Compute.VolumeType,
 			"volume_iops": plan.Compute.VolumeIOPS, "volume_throughput_mib": plan.Compute.VolumeThroughputMiB,
 		},
 		"limits": map[string]any{
 			"max_runtime_seconds": plan.Limits.MaxRuntimeSeconds,
 		},
-		"network_grants": networkGrants, "secret_grants": secretGrants,
-		"artifact_retention_seconds": plan.ArtifactRetentionSeconds,
 		"quote": map[string]any{
-			"amount_micros": plan.Quote.AmountMicros, "currency": plan.Quote.Currency,
+			"amount_micros": plan.Quote.AmountMicros, "compute_micros_per_hour": plan.Quote.ComputeMicrosPerHour,
+			"currency":    plan.Quote.Currency,
 			"source_time": formatCloudWorkerTime(plan.Quote.SourceTime), "expires_at": formatCloudWorkerTime(plan.Quote.ExpiresAt),
 			"maximum_authorized_cost_micros": plan.Quote.MaximumAuthorizedCostMicros,
 		},
@@ -269,14 +209,6 @@ func cloudWorkerExecutionProjection(execution cloudworker.Execution) CloudWorker
 	for _, id := range execution.ArtifactIDs {
 		artifactIDs = append(artifactIDs, id)
 	}
-	cleanup := map[string]any{
-		"verified_destroyed":           execution.Cleanup.VerifiedDestroyed,
-		"resources_total":              execution.Cleanup.ResourcesTotal,
-		"resources_verified_destroyed": execution.Cleanup.ResourcesVerifiedDestroyed,
-	}
-	if execution.Cleanup.VerifiedAt != nil {
-		cleanup["verified_at"] = formatCloudWorkerTime(*execution.Cleanup.VerifiedAt)
-	}
 	return CloudWorkerObject{
 		"owner_id": execution.OwnerID, "account_generation": execution.AccountGeneration,
 		"run_id": execution.RunID, "execution_id": execution.ExecutionID,
@@ -284,21 +216,10 @@ func cloudWorkerExecutionProjection(execution cloudworker.Execution) CloudWorker
 		"task_id": execution.TaskID, "confirmation_id": execution.ConfirmationID,
 		"conversation_id": execution.ConversationID, "turn_id": execution.TurnID,
 		"status": string(execution.State), "revision": execution.Revision,
-		"cleanup": cleanup, "artifact_ids": artifactIDs,
-		"worker_id": execution.WorkerID, "persistent_worker": execution.PersistentWorker,
+		"artifact_ids": artifactIDs,
+		"worker_id":    execution.WorkerID, "persistent_worker": execution.PersistentWorker,
 		"failure_code": execution.FailureCode, "failure_summary": execution.FailureSummary,
-		"cancellation_requested": execution.TerminalIntent == string(cloudworker.StateCanceled),
-		"created_at":             formatCloudWorkerTime(execution.CreatedAt), "updated_at": formatCloudWorkerTime(execution.UpdatedAt),
-	}
-}
-
-func cloudWorkerArtifactProjection(artifact cloudworker.Artifact, authority Authority) CloudWorkerObject {
-	return CloudWorkerObject{
-		"owner_id": authority.OwnerID, "account_generation": authority.AccountGeneration,
-		"artifact_id": artifact.ArtifactID, "execution_id": artifact.ExecutionID,
-		"kind": artifact.Kind, "name": artifact.Name, "media_type": artifact.MediaType,
-		"size_bytes": artifact.SizeBytes, "sha256": artifact.SHA256, "status": string(artifact.Status),
-		"created_at": formatCloudWorkerTime(artifact.CreatedAt),
+		"created_at": formatCloudWorkerTime(execution.CreatedAt), "updated_at": formatCloudWorkerTime(execution.UpdatedAt),
 	}
 }
 
@@ -311,17 +232,6 @@ func cloudWorkerEventProjection(event cloudworker.Event) CloudWorkerObject {
 	}
 	if event.State != "" {
 		out["status"] = string(event.State)
-	}
-	if event.Progress != nil {
-		out["progress"] = map[string]any{
-			"phase": event.Progress.Phase, "elapsed_ms": event.Progress.ElapsedMS,
-			"last_activity_at":        formatCloudWorkerTime(event.Progress.LastActivityAt),
-			"cpu_time_ms":             event.Progress.CPUTimeMS,
-			"memory_high_water_bytes": event.Progress.MemoryHighWaterBytes,
-			"invocation_count":        event.Progress.InvocationCount,
-			"uploaded_bytes":          event.Progress.UploadedBytes,
-			"output_truncated":        event.Progress.OutputTruncated,
-		}
 	}
 	return out
 }

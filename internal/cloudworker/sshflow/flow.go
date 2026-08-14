@@ -74,14 +74,6 @@ type Executor interface {
 	Execute(context.Context, Request) (Result, error)
 }
 
-// LaunchPreflight performs the last read-only pricing check after confirmation
-// consumption and before Executor can reach an AWS mutation. A true result
-// means the old execution was atomically replaced by a fresh offer and must
-// not be failed or executed.
-type LaunchPreflight interface {
-	PreflightLaunch(context.Context, coretask.Task, cloudworker.Plan, coremodel.ExecutionSnapshot) (bool, error)
-}
-
 type Store interface {
 	Begin(context.Context, coretask.Task) (Run, error)
 	Complete(context.Context, Run, Result) error
@@ -89,20 +81,19 @@ type Store interface {
 }
 
 type Handler struct {
-	store     Store
-	preflight LaunchPreflight
-	executor  Executor
+	store    Store
+	executor Executor
 }
 
-func NewHandler(store Store, preflight LaunchPreflight, executor Executor) (*Handler, error) {
-	if store == nil || preflight == nil || executor == nil {
+func NewHandler(store Store, executor Executor) (*Handler, error) {
+	if store == nil || executor == nil {
 		return nil, ErrInvalid
 	}
-	return &Handler{store: store, preflight: preflight, executor: executor}, nil
+	return &Handler{store: store, executor: executor}, nil
 }
 
 func (handler *Handler) Handle(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
-	if handler == nil || handler.store == nil || handler.preflight == nil || handler.executor == nil || ctx == nil ||
+	if handler == nil || handler.store == nil || handler.executor == nil || ctx == nil ||
 		task.Spec.Kind != coretask.TaskKindCloudWorker || task.Spec.Payload.CloudWorker == nil ||
 		task.Status != coretask.StatusRunning || task.Lease == nil {
 		return coreruntime.ManagedOutcome{Err: ErrInvalid}
@@ -110,13 +101,6 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 	run, err := handler.store.Begin(ctx, task)
 	if err != nil {
 		return coreruntime.ManagedOutcome{Err: err}
-	}
-	requoted, err := handler.preflight.PreflightLaunch(ctx, task, run.Plan, run.ModelSnapshot)
-	if err != nil {
-		return coreruntime.ManagedOutcome{Err: err, TerminalOwned: requoted}
-	}
-	if requoted {
-		return coreruntime.ManagedOutcome{Err: cloudworker.ErrQuoteExpired, TerminalOwned: true}
 	}
 	result, executeErr := handler.executor.Execute(ctx, Request{
 		OwnerID: run.Plan.OwnerID, AccountGeneration: run.Plan.AccountGeneration,

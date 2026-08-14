@@ -43,7 +43,7 @@ func (SDKAWSPriceListFactory) New(credential workaws.CredentialHandle) (AWSPrice
 }
 
 // AWSLivePricingCatalog performs a new AWS Price List query for every
-// proposal and requote. It holds no price catalog or cross-request cache.
+// proposal. It holds no price catalog or cross-request cache.
 type AWSLivePricingCatalog struct {
 	credentials workaws.ExactCredentialResolver
 	factory     AWSPriceListFactory

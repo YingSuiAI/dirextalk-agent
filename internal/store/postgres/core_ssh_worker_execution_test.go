@@ -34,7 +34,7 @@ func TestScanPersistentWorkerTerminalExecution(t *testing.T) {
 		ConversationID: "00000000-0000-4000-8000-000000000005", TurnID: "00000000-0000-4000-8000-000000000006",
 		Status: cloudworker.StateSucceeded, State: cloudworker.StateSucceeded, Revision: 2, WorkspaceMode: cloudworker.WorkspaceNone,
 		ModelBindingDigest: strings.Repeat("b", 64), QuoteDigest: strings.Repeat("c", 64), ExecutionDigest: strings.Repeat("d", 64),
-		WorkerID: "00000000-0000-4000-8000-000000000001", PersistentWorker: true, ProviderMutationStarted: true,
+		WorkerID: "00000000-0000-4000-8000-000000000001", PersistentWorker: true,
 		ArtifactIDs: []string{}, CreatedAt: now, UpdatedAt: now}
 	if err := execution.Seal(); err != nil {
 		t.Fatal(err)

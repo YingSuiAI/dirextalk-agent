@@ -48,8 +48,8 @@ type IntrinsicOwnerResolver interface {
 }
 
 // IntrinsicManifestResolver maps attachment IDs already accepted on the
-// durable turn to an exact-version private S3 manifest. The model cannot name
-// buckets, keys, versions, grants, or arbitrary local paths.
+// durable turn to exact Agent-owned source revisions. The model cannot name
+// storage locations or arbitrary local paths.
 type IntrinsicManifestResolver interface {
 	ResolveCloudWorkerManifest(context.Context, coreconversation.TurnLease, WorkspaceMode, []string) (InputManifest, error)
 }
