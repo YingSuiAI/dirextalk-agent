@@ -43,7 +43,16 @@ type PublicBinding struct {
 	RunRevision       int64               `json:"run_revision,omitempty"`
 	RunDigest         Digest              `json:"run_digest,omitempty"`
 	QuoteDigest       Digest              `json:"quote_digest,omitempty"`
+	Quote             *PublicQuote        `json:"quote,omitempty"`
 	Digest            Digest              `json:"digest,omitempty"`
+}
+
+type PublicQuote struct {
+	AmountMicros                int64     `json:"amount_micros"`
+	Currency                    string    `json:"currency"`
+	SourceTime                  time.Time `json:"source_time"`
+	ExpiresAt                   time.Time `json:"expires_at"`
+	MaximumAuthorizedCostMicros int64     `json:"maximum_authorized_cost_micros"`
 }
 
 func (b PublicBinding) MarshalJSON() ([]byte, error) {
@@ -52,27 +61,32 @@ func (b PublicBinding) MarshalJSON() ([]byte, error) {
 		return json.Marshal(bindingAlias(b))
 	}
 	return json.Marshal(struct {
-		OwnerID           string `json:"owner_id"`
-		AccountGeneration uint64 `json:"account_generation"`
-		OperationDomain   string `json:"operation_domain"`
-		TargetID          string `json:"target_id"`
-		TargetRevision    int64  `json:"target_revision"`
-		ExecutionID       string `json:"execution_id"`
-		PlanID            string `json:"plan_id"`
-		PlanRevision      int64  `json:"plan_revision"`
-		RunID             string `json:"run_id"`
-		RunRevision       int64  `json:"run_revision"`
+		OwnerID           string       `json:"owner_id"`
+		AccountGeneration uint64       `json:"account_generation"`
+		OperationDomain   string       `json:"operation_domain"`
+		TargetID          string       `json:"target_id"`
+		TargetRevision    int64        `json:"target_revision"`
+		ExecutionID       string       `json:"execution_id"`
+		PlanID            string       `json:"plan_id"`
+		PlanRevision      int64        `json:"plan_revision"`
+		Quote             *PublicQuote `json:"quote"`
 	}{b.OwnerID, b.AccountGeneration, b.OperationDomain, b.TargetID, b.TargetRevision,
-		b.ExecutionID, b.PlanID, b.PlanRevision, b.RunID, b.RunRevision})
+		b.ExecutionID, b.PlanID, b.PlanRevision, b.Quote})
 }
 
 func (b Binding) Public() PublicBinding {
 	if b.OperationDomain == "cloud_worker.execute" {
+		var quote *PublicQuote
+		if b.Quote != nil {
+			quote = &PublicQuote{AmountMicros: b.Quote.AmountMicros, Currency: b.Quote.Currency,
+				SourceTime: b.Quote.SourceTime, ExpiresAt: b.Quote.ExpiresAt,
+				MaximumAuthorizedCostMicros: b.Quote.MaximumAuthorizedCostMicros}
+		}
 		return PublicBinding{
 			OwnerID: strings.TrimSpace(b.OwnerID), AccountGeneration: b.AccountGeneration,
 			OperationDomain: b.OperationDomain, TargetID: b.TargetID, TargetRevision: b.TargetRevision,
 			ExecutionID: b.ExecutionID, PlanID: b.PlanID, PlanRevision: b.PlanRevision,
-			RunID: b.RunID, RunRevision: b.RunRevision,
+			Quote: quote,
 		}
 	}
 	grants := make([]PublicSecretGrant, 0, len(b.SecretGrants))

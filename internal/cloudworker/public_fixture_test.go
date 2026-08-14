@@ -265,11 +265,16 @@ func TestCloudWorkerPublicFixtureV1(t *testing.T) {
 	for _, retired := range []string{
 		"target_kind", "source_version", "source_commit", "content_digest", "manifest_digest", "execution_digest",
 		"permission_digest", "parameter_digest", "network_digest", "secret_grant_digest", "selected_tool",
-		"selected_command", "network_grants", "secret_grants", "plan_digest", "run_digest", "quote_digest", "digest",
+		"selected_command", "network_grants", "secret_grants", "plan_digest", "run_id", "run_revision", "run_digest", "quote_digest", "digest",
 	} {
 		if _, present := bindingObject[retired]; present {
 			t.Errorf("public Cloud Worker confirmation binding retains %q", retired)
 		}
+	}
+	confirmationQuote, ok := bindingObject["quote"].(map[string]any)
+	if !ok || confirmationQuote["amount_micros"] != float64(230000) || confirmationQuote["currency"] != "USD" ||
+		confirmationQuote["maximum_authorized_cost_micros"] != float64(300000) {
+		t.Fatalf("public Cloud Worker confirmation quote=%v", confirmationQuote)
 	}
 }
 

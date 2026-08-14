@@ -32,6 +32,7 @@ func cloudWorkerAuthorityBinding(owner string, generation uint64) Binding {
 	binding.RunRevision = 1
 	binding.RunDigest = Digest(strings.Repeat("5", 64))
 	binding.QuoteDigest = Digest(strings.Repeat("6", 64))
+	binding.Quote = &LiveQuote{AmountMicros: 100, Currency: "USD", SourceTime: time.Date(2035, 1, 2, 3, 4, 5, 0, time.UTC), ExpiresAt: time.Date(2035, 1, 2, 4, 4, 5, 0, time.UTC), MaximumAuthorizedCostMicros: 200}
 	binding.Digest = ""
 	binding.Digest = canonicalDigest(binding)
 	return binding

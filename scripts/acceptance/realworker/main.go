@@ -105,8 +105,8 @@ type plan struct {
 }
 
 type quote struct {
-	AmountMicros                    int64
-	Currency, SourceTime, ExpiresAt string
+	AmountMicros, MaximumAuthorizedCostMicros int64
+	Currency, SourceTime, ExpiresAt           string
 }
 
 type run struct {
@@ -694,7 +694,8 @@ func decodePlan(value map[string]any) (plan, error) {
 		ConfirmationID: stringValue(value, "confirmation_id"), ConversationID: stringValue(value, "conversation_id"),
 		Status: stringValue(value, "status"), Revision: integer(value["revision"]), PersistentWorkerReuse: boolean(value["persistent_worker_reuse"]),
 		Quote: quote{AmountMicros: integer(quoteValue["amount_micros"]), Currency: stringValue(quoteValue, "currency"),
-			SourceTime: stringValue(quoteValue, "source_time"), ExpiresAt: stringValue(quoteValue, "expires_at")},
+			SourceTime: stringValue(quoteValue, "source_time"), ExpiresAt: stringValue(quoteValue, "expires_at"),
+			MaximumAuthorizedCostMicros: integer(quoteValue["maximum_authorized_cost_micros"])},
 	}
 	if result.PlanID == "" || result.ExecutionID == "" || result.ConfirmationID == "" || result.ConversationID == "" || result.Revision < 1 {
 		return plan{}, errors.New("invalid Cloud Worker plan projection")
@@ -730,7 +731,7 @@ func (d *driver) findNewPlan(ctx context.Context, baseline map[string]struct{}, 
 }
 
 func validPricedQuote(value quote) bool {
-	if value.AmountMicros <= 0 || value.Currency != "USD" {
+	if value.AmountMicros <= 0 || value.MaximumAuthorizedCostMicros < value.AmountMicros || value.Currency != "USD" {
 		return false
 	}
 	source, sourceErr := time.Parse(time.RFC3339Nano, value.SourceTime)
@@ -762,6 +763,13 @@ func (d *driver) pendingConfirmation(ctx context.Context, current plan) (map[str
 	binding := object(values[0], "binding")
 	if stringValue(binding, "operation_domain") != "cloud_worker.execute" || stringValue(binding, "execution_id") != current.ExecutionID || stringValue(binding, "plan_id") != current.PlanID || integer(binding["plan_revision"]) != current.Revision {
 		return nil, errors.New("pending confirmation binding does not match the exact current plan")
+	}
+	confirmationQuote := object(binding, "quote")
+	if integer(confirmationQuote["amount_micros"]) != current.Quote.AmountMicros ||
+		integer(confirmationQuote["maximum_authorized_cost_micros"]) != current.Quote.MaximumAuthorizedCostMicros ||
+		stringValue(confirmationQuote, "currency") != current.Quote.Currency ||
+		stringValue(confirmationQuote, "source_time") != current.Quote.SourceTime || stringValue(confirmationQuote, "expires_at") != current.Quote.ExpiresAt {
+		return nil, errors.New("pending confirmation quote does not match the current plan")
 	}
 	return values[0], nil
 }

@@ -40,6 +40,7 @@ func cloudWorkerRPCBinding(t *testing.T) coreconfirmation.Binding {
 		},
 		ExecutionID: executionID, PlanID: "44444444-4444-4444-8444-444444444444", PlanRevision: 1,
 		PlanDigest: d, RunID: executionID, RunRevision: 1, RunDigest: d, QuoteDigest: d,
+		Quote: &coreconfirmation.LiveQuote{AmountMicros: 100, Currency: "USD", SourceTime: time.Date(2035, 1, 2, 3, 4, 5, 0, time.UTC), ExpiresAt: time.Date(2035, 1, 2, 4, 4, 5, 0, time.UTC), MaximumAuthorizedCostMicros: 200},
 	}
 	raw, err := json.Marshal(binding)
 	if err != nil {

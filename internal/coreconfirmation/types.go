@@ -131,7 +131,18 @@ type Binding struct {
 	RunRevision       int64         `json:"run_revision,omitempty"`
 	RunDigest         Digest        `json:"run_digest,omitempty"`
 	QuoteDigest       Digest        `json:"quote_digest,omitempty"`
+	Quote             *LiveQuote    `json:"quote,omitempty"`
 	Digest            Digest        `json:"digest,omitempty"`
+}
+
+// LiveQuote is the user-visible pricing window attached to a Cloud Worker
+// confirmation. Internal pricing and authorization digests remain private.
+type LiveQuote struct {
+	AmountMicros                int64     `json:"amount_micros"`
+	Currency                    string    `json:"currency"`
+	SourceTime                  time.Time `json:"source_time"`
+	ExpiresAt                   time.Time `json:"expires_at"`
+	MaximumAuthorizedCostMicros int64     `json:"maximum_authorized_cost_micros"`
 }
 
 // SecretGrant is a safe descriptor. It can identify an authorized secret but
@@ -186,6 +197,15 @@ func (b Binding) normalized() (Binding, error) {
 				return Binding{}, ErrInvalid
 			}
 		}
+		if b.Quote == nil || b.Quote.AmountMicros < 0 || strings.TrimSpace(b.Quote.Currency) == "" ||
+			b.Quote.MaximumAuthorizedCostMicros < b.Quote.AmountMicros || b.Quote.SourceTime.IsZero() ||
+			!b.Quote.ExpiresAt.After(b.Quote.SourceTime) {
+			return Binding{}, ErrInvalid
+		}
+		quote := *b.Quote
+		quote.Currency = strings.TrimSpace(quote.Currency)
+		quote.SourceTime, quote.ExpiresAt = quote.SourceTime.UTC(), quote.ExpiresAt.UTC()
+		b.Quote = &quote
 	}
 	if b.OperationDomain == "execution_v2.run" {
 		if b.OwnerID == "" || b.AccountGeneration == 0 || cloudFields || !validateUUID(b.TargetID) {
@@ -291,7 +311,14 @@ func (b Binding) Equal(other Binding) bool {
 		a.SelectedTool == c.SelectedTool && equalStrings(a.SelectedCommand, c.SelectedCommand) &&
 		equalStrings(a.NetworkGrants, c.NetworkGrants) && equalSecretGrants(a.SecretGrants, c.SecretGrants) &&
 		a.ExecutionID == c.ExecutionID && a.PlanID == c.PlanID && a.PlanRevision == c.PlanRevision && a.PlanDigest == c.PlanDigest &&
-		a.RunID == c.RunID && a.RunRevision == c.RunRevision && a.RunDigest == c.RunDigest && a.QuoteDigest == c.QuoteDigest && a.Digest == c.Digest
+		a.RunID == c.RunID && a.RunRevision == c.RunRevision && a.RunDigest == c.RunDigest && a.QuoteDigest == c.QuoteDigest && equalLiveQuote(a.Quote, c.Quote) && a.Digest == c.Digest
+}
+
+func equalLiveQuote(a, b *LiveQuote) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 func equalSecretGrants(a, b []SecretGrant) bool {
@@ -433,6 +460,10 @@ type Page struct {
 }
 
 func cloneConfirmation(in Confirmation) Confirmation {
+	if in.Binding.Quote != nil {
+		quote := *in.Binding.Quote
+		in.Binding.Quote = &quote
+	}
 	if in.Binding.NetworkGrants != nil {
 		in.Binding.NetworkGrants = append(make([]string, 0, len(in.Binding.NetworkGrants)), in.Binding.NetworkGrants...)
 	}

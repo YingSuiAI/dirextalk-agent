@@ -1320,6 +1320,9 @@ func BindingForPlan(plan Plan) (coreconfirmation.Binding, error) {
 		SecretGrants:      secretGrants,
 		ExecutionID:       plan.ExecutionID, PlanID: plan.PlanID, PlanRevision: int64(plan.Revision), PlanDigest: coreconfirmation.Digest(plan.Digest),
 		RunID: execution.RunID, RunRevision: int64(execution.Revision), RunDigest: coreconfirmation.Digest(execution.Digest), QuoteDigest: coreconfirmation.Digest(plan.Quote.Digest),
+		Quote: &coreconfirmation.LiveQuote{AmountMicros: plan.Quote.AmountMicros, Currency: plan.Quote.Currency,
+			SourceTime: plan.Quote.SourceTime, ExpiresAt: plan.Quote.ExpiresAt,
+			MaximumAuthorizedCostMicros: plan.Quote.MaximumAuthorizedCostMicros},
 	}
 	binding.Digest = coreconfirmation.Digest(digestValue(binding))
 	return binding.Normalize()

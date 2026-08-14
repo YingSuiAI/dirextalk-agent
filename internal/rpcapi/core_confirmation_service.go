@@ -87,11 +87,28 @@ func confirmationProto(c coreconfirmation.Confirmation) *agentv1.CoreConfirmatio
 		RunId: c.Binding.RunID, RunRevision: c.Binding.RunRevision, RunDigest: string(c.Binding.RunDigest),
 		QuoteDigest: string(c.Binding.QuoteDigest), Digest: string(c.Binding.Digest),
 	}
+	if c.Binding.OperationDomain == "cloud_worker.execute" {
+		publicBinding.SecretGrants = purposeOnlySecretGrants(c.Binding.SecretGrants)
+	}
 	for _, g := range publicBinding.SecretGrants {
 		b.SecretGrants = append(b.SecretGrants, &agentv1.CoreSecretGrantDescriptor{ReferenceId: g.ReferenceID, Purpose: secretPurposeProto(g.Purpose), BindingDigest: string(g.BindingDigest)})
 	}
 	return &agentv1.CoreConfirmation{ConfirmationId: c.ConfirmationID, OwnerId: c.OwnerID, Binding: b, TaskId: c.TaskID, State: confirmationStateProto(c.State), Revision: c.Revision, CreatedAt: timestamppb.New(c.CreatedAt), UpdatedAt: timestamppb.New(c.UpdatedAt), ExpiresAt: timestamppb.New(c.ExpiresAt), TerminalReason: c.TerminalReason, TerminalCode: c.TerminalCode, TerminalNote: c.TerminalNote}
 }
+
+func purposeOnlySecretGrants(grants []coreconfirmation.SecretGrant) []coreconfirmation.PublicSecretGrant {
+	seen := make(map[coreconfirmation.SecretPurpose]struct{}, len(grants))
+	result := make([]coreconfirmation.PublicSecretGrant, 0, len(grants))
+	for _, grant := range grants {
+		if _, ok := seen[grant.Purpose]; ok {
+			continue
+		}
+		seen[grant.Purpose] = struct{}{}
+		result = append(result, coreconfirmation.PublicSecretGrant{Purpose: grant.Purpose})
+	}
+	return result
+}
+
 func secretPurposeProto(p coreconfirmation.SecretPurpose) agentv1.CoreSecretGrantPurpose {
 	switch p {
 	case coreconfirmation.SecretPurposeModelAPIKey:

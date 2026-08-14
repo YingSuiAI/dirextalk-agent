@@ -163,6 +163,7 @@ func newCloudWorkerConfirmationCapability(t *testing.T) (*coreConfirmationCapabi
 		ExecutionID: executionID, PlanID: "44444444-4444-4444-8444-444444444444", PlanRevision: 1,
 		PlanDigest: coreconfirmation.Digest(strings.Repeat("8", 64)), RunID: executionID, RunRevision: 1,
 		RunDigest: coreconfirmation.Digest(strings.Repeat("9", 64)), QuoteDigest: coreconfirmation.Digest(strings.Repeat("b", 64)),
+		Quote: &coreconfirmation.LiveQuote{AmountMicros: 100, Currency: "USD", SourceTime: now, ExpiresAt: now.Add(time.Hour), MaximumAuthorizedCostMicros: 200},
 	}
 	encoded, err := json.Marshal(binding)
 	if err != nil {
@@ -183,7 +184,7 @@ func newCloudWorkerConfirmationCapability(t *testing.T) (*coreConfirmationCapabi
 	return &coreConfirmationCapability{service: service}, ctx, confirmation, append(referenceIDs, referenceDigests...)
 }
 
-func TestCloudWorkerConfirmationCapabilityExposesPurposeOnlySecretGrants(t *testing.T) {
+func TestCloudWorkerConfirmationCapabilityExposesPreRunIdentityAndQuote(t *testing.T) {
 	for _, operation := range []string{"get", "list", "confirm", "reject"} {
 		t.Run(operation, func(t *testing.T) {
 			capability, ctx, confirmation, privateValues := newCloudWorkerConfirmationCapability(t)
@@ -207,7 +208,8 @@ func TestCloudWorkerConfirmationCapabilityExposesPurposeOnlySecretGrants(t *test
 					t.Fatalf("%s leaked private Cloud Worker grant material %q: %s", operation, privateValue, result)
 				}
 			}
-			if bytes.Contains(result, []byte(`"reference_id"`)) || bytes.Contains(result, []byte(`"binding_digest"`)) {
+			if bytes.Contains(result, []byte(`"reference_id"`)) || bytes.Contains(result, []byte(`"binding_digest"`)) ||
+				bytes.Contains(result, []byte(`"run_id"`)) || bytes.Contains(result, []byte(`"run_revision"`)) {
 				t.Fatalf("%s leaked private Cloud Worker grant fields: %s", operation, result)
 			}
 
@@ -225,14 +227,23 @@ func TestCloudWorkerConfirmationCapabilityExposesPurposeOnlySecretGrants(t *test
 			}
 			var projected struct {
 				Binding struct {
-					SecretGrants []map[string]any `json:"secret_grants"`
+					ExecutionID  string `json:"execution_id"`
+					PlanID       string `json:"plan_id"`
+					PlanRevision int64  `json:"plan_revision"`
+					Quote        struct {
+						AmountMicros                int64  `json:"amount_micros"`
+						MaximumAuthorizedCostMicros int64  `json:"maximum_authorized_cost_micros"`
+						Currency                    string `json:"currency"`
+					} `json:"quote"`
 				} `json:"binding"`
 			}
 			if err := json.Unmarshal(confirmationRaw, &projected); err != nil {
 				t.Fatal(err)
 			}
-			if len(projected.Binding.SecretGrants) != 1 || len(projected.Binding.SecretGrants[0]) != 1 || projected.Binding.SecretGrants[0]["purpose"] != string(coreconfirmation.SecretPurposeModelAPIKey) {
-				t.Fatalf("%s secret grants are not purpose-only: %s", operation, confirmationRaw)
+			if projected.Binding.ExecutionID != confirmation.Binding.ExecutionID || projected.Binding.PlanID != confirmation.Binding.PlanID ||
+				projected.Binding.PlanRevision != confirmation.Binding.PlanRevision || projected.Binding.Quote.AmountMicros != 100 ||
+				projected.Binding.Quote.MaximumAuthorizedCostMicros != 200 || projected.Binding.Quote.Currency != "USD" {
+				t.Fatalf("%s pre-run binding is invalid: %s", operation, confirmationRaw)
 			}
 		})
 	}
