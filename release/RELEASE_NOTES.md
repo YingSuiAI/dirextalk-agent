@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.92
+
+1. Finish expired Worker offers safely after their owning conversation has been deleted.
+2. Select the smallest matching AWS compute shape from live pricing and launch the confirmed SSH Worker from that single quote without a second pricing pass.
+3. Remove the retired CloudFormation, S3, KMS, AMI, WorkerControl, model-relay, execution-gate, staging, retention, and legacy runtime paths while retaining credential-owned SSH Workers, local artifacts, persistent services, and explicit teardown.
+
 ## v1.0.91
 
 1. Complete expired Cloud Worker confirmation, task, and execution state even when the owning conversation was deleted, without terminating the Agent runtime.
