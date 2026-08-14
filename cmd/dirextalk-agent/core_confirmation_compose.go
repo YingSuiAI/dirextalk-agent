@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
@@ -38,11 +40,7 @@ func (l *confirmationExpiryLoop) Run(ctx context.Context) error {
 		return nil
 	}
 	defer close(l.done)
-	if err := l.sweep(ctx); err != nil && ctx.Err() == nil {
-		if errors.Is(err, coredeprovision.ErrClosed) {
-			<-ctx.Done()
-			return ctx.Err()
-		}
+	if err := l.runSweep(ctx); err != nil {
 		return err
 	}
 	ticker := time.NewTicker(l.interval)
@@ -52,15 +50,38 @@ func (l *confirmationExpiryLoop) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := l.sweep(ctx); err != nil && ctx.Err() == nil {
-				if errors.Is(err, coredeprovision.ErrClosed) {
-					<-ctx.Done()
-					return ctx.Err()
-				}
+			if err := l.runSweep(ctx); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+func (l *confirmationExpiryLoop) runSweep(ctx context.Context) error {
+	err := l.sweep(ctx)
+	if err == nil {
+		return err
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, coredeprovision.ErrClosed) {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if confirmationExpiryRecordConflict(err) {
+		slog.Warn("confirmation expiry record conflict; retry scheduled", "error", safeError(err))
+		return nil
+	}
+	return err
+}
+
+func confirmationExpiryRecordConflict(err error) bool {
+	return errors.Is(err, coreconfirmation.ErrConflict) ||
+		errors.Is(err, coreconfirmation.ErrRevisionConflict) ||
+		errors.Is(err, coreconfirmation.ErrStale) ||
+		errors.Is(err, cloudworker.ErrConflict) ||
+		errors.Is(err, cloudworker.ErrRevisionConflict)
 }
 
 func (l *confirmationExpiryLoop) sweep(ctx context.Context) error {

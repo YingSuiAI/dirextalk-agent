@@ -196,11 +196,20 @@ func (s *Service) ProcessNext(ctx context.Context) (bool, error) {
 			candidates = safe
 		}
 		if err == nil {
-			return true, s.store.ApplyObservation(ctx, lease, candidates, now)
+			applyErr := s.store.ApplyObservation(ctx, lease, candidates, now)
+			if errors.Is(applyErr, ErrLeaseConflict) {
+				slog.Warn("[memory.consolidation] observation lease changed before apply", "observation_id", lease.ID, "attempt", lease.Attempt)
+				return true, nil
+			}
+			return true, applyErr
 		}
 	}
 	// Error details can contain provider internals. Persist only a stable class.
 	if retryErr := s.store.RetryObservation(ctx, lease, "memory_consolidation_failed", now); retryErr != nil {
+		if errors.Is(retryErr, ErrLeaseConflict) {
+			slog.Warn("[memory.consolidation] observation lease changed before retry", "observation_id", lease.ID, "attempt", lease.Attempt)
+			return true, nil
+		}
 		return true, retryErr
 	}
 	slog.Warn("[memory.consolidation] retry scheduled", "observation_id", lease.ID, "attempt", lease.Attempt, "code", "memory_consolidation_failed")

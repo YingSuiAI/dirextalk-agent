@@ -16,6 +16,7 @@ import (
 var (
 	ErrRevisionConflict       = errors.New("core memory revision conflict")
 	ErrIdempotencyConflict    = errors.New("core memory idempotency conflict")
+	ErrLeaseConflict          = errors.New("core memory observation lease conflict")
 	ErrRepository             = errors.New("core memory repository unavailable")
 	ErrEmbeddingNotConfigured = errors.New("core memory embedding model is not configured")
 )

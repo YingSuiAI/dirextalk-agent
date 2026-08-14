@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
@@ -26,23 +27,20 @@ func (s *CoreConfirmationStore) SweepExpired(ctx context.Context, now time.Time,
 	if s == nil || s.store == nil || limit < 1 || limit > 1000 || now.IsZero() {
 		return 0, coreconfirmation.ErrInvalid
 	}
-	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
+	rows, err := s.store.pool.Query(ctx, `SELECT confirmation_id::text,task_id::text FROM core_confirmations
+		WHERE state IN ('pending','confirmed') AND expires_at <= $1 ORDER BY expires_at,confirmation_id LIMIT $2`, now.UTC(), limit)
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, confirmationSelect+` WHERE state IN ('pending','confirmed') AND expires_at <= $1 ORDER BY expires_at,confirmation_id LIMIT $2`, now.UTC(), limit)
-	if err != nil {
-		return 0, err
-	}
-	var candidates []coreconfirmation.Confirmation
+	type expiryCandidate struct{ confirmationID, taskID string }
+	var candidates []expiryCandidate
 	for rows.Next() {
-		c, e := scanConfirmation(rows)
-		if e != nil {
+		var candidate expiryCandidate
+		if err = rows.Scan(&candidate.confirmationID, &candidate.taskID); err != nil {
 			rows.Close()
-			return 0, e
+			return 0, err
 		}
-		candidates = append(candidates, c)
+		candidates = append(candidates, candidate)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
@@ -50,27 +48,57 @@ func (s *CoreConfirmationStore) SweepExpired(ctx context.Context, now time.Time,
 	}
 	rows.Close()
 	count := 0
+	var recordConflict error
 	for _, candidate := range candidates {
-		var status string
-		if err = tx.QueryRow(ctx, `SELECT status FROM core_tasks WHERE task_id=$1 FOR UPDATE`, candidate.TaskID).Scan(&status); err != nil {
-			return 0, err
+		expired, expireErr := s.sweepExpiredConfirmation(ctx, candidate.confirmationID, candidate.taskID, now.UTC())
+		if expireErr != nil {
+			if confirmationExpiryRecordConflict(expireErr) {
+				if recordConflict == nil {
+					recordConflict = fmt.Errorf("expire confirmation %s: %w", candidate.confirmationID, expireErr)
+				}
+				continue
+			}
+			return count, expireErr
 		}
-		c, e := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1 FOR UPDATE`, candidate.ConfirmationID))
-		if e != nil {
-			return 0, e
+		if expired {
+			count++
 		}
-		if (c.State != coreconfirmation.StatePending && c.State != coreconfirmation.StateConfirmed) || c.ExpiresAt.After(now.UTC()) {
-			continue
-		}
-		if _, err = terminalizeExpiredTx(ctx, tx, s.store.instanceID, c, now.UTC(), coreconfirmation.ReasonExpired); err != nil {
-			return 0, err
-		}
-		count++
+	}
+	return count, recordConflict
+}
+
+func confirmationExpiryRecordConflict(err error) bool {
+	return errors.Is(err, coreconfirmation.ErrConflict) ||
+		errors.Is(err, coreconfirmation.ErrRevisionConflict) ||
+		errors.Is(err, coreconfirmation.ErrStale) ||
+		errors.Is(err, cloudworker.ErrConflict) ||
+		errors.Is(err, cloudworker.ErrRevisionConflict)
+}
+
+func (s *CoreConfirmationStore) sweepExpiredConfirmation(ctx context.Context, confirmationID, taskID string, now time.Time) (bool, error) {
+	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	var taskStatus string
+	if err = tx.QueryRow(ctx, `SELECT status FROM core_tasks WHERE task_id=$1 FOR UPDATE`, taskID).Scan(&taskStatus); err != nil {
+		return false, err
+	}
+	confirmation, err := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1 FOR UPDATE`, confirmationID))
+	if err != nil {
+		return false, err
+	}
+	if (confirmation.State != coreconfirmation.StatePending && confirmation.State != coreconfirmation.StateConfirmed) || confirmation.ExpiresAt.After(now) {
+		return false, nil
+	}
+	if _, err = terminalizeExpiredTx(ctx, tx, s.store.instanceID, confirmation, now, coreconfirmation.ReasonExpired); err != nil {
+		return false, err
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return 0, err
+		return false, err
 	}
-	return count, nil
+	return true, nil
 }
 
 func (s *CoreConfirmationStore) ReadTargetBinding(ctx context.Context, id string) (coreconfirmation.Binding, error) {

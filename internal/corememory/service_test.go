@@ -16,6 +16,8 @@ type testStore struct {
 	retryCode    string
 	claim        bool
 	applyCalls   int
+	applyErr     error
+	retryErr     error
 	snapshot     Snapshot
 	factMutation FactMutation
 }
@@ -43,11 +45,11 @@ func (s *testStore) ListActiveFacts(context.Context, int) ([]Fact, error) {
 func (s *testStore) ApplyObservation(_ context.Context, _ ObservationLease, candidates []Candidate, _ time.Time) error {
 	s.applyCalls++
 	s.applied = append([]Candidate(nil), candidates...)
-	return nil
+	return s.applyErr
 }
 func (s *testStore) RetryObservation(_ context.Context, _ ObservationLease, code string, _ time.Time) error {
 	s.retryCode = code
-	return nil
+	return s.retryErr
 }
 func (s *testStore) Recall(_ context.Context, facts, events int) (Snapshot, error) {
 	if facts != MaxActiveFacts || events != DefaultRecallEvents {
@@ -116,6 +118,53 @@ func TestProcessNextRetriesInvalidOrUnavailableExtractionWithoutFailingChatPath(
 	processed, err := service.ProcessNext(context.Background())
 	if err != nil || !processed || store.retryCode != "memory_consolidation_failed" || store.applyCalls != 0 {
 		t.Fatalf("processed=%v retry=%q applies=%d err=%v", processed, store.retryCode, store.applyCalls, err)
+	}
+}
+
+func TestProcessNextDoesNotFailCleanerAfterObservationLeaseConflict(t *testing.T) {
+	lease := ObservationLease{Observation: Observation{ID: "11111111-1111-4111-8111-111111111111"}, LeaseID: "22222222-2222-4222-8222-222222222222", Attempt: 2}
+	for _, test := range []struct {
+		name       string
+		extractErr error
+		applyErr   error
+		retryErr   error
+	}{
+		{name: "apply", applyErr: ErrLeaseConflict},
+		{name: "retry", extractErr: errors.New("provider unavailable"), retryErr: ErrLeaseConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &testStore{claim: true, lease: lease, applyErr: test.applyErr, retryErr: test.retryErr}
+			service, err := NewService(store, extractorFunc(func(context.Context, Observation, []Fact) ([]Candidate, error) {
+				if test.extractErr != nil {
+					return nil, test.extractErr
+				}
+				return []Candidate{{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: "Beijing", Confidence: .9}}, nil
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			processed, processErr := service.ProcessNext(context.Background())
+			if processErr != nil || !processed {
+				t.Fatalf("processed=%v err=%v", processed, processErr)
+			}
+		})
+	}
+}
+
+func TestProcessNextStillReturnsRepositoryFailure(t *testing.T) {
+	store := &testStore{claim: true, applyErr: ErrRepository, lease: ObservationLease{
+		Observation: Observation{ID: "11111111-1111-4111-8111-111111111111"},
+		LeaseID:     "22222222-2222-4222-8222-222222222222",
+		Attempt:     1,
+	}}
+	service, err := NewService(store, extractorFunc(func(context.Context, Observation, []Fact) ([]Candidate, error) {
+		return []Candidate{{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: "Beijing", Confidence: .9}}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, processErr := service.ProcessNext(context.Background()); !errors.Is(processErr, ErrRepository) {
+		t.Fatalf("process error = %v, want repository failure", processErr)
 	}
 }
 

@@ -390,7 +390,7 @@ func (s *CoreMemoryStore) ApplyObservation(ctx context.Context, lease corememory
 	var state string
 	if err = tx.QueryRow(ctx, `SELECT state FROM core_memory_observations WHERE observation_id=$1 AND lease_id=$2 AND state='processing' AND lease_expires_at>$3 FOR UPDATE`, lease.ID, lease.LeaseID, now).Scan(&state); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return corememory.ErrInvalid
+			return corememory.ErrLeaseConflict
 		}
 		return err
 	}
@@ -404,7 +404,7 @@ func (s *CoreMemoryStore) ApplyObservation(ctx context.Context, lease corememory
 		return err
 	}
 	if result.RowsAffected() != 1 {
-		return corememory.ErrInvalid
+		return corememory.ErrLeaseConflict
 	}
 	return tx.Commit(ctx)
 }
@@ -492,7 +492,7 @@ func (s *CoreMemoryStore) RetryObservation(ctx context.Context, lease corememory
 		return err
 	}
 	if result.RowsAffected() != 1 {
-		return corememory.ErrInvalid
+		return corememory.ErrLeaseConflict
 	}
 	return nil
 }

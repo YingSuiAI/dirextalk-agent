@@ -131,6 +131,46 @@ func (h *pgCloudWorkerHarness) propose(t *testing.T) cloudworker.Offer {
 	return offer
 }
 
+func (h *pgCloudWorkerHarness) proposeAdditional(t *testing.T) cloudworker.Offer {
+	t.Helper()
+	conversationID := uuid.NewString()
+	profileID := h.command.ModelAuthorization.ModelProfileID
+	snapshot := coremodel.ExecutionSnapshot{ProfileID: profileID, Revision: 1, CredentialVersion: 1,
+		Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation,
+		BaseURL: "https://example.invalid", Model: "test", APIKey: "test", ContextWindow: 32768}
+	turn, err := h.conversation.StartTurn(h.ctx, core.TurnStartCommand{RequestID: uuid.NewString(), OwnerID: h.owner,
+		AccountGeneration: h.generation, ConversationID: conversationID, Prompt: "Run a second heavy task on AWS.",
+		ProfileID: profileID, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1, ProfileSnapshot: snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := h.conversation.ClaimTurn(h.ctx, turn.ID, h.now, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := h.command
+	command.IdempotencyKey = uuid.NewString()
+	command.ConversationID = conversationID
+	command.TurnID = turn.ID
+	command.TurnLeaseID = lease.LeaseID
+	command.TurnLeaseEpoch = lease.Epoch
+	command.ExpectedTurnRevision = lease.Turn.Revision
+	command.UserPromptDigest = pgCloudDigest(lease.Turn.Prompt)
+	arguments, _ := json.Marshal(map[string]any{"objective": command.Objective, "workspace_mode": string(command.WorkspaceMode)})
+	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(arguments)}
+	if _, err = h.conversation.PrepareTurnModel(h.ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.conversation.RecordTurnModelResult(h.ctx, lease, core.ModelRunResult{ToolCalls: []core.ToolCall{call}}); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := h.service.Propose(h.ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return offer
+}
+
 func seedDeletedLegacyCloudWorkerOffer(t *testing.T, h *pgCloudWorkerHarness, mutate func(*coreconfirmation.Binding)) cloudworker.Offer {
 	t.Helper()
 	offer := h.propose(t)
@@ -201,8 +241,9 @@ func TestCloudWorkerPostgresDeletedConversationDoesNotHideStaleBinding(t *testin
 	offer := seedDeletedLegacyCloudWorkerOffer(t, h, func(binding *coreconfirmation.Binding) {
 		binding.PlanDigest = coreconfirmation.Digest(pgCloudDigest("unrelated-plan"))
 	})
+	valid := h.proposeAdditional(t)
 	count, err := h.confirmations.SweepExpired(h.ctx, offer.Confirmation.ExpiresAt.Add(time.Second), 100)
-	if !errors.Is(err, coreconfirmation.ErrStale) || count != 0 {
+	if !errors.Is(err, coreconfirmation.ErrStale) || count != 1 {
 		t.Fatalf("stale binding sweep count=%d err=%v", count, err)
 	}
 	var confirmationState, executionState, taskStatus string
@@ -213,6 +254,14 @@ func TestCloudWorkerPostgresDeletedConversationDoesNotHideStaleBinding(t *testin
 	}
 	if confirmationState != string(coreconfirmation.StatePending) || executionState != string(cloudworker.StateWaitingUser) || taskStatus != string(coretask.StatusWaitingUser) {
 		t.Fatalf("stale binding mutated state confirmation=%s execution=%s task=%s", confirmationState, executionState, taskStatus)
+	}
+	if err = h.store.pool.QueryRow(h.ctx, `SELECT c.state,e.state,t.status FROM core_cloud_worker_executions e
+		JOIN core_confirmations c ON c.confirmation_id=e.confirmation_id JOIN core_tasks t ON t.task_id=e.task_id
+		WHERE e.execution_id=$1`, valid.Execution.ExecutionID).Scan(&confirmationState, &executionState, &taskStatus); err != nil {
+		t.Fatal(err)
+	}
+	if confirmationState != string(coreconfirmation.StateExpired) || executionState != string(cloudworker.StateExpired) || taskStatus != string(coretask.StatusFailed) {
+		t.Fatalf("valid sibling did not expire confirmation=%s execution=%s task=%s", confirmationState, executionState, taskStatus)
 	}
 }
 

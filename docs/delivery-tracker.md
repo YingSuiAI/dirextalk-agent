@@ -25,7 +25,9 @@ contract](message-server-integration-development-contract.md), and
   A bounded model extraction records explicit durable user facts only; repeated
   values confirm, changed values supersede with validity history, and explicit
   retractions close the active fact. Provider failures retry without rolling
-  back the already committed conversation.
+  back the already committed conversation. A lost observation lease leaves the
+  durable record for its current owner or expiry retry instead of terminating
+  the lifecycle cleaner.
 - Structured conversation memory is owner opt-in and disabled on fresh state.
   `agent.memory.v1` exposes the current toggle, embedding readiness/model,
   revision, bounded facts, conflict timeline, and pending/failed observation
@@ -123,6 +125,10 @@ contract](message-server-integration-development-contract.md), and
   generation; historical provisioning recovery is read-only, partial cleanup
   is retryable, and one unavailable AWS observation no longer hides the rest
   of the retained inventory.
+- Confirmation expiry processes each durable candidate in its own transaction.
+  A stale binding or CAS conflict remains unchanged and is reported for retry,
+  while other expired confirmations in the same sweep still commit; repository
+  and infrastructure failures continue to stop the cleaner.
 - Generic Execution V2 run creation/retry now uses a real
   `EXECUTION_V2_RUN` CoreTask and CoreConfirmation; provider recovery is
   controller-owned.

@@ -100,6 +100,12 @@ func TestCoreMemoryPostgresConflictTimelineOptIn(t *testing.T) {
 		if applyErr := memoryStore.ApplyObservation(ctx, lease, []corememory.Candidate{{Operation: "upsert", Subject: "user", Predicate: "home_city", Value: value, Kind: "context", Confidence: .95, EffectiveAt: effectiveAt}}, at); applyErr != nil {
 			t.Fatal(applyErr)
 		}
+		if applyErr := memoryStore.ApplyObservation(ctx, lease, nil, at); !errors.Is(applyErr, corememory.ErrLeaseConflict) {
+			t.Fatalf("completed observation replay error=%v", applyErr)
+		}
+		if retryErr := memoryStore.RetryObservation(ctx, lease, "memory_consolidation_failed", at); !errors.Is(retryErr, corememory.ErrLeaseConflict) {
+			t.Fatalf("completed observation retry error=%v", retryErr)
+		}
 	}
 	apply("Shanghai", now, "")
 	effectiveAt := now.Add(-365 * 24 * time.Hour).Truncate(time.Second)
