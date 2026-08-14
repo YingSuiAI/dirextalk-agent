@@ -7,17 +7,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
-
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 )
 
 type fakeProduct struct {
@@ -128,7 +126,7 @@ func TestRunRejectsNonemptyWorkerBaselineBeforeMutation(t *testing.T) {
 
 func TestWaitingConfirmationAuthorityComesFromFrameData(t *testing.T) {
 	frame := map[string]any{
-		"type": "server.native_agent_stream.event", "event": "waiting_confirmation", "turn_id": "turn-id",
+		"event": "waiting_confirmation", "turn_id": "turn-id",
 		"confirmation_id": "wrong-root-confirmation", "execution_id": "wrong-root-execution",
 		"data": map[string]any{
 			"confirmation_id": "data-confirmation", "execution_id": "data-execution", "status": "waiting_confirmation",
@@ -147,6 +145,18 @@ func TestWaitingConfirmationAuthorityComesFromFrameData(t *testing.T) {
 	result = streamResult{}
 	if _, err = applyStreamFrame(&result, frame, true); err == nil {
 		t.Fatal("waiting_confirmation accepted root-level authority without data binding")
+	}
+}
+
+func TestTerminalSSEReportsSanitizedCodeAndSummary(t *testing.T) {
+	frame := map[string]any{
+		"event": "error", "turn_id": "turn-id",
+		"data": map[string]any{"error_code": "provider_uncertain", "error_summary": "model dispatch outcome is unknown"},
+	}
+	var result streamResult
+	terminal, err := applyStreamFrame(&result, frame, false)
+	if !terminal || err == nil || err.Error() != "durable turn ended error: provider_uncertain: model dispatch outcome is unknown" {
+		t.Fatalf("terminal error = terminal %t, error %v", terminal, err)
 	}
 }
 
@@ -295,17 +305,40 @@ func TestProfileSelectionUsesConfiguredConversationDefault(t *testing.T) {
 		if action != "agent.model_profiles.list" {
 			return nil, errors.New("unexpected action")
 		}
-		profileValue := func(id string) map[string]any {
-			return map[string]any{"profile_id": id, "provider": "openai_compatible", "model_kind": "conversation", "api_key_configured": true, "revision": int64(1), "credential_version": int64(1)}
+		profileValue := func(id, clientID string) map[string]any {
+			return map[string]any{"profile_id": id, "client_profile_id": clientID, "provider": "openai_compatible", "model_kind": "conversation", "api_key_configured": true, "revision": int64(1), "credential_version": int64(1)}
 		}
 		return map[string]any{
 			"default_conversation_client_profile_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-			"profiles":                               []any{profileValue("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"), profileValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")},
+			"profiles": []any{
+				profileValue("11111111-1111-4111-8111-111111111111", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+				profileValue("22222222-2222-4222-8222-222222222222", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+			},
 		}, nil
 	}}
 	d := &driver{product: product}
 	selected, err := d.selectProfile(context.Background())
-	if err != nil || selected.ProfileID != "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" {
+	if err != nil || selected.ProfileID != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("selected profile = %+v, %v", selected, err)
+	}
+}
+
+func TestProfileSelectionUsesExplicitInternalProfileID(t *testing.T) {
+	product := &fakeProduct{call: func(action string, _ map[string]any) (map[string]any, error) {
+		if action != "agent.model_profiles.list" {
+			return nil, errors.New("unexpected action")
+		}
+		return map[string]any{
+			"default_conversation_client_profile_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			"profiles": []any{
+				map[string]any{"profile_id": "11111111-1111-4111-8111-111111111111", "client_profile_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "provider": "openai_compatible", "model_kind": "conversation", "api_key_configured": true, "revision": int64(1), "credential_version": int64(1)},
+				map[string]any{"profile_id": "22222222-2222-4222-8222-222222222222", "client_profile_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "provider": "openai_compatible", "model_kind": "conversation", "api_key_configured": true, "revision": int64(1), "credential_version": int64(1)},
+			},
+		}, nil
+	}}
+	d := &driver{cfg: config{modelProfileID: "22222222-2222-4222-8222-222222222222"}, product: product}
+	selected, err := d.selectProfile(context.Background())
+	if err != nil || selected.ProfileID != "22222222-2222-4222-8222-222222222222" {
 		t.Fatalf("selected profile = %+v, %v", selected, err)
 	}
 }
@@ -327,57 +360,34 @@ func TestWorkerPromptsExerciseAutomaticEscalationAndReuse(t *testing.T) {
 	}
 }
 
-func TestStartTurnResumesAfterWebSocketDisconnect(t *testing.T) {
-	var mu sync.Mutex
+func TestStartTurnPostsOnceAndResumesSSEAfterDisconnect(t *testing.T) {
 	afterValues := make([]int64, 0, 2)
-	connections := 0
+	postCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/_p2p/query" {
-			_ = json.NewEncoder(writer).Encode(map[string]any{"ticket": "ticket"})
+		if request.Method == http.MethodPost && request.URL.Path == "/_p2p/agent/chat/conversations/conversation-id/turns" {
+			postCount++
+			writer.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"turn_id": "turn-id", "conversation_id": "conversation-id", "seq": int64(1),
+			})
 			return
 		}
-		if request.URL.Path != "/_p2p/ws" {
+		if request.Method != http.MethodGet || request.URL.Path != "/_p2p/agent/chat/conversations/conversation-id/turns/turn-id/events" {
 			http.NotFound(writer, request)
 			return
 		}
-		connection, err := websocket.Accept(writer, request, nil)
-		if err != nil {
-			t.Error(err)
-			return
+		after, _ := strconv.ParseInt(request.URL.Query().Get("after_seq"), 10, 64)
+		if request.Header.Get("Last-Event-ID") != strconv.FormatInt(after, 10) {
+			t.Errorf("Last-Event-ID = %q, want %d", request.Header.Get("Last-Event-ID"), after)
 		}
-		defer connection.CloseNow()
-		ctx := request.Context()
-		var hello map[string]any
-		if err = wsjson.Read(ctx, connection, &hello); err != nil {
-			t.Error(err)
-			return
-		}
-		if err = wsjson.Write(ctx, connection, map[string]any{"type": "server.ready"}); err != nil {
-			t.Error(err)
-			return
-		}
-		var start map[string]any
-		if err = wsjson.Read(ctx, connection, &start); err != nil {
-			t.Error(err)
-			return
-		}
-		after := integer(object(start, "params")["after_seq"])
-		mu.Lock()
 		afterValues = append(afterValues, after)
-		connections++
-		current := connections
-		mu.Unlock()
-		frame := map[string]any{"type": "server.native_agent_stream.event", "id": stringValue(start, "id"), "turn_id": "turn-id"}
-		if current == 1 {
-			frame["event"], frame["seq"] = "delta", int64(2)
-			_ = wsjson.Write(ctx, connection, frame)
-			_ = connection.Close(websocket.StatusGoingAway, "test disconnect")
-			return
+		seq, event := int64(2), "delta"
+		if len(afterValues) == 2 {
+			seq, event = 3, "done"
 		}
-		frame["event"], frame["seq"] = "done", int64(3)
-		if err = wsjson.Write(ctx, connection, frame); err != nil {
-			t.Error(err)
-		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		frame := map[string]any{"event": event, "seq": seq, "turn_id": "turn-id", "conversation_id": "conversation-id"}
+		_, _ = fmt.Fprintf(writer, "id: %d\nevent: %s\ndata: %s\n\n", seq, event, mustJSON(frame))
 	}))
 	defer server.Close()
 
@@ -389,9 +399,57 @@ func TestStartTurnResumesAfterWebSocketDisconnect(t *testing.T) {
 	if err != nil || !result.Done || result.TurnID != "turn-id" {
 		t.Fatalf("resumed result = %+v, %v", result, err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(afterValues) != 2 || afterValues[0] != 0 || afterValues[1] != 2 {
-		t.Fatalf("after_seq values = %v, want [0 2]", afterValues)
+	if postCount != 1 {
+		t.Fatalf("turn POST count = %d, want 1", postCount)
 	}
+	if len(afterValues) != 2 || afterValues[0] != 1 || afterValues[1] != 2 {
+		t.Fatalf("after_seq values = %v, want [1 2]", afterValues)
+	}
+}
+
+func TestStartTurnDoesNotReconnectTerminalSSE(t *testing.T) {
+	postCount, watchCount := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodPost:
+			postCount++
+			writer.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"turn_id": "turn-id", "conversation_id": "conversation-id", "seq": int64(1),
+			})
+		case http.MethodGet:
+			watchCount++
+			writer.Header().Set("Content-Type", "text/event-stream")
+			frame := map[string]any{
+				"event": "error", "seq": int64(2), "turn_id": "turn-id", "conversation_id": "conversation-id",
+				"data": map[string]any{"error_code": "provider_uncertain", "error_summary": "model dispatch outcome is unknown"},
+			}
+			_, _ = fmt.Fprintf(writer, "id: 2\nevent: error\ndata: %s\n\n", mustJSON(frame))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	product, err := newHTTPProduct(server.URL, "owner-token", 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = product.StartTurn(context.Background(), map[string]any{
+		"conversation_id": "conversation-id", "idempotency_key": "idempotency-key",
+	}, false)
+	if err == nil || err.Error() != "durable turn ended error: provider_uncertain: model dispatch outcome is unknown" {
+		t.Fatalf("terminal error = %v", err)
+	}
+	if postCount != 1 || watchCount != 1 {
+		t.Fatalf("terminal request counts = POST %d, watch %d; want 1, 1", postCount, watchCount)
+	}
+}
+
+func mustJSON(value any) string {
+	body, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
 }

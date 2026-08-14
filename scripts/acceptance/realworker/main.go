@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -18,9 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 )
 
 const receiptSchema = "dirextalk.agent.worker.acceptance.v1"
@@ -90,6 +88,7 @@ type credential struct {
 
 type profile struct {
 	ProfileID         string `json:"profile_id"`
+	ClientProfileID   string `json:"client_profile_id"`
 	Provider          string `json:"provider"`
 	ModelKind         string `json:"model_kind"`
 	APIKeyConfigured  bool   `json:"api_key_configured"`
@@ -609,17 +608,20 @@ func (d *driver) selectProfile(ctx context.Context) (profile, error) {
 	if err != nil {
 		return profile{}, fmt.Errorf("list model profiles: %w", err)
 	}
-	targetID := d.cfg.modelProfileID
-	if targetID == "" {
-		targetID = stringValue(response, "default_conversation_client_profile_id")
+	targetProfileID := d.cfg.modelProfileID
+	targetClientProfileID := ""
+	if targetProfileID == "" {
+		targetClientProfileID = stringValue(response, "default_conversation_client_profile_id")
 	}
 	for _, value := range objects(response["profiles"]) {
 		item := profile{
-			ProfileID: stringValue(value, "profile_id"), Provider: stringValue(value, "provider"),
+			ProfileID: stringValue(value, "profile_id"), ClientProfileID: stringValue(value, "client_profile_id"), Provider: stringValue(value, "provider"),
 			ModelKind: stringValue(value, "model_kind"), APIKeyConfigured: boolean(value["api_key_configured"]),
 			Revision: integer(value["revision"]), CredentialVersion: integer(value["credential_version"]),
 		}
-		if item.ProfileID == targetID && item.Provider == "openai_compatible" && item.ModelKind == "conversation" && item.APIKeyConfigured && item.Revision > 0 && item.CredentialVersion > 0 {
+		selected := targetProfileID != "" && item.ProfileID == targetProfileID ||
+			targetProfileID == "" && item.ClientProfileID == targetClientProfileID
+		if selected && item.Provider == "openai_compatible" && item.ModelKind == "conversation" && item.APIKeyConfigured && item.Revision > 0 && item.CredentialVersion > 0 {
 			return item, nil
 		}
 	}
@@ -1031,15 +1033,18 @@ func (client *httpProduct) Call(ctx context.Context, action string, params map[s
 }
 
 func (client *httpProduct) StartTurn(ctx context.Context, params map[string]any, stopAtConfirmation bool) (streamResult, error) {
-	var result streamResult
-	after := int64(0)
+	result, after, err := client.createTurn(ctx, params)
+	if err != nil {
+		return streamResult{}, err
+	}
+	conversationID := stringValue(params, "conversation_id")
 	for attempt := 0; attempt < 5; attempt++ {
-		terminal, next, err := client.readTurn(ctx, params, stopAtConfirmation, after, &result)
+		terminal, next, err := client.readTurn(ctx, conversationID, stopAtConfirmation, after, &result)
 		if next > after {
 			after = next
 		}
 		if terminal {
-			return result, nil
+			return result, err
 		}
 		if err == nil || ctx.Err() != nil || attempt == 4 {
 			return result, err
@@ -1051,61 +1056,129 @@ func (client *httpProduct) StartTurn(ctx context.Context, params map[string]any,
 	return result, errors.New("durable stream reconnect attempts exhausted")
 }
 
-func (client *httpProduct) readTurn(ctx context.Context, params map[string]any, stopAtConfirmation bool, after int64, result *streamResult) (bool, int64, error) {
-	ticketResponse, err := client.Call(ctx, "realtime.ws_ticket.create", map[string]any{})
+func (client *httpProduct) createTurn(ctx context.Context, params map[string]any) (streamResult, int64, error) {
+	conversationID := stringValue(params, "conversation_id")
+	body, err := json.Marshal(params)
+	if err != nil {
+		return streamResult{}, 0, err
+	}
+	endpoint := client.base + "/_p2p/agent/chat/conversations/" + url.PathEscape(conversationID) + "/turns"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return streamResult{}, 0, err
+	}
+	request.Header.Set("Authorization", "Bearer "+client.token)
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.client.Do(request)
+	if err != nil {
+		return streamResult{}, 0, fmt.Errorf("create durable turn completion is unknown: %w", err)
+	}
+	defer response.Body.Close()
+	decoder := json.NewDecoder(io.LimitReader(response.Body, 8<<20))
+	decoder.UseNumber()
+	var receipt map[string]any
+	if err = decoder.Decode(&receipt); err != nil {
+		return streamResult{}, 0, fmt.Errorf("create durable turn returned HTTP %d with invalid JSON", response.StatusCode)
+	}
+	if response.StatusCode != http.StatusAccepted {
+		return streamResult{}, 0, fmt.Errorf("create durable turn returned HTTP %d: %s", response.StatusCode, stringValue(receipt, "error"))
+	}
+	result := streamResult{TurnID: stringValue(receipt, "turn_id")}
+	seq := integer(receipt["seq"])
+	if conversationID == "" || result.TurnID == "" || stringValue(receipt, "conversation_id") != conversationID || seq <= 0 {
+		return streamResult{}, 0, errors.New("create durable turn returned an invalid receipt")
+	}
+	return result, seq, nil
+}
+
+func (client *httpProduct) readTurn(ctx context.Context, conversationID string, stopAtConfirmation bool, after int64, result *streamResult) (bool, int64, error) {
+	endpoint := client.base + "/_p2p/agent/chat/conversations/" + url.PathEscape(conversationID) + "/turns/" + url.PathEscape(result.TurnID) + "/events"
+	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		return false, after, err
 	}
-	ticket := stringValue(ticketResponse, "ticket")
-	parsed, err := url.Parse(client.base)
-	if err != nil || ticket == "" {
-		return false, after, errors.New("realtime ticket response is invalid")
-	}
-	if parsed.Scheme == "http" {
-		parsed.Scheme = "ws"
-	} else {
-		parsed.Scheme = "wss"
-	}
-	parsed.Path = "/_p2p/ws"
-	parsed.RawQuery = url.Values{"ticket": []string{ticket}}.Encode()
-	connection, _, err := websocket.Dial(ctx, parsed.String(), nil)
+	query := parsed.Query()
+	query.Set("after_seq", strconv.FormatInt(after, 10))
+	parsed.RawQuery = query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return false, after, err
 	}
-	defer connection.CloseNow()
-	if err = wsjson.Write(ctx, connection, map[string]any{"type": "client.hello", "since": 0}); err != nil {
+	request.Header.Set("Authorization", "Bearer "+client.token)
+	request.Header.Set("Accept", "text/event-stream")
+	request.Header.Set("Last-Event-ID", strconv.FormatInt(after, 10))
+	streamClient := *client.client
+	streamClient.Timeout = 0
+	response, err := streamClient.Do(request)
+	if err != nil {
 		return false, after, err
 	}
-	var ready map[string]any
-	if err = wsjson.Read(ctx, connection, &ready); err != nil || stringValue(ready, "type") != "server.ready" {
-		return false, after, fmt.Errorf("expected server.ready: %w", err)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return false, after, fmt.Errorf("watch durable turn returned HTTP %d", response.StatusCode)
 	}
-	streamID := "real-worker-" + uuid4()
-	requestParams := cloneMap(params)
-	requestParams["after_seq"] = after
-	if err = wsjson.Write(ctx, connection, map[string]any{"type": "client.native_agent_stream", "id": streamID, "action": "agent.chat", "params": requestParams}); err != nil {
-		return false, after, err
+	if !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
+		return false, after, errors.New("watch durable turn returned a non-SSE response")
 	}
+
 	maxSeq := after
-	for {
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, 4096), 2<<20)
+	var eventID, eventName string
+	dataLines := make([]string, 0, 1)
+	apply := func() (bool, error) {
+		if len(dataLines) == 0 {
+			eventID, eventName = "", ""
+			return false, nil
+		}
 		var frame map[string]any
-		if err = wsjson.Read(ctx, connection, &frame); err != nil {
-			return false, maxSeq, err
+		if err := json.Unmarshal([]byte(strings.Join(dataLines, "\n")), &frame); err != nil {
+			return false, errors.New("watch durable turn returned invalid SSE JSON")
 		}
-		if stringValue(frame, "id") != streamID {
-			continue
+		if stringValue(frame, "event") == "" {
+			frame["event"] = eventName
 		}
-		if seq := integer(frame["seq"]); seq > maxSeq {
+		wireSeq, parseErr := strconv.ParseInt(eventID, 10, 64)
+		seq := integer(frame["seq"])
+		if parseErr != nil || wireSeq <= 0 || seq != wireSeq {
+			return false, errors.New("watch durable turn returned an invalid SSE cursor")
+		}
+		if seq > maxSeq {
 			maxSeq = seq
 		}
-		terminal, frameErr := applyStreamFrame(result, frame, stopAtConfirmation)
-		if frameErr != nil {
-			return false, maxSeq, frameErr
+		return applyStreamFrame(result, frame, stopAtConfirmation)
+	}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			terminal, frameErr := apply()
+			eventID, eventName, dataLines = "", "", dataLines[:0]
+			if frameErr != nil || terminal {
+				return terminal, maxSeq, frameErr
+			}
+			continue
 		}
-		if terminal {
-			return true, maxSeq, nil
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		name, value, found := strings.Cut(line, ":")
+		if found {
+			value = strings.TrimPrefix(value, " ")
+		}
+		switch name {
+		case "id":
+			eventID = value
+		case "event":
+			eventName = value
+		case "data":
+			dataLines = append(dataLines, value)
 		}
 	}
+	if err = scanner.Err(); err != nil {
+		return false, maxSeq, err
+	}
+	return false, maxSeq, io.ErrUnexpectedEOF
 }
 
 func applyStreamFrame(result *streamResult, frame map[string]any, stopAtConfirmation bool) (bool, error) {
@@ -1115,10 +1188,11 @@ func applyStreamFrame(result *streamResult, frame map[string]any, stopAtConfirma
 		}
 		result.TurnID = turnID
 	}
-	if stringValue(frame, "type") == "server.native_agent_stream.error" || stringValue(frame, "event") == "error" {
-		return false, fmt.Errorf("durable stream failed: %s: %s", stringValue(frame, "error_code"), stringValue(frame, "error"))
-	}
-	switch stringValue(frame, "event") {
+	event := stringValue(frame, "event")
+	switch event {
+	case "error", "cancelled":
+		data := object(frame, "data")
+		return true, fmt.Errorf("durable turn ended %s: %s: %s", event, stringValue(data, "error_code"), stringValue(data, "error_summary"))
 	case "waiting_confirmation":
 		data := object(frame, "data")
 		result.ConfirmationID = stringValue(data, "confirmation_id")

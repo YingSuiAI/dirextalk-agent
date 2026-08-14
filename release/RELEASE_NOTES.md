@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.88
+
+1. Close a caught-up capability operation watch immediately when the authoritative operation is already terminal, so durable clients cannot hang after observing the terminal cursor.
+2. Log only stable model-provider failure classes with operation and profile identities, without provider URLs, credentials, request content, model names, or response bodies.
+3. Keep real Worker acceptance on the current one-POST durable turn plus resumable SSE transport and never reconnect after an error or cancelled terminal frame.
+
 ## v1.0.87
 
 1. Include the SSH client required by retained AWS Workers in the production Agent image.
