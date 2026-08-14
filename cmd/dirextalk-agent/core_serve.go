@@ -1164,6 +1164,11 @@ type coreLifecycleCleaner interface {
 	Wait(context.Context) error
 }
 
+type coreRuntimeResult struct {
+	component string
+	err       error
+}
+
 func runCoreLifecycle(ctx context.Context, listener net.Listener, server coreLifecycleServer, scheduler coreLifecycleScheduler, worker coreLifecycleWorker, grace time.Duration, closeStore func(), cleaners ...coreLifecycleCleaner) error {
 	if ctx == nil || listener == nil || server == nil || scheduler == nil || worker == nil || grace <= 0 {
 		return errors.New("invalid Core lifecycle dependencies")
@@ -1174,12 +1179,14 @@ func runCoreLifecycle(ctx context.Context, listener net.Listener, server coreLif
 	defer closeStore()
 	runtimeCtx, cancelRuntime := context.WithCancel(ctx)
 	defer cancelRuntime()
-	runtimeErrors := make(chan error, 2+len(cleaners))
-	go func() { runtimeErrors <- scheduler.Run(runtimeCtx) }()
-	go func() { runtimeErrors <- worker.Run(runtimeCtx) }()
+	runtimeErrors := make(chan coreRuntimeResult, 2+len(cleaners))
+	go func() { runtimeErrors <- coreRuntimeResult{component: "schedule loop", err: scheduler.Run(runtimeCtx)} }()
+	go func() { runtimeErrors <- coreRuntimeResult{component: "task worker", err: worker.Run(runtimeCtx)} }()
 	for _, cleaner := range cleaners {
 		if cleaner != nil {
-			go func(value coreLifecycleCleaner) { runtimeErrors <- value.Run(runtimeCtx) }(cleaner)
+			go func(value coreLifecycleCleaner) {
+				runtimeErrors <- coreRuntimeResult{component: fmt.Sprintf("lifecycle cleaner %T", value), err: value.Run(runtimeCtx)}
+			}(cleaner)
 		}
 	}
 	serveErrors := make(chan error, 1)
@@ -1219,14 +1226,14 @@ func runCoreLifecycle(ctx context.Context, listener net.Listener, server coreLif
 				return nil
 			}
 			return err
-		case err := <-runtimeErrors:
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		case result := <-runtimeErrors:
+			if errors.Is(result.err, context.Canceled) || errors.Is(result.err, context.DeadlineExceeded) {
 				continue
 			}
 			if shutdownErr := shutdown(); shutdownErr != nil {
-				return fmt.Errorf("Core runtime failed: %w; shutdown: %v", err, shutdownErr)
+				return fmt.Errorf("Core runtime %s failed: %w; shutdown: %v", result.component, result.err, shutdownErr)
 			}
-			return fmt.Errorf("Core runtime failed: %w", err)
+			return fmt.Errorf("Core runtime %s failed: %w", result.component, result.err)
 		case <-ctx.Done():
 			if shutdownErr := shutdown(); shutdownErr != nil {
 				slog.Warn("forced Core shutdown after grace period", "error", safeError(shutdownErr))

@@ -365,6 +365,9 @@ func TestRunCoreLifecycleFatalRuntimeShutdownOrder(t *testing.T) {
 	if err == nil || !closed {
 		t.Fatalf("err=%v closed=%v", err, closed)
 	}
+	if !strings.Contains(err.Error(), "Core runtime schedule loop failed: scheduler invariant") {
+		t.Fatalf("runtime failure lost component identity: %v", err)
+	}
 	if !reflect.DeepEqual(events, []string{"schedule", "worker", "grpc", "pool"}) {
 		t.Fatalf("shutdown order=%v", events)
 	}

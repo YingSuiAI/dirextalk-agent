@@ -413,6 +413,40 @@ func TestCloudWorkerPostgresConfirmationAndPredispatchCancelProjection(t *testin
 	}
 }
 
+func TestCloudWorkerPostgresExpiredConfirmationSurvivesDeletedConversation(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+	offer := h.propose(t)
+
+	var conversationRevision uint64
+	if err := h.store.pool.QueryRow(h.ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1`, offer.Plan.ConversationID).Scan(&conversationRevision); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.conversation.DeleteConversation(h.ctx, offer.Plan.ConversationID, conversationRevision); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := h.confirmations.SweepExpired(h.ctx, offer.Confirmation.ExpiresAt.Add(time.Second), 100)
+	if err != nil || count != 1 {
+		t.Fatalf("expired confirmation sweep count=%d err=%v", count, err)
+	}
+	var confirmationState, executionState, taskStatus, turnState string
+	var messageCount int
+	if err = h.store.pool.QueryRow(h.ctx, `SELECT c.state,e.state,t.status,u.state,
+		(SELECT count(*) FROM core_messages WHERE conversation_id=e.conversation_id)
+		FROM core_cloud_worker_executions e JOIN core_confirmations c ON c.confirmation_id=e.confirmation_id
+		JOIN core_tasks t ON t.task_id=e.task_id JOIN core_conversation_turns u ON u.turn_id=e.turn_id
+		WHERE e.execution_id=$1`, offer.Execution.ExecutionID).Scan(
+		&confirmationState, &executionState, &taskStatus, &turnState, &messageCount); err != nil {
+		t.Fatal(err)
+	}
+	if confirmationState != string(coreconfirmation.StateExpired) || executionState != string(cloudworker.StateExpired) ||
+		taskStatus != string(coretask.StatusFailed) || turnState != string(core.TurnWaitingConfirmation) || messageCount != 2 {
+		t.Fatalf("deleted conversation terminal projection confirmation=%s execution=%s task=%s turn=%s messages=%d",
+			confirmationState, executionState, taskStatus, turnState, messageCount)
+	}
+}
+
 func preparePGCloudLaunch(t *testing.T, h *pgCloudWorkerHarness) (cloudworker.Offer, coretask.Task, cloudworker.BeginResult, cloudworker.RuntimeTaskMaterial) {
 	t.Helper()
 	offer := h.propose(t)

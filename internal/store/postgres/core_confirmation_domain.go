@@ -247,12 +247,20 @@ func terminalizeCloudWorkerTurnTx(
 		return coreconfirmation.ErrStale
 	}
 	var conversationRevision uint64
-	if err := tx.QueryRow(ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1 AND deleted_at IS NULL FOR UPDATE`, plan.ConversationID).Scan(&conversationRevision); err != nil {
+	var conversationDeletedAt *time.Time
+	if err := tx.QueryRow(ctx, `SELECT revision,deleted_at FROM core_conversations WHERE conversation_id=$1 FOR UPDATE`, plan.ConversationID).Scan(&conversationRevision, &conversationDeletedAt); err != nil {
 		return err
 	}
 	binding, err := cloudworker.BindingForPlan(plan)
 	if err != nil || !confirmation.Binding.Equal(binding) {
 		return coreconfirmation.ErrStale
+	}
+	// Conversation deletion makes the user-visible projection intentionally
+	// unreachable, but it does not cancel the durable confirmation, task, or
+	// Cloud Worker execution. Let those owner records reach their terminal
+	// states without trying to append a message to a deleted conversation.
+	if conversationDeletedAt != nil {
+		return nil
 	}
 	confirmationState := string(coreconfirmation.StateExpired)
 	turnState, eventKind := string(core.TurnFailed), core.TurnEventError

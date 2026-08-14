@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.91
+
+1. Complete expired Cloud Worker confirmation, task, and execution state even when the owning conversation was deleted, without terminating the Agent runtime.
+2. Identify the failing runtime component in Core lifecycle errors.
+
 ## v1.0.90
 
 1. Publish the current reusable Worker plan and run DTOs without retired digests, infrastructure details, or private credential references.
