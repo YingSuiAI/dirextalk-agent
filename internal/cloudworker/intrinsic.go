@@ -480,6 +480,12 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 	if arguments.Objective == "" || len(arguments.Objective) > coretask.MaxGoalBytes || !utf8.ValidString(arguments.Objective) || !validateWorkspaceMode(WorkspaceMode(arguments.WorkspaceMode)) || len(arguments.AttachmentIDs) > coreconversation.MaxTurnAttachments {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
+	// Providers occasionally return a smaller positive disk estimate even
+	// though the tool schema advertises the EC2/EBS floor. Treat that estimate
+	// as a request for the supported minimum instead of failing the whole turn.
+	if arguments.DiskGiB > 0 && arguments.DiskGiB < 8 {
+		arguments.DiskGiB = 8
+	}
 	if (ComputeRequirements{MinVCPU: arguments.MinVCPU, MinMemoryGiB: arguments.MinMemoryGiB, DiskGiB: arguments.DiskGiB,
 		EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes}).validate() != nil {
 		return proposeIntrinsicArguments{}, ErrInvalid

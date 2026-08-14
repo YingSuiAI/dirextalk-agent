@@ -232,6 +232,10 @@ func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
 	if arguments.WorkloadKind != string(WorkloadJob) || arguments.Service != nil {
 		t.Fatalf("job defaults were not applied: %+v", arguments)
 	}
+	arguments, err = parseProposeIntrinsicArguments([]byte(`{"objective":"inspect","workspace_mode":"write","min_vcpu":1,"min_memory_gib":1,"disk_gib":2,"estimated_runtime_minutes":15}`))
+	if err != nil || arguments.DiskGiB != 8 {
+		t.Fatalf("small positive disk estimate was not normalized: arguments=%+v err=%v", arguments, err)
+	}
 	service, err := parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"memory-api","port":8080,"health_path":"/health"}}`))
 	if err != nil || service.Service == nil || service.Service.WorkloadID != "memory-api" || service.Service.Port != 8080 {
 		t.Fatalf("service arguments=%+v err=%v", service, err)
