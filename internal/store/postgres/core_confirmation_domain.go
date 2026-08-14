@@ -271,7 +271,7 @@ func terminalizeCloudWorkerTurnTx(
 		code = "user_canceled"
 		summary = "Cloud Worker task was canceled before dispatch. No AWS resources were created."
 	}
-	references := cloudWorkerReferences(plan, execution, binding, uint64(confirmation.Revision+1), confirmationState)
+	references := cloudWorkerReferences(plan, execution, uint64(confirmation.Revision+1), confirmationState)
 	message := core.Message{
 		ID:   deterministicCloudWorkerUUID("cloud-worker-offer-terminal-message", plan.ExecutionID+":"+string(terminal)),
 		Role: core.RoleAssistant, Content: summary, ModelProfileID: turn.ProfileID,

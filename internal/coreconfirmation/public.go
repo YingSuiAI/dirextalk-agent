@@ -1,7 +1,7 @@
 package coreconfirmation
 
 import (
-	"sort"
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -46,26 +46,38 @@ type PublicBinding struct {
 	Digest            Digest              `json:"digest,omitempty"`
 }
 
+func (b PublicBinding) MarshalJSON() ([]byte, error) {
+	if b.OperationDomain != "cloud_worker.execute" {
+		type bindingAlias PublicBinding
+		return json.Marshal(bindingAlias(b))
+	}
+	return json.Marshal(struct {
+		OwnerID           string `json:"owner_id"`
+		AccountGeneration uint64 `json:"account_generation"`
+		OperationDomain   string `json:"operation_domain"`
+		TargetID          string `json:"target_id"`
+		TargetRevision    int64  `json:"target_revision"`
+		ExecutionID       string `json:"execution_id"`
+		PlanID            string `json:"plan_id"`
+		PlanRevision      int64  `json:"plan_revision"`
+		RunID             string `json:"run_id"`
+		RunRevision       int64  `json:"run_revision"`
+	}{b.OwnerID, b.AccountGeneration, b.OperationDomain, b.TargetID, b.TargetRevision,
+		b.ExecutionID, b.PlanID, b.PlanRevision, b.RunID, b.RunRevision})
+}
+
 func (b Binding) Public() PublicBinding {
-	grants := make([]PublicSecretGrant, 0, len(b.SecretGrants))
 	if b.OperationDomain == "cloud_worker.execute" {
-		seen := make(map[SecretPurpose]struct{}, len(b.SecretGrants))
-		purposes := make([]SecretPurpose, 0, len(b.SecretGrants))
-		for _, grant := range b.SecretGrants {
-			if _, duplicate := seen[grant.Purpose]; duplicate {
-				continue
-			}
-			seen[grant.Purpose] = struct{}{}
-			purposes = append(purposes, grant.Purpose)
+		return PublicBinding{
+			OwnerID: strings.TrimSpace(b.OwnerID), AccountGeneration: b.AccountGeneration,
+			OperationDomain: b.OperationDomain, TargetID: b.TargetID, TargetRevision: b.TargetRevision,
+			ExecutionID: b.ExecutionID, PlanID: b.PlanID, PlanRevision: b.PlanRevision,
+			RunID: b.RunID, RunRevision: b.RunRevision,
 		}
-		sort.Slice(purposes, func(i, j int) bool { return purposes[i] < purposes[j] })
-		for _, purpose := range purposes {
-			grants = append(grants, PublicSecretGrant{Purpose: purpose})
-		}
-	} else {
-		for _, grant := range b.SecretGrants {
-			grants = append(grants, PublicSecretGrant{ReferenceID: grant.ReferenceID, Purpose: grant.Purpose, BindingDigest: grant.BindingDigest})
-		}
+	}
+	grants := make([]PublicSecretGrant, 0, len(b.SecretGrants))
+	for _, grant := range b.SecretGrants {
+		grants = append(grants, PublicSecretGrant{ReferenceID: grant.ReferenceID, Purpose: grant.Purpose, BindingDigest: grant.BindingDigest})
 	}
 	return PublicBinding{
 		OwnerID: strings.TrimSpace(b.OwnerID), AccountGeneration: b.AccountGeneration,

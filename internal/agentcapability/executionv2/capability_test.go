@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
@@ -98,6 +99,42 @@ func TestDescriptorMatchesMessageServerBindingOperations(t *testing.T) {
 	}
 	if len(wantRecordKind) != 0 {
 		t.Fatalf("record_kind operations missing: %v", wantRecordKind)
+	}
+}
+
+func TestCloudWorkerCatalogDescribesCurrentPlanAndRunProjection(t *testing.T) {
+	domain, err := coreexecutionv2.NewService(coreexecutionv2.Config{Store: coreexecutionv2.NewMemoryStore(), CloudWorker: capabilityCloudWorkerPort{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, _ := NewCapability(domain)
+	want := map[string][]string{
+		"plans_get":   {"persistent_worker_reuse", "maximum_authorized_cost_micros"},
+		"plans_list":  {"persistent_worker_reuse", "maximum_authorized_cost_micros"},
+		"runs_get":    {"worker_id", "persistent_worker", "artifact_ids"},
+		"runs_list":   {"worker_id", "persistent_worker", "artifact_ids"},
+		"runs_cancel": {"worker_id", "persistent_worker", "artifact_ids"},
+	}
+	for _, operation := range capability.Descriptor().GetOperations() {
+		fields, selected := want[operation.GetOperationId()]
+		if !selected {
+			continue
+		}
+		schema := operation.GetResultSchemaJson()
+		for _, field := range fields {
+			if !strings.Contains(schema, `"`+field+`"`) {
+				t.Errorf("%s schema omits %s: %s", operation.GetOperationId(), field, schema)
+			}
+		}
+		for _, retired := range []string{"recipe_id", "adapter", "input_manifest_digest", "ami_id", "worker_release_digest", "plan_digest", "quote_digest", "execution_digest"} {
+			if strings.Contains(schema, `"`+retired+`"`) {
+				t.Errorf("%s schema retains %s: %s", operation.GetOperationId(), retired, schema)
+			}
+		}
+		delete(want, operation.GetOperationId())
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing catalog operations: %v", want)
 	}
 }
 

@@ -150,11 +150,10 @@ func buildCloudWorkerPublicFixture(t *testing.T) cloudWorkerPublicFixture {
 	}
 	baseReference := coreconversation.Reference{
 		AccountGeneration: plan.AccountGeneration, TaskID: plan.TaskID,
-		PlanID: plan.PlanID, PlanRevision: plan.Revision, PlanDigest: plan.Digest,
-		RunID: execution.RunID, RunRevision: execution.Revision, RunDigest: execution.Digest,
+		PlanID: plan.PlanID, PlanRevision: plan.Revision,
+		RunID: execution.RunID, RunRevision: execution.Revision,
 		ExecutionID: execution.ExecutionID, ConfirmationID: confirmation.ConfirmationID,
-		ConfirmationRevision: uint64(confirmation.Revision), BindingDigest: string(binding.Digest),
-		QuoteDigest: plan.Quote.Digest, ExecutionDigest: plan.ExecutionDigest,
+		ConfirmationRevision: uint64(confirmation.Revision),
 	}
 	planReference, runReference, confirmationReference := baseReference, baseReference, baseReference
 	planReference.Kind, planReference.Status = "execution_plan", plan.Status
@@ -221,7 +220,37 @@ func TestCloudWorkerPublicFixtureV1(t *testing.T) {
 			t.Fatalf("public fixture leaks private key %q", forbidden)
 		}
 	}
-	for _, path := range [][]string{{"plan", "secret_grants"}, {"confirmation", "binding", "secret_grants"}} {
+	planObject, ok := raw["plan"].(map[string]any)
+	if !ok {
+		t.Fatal("public fixture plan is not an object")
+	}
+	for _, retired := range []string{
+		"digest", "recipe_id", "adapter", "input_manifest_digest", "input_manifest_item_count",
+		"model_authorization", "execution_digest",
+	} {
+		if _, present := planObject[retired]; present {
+			t.Errorf("public plan retains retired field %q", retired)
+		}
+	}
+	if planObject["persistent_worker_reuse"] != false {
+		t.Fatalf("public plan persistent_worker_reuse=%v", planObject["persistent_worker_reuse"])
+	}
+	runObject, ok := raw["run"].(map[string]any)
+	if !ok {
+		t.Fatal("public fixture run is not an object")
+	}
+	for _, retired := range []string{"plan_digest", "digest", "workspace_mode", "quote_digest", "execution_digest"} {
+		if _, present := runObject[retired]; present {
+			t.Errorf("public run retains retired field %q", retired)
+		}
+	}
+	if _, present := runObject["worker_id"]; !present {
+		t.Fatal("public run omits worker_id")
+	}
+	if _, present := runObject["persistent_worker"]; !present {
+		t.Fatal("public run omits persistent_worker")
+	}
+	for _, path := range [][]string{{"plan", "secret_grants"}} {
 		grants := nestedFixtureList(t, raw, path...)
 		if len(grants) != 1 {
 			t.Fatalf("%v must expose one de-duplicated purpose, got %v", path, grants)
@@ -229,6 +258,17 @@ func TestCloudWorkerPublicFixtureV1(t *testing.T) {
 		grant, ok := grants[0].(map[string]any)
 		if !ok || len(grant) != 1 || grant["purpose"] != string(coreconfirmation.SecretPurposeModelAPIKey) {
 			t.Fatalf("%v leaked more than purpose: %v", path, grant)
+		}
+	}
+	confirmationObject := raw["confirmation"].(map[string]any)
+	bindingObject := confirmationObject["binding"].(map[string]any)
+	for _, retired := range []string{
+		"target_kind", "source_version", "source_commit", "content_digest", "manifest_digest", "execution_digest",
+		"permission_digest", "parameter_digest", "network_digest", "secret_grant_digest", "selected_tool",
+		"selected_command", "network_grants", "secret_grants", "plan_digest", "run_digest", "quote_digest", "digest",
+	} {
+		if _, present := bindingObject[retired]; present {
+			t.Errorf("public Cloud Worker confirmation binding retains %q", retired)
 		}
 	}
 }

@@ -237,30 +237,21 @@ func cloudWorkerPlanProjection(plan cloudworker.Plan) CloudWorkerObject {
 	}
 	return CloudWorkerObject{
 		"owner_id": plan.OwnerID, "account_generation": plan.AccountGeneration,
-		"plan_id": plan.PlanID, "revision": plan.Revision, "status": plan.Status, "digest": plan.Digest,
+		"plan_id": plan.PlanID, "revision": plan.Revision, "status": plan.Status,
 		"execution_id": plan.ExecutionID, "task_id": plan.TaskID, "confirmation_id": plan.ConfirmationID,
-		"conversation_id": plan.ConversationID, "turn_id": plan.TurnID, "recipe_id": plan.RecipeID, "adapter": plan.Adapter,
+		"conversation_id": plan.ConversationID, "turn_id": plan.TurnID,
 		"objective_summary": plan.ObjectiveSummary, "proposal_reason": string(plan.ProposalReason),
-		"input_manifest_digest": plan.InputManifestDigest, "input_manifest_item_count": plan.InputManifestItemCount,
-		"workspace_mode": string(plan.WorkspaceMode),
-		"model_authorization": map[string]any{
-			"model_profile_id": plan.ModelAuthorization.ModelProfileID, "model_profile_revision": plan.ModelAuthorization.ModelProfileRevision,
-			"provider": plan.ModelAuthorization.Provider, "model": plan.ModelAuthorization.Model,
-			"interface": plan.ModelAuthorization.Interface, "credential_version": plan.ModelAuthorization.CredentialVersion,
-		},
+		"persistent_worker_reuse": plan.PersistentWorkerReuse, "workspace_mode": string(plan.WorkspaceMode),
 		"aws": map[string]any{
-			"account_id": plan.AWS.AccountID, "region": plan.AWS.Region, "credential_revision": plan.AWS.CredentialRevision,
+			"account_id": plan.AWS.AccountID, "region": plan.AWS.Region,
 		},
 		"compute": map[string]any{
 			"instance_type": plan.Compute.InstanceType, "volume_gib": plan.Compute.VolumeGiB,
-			"ami_id": plan.Compute.AMIID, "ami_digest": plan.Compute.AMIDigest,
-			"worker_release_digest": plan.Compute.WorkerReleaseDigest, "pi_runtime_digest": plan.Compute.PiRuntimeDigest,
-			"host_network_policy_sha256": plan.Compute.HostNetworkPolicySHA256, "architecture": plan.Compute.Architecture,
-			"root_device_name": plan.Compute.RootDeviceName, "volume_type": plan.Compute.VolumeType,
+			"volume_type": plan.Compute.VolumeType,
 			"volume_iops": plan.Compute.VolumeIOPS, "volume_throughput_mib": plan.Compute.VolumeThroughputMiB,
 		},
 		"limits": map[string]any{
-			"max_runtime_seconds": plan.Limits.MaxRuntimeSeconds, "max_tokens": plan.Limits.MaxTokens, "max_output_bytes": plan.Limits.MaxOutputBytes,
+			"max_runtime_seconds": plan.Limits.MaxRuntimeSeconds,
 		},
 		"network_grants": networkGrants, "secret_grants": secretGrants,
 		"artifact_retention_seconds": plan.ArtifactRetentionSeconds,
@@ -268,10 +259,8 @@ func cloudWorkerPlanProjection(plan cloudworker.Plan) CloudWorkerObject {
 			"amount_micros": plan.Quote.AmountMicros, "currency": plan.Quote.Currency,
 			"source_time": formatCloudWorkerTime(plan.Quote.SourceTime), "expires_at": formatCloudWorkerTime(plan.Quote.ExpiresAt),
 			"maximum_authorized_cost_micros": plan.Quote.MaximumAuthorizedCostMicros,
-			"digest":                         plan.Quote.Digest,
 		},
-		"execution_digest": plan.ExecutionDigest,
-		"created_at":       formatCloudWorkerTime(plan.CreatedAt), "updated_at": formatCloudWorkerTime(plan.UpdatedAt),
+		"created_at": formatCloudWorkerTime(plan.CreatedAt), "updated_at": formatCloudWorkerTime(plan.UpdatedAt),
 	}
 }
 
@@ -291,12 +280,11 @@ func cloudWorkerExecutionProjection(execution cloudworker.Execution) CloudWorker
 	return CloudWorkerObject{
 		"owner_id": execution.OwnerID, "account_generation": execution.AccountGeneration,
 		"run_id": execution.RunID, "execution_id": execution.ExecutionID,
-		"plan_id": execution.PlanID, "plan_revision": execution.PlanRevision, "plan_digest": execution.PlanDigest,
+		"plan_id": execution.PlanID, "plan_revision": execution.PlanRevision,
 		"task_id": execution.TaskID, "confirmation_id": execution.ConfirmationID,
 		"conversation_id": execution.ConversationID, "turn_id": execution.TurnID,
-		"status": string(execution.State), "revision": execution.Revision, "digest": execution.Digest,
-		"workspace_mode": string(execution.WorkspaceMode), "quote_digest": execution.QuoteDigest,
-		"execution_digest": execution.ExecutionDigest, "cleanup": cleanup, "artifact_ids": artifactIDs,
+		"status": string(execution.State), "revision": execution.Revision,
+		"cleanup": cleanup, "artifact_ids": artifactIDs,
 		"worker_id": execution.WorkerID, "persistent_worker": execution.PersistentWorker,
 		"failure_code": execution.FailureCode, "failure_summary": execution.FailureSummary,
 		"cancellation_requested": execution.TerminalIntent == string(cloudworker.StateCanceled),

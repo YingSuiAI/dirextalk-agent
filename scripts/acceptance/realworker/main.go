@@ -100,12 +100,13 @@ type plan struct {
 	PlanID, ExecutionID, ConfirmationID, ConversationID string
 	Status                                              string
 	Revision                                            int64
+	PersistentWorkerReuse                               bool
 	Quote                                               quote
 }
 
 type quote struct {
-	AmountMicros                            int64
-	Currency, Digest, SourceTime, ExpiresAt string
+	AmountMicros                    int64
+	Currency, SourceTime, ExpiresAt string
 }
 
 type run struct {
@@ -411,7 +412,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 	if err != nil {
 		return out, err
 	}
-	if secondPlan.PlanID == firstPlan.PlanID || secondPlan.Quote.AmountMicros != 0 || secondPlan.Quote.Currency != "USD" || secondPlan.Quote.Digest == "" {
+	if secondPlan.PlanID == firstPlan.PlanID || !secondPlan.PersistentWorkerReuse || secondPlan.Quote.AmountMicros != 0 || secondPlan.Quote.Currency != "USD" {
 		return out, errors.New("second task did not expose a zero-priced retained Worker reuse plan")
 	}
 	pending, err := d.listConfirmations(ctx, secondPlan.ExecutionID, []string{"pending"})
@@ -691,9 +692,9 @@ func decodePlan(value map[string]any) (plan, error) {
 	result := plan{
 		PlanID: stringValue(value, "plan_id"), ExecutionID: stringValue(value, "execution_id"),
 		ConfirmationID: stringValue(value, "confirmation_id"), ConversationID: stringValue(value, "conversation_id"),
-		Status: stringValue(value, "status"), Revision: integer(value["revision"]),
+		Status: stringValue(value, "status"), Revision: integer(value["revision"]), PersistentWorkerReuse: boolean(value["persistent_worker_reuse"]),
 		Quote: quote{AmountMicros: integer(quoteValue["amount_micros"]), Currency: stringValue(quoteValue, "currency"),
-			Digest: stringValue(quoteValue, "digest"), SourceTime: stringValue(quoteValue, "source_time"), ExpiresAt: stringValue(quoteValue, "expires_at")},
+			SourceTime: stringValue(quoteValue, "source_time"), ExpiresAt: stringValue(quoteValue, "expires_at")},
 	}
 	if result.PlanID == "" || result.ExecutionID == "" || result.ConfirmationID == "" || result.ConversationID == "" || result.Revision < 1 {
 		return plan{}, errors.New("invalid Cloud Worker plan projection")
@@ -729,7 +730,7 @@ func (d *driver) findNewPlan(ctx context.Context, baseline map[string]struct{}, 
 }
 
 func validPricedQuote(value quote) bool {
-	if value.AmountMicros <= 0 || value.Currency != "USD" || len(value.Digest) != 64 {
+	if value.AmountMicros <= 0 || value.Currency != "USD" {
 		return false
 	}
 	source, sourceErr := time.Parse(time.RFC3339Nano, value.SourceTime)

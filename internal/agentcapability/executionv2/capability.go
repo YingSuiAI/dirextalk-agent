@@ -131,9 +131,85 @@ func inputSchema(action string) string {
 }
 
 func resultSchema(action string) string {
-	if action != "agent.execution.v2.artifacts.download" {
+	var properties map[string]any
+	switch action {
+	case "agent.execution.v2.plans.get":
+		properties = map[string]any{"plan": cloudWorkerResultObject(cloudWorkerPlanResultProperties())}
+	case "agent.execution.v2.plans.list":
+		properties = map[string]any{
+			"plans":           map[string]any{"items": cloudWorkerResultObject(cloudWorkerPlanResultProperties()), "type": "array"},
+			"next_page_token": map[string]any{"type": "string"},
+		}
+	case "agent.execution.v2.runs.get", "agent.execution.v2.runs.cancel":
+		properties = map[string]any{"run": cloudWorkerResultObject(cloudWorkerRunResultProperties())}
+	case "agent.execution.v2.runs.list":
+		properties = map[string]any{
+			"runs":            map[string]any{"items": cloudWorkerResultObject(cloudWorkerRunResultProperties()), "type": "array"},
+			"next_page_token": map[string]any{"type": "string"},
+		}
+	case "agent.execution.v2.runs.events":
+		properties = map[string]any{
+			"events":        map[string]any{"items": map[string]any{"type": "object", "additionalProperties": true}, "type": "array"},
+			"next_sequence": map[string]any{"type": "integer"}, "history_truncated": map[string]any{"type": "boolean"},
+		}
+	case "agent.execution.v2.artifacts.get":
+		properties = map[string]any{"artifact": map[string]any{"type": "object", "additionalProperties": true}}
+	case "agent.execution.v2.artifacts.download":
+		return artifactDownloadResultSchema()
+	default:
 		return `{"type":"object","additionalProperties":true}`
 	}
+	// These operations also serve generic Execution V2 records when
+	// record_kind is omitted. Publish the Cloud Worker fields for discovery
+	// without claiming that the generic projection has the same closed shape.
+	raw, _ := json.Marshal(map[string]any{"additionalProperties": true, "properties": properties, "type": "object"})
+	return string(raw)
+}
+
+func cloudWorkerResultObject(properties map[string]any) map[string]any {
+	return map[string]any{"additionalProperties": true, "properties": properties, "type": "object"}
+}
+
+func cloudWorkerPlanResultProperties() map[string]any {
+	stringField := func() map[string]any { return map[string]any{"type": "string"} }
+	integerField := func() map[string]any { return map[string]any{"type": "integer"} }
+	return map[string]any{
+		"owner_id": stringField(), "account_generation": integerField(), "plan_id": stringField(), "revision": integerField(),
+		"status": stringField(), "execution_id": stringField(), "task_id": stringField(), "confirmation_id": stringField(),
+		"conversation_id": stringField(), "turn_id": stringField(), "objective_summary": stringField(), "proposal_reason": stringField(),
+		"persistent_worker_reuse": map[string]any{"type": "boolean"}, "workspace_mode": stringField(),
+		"aws": cloudWorkerResultObject(map[string]any{"account_id": stringField(), "region": stringField()}),
+		"compute": cloudWorkerResultObject(map[string]any{
+			"instance_type": stringField(), "volume_gib": integerField(), "volume_type": stringField(),
+			"volume_iops": integerField(), "volume_throughput_mib": integerField(),
+		}),
+		"limits":                     cloudWorkerResultObject(map[string]any{"max_runtime_seconds": integerField()}),
+		"network_grants":             map[string]any{"items": stringField(), "type": "array"},
+		"secret_grants":              map[string]any{"items": cloudWorkerResultObject(map[string]any{"purpose": stringField()}), "type": "array"},
+		"artifact_retention_seconds": integerField(),
+		"quote": cloudWorkerResultObject(map[string]any{
+			"amount_micros": integerField(), "currency": stringField(), "source_time": stringField(), "expires_at": stringField(),
+			"maximum_authorized_cost_micros": integerField(),
+		}),
+		"created_at": stringField(), "updated_at": stringField(),
+	}
+}
+
+func cloudWorkerRunResultProperties() map[string]any {
+	stringField := func() map[string]any { return map[string]any{"type": "string"} }
+	integerField := func() map[string]any { return map[string]any{"type": "integer"} }
+	return map[string]any{
+		"owner_id": stringField(), "account_generation": integerField(), "run_id": stringField(), "execution_id": stringField(),
+		"plan_id": stringField(), "plan_revision": integerField(), "task_id": stringField(), "confirmation_id": stringField(),
+		"conversation_id": stringField(), "turn_id": stringField(), "status": stringField(), "revision": integerField(),
+		"cancellation_requested": map[string]any{"type": "boolean"}, "worker_id": stringField(), "persistent_worker": map[string]any{"type": "boolean"},
+		"cleanup":      map[string]any{"type": "object", "additionalProperties": true},
+		"artifact_ids": map[string]any{"items": stringField(), "type": "array"},
+		"failure_code": stringField(), "failure_summary": stringField(), "created_at": stringField(), "updated_at": stringField(),
+	}
+}
+
+func artifactDownloadResultSchema() string {
 	properties := map[string]any{
 		"owner_id":           map[string]any{"type": "string"},
 		"account_generation": map[string]any{"type": "integer", "minimum": 1},

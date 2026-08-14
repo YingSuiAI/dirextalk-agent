@@ -30,13 +30,12 @@ func TestReferenceValidateKeepsGenericExecutionV2AndServiceBinding(t *testing.T)
 }
 
 func TestReferenceValidateSplitsCloudWorkerByTaskID(t *testing.T) {
-	digest := strings.Repeat("b", 64)
 	cloud := Reference{
 		Kind: "execution_run", TaskID: "99999999-9999-4999-8999-999999999999", AccountGeneration: 7,
-		PlanID: "11111111-1111-4111-8111-111111111111", PlanRevision: 1, PlanDigest: digest,
-		RunID: "22222222-2222-4222-8222-222222222222", ExecutionID: "22222222-2222-4222-8222-222222222222", RunRevision: 2, RunDigest: digest,
+		PlanID: "11111111-1111-4111-8111-111111111111", PlanRevision: 1,
+		RunID: "22222222-2222-4222-8222-222222222222", ExecutionID: "22222222-2222-4222-8222-222222222222", RunRevision: 2,
 		ConfirmationID: "55555555-5555-4555-8555-555555555555", ConfirmationRevision: 1,
-		BindingDigest: digest, QuoteDigest: digest, ExecutionDigest: digest, Status: "queued",
+		Status: "queued",
 	}
 	if err := cloud.Validate(); err != nil {
 		t.Fatalf("strict Cloud Worker reference rejected: %v", err)
@@ -50,5 +49,10 @@ func TestReferenceValidateSplitsCloudWorkerByTaskID(t *testing.T) {
 	missingTask.TaskID = ""
 	if missingTask.Validate() == nil {
 		t.Fatal("partial Cloud Worker reference fell through to generic validation")
+	}
+	withRetiredDigest := cloud
+	withRetiredDigest.PlanDigest = strings.Repeat("b", 64)
+	if withRetiredDigest.Validate() == nil {
+		t.Fatal("Cloud Worker reference accepted a retired digest")
 	}
 }

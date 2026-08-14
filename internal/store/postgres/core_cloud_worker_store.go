@@ -353,7 +353,7 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	}
 
 	confirmationProjection := confirmationState
-	references := cloudWorkerReferences(plan, execution, normalizedBinding, 1, confirmationProjection)
+	references := cloudWorkerReferences(plan, execution, 1, confirmationProjection)
 	userMessage := core.Message{ID: deterministicCloudWorkerUUID("conversation-turn-user", turn.RequestID), Role: core.RoleUser,
 		Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: plan.CreatedAt.Add(-time.Microsecond)}
 	offerMessage := core.Message{ID: deterministicCloudWorkerUUID("cloud-worker-offer-message", plan.ExecutionID), Role: core.RoleAssistant,
@@ -516,12 +516,11 @@ func insertCloudWorkerMessageTx(ctx context.Context, tx pgx.Tx, conversationID s
 	return nil
 }
 
-func cloudWorkerReferences(plan cloudworker.Plan, execution cloudworker.Execution, binding coreconfirmation.Binding, confirmationRevision uint64, confirmationState string) []core.Reference {
+func cloudWorkerReferences(plan cloudworker.Plan, execution cloudworker.Execution, confirmationRevision uint64, confirmationState string) []core.Reference {
 	base := core.Reference{AccountGeneration: plan.AccountGeneration, TaskID: plan.TaskID, PlanID: plan.PlanID,
-		PlanRevision: plan.Revision, PlanDigest: plan.Digest, RunID: execution.RunID, RunRevision: execution.Revision,
-		RunDigest: execution.Digest, ExecutionID: execution.ExecutionID, ConfirmationID: plan.ConfirmationID,
-		ConfirmationRevision: confirmationRevision, BindingDigest: string(binding.Digest), QuoteDigest: plan.Quote.Digest,
-		ExecutionDigest: plan.ExecutionDigest}
+		PlanRevision: plan.Revision, RunID: execution.RunID, RunRevision: execution.Revision,
+		ExecutionID: execution.ExecutionID, WorkerID: execution.WorkerID, ConfirmationID: plan.ConfirmationID,
+		ConfirmationRevision: confirmationRevision}
 	planReference, runReference, confirmationReference := base, base, base
 	planReference.Kind, planReference.Status = "execution_plan", string(execution.State)
 	runReference.Kind, runReference.Status = "execution_run", string(execution.State)
@@ -2353,7 +2352,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		logCloudWorkerTerminalInvariant("confirmation_binding")
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, cloudworker.ErrStaleAuthorization
 	}
-	references := cloudWorkerReferences(plan, next, binding, confirmationReferenceRevision, confirmationReferenceState)
+	references := cloudWorkerReferences(plan, next, confirmationReferenceRevision, confirmationReferenceState)
 	toolCall, toolResult, err := cloudWorkerContinuation(dispatchResultRaw, plan, next, terminal, summary, providerResult, references)
 	if err != nil {
 		logCloudWorkerTerminalInvariant("continuation")
@@ -2871,7 +2870,7 @@ func (s *CloudWorkerStore) ReplaceWithRequote(ctx context.Context, supplied core
 	if err = tx.QueryRow(ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1 AND deleted_at IS NULL FOR UPDATE`, plan.ConversationID).Scan(&conversationRevision); err != nil {
 		return cloudworker.Offer{}, cloudworker.ErrConflict
 	}
-	references := cloudWorkerReferences(plan, execution, binding, 1, "pending")
+	references := cloudWorkerReferences(plan, execution, 1, "pending")
 	message := core.Message{ID: deterministicCloudWorkerUUID("requote-offer-message", command.IdempotencyKey), Role: core.RoleAssistant,
 		Content: "Cloud Worker quote changed and requires fresh confirmation.", ModelProfileID: turn.ProfileID,
 		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, References: references, CreatedAt: plan.CreatedAt}

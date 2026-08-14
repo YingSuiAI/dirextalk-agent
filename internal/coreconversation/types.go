@@ -71,6 +71,7 @@ type Reference struct {
 	RunDigest            string `json:"run_digest,omitempty"`
 	DeploymentID         string `json:"deployment_id,omitempty"`
 	ExecutionID          string `json:"execution_id,omitempty"`
+	WorkerID             string `json:"worker_id,omitempty"`
 	ConfirmationID       string `json:"confirmation_id,omitempty"`
 	ConfirmationRevision uint64 `json:"confirmation_revision,omitempty"`
 	StageID              string `json:"stage_id,omitempty"`
@@ -692,10 +693,9 @@ func (r Reference) Validate() error {
 
 func validateCloudWorkerReference(r Reference) error {
 	if hasConversationReferenceFields(r) || r.AccountGeneration == 0 || !validUUID(r.TaskID) ||
-		!validUUID(r.PlanID) || r.PlanRevision == 0 || !validReferenceDigest(r.PlanDigest) ||
-		!validUUID(r.RunID) || r.RunID != r.ExecutionID || r.RunRevision == 0 || !validReferenceDigest(r.RunDigest) ||
-		!validUUID(r.ConfirmationID) || r.ConfirmationRevision == 0 || !validReferenceDigest(r.BindingDigest) ||
-		!validReferenceDigest(r.QuoteDigest) || !validReferenceDigest(r.ExecutionDigest) ||
+		!validUUID(r.PlanID) || r.PlanRevision == 0 || !validUUID(r.RunID) || r.RunID != r.ExecutionID || r.RunRevision == 0 ||
+		!validUUID(r.ConfirmationID) || r.ConfirmationRevision == 0 || (r.WorkerID != "" && !validUUID(r.WorkerID)) ||
+		r.PlanDigest != "" || r.RunDigest != "" || r.BindingDigest != "" || r.QuoteDigest != "" || r.ExecutionDigest != "" ||
 		r.DeploymentID != "" || r.StageID != "" || r.StageRevision != 0 || r.StageDigest != "" ||
 		r.TargetID != "" || r.TargetRevision != 0 || r.TargetDigest != "" || r.PreviewDigest != "" ||
 		r.RiskLevel != "" || r.GateType != "" || r.BindingID != "" || r.BindingRevision != 0 || r.ProjectID != "" {
@@ -768,7 +768,7 @@ func hasConversationReferenceFields(r Reference) bool {
 }
 
 func hasCloudWorkerOnlyReferenceFields(r Reference) bool {
-	return r.AccountGeneration != 0 || r.TaskID != "" || r.ExecutionID != "" || r.QuoteDigest != "" || r.ExecutionDigest != ""
+	return r.AccountGeneration != 0 || r.TaskID != "" || r.ExecutionID != "" || r.WorkerID != "" || r.QuoteDigest != "" || r.ExecutionDigest != ""
 }
 
 func hasExecutionReferenceFields(r Reference) bool {

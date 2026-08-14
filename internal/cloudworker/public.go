@@ -42,62 +42,56 @@ func ProjectPublicSecretGrants(values []SecretGrant) []PublicSecretGrant {
 // Keep this explicit allow-list: the private Plan contains credential IDs,
 // exact S3 locations, placement, bootstrap, relay and policy material.
 type PublicPlan struct {
-	OwnerID                  string                   `json:"owner_id"`
-	AccountGeneration        uint64                   `json:"account_generation"`
-	PlanID                   string                   `json:"plan_id"`
-	Revision                 uint64                   `json:"revision"`
-	Status                   string                   `json:"status"`
-	Digest                   string                   `json:"digest"`
-	ExecutionID              string                   `json:"execution_id"`
-	TaskID                   string                   `json:"task_id"`
-	ConfirmationID           string                   `json:"confirmation_id"`
-	ConversationID           string                   `json:"conversation_id"`
-	TurnID                   string                   `json:"turn_id"`
-	RecipeID                 string                   `json:"recipe_id"`
-	Adapter                  string                   `json:"adapter"`
-	ObjectiveSummary         string                   `json:"objective_summary"`
-	ProposalReason           ProposalReason           `json:"proposal_reason"`
-	InputManifestDigest      string                   `json:"input_manifest_digest"`
-	InputManifestItemCount   uint64                   `json:"input_manifest_item_count"`
-	WorkspaceMode            WorkspaceMode            `json:"workspace_mode"`
-	ModelAuthorization       PublicModelAuthorization `json:"model_authorization"`
-	AWS                      PublicAWSBinding         `json:"aws"`
-	Compute                  ComputeSpec              `json:"compute"`
-	Limits                   Limits                   `json:"limits"`
-	NetworkGrants            []string                 `json:"network_grants"`
-	SecretGrants             []PublicSecretGrant      `json:"secret_grants"`
-	ArtifactRetentionSeconds uint64                   `json:"artifact_retention_seconds"`
-	Quote                    PublicQuote              `json:"quote"`
-	ExecutionDigest          string                   `json:"execution_digest"`
-	CreatedAt                time.Time                `json:"created_at"`
-	UpdatedAt                time.Time                `json:"updated_at"`
+	OwnerID                  string              `json:"owner_id"`
+	AccountGeneration        uint64              `json:"account_generation"`
+	PlanID                   string              `json:"plan_id"`
+	Revision                 uint64              `json:"revision"`
+	Status                   string              `json:"status"`
+	ExecutionID              string              `json:"execution_id"`
+	TaskID                   string              `json:"task_id"`
+	ConfirmationID           string              `json:"confirmation_id"`
+	ConversationID           string              `json:"conversation_id"`
+	TurnID                   string              `json:"turn_id"`
+	ObjectiveSummary         string              `json:"objective_summary"`
+	ProposalReason           ProposalReason      `json:"proposal_reason"`
+	PersistentWorkerReuse    bool                `json:"persistent_worker_reuse"`
+	WorkspaceMode            WorkspaceMode       `json:"workspace_mode"`
+	AWS                      PublicAWSBinding    `json:"aws"`
+	Compute                  PublicCompute       `json:"compute"`
+	Limits                   PublicLimits        `json:"limits"`
+	NetworkGrants            []string            `json:"network_grants"`
+	SecretGrants             []PublicSecretGrant `json:"secret_grants"`
+	ArtifactRetentionSeconds uint64              `json:"artifact_retention_seconds"`
+	Quote                    PublicQuote         `json:"quote"`
+	CreatedAt                time.Time           `json:"created_at"`
+	UpdatedAt                time.Time           `json:"updated_at"`
 }
 
 type PublicAWSBinding struct {
-	AccountID          string `json:"account_id"`
-	Region             string `json:"region"`
-	CredentialRevision uint64 `json:"credential_revision"`
+	AccountID string `json:"account_id"`
+	Region    string `json:"region"`
 }
 
-type PublicModelAuthorization struct {
-	ModelProfileID       string `json:"model_profile_id"`
-	ModelProfileRevision uint64 `json:"model_profile_revision"`
-	Provider             string `json:"provider"`
-	Model                string `json:"model"`
-	Interface            string `json:"interface"`
-	CredentialVersion    uint64 `json:"credential_version"`
+type PublicCompute struct {
+	InstanceType        string `json:"instance_type"`
+	VolumeGiB           uint64 `json:"volume_gib"`
+	VolumeType          string `json:"volume_type"`
+	VolumeIOPS          uint64 `json:"volume_iops"`
+	VolumeThroughputMiB uint64 `json:"volume_throughput_mib"`
 }
 
-// PublicQuote deliberately omits the internal pricing catalog revision. The
-// revision is persisted and included in Quote.Digest so authorization drift
-// is detectable, but clients need only the sealed digest and cost envelope.
+type PublicLimits struct {
+	MaxRuntimeSeconds uint64 `json:"max_runtime_seconds"`
+}
+
+// PublicQuote exposes only the values needed to show the current price and
+// confirmation window. Internal quote and pricing identities stay private.
 type PublicQuote struct {
 	AmountMicros                int64     `json:"amount_micros"`
 	Currency                    string    `json:"currency"`
 	SourceTime                  time.Time `json:"source_time"`
 	ExpiresAt                   time.Time `json:"expires_at"`
 	MaximumAuthorizedCostMicros int64     `json:"maximum_authorized_cost_micros"`
-	Digest                      string    `json:"digest"`
 }
 
 func (p Plan) Public() (PublicPlan, error) {
@@ -106,27 +100,22 @@ func (p Plan) Public() (PublicPlan, error) {
 	}
 	return PublicPlan{
 		OwnerID: p.OwnerID, AccountGeneration: p.AccountGeneration, PlanID: p.PlanID,
-		Revision: p.Revision, Status: p.Status, Digest: p.Digest, ExecutionID: p.ExecutionID,
+		Revision: p.Revision, Status: p.Status, ExecutionID: p.ExecutionID,
 		TaskID: p.TaskID, ConfirmationID: p.ConfirmationID, ConversationID: p.ConversationID,
-		TurnID: p.TurnID, RecipeID: p.RecipeID, Adapter: p.Adapter,
+		TurnID:           p.TurnID,
 		ObjectiveSummary: p.ObjectiveSummary, ProposalReason: p.ProposalReason,
-		InputManifestDigest: p.InputManifestDigest, InputManifestItemCount: p.InputManifestItemCount,
-		WorkspaceMode: p.WorkspaceMode,
-		ModelAuthorization: PublicModelAuthorization{
-			ModelProfileID: p.ModelAuthorization.ModelProfileID, ModelProfileRevision: p.ModelAuthorization.ModelProfileRevision,
-			Provider: p.ModelAuthorization.Provider, Model: p.ModelAuthorization.Model,
-			Interface: p.ModelAuthorization.Interface, CredentialVersion: p.ModelAuthorization.CredentialVersion,
-		},
-		AWS:     PublicAWSBinding{AccountID: p.AWS.AccountID, Region: p.AWS.Region, CredentialRevision: p.AWS.CredentialRevision},
-		Compute: p.Compute, Limits: p.Limits,
+		PersistentWorkerReuse: p.PersistentWorkerReuse, WorkspaceMode: p.WorkspaceMode,
+		AWS: PublicAWSBinding{AccountID: p.AWS.AccountID, Region: p.AWS.Region},
+		Compute: PublicCompute{InstanceType: p.Compute.InstanceType, VolumeGiB: p.Compute.VolumeGiB,
+			VolumeType: p.Compute.VolumeType, VolumeIOPS: p.Compute.VolumeIOPS, VolumeThroughputMiB: p.Compute.VolumeThroughputMiB},
+		Limits:                   PublicLimits{MaxRuntimeSeconds: p.Limits.MaxRuntimeSeconds},
 		NetworkGrants:            append(make([]string, 0, len(p.NetworkGrants)), p.NetworkGrants...),
 		SecretGrants:             ProjectPublicSecretGrants(p.SecretGrants),
 		ArtifactRetentionSeconds: p.ArtifactRetentionSeconds,
 		Quote: PublicQuote{AmountMicros: p.Quote.AmountMicros, Currency: p.Quote.Currency,
 			SourceTime: p.Quote.SourceTime, ExpiresAt: p.Quote.ExpiresAt,
-			MaximumAuthorizedCostMicros: p.Quote.MaximumAuthorizedCostMicros,
-			Digest:                      p.Quote.Digest},
-		ExecutionDigest: p.ExecutionDigest, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+			MaximumAuthorizedCostMicros: p.Quote.MaximumAuthorizedCostMicros},
+		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 	}, nil
 }
 
@@ -137,19 +126,14 @@ type PublicExecution struct {
 	ExecutionID           string         `json:"execution_id"`
 	PlanID                string         `json:"plan_id"`
 	PlanRevision          uint64         `json:"plan_revision"`
-	PlanDigest            string         `json:"plan_digest"`
 	TaskID                string         `json:"task_id"`
 	ConfirmationID        string         `json:"confirmation_id"`
 	ConversationID        string         `json:"conversation_id"`
 	TurnID                string         `json:"turn_id"`
 	Status                ExecutionState `json:"status"`
 	Revision              uint64         `json:"revision"`
-	Digest                string         `json:"digest"`
-	WorkspaceMode         WorkspaceMode  `json:"workspace_mode"`
-	QuoteDigest           string         `json:"quote_digest"`
-	ExecutionDigest       string         `json:"execution_digest"`
-	WorkerID              string         `json:"worker_id,omitempty"`
-	PersistentWorker      bool           `json:"persistent_worker,omitempty"`
+	WorkerID              string         `json:"worker_id"`
+	PersistentWorker      bool           `json:"persistent_worker"`
 	Cleanup               CleanupSummary `json:"cleanup"`
 	ArtifactIDs           []string       `json:"artifact_ids"`
 	FailureCode           string         `json:"failure_code"`
@@ -165,10 +149,9 @@ func (e Execution) Public() (PublicExecution, error) {
 	}
 	return PublicExecution{
 		OwnerID: e.OwnerID, AccountGeneration: e.AccountGeneration, RunID: e.RunID, ExecutionID: e.ExecutionID,
-		PlanID: e.PlanID, PlanRevision: e.PlanRevision, PlanDigest: e.PlanDigest, TaskID: e.TaskID,
+		PlanID: e.PlanID, PlanRevision: e.PlanRevision, TaskID: e.TaskID,
 		ConfirmationID: e.ConfirmationID, ConversationID: e.ConversationID, TurnID: e.TurnID,
-		Status: e.State, Revision: e.Revision, Digest: e.Digest, WorkspaceMode: e.WorkspaceMode,
-		QuoteDigest: e.QuoteDigest, ExecutionDigest: e.ExecutionDigest, WorkerID: e.WorkerID, PersistentWorker: e.PersistentWorker, Cleanup: e.Cleanup,
+		Status: e.State, Revision: e.Revision, WorkerID: e.WorkerID, PersistentWorker: e.PersistentWorker, Cleanup: e.Cleanup,
 		ArtifactIDs: append(make([]string, 0, len(e.ArtifactIDs)), e.ArtifactIDs...), FailureCode: e.FailureCode,
 		FailureSummary: e.FailureSummary, CancellationRequested: e.TerminalIntent == string(StateCanceled),
 		CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt,

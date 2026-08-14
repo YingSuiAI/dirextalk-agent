@@ -6,50 +6,28 @@
     "plan_id": "c580b6ca-dd36-5759-8273-766afaef3a15",
     "revision": 1,
     "status": "waiting_user",
-    "digest": "b1dbdf6fbc26105b64e4855558786c871b50f5eadcb62ebe564656192648a474",
     "execution_id": "7e3937bb-c334-5360-90f9-931322e7fd88",
     "task_id": "f5d12ab5-e444-57f9-ab53-46214dc70fea",
     "confirmation_id": "d8c733c0-46ce-57d8-bc1b-0bf4b1115639",
     "conversation_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     "turn_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-    "recipe_id": "ephemeral-pi-task",
-    "adapter": "pi_json_task_v1",
     "objective_summary": "Produce a verified repository change",
     "proposal_reason": "explicit_user_cloud",
-    "input_manifest_digest": "c94efac67992727f5285d674ad5f500ec903a94725dbd81540467c175f5af82c",
-    "input_manifest_item_count": 0,
+    "persistent_worker_reuse": false,
     "workspace_mode": "none",
-    "model_authorization": {
-      "model_profile_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
-      "model_profile_revision": 4,
-      "provider": "openai",
-      "model": "gpt-fixture",
-      "interface": "openai_responses",
-      "credential_version": 9
-    },
     "aws": {
       "account_id": "123456789012",
-      "region": "us-east-1",
-      "credential_revision": 3
+      "region": "us-east-1"
     },
     "compute": {
       "instance_type": "c7i.large",
-      "architecture": "x86_64",
-      "root_device_name": "/dev/xvda",
       "volume_gib": 32,
       "volume_type": "gp3",
       "volume_iops": 3000,
-      "volume_throughput_mib": 125,
-      "ami_id": "ami-0123456789abcdef0",
-      "ami_digest": "31b94c62b556b24a08d1e7dd97c13fca296136384a86ca0f0fbc9a5ff7c4cae1",
-      "worker_release_digest": "1636f9ecc7b580a7651279d7807d92dda808ba58d51abae7d1332ebe1d623ce7",
-      "pi_runtime_digest": "d9470c6b3069cf135b35c8e1f67317837d889fee4a894ec293ab09ae3f352716",
-      "host_network_policy_sha256": "72de7e673b4346128ac7787c329e253e0a260acc5e21a51f71e0a07e55147075"
+      "volume_throughput_mib": 125
     },
     "limits": {
-      "max_runtime_seconds": 3600,
-      "max_tokens": 2000,
-      "max_output_bytes": 1048576
+      "max_runtime_seconds": 3600
     },
     "network_grants": [
       "controlled_https_egress"
@@ -65,10 +43,8 @@
       "currency": "USD",
       "source_time": "2026-08-07T10:00:00.123456Z",
       "expires_at": "2026-08-07T10:15:00.123456Z",
-      "maximum_authorized_cost_micros": 300000,
-      "digest": "cb39632910e130a5e9f39209382cfc3c83978e6a7fbcda95562d05638667b48b"
+      "maximum_authorized_cost_micros": 300000
     },
-    "execution_digest": "b934c2d62e496adca58afb5e9e80b971f0ee8288cf97a6c76b21bd3307751efd",
     "created_at": "2026-08-07T10:00:00.123456Z",
     "updated_at": "2026-08-07T10:00:00.123456Z"
   },
@@ -79,17 +55,14 @@
     "execution_id": "7e3937bb-c334-5360-90f9-931322e7fd88",
     "plan_id": "c580b6ca-dd36-5759-8273-766afaef3a15",
     "plan_revision": 1,
-    "plan_digest": "b1dbdf6fbc26105b64e4855558786c871b50f5eadcb62ebe564656192648a474",
     "task_id": "f5d12ab5-e444-57f9-ab53-46214dc70fea",
     "confirmation_id": "d8c733c0-46ce-57d8-bc1b-0bf4b1115639",
     "conversation_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     "turn_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
     "status": "succeeded",
     "revision": 9,
-    "digest": "c7cbb0da65f8bc684b1edf010a9b37bcfc80c8c81b8176ad6bd233374f95d2f7",
-    "workspace_mode": "none",
-    "quote_digest": "cb39632910e130a5e9f39209382cfc3c83978e6a7fbcda95562d05638667b48b",
-    "execution_digest": "b934c2d62e496adca58afb5e9e80b971f0ee8288cf97a6c76b21bd3307751efd",
+    "worker_id": "",
+    "persistent_worker": false,
     "cleanup": {
       "verified_destroyed": true,
       "verified_at": "2026-08-07T10:11:00.123456Z",
@@ -126,35 +99,11 @@
       "operation_domain": "cloud_worker.execute",
       "target_id": "7e3937bb-c334-5360-90f9-931322e7fd88",
       "target_revision": 1,
-      "target_kind": "ephemeral_pi_worker",
-      "source_version": "ephemeral-pi-task",
-      "source_commit": "1636f9ecc7b580a7651279d7807d92dda808ba58d51abae7d1332ebe1d623ce7",
-      "content_digest": "d5dae220d25df0c8810883319a3179972cc4cfe00657bee6741cae0d4dcb5e99",
-      "manifest_digest": "c94efac67992727f5285d674ad5f500ec903a94725dbd81540467c175f5af82c",
-      "execution_digest": "b934c2d62e496adca58afb5e9e80b971f0ee8288cf97a6c76b21bd3307751efd",
-      "permission_digest": "2cb1eafb8cf28086441ec1a1603c657c0490a51ea2cf9aaf5467a34039e10598",
-      "parameter_digest": "b1dbdf6fbc26105b64e4855558786c871b50f5eadcb62ebe564656192648a474",
-      "network_digest": "40b2b29340fd4c81d47d8be2a509aed9a6dd6400ed889ffc61fcc4aa4bf64e41",
-      "secret_grant_digest": "e735243a33fd217d929b201d8a2a8154f248f3121b62c1924cf4312bfc4a2db1",
-      "selected_tool": "cloud_worker_propose",
-      "selected_command": [],
-      "network_grants": [
-        "controlled_https_egress"
-      ],
-      "secret_grants": [
-        {
-          "purpose": "model_api_key"
-        }
-      ],
       "execution_id": "7e3937bb-c334-5360-90f9-931322e7fd88",
       "plan_id": "c580b6ca-dd36-5759-8273-766afaef3a15",
       "plan_revision": 1,
-      "plan_digest": "b1dbdf6fbc26105b64e4855558786c871b50f5eadcb62ebe564656192648a474",
       "run_id": "7e3937bb-c334-5360-90f9-931322e7fd88",
-      "run_revision": 1,
-      "run_digest": "8ca357a903c626f8196ce114b3fe51f1982621584676a3c1c2937804fa2bba90",
-      "quote_digest": "cb39632910e130a5e9f39209382cfc3c83978e6a7fbcda95562d05638667b48b",
-      "digest": "928ed450b42fee57c5de3ae877ebe7072f1edd3589ffee8ab3284f144b906df6"
+      "run_revision": 1
     },
     "task_id": "f5d12ab5-e444-57f9-ab53-46214dc70fea",
     "state": "consumed",
@@ -173,16 +122,11 @@
       "task_id": "f5d12ab5-e444-57f9-ab53-46214dc70fea",
       "plan_id": "c580b6ca-dd36-5759-8273-766afaef3a15",
       "plan_revision": 1,
-      "plan_digest": "b1dbdf6fbc26105b64e4855558786c871b50f5eadcb62ebe564656192648a474",
       "run_id": "7e3937bb-c334-5360-90f9-931322e7fd88",
       "run_revision": 9,
-      "run_digest": "c7cbb0da65f8bc684b1edf010a9b37bcfc80c8c81b8176ad6bd233374f95d2f7",
       "execution_id": "7e3937bb-c334-5360-90f9-931322e7fd88",
       "confirmation_id": "d8c733c0-46ce-57d8-bc1b-0bf4b1115639",
       "confirmation_revision": 3,
-      "binding_digest": "928ed450b42fee57c5de3ae877ebe7072f1edd3589ffee8ab3284f144b906df6",
-      "quote_digest": "cb39632910e130a5e9f39209382cfc3c83978e6a7fbcda95562d05638667b48b",
-      "execution_digest": "b934c2d62e496adca58afb5e9e80b971f0ee8288cf97a6c76b21bd3307751efd",
       "status": "waiting_user"
     },
     "run": {
@@ -191,16 +135,11 @@
       "task_id": "f5d12ab5-e444-57f9-ab53-46214dc70fea",
       "plan_id": "c580b6ca-dd36-5759-8273-766afaef3a15",
       "plan_revision": 1,
-      "plan_digest": "b1dbdf6fbc26105b64e4855558786c871b50f5eadcb62ebe564656192648a474",
       "run_id": "7e3937bb-c334-5360-90f9-931322e7fd88",
       "run_revision": 9,
-      "run_digest": "c7cbb0da65f8bc684b1edf010a9b37bcfc80c8c81b8176ad6bd233374f95d2f7",
       "execution_id": "7e3937bb-c334-5360-90f9-931322e7fd88",
       "confirmation_id": "d8c733c0-46ce-57d8-bc1b-0bf4b1115639",
       "confirmation_revision": 3,
-      "binding_digest": "928ed450b42fee57c5de3ae877ebe7072f1edd3589ffee8ab3284f144b906df6",
-      "quote_digest": "cb39632910e130a5e9f39209382cfc3c83978e6a7fbcda95562d05638667b48b",
-      "execution_digest": "b934c2d62e496adca58afb5e9e80b971f0ee8288cf97a6c76b21bd3307751efd",
       "status": "succeeded"
     },
     "confirmation": {
@@ -209,16 +148,11 @@
       "task_id": "f5d12ab5-e444-57f9-ab53-46214dc70fea",
       "plan_id": "c580b6ca-dd36-5759-8273-766afaef3a15",
       "plan_revision": 1,
-      "plan_digest": "b1dbdf6fbc26105b64e4855558786c871b50f5eadcb62ebe564656192648a474",
       "run_id": "7e3937bb-c334-5360-90f9-931322e7fd88",
       "run_revision": 9,
-      "run_digest": "c7cbb0da65f8bc684b1edf010a9b37bcfc80c8c81b8176ad6bd233374f95d2f7",
       "execution_id": "7e3937bb-c334-5360-90f9-931322e7fd88",
       "confirmation_id": "d8c733c0-46ce-57d8-bc1b-0bf4b1115639",
       "confirmation_revision": 3,
-      "binding_digest": "928ed450b42fee57c5de3ae877ebe7072f1edd3589ffee8ab3284f144b906df6",
-      "quote_digest": "cb39632910e130a5e9f39209382cfc3c83978e6a7fbcda95562d05638667b48b",
-      "execution_digest": "b934c2d62e496adca58afb5e9e80b971f0ee8288cf97a6c76b21bd3307751efd",
       "state": "consumed"
     }
   },
