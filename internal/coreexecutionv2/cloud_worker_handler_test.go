@@ -115,7 +115,7 @@ func TestCloudWorkerRecordKindRoutesEveryPublicReadAndCancel(t *testing.T) {
 		key    string
 	}{
 		{"agent.execution.v2.plans.get", map[string]any{"plan_id": cloudPlanID}, "plans.get"},
-		{"agent.execution.v2.plans.list", map[string]any{}, "plans.list"},
+		{"agent.execution.v2.plans.list", map[string]any{"page_size": 200}, "plans.list"},
 		{"agent.execution.v2.runs.get", map[string]any{"run_id": cloudRunID}, "runs.get"},
 		{"agent.execution.v2.runs.list", map[string]any{}, "runs.list"},
 		{"agent.execution.v2.runs.cancel", map[string]any{"run_id": cloudRunID, "expected_revision": uint64(3), "idempotency_key": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}, "runs.cancel"},

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.100
+
+1. Accept the public Execution V2 page-size ceiling of 200 for Worker plans and runs, matching the Message Server contract and allowing the real Worker flow to read its baseline before quoting.
+
 ## v1.0.99
 
 1. Route provider-neutral task requirements through the single dynamic Ubuntu 24.04 SSH Worker path, prefer an exact compatible retained Worker before new-instance selection, and bind reuse to that Worker identity.

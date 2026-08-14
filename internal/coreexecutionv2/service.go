@@ -88,7 +88,7 @@ func validateCloudWorkerInput(action string, in map[string]any) error {
 	case "agent.execution.v2.plans.get":
 		return requireID("plan_id")
 	case "agent.execution.v2.plans.list", "agent.execution.v2.runs.list":
-		if size := intParam(in, "page_size", 100); size < 1 || size > 100 {
+		if size := intParam(in, "page_size", 100); size < 1 || size > 200 {
 			return ErrInvalid
 		}
 		return nil
