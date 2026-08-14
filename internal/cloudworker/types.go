@@ -53,7 +53,6 @@ const (
 type ProposalReason string
 
 const (
-	ProposalReasonExplicitUserCloud   ProposalReason = "explicit_user_cloud"
 	ProposalReasonLocalBudgetExceeded ProposalReason = "local_budget_exceeded"
 )
 
@@ -223,6 +222,7 @@ type Plan struct {
 	AWS                      AWSBinding           `json:"aws"`
 	Compute                  ComputeSpec          `json:"compute"`
 	PersistentWorkerReuse    bool                 `json:"-"`
+	ReuseWorkerID            string               `json:"-"`
 	AuthorizationBasisDigest string               `json:"authorization_basis_digest"`
 	Limits                   Limits               `json:"limits"`
 	Quote                    Quote                `json:"quote"`
@@ -481,6 +481,9 @@ func (p *Plan) Seal() error {
 		(p.WorkloadKind != WorkloadJob && p.WorkloadKind != WorkloadService) {
 		return ErrInvalid
 	}
+	if (p.PersistentWorkerReuse && !validUUID(p.ReuseWorkerID)) || (!p.PersistentWorkerReuse && p.ReuseWorkerID != "") {
+		return ErrInvalid
+	}
 	if err := p.sealAuthorizationBasis(); err != nil {
 		return err
 	}
@@ -515,7 +518,8 @@ func (p *Plan) Seal() error {
 		p.ExecutionDigest = digestValue(struct {
 			Basis                 any
 			PersistentWorkerReuse bool
-		}{executionDigestBasis, true})
+			ReuseWorkerID         string
+		}{executionDigestBasis, true, p.ReuseWorkerID})
 	} else {
 		p.ExecutionDigest = digestValue(executionDigestBasis)
 	}
@@ -533,11 +537,10 @@ func (p *Plan) sealAuthorizationBasis() error {
 		(p.WorkloadKind != WorkloadJob && p.WorkloadKind != WorkloadService) {
 		return ErrInvalid
 	}
+	if (p.PersistentWorkerReuse && !validUUID(p.ReuseWorkerID)) || (!p.PersistentWorkerReuse && p.ReuseWorkerID != "") {
+		return ErrInvalid
+	}
 	switch p.ProposalReason {
-	case ProposalReasonExplicitUserCloud:
-		if p.LocalBudgetEvidence != nil {
-			return ErrInvalid
-		}
 	case ProposalReasonLocalBudgetExceeded:
 		if p.LocalBudgetEvidence == nil || p.LocalBudgetEvidence.normalize() != nil {
 			return ErrInvalid
@@ -579,15 +582,22 @@ func (p *Plan) sealAuthorizationBasis() error {
 		Compute                                                ComputeSpec
 		Limits                                                 Limits
 	}{p.OwnerID, p.ConversationID, p.TurnID, p.RecipeID, p.Adapter, p.AccountGeneration, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.AWS, p.Compute, p.Limits}
+	var authorizationDigestBasis any = authorizationBasis
 	if p.WorkloadKind == WorkloadService {
-		p.AuthorizationBasisDigest = digestValue(struct {
+		authorizationDigestBasis = struct {
 			Basis        any
 			WorkloadKind WorkloadKind
 			Service      *ServiceSpec
-		}{authorizationBasis, p.WorkloadKind, p.Service})
-	} else {
-		p.AuthorizationBasisDigest = digestValue(authorizationBasis)
+		}{authorizationBasis, p.WorkloadKind, p.Service}
 	}
+	if p.PersistentWorkerReuse {
+		authorizationDigestBasis = struct {
+			Basis                 any
+			PersistentWorkerReuse bool
+			ReuseWorkerID         string
+		}{authorizationDigestBasis, true, p.ReuseWorkerID}
+	}
+	p.AuthorizationBasisDigest = digestValue(authorizationDigestBasis)
 	return nil
 }
 

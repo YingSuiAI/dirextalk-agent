@@ -363,6 +363,82 @@ func TestCoreConversationTurnHistoryAndEventsAtomicPostgres(t *testing.T) {
 	}
 }
 
+func TestCoreConversationFailedTurnPersistsPartialTranscriptOncePostgres(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		userAlreadyCommitted bool
+		deltas               []string
+		wantContent          string
+	}{
+		{name: "new user with partial output", deltas: []string{"partial one", "partial two"}, wantContent: "partial onepartial two\n\nError (intrinsic_failed): Core intrinsic operation failed"},
+		{name: "precommitted user without partial output", userAlreadyCommitted: true, wantContent: "Error (intrinsic_failed): Core intrinsic operation failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := openTurnDB(t)
+			turn, err := h.store.StartTurn(context.Background(), turnCommand())
+			if err != nil {
+				t.Fatal(err)
+			}
+			createTestProfile(context.Background(), t, h.store.Store, turn.ProfileID, "test", "integration-secret")
+			initialRevision := uint64(1)
+			if test.userAlreadyCommitted {
+				message := core.Message{ID: core.TurnUserMessageID(turn.RequestID), Role: core.RoleUser, Content: turn.Prompt,
+					ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC().Add(-time.Second).Truncate(time.Microsecond)}
+				tx, txErr := h.pool.Begin(context.Background())
+				if txErr != nil {
+					t.Fatal(txErr)
+				}
+				defer tx.Rollback(context.Background())
+				if err = insertCloudWorkerMessageTx(context.Background(), tx, turn.ConversationID, 1, message); err != nil {
+					t.Fatal(err)
+				}
+				if _, err = tx.Exec(context.Background(), `UPDATE core_conversations SET revision=revision+1 WHERE conversation_id=$1`, turn.ConversationID); err != nil {
+					t.Fatal(err)
+				}
+				if err = tx.Commit(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				initialRevision++
+			}
+			lease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = h.store.AppendTurnEvent(context.Background(), turn.ID, core.TurnEvent{Kind: core.TurnEventStarted}); err != nil {
+				t.Fatal(err)
+			}
+			for _, text := range test.deltas {
+				if _, err = h.store.AppendTurnEvent(context.Background(), turn.ID, core.TurnEvent{Kind: core.TurnEventDelta, Text: text}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err = h.store.FailTurn(context.Background(), lease, "intrinsic_failed", "Core intrinsic operation failed"); err != nil {
+				t.Fatal(err)
+			}
+
+			conversation, err := h.store.LoadConversation(context.Background(), turn.ConversationID)
+			if err != nil || conversation.Revision != initialRevision+1 || len(conversation.Messages) != 2 {
+				t.Fatalf("conversation=%+v err=%v", conversation, err)
+			}
+			if conversation.Messages[0].ID != core.TurnUserMessageID(turn.RequestID) || conversation.Messages[0].Content != turn.Prompt {
+				t.Fatalf("failed user transcript=%+v", conversation.Messages[0])
+			}
+			assistant := conversation.Messages[1]
+			if assistant.Status != "failed" || assistant.Role != core.RoleAssistant ||
+				assistant.Content != test.wantContent {
+				t.Fatalf("failed assistant transcript=%+v", assistant)
+			}
+			if _, err = h.store.FailTurn(context.Background(), lease, "intrinsic_failed", "Core intrinsic operation failed"); !errors.Is(err, core.ErrConflict) {
+				t.Fatalf("failed turn replay err=%v", err)
+			}
+			replayed, err := h.store.LoadConversation(context.Background(), turn.ConversationID)
+			if err != nil || replayed.Revision != conversation.Revision || len(replayed.Messages) != 2 {
+				t.Fatalf("replayed conversation=%+v err=%v", replayed, err)
+			}
+		})
+	}
+}
+
 func TestCoreConversationTurnEventsRejectZeroRevisionPayloadPostgres(t *testing.T) {
 	h := openTurnDB(t)
 	turn, err := h.store.StartTurn(context.Background(), turnCommand())

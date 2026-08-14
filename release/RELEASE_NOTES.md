@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.99
+
+1. Route provider-neutral task requirements through the single dynamic Ubuntu 24.04 SSH Worker path, prefer an exact compatible retained Worker before new-instance selection, and bind reuse to that Worker identity.
+2. Remove deploy-time AWS enablement, fixed Worker defaults, explicit-cloud routing, task-specific reporting, and retained-Worker cleanup cost inflation.
+3. Preserve failed and partial Agent turns in conversation history, recover terminal Worker continuations without unavailable request-scoped extensions, and normalize attachment-free read-only proposals.
+
 ## v1.0.97
 
 1. Rebind the existing Cloud Worker confirmation reservation when an expired task lease is reclaimed, so the same durable execution resumes instead of being mislabeled as a model failure.

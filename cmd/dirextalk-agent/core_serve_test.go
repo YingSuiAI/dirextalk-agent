@@ -108,26 +108,15 @@ func TestComposeCoreKnowledgeDisabledDoesNotCreateProductionFallback(t *testing.
 	}
 }
 
-func TestComposeCoreAWSDisabledDoesNotCreateProductionFallback(t *testing.T) {
-	composition, err := composeCoreAWS(config.Config{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if composition != nil {
-		t.Fatal("disabled Core AWS unexpectedly created a composition")
+func TestComposeCoreAWSFailsClosedWithoutDurableDependencies(t *testing.T) {
+	if _, err := composeCoreAWS(nil); err == nil {
+		t.Fatal("Core AWS accepted missing durable dependencies")
 	}
 }
 
-func TestComposeCoreAWSEnabledFailsClosedWithoutDurableDependencies(t *testing.T) {
-	cfg := config.Config{CoreAWSEnabled: true}
-	if _, err := composeCoreAWS(cfg, nil); err == nil {
-		t.Fatal("enabled Core AWS accepted missing durable dependencies")
-	}
-}
-
-func TestComposeCoreAWSGraphEnabledBuildsCredentialRPC(t *testing.T) {
+func TestComposeCoreAWSGraphBuildsCredentialRPC(t *testing.T) {
 	repository := coreaws.NewMemoryRepository()
-	composition, err := composeCoreAWSGraph(config.Config{CoreAWSEnabled: true}, repository, &coreaws.FakeSTSProvider{})
+	composition, err := composeCoreAWSGraph(repository, &coreaws.FakeSTSProvider{})
 	if err != nil {
 		t.Fatal(err)
 	}

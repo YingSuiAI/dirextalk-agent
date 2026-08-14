@@ -270,13 +270,17 @@ func projectConversationMessages(values []coreconversation.Message) []publicConv
 		if references == nil {
 			references = make([]coreconversation.Reference, 0)
 		}
+		status := value.Status
+		if status == "" {
+			status = "done"
+		}
 		result = append(result, publicConversationMessage{
 			MessageID:  value.ID,
 			Role:       string(value.Role),
 			Content:    value.Content,
 			CreatedAt:  value.CreatedAt,
 			MessageSeq: sequence,
-			Status:     "done",
+			Status:     status,
 			References: references,
 		})
 	}

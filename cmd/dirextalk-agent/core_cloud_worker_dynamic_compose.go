@@ -19,7 +19,7 @@ import (
 const cloudWorkerDefaultQuoteTTL = 5 * time.Minute
 
 func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store, conversationStore *postgres.CoreConversationStore, workerState *sshworker.FileStore) (*coreCloudWorkerComposition, error) {
-	if !cfg.CoreAWSEnabled || !cfg.CapabilityEnabled {
+	if !cfg.CapabilityEnabled {
 		return nil, nil
 	}
 	if store == nil || conversationStore == nil || workerState == nil {
@@ -45,15 +45,13 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	}
 	quoter, err := cloudworker.NewProductionQuoter(pricing, cloudworker.ProductionQuoterConfig{
 		QuoteTTL: cloudWorkerDefaultQuoteTTL, MaximumCatalogAge: cloudWorkerDefaultQuoteTTL,
-		CleanupReserveSeconds:  cloudworker.EphemeralCleanupReserveSeconds,
 		ContingencyBasisPoints: 1000, AbsoluteHardLimitMicros: 100_000_000,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initialize dynamic Cloud Worker quoter: %w", err)
 	}
 	defaults := cloudworker.Defaults{
-		Limits:                  cloudworker.Limits{MaxRuntimeSeconds: 3600, MaxTokens: 100_000, MaxOutputBytes: cloudworker.MaxCloudWorkerOutputBytes},
-		MaximumAuthorizedMicros: 100_000_000, QuoteTTL: cloudWorkerDefaultQuoteTTL,
+		Limits: cloudworker.Limits{MaxRuntimeSeconds: 3600, MaxTokens: 100_000, MaxOutputBytes: cloudworker.MaxCloudWorkerOutputBytes},
 	}
 	domain, err := cloudworker.NewServiceWithAWSBindingResolver(postgres.NewCloudWorkerStore(store), defaults, quoter, authority)
 	if err != nil {

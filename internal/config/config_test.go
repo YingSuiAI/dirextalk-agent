@@ -75,9 +75,8 @@ func TestValidateCoreRequiresTokenAndBounds(t *testing.T) {
 	}
 }
 
-func TestValidateCoreAWSRequiresStrictMountedMasterKey(t *testing.T) {
+func TestValidateCoreRequiresStrictMountedMasterKey(t *testing.T) {
 	cfg := validCoreConfig(t)
-	cfg.CoreAWSEnabled = true
 	keyPath := filepath.Join(filepath.Dir(cfg.DatabaseURLFile), "core-secret-master-key")
 	cfg.CoreSecretMasterKeyFile = keyPath
 	if err := ValidateCore(&cfg); err != nil {
@@ -89,25 +88,16 @@ func TestValidateCoreAWSRequiresStrictMountedMasterKey(t *testing.T) {
 	if err := os.Chmod(keyPath, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateCoreAWS(&cfg); err == nil || !strings.Contains(err.Error(), "core_secret_master_key_file") {
-		t.Fatalf("insecure AWS key mode accepted: %v", err)
+	if err := ValidateCoreSecretMasterKey(&cfg); err == nil || !strings.Contains(err.Error(), "core_secret_master_key_file") {
+		t.Fatalf("insecure master key mode accepted: %v", err)
 	}
 }
 
-func TestValidateCoreAWSDisabledDoesNotReadKeyFile(t *testing.T) {
-	cfg := validCoreConfig(t)
-	cfg.CoreSecretMasterKeyFile = filepath.Join(t.TempDir(), "missing")
-	if err := ValidateCoreAWS(&cfg); err != nil {
-		t.Fatalf("disabled AWS unexpectedly required key: %v", err)
-	}
-}
-
-func TestValidateCoreAWSRejectsSymlinkedMasterKey(t *testing.T) {
+func TestValidateCoreSecretMasterKeyRejectsSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink permissions differ on Windows")
 	}
 	cfg := validCoreConfig(t)
-	cfg.CoreAWSEnabled = true
 	root := filepath.Dir(cfg.DatabaseURLFile)
 	target := filepath.Join(root, "core-secret-master-key-target")
 	link := filepath.Join(root, "core-secret-master-key-link")
@@ -118,8 +108,8 @@ func TestValidateCoreAWSRejectsSymlinkedMasterKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.CoreSecretMasterKeyFile = link
-	if err := ValidateCoreAWS(&cfg); err == nil {
-		t.Fatal("symlinked AWS master key accepted")
+	if err := ValidateCoreSecretMasterKey(&cfg); err == nil {
+		t.Fatal("symlinked master key accepted")
 	}
 }
 

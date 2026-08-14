@@ -115,6 +115,7 @@ type Message struct {
 	RelatedPlanIDs []string     `json:"related_plan_ids,omitempty"`
 	References     []Reference  `json:"references,omitempty"`
 	ToolSummaries  []string     `json:"tool_summaries,omitempty"`
+	Status         string       `json:"status,omitempty"`
 }
 
 type Conversation struct {
@@ -940,6 +941,9 @@ func (m Message) Validate() error {
 		return ErrInvalid
 	}
 	if len(m.Content) > MaxContentBytes {
+		return ErrInvalid
+	}
+	if m.Status != "" && m.Status != "done" && (m.Status != "failed" || m.Role != RoleAssistant) {
 		return ErrInvalid
 	}
 	if m.Role != RoleTool && len(m.ToolResults) > 0 {

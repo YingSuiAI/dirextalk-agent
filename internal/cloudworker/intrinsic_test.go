@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,16 @@ type intrinsicComputeSelector struct{ compute ComputeSpec }
 
 func (selector intrinsicComputeSelector) SelectCompute(context.Context, AWSBinding, ComputeRequirements) (ComputeSpec, error) {
 	return selector.compute, nil
+}
+
+type intrinsicNoWorkerReuse struct{}
+
+func (intrinsicNoWorkerReuse) ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeRequirements) (WorkerReuseSelection, bool, error) {
+	return WorkerReuseSelection{}, false, nil
+}
+
+func (intrinsicNoWorkerReuse) CheckCreateWorkerCapacity(context.Context, string, uint64, AWSBinding) error {
+	return nil
 }
 
 func (s *intrinsicStore) CreateOffer(_ context.Context, command CreateOfferCommand) (Offer, error) {
@@ -83,24 +94,26 @@ func (r *intrinsicManifest) ResolveCloudWorkerManifest(_ context.Context, _ core
 	return InputManifest{Schema: InputManifestSchema, Items: items}, nil
 }
 
-func intrinsicDefaults(now time.Time) Defaults {
-	return Defaults{
-		AWS:               AWSBinding{AccountID: "123456789012", Region: "us-east-1", CredentialID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("aws-credential")).String(), CredentialRevision: 3},
-		Compute:           ComputeSpec{InstanceType: "c7i.large", Architecture: "x86_64", RootDeviceName: "/dev/xvda", VolumeGiB: 32, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125},
-		Limits:            Limits{MaxRuntimeSeconds: 3600, MaxTokens: 2000, MaxOutputBytes: 1 << 20},
-		QuoteAmountMicros: 1000, MaximumAuthorizedMicros: 2000, QuoteTTL: 5 * time.Minute,
-	}
+func intrinsicDefaults(time.Time) Defaults {
+	return Defaults{Limits: Limits{MaxRuntimeSeconds: 3600, MaxTokens: 2000, MaxOutputBytes: 1 << 20}}
+}
+
+func intrinsicAWSBinding() AWSBinding {
+	return AWSBinding{AccountID: "123456789012", Region: "us-east-1", CredentialID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("aws-credential")).String(), CredentialRevision: 3}
 }
 
 func intrinsicFixture(t *testing.T, prompt string, manifests IntrinsicManifestResolver, budgets IntrinsicBudgetResolver) (*ProposeIntrinsic, *intrinsicStore, coreconversation.TurnLease) {
 	t.Helper()
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	store := &intrinsicStore{}
-	service, err := NewService(store, intrinsicDefaults(now), FakeQuoter{AmountMicros: 1000, MaximumAuthorizedMicros: 2000, TTL: 5 * time.Minute, Now: func() time.Time { return now }}, func() time.Time { return now })
+	service, err := NewServiceWithAWSBindingResolver(store, intrinsicDefaults(now), FakeQuoter{AmountMicros: 1000, MaximumAuthorizedMicros: 2000, TTL: 5 * time.Minute, Now: func() time.Time { return now }}, AWSBindingResolverFunc(func(context.Context) (AWSBinding, error) { return intrinsicAWSBinding(), nil }), func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = service.EnableDynamicComputeSelection(intrinsicComputeSelector{compute: ComputeSpec{InstanceType: "t3.small", Architecture: "x86_64", VCPU: 2, MemoryGiB: 2, RootDeviceName: "/dev/xvda", VolumeGiB: 20, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.EnablePersistentWorkerReuse(intrinsicNoWorkerReuse{}); err != nil {
 		t.Fatal(err)
 	}
 	owner := &intrinsicOwner{owner: IntrinsicOwnerContext{OwnerID: "@owner:example.test", AccountGeneration: 7}}
@@ -205,8 +218,9 @@ func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
 	if err != nil || arguments.WorkspaceMode != string(WorkspaceWrite) || len(arguments.AttachmentIDs) != 0 {
 		t.Fatalf("empty write workspace arguments=%+v err=%v", arguments, err)
 	}
-	if _, err = parseProposeIntrinsicArguments([]byte(`{"objective":"inspect","workspace_mode":"read_only"}`)); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("empty read-only workspace accepted: %v", err)
+	arguments, err = parseProposeIntrinsicArguments([]byte(`{"objective":"inspect","workspace_mode":"read_only","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60}`))
+	if err != nil || arguments.WorkspaceMode != string(WorkspaceNone) {
+		t.Fatalf("empty read-only workspace was not normalized: arguments=%+v err=%v", arguments, err)
 	}
 }
 
@@ -361,6 +375,12 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 	if !ok {
 		t.Fatalf("properties schema=%#v", tools[0].Tool.InputSchema["properties"])
 	}
+	for _, field := range []string{"min_vcpu", "min_memory_gib", "disk_gib", "estimated_runtime_minutes"} {
+		definition, ok := properties[field].(map[string]any)
+		if !ok || strings.TrimSpace(fmt.Sprint(definition["description"])) == "" {
+			t.Fatalf("sizing description %s=%#v", field, properties[field])
+		}
+	}
 	attachments, ok := properties["attachment_ids"].(map[string]any)
 	if !ok || attachments["maxItems"] != 2 {
 		t.Fatalf("attachment schema=%#v", properties["attachment_ids"])
@@ -391,5 +411,9 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 	properties = tools[0].Tool.InputSchema["properties"].(map[string]any)
 	if _, exposed := properties["attachment_ids"]; exposed {
 		t.Fatalf("stale attachment snapshot was exposed: %#v", properties["attachment_ids"])
+	}
+	workspace := properties["workspace_mode"].(map[string]any)
+	if modes, ok := workspace["enum"].([]any); !ok || slices.Contains(modes, any(string(WorkspaceReadOnly))) {
+		t.Fatalf("read-only workspace was exposed without frozen attachments: %#v", workspace)
 	}
 }

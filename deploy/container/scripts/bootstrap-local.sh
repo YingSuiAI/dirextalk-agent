@@ -540,7 +540,6 @@ grpc_listen: ":9443"
 tls_cert_file: /run/secrets/tls_cert
 tls_key_file: /run/secrets/tls_key
 service_token_file: /run/secrets/service_token
-core_aws_enabled: false
 core_secret_master_key_file: /run/secrets/core_secret_master_key
 core_secret_master_key_version: 1
 enable_health_service: true

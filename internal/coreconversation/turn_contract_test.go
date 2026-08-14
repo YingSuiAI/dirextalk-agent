@@ -719,11 +719,25 @@ func TestExecuteTurnContinuesIntrinsicHistoryWithoutDuplicatePublicMessages(t *t
 	turnID := uuid.NewString()
 	createdAt := time.Now().UTC().Add(-time.Minute)
 	expectedRevision := uint64(1)
+	contextSnapshot := func(source, tool, digest string) ExtensionExecutionSnapshot {
+		selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1.0.0", Digest: digest, AllowedTools: []string{tool}}
+		return ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: source,
+			ContentDigest: digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64),
+			NetworkBindingDigest: strings.Repeat("d", 64), ToolNames: []string{tool}, ReadOnly: true}
+	}
+	productSnapshot := contextSnapshot("product-capability", "product_lookup", strings.Repeat("1", 64))
+	knowledgeSnapshot := contextSnapshot("builtin:knowledge:semantic", "knowledge_search", strings.Repeat("2", 64))
+	webSnapshot := contextSnapshot("builtin:web_search:tavily", "web_search", strings.Repeat("3", 64))
+	installedSnapshot := contextSnapshot("mcp:installed", "installed_lookup", strings.Repeat("4", 64))
+	snapshots := []ExtensionExecutionSnapshot{productSnapshot, knowledgeSnapshot, webSnapshot, installedSnapshot}
 	turn := Turn{ID: turnID, RequestID: requestID, ConversationID: conversationID,
 		Prompt: "deploy the service", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
 		ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 3,
-		LastSequence: 3, ExpectedRevision: &expectedRevision, CreatedAt: createdAt}
+		LastSequence: 5, ExpectedRevision: &expectedRevision, CreatedAt: createdAt,
+		ExtensionSnapshots: snapshots, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: snapshots}.ExtensionSnapshotDigest()}
 	taskID, planID := uuid.NewString(), uuid.NewString()
+	webCall := ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"worker recovery"}`}
+	webResult := ToolResult{CallID: webCall.ID, ToolName: webCall.Name, Content: `{"results":[]}`}
 	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
 	reference := Reference{Kind: "execution_plan", AccountGeneration: 1, TaskID: taskID,
 		PlanID: planID, PlanRevision: 1, Status: "waiting_user"}
@@ -743,18 +757,29 @@ func TestExecuteTurnContinuesIntrinsicHistoryWithoutDuplicatePublicMessages(t *t
 		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
 		events: []TurnEvent{
 			{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: createdAt},
-			{TurnID: turn.ID, Sequence: 2, Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: createdAt.Add(time.Second)},
-			{TurnID: turn.ID, Sequence: 3, Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: createdAt.Add(2 * time.Second)},
+			{TurnID: turn.ID, Sequence: 2, Kind: TurnEventToolCall, ToolCall: &webCall, CreatedAt: createdAt.Add(time.Second)},
+			{TurnID: turn.ID, Sequence: 3, Kind: TurnEventToolResult, ToolResult: &webResult, CreatedAt: createdAt.Add(2 * time.Second)},
+			{TurnID: turn.ID, Sequence: 4, Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: createdAt.Add(3 * time.Second)},
+			{TurnID: turn.ID, Sequence: 5, Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: createdAt.Add(4 * time.Second)},
 		},
 	}
 	model := &capturingTurnModel{}
-	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	service, err := NewService(store, model, extensionResolverFunc(func(_ context.Context, selections []ExtensionSelection) ([]ResolvedExtension, error) {
+		if len(selections) != 1 || selections[0].ID != installedSnapshot.Selection.ID {
+			t.Fatalf("installed selections=%+v", selections)
+		}
+		return []ResolvedExtension{{Selection: installedSnapshot.Selection, Snapshot: installedSnapshot,
+			Tools: []coremodel.Tool{{Name: "installed_lookup", InputSchema: map[string]any{"type": "object"}}}}}, nil
+	}), snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = service.resolveAcceptedTurnExtensions(context.Background(), snapshots); !errors.Is(err, ErrConflict) {
+		t.Fatalf("context-bound snapshots were accepted without terminal Worker history: %v", err)
+	}
 	service.executeTurn(context.Background(), turn.ID)
 
-	if model.runs != 1 || len(model.request.Conversation.Messages) != 4 {
+	if model.runs != 1 || len(model.request.Conversation.Messages) != 6 || len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != installedSnapshot.Selection.ID {
 		t.Fatalf("model runs=%d context=%+v", model.runs, model.request.Conversation.Messages)
 	}
 	promptCount := 0
@@ -769,7 +794,9 @@ func TestExecuteTurnContinuesIntrinsicHistoryWithoutDuplicatePublicMessages(t *t
 	if promptCount != 1 || model.request.Conversation.Messages[0].ID != prefix.ID ||
 		model.request.Conversation.Messages[1].Role != RoleUser ||
 		len(model.request.Conversation.Messages[2].ToolCalls) != 1 ||
-		len(model.request.Conversation.Messages[3].ToolResults) != 1 {
+		len(model.request.Conversation.Messages[3].ToolResults) != 1 ||
+		len(model.request.Conversation.Messages[4].ToolCalls) != 1 ||
+		len(model.request.Conversation.Messages[5].ToolResults) != 1 {
 		t.Fatalf("continuation context=%+v prompt_count=%d", model.request.Conversation.Messages, promptCount)
 	}
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
@@ -781,7 +808,7 @@ func TestExecuteTurnContinuesIntrinsicHistoryWithoutDuplicatePublicMessages(t *t
 		!reflect.DeepEqual(response.RelatedPlanIDs, []string{planID}) ||
 		!reflect.DeepEqual(response.References, []Reference{reference}) ||
 		!reflect.DeepEqual(response.ToolSummaries, []string{result.Summary}) ||
-		len(response.ToolResults) != 1 || response.ToolResults[0].CallID != call.ID {
+		len(response.ToolResults) != 2 || response.ToolResults[1].CallID != call.ID {
 		t.Fatalf("terminal response metadata=%+v", response)
 	}
 	started := 0

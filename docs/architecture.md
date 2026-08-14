@@ -43,8 +43,8 @@ require another creation quote. A retained Worker is destroyed only by an
 explicit owner action.
 
 The Worker manager supports at most five retained Workers for the current
-credential. It discovers the newest AWS-owned Amazon Linux 2023 image and the
-account's default VPC/subnet at runtime, creates one EC2 instance with an
+credential. It discovers the newest Canonical official Ubuntu 24.04 LTS image
+and the account's default VPC/subnet at runtime, creates one EC2 instance with an
 ordinary auto-assigned public IPv4, and connects from Agent by outbound SSH.
 There is no EIP, custom AMI, inbound Worker API, WorkerControl listener, model
 relay, S3/KMS artifact path, or deploy-time Worker injection. Jobs and service

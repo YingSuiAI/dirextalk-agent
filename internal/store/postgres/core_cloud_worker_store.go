@@ -31,6 +31,7 @@ type privateCloudWorkerPlan struct {
 	Objective             string                    `json:"objective"`
 	InputManifest         cloudworker.InputManifest `json:"input_manifest"`
 	PersistentWorkerReuse bool                      `json:"persistent_worker_reuse,omitempty"`
+	ReuseWorkerID         string                    `json:"reuse_worker_id,omitempty"`
 }
 
 type cloudWorkerReplay struct {
@@ -48,7 +49,7 @@ func marshalCloudWorkerPlan(plan cloudworker.Plan) ([]byte, []byte, error) {
 	}
 	privateRaw, err := json.Marshal(privateCloudWorkerPlan{
 		Objective: copy.Objective, InputManifest: copy.InputManifest,
-		PersistentWorkerReuse: copy.PersistentWorkerReuse,
+		PersistentWorkerReuse: copy.PersistentWorkerReuse, ReuseWorkerID: copy.ReuseWorkerID,
 	})
 	if err != nil || len(publicRaw) > 1<<20 || len(privateRaw) > 1<<20 {
 		return nil, nil, cloudworker.ErrInvalid
@@ -79,6 +80,7 @@ func scanCloudWorkerPlan(row cloudWorkerRowScanner) (cloudworker.Plan, error) {
 	}
 	plan.Objective, plan.InputManifest = private.Objective, private.InputManifest
 	plan.PersistentWorkerReuse = private.PersistentWorkerReuse
+	plan.ReuseWorkerID = private.ReuseWorkerID
 	if plan.Seal() != nil || plan.Revision != uint64(storedRevision) || plan.Digest != storedDigest ||
 		plan.ExecutionDigest != storedExecutionDigest || plan.AuthorizationBasisDigest != storedAuthorization ||
 		plan.Quote.Digest != storedQuote || plan.InputManifestDigest != storedManifest ||

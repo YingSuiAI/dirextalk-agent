@@ -45,6 +45,7 @@ type Request struct {
 	ConfirmationProof string
 	ModelSnapshot     coremodel.ExecutionSnapshot
 	ReuseOnly         bool
+	ReuseWorkerID     string
 }
 
 // Artifact is immutable metadata for bytes already collected under the
@@ -109,7 +110,8 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 		AWS: run.Plan.AWS, Compute: run.Plan.Compute,
 		Limits: run.Plan.Limits, InputManifest: run.Plan.InputManifest,
 		WorkspaceMode:     run.Plan.WorkspaceMode,
-		ConfirmationProof: run.ConfirmationProof, ModelSnapshot: run.ModelSnapshot, ReuseOnly: run.Plan.PersistentWorkerReuse,
+		ConfirmationProof: run.ConfirmationProof, ModelSnapshot: run.ModelSnapshot,
+		ReuseOnly: run.Plan.PersistentWorkerReuse, ReuseWorkerID: run.Plan.ReuseWorkerID,
 	})
 	if executeErr != nil {
 		// A detached remote process may still be running. Its durable task and

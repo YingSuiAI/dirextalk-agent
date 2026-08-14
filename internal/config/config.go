@@ -63,7 +63,6 @@ type Config struct {
 	CoreTaskLeaseTTL                   time.Duration `yaml:"core_task_lease_ttl" mapstructure:"core_task_lease_ttl"`
 	CoreScheduleSweepInterval          time.Duration `yaml:"core_schedule_sweep_interval" mapstructure:"core_schedule_sweep_interval"`
 	CoreShutdownGrace                  time.Duration `yaml:"core_shutdown_grace" mapstructure:"core_shutdown_grace"`
-	CoreAWSEnabled                     bool          `yaml:"core_aws_enabled" mapstructure:"core_aws_enabled"`
 	CoreSecretMasterKeyFile            string        `yaml:"core_secret_master_key_file" mapstructure:"core_secret_master_key_file"`
 	CoreSecretMasterKeyVersion         uint32        `yaml:"core_secret_master_key_version" mapstructure:"core_secret_master_key_version"`
 	CoreExtensionEnabled               bool          `yaml:"core_extension_enabled" mapstructure:"core_extension_enabled"`
@@ -171,9 +170,6 @@ func ValidateCore(cfg *Config) error {
 	if err := ValidateCoreSecretMasterKey(cfg); err != nil {
 		return err
 	}
-	if err := ValidateCoreAWS(cfg); err != nil {
-		return err
-	}
 	if err := validateCoreRuntime(cfg); err != nil {
 		return err
 	}
@@ -263,15 +259,6 @@ func ValidateCoreSecretMasterKey(cfg *Config) error {
 	}
 	cfg.CoreSecretMasterKeyFile = resolved
 	return nil
-}
-
-// ValidateCoreAWS retains the AWS-specific validation entry point while the
-// mounted master key is now required for every Core durable-secret surface.
-func ValidateCoreAWS(cfg *Config) error {
-	if cfg == nil || !cfg.CoreAWSEnabled {
-		return nil
-	}
-	return ValidateCoreSecretMasterKey(cfg)
 }
 
 // ValidateCoreVoice validates the optional Agent-owned Native Voice graph.

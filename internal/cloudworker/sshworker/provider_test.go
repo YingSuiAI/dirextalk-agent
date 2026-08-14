@@ -282,6 +282,8 @@ func TestExecuteRequiresConfirmationOnlyWhenCreatingAndRetainsWorker(t *testing.
 	second.ExecutionID = "execution-2"
 	second.Runtime.TaskID = second.ExecutionID
 	second.Confirmation = Confirmation{}
+	second.ReuseOnly = true
+	second.ReuseWorkerID = r.ExecutionID
 	if _, err := provider.Execute(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
@@ -349,12 +351,71 @@ func TestReuseOnlyNeverFallsThroughToCreate(t *testing.T) {
 	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
 	request := requestFixture()
 	request.ReuseOnly = true
+	request.ReuseWorkerID = "worker-missing"
 	request.Confirmation = Confirmation{}
 	if _, err := provider.Execute(context.Background(), request); !errors.Is(err, ErrBusy) {
 		t.Fatalf("reuse-only race error=%v", err)
 	}
 	if cloud.mutations != 0 || len(store.workers) != 0 {
 		t.Fatalf("reuse-only created resources: mutations=%d workers=%#v", cloud.mutations, store.workers)
+	}
+}
+
+func TestReuseOnlyLeasesTheExactProposedWorker(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	for index, id := range []string{"worker-a", "worker-b"} {
+		worker := workerRecordFixture(id, credentialFixture(), WorkerIdle)
+		worker.Instance = Instance{ID: "i-" + id, State: "running", PublicIP: "203.0.113." + string(rune('1'+index))}
+		store.workers[id] = worker
+		cloud.instances[id] = worker.Instance
+	}
+	ssh := &fakeSSH{}
+	provider, _ := New(cloud, &fakeKeys{}, ssh, store)
+	request := requestFixture()
+	request.ReuseOnly, request.ReuseWorkerID, request.Confirmation = true, "worker-b", Confirmation{}
+	result, err := provider.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.WorkerID != "worker-b" || len(ssh.hosts) != 1 || ssh.hosts[0] != "203.0.113.2" || cloud.runs != 0 {
+		t.Fatalf("result=%+v hosts=%v runs=%d", result, ssh.hosts, cloud.runs)
+	}
+}
+
+func TestRetainedWorkerReuseAcceptsOnlyTheSameLogicalCredentialAcrossRevision(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	createdWith := credentialFixture()
+	worker := workerRecordFixture("worker-a", createdWith, WorkerIdle)
+	worker.Instance = Instance{ID: "i-worker-a", State: "running", PublicIP: "203.0.113.7"}
+	store.workers[worker.WorkerID] = worker
+	cloud.instances[worker.WorkerID] = worker.Instance
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+
+	rotated := createdWith
+	rotated.CredentialRevision++
+	resolved, found, err := provider.ResolveIdleWorker(context.Background(), authorityFixture(), rotated, 2, 2, 16)
+	if err != nil || !found || resolved.WorkerID != worker.WorkerID {
+		t.Fatalf("resolved=%+v found=%t err=%v", resolved, found, err)
+	}
+	request := requestFixture()
+	request.Credential, request.ReuseOnly, request.ReuseWorkerID, request.Confirmation = rotated, true, worker.WorkerID, Confirmation{}
+	if result, executeErr := provider.Execute(context.Background(), request); executeErr != nil || result.WorkerID != worker.WorkerID || cloud.runs != 0 {
+		t.Fatalf("result=%+v err=%v runs=%d", result, executeErr, cloud.runs)
+	}
+
+	for name, changed := range map[string]CredentialIdentity{
+		"credential": {CredentialID: "aws-2", CredentialRevision: 2, AccountID: createdWith.AccountID, Region: createdWith.Region},
+		"account":    {CredentialID: createdWith.CredentialID, CredentialRevision: 2, AccountID: "210987654321", Region: createdWith.Region},
+		"region":     {CredentialID: createdWith.CredentialID, CredentialRevision: 2, AccountID: createdWith.AccountID, Region: "us-east-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, found, resolveErr := provider.ResolveIdleWorker(context.Background(), authorityFixture(), changed, 2, 2, 16)
+			if resolveErr != nil || found {
+				t.Fatalf("found=%t err=%v", found, resolveErr)
+			}
+		})
 	}
 }
 

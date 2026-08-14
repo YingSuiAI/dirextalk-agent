@@ -12,9 +12,8 @@ core_task_max_concurrency: 4
 core_task_lease_ttl: 30s
 core_schedule_sweep_interval: 1s
 core_shutdown_grace: 30s
-# Core AWS is opt-in. When enabled, this path must resolve to a raw 32-byte
-# mode-0400 mounted key file; the key value never belongs in YAML or PostgreSQL.
-core_aws_enabled: false
+# This path must resolve to a raw 32-byte mode-0400 mounted key file; the key
+# value never belongs in YAML or PostgreSQL.
 core_secret_master_key_file: /run/secrets/core_secret_master_key
 core_secret_master_key_version: 1
 core_extension_enabled: false

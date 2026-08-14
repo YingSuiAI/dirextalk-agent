@@ -164,11 +164,11 @@ func (staticIP) PublicIP(context.Context) (netip.Addr, error) {
 	return netip.MustParseAddr("198.51.100.7"), nil
 }
 
-func TestSDKDiscoverUsesAmazonOwnerAliasAndNewestOfficialImage(t *testing.T) {
+func TestSDKDiscoverUsesCanonicalOwnerAndNewestUbuntu2404Image(t *testing.T) {
 	probe := &mutationProbeEC2{
 		images: []ec2types.Image{
-			{ImageId: aws.String("ami-older"), Name: aws.String("al2023-older"), CreationDate: aws.String("2026-08-01T00:00:00Z")},
-			{ImageId: aws.String("ami-newest"), Name: aws.String("al2023-newest"), CreationDate: aws.String("2026-08-02T00:00:00Z")},
+			{ImageId: aws.String("ami-older"), Name: aws.String("ubuntu-noble-older"), CreationDate: aws.String("2026-08-01T00:00:00Z")},
+			{ImageId: aws.String("ami-newest"), Name: aws.String("ubuntu-noble-newest"), CreationDate: aws.String("2026-08-02T00:00:00Z")},
 		},
 		vpcs: []ec2types.Vpc{{VpcId: aws.String("vpc-default")}},
 		subnets: []ec2types.Subnet{
@@ -182,10 +182,20 @@ func TestSDKDiscoverUsesAmazonOwnerAliasAndNewestOfficialImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if probe.describeImagesInput == nil || !slices.Equal(probe.describeImagesInput.Owners, []string{"amazon"}) {
-		t.Fatalf("DescribeImages owners = %v, want AWS owner alias amazon", probe.describeImagesInput.Owners)
+	if probe.describeImagesInput == nil || !slices.Equal(probe.describeImagesInput.Owners, []string{"099720109477"}) {
+		t.Fatalf("DescribeImages owners = %v, want Canonical owner 099720109477", probe.describeImagesInput.Owners)
 	}
-	if discovery.ImageID != "ami-newest" || discovery.ImageName != "al2023-newest" || discovery.VPCID != "vpc-default" || discovery.SubnetID != "subnet-a" {
+	var imageNames []string
+	for _, filter := range probe.describeImagesInput.Filters {
+		if aws.ToString(filter.Name) == "name" {
+			imageNames = filter.Values
+			break
+		}
+	}
+	if !slices.Equal(imageNames, []string{"ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"}) {
+		t.Fatalf("DescribeImages names = %v", imageNames)
+	}
+	if discovery.ImageID != "ami-newest" || discovery.ImageName != "ubuntu-noble-newest" || discovery.SSHUser != "ubuntu" || discovery.VPCID != "vpc-default" || discovery.SubnetID != "subnet-a" {
 		t.Fatalf("discovery = %#v", discovery)
 	}
 }

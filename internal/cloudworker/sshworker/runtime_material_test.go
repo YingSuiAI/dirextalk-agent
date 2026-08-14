@@ -38,7 +38,8 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 	for _, expected := range []string{
 		"releases/download/v0.84.1/pi-linux-x64.tar.gz",
 		piLinuxX64SHA256,
-		"sudo dnf -q -y install ca-certificates git golang gzip tar",
+		"sudo apt-get -qq update",
+		"sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install ca-certificates curl git golang-go gzip tar",
 		`readonly task_root="$worker_root/tasks/task-001"`,
 		`dirextalk-worker-runner`,
 		`server-status`,
@@ -48,8 +49,11 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 			t.Fatalf("script does not contain %q", expected)
 		}
 	}
-	if strings.Contains(script, "install ca-certificates curl") {
-		t.Fatal("bootstrap replaces the Amazon Linux curl-minimal package")
+	if strings.Contains(script, "dnf") {
+		t.Fatal("bootstrap contains the retired dnf package path")
+	}
+	if strings.Contains(script, "deployment flow") || strings.Contains(script, "actual server load") {
+		t.Fatal("generic job prompt retained task-specific reporting requirements")
 	}
 	if strings.Contains(script, secret) || strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(secret))) {
 		t.Fatal("model credential leaked into worker script")

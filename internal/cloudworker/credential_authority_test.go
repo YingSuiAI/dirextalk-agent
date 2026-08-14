@@ -29,17 +29,32 @@ type proposalAWSBindingResolver struct {
 }
 
 type capacityReuseResolver struct {
-	err   error
-	calls int
+	err       error
+	calls     int
+	selection WorkerReuseSelection
+	found     bool
 }
 
-func (resolver *capacityReuseResolver) ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeSpec) (ComputeSpec, bool, error) {
-	return ComputeSpec{}, false, nil
+func (resolver *capacityReuseResolver) ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeRequirements) (WorkerReuseSelection, bool, error) {
+	return resolver.selection, resolver.found, nil
 }
 
-func (resolver *capacityReuseResolver) CheckCreateWorkerCapacity(context.Context, string, uint64, AWSBinding, ComputeSpec) error {
+func (resolver *capacityReuseResolver) CheckCreateWorkerCapacity(context.Context, string, uint64, AWSBinding) error {
 	resolver.calls++
 	return resolver.err
+}
+
+func enableCredentialProposalDependencies(t *testing.T, service *Service, reuse *capacityReuseResolver) {
+	t.Helper()
+	if reuse == nil {
+		reuse = &capacityReuseResolver{}
+	}
+	if err := service.EnablePersistentWorkerReuse(reuse); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.EnableDynamicComputeSelection(intrinsicComputeSelector{compute: ComputeSpec{InstanceType: "t3.small", Architecture: "x86_64", VCPU: 2, MemoryGiB: 2, RootDeviceName: "/dev/xvda", VolumeGiB: 20, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (resolver *proposalAWSBindingResolver) ResolveCurrentAWSBinding(context.Context) (AWSBinding, error) {
@@ -54,9 +69,13 @@ func credentialProposalCommand() ProposeCommand {
 		TurnLeaseID: uuid.NewString(), TurnLeaseEpoch: 2, ExpectedTurnRevision: 1,
 		Objective: "run an exact cloud task", ObjectiveSummary: "run an exact cloud task",
 		UserPromptDigest: digestValue("credential-authority-prompt"),
-		ProposalReason:   ProposalReasonExplicitUserCloud,
-		InputManifest:    InputManifest{Schema: InputManifestSchema, Items: []InputManifestItem{}},
-		WorkspaceMode:    WorkspaceNone,
+		ProposalReason:   ProposalReasonLocalBudgetExceeded,
+		LocalBudgetEvidence: &LocalBudgetEvidence{
+			BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-project-execution"),
+		},
+		InputManifest:       InputManifest{Schema: InputManifestSchema, Items: []InputManifestItem{}},
+		WorkspaceMode:       WorkspaceNone,
+		ComputeRequirements: ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 2, DiskGiB: 20, EstimatedRuntimeMinutes: 60},
 		ModelAuthorization: ModelAuthorization{
 			ModelProfileID: uuid.NewString(), ModelProfileRevision: 2,
 			Provider: "openai_compatible", Model: "gpt-test", Interface: "openai_compatible",
@@ -68,7 +87,7 @@ func credentialProposalCommand() ProposeCommand {
 func TestServiceProposalRevalidatesCurrentAWSBinding(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	defaults := intrinsicDefaults(now)
-	current := defaults.AWS
+	current := intrinsicAWSBinding()
 	current.CredentialRevision++
 	resolver := &proposalAWSBindingResolver{binding: current}
 	store := &intrinsicStore{}
@@ -80,12 +99,13 @@ func TestServiceProposalRevalidatesCurrentAWSBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	enableCredentialProposalDependencies(t, service, nil)
 	offer, err := service.Propose(context.Background(), credentialProposalCommand())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resolver.calls != 1 || len(store.commands) != 1 || offer.Plan.AWS != current ||
-		offer.Plan.AWS == defaults.AWS || offer.Plan.AuthorizationBasisDigest == "" {
+		offer.Plan.AWS == intrinsicAWSBinding() || offer.Plan.AuthorizationBasisDigest == "" {
 		t.Fatalf("proposal did not bind current credential: calls=%d plan=%+v", resolver.calls, offer.Plan)
 	}
 }
@@ -93,7 +113,7 @@ func TestServiceProposalRevalidatesCurrentAWSBinding(t *testing.T) {
 func TestServiceProposalFailsClosedWhenCredentialAuthorityIsStale(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	defaults := intrinsicDefaults(now)
-	resolver := &proposalAWSBindingResolver{binding: defaults.AWS, err: ErrStaleAuthorization}
+	resolver := &proposalAWSBindingResolver{binding: intrinsicAWSBinding(), err: ErrStaleAuthorization}
 	store := &intrinsicStore{}
 	service, err := NewServiceWithAWSBindingResolver(
 		store, defaults,
@@ -103,6 +123,7 @@ func TestServiceProposalFailsClosedWhenCredentialAuthorityIsStale(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	enableCredentialProposalDependencies(t, service, nil)
 	if _, err = service.Propose(context.Background(), credentialProposalCommand()); !errors.Is(err, ErrStaleAuthorization) {
 		t.Fatalf("stale credential authority err=%v", err)
 	}
@@ -116,15 +137,13 @@ func TestServiceChecksWorkerCapacityBeforeQuote(t *testing.T) {
 	defaults := intrinsicDefaults(now)
 	store := &intrinsicStore{}
 	quoter := &limitRecordingQuoter{base: FakeQuoter{AmountMicros: 1000, MaximumAuthorizedMicros: 2000, TTL: 5 * time.Minute, Now: func() time.Time { return now }}}
-	service, err := NewServiceWithAWSBindingResolver(store, defaults, quoter, &proposalAWSBindingResolver{binding: defaults.AWS}, func() time.Time { return now })
+	service, err := NewServiceWithAWSBindingResolver(store, defaults, quoter, &proposalAWSBindingResolver{binding: intrinsicAWSBinding()}, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
 	capacityErr := errors.New("worker pool is full")
 	reuse := &capacityReuseResolver{err: capacityErr}
-	if err = service.EnablePersistentWorkerReuse(reuse); err != nil {
-		t.Fatal(err)
-	}
+	enableCredentialProposalDependencies(t, service, reuse)
 	if _, err = service.Propose(context.Background(), credentialProposalCommand()); !errors.Is(err, capacityErr) {
 		t.Fatalf("proposal error=%v", err)
 	}
@@ -136,7 +155,7 @@ func TestServiceChecksWorkerCapacityBeforeQuote(t *testing.T) {
 func TestProposeIntrinsicPublicationTracksCredentialReadinessWithoutRestart(t *testing.T) {
 	now := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
 	defaults := intrinsicDefaults(now)
-	resolver := &proposalAWSBindingResolver{binding: defaults.AWS, err: ErrStaleAuthorization}
+	resolver := &proposalAWSBindingResolver{binding: intrinsicAWSBinding(), err: ErrStaleAuthorization}
 	service, err := NewServiceWithAWSBindingResolver(
 		&intrinsicStore{}, defaults,
 		FakeQuoter{AmountMicros: 1000, MaximumAuthorizedMicros: 2000, TTL: 5 * time.Minute, Now: func() time.Time { return now }},
@@ -145,6 +164,7 @@ func TestProposeIntrinsicPublicationTracksCredentialReadinessWithoutRestart(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	enableCredentialProposalDependencies(t, service, nil)
 	intrinsic, err := NewProposeIntrinsic(service, &intrinsicOwner{owner: IntrinsicOwnerContext{OwnerID: "@owner:example.test", AccountGeneration: 7}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +187,7 @@ func TestServiceProposalBindsAuthorizationTokenCeilingBeforeSingleQuote(t *testi
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	defaults := intrinsicDefaults(now)
 	defaults.Limits.MaxTokens = 1_000_000
-	resolver := &proposalAWSBindingResolver{binding: defaults.AWS}
+	resolver := &proposalAWSBindingResolver{binding: intrinsicAWSBinding()}
 	store := &intrinsicStore{}
 	quoter := &limitRecordingQuoter{base: FakeQuoter{
 		AmountMicros: 1000, MaximumAuthorizedMicros: 2000,
@@ -179,6 +199,7 @@ func TestServiceProposalBindsAuthorizationTokenCeilingBeforeSingleQuote(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	enableCredentialProposalDependencies(t, service, nil)
 	command := credentialProposalCommand()
 	command.ModelAuthorization.MaximumOutputTokens = 0
 	offer, err := service.Propose(context.Background(), command)
@@ -198,7 +219,7 @@ func TestServiceProposalBindsAuthorizationTokenCeilingBeforeSingleQuote(t *testi
 func TestServiceProposalRejectsUnqualifiedEffectiveTokenLimitBeforeAuthorityOrQuote(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	defaults := intrinsicDefaults(now)
-	resolver := &proposalAWSBindingResolver{binding: defaults.AWS}
+	resolver := &proposalAWSBindingResolver{binding: intrinsicAWSBinding()}
 	store := &intrinsicStore{}
 	quoter := &limitRecordingQuoter{base: FakeQuoter{
 		AmountMicros: 1000, MaximumAuthorizedMicros: 2000,
@@ -208,6 +229,7 @@ func TestServiceProposalRejectsUnqualifiedEffectiveTokenLimitBeforeAuthorityOrQu
 	if err != nil {
 		t.Fatal(err)
 	}
+	enableCredentialProposalDependencies(t, service, nil)
 	command := credentialProposalCommand()
 	command.ModelAuthorization.MaximumOutputTokens = 511
 	if _, err = service.Propose(context.Background(), command); !errors.Is(err, ErrInvalid) {

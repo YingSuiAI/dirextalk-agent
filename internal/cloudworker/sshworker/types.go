@@ -42,6 +42,10 @@ type CredentialIdentity struct {
 	Region             string
 }
 
+func sameLogicalCredential(left, right CredentialIdentity) bool {
+	return left.CredentialID == right.CredentialID && left.AccountID == right.AccountID && left.Region == right.Region
+}
+
 type OwnerAuthority struct {
 	OwnerID           string `json:"owner_id"`
 	AccountGeneration uint64 `json:"account_generation"`
@@ -128,6 +132,7 @@ type ExecuteRequest struct {
 	MaxResultBytes     int64
 	Sink               ResultSink
 	ReuseOnly          bool
+	ReuseWorkerID      string
 }
 
 func (request ExecuteRequest) validate() error {
@@ -138,6 +143,9 @@ func (request ExecuteRequest) validate() error {
 	}
 	digest := sha256.Sum256(request.WorkerScript)
 	if !strings.EqualFold(hex.EncodeToString(digest[:]), strings.TrimSpace(request.WorkerScriptSHA256)) || (request.WorkspacePath != "" && !filepath.IsAbs(request.WorkspacePath)) {
+		return ErrInvalid
+	}
+	if (request.ReuseOnly && !validID(request.ReuseWorkerID)) || (!request.ReuseOnly && request.ReuseWorkerID != "") {
 		return ErrInvalid
 	}
 	return nil

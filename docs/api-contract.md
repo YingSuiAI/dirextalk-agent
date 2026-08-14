@@ -383,7 +383,7 @@ failures are not capability evidence. Cloud/local-only vetoes remain binding,
 and AWS resources start only after the owner confirms the pending quote. The
 manager supports no more than five retained Workers for one authenticated
 owner/account generation across credential revisions. It discovers the newest
-AWS-owned Amazon Linux 2023 image and the
+Canonical official Ubuntu 24.04 LTS image and the
 default VPC/subnet at runtime, assigns an ordinary public IPv4, and uses
 outbound SSH. Image identity remains internal provider data. There is no EIP,
 custom AMI, S3/KMS, WorkerControl callback, model relay, Worker domain, or

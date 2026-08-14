@@ -70,6 +70,7 @@ func TestHandlerPassesOnlyConfirmedMinimalExecutionInputAndOwnsTerminal(t *testi
 	}
 	store := &flowStore{run: Run{Plan: cloudworker.Plan{OwnerID: "owner", AccountGeneration: 7,
 		ExecutionID: "33333333-3333-4333-8333-333333333333", Objective: "deploy service",
+		PersistentWorkerReuse: true, ReuseWorkerID: "66666666-6666-4666-8666-666666666666",
 		WorkloadKind: cloudworker.WorkloadService, Service: &cloudworker.ServiceSpec{WorkloadID: "memory-api", Port: 8080, HealthPath: "/health"},
 		InputManifest: manifest, WorkspaceMode: cloudworker.WorkspaceReadOnly,
 		AWS:     cloudworker.AWSBinding{AccountID: "123456789012", Region: "ap-east-1"},
@@ -91,6 +92,9 @@ func TestHandlerPassesOnlyConfirmedMinimalExecutionInputAndOwnsTerminal(t *testi
 	}
 	if executor.request.WorkloadKind != cloudworker.WorkloadService || executor.request.Service == nil || executor.request.Service.Port != 8080 {
 		t.Fatalf("service contract was not propagated: %+v", executor.request)
+	}
+	if !executor.request.ReuseOnly || executor.request.ReuseWorkerID != store.run.Plan.ReuseWorkerID {
+		t.Fatalf("exact reuse binding was not propagated: %+v", executor.request)
 	}
 	if executor.request.WorkspaceMode != cloudworker.WorkspaceReadOnly || len(executor.request.InputManifest.Items) != 1 ||
 		executor.request.InputManifest.Items[0] != manifest.Items[0] {

@@ -303,6 +303,7 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 		var payload []byte
 		_ = s.pool.QueryRow(ctx, `SELECT payload_json FROM core_messages WHERE message_id=$1`, c.Messages[i].ID).Scan(&payload)
 		_ = json.Unmarshal(payload, &persisted)
+		c.Messages[i].Status = persisted.Status
 		executionIDs := make(map[string]string, len(persisted.ToolCalls))
 		for _, call := range persisted.ToolCalls {
 			executionIDs[call.ID] = call.ExecutionID

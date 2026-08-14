@@ -111,7 +111,7 @@ func run(taskID string) error {
 	report, err := os.OpenFile(filepath.Join(artifactRoot, "final-report.md"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil { return finish(taskID, current, 1, err) }
 	defer report.Close()
-	prompt := "Complete the supplied objective on this retained remote host. This is a " + spec.Workload + " workload. Use shell and workspace tools as needed. Write every deliverable under " + artifactRoot + ". Your final response must concisely report work, deployment flow, verification, actual server load, and artifact paths. Never expose credentials or hidden configuration."
+	prompt := "Complete the supplied objective on this retained remote host. This is a " + spec.Workload + " workload. Use shell and workspace tools as needed. Write every deliverable under " + artifactRoot + ". Your final response must concisely report completed work, verification, and artifact paths. Never expose credentials or hidden configuration."
 	if spec.Workload == "service" && spec.Service != nil {
 		prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits. It must listen on 0.0.0.0 port " + strconv.Itoa(int(spec.Service.Port)) + " and return HTTP success at " + spec.Service.HealthPath + "."
 	}

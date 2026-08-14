@@ -163,19 +163,24 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		return nil, nil
 	}
 	bound := lease
+	attachmentSchema := frozenTurnAttachmentSchema(bound.Turn)
+	workspaceModes := []any{string(WorkspaceNone), string(WorkspaceWrite)}
+	if attachmentSchema != nil {
+		workspaceModes = []any{string(WorkspaceNone), string(WorkspaceReadOnly), string(WorkspaceWrite)}
+	}
 	properties := map[string]any{
 		"objective":                 map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes},
-		"workspace_mode":            map[string]any{"type": "string", "enum": []any{string(WorkspaceNone), string(WorkspaceReadOnly), string(WorkspaceWrite)}},
+		"workspace_mode":            map[string]any{"type": "string", "enum": workspaceModes},
 		"workload_kind":             map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob)},
-		"min_vcpu":                  map[string]any{"type": "integer", "minimum": 1, "maximum": 128},
-		"min_memory_gib":            map[string]any{"type": "integer", "minimum": 1, "maximum": 1024},
-		"disk_gib":                  map[string]any{"type": "integer", "minimum": 8, "maximum": 16384},
-		"estimated_runtime_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440},
+		"min_vcpu":                  map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Minimum virtual CPU count needed for the task."},
+		"min_memory_gib":            map[string]any{"type": "integer", "minimum": 1, "maximum": 1024, "description": "Minimum memory in GiB needed for the task."},
+		"disk_gib":                  map[string]any{"type": "integer", "minimum": 8, "maximum": 16384, "description": "Working disk capacity in GiB needed for inputs, dependencies, and outputs."},
+		"estimated_runtime_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "Estimated task runtime in minutes."},
 		"service": map[string]any{"type": "object", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
 			"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "health_path": map[string]any{"type": "string", "minLength": 1, "maxLength": 2048},
 		}},
 	}
-	if attachmentSchema := frozenTurnAttachmentSchema(bound.Turn); attachmentSchema != nil {
+	if attachmentSchema != nil {
 		properties["attachment_ids"] = attachmentSchema
 	}
 	description := "Run work in a suitable retained execution environment, or propose a priced reusable environment when none is available. Use it for substantial project or shell execution, deployment, build, test, durable file delivery, long-running compute, and actual follow-up work in a retained environment. Do not call this tool only to inspect status; answer status questions from the live retained_worker_inventory below. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. Reuse needs no creation confirmation; new resources start only after the owner reviews and confirms the offer."
@@ -372,6 +377,9 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 			return proposeIntrinsicArguments{}, ErrInvalid
 		}
 		seen[id] = struct{}{}
+	}
+	if len(arguments.AttachmentIDs) == 0 && WorkspaceMode(arguments.WorkspaceMode) == WorkspaceReadOnly {
+		arguments.WorkspaceMode = string(WorkspaceNone)
 	}
 	if !validWorkspaceInputCardinality(WorkspaceMode(arguments.WorkspaceMode), len(arguments.AttachmentIDs)) {
 		return proposeIntrinsicArguments{}, ErrInvalid

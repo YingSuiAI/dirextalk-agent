@@ -61,7 +61,7 @@ type RuntimeMaterial struct {
 	Protocol           RuntimeProtocol
 }
 
-// CompileRuntime builds the fixed bootstrap for an official Amazon Linux 2023
+// CompileRuntime builds the fixed bootstrap for an official Ubuntu 24.04 LTS
 // host. The natural-language objective is encoded as data and fed to Pi on
 // stdin; it is never evaluated by the shell.
 func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
@@ -119,7 +119,8 @@ readonly pi_bin="$runtime_root/pi"
 readonly task_root="$worker_root/tasks/%s"
 
 mkdir -p -- "$runtime_root" "$config_root" "$artifact_root" "$task_root"
-sudo dnf -q -y install ca-certificates git golang gzip tar >/dev/null
+sudo apt-get -qq update >/dev/null
+sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install ca-certificates curl git golang-go gzip tar >/dev/null
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
   --output "$archive" %s
 printf '%%s  %%s\n' %s "$archive" | sha256sum -c - >/dev/null

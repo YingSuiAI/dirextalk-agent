@@ -118,8 +118,8 @@ contract](message-server-integration-development-contract.md), and
   New Worker creation uses a fresh EC2/EBS quote and exact owner confirmation;
   retained idle Workers are reused without another creation. The manager
   supports at most five ordinary-public-IPv4 EC2 Workers, discovers the current
-  AWS-owned Amazon Linux 2023 image and default network live, and copies remote
-  results into Agent-owned local artifact storage. It has no EIP, S3/KMS,
+  Canonical official Ubuntu 24.04 LTS image and default network live, and copies
+  remote results into Agent-owned local artifact storage. It has no EIP, S3/KMS,
   custom AMI, WorkerControl, model relay, or deployment-time Worker binding.
   Worker/execution records are bound to the authenticated owner/account
   generation; historical provisioning recovery is read-only, partial cleanup
@@ -204,11 +204,14 @@ support.
   tests use fakes or SDK test doubles and perform no AWS mutation.
 - On **2026-08-13**, the active implementation replaced that historical
   inbound/custom-image path with the persistent SSH Worker manager. Focused
-  tests cover AWS-owned AL2023/default-network discovery, ordinary public IPv4,
+  tests covered AWS-owned AL2023/default-network discovery, ordinary public IPv4,
   maximum-five capacity, confirmed creation, retained idle reuse, explicit
   destroy, reconnectable task status/log/artifact commands, live server-load
   observation, and local artifact storage. This evidence is code-level and
   does not claim a new live AWS mutation.
+- On **2026-08-14**, current focused tests cover Canonical official Ubuntu 24.04
+  image discovery and its `ubuntu` SSH/bootstrap contract. This evidence is
+  code-level and does not claim a live Ubuntu Worker mutation.
 
 ## Remaining release gates
 
@@ -226,8 +229,8 @@ support.
   AWS mutation remains a separate authorized acceptance step.
 - The fresh-state real-cloud acceptance for the current design remains open:
   App credential upload and STS verification, a fresh live quote, exact owner
-  confirmation, creation of one AWS-owned-AL2023 EC2 Worker with ordinary
-  public IPv4, reconnectable Pi task execution, local artifact delivery,
+  confirmation, creation of one Canonical official Ubuntu 24.04 EC2 Worker with
+  ordinary public IPv4, reconnectable Pi task execution, local artifact delivery,
   retained idle reuse without another creation, live load observation, and
   explicit manual destroy with EC2/key-pair/security-group absence read-back.
   Route53 bind/unbind acceptance is optional and separate from Worker readiness.

@@ -16,7 +16,7 @@ func TestProductionQuoterUsesFreshBoundCatalogAndHardMaximum(t *testing.T) {
 		FixedRequestOverheadMicros: 100,
 	}}
 	quoter, err := NewProductionQuoter(catalog, ProductionQuoterConfig{QuoteTTL: 5 * time.Minute, MaximumCatalogAge: time.Minute,
-		CleanupReserveSeconds: 600, ContingencyBasisPoints: 2_000, AbsoluteHardLimitMicros: 10_000_000}, func() time.Time { return now })
+		ContingencyBasisPoints: 2_000, AbsoluteHardLimitMicros: 10_000_000}, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestProductionQuoterUsesFreshBoundCatalogAndHardMaximum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if quote.AmountMicros != 4_622_157 || quote.MaximumAuthorizedCostMicros != 5_546_589 || quote.Currency != "USD" ||
+	if quote.AmountMicros != 3_962_149 || quote.MaximumAuthorizedCostMicros != 4_754_579 || quote.Currency != "USD" ||
 		quote.SourceTime != now || quote.ExpiresAt != now.Add(5*time.Minute) || quote.BasisDigest != request.AuthorizationBasisDigest || !validDigest(quote.Digest) {
 		t.Fatalf("unexpected production quote: %+v", quote)
 	}
@@ -49,7 +49,7 @@ func TestProductionQuoterUsesFreshBoundCatalogAndHardMaximum(t *testing.T) {
 func TestProductionQuoterFailsClosedOnStaleDriftAndHardLimit(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	request := productionQuoteRequest()
-	config := ProductionQuoterConfig{QuoteTTL: time.Minute, MaximumCatalogAge: 30 * time.Second, CleanupReserveSeconds: EphemeralCleanupReserveSeconds,
+	config := ProductionQuoterConfig{QuoteTTL: time.Minute, MaximumCatalogAge: 30 * time.Second,
 		ContingencyBasisPoints: 1_000, AbsoluteHardLimitMicros: 10_000_000}
 	rates := PricingCatalogRates{ComputeMicrosPerHour: 1_000_000, EBSStorageMicrosPerGiBMonth: 1_000,
 		PublicIPv4MicrosPerHour: 10_000, ModelMicrosPerThousandTokens: 1_000}
@@ -97,7 +97,7 @@ func quoteRequestForPlan(plan Plan) QuoteRequest {
 func productionQuoteRequest() QuoteRequest {
 	return QuoteRequest{
 		OwnerID: "owner-1", AccountGeneration: 3, ObjectiveDigest: digestValue("objective"), UserPromptDigest: digestValue("prompt"),
-		InputManifestDigest: digestValue("manifest"), WorkspaceMode: WorkspaceWrite, ProposalReason: ProposalReasonExplicitUserCloud,
+		InputManifestDigest: digestValue("manifest"), WorkspaceMode: WorkspaceWrite, ProposalReason: ProposalReasonLocalBudgetExceeded,
 		ModelBindingDigest: digestValue("model"), AuthorizationBasisDigest: digestValue("basis"),
 		AWS: AWSBinding{AccountID: "123456789012", Region: "us-east-1", CredentialID: "11111111-1111-4111-8111-111111111111", CredentialRevision: 7},
 		Compute: ComputeSpec{InstanceType: "c7i.large", Architecture: "x86_64", RootDeviceName: "/dev/xvda", VolumeGiB: 32,

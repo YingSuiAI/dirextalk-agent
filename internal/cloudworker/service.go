@@ -19,17 +19,26 @@ type Store interface {
 	CreateOffer(context.Context, CreateOfferCommand) (Offer, error)
 }
 
-// WorkerReuseResolver reports the actual compute of a matching idle Worker.
+// WorkerReuseSelection binds an offer to one exact retained Worker and its
+// observed compute. A later lease race must fail rather than select another
+// Worker or create a replacement.
+type WorkerReuseSelection struct {
+	WorkerID string
+	Compute  ComputeSpec
+}
+
+// WorkerReuseResolver reports one matching idle Worker for the original
+// provider-neutral requirements, before a new instance shape is selected.
 // It is read-only; a later lease race must fail instead of falling through to
 // Worker creation.
 type WorkerReuseResolver interface {
-	ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeSpec) (ComputeSpec, bool, error)
+	ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeRequirements) (WorkerReuseSelection, bool, error)
 }
 
 // WorkerCapacityPreflighter performs the provider's exact read-only pool
 // count after reuse has failed, before pricing can create an unusable offer.
 type WorkerCapacityPreflighter interface {
-	CheckCreateWorkerCapacity(context.Context, string, uint64, AWSBinding, ComputeSpec) error
+	CheckCreateWorkerCapacity(context.Context, string, uint64, AWSBinding) error
 }
 
 // ComputeSelector chooses an exact region-available ordinary on-demand shape
@@ -83,35 +92,12 @@ func (resolve AWSBindingResolverFunc) ResolveCurrentAWSBinding(ctx context.Conte
 	return resolve(ctx)
 }
 
-type fixedAWSBindingResolver struct{ binding AWSBinding }
-
-func (resolve fixedAWSBindingResolver) ResolveCurrentAWSBinding(context.Context) (AWSBinding, error) {
-	if validateAWS(resolve.binding) != nil {
-		return AWSBinding{}, ErrInvalid
-	}
-	return resolve.binding, nil
-}
-
-func (resolve fixedAWSBindingResolver) ResolveExactAWSBinding(_ context.Context, expected AWSBinding) (AWSBinding, error) {
-	if validateAWS(resolve.binding) != nil || expected != resolve.binding {
-		return AWSBinding{}, ErrStaleAuthorization
-	}
-	return resolve.binding, nil
-}
-
 type Defaults struct {
-	AWS                     AWSBinding
-	Compute                 ComputeSpec
-	Limits                  Limits
-	QuoteAmountMicros       int64
-	MaximumAuthorizedMicros int64
-	QuoteTTL                time.Duration
+	Limits Limits
 }
 
 func (d Defaults) Validate() error {
-	if (d.Compute != (ComputeSpec{}) && validateCompute(d.Compute) != nil) || validateLimits(d.Limits) != nil ||
-		d.QuoteTTL <= 0 || d.QuoteTTL > 24*time.Hour ||
-		d.QuoteAmountMicros < 0 || d.MaximumAuthorizedMicros < d.QuoteAmountMicros {
+	if validateLimits(d.Limits) != nil {
 		return ErrInvalid
 	}
 	return nil
@@ -153,15 +139,11 @@ func (s *Service) EnableDynamicComputeSelection(selector ComputeSelector) error 
 // by Propose. It is intentionally dynamic so uploading, testing, rotating, or
 // deleting the sole AWS credential changes tool publication without restart.
 func (s *Service) ProposalReady(ctx context.Context) bool {
-	if s == nil || s.awsBindings == nil || ctx == nil {
+	if s == nil || s.awsBindings == nil || s.workerReuse == nil || s.capacity == nil || s.selector == nil || ctx == nil {
 		return false
 	}
 	binding, err := s.awsBindings.ResolveCurrentAWSBinding(ctx)
 	return err == nil && validateAWS(binding) == nil
-}
-
-func NewService(store Store, defaults Defaults, quoter Quoter, clocks ...func() time.Time) (*Service, error) {
-	return NewServiceWithAWSBindingResolver(store, defaults, quoter, fixedAWSBindingResolver{binding: defaults.AWS}, clocks...)
 }
 
 // NewServiceWithAWSBindingResolver is the production constructor. The
@@ -234,7 +216,7 @@ func boundedSummary(value string) string {
 }
 
 func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, error) {
-	if s == nil || s.store == nil || s.awsBindings == nil || strings.TrimSpace(command.OwnerID) == "" || len(strings.TrimSpace(command.OwnerID)) > 512 || command.AccountGeneration == 0 || !validUUID(command.IdempotencyKey) || !validUUID(command.ConversationID) || !validUUID(command.TurnID) || !validUUID(command.TurnLeaseID) || command.TurnLeaseEpoch == 0 || command.ExpectedTurnRevision == 0 || strings.TrimSpace(command.Objective) == "" || len(command.Objective) > coretask.MaxGoalBytes || !validDigest(command.UserPromptDigest) || !validateWorkspaceMode(command.WorkspaceMode) {
+	if s == nil || s.store == nil || s.awsBindings == nil || s.workerReuse == nil || s.capacity == nil || s.selector == nil || strings.TrimSpace(command.OwnerID) == "" || len(strings.TrimSpace(command.OwnerID)) > 512 || command.AccountGeneration == 0 || !validUUID(command.IdempotencyKey) || !validUUID(command.ConversationID) || !validUUID(command.TurnID) || !validUUID(command.TurnLeaseID) || command.TurnLeaseEpoch == 0 || command.ExpectedTurnRevision == 0 || strings.TrimSpace(command.Objective) == "" || len(command.Objective) > coretask.MaxGoalBytes || !validDigest(command.UserPromptDigest) || !validateWorkspaceMode(command.WorkspaceMode) || command.ComputeRequirements.validate() != nil {
 		return Offer{}, ErrInvalid
 	}
 	manifestDigest, err := command.InputManifest.Seal()
@@ -255,9 +237,18 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	if err != nil || validateAWS(awsBinding) != nil {
 		return Offer{}, errors.Join(ErrStaleAuthorization, err)
 	}
-	compute := s.defaults.Compute
-	if command.ComputeRequirements != (ComputeRequirements{}) {
-		if command.ComputeRequirements.validate() != nil || s.selector == nil {
+	selection, reuse, err := s.workerReuse.ResolveIdleWorker(ctx, strings.TrimSpace(command.OwnerID), command.AccountGeneration, awsBinding, command.ComputeRequirements)
+	if err != nil {
+		return Offer{}, err
+	}
+	compute := selection.Compute
+	if reuse {
+		if !validUUID(selection.WorkerID) || validateCompute(compute) != nil || compute.VCPU < command.ComputeRequirements.MinVCPU ||
+			compute.MemoryGiB < command.ComputeRequirements.MinMemoryGiB || compute.VolumeGiB < command.ComputeRequirements.DiskGiB {
+			return Offer{}, ErrInvalid
+		}
+	} else {
+		if selection != (WorkerReuseSelection{}) {
 			return Offer{}, ErrInvalid
 		}
 		compute, err = s.selector.SelectCompute(ctx, awsBinding, command.ComputeRequirements)
@@ -265,11 +256,12 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 			compute.MemoryGiB < command.ComputeRequirements.MinMemoryGiB || compute.VolumeGiB < command.ComputeRequirements.DiskGiB {
 			return Offer{}, errors.Join(ErrProviderUnavailable, err)
 		}
-		limits.MaxRuntimeSeconds = command.ComputeRequirements.EstimatedRuntimeMinutes * 60
-		if validateLimits(limits) != nil {
-			return Offer{}, ErrInvalid
+		if err = s.capacity.CheckCreateWorkerCapacity(ctx, strings.TrimSpace(command.OwnerID), command.AccountGeneration, awsBinding); err != nil {
+			return Offer{}, err
 		}
-	} else if validateCompute(compute) != nil {
+	}
+	limits.MaxRuntimeSeconds = command.ComputeRequirements.EstimatedRuntimeMinutes * 60
+	if validateLimits(limits) != nil {
 		return Offer{}, ErrInvalid
 	}
 	budgetEvidence := command.LocalBudgetEvidence
@@ -297,36 +289,13 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		ProposalReason: command.ProposalReason, LocalBudgetEvidence: budgetEvidence,
 		InputManifest: command.InputManifest, InputManifestDigest: manifestDigest, WorkspaceMode: command.WorkspaceMode,
 		ModelAuthorization: command.ModelAuthorization,
-		AWS:                awsBinding, Compute: compute, Limits: limits,
+		AWS:                awsBinding, Compute: compute, PersistentWorkerReuse: reuse, ReuseWorkerID: selection.WorkerID, Limits: limits,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := plan.sealAuthorizationBasis(); err != nil {
 		return Offer{}, err
 	}
 	objectiveDigest := digestValue(plan.Objective)
-	reuse := false
-	if s.workerReuse != nil {
-		var reusedCompute ComputeSpec
-		reusedCompute, reuse, err = s.workerReuse.ResolveIdleWorker(ctx, plan.OwnerID, plan.AccountGeneration, plan.AWS, plan.Compute)
-		if err != nil {
-			return Offer{}, err
-		}
-		if reuse {
-			if validateCompute(reusedCompute) != nil || reusedCompute.VCPU < plan.Compute.VCPU || reusedCompute.MemoryGiB < plan.Compute.MemoryGiB || reusedCompute.VolumeGiB < plan.Compute.VolumeGiB {
-				return Offer{}, ErrInvalid
-			}
-			plan.Compute = reusedCompute
-		}
-	}
-	plan.PersistentWorkerReuse = reuse
-	if err := plan.sealAuthorizationBasis(); err != nil {
-		return Offer{}, err
-	}
-	if !reuse && s.workerReuse != nil {
-		if err = s.capacity.CheckCreateWorkerCapacity(ctx, plan.OwnerID, plan.AccountGeneration, plan.AWS, plan.Compute); err != nil {
-			return Offer{}, err
-		}
-	}
 	var quote Quote
 	if reuse {
 		live, quoteErr := s.quoter.Quote(ctx, QuoteRequest{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration, ObjectiveDigest: objectiveDigest, UserPromptDigest: plan.UserPromptDigest, InputManifestDigest: plan.InputManifestDigest, WorkspaceMode: plan.WorkspaceMode, ProposalReason: plan.ProposalReason, ModelBindingDigest: plan.ModelAuthorization.BindingDigest, AuthorizationBasisDigest: plan.AuthorizationBasisDigest, AWS: plan.AWS, Compute: plan.Compute, Limits: plan.Limits})
@@ -399,7 +368,7 @@ func (q FakeQuoter) clock() time.Time {
 }
 
 func (q FakeQuoter) Quote(_ context.Context, request QuoteRequest) (Quote, error) {
-	if strings.TrimSpace(request.OwnerID) == "" || request.AccountGeneration == 0 || !validDigest(request.ObjectiveDigest) || !validDigest(request.UserPromptDigest) || !validDigest(request.InputManifestDigest) || !validDigest(request.ModelBindingDigest) || !validDigest(request.AuthorizationBasisDigest) || !validateWorkspaceMode(request.WorkspaceMode) || (request.ProposalReason != ProposalReasonExplicitUserCloud && request.ProposalReason != ProposalReasonLocalBudgetExceeded) || q.TTL <= 0 || q.AmountMicros < 0 || q.MaximumAuthorizedMicros < q.AmountMicros {
+	if strings.TrimSpace(request.OwnerID) == "" || request.AccountGeneration == 0 || !validDigest(request.ObjectiveDigest) || !validDigest(request.UserPromptDigest) || !validDigest(request.InputManifestDigest) || !validDigest(request.ModelBindingDigest) || !validDigest(request.AuthorizationBasisDigest) || !validateWorkspaceMode(request.WorkspaceMode) || request.ProposalReason != ProposalReasonLocalBudgetExceeded || q.TTL <= 0 || q.AmountMicros < 0 || q.MaximumAuthorizedMicros < q.AmountMicros {
 		return Quote{}, ErrInvalid
 	}
 	now := q.clock()

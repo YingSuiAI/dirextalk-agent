@@ -39,14 +39,29 @@ func pgCloudDigest(value string) string {
 }
 
 func pgCloudDefaults() cloudworker.Defaults {
-	return cloudworker.Defaults{
-		AWS: cloudworker.AWSBinding{AccountID: "123456789012", Region: "us-east-1",
-			CredentialID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("pg-cloud-credential")).String(), CredentialRevision: 3},
-		Compute: cloudworker.ComputeSpec{InstanceType: "c7i.large", Architecture: "x86_64", VCPU: 2, MemoryGiB: 4,
-			RootDeviceName: "/dev/xvda", VolumeGiB: 32, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125},
-		Limits:            cloudworker.Limits{MaxRuntimeSeconds: 3600, MaxTokens: 2000, MaxOutputBytes: 1 << 20},
-		QuoteAmountMicros: 1000, MaximumAuthorizedMicros: 2000, QuoteTTL: time.Hour,
-	}
+	return cloudworker.Defaults{Limits: cloudworker.Limits{MaxRuntimeSeconds: 3600, MaxTokens: 2000, MaxOutputBytes: 1 << 20}}
+}
+
+func pgCloudAWSBinding() cloudworker.AWSBinding {
+	return cloudworker.AWSBinding{AccountID: "123456789012", Region: "us-east-1",
+		CredentialID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("pg-cloud-credential")).String(), CredentialRevision: 3}
+}
+
+type pgCloudComputeSelector struct{}
+
+func (pgCloudComputeSelector) SelectCompute(context.Context, cloudworker.AWSBinding, cloudworker.ComputeRequirements) (cloudworker.ComputeSpec, error) {
+	return cloudworker.ComputeSpec{InstanceType: "c7i.large", Architecture: "x86_64", VCPU: 2, MemoryGiB: 4,
+		RootDeviceName: "/dev/xvda", VolumeGiB: 32, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}, nil
+}
+
+type pgCloudReuseResolver struct{}
+
+func (pgCloudReuseResolver) ResolveIdleWorker(context.Context, string, uint64, cloudworker.AWSBinding, cloudworker.ComputeRequirements) (cloudworker.WorkerReuseSelection, bool, error) {
+	return cloudworker.WorkerReuseSelection{}, false, nil
+}
+
+func (pgCloudReuseResolver) CheckCreateWorkerCapacity(context.Context, string, uint64, cloudworker.AWSBinding) error {
+	return nil
 }
 
 func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
@@ -76,21 +91,30 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 		t.Fatal(err)
 	}
 	defaults := pgCloudDefaults()
+	binding := pgCloudAWSBinding()
 	credential := coreaws.RehydrateCredentialsWithTestedAt(
-		defaults.AWS.CredentialID, "cloud-worker-test", defaults.AWS.Region,
-		defaults.AWS.AccountID, "arn:aws:iam::123456789012:user/cloud-worker-test",
+		binding.CredentialID, "cloud-worker-test", binding.Region,
+		binding.AccountID, "arn:aws:iam::123456789012:user/cloud-worker-test",
 		[]byte("AKIATESTOUTPUTJOURNAL"), []byte("test-secret-access-key"), nil,
-		int64(defaults.AWS.CredentialRevision), int64(defaults.AWS.CredentialRevision), now, now, now,
+		int64(binding.CredentialRevision), int64(binding.CredentialRevision), now, now, now,
 	)
 	if _, err = NewCoreAWSStore(store).CreateCredential(ctx, credential); err != nil {
 		cleanup()
 		t.Fatal(err)
 	}
 	cloudStore := NewCloudWorkerStore(store)
-	service, err := cloudworker.NewService(cloudStore, defaults, cloudworker.FakeQuoter{
+	service, err := cloudworker.NewServiceWithAWSBindingResolver(cloudStore, defaults, cloudworker.FakeQuoter{
 		AmountMicros: 1000, MaximumAuthorizedMicros: 2000, TTL: time.Hour, Now: func() time.Time { return now },
-	}, func() time.Time { return now })
+	}, cloudworker.AWSBindingResolverFunc(func(context.Context) (cloudworker.AWSBinding, error) { return binding, nil }), func() time.Time { return now })
 	if err != nil {
+		cleanup()
+		t.Fatal(err)
+	}
+	if err = service.EnableDynamicComputeSelection(pgCloudComputeSelector{}); err != nil {
+		cleanup()
+		t.Fatal(err)
+	}
+	if err = service.EnablePersistentWorkerReuse(pgCloudReuseResolver{}); err != nil {
 		cleanup()
 		t.Fatal(err)
 	}
@@ -105,8 +129,11 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 		ConversationID: conversationID, TurnID: turn.ID, TurnLeaseID: lease.LeaseID, TurnLeaseEpoch: lease.Epoch,
 		ExpectedTurnRevision: lease.Turn.Revision, Objective: "Produce a verified cloud result",
 		ObjectiveSummary: "Verified cloud result", UserPromptDigest: pgCloudDigest(lease.Turn.Prompt),
-		ProposalReason: cloudworker.ProposalReasonExplicitUserCloud, InputManifest: cloudworker.InputManifest{},
-		WorkspaceMode: cloudworker.WorkspaceNone, ModelAuthorization: authorization}
+		ProposalReason: cloudworker.ProposalReasonLocalBudgetExceeded,
+		LocalBudgetEvidence: &cloudworker.LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1,
+			Digest: pgCloudDigest("local-budget")}, InputManifest: cloudworker.InputManifest{},
+		WorkspaceMode: cloudworker.WorkspaceNone, ModelAuthorization: authorization,
+		ComputeRequirements: cloudworker.ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 4, DiskGiB: 32, EstimatedRuntimeMinutes: 60}}
 	arguments, _ := json.Marshal(map[string]any{"objective": command.Objective, "workspace_mode": string(command.WorkspaceMode)})
 	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(arguments)}
 	if _, err = conversation.PrepareTurnModel(ctx, lease); err != nil {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -59,8 +58,8 @@ func (provider *Provider) Discover(ctx context.Context, credential CredentialIde
 
 // ResolveIdleWorker performs the same instance read-back used by lease,
 // without reserving or mutating either AWS or the local pool.
-func (provider *Provider) ResolveIdleWorker(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity, instanceType string, minVCPU, minMemoryGiB uint32, minVolumeGiB int32) (WorkerRecord, bool, error) {
-	if provider == nil || ctx == nil || authority.validate() != nil || credential.validate() != nil || strings.TrimSpace(instanceType) == "" || minVCPU == 0 || minMemoryGiB == 0 || minVolumeGiB < 8 {
+func (provider *Provider) ResolveIdleWorker(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity, minVCPU, minMemoryGiB uint32, minVolumeGiB int32) (WorkerRecord, bool, error) {
+	if provider == nil || ctx == nil || authority.validate() != nil || credential.validate() != nil || minVCPU == 0 || minMemoryGiB == 0 || minVolumeGiB < 8 {
 		return WorkerRecord{}, false, ErrInvalid
 	}
 	workers, err := provider.store.ListWorkers(ctx)
@@ -68,7 +67,7 @@ func (provider *Provider) ResolveIdleWorker(ctx context.Context, authority Owner
 		return WorkerRecord{}, false, err
 	}
 	for _, worker := range workers {
-		if worker.authority() != authority || worker.Credential != credential || worker.Phase != WorkerIdle || worker.VCPU < minVCPU || worker.MemoryGiB < minMemoryGiB || worker.VolumeGiB < minVolumeGiB {
+		if worker.authority() != authority || !sameLogicalCredential(worker.Credential, credential) || worker.Phase != WorkerIdle || worker.VCPU < minVCPU || worker.MemoryGiB < minMemoryGiB || worker.VolumeGiB < minVolumeGiB {
 			continue
 		}
 		observed, found, observeErr := provider.aws.ObserveInstance(ctx, credential, worker.Instance.ID, resourceTags(worker.WorkerID, authority, worker.Credential, worker.CreationProof))
@@ -140,7 +139,7 @@ func (provider *Provider) lease(ctx context.Context, request ExecuteRequest) (Wo
 	if err != nil {
 		return WorkerRecord{}, ExecutionRecord{}, false, false, err
 	}
-	if exists && (execution.authority() != request.Authority || execution.Credential != request.Credential) {
+	if exists && (execution.authority() != request.Authority || !sameLogicalCredential(execution.Credential, request.Credential)) {
 		return WorkerRecord{}, ExecutionRecord{}, false, false, ErrIdentity
 	}
 	if exists && execution.Phase == TaskCompleted {
@@ -174,16 +173,42 @@ func (provider *Provider) acquire(ctx context.Context, request ExecuteRequest, p
 	}
 	if prior.WorkerID != "" {
 		for _, worker := range workers {
-			if worker.authority() == request.Authority && worker.Credential == request.Credential && worker.WorkerID == prior.WorkerID && worker.Phase == WorkerBusy && worker.CurrentExecutionID == request.ExecutionID {
+			if worker.authority() == request.Authority && sameLogicalCredential(worker.Credential, request.Credential) && worker.WorkerID == prior.WorkerID && worker.Phase == WorkerBusy && worker.CurrentExecutionID == request.ExecutionID && (!request.ReuseOnly || request.ReuseWorkerID == worker.WorkerID) {
 				return worker, nil
 			}
 		}
+		return WorkerRecord{}, ErrBusy
+	}
+	if request.ReuseOnly {
+		for _, worker := range workers {
+			if worker.WorkerID != request.ReuseWorkerID {
+				continue
+			}
+			if worker.authority() != request.Authority || !sameLogicalCredential(worker.Credential, request.Credential) {
+				return WorkerRecord{}, ErrIdentity
+			}
+			if worker.Phase != WorkerIdle || worker.VCPU < request.VCPU || worker.MemoryGiB < request.MemoryGiB || worker.VolumeGiB < request.VolumeGiB {
+				return WorkerRecord{}, ErrBusy
+			}
+			observed, found, observeErr := provider.aws.ObserveInstance(ctx, request.Credential, worker.Instance.ID, resourceTags(worker.WorkerID, request.Authority, worker.Credential, worker.CreationProof))
+			if observeErr != nil {
+				return WorkerRecord{}, observeErr
+			}
+			if !found || observed.State != "running" || observed.PublicIP == "" {
+				return WorkerRecord{}, ErrBusy
+			}
+			worker.Instance = observed
+			worker.Phase = WorkerBusy
+			worker.CurrentExecutionID = request.ExecutionID
+			if err := provider.saveWorker(ctx, &worker); err != nil {
+				return WorkerRecord{}, err
+			}
+			return worker, nil
+		}
+		return WorkerRecord{}, ErrBusy
 	}
 	for _, worker := range workers {
 		if worker.WorkerID == request.ExecutionID && worker.authority() == request.Authority && worker.Credential == request.Credential && worker.Phase == WorkerProvisioning {
-			if request.ReuseOnly {
-				return WorkerRecord{}, ErrBusy
-			}
 			if err := provider.authorizeCreate(ctx, request.Credential); err != nil {
 				return WorkerRecord{}, errors.Join(err, provider.reconcileProvisioning(ctx, &worker))
 			}
@@ -194,29 +219,6 @@ func (provider *Provider) acquire(ctx context.Context, request ExecuteRequest, p
 		if worker.WorkerID == request.ExecutionID {
 			return WorkerRecord{}, ErrIdentity
 		}
-	}
-	sort.Slice(workers, func(i, j int) bool { return workers[i].UpdatedAt.Before(workers[j].UpdatedAt) })
-	for _, worker := range workers {
-		if worker.authority() != request.Authority || worker.Credential != request.Credential || worker.Phase != WorkerIdle || worker.VCPU < request.VCPU || worker.MemoryGiB < request.MemoryGiB || worker.VolumeGiB < request.VolumeGiB {
-			continue
-		}
-		observed, found, err := provider.aws.ObserveInstance(ctx, request.Credential, worker.Instance.ID, resourceTags(worker.WorkerID, request.Authority, worker.Credential, worker.CreationProof))
-		if err != nil {
-			return WorkerRecord{}, err
-		}
-		if !found || observed.State != "running" || observed.PublicIP == "" {
-			continue
-		}
-		worker.Instance = observed
-		worker.Phase = WorkerBusy
-		worker.CurrentExecutionID = request.ExecutionID
-		if err := provider.saveWorker(ctx, &worker); err != nil {
-			return WorkerRecord{}, err
-		}
-		return worker, nil
-	}
-	if request.ReuseOnly {
-		return WorkerRecord{}, ErrBusy
 	}
 	if err := provider.checkCreateCapacity(ctx, request.Authority, request.Credential, workers); err != nil {
 		return WorkerRecord{}, err
@@ -439,7 +441,7 @@ func (provider *Provider) reconcileCompletedWorkerReleaseLocked(ctx context.Cont
 	if worker.Phase == WorkerIdle && worker.CurrentExecutionID == "" {
 		return nil
 	}
-	if worker.authority() != execution.authority() || worker.Credential != execution.Credential ||
+	if worker.authority() != execution.authority() || !sameLogicalCredential(worker.Credential, execution.Credential) ||
 		worker.Phase != WorkerBusy || worker.CurrentExecutionID != execution.ExecutionID {
 		return ErrIdentity
 	}
@@ -666,7 +668,7 @@ func (provider *Provider) ListWorkers(ctx context.Context, authority OwnerAuthor
 		}
 		if worker.CurrentExecutionID != "" {
 			if execution, ok, _ := provider.store.LoadExecution(ctx, worker.CurrentExecutionID); ok && execution.WorkerID == worker.WorkerID &&
-				execution.authority() == authority && execution.Credential == credential {
+				execution.authority() == authority && sameLogicalCredential(execution.Credential, credential) {
 				status.TaskPhase = execution.Phase
 			}
 		}
@@ -687,7 +689,7 @@ func (provider *Provider) WorkerIdentity(ctx context.Context, authority OwnerAut
 	if err != nil {
 		return WorkerIdentity{}, err
 	}
-	if !found || worker.authority() != authority || worker.Credential != credential || worker.Phase == WorkerDestroyed {
+	if !found || worker.authority() != authority || !sameLogicalCredential(worker.Credential, credential) || worker.Phase == WorkerDestroyed {
 		return WorkerIdentity{}, ErrIdentity
 	}
 	return workerIdentity(worker), nil

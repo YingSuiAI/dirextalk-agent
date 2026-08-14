@@ -1490,14 +1490,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "durable conversation context is invalid")
 		return
 	}
-	resolvedExtensions, err := s.resolveAcceptedTurnExtensions(ctx, turn.ExtensionSnapshots)
-	if err != nil {
-		_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
-		return
-	}
 	toolCallAuthorities, err := s.appendTurnToolHistory(ctx, turn, &conv)
 	if err != nil {
 		_, _ = s.turns.FailTurn(ctx, lease, "tool_history_unavailable", "durable tool history is unavailable")
+		return
+	}
+	resolvedExtensions, err := s.resolveAcceptedTurnExtensionsForContinuation(ctx, turn.ExtensionSnapshots, hasTerminalCloudWorkerResult(toolCallAuthorities))
+	if err != nil {
+		_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
 		return
 	}
 	if turn.ExpectedRevision != nil {
@@ -1931,12 +1931,16 @@ func intrinsicTerminalFailure(toolName string, err error) (string, string) {
 }
 
 func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots []ExtensionExecutionSnapshot) ([]ResolvedExtension, error) {
+	return s.resolveAcceptedTurnExtensionsForContinuation(ctx, snapshots, false)
+}
+
+func (s *Service) resolveAcceptedTurnExtensionsForContinuation(ctx context.Context, snapshots []ExtensionExecutionSnapshot, omitContextBound bool) ([]ResolvedExtension, error) {
 	if len(snapshots) == 0 {
 		return nil, nil
 	}
 	selections := make([]ExtensionSelection, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		if snapshot.Source == "builtin:web_search:tavily" || snapshot.Source == "builtin:knowledge:semantic" || snapshot.Source == "product-capability" {
+		if contextBoundExtensionSource(snapshot.Source) {
 			continue
 		}
 		selections = append(selections, snapshot.Selection)
@@ -1947,6 +1951,9 @@ func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots [
 	}
 	expected := make(map[string]string, len(snapshots))
 	for _, snapshot := range snapshots {
+		if omitContextBound && contextBoundExtensionSource(snapshot.Source) {
+			continue
+		}
 		expected[snapshot.Selection.ID] = snapshot.ContentDigest + ":" + snapshot.ArtifactDigest + ":" + snapshot.ToolSchemaDigest
 	}
 	accepted := make([]ResolvedExtension, 0, len(snapshots))
@@ -1972,6 +1979,10 @@ func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots [
 	return accepted, nil
 }
 
+func contextBoundExtensionSource(source string) bool {
+	return source == "builtin:web_search:tavily" || source == "builtin:knowledge:semantic" || source == "product-capability"
+}
+
 type turnToolCallState uint8
 
 const (
@@ -1983,6 +1994,16 @@ type turnToolCallAuthority struct {
 	call   ToolCall
 	state  turnToolCallState
 	result *ToolResult
+}
+
+func hasTerminalCloudWorkerResult(authorities map[string]turnToolCallAuthority) bool {
+	for _, authority := range authorities {
+		if authority.state == turnToolCallTerminal && authority.call.Name == coremodel.IntrinsicCloudWorkerProposeToolName &&
+			authority.result != nil && authority.result.ToolName == coremodel.IntrinsicCloudWorkerProposeToolName {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation) (map[string]turnToolCallAuthority, error) {

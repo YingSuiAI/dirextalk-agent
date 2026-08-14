@@ -111,7 +111,11 @@ func (executor *sshWorkerExecutor) hourlyQuote(ctx context.Context, worker sshwo
 	if executor == nil || executor.pricing == nil || worker.AccountGeneration == 0 || worker.VolumeGiB <= 0 {
 		return sshworker.HourlyQuote{}, sshworker.ErrInvalid
 	}
-	identity := worker.Credential
+	binding, err := executor.currentBindingForCredential(ctx, worker.Credential)
+	if err != nil {
+		return sshworker.HourlyQuote{}, err
+	}
+	identity := sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision, AccountID: binding.AccountID, Region: binding.Region}
 	snapshot, err := executor.pricing.Snapshot(ctx, cloudworker.PricingCatalogRequest{AccountID: identity.AccountID, AccountGeneration: worker.AccountGeneration,
 		Region: identity.Region, CredentialID: identity.CredentialID, CredentialRevision: identity.CredentialRevision,
 		InstanceType: worker.InstanceType, Architecture: "x86_64", VolumeGiB: uint64(worker.VolumeGiB), VolumeType: "gp3", VolumeIOPS: 3000,
@@ -165,7 +169,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	}
 	result, err := provider.Execute(ctx, sshworker.ExecuteRequest{ExecutionID: request.ExecutionID,
 		Authority: sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, Credential: identity,
-		Confirmation: confirmation, Discovery: discovery, ReuseOnly: request.ReuseOnly,
+		Confirmation: confirmation, Discovery: discovery, ReuseOnly: request.ReuseOnly, ReuseWorkerID: request.ReuseWorkerID,
 		InstanceType: request.Compute.InstanceType, VCPU: request.Compute.VCPU, MemoryGiB: request.Compute.MemoryGiB,
 		VolumeGiB: int32(request.Compute.VolumeGiB), WorkerScript: material.WorkerScript,
 		WorkerScriptSHA256: material.WorkerScriptSHA256, Runtime: material.Protocol,
@@ -344,21 +348,21 @@ func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider 
 	return provider.SetPublicPort(ctx, worker, service.Port, true)
 }
 
-func (executor *sshWorkerExecutor) ResolveIdleWorker(ctx context.Context, ownerID string, accountGeneration uint64, binding cloudworker.AWSBinding, compute cloudworker.ComputeSpec) (cloudworker.ComputeSpec, bool, error) {
+func (executor *sshWorkerExecutor) ResolveIdleWorker(ctx context.Context, ownerID string, accountGeneration uint64, binding cloudworker.AWSBinding, requirements cloudworker.ComputeRequirements) (cloudworker.WorkerReuseSelection, bool, error) {
 	provider, identity, err := executor.provider(ctx, binding)
 	if err != nil {
-		return cloudworker.ComputeSpec{}, false, err
+		return cloudworker.WorkerReuseSelection{}, false, err
 	}
 	worker, found, err := provider.ResolveIdleWorker(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, identity,
-		compute.InstanceType, compute.VCPU, compute.MemoryGiB, int32(compute.VolumeGiB))
+		requirements.MinVCPU, requirements.MinMemoryGiB, int32(requirements.DiskGiB))
 	if err != nil || !found {
-		return cloudworker.ComputeSpec{}, false, err
+		return cloudworker.WorkerReuseSelection{}, false, err
 	}
-	return cloudworker.ComputeSpec{InstanceType: worker.InstanceType, Architecture: "x86_64", VCPU: worker.VCPU, MemoryGiB: worker.MemoryGiB,
-		RootDeviceName: "/dev/xvda", VolumeGiB: uint64(worker.VolumeGiB), VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}, true, nil
+	return cloudworker.WorkerReuseSelection{WorkerID: worker.WorkerID, Compute: cloudworker.ComputeSpec{InstanceType: worker.InstanceType, Architecture: "x86_64", VCPU: worker.VCPU, MemoryGiB: worker.MemoryGiB,
+		RootDeviceName: "/dev/xvda", VolumeGiB: uint64(worker.VolumeGiB), VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}}, true, nil
 }
 
-func (executor *sshWorkerExecutor) CheckCreateWorkerCapacity(ctx context.Context, ownerID string, accountGeneration uint64, binding cloudworker.AWSBinding, _ cloudworker.ComputeSpec) error {
+func (executor *sshWorkerExecutor) CheckCreateWorkerCapacity(ctx context.Context, ownerID string, accountGeneration uint64, binding cloudworker.AWSBinding) error {
 	provider, identity, err := executor.provider(ctx, binding)
 	if err != nil {
 		return err
@@ -388,12 +392,26 @@ func (source sshWorkerCredentials) HasCurrentVerifiedCredential(ctx context.Cont
 }
 
 func (executor *sshWorkerExecutor) providerForIdentity(ctx context.Context, identity sshworker.CredentialIdentity) (*sshworker.Provider, error) {
-	provider, actual, err := executor.provider(ctx, cloudworker.AWSBinding{AccountID: identity.AccountID, Region: identity.Region,
-		CredentialID: identity.CredentialID, CredentialRevision: identity.CredentialRevision})
-	if err != nil || actual != identity {
+	binding, err := executor.currentBindingForCredential(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	provider, actual, err := executor.provider(ctx, binding)
+	if err != nil || actual.CredentialID != identity.CredentialID || actual.AccountID != identity.AccountID || actual.Region != identity.Region {
 		return nil, errors.Join(sshworker.ErrIdentity, err)
 	}
 	return provider, nil
+}
+
+func (executor *sshWorkerExecutor) currentBindingForCredential(ctx context.Context, identity sshworker.CredentialIdentity) (cloudworker.AWSBinding, error) {
+	if executor == nil || executor.authority == nil || ctx == nil {
+		return cloudworker.AWSBinding{}, sshworker.ErrIdentity
+	}
+	binding, err := executor.authority.ResolveCurrentAWSBinding(ctx)
+	if err != nil || binding.CredentialID != identity.CredentialID || binding.AccountID != identity.AccountID || binding.Region != identity.Region {
+		return cloudworker.AWSBinding{}, errors.Join(sshworker.ErrIdentity, err)
+	}
+	return binding, nil
 }
 
 func (executor *sshWorkerExecutor) HasManagedWorkers(ctx context.Context) bool {
@@ -568,7 +586,7 @@ func (domains sshWorkerDomains) BindDomain(ctx context.Context, command workerca
 	if runtime, observeErr := provider.ObserveService(ctx, command.Worker, service.TaskID); observeErr != nil || runtime.Health != "healthy" {
 		return workercap.DomainStatus{}, errors.Join(sshworker.ErrInvalid, observeErr)
 	}
-	dns := domains.executor.route53For(command.Worker.Credential)
+	dns := domains.executor.route53For(ctx, command.Worker.Credential)
 	if dns == nil {
 		return workercap.DomainStatus{}, remoteservice.ErrInvalid
 	}
@@ -604,7 +622,7 @@ func (executor *sshWorkerExecutor) deleteDomain(ctx context.Context, service ssh
 	if domain == nil {
 		return nil
 	}
-	dns := executor.route53For(service.Worker.Credential)
+	dns := executor.route53For(ctx, service.Worker.Credential)
 	if dns == nil {
 		return remoteservice.ErrInvalid
 	}
@@ -664,8 +682,16 @@ func projectDomainForWorker(domain *sshworkload.Domain, currentPublicIP string) 
 
 func ptrDomain(value workercap.DomainStatus) *workercap.DomainStatus { return &value }
 
-func (executor *sshWorkerExecutor) route53For(identity sshworker.CredentialIdentity) remoteservice.Route53 {
+func (executor *sshWorkerExecutor) route53For(ctx context.Context, identity sshworker.CredentialIdentity) remoteservice.Route53 {
+	binding, err := executor.currentBindingForCredential(ctx, identity)
+	if err != nil {
+		return nil
+	}
+	_, current, err := executor.provider(ctx, binding)
+	if err != nil {
+		return nil
+	}
 	executor.mu.Lock()
 	defer executor.mu.Unlock()
-	return executor.route53[identity]
+	return executor.route53[current]
 }

@@ -231,7 +231,7 @@ func serveCore(cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("initialize Knowledge composition: %w", err)
 	}
-	awsComposition, err := composeCoreAWS(cfg, store)
+	awsComposition, err := composeCoreAWS(store)
 	if err != nil {
 		if knowledgeComposition != nil {
 			knowledgeComposition.Close()

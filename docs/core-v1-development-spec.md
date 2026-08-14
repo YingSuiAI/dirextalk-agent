@@ -445,9 +445,9 @@ Worker domain rather than a generic AWS resource graph. Confirmation is
 mandatory for Worker spend or exposure operations; model and extension tools
 cannot bypass it.
 
-AWS credential access still requires `core_aws_enabled`; all durable Core secret
-envelopes require a raw 32-byte `core_secret_master_key_file` mounted with mode
-`0400`. PostgreSQL
+AWS credential access is always composed so the sole App-uploaded credential
+can immediately publish Worker readiness. All durable Core secret envelopes
+require a raw 32-byte `core_secret_master_key_file` mounted with mode `0400`. PostgreSQL
 stores only the key version, nonce, and AES-256-GCM ciphertext; field AAD binds
 the credential ID, revision, and secret field. Missing keys, wrong keys, and
 version mismatches fail closed. Provider code materializes credentials only
@@ -486,8 +486,8 @@ live hourly read still reports its ongoing server cost.
 Destroying a retained Worker is a separate explicit owner action.
 
 The manager keeps at most five Workers for the authenticated owner/account
-generation. It discovers the newest AWS-owned Amazon Linux 2023 image and the
-default VPC/subnet, launches an instance with an ordinary public IPv4, and
+generation. It discovers the newest Canonical official Ubuntu 24.04 LTS image
+and the default VPC/subnet, launches an instance with an ordinary public IPv4, and
 connects by outbound SSH. Agent uses short SSH operations to start work, read
 status and load, stream logs by offset, and list or copy artifacts. A dropped
 connection does not erase remote state. Job and service workloads share this

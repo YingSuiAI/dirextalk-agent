@@ -526,7 +526,7 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 	messages := []coreconversation.Message{
 		{ID: uuid.NewString(), Sequence: 1, Role: coreconversation.RoleUser, Content: "first", ModelProfileID: profileID, CreatedAt: now},
 		{ID: uuid.NewString(), Sequence: 2, Role: coreconversation.RoleTool, ToolResults: []coreconversation.ToolResult{{CallID: "call", Content: "private tool payload"}}, ModelProfileID: profileID, CreatedAt: now.Add(time.Second)},
-		{ID: uuid.NewString(), Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second)},
+		{ID: uuid.NewString(), Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second), Status: "failed"},
 		{ID: uuid.NewString(), Sequence: 4, Role: coreconversation.RoleSystem, Content: "private system context", ModelProfileID: profileID, CreatedAt: now.Add(3 * time.Second)},
 		{ID: uuid.NewString(), Sequence: 5, Role: coreconversation.RoleUser, Content: "third", ModelProfileID: profileID, CreatedAt: now.Add(4 * time.Second)},
 	}
@@ -534,7 +534,7 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page) != 2 || page[0].MessageSeq != 3 || page[1].MessageSeq != 5 || next == "" {
+	if len(page) != 2 || page[0].MessageSeq != 3 || page[0].Status != "failed" || page[1].MessageSeq != 5 || page[1].Status != "done" || next == "" {
 		t.Fatalf("first page=%+v next=%q", page, next)
 	}
 	raw, err := json.Marshal(page)

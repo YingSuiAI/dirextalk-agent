@@ -125,8 +125,13 @@ func TestSSHWorkerHourlyQuoteUsesLiveInfrastructureRates(t *testing.T) {
 			ComputeMicrosPerHour: 20_800, EBSStorageMicrosPerGiBMonth: 80_000, PublicIPv4MicrosPerHour: 5_000,
 		},
 	}}
-	executor := &sshWorkerExecutor{pricing: catalog}
-	identity := sshworker.CredentialIdentity{CredentialID: "credential-1", CredentialRevision: 7, AccountID: "123456789012", Region: "ap-east-1"}
+	authority, _ := cloudWorkerCredentialAuthorityFixture(t)
+	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &sshWorkerExecutor{authority: authority, pricing: catalog}
+	identity := sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: 1, AccountID: binding.AccountID, Region: binding.Region}
 	worker := sshworker.WorkerRecord{OwnerID: "owner", AccountGeneration: 9, Credential: identity, InstanceType: "t3.small", VolumeGiB: 20}
 	quote, err := executor.hourlyQuote(context.Background(), worker)
 	if err != nil {
@@ -136,7 +141,7 @@ func TestSSHWorkerHourlyQuoteUsesLiveInfrastructureRates(t *testing.T) {
 		t.Fatalf("quote=%+v", quote)
 	}
 	if catalog.request.AccountGeneration != worker.AccountGeneration || catalog.request.AccountID != identity.AccountID || catalog.request.Region != identity.Region || catalog.request.CredentialID != identity.CredentialID ||
-		catalog.request.CredentialRevision != identity.CredentialRevision || catalog.request.InstanceType != "t3.small" || catalog.request.VolumeGiB != 20 || catalog.request.VolumeType != "gp3" {
+		catalog.request.CredentialRevision != binding.CredentialRevision || catalog.request.InstanceType != "t3.small" || catalog.request.VolumeGiB != 20 || catalog.request.VolumeType != "gp3" {
 		t.Fatalf("pricing request=%+v", catalog.request)
 	}
 }
@@ -171,7 +176,13 @@ func TestSSHWorkerDestroyResolvesCredentialBeforeBusyState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	identity := workerIdentityFixture()
+	identity.Credential = sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: 1, AccountID: binding.AccountID, Region: binding.Region}
 	worker := sshworker.WorkerRecord{WorkerID: identity.WorkerID, OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration,
 		Credential: identity.Credential, Phase: sshworker.WorkerBusy, CurrentExecutionID: "execution-live",
 		Instance: sshworker.Instance{ID: identity.InstanceID}, KeyPair: sshworker.KeyPair{ID: identity.KeyPairID}, SecurityGroup: sshworker.SecurityGroup{ID: identity.SecurityGroupID}}
@@ -179,8 +190,8 @@ func TestSSHWorkerDestroyResolvesCredentialBeforeBusyState(t *testing.T) {
 		t.Fatal(err)
 	}
 	credentialErr := errors.New("historical secret unavailable")
-	resolver := &cloudWorkerCredentialResolverFake{exactRevision: identity.Credential.CredentialRevision, exactErr: credentialErr}
-	executor := &sshWorkerExecutor{exact: resolver, state: state}
+	resolver.exactErr = credentialErr
+	executor := &sshWorkerExecutor{authority: authority, exact: resolver, state: state, root: t.TempDir(), providers: make(map[sshworker.CredentialIdentity]*sshworker.Provider), route53: make(map[sshworker.CredentialIdentity]remoteservice.Route53), pool: sshworker.NewPool()}
 	err = executor.DestroyWorker(context.Background(), workerAuthorityFixture(), sshworker.DestroyRequest{Identity: identity,
 		Authorization: sshworker.DestroyAuthorization{Authorized: true, Proof: "destroy"}})
 	if !errors.Is(err, credentialErr) || errors.Is(err, sshworker.ErrBusy) {

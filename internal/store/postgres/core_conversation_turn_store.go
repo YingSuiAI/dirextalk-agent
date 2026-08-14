@@ -1065,6 +1065,119 @@ func turnUserMessageExistsTx(ctx context.Context, tx pgx.Tx, messageID string, t
 	return true, nil
 }
 
+func failedTurnTranscriptTx(ctx context.Context, tx pgx.Tx, turn core.Turn, code, summary string, now time.Time) error {
+	rows, err := tx.Query(ctx, `SELECT payload_json FROM core_conversation_turn_events WHERE turn_id=$1 AND kind=$2 ORDER BY sequence`, turn.ID, string(core.TurnEventDelta))
+	if err != nil {
+		return err
+	}
+	var partial strings.Builder
+	for rows.Next() {
+		var raw []byte
+		var event core.TurnEvent
+		if err = rows.Scan(&raw); err != nil || json.Unmarshal(raw, &event) != nil || event.Kind != core.TurnEventDelta {
+			rows.Close()
+			return core.ErrConflict
+		}
+		partial.WriteString(event.Text)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	var conversationRevision uint64
+	if err = tx.QueryRow(ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1 AND deleted_at IS NULL FOR UPDATE`, turn.ConversationID).Scan(&conversationRevision); err != nil {
+		return core.ErrConflict
+	}
+	var nextSequence int64
+	var latestCreatedAt *time.Time
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence),0)+1,MAX(created_at) FROM core_messages WHERE conversation_id=$1`, turn.ConversationID).Scan(&nextSequence, &latestCreatedAt); err != nil {
+		return err
+	}
+	createdAt := now.UTC().Truncate(time.Microsecond)
+	if latestCreatedAt != nil && !createdAt.After(latestCreatedAt.UTC()) {
+		createdAt = latestCreatedAt.UTC().Add(time.Microsecond)
+	}
+
+	userMessageID := core.TurnUserMessageID(turn.RequestID)
+	userAlreadyCommitted, err := turnUserMessageExistsTx(ctx, tx, userMessageID, turn)
+	if err != nil {
+		return err
+	}
+	if !userAlreadyCommitted {
+		user := core.Message{ID: userMessageID, Role: core.RoleUser, Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: createdAt}
+		if user.Validate() != nil {
+			return core.ErrInvalid
+		}
+		if err = insertCloudWorkerMessageTx(ctx, tx, turn.ConversationID, nextSequence, user); err != nil {
+			return err
+		}
+		nextSequence++
+		createdAt = createdAt.Add(time.Microsecond)
+	}
+	assistant := core.Message{
+		ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-failed-assistant:"+turn.RequestID)).String(),
+		Role:           core.RoleAssistant,
+		Content:        failedTurnAssistantContent(partial.String(), code, summary),
+		ModelProfileID: turn.ProfileID,
+		CreatedAt:      createdAt,
+		Status:         "failed",
+	}
+	if assistant.Validate() != nil {
+		return core.ErrInvalid
+	}
+	if err = insertCloudWorkerMessageTx(ctx, tx, turn.ConversationID, nextSequence, assistant); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id) VALUES('conversation',$1,$2) ON CONFLICT DO NOTHING`, turn.ConversationID, turn.ProfileID); err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `UPDATE core_conversations SET revision=revision+1,updated_at=$2 WHERE conversation_id=$1 AND revision=$3`, turn.ConversationID, assistant.CreatedAt, conversationRevision)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return core.ErrConflict
+	}
+	return nil
+}
+
+func failedTurnAssistantContent(partial, code, summary string) string {
+	code = boundedTurnFailureText(strings.TrimSpace(code), 128)
+	summary = boundedTurnFailureText(strings.TrimSpace(summary), core.MaxSummaryBytes)
+	terminal := "Error"
+	if code != "" {
+		terminal += " (" + code + ")"
+	}
+	if summary != "" {
+		terminal += ": " + summary
+	}
+	if strings.TrimSpace(partial) == "" {
+		return terminal
+	}
+	suffix := "\n\n" + terminal
+	return boundedTurnFailureText(partial, core.MaxContentBytes-len(suffix)) + suffix
+}
+
+func boundedTurnFailureText(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	var bounded strings.Builder
+	bounded.Grow(limit)
+	for _, current := range value {
+		if bounded.Len()+len(string(current)) > limit {
+			break
+		}
+		bounded.WriteRune(current)
+	}
+	return bounded.String()
+}
+
 func listTurnSteersTx(ctx context.Context, tx pgx.Tx, turnID string) ([]core.TurnSteer, error) {
 	rows, err := tx.Query(ctx, `SELECT sequence,payload_json,created_at FROM core_conversation_turn_events WHERE turn_id=$1 AND kind=$2 ORDER BY sequence`, turnID, string(core.TurnEventSteered))
 	if err != nil {
@@ -1374,6 +1487,10 @@ func (s *CoreConversationStore) FailTurnUncertain(ctx context.Context, id, code,
 		return core.Turn{}, err
 	}
 	defer tx.Rollback(ctx)
+	var turn core.Turn
+	if err = s.scanTurn(ctx, tx, id, &turn); err != nil {
+		return core.Turn{}, core.ErrConflict
+	}
 	now := time.Now().UTC()
 	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='failed',revision=revision+1,terminal_code=$2,terminal_summary=$3,lease_id=NULL,lease_expires_at=NULL,updated_at=$4 WHERE turn_id=$1 AND state IN ('accepted','running') AND cancel_requested=false AND dispatch_state='uncertain'`, id, code, summary, now)
 	if err != nil || result.RowsAffected() != 1 {
@@ -1382,11 +1499,10 @@ func (s *CoreConversationStore) FailTurnUncertain(ctx context.Context, id, code,
 		}
 		return core.Turn{}, core.ErrConflict
 	}
-	var turn core.Turn
-	if err = s.scanTurn(ctx, tx, id, &turn); err != nil {
+	if err = insertTurnEventTx(ctx, tx, id, turn.LastSequence+1, core.TurnEvent{Kind: core.TurnEventError, ErrorCode: code, ErrorSummary: summary}, now); err != nil {
 		return core.Turn{}, err
 	}
-	if err = insertTurnEventTx(ctx, tx, id, turn.LastSequence+1, core.TurnEvent{Kind: core.TurnEventError, ErrorCode: code, ErrorSummary: summary}, now); err != nil {
+	if err = failedTurnTranscriptTx(ctx, tx, turn, code, summary, now); err != nil {
 		return core.Turn{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -1412,6 +1528,9 @@ func (s *CoreConversationStore) FailTurn(ctx context.Context, lease core.TurnLea
 	}
 	if result.RowsAffected() != 1 {
 		return core.Turn{}, core.ErrConflict
+	}
+	if err = failedTurnTranscriptTx(ctx, tx, lease.Turn, code, summary, now); err != nil {
+		return core.Turn{}, err
 	}
 	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lastSequence+1, core.TurnEvent{Kind: core.TurnEventError, ErrorCode: code, ErrorSummary: summary}, now); err != nil {
 		return core.Turn{}, err

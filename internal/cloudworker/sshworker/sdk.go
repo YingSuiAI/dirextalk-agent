@@ -100,8 +100,8 @@ func (client *SDK) Discover(ctx context.Context, identity CredentialIdentity) (D
 	if err := client.VerifyIdentity(ctx, identity); err != nil {
 		return Discovery{}, err
 	}
-	images, err := client.ec2.DescribeImages(ctx, &ec2.DescribeImagesInput{Owners: []string{"amazon"}, Filters: []ec2types.Filter{
-		{Name: aws.String("name"), Values: []string{"al2023-ami-2023*-x86_64"}}, {Name: aws.String("state"), Values: []string{"available"}},
+	images, err := client.ec2.DescribeImages(ctx, &ec2.DescribeImagesInput{Owners: []string{"099720109477"}, Filters: []ec2types.Filter{
+		{Name: aws.String("name"), Values: []string{"ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"}}, {Name: aws.String("state"), Values: []string{"available"}},
 		{Name: aws.String("architecture"), Values: []string{"x86_64"}}, {Name: aws.String("root-device-type"), Values: []string{"ebs"}}, {Name: aws.String("virtualization-type"), Values: []string{"hvm"}}}})
 	if err != nil || len(images.Images) == 0 {
 		return Discovery{}, errors.Join(ErrInvalid, err)
@@ -130,7 +130,7 @@ func (client *SDK) Discover(ctx context.Context, identity CredentialIdentity) (D
 	if err != nil {
 		return Discovery{}, err
 	}
-	return Discovery{ImageID: aws.ToString(image.ImageId), ImageName: aws.ToString(image.Name), ImageCreatedAt: createdAt.UTC(), SSHUser: "ec2-user", VPCID: vpcID,
+	return Discovery{ImageID: aws.ToString(image.ImageId), ImageName: aws.ToString(image.Name), ImageCreatedAt: createdAt.UTC(), SSHUser: "ubuntu", VPCID: vpcID,
 		SubnetID: aws.ToString(subnets.Subnets[0].SubnetId), PublicEgressCIDR: netip.PrefixFrom(address, 32).String(), ObservedAt: client.now().UTC()}, nil
 }
 

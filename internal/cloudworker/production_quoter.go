@@ -90,14 +90,13 @@ func (snapshot PricingCatalogSnapshot) validate(request PricingCatalogRequest, n
 type ProductionQuoterConfig struct {
 	QuoteTTL                time.Duration
 	MaximumCatalogAge       time.Duration
-	CleanupReserveSeconds   uint64
 	ContingencyBasisPoints  uint32
 	AbsoluteHardLimitMicros int64
 }
 
 func (config ProductionQuoterConfig) validate() error {
 	if config.QuoteTTL <= 0 || config.QuoteTTL > 15*time.Minute || config.MaximumCatalogAge <= 0 || config.MaximumCatalogAge > 15*time.Minute ||
-		config.CleanupReserveSeconds != EphemeralCleanupReserveSeconds || config.ContingencyBasisPoints > 10_000 ||
+		config.ContingencyBasisPoints > 10_000 ||
 		config.AbsoluteHardLimitMicros <= 0 {
 		return ErrInvalid
 	}
@@ -146,7 +145,7 @@ func (quoter *ProductionQuoter) quote(ctx context.Context, request QuoteRequest)
 	if err := snapshot.validate(catalogRequest, now, quoter.config.MaximumCatalogAge); err != nil {
 		return Quote{}, err
 	}
-	amount, err := estimateMaximumCost(snapshot.Rates, request.Compute, request.Limits, quoter.config.CleanupReserveSeconds)
+	amount, err := estimateMaximumCost(snapshot.Rates, request.Compute, request.Limits)
 	if err != nil || amount > uint64(math.MaxInt64) || int64(amount) > quoter.config.AbsoluteHardLimitMicros {
 		return Quote{}, ErrInvalid
 	}
@@ -171,17 +170,14 @@ func validateProductionQuoteRequest(request QuoteRequest) error {
 	if request.OwnerID == "" || request.AccountGeneration == 0 || !validDigest(request.ObjectiveDigest) || !validDigest(request.UserPromptDigest) ||
 		!validDigest(request.InputManifestDigest) || !validDigest(request.ModelBindingDigest) || !validDigest(request.AuthorizationBasisDigest) ||
 		!validateWorkspaceMode(request.WorkspaceMode) || validateAWS(request.AWS) != nil || validateCompute(request.Compute) != nil ||
-		validateLimits(request.Limits) != nil || (request.ProposalReason != ProposalReasonExplicitUserCloud && request.ProposalReason != ProposalReasonLocalBudgetExceeded) {
+		validateLimits(request.Limits) != nil || request.ProposalReason != ProposalReasonLocalBudgetExceeded {
 		return ErrInvalid
 	}
 	return nil
 }
 
-func estimateMaximumCost(rates PricingCatalogRates, compute ComputeSpec, limits Limits, cleanupReserveSeconds uint64) (uint64, error) {
-	runtimeSeconds, err := checkedAdd64(limits.MaxRuntimeSeconds, cleanupReserveSeconds)
-	if err != nil {
-		return 0, err
-	}
+func estimateMaximumCost(rates PricingCatalogRates, compute ComputeSpec, limits Limits) (uint64, error) {
+	runtimeSeconds := limits.MaxRuntimeSeconds
 	if runtimeSeconds < 60 {
 		runtimeSeconds = 60
 	}
