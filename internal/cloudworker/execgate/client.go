@@ -10,7 +10,6 @@ import (
 
 const (
 	terminalRetryInterval = 25 * time.Millisecond
-	terminalRetryLimit    = 1500 * time.Millisecond
 )
 
 type Client struct {
@@ -76,7 +75,6 @@ func (run *Run) Terminal(ctx context.Context) (Proof, error) {
 	if run == nil || run.client == nil || ctx == nil {
 		return Proof{}, ErrInvalid
 	}
-	deadline := time.Now().Add(terminalRetryLimit)
 	request := wireRequest{
 		Schema: ProtocolSchemaV1, Operation: operationTerminal, RunID: run.id,
 	}
@@ -94,12 +92,7 @@ func (run *Run) Terminal(ctx context.Context) (Proof, error) {
 		if ctx.Err() != nil {
 			return Proof{}, ctx.Err()
 		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return Proof{}, ErrUnavailable
-		}
-		delay := min(terminalRetryInterval, remaining)
-		timer := time.NewTimer(delay)
+		timer := time.NewTimer(terminalRetryInterval)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {

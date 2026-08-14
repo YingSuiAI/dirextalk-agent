@@ -194,9 +194,7 @@ func (runner OSProcessRunner) Run(ctx context.Context, spec ProcessSpec) (Proces
 		waitErr = command.Wait()
 	}
 	if gateRun != nil && startErr == nil {
-		terminalCtx, cancelTerminal := context.WithTimeout(context.Background(), 2*time.Second)
-		proof, topologyErr := gateRun.Terminal(terminalCtx)
-		cancelTerminal()
+		proof, topologyErr := gateRun.Terminal(ctx)
 		if topologyErr != nil || proof.ValidateTerminal() != nil {
 			logProcessFailure("gate_terminal", FailureCodeProcessTopology)
 			lifecycleErr = newFailure(FailureStageProcess, FailureCodeProcessTopology)
@@ -250,19 +248,6 @@ func (runner OSProcessRunner) Run(ctx context.Context, spec ProcessSpec) (Proces
 		case errors.As(waitErr, &exitError) &&
 			allowedExitCode(exitError.ExitCode(), spec.AllowedExitCodes):
 			// The compiled runtime explicitly allowed this exit status.
-		case acceptPiEventsAfterWaitDelay(
-			waitErr,
-			command.ProcessState != nil && command.ProcessState.Success(),
-			terminalProof,
-			spec.StdoutPolicy,
-			stdout.exceededLimit() || stderr.exceeded,
-		):
-			// The Pi event parser remains responsible for proving a complete,
-			// valid terminal event stream after os/exec closed lingering pipes.
-			slog.Info(
-				"[cloud-worker.process] outcome=continued",
-				"phase", "wait", "code", "wait_delay_pi_events",
-			)
 		case errors.As(waitErr, &exitError):
 			stdout.destroy()
 			logProcessFailure("wait", FailureCodeProcessExitNonZero)
@@ -292,18 +277,6 @@ func logProcessFailure(phase string, code FailureCode) {
 		"[cloud-worker.process] outcome=failed",
 		"phase", phase, "code", string(code),
 	)
-}
-
-func acceptPiEventsAfterWaitDelay(
-	waitErr error,
-	processStateSuccess bool,
-	terminalProof execgate.Proof,
-	stdoutPolicy ProcessStdoutPolicy,
-	outputExceeded bool,
-) bool {
-	return errors.Is(waitErr, exec.ErrWaitDelay) && processStateSuccess &&
-		terminalProof.ValidateTerminal() == nil &&
-		stdoutPolicy == ProcessStdoutPiEventsV1 && !outputExceeded
 }
 
 func validateProcessSpec(spec ProcessSpec) error {
@@ -447,5 +420,3 @@ func (buffer *boundedBuffer) destroy() {
 	clear(buffer.buffer)
 	buffer.buffer = nil
 }
-
-func processWaitDelay() time.Duration { return 2 * time.Second }

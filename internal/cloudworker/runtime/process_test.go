@@ -3,66 +3,19 @@
 package runtime
 
 import (
-	"errors"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 )
 
-func TestWaitDelayReturnsPiEventsOnlyWithSuccessfulQuiescentRun(t *testing.T) {
-	proof := processTerminalProof()
-	if !acceptPiEventsAfterWaitDelay(
-		exec.ErrWaitDelay, true, proof, ProcessStdoutPiEventsV1, false,
-	) {
-		t.Fatal("valid Pi wait-delay result was rejected")
-	}
-	stream := validPiEventStream()
-	defer clear(stream)
-	_, finalJSON, err := ParsePiEvents(stream)
-	clear(finalJSON)
-	if err != nil {
-		t.Fatalf("retained Pi events were not parseable: %v", err)
-	}
-
-	invalidProof := proof
-	invalidProof.ActiveDescendants = 1
-	for _, test := range []struct {
-		name           string
-		err            error
-		processSuccess bool
-		proof          execgate.Proof
-		policy         ProcessStdoutPolicy
-		exceeded       bool
-	}{
-		{name: "different wait error", err: errors.New("wait failed"), processSuccess: true, proof: proof, policy: ProcessStdoutPiEventsV1},
-		{name: "failed process", err: exec.ErrWaitDelay, proof: proof, policy: ProcessStdoutPiEventsV1},
-		{name: "invalid terminal proof", err: exec.ErrWaitDelay, processSuccess: true, proof: invalidProof, policy: ProcessStdoutPiEventsV1},
-		{name: "raw stdout", err: exec.ErrWaitDelay, processSuccess: true, proof: proof, policy: ProcessStdoutRaw},
-		{name: "output exceeded", err: exec.ErrWaitDelay, processSuccess: true, proof: proof, policy: ProcessStdoutPiEventsV1, exceeded: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if acceptPiEventsAfterWaitDelay(
-				test.err, test.processSuccess, test.proof, test.policy, test.exceeded,
-			) {
-				t.Fatal("unsafe wait-delay result was accepted")
-			}
-		})
-	}
-}
-
-func TestOSProcessRunnerDoesNotClassifyWaitFailureAsStartFailure(t *testing.T) {
+func TestOSProcessRunnerWaitsForDescendantsWithoutLocalDeadline(t *testing.T) {
 	directory := t.TempDir()
-	pidPath := filepath.Join(directory, "child.pid")
-	_, err := (OSProcessRunner{}).Run(t.Context(), ProcessSpec{
+	started := time.Now()
+	output, err := (OSProcessRunner{}).Run(t.Context(), ProcessSpec{
 		Executable: "/bin/sh",
-		Arguments:  []string{"-c", "sleep 4 & echo $! > child.pid"},
+		Arguments:  []string{"-c", "sleep 2.2 &"},
 		Directory:  directory,
 		Environment: map[string]string{
 			"PATH": "/usr/bin:/bin",
@@ -71,27 +24,11 @@ func TestOSProcessRunnerDoesNotClassifyWaitFailureAsStartFailure(t *testing.T) {
 		MaxStdoutBytes: 1024,
 		MaxStderrBytes: 1024,
 	})
-	rawPID, readErr := os.ReadFile(pidPath)
-	if readErr != nil {
-		t.Fatal(readErr)
+	if err != nil || len(output.Stdout) != 0 {
+		t.Fatalf("output=%q err=%v", output.Stdout, err)
 	}
-	childPID, parseErr := strconv.Atoi(strings.TrimSpace(string(rawPID)))
-	clear(rawPID)
-	if parseErr != nil || childPID < 1 {
-		t.Fatalf("child pid is invalid: %d err=%v", childPID, parseErr)
-	}
-	_ = syscall.Kill(childPID, syscall.SIGKILL)
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if killErr := syscall.Kill(childPID, 0); errors.Is(killErr, syscall.ESRCH) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	failure, ok := FailureOf(err)
-	if !ok || failure.Stage != FailureStageProcess ||
-		failure.Code != FailureCodeProcessWait {
-		t.Fatalf("failure=%+v ok=%t err=%v", failure, ok, err)
+	if elapsed := time.Since(started); elapsed < 2*time.Second {
+		t.Fatalf("Run returned before descendant exited: %s", elapsed)
 	}
 }
 

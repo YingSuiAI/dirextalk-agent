@@ -37,7 +37,6 @@ func configureProcessCancellation(command *exec.Cmd, uid, gid uint32) error {
 		}
 		return err
 	}
-	command.WaitDelay = processWaitDelay()
 	return nil
 }
 

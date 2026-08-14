@@ -21,7 +21,7 @@ func TestConfigureProcessCancellationPinsIdentityDeathAndCapabilities(t *testing
 		attributes.Credential == nil || attributes.Credential.Uid != 65532 ||
 		attributes.Credential.Gid != 65532 || attributes.Credential.NoSetGroups ||
 		len(attributes.Credential.Groups) != 0 ||
-		len(attributes.AmbientCaps) != 0 || command.Cancel == nil || command.WaitDelay != processWaitDelay() {
+		len(attributes.AmbientCaps) != 0 || command.Cancel == nil || command.WaitDelay != 0 {
 		t.Fatalf("process attributes = %+v wait=%s cancel=%t", attributes, command.WaitDelay, command.Cancel != nil)
 	}
 }

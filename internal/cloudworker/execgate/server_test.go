@@ -53,6 +53,7 @@ func TestMonitorTopologyAllowsOnlyBoundedPreActivationImageTransition(t *testing
 			SHA256: strings.Repeat("2", 64),
 		},
 	}
+	current.authorizedPi = map[int32]ProcessIdentity{200: current.pi}
 	if violation := monitorTopologyViolation(
 		current, now.Add(time.Second), 2, 0, 2, nil, false,
 	); violation != "" {
@@ -85,13 +86,23 @@ func TestMonitorTopologyAllowsOnlyBoundedPreActivationImageTransition(t *testing
 }
 
 func TestPiProcessTreeAllowsUnlimitedNestedAgents(t *testing.T) {
+	piIdentity := func(pid int32, started uint64) ProcessIdentity {
+		return ProcessIdentity{
+			PID: pid, StartTimeTicks: started, Device: 1, Inode: 20,
+			SHA256: strings.Repeat("2", 64),
+		}
+	}
 	current := &policy{
 		workerPID:         100,
 		activeProof:       true,
 		authorizedPiExecs: 4,
-		pi: ProcessIdentity{
-			PID: 200, StartTimeTicks: 300, Device: 1, Inode: 20,
-			SHA256: strings.Repeat("2", 64),
+		piPinned:          fileIdentity{Device: 1, Inode: 20, SHA256: strings.Repeat("2", 64)},
+		pi:                piIdentity(200, 300),
+		authorizedPi: map[int32]ProcessIdentity{
+			200: piIdentity(200, 300),
+			201: piIdentity(201, 301),
+			204: piIdentity(204, 304),
+			205: piIdentity(205, 305),
 		},
 	}
 	parents := map[int32]processStatValue{
@@ -142,10 +153,23 @@ func TestPiProcessTreeAllowsUnlimitedNestedAgents(t *testing.T) {
 	if piExecCallerAuthorized(current, 206, parents[206], stat, member) {
 		t.Fatal("unrelated Pi exec caller was accepted")
 	}
-	parents[201] = processStatValue{ParentPID: 202, StartTimeTicks: 301}
-	parents[202] = processStatValue{ParentPID: 201, StartTimeTicks: 302}
-	if piProcessTreeValid(current, 1, 4, 7, members[:7], piMembers, nil, stat) {
-		t.Fatal("cyclic process ancestry was accepted")
+
+	// The root Pi may exit before an authorized child Agent. The child's
+	// kernel-bound identity remains valid and it can continue spawning Pi.
+	rootlessMembers := []int32{100, 201, 202, 203, 204, 205}
+	rootlessPi := []int32{201, 204, 205}
+	if !piProcessTreeValid(current, 1, 3, 6, rootlessMembers, rootlessPi, nil, stat) {
+		t.Fatal("authorized child Agent tree was rejected after root Pi exited")
+	}
+	delete(memberSet, 200)
+	if !piExecCallerAuthorized(current, 204, parents[204], stat, member) {
+		t.Fatal("authorized child Agent could not spawn after root Pi exited")
+	}
+
+	reused := parents[204]
+	reused.StartTimeTicks++
+	if piExecCallerAuthorized(current, 204, reused, stat, member) {
+		t.Fatal("reused PID was accepted as an authorized child Agent")
 	}
 }
 
@@ -177,40 +201,30 @@ func TestPermissionEventRejectsExpiredOrViolatedPolicy(t *testing.T) {
 	}
 }
 
-func TestActiveQuiescenceIsBoundedAndRejectsOtherTopologyDrift(t *testing.T) {
+func TestActiveDescendantsDrainWithoutLocalLifetimeLimit(t *testing.T) {
 	now := time.Date(2026, 8, 11, 1, 0, 0, 0, time.UTC)
 	validPi := ProcessIdentity{
 		PID: 200, StartTimeTicks: 300, Device: 1, Inode: 20,
 		SHA256: strings.Repeat("2", 64),
 	}
-	current := &policy{activeProof: true, authorizedPiExecs: 1, pi: validPi}
-	waiting, expired := activeQuiescenceState(current, now, 1, 0, 3, nil)
-	if !waiting || expired {
-		t.Fatalf("initial quiescence waiting=%t expired=%t", waiting, expired)
+	current := &policy{
+		activeProof: true, authorizedPiExecs: 1, pi: validPi,
+		authorizedPi: map[int32]ProcessIdentity{200: validPi},
 	}
 	if violation := monitorTopologyViolation(
 		current, now, 1, 0, 3, nil, false,
 	); violation != "" {
-		t.Fatalf("initial active quiescence violation=%q", violation)
-	}
-	if current.quiescenceAt != now {
-		t.Fatalf("quiescence start=%s want=%s", current.quiescenceAt, now)
+		t.Fatalf("initial descendant drain violation=%q", violation)
 	}
 	if violation := monitorTopologyViolation(
-		current, now.Add(terminalQuiescenceLimit-time.Nanosecond), 1, 0, 2, nil, false,
+		current, now.Add(24*time.Hour), 1, 0, 2, nil, false,
 	); violation != "" {
-		t.Fatalf("bounded active quiescence violation=%q", violation)
+		t.Fatalf("long-running descendant drain violation=%q", violation)
 	}
 	if violation := monitorTopologyViolation(
-		current, now.Add(terminalQuiescenceLimit), 1, 0, 2, nil, false,
-	); violation != "runtime_topology_invalid" {
-		t.Fatalf("expired active quiescence violation=%q", violation)
-	}
-	waiting, expired = activeQuiescenceState(
-		current, now.Add(terminalQuiescenceLimit), 1, 0, 2, nil,
-	)
-	if waiting || !expired {
-		t.Fatalf("expired quiescence waiting=%t expired=%t", waiting, expired)
+		current, now.Add(7*24*time.Hour), 1, 0, 1, nil, false,
+	); violation != "" {
+		t.Fatalf("fully drained topology violation=%q", violation)
 	}
 
 	for _, test := range []struct {
@@ -219,7 +233,7 @@ func TestActiveQuiescenceIsBoundedAndRejectsOtherTopologyDrift(t *testing.T) {
 		workerCount, piCount, cgCount uint32
 		scanErr                       error
 	}{
-		{name: "multiple Pi", active: true, workerCount: 1, piCount: 2, cgCount: 3},
+		{name: "unauthorized Pi", active: true, workerCount: 1, piCount: 2, cgCount: 3},
 		{name: "missing Worker", active: true, piCount: 0, cgCount: 2},
 		{name: "scan error", active: true, workerCount: 1, cgCount: 2, scanErr: errors.New("scan failed")},
 		{name: "not activated", workerCount: 1, cgCount: 2},
@@ -228,6 +242,7 @@ func TestActiveQuiescenceIsBoundedAndRejectsOtherTopologyDrift(t *testing.T) {
 			candidate := &policy{
 				activeProof: test.active, authorizedPiExecs: 1,
 				createdAt: now, pi: validPi,
+				authorizedPi: map[int32]ProcessIdentity{200: validPi},
 			}
 			if violation := monitorTopologyViolation(
 				candidate, now, test.workerCount, test.piCount,

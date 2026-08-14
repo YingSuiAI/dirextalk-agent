@@ -258,8 +258,12 @@ only the UID/GID transition capabilities and Pi holds none. Gate registration
 is authenticated with kernel `SO_PEERCRED` and binds the Worker UID/PID, boot
 identity, process start ticks, exact cgroup, execution/task/attempt, and lease
 epoch. The first Worker child must be the pinned Pi device/inode/SHA-256.
-Further pinned Pi execs are accepted only from descendants of that root Pi;
-no process count, tree depth, or child lifetime is prescribed. A copied
+Further pinned Pi execs are accepted only from a currently authorized Pi or
+one of its live descendants. Every authorized Pi is bound to its kernel PID
+and start time, so child Agents remain valid and may continue dispatching after
+the root Pi exits without allowing PID reuse. No process count, tree depth, or
+child lifetime is prescribed; the approved task deadline and cancellation are
+the lifecycle boundaries. A copied
 executable with the same digest is denied while ordinary task tools remain
 available. Path replacement before the first exec is also denied because the
 permission event validates the kernel-opened FD rather than a mutable pathname.
@@ -270,7 +274,8 @@ release digest, Pi digest, and future clock skew. Proof age alone is not an
 authorization boundary because bounded result upload happens after proof
 creation. Completion requires at least one authorized pinned Pi exec, zero
 active Pi processes or descendants, and exactly the Worker remaining in its
-cgroup; result parsing and `write` workspace collection cannot precede that proof.
+cgroup. The gate waits for this complete drain without a separate local grace
+period; result parsing and `write` workspace collection cannot precede that proof.
 Gate loss, daemon/orphan residue, replay drift, or cancellation fails closed.
 
 ## AWS provider and cleanup
