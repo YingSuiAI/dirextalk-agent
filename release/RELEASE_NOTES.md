@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.94
+
+1. Use the quote-bound Worker token limit when a model profile leaves its output-token limit unset, so ordinary provider-default profiles can execute confirmed remote tasks.
+
 ## v1.0.93
 
 1. Isolate each durable confirmation expiry candidate so one stale Worker projection remains retryable while valid siblings commit and the Agent lifecycle stays available.
