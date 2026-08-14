@@ -765,7 +765,7 @@ func (m *Manager) terminal(ctx context.Context, operationID string, state State,
 	if err := m.emitEvent(ctx, operationID, eventType, payload); err != nil {
 		return err
 	}
-	if state == StateCompleted || state == StateFailed || state == StateCancelled || state == StateUncertain {
+	if terminalOperationState(state) {
 		m.clearSecrets(operationID)
 	}
 	return nil
@@ -1139,6 +1139,12 @@ func (m *Manager) Watch(ctx context.Context, operationID string, afterSequence i
 				return
 			}
 		}
+		// A reconnect that already consumed the persisted terminal event has
+		// nothing left to replay. Close it instead of retaining a watcher that
+		// can never receive another event for this operation.
+		if terminalOperationState(op.State) {
+			return
+		}
 		select {
 		case <-ctx.Done():
 		case <-w.done:
@@ -1249,6 +1255,15 @@ func (m *Manager) publishEvent(e Event) {
 func terminalEvent(event Event) bool {
 	switch event.EventType {
 	case "result", "error", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func terminalOperationState(state State) bool {
+	switch state {
+	case StateCompleted, StateFailed, StateCancelled, StateUncertain:
 		return true
 	default:
 		return false

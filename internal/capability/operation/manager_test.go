@@ -958,6 +958,36 @@ func TestManager_WatchReplaysTerminalEventAndCloses(t *testing.T) {
 	}
 }
 
+func TestManager_WatchClosesWhenTerminalCursorIsAlreadyConsumed(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-watch-terminal-consumed", CapabilityID: "test.cap.v1", OperationName: "mutate", RequestJSON: []byte(`{}`), RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	if err := manager.Start(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Fail(context.Background(), op.ID, "PRECONDITION_FAILED", "model dispatch outcome is unknown"); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := manager.getEvents(context.Background(), op.ID, 0)
+	if err != nil || len(persisted) == 0 || persisted[len(persisted)-1].EventType != "error" {
+		t.Fatalf("persisted events=%+v err=%v", persisted, err)
+	}
+	terminalSequence := persisted[len(persisted)-1].Sequence
+	events, err := manager.Watch(context.Background(), op.ID, terminalSequence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event, ok := <-events:
+		if ok {
+			t.Fatalf("consumed terminal replayed: %+v", event)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("watch remained open after the terminal cursor was consumed")
+	}
+}
+
 func TestManager_WatchLiveTerminalClosesAcrossReplayRace(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
