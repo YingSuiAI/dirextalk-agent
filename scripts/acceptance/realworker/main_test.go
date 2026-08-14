@@ -247,9 +247,9 @@ func TestDownloadArtifactVerifiesEveryChunkAndFullDigest(t *testing.T) {
 		}, nil
 	}}
 	d := &driver{cfg: config{runDir: t.TempDir()}, product: product}
-	artifactID, artifactSHA, err := d.downloadMarkedArtifact(context.Background(), run{
+	artifactID, artifactSHA, err := d.downloadAcceptanceArtifact(context.Background(), run{
 		RunID: "run-id", ExecutionID: "execution-id", ArtifactIDs: []string{"artifact-id"},
-	}, "DIREXTALK_WORKER_ACCEPTANCE_test")
+	})
 	if err != nil || artifactID != "artifact-id" || artifactSHA != fullHex {
 		t.Fatalf("marked artifact = %q, %q, %v", artifactID, artifactSHA, err)
 	}
@@ -356,7 +356,7 @@ func TestProfileSelectionUsesExplicitInternalProfileID(t *testing.T) {
 }
 
 func TestWorkerPromptsExerciseAutomaticEscalationAndReuse(t *testing.T) {
-	first := firstWorkerPrompt("acceptance-marker")
+	first := firstWorkerPrompt()
 	second := reuseWorkerPrompt()
 	for _, prompt := range []string{first, second} {
 		lower := strings.ToLower(strings.ReplaceAll(prompt, "https://github.com/TencentCloud/TencentDB-Agent-Memory", ""))
@@ -366,7 +366,7 @@ func TestWorkerPromptsExerciseAutomaticEscalationAndReuse(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(first, "TencentDB-Agent-Memory") || !strings.Contains(first, "acceptance-marker") ||
+	if !strings.Contains(first, "TencentDB-Agent-Memory") || !strings.Contains(first, "acceptance.txt") ||
 		!strings.Contains(second, "retained from the previous task") {
 		t.Fatalf("prompts do not retain the acceptance objectives: first=%q second=%q", first, second)
 	}
