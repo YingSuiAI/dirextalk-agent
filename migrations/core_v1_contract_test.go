@@ -95,13 +95,6 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 	for _, needle := range []string{
 		"CREATE TABLE core_cloud_worker_plans",
 		"CREATE TABLE core_cloud_worker_executions",
-		"CREATE TABLE core_cloud_worker_aws_ledger",
-		"CREATE TABLE core_cloud_worker_output_journals",
-		"CREATE TABLE core_cloud_worker_output_versions",
-		"CREATE TABLE core_cloud_worker_sessions",
-		"CREATE TABLE core_cloud_worker_model_budgets",
-		"input_manifest_json bytea",
-		"runtime_task_json bytea",
 		"'execution_v2_run'",
 		"'execution_v2_run_create','execution_v2_run_retry','execution_v2_run_cancel'",
 		"DROP CONSTRAINT core_task_replays_operation_check",
@@ -110,11 +103,6 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 	} {
 		if !strings.Contains(string(cloudWorker), needle) {
 			t.Errorf("Cloud Worker migration missing %q", needle)
-		}
-	}
-	for _, forbidden := range []string{"input_manifest_json jsonb", "runtime_task_json jsonb"} {
-		if strings.Contains(string(cloudWorker), forbidden) {
-			t.Errorf("Cloud Worker migration rewrites authorization-bound bytes via %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{

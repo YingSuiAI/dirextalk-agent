@@ -127,7 +127,7 @@ func TestProposeIntrinsicPublicationTracksCredentialReadinessWithoutRestart(t *t
 	}
 }
 
-func TestServiceProposalBindsOneEffectiveTokenLimitBeforeQuoteAndRuntimeTask(t *testing.T) {
+func TestServiceProposalBindsOneEffectiveTokenLimitBeforeSingleQuote(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	defaults := intrinsicDefaults(now)
 	defaults.Limits.MaxTokens = 1_000_000

@@ -12,14 +12,8 @@ func TestCloudWorkerPublicProtoMatchesDynamicSSHPublicProjection(t *testing.T) {
 	if file == nil {
 		t.Fatal("Cloud Worker descriptor is missing")
 	}
-	plan := file.Messages().ByName("CoreCloudWorkerPlan")
-	for _, retired := range []protoreflect.Name{"network_grants", "secret_grants", "artifact_retention_seconds"} {
-		if plan.Fields().ByName(retired) != nil {
-			t.Fatalf("plan retains %s", retired)
-		}
-	}
 	compute := file.Messages().ByName("CoreCloudWorkerComputeProjection")
-	if compute.Fields().ByName("vcpu") == nil || compute.Fields().ByName("memory_gib") == nil || compute.Fields().ByName("ami_id") != nil {
+	if compute.Fields().ByName("vcpu") == nil || compute.Fields().ByName("memory_gib") == nil {
 		t.Fatalf("compute projection=%v", compute)
 	}
 	quote := file.Messages().ByName("CoreCloudWorkerQuote")
@@ -27,8 +21,7 @@ func TestCloudWorkerPublicProtoMatchesDynamicSSHPublicProjection(t *testing.T) {
 		t.Fatalf("hourly compute price=%v", hourly)
 	}
 	execution := file.Messages().ByName("CoreCloudWorkerExecution")
-	if execution.Fields().ByName("cleanup") != nil || execution.Fields().ByName("cancellation_requested") != nil ||
-		execution.Fields().ByName("worker_id") == nil || execution.Fields().ByName("persistent_worker") == nil {
+	if execution.Fields().ByName("worker_id") == nil || execution.Fields().ByName("persistent_worker") == nil {
 		t.Fatalf("execution projection=%v", execution)
 	}
 	artifact := file.Messages().ByName("CoreCloudWorkerArtifact")

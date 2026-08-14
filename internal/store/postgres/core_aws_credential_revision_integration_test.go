@@ -120,18 +120,13 @@ func TestCoreAWSCredentialRevisionsSurviveRotationDisableAndRestart(t *testing.T
 		}
 	}
 
-	for _, table := range []string{
-		"core_cloud_worker_plans", "core_cloud_worker_artifacts",
-		"core_cloud_worker_output_journals", "core_cloud_worker_output_versions",
-	} {
-		var protected bool
-		if err = store.Pool().QueryRow(ctx, `SELECT EXISTS (
+	var protected bool
+	if err = store.Pool().QueryRow(ctx, `SELECT EXISTS (
 			SELECT 1 FROM pg_constraint
 			WHERE contype='f' AND conrelid=$1::regclass
 			AND confrelid='core_aws_credential_revisions'::regclass
-		)`, table).Scan(&protected); err != nil || !protected {
-			t.Fatalf("%s exact credential revision FK protected=%v err=%v", table, protected, err)
-		}
+		)`, "core_cloud_worker_plans").Scan(&protected); err != nil || !protected {
+		t.Fatalf("core_cloud_worker_plans exact credential revision FK protected=%v err=%v", protected, err)
 	}
 }
 

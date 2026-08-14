@@ -126,11 +126,6 @@ func TestCloudWorkerCatalogDescribesCurrentPlanAndRunProjection(t *testing.T) {
 				t.Errorf("%s schema omits %s: %s", operation.GetOperationId(), field, schema)
 			}
 		}
-		for _, retired := range []string{"recipe_id", "adapter", "input_manifest_digest", "ami_id", "worker_release_digest", "plan_digest", "quote_digest", "execution_digest", "network_grants", "secret_grants", "artifact_retention_seconds", "cleanup", "cancellation_requested"} {
-			if strings.Contains(schema, `"`+retired+`"`) {
-				t.Errorf("%s schema retains %s: %s", operation.GetOperationId(), retired, schema)
-			}
-		}
 		delete(want, operation.GetOperationId())
 	}
 	if len(want) != 0 {

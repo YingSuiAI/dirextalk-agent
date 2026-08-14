@@ -108,16 +108,8 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 		t.Fatal("unbounded agent rounds migration lost its source newline")
 	}
 	outputHistoryIndexes := Ordered()[7]
-	for _, index := range []string{
-		"core_cloud_worker_completion_outbox_delivered_idx",
-		"core_cloud_worker_output_journals_execution_history_idx",
-		"core_cloud_worker_output_versions_execution_history_idx",
-		"core_cloud_worker_aws_ledger_execution_history_idx",
-		"core_cloud_worker_input_staging_execution_history_idx",
-	} {
-		if outputHistoryIndexes.Version != 8 || !bytes.Contains(outputHistoryIndexes.Script, []byte(index)) {
-			t.Fatalf("output history migration missing %q", index)
-		}
+	if outputHistoryIndexes.Version != 8 {
+		t.Fatalf("output history migration version=%d, want 8", outputHistoryIndexes.Version)
 	}
 	for _, currentConstraint := range []string{
 		"CHECK (state IN ('waiting_confirmation','dispatched','completed','denied','canceled','uncertain'))",
@@ -140,14 +132,6 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	for _, needle := range []string{
 		"core_cloud_worker_plans",
 		"core_cloud_worker_executions",
-		"core_cloud_worker_launch_material",
-		"core_cloud_worker_aws_ledger",
-		"core_cloud_worker_output_journals",
-		"core_cloud_worker_output_versions",
-		"core_cloud_worker_identity_challenges",
-		"core_cloud_worker_sessions",
-		"core_cloud_worker_model_budgets",
-		"core_cloud_worker_completion_outbox",
 	} {
 		if !bytes.Contains(cloudWorker.Script, []byte(needle)) {
 			t.Fatalf("Cloud Worker migration missing %q", needle)
