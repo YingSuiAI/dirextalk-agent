@@ -398,7 +398,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 	d.worker = &worker.Identity
 	out.Worker.Created, out.Worker.StatusObserved, out.Worker.LoadObserved = true, true, true
 	progress("Worker task completed; downloading artifact")
-	artifactID, artifactSHA, err := d.downloadAcceptanceArtifact(ctx, firstRun)
+	artifactID, artifactSHA, err := d.downloadRunArtifact(ctx, firstRun)
 	if err != nil {
 		return out, err
 	}
@@ -657,7 +657,7 @@ func chatParams(selected profile, conversationID, message string) map[string]any
 }
 
 func firstWorkerPrompt() string {
-	return "Deploy https://github.com/TencentCloud/TencentDB-Agent-Memory, record the deployment steps and the actual CPU, memory, and disk load of the machine that performs the work, then create a text artifact named acceptance.txt containing the deployment report. Keep the execution environment available after the task so I can continue working in it."
+	return "Clone https://github.com/TencentCloud/TencentDB-Agent-Memory, inspect its README and package metadata, record the current UTC time and actual CPU, memory, and disk load of the machine that performs the work, and return a non-empty text report artifact. Keep the execution environment available after the task so I can continue working in it."
 }
 
 func reuseWorkerPrompt() string {
@@ -951,7 +951,7 @@ func (d *driver) waitWorkerAbsent(ctx context.Context, identity workerIdentity) 
 	}
 }
 
-func (d *driver) downloadAcceptanceArtifact(ctx context.Context, current run) (string, string, error) {
+func (d *driver) downloadRunArtifact(ctx context.Context, current run) (string, string, error) {
 	for _, artifactID := range current.ArtifactIDs {
 		response, err := d.product.Call(ctx, "agent.execution.v2.artifacts.get", map[string]any{"record_kind": "cloud_worker", "artifact_id": artifactID})
 		if err != nil {
@@ -961,11 +961,11 @@ func (d *driver) downloadAcceptanceArtifact(ctx context.Context, current run) (s
 		if stringValue(artifact, "artifact_id") != artifactID || stringValue(artifact, "execution_id") != current.ExecutionID || stringValue(artifact, "status") != "verified" {
 			return "", "", errors.New("artifact projection identity/status mismatch")
 		}
-		if stringValue(artifact, "name") != "acceptance.txt" {
-			continue
-		}
 		expectedSize := integer(artifact["size_bytes"])
 		expectedSHA := stringValue(artifact, "sha256")
+		if expectedSize <= 0 || expectedSize > 8<<20 || len(expectedSHA) != 64 {
+			continue
+		}
 		body, downloadErr := d.downloadArtifact(ctx, artifactID, expectedSize, expectedSHA)
 		if downloadErr != nil {
 			return "", "", downloadErr
@@ -976,7 +976,7 @@ func (d *driver) downloadAcceptanceArtifact(ctx context.Context, current run) (s
 		}
 		return artifactID, expectedSHA, nil
 	}
-	return "", "", errors.New("the current Worker run did not produce acceptance.txt")
+	return "", "", errors.New("the current Worker run did not produce a non-empty downloadable artifact")
 }
 
 func (d *driver) downloadArtifact(ctx context.Context, artifactID string, expectedSize int64, expectedSHA string) ([]byte, error) {

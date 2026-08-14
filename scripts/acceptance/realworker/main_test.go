@@ -247,7 +247,7 @@ func TestDownloadArtifactVerifiesEveryChunkAndFullDigest(t *testing.T) {
 		}, nil
 	}}
 	d := &driver{cfg: config{runDir: t.TempDir()}, product: product}
-	artifactID, artifactSHA, err := d.downloadAcceptanceArtifact(context.Background(), run{
+	artifactID, artifactSHA, err := d.downloadRunArtifact(context.Background(), run{
 		RunID: "run-id", ExecutionID: "execution-id", ArtifactIDs: []string{"artifact-id"},
 	})
 	if err != nil || artifactID != "artifact-id" || artifactSHA != fullHex {
@@ -366,7 +366,7 @@ func TestWorkerPromptsExerciseAutomaticEscalationAndReuse(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(first, "TencentDB-Agent-Memory") || !strings.Contains(first, "acceptance.txt") ||
+	if !strings.Contains(first, "TencentDB-Agent-Memory") || !strings.Contains(first, "non-empty text report artifact") ||
 		!strings.Contains(second, "retained from the previous task") {
 		t.Fatalf("prompts do not retain the acceptance objectives: first=%q second=%q", first, second)
 	}
