@@ -19,6 +19,22 @@ type memoryStore struct {
 	workers    map[string]WorkerRecord
 }
 
+type contextAwareStore struct{ *memoryStore }
+
+func (store *contextAwareStore) SaveExecution(ctx context.Context, record ExecutionRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return store.memoryStore.SaveExecution(ctx, record)
+}
+
+func (store *contextAwareStore) SaveWorker(ctx context.Context, record WorkerRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return store.memoryStore.SaveWorker(ctx, record)
+}
+
 func newMemoryStore() *memoryStore {
 	return &memoryStore{executions: map[string]ExecutionRecord{}, workers: map[string]WorkerRecord{}}
 }
@@ -349,6 +365,31 @@ func TestAmbiguousSSHExecutionKeepsWorkerBusyAndRunning(t *testing.T) {
 	}
 	if len(ssh.seen) != 2 || ssh.seen[0].Resume || !ssh.seen[1].Resume {
 		t.Fatalf("resume flags=%#v", ssh.seen)
+	}
+}
+
+func TestFailExecutionUsesFreshContextAfterCancellation(t *testing.T) {
+	base := newMemoryStore()
+	store := &contextAwareStore{memoryStore: base}
+	provider, err := New(newFakeAWS(), &fakeKeys{}, &fakeSSH{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := ExecutionRecord{ExecutionID: "execution-canceled", WorkerID: "worker-canceled", Phase: TaskRunning}
+	worker := WorkerRecord{WorkerID: "worker-canceled", Phase: WorkerBusy, CurrentExecutionID: execution.ExecutionID}
+	base.executions[execution.ExecutionID] = execution
+	base.workers[worker.WorkerID] = worker
+	provider.active[execution.ExecutionID] = struct{}{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err = provider.failExecution(ctx, &execution, &worker); err != nil {
+		t.Fatal(err)
+	}
+	if base.executions[execution.ExecutionID].Phase != TaskFailed || base.workers[worker.WorkerID].Phase != WorkerIdle || base.workers[worker.WorkerID].CurrentExecutionID != "" {
+		t.Fatalf("execution=%+v worker=%+v", base.executions[execution.ExecutionID], base.workers[worker.WorkerID])
+	}
+	if _, active := provider.active[execution.ExecutionID]; active {
+		t.Fatal("canceled execution remained active")
 	}
 }
 

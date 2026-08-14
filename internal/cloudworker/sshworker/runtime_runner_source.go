@@ -150,7 +150,9 @@ func finish(taskID string, current taskStatus, code int, runErr error) error {
 }
 
 func status(taskID string) error {
-	value, err := loadStatus(taskID); if err != nil { return err }
+	value, err := loadStatus(taskID)
+	if os.IsNotExist(err) { return json.NewEncoder(os.Stdout).Encode(taskStatus{TaskID: taskID, Phase: "not_started"}) }
+	if err != nil { return err }
 	if value.Phase == "running" && !alive(value.PID) { value.Phase = "failed"; value.ExitCode = 1; value.FinishedAt = time.Now().UTC().Format(time.RFC3339); _ = saveStatus(taskID, value) }
 	return json.NewEncoder(os.Stdout).Encode(value)
 }

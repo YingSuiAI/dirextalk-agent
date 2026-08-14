@@ -99,13 +99,11 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 
 	privateKey, _, err := provider.keys.Ensure(ctx, worker.WorkerID)
 	if err != nil {
-		provider.failExecution(ctx, &execution, &worker)
-		return ExecutionResult{}, err
+		return ExecutionResult{}, errors.Join(err, provider.failExecution(ctx, &execution, &worker))
 	}
 	target, err := provider.target.Resolve(worker.Instance)
 	if err != nil {
-		provider.failExecution(ctx, &execution, &worker)
-		return ExecutionResult{}, err
+		return ExecutionResult{}, errors.Join(err, provider.failExecution(ctx, &execution, &worker))
 	}
 	result, runErr := provider.ssh.Execute(ctx, SSHRequest{ExecutionID: request.ExecutionID, Host: target, User: worker.SSHUser,
 		PrivateKeyPath: privateKey, WorkerScript: request.WorkerScript, WorkerScriptSHA256: request.WorkerScriptSHA256,
@@ -118,8 +116,7 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 			provider.pool.mu.Unlock()
 			return ExecutionResult{}, runErr
 		}
-		provider.failExecution(ctx, &execution, &worker)
-		return ExecutionResult{}, runErr
+		return ExecutionResult{}, errors.Join(runErr, provider.failExecution(ctx, &execution, &worker))
 	}
 	result.WorkerID = worker.WorkerID
 	if err := provider.completeExecution(ctx, &execution, &worker, result); err != nil {
@@ -412,13 +409,18 @@ func (provider *Provider) releaseLocked(ctx context.Context, worker *WorkerRecor
 	return provider.saveWorker(ctx, worker)
 }
 
-func (provider *Provider) failExecution(ctx context.Context, execution *ExecutionRecord, worker *WorkerRecord) {
+func (provider *Provider) failExecution(ctx context.Context, execution *ExecutionRecord, worker *WorkerRecord) error {
+	cleanupCtx := ctx
+	cancel := func() {}
+	if ctx.Err() != nil {
+		cleanupCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	}
+	defer cancel()
 	provider.pool.mu.Lock()
 	defer provider.pool.mu.Unlock()
 	delete(provider.active, execution.ExecutionID)
 	execution.Phase = TaskFailed
-	_ = provider.saveExecution(ctx, execution)
-	_ = provider.releaseLocked(ctx, worker, execution.ExecutionID)
+	return errors.Join(provider.saveExecution(cleanupCtx, execution), provider.releaseLocked(cleanupCtx, worker, execution.ExecutionID))
 }
 
 func (provider *Provider) completeExecution(ctx context.Context, execution *ExecutionRecord, worker *WorkerRecord, result ExecutionResult) error {

@@ -207,7 +207,15 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(taskRoot, "spec.json"), spec, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	output, err := exec.Command(runner, "service-status", taskID).CombinedOutput()
+	output, err := exec.Command(runner, "status", taskID).CombinedOutput()
+	if err != nil {
+		t.Fatalf("not-started status failed: %v: %s", err, output)
+	}
+	var taskStatus remoteRuntimeStatus
+	if json.Unmarshal(output, &taskStatus) != nil || taskStatus.Phase != "not_started" {
+		t.Fatalf("not-started status=%s", output)
+	}
+	output, err = exec.Command(runner, "service-status", taskID).CombinedOutput()
 	if err != nil {
 		t.Fatalf("service status without duplicate contract failed: %v: %s", err, output)
 	}

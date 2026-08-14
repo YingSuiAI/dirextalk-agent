@@ -349,6 +349,10 @@ type remoteRuntimeStatus struct {
 	ExitCode int    `json:"exit_code"`
 }
 
+var errRuntimeNotStarted = errors.New("remote runtime is not started")
+
+const sshReadAttempts = 3
+
 type remoteArtifact struct {
 	Name string `json:"name"`
 	Size int64  `json:"size"`
@@ -386,7 +390,7 @@ func (source CommandStatusSource) ObserveService(ctx context.Context, worker Wor
 		sshPath = "ssh"
 	}
 	base := []string{"-i", key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/dev/null", worker.SSHUser + "@" + worker.Instance.PublicIP}
-	body, err := sshOutput(ctx, sshPath, base, runnerCommand(RuntimeServiceStatus, taskID), 64<<10)
+	body, err := retrySSHOutput(ctx, sshPath, base, runnerCommand(RuntimeServiceStatus, taskID), 64<<10)
 	if err != nil {
 		return ServiceRuntimeStatus{}, err
 	}
@@ -413,7 +417,7 @@ func (source CommandStatusSource) Observe(ctx context.Context, worker WorkerReco
 		sshPath = "ssh"
 	}
 	base := []string{"-i", key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/dev/null", worker.SSHUser + "@" + worker.Instance.PublicIP}
-	body, err := sshOutput(ctx, sshPath, base, runnerCommand(RuntimeServerStatus), 64<<10)
+	body, err := retrySSHOutput(ctx, sshPath, base, runnerCommand(RuntimeServerStatus), 64<<10)
 	if err != nil {
 		return RunnerMetrics{}, err
 	}
@@ -499,6 +503,16 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 		}
 	}
 	status, err := executor.waitRuntime(ctx, sshPath, base, request.Runtime)
+	if request.Resume && errors.Is(err, errRuntimeNotStarted) {
+		start, startErr := request.Runtime.Start()
+		if startErr != nil {
+			return ExecutionResult{}, startErr
+		}
+		if startErr = sshWithInput(ctx, sshPath, base, start.Shell, bytes.NewReader(start.Stdin)); startErr != nil {
+			return ExecutionResult{}, errors.Join(ErrAmbiguous, startErr)
+		}
+		status, err = executor.waitRuntime(ctx, sshPath, base, request.Runtime)
+	}
 	if err != nil {
 		return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
 	}
@@ -506,7 +520,7 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 	if err != nil {
 		return ExecutionResult{}, err
 	}
-	logBody, err := sshOutput(ctx, sshPath, base, logCommand.Shell, request.MaxResultBytes)
+	logBody, err := retrySSHOutput(ctx, sshPath, base, logCommand.Shell, request.MaxResultBytes)
 	if err != nil {
 		return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
 	}
@@ -526,7 +540,7 @@ func (executor CommandSSHExecutor) waitRuntime(ctx context.Context, sshPath stri
 		if err != nil {
 			return remoteRuntimeStatus{}, err
 		}
-		body, err := sshOutput(ctx, sshPath, base, command.Shell, 64<<10)
+		body, err := retrySSHOutput(ctx, sshPath, base, command.Shell, 64<<10)
 		if err != nil {
 			return remoteRuntimeStatus{}, err
 		}
@@ -538,6 +552,8 @@ func (executor CommandSSHExecutor) waitRuntime(ctx context.Context, sshPath stri
 		case "completed", "failed":
 			return status, nil
 		case "running":
+		case "not_started":
+			return remoteRuntimeStatus{}, errRuntimeNotStarted
 		default:
 			return remoteRuntimeStatus{}, ErrInvalid
 		}
@@ -554,7 +570,7 @@ func (executor CommandSSHExecutor) collectRuntimeArtifacts(ctx context.Context, 
 	if err != nil {
 		return 0, err
 	}
-	body, err := sshOutput(ctx, sshPath, base, listCommand.Shell, 1<<20)
+	body, err := retrySSHOutput(ctx, sshPath, base, listCommand.Shell, 1<<20)
 	if err != nil {
 		return 0, errors.Join(ErrAmbiguous, err)
 	}
@@ -572,7 +588,7 @@ func (executor CommandSSHExecutor) collectRuntimeArtifacts(ctx context.Context, 
 		if commandErr != nil {
 			return count, commandErr
 		}
-		data, commandErr := sshOutput(ctx, sshPath, base, command.Shell, artifact.Size)
+		data, commandErr := retrySSHOutput(ctx, sshPath, base, command.Shell, artifact.Size)
 		if commandErr != nil {
 			return count, errors.Join(ErrAmbiguous, commandErr)
 		}
@@ -600,6 +616,29 @@ func sshOutput(ctx context.Context, sshPath string, base []string, remote string
 		return nil, ErrResultTooLarge
 	}
 	return bytes.Clone(buffer.Bytes()), nil
+}
+
+func retrySSHOutput(ctx context.Context, sshPath string, base []string, remote string, limit int64) ([]byte, error) {
+	var last error
+	for attempt := 0; attempt < sshReadAttempts; attempt++ {
+		body, err := sshOutput(ctx, sshPath, base, remote, limit)
+		if err == nil {
+			return body, nil
+		}
+		last = err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		if errors.Is(err, ErrResultTooLarge) || attempt == sshReadAttempts-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timeAfter(1):
+		}
+	}
+	return nil, last
 }
 
 func retrySSH(ctx context.Context, sshPath string, base []string, remote string) error {
