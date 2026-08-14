@@ -194,11 +194,11 @@ func (r *RunRegistry) ClaimDigest(runID, digest string) (StatusV1, bool, error) 
 func (r *RunRegistry) Record(runID, digest string, status StatusV1) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if old, ok := r.records[runID]; ok && r.tombstones[runID].Status.RunID != "" {
-		if old.RequestDigest == digest {
-			return nil
-		}
+	if old, ok := r.records[runID]; ok && old.RequestDigest != digest {
 		return ErrReplay
+	}
+	if old, ok := r.records[runID]; ok && old.Status.RunID != "" {
+		return nil
 	}
 	r.records[runID] = runRecord{RunID: runID, RequestDigest: digest, Status: status}
 	r.tombstones[runID] = Tombstone{RunID: runID, At: time.Now().UTC(), Status: status}

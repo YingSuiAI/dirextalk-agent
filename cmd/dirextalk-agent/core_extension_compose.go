@@ -580,7 +580,6 @@ func resolveBuiltinLocalSandboxSelection(ctx context.Context, service coreextens
 }
 
 type builtinMCPSeedStore interface {
-	BuiltinMCPSeeded(context.Context, string) (bool, error)
 	EnsureBuiltinMCP(context.Context, coreextension.FetchArtifact, string) (coreextension.Installation, error)
 }
 
@@ -593,13 +592,6 @@ func ensureDefaultBuiltinMCPs(ctx context.Context, store builtinMCPSeedStore, ca
 		return err
 	}
 	for _, artifact := range catalog.Artifacts() {
-		seeded, err := store.BuiltinMCPSeeded(ctx, artifact.Candidate.ID)
-		if err != nil {
-			return err
-		}
-		if seeded {
-			continue
-		}
 		materialized, err := materializer.Materialize(ctx, artifact)
 		if err != nil {
 			return err

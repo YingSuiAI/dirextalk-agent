@@ -39,8 +39,13 @@ func TestToolCallRejectsArgumentsAndWrongName(t *testing.T) {
 
 func TestLocalSandboxToolReturnsBoundedShellResult(t *testing.T) {
 	original := newLocalSandboxCommand
-	t.Cleanup(func() { newLocalSandboxCommand = original })
+	originalPrepare := prepareLocalSandboxApplets
+	t.Cleanup(func() {
+		newLocalSandboxCommand = original
+		prepareLocalSandboxApplets = originalPrepare
+	})
 	work := t.TempDir()
+	prepareLocalSandboxApplets = func() error { return nil }
 	newLocalSandboxCommand = func(script string) *exec.Cmd {
 		cmd := exec.Command("/bin/sh", "-c", script)
 		cmd.Dir = work
@@ -57,6 +62,33 @@ func TestLocalSandboxToolReturnsBoundedShellResult(t *testing.T) {
 	payload := result["structuredContent"].(map[string]any)
 	if payload["stdout"] != "stdout" || payload["stderr"] != "stderr" || payload["exit_code"] != 0 {
 		t.Fatalf("local sandbox payload=%#v", payload)
+	}
+}
+
+func TestLocalSandboxPreparesBusyBoxAppletsBeforeRunningScript(t *testing.T) {
+	original := newLocalSandboxCommand
+	originalPrepare := prepareLocalSandboxApplets
+	t.Cleanup(func() {
+		newLocalSandboxCommand = original
+		prepareLocalSandboxApplets = originalPrepare
+	})
+	prepared := false
+	work := t.TempDir()
+	prepareLocalSandboxApplets = func() error {
+		prepared = true
+		return nil
+	}
+	newLocalSandboxCommand = func(string) *exec.Cmd {
+		if !prepared {
+			t.Fatal("shell command created before BusyBox applets")
+		}
+		cmd := exec.Command("/bin/sh", "-c", "printf artifact > result.txt; cat result.txt")
+		cmd.Dir = work
+		return cmd
+	}
+	result, err := call(localSandboxKind, json.RawMessage(`{"name":"local_sandbox_run","arguments":{"script":"ignored","result_paths":["result.txt"]}}`))
+	if err != nil || result["isError"] != false || !prepared {
+		t.Fatalf("local sandbox result=%#v prepared=%t err=%v", result, prepared, err)
 	}
 }
 

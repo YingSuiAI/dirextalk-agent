@@ -10,7 +10,7 @@ import (
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 )
 
-const builtinMCPVersion = "1.0.0"
+const builtinMCPVersion = "1.0.1"
 
 type builtinMCPDefinition struct {
 	ID          string

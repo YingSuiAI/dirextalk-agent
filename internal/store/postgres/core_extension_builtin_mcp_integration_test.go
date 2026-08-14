@@ -67,6 +67,23 @@ func TestCoreExtensionBuiltinMCPSeedIsOneTimeAndRemovalSurvivesRestart(t *testin
 	if err != nil || replayed.ID != installed.ID || replayed.Revision != installed.Revision {
 		t.Fatalf("replayed=%#v err=%v", replayed, err)
 	}
+	updatedCatalog, err := source.NewBuiltinMCPs([]byte("ELF fixture v2"), []byte("shell fixture"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedArtifact := updatedCatalog.Artifacts()[0]
+	updatedDigest := strings.Repeat("b", 64)
+	updated, err := repository.EnsureBuiltinMCP(ctx, updatedArtifact, updatedDigest)
+	if err != nil || updated.ID != installed.ID || updated.Revision != installed.Revision+1 || len(updated.Versions) != 2 || updated.ActiveVersionID == installed.ActiveVersionID {
+		t.Fatalf("updated=%#v err=%v", updated, err)
+	}
+	active := updated.Versions[1]
+	if updated.Versions[0].VersionID == updated.ActiveVersionID {
+		active = updated.Versions[0]
+	}
+	if active.VersionID != updated.ActiveVersionID || active.ArtifactDigest != updatedDigest {
+		t.Fatalf("active updated version=%#v", active)
+	}
 	if _, err = pool.Exec(ctx, `UPDATE core_extension_installations SET state='removed',enabled=false,active_version_id=NULL,revision=revision+1 WHERE installation_id=$1`, installed.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +91,7 @@ func TestCoreExtensionBuiltinMCPSeedIsOneTimeAndRemovalSurvivesRestart(t *testin
 	if err != nil || !seeded {
 		t.Fatalf("seeded=%v err=%v", seeded, err)
 	}
-	afterRestart, err := repository.EnsureBuiltinMCP(ctx, artifact, artifactDigest)
+	afterRestart, err := repository.EnsureBuiltinMCP(ctx, updatedArtifact, updatedDigest)
 	if err != nil || afterRestart.State != coreextension.StateRemoved || afterRestart.Enabled || afterRestart.ActiveVersionID != "" {
 		t.Fatalf("removed default resurrected: %#v err=%v", afterRestart, err)
 	}

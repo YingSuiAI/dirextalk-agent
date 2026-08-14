@@ -1,5 +1,5 @@
 // dirextalk-builtin-mcp is the immutable, network-free executable published
-// as the two default read-only MCP installations.
+// as the default MCP installations.
 package main
 
 import (
@@ -23,6 +23,7 @@ const (
 	localSandboxToolName       = "local_sandbox_run"
 	localSandboxShellPath      = "/app/shell"
 	localSandboxWorkDir        = "/work"
+	localSandboxBinDir         = "/work/.dirextalk-bin"
 	localSandboxMaxScriptBytes = 64 << 10
 	localSandboxMaxResultPaths = 16
 	localSandboxMaxOutputBytes = 64 << 10
@@ -32,8 +33,30 @@ var newLocalSandboxCommand = func(script string) *exec.Cmd {
 	cmd := exec.Command(localSandboxShellPath, "sh", "-c", script)
 	cmd.Args[0] = "busybox"
 	cmd.Dir = localSandboxWorkDir
-	cmd.Env = []string{"HOME=/work", "TMPDIR=/work", "PATH=/app"}
+	cmd.Env = []string{"HOME=/work", "TMPDIR=/work", "PATH=" + localSandboxBinDir}
 	return cmd
+}
+
+var prepareLocalSandboxApplets = func() error {
+	list := exec.Command(localSandboxShellPath, "--list")
+	list.Args[0] = "busybox"
+	output, err := list.Output()
+	if err != nil {
+		return err
+	}
+	if err = os.Mkdir(localSandboxBinDir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	for _, name := range strings.Fields(string(output)) {
+		if name == "" || strings.Contains(name, "/") {
+			continue
+		}
+		link := path.Join(localSandboxBinDir, name)
+		if err = os.Symlink(localSandboxShellPath, link); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 type request struct {
@@ -186,6 +209,9 @@ func runLocalSandbox(arguments map[string]any) (map[string]any, error) {
 			}
 			seen[item] = struct{}{}
 		}
+	}
+	if err := prepareLocalSandboxApplets(); err != nil {
+		return nil, err
 	}
 	cmd := newLocalSandboxCommand(script)
 	stdout, stderr := &boundedOutput{}, &boundedOutput{}

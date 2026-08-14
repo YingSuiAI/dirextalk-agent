@@ -47,9 +47,40 @@ func (s *CoreExtensionStore) EnsureBuiltinMCP(ctx context.Context, artifact core
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('core_builtin_mcp_seeds',0))`); err != nil {
 		return coreextension.Installation{}, err
 	}
-	var existingID string
-	err = tx.QueryRow(ctx, `SELECT installation_id::text FROM core_builtin_mcp_seeds WHERE candidate_id=$1 FOR UPDATE`, artifact.Candidate.ID).Scan(&existingID)
+	now := time.Now().UTC()
+	mutation := coreextension.Mutation{Candidate: artifact.Candidate, Inspection: artifact.Inspection, ArtifactPath: artifactDigest, ArtifactDigest: artifactDigest}
+	version := versionFromInspectionPG(artifact.Inspection, versionID, now, mutation)
+	var existingID, registryVersion, contentDigest, existingArtifactDigest string
+	err = tx.QueryRow(ctx, `SELECT installation_id::text,registry_version,content_digest,artifact_digest FROM core_builtin_mcp_seeds WHERE candidate_id=$1 FOR UPDATE`, artifact.Candidate.ID).Scan(&existingID, &registryVersion, &contentDigest, &existingArtifactDigest)
 	if err == nil {
+		if registryVersion == artifact.Candidate.Pin.RegistryVersion && contentDigest == artifact.ContentDigest && existingArtifactDigest == artifactDigest {
+			if err = tx.Commit(ctx); err != nil {
+				return coreextension.Installation{}, err
+			}
+			return s.Get(ctx, existingID)
+		}
+		var state string
+		var enabled bool
+		if err = tx.QueryRow(ctx, `SELECT state,enabled FROM core_extension_installations WHERE installation_id=$1 FOR UPDATE`, existingID).Scan(&state, &enabled); err != nil {
+			return coreextension.Installation{}, err
+		}
+		if state != string(coreextension.StateInstalled) || !enabled {
+			if err = tx.Commit(ctx); err != nil {
+				return coreextension.Installation{}, err
+			}
+			return s.Get(ctx, existingID)
+		}
+		candidateJSON, _ := json.Marshal(artifact.Candidate)
+		versionJSON, _ := json.Marshal(version)
+		if _, err = tx.Exec(ctx, `INSERT INTO core_extension_versions(version_id,installation_id,version_json,created_at) VALUES($1,$2,$3,$4)`, versionID, existingID, versionJSON, now); err != nil {
+			return coreextension.Installation{}, err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE core_extension_installations SET candidate_json=$2,name=$3,description=$4,revision=revision+1,active_version_id=$5,proposed_version_id=NULL,updated_at=$6 WHERE installation_id=$1`, existingID, candidateJSON, artifact.Candidate.Name, artifact.Candidate.Description, versionID, now); err != nil {
+			return coreextension.Installation{}, err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE core_builtin_mcp_seeds SET registry_version=$2,content_digest=$3,artifact_digest=$4,seeded_at=$5 WHERE candidate_id=$1`, artifact.Candidate.ID, artifact.Candidate.Pin.RegistryVersion, artifact.ContentDigest, artifactDigest, now); err != nil {
+			return coreextension.Installation{}, err
+		}
 		if err = tx.Commit(ctx); err != nil {
 			return coreextension.Installation{}, err
 		}
@@ -58,9 +89,6 @@ func (s *CoreExtensionStore) EnsureBuiltinMCP(ctx context.Context, artifact core
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return coreextension.Installation{}, err
 	}
-	now := time.Now().UTC()
-	mutation := coreextension.Mutation{Candidate: artifact.Candidate, Inspection: artifact.Inspection, ArtifactPath: artifactDigest, ArtifactDigest: artifactDigest}
-	version := versionFromInspectionPG(artifact.Inspection, versionID, now, mutation)
 	installation := coreextension.Installation{
 		ID: installationID.String(), Candidate: artifact.Candidate, Kind: coreextension.KindMCP,
 		Source: coreextension.SourceBuiltin, CandidateID: artifact.Candidate.ID, Name: artifact.Candidate.Name,
