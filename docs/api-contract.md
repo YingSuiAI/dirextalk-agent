@@ -374,7 +374,12 @@ pricing or replacement-offer pass.
 Reusing an already retained idle Worker requires its actual vCPU, memory, and
 disk to satisfy the request. It needs no creation confirmation, but Agent still
 reads and displays its live ongoing hourly cost. Worker destruction is a
-separate explicit owner-confirmed operation.
+separate explicit owner-confirmed operation. The owner may invoke it from the
+Worker management surface or explicitly ask the Native Agent to destroy one
+of the retained Worker IDs in the live owner-scoped inventory. The conversation
+intrinsic accepts no provider identity from the model, re-resolves the exact
+stored Worker under the current owner/account generation, and commits the
+terminal conversation response only after destruction completes.
 The intrinsic may create a priced offer for an explicit cloud request or when
 trusted Native scheduler evidence proves that the local conversation runtime
 lacks the general project/shell executor required by a substantial task. The

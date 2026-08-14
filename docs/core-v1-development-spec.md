@@ -477,13 +477,15 @@ live hourly compute price, estimated cost, and maximum authorized cost.
 
 A proposal atomically creates the plan, execution, `CLOUD_WORKER` Task and
 `CoreConfirmation`. Creating a Worker requires a fresh EC2/EBS price read and
-confirmation of that exact quote before any AWS mutation. The price is read
-again immediately before the first AWS write; expiry or drift atomically
-creates a replacement offer and confirmation without creating a key pair,
-security group, or instance. Reusing a sufficiently large idle retained Worker
+confirmation of that exact quote before any AWS mutation. Confirmation of the
+current unexpired offer authorizes the first AWS write directly; there is no
+second quote or confirmation step. Reusing a sufficiently large idle retained Worker
 performs no creation mutation and needs no new creation confirmation, while a
 live hourly read still reports its ongoing server cost.
-Destroying a retained Worker is a separate explicit owner action.
+Destroying a retained Worker is a separate explicit owner action available
+from both the owner client and the Native Agent conversation. The conversation
+tool enumerates only the current owner-scoped retained Worker IDs and resolves
+the full provider identity from Agent storage at execution time.
 
 The manager keeps at most five Workers for the authenticated owner/account
 generation. It discovers the newest Canonical official Ubuntu 24.04 LTS image

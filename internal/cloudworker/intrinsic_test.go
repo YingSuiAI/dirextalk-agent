@@ -62,6 +62,31 @@ func (resolver *intrinsicWorkerInventory) ResolveRetainedWorkerInventory(_ conte
 	return resolver.value, nil
 }
 
+type intrinsicWorkerManager struct {
+	intrinsicWorkerInventory
+	destroyedWorker, destroyProof string
+}
+
+func (manager *intrinsicWorkerManager) DestroyRetainedWorker(_ context.Context, owner string, generation uint64, workerID, proof string) error {
+	if owner != manager.owner || generation != manager.gen {
+		return ErrInvalid
+	}
+	manager.destroyedWorker, manager.destroyProof = workerID, proof
+	return nil
+}
+
+type intrinsicTurnCommitter struct {
+	lease    coreconversation.TurnLease
+	response coreconversation.ChatResponse
+}
+
+func (committer *intrinsicTurnCommitter) CommitTurn(_ context.Context, lease coreconversation.TurnLease, response coreconversation.ChatResponse) (coreconversation.Turn, error) {
+	committer.lease, committer.response = lease, response
+	turn := lease.Turn
+	turn.State, turn.Response = coreconversation.TurnCompleted, &response
+	return turn, nil
+}
+
 func (r intrinsicBudget) ResolveCloudWorkerBudgetEvidence(context.Context, coreconversation.TurnLease) (*LocalBudgetEvidence, error) {
 	return r.evidence, nil
 }
@@ -242,6 +267,41 @@ func TestIntrinsicDescriptionIncludesLiveRetainedWorkerInventory(t *testing.T) {
 	}
 	if resolver.owner != lease.Turn.OwnerID || resolver.gen != lease.Turn.AccountGeneration {
 		t.Fatalf("inventory authority=%q/%d", resolver.owner, resolver.gen)
+	}
+}
+
+func TestIntrinsicDestroysExactRetainedWorkerFromConversation(t *testing.T) {
+	intrinsic, _, lease := intrinsicFixture(t, "销毁刚才保留的 Worker", nil, nil)
+	lease.Turn.CreatedAt = time.Date(2026, 8, 15, 4, 0, 0, 0, time.UTC)
+	workerID := uuid.NewString()
+	manager := &intrinsicWorkerManager{intrinsicWorkerInventory: intrinsicWorkerInventory{value: RetainedWorkerInventory{
+		ObservedAt: lease.Turn.CreatedAt, Workers: []RetainedWorkerSnapshot{{
+			WorkerID: workerID, Availability: "available", EC2State: "running", WorkerPhase: "idle", PublicIPv4: "203.0.113.9",
+		}},
+	}}}
+	committer := &intrinsicTurnCommitter{}
+	if err := intrinsic.EnableRetainedWorkerManagement(manager, committer); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
+	if err != nil || len(tools) != 2 || tools[1].Tool.Name != coremodel.IntrinsicCloudWorkerDestroyToolName {
+		t.Fatalf("tools=%+v err=%v", tools, err)
+	}
+	raw := []byte(fmt.Sprintf(`{"worker_id":%q,"confirmation":"destroy_worker"}`, workerID))
+	result, err := tools[1].Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
+		Lease: lease, ConversationRevision: 8, CanonicalArguments: raw,
+		Call: coreconversation.ToolCall{ID: "destroy-call", Name: coremodel.IntrinsicCloudWorkerDestroyToolName, Arguments: string(raw)},
+	})
+	if err != nil || !result.TurnCommitted {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if manager.destroyedWorker != workerID || manager.destroyProof == "" || manager.owner != lease.Turn.OwnerID || manager.gen != lease.Turn.AccountGeneration {
+		t.Fatalf("destroy authority manager=%+v", manager)
+	}
+	response := committer.response
+	if committer.lease.LeaseID != lease.LeaseID || !response.Done || response.Revision != 9 || response.ConversationID != lease.Turn.ConversationID ||
+		response.Message.Content != "Worker "+workerID+" destroyed." || response.Message.ModelProfileID != lease.Turn.ProfileID {
+		t.Fatalf("committed response=%+v", response)
 	}
 }
 

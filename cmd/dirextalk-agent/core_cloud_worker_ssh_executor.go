@@ -527,6 +527,24 @@ func (executor *sshWorkerExecutor) DestroyWorker(ctx context.Context, authority 
 	return executor.destroyWorkerResources(ctx, provider, request)
 }
 
+func (executor *sshWorkerExecutor) DestroyRetainedWorker(ctx context.Context, ownerID string, accountGeneration uint64, workerID, proof string) error {
+	if executor == nil || ctx == nil || strings.TrimSpace(ownerID) == "" || accountGeneration == 0 || strings.TrimSpace(workerID) == "" || strings.TrimSpace(proof) == "" {
+		return sshworker.ErrInvalid
+	}
+	worker, found, err := executor.state.LoadWorker(ctx, workerID)
+	if err != nil || !found || worker.OwnerID != ownerID || worker.AccountGeneration != accountGeneration {
+		return errors.Join(sshworker.ErrIdentity, err)
+	}
+	identity := sshworker.WorkerIdentity{
+		WorkerID: worker.WorkerID, OwnerID: worker.OwnerID, AccountGeneration: worker.AccountGeneration,
+		Credential: worker.Credential, InstanceID: worker.Instance.ID,
+		KeyPairID: worker.KeyPair.ID, SecurityGroupID: worker.SecurityGroup.ID,
+	}
+	return executor.DestroyWorker(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, sshworker.DestroyRequest{
+		Identity: identity, Authorization: sshworker.DestroyAuthorization{Authorized: true, Proof: proof},
+	})
+}
+
 type workerDestroyer interface {
 	DestroyWorkerResources(context.Context, sshworker.DestroyRequest) error
 	FinalizeWorkerDestroy(context.Context, sshworker.DestroyRequest) error

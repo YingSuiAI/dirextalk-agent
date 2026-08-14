@@ -212,6 +212,17 @@ support.
 - On **2026-08-14**, current focused tests cover Canonical official Ubuntu 24.04
   image discovery and its `ubuntu` SSH/bootstrap contract. This evidence is
   code-level and does not claim a live Ubuntu Worker mutation.
+- On **2026-08-15**, the s3 production-shaped acceptance used the App-uploaded
+  AWS credential in account `066107820442`, performed a fresh `ap-east-1`
+  quote and one owner confirmation, created one Canonical Ubuntu 24.04 SSH
+  Worker with an ordinary public IPv4, observed task status and server load,
+  downloaded a verified Agent-local artifact, retained and reused the same
+  Worker without a second creation confirmation, then explicitly destroyed it.
+  Independent AWS read-back proved the EC2 instance terminated and its key pair
+  and security group absent; no S3 path was used. The same deployment also ran
+  a real Native Agent local-sandbox turn with one HTTP admission and resumable
+  SSE through `done`, persisted three local artifact references, and verified
+  get/download/delete against Agent-owned host storage.
 
 ## Remaining release gates
 
@@ -227,13 +238,8 @@ support.
   Focused intrinsic, deterministic evidence-binding, empty-write materializer,
   command composition, and pure PostgreSQL package tests cover this path; live
   AWS mutation remains a separate authorized acceptance step.
-- The fresh-state real-cloud acceptance for the current design remains open:
-  App credential upload and STS verification, a fresh live quote, exact owner
-  confirmation, creation of one Canonical official Ubuntu 24.04 EC2 Worker with
-  ordinary public IPv4, reconnectable Pi task execution, local artifact delivery,
-  retained idle reuse without another creation, live load observation, and
-  explicit manual destroy with EC2/key-pair/security-group absence read-back.
-  Route53 bind/unbind acceptance is optional and separate from Worker readiness.
+- Route53 bind/unbind acceptance remains optional and separate from Worker
+  readiness.
 
 These gates are evidence requirements, not fallback behavior: a missing proof
 keeps the corresponding capability unpublished while planning and unrelated

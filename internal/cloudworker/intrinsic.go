@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"regexp"
@@ -68,6 +69,17 @@ type RetainedWorkerInventoryResolver interface {
 	ResolveRetainedWorkerInventory(context.Context, string, uint64) (RetainedWorkerInventory, error)
 }
 
+// RetainedWorkerManager exposes only the owner-scoped lifecycle operation the
+// conversation intrinsic needs. The model never receives provider identities.
+type RetainedWorkerManager interface {
+	RetainedWorkerInventoryResolver
+	DestroyRetainedWorker(context.Context, string, uint64, string, string) error
+}
+
+type IntrinsicTurnCommitter interface {
+	CommitTurn(context.Context, coreconversation.TurnLease, coreconversation.ChatResponse) (coreconversation.Turn, error)
+}
+
 type RetainedWorkerInventory struct {
 	ObservedAt time.Time                `json:"observed_at"`
 	AtCapacity bool                     `json:"at_capacity"`
@@ -122,6 +134,8 @@ type ProposeIntrinsic struct {
 	manifests IntrinsicManifestResolver
 	budgets   IntrinsicBudgetResolver
 	workers   RetainedWorkerInventoryResolver
+	manager   RetainedWorkerManager
+	turns     IntrinsicTurnCommitter
 }
 
 func NewProposeIntrinsic(service *Service, owners IntrinsicOwnerResolver, manifests IntrinsicManifestResolver, budgets IntrinsicBudgetResolver) (*ProposeIntrinsic, error) {
@@ -136,6 +150,14 @@ func (p *ProposeIntrinsic) EnableRetainedWorkerInventory(resolver RetainedWorker
 		return ErrInvalid
 	}
 	p.workers = resolver
+	return nil
+}
+
+func (p *ProposeIntrinsic) EnableRetainedWorkerManagement(manager RetainedWorkerManager, turns IntrinsicTurnCommitter) error {
+	if p == nil || manager == nil || turns == nil {
+		return ErrInvalid
+	}
+	p.workers, p.manager, p.turns = manager, manager, turns
 	return nil
 }
 
@@ -185,10 +207,13 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	}
 	description := "Run work in a suitable retained execution environment, or propose a priced reusable environment when none is available. Use it for substantial project or shell execution, deployment, build, test, durable file delivery, long-running compute, and actual follow-up work in a retained environment. Do not call this tool only to inspect status; answer status questions from the live retained_worker_inventory below. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. Reuse needs no creation confirmation; new resources start only after the owner reviews and confirms the offer."
 	inventory := `{"status":"unavailable"}`
+	var currentInventory RetainedWorkerInventory
+	inventoryReady := false
 	if p.workers != nil && strings.TrimSpace(bound.Turn.OwnerID) != "" && bound.Turn.AccountGeneration != 0 {
 		if current, inventoryErr := p.workers.ResolveRetainedWorkerInventory(ctx, bound.Turn.OwnerID, bound.Turn.AccountGeneration); inventoryErr == nil {
 			if raw, marshalErr := json.Marshal(current); marshalErr == nil && len(raw) <= 64<<10 {
 				inventory = string(raw)
+				currentInventory, inventoryReady = current, true
 			}
 		}
 	}
@@ -202,12 +227,107 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 			"properties":           properties,
 		},
 	}
-	return []coreconversation.ResolvedIntrinsic{{
+	resolved := []coreconversation.ResolvedIntrinsic{{
 		Tool: tool,
 		Execute: func(ctx context.Context, request coreconversation.IntrinsicExecutionRequest) (coreconversation.IntrinsicExecutionResult, error) {
 			return p.execute(ctx, bound, request)
 		},
-	}}, nil
+	}}
+	if p.manager == nil || p.turns == nil || !inventoryReady || len(currentInventory.Workers) == 0 {
+		return resolved, nil
+	}
+	workerChoices := make([]any, 0, len(currentInventory.Workers))
+	for _, worker := range currentInventory.Workers {
+		if !coretask.ValidUUID(worker.WorkerID) {
+			continue
+		}
+		detail := strings.TrimSpace(strings.Join([]string{worker.Availability, worker.EC2State, worker.WorkerPhase, worker.PublicIPv4}, " "))
+		workerChoices = append(workerChoices, map[string]any{"const": worker.WorkerID, "description": detail})
+	}
+	if len(workerChoices) == 0 {
+		return resolved, nil
+	}
+	resolved = append(resolved, coreconversation.ResolvedIntrinsic{
+		Tool: coremodel.Tool{
+			Name:        coremodel.IntrinsicCloudWorkerDestroyToolName,
+			Description: "Destroy one retained Worker only when the user explicitly asks to destroy it. A status question, completed task, or idle Worker is not authorization. Select the exact worker_id from the current owner-scoped inventory. This permanently removes the EC2 instance, key pair, security group, and any bound service state.",
+			InputSchema: map[string]any{
+				"type": "object", "additionalProperties": false,
+				"required": []any{"worker_id", "confirmation"},
+				"properties": map[string]any{
+					"worker_id":    map[string]any{"type": "string", "oneOf": workerChoices},
+					"confirmation": map[string]any{"type": "string", "const": "destroy_worker"},
+				},
+			},
+		},
+		Execute: func(ctx context.Context, request coreconversation.IntrinsicExecutionRequest) (coreconversation.IntrinsicExecutionResult, error) {
+			return p.executeDestroy(ctx, bound, request)
+		},
+	})
+	return resolved, nil
+}
+
+type destroyIntrinsicArguments struct {
+	WorkerID     string `json:"worker_id"`
+	Confirmation string `json:"confirmation"`
+}
+
+func (p *ProposeIntrinsic) executeDestroy(ctx context.Context, bound coreconversation.TurnLease, request coreconversation.IntrinsicExecutionRequest) (coreconversation.IntrinsicExecutionResult, error) {
+	if ctx == nil || p.manager == nil || p.turns == nil || request.Lease.Turn.ID != bound.Turn.ID ||
+		request.Lease.Turn.RequestID != bound.Turn.RequestID || request.Lease.LeaseID != bound.LeaseID ||
+		request.Lease.Epoch != bound.Epoch || request.Call.Name != coremodel.IntrinsicCloudWorkerDestroyToolName ||
+		request.Call.Validate() != nil || request.ConversationRevision == 0 || bound.Turn.CreatedAt.IsZero() {
+		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	arguments, err := parseDestroyIntrinsicArguments(request.CanonicalArguments)
+	if err != nil {
+		return coreconversation.IntrinsicExecutionResult{}, err
+	}
+	owner, err := p.owners.ResolveCloudWorkerOwner(ctx, bound)
+	if err != nil || owner.OwnerID != bound.Turn.OwnerID || owner.AccountGeneration != bound.Turn.AccountGeneration {
+		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	proof := uuid.NewSHA1(uuid.NameSpaceOID, []byte("cloud-worker-destroy:"+bound.Turn.ID+":"+request.Call.ID)).String()
+	if err = p.manager.DestroyRetainedWorker(ctx, owner.OwnerID, owner.AccountGeneration, arguments.WorkerID, proof); err != nil {
+		return coreconversation.IntrinsicExecutionResult{}, err
+	}
+	message := coreconversation.Message{
+		ID:   uuid.NewSHA1(uuid.NameSpaceOID, []byte("cloud-worker-destroy-message:"+bound.Turn.ID+":"+request.Call.ID)).String(),
+		Role: coreconversation.RoleAssistant, Content: fmt.Sprintf("Worker %s destroyed.", arguments.WorkerID),
+		CreatedAt: bound.Turn.CreatedAt.UTC().Add(time.Microsecond), ModelProfileID: bound.Turn.ProfileID,
+	}
+	if message.Validate() != nil {
+		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	response := coreconversation.ChatResponse{
+		RequestID: bound.Turn.RequestID, ConversationID: bound.Turn.ConversationID,
+		Revision: request.ConversationRevision + 1, Message: message, Done: true, ModelProfileID: bound.Turn.ProfileID,
+	}
+	if _, err = p.turns.CommitTurn(ctx, request.Lease, response); err != nil {
+		return coreconversation.IntrinsicExecutionResult{}, err
+	}
+	return coreconversation.IntrinsicExecutionResult{TurnCommitted: true}, nil
+}
+
+func parseDestroyIntrinsicArguments(raw json.RawMessage) (destroyIntrinsicArguments, error) {
+	if len(raw) == 0 || len(raw) > coreconversation.MaxToolArgumentsBytes {
+		return destroyIntrinsicArguments{}, ErrInvalid
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var arguments destroyIntrinsicArguments
+	if decoder.Decode(&arguments) != nil {
+		return destroyIntrinsicArguments{}, ErrInvalid
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return destroyIntrinsicArguments{}, ErrInvalid
+	}
+	arguments.WorkerID = strings.TrimSpace(arguments.WorkerID)
+	if !coretask.ValidUUID(arguments.WorkerID) || arguments.Confirmation != "destroy_worker" {
+		return destroyIntrinsicArguments{}, ErrInvalid
+	}
+	return arguments, nil
 }
 
 // frozenTurnAttachmentSchema exposes only the sources already consumed and

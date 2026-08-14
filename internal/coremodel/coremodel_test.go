@@ -242,7 +242,7 @@ func TestProviderPayloadsMapToolExchanges(t *testing.T) {
 }
 
 func TestProviderSafeIntrinsicNamesRoundTripPayloadsAndResponses(t *testing.T) {
-	for _, name := range []string{IntrinsicScheduleCreateToolName, IntrinsicCloudWorkerProposeToolName, IntrinsicStaticSitePublishToolName} {
+	for _, name := range []string{IntrinsicScheduleCreateToolName, IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicStaticSitePublishToolName} {
 		if !toolNamePattern.MatchString(name) || strings.Contains(name, ".") {
 			t.Fatalf("intrinsic tool name is not provider-safe: %q", name)
 		}

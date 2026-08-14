@@ -40,7 +40,8 @@ Before creating a new Worker, the Agent reads the current AWS EC2 and EBS price,
 presents the exact quote, and performs no AWS mutation until the owner confirms
 it. Reusing an existing idle Worker does not create infrastructure and does not
 require another creation quote. A retained Worker is destroyed only by an
-explicit owner action.
+explicit owner action, either through the owner client management operation or
+the Native Agent's owner-scoped `cloud_worker_destroy` intrinsic.
 
 The Worker manager supports at most five retained Workers for the current
 credential. It discovers the newest Canonical official Ubuntu 24.04 LTS image

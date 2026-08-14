@@ -1113,7 +1113,7 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 		model.request.Intrinsics[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
 		len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != selection.ID ||
 		!strings.HasPrefix(model.request.Profile.SystemPrompt, profile.SystemPrompt+"\n\n") ||
-		!strings.Contains(model.request.Profile.SystemPrompt, "call cloud_worker_propose") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "Use cloud_worker_propose directly") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "does not need to mention AWS") {
 		t.Fatalf("model request lost intrinsic or extension: %+v", model.request)
 	}

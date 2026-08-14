@@ -27,6 +27,7 @@ var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 const (
 	IntrinsicCloudWorkerProposeToolName = "cloud_worker_propose"
+	IntrinsicCloudWorkerDestroyToolName = "cloud_worker_destroy"
 	IntrinsicScheduleCreateToolName     = "agent_schedule_create"
 	IntrinsicStaticSitePublishToolName  = "static_site_publish"
 	maxImageInputBytes                  = 8 << 20
@@ -34,7 +35,7 @@ const (
 
 func IsIntrinsicToolName(value string) bool {
 	switch value {
-	case IntrinsicCloudWorkerProposeToolName, IntrinsicScheduleCreateToolName, IntrinsicStaticSitePublishToolName:
+	case IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicScheduleCreateToolName, IntrinsicStaticSitePublishToolName:
 		return true
 	default:
 		return false

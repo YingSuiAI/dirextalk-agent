@@ -12,6 +12,13 @@ The intrinsic supplies minimum vCPU, memory, disk, and estimated runtime, never 
 
 Creating a Worker requires a fresh AWS Price List quote for EC2 and gp3 storage. The owner confirms that exact quote once before the Agent creates a key pair, security group, or instance. Reusing an idle retained Worker is allowed only when its actual vCPU, memory, and disk meet the new request. It needs no creation confirmation, but its ongoing hourly cost is still read live and displayed. Destroying a Worker is a separate owner-confirmed action.
 
+Worker destruction is available through the owner-facing management action and
+the Core-owned `cloud_worker_destroy` conversation intrinsic. The intrinsic is
+published only when the live owner inventory contains a retained Worker,
+accepts one enumerated Worker ID, re-resolves its full identity from Agent
+storage, and commits a final chat response after the idempotent destroy path
+completes. Status or load questions never authorize destruction.
+
 ## Persistent SSH Workers
 
 The Agent manages at most five retained Workers for the authenticated owner and account generation. It uses the sole active AWS credential uploaded and STS-verified through the App, discovers the newest Canonical official Ubuntu 24.04 LTS image and the account's default VPC/subnet, and creates an ordinary EC2 instance with an auto-assigned public IPv4.
