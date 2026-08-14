@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.96
+
+1. Use the curl already provided by Amazon Linux 2023 and bound oversized SSH bootstrap errors before durable terminalization, preventing package conflicts from leaving Worker runs stuck in provisioning.
+
 ## v1.0.95
 
 1. Keep the Cloud Worker pricing and authorization token ceiling separate from Pi request configuration, so an unset profile uses Pi's maintained 16,384-token default instead of an unrelated quote limit.
