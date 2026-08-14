@@ -712,7 +712,7 @@ func TestExecuteTurnDurableUsesStreamingPathBeyondLegacyTotalWindow(t *testing.T
 	}
 }
 
-func TestExecuteTurnContinuesIntrinsicHistoryWithoutDuplicatePublicMessages(t *testing.T) {
+func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
 	requestID := uuid.NewString()
@@ -741,7 +741,8 @@ func TestExecuteTurnContinuesIntrinsicHistoryWithoutDuplicatePublicMessages(t *t
 	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
 	reference := Reference{Kind: "execution_plan", AccountGeneration: 1, TaskID: taskID,
 		PlanID: planID, PlanRevision: 1, Status: "waiting_user"}
-	result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"status":"succeeded"}`,
+	workerID := uuid.NewString()
+	result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"schema":"dirextalk.ssh-worker-completion/v1","status":"succeeded","worker_id":"` + workerID + `","worker_report":"deployment finished"}`,
 		RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID},
 		References: []Reference{reference}, Summary: "Cloud Worker result returned"}
 	prefix := Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "earlier answer",
@@ -779,32 +780,16 @@ func TestExecuteTurnContinuesIntrinsicHistoryWithoutDuplicatePublicMessages(t *t
 	}
 	service.executeTurn(context.Background(), turn.ID)
 
-	if model.runs != 1 || len(model.request.Conversation.Messages) != 6 || len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != installedSnapshot.Selection.ID {
-		t.Fatalf("model runs=%d context=%+v", model.runs, model.request.Conversation.Messages)
-	}
-	promptCount := 0
-	for _, message := range model.request.Conversation.Messages {
-		if message.Content == turn.Prompt {
-			promptCount++
-		}
-		if message.Content == quote.Content {
-			t.Fatal("synthetic quote leaked into continuation model context")
-		}
-	}
-	if promptCount != 1 || model.request.Conversation.Messages[0].ID != prefix.ID ||
-		model.request.Conversation.Messages[1].Role != RoleUser ||
-		len(model.request.Conversation.Messages[2].ToolCalls) != 1 ||
-		len(model.request.Conversation.Messages[3].ToolResults) != 1 ||
-		len(model.request.Conversation.Messages[4].ToolCalls) != 1 ||
-		len(model.request.Conversation.Messages[5].ToolResults) != 1 {
-		t.Fatalf("continuation context=%+v prompt_count=%d", model.request.Conversation.Messages, promptCount)
+	if model.runs != 0 {
+		t.Fatalf("terminal Worker result triggered %d additional model runs", model.runs)
 	}
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
 	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil {
 		t.Fatalf("terminal=%+v err=%v", terminal, err)
 	}
 	response := terminal.Response
-	if !reflect.DeepEqual(response.RelatedTaskIDs, []string{taskID}) ||
+	if !strings.Contains(response.Message.Content, "deployment finished") || !strings.Contains(response.Message.Content, workerID) ||
+		!reflect.DeepEqual(response.RelatedTaskIDs, []string{taskID}) ||
 		!reflect.DeepEqual(response.RelatedPlanIDs, []string{planID}) ||
 		!reflect.DeepEqual(response.References, []Reference{reference}) ||
 		!reflect.DeepEqual(response.ToolSummaries, []string{result.Summary}) ||

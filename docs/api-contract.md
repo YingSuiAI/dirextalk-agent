@@ -389,7 +389,8 @@ outbound SSH. Image identity remains internal provider data. There is no EIP,
 custom AMI, S3/KMS, WorkerControl callback, model relay, Worker domain, or
 deployment-time binding. Terminal Worker output returns to the same durable
 turn as a tool result with related task/plan IDs and local Agent-owned artifact
-metadata; Central resumes the turn and authors the final user-facing answer.
+metadata. A successful Worker report is committed directly as the final
+user-facing answer so completion does not depend on a second model dispatch.
 
 `agent.chat.v1/upload_attachment_begin` requires `kind` (`image`, `file`, or
 `workspace_archive`) and a matching approved `mime_type`. A turn accepts at

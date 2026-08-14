@@ -1495,10 +1495,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		_, _ = s.turns.FailTurn(ctx, lease, "tool_history_unavailable", "durable tool history is unavailable")
 		return
 	}
-	resolvedExtensions, err := s.resolveAcceptedTurnExtensionsForContinuation(ctx, turn.ExtensionSnapshots, hasTerminalCloudWorkerResult(toolCallAuthorities))
-	if err != nil {
-		_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
-		return
+	workerContent, terminalWorker := terminalCloudWorkerContent(toolCallAuthorities)
+	var resolvedExtensions []ResolvedExtension
+	if !terminalWorker {
+		resolvedExtensions, err = s.resolveAcceptedTurnExtensionsForContinuation(ctx, turn.ExtensionSnapshots, false)
+		if err != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
+			return
+		}
 	}
 	if turn.ExpectedRevision != nil {
 		expectedRevision := *turn.ExpectedRevision
@@ -1509,6 +1513,35 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			_, _ = s.turns.FailTurn(ctx, lease, "revision_conflict", "conversation revision changed")
 			return
 		}
+	}
+	if terminalWorker {
+		historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
+		userTime := nextMessageTime(conv, s.clock())
+		message := Message{
+			ID: uuid.NewString(), Role: RoleAssistant, Content: workerContent, ModelProfileID: turn.ProfileID,
+			CreatedAt: userTime.Add(time.Microsecond), RelatedTaskIDs: historyTasks, RelatedPlanIDs: historyPlans,
+			References: historyReferences, ToolSummaries: historySummaries,
+		}
+		if err := message.Validate(); err != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, "invalid_worker_result", "Cloud Worker returned an invalid completion")
+			return
+		}
+		conv.Revision++
+		response := ChatResponse{
+			RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision,
+			Message: message, Done: true, ModelProfileID: turn.ProfileID,
+			RelatedTaskIDs: append([]string(nil), historyTasks...), RelatedPlanIDs: append([]string(nil), historyPlans...),
+			References: cloneReferences(historyReferences), ToolSummaries: append([]string(nil), historySummaries...),
+			ToolResults: historyResults, ConversationTitle: conversationTitleFallback(conversationTitleUserText),
+		}
+		if _, commitErr := s.turns.CommitTurn(ctx, lease, response); commitErr != nil {
+			current, readErr := s.turns.GetTurn(ctx, turn.ID)
+			if readErr == nil && current.State == TurnCompleted {
+				return
+			}
+			_, _ = s.turns.FailTurn(ctx, lease, "turn_commit_failed", "conversation response could not be committed")
+		}
+		return
 	}
 	dispatchStore, durableDispatch := s.turns.(TurnDispatchStore)
 	child, cancel := context.WithCancel(ctx)
@@ -1996,14 +2029,35 @@ type turnToolCallAuthority struct {
 	result *ToolResult
 }
 
-func hasTerminalCloudWorkerResult(authorities map[string]turnToolCallAuthority) bool {
+func terminalCloudWorkerContent(authorities map[string]turnToolCallAuthority) (string, bool) {
 	for _, authority := range authorities {
-		if authority.state == turnToolCallTerminal && authority.call.Name == coremodel.IntrinsicCloudWorkerProposeToolName &&
-			authority.result != nil && authority.result.ToolName == coremodel.IntrinsicCloudWorkerProposeToolName {
-			return true
+		if authority.state != turnToolCallTerminal || authority.call.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
+			authority.result == nil || authority.result.ToolName != coremodel.IntrinsicCloudWorkerProposeToolName {
+			continue
 		}
+		var completion struct {
+			Schema       string `json:"schema"`
+			Status       string `json:"status"`
+			WorkerID     string `json:"worker_id"`
+			WorkerReport string `json:"worker_report"`
+		}
+		if json.Unmarshal([]byte(authority.result.Content), &completion) != nil ||
+			completion.Schema != "dirextalk.ssh-worker-completion/v1" || completion.Status != "succeeded" {
+			return "", false
+		}
+		content := strings.TrimSpace(completion.WorkerReport)
+		if content == "" {
+			content = strings.TrimSpace(authority.result.Summary)
+		}
+		if content == "" {
+			return "", false
+		}
+		if strings.TrimSpace(completion.WorkerID) != "" {
+			content += "\n\nWorker " + strings.TrimSpace(completion.WorkerID) + " is retained for reuse. Do you want to destroy it?"
+		}
+		return content, true
 	}
-	return false
+	return "", false
 }
 
 func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation) (map[string]turnToolCallAuthority, error) {

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.101
+
+1. Commit a successful SSH Worker report directly to its durable conversation turn, preserving task, plan, run, and artifact references without a second model dispatch.
+
 ## v1.0.100
 
 1. Accept the public Execution V2 page-size ceiling of 200 for Worker plans and runs, matching the Message Server contract and allowing the real Worker flow to read its baseline before quoting.
