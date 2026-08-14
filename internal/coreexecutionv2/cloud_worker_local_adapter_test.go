@@ -3,6 +3,7 @@ package coreexecutionv2
 import (
 	"bytes"
 	"context"
+	"errors"
 	"reflect"
 	"sort"
 	"strings"
@@ -28,13 +29,58 @@ func TestLocalCloudWorkerArtifactReadAndDownload(t *testing.T) {
 	items, _, _ := repository.List(context.Background(), authority, executionID, "", 10)
 	adapter := &localCloudWorkerExecutionAdapter{artifacts: repository}
 	requestAuthority := Authority{OwnerID: authority.OwnerID, AccountGeneration: authority.AccountGeneration}
-	artifact, err := adapter.GetArtifact(context.Background(), CloudWorkerArtifactGetRequest{Authority: requestAuthority, ArtifactID: items[0].ArtifactID})
+	artifact, err := adapter.GetArtifact(context.Background(), CloudWorkerArtifactGetRequest{Authority: requestAuthority, RecordKind: RecordKindCloudWorker, ArtifactID: items[0].ArtifactID})
 	if err != nil || artifact["execution_id"] != executionID {
 		t.Fatalf("artifact=%#v err=%v", artifact, err)
 	}
-	chunk, err := adapter.DownloadArtifact(context.Background(), CloudWorkerArtifactDownloadRequest{Authority: requestAuthority, ArtifactID: items[0].ArtifactID, MaxChunkBytes: 64})
+	chunk, err := adapter.DownloadArtifact(context.Background(), CloudWorkerArtifactDownloadRequest{Authority: requestAuthority, RecordKind: RecordKindCloudWorker, ArtifactID: items[0].ArtifactID, MaxChunkBytes: 64})
 	if err != nil || string(chunk.Data) != "worker report" || !chunk.EOF {
 		t.Fatalf("chunk=%#v err=%v", chunk, err)
+	}
+	idempotencyKey := uuid.NewString()
+	deleted, err := adapter.DeleteArtifact(context.Background(), CloudWorkerArtifactDeleteRequest{Authority: requestAuthority, RecordKind: RecordKindCloudWorker, ArtifactID: items[0].ArtifactID, IdempotencyKey: idempotencyKey})
+	if err != nil || deleted["artifact_id"] != items[0].ArtifactID {
+		t.Fatalf("deleted=%#v err=%v", deleted, err)
+	}
+	if _, err = adapter.DeleteArtifact(context.Background(), CloudWorkerArtifactDeleteRequest{Authority: requestAuthority, RecordKind: RecordKindCloudWorker, ArtifactID: items[0].ArtifactID, IdempotencyKey: idempotencyKey}); err != nil {
+		t.Fatalf("Cloud Worker delete replay: %v", err)
+	}
+}
+
+func TestLocalArtifactAdapterFencesRecordKindAndDeletesOnlyArtifact(t *testing.T) {
+	repository, err := localartifact.NewRepository(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := localartifact.Authority{OwnerID: "owner", AccountGeneration: 7}
+	executionID := uuid.NewString()
+	sink, err := repository.BindLocalSandbox(authority, executionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = sink.StoreArtifact(context.Background(), "report.html", bytes.NewBufferString("local report"), 12); err != nil {
+		t.Fatal(err)
+	}
+	items, _, err := repository.ListLocalSandbox(context.Background(), authority, executionID, "", 10)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+	adapter := &localCloudWorkerExecutionAdapter{artifacts: repository}
+	requestAuthority := Authority{OwnerID: authority.OwnerID, AccountGeneration: authority.AccountGeneration}
+	if _, err = adapter.GetArtifact(context.Background(), CloudWorkerArtifactGetRequest{Authority: requestAuthority, RecordKind: RecordKindCloudWorker, ArtifactID: items[0].ArtifactID}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wrong record kind read error = %v", err)
+	}
+	idempotencyKey := uuid.NewString()
+	deleted, err := adapter.DeleteArtifact(context.Background(), CloudWorkerArtifactDeleteRequest{Authority: requestAuthority, RecordKind: RecordKindLocalSandbox, ArtifactID: items[0].ArtifactID, IdempotencyKey: idempotencyKey})
+	if err != nil || deleted["artifact_id"] != items[0].ArtifactID {
+		t.Fatalf("deleted=%#v err=%v", deleted, err)
+	}
+	replayed, err := adapter.DeleteArtifact(context.Background(), CloudWorkerArtifactDeleteRequest{Authority: requestAuthority, RecordKind: RecordKindLocalSandbox, ArtifactID: items[0].ArtifactID, IdempotencyKey: idempotencyKey})
+	if err != nil || replayed["artifact_id"] != items[0].ArtifactID {
+		t.Fatalf("replayed=%#v err=%v", replayed, err)
+	}
+	if _, err = repository.GetLocalSandbox(context.Background(), authority, items[0].ArtifactID); !errors.Is(err, localartifact.ErrNotFound) {
+		t.Fatalf("artifact remains after delete: %v", err)
 	}
 }
 

@@ -34,7 +34,9 @@ Optional Route53 binding is an explicit management action for a service that nee
 
 Terminal output is returned to the original durable turn as the `cloud_worker_propose` tool result. Central resumes that turn and writes the user-facing answer.
 
-Result files are copied into the Agent-owned local artifact repository. Public artifact metadata contains stable IDs, media type, size, and SHA-256, never a Worker filesystem path. `agent.execution.v2.artifacts.download` revalidates owner/account generation and the stored relative path, size, and digest before returning bounded chunks. Artifact reads do not contact AWS.
+Cloud Worker and local sandbox result files use the same Agent-owned local artifact repository with separate internal namespaces. Existing Cloud Worker metadata and deterministic artifact IDs remain unchanged. Public artifact metadata contains stable IDs, media type, size, and SHA-256, never a Worker or sandbox filesystem path. The artifact request `record_kind` selects the namespace, and `agent.execution.v2.artifacts.download` revalidates the stored identity before returning bounded chunks. Artifact reads do not contact AWS.
+
+`agent.execution.v2.artifacts.delete` requires an idempotency key and removes only the selected artifact metadata and bytes. A durable deletion receipt completes partial removal after restart and makes an exact retry return the original successful result. It does not delete or stop the associated execution, task, run, sandbox, or Worker.
 
 ## Public operations and recovery
 
@@ -42,9 +44,11 @@ Clients read plans, runs, events, and artifacts through `agent.execution.v2.*`, 
 
 Task leases, confirmation state, run events, Worker inventory, remote task state, and local artifact records remain durable. Restart and reconnect observe the original Worker and task. An uncertain external response is resolved by reading the same provider or remote identity; it is never permission to create or start a replacement.
 
-Execution V2 exposes exactly eight Cloud Worker operations:
+Execution V2 exposes nine operations:
 `plans.get/list`, `runs.get/list/cancel/events`, and
-`artifacts.get/download`. There is no generic provider, CloudFormation,
+`artifacts.get/download/delete`. Plan and run operations accept only
+`record_kind=cloud_worker`; artifact operations accept `cloud_worker` or
+`local_sandbox`. There is no generic provider, CloudFormation,
 SSM/ECS workload, secret, deployment, target, or service-binding route.
 Readiness depends only on the Cloud Worker stores, local artifact repository,
 SSH manager, and current App-uploaded AWS credential. It does not depend on a

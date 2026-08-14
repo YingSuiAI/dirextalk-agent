@@ -29,26 +29,61 @@ func NewLocalCloudWorkerExecutionPort(store CloudWorkerAuthorityStore, artifacts
 }
 
 func (adapter *localCloudWorkerExecutionAdapter) GetArtifact(ctx context.Context, request CloudWorkerArtifactGetRequest) (CloudWorkerObject, error) {
-	if adapter == nil || adapter.artifacts == nil || !validCloudWorkerAuthority(request.Authority) || !coretask.ValidUUID(request.ArtifactID) {
+	if adapter == nil || adapter.artifacts == nil || !validCloudWorkerAuthority(request.Authority) || !validArtifactRecordKind(request.RecordKind) || !coretask.ValidUUID(request.ArtifactID) {
 		return nil, ErrInvalid
 	}
-	artifact, err := adapter.artifacts.Get(ctx, localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, request.ArtifactID)
+	authority := localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}
+	var artifact localartifact.Artifact
+	var err error
+	if request.RecordKind == RecordKindLocalSandbox {
+		artifact, err = adapter.artifacts.GetLocalSandbox(ctx, authority, request.ArtifactID)
+	} else {
+		artifact, err = adapter.artifacts.Get(ctx, authority, request.ArtifactID)
+	}
 	if err != nil {
 		return nil, mapLocalArtifactError(err)
 	}
+	return localArtifactProjection(artifact), nil
+}
+
+func (adapter *localCloudWorkerExecutionAdapter) DeleteArtifact(ctx context.Context, request CloudWorkerArtifactDeleteRequest) (CloudWorkerObject, error) {
+	if adapter == nil || adapter.artifacts == nil || !validCloudWorkerAuthority(request.Authority) || !validArtifactRecordKind(request.RecordKind) || !coretask.ValidUUID(request.ArtifactID) || !coretask.ValidUUID(request.IdempotencyKey) {
+		return nil, ErrInvalid
+	}
+	authority := localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}
+	var artifact localartifact.Artifact
+	var err error
+	if request.RecordKind == RecordKindLocalSandbox {
+		artifact, err = adapter.artifacts.DeleteLocalSandbox(ctx, authority, request.ArtifactID, request.IdempotencyKey)
+	} else {
+		artifact, err = adapter.artifacts.Delete(ctx, authority, request.ArtifactID, request.IdempotencyKey)
+	}
+	if err != nil {
+		return nil, mapLocalArtifactError(err)
+	}
+	return localArtifactProjection(artifact), nil
+}
+
+func localArtifactProjection(artifact localartifact.Artifact) CloudWorkerObject {
 	return CloudWorkerObject{"owner_id": artifact.OwnerID, "account_generation": artifact.AccountGeneration,
 		"artifact_id": artifact.ArtifactID, "execution_id": artifact.ExecutionID, "kind": artifact.Kind,
 		"name": artifact.Name, "media_type": artifact.MediaType, "size_bytes": uint64(artifact.SizeBytes),
-		"sha256": artifact.SHA256, "status": "verified", "created_at": formatCloudWorkerTime(artifact.CreatedAt)}, nil
+		"sha256": artifact.SHA256, "status": "verified", "created_at": formatCloudWorkerTime(artifact.CreatedAt)}
 }
 
 func (adapter *localCloudWorkerExecutionAdapter) DownloadArtifact(ctx context.Context, request CloudWorkerArtifactDownloadRequest) (CloudWorkerArtifactChunk, error) {
-	if adapter == nil || adapter.artifacts == nil || !validCloudWorkerAuthority(request.Authority) || !coretask.ValidUUID(request.ArtifactID) ||
+	if adapter == nil || adapter.artifacts == nil || !validCloudWorkerAuthority(request.Authority) || !validArtifactRecordKind(request.RecordKind) || !coretask.ValidUUID(request.ArtifactID) ||
 		request.OffsetBytes > uint64(^uint64(0)>>1) || request.MaxChunkBytes == 0 || request.MaxChunkBytes > MaxCloudWorkerArtifactDownloadChunkBytes {
 		return CloudWorkerArtifactChunk{}, ErrInvalid
 	}
-	chunk, err := adapter.artifacts.Download(ctx, localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration},
-		request.ArtifactID, int64(request.OffsetBytes), int64(request.MaxChunkBytes))
+	authority := localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}
+	var chunk localartifact.Chunk
+	var err error
+	if request.RecordKind == RecordKindLocalSandbox {
+		chunk, err = adapter.artifacts.DownloadLocalSandbox(ctx, authority, request.ArtifactID, int64(request.OffsetBytes), int64(request.MaxChunkBytes))
+	} else {
+		chunk, err = adapter.artifacts.Download(ctx, authority, request.ArtifactID, int64(request.OffsetBytes), int64(request.MaxChunkBytes))
+	}
 	if err != nil {
 		return CloudWorkerArtifactChunk{}, mapLocalArtifactError(err)
 	}
@@ -56,6 +91,10 @@ func (adapter *localCloudWorkerExecutionAdapter) DownloadArtifact(ctx context.Co
 		ExecutionID: chunk.Artifact.ExecutionID, OffsetBytes: uint64(chunk.OffsetBytes), Data: append([]byte(nil), chunk.Data...),
 		ChunkSHA256: chunk.ChunkSHA256, ArtifactSHA256: chunk.Artifact.SHA256, SizeBytes: uint64(chunk.Artifact.SizeBytes),
 		NextOffsetBytes: uint64(chunk.NextOffsetBytes), EOF: chunk.EOF}, nil
+}
+
+func validArtifactRecordKind(recordKind string) bool {
+	return recordKind == RecordKindCloudWorker || recordKind == RecordKindLocalSandbox
 }
 
 func mapLocalArtifactError(err error) error {

@@ -54,6 +54,9 @@ func (registryCloudWorkerPort) GetArtifact(context.Context, coreexecutionv2.Clou
 func (registryCloudWorkerPort) DownloadArtifact(context.Context, coreexecutionv2.CloudWorkerArtifactDownloadRequest) (coreexecutionv2.CloudWorkerArtifactChunk, error) {
 	return coreexecutionv2.CloudWorkerArtifactChunk{}, nil
 }
+func (registryCloudWorkerPort) DeleteArtifact(context.Context, coreexecutionv2.CloudWorkerArtifactDeleteRequest) (coreexecutionv2.CloudWorkerObject, error) {
+	return nil, nil
+}
 
 func (c registryErrorCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return &capv1.CapabilityDescriptor{CapabilityId: "test.error.v1"}

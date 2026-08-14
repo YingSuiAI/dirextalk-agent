@@ -88,6 +88,23 @@ type ExecutionOutput struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
+type deletionReceipt struct {
+	Authority
+	IdempotencyKey string   `json:"idempotency_key"`
+	Namespace      string   `json:"namespace"`
+	Artifact       Artifact `json:"artifact"`
+	Completed      bool     `json:"completed"`
+}
+
+func (receipt deletionReceipt) validate() error {
+	if receipt.Authority.validate() != nil || !validID(receipt.IdempotencyKey) ||
+		(receipt.Namespace != string(cloudWorkerNamespace) && receipt.Namespace != string(localSandboxNamespace)) || receipt.Artifact.validate() != nil ||
+		receipt.Artifact.Authority != receipt.Authority {
+		return ErrInvalid
+	}
+	return nil
+}
+
 func (output ExecutionOutput) validate() error {
 	if output.Authority.validate() != nil || !validID(output.ExecutionID) || !validID(output.StdoutArtifactID) ||
 		!validID(output.StderrArtifactID) || output.UpdatedAt.IsZero() {
@@ -111,6 +128,13 @@ type Repository struct {
 	mu   sync.RWMutex
 }
 
+type storageNamespace string
+
+const (
+	cloudWorkerNamespace  storageNamespace = ""
+	localSandboxNamespace storageNamespace = "local-sandbox"
+)
+
 func NewRepository(root string) (*Repository, error) {
 	if !filepath.IsAbs(root) {
 		return nil, ErrInvalid
@@ -123,10 +147,15 @@ func NewRepository(root string) (*Repository, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(root, "objects"), 0o700); err != nil {
-		return nil, err
+	for _, namespaceRoot := range []string{root, filepath.Join(root, string(localSandboxNamespace))} {
+		if err := os.MkdirAll(filepath.Join(namespaceRoot, "objects"), 0o700); err != nil {
+			return nil, err
+		}
+		if err := os.MkdirAll(filepath.Join(namespaceRoot, "executions"), 0o700); err != nil {
+			return nil, err
+		}
 	}
-	if err := os.MkdirAll(filepath.Join(root, "executions"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "deletions"), 0o700); err != nil {
 		return nil, err
 	}
 	return &Repository{root: root, now: func() time.Time { return time.Now().UTC() }}, nil
@@ -134,14 +163,24 @@ func NewRepository(root string) (*Repository, error) {
 
 // Bind returns the execution-scoped ResultSink passed to sshworker.Execute.
 func (repository *Repository) Bind(authority Authority, executionID string) (*Sink, error) {
+	return repository.bind(cloudWorkerNamespace, authority, executionID)
+}
+
+// BindLocalSandbox returns an execution-scoped sink for local sandbox output.
+func (repository *Repository) BindLocalSandbox(authority Authority, executionID string) (*Sink, error) {
+	return repository.bind(localSandboxNamespace, authority, executionID)
+}
+
+func (repository *Repository) bind(namespace storageNamespace, authority Authority, executionID string) (*Sink, error) {
 	if repository == nil || authority.validate() != nil || !validID(executionID) {
 		return nil, ErrInvalid
 	}
-	return &Sink{repository: repository, authority: authority, executionID: executionID}, nil
+	return &Sink{repository: repository, namespace: namespace, authority: authority, executionID: executionID}, nil
 }
 
 type Sink struct {
 	repository  *Repository
+	namespace   storageNamespace
 	authority   Authority
 	executionID string
 }
@@ -162,7 +201,7 @@ func (sink *Sink) StoreText(ctx context.Context, stdout, stderr []byte, exitCode
 	output := ExecutionOutput{Authority: sink.authority, ExecutionID: sink.executionID, ExitCode: exitCode,
 		StdoutArtifactID: stdoutArtifact.ArtifactID, StderrArtifactID: stderrArtifact.ArtifactID,
 		UpdatedAt: sink.repository.now().UTC()}
-	return sink.repository.saveExecution(output)
+	return sink.repository.saveExecution(sink.namespace, output)
 }
 
 func (sink *Sink) StoreArtifact(ctx context.Context, name string, reader io.Reader, size int64) error {
@@ -181,11 +220,11 @@ func (sink *Sink) store(ctx context.Context, kind, name, mediaType string, size 
 	if ctx == nil || ctx.Err() != nil || reader == nil {
 		return Artifact{}, ErrInvalid
 	}
-	artifactID := deterministicArtifactID(sink.executionID, kind, name)
+	artifactID := artifactIDForNamespace(sink.namespace, sink.executionID, kind, name)
 	repository := sink.repository
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
-	if existing, err := repository.loadArtifactLocked(artifactID); err == nil {
+	if existing, err := repository.loadArtifactLocked(sink.namespace, artifactID); err == nil {
 		if existing.Authority != sink.authority || existing.ExecutionID != sink.executionID || existing.Kind != kind ||
 			existing.Name != name || existing.MediaType != mediaType || existing.SizeBytes != size {
 			return Artifact{}, ErrConflict
@@ -194,7 +233,7 @@ func (sink *Sink) store(ctx context.Context, kind, name, mediaType string, size 
 		if digestErr != nil || suppliedBytes != size || supplied != existing.SHA256 {
 			return Artifact{}, ErrConflict
 		}
-		actual, digestErr := digestFile(repository.dataPath(artifactID))
+		actual, digestErr := digestFile(repository.dataPath(sink.namespace, artifactID))
 		if digestErr != nil || actual != existing.SHA256 {
 			return Artifact{}, ErrConflict
 		}
@@ -202,14 +241,14 @@ func (sink *Sink) store(ctx context.Context, kind, name, mediaType string, size 
 	} else if !errors.Is(err, ErrNotFound) {
 		return Artifact{}, err
 	}
-	count, total, err := repository.executionUsageLocked(sink.authority, sink.executionID)
+	count, total, err := repository.executionUsageLocked(sink.namespace, sink.authority, sink.executionID)
 	if err != nil {
 		return Artifact{}, err
 	}
 	if count >= MaxExecutionArtifacts || total+size > MaxExecutionBytes {
 		return Artifact{}, ErrInvalid
 	}
-	temporary, err := os.CreateTemp(filepath.Join(repository.root, "objects"), ".artifact-*")
+	temporary, err := os.CreateTemp(repository.objectsPath(sink.namespace), ".artifact-*")
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -235,17 +274,25 @@ func (sink *Sink) store(ctx context.Context, kind, name, mediaType string, size 
 	if artifact.validate() != nil {
 		return Artifact{}, ErrInvalid
 	}
-	if err = os.Rename(temporaryName, repository.dataPath(artifactID)); err != nil {
+	if err = os.Rename(temporaryName, repository.dataPath(sink.namespace, artifactID)); err != nil {
 		return Artifact{}, err
 	}
-	if err = writeJSONAtomic(repository.metadataPath(artifactID), artifact); err != nil {
-		_ = os.Remove(repository.dataPath(artifactID))
+	if err = writeJSONAtomic(repository.metadataPath(sink.namespace, artifactID), artifact); err != nil {
+		_ = os.Remove(repository.dataPath(sink.namespace, artifactID))
 		return Artifact{}, err
 	}
 	return artifact, nil
 }
 
 func (repository *Repository) List(ctx context.Context, authority Authority, executionID, pageToken string, pageSize int) ([]Artifact, string, error) {
+	return repository.list(ctx, cloudWorkerNamespace, authority, executionID, pageToken, pageSize)
+}
+
+func (repository *Repository) ListLocalSandbox(ctx context.Context, authority Authority, executionID, pageToken string, pageSize int) ([]Artifact, string, error) {
+	return repository.list(ctx, localSandboxNamespace, authority, executionID, pageToken, pageSize)
+}
+
+func (repository *Repository) list(ctx context.Context, namespace storageNamespace, authority Authority, executionID, pageToken string, pageSize int) ([]Artifact, string, error) {
 	if repository == nil || ctx == nil || ctx.Err() != nil || authority.validate() != nil || !validID(executionID) ||
 		pageSize < 1 || pageSize > 200 {
 		return nil, "", ErrInvalid
@@ -256,7 +303,7 @@ func (repository *Repository) List(ctx context.Context, authority Authority, exe
 	}
 	repository.mu.RLock()
 	defer repository.mu.RUnlock()
-	items, err := repository.listLocked(authority, executionID)
+	items, err := repository.listLocked(namespace, authority, executionID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -274,12 +321,20 @@ func (repository *Repository) List(ctx context.Context, authority Authority, exe
 }
 
 func (repository *Repository) Get(ctx context.Context, authority Authority, artifactID string) (Artifact, error) {
+	return repository.get(ctx, cloudWorkerNamespace, authority, artifactID)
+}
+
+func (repository *Repository) GetLocalSandbox(ctx context.Context, authority Authority, artifactID string) (Artifact, error) {
+	return repository.get(ctx, localSandboxNamespace, authority, artifactID)
+}
+
+func (repository *Repository) get(ctx context.Context, namespace storageNamespace, authority Authority, artifactID string) (Artifact, error) {
 	if repository == nil || ctx == nil || ctx.Err() != nil || authority.validate() != nil || !validID(artifactID) {
 		return Artifact{}, ErrInvalid
 	}
 	repository.mu.RLock()
 	defer repository.mu.RUnlock()
-	artifact, err := repository.loadArtifactLocked(artifactID)
+	artifact, err := repository.loadArtifactLocked(namespace, artifactID)
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -289,14 +344,84 @@ func (repository *Repository) Get(ctx context.Context, authority Authority, arti
 	return artifact, nil
 }
 
+// Delete removes one artifact's metadata and bytes without changing its
+// execution, task, run, or Worker records.
+func (repository *Repository) Delete(ctx context.Context, authority Authority, artifactID, idempotencyKey string) (Artifact, error) {
+	return repository.delete(ctx, cloudWorkerNamespace, authority, artifactID, idempotencyKey)
+}
+
+func (repository *Repository) DeleteLocalSandbox(ctx context.Context, authority Authority, artifactID, idempotencyKey string) (Artifact, error) {
+	return repository.delete(ctx, localSandboxNamespace, authority, artifactID, idempotencyKey)
+}
+
+func (repository *Repository) delete(ctx context.Context, namespace storageNamespace, authority Authority, artifactID, idempotencyKey string) (Artifact, error) {
+	if repository == nil || ctx == nil || ctx.Err() != nil || authority.validate() != nil || !validID(artifactID) || !validID(idempotencyKey) {
+		return Artifact{}, ErrInvalid
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	receiptPath := repository.deletionPath(idempotencyKey)
+	var receipt deletionReceipt
+	err := readJSON(receiptPath, &receipt)
+	if err == nil {
+		if receipt.validate() != nil || receipt.Authority != authority || receipt.IdempotencyKey != idempotencyKey ||
+			receipt.Namespace != string(namespace) || receipt.Artifact.ArtifactID != artifactID {
+			return Artifact{}, ErrConflict
+		}
+		if receipt.Completed {
+			return receipt.Artifact, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Artifact{}, err
+	} else {
+		artifact, loadErr := repository.loadArtifactLocked(namespace, artifactID)
+		if loadErr != nil {
+			return Artifact{}, loadErr
+		}
+		if artifact.Authority != authority {
+			return Artifact{}, ErrNotFound
+		}
+		receipt = deletionReceipt{Authority: authority, IdempotencyKey: idempotencyKey, Namespace: string(namespace), Artifact: artifact}
+		if err = writeJSONAtomic(receiptPath, receipt); err != nil {
+			return Artifact{}, err
+		}
+	}
+	current, currentErr := repository.loadArtifactLocked(namespace, artifactID)
+	if currentErr == nil && current != receipt.Artifact {
+		return Artifact{}, ErrConflict
+	}
+	if currentErr != nil && !errors.Is(currentErr, ErrNotFound) {
+		return Artifact{}, currentErr
+	}
+	if err = removeIfExists(repository.dataPath(namespace, artifactID)); err != nil {
+		return Artifact{}, err
+	}
+	if err = removeIfExists(repository.metadataPath(namespace, artifactID)); err != nil {
+		return Artifact{}, err
+	}
+	receipt.Completed = true
+	if err = writeJSONAtomic(receiptPath, receipt); err != nil {
+		return Artifact{}, err
+	}
+	return receipt.Artifact, nil
+}
+
 func (repository *Repository) Download(ctx context.Context, authority Authority, artifactID string, offset, maxBytes int64) (Chunk, error) {
+	return repository.download(ctx, cloudWorkerNamespace, authority, artifactID, offset, maxBytes)
+}
+
+func (repository *Repository) DownloadLocalSandbox(ctx context.Context, authority Authority, artifactID string, offset, maxBytes int64) (Chunk, error) {
+	return repository.download(ctx, localSandboxNamespace, authority, artifactID, offset, maxBytes)
+}
+
+func (repository *Repository) download(ctx context.Context, namespace storageNamespace, authority Authority, artifactID string, offset, maxBytes int64) (Chunk, error) {
 	if repository == nil || ctx == nil || ctx.Err() != nil || authority.validate() != nil || !validID(artifactID) ||
 		offset < 0 || maxBytes < 1 || maxBytes > MaxDownloadChunkBytes {
 		return Chunk{}, ErrInvalid
 	}
 	repository.mu.RLock()
 	defer repository.mu.RUnlock()
-	artifact, err := repository.loadArtifactLocked(artifactID)
+	artifact, err := repository.loadArtifactLocked(namespace, artifactID)
 	if err != nil || artifact.Authority != authority {
 		if err == nil {
 			err = ErrNotFound
@@ -306,7 +431,7 @@ func (repository *Repository) Download(ctx context.Context, authority Authority,
 	if offset > artifact.SizeBytes {
 		return Chunk{}, ErrInvalid
 	}
-	file, err := os.Open(repository.dataPath(artifactID))
+	file, err := os.Open(repository.dataPath(namespace, artifactID))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Chunk{}, ErrConflict
@@ -330,13 +455,21 @@ func (repository *Repository) Download(ctx context.Context, authority Authority,
 }
 
 func (repository *Repository) GetExecution(ctx context.Context, authority Authority, executionID string) (ExecutionOutput, error) {
+	return repository.getExecution(ctx, cloudWorkerNamespace, authority, executionID)
+}
+
+func (repository *Repository) GetLocalSandboxExecution(ctx context.Context, authority Authority, executionID string) (ExecutionOutput, error) {
+	return repository.getExecution(ctx, localSandboxNamespace, authority, executionID)
+}
+
+func (repository *Repository) getExecution(ctx context.Context, namespace storageNamespace, authority Authority, executionID string) (ExecutionOutput, error) {
 	if repository == nil || ctx == nil || ctx.Err() != nil || authority.validate() != nil || !validID(executionID) {
 		return ExecutionOutput{}, ErrInvalid
 	}
 	repository.mu.RLock()
 	defer repository.mu.RUnlock()
 	var output ExecutionOutput
-	if err := readJSON(repository.executionPath(executionID), &output); err != nil {
+	if err := readJSON(repository.executionPath(namespace, executionID), &output); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return ExecutionOutput{}, ErrNotFound
 		}
@@ -351,14 +484,14 @@ func (repository *Repository) GetExecution(ctx context.Context, authority Author
 	return output, nil
 }
 
-func (repository *Repository) saveExecution(output ExecutionOutput) error {
+func (repository *Repository) saveExecution(namespace storageNamespace, output ExecutionOutput) error {
 	if output.validate() != nil {
 		return ErrInvalid
 	}
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
 	var existing ExecutionOutput
-	err := readJSON(repository.executionPath(output.ExecutionID), &existing)
+	err := readJSON(repository.executionPath(namespace, output.ExecutionID), &existing)
 	if err == nil {
 		if existing.Authority != output.Authority || existing.ExecutionID != output.ExecutionID ||
 			existing.ExitCode != output.ExitCode || existing.StdoutArtifactID != output.StdoutArtifactID ||
@@ -370,11 +503,11 @@ func (repository *Repository) saveExecution(output ExecutionOutput) error {
 	if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return writeJSONAtomic(repository.executionPath(output.ExecutionID), output)
+	return writeJSONAtomic(repository.executionPath(namespace, output.ExecutionID), output)
 }
 
-func (repository *Repository) executionUsageLocked(authority Authority, executionID string) (int, int64, error) {
-	items, err := repository.listLocked(authority, executionID)
+func (repository *Repository) executionUsageLocked(namespace storageNamespace, authority Authority, executionID string) (int, int64, error) {
+	items, err := repository.listLocked(namespace, authority, executionID)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -385,8 +518,8 @@ func (repository *Repository) executionUsageLocked(authority Authority, executio
 	return len(items), total, nil
 }
 
-func (repository *Repository) listLocked(authority Authority, executionID string) ([]Artifact, error) {
-	entries, err := os.ReadDir(filepath.Join(repository.root, "objects"))
+func (repository *Repository) listLocked(namespace storageNamespace, authority Authority, executionID string) ([]Artifact, error) {
+	entries, err := os.ReadDir(repository.objectsPath(namespace))
 	if err != nil {
 		return nil, err
 	}
@@ -396,7 +529,7 @@ func (repository *Repository) listLocked(authority Authority, executionID string
 			continue
 		}
 		var artifact Artifact
-		if err := readJSON(filepath.Join(repository.root, "objects", entry.Name()), &artifact); err != nil || artifact.validate() != nil {
+		if err := readJSON(filepath.Join(repository.objectsPath(namespace), entry.Name()), &artifact); err != nil || artifact.validate() != nil {
 			return nil, ErrConflict
 		}
 		if artifact.Authority == authority && artifact.ExecutionID == executionID {
@@ -407,9 +540,9 @@ func (repository *Repository) listLocked(authority Authority, executionID string
 	return items, nil
 }
 
-func (repository *Repository) loadArtifactLocked(artifactID string) (Artifact, error) {
+func (repository *Repository) loadArtifactLocked(namespace storageNamespace, artifactID string) (Artifact, error) {
 	var artifact Artifact
-	if err := readJSON(repository.metadataPath(artifactID), &artifact); err != nil {
+	if err := readJSON(repository.metadataPath(namespace, artifactID), &artifact); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Artifact{}, ErrNotFound
 		}
@@ -421,16 +554,39 @@ func (repository *Repository) loadArtifactLocked(artifactID string) (Artifact, e
 	return artifact, nil
 }
 
-func (repository *Repository) dataPath(artifactID string) string {
-	return filepath.Join(repository.root, "objects", artifactID+".data")
+func (repository *Repository) namespaceRoot(namespace storageNamespace) string {
+	if namespace == cloudWorkerNamespace {
+		return repository.root
+	}
+	return filepath.Join(repository.root, string(namespace))
 }
 
-func (repository *Repository) metadataPath(artifactID string) string {
-	return filepath.Join(repository.root, "objects", artifactID+".json")
+func (repository *Repository) objectsPath(namespace storageNamespace) string {
+	return filepath.Join(repository.namespaceRoot(namespace), "objects")
 }
 
-func (repository *Repository) executionPath(executionID string) string {
-	return filepath.Join(repository.root, "executions", executionID+".json")
+func (repository *Repository) dataPath(namespace storageNamespace, artifactID string) string {
+	return filepath.Join(repository.objectsPath(namespace), artifactID+".data")
+}
+
+func (repository *Repository) metadataPath(namespace storageNamespace, artifactID string) string {
+	return filepath.Join(repository.objectsPath(namespace), artifactID+".json")
+}
+
+func (repository *Repository) executionPath(namespace storageNamespace, executionID string) string {
+	return filepath.Join(repository.namespaceRoot(namespace), "executions", executionID+".json")
+}
+
+func (repository *Repository) deletionPath(idempotencyKey string) string {
+	return filepath.Join(repository.root, "deletions", idempotencyKey+".json")
+}
+
+func removeIfExists(name string) error {
+	err := os.Remove(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func writeJSONAtomic(name string, value any) error {
@@ -495,6 +651,13 @@ func digestReader(reader io.Reader, size int64) (string, int64, error) {
 		return "", written, err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), written, nil
+}
+
+func artifactIDForNamespace(namespace storageNamespace, executionID, kind, name string) string {
+	if namespace == cloudWorkerNamespace {
+		return deterministicArtifactID(executionID, kind, name)
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk-local-sandbox-artifact:"+executionID+":"+kind+":"+name)).String()
 }
 
 func deterministicArtifactID(executionID, kind, name string) string {

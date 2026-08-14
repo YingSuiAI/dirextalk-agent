@@ -18,6 +18,7 @@ var actionNames = []string{
 	"agent.execution.v2.runs.events",
 	"agent.execution.v2.artifacts.get",
 	"agent.execution.v2.artifacts.download",
+	"agent.execution.v2.artifacts.delete",
 }
 
 var actionSet = func() map[string]struct{} {
@@ -70,7 +71,12 @@ func (s *Service) HandleWithAuthority(ctx context.Context, authority Authority, 
 		return nil, ErrInvalid
 	}
 	params = cloneMap(params)
-	if stringParam(params, "record_kind") != RecordKindCloudWorker {
+	recordKind := stringParam(params, "record_kind")
+	if isArtifactAction(action) {
+		if !validArtifactRecordKind(recordKind) {
+			return nil, ErrInvalid
+		}
+	} else if recordKind != RecordKindCloudWorker {
 		return nil, ErrInvalid
 	}
 	if err := validateCloudWorkerInput(action, params); err != nil {
@@ -109,6 +115,11 @@ func validateCloudWorkerInput(action string, in map[string]any) error {
 		return nil
 	case "agent.execution.v2.artifacts.get":
 		return requireID("artifact_id")
+	case "agent.execution.v2.artifacts.delete":
+		if requireID("artifact_id") != nil || requireID("idempotency_key") != nil {
+			return ErrInvalid
+		}
+		return nil
 	case "agent.execution.v2.artifacts.download":
 		if requireID("artifact_id") != nil {
 			return ErrInvalid
@@ -122,6 +133,10 @@ func validateCloudWorkerInput(action string, in map[string]any) error {
 	default:
 		return ErrUnsupported
 	}
+}
+
+func isArtifactAction(action string) bool {
+	return action == "agent.execution.v2.artifacts.get" || action == "agent.execution.v2.artifacts.download" || action == "agent.execution.v2.artifacts.delete"
 }
 
 func stringParam(params map[string]any, key string) string {

@@ -41,6 +41,7 @@ var operationActions = []struct{ action, operation string }{
 	{"agent.execution.v2.runs.events", "runs_events"},
 	{"agent.execution.v2.artifacts.get", "artifacts_get"},
 	{"agent.execution.v2.artifacts.download", "artifacts_download"},
+	{"agent.execution.v2.artifacts.delete", "artifacts_delete"},
 }
 
 func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
@@ -72,14 +73,18 @@ func inputSchema(action string) string {
 	fields := map[string][]string{
 		"agent.execution.v2.plans.get": {"record_kind", "plan_id", "revision"}, "agent.execution.v2.plans.list": {"record_kind", "page_size", "page_token"},
 		"agent.execution.v2.runs.get": {"record_kind", "run_id"}, "agent.execution.v2.runs.list": {"record_kind", "page_size", "page_token"}, "agent.execution.v2.runs.cancel": {"record_kind", "run_id", "idempotency_key", "expected_revision"}, "agent.execution.v2.runs.events": {"record_kind", "run_id", "after_sequence", "limit"},
-		"agent.execution.v2.artifacts.get": {"record_kind", "artifact_id"}, "agent.execution.v2.artifacts.download": {"record_kind", "artifact_id", "offset_bytes", "max_chunk_bytes"},
+		"agent.execution.v2.artifacts.get": {"record_kind", "artifact_id"}, "agent.execution.v2.artifacts.download": {"record_kind", "artifact_id", "offset_bytes", "max_chunk_bytes"}, "agent.execution.v2.artifacts.delete": {"record_kind", "artifact_id", "idempotency_key"},
 	}
 	properties := map[string]any{}
 	for _, field := range fields[action] {
 		properties[field] = map[string]string{"type": "string"}
 	}
 	if _, ok := properties["record_kind"]; ok {
-		properties["record_kind"] = map[string]any{"enum": []string{coreexecutionv2.RecordKindCloudWorker}, "type": "string"}
+		recordKinds := []string{coreexecutionv2.RecordKindCloudWorker}
+		if isArtifactAction(action) {
+			recordKinds = append(recordKinds, coreexecutionv2.RecordKindLocalSandbox)
+		}
+		properties["record_kind"] = map[string]any{"enum": recordKinds, "type": "string"}
 	}
 	for _, field := range []string{"page_size", "revision", "expected_revision", "after_sequence", "limit", "offset_bytes", "max_chunk_bytes"} {
 		if _, ok := properties[field]; ok {
@@ -95,7 +100,7 @@ func inputSchema(action string) string {
 	required := map[string][]string{
 		"agent.execution.v2.plans.get": {"record_kind", "plan_id"}, "agent.execution.v2.plans.list": {"record_kind"},
 		"agent.execution.v2.runs.get": {"record_kind", "run_id"}, "agent.execution.v2.runs.list": {"record_kind"}, "agent.execution.v2.runs.cancel": {"record_kind", "run_id", "idempotency_key", "expected_revision"}, "agent.execution.v2.runs.events": {"record_kind", "run_id"},
-		"agent.execution.v2.artifacts.get": {"record_kind", "artifact_id"}, "agent.execution.v2.artifacts.download": {"record_kind", "artifact_id", "offset_bytes", "max_chunk_bytes"},
+		"agent.execution.v2.artifacts.get": {"record_kind", "artifact_id"}, "agent.execution.v2.artifacts.download": {"record_kind", "artifact_id", "offset_bytes", "max_chunk_bytes"}, "agent.execution.v2.artifacts.delete": {"record_kind", "artifact_id", "idempotency_key"},
 	}
 	schema := map[string]any{"additionalProperties": false, "properties": properties, "type": "object"}
 	if values := required[action]; len(values) > 0 {
@@ -129,12 +134,28 @@ func resultSchema(action string) string {
 		}
 	case "agent.execution.v2.artifacts.get":
 		properties = map[string]any{"artifact": map[string]any{"type": "object", "additionalProperties": true}}
+	case "agent.execution.v2.artifacts.delete":
+		return artifactDeleteResultSchema()
 	case "agent.execution.v2.artifacts.download":
 		return artifactDownloadResultSchema()
 	default:
 		return `{"type":"object","additionalProperties":true}`
 	}
 	raw, _ := json.Marshal(map[string]any{"additionalProperties": true, "properties": properties, "type": "object"})
+	return string(raw)
+}
+
+func artifactDeleteResultSchema() string {
+	properties := map[string]any{
+		"artifact": map[string]any{"type": "object", "additionalProperties": true},
+		"deleted":  map[string]any{"const": true, "type": "boolean"},
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"additionalProperties": false,
+		"properties":           properties,
+		"required":             []string{"artifact", "deleted"},
+		"type":                 "object",
+	})
 	return string(raw)
 }
 
@@ -205,6 +226,10 @@ func isRead(action string) bool {
 	default:
 		return false
 	}
+}
+
+func isArtifactAction(action string) bool {
+	return action == "agent.execution.v2.artifacts.get" || action == "agent.execution.v2.artifacts.download" || action == "agent.execution.v2.artifacts.delete"
 }
 
 func actionForOperation(operation string) (string, bool) {

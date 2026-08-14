@@ -6,7 +6,10 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 )
 
-const RecordKindCloudWorker = "cloud_worker"
+const (
+	RecordKindCloudWorker  = "cloud_worker"
+	RecordKindLocalSandbox = "local_sandbox"
+)
 
 // Authority is derived from the signed Capability permission. Cloud Worker
 // lookups must bind both fields so a deleted/recreated owner account cannot
@@ -49,7 +52,15 @@ type CloudWorkerRunEventsRequest struct {
 
 type CloudWorkerArtifactGetRequest struct {
 	Authority
+	RecordKind string
 	ArtifactID string
+}
+
+type CloudWorkerArtifactDeleteRequest struct {
+	Authority
+	RecordKind     string
+	ArtifactID     string
+	IdempotencyKey string
 }
 
 const MaxCloudWorkerArtifactDownloadChunkBytes uint64 = 512 << 10
@@ -57,6 +68,7 @@ const MaxCloudWorkerArtifactDownloadOffsetBytes = cloudworker.MaxCloudWorkerOutp
 
 type CloudWorkerArtifactDownloadRequest struct {
 	Authority
+	RecordKind    string
 	ArtifactID    string
 	OffsetBytes   uint64
 	MaxChunkBytes uint64
@@ -104,6 +116,7 @@ type CloudWorkerExecutionPort interface {
 	RunEvents(context.Context, CloudWorkerRunEventsRequest) (CloudWorkerEventPage, error)
 	GetArtifact(context.Context, CloudWorkerArtifactGetRequest) (CloudWorkerObject, error)
 	DownloadArtifact(context.Context, CloudWorkerArtifactDownloadRequest) (CloudWorkerArtifactChunk, error)
+	DeleteArtifact(context.Context, CloudWorkerArtifactDeleteRequest) (CloudWorkerObject, error)
 }
 
 // CloudWorkerAuthorityStore is the persistence boundary used by the public

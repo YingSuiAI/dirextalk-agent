@@ -1,5 +1,5 @@
-// Package coreexecutionv2 exposes the Cloud Worker plan, run and artifact
-// views through the stable Execution V2 action names.
+// Package coreexecutionv2 exposes Cloud Worker plans and runs plus Agent-owned
+// artifacts through the stable Execution V2 action names.
 package coreexecutionv2
 
 import (
@@ -9,7 +9,7 @@ import (
 
 const (
 	CapabilityID    = "agent.execution.v2"
-	SemanticVersion = "2.0.0"
+	SemanticVersion = "2.1.0"
 	SchemaVersion   = "execution-plan/v2"
 )
 

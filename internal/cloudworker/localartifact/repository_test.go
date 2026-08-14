@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -16,7 +17,7 @@ import (
 func TestSinkPersistsSSHOutputAndArtifactsAcrossRestart(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "worker-artifacts")
 	authority := Authority{OwnerID: "owner-1", AccountGeneration: 7}
-	executionID := uuid.NewString()
+	executionID := "11111111-1111-4111-8111-111111111111"
 	repository, err := NewRepository(root)
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +57,26 @@ func TestSinkPersistsSSHOutputAndArtifactsAcrossRestart(t *testing.T) {
 	if file.Name != "reports/index.html" || file.MediaType != "text/html; charset=utf-8" || file.SizeBytes != int64(len(html)) {
 		t.Fatalf("file artifact = %#v", file)
 	}
+	if file.ArtifactID != "73c20108-08bf-557e-a7e7-c49991e06bef" {
+		t.Fatalf("Cloud Worker artifact ID changed: %s", file.ArtifactID)
+	}
+	metadata, err := os.ReadFile(reopened.metadataPath(cloudWorkerNamespace, file.ArtifactID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(metadata, &fields); err != nil {
+		t.Fatal(err)
+	}
+	wantFields := []string{"owner_id", "account_generation", "artifact_id", "execution_id", "kind", "name", "media_type", "size_bytes", "sha256", "created_at"}
+	if len(fields) != len(wantFields) {
+		t.Fatalf("Cloud Worker artifact metadata fields changed: %v", fields)
+	}
+	for _, field := range wantFields {
+		if _, present := fields[field]; !present {
+			t.Fatalf("Cloud Worker artifact metadata is missing %s", field)
+		}
+	}
 	digest := sha256.Sum256(html)
 	if file.SHA256 != hex.EncodeToString(digest[:]) {
 		t.Fatalf("file digest = %s", file.SHA256)
@@ -67,6 +88,72 @@ func TestSinkPersistsSSHOutputAndArtifactsAcrossRestart(t *testing.T) {
 	last, err := reopened.Download(context.Background(), authority, file.ArtifactID, chunk.NextOffsetBytes, MaxDownloadChunkBytes)
 	if err != nil || !last.EOF || !bytes.Equal(append(chunk.Data, last.Data...), html[5:]) {
 		t.Fatalf("last Download() = %#v, %v", last, err)
+	}
+}
+
+func TestRepositoryDeletesOnlyExactAuthorityArtifact(t *testing.T) {
+	repository, err := NewRepository(filepath.Join(t.TempDir(), "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := Authority{OwnerID: "owner-1", AccountGeneration: 7}
+	executionID := uuid.NewString()
+	sink, err := repository.BindLocalSandbox(authority, executionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = sink.StoreText(context.Background(), []byte("output"), []byte(""), 0); err != nil {
+		t.Fatal(err)
+	}
+	items, _, err := repository.ListLocalSandbox(context.Background(), authority, executionID, "", 10)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("List() = %#v, %v", items, err)
+	}
+	artifact := items[0]
+	foreign := Authority{OwnerID: authority.OwnerID, AccountGeneration: authority.AccountGeneration + 1}
+	foreignKey := uuid.NewString()
+	if _, err = repository.DeleteLocalSandbox(context.Background(), foreign, artifact.ArtifactID, foreignKey); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign Delete() error = %v", err)
+	}
+	if _, err = os.Stat(repository.metadataPath(localSandboxNamespace, artifact.ArtifactID)); err != nil {
+		t.Fatalf("metadata removed by foreign delete: %v", err)
+	}
+	if _, err = os.Stat(repository.dataPath(localSandboxNamespace, artifact.ArtifactID)); err != nil {
+		t.Fatalf("bytes removed by foreign delete: %v", err)
+	}
+	if _, err = repository.Delete(context.Background(), authority, artifact.ArtifactID, uuid.NewString()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wrong record kind Delete() error = %v", err)
+	}
+	idempotencyKey := uuid.NewString()
+	pending := deletionReceipt{Authority: authority, IdempotencyKey: idempotencyKey, Namespace: string(localSandboxNamespace), Artifact: artifact}
+	if err = writeJSONAtomic(repository.deletionPath(idempotencyKey), pending); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Remove(repository.dataPath(localSandboxNamespace, artifact.ArtifactID)); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := repository.DeleteLocalSandbox(context.Background(), authority, artifact.ArtifactID, idempotencyKey)
+	if err != nil || deleted != artifact {
+		t.Fatalf("Delete() = %#v, %v", deleted, err)
+	}
+	replayed, err := repository.DeleteLocalSandbox(context.Background(), authority, artifact.ArtifactID, idempotencyKey)
+	if err != nil || replayed != artifact {
+		t.Fatalf("replayed Delete() = %#v, %v", replayed, err)
+	}
+	if _, err = os.Stat(repository.metadataPath(localSandboxNamespace, artifact.ArtifactID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("metadata still exists: %v", err)
+	}
+	if _, err = os.Stat(repository.dataPath(localSandboxNamespace, artifact.ArtifactID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bytes still exist: %v", err)
+	}
+	if _, err = repository.GetLocalSandbox(context.Background(), authority, artifact.ArtifactID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get() after delete error = %v", err)
+	}
+	if _, err = repository.DownloadLocalSandbox(context.Background(), authority, artifact.ArtifactID, 0, 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Download() after delete error = %v", err)
+	}
+	if _, err = repository.GetLocalSandboxExecution(context.Background(), authority, executionID); err != nil {
+		t.Fatalf("execution metadata removed: %v", err)
 	}
 }
 

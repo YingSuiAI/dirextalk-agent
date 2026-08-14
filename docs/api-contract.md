@@ -360,7 +360,7 @@ Cloud Worker offers are created only by the Core intrinsic
 `cloud_worker_propose` during an authoritative conversation turn. Public
 clients use `agent.execution.v2.plans.get/list`,
 `agent.execution.v2.runs.get/list/cancel/events`, and
-`agent.execution.v2.artifacts.get/download`; they use
+`agent.execution.v2.artifacts.get/download/delete`; they use
 `agent.core.confirmations.get/list/confirm/reject` for authorization. Every
 proposal carries minimum vCPU, memory, disk, and estimated runtime rather than
 an AWS instance type. Agent intersects current-generation Linux on-demand
@@ -399,13 +399,18 @@ each source remains immutably bound to owner, account generation, turn request,
 revision, size, and SHA-256. Workspace archives use the single constrained
 tar+gzip media type and are never exposed as arbitrary local paths.
 
-`agent.execution.v2.artifacts.download` is a safe read for retained Cloud
-Worker artifacts copied into the Agent-owned local artifact repository. Its
-closed request contains `record_kind=cloud_worker`, one artifact UUID, a
-bounded offset below the output ceiling, and a bounded chunk limit. Each call
-revalidates owner/account generation and the stored relative path, size, and
-SHA-256 before returning bytes. It does not contact AWS, create a download
-lease, or expose a Worker filesystem path.
+`agent.execution.v2.artifacts.get/download/delete` manage Cloud Worker and
+local sandbox artifacts in one Agent-owned local repository. Their closed
+requests contain `record_kind=cloud_worker|local_sandbox` and one artifact
+UUID; download also carries a bounded offset below the output ceiling and a
+bounded chunk limit, while delete requires an idempotency key. Each call
+revalidates owner/account generation, the selected namespace, and the stored
+identity. Download revalidates size and SHA-256 before returning bytes. Delete
+uses a durable receipt so an exact retry completes partial removal or returns
+the original success. It removes only that artifact's metadata and bytes; it
+does not delete an execution, task, run, sandbox, or Worker. These operations
+do not contact AWS, create a download lease, or expose a remote filesystem
+path.
 
 ## Capability and readiness semantics
 
@@ -415,7 +420,7 @@ and required readiness proof are complete; configuration-disabled or partial
 domains stay absent and fail closed when selected.
 
 - `workload.core_runner` requires its nonce-backed full local isolation proof.
-- `agent.execution.v2` publishes only the eight Cloud Worker plan/run/artifact
+- `agent.execution.v2` publishes only the nine plan/run/artifact
   operations listed above. Readiness is evaluated from its
   PostgreSQL task/confirmation stores, local artifact repository, SSH manager,
   and the sole current STS-verified AWS credential. It does not depend on a

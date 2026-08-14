@@ -96,6 +96,13 @@ func (f *cloudWorkerPortFake) DownloadArtifact(_ context.Context, request CloudW
 	return chunk, nil
 }
 
+func (f *cloudWorkerPortFake) DeleteArtifact(_ context.Context, request CloudWorkerArtifactDeleteRequest) (CloudWorkerObject, error) {
+	f.calls["artifacts.delete"]++
+	authority := f.authority(request.Authority)
+	return CloudWorkerObject{"owner_id": authority.OwnerID, "account_generation": authority.AccountGeneration,
+		"artifact_id": cloudArtifactID, "execution_id": cloudRunID, "status": "verified"}, nil
+}
+
 func newCloudRoutingService(t *testing.T, port CloudWorkerExecutionPort) *Service {
 	t.Helper()
 	service, err := NewService(port)
@@ -122,6 +129,7 @@ func TestCloudWorkerRecordKindRoutesEveryPublicReadAndCancel(t *testing.T) {
 		{"agent.execution.v2.runs.events", map[string]any{"run_id": cloudRunID, "after_sequence": uint64(4)}, "runs.events"},
 		{"agent.execution.v2.artifacts.get", map[string]any{"artifact_id": cloudArtifactID}, "artifacts.get"},
 		{"agent.execution.v2.artifacts.download", map[string]any{"artifact_id": cloudArtifactID, "offset_bytes": uint64(0), "max_chunk_bytes": uint64(512 << 10)}, "artifacts.download"},
+		{"agent.execution.v2.artifacts.delete", map[string]any{"artifact_id": cloudArtifactID, "idempotency_key": "ffffffff-ffff-4fff-8fff-ffffffffffff"}, "artifacts.delete"},
 	}
 	for _, test := range tests {
 		input := cloneMap(test.input)
@@ -135,6 +143,32 @@ func TestCloudWorkerRecordKindRoutesEveryPublicReadAndCancel(t *testing.T) {
 	}
 }
 
+func TestLocalSandboxRecordKindRoutesOnlyArtifactOperations(t *testing.T) {
+	port := &cloudWorkerPortFake{calls: map[string]int{}}
+	service := newCloudRoutingService(t, port)
+	authority := Authority{OwnerID: owner, AccountGeneration: cloudGeneration}
+	for _, test := range []struct {
+		action string
+		input  map[string]any
+		key    string
+	}{
+		{"agent.execution.v2.artifacts.get", map[string]any{"artifact_id": cloudArtifactID}, "artifacts.get"},
+		{"agent.execution.v2.artifacts.download", map[string]any{"artifact_id": cloudArtifactID, "offset_bytes": uint64(0), "max_chunk_bytes": uint64(512 << 10)}, "artifacts.download"},
+		{"agent.execution.v2.artifacts.delete", map[string]any{"artifact_id": cloudArtifactID, "idempotency_key": "ffffffff-ffff-4fff-8fff-ffffffffffff"}, "artifacts.delete"},
+	} {
+		test.input["record_kind"] = RecordKindLocalSandbox
+		if _, err := service.HandleWithAuthority(context.Background(), authority, test.action, test.input); err != nil {
+			t.Fatalf("%s: %v", test.action, err)
+		}
+		if port.calls[test.key] != 1 {
+			t.Fatalf("%s calls = %d", test.action, port.calls[test.key])
+		}
+	}
+	if _, err := service.HandleWithAuthority(context.Background(), authority, "agent.execution.v2.runs.list", map[string]any{"record_kind": RecordKindLocalSandbox}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("local sandbox run list error = %v", err)
+	}
+}
+
 func TestCloudWorkerRoutingRejectsInvalidKindAuthorityAndProviderDrift(t *testing.T) {
 	port := &cloudWorkerPortFake{calls: map[string]int{}}
 	service := newCloudRoutingService(t, port)
@@ -142,6 +176,11 @@ func TestCloudWorkerRoutingRejectsInvalidKindAuthorityAndProviderDrift(t *testin
 		if _, err := service.HandleWithAuthority(context.Background(), Authority{OwnerID: owner, AccountGeneration: cloudGeneration}, "agent.execution.v2.plans.get", map[string]any{"record_kind": kind, "plan_id": cloudPlanID}); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("record_kind=%v err=%v", kind, err)
 		}
+	}
+	if _, err := service.HandleWithAuthority(context.Background(), Authority{OwnerID: owner, AccountGeneration: cloudGeneration}, "agent.execution.v2.artifacts.delete", map[string]any{
+		"record_kind": RecordKindCloudWorker, "artifact_id": cloudArtifactID,
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("delete without idempotency key err=%v", err)
 	}
 	if _, err := service.Handle(context.Background(), owner, "agent.execution.v2.plans.get", map[string]any{"record_kind": RecordKindCloudWorker, "plan_id": cloudPlanID}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("zero account generation err=%v", err)

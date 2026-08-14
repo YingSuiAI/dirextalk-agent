@@ -94,7 +94,7 @@ func (s *Service) handleCloudWorker(ctx context.Context, authority Authority, ac
 		return map[string]any{"events": events, "next_sequence": page.NextSequence, "history_truncated": page.HistoryTruncated}, nil
 	case "agent.execution.v2.artifacts.get":
 		artifactID, _ := idParam(in, "artifact_id")
-		value, err := s.cloudWorker.GetArtifact(ctx, CloudWorkerArtifactGetRequest{Authority: authority, ArtifactID: artifactID})
+		value, err := s.cloudWorker.GetArtifact(ctx, CloudWorkerArtifactGetRequest{Authority: authority, RecordKind: stringParam(in, "record_kind"), ArtifactID: artifactID})
 		if err != nil {
 			return nil, err
 		}
@@ -106,7 +106,7 @@ func (s *Service) handleCloudWorker(ctx context.Context, authority Authority, ac
 	case "agent.execution.v2.artifacts.download":
 		artifactID, _ := idParam(in, "artifact_id")
 		request := CloudWorkerArtifactDownloadRequest{
-			Authority: authority, ArtifactID: artifactID,
+			Authority: authority, RecordKind: stringParam(in, "record_kind"), ArtifactID: artifactID,
 			OffsetBytes: uintParam(in, "offset_bytes"), MaxChunkBytes: uintParam(in, "max_chunk_bytes"),
 		}
 		chunk, err := s.cloudWorker.DownloadArtifact(ctx, request)
@@ -124,6 +124,20 @@ func (s *Service) handleCloudWorker(ctx context.Context, authority Authority, ac
 			"chunk_sha256": chunk.ChunkSHA256, "artifact_sha256": chunk.ArtifactSHA256,
 			"size_bytes": chunk.SizeBytes, "next_offset_bytes": chunk.NextOffsetBytes, "eof": chunk.EOF,
 		}, nil
+	case "agent.execution.v2.artifacts.delete":
+		artifactID, _ := idParam(in, "artifact_id")
+		value, err := s.cloudWorker.DeleteArtifact(ctx, CloudWorkerArtifactDeleteRequest{
+			Authority: authority, RecordKind: stringParam(in, "record_kind"), ArtifactID: artifactID,
+			IdempotencyKey: stringParam(in, "idempotency_key"),
+		})
+		if err != nil {
+			return nil, err
+		}
+		artifact, err := validateCloudWorkerOwnedObject(value, authority, "artifact_id", artifactID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: artifact delete identity mismatch", ErrUnsafeOutput)
+		}
+		return map[string]any{"artifact": artifact, "deleted": true}, nil
 	default:
 		return nil, ErrUnsupported
 	}
