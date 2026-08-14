@@ -10,18 +10,14 @@ import (
 )
 
 type persistentExecutionRow struct {
-	raw       []byte
-	state     string
-	revision  int64
-	digest    string
-	started   bool
-	terminal  string
-	reconcile bool
+	raw      []byte
+	state    string
+	revision int64
+	digest   string
 }
 
 func (row persistentExecutionRow) Scan(dest ...any) error {
 	*dest[0].(*[]byte), *dest[1].(*string), *dest[2].(*int64), *dest[3].(*string) = row.raw, row.state, row.revision, row.digest
-	*dest[4].(*bool), *dest[5].(*string), *dest[6].(*bool) = row.started, row.terminal, row.reconcile
 	return nil
 }
 
@@ -40,7 +36,7 @@ func TestScanPersistentWorkerTerminalExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(execution)
-	got, err := scanCloudWorkerExecution(persistentExecutionRow{raw: raw, state: string(execution.State), revision: int64(execution.Revision), digest: execution.Digest, started: true})
+	got, err := scanCloudWorkerExecution(persistentExecutionRow{raw: raw, state: string(execution.State), revision: int64(execution.Revision), digest: execution.Digest})
 	if err != nil || got.WorkerID != execution.WorkerID || !got.PersistentWorker || got.Digest != execution.Digest {
 		t.Fatalf("execution=%#v err=%v", got, err)
 	}
