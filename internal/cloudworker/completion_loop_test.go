@@ -43,7 +43,7 @@ func TestCompletionLoopMarksOnlyUnambiguousReceiptsDelivered(t *testing.T) {
 	failure := success
 	failure.EventID = deterministicID("completion-loop", "failure")
 	failure.ExecutionID = deterministicID("completion-loop-execution", "failure")
-	failure.RunID = failure.ExecutionID
+	failure.RunID = deterministicID("completion-loop-run", "failure")
 	failure.PayloadDigest = CompletionDigest(failure)
 	store := &completionLoopStore{items: []CompletionOutbox{success, failure}}
 	loop, err := NewCompletionLoop(CompletionLoopConfig{

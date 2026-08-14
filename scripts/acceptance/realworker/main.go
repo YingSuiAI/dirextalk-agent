@@ -110,9 +110,9 @@ type quote struct {
 }
 
 type run struct {
-	RunID, PlanID, ConversationID, Status, WorkerID, FailureCode, FailureSummary string
-	PersistentWorker                                                             bool
-	ArtifactIDs                                                                  []string
+	RunID, ExecutionID, PlanID, ConversationID, Status, WorkerID, FailureCode, FailureSummary string
+	PersistentWorker                                                                          bool
+	ArtifactIDs                                                                               []string
 }
 
 type workerIdentity struct {
@@ -372,9 +372,13 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 	if err != nil || stringValue(object(confirmed, "confirmation"), "state") != "confirmed" {
 		return out, fmt.Errorf("confirm exact first offer: %w", err)
 	}
-	d.confirmedRunID = firstPlan.ExecutionID
+	firstRunIdentity, err := d.findRunByExecution(ctx, firstPlan.ExecutionID)
+	if err != nil {
+		return out, err
+	}
+	d.confirmedRunID = firstRunIdentity.RunID
 	out.Confirmation.Confirmed = true
-	firstRun, err := d.waitRun(ctx, firstPlan.ExecutionID)
+	firstRun, err := d.waitRun(ctx, firstRunIdentity.RunID)
 	if err != nil {
 		return out, err
 	}
@@ -419,7 +423,11 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 	if err != nil || len(pending) != 0 {
 		return out, fmt.Errorf("reuse created a pending Worker creation confirmation: count=%d: %w", len(pending), err)
 	}
-	secondRun, err := d.waitRun(ctx, secondPlan.ExecutionID)
+	secondRunIdentity, err := d.findRunByExecution(ctx, secondPlan.ExecutionID)
+	if err != nil {
+		return out, err
+	}
+	secondRun, err := d.waitRun(ctx, secondRunIdentity.RunID)
 	if err != nil {
 		return out, err
 	}
@@ -781,15 +789,47 @@ func (d *driver) getRun(ctx context.Context, id string) (run, error) {
 	}
 	value := object(response, "run")
 	result := run{
-		RunID: stringValue(value, "run_id"), PlanID: stringValue(value, "plan_id"), ConversationID: stringValue(value, "conversation_id"),
+		RunID: stringValue(value, "run_id"), ExecutionID: stringValue(value, "execution_id"),
+		PlanID: stringValue(value, "plan_id"), ConversationID: stringValue(value, "conversation_id"),
 		Status: stringValue(value, "status"), WorkerID: stringValue(value, "worker_id"),
 		FailureCode: stringValue(value, "failure_code"), FailureSummary: stringValue(value, "failure_summary"),
 		PersistentWorker: boolean(value["persistent_worker"]), ArtifactIDs: stringsValue(value["artifact_ids"]),
 	}
-	if result.RunID != id {
+	if result.RunID != id || result.ExecutionID == "" {
 		return run{}, errors.New("run readback identity mismatch")
 	}
 	return result, nil
+}
+
+func (d *driver) findRunByExecution(ctx context.Context, executionID string) (run, error) {
+	for {
+		response, err := d.product.Call(ctx, "agent.execution.v2.runs.list", map[string]any{"record_kind": "cloud_worker", "page_size": 200})
+		if err != nil {
+			return run{}, fmt.Errorf("list Cloud Worker runs: %w", err)
+		}
+		if stringValue(response, "next_page_token") != "" {
+			return run{}, errors.New("Cloud Worker run list exceeded one acceptance page")
+		}
+		var matches []run
+		for _, value := range objects(response["runs"]) {
+			current := run{RunID: stringValue(value, "run_id"), ExecutionID: stringValue(value, "execution_id")}
+			if current.RunID == "" || current.ExecutionID == "" {
+				return run{}, errors.New("invalid Cloud Worker run identity projection")
+			}
+			if current.ExecutionID == executionID {
+				matches = append(matches, current)
+			}
+		}
+		if len(matches) == 1 {
+			return matches[0], nil
+		}
+		if len(matches) > 1 {
+			return run{}, errors.New("multiple runs share one execution_id")
+		}
+		if err := waitPoll(ctx, d.cfg.poll); err != nil {
+			return run{}, err
+		}
+	}
 }
 
 func (d *driver) waitRun(ctx context.Context, id string) (run, error) {

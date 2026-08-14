@@ -28,7 +28,7 @@ func cloudWorkerAuthorityBinding(owner string, generation uint64) Binding {
 	binding.PlanID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	binding.PlanRevision = 1
 	binding.PlanDigest = Digest(strings.Repeat("4", 64))
-	binding.RunID = executionID
+	binding.RunID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	binding.RunRevision = 1
 	binding.RunDigest = Digest(strings.Repeat("5", 64))
 	binding.QuoteDigest = Digest(strings.Repeat("6", 64))

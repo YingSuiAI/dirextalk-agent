@@ -199,7 +199,7 @@ type PublicEvent struct {
 }
 
 func (e Event) Public() (PublicEvent, error) {
-	if !validUUID(e.EventID) || !validUUID(e.RunID) || e.RunID != e.ExecutionID || e.OwnerID == "" || e.AccountGeneration == 0 || e.Revision == 0 || e.Sequence == 0 || e.Type == "" || e.CreatedAt.IsZero() || !validDigest(e.PayloadDigest) || (e.State != "" && !validExecutionState(e.State)) {
+	if !validUUID(e.EventID) || !validUUID(e.RunID) || !validUUID(e.ExecutionID) || e.OwnerID == "" || e.AccountGeneration == 0 || e.Revision == 0 || e.Sequence == 0 || e.Type == "" || e.CreatedAt.IsZero() || !validDigest(e.PayloadDigest) || (e.State != "" && !validExecutionState(e.State)) {
 		return PublicEvent{}, ErrInvalid
 	}
 	return PublicEvent{EventID: e.EventID, RunID: e.RunID, OwnerID: e.OwnerID, AccountGeneration: e.AccountGeneration, Revision: e.Revision, Sequence: e.Sequence, Type: e.Type, At: e.CreatedAt.UTC(), PayloadDigest: e.PayloadDigest, Status: e.State}, nil

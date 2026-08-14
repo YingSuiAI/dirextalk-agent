@@ -64,7 +64,7 @@ func (s *CloudWorkerStore) GetExecutionForAuthority(ctx context.Context, owner s
 		return cloudworker.Execution{}, cloudworker.ErrInvalid
 	}
 	return scanCloudWorkerExecution(s.store.pool.QueryRow(ctx, cloudWorkerExecutionSelect+`
-		WHERE execution_id=$1 AND owner_id=$2 AND account_generation=$3`, id, owner, accountGeneration))
+		WHERE execution_json->>'run_id'=$1 AND owner_id=$2 AND account_generation=$3`, id, owner, accountGeneration))
 }
 
 func (s *CloudWorkerStore) ListExecutionsForAuthority(ctx context.Context, owner string, accountGeneration uint64, cursor string, limit int) ([]cloudworker.Execution, string, error) {
@@ -108,9 +108,10 @@ func (s *CloudWorkerStore) EventsForAuthority(ctx context.Context, owner string,
 		return nil, after, false, err
 	}
 	defer tx.Rollback(ctx)
+	var executionID string
 	var truncatedThrough uint64
-	err = tx.QueryRow(ctx, `SELECT event_history_truncated_through FROM core_cloud_worker_executions
-		WHERE execution_id=$1 AND owner_id=$2 AND account_generation=$3`, id, owner, accountGeneration).Scan(&truncatedThrough)
+	err = tx.QueryRow(ctx, `SELECT execution_id::text,event_history_truncated_through FROM core_cloud_worker_executions
+		WHERE execution_json->>'run_id'=$1 AND owner_id=$2 AND account_generation=$3`, id, owner, accountGeneration).Scan(&executionID, &truncatedThrough)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, after, false, cloudworker.ErrNotFound
 	}
@@ -127,7 +128,7 @@ func (s *CloudWorkerStore) EventsForAuthority(ctx context.Context, owner string,
 		JOIN core_cloud_worker_executions execution ON execution.execution_id=event.execution_id
 		WHERE event.execution_id=$1 AND event.owner_id=$2 AND execution.owner_id=$2
 		AND execution.account_generation=$3 AND event.sequence>$4
-		ORDER BY event.sequence LIMIT $5`, id, owner, accountGeneration, effectiveAfter, limit)
+		ORDER BY event.sequence LIMIT $5`, executionID, owner, accountGeneration, effectiveAfter, limit)
 	if err != nil {
 		return nil, after, false, err
 	}
@@ -140,7 +141,7 @@ func (s *CloudWorkerStore) EventsForAuthority(ctx context.Context, owner string,
 		var raw []byte
 		var event cloudworker.Event
 		if err = rows.Scan(&kind, &workerProgressSequence, &raw); err != nil || json.Unmarshal(raw, &event) != nil ||
-			event.ExecutionID != id || event.RunID != id || event.OwnerID != owner ||
+			event.ExecutionID != executionID || event.RunID != id || event.OwnerID != owner ||
 			event.AccountGeneration != accountGeneration || event.Sequence != next+1 || event.Type != kind ||
 			!validCloudWorkerPublicProgress(event, workerProgressSequence) {
 			return nil, after, false, cloudworker.ErrConflict

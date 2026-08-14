@@ -95,6 +95,9 @@ func buildCloudWorkerPublicFixture(t *testing.T) cloudWorkerPublicFixture {
 	}
 	plan := store.commands[0].Plan
 	execution := store.commands[0].Execution
+	if execution.RunID == execution.ExecutionID {
+		t.Fatal("Cloud Worker run_id must be independently generated")
+	}
 	var binding coreconfirmation.Binding
 	if err := json.Unmarshal(store.commands[0].BindingJSON, &binding); err != nil {
 		t.Fatal(err)

@@ -660,12 +660,12 @@ func (s *CloudWorkerControlStore) mutateSession(ctx context.Context, operation s
 	if _, err = lockControlFenceTx(ctx, tx, mutation.Fence, mutation.At); err != nil {
 		return control.Session{}, err
 	}
-	var executionOwner, executionState string
+	var executionOwner, executionRunID, executionState string
 	var executionGeneration, executionRevision uint64
-	err = tx.QueryRow(ctx, `SELECT owner_id,account_generation,state,revision
+	err = tx.QueryRow(ctx, `SELECT owner_id,execution_json->>'run_id',account_generation,state,revision
 			FROM core_cloud_worker_executions WHERE execution_id=$1 AND task_id=$2 FOR UPDATE`,
 		mutation.Fence.ExecutionID, mutation.Fence.TaskID).Scan(
-		&executionOwner, &executionGeneration, &executionState, &executionRevision,
+		&executionOwner, &executionRunID, &executionGeneration, &executionState, &executionRevision,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return control.Session{}, control.ErrStaleLease
@@ -793,7 +793,7 @@ func (s *CloudWorkerControlStore) mutateSession(ctx context.Context, operation s
 		progress := session.LatestProgress
 		event := cloudworker.Event{
 			OwnerID: executionOwner, AccountGeneration: executionGeneration,
-			RunID: mutation.Fence.ExecutionID, ExecutionID: mutation.Fence.ExecutionID,
+			RunID: executionRunID, ExecutionID: mutation.Fence.ExecutionID,
 			EventID: deterministicCloudWorkerUUID("worker-progress", fmt.Sprintf("%s:%d", session.SessionID, mutation.ProgressSequence)),
 			Type:    "worker_progress", State: cloudworker.ExecutionState(executionState), Revision: executionRevision,
 			Progress: &cloudworker.WorkerProgress{

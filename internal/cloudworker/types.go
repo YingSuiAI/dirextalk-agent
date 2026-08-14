@@ -1140,7 +1140,7 @@ func NewExecution(plan Plan) (Execution, error) {
 	}
 	execution := Execution{
 		OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration,
-		RunID: plan.ExecutionID, ExecutionID: plan.ExecutionID,
+		RunID: deterministicID("cloud-worker-run", plan.ExecutionID), ExecutionID: plan.ExecutionID,
 		PlanID: plan.PlanID, PlanRevision: plan.Revision, PlanDigest: plan.Digest,
 		TaskID: plan.TaskID, ConfirmationID: plan.ConfirmationID,
 		ConversationID: plan.ConversationID, TurnID: plan.TurnID,
@@ -1157,7 +1157,7 @@ func NewExecution(plan Plan) (Execution, error) {
 }
 
 func (e *Execution) Seal() error {
-	if e == nil || strings.TrimSpace(e.OwnerID) == "" || e.AccountGeneration == 0 || !validUUID(e.RunID) || e.RunID != e.ExecutionID || !validUUID(e.PlanID) || !validUUID(e.TaskID) || !validUUID(e.ConfirmationID) || !validUUID(e.ConversationID) || !validUUID(e.TurnID) || e.PlanRevision == 0 || e.Revision == 0 || !validDigest(e.PlanDigest) || !validDigest(e.ModelBindingDigest) || !validDigest(e.QuoteDigest) || !validDigest(e.ExecutionDigest) || e.Status != e.State || !validExecutionState(e.State) || !validateWorkspaceMode(e.WorkspaceMode) || e.CreatedAt.IsZero() || e.UpdatedAt.IsZero() {
+	if e == nil || strings.TrimSpace(e.OwnerID) == "" || e.AccountGeneration == 0 || !validUUID(e.RunID) || !validUUID(e.ExecutionID) || !validUUID(e.PlanID) || !validUUID(e.TaskID) || !validUUID(e.ConfirmationID) || !validUUID(e.ConversationID) || !validUUID(e.TurnID) || e.PlanRevision == 0 || e.Revision == 0 || !validDigest(e.PlanDigest) || !validDigest(e.ModelBindingDigest) || !validDigest(e.QuoteDigest) || !validDigest(e.ExecutionDigest) || e.Status != e.State || !validExecutionState(e.State) || !validateWorkspaceMode(e.WorkspaceMode) || e.CreatedAt.IsZero() || e.UpdatedAt.IsZero() {
 		return ErrInvalid
 	}
 	e.CreatedAt, e.UpdatedAt = e.CreatedAt.UTC(), e.UpdatedAt.UTC()
@@ -1341,7 +1341,7 @@ func CompletionDigest(value CompletionOutbox) string {
 }
 
 func (o CompletionOutbox) Validate() error {
-	if !validUUID(o.EventID) || !validUUID(o.ExecutionID) || o.RunID != o.ExecutionID || !validUUID(o.ConversationID) || !validUUID(o.TurnID) || o.CompletedAt.IsZero() || o.CompletedAt.Location() != time.UTC || !validDigest(o.PayloadDigest) || o.PayloadDigest != CompletionDigest(o) {
+	if !validUUID(o.EventID) || !validUUID(o.ExecutionID) || !validUUID(o.RunID) || !validUUID(o.ConversationID) || !validUUID(o.TurnID) || o.CompletedAt.IsZero() || o.CompletedAt.Location() != time.UTC || !validDigest(o.PayloadDigest) || o.PayloadDigest != CompletionDigest(o) {
 		return ErrInvalid
 	}
 	switch o.TerminalState {

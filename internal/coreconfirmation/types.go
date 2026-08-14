@@ -189,7 +189,7 @@ func (b Binding) normalized() (Binding, error) {
 	}
 	cloudFields := b.ExecutionID != "" || b.PlanID != "" || b.RunID != "" || b.PlanRevision != 0 || b.RunRevision != 0 || b.PlanDigest != "" || b.RunDigest != "" || b.QuoteDigest != "" || b.Digest != ""
 	if cloudFields {
-		if b.OperationDomain != "cloud_worker.execute" || b.AccountGeneration == 0 || !validateUUID(b.ExecutionID) || !validateUUID(b.PlanID) || !validateUUID(b.RunID) || b.ExecutionID != b.TargetID || b.RunID != b.ExecutionID || b.PlanRevision < 1 || b.RunRevision < 1 {
+		if b.OperationDomain != "cloud_worker.execute" || b.AccountGeneration == 0 || !validateUUID(b.ExecutionID) || !validateUUID(b.PlanID) || !validateUUID(b.RunID) || b.ExecutionID != b.TargetID || b.PlanRevision < 1 || b.RunRevision < 1 {
 			return Binding{}, ErrInvalid
 		}
 		for _, d := range []Digest{b.PlanDigest, b.RunDigest, b.QuoteDigest, b.Digest} {

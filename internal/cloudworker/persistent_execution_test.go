@@ -9,7 +9,7 @@ func TestPersistentWorkerTerminalExecutionNeedsNoEphemeralCleanupGraph(t *testin
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	fixture := Execution{
 		OwnerID: "owner", AccountGeneration: 1,
-		RunID: "00000000-0000-4000-8000-000000000001", ExecutionID: "00000000-0000-4000-8000-000000000001",
+		RunID: "00000000-0000-4000-8000-000000000007", ExecutionID: "00000000-0000-4000-8000-000000000001",
 		PlanID: "00000000-0000-4000-8000-000000000002", PlanRevision: 1, PlanDigest: digestValue("plan"),
 		TaskID: "00000000-0000-4000-8000-000000000003", ConfirmationID: "00000000-0000-4000-8000-000000000004",
 		ConversationID: "00000000-0000-4000-8000-000000000005", TurnID: "00000000-0000-4000-8000-000000000006",

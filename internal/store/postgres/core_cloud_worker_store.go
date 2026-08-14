@@ -420,7 +420,7 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		executionEventType = "worker_reuse_queued"
 	}
 	executionEvent := cloudworker.Event{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration,
-		RunID: plan.ExecutionID, ExecutionID: plan.ExecutionID,
+		RunID: execution.RunID, ExecutionID: plan.ExecutionID,
 		Sequence: 1, EventID: deterministicCloudWorkerUUID("execution-event-offer", plan.ExecutionID), Type: executionEventType,
 		State: execution.State, Revision: execution.Revision, CreatedAt: plan.CreatedAt}
 	executionEvent.PayloadDigest = digestCloudWorkerValue(struct {
@@ -946,7 +946,7 @@ func appendCloudWorkerEventTx(
 	sessionID string,
 	workerProgressSequence uint64,
 ) error {
-	if event == nil || event.ExecutionID == "" || event.RunID != event.ExecutionID ||
+	if event == nil || !coretask.ValidUUID(event.ExecutionID) || !coretask.ValidUUID(event.RunID) ||
 		event.EventID == "" || event.Type != "worker_progress" || sessionID == "" || workerProgressSequence == 0 {
 		return cloudworker.ErrInvalid
 	}
@@ -1901,23 +1901,31 @@ func (s *CloudWorkerStore) BeginCleanup(ctx context.Context, supplied coretask.T
 // RequestCancel records a durable terminal intent only. Even an unconfirmed,
 // zero-resource execution is queued for the controller so cancellation always
 // follows the same fence -> cleaning -> verified terminal/outbox path.
-func (s *CloudWorkerStore) RequestCancel(ctx context.Context, owner string, accountGeneration uint64, executionID string, expectedRevision uint64, idempotencyKey string) (cloudworker.Execution, error) {
+func (s *CloudWorkerStore) RequestCancel(ctx context.Context, owner string, accountGeneration uint64, runID string, expectedRevision uint64, idempotencyKey string) (cloudworker.Execution, error) {
 	owner = strings.TrimSpace(owner)
-	if s == nil || s.store == nil || owner == "" || accountGeneration == 0 || !coretask.ValidUUID(executionID) || expectedRevision == 0 || !coretask.ValidUUID(idempotencyKey) {
+	if s == nil || s.store == nil || owner == "" || accountGeneration == 0 || !coretask.ValidUUID(runID) || expectedRevision == 0 || !coretask.ValidUUID(idempotencyKey) {
 		return cloudworker.Execution{}, cloudworker.ErrInvalid
 	}
 	requestDigest := digestCloudWorkerValue(struct {
 		OwnerID           string
 		AccountGeneration uint64
-		ExecutionID       string
+		RunID             string
 		ExpectedRevision  uint64
-	}{owner, accountGeneration, executionID, expectedRevision})
+	}{owner, accountGeneration, runID, expectedRevision})
 	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return cloudworker.Execution{}, err
 	}
 	defer tx.Rollback(ctx)
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "cloud-worker:request-cancel:"+idempotencyKey); err != nil {
+		return cloudworker.Execution{}, err
+	}
+	var executionID string
+	if err = tx.QueryRow(ctx, `SELECT execution_id::text FROM core_cloud_worker_executions
+		WHERE execution_json->>'run_id'=$1 AND owner_id=$2 AND account_generation=$3`, runID, owner, accountGeneration).Scan(&executionID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return cloudworker.Execution{}, cloudworker.ErrNotFound
+		}
 		return cloudworker.Execution{}, err
 	}
 	var replayDigest, replayExecution string
@@ -2378,7 +2386,7 @@ func (s *CloudWorkerStore) terminalExecution(ctx context.Context, supplied coret
 		return cloudworker.Execution{}, cloudworker.CompletionOutbox{}, err
 	}
 	outbox := cloudworker.CompletionOutbox{EventID: deterministicCloudWorkerUUID("completion-outbox", plan.ExecutionID),
-		ExecutionID: plan.ExecutionID, RunID: plan.ExecutionID, ConversationID: plan.ConversationID,
+		ExecutionID: plan.ExecutionID, RunID: next.RunID, ConversationID: plan.ConversationID,
 		TurnID: plan.TurnID, TerminalState: string(terminal), CompletedAt: now}
 	outbox.PayloadDigest = cloudworker.CompletionDigest(outbox)
 	if outbox.Validate() != nil {
@@ -2846,7 +2854,7 @@ func (s *CloudWorkerStore) ReplaceWithRequote(ctx context.Context, supplied core
 	}
 
 	initialEvent := cloudworker.Event{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration,
-		RunID: plan.ExecutionID, ExecutionID: plan.ExecutionID,
+		RunID: execution.RunID, ExecutionID: plan.ExecutionID,
 		Sequence: 1, EventID: deterministicCloudWorkerUUID("requote-execution-event", command.IdempotencyKey),
 		Type: "requote_created", State: cloudworker.StateWaitingUser, Revision: execution.Revision, CreatedAt: plan.CreatedAt}
 	initialEvent.PayloadDigest = digestCloudWorkerValue(command.TaskPayload)
