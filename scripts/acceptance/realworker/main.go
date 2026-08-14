@@ -962,6 +962,9 @@ func (d *driver) downloadMarkedArtifact(ctx context.Context, current run, marker
 		if stringValue(artifact, "artifact_id") != artifactID || stringValue(artifact, "execution_id") != current.ExecutionID || stringValue(artifact, "status") != "verified" {
 			return "", "", errors.New("artifact projection identity/status mismatch")
 		}
+		if stringValue(artifact, "name") != "acceptance.txt" {
+			continue
+		}
 		expectedSize := integer(artifact["size_bytes"])
 		expectedSHA := stringValue(artifact, "sha256")
 		body, downloadErr := d.downloadArtifact(ctx, artifactID, expectedSize, expectedSHA)

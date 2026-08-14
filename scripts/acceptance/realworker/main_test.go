@@ -226,7 +226,7 @@ func TestDownloadArtifactVerifiesEveryChunkAndFullDigest(t *testing.T) {
 	product := &fakeProduct{call: func(action string, params map[string]any) (map[string]any, error) {
 		if action == "agent.execution.v2.artifacts.get" {
 			return map[string]any{"artifact": map[string]any{
-				"artifact_id": "artifact-id", "execution_id": "execution-id", "status": "verified",
+				"artifact_id": "artifact-id", "execution_id": "execution-id", "name": "acceptance.txt", "status": "verified",
 				"size_bytes": int64(len(body)), "sha256": fullHex,
 			}}, nil
 		}
