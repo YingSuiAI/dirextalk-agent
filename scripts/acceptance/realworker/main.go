@@ -60,6 +60,7 @@ type receipt struct {
 	Destroy struct {
 		Completed       bool `json:"completed"`
 		ResourcesAbsent bool `json:"resources_absent"`
+		ViaConversation bool `json:"via_conversation"`
 	} `json:"destroy"`
 	Evidence struct {
 		AccountID        string         `json:"account_id"`
@@ -441,7 +442,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 		return out, fmt.Errorf("reuse did not retain the exact one Worker identity: count=%d: %w", len(workers), err)
 	}
 	out.Reuse.Completed, out.Reuse.NoNewCreationConfirmation = true, true
-	progress("retained Worker reuse completed; destroying exact Worker")
+	progress("retained Worker reuse completed; asking Agent to destroy exact Worker")
 
 	if err = d.revalidateAccount(ctx, identity.AccountID); err != nil {
 		return out, fmt.Errorf("pre-destroy AWS identity: %w", err)
@@ -449,8 +450,10 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 	if err = d.aws.ObserveOwnedResources(ctx, worker.Identity); err != nil {
 		return out, fmt.Errorf("pre-destroy exact resource ownership: %w", err)
 	}
-	if _, err = d.product.Call(ctx, "agent.workers.destroy", map[string]any{"identity": identityMap(worker.Identity), "confirmation": "destroy_worker"}); err != nil {
-		return out, fmt.Errorf("destroy exact Worker: %w", err)
+	destroyStream, err := d.product.StartTurn(ctx, chatParams(selected, d.conversationID,
+		"Destroy retained Worker "+worker.Identity.WorkerID+" now. This is my explicit instruction to destroy that exact Worker and its resources."), false)
+	if err != nil || !destroyStream.Done {
+		return out, fmt.Errorf("destroy exact Worker through Native Agent conversation: %w", err)
 	}
 	d.destroyRequested = true
 	if err = d.waitWorkerAbsent(ctx, worker.Identity); err != nil {
@@ -461,7 +464,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 		return out, fmt.Errorf("exact AWS resource absence: %w", err)
 	}
 	d.workerAbsent = true
-	out.Destroy.Completed, out.Destroy.ResourcesAbsent = true, true
+	out.Destroy.Completed, out.Destroy.ResourcesAbsent, out.Destroy.ViaConversation = true, true, true
 	progress("Worker resources absent; cleaning acceptance records")
 
 	conversationEvidence := d.conversationID
@@ -1511,7 +1514,7 @@ func writeReceiptAtomic(path string, value receipt) error {
 		!value.Quote.Observed || !value.Confirmation.Confirmed || !value.Worker.Created ||
 		!value.Worker.StatusObserved || !value.Worker.LoadObserved || !value.Artifact.Downloaded ||
 		!value.Reuse.Completed || !value.Reuse.NoNewCreationConfirmation ||
-		!value.Destroy.Completed || !value.Destroy.ResourcesAbsent || value.S3Used {
+		!value.Destroy.Completed || !value.Destroy.ResourcesAbsent || !value.Destroy.ViaConversation || value.S3Used {
 		return errors.New("refusing to write incomplete receipt")
 	}
 	body, err := json.MarshalIndent(value, "", "  ")

@@ -279,7 +279,7 @@ func TestReceiptIsAtomicAndContainsNoCredentialMaterial(t *testing.T) {
 	value.Worker.Created, value.Worker.StatusObserved, value.Worker.LoadObserved = true, true, true
 	value.Artifact.Downloaded = true
 	value.Reuse.Completed, value.Reuse.NoNewCreationConfirmation = true, true
-	value.Destroy.Completed, value.Destroy.ResourcesAbsent = true, true
+	value.Destroy.Completed, value.Destroy.ResourcesAbsent, value.Destroy.ViaConversation = true, true, true
 	value.Evidence.AccountID = "123456789012"
 	value.Evidence.CredentialID = "credential-id"
 	if err := writeReceiptAtomic(path, value); err != nil {
