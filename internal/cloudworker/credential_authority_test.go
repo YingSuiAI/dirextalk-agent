@@ -127,7 +127,7 @@ func TestProposeIntrinsicPublicationTracksCredentialReadinessWithoutRestart(t *t
 	}
 }
 
-func TestServiceProposalBindsOneEffectiveTokenLimitBeforeSingleQuote(t *testing.T) {
+func TestServiceProposalBindsAuthorizationTokenCeilingBeforeSingleQuote(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	defaults := intrinsicDefaults(now)
 	defaults.Limits.MaxTokens = 1_000_000
@@ -149,7 +149,7 @@ func TestServiceProposalBindsOneEffectiveTokenLimitBeforeSingleQuote(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens
+	want := runtimebounds.OpenAICompatibleMaximumAuthorizedOutputTokens
 	if offer.Plan.Limits.MaxTokens != want || quoter.last.Limits.MaxTokens != want ||
 		offer.Plan.Quote.BasisDigest != offer.Plan.AuthorizationBasisDigest ||
 		offer.Execution.PlanDigest != offer.Plan.Digest ||

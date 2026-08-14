@@ -205,8 +205,8 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 	}
 	modelAuthorization, err := ModelAuthorizationFromSnapshot(snapshot)
 	if err != nil {
-		// The relay has no approved Pi adapter for Anthropic, Gemini, voice,
-		// or future providers. Reject before a paid quote is created.
+		// Reject providers without an approved remote Pi adapter before a paid
+		// quote is created.
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
 	promptDigest := sha256.Sum256([]byte(bound.Turn.Prompt))

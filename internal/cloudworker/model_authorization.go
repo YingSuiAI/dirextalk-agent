@@ -38,9 +38,11 @@ func ModelAuthorizationFromSnapshot(snapshot coremodel.ExecutionSnapshot) (Model
 	return authorization, nil
 }
 
-// effectivePlanLimits derives the one output-token limit signed by the Plan,
-// priced by the quote, granted by Model Relay, and sent by Pi. A zero profile
-// limit means the profile did not narrow the server-owned default.
+// effectivePlanLimits derives the output-token cost and authorization ceiling
+// signed by the Plan and priced by the quote. A zero profile limit means the
+// profile did not narrow the server-owned default. The Pi runtime derives its
+// concrete request cap separately from the immutable model snapshot; this
+// pricing limit must not be reused as model configuration.
 func effectivePlanLimits(defaults Limits, authorization ModelAuthorization) (Limits, error) {
 	copy := authorization
 	if validateLimits(defaults) != nil || copy.Seal() != nil {
@@ -51,10 +53,10 @@ func effectivePlanLimits(defaults Limits, authorization ModelAuthorization) (Lim
 		maximum = copy.MaximumOutputTokens
 	}
 	if copy.Provider == "openai_compatible" && copy.Interface == "openai_compatible" {
-		if maximum > runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens {
-			maximum = runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens
+		if maximum > runtimebounds.OpenAICompatibleMaximumAuthorizedOutputTokens {
+			maximum = runtimebounds.OpenAICompatibleMaximumAuthorizedOutputTokens
 		}
-		if maximum < runtimebounds.PiOpenAICompatibleMinimumOutputTokens {
+		if maximum < runtimebounds.OpenAICompatibleMinimumAuthorizedOutputTokens {
 			return Limits{}, ErrInvalid
 		}
 	}

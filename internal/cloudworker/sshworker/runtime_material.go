@@ -78,16 +78,19 @@ func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 	if err != nil || !validRuntimeModel(request.Model) {
 		return RuntimeMaterial{}, ErrInvalid
 	}
+	modelDefinition := map[string]any{
+		"id": request.Model.Name, "reasoning": true,
+	}
+	if request.Model.MaxOutputTokens > 0 {
+		modelDefinition["maxTokens"] = request.Model.MaxOutputTokens
+	}
 	modelConfig, err := json.Marshal(map[string]any{
 		"providers": map[string]any{
 			"dirextalk-worker": map[string]any{
 				"baseUrl": request.Model.BaseURL,
 				"api":     api,
 				"apiKey":  "$DIREXTALK_MODEL_API_KEY",
-				"models": []any{map[string]any{
-					"id": request.Model.Name, "reasoning": true,
-					"maxTokens": request.Model.MaxOutputTokens,
-				}},
+				"models":  []any{modelDefinition},
 			},
 		},
 	})
@@ -179,5 +182,5 @@ func validRuntimeModel(model RuntimeModel) bool {
 	return err == nil && endpoint.Scheme == "https" && endpoint.Host != "" &&
 		strings.TrimSpace(model.Name) != "" && len(model.Name) <= 512 &&
 		strings.TrimSpace(model.APIKey) != "" && !strings.ContainsAny(model.APIKey, "\r\n") &&
-		model.MaxOutputTokens > 0 && model.MaxOutputTokens <= 262_144
+		model.MaxOutputTokens >= 0 && model.MaxOutputTokens <= 1<<20
 }

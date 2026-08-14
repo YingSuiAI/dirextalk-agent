@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestEffectivePlanLimitsBindProfileAndPiRequestCeilings(t *testing.T) {
+func TestEffectivePlanLimitsBindProfileAndAuthorizationCeilings(t *testing.T) {
 	t.Parallel()
 	defaults := Limits{
 		MaxRuntimeSeconds: 3600,
@@ -22,9 +22,9 @@ func TestEffectivePlanLimitsBindProfileAndPiRequestCeilings(t *testing.T) {
 		want       uint64
 		wantErr    bool
 	}{
-		{name: "unspecified profile uses Pi cap", profileMax: 0, want: runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens},
+		{name: "unspecified profile uses plan cap", profileMax: 0, want: runtimebounds.OpenAICompatibleMaximumAuthorizedOutputTokens},
 		{name: "profile narrows default", profileMax: 2048, want: 2048},
-		{name: "large profile uses Pi cap", profileMax: 1 << 20, want: runtimebounds.PiOpenAICompatibleMaximumRequestOutputTokens},
+		{name: "large profile uses plan cap", profileMax: 1 << 20, want: runtimebounds.OpenAICompatibleMaximumAuthorizedOutputTokens},
 		{name: "profile below qualified minimum", profileMax: 511, wantErr: true},
 	}
 	for _, test := range tests {

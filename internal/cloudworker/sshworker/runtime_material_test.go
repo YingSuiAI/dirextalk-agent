@@ -61,6 +61,22 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 	}
 }
 
+func TestCompileRuntimeOmitsUnsetModelOutputLimit(t *testing.T) {
+	material, err := CompileRuntime(RuntimeRequest{
+		TaskID: "task-default-limit", Objective: "deploy the service", Architecture: "x86_64", Workload: WorkloadJob,
+		Model: RuntimeModel{Provider: "openai_compatible", BaseURL: "https://openrouter.ai/api/v1",
+			Name: "deepseek/deepseek-v4-flash", APIKey: "secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := `{"providers":{"dirextalk-worker":{"api":"openai-completions","apiKey":"$DIREXTALK_MODEL_API_KEY","baseUrl":"https://openrouter.ai/api/v1","models":[{"id":"deepseek/deepseek-v4-flash","reasoning":true}]}}}`
+	encoded := base64.StdEncoding.EncodeToString([]byte(config))
+	if !strings.Contains(string(material.WorkerScript), shellQuote(encoded)+` | base64 --decode > "$config_root/models.json"`) {
+		t.Fatal("compiled models.json did not preserve Pi's unset-limit contract")
+	}
+}
+
 func TestCompileRuntimeTreatsObjectiveAsData(t *testing.T) {
 	objective := `deploy $(touch /tmp/not-executed) ; echo "done" && report`
 	material, err := CompileRuntime(RuntimeRequest{

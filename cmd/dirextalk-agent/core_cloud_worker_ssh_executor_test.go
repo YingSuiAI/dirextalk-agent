@@ -207,16 +207,16 @@ func TestSSHWorkerExecuteRejectsRotatedCurrentCredentialBeforeWorkspaceRead(t *t
 	}
 }
 
-func TestSSHWorkerRuntimeUsesPlanLimitWhenProfileHasNoExplicitLimit(t *testing.T) {
+func TestSSHWorkerRuntimePreservesUnsetProfileOutputLimit(t *testing.T) {
 	snapshot := coremodel.ExecutionSnapshot{Provider: coremodel.ProviderOpenAICompatible,
 		BaseURL: "https://openrouter.example.test/v1", Model: "deepseek/test", APIKey: "secret"}
-	model := workerRuntimeModel(snapshot, cloudworker.Limits{MaxTokens: 100_000})
-	if model.MaxOutputTokens != 100_000 {
+	model := workerRuntimeModel(snapshot)
+	if model.MaxOutputTokens != 0 {
 		t.Fatalf("max output tokens = %d", model.MaxOutputTokens)
 	}
 	if _, err := sshworker.CompileRuntime(sshworker.RuntimeRequest{TaskID: "33333333-3333-4333-8333-333333333333",
 		Objective: "deploy the service", Architecture: "x86_64", Workload: sshworker.WorkloadJob, Model: model}); err != nil {
-		t.Fatalf("compile unbounded profile with authorized plan limit: %v", err)
+		t.Fatalf("compile profile using Pi default output limit: %v", err)
 	}
 }
 

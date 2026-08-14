@@ -150,7 +150,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	}
 	material, err := sshworker.CompileRuntime(sshworker.RuntimeRequest{TaskID: request.ExecutionID, Objective: request.Objective,
 		Architecture: request.Compute.Architecture, Workload: workload, Service: service,
-		Model: workerRuntimeModel(request.ModelSnapshot, request.Limits)})
+		Model: workerRuntimeModel(request.ModelSnapshot)})
 	if err != nil {
 		return sshflow.Result{}, err
 	}
@@ -196,9 +196,9 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	return workerResult, nil
 }
 
-func workerRuntimeModel(snapshot coremodel.ExecutionSnapshot, limits cloudworker.Limits) sshworker.RuntimeModel {
+func workerRuntimeModel(snapshot coremodel.ExecutionSnapshot) sshworker.RuntimeModel {
 	return sshworker.RuntimeModel{Provider: string(snapshot.Provider), BaseURL: snapshot.BaseURL,
-		Name: snapshot.Model, APIKey: snapshot.APIKey, MaxOutputTokens: int(limits.MaxTokens)}
+		Name: snapshot.Model, APIKey: snapshot.APIKey, MaxOutputTokens: snapshot.MaxOutputTokens}
 }
 
 var errSSHWorkerArtifactLimit = fmt.Errorf("SSH Worker artifact count exceeds %d", coretask.MaxFileCount)
