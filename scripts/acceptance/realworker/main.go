@@ -245,6 +245,7 @@ func configFromEnv() (config, error) {
 func (d *driver) run(ctx context.Context) (receipt, error) {
 	var out receipt
 	out.Schema, out.S3Used = receiptSchema, false
+	progress("checking AWS and product baseline")
 
 	identity, err := d.aws.Identity(ctx)
 	if err != nil || len(identity.AccountID) != 12 {
@@ -334,6 +335,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 	if err != nil {
 		return out, err
 	}
+	progress("baseline ready; starting priced Worker offer")
 
 	d.conversationID = uuid4()
 	if _, err = d.product.Call(ctx, "agent.chat.conversations.create", map[string]any{
@@ -359,6 +361,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 		return out, errors.New("first plan did not expose the exact pending priced offer")
 	}
 	out.Quote.Observed = true
+	progress("priced offer observed; confirming once")
 	confirmation, err := d.pendingConfirmation(ctx, firstPlan)
 	if err != nil {
 		return out, err
@@ -378,6 +381,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 	}
 	d.confirmedRunID = firstRunIdentity.RunID
 	out.Confirmation.Confirmed = true
+	progress("offer confirmed; waiting for Worker task completion")
 	firstRun, err := d.waitRun(ctx, firstRunIdentity.RunID)
 	if err != nil {
 		return out, err
@@ -394,6 +398,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 	}
 	d.worker = &worker.Identity
 	out.Worker.Created, out.Worker.StatusObserved, out.Worker.LoadObserved = true, true, true
+	progress("Worker task completed; downloading artifact")
 	artifactID, artifactSHA, err := d.downloadMarkedArtifact(ctx, firstRun, artifactMarker)
 	if err != nil {
 		return out, err
@@ -402,6 +407,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 	if err = d.waitTurn(ctx, firstStream.TurnID); err != nil {
 		return out, err
 	}
+	progress("artifact verified; starting retained Worker reuse")
 
 	secondBaseline, err := d.planIDs(ctx)
 	if err != nil {
@@ -436,6 +442,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 		return out, fmt.Errorf("reuse did not retain the exact one Worker identity: count=%d: %w", len(workers), err)
 	}
 	out.Reuse.Completed, out.Reuse.NoNewCreationConfirmation = true, true
+	progress("retained Worker reuse completed; destroying exact Worker")
 
 	if err = d.revalidateAccount(ctx, identity.AccountID); err != nil {
 		return out, fmt.Errorf("pre-destroy AWS identity: %w", err)
@@ -456,6 +463,7 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 	}
 	d.workerAbsent = true
 	out.Destroy.Completed, out.Destroy.ResourcesAbsent = true, true
+	progress("Worker resources absent; cleaning acceptance records")
 
 	conversationEvidence := d.conversationID
 	if err = d.cleanupRecords(ctx); err != nil {
@@ -468,6 +476,10 @@ func (d *driver) run(ctx context.Context) (receipt, error) {
 	out.Evidence.WorkerIdentity = worker.Identity
 	out.Evidence.ArtifactID, out.Evidence.ArtifactSHA256 = artifactID, artifactSHA
 	return out, nil
+}
+
+func progress(message string) {
+	fmt.Fprintf(os.Stderr, "%s real Worker acceptance: %s\n", time.Now().UTC().Format(time.RFC3339), message)
 }
 
 func (d *driver) cleanup(ctx context.Context) error {
