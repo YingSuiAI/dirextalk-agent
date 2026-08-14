@@ -418,11 +418,25 @@ func assertValueMatchesAdvertisedObjectSchema(t *testing.T, schemaJSON []byte, v
 func TestDurableChatWireProjectionFailsClosedOnInvalidAuthority(t *testing.T) {
 	profileID := uuid.NewString()
 	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Revision: 1}
-	message := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "complete", CreatedAt: time.Now().UTC(), ModelProfileID: profileID}
-	response := coreconversation.ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 2, Message: message, Done: true, ModelProfileID: profileID}
+	messageSize := uint64(204)
+	responseSize := uint64(204)
+	messageReference := coreconversation.Reference{
+		Kind: "execution_artifact", AccountGeneration: 1, ExecutionID: uuid.NewString(), ArtifactID: uuid.NewString(),
+		RecordKind: "local_sandbox", Name: "acceptance.html", MediaType: "text/html; charset=utf-8", SizeBytes: &messageSize,
+		SHA256: "6c92a64c09d549e494241899bedf1542026bd1684f915b51bd8b67b58f637479",
+	}
+	responseReference := messageReference
+	responseReference.SizeBytes = &responseSize
+	message := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "complete", CreatedAt: time.Now().UTC(), ModelProfileID: profileID, References: []coreconversation.Reference{messageReference}}
+	response := coreconversation.ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 2, Message: message, Done: true, ModelProfileID: profileID, References: []coreconversation.Reference{responseReference}}
 	if _, err := projectDurableChatStreamResult(turn, response); err != nil {
 		t.Fatal(err)
 	}
+	*response.References[0].SizeBytes++
+	if _, err := projectDurableChatStreamResult(turn, response); !errors.Is(err, coreconversation.ErrChatFailed) {
+		t.Fatalf("mismatched artifact size err=%v", err)
+	}
+	*response.References[0].SizeBytes--
 	badResponse := response
 	badResponse.RequestID = uuid.NewString()
 	if _, err := projectDurableChatStreamResult(turn, badResponse); !errors.Is(err, coreconversation.ErrChatFailed) {

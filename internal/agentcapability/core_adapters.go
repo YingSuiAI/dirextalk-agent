@@ -843,7 +843,7 @@ func projectDurableChatStreamResult(turn coreconversation.Turn, response corecon
 		response.ModelProfileID != response.Message.ModelProfileID ||
 		!slices.Equal(response.RelatedTaskIDs, response.Message.RelatedTaskIDs) ||
 		!slices.Equal(response.RelatedPlanIDs, response.Message.RelatedPlanIDs) ||
-		!slices.Equal(response.References, response.Message.References) {
+		!slices.EqualFunc(response.References, response.Message.References, equalReferenceValue) {
 		return durableChatStreamResult{}, coreconversation.ErrChatFailed
 	}
 	return durableChatStreamResult{
@@ -856,6 +856,18 @@ func projectDurableChatStreamResult(turn coreconversation.Turn, response corecon
 		ToolSummaries:  append([]string(nil), response.ToolSummaries...),
 		ToolResults:    append([]coreconversation.ToolResult(nil), response.ToolResults...),
 	}, nil
+}
+
+func equalReferenceValue(left, right coreconversation.Reference) bool {
+	if (left.SizeBytes == nil) != (right.SizeBytes == nil) {
+		return false
+	}
+	if left.SizeBytes != nil && *left.SizeBytes != *right.SizeBytes {
+		return false
+	}
+	left.SizeBytes = nil
+	right.SizeBytes = nil
+	return left == right
 }
 
 func projectDurableChatStreamEvent(turn coreconversation.Turn, revision uint64, event coreconversation.StreamEvent) (durableChatStreamEvent, error) {
