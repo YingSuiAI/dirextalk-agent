@@ -113,18 +113,27 @@ function compactAssistantText(
     compacted.content = boundedText(compacted.content, maximum);
   } else if (Array.isArray(compacted.content)) {
     compacted.content = compacted.content.map((item) => {
-      if (
-        !item ||
-        typeof item !== "object" ||
-        (item as ContextRecord).type !== "text"
-      ) {
-        return item;
+      if (!item || typeof item !== "object") return item;
+      const content = item as ContextRecord;
+      if (content.type === "text") {
+        return {
+          ...content,
+          text: boundedText(
+            typeof content.text === "string" ? content.text : "",
+            maximum,
+          ),
+        };
       }
-      const text = (item as ContextRecord).text;
-      return {
-        ...(item as ContextRecord),
-        text: boundedText(typeof text === "string" ? text : "", maximum),
-      };
+      if (content.type === "thinking") {
+        return {
+          ...content,
+          thinking: boundedText(
+            typeof content.thinking === "string" ? content.thinking : "",
+            maximum,
+          ),
+        };
+      }
+      return item;
     });
   }
   for (const key of ["reasoning_content", "reasoningContent"]) {

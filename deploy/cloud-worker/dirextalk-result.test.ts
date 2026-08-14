@@ -107,4 +107,46 @@ describe("Dirextalk Pi output continuation", () => {
       (compacted[1] as { content: string }).content.length,
     ).toBeLessThanOrEqual(8192);
   });
+
+  test("compacts DeepSeek thinking blocks across repeated length stops", () => {
+    const messages = [
+      { role: "user", content: "Create the exact requested deliverables." },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "R".repeat(40000),
+            thinkingSignature: "reasoning_content",
+          },
+          { type: "text", text: "Working on the first half." },
+        ],
+      },
+      { role: "user", content: "Continue without repeating completed work." },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "S".repeat(40000),
+            thinkingSignature: "reasoning_content",
+          },
+          { type: "text", text: "Working on the second half." },
+        ],
+      },
+    ];
+
+    const compacted = extension.compactDirextalkContext(
+      messages,
+      65536,
+      8192,
+      24000,
+    ) as typeof messages;
+
+    expect(compacted[0]).toEqual(messages[0]);
+    expect(compacted[2]).toEqual(messages[2]);
+    expect(compacted[1].content[0].thinking.length).toBeLessThanOrEqual(2048);
+    expect(compacted[3].content[0].thinking.length).toBeLessThanOrEqual(8192);
+    expect(compacted[3].content[0].thinkingSignature).toBe("reasoning_content");
+  });
 });
