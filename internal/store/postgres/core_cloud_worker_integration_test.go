@@ -413,10 +413,38 @@ func TestCloudWorkerPostgresConfirmationAndPredispatchCancelProjection(t *testin
 	}
 }
 
-func TestCloudWorkerPostgresExpiredConfirmationSurvivesDeletedConversation(t *testing.T) {
-	h := newPGCloudWorkerHarness(t)
-	defer h.cleanup()
+func seedDeletedLegacyCloudWorkerOffer(t *testing.T, h *pgCloudWorkerHarness, mutate func(*coreconfirmation.Binding)) cloudworker.Offer {
+	t.Helper()
 	offer := h.propose(t)
+	legacyExecution := offer.Execution
+	legacyExecution.RunID = legacyExecution.ExecutionID
+	legacyExecutionRaw, _ := json.Marshal(legacyExecution)
+	legacyBinding := offer.Confirmation.Binding
+	legacyBinding.RunID = legacyExecution.RunID
+	legacyBinding.Quote = nil
+	if mutate != nil {
+		mutate(&legacyBinding)
+	}
+	legacyBinding.Digest = ""
+	legacyBindingRaw, _ := json.Marshal(legacyBinding)
+	legacyBinding.Digest = coreconfirmation.Digest(pgCloudDigest(string(legacyBindingRaw)))
+	legacyBindingRaw, _ = json.Marshal(legacyBinding)
+	if _, err := h.store.pool.Exec(h.ctx, `UPDATE core_cloud_worker_executions SET execution_json=$2 WHERE execution_id=$1`,
+		offer.Execution.ExecutionID, legacyExecutionRaw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.pool.Exec(h.ctx, `UPDATE core_confirmations SET binding_json=$2 WHERE confirmation_id=$1`,
+		offer.Confirmation.ConfirmationID, legacyBindingRaw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.pool.Exec(h.ctx, `UPDATE core_confirmation_target_bindings SET binding_json=$2 WHERE confirmation_id=$1`,
+		offer.Confirmation.ConfirmationID, legacyBindingRaw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.pool.Exec(h.ctx, `UPDATE core_confirmation_current_bindings SET binding_json=$3 WHERE operation_domain=$1 AND target_id=$2`,
+		cloudworker.OperationDomain, offer.Execution.ExecutionID, legacyBindingRaw); err != nil {
+		t.Fatal(err)
+	}
 
 	var conversationRevision uint64
 	if err := h.store.pool.QueryRow(h.ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1`, offer.Plan.ConversationID).Scan(&conversationRevision); err != nil {
@@ -425,6 +453,13 @@ func TestCloudWorkerPostgresExpiredConfirmationSurvivesDeletedConversation(t *te
 	if err := h.conversation.DeleteConversation(h.ctx, offer.Plan.ConversationID, conversationRevision); err != nil {
 		t.Fatal(err)
 	}
+	return offer
+}
+
+func TestCloudWorkerPostgresExpiredConfirmationSurvivesDeletedConversation(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+	offer := seedDeletedLegacyCloudWorkerOffer(t, h, nil)
 
 	count, err := h.confirmations.SweepExpired(h.ctx, offer.Confirmation.ExpiresAt.Add(time.Second), 100)
 	if err != nil || count != 1 {
@@ -444,6 +479,28 @@ func TestCloudWorkerPostgresExpiredConfirmationSurvivesDeletedConversation(t *te
 		taskStatus != string(coretask.StatusFailed) || turnState != string(core.TurnWaitingConfirmation) || messageCount != 2 {
 		t.Fatalf("deleted conversation terminal projection confirmation=%s execution=%s task=%s turn=%s messages=%d",
 			confirmationState, executionState, taskStatus, turnState, messageCount)
+	}
+}
+
+func TestCloudWorkerPostgresDeletedConversationDoesNotHideStaleBinding(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+	offer := seedDeletedLegacyCloudWorkerOffer(t, h, func(binding *coreconfirmation.Binding) {
+		binding.PlanDigest = coreconfirmation.Digest(pgCloudDigest("unrelated-plan"))
+	})
+
+	count, err := h.confirmations.SweepExpired(h.ctx, offer.Confirmation.ExpiresAt.Add(time.Second), 100)
+	if !errors.Is(err, coreconfirmation.ErrStale) || count != 0 {
+		t.Fatalf("stale binding sweep count=%d err=%v", count, err)
+	}
+	var confirmationState, executionState, taskStatus string
+	if err = h.store.pool.QueryRow(h.ctx, `SELECT c.state,e.state,t.status FROM core_cloud_worker_executions e
+		JOIN core_confirmations c ON c.confirmation_id=e.confirmation_id JOIN core_tasks t ON t.task_id=e.task_id
+		WHERE e.execution_id=$1`, offer.Execution.ExecutionID).Scan(&confirmationState, &executionState, &taskStatus); err != nil {
+		t.Fatal(err)
+	}
+	if confirmationState != string(coreconfirmation.StatePending) || executionState != string(cloudworker.StateWaitingUser) || taskStatus != string(coretask.StatusWaitingUser) {
+		t.Fatalf("stale binding mutated state confirmation=%s execution=%s task=%s", confirmationState, executionState, taskStatus)
 	}
 }
 
