@@ -199,7 +199,7 @@ type Defaults struct {
 }
 
 func (d Defaults) Validate() error {
-	if validateAWS(d.AWS) != nil || validateCompute(d.Compute) != nil || !validAWSID(d.Placement.VPCID, "vpc") || !validAWSID(d.Placement.SubnetID, "subnet") || d.Placement.IAMPolicyDigest != "" || validateLimits(d.Limits) != nil || d.ArtifactRetentionSeconds == 0 || d.QuoteTTL <= 0 || d.QuoteTTL > 24*time.Hour || d.QuoteAmountMicros < 0 || d.MaximumAuthorizedMicros < d.QuoteAmountMicros {
+	if validateAWS(d.AWS) != nil || validateCompute(d.Compute) != nil || !validAWSID(d.Placement.VPCID, "vpc") || !validAWSID(d.Placement.SubnetID, "subnet") || d.Placement.IAMPolicyDigest != "" || validateLimits(d.Limits) != nil || d.Limits.MaxTokens != 0 || d.ArtifactRetentionSeconds == 0 || d.QuoteTTL <= 0 || d.QuoteTTL > 24*time.Hour || d.QuoteAmountMicros < 0 || d.MaximumAuthorizedMicros < d.QuoteAmountMicros {
 		return ErrInvalid
 	}
 	network := d.NetworkPolicy
@@ -454,7 +454,7 @@ func (q FakeQuoter) clock() time.Time {
 }
 
 func (q FakeQuoter) Quote(_ context.Context, request QuoteRequest) (Quote, error) {
-	if strings.TrimSpace(request.OwnerID) == "" || request.AccountGeneration == 0 || !validDigest(request.ObjectiveDigest) || !validDigest(request.UserPromptDigest) || !validDigest(request.InputManifestDigest) || !validDigest(request.ModelBindingDigest) || !validDigest(request.AuthorizationBasisDigest) || !validateWorkspaceMode(request.WorkspaceMode) || !validProposalReason(request.ProposalReason) || q.TTL <= 0 || q.AmountMicros < 0 || q.MaximumAuthorizedMicros < q.AmountMicros {
+	if strings.TrimSpace(request.OwnerID) == "" || request.AccountGeneration == 0 || request.Limits.MaxTokens != 0 || !validDigest(request.ObjectiveDigest) || !validDigest(request.UserPromptDigest) || !validDigest(request.InputManifestDigest) || !validDigest(request.ModelBindingDigest) || !validDigest(request.AuthorizationBasisDigest) || !validateWorkspaceMode(request.WorkspaceMode) || !validProposalReason(request.ProposalReason) || q.TTL <= 0 || q.AmountMicros < 0 || q.MaximumAuthorizedMicros < q.AmountMicros {
 		return Quote{}, ErrInvalid
 	}
 	now := q.clock()

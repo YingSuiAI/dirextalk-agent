@@ -101,6 +101,48 @@ FROM core_cloud_worker_model_grants g WHERE grant_id=$1`, grant.GrantID).Scan(&s
 	clear(token)
 }
 
+func TestPostgresStoreAuditsUnlimitedExecutionWithoutCumulativeClamp(t *testing.T) {
+	fixture := newPostgresRelayFixture(t)
+	if _, err := fixture.pool.Exec(fixture.ctx, `UPDATE core_cloud_worker_plans
+SET plan_json=jsonb_set(plan_json,'{limits}',(plan_json->'limits')-'max_tokens')
+WHERE execution_id=$1`, fixture.fence.ExecutionID); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewPostgresStore(fixture.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenDigest := sha256.Sum256([]byte("cwmg1_unlimited-execution-token"))
+	grant := fixture.activate(t, store, tokenDigest, 0)
+	for index, actual := range []uint64{80, 90} {
+		_, invocation, beginErr := store.BeginInvocation(fixture.ctx, BeginMutation{
+			InvocationID: uuid.NewString(), TokenDigest: tokenDigest,
+			Path: PathChatCompletions, RequestDigest: relayIntegrationDigest(fmt.Sprintf("unlimited-%d", index)),
+			RequestedTokens: 100, At: fixture.now.Add(time.Duration(index*2+1) * time.Second),
+		})
+		if beginErr != nil || invocation.ReservedTokens != 100 {
+			t.Fatalf("call %d reservation=%+v err=%v", index, invocation, beginErr)
+		}
+		if _, _, settleErr := store.Settle(fixture.ctx, SettleMutation{
+			InvocationID: invocation.InvocationID, ActualTokens: actual,
+			At: fixture.now.Add(time.Duration(index*2+2) * time.Second),
+		}); settleErr != nil {
+			t.Fatalf("call %d settle: %v", index, settleErr)
+		}
+	}
+	final, err := store.GetGrant(fixture.ctx, grant.GrantID)
+	if err != nil || final.MaxTokens != 0 || final.SettledTokens != 170 ||
+		final.ReservedTokens != 0 || final.AvailableTokens() != MaximumRequestTokens {
+		t.Fatalf("unlimited grant=%+v err=%v", final, err)
+	}
+	var maxTokens, settledTokens int64
+	if err := fixture.pool.QueryRow(fixture.ctx, `SELECT max_tokens,settled_tokens
+FROM core_cloud_worker_model_budgets WHERE execution_id=$1`, fixture.fence.ExecutionID).Scan(
+		&maxTokens, &settledTokens); err != nil || maxTokens != 0 || settledTokens != 170 {
+		t.Fatalf("usage ledger max=%d settled=%d err=%v", maxTokens, settledTokens, err)
+	}
+}
+
 func TestPostgresExecutionBudgetSurvivesDuplicateClaimLeaseReclaimAndRestart(t *testing.T) {
 	fixture := newPostgresRelayFixture(t)
 	store, err := NewPostgresStore(fixture.pool)

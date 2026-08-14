@@ -54,6 +54,7 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 		"000012_managed_node_prepared_cleanup.up.sql",
 		"000013_cloud_worker_model_grant_snapshot.up.sql",
 		"000014_cloud_worker_central_completion.up.sql",
+		"000015_cloud_worker_runtime_bounded_model_usage.up.sql",
 	}
 	if !slices.Equal(entries, wantEntries) {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Cloud Worker migrations", entries)

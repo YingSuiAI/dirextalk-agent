@@ -229,7 +229,10 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration,
 		IdempotencyKey: idempotencyKey, ConversationID: lease.Turn.ConversationID,
 		TurnID: lease.Turn.ID, TurnLeaseID: lease.LeaseID, TurnLeaseEpoch: lease.Epoch,
-		ExpectedTurnRevision: lease.Turn.Revision, Objective: arguments.Objective,
+		// The durable user prompt is the authoritative Worker objective. The
+		// model-provided objective is only a display summary and must not be able
+		// to omit required deliverables, verification, or worker topology.
+		ExpectedTurnRevision: lease.Turn.Revision, Objective: lease.Turn.Prompt,
 		ObjectiveSummary: arguments.Objective, UserPromptDigest: hex.EncodeToString(promptDigest[:]),
 		ProposalReason: reason, LocalBudgetEvidence: budget, InputManifest: manifest,
 		WorkspaceMode:      mode,

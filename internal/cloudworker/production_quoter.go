@@ -30,7 +30,7 @@ type PricingCatalogRequest struct {
 	VolumeIOPS        uint64        `json:"volume_iops"`
 	VolumeThroughput  uint64        `json:"volume_throughput_mib"`
 	MaxRuntimeSeconds uint64        `json:"max_runtime_seconds"`
-	MaxTokens         uint64        `json:"max_tokens"`
+	MaxTokens         uint64        `json:"max_tokens,omitempty"`
 	BasisDigest       string        `json:"basis_digest"`
 	WorkspaceMode     WorkspaceMode `json:"workspace_mode"`
 }
@@ -124,7 +124,7 @@ func NewProductionQuoter(catalog PricingCatalog, config ProductionQuoterConfig, 
 }
 
 func (quoter *ProductionQuoter) Quote(ctx context.Context, request QuoteRequest) (Quote, error) {
-	if quoter == nil || ctx == nil {
+	if quoter == nil || ctx == nil || request.Limits.MaxTokens != 0 {
 		return Quote{}, ErrInvalid
 	}
 	return quoter.quote(ctx, request)
@@ -249,11 +249,19 @@ func estimateMaximumCost(rates PricingCatalogRates, compute ComputeSpec, limits 
 	if err != nil {
 		return 0, err
 	}
-	modelCost, err := scaleCostCeil(rates.ModelMicrosPerThousandTokens, limits.MaxTokens, 1000)
-	if err != nil {
-		return 0, err
+	if limits.MaxTokens > 0 {
+		// Legacy Plans quoted and sealed a cumulative model allowance. Retain
+		// that calculation only so existing confirmations can still be verified.
+		modelCost, err := scaleCostCeil(rates.ModelMicrosPerThousandTokens, limits.MaxTokens, 1000)
+		if err != nil {
+			return 0, err
+		}
+		return checkedSum64(computeCost, ipv4Cost, ebsCost, modelCost, rates.FixedRequestOverheadMicros)
 	}
-	return checkedSum64(computeCost, ipv4Cost, ebsCost, modelCost, rates.FixedRequestOverheadMicros)
+	// New Plans authorize Central-managed cloud infrastructure. Model calls use
+	// the user's configured provider account and are metered for audit without a
+	// cumulative token allowance.
+	return checkedSum64(computeCost, ipv4Cost, ebsCost, rates.FixedRequestOverheadMicros)
 }
 
 func scaleCostCeil(rate, numerator, denominator uint64) (uint64, error) {

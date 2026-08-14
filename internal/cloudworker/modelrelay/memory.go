@@ -105,7 +105,7 @@ func (s *MemoryStore) Activate(_ context.Context, mutation ActivationMutation) (
 func (s *MemoryStore) BeginInvocation(_ context.Context, mutation BeginMutation) (Grant, Invocation, error) {
 	if s == nil || !canonicalUUID(mutation.InvocationID) || !validPath(mutation.Path) ||
 		!validDigest(mutation.RequestDigest) || mutation.RequestedTokens == 0 ||
-		mutation.RequestedTokens > MaximumTokens || mutation.At.IsZero() || mutation.At != mutation.At.UTC() {
+		mutation.RequestedTokens > MaximumRequestTokens || mutation.At.IsZero() || mutation.At != mutation.At.UTC() {
 		return Grant{}, Invocation{}, ErrInvalid
 	}
 	s.mu.Lock()
@@ -187,7 +187,7 @@ func (s *MemoryStore) BeginInvocation(_ context.Context, mutation BeginMutation)
 }
 
 func (s *MemoryStore) Settle(_ context.Context, mutation SettleMutation) (Grant, Invocation, error) {
-	if s == nil || !canonicalUUID(mutation.InvocationID) || mutation.ActualTokens > MaximumTokens ||
+	if s == nil || !canonicalUUID(mutation.InvocationID) || mutation.ActualTokens > MaximumRequestTokens ||
 		mutation.At.IsZero() || mutation.At != mutation.At.UTC() {
 		return Grant{}, Invocation{}, ErrInvalid
 	}

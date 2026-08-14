@@ -130,7 +130,7 @@ func intrinsicDefaults(now time.Time) Defaults {
 		ArtifactBucket: "dirextalk-worker-artifacts", ArtifactBasePrefix: "executions/", ArtifactKMSKeyARN: "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111", ArtifactVersioned: true,
 		WorkerBootstrap: WorkerBootstrap{Protocol: WorkerControlProtocolV1, Endpoint: "https://worker.example.test:8443", TLSServerName: "worker.example.test", TrustBundleDigest: digestValue("worker-ca")},
 		ModelRelay:      ModelRelayBinding{Endpoint: "https://relay.example.test/v1", TLSServerName: "relay.example.test", TrustBundleDigest: digestValue("relay-ca")},
-		Limits:          Limits{MaxRuntimeSeconds: 3600, MaxTokens: 2000, MaxOutputBytes: 1 << 20}, ArtifactRetentionSeconds: 3600,
+		Limits:          Limits{MaxRuntimeSeconds: 3600, MaxOutputBytes: 1 << 20}, ArtifactRetentionSeconds: 3600,
 		QuoteAmountMicros: 1000, MaximumAuthorizedMicros: 2000, QuoteTTL: 5 * time.Minute,
 	}
 }
@@ -378,7 +378,7 @@ func TestIntrinsicIsCoreOwnedStrictAndBindsDurableTurn(t *testing.T) {
 		t.Fatalf("offer calls=%d", len(store.commands))
 	}
 	command := store.commands[0]
-	if command.Plan.OwnerID != lease.Turn.OwnerID || command.Plan.AccountGeneration != lease.Turn.AccountGeneration || command.Plan.TurnID != lease.Turn.ID || command.Plan.ConversationID != lease.Turn.ConversationID || command.Plan.ProposalReason != ProposalReasonExplicitUserCloud || command.TurnLeaseID != lease.LeaseID || command.TurnLeaseEpoch != lease.Epoch {
+	if command.Plan.OwnerID != lease.Turn.OwnerID || command.Plan.AccountGeneration != lease.Turn.AccountGeneration || command.Plan.TurnID != lease.Turn.ID || command.Plan.ConversationID != lease.Turn.ConversationID || command.Plan.ProposalReason != ProposalReasonExplicitUserCloud || command.Plan.Objective != lease.Turn.Prompt || command.Plan.ObjectiveSummary != "analyze the repository" || command.TurnLeaseID != lease.LeaseID || command.TurnLeaseEpoch != lease.Epoch {
 		t.Fatalf("untrusted turn binding: %+v", command)
 	}
 	// Replaying the same accepted model call derives exactly the same IDs and

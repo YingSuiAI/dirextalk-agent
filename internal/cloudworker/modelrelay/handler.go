@@ -346,7 +346,7 @@ func parseProviderRequest(raw []byte, path string) (parsedProviderRequest, error
 		field = "max_output_tokens"
 	}
 	requested, ok := jsonUint(value[field])
-	if !ok || requested == 0 || requested > MaximumTokens {
+	if !ok || requested == 0 || requested > MaximumRequestTokens {
 		return parsedProviderRequest{}, ErrInvalid
 	}
 	streaming := false

@@ -388,7 +388,7 @@ func validateCollectedLimits(
 ) error {
 	usage := collected.Manifest.Usage
 	if usage.Validate() != nil || usage.OutputTokens < 0 || usage.ReasoningOutputTokens < 0 ||
-		uint64(usage.OutputTokens) > plan.Limits.MaxTokens ||
+		(plan.Limits.MaxTokens > 0 && uint64(usage.OutputTokens) > plan.Limits.MaxTokens) ||
 		usage.ReasoningOutputTokens > usage.OutputTokens {
 		return ErrInvalid
 	}

@@ -184,12 +184,14 @@ type CloudWorker struct {
 	ContingencyBasisPoints        uint32        `yaml:"contingency_basis_points" mapstructure:"contingency_basis_points"`
 	AbsoluteHardLimitMicros       int64         `yaml:"absolute_hard_limit_micros" mapstructure:"absolute_hard_limit_micros"`
 	MaxRuntime                    time.Duration `yaml:"max_runtime" mapstructure:"max_runtime"`
-	MaxTokens                     uint64        `yaml:"max_tokens" mapstructure:"max_tokens"`
-	MaxOutputBytes                uint64        `yaml:"max_output_bytes" mapstructure:"max_output_bytes"`
-	ControllerPollInterval        time.Duration `yaml:"controller_poll_interval" mapstructure:"controller_poll_interval"`
-	WorkerHeartbeatInterval       time.Duration `yaml:"worker_heartbeat_interval" mapstructure:"worker_heartbeat_interval"`
-	ReaperInterval                time.Duration `yaml:"reaper_interval" mapstructure:"reaper_interval"`
-	CompletionOutboxInterval      time.Duration `yaml:"completion_outbox_interval" mapstructure:"completion_outbox_interval"`
+	// MaxTokens keeps older deployment YAML readable. It is ignored when new
+	// Plans are composed and may be removed from operator configuration.
+	MaxTokens                uint64        `yaml:"max_tokens" mapstructure:"max_tokens"`
+	MaxOutputBytes           uint64        `yaml:"max_output_bytes" mapstructure:"max_output_bytes"`
+	ControllerPollInterval   time.Duration `yaml:"controller_poll_interval" mapstructure:"controller_poll_interval"`
+	WorkerHeartbeatInterval  time.Duration `yaml:"worker_heartbeat_interval" mapstructure:"worker_heartbeat_interval"`
+	ReaperInterval           time.Duration `yaml:"reaper_interval" mapstructure:"reaper_interval"`
+	CompletionOutboxInterval time.Duration `yaml:"completion_outbox_interval" mapstructure:"completion_outbox_interval"`
 }
 
 // AWSWorkloadReadiness is non-secret, explicit startup proof configuration.
@@ -562,7 +564,7 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 	if worker.QuoteTTL <= 0 || worker.QuoteTTL > 15*time.Minute || worker.MaximumCatalogAge < 0 || worker.MaximumCatalogAge > 15*time.Minute ||
 		worker.ContingencyBasisPoints > 10_000 || worker.AbsoluteHardLimitMicros <= 0 ||
 		worker.MaxRuntime < time.Minute || worker.MaxRuntime > 24*time.Hour || worker.MaxRuntime%time.Second != 0 ||
-		worker.MaxTokens == 0 || worker.MaxTokens > 10_000_000 || worker.MaxOutputBytes == 0 || worker.MaxOutputBytes > cloudworker.MaxCloudWorkerOutputBytes ||
+		worker.MaxOutputBytes == 0 || worker.MaxOutputBytes > cloudworker.MaxCloudWorkerOutputBytes ||
 		worker.ControllerPollInterval <= 0 || worker.ControllerPollInterval > 30*time.Second ||
 		worker.WorkerHeartbeatInterval < time.Second || worker.WorkerHeartbeatInterval > time.Minute ||
 		worker.ReaperInterval < time.Second || worker.ReaperInterval > 10*time.Minute ||

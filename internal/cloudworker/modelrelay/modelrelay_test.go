@@ -326,6 +326,41 @@ func TestHandlerAtomicallyClampsAndSettlesCumulativeTokenBudget(t *testing.T) {
 	}
 }
 
+func TestHandlerAuditsUnlimitedExecutionWithoutCumulativeClamp(t *testing.T) {
+	fixture := newRelayFixture(t, 0, providerSSE(80), providerSSE(90))
+	defer fixture.issued.Destroy()
+	requestJSON := `{"model":"gpt-test","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"work"}]}`
+	for call := 0; call < 2; call++ {
+		response := fixture.request(t, requestJSON)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "[DONE]") {
+			t.Fatalf("call %d status=%d body=%s", call, response.Code, response.Body.String())
+		}
+	}
+	fixture.backend.mu.Lock()
+	bodies := make([][]byte, len(fixture.backend.bodies))
+	for index, body := range fixture.backend.bodies {
+		bodies[index] = bytes.Clone(body)
+	}
+	fixture.backend.mu.Unlock()
+	for index, body := range bodies {
+		var request map[string]any
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.UseNumber()
+		if decoder.Decode(&request) != nil {
+			t.Fatal("invalid forwarded body")
+		}
+		actual, ok := jsonUint(request["max_tokens"])
+		if !ok || actual != 100 {
+			t.Fatalf("call %d was cumulatively clamped: %s", index, body)
+		}
+	}
+	grant, err := fixture.store.GetGrant(t.Context(), fixture.issued.Grant.GrantID)
+	if err != nil || grant.MaxTokens != 0 || grant.SettledTokens != 170 ||
+		grant.ReservedTokens != 0 || grant.AvailableTokens() != MaximumRequestTokens {
+		t.Fatalf("unlimited usage ledger grant=%+v err=%v", grant, err)
+	}
+}
+
 func TestHandlerPassesJSONProviderErrorForStreamingRequest(t *testing.T) {
 	fixture := newRelayFixture(t, 40)
 	defer fixture.issued.Destroy()

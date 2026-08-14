@@ -53,7 +53,6 @@ func TestEffectivePlanLimitsBindProfileAndPiRequestCeilings(t *testing.T) {
 	t.Parallel()
 	defaults := Limits{
 		MaxRuntimeSeconds: 3600,
-		MaxTokens:         1_000_000,
 		MaxOutputBytes:    1 << 20,
 	}
 	tests := []struct {
@@ -88,7 +87,7 @@ func TestEffectivePlanLimitsBindProfileAndPiRequestCeilings(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || requestErr != nil || limits.MaxTokens != defaults.MaxTokens ||
+			if err != nil || requestErr != nil || limits.MaxTokens != 0 ||
 				requestMaximum != test.want {
 				t.Fatalf("effective limits = %+v request_max=%d errors=%v/%v", limits, requestMaximum, err, requestErr)
 			}

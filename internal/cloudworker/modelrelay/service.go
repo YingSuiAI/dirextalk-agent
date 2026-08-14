@@ -130,7 +130,7 @@ func (issued IssuedGrant) RuntimeModelGrant(maxOutputTokens uint64) (cloudruntim
 	if issued.Grant.Validate() != nil || issued.Grant.State != GrantActive ||
 		len(issued.BearerToken) < len(relayTokenPrefix)+32 ||
 		!bytes.HasPrefix(issued.BearerToken, []byte(relayTokenPrefix)) ||
-		maxOutputTokens == 0 || maxOutputTokens > MaximumTokens ||
+		maxOutputTokens == 0 || maxOutputTokens > MaximumRequestTokens ||
 		(issued.Grant.Profile.MaximumOutputTokens > 0 &&
 			maxOutputTokens > issued.Grant.Profile.MaximumOutputTokens) {
 		return cloudruntime.ModelGrant{}, ErrInvalid

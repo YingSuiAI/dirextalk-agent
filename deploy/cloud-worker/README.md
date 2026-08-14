@@ -168,6 +168,14 @@ cancellation, or Gate failure is fail-closed. The Gate kills fenced cgroup
 members other than the Worker during cancellation and never exposes its proof
 as public Execution V2 diagnostics.
 
+Current Plans also have no cumulative model-token budget. The relay enforces
+the selected model profile's context and output limits on every request and
+records actual usage for audit. If the provider stops a Pi turn for output
+length before the final result is submitted, the result extension asks the
+same Pi session to continue; this can repeat until completion, cancellation,
+or the execution deadline. A positive cumulative limit is accepted only when
+recovering a historical signed Plan that already contained one.
+
 Every x86 release candidate also runs the tagged
 `TestRealUnlimitedPinnedPiProcessTreeUnderExecGate` qualification with separate
 Gate and Worker executables in a dedicated systemd cgroup. The fixture launches

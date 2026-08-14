@@ -40,12 +40,12 @@ func ModelAuthorizationFromSnapshot(snapshot coremodel.ExecutionSnapshot) (Model
 	return authorization, nil
 }
 
-// effectivePlanLimits validates the model's per-request output limit while
-// preserving the server-owned cumulative token budget signed and priced by
-// the Plan. Pi may make several model calls during one execution.
+// effectivePlanLimits validates the model's per-request output limit. The Plan
+// deliberately has no cumulative token budget: Pi may make as many model calls
+// as the approved task runtime permits.
 func effectivePlanLimits(defaults Limits, authorization ModelAuthorization) (Limits, error) {
 	copy := authorization
-	if validateLimits(defaults) != nil || copy.Seal() != nil {
+	if validateLimits(defaults) != nil || defaults.MaxTokens != 0 || copy.Seal() != nil {
 		return Limits{}, ErrInvalid
 	}
 	if copy.ContextWindow < MinimumPiContextWindow {
@@ -58,7 +58,7 @@ func effectivePlanLimits(defaults Limits, authorization ModelAuthorization) (Lim
 }
 
 // effectiveModelOutputTokens returns the model-qualified ceiling for one Pi
-// request. It is separate from the execution-wide budget in Plan.Limits.
+// request.
 func effectiveModelOutputTokens(authorization ModelAuthorization) (uint64, error) {
 	copy := authorization
 	if copy.Seal() != nil {

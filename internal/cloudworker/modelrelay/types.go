@@ -48,9 +48,12 @@ const (
 	InterfaceOpenAIResponses  = "openai_responses"
 	InterfaceOpenAICompatible = "openai_compatible"
 
-	MinimumGrantLifetime   = 30 * time.Second
-	MaximumGrantLifetime   = 24 * time.Hour
-	MaximumTokens          = uint64(10_000_000)
+	MinimumGrantLifetime = 30 * time.Second
+	MaximumGrantLifetime = 24 * time.Hour
+	// MaximumRequestTokens is a structural request bound. It is not an
+	// execution budget; the selected model profile supplies the lower effective
+	// per-request maximum.
+	MaximumRequestTokens   = uint64(10_000_000)
 	MaximumRequestBytes    = int64(2 << 20)
 	MaximumResponseBytes   = int64(32 << 20)
 	MaximumCredentialBytes = 16 << 10
@@ -106,7 +109,7 @@ func (r ProfileReference) Validate() error {
 		r.AccountGeneration == 0 || r.AccountGeneration > math.MaxInt64 || !canonicalUUID(r.ProfileID) ||
 		r.ProfileRevision == 0 || r.ProfileRevision > math.MaxInt64 ||
 		r.CredentialVersion == 0 || r.CredentialVersion > math.MaxInt64 ||
-		r.MaximumOutputTokens > MaximumTokens ||
+		r.MaximumOutputTokens > MaximumRequestTokens ||
 		!namePattern.MatchString(r.Model) || !validDigest(r.CredentialBindingDigest) ||
 		!validDigest(r.ModelBindingDigest) || !validProviderInterface(r.Provider, r.Interface) {
 		return ErrInvalid
@@ -211,8 +214,7 @@ func (g Grant) Validate() error {
 		g.Profile.OwnerID != g.Fence.OwnerID || g.Profile.AccountGeneration != g.Fence.AccountGeneration ||
 		!validDigest(g.AudienceDigest) || !validDigest(g.LimitDigest) ||
 		!validRelayURL(g.RelayURL) || !validDigest(g.RelayBindingDigest) ||
-		g.MaxTokens == 0 || g.MaxTokens > MaximumTokens ||
-		g.ReservedTokens > g.MaxTokens || g.SettledTokens > g.MaxTokens-g.ReservedTokens ||
+		g.MaxTokens > MaximumRequestTokens || !validUsageCounters(g.MaxTokens, g.ReservedTokens, g.SettledTokens) ||
 		(g.State != GrantActive && g.State != GrantFenced && g.State != GrantTerminal) ||
 		g.ActivatedAt.IsZero() || g.UpdatedAt.IsZero() || g.ExpiresAt.IsZero() ||
 		g.ActivatedAt != g.ActivatedAt.UTC() || g.UpdatedAt != g.UpdatedAt.UTC() ||
@@ -240,6 +242,9 @@ func (g Grant) Validate() error {
 }
 
 func (g Grant) AvailableTokens() uint64 {
+	if g.MaxTokens == 0 {
+		return MaximumRequestTokens
+	}
 	if g.ReservedTokens > g.MaxTokens || g.SettledTokens > g.MaxTokens-g.ReservedTokens {
 		return 0
 	}
@@ -269,8 +274,7 @@ type executionBudget struct {
 
 func (b executionBudget) validate() error {
 	if !canonicalUUID(b.ExecutionID) || !validDigest(b.LimitDigest) ||
-		b.MaxTokens == 0 || b.MaxTokens > MaximumTokens ||
-		b.ReservedTokens > b.MaxTokens || b.SettledTokens > b.MaxTokens-b.ReservedTokens ||
+		b.MaxTokens > MaximumRequestTokens || !validUsageCounters(b.MaxTokens, b.ReservedTokens, b.SettledTokens) ||
 		b.Revision == 0 || b.CreatedAt.IsZero() || b.UpdatedAt.IsZero() ||
 		b.CreatedAt != b.CreatedAt.UTC() || b.UpdatedAt != b.UpdatedAt.UTC() ||
 		b.UpdatedAt.Before(b.CreatedAt) {
@@ -280,6 +284,9 @@ func (b executionBudget) validate() error {
 }
 
 func (b executionBudget) availableTokens() uint64 {
+	if b.MaxTokens == 0 {
+		return MaximumRequestTokens
+	}
 	if b.ReservedTokens > b.MaxTokens || b.SettledTokens > b.MaxTokens-b.ReservedTokens {
 		return 0
 	}
@@ -304,13 +311,26 @@ func (a Activation) validate(now time.Time) error {
 		a.Profile.OwnerID != a.Fence.OwnerID || a.Profile.AccountGeneration != a.Fence.AccountGeneration ||
 		!validDigest(a.AudienceDigest) || !validDigest(a.LimitDigest) ||
 		!validRelayURL(a.RelayURL) || !validDigest(a.RelayBindingDigest) ||
-		a.MaxTokens == 0 || a.MaxTokens > MaximumTokens || a.ExpiresAt.IsZero() ||
+		a.MaxTokens > MaximumRequestTokens || a.ExpiresAt.IsZero() ||
 		a.ExpiresAt != a.ExpiresAt.UTC() ||
 		!a.ExpiresAt.After(now.UTC().Add(MinimumGrantLifetime)) ||
 		a.ExpiresAt.After(now.UTC().Add(MaximumGrantLifetime)) {
 		return ErrInvalid
 	}
 	return nil
+}
+
+// maxTokens is zero for current executions, meaning usage is audited without
+// a cumulative token allowance. Positive values are retained only for exact
+// authorization of historical Plans that carried the former task budget.
+func validUsageCounters(maxTokens, reservedTokens, settledTokens uint64) bool {
+	if reservedTokens > math.MaxInt64 || settledTokens > math.MaxInt64 {
+		return false
+	}
+	if maxTokens == 0 {
+		return true
+	}
+	return reservedTokens <= maxTokens && settledTokens <= maxTokens-reservedTokens
 }
 
 type IssuedGrant struct {
@@ -354,7 +374,7 @@ type Invocation struct {
 func (i Invocation) Validate() error {
 	if !canonicalUUID(i.InvocationID) || !canonicalUUID(i.GrantID) ||
 		!validPath(i.Path) || !validDigest(i.RequestDigest) || i.ReservedTokens == 0 ||
-		i.ReservedTokens > MaximumTokens || i.CreatedAt.IsZero() || i.UpdatedAt.IsZero() ||
+		i.ReservedTokens > MaximumRequestTokens || i.CreatedAt.IsZero() || i.UpdatedAt.IsZero() ||
 		i.CreatedAt != i.CreatedAt.UTC() || i.UpdatedAt != i.UpdatedAt.UTC() ||
 		i.UpdatedAt.Before(i.CreatedAt) ||
 		(i.State != InvocationReserved && i.State != InvocationSettled && i.State != InvocationRefunded) {

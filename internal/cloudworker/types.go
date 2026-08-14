@@ -270,8 +270,11 @@ type ComputeSpec struct {
 
 type Limits struct {
 	MaxRuntimeSeconds uint64 `json:"max_runtime_seconds"`
-	MaxTokens         uint64 `json:"max_tokens"`
-	MaxOutputBytes    uint64 `json:"max_output_bytes"`
+	// MaxTokens is present only when reading or validating a legacy Plan. New
+	// Plans leave it at zero and are bounded by runtime/cancellation plus the
+	// selected model profile's per-request output limit.
+	MaxTokens      uint64 `json:"max_tokens,omitempty"`
+	MaxOutputBytes uint64 `json:"max_output_bytes"`
 }
 
 type SecretGrant struct {
@@ -1048,7 +1051,7 @@ func (r *ModelRelayBinding) Seal(network NetworkPolicy, model ModelAuthorization
 	r.TLSServerName = strings.ToLower(strings.TrimSpace(r.TLSServerName))
 	r.TrustBundleDigest = strings.TrimSpace(r.TrustBundleDigest)
 	parsed, err := url.Parse(r.Endpoint)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Hostname() != r.TLSServerName || !validDigest(r.TrustBundleDigest) || !validDigest(model.BindingDigest) || limits.MaxTokens == 0 {
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Hostname() != r.TLSServerName || !validDigest(r.TrustBundleDigest) || !validDigest(model.BindingDigest) {
 		return ErrInvalid
 	}
 	allowed := false
@@ -1061,15 +1064,24 @@ func (r *ModelRelayBinding) Seal(network NetworkPolicy, model ModelAuthorization
 	if !allowed {
 		return ErrInvalid
 	}
+	if limits.MaxTokens > 0 {
+		// Preserve the exact v1 digest so persisted Plans and artifacts remain
+		// readable after cumulative budgeting is retired.
+		r.BindingDigest = digestValue(struct {
+			Endpoint, TLSServerName, TrustBundleDigest, ModelBindingDigest string
+			MaxTokens                                                      uint64
+		}{r.Endpoint, r.TLSServerName, r.TrustBundleDigest, model.BindingDigest, limits.MaxTokens})
+		return nil
+	}
 	r.BindingDigest = digestValue(struct {
 		Endpoint, TLSServerName, TrustBundleDigest, ModelBindingDigest string
-		MaxTokens                                                      uint64
-	}{r.Endpoint, r.TLSServerName, r.TrustBundleDigest, model.BindingDigest, limits.MaxTokens})
+	}{r.Endpoint, r.TLSServerName, r.TrustBundleDigest, model.BindingDigest})
 	return nil
 }
 
 func validateLimits(value Limits) error {
-	if value.MaxRuntimeSeconds == 0 || value.MaxRuntimeSeconds > uint64((24*time.Hour)/time.Second) || value.MaxTokens == 0 || value.MaxTokens > 10_000_000 || value.MaxOutputBytes == 0 || value.MaxOutputBytes > MaxCloudWorkerOutputBytes {
+	if value.MaxRuntimeSeconds == 0 || value.MaxRuntimeSeconds > uint64((24*time.Hour)/time.Second) ||
+		value.MaxTokens > 10_000_000 || value.MaxOutputBytes == 0 || value.MaxOutputBytes > MaxCloudWorkerOutputBytes {
 		return ErrInvalid
 	}
 	return nil

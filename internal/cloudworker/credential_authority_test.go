@@ -2,7 +2,9 @@ package cloudworker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,10 +131,9 @@ func TestServiceProposalChecksArtifactDestinationBeforeQuoteOrPersistence(t *tes
 	}
 }
 
-func TestServiceProposalBindsOneEffectiveTokenLimitBeforeQuoteAndRuntimeTask(t *testing.T) {
+func TestServiceProposalHasNoCumulativeTokenBudgetAndBindsPerRequestModelLimit(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	defaults := intrinsicDefaults(now)
-	defaults.Limits.MaxTokens = 1_000_000
 	resolver := &proposalAWSBindingResolver{binding: defaults.AWS}
 	store := &intrinsicStore{}
 	quoter := &limitRecordingQuoter{base: FakeQuoter{
@@ -152,8 +153,12 @@ func TestServiceProposalBindsOneEffectiveTokenLimitBeforeQuoteAndRuntimeTask(t *
 		t.Fatal(err)
 	}
 	wantRequestMax := command.ModelAuthorization.MaximumOutputTokens
-	if offer.Plan.Limits.MaxTokens != defaults.Limits.MaxTokens ||
-		quoter.last.Limits.MaxTokens != defaults.Limits.MaxTokens ||
+	publicPlan, err := json.Marshal(offer.Plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offer.Plan.Limits.MaxTokens != 0 || quoter.last.Limits.MaxTokens != 0 ||
+		strings.Contains(string(publicPlan), `"max_tokens"`) ||
 		offer.Plan.Quote.BasisDigest != offer.Plan.AuthorizationBasisDigest ||
 		offer.Execution.PlanDigest != offer.Plan.Digest ||
 		offer.Execution.ExecutionDigest != offer.Plan.ExecutionDigest {
@@ -220,7 +225,6 @@ func TestRequoteRecomputesEffectiveTokenLimitFromServerBase(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			defaults := intrinsicDefaults(now)
-			defaults.Limits.MaxTokens = 100_000
 			store := &intrinsicStore{}
 			quoter := FakeQuoter{AmountMicros: 1000, MaximumAuthorizedMicros: 2000, TTL: 5 * time.Minute, Now: func() time.Time { return now }}
 			service, err := NewService(store, defaults, quoter, func() time.Time { return now })
@@ -233,8 +237,8 @@ func TestRequoteRecomputesEffectiveTokenLimitFromServerBase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if offer.Plan.Limits.MaxTokens != defaults.Limits.MaxTokens {
-				t.Fatalf("old cumulative budget = %d", offer.Plan.Limits.MaxTokens)
+			if offer.Plan.Limits.MaxTokens != 0 {
+				t.Fatalf("new Plan has cumulative budget = %d", offer.Plan.Limits.MaxTokens)
 			}
 			current := offer.Plan.ModelAuthorization
 			current.ModelProfileRevision++
@@ -251,7 +255,7 @@ func TestRequoteRecomputesEffectiveTokenLimitFromServerBase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if command.Plan.Limits.MaxTokens != defaults.Limits.MaxTokens ||
+			if command.Plan.Limits.MaxTokens != 0 ||
 				command.Plan.Quote.BasisDigest != command.Plan.AuthorizationBasisDigest ||
 				command.Plan.Digest == offer.Plan.Digest {
 				t.Fatalf("replacement limit/digest drift: old=%+v replacement=%+v", offer.Plan, command.Plan)

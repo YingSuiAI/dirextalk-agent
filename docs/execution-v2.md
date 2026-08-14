@@ -242,8 +242,13 @@ confirmation becomes stale before queueing and a previously confirmed task is
 rejected before begin authority can be created. The Worker cannot infer,
 enlarge, or substitute either model limit, and an oversized relay request fails
 as `context_request_too_large` before model-budget reservation.
-The canonical Pi final result is bounded by the approved `max_tokens` and
-output bytes. Collection uses one exact versioned S3 object and verifies
+Each model request is bounded by the selected model profile's context and
+output limits. Current Plans have no cumulative token allowance: Pi may keep
+working and may continue a length-stopped turn until the execution deadline,
+user cancellation, or another explicit safety boundary. Historical Plans that
+already carried `max_tokens` retain that exact authorization for recovery.
+The canonical Pi final result remains bounded by approved output bytes.
+Collection uses one exact versioned S3 object and verifies
 version, key/prefix, media type, size, digest, manifest, task/lease binding,
 and canonical final schema before any user-visible conclusion is accepted.
 For a `write` result, central validation additionally requires exactly one

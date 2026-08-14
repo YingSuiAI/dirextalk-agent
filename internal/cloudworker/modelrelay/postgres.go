@@ -25,13 +25,13 @@ const PostgresSchemaRequirement = `CREATE TABLE core_cloud_worker_model_budgets 
     plan_revision bigint NOT NULL CHECK (plan_revision > 0),
     plan_digest char(64) NOT NULL CHECK (plan_digest ~ '^[a-f0-9]{64}$'),
     limit_digest char(64) NOT NULL CHECK (limit_digest ~ '^[a-f0-9]{64}$'),
-    max_tokens bigint NOT NULL CHECK (max_tokens BETWEEN 1 AND 10000000),
+	max_tokens bigint NOT NULL CHECK (max_tokens BETWEEN 0 AND 10000000),
     reserved_tokens bigint NOT NULL DEFAULT 0 CHECK (reserved_tokens >= 0),
     settled_tokens bigint NOT NULL DEFAULT 0 CHECK (settled_tokens >= 0),
     revision bigint NOT NULL CHECK (revision > 0),
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
-    CHECK (reserved_tokens + settled_tokens <= max_tokens),
+	CHECK (max_tokens = 0 OR reserved_tokens <= max_tokens - settled_tokens),
     CHECK (updated_at >= created_at)
 );
 
@@ -46,10 +46,10 @@ CREATE TABLE core_cloud_worker_model_grants (
     session_id uuid NOT NULL REFERENCES core_cloud_worker_sessions(session_id) ON DELETE RESTRICT,
     token_digest bytea NOT NULL UNIQUE CHECK (octet_length(token_digest) = 32),
     model_profile_id uuid NOT NULL,
-	    model_profile_revision bigint NOT NULL CHECK (model_profile_revision > 0),
-	    credential_version bigint NOT NULL CHECK (credential_version > 0),
-	    model_maximum_output_tokens bigint NOT NULL CHECK (model_maximum_output_tokens BETWEEN 0 AND 10000000),
-	    provider text NOT NULL CHECK (provider IN ('openai','openai_compatible')),
+	model_profile_revision bigint NOT NULL CHECK (model_profile_revision > 0),
+	credential_version bigint NOT NULL CHECK (credential_version > 0),
+	model_maximum_output_tokens bigint NOT NULL CHECK (model_maximum_output_tokens BETWEEN 0 AND 10000000),
+	provider text NOT NULL CHECK (provider IN ('openai','openai_compatible')),
     model_interface text NOT NULL CHECK (model_interface IN ('openai_responses','openai_compatible')),
     model_name text NOT NULL CHECK (length(model_name) BETWEEN 1 AND 256),
     credential_binding_digest char(64) NOT NULL CHECK (credential_binding_digest ~ '^[a-f0-9]{64}$'),
@@ -58,7 +58,7 @@ CREATE TABLE core_cloud_worker_model_grants (
     limit_digest char(64) NOT NULL CHECK (limit_digest ~ '^[a-f0-9]{64}$'),
     relay_url text NOT NULL CHECK (length(relay_url) BETWEEN 1 AND 2048),
     relay_binding_digest char(64) NOT NULL CHECK (relay_binding_digest ~ '^[a-f0-9]{64}$'),
-    max_tokens bigint NOT NULL CHECK (max_tokens BETWEEN 1 AND 10000000),
+	max_tokens bigint NOT NULL CHECK (max_tokens BETWEEN 0 AND 10000000),
     reserved_tokens bigint NOT NULL DEFAULT 0 CHECK (reserved_tokens >= 0),
     settled_tokens bigint NOT NULL DEFAULT 0 CHECK (settled_tokens >= 0),
     state text NOT NULL CHECK (state IN ('active','fenced','terminal')),
@@ -71,7 +71,7 @@ CREATE TABLE core_cloud_worker_model_grants (
     revision bigint NOT NULL CHECK (revision > 0),
     FOREIGN KEY (task_id, task_attempt, lease_epoch)
         REFERENCES core_cloud_worker_launch_expectations(task_id, task_attempt, lease_epoch) ON DELETE RESTRICT,
-    CHECK (reserved_tokens + settled_tokens <= max_tokens),
+	CHECK (max_tokens = 0 OR reserved_tokens <= max_tokens - settled_tokens),
     CHECK (expires_at > activated_at),
     CHECK ((state = 'active') = (reason_code = '' AND fenced_at IS NULL AND terminal_at IS NULL)),
     CHECK ((state = 'fenced') = (fenced_at IS NOT NULL AND terminal_at IS NULL)),
@@ -215,7 +215,8 @@ func activateExecutionBudget(
 	grant Grant,
 ) (postgresExecutionBudget, error) {
 	var planID, planDigest string
-	var planRevision, planMaxTokens int64
+	var planRevision int64
+	var planMaxTokens sql.NullInt64
 	err := tx.QueryRow(ctx, `SELECT e.plan_id::text,e.plan_revision,e.plan_digest,
        (p.plan_json #>> '{limits,max_tokens}')::bigint
 FROM core_cloud_worker_executions e
@@ -223,16 +224,17 @@ JOIN core_cloud_worker_plans p ON p.plan_id=e.plan_id
 WHERE e.execution_id=$1 AND p.execution_id=e.execution_id
   AND p.revision=e.plan_revision AND p.digest=e.plan_digest`, grant.Fence.ExecutionID).Scan(
 		&planID, &planRevision, &planDigest, &planMaxTokens)
+	expectedMaxTokens, expectedErr := authorizedPlanMaxTokens(planMaxTokens)
 	if err != nil || !canonicalUUID(planID) || planRevision <= 0 || !validDigest(planDigest) ||
-		planMaxTokens <= 0 || uint64(planMaxTokens) != grant.MaxTokens {
+		expectedErr != nil || grant.MaxTokens != expectedMaxTokens {
 		return postgresExecutionBudget{}, ErrConflict
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_model_budgets(
 execution_id,plan_id,plan_revision,plan_digest,limit_digest,max_tokens,reserved_tokens,
 settled_tokens,revision,created_at,updated_at)
-VALUES($1,$2,$3,$4,$5,$6,0,0,1,$7,$7)
+	VALUES($1,$2,$3,$4,$5,$6,0,0,1,$7,$7)
 ON CONFLICT (execution_id) DO NOTHING`, grant.Fence.ExecutionID, planID, planRevision,
-		planDigest, grant.LimitDigest, planMaxTokens, grant.ActivatedAt); err != nil {
+		planDigest, grant.LimitDigest, int64(grant.MaxTokens), grant.ActivatedAt); err != nil {
 		return postgresExecutionBudget{}, ErrConflict
 	}
 	budget, err := scanExecutionBudget(tx.QueryRow(ctx, `SELECT `+budgetColumns+`
@@ -248,7 +250,7 @@ FROM core_cloud_worker_model_budgets WHERE execution_id=$1 FOR UPDATE`, grant.Fe
 func (s *PostgresStore) BeginInvocation(ctx context.Context, mutation BeginMutation) (Grant, Invocation, error) {
 	if s == nil || s.pool == nil || ctx == nil || !canonicalUUID(mutation.InvocationID) ||
 		!validPath(mutation.Path) || !validDigest(mutation.RequestDigest) ||
-		mutation.RequestedTokens == 0 || mutation.RequestedTokens > MaximumTokens ||
+		mutation.RequestedTokens == 0 || mutation.RequestedTokens > MaximumRequestTokens ||
 		mutation.At.IsZero() || mutation.At != mutation.At.UTC() {
 		return Grant{}, Invocation{}, ErrInvalid
 	}
@@ -366,7 +368,7 @@ VALUES($1,$2,$3,$4,$5,NULL,'reserved',$6,$6)`, invocation.InvocationID, invocati
 
 func (s *PostgresStore) Settle(ctx context.Context, mutation SettleMutation) (Grant, Invocation, error) {
 	if s == nil || s.pool == nil || ctx == nil || !canonicalUUID(mutation.InvocationID) ||
-		mutation.ActualTokens > MaximumTokens || mutation.At.IsZero() || mutation.At != mutation.At.UTC() {
+		mutation.ActualTokens > MaximumRequestTokens || mutation.At.IsZero() || mutation.At != mutation.At.UTC() {
 		return Grant{}, Invocation{}, ErrInvalid
 	}
 	return s.finishInvocation(ctx, mutation.InvocationID, mutation.ActualTokens, false, mutation.At)
@@ -616,7 +618,7 @@ func scanGrant(row rowScanner) (Grant, error) {
 		return Grant{}, err
 	}
 	if accountGeneration <= 0 || leaseEpoch <= 0 || profileRevision <= 0 ||
-		credentialVersion <= 0 || maximumOutputTokens < 0 || maxTokens <= 0 || reservedTokens < 0 || settledTokens < 0 ||
+		credentialVersion <= 0 || maximumOutputTokens < 0 || maxTokens < 0 || reservedTokens < 0 || settledTokens < 0 ||
 		revision <= 0 || attempt <= 0 {
 		return Grant{}, ErrConflict
 	}
@@ -680,7 +682,8 @@ func lockExecutionBudget(
 		return postgresExecutionBudget{}, ErrInvalid
 	}
 	var planID, planDigest string
-	var planRevision, planMaxTokens int64
+	var planRevision int64
+	var planMaxTokens sql.NullInt64
 	if err := tx.QueryRow(ctx, `SELECT e.plan_id::text,e.plan_revision,e.plan_digest,
        (p.plan_json #>> '{limits,max_tokens}')::bigint
 FROM core_cloud_worker_executions e
@@ -690,8 +693,8 @@ WHERE e.execution_id=$1 AND p.execution_id=e.execution_id
 FOR UPDATE OF e`, executionID).Scan(&planID, &planRevision, &planDigest, &planMaxTokens); err != nil {
 		return postgresExecutionBudget{}, ErrConflict
 	}
-	if !canonicalUUID(planID) || planRevision <= 0 || !validDigest(planDigest) ||
-		planMaxTokens <= 0 || planMaxTokens > int64(MaximumTokens) {
+	expectedMaxTokens, err := authorizedPlanMaxTokens(planMaxTokens)
+	if err != nil || !canonicalUUID(planID) || planRevision <= 0 || !validDigest(planDigest) {
 		return postgresExecutionBudget{}, ErrConflict
 	}
 	budget, err := scanExecutionBudget(tx.QueryRow(ctx, `SELECT `+budgetColumns+`
@@ -700,7 +703,7 @@ FROM core_cloud_worker_model_budgets WHERE execution_id=$1 FOR UPDATE`, executio
 		return postgresExecutionBudget{}, ErrConflict
 	}
 	if budget.PlanID != planID || budget.PlanRevision != uint64(planRevision) ||
-		budget.PlanDigest != planDigest || budget.MaxTokens != uint64(planMaxTokens) {
+		budget.PlanDigest != planDigest || budget.MaxTokens != expectedMaxTokens {
 		return postgresExecutionBudget{}, ErrConflict
 	}
 	return budget, nil
@@ -715,7 +718,7 @@ func scanExecutionBudget(row rowScanner) (postgresExecutionBudget, error) {
 	if err != nil {
 		return postgresExecutionBudget{}, err
 	}
-	if planRevision <= 0 || maxTokens <= 0 || reservedTokens < 0 || settledTokens < 0 || revision <= 0 {
+	if planRevision <= 0 || maxTokens < 0 || reservedTokens < 0 || settledTokens < 0 || revision <= 0 {
 		return postgresExecutionBudget{}, ErrConflict
 	}
 	budget.PlanRevision = uint64(planRevision)
@@ -729,6 +732,16 @@ func scanExecutionBudget(row rowScanner) (postgresExecutionBudget, error) {
 		return postgresExecutionBudget{}, ErrConflict
 	}
 	return budget, nil
+}
+
+func authorizedPlanMaxTokens(value sql.NullInt64) (uint64, error) {
+	if !value.Valid {
+		return 0, nil
+	}
+	if value.Int64 <= 0 || value.Int64 > int64(MaximumRequestTokens) {
+		return 0, ErrConflict
+	}
+	return uint64(value.Int64), nil
 }
 
 func updateExecutionBudget(

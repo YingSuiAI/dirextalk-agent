@@ -2433,3 +2433,23 @@ ALTER TABLE core_cloud_worker_completion_outbox
 COMMENT ON COLUMN core_cloud_worker_completion_outbox.result_message_id IS
     'Deterministic ID reserved for the Central-generated terminal reply; the message may be created after this outbox row.';
 -- dirextalk-agent migration end 000014_cloud_worker_central_completion.up.sql
+-- dirextalk-agent migration begin 000015_cloud_worker_runtime_bounded_model_usage.up.sql
+-- Model calls are bounded by the selected profile per request and by the
+-- execution deadline overall. Zero means usage-only accounting with no
+-- cumulative token allowance; positive values preserve historical Plans.
+ALTER TABLE core_cloud_worker_model_budgets
+    DROP CONSTRAINT IF EXISTS core_cloud_worker_model_budgets_max_tokens_check,
+    DROP CONSTRAINT IF EXISTS core_cloud_worker_model_budgets_check,
+    ADD CONSTRAINT core_cloud_worker_model_budgets_max_tokens_check
+        CHECK (max_tokens BETWEEN 0 AND 10000000),
+    ADD CONSTRAINT core_cloud_worker_model_budgets_check
+        CHECK (max_tokens = 0 OR reserved_tokens <= max_tokens - settled_tokens);
+
+ALTER TABLE core_cloud_worker_model_grants
+    DROP CONSTRAINT IF EXISTS core_cloud_worker_model_grants_max_tokens_check,
+    DROP CONSTRAINT IF EXISTS core_cloud_worker_model_grants_check,
+    ADD CONSTRAINT core_cloud_worker_model_grants_max_tokens_check
+        CHECK (max_tokens BETWEEN 0 AND 10000000),
+    ADD CONSTRAINT core_cloud_worker_model_grants_check
+        CHECK (max_tokens = 0 OR reserved_tokens <= max_tokens - settled_tokens);
+-- dirextalk-agent migration end 000015_cloud_worker_runtime_bounded_model_usage.up.sql

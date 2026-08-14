@@ -25,7 +25,7 @@ func TestProductionQuoterUsesFreshBoundCatalogAndHardMaximum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if quote.AmountMicros != 4_622_157 || quote.MaximumAuthorizedCostMicros != 5_546_589 || quote.Currency != "USD" ||
+	if quote.AmountMicros != 4_620_157 || quote.MaximumAuthorizedCostMicros != 5_544_189 || quote.Currency != "USD" ||
 		quote.SourceTime != now || quote.ExpiresAt != now.Add(5*time.Minute) || quote.BasisDigest != request.AuthorizationBasisDigest || !validDigest(quote.Digest) {
 		t.Fatalf("unexpected production quote: %+v", quote)
 	}
@@ -179,7 +179,7 @@ func productionQuoteRequest() QuoteRequest {
 		Compute: ComputeSpec{InstanceType: "c7i.large", Architecture: "x86_64", RootDeviceName: "/dev/xvda", VolumeGiB: 32,
 			VolumeType: "gp3", VolumeIOPS: 4000, VolumeThroughputMiB: 250, AMIID: "ami-0123456789abcdef0", AMIDigest: digestValue("ami"),
 			WorkerReleaseDigest: digestValue("worker"), PiRuntimeDigest: digestValue("pi"), HostNetworkPolicySHA256: digestValue("host-network-policy")},
-		Limits: Limits{MaxRuntimeSeconds: 3600, MaxTokens: 2000, MaxOutputBytes: 1 << 20},
+		Limits: Limits{MaxRuntimeSeconds: 3600, MaxOutputBytes: 1 << 20},
 	}
 }
 

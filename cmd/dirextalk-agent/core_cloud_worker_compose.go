@@ -111,7 +111,7 @@ func composeCoreCloudWorker(
 			TLSServerName: worker.WorkerControlServerName, TrustBundleDigest: worker.WorkerControlTrustSHA256,
 		},
 		ModelRelay:    cloudworker.ModelRelayBinding{Endpoint: worker.ModelRelayEndpoint, TLSServerName: worker.ModelRelayServerName, TrustBundleDigest: worker.ModelRelayTrustSHA256},
-		Limits:        cloudworker.Limits{MaxRuntimeSeconds: uint64(worker.MaxRuntime / time.Second), MaxTokens: worker.MaxTokens, MaxOutputBytes: worker.MaxOutputBytes},
+		Limits:        cloudworker.Limits{MaxRuntimeSeconds: uint64(worker.MaxRuntime / time.Second), MaxOutputBytes: worker.MaxOutputBytes},
 		NetworkGrants: append([]string(nil), worker.AllowedFQDNs...), ArtifactRetentionSeconds: uint64(worker.ArtifactRetention / time.Second),
 		QuoteAmountMicros: 0, MaximumAuthorizedMicros: worker.AbsoluteHardLimitMicros, QuoteTTL: worker.QuoteTTL,
 	}

@@ -203,7 +203,7 @@ func cloudWorkerPlanProjection(plan cloudworker.Plan) CloudWorkerObject {
 			"volume_iops": plan.Compute.VolumeIOPS, "volume_throughput_mib": plan.Compute.VolumeThroughputMiB,
 		},
 		"limits": map[string]any{
-			"max_runtime_seconds": plan.Limits.MaxRuntimeSeconds, "max_tokens": plan.Limits.MaxTokens, "max_output_bytes": plan.Limits.MaxOutputBytes,
+			"max_runtime_seconds": plan.Limits.MaxRuntimeSeconds, "max_output_bytes": plan.Limits.MaxOutputBytes,
 		},
 		"network_grants": networkGrants, "secret_grants": secretGrants,
 		"artifact_retention_seconds": plan.ArtifactRetentionSeconds,

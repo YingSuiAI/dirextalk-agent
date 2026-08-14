@@ -67,7 +67,7 @@ func pgCloudDefaults() cloudworker.Defaults {
 		WorkerBootstrap: cloudworker.WorkerBootstrap{Protocol: cloudworker.WorkerControlProtocolV1,
 			Endpoint: "https://worker.example.test:8443", TLSServerName: "worker.example.test", TrustBundleDigest: pgCloudDigest("worker-ca")},
 		ModelRelay:               cloudworker.ModelRelayBinding{Endpoint: "https://relay.example.test/v1", TLSServerName: "relay.example.test", TrustBundleDigest: pgCloudDigest("relay-ca")},
-		Limits:                   cloudworker.Limits{MaxRuntimeSeconds: 3600, MaxTokens: 2000, MaxOutputBytes: 1 << 20},
+		Limits:                   cloudworker.Limits{MaxRuntimeSeconds: 3600, MaxOutputBytes: 1 << 20},
 		ArtifactRetentionSeconds: 3600, QuoteAmountMicros: 1000, MaximumAuthorizedMicros: 2000, QuoteTTL: time.Hour,
 	}
 }
