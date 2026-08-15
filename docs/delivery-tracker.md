@@ -41,8 +41,11 @@ contract](message-server-integration-development-contract.md), and
 - Revision-fenced `agent.chat.v1/steer_turn` now persists additional user
   guidance in the current turn ledger. It interrupts a provider generation
   before tool publication, preserves an already public/dispatched tool and its
-  lease, and applies deferred guidance with that tool's result in the next
-  model round; it never queues a successor turn.
+  lease, and applies deferred guidance with ordinary tool results in the next
+  model round. A successful terminal SSH Worker instead completes directly,
+  preserves the guidance as a conversation follow-up, and reports that the
+  already running execution could not apply it; it never queues a successor
+  turn or repeats the Worker intrinsic.
 - Agent-owned encrypted Tavily Web Search configuration and guarded dispatch.
 - Agent-owned typed text tools with virtual revision-zero built-ins, durable
   full-list configuration/replay, explicit Tool-profile resolution, and

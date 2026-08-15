@@ -116,8 +116,11 @@ Same-turn guidance uses `agent.chat.v1/steer_turn` with a separate mutation
 UUID, that authoritative turn id/revision, and one bounded instruction. Agent
 Core persists it on the current turn. Guidance interrupts a provider generation
 before tool publication, but waits for an already public/dispatched tool result
-without changing that tool's authority; neither proxy nor Flutter may represent
-it as a queued successor turn.
+without changing that tool's authority. A terminal successful SSH Worker is
+completed directly because its runtime has no guidance injection channel; the
+instruction remains an explicit conversation follow-up and the response states
+that it was not applied. Agent does not re-propose or re-run the Worker, and
+neither proxy nor Flutter may represent the guidance as a queued successor turn.
 
 ## Deployment boundary
 

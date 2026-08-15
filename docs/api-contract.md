@@ -190,9 +190,13 @@ multi-tenant model.
   `instruction`. Before a tool call becomes public, the store records the
   instruction, advances the turn revision, invalidates the active provider
   lease, and cancels that provider context. Once a tool call is public or
-  dispatched, the same mutation preserves its authority and lease; after the
-  result arrives, the next model round receives both that result and every
-  recorded instruction. It never creates or queues a second turn. The typed
+  dispatched, the same mutation preserves its authority and lease. Ordinary
+  tool results continue with the recorded instruction in the next model round.
+  The immutable SSH Worker runtime has no mid-process guidance channel; if its
+  terminal success arrives first, Core preserves the instruction as an explicit
+  conversation follow-up and completes successfully with a truthful notice
+  that it was not applied to that execution. It never re-proposes the Worker,
+  re-runs the intrinsic, or creates a successor turn. The typed
   result returns the original turn idempotency identity plus the separate steer
   mutation receipt; prompt/profile data stays private.
 - Capability `agent.chat.v1/stream_chat` starts and watches the same durable

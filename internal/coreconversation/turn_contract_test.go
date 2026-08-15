@@ -834,15 +834,16 @@ func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *t
 	}
 }
 
-func TestExecuteTurnAppliesDeferredSteerAfterCloudWorkerResult(t *testing.T) {
+func TestExecuteTurnFinalizesSucceededCloudWorkerWithDeferredSteer(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID, requestID, turnID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	createdAt := time.Now().UTC().Add(-time.Minute)
 	turn := Turn{ID: turnID, RequestID: requestID, ConversationID: conversationID,
 		Prompt: "deploy the service", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
 		ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 4,
-		LastSequence: 4, CreatedAt: createdAt}
+		LastSequence: 9, CreatedAt: createdAt}
 	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
+	executionID := uuid.NewString()
 	result := ToolResult{CallID: call.ID, ToolName: call.Name,
 		Content: `{"schema":"dirextalk.ssh-worker-completion/v1","status":"succeeded","worker_id":"worker-one","worker_report":"deployment finished"}`,
 		Summary: "Cloud Worker result returned"}
@@ -855,8 +856,14 @@ func TestExecuteTurnAppliesDeferredSteerAfterCloudWorkerResult(t *testing.T) {
 		steers:                []TurnSteer{steer},
 		events: []TurnEvent{
 			{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: createdAt},
-			{TurnID: turn.ID, Sequence: 2, Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: createdAt.Add(time.Second)},
-			{TurnID: turn.ID, Sequence: 4, Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: createdAt.Add(4 * time.Second)},
+			{TurnID: turn.ID, Sequence: 2, Kind: TurnEventStarted, CreatedAt: createdAt.Add(time.Second)},
+			{TurnID: turn.ID, Sequence: 3, Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: createdAt.Add(2 * time.Second)},
+			{TurnID: turn.ID, Sequence: 4, Kind: TurnEventWorkerStatus, ExecutionID: executionID, Status: "queued", CreatedAt: createdAt.Add(3 * time.Second)},
+			{TurnID: turn.ID, Sequence: 5, Kind: TurnEventWorkerStatus, ExecutionID: executionID, Status: "provisioning", CreatedAt: createdAt.Add(4 * time.Second)},
+			{TurnID: turn.ID, Sequence: 6, Kind: TurnEventSteered, Text: steer.Instruction, Status: "deferred_tool", CreatedAt: steer.CreatedAt},
+			{TurnID: turn.ID, Sequence: 7, Kind: TurnEventWorkerStatus, ExecutionID: executionID, Status: "running", CreatedAt: createdAt.Add(6 * time.Second)},
+			{TurnID: turn.ID, Sequence: 8, Kind: TurnEventWorkerStatus, ExecutionID: executionID, Status: "succeeded", CreatedAt: createdAt.Add(7 * time.Second)},
+			{TurnID: turn.ID, Sequence: 9, Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: createdAt.Add(8 * time.Second)},
 		},
 	}
 	model := &capturingTurnModel{}
@@ -867,23 +874,14 @@ func TestExecuteTurnAppliesDeferredSteerAfterCloudWorkerResult(t *testing.T) {
 	service.executeTurn(context.Background(), turn.ID)
 
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
-	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "ok" || model.runs != 1 {
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || model.runs != 0 {
 		t.Fatalf("terminal=%+v model_runs=%d err=%v", terminal, model.runs, err)
 	}
-	messages := model.request.Conversation.Messages
-	if len(messages) < 3 || messages[len(messages)-1].Role != RoleUser || messages[len(messages)-1].Content != steer.Instruction {
-		t.Fatalf("model conversation missing deferred steer: %+v", messages)
-	}
-	workerResultSeen := false
-	for _, message := range messages[:len(messages)-1] {
-		for _, toolResult := range message.ToolResults {
-			if toolResult.CallID == call.ID && toolResult.Content == result.Content {
-				workerResultSeen = true
-			}
-		}
-	}
-	if !workerResultSeen {
-		t.Fatalf("model conversation missing Worker result: %+v", messages)
+	content := terminal.Response.Message.Content
+	if !strings.Contains(content, "deployment finished") || !strings.Contains(content, "preserved in the conversation") ||
+		!strings.Contains(content, "was not applied to this completed execution") || len(terminal.Response.ToolResults) != 1 ||
+		terminal.Response.ToolResults[0].CallID != call.ID {
+		t.Fatalf("terminal response=%+v", terminal.Response)
 	}
 }
 

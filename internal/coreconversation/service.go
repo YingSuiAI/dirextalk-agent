@@ -1511,14 +1511,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		}
 	}
 	workerContent, terminalWorker := terminalCloudWorkerContent(toolCallAuthorities)
-	deferredSteer := false
-	for _, steer := range turnSteers {
-		if steer.Deferred {
-			deferredSteer = true
-			break
-		}
+	if terminalWorker {
+		workerContent = appendDeferredWorkerGuidanceStatus(workerContent, turnSteers)
 	}
-	autoFinalizeWorker := terminalWorker && !deferredSteer
+	autoFinalizeWorker := terminalWorker
 	var resolvedExtensions []ResolvedExtension
 	if !autoFinalizeWorker {
 		resolvedExtensions, err = s.resolveAcceptedTurnExtensionsForContinuation(ctx, turn.ExtensionSnapshots, terminalWorker)
@@ -2082,6 +2078,29 @@ func terminalCloudWorkerContent(authorities map[string]turnToolCallAuthority) (s
 		return content, true
 	}
 	return "", false
+}
+
+func appendDeferredWorkerGuidanceStatus(content string, steers []TurnSteer) string {
+	deferred := false
+	for _, steer := range steers {
+		if steer.Deferred {
+			deferred = true
+			break
+		}
+	}
+	if !deferred {
+		return content
+	}
+	note := "\n\nFollow-up guidance received while this Worker execution was already running was preserved in the conversation but was not applied to this completed execution."
+	limit := MaxContentBytes - len(note)
+	for len(content) > limit {
+		_, size := utf8.DecodeLastRuneInString(content)
+		if size == 0 {
+			break
+		}
+		content = content[:len(content)-size]
+	}
+	return strings.TrimSpace(content) + note
 }
 
 func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation) (map[string]turnToolCallAuthority, error) {

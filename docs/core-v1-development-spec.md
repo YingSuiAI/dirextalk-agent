@@ -185,8 +185,12 @@ guidance. A confirmation-waiting turn also accepts guidance after its Cloud
 Worker task is queued or running. Before a tool call becomes public, Core
 invalidates and cancels the active provider lease and regenerates the same turn.
 After a tool call is public or dispatched, Core preserves that authority and
-lease, waits for its result, then gives the next model round both the result and
-the ordered guidance messages. No successor turn is created.
+lease and waits for its result. Ordinary tools then give the next model round
+both the result and ordered guidance. The SSH Worker protocol cannot inject
+guidance into an already running remote process; a terminal successful Worker
+therefore remains successful, preserves the instruction as an explicit
+conversation follow-up, and states that it was not applied instead of starting
+another model/intrinsic round. No successor turn is created.
 
 `agent.info.v1/list_models` is the provider catalog, separate from persisted
 profile listing. It resolves either a write-only request credential or an
