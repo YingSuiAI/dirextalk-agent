@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -46,7 +47,7 @@ type sshWorkerExecutor struct {
 	workloads   *sshworkload.Repository
 	route53     map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53
 	root        string
-	verifyHTTPS func(context.Context, string, string, func(context.Context, string, string) error) error
+	verifyHTTPS func(context.Context, string, string, string, func(context.Context, string, string) error) error
 	mu          sync.Mutex
 }
 
@@ -509,15 +510,29 @@ func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider 
 	if verify == nil {
 		verify = verifyPublicServiceHTTPS
 	}
-	if err = verify(ctx, publication.Hostname, publication.HealthPath, report); err != nil {
+	if err = verify(ctx, publication.Hostname, publication.PublicIPv4, publication.HealthPath, report); err != nil {
 		return publication, err
 	}
 	publication.TLSReady = true
 	return publication, nil
 }
 
-func verifyPublicServiceHTTPS(ctx context.Context, hostname, healthPath string, report func(context.Context, string, string) error) error {
-	client := &http.Client{Timeout: 5 * time.Second}
+func verifyPublicServiceHTTPS(ctx context.Context, hostname, publicIPv4, healthPath string, report func(context.Context, string, string) error) error {
+	if net.ParseIP(publicIPv4).To4() == nil {
+		return fmt.Errorf("public HTTPS health verification has invalid IPv4 %q", publicIPv4)
+	}
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		_, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(publicIPv4, port))
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
 	var lastErr error
 	for attempt := 0; attempt < 24; attempt++ {
 		if report != nil {

@@ -363,7 +363,12 @@ func TestPublishServiceBindsRequestedHostnameWithUploadedCredential(t *testing.T
 		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns}}
 	worker := &serviceWorkerStub{identity: identity, status: sshworker.WorkerStatus{Identity: identity, PublicIP: "203.0.113.20"}}
 	service := cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.example.test"}
-	executor.verifyHTTPS = func(context.Context, string, string, func(context.Context, string, string) error) error { return nil }
+	executor.verifyHTTPS = func(_ context.Context, hostname, publicIPv4, healthPath string, _ func(context.Context, string, string) error) error {
+		if hostname != service.Hostname || publicIPv4 != worker.status.PublicIP || healthPath != service.HealthPath {
+			t.Fatalf("HTTPS probe target=%s|%s|%s", hostname, publicIPv4, healthPath)
+		}
+		return nil
+	}
 	publication, err := executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -387,7 +392,7 @@ func TestPublishServiceDoesNotClaimHTTPSWhenPublicProbeFails(t *testing.T) {
 	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository,
 		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{identity.Credential: {}},
 		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns},
-		verifyHTTPS: func(context.Context, string, string, func(context.Context, string, string) error) error {
+		verifyHTTPS: func(context.Context, string, string, string, func(context.Context, string, string) error) error {
 			return probeErr
 		}}
 	worker := &serviceWorkerStub{identity: identity, status: sshworker.WorkerStatus{Identity: identity, PublicIP: "203.0.113.20"}}

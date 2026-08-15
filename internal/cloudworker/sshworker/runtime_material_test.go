@@ -114,7 +114,7 @@ func TestCompileRuntimeTreatsObjectiveAsData(t *testing.T) {
 			t.Fatalf("hostname runtime missing %q", required)
 		}
 	}
-	for _, required := range []string{"listen only on 127.0.0.1", "lightweight persistent local HTTP service", "reserves ports 80 and 443", "disable its default port-80 site", "Do not install, configure, edit, or restart Caddy", "reverse_proxy 127.0.0.1:%d", "Caddy reload timed out"} {
+	for _, required := range []string{"after a host reboot", "systemd service or a restart-enabled container", "never use shell backgrounding (&), nohup, or disown", "listen only on 127.0.0.1", "lightweight persistent local HTTP service", "reserves ports 80 and 443", "disable its default port-80 site", "Do not install, configure, edit, or restart Caddy", "reverse_proxy 127.0.0.1:%d", "Caddy reload timed out"} {
 		if !strings.Contains(remoteRunnerSource, required) {
 			t.Fatalf("embedded hostname runtime missing %q", required)
 		}
