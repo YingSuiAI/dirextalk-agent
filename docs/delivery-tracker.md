@@ -40,8 +40,9 @@ contract](message-server-integration-development-contract.md), and
   client-message request identity remains a separate idempotency fence.
 - Revision-fenced `agent.chat.v1/steer_turn` now persists additional user
   guidance in the current turn ledger. It interrupts a provider generation
-  before tool publication, preserves an already public/dispatched tool and its
-  lease, and applies deferred guidance with ordinary tool results in the next
+  before tool publication, preserves an unconfirmed or already dispatched
+  Cloud Worker offer and its lease, and applies deferred guidance with ordinary
+  tool results in the next
   model round. For SSH Workers, deferred instructions and readable text
   attachments observed before the remote runtime starts are appended to its
   objective at that single start boundary; the terminal result records their

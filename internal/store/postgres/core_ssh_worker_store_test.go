@@ -214,6 +214,46 @@ func TestSSHWorkerStorePreservesRunningWorkerWhenTurnIsSteered(t *testing.T) {
 	}
 }
 
+func TestConversationTurnSteerAcceptsUnconfirmedCloudWorkerOffer(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+	offer := h.propose(t)
+	conversationStore, err := NewCoreConversationStore(h.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting, err := conversationStore.GetTurn(h.ctx, offer.Plan.TurnID)
+	if err != nil || waiting.State != core.TurnWaitingConfirmation || waiting.Revision != 2 || waiting.DispatchState != "completed" {
+		t.Fatalf("waiting turn=%+v err=%v", waiting, err)
+	}
+	var planStatus, taskStatus string
+	if err = h.store.pool.QueryRow(h.ctx, `SELECT p.status,t.status FROM core_cloud_worker_plans p
+		JOIN core_tasks t ON t.task_id=p.task_id WHERE p.plan_id=$1`, offer.Plan.PlanID).Scan(&planStatus, &taskStatus); err != nil {
+		t.Fatal(err)
+	}
+	if planStatus != string(cloudworker.StateWaitingUser) || taskStatus != string(coretask.StatusWaitingUser) {
+		t.Fatalf("offer plan_status=%q task_status=%q", planStatus, taskStatus)
+	}
+	steerID := uuid.NewString()
+	steered, interrupt, err := conversationStore.RequestTurnSteer(h.ctx, core.TurnSteerCommand{
+		RequestID: steerID, TurnID: waiting.ID, ExpectedRevision: waiting.Revision,
+		Instruction: "add RIVER-LANTERN-7392 to both reports",
+	})
+	if err != nil || interrupt || steered.State != core.TurnWaitingConfirmation || steered.Revision != waiting.Revision+1 ||
+		steered.DispatchState != waiting.DispatchState || !reflect.DeepEqual(steered.DispatchResult, waiting.DispatchResult) {
+		t.Fatalf("steered=%+v interrupt=%v err=%v", steered, interrupt, err)
+	}
+	steers, err := conversationStore.ListTurnSteers(h.ctx, waiting.ID)
+	if err != nil || len(steers) != 1 || steers[0].RequestID != steerID || !steers[0].Deferred {
+		t.Fatalf("steers=%+v err=%v", steers, err)
+	}
+	if err = h.store.pool.QueryRow(h.ctx, `SELECT p.status,t.status FROM core_cloud_worker_plans p
+		JOIN core_tasks t ON t.task_id=p.task_id WHERE p.plan_id=$1`, offer.Plan.PlanID).Scan(&planStatus, &taskStatus); err != nil ||
+		planStatus != string(cloudworker.StateWaitingUser) || taskStatus != string(coretask.StatusWaitingUser) {
+		t.Fatalf("steer changed unconfirmed offer plan_status=%q task_status=%q err=%v", planStatus, taskStatus, err)
+	}
+}
+
 func TestSSHWorkerContinuationPersistsRetainedWorkerNextAction(t *testing.T) {
 	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
 	plan := cloudworker.Plan{TaskID: uuid.NewString(), PlanID: uuid.NewString(), ExecutionID: uuid.NewString(),

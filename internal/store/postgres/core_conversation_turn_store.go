@@ -1363,13 +1363,13 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 		if dispatchState != "completed" {
 			return core.Turn{}, false, core.ErrConflict
 		}
-		var cloudWorkerInFlight bool
+		var cloudWorkerSteerable bool
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(
 			SELECT 1 FROM core_cloud_worker_plans p JOIN core_tasks t ON t.task_id=p.task_id
-			WHERE p.turn_id=$1 AND t.status IN ('queued','running'))`, c.TurnID).Scan(&cloudWorkerInFlight); err != nil {
+			WHERE p.turn_id=$1 AND p.status='waiting_user' AND t.status IN ('waiting_user','queued','running'))`, c.TurnID).Scan(&cloudWorkerSteerable); err != nil {
 			return core.Turn{}, false, err
 		}
-		if !cloudWorkerInFlight {
+		if !cloudWorkerSteerable {
 			return core.Turn{}, false, core.ErrConflict
 		}
 		deferred = true

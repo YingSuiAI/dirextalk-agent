@@ -187,8 +187,9 @@ multi-tenant model.
   cancellation, accept unknown fields, or expose the original prompt/profile.
 - Capability `agent.chat.v1/steer_turn` appends one non-empty instruction to
   the same accepted/running durable turn, or to a confirmation-waiting turn
-  whose Cloud Worker task is already queued or running. It accepts exactly a
-  mutation `idempotency_key`, `turn_id`, positive `expected_revision`, and
+  whose current Cloud Worker offer is unconfirmed, queued, or running. It
+  accepts exactly a mutation `idempotency_key`, `turn_id`, positive
+  `expected_revision`, and
   `instruction` plus optional `accepted_attachment_ids` (at most four). The
   mutation UUID is also the attachment `turn_request_id`; Agent consumes the
   committed sources atomically with the steer event. Before a tool call becomes public, the store records the
