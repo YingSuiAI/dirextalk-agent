@@ -33,6 +33,7 @@ type Run struct {
 type Request struct {
 	OwnerID           string
 	AccountGeneration uint64
+	TurnID            string
 	ExecutionID       string
 	Objective         string
 	WorkloadKind      cloudworker.WorkloadKind
@@ -62,10 +63,11 @@ type Artifact struct {
 }
 
 type Result struct {
-	Summary   string
-	ExitCode  int
-	WorkerID  string
-	Artifacts []Artifact
+	Summary         string
+	ExitCode        int
+	WorkerID        string
+	Artifacts       []Artifact
+	AppliedSteerIDs []string
 }
 
 type Executor interface {
@@ -105,7 +107,7 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 	}
 	result, executeErr := handler.executor.Execute(ctx, Request{
 		OwnerID: run.Plan.OwnerID, AccountGeneration: run.Plan.AccountGeneration,
-		ExecutionID: run.Plan.ExecutionID, Objective: run.Plan.Objective,
+		TurnID: run.Plan.TurnID, ExecutionID: run.Plan.ExecutionID, Objective: run.Plan.Objective,
 		WorkloadKind: run.Plan.WorkloadKind, Service: run.Plan.Service,
 		AWS: run.Plan.AWS, Compute: run.Plan.Compute,
 		Limits: run.Plan.Limits, InputManifest: run.Plan.InputManifest,

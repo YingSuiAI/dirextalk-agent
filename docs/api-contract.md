@@ -196,10 +196,14 @@ multi-tenant model.
   lease, and cancels that provider context. Once a tool call is public or
   dispatched, the same mutation preserves its authority and lease. Ordinary
   tool results continue with the recorded instruction in the next model round.
-  The immutable SSH Worker runtime has no mid-process guidance channel; if its
-  terminal success arrives first, Core preserves the instruction as an explicit
-  conversation follow-up and completes successfully with a truthful notice
-  that it was not applied to that execution. It never re-proposes the Worker,
+  The immutable SSH Worker runtime has no guidance channel after the remote Pi
+  process starts. During provisioning, or while a resumed runtime is still
+  `not_started`, Agent resolves deferred instructions and readable text
+  attachments once at the SSH runtime-start boundary and appends them to the
+  objective before starting Pi. The terminal Worker result records the exact
+  applied steer mutation IDs. Guidance arriving after that boundary remains an
+  explicit conversation follow-up, and terminal success includes a truthful
+  notice only for those unapplied mutations. Core never re-proposes the Worker,
   re-runs the intrinsic, or creates a successor turn. The typed
   result returns the original turn idempotency identity plus the separate steer
   mutation receipt; prompt/profile data stays private.

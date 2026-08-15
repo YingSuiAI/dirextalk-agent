@@ -1531,9 +1531,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			return
 		}
 	}
-	workerContent, terminalWorker := terminalCloudWorkerContent(toolCallAuthorities)
+	workerContent, appliedWorkerSteers, terminalWorker := terminalCloudWorkerContent(toolCallAuthorities)
 	if terminalWorker {
-		workerContent = appendDeferredWorkerGuidanceStatus(workerContent, turnSteers)
+		workerContent = appendDeferredWorkerGuidanceStatus(workerContent, turnSteers, appliedWorkerSteers)
 	}
 	failedWorkerContent, failedWorker := terminalFailedCloudWorkerContent(toolCallAuthorities)
 	autoFinalizeWorker := terminalWorker
@@ -2139,36 +2139,37 @@ type turnToolCallAuthority struct {
 	result *ToolResult
 }
 
-func terminalCloudWorkerContent(authorities map[string]turnToolCallAuthority) (string, bool) {
-	content, workerID, ok := terminalCloudWorkerResult(authorities, "succeeded")
+func terminalCloudWorkerContent(authorities map[string]turnToolCallAuthority) (string, []string, bool) {
+	content, workerID, appliedSteerIDs, ok := terminalCloudWorkerResult(authorities, "succeeded")
 	if !ok {
-		return "", false
+		return "", nil, false
 	}
 	if workerID != "" {
 		content += "\n\nWorker " + workerID + " is retained for reuse. Do you want to destroy it?"
 	}
-	return content, true
+	return content, appliedSteerIDs, true
 }
 
 func terminalFailedCloudWorkerContent(authorities map[string]turnToolCallAuthority) (string, bool) {
-	content, _, ok := terminalCloudWorkerResult(authorities, "failed")
+	content, _, _, ok := terminalCloudWorkerResult(authorities, "failed")
 	if !ok {
 		return "", false
 	}
 	return "Cloud Worker failed: " + content, true
 }
 
-func terminalCloudWorkerResult(authorities map[string]turnToolCallAuthority, status string) (string, string, bool) {
+func terminalCloudWorkerResult(authorities map[string]turnToolCallAuthority, status string) (string, string, []string, bool) {
 	for _, authority := range authorities {
 		if authority.state != turnToolCallTerminal || authority.call.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
 			authority.result == nil || authority.result.ToolName != coremodel.IntrinsicCloudWorkerProposeToolName {
 			continue
 		}
 		var completion struct {
-			Schema       string `json:"schema"`
-			Status       string `json:"status"`
-			WorkerID     string `json:"worker_id"`
-			WorkerReport string `json:"worker_report"`
+			Schema          string   `json:"schema"`
+			Status          string   `json:"status"`
+			WorkerID        string   `json:"worker_id"`
+			WorkerReport    string   `json:"worker_report"`
+			AppliedSteerIDs []string `json:"applied_steer_ids"`
 		}
 		if json.Unmarshal([]byte(authority.result.Content), &completion) != nil ||
 			completion.Schema != "dirextalk.ssh-worker-completion/v1" || completion.Status != status {
@@ -2181,9 +2182,9 @@ func terminalCloudWorkerResult(authorities map[string]turnToolCallAuthority, sta
 		if content == "" {
 			continue
 		}
-		return content, strings.TrimSpace(completion.WorkerID), true
+		return content, strings.TrimSpace(completion.WorkerID), completion.AppliedSteerIDs, true
 	}
-	return "", "", false
+	return "", "", nil, false
 }
 
 func modelResultCallsTool(result ModelRunResult, toolName string) bool {
@@ -2197,15 +2198,21 @@ func modelResultCallsTool(result ModelRunResult, toolName string) bool {
 	return false
 }
 
-func appendDeferredWorkerGuidanceStatus(content string, steers []TurnSteer) string {
-	deferred := false
+func appendDeferredWorkerGuidanceStatus(content string, steers []TurnSteer, appliedSteerIDs []string) string {
+	applied := make(map[string]struct{}, len(appliedSteerIDs))
+	for _, id := range appliedSteerIDs {
+		applied[id] = struct{}{}
+	}
+	unapplied := false
 	for _, steer := range steers {
 		if steer.Deferred {
-			deferred = true
-			break
+			if _, ok := applied[steer.RequestID]; !ok {
+				unapplied = true
+				break
+			}
 		}
 	}
-	if !deferred {
+	if !unapplied {
 		return content
 	}
 	note := "\n\nFollow-up guidance received while this Worker execution was already running was preserved in the conversation but was not applied to this completed execution."

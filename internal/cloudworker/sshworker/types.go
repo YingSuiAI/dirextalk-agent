@@ -131,6 +131,7 @@ type ExecuteRequest struct {
 	MaxWorkspaceBytes  int64
 	MaxResultBytes     int64
 	Sink               ResultSink
+	ResolveGuidance    func(context.Context) (RuntimeGuidance, error)
 	ReuseOnly          bool
 	ReuseWorkerID      string
 }
@@ -192,6 +193,7 @@ type SSHRequest struct {
 	Runtime                                                                    RuntimeProtocol
 	MaxWorkspaceBytes, MaxResultBytes                                          int64
 	Sink                                                                       ResultSink
+	ResolveGuidance                                                            func(context.Context) (RuntimeGuidance, error)
 	Resume                                                                     bool
 }
 type SSHExecutor interface {
@@ -220,6 +222,12 @@ type ExecutionResult struct {
 	ExitCode                 int
 	StdoutBytes, StderrBytes int64
 	ArtifactCount            int
+	AppliedSteerIDs          []string
+}
+
+type RuntimeGuidance struct {
+	SteerIDs []string
+	Text     string
 }
 
 type WorkerPhase string

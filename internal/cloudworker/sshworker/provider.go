@@ -107,7 +107,7 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	result, runErr := provider.ssh.Execute(ctx, SSHRequest{ExecutionID: request.ExecutionID, Host: target, User: worker.SSHUser,
 		PrivateKeyPath: privateKey, WorkerScript: request.WorkerScript, WorkerScriptSHA256: request.WorkerScriptSHA256,
 		Runtime: request.Runtime, WorkspacePath: request.WorkspacePath, MaxWorkspaceBytes: request.MaxWorkspaceBytes, MaxResultBytes: request.MaxResultBytes, Sink: request.Sink,
-		Resume: resume})
+		ResolveGuidance: request.ResolveGuidance, Resume: resume})
 	if runErr != nil {
 		if errors.Is(runErr, ErrAmbiguous) {
 			provider.pool.mu.Lock()

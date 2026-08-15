@@ -219,20 +219,22 @@ func TestSSHWorkerContinuationPersistsRetainedWorkerNextAction(t *testing.T) {
 	plan := cloudworker.Plan{TaskID: uuid.NewString(), PlanID: uuid.NewString(), ExecutionID: uuid.NewString(),
 		AccountGeneration: 1, Revision: 1, Status: string(cloudworker.StateWaitingUser)}
 	execution := cloudworker.Execution{RunID: uuid.NewString(), ExecutionID: plan.ExecutionID, Revision: 2, State: cloudworker.StateSucceeded}
+	steerID := uuid.NewString()
 	_, result, err := sshWorkerContinuation(
 		&core.ModelRunResult{ToolCalls: []core.ToolCall{call}},
 		plan,
 		execution,
 		"deployment complete",
-		sshflow.Result{WorkerID: "worker-one"},
+		sshflow.Result{WorkerID: "worker-one", AppliedSteerIDs: []string{steerID}},
 		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var completion struct {
-		WorkerID         string `json:"worker_id"`
-		PersistentWorker bool   `json:"persistent_worker"`
+		WorkerID         string   `json:"worker_id"`
+		PersistentWorker bool     `json:"persistent_worker"`
+		AppliedSteerIDs  []string `json:"applied_steer_ids"`
 		NextAction       struct {
 			Kind      string `json:"kind"`
 			Operation string `json:"operation"`
@@ -243,6 +245,7 @@ func TestSSHWorkerContinuationPersistsRetainedWorkerNextAction(t *testing.T) {
 	}
 	if err = json.Unmarshal([]byte(result.Content), &completion); err != nil ||
 		completion.WorkerID != "worker-one" || !completion.PersistentWorker ||
+		!reflect.DeepEqual(completion.AppliedSteerIDs, []string{steerID}) ||
 		completion.NextAction.Kind != "confirm_destroy_worker" || completion.NextAction.Operation != "destroy_worker" ||
 		completion.NextAction.WorkerID != completion.WorkerID || completion.NextAction.Default != "retain" ||
 		!strings.Contains(completion.NextAction.Question, "whether to destroy") {

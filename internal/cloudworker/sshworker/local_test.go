@@ -62,6 +62,41 @@ esac
 	}
 }
 
+func TestCommandSSHExecutorAppliesDeferredGuidanceBeforeRuntimeStart(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `
+case "$remote" in
+  *"'status'"*)
+    if [[ -f "$state/started" ]]; then
+      printf '%s\n' '{"phase":"completed","exit_code":0}'
+    else
+      printf '%s\n' '{"phase":"not_started","exit_code":0}'
+    fi
+    ;;
+  *"objective.txt"*) cat > "$state/guidance" ;;
+  *"'start'"*) cat >/dev/null; touch "$state/started" ;;
+  *"'log'"*) printf '%s\n' 'completed with RIVER-LANTERN-7392' ;;
+  *"'artifact'"*) exit 0 ;;
+  *) exit 64 ;;
+esac
+`)
+	sink := &recordingResultSink{artifacts: make(map[string][]byte)}
+	request := sshRequestFixture(t, sink)
+	const steerID = "b5eb0214-91fa-40af-9a89-056ca78c9a61"
+	request.ResolveGuidance = func(context.Context) (RuntimeGuidance, error) {
+		return RuntimeGuidance{SteerIDs: []string{steerID}, Text: "Read the attached TXT and include RIVER-LANTERN-7392 in both reports."}, nil
+	}
+	result, err := (CommandSSHExecutor{SSHPath: ssh}).Execute(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guidance, err := os.ReadFile(filepath.Join(state, "guidance"))
+	if err != nil || !bytes.Contains(guidance, []byte("RIVER-LANTERN-7392")) ||
+		len(result.AppliedSteerIDs) != 1 || result.AppliedSteerIDs[0] != steerID {
+		t.Fatalf("guidance=%q result=%+v err=%v", guidance, result, err)
+	}
+}
+
 func TestCommandSSHExecutorRetriesTransientReads(t *testing.T) {
 	state := t.TempDir()
 	ssh := writeFakeSSH(t, state, `

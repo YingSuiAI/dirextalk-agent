@@ -316,6 +316,9 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 		"execution_id": plan.ExecutionID, "status": terminal, "worker_id": result.WorkerID,
 		"persistent_worker": true, "worker_report": summary, "artifacts": artifacts,
 		"central_instruction": "Continue the current conversation using the Worker report and local artifacts."}
+	if len(result.AppliedSteerIDs) != 0 {
+		completion["applied_steer_ids"] = append([]string(nil), result.AppliedSteerIDs...)
+	}
 	if terminal == cloudworker.StateSucceeded {
 		completion["next_action"] = map[string]any{
 			"kind": "confirm_destroy_worker", "operation": "destroy_worker", "worker_id": result.WorkerID, "default": "retain",

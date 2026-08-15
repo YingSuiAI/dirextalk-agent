@@ -42,10 +42,12 @@ contract](message-server-integration-development-contract.md), and
   guidance in the current turn ledger. It interrupts a provider generation
   before tool publication, preserves an already public/dispatched tool and its
   lease, and applies deferred guidance with ordinary tool results in the next
-  model round. A successful terminal SSH Worker instead completes directly,
-  preserves the guidance as a conversation follow-up, and reports that the
-  already running execution could not apply it; it never queues a successor
-  turn or repeats the Worker intrinsic.
+  model round. For SSH Workers, deferred instructions and readable text
+  attachments observed before the remote runtime starts are appended to its
+  objective at that single start boundary; the terminal result records their
+  steer IDs. Later guidance remains a conversation follow-up and is reported
+  as unapplied; the flow never queues a successor turn or repeats the Worker
+  intrinsic.
 - Agent-owned encrypted Tavily Web Search configuration and guarded dispatch.
 - Agent-owned typed text tools with virtual revision-zero built-ins, durable
   full-list configuration/replay, explicit Tool-profile resolution, and

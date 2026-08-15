@@ -472,6 +472,7 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 	workspaceRoot := taskRoot + "/workspace"
 	artifactRoot := taskRoot + "/artifacts"
 	workerScript := taskRoot + "/worker.sh"
+	var appliedSteerIDs []string
 	if !request.Resume {
 		prepare := "rm -rf -- " + shellQuote(taskRoot) + " && mkdir -p -- " + shellQuote(workspaceRoot) + " " + shellQuote(artifactRoot)
 		if err := retrySSH(ctx, sshPath, base, prepare); err != nil {
@@ -494,6 +495,10 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 		if output, err := exec.CommandContext(ctx, sshPath, append(base, bootstrap)...).CombinedOutput(); err != nil {
 			return ExecutionResult{}, fmt.Errorf("worker bootstrap failed: %w: %s", err, output)
 		}
+		appliedSteerIDs, err = applyRuntimeGuidance(ctx, sshPath, base, taskRoot, request.ResolveGuidance)
+		if err != nil {
+			return ExecutionResult{}, err
+		}
 		start, err := request.Runtime.Start()
 		if err != nil {
 			return ExecutionResult{}, err
@@ -504,6 +509,10 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 	}
 	status, err := executor.waitRuntime(ctx, sshPath, base, request.Runtime)
 	if request.Resume && errors.Is(err, errRuntimeNotStarted) {
+		appliedSteerIDs, err = applyRuntimeGuidance(ctx, sshPath, base, taskRoot, request.ResolveGuidance)
+		if err != nil {
+			return ExecutionResult{}, err
+		}
 		start, startErr := request.Runtime.Start()
 		if startErr != nil {
 			return ExecutionResult{}, startErr
@@ -531,7 +540,31 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 	if err != nil {
 		return ExecutionResult{}, err
 	}
-	return ExecutionResult{Summary: strings.TrimSpace(string(logBody)), ExitCode: status.ExitCode, StdoutBytes: int64(len(logBody)), ArtifactCount: artifactCount}, nil
+	return ExecutionResult{Summary: strings.TrimSpace(string(logBody)), ExitCode: status.ExitCode, StdoutBytes: int64(len(logBody)), ArtifactCount: artifactCount,
+		AppliedSteerIDs: append([]string(nil), appliedSteerIDs...)}, nil
+}
+
+func applyRuntimeGuidance(ctx context.Context, sshPath string, base []string, taskRoot string, resolve func(context.Context) (RuntimeGuidance, error)) ([]string, error) {
+	if resolve == nil {
+		return nil, nil
+	}
+	guidance, err := resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(guidance.SteerIDs) == 0 || strings.TrimSpace(guidance.Text) == "" {
+		return nil, nil
+	}
+	body := "\n\n[ADDITIONAL USER GUIDANCE RECEIVED BEFORE WORKER START]\n" + strings.TrimSpace(guidance.Text) + "\n[END ADDITIONAL USER GUIDANCE]\n"
+	objective := taskRoot + "/objective.txt"
+	baseObjective := taskRoot + "/objective.base.txt"
+	guidancePath := taskRoot + "/guidance.txt"
+	command := "umask 077; test -e " + shellQuote(baseObjective) + " || cp -- " + shellQuote(objective) + " " + shellQuote(baseObjective) +
+		"; cat > " + shellQuote(guidancePath) + "; cat -- " + shellQuote(baseObjective) + " " + shellQuote(guidancePath) + " > " + shellQuote(objective)
+	if err = sshWithInput(ctx, sshPath, base, command, strings.NewReader(body)); err != nil {
+		return nil, err
+	}
+	return append([]string(nil), guidance.SteerIDs...), nil
 }
 
 func (executor CommandSSHExecutor) waitRuntime(ctx context.Context, sshPath string, base []string, protocol RuntimeProtocol) (remoteRuntimeStatus, error) {

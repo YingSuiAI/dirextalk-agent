@@ -1001,6 +1001,9 @@ func TestExecuteTurnFinalizesSucceededCloudWorkerWithDeferredSteer(t *testing.T)
 		terminal.Response.ToolResults[0].CallID != call.ID {
 		t.Fatalf("terminal response=%+v", terminal.Response)
 	}
+	if applied := appendDeferredWorkerGuidanceStatus("deployment finished", []TurnSteer{steer}, []string{steer.RequestID}); applied != "deployment finished" {
+		t.Fatalf("applied Worker steer reported as deferred: %q", applied)
+	}
 }
 
 func TestExecuteTurnCommitErrorUsesTerminalReadback(t *testing.T) {

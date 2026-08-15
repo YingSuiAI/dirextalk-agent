@@ -24,6 +24,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workspacearchive"
@@ -37,6 +38,7 @@ type sshWorkerExecutor struct {
 	artifacts *localartifact.Repository
 	pricing   cloudworker.PricingCatalog
 	sources   cloudworker.SourceReader
+	steers    coreconversation.TurnSteerStore
 	state     *sshworker.FileStore
 	pool      *sshworker.Pool
 	workloads *sshworkload.Repository
@@ -45,8 +47,8 @@ type sshWorkerExecutor struct {
 	mu        sync.Mutex
 }
 
-func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.SourceReader, state *sshworker.FileStore, root string) (*sshWorkerExecutor, error) {
-	if authority == nil || exact == nil || artifacts == nil || pricing == nil || sources == nil || state == nil || !filepath.IsAbs(root) {
+func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.SourceReader, steers coreconversation.TurnSteerStore, state *sshworker.FileStore, root string) (*sshWorkerExecutor, error) {
+	if authority == nil || exact == nil || artifacts == nil || pricing == nil || sources == nil || steers == nil || state == nil || !filepath.IsAbs(root) {
 		return nil, sshworker.ErrInvalid
 	}
 	workloads, err := sshworkload.NewRepository(filepath.Join(root, "workloads"))
@@ -54,7 +56,7 @@ func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact worka
 		return nil, err
 	}
 	return &sshWorkerExecutor{authority: authority, exact: exact, providers: make(map[sshworker.CredentialIdentity]*sshworker.Provider), artifacts: artifacts,
-		pricing: pricing, sources: sources, state: state, pool: sshworker.NewPool(), workloads: workloads,
+		pricing: pricing, sources: sources, steers: steers, state: state, pool: sshworker.NewPool(), workloads: workloads,
 		route53: make(map[sshworker.CredentialIdentity]remoteservice.Route53), root: root}, nil
 }
 
@@ -173,8 +175,12 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		InstanceType: request.Compute.InstanceType, VCPU: request.Compute.VCPU, MemoryGiB: request.Compute.MemoryGiB,
 		VolumeGiB: int32(request.Compute.VolumeGiB), WorkerScript: material.WorkerScript,
 		WorkerScriptSHA256: material.WorkerScriptSHA256, Runtime: material.Protocol,
-		WorkspacePath: workspacePath, MaxWorkspaceBytes: 512 << 20, MaxResultBytes: int64(request.Limits.MaxOutputBytes), Sink: sink})
+		WorkspacePath: workspacePath, MaxWorkspaceBytes: 512 << 20, MaxResultBytes: int64(request.Limits.MaxOutputBytes), Sink: sink,
+		ResolveGuidance: func(guidanceCtx context.Context) (sshworker.RuntimeGuidance, error) {
+			return executor.resolveDeferredWorkerGuidance(guidanceCtx, request)
+		}})
 	workerResult := sshflow.Result{ExitCode: result.ExitCode, WorkerID: result.WorkerID}
+	workerResult.AppliedSteerIDs = append([]string(nil), result.AppliedSteerIDs...)
 	artifacts, artifactErr := executor.executionArtifacts(ctx, localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, request.ExecutionID)
 	workerResult.Artifacts = artifacts
 	if artifactErr != nil {
@@ -199,6 +205,50 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		}
 	}
 	return workerResult, nil
+}
+
+func (executor *sshWorkerExecutor) resolveDeferredWorkerGuidance(ctx context.Context, request sshflow.Request) (sshworker.RuntimeGuidance, error) {
+	if executor == nil || executor.sources == nil || executor.steers == nil {
+		return sshworker.RuntimeGuidance{}, sshworker.ErrInvalid
+	}
+	steers, err := executor.steers.ListTurnSteers(ctx, request.TurnID)
+	if err != nil {
+		return sshworker.RuntimeGuidance{}, err
+	}
+	var guidance strings.Builder
+	ids := make([]string, 0, len(steers))
+	for _, steer := range steers {
+		if !steer.Deferred {
+			continue
+		}
+		ids = append(ids, steer.RequestID)
+		guidance.WriteString(strings.TrimSpace(steer.Instruction))
+		guidance.WriteByte('\n')
+		for _, attachment := range steer.AttachmentSources {
+			if attachment.Kind != coreconversation.TurnAttachmentKindFile ||
+				(attachment.MediaType != "text/plain" && attachment.MediaType != "text/markdown") {
+				continue
+			}
+			input := cloudworker.InputManifestItem{InputID: attachment.SourceID, Kind: "file", Name: attachment.Name,
+				MountPath: "inputs/" + attachment.SourceID + "/" + attachment.Name, MediaType: attachment.MediaType,
+				SizeBytes: attachment.SizeBytes, SHA256: attachment.SHA256, SourceRef: attachment.SourceID, SourceRevision: attachment.Revision}
+			read, readErr := executor.sources.OpenSource(ctx, cloudworker.SourceRequest{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration, Input: input})
+			if readErr != nil {
+				return sshworker.RuntimeGuidance{}, readErr
+			}
+			body, readErr := io.ReadAll(read.Body)
+			closeErr := read.Body.Close()
+			if readErr != nil || closeErr != nil || coreconversation.ValidateTurnModelAttachmentContent(attachment, body) != nil {
+				clear(body)
+				return sshworker.RuntimeGuidance{}, errors.Join(sshworker.ErrInvalid, readErr, closeErr)
+			}
+			guidance.WriteString("[ATTACHMENT: " + attachment.Name + "]\n")
+			guidance.Write(body)
+			guidance.WriteString("\n[END ATTACHMENT]\n")
+			clear(body)
+		}
+	}
+	return sshworker.RuntimeGuidance{SteerIDs: ids, Text: strings.TrimSpace(guidance.String())}, nil
 }
 
 func workerRuntimeModel(snapshot coremodel.ExecutionSnapshot) sshworker.RuntimeModel {
