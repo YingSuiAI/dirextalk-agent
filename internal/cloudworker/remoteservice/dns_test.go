@@ -146,7 +146,7 @@ func TestWorkerPublicIPChangeProducesNewRoute53Mutation(t *testing.T) {
 	exposure := Exposure{Enabled: true, Hostname: "app.example.com", TLS: true, Domain: &DomainBinding{Mode: DomainRoute53SameAccount, ZoneID: "Z0123456789", Hostname: "app.example.com", TTL: 300}}
 	exposure.Confirmation = ExactConfirmation{Proof: "exposure-confirmed", Digest: exposureDigest("worker-a", workload.ID, workload.Service.Port, exposure)}
 	workload.Exposure = &exposure
-	worker := Worker{ID: "worker-a", AccountID: "123456789012", PublicIPv4: "203.0.113.10", Workloads: []Workload{workload}}
+	worker := Worker{ID: "07ae71b8-36cb-598c-871c-a25c500ecf23", AccountID: "123456789012", PublicIPv4: "203.0.113.10", Workloads: []Workload{workload}}
 	first, err := Route53MutationForWorker(worker, workload, DNSUpsertA)
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +175,7 @@ func TestExternalDNSCompilesInstructionsOnly(t *testing.T) {
 
 func dnsFixture(action DNSAction) DNSMutation {
 	return DNSMutation{
-		Action: action, AccountID: "123456789012", WorkerID: "worker-a", WorkloadID: "api",
+		Action: action, AccountID: "123456789012", WorkerID: "07ae71b8-36cb-598c-871c-a25c500ecf23", WorkloadID: "api",
 		Record: ARecord{ZoneID: "Z0123456789", Hostname: "app.example.com", IPv4: "203.0.113.10", TTL: 300},
 	}
 }

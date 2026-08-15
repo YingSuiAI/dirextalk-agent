@@ -178,7 +178,7 @@ type WorkloadStatus struct {
 }
 
 var (
-	idPattern   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+	idPattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 	userPattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	envPattern  = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,127}$`)
 )
