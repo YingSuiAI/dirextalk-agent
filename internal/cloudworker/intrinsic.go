@@ -193,19 +193,19 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	properties := map[string]any{
 		"objective":                 map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes},
 		"workspace_mode":            map[string]any{"type": "string", "enum": workspaceModes},
-		"workload_kind":             map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob)},
+		"workload_kind":             map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob), "description": "Use job for finite work. Use service only for a network service that should remain available."},
 		"min_vcpu":                  map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Minimum virtual CPU count needed for the task."},
 		"min_memory_gib":            map[string]any{"type": "integer", "minimum": 1, "maximum": 1024, "description": "Minimum memory in GiB needed for the task."},
 		"disk_gib":                  map[string]any{"type": "integer", "minimum": 8, "maximum": 16384, "description": "Working disk capacity in GiB needed for inputs, dependencies, and outputs."},
 		"estimated_runtime_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "Estimated total runtime in minutes, including environment setup, dependency installation, model execution, the full requested active run or observation duration, and result collection. Include reasonable margin beyond any explicitly requested duration."},
-		"service": map[string]any{"type": "object", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
+		"service": map[string]any{"type": "object", "description": "Set only when workload_kind is service; omit for job.", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
 			"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "health_path": map[string]any{"type": "string", "minLength": 1, "maxLength": 2048},
 		}},
 	}
 	if attachmentSchema != nil {
 		properties["attachment_ids"] = attachmentSchema
 	}
-	description := "Run work in a suitable retained execution environment, or propose a priced reusable environment when none is available. Use it for substantial project or shell execution, deployment, build, test, durable file delivery, long-running compute, and actual follow-up work in a retained environment. Estimate total runtime with setup, dependency installation, model work, the full requested active run or observation duration, result collection, and reasonable margin; never use the requested active duration alone as the total. Do not call this tool only to inspect status; answer status questions from the live retained_worker_inventory below. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. Reuse needs no creation confirmation; new resources start only after the owner reviews and confirms the offer."
+	description := "Run work in a suitable retained execution environment, or propose a priced reusable environment when none is available. Use it for substantial project or shell execution, deployment, build, test, durable file delivery, long-running compute, and actual follow-up work in a retained environment. Use workload_kind=job for finite work and omit service; use workload_kind=service with service settings only for a network service that should remain available. Estimate total runtime with setup, dependency installation, model work, the full requested active run or observation duration, result collection, and reasonable margin; never use the requested active duration alone as the total. Do not call this tool only to inspect status; answer status questions from the live retained_worker_inventory below. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. Reuse needs no creation confirmation; new resources start only after the owner reviews and confirms the offer."
 	inventory := `{"status":"unavailable"}`
 	var currentInventory RetainedWorkerInventory
 	inventoryReady := false
@@ -364,6 +364,9 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 	}
 	arguments, err := parseProposeIntrinsicArguments(request.CanonicalArguments)
 	if err != nil {
+		if errors.Is(err, ErrInvalid) {
+			return coreconversation.IntrinsicExecutionResult{}, coreconversation.ErrInvalid
+		}
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
 	mode := WorkspaceMode(arguments.WorkspaceMode)
@@ -477,6 +480,9 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 	if arguments.WorkloadKind == "" {
 		arguments.WorkloadKind = string(WorkloadJob)
 	}
+	if arguments.WorkloadKind == string(WorkloadJob) {
+		arguments.Service = nil
+	}
 	if arguments.Objective == "" || len(arguments.Objective) > coretask.MaxGoalBytes || !utf8.ValidString(arguments.Objective) || !validateWorkspaceMode(WorkspaceMode(arguments.WorkspaceMode)) || len(arguments.AttachmentIDs) > coreconversation.MaxTurnAttachments {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
@@ -490,7 +496,7 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 		EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes}).validate() != nil {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
-	if (arguments.WorkloadKind == string(WorkloadJob) && arguments.Service != nil) || (arguments.WorkloadKind == string(WorkloadService) && (arguments.Service == nil || (ServiceSpec{WorkloadID: arguments.Service.WorkloadID, Port: arguments.Service.Port, HealthPath: arguments.Service.HealthPath}).validate() != nil)) ||
+	if (arguments.WorkloadKind == string(WorkloadService) && (arguments.Service == nil || (ServiceSpec{WorkloadID: arguments.Service.WorkloadID, Port: arguments.Service.Port, HealthPath: arguments.Service.HealthPath}).validate() != nil)) ||
 		(arguments.WorkloadKind != string(WorkloadJob) && arguments.WorkloadKind != string(WorkloadService)) {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}

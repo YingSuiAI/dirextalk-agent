@@ -253,6 +253,28 @@ func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
 	}
 }
 
+func TestProposeIntrinsicNormalizesServiceOutOfJobArguments(t *testing.T) {
+	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-capability")}
+	if err := evidence.normalize(); err != nil {
+		t.Fatal(err)
+	}
+	intrinsic, store, lease := intrinsicFixture(t,
+		"Run a real 45-second system monitoring job and return the text and HTML reports.",
+		nil, intrinsicBudget{evidence: evidence})
+	err := executeIntrinsic(t, intrinsic, lease, map[string]any{
+		"objective":      "Run a real 45-second system monitoring job on this Worker. Every 5 seconds (9 samples total), capture: (1) current UTC time via date -u, (2) uptime output, (3) load average from /proc/loadavg, (4) memory via free -m, (5) disk usage via df -h. Write raw samples to worker-acceptance.txt (plain text, one sample block per capture) and worker-acceptance.html (single self-contained UTF-8 HTML page with a table of raw samples, no JavaScript or external resources). Keep the Worker alive after the job finishes; do not destroy it. Return both files as the job result with their full contents.",
+		"workspace_mode": "write", "workload_kind": "job", "min_vcpu": 1, "min_memory_gib": 1,
+		"disk_gib": 8, "estimated_runtime_minutes": 12,
+		"service": map[string]any{"workload_id": "worker-acceptance-monitor", "port": 8080, "health_path": "/"},
+	}, "call-job-with-service")
+	if err != nil {
+		t.Fatalf("job proposal with an inapplicable service object failed: %v", err)
+	}
+	if len(store.commands) != 1 || store.commands[0].Plan.WorkloadKind != WorkloadJob || store.commands[0].Plan.Service != nil {
+		t.Fatalf("job service normalization command=%+v", store.commands)
+	}
+}
+
 func TestIntrinsicDescriptionIncludesLiveRetainedWorkerInventory(t *testing.T) {
 	intrinsic, _, lease := intrinsicFixture(t, "check the retained worker load", nil, nil)
 	resolver := &intrinsicWorkerInventory{value: RetainedWorkerInventory{ObservedAt: time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC), Workers: []RetainedWorkerSnapshot{{WorkerID: "worker-1", Availability: "busy", EC2State: "running", WorkerPhase: "busy", PublicIPv4: "203.0.113.8", CurrentTask: &RetainedWorkerTask{ExecutionID: "execution-1", Phase: "running"}, Server: &RetainedWorkerServer{Load1: 0.5, Load5: 0.25, Load15: 0.1}}}}}
@@ -352,7 +374,7 @@ func TestIntrinsicIsCoreOwnedStrictAndBindsDurableTurn(t *testing.T) {
 	if len(store.commands) != 2 || store.commands[0].IdempotencyKey != store.commands[1].IdempotencyKey || store.commands[0].RequestDigest != store.commands[1].RequestDigest {
 		t.Fatalf("intrinsic replay drifted: %+v", store.commands)
 	}
-	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "x", "workspace_mode": "none", "owner_id": "forged", "account_generation": 99}, "call-2"); !errors.Is(err, ErrInvalid) {
+	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "x", "workspace_mode": "none", "owner_id": "forged", "account_generation": 99}, "call-2"); !errors.Is(err, coreconversation.ErrInvalid) {
 		t.Fatalf("forged trusted fields accepted: %v", err)
 	}
 }
@@ -450,6 +472,12 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 		!strings.Contains(runtimeDescription, "reasonable margin") ||
 		!strings.Contains(tools[0].Tool.Description, "requested active duration alone as the total") {
 		t.Fatalf("runtime sizing guidance schema=%q tool=%q", runtimeDescription, tools[0].Tool.Description)
+	}
+	workloadDescription := fmt.Sprint(properties["workload_kind"].(map[string]any)["description"])
+	serviceDescription := fmt.Sprint(properties["service"].(map[string]any)["description"])
+	if !strings.Contains(workloadDescription, "service") || !strings.Contains(serviceDescription, "only") ||
+		!strings.Contains(tools[0].Tool.Description, "omit service") {
+		t.Fatalf("workload guidance schema=%q service=%q tool=%q", workloadDescription, serviceDescription, tools[0].Tool.Description)
 	}
 	attachments, ok := properties["attachment_ids"].(map[string]any)
 	if !ok || attachments["maxItems"] != 2 {

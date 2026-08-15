@@ -2058,22 +2058,16 @@ func conversationToolAttemptContent(attempt ToolAttempt) string {
 }
 
 func intrinsicTerminalFailure(toolName string, err error) (string, string) {
+	if errors.Is(err, ErrInvalid) {
+		return "invalid_intrinsic_arguments", "Core intrinsic arguments are invalid"
+	}
 	if toolName == coremodel.IntrinsicCloudWorkerDestroyToolName {
-		if errors.Is(err, ErrInvalid) {
-			return "invalid_intrinsic_arguments", "Core intrinsic arguments are invalid"
-		}
 		return "cloud_worker_destroy_failed", "Worker could not be destroyed"
 	}
 	if toolName == coremodel.IntrinsicScheduleCreateToolName {
-		if errors.Is(err, ErrInvalid) {
-			return "invalid_intrinsic_arguments", "Core intrinsic arguments are invalid"
-		}
 		return "schedule_persistence_failed", "Schedule could not be saved"
 	}
 	if toolName == coremodel.IntrinsicStaticSitePublishToolName {
-		if errors.Is(err, ErrInvalid) {
-			return "invalid_intrinsic_arguments", "Core intrinsic arguments are invalid"
-		}
 		return "static_site_publish_failed", "Static page could not be published"
 	}
 	return "intrinsic_failed", "Core intrinsic operation failed"

@@ -212,7 +212,7 @@ func TestScheduleIntrinsicStoreFailureDoesNotReportCommittedTurn(t *testing.T) {
 	}
 }
 
-func TestScheduleIntrinsicFailureClassificationIsSpecificAndRedacted(t *testing.T) {
+func TestIntrinsicFailureClassificationIsSpecificAndRedacted(t *testing.T) {
 	lease := scheduleIntrinsicLease()
 	invalidErr := executeScheduleForTest(t, &conversationScheduleStoreStub{}, lease, "call-invalid", map[string]any{
 		"name": "invalid", "goal": "send reminder", "cron": "not a cron", "timezone": "UTC",
@@ -220,6 +220,10 @@ func TestScheduleIntrinsicFailureClassificationIsSpecificAndRedacted(t *testing.
 	code, summary := intrinsicTerminalFailure(coremodel.IntrinsicScheduleCreateToolName, invalidErr)
 	if code != "invalid_intrinsic_arguments" || summary != "Core intrinsic arguments are invalid" {
 		t.Fatalf("invalid classification code=%q summary=%q err=%v", code, summary, invalidErr)
+	}
+	code, summary = intrinsicTerminalFailure(coremodel.IntrinsicCloudWorkerProposeToolName, ErrInvalid)
+	if code != "invalid_intrinsic_arguments" || summary != "Core intrinsic arguments are invalid" {
+		t.Fatalf("invalid Worker arguments classification code=%q summary=%q", code, summary)
 	}
 
 	privateErr := errors.New("database unavailable: private connection detail")
