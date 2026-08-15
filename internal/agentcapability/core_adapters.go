@@ -620,10 +620,11 @@ func (c *coreChatCapability) handleStopTurn(ctx context.Context, raw []byte) ([]
 
 func (c *coreChatCapability) handleSteerTurn(ctx context.Context, raw []byte) ([]byte, error) {
 	var request struct {
-		IdempotencyKey   string `json:"idempotency_key"`
-		TurnID           string `json:"turn_id"`
-		ExpectedRevision uint64 `json:"expected_revision"`
-		Instruction      string `json:"instruction"`
+		IdempotencyKey        string   `json:"idempotency_key"`
+		TurnID                string   `json:"turn_id"`
+		ExpectedRevision      uint64   `json:"expected_revision"`
+		Instruction           string   `json:"instruction"`
+		AcceptedAttachmentIDs []string `json:"accepted_attachment_ids"`
 	}
 	if err := decodeStrictObject(raw, &request); err != nil || !coretask.ValidUUID(request.IdempotencyKey) || !coretask.ValidUUID(request.TurnID) || request.ExpectedRevision == 0 || strings.TrimSpace(request.Instruction) == "" {
 		return nil, coreconversation.ErrInvalid
@@ -631,6 +632,7 @@ func (c *coreChatCapability) handleSteerTurn(ctx context.Context, raw []byte) ([
 	turn, err := c.service.SteerTurn(ctx, coreconversation.TurnSteerCommand{
 		RequestID: request.IdempotencyKey, TurnID: request.TurnID,
 		ExpectedRevision: request.ExpectedRevision, Instruction: request.Instruction,
+		AcceptedAttachmentIDs: append([]string(nil), request.AcceptedAttachmentIDs...),
 	})
 	return marshalResult(publicSteeredTurn{
 		publicTurnMetadata: projectPublicTurnMetadata(turn),
@@ -2102,7 +2104,7 @@ func operationInputSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:stop_turn":
 		return `{"additionalProperties":false,"properties":{"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"turn_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","turn_id","expected_revision"],"type":"object"}`
 	case "agent.chat.v1:steer_turn":
-		return `{"additionalProperties":false,"properties":{"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"instruction":{"minLength":1,"type":"string"},"turn_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","turn_id","expected_revision","instruction"],"type":"object"}`
+		return `{"additionalProperties":false,"properties":{"accepted_attachment_ids":{"items":{"format":"uuid","type":"string"},"maxItems":4,"uniqueItems":true,"type":"array"},"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"instruction":{"minLength":1,"type":"string"},"turn_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","turn_id","expected_revision","instruction"],"type":"object"}`
 	case "agent.chat.v1:list_turns":
 		return `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"limit":{"maximum":1000,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"}},"required":["conversation_id"],"type":"object"}`
 	case "agent.chat.v1:compress_context":

@@ -299,13 +299,14 @@ type AtomicCompletion struct {
 }
 
 type ModelRunRequest struct {
-	Conversation       Conversation
-	Profile            ResolvedProfile
-	Snapshot           coremodel.ExecutionSnapshot
-	ProfileSnapshot    coremodel.ExecutionSnapshot
-	Intrinsics         []ResolvedIntrinsic
-	Extensions         []ResolvedExtension
-	ExtensionSnapshots []ExtensionExecutionSnapshot
+	Conversation          Conversation
+	Profile               ResolvedProfile
+	Snapshot              coremodel.ExecutionSnapshot
+	ProfileSnapshot       coremodel.ExecutionSnapshot
+	Intrinsics            []ResolvedIntrinsic
+	Extensions            []ResolvedExtension
+	ExtensionSnapshots    []ExtensionExecutionSnapshot
+	InputPartsByMessageID map[string][]coremodel.MessageInputPart
 }
 type ModelRunResult struct {
 	Message        Message

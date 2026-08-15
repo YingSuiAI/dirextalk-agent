@@ -1317,7 +1317,9 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 	var cancelRequested bool
 	var dispatchState string
 	var dispatchRaw []byte
-	if err = tx.QueryRow(ctx, `SELECT state,revision,last_sequence,cancel_requested,dispatch_state,dispatch_result_json FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, c.TurnID).Scan(&state, &revision, &lastSequence, &cancelRequested, &dispatchState, &dispatchRaw); err != nil {
+	var owner string
+	var generation uint64
+	if err = tx.QueryRow(ctx, `SELECT state,revision,last_sequence,cancel_requested,dispatch_state,dispatch_result_json,owner_id,account_generation FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, c.TurnID).Scan(&state, &revision, &lastSequence, &cancelRequested, &dispatchState, &dispatchRaw, &owner, &generation); err != nil {
 		return core.Turn{}, false, core.ErrConflict
 	}
 	rows, err := tx.Query(ctx, `SELECT payload_json FROM core_conversation_turn_events WHERE turn_id=$1 AND kind=$2 ORDER BY sequence`, c.TurnID, string(core.TurnEventSteered))
@@ -1337,7 +1339,7 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 		}
 		if event.MutationID == c.RequestID {
 			rows.Close()
-			if event.ExpectedRevision != c.ExpectedRevision || event.Text != strings.TrimSpace(c.Instruction) {
+			if event.ExpectedRevision != c.ExpectedRevision || event.Text != strings.TrimSpace(c.Instruction) || strings.Join(attachmentSourceIDs(event.AttachmentSources), ",") != strings.Join(c.AcceptedAttachmentIDs, ",") {
 				return core.Turn{}, false, core.ErrConflict
 			}
 			if err = tx.Commit(ctx); err != nil {
@@ -1410,16 +1412,24 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 		}
 	}
 	now := time.Now().UTC()
+	c.AttachmentSources, err = resolveAcceptedAttachments(ctx, tx, owner, generation, c.RequestID, c.AcceptedAttachmentIDs)
+	if err != nil {
+		return core.Turn{}, false, err
+	}
 	event := core.TurnEvent{
-		Kind:             core.TurnEventSteered,
-		Text:             strings.TrimSpace(c.Instruction),
-		MutationID:       c.RequestID,
-		ExpectedRevision: c.ExpectedRevision,
+		Kind:              core.TurnEventSteered,
+		Text:              strings.TrimSpace(c.Instruction),
+		MutationID:        c.RequestID,
+		ExpectedRevision:  c.ExpectedRevision,
+		AttachmentSources: c.AttachmentSources,
 	}
 	if deferred {
 		event.Status = deferredTurnSteerStatus
 	}
 	if err = insertTurnEventTx(ctx, tx, c.TurnID, lastSequence+1, event, now); err != nil {
+		return core.Turn{}, false, err
+	}
+	if err = consumeAcceptedAttachments(ctx, tx, owner, generation, c.RequestID, c.AcceptedAttachmentIDs, c.AttachmentSources, c.TurnID); err != nil {
 		return core.Turn{}, false, err
 	}
 	if deferred {
@@ -1475,7 +1485,7 @@ func (s *CoreConversationStore) ListTurnSteers(ctx context.Context, turnID strin
 		if event.Status != "" && event.Status != deferredTurnSteerStatus {
 			return nil, core.ErrConflict
 		}
-		result = append(result, core.TurnSteer{RequestID: event.MutationID, Instruction: event.Text, ExpectedRevision: event.ExpectedRevision, Sequence: sequence, CreatedAt: createdAt.UTC(), Deferred: event.Status == deferredTurnSteerStatus})
+		result = append(result, core.TurnSteer{RequestID: event.MutationID, Instruction: event.Text, ExpectedRevision: event.ExpectedRevision, Sequence: sequence, CreatedAt: createdAt.UTC(), Deferred: event.Status == deferredTurnSteerStatus, AttachmentSources: event.AttachmentSources})
 	}
 	return result, rows.Err()
 }

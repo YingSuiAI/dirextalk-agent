@@ -78,31 +78,32 @@ type Turn struct {
 }
 
 type TurnEvent struct {
-	TurnID           string
-	Sequence         int64
-	Revision         uint64
-	Kind             TurnEventKind
-	Text             string
-	ReasoningContent string
-	Message          *Message
-	Response         *ChatResponse
-	ToolCall         *ToolCall
-	ToolResult       *ToolResult
-	ConfirmationID   string
-	ExecutionID      string
-	Status           string
-	RelatedTaskIDs   []string
-	RelatedPlanIDs   []string
-	References       []Reference
-	ErrorCode        string
-	ErrorSummary     string
-	FirstSequence    int64
-	LastSequence     int64
-	ReplayGap        bool
-	MutationID       string
-	ExpectedRevision uint64
-	CreatedAt        time.Time
-	Err              error `json:"-"`
+	TurnID            string
+	Sequence          int64
+	Revision          uint64
+	Kind              TurnEventKind
+	Text              string
+	ReasoningContent  string
+	Message           *Message
+	Response          *ChatResponse
+	ToolCall          *ToolCall
+	ToolResult        *ToolResult
+	ConfirmationID    string
+	ExecutionID       string
+	Status            string
+	RelatedTaskIDs    []string
+	RelatedPlanIDs    []string
+	References        []Reference
+	ErrorCode         string
+	ErrorSummary      string
+	FirstSequence     int64
+	LastSequence      int64
+	ReplayGap         bool
+	MutationID        string
+	ExpectedRevision  uint64
+	AttachmentSources []TurnAttachment
+	CreatedAt         time.Time
+	Err               error `json:"-"`
 }
 
 // NewWaitingConfirmationTurnEvent is the sole content constructor for a
@@ -156,7 +157,7 @@ func (e TurnEvent) ValidateWaitingConfirmationAuthority() error {
 		e.ToolCall != nil || e.ToolResult != nil || len(e.RelatedTaskIDs) != 0 ||
 		len(e.RelatedPlanIDs) != 0 || len(e.References) != 0 || e.ErrorCode != "" || e.ErrorSummary != "" ||
 		e.FirstSequence != 0 || e.LastSequence != 0 || e.ReplayGap || e.MutationID != "" ||
-		e.ExpectedRevision != 0 || e.Err != nil {
+		e.ExpectedRevision != 0 || len(e.AttachmentSources) != 0 || e.Err != nil {
 		return ErrInvalid
 	}
 	return nil
@@ -189,19 +190,22 @@ type TurnCancelCommand struct {
 }
 
 type TurnSteerCommand struct {
-	RequestID        string
-	TurnID           string
-	ExpectedRevision uint64
-	Instruction      string
+	RequestID             string
+	TurnID                string
+	ExpectedRevision      uint64
+	Instruction           string
+	AcceptedAttachmentIDs []string
+	AttachmentSources     []TurnAttachment
 }
 
 type TurnSteer struct {
-	RequestID        string
-	Instruction      string
-	ExpectedRevision uint64
-	Sequence         int64
-	CreatedAt        time.Time
-	Deferred         bool
+	RequestID         string
+	Instruction       string
+	ExpectedRevision  uint64
+	Sequence          int64
+	CreatedAt         time.Time
+	Deferred          bool
+	AttachmentSources []TurnAttachment
 }
 
 type TurnLease struct {
@@ -316,6 +320,10 @@ type TurnCancelStore interface {
 type TurnSteerStore interface {
 	RequestTurnSteer(context.Context, TurnSteerCommand) (Turn, bool, error)
 	ListTurnSteers(context.Context, string) ([]TurnSteer, error)
+}
+
+type TurnAttachmentContentResolver interface {
+	ResolveTurnAttachment(context.Context, Turn, TurnAttachment) ([]byte, error)
 }
 
 type TurnUncertainStore interface {

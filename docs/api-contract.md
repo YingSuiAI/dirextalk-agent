@@ -189,7 +189,9 @@ multi-tenant model.
   the same accepted/running durable turn, or to a confirmation-waiting turn
   whose Cloud Worker task is already queued or running. It accepts exactly a
   mutation `idempotency_key`, `turn_id`, positive `expected_revision`, and
-  `instruction`. Before a tool call becomes public, the store records the
+  `instruction` plus optional `accepted_attachment_ids` (at most four). The
+  mutation UUID is also the attachment `turn_request_id`; Agent consumes the
+  committed sources atomically with the steer event. Before a tool call becomes public, the store records the
   instruction, advances the turn revision, invalidates the active provider
   lease, and cancels that provider context. Once a tool call is public or
   dispatched, the same mutation preserves its authority and lease. Ordinary
@@ -422,6 +424,10 @@ most four sources, at most one workspace archive, and at most 8 MiB combined;
 each source remains immutably bound to owner, account generation, turn request,
 revision, size, and SHA-256. Workspace archives use the single constrained
 tar+gzip media type and are never exposed as arbitrary local paths.
+Conversation model input supports JPEG, PNG, WebP, UTF-8 `text/plain`, and
+UTF-8 `text/markdown`. Text is framed as untrusted attachment content. PDF and
+other document formats are explicitly unsupported in Core v1 and are not sent
+to a provider.
 
 `agent.execution.v2.artifacts.get/download/delete` manage Cloud Worker and
 local sandbox artifacts in one Agent-owned local repository. Their closed

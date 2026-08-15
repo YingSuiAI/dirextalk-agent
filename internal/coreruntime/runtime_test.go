@@ -322,6 +322,22 @@ func TestRoleToolMapsCallNameAcrossMessages(t *testing.T) {
 	}
 }
 
+func TestModelRunnerUsesResolvedInputPartsForMessage(t *testing.T) {
+	id := "00000000-0000-4000-8000-000000000001"
+	messageID := "00000000-0000-4000-8000-000000000002"
+	client := &captureClient{}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	parts := []coremodel.MessageInputPart{{Type: coremodel.MessageInputPartText, Text: "prompt"}, {Type: coremodel.MessageInputPartImage, Image: coremodel.NewImageInput("image/png", []byte("image"))}}
+	_, err := runner.Run(context.Background(), coreconversation.ModelRunRequest{
+		Snapshot:              coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}),
+		Conversation:          coreconversation.Conversation{Messages: []coreconversation.Message{{ID: messageID, Role: coreconversation.RoleUser, Content: "prompt"}}},
+		InputPartsByMessageID: map[string][]coremodel.MessageInputPart{messageID: parts},
+	})
+	if err != nil || len(client.req.Messages) != 1 || client.req.Messages[0].Content != "" || len(client.req.Messages[0].InputParts) != 2 {
+		t.Fatalf("request=%+v err=%v", client.req, err)
+	}
+}
+
 func TestModelRunnerForwardsResolvedExtensionToolsToProvider(t *testing.T) {
 	id := "00000000-0000-4000-8000-000000000001"
 	client := &captureClient{}

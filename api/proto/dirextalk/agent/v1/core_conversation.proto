@@ -249,6 +249,7 @@ message ConversationServiceSteerTurnRequest {
   string turn_id = 2;
   int64 expected_revision = 3;
   string instruction = 4;
+  repeated string accepted_attachment_ids = 5;
 }
 message ConversationServiceSteerTurnResponse {
   CoreConversationTurn turn = 1;

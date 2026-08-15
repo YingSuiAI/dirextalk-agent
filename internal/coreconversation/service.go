@@ -1192,6 +1192,19 @@ func (s *Service) SteerTurn(ctx context.Context, cmd TurnSteerCommand) (Turn, er
 	if err := validateText(cmd.Instruction, MaxContentBytes); err != nil {
 		return Turn{}, err
 	}
+	if len(cmd.AcceptedAttachmentIDs) > MaxTurnAttachments {
+		return Turn{}, ErrInvalid
+	}
+	seenAttachments := map[string]struct{}{}
+	for _, id := range cmd.AcceptedAttachmentIDs {
+		if !validUUID(id) {
+			return Turn{}, ErrInvalid
+		}
+		if _, exists := seenAttachments[id]; exists {
+			return Turn{}, ErrConflict
+		}
+		seenAttachments[id] = struct{}{}
+	}
 	store, ok := s.turns.(TurnSteerStore)
 	if !ok {
 		return Turn{}, ErrInvalid
@@ -1615,6 +1628,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 		}
 	}
+	var inputParts map[string][]coremodel.MessageInputPart
+	if !replayed {
+		inputParts, err = s.resolveTurnAttachmentInputParts(ctx, turn, turnSteers)
+		if err != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, "unsupported_attachment", "turn attachment is not supported by the selected model input")
+			return
+		}
+	}
 	intrinsicTools, err := s.resolveIntrinsicTools(ctx, lease)
 	if err != nil {
 		_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_unavailable", "Core intrinsic tool is unavailable")
@@ -1672,11 +1693,12 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					Model:        profile.Model,
 					SystemPrompt: systemPrompt,
 				},
-				Snapshot:           turn.ProfileSnapshot,
-				ProfileSnapshot:    turn.ProfileSnapshot,
-				Intrinsics:         append([]ResolvedIntrinsic(nil), intrinsicTools...),
-				Extensions:         resolvedExtensions,
-				ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...),
+				Snapshot:              turn.ProfileSnapshot,
+				ProfileSnapshot:       turn.ProfileSnapshot,
+				Intrinsics:            append([]ResolvedIntrinsic(nil), intrinsicTools...),
+				Extensions:            resolvedExtensions,
+				ExtensionSnapshots:    append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...),
+				InputPartsByMessageID: inputParts,
 			}, func(delta ModelDelta) error {
 				if delta.Text == "" && delta.ReasoningContent == "" {
 					return nil
@@ -1922,6 +1944,56 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			cancel()
 		}
 	}
+}
+
+func (s *Service) resolveTurnAttachmentInputParts(ctx context.Context, turn Turn, steers []TurnSteer) (map[string][]coremodel.MessageInputPart, error) {
+	resolver, ok := s.turns.(TurnAttachmentContentResolver)
+	all := []struct {
+		id, text    string
+		attachments []TurnAttachment
+	}{{uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-user-prompt:"+turn.ID)).String(), turn.Prompt, turn.AttachmentSources}}
+	for _, steer := range steers {
+		all = append(all, struct {
+			id, text    string
+			attachments []TurnAttachment
+		}{uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-steer-user:"+steer.RequestID)).String(), steer.Instruction, steer.AttachmentSources})
+	}
+	result := make(map[string][]coremodel.MessageInputPart)
+	for _, input := range all {
+		if len(input.attachments) == 0 {
+			continue
+		}
+		if !ok {
+			return nil, ErrInvalid
+		}
+		parts := []coremodel.MessageInputPart{{Type: coremodel.MessageInputPartText, Text: input.text}}
+		modelAttachmentCount := 0
+		for _, attachment := range input.attachments {
+			if attachment.Kind == TurnAttachmentKindWorkspaceArchive {
+				continue
+			}
+			data, err := resolver.ResolveTurnAttachment(ctx, turn, attachment)
+			if err != nil {
+				return nil, err
+			}
+			switch {
+			case attachment.Kind == TurnAttachmentKindImage:
+				parts = append(parts, coremodel.MessageInputPart{Type: coremodel.MessageInputPartImage, Image: coremodel.NewImageInput(attachment.MediaType, data)})
+				modelAttachmentCount++
+			case attachment.Kind == TurnAttachmentKindFile && (attachment.MediaType == "text/plain" || attachment.MediaType == "text/markdown") && utf8.Valid(data):
+				parts = append(parts, coremodel.MessageInputPart{Type: coremodel.MessageInputPartText, Text: "[UNTRUSTED ATTACHMENT: " + attachment.Name + "]\n" + string(data) + "\n[END UNTRUSTED ATTACHMENT]"})
+				modelAttachmentCount++
+			default:
+				clear(data)
+				return nil, ErrInvalid
+			}
+			clear(data)
+		}
+		if modelAttachmentCount != 0 {
+			result[input.id] = parts
+		}
+	}
+	return result, nil
 }
 
 const (

@@ -1496,12 +1496,13 @@ func newSteerTurnCapability(t *testing.T) (*coreChatCapability, *steerTurnCapabi
 func TestSteerTurnCapabilityCallsConversationServiceAndReturnsTypedReceipt(t *testing.T) {
 	capability, store := newSteerTurnCapability(t)
 	key := uuid.NewString()
-	raw := []byte(`{"idempotency_key":"` + key + `","turn_id":"` + store.turn.ID + `","expected_revision":4,"instruction":"answer with the constraints first"}`)
+	attachmentID := uuid.NewString()
+	raw := []byte(`{"idempotency_key":"` + key + `","turn_id":"` + store.turn.ID + `","expected_revision":4,"instruction":"answer with the constraints first","accepted_attachment_ids":["` + attachmentID + `"]}`)
 	result, err := capability.HandleOperation(context.Background(), "steer_turn", raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.calls != 1 || store.command.RequestID != key || store.command.TurnID != store.turn.ID || store.command.ExpectedRevision != 4 || store.command.Instruction != "answer with the constraints first" {
+	if store.calls != 1 || store.command.RequestID != key || store.command.TurnID != store.turn.ID || store.command.ExpectedRevision != 4 || store.command.Instruction != "answer with the constraints first" || len(store.command.AcceptedAttachmentIDs) != 1 || store.command.AcceptedAttachmentIDs[0] != attachmentID {
 		t.Fatalf("SteerTurn command=%+v calls=%d", store.command, store.calls)
 	}
 	var output map[string]any

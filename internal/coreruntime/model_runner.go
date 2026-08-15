@@ -95,6 +95,10 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 	callNames := map[string]string{}
 	for _, m := range req.Conversation.Messages[start:] {
 		pm := coremodel.Message{Role: coremodel.Role(m.Role), Content: m.Content, ReasoningContent: m.ReasoningContent}
+		if parts := req.InputPartsByMessageID[m.ID]; len(parts) != 0 {
+			pm.Content = ""
+			pm.InputParts = append([]coremodel.MessageInputPart(nil), parts...)
+		}
 		for _, tc := range m.ToolCalls {
 			pm.ToolCalls = append(pm.ToolCalls, coremodel.ToolCall{ID: tc.ID, Type: "function", Function: coremodel.FunctionCall{Name: tc.Name, Arguments: tc.Arguments}})
 			callNames[tc.ID] = tc.Name

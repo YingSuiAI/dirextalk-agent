@@ -2374,13 +2374,14 @@ func (x *ConversationServiceCancelTurnResponse) GetTurn() *CoreConversationTurn 
 }
 
 type ConversationServiceSteerTurnRequest struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	IdempotencyKey   string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	TurnId           string                 `protobuf:"bytes,2,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
-	ExpectedRevision int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
-	Instruction      string                 `protobuf:"bytes,4,opt,name=instruction,proto3" json:"instruction,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	IdempotencyKey        string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	TurnId                string                 `protobuf:"bytes,2,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
+	ExpectedRevision      int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	Instruction           string                 `protobuf:"bytes,4,opt,name=instruction,proto3" json:"instruction,omitempty"`
+	AcceptedAttachmentIds []string               `protobuf:"bytes,5,rep,name=accepted_attachment_ids,json=acceptedAttachmentIds,proto3" json:"accepted_attachment_ids,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *ConversationServiceSteerTurnRequest) Reset() {
@@ -2439,6 +2440,13 @@ func (x *ConversationServiceSteerTurnRequest) GetInstruction() string {
 		return x.Instruction
 	}
 	return ""
+}
+
+func (x *ConversationServiceSteerTurnRequest) GetAcceptedAttachmentIds() []string {
+	if x != nil {
+		return x.AcceptedAttachmentIds
+	}
+	return nil
 }
 
 type ConversationServiceSteerTurnResponse struct {
@@ -2779,12 +2787,13 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\aturn_id\x18\x02 \x01(\tR\x06turnId\x12+\n" +
 	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\"e\n" +
 	"%ConversationServiceCancelTurnResponse\x12<\n" +
-	"\x04turn\x18\x01 \x01(\v2(.dirextalk.agent.v1.CoreConversationTurnR\x04turn\"\xb6\x01\n" +
+	"\x04turn\x18\x01 \x01(\v2(.dirextalk.agent.v1.CoreConversationTurnR\x04turn\"\xee\x01\n" +
 	"#ConversationServiceSteerTurnRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x17\n" +
 	"\aturn_id\x18\x02 \x01(\tR\x06turnId\x12+\n" +
 	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\x12 \n" +
-	"\vinstruction\x18\x04 \x01(\tR\vinstruction\"d\n" +
+	"\vinstruction\x18\x04 \x01(\tR\vinstruction\x126\n" +
+	"\x17accepted_attachment_ids\x18\x05 \x03(\tR\x15acceptedAttachmentIds\"d\n" +
 	"$ConversationServiceSteerTurnResponse\x12<\n" +
 	"\x04turn\x18\x01 \x01(\v2(.dirextalk.agent.v1.CoreConversationTurnR\x04turn\"q\n" +
 	"*ConversationServiceWatchTurnEventsResponse\x12C\n" +

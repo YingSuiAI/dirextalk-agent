@@ -266,6 +266,36 @@ func resolveAcceptedTurnAttachments(ctx context.Context, tx pgx.Tx, command *cor
 	return core.ValidateAcceptedTurnAttachments(command.RequestID, command.AcceptedAttachmentIDs, command.AttachmentSources)
 }
 
+func resolveAcceptedAttachments(ctx context.Context, tx pgx.Tx, owner string, generation uint64, requestID string, acceptedIDs []string) ([]core.TurnAttachment, error) {
+	command := core.TurnStartCommand{OwnerID: owner, AccountGeneration: generation, RequestID: requestID, AcceptedAttachmentIDs: acceptedIDs}
+	if err := resolveAcceptedTurnAttachments(ctx, tx, &command, uuid.NewString()); err != nil {
+		return nil, err
+	}
+	return command.AttachmentSources, nil
+}
+
+func consumeAcceptedAttachments(ctx context.Context, tx pgx.Tx, owner string, generation uint64, requestID string, acceptedIDs []string, attachments []core.TurnAttachment, turnID string) error {
+	return consumeAcceptedTurnAttachments(ctx, tx, core.TurnStartCommand{OwnerID: owner, AccountGeneration: generation, RequestID: requestID, AcceptedAttachmentIDs: acceptedIDs, AttachmentSources: attachments}, turnID)
+}
+
+func (s *CoreConversationStore) ResolveTurnAttachment(ctx context.Context, turn core.Turn, attachment core.TurnAttachment) ([]byte, error) {
+	var content []byte
+	err := s.pool.QueryRow(ctx, `SELECT a.content_bytes FROM core_conversation_attachment_uploads a
+		JOIN core_conversation_turns t ON t.turn_id=a.consumed_turn_id
+		WHERE a.source_id=$1 AND a.consumed_turn_id=$2 AND a.owner_id=t.owner_id AND a.account_generation=t.account_generation
+		AND a.status='consumed' AND a.kind=$3 AND a.name=$4 AND a.media_type=$5 AND a.declared_size=$6 AND a.content_sha256=$7`,
+		attachment.SourceID, turn.ID, attachment.Kind, attachment.Name, attachment.MediaType, attachment.SizeBytes, attachment.SHA256).Scan(&content)
+	if err != nil {
+		return nil, core.ErrConflict
+	}
+	sum := sha256.Sum256(content)
+	if uint64(len(content)) != attachment.SizeBytes || hex.EncodeToString(sum[:]) != attachment.SHA256 {
+		clear(content)
+		return nil, core.ErrConflict
+	}
+	return append([]byte(nil), content...), nil
+}
+
 // consumeAcceptedTurnAttachments performs the one-way source transition only
 // after the turn row (and its immutable attachment snapshot) exists. It runs in
 // the same transaction as StartTurn, so a failed event insert or commit cannot

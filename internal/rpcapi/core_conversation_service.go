@@ -364,6 +364,7 @@ func (s *CoreConversationService) SteerTurn(ctx context.Context, r *agentv1.Conv
 	turn, e := s.service.SteerTurn(ctx, coreconversation.TurnSteerCommand{
 		RequestID: r.GetIdempotencyKey(), TurnID: r.GetTurnId(),
 		ExpectedRevision: uint64(r.GetExpectedRevision()), Instruction: r.GetInstruction(),
+		AcceptedAttachmentIDs: append([]string(nil), r.GetAcceptedAttachmentIds()...),
 	})
 	if e != nil {
 		return nil, mapErr(e)

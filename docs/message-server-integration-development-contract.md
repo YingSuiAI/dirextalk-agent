@@ -113,7 +113,8 @@ polling Execution V2. Turn history uses the same
 `turn_id`/`idempotency_key` pair, and `agent.chat.v1/stop_turn` accepts only its
 own UUID idempotency key plus the authoritative turn id and expected revision.
 Same-turn guidance uses `agent.chat.v1/steer_turn` with a separate mutation
-UUID, that authoritative turn id/revision, and one bounded instruction. Agent
+UUID, that authoritative turn id/revision, one bounded instruction, and up to
+four optional attachment source IDs uploaded under that same mutation UUID. Agent
 Core persists it on the current turn. Guidance interrupts a provider generation
 before tool publication, but waits for an already public/dispatched tool result
 without changing that tool's authority. A terminal successful SSH Worker is
