@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
-	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/modelrelay"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/google/uuid"
 )
@@ -26,20 +25,12 @@ func TestExactModelResolverRequiresCompleteSnapshotAndReturnsDestroyableCredenti
 	snapshot := coremodel.SnapshotFromProfile(profile)
 	authorization := cloudworker.ModelAuthorization{
 		ModelProfileID: profile.ID, ModelProfileRevision: uint64(profile.Revision),
-		Provider: string(profile.Provider), Interface: modelrelay.InterfaceOpenAICompatible,
-		Model: profile.Model, MaximumOutputTokens: uint64(profile.MaxOutputTokens), ContextWindow: uint64(profile.ContextWindow), CredentialVersion: uint64(profile.CredentialVersion),
+		Provider: string(profile.Provider), Interface: "openai_compatible",
+		Model: profile.Model, BaseURL: profile.BaseURL, MaximumOutputTokens: uint64(profile.MaxOutputTokens), ContextWindow: uint64(profile.ContextWindow), CredentialVersion: uint64(profile.CredentialVersion),
 		CredentialBindingDigest: snapshot.Digest(),
 	}
 	if err := authorization.Seal(); err != nil {
 		t.Fatal(err)
-	}
-	reference := modelrelay.ProfileReference{
-		OwnerID: "@owner:example.test", AccountGeneration: 9,
-		ProfileID: profile.ID, ProfileRevision: uint64(profile.Revision),
-		CredentialVersion: uint64(profile.CredentialVersion), Provider: string(profile.Provider),
-		Interface: modelrelay.InterfaceOpenAICompatible, Model: profile.Model, MaximumOutputTokens: uint64(profile.MaxOutputTokens),
-		CredentialBindingDigest: authorization.CredentialBindingDigest,
-		ModelBindingDigest:      authorization.BindingDigest,
 	}
 	resolver, err := NewExactModelResolver(exactProfileReaderFunc(func(context.Context, string) (coremodel.Profile, error) {
 		return profile, nil
@@ -47,18 +38,11 @@ func TestExactModelResolverRequiresCompleteSnapshotAndReturnsDestroyableCredenti
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding, err := resolver.ResolveExactProfileBinding(context.Background(), reference)
-	if err != nil || binding.Reference != reference || binding.BaseURL != profile.BaseURL {
-		t.Fatalf("binding=%+v err=%v", binding, err)
+	workerCredential, err := resolver.ResolveWorkerCredential(context.Background(), authorization)
+	if err != nil || string(workerCredential) != profile.APIKey {
+		t.Fatalf("worker credential=%q err=%v", workerCredential, err)
 	}
-	credential, err := resolver.ResolveExactCredential(context.Background(), binding)
-	if err != nil || string(credential.Value) != profile.APIKey || credential.CredentialBindingDigest != reference.CredentialBindingDigest {
-		t.Fatalf("credential=%s err=%v", credential.Value, err)
-	}
-	credential.Destroy()
-	if len(credential.Value) != 0 {
-		t.Fatal("credential plaintext was not destroyed")
-	}
+	clear(workerCredential)
 }
 
 func TestExactModelResolverRejectsRevisionCredentialAndEndpointDrift(t *testing.T) {
@@ -70,17 +54,11 @@ func TestExactModelResolverRejectsRevisionCredentialAndEndpointDrift(t *testing.
 	snapshot := coremodel.SnapshotFromProfile(profile)
 	authorization := cloudworker.ModelAuthorization{
 		ModelProfileID: profile.ID, ModelProfileRevision: 7, Provider: string(profile.Provider),
-		Interface: modelrelay.InterfaceOpenAICompatible, Model: profile.Model, MaximumOutputTokens: uint64(profile.MaxOutputTokens), ContextWindow: uint64(profile.ContextWindow), CredentialVersion: 3,
+		Interface: "openai_compatible", Model: profile.Model, BaseURL: profile.BaseURL, MaximumOutputTokens: uint64(profile.MaxOutputTokens), ContextWindow: uint64(profile.ContextWindow), CredentialVersion: 3,
 		CredentialBindingDigest: snapshot.Digest(),
 	}
 	if err := authorization.Seal(); err != nil {
 		t.Fatal(err)
-	}
-	reference := modelrelay.ProfileReference{
-		OwnerID: "@owner:example.test", AccountGeneration: 9, ProfileID: profile.ID,
-		ProfileRevision: 7, CredentialVersion: 3, Provider: string(profile.Provider),
-		Interface: modelrelay.InterfaceOpenAICompatible, Model: profile.Model, MaximumOutputTokens: uint64(profile.MaxOutputTokens),
-		CredentialBindingDigest: authorization.CredentialBindingDigest, ModelBindingDigest: authorization.BindingDigest,
 	}
 	current := profile
 	resolver, _ := NewExactModelResolver(exactProfileReaderFunc(func(context.Context, string) (coremodel.Profile, error) {
@@ -94,8 +72,8 @@ func TestExactModelResolverRejectsRevisionCredentialAndEndpointDrift(t *testing.
 		t.Run(name, func(t *testing.T) {
 			current = profile
 			mutate()
-			_, err := resolver.ResolveExactProfileBinding(context.Background(), reference)
-			if !errors.Is(err, modelrelay.ErrProfileDrift) {
+			_, err := resolver.ResolveWorkerCredential(context.Background(), authorization)
+			if !errors.Is(err, cloudworker.ErrStaleAuthorization) {
 				t.Fatalf("err=%v, want profile drift", err)
 			}
 		})

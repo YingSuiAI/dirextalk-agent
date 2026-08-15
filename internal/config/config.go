@@ -168,12 +168,6 @@ type CloudWorker struct {
 	WorkerControlTLSKeyFile       string        `yaml:"worker_control_tls_key_file" mapstructure:"worker_control_tls_key_file"`
 	WorkerControlTrustSHA256      string        `yaml:"worker_control_trust_bundle_sha256" mapstructure:"worker_control_trust_bundle_sha256"`
 	WorkerControlMaxConcurrentRPC int           `yaml:"worker_control_max_concurrent_rpc" mapstructure:"worker_control_max_concurrent_rpc"`
-	ModelRelayListenAddress       string        `yaml:"model_relay_listen" mapstructure:"model_relay_listen"`
-	ModelRelayEndpoint            string        `yaml:"model_relay_endpoint" mapstructure:"model_relay_endpoint"`
-	ModelRelayServerName          string        `yaml:"model_relay_server_name" mapstructure:"model_relay_server_name"`
-	ModelRelayTLSCertFile         string        `yaml:"model_relay_tls_cert_file" mapstructure:"model_relay_tls_cert_file"`
-	ModelRelayTLSKeyFile          string        `yaml:"model_relay_tls_key_file" mapstructure:"model_relay_tls_key_file"`
-	ModelRelayTrustSHA256         string        `yaml:"model_relay_trust_bundle_sha256" mapstructure:"model_relay_trust_bundle_sha256"`
 	IIDCertificateFile            string        `yaml:"iid_certificate_file" mapstructure:"iid_certificate_file"`
 	PricingCatalogFile            string        `yaml:"pricing_catalog_file" mapstructure:"pricing_catalog_file"`
 	PricingCatalogSHA256          string        `yaml:"pricing_catalog_sha256" mapstructure:"pricing_catalog_sha256"`
@@ -462,7 +456,6 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 		"pi_runtime_digest": worker.PiRuntimeDigest, "host_network_policy_sha256": worker.HostNetworkPolicySHA256,
 		"outbound_proxy_trust_bundle_sha256": worker.OutboundProxyTrustSHA256,
 		"worker_control_trust_bundle_sha256": worker.WorkerControlTrustSHA256,
-		"model_relay_trust_bundle_sha256":    worker.ModelRelayTrustSHA256,
 		"pricing_catalog_sha256":             worker.PricingCatalogSHA256,
 		"runtime_qualification_sha256":       worker.RuntimeQualificationSHA256,
 	} {
@@ -477,22 +470,17 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	relayHost, err := validateCloudWorkerModelRelayEndpoint(worker.ModelRelayEndpoint, worker.ModelRelayServerName)
-	if err != nil {
-		return err
-	}
 	allowed := make(map[string]bool, len(worker.AllowedFQDNs))
 	for _, value := range worker.AllowedFQDNs {
 		allowed[strings.ToLower(strings.TrimSpace(value))] = true
 	}
-	if !allowed[controlHost] || !allowed[relayHost] {
-		return errors.New("core_cloud_worker allowed_fqdns must include WorkerControl and Model Relay server names")
+	if !allowed[controlHost] {
+		return errors.New("core_cloud_worker allowed_fqdns must include the WorkerControl server name")
 	}
-	if strings.TrimSpace(worker.WorkerControlListenAddress) == "" || strings.TrimSpace(worker.ModelRelayListenAddress) == "" ||
-		worker.WorkerControlListenAddress == worker.ModelRelayListenAddress ||
-		worker.WorkerControlListenAddress == cfg.ListenAddress || worker.ModelRelayListenAddress == cfg.ListenAddress ||
-		worker.WorkerControlListenAddress == cfg.CapabilityListenAddress || worker.ModelRelayListenAddress == cfg.CapabilityListenAddress {
-		return errors.New("core_cloud_worker private listeners must be non-empty and distinct")
+	if strings.TrimSpace(worker.WorkerControlListenAddress) == "" ||
+		worker.WorkerControlListenAddress == cfg.ListenAddress ||
+		worker.WorkerControlListenAddress == cfg.CapabilityListenAddress {
+		return errors.New("core_cloud_worker WorkerControl listener must be non-empty and distinct")
 	}
 	if worker.WorkerControlMaxConcurrentRPC == 0 {
 		worker.WorkerControlMaxConcurrentRPC = 64
@@ -503,8 +491,6 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 	for name, path := range map[string]string{
 		"worker_control_tls_cert_file": worker.WorkerControlTLSCertFile,
 		"worker_control_tls_key_file":  worker.WorkerControlTLSKeyFile,
-		"model_relay_tls_cert_file":    worker.ModelRelayTLSCertFile,
-		"model_relay_tls_key_file":     worker.ModelRelayTLSKeyFile,
 		"iid_certificate_file":         worker.IIDCertificateFile,
 		"pricing_catalog_file":         worker.PricingCatalogFile,
 		"runtime_qualification_file":   worker.RuntimeQualificationFile,
@@ -525,10 +511,6 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 			worker.WorkerControlTLSCertFile = resolved
 		case "worker_control_tls_key_file":
 			worker.WorkerControlTLSKeyFile = resolved
-		case "model_relay_tls_cert_file":
-			worker.ModelRelayTLSCertFile = resolved
-		case "model_relay_tls_key_file":
-			worker.ModelRelayTLSKeyFile = resolved
 		case "iid_certificate_file":
 			worker.IIDCertificateFile = resolved
 		case "pricing_catalog_file":
@@ -575,7 +557,6 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 	worker.Region = strings.TrimSpace(worker.Region)
 	worker.CredentialID = strings.TrimSpace(worker.CredentialID)
 	worker.WorkerControlServerName = controlHost
-	worker.ModelRelayServerName = relayHost
 	return nil
 }
 
@@ -637,18 +618,6 @@ func validateCloudWorkerHTTPS(name, raw, serverName string) (string, error) {
 		return "", fmt.Errorf("core_cloud_worker %s must be an exact HTTPS server binding", name)
 	}
 	return serverName, nil
-}
-
-func validateCloudWorkerModelRelayEndpoint(raw, serverName string) (string, error) {
-	host, err := validateCloudWorkerHTTPS("model_relay_endpoint", raw, serverName)
-	if err != nil {
-		return "", err
-	}
-	parsed, _ := url.Parse(strings.TrimSpace(raw))
-	if parsed.Path != "/v1" || parsed.RawPath != "" {
-		return "", errors.New("core_cloud_worker model_relay_endpoint must use the exact /v1 path")
-	}
-	return host, nil
 }
 
 var awsServiceRoleARNRE = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]{1,512}$`)

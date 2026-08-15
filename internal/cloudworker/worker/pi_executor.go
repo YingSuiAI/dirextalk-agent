@@ -12,22 +12,15 @@ type WorkspacePreparer interface {
 	Prepare(context.Context, ClaimedTask) (cloudruntime.Workspace, func(), error)
 }
 
-type PiProxy interface {
-	URL() string
-	AuthorizeRelay(string) error
-}
-
 type PiTaskExecutorConfig struct {
-	Release                   cloudruntime.PiRelease
-	Processes                 cloudruntime.ProcessRunner
-	Outputs                   cloudruntime.OutputCollector
-	Workspaces                WorkspacePreparer
-	StateRoot                 string
-	SearchPath                string
-	PiProxy                   PiProxy
-	ModelRelayTrustBundlePath string
-	RuntimeGID                uint32
-	Now                       func() time.Time
+	Release    cloudruntime.PiRelease
+	Processes  cloudruntime.ProcessRunner
+	Outputs    cloudruntime.OutputCollector
+	Workspaces WorkspacePreparer
+	StateRoot  string
+	SearchPath string
+	RuntimeGID uint32
+	Now        func() time.Time
 }
 
 // PiTaskExecutor creates one sealed Pi runtime per claimed task so the claim's
@@ -36,9 +29,7 @@ type PiTaskExecutorConfig struct {
 type PiTaskExecutor struct{ config PiTaskExecutorConfig }
 
 func NewPiTaskExecutor(config PiTaskExecutorConfig) (*PiTaskExecutor, error) {
-	if config.Processes == nil || config.Workspaces == nil ||
-		config.PiProxy == nil || config.PiProxy.URL() != cloudruntime.PiLoopbackProxyURL ||
-		config.ModelRelayTrustBundlePath != cloudruntime.PiModelRelayTrustBundlePath || config.RuntimeGID == 0 {
+	if config.Processes == nil || config.Workspaces == nil || config.RuntimeGID == 0 {
 		return nil, ErrInvalid
 	}
 	if config.Now == nil {
@@ -74,10 +65,6 @@ func (executor *PiTaskExecutor) Run(
 		resolver.destroy()
 		return cloudruntime.Result{}, err
 	}
-	if err := executor.config.PiProxy.AuthorizeRelay(claimed.Task.ModelRelayBaseURL); err != nil {
-		resolver.destroy()
-		return cloudruntime.Result{}, ErrIdentityChanged
-	}
 	processes := executor.config.Processes
 	if binder, ok := processes.(cloudruntime.ProcessBinder); ok {
 		runtimeTaskSHA256, digestErr := claimed.Task.Digest()
@@ -95,10 +82,9 @@ func (executor *PiTaskExecutor) Run(
 			return cloudruntime.Result{}, ErrInvalid
 		}
 	}
-	credentialEnvironment := "OPENAI_API_KEY"
-	if claimed.Task.ModelProvider == "deepseek" {
-		credentialEnvironment = "DEEPSEEK_API_KEY"
-	}
+	credentialEnvironment := cloudruntime.PiCredentialEnvironment(
+		claimed.Task.ModelProvider,
+	)
 	runner, err := cloudruntime.NewPiExecutor(cloudruntime.PiConfig{
 		Release: executor.config.Release,
 		Models: []cloudruntime.QualifiedModel{{
@@ -106,16 +92,14 @@ func (executor *PiTaskExecutor) Run(
 			Provider:  claimed.Task.ModelProvider, Model: claimed.Task.Model,
 			Interface:             claimed.Task.ModelInterface,
 			CredentialEnvironment: credentialEnvironment,
-			RelayBaseURL:          claimed.Task.ModelRelayBaseURL,
-			RelayEndpointSHA256:   claimed.Task.ModelRelayEndpointSHA256,
+			BaseURL:               claimed.Task.ModelBaseURL,
+			EndpointSHA256:        claimed.Task.ModelEndpointSHA256,
 			MaximumOutputTokens:   claimed.Task.MaxOutputTokens,
 		}},
 		Inputs: resolver, Processes: processes,
 		Outputs: executor.config.Outputs, StateRoot: executor.config.StateRoot,
 		SearchPath: executor.config.SearchPath, Now: executor.config.Now,
-		OutboundProxyURL:          executor.config.PiProxy.URL(),
-		ModelRelayTrustBundlePath: executor.config.ModelRelayTrustBundlePath,
-		RuntimeGID:                executor.config.RuntimeGID,
+		RuntimeGID: executor.config.RuntimeGID,
 	})
 	if err != nil {
 		resolver.destroy()

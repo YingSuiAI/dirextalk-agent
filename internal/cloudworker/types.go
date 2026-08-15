@@ -71,13 +71,15 @@ type LocalBudgetEvidence struct {
 	Digest   string `json:"digest"`
 }
 
-// ModelAuthorization binds a plan to an Agent-owned model profile and
-// credential revision without making the long-lived credential representable.
-// BindingDigest is also the audience binding used by short-lived Worker grants.
+// ModelAuthorization binds a plan to an Agent-owned model profile, endpoint,
+// and credential revision without making the long-lived credential
+// representable. The credential itself is resolved only after a verified
+// Worker claims this exact task.
 type ModelAuthorization struct {
 	ModelProfileID          string `json:"model_profile_id"`
 	ModelProfileRevision    uint64 `json:"model_profile_revision"`
 	Provider                string `json:"provider"`
+	BaseURL                 string `json:"base_url,omitempty"`
 	Model                   string `json:"model"`
 	Interface               string `json:"interface"`
 	MaximumOutputTokens     uint64 `json:"maximum_output_tokens"`
@@ -112,7 +114,28 @@ type modelAuthorizationPlanDigestV2 struct {
 	BindingDigest           string `json:"binding_digest"`
 }
 
+type modelAuthorizationPlanDigestV3 struct {
+	ModelProfileID          string `json:"model_profile_id"`
+	ModelProfileRevision    uint64 `json:"model_profile_revision"`
+	Provider                string `json:"provider"`
+	BaseURL                 string `json:"base_url"`
+	Model                   string `json:"model"`
+	Interface               string `json:"interface"`
+	MaximumOutputTokens     uint64 `json:"maximum_output_tokens"`
+	ContextWindow           uint64 `json:"context_window"`
+	CredentialVersion       uint64 `json:"credential_version"`
+	CredentialBindingDigest string `json:"credential_binding_digest"`
+	BindingDigest           string `json:"binding_digest"`
+}
+
 func (a ModelAuthorization) planDigestProjection() any {
+	if a.BaseURL != "" {
+		return modelAuthorizationPlanDigestV3{
+			a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.BaseURL,
+			a.Model, a.Interface, a.MaximumOutputTokens, a.ContextWindow,
+			a.CredentialVersion, a.CredentialBindingDigest, a.BindingDigest,
+		}
+	}
 	if a.ContextWindow == 0 {
 		return modelAuthorizationPlanDigestV1{
 			a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.Model, a.Interface,
@@ -246,11 +269,10 @@ type WorkerBootstrap struct {
 	BindingDigest     string `json:"binding_digest"`
 }
 
-type ModelRelayBinding struct {
-	Endpoint          string `json:"endpoint"`
-	TLSServerName     string `json:"tls_server_name"`
-	TrustBundleDigest string `json:"trust_bundle_digest"`
-	BindingDigest     string `json:"binding_digest"`
+type ModelEndpointBinding struct {
+	Endpoint      string `json:"endpoint"`
+	TLSServerName string `json:"tls_server_name"`
+	BindingDigest string `json:"binding_digest"`
 }
 
 type ComputeSpec struct {
@@ -325,7 +347,7 @@ type Plan struct {
 	NetworkPolicy            NetworkPolicy        `json:"-"`
 	ArtifactGrant            ArtifactGrant        `json:"-"`
 	WorkerBootstrap          WorkerBootstrap      `json:"-"`
-	ModelRelay               ModelRelayBinding    `json:"-"`
+	ModelEndpoint            ModelEndpointBinding `json:"-"`
 	AWSInfrastructureDigest  string               `json:"aws_infrastructure_digest"`
 	AuthorizationBasisDigest string               `json:"authorization_basis_digest"`
 	Limits                   Limits               `json:"limits"`
@@ -530,11 +552,19 @@ func (a *ModelAuthorization) Seal() error {
 	}
 	a.ModelProfileID = strings.TrimSpace(a.ModelProfileID)
 	a.Provider = strings.TrimSpace(a.Provider)
+	a.BaseURL = strings.TrimSpace(a.BaseURL)
 	a.Model = strings.TrimSpace(a.Model)
 	a.Interface = strings.TrimSpace(a.Interface)
 	a.CredentialBindingDigest = strings.TrimSpace(a.CredentialBindingDigest)
+	parsedBaseURL, baseURLErr := url.Parse(a.BaseURL)
+	baseURLValid := a.BaseURL == "" || (baseURLErr == nil && parsedBaseURL.Scheme == "https" &&
+		parsedBaseURL.Host != "" && parsedBaseURL.User == nil && parsedBaseURL.RawQuery == "" &&
+		parsedBaseURL.Fragment == "" && parsedBaseURL.RawPath == "" &&
+		parsedBaseURL.String() == a.BaseURL && parsedBaseURL.Host == strings.ToLower(parsedBaseURL.Host) &&
+		net.ParseIP(parsedBaseURL.Hostname()) == nil)
 	if !validUUID(a.ModelProfileID) || a.ModelProfileRevision == 0 || a.CredentialVersion == 0 ||
 		a.Provider == "" || len(a.Provider) > 128 || strings.ContainsAny(a.Provider, "\r\n\x00") ||
+		!baseURLValid ||
 		a.Model == "" || len(a.Model) > 256 || strings.ContainsAny(a.Model, "\r\n\x00") ||
 		a.Interface == "" || len(a.Interface) > 128 || strings.ContainsAny(a.Interface, "\r\n\x00") ||
 		a.MaximumOutputTokens > 10_000_000 ||
@@ -545,7 +575,7 @@ func (a *ModelAuthorization) Seal() error {
 			(a.Provider == "openai_compatible" && a.Interface == "openai_compatible")) {
 		return ErrInvalid
 	}
-	if a.ContextWindow == 0 {
+	if a.BaseURL == "" && a.ContextWindow == 0 {
 		a.BindingDigest = digestValue(struct {
 			ModelProfileID          string
 			ModelProfileRevision    uint64
@@ -558,17 +588,32 @@ func (a *ModelAuthorization) Seal() error {
 		}{a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.Model, a.Interface, a.MaximumOutputTokens, a.CredentialVersion, a.CredentialBindingDigest})
 		return nil
 	}
+	if a.BaseURL == "" {
+		a.BindingDigest = digestValue(struct {
+			ModelProfileID          string
+			ModelProfileRevision    uint64
+			Provider                string
+			Model                   string
+			Interface               string
+			MaximumOutputTokens     uint64
+			ContextWindow           uint64
+			CredentialVersion       uint64
+			CredentialBindingDigest string
+		}{a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.Model, a.Interface, a.MaximumOutputTokens, a.ContextWindow, a.CredentialVersion, a.CredentialBindingDigest})
+		return nil
+	}
 	a.BindingDigest = digestValue(struct {
 		ModelProfileID          string
 		ModelProfileRevision    uint64
 		Provider                string
+		BaseURL                 string
 		Model                   string
 		Interface               string
 		MaximumOutputTokens     uint64
 		ContextWindow           uint64
 		CredentialVersion       uint64
 		CredentialBindingDigest string
-	}{a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.Model, a.Interface, a.MaximumOutputTokens, a.ContextWindow, a.CredentialVersion, a.CredentialBindingDigest})
+	}{a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.BaseURL, a.Model, a.Interface, a.MaximumOutputTokens, a.ContextWindow, a.CredentialVersion, a.CredentialBindingDigest})
 	return nil
 }
 
@@ -863,7 +908,7 @@ func (p *Plan) sealInfrastructure() error {
 	if err := p.WorkerBootstrap.Seal(p.NetworkPolicy); err != nil {
 		return err
 	}
-	if err := p.ModelRelay.Seal(p.NetworkPolicy, p.ModelAuthorization, p.Limits); err != nil {
+	if err := p.ModelEndpoint.Seal(p.NetworkPolicy, p.ModelAuthorization, p.Limits); err != nil {
 		return err
 	}
 	iamDigest := digestValue(struct {
@@ -872,9 +917,9 @@ func (p *Plan) sealInfrastructure() error {
 		ArtifactGrant      ArtifactGrant
 		NetworkPolicy      NetworkPolicy
 		WorkerBootstrap    WorkerBootstrap
-		ModelRelay         ModelRelayBinding
+		ModelEndpoint      ModelEndpointBinding
 		ModelBindingDigest string
-	}{p.ExecutionID, p.InputManifest, p.ArtifactGrant, p.NetworkPolicy, p.WorkerBootstrap, p.ModelRelay, p.ModelAuthorization.BindingDigest})
+	}{p.ExecutionID, p.InputManifest, p.ArtifactGrant, p.NetworkPolicy, p.WorkerBootstrap, p.ModelEndpoint, p.ModelAuthorization.BindingDigest})
 	if p.Placement.IAMPolicyDigest != "" && p.Placement.IAMPolicyDigest != iamDigest {
 		return ErrInvalid
 	}
@@ -887,8 +932,8 @@ func (p *Plan) sealInfrastructure() error {
 		NetworkPolicy     NetworkPolicy
 		ArtifactGrant     ArtifactGrant
 		WorkerBootstrap   WorkerBootstrap
-		ModelRelay        ModelRelayBinding
-	}{p.AccountGeneration, p.AWS, p.Compute, p.Placement, p.NetworkPolicy, p.ArtifactGrant, p.WorkerBootstrap, p.ModelRelay})
+		ModelEndpoint     ModelEndpointBinding
+	}{p.AccountGeneration, p.AWS, p.Compute, p.Placement, p.NetworkPolicy, p.ArtifactGrant, p.WorkerBootstrap, p.ModelEndpoint})
 	if p.AWSInfrastructureDigest != "" && p.AWSInfrastructureDigest != infrastructureDigest {
 		return ErrInvalid
 	}
@@ -1043,15 +1088,15 @@ func (b *WorkerBootstrap) Seal(network NetworkPolicy) error {
 	return nil
 }
 
-func (r *ModelRelayBinding) Seal(network NetworkPolicy, model ModelAuthorization, limits Limits) error {
+func (r *ModelEndpointBinding) Seal(network NetworkPolicy, model ModelAuthorization, limits Limits) error {
 	if r == nil {
 		return ErrInvalid
 	}
 	r.Endpoint = strings.TrimSpace(r.Endpoint)
 	r.TLSServerName = strings.ToLower(strings.TrimSpace(r.TLSServerName))
-	r.TrustBundleDigest = strings.TrimSpace(r.TrustBundleDigest)
 	parsed, err := url.Parse(r.Endpoint)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Hostname() != r.TLSServerName || !validDigest(r.TrustBundleDigest) || !validDigest(model.BindingDigest) {
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Hostname() != r.TLSServerName ||
+		(model.BaseURL != "" && r.Endpoint != model.BaseURL) || !validDigest(model.BindingDigest) {
 		return ErrInvalid
 	}
 	allowed := false
@@ -1068,14 +1113,14 @@ func (r *ModelRelayBinding) Seal(network NetworkPolicy, model ModelAuthorization
 		// Preserve the exact v1 digest so persisted Plans and artifacts remain
 		// readable after cumulative budgeting is retired.
 		r.BindingDigest = digestValue(struct {
-			Endpoint, TLSServerName, TrustBundleDigest, ModelBindingDigest string
-			MaxTokens                                                      uint64
-		}{r.Endpoint, r.TLSServerName, r.TrustBundleDigest, model.BindingDigest, limits.MaxTokens})
+			Endpoint, TLSServerName, ModelBindingDigest string
+			MaxTokens                                   uint64
+		}{r.Endpoint, r.TLSServerName, model.BindingDigest, limits.MaxTokens})
 		return nil
 	}
 	r.BindingDigest = digestValue(struct {
-		Endpoint, TLSServerName, TrustBundleDigest, ModelBindingDigest string
-	}{r.Endpoint, r.TLSServerName, r.TrustBundleDigest, model.BindingDigest})
+		Endpoint, TLSServerName, ModelBindingDigest string
+	}{r.Endpoint, r.TLSServerName, model.BindingDigest})
 	return nil
 }
 

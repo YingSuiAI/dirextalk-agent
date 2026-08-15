@@ -30,7 +30,8 @@ func ModelAuthorizationFromSnapshot(snapshot coremodel.ExecutionSnapshot) (Model
 	}
 	authorization := ModelAuthorization{
 		ModelProfileID: snapshot.ProfileID, ModelProfileRevision: uint64(snapshot.Revision),
-		Provider: string(snapshot.Provider), Model: snapshot.Model, Interface: modelInterface,
+		Provider: string(snapshot.Provider), BaseURL: snapshot.BaseURL,
+		Model: snapshot.Model, Interface: modelInterface,
 		MaximumOutputTokens: uint64(snapshot.MaxOutputTokens), ContextWindow: uint64(snapshot.ContextWindow),
 		CredentialVersion: uint64(snapshot.CredentialVersion), CredentialBindingDigest: snapshot.Digest(),
 	}

@@ -13,7 +13,6 @@ import (
 
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
-	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/modelrelay"
 	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
@@ -54,6 +53,7 @@ type controllerTestStore struct {
 	authorizeErr         error
 	markHook             func()
 	markErrors           []error
+	transitionErrors     []error
 	replaceCalls         int
 	replaceCommand       RequoteOfferCommand
 	replaceErr           error
@@ -210,6 +210,13 @@ func (store *controllerTestStore) ReplaceWithRequote(_ context.Context, _ coreta
 
 func (store *controllerTestStore) TransitionExecution(_ context.Context, _ coretask.Task, expectedRevision uint64, nextState ExecutionState) (Execution, error) {
 	store.trace.add("transition:" + string(nextState))
+	if len(store.transitionErrors) > 0 {
+		err := store.transitionErrors[0]
+		store.transitionErrors = store.transitionErrors[1:]
+		if err != nil {
+			return Execution{}, err
+		}
+	}
 	if expectedRevision != store.execution.Revision {
 		return Execution{}, ErrRevisionConflict
 	}
@@ -219,6 +226,26 @@ func (store *controllerTestStore) TransitionExecution(_ context.Context, _ coret
 	}
 	store.execution = next
 	return next, nil
+}
+
+type controllerTestSQLStateError string
+
+func (err controllerTestSQLStateError) Error() string    { return "database transaction retry" }
+func (err controllerTestSQLStateError) SQLState() string { return string(err) }
+
+func TestControllerRetriesSerializationFailureWithoutFencingWorker(t *testing.T) {
+	fixture := newControllerTestFixture(t)
+	fixture.primeAuthorized(t, true)
+	fixture.store.transitionErrors = []error{controllerTestSQLStateError("40001")}
+
+	outcome := fixture.controller(t, nil).Handle(context.Background(), fixture.task)
+	if outcome.Err != nil || !outcome.TerminalOwned || fixture.store.execution.State != StateSucceeded {
+		t.Fatalf("outcome=%+v state=%s trace=%v", outcome, fixture.store.execution.State, fixture.trace.entries)
+	}
+	if fixture.sessions.findCalls < 2 || fixture.store.failCalls != 0 {
+		t.Fatalf("serialization failure was not retried: finds=%d failures=%d trace=%v",
+			fixture.sessions.findCalls, fixture.store.failCalls, fixture.trace.entries)
+	}
 }
 
 func (store *controllerTestStore) RecordResources(_ context.Context, _ coretask.Task, expectedRevision uint64, resources []Resource, nextState ExecutionState) (Execution, error) {
@@ -564,19 +591,6 @@ func (sessions *controllerTestSessions) FenceExecutionSessions(_ context.Context
 	return sessions.session, sessions.fenceErr
 }
 
-type controllerTestModelGrants struct {
-	trace *controllerTestTrace
-	calls int
-	fence modelrelay.Fence
-}
-
-func (grants *controllerTestModelGrants) FenceExecution(_ context.Context, fence modelrelay.Fence, _ string, _ bool) error {
-	grants.trace.add("fence_model_grant")
-	grants.calls++
-	grants.fence = fence
-	return nil
-}
-
 type controllerTestCollector struct {
 	trace        *controllerTestTrace
 	result       ProviderResult
@@ -607,7 +621,6 @@ type controllerTestFixture struct {
 	resolver  controllerTestQualification
 	aws       *controllerTestAWS
 	sessions  *controllerTestSessions
-	grants    *controllerTestModelGrants
 	collector *controllerTestCollector
 }
 
@@ -661,7 +674,6 @@ func newControllerTestFixture(t *testing.T) *controllerTestFixture {
 		AccountGeneration: plan.AccountGeneration, Attempt: task.Attempt, LeaseEpoch: task.LeaseEpoch}, State: control.SessionCompleted,
 		ClaimedAt: now.Add(-time.Second), HeartbeatAt: now, FinishedAt: now}
 	sessions := &controllerTestSessions{trace: trace, session: session}
-	grants := &controllerTestModelGrants{trace: trace}
 	artifact := Artifact{ArtifactID: uuid.NewString(), ExecutionID: plan.ExecutionID, Kind: "result", Name: "result.txt",
 		MediaType: "text/plain", SizeBytes: 12, SHA256: digestValue("controller-result"), Status: ArtifactVerified, CreatedAt: now}
 	collector := &controllerTestCollector{trace: trace, result: ProviderResult{Artifacts: []Artifact{artifact}, Summary: "verified result"}}
@@ -672,7 +684,7 @@ func newControllerTestFixture(t *testing.T) *controllerTestFixture {
 	return &controllerTestFixture{now: now, trace: trace, store: store, task: task, stager: stager,
 		outputs: controllerTestOutputs{},
 		quoter:  quoter, bindings: bindings, models: models, resolver: controllerTestQualification{value: qualification}, aws: aws,
-		sessions: sessions, grants: grants, collector: collector}
+		sessions: sessions, collector: collector}
 }
 
 func (fixture *controllerTestFixture) controller(t *testing.T, quoter Quoter) *Controller {
@@ -685,8 +697,8 @@ func (fixture *controllerTestFixture) controller(t *testing.T, quoter Quoter) *C
 		ArtifactReadiness: assumedArtifactDestinationReady{}, ModelAuthorizations: fixture.models, Stager: fixture.stager,
 		Outputs:        fixture.outputs,
 		Qualifications: fixture.resolver, AWS: fixture.aws, Sessions: fixture.sessions,
-		ModelGrants: fixture.grants, Results: fixture.collector,
-		Clock: func() time.Time { return fixture.now }, PollInterval: time.Millisecond,
+		Results: fixture.collector,
+		Clock:   func() time.Time { return fixture.now }, PollInterval: time.Millisecond,
 		WorkerHeartbeatStaleAfter: 30 * time.Second,
 	})
 	if err != nil {
@@ -755,7 +767,7 @@ func (fixture *controllerTestFixture) primeLegacyV1Authorized(t *testing.T) {
 	plan := fixture.store.plan
 	plan.ModelAuthorization.ContextWindow = 0
 	plan.ModelAuthorization.BindingDigest = ""
-	plan.ModelRelay.BindingDigest = ""
+	plan.ModelEndpoint.BindingDigest = ""
 	plan.Placement.IAMPolicyDigest = ""
 	plan.AWSInfrastructureDigest = ""
 	plan.AuthorizationBasisDigest = ""
@@ -795,11 +807,11 @@ func (fixture *controllerTestFixture) primeLegacyV1Authorized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	piProvider, piInterface, err := PiRelayModel(plan.ModelAuthorization)
+	piProvider, piInterface, err := PiDirectModel(plan.ModelAuthorization)
 	if err != nil {
 		t.Fatal(err)
 	}
-	relayDigest := sha256.Sum256([]byte(plan.ModelRelay.Endpoint))
+	endpointDigest := sha256.Sum256([]byte(plan.ModelEndpoint.Endpoint))
 	runtimeTask := cloudruntime.Task{
 		SchemaVersion: cloudruntime.TaskSchemaV1, Recipe: cloudruntime.RecipeEphemeralPiTask,
 		Adapter: cloudruntime.AdapterPiJSONTaskV1, TaskID: plan.TaskID, ExecutionID: plan.ExecutionID,
@@ -814,10 +826,10 @@ func (fixture *controllerTestFixture) primeLegacyV1Authorized(t *testing.T) {
 		CredentialVersion:        plan.ModelAuthorization.CredentialVersion,
 		ModelBindingSHA256:       plan.ModelAuthorization.BindingDigest,
 		ModelGrantAudienceSHA256: RuntimeGrantAudienceDigest(plan, runtimeFenceForTask(fixture.task, plan)),
-		ModelGrantLimitSHA256:    digestValue(plan.Limits), ModelRelayBaseURL: plan.ModelRelay.Endpoint,
-		ModelRelayEndpointSHA256: hex.EncodeToString(relayDigest[:]),
-		ModelRelayBindingSHA256:  plan.ModelRelay.BindingDigest,
-		MaxOutputTokens:          plan.ModelAuthorization.MaximumOutputTokens, MaxOutputBytes: plan.Limits.MaxOutputBytes,
+		ModelGrantLimitSHA256:    digestValue(plan.Limits), ModelBaseURL: plan.ModelEndpoint.Endpoint,
+		ModelEndpointSHA256:        hex.EncodeToString(endpointDigest[:]),
+		ModelEndpointBindingSHA256: plan.ModelEndpoint.BindingDigest,
+		MaxOutputTokens:            plan.ModelAuthorization.MaximumOutputTokens, MaxOutputBytes: plan.Limits.MaxOutputBytes,
 	}
 	runtimeJSON, err := json.Marshal(runtimeTask)
 	if err != nil {
@@ -1193,7 +1205,7 @@ func TestControllerModelAndPriceDriftRequoteBeforeStaging(t *testing.T) {
 			replacement.AuthorizationBasisDigest == fixture.store.plan.AuthorizationBasisDigest ||
 			replacement.AWSInfrastructureDigest == fixture.store.plan.AWSInfrastructureDigest ||
 			replacement.Placement.IAMPolicyDigest == fixture.store.plan.Placement.IAMPolicyDigest ||
-			replacement.ModelRelay.BindingDigest == fixture.store.plan.ModelRelay.BindingDigest {
+			replacement.ModelEndpoint.BindingDigest == fixture.store.plan.ModelEndpoint.BindingDigest {
 			t.Fatalf("replacement did not rebind model authority: old=%+v replacement=%+v", fixture.store.plan, replacement)
 		}
 	})
@@ -1480,10 +1492,10 @@ func TestControllerCleaningResumeReassertsWorkerFence(t *testing.T) {
 		t.Fatalf("outcome=%+v state=%s fail=%d trace=%v", outcome, fixture.store.execution.State,
 			fixture.store.failCalls, fixture.trace.entries)
 	}
-	if fixture.sessions.fenceCalls != 1 || fixture.grants.calls != 0 || fixture.aws.destroyCalls != 1 ||
+	if fixture.sessions.fenceCalls != 1 || fixture.aws.destroyCalls != 1 ||
 		!fixture.store.execution.Cleanup.VerifiedDestroyed {
-		t.Fatalf("resume fence=%d grants=%d destroy=%d cleanup=%+v trace=%v", fixture.sessions.fenceCalls,
-			fixture.grants.calls, fixture.aws.destroyCalls, fixture.store.execution.Cleanup, fixture.trace.entries)
+		t.Fatalf("resume fence=%d destroy=%d cleanup=%+v trace=%v", fixture.sessions.fenceCalls,
+			fixture.aws.destroyCalls, fixture.store.execution.Cleanup, fixture.trace.entries)
 	}
 	if fixture.trace.index("fence_sessions") < 0 || fixture.trace.index("fence_sessions") > fixture.trace.index("aws_destroy") ||
 		fixture.trace.index("aws_destroy") > fixture.trace.index("terminal:failed") {
@@ -1521,9 +1533,9 @@ func TestControllerReclaimKeepsAuthorizedRuntimeDeadlineAndCleans(t *testing.T) 
 			fixture.store.execution.FailureCode, fixture.trace.entries)
 	}
 	if fixture.aws.ensureCalls != 0 || fixture.collector.calls != 0 || fixture.sessions.fenceCalls != 1 ||
-		fixture.grants.calls != 1 || fixture.aws.destroyCalls != 1 || !fixture.store.execution.Cleanup.VerifiedDestroyed {
-		t.Fatalf("deadline authority ensure=%d collect=%d session_fence=%d grant_fence=%d destroy=%d cleanup=%+v trace=%v",
-			fixture.aws.ensureCalls, fixture.collector.calls, fixture.sessions.fenceCalls, fixture.grants.calls,
+		fixture.aws.destroyCalls != 1 || !fixture.store.execution.Cleanup.VerifiedDestroyed {
+		t.Fatalf("deadline authority ensure=%d collect=%d session_fence=%d destroy=%d cleanup=%+v trace=%v",
+			fixture.aws.ensureCalls, fixture.collector.calls, fixture.sessions.fenceCalls,
 			fixture.aws.destroyCalls, fixture.store.execution.Cleanup, fixture.trace.entries)
 	}
 	if fixture.trace.index("fence_sessions") < 0 || fixture.trace.index("fence_sessions") > fixture.trace.index("begin_cleanup") ||
@@ -1547,10 +1559,10 @@ func TestControllerStaleWorkerHeartbeatFencesAndCleans(t *testing.T) {
 			fixture.store.execution.FailureCode, fixture.trace.entries)
 	}
 	if fixture.aws.ensureCalls != 1 || fixture.sessions.setCalls != 1 || fixture.collector.calls != 0 ||
-		fixture.sessions.fenceCalls != 1 || fixture.grants.calls != 1 || fixture.aws.destroyCalls != 1 ||
+		fixture.sessions.fenceCalls != 1 || fixture.aws.destroyCalls != 1 ||
 		!fixture.store.execution.Cleanup.VerifiedDestroyed {
-		t.Fatalf("stale heartbeat ensure=%d set=%d collect=%d session_fence=%d grant_fence=%d destroy=%d cleanup=%+v trace=%v",
+		t.Fatalf("stale heartbeat ensure=%d set=%d collect=%d session_fence=%d destroy=%d cleanup=%+v trace=%v",
 			fixture.aws.ensureCalls, fixture.sessions.setCalls, fixture.collector.calls, fixture.sessions.fenceCalls,
-			fixture.grants.calls, fixture.aws.destroyCalls, fixture.store.execution.Cleanup, fixture.trace.entries)
+			fixture.aws.destroyCalls, fixture.store.execution.Cleanup, fixture.trace.entries)
 	}
 }

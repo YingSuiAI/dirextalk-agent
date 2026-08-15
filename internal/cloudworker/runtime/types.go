@@ -27,15 +27,12 @@ import (
 )
 
 const (
-	RecipeEphemeralPiTask       = "ephemeral-pi-task"
-	AdapterPiJSONTaskV1         = "pi_json_task_v1"
-	TaskSchemaV1                = "dirextalk.agent.cloud-worker-pi-task/v1"
-	TaskSchemaV2                = "dirextalk.agent.cloud-worker-pi-task/v2"
-	PiFinalSchemaV1             = "dirextalk.agent.pi-final/v1"
-	PiLoopbackProxyAddress      = "127.0.0.1:38081"
-	PiLoopbackProxyURL          = "http://" + PiLoopbackProxyAddress
-	PiModelRelayTrustBundlePath = "/usr/local/share/dirextalk-cloud-worker/model-relay-ca.pem"
-	WorkspaceDeltaArtifactName  = "workspace.delta.tar.gz"
+	RecipeEphemeralPiTask      = "ephemeral-pi-task"
+	AdapterPiJSONTaskV1        = "pi_json_task_v1"
+	TaskSchemaV1               = "dirextalk.agent.cloud-worker-pi-task/v1"
+	TaskSchemaV2               = "dirextalk.agent.cloud-worker-pi-task/v2"
+	PiFinalSchemaV1            = "dirextalk.agent.pi-final/v1"
+	WorkspaceDeltaArtifactName = "workspace.delta.tar.gz"
 
 	MaxObjectiveBytes         = 32 << 10
 	MaxInputManifestBytes     = 512 << 10
@@ -59,7 +56,6 @@ var (
 	digestPattern      = regexp.MustCompile(`^[a-f0-9]{64}$`)
 	catalogNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
 	versionPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
-	modelGrantPattern  = regexp.MustCompile(`^cwmg1_[A-Za-z0-9_-]+$`)
 )
 
 type WorkspaceMode string
@@ -80,36 +76,36 @@ const (
 )
 
 // Task is the immutable, authorization-covered input to one root Pi process tree. It
-// contains no executable path, arbitrary environment variable, endpoint, or
-// credential value.
+// contains no executable path, arbitrary environment variable, or credential
+// value. The model endpoint is part of the signed task contract.
 type Task struct {
-	SchemaVersion            string         `json:"schema_version"`
-	Recipe                   string         `json:"recipe"`
-	Adapter                  string         `json:"adapter"`
-	TaskID                   string         `json:"task_id"`
-	ExecutionID              string         `json:"execution_id"`
-	Objective                string         `json:"objective"`
-	InputManifestSHA256      string         `json:"input_manifest_sha256"`
-	WorkspaceMode            WorkspaceMode  `json:"workspace_mode"`
-	WorkspaceSHA256          string         `json:"workspace_sha256,omitempty"`
-	PiVersion                string         `json:"pi_version"`
-	PiExecutableSHA256       string         `json:"pi_executable_sha256"`
-	ResultExtensionSHA256    string         `json:"result_extension_sha256"`
-	ModelProfileID           string         `json:"model_profile_id"`
-	ModelProfileRevision     uint64         `json:"model_profile_revision"`
-	ModelProvider            string         `json:"model_provider"`
-	Model                    string         `json:"model"`
-	ModelInterface           ModelInterface `json:"model_interface"`
-	CredentialVersion        uint64         `json:"credential_version"`
-	ModelBindingSHA256       string         `json:"model_binding_sha256"`
-	ModelGrantAudienceSHA256 string         `json:"model_grant_audience_sha256"`
-	ModelGrantLimitSHA256    string         `json:"model_grant_limit_sha256"`
-	ModelRelayBaseURL        string         `json:"model_relay_base_url"`
-	ModelRelayEndpointSHA256 string         `json:"model_relay_endpoint_sha256"`
-	ModelRelayBindingSHA256  string         `json:"model_relay_binding_sha256"`
-	MaxOutputTokens          uint64         `json:"max_output_tokens"`
-	ModelContextWindow       uint64         `json:"model_context_window,omitempty"`
-	MaxOutputBytes           uint64         `json:"max_output_bytes"`
+	SchemaVersion              string         `json:"schema_version"`
+	Recipe                     string         `json:"recipe"`
+	Adapter                    string         `json:"adapter"`
+	TaskID                     string         `json:"task_id"`
+	ExecutionID                string         `json:"execution_id"`
+	Objective                  string         `json:"objective"`
+	InputManifestSHA256        string         `json:"input_manifest_sha256"`
+	WorkspaceMode              WorkspaceMode  `json:"workspace_mode"`
+	WorkspaceSHA256            string         `json:"workspace_sha256,omitempty"`
+	PiVersion                  string         `json:"pi_version"`
+	PiExecutableSHA256         string         `json:"pi_executable_sha256"`
+	ResultExtensionSHA256      string         `json:"result_extension_sha256"`
+	ModelProfileID             string         `json:"model_profile_id"`
+	ModelProfileRevision       uint64         `json:"model_profile_revision"`
+	ModelProvider              string         `json:"model_provider"`
+	Model                      string         `json:"model"`
+	ModelInterface             ModelInterface `json:"model_interface"`
+	CredentialVersion          uint64         `json:"credential_version"`
+	ModelBindingSHA256         string         `json:"model_binding_sha256"`
+	ModelGrantAudienceSHA256   string         `json:"model_grant_audience_sha256"`
+	ModelGrantLimitSHA256      string         `json:"model_grant_limit_sha256"`
+	ModelBaseURL               string         `json:"model_base_url"`
+	ModelEndpointSHA256        string         `json:"model_endpoint_sha256"`
+	ModelEndpointBindingSHA256 string         `json:"model_endpoint_binding_sha256"`
+	MaxOutputTokens            uint64         `json:"max_output_tokens"`
+	ModelContextWindow         uint64         `json:"model_context_window,omitempty"`
+	MaxOutputBytes             uint64         `json:"max_output_bytes"`
 }
 
 func (task Task) Validate() error {
@@ -147,8 +143,8 @@ func (task Task) validate(allowHistorical bool) error {
 		!validDigest(task.ModelBindingSHA256) ||
 		!validDigest(task.ModelGrantAudienceSHA256) ||
 		!validDigest(task.ModelGrantLimitSHA256) ||
-		!validRelayEndpoint(task.ModelRelayBaseURL, task.ModelRelayEndpointSHA256) ||
-		!validDigest(task.ModelRelayBindingSHA256) ||
+		!validModelEndpoint(task.ModelBaseURL, task.ModelEndpointSHA256) ||
+		!validDigest(task.ModelEndpointBindingSHA256) ||
 		task.MaxOutputTokens == 0 ||
 		task.MaxOutputTokens > MaxOutputTokens ||
 		task.MaxOutputBytes == 0 ||
@@ -224,8 +220,8 @@ type QualifiedModel struct {
 	Model                 string         `json:"model"`
 	Interface             ModelInterface `json:"interface"`
 	CredentialEnvironment string         `json:"credential_environment"`
-	RelayBaseURL          string         `json:"relay_base_url"`
-	RelayEndpointSHA256   string         `json:"relay_endpoint_sha256"`
+	BaseURL               string         `json:"model_base_url"`
+	EndpointSHA256        string         `json:"model_endpoint_sha256"`
 	MaximumOutputTokens   uint64         `json:"maximum_output_tokens"`
 }
 
@@ -235,7 +231,7 @@ func (model QualifiedModel) validate() error {
 		!validCatalogName(model.Model) ||
 		!validModelInterface(model.Interface) ||
 		!validCredentialEnvironment(model.CredentialEnvironment) ||
-		!validRelayEndpoint(model.RelayBaseURL, model.RelayEndpointSHA256) ||
+		!validModelEndpoint(model.BaseURL, model.EndpointSHA256) ||
 		model.MaximumOutputTokens == 0 ||
 		model.MaximumOutputTokens > MaxOutputTokens {
 		return ErrInvalid
@@ -248,8 +244,8 @@ func (model QualifiedModel) matches(task Task) bool {
 		model.Provider == task.ModelProvider &&
 		model.Model == task.Model &&
 		model.Interface == task.ModelInterface &&
-		model.RelayBaseURL == task.ModelRelayBaseURL &&
-		model.RelayEndpointSHA256 == task.ModelRelayEndpointSHA256 &&
+		model.BaseURL == task.ModelBaseURL &&
+		model.EndpointSHA256 == task.ModelEndpointSHA256 &&
 		task.MaxOutputTokens <= model.MaximumOutputTokens
 }
 
@@ -261,19 +257,19 @@ type Workspace struct {
 	Isolated  bool          `json:"isolated"`
 }
 
-// ModelGrant contains exactly one execution-bound, short-lived relay bearer.
-// It is not a provider API key and cannot authorize a different audience,
-// relay, model binding, token limit, or expiration.
+// ModelGrant is the wire-compatible name of the execution-bound model
+// credential envelope. BearerToken contains the provider API key for this
+// ephemeral Worker; it is cleared when the claim or process finishes.
 type ModelGrant struct {
-	GrantID            string
-	BearerToken        []byte
-	ModelBindingSHA256 string
-	AudienceSHA256     string
-	ExpiresAtUnix      int64
-	LimitSHA256        string
-	RelayBaseURL       string
-	RelayBindingSHA256 string
-	MaxOutputTokens    uint64
+	GrantID               string
+	BearerToken           []byte
+	ModelBindingSHA256    string
+	AudienceSHA256        string
+	ExpiresAtUnix         int64
+	LimitSHA256           string
+	BaseURL               string
+	EndpointBindingSHA256 string
+	MaxOutputTokens       uint64
 }
 
 func (grant *ModelGrant) Destroy() {
@@ -285,14 +281,14 @@ func (grant *ModelGrant) Destroy() {
 }
 
 func (grant ModelGrant) ValidateFor(task Task, now time.Time) error {
-	if task.Validate() != nil || !modelGrantPattern.Match(grant.BearerToken) ||
-		len(grant.BearerToken) < len("cwmg1_")+32 ||
+	if task.Validate() != nil || len(grant.BearerToken) == 0 ||
 		len(grant.BearerToken) > MaxCredentialBytes || !canonicalUUID(grant.GrantID) ||
+		bytes.IndexAny(grant.BearerToken, "\r\n\x00") >= 0 ||
 		grant.ModelBindingSHA256 != task.ModelBindingSHA256 ||
 		grant.AudienceSHA256 != task.ModelGrantAudienceSHA256 ||
 		grant.LimitSHA256 != task.ModelGrantLimitSHA256 ||
-		grant.RelayBaseURL != task.ModelRelayBaseURL ||
-		grant.RelayBindingSHA256 != task.ModelRelayBindingSHA256 ||
+		grant.BaseURL != task.ModelBaseURL ||
+		grant.EndpointBindingSHA256 != task.ModelEndpointBindingSHA256 ||
 		grant.MaxOutputTokens != task.MaxOutputTokens ||
 		!time.Unix(grant.ExpiresAtUnix, 0).After(now.UTC().Add(MinimumModelGrantLifetime)) {
 		return ErrInvalid
@@ -300,8 +296,8 @@ func (grant ModelGrant) ValidateFor(task Task, now time.Time) error {
 	return nil
 }
 
-// Inputs contains exactly one ephemeral model relay grant. Runtime code never
-// accepts MCP, Skill, AWS, or extension-runner credentials.
+// Inputs contains the task inputs. Runtime code never accepts MCP, Skill, AWS,
+// or extension-runner credentials through this channel.
 type Inputs struct {
 	InputManifestJSON []byte
 	Workspace         Workspace
@@ -355,7 +351,7 @@ func (inputs Inputs) validate(task Task) error {
 	return nil
 }
 
-func validRelayEndpoint(raw, digest string) bool {
+func validModelEndpoint(raw, digest string) bool {
 	if raw == "" || raw != strings.TrimSpace(raw) || len(raw) > 2048 ||
 		!validDigest(digest) {
 		return false
@@ -363,24 +359,16 @@ func validRelayEndpoint(raw, digest string) bool {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme != "https" || parsed.User != nil ||
 		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Host == "" ||
-		parsed.Path != "/v1" || parsed.RawPath != "" ||
+		parsed.RawPath != "" || strings.Contains(parsed.Path, "..") ||
+		(parsed.Path != "" && parsed.Path != "/" && strings.HasSuffix(parsed.Path, "/")) ||
 		parsed.Host != strings.ToLower(parsed.Host) || parsed.String() != raw ||
 		net.ParseIP(parsed.Hostname()) != nil {
-		return false
-	}
-	switch parsed.Hostname() {
-	case "api.openai.com", "api.deepseek.com", "api.anthropic.com",
-		"generativelanguage.googleapis.com":
 		return false
 	}
 	endpointDigest := sha256.Sum256([]byte(raw))
 	return subtle.ConstantTimeCompare(
 		[]byte(hex.EncodeToString(endpointDigest[:])), []byte(digest),
 	) == 1
-}
-
-func validOutboundProxyURL(raw string) bool {
-	return raw == PiLoopbackProxyURL
 }
 
 type InputResolver interface {

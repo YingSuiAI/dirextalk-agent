@@ -121,7 +121,7 @@ func buildTemplate(request cloudaws.CreateStackRequest) (string, error) {
 			"Dirextalk": map[string]any{
 				"Recipe": request.Plan.Recipe, "Adapter": request.Plan.Adapter, "InstanceCount": 1,
 				"WorkerUnit": "dirextalk-cloud-worker.service", "PiExecPolicy": "fanotify_exactly_once",
-				"SSMEnabled": false, "FQDNEnforcement": "controlled_tls_proxy",
+				"SSMEnabled": false, "FQDNEnforcement": "controlled_worker_proxy_plus_direct_model_https",
 				"FQDNPolicyDigest":           request.SecurityGroupPolicy.FQDNPolicyDigest,
 				"OutboundProxyBindingDigest": request.Plan.Network.OutboundProxyBindingDigest,
 				"HostNetworkPolicySHA256":    request.Plan.HostNetworkPolicySHA256,

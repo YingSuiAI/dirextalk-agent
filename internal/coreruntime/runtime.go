@@ -3,6 +3,7 @@ package coreruntime
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -297,6 +298,10 @@ func (p *WorkerPool) execute(parent context.Context, task coretask.Task, lease c
 			case now := <-ticker.C:
 				_, err := p.store.RenewLease(leaseCtx, coretask.RenewLeaseCommand{Fence: fence, Holder: p.holder, LeaseTTL: p.leaseTTL, At: now.UTC()})
 				if err != nil {
+					slog.Warn("[core-task.worker] lease_renewal_failed",
+						"task_id", task.ID, "task_kind", task.Spec.Kind,
+						"attempt", lease.Attempt, "lease_epoch", lease.Epoch,
+						"error", err)
 					stale.Store(true)
 					cancel()
 					return

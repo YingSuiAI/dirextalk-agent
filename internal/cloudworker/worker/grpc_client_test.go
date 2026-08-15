@@ -83,7 +83,7 @@ func TestClaimedTaskResponseRequiresExactProtocolVersions(t *testing.T) {
 			ModelBindingDigest: claimed.ModelGrant.ModelBindingSHA256,
 			AudienceDigest:     claimed.ModelGrant.AudienceSHA256,
 			ExpiresAt:          timestamppb.New(time.Unix(claimed.ModelGrant.ExpiresAtUnix, 0).UTC()),
-			RelayUrl:           claimed.ModelGrant.RelayBaseURL, RelayBindingDigest: claimed.ModelGrant.RelayBindingSHA256,
+			RelayUrl:           claimed.ModelGrant.BaseURL, RelayBindingDigest: claimed.ModelGrant.EndpointBindingSHA256,
 			MaxTokens: claimed.ModelGrant.MaxOutputTokens, LimitDigest: claimed.ModelGrant.LimitSHA256,
 		},
 		RuntimeTaskJson: runtimeTaskJSON, RuntimeTaskDigest: runtimeTaskDigest,

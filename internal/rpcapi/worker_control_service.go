@@ -33,8 +33,8 @@ type WorkerLaunchResolver interface {
 
 // WorkerClaimMaterial is private execution material returned only after the
 // signed EC2 identity was verified and a fenced WorkerControl session was
-// created. Implementations issue a short-lived relay bearer; they never return
-// the underlying provider credential.
+// created. ModelGrant is retained as the private wire field name for protocol
+// compatibility; it now carries the task's direct provider credential.
 type WorkerClaimMaterial struct {
 	ProtocolVersions    cloudprotocol.Versions
 	RuntimeTaskJSON     []byte
@@ -172,7 +172,9 @@ func (service *WorkerControlService) Claim(
 			GrantId: material.ModelGrant.GrantID, BearerToken: bytes.Clone(material.ModelGrant.BearerToken),
 			ModelBindingDigest: material.ModelGrant.ModelBindingSHA256,
 			AudienceDigest:     material.ModelGrant.AudienceSHA256, ExpiresAt: timestamppb.New(grantExpiry),
-			RelayUrl: material.ModelGrant.RelayBaseURL, RelayBindingDigest: material.ModelGrant.RelayBindingSHA256,
+			// RelayUrl and RelayBindingDigest are the v1 wire names. They carry
+			// the direct provider endpoint; Central does not proxy model traffic.
+			RelayUrl: material.ModelGrant.BaseURL, RelayBindingDigest: material.ModelGrant.EndpointBindingSHA256,
 			MaxTokens: material.ModelGrant.MaxOutputTokens, LimitDigest: material.ModelGrant.LimitSHA256,
 		},
 		RuntimeTaskJson: bytes.Clone(material.RuntimeTaskJSON), RuntimeTaskDigest: material.RuntimeTaskDigest,

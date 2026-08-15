@@ -17,7 +17,6 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/identitywire"
-	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/modelrelay"
 	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
 	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
@@ -490,13 +489,6 @@ func (sessions *freshStateWorkerSessions) FenceExecutionSessions(ctx context.Con
 	return sessions.controlStore.FenceExecutionSessions(ctx, task, executionID, reason)
 }
 
-type freshStateModelGrants struct{ fenceCalls int }
-
-func (grants *freshStateModelGrants) FenceExecution(context.Context, modelrelay.Fence, string, bool) error {
-	grants.fenceCalls++
-	return nil
-}
-
 type freshStateStoreTrace struct {
 	cloudworker.Store
 	authorizeErr error
@@ -600,7 +592,6 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 	workerSessions := &freshStateWorkerSessions{
 		cloud: h.cloud, controlStore: NewCloudWorkerControlStore(h.store), objects: objects,
 	}
-	grants := &freshStateModelGrants{}
 	qualification := cloudworker.RuntimeQualification{
 		WorkerProtocolVersion: cloudprotocol.WorkerProtocolVersion, RuntimeContractVersion: cloudprotocol.RuntimeContractVersion,
 		PiRuntimeDigest: plan.Compute.PiRuntimeDigest, PiVersion: "0.83.0",
@@ -631,7 +622,7 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 		Qualifications: cloudworker.ControllerQualificationResolverFunc(func(context.Context, cloudworker.Plan) (cloudworker.RuntimeQualification, error) {
 			return qualification, nil
 		}),
-		AWS: provider, Sessions: workerSessions, ModelGrants: grants, Results: validator,
+		AWS: provider, Sessions: workerSessions, Results: validator,
 		Clock: func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }, PollInterval: time.Millisecond,
 	})
 	if err != nil {
@@ -722,8 +713,8 @@ func TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation(t 
 	}
 	if provider.prepareCalls != 1 || provider.ensureCalls != 1 || provider.observeCalls != 1 || provider.destroyCalls != 1 ||
 		workerSessions.setCalls != 1 || workerSessions.claimCalls != 1 || workerSessions.completeCalls != 1 ||
-		stager.stageCalls != 1 || stager.cleanupCalls != 1 || grants.fenceCalls != 1 || objects.reads != 2 || awsBindingReads < 3 {
-		t.Fatalf("single-worker qualification provider=%+v sessions=%+v stager=%+v grants=%+v object_reads=%d aws_binding_reads=%d",
-			provider, workerSessions, stager, grants, objects.reads, awsBindingReads)
+		stager.stageCalls != 1 || stager.cleanupCalls != 1 || objects.reads != 2 || awsBindingReads < 3 {
+		t.Fatalf("single-worker qualification provider=%+v sessions=%+v stager=%+v object_reads=%d aws_binding_reads=%d",
+			provider, workerSessions, stager, objects.reads, awsBindingReads)
 	}
 }

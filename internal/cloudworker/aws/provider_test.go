@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestPlanAndDispatchAreDeterministicAndNetworkIsClosed(t *testing.T) {
+func TestPlanAndDispatchAreDeterministicAndModelEgressIsHTTPSOnly(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	plan := testPlan(t, now)
 	reordered := plan
@@ -43,11 +43,15 @@ func TestPlanAndDispatchAreDeterministicAndNetworkIsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(policy.Ingress) != 0 || policy.SecurityGroupEnforcesFQDN || policy.FQDNEnforcement != "controlled_tls_proxy" {
+	if len(policy.Ingress) != 0 || policy.SecurityGroupEnforcesFQDN || policy.FQDNEnforcement != "controlled_worker_proxy_plus_direct_model_https" {
 		t.Fatalf("unsafe security-group policy: %+v", policy)
 	}
 	for _, rule := range policy.Egress {
-		if rule.CIDRv4 == "0.0.0.0/0" || (rule.FromPort != 53 && rule.FromPort != 443) {
+		if rule.CIDRv4 == "0.0.0.0/0" &&
+			(rule.Protocol != "tcp" || rule.FromPort != 443 || rule.ToPort != 443) {
+			t.Fatalf("unbounded non-HTTPS egress rule: %+v", rule)
+		}
+		if rule.FromPort != 53 && rule.FromPort != 443 {
 			t.Fatalf("unexpected egress rule: %+v", rule)
 		}
 	}
@@ -104,18 +108,6 @@ func TestProxyAndHostPolicyDriftChangeInfrastructureAndTamperFailsClosed(t *test
 	if kmsDrift.InfrastructureDigest == plan.InfrastructureDigest ||
 		kmsDrift.BootstrapDigest == plan.BootstrapDigest {
 		t.Fatal("artifact KMS drift reused bootstrap or infrastructure authorization")
-	}
-
-	relayTrustDrift := plan
-	relayTrustDrift.ModelRelayTrustBundleSHA256 = testDigest("0")
-	relayTrustDrift.IAMRoleName, relayTrustDrift.InstanceProfileName, relayTrustDrift.BootstrapDigest, relayTrustDrift.InfrastructureDigest = "", "", "", ""
-	relayTrustDrift, err = SealPlan(relayTrustDrift)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if relayTrustDrift.InfrastructureDigest == plan.InfrastructureDigest ||
-		relayTrustDrift.BootstrapDigest == plan.BootstrapDigest {
-		t.Fatal("model relay CA drift reused bootstrap or infrastructure authorization")
 	}
 
 	tampered := plan
@@ -1114,8 +1106,8 @@ func testPlan(t *testing.T, now time.Time) Plan {
 		RootVolumeThroughput: 125, RootKMSKeyARN: "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111",
 		VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0", ControlPlaneEndpoint: "https://control.example.com:443",
 		ControlPlaneServerName: "control.example.com", ControlPlaneTrustBundleSHA256: testDigest("4"),
-		ModelRelayServerName: "api.openai.com", ModelRelayTrustBundleSHA256: testDigest("6"),
-		WorkspaceMode: WorkspaceWrite, ExecutionSHA256: testDigest("5"), TaskSHA256: testDigest("6"),
+		ModelEndpointServerName: "api.openai.com",
+		WorkspaceMode:           WorkspaceWrite, ExecutionSHA256: testDigest("5"), TaskSHA256: testDigest("6"),
 		InputManifestDigest: testDigest("1"), ModelAuthorizationDigest: testDigest("2"), ArtifactBindingDigest: testDigest("3"),
 		S3Grants: []S3ObjectGrant{{Access: S3ReadExactVersion, Bucket: "dirextalk-input", Key: "tasks/input.tar", VersionID: "version-1"},
 			{Access: S3WritePrefix, Bucket: "dirextalk-output", Key: "executions/11111111/"}}, ArtifactRetentionSeconds: 86400,

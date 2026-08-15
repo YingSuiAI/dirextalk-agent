@@ -467,8 +467,11 @@ unconsumed, missing-authority, or still-referenced data is never eligible;
 restart resumes from PostgreSQL state.
 
 The Worker receives no local MCP/Skill/Extension Runner state. It receives only
-the exact runtime task and versioned input manifest, short-lived model relay
-grant, exact artifact S3 prefix, heartbeat deadline, and approved grants.
+the exact runtime task and versioned input manifest, the selected provider API
+key and direct HTTPS base URL, exact artifact S3 prefix, heartbeat deadline,
+and approved grants. Pi receives the key through its provider environment
+variable and calls the model provider directly; Central does not relay model
+traffic.
 Turn inputs use one owner/account-generation/request-bound upload authority for
 images, approved ordinary code/document files, and at most one constrained
 `application/vnd.dirextalk.workspace+tar+gzip` workspace archive. The Agent

@@ -93,24 +93,14 @@ RUN --mount=type=secret,id=dirextalk_outbound_proxy_ca,required=true \
     && grep -q -- '-----BEGIN CERTIFICATE-----' \
         /out/rootfs/usr/local/share/dirextalk-cloud-worker/outbound-proxy-ca.pem
 
-# Pi receives only this relay-specific CA through NODE_EXTRA_CA_CERTS after
-# the Worker has claimed and sealed the exact relay authority. It is never
-# added to system trust and is distinct from the outbound-proxy CA.
-RUN --mount=type=secret,id=dirextalk_model_relay_ca,required=true \
-    install -m 0440 -o 0 -g 65532 /run/secrets/dirextalk_model_relay_ca \
-        /out/rootfs/usr/local/share/dirextalk-cloud-worker/model-relay-ca.pem \
-    && grep -q -- '-----BEGIN CERTIFICATE-----' \
-        /out/rootfs/usr/local/share/dirextalk-cloud-worker/model-relay-ca.pem
-
 RUN DTX_WORKER_DIGEST="$(sha256sum /out/rootfs/usr/local/bin/dirextalk-cloud-worker | awk '{print $1}')" \
     && DTX_EXTENSION_DIGEST="$(sha256sum /out/rootfs/usr/local/lib/dirextalk-cloud-worker/pi/dirextalk-result.ts | awk '{print $1}')" \
     && DTX_HOST_POLICY_DIGEST="$(sha256sum /out/rootfs/usr/local/share/dirextalk-cloud-worker/pi-egress.nft | awk '{print $1}')" \
     && DTX_PROXY_CA_DIGEST="$(sha256sum /out/rootfs/usr/local/share/dirextalk-cloud-worker/outbound-proxy-ca.pem | awk '{print $1}')" \
-    && DTX_RELAY_CA_DIGEST="$(sha256sum /out/rootfs/usr/local/share/dirextalk-cloud-worker/model-relay-ca.pem | awk '{print $1}')" \
     && DTX_PI_DESCRIPTOR="$(printf '{"pi_version":"%s","pi_executable":"/usr/local/lib/dirextalk-cloud-worker/pi/pi","pi_executable_sha256":"%s","result_extension":"/usr/local/lib/dirextalk-cloud-worker/pi/dirextalk-result.ts","result_extension_sha256":"%s"}' "$PI_VERSION" "$PI_EXECUTABLE_SHA256" "$DTX_EXTENSION_DIGEST")" \
     && DTX_PI_DIGEST="$(printf '%s' "$DTX_PI_DESCRIPTOR" | sha256sum | awk '{print $1}')" \
-    && printf '{"schema_version":"dirextalk.agent.cloud-worker-installation/v1","ami_digest":"%s","worker_digest":"%s","pi_digest":"%s","host_network_policy_sha256":"%s","outbound_proxy_trust_bundle_sha256":"%s","model_relay_trust_bundle_sha256":"%s","pi_version":"%s","worker_executable":"/usr/local/bin/dirextalk-cloud-worker","pi_executable":"/usr/local/lib/dirextalk-cloud-worker/pi/pi","pi_executable_sha256":"%s","result_extension":"/usr/local/lib/dirextalk-cloud-worker/pi/dirextalk-result.ts","result_extension_sha256":"%s"}' \
-        "$AMI_DIGEST" "$DTX_WORKER_DIGEST" "$DTX_PI_DIGEST" "$DTX_HOST_POLICY_DIGEST" "$DTX_PROXY_CA_DIGEST" "$DTX_RELAY_CA_DIGEST" "$PI_VERSION" "$PI_EXECUTABLE_SHA256" "$DTX_EXTENSION_DIGEST" \
+    && printf '{"schema_version":"dirextalk.agent.cloud-worker-installation/v1","ami_digest":"%s","worker_digest":"%s","pi_digest":"%s","host_network_policy_sha256":"%s","outbound_proxy_trust_bundle_sha256":"%s","pi_version":"%s","worker_executable":"/usr/local/bin/dirextalk-cloud-worker","pi_executable":"/usr/local/lib/dirextalk-cloud-worker/pi/pi","pi_executable_sha256":"%s","result_extension":"/usr/local/lib/dirextalk-cloud-worker/pi/dirextalk-result.ts","result_extension_sha256":"%s"}' \
+        "$AMI_DIGEST" "$DTX_WORKER_DIGEST" "$DTX_PI_DIGEST" "$DTX_HOST_POLICY_DIGEST" "$DTX_PROXY_CA_DIGEST" "$PI_VERSION" "$PI_EXECUTABLE_SHA256" "$DTX_EXTENSION_DIGEST" \
         > /out/rootfs/usr/local/share/dirextalk-cloud-worker/installation.json \
     && chmod 0444 /out/rootfs/usr/local/share/dirextalk-cloud-worker/installation.json
 

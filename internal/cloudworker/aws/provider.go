@@ -27,7 +27,7 @@ func (request CreateStackRequest) Validate() error {
 	if err != nil || request.Plan.Validate() != nil || request.Intent.Validate(request.Plan) != nil || !request.Identity.Equal(request.Plan.Identity) ||
 		request.InstanceCount != 1 || request.SSMEnabled ||
 		len(request.SecurityGroupPolicy.Ingress) != 0 || request.SecurityGroupPolicy.SecurityGroupEnforcesFQDN ||
-		request.SecurityGroupPolicy.FQDNEnforcement != "controlled_tls_proxy" || request.SecurityGroupPolicy.FQDNPolicyDigest != policy.FQDNPolicyDigest ||
+		request.SecurityGroupPolicy.FQDNEnforcement != "controlled_worker_proxy_plus_direct_model_https" || request.SecurityGroupPolicy.FQDNPolicyDigest != policy.FQDNPolicyDigest ||
 		!equalRules(request.SecurityGroupPolicy.Egress, policy.Egress) || !slices.Equal(request.ExpectedResources, allResourceKinds) ||
 		!containsTags(request.ResourceTags, RequiredTags(request.Identity, request.Plan.Digest, request.Plan.InfrastructureDigest, request.Intent.IntentDigest)) {
 		return ErrInvalid

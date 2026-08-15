@@ -20,38 +20,33 @@ Use only the enabled tools and supplied workspace. Never inspect credential loca
 Call dirextalk_submit_result exactly once as the final action.`
 
 type PiConfig struct {
-	Release                   PiRelease
-	Models                    []QualifiedModel
-	Inputs                    InputResolver
-	Processes                 ProcessRunner
-	Outputs                   OutputCollector
-	StateRoot                 string
-	SearchPath                string
-	OutboundProxyURL          string
-	ModelRelayTrustBundlePath string
-	RuntimeGID                uint32
-	Now                       func() time.Time
+	Release    PiRelease
+	Models     []QualifiedModel
+	Inputs     InputResolver
+	Processes  ProcessRunner
+	Outputs    OutputCollector
+	StateRoot  string
+	SearchPath string
+	RuntimeGID uint32
+	Now        func() time.Time
 }
 
 type PiExecutor struct {
-	release                   PiRelease
-	models                    []QualifiedModel
-	inputs                    InputResolver
-	processes                 ProcessRunner
-	outputs                   OutputCollector
-	stateRoot                 string
-	searchPath                string
-	outboundProxyURL          string
-	modelRelayTrustBundlePath string
-	runtimeGID                uint32
-	now                       func() time.Time
+	release    PiRelease
+	models     []QualifiedModel
+	inputs     InputResolver
+	processes  ProcessRunner
+	outputs    OutputCollector
+	stateRoot  string
+	searchPath string
+	runtimeGID uint32
+	now        func() time.Time
 }
 
 func NewPiExecutor(config PiConfig) (*PiExecutor, error) {
 	if config.Release.verify() != nil || config.Inputs == nil ||
 		config.Processes == nil || !cleanAbsolute(config.StateRoot) ||
-		config.SearchPath != DefaultSearchPath || !validOutboundProxyURL(config.OutboundProxyURL) || config.RuntimeGID == 0 || len(config.Models) == 0 ||
-		config.ModelRelayTrustBundlePath != PiModelRelayTrustBundlePath ||
+		config.SearchPath != DefaultSearchPath || config.RuntimeGID == 0 || len(config.Models) == 0 ||
 		len(config.Models) > 64 {
 		return nil, ErrInvalid
 	}
@@ -79,10 +74,8 @@ func NewPiExecutor(config PiConfig) (*PiExecutor, error) {
 		release: config.Release, models: models, inputs: config.Inputs,
 		processes: config.Processes, outputs: config.Outputs,
 		stateRoot: config.StateRoot, searchPath: config.SearchPath,
-		outboundProxyURL:          config.OutboundProxyURL,
-		modelRelayTrustBundlePath: config.ModelRelayTrustBundlePath,
-		runtimeGID:                config.RuntimeGID,
-		now:                       config.Now,
+		runtimeGID: config.RuntimeGID,
+		now:        config.Now,
 	}, nil
 }
 
@@ -190,10 +183,6 @@ func (executor *PiExecutor) Run(
 			"PI_OFFLINE":          "1", "PI_TELEMETRY": "0",
 			"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
 			"TERM": "dumb", "NO_COLOR": "1",
-			"HTTP_PROXY":          executor.outboundProxyURL,
-			"HTTPS_PROXY":         executor.outboundProxyURL,
-			"NO_PROXY":            "",
-			"NODE_EXTRA_CA_CERTS": executor.modelRelayTrustBundlePath,
 		},
 		SecretEnvironment: map[string][]byte{
 			model.CredentialEnvironment: grant.BearerToken,
@@ -348,8 +337,6 @@ func writePiModelsConfig(configRoot string, task Task) error {
 		api = "openai-completions"
 		compat := map[string]any{"maxTokensField": "max_tokens"}
 		if task.ModelProvider == "deepseek" {
-			// The relay URL intentionally hides the upstream provider, so Pi
-			// cannot infer DeepSeek's Chat Completions compatibility flags.
 			compat["supportsStore"] = false
 			compat["supportsDeveloperRole"] = false
 			compat["supportsReasoningEffort"] = true
@@ -363,8 +350,9 @@ func writePiModelsConfig(configRoot string, task Task) error {
 	config := map[string]any{
 		"providers": map[string]any{
 			task.ModelProvider: map[string]any{
-				"baseUrl": task.ModelRelayBaseURL,
+				"baseUrl": task.ModelBaseURL,
 				"api":     api,
+				"apiKey":  "$" + PiCredentialEnvironment(task.ModelProvider),
 				"models":  []any{model},
 			},
 		},
@@ -389,6 +377,13 @@ func writePiModelsConfig(configRoot string, task Task) error {
 		return ErrExecution
 	}
 	return nil
+}
+
+func PiCredentialEnvironment(provider string) string {
+	if provider == "deepseek" {
+		return "DEEPSEEK_API_KEY"
+	}
+	return "OPENAI_API_KEY"
 }
 
 func piArguments(task Task, resultExtensionPath string) []string {

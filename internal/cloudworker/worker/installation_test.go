@@ -39,8 +39,7 @@ func TestLoadInstallationBindsImagePolicyAndProxyTrust(t *testing.T) {
 	if installation.Release.Executable.Path != fixture.paths.PiExecutable ||
 		installation.Release.ResultExtension.Path != fixture.paths.ResultExtension ||
 		installation.TrustRoots == nil || installation.OutboundProxyRoots == nil ||
-		installation.SystemTrustRoots == nil ||
-		installation.ModelRelayTrustBundlePath != fixture.paths.ModelRelayTrustBundle {
+		installation.SystemTrustRoots == nil {
 		t.Fatalf("installation = %+v", installation)
 	}
 }
@@ -60,13 +59,6 @@ func TestLoadInstallationRejectsPolicyProxyAndPathDrift(t *testing.T) {
 		},
 		"proxy trust manifest": func(t *testing.T, fixture *installationFixture) {
 			fixture.manifest.OutboundProxyTrustBundleSHA256 = installationTestDigest([]byte("other-ca"))
-			fixture.writeManifest(t)
-		},
-		"model relay trust content": func(t *testing.T, fixture *installationFixture) {
-			rewriteInstallationFile(t, fixture.paths.ModelRelayTrustBundle, installationTestCA(t), 0o400)
-		},
-		"model relay trust manifest": func(t *testing.T, fixture *installationFixture) {
-			fixture.manifest.ModelRelayTrustBundleSHA256 = installationTestDigest([]byte("other-relay-ca"))
 			fixture.writeManifest(t)
 		},
 		"policy symlink": func(t *testing.T, fixture *installationFixture) {
@@ -134,7 +126,6 @@ func newInstallationFixture(t *testing.T) installationFixture {
 		Manifest:                 filepath.Join(root, "share", "installation.json"),
 		TrustBundle:              filepath.Join(root, "share", "control-plane-ca.pem"),
 		OutboundProxyTrustBundle: filepath.Join(root, "share", "outbound-proxy-ca.pem"),
-		ModelRelayTrustBundle:    filepath.Join(root, "share", "model-relay-ca.pem"),
 		SystemTrustBundle:        filepath.Join(root, "share", "system-ca.pem"),
 		HostNetworkPolicy:        filepath.Join(root, "share", "pi-egress.nft"),
 		WorkerExecutable:         filepath.Join(root, "bin", "dirextalk-cloud-worker"),
@@ -153,7 +144,6 @@ func newInstallationFixture(t *testing.T) installationFixture {
 	writeInstallationFile(t, paths.HostNetworkPolicy, policyRaw, 0o400)
 	writeInstallationFile(t, paths.TrustBundle, trustRaw, 0o400)
 	writeInstallationFile(t, paths.OutboundProxyTrustBundle, trustRaw, 0o400)
-	writeInstallationFile(t, paths.ModelRelayTrustBundle, trustRaw, 0o400)
 	writeInstallationFile(t, paths.SystemTrustBundle, trustRaw, 0o400)
 	manifest := InstallationManifest{
 		SchemaVersion:                  InstallationSchemaV1,
@@ -161,7 +151,6 @@ func newInstallationFixture(t *testing.T) installationFixture {
 		WorkerDigest:                   installationTestDigest(workerRaw),
 		HostNetworkPolicySHA256:        installationTestDigest(policyRaw),
 		OutboundProxyTrustBundleSHA256: installationTestDigest(trustRaw),
-		ModelRelayTrustBundleSHA256:    installationTestDigest(trustRaw),
 		PiVersion:                      "0.83.0",
 		WorkerExecutable:               paths.WorkerExecutable,
 		PiExecutable:                   paths.PiExecutable,
@@ -199,8 +188,7 @@ func newInstallationFixture(t *testing.T) installationFixture {
 		ControlPlaneEndpoint:          "https://control.example.test:443",
 		ControlPlaneServerName:        "control.example.test",
 		ControlPlaneTrustBundleSHA256: installationTestDigest(trustRaw),
-		ModelRelayServerName:          "model-relay.example.test",
-		ModelRelayTrustBundleSHA256:   manifest.ModelRelayTrustBundleSHA256,
+		ModelEndpointServerName:       "api.example.test",
 		OutboundProxyURL:              proxyURL,
 		OutboundProxyServerName:       proxyServerName,
 		OutboundProxyTrustSHA256:      manifest.OutboundProxyTrustBundleSHA256,

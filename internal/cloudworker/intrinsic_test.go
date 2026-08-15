@@ -129,7 +129,6 @@ func intrinsicDefaults(now time.Time) Defaults {
 		NetworkPolicy:  NetworkPolicy{DNSResolverCIDRs: []string{"10.0.0.2/32"}, TLSProxyCIDRs: []string{"10.0.0.3/32"}, AllowedFQDNs: []string{"worker.example.test", "relay.example.test"}, OutboundProxyURL: "https://proxy.example.test:443", OutboundProxyServerName: "proxy.example.test", OutboundProxyTrustBundleSHA256: digestValue("proxy-ca")},
 		ArtifactBucket: "dirextalk-worker-artifacts", ArtifactBasePrefix: "executions/", ArtifactKMSKeyARN: "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111", ArtifactVersioned: true,
 		WorkerBootstrap: WorkerBootstrap{Protocol: WorkerControlProtocolV1, Endpoint: "https://worker.example.test:8443", TLSServerName: "worker.example.test", TrustBundleDigest: digestValue("worker-ca")},
-		ModelRelay:      ModelRelayBinding{Endpoint: "https://relay.example.test/v1", TLSServerName: "relay.example.test", TrustBundleDigest: digestValue("relay-ca")},
 		Limits:          Limits{MaxRuntimeSeconds: 3600, MaxOutputBytes: 1 << 20}, ArtifactRetentionSeconds: 3600,
 		QuoteAmountMicros: 1000, MaximumAuthorizedMicros: 2000, QuoteTTL: 5 * time.Minute,
 	}

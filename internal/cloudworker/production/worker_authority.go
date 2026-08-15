@@ -9,9 +9,9 @@ import (
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
-	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/modelrelay"
 	cloudprotocol "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/protocol"
 	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
+	cloudruntime "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 )
@@ -27,9 +27,8 @@ type resumeContextReader interface {
 	GetResumeContext(context.Context, coretask.Task) (cloudworker.ResumeContext, error)
 }
 
-type modelGrantIssuer interface {
-	Activate(context.Context, modelrelay.Activation) (modelrelay.IssuedGrant, error)
-	FenceExecution(context.Context, modelrelay.Fence, string, bool) error
+type modelCredentialResolver interface {
+	ResolveWorkerCredential(context.Context, cloudworker.ModelAuthorization) ([]byte, error)
 }
 
 // WorkerAuthority issues only claim material. Challenge and lease authority
@@ -38,13 +37,13 @@ type modelGrantIssuer interface {
 type WorkerAuthority struct {
 	tasks             currentTaskReader
 	cloud             resumeContextReader
-	relay             modelGrantIssuer
+	credentials       modelCredentialResolver
 	heartbeatInterval time.Duration
 	now               func() time.Time
 }
 
-func NewWorkerAuthority(tasks currentTaskReader, cloud resumeContextReader, relay modelGrantIssuer, heartbeatInterval time.Duration, clocks ...func() time.Time) (*WorkerAuthority, error) {
-	if tasks == nil || cloud == nil || relay == nil {
+func NewWorkerAuthority(tasks currentTaskReader, cloud resumeContextReader, credentials modelCredentialResolver, heartbeatInterval time.Duration, clocks ...func() time.Time) (*WorkerAuthority, error) {
+	if tasks == nil || cloud == nil || credentials == nil {
 		return nil, cloudworker.ErrInvalid
 	}
 	if heartbeatInterval == 0 {
@@ -57,7 +56,7 @@ func NewWorkerAuthority(tasks currentTaskReader, cloud resumeContextReader, rela
 	if len(clocks) > 0 && clocks[0] != nil {
 		clock = clocks[0]
 	}
-	return &WorkerAuthority{tasks: tasks, cloud: cloud, relay: relay, heartbeatInterval: heartbeatInterval, now: clock}, nil
+	return &WorkerAuthority{tasks: tasks, cloud: cloud, credentials: credentials, heartbeatInterval: heartbeatInterval, now: clock}, nil
 }
 
 func (authority *WorkerAuthority) IssueWorkerClaimMaterial(ctx context.Context, session control.Session, requested cloudprotocol.Versions) (rpcapi.WorkerClaimMaterial, error) {
@@ -94,47 +93,25 @@ func (authority *WorkerAuthority) IssueWorkerClaimMaterial(ctx context.Context, 
 	if material.ProtocolVersions != requested {
 		return rpcapi.WorkerClaimMaterial{}, control.ErrIdentityRejected
 	}
-	profile := modelrelay.ProfileReference{
-		OwnerID: resume.Plan.OwnerID, AccountGeneration: resume.Plan.AccountGeneration,
-		ProfileID:         resume.Plan.ModelAuthorization.ModelProfileID,
-		ProfileRevision:   resume.Plan.ModelAuthorization.ModelProfileRevision,
-		CredentialVersion: resume.Plan.ModelAuthorization.CredentialVersion,
-		Provider:          resume.Plan.ModelAuthorization.Provider, Interface: resume.Plan.ModelAuthorization.Interface,
-		Model:                   resume.Plan.ModelAuthorization.Model,
-		MaximumOutputTokens:     resume.Plan.ModelAuthorization.MaximumOutputTokens,
-		CredentialBindingDigest: resume.Plan.ModelAuthorization.CredentialBindingDigest,
-		ModelBindingDigest:      resume.Plan.ModelAuthorization.BindingDigest,
-	}
-	relayFence := modelrelay.Fence{
-		OwnerID: resume.Plan.OwnerID, AccountGeneration: resume.Plan.AccountGeneration,
-		ExecutionID: session.Fence.ExecutionID, TaskID: session.Fence.TaskID,
-		Attempt: session.Fence.Attempt, LeaseEpoch: session.Fence.LeaseEpoch,
-		SessionID: session.SessionID,
-	}
-	issued, err := authority.relay.Activate(ctx, modelrelay.Activation{
-		Fence: relayFence, Profile: profile,
-		AudienceDigest:     material.Task.ModelGrantAudienceSHA256,
-		LimitDigest:        material.Task.ModelGrantLimitSHA256,
-		RelayURL:           resume.Plan.ModelRelay.Endpoint,
-		RelayBindingDigest: resume.Plan.ModelRelay.BindingDigest,
-		MaxTokens:          resume.Plan.Limits.MaxTokens,
-		// Grant and Worker execution end at the same second. Letting the grant
-		// cross the smallest hard deadline would silently extend authorization.
-		ExpiresAt: deadline,
-	})
+	credential, err := authority.credentials.ResolveWorkerCredential(
+		ctx, resume.Plan.ModelAuthorization,
+	)
 	if err != nil {
 		return rpcapi.WorkerClaimMaterial{}, err
 	}
-	defer issued.Destroy()
-	grant, err := issued.RuntimeModelGrant(material.Task.MaxOutputTokens)
-	if err != nil {
-		_ = authority.relay.FenceExecution(ctx, relayFence, "claim_material_invalid", false)
-		return rpcapi.WorkerClaimMaterial{}, err
+	defer clear(credential)
+	grant := cloudruntime.ModelGrant{
+		GrantID: session.SessionID, BearerToken: bytes.Clone(credential),
+		ModelBindingSHA256: material.Task.ModelBindingSHA256,
+		AudienceSHA256:     material.Task.ModelGrantAudienceSHA256,
+		ExpiresAtUnix:      deadline.Unix(), LimitSHA256: material.Task.ModelGrantLimitSHA256,
+		BaseURL:               material.Task.ModelBaseURL,
+		EndpointBindingSHA256: material.Task.ModelEndpointBindingSHA256,
+		MaxOutputTokens:       material.Task.MaxOutputTokens,
 	}
 	scope := cloudresult.Scope{Bucket: resume.Plan.ArtifactGrant.Bucket, KeyPrefix: resume.Plan.ArtifactGrant.KeyPrefix}
 	if scope.Validate() != nil || time.Unix(grant.ExpiresAtUnix, 0).UTC() != deadline {
 		grant.Destroy()
-		_ = authority.relay.FenceExecution(ctx, relayFence, "claim_material_invalid", false)
 		return rpcapi.WorkerClaimMaterial{}, cloudworker.ErrStaleAuthorization
 	}
 	return rpcapi.WorkerClaimMaterial{
@@ -278,7 +255,7 @@ func workerHardDeadline(resume cloudworker.ResumeContext, task coretask.Task, no
 	deadline = deadline.Truncate(time.Second)
 	if deadline.After(runtimeDeadline) || deadline.After(destroyDeadline) || deadline.After(taskDeadline) ||
 		!deadline.After(now.UTC().Add(2*heartbeat)) ||
-		!deadline.After(now.UTC().Add(modelrelay.MinimumGrantLifetime)) {
+		!deadline.After(now.UTC().Add(cloudruntime.MinimumModelGrantLifetime)) {
 		return time.Time{}, cloudworker.ErrStaleAuthorization
 	}
 	return deadline, nil

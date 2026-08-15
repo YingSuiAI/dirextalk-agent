@@ -39,6 +39,15 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 			SHA256: task.WorkspaceSHA256, Isolated: true,
 		},
 	}, process, collector)
+	if err := task.Validate(); err != nil {
+		t.Fatalf("task fixture: %v", err)
+	}
+	if err := executor.ValidateTask(task); err != nil {
+		t.Fatalf("qualified model fixture: %v", err)
+	}
+	if err := grant.ValidateFor(task, executor.now()); err != nil {
+		t.Fatalf("provider credential fixture: %v", err)
+	}
 
 	result, err := executor.Run(context.Background(), task, grant)
 	if err != nil {
@@ -65,13 +74,13 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 		process.spec.StdoutPolicy != ProcessStdoutPiEventsV1 {
 		t.Fatalf("process spec=%+v", process.spec)
 	}
-	if process.spec.Environment["HTTP_PROXY"] != PiLoopbackProxyURL ||
-		process.spec.Environment["HTTPS_PROXY"] != PiLoopbackProxyURL ||
-		process.spec.Environment["NO_PROXY"] != "" {
-		t.Fatalf("Pi proxy environment escaped loopback bridge: %+v", process.spec.Environment)
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"} {
+		if _, exists := process.spec.Environment[name]; exists {
+			t.Fatalf("Pi model call is still proxied through %s: %+v", name, process.spec.Environment)
+		}
 	}
-	if process.spec.Environment["NODE_EXTRA_CA_CERTS"] != PiModelRelayTrustBundlePath {
-		t.Fatalf("Pi did not receive only the model-relay trust bundle: %+v", process.spec.Environment)
+	if _, exists := process.spec.Environment["NODE_EXTRA_CA_CERTS"]; exists {
+		t.Fatalf("Pi still depends on a Central model trust bundle: %+v", process.spec.Environment)
 	}
 	for _, value := range process.spec.Environment {
 		if strings.Contains(value, "outbound-proxy-ca") || strings.Contains(value, "control-plane-ca") {
@@ -114,6 +123,7 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 		Providers map[string]struct {
 			BaseURL string `json:"baseUrl"`
 			API     string `json:"api"`
+			APIKey  string `json:"apiKey"`
 			Models  []struct {
 				ID            string `json:"id"`
 				Reasoning     bool   `json:"reasoning"`
@@ -135,7 +145,8 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 		t.Fatalf("models config=%q: %v", process.modelsConfig, err)
 	}
 	provider := config.Providers[task.ModelProvider]
-	if provider.BaseURL != task.ModelRelayBaseURL || provider.API != "openai-completions" ||
+	if provider.BaseURL != task.ModelBaseURL || provider.API != "openai-completions" ||
+		provider.APIKey != "$DEEPSEEK_API_KEY" ||
 		len(provider.Models) != 1 || provider.Models[0].ID != task.Model ||
 		!provider.Models[0].Reasoning || provider.Models[0].MaxTokens != task.MaxOutputTokens ||
 		provider.Models[0].ContextWindow != task.ModelContextWindow ||
@@ -178,9 +189,9 @@ func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
 			directory := t.TempDir()
 			task := Task{
 				ModelProvider: test.provider, Model: test.model,
-				ModelInterface:    test.modelInterface,
-				ModelRelayBaseURL: "https://model-relay.dirextalk.invalid/v1",
-				MaxOutputTokens:   4096, ModelContextWindow: 65536,
+				ModelInterface:  test.modelInterface,
+				ModelBaseURL:    "https://api.dirextalk.invalid/v1",
+				MaxOutputTokens: 4096, ModelContextWindow: 65536,
 			}
 			if err := writePiModelsConfig(directory, task); err != nil {
 				t.Fatal(err)
@@ -192,6 +203,7 @@ func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
 			var config struct {
 				Providers map[string]struct {
 					API    string `json:"api"`
+					APIKey string `json:"apiKey"`
 					Models []struct {
 						ID            string `json:"id"`
 						Reasoning     bool   `json:"reasoning"`
@@ -213,7 +225,9 @@ func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
 				t.Fatal(err)
 			}
 			provider := config.Providers[test.provider]
-			if provider.API != test.api || len(provider.Models) != 1 ||
+			if provider.API != test.api ||
+				provider.APIKey != "$"+PiCredentialEnvironment(test.provider) ||
+				len(provider.Models) != 1 ||
 				provider.Models[0].ID != test.model || !provider.Models[0].Reasoning ||
 				provider.Models[0].MaxTokens != task.MaxOutputTokens ||
 				provider.Models[0].ContextWindow != task.ModelContextWindow ||
@@ -369,7 +383,7 @@ func TestPiRunnerAcceptsCumulativeUsageAcrossIndividuallyBoundedModelCalls(t *te
 	}
 }
 
-func TestPiRunnerRequiresShortLivedBoundRelayGrant(t *testing.T) {
+func TestPiRunnerRequiresBoundTemporaryProviderCredential(t *testing.T) {
 	t.Parallel()
 	contextJSON := []byte(`{"scope":"approved"}`)
 	task := validTask(contextJSON, WorkspaceNone)
@@ -377,9 +391,6 @@ func TestPiRunnerRequiresShortLivedBoundRelayGrant(t *testing.T) {
 		name   string
 		mutate func(*Task, *ModelGrant)
 	}{
-		{name: "long_lived_provider_key", mutate: func(_ *Task, grant *ModelGrant) {
-			grant.BearerToken = []byte("sk-abcdefghijklmnopqrstuvwxyz1234567890")
-		}},
 		{name: "audience_drift", mutate: func(_ *Task, grant *ModelGrant) {
 			grant.AudienceSHA256 = strings.Repeat("e", 64)
 		}},
@@ -388,12 +399,6 @@ func TestPiRunnerRequiresShortLivedBoundRelayGrant(t *testing.T) {
 		}},
 		{name: "expired", mutate: func(_ *Task, grant *ModelGrant) {
 			grant.ExpiresAtUnix = time.Now().UTC().Add(time.Second).Unix()
-		}},
-		{name: "public_provider_endpoint", mutate: func(task *Task, grant *ModelGrant) {
-			task.ModelRelayBaseURL = "https://api.deepseek.com/v1"
-			digest := sha256.Sum256([]byte(task.ModelRelayBaseURL))
-			task.ModelRelayEndpointSHA256 = hex.EncodeToString(digest[:])
-			grant.RelayBaseURL = task.ModelRelayBaseURL
 		}},
 	} {
 		test := test
@@ -405,9 +410,26 @@ func TestPiRunnerRequiresShortLivedBoundRelayGrant(t *testing.T) {
 			if candidate.Validate() == nil && grant.ValidateFor(
 				candidate, time.Now().UTC(),
 			) == nil {
-				t.Fatal("unsafe model relay grant was accepted")
+				t.Fatal("unbound or expired provider credential was accepted")
 			}
 		})
+	}
+}
+
+func TestPiRunnerAcceptsDirectProviderKeyAndEndpoint(t *testing.T) {
+	t.Parallel()
+	task := validTask([]byte(`{"scope":"approved"}`), WorkspaceNone)
+	task.ModelBaseURL = "https://api.deepseek.com"
+	digest := sha256.Sum256([]byte(task.ModelBaseURL))
+	task.ModelEndpointSHA256 = hex.EncodeToString(digest[:])
+	grant := validModelGrant(task)
+	grant.BearerToken = []byte("sk-direct-provider-key")
+	grant.BaseURL = task.ModelBaseURL
+	if err := task.Validate(); err != nil {
+		t.Fatalf("direct provider task: %v", err)
+	}
+	if err := grant.ValidateFor(task, time.Now().UTC()); err != nil {
+		t.Fatalf("direct provider credential: %v", err)
 	}
 }
 
@@ -595,7 +617,11 @@ func newTestExecutor(
 	task.ResultExtensionSHA256 = extensionDigest
 	// The caller's task is passed by value, so pins must already be reflected
 	// in it. All fixtures use the deterministic file contents above.
-	executor, err := NewPiExecutor(PiConfig{
+	stateRoot := t.TempDir()
+	if err := os.Chmod(stateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := PiConfig{
 		Release: PiRelease{
 			Version:         task.PiVersion,
 			Executable:      PinnedFile{Path: binaryPath, SHA256: binaryDigest},
@@ -605,16 +631,15 @@ func newTestExecutor(
 			ProfileID: task.ModelProfileID, Provider: task.ModelProvider,
 			Model: task.Model, Interface: task.ModelInterface,
 			CredentialEnvironment: "DEEPSEEK_API_KEY",
-			RelayBaseURL:          task.ModelRelayBaseURL,
-			RelayEndpointSHA256:   task.ModelRelayEndpointSHA256,
+			BaseURL:               task.ModelBaseURL,
+			EndpointSHA256:        task.ModelEndpointSHA256,
 			MaximumOutputTokens:   4096,
 		}},
 		Inputs: &fakeResolver{inputs: inputs}, Processes: process, Outputs: collector,
-		StateRoot: t.TempDir(), SearchPath: DefaultSearchPath,
-		OutboundProxyURL:          PiLoopbackProxyURL,
-		ModelRelayTrustBundlePath: PiModelRelayTrustBundlePath,
-		RuntimeGID:                uint32(os.Getgid()),
-	})
+		StateRoot: stateRoot, SearchPath: DefaultSearchPath,
+		RuntimeGID: uint32(os.Getgid()),
+	}
+	executor, err := NewPiExecutor(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -641,14 +666,14 @@ func validTask(contextJSON []byte, mode WorkspaceMode) Task {
 		CredentialVersion: 5, ModelBindingSHA256: strings.Repeat("b", 64),
 		ModelGrantAudienceSHA256: strings.Repeat("c", 64),
 		ModelGrantLimitSHA256:    strings.Repeat("d", 64),
-		ModelRelayBaseURL:        "https://model-relay.dirextalk.invalid/v1",
+		ModelBaseURL:             "https://api.deepseek.com",
 		MaxOutputTokens:          777,
 		ModelContextWindow:       65536,
 		MaxOutputBytes:           MaxResultBytes,
 	}
-	relayDigest := sha256.Sum256([]byte(task.ModelRelayBaseURL))
-	task.ModelRelayEndpointSHA256 = hex.EncodeToString(relayDigest[:])
-	task.ModelRelayBindingSHA256 = strings.Repeat("e", 64)
+	endpointDigest := sha256.Sum256([]byte(task.ModelBaseURL))
+	task.ModelEndpointSHA256 = hex.EncodeToString(endpointDigest[:])
+	task.ModelEndpointBindingSHA256 = strings.Repeat("e", 64)
 	if mode != WorkspaceNone {
 		task.WorkspaceSHA256 = task.InputManifestSHA256
 	}
@@ -657,15 +682,15 @@ func validTask(contextJSON []byte, mode WorkspaceMode) Task {
 
 func validModelGrant(task Task) ModelGrant {
 	return ModelGrant{
-		GrantID:            "44444444-4444-4444-8444-444444444444",
-		BearerToken:        []byte("cwmg1_abcdefghijklmnopqrstuvwxyzABCDEFGH"),
-		ModelBindingSHA256: task.ModelBindingSHA256,
-		AudienceSHA256:     task.ModelGrantAudienceSHA256,
-		ExpiresAtUnix:      time.Now().UTC().Add(10 * time.Minute).Unix(),
-		LimitSHA256:        task.ModelGrantLimitSHA256,
-		RelayBaseURL:       task.ModelRelayBaseURL,
-		RelayBindingSHA256: task.ModelRelayBindingSHA256,
-		MaxOutputTokens:    task.MaxOutputTokens,
+		GrantID:               "44444444-4444-4444-8444-444444444444",
+		BearerToken:           []byte("cwmg1_abcdefghijklmnopqrstuvwxyzABCDEFGH"),
+		ModelBindingSHA256:    task.ModelBindingSHA256,
+		AudienceSHA256:        task.ModelGrantAudienceSHA256,
+		ExpiresAtUnix:         time.Now().UTC().Add(10 * time.Minute).Unix(),
+		LimitSHA256:           task.ModelGrantLimitSHA256,
+		BaseURL:               task.ModelBaseURL,
+		EndpointBindingSHA256: task.ModelEndpointBindingSHA256,
+		MaxOutputTokens:       task.MaxOutputTokens,
 	}
 }
 

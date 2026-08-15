@@ -66,11 +66,13 @@ Every execution owns exactly one EC2 instance, one Worker process, and one root
 Pi process tree. Pi may invoke ordinary approved tools and dispatch any number
 of pinned-image child Agents inside that task tree. The Worker does not load
 the user's local MCP installations, Skills, Extension Runner, local sandbox
-credentials, or Agent database. It receives
-only a short-lived model relay grant, exact versioned input objects, its exact
-artifact prefix, and the approved network/secret grant descriptors.
-The configured private Model Relay endpoint is an exact HTTPS base URL whose
-path is `/v1`; startup rejects a bare origin, encoded path, or trailing slash.
+credentials, or Agent database. It receives the selected provider's API key,
+the exact provider HTTPS base URL and model limits, exact versioned input
+objects, its artifact prefix, and the approved network/secret grant
+descriptors. Pi reads the API key from `OPENAI_API_KEY` or
+`DEEPSEEK_API_KEY` and calls the provider directly; Central does not proxy or
+relay model traffic. The task-local `models.json` contains the selected
+profile's exact base URL, model, context window, and per-request output limit.
 
 Workspace modes are closed:
 
@@ -166,7 +168,7 @@ token limit computed before its authorization digest and quote. It is the
 minimum of the server Cloud Worker limit, a positive exact-profile output
 limit, and Pi's qualified provider-request ceiling of 384 Ki tokens, and it
 must be at least 512 tokens. The same value is priced and then propagated
-unchanged through the runtime task, Model Relay grant, and Pi model override.
+unchanged through the runtime task and Pi model configuration.
 
 Public projections are explicit allow-lists. They omit AWS credential IDs,
 raw objectives, user-prompt and private model-binding digests, exact S3
@@ -213,7 +215,7 @@ only as digests; heartbeat sequence and terminal calls are idempotent and
 reject replay, cancellation, and stale leases.
 
 Claim returns the exact runtime task, immutable input manifest, exact artifact
-scope, short-lived model relay grant, heartbeat interval, and not-after time.
+scope, the selected provider API key, heartbeat interval, and not-after time.
 The immutable AMI qualification is the sole release record for the current
 `worker_protocol_version=dirextalk.agent.cloud-worker-control/v1` and
 `runtime_contract_version=dirextalk.agent.ephemeral-pi-runtime/v2`. The Worker
@@ -228,23 +230,16 @@ maximum output tokens. Central reads both values from the immutable execution
 snapshot and includes them in the model authorization and task digest. The Pi
 model configuration receives those exact limits. Pi's native semantic
 auto-compaction remains enabled and uses the active model's context window to
-compact near its boundary; after a provider overflow it may compact and retry
-once. This is Pi's own working-context decision, not a Central-generated summary
-or a cumulative token budget. Before each provider request, the result extension
-uses Pi's model-neutral estimator, a conservative UTF-8 byte upper bound, and the
-actual active system/tool overhead only as a final transport guard. It can bound
-oversized tool output and older length-stopped assistant text while preserving
-the original user objective, recent working state, tool call/result identities,
-and the original tool-call arguments. The final provider payload is checked
-against the same authorized model/output limits and the relay's 2 MiB transport
-limit. If the guarded request still cannot fit, Pi aborts the turn instead of
-sending an oversized request. Historical v1
+compact near its boundary. This is Pi's own working-context decision, not a
+Central-generated summary or a cumulative token budget. The Dirextalk result
+extension does not rewrite, estimate, truncate, or proxy model requests; it
+only registers the final-result tool and asks Pi to continue the same task
+when a provider stops one turn at its per-request output limit. Historical v1
 authorizations remain readable for conversation, artifact history, result
 recovery, and cleanup of an already-started dispatch, but a
 confirmation becomes stale before queueing and a previously confirmed task is
 rejected before begin authority can be created. The Worker cannot infer,
-enlarge, or substitute either model limit, and an oversized relay request fails
-as `context_request_too_large` before model-budget reservation.
+enlarge, or substitute either model limit.
 Each model request is bounded by the selected model profile's context and
 output limits. Current Plans have no cumulative token allowance: Pi may keep
 working and may continue a length-stopped turn until the execution deadline,

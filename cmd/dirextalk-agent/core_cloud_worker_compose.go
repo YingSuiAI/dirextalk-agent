@@ -7,10 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +16,6 @@ import (
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/controlserver"
-	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/modelrelay"
 	cloudproduction "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/production"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
@@ -39,7 +35,6 @@ type coreCloudWorkerComposition struct {
 	outboxStore   cloudworker.CompletionOutboxStore
 
 	workerControl *controlserver.Server
-	modelRelay    *cloudWorkerModelRelayServer
 	reaper        *cloudWorkerReaperLoop
 	retention     *cloudworker.ArtifactRetentionCleaner
 	outputHistory *cloudworker.OutputHistoryCleaner
@@ -110,7 +105,6 @@ func composeCoreCloudWorker(
 			Protocol: cloudworker.WorkerControlProtocolV1, Endpoint: worker.WorkerControlEndpoint,
 			TLSServerName: worker.WorkerControlServerName, TrustBundleDigest: worker.WorkerControlTrustSHA256,
 		},
-		ModelRelay:    cloudworker.ModelRelayBinding{Endpoint: worker.ModelRelayEndpoint, TLSServerName: worker.ModelRelayServerName, TrustBundleDigest: worker.ModelRelayTrustSHA256},
 		Limits:        cloudworker.Limits{MaxRuntimeSeconds: uint64(worker.MaxRuntime / time.Second), MaxOutputBytes: worker.MaxOutputBytes},
 		NetworkGrants: append([]string(nil), worker.AllowedFQDNs...), ArtifactRetentionSeconds: uint64(worker.ArtifactRetention / time.Second),
 		QuoteAmountMicros: 0, MaximumAuthorizedMicros: worker.AbsoluteHardLimitMicros, QuoteTTL: worker.QuoteTTL,
@@ -166,12 +160,8 @@ func composeCoreCloudWorker(
 	if err != nil {
 		return nil, fmt.Errorf("initialize Cloud Worker output cleanup: %w", err)
 	}
-	relayStore, err := modelrelay.NewPostgresStore(store.Pool())
-	if err != nil {
-		return nil, fmt.Errorf("initialize Cloud Worker Model Relay store: %w", err)
-	}
 	readyCtx, cancelReady := context.WithTimeout(ctx, 10*time.Second)
-	err = errors.Join(awsLedger.Ready(readyCtx), stagingLedger.Ready(readyCtx), outputLedger.Ready(readyCtx), relayStore.Ready(readyCtx), cloudStore.ArtifactRetentionReady(readyCtx))
+	err = errors.Join(awsLedger.Ready(readyCtx), stagingLedger.Ready(readyCtx), outputLedger.Ready(readyCtx), cloudStore.ArtifactRetentionReady(readyCtx))
 	cancelReady()
 	if err != nil {
 		return nil, fmt.Errorf("qualify Cloud Worker PostgreSQL authorities: %w", err)
@@ -189,24 +179,6 @@ func composeCoreCloudWorker(
 	if err != nil {
 		return nil, fmt.Errorf("initialize Cloud Worker exact model resolver: %w", err)
 	}
-	providerTransport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		return nil, fmt.Errorf("initialize Cloud Worker Model Relay transport")
-	}
-	providerTransport = providerTransport.Clone()
-	providerTransport.Proxy = nil
-	providerTransport.DisableCompression = true
-	providerTransport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	providerHTTP := &http.Client{Transport: providerTransport, Timeout: 2 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	modelBackend, err := modelrelay.NewHTTPBackend(providerHTTP)
-	if err != nil {
-		return nil, fmt.Errorf("initialize Cloud Worker Model Relay backend: %w", err)
-	}
-	relay, err := modelrelay.NewService(relayStore, modelResolver, modelResolver, modelBackend)
-	if err != nil {
-		return nil, fmt.Errorf("initialize Cloud Worker Model Relay: %w", err)
-	}
-
 	identityEvidence, err := control.NewRevalidatingIdentityEvidenceReader(awsLedger, awsClient, time.Now)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Cloud Worker identity evidence: %w", err)
@@ -228,7 +200,7 @@ func composeCoreCloudWorker(
 	if err != nil {
 		return nil, fmt.Errorf("initialize Cloud Worker control domain: %w", err)
 	}
-	workerAuthority, err := cloudproduction.NewWorkerAuthority(tasks, cloudStore, relay, worker.WorkerHeartbeatInterval)
+	workerAuthority, err := cloudproduction.NewWorkerAuthority(tasks, cloudStore, modelResolver, worker.WorkerHeartbeatInterval)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Cloud Worker claim authority: %w", err)
 	}
@@ -246,11 +218,6 @@ func composeCoreCloudWorker(
 	if err != nil {
 		return nil, fmt.Errorf("initialize Cloud Worker private control listener: %w", err)
 	}
-	modelRelayServer, err := newCloudWorkerModelRelayServer(worker.ModelRelayListenAddress, worker.ModelRelayServerName, worker.ModelRelayTLSCertFile, worker.ModelRelayTLSKeyFile, relay)
-	if err != nil {
-		return nil, fmt.Errorf("initialize Cloud Worker private model listener: %w", err)
-	}
-
 	resultReaders := cloudWorkerResultReaderRouter{factory: sdkFactory}
 	results, err := cloudworker.NewResultValidatorFactory(resultReaders)
 	if err != nil {
@@ -269,7 +236,7 @@ func composeCoreCloudWorker(
 		Store: cloudStore, Quoter: quoter, BaseLimits: defaults.Limits, AWSBindings: credentialAuthority, ModelAuthorizations: modelResolver,
 		ArtifactReadiness: artifactReadiness,
 		Stager:            stager, Outputs: outputs, Qualifications: qualification,
-		AWS: provider, Sessions: controlStore, ModelGrants: relay, Results: results,
+		AWS: provider, Sessions: controlStore, Results: results,
 		PollInterval: worker.ControllerPollInterval, WorkerHeartbeatStaleAfter: 3 * worker.WorkerHeartbeatInterval,
 	})
 	if err != nil {
@@ -295,8 +262,8 @@ func composeCoreCloudWorker(
 	}
 	return &coreCloudWorkerComposition{
 		domain: domain, intrinsic: intrinsic, executionPort: executionPort, taskHandler: controller.Handler(), outboxStore: cloudStore,
-		workerControl: workerControl, modelRelay: modelRelayServer,
-		reaper: newCloudWorkerReaperLoop(reaperDomain, worker.ReaperInterval), retention: retention,
+		workerControl: workerControl,
+		reaper:        newCloudWorkerReaperLoop(reaperDomain, worker.ReaperInterval), retention: retention,
 		outputHistory: outputHistory,
 	}, nil
 }
@@ -326,7 +293,7 @@ func (composition *coreCloudWorkerComposition) BindCompletion(client *client.Cli
 }
 
 func (composition *coreCloudWorkerComposition) StartPrivate() error {
-	if composition == nil || composition.workerControl == nil || composition.modelRelay == nil || composition.completion == nil {
+	if composition == nil || composition.workerControl == nil || composition.completion == nil {
 		return cloudworker.ErrInvalid
 	}
 	composition.mu.Lock()
@@ -335,12 +302,6 @@ func (composition *coreCloudWorkerComposition) StartPrivate() error {
 		return cloudworker.ErrConflict
 	}
 	if err := composition.workerControl.Start(); err != nil {
-		return err
-	}
-	if err := composition.modelRelay.Start(); err != nil {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = composition.workerControl.Stop(stopCtx)
-		cancel()
 		return err
 	}
 	composition.started = true
@@ -359,7 +320,7 @@ func (composition *coreCloudWorkerComposition) StopPrivate(ctx context.Context) 
 	}
 	composition.stopped = true
 	composition.mu.Unlock()
-	return errors.Join(composition.modelRelay.Stop(ctx), composition.workerControl.Stop(ctx))
+	return composition.workerControl.Stop(ctx)
 }
 
 func (composition *coreCloudWorkerComposition) Cleaners() []coreLifecycleCleaner {
@@ -396,67 +357,6 @@ func (resolver fixedCloudWorkerOwnerResolver) ResolveCloudWorkerOwner(ctx contex
 		return cloudworker.IntrinsicOwnerContext{}, cloudworker.ErrStaleAuthorization
 	}
 	return owner, nil
-}
-
-type cloudWorkerModelRelayServer struct {
-	address string
-	tls     *tls.Config
-	server  *http.Server
-
-	mu       sync.Mutex
-	listener net.Listener
-	started  bool
-}
-
-func newCloudWorkerModelRelayServer(address, serverName, certFile, keyFile string, handler http.Handler) (*cloudWorkerModelRelayServer, error) {
-	address, serverName = strings.TrimSpace(address), strings.TrimSpace(serverName)
-	if address == "" || serverName == "" || handler == nil {
-		return nil, cloudworker.ErrInvalid
-	}
-	identity, err := loadCloudWorkerTLSIdentity(certFile, keyFile, serverName)
-	if err != nil {
-		return nil, err
-	}
-	tlsConfig := &tls.Config{Certificates: []tls.Certificate{identity}, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13, NextProtos: []string{"http/1.1"}, SessionTicketsDisabled: true}
-	server := &http.Server{Handler: handler, TLSConfig: tlsConfig, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 2 * time.Minute, WriteTimeout: 2 * time.Minute, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
-	return &cloudWorkerModelRelayServer{address: address, tls: tlsConfig, server: server}, nil
-}
-
-func (server *cloudWorkerModelRelayServer) Start() error {
-	if server == nil || server.server == nil || server.tls == nil {
-		return cloudworker.ErrInvalid
-	}
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	if server.started {
-		return cloudworker.ErrConflict
-	}
-	listener, err := net.Listen("tcp", server.address)
-	if err != nil {
-		return err
-	}
-	server.listener, server.started = listener, true
-	tlsListener := tls.NewListener(listener, server.tls.Clone())
-	go func() {
-		if err := server.server.Serve(tlsListener); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-			slog.Error("Cloud Worker Model Relay stopped", "error", err)
-		}
-	}()
-	return nil
-}
-
-func (server *cloudWorkerModelRelayServer) Stop(ctx context.Context) error {
-	if server == nil || server.server == nil || ctx == nil {
-		return cloudworker.ErrInvalid
-	}
-	server.mu.Lock()
-	started := server.started
-	server.started = false
-	server.mu.Unlock()
-	if !started {
-		return nil
-	}
-	return server.server.Shutdown(ctx)
 }
 
 func loadCloudWorkerTLSIdentity(certFile, keyFile, serverName string) (tls.Certificate, error) {

@@ -23,7 +23,7 @@ func TestOutboundProxyDialsOnlySealedProxyAndConnectsExactTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := "model-relay.example.test:443"
+	target := "api.example.test:443"
 	serverErr := make(chan error, 1)
 	dialed := make(chan string, 1)
 	proxy.dialProxyTLS = func(

@@ -126,7 +126,7 @@ func (client *Client) ObserveGraph(ctx context.Context, request cloudaws.Observe
 			continue
 		}
 		if observeErr != nil {
-			return cloudaws.ObservedGraph{}, observeErr
+			return cloudaws.ObservedGraph{}, fmt.Errorf("observe %s: %w", kind, observeErr)
 		}
 		if rootID != "" {
 			rootVolumeID = rootID
@@ -144,7 +144,7 @@ func (client *Client) ObserveGraph(ctx context.Context, request cloudaws.Observe
 		volume, _, err := client.observePhysical(ctx, request.Identity, request.Plan, mapping, cloudaws.ResourceEBS, rootVolumeID,
 			request.ExpectedResourceProviderIDs[cloudaws.ResourceEBS], request.ExpectedTags, request.SecurityGroupPolicy)
 		if err != nil {
-			return cloudaws.ObservedGraph{}, err
+			return cloudaws.ObservedGraph{}, fmt.Errorf("observe %s: %w", cloudaws.ResourceEBS, err)
 		}
 		observations = append(observations, volume)
 		observedKinds[cloudaws.ResourceEBS] = true
@@ -805,7 +805,7 @@ func validateGraphRequest(request cloudaws.ObserveGraphRequest) error {
 	if request.Identity.Validate() != nil || request.Plan.Validate() != nil || !request.Plan.Identity.Equal(request.Identity) ||
 		request.PlanDigest != request.Plan.Digest || request.InfrastructureDigest != request.Plan.InfrastructureDigest || request.IntentDigest == "" ||
 		request.ClientToken == "" || !containsTags(request.ExpectedTags, cloudaws.RequiredTags(request.Identity, request.PlanDigest, request.InfrastructureDigest, request.IntentDigest)) ||
-		len(request.SecurityGroupPolicy.Ingress) != 0 || request.SecurityGroupPolicy.SecurityGroupEnforcesFQDN || request.SecurityGroupPolicy.FQDNEnforcement != "controlled_tls_proxy" {
+		len(request.SecurityGroupPolicy.Ingress) != 0 || request.SecurityGroupPolicy.SecurityGroupEnforcesFQDN || request.SecurityGroupPolicy.FQDNEnforcement != "controlled_worker_proxy_plus_direct_model_https" {
 		return cloudaws.ErrInvalid
 	}
 	if validateExpectedResourceProviderIDs(request.ExpectedResourceProviderIDs, "", "") != nil {
@@ -932,11 +932,13 @@ func equalSecurityGroupEgress(actual []ec2types.IpPermission, expected []cloudaw
 	rules := make([]cloudaws.NetworkRule, 0)
 	for _, permission := range actual {
 		if len(permission.Ipv6Ranges) != 0 || len(permission.PrefixListIds) != 0 || len(permission.UserIdGroupPairs) != 0 ||
-			permission.FromPort == nil || permission.ToPort == nil || len(permission.IpRanges) != 1 {
+			permission.FromPort == nil || permission.ToPort == nil || len(permission.IpRanges) == 0 {
 			return false
 		}
-		rules = append(rules, cloudaws.NetworkRule{Protocol: awssdk.ToString(permission.IpProtocol), FromPort: uint16(awssdk.ToInt32(permission.FromPort)),
-			ToPort: uint16(awssdk.ToInt32(permission.ToPort)), CIDRv4: awssdk.ToString(permission.IpRanges[0].CidrIp)})
+		for _, ipRange := range permission.IpRanges {
+			rules = append(rules, cloudaws.NetworkRule{Protocol: awssdk.ToString(permission.IpProtocol), FromPort: uint16(awssdk.ToInt32(permission.FromPort)),
+				ToPort: uint16(awssdk.ToInt32(permission.ToPort)), CIDRv4: awssdk.ToString(ipRange.CidrIp)})
+		}
 	}
 	key := func(rule cloudaws.NetworkRule) string {
 		return rule.Protocol + ":" + strconv.Itoa(int(rule.FromPort)) + ":" + strconv.Itoa(int(rule.ToPort)) + ":" + rule.CIDRv4

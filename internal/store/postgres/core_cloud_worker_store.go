@@ -34,13 +34,13 @@ type CloudWorkerStore struct{ store *Store }
 func NewCloudWorkerStore(store *Store) *CloudWorkerStore { return &CloudWorkerStore{store: store} }
 
 type privateCloudWorkerPlan struct {
-	Objective       string                        `json:"objective"`
-	InputManifest   cloudworker.InputManifest     `json:"input_manifest"`
-	Placement       cloudworker.PlacementSpec     `json:"placement"`
-	NetworkPolicy   cloudworker.NetworkPolicy     `json:"network_policy"`
-	ArtifactGrant   cloudworker.ArtifactGrant     `json:"artifact_grant"`
-	WorkerBootstrap cloudworker.WorkerBootstrap   `json:"worker_bootstrap"`
-	ModelRelay      cloudworker.ModelRelayBinding `json:"model_relay"`
+	Objective       string                           `json:"objective"`
+	InputManifest   cloudworker.InputManifest        `json:"input_manifest"`
+	Placement       cloudworker.PlacementSpec        `json:"placement"`
+	NetworkPolicy   cloudworker.NetworkPolicy        `json:"network_policy"`
+	ArtifactGrant   cloudworker.ArtifactGrant        `json:"artifact_grant"`
+	WorkerBootstrap cloudworker.WorkerBootstrap      `json:"worker_bootstrap"`
+	ModelEndpoint   cloudworker.ModelEndpointBinding `json:"model_relay"`
 }
 
 type cloudWorkerReplay struct {
@@ -60,7 +60,7 @@ func marshalCloudWorkerPlan(plan cloudworker.Plan) ([]byte, []byte, error) {
 		Objective: copy.Objective, InputManifest: copy.InputManifest,
 		Placement: copy.Placement, NetworkPolicy: copy.NetworkPolicy,
 		ArtifactGrant: copy.ArtifactGrant, WorkerBootstrap: copy.WorkerBootstrap,
-		ModelRelay: copy.ModelRelay,
+		ModelEndpoint: copy.ModelEndpoint,
 	})
 	if err != nil || len(publicRaw) > 1<<20 || len(privateRaw) > 1<<20 {
 		return nil, nil, cloudworker.ErrInvalid
@@ -91,7 +91,7 @@ func scanCloudWorkerPlan(row cloudWorkerRowScanner) (cloudworker.Plan, error) {
 	}
 	plan.Objective, plan.InputManifest = private.Objective, private.InputManifest
 	plan.Placement, plan.NetworkPolicy = private.Placement, private.NetworkPolicy
-	plan.ArtifactGrant, plan.WorkerBootstrap, plan.ModelRelay = private.ArtifactGrant, private.WorkerBootstrap, private.ModelRelay
+	plan.ArtifactGrant, plan.WorkerBootstrap, plan.ModelEndpoint = private.ArtifactGrant, private.WorkerBootstrap, private.ModelEndpoint
 	if plan.Seal() != nil || plan.Revision != uint64(storedRevision) || plan.Digest != storedDigest ||
 		plan.ExecutionDigest != storedExecutionDigest || plan.AuthorizationBasisDigest != storedAuthorization ||
 		plan.Quote.Digest != storedQuote || plan.InputManifestDigest != storedManifest ||

@@ -48,8 +48,7 @@ type BootstrapDocument struct {
 	ControlPlaneEndpoint          string `json:"control_plane_endpoint"`
 	ControlPlaneServerName        string `json:"control_plane_server_name"`
 	ControlPlaneTrustBundleSHA256 string `json:"control_plane_trust_bundle_sha256"`
-	ModelRelayServerName          string `json:"model_relay_server_name"`
-	ModelRelayTrustBundleSHA256   string `json:"model_relay_trust_bundle_sha256"`
+	ModelEndpointServerName       string `json:"model_endpoint_server_name"`
 	OutboundProxyURL              string `json:"outbound_proxy_url"`
 	OutboundProxyServerName       string `json:"outbound_proxy_server_name"`
 	OutboundProxyTrustSHA256      string `json:"outbound_proxy_trust_bundle_sha256"`
@@ -87,9 +86,8 @@ func ParseBootstrapDocument(raw []byte) (BootstrapDocument, BootstrapBinding, er
 		!validDigest(document.PlanDigest) || !validDigest(document.AMIDigest) ||
 		!validDigest(document.WorkerDigest) || !validDigest(document.PiDigest) ||
 		!validDigest(document.ControlPlaneTrustBundleSHA256) ||
-		!validDigest(document.ModelRelayTrustBundleSHA256) ||
-		document.ModelRelayServerName != strings.ToLower(document.ModelRelayServerName) ||
-		!hostnamePattern.MatchString(document.ModelRelayServerName) || net.ParseIP(document.ModelRelayServerName) != nil ||
+		document.ModelEndpointServerName != strings.ToLower(document.ModelEndpointServerName) ||
+		!hostnamePattern.MatchString(document.ModelEndpointServerName) || net.ParseIP(document.ModelEndpointServerName) != nil ||
 		!validDigest(document.ArtifactBindingDigest) ||
 		!validArtifactKMSKeyARN(document.ArtifactKMSKeyARN, document.Region, document.AccountID) ||
 		endpoint.Scheme != "https" || endpoint.User != nil || endpoint.RawQuery != "" ||

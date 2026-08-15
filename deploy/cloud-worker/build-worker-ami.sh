@@ -76,6 +76,11 @@ if archive_index=$(tar -tf "$rootfs_tar_path"); then :; else status=$?; echo "ro
     exit 66
 }
 if installation=$(tar -xOf "$rootfs_tar_path" ./usr/local/share/dirextalk-cloud-worker/installation.json); then :; else status=$?; echo "rootfs installation manifest read failed with status $status" >&2; exit 66; fi
+installation_size=$(tar -xOf "$rootfs_tar_path" ./usr/local/share/dirextalk-cloud-worker/installation.json | wc -c | tr -d '[:space:]')
+[ "$installation_size" -eq "${#installation}" ] || {
+    echo "rootfs installation manifest must be canonical JSON without a trailing newline" >&2
+    exit 66
+}
 bundle_ami_digest=$(printf '%s\n' "$installation" | sed -n 's/^{"schema_version":"dirextalk.agent.cloud-worker-installation\/v1","ami_digest":"\([a-f0-9]\{64\}\)",.*$/\1/p')
 [ "$bundle_ami_digest" = "$ami_digest" ] || { echo "rootfs semantic AMI digest mismatch" >&2; exit 66; }
 

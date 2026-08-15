@@ -33,11 +33,13 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 	for _, required := range []string{
 		`type filter hook output priority -20; policy drop;`,
 		`meta skuid != 65532 accept`,
-		`meta skuid 65532 ip daddr 127.0.0.1 ip protocol tcp tcp dport 38081 accept`,
 		`meta skuid 65532 ip daddr 127.0.0.0/8 reject`,
 		`meta skuid 65532 ip daddr 169.254.0.0/16 reject`,
 		`meta skuid 65532 ip6 daddr ::1/128 reject`,
 		`meta skuid 65532 ip6 daddr fe80::/10 reject`,
+		`meta skuid 65532 ip protocol udp udp dport 53 accept`,
+		`meta skuid 65532 ip protocol tcp tcp dport 53 accept`,
+		`meta skuid 65532 ip protocol tcp tcp dport 443 accept`,
 		`meta skuid 65532 reject`,
 	} {
 		if !strings.Contains(policy, required) {
@@ -46,10 +48,8 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 	}
 	if strings.Contains(policy, "approved_dns_ipv4") ||
 		strings.Contains(policy, "approved_proxy_ipv4") ||
-		strings.Contains(policy, "dport 53 accept") ||
-		strings.Contains(policy, "dport 443 accept") ||
-		strings.Index(policy, "dport 38081 accept") > strings.Index(policy, "127.0.0.0/8 reject") {
-		t.Fatal("Pi egress policy permits a direct path or rejects the bridge before allowing it")
+		strings.Contains(policy, "dport 38081") {
+		t.Fatal("Pi egress policy still depends on the retired model proxy bridge")
 	}
 
 	unit := readDeployFile(t, root, "dirextalk-cloud-worker.service")
@@ -66,13 +66,11 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 		"TasksMax=infinity",
 		"CapabilityBoundingSet=CAP_SETUID CAP_SETGID",
 		"AmbientCapabilities=CAP_SETUID CAP_SETGID",
-		"SocketBindAllow=ipv4:tcp:38081",
 		"SocketBindDeny=any",
 		"AssertFileIsExecutable=/usr/local/bin/dirextalk-cloud-worker",
 		"AssertPathExists=/usr/local/share/dirextalk-cloud-worker/installation.json",
 		"AssertPathExists=/usr/local/share/dirextalk-cloud-worker/control-plane-ca.pem",
 		"AssertPathExists=/usr/local/share/dirextalk-cloud-worker/outbound-proxy-ca.pem",
-		"AssertPathExists=/usr/local/share/dirextalk-cloud-worker/model-relay-ca.pem",
 		"AssertPathExists=/usr/local/share/dirextalk-cloud-worker/pi-egress.nft",
 		"NoExecPaths=/",
 		"ExecPaths=/usr",
@@ -81,7 +79,7 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 			t.Fatalf("worker unit lacks %q", required)
 		}
 	}
-	if strings.Count(unit, "SocketBindAllow=") != 1 ||
+	if strings.Contains(unit, "SocketBindAllow=") ||
 		strings.Contains(unit, "ConditionFileIsExecutable=") || strings.Contains(unit, "ConditionPathExists=") ||
 		strings.Contains(unit, "CAP_SYS_ADMIN") || strings.Contains(unit, "CAP_NET_ADMIN") ||
 		strings.Contains(strings.ToLower(unit), "ssm") ||
@@ -165,7 +163,6 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 	for _, required := range []string{
 		"id=dirextalk_control_plane_ca,required=true",
 		"id=dirextalk_outbound_proxy_ca,required=true",
-		"id=dirextalk_model_relay_ca,required=true",
 		"dirextalk-cloud-worker-network.service",
 		"dirextalk-cloud-worker-exec-gate.service",
 		"dirextalk-cloud-worker-boot-qualification.service",
@@ -174,7 +171,6 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 		"pi-egress.nft",
 		"host_network_policy_sha256",
 		"outbound_proxy_trust_bundle_sha256",
-		"model_relay_trust_bundle_sha256",
 		"render-pi-egress-policy.sh",
 		"qualify-image.sh /out/rootfs/usr/local/sbin/dirextalk-cloud-worker-qualify",
 		"rootfs-files.allowlist /out/rootfs/usr/local/share/dirextalk-cloud-worker/rootfs-files.allowlist",
@@ -191,7 +187,7 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 		t.Fatal("rootfs build must not emit JSON with literal escape characters")
 	}
 	if strings.Count(containerfile, "install -m 0440 -o 0 -g 65531") != 2 ||
-		strings.Count(containerfile, "install -m 0440 -o 0 -g 65532") != 1 ||
+		strings.Count(containerfile, "install -m 0440 -o 0 -g 65532") != 0 ||
 		!strings.Contains(containerfile, "install -m 0551 -o 0 -g 65531 /out/pi/pi") ||
 		strings.Contains(containerfile, "/out/rootfs/etc/ssl") ||
 		strings.Contains(containerfile, "/out/rootfs/etc/pki") ||
@@ -216,7 +212,9 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 	renderer := readDeployFile(t, root, "render-pi-egress-policy.sh")
 	for _, required := range []string{
 		"policy drop",
-		"127.0.0.1 ip protocol tcp tcp dport 38081 accept",
+		"ip protocol udp udp dport 53 accept",
+		"ip protocol tcp tcp dport 53 accept",
+		"ip protocol tcp tcp dport 443 accept",
 		"meta skuid 65532 reject",
 	} {
 		if !strings.Contains(renderer, required) {
@@ -337,7 +335,7 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 		"0000000000280020",
 		"TasksCurrent",
 		"TasksMax",
-			"Worker task limit mismatch",
+		"Worker task limit mismatch",
 		"/run/dirextalk-cloud-worker-exec-gate/control.sock",
 		"nft --handle list chain inet dirextalk_cloud_worker pi_output",
 		`grep -Eq 'hook output priority -20; policy drop;'`,
@@ -415,6 +413,7 @@ func TestAMIBuildWrapperFencesCallerAndReadsBackEveryAWSOwner(t *testing.T) {
 		`$security_group_id:$target_account_id:$vpc_id:1:0`,
 		"build Security Group identity or rules changed before Packer",
 		"rootfs tar identity changed before Packer",
+		"rootfs installation manifest must be canonical JSON without a trailing newline",
 		`if verify_caller; then :; else status=$?; exit "$status"; fi`,
 		`"$packer" build`,
 	} {
@@ -529,6 +528,58 @@ printf 'packer %s\n' "$*" >> "$FAKE_LOG"
 		!strings.Contains(logText, "packer build") ||
 		strings.LastIndex(logText, "aws sts get-caller-identity") > strings.LastIndex(logText, "packer build") {
 		t.Fatalf("unexpected fenced call order:\n%s", logText)
+	}
+
+	invalidManifest := append(append([]byte(nil), manifest...), '\n')
+	var invalidPayloadBuffer bytes.Buffer
+	invalidTarWriter := tar.NewWriter(&invalidPayloadBuffer)
+	if err := invalidTarWriter.WriteHeader(&tar.Header{
+		Name: "./usr/local/share/dirextalk-cloud-worker/installation.json",
+		Mode: 0o444,
+		Size: int64(len(invalidManifest)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := invalidTarWriter.Write(invalidManifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := invalidTarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	invalidPayload := invalidPayloadBuffer.Bytes()
+	invalidDigest := fmt.Sprintf("%x", sha256.Sum256(invalidPayload))
+	if err := os.Chmod(rootfsTar, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rootfsTar, invalidPayload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for index := range args {
+		if args[index] == "--rootfs-sha256" {
+			args[index+1] = invalidDigest
+		}
+	}
+	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := run("111122223333", "", "0"); err == nil ||
+		!strings.Contains(string(result), "canonical JSON without a trailing newline") {
+		t.Fatalf("non-canonical installation manifest reached the build: %v: %s", err, result)
+	}
+	log, err = os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(log), "packer ") {
+		t.Fatalf("non-canonical installation manifest reached Packer:\n%s", log)
+	}
+	if err := os.WriteFile(rootfsTar, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for index := range args {
+		if args[index] == "--rootfs-sha256" {
+			args[index+1] = digest
+		}
 	}
 
 	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
@@ -657,8 +708,8 @@ func TestWorkerContainerBuildProducesCanonicalInstallationManifest(t *testing.T)
 	deployRoot := cloudWorkerDeployRoot(t)
 	repositoryRoot := filepath.Clean(filepath.Join(deployRoot, "..", ".."))
 	workspace := t.TempDir()
-	secretPaths := make([]string, 3)
-	for index, name := range []string{"control", "outbound", "relay"} {
+	secretPaths := make([]string, 2)
+	for index, name := range []string{"control", "outbound"} {
 		keyPath := filepath.Join(workspace, name+".key")
 		certificatePath := filepath.Join(workspace, name+".pem")
 		command := exec.Command(openssl,
@@ -681,7 +732,6 @@ func TestWorkerContainerBuildProducesCanonicalInstallationManifest(t *testing.T)
 		"--build-arg", "AMI_DIGEST="+semanticDigest,
 		"--secret", "id=dirextalk_control_plane_ca,src="+secretPaths[0],
 		"--secret", "id=dirextalk_outbound_proxy_ca,src="+secretPaths[1],
-		"--secret", "id=dirextalk_model_relay_ca,src="+secretPaths[2],
 		"--file", filepath.Join(deployRoot, "worker.Containerfile"),
 		repositoryRoot,
 	)
@@ -829,7 +879,6 @@ func TestCloudWorkerUnitsEnableMaskAndVerifyInFakeRoot(t *testing.T) {
 		"usr/local/share/dirextalk-cloud-worker/installation.json",
 		"usr/local/share/dirextalk-cloud-worker/control-plane-ca.pem",
 		"usr/local/share/dirextalk-cloud-worker/outbound-proxy-ca.pem",
-		"usr/local/share/dirextalk-cloud-worker/model-relay-ca.pem",
 		"usr/sbin/nft",
 	} {
 		file := filepath.Join(target, filepath.FromSlash(path))
@@ -883,7 +932,9 @@ func TestEgressPolicyRendererIsFixedAndFailsClosed(t *testing.T) {
 	policy := readDeployFile(t, filepath.Dir(output), filepath.Base(output))
 	for _, required := range []string{
 		"policy drop",
-		"127.0.0.1 ip protocol tcp tcp dport 38081 accept",
+		"ip protocol udp udp dport 53 accept",
+		"ip protocol tcp tcp dport 53 accept",
+		"ip protocol tcp tcp dport 443 accept",
 		"meta skuid 65532 reject",
 	} {
 		if !strings.Contains(policy, required) {

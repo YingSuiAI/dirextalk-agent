@@ -436,8 +436,8 @@ func sdkSecurityPlanAndIntent(t *testing.T, now time.Time) (cloudaws.Plan, cloud
 		RootKMSKeyARN: "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111",
 		VPCID:         "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0",
 		ControlPlaneEndpoint: "https://control.example.com:443", ControlPlaneServerName: "control.example.com",
-		ControlPlaneTrustBundleSHA256: sdkSecurityDigest("4"), ModelRelayServerName: "api.openai.com",
-		ModelRelayTrustBundleSHA256: sdkSecurityDigest("6"), WorkspaceMode: cloudaws.WorkspaceWrite,
+		ControlPlaneTrustBundleSHA256: sdkSecurityDigest("4"), ModelEndpointServerName: "api.openai.com",
+		WorkspaceMode:   cloudaws.WorkspaceWrite,
 		ExecutionSHA256: sdkSecurityDigest("5"), TaskSHA256: sdkSecurityDigest("6"), InputManifestDigest: sdkSecurityDigest("1"),
 		ModelAuthorizationDigest: sdkSecurityDigest("2"), ArtifactBindingDigest: sdkSecurityDigest("3"),
 		S3Grants: []cloudaws.S3ObjectGrant{

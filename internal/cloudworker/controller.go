@@ -9,7 +9,6 @@ import (
 
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
-	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/modelrelay"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
@@ -70,10 +69,6 @@ type ControllerWorkerSessions interface {
 	FenceExecutionSessions(context.Context, coretask.Task, string, string) (control.Session, error)
 }
 
-type ControllerModelGrants interface {
-	FenceExecution(context.Context, modelrelay.Fence, string, bool) error
-}
-
 type ControllerResultCollector interface {
 	Collect(context.Context, Plan, Execution, LaunchAuthorization, RuntimeTaskMaterial, control.Session) (ProviderResult, error)
 }
@@ -90,7 +85,6 @@ type ControllerConfig struct {
 	Qualifications      ControllerQualificationResolver
 	AWS                 ControllerAWS
 	Sessions            ControllerWorkerSessions
-	ModelGrants         ControllerModelGrants
 	Results             ControllerResultCollector
 	Clock               func() time.Time
 	PollInterval        time.Duration
@@ -114,7 +108,6 @@ type Controller struct {
 	qualifications      ControllerQualificationResolver
 	aws                 ControllerAWS
 	sessions            ControllerWorkerSessions
-	modelGrants         ControllerModelGrants
 	results             ControllerResultCollector
 	now                 func() time.Time
 	pollInterval        time.Duration
@@ -126,7 +119,7 @@ type Controller struct {
 // bypass WorkerControl/result collection.
 func NewController(config ControllerConfig) (*Controller, error) {
 	if config.Store == nil || config.Quoter == nil || validateLimits(config.BaseLimits) != nil || config.AWSBindings == nil || config.ArtifactReadiness == nil || config.ModelAuthorizations == nil || config.Stager == nil || config.Outputs == nil || config.Qualifications == nil ||
-		config.AWS == nil || config.Sessions == nil || config.ModelGrants == nil || config.Results == nil {
+		config.AWS == nil || config.Sessions == nil || config.Results == nil {
 		return nil, ErrInvalid
 	}
 	if config.Clock == nil {
@@ -147,8 +140,8 @@ func NewController(config ControllerConfig) (*Controller, error) {
 	return &Controller{
 		store: config.Store, quoter: config.Quoter, baseLimits: config.BaseLimits, awsBindings: config.AWSBindings, artifactReadiness: config.ArtifactReadiness, modelAuthorizations: config.ModelAuthorizations, stager: config.Stager, outputs: config.Outputs,
 		qualifications: config.Qualifications, aws: config.AWS,
-		sessions: config.Sessions, modelGrants: config.ModelGrants,
-		results: config.Results, now: config.Clock, pollInterval: config.PollInterval,
+		sessions: config.Sessions,
+		results:  config.Results, now: config.Clock, pollInterval: config.PollInterval,
 		heartbeatStaleAfter: config.WorkerHeartbeatStaleAfter,
 	}, nil
 }
@@ -165,17 +158,18 @@ func (c *Controller) Handle(ctx context.Context, task coretask.Task) coreruntime
 }
 
 type controllerRun struct {
-	plan             Plan
-	execution        Execution
-	authorization    LaunchAuthorization
-	staged           StagedInputManifest
-	material         RuntimeTaskMaterial
-	awsPlan          cloudaws.Plan
-	intent           cloudaws.DispatchIntent
-	dispatchIdentity cloudaws.ExecutionIdentity
-	resources        []Resource
-	workersFenced    bool
-	createDispatched bool
+	plan                      Plan
+	execution                 Execution
+	authorization             LaunchAuthorization
+	staged                    StagedInputManifest
+	material                  RuntimeTaskMaterial
+	awsPlan                   cloudaws.Plan
+	intent                    cloudaws.DispatchIntent
+	dispatchIdentity          cloudaws.ExecutionIdentity
+	resources                 []Resource
+	workersFenced             bool
+	createDispatched          bool
+	lastProvisioningWarningAt time.Time
 }
 
 func (run *controllerRun) destroy() {
@@ -560,7 +554,18 @@ func (c *Controller) continueProduction(ctx context.Context, task coretask.Task,
 		return c.finish(ctx, task, run, StateCanceled, ProviderResult{}, "canceled", "Cloud Worker execution canceled")
 	}
 
-	result, err := c.awaitAndCollect(ctx, task, run)
+	var result ProviderResult
+	for {
+		result, err = c.awaitAndCollect(ctx, task, run)
+		if err == nil || !isControllerRetryableDependency(err) {
+			break
+		}
+		slog.Info("[cloud-worker.controller] worker_wait_retry",
+			"execution_id", run.plan.ExecutionID, "class", controllerErrorClass(err))
+		if err = c.wait(ctx); err != nil {
+			return c.owned(err)
+		}
+	}
 	if err != nil {
 		if c.shouldStop(ctx, err) {
 			return c.owned(err)
@@ -574,9 +579,28 @@ func (c *Controller) continueProduction(ctx context.Context, task coretask.Task,
 		if errors.Is(err, errControllerHeartbeatStale) {
 			return c.finish(ctx, task, run, StateFailed, ProviderResult{}, "worker_heartbeat_stale", "Cloud Worker heartbeat became stale")
 		}
+		slog.Warn("[cloud-worker.controller] worker_wait_failed",
+			"execution_id", run.plan.ExecutionID, "class", controllerErrorClass(err), "error", err)
 		return c.finish(ctx, task, run, StateFailed, ProviderResult{}, "worker_failed", "Cloud Worker execution or result validation failed")
 	}
 	return c.finish(ctx, task, run, StateSucceeded, result, "", result.Summary)
+}
+
+type controllerSQLStateError interface {
+	SQLState() string
+}
+
+func isControllerRetryableDependency(err error) bool {
+	var stateError controllerSQLStateError
+	if !errors.As(err, &stateError) {
+		return false
+	}
+	switch stateError.SQLState() {
+	case "40001", "40P01", "55P03", "53300", "57P03":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Controller) checkArtifactDestination(ctx context.Context, plan Plan) error {
@@ -625,6 +649,16 @@ func (c *Controller) ensureActive(ctx context.Context, task coretask.Task, run *
 		}
 		if err != nil && !errors.Is(err, cloudaws.ErrReconcilePending) && !errors.Is(err, cloudaws.ErrCloudReadback) && !errors.Is(err, cloudaws.ErrResponseUnknown) {
 			return graph, err
+		}
+		if err != nil {
+			now := c.now().UTC()
+			if run.lastProvisioningWarningAt.IsZero() || now.Sub(run.lastProvisioningWarningAt) >= 15*time.Second {
+				slog.Warn("[cloud-worker.controller] provisioning_readback_retry",
+					"execution_id", run.plan.ExecutionID,
+					"class", controllerErrorClass(err),
+					"error", err)
+				run.lastProvisioningWarningAt = now
+			}
 		}
 		if waitErr := c.wait(ctx); waitErr != nil {
 			return cloudaws.ObservedGraph{}, waitErr
@@ -733,10 +767,11 @@ func (c *Controller) awaitAndCollect(ctx context.Context, task coretask.Task, ru
 				return ProviderResult{}, errControllerHeartbeatStale
 			}
 			if run.execution.State == StateAwaitingWorker {
-				run.execution, err = c.store.TransitionExecution(ctx, task, run.execution.Revision, StateRunning)
-				if err != nil {
-					return ProviderResult{}, err
+				next, transitionErr := c.store.TransitionExecution(ctx, task, run.execution.Revision, StateRunning)
+				if transitionErr != nil {
+					return ProviderResult{}, transitionErr
 				}
+				run.execution = next
 			}
 			if waitErr := c.wait(ctx); waitErr != nil {
 				return ProviderResult{}, waitErr
@@ -746,16 +781,18 @@ func (c *Controller) awaitAndCollect(ctx context.Context, task coretask.Task, ru
 				return ProviderResult{}, errControllerRuntimeDeadline
 			}
 			if run.execution.State == StateAwaitingWorker {
-				run.execution, err = c.store.TransitionExecution(ctx, task, run.execution.Revision, StateRunning)
-				if err != nil {
-					return ProviderResult{}, err
+				next, transitionErr := c.store.TransitionExecution(ctx, task, run.execution.Revision, StateRunning)
+				if transitionErr != nil {
+					return ProviderResult{}, transitionErr
 				}
+				run.execution = next
 			}
 			if run.execution.State == StateRunning {
-				run.execution, err = c.store.TransitionExecution(ctx, task, run.execution.Revision, StateCollecting)
-				if err != nil {
-					return ProviderResult{}, err
+				next, transitionErr := c.store.TransitionExecution(ctx, task, run.execution.Revision, StateCollecting)
+				if transitionErr != nil {
+					return ProviderResult{}, transitionErr
 				}
+				run.execution = next
 			}
 			material, cloneErr := run.material.CloneForRecoveryFence(runtimeFenceForSession(session))
 			if cloneErr != nil {
@@ -767,10 +804,11 @@ func (c *Controller) awaitAndCollect(ctx context.Context, task coretask.Task, ru
 				return ProviderResult{}, collectErr
 			}
 			if run.execution.State == StateCollecting {
-				run.execution, err = c.store.RecordArtifacts(ctx, task, run.execution.Revision, result.Artifacts, StateValidating)
-				if err != nil {
-					return ProviderResult{}, err
+				next, recordErr := c.store.RecordArtifacts(ctx, task, run.execution.Revision, result.Artifacts, StateValidating)
+				if recordErr != nil {
+					return ProviderResult{}, recordErr
 				}
+				run.execution = next
 			} else if run.execution.State != StateValidating && run.execution.State != StateCleaning {
 				return ProviderResult{}, ErrConflict
 			}
@@ -1164,31 +1202,17 @@ func terminalReasonCode(terminal ExecutionState, code string) string {
 }
 
 func (c *Controller) fenceWorkers(ctx context.Context, task coretask.Task, plan Plan, reason string) error {
-	latest, findErr := c.sessions.FindLatestSessionByExecution(ctx, plan.ExecutionID, plan.TaskID, plan.AccountGeneration)
-	if findErr != nil && !errors.Is(findErr, control.ErrNotFound) {
-		return findErr
-	}
-	fenced, err := c.sessions.FenceExecutionSessions(ctx, task, plan.ExecutionID, reason)
+	_, err := c.sessions.FenceExecutionSessions(ctx, task, plan.ExecutionID, reason)
 	if err != nil {
-		if errors.Is(findErr, control.ErrNotFound) && errors.Is(err, control.ErrNotFound) {
+		if errors.Is(err, control.ErrNotFound) {
 			return nil
 		}
 		return err
 	}
-	if findErr != nil && fenced.SessionID != "" {
-		latest = fenced
-		findErr = nil
-	}
-	if findErr != nil || latest.SessionID == "" {
-		return nil
-	}
-	fence := modelrelay.Fence{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration,
-		ExecutionID: plan.ExecutionID, TaskID: plan.TaskID, Attempt: latest.Fence.Attempt,
-		LeaseEpoch: latest.Fence.LeaseEpoch, SessionID: latest.SessionID}
-	if err = c.modelGrants.FenceExecution(ctx, fence, reason, true); errors.Is(err, modelrelay.ErrNotFound) {
-		return nil
-	}
-	return err
+	// Direct provider credentials live only in the claimed Worker process.
+	// Fencing the Worker session cancels that process; there is no Central
+	// provider credential grant to revoke.
+	return nil
 }
 
 func (c *Controller) cleanup(ctx context.Context, task coretask.Task, run *controllerRun, accepted []Artifact) error {

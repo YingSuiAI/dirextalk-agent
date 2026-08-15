@@ -114,7 +114,7 @@ func validateRuntimeTaskFenceForMaterial(fence RuntimeTaskFence, material Runtim
 
 // BuildRuntimeTask is the sole Plan -> Pi task compiler. It verifies the
 // sealed plan/execution, exact staged S3 versions, current session fence, AMI
-// qualification and relay mapping before returning canonical private claim
+// qualification and direct provider mapping before returning canonical private claim
 // material.
 func BuildRuntimeTask(
 	plan Plan,
@@ -145,7 +145,7 @@ func BuildRuntimeTask(
 	if err != nil {
 		return RuntimeTaskMaterial{}, err
 	}
-	piProvider, piInterface, err := PiRelayModel(sealedPlan.ModelAuthorization)
+	piProvider, piInterface, err := PiDirectModel(sealedPlan.ModelAuthorization)
 	if err != nil {
 		clear(inputJSON)
 		return RuntimeTaskMaterial{}, err
@@ -156,7 +156,7 @@ func BuildRuntimeTask(
 		clear(inputJSON)
 		return RuntimeTaskMaterial{}, ErrInvalid
 	}
-	relayDigest := sha256.Sum256([]byte(sealedPlan.ModelRelay.Endpoint))
+	endpointDigest := sha256.Sum256([]byte(sealedPlan.ModelEndpoint.Endpoint))
 	task := cloudruntime.Task{
 		SchemaVersion: cloudruntime.TaskSchemaV2,
 		Recipe:        cloudruntime.RecipeEphemeralPiTask, Adapter: cloudruntime.AdapterPiJSONTaskV1,
@@ -169,17 +169,17 @@ func BuildRuntimeTask(
 		ModelProfileID:        sealedPlan.ModelAuthorization.ModelProfileID,
 		ModelProfileRevision:  sealedPlan.ModelAuthorization.ModelProfileRevision,
 		ModelProvider:         piProvider, Model: sealedPlan.ModelAuthorization.Model,
-		ModelInterface:           piInterface,
-		CredentialVersion:        sealedPlan.ModelAuthorization.CredentialVersion,
-		ModelBindingSHA256:       sealedPlan.ModelAuthorization.BindingDigest,
-		ModelGrantAudienceSHA256: RuntimeGrantAudienceDigest(sealedPlan, fence),
-		ModelGrantLimitSHA256:    digestValue(sealedPlan.Limits),
-		ModelRelayBaseURL:        sealedPlan.ModelRelay.Endpoint,
-		ModelRelayEndpointSHA256: hex.EncodeToString(relayDigest[:]),
-		ModelRelayBindingSHA256:  sealedPlan.ModelRelay.BindingDigest,
-		MaxOutputTokens:          maximumOutputTokens,
-		ModelContextWindow:       sealedPlan.ModelAuthorization.ContextWindow,
-		MaxOutputBytes:           sealedPlan.Limits.MaxOutputBytes,
+		ModelInterface:             piInterface,
+		CredentialVersion:          sealedPlan.ModelAuthorization.CredentialVersion,
+		ModelBindingSHA256:         sealedPlan.ModelAuthorization.BindingDigest,
+		ModelGrantAudienceSHA256:   RuntimeGrantAudienceDigest(sealedPlan, fence),
+		ModelGrantLimitSHA256:      digestValue(sealedPlan.Limits),
+		ModelBaseURL:               sealedPlan.ModelEndpoint.Endpoint,
+		ModelEndpointSHA256:        hex.EncodeToString(endpointDigest[:]),
+		ModelEndpointBindingSHA256: sealedPlan.ModelEndpoint.BindingDigest,
+		MaxOutputTokens:            maximumOutputTokens,
+		ModelContextWindow:         sealedPlan.ModelAuthorization.ContextWindow,
+		MaxOutputBytes:             sealedPlan.Limits.MaxOutputBytes,
 	}
 	if sealedPlan.WorkspaceMode != WorkspaceNone {
 		task.WorkspaceSHA256 = inputDigest
@@ -210,7 +210,7 @@ func BuildRuntimeTask(
 	}, nil
 }
 
-func PiRelayModel(
+func PiDirectModel(
 	authorization ModelAuthorization,
 ) (string, cloudruntime.ModelInterface, error) {
 	copy := authorization
@@ -221,8 +221,8 @@ func PiRelayModel(
 	case copy.Provider == "openai" && copy.Interface == "openai_responses":
 		return "openai", cloudruntime.ModelOpenAIResponses, nil
 	case copy.Provider == "openai_compatible" && copy.Interface == "openai_compatible":
-		// Pi's closed compatible adapter is named deepseek, but the model call
-		// still terminates at the Agent relay and never at api.deepseek.com.
+		// Pi's compatible adapter is named deepseek. The task-bound base URL
+		// determines the actual provider endpoint.
 		return "deepseek", cloudruntime.ModelOpenAICompatible, nil
 	default:
 		return "", "", ErrInvalid

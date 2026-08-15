@@ -46,6 +46,17 @@ func compileRequoteOffer(
 	plan := old
 	plan.AWS = awsBinding
 	plan.ModelAuthorization = modelAuthorization
+	if modelAuthorization.BaseURL != "" {
+		plan.ModelEndpoint.Endpoint = modelAuthorization.BaseURL
+		plan.ModelEndpoint.TLSServerName = modelEndpointHost(modelAuthorization.BaseURL)
+		plan.ModelEndpoint.BindingDigest = ""
+		plan.NetworkPolicy.AllowedFQDNs = appendModelEndpointHost(
+			plan.NetworkPolicy.AllowedFQDNs, modelAuthorization.BaseURL,
+		)
+		plan.NetworkGrants = appendModelEndpointHost(
+			plan.NetworkGrants, modelAuthorization.BaseURL,
+		)
+	}
 	limits, err := effectivePlanLimits(baseLimits, modelAuthorization)
 	if err != nil {
 		return RequoteOfferCommand{}, err
@@ -73,7 +84,7 @@ func compileRequoteOffer(
 	plan.AWSInfrastructureDigest = ""
 	plan.Placement.IAMPolicyDigest = ""
 	plan.ArtifactGrant.Digest = ""
-	plan.ModelRelay.BindingDigest = ""
+	plan.ModelEndpoint.BindingDigest = ""
 	plan.Quote = Quote{}
 	if err := plan.sealAuthorizationBasis(); err != nil {
 		return RequoteOfferCommand{}, err

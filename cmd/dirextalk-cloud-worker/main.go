@@ -110,13 +110,6 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	piProxy, err := worker.StartPiCONNECTBridge(
-		ctx, outboundProxy, document.ModelRelayServerName,
-	)
-	if err != nil {
-		return err
-	}
-	defer piProxy.Close()
 	connection, err := connectWorkerControl(ctx, document, installation, outboundProxy)
 	if err != nil {
 		return err
@@ -152,7 +145,6 @@ func run(ctx context.Context) error {
 		Release: installation.Release, Processes: processes,
 		Outputs: cloudruntime.FilesystemOutputCollector{}, Workspaces: workspaces,
 		StateRoot: worker.DefaultStateRoot, SearchPath: cloudruntime.DefaultSearchPath,
-		PiProxy: piProxy, ModelRelayTrustBundlePath: installation.ModelRelayTrustBundlePath,
 		RuntimeGID: worker.PiRuntimeGID,
 	})
 	if err != nil {
@@ -175,20 +167,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	workflowCtx, cancelWorkflow := context.WithCancel(ctx)
-	defer cancelWorkflow()
-	workflowDone := make(chan error, 1)
-	go func() { workflowDone <- workflow.Run(workflowCtx) }()
-	select {
-	case err := <-workflowDone:
-		return err
-	case bridgeErr := <-piProxy.Errors():
-		cancelWorkflow()
-		if bridgeErr == nil {
-			return worker.ErrUnavailable
-		}
-		return bridgeErr
-	}
+	return workflow.Run(ctx)
 }
 
 func validateCurrentProcessCapabilities(path, expected string) error {

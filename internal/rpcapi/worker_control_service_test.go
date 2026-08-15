@@ -118,7 +118,7 @@ func TestWorkerControlServiceBindsLaunchClaimHeartbeatAndCompletion(t *testing.T
 		GrantID: uuid.NewString(), BearerToken: []byte("cwmg1_" + strings.Repeat("b", 48)),
 		ModelBindingSHA256: task.ModelBindingSHA256, AudienceSHA256: task.ModelGrantAudienceSHA256,
 		ExpiresAtUnix: now.Add(10 * time.Minute).Unix(), LimitSHA256: task.ModelGrantLimitSHA256,
-		RelayBaseURL: task.ModelRelayBaseURL, RelayBindingSHA256: task.ModelRelayBindingSHA256,
+		BaseURL: task.ModelBaseURL, EndpointBindingSHA256: task.ModelEndpointBindingSHA256,
 		MaxOutputTokens: task.MaxOutputTokens,
 	}
 	resultClaim := control.ObjectClaim{
@@ -274,7 +274,7 @@ func TestValidateWorkerClaimMaterialAllowsGrantAtWorkerHardDeadlineAndRejectsEar
 			GrantID: uuid.NewString(), BearerToken: []byte("cwmg1_" + strings.Repeat("b", 48)),
 			ModelBindingSHA256: task.ModelBindingSHA256, AudienceSHA256: task.ModelGrantAudienceSHA256,
 			ExpiresAtUnix: hardDeadline.Unix(), LimitSHA256: task.ModelGrantLimitSHA256,
-			RelayBaseURL: task.ModelRelayBaseURL, RelayBindingSHA256: task.ModelRelayBindingSHA256,
+			BaseURL: task.ModelBaseURL, EndpointBindingSHA256: task.ModelEndpointBindingSHA256,
 			MaxOutputTokens: task.MaxOutputTokens,
 		},
 		HeartbeatInterval: 10 * time.Second,
@@ -296,8 +296,8 @@ func workerControlRuntimeFixture(t *testing.T, executionID, taskID string) (clou
 	t.Helper()
 	manifest := []byte(`{"items":[],"schema":"cloud_worker_input_manifest/v1"}`)
 	manifestDigest := sha256.Sum256(manifest)
-	relayURL := "https://model-relay.example.test/v1"
-	relayDigest := sha256.Sum256([]byte(relayURL))
+	providerURL := "https://api.example.test/v1"
+	endpointDigest := sha256.Sum256([]byte(providerURL))
 	task := cloudruntime.Task{
 		SchemaVersion: cloudruntime.TaskSchemaV2, Recipe: cloudruntime.RecipeEphemeralPiTask,
 		Adapter: cloudruntime.AdapterPiJSONTaskV1, TaskID: taskID, ExecutionID: executionID,
@@ -307,9 +307,9 @@ func workerControlRuntimeFixture(t *testing.T, executionID, taskID string) (clou
 		ModelProfileID: "profile", ModelProfileRevision: 3, ModelProvider: "openai", Model: "gpt-5",
 		ModelInterface: cloudruntime.ModelOpenAIResponses, CredentialVersion: 4,
 		ModelBindingSHA256: strings.Repeat("3", 64), ModelGrantAudienceSHA256: strings.Repeat("4", 64),
-		ModelGrantLimitSHA256: strings.Repeat("5", 64), ModelRelayBaseURL: relayURL,
-		ModelRelayEndpointSHA256: hex.EncodeToString(relayDigest[:]), ModelRelayBindingSHA256: strings.Repeat("6", 64),
-		MaxOutputTokens: 1024, MaxOutputBytes: 1 << 20,
+		ModelGrantLimitSHA256: strings.Repeat("5", 64), ModelBaseURL: providerURL,
+		ModelEndpointSHA256: hex.EncodeToString(endpointDigest[:]), ModelEndpointBindingSHA256: strings.Repeat("6", 64),
+		MaxOutputTokens: 1024, ModelContextWindow: 65536, MaxOutputBytes: 1 << 20,
 	}
 	if err := task.Validate(); err != nil {
 		t.Fatal(err)

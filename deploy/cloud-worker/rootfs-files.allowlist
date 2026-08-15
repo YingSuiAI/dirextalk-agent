@@ -15,7 +15,6 @@
 0555 0 0 usr/local/sbin/dirextalk-cloud-worker-qualify
 0440 0 65531 usr/local/share/dirextalk-cloud-worker/control-plane-ca.pem
 0444 0 0 usr/local/share/dirextalk-cloud-worker/installation.json
-0440 0 65532 usr/local/share/dirextalk-cloud-worker/model-relay-ca.pem
 0440 0 65531 usr/local/share/dirextalk-cloud-worker/outbound-proxy-ca.pem
 0444 0 0 usr/local/share/dirextalk-cloud-worker/pi-egress.nft
 0444 0 0 usr/local/share/dirextalk-cloud-worker/rootfs-files.allowlist

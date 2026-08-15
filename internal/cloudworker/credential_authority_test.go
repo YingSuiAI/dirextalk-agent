@@ -49,7 +49,7 @@ func credentialProposalCommand() ProposeCommand {
 		WorkspaceMode:    WorkspaceNone,
 		ModelAuthorization: ModelAuthorization{
 			ModelProfileID: uuid.NewString(), ModelProfileRevision: 2,
-			Provider: "openai_compatible", Model: "gpt-test", Interface: "openai_compatible",
+			Provider: "openai_compatible", BaseURL: "https://api.openai.com/v1", Model: "gpt-test", Interface: "openai_compatible",
 			MaximumOutputTokens: 4096, ContextWindow: 65536,
 			CredentialVersion: 4, CredentialBindingDigest: digestValue("model-credential"),
 		},

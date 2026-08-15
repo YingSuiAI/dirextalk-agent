@@ -66,7 +66,6 @@ func pgCloudDefaults() cloudworker.Defaults {
 		ArtifactVersioned: true,
 		WorkerBootstrap: cloudworker.WorkerBootstrap{Protocol: cloudworker.WorkerControlProtocolV1,
 			Endpoint: "https://worker.example.test:8443", TLSServerName: "worker.example.test", TrustBundleDigest: pgCloudDigest("worker-ca")},
-		ModelRelay:               cloudworker.ModelRelayBinding{Endpoint: "https://relay.example.test/v1", TLSServerName: "relay.example.test", TrustBundleDigest: pgCloudDigest("relay-ca")},
 		Limits:                   cloudworker.Limits{MaxRuntimeSeconds: 3600, MaxOutputBytes: 1 << 20},
 		ArtifactRetentionSeconds: 3600, QuoteAmountMicros: 1000, MaximumAuthorizedMicros: 2000, QuoteTTL: time.Hour,
 	}
@@ -555,7 +554,7 @@ func convertOfferToLegacyV1(t *testing.T, h *pgCloudWorkerHarness, offer cloudwo
 	plan := offer.Plan
 	plan.ModelAuthorization.ContextWindow = 0
 	plan.ModelAuthorization.BindingDigest = ""
-	plan.ModelRelay.BindingDigest = ""
+	plan.ModelEndpoint.BindingDigest = ""
 	plan.Placement.IAMPolicyDigest = ""
 	plan.AWSInfrastructureDigest = ""
 	plan.AuthorizationBasisDigest = ""

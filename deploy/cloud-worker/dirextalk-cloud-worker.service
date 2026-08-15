@@ -8,7 +8,6 @@ AssertFileIsExecutable=/usr/local/bin/dirextalk-cloud-worker
 AssertPathExists=/usr/local/share/dirextalk-cloud-worker/installation.json
 AssertPathExists=/usr/local/share/dirextalk-cloud-worker/control-plane-ca.pem
 AssertPathExists=/usr/local/share/dirextalk-cloud-worker/outbound-proxy-ca.pem
-AssertPathExists=/usr/local/share/dirextalk-cloud-worker/model-relay-ca.pem
 AssertPathExists=/usr/local/share/dirextalk-cloud-worker/pi-egress.nft
 
 [Service]
@@ -56,7 +55,6 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=no
-SocketBindAllow=ipv4:tcp:38081
 SocketBindDeny=any
 SystemCallArchitectures=native
 

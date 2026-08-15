@@ -22,11 +22,10 @@ bundle_dir=$(mktemp -d)
 docker buildx build \
   --output "type=local,dest=$rootfs_dir" \
   --build-arg GO_BUILD_BASE=golang:1.26-alpine \
-  --build-arg AMI_DIGEST=<64-lowercase-hex-release-digest> \
-  --secret id=dirextalk_control_plane_ca,src=/absolute/path/worker-control-ca.pem \
-  --secret id=dirextalk_outbound_proxy_ca,src=/absolute/path/outbound-proxy-ca.pem \
-  --secret id=dirextalk_model_relay_ca,src=/absolute/path/model-relay-ca.pem \
-  -f deploy/cloud-worker/worker.Containerfile .
+	  --build-arg AMI_DIGEST=<64-lowercase-hex-release-digest> \
+	  --secret id=dirextalk_control_plane_ca,src=/absolute/path/worker-control-ca.pem \
+	  --secret id=dirextalk_outbound_proxy_ca,src=/absolute/path/outbound-proxy-ca.pem \
+	  -f deploy/cloud-worker/worker.Containerfile .
 sh deploy/cloud-worker/package-rootfs-bundle.sh \
   --source-root "$rootfs_dir" \
   --output-tar "$bundle_dir/dirextalk-cloud-worker-rootfs.tar" \
@@ -168,9 +167,8 @@ cancellation, or Gate failure is fail-closed. The Gate kills fenced cgroup
 members other than the Worker during cancellation and never exposes its proof
 as public Execution V2 diagnostics.
 
-Current Plans also have no cumulative model-token budget. The relay enforces
-the selected model profile's context and output limits on every request and
-records actual usage for audit. If the provider stops a Pi turn for output
+Current Plans also have no cumulative model-token budget. Pi uses the selected
+model profile's context window and per-request output limit. If the provider stops a Pi turn for output
 length before the final result is submitted, the result extension asks the
 same Pi session to continue; this can repeat until completion, cancellation,
 or the execution deadline. A positive cumulative limit is accepted only when
@@ -254,19 +252,13 @@ leaves the AMI unqualified.
 The AMI build renders a fixed host nftables policy and qualification compares
 its digest with the immutable Core AWS release profile. Runtime user data
 cannot replace this policy. The Pi UID is fixed at `65532`; its chain is
-default-drop and permits only TCP to the Worker-owned
-`127.0.0.1:38081` CONNECT bridge. Pi cannot reach DNS, IMDS, the controlled
-proxy, or any external address directly. The bridge accepts only lowercase
-hostname authorities on port 443 and uses the sealed Worker `OutboundProxy`
-without a direct fallback. The Worker alone obtains signed EC2 identity, role
-credentials, DNS, and controlled-proxy access. Pi receives an empty `NO_PROXY`
-plus the local HTTP proxy URL and a relay-only CA through scoped
-`NODE_EXTRA_CA_CERTS`; it never receives the private outbound-proxy CA. The
-bridge remains closed before claim and accepts only the claimed relay hostname
-matching the immutable bootstrap binding on port 443. No private CA is added
-to system roots; the control-plane and proxy CA files are readable only by the
-fixed Worker identity, while the relay CA is exposed only through the scoped
-Pi environment.
+default-drop, rejects loopback and instance-metadata ranges, and permits only
+DNS plus outbound HTTPS. The per-task Security Group limits DNS to the VPC
+resolver and permits direct HTTPS model calls. Pi receives the selected model
+base URL and user-configured provider key through its private runtime config;
+Central does not relay or inspect model requests or responses. WorkerControl
+and S3 still use the Worker-owned outbound proxy and private trust bundle.
+No private CA is added to system roots or exposed to Pi.
 Environment variables are not treated as the IMDS or egress security boundary.
 
 Publishing an AMI or launching EC2 is a separate explicitly authorized

@@ -194,15 +194,15 @@ func (client *GRPCControlClient) claimedTaskFromProto(
 		return ClaimedTask{}, ErrInvalid
 	}
 	grant := cloudruntime.ModelGrant{
-		GrantID:            response.ModelGrant.GrantId,
-		BearerToken:        bytes.Clone(response.ModelGrant.BearerToken),
-		ModelBindingSHA256: response.ModelGrant.ModelBindingDigest,
-		AudienceSHA256:     response.ModelGrant.AudienceDigest,
-		ExpiresAtUnix:      response.ModelGrant.ExpiresAt.AsTime().UTC().Unix(),
-		LimitSHA256:        response.ModelGrant.LimitDigest,
-		RelayBaseURL:       response.ModelGrant.RelayUrl,
-		RelayBindingSHA256: response.ModelGrant.RelayBindingDigest,
-		MaxOutputTokens:    response.ModelGrant.MaxTokens,
+		GrantID:               response.ModelGrant.GrantId,
+		BearerToken:           bytes.Clone(response.ModelGrant.BearerToken),
+		ModelBindingSHA256:    response.ModelGrant.ModelBindingDigest,
+		AudienceSHA256:        response.ModelGrant.AudienceDigest,
+		ExpiresAtUnix:         response.ModelGrant.ExpiresAt.AsTime().UTC().Unix(),
+		LimitSHA256:           response.ModelGrant.LimitDigest,
+		BaseURL:               response.ModelGrant.RelayUrl,
+		EndpointBindingSHA256: response.ModelGrant.RelayBindingDigest,
+		MaxOutputTokens:       response.ModelGrant.MaxTokens,
 	}
 	now := client.now().UTC()
 	if grant.ValidateFor(task, now) != nil {

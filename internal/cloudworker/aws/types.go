@@ -168,9 +168,11 @@ func dispatchIdentityFor(identity ExecutionIdentity) dispatchIdentity {
 	}
 }
 
-// NetworkPolicy permits DNS only to explicit resolvers and HTTPS only to an
-// explicit controlled proxy. AllowedFQDNs are enforced by that proxy. AWS
-// Security Groups cannot express or enforce an FQDN allow-list.
+// NetworkPolicy keeps WorkerControl and object storage on the controlled
+// proxy while allowing Pi to call the selected model provider directly.
+// AWS Security Groups cannot express an FQDN allow-list, so direct model
+// traffic is constrained to outbound HTTPS and the task-bound base URL is
+// enforced by Pi's immutable models.json.
 type NetworkPolicy struct {
 	DNSResolverCIDRs               []string `json:"dns_resolver_cidrs"`
 	TLSProxyCIDRs                  []string `json:"tls_proxy_cidrs"`
@@ -258,7 +260,7 @@ func (policy NetworkPolicy) SecurityGroupPolicy() (SecurityGroupPolicy, error) {
 	if err := policy.Validate(); err != nil {
 		return SecurityGroupPolicy{}, err
 	}
-	rules := make([]NetworkRule, 0, len(policy.DNSResolverCIDRs)*2+len(policy.TLSProxyCIDRs))
+	rules := make([]NetworkRule, 0, len(policy.DNSResolverCIDRs)*2+len(policy.TLSProxyCIDRs)+1)
 	for _, cidr := range policy.DNSResolverCIDRs {
 		rules = append(rules,
 			NetworkRule{Protocol: "udp", FromPort: 53, ToPort: 53, CIDRv4: cidr},
@@ -268,6 +270,7 @@ func (policy NetworkPolicy) SecurityGroupPolicy() (SecurityGroupPolicy, error) {
 	for _, cidr := range policy.TLSProxyCIDRs {
 		rules = append(rules, NetworkRule{Protocol: "tcp", FromPort: 443, ToPort: 443, CIDRv4: cidr})
 	}
+	rules = append(rules, NetworkRule{Protocol: "tcp", FromPort: 443, ToPort: 443, CIDRv4: "0.0.0.0/0"})
 	sort.Slice(rules, func(i, j int) bool {
 		left := rules[i].Protocol + rules[i].CIDRv4
 		right := rules[j].Protocol + rules[j].CIDRv4
@@ -276,7 +279,7 @@ func (policy NetworkPolicy) SecurityGroupPolicy() (SecurityGroupPolicy, error) {
 	return SecurityGroupPolicy{
 		Ingress:                   []NetworkRule{},
 		Egress:                    rules,
-		FQDNEnforcement:           "controlled_tls_proxy",
+		FQDNEnforcement:           "controlled_worker_proxy_plus_direct_model_https",
 		FQDNPolicyDigest:          policy.ProxyPolicyDigest(),
 		SecurityGroupEnforcesFQDN: false,
 	}, nil
@@ -306,8 +309,7 @@ type Plan struct {
 	ControlPlaneEndpoint          string            `json:"control_plane_endpoint"`
 	ControlPlaneServerName        string            `json:"control_plane_server_name"`
 	ControlPlaneTrustBundleSHA256 string            `json:"control_plane_trust_bundle_sha256"`
-	ModelRelayServerName          string            `json:"model_relay_server_name"`
-	ModelRelayTrustBundleSHA256   string            `json:"model_relay_trust_bundle_sha256"`
+	ModelEndpointServerName       string            `json:"model_endpoint_server_name"`
 	WorkspaceMode                 WorkspaceMode     `json:"workspace_mode"`
 	ExecutionSHA256               string            `json:"execution_sha256"`
 	TaskSHA256                    string            `json:"task_sha256"`
@@ -387,8 +389,7 @@ type BootstrapDocumentV1 struct {
 	ControlPlaneEndpoint          string `json:"control_plane_endpoint"`
 	ControlPlaneServerName        string `json:"control_plane_server_name"`
 	ControlPlaneTrustBundleSHA256 string `json:"control_plane_trust_bundle_sha256"`
-	ModelRelayServerName          string `json:"model_relay_server_name"`
-	ModelRelayTrustBundleSHA256   string `json:"model_relay_trust_bundle_sha256"`
+	ModelEndpointServerName       string `json:"model_endpoint_server_name"`
 	OutboundProxyURL              string `json:"outbound_proxy_url"`
 	OutboundProxyServerName       string `json:"outbound_proxy_server_name"`
 	OutboundProxyTrustSHA256      string `json:"outbound_proxy_trust_bundle_sha256"`
@@ -413,8 +414,8 @@ func (plan Plan) BootstrapDocument() ([]byte, error) {
 		WorkerDigest: plan.WorkerDigest, PiDigest: plan.PiDigest, HostNetworkPolicySHA256: plan.HostNetworkPolicySHA256,
 		ControlPlaneEndpoint: plan.ControlPlaneEndpoint, ControlPlaneServerName: plan.ControlPlaneServerName,
 		ControlPlaneTrustBundleSHA256: plan.ControlPlaneTrustBundleSHA256,
-		ModelRelayServerName:          plan.ModelRelayServerName, ModelRelayTrustBundleSHA256: plan.ModelRelayTrustBundleSHA256,
-		OutboundProxyURL: plan.Network.OutboundProxyURL, OutboundProxyServerName: plan.Network.OutboundProxyServerName,
+		ModelEndpointServerName:       plan.ModelEndpointServerName,
+		OutboundProxyURL:              plan.Network.OutboundProxyURL, OutboundProxyServerName: plan.Network.OutboundProxyServerName,
 		OutboundProxyTrustSHA256: plan.Network.OutboundProxyTrustBundleSHA256, OutboundProxyBindingSHA256: plan.Network.OutboundProxyBindingDigest,
 		WorkspaceMode:       string(plan.WorkspaceMode),
 		InputManifestDigest: plan.InputManifestDigest, ModelAuthorizationDigest: plan.ModelAuthorizationDigest,
@@ -449,8 +450,7 @@ func SealPlan(plan Plan) (Plan, error) {
 	plan.ControlPlaneEndpoint = strings.TrimSpace(plan.ControlPlaneEndpoint)
 	plan.ControlPlaneServerName = strings.TrimSpace(plan.ControlPlaneServerName)
 	plan.ControlPlaneTrustBundleSHA256 = strings.TrimSpace(plan.ControlPlaneTrustBundleSHA256)
-	plan.ModelRelayServerName = strings.ToLower(strings.TrimSpace(plan.ModelRelayServerName))
-	plan.ModelRelayTrustBundleSHA256 = strings.TrimSpace(plan.ModelRelayTrustBundleSHA256)
+	plan.ModelEndpointServerName = strings.ToLower(strings.TrimSpace(plan.ModelEndpointServerName))
 	plan.ExecutionSHA256 = strings.TrimSpace(plan.ExecutionSHA256)
 	plan.TaskSHA256 = strings.TrimSpace(plan.TaskSHA256)
 	plan.InputManifestDigest = strings.TrimSpace(plan.InputManifestDigest)
@@ -496,8 +496,8 @@ func (plan Plan) Validate() error {
 		!kmsARNPattern.MatchString(plan.RootKMSKeyARN) || !strings.Contains(plan.RootKMSKeyARN, ":"+plan.Identity.Region+":"+plan.Identity.AccountID+":") ||
 		!awsIDPattern.MatchString(plan.VPCID) || !awsIDPattern.MatchString(plan.SubnetID) || plan.DestroyDeadline.IsZero() || plan.Network.Validate() != nil ||
 		!validControlPlaneEndpoint(plan.ControlPlaneEndpoint, plan.ControlPlaneServerName) || !digestPattern.MatchString(plan.ControlPlaneTrustBundleSHA256) ||
-		!hostnamePattern.MatchString(plan.ModelRelayServerName) || net.ParseIP(plan.ModelRelayServerName) != nil ||
-		!slices.Contains(plan.Network.AllowedFQDNs, plan.ModelRelayServerName) || !digestPattern.MatchString(plan.ModelRelayTrustBundleSHA256) ||
+		!hostnamePattern.MatchString(plan.ModelEndpointServerName) || net.ParseIP(plan.ModelEndpointServerName) != nil ||
+		!slices.Contains(plan.Network.AllowedFQDNs, plan.ModelEndpointServerName) ||
 		!iamNamePattern.MatchString(plan.IAMRoleName) || !iamNamePattern.MatchString(plan.InstanceProfileName) ||
 		(plan.WorkspaceMode != WorkspaceNone && plan.WorkspaceMode != WorkspaceReadOnly && plan.WorkspaceMode != WorkspaceWrite) ||
 		!digestPattern.MatchString(plan.ExecutionSHA256) || !digestPattern.MatchString(plan.TaskSHA256) ||
@@ -838,7 +838,7 @@ func (graph ObservedGraph) Validate(plan Plan, intent DispatchIntent) error {
 		policy, _ := plan.Network.SecurityGroupPolicy()
 		if graph.Topology.EC2InstanceCount != 1 ||
 			len(graph.Topology.Ingress) != 0 || graph.Topology.SSMEnabled || graph.Topology.FQDNEnforcement != policy.FQDNEnforcement ||
-			graph.Topology.FQDNPolicyDigest != policy.FQDNPolicyDigest || graph.Topology.FQDNEnforcement != "controlled_tls_proxy" ||
+			graph.Topology.FQDNPolicyDigest != policy.FQDNPolicyDigest || graph.Topology.FQDNEnforcement != "controlled_worker_proxy_plus_direct_model_https" ||
 			!equalRules(graph.Topology.Egress, policy.Egress) {
 			return ErrCloudReadback
 		}

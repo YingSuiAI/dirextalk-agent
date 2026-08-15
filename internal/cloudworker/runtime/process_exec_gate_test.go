@@ -67,13 +67,7 @@ func TestGuardedRunnerRequiresTerminalProofBeforeReturningOutput(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("root-only setuid/setgid Worker qualification")
 	}
-	directory := t.TempDir()
-	if err := os.Chown(directory, 0, 65532); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(directory, 0o770); err != nil {
-		t.Fatal(err)
-	}
+	directory := piIdentityTempDir(t)
 	sha, err := digestPath("/bin/sh")
 	if err != nil {
 		t.Fatal(err)
@@ -117,13 +111,7 @@ func TestGuardedRunnerPreservesTopologyFailures(t *testing.T) {
 		{name: "terminal", terminalErr: &execgate.Violation{Code: "runtime_topology_invalid"}, violation: "runtime_topology_invalid"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			directory := t.TempDir()
-			if err := os.Chown(directory, 0, 65532); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chmod(directory, 0o770); err != nil {
-				t.Fatal(err)
-			}
+			directory := piIdentityTempDir(t)
 			sha, err := digestPath("/bin/sh")
 			if err != nil {
 				t.Fatal(err)
@@ -160,6 +148,9 @@ func TestGuardedRunnerPreservesTopologyFailures(t *testing.T) {
 }
 
 func TestGuardedRunnerPreservesStartFailureBeforeActivation(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-only setuid/setgid start-failure qualification")
+	}
 	directory := t.TempDir()
 	sha, err := digestPath("/bin/sh")
 	if err != nil {
@@ -193,6 +184,22 @@ func TestGuardedRunnerPreservesStartFailureBeforeActivation(t *testing.T) {
 			gate.run.activatedPID, gate.run.terminalCalls, gate.run.cancelCalls,
 		)
 	}
+}
+
+func piIdentityTempDir(t *testing.T) string {
+	t.Helper()
+	directory, err := os.MkdirTemp("", "dirextalk-pi-identity-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	if err := os.Chown(directory, 0, 65532); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	return directory
 }
 
 type fakeProcessExecGate struct {

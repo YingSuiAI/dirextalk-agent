@@ -364,11 +364,10 @@ cleanup_rules() { rm -f -- "$rules"; }
 trap cleanup_rules EXIT HUP INT TERM
 nft --handle list chain inet dirextalk_cloud_worker pi_output > "$rules"
 grep -Eq 'hook output priority -20; policy drop;' "$rules" || { echo "Pi nft chain is not default-drop" >&2; exit 69; }
-[ "$(grep -c '^[[:space:]]*meta .*# handle' "$rules")" -eq 7 ] || { echo "Pi nft rule count drifted" >&2; exit 69; }
-grep -Eq 'meta skuid 65532 ip daddr 127\.0\.0\.1 ip protocol tcp tcp dport 38081 accept' "$rules" || {
-    echo "Pi loopback bridge rule is missing" >&2
-    exit 69
-}
+[ "$(grep -c '^[[:space:]]*meta .*# handle' "$rules")" -eq 9 ] || { echo "Pi nft rule count drifted" >&2; exit 69; }
+grep -Eq 'meta skuid 65532 ip protocol udp udp dport 53 accept' "$rules" || { echo "Pi DNS UDP rule is missing" >&2; exit 69; }
+grep -Eq 'meta skuid 65532 ip protocol tcp tcp dport 53 accept' "$rules" || { echo "Pi DNS TCP rule is missing" >&2; exit 69; }
+grep -Eq 'meta skuid 65532 ip protocol tcp tcp dport 443 accept' "$rules" || { echo "Pi direct HTTPS rule is missing" >&2; exit 69; }
 grep -Eq 'meta skuid 65532 reject' "$rules" || { echo "Pi terminal reject rule is missing" >&2; exit 69; }
 
 networkd_pid_before=$(systemctl show --property=MainPID --value systemd-networkd.service)

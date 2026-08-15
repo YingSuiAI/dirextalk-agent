@@ -2,6 +2,8 @@
 .gitignore
 .worktrees
 .codex
+.codex-build
+.tmp
 .idea
 .vscode
 .run

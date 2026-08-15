@@ -1,20 +1,41 @@
 package production
 
 import (
+	"bytes"
 	"context"
 	"errors"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
-	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/modelrelay"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 )
+
+// ResolveWorkerCredential returns the exact provider key selected by an
+// already-sealed model authorization. The caller must clear the returned
+// bytes after constructing one verified Worker Claim response.
+func (resolver *ExactModelResolver) ResolveWorkerCredential(
+	ctx context.Context,
+	authorization cloudworker.ModelAuthorization,
+) ([]byte, error) {
+	if resolver == nil || ctx == nil || authorization.Seal() != nil {
+		return nil, cloudworker.ErrInvalid
+	}
+	profile, current, err := resolver.current(ctx, authorization.ModelProfileID)
+	if err != nil || current.BindingDigest != authorization.BindingDigest ||
+		current.CredentialBindingDigest != authorization.CredentialBindingDigest ||
+		current.ModelProfileRevision != authorization.ModelProfileRevision ||
+		current.CredentialVersion != authorization.CredentialVersion ||
+		profile.APIKey == "" {
+		return nil, errors.Join(cloudworker.ErrStaleAuthorization, err)
+	}
+	return bytes.Clone([]byte(profile.APIKey)), nil
+}
 
 type exactProfileReader interface {
 	ResolveProfile(context.Context, string) (coremodel.Profile, error)
 }
 
-// ExactModelResolver binds the model relay to the same immutable Core model
-// snapshot used to quote the plan. It resolves no "latest compatible" alias:
+// ExactModelResolver binds a Worker to the same immutable Core model snapshot
+// used to quote the plan. It resolves no "latest compatible" alias:
 // revision, credential version, provider, model and both digests must match.
 type ExactModelResolver struct {
 	profiles exactProfileReader
@@ -22,40 +43,9 @@ type ExactModelResolver struct {
 
 func NewExactModelResolver(profiles exactProfileReader) (*ExactModelResolver, error) {
 	if profiles == nil {
-		return nil, modelrelay.ErrInvalid
+		return nil, cloudworker.ErrInvalid
 	}
 	return &ExactModelResolver{profiles: profiles}, nil
-}
-
-func (resolver *ExactModelResolver) ResolveExactProfileBinding(ctx context.Context, reference modelrelay.ProfileReference) (modelrelay.ProfileBinding, error) {
-	profile, err := resolver.resolve(ctx, reference)
-	if err != nil {
-		return modelrelay.ProfileBinding{}, err
-	}
-	binding := modelrelay.ProfileBinding{Reference: reference, BaseURL: profile.BaseURL}
-	if binding.Validate() != nil {
-		return modelrelay.ProfileBinding{}, modelrelay.ErrProfileDrift
-	}
-	return binding, nil
-}
-
-func (resolver *ExactModelResolver) ResolveExactCredential(ctx context.Context, binding modelrelay.ProfileBinding) (modelrelay.ResolvedCredential, error) {
-	if binding.Validate() != nil {
-		return modelrelay.ResolvedCredential{}, modelrelay.ErrInvalid
-	}
-	profile, err := resolver.resolve(ctx, binding.Reference)
-	if err != nil {
-		return modelrelay.ResolvedCredential{}, err
-	}
-	credential := modelrelay.ResolvedCredential{
-		Value:                   []byte(profile.APIKey),
-		CredentialBindingDigest: binding.Reference.CredentialBindingDigest,
-	}
-	if credential.ValidateFor(binding.Reference) != nil {
-		credential.Destroy()
-		return modelrelay.ResolvedCredential{}, modelrelay.ErrCredentialUnavailable
-	}
-	return credential, nil
 }
 
 // ResolveCurrentModelAuthorization returns the current immutable
@@ -76,41 +66,22 @@ func (resolver *ExactModelResolver) ResolveCurrentModelAuthorization(ctx context
 	return current, nil
 }
 
-func (resolver *ExactModelResolver) resolve(ctx context.Context, reference modelrelay.ProfileReference) (coremodel.Profile, error) {
-	if resolver == nil || resolver.profiles == nil || ctx == nil || reference.Validate() != nil {
-		return coremodel.Profile{}, modelrelay.ErrInvalid
-	}
-	profile, current, err := resolver.current(ctx, reference.ProfileID)
-	if err != nil || current.ModelProfileID != reference.ProfileID ||
-		current.ModelProfileRevision != reference.ProfileRevision ||
-		current.CredentialVersion != reference.CredentialVersion ||
-		current.Provider != reference.Provider || current.Interface != reference.Interface ||
-		current.Model != reference.Model || current.MaximumOutputTokens != reference.MaximumOutputTokens ||
-		current.CredentialBindingDigest != reference.CredentialBindingDigest ||
-		current.BindingDigest != reference.ModelBindingDigest {
-		return coremodel.Profile{}, errors.Join(modelrelay.ErrProfileDrift, err)
-	}
-	return profile, nil
-}
-
 func (resolver *ExactModelResolver) current(ctx context.Context, profileID string) (coremodel.Profile, cloudworker.ModelAuthorization, error) {
 	if resolver == nil || resolver.profiles == nil || ctx == nil || profileID == "" {
-		return coremodel.Profile{}, cloudworker.ModelAuthorization{}, modelrelay.ErrInvalid
+		return coremodel.Profile{}, cloudworker.ModelAuthorization{}, cloudworker.ErrInvalid
 	}
 	profile, err := resolver.profiles.ResolveProfile(ctx, profileID)
 	if err != nil {
 		return coremodel.Profile{}, cloudworker.ModelAuthorization{}, err
 	}
 	if profile.ID != profileID {
-		return coremodel.Profile{}, cloudworker.ModelAuthorization{}, modelrelay.ErrProfileDrift
+		return coremodel.Profile{}, cloudworker.ModelAuthorization{}, cloudworker.ErrStaleAuthorization
 	}
 	authorization, err := cloudworker.ModelAuthorizationFromSnapshot(coremodel.SnapshotFromProfile(profile))
 	if err != nil {
-		return coremodel.Profile{}, cloudworker.ModelAuthorization{}, errors.Join(modelrelay.ErrProfileDrift, err)
+		return coremodel.Profile{}, cloudworker.ModelAuthorization{}, errors.Join(cloudworker.ErrStaleAuthorization, err)
 	}
 	return profile, authorization, nil
 }
 
-var _ modelrelay.ProfileBindingReader = (*ExactModelResolver)(nil)
-var _ modelrelay.ExactCredentialResolver = (*ExactModelResolver)(nil)
 var _ cloudworker.ModelAuthorizationResolver = (*ExactModelResolver)(nil)

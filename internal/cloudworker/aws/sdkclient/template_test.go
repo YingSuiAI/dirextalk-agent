@@ -83,8 +83,7 @@ func TestFixedTemplateIsOneClosedWorkerWithCanonicalBootstrap(t *testing.T) {
 		t.Fatalf("Worker rejected AWS bootstrap bytes: %v", err)
 	}
 	if parsedBootstrap.ArtifactKMSKeyARN != request.Plan.RootKMSKeyARN ||
-		parsedBootstrap.ModelRelayServerName != request.Plan.ModelRelayServerName ||
-		parsedBootstrap.ModelRelayTrustBundleSHA256 != request.Plan.ModelRelayTrustBundleSHA256 {
+		parsedBootstrap.ModelEndpointServerName != request.Plan.ModelEndpointServerName {
 		t.Fatalf("Worker bootstrap authorization fields = %+v", parsedBootstrap)
 	}
 	for _, forbidden := range []string{"task_attempt", "lease_epoch", "command", "script", "secret"} {
@@ -96,8 +95,7 @@ func TestFixedTemplateIsOneClosedWorkerWithCanonicalBootstrap(t *testing.T) {
 		"execution_sha256": request.Plan.ExecutionSHA256, "task_sha256": request.Plan.TaskSHA256,
 		"control_plane_server_name":          request.Plan.ControlPlaneServerName,
 		"control_plane_trust_bundle_sha256":  request.Plan.ControlPlaneTrustBundleSHA256,
-		"model_relay_server_name":            request.Plan.ModelRelayServerName,
-		"model_relay_trust_bundle_sha256":    request.Plan.ModelRelayTrustBundleSHA256,
+		"model_endpoint_server_name":         request.Plan.ModelEndpointServerName,
 		"outbound_proxy_url":                 request.Plan.Network.OutboundProxyURL,
 		"outbound_proxy_server_name":         request.Plan.Network.OutboundProxyServerName,
 		"outbound_proxy_trust_bundle_sha256": request.Plan.Network.OutboundProxyTrustBundleSHA256,
@@ -213,8 +211,8 @@ func testCreateRequest(t *testing.T) cloudaws.CreateStackRequest {
 		RootVolumeThroughput: 125, RootKMSKeyARN: "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111",
 		VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0",
 		ControlPlaneEndpoint: "https://control.example.com:443", ControlPlaneServerName: "control.example.com", ControlPlaneTrustBundleSHA256: digestCharacter("4"),
-		ModelRelayServerName: "api.openai.com", ModelRelayTrustBundleSHA256: digestCharacter("6"),
-		WorkspaceMode: cloudaws.WorkspaceWrite, ExecutionSHA256: digestCharacter("5"), TaskSHA256: digestCharacter("6"),
+		ModelEndpointServerName: "api.openai.com",
+		WorkspaceMode:           cloudaws.WorkspaceWrite, ExecutionSHA256: digestCharacter("5"), TaskSHA256: digestCharacter("6"),
 		InputManifestDigest: digestCharacter("1"), ModelAuthorizationDigest: digestCharacter("2"), ArtifactBindingDigest: digestCharacter("3"),
 		S3Grants: []cloudaws.S3ObjectGrant{{Access: cloudaws.S3ReadExactVersion, Bucket: "dirextalk-input", Key: "tasks/input.tar", VersionID: "version-1"},
 			{Access: cloudaws.S3WritePrefix, Bucket: "dirextalk-output", Key: "executions/11111111/"}},

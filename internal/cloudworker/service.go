@@ -188,7 +188,6 @@ type Defaults struct {
 	ArtifactKMSKeyARN        string
 	ArtifactVersioned        bool
 	WorkerBootstrap          WorkerBootstrap
-	ModelRelay               ModelRelayBinding
 	Limits                   Limits
 	NetworkGrants            []string
 	SecretGrants             []SecretGrant
@@ -209,12 +208,6 @@ func (d Defaults) Validate() error {
 	bootstrap := d.WorkerBootstrap
 	if err := bootstrap.Seal(network); err != nil {
 		return err
-	}
-	// Model binding is request-scoped, so Defaults can only validate the relay
-	// transport shape here. The complete audience binding is sealed per plan.
-	parsedRelay, err := url.Parse(strings.TrimSpace(d.ModelRelay.Endpoint))
-	if err != nil || parsedRelay.Scheme != "https" || parsedRelay.Hostname() != strings.ToLower(strings.TrimSpace(d.ModelRelay.TLSServerName)) || !validDigest(strings.TrimSpace(d.ModelRelay.TrustBundleDigest)) {
-		return ErrInvalid
 	}
 	if len(strings.TrimSpace(d.ArtifactBucket)) < 3 || len(strings.TrimSpace(d.ArtifactBucket)) > 63 || strings.TrimSpace(d.ArtifactBasePrefix) == "" || !strings.HasSuffix(strings.TrimSpace(d.ArtifactBasePrefix), "/") || strings.HasPrefix(strings.TrimSpace(d.ArtifactBasePrefix), "/") || strings.Contains(strings.TrimSpace(d.ArtifactBasePrefix), "..") || !d.ArtifactVersioned || !strings.HasPrefix(strings.TrimSpace(d.ArtifactKMSKeyARN), "arn:aws:kms:") {
 		return ErrInvalid
@@ -366,6 +359,10 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	executionID := deterministicID("cloud-worker-execution", command.IdempotencyKey)
 	taskID := deterministicID("cloud-worker-task", command.IdempotencyKey)
 	confirmationID := deterministicID("cloud-worker-confirmation", command.IdempotencyKey)
+	modelEndpoint := ModelEndpointBinding{
+		Endpoint:      command.ModelAuthorization.BaseURL,
+		TLSServerName: modelEndpointHost(command.ModelAuthorization.BaseURL),
+	}
 	plan := Plan{
 		OwnerID: strings.TrimSpace(command.OwnerID), AccountGeneration: command.AccountGeneration,
 		PlanID: planID, Revision: 1,
@@ -381,7 +378,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		NetworkPolicy: NetworkPolicy{
 			DNSResolverCIDRs:               append([]string(nil), s.defaults.NetworkPolicy.DNSResolverCIDRs...),
 			TLSProxyCIDRs:                  append([]string(nil), s.defaults.NetworkPolicy.TLSProxyCIDRs...),
-			AllowedFQDNs:                   append([]string(nil), s.defaults.NetworkPolicy.AllowedFQDNs...),
+			AllowedFQDNs:                   appendModelEndpointHost(s.defaults.NetworkPolicy.AllowedFQDNs, modelEndpoint.Endpoint),
 			OutboundProxyURL:               s.defaults.NetworkPolicy.OutboundProxyURL,
 			OutboundProxyServerName:        s.defaults.NetworkPolicy.OutboundProxyServerName,
 			OutboundProxyTrustBundleSHA256: s.defaults.NetworkPolicy.OutboundProxyTrustBundleSHA256,
@@ -391,10 +388,13 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 			KMSKeyARN: strings.TrimSpace(s.defaults.ArtifactKMSKeyARN), Versioned: s.defaults.ArtifactVersioned,
 			RetentionSeconds: s.defaults.ArtifactRetentionSeconds,
 		},
-		WorkerBootstrap:          s.defaults.WorkerBootstrap,
-		ModelRelay:               s.defaults.ModelRelay,
+		WorkerBootstrap: s.defaults.WorkerBootstrap,
+		// ModelEndpoint is the persisted v1 compatibility name for the
+		// task-bound model endpoint. New Workers use it only as a direct
+		// provider endpoint and receive the provider key in Claim material.
+		ModelEndpoint:            modelEndpoint,
 		Limits:                   limits,
-		NetworkGrants:            append([]string(nil), s.defaults.NetworkGrants...),
+		NetworkGrants:            appendModelEndpointHost(s.defaults.NetworkGrants, modelEndpoint.Endpoint),
 		SecretGrants:             append([]SecretGrant(nil), s.defaults.SecretGrants...),
 		ArtifactRetentionSeconds: s.defaults.ArtifactRetentionSeconds,
 		CreatedAt:                now, UpdatedAt: now,
@@ -436,6 +436,28 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	}{plan.OwnerID, plan.ConversationID, plan.TurnID, plan.Objective, plan.UserPromptDigest, plan.InputManifestDigest, plan.ModelAuthorization.BindingDigest, plan.AuthorizationBasisDigest, plan.AccountGeneration, plan.ProposalReason, plan.LocalBudgetEvidence, plan.WorkspaceMode})
 	sum := sha256.Sum256(requestRaw)
 	return s.store.CreateOffer(ctx, CreateOfferCommand{IdempotencyKey: command.IdempotencyKey, RequestDigest: hex.EncodeToString(sum[:]), TurnLeaseID: command.TurnLeaseID, TurnLeaseEpoch: command.TurnLeaseEpoch, ExpectedTurnRevision: command.ExpectedTurnRevision, Plan: plan, Execution: execution, BindingJSON: bindingRaw, TaskPayload: payload})
+}
+
+func modelEndpointHost(baseURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Scheme != "https" {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
+}
+
+func appendModelEndpointHost(values []string, baseURL string) []string {
+	result := append([]string(nil), values...)
+	host := modelEndpointHost(baseURL)
+	if host == "" {
+		return result
+	}
+	for _, existing := range result {
+		if existing == host {
+			return result
+		}
+	}
+	return append(result, host)
 }
 
 // FakeQuoter is explicit test/dev infrastructure. It never performs an AWS

@@ -445,7 +445,7 @@ func validateCentralResultText(plan Plan, final cloudruntime.PiFinalV1) error {
 	values = append(values, final.Risks...)
 	privateValues := []string{
 		plan.ArtifactGrant.Bucket, plan.ArtifactGrant.KeyPrefix, plan.AWS.CredentialID,
-		plan.WorkerBootstrap.Endpoint, plan.ModelRelay.Endpoint,
+		plan.WorkerBootstrap.Endpoint, plan.ModelEndpoint.Endpoint,
 	}
 	for _, value := range values {
 		if strings.TrimSpace(value) == "" || security.ContainsLikelySecret(value) || privateWorkerResultPattern.MatchString(value) {

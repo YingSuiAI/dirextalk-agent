@@ -42,17 +42,19 @@ work_dir=$(mktemp -d)
 cleanup() { rm -rf -- "$work_dir"; }
 trap cleanup EXIT HUP INT TERM
 expected=$work_dir/expected
+expected_unsorted=$work_dir/expected.unsorted
 actual=$work_dir/actual
 bundle_root=$work_dir/rootfs
 mkdir -p "$bundle_root"
 
 awk '
     /^[[:space:]]*(#|$)/ { next }
-    NF != 4 || $1 !~ /^0[0-7]{3}$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ ||
+    NF != 4 || $1 !~ /^0[0-7][0-7][0-7]$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ ||
         $4 ~ /^\// || $4 ~ /(^|\/)\.\.?(\/|$)/ { exit 1 }
     seen[$4]++ { exit 1 }
     { print $4 }
-' "$allowlist" | LC_ALL=C sort > "$expected" || { echo "invalid rootfs allowlist" >&2; exit 66; }
+' "$allowlist" > "$expected_unsorted" || { echo "invalid rootfs allowlist" >&2; exit 66; }
+LC_ALL=C sort "$expected_unsorted" > "$expected"
 [ -s "$expected" ] || { echo "empty rootfs allowlist" >&2; exit 66; }
 
 if find "$source_root" -mindepth 1 ! -type d ! -type f -print -quit | grep -q .; then

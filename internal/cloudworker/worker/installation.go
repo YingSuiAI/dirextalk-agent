@@ -24,7 +24,6 @@ const (
 	DefaultInstallationManifestPath = "/usr/local/share/dirextalk-cloud-worker/installation.json"
 	DefaultTrustBundlePath          = "/usr/local/share/dirextalk-cloud-worker/control-plane-ca.pem"
 	DefaultOutboundProxyTrustPath   = "/usr/local/share/dirextalk-cloud-worker/outbound-proxy-ca.pem"
-	DefaultModelRelayTrustPath      = cloudruntime.PiModelRelayTrustBundlePath
 	DefaultSystemTrustBundlePath    = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
 	DefaultHostNetworkPolicyPath    = "/usr/local/share/dirextalk-cloud-worker/pi-egress.nft"
 	DefaultWorkerExecutablePath     = "/usr/local/bin/dirextalk-cloud-worker"
@@ -41,7 +40,6 @@ type InstallationManifest struct {
 	PiDigest                       string `json:"pi_digest"`
 	HostNetworkPolicySHA256        string `json:"host_network_policy_sha256"`
 	OutboundProxyTrustBundleSHA256 string `json:"outbound_proxy_trust_bundle_sha256"`
-	ModelRelayTrustBundleSHA256    string `json:"model_relay_trust_bundle_sha256"`
 	PiVersion                      string `json:"pi_version"`
 	WorkerExecutable               string `json:"worker_executable"`
 	PiExecutable                   string `json:"pi_executable"`
@@ -54,7 +52,6 @@ type InstallationPaths struct {
 	Manifest                 string
 	TrustBundle              string
 	OutboundProxyTrustBundle string
-	ModelRelayTrustBundle    string
 	SystemTrustBundle        string
 	HostNetworkPolicy        string
 	WorkerExecutable         string
@@ -64,18 +61,16 @@ type InstallationPaths struct {
 }
 
 type Installation struct {
-	Release                   cloudruntime.PiRelease
-	TrustRoots                *x509.CertPool
-	OutboundProxyRoots        *x509.CertPool
-	SystemTrustRoots          *x509.CertPool
-	ModelRelayTrustBundlePath string
+	Release            cloudruntime.PiRelease
+	TrustRoots         *x509.CertPool
+	OutboundProxyRoots *x509.CertPool
+	SystemTrustRoots   *x509.CertPool
 }
 
 func DefaultInstallationPaths() InstallationPaths {
 	return InstallationPaths{
 		Manifest: DefaultInstallationManifestPath, TrustBundle: DefaultTrustBundlePath,
 		OutboundProxyTrustBundle: DefaultOutboundProxyTrustPath,
-		ModelRelayTrustBundle:    DefaultModelRelayTrustPath,
 		SystemTrustBundle:        DefaultSystemTrustBundlePath,
 		HostNetworkPolicy:        DefaultHostNetworkPolicyPath,
 		WorkerExecutable:         DefaultWorkerExecutablePath, PiExecutable: DefaultPiExecutablePath,
@@ -114,8 +109,7 @@ func loadInstallation(
 		manifest.WorkerDigest != document.WorkerDigest ||
 		manifest.PiDigest != document.PiDigest ||
 		manifest.HostNetworkPolicySHA256 != document.HostNetworkPolicySHA256 ||
-		manifest.OutboundProxyTrustBundleSHA256 != document.OutboundProxyTrustSHA256 ||
-		manifest.ModelRelayTrustBundleSHA256 != document.ModelRelayTrustBundleSHA256 {
+		manifest.OutboundProxyTrustBundleSHA256 != document.OutboundProxyTrustSHA256 {
 		return Installation{}, ErrInvalid
 	}
 	piDigest, err := installationPiDigest(manifest)
@@ -166,18 +160,6 @@ func loadInstallation(
 	if err != nil {
 		return Installation{}, err
 	}
-	modelRelayTrustBundle, err := readPinnedInstallationFile(
-		paths.ModelRelayTrustBundle, paths.TrustedRoot, expectedOwner, 1<<20, false,
-	)
-	if err != nil {
-		return Installation{}, err
-	}
-	defer clear(modelRelayTrustBundle)
-	if _, err := VerifyTrustBundle(
-		modelRelayTrustBundle, manifest.ModelRelayTrustBundleSHA256,
-	); err != nil {
-		return Installation{}, err
-	}
 	systemTrustBundle, err := readPinnedInstallationFile(
 		paths.SystemTrustBundle, paths.TrustedRoot, expectedOwner, 2<<20, false,
 	)
@@ -206,7 +188,6 @@ func loadInstallation(
 			},
 		},
 		TrustRoots: roots, OutboundProxyRoots: proxyRoots, SystemTrustRoots: systemRoots,
-		ModelRelayTrustBundlePath: paths.ModelRelayTrustBundle,
 	}, nil
 }
 
@@ -231,7 +212,6 @@ func parseInstallationManifest(raw []byte) (InstallationManifest, error) {
 		!validDigest(manifest.PiDigest) ||
 		!validDigest(manifest.HostNetworkPolicySHA256) ||
 		!validDigest(manifest.OutboundProxyTrustBundleSHA256) ||
-		!validDigest(manifest.ModelRelayTrustBundleSHA256) ||
 		manifest.PiVersion == "" || manifest.PiVersion != strings.TrimSpace(manifest.PiVersion) ||
 		len(manifest.PiVersion) > 64 ||
 		!cleanAbsoluteInstallationPath(manifest.WorkerExecutable) ||
@@ -368,7 +348,6 @@ func cleanInstallationPaths(paths InstallationPaths) bool {
 	return cleanAbsoluteInstallationPath(paths.Manifest) &&
 		cleanAbsoluteInstallationPath(paths.TrustBundle) &&
 		cleanAbsoluteInstallationPath(paths.OutboundProxyTrustBundle) &&
-		cleanAbsoluteInstallationPath(paths.ModelRelayTrustBundle) &&
 		cleanAbsoluteInstallationPath(paths.SystemTrustBundle) &&
 		cleanAbsoluteInstallationPath(paths.HostNetworkPolicy) &&
 		cleanAbsoluteInstallationPath(paths.WorkerExecutable) &&
@@ -378,7 +357,6 @@ func cleanInstallationPaths(paths InstallationPaths) bool {
 		pathWithinTrustedRoot(paths.Manifest, paths.TrustedRoot) &&
 		pathWithinTrustedRoot(paths.TrustBundle, paths.TrustedRoot) &&
 		pathWithinTrustedRoot(paths.OutboundProxyTrustBundle, paths.TrustedRoot) &&
-		pathWithinTrustedRoot(paths.ModelRelayTrustBundle, paths.TrustedRoot) &&
 		pathWithinTrustedRoot(paths.SystemTrustBundle, paths.TrustedRoot) &&
 		pathWithinTrustedRoot(paths.HostNetworkPolicy, paths.TrustedRoot) &&
 		pathWithinTrustedRoot(paths.WorkerExecutable, paths.TrustedRoot) &&

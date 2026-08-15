@@ -30,26 +30,30 @@ func TestOSProcessRunnerExecutesAsPinnedPiIdentity(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("root-only AMI qualification gate for actual setuid/setgid child")
 	}
-	directory, err := os.MkdirTemp("", "dirextalk-pi-identity-")
+	directory := piIdentityTempDir(t)
+	sha, err := digestPath("/bin/sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(directory) })
-	if err := os.Chown(directory, 0, 65532); err != nil {
-		t.Fatal(err)
+	binding := ProcessBinding{
+		ExecutionID: "11111111-1111-4111-8111-111111111111",
+		TaskID:      "22222222-2222-4222-8222-222222222222",
+		Attempt:     1, LeaseEpoch: 2, RuntimeTaskSHA256: strings.Repeat("1", 64),
 	}
-	if err := os.Chmod(directory, 0o770); err != nil {
-		t.Fatal(err)
+	runner := OSProcessRunner{
+		uid: 65532, gid: 65532,
+		gate: &fakeProcessExecGate{}, state: &processRunnerState{},
 	}
-	runner, err := NewOSProcessRunner(65532, 65532)
+	bound, err := runner.BindProcess(binding)
 	if err != nil {
 		t.Fatal(err)
 	}
 	const script = `printf '%s\n' "$(id -u)" "$(id -g)" "$(id -G)" "$(umask)"; awk '/^Cap(Inh|Prm|Eff|Amb):/ { print $1 $2 }' /proc/self/status`
-	output, err := runner.Run(t.Context(), ProcessSpec{
-		Executable: "/bin/sh",
-		Arguments:  []string{"-c", script},
-		Directory:  directory,
+	output, err := bound.Run(t.Context(), ProcessSpec{
+		Executable:               "/bin/sh",
+		ExpectedExecutableSHA256: sha,
+		Arguments:                []string{"-c", script},
+		Directory:                directory,
 		Environment: map[string]string{
 			"PATH": "/usr/bin:/bin",
 		},
