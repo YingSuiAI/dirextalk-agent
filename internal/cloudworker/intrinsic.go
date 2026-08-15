@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -174,6 +175,7 @@ type proposeIntrinsicArguments struct {
 		WorkloadID string `json:"workload_id"`
 		Port       uint16 `json:"port"`
 		HealthPath string `json:"health_path"`
+		Hostname   string `json:"hostname,omitempty"`
 	} `json:"service,omitempty"`
 }
 
@@ -198,8 +200,8 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		"min_memory_gib":            map[string]any{"type": "integer", "minimum": 1, "maximum": 1024, "description": "Minimum memory in GiB needed for the task."},
 		"disk_gib":                  map[string]any{"type": "integer", "minimum": 8, "maximum": 16384, "description": "Working disk capacity in GiB needed for inputs, dependencies, and outputs."},
 		"estimated_runtime_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "Sufficient task execution budget in minutes for environment setup, dependency installation, build, configuration, verification, result collection, and reasonable margin. This is not the lifetime of a retained Worker or deployed service."},
-		"service": map[string]any{"type": "object", "description": "Set only when workload_kind is service; omit for job.", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
-			"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "health_path": map[string]any{"type": "string", "minLength": 1, "maxLength": 2048},
+		"service": map[string]any{"type": "object", "description": "Set only when workload_kind is service; omit for job. Set hostname only when the user requests a DNS name.", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
+			"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "health_path": map[string]any{"type": "string", "minLength": 1, "maxLength": 2048}, "hostname": map[string]any{"type": "string", "minLength": 1, "maxLength": 253},
 		}},
 	}
 	if attachmentSchema != nil {
@@ -423,7 +425,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 			if arguments.Service == nil {
 				return nil
 			}
-			return &ServiceSpec{WorkloadID: arguments.Service.WorkloadID, Port: arguments.Service.Port, HealthPath: arguments.Service.HealthPath}
+			return &ServiceSpec{WorkloadID: arguments.Service.WorkloadID, Port: arguments.Service.Port, HealthPath: arguments.Service.HealthPath, Hostname: arguments.Service.Hostname}
 		}(),
 		ProposalReason: reason, LocalBudgetEvidence: budget, InputManifest: manifest,
 		WorkspaceMode:      mode,
@@ -482,6 +484,8 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 	}
 	if arguments.WorkloadKind == string(WorkloadJob) {
 		arguments.Service = nil
+	} else if arguments.Service != nil {
+		arguments.Service.Hostname = remoteservice.CanonicalHostname(arguments.Service.Hostname)
 	}
 	if arguments.Objective == "" || len(arguments.Objective) > coretask.MaxGoalBytes || !utf8.ValidString(arguments.Objective) || !validateWorkspaceMode(WorkspaceMode(arguments.WorkspaceMode)) || len(arguments.AttachmentIDs) > coreconversation.MaxTurnAttachments {
 		return proposeIntrinsicArguments{}, ErrInvalid
@@ -496,7 +500,7 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 		EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes}).validate() != nil {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
-	if (arguments.WorkloadKind == string(WorkloadService) && (arguments.Service == nil || (ServiceSpec{WorkloadID: arguments.Service.WorkloadID, Port: arguments.Service.Port, HealthPath: arguments.Service.HealthPath}).validate() != nil)) ||
+	if (arguments.WorkloadKind == string(WorkloadService) && (arguments.Service == nil || (ServiceSpec{WorkloadID: arguments.Service.WorkloadID, Port: arguments.Service.Port, HealthPath: arguments.Service.HealthPath, Hostname: arguments.Service.Hostname}).validate() != nil)) ||
 		(arguments.WorkloadKind != string(WorkloadJob) && arguments.WorkloadKind != string(WorkloadService)) {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}

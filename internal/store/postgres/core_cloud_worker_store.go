@@ -140,7 +140,8 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	}
 	plan, execution := command.Plan, command.Execution
 	expectedExecutionState := cloudworker.StateWaitingUser
-	if plan.PersistentWorkerReuse {
+	requiresConfirmation := plan.RequiresOwnerConfirmation()
+	if !requiresConfirmation {
 		expectedExecutionState = cloudworker.StateQueued
 	}
 	if plan.Seal() != nil || execution.Seal() != nil || plan.ExecutionID != execution.ExecutionID ||
@@ -269,7 +270,7 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	payloadRaw, _ := json.Marshal(spec.Payload)
 	emptyArray := []byte(`[]`)
 	taskStatus, taskPhase, taskMessage := "waiting_user", "confirmation", "waiting for owner confirmation"
-	if plan.PersistentWorkerReuse {
+	if !requiresConfirmation {
 		taskStatus, taskPhase, taskMessage = "queued", "worker_reuse", "existing Worker queued"
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,model_profile_id,create_idempotency_key,
@@ -291,7 +292,7 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		return cloudworker.Offer{}, err
 	}
 	confirmationState := "pending"
-	if plan.PersistentWorkerReuse {
+	if !requiresConfirmation {
 		// This confirmed row is an internal execution fence for using an existing
 		// Worker. It is never published as a pending owner confirmation.
 		confirmationState = "confirmed"
@@ -362,7 +363,7 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	if !priorTurnPlan {
 		messages = append(messages, userMessage)
 	}
-	if !plan.PersistentWorkerReuse {
+	if requiresConfirmation {
 		messages = append(messages, offerMessage)
 	}
 	for index, message := range messages {
@@ -381,7 +382,7 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		return cloudworker.Offer{}, err
 	}
 	nextTurnSequence := turn.LastSequence
-	if !plan.PersistentWorkerReuse {
+	if requiresConfirmation {
 		event, eventErr := core.NewWaitingConfirmationTurnEvent(plan.ConfirmationID, plan.ExecutionID)
 		if eventErr != nil {
 			return cloudworker.Offer{}, cloudworker.ErrInvalid
@@ -412,7 +413,7 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	}
 
 	executionEventType := "offer_created"
-	if plan.PersistentWorkerReuse {
+	if !requiresConfirmation {
 		executionEventType = "worker_reuse_queued"
 	}
 	executionEvent := cloudworker.Event{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration,

@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,9 +28,14 @@ import (
 
 type serviceWorkerStub struct {
 	identity sshworker.WorkerIdentity
+	status   sshworker.WorkerStatus
 	port     uint16
 	open     bool
 	err      error
+}
+
+func (worker *serviceWorkerStub) ObserveWorker(context.Context, sshworker.WorkerIdentity) (sshworker.WorkerStatus, error) {
+	return worker.status, worker.err
 }
 
 func (worker *serviceWorkerStub) WorkerIdentity(context.Context, sshworker.OwnerAuthority, sshworker.CredentialIdentity, string) (sshworker.WorkerIdentity, error) {
@@ -44,13 +50,27 @@ func (worker *serviceWorkerStub) SetPublicPort(_ context.Context, _ sshworker.Wo
 type route53Stub struct {
 	record    remoteservice.ARecord
 	exists    bool
+	zoneID    string
+	zoneFound bool
+	upserts   int
+	mutation  remoteservice.DNSMutation
+	accountID string
 	deletes   int
 	deleteErr error
 }
 
-func (*route53Stub) VerifyAccount(context.Context, string) error { return nil }
-func (*route53Stub) UpsertA(context.Context, remoteservice.DNSMutation) error {
-	return errors.New("unexpected upsert")
+func (route53 *route53Stub) VerifyAccount(_ context.Context, accountID string) error {
+	route53.accountID = accountID
+	return nil
+}
+func (route53 *route53Stub) ResolveHostedZone(context.Context, string) (string, bool, error) {
+	return route53.zoneID, route53.zoneFound, nil
+}
+func (route53 *route53Stub) UpsertA(_ context.Context, mutation remoteservice.DNSMutation) error {
+	route53.upserts++
+	route53.mutation = mutation
+	route53.record, route53.exists = mutation.Record, true
+	return nil
 }
 func (route53 *route53Stub) DeleteA(context.Context, remoteservice.DNSMutation) error {
 	route53.deletes++
@@ -191,7 +211,7 @@ func TestSSHWorkerDestroyResolvesCredentialBeforeBusyState(t *testing.T) {
 	}
 	credentialErr := errors.New("historical secret unavailable")
 	resolver.exactErr = credentialErr
-	executor := &sshWorkerExecutor{authority: authority, exact: resolver, state: state, root: t.TempDir(), providers: make(map[sshworker.CredentialIdentity]*sshworker.Provider), route53: make(map[sshworker.CredentialIdentity]remoteservice.Route53), pool: sshworker.NewPool()}
+	executor := &sshWorkerExecutor{authority: authority, exact: resolver, state: state, root: t.TempDir(), providers: make(map[sshworker.CredentialIdentity]*sshworker.Provider), route53: make(map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53), pool: sshworker.NewPool()}
 	err = executor.DestroyWorker(context.Background(), workerAuthorityFixture(), sshworker.DestroyRequest{Identity: identity,
 		Authorization: sshworker.DestroyAuthorization{Authorized: true, Proof: "destroy"}})
 	if !errors.Is(err, credentialErr) || errors.Is(err, sshworker.ErrBusy) {
@@ -259,15 +279,21 @@ func TestProjectDomainForWorkerReportsDriftWithoutChangingPersistedTarget(t *tes
 }
 
 func TestPublishServicePersistsBeforeOpeningPort(t *testing.T) {
+	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	repository, err := sshworkload.NewRepository(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	identity := workerIdentityFixture()
-	executor := &sshWorkerExecutor{workloads: repository}
+	identity.Credential = sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision, AccountID: binding.AccountID, Region: binding.Region}
+	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository}
 	worker := &serviceWorkerStub{identity: identity}
-	service := sshworker.RuntimeServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health"}
-	if err = executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service); err != nil {
+	service := cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health"}
+	if _, err = executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service); err != nil {
 		t.Fatal(err)
 	}
 	if !worker.open || worker.port != service.Port {
@@ -278,13 +304,65 @@ func TestPublishServicePersistsBeforeOpeningPort(t *testing.T) {
 	}
 
 	failedRepository, _ := sshworkload.NewRepository(t.TempDir())
-	failedExecutor := &sshWorkerExecutor{workloads: failedRepository}
+	failedExecutor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: failedRepository}
 	worker.err = errors.New("open port failed")
-	if err = failedExecutor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-b", service); err == nil {
+	if _, err = failedExecutor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-b", service); err == nil {
 		t.Fatal("port failure was accepted")
 	}
 	if _, err = failedRepository.Get(context.Background(), identity, service.WorkloadID); err != nil {
 		t.Fatalf("port failure left service untracked: %v", err)
+	}
+}
+
+func TestPublishServiceBindsRequestedHostnameWithUploadedCredential(t *testing.T) {
+	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := workerIdentityFixture()
+	identity.Credential = sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision, AccountID: binding.AccountID, Region: binding.Region}
+	repository, _ := sshworkload.NewRepository(t.TempDir())
+	dns := &route53Stub{zoneID: "Z123", zoneFound: true}
+	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository,
+		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{identity.Credential: {}},
+		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns}}
+	worker := &serviceWorkerStub{identity: identity, status: sshworker.WorkerStatus{Identity: identity, PublicIP: "203.0.113.20"}}
+	service := cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.example.test"}
+	publication, err := executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repository.Get(context.Background(), identity, service.WorkloadID)
+	if err != nil || stored.Domain == nil || stored.Domain.Hostname != service.Hostname || stored.Domain.BoundIPv4 != worker.status.PublicIP ||
+		publication.ZoneID != dns.zoneID || dns.upserts != 1 || dns.accountID != identity.Credential.AccountID || dns.mutation.Record != dns.record {
+		t.Fatalf("publication=%+v stored=%+v dns=%+v err=%v", publication, stored, dns, err)
+	}
+}
+
+func TestPublishServiceReturnsManualDNSWhenNoHostedZoneMatches(t *testing.T) {
+	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := workerIdentityFixture()
+	identity.Credential = sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision, AccountID: binding.AccountID, Region: binding.Region}
+	repository, _ := sshworkload.NewRepository(t.TempDir())
+	dns := &route53Stub{}
+	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository,
+		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{identity.Credential: {}},
+		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns}}
+	worker := &serviceWorkerStub{identity: identity, status: sshworker.WorkerStatus{Identity: identity, PublicIP: "203.0.113.20"}}
+	service := cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.external.test"}
+	publication, err := executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repository.Get(context.Background(), identity, service.WorkloadID)
+	if err != nil || stored.Domain != nil || dns.upserts != 0 || publication.ZoneID != "" ||
+		!strings.Contains(publication.summary(), worker.status.PublicIP) || !strings.Contains(publication.summary(), "Create an A record") {
+		t.Fatalf("publication=%+v stored=%+v dns=%+v err=%v", publication, stored, dns, err)
 	}
 }
 
@@ -312,7 +390,7 @@ func TestUnbindDomainUsesPersistedAddressWithoutObservingWorker(t *testing.T) {
 	dns := &route53Stub{record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}, exists: true}
 	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository,
 		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{identity.Credential: {}},
-		route53:   map[sshworker.CredentialIdentity]remoteservice.Route53{identity.Credential: dns}}
+		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns}}
 	_, err = (sshWorkerDomains{executor: executor}).UnbindDomain(context.Background(), workercap.DomainCommand{Worker: identity,
 		WorkloadID: service.WorkloadID, ZoneID: domain.ZoneID, Hostname: domain.Hostname, TTL: domain.TTL, Confirmation: "unbind_domain"})
 	if err != nil {
@@ -419,7 +497,7 @@ func TestDestroyWorkerReportsDNSFailureAfterComputeDestruction(t *testing.T) {
 	destroyer := &workerDestroyerStub{}
 	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository,
 		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{identity.Credential: {}},
-		route53:   map[sshworker.CredentialIdentity]remoteservice.Route53{identity.Credential: dns}}
+		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns}}
 	request := sshworker.DestroyRequest{Identity: identity, Authorization: sshworker.DestroyAuthorization{Authorized: true, Proof: "destroy"}}
 	if err = executor.destroyWorkerResources(context.Background(), destroyer, request); !errors.Is(err, dnsFailure) {
 		t.Fatalf("destroy returned %v", err)

@@ -510,16 +510,22 @@ connection does not erase remote state. Job and service workloads share this
 protocol, and a service may remain running across conversation turns.
 The existing Task event stream and originating turn `worker_status` event
 report environment preparation, Worker selection/provisioning, connection,
-remote execution, result collection, and service verification before the
+remote execution (including periodic durable updates while it remains
+running), result collection, and service verification before the
 terminal event. The turn event keeps coarse status as authority and carries
 only an optional phase enum for client localization. Remote finite execution runs
 inside a task-named systemd scope; timeout cancellation stops that scope so
 session-changing descendants cannot continue after the task is terminal.
 
 Worker results are copied into the Agent-owned local artifact repository and
-returned to the original durable turn. Optional Route53 binding is an explicit
-management action for workloads that need a domain. It is not required for
-Worker creation or execution. There is no EIP, custom AMI, S3/KMS artifact
+returned to the original durable turn. When a confirmed service plan includes
+a user-requested hostname, Agent uses the same App-uploaded credential to find
+the longest matching public Route53 hosted zone and UPSERT an A record to the
+Worker public IPv4. The hostname is part of the confirmed plan, so this does
+not create a second confirmation. If no matching zone is available, service
+deployment still succeeds and the result returns the public IPv4 plus manual A
+record instructions. Later domain changes remain explicit management actions.
+Route53 is not required for Worker creation or ordinary execution. There is no EIP, custom AMI, S3/KMS artifact
 path, WorkerControl listener, model relay, or deploy-time Worker binding. The
 complete read, cancellation, event, artifact, and management contract is
 [Execution V2](execution-v2.md).

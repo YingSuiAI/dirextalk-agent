@@ -203,6 +203,9 @@ func TestSSHWorkerStorePreservesRunningWorkerWhenTurnIsSteered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = sshStore.Progress(h.ctx, &run, "executing_remote_task", "Executing task on Worker"); err != nil {
+		t.Fatal(err)
+	}
 	conversationStore, err := NewCoreConversationStore(h.store)
 	if err != nil {
 		t.Fatal(err)
@@ -220,10 +223,13 @@ func TestSSHWorkerStorePreservesRunningWorkerWhenTurnIsSteered(t *testing.T) {
 		steered.DispatchState != waiting.DispatchState || !reflect.DeepEqual(steered.DispatchResult, waiting.DispatchResult) {
 		t.Fatalf("steered=%+v interrupt=%v err=%v", steered, interrupt, err)
 	}
+	if err = sshStore.Progress(h.ctx, &run, "executing_remote_task", "Executing task on Worker"); err != nil {
+		t.Fatalf("progress after steer: %v", err)
+	}
 	afterTask, err := tasks.GetTask(h.ctx, running.ID)
 	if err != nil || afterTask.Status != coretask.StatusRunning || afterTask.Lease == nil ||
-		afterTask.Lease.Holder != running.Lease.Holder || afterTask.LeaseEpoch != running.LeaseEpoch ||
-		!afterTask.Lease.ExpiresAt.Equal(running.Lease.ExpiresAt) || afterTask.Revision != running.Revision {
+		afterTask.Lease.Holder != run.Task.Lease.Holder || afterTask.LeaseEpoch != run.Task.LeaseEpoch ||
+		!afterTask.Lease.ExpiresAt.Equal(run.Task.Lease.ExpiresAt) || afterTask.Revision != run.Task.Revision || afterTask.ProgressSequence != 2 {
 		t.Fatalf("Worker task authority changed before=%+v after=%+v err=%v", running, afterTask, err)
 	}
 	if err = sshStore.Complete(h.ctx, run, sshflow.Result{Summary: "deployment complete", WorkerID: "worker-one"}); err != nil {

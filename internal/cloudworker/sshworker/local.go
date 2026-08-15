@@ -509,10 +509,10 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 	}
 	if request.ReportProgress != nil {
 		if err := request.ReportProgress(ctx, "executing_remote_task", "Executing task on Worker"); err != nil {
-			return ExecutionResult{}, err
+			return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
 		}
 	}
-	status, err := executor.waitRuntime(ctx, sshPath, base, request.Runtime)
+	status, err := executor.waitRuntime(ctx, sshPath, base, request.Runtime, request.ReportProgress)
 	if request.Resume && errors.Is(err, errRuntimeNotStarted) {
 		appliedSteerIDs, err = applyRuntimeGuidance(ctx, sshPath, base, taskRoot, request.ResolveGuidance)
 		if err != nil {
@@ -525,7 +525,7 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 		if startErr = sshWithInput(ctx, sshPath, base, start.Shell, bytes.NewReader(start.Stdin)); startErr != nil {
 			return ExecutionResult{}, errors.Join(ErrAmbiguous, startErr)
 		}
-		status, err = executor.waitRuntime(ctx, sshPath, base, request.Runtime)
+		status, err = executor.waitRuntime(ctx, sshPath, base, request.Runtime, request.ReportProgress)
 	}
 	if err != nil {
 		return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
@@ -577,7 +577,8 @@ func applyRuntimeGuidance(ctx context.Context, sshPath string, base []string, ta
 	return append([]string(nil), guidance.SteerIDs...), nil
 }
 
-func (executor CommandSSHExecutor) waitRuntime(ctx context.Context, sshPath string, base []string, protocol RuntimeProtocol) (remoteRuntimeStatus, error) {
+func (executor CommandSSHExecutor) waitRuntime(ctx context.Context, sshPath string, base []string, protocol RuntimeProtocol, report func(context.Context, string, string) error) (remoteRuntimeStatus, error) {
+	lastProgress := time.Now()
 	for {
 		command, err := protocol.Status()
 		if err != nil {
@@ -599,6 +600,12 @@ func (executor CommandSSHExecutor) waitRuntime(ctx context.Context, sshPath stri
 			return remoteRuntimeStatus{}, errRuntimeNotStarted
 		default:
 			return remoteRuntimeStatus{}, ErrInvalid
+		}
+		if report != nil && time.Since(lastProgress) >= runtimeProgressInterval {
+			if err = report(ctx, "executing_remote_task", "Executing task on Worker"); err != nil {
+				return remoteRuntimeStatus{}, err
+			}
+			lastProgress = time.Now()
 		}
 		select {
 		case <-ctx.Done():
@@ -703,6 +710,7 @@ func retrySSH(ctx context.Context, sshPath string, base []string, remote string)
 }
 
 var timeAfter = func(seconds int) <-chan time.Time { return time.After(time.Duration(seconds) * time.Second) }
+var runtimeProgressInterval = 15 * time.Second
 
 func sshWithInput(ctx context.Context, sshPath string, base []string, remote string, input io.Reader) error {
 	command := exec.CommandContext(ctx, sshPath, append(base, remote)...)

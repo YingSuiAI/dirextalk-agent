@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workspacearchive"
@@ -166,11 +167,13 @@ type ServiceSpec struct {
 	WorkloadID string `json:"workload_id"`
 	Port       uint16 `json:"port"`
 	HealthPath string `json:"health_path"`
+	Hostname   string `json:"hostname,omitempty"`
 }
 
 func (spec ServiceSpec) validate() error {
 	if strings.TrimSpace(spec.WorkloadID) == "" || len(spec.WorkloadID) > 128 || spec.Port == 0 || len(spec.HealthPath) > 2048 ||
-		!strings.HasPrefix(spec.HealthPath, "/") || strings.HasPrefix(spec.HealthPath, "//") || strings.ContainsAny(spec.HealthPath, " \t\r\n#") {
+		!strings.HasPrefix(spec.HealthPath, "/") || strings.HasPrefix(spec.HealthPath, "//") || strings.ContainsAny(spec.HealthPath, " \t\r\n#") ||
+		(spec.Hostname != "" && !remoteservice.ValidHostname(spec.Hostname)) {
 		return ErrInvalid
 	}
 	for _, current := range spec.WorkloadID {
@@ -230,6 +233,10 @@ type Plan struct {
 	ExecutionDigest          string               `json:"execution_digest"`
 	CreatedAt                time.Time            `json:"created_at"`
 	UpdatedAt                time.Time            `json:"updated_at"`
+}
+
+func (p Plan) RequiresOwnerConfirmation() bool {
+	return !p.PersistentWorkerReuse || (p.Service != nil && p.Service.Hostname != "")
 }
 
 type Execution struct {

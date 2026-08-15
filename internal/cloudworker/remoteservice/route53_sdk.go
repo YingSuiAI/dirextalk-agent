@@ -23,6 +23,11 @@ type Route53STSAPI interface {
 	GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
 }
 
+type HostedZoneRoute53 interface {
+	Route53
+	ResolveHostedZone(context.Context, string) (string, bool, error)
+}
+
 // Route53SDK uses the App-provided AWS credentials. Route 53 records point
 // directly to the Worker's ordinary public IPv4; this adapter never allocates
 // or manages an Elastic IP.

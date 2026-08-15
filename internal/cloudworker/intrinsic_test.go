@@ -236,9 +236,12 @@ func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
 	if err != nil || arguments.DiskGiB != 8 {
 		t.Fatalf("small positive disk estimate was not normalized: arguments=%+v err=%v", arguments, err)
 	}
-	service, err := parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"memory-api","port":8080,"health_path":"/health"}}`))
-	if err != nil || service.Service == nil || service.Service.WorkloadID != "memory-api" || service.Service.Port != 8080 {
+	service, err := parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"memory-api","port":8080,"health_path":"/health","hostname":"API.Example.Test."}}`))
+	if err != nil || service.Service == nil || service.Service.WorkloadID != "memory-api" || service.Service.Port != 8080 || service.Service.Hostname != "api.example.test" {
 		t.Fatalf("service arguments=%+v err=%v", service, err)
+	}
+	if _, err = parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"memory-api","port":8080,"health_path":"/health","hostname":"not a hostname"}}`)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("invalid hostname accepted: %v", err)
 	}
 	if _, err = parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","workload_kind":"service"}`)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("missing service spec accepted: %v", err)
@@ -391,7 +394,7 @@ func TestIntrinsicProposalUsesRenewedTurnLease(t *testing.T) {
 	renewed := bound
 	renewed.Epoch++
 	renewed.ExpiresAt = renewed.ExpiresAt.Add(time.Minute)
-	raw := json.RawMessage(`{"objective":"deploy the service","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60}`)
+	raw := json.RawMessage(`{"objective":"deploy the service","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"web","port":8080,"health_path":"/health","hostname":"App.Example.Test."}}`)
 	result, err := tools[0].Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
 		Lease: renewed,
 		Call: coreconversation.ToolCall{
@@ -402,7 +405,7 @@ func TestIntrinsicProposalUsesRenewedTurnLease(t *testing.T) {
 	if err != nil || !result.TurnCommitted {
 		t.Fatalf("renewed lease rejected: result=%+v err=%v", result, err)
 	}
-	if len(store.commands) != 1 || store.commands[0].TurnLeaseEpoch != renewed.Epoch {
+	if len(store.commands) != 1 || store.commands[0].TurnLeaseEpoch != renewed.Epoch || store.commands[0].Plan.Service == nil || store.commands[0].Plan.Service.Hostname != "app.example.test" {
 		t.Fatalf("offer committed under stale lease: commands=%+v", store.commands)
 	}
 }

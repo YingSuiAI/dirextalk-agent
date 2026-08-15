@@ -3,6 +3,7 @@ package sshworker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -137,6 +138,66 @@ esac
 	}
 	if _, err = os.Stat(filepath.Join(state, "start.count")); !os.IsNotExist(err) {
 		t.Fatalf("resume unexpectedly restarted an existing runtime: %v", err)
+	}
+}
+
+func TestCommandSSHExecutorReportsProgressWhileRuntimeIsRunning(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `
+case "$remote" in
+  *"'status'"*)
+    current="$(count status)"
+    if [[ "$current" -le 2 ]]; then printf '%s\n' '{"phase":"running","exit_code":0}'; else printf '%s\n' '{"phase":"completed","exit_code":0}'; fi
+    ;;
+  *"'log'"*) printf '%s\n' 'completed after progress' ;;
+  *"'artifact'"*) exit 0 ;;
+  *) exit 64 ;;
+esac
+`)
+	withoutRetryDelay(t)
+	previousInterval := runtimeProgressInterval
+	runtimeProgressInterval = 0
+	t.Cleanup(func() { runtimeProgressInterval = previousInterval })
+	sink := &recordingResultSink{artifacts: make(map[string][]byte)}
+	request := sshRequestFixture(t, sink)
+	var phases []string
+	request.ReportProgress = func(_ context.Context, phase, _ string) error {
+		phases = append(phases, phase)
+		return nil
+	}
+	if _, err := (CommandSSHExecutor{SSHPath: ssh}).Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"executing_remote_task", "executing_remote_task", "executing_remote_task", "collecting_result"}
+	if fmt.Sprint(phases) != fmt.Sprint(want) {
+		t.Fatalf("progress phases=%v want=%v", phases, want)
+	}
+}
+
+func TestCommandSSHExecutorTreatsProgressFailureAfterStartAsAmbiguous(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `
+case "$remote" in
+  *"'status'"*) printf '%s\n' '{"phase":"running","exit_code":0}' ;;
+  *) exit 64 ;;
+esac
+`)
+	previousInterval := runtimeProgressInterval
+	runtimeProgressInterval = 0
+	t.Cleanup(func() { runtimeProgressInterval = previousInterval })
+	sink := &recordingResultSink{artifacts: make(map[string][]byte)}
+	request := sshRequestFixture(t, sink)
+	calls := 0
+	request.ReportProgress = func(context.Context, string, string) error {
+		calls++
+		if calls > 1 {
+			return errors.New("progress unavailable")
+		}
+		return nil
+	}
+	_, err := (CommandSSHExecutor{SSHPath: ssh}).Execute(context.Background(), request)
+	if !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("progress failure=%v", err)
 	}
 }
 

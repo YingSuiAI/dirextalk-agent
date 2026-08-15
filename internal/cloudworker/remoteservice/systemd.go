@@ -183,3 +183,9 @@ func validHostname(value string) bool {
 	}
 	return true
 }
+
+// ValidHostname reports whether value can be used as a DNS hostname by the
+// remote-service and Route53 paths.
+func ValidHostname(value string) bool { return validHostname(value) }
+
+func CanonicalHostname(value string) string { return canonicalHostname(value) }

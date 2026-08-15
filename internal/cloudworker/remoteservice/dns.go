@@ -46,27 +46,26 @@ func ReconcileLiteral(ctx context.Context, client Route53, mutation DNSMutation,
 		(mutation.Action == DNSDeleteA && confirmation != "unbind_domain" && confirmation != "destroy_worker") {
 		return ErrNotConfirmed
 	}
+	if mutation.Action == DNSUpsertA {
+		return ReconcilePlannedUpsert(ctx, client, mutation)
+	}
 	if err := client.VerifyAccount(ctx, mutation.AccountID); err != nil {
 		return err
 	}
-	if mutation.Action == DNSDeleteA {
-		current, exists, err := client.ReadA(ctx, mutation.Record.ZoneID, canonicalHostname(mutation.Record.Hostname))
-		if err != nil {
-			return err
-		}
-		if !exists {
-			return nil
-		}
-		if !sameRecord(current, mutation.Record) {
-			return ErrReadback
-		}
-		if err = client.VerifyAccount(ctx, mutation.AccountID); err != nil {
-			return err
-		}
-		if err = client.DeleteA(ctx, mutation); err != nil {
-			return err
-		}
-	} else if err := client.UpsertA(ctx, mutation); err != nil {
+	current, exists, err := client.ReadA(ctx, mutation.Record.ZoneID, canonicalHostname(mutation.Record.Hostname))
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if !sameRecord(current, mutation.Record) {
+		return ErrReadback
+	}
+	if err = client.VerifyAccount(ctx, mutation.AccountID); err != nil {
+		return err
+	}
+	if err = client.DeleteA(ctx, mutation); err != nil {
 		return err
 	}
 	if err := client.VerifyAccount(ctx, mutation.AccountID); err != nil {
@@ -81,6 +80,32 @@ func ReconcileLiteral(ctx context.Context, client Route53, mutation DNSMutation,
 			return ErrReadback
 		}
 		return nil
+	}
+	if !exists || !sameRecord(record, mutation.Record) {
+		return ErrReadback
+	}
+	return nil
+}
+
+// ReconcilePlannedUpsert applies a DNS record already bound into a confirmed
+// Cloud Worker plan. The caller owns confirmation; this helper owns the exact
+// AWS account mutation and read-back.
+func ReconcilePlannedUpsert(ctx context.Context, client Route53, mutation DNSMutation) error {
+	if ctx == nil || client == nil || mutation.Action != DNSUpsertA || mutation.validate() != nil {
+		return ErrInvalid
+	}
+	if err := client.VerifyAccount(ctx, mutation.AccountID); err != nil {
+		return err
+	}
+	if err := client.UpsertA(ctx, mutation); err != nil {
+		return err
+	}
+	if err := client.VerifyAccount(ctx, mutation.AccountID); err != nil {
+		return err
+	}
+	record, exists, err := client.ReadA(ctx, mutation.Record.ZoneID, canonicalHostname(mutation.Record.Hostname))
+	if err != nil {
+		return err
 	}
 	if !exists || !sameRecord(record, mutation.Record) {
 		return ErrReadback

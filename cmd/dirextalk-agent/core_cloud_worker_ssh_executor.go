@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -42,7 +43,7 @@ type sshWorkerExecutor struct {
 	state     *sshworker.FileStore
 	pool      *sshworker.Pool
 	workloads *sshworkload.Repository
-	route53   map[sshworker.CredentialIdentity]remoteservice.Route53
+	route53   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53
 	root      string
 	mu        sync.Mutex
 }
@@ -57,7 +58,7 @@ func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact worka
 	}
 	return &sshWorkerExecutor{authority: authority, exact: exact, providers: make(map[sshworker.CredentialIdentity]*sshworker.Provider), artifacts: artifacts,
 		pricing: pricing, sources: sources, steers: steers, state: state, pool: sshworker.NewPool(), workloads: workloads,
-		route53: make(map[sshworker.CredentialIdentity]remoteservice.Route53), root: root}, nil
+		route53: make(map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53), root: root}, nil
 }
 
 func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudworker.AWSBinding) (*sshworker.Provider, sshworker.CredentialIdentity, error) {
@@ -205,8 +206,12 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 				return workerResult, progressErr
 			}
 		}
-		if err = executor.publishService(ctx, provider, sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, identity, result.WorkerID, request.ExecutionID, *service); err != nil {
-			return workerResult, err
+		publication, publishErr := executor.publishService(ctx, provider, sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, identity, result.WorkerID, request.ExecutionID, *request.Service)
+		if publishErr != nil {
+			return workerResult, publishErr
+		}
+		if detail := publication.summary(); detail != "" {
+			workerResult.Summary = boundedWorkerSummary(workerResult.Summary + "\n\n" + detail)
 		}
 	}
 	return workerResult, nil
@@ -388,19 +393,92 @@ func matchesSHA256(body []byte, expected string) bool {
 
 type serviceWorker interface {
 	WorkerIdentity(context.Context, sshworker.OwnerAuthority, sshworker.CredentialIdentity, string) (sshworker.WorkerIdentity, error)
+	ObserveWorker(context.Context, sshworker.WorkerIdentity) (sshworker.WorkerStatus, error)
 	SetPublicPort(context.Context, sshworker.WorkerIdentity, uint16, bool) error
 }
 
-func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider serviceWorker, authority sshworker.OwnerAuthority, credential sshworker.CredentialIdentity, workerID, taskID string, service sshworker.RuntimeServiceSpec) error {
+type servicePublication struct {
+	Hostname, PublicIPv4, ZoneID, ManualDNS string
+	DNSLookupFailed                         bool
+	Port                                    uint16
+}
+
+func (publication servicePublication) summary() string {
+	if publication.Hostname == "" || publication.PublicIPv4 == "" {
+		return ""
+	}
+	if publication.ZoneID != "" {
+		return fmt.Sprintf("Service DNS ready: %s A -> %s (Route53 hosted zone %s, port %d).", publication.Hostname, publication.PublicIPv4, publication.ZoneID, publication.Port)
+	}
+	reason := "No matching Route53 hosted zone was available."
+	if publication.DNSLookupFailed {
+		reason = "Automatic Route53 lookup failed."
+	}
+	return fmt.Sprintf("Service is running on public IPv4 %s (port %d). %s %s", publication.PublicIPv4, publication.Port, reason, publication.ManualDNS)
+}
+
+func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider serviceWorker, authority sshworker.OwnerAuthority, credential sshworker.CredentialIdentity, workerID, taskID string, service cloudworker.ServiceSpec) (servicePublication, error) {
 	worker, err := provider.WorkerIdentity(ctx, authority, credential, workerID)
 	if err != nil {
-		return err
+		return servicePublication{}, err
 	}
 	if err = executor.workloads.PutService(ctx, sshworkload.Service{Worker: worker, TaskID: taskID,
 		WorkloadID: service.WorkloadID, Port: service.Port, HealthPath: service.HealthPath}); err != nil {
-		return err
+		return servicePublication{}, err
 	}
-	return provider.SetPublicPort(ctx, worker, service.Port, true)
+	if _, err = executor.currentBindingForCredential(ctx, credential); err != nil {
+		return servicePublication{}, err
+	}
+	if err = provider.SetPublicPort(ctx, worker, service.Port, true); err != nil {
+		return servicePublication{}, err
+	}
+	if service.Hostname == "" {
+		return servicePublication{}, nil
+	}
+	if _, err = executor.currentBindingForCredential(ctx, credential); err != nil {
+		return servicePublication{}, err
+	}
+	status, err := provider.ObserveWorker(ctx, worker)
+	if err != nil || status.PublicIP == "" {
+		return servicePublication{}, errors.Join(sshworker.ErrIdentity, err)
+	}
+	publication := servicePublication{Hostname: remoteservice.CanonicalHostname(service.Hostname), PublicIPv4: status.PublicIP, Port: service.Port}
+	instructions, err := remoteservice.CompileExternalDNS(remoteservice.DomainBinding{Mode: remoteservice.DomainExternal,
+		Hostname: publication.Hostname, TTL: 300}, publication.PublicIPv4)
+	if err != nil {
+		return servicePublication{}, err
+	}
+	publication.ManualDNS = instructions.Summary
+	dns := executor.route53For(ctx, credential)
+	if dns == nil {
+		publication.DNSLookupFailed = true
+		return publication, nil
+	}
+	if err = dns.VerifyAccount(ctx, credential.AccountID); err != nil {
+		publication.DNSLookupFailed = true
+		slog.Warn("[cloud-worker.route53] account_verification_failed", "error", err, "hostname", publication.Hostname)
+		return publication, nil
+	}
+	zoneID, found, resolveErr := dns.ResolveHostedZone(ctx, publication.Hostname)
+	if resolveErr != nil {
+		publication.DNSLookupFailed = true
+		slog.Warn("[cloud-worker.route53] hosted_zone_lookup_failed", "error", resolveErr, "hostname", publication.Hostname)
+		return publication, nil
+	}
+	if !found {
+		return publication, nil
+	}
+	domain := &sshworkload.Domain{ZoneID: zoneID, Hostname: publication.Hostname, TTL: 300, BoundIPv4: publication.PublicIPv4, PublicPort: service.Port}
+	mutation := remoteservice.DNSMutation{Action: remoteservice.DNSUpsertA, AccountID: credential.AccountID, WorkerID: worker.WorkerID,
+		WorkloadID: service.WorkloadID, Record: remoteservice.ARecord{ZoneID: zoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}}
+	if err = remoteservice.ReconcilePlannedUpsert(ctx, dns, mutation); err != nil {
+		return servicePublication{}, err
+	}
+	if err = executor.workloads.SetDomain(ctx, worker, service.WorkloadID, domain); err != nil {
+		return servicePublication{}, err
+	}
+	publication.ZoneID = zoneID
+	return publication, nil
 }
 
 func (executor *sshWorkerExecutor) ResolveIdleWorker(ctx context.Context, ownerID string, accountGeneration uint64, binding cloudworker.AWSBinding, requirements cloudworker.ComputeRequirements) (cloudworker.WorkerReuseSelection, bool, error) {
@@ -755,7 +833,7 @@ func projectDomainForWorker(domain *sshworkload.Domain, currentPublicIP string) 
 
 func ptrDomain(value workercap.DomainStatus) *workercap.DomainStatus { return &value }
 
-func (executor *sshWorkerExecutor) route53For(ctx context.Context, identity sshworker.CredentialIdentity) remoteservice.Route53 {
+func (executor *sshWorkerExecutor) route53For(ctx context.Context, identity sshworker.CredentialIdentity) remoteservice.HostedZoneRoute53 {
 	binding, err := executor.currentBindingForCredential(ctx, identity)
 	if err != nil {
 		return nil

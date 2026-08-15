@@ -35,15 +35,22 @@ Remote work is durable by task ID. The Agent uses short SSH operations to:
 
 A dropped SSH connection does not erase remote state or authorize a duplicate start. Jobs terminalize when their remote task finishes. Services may remain active across turns until the owner stops them or destroys the Worker.
 
-Optional Route53 binding is an explicit management action for a service that needs a domain. It is not required for Worker creation, reuse, observation, or ordinary jobs.
+When a confirmed service proposal includes a user-requested hostname, Agent
+uses the App-uploaded credential to find the longest matching public Route53
+hosted zone and UPSERT an A record to the Worker's current public IPv4. The
+hostname is already bound by the single Worker confirmation. If no matching
+zone is available, the service still succeeds and returns the IPv4 and manual
+A-record instructions. Later domain changes are explicit management actions.
+Route53 is not required for Worker creation, reuse, observation, or ordinary jobs.
 
 ## Results and artifacts
 
 Terminal output is returned to the original durable turn as the `cloud_worker_propose` tool result. Central resumes that turn and writes the user-facing answer.
 The same turn also receives canonical `worker_status` progress for queued,
-provisioning, running, and terminal execution transitions. Each event contains
-only the turn identity/revision/timestamp plus execution ID and status; it does
-not duplicate Worker inventory or require client polling.
+provisioning, running, and terminal execution transitions. Long remote runs
+repeat the durable running phase periodically. Each event contains only the
+turn identity/revision/timestamp plus execution ID, status, and optional phase;
+it does not duplicate Worker inventory or require client polling.
 
 Cloud Worker and local sandbox result files use the same Agent-owned local artifact repository with separate internal namespaces. Existing Cloud Worker metadata and deterministic artifact IDs remain unchanged. Public artifact metadata contains stable IDs, media type, size, and SHA-256, never a Worker or sandbox filesystem path. The artifact request `record_kind` selects the namespace, and `agent.execution.v2.artifacts.download` revalidates the stored identity before returning bounded chunks. Artifact reads do not contact AWS.
 
