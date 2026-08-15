@@ -573,6 +573,8 @@ func TestExecuteRunsSeparateWorkerLeasesConcurrently(t *testing.T) {
 		request.ExecutionID = "execution-" + string(rune('a'+index))
 		request.Runtime.TaskID = request.ExecutionID
 		request.Confirmation = Confirmation{}
+		request.ReuseOnly = true
+		request.ReuseWorkerID = "worker-" + string(rune('a'+index))
 		go func() {
 			_, err := provider.Execute(context.Background(), request)
 			errCh <- err

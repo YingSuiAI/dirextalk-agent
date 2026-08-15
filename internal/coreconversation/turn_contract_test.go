@@ -879,7 +879,7 @@ func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *t
 	}
 }
 
-func TestExecuteTurnRepeatWorkerProposalPreservesExistingRemoteFailure(t *testing.T) {
+func TestExecuteTurnAllowsFailedWorkerFollowUpProposalForDeferredSteer(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
 	createdAt := time.Now().UTC().Add(-time.Minute)
@@ -887,7 +887,7 @@ func TestExecuteTurnRepeatWorkerProposalPreservesExistingRemoteFailure(t *testin
 		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
 		Prompt: "deploy the service remotely", ProfileID: profile.ProfileID,
 		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
-		State: TurnAccepted, Revision: 3, LastSequence: 5, CreatedAt: createdAt,
+		State: TurnAccepted, Revision: 3, LastSequence: 6, CreatedAt: createdAt,
 	}
 	taskID, planID := uuid.NewString(), uuid.NewString()
 	executionID := uuid.NewString()
@@ -901,16 +901,20 @@ func TestExecuteTurnRepeatWorkerProposalPreservesExistingRemoteFailure(t *testin
 		References: []Reference{reference},
 	}
 	repeatCall := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
+	steer := TurnSteer{RequestID: uuid.NewString(), Instruction: "retry using the retained Worker", ExpectedRevision: 2,
+		Sequence: 5, CreatedAt: createdAt.Add(4 * time.Second), Deferred: true}
 	base := newFakeStore()
 	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
 	store := &readOnlyTurnStore{
 		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		steers:                []TurnSteer{steer},
 		events: []TurnEvent{
 			{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: createdAt},
 			{TurnID: turn.ID, Sequence: 2, Revision: 2, Kind: TurnEventToolCall, ToolCall: &originalCall, CreatedAt: createdAt.Add(time.Second)},
 			{TurnID: turn.ID, Sequence: 3, Revision: 2, Kind: TurnEventWorkerStatus, ExecutionID: executionID, Status: "running", CreatedAt: createdAt.Add(2 * time.Second)},
 			{TurnID: turn.ID, Sequence: 4, Revision: 3, Kind: TurnEventWorkerStatus, ExecutionID: executionID, Status: "failed", CreatedAt: createdAt.Add(3 * time.Second)},
-			{TurnID: turn.ID, Sequence: 5, Revision: 3, Kind: TurnEventToolResult, ToolResult: &originalResult, CreatedAt: createdAt.Add(4 * time.Second)},
+			{TurnID: turn.ID, Sequence: 5, Revision: 3, Kind: TurnEventSteered, Text: steer.Instruction, Status: "deferred_tool", CreatedAt: steer.CreatedAt},
+			{TurnID: turn.ID, Sequence: 6, Revision: 3, Kind: TurnEventToolResult, ToolResult: &originalResult, CreatedAt: createdAt.Add(5 * time.Second)},
 		},
 	}
 	executeCalls := 0
@@ -922,9 +926,15 @@ func TestExecuteTurnRepeatWorkerProposalPreservesExistingRemoteFailure(t *testin
 	service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
 		return []ResolvedIntrinsic{{
 			Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerProposeToolName, InputSchema: map[string]any{"type": "object"}},
-			Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+			Execute: func(ctx context.Context, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
 				executeCalls++
-				return IntrinsicExecutionResult{}, ErrConflict
+				response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID,
+					Revision: request.ConversationRevision + 1, Done: true, ModelProfileID: turn.ProfileID,
+					Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "follow-up Worker execution accepted",
+						ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC()},
+				}
+				_, commitErr := store.CommitTurn(ctx, request.Lease, response)
+				return IntrinsicExecutionResult{TurnCommitted: commitErr == nil}, commitErr
 			},
 		}}, nil
 	}))
@@ -935,24 +945,18 @@ func TestExecuteTurnRepeatWorkerProposalPreservesExistingRemoteFailure(t *testin
 	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil {
 		t.Fatalf("terminal=%+v err=%v", terminal, err)
 	}
-	if executeCalls != 0 {
-		t.Fatalf("repeat cloud_worker_propose executed %d times", executeCalls)
+	if executeCalls != 1 {
+		t.Fatalf("follow-up cloud_worker_propose executed %d times", executeCalls)
 	}
 	if store.failedCode != "" {
 		t.Fatalf("terminal failure code=%q", store.failedCode)
 	}
-	response := terminal.Response
-	if !strings.Contains(response.Message.Content, "HTTP 403") || !strings.Contains(response.Message.Content, "model unavailable in region") ||
-		len(response.Message.ToolCalls) != 0 || !response.Done ||
-		!reflect.DeepEqual(response.RelatedTaskIDs, []string{taskID}) ||
-		!reflect.DeepEqual(response.RelatedPlanIDs, []string{planID}) ||
-		!reflect.DeepEqual(response.References, []Reference{reference}) ||
-		len(response.ToolResults) != 1 || response.ToolResults[0].CallID != originalCall.ID {
-		t.Fatalf("terminal response=%+v", response)
+	if terminal.Response.Message.Content != "follow-up Worker execution accepted" {
+		t.Fatalf("terminal response=%+v", terminal.Response)
 	}
 }
 
-func TestExecuteTurnFinalizesSucceededCloudWorkerWithDeferredSteer(t *testing.T) {
+func TestExecuteTurnContinuesSucceededCloudWorkerWithDeferredSteer(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID, requestID, turnID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	createdAt := time.Now().UTC().Add(-time.Minute)
@@ -992,17 +996,25 @@ func TestExecuteTurnFinalizesSucceededCloudWorkerWithDeferredSteer(t *testing.T)
 	service.executeTurn(context.Background(), turn.ID)
 
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
-	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || model.runs != 0 {
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || model.runs != 1 {
 		t.Fatalf("terminal=%+v model_runs=%d err=%v", terminal, model.runs, err)
 	}
-	content := terminal.Response.Message.Content
-	if !strings.Contains(content, "deployment finished") || !strings.Contains(content, "preserved in the conversation") ||
-		!strings.Contains(content, "was not applied to this completed execution") || len(terminal.Response.ToolResults) != 1 ||
+	if terminal.Response.Message.Content != "ok" || len(terminal.Response.ToolResults) != 1 ||
 		terminal.Response.ToolResults[0].CallID != call.ID {
 		t.Fatalf("terminal response=%+v", terminal.Response)
 	}
-	if applied := appendDeferredWorkerGuidanceStatus("deployment finished", []TurnSteer{steer}, []string{steer.RequestID}); applied != "deployment finished" {
-		t.Fatalf("applied Worker steer reported as deferred: %q", applied)
+	foundSteer, foundWorkerResult := false, false
+	for _, message := range model.request.Conversation.Messages {
+		foundSteer = foundSteer || (message.Role == RoleUser && message.Content == steer.Instruction)
+		for _, toolResult := range message.ToolResults {
+			foundWorkerResult = foundWorkerResult || toolResult.CallID == call.ID
+		}
+	}
+	if !foundSteer || !foundWorkerResult {
+		t.Fatalf("follow-up context steer=%v worker_result=%v messages=%+v", foundSteer, foundWorkerResult, model.request.Conversation.Messages)
+	}
+	if hasUnappliedDeferredWorkerSteer([]TurnSteer{steer}, []string{steer.RequestID}) {
+		t.Fatal("applied Worker steer reported as deferred")
 	}
 }
 
@@ -1297,6 +1309,8 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 		len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != selection.ID ||
 		!strings.HasPrefix(model.request.Profile.SystemPrompt, profile.SystemPrompt+"\n\n") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "Use cloud_worker_propose directly") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "workload_kind=service") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "not the lifetime") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "does not need to mention AWS") {
 		t.Fatalf("model request lost intrinsic or extension: %+v", model.request)
 	}

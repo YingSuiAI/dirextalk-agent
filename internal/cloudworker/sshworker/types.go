@@ -132,6 +132,7 @@ type ExecuteRequest struct {
 	MaxResultBytes     int64
 	Sink               ResultSink
 	ResolveGuidance    func(context.Context) (RuntimeGuidance, error)
+	ReportProgress     func(context.Context, string, string) error
 	ReuseOnly          bool
 	ReuseWorkerID      string
 }
@@ -194,6 +195,7 @@ type SSHRequest struct {
 	MaxWorkspaceBytes, MaxResultBytes                                          int64
 	Sink                                                                       ResultSink
 	ResolveGuidance                                                            func(context.Context) (RuntimeGuidance, error)
+	ReportProgress                                                             func(context.Context, string, string) error
 	Resume                                                                     bool
 }
 type SSHExecutor interface {

@@ -252,7 +252,9 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 	if err = os.MkdirAll(runtimeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(runtimeRoot, "pi"), []byte("#!/bin/sh\nsleep 5\n"), 0o700); err != nil {
+	escaped := filepath.Join(root, "escaped-after-timeout")
+	piScript := "#!/bin/sh\nsetsid sh -c 'sleep 2; touch " + escaped + "' >/dev/null 2>&1 &\nsleep 5\n"
+	if err = os.WriteFile(filepath.Join(runtimeRoot, "pi"), []byte(piScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	start := exec.Command(runner, "start", jobID)
@@ -266,6 +268,10 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 		if err == nil && json.Unmarshal(output, &taskStatus) == nil && taskStatus.Phase == "failed" {
 			if taskStatus.ExitCode != 124 {
 				t.Fatalf("timeout exit code = %d, want 124", taskStatus.ExitCode)
+			}
+			time.Sleep(1500 * time.Millisecond)
+			if _, statErr := os.Stat(escaped); !os.IsNotExist(statErr) {
+				t.Fatalf("descendant escaped timeout containment: %v", statErr)
 			}
 			return
 		}

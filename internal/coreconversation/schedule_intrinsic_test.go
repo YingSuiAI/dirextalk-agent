@@ -28,6 +28,22 @@ type executingScheduleTurnStore struct {
 	*conversationScheduleStoreStub
 }
 
+type correctingScheduleModel struct {
+	calls    []ToolCall
+	requests []ModelRunRequest
+}
+
+func (m *correctingScheduleModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
+	m.requests = append(m.requests, request)
+	call := m.calls[len(m.requests)-1]
+	message := Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: []ToolCall{call}, CreatedAt: time.Now().UTC()}
+	return ModelRunResult{Message: message, ToolCalls: []ToolCall{call}}, nil
+}
+
+func (m *correctingScheduleModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
 func (s *conversationScheduleStoreStub) CommitConversationSchedule(_ context.Context, command ConversationScheduleCommand) (coretask.Schedule, error) {
 	if s.err != nil {
 		return coretask.Schedule{}, s.err
@@ -94,6 +110,28 @@ func TestScheduleIntrinsicUsesLoadedRevisionWhenClientCASIsOmitted(t *testing.T)
 	}
 }
 
+func TestScheduleIntrinsicUsesRenewedTurnLease(t *testing.T) {
+	bound := scheduleIntrinsicLease()
+	renewed := bound
+	renewed.Epoch++
+	renewed.ExpiresAt = renewed.ExpiresAt.Add(time.Minute)
+	store := &conversationScheduleStoreStub{}
+	raw := json.RawMessage(`{"name":"每日纳斯达克行情总结","goal":"生成并发布每日行情页面","cron":"30 21 * * *","timezone":"Asia/Shanghai","timeout_seconds":600}`)
+	result, err := scheduleIntrinsic(store, bound).Execute(context.Background(), IntrinsicExecutionRequest{
+		Lease: renewed,
+		Call: ToolCall{
+			ID: uuid.NewString(), Name: coremodel.IntrinsicScheduleCreateToolName, Arguments: string(raw),
+		},
+		CanonicalArguments: raw, ConversationRevision: 5,
+	})
+	if err != nil || !result.TurnCommitted {
+		t.Fatalf("renewed lease rejected: result=%+v err=%v", result, err)
+	}
+	if len(store.commands) != 1 || store.commands[0].Lease.Epoch != renewed.Epoch {
+		t.Fatalf("schedule committed under stale lease: commands=%+v", store.commands)
+	}
+}
+
 func TestExecuteTurnPassesLoadedConversationRevisionToScheduleIntrinsic(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
@@ -130,6 +168,55 @@ func TestExecuteTurnPassesLoadedConversationRevisionToScheduleIntrinsic(t *testi
 	if len(scheduleStore.commands) != 1 || scheduleStore.commands[0].Response.Revision != 6 || turnStore.failedCode != "" {
 		t.Fatalf("commands=%+v failed=%q", scheduleStore.commands, turnStore.failedCode)
 	}
+}
+
+func TestExecuteTurnReturnsInvalidScheduleArgumentsToModel(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 5, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:example.test", AccountGeneration: 9,
+		ConversationID: conversationID, Prompt: "schedule this", ProfileID: profile.ProfileID,
+		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 1,
+		LastSequence: 1, CreatedAt: time.Now().UTC(),
+	}
+	turnStore := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}
+	scheduleStore := &conversationScheduleStoreStub{}
+	store := &executingScheduleTurnStore{readOnlyTurnStore: turnStore, conversationScheduleStoreStub: scheduleStore}
+	model := &correctingScheduleModel{calls: []ToolCall{
+		{ID: uuid.NewString(), Name: coremodel.IntrinsicScheduleCreateToolName, Arguments: `{"name":"daily","goal":"publish summary","cron":"30 21 * * * *","timezone":"Asia/Shanghai","timeout_seconds":600}`},
+		{ID: uuid.NewString(), Name: coremodel.IntrinsicScheduleCreateToolName, Arguments: `{"name":"daily","goal":"publish summary","cron":"30 21 * * *","timezone":"Asia/Shanghai","timeout_seconds":600}`},
+	}}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.executeTurn(context.Background(), turn.ID)
+	if len(scheduleStore.commands) != 0 || turnStore.turn.State != TurnAccepted || turnStore.failedCode != "" {
+		t.Fatalf("invalid arguments terminated turn: commands=%+v turn=%+v failed=%q", scheduleStore.commands, turnStore.turn, turnStore.failedCode)
+	}
+	service.executeTurn(context.Background(), turn.ID)
+	if len(scheduleStore.commands) != 1 || scheduleStore.commands[0].Schedule.Cron != "30 21 * * *" || turnStore.failedCode != "" {
+		t.Fatalf("corrected call not committed: commands=%+v failed=%q", scheduleStore.commands, turnStore.failedCode)
+	}
+	if len(model.requests) != 2 || !conversationContainsToolError(model.requests[1].Conversation, coremodel.IntrinsicScheduleCreateToolName) {
+		t.Fatalf("corrected model round did not receive tool error: requests=%+v", model.requests)
+	}
+}
+
+func conversationContainsToolError(conversation Conversation, toolName string) bool {
+	for _, message := range conversation.Messages {
+		for _, result := range message.ToolResults {
+			if result.ToolName == toolName && result.IsError && strings.Contains(result.Content, "correct") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestScheduleIntrinsicInjectsTurnAuthorityAndUsesDeterministicIdentity(t *testing.T) {

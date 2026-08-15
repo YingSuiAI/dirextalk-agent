@@ -178,7 +178,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		WorkspacePath: workspacePath, MaxWorkspaceBytes: 512 << 20, MaxResultBytes: int64(request.Limits.MaxOutputBytes), Sink: sink,
 		ResolveGuidance: func(guidanceCtx context.Context) (sshworker.RuntimeGuidance, error) {
 			return executor.resolveDeferredWorkerGuidance(guidanceCtx, request)
-		}})
+		}, ReportProgress: request.ReportProgress})
 	workerResult := sshflow.Result{ExitCode: result.ExitCode, WorkerID: result.WorkerID}
 	workerResult.AppliedSteerIDs = append([]string(nil), result.AppliedSteerIDs...)
 	artifacts, artifactErr := executor.executionArtifacts(ctx, localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, request.ExecutionID)
@@ -200,6 +200,11 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		return workerResult, fmt.Errorf("remote Worker exited with code %d", result.ExitCode)
 	}
 	if service != nil {
+		if request.ReportProgress != nil {
+			if progressErr := request.ReportProgress(ctx, "verifying_service", "Verifying deployed service"); progressErr != nil {
+				return workerResult, progressErr
+			}
+		}
 		if err = executor.publishService(ctx, provider, sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, identity, result.WorkerID, request.ExecutionID, *service); err != nil {
 			return workerResult, err
 		}

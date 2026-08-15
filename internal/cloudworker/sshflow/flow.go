@@ -47,6 +47,7 @@ type Request struct {
 	ModelSnapshot     coremodel.ExecutionSnapshot
 	ReuseOnly         bool
 	ReuseWorkerID     string
+	ReportProgress    func(context.Context, string, string) error
 }
 
 // Artifact is immutable metadata for bytes already collected under the
@@ -79,6 +80,7 @@ type Executor interface {
 
 type Store interface {
 	Begin(context.Context, coretask.Task) (Run, error)
+	Progress(context.Context, *Run, string, string) error
 	Complete(context.Context, Run, Result) error
 	Fail(context.Context, Run, Result, string, string) error
 }
@@ -105,6 +107,9 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 	if err != nil {
 		return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 	}
+	if err = handler.store.Progress(ctx, &run, "preparing_environment", "Preparing Worker environment"); err != nil {
+		return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
+	}
 	result, executeErr := handler.executor.Execute(ctx, Request{
 		OwnerID: run.Plan.OwnerID, AccountGeneration: run.Plan.AccountGeneration,
 		TurnID: run.Plan.TurnID, ExecutionID: run.Plan.ExecutionID, Objective: run.Plan.Objective,
@@ -114,6 +119,9 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 		WorkspaceMode:     run.Plan.WorkspaceMode,
 		ConfirmationProof: run.ConfirmationProof, ModelSnapshot: run.ModelSnapshot,
 		ReuseOnly: run.Plan.PersistentWorkerReuse, ReuseWorkerID: run.Plan.ReuseWorkerID,
+		ReportProgress: func(progressCtx context.Context, phase, message string) error {
+			return handler.store.Progress(progressCtx, &run, phase, message)
+		},
 	})
 	if executeErr != nil {
 		// A detached remote process may still be running. Its durable task and

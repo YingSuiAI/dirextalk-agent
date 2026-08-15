@@ -88,12 +88,22 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	if provider == nil || ctx == nil || request.validate() != nil {
 		return ExecutionResult{}, ErrInvalid
 	}
+	if request.ReportProgress != nil {
+		if err := request.ReportProgress(ctx, "provisioning_worker", "Selecting or provisioning Worker"); err != nil {
+			return ExecutionResult{}, err
+		}
+	}
 	worker, execution, completed, resume, err := provider.lease(ctx, request)
 	if err != nil {
 		return ExecutionResult{}, err
 	}
 	if completed {
 		return execution.Result, nil
+	}
+	if request.ReportProgress != nil {
+		if err := request.ReportProgress(ctx, "connecting_worker", "Connecting to Worker"); err != nil {
+			return ExecutionResult{}, errors.Join(err, provider.failExecution(ctx, &execution, &worker))
+		}
 	}
 
 	privateKey, _, err := provider.keys.Ensure(ctx, worker.WorkerID)
@@ -107,7 +117,7 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	result, runErr := provider.ssh.Execute(ctx, SSHRequest{ExecutionID: request.ExecutionID, Host: target, User: worker.SSHUser,
 		PrivateKeyPath: privateKey, WorkerScript: request.WorkerScript, WorkerScriptSHA256: request.WorkerScriptSHA256,
 		Runtime: request.Runtime, WorkspacePath: request.WorkspacePath, MaxWorkspaceBytes: request.MaxWorkspaceBytes, MaxResultBytes: request.MaxResultBytes, Sink: request.Sink,
-		ResolveGuidance: request.ResolveGuidance, Resume: resume})
+		ResolveGuidance: request.ResolveGuidance, ReportProgress: request.ReportProgress, Resume: resume})
 	if runErr != nil {
 		if errors.Is(runErr, ErrAmbiguous) {
 			provider.pool.mu.Lock()

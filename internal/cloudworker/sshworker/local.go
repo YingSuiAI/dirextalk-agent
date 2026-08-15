@@ -507,6 +507,11 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 			return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
 		}
 	}
+	if request.ReportProgress != nil {
+		if err := request.ReportProgress(ctx, "executing_remote_task", "Executing task on Worker"); err != nil {
+			return ExecutionResult{}, err
+		}
+	}
 	status, err := executor.waitRuntime(ctx, sshPath, base, request.Runtime)
 	if request.Resume && errors.Is(err, errRuntimeNotStarted) {
 		appliedSteerIDs, err = applyRuntimeGuidance(ctx, sshPath, base, taskRoot, request.ResolveGuidance)
@@ -524,6 +529,11 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 	}
 	if err != nil {
 		return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
+	}
+	if request.ReportProgress != nil {
+		if err := request.ReportProgress(ctx, "collecting_result", "Collecting Worker result and artifacts"); err != nil {
+			return ExecutionResult{}, err
+		}
 	}
 	logCommand, err := request.Runtime.Log(0)
 	if err != nil {

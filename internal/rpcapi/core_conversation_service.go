@@ -81,7 +81,7 @@ func turnEventProto(e coreconversation.TurnEvent) (*agentv1.ConversationServiceW
 	if e.Revision == 0 || (e.Kind == coreconversation.TurnEventWaitingConfirmation && e.ValidateWaitingConfirmationAuthority() != nil) {
 		return nil, coreconversation.ErrChatFailed
 	}
-	out := &agentv1.CoreConversationTurnEvent{TurnId: e.TurnID, Sequence: e.Sequence, Revision: e.Revision, Kind: string(e.Kind), Text: e.Text, ReasoningContent: e.ReasoningContent, ErrorCode: e.ErrorCode, ErrorSummary: e.ErrorSummary, FirstSequence: e.FirstSequence, LastSequence: e.LastSequence, ReplayGap: e.ReplayGap, CreatedAt: timestamppb.New(e.CreatedAt), ConfirmationId: e.ConfirmationID, ExecutionId: e.ExecutionID, Status: e.Status, RelatedTaskIds: append([]string(nil), e.RelatedTaskIDs...), RelatedPlanIds: append([]string(nil), e.RelatedPlanIDs...), References: referenceProtos(e.References)}
+	out := &agentv1.CoreConversationTurnEvent{TurnId: e.TurnID, Sequence: e.Sequence, Revision: e.Revision, Kind: string(e.Kind), Text: e.Text, ReasoningContent: e.ReasoningContent, ErrorCode: e.ErrorCode, ErrorSummary: e.ErrorSummary, FirstSequence: e.FirstSequence, LastSequence: e.LastSequence, ReplayGap: e.ReplayGap, CreatedAt: timestamppb.New(e.CreatedAt), ConfirmationId: e.ConfirmationID, ExecutionId: e.ExecutionID, Status: e.Status, Phase: e.Phase, RelatedTaskIds: append([]string(nil), e.RelatedTaskIDs...), RelatedPlanIds: append([]string(nil), e.RelatedPlanIDs...), References: referenceProtos(e.References)}
 	if e.ToolResult != nil {
 		out.ToolResult = toolResultProto(*e.ToolResult)
 	}

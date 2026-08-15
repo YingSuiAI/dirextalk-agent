@@ -2095,6 +2095,7 @@ type CoreConversationTurnEvent struct {
 	// The positive turn revision captured atomically when this event was written.
 	Revision         uint64 `protobuf:"varint,20,opt,name=revision,proto3" json:"revision,omitempty"`
 	ReasoningContent string `protobuf:"bytes,21,opt,name=reasoning_content,json=reasoningContent,proto3" json:"reasoning_content,omitempty"`
+	Phase            string `protobuf:"bytes,22,opt,name=phase,proto3" json:"phase,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -2265,6 +2266,13 @@ func (x *CoreConversationTurnEvent) GetRevision() uint64 {
 func (x *CoreConversationTurnEvent) GetReasoningContent() string {
 	if x != nil {
 		return x.ReasoningContent
+	}
+	return ""
+}
+
+func (x *CoreConversationTurnEvent) GetPhase() string {
+	if x != nil {
+		return x.Phase
 	}
 	return ""
 }
@@ -2752,7 +2760,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	")ConversationServiceWatchTurnEventsRequest\x12\x17\n" +
 	"\aturn_id\x18\x01 \x01(\tR\x06turnId\x12%\n" +
 	"\x0eafter_sequence\x18\x02 \x01(\x03R\rafterSequence\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\xd0\x06\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\xe6\x06\n" +
 	"\x19CoreConversationTurnEvent\x12\x17\n" +
 	"\aturn_id\x18\x01 \x01(\tR\x06turnId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x03R\bsequence\x12\x12\n" +
@@ -2780,7 +2788,8 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"references\x18\x13 \x03(\v2-.dirextalk.agent.v1.CoreConversationReferenceR\n" +
 	"references\x12\x1a\n" +
 	"\brevision\x18\x14 \x01(\x04R\brevision\x12+\n" +
-	"\x11reasoning_content\x18\x15 \x01(\tR\x10reasoningContentJ\x04\b\r\x10\x0eR\n" +
+	"\x11reasoning_content\x18\x15 \x01(\tR\x10reasoningContent\x12\x14\n" +
+	"\x05phase\x18\x16 \x01(\tR\x05phaseJ\x04\b\r\x10\x0eR\n" +
 	"attempt_id\"\x95\x01\n" +
 	"$ConversationServiceCancelTurnRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x17\n" +

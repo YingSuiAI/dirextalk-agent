@@ -188,11 +188,12 @@ Worker task is queued or running. Before a tool call becomes public, Core
 invalidates and cancels the active provider lease and regenerates the same turn.
 After a tool call is public or dispatched, Core preserves that authority and
 lease and waits for its result. Ordinary tools then give the next model round
-both the result and ordered guidance. The SSH Worker protocol cannot inject
-guidance into an already running remote process; a terminal successful Worker
-therefore remains successful, preserves the instruction as an explicit
-conversation follow-up, and states that it was not applied instead of starting
-another model/intrinsic round. No successor turn is created.
+both the result and ordered guidance. The current SSH Worker text protocol
+cannot inject guidance into an already running remote process. When its
+terminal result has unapplied deferred guidance, Core resumes one normal model
+round in the same durable turn with both the Worker result and that guidance;
+the model may answer or reuse the retained Worker. No successor turn is
+created.
 
 `agent.info.v1/list_models` is the provider catalog, separate from persisted
 profile listing. It resolves either a write-only request credential or an
@@ -256,6 +257,10 @@ it contains no credential or arbitrary reference fields.
 The PostgreSQL boundary atomically commits the schedule, idempotency replay,
 turn response/event, and transcript, so recovery cannot expose either a
 schedule without its conversation receipt or a receipt without its schedule.
+The intrinsic accepts a renewed epoch of the same active turn lease and commits
+under that current epoch. Invalid model-supplied intrinsic arguments are stored
+as an error tool result for correction in the next model round rather than
+discarding the turn.
 
 Single-page static publication uses the Core-owned `static_site_publish`
 intrinsic. One HTML file is published directly and is not wrapped in an
@@ -503,6 +508,13 @@ connects by outbound SSH. Agent uses short SSH operations to start work, read
 status and load, stream logs by offset, and list or copy artifacts. A dropped
 connection does not erase remote state. Job and service workloads share this
 protocol, and a service may remain running across conversation turns.
+The existing Task event stream and originating turn `worker_status` event
+report environment preparation, Worker selection/provisioning, connection,
+remote execution, result collection, and service verification before the
+terminal event. The turn event keeps coarse status as authority and carries
+only an optional phase enum for client localization. Remote finite execution runs
+inside a task-named systemd scope; timeout cancellation stops that scope so
+session-changing descendants cannot continue after the task is terminal.
 
 Worker results are copied into the Agent-owned local artifact repository and
 returned to the original durable turn. Optional Route53 binding is an explicit

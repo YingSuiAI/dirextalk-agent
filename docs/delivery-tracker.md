@@ -48,9 +48,9 @@ contract](message-server-integration-development-contract.md), and
   model round. For SSH Workers, deferred instructions and readable text
   attachments observed before the remote runtime starts are appended to its
   objective at that single start boundary; the terminal result records their
-  steer IDs. Later guidance remains a conversation follow-up and is reported
-  as unapplied; the flow never queues a successor turn or repeats the Worker
-  intrinsic.
+  steer IDs. Later guidance is consumed with the terminal Worker result by one
+  normal model round in the same durable turn, which may answer or reuse the
+  retained Worker; the flow never queues a successor turn.
 - Agent-owned encrypted Tavily Web Search configuration and guarded dispatch.
   Read-only tool execution errors return to the next model round for
   correction instead of terminating the conversation; an unrecoverable
@@ -236,6 +236,13 @@ support.
   a real Native Agent local-sandbox turn with one HTTP admission and resumable
   SSE through `done`, persisted three local artifact references, and verified
   get/download/delete against Agent-owned host storage.
+- On **2026-08-15**, focused regressions reproduce and fix intrinsic execution
+  after a turn heartbeat renews the lease epoch, using the production schedule
+  argument shape. Worker Task and turn status events now expose real preparation,
+  provisioning, connection, execution, collection, and verification phases. The embedded
+  runtime test also proves a session-changing descendant is removed when the
+  remote execution budget expires. This is code-level evidence and performs no
+  AWS mutation.
 
 ## Remaining release gates
 

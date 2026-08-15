@@ -107,8 +107,10 @@ published. Message Server forwards this business acceptance and identity rather
 than synthesizing a second accepted event. Cloud Worker execution transitions
 cross the same stream as `worker_status`, containing only that base turn
 identity/revision, `created_at`, `execution_id`, and the canonical execution
-status. Agent writes them at the actual queued, provisioning, running, and
-terminal transitions; Message Server forwards them and never derives them by
+status. A running event may also carry one optional phase enum for localized
+Worker progress; the phase never controls lifecycle or input state. Agent
+writes them at the actual queued, provisioning, running, and terminal
+transitions; Message Server forwards them and never derives them by
 polling Execution V2. Turn history uses the same
 `turn_id`/`idempotency_key` pair, and `agent.chat.v1/stop_turn` accepts only its
 own UUID idempotency key plus the authoritative turn id and expected revision.
@@ -117,11 +119,11 @@ UUID, that authoritative turn id/revision, one bounded instruction, and up to
 four optional attachment source IDs uploaded under that same mutation UUID. Agent
 Core persists it on the current turn. Guidance interrupts a provider generation
 before tool publication, but waits for an already public/dispatched tool result
-without changing that tool's authority. A terminal successful SSH Worker is
-completed directly because its runtime has no guidance injection channel; the
-instruction remains an explicit conversation follow-up and the response states
-that it was not applied. Agent does not re-propose or re-run the Worker, and
-neither proxy nor Flutter may represent the guidance as a queued successor turn.
+without changing that tool's authority. The current SSH text runtime has no
+mid-run guidance injection channel. After a terminal Worker result, unapplied
+guidance is consumed with that result by one normal model round in the same
+durable turn; it may answer or reuse the retained Worker. Neither proxy nor
+Flutter may represent the guidance as a queued successor turn.
 
 ## Deployment boundary
 

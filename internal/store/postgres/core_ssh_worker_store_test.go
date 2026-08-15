@@ -66,6 +66,9 @@ func TestSSHWorkerStoreRebindsConsumedReservationAfterTaskReclaim(t *testing.T) 
 	if secondRun.Execution.ExecutionID != firstRun.Execution.ExecutionID || secondRun.Plan.PlanID != firstRun.Plan.PlanID {
 		t.Fatalf("first run=%+v reclaimed run=%+v", firstRun, secondRun)
 	}
+	if err = sshStore.Progress(h.ctx, &secondRun, "connecting_worker", "Connecting to Worker"); err != nil {
+		t.Fatalf("append Worker progress: %v", err)
+	}
 
 	after, err := h.confirmations.Get(h.ctx, offer.Confirmation.ConfirmationID)
 	if err != nil || after.State != coreconfirmation.StateConsumed || after.Revision != consumed.Revision {
@@ -83,7 +86,7 @@ func TestSSHWorkerStoreRebindsConsumedReservationAfterTaskReclaim(t *testing.T) 
 		t.Fatal(err)
 	}
 	if reservationCount != 1 || taskID != reclaimed.ID || attempt != reclaimed.Attempt ||
-		epoch != reclaimed.LeaseEpoch || revision != reclaimed.Revision || !expiresAt.Equal(reclaimed.Lease.ExpiresAt) {
+		epoch != reclaimed.LeaseEpoch || revision != secondRun.Task.Revision || !expiresAt.Equal(reclaimed.Lease.ExpiresAt) {
 		t.Fatalf("reservation count=%d task=%s attempt=%d epoch=%d revision=%d expires=%s reclaimed=%+v",
 			reservationCount, taskID, attempt, epoch, revision, expiresAt, reclaimed)
 	}
@@ -105,6 +108,19 @@ func TestSSHWorkerStoreRebindsConsumedReservationAfterTaskReclaim(t *testing.T) 
 	if err != nil || completed.Status != coretask.StatusSucceeded || completed.Result == nil || completed.Result.Summary != "deployment complete" || completed.FailureCode != "" || completed.FailureSummary != "" {
 		t.Fatalf("completed task=%+v err=%v", completed, err)
 	}
+	progress, _, err := tasks.ListProgress(h.ctx, reclaimed.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundProgress := false
+	for _, event := range progress {
+		if event.Phase == "connecting_worker" && event.Message == "Connecting to Worker" {
+			foundProgress = true
+		}
+	}
+	if !foundProgress {
+		t.Fatalf("Worker progress event missing: %+v", progress)
+	}
 	conversationStore, err := NewCoreConversationStore(h.store)
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +129,7 @@ func TestSSHWorkerStoreRebindsConsumedReservationAfterTaskReclaim(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	var workerStatuses []string
+	var workerStatuses, workerProgress []string
 	for _, event := range events {
 		if event.Kind != core.TurnEventWorkerStatus {
 			continue
@@ -123,9 +139,15 @@ func TestSSHWorkerStoreRebindsConsumedReservationAfterTaskReclaim(t *testing.T) 
 			t.Fatalf("invalid Worker status event: %+v", event)
 		}
 		workerStatuses = append(workerStatuses, event.Status)
+		if event.Phase != "" {
+			workerProgress = append(workerProgress, event.Phase)
+		}
 	}
-	if want := []string{"queued", "provisioning", "running", "succeeded"}; !reflect.DeepEqual(workerStatuses, want) {
+	if want := []string{"queued", "provisioning", "running", "running", "succeeded"}; !reflect.DeepEqual(workerStatuses, want) {
 		t.Fatalf("Worker status sequence=%v want=%v events=%+v", workerStatuses, want, events)
+	}
+	if !reflect.DeepEqual(workerProgress, []string{"connecting_worker"}) {
+		t.Fatalf("Worker progress=%v events=%+v", workerProgress, events)
 	}
 	resumed, err := conversationStore.GetTurn(h.ctx, offer.Plan.TurnID)
 	if err != nil || resumed.State != core.TurnAccepted {

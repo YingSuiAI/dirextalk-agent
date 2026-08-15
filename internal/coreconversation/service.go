@@ -1532,11 +1532,13 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		}
 	}
 	workerContent, appliedWorkerSteers, terminalWorker := terminalCloudWorkerContent(toolCallAuthorities)
-	if terminalWorker {
-		workerContent = appendDeferredWorkerGuidanceStatus(workerContent, turnSteers, appliedWorkerSteers)
-	}
 	failedWorkerContent, failedWorker := terminalFailedCloudWorkerContent(toolCallAuthorities)
-	autoFinalizeWorker := terminalWorker
+	workerSteersApplied := appliedWorkerSteers
+	if failedWorker {
+		_, _, workerSteersApplied, _ = terminalCloudWorkerResult(toolCallAuthorities, "failed")
+	}
+	unappliedWorkerSteer := hasUnappliedDeferredWorkerSteer(turnSteers, workerSteersApplied)
+	autoFinalizeWorker := terminalWorker && !unappliedWorkerSteer
 	var resolvedExtensions []ResolvedExtension
 	if !autoFinalizeWorker {
 		resolvedExtensions, err = s.resolveAcceptedTurnExtensionsForContinuation(ctx, turn.ExtensionSnapshots, terminalWorker)
@@ -1746,7 +1748,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				}
 				return
 			}
-			if failedWorker && modelResultCallsTool(out.result, coremodel.IntrinsicCloudWorkerProposeToolName) {
+			if failedWorker && !unappliedWorkerSteer && modelResultCallsTool(out.result, coremodel.IntrinsicCloudWorkerProposeToolName) {
 				out.result.Done = true
 				out.result.ToolCalls = nil
 				out.result.Message.Content = failedWorkerContent
@@ -1805,13 +1807,21 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						}
 						arguments, argumentsErr := canonicalJSON(call.Arguments, MaxToolArgumentsBytes)
 						if argumentsErr != nil {
-							_, _ = s.turns.FailTurn(ctx, lease, "invalid_intrinsic_arguments", "Core intrinsic arguments are invalid")
+							if recordErr := recordCorrectableIntrinsicError(ctx, roundStore, lease, call); recordErr != nil {
+								_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_error_result_failed", "Core intrinsic error result could not be saved")
+							}
 							return
 						}
 						intrinsicResult, intrinsicErr := intrinsic.Execute(ctx, IntrinsicExecutionRequest{
 							Lease: lease, Call: call, CanonicalArguments: arguments,
 							ConversationRevision: conv.Revision,
 						})
+						if errors.Is(intrinsicErr, ErrInvalid) {
+							if recordErr := recordCorrectableIntrinsicError(ctx, roundStore, lease, call); recordErr != nil {
+								_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_error_result_failed", "Core intrinsic error result could not be saved")
+							}
+							return
+						}
 						if intrinsicErr != nil || !intrinsicResult.TurnCommitted {
 							code, summary := intrinsicTerminalFailure(call.Name, intrinsicErr)
 							_, _ = s.turns.FailTurn(ctx, lease, code, summary)
@@ -2083,6 +2093,24 @@ func intrinsicTerminalFailure(toolName string, err error) (string, string) {
 	return "intrinsic_failed", "Core intrinsic operation failed"
 }
 
+func recordCorrectableIntrinsicError(ctx context.Context, store OrderedConversationToolStore, lease TurnLease, call ToolCall) error {
+	if err := store.RecordConversationToolCall(ctx, lease, call); err != nil {
+		return err
+	}
+	if _, err := store.BeginConversationToolDispatch(ctx, lease, call); err != nil {
+		return err
+	}
+	result := ToolResult{
+		CallID: call.ID, ToolName: call.Name, IsError: true,
+		Content: "tool arguments are invalid; correct them according to the tool schema and call again",
+	}
+	if err := store.RecordConversationToolResult(ctx, lease, result); err != nil {
+		return err
+	}
+	_, err := store.CompleteConversationToolRound(ctx, lease)
+	return err
+}
+
 func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots []ExtensionExecutionSnapshot) ([]ResolvedExtension, error) {
 	return s.resolveAcceptedTurnExtensionsForContinuation(ctx, snapshots, false)
 }
@@ -2208,33 +2236,19 @@ func modelResultCallsTool(result ModelRunResult, toolName string) bool {
 	return false
 }
 
-func appendDeferredWorkerGuidanceStatus(content string, steers []TurnSteer, appliedSteerIDs []string) string {
+func hasUnappliedDeferredWorkerSteer(steers []TurnSteer, appliedSteerIDs []string) bool {
 	applied := make(map[string]struct{}, len(appliedSteerIDs))
 	for _, id := range appliedSteerIDs {
 		applied[id] = struct{}{}
 	}
-	unapplied := false
 	for _, steer := range steers {
 		if steer.Deferred {
 			if _, ok := applied[steer.RequestID]; !ok {
-				unapplied = true
-				break
+				return true
 			}
 		}
 	}
-	if !unapplied {
-		return content
-	}
-	note := "\n\nFollow-up guidance received while this Worker execution was already running was preserved in the conversation but was not applied to this completed execution."
-	limit := MaxContentBytes - len(note)
-	for len(content) > limit {
-		_, size := utf8.DecodeLastRuneInString(content)
-		if size == 0 {
-			break
-		}
-		content = content[:len(content)-size]
-	}
-	return strings.TrimSpace(content) + note
+	return false
 }
 
 func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation) (map[string]turnToolCallAuthority, string, error) {

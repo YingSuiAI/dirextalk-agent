@@ -74,7 +74,7 @@ func scheduleIntrinsic(store ConversationScheduleStore, bound TurnLease) Resolve
 
 func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleStore, bound TurnLease, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
 	if ctx == nil || store == nil || request.Lease.Turn.ID != bound.Turn.ID || request.Lease.Turn.RequestID != bound.Turn.RequestID ||
-		request.Lease.LeaseID != bound.LeaseID || request.Lease.Epoch != bound.Epoch || request.Call.Name != coremodel.IntrinsicScheduleCreateToolName || request.Call.Validate() != nil ||
+		request.Lease.LeaseID != bound.LeaseID || request.Lease.Epoch < bound.Epoch || request.Call.Name != coremodel.IntrinsicScheduleCreateToolName || request.Call.Validate() != nil ||
 		request.ConversationRevision == 0 || request.ConversationRevision == ^uint64(0) {
 		return IntrinsicExecutionResult{}, ErrInvalid
 	}
@@ -140,7 +140,7 @@ func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleSto
 	}
 	response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: revision, Message: message, Done: true, ModelProfileID: turn.ProfileID}
 	command := ConversationScheduleCommand{
-		Lease: bound, Schedule: schedule,
+		Lease: request.Lease, Schedule: schedule,
 		Mutation: coretask.MutationCommand{IdempotencyKey: idempotencyKey, RequestDigest: hex.EncodeToString(digestSum[:])},
 		Response: response,
 	}

@@ -193,11 +193,11 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	properties := map[string]any{
 		"objective":                 map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes},
 		"workspace_mode":            map[string]any{"type": "string", "enum": workspaceModes},
-		"workload_kind":             map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob), "description": "Use job for finite work. Use service only for a network service that should remain available."},
+		"workload_kind":             map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob), "description": "Use job for finite execution. Use service when the requested result is a persistent network service."},
 		"min_vcpu":                  map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Minimum virtual CPU count needed for the task."},
 		"min_memory_gib":            map[string]any{"type": "integer", "minimum": 1, "maximum": 1024, "description": "Minimum memory in GiB needed for the task."},
 		"disk_gib":                  map[string]any{"type": "integer", "minimum": 8, "maximum": 16384, "description": "Working disk capacity in GiB needed for inputs, dependencies, and outputs."},
-		"estimated_runtime_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "Estimated total runtime in minutes, including environment setup, dependency installation, model execution, the full requested active run or observation duration, and result collection. Include reasonable margin beyond any explicitly requested duration."},
+		"estimated_runtime_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "Sufficient task execution budget in minutes for environment setup, dependency installation, build, configuration, verification, result collection, and reasonable margin. This is not the lifetime of a retained Worker or deployed service."},
 		"service": map[string]any{"type": "object", "description": "Set only when workload_kind is service; omit for job.", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
 			"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "health_path": map[string]any{"type": "string", "minLength": 1, "maxLength": 2048},
 		}},
@@ -205,7 +205,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	if attachmentSchema != nil {
 		properties["attachment_ids"] = attachmentSchema
 	}
-	description := "Run work in a suitable retained execution environment, or propose a priced reusable environment when none is available. Use it for substantial project or shell execution, deployment, build, test, durable file delivery, long-running compute, and actual follow-up work in a retained environment. Use workload_kind=job for finite work and omit service; use workload_kind=service with service settings only for a network service that should remain available. Estimate total runtime with setup, dependency installation, model work, the full requested active run or observation duration, result collection, and reasonable margin; never use the requested active duration alone as the total. Do not call this tool only to inspect status; answer status questions from the live retained_worker_inventory below. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. Reuse needs no creation confirmation; new resources start only after the owner reviews and confirms the offer."
+	description := "Run work in a suitable retained execution environment, or propose a priced reusable environment when none is available. Use it for substantial project or shell execution, deployment, build, test, durable file delivery, long-running compute, and actual follow-up work in a retained environment. Use workload_kind=job for finite execution and omit service. Use workload_kind=service with service settings when the requested result is a persistent network service. Give estimated_runtime_minutes enough budget for setup, dependency installation, build, configuration, verification, result collection, and reasonable margin; it is not the lifetime of the retained Worker or deployed service. Do not call this tool only to inspect status; answer status questions from the live retained_worker_inventory below. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. Reuse needs no creation confirmation; new resources start only after the owner reviews and confirms the offer."
 	inventory := `{"status":"unavailable"}`
 	var currentInventory RetainedWorkerInventory
 	inventoryReady := false
@@ -275,7 +275,7 @@ type destroyIntrinsicArguments struct {
 func (p *ProposeIntrinsic) executeDestroy(ctx context.Context, bound coreconversation.TurnLease, request coreconversation.IntrinsicExecutionRequest) (coreconversation.IntrinsicExecutionResult, error) {
 	if ctx == nil || p.manager == nil || p.turns == nil || request.Lease.Turn.ID != bound.Turn.ID ||
 		request.Lease.Turn.RequestID != bound.Turn.RequestID || request.Lease.LeaseID != bound.LeaseID ||
-		request.Lease.Epoch != bound.Epoch || request.Call.Name != coremodel.IntrinsicCloudWorkerDestroyToolName ||
+		request.Lease.Epoch < bound.Epoch || request.Call.Name != coremodel.IntrinsicCloudWorkerDestroyToolName ||
 		request.Call.Validate() != nil || request.ConversationRevision == 0 || bound.Turn.CreatedAt.IsZero() {
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
@@ -283,7 +283,7 @@ func (p *ProposeIntrinsic) executeDestroy(ctx context.Context, bound coreconvers
 	if err != nil {
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
-	owner, err := p.owners.ResolveCloudWorkerOwner(ctx, bound)
+	owner, err := p.owners.ResolveCloudWorkerOwner(ctx, request.Lease)
 	if err != nil || owner.OwnerID != bound.Turn.OwnerID || owner.AccountGeneration != bound.Turn.AccountGeneration {
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
@@ -359,7 +359,7 @@ func frozenTurnAttachmentSchema(turn coreconversation.Turn) map[string]any {
 }
 
 func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.TurnLease, request coreconversation.IntrinsicExecutionRequest) (coreconversation.IntrinsicExecutionResult, error) {
-	if ctx == nil || request.Lease.Turn.ID != bound.Turn.ID || request.Lease.Turn.RequestID != bound.Turn.RequestID || request.Lease.LeaseID != bound.LeaseID || request.Lease.Epoch != bound.Epoch || request.Call.Name != coremodel.IntrinsicCloudWorkerProposeToolName || request.Call.Validate() != nil {
+	if ctx == nil || request.Lease.Turn.ID != bound.Turn.ID || request.Lease.Turn.RequestID != bound.Turn.RequestID || request.Lease.LeaseID != bound.LeaseID || request.Lease.Epoch < bound.Epoch || request.Call.Name != coremodel.IntrinsicCloudWorkerProposeToolName || request.Call.Validate() != nil {
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
 	arguments, err := parseProposeIntrinsicArguments(request.CanonicalArguments)
@@ -376,7 +376,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 	if p.budgets == nil {
 		return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
 	}
-	budget, err := p.budgets.ResolveCloudWorkerBudgetEvidence(ctx, bound)
+	budget, err := p.budgets.ResolveCloudWorkerBudgetEvidence(ctx, request.Lease)
 	if err != nil {
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
@@ -387,7 +387,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 	if strings.TrimSpace(bound.Turn.OwnerID) == "" || bound.Turn.AccountGeneration == 0 {
 		return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
 	}
-	owner, err := p.owners.ResolveCloudWorkerOwner(ctx, bound)
+	owner, err := p.owners.ResolveCloudWorkerOwner(ctx, request.Lease)
 	if err != nil || strings.TrimSpace(owner.OwnerID) != strings.TrimSpace(bound.Turn.OwnerID) || owner.AccountGeneration != bound.Turn.AccountGeneration {
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
@@ -396,7 +396,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		if p.manifests == nil || !turnAllowsAttachments(bound.Turn, arguments.AttachmentIDs) {
 			return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 		}
-		manifest, err = p.manifests.ResolveCloudWorkerManifest(ctx, bound, mode, arguments.AttachmentIDs)
+		manifest, err = p.manifests.ResolveCloudWorkerManifest(ctx, request.Lease, mode, arguments.AttachmentIDs)
 		if err != nil {
 			return coreconversation.IntrinsicExecutionResult{}, err
 		}
@@ -416,7 +416,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 	offer, err := p.service.Propose(ctx, ProposeCommand{
 		OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration,
 		IdempotencyKey: idempotencyKey, ConversationID: bound.Turn.ConversationID,
-		TurnID: bound.Turn.ID, TurnLeaseID: bound.LeaseID, TurnLeaseEpoch: bound.Epoch,
+		TurnID: bound.Turn.ID, TurnLeaseID: request.Lease.LeaseID, TurnLeaseEpoch: request.Lease.Epoch,
 		ExpectedTurnRevision: bound.Turn.Revision, Objective: arguments.Objective,
 		ObjectiveSummary: arguments.Objective, UserPromptDigest: hex.EncodeToString(promptDigest[:]),
 		WorkloadKind: WorkloadKind(arguments.WorkloadKind), Service: func() *ServiceSpec {

@@ -20,10 +20,15 @@ type flowStore struct {
 	completed   int
 	failed      int
 	summary     string
+	progress    []string
 }
 
 func (store *flowStore) Begin(context.Context, coretask.Task) (Run, error) {
 	return store.run, store.beginErr
+}
+func (store *flowStore) Progress(_ context.Context, _ *Run, phase, _ string) error {
+	store.progress = append(store.progress, phase)
+	return nil
 }
 func (store *flowStore) Complete(_ context.Context, _ Run, _ Result) error {
 	store.completed++
@@ -36,15 +41,21 @@ func (store *flowStore) Fail(_ context.Context, _ Run, _ Result, _, summary stri
 }
 
 type flowExecutor struct {
-	calls   int
-	request Request
-	result  Result
-	err     error
+	calls          int
+	request        Request
+	result         Result
+	err            error
+	progressStages []string
 }
 
 func (executor *flowExecutor) Execute(_ context.Context, request Request) (Result, error) {
 	executor.calls++
 	executor.request = request
+	for _, phase := range executor.progressStages {
+		if request.ReportProgress != nil {
+			_ = request.ReportProgress(context.Background(), phase, phase)
+		}
+	}
 	return executor.result, executor.err
 }
 
@@ -76,7 +87,7 @@ func TestHandlerPassesOnlyConfirmedMinimalExecutionInputAndOwnsTerminal(t *testi
 		AWS:     cloudworker.AWSBinding{AccountID: "123456789012", Region: "ap-east-1"},
 		Compute: cloudworker.ComputeSpec{InstanceType: "t3.small", VolumeGiB: 20}},
 		ConfirmationProof: "confirmed-proof", ModelSnapshot: snapshot}}
-	executor := &flowExecutor{result: Result{Summary: "done", WorkerID: "i-0123456789abcdef0"}}
+	executor := &flowExecutor{result: Result{Summary: "done", WorkerID: "i-0123456789abcdef0"}, progressStages: []string{"connecting_worker", "executing_remote_task", "collecting_result"}}
 	handler, err := NewHandler(store, executor)
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +110,9 @@ func TestHandlerPassesOnlyConfirmedMinimalExecutionInputAndOwnsTerminal(t *testi
 	if executor.request.WorkspaceMode != cloudworker.WorkspaceReadOnly || len(executor.request.InputManifest.Items) != 1 ||
 		executor.request.InputManifest.Items[0] != manifest.Items[0] {
 		t.Fatalf("sealed workspace authority was not propagated: %+v", executor.request)
+	}
+	if got := strings.Join(store.progress, ","); got != "preparing_environment,connecting_worker,executing_remote_task,collecting_result" {
+		t.Fatalf("progress stages=%q", got)
 	}
 }
 

@@ -314,8 +314,10 @@ func TestIntrinsicDestroysExactRetainedWorkerFromConversation(t *testing.T) {
 		t.Fatalf("tools=%+v err=%v", tools, err)
 	}
 	raw := []byte(fmt.Sprintf(`{"worker_id":%q,"confirmation":"destroy_worker"}`, workerID))
+	renewed := lease
+	renewed.Epoch++
 	result, err := tools[1].Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
-		Lease: lease, ConversationRevision: 8, CanonicalArguments: raw,
+		Lease: renewed, ConversationRevision: 8, CanonicalArguments: raw,
 		Call: coreconversation.ToolCall{ID: "destroy-call", Name: coremodel.IntrinsicCloudWorkerDestroyToolName, Arguments: string(raw)},
 	})
 	if err != nil || !result.TurnCommitted {
@@ -325,7 +327,7 @@ func TestIntrinsicDestroysExactRetainedWorkerFromConversation(t *testing.T) {
 		t.Fatalf("destroy authority manager=%+v", manager)
 	}
 	response := committer.response
-	if committer.lease.LeaseID != lease.LeaseID || !response.Done || response.Revision != 9 || response.ConversationID != lease.Turn.ConversationID ||
+	if committer.lease.LeaseID != lease.LeaseID || committer.lease.Epoch != renewed.Epoch || !response.Done || response.Revision != 9 || response.ConversationID != lease.Turn.ConversationID ||
 		response.Message.Content != "Worker "+workerID+" destroyed." || response.Message.ModelProfileID != lease.Turn.ProfileID {
 		t.Fatalf("committed response=%+v", response)
 	}
@@ -376,6 +378,32 @@ func TestIntrinsicIsCoreOwnedStrictAndBindsDurableTurn(t *testing.T) {
 	}
 	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "x", "workspace_mode": "none", "owner_id": "forged", "account_generation": 99}, "call-2"); !errors.Is(err, coreconversation.ErrInvalid) {
 		t.Fatalf("forged trusted fields accepted: %v", err)
+	}
+}
+
+func TestIntrinsicProposalUsesRenewedTurnLease(t *testing.T) {
+	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-capability")}
+	intrinsic, store, bound := intrinsicFixture(t, "deploy the service", nil, intrinsicBudget{evidence: evidence})
+	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), bound)
+	if err != nil || len(tools) == 0 {
+		t.Fatalf("resolve intrinsic: tools=%+v err=%v", tools, err)
+	}
+	renewed := bound
+	renewed.Epoch++
+	renewed.ExpiresAt = renewed.ExpiresAt.Add(time.Minute)
+	raw := json.RawMessage(`{"objective":"deploy the service","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60}`)
+	result, err := tools[0].Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
+		Lease: renewed,
+		Call: coreconversation.ToolCall{
+			ID: "renewed-call", Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(raw),
+		},
+		CanonicalArguments: raw,
+	})
+	if err != nil || !result.TurnCommitted {
+		t.Fatalf("renewed lease rejected: result=%+v err=%v", result, err)
+	}
+	if len(store.commands) != 1 || store.commands[0].TurnLeaseEpoch != renewed.Epoch {
+		t.Fatalf("offer committed under stale lease: commands=%+v", store.commands)
 	}
 }
 
@@ -468,14 +496,14 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 		}
 	}
 	runtimeDescription := fmt.Sprint(properties["estimated_runtime_minutes"].(map[string]any)["description"])
-	if !strings.Contains(runtimeDescription, "environment setup") || !strings.Contains(runtimeDescription, "full requested active") ||
-		!strings.Contains(runtimeDescription, "reasonable margin") ||
-		!strings.Contains(tools[0].Tool.Description, "requested active duration alone as the total") {
+	if !strings.Contains(runtimeDescription, "environment setup") || !strings.Contains(runtimeDescription, "configuration") ||
+		!strings.Contains(runtimeDescription, "verification") || !strings.Contains(runtimeDescription, "reasonable margin") ||
+		!strings.Contains(runtimeDescription, "not the lifetime") || !strings.Contains(tools[0].Tool.Description, "not the lifetime") {
 		t.Fatalf("runtime sizing guidance schema=%q tool=%q", runtimeDescription, tools[0].Tool.Description)
 	}
 	workloadDescription := fmt.Sprint(properties["workload_kind"].(map[string]any)["description"])
 	serviceDescription := fmt.Sprint(properties["service"].(map[string]any)["description"])
-	if !strings.Contains(workloadDescription, "service") || !strings.Contains(serviceDescription, "only") ||
+	if !strings.Contains(workloadDescription, "persistent network service") || !strings.Contains(serviceDescription, "only") ||
 		!strings.Contains(tools[0].Tool.Description, "omit service") {
 		t.Fatalf("workload guidance schema=%q service=%q tool=%q", workloadDescription, serviceDescription, tools[0].Tool.Description)
 	}

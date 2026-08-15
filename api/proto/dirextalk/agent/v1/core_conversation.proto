@@ -235,6 +235,7 @@ message CoreConversationTurnEvent {
   // The positive turn revision captured atomically when this event was written.
   uint64 revision = 20;
   string reasoning_content = 21;
+  string phase = 22;
 }
 message ConversationServiceCancelTurnRequest {
   string idempotency_key = 1;

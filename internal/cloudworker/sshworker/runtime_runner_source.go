@@ -115,11 +115,14 @@ func run(taskID string) error {
 	if spec.Workload == "service" && spec.Service != nil {
 		prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits. It must listen on 0.0.0.0 port " + strconv.Itoa(int(spec.Service.Port)) + " and return HTTP success at " + spec.Service.HealthPath + "."
 	}
-	arguments := []string{"--mode", "text", "--print", "--no-session", "--provider", "dirextalk-worker", "--model", spec.Model, "--thinking", "medium", "--tools", "read,bash,edit,write,grep,find,ls", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt}
+	piArguments := []string{"--mode", "text", "--print", "--no-session", "--provider", "dirextalk-worker", "--model", spec.Model, "--thinking", "medium", "--tools", "read,bash,edit,write,grep,find,ls", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt}
+	unit := "dirextalk-worker-" + taskID + ".scope"
+	arguments := []string{"--user", "--scope", "--quiet", "--unit", unit, "--property=RuntimeMaxSec=" + strconv.FormatUint(spec.MaxRuntimeSeconds+5, 10) + "s", filepath.Join(root, "runtime", "pi")}
+	arguments = append(arguments, piArguments...)
 	runContext, cancel := context.WithTimeout(context.Background(), time.Duration(spec.MaxRuntimeSeconds)*time.Second); defer cancel()
-	command := exec.CommandContext(runContext, filepath.Join(root, "runtime", "pi"), arguments...)
+	command := exec.CommandContext(runContext, "systemd-run", arguments...)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	command.Cancel = func() error { if command.Process == nil { return os.ErrProcessDone }; return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
+	command.Cancel = func() error { _ = exec.Command("systemctl", "--user", "stop", unit).Run(); if command.Process == nil { return os.ErrProcessDone }; err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL); if errors.Is(err, syscall.ESRCH) { return os.ErrProcessDone }; return err }
 	objective, err := os.Open(taskPath(taskID, "objective.txt")); if err != nil { return finish(taskID, current, 1, err) }
 	defer objective.Close()
 	command.Dir = workspaceRoot; command.Stdin = objective

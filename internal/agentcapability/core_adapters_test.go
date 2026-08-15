@@ -1096,9 +1096,8 @@ func TestChatCapabilityPinsDurableStreamResultAndEventSchemas(t *testing.T) {
 		if operation.GetOperationId() != "stream_chat" {
 			continue
 		}
-		if strings.Contains(operation.GetEventSchemaJson(), `"attempt_id"`) ||
-			!strings.Contains(operation.GetEventSchemaJson(), `"else":{"not":{"anyOf"`) {
-			t.Fatalf("waiting confirmation event schema is not single-shape: %s", operation.GetEventSchemaJson())
+		if strings.Contains(operation.GetEventSchemaJson(), `"attempt_id"`) {
+			t.Fatalf("stream event schema exposes retired attempt identity: %s", operation.GetEventSchemaJson())
 		}
 		checks := []struct {
 			name   string
@@ -1106,7 +1105,7 @@ func TestChatCapabilityPinsDurableStreamResultAndEventSchemas(t *testing.T) {
 			want   string
 		}{
 			{name: "result", schema: operation.GetResultSchemaJson(), want: "e517caf92e89459a4b9e6318b519765499bfa0e30c077c0bf004cfd852ea5545"},
-			{name: "event", schema: operation.GetEventSchemaJson(), want: "da2612caf8a8dcc572b79ff0dd1d06f10cc91975a71c3c6d24d7c45b99bfc77b"},
+			{name: "event", schema: operation.GetEventSchemaJson(), want: "7eedc9a60b558c8031805be2279b224a734c60e3223d80ce7397281ccdfea2e8"},
 		}
 		for _, check := range checks {
 			digest := sha256.Sum256([]byte(check.schema))
@@ -1253,6 +1252,22 @@ func TestDurableWorkerStatusProgressProjectsCanonicalLifecycleOnly(t *testing.T)
 		value["execution_id"] != event.ExecutionID || value["status"] != "provisioning" ||
 		value["revision"] != float64(4) || value["created_at"] != createdAt.Format(time.RFC3339Nano) || len(value) != 8 {
 		t.Fatalf("projected Worker status=%s", raw)
+	}
+}
+
+func TestDurableWorkerProgressProjectsPhaseOnExistingStatusEvent(t *testing.T) {
+	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
+	event, err := coreconversation.NewWorkerProgressTurnEvent(uuid.NewString(), "connecting_worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.Revision, event.CreatedAt = 5, time.Now().UTC()
+	projected, err := projectDurableWorkerStatusEvent(turn, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projected.Status != "running" || projected.Phase != "connecting_worker" || projected.Text != "" || projected.ExecutionID != event.ExecutionID {
+		t.Fatalf("projected Worker progress=%+v", projected)
 	}
 }
 

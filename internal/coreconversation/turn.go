@@ -91,6 +91,7 @@ type TurnEvent struct {
 	ConfirmationID    string
 	ExecutionID       string
 	Status            string
+	Phase             string
 	RelatedTaskIDs    []string
 	RelatedPlanIDs    []string
 	References        []Reference
@@ -132,14 +133,29 @@ func NewWorkerStatusTurnEvent(executionID, status string) (TurnEvent, error) {
 	return event, nil
 }
 
+func NewWorkerProgressTurnEvent(executionID, phase string) (TurnEvent, error) {
+	event := TurnEvent{Kind: TurnEventWorkerStatus, ExecutionID: executionID, Status: "running", Phase: strings.TrimSpace(phase)}
+	if err := event.ValidateWorkerStatusAuthority(); err != nil {
+		return TurnEvent{}, err
+	}
+	return event, nil
+}
+
 func (e TurnEvent) ValidateWorkerStatusAuthority() error {
 	validStatus := false
 	switch e.Status {
 	case "queued", "provisioning", "running", "succeeded", "failed", "canceled", "rejected", "expired":
 		validStatus = true
 	}
+	validPhase := e.Phase == ""
+	if e.Status == "running" {
+		switch e.Phase {
+		case "", "preparing_environment", "provisioning_worker", "connecting_worker", "executing_remote_task", "collecting_result", "verifying_service":
+			validPhase = true
+		}
+	}
 	if e.Kind != TurnEventWorkerStatus || !validUUID(e.ExecutionID) || !validStatus ||
-		e.Text != "" || e.Message != nil || e.Response != nil || e.ToolCall != nil || e.ToolResult != nil ||
+		!validPhase || e.Text != "" || e.Message != nil || e.Response != nil || e.ToolCall != nil || e.ToolResult != nil ||
 		e.ConfirmationID != "" || len(e.RelatedTaskIDs) != 0 || len(e.RelatedPlanIDs) != 0 ||
 		len(e.References) != 0 || e.ErrorCode != "" || e.ErrorSummary != "" || e.FirstSequence != 0 ||
 		e.LastSequence != 0 || e.ReplayGap || e.MutationID != "" || e.ExpectedRevision != 0 || e.Err != nil {
@@ -153,7 +169,7 @@ func (e TurnEvent) ValidateWorkerStatusAuthority() error {
 // populated by the owning transaction and are intentionally allowed.
 func (e TurnEvent) ValidateWaitingConfirmationAuthority() error {
 	if e.Kind != TurnEventWaitingConfirmation || !validUUID(e.ConfirmationID) || !validUUID(e.ExecutionID) ||
-		e.Status != string(TurnWaitingConfirmation) || e.Text != "" || e.Message != nil || e.Response != nil ||
+		e.Status != string(TurnWaitingConfirmation) || e.Phase != "" || e.Text != "" || e.Message != nil || e.Response != nil ||
 		e.ToolCall != nil || e.ToolResult != nil || len(e.RelatedTaskIDs) != 0 ||
 		len(e.RelatedPlanIDs) != 0 || len(e.References) != 0 || e.ErrorCode != "" || e.ErrorSummary != "" ||
 		e.FirstSequence != 0 || e.LastSequence != 0 || e.ReplayGap || e.MutationID != "" ||

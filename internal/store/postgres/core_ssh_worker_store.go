@@ -119,6 +119,79 @@ func (store *SSHWorkerStore) Complete(ctx context.Context, run sshflow.Run, resu
 	return store.terminal(ctx, run, result, cloudworker.StateSucceeded, "", strings.TrimSpace(result.Summary))
 }
 
+func (store *SSHWorkerStore) Progress(ctx context.Context, run *sshflow.Run, phase, message string) error {
+	if store == nil || store.store == nil || ctx == nil || run == nil || run.Task.Lease == nil ||
+		strings.TrimSpace(phase) == "" || strings.TrimSpace(message) == "" {
+		return errSSHWorkerStoreInvalid
+	}
+	phase, message = strings.TrimSpace(phase), strings.TrimSpace(message)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tx, err := store.store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tasks := NewCoreTaskStore(store.store)
+	current, err := tasks.taskTxLocked(ctx, tx, run.Task.ID, false)
+	if err != nil || validateSSHWorkerTaskFence(current, run.Task, now) != nil {
+		return cloudworker.ErrLeaseConflict
+	}
+	progress := coretask.Progress{TaskID: current.ID, Attempt: current.Attempt, Sequence: current.ProgressSequence + 1,
+		At: now, Status: coretask.StatusRunning, Phase: phase, Message: message}
+	command := coretask.ProgressCommand{
+		Fence:            coretask.Fence{TaskID: current.ID, Attempt: current.Attempt, LeaseEpoch: current.LeaseEpoch, ExpectedRevision: current.Revision},
+		ExpectedSequence: current.ProgressSequence, Progress: progress,
+	}
+	if err = coretask.ValidateProgress(current, command); err != nil {
+		return err
+	}
+	updated, err := tx.Exec(ctx, `UPDATE core_tasks SET progress_sequence=progress_sequence+1,revision=revision+1,updated_at=$2
+		WHERE task_id=$1 AND status='running' AND attempt=$3 AND lease_epoch=$4 AND revision=$5
+		  AND progress_sequence=$6 AND lease_expires_at>$2`, current.ID, now, current.Attempt, current.LeaseEpoch,
+		current.Revision, current.ProgressSequence)
+	if err != nil || updated.RowsAffected() != 1 {
+		return cloudworker.ErrLeaseConflict
+	}
+	payload := current.Spec.Payload.CloudWorker
+	reservation, err := tx.Exec(ctx, `UPDATE core_confirmation_reservations SET task_revision=$2
+		WHERE confirmation_id=$1 AND task_id=$3 AND acquired_attempt=$4 AND acquired_lease_epoch=$5
+		  AND task_revision=$6 AND active=true`, payload.ConfirmationID, current.Revision+1, current.ID,
+		current.Attempt, current.LeaseEpoch, current.Revision)
+	if err != nil || reservation.RowsAffected() != 1 {
+		return cloudworker.ErrLeaseConflict
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at)
+		VALUES($1,$2,$3,$4,'running',$5,$6,$7)`, current.ID, progress.Sequence, uuid.New(), current.Attempt, phase, message, now); err != nil {
+		return err
+	}
+	var turnState, turnOwner, turnConversation string
+	var turnGeneration uint64
+	var lastSequence int64
+	if err = tx.QueryRow(ctx, `SELECT state,owner_id,account_generation,conversation_id::text,last_sequence
+		FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, run.Plan.TurnID).Scan(
+		&turnState, &turnOwner, &turnGeneration, &turnConversation, &lastSequence,
+	); err != nil || turnState != string(core.TurnWaitingConfirmation) || turnOwner != run.Plan.OwnerID ||
+		turnGeneration != run.Plan.AccountGeneration || turnConversation != run.Plan.ConversationID {
+		return cloudworker.ErrStaleAuthorization
+	}
+	turnEvent, err := core.NewWorkerProgressTurnEvent(run.Plan.ExecutionID, phase)
+	if err != nil {
+		return err
+	}
+	if err = insertTurnEventTx(ctx, tx, run.Plan.TurnID, lastSequence+1, turnEvent, now); err != nil {
+		return err
+	}
+	current, err = tasks.taskTx(ctx, tx, current.ID, false)
+	if err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	run.Task = current
+	return nil
+}
+
 func (store *SSHWorkerStore) Fail(ctx context.Context, run sshflow.Run, result sshflow.Result, code, summary string) error {
 	return store.terminal(ctx, run, result, cloudworker.StateFailed, strings.TrimSpace(code), strings.TrimSpace(summary))
 }
