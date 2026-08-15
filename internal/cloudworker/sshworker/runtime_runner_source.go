@@ -117,7 +117,7 @@ func run(taskID string) error {
 		if spec.Service.Hostname == "" {
 			prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits. It must listen on 0.0.0.0 port " + strconv.Itoa(int(spec.Service.Port)) + " and return HTTP success at " + spec.Service.HealthPath + "."
 		} else {
-			prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits. Port " + strconv.Itoa(int(spec.Service.Port)) + " is its internal HTTP port: listen only on 127.0.0.1 and return HTTP success at " + spec.Service.HealthPath + ". For static files, run a lightweight persistent local HTTP service on that internal port. The Agent runner owns Caddy and the Agent host owns Route53/DNS. Do not install, configure, edit, or restart Caddy, and do not call AWS CLI, Route53, or another DNS API."
+			prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits. Port " + strconv.Itoa(int(spec.Service.Port)) + " is its internal HTTP port: listen only on 127.0.0.1 and return HTTP success at " + spec.Service.HealthPath + ". For static files, run a lightweight persistent local HTTP service on that internal port. The Agent runner owns Caddy and reserves ports 80 and 443; ensure the application and package defaults do not listen on either port. If using Nginx or Apache, disable its default port-80 site before starting it. The Agent host owns Route53/DNS. Do not install, configure, edit, or restart Caddy, and do not call AWS CLI, Route53, or another DNS API."
 		}
 	}
 	piArguments := []string{"--mode", "text", "--print", "--no-session", "--provider", "dirextalk-worker", "--model", spec.Model, "--thinking", "medium", "--tools", "read,bash,edit,write,grep,find,ls", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt}
@@ -152,8 +152,16 @@ func configureCaddy(spec taskSpec) error {
 	if output, err := exec.Command("sudo", "install", "-m", "0644", temporary, target).CombinedOutput(); err != nil { return fmt.Errorf("install Caddy config: %w: %s", err, output) }
 	rollback := func() { if previousErr == nil { _ = os.WriteFile(temporary, previous, 0600); _ = exec.Command("sudo", "install", "-m", "0644", temporary, target).Run() } else { _ = exec.Command("sudo", "rm", "-f", target).Run() } }
 	if output, err := exec.Command("sudo", "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile").CombinedOutput(); err != nil { rollback(); return fmt.Errorf("validate Caddy config: %w: %s", err, output) }
-	if output, err := exec.Command("sudo", "systemctl", "reload", "caddy.service").CombinedOutput(); err != nil { rollback(); _ = exec.Command("sudo", "systemctl", "reload", "caddy.service").Run(); return fmt.Errorf("reload Caddy: %w: %s", err, output) }
+	output, err := reloadCaddy()
+	if err != nil { rollback(); _, _ = reloadCaddy(); return fmt.Errorf("reload Caddy: %w: %s", err, output) }
 	return nil
+}
+
+func reloadCaddy() ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second); defer cancel()
+	output, err := exec.CommandContext(ctx, "sudo", "caddy", "reload", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile").CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) { return output, errors.New("Caddy reload timed out") }
+	return output, err
 }
 
 func verifyService(spec taskSpec) error {
