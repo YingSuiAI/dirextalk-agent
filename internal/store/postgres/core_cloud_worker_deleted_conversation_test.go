@@ -64,6 +64,19 @@ func (pgCloudReuseResolver) CheckCreateWorkerCapacity(context.Context, string, u
 	return nil
 }
 
+type pgCloudRetainedReuseResolver struct{ workerID string }
+
+func (r pgCloudRetainedReuseResolver) ResolveIdleWorker(context.Context, string, uint64, cloudworker.AWSBinding, cloudworker.ComputeRequirements) (cloudworker.WorkerReuseSelection, bool, error) {
+	return cloudworker.WorkerReuseSelection{WorkerID: r.workerID, Compute: cloudworker.ComputeSpec{
+		InstanceType: "c7i.large", Architecture: "x86_64", VCPU: 2, MemoryGiB: 4,
+		RootDeviceName: "/dev/xvda", VolumeGiB: 32, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125,
+	}}, true, nil
+}
+
+func (pgCloudRetainedReuseResolver) CheckCreateWorkerCapacity(context.Context, string, uint64, cloudworker.AWSBinding) error {
+	return nil
+}
+
 func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 	t.Helper()
 	ctx, store, profileID, cleanup := corePG18Fixture(t)
@@ -104,7 +117,7 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 	}
 	cloudStore := NewCloudWorkerStore(store)
 	service, err := cloudworker.NewServiceWithAWSBindingResolver(cloudStore, defaults, cloudworker.FakeQuoter{
-		AmountMicros: 1000, MaximumAuthorizedMicros: 2000, TTL: time.Hour, Now: func() time.Time { return now },
+		AmountMicros: 1000, MaximumAuthorizedMicros: 2000, ComputeMicrosPerHour: 100000, TTL: time.Hour, Now: func() time.Time { return now },
 	}, cloudworker.AWSBindingResolverFunc(func(context.Context) (cloudworker.AWSBinding, error) { return binding, nil }), func() time.Time { return now })
 	if err != nil {
 		cleanup()
@@ -235,6 +248,51 @@ func seedDeletedLegacyCloudWorkerOffer(t *testing.T, h *pgCloudWorkerHarness, mu
 		t.Fatal(err)
 	}
 	return offer
+}
+
+func TestCloudWorkerPostgresReusesRetainedWorkerTwiceInOneTurn(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+	workerID := uuid.NewString()
+	if err := h.service.EnablePersistentWorkerReuse(pgCloudRetainedReuseResolver{workerID: workerID}); err != nil {
+		t.Fatal(err)
+	}
+	first := h.propose(t)
+	if !first.Plan.PersistentWorkerReuse || first.Plan.ReuseWorkerID != workerID {
+		t.Fatalf("first offer did not reuse retained Worker: %+v", first.Plan)
+	}
+
+	leaseID := uuid.NewString()
+	var revision, epoch uint64
+	if err := h.store.pool.QueryRow(h.ctx, `UPDATE core_conversation_turns
+		SET state='running',revision=revision+1,lease_id=$2,lease_epoch=lease_epoch+1,
+			lease_expires_at=$3,updated_at=$4
+		WHERE turn_id=$1
+		RETURNING revision,lease_epoch`, h.command.TurnID, leaseID, h.now.Add(30*time.Minute), h.now).Scan(&revision, &epoch); err != nil {
+		t.Fatal(err)
+	}
+	secondCommand := h.command
+	secondCommand.IdempotencyKey = uuid.NewString()
+	secondCommand.TurnLeaseID = leaseID
+	secondCommand.TurnLeaseEpoch = epoch
+	secondCommand.ExpectedTurnRevision = revision
+	secondCommand.Objective = "Add disk usage to the retained Worker report"
+	secondCommand.ObjectiveSummary = secondCommand.Objective
+	second, err := h.service.Propose(h.ctx, secondCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Plan.PersistentWorkerReuse || second.Plan.ReuseWorkerID != workerID || second.Plan.PlanID == first.Plan.PlanID || second.Plan.TurnID != first.Plan.TurnID {
+		t.Fatalf("follow-up offer=%+v first=%+v", second.Plan, first.Plan)
+	}
+	var userMessages int
+	if err = h.store.pool.QueryRow(h.ctx, `SELECT count(*) FROM core_messages
+		WHERE conversation_id=$1 AND role='user'`, h.command.ConversationID).Scan(&userMessages); err != nil {
+		t.Fatal(err)
+	}
+	if userMessages != 1 {
+		t.Fatalf("same-turn Worker reuse persisted %d original user messages", userMessages)
+	}
 }
 
 func TestCloudWorkerPostgresExpiredConfirmationSurvivesDeletedConversation(t *testing.T) {

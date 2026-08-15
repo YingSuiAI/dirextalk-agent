@@ -354,9 +354,16 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	if err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence),0)+1 FROM core_messages WHERE conversation_id=$1`, plan.ConversationID).Scan(&nextMessageSequence); err != nil {
 		return cloudworker.Offer{}, err
 	}
-	messages := []core.Message{userMessage, offerMessage}
-	if plan.PersistentWorkerReuse {
-		messages = []core.Message{userMessage}
+	var priorTurnPlan bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_cloud_worker_plans WHERE turn_id=$1 AND plan_id<>$2)`, plan.TurnID, plan.PlanID).Scan(&priorTurnPlan); err != nil {
+		return cloudworker.Offer{}, err
+	}
+	messages := make([]core.Message, 0, 2)
+	if !priorTurnPlan {
+		messages = append(messages, userMessage)
+	}
+	if !plan.PersistentWorkerReuse {
+		messages = append(messages, offerMessage)
 	}
 	for index, message := range messages {
 		if err = insertCloudWorkerMessageTx(ctx, tx, plan.ConversationID, nextMessageSequence+int64(index), message); err != nil {
