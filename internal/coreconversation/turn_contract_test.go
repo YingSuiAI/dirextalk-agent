@@ -879,6 +879,79 @@ func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *t
 	}
 }
 
+func TestExecuteTurnRepeatWorkerProposalPreservesExistingRemoteFailure(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	createdAt := time.Now().UTC().Add(-time.Minute)
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+		Prompt: "deploy the service remotely", ProfileID: profile.ProfileID,
+		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+		State: TurnAccepted, Revision: 3, LastSequence: 5, CreatedAt: createdAt,
+	}
+	taskID, planID := uuid.NewString(), uuid.NewString()
+	executionID := uuid.NewString()
+	originalCall := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
+	reference := Reference{Kind: "execution_plan", AccountGeneration: 1, TaskID: taskID,
+		PlanID: planID, PlanRevision: 1, Status: "failed"}
+	originalResult := ToolResult{
+		CallID: originalCall.ID, ToolName: originalCall.Name, IsError: true,
+		Content: `{"schema":"dirextalk.ssh-worker-completion/v1","execution_id":"` + executionID + `","status":"failed","worker_id":"` + uuid.NewString() + `","persistent_worker":true,"worker_report":"HTTP 403: model unavailable in region","central_instruction":"Continue the current conversation using the Worker report and local artifacts."}`,
+		Summary: "Cloud Worker result returned", RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID},
+		References: []Reference{reference},
+	}
+	repeatCall := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events: []TurnEvent{
+			{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: createdAt},
+			{TurnID: turn.ID, Sequence: 2, Revision: 2, Kind: TurnEventToolCall, ToolCall: &originalCall, CreatedAt: createdAt.Add(time.Second)},
+			{TurnID: turn.ID, Sequence: 3, Revision: 2, Kind: TurnEventWorkerStatus, ExecutionID: executionID, Status: "running", CreatedAt: createdAt.Add(2 * time.Second)},
+			{TurnID: turn.ID, Sequence: 4, Revision: 3, Kind: TurnEventWorkerStatus, ExecutionID: executionID, Status: "failed", CreatedAt: createdAt.Add(3 * time.Second)},
+			{TurnID: turn.ID, Sequence: 5, Revision: 3, Kind: TurnEventToolResult, ToolResult: &originalResult, CreatedAt: createdAt.Add(4 * time.Second)},
+		},
+	}
+	executeCalls := 0
+	service, err := NewService(store, fixedToolCallsTurnModel{calls: []ToolCall{repeatCall}}, nil,
+		snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+		return []ResolvedIntrinsic{{
+			Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerProposeToolName, InputSchema: map[string]any{"type": "object"}},
+			Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+				executeCalls++
+				return IntrinsicExecutionResult{}, ErrConflict
+			},
+		}}, nil
+	}))
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	terminal, err := store.GetTurn(context.Background(), turn.ID)
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil {
+		t.Fatalf("terminal=%+v err=%v", terminal, err)
+	}
+	if executeCalls != 0 {
+		t.Fatalf("repeat cloud_worker_propose executed %d times", executeCalls)
+	}
+	if store.failedCode != "" {
+		t.Fatalf("terminal failure code=%q", store.failedCode)
+	}
+	response := terminal.Response
+	if !strings.Contains(response.Message.Content, "HTTP 403") || !strings.Contains(response.Message.Content, "model unavailable in region") ||
+		len(response.Message.ToolCalls) != 0 || !response.Done ||
+		!reflect.DeepEqual(response.RelatedTaskIDs, []string{taskID}) ||
+		!reflect.DeepEqual(response.RelatedPlanIDs, []string{planID}) ||
+		!reflect.DeepEqual(response.References, []Reference{reference}) ||
+		len(response.ToolResults) != 1 || response.ToolResults[0].CallID != originalCall.ID {
+		t.Fatalf("terminal response=%+v", response)
+	}
+}
+
 func TestExecuteTurnFinalizesSucceededCloudWorkerWithDeferredSteer(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID, requestID, turnID := uuid.NewString(), uuid.NewString(), uuid.NewString()

@@ -1535,6 +1535,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if terminalWorker {
 		workerContent = appendDeferredWorkerGuidanceStatus(workerContent, turnSteers)
 	}
+	failedWorkerContent, failedWorker := terminalFailedCloudWorkerContent(toolCallAuthorities)
 	autoFinalizeWorker := terminalWorker
 	var resolvedExtensions []ResolvedExtension
 	if !autoFinalizeWorker {
@@ -1744,6 +1745,12 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					_, _ = cancelStore.MarkTurnCanceledRequested(ctx, id)
 				}
 				return
+			}
+			if failedWorker && modelResultCallsTool(out.result, coremodel.IntrinsicCloudWorkerProposeToolName) {
+				out.result.Done = true
+				out.result.ToolCalls = nil
+				out.result.Message.Content = failedWorkerContent
+				out.result.Message.ToolCalls = nil
 			}
 			if len(out.result.ToolCalls) != 0 || len(out.result.Message.ToolCalls) != 0 {
 				calls := out.result.ToolCalls
@@ -2139,6 +2146,25 @@ type turnToolCallAuthority struct {
 }
 
 func terminalCloudWorkerContent(authorities map[string]turnToolCallAuthority) (string, bool) {
+	content, workerID, ok := terminalCloudWorkerResult(authorities, "succeeded")
+	if !ok {
+		return "", false
+	}
+	if workerID != "" {
+		content += "\n\nWorker " + workerID + " is retained for reuse. Do you want to destroy it?"
+	}
+	return content, true
+}
+
+func terminalFailedCloudWorkerContent(authorities map[string]turnToolCallAuthority) (string, bool) {
+	content, _, ok := terminalCloudWorkerResult(authorities, "failed")
+	if !ok {
+		return "", false
+	}
+	return "Cloud Worker failed: " + content, true
+}
+
+func terminalCloudWorkerResult(authorities map[string]turnToolCallAuthority, status string) (string, string, bool) {
 	for _, authority := range authorities {
 		if authority.state != turnToolCallTerminal || authority.call.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
 			authority.result == nil || authority.result.ToolName != coremodel.IntrinsicCloudWorkerProposeToolName {
@@ -2151,22 +2177,30 @@ func terminalCloudWorkerContent(authorities map[string]turnToolCallAuthority) (s
 			WorkerReport string `json:"worker_report"`
 		}
 		if json.Unmarshal([]byte(authority.result.Content), &completion) != nil ||
-			completion.Schema != "dirextalk.ssh-worker-completion/v1" || completion.Status != "succeeded" {
-			return "", false
+			completion.Schema != "dirextalk.ssh-worker-completion/v1" || completion.Status != status {
+			continue
 		}
 		content := strings.TrimSpace(completion.WorkerReport)
 		if content == "" {
 			content = strings.TrimSpace(authority.result.Summary)
 		}
 		if content == "" {
-			return "", false
+			continue
 		}
-		if strings.TrimSpace(completion.WorkerID) != "" {
-			content += "\n\nWorker " + strings.TrimSpace(completion.WorkerID) + " is retained for reuse. Do you want to destroy it?"
-		}
-		return content, true
+		return content, strings.TrimSpace(completion.WorkerID), true
 	}
-	return "", false
+	return "", "", false
+}
+
+func modelResultCallsTool(result ModelRunResult, toolName string) bool {
+	for _, calls := range [][]ToolCall{result.ToolCalls, result.Message.ToolCalls} {
+		for _, call := range calls {
+			if call.Name == toolName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func appendDeferredWorkerGuidanceStatus(content string, steers []TurnSteer) string {
