@@ -34,7 +34,11 @@ func TestCloudWorkerContinuationTellsCentralApprovalWasCompleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !payload.UserApprovalCompleted || !strings.Contains(payload.CentralInstruction, "approval was completed") ||
-		!strings.Contains(payload.CentralInstruction, "do not claim") {
+		!strings.Contains(payload.CentralInstruction, "do not claim") ||
+		!strings.Contains(payload.CentralInstruction, "language of the user's current request") ||
+		!strings.Contains(payload.CentralInstruction, "audit every explicit requirement") ||
+		!strings.Contains(payload.CentralInstruction, "Treat the Worker report as a claim, not proof") ||
+		!strings.Contains(payload.CentralInstruction, "missing, renamed, unsupported, or unverified requirements") {
 		t.Fatalf("Central approval authority missing: %+v", payload)
 	}
 }

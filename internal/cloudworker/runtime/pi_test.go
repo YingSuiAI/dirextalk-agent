@@ -383,6 +383,105 @@ func TestPiRunnerAcceptsCumulativeUsageAcrossIndividuallyBoundedModelCalls(t *te
 	}
 }
 
+func TestParsePiEventsAcceptsPiManagedRetryAndContinuationRuns(t *testing.T) {
+	t.Parallel()
+	stream := []byte(
+		`{"type":"session","version":3,"id":"session-1"}` + "\n" +
+			`{"type":"agent_start"}` + "\n" +
+			`{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"503 service unavailable","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"reasoning":0}}}` + "\n" +
+			`{"type":"agent_end","willRetry":true}` + "\n" +
+			`{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":2000}` + "\n" +
+			`{"type":"agent_start"}` + "\n" +
+			`{"type":"message_end","message":{"role":"assistant","stopReason":"toolUse","usage":{"input":120,"output":24,"cacheRead":20,"cacheWrite":0,"reasoning":6}}}` + "\n" +
+			`{"type":"auto_retry_end","success":true,"attempt":1}` + "\n" +
+			`{"type":"tool_execution_end","toolName":"dirextalk_submit_result","result":{"content":[{"type":"text","text":"Final result submitted."}],"details":{"status":"completed","summary":"Recovered and completed the task.","deliverables":["report.txt"],"tests":["Focused tests passed."],"risks":[]},"terminate":true},"isError":false}` + "\n" +
+			`{"type":"agent_end","willRetry":false}` + "\n" +
+			`{"type":"agent_settled"}` + "\n",
+	)
+
+	usage, finalJSON, err := ParsePiEvents(stream)
+	if err != nil {
+		t.Fatalf("parse Pi-managed retry: %v", err)
+	}
+	defer clear(finalJSON)
+	if usage.InputTokens != 140 || usage.OutputTokens != 24 ||
+		usage.CachedInputTokens != 20 || usage.ReasoningOutputTokens != 6 {
+		t.Fatalf("retry usage=%+v", usage)
+	}
+	final, canonical, err := ParsePiFinalV1(finalJSON)
+	defer clear(canonical)
+	if err != nil || final.Summary != "Recovered and completed the task." {
+		t.Fatalf("retry final=%+v err=%v", final, err)
+	}
+}
+
+func TestPiProcessOutputAcceptsRealPi083RetryLifecycle(t *testing.T) {
+	t.Parallel()
+	raw := []byte(
+		`{"type":"session","version":3,"id":"session-1"}` + "\n" +
+			`{"type":"agent_start"}` + "\n" +
+			`{"type":"turn_start"}` + "\n" +
+			`{"type":"message_start","message":{"role":"assistant","stopReason":"pending"}}` + "\n" +
+			`{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"503 service unavailable","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"reasoning":0}}}` + "\n" +
+			`{"type":"turn_end"}` + "\n" +
+			`{"type":"agent_end","willRetry":true}` + "\n" +
+			`{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":2000}` + "\n" +
+			`{"type":"agent_start"}` + "\n" +
+			`{"type":"turn_start"}` + "\n" +
+			`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"discarded"}}` + "\n" +
+			`{"type":"message_end","message":{"role":"assistant","stopReason":"toolUse","usage":{"input":100,"output":20,"cacheRead":0,"cacheWrite":0,"reasoning":0}}}` + "\n" +
+			`{"type":"auto_retry_end","success":true,"attempt":1}` + "\n" +
+			`{"type":"tool_execution_start","toolName":"dirextalk_submit_result"}` + "\n" +
+			`{"type":"tool_execution_end","toolName":"dirextalk_submit_result","result":{"content":[{"type":"text","text":"Final result submitted."}],"details":{"status":"completed","summary":"Real Pi 0.83 retry lifecycle passed.","deliverables":["retry-evidence.txt"],"tests":["real Pi 0.83 JSON event stream"],"risks":[]},"terminate":true},"isError":false}` + "\n" +
+			`{"type":"turn_end"}` + "\n" +
+			`{"type":"agent_end","willRetry":false}` + "\n" +
+			`{"type":"agent_settled"}` + "\n",
+	)
+	buffer := newProcessOutputBuffer(ProcessStdoutPiEventsV1, MaxProcessOutputBytes, nil)
+	for len(raw) > 0 {
+		chunk := min(17, len(raw))
+		if _, err := buffer.Write(raw[:chunk]); err != nil {
+			t.Fatal(err)
+		}
+		raw = raw[chunk:]
+	}
+	buffer.finalize()
+	if buffer.exceededLimit() {
+		t.Fatal("real Pi retry lifecycle exceeded retained output limit")
+	}
+	retained := buffer.clone()
+	buffer.destroy()
+	defer clear(retained)
+	usage, finalJSON, err := ParsePiEvents(retained)
+	defer clear(finalJSON)
+	if err != nil || usage.InputTokens != 100 || usage.OutputTokens != 20 ||
+		!bytes.Contains(finalJSON, []byte("Real Pi 0.83 retry lifecycle passed.")) {
+		t.Fatalf("retained retry output usage=%+v final=%s err=%v", usage, finalJSON, err)
+	}
+	if bytes.Contains(retained, []byte("discarded")) || bytes.Contains(retained, []byte("turn_start")) {
+		t.Fatalf("transient Pi payload was retained: %s", retained)
+	}
+}
+
+func TestParsePiEventsRejectsContinuationAfterFinalSubmission(t *testing.T) {
+	t.Parallel()
+	stream := bytes.Replace(
+		validPiEventStream(),
+		[]byte(`{"type":"agent_end","willRetry":false}`+"\n"),
+		[]byte(
+			`{"type":"agent_end","willRetry":false}`+"\n"+
+				`{"type":"agent_start"}`+"\n"+
+				`{"type":"agent_end","willRetry":false}`+"\n",
+		),
+		1,
+	)
+	usage, finalJSON, err := ParsePiEvents(stream)
+	clear(finalJSON)
+	if !errors.Is(err, ErrExecution) || usage != (Usage{}) {
+		t.Fatalf("continuation after final accepted: usage=%+v err=%v", usage, err)
+	}
+}
+
 func TestPiRunnerRequiresBoundTemporaryProviderCredential(t *testing.T) {
 	t.Parallel()
 	contextJSON := []byte(`{"scope":"approved"}`)

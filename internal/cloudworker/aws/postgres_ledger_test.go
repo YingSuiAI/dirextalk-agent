@@ -210,6 +210,42 @@ func TestPostgresLedgerReadyReapFilterAndStrictJSON(t *testing.T) {
 	}
 }
 
+func TestPostgresLedgerReaperSkipsOnlyUnreadableVerifiedTombstones(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 15, 4, 0, 0, 0, time.UTC)
+	current := postgresTestRecord(t, testPlanWithExecution(t, now,
+		"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", now.Add(-time.Minute)), now)
+	encoded, err := encodeLedgerRecord(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := newPostgresLedger(&reapListDB{
+		states: []LifecycleState{LifecycleVerifiedDestroyed, current.State},
+		values: [][]byte{[]byte(`{"legacy":"no longer valid under current plan rules"}`), encoded},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reapable, err := ledger.ListReapable(context.Background(), now)
+	if err != nil || len(reapable) != 1 || reapable[0].Identity.ExecutionID != current.Identity.ExecutionID {
+		t.Fatalf("reapable=%+v err=%v", reapable, err)
+	}
+}
+
+func TestPostgresLedgerReaperRejectsUnreadableNonTerminalRecord(t *testing.T) {
+	t.Parallel()
+	ledger, err := newPostgresLedger(&reapListDB{
+		states: []LifecycleState{LifecycleDestroying},
+		values: [][]byte{[]byte(`{"corrupt":true}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ledger.ListReapable(context.Background(), time.Now().UTC()); !errors.Is(err, ErrIdentityMismatch) {
+		t.Fatalf("unreadable non-terminal ledger record accepted: %v", err)
+	}
+}
+
 func containsLedgerExecution(records []LedgerRecord, executionID string) bool {
 	for _, record := range records {
 		if record.Identity.ExecutionID == executionID {
@@ -357,7 +393,12 @@ func (db *fakeLedgerDB) Query(_ context.Context, sql string, args ...any) (pgx.R
 	// The production SQL orders by deadline and identity key; preserve that
 	// contract in the fake by decoding and sorting through the same fields.
 	sortLedgerJSON(values)
-	return &fakeRows{values: values, index: -1}, nil
+	states := make([]LifecycleState, len(values))
+	for index, encoded := range values {
+		record, _ := decodeLedgerRecord(encoded)
+		states[index] = record.State
+	}
+	return &fakeRows{values: values, states: states, index: -1}, nil
 }
 
 func fakeExecutionKey(account string, generation uint64, owner, execution string) string {
@@ -389,6 +430,7 @@ func (row fakeRow) Scan(dest ...any) error {
 
 type fakeRows struct {
 	values [][]byte
+	states []LifecycleState
 	index  int
 	closed bool
 }
@@ -406,10 +448,19 @@ func (rows *fakeRows) Next() bool {
 	return true
 }
 func (rows *fakeRows) Scan(dest ...any) error {
-	if rows.index < 0 || rows.index >= len(rows.values) || len(dest) != 1 {
+	if rows.index < 0 || rows.index >= len(rows.values) || (len(dest) != 1 && len(dest) != 2) {
 		return errors.New("invalid rows scan")
 	}
-	value, ok := dest[0].(*[]byte)
+	valueIndex := 0
+	if len(dest) == 2 {
+		state, ok := dest[0].(*string)
+		if !ok || len(rows.states) != len(rows.values) {
+			return errors.New("unsupported rows state target")
+		}
+		*state = string(rows.states[rows.index])
+		valueIndex = 1
+	}
+	value, ok := dest[valueIndex].(*[]byte)
 	if !ok {
 		return errors.New("unsupported rows target")
 	}
@@ -419,6 +470,30 @@ func (rows *fakeRows) Scan(dest ...any) error {
 func (rows *fakeRows) Values() ([]any, error) { return []any{rows.values[rows.index]}, nil }
 func (rows *fakeRows) RawValues() [][]byte    { return [][]byte{rows.values[rows.index]} }
 func (rows *fakeRows) Conn() *pgx.Conn        { return nil }
+
+type reapListDB struct {
+	states []LifecycleState
+	values [][]byte
+}
+
+func (db *reapListDB) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, errors.New("unexpected exec")
+}
+
+func (db *reapListDB) QueryRow(context.Context, string, ...any) pgx.Row {
+	return fakeRow{err: errors.New("unexpected query row")}
+}
+
+func (db *reapListDB) Query(_ context.Context, sql string, _ ...any) (pgx.Rows, error) {
+	if sql != listReapableLedgerSQL || len(db.states) != len(db.values) {
+		return nil, errors.New("unexpected query")
+	}
+	values := make([][]byte, len(db.values))
+	for index, value := range db.values {
+		values[index] = append([]byte(nil), value...)
+	}
+	return &fakeRows{states: append([]LifecycleState(nil), db.states...), values: values, index: -1}, nil
+}
 
 func sortLedgerJSON(values [][]byte) {
 	for index := 1; index < len(values); index++ {

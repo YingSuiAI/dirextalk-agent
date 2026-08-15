@@ -73,12 +73,14 @@ func ParsePiEvents(stream []byte) (Usage, []byte, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(stream))
 	scanner.Buffer(make([]byte, 64<<10), maxPiEventLineBytes)
 	sessionSeen := false
-	agentStarted := false
+	agentActive := false
+	agentRuns := 0
 	agentEnded := false
 	agentSettled := false
 	finalSeen := false
 	var usage Usage
 	var finalJSON []byte
+	var terminalFailure error
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
@@ -95,19 +97,21 @@ func ParsePiEvents(stream []byte) (Usage, []byte, error) {
 		}
 		switch event.Type {
 		case "session":
-			if sessionSeen || agentStarted || event.Version != 3 {
+			if sessionSeen || agentRuns != 0 || event.Version != 3 {
 				clear(finalJSON)
 				return Usage{}, nil, piEventInvalid()
 			}
 			sessionSeen = true
 		case "agent_start":
-			if !sessionSeen || agentStarted || agentEnded {
+			if !sessionSeen || agentActive || agentSettled || finalSeen {
 				clear(finalJSON)
 				return Usage{}, nil, piEventInvalid()
 			}
-			agentStarted = true
+			agentActive = true
+			agentEnded = false
+			agentRuns++
 		case "message_end":
-			if !agentStarted || agentEnded {
+			if !agentActive {
 				clear(finalJSON)
 				return Usage{}, nil, piEventInvalid()
 			}
@@ -117,24 +121,24 @@ func ParsePiEvents(stream []byte) (Usage, []byte, error) {
 				return Usage{}, nil, piEventInvalid()
 			}
 			if message.Role == "assistant" {
-				switch message.StopReason {
-				case "error":
-					clear(finalJSON)
-					return Usage{}, nil, classifyPiProviderFailure(message.ErrorMessage)
-				case "aborted":
-					clear(finalJSON)
-					// The production Pi runtime is non-interactive and its only
-					// in-process abort source is the signed context/provider guard.
-					// External cancellation terminates Process.Run before event parsing.
-					return Usage{}, nil, newFailure(FailureStagePi, FailureCodeContextLimit)
-				}
 				if addPiUsage(&usage, message.Usage) != nil {
 					clear(finalJSON)
 					return Usage{}, nil, piEventInvalid()
 				}
+				switch message.StopReason {
+				case "error":
+					terminalFailure = classifyPiProviderFailure(message.ErrorMessage)
+				case "aborted":
+					// The production Pi runtime is non-interactive and its only
+					// in-process abort source is the signed context/provider guard.
+					// External cancellation terminates Process.Run before event parsing.
+					terminalFailure = newFailure(FailureStagePi, FailureCodeContextLimit)
+				default:
+					terminalFailure = nil
+				}
 			}
 		case "tool_execution_end":
-			if !agentStarted || agentEnded {
+			if !agentActive {
 				clear(finalJSON)
 				return Usage{}, nil, piEventInvalid()
 			}
@@ -157,26 +161,31 @@ func ParsePiEvents(stream []byte) (Usage, []byte, error) {
 			}
 			finalJSON = canonical
 			finalSeen = true
+			terminalFailure = nil
 		case "agent_end":
-			if !agentStarted || agentEnded || event.WillRetry {
+			if !agentActive || agentEnded || (finalSeen && event.WillRetry) {
 				clear(finalJSON)
 				return Usage{}, nil, piEventInvalid()
 			}
+			agentActive = false
 			agentEnded = true
 		case "agent_settled":
-			if !agentEnded || agentSettled {
+			if agentRuns == 0 || agentActive || !agentEnded || agentSettled {
 				clear(finalJSON)
 				return Usage{}, nil, piEventInvalid()
 			}
 			agentSettled = true
 		}
 	}
-	if scanner.Err() != nil || !sessionSeen || !agentStarted ||
+	if scanner.Err() != nil || !sessionSeen || agentRuns == 0 || agentActive ||
 		!agentEnded || !agentSettled || usage.Validate() != nil {
 		clear(finalJSON)
 		return Usage{}, nil, piEventInvalid()
 	}
 	if !finalSeen {
+		if terminalFailure != nil {
+			return Usage{}, nil, terminalFailure
+		}
 		return Usage{}, nil, newFailure(FailureStagePi, FailureCodePiFinalMissing)
 	}
 	return usage, finalJSON, nil

@@ -71,7 +71,7 @@ var (
           AND lease_epoch=$9 AND provider_id=$10 AND launch_identity=$11 AND generation=$12
           AND plan_digest=$13 AND infrastructure_digest=$14 AND intent_digest=$15
 	          AND revision=$21 AND (state <> 'verified_destroyed' OR $16 IN ('verified_destroyed','destroying'))`
-	listReapableLedgerSQL = `SELECT record_json FROM core_cloud_worker_aws_ledger
+	listReapableLedgerSQL = `SELECT state, record_json FROM core_cloud_worker_aws_ledger
 	        WHERE (state <> 'verified_destroyed'
 	          AND (cleanup_requested_at IS NOT NULL OR destroy_deadline <= $1))
 	           OR state = 'verified_destroyed'
@@ -218,13 +218,29 @@ func (ledger *PostgresLedger) ListReapable(ctx context.Context, before time.Time
 	defer rows.Close()
 	result := make([]LedgerRecord, 0)
 	for rows.Next() {
+		var persistedState string
 		var encoded []byte
-		if err := rows.Scan(&encoded); err != nil {
+		if err := rows.Scan(&persistedState, &encoded); err != nil {
 			return nil, errors.Join(ErrCloudReadback, err)
+		}
+		state := LifecycleState(persistedState)
+		if !validLifecycleState(state) {
+			return nil, ErrIdentityMismatch
 		}
 		record, err := decodeLedgerRecord(encoded)
 		if err != nil {
+			// Verified tombstones are immutable cleanup history. Older releases
+			// may no longer satisfy the current Plan validator after a runtime or
+			// network contract upgrade. They are safe to omit from the optional
+			// 24-hour late-create audit, but an unreadable non-terminal record must
+			// still stop the Reaper before any provider mutation.
+			if state == LifecycleVerifiedDestroyed {
+				continue
+			}
 			return nil, err
+		}
+		if record.State != state {
+			return nil, ErrIdentityMismatch
 		}
 		if record.State == LifecycleVerifiedDestroyed {
 			if record.tombstoneAuditDue(before.UTC()) {
