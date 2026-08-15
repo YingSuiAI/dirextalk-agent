@@ -498,8 +498,7 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 			if e.ExpectedRevision == nil || p.Revision != *e.ExpectedRevision {
 				return coremodel.SyncProfileResult{}, coremodel.ErrRevisionConflict
 			}
-			previousAPIKey := p.APIKey
-			previousProviderSecrets := cloneStringMap(p.ProviderSecrets)
+			previous := p
 			p.DisplayName, p.Provider, p.ModelKind, p.InputModalities, p.ProviderConfig, p.BaseURL, p.Model, p.SystemPrompt = e.DisplayName, e.Provider, e.ModelKind, append([]string(nil), e.InputModalities...), e.ProviderConfig, e.BaseURL, e.Model, e.SystemPrompt
 			if e.ProviderSecrets != nil {
 				p.ProviderSecrets = e.ProviderSecrets
@@ -511,38 +510,40 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 			if p.CredentialVersion <= 0 {
 				p.CredentialVersion = 1
 			}
-			if previousAPIKey != p.APIKey || !equalStringMap(previousProviderSecrets, p.ProviderSecrets) {
-				p.CredentialVersion++
-			}
-			p.Revision++
-			p.UpdatedAt = time.Now().UTC()
 			p, err = coremodel.ValidateProfile(p)
 			if err != nil {
 				return coremodel.SyncProfileResult{}, err
 			}
-			modalities, providerConfig, providerSecretStatus := profileMetadataJSON(p)
-			envelope, sealErr := s.sealProfileSecret(p)
-			if sealErr != nil {
-				return coremodel.SyncProfileResult{}, sealErr
-			}
-			keyVersion, keyNonce, keyCipher := profileSecretArgs(envelope)
-			providerEnvelope, sealErr := s.sealProviderSecrets(p)
-			if sealErr != nil {
-				return coremodel.SyncProfileResult{}, sealErr
-			}
-			providerKeyVersion, providerKeyNonce, providerKeyCipher := providerSecretStatusArgs(providerEnvelope)
-			_, err = tx.Exec(ctx, `UPDATE core_model_profiles SET display_name=$2,provider=$3,model_kind=$4,input_modalities=$5::jsonb,provider_config=$6::jsonb,provider_secret_status=$7::jsonb,provider_secrets_key_version=$8,provider_secrets_nonce=$9,provider_secrets_ciphertext=$10,base_url=$11,model_name=$12,system_prompt=$13,api_key_configured=$14,credential_version=$15,api_key_key_version=$16,api_key_nonce=$17,api_key_ciphertext=$18,temperature=$19,top_p=$20,max_output_tokens=$21,context_window=$22,reasoning_effort=$23,revision=$24,updated_at=$25 WHERE profile_id=$1`, p.ID, p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.UpdatedAt)
-			if err != nil {
-				return coremodel.SyncProfileResult{}, mapProfileDBError(err)
-			}
-			if p.APIKey != "" {
-				revisionEnvelope, revisionErr := s.sealProfileRevisionSecret(p)
-				if revisionErr != nil {
-					return coremodel.SyncProfileResult{}, revisionErr
+			if !previous.SameConfiguration(p) {
+				if previous.APIKey != p.APIKey || !equalStringMap(previous.ProviderSecrets, p.ProviderSecrets) {
+					p.CredentialVersion++
 				}
-				revisionKeyVersion, revisionKeyNonce, revisionKeyCipher := profileSecretArgs(revisionEnvelope)
-				if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_secret_revisions(profile_id,revision,secret_key_version,api_key_nonce,api_key_ciphertext) VALUES($1,$2,$3,$4,$5) ON CONFLICT (profile_id,revision) DO NOTHING`, p.ID, p.Revision, revisionKeyVersion, revisionKeyNonce, revisionKeyCipher); err != nil {
+				p.Revision++
+				p.UpdatedAt = time.Now().UTC()
+				modalities, providerConfig, providerSecretStatus := profileMetadataJSON(p)
+				envelope, sealErr := s.sealProfileSecret(p)
+				if sealErr != nil {
+					return coremodel.SyncProfileResult{}, sealErr
+				}
+				keyVersion, keyNonce, keyCipher := profileSecretArgs(envelope)
+				providerEnvelope, sealErr := s.sealProviderSecrets(p)
+				if sealErr != nil {
+					return coremodel.SyncProfileResult{}, sealErr
+				}
+				providerKeyVersion, providerKeyNonce, providerKeyCipher := providerSecretStatusArgs(providerEnvelope)
+				_, err = tx.Exec(ctx, `UPDATE core_model_profiles SET display_name=$2,provider=$3,model_kind=$4,input_modalities=$5::jsonb,provider_config=$6::jsonb,provider_secret_status=$7::jsonb,provider_secrets_key_version=$8,provider_secrets_nonce=$9,provider_secrets_ciphertext=$10,base_url=$11,model_name=$12,system_prompt=$13,api_key_configured=$14,credential_version=$15,api_key_key_version=$16,api_key_nonce=$17,api_key_ciphertext=$18,temperature=$19,top_p=$20,max_output_tokens=$21,context_window=$22,reasoning_effort=$23,revision=$24,updated_at=$25 WHERE profile_id=$1`, p.ID, p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.UpdatedAt)
+				if err != nil {
 					return coremodel.SyncProfileResult{}, mapProfileDBError(err)
+				}
+				if p.APIKey != "" {
+					revisionEnvelope, revisionErr := s.sealProfileRevisionSecret(p)
+					if revisionErr != nil {
+						return coremodel.SyncProfileResult{}, revisionErr
+					}
+					revisionKeyVersion, revisionKeyNonce, revisionKeyCipher := profileSecretArgs(revisionEnvelope)
+					if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_secret_revisions(profile_id,revision,secret_key_version,api_key_nonce,api_key_ciphertext) VALUES($1,$2,$3,$4,$5) ON CONFLICT (profile_id,revision) DO NOTHING`, p.ID, p.Revision, revisionKeyVersion, revisionKeyNonce, revisionKeyCipher); err != nil {
+						return coremodel.SyncProfileResult{}, mapProfileDBError(err)
+					}
 				}
 			}
 		} else {
@@ -809,17 +810,6 @@ func valueOrEmpty(v *string) string {
 		return ""
 	}
 	return *v
-}
-
-func cloneStringMap(value map[string]string) map[string]string {
-	if len(value) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(value))
-	for key, item := range value {
-		out[key] = item
-	}
-	return out
 }
 
 func equalStringMap(left, right map[string]string) bool {

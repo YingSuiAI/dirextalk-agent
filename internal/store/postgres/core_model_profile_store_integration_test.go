@@ -318,6 +318,28 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	if err != nil || defaults.ToolClientProfileID != "two" {
 		t.Fatalf("durable tool default=%+v err=%v", defaults, err)
 	}
+	beforeNoOp, err := store.GetProfile(ctx, created.Profiles[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("a1", 32), coremodel.SyncProfileCommand{
+		DefaultConversationProfileID: "one",
+		DefaultToolProfileID:         "two",
+		Entries: []coremodel.SyncProfileEntry{{
+			ClientProfileID: "one", ExpectedRevision: int64PtrStore(1), DisplayName: "One",
+			Provider: coremodel.ProviderOpenAICompatible, Model: "model",
+		}},
+	})
+	if err != nil || len(unchanged.Profiles) != 1 || unchanged.Profiles[0].Revision != 1 || unchanged.Profiles[0].CredentialVersion != 1 || !unchanged.Profiles[0].UpdatedAt.Equal(beforeNoOp.UpdatedAt) {
+		t.Fatalf("PostgreSQL no-op sync changed profile: before=%+v after=%+v err=%v", beforeNoOp.Public(), unchanged, err)
+	}
+	_, err = store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("a2", 32), coremodel.SyncProfileCommand{Entries: []coremodel.SyncProfileEntry{{
+		ClientProfileID: "one", ExpectedRevision: int64PtrStore(2), DisplayName: "One",
+		Provider: coremodel.ProviderOpenAICompatible, Model: "model",
+	}}})
+	if !errors.Is(err, coremodel.ErrRevisionConflict) {
+		t.Fatalf("PostgreSQL stale no-op sync err=%v", err)
+	}
 	_, err = store.SyncProfiles(ctx, uuid.NewString(), "abababababababababababababababababababababababababababababababab", coremodel.SyncProfileCommand{DefaultToolProfileID: "embed", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "embed", DisplayName: "Embed", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, Model: "embed", APIKey: stringPtrStore("embed-secret")}}})
 	if !errors.Is(err, coremodel.ErrInvalidProfile) {
 		t.Fatalf("PostgreSQL accepted embedding tool default: %v", err)
@@ -382,7 +404,7 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	left.IdempotencyKey, right.IdempotencyKey = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
 	left.Entries = append([]coremodel.SyncProfileEntry(nil), replayCommand.Entries...)
 	right.Entries = append([]coremodel.SyncProfileEntry(nil), replayCommand.Entries...)
-	left.Entries[0].ExpectedRevision, right.Entries[0].ExpectedRevision = int64PtrStore(3), int64PtrStore(3)
+	left.Entries[0].ExpectedRevision, right.Entries[0].ExpectedRevision = int64PtrStore(2), int64PtrStore(2)
 	left.Entries[0].DisplayName, right.Entries[0].DisplayName = "left", "right"
 	results := make(chan error, 2)
 	go func() {

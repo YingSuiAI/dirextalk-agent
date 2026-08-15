@@ -172,7 +172,9 @@ pin triple: `model_profile_id`, `model_profile_revision`, and
 `credential_version`. All three values must be positive and match the resolved
 profile exactly; there is no default-profile or partial-pin fallback. The
 profile revision advances for any profile update, while the credential version
-advances when API-key or provider-secret material is rotated or cleared. The
+advances when API-key or provider-secret material is rotated or cleared. A
+reconnect sync that submits the same effective profile and credential material
+with the current revision fence preserves the revision. The
 resolved snapshot, request fingerprint, durable turn, and replay receipt retain
 the same pins without storing them as secret material. A stale pin fails before
 provider work, while an idempotent replay returns the already-bound durable

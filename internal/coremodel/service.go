@@ -1114,8 +1114,7 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 			if e.ExpectedRevision == nil || p.Revision != *e.ExpectedRevision {
 				return SyncProfileResult{}, ErrRevisionConflict
 			}
-			previousAPIKey := p.APIKey
-			previousProviderSecrets := cloneStringMap(p.ProviderSecrets)
+			previous := cloneProfile(p)
 			p.DisplayName, p.Provider, p.ModelKind, p.InputModalities, p.ProviderConfig, p.BaseURL, p.Model, p.SystemPrompt = e.DisplayName, e.Provider, e.ModelKind, append([]string(nil), e.InputModalities...), e.ProviderConfig, e.BaseURL, e.Model, e.SystemPrompt
 			if e.ProviderSecrets != nil {
 				p.ProviderSecrets = cloneStringMap(e.ProviderSecrets)
@@ -1128,10 +1127,18 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 			if p.CredentialVersion <= 0 {
 				p.CredentialVersion = 1
 			}
-			if previousAPIKey != p.APIKey || !equalStringMap(previousProviderSecrets, p.ProviderSecrets) {
-				p.CredentialVersion++
+			var err error
+			p, err = validateStoredProfile(p)
+			if err != nil {
+				return SyncProfileResult{}, err
 			}
-			p.Revision++
+			if !previous.SameConfiguration(p) {
+				if credentialMaterialChanged(previous, p) {
+					p.CredentialVersion++
+				}
+				p.Revision++
+				p.UpdatedAt = time.Now().UTC()
+			}
 			work[id] = p
 		} else {
 			if e.ExpectedRevision != nil {
@@ -1154,7 +1161,6 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 			}
 			return SyncProfileResult{}, ErrAPIKeyUnavailable
 		}
-		p.UpdatedAt = time.Now().UTC()
 		work[id] = p
 		out.Profiles = append(out.Profiles, p.Public())
 	}

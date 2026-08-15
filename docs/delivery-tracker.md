@@ -15,6 +15,8 @@ contract](message-server-integration-development-contract.md), and
   confirmations, and fenced recovery. The private outbound Product Capability
   mTLS client explicitly bypasses ambient HTTP(S) proxy settings.
 - Provider-backed model catalog and durable Eino conversation/Task execution.
+- Revision-fenced profile sync treats an identical hydrated profile as a no-op,
+  so reconnects do not invalidate an already published conversation pin.
 - Native Chat/StreamChat and durable StartTurn now include the current prompt
   in the provider request and perform bounded long-term-memory recall on every
   turn. The model-only envelope combines relevance-ranked current user facts,

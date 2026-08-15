@@ -34,6 +34,35 @@ func TestSyncProfilesIsAtomicAndBatchIdempotent(t *testing.T) {
 	}
 }
 
+func TestSyncProfilesNoOpPreservesRevision(t *testing.T) {
+	svc := newSyncTestService(t)
+	created := mustSync(t, svc, "a0000000-0000-4000-8000-000000000003", "primary", syncEntry("primary", "Primary", "secret"))
+	first := created.Profiles[0]
+
+	unchanged := mustSync(t, svc, "a0000000-0000-4000-8000-000000000004", "primary", SyncProfileEntry{
+		ClientProfileID: "primary", ExpectedRevision: int64Ptr(1), DisplayName: "Primary",
+		Provider: ProviderOpenAICompatible, Model: "model",
+	})
+	if got := unchanged.Profiles[0]; got.Revision != 1 || got.CredentialVersion != 1 || !got.UpdatedAt.Equal(first.UpdatedAt) {
+		t.Fatalf("no-op sync changed profile: before=%+v after=%+v", first, got)
+	}
+
+	if _, err := svc.Sync(context.Background(), SyncProfileCommand{IdempotencyKey: "a0000000-0000-4000-8000-000000000005", Entries: []SyncProfileEntry{{
+		ClientProfileID: "primary", ExpectedRevision: int64Ptr(2), DisplayName: "Primary",
+		Provider: ProviderOpenAICompatible, Model: "model",
+	}}}); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("stale no-op sync err=%v", err)
+	}
+
+	changed := mustSync(t, svc, "a0000000-0000-4000-8000-000000000006", "primary", SyncProfileEntry{
+		ClientProfileID: "primary", ExpectedRevision: int64Ptr(1), DisplayName: "Primary v2",
+		Provider: ProviderOpenAICompatible, Model: "model",
+	})
+	if got := changed.Profiles[0]; got.Revision != 2 || got.CredentialVersion != 1 {
+		t.Fatalf("real change was not revisioned: %+v", got)
+	}
+}
+
 func TestSyncProfilesPreservesMissingProfilesAndRotatesWriteOnlyKey(t *testing.T) {
 	svc := newSyncTestService(t)
 	first := mustSync(t, svc, "a0000000-0000-4000-8000-000000000010", "primary", syncEntry("primary", "Primary", "first"), syncEntry("secondary", "Secondary", "second"))

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -52,6 +53,58 @@ type Profile struct {
 	CredentialVersion    int64
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+}
+
+// SameConfiguration reports whether two profiles resolve to the same model
+// behavior and credential material. Revision and persistence metadata are not
+// configuration, so a reconnect sync can preserve the existing revision.
+func (p Profile) SameConfiguration(other Profile) bool {
+	return p.DisplayName == other.DisplayName &&
+		p.Provider == other.Provider &&
+		p.ModelKind == other.ModelKind &&
+		equalStrings(p.InputModalities, other.InputModalities) &&
+		reflect.DeepEqual(redactProviderConfig(p.ProviderConfig), redactProviderConfig(other.ProviderConfig)) &&
+		equalProfileSecrets(p.ProviderSecrets, other.ProviderSecrets) &&
+		p.BaseURL == other.BaseURL &&
+		p.Model == other.Model &&
+		p.APIKey == other.APIKey &&
+		p.SystemPrompt == other.SystemPrompt &&
+		equalFloat(p.Temperature, other.Temperature) &&
+		equalFloat(p.TopP, other.TopP) &&
+		p.MaxOutputTokens == other.MaxOutputTokens &&
+		p.ContextWindow == other.ContextWindow &&
+		p.ReasoningEffort == other.ReasoningEffort
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalProfileSecrets(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func equalFloat(left, right *float64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 // ExecutionSnapshot is the immutable, secret-bearing profile material bound
