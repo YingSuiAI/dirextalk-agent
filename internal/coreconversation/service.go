@@ -1859,8 +1859,18 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						}
 						result, executeErr := executable.Execute(child, ToolExecutionRequest{Call: call})
 						if executeErr != nil {
-							_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "tool_execution_failed", "read-only tool execution failed")
-							return
+							if child.Err() != nil {
+								return
+							}
+							// Tool errors are model observations, not conversation failures.
+							// Returning a bounded error result lets the model correct invalid
+							// arguments or choose another tool in the next round.
+							result = ToolResult{
+								CallID:   call.ID,
+								ToolName: call.Name,
+								Content:  "tool execution failed; correct the arguments or use another available tool",
+								IsError:  true,
+							}
 						}
 						if result.CallID == "" {
 							result.CallID = call.ID

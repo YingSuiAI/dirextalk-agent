@@ -331,7 +331,7 @@ func TestConversationToolTerminalUsesLiveSequencePostgres(t *testing.T) {
 	}
 }
 
-func TestConversationReadOnlyExecuteFailureTerminalizesExactlyOncePostgres(t *testing.T) {
+func TestConversationReadOnlyDispatchFailurePreservesPromptPostgres(t *testing.T) {
 	fixture := newConversationToolPrepareFixture(t, uuid.NewString())
 	call := core.ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"bounded"}`}
 	persistConversationToolBatch(t, fixture, []core.ToolCall{call})
@@ -341,15 +341,19 @@ func TestConversationReadOnlyExecuteFailureTerminalizesExactlyOncePostgres(t *te
 	if execute, err := fixture.h.store.BeginConversationToolDispatch(context.Background(), fixture.lease, call); err != nil || !execute {
 		t.Fatalf("begin execute=%v err=%v", execute, err)
 	}
-	failed, err := fixture.h.store.FailConversationToolDispatch(context.Background(), fixture.lease, call, "tool_execution_failed", "read-only tool execution failed")
-	if err != nil || failed.State != core.TurnFailed || failed.TerminalCode != "tool_execution_failed" {
+	failed, err := fixture.h.store.FailConversationToolDispatch(context.Background(), fixture.lease, call, "tool_dispatch_uncertain", "read-only tool dispatch outcome is unknown")
+	if err != nil || failed.State != core.TurnFailed || failed.TerminalCode != "tool_dispatch_uncertain" {
 		t.Fatalf("failed=%+v err=%v", failed, err)
 	}
-	if _, err = fixture.h.store.FailConversationToolDispatch(context.Background(), fixture.lease, call, "tool_execution_failed", "read-only tool execution failed"); !errors.Is(err, core.ErrConflict) {
+	if _, err = fixture.h.store.FailConversationToolDispatch(context.Background(), fixture.lease, call, "tool_dispatch_uncertain", "read-only tool dispatch outcome is unknown"); !errors.Is(err, core.ErrConflict) {
 		t.Fatalf("terminal replay err=%v", err)
 	}
 	assertSingleTurnTerminalEvent(t, fixture.h.store, fixture.turn.ID, core.TurnEventToolResult, "")
-	assertSingleTurnTerminalEvent(t, fixture.h.store, fixture.turn.ID, core.TurnEventError, "tool_execution_failed")
+	assertSingleTurnTerminalEvent(t, fixture.h.store, fixture.turn.ID, core.TurnEventError, "tool_dispatch_uncertain")
+	conversation, err := fixture.h.store.LoadConversation(context.Background(), fixture.turn.ConversationID)
+	if err != nil || len(conversation.Messages) != 2 || conversation.Messages[0].Role != core.RoleUser || conversation.Messages[0].Content != fixture.turn.Prompt || conversation.Messages[1].Status != "failed" {
+		t.Fatalf("failed transcript=%+v err=%v", conversation.Messages, err)
+	}
 }
 
 func TestConversationReadOnlyDispatchCrashRestartDoesNotExecuteAgainPostgres(t *testing.T) {

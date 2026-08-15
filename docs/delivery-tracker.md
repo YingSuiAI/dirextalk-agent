@@ -50,6 +50,10 @@ contract](message-server-integration-development-contract.md), and
   as unapplied; the flow never queues a successor turn or repeats the Worker
   intrinsic.
 - Agent-owned encrypted Tavily Web Search configuration and guarded dispatch.
+  Read-only tool execution errors return to the next model round for
+  correction instead of terminating the conversation; an unrecoverable
+  dispatch failure still preserves the user prompt and failed response in
+  durable history.
 - Agent-owned typed text tools with virtual revision-zero built-ins, durable
   full-list configuration/replay, explicit Tool-profile resolution, and
   bounded non-conversational model/search execution through the owner-client

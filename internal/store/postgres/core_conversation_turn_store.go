@@ -720,6 +720,9 @@ func (s *CoreConversationStore) FailConversationToolDispatch(ctx context.Context
 	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lastSequence+2, core.TurnEvent{Kind: core.TurnEventError, ErrorCode: code, ErrorSummary: summary}, now); err != nil {
 		return core.Turn{}, err
 	}
+	if err = failedTurnTranscriptTx(ctx, tx, lease.Turn, code, summary, now); err != nil {
+		return core.Turn{}, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return core.Turn{}, err
 	}

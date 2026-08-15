@@ -1043,7 +1043,7 @@ func TestExecuteTurnCommitErrorUsesTerminalReadback(t *testing.T) {
 	}
 }
 
-func TestDurableReadOnlyToolPersistsEventsAndCompletesSecondModelRound(t *testing.T) {
+func TestDurableReadOnlyToolErrorReturnsToModelAndCompletesSecondRound(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
 	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "config-1", Digest: strings.Repeat("a", 64), AllowedTools: []string{"web_search"}}
@@ -1064,7 +1064,7 @@ func TestDurableReadOnlyToolPersistsEventsAndCompletesSecondModelRound(t *testin
 			case <-ctx.Done():
 				return ToolResult{}, ctx.Err()
 			}
-			return ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"answer":"found"}`, Summary: "search complete"}, nil
+			return ToolResult{}, errors.New("invalid tool arguments")
 		},
 	}
 	base := newFakeStore()
@@ -1121,7 +1121,7 @@ func TestDurableReadOnlyToolPersistsEventsAndCompletesSecondModelRound(t *testin
 	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "final answer" || terminal.Response.Message.ReasoningContent != "tool reasoningfinal reasoning" || len(model.requests) != 2 {
 		t.Fatalf("terminal=%+v model rounds=%d err=%v", terminal, len(model.requests), err)
 	}
-	if len(model.requests[1].Conversation.Messages) != 3 || len(model.requests[1].Conversation.Messages[1].ToolCalls) != 1 || model.requests[1].Conversation.Messages[1].ReasoningContent != "tool reasoning" || len(model.requests[1].Conversation.Messages[2].ToolResults) != 1 {
+	if len(model.requests[1].Conversation.Messages) != 3 || len(model.requests[1].Conversation.Messages[1].ToolCalls) != 1 || model.requests[1].Conversation.Messages[1].ReasoningContent != "tool reasoning" || len(model.requests[1].Conversation.Messages[2].ToolResults) != 1 || !model.requests[1].Conversation.Messages[2].ToolResults[0].IsError {
 		t.Fatalf("second-round durable context=%+v", model.requests[1].Conversation.Messages)
 	}
 	var toolCalls, toolResults, done int

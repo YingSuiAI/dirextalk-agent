@@ -289,7 +289,9 @@ across read-only execution, confirmation pauses, restart, and retry. Built-in
 and remote calls do not consume a local-sandbox lane; executable local calls
 enter the existing durable Task lane and are admitted only by its configured
 concurrency limit. A model round is released for the next provider dispatch
-only after every call in the retained batch has a durable result.
+only after every call in the retained batch has a durable result. A read-only
+tool execution error is recorded as an error result for the next model round,
+so invalid arguments or a provider failure do not discard the conversation.
 Immediate read-only dispatch uses a compact private pending/dispatched/terminal
 authority inside the current versioned turn-dispatch envelope; it never consumes
 or leaks a public conversation event sequence. Public history contains only the
