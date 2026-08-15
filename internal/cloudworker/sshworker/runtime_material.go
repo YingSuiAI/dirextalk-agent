@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
 )
 
 const (
@@ -44,11 +46,13 @@ type RuntimeServiceSpec struct {
 	WorkloadID string `json:"workload_id"`
 	Port       uint16 `json:"port"`
 	HealthPath string `json:"health_path"`
+	Hostname   string `json:"hostname,omitempty"`
 }
 
 func (spec RuntimeServiceSpec) valid() bool {
 	return validID(spec.WorkloadID) && spec.Port > 0 && strings.HasPrefix(spec.HealthPath, "/") &&
-		len(spec.HealthPath) <= 2048 && !strings.HasPrefix(spec.HealthPath, "//") && !strings.ContainsAny(spec.HealthPath, " \t\r\n#")
+		len(spec.HealthPath) <= 2048 && !strings.HasPrefix(spec.HealthPath, "//") && !strings.ContainsAny(spec.HealthPath, " \t\r\n#") &&
+		(spec.Hostname == "" || (remoteservice.ValidHostname(spec.Hostname) && spec.Port != 80 && spec.Port != 443))
 }
 
 // RuntimeMaterial is ready to pass to ExecuteRequest.WorkerScript. The SSH
@@ -106,6 +110,30 @@ func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 	if err != nil {
 		return RuntimeMaterial{}, ErrInvalid
 	}
+	packages := "ca-certificates curl git golang-go gzip tar"
+	caddyPreflight := ""
+	caddySetup := ""
+	if request.Service != nil && request.Service.Hostname != "" {
+		packages += " caddy"
+		caddyPreflight = `caddy_preexisting=false
+if command -v caddy >/dev/null 2>&1; then caddy_preexisting=true; fi
+`
+		caddySetup = `if [[ "$caddy_preexisting" == true ]] && [[ -f /etc/caddy/Caddyfile ]] && ! grep -qxF '# Managed by Dirextalk Agent' /etc/caddy/Caddyfile; then
+  echo 'refusing to replace an unmanaged Caddyfile' >&2
+  exit 1
+fi
+sudo install -d -m 0755 /etc/caddy/dirextalk
+caddy_main="$(mktemp)"
+trap 'rm -f -- "$caddy_main"' EXIT
+printf '%s\n' '# Managed by Dirextalk Agent' 'import /etc/caddy/dirextalk/*.caddy' > "$caddy_main"
+sudo caddy validate --config "$caddy_main" --adapter caddyfile >/dev/null
+sudo install -m 0644 "$caddy_main" /etc/caddy/Caddyfile
+sudo systemctl enable --now caddy.service >/dev/null
+sudo systemctl reload caddy.service
+rm -f -- "$caddy_main"
+trap - EXIT
+`
+	}
 	script := fmt.Sprintf(`#!/bin/bash
 set -euo pipefail
 umask 077
@@ -119,8 +147,10 @@ readonly pi_bin="$runtime_root/pi"
 readonly task_root="$worker_root/tasks/%s"
 
 mkdir -p -- "$runtime_root" "$config_root" "$artifact_root" "$task_root"
+%s
 sudo apt-get -qq update >/dev/null
-sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install ca-certificates curl git golang-go gzip tar >/dev/null
+sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install %s >/dev/null
+%s
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
   --output "$archive" %s
 printf '%%s  %%s\n' %s "$archive" | sha256sum -c - >/dev/null
@@ -139,6 +169,7 @@ chmod 700 "$worker_root/dirextalk-worker-runner"
 "$worker_root/dirextalk-worker-runner" server-status >/dev/null
 `,
 		request.TaskID,
+		caddyPreflight, packages, caddySetup,
 		shellQuote("https://github.com/earendil-works/pi/releases/download/v"+PiReleaseVersion+"/"+archive),
 		shellQuote(archiveSHA256), shellQuote(PiReleaseVersion),
 		shellQuote(base64.StdEncoding.EncodeToString(modelConfig)),

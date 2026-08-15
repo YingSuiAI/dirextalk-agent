@@ -36,11 +36,14 @@ Remote work is durable by task ID. The Agent uses short SSH operations to:
 A dropped SSH connection does not erase remote state or authorize a duplicate start. Jobs terminalize when their remote task finishes. Services may remain active across turns until the owner stops them or destroys the Worker.
 
 When a confirmed service proposal includes a user-requested hostname, Agent
-uses the App-uploaded credential to find the longest matching public Route53
-hosted zone and UPSERT an A record to the Worker's current public IPv4. The
-hostname is already bound by the single Worker confirmation. If no matching
+keeps the application on an unused localhost port and manages an Ubuntu Caddy
+reverse proxy that persists after the model run. Agent opens only ports 80 and
+443, then uses the App-uploaded credential to find the longest matching public
+Route53 hosted zone and UPSERT an A record to the Worker's current public IPv4.
+The hostname is already bound by the single Worker confirmation. Agent reports
+HTTPS ready only after a bounded public health probe succeeds. If no matching
 zone is available, the service still succeeds and returns the IPv4 and manual
-A-record instructions. Later domain changes are explicit management actions.
+A-record instructions. DNS-only post-deployment binding is not exposed.
 Route53 is not required for Worker creation, reuse, observation, or ordinary jobs.
 
 ## Results and artifacts

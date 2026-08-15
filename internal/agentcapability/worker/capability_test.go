@@ -59,20 +59,6 @@ func (stub *managerStub) DestroyWorker(_ context.Context, authority sshworker.Ow
 	return stub.err
 }
 
-type domainStub struct {
-	bound, unbound DomainCommand
-	status         DomainStatus
-}
-
-func (stub *domainStub) BindDomain(_ context.Context, command DomainCommand) (DomainStatus, error) {
-	stub.bound = command
-	return stub.status, nil
-}
-func (stub *domainStub) UnbindDomain(_ context.Context, command DomainCommand) (DomainStatus, error) {
-	stub.unbound = command
-	return stub.status, nil
-}
-
 type workloadStub struct{ values []WorkloadStatus }
 
 func (stub workloadStub) ListWorkerWorkloads(context.Context, sshworker.WorkerStatus) ([]WorkloadStatus, error) {
@@ -96,17 +82,17 @@ func ownerContext() context.Context {
 	return capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, &capv1.PermissionContext{AuthenticatedOwnerId: "owner", AccountGeneration: 1})
 }
 
-func TestDescriptorFreezesWorkerAndDomainOperations(t *testing.T) {
+func TestDescriptorFreezesWorkerOperations(t *testing.T) {
 	credential, _ := fixture()
-	capability, err := NewCapability(Bindings{Credentials: credentialStub{credential: credential}, Workers: &managerStub{}, Domains: &domainStub{}})
+	capability, err := NewCapability(Bindings{Credentials: credentialStub{credential: credential}, Workers: &managerStub{}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	descriptor := capability.Descriptor()
-	if descriptor.GetCapabilityId() != CapabilityID || !descriptor.GetReadiness() || len(descriptor.GetOperations()) != 5 {
+	if descriptor.GetCapabilityId() != CapabilityID || !descriptor.GetReadiness() || len(descriptor.GetOperations()) != 3 {
 		t.Fatalf("descriptor=%+v", descriptor)
 	}
-	want := map[string]capv1.RiskLevel{"list_workers": capv1.RiskLevel_RISK_LEVEL_SAFE, "get_worker": capv1.RiskLevel_RISK_LEVEL_SAFE, "destroy_worker": capv1.RiskLevel_RISK_LEVEL_HIGH, "bind_domain": capv1.RiskLevel_RISK_LEVEL_HIGH, "unbind_domain": capv1.RiskLevel_RISK_LEVEL_HIGH}
+	want := map[string]capv1.RiskLevel{"list_workers": capv1.RiskLevel_RISK_LEVEL_SAFE, "get_worker": capv1.RiskLevel_RISK_LEVEL_SAFE, "destroy_worker": capv1.RiskLevel_RISK_LEVEL_HIGH}
 	for _, operation := range descriptor.GetOperations() {
 		if operation.GetRiskLevel() != want[operation.GetOperationId()] || len(operation.GetAudience()) != 1 || operation.GetAudience()[0] != capv1.Audience_AUDIENCE_OWNER_CLIENT {
 			t.Fatalf("operation=%+v", operation)
@@ -126,7 +112,7 @@ func TestDescriptorTracksVerifiedCredentialWithoutRestart(t *testing.T) {
 	ready := false
 	capability, err := NewCapability(Bindings{
 		Credentials: credentialStub{credential: credential, ready: func() bool { return ready }},
-		Workers:     &managerStub{}, Domains: &domainStub{},
+		Workers:     &managerStub{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +133,7 @@ func TestDescriptorTracksVerifiedCredentialWithoutRestart(t *testing.T) {
 func TestDescriptorKeepsRetainedWorkersManageableWithoutCurrentCredential(t *testing.T) {
 	credential, status := fixture()
 	capability, err := NewCapability(Bindings{Credentials: credentialStub{credential: credential, ready: func() bool { return false }},
-		Workers: &managerStub{statuses: []sshworker.WorkerStatus{status}}, Domains: &domainStub{}})
+		Workers: &managerStub{statuses: []sshworker.WorkerStatus{status}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +147,7 @@ func TestCatalogTracksVerifiedCredentialWithoutRestart(t *testing.T) {
 	ready := false
 	capability, err := NewCapability(Bindings{
 		Credentials: credentialStub{credential: credential, ready: func() bool { return ready }},
-		Workers:     &managerStub{}, Domains: &domainStub{},
+		Workers:     &managerStub{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +172,7 @@ func TestListProjectsObservedPublicIPv4TaskQuoteAndWorkload(t *testing.T) {
 	credential, status := fixture()
 	manager := &managerStub{statuses: []sshworker.WorkerStatus{status}}
 	workload := WorkloadStatus{WorkloadID: "web", Kind: "service", Phase: "running", ActiveState: "active", Health: "healthy", Port: 8080, Domain: &DomainStatus{Mode: "route53_same_account", ZoneID: "Z123", Hostname: "app.example.com", TargetIPv4: status.PublicIP, TTL: 300, RecordStatus: "current"}}
-	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: credential}, Workers: manager, Workloads: workloadStub{[]WorkloadStatus{workload}}, Domains: &domainStub{}})
+	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: credential}, Workers: manager, Workloads: workloadStub{[]WorkloadStatus{workload}}})
 	raw, err := capability.HandleOperation(ownerContext(), "list_workers", []byte(`{}`))
 	if err != nil {
 		t.Fatal(err)
@@ -197,24 +183,14 @@ func TestListProjectsObservedPublicIPv4TaskQuoteAndWorkload(t *testing.T) {
 	}
 }
 
-func TestDestroyAndDomainMutationsPassExactIdentityAndProofs(t *testing.T) {
+func TestDestroyPassesExactIdentityAndProof(t *testing.T) {
 	credential, status := fixture()
 	manager := &managerStub{statuses: []sshworker.WorkerStatus{status}}
-	domains := &domainStub{status: DomainStatus{Mode: "route53_same_account", ZoneID: "Z123", Hostname: "app.example.com", TargetIPv4: status.PublicIP, TTL: 300, RecordStatus: "current"}}
-	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: credential}, Workers: manager, Domains: domains})
+	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: credential}, Workers: manager})
 	identity, _ := json.Marshal(projectIdentity(status.Identity))
 	destroy := []byte(`{"identity":` + string(identity) + `,"confirmation":"destroy_worker"}`)
 	if _, err := capability.HandleOperation(ownerContext(), "destroy_worker", destroy); err != nil || manager.destroyed.Identity != status.Identity || manager.destroyed.Authorization.Proof != "capability:destroy_worker" {
 		t.Fatalf("destroy request=%+v err=%v", manager.destroyed, err)
-	}
-	domain := []byte(`{"worker_identity":` + string(identity) + `,"workload_id":"web","zone_id":"Z123","hostname":"app.example.com","ttl":300,"confirmation":"bind_domain"}`)
-	if _, err := capability.HandleOperation(ownerContext(), "bind_domain", domain); err != nil || domains.bound.Worker != status.Identity || domains.bound.Confirmation != "bind_domain" {
-		t.Fatalf("bind=%+v err=%v", domains.bound, err)
-	}
-	unbind := bytes.Replace(domain, []byte(`"bind_domain"`), []byte(`"unbind_domain"`), 1)
-	result, err := capability.HandleOperation(ownerContext(), "unbind_domain", unbind)
-	if err != nil || domains.unbound.Worker != status.Identity || !bytes.Contains(result, []byte(`"unbound":true`)) {
-		t.Fatalf("unbind=%s command=%+v err=%v", result, domains.unbound, err)
 	}
 }
 
@@ -223,7 +199,7 @@ func TestUnavailableWorkerProjectsWithoutWorkloadFailure(t *testing.T) {
 	status.Availability, status.Error, status.EC2State = sshworker.WorkerUnavailable, "AWS credential revision is unavailable", "unknown"
 	manager := &managerStub{statuses: []sshworker.WorkerStatus{status}}
 	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: credential}, Workers: manager,
-		Workloads: workloadStub{values: []WorkloadStatus{{WorkloadID: "should-not-project"}}}, Domains: &domainStub{}})
+		Workloads: workloadStub{values: []WorkloadStatus{{WorkloadID: "should-not-project"}}}})
 	raw, err := capability.HandleOperation(ownerContext(), "list_workers", []byte(`{}`))
 	if err != nil || !bytes.Contains(raw, []byte(`"availability":"unavailable"`)) || !bytes.Contains(raw, []byte(`"error":"AWS credential revision is unavailable"`)) || bytes.Contains(raw, []byte("should-not-project")) {
 		t.Fatalf("unavailable projection=%s err=%v", raw, err)
@@ -236,7 +212,7 @@ func TestDestroyAcceptsHistoricalCredentialRevisionIdentity(t *testing.T) {
 	historical.CredentialRevision--
 	status.Identity.Credential = historical
 	manager := &managerStub{statuses: []sshworker.WorkerStatus{status}}
-	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: current}, Workers: manager, Domains: &domainStub{}})
+	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: current}, Workers: manager})
 	identity, _ := json.Marshal(projectIdentity(status.Identity))
 	_, err := capability.HandleOperation(ownerContext(), "destroy_worker", []byte(`{"identity":`+string(identity)+`,"confirmation":"destroy_worker"}`))
 	if err != nil || manager.destroyed.Identity.Credential != historical {
@@ -249,7 +225,7 @@ func TestWorkerIdentityRejectsNonNumericAccount(t *testing.T) {
 	identity := projectIdentity(status.Identity)
 	identity["account_id"] = "12345678901x"
 	raw, _ := json.Marshal(identity)
-	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: status.Identity.Credential}, Workers: &managerStub{statuses: []sshworker.WorkerStatus{status}}, Domains: &domainStub{}})
+	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: status.Identity.Credential}, Workers: &managerStub{statuses: []sshworker.WorkerStatus{status}}})
 	if _, err := capability.HandleOperation(ownerContext(), "get_worker", []byte(`{"identity":`+string(raw)+`}`)); err == nil {
 		t.Fatal("non-numeric account identity was accepted")
 	}
@@ -258,7 +234,7 @@ func TestWorkerIdentityRejectsNonNumericAccount(t *testing.T) {
 func TestOwnerCredentialAndExactIdentityFailClosed(t *testing.T) {
 	credential, status := fixture()
 	manager := &managerStub{statuses: []sshworker.WorkerStatus{status}}
-	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: credential}, Workers: manager, Domains: &domainStub{}})
+	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: credential}, Workers: manager})
 	if _, err := capability.HandleOperation(context.Background(), "list_workers", []byte(`{}`)); err == nil {
 		t.Fatal("missing owner context was accepted")
 	}

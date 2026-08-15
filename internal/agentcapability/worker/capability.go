@@ -26,16 +26,12 @@ const (
 	workloadSchema = `{"additionalProperties":false,"properties":{"active_state":{"type":"string"},"domain":` + domainSchema + `,"health":{"type":"string"},"kind":{"enum":["job","service"],"type":"string"},"phase":{"type":"string"},"port":{"type":"integer"},"workload_id":{"type":"string"}},"required":["workload_id","kind","phase","active_state","health"],"type":"object"}`
 	statusSchema   = `{"additionalProperties":false,"properties":{"availability":{"enum":["available","unavailable"],"type":"string"},"current_task":{"additionalProperties":false,"properties":{"execution_id":{"type":"string"},"phase":{"type":"string"}},"required":["execution_id","phase"],"type":"object"},"ec2_state":{"type":"string"},"error":{"type":"string"},"hourly_quote":{"additionalProperties":false,"properties":{"currency":{"type":"string"},"expires_at":{"format":"date-time","type":"string"},"micros_per_hour":{"minimum":0,"type":"integer"},"observed_at":{"format":"date-time","type":"string"}},"required":["currency","micros_per_hour","observed_at","expires_at"],"type":"object"},"identity":` + identitySchema + `,"observed_at":{"format":"date-time","type":"string"},"public_ipv4":{"type":"string"},"server":{"additionalProperties":false,"properties":{"last_seen":{"format":"date-time","type":"string"},"load_1":{"type":"number"},"load_15":{"type":"number"},"load_5":{"type":"number"}},"required":["last_seen","load_1","load_5","load_15"],"type":"object"},"worker_phase":{"type":"string"},"workloads":{"items":` + workloadSchema + `,"type":"array"}},"required":["identity","availability","ec2_state","worker_phase","observed_at"],"type":"object"}`
 
-	listInputSchema         = `{"additionalProperties":false,"properties":{},"type":"object"}`
-	listResultSchema        = `{"additionalProperties":false,"properties":{"workers":{"items":` + statusSchema + `,"type":"array"}},"required":["workers"],"type":"object"}`
-	getInputSchema          = `{"additionalProperties":false,"properties":{"identity":` + identitySchema + `},"required":["identity"],"type":"object"}`
-	getResultSchema         = `{"additionalProperties":false,"properties":{"worker":` + statusSchema + `},"required":["worker"],"type":"object"}`
-	destroyInputSchema      = `{"additionalProperties":false,"properties":{"confirmation":{"const":"destroy_worker","type":"string"},"identity":` + identitySchema + `},"required":["identity","confirmation"],"type":"object"}`
-	destroyResultSchema     = `{"additionalProperties":false,"properties":{"destroyed":{"const":true,"type":"boolean"},"identity":` + identitySchema + `},"required":["identity","destroyed"],"type":"object"}`
-	bindDomainInputSchema   = `{"additionalProperties":false,"properties":{"confirmation":{"const":"bind_domain","type":"string"},"hostname":{"type":"string"},"ttl":{"type":"integer"},"worker_identity":` + identitySchema + `,"workload_id":{"type":"string"},"zone_id":{"type":"string"}},"required":["worker_identity","workload_id","zone_id","hostname","ttl","confirmation"],"type":"object"}`
-	unbindDomainInputSchema = `{"additionalProperties":false,"properties":{"confirmation":{"const":"unbind_domain","type":"string"},"hostname":{"type":"string"},"ttl":{"type":"integer"},"worker_identity":` + identitySchema + `,"workload_id":{"type":"string"},"zone_id":{"type":"string"}},"required":["worker_identity","workload_id","zone_id","hostname","ttl","confirmation"],"type":"object"}`
-	bindResultSchema        = `{"additionalProperties":false,"properties":{"domain":` + domainSchema + `,"worker_identity":` + identitySchema + `,"workload_id":{"type":"string"}},"required":["worker_identity","workload_id","domain"],"type":"object"}`
-	unbindResultSchema      = `{"additionalProperties":false,"properties":{"domain":` + domainSchema + `,"unbound":{"const":true,"type":"boolean"},"worker_identity":` + identitySchema + `,"workload_id":{"type":"string"}},"required":["worker_identity","workload_id","domain","unbound"],"type":"object"}`
+	listInputSchema     = `{"additionalProperties":false,"properties":{},"type":"object"}`
+	listResultSchema    = `{"additionalProperties":false,"properties":{"workers":{"items":` + statusSchema + `,"type":"array"}},"required":["workers"],"type":"object"}`
+	getInputSchema      = `{"additionalProperties":false,"properties":{"identity":` + identitySchema + `},"required":["identity"],"type":"object"}`
+	getResultSchema     = `{"additionalProperties":false,"properties":{"worker":` + statusSchema + `},"required":["worker"],"type":"object"}`
+	destroyInputSchema  = `{"additionalProperties":false,"properties":{"confirmation":{"const":"destroy_worker","type":"string"},"identity":` + identitySchema + `},"required":["identity","confirmation"],"type":"object"}`
+	destroyResultSchema = `{"additionalProperties":false,"properties":{"destroyed":{"const":true,"type":"boolean"},"identity":` + identitySchema + `},"required":["identity","destroyed"],"type":"object"}`
 )
 
 // CredentialSource returns the one current verified AWS credential. The
@@ -76,40 +72,23 @@ type WorkloadSource interface {
 	ListWorkerWorkloads(context.Context, sshworker.WorkerStatus) ([]WorkloadStatus, error)
 }
 
-type DomainCommand struct {
-	Worker       sshworker.WorkerIdentity
-	WorkloadID   string
-	ZoneID       string
-	Hostname     string
-	TTL          uint32
-	Confirmation string
-}
-
-// DomainManager owns Route53 mutation, exact confirmation validation, current
-// public-IPv4 selection, AWS account revalidation, and provider read-back.
-type DomainManager interface {
-	BindDomain(context.Context, DomainCommand) (DomainStatus, error)
-	UnbindDomain(context.Context, DomainCommand) (DomainStatus, error)
-}
-
 type Bindings struct {
 	Credentials CredentialSource
 	Workers     Manager
 	Workloads   WorkloadSource
-	Domains     DomainManager
 }
 
 type Capability struct{ bindings Bindings }
 
 func NewCapability(bindings Bindings) (*Capability, error) {
-	if bindings.Credentials == nil || bindings.Workers == nil || bindings.Domains == nil {
+	if bindings.Credentials == nil || bindings.Workers == nil {
 		return nil, errors.New("worker capability dependencies are incomplete")
 	}
 	return &Capability{bindings: bindings}, nil
 }
 
 func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
-	ready := c != nil && c.bindings.Credentials != nil && c.bindings.Workers != nil && c.bindings.Domains != nil
+	ready := c != nil && c.bindings.Credentials != nil && c.bindings.Workers != nil
 	reason := ""
 	if ready && !c.bindings.Credentials.HasCurrentVerifiedCredential(context.Background()) && !c.bindings.Workers.HasManagedWorkers(context.Background()) {
 		ready = false
@@ -120,8 +99,6 @@ func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 		{"list_workers", "List Workers", capv1.OperationType_OPERATION_TYPE_READ, capv1.RiskLevel_RISK_LEVEL_SAFE, "agent:worker:read", listInputSchema, listResultSchema},
 		{"get_worker", "Get Worker", capv1.OperationType_OPERATION_TYPE_READ, capv1.RiskLevel_RISK_LEVEL_SAFE, "agent:worker:read", getInputSchema, getResultSchema},
 		{"destroy_worker", "Destroy Worker", capv1.OperationType_OPERATION_TYPE_MUTATION, capv1.RiskLevel_RISK_LEVEL_HIGH, "agent:worker:destroy", destroyInputSchema, destroyResultSchema},
-		{"bind_domain", "Bind Route53 domain", capv1.OperationType_OPERATION_TYPE_MUTATION, capv1.RiskLevel_RISK_LEVEL_HIGH, "agent:worker:domain", bindDomainInputSchema, bindResultSchema},
-		{"unbind_domain", "Unbind Route53 domain", capv1.OperationType_OPERATION_TYPE_MUTATION, capv1.RiskLevel_RISK_LEVEL_HIGH, "agent:worker:domain", unbindDomainInputSchema, unbindResultSchema},
 	}
 	for _, spec := range specs {
 		inputDigest, resultDigest := sha256.Sum256([]byte(spec.input)), sha256.Sum256([]byte(spec.result))
@@ -140,7 +117,7 @@ type operationSpec struct {
 }
 
 func (c *Capability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
-	if c == nil || c.bindings.Credentials == nil || c.bindings.Workers == nil || c.bindings.Domains == nil {
+	if c == nil || c.bindings.Credentials == nil || c.bindings.Workers == nil {
 		return nil, capabilityoperation.NewFailure("PRECONDITION_FAILED", "Worker management is not ready", errors.New("worker capability dependencies are incomplete"))
 	}
 	authority, err := ownerAuthority(ctx)
@@ -200,32 +177,6 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 			return nil, managerFailure(err)
 		}
 		return json.Marshal(map[string]any{"identity": projectIdentity(identity), "destroyed": true})
-	case "bind_domain", "unbind_domain":
-		var request domainRequest
-		expectedConfirmation := operationID
-		if err := decodeStrict(raw, &request); err != nil || request.Confirmation != expectedConfirmation {
-			return nil, invalid(errors.Join(err, errors.New("explicit domain authorization is required")))
-		}
-		identity, err := request.WorkerIdentity.workerIdentity()
-		if err != nil {
-			return nil, managerFailure(err)
-		}
-		identity.OwnerID, identity.AccountGeneration = authority.OwnerID, authority.AccountGeneration
-		command := DomainCommand{Worker: identity, WorkloadID: request.WorkloadID, ZoneID: request.ZoneID, Hostname: request.Hostname, TTL: request.TTL, Confirmation: request.Confirmation}
-		var domain DomainStatus
-		if operationID == "bind_domain" {
-			domain, err = c.bindings.Domains.BindDomain(ctx, command)
-		} else {
-			domain, err = c.bindings.Domains.UnbindDomain(ctx, command)
-		}
-		if err != nil {
-			return nil, managerFailure(err)
-		}
-		result := map[string]any{"worker_identity": projectIdentity(identity), "workload_id": request.WorkloadID, "domain": domain}
-		if operationID == "unbind_domain" {
-			result["unbound"] = true
-		}
-		return json.Marshal(result)
 	default:
 		return nil, invalid(errors.New("unknown worker operation"))
 	}
@@ -237,14 +188,6 @@ type identityRequest struct {
 type destroyRequest struct {
 	Identity     identityInput `json:"identity"`
 	Confirmation string        `json:"confirmation"`
-}
-type domainRequest struct {
-	WorkerIdentity identityInput `json:"worker_identity"`
-	WorkloadID     string        `json:"workload_id"`
-	ZoneID         string        `json:"zone_id"`
-	Hostname       string        `json:"hostname"`
-	TTL            uint32        `json:"ttl"`
-	Confirmation   string        `json:"confirmation"`
 }
 type identityInput struct {
 	WorkerID           string `json:"worker_id"`

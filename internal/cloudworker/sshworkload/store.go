@@ -32,11 +32,10 @@ type Service struct {
 }
 
 type Domain struct {
-	ZoneID     string `json:"zone_id"`
-	Hostname   string `json:"hostname"`
-	TTL        uint32 `json:"ttl"`
-	BoundIPv4  string `json:"bound_ipv4"`
-	PublicPort uint16 `json:"public_port"`
+	ZoneID    string `json:"zone_id"`
+	Hostname  string `json:"hostname"`
+	TTL       uint32 `json:"ttl"`
+	BoundIPv4 string `json:"bound_ipv4"`
 }
 
 type Repository struct {
@@ -66,7 +65,7 @@ func (repository *Repository) PutService(_ context.Context, service Service) err
 	}
 	for index := range services {
 		if services[index].WorkloadID == service.WorkloadID {
-			if services[index].TaskID != service.TaskID || services[index].Port != service.Port || services[index].HealthPath != service.HealthPath {
+			if services[index].Port != service.Port || services[index].HealthPath != service.HealthPath {
 				return ErrIdentity
 			}
 			service.Domain = services[index].Domain
@@ -116,9 +115,6 @@ func (repository *Repository) SetDomain(_ context.Context, identity sshworker.Wo
 	}
 	for index := range services {
 		if services[index].WorkloadID == workloadID {
-			if domain != nil && domain.PublicPort != services[index].Port {
-				return ErrIdentity
-			}
 			services[index].Domain = domain
 			return repository.writeLocked(identity, services)
 		}
@@ -198,9 +194,6 @@ func validateService(service Service) error {
 		!validHealthPath(service.HealthPath) || (service.Domain != nil && validateDomain(*service.Domain) != nil) {
 		return ErrInvalid
 	}
-	if service.Domain != nil && service.Domain.PublicPort != service.Port {
-		return ErrInvalid
-	}
 	return nil
 }
 
@@ -215,7 +208,7 @@ func validateWorker(identity sshworker.WorkerIdentity) error {
 
 func validateDomain(domain Domain) error {
 	if strings.TrimSpace(domain.ZoneID) == "" || strings.TrimSpace(domain.Hostname) == "" || strings.TrimSpace(domain.BoundIPv4) == "" ||
-		domain.TTL < 60 || domain.TTL > 86400 || domain.PublicPort == 0 {
+		domain.TTL < 60 || domain.TTL > 86400 {
 		return ErrInvalid
 	}
 	return nil

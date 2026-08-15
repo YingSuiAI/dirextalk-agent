@@ -18,7 +18,7 @@ func TestRepositoryPersistsServiceAndExactDomain(t *testing.T) {
 	if err := repository.PutService(context.Background(), service); err != nil {
 		t.Fatal(err)
 	}
-	domain := &Domain{ZoneID: "Z123", Hostname: "memory.example.test", TTL: 300, BoundIPv4: "203.0.113.10", PublicPort: 8080}
+	domain := &Domain{ZoneID: "Z123", Hostname: "memory.example.test", TTL: 300, BoundIPv4: "203.0.113.10"}
 	if err := repository.SetDomain(context.Background(), identity, service.WorkloadID, domain); err != nil {
 		t.Fatal(err)
 	}

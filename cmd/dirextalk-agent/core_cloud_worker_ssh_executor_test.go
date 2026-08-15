@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	workercap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
@@ -32,6 +31,10 @@ type serviceWorkerStub struct {
 	port     uint16
 	open     bool
 	err      error
+	ports    []struct {
+		port uint16
+		open bool
+	}
 }
 
 func (worker *serviceWorkerStub) ObserveWorker(context.Context, sshworker.WorkerIdentity) (sshworker.WorkerStatus, error) {
@@ -44,6 +47,10 @@ func (worker *serviceWorkerStub) WorkerIdentity(context.Context, sshworker.Owner
 
 func (worker *serviceWorkerStub) SetPublicPort(_ context.Context, _ sshworker.WorkerIdentity, port uint16, open bool) error {
 	worker.port, worker.open = port, open
+	worker.ports = append(worker.ports, struct {
+		port uint16
+		open bool
+	}{port: port, open: open})
 	return worker.err
 }
 
@@ -271,10 +278,37 @@ func TestSSHWorkerCreateAuthorizationRechecksCurrentCredentialAtAdmission(t *tes
 }
 
 func TestProjectDomainForWorkerReportsDriftWithoutChangingPersistedTarget(t *testing.T) {
-	domain := &sshworkload.Domain{ZoneID: "Z123", Hostname: "app.example.test", BoundIPv4: "203.0.113.10", TTL: 300, PublicPort: 8080}
+	domain := &sshworkload.Domain{ZoneID: "Z123", Hostname: "app.example.test", BoundIPv4: "203.0.113.10", TTL: 300}
 	status := projectDomainForWorker(domain, "203.0.113.20")
 	if status.RecordStatus != "drifted" || status.TargetIPv4 != "203.0.113.10" || domain.BoundIPv4 != "203.0.113.10" {
 		t.Fatalf("status=%+v domain=%+v", status, domain)
+	}
+}
+
+func TestHostnameReuseRejectsConflictingPortsButAllowsSameWorkloadUpdate(t *testing.T) {
+	requested := &cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.example.test"}
+	for _, test := range []struct {
+		name, workload string
+		port           uint16
+		want           bool
+	}{
+		{"public-http", "other", 80, false}, {"public-https", "other", 443, false}, {"internal", "other", 8080, false},
+		{"unrelated", "other", 9090, true}, {"same-workload-update", "web", 8080, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			identity := workerIdentityFixture()
+			repository, _ := sshworkload.NewRepository(t.TempDir())
+			if err := repository.PutService(context.Background(), sshworkload.Service{Worker: identity, TaskID: "old-task", WorkloadID: test.workload, Port: test.port, HealthPath: "/health"}); err != nil {
+				t.Fatal(err)
+			}
+			executor := &sshWorkerExecutor{workloads: repository}
+			worker := sshworker.WorkerRecord{WorkerID: identity.WorkerID, OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration,
+				Credential: identity.Credential, Instance: sshworker.Instance{ID: identity.InstanceID}, KeyPair: sshworker.KeyPair{ID: identity.KeyPairID}, SecurityGroup: sshworker.SecurityGroup{ID: identity.SecurityGroupID}}
+			got, err := executor.workerSupportsService(context.Background(), worker, requested)
+			if err != nil || got != test.want {
+				t.Fatalf("compatible=%t want=%t err=%v", got, test.want, err)
+			}
+		})
 	}
 }
 
@@ -293,7 +327,7 @@ func TestPublishServicePersistsBeforeOpeningPort(t *testing.T) {
 	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository}
 	worker := &serviceWorkerStub{identity: identity}
 	service := cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health"}
-	if _, err = executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service); err != nil {
+	if _, err = executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !worker.open || worker.port != service.Port {
@@ -306,7 +340,7 @@ func TestPublishServicePersistsBeforeOpeningPort(t *testing.T) {
 	failedRepository, _ := sshworkload.NewRepository(t.TempDir())
 	failedExecutor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: failedRepository}
 	worker.err = errors.New("open port failed")
-	if _, err = failedExecutor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-b", service); err == nil {
+	if _, err = failedExecutor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-b", service, nil); err == nil {
 		t.Fatal("port failure was accepted")
 	}
 	if _, err = failedRepository.Get(context.Background(), identity, service.WorkloadID); err != nil {
@@ -329,14 +363,38 @@ func TestPublishServiceBindsRequestedHostnameWithUploadedCredential(t *testing.T
 		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns}}
 	worker := &serviceWorkerStub{identity: identity, status: sshworker.WorkerStatus{Identity: identity, PublicIP: "203.0.113.20"}}
 	service := cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.example.test"}
-	publication, err := executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service)
+	executor.verifyHTTPS = func(context.Context, string, string, func(context.Context, string, string) error) error { return nil }
+	publication, err := executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	stored, err := repository.Get(context.Background(), identity, service.WorkloadID)
 	if err != nil || stored.Domain == nil || stored.Domain.Hostname != service.Hostname || stored.Domain.BoundIPv4 != worker.status.PublicIP ||
-		publication.ZoneID != dns.zoneID || dns.upserts != 1 || dns.accountID != identity.Credential.AccountID || dns.mutation.Record != dns.record {
+		publication.ZoneID != dns.zoneID || !publication.TLSReady || dns.upserts != 1 || dns.accountID != identity.Credential.AccountID || dns.mutation.Record != dns.record ||
+		len(worker.ports) != 3 || worker.ports[0].port != 80 || !worker.ports[0].open || worker.ports[1].port != 443 || !worker.ports[1].open || worker.ports[2].port != service.Port || worker.ports[2].open {
 		t.Fatalf("publication=%+v stored=%+v dns=%+v err=%v", publication, stored, dns, err)
+	}
+}
+
+func TestPublishServiceDoesNotClaimHTTPSWhenPublicProbeFails(t *testing.T) {
+	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	binding, _ := authority.ResolveCurrentAWSBinding(context.Background())
+	identity := workerIdentityFixture()
+	identity.Credential = sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision, AccountID: binding.AccountID, Region: binding.Region}
+	repository, _ := sshworkload.NewRepository(t.TempDir())
+	dns := &route53Stub{zoneID: "Z123", zoneFound: true}
+	probeErr := errors.New("TLS certificate pending")
+	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository,
+		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{identity.Credential: {}},
+		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns},
+		verifyHTTPS: func(context.Context, string, string, func(context.Context, string, string) error) error {
+			return probeErr
+		}}
+	worker := &serviceWorkerStub{identity: identity, status: sshworker.WorkerStatus{Identity: identity, PublicIP: "203.0.113.20"}}
+	publication, err := executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a",
+		cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.example.test"}, nil)
+	if !errors.Is(err, probeErr) || publication.TLSReady || !strings.Contains(publication.summary(), "HTTPS is not ready") {
+		t.Fatalf("publication=%+v err=%v", publication, err)
 	}
 }
 
@@ -355,7 +413,7 @@ func TestPublishServiceReturnsManualDNSWhenNoHostedZoneMatches(t *testing.T) {
 		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns}}
 	worker := &serviceWorkerStub{identity: identity, status: sshworker.WorkerStatus{Identity: identity, PublicIP: "203.0.113.20"}}
 	service := cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.external.test"}
-	publication, err := executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service)
+	publication, err := executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,42 +421,6 @@ func TestPublishServiceReturnsManualDNSWhenNoHostedZoneMatches(t *testing.T) {
 	if err != nil || stored.Domain != nil || dns.upserts != 0 || publication.ZoneID != "" ||
 		!strings.Contains(publication.summary(), worker.status.PublicIP) || !strings.Contains(publication.summary(), "Create an A record") {
 		t.Fatalf("publication=%+v stored=%+v dns=%+v err=%v", publication, stored, dns, err)
-	}
-}
-
-func TestUnbindDomainUsesPersistedAddressWithoutObservingWorker(t *testing.T) {
-	identity := workerIdentityFixture()
-	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
-	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity.Credential = sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision, AccountID: binding.AccountID, Region: binding.Region}
-	repository, err := sshworkload.NewRepository(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := sshworkload.Service{Worker: identity, TaskID: "task-a", WorkloadID: "web", Port: 8080, HealthPath: "/health"}
-	domain := &sshworkload.Domain{ZoneID: "Z123", Hostname: "app.example.test", BoundIPv4: "203.0.113.10", TTL: 300, PublicPort: service.Port}
-	if err = repository.PutService(context.Background(), service); err != nil {
-		t.Fatal(err)
-	}
-	if err = repository.SetDomain(context.Background(), identity, service.WorkloadID, domain); err != nil {
-		t.Fatal(err)
-	}
-	service.Domain = domain
-	dns := &route53Stub{record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}, exists: true}
-	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository,
-		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{identity.Credential: {}},
-		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns}}
-	_, err = (sshWorkerDomains{executor: executor}).UnbindDomain(context.Background(), workercap.DomainCommand{Worker: identity,
-		WorkloadID: service.WorkloadID, ZoneID: domain.ZoneID, Hostname: domain.Hostname, TTL: domain.TTL, Confirmation: "unbind_domain"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored, err := repository.Get(context.Background(), identity, service.WorkloadID)
-	if err != nil || stored.Domain != nil || dns.deletes != 1 {
-		t.Fatalf("stored=%+v deletes=%d err=%v", stored, dns.deletes, err)
 	}
 }
 
@@ -485,7 +507,7 @@ func TestDestroyWorkerReportsDNSFailureAfterComputeDestruction(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := sshworkload.Service{Worker: identity, TaskID: "task-a", WorkloadID: "web", Port: 8080, HealthPath: "/health"}
-	domain := &sshworkload.Domain{ZoneID: "Z123", Hostname: "app.example.test", BoundIPv4: "203.0.113.10", TTL: 300, PublicPort: service.Port}
+	domain := &sshworkload.Domain{ZoneID: "Z123", Hostname: "app.example.test", BoundIPv4: "203.0.113.10", TTL: 300}
 	if err = repository.PutService(context.Background(), service); err != nil {
 		t.Fatal(err)
 	}

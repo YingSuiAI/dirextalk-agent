@@ -92,7 +92,7 @@ func TestCompileRuntimeTreatsObjectiveAsData(t *testing.T) {
 	objective := `deploy $(touch /tmp/not-executed) ; echo "done" && report`
 	material, err := CompileRuntime(RuntimeRequest{
 		TaskID: "task-002", Objective: objective, Architecture: "arm64", Workload: WorkloadService, MaxRuntimeSeconds: 3600,
-		Service: &RuntimeServiceSpec{WorkloadID: "memory-api", Port: 8080, HealthPath: "/health"},
+		Service: &RuntimeServiceSpec{WorkloadID: "memory-api", Port: 8080, HealthPath: "/health", Hostname: "api.example.test"},
 		Model: RuntimeModel{Provider: "anthropic", BaseURL: "https://api.anthropic.com",
 			Name: "claude-test", APIKey: "secret", MaxOutputTokens: 4096},
 	})
@@ -108,6 +108,16 @@ func TestCompileRuntimeTreatsObjectiveAsData(t *testing.T) {
 	}
 	if !strings.Contains(script, piLinuxARM64SHA256) {
 		t.Fatal("arm64 release pin is missing")
+	}
+	for _, required := range []string{" caddy", "# Managed by Dirextalk Agent", "refusing to replace an unmanaged Caddyfile"} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("hostname runtime missing %q", required)
+		}
+	}
+	for _, required := range []string{"listen only on 127.0.0.1", "lightweight persistent local HTTP service", "Do not install, configure, edit, or restart Caddy", "reverse_proxy 127.0.0.1:%d"} {
+		if !strings.Contains(remoteRunnerSource, required) {
+			t.Fatalf("embedded hostname runtime missing %q", required)
+		}
 	}
 	path := filepath.Join(t.TempDir(), "worker.sh")
 	if err := os.WriteFile(path, material.WorkerScript, 0o700); err != nil {

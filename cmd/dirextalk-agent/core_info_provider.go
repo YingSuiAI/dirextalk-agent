@@ -25,7 +25,7 @@ var (
 	coreTextToolsRequiredOperations   = []string{"get_config", "update_config", "execute"}
 	coreImageToolsRequiredOperations  = []string{"upload_begin", "upload_append", "upload_commit", "extract_text", "translate_text"}
 	coreStaticSitesRequiredOperations = []string{"list_releases", "delete_release"}
-	coreWorkersRequiredOperations     = []string{"list_workers", "get_worker", "destroy_worker", "bind_domain", "unbind_domain"}
+	coreWorkersRequiredOperations     = []string{"list_workers", "get_worker", "destroy_worker"}
 )
 
 // newCoreInfoProvider exposes only non-secret process metadata. The embedded

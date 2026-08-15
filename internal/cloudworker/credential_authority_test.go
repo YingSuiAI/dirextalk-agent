@@ -35,7 +35,7 @@ type capacityReuseResolver struct {
 	found     bool
 }
 
-func (resolver *capacityReuseResolver) ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeRequirements) (WorkerReuseSelection, bool, error) {
+func (resolver *capacityReuseResolver) ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeRequirements, *ServiceSpec) (WorkerReuseSelection, bool, error) {
 	return resolver.selection, resolver.found, nil
 }
 

@@ -32,7 +32,7 @@ type WorkerReuseSelection struct {
 // It is read-only; a later lease race must fail instead of falling through to
 // Worker creation.
 type WorkerReuseResolver interface {
-	ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeRequirements) (WorkerReuseSelection, bool, error)
+	ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeRequirements, *ServiceSpec) (WorkerReuseSelection, bool, error)
 }
 
 // WorkerCapacityPreflighter performs the provider's exact read-only pool
@@ -237,7 +237,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	if err != nil || validateAWS(awsBinding) != nil {
 		return Offer{}, errors.Join(ErrStaleAuthorization, err)
 	}
-	selection, reuse, err := s.workerReuse.ResolveIdleWorker(ctx, strings.TrimSpace(command.OwnerID), command.AccountGeneration, awsBinding, command.ComputeRequirements)
+	selection, reuse, err := s.workerReuse.ResolveIdleWorker(ctx, strings.TrimSpace(command.OwnerID), command.AccountGeneration, awsBinding, command.ComputeRequirements, command.Service)
 	if err != nil {
 		return Offer{}, err
 	}

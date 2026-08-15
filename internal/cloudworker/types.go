@@ -173,7 +173,7 @@ type ServiceSpec struct {
 func (spec ServiceSpec) validate() error {
 	if strings.TrimSpace(spec.WorkloadID) == "" || len(spec.WorkloadID) > 128 || spec.Port == 0 || len(spec.HealthPath) > 2048 ||
 		!strings.HasPrefix(spec.HealthPath, "/") || strings.HasPrefix(spec.HealthPath, "//") || strings.ContainsAny(spec.HealthPath, " \t\r\n#") ||
-		(spec.Hostname != "" && !remoteservice.ValidHostname(spec.Hostname)) {
+		(spec.Hostname != "" && (!remoteservice.ValidHostname(spec.Hostname) || spec.Port == 80 || spec.Port == 443)) {
 		return ErrInvalid
 	}
 	for _, current := range spec.WorkloadID {
