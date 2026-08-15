@@ -20,6 +20,8 @@ import (
 
 const durableTurnDispatchEnvelopeVersion = 1
 
+const deferredTurnSteerStatus = "deferred_tool"
+
 type durableTurnToolCallState string
 
 const (
@@ -1196,7 +1198,10 @@ func listTurnSteersTx(ctx context.Context, tx pgx.Tx, turnID string) ([]core.Tur
 		if json.Unmarshal(raw, &event) != nil || uuid.Validate(event.MutationID) != nil || event.ExpectedRevision == 0 || strings.TrimSpace(event.Text) == "" {
 			return nil, core.ErrConflict
 		}
-		result = append(result, core.TurnSteer{RequestID: event.MutationID, Instruction: event.Text, ExpectedRevision: event.ExpectedRevision, Sequence: sequence, CreatedAt: createdAt.UTC()})
+		if event.Status != "" && event.Status != deferredTurnSteerStatus {
+			return nil, core.ErrConflict
+		}
+		result = append(result, core.TurnSteer{RequestID: event.MutationID, Instruction: event.Text, ExpectedRevision: event.ExpectedRevision, Sequence: sequence, CreatedAt: createdAt.UTC(), Deferred: event.Status == deferredTurnSteerStatus})
 	}
 	return result, rows.Err()
 }
@@ -1342,8 +1347,25 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 		return core.Turn{}, false, err
 	}
 	rows.Close()
-	if cancelRequested || revision != c.ExpectedRevision || (state != string(core.TurnAccepted) && state != string(core.TurnRunning)) {
+	if cancelRequested || revision != c.ExpectedRevision ||
+		(state != string(core.TurnAccepted) && state != string(core.TurnRunning) && state != string(core.TurnWaitingConfirmation)) {
 		return core.Turn{}, false, core.ErrConflict
+	}
+	deferred := false
+	if state == string(core.TurnWaitingConfirmation) {
+		if dispatchState != "completed" {
+			return core.Turn{}, false, core.ErrConflict
+		}
+		var cloudWorkerInFlight bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM core_cloud_worker_plans p JOIN core_tasks t ON t.task_id=p.task_id
+			WHERE p.turn_id=$1 AND t.status IN ('queued','running'))`, c.TurnID).Scan(&cloudWorkerInFlight); err != nil {
+			return core.Turn{}, false, err
+		}
+		if !cloudWorkerInFlight {
+			return core.Turn{}, false, core.ErrConflict
+		}
+		deferred = true
 	}
 	if dispatchState == "completed" {
 		envelope, envelopeErr := loadDurableTurnDispatchEnvelope(dispatchRaw)
@@ -1362,12 +1384,17 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 			}
 			switch entry.State {
 			case durableTurnToolCallDispatched:
-				return core.Turn{}, false, core.ErrConflict
+				if authority.state != conversationToolCallPending {
+					return core.Turn{}, false, core.ErrConflict
+				}
+				deferred = true
 			case durableTurnToolCallPending:
 				// A model-authored pending entry is safe to discard until its
-				// public tool_call has been appended. Once public, the exact
-				// batch must finish or terminalize before steering.
-				if authority.state != conversationToolCallAbsent {
+				// public tool_call has been appended. Once public, preserve the
+				// exact batch and apply the steer after its result arrives.
+				if authority.state == conversationToolCallPending {
+					deferred = true
+				} else if authority.state != conversationToolCallAbsent {
 					return core.Turn{}, false, core.ErrConflict
 				}
 			case durableTurnToolCallTerminal:
@@ -1384,8 +1411,26 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 		MutationID:       c.RequestID,
 		ExpectedRevision: c.ExpectedRevision,
 	}
+	if deferred {
+		event.Status = deferredTurnSteerStatus
+	}
 	if err = insertTurnEventTx(ctx, tx, c.TurnID, lastSequence+1, event, now); err != nil {
 		return core.Turn{}, false, err
+	}
+	if deferred {
+		result, updateErr := tx.Exec(ctx, `UPDATE core_conversation_turns SET revision=revision+1,updated_at=$2
+			WHERE turn_id=$1 AND revision=$3 AND state=$4 AND cancel_requested=false`, c.TurnID, now, c.ExpectedRevision, state)
+		if updateErr != nil {
+			return core.Turn{}, false, updateErr
+		}
+		if result.RowsAffected() != 1 {
+			return core.Turn{}, false, core.ErrConflict
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return core.Turn{}, false, err
+		}
+		turn, getErr := s.GetTurn(ctx, c.TurnID)
+		return turn, false, getErr
 	}
 	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',dispatch_state='',dispatch_epoch=0,dispatch_result_json=NULL,lease_id=NULL,lease_expires_at=NULL,lease_epoch=lease_epoch+1,revision=revision+1,updated_at=$2 WHERE turn_id=$1 AND revision=$3 AND state IN ('accepted','running') AND cancel_requested=false`, c.TurnID, now, c.ExpectedRevision)
 	if err != nil {
@@ -1422,7 +1467,10 @@ func (s *CoreConversationStore) ListTurnSteers(ctx context.Context, turnID strin
 		if json.Unmarshal(raw, &event) != nil || uuid.Validate(event.MutationID) != nil || event.ExpectedRevision == 0 || strings.TrimSpace(event.Text) == "" {
 			return nil, core.ErrConflict
 		}
-		result = append(result, core.TurnSteer{RequestID: event.MutationID, Instruction: event.Text, ExpectedRevision: event.ExpectedRevision, Sequence: sequence, CreatedAt: createdAt.UTC()})
+		if event.Status != "" && event.Status != deferredTurnSteerStatus {
+			return nil, core.ErrConflict
+		}
+		result = append(result, core.TurnSteer{RequestID: event.MutationID, Instruction: event.Text, ExpectedRevision: event.ExpectedRevision, Sequence: sequence, CreatedAt: createdAt.UTC(), Deferred: event.Status == deferredTurnSteerStatus})
 	}
 	return result, rows.Err()
 }

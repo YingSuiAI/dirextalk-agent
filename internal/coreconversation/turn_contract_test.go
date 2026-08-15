@@ -135,6 +135,7 @@ func (m *twoRoundReadOnlyModel) Stream(ctx context.Context, request ModelRunRequ
 type readOnlyTurnStore struct {
 	*publicActiveTurnStore
 	events          []TurnEvent
+	steers          []TurnSteer
 	dispatchState   string
 	dispatch        ModelRunResult
 	failedCode      string
@@ -143,6 +144,16 @@ type readOnlyTurnStore struct {
 	dispatched      map[string]bool
 	prepareCalls    int
 	prepared        ToolAttempt
+}
+
+func (s *readOnlyTurnStore) RequestTurnSteer(context.Context, TurnSteerCommand) (Turn, bool, error) {
+	return Turn{}, false, ErrInvalid
+}
+
+func (s *readOnlyTurnStore) ListTurnSteers(context.Context, string) ([]TurnSteer, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]TurnSteer(nil), s.steers...), nil
 }
 
 func (s *readOnlyTurnStore) RecordConversationToolCall(_ context.Context, _ TurnLease, call ToolCall) error {
@@ -820,6 +831,59 @@ func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *t
 	}
 	if started != 1 {
 		t.Fatalf("continuation started events=%d events=%+v", started, store.events)
+	}
+}
+
+func TestExecuteTurnAppliesDeferredSteerAfterCloudWorkerResult(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID, requestID, turnID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	createdAt := time.Now().UTC().Add(-time.Minute)
+	turn := Turn{ID: turnID, RequestID: requestID, ConversationID: conversationID,
+		Prompt: "deploy the service", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
+		ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 4,
+		LastSequence: 4, CreatedAt: createdAt}
+	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
+	result := ToolResult{CallID: call.ID, ToolName: call.Name,
+		Content: `{"schema":"dirextalk.ssh-worker-completion/v1","status":"succeeded","worker_id":"worker-one","worker_report":"deployment finished"}`,
+		Summary: "Cloud Worker result returned"}
+	steer := TurnSteer{RequestID: uuid.NewString(), Instruction: "also report the service URL",
+		ExpectedRevision: 2, Sequence: 3, CreatedAt: createdAt.Add(3 * time.Second), Deferred: true}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		steers:                []TurnSteer{steer},
+		events: []TurnEvent{
+			{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: createdAt},
+			{TurnID: turn.ID, Sequence: 2, Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: createdAt.Add(time.Second)},
+			{TurnID: turn.ID, Sequence: 4, Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: createdAt.Add(4 * time.Second)},
+		},
+	}
+	model := &capturingTurnModel{}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.executeTurn(context.Background(), turn.ID)
+
+	terminal, err := store.GetTurn(context.Background(), turn.ID)
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "ok" || model.runs != 1 {
+		t.Fatalf("terminal=%+v model_runs=%d err=%v", terminal, model.runs, err)
+	}
+	messages := model.request.Conversation.Messages
+	if len(messages) < 3 || messages[len(messages)-1].Role != RoleUser || messages[len(messages)-1].Content != steer.Instruction {
+		t.Fatalf("model conversation missing deferred steer: %+v", messages)
+	}
+	workerResultSeen := false
+	for _, message := range messages[:len(messages)-1] {
+		for _, toolResult := range message.ToolResults {
+			if toolResult.CallID == call.ID && toolResult.Content == result.Content {
+				workerResultSeen = true
+			}
+		}
+	}
+	if !workerResultSeen {
+		t.Fatalf("model conversation missing Worker result: %+v", messages)
 	}
 }
 

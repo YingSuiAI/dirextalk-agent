@@ -173,6 +173,7 @@ type TurnSteer struct {
 	ExpectedRevision uint64
 	Sequence         int64
 	CreatedAt        time.Time
+	Deferred         bool
 }
 
 type TurnLease struct {
@@ -281,8 +282,9 @@ type TurnCancelStore interface {
 }
 
 // TurnSteerStore persists same-turn user guidance in the durable event ledger.
-// Implementations must revision-fence the mutation and invalidate any active
-// provider lease before returning success.
+// The boolean result tells the service whether the current provider generation
+// must be interrupted. Guidance received after a tool call is public or
+// dispatched is deferred without changing that tool's active authority.
 type TurnSteerStore interface {
 	RequestTurnSteer(context.Context, TurnSteerCommand) (Turn, bool, error)
 	ListTurnSteers(context.Context, string) ([]TurnSteer, error)

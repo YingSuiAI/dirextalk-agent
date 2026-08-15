@@ -39,9 +39,10 @@ contract](message-server-integration-development-contract.md), and
   its Capability operation identity is the public turn identity while the
   client-message request identity remains a separate idempotency fence.
 - Revision-fenced `agent.chat.v1/steer_turn` now persists additional user
-  guidance in the current turn ledger, invalidates the active provider lease,
-  and regenerates that same turn from the original question plus all guidance;
-  it never queues a successor turn.
+  guidance in the current turn ledger. It interrupts a provider generation
+  before tool publication, preserves an already public/dispatched tool and its
+  lease, and applies deferred guidance with that tool's result in the next
+  model round; it never queues a successor turn.
 - Agent-owned encrypted Tavily Web Search configuration and guarded dispatch.
 - Agent-owned typed text tools with virtual revision-zero built-ins, durable
   full-list configuration/replay, explicit Tool-profile resolution, and

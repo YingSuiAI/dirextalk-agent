@@ -460,46 +460,17 @@ func TestConversationToolCompactEnvelopePreservesLargeArgumentsAndResultPostgres
 	}
 }
 
-func TestConversationTurnSteerCannotDiscardStartedToolAuthorityPostgres(t *testing.T) {
-	t.Run("private pending before public call remains steerable", func(t *testing.T) {
-		fixture := newConversationToolPrepareFixture(t, uuid.NewString())
-		call := core.ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{}`}
-		persistConversationToolBatch(t, fixture, []core.ToolCall{call})
-		current, err := fixture.h.store.GetTurn(context.Background(), fixture.turn.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		steered, applied, err := fixture.h.store.RequestTurnSteer(context.Background(), core.TurnSteerCommand{RequestID: uuid.NewString(), TurnID: current.ID, Instruction: "change direction", ExpectedRevision: current.Revision})
-		if err != nil || !applied || steered.State != core.TurnAccepted || steered.DispatchState != "" {
-			t.Fatalf("steered=%+v applied=%v err=%v", steered, applied, err)
-		}
-	})
-
-	for _, stage := range []string{"public_pending", "private_dispatched"} {
-		t.Run(stage, func(t *testing.T) {
-			fixture := newConversationToolPrepareFixture(t, uuid.NewString())
-			call := core.ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{}`}
-			persistConversationToolBatch(t, fixture, []core.ToolCall{call})
-			if err := fixture.h.store.RecordConversationToolCall(context.Background(), fixture.lease, call); err != nil {
-				t.Fatal(err)
-			}
-			if stage == "private_dispatched" {
-				if execute, err := fixture.h.store.BeginConversationToolDispatch(context.Background(), fixture.lease, call); err != nil || !execute {
-					t.Fatalf("begin execute=%v err=%v", execute, err)
-				}
-			}
-			current, err := fixture.h.store.GetTurn(context.Background(), fixture.turn.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, _, err = fixture.h.store.RequestTurnSteer(context.Background(), core.TurnSteerCommand{RequestID: uuid.NewString(), TurnID: current.ID, Instruction: "change direction", ExpectedRevision: current.Revision}); !errors.Is(err, core.ErrConflict) {
-				t.Fatalf("started batch steer err=%v", err)
-			}
-			after, err := fixture.h.store.GetTurn(context.Background(), fixture.turn.ID)
-			if err != nil || after.DispatchState != "completed" {
-				t.Fatalf("authority lost after steer rejection: turn=%+v err=%v", after, err)
-			}
-		})
+func TestConversationTurnSteerCanDiscardPrivatePendingToolBatchPostgres(t *testing.T) {
+	fixture := newConversationToolPrepareFixture(t, uuid.NewString())
+	call := core.ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{}`}
+	persistConversationToolBatch(t, fixture, []core.ToolCall{call})
+	current, err := fixture.h.store.GetTurn(context.Background(), fixture.turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steered, interrupt, err := fixture.h.store.RequestTurnSteer(context.Background(), core.TurnSteerCommand{RequestID: uuid.NewString(), TurnID: current.ID, Instruction: "change direction", ExpectedRevision: current.Revision})
+	if err != nil || !interrupt || steered.State != core.TurnAccepted || steered.DispatchState != "" {
+		t.Fatalf("steered=%+v interrupt=%v err=%v", steered, interrupt, err)
 	}
 }
 

@@ -1188,11 +1188,11 @@ func (s *Service) SteerTurn(ctx context.Context, cmd TurnSteerCommand) (Turn, er
 	if !ok {
 		return Turn{}, ErrInvalid
 	}
-	turn, applied, err := store.RequestTurnSteer(ctx, cmd)
+	turn, interrupt, err := store.RequestTurnSteer(ctx, cmd)
 	if err != nil {
 		return Turn{}, err
 	}
-	if !applied {
+	if !interrupt {
 		return turn, nil
 	}
 	s.cancelMu.Lock()
@@ -1502,10 +1502,26 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		_, _ = s.turns.FailTurn(ctx, lease, "tool_history_unavailable", "durable tool history is unavailable")
 		return
 	}
+	var turnSteers []TurnSteer
+	if steerStore, ok := s.turns.(TurnSteerStore); ok {
+		turnSteers, err = steerStore.ListTurnSteers(ctx, turn.ID)
+		if err != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, "turn_steer_unavailable", "same-turn guidance is unavailable")
+			return
+		}
+	}
 	workerContent, terminalWorker := terminalCloudWorkerContent(toolCallAuthorities)
+	deferredSteer := false
+	for _, steer := range turnSteers {
+		if steer.Deferred {
+			deferredSteer = true
+			break
+		}
+	}
+	autoFinalizeWorker := terminalWorker && !deferredSteer
 	var resolvedExtensions []ResolvedExtension
-	if !terminalWorker {
-		resolvedExtensions, err = s.resolveAcceptedTurnExtensionsForContinuation(ctx, turn.ExtensionSnapshots, false)
+	if !autoFinalizeWorker {
+		resolvedExtensions, err = s.resolveAcceptedTurnExtensionsForContinuation(ctx, turn.ExtensionSnapshots, terminalWorker)
 		if err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
 			return
@@ -1521,7 +1537,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			return
 		}
 	}
-	if terminalWorker {
+	if autoFinalizeWorker {
 		historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
 		userTime := nextMessageTime(conv, s.clock())
 		message := Message{
@@ -1587,13 +1603,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "model context is invalid")
 			return
 		}
-		if steerStore, ok := s.turns.(TurnSteerStore); ok {
-			steers, steerErr := steerStore.ListTurnSteers(ctx, turn.ID)
-			if steerErr != nil {
-				_, _ = s.turns.FailTurn(ctx, lease, "turn_steer_unavailable", "same-turn guidance is unavailable")
-				return
-			}
-			modelConversation, err = appendTurnSteers(modelConversation, turn, steers, s.clock())
+		if len(turnSteers) != 0 {
+			modelConversation, err = appendTurnSteers(modelConversation, turn, turnSteers, s.clock())
 			if err != nil {
 				_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "model context is invalid")
 				return

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -132,6 +133,66 @@ func TestSSHWorkerStoreRebindsConsumedReservationAfterTaskReclaim(t *testing.T) 
 		conversation.Messages[1].Content != "Cloud Worker quote is ready for confirmation." ||
 		conversation.Messages[2].Content != "deployment complete" {
 		t.Fatalf("terminal Worker transcript=%+v err=%v", conversation.Messages, err)
+	}
+}
+
+func TestSSHWorkerStorePreservesRunningWorkerWhenTurnIsSteered(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+	offer := h.propose(t)
+	confirmationService, err := coreconfirmation.NewService(h.confirmations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = confirmationService.Confirm(h.ctx, coreconfirmation.ConfirmCommand{
+		ConfirmationID: offer.Confirmation.ConfirmationID,
+		IdempotencyKey: uuid.NewString(), ExpectedRevision: offer.Confirmation.Revision, At: h.now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := NewCoreTaskStore(h.store)
+	running, _, err := tasks.ClaimNextDue(h.ctx, "ssh-worker-steer", h.now, 2*time.Minute, 1)
+	if err != nil || running.Lease == nil {
+		t.Fatalf("running task=%+v err=%v", running, err)
+	}
+	sshStore, err := NewSSHWorkerStore(h.store, "cloud-worker/artifacts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := sshStore.Begin(h.ctx, running)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationStore, err := NewCoreConversationStore(h.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting, err := conversationStore.GetTurn(h.ctx, offer.Plan.TurnID)
+	if err != nil || waiting.State != core.TurnWaitingConfirmation || waiting.DispatchState != "completed" || waiting.DispatchResult == nil {
+		t.Fatalf("waiting turn=%+v err=%v", waiting, err)
+	}
+	steerID := uuid.NewString()
+	steered, interrupt, err := conversationStore.RequestTurnSteer(h.ctx, core.TurnSteerCommand{
+		RequestID: steerID, TurnID: waiting.ID, ExpectedRevision: waiting.Revision,
+		Instruction: "also report the service URL",
+	})
+	if err != nil || interrupt || steered.State != core.TurnWaitingConfirmation || steered.Revision != waiting.Revision+1 ||
+		steered.DispatchState != waiting.DispatchState || !reflect.DeepEqual(steered.DispatchResult, waiting.DispatchResult) {
+		t.Fatalf("steered=%+v interrupt=%v err=%v", steered, interrupt, err)
+	}
+	afterTask, err := tasks.GetTask(h.ctx, running.ID)
+	if err != nil || afterTask.Status != coretask.StatusRunning || afterTask.Lease == nil ||
+		afterTask.Lease.Holder != running.Lease.Holder || afterTask.LeaseEpoch != running.LeaseEpoch ||
+		!afterTask.Lease.ExpiresAt.Equal(running.Lease.ExpiresAt) || afterTask.Revision != running.Revision {
+		t.Fatalf("Worker task authority changed before=%+v after=%+v err=%v", running, afterTask, err)
+	}
+	if err = sshStore.Complete(h.ctx, run, sshflow.Result{Summary: "deployment complete", WorkerID: "worker-one"}); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := conversationStore.GetTurn(h.ctx, waiting.ID)
+	steers, steerErr := conversationStore.ListTurnSteers(h.ctx, waiting.ID)
+	if err != nil || resumed.State != core.TurnAccepted || steerErr != nil || len(steers) != 1 || steers[0].RequestID != steerID || !steers[0].Deferred {
+		t.Fatalf("resumed=%+v steers=%+v err=%v steer_err=%v", resumed, steers, err, steerErr)
 	}
 }
 

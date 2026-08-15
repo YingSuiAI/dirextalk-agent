@@ -1515,7 +1515,8 @@ func TestSteerTurnDescriptorPublishesClosedTypedContract(t *testing.T) {
 			!chatOperationRequiresKey("steer_turn") ||
 			!strings.Contains(operation.GetInputSchemaJson(), `"additionalProperties":false`) ||
 			!strings.Contains(operation.GetInputSchemaJson(), `"instruction"`) ||
-			!strings.Contains(operation.GetResultSchemaJson(), `"steer_idempotency_key"`) {
+			!strings.Contains(operation.GetResultSchemaJson(), `"steer_idempotency_key"`) ||
+			!strings.Contains(operation.GetResultSchemaJson(), `"waiting_confirmation"`) {
 			t.Fatalf("unexpected steer_turn descriptor: %+v", operation)
 		}
 		return

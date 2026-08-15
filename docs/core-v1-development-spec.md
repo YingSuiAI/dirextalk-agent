@@ -181,11 +181,12 @@ durable-turn responses project the profile revision and credential version so
 the caller can pin its next request.
 
 An accepted or running durable turn may receive revision-fenced same-turn
-guidance. Core appends each instruction to the turn ledger, invalidates and
-cancels the active provider lease, then regenerates the same turn with the
-original prompt followed by the ordered guidance messages. Late results from
-the superseded provider lease cannot commit or dispatch a tool, and no
-successor turn is created.
+guidance. A confirmation-waiting turn also accepts guidance after its Cloud
+Worker task is queued or running. Before a tool call becomes public, Core
+invalidates and cancels the active provider lease and regenerates the same turn.
+After a tool call is public or dispatched, Core preserves that authority and
+lease, waits for its result, then gives the next model round both the result and
+the ordered guidance messages. No successor turn is created.
 
 `agent.info.v1/list_models` is the provider catalog, separate from persisted
 profile listing. It resolves either a write-only request credential or an
