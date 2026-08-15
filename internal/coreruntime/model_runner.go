@@ -74,6 +74,12 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 	} else {
 		return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, errors.New("model execution snapshot is required")
 	}
+	if req.Profile.ID != "" {
+		if req.Profile.ID != p.ID || req.Profile.Provider != string(p.Provider) || req.Profile.Model != p.Model {
+			return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
+		}
+		p.SystemPrompt = req.Profile.SystemPrompt
+	}
 	client, err := r.factory(p)
 	if err != nil {
 		return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, err

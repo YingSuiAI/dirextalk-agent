@@ -292,13 +292,22 @@ func TestConversationToolReclaimTerminalizesDispatchedAttemptWithoutProviderRepl
 	}
 }
 
-func TestConversationToolPostDispatchFailureUsesDetachedTerminalContext(t *testing.T) {
+func TestConversationToolResolutionFailureUsesDetachedTerminalContext(t *testing.T) {
 	store := &recoveringConversationStore{}
 	ctx, cancel := context.WithCancel(context.Background())
 	resolver := &localLimitsInvocationResolver{err: context.Canceled, cancel: cancel}
 	handler := conversationToolTaskHandler(store, resolver, nil, nil, nil, nil)
 	out := handler(ctx, coretask.Task{ID: uuid.NewString()})
-	if !errors.Is(out.Err, context.Canceled) || !out.TerminalOwned || store.finishCalls != 1 || store.finishState != "uncertain" || store.finishCtxErr != nil || resolver.calls != 1 {
+	if !errors.Is(out.Err, context.Canceled) || !out.TerminalOwned || store.finishCalls != 1 || store.finishState != "failed" || store.finishCtxErr != nil || resolver.calls != 1 {
 		t.Fatalf("out=%+v finish_calls=%d finish_state=%q finish_ctx_err=%v resolver_calls=%d", out, store.finishCalls, store.finishState, store.finishCtxErr, resolver.calls)
+	}
+}
+
+func TestConversationToolInvalidArgumentsAreDeterministic(t *testing.T) {
+	store := &localLimitsConversationStore{}
+	handler := conversationToolTaskHandler(store, &localLimitsInvocationResolver{err: coreextension.ErrInvalid}, nil, nil, nil, nil)
+	out := handler(context.Background(), coretask.Task{ID: uuid.NewString()})
+	if !errors.Is(out.Err, coreextension.ErrInvalid) || !out.TerminalOwned || store.finished != "failed" || store.code != "tool_arguments_invalid" || store.summary != "tool arguments are invalid" {
+		t.Fatalf("out=%+v state=%q code=%q summary=%q", out, store.finished, store.code, store.summary)
 	}
 }

@@ -151,6 +151,30 @@ func TestModelRunnerToolDoneAndStreamError(t *testing.T) {
 	}
 }
 
+func TestModelRunnerUsesTurnAugmentedSystemPrompt(t *testing.T) {
+	id := "00000000-0000-4000-8000-000000000001"
+	var profile coremodel.Profile
+	runner, _ := NewModelRunner(func(current coremodel.Profile) (coremodel.Client, error) {
+		profile = current
+		return &fakeClient{}, nil
+	})
+	snapshot := coremodel.SnapshotFromProfile(coremodel.Profile{
+		ID: id, Model: "m", Provider: coremodel.ProviderOpenAICompatible,
+		BaseURL: "https://example.com", APIKey: "k", SystemPrompt: "base", Revision: 1,
+	})
+	_, err := runner.Run(context.Background(), coreconversation.ModelRunRequest{
+		Snapshot: snapshot,
+		Profile: coreconversation.ResolvedProfile{
+			ID: id, Provider: string(coremodel.ProviderOpenAICompatible), Model: "m",
+			SystemPrompt: "base\n\nroute substantial work to cloud_worker_propose",
+		},
+		Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "deploy"}}},
+	})
+	if err != nil || profile.SystemPrompt != "base\n\nroute substantial work to cloud_worker_propose" {
+		t.Fatalf("system prompt=%q err=%v", profile.SystemPrompt, err)
+	}
+}
+
 func TestModelRunnerFailsClosedForUnresolvedExtensionSnapshot(t *testing.T) {
 	id := "00000000-0000-4000-8000-000000000001"
 	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return &captureClient{}, nil })

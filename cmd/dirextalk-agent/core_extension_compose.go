@@ -206,7 +206,11 @@ func conversationToolTaskHandler(store conversationToolAttemptStore, coord conve
 		}
 		invocation, err := coord.ResolveConversationInvocation(ctx, task)
 		if err != nil {
-			_ = finish("uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown")
+			code, summary := "tool_resolution_failed", "tool could not be prepared"
+			if errors.Is(err, coreextension.ErrInvalid) {
+				code, summary = "tool_arguments_invalid", "tool arguments are invalid"
+			}
+			_ = finish("failed", nil, code, summary)
 			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 		}
 		var result coretask.Result
