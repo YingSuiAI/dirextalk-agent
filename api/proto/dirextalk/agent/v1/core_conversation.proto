@@ -66,6 +66,7 @@ message CoreConversationMessage {
   google.protobuf.Timestamp created_at = 10;
   repeated string related_plan_ids = 11;
   repeated CoreConversationReference references = 12;
+  string reasoning_content = 13;
 }
 
 message ConversationServiceCreateRequest {
@@ -132,6 +133,7 @@ message ConversationServiceStreamChatRequest {
 }
 message CoreStreamChatDelta {
   string text = 1;
+  string reasoning_content = 2;
 }
 message CoreStreamChatToolProgress {
   string name = 1;
@@ -232,6 +234,7 @@ message CoreConversationTurnEvent {
   repeated CoreConversationReference references = 19;
   // The positive turn revision captured atomically when this event was written.
   uint64 revision = 20;
+  string reasoning_content = 21;
 }
 message ConversationServiceCancelTurnRequest {
   string idempotency_key = 1;

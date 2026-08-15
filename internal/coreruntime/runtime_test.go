@@ -143,11 +143,18 @@ func TestModelRunnerToolDoneAndStreamError(t *testing.T) {
 	if err == nil || res.Done {
 		t.Fatalf("stream err=%v done=%v", err, res.Done)
 	}
-	fc3 := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: "ok"}}}}
+	fc3 := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{{ReasoningContent: "think "}, {Content: "ok", ReasoningContent: "then answer"}}}}
 	r3, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return fc3, nil })
-	res, err = r3.Stream(context.Background(), request, nil)
-	if err != nil || !res.Done || res.Message.Content != "ok" || !coretask.ValidUUID(res.Message.ID) {
+	var deltas []coreconversation.ModelDelta
+	res, err = r3.Stream(context.Background(), request, func(delta coreconversation.ModelDelta) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if err != nil || !res.Done || res.Message.Content != "ok" || res.Message.ReasoningContent != "think then answer" || !coretask.ValidUUID(res.Message.ID) {
 		t.Fatalf("successful stream result=%+v err=%v", res, err)
+	}
+	if len(deltas) != 3 || deltas[0].ReasoningContent != "think " || deltas[1].Text != "ok" || deltas[2].ReasoningContent != "then answer" {
+		t.Fatalf("stream deltas=%+v", deltas)
 	}
 }
 
@@ -306,11 +313,11 @@ func TestRoleToolMapsCallNameAcrossMessages(t *testing.T) {
 	client := &captureClient{}
 	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
 	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}), Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{
-		{Role: coreconversation.RoleAssistant, ToolCalls: []coreconversation.ToolCall{{ID: "call-1", Name: "lookup", Arguments: "{}"}}},
+		{Role: coreconversation.RoleAssistant, ReasoningContent: "tool reasoning", ToolCalls: []coreconversation.ToolCall{{ID: "call-1", Name: "lookup", Arguments: "{}"}}},
 		{Role: coreconversation.RoleAssistant, ToolResults: []coreconversation.ToolResult{{CallID: "call-1", Content: "ok"}}},
 	}}})
 	got := client.req
-	if err != nil || len(got.Messages) != 2 || got.Messages[1].ToolCallID != "call-1" || got.Messages[1].Name != "lookup" {
+	if err != nil || len(got.Messages) != 2 || got.Messages[0].ReasoningContent != "tool reasoning" || got.Messages[1].ToolCallID != "call-1" || got.Messages[1].Name != "lookup" {
 		t.Fatalf("request=%+v err=%v", got, err)
 	}
 }

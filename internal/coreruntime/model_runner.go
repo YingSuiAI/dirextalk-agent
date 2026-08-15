@@ -94,7 +94,7 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 	}
 	callNames := map[string]string{}
 	for _, m := range req.Conversation.Messages[start:] {
-		pm := coremodel.Message{Role: coremodel.Role(m.Role), Content: m.Content}
+		pm := coremodel.Message{Role: coremodel.Role(m.Role), Content: m.Content, ReasoningContent: m.ReasoningContent}
 		for _, tc := range m.ToolCalls {
 			pm.ToolCalls = append(pm.ToolCalls, coremodel.ToolCall{ID: tc.ID, Type: "function", Function: coremodel.FunctionCall{Name: tc.Name, Arguments: tc.Arguments}})
 			callNames[tc.ID] = tc.Name
@@ -150,7 +150,7 @@ func (r *ModelRunner) Run(ctx context.Context, req coreconversation.ModelRunRequ
 		r.logProviderFailure(ctx, p.ID, err)
 		return coreconversation.ModelRunResult{}, err
 	}
-	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.Role(comp.Message.Role), Content: comp.Message.Content, ModelProfileID: p.ID}
+	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.Role(comp.Message.Role), Content: comp.Message.Content, ReasoningContent: comp.Message.ReasoningContent, ModelProfileID: p.ID}
 	for _, tc := range comp.Message.ToolCalls {
 		msg.ToolCalls = append(msg.ToolCalls, coreconversation.ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
 	}
@@ -169,6 +169,7 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 	}
 	defer stream.Close()
 	var content strings.Builder
+	var reasoning strings.Builder
 	callsByIndex := map[int]coreconversation.ToolCall{}
 	for {
 		d, e := stream.Recv()
@@ -183,6 +184,14 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 			content.WriteString(d.Content)
 			if emit != nil {
 				if err := emit(coreconversation.ModelDelta{Text: d.Content}); err != nil {
+					return coreconversation.ModelRunResult{}, err
+				}
+			}
+		}
+		if d.ReasoningContent != "" {
+			reasoning.WriteString(d.ReasoningContent)
+			if emit != nil {
+				if err := emit(coreconversation.ModelDelta{ReasoningContent: d.ReasoningContent}); err != nil {
 					return coreconversation.ModelRunResult{}, err
 				}
 			}
@@ -215,7 +224,7 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 	for _, i := range indices {
 		calls = append(calls, callsByIndex[i])
 	}
-	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: content.String(), ToolCalls: calls, ModelProfileID: p.ID}
+	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: content.String(), ReasoningContent: reasoning.String(), ToolCalls: calls, ModelProfileID: p.ID}
 	return coreconversation.ModelRunResult{Message: msg, ToolCalls: calls, Done: len(calls) == 0}, nil
 }
 

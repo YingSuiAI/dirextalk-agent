@@ -226,13 +226,14 @@ type publicConversation struct {
 }
 
 type publicConversationMessage struct {
-	MessageID  string                       `json:"message_id"`
-	Role       string                       `json:"role"`
-	Content    string                       `json:"content"`
-	CreatedAt  time.Time                    `json:"created_at"`
-	MessageSeq int64                        `json:"message_seq"`
-	Status     string                       `json:"status"`
-	References []coreconversation.Reference `json:"references"`
+	MessageID        string                       `json:"message_id"`
+	Role             string                       `json:"role"`
+	Content          string                       `json:"content"`
+	ReasoningContent string                       `json:"reasoning_content,omitempty"`
+	CreatedAt        time.Time                    `json:"created_at"`
+	MessageSeq       int64                        `json:"message_seq"`
+	Status           string                       `json:"status"`
+	References       []coreconversation.Reference `json:"references"`
 }
 
 type conversationMessageCursor struct {
@@ -275,13 +276,14 @@ func projectConversationMessages(values []coreconversation.Message) []publicConv
 			status = "done"
 		}
 		result = append(result, publicConversationMessage{
-			MessageID:  value.ID,
-			Role:       string(value.Role),
-			Content:    value.Content,
-			CreatedAt:  value.CreatedAt,
-			MessageSeq: sequence,
-			Status:     status,
-			References: references,
+			MessageID:        value.ID,
+			Role:             string(value.Role),
+			Content:          value.Content,
+			ReasoningContent: value.ReasoningContent,
+			CreatedAt:        value.CreatedAt,
+			MessageSeq:       sequence,
+			Status:           status,
+			References:       references,
 		})
 	}
 	return result
@@ -831,20 +833,21 @@ type durableChatStreamResult struct {
 // durableChatStreamEventSchema. TurnSequence remains an internal replay
 // cursor and is intentionally not exposed by this versioned wire contract.
 type durableChatStreamEvent struct {
-	Kind           string                       `json:"kind"`
-	IdempotencyKey string                       `json:"idempotency_key"`
-	ConversationID string                       `json:"conversation_id"`
-	TurnID         string                       `json:"turn_id"`
-	Revision       uint64                       `json:"revision"`
-	Text           string                       `json:"text,omitempty"`
-	ToolCall       *coreconversation.ToolCall   `json:"tool_call,omitempty"`
-	ToolResult     *coreconversation.ToolResult `json:"tool_result,omitempty"`
-	ErrorCode      string                       `json:"error_code,omitempty"`
-	ErrorSummary   string                       `json:"error_summary,omitempty"`
-	ConfirmationID string                       `json:"confirmation_id,omitempty"`
-	ExecutionID    string                       `json:"execution_id,omitempty"`
-	Status         string                       `json:"status,omitempty"`
-	CreatedAt      string                       `json:"created_at,omitempty"`
+	Kind             string                       `json:"kind"`
+	IdempotencyKey   string                       `json:"idempotency_key"`
+	ConversationID   string                       `json:"conversation_id"`
+	TurnID           string                       `json:"turn_id"`
+	Revision         uint64                       `json:"revision"`
+	Text             string                       `json:"text,omitempty"`
+	ReasoningContent string                       `json:"reasoning_content,omitempty"`
+	ToolCall         *coreconversation.ToolCall   `json:"tool_call,omitempty"`
+	ToolResult       *coreconversation.ToolResult `json:"tool_result,omitempty"`
+	ErrorCode        string                       `json:"error_code,omitempty"`
+	ErrorSummary     string                       `json:"error_summary,omitempty"`
+	ConfirmationID   string                       `json:"confirmation_id,omitempty"`
+	ExecutionID      string                       `json:"execution_id,omitempty"`
+	Status           string                       `json:"status,omitempty"`
+	CreatedAt        string                       `json:"created_at,omitempty"`
 }
 
 func projectDurableChatStreamResult(turn coreconversation.Turn, response coreconversation.ChatResponse) (durableChatStreamResult, error) {
@@ -888,7 +891,7 @@ func projectDurableChatStreamEvent(turn coreconversation.Turn, revision uint64, 
 	}
 	return durableChatStreamEvent{
 		Kind: string(event.Kind), IdempotencyKey: turn.RequestID, ConversationID: turn.ConversationID,
-		TurnID: turn.ID, Revision: revision, Text: event.Text,
+		TurnID: turn.ID, Revision: revision, Text: event.Text, ReasoningContent: event.ReasoningContent,
 		ToolCall: event.ToolCall, ToolResult: event.ToolResult,
 		ErrorCode: event.ErrCode, ErrorSummary: event.ErrSummary,
 	}, nil
@@ -936,7 +939,7 @@ func durableTurnStreamEvent(turn coreconversation.Turn, event coreconversation.T
 	case coreconversation.TurnEventStarted:
 		base.Kind = coreconversation.EventStarted
 	case coreconversation.TurnEventDelta:
-		base.Kind, base.Text = coreconversation.EventDelta, event.Text
+		base.Kind, base.Text, base.ReasoningContent = coreconversation.EventDelta, event.Text, event.ReasoningContent
 	case coreconversation.TurnEventToolCall:
 		base.Kind, base.ToolCall = coreconversation.EventToolCall, event.ToolCall
 	case coreconversation.TurnEventToolResult:
@@ -2037,7 +2040,7 @@ const durableStreamExtensionSelectionSchema = `{"additionalProperties":false,"pr
 
 const durableChatStreamResultSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"done":{"const":true,"type":"boolean"},"idempotency_key":{"format":"uuid","type":"string"},"message":{"type":"object"},"model_profile_id":{"format":"uuid","type":"string"},"references":{"items":{"type":"object"},"type":"array"},"related_plan_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"related_task_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"revision":{"minimum":1,"type":"integer"},"tool_results":{"items":{"type":"object"},"type":"array"},"tool_summaries":{"items":{"type":"string"},"type":"array"}},"required":["idempotency_key","conversation_id","revision","message","done","model_profile_id"],"type":"object"}`
 
-const durableChatStreamEventSchema = `{"additionalProperties":false,"allOf":[{"if":{"properties":{"kind":{"const":"waiting_confirmation"}}},"then":{"not":{"anyOf":[{"required":["text"]},{"required":["tool_call"]},{"required":["tool_result"]},{"required":["response"]},{"required":["error_code"]},{"required":["error_summary"]},{"required":["created_at"]}]},"properties":{"status":{"const":"waiting_confirmation"}},"required":["confirmation_id","execution_id","status"]}},{"if":{"properties":{"kind":{"const":"worker_status"}}},"then":{"not":{"anyOf":[{"required":["text"]},{"required":["tool_call"]},{"required":["tool_result"]},{"required":["response"]},{"required":["error_code"]},{"required":["error_summary"]},{"required":["confirmation_id"]}]},"properties":{"status":{"enum":["queued","provisioning","running","succeeded","failed","canceled","rejected","expired"]}},"required":["execution_id","status","created_at"]}},{"if":{"properties":{"kind":{"enum":["accepted","started","delta","tool_call","tool_result","done","error"]}}},"then":{"not":{"anyOf":[{"required":["confirmation_id"]},{"required":["execution_id"]},{"required":["status"]},{"required":["created_at"]}]}}}],"properties":{"confirmation_id":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"error_code":{"type":"string"},"error_summary":{"type":"string"},"execution_id":{"format":"uuid","type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"kind":{"enum":["accepted","started","delta","tool_call","tool_result","waiting_confirmation","worker_status","done","error"],"type":"string"},"response":` + durableChatStreamResultSchema + `,"revision":{"minimum":1,"type":"integer"},"status":{"enum":["waiting_confirmation","queued","provisioning","running","succeeded","failed","canceled","rejected","expired"],"type":"string"},"text":{"type":"string"},"tool_call":{"type":"object"},"tool_result":{"type":"object"},"turn_id":{"format":"uuid","type":"string"}},"required":["kind","idempotency_key","conversation_id","turn_id","revision"],"type":"object"}`
+const durableChatStreamEventSchema = `{"additionalProperties":false,"allOf":[{"if":{"properties":{"kind":{"const":"waiting_confirmation"}}},"then":{"not":{"anyOf":[{"required":["text"]},{"required":["tool_call"]},{"required":["tool_result"]},{"required":["response"]},{"required":["error_code"]},{"required":["error_summary"]},{"required":["created_at"]}]},"properties":{"status":{"const":"waiting_confirmation"}},"required":["confirmation_id","execution_id","status"]}},{"if":{"properties":{"kind":{"const":"worker_status"}}},"then":{"not":{"anyOf":[{"required":["text"]},{"required":["tool_call"]},{"required":["tool_result"]},{"required":["response"]},{"required":["error_code"]},{"required":["error_summary"]},{"required":["confirmation_id"]}]},"properties":{"status":{"enum":["queued","provisioning","running","succeeded","failed","canceled","rejected","expired"]}},"required":["execution_id","status","created_at"]}},{"if":{"properties":{"kind":{"enum":["accepted","started","delta","tool_call","tool_result","done","error"]}}},"then":{"not":{"anyOf":[{"required":["confirmation_id"]},{"required":["execution_id"]},{"required":["status"]},{"required":["created_at"]}]}}}],"properties":{"confirmation_id":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"error_code":{"type":"string"},"error_summary":{"type":"string"},"execution_id":{"format":"uuid","type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"kind":{"enum":["accepted","started","delta","tool_call","tool_result","waiting_confirmation","worker_status","done","error"],"type":"string"},"reasoning_content":{"type":"string"},"response":` + durableChatStreamResultSchema + `,"revision":{"minimum":1,"type":"integer"},"status":{"enum":["waiting_confirmation","queued","provisioning","running","succeeded","failed","canceled","rejected","expired"],"type":"string"},"text":{"type":"string"},"tool_call":{"type":"object"},"tool_result":{"type":"object"},"turn_id":{"format":"uuid","type":"string"}},"required":["kind","idempotency_key","conversation_id","turn_id","revision"],"type":"object"}`
 
 func operationEventSchema(capabilityID, operation string) string {
 	if capabilityID == "agent.chat.v1" && operation == "stream_chat" {

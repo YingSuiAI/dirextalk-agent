@@ -90,7 +90,7 @@ func (m *delayedStreamingTurnModel) Stream(ctx context.Context, _ ModelRunReques
 	if emit == nil {
 		return ModelRunResult{}, ErrInvalid
 	}
-	if err := emit(ModelDelta{Text: "intermediate-only delta"}); err != nil {
+	if err := emit(ModelDelta{Text: "intermediate-only delta", ReasoningContent: "durable reasoning"}); err != nil {
 		return ModelRunResult{}, err
 	}
 	timer := time.NewTimer(m.delay)
@@ -100,7 +100,7 @@ func (m *delayedStreamingTurnModel) Stream(ctx context.Context, _ ModelRunReques
 	case <-ctx.Done():
 		return ModelRunResult{}, ctx.Err()
 	}
-	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", CreatedAt: time.Now().UTC()}}, nil
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", ReasoningContent: "durable reasoning", CreatedAt: time.Now().UTC()}}, nil
 }
 
 type fixedToolCallsTurnModel struct{ calls []ToolCall }
@@ -122,14 +122,18 @@ type twoRoundReadOnlyModel struct {
 func (m *twoRoundReadOnlyModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
 	m.requests = append(m.requests, request)
 	if len(m.requests) == 1 {
-		message := Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: []ToolCall{m.call}, CreatedAt: time.Now().UTC()}
+		message := Message{ID: uuid.NewString(), Role: RoleAssistant, ReasoningContent: "tool reasoning", ToolCalls: []ToolCall{m.call}, CreatedAt: time.Now().UTC()}
 		return ModelRunResult{Message: message, ToolCalls: []ToolCall{m.call}}, nil
 	}
-	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", CreatedAt: time.Now().UTC()}}, nil
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", ReasoningContent: "final reasoning", CreatedAt: time.Now().UTC()}}, nil
 }
 
-func (m *twoRoundReadOnlyModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
-	return m.Run(ctx, request)
+func (m *twoRoundReadOnlyModel) Stream(ctx context.Context, request ModelRunRequest, emit func(ModelDelta) error) (ModelRunResult, error) {
+	result, err := m.Run(ctx, request)
+	if err == nil && emit != nil {
+		err = emit(ModelDelta{ReasoningContent: result.Message.ReasoningContent})
+	}
+	return result, err
 }
 
 type readOnlyTurnStore struct {
@@ -717,7 +721,7 @@ func TestExecuteTurnDurableUsesStreamingPathBeyondLegacyTotalWindow(t *testing.T
 	elapsed := time.Since(started)
 
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
-	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "final answer" {
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "final answer" || terminal.Response.Message.ReasoningContent != "durable reasoning" {
 		t.Fatalf("terminal=%+v err=%v", terminal, err)
 	}
 	if model.runCalls != 0 || model.streamCalls != 1 {
@@ -727,15 +731,56 @@ func TestExecuteTurnDurableUsesStreamingPathBeyondLegacyTotalWindow(t *testing.T
 		t.Fatalf("durable streaming elapsed=%s delay=%s legacy_window=%s", elapsed, model.delay, simulatedLegacyTotalWindow)
 	}
 	if len(store.events) != 4 || store.events[0].Kind != TurnEventAccepted || store.events[1].Kind != TurnEventStarted ||
-		store.events[2].Kind != TurnEventDelta || store.events[2].Text != "intermediate-only delta" || store.events[3].Kind != TurnEventDone {
+		store.events[2].Kind != TurnEventDelta || store.events[2].Text != "intermediate-only delta" || store.events[2].ReasoningContent != "durable reasoning" || store.events[3].Kind != TurnEventDone {
 		t.Fatalf("durable events=%+v", store.events)
 	}
 	replayed, err := store.LoadTurnEvents(context.Background(), turn.ID, 0, 1000)
-	if err != nil || len(replayed) != 4 || replayed[2].Kind != TurnEventDelta || replayed[2].Text != "intermediate-only delta" || replayed[3].Kind != TurnEventDone {
+	if err != nil || len(replayed) != 4 || replayed[2].Kind != TurnEventDelta || replayed[2].Text != "intermediate-only delta" || replayed[2].ReasoningContent != "durable reasoning" || replayed[3].Kind != TurnEventDone {
 		t.Fatalf("replayed durable events=%+v err=%v", replayed, err)
 	}
 	if strings.Contains(terminal.Response.Message.Content, "intermediate-only delta") {
 		t.Fatal("streaming delta leaked into terminal response")
+	}
+}
+
+func TestExecuteTurnReplayDoesNotDuplicateTerminalReasoningDelta(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+		Prompt: "recover the completed provider response", ProfileID: profile.ProfileID,
+		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+		State: TurnAccepted, Revision: 1, LastSequence: 2, CreatedAt: time.Now().UTC(),
+	}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events: []TurnEvent{
+			{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt},
+			{TurnID: turn.ID, Sequence: 2, Revision: 1, Kind: TurnEventDelta, ReasoningContent: "final reasoning", CreatedAt: turn.CreatedAt.Add(time.Second)},
+		},
+		dispatchState: "completed",
+		dispatch: ModelRunResult{Done: true, Message: Message{
+			ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", ReasoningContent: "final reasoning", CreatedAt: time.Now().UTC(),
+		}},
+	}
+	model := &capturingTurnModel{}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	service.executeTurn(context.Background(), turn.ID)
+	terminal, err := store.GetTurn(context.Background(), turn.ID)
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil {
+		t.Fatalf("terminal=%+v err=%v", terminal, err)
+	}
+	if got := terminal.Response.Message.ReasoningContent; got != "final reasoning" {
+		t.Fatalf("replayed terminal reasoning=%q", got)
+	}
+	if model.runs != 0 {
+		t.Fatalf("replayed provider result invoked model %d times", model.runs)
 	}
 }
 
@@ -997,10 +1042,10 @@ func TestDurableReadOnlyToolPersistsEventsAndCompletesSecondModelRound(t *testin
 	}
 	service.executeTurn(context.Background(), turn.ID)
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
-	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "final answer" || len(model.requests) != 2 {
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "final answer" || terminal.Response.Message.ReasoningContent != "tool reasoningfinal reasoning" || len(model.requests) != 2 {
 		t.Fatalf("terminal=%+v model rounds=%d err=%v", terminal, len(model.requests), err)
 	}
-	if len(model.requests[1].Conversation.Messages) != 3 || len(model.requests[1].Conversation.Messages[1].ToolCalls) != 1 || len(model.requests[1].Conversation.Messages[2].ToolResults) != 1 {
+	if len(model.requests[1].Conversation.Messages) != 3 || len(model.requests[1].Conversation.Messages[1].ToolCalls) != 1 || model.requests[1].Conversation.Messages[1].ReasoningContent != "tool reasoning" || len(model.requests[1].Conversation.Messages[2].ToolResults) != 1 {
 		t.Fatalf("second-round durable context=%+v", model.requests[1].Conversation.Messages)
 	}
 	var toolCalls, toolResults, done int

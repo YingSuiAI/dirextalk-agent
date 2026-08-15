@@ -78,15 +78,17 @@ multi-tenant model.
   turn fails with `provider_timeout` and an unknown-outcome summary. The
   dispatch is never replayed automatically, and recovery preserves the
   persisted timeout classification.
-- Native conversation progress durably publishes visible assistant `delta`
-  text as it arrives from the provider, followed by the terminal response; it
-  never publishes provider reasoning content. It publishes the existing
-  `tool_call` event only after the model step and tool identity are durable,
-  and before the extension is dispatched. A successful call is followed by its
-  exact `tool_result`; a failed dispatch retains the already-published call
-  before the existing safe terminal error. Durable turns persist the same
-  public ordering while their private pending/dispatched envelope remains the
-  at-most-once authority and is never exposed as an additional client event.
+- Native conversation progress durably publishes assistant `delta` text and
+  additive `reasoning_content` as they arrive from the provider, followed by
+  the terminal response containing the full accumulated `reasoning_content`.
+  Reasoning uses the same durable event path rather than a parallel stream. It
+  publishes the existing `tool_call` event only after the model step and tool
+  identity are durable, and before the extension is dispatched. A successful
+  call is followed by its exact `tool_result`; a failed dispatch retains the
+  already-published call before the existing safe terminal error. Durable turns
+  persist the same public ordering while their private pending/dispatched
+  envelope remains the at-most-once authority and is never exposed as an
+  additional client event.
 - On every Native conversation turn, `Chat`, `StreamChat`, and `StartTurn`
   compose two memory layers before model dispatch. Working memory remains the
   durable conversation summary plus recent transcript window. Long-term memory
@@ -167,9 +169,9 @@ multi-tenant model.
 - Capability conversation reads use a closed Flutter-facing projection.
   Conversations expose only id/title/revision/timestamps/status; history
   exposes only user/assistant messages with durable sequence, terminal status,
-  and a references array. The first history page contains the newest bounded
-  messages in ascending sequence order, and its opaque cursor is bound to the
-  conversation id and prior sequence.
+  additive `reasoning_content`, and a references array. The first history page
+  contains the newest bounded messages in ascending sequence order, and its
+  opaque cursor is bound to the conversation id and prior sequence.
 - Capability `agent.chat.v1/list_turns` accepts only a canonical conversation
   UUID, an optional opaque page token of at most 4,096 bytes, and an optional
   limit from 1 through 1,000. Its closed result projects exactly `turn_id`,

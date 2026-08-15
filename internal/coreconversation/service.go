@@ -478,6 +478,7 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 	var relatedPlans []string
 	var references []Reference
 	var toolSummaries []string
+	var reasoningContent strings.Builder
 	for round := 0; ; round++ {
 		if err := ctx.Err(); err != nil {
 			return ChatResponse{}, ErrCanceled
@@ -493,8 +494,8 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 				if emit == nil {
 					return nil
 				}
-				if d.Text != "" {
-					emit(StreamEvent{Kind: EventDelta, RequestID: cmd.RequestID, ConversationID: conv.ID, Text: d.Text})
+				if d.Text != "" || d.ReasoningContent != "" {
+					emit(StreamEvent{Kind: EventDelta, RequestID: cmd.RequestID, ConversationID: conv.ID, Text: d.Text, ReasoningContent: d.ReasoningContent})
 				}
 				return nil
 			}
@@ -528,6 +529,7 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 		if len(result.Message.ToolCalls) == 0 && len(result.ToolCalls) > 0 {
 			result.Message.ToolCalls = append([]ToolCall(nil), result.ToolCalls...)
 		}
+		reasoningContent.WriteString(result.Message.ReasoningContent)
 		result.Message.ModelProfileID = cmd.ProfileID
 		result.Message.RelatedTaskIDs = append([]string(nil), result.RelatedTaskIDs...)
 		result.Message.RelatedPlanIDs = append([]string(nil), result.RelatedPlanIDs...)
@@ -558,6 +560,12 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 			result.ToolCalls = nil
 			if err := s.store.RecordModelStep(ctx, cmd.RequestID, lease.LeaseID, lease.Fingerprint, lease.Epoch, cmd.ProfileID, round, result); err != nil {
 				return ChatResponse{}, err
+			}
+		}
+		if len(result.Message.ToolCalls) == 0 {
+			result.Message.ReasoningContent = reasoningContent.String()
+			if err := result.Message.Validate(); err != nil {
+				return ChatResponse{}, fmt.Errorf("model message: %w", err)
 			}
 		}
 		conv.Messages = append(conv.Messages, result.Message)
@@ -1497,7 +1505,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "durable conversation context is invalid")
 		return
 	}
-	toolCallAuthorities, err := s.appendTurnToolHistory(ctx, turn, &conv)
+	toolCallAuthorities, priorReasoning, err := s.appendTurnToolHistory(ctx, turn, &conv)
 	if err != nil {
 		_, _ = s.turns.FailTurn(ctx, lease, "tool_history_unavailable", "durable tool history is unavailable")
 		return
@@ -1653,9 +1661,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 			}
 			// Force the current streaming runner so active provider streams are
-			// bounded only by their inactivity watchdog. Persist only user-visible
-			// assistant text as durable deltas; provider reasoning content is never
-			// part of ModelDelta and remains outside the conversation contract.
+			// bounded only by their inactivity watchdog. Visible assistant text and
+			// provider reasoning use the same durable delta ordering.
 			result, runErr := s.runModel(child, ModelRunRequest{
 				Conversation: modelConversation,
 				Profile: ResolvedProfile{
@@ -1671,12 +1678,13 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				Extensions:         resolvedExtensions,
 				ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...),
 			}, func(delta ModelDelta) error {
-				if delta.Text == "" {
+				if delta.Text == "" && delta.ReasoningContent == "" {
 					return nil
 				}
 				_, appendErr := s.turns.AppendTurnEvent(ctx, id, TurnEvent{
-					Kind: TurnEventDelta,
-					Text: delta.Text,
+					Kind:             TurnEventDelta,
+					Text:             delta.Text,
+					ReasoningContent: delta.ReasoningContent,
 				})
 				return appendErr
 			})
@@ -1873,6 +1881,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				}
 			}
 			m := out.result.Message
+			m.ReasoningContent = priorReasoning + m.ReasoningContent
 			historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
 			m.RelatedTaskIDs = stableIDs(append(append(m.RelatedTaskIDs, out.result.RelatedTaskIDs...), historyTasks...))
 			m.RelatedPlanIDs = stableIDs(append(append(m.RelatedPlanIDs, out.result.RelatedPlanIDs...), historyPlans...))
@@ -2103,16 +2112,16 @@ func appendDeferredWorkerGuidanceStatus(content string, steers []TurnSteer) stri
 	return strings.TrimSpace(content) + note
 }
 
-func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation) (map[string]turnToolCallAuthority, error) {
+func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation) (map[string]turnToolCallAuthority, string, error) {
 	if conversation == nil {
-		return nil, ErrInvalid
+		return nil, "", ErrInvalid
 	}
 	const pageSize = 1000
 	var events []TurnEvent
 	for cursor := int64(0); ; {
 		page, err := s.turns.LoadTurnEvents(ctx, turn.ID, cursor, pageSize)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if len(page) == 0 {
 			break
@@ -2120,7 +2129,7 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		events = append(events, page...)
 		next := page[len(page)-1].Sequence
 		if next <= cursor {
-			return nil, ErrConflict
+			return nil, "", ErrConflict
 		}
 		cursor = next
 		if len(page) < pageSize {
@@ -2128,35 +2137,42 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		}
 	}
 	authorities := make(map[string]turnToolCallAuthority)
+	reasoningByCall := make(map[string]string)
+	var completedReasoning, pendingReasoning strings.Builder
 	for _, event := range events {
 		switch event.Kind {
+		case TurnEventDelta:
+			pendingReasoning.WriteString(event.ReasoningContent)
 		case TurnEventToolCall:
 			if event.ToolCall == nil || event.ToolCall.Validate() != nil {
-				return nil, ErrConflict
+				return nil, "", ErrConflict
 			}
 			if _, exists := authorities[event.ToolCall.ID]; exists {
-				return nil, ErrConflict
+				return nil, "", ErrConflict
 			}
 			authorities[event.ToolCall.ID] = turnToolCallAuthority{call: *event.ToolCall, state: turnToolCallPending}
+			reasoningByCall[event.ToolCall.ID] = pendingReasoning.String()
+			completedReasoning.WriteString(pendingReasoning.String())
+			pendingReasoning.Reset()
 		case TurnEventToolResult:
 			if event.ToolResult == nil || event.ToolResult.Validate() != nil {
-				return nil, ErrConflict
+				return nil, "", ErrConflict
 			}
 			authority, exists := authorities[event.ToolResult.CallID]
 			if !exists || authority.state == turnToolCallTerminal || event.ToolResult.ToolName != authority.call.Name {
-				return nil, ErrConflict
+				return nil, "", ErrConflict
 			}
 			result := *event.ToolResult
 			authority.state, authority.result = turnToolCallTerminal, &result
 			authorities[event.ToolResult.CallID] = authority
 			createdAt := nextMessageTime(*conversation, event.CreatedAt)
 			conversation.Messages = append(conversation.Messages,
-				Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-call:"+turn.ID+":"+authority.call.ID)).String(), Role: RoleAssistant, ToolCalls: []ToolCall{authority.call}, CreatedAt: createdAt, ModelProfileID: turn.ProfileID},
+				Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-call:"+turn.ID+":"+authority.call.ID)).String(), Role: RoleAssistant, ReasoningContent: reasoningByCall[authority.call.ID], ToolCalls: []ToolCall{authority.call}, CreatedAt: createdAt, ModelProfileID: turn.ProfileID},
 				Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-result:"+turn.ID+":"+authority.call.ID)).String(), Role: RoleTool, ToolResults: []ToolResult{result}, References: cloneReferences(result.References), CreatedAt: createdAt.Add(time.Nanosecond), ModelProfileID: turn.ProfileID},
 			)
 		}
 	}
-	return authorities, nil
+	return authorities, completedReasoning.String(), nil
 }
 
 func conversationForTurnContinuation(conversation Conversation, turn Turn) (Conversation, int, bool, error) {

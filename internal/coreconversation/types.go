@@ -111,18 +111,19 @@ type Message struct {
 	// Sequence is the durable transcript ordinal loaded from PostgreSQL. New
 	// in-memory messages keep it at zero until the atomic conversation commit;
 	// public history adapters use it without exposing Core-only payload fields.
-	Sequence       int64        `json:"-"`
-	Role           Role         `json:"role"`
-	Content        string       `json:"content,omitempty"`
-	ToolCalls      []ToolCall   `json:"tool_calls,omitempty"`
-	ToolResults    []ToolResult `json:"tool_results,omitempty"`
-	CreatedAt      time.Time    `json:"created_at"`
-	ModelProfileID string       `json:"model_profile_id"`
-	RelatedTaskIDs []string     `json:"related_task_ids,omitempty"`
-	RelatedPlanIDs []string     `json:"related_plan_ids,omitempty"`
-	References     []Reference  `json:"references,omitempty"`
-	ToolSummaries  []string     `json:"tool_summaries,omitempty"`
-	Status         string       `json:"status,omitempty"`
+	Sequence         int64        `json:"-"`
+	Role             Role         `json:"role"`
+	Content          string       `json:"content,omitempty"`
+	ReasoningContent string       `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall   `json:"tool_calls,omitempty"`
+	ToolResults      []ToolResult `json:"tool_results,omitempty"`
+	CreatedAt        time.Time    `json:"created_at"`
+	ModelProfileID   string       `json:"model_profile_id"`
+	RelatedTaskIDs   []string     `json:"related_task_ids,omitempty"`
+	RelatedPlanIDs   []string     `json:"related_plan_ids,omitempty"`
+	References       []Reference  `json:"references,omitempty"`
+	ToolSummaries    []string     `json:"tool_summaries,omitempty"`
+	Status           string       `json:"status,omitempty"`
 }
 
 type Conversation struct {
@@ -228,17 +229,18 @@ const (
 )
 
 type StreamEvent struct {
-	Kind           StreamEventKind `json:"kind"`
-	TurnSequence   int64           `json:"turn_sequence,omitempty"`
-	RequestID      string          `json:"request_id"`
-	ConversationID string          `json:"conversation_id"`
-	Text           string          `json:"text,omitempty"`
-	ToolCall       *ToolCall       `json:"tool_call,omitempty"`
-	ToolResult     *ToolResult     `json:"tool_result,omitempty"`
-	Response       *ChatResponse   `json:"response,omitempty"`
-	Err            string          `json:"error,omitempty"`
-	ErrCode        string          `json:"error_code,omitempty"`
-	ErrSummary     string          `json:"error_summary,omitempty"`
+	Kind             StreamEventKind `json:"kind"`
+	TurnSequence     int64           `json:"turn_sequence,omitempty"`
+	RequestID        string          `json:"request_id"`
+	ConversationID   string          `json:"conversation_id"`
+	Text             string          `json:"text,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ToolCall         *ToolCall       `json:"tool_call,omitempty"`
+	ToolResult       *ToolResult     `json:"tool_result,omitempty"`
+	Response         *ChatResponse   `json:"response,omitempty"`
+	Err              string          `json:"error,omitempty"`
+	ErrCode          string          `json:"error_code,omitempty"`
+	ErrSummary       string          `json:"error_summary,omitempty"`
 }
 
 type ClaimStatus string
@@ -564,8 +566,9 @@ type StreamingModelRunner interface {
 	Stream(context.Context, ModelRunRequest, func(ModelDelta) error) (ModelRunResult, error)
 }
 type ModelDelta struct {
-	Text     string
-	ToolCall *ToolCall
+	Text             string
+	ReasoningContent string
+	ToolCall         *ToolCall
 }
 type ExtensionResolver interface {
 	ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error)
@@ -981,7 +984,7 @@ func (m Message) Validate() error {
 	default:
 		return ErrInvalid
 	}
-	if len(m.Content) > MaxContentBytes {
+	if len(m.Content) > MaxContentBytes || len(m.ReasoningContent) > MaxContentBytes || !utf8.ValidString(m.ReasoningContent) {
 		return ErrInvalid
 	}
 	if m.Status != "" && m.Status != "done" && (m.Status != "failed" || m.Role != RoleAssistant) {

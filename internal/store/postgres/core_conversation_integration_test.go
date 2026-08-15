@@ -38,7 +38,7 @@ type integrationConversationRunner struct{}
 
 func (integrationConversationRunner) Run(_ context.Context, request core.ModelRunRequest) (core.ModelRunResult, error) {
 	createdAt := request.Conversation.Messages[len(request.Conversation.Messages)-1].CreatedAt.Add(time.Nanosecond)
-	return core.ModelRunResult{Done: true, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "ok", CreatedAt: createdAt}}, nil
+	return core.ModelRunResult{Done: true, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "ok", ReasoningContent: "integration reasoning", CreatedAt: createdAt}}, nil
 }
 
 type integrationSnapshotResolver struct{ snapshot coremodel.ExecutionSnapshot }
@@ -286,6 +286,9 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	if e != nil || len(loadedChat.Messages) != 4 || loadedChat.ValidateForPersistence() != nil {
 		t.Fatalf("round-trip conversation=%+v err=%v", loadedChat, e)
 	}
+	if loadedChat.Messages[1].ReasoningContent != "integration reasoning" || loadedChat.Messages[3].ReasoningContent != "integration reasoning" {
+		t.Fatalf("reasoning was not restored from message payload: %+v", loadedChat.Messages)
+	}
 	for i := 1; i < len(loadedChat.Messages); i++ {
 		previous, current := loadedChat.Messages[i-1].CreatedAt, loadedChat.Messages[i].CreatedAt
 		if !current.After(previous) || current.Sub(previous) < time.Microsecond || current.Nanosecond()%int(time.Microsecond) != 0 {
@@ -301,14 +304,14 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	msg := core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "answer", CreatedAt: now, ModelProfileID: commitProfile, ToolCalls: []core.ToolCall{{ID: toolCallID, Name: "demo", Arguments: `{"a":1}`}}, ToolResults: []core.ToolResult{{CallID: toolCallID, Content: "ok", Summary: "done"}}}
+	msg := core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "answer", ReasoningContent: "persisted reasoning", CreatedAt: now, ModelProfileID: commitProfile, ToolCalls: []core.ToolCall{{ID: toolCallID, Name: "demo", Arguments: `{"a":1}`}}, ToolResults: []core.ToolResult{{CallID: toolCallID, Content: "ok", Summary: "done"}}}
 	commitConv.Messages = []core.Message{msg}
 	resp := core.ChatResponse{RequestID: commitReq, ConversationID: commitConv.ID, Revision: 1, Message: msg, Done: true, ModelProfileID: commitProfile}
 	if _, e = cs.CommitChatCompletion(ctx, core.AtomicCompletion{RequestID: commitReq, LeaseID: commitLease.LeaseID, Fingerprint: sha256hexPG([]byte("commit")), ExpectedRevision: 1, Conversation: commitConv, Response: resp, Epoch: commitLease.Epoch}); e != nil {
 		t.Fatal(e)
 	}
 	loadedConv, e := cs.LoadConversation(ctx, commitConv.ID)
-	if e != nil || len(loadedConv.Messages) != 1 || len(loadedConv.Messages[0].ToolCalls) != 1 || len(loadedConv.Messages[0].ToolResults) != 1 {
+	if e != nil || len(loadedConv.Messages) != 1 || loadedConv.Messages[0].ReasoningContent != "persisted reasoning" || len(loadedConv.Messages[0].ToolCalls) != 1 || len(loadedConv.Messages[0].ToolResults) != 1 {
 		t.Fatalf("committed conversation=%+v err=%v", loadedConv, e)
 	}
 

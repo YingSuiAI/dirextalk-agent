@@ -337,12 +337,12 @@ func TestConsumeDurableTurnStreamPersistsReplayableProgressAndTerminal(t *testin
 	operationID := uuid.NewString()
 	profileID := uuid.NewString()
 	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: operationID, ConversationID: uuid.NewString(), Revision: 1}
-	message := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "complete", CreatedAt: time.Now().UTC(), ModelProfileID: profileID}
+	message := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "complete", ReasoningContent: "full reasoning", CreatedAt: time.Now().UTC(), ModelProfileID: profileID}
 	response := &coreconversation.ChatResponse{RequestID: operationID, ConversationID: turn.ConversationID, Revision: 2, Message: message, Done: true, ModelProfileID: profileID}
 	events := make(chan coreconversation.TurnEvent, 4)
 	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: coreconversation.TurnEventAccepted}
 	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 2, Revision: 1, Kind: coreconversation.TurnEventStarted}
-	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 3, Revision: 1, Kind: coreconversation.TurnEventDelta, Text: "visible progress"}
+	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 3, Revision: 1, Kind: coreconversation.TurnEventDelta, Text: "visible progress", ReasoningContent: "reasoning chunk"}
 	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 4, Revision: 2, Kind: coreconversation.TurnEventDone, Response: response}
 	close(events)
 
@@ -377,7 +377,7 @@ func TestConsumeDurableTurnStreamPersistsReplayableProgressAndTerminal(t *testin
 		}
 	}
 	if progressEvents[0]["kind"] != "accepted" || progressEvents[1]["kind"] != "started" ||
-		progressEvents[2]["kind"] != "delta" || progressEvents[2]["text"] != "visible progress" {
+		progressEvents[2]["kind"] != "delta" || progressEvents[2]["text"] != "visible progress" || progressEvents[2]["reasoning_content"] != "reasoning chunk" {
 		t.Fatalf("progress events=%+v", progressEvents)
 	}
 	var result map[string]any
@@ -385,6 +385,10 @@ func TestConsumeDurableTurnStreamPersistsReplayableProgressAndTerminal(t *testin
 		t.Fatalf("terminal result=%s", raw)
 	}
 	assertValueMatchesAdvertisedObjectSchema(t, []byte(durableChatStreamResultSchema), result)
+	messageResult, _ := result["message"].(map[string]any)
+	if messageResult["reasoning_content"] != "full reasoning" {
+		t.Fatalf("terminal reasoning result=%s", raw)
+	}
 	if _, present := result["request_id"]; present {
 		t.Fatalf("terminal result leaked Core request_id: %s", raw)
 	}
@@ -540,7 +544,7 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 	messages := []coreconversation.Message{
 		{ID: uuid.NewString(), Sequence: 1, Role: coreconversation.RoleUser, Content: "first", ModelProfileID: profileID, CreatedAt: now},
 		{ID: uuid.NewString(), Sequence: 2, Role: coreconversation.RoleTool, ToolResults: []coreconversation.ToolResult{{CallID: "call", Content: "private tool payload"}}, ModelProfileID: profileID, CreatedAt: now.Add(time.Second)},
-		{ID: uuid.NewString(), Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second), Status: "failed"},
+		{ID: uuid.NewString(), Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ReasoningContent: "durable reasoning", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second), Status: "failed"},
 		{ID: uuid.NewString(), Sequence: 4, Role: coreconversation.RoleSystem, Content: "private system context", ModelProfileID: profileID, CreatedAt: now.Add(3 * time.Second)},
 		{ID: uuid.NewString(), Sequence: 5, Role: coreconversation.RoleUser, Content: "third", ModelProfileID: profileID, CreatedAt: now.Add(4 * time.Second)},
 	}
@@ -555,7 +559,7 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(raw, []byte("private tool payload")) || bytes.Contains(raw, []byte("private system context")) || !bytes.Contains(raw, []byte(`"references":[]`)) {
+	if bytes.Contains(raw, []byte("private tool payload")) || bytes.Contains(raw, []byte("private system context")) || !bytes.Contains(raw, []byte(`"reasoning_content":"durable reasoning"`)) || !bytes.Contains(raw, []byte(`"references":[]`)) {
 		t.Fatalf("public history leaked Core-only fields: %s", raw)
 	}
 	older, finalCursor, err := pageConversationMessages(conversationID, messages, next, 2)

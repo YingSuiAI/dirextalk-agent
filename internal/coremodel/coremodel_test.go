@@ -337,6 +337,26 @@ func TestOpenAIMixedDeltaPreservesContentAndTools(t *testing.T) {
 	}
 }
 
+func TestOpenAIReasoningRoundTripsThroughMessagesAndResponses(t *testing.T) {
+	payload := openAIPayload(
+		validProfile(ProviderOpenAICompatible, "https://example.com", "k"),
+		CompletionRequest{Messages: []Message{{Role: RoleAssistant, Content: "answer", ReasoningContent: "prior reasoning"}}},
+		false,
+	)
+	messages := payload["messages"].([]any)
+	if len(messages) != 1 || messages[0].(map[string]any)["reasoning"] != "prior reasoning" {
+		t.Fatalf("reasoning request payload=%#v", messages)
+	}
+	completion, err := decodeCompletion(ProviderOpenAICompatible, []byte(`{"choices":[{"message":{"role":"assistant","content":"answer","reasoning":"full reasoning"}}]}`), nil)
+	if err != nil || completion.Message.Content != "answer" || completion.Message.ReasoningContent != "full reasoning" {
+		t.Fatalf("reasoning completion=%#v err=%v", completion, err)
+	}
+	delta, ok := decodeDeltaState(ProviderOpenAICompatible, []byte(`{"choices":[{"delta":{"reasoning":"reasoning chunk"}}]}`), map[int]string{})
+	if !ok || delta.Content != "" || delta.ReasoningContent != "reasoning chunk" {
+		t.Fatalf("reasoning delta=%#v ok=%v", delta, ok)
+	}
+}
+
 func TestUpdateProfileFullReplacementAndMultilinePrompt(t *testing.T) {
 	key := "k"
 	old := validProfile(ProviderOpenAICompatible, "https://custom.example/v1", key)

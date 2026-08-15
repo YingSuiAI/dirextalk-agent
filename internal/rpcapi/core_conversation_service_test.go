@@ -82,3 +82,19 @@ func TestTurnEventProtoRetainsNonWaitingTerminalReferences(t *testing.T) {
 		t.Fatalf("terminal related projection=%+v", got)
 	}
 }
+
+func TestTurnEventAndMessageProtoExposeReasoningContent(t *testing.T) {
+	event := coreconversation.TurnEvent{
+		TurnID: uuid.NewString(), Sequence: 2, Revision: 1, Kind: coreconversation.TurnEventDelta,
+		ReasoningContent: "reasoning chunk", CreatedAt: time.Now().UTC(),
+	}
+	response, err := turnEventProto(event)
+	if err != nil || response.GetEvent().GetReasoningContent() != event.ReasoningContent {
+		t.Fatalf("reasoning event=%+v err=%v", response, err)
+	}
+	message := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "answer", ReasoningContent: "full reasoning", ModelProfileID: uuid.NewString(), CreatedAt: time.Now().UTC()}
+	projected := msgProto(message, 2, uuid.NewString())
+	if projected.GetReasoningContent() != message.ReasoningContent {
+		t.Fatalf("reasoning message=%+v", projected)
+	}
+}

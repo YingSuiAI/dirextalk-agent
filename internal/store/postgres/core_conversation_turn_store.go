@@ -1075,7 +1075,7 @@ func failedTurnTranscriptTx(ctx context.Context, tx pgx.Tx, turn core.Turn, code
 	if err != nil {
 		return err
 	}
-	var partial strings.Builder
+	var partial, reasoning strings.Builder
 	for rows.Next() {
 		var raw []byte
 		var event core.TurnEvent
@@ -1084,6 +1084,7 @@ func failedTurnTranscriptTx(ctx context.Context, tx pgx.Tx, turn core.Turn, code
 			return core.ErrConflict
 		}
 		partial.WriteString(event.Text)
+		reasoning.WriteString(event.ReasoningContent)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
@@ -1122,12 +1123,13 @@ func failedTurnTranscriptTx(ctx context.Context, tx pgx.Tx, turn core.Turn, code
 		createdAt = createdAt.Add(time.Microsecond)
 	}
 	assistant := core.Message{
-		ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-failed-assistant:"+turn.RequestID)).String(),
-		Role:           core.RoleAssistant,
-		Content:        failedTurnAssistantContent(partial.String(), code, summary),
-		ModelProfileID: turn.ProfileID,
-		CreatedAt:      createdAt,
-		Status:         "failed",
+		ID:               uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-failed-assistant:"+turn.RequestID)).String(),
+		Role:             core.RoleAssistant,
+		Content:          failedTurnAssistantContent(partial.String(), code, summary),
+		ReasoningContent: reasoning.String(),
+		ModelProfileID:   turn.ProfileID,
+		CreatedAt:        createdAt,
+		Status:           "failed",
 	}
 	if assistant.Validate() != nil {
 		return core.ErrInvalid

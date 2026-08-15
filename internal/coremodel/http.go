@@ -421,6 +421,9 @@ func openAIMessages(messages []Message) []any {
 			content = openAIInputParts(msg.InputParts)
 		}
 		entry := map[string]any{"role": string(msg.Role), "content": content}
+		if msg.ReasoningContent != "" {
+			entry["reasoning"] = msg.ReasoningContent
+		}
 		if msg.Name != "" {
 			entry["name"] = msg.Name
 		}
@@ -703,6 +706,7 @@ func decodeCompletion(provider ModelProvider, body []byte, _ http.Header) (Compl
 				Message struct {
 					Role      string `json:"role"`
 					Content   any    `json:"content"`
+					Reasoning string `json:"reasoning"`
 					ToolCalls []struct {
 						ID       string `json:"id"`
 						Type     string `json:"type"`
@@ -724,7 +728,7 @@ func decodeCompletion(provider ModelProvider, body []byte, _ http.Header) (Compl
 		}
 		ch := o.Choices[0].Message
 		content, _ := ch.Content.(string)
-		msg := Message{Role: RoleAssistant, Content: content}
+		msg := Message{Role: RoleAssistant, Content: content, ReasoningContent: ch.Reasoning}
 		for _, tc := range ch.ToolCalls {
 			msg.ToolCalls = append(msg.ToolCalls, ToolCall{ID: tc.ID, Type: tc.Type, Function: FunctionCall{Name: tc.Function.Name, Arguments: tc.Function.Arguments}})
 		}
@@ -1033,6 +1037,7 @@ func decodeDeltaStateCounter(provider ModelProvider, body []byte, toolIDs map[in
 		cm, _ := ch[0].(map[string]any)
 		d, _ := cm["delta"].(map[string]any)
 		t, _ := d["content"].(string)
+		reasoning, _ := d["reasoning"].(string)
 		calls, _ := d["tool_calls"].([]any)
 		out := make([]ToolCall, 0, len(calls))
 		for _, raw := range calls {
@@ -1054,10 +1059,10 @@ func decodeDeltaStateCounter(provider ModelProvider, body []byte, toolIDs map[in
 			args, _ := fn["arguments"].(string)
 			out = append(out, ToolCall{Index: idx, ID: id, Type: typ, Function: FunctionCall{Name: name, Arguments: args}})
 		}
-		if t == "" && len(out) == 0 {
+		if t == "" && reasoning == "" && len(out) == 0 {
 			return Delta{}, false
 		}
-		return Delta{Content: t, ToolCalls: out}, true
+		return Delta{Content: t, ReasoningContent: reasoning, ToolCalls: out}, true
 	}
 }
 

@@ -81,7 +81,7 @@ func turnEventProto(e coreconversation.TurnEvent) (*agentv1.ConversationServiceW
 	if e.Revision == 0 || (e.Kind == coreconversation.TurnEventWaitingConfirmation && e.ValidateWaitingConfirmationAuthority() != nil) {
 		return nil, coreconversation.ErrChatFailed
 	}
-	out := &agentv1.CoreConversationTurnEvent{TurnId: e.TurnID, Sequence: e.Sequence, Revision: e.Revision, Kind: string(e.Kind), Text: e.Text, ErrorCode: e.ErrorCode, ErrorSummary: e.ErrorSummary, FirstSequence: e.FirstSequence, LastSequence: e.LastSequence, ReplayGap: e.ReplayGap, CreatedAt: timestamppb.New(e.CreatedAt), ConfirmationId: e.ConfirmationID, ExecutionId: e.ExecutionID, Status: e.Status, RelatedTaskIds: append([]string(nil), e.RelatedTaskIDs...), RelatedPlanIds: append([]string(nil), e.RelatedPlanIDs...), References: referenceProtos(e.References)}
+	out := &agentv1.CoreConversationTurnEvent{TurnId: e.TurnID, Sequence: e.Sequence, Revision: e.Revision, Kind: string(e.Kind), Text: e.Text, ReasoningContent: e.ReasoningContent, ErrorCode: e.ErrorCode, ErrorSummary: e.ErrorSummary, FirstSequence: e.FirstSequence, LastSequence: e.LastSequence, ReplayGap: e.ReplayGap, CreatedAt: timestamppb.New(e.CreatedAt), ConfirmationId: e.ConfirmationID, ExecutionId: e.ExecutionID, Status: e.Status, RelatedTaskIds: append([]string(nil), e.RelatedTaskIDs...), RelatedPlanIds: append([]string(nil), e.RelatedPlanIDs...), References: referenceProtos(e.References)}
 	if e.ToolResult != nil {
 		out.ToolResult = toolResultProto(*e.ToolResult)
 	}
@@ -136,7 +136,7 @@ func msgProto(m coreconversation.Message, seq int64, conversationID ...string) *
 	if len(conversationID) > 0 {
 		id = conversationID[0]
 	}
-	return &agentv1.CoreConversationMessage{MessageId: m.ID, ConversationId: id, Sequence: seq, Role: string(m.Role), Content: m.Content, ModelProfileId: m.ModelProfileID, Payload: payload, RelatedTaskIds: append([]string(nil), m.RelatedTaskIDs...), ToolSummaries: append([]string(nil), m.ToolSummaries...), CreatedAt: timestamppb.New(m.CreatedAt), RelatedPlanIds: append([]string(nil), m.RelatedPlanIDs...), References: referenceProtos(m.References)}
+	return &agentv1.CoreConversationMessage{MessageId: m.ID, ConversationId: id, Sequence: seq, Role: string(m.Role), Content: m.Content, ReasoningContent: m.ReasoningContent, ModelProfileId: m.ModelProfileID, Payload: payload, RelatedTaskIds: append([]string(nil), m.RelatedTaskIDs...), ToolSummaries: append([]string(nil), m.ToolSummaries...), CreatedAt: timestamppb.New(m.CreatedAt), RelatedPlanIds: append([]string(nil), m.RelatedPlanIDs...), References: referenceProtos(m.References)}
 }
 func extensionCommands(in []*agentv1.CoreExtensionSelection) []coreconversation.ExtensionSelection {
 	if len(in) == 0 {
@@ -264,7 +264,7 @@ func (s *CoreConversationService) StreamChat(r *agentv1.ConversationServiceStrea
 		case coreconversation.EventStarted:
 			out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Tool{Tool: &agentv1.CoreStreamChatToolProgress{Status: "started"}}}
 		case coreconversation.EventDelta:
-			out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Delta{Delta: &agentv1.CoreStreamChatDelta{Text: ev.Text}}}
+			out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Delta{Delta: &agentv1.CoreStreamChatDelta{Text: ev.Text, ReasoningContent: ev.ReasoningContent}}}
 		case coreconversation.EventToolCall:
 			if ev.ToolCall != nil {
 				out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Tool{Tool: &agentv1.CoreStreamChatToolProgress{Name: ev.ToolCall.Name, Status: "started"}}}
