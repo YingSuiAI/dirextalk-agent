@@ -25,8 +25,20 @@ func TestLocalSandboxAttemptProjectsDurableExecutionArtifactReference(t *testing
 	}}}}
 	resultJSON, _ := json.Marshal(payload)
 	stored, _ := json.Marshal(coretask.Result{JSON: resultJSON, Summary: "local MCP tool result"})
-	references, err := conversationToolAttemptReferences(core.ToolAttempt{ToolName: coreextension.BuiltinLocalSandboxToolName, Result: stored})
+	references, err := conversationToolAttemptReferences(core.ToolAttempt{ToolName: coreextension.BuiltinLocalSandboxToolName, State: "completed", Result: stored})
 	if err != nil || len(references) != 1 || references[0].ArtifactID != reference.ArtifactID || references[0].SizeBytes == nil || *references[0].SizeBytes != 0 {
+		t.Fatalf("references=%+v err=%v", references, err)
+	}
+}
+
+func TestDeniedLocalSandboxAttemptHasNoArtifactReferences(t *testing.T) {
+	stored, _ := json.Marshal(coretask.Result{Summary: "local sandbox task failed"})
+	references, err := conversationToolAttemptReferences(core.ToolAttempt{
+		ToolName: coreextension.BuiltinLocalSandboxToolName,
+		State:    "denied",
+		Result:   stored,
+	})
+	if err != nil || len(references) != 0 {
 		t.Fatalf("references=%+v err=%v", references, err)
 	}
 }

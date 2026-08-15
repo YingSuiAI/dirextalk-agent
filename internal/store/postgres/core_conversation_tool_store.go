@@ -384,7 +384,7 @@ func conversationToolAttemptContent(attempt core.ToolAttempt) string {
 }
 
 func conversationToolAttemptReferences(attempt core.ToolAttempt) ([]core.Reference, error) {
-	if attempt.ToolName != coreextension.BuiltinLocalSandboxToolName || len(attempt.Result) == 0 {
+	if attempt.ToolName != coreextension.BuiltinLocalSandboxToolName || attempt.State != "completed" || len(attempt.Result) == 0 {
 		return nil, nil
 	}
 	var stored coretask.Result
