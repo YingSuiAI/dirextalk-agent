@@ -1695,3 +1695,21 @@ func TestRequestTurnCancelIsRevisionScoped(t *testing.T) {
 		t.Fatal("cancel command did not preserve request identity and revision fence")
 	}
 }
+
+func TestInitialWorkerOnlyAttachmentIsSkippedByModelInput(t *testing.T) {
+	turn := Turn{
+		ID: "00000000-0000-4000-8000-000000000001", Prompt: "inspect the document",
+		AttachmentSources: []TurnAttachment{{Kind: TurnAttachmentKindFile, MediaType: "application/pdf", Name: "input.pdf"}},
+	}
+	parts, err := resolveTurnAttachmentInputParts(context.Background(), nil, turn, nil)
+	if err != nil || len(parts) != 0 || len(turn.AttachmentSources) != 1 {
+		t.Fatalf("parts=%+v attachments=%+v err=%v", parts, turn.AttachmentSources, err)
+	}
+}
+
+func TestSteerRejectsUnsupportedModelAttachmentContent(t *testing.T) {
+	attachment := TurnAttachment{Kind: TurnAttachmentKindFile, MediaType: "application/pdf", Name: "guidance.pdf"}
+	if err := ValidateTurnModelAttachmentContent(attachment, []byte("%PDF")); err != ErrInvalid {
+		t.Fatalf("PDF steer validation err=%v", err)
+	}
+}

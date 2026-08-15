@@ -1947,7 +1947,11 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 }
 
 func (s *Service) resolveTurnAttachmentInputParts(ctx context.Context, turn Turn, steers []TurnSteer) (map[string][]coremodel.MessageInputPart, error) {
-	resolver, ok := s.turns.(TurnAttachmentContentResolver)
+	resolver, _ := s.turns.(TurnAttachmentContentResolver)
+	return resolveTurnAttachmentInputParts(ctx, resolver, turn, steers)
+}
+
+func resolveTurnAttachmentInputParts(ctx context.Context, resolver TurnAttachmentContentResolver, turn Turn, steers []TurnSteer) (map[string][]coremodel.MessageInputPart, error) {
 	all := []struct {
 		id, text    string
 		attachments []TurnAttachment
@@ -1963,24 +1967,28 @@ func (s *Service) resolveTurnAttachmentInputParts(ctx context.Context, turn Turn
 		if len(input.attachments) == 0 {
 			continue
 		}
-		if !ok {
-			return nil, ErrInvalid
-		}
 		parts := []coremodel.MessageInputPart{{Type: coremodel.MessageInputPartText, Text: input.text}}
 		modelAttachmentCount := 0
 		for _, attachment := range input.attachments {
-			if attachment.Kind == TurnAttachmentKindWorkspaceArchive {
+			if !IsTurnModelReadableAttachment(attachment) {
 				continue
+			}
+			if resolver == nil {
+				return nil, ErrInvalid
 			}
 			data, err := resolver.ResolveTurnAttachment(ctx, turn, attachment)
 			if err != nil {
+				return nil, err
+			}
+			if err = ValidateTurnModelAttachmentContent(attachment, data); err != nil {
+				clear(data)
 				return nil, err
 			}
 			switch {
 			case attachment.Kind == TurnAttachmentKindImage:
 				parts = append(parts, coremodel.MessageInputPart{Type: coremodel.MessageInputPartImage, Image: coremodel.NewImageInput(attachment.MediaType, data)})
 				modelAttachmentCount++
-			case attachment.Kind == TurnAttachmentKindFile && (attachment.MediaType == "text/plain" || attachment.MediaType == "text/markdown") && utf8.Valid(data):
+			case attachment.Kind == TurnAttachmentKindFile:
 				parts = append(parts, coremodel.MessageInputPart{Type: coremodel.MessageInputPartText, Text: "[UNTRUSTED ATTACHMENT: " + attachment.Name + "]\n" + string(data) + "\n[END UNTRUSTED ATTACHMENT]"})
 				modelAttachmentCount++
 			default:

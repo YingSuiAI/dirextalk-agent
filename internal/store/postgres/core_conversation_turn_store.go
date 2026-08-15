@@ -1416,6 +1416,9 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 	if err != nil {
 		return core.Turn{}, false, err
 	}
+	if err = validateSteerModelAttachments(ctx, tx, c.AttachmentSources); err != nil {
+		return core.Turn{}, false, err
+	}
 	event := core.TurnEvent{
 		Kind:              core.TurnEventSteered,
 		Text:              strings.TrimSpace(c.Instruction),

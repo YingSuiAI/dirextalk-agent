@@ -208,3 +208,18 @@ func ValidTurnAttachmentMediaType(kind, value string) bool {
 		return false
 	}
 }
+
+func IsTurnModelReadableAttachment(attachment TurnAttachment) bool {
+	return attachment.Kind == TurnAttachmentKindImage ||
+		(attachment.Kind == TurnAttachmentKindFile && (attachment.MediaType == "text/plain" || attachment.MediaType == "text/markdown"))
+}
+
+func ValidateTurnModelAttachmentContent(attachment TurnAttachment, content []byte) error {
+	if !IsTurnModelReadableAttachment(attachment) {
+		return ErrInvalid
+	}
+	if attachment.Kind == TurnAttachmentKindFile && !utf8.Valid(content) {
+		return ErrInvalid
+	}
+	return nil
+}

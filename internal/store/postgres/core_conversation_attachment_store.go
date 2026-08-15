@@ -278,6 +278,21 @@ func consumeAcceptedAttachments(ctx context.Context, tx pgx.Tx, owner string, ge
 	return consumeAcceptedTurnAttachments(ctx, tx, core.TurnStartCommand{OwnerID: owner, AccountGeneration: generation, RequestID: requestID, AcceptedAttachmentIDs: acceptedIDs, AttachmentSources: attachments}, turnID)
 }
 
+func validateSteerModelAttachments(ctx context.Context, tx pgx.Tx, attachments []core.TurnAttachment) error {
+	for _, attachment := range attachments {
+		var content []byte
+		if err := tx.QueryRow(ctx, `SELECT content_bytes FROM core_conversation_attachment_uploads WHERE source_id=$1 AND status='committed'`, attachment.SourceID).Scan(&content); err != nil {
+			return core.ErrConflict
+		}
+		err := core.ValidateTurnModelAttachmentContent(attachment, content)
+		clear(content)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *CoreConversationStore) ResolveTurnAttachment(ctx context.Context, turn core.Turn, attachment core.TurnAttachment) ([]byte, error) {
 	var content []byte
 	err := s.pool.QueryRow(ctx, `SELECT a.content_bytes FROM core_conversation_attachment_uploads a
