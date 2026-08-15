@@ -37,8 +37,10 @@ A dropped SSH connection does not erase remote state or authorize a duplicate st
 
 When a confirmed service proposal includes a user-requested hostname, Agent
 keeps the application on an unused localhost port and manages an Ubuntu Caddy
-reverse proxy that persists after the model run. Agent opens only ports 80 and
-443, then uses the App-uploaded credential to find the longest matching public
+reverse proxy with exact-host on-demand TLS that persists after the model run.
+Certificate issuance starts only when the host probes HTTPS after DNS
+read-back. Agent opens only ports 80 and 443, then uses the App-uploaded
+credential to find the longest matching public
 Route53 hosted zone and UPSERT an A record to the Worker's current public IPv4.
 The hostname is already bound by the single Worker confirmation. Agent reports
 HTTPS ready only after a bounded public health probe succeeds. If no matching

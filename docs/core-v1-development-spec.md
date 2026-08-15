@@ -521,8 +521,10 @@ Worker results are copied into the Agent-owned local artifact repository and
 returned to the original durable turn. When a confirmed service plan includes
 a user-requested hostname, the application listens on its unused internal
 localhost port while the active runtime installs the Ubuntu Caddy package and
-publishes one managed per-workload reverse proxy with automatic HTTPS. Agent
-opens only ports 80 and 443, then uses the same App-uploaded credential to find
+publishes one managed per-workload reverse proxy with exact-host on-demand TLS.
+Certificate issuance therefore starts only on the first HTTPS handshake after
+host-owned DNS read-back. Agent opens only ports 80 and 443, then uses the same
+App-uploaded credential to find
 the longest matching public Route53 hosted zone and UPSERT an A record to the
 Worker public IPv4. The hostname is part of the confirmed plan, so this does
 not create a second confirmation. Agent reports HTTPS ready only after a

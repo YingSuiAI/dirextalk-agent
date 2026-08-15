@@ -142,7 +142,7 @@ func run(taskID string) error {
 
 func configureCaddy(spec taskSpec) error {
 	if spec.Service == nil || spec.Service.Hostname == "" || spec.Service.Port == 80 || spec.Service.Port == 443 { return errors.New("invalid Caddy service spec") }
-	body := fmt.Sprintf("%s {\n\treverse_proxy 127.0.0.1:%d\n}\n", spec.Service.Hostname, spec.Service.Port)
+	body := fmt.Sprintf("%s {\n\ttls {\n\t\ton_demand\n\t}\n\treverse_proxy 127.0.0.1:%d\n}\n", spec.Service.Hostname, spec.Service.Port)
 	temporary := taskPath(spec.TaskID, "caddy.tmp")
 	if err := os.WriteFile(temporary, []byte(body), 0600); err != nil { return err }
 	defer os.Remove(temporary)
