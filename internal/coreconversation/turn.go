@@ -39,6 +39,7 @@ const (
 	TurnEventError               TurnEventKind = "error"
 	TurnEventCanceled            TurnEventKind = "canceled"
 	TurnEventWaitingConfirmation TurnEventKind = "waiting_confirmation"
+	TurnEventWorkerStatus        TurnEventKind = "worker_status"
 	TurnEventToolCall            TurnEventKind = "tool_call"
 	TurnEventToolResult          TurnEventKind = "tool_result"
 	TurnEventSteered             TurnEventKind = "steered"
@@ -117,6 +118,32 @@ func NewWaitingConfirmationTurnEvent(confirmationID, executionID string) (TurnEv
 		return TurnEvent{}, err
 	}
 	return event, nil
+}
+
+// NewWorkerStatusTurnEvent projects one durable Cloud Worker lifecycle
+// transition onto its originating turn. Worker details remain in Execution V2.
+func NewWorkerStatusTurnEvent(executionID, status string) (TurnEvent, error) {
+	event := TurnEvent{Kind: TurnEventWorkerStatus, ExecutionID: executionID, Status: status}
+	if err := event.ValidateWorkerStatusAuthority(); err != nil {
+		return TurnEvent{}, err
+	}
+	return event, nil
+}
+
+func (e TurnEvent) ValidateWorkerStatusAuthority() error {
+	validStatus := false
+	switch e.Status {
+	case "queued", "provisioning", "running", "succeeded", "failed", "canceled", "rejected", "expired":
+		validStatus = true
+	}
+	if e.Kind != TurnEventWorkerStatus || !validUUID(e.ExecutionID) || !validStatus ||
+		e.Text != "" || e.Message != nil || e.Response != nil || e.ToolCall != nil || e.ToolResult != nil ||
+		e.ConfirmationID != "" || len(e.RelatedTaskIDs) != 0 || len(e.RelatedPlanIDs) != 0 ||
+		len(e.References) != 0 || e.ErrorCode != "" || e.ErrorSummary != "" || e.FirstSequence != 0 ||
+		e.LastSequence != 0 || e.ReplayGap || e.MutationID != "" || e.ExpectedRevision != 0 || e.Err != nil {
+		return ErrInvalid
+	}
+	return nil
 }
 
 // ValidateWaitingConfirmationAuthority rejects alternate or mixed event

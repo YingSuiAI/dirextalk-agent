@@ -852,7 +852,8 @@ func (s *CoreConversationStore) AppendTurnEvent(ctx context.Context, id string, 
 	sequence := lastSequence + 1
 	event.TurnID, event.Sequence, event.Revision = id, sequence, revision
 	event.CreatedAt = time.Now().UTC()
-	if event.Kind == core.TurnEventWaitingConfirmation && event.ValidateWaitingConfirmationAuthority() != nil {
+	if (event.Kind == core.TurnEventWaitingConfirmation && event.ValidateWaitingConfirmationAuthority() != nil) ||
+		(event.Kind == core.TurnEventWorkerStatus && event.ValidateWorkerStatusAuthority() != nil) {
 		return core.TurnEvent{}, core.ErrInvalid
 	}
 	payload, _ := json.Marshal(event)
@@ -877,7 +878,8 @@ func insertTurnEventTx(ctx context.Context, tx pgx.Tx, id string, sequence int64
 		return core.ErrConflict
 	}
 	event.TurnID, event.Sequence, event.Revision, event.CreatedAt = id, sequence, revision, now
-	if event.Kind == core.TurnEventWaitingConfirmation && event.ValidateWaitingConfirmationAuthority() != nil {
+	if (event.Kind == core.TurnEventWaitingConfirmation && event.ValidateWaitingConfirmationAuthority() != nil) ||
+		(event.Kind == core.TurnEventWorkerStatus && event.ValidateWorkerStatusAuthority() != nil) {
 		return core.ErrInvalid
 	}
 	payload, _ := json.Marshal(event)
@@ -909,7 +911,8 @@ func (s *CoreConversationStore) LoadTurnEvents(ctx context.Context, id string, a
 		}
 		if json.Unmarshal(raw, &e) != nil || e.TurnID != id || e.Sequence != sequence ||
 			e.Kind != core.TurnEventKind(kind) || e.Revision == 0 ||
-			(e.Kind == core.TurnEventWaitingConfirmation && e.ValidateWaitingConfirmationAuthority() != nil) {
+			(e.Kind == core.TurnEventWaitingConfirmation && e.ValidateWaitingConfirmationAuthority() != nil) ||
+			(e.Kind == core.TurnEventWorkerStatus && e.ValidateWorkerStatusAuthority() != nil) {
 			return nil, core.ErrConflict
 		}
 		e.CreatedAt = createdAt

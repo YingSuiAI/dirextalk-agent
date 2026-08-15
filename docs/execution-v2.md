@@ -40,6 +40,10 @@ Optional Route53 binding is an explicit management action for a service that nee
 ## Results and artifacts
 
 Terminal output is returned to the original durable turn as the `cloud_worker_propose` tool result. Central resumes that turn and writes the user-facing answer.
+The same turn also receives canonical `worker_status` progress for queued,
+provisioning, running, and terminal execution transitions. Each event contains
+only the turn identity/revision/timestamp plus execution ID and status; it does
+not duplicate Worker inventory or require client polling.
 
 Cloud Worker and local sandbox result files use the same Agent-owned local artifact repository with separate internal namespaces. Existing Cloud Worker metadata and deterministic artifact IDs remain unchanged. Public artifact metadata contains stable IDs, media type, size, and SHA-256, never a Worker or sandbox filesystem path. The artifact request `record_kind` selects the namespace, and `agent.execution.v2.artifacts.download` revalidates the stored identity before returning bounded chunks. Artifact reads do not contact AWS.
 

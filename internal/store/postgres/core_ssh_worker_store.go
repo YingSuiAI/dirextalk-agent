@@ -67,7 +67,8 @@ func (store *SSHWorkerStore) Begin(ctx context.Context, supplied coretask.Task) 
 		return sshflow.Run{}, cloudworker.ErrStaleAuthorization
 	}
 	binding, err := cloudworker.BindingForPlan(plan)
-	if err != nil || !confirmation.Binding.Equal(binding) || execution.State != cloudworker.StateProvisioning {
+	if err != nil || !confirmation.Binding.Equal(binding) ||
+		(execution.State != cloudworker.StateProvisioning && execution.State != cloudworker.StateRunning) {
 		return sshflow.Run{}, cloudworker.ErrStaleAuthorization
 	}
 	var reservationTask string
@@ -95,6 +96,16 @@ func (store *SSHWorkerStore) Begin(ctx context.Context, supplied coretask.Task) 
 		uint64(turn.ProfileSnapshot.Revision) != plan.ModelAuthorization.ModelProfileRevision ||
 		uint64(turn.ProfileSnapshot.CredentialVersion) != plan.ModelAuthorization.CredentialVersion {
 		return sshflow.Run{}, cloudworker.ErrStaleAuthorization
+	}
+	if execution.State == cloudworker.StateProvisioning {
+		nextExecution, transitionErr := execution.Transition(cloudworker.StateRunning, now)
+		if transitionErr != nil {
+			return sshflow.Run{}, transitionErr
+		}
+		if err = saveCloudWorkerExecutionTx(ctx, tx, execution, nextExecution, "execution_running"); err != nil {
+			return sshflow.Run{}, err
+		}
+		execution = nextExecution
 	}
 	proof := fmt.Sprintf("%s:%d:%s", confirmation.ConfirmationID, confirmation.Revision, confirmation.Binding.Digest)
 	if err = tx.Commit(ctx); err != nil {
@@ -225,21 +236,25 @@ func (store *SSHWorkerStore) terminal(ctx context.Context, run sshflow.Run, work
 	if err = saveCloudWorkerExecutionTx(ctx, tx, currentExecution, next, eventType); err != nil {
 		return err
 	}
+	var statusSequence int64
+	if err = tx.QueryRow(ctx, `SELECT last_sequence FROM core_conversation_turns WHERE turn_id=$1`, plan.TurnID).Scan(&statusSequence); err != nil {
+		return err
+	}
 	toolCall, toolResult, err := sshWorkerContinuation(turn.DispatchResult, plan, next, summary, workerResult, artifacts)
 	if err != nil {
 		return err
 	}
-	if err = insertTurnEventTx(ctx, tx, plan.TurnID, turn.LastSequence+1, core.TurnEvent{Kind: core.TurnEventToolCall, ToolCall: &toolCall}, now); err != nil {
+	if err = insertTurnEventTx(ctx, tx, plan.TurnID, statusSequence+1, core.TurnEvent{Kind: core.TurnEventToolCall, ToolCall: &toolCall}, now); err != nil {
 		return err
 	}
-	if err = insertTurnEventTx(ctx, tx, plan.TurnID, turn.LastSequence+2, core.TurnEvent{Kind: core.TurnEventToolResult, ToolResult: &toolResult}, now); err != nil {
+	if err = insertTurnEventTx(ctx, tx, plan.TurnID, statusSequence+2, core.TurnEvent{Kind: core.TurnEventToolResult, ToolResult: &toolResult}, now); err != nil {
 		return err
 	}
 	turnUpdate, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',response_json=NULL,
 		dispatch_state='',dispatch_epoch=0,dispatch_result_json=NULL,lease_id=NULL,lease_expires_at=NULL,
 		revision=revision+1,last_sequence=$2,updated_at=$3
 		WHERE turn_id=$1 AND state='waiting_confirmation' AND revision=$4 AND cancel_requested=false`,
-		plan.TurnID, turn.LastSequence+2, now, turn.Revision)
+		plan.TurnID, statusSequence+2, now, turn.Revision)
 	if err != nil || turnUpdate.RowsAffected() != 1 {
 		return cloudworker.ErrConflict
 	}

@@ -200,7 +200,13 @@ multi-tenant model.
   `operation_id` is the public `turn_id`; the request id remains the distinct
   client-message idempotency identity. Disconnecting a WatchOperation consumer
   does not cancel execution, while cancelling the Capability operation requests
-  cancellation of that exact durable turn.
+  cancellation of that exact durable turn. A Cloud Worker lifecycle change is
+  projected on this stream as `kind=worker_status` with only the existing turn
+  identity and revision, event `created_at`, exact `execution_id`, and canonical
+  `status`. New execution offers still use the separate
+  `waiting_confirmation` event. The Worker projection is written in the same
+  transaction as `queued`, `provisioning`, `running`, and terminal execution
+  changes; it is not synthesized by polling.
 - Stored credentials are write-only from ordinary read/list APIs. Responses
   expose status, fingerprints, revisions, or binding digests, never secret
   bytes. Agent-owned secret fields use the configured encrypted-at-rest store.
@@ -397,8 +403,12 @@ outbound SSH. Image identity remains internal provider data. There is no EIP,
 custom AMI, S3/KMS, WorkerControl callback, model relay, Worker domain, or
 deployment-time binding. Terminal Worker output returns to the same durable
 turn as a tool result with related task/plan IDs and local Agent-owned artifact
-metadata. A successful Worker report is committed directly as the final
-user-facing answer so completion does not depend on a second model dispatch.
+metadata. The proposal's estimated runtime covers environment setup,
+dependencies, model execution, the full requested active run or observation
+duration, result collection, and reasonable margin rather than treating an
+explicitly requested duration as the whole execution budget. A successful
+Worker report is committed directly as the final user-facing answer so
+completion does not depend on a second model dispatch.
 
 `agent.chat.v1/upload_attachment_begin` requires `kind` (`image`, `file`, or
 `workspace_archive`) and a matching approved `mime_type`. A turn accepts at

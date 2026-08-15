@@ -761,6 +761,16 @@ func consumeDurableTurnStream(
 			}
 			continue
 		}
+		if event.Kind == coreconversation.TurnEventWorkerStatus {
+			projected, err := projectDurableWorkerStatusEvent(turn, event)
+			if err != nil {
+				return nil, err
+			}
+			if err := emitCapabilityProgressValue(ctx, operationID, projected, progress); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		streamEvent := durableTurnStreamEvent(turn, event)
 		if streamEvent == nil {
 			continue
@@ -834,6 +844,7 @@ type durableChatStreamEvent struct {
 	ConfirmationID string                       `json:"confirmation_id,omitempty"`
 	ExecutionID    string                       `json:"execution_id,omitempty"`
 	Status         string                       `json:"status,omitempty"`
+	CreatedAt      string                       `json:"created_at,omitempty"`
 }
 
 func projectDurableChatStreamResult(turn coreconversation.Turn, response coreconversation.ChatResponse) (durableChatStreamResult, error) {
@@ -897,6 +908,23 @@ func projectDurableWaitingConfirmationEvent(turn coreconversation.Turn, event co
 	projected.ConfirmationID = event.ConfirmationID
 	projected.ExecutionID = event.ExecutionID
 	projected.Status = event.Status
+	return projected, nil
+}
+
+func projectDurableWorkerStatusEvent(turn coreconversation.Turn, event coreconversation.TurnEvent) (durableChatStreamEvent, error) {
+	if event.Revision == 0 || event.CreatedAt.IsZero() || event.ValidateWorkerStatusAuthority() != nil {
+		return durableChatStreamEvent{}, coreconversation.ErrChatFailed
+	}
+	projected, err := projectDurableChatStreamEvent(turn, event.Revision, coreconversation.StreamEvent{
+		Kind:      coreconversation.StreamEventKind(coreconversation.TurnEventWorkerStatus),
+		RequestID: turn.RequestID, ConversationID: turn.ConversationID,
+	})
+	if err != nil {
+		return durableChatStreamEvent{}, err
+	}
+	projected.ExecutionID = event.ExecutionID
+	projected.Status = event.Status
+	projected.CreatedAt = event.CreatedAt.UTC().Format(time.RFC3339Nano)
 	return projected, nil
 }
 
@@ -2009,7 +2037,7 @@ const durableStreamExtensionSelectionSchema = `{"additionalProperties":false,"pr
 
 const durableChatStreamResultSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"done":{"const":true,"type":"boolean"},"idempotency_key":{"format":"uuid","type":"string"},"message":{"type":"object"},"model_profile_id":{"format":"uuid","type":"string"},"references":{"items":{"type":"object"},"type":"array"},"related_plan_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"related_task_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"revision":{"minimum":1,"type":"integer"},"tool_results":{"items":{"type":"object"},"type":"array"},"tool_summaries":{"items":{"type":"string"},"type":"array"}},"required":["idempotency_key","conversation_id","revision","message","done","model_profile_id"],"type":"object"}`
 
-const durableChatStreamEventSchema = `{"additionalProperties":false,"allOf":[{"if":{"properties":{"kind":{"const":"waiting_confirmation"}}},"then":{"not":{"anyOf":[{"required":["text"]},{"required":["tool_call"]},{"required":["tool_result"]},{"required":["response"]},{"required":["error_code"]},{"required":["error_summary"]}]},"required":["confirmation_id","execution_id","status"]},"else":{"not":{"anyOf":[{"required":["confirmation_id"]},{"required":["execution_id"]},{"required":["status"]}]}}}],"properties":{"confirmation_id":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"error_code":{"type":"string"},"error_summary":{"type":"string"},"execution_id":{"format":"uuid","type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"kind":{"enum":["accepted","started","delta","tool_call","tool_result","waiting_confirmation","done","error"],"type":"string"},"response":` + durableChatStreamResultSchema + `,"revision":{"minimum":1,"type":"integer"},"status":{"const":"waiting_confirmation","type":"string"},"text":{"type":"string"},"tool_call":{"type":"object"},"tool_result":{"type":"object"},"turn_id":{"format":"uuid","type":"string"}},"required":["kind","idempotency_key","conversation_id","turn_id","revision"],"type":"object"}`
+const durableChatStreamEventSchema = `{"additionalProperties":false,"allOf":[{"if":{"properties":{"kind":{"const":"waiting_confirmation"}}},"then":{"not":{"anyOf":[{"required":["text"]},{"required":["tool_call"]},{"required":["tool_result"]},{"required":["response"]},{"required":["error_code"]},{"required":["error_summary"]},{"required":["created_at"]}]},"properties":{"status":{"const":"waiting_confirmation"}},"required":["confirmation_id","execution_id","status"]}},{"if":{"properties":{"kind":{"const":"worker_status"}}},"then":{"not":{"anyOf":[{"required":["text"]},{"required":["tool_call"]},{"required":["tool_result"]},{"required":["response"]},{"required":["error_code"]},{"required":["error_summary"]},{"required":["confirmation_id"]}]},"properties":{"status":{"enum":["queued","provisioning","running","succeeded","failed","canceled","rejected","expired"]}},"required":["execution_id","status","created_at"]}},{"if":{"properties":{"kind":{"enum":["accepted","started","delta","tool_call","tool_result","done","error"]}}},"then":{"not":{"anyOf":[{"required":["confirmation_id"]},{"required":["execution_id"]},{"required":["status"]},{"required":["created_at"]}]}}}],"properties":{"confirmation_id":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"error_code":{"type":"string"},"error_summary":{"type":"string"},"execution_id":{"format":"uuid","type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"kind":{"enum":["accepted","started","delta","tool_call","tool_result","waiting_confirmation","worker_status","done","error"],"type":"string"},"response":` + durableChatStreamResultSchema + `,"revision":{"minimum":1,"type":"integer"},"status":{"enum":["waiting_confirmation","queued","provisioning","running","succeeded","failed","canceled","rejected","expired"],"type":"string"},"text":{"type":"string"},"tool_call":{"type":"object"},"tool_result":{"type":"object"},"turn_id":{"format":"uuid","type":"string"}},"required":["kind","idempotency_key","conversation_id","turn_id","revision"],"type":"object"}`
 
 func operationEventSchema(capabilityID, operation string) string {
 	if capabilityID == "agent.chat.v1" && operation == "stream_chat" {

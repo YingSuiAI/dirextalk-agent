@@ -445,6 +445,12 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 			t.Fatalf("sizing description %s=%#v", field, properties[field])
 		}
 	}
+	runtimeDescription := fmt.Sprint(properties["estimated_runtime_minutes"].(map[string]any)["description"])
+	if !strings.Contains(runtimeDescription, "environment setup") || !strings.Contains(runtimeDescription, "full requested active") ||
+		!strings.Contains(runtimeDescription, "reasonable margin") ||
+		!strings.Contains(tools[0].Tool.Description, "requested active duration alone as the total") {
+		t.Fatalf("runtime sizing guidance schema=%q tool=%q", runtimeDescription, tools[0].Tool.Description)
+	}
 	attachments, ok := properties["attachment_ids"].(map[string]any)
 	if !ok || attachments["maxItems"] != 2 {
 		t.Fatalf("attachment schema=%#v", properties["attachment_ids"])

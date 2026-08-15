@@ -109,6 +109,24 @@ func TestSSHWorkerStoreRebindsConsumedReservationAfterTaskReclaim(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	events, err := conversationStore.LoadTurnEvents(h.ctx, offer.Plan.TurnID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workerStatuses []string
+	for _, event := range events {
+		if event.Kind != core.TurnEventWorkerStatus {
+			continue
+		}
+		if event.ExecutionID != offer.Execution.ExecutionID || event.Revision == 0 || event.CreatedAt.IsZero() ||
+			event.ValidateWorkerStatusAuthority() != nil {
+			t.Fatalf("invalid Worker status event: %+v", event)
+		}
+		workerStatuses = append(workerStatuses, event.Status)
+	}
+	if want := []string{"queued", "provisioning", "running", "succeeded"}; !reflect.DeepEqual(workerStatuses, want) {
+		t.Fatalf("Worker status sequence=%v want=%v events=%+v", workerStatuses, want, events)
+	}
 	resumed, err := conversationStore.GetTurn(h.ctx, offer.Plan.TurnID)
 	if err != nil || resumed.State != core.TurnAccepted {
 		t.Fatalf("resumed turn=%+v err=%v", resumed, err)

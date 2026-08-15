@@ -104,7 +104,12 @@ The Native durable stream starts with the Agent-authored `accepted` progress
 event. Every progress event carries the start `idempotency_key`, Agent-internal
 `turn_id`, conversation id, and turn revision; no `request_id` alias is
 published. Message Server forwards this business acceptance and identity rather
-than synthesizing a second accepted event. Turn history uses the same
+than synthesizing a second accepted event. Cloud Worker execution transitions
+cross the same stream as `worker_status`, containing only that base turn
+identity/revision, `created_at`, `execution_id`, and the canonical execution
+status. Agent writes them at the actual queued, provisioning, running, and
+terminal transitions; Message Server forwards them and never derives them by
+polling Execution V2. Turn history uses the same
 `turn_id`/`idempotency_key` pair, and `agent.chat.v1/stop_turn` accepts only its
 own UUID idempotency key plus the authoritative turn id and expected revision.
 Same-turn guidance uses `agent.chat.v1/steer_turn` with a separate mutation

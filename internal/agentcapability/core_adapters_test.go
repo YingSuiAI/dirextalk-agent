@@ -1224,6 +1224,34 @@ func TestDurableWaitingConfirmationProgressRejectsInexactIdentityAndStatus(t *te
 	}
 }
 
+func TestDurableWorkerStatusProgressProjectsCanonicalLifecycleOnly(t *testing.T) {
+	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
+	createdAt := time.Date(2026, 8, 15, 3, 13, 30, 123000000, time.UTC)
+	event, err := coreconversation.NewWorkerStatusTurnEvent(uuid.NewString(), "provisioning")
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.Revision, event.CreatedAt = 4, createdAt
+	projected, err := projectDurableWorkerStatusEvent(turn, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err = json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	if value["kind"] != "worker_status" || value["idempotency_key"] != turn.RequestID ||
+		value["conversation_id"] != turn.ConversationID || value["turn_id"] != turn.ID ||
+		value["execution_id"] != event.ExecutionID || value["status"] != "provisioning" ||
+		value["revision"] != float64(4) || value["created_at"] != createdAt.Format(time.RFC3339Nano) || len(value) != 8 {
+		t.Fatalf("projected Worker status=%s", raw)
+	}
+}
+
 func TestListTurnsCapabilityPublishesOnlyCanonicalMetadata(t *testing.T) {
 	createdAt := time.Date(2026, 8, 6, 1, 2, 3, 0, time.UTC)
 	metadata := publicTurnMetadataList([]coreconversation.Turn{{

@@ -386,6 +386,12 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 			return cloudworker.Offer{}, err
 		}
 		nextTurnSequence = uint64(event.Sequence)
+	} else {
+		sequence, statusErr := insertCloudWorkerTurnStatusTx(ctx, tx, execution, plan.CreatedAt)
+		if statusErr != nil {
+			return cloudworker.Offer{}, statusErr
+		}
+		nextTurnSequence = uint64(sequence)
 	}
 	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='waiting_confirmation',revision=revision+1,
 		last_sequence=$2,lease_id=NULL,lease_expires_at=NULL,updated_at=$3
@@ -637,7 +643,30 @@ func saveCloudWorkerExecutionTx(ctx context.Context, tx pgx.Tx, previous, next c
 		next.OwnerID, event.Type, event.State, event.Revision, event.PayloadDigest, payloadRaw, event.CreatedAt); err != nil {
 		return err
 	}
-	return pruneCloudWorkerEventsTx(ctx, tx, next.ExecutionID, sequence)
+	if err = pruneCloudWorkerEventsTx(ctx, tx, next.ExecutionID, sequence); err != nil {
+		return err
+	}
+	_, err = insertCloudWorkerTurnStatusTx(ctx, tx, next, next.UpdatedAt)
+	return err
+}
+
+func insertCloudWorkerTurnStatusTx(ctx context.Context, tx pgx.Tx, execution cloudworker.Execution, at time.Time) (int64, error) {
+	event, err := core.NewWorkerStatusTurnEvent(execution.ExecutionID, string(execution.State))
+	if err != nil {
+		return 0, cloudworker.ErrInvalid
+	}
+	var state string
+	var lastSequence int64
+	if err = tx.QueryRow(ctx, `SELECT state,last_sequence FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, execution.TurnID).Scan(&state, &lastSequence); err != nil {
+		return 0, err
+	}
+	if state == string(core.TurnCompleted) || state == string(core.TurnCanceled) || state == string(core.TurnFailed) {
+		return 0, cloudworker.ErrConflict
+	}
+	if err = insertTurnEventTx(ctx, tx, execution.TurnID, lastSequence+1, event, at); err != nil {
+		return 0, err
+	}
+	return lastSequence + 1, nil
 }
 
 func pruneCloudWorkerEventsTx(ctx context.Context, tx pgx.Tx, executionID string, newest uint64) error {

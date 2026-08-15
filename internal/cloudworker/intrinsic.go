@@ -197,7 +197,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		"min_vcpu":                  map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Minimum virtual CPU count needed for the task."},
 		"min_memory_gib":            map[string]any{"type": "integer", "minimum": 1, "maximum": 1024, "description": "Minimum memory in GiB needed for the task."},
 		"disk_gib":                  map[string]any{"type": "integer", "minimum": 8, "maximum": 16384, "description": "Working disk capacity in GiB needed for inputs, dependencies, and outputs."},
-		"estimated_runtime_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "Estimated task runtime in minutes."},
+		"estimated_runtime_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "Estimated total runtime in minutes, including environment setup, dependency installation, model execution, the full requested active run or observation duration, and result collection. Include reasonable margin beyond any explicitly requested duration."},
 		"service": map[string]any{"type": "object", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
 			"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "health_path": map[string]any{"type": "string", "minLength": 1, "maxLength": 2048},
 		}},
@@ -205,7 +205,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	if attachmentSchema != nil {
 		properties["attachment_ids"] = attachmentSchema
 	}
-	description := "Run work in a suitable retained execution environment, or propose a priced reusable environment when none is available. Use it for substantial project or shell execution, deployment, build, test, durable file delivery, long-running compute, and actual follow-up work in a retained environment. Do not call this tool only to inspect status; answer status questions from the live retained_worker_inventory below. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. Reuse needs no creation confirmation; new resources start only after the owner reviews and confirms the offer."
+	description := "Run work in a suitable retained execution environment, or propose a priced reusable environment when none is available. Use it for substantial project or shell execution, deployment, build, test, durable file delivery, long-running compute, and actual follow-up work in a retained environment. Estimate total runtime with setup, dependency installation, model work, the full requested active run or observation duration, result collection, and reasonable margin; never use the requested active duration alone as the total. Do not call this tool only to inspect status; answer status questions from the live retained_worker_inventory below. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. Reuse needs no creation confirmation; new resources start only after the owner reviews and confirms the offer."
 	inventory := `{"status":"unavailable"}`
 	var currentInventory RetainedWorkerInventory
 	inventoryReady := false

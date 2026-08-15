@@ -104,6 +104,7 @@ const (
 	StateWaitingUser  ExecutionState = "waiting_user"
 	StateQueued       ExecutionState = "queued"
 	StateProvisioning ExecutionState = "provisioning"
+	StateRunning      ExecutionState = "running"
 	StateCleaning     ExecutionState = "cleaning"
 	StateSucceeded    ExecutionState = "succeeded"
 	StateFailed       ExecutionState = "failed"
@@ -712,7 +713,7 @@ func isTerminalExecutionState(state ExecutionState) bool {
 
 func validExecutionState(state ExecutionState) bool {
 	switch state {
-	case StateWaitingUser, StateQueued, StateProvisioning, StateCleaning, StateSucceeded, StateFailed, StateCanceled, StateRejected, StateExpired:
+	case StateWaitingUser, StateQueued, StateProvisioning, StateRunning, StateCleaning, StateSucceeded, StateFailed, StateCanceled, StateRejected, StateExpired:
 		return true
 	default:
 		return false
@@ -726,6 +727,8 @@ func canTransition(from, to ExecutionState) bool {
 	case StateQueued:
 		return to == StateProvisioning || to == StateExpired || to == StateCanceled || to == StateCleaning
 	case StateProvisioning:
+		return to == StateRunning || to == StateCleaning || to == StateSucceeded || to == StateFailed || to == StateCanceled
+	case StateRunning:
 		return to == StateCleaning || to == StateSucceeded || to == StateFailed || to == StateCanceled
 	case StateCleaning:
 		return to == StateSucceeded || to == StateFailed || to == StateCanceled
