@@ -130,12 +130,12 @@ func tool(kind string) map[string]any {
 	if kind == localSandboxKind {
 		return map[string]any{
 			"name":        localSandboxToolName,
-			"description": "Run a small offline shell script in an ephemeral isolated workspace. Use only for tasks that fit 30 CPU seconds, 256 MiB memory, 32 processes, and 16 MiB total files. Network access is unavailable; use cloud_worker_propose for network, build, deploy, long-running, or larger tasks.",
+			"description": "Run a small offline shell script in an ephemeral isolated workspace whose current working directory is /work. Use only for tasks that fit 30 CPU seconds, 256 MiB memory, 32 processes, and 16 MiB total files. Network access is unavailable; use cloud_worker_propose for network, build, deploy, long-running, or larger tasks.",
 			"inputSchema": map[string]any{
 				"type": "object", "additionalProperties": false,
 				"properties": map[string]any{
 					"script":       map[string]any{"type": "string", "minLength": 1, "maxLength": localSandboxMaxScriptBytes},
-					"result_paths": map[string]any{"type": "array", "maxItems": localSandboxMaxResultPaths, "uniqueItems": true, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 512}},
+					"result_paths": map[string]any{"type": "array", "description": "Files to return from the workspace. Every path must be relative to the current working directory, for example report.html; do not use /work/report.html or another absolute path.", "maxItems": localSandboxMaxResultPaths, "uniqueItems": true, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 512}},
 				},
 				"required": []string{"script"},
 			},
