@@ -1309,6 +1309,7 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 		len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != selection.ID ||
 		!strings.HasPrefix(model.request.Profile.SystemPrompt, profile.SystemPrompt+"\n\n") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "Use cloud_worker_propose directly") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "cannot access the Worker filesystem") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "workload_kind=service") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "not the lifetime") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "does not need to mention AWS") {

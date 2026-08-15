@@ -258,6 +258,10 @@ func conversationToolTaskHandler(store conversationToolAttemptStore, coord conve
 				finishErr := finish("failed", nil, code, summary)
 				return coreruntime.ManagedOutcome{Err: errors.Join(err, finishErr), TerminalOwned: true}
 			}
+			if code, summary, terminalFailure := execution.LocalExecutionFailure(err); terminalFailure {
+				finishErr := finish("failed", nil, code, summary)
+				return coreruntime.ManagedOutcome{Err: errors.Join(err, finishErr), TerminalOwned: true}
+			}
 			_ = finish("uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown")
 			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 		}

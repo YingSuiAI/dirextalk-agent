@@ -9,15 +9,25 @@ import (
 const (
 	LocalResourceBusyCode         = "local_resource_busy"
 	LocalResourceExhaustedCode    = "local_resource_exhausted"
+	LocalExecutionFailedCode      = "local_execution_failed"
 	LocalResourceBusySummary      = "local sandbox is busy; retry later or explicitly authorize Cloud Worker"
 	LocalResourceExhaustedSummary = "local sandbox resources were exhausted; retry later or explicitly authorize Cloud Worker"
+	LocalExecutionFailedSummary   = "local execution failed; check the tool input and requested result files"
 )
 
 var (
 	ErrLocalResourceBusy      = errors.New(LocalResourceBusyCode)
 	ErrLocalResourceExhausted = errors.New(LocalResourceExhaustedCode)
+	ErrLocalExecutionFailed   = errors.New(LocalExecutionFailedCode)
 	ErrLocalOutcomeUncertain  = errors.New("local extension execution outcome is uncertain")
 )
+
+func LocalExecutionFailure(err error) (code, summary string, ok bool) {
+	if errors.Is(err, ErrLocalExecutionFailed) {
+		return LocalExecutionFailedCode, LocalExecutionFailedSummary, true
+	}
+	return "", "", false
+}
 
 // LocalResourceFailure maps only terminal runner receipts whose execution
 // outcome is known. Transport failures remain unclassified because the caller

@@ -292,6 +292,9 @@ func (e *LocalExecutor) executeMCPWithResultFiles(ctx context.Context, in LocalI
 		for _, file := range files {
 			_ = file.Close()
 		}
+		if status.Phase == extensionrunner.PhaseFailed {
+			return extensionrunner.StatusV1{}, nil, ErrLocalExecutionFailed
+		}
 		return extensionrunner.StatusV1{}, nil, core.ErrConflict
 	}
 	return status, files, nil

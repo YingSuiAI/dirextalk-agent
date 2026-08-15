@@ -148,6 +148,26 @@ func TestConversationToolLocalTransportFailureRemainsUncertain(t *testing.T) {
 	}
 }
 
+func TestConversationToolVerifiedLocalFailureReturnsToModel(t *testing.T) {
+	invocation := localMCPResourceInvocation(t)
+	invocation.Local.Tool = coreextension.BuiltinLocalSandboxToolName
+	invocation.Local.Argv = []string{"entry", "local_sandbox"}
+	invocation.Local.Input = json.RawMessage(`{"result_paths":["summary.md"],"script":"cat /work/summary.md"}`)
+	invocation.Local.ResultFiles = []string{"summary.md"}
+	store := &localLimitsConversationStore{}
+	resolver := &localLimitsInvocationResolver{invocation: invocation}
+	runner := &localLimitsRunner{status: &extensionrunner.StatusV1{
+		Phase: extensionrunner.PhaseFailed, Error: extensionrunner.ErrorExecution, Status: "result_handoff",
+	}}
+	handler := conversationToolTaskHandler(store, resolver, &execution.LocalExecutor{Runner: runner}, nil, nil, nil)
+	out := handler(context.Background(), coretask.Task{ID: invocation.Local.TaskID})
+	if !errors.Is(out.Err, execution.ErrLocalExecutionFailed) || errors.Is(out.Err, execution.ErrLocalOutcomeUncertain) ||
+		!out.TerminalOwned || runner.calls != 1 || store.finished != "failed" ||
+		store.code != execution.LocalExecutionFailedCode || store.summary != execution.LocalExecutionFailedSummary {
+		t.Fatalf("out=%+v calls=%d state=%q code=%q summary=%q", out, runner.calls, store.finished, store.code, store.summary)
+	}
+}
+
 func TestConversationToolExecutableSkillDispatchBindsExactLocalSandboxLimits(t *testing.T) {
 	taskID := uuid.NewString()
 	digest := strings.Repeat("a", 64)
