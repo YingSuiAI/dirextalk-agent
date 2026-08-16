@@ -129,13 +129,14 @@ retain their frozen revision CAS.
   batch, followed by the matching tool-result messages in call order.
 - OpenAI-compatible streams accept either `[DONE]` or a nonempty first-choice
   `finish_reason` as an explicit terminal signal. A clean EOF after that signal
-  preserves the final content/tool-call delta; EOF without either signal is
-  still `provider_stream_truncated`. The `length` finish reason is distinct
-  from a transport truncation: Core durably closes the current output fragment,
-  preserves its text and reasoning, and continues the same turn with the frozen
-  model context and full accepted tool catalog. An incomplete tool-call
-  fragment is never dispatched; the next model round must issue it again as one
-  complete call. OpenAI-compatible reasoning uses the
+  preserves the final content/tool-call delta. If a stream truncation, request
+  failure, or idle timeout occurs after a content, reasoning, or tool delta,
+  Core durably closes that side-effect-free output fragment and continues the
+  same turn; the same failure before any delta remains terminal. The `length`
+  finish reason uses the same continuation with the frozen model context and
+  full accepted tool catalog. An incomplete tool-call fragment is never
+  dispatched; the next model round must issue it again as one complete call.
+  OpenAI-compatible reasoning uses the
   `reasoning_content` response and assistant-message field so a reasoning model
   can continue a tool round with the exact prior reasoning. A provider HTTP
   4xx is a terminal `provider_rejected` outcome rather than an unknown dispatch

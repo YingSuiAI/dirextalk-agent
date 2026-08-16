@@ -175,15 +175,20 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 	var content strings.Builder
 	var reasoning strings.Builder
 	callsByIndex := map[int]coreconversation.ToolCall{}
-	outputLimited := false
+	continueOutput := false
 	for {
 		d, e := stream.Recv()
 		if e != nil {
 			if errors.Is(e, io.EOF) {
 				break
 			}
-			if errors.Is(e, coremodel.ErrOutputLimitReached) && (content.Len() != 0 || reasoning.Len() != 0 || len(callsByIndex) != 0) {
-				outputLimited = true
+			hasPartialOutput := content.Len() != 0 || reasoning.Len() != 0 || len(callsByIndex) != 0
+			if hasPartialOutput && (errors.Is(e, coremodel.ErrOutputLimitReached) ||
+				errors.Is(e, coremodel.ErrStreamTruncated) || errors.Is(e, coremodel.ErrProviderUnavailable) || errors.Is(e, coremodel.ErrStreamIdleTimeout)) {
+				continueOutput = true
+				if !errors.Is(e, coremodel.ErrOutputLimitReached) {
+					r.logProviderFailure(ctx, p.ID, e)
+				}
 				break
 			}
 			r.logProviderFailure(ctx, p.ID, e)
@@ -225,7 +230,7 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 		}
 	}
 	var calls []coreconversation.ToolCall
-	if !outputLimited {
+	if !continueOutput {
 		indices := make([]int, 0, len(callsByIndex))
 		for i := range callsByIndex {
 			indices = append(indices, i)
@@ -237,7 +242,7 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 		}
 	}
 	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: content.String(), ReasoningContent: reasoning.String(), ToolCalls: calls, ModelProfileID: p.ID}
-	return coreconversation.ModelRunResult{Message: msg, ToolCalls: calls, Done: len(calls) == 0 && !outputLimited, Continue: outputLimited}, nil
+	return coreconversation.ModelRunResult{Message: msg, ToolCalls: calls, Done: len(calls) == 0 && !continueOutput, Continue: continueOutput}, nil
 }
 
 var _ coreconversation.ModelRunner = (*ModelRunner)(nil)

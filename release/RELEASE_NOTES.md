@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+1. Continue from durable partial model output when a provider stream truncates, fails, or idles after producing progress, while preserving zero-delta failures as terminal and never dispatching a cut-off tool call.
+
 ## v1.0.156
 
 1. Continue output-limited responses from an explicit model-visible suffix request so long reasoning, text, and tool work resume without restarting or repeating prior fragments.
