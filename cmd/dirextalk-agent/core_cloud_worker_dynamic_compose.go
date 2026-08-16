@@ -19,7 +19,7 @@ import (
 const cloudWorkerDefaultQuoteTTL = 5 * time.Minute
 
 func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store, conversationStore *postgres.CoreConversationStore, workerState *sshworker.FileStore) (*coreCloudWorkerComposition, error) {
-	if !cfg.CapabilityEnabled {
+	if !cfg.CapabilityEnabled && !cfg.AgentHTTPEnabled {
 		return nil, nil
 	}
 	if store == nil || conversationStore == nil || workerState == nil {

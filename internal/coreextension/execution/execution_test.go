@@ -663,6 +663,15 @@ func validLocalResourceInvocation(t *testing.T) LocalInvocation {
 	}
 }
 
+func TestLocalSandboxWallTimeoutAllowsPublishedCPUWindow(t *testing.T) {
+	if LocalSandboxWallTimeout <= 30*time.Second {
+		t.Fatalf("wall timeout %s can expire a command that fits the published 30 CPU-second budget", LocalSandboxWallTimeout)
+	}
+	if LocalSandboxWallTimeout > 10*time.Minute {
+		t.Fatalf("wall timeout %s exceeds the runner's production maximum", LocalSandboxWallTimeout)
+	}
+}
+
 func TestLocalExecutorClassifiesOnlyKnownTerminalResourceFailures(t *testing.T) {
 	tests := []struct {
 		name   string

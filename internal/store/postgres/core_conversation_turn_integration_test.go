@@ -883,4 +883,13 @@ func TestCoreConversationToolServerOwnedSandboxQueuesWithoutConfirmationPostgres
 	if _, err = fixture.h.store.BeginConversationTool(context.Background(), claimed); err != nil {
 		t.Fatal(err)
 	}
+	coordinator := NewPostgresExtensionExecutionCoordinator(fixture.h.store.Store)
+	coordinator.WorkspaceRoot = t.TempDir()
+	invocation, err := coordinator.ResolveConversationInvocation(context.Background(), claimed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invocation.Local == nil || invocation.Local.Timeout != execution.LocalSandboxWallTimeout {
+		t.Fatalf("local conversation timeout=%v want=%v", invocation.Local, execution.LocalSandboxWallTimeout)
+	}
 }

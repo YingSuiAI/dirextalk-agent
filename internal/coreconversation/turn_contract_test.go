@@ -34,6 +34,12 @@ func TestConversationToolAttemptContentRestoresSafeFailureSummary(t *testing.T) 
 	}
 }
 
+func TestCloudWorkerRoutingGuidanceDoesNotRepeatExhaustedLocalCall(t *testing.T) {
+	if !strings.Contains(cloudWorkerRoutingGuidance, "Do not repeat an identical local_sandbox_run after a local resource failure in the same turn") {
+		t.Fatal("local resource guidance still permits the model to immediately repeat an exhausted call")
+	}
+}
+
 type replayTurnStore struct {
 	*fakeStore
 	turn Turn

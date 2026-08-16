@@ -27,6 +27,11 @@ var (
 	ErrSecretBinding = errors.New("secret reference or binding mismatch")
 )
 
+// LocalSandboxWallTimeout is deliberately longer than the published CPU
+// budget: sleeping and other low-CPU work must not consume CPU seconds merely
+// by waiting. The runner still enforces this wall-clock ceiling independently.
+const LocalSandboxWallTimeout = 10 * time.Minute
+
 // PurposeBoundSecretResolver is the only execution-time secret seam. Every
 // lookup binds installation, version, reference, purpose, and digest.
 type PurposeBoundSecretResolver interface {
