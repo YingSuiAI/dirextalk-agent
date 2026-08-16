@@ -422,7 +422,7 @@ func openAIMessages(messages []Message) []any {
 		}
 		entry := map[string]any{"role": string(msg.Role), "content": content}
 		if msg.ReasoningContent != "" {
-			entry["reasoning"] = msg.ReasoningContent
+			entry["reasoning_content"] = msg.ReasoningContent
 		}
 		if msg.Name != "" {
 			entry["name"] = msg.Name
@@ -704,10 +704,11 @@ func decodeCompletion(provider ModelProvider, body []byte, _ http.Header) (Compl
 		var o struct {
 			Choices []struct {
 				Message struct {
-					Role      string `json:"role"`
-					Content   any    `json:"content"`
-					Reasoning string `json:"reasoning"`
-					ToolCalls []struct {
+					Role             string `json:"role"`
+					Content          any    `json:"content"`
+					Reasoning        string `json:"reasoning"`
+					ReasoningContent string `json:"reasoning_content"`
+					ToolCalls        []struct {
 						ID       string `json:"id"`
 						Type     string `json:"type"`
 						Function struct {
@@ -728,7 +729,11 @@ func decodeCompletion(provider ModelProvider, body []byte, _ http.Header) (Compl
 		}
 		ch := o.Choices[0].Message
 		content, _ := ch.Content.(string)
-		msg := Message{Role: RoleAssistant, Content: content, ReasoningContent: ch.Reasoning}
+		reasoning := ch.ReasoningContent
+		if reasoning == "" {
+			reasoning = ch.Reasoning
+		}
+		msg := Message{Role: RoleAssistant, Content: content, ReasoningContent: reasoning}
 		for _, tc := range ch.ToolCalls {
 			msg.ToolCalls = append(msg.ToolCalls, ToolCall{ID: tc.ID, Type: tc.Type, Function: FunctionCall{Name: tc.Function.Name, Arguments: tc.Function.Arguments}})
 		}
@@ -1050,7 +1055,10 @@ func decodeDeltaStateCounter(provider ModelProvider, body []byte, toolIDs map[in
 		cm, _ := ch[0].(map[string]any)
 		d, _ := cm["delta"].(map[string]any)
 		t, _ := d["content"].(string)
-		reasoning, _ := d["reasoning"].(string)
+		reasoning, _ := d["reasoning_content"].(string)
+		if reasoning == "" {
+			reasoning, _ = d["reasoning"].(string)
+		}
 		calls, _ := d["tool_calls"].([]any)
 		out := make([]ToolCall, 0, len(calls))
 		for _, raw := range calls {

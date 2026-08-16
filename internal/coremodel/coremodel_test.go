@@ -344,14 +344,14 @@ func TestOpenAIReasoningRoundTripsThroughMessagesAndResponses(t *testing.T) {
 		false,
 	)
 	messages := payload["messages"].([]any)
-	if len(messages) != 1 || messages[0].(map[string]any)["reasoning"] != "prior reasoning" {
+	if len(messages) != 1 || messages[0].(map[string]any)["reasoning_content"] != "prior reasoning" {
 		t.Fatalf("reasoning request payload=%#v", messages)
 	}
-	completion, err := decodeCompletion(ProviderOpenAICompatible, []byte(`{"choices":[{"message":{"role":"assistant","content":"answer","reasoning":"full reasoning"}}]}`), nil)
+	completion, err := decodeCompletion(ProviderOpenAICompatible, []byte(`{"choices":[{"message":{"role":"assistant","content":"answer","reasoning_content":"full reasoning"}}]}`), nil)
 	if err != nil || completion.Message.Content != "answer" || completion.Message.ReasoningContent != "full reasoning" {
 		t.Fatalf("reasoning completion=%#v err=%v", completion, err)
 	}
-	delta, ok := decodeDeltaState(ProviderOpenAICompatible, []byte(`{"choices":[{"delta":{"reasoning":"reasoning chunk"}}]}`), map[int]string{})
+	delta, ok := decodeDeltaState(ProviderOpenAICompatible, []byte(`{"choices":[{"delta":{"reasoning_content":"reasoning chunk"}}]}`), map[int]string{})
 	if !ok || delta.Content != "" || delta.ReasoningContent != "reasoning chunk" {
 		t.Fatalf("reasoning delta=%#v ok=%v", delta, ok)
 	}

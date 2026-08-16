@@ -127,7 +127,11 @@ retain their frozen revision CAS.
 - OpenAI-compatible streams accept either `[DONE]` or a nonempty first-choice
   `finish_reason` as an explicit terminal signal. A clean EOF after that signal
   preserves the final content/tool-call delta; EOF without either signal is
-  still `provider_stream_truncated`.
+  still `provider_stream_truncated`. OpenAI-compatible reasoning uses the
+  `reasoning_content` response and assistant-message field so a reasoning model
+  can continue a tool round with the exact prior reasoning. A provider HTTP
+  4xx is a terminal `provider_rejected` outcome rather than an unknown dispatch
+  outcome.
 - On every Native conversation turn, `Chat`, `StreamChat`, and `StartTurn`
   compose two memory layers before model dispatch. Working memory remains the
   durable conversation summary plus recent transcript window. Long-term memory

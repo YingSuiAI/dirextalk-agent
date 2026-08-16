@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -106,6 +108,24 @@ func TestModelDispatchFailureClassification(t *testing.T) {
 	code, summary := classifyModelDispatchFailure(errors.New("provider unavailable"))
 	if code != modelDispatchUncertainCode || summary != modelDispatchUncertainSummary {
 		t.Fatalf("provider code=%q summary=%q", code, summary)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+	profile := coremodel.Profile{
+		ID: uuid.NewString(), DisplayName: "test", Provider: coremodel.ProviderOpenAICompatible,
+		ModelKind: coremodel.ModelKindConversation, BaseURL: server.URL, Model: "test", APIKey: "test",
+		MaxOutputTokens: coremodel.DefaultConversationMaxOutputTokens, Revision: 1,
+	}
+	client, err := coremodel.NewClient(profile, coremodel.WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, failure := client.Stream(context.Background(), coremodel.CompletionRequest{Messages: []coremodel.Message{{Role: coremodel.RoleUser, Content: "hello"}}})
+	code, summary = classifyModelDispatchFailure(failure)
+	if code != modelProviderRejectedCode || summary != modelProviderRejectedSummary {
+		t.Fatalf("4xx code=%q summary=%q failure=%v", code, summary, failure)
 	}
 }
 

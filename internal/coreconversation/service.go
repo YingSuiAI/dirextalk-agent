@@ -2104,6 +2104,8 @@ const (
 	modelResponseTimeoutSummary   = "model stream stopped producing progress; outcome is unknown; send a new turn to retry"
 	modelBudgetExhaustedCode      = "model_budget_exhausted"
 	modelBudgetExhaustedSummary   = "model execution budget was exhausted before a final response"
+	modelProviderRejectedCode     = "provider_rejected"
+	modelProviderRejectedSummary  = "model provider rejected the request"
 )
 
 func classifyModelDispatchFailure(err error) (string, string) {
@@ -2112,6 +2114,9 @@ func classifyModelDispatchFailure(err error) (string, string) {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return modelResponseTimeoutCode, modelResponseTimeoutSummary
+	}
+	if coremodel.SafeFailureClass(err) == "provider_http_4xx" {
+		return modelProviderRejectedCode, modelProviderRejectedSummary
 	}
 	var timeout interface{ Timeout() bool }
 	if errors.As(err, &timeout) && timeout.Timeout() {
