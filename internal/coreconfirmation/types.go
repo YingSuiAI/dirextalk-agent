@@ -19,6 +19,8 @@ import (
 
 type State string
 
+const TargetKindPersistentService = "persistent_service"
+
 // TaskTerminalCommand is the narrow hook used by the task ledger after it has
 // committed cancellation or timeout.  Pending/confirmed confirmations can be
 // compensated immediately; consumed work must remain fenced for reconciliation

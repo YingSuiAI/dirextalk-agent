@@ -214,6 +214,16 @@ func mapCloudWorkerPortError(err error) error {
 }
 
 func cloudWorkerPlanProjection(plan cloudworker.Plan) CloudWorkerObject {
+	quote := map[string]any{
+		"compute_micros_per_hour": plan.Quote.ComputeMicrosPerHour,
+		"currency":                plan.Quote.Currency,
+		"source_time":             formatCloudWorkerTime(plan.Quote.SourceTime),
+		"expires_at":              formatCloudWorkerTime(plan.Quote.ExpiresAt),
+	}
+	if plan.WorkloadKind != cloudworker.WorkloadService {
+		quote["amount_micros"] = plan.Quote.AmountMicros
+		quote["maximum_authorized_cost_micros"] = plan.Quote.MaximumAuthorizedCostMicros
+	}
 	return CloudWorkerObject{
 		"owner_id": plan.OwnerID, "account_generation": plan.AccountGeneration,
 		"plan_id": plan.PlanID, "revision": plan.Revision, "status": plan.Status,
@@ -233,12 +243,7 @@ func cloudWorkerPlanProjection(plan cloudworker.Plan) CloudWorkerObject {
 		"limits": map[string]any{
 			"max_runtime_seconds": plan.Limits.MaxRuntimeSeconds,
 		},
-		"quote": map[string]any{
-			"amount_micros": plan.Quote.AmountMicros, "compute_micros_per_hour": plan.Quote.ComputeMicrosPerHour,
-			"currency":    plan.Quote.Currency,
-			"source_time": formatCloudWorkerTime(plan.Quote.SourceTime), "expires_at": formatCloudWorkerTime(plan.Quote.ExpiresAt),
-			"maximum_authorized_cost_micros": plan.Quote.MaximumAuthorizedCostMicros,
-		},
+		"quote":      quote,
 		"created_at": formatCloudWorkerTime(plan.CreatedAt), "updated_at": formatCloudWorkerTime(plan.UpdatedAt),
 	}
 }

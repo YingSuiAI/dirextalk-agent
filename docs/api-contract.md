@@ -389,10 +389,11 @@ an AWS instance type. Agent intersects current-generation Linux on-demand
 products with actual regional offerings and selects the cheapest satisfying
 x86_64 shape. Every proposal performs a fresh AWS Price List read for that
 exact EC2 shape and gp3 volume. The quote is not served from a persisted pricing
-catalog. Confirmation exposes the exact shape, hourly compute price, estimated
-cost, and maximum authorized cost. Confirmation validates the offer revision
-and expiry; after confirmation the task executes directly without a second
-pricing or replacement-offer pass.
+catalog. Confirmation exposes the exact shape and hourly compute price. A
+bounded job also exposes its estimated cost and maximum authorized cost; a
+persistent service omits those two open-ended values. Confirmation validates
+the offer revision and expiry; after confirmation the task executes directly
+without a second pricing or replacement-offer pass.
 Reusing an already retained idle Worker requires its actual vCPU, memory, and
 disk to satisfy the request. It needs no creation confirmation, but Agent still
 reads and displays its live ongoing hourly cost. Worker destruction is a

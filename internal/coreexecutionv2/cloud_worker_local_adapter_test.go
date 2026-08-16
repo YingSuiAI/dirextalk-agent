@@ -112,6 +112,7 @@ func TestCloudWorkerPlanProjectionContainsOnlyCurrentUIFields(t *testing.T) {
 		ExecutionID: cloudRunID, TaskID: "00000000-0000-4000-8000-000000000003", ConfirmationID: "00000000-0000-4000-8000-000000000004",
 		ConversationID: "00000000-0000-4000-8000-000000000005", TurnID: "00000000-0000-4000-8000-000000000006",
 		ObjectiveSummary: "deploy service", ProposalReason: cloudworker.ProposalReasonLocalBudgetExceeded, PersistentWorkerReuse: true,
+		WorkloadKind: cloudworker.WorkloadService, Service: &cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health"},
 		WorkspaceMode: cloudworker.WorkspaceWrite, AWS: cloudworker.AWSBinding{AccountID: "123456789012", Region: "ap-east-1"},
 		Compute:   cloudworker.ComputeSpec{InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 20, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125},
 		Limits:    cloudworker.Limits{MaxRuntimeSeconds: 3600},
@@ -120,6 +121,24 @@ func TestCloudWorkerPlanProjectionContainsOnlyCurrentUIFields(t *testing.T) {
 	projection := cloudWorkerPlanProjection(plan)
 	if projection["persistent_worker_reuse"] != true {
 		t.Fatalf("projection=%#v", projection)
+	}
+	quote := projection["quote"].(map[string]any)
+	if quote["compute_micros_per_hour"] != uint64(25_000) || quote["currency"] != "USD" {
+		t.Fatalf("service hourly quote=%#v", quote)
+	}
+	if _, exists := quote["amount_micros"]; exists {
+		t.Fatalf("service quote exposed estimated cost: %#v", quote)
+	}
+	if _, exists := quote["maximum_authorized_cost_micros"]; exists {
+		t.Fatalf("service quote exposed authorized ceiling: %#v", quote)
+	}
+	plan.WorkloadKind, plan.Service = cloudworker.WorkloadJob, nil
+	jobQuote := cloudWorkerPlanProjection(plan)["quote"].(map[string]any)
+	if _, exists := jobQuote["amount_micros"]; !exists {
+		t.Fatalf("bounded job quote omitted estimated cost: %#v", jobQuote)
+	}
+	if _, exists := jobQuote["maximum_authorized_cost_micros"]; !exists {
+		t.Fatalf("bounded job quote omitted authorized ceiling: %#v", jobQuote)
 	}
 	assertCloudWorkerProjectionKeys(t, projection, []string{
 		"owner_id", "account_generation", "plan_id", "revision", "status", "execution_id", "task_id", "confirmation_id",

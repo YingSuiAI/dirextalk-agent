@@ -767,6 +767,9 @@ func BindingForPlan(plan Plan) (coreconfirmation.Binding, error) {
 		OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration, OperationDomain: OperationDomain,
 		TargetID: plan.ExecutionID, TargetRevision: int64(plan.Revision),
 		TargetKind: func() string {
+			if plan.WorkloadKind == WorkloadService {
+				return coreconfirmation.TargetKindPersistentService
+			}
 			if plan.PersistentWorkerReuse {
 				return "persistent_worker_reuse"
 			}

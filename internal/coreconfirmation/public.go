@@ -48,12 +48,12 @@ type PublicBinding struct {
 }
 
 type PublicQuote struct {
-	AmountMicros                int64     `json:"amount_micros"`
+	AmountMicros                int64     `json:"amount_micros,omitempty"`
 	ComputeMicrosPerHour        uint64    `json:"compute_micros_per_hour"`
 	Currency                    string    `json:"currency"`
 	SourceTime                  time.Time `json:"source_time"`
 	ExpiresAt                   time.Time `json:"expires_at"`
-	MaximumAuthorizedCostMicros int64     `json:"maximum_authorized_cost_micros"`
+	MaximumAuthorizedCostMicros int64     `json:"maximum_authorized_cost_micros,omitempty"`
 }
 
 func (b PublicBinding) MarshalJSON() ([]byte, error) {
@@ -82,6 +82,10 @@ func (b Binding) Public() PublicBinding {
 			quote = &PublicQuote{AmountMicros: b.Quote.AmountMicros, ComputeMicrosPerHour: b.Quote.ComputeMicrosPerHour, Currency: b.Quote.Currency,
 				SourceTime: b.Quote.SourceTime, ExpiresAt: b.Quote.ExpiresAt,
 				MaximumAuthorizedCostMicros: b.Quote.MaximumAuthorizedCostMicros}
+			if b.TargetKind == TargetKindPersistentService {
+				quote.AmountMicros = 0
+				quote.MaximumAuthorizedCostMicros = 0
+			}
 		}
 		return PublicBinding{
 			OwnerID: strings.TrimSpace(b.OwnerID), AccountGeneration: b.AccountGeneration,

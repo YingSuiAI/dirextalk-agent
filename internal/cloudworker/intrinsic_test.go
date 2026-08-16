@@ -408,6 +408,10 @@ func TestIntrinsicProposalUsesRenewedTurnLease(t *testing.T) {
 	if len(store.commands) != 1 || store.commands[0].TurnLeaseEpoch != renewed.Epoch || store.commands[0].Plan.Service == nil || store.commands[0].Plan.Service.Hostname != "app.example.test" {
 		t.Fatalf("offer committed under stale lease: commands=%+v", store.commands)
 	}
+	binding, err := BindingForPlan(store.commands[0].Plan)
+	if err != nil || binding.TargetKind != coreconfirmation.TargetKindPersistentService {
+		t.Fatalf("service confirmation target kind=%q err=%v", binding.TargetKind, err)
+	}
 }
 
 func TestIntrinsicAllowsTrustedLocalCapabilityEvidenceWithoutCloudWording(t *testing.T) {

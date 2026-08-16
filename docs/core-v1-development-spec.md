@@ -486,8 +486,10 @@ are not authority. A cloud or local-only veto wins.
 A proposal carries provider-neutral minimum vCPU, memory, disk, and estimated
 runtime requirements. Agent intersects current-generation x86_64 on-demand
 products with the Region's actual EC2 offerings and selects the cheapest shape
-that satisfies them. The plan and confirmation expose that exact shape, its
-live hourly compute price, estimated cost, and maximum authorized cost.
+that satisfies them. The plan and confirmation expose that exact shape and its
+live hourly compute price. Bounded jobs also expose their estimated cost and
+maximum authorized cost; persistent services do not present a finite task cost
+or cost ceiling for their open-ended lifetime.
 
 A proposal atomically creates the plan, execution, `CLOUD_WORKER` Task and
 `CoreConfirmation`. Creating a Worker requires a fresh EC2/EBS price read and
