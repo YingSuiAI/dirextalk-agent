@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.154
+
+1. Bound each turn to three successful Web Search executions, then preserve unrelated tools while directing the Agent to complete from existing evidence and state remaining gaps.
+
 ## v1.0.153
 
 1. Keep completed lightweight Web Search research, summaries, reports, and static pages off Cloud Worker while preserving escalation for required builds, deployments, services, and unavailable execution capabilities.
