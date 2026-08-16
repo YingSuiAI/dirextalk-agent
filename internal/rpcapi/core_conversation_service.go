@@ -353,7 +353,7 @@ func (s *CoreConversationService) WatchTurnEvents(r *agentv1.ConversationService
 }
 
 func (s *CoreConversationService) CancelTurn(ctx context.Context, r *agentv1.ConversationServiceCancelTurnRequest) (*agentv1.ConversationServiceCancelTurnResponse, error) {
-	turn, e := s.service.CancelTurn(ctx, coreconversation.TurnCancelCommand{RequestID: r.GetIdempotencyKey(), TurnID: r.GetTurnId(), ExpectedRevision: uint64(r.GetExpectedRevision())})
+	turn, e := s.service.CancelTurn(ctx, coreconversation.TurnCancelCommand{RequestID: r.GetIdempotencyKey(), TurnID: r.GetTurnId()})
 	if e != nil {
 		return nil, mapErr(e)
 	}

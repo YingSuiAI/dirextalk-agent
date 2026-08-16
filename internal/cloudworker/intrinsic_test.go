@@ -280,7 +280,7 @@ func TestProposeIntrinsicNormalizesServiceOutOfJobArguments(t *testing.T) {
 
 func TestIntrinsicDescriptionIncludesLiveRetainedWorkerInventory(t *testing.T) {
 	intrinsic, _, lease := intrinsicFixture(t, "check the retained worker load", nil, nil)
-	resolver := &intrinsicWorkerInventory{value: RetainedWorkerInventory{ObservedAt: time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC), Workers: []RetainedWorkerSnapshot{{WorkerID: "worker-1", Availability: "busy", EC2State: "running", WorkerPhase: "busy", PublicIPv4: "203.0.113.8", CurrentTask: &RetainedWorkerTask{ExecutionID: "execution-1", Phase: "running"}, Server: &RetainedWorkerServer{Load1: 0.5, Load5: 0.25, Load15: 0.1}}}}}
+	resolver := &intrinsicWorkerInventory{value: RetainedWorkerInventory{ObservedAt: time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC), Workers: []RetainedWorkerSnapshot{{WorkerID: "worker-1", InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 20, Availability: "available", EC2State: "running", WorkerPhase: "idle", PublicIPv4: "203.0.113.8", Server: &RetainedWorkerServer{Load1: 0.5, Load5: 0.25, Load15: 0.1}}}}}
 	if err := intrinsic.EnableRetainedWorkerInventory(resolver); err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestIntrinsicDescriptionIncludesLiveRetainedWorkerInventory(t *testing.T) {
 		t.Fatalf("tools=%+v err=%v", tools, err)
 	}
 	description := tools[0].Tool.Description
-	for _, expected := range []string{`"worker_id":"worker-1"`, `"availability":"busy"`, `"public_ipv4":"203.0.113.8"`, `"load_1":0.5`} {
+	for _, expected := range []string{`"worker_id":"worker-1"`, `"instance_type":"t3.small"`, `"vcpu":2`, `"memory_gib":2`, `"volume_gib":20`, `"availability":"available"`, `"public_ipv4":"203.0.113.8"`, `"load_1":0.5`, "actual minimum", "Prefer an available idle retained Worker"} {
 		if !strings.Contains(description, expected) {
 			t.Fatalf("inventory description missing %s: %s", expected, description)
 		}

@@ -179,12 +179,14 @@ multi-tenant model.
   `last_sequence`, `terminal_code`, `terminal_summary`, `created_at`, and
   `updated_at`; prompts, request fingerprints, model/profile data, credentials,
   and execution snapshots never cross the Capability boundary.
-- Capability `agent.chat.v1/stop_turn` is the revision-fenced durable-turn
-  cancellation mutation. It accepts exactly `idempotency_key`, `turn_id`, and
-  positive `expected_revision`, calls the conversation service cancellation
+- Capability `agent.chat.v1/stop_turn` is the monotonic durable-turn
+  cancellation mutation. It accepts exactly `idempotency_key` and `turn_id`,
+  calls the conversation service cancellation
   path, and returns only the same public turn metadata plus the cancellation
-  request `idempotency_key`. It does not alias generic Capability operation
-  cancellation, accept unknown fields, or expose the original prompt/profile.
+  request `idempotency_key`. The request is bound to the immutable turn ID and
+  replays after later turn state changes; it does not use the changing turn
+  revision. It does not alias generic Capability operation cancellation,
+  accept unknown fields, or expose the original prompt/profile.
 - Capability `agent.chat.v1/steer_turn` appends one non-empty instruction to
   the same accepted/running durable turn, or to a confirmation-waiting turn
   whose current Cloud Worker offer is unconfirmed, queued, or running. It
@@ -399,8 +401,10 @@ persistent service omits those two open-ended values. Confirmation validates
 the offer revision and expiry; after confirmation the task executes directly
 without a second pricing or replacement-offer pass.
 Reusing an already retained idle Worker requires its actual vCPU, memory, and
-disk to satisfy the request. It needs no creation confirmation, but Agent still
-reads and displays its live ongoing hourly cost. Worker destruction is a
+disk to satisfy the request. The live model inventory exposes each retained
+Worker's instance type, vCPU, memory, and disk so the intrinsic can declare the
+task's actual minimums and prefer an adequate idle Worker. It needs no creation
+confirmation, but Agent still reads and displays its live ongoing hourly cost. Worker destruction is a
 separate explicit owner-confirmed operation. The owner may invoke it from the
 Worker management surface or explicitly ask the Native Agent to destroy one
 of the retained Worker IDs in the live owner-scoped inventory. The conversation

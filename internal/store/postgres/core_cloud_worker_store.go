@@ -588,8 +588,7 @@ func (s *CloudWorkerStore) beginExecutionTx(ctx context.Context, tx pgx.Tx, curr
 	if err != nil {
 		return cloudworker.Execution{}, cloudworker.ErrStaleAuthorization
 	}
-	binding, err := cloudworker.BindingForPlan(plan)
-	if err != nil || !confirmation.Binding.Equal(binding) || confirmation.State != coreconfirmation.StateConfirmed ||
+	if cloudworker.ValidateFrozenBinding(plan, execution, confirmation.Binding) != nil || confirmation.State != coreconfirmation.StateConfirmed ||
 		execution.State != cloudworker.StateQueued {
 		return cloudworker.Execution{}, cloudworker.ErrStaleAuthorization
 	}
@@ -752,9 +751,8 @@ func (s *CloudWorkerStore) RequestCancel(ctx context.Context, owner string, acco
 		return cloudworker.Execution{}, err
 	}
 	plan, execution, err := cloudWorkerPlanAndExecutionTx(ctx, tx, task.Spec.Payload.CloudWorker, true)
-	binding, bindingErr := cloudworker.BindingForPlan(plan)
 	if err != nil || plan.OwnerID != owner || plan.AccountGeneration != accountGeneration || plan.ExecutionID != executionID ||
-		plan.TaskID != taskID || plan.ConfirmationID != confirmationID || bindingErr != nil || !confirmation.Binding.Equal(binding) {
+		plan.TaskID != taskID || plan.ConfirmationID != confirmationID || cloudworker.ValidateFrozenBinding(plan, execution, confirmation.Binding) != nil {
 		return cloudworker.Execution{}, cloudworker.ErrStaleAuthorization
 	}
 	if execution.Revision != expectedRevision {

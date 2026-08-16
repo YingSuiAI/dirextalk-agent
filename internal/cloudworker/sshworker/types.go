@@ -351,6 +351,9 @@ const (
 
 type WorkerStatus struct {
 	Identity           WorkerIdentity
+	InstanceType       string
+	VCPU, MemoryGiB    uint32
+	VolumeGiB          int32
 	Availability       WorkerAvailability
 	Error              string
 	EC2State, PublicIP string
@@ -363,7 +366,8 @@ type WorkerStatus struct {
 }
 
 func UnavailableStatus(worker WorkerRecord, observedAt time.Time, message string) WorkerStatus {
-	return WorkerStatus{Identity: workerIdentity(worker), Availability: WorkerUnavailable, Error: message,
+	return WorkerStatus{Identity: workerIdentity(worker), InstanceType: worker.InstanceType, VCPU: worker.VCPU,
+		MemoryGiB: worker.MemoryGiB, VolumeGiB: worker.VolumeGiB, Availability: WorkerUnavailable, Error: message,
 		EC2State: "unknown", WorkerPhase: worker.Phase, CurrentExecutionID: worker.CurrentExecutionID, ObservedAt: observedAt.UTC()}
 }
 

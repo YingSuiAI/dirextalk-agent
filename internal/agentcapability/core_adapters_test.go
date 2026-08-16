@@ -510,7 +510,7 @@ func (s *durableTurnCancelerStub) CancelTurn(_ context.Context, command coreconv
 	return s.turn, nil
 }
 
-func TestCancelDurableTurnUsesCurrentRevisionAndDeterministicRequestIdentity(t *testing.T) {
+func TestCancelDurableTurnUsesDeterministicRequestIdentity(t *testing.T) {
 	accepted := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), Revision: 1, State: coreconversation.TurnAccepted}
 	stub := &durableTurnCancelerStub{turn: coreconversation.Turn{ID: accepted.ID, RequestID: accepted.RequestID, Revision: 4, State: coreconversation.TurnRunning}}
 	if err := cancelDurableTurn(stub, accepted); err != nil {
@@ -524,7 +524,7 @@ func TestCancelDurableTurnUsesCurrentRevisionAndDeterministicRequestIdentity(t *
 	}
 	wantRequestID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("capability-turn-cancel:"+accepted.RequestID)).String()
 	for _, command := range stub.commands {
-		if command.TurnID != accepted.ID || command.ExpectedRevision != 4 || command.RequestID != wantRequestID {
+		if command.TurnID != accepted.ID || command.RequestID != wantRequestID {
 			t.Fatalf("cancel command=%+v", command)
 		}
 	}
@@ -1403,12 +1403,12 @@ func newStopTurnCapability(t *testing.T) (*coreChatCapability, *stopTurnCapabili
 func TestStopTurnCapabilityCallsConversationServiceAndReturnsOnlyPublicMetadata(t *testing.T) {
 	capability, store := newStopTurnCapability(t)
 	key := uuid.NewString()
-	raw := []byte(`{"idempotency_key":"` + key + `","turn_id":"` + store.turn.ID + `","expected_revision":3}`)
+	raw := []byte(`{"idempotency_key":"` + key + `","turn_id":"` + store.turn.ID + `"}`)
 	result, err := capability.HandleOperation(context.Background(), "stop_turn", raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.calls != 1 || store.command.RequestID != key || store.command.TurnID != store.turn.ID || store.command.ExpectedRevision != 3 {
+	if store.calls != 1 || store.command.RequestID != key || store.command.TurnID != store.turn.ID {
 		t.Fatalf("CancelTurn command=%+v calls=%d", store.command, store.calls)
 	}
 	var output map[string]any
@@ -1429,11 +1429,11 @@ func TestStopTurnCapabilityRejectsUnknownAndMalformedInputBeforeService(t *testi
 	capability, store := newStopTurnCapability(t)
 	key, turnID := uuid.NewString(), store.turn.ID
 	for _, raw := range []string{
-		`{"idempotency_key":"` + key + `","turn_id":"` + turnID + `","expected_revision":3,"request_id":"` + uuid.NewString() + `"}`,
-		`{"idempotency_key":"` + key + `","turn_id":"` + turnID + `","expected_revision":0}`,
-		`{"idempotency_key":"not-a-uuid","turn_id":"` + turnID + `","expected_revision":3}`,
-		`{"idempotency_key":"` + key + `","turn_id":"not-a-uuid","expected_revision":3}`,
-		`{"idempotency_key":"` + key + `","turn_id":"` + turnID + `","expected_revision":3} {}`,
+		`{"idempotency_key":"` + key + `","turn_id":"` + turnID + `","request_id":"` + uuid.NewString() + `"}`,
+		`{"idempotency_key":"` + key + `","turn_id":"` + turnID + `","expected_revision":3}`,
+		`{"idempotency_key":"not-a-uuid","turn_id":"` + turnID + `"}`,
+		`{"idempotency_key":"` + key + `","turn_id":"not-a-uuid"}`,
+		`{"idempotency_key":"` + key + `","turn_id":"` + turnID + `"} {}`,
 	} {
 		if _, err := capability.HandleOperation(context.Background(), "stop_turn", []byte(raw)); !errors.Is(err, coreconversation.ErrInvalid) {
 			t.Fatalf("input %s error=%v, want ErrInvalid", raw, err)
@@ -1457,7 +1457,7 @@ func TestStopTurnDescriptorMatchesPinnedMessageServerContract(t *testing.T) {
 		}
 		inputDigest := sha256.Sum256([]byte(operation.GetInputSchemaJson()))
 		resultDigest := sha256.Sum256([]byte(operation.GetResultSchemaJson()))
-		if got := hex.EncodeToString(inputDigest[:]); got != "d7bc619c13ed4ab5b743b7157d80e1a303386d1259696f19b5d82cfb939e1058" {
+		if got := hex.EncodeToString(inputDigest[:]); got != "eaa73fde17ad29c4d721b6e07e17e0f472d88fb63b2d6b0112f6d385f67445da" {
 			t.Fatalf("stop_turn input digest=%s schema=%s", got, operation.GetInputSchemaJson())
 		}
 		if got := hex.EncodeToString(resultDigest[:]); got != "5031fafc12966ca78f1c41730d87f967f622647042719a67dca2619cfb737763" {

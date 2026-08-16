@@ -712,7 +712,8 @@ func (executor *sshWorkerExecutor) ResolveRetainedWorkerInventory(ctx context.Co
 	inventory := cloudworker.RetainedWorkerInventory{ObservedAt: time.Now().UTC(), AtCapacity: len(statuses) >= sshworker.MaxWorkers,
 		Workers: make([]cloudworker.RetainedWorkerSnapshot, 0, len(statuses))}
 	for _, status := range statuses {
-		worker := cloudworker.RetainedWorkerSnapshot{WorkerID: status.Identity.WorkerID, Availability: string(status.Availability),
+		worker := cloudworker.RetainedWorkerSnapshot{WorkerID: status.Identity.WorkerID, InstanceType: status.InstanceType,
+			VCPU: status.VCPU, MemoryGiB: status.MemoryGiB, VolumeGiB: status.VolumeGiB, Availability: string(status.Availability),
 			EC2State: status.EC2State, WorkerPhase: string(status.WorkerPhase), PublicIPv4: status.PublicIP, Error: status.Error}
 		if status.CurrentExecutionID != "" {
 			worker.CurrentTask = &cloudworker.RetainedWorkerTask{ExecutionID: status.CurrentExecutionID, Phase: string(status.TaskPhase)}

@@ -180,7 +180,7 @@ func (r coreConversationVoiceRunner) Cancel(ctx context.Context, _ string, turnI
 	if err != nil {
 		return err
 	}
-	_, err = r.conversation.CancelTurn(ctx, coreconversation.TurnCancelCommand{RequestID: requestID, TurnID: turn.ID, ExpectedRevision: turn.Revision})
+	_, err = r.conversation.CancelTurn(ctx, coreconversation.TurnCancelCommand{RequestID: requestID, TurnID: turn.ID})
 	return err
 }
 

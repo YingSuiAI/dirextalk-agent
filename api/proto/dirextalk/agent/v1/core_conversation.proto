@@ -240,7 +240,6 @@ message CoreConversationTurnEvent {
 message ConversationServiceCancelTurnRequest {
   string idempotency_key = 1;
   string turn_id = 2;
-  int64 expected_revision = 3;
 }
 message ConversationServiceCancelTurnResponse {
   CoreConversationTurn turn = 1;

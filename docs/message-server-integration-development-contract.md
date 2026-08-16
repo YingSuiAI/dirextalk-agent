@@ -113,7 +113,8 @@ writes them at the actual queued, provisioning, running, and terminal
 transitions; Message Server forwards them and never derives them by
 polling Execution V2. Turn history uses the same
 `turn_id`/`idempotency_key` pair, and `agent.chat.v1/stop_turn` accepts only its
-own UUID idempotency key plus the authoritative turn id and expected revision.
+own UUID idempotency key plus the authoritative turn id. Cancellation is
+monotonic and does not depend on the changing turn revision.
 Same-turn guidance uses `agent.chat.v1/steer_turn` with a separate mutation
 UUID, that authoritative turn id/revision, one bounded instruction, and up to
 four optional attachment source IDs uploaded under that same mutation UUID. Agent

@@ -796,3 +796,33 @@ func BindingForPlan(plan Plan) (coreconfirmation.Binding, error) {
 	binding.Digest = coreconfirmation.Digest(digestValue(binding))
 	return binding.Normalize()
 }
+
+// ValidateFrozenBinding verifies the immutable authority captured when the
+// offer was created. TargetKind is presentation metadata and remains frozen;
+// later code must not regenerate it from the current projection rules.
+func ValidateFrozenBinding(plan Plan, execution Execution, binding coreconfirmation.Binding) error {
+	if plan.Seal() != nil || execution.Seal() != nil || execution.ExecutionID != plan.ExecutionID ||
+		execution.PlanID != plan.PlanID || execution.PlanRevision != plan.Revision || execution.PlanDigest != plan.Digest ||
+		execution.TaskID != plan.TaskID || execution.ConfirmationID != plan.ConfirmationID ||
+		execution.ExecutionDigest != plan.ExecutionDigest || execution.QuoteDigest != plan.Quote.Digest {
+		return ErrStaleAuthorization
+	}
+	normalized, err := binding.Normalize()
+	if err != nil || normalized.OwnerID != plan.OwnerID ||
+		normalized.AccountGeneration != plan.AccountGeneration || normalized.OperationDomain != OperationDomain ||
+		normalized.TargetID != plan.ExecutionID || normalized.TargetRevision != int64(plan.Revision) ||
+		normalized.ExecutionDigest != coreconfirmation.Digest(plan.ExecutionDigest) ||
+		normalized.ExecutionID != execution.ExecutionID || normalized.PlanID != plan.PlanID ||
+		normalized.PlanRevision != int64(plan.Revision) || normalized.PlanDigest != coreconfirmation.Digest(plan.Digest) ||
+		normalized.RunID != execution.RunID || normalized.RunRevision < 1 || uint64(normalized.RunRevision) > execution.Revision ||
+		normalized.QuoteDigest != coreconfirmation.Digest(plan.Quote.Digest) || normalized.Quote == nil {
+		return ErrStaleAuthorization
+	}
+	expectedQuote := coreconfirmation.LiveQuote{AmountMicros: plan.Quote.AmountMicros, ComputeMicrosPerHour: plan.Quote.ComputeMicrosPerHour,
+		Currency: plan.Quote.Currency, SourceTime: plan.Quote.SourceTime, ExpiresAt: plan.Quote.ExpiresAt,
+		MaximumAuthorizedCostMicros: plan.Quote.MaximumAuthorizedCostMicros}
+	if *normalized.Quote != expectedQuote {
+		return ErrStaleAuthorization
+	}
+	return nil
+}

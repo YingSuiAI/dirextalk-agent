@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -1215,16 +1214,23 @@ func listTurnSteersTx(ctx context.Context, tx pgx.Tx, turnID string) ([]core.Tur
 }
 
 func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.TurnCancelCommand) (core.Turn, error) {
+	if uuid.Validate(c.RequestID) != nil || uuid.Validate(c.TurnID) != nil {
+		return core.Turn{}, core.ErrInvalid
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return core.Turn{}, err
 	}
 	defer tx.Rollback(ctx)
+	var exactTurnID string
+	if err = tx.QueryRow(ctx, `SELECT turn_id::text FROM core_conversation_turns WHERE turn_id=$1`, c.TurnID).Scan(&exactTurnID); err != nil || exactTurnID != c.TurnID {
+		return core.Turn{}, core.ErrConflict
+	}
 	var turn core.Turn
 	if err = s.scanTurn(ctx, tx, c.TurnID, &turn); err != nil {
 		return core.Turn{}, core.ErrConflict
 	}
-	cancelFingerprint := sha256hexPG([]byte(fmt.Sprintf("%s:%d", c.TurnID, c.ExpectedRevision)))
+	cancelFingerprint := sha256hexPG([]byte(c.TurnID))
 	if turn.CancelRequestID == c.RequestID {
 		if turn.CancelRequestFingerprint != cancelFingerprint {
 			return core.Turn{}, core.ErrConflict
@@ -1236,8 +1242,9 @@ func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.Tu
 		_ = tx.Commit(ctx)
 		return turn, nil
 	}
-	if turn.Revision != c.ExpectedRevision {
-		return core.Turn{}, core.ErrConflict
+	if turn.CancelRequested {
+		_ = tx.Commit(ctx)
+		return turn, nil
 	}
 	now := time.Now().UTC()
 	// A turn blocked on owner confirmation has no provider call in flight.  The
@@ -1282,7 +1289,7 @@ func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.Tu
 			}
 		}
 	}
-	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state=CASE WHEN state='waiting_confirmation' THEN 'canceled' ELSE state END,cancel_requested=true,cancel_request_id=$4,cancel_request_fingerprint=$5,lease_id=NULL,lease_expires_at=NULL,lease_epoch=lease_epoch+1,revision=revision+1,updated_at=$2 WHERE turn_id=$1 AND state IN ('accepted','running','waiting_confirmation') AND revision=$3`, c.TurnID, now, c.ExpectedRevision, c.RequestID, cancelFingerprint)
+	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state=CASE WHEN state='waiting_confirmation' THEN 'canceled' ELSE state END,cancel_requested=true,cancel_request_id=$4,cancel_request_fingerprint=$5,lease_id=NULL,lease_expires_at=NULL,lease_epoch=lease_epoch+1,revision=revision+1,updated_at=$2 WHERE turn_id=$1 AND state=$3 AND cancel_requested=false`, c.TurnID, now, turn.State, c.RequestID, cancelFingerprint)
 	if err != nil {
 		return core.Turn{}, err
 	}

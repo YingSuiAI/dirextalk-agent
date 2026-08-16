@@ -238,8 +238,7 @@ func terminalizeCloudWorkerTurnTx(
 	if conversationDeletedAt != nil {
 		return nil
 	}
-	binding, err := cloudworker.BindingForPlan(plan)
-	if err != nil || !confirmation.Binding.Equal(binding) {
+	if err := cloudworker.ValidateFrozenBinding(plan, execution, confirmation.Binding); err != nil {
 		return coreconfirmation.ErrStale
 	}
 	confirmationState := string(coreconfirmation.StateExpired)
@@ -270,11 +269,11 @@ func terminalizeCloudWorkerTurnTx(
 		return coreconfirmation.ErrStale
 	}
 	var messageSequence int64
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence),0)+1 FROM core_messages WHERE conversation_id=$1`, plan.ConversationID).Scan(&messageSequence); err != nil {
-		return err
+	if queryErr := tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence),0)+1 FROM core_messages WHERE conversation_id=$1`, plan.ConversationID).Scan(&messageSequence); queryErr != nil {
+		return queryErr
 	}
-	if err = insertCloudWorkerMessageTx(ctx, tx, plan.ConversationID, messageSequence, message); err != nil {
-		return err
+	if insertErr := insertCloudWorkerMessageTx(ctx, tx, plan.ConversationID, messageSequence, message); insertErr != nil {
+		return insertErr
 	}
 	event := core.TurnEvent{
 		TurnID: plan.TurnID, Sequence: int64(turn.LastSequence + 1), Revision: turn.Revision + 1, Kind: eventKind,
@@ -283,15 +282,15 @@ func terminalizeCloudWorkerTurnTx(
 		References: references, ErrorCode: code, ErrorSummary: summary, CreatedAt: at,
 	}
 	eventRaw, _ := json.Marshal(event)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at)
-		VALUES($1,$2,$3,$4,$5)`, plan.TurnID, event.Sequence, string(event.Kind), eventRaw, at); err != nil {
-		return err
+	if _, insertErr := tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at)
+		VALUES($1,$2,$3,$4,$5)`, plan.TurnID, event.Sequence, string(event.Kind), eventRaw, at); insertErr != nil {
+		return insertErr
 	}
-	turnUpdate, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state=$2,terminal_code=$3,terminal_summary=$4,
+	turnUpdate, updateErr := tx.Exec(ctx, `UPDATE core_conversation_turns SET state=$2,terminal_code=$3,terminal_summary=$4,
 		revision=revision+1,last_sequence=$5,lease_id=NULL,lease_expires_at=NULL,updated_at=$6
 		WHERE turn_id=$1 AND state='waiting_confirmation' AND revision=$7`, plan.TurnID, turnState, code, summary,
 		event.Sequence, at, turn.Revision)
-	if err != nil || turnUpdate.RowsAffected() != 1 {
+	if updateErr != nil || turnUpdate.RowsAffected() != 1 {
 		return coreconfirmation.ErrConflict
 	}
 	conversationUpdate, err := tx.Exec(ctx, `UPDATE core_conversations SET revision=revision+1,updated_at=$2

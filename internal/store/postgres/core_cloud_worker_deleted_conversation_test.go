@@ -56,7 +56,7 @@ func (pgCloudComputeSelector) SelectCompute(context.Context, cloudworker.AWSBind
 
 type pgCloudReuseResolver struct{}
 
-func (pgCloudReuseResolver) ResolveIdleWorker(context.Context, string, uint64, cloudworker.AWSBinding, cloudworker.ComputeRequirements) (cloudworker.WorkerReuseSelection, bool, error) {
+func (pgCloudReuseResolver) ResolveIdleWorker(context.Context, string, uint64, cloudworker.AWSBinding, cloudworker.ComputeRequirements, *cloudworker.ServiceSpec) (cloudworker.WorkerReuseSelection, bool, error) {
 	return cloudworker.WorkerReuseSelection{}, false, nil
 }
 
@@ -66,7 +66,7 @@ func (pgCloudReuseResolver) CheckCreateWorkerCapacity(context.Context, string, u
 
 type pgCloudRetainedReuseResolver struct{ workerID string }
 
-func (r pgCloudRetainedReuseResolver) ResolveIdleWorker(context.Context, string, uint64, cloudworker.AWSBinding, cloudworker.ComputeRequirements) (cloudworker.WorkerReuseSelection, bool, error) {
+func (r pgCloudRetainedReuseResolver) ResolveIdleWorker(context.Context, string, uint64, cloudworker.AWSBinding, cloudworker.ComputeRequirements, *cloudworker.ServiceSpec) (cloudworker.WorkerReuseSelection, bool, error) {
 	return cloudworker.WorkerReuseSelection{WorkerID: r.workerID, Compute: cloudworker.ComputeSpec{
 		InstanceType: "c7i.large", Architecture: "x86_64", VCPU: 2, MemoryGiB: 4,
 		RootDeviceName: "/dev/xvda", VolumeGiB: 32, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125,
@@ -248,6 +248,63 @@ func seedDeletedLegacyCloudWorkerOffer(t *testing.T, h *pgCloudWorkerHarness, mu
 		t.Fatal(err)
 	}
 	return offer
+}
+
+func rewriteCloudWorkerBinding(t *testing.T, h *pgCloudWorkerHarness, offer cloudworker.Offer, mutate func(*coreconfirmation.Binding)) {
+	t.Helper()
+	binding := offer.Confirmation.Binding
+	mutate(&binding)
+	binding.Digest = ""
+	raw, _ := json.Marshal(binding)
+	binding.Digest = coreconfirmation.Digest(pgCloudDigest(string(raw)))
+	raw, _ = json.Marshal(binding)
+	for _, update := range []struct {
+		query string
+		args  []any
+	}{
+		{`UPDATE core_confirmations SET binding_json=$2 WHERE confirmation_id=$1`, []any{offer.Confirmation.ConfirmationID, raw}},
+		{`UPDATE core_confirmation_target_bindings SET binding_json=$2 WHERE confirmation_id=$1`, []any{offer.Confirmation.ConfirmationID, raw}},
+		{`UPDATE core_confirmation_current_bindings SET binding_json=$3 WHERE operation_domain=$1 AND target_id=$2`, []any{cloudworker.OperationDomain, offer.Execution.ExecutionID, raw}},
+	} {
+		if _, err := h.store.pool.Exec(h.ctx, update.query, update.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestCloudWorkerPostgresExecutesOfferWithFrozenPreChangeTargetKind(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+	h.command.WorkloadKind = cloudworker.WorkloadService
+	h.command.Service = &cloudworker.ServiceSpec{WorkloadID: "gitea", Port: 3000, HealthPath: "/api/healthz"}
+	offer := h.propose(t)
+	if offer.Confirmation.Binding.TargetKind != coreconfirmation.TargetKindPersistentService {
+		t.Fatalf("new service target kind=%q", offer.Confirmation.Binding.TargetKind)
+	}
+	rewriteCloudWorkerBinding(t, h, offer, func(binding *coreconfirmation.Binding) {
+		binding.TargetKind = "persistent_ssh_worker"
+	})
+	confirmationService, err := coreconfirmation.NewService(h.confirmations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmed, err := confirmationService.ConfirmAuthorized(h.ctx, coreconfirmation.Authority{OwnerID: h.owner, AccountGeneration: h.generation}, coreconfirmation.ConfirmCommand{
+		ConfirmationID: offer.Confirmation.ConfirmationID, IdempotencyKey: uuid.NewString(), ExpectedRevision: offer.Confirmation.Revision, At: h.now.Add(time.Second),
+	})
+	if err != nil || confirmed.State != coreconfirmation.StateConfirmed || confirmed.Binding.TargetKind != "persistent_ssh_worker" {
+		t.Fatalf("confirmed=%+v err=%v", confirmed, err)
+	}
+	claimed, _, err := NewCoreTaskStore(h.store).ClaimNextDue(h.ctx, "frozen-binding-worker", h.now.Add(2*time.Second), time.Minute, 4)
+	if err != nil || claimed.ID != offer.Task.ID {
+		t.Fatalf("claimed=%+v err=%v", claimed, err)
+	}
+	var confirmationState, executionState string
+	if err = h.store.pool.QueryRow(h.ctx, `SELECT c.state,e.state FROM core_confirmations c JOIN core_cloud_worker_executions e ON e.confirmation_id=c.confirmation_id WHERE c.confirmation_id=$1`, offer.Confirmation.ConfirmationID).Scan(&confirmationState, &executionState); err != nil {
+		t.Fatal(err)
+	}
+	if confirmationState != string(coreconfirmation.StateConsumed) || executionState != string(cloudworker.StateProvisioning) {
+		t.Fatalf("confirmation=%s execution=%s", confirmationState, executionState)
+	}
 }
 
 func TestCloudWorkerPostgresReusesRetainedWorkerTwiceInOneTurn(t *testing.T) {

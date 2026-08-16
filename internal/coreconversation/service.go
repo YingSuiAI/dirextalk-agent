@@ -1143,7 +1143,7 @@ func (s *Service) RecoverTurns(ctx context.Context) error {
 }
 
 func (s *Service) CancelTurn(ctx context.Context, cmd TurnCancelCommand) (Turn, error) {
-	if s.turns == nil || !validUUID(cmd.TurnID) || !validUUID(cmd.RequestID) || cmd.ExpectedRevision == 0 {
+	if s.turns == nil || !validUUID(cmd.TurnID) || !validUUID(cmd.RequestID) {
 		return Turn{}, ErrInvalid
 	}
 	turn, err := s.turns.RequestTurnCancel(ctx, cmd)

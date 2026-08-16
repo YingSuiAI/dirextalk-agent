@@ -497,7 +497,7 @@ func (s *publicActiveTurnStore) CommitTurn(context.Context, TurnLease, ChatRespo
 func (s *publicActiveTurnStore) RequestTurnCancel(_ context.Context, cmd TurnCancelCommand) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.turn.Revision != cmd.ExpectedRevision {
+	if s.turn.ID != cmd.TurnID {
 		return Turn{}, ErrConflict
 	}
 	s.turn.CancelRequested = true
@@ -1618,7 +1618,7 @@ func TestPublicStartAndCancelWaitForNonCooperativeRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-model.started
-	if _, err = service.CancelTurn(context.Background(), TurnCancelCommand{RequestID: uuid.NewString(), TurnID: turn.ID, ExpectedRevision: turn.Revision}); err != nil {
+	if _, err = service.CancelTurn(context.Background(), TurnCancelCommand{RequestID: uuid.NewString(), TurnID: turn.ID}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -1714,7 +1714,7 @@ func TestCancelTurnReattachesOrphanedSupervisorAndCloseCancelsRetry(t *testing.T
 		t.Fatal("orphaned supervisor did not stop")
 	}
 
-	turn, err := service.CancelTurn(context.Background(), TurnCancelCommand{RequestID: uuid.NewString(), TurnID: store.turn.ID, ExpectedRevision: store.turn.Revision})
+	turn, err := service.CancelTurn(context.Background(), TurnCancelCommand{RequestID: uuid.NewString(), TurnID: store.turn.ID})
 	if err != nil || turn.State != TurnRunning || !turn.CancelRequested {
 		t.Fatalf("cancel response turn=%+v err=%v", turn, err)
 	}
@@ -1774,16 +1774,6 @@ func TestTurnEventKindsHaveSingleTerminalVocabulary(t *testing.T) {
 	}
 	if TurnEventAccepted == TurnEventDone || TurnEventDone == TurnEventCanceled {
 		t.Fatal("turn event vocabulary aliases terminal events")
-	}
-}
-
-func TestRequestTurnCancelIsRevisionScoped(t *testing.T) {
-	turnID, requestID := uuid.NewString(), uuid.NewString()
-	first := TurnCancelCommand{TurnID: turnID, RequestID: requestID, ExpectedRevision: 1}
-	second := first
-	second.ExpectedRevision = 2
-	if first.TurnID != second.TurnID || first.RequestID != second.RequestID || first.ExpectedRevision == second.ExpectedRevision {
-		t.Fatal("cancel command did not preserve request identity and revision fence")
 	}
 }
 

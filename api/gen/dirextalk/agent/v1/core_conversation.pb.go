@@ -2278,12 +2278,11 @@ func (x *CoreConversationTurnEvent) GetPhase() string {
 }
 
 type ConversationServiceCancelTurnRequest struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	IdempotencyKey   string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	TurnId           string                 `protobuf:"bytes,2,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
-	ExpectedRevision int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	IdempotencyKey string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	TurnId         string                 `protobuf:"bytes,2,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ConversationServiceCancelTurnRequest) Reset() {
@@ -2328,13 +2327,6 @@ func (x *ConversationServiceCancelTurnRequest) GetTurnId() string {
 		return x.TurnId
 	}
 	return ""
-}
-
-func (x *ConversationServiceCancelTurnRequest) GetExpectedRevision() int64 {
-	if x != nil {
-		return x.ExpectedRevision
-	}
-	return 0
 }
 
 type ConversationServiceCancelTurnResponse struct {
@@ -2790,11 +2782,10 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\brevision\x18\x14 \x01(\x04R\brevision\x12+\n" +
 	"\x11reasoning_content\x18\x15 \x01(\tR\x10reasoningContent\x12\x14\n" +
 	"\x05phase\x18\x16 \x01(\tR\x05phaseJ\x04\b\r\x10\x0eR\n" +
-	"attempt_id\"\x95\x01\n" +
+	"attempt_id\"h\n" +
 	"$ConversationServiceCancelTurnRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x17\n" +
-	"\aturn_id\x18\x02 \x01(\tR\x06turnId\x12+\n" +
-	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\"e\n" +
+	"\aturn_id\x18\x02 \x01(\tR\x06turnId\"e\n" +
 	"%ConversationServiceCancelTurnResponse\x12<\n" +
 	"\x04turn\x18\x01 \x01(\v2(.dirextalk.agent.v1.CoreConversationTurnR\x04turn\"\xee\x01\n" +
 	"#ConversationServiceSteerTurnRequest\x12'\n" +

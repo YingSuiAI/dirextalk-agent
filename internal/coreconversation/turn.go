@@ -200,9 +200,8 @@ type TurnStartCommand struct {
 }
 
 type TurnCancelCommand struct {
-	RequestID        string
-	TurnID           string
-	ExpectedRevision uint64
+	RequestID string
+	TurnID    string
 }
 
 type TurnSteerCommand struct {

@@ -654,7 +654,8 @@ func (provider *Provider) ListWorkers(ctx context.Context, authority OwnerAuthor
 		if worker.authority() != authority || worker.Credential != credential || worker.Phase == WorkerDestroyed {
 			continue
 		}
-		status := WorkerStatus{Identity: workerIdentity(worker), Availability: WorkerAvailable, EC2State: "unknown", WorkerPhase: worker.Phase,
+		status := WorkerStatus{Identity: workerIdentity(worker), InstanceType: worker.InstanceType, VCPU: worker.VCPU,
+			MemoryGiB: worker.MemoryGiB, VolumeGiB: worker.VolumeGiB, Availability: WorkerAvailable, EC2State: "unknown", WorkerPhase: worker.Phase,
 			CurrentExecutionID: worker.CurrentExecutionID, ObservedAt: provider.now().UTC()}
 		instance, found := Instance{}, false
 		if worker.Instance.ID != "" {

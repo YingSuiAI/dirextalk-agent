@@ -605,15 +605,14 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 
 func (c *coreChatCapability) handleStopTurn(ctx context.Context, raw []byte) ([]byte, error) {
 	var request struct {
-		IdempotencyKey   string `json:"idempotency_key"`
-		TurnID           string `json:"turn_id"`
-		ExpectedRevision uint64 `json:"expected_revision"`
+		IdempotencyKey string `json:"idempotency_key"`
+		TurnID         string `json:"turn_id"`
 	}
-	if err := decodeStrictObject(raw, &request); err != nil || !coretask.ValidUUID(request.IdempotencyKey) || !coretask.ValidUUID(request.TurnID) || request.ExpectedRevision == 0 {
+	if err := decodeStrictObject(raw, &request); err != nil || !coretask.ValidUUID(request.IdempotencyKey) || !coretask.ValidUUID(request.TurnID) {
 		return nil, coreconversation.ErrInvalid
 	}
 	turn, err := c.service.CancelTurn(ctx, coreconversation.TurnCancelCommand{
-		RequestID: request.IdempotencyKey, TurnID: request.TurnID, ExpectedRevision: request.ExpectedRevision,
+		RequestID: request.IdempotencyKey, TurnID: request.TurnID,
 	})
 	return marshalResult(publicStoppedTurn{publicTurnMetadata: projectPublicTurnMetadata(turn), IdempotencyKey: request.IdempotencyKey}, err)
 }
@@ -979,7 +978,7 @@ func cancelDurableTurn(service durableTurnCanceler, accepted coreconversation.Tu
 		return nil
 	}
 	requestID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("capability-turn-cancel:"+accepted.RequestID)).String()
-	_, err = service.CancelTurn(ctx, coreconversation.TurnCancelCommand{RequestID: requestID, TurnID: turn.ID, ExpectedRevision: turn.Revision})
+	_, err = service.CancelTurn(ctx, coreconversation.TurnCancelCommand{RequestID: requestID, TurnID: turn.ID})
 	return err
 }
 
@@ -2104,7 +2103,7 @@ func operationInputSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:delete_conversation":
 		return `{"type":"object","properties":{"conversation_id":{"type":"string"},"expected_revision":{"type":"integer"},"idempotency_key":{"type":"string"}},"required":["conversation_id","expected_revision","idempotency_key"]}`
 	case "agent.chat.v1:stop_turn":
-		return `{"additionalProperties":false,"properties":{"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"turn_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","turn_id","expected_revision"],"type":"object"}`
+		return `{"additionalProperties":false,"properties":{"idempotency_key":{"format":"uuid","type":"string"},"turn_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","turn_id"],"type":"object"}`
 	case "agent.chat.v1:steer_turn":
 		return `{"additionalProperties":false,"properties":{"accepted_attachment_ids":{"items":{"format":"uuid","type":"string"},"maxItems":4,"uniqueItems":true,"type":"array"},"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"instruction":{"minLength":1,"type":"string"},"turn_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","turn_id","expected_revision","instruction"],"type":"object"}`
 	case "agent.chat.v1:list_turns":

@@ -186,7 +186,10 @@ func TestCoreConversationTurnCancelCompletionFencePostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancel := core.TurnCancelCommand{RequestID: uuid.NewString(), TurnID: turn.ID, ExpectedRevision: turn.Revision}
+	if _, err = h.pool.Exec(context.Background(), `UPDATE core_conversation_turns SET revision=revision+1 WHERE turn_id=$1`, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	cancel := core.TurnCancelCommand{RequestID: uuid.NewString(), TurnID: turn.ID}
 	start := make(chan struct{})
 	cancelErrs := make([]error, 2)
 	var wg sync.WaitGroup
@@ -205,11 +208,6 @@ func TestCoreConversationTurnCancelCompletionFencePostgres(t *testing.T) {
 			t.Fatalf("identical concurrent cancel[%d]: %v", i, cancelErr)
 		}
 	}
-	changedCancel := cancel
-	changedCancel.ExpectedRevision++
-	if _, err = h.store.RequestTurnCancel(context.Background(), changedCancel); err != core.ErrConflict {
-		t.Fatalf("changed cancel replay err=%v", err)
-	}
 	response := core.ChatResponse{RequestID: cmd.RequestID, ConversationID: turn.ConversationID, Revision: 2, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "done", ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC()}}
 	if _, err = h.store.CommitTurn(context.Background(), lease, response); err == nil {
 		t.Fatal("stale completion won cancellation")
@@ -220,6 +218,9 @@ func TestCoreConversationTurnCancelCompletionFencePostgres(t *testing.T) {
 	got, err := h.store.GetTurn(context.Background(), turn.ID)
 	if err != nil || got.State != core.TurnCanceled {
 		t.Fatalf("turn=%+v err=%v", got, err)
+	}
+	if replay, replayErr := h.store.RequestTurnCancel(context.Background(), cancel); replayErr != nil || replay.State != core.TurnCanceled {
+		t.Fatalf("terminal cancel replay=%+v err=%v", replay, replayErr)
 	}
 }
 
@@ -836,7 +837,7 @@ func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *
 	if err != nil || waitingTurn.State != core.TurnWaitingConfirmation {
 		t.Fatalf("waiting cancel turn=%+v err=%v", waitingTurn, err)
 	}
-	canceledTurn, err := h.store.RequestTurnCancel(context.Background(), core.TurnCancelCommand{RequestID: uuid.NewString(), TurnID: waitingTurn.ID, ExpectedRevision: waitingTurn.Revision})
+	canceledTurn, err := h.store.RequestTurnCancel(context.Background(), core.TurnCancelCommand{RequestID: uuid.NewString(), TurnID: waitingTurn.ID})
 	if err != nil || canceledTurn.State != core.TurnCanceled || canceledTurn.Revision != waitingTurn.Revision+1 {
 		t.Fatalf("canceled turn=%+v err=%v", canceledTurn, err)
 	}

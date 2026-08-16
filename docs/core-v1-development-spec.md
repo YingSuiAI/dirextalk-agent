@@ -496,8 +496,11 @@ A proposal atomically creates the plan, execution, `CLOUD_WORKER` Task and
 confirmation of that exact quote before any AWS mutation. Confirmation of the
 current unexpired offer authorizes the first AWS write directly; there is no
 second quote or confirmation step. Reusing a sufficiently large idle retained Worker
-performs no creation mutation and needs no new creation confirmation, while a
-live hourly read still reports its ongoing server cost.
+performs no creation mutation and needs no new creation confirmation. The live
+intrinsic inventory includes its instance type, vCPU, memory, and disk; the
+model declares the task's actual minimums and prefers an adequate idle Worker
+without inflating or reducing those requirements. A live hourly read still
+reports its ongoing server cost.
 Destroying a retained Worker is a separate explicit owner action available
 from both the owner client and the Native Agent conversation. The conversation
 tool enumerates only the current owner-scoped retained Worker IDs and resolves
