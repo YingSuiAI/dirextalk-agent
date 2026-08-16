@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.155
+
 1. Continue provider output-limit responses from durable text and reasoning fragments with the full accepted tool context, while keeping true transport truncation distinct and never executing a cut-off tool call.
 2. Raise the Native conversation emergency fuse to 500 provider dispatches and 24 hours of cumulative model-active time so it does not constrain legitimate long-running work.
 
