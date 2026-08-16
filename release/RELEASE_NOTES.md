@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.139
+
+1. Preserve explicit zero estimated and maximum costs in Cloud Worker confirmation quotes, so retained Worker reuse remains a valid public DTO and renders from authoritative history.
+
 ## v1.0.138
 
 1. Move the Native Agent chat data plane to durable HTTP writes, resumable SSE, and authoritative Agent-owned history while preserving cancellation, continuation, reasoning, Task, Plan, and attachment projections.

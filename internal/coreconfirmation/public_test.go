@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestPersistentServicePublicQuoteContainsOnlyHourlyPrice(t *testing.T) {
+func TestCloudWorkerPublicQuotePreservesZeroPricingFields(t *testing.T) {
 	now := time.Date(2026, 8, 16, 8, 0, 0, 0, time.UTC)
 	binding := Binding{
 		OperationDomain: "cloud_worker.execute",
@@ -28,20 +28,22 @@ func TestPersistentServicePublicQuoteContainsOnlyHourlyPrice(t *testing.T) {
 	if !strings.Contains(text, `"target_kind":"persistent_service"`) {
 		t.Fatalf("target kind missing: %s", text)
 	}
-	if strings.Contains(text, "amount_micros") || strings.Contains(text, "maximum_authorized_cost_micros") {
-		t.Fatalf("persistent service exposed bounded-job pricing: %s", text)
+	if !strings.Contains(text, `"amount_micros":0`) || !strings.Contains(text, `"maximum_authorized_cost_micros":0`) {
+		t.Fatalf("persistent service zero pricing fields missing: %s", text)
 	}
 
-	binding.TargetKind = "persistent_ssh_worker"
+	binding.TargetKind = "persistent_worker_reuse"
+	binding.Quote.AmountMicros = 0
+	binding.Quote.MaximumAuthorizedCostMicros = 0
 	encoded, err = json.Marshal(binding.Public())
 	if err != nil {
 		t.Fatal(err)
 	}
 	text = string(encoded)
-	if !strings.Contains(text, `"amount_micros":120000`) || !strings.Contains(text, `"maximum_authorized_cost_micros":150000`) {
-		t.Fatalf("bounded job pricing missing: %s", text)
+	if !strings.Contains(text, `"amount_micros":0`) || !strings.Contains(text, `"maximum_authorized_cost_micros":0`) {
+		t.Fatalf("retained reuse zero pricing fields missing: %s", text)
 	}
-	if !strings.Contains(text, `"target_kind":"persistent_ssh_worker"`) {
-		t.Fatalf("bounded target kind missing: %s", text)
+	if !strings.Contains(text, `"target_kind":"persistent_worker_reuse"`) {
+		t.Fatalf("retained reuse target kind missing: %s", text)
 	}
 }

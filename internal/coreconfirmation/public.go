@@ -48,12 +48,12 @@ type PublicBinding struct {
 }
 
 type PublicQuote struct {
-	AmountMicros                int64     `json:"amount_micros,omitempty"`
+	AmountMicros                int64     `json:"amount_micros"`
 	ComputeMicrosPerHour        uint64    `json:"compute_micros_per_hour"`
 	Currency                    string    `json:"currency"`
 	SourceTime                  time.Time `json:"source_time"`
 	ExpiresAt                   time.Time `json:"expires_at"`
-	MaximumAuthorizedCostMicros int64     `json:"maximum_authorized_cost_micros,omitempty"`
+	MaximumAuthorizedCostMicros int64     `json:"maximum_authorized_cost_micros"`
 }
 
 func (b PublicBinding) MarshalJSON() ([]byte, error) {
