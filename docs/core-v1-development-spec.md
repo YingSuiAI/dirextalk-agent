@@ -497,6 +497,13 @@ small local transformations, and static HTML publication compose locally and
 do not justify a Worker offer merely because the overall request uses network
 research or produces a file.
 
+After a successful Web Search, ordinary lightweight research, summary, report,
+and static-page work synthesizes the available evidence and states any gaps;
+completeness, exactness, freshness, or fetching the same research through a
+different path does not by itself authorize Worker escalation. Repository
+cloning, builds, deployments, services, and other required execution or network
+behavior unavailable through specialized tools remain eligible for Worker use.
+
 A proposal carries provider-neutral minimum vCPU, memory, disk, and estimated
 runtime requirements. Agent intersects current-generation x86_64 on-demand
 products with the Region's actual EC2 offerings and selects the cheapest shape

@@ -46,6 +46,9 @@ func TestCloudWorkerRoutingGuidanceKeepsLightweightResearchLocal(t *testing.T) {
 		"use web_search for lightweight web research",
 		"static_site_publish for a self-contained HTML result",
 		"Research plus report or static-page generation is not by itself a reason to start a Worker",
+		"After a successful web_search",
+		"must synthesize the available evidence and state any gaps",
+		"Do not use Cloud Worker solely to improve completeness, exactness, freshness",
 	} {
 		if !strings.Contains(cloudWorkerRoutingGuidance, required) {
 			t.Fatalf("lightweight local routing guidance is missing %q", required)
