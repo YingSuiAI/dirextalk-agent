@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.157
+
 1. Continue from durable partial model output when a provider stream truncates, fails, or idles after producing progress, while preserving zero-delta failures as terminal and never dispatching a cut-off tool call.
 
 ## v1.0.156
