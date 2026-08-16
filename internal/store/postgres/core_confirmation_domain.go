@@ -213,12 +213,12 @@ func terminalizeCloudWorkerTurnTx(
 		return coreconfirmation.ErrStale
 	}
 	var turn struct {
-		OwnerID, ConversationID, ProfileID, State string
-		AccountGeneration, Revision, LastSequence uint64
+		OwnerID, ConversationID, ProfileID, Prompt, State string
+		AccountGeneration, Revision, LastSequence         uint64
 	}
-	if err := tx.QueryRow(ctx, `SELECT owner_id,account_generation,conversation_id::text,profile_id::text,state,revision,last_sequence
+	if err := tx.QueryRow(ctx, `SELECT owner_id,account_generation,conversation_id::text,profile_id::text,prompt,state,revision,last_sequence
 		FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, plan.TurnID).Scan(
-		&turn.OwnerID, &turn.AccountGeneration, &turn.ConversationID, &turn.ProfileID, &turn.State, &turn.Revision, &turn.LastSequence); err != nil {
+		&turn.OwnerID, &turn.AccountGeneration, &turn.ConversationID, &turn.ProfileID, &turn.Prompt, &turn.State, &turn.Revision, &turn.LastSequence); err != nil {
 		return err
 	}
 	if turn.OwnerID != plan.OwnerID || turn.AccountGeneration != plan.AccountGeneration ||
@@ -297,8 +297,9 @@ func terminalizeCloudWorkerTurnTx(
 	if updateErr != nil || turnUpdate.RowsAffected() != 1 {
 		return coreconfirmation.ErrConflict
 	}
-	conversationUpdate, err := tx.Exec(ctx, `UPDATE core_conversations SET revision=revision+1,updated_at=$2
-		WHERE conversation_id=$1 AND revision=$3`, plan.ConversationID, at, conversationRevision)
+	conversationUpdate, err := tx.Exec(ctx, `UPDATE core_conversations
+		SET title=CASE WHEN title='' THEN $2 ELSE title END,revision=revision+1,updated_at=$3
+		WHERE conversation_id=$1 AND revision=$4`, plan.ConversationID, core.ProvisionalConversationTitle(turn.Prompt), at, conversationRevision)
 	if err != nil || conversationUpdate.RowsAffected() != 1 {
 		return coreconfirmation.ErrConflict
 	}

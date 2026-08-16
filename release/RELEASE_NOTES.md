@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.147
+
+1. Preserve a prompt-derived first-turn title and durable stop summary when a retained Cloud Worker turn is canceled.
+
 ## v1.0.146
 
 1. Stop the exact remote SSH runtime when a canceled task invalidates progress before the WorkerPool lease-renewal tick.

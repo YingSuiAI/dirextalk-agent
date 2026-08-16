@@ -449,6 +449,9 @@ func TestCloudWorkerPostgresStopTurnCancelsRetainedServiceReuse(t *testing.T) {
 			}
 			h.command.WorkloadKind = cloudworker.WorkloadService
 			h.command.Service = &cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.example.test"}
+			if _, err := h.store.pool.Exec(h.ctx, `UPDATE core_conversations SET title='' WHERE conversation_id=$1`, h.command.ConversationID); err != nil {
+				t.Fatal(err)
+			}
 			offer := h.propose(t)
 			if offer.Execution.State != cloudworker.StateQueued || offer.Confirmation.State != coreconfirmation.StateConfirmed {
 				t.Fatalf("direct reuse offer=%+v", offer)
@@ -492,6 +495,20 @@ func TestCloudWorkerPostgresStopTurnCancelsRetainedServiceReuse(t *testing.T) {
 				(consumedReleased != test.startExecution) {
 				t.Fatalf("execution=%s task=%s confirmation=%s released=%t turn=%s active_reservation=%t",
 					executionState, taskState, confirmationState, consumedReleased, turnState, activeReservation)
+			}
+			var title, terminalSummary string
+			if err = h.store.pool.QueryRow(h.ctx, `SELECT title FROM core_conversations WHERE conversation_id=$1`, h.command.ConversationID).Scan(&title); err != nil {
+				t.Fatal(err)
+			}
+			if err = h.store.pool.QueryRow(h.ctx, `SELECT content FROM core_messages WHERE conversation_id=$1 AND role='assistant' ORDER BY sequence DESC LIMIT 1`, h.command.ConversationID).Scan(&terminalSummary); err != nil {
+				t.Fatal(err)
+			}
+			expectedSummary := "Cloud Worker task was canceled before dispatch. No AWS resources were created."
+			if test.startExecution {
+				expectedSummary = "Cloud Worker task was stopped. Any retained Worker remains available."
+			}
+			if title != core.ProvisionalConversationTitle(h.lease.Turn.Prompt) || terminalSummary != expectedSummary {
+				t.Fatalf("title=%q terminal_summary=%q", title, terminalSummary)
 			}
 		})
 	}
