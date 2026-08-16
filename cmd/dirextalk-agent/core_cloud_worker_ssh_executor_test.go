@@ -65,6 +65,7 @@ type route53Stub struct {
 	accountID string
 	deletes   int
 	deleteErr error
+	readErr   error
 }
 
 func (route53 *route53Stub) VerifyAccount(_ context.Context, accountID string) error {
@@ -136,7 +137,7 @@ func (destroyer *workerDestroyerStub) FinalizeWorkerDestroy(_ context.Context, r
 	return nil
 }
 func (route53 *route53Stub) ReadA(context.Context, string, string) (remoteservice.ARecord, bool, error) {
-	return route53.record, route53.exists, nil
+	return route53.record, route53.exists, route53.readErr
 }
 
 type workerStatusPricingCatalog struct {
@@ -321,18 +322,24 @@ func TestHostnameReuseRejectsChangedWorkloadAndHostnameCollisions(t *testing.T) 
 	requested := &cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.example.test"}
 	for _, test := range []struct {
 		name, workload, health, hostname string
+		manualHostname                   bool
 	}{
 		{name: "changed-health", workload: "web", health: "/ready"},
 		{name: "same-workload-other-hostname", workload: "web", health: "/health", hostname: "old.example.test"},
 		{name: "other-workload-same-hostname", workload: "other", health: "/health", hostname: "app.example.test"},
+		{name: "manual-dns-hostname", workload: "other", health: "/health", hostname: "app.example.test", manualHostname: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			identity := workerIdentityFixture()
 			repository, _ := sshworkload.NewRepository(t.TempDir())
-			if err := repository.PutService(context.Background(), sshworkload.Service{Worker: identity, TaskID: "old-task", WorkloadID: test.workload, Port: 8080, HealthPath: test.health}); err != nil {
+			stored := sshworkload.Service{Worker: identity, TaskID: "old-task", WorkloadID: test.workload, Port: 8080, HealthPath: test.health}
+			if test.manualHostname {
+				stored.Hostname = test.hostname
+			}
+			if err := repository.PutService(context.Background(), stored); err != nil {
 				t.Fatal(err)
 			}
-			if test.hostname != "" {
+			if test.hostname != "" && !test.manualHostname {
 				if err := repository.SetDomain(context.Background(), identity, test.workload, &sshworkload.Domain{ZoneID: "Z1", Hostname: test.hostname, TTL: 300, BoundIPv4: "203.0.113.10"}); err != nil {
 					t.Fatal(err)
 				}
@@ -438,6 +445,35 @@ func TestPublishServiceDoesNotClaimHTTPSWhenPublicProbeFails(t *testing.T) {
 	}
 }
 
+func TestPublishServiceKeepsExactDomainAfterAmbiguousRoute53Write(t *testing.T) {
+	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	binding, _ := authority.ResolveCurrentAWSBinding(context.Background())
+	identity := workerIdentityFixture()
+	identity.Credential = sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision, AccountID: binding.AccountID, Region: binding.Region}
+	repository, _ := sshworkload.NewRepository(t.TempDir())
+	service := cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.example.test"}
+	previous := &sshworkload.Domain{ZoneID: "Z123", Hostname: service.Hostname, BoundIPv4: "203.0.113.10", TTL: 300}
+	if err := repository.PutService(context.Background(), sshworkload.Service{Worker: identity, TaskID: "task-old", WorkloadID: service.WorkloadID, Port: service.Port, HealthPath: service.HealthPath, Hostname: service.Hostname}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SetDomain(context.Background(), identity, service.WorkloadID, previous); err != nil {
+		t.Fatal(err)
+	}
+	dns := &route53Stub{zoneID: "Z123", zoneFound: true, readErr: errors.New("Route53 readback failed")}
+	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository,
+		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{identity.Credential: {}},
+		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns}}
+	worker := &serviceWorkerStub{identity: identity, status: sshworker.WorkerStatus{Identity: identity, PublicIP: "203.0.113.20"}}
+
+	if _, err := executor.publishService(context.Background(), worker, workerAuthorityFixture(), identity.Credential, identity.WorkerID, "task-a", service, nil); !errors.Is(err, dns.readErr) {
+		t.Fatalf("publish error = %v", err)
+	}
+	stored, err := repository.Get(context.Background(), identity, service.WorkloadID)
+	if err != nil || stored.Domain == nil || *stored.Domain != *previous || stored.PendingDomain == nil || stored.PendingDomain.ZoneID != dns.zoneID || stored.PendingDomain.Hostname != service.Hostname || stored.PendingDomain.BoundIPv4 != worker.status.PublicIP || dns.upserts != 1 {
+		t.Fatalf("stored=%+v dns=%+v err=%v", stored, dns, err)
+	}
+}
+
 func TestPublishServiceReturnsManualDNSWhenNoHostedZoneMatches(t *testing.T) {
 	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
 	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
@@ -458,7 +494,7 @@ func TestPublishServiceReturnsManualDNSWhenNoHostedZoneMatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, err := repository.Get(context.Background(), identity, service.WorkloadID)
-	if err != nil || stored.Domain != nil || dns.upserts != 0 || publication.ZoneID != "" ||
+	if err != nil || stored.Domain != nil || stored.Hostname != service.Hostname || dns.upserts != 0 || publication.ZoneID != "" ||
 		!strings.Contains(publication.summary(), worker.status.PublicIP) || !strings.Contains(publication.summary(), "Create an A record") {
 		t.Fatalf("publication=%+v stored=%+v dns=%+v err=%v", publication, stored, dns, err)
 	}

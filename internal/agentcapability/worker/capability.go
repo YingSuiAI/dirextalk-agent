@@ -23,7 +23,7 @@ const (
 
 	identitySchema = `{"additionalProperties":false,"properties":{"account_id":{"type":"string"},"credential_id":{"type":"string"},"credential_revision":{"minimum":1,"type":"integer"},"instance_id":{"type":"string"},"key_pair_id":{"type":"string"},"region":{"type":"string"},"security_group_id":{"type":"string"},"worker_id":{"type":"string"}},"required":["worker_id","instance_id","key_pair_id","security_group_id","credential_id","credential_revision","account_id","region"],"type":"object"}`
 	domainSchema   = `{"additionalProperties":false,"properties":{"hostname":{"type":"string"},"mode":{"const":"route53_same_account","type":"string"},"record_status":{"enum":["pending","current","drifted","error"],"type":"string"},"target_ipv4":{"type":"string"},"ttl":{"type":"integer"},"zone_id":{"type":"string"}},"required":["mode","zone_id","hostname","target_ipv4","ttl","record_status"],"type":"object"}`
-	workloadSchema = `{"additionalProperties":false,"properties":{"active_state":{"type":"string"},"domain":` + domainSchema + `,"health":{"type":"string"},"kind":{"enum":["job","service"],"type":"string"},"phase":{"type":"string"},"port":{"type":"integer"},"workload_id":{"type":"string"}},"required":["workload_id","kind","phase","active_state","health"],"type":"object"}`
+	workloadSchema = `{"additionalProperties":false,"properties":{"active_state":{"type":"string"},"domain":` + domainSchema + `,"health":{"type":"string"},"hostname":{"type":"string"},"kind":{"enum":["job","service"],"type":"string"},"phase":{"type":"string"},"port":{"type":"integer"},"workload_id":{"type":"string"}},"required":["workload_id","kind","phase","active_state","health"],"type":"object"}`
 	statusSchema   = `{"additionalProperties":false,"properties":{"availability":{"enum":["available","unavailable"],"type":"string"},"current_task":{"additionalProperties":false,"properties":{"execution_id":{"type":"string"},"phase":{"type":"string"}},"required":["execution_id","phase"],"type":"object"},"ec2_state":{"type":"string"},"error":{"type":"string"},"hourly_quote":{"additionalProperties":false,"properties":{"currency":{"type":"string"},"expires_at":{"format":"date-time","type":"string"},"micros_per_hour":{"minimum":0,"type":"integer"},"observed_at":{"format":"date-time","type":"string"}},"required":["currency","micros_per_hour","observed_at","expires_at"],"type":"object"},"identity":` + identitySchema + `,"observed_at":{"format":"date-time","type":"string"},"public_ipv4":{"type":"string"},"server":{"additionalProperties":false,"properties":{"last_seen":{"format":"date-time","type":"string"},"load_1":{"type":"number"},"load_15":{"type":"number"},"load_5":{"type":"number"}},"required":["last_seen","load_1","load_5","load_15"],"type":"object"},"worker_phase":{"type":"string"},"workloads":{"items":` + workloadSchema + `,"type":"array"}},"required":["identity","availability","ec2_state","worker_phase","observed_at"],"type":"object"}`
 
 	listInputSchema     = `{"additionalProperties":false,"properties":{},"type":"object"}`
@@ -64,6 +64,7 @@ type WorkloadStatus struct {
 	ActiveState string        `json:"active_state"`
 	Health      string        `json:"health"`
 	Port        uint16        `json:"port,omitempty"`
+	Hostname    string        `json:"hostname,omitempty"`
 	Domain      *DomainStatus `json:"domain,omitempty"`
 }
 

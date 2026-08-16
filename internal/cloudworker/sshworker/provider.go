@@ -129,7 +129,7 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	}
 	result.WorkerID = worker.WorkerID
 	if request.Finalize != nil {
-		if err := request.Finalize(ctx, worker.WorkerID); err != nil {
+		if err := request.Finalize(ctx, worker.WorkerID, &result); err != nil {
 			return result, errors.Join(err, provider.failExecution(ctx, &execution, &worker))
 		}
 	}

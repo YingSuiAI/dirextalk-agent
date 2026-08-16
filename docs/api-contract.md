@@ -279,7 +279,8 @@ retain their frozen revision CAS.
   `list_workers` and `get_worker` expose the exact
   AWS resource identity, observed EC2 state and ordinary auto-assigned public
   IPv4, Worker/task phase, server load and last-seen time, live hourly quote,
-  availability and optional workload/domain status. An unavailable historical
+  availability and optional workload hostname/managed-domain status. An
+  unavailable historical
   credential or one failed AWS observation is projected on that retained
   Worker without hiding other records. At most five retained Workers may exist
   for one authenticated owner/account generation across credential revisions;

@@ -53,6 +53,18 @@ func TestRepositoryRejectsChangedStableServiceSpec(t *testing.T) {
 	}
 }
 
+func TestRepositoryRejectsDomainForDifferentHostname(t *testing.T) {
+	repository, _ := NewRepository(t.TempDir())
+	service := Service{Worker: workerFixture(), TaskID: "task-a", WorkloadID: "memory-api", Port: 8080, HealthPath: "/health", Hostname: "api.example.test"}
+	if err := repository.PutService(context.Background(), service); err != nil {
+		t.Fatal(err)
+	}
+	domain := &Domain{ZoneID: "Z123", Hostname: "other.example.test", TTL: 300, BoundIPv4: "203.0.113.10"}
+	if err := repository.SetDomain(context.Background(), service.Worker, service.WorkloadID, domain); !errors.Is(err, ErrIdentity) {
+		t.Fatalf("mismatched domain accepted: %v", err)
+	}
+}
+
 func TestRepositoryPersistsMultipleServicesForRetainedWorker(t *testing.T) {
 	repository, _ := NewRepository(t.TempDir())
 	identity := workerFixture()

@@ -494,19 +494,27 @@ func TestProviderKeepsWorkerBusyThroughFinalization(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := requestFixture()
-	request.Finalize = func(_ context.Context, workerID string) error {
+	finalized := 0
+	request.Finalize = func(_ context.Context, workerID string, result *ExecutionResult) error {
+		finalized++
 		worker := store.workers[workerID]
 		if worker.Phase != WorkerBusy || worker.CurrentExecutionID != request.ExecutionID {
 			t.Fatalf("worker was released before finalization: %+v", worker)
 		}
+		result.Summary = "service https ready"
 		return nil
 	}
-	if _, err = provider.Execute(context.Background(), request); err != nil {
+	result, err := provider.Execute(context.Background(), request)
+	if err != nil || result.Summary != "service https ready" {
 		t.Fatal(err)
 	}
 	worker := store.workers[request.ExecutionID]
 	if worker.Phase != WorkerIdle || worker.CurrentExecutionID != "" {
 		t.Fatalf("worker was not released after finalization: %+v", worker)
+	}
+	replayed, err := provider.Execute(context.Background(), request)
+	if err != nil || replayed.Summary != "service https ready" || finalized != 1 {
+		t.Fatalf("replayed=%+v finalized=%d err=%v", replayed, finalized, err)
 	}
 }
 

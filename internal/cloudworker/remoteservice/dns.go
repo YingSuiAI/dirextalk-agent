@@ -49,6 +49,15 @@ func ReconcileLiteral(ctx context.Context, client Route53, mutation DNSMutation,
 	if mutation.Action == DNSUpsertA {
 		return ReconcilePlannedUpsert(ctx, client, mutation)
 	}
+	return ReconcilePlannedDelete(ctx, client, mutation)
+}
+
+// ReconcilePlannedDelete removes one exact record already authorized by its
+// owning Worker operation and verifies that it is absent.
+func ReconcilePlannedDelete(ctx context.Context, client Route53, mutation DNSMutation) error {
+	if ctx == nil || client == nil || mutation.Action != DNSDeleteA || mutation.validate() != nil {
+		return ErrInvalid
+	}
 	if err := client.VerifyAccount(ctx, mutation.AccountID); err != nil {
 		return err
 	}
@@ -71,17 +80,11 @@ func ReconcileLiteral(ctx context.Context, client Route53, mutation DNSMutation,
 	if err := client.VerifyAccount(ctx, mutation.AccountID); err != nil {
 		return err
 	}
-	record, exists, err := client.ReadA(ctx, mutation.Record.ZoneID, canonicalHostname(mutation.Record.Hostname))
+	_, exists, err = client.ReadA(ctx, mutation.Record.ZoneID, canonicalHostname(mutation.Record.Hostname))
 	if err != nil {
 		return err
 	}
-	if mutation.Action == DNSDeleteA {
-		if exists {
-			return ErrReadback
-		}
-		return nil
-	}
-	if !exists || !sameRecord(record, mutation.Record) {
+	if exists {
 		return ErrReadback
 	}
 	return nil

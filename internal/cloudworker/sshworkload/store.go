@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 )
 
@@ -23,12 +24,14 @@ var (
 )
 
 type Service struct {
-	Worker     sshworker.WorkerIdentity `json:"worker"`
-	TaskID     string                   `json:"task_id"`
-	WorkloadID string                   `json:"workload_id"`
-	Port       uint16                   `json:"port"`
-	HealthPath string                   `json:"health_path"`
-	Domain     *Domain                  `json:"domain,omitempty"`
+	Worker        sshworker.WorkerIdentity `json:"worker"`
+	TaskID        string                   `json:"task_id"`
+	WorkloadID    string                   `json:"workload_id"`
+	Port          uint16                   `json:"port"`
+	HealthPath    string                   `json:"health_path"`
+	Hostname      string                   `json:"hostname,omitempty"`
+	Domain        *Domain                  `json:"domain,omitempty"`
+	PendingDomain *Domain                  `json:"pending_domain,omitempty"`
 }
 
 type Domain struct {
@@ -68,7 +71,14 @@ func (repository *Repository) PutService(_ context.Context, service Service) err
 			if services[index].Port != service.Port || services[index].HealthPath != service.HealthPath {
 				return ErrIdentity
 			}
+			if services[index].Hostname != "" && services[index].Hostname != service.Hostname {
+				return ErrIdentity
+			}
+			if service.Hostname == "" {
+				service.Hostname = services[index].Hostname
+			}
 			service.Domain = services[index].Domain
+			service.PendingDomain = services[index].PendingDomain
 			services[index] = service
 			return repository.writeLocked(service.Worker, services)
 		}
@@ -115,9 +125,67 @@ func (repository *Repository) SetDomain(_ context.Context, identity sshworker.Wo
 	}
 	for index := range services {
 		if services[index].WorkloadID == workloadID {
-			services[index].Domain = domain
+			next := services[index]
+			next.Domain = domain
+			next.PendingDomain = nil
+			if validateService(next) != nil {
+				return ErrIdentity
+			}
+			services[index] = next
 			return repository.writeLocked(identity, services)
 		}
+	}
+	return ErrNotFound
+}
+
+func (repository *Repository) StageDomain(_ context.Context, identity sshworker.WorkerIdentity, workloadID string, domain *Domain) error {
+	if repository == nil || validateWorker(identity) != nil || !validID(workloadID) || domain == nil || validateDomain(*domain) != nil {
+		return ErrInvalid
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	services, err := repository.readLocked(identity)
+	if err != nil {
+		return err
+	}
+	for index := range services {
+		if services[index].WorkloadID != workloadID {
+			continue
+		}
+		next := services[index]
+		if next.PendingDomain != nil && *next.PendingDomain != *domain {
+			return ErrIdentity
+		}
+		next.PendingDomain = domain
+		if validateService(next) != nil {
+			return ErrIdentity
+		}
+		services[index] = next
+		return repository.writeLocked(identity, services)
+	}
+	return ErrNotFound
+}
+
+func (repository *Repository) CommitDomain(_ context.Context, identity sshworker.WorkerIdentity, workloadID string) error {
+	if repository == nil || validateWorker(identity) != nil || !validID(workloadID) {
+		return ErrInvalid
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	services, err := repository.readLocked(identity)
+	if err != nil {
+		return err
+	}
+	for index := range services {
+		if services[index].WorkloadID != workloadID {
+			continue
+		}
+		if services[index].PendingDomain == nil {
+			return ErrIdentity
+		}
+		services[index].Domain = services[index].PendingDomain
+		services[index].PendingDomain = nil
+		return repository.writeLocked(identity, services)
 	}
 	return ErrNotFound
 }
@@ -191,10 +259,16 @@ func (repository *Repository) path(workerID string) string {
 
 func validateService(service Service) error {
 	if validateWorker(service.Worker) != nil || !validID(service.TaskID) || !validID(service.WorkloadID) || service.Port == 0 ||
-		!validHealthPath(service.HealthPath) || (service.Domain != nil && validateDomain(*service.Domain) != nil) {
+		!validHealthPath(service.HealthPath) || (service.Hostname != "" && !remoteservice.ValidHostname(service.Hostname)) ||
+		!validServiceDomain(service.Hostname, service.Domain) || !validServiceDomain(service.Hostname, service.PendingDomain) {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func validServiceDomain(hostname string, domain *Domain) bool {
+	return domain == nil || (validateDomain(*domain) == nil &&
+		(hostname == "" || remoteservice.CanonicalHostname(domain.Hostname) == remoteservice.CanonicalHostname(hostname)))
 }
 
 func validateWorker(identity sshworker.WorkerIdentity) error {

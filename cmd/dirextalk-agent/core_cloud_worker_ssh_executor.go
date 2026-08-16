@@ -180,18 +180,21 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	if request.ReuseOnly {
 		confirmation = sshworker.Confirmation{}
 	}
-	publicationSummary := ""
-	var finalize func(context.Context, string) error
+	var finalize func(context.Context, string, *sshworker.ExecutionResult) error
 	if service != nil {
-		finalize = func(finalizeCtx context.Context, workerID string) error {
+		finalize = func(finalizeCtx context.Context, workerID string, result *sshworker.ExecutionResult) error {
 			if request.ReportProgress != nil {
 				if progressErr := request.ReportProgress(finalizeCtx, "verifying_service", "Verifying deployed service"); progressErr != nil {
 					return progressErr
 				}
 			}
 			publication, publishErr := executor.publishService(finalizeCtx, provider, sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, identity, workerID, request.ExecutionID, *request.Service, request.ReportProgress)
-			if publishErr == nil {
-				publicationSummary = publication.summary()
+			if detail := publication.summary(); publishErr == nil && detail != "" {
+				if strings.TrimSpace(result.Summary) == "" {
+					result.Summary = detail
+				} else {
+					result.Summary = boundedWorkerSummary(result.Summary + "\n\n" + detail)
+				}
 			}
 			return publishErr
 		}
@@ -216,9 +219,6 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	workerResult.Summary = boundedWorkerSummary(result.Summary)
 	if workerResult.Summary == "" {
 		workerResult.Summary = fmt.Sprintf("Cloud Worker %s completed with exit code %d and %d artifacts", workerResult.WorkerID, result.ExitCode, result.ArtifactCount)
-	}
-	if publicationSummary != "" {
-		workerResult.Summary = boundedWorkerSummary(workerResult.Summary + "\n\n" + publicationSummary)
 	}
 	if errors.Is(err, sshworker.ErrAmbiguous) {
 		err = errors.Join(sshflow.ErrExecutionUncertain, err)
@@ -442,7 +442,8 @@ func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider 
 		return servicePublication{}, err
 	}
 	if err = executor.workloads.PutService(ctx, sshworkload.Service{Worker: worker, TaskID: taskID,
-		WorkloadID: service.WorkloadID, Port: service.Port, HealthPath: service.HealthPath}); err != nil {
+		WorkloadID: service.WorkloadID, Port: service.Port, HealthPath: service.HealthPath,
+		Hostname: remoteservice.CanonicalHostname(service.Hostname)}); err != nil {
 		return servicePublication{}, err
 	}
 	publicPorts := []uint16{service.Port}
@@ -504,10 +505,22 @@ func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider 
 	domain := &sshworkload.Domain{ZoneID: zoneID, Hostname: publication.Hostname, TTL: 300, BoundIPv4: publication.PublicIPv4}
 	mutation := remoteservice.DNSMutation{Action: remoteservice.DNSUpsertA, AccountID: credential.AccountID, WorkerID: worker.WorkerID,
 		WorkloadID: service.WorkloadID, Record: remoteservice.ARecord{ZoneID: zoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}}
+	stored, err := executor.workloads.Get(ctx, worker, service.WorkloadID)
+	if err != nil {
+		return servicePublication{}, err
+	}
+	if err = executor.workloads.StageDomain(ctx, worker, service.WorkloadID, domain); err != nil {
+		return servicePublication{}, err
+	}
 	if err = remoteservice.ReconcilePlannedUpsert(ctx, dns, mutation); err != nil {
 		return servicePublication{}, err
 	}
-	if err = executor.workloads.SetDomain(ctx, worker, service.WorkloadID, domain); err != nil {
+	if stored.Domain != nil && !sameDomainRecordKey(stored.Domain, domain) {
+		if err = remoteservice.ReconcilePlannedDelete(ctx, dns, domainMutation(credential.AccountID, worker.WorkerID, service.WorkloadID, remoteservice.DNSDeleteA, stored.Domain)); err != nil {
+			return servicePublication{}, err
+		}
+	}
+	if err = executor.workloads.CommitDomain(ctx, worker, service.WorkloadID); err != nil {
 		return servicePublication{}, err
 	}
 	publication.ZoneID = zoneID
@@ -603,14 +616,18 @@ func (executor *sshWorkerExecutor) workerSupportsService(ctx context.Context, wo
 		reserved[80], reserved[443] = struct{}{}, struct{}{}
 	}
 	for _, service := range services {
+		existingHostname := remoteservice.CanonicalHostname(service.Hostname)
+		if existingHostname == "" && service.Domain != nil {
+			existingHostname = remoteservice.CanonicalHostname(service.Domain.Hostname)
+		}
 		if service.WorkloadID == requested.WorkloadID {
 			if service.Port != requested.Port || service.HealthPath != requested.HealthPath ||
-				(service.Domain != nil && remoteservice.CanonicalHostname(service.Domain.Hostname) != remoteservice.CanonicalHostname(requested.Hostname)) {
+				(existingHostname != "" && existingHostname != remoteservice.CanonicalHostname(requested.Hostname)) {
 				return false, nil
 			}
 		}
-		if requested.Hostname != "" && service.WorkloadID != requested.WorkloadID && service.Domain != nil &&
-			remoteservice.CanonicalHostname(service.Domain.Hostname) == remoteservice.CanonicalHostname(requested.Hostname) {
+		if requested.Hostname != "" && service.WorkloadID != requested.WorkloadID &&
+			existingHostname == remoteservice.CanonicalHostname(requested.Hostname) {
 			return false, nil
 		}
 		if _, conflict := reserved[service.Port]; conflict {
@@ -750,8 +767,8 @@ func (executor *sshWorkerExecutor) ResolveRetainedWorkerInventory(ctx context.Co
 			worker.Workloads = make([]cloudworker.RetainedWorkerWorkload, 0, len(workloads))
 			for _, workload := range workloads {
 				item := cloudworker.RetainedWorkerWorkload{WorkloadID: workload.WorkloadID, Kind: workload.Kind, Phase: workload.Phase,
-					ActiveState: workload.ActiveState, Health: workload.Health, Port: workload.Port}
-				if workload.Domain != nil {
+					ActiveState: workload.ActiveState, Health: workload.Health, Port: workload.Port, Hostname: workload.Hostname}
+				if item.Hostname == "" && workload.Domain != nil {
 					item.Hostname = workload.Domain.Hostname
 				}
 				worker.Workloads = append(worker.Workloads, item)
@@ -829,7 +846,7 @@ func (executor *sshWorkerExecutor) destroyWorkerResources(ctx context.Context, p
 	}
 	var dnsErr error
 	for _, service := range services {
-		if service.Domain == nil {
+		if service.Domain == nil && service.PendingDomain == nil {
 			continue
 		}
 		dnsErr = errors.Join(dnsErr, executor.deleteDomain(completionCtx, service, "destroy_worker"))
@@ -853,23 +870,42 @@ func completeWorkerResourceIdentity(identity sshworker.WorkerIdentity) bool {
 }
 
 func (executor *sshWorkerExecutor) deleteDomain(ctx context.Context, service sshworkload.Service, confirmation string) error {
-	domain := service.Domain
-	if domain == nil {
+	if service.Domain == nil && service.PendingDomain == nil {
 		return nil
 	}
 	dns := executor.route53For(ctx, service.Worker.Credential)
 	if dns == nil {
 		return remoteservice.ErrInvalid
 	}
-	mutation := remoteservice.DNSMutation{Action: remoteservice.DNSDeleteA, AccountID: service.Worker.Credential.AccountID, WorkerID: service.Worker.WorkerID,
-		WorkloadID: service.WorkloadID, Record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}}
-	if err := remoteservice.ReconcileLiteral(ctx, dns, mutation, confirmation); err != nil {
-		return err
+	var result error
+	pendingDeleted := false
+	if service.PendingDomain != nil {
+		err := remoteservice.ReconcileLiteral(ctx, dns, domainMutation(service.Worker.Credential.AccountID, service.Worker.WorkerID, service.WorkloadID, remoteservice.DNSDeleteA, service.PendingDomain), confirmation)
+		pendingDeleted = err == nil
+		if err != nil && !(errors.Is(err, remoteservice.ErrReadback) && sameDomainRecordKey(service.PendingDomain, service.Domain)) {
+			result = errors.Join(result, err)
+		}
+	}
+	if service.Domain != nil && !(pendingDeleted && sameDomainRecordKey(service.PendingDomain, service.Domain)) {
+		result = errors.Join(result, remoteservice.ReconcileLiteral(ctx, dns, domainMutation(service.Worker.Credential.AccountID, service.Worker.WorkerID, service.WorkloadID, remoteservice.DNSDeleteA, service.Domain), confirmation))
+	}
+	if result != nil {
+		return result
 	}
 	if confirmation == "destroy_worker" {
 		return nil
 	}
 	return executor.workloads.SetDomain(ctx, service.Worker, service.WorkloadID, nil)
+}
+
+func domainMutation(accountID, workerID, workloadID string, action remoteservice.DNSAction, domain *sshworkload.Domain) remoteservice.DNSMutation {
+	return remoteservice.DNSMutation{Action: action, AccountID: accountID, WorkerID: workerID, WorkloadID: workloadID,
+		Record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}}
+}
+
+func sameDomainRecordKey(left, right *sshworkload.Domain) bool {
+	return left != nil && right != nil && left.ZoneID == right.ZoneID &&
+		remoteservice.CanonicalHostname(left.Hostname) == remoteservice.CanonicalHostname(right.Hostname)
 }
 
 func projectDomain(domain *sshworkload.Domain, state string) workercap.DomainStatus {
@@ -895,7 +931,7 @@ func (executor *sshWorkerExecutor) ListWorkerWorkloads(ctx context.Context, work
 	result := make([]workercap.WorkloadStatus, 0, len(services))
 	for _, service := range services {
 		runtime, observeErr := provider.ObserveService(ctx, worker.Identity, service.TaskID)
-		status := workercap.WorkloadStatus{WorkloadID: service.WorkloadID, Kind: "service", Phase: "unavailable", ActiveState: "unknown", Health: "unknown", Port: service.Port}
+		status := workercap.WorkloadStatus{WorkloadID: service.WorkloadID, Kind: "service", Phase: "unavailable", ActiveState: "unknown", Health: "unknown", Port: service.Port, Hostname: service.Hostname}
 		if observeErr == nil {
 			status.Phase, status.ActiveState, status.Health = runtime.Phase, runtime.ActiveState, runtime.Health
 		}

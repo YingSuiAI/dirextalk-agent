@@ -171,14 +171,14 @@ func TestCatalogTracksVerifiedCredentialWithoutRestart(t *testing.T) {
 func TestListProjectsObservedPublicIPv4TaskQuoteAndWorkload(t *testing.T) {
 	credential, status := fixture()
 	manager := &managerStub{statuses: []sshworker.WorkerStatus{status}}
-	workload := WorkloadStatus{WorkloadID: "web", Kind: "service", Phase: "running", ActiveState: "active", Health: "healthy", Port: 8080, Domain: &DomainStatus{Mode: "route53_same_account", ZoneID: "Z123", Hostname: "app.example.com", TargetIPv4: status.PublicIP, TTL: 300, RecordStatus: "current"}}
+	workload := WorkloadStatus{WorkloadID: "web", Kind: "service", Phase: "running", ActiveState: "active", Health: "healthy", Port: 8080, Hostname: "app.example.com", Domain: &DomainStatus{Mode: "route53_same_account", ZoneID: "Z123", Hostname: "app.example.com", TargetIPv4: status.PublicIP, TTL: 300, RecordStatus: "current"}}
 	capability, _ := NewCapability(Bindings{Credentials: credentialStub{credential: credential}, Workers: manager, Workloads: workloadStub{[]WorkloadStatus{workload}}})
 	raw, err := capability.HandleOperation(ownerContext(), "list_workers", []byte(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var result map[string]any
-	if json.Unmarshal(raw, &result) != nil || !bytes.Contains(raw, []byte(`"public_ipv4":"203.0.113.10"`)) || !bytes.Contains(raw, []byte(`"execution_id":"task-1"`)) || !bytes.Contains(raw, []byte(`"micros_per_hour":25000`)) || !bytes.Contains(raw, []byte(`"hostname":"app.example.com"`)) {
+	if json.Unmarshal(raw, &result) != nil || !bytes.Contains(raw, []byte(`"public_ipv4":"203.0.113.10"`)) || !bytes.Contains(raw, []byte(`"execution_id":"task-1"`)) || !bytes.Contains(raw, []byte(`"micros_per_hour":25000`)) || bytes.Count(raw, []byte(`"hostname":"app.example.com"`)) != 2 {
 		t.Fatalf("list result=%s", raw)
 	}
 }
