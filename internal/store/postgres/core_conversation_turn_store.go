@@ -498,12 +498,13 @@ func (s *CoreConversationStore) RenewTurn(ctx context.Context, id, lease string,
 }
 
 func (s *CoreConversationStore) PrepareTurnModel(ctx context.Context, lease core.TurnLease) (core.Turn, error) {
-	var out core.Turn
-	err := s.pool.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='' RETURNING turn_id`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&out.ID)
+	out := lease.Turn
+	err := s.pool.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='' RETURNING dispatch_epoch,updated_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&out.DispatchEpoch, &out.UpdatedAt)
 	if err != nil {
 		return core.Turn{}, core.ErrConflict
 	}
-	return s.GetTurn(ctx, out.ID)
+	out.DispatchState = "dispatched"
+	return out, nil
 }
 
 func (s *CoreConversationStore) LoadTurnModelResult(ctx context.Context, id string) (core.ModelRunResult, bool, error) {

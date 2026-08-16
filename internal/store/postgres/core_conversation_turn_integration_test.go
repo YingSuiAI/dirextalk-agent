@@ -313,6 +313,31 @@ func TestCoreConversationTurnDispatchRecoveryPostgres(t *testing.T) {
 	}
 }
 
+func TestPrepareTurnModelReturnsAtomicDispatchTransitionPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	turn, err := h.store.StartTurn(context.Background(), turnCommand())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := h.store.PrepareTurnModel(context.Background(), lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.ID != turn.ID || prepared.State != core.TurnRunning || prepared.DispatchState != "dispatched" || prepared.DispatchEpoch != 1 {
+		t.Fatalf("prepared turn=%+v", prepared)
+	}
+	if prepared.ProfileSnapshot.APIKey != lease.Turn.ProfileSnapshot.APIKey || prepared.UpdatedAt.Before(lease.Turn.UpdatedAt) {
+		t.Fatalf("prepared turn lost accepted snapshot: %+v", prepared)
+	}
+	if _, err = h.store.PrepareTurnModel(context.Background(), lease); err != core.ErrConflict {
+		t.Fatalf("duplicate prepare err=%v", err)
+	}
+}
+
 func TestCoreConversationTurnMigrationConstraintsPostgres(t *testing.T) {
 	h := openTurnDB(t)
 	if _, err := h.pool.Exec(context.Background(), `INSERT INTO core_conversation_turns(turn_id,request_id,request_fingerprint,prompt,profile_id,profile_snapshot_json,profile_snapshot_digest,state) VALUES($1,$2,$3,'x',$4,'{}',$5,'completed')`, uuid.New(), uuid.New(), strings.Repeat("a", 64), uuid.New(), strings.Repeat("b", 64)); err == nil {

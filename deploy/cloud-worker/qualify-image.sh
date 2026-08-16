@@ -339,11 +339,12 @@ qualify_presentation_runtime() (
         exit 69
     }
 
-    probe_root=$(mktemp -d)
-    cleanup_presentation() { rm -rf -- "$probe_root"; }
+    probe_root=$(setpriv --reuid=65532 --regid=65532 --clear-groups mktemp -d)
+    cleanup_presentation() {
+        setpriv --reuid=65532 --regid=65532 --clear-groups \
+            rm -rf -- "$probe_root"
+    }
     trap cleanup_presentation EXIT HUP INT TERM
-    chown 65532:65532 "$probe_root"
-    chmod 0700 "$probe_root"
     if version=$(setpriv --reuid=65532 --regid=65532 --clear-groups \
         env -i PATH=/usr/local/bin:/usr/bin:/bin HOME="$probe_root" \
         XDG_CACHE_HOME="$probe_root/cache" "$presentation" version 2>&1); then

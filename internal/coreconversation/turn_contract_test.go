@@ -1108,7 +1108,9 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 
 	if model.runs != 1 || len(model.request.Intrinsics) != 1 ||
 		model.request.Intrinsics[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
-		len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != selection.ID {
+		len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != selection.ID ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "call cloud_worker_propose in the current turn") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "never proves that a new offer exists") {
 		t.Fatalf("model request lost intrinsic or extension: %+v", model.request)
 	}
 }

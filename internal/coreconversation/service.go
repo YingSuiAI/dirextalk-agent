@@ -1602,6 +1602,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		go func() {
 			profile := turn.ProfileSnapshot.Profile()
 			systemPrompt := profile.SystemPrompt
+			if containsCloudWorkerIntrinsic(intrinsicTools) {
+				systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
+			}
 			if containsStaticSiteIntrinsic(intrinsicTools) {
 				systemPrompt = staticSiteSystemPrompt(systemPrompt)
 			}

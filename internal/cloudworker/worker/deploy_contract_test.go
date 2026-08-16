@@ -358,6 +358,9 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 		"qualified LibreOffice 25.8.7 runtime is missing",
 		"qualified Noto Sans CJK SC font is missing",
 		"dirextalk-presentation 1.0.0",
+		`probe_root=$(setpriv --reuid=65532 --regid=65532 --clear-groups mktemp -d)`,
+		"cleanup_presentation() {",
+		`rm -rf -- "$probe_root"`,
 	} {
 		if !strings.Contains(qualifier, required) {
 			t.Fatalf("AMI qualifier lacks %q", required)
@@ -374,6 +377,23 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 	}
 	if strings.Contains(qualifier, `^\[fe80:[0-9a-f:]+%[[:alnum:]_.:-]+\]:546$`) {
 		t.Fatal("boot qualification must match ss IPv6 zone placement outside the address brackets")
+	}
+	presentationStart := strings.Index(qualifier, "qualify_presentation_runtime() (")
+	presentationEndMarker := "\n)\n\nif [ \"$phase\" = offline ]"
+	presentationEnd := -1
+	if presentationStart >= 0 {
+		if relativeEnd := strings.Index(
+			qualifier[presentationStart:],
+			presentationEndMarker,
+		); relativeEnd >= 0 {
+			presentationEnd = presentationStart + relativeEnd
+		}
+	}
+	if presentationStart < 0 || presentationEnd <= presentationStart {
+		t.Fatal("presentation runtime qualification block is malformed")
+	}
+	if strings.Contains(qualifier[presentationStart:presentationEnd], "chown ") {
+		t.Fatal("presentation boot qualification must not require CAP_CHOWN")
 	}
 
 	allowlist := readDeployFile(t, root, "rootfs-files.allowlist")
