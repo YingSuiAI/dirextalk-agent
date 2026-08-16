@@ -18,7 +18,10 @@ import (
 	"github.com/google/uuid"
 )
 
-const webSearchToolSchema = `{"additionalProperties":false,"properties":{"max_results":{"maximum":10,"minimum":1,"type":"integer"},"query":{"maxLength":1000,"minLength":1,"type":"string"}},"required":["query"],"type":"object"}`
+const (
+	webSearchToolSchema      = `{"additionalProperties":false,"properties":{"max_results":{"description":"Choose enough results for the requested answer in the first search.","maximum":10,"minimum":1,"type":"integer"},"query":{"description":"One focused search query for a missing fact, not a paraphrase of an earlier query in this turn.","maxLength":1000,"minLength":1,"type":"string"}},"required":["query"],"type":"object"}`
+	webSearchToolDescription = "Search the public web for current information and sources. Start with one focused query and enough results. Search again only for a distinct missing fact; do not repeat equivalent searches. Once the evidence is sufficient, answer immediately and state any uncertainty instead of searching for exhaustive confirmation."
+)
 
 type webSearchConversationResolver struct {
 	base    coreconversation.ExtensionResolver
@@ -93,7 +96,7 @@ func (r *webSearchConversationResolver) ResolveExtensions(ctx context.Context, s
 			ContentDigest: contentDigest, ArtifactDigest: artifactDigest, ToolSchemaDigest: schemaDigest,
 			NetworkBindingDigest: artifactDigest, ToolNames: []string{"web_search"}, ReadOnly: true,
 		},
-		Tools: []coremodel.Tool{{Name: "web_search", Description: "Search the public web for current information and sources.", InputSchema: schema}},
+		Tools: []coremodel.Tool{{Name: "web_search", Description: webSearchToolDescription, InputSchema: schema}},
 		Execute: func(toolCtx context.Context, request coreconversation.ToolExecutionRequest) (coreconversation.ToolResult, error) {
 			var input struct {
 				Query      string `json:"query"`

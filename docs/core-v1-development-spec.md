@@ -213,7 +213,10 @@ authenticated owner and generation, reloads the current encrypted config, and
 requires exact revision and credential-version matches. Rotation, clear,
 disable, generation change, or deprovision therefore fails closed before any
 Tavily request. A service restart rebuilds the executable closure from the
-encrypted repository.
+encrypted repository. Its model-facing contract requests one focused search
+with enough results, permits another only for a distinct missing fact, and
+directs the model to synthesize sufficient evidence instead of repeating
+equivalent searches for exhaustive confirmation.
 
 When Knowledge is enabled, the same resolver chain adds one Agent-owned,
 read-only `knowledge_search` tool for authenticated Native conversations. It

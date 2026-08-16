@@ -93,6 +93,10 @@ func TestWebSearchConversationResolverInjectsStoredCredentialWithoutPersistingIt
 	if err != nil || len(resolved) != 1 || len(resolved[0].Tools) != 1 || resolved[0].Tools[0].Name != "web_search" {
 		t.Fatalf("resolved=%#v err=%v", resolved, err)
 	}
+	if !strings.Contains(resolved[0].Tools[0].Description, "do not repeat equivalent searches") ||
+		!strings.Contains(resolved[0].Tools[0].Description, "answer immediately") {
+		t.Fatalf("web search completion guidance=%q", resolved[0].Tools[0].Description)
+	}
 	if err := resolved[0].Snapshot.Validate(); err != nil {
 		t.Fatalf("snapshot invalid: %#v err=%v", resolved[0].Snapshot, err)
 	}
