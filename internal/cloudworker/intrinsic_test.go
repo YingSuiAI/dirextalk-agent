@@ -78,6 +78,7 @@ func (manager *intrinsicWorkerManager) DestroyRetainedWorker(_ context.Context, 
 type intrinsicTurnCommitter struct {
 	lease    coreconversation.TurnLease
 	response coreconversation.ChatResponse
+	turns    []coreconversation.Turn
 }
 
 func (committer *intrinsicTurnCommitter) CommitTurn(_ context.Context, lease coreconversation.TurnLease, response coreconversation.ChatResponse) (coreconversation.Turn, error) {
@@ -85,6 +86,10 @@ func (committer *intrinsicTurnCommitter) CommitTurn(_ context.Context, lease cor
 	turn := lease.Turn
 	turn.State, turn.Response = coreconversation.TurnCompleted, &response
 	return turn, nil
+}
+
+func (committer *intrinsicTurnCommitter) ListTurns(context.Context, string, string, int) ([]coreconversation.Turn, string, error) {
+	return append([]coreconversation.Turn(nil), committer.turns...), "", nil
 }
 
 func (r intrinsicBudget) ResolveCloudWorkerBudgetEvidence(context.Context, coreconversation.TurnLease) (*LocalBudgetEvidence, error) {
@@ -264,7 +269,8 @@ func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
 
 func TestProposeOnlyCommitsSummaryWithoutCreatingOrStartingRetainedWorkerWork(t *testing.T) {
 	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-capability")}
-	intrinsic, store, lease := intrinsicFixture(t, "Only give me a deployment plan; do not start the Worker.", nil, intrinsicBudget{evidence: evidence})
+	firstPrompt := "Only give me a deployment plan; do not start the Worker."
+	intrinsic, store, lease := intrinsicFixture(t, "Continue the plan without starting the Worker.", nil, intrinsicBudget{evidence: evidence})
 	lease.Turn.CreatedAt = time.Date(2026, 8, 16, 9, 0, 0, 0, time.UTC)
 	reuse := &capacityReuseResolver{found: true, selection: WorkerReuseSelection{WorkerID: uuid.NewString(), Compute: ComputeSpec{
 		InstanceType: "t3.small", Architecture: "x86_64", VCPU: 2, MemoryGiB: 2,
@@ -273,7 +279,10 @@ func TestProposeOnlyCommitsSummaryWithoutCreatingOrStartingRetainedWorkerWork(t 
 	if err := intrinsic.service.EnablePersistentWorkerReuse(reuse); err != nil {
 		t.Fatal(err)
 	}
-	committer := &intrinsicTurnCommitter{}
+	committer := &intrinsicTurnCommitter{turns: []coreconversation.Turn{{
+		ID: uuid.NewString(), ConversationID: lease.Turn.ConversationID, Prompt: firstPrompt,
+		State: coreconversation.TurnCanceled, CreatedAt: lease.Turn.CreatedAt.Add(-time.Minute),
+	}}}
 	manager := &intrinsicWorkerManager{}
 	if err := intrinsic.EnableRetainedWorkerManagement(manager, committer); err != nil {
 		t.Fatal(err)
@@ -294,7 +303,8 @@ func TestProposeOnlyCommitsSummaryWithoutCreatingOrStartingRetainedWorkerWork(t 
 		t.Fatalf("proposal-only crossed execution boundary: offers=%d resolve_calls=%d capacity_calls=%d", len(store.commands), reuse.resolveCalls, reuse.calls)
 	}
 	if !committer.response.Done || committer.response.Revision != 5 || !strings.Contains(committer.response.Message.Content, "no Worker was started") ||
-		!strings.Contains(committer.response.Message.Content, "2 vCPU, 2 GiB memory, 20 GiB disk") {
+		!strings.Contains(committer.response.Message.Content, "2 vCPU, 2 GiB memory, 20 GiB disk") ||
+		committer.response.ConversationTitle != coreconversation.ProvisionalConversationTitle(firstPrompt) || committer.response.ConversationTitleSource != firstPrompt {
 		t.Fatalf("proposal-only response=%+v", committer.response)
 	}
 }

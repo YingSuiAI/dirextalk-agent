@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.144
+
+1. Preserve a durable prompt-derived conversation title when a planning-only Cloud Worker intrinsic completes without a title-model call.
+
 ## v1.0.143
 
 1. Replace a provisional conversation title left by a stopped first turn when the next turn completes successfully, using the earliest durable prompt without overwriting user-assigned titles.

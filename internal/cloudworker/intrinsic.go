@@ -477,9 +477,16 @@ func (p *ProposeIntrinsic) commitProposalOnly(ctx context.Context, bound corecon
 	if message.Validate() != nil {
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
+	titleSource := bound.Turn.Prompt
+	if lister, ok := p.turns.(coreconversation.TurnLister); ok {
+		if turns, _, err := lister.ListTurns(ctx, bound.Turn.ConversationID, "", 1); err == nil && len(turns) == 1 && strings.TrimSpace(turns[0].Prompt) != "" {
+			titleSource = turns[0].Prompt
+		}
+	}
 	response := coreconversation.ChatResponse{
 		RequestID: bound.Turn.RequestID, ConversationID: bound.Turn.ConversationID,
 		Revision: request.ConversationRevision + 1, Message: message, Done: true, ModelProfileID: bound.Turn.ProfileID,
+		ConversationTitle: coreconversation.ProvisionalConversationTitle(titleSource), ConversationTitleSource: titleSource,
 	}
 	if _, err := p.turns.CommitTurn(ctx, request.Lease, response); err != nil {
 		return coreconversation.IntrinsicExecutionResult{}, err
