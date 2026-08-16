@@ -486,6 +486,10 @@ are not authority. A cloud or local-only veto wins. The intrinsic requires an
 explicit `execute` or `proposal_only` intent. Proposal-only returns a durable
 non-executing summary without pricing, offer, Task, confirmation, or execution
 state, so an idle retained Worker cannot turn a planning-only request into work.
+Available specialized tools remain the first choice: lightweight web research,
+small local transformations, and static HTML publication compose locally and
+do not justify a Worker offer merely because the overall request uses network
+research or produces a file.
 
 A proposal carries provider-neutral minimum vCPU, memory, disk, and estimated
 runtime requirements. Agent intersects current-generation x86_64 on-demand

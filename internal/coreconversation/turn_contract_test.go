@@ -40,6 +40,19 @@ func TestCloudWorkerRoutingGuidanceDoesNotRepeatExhaustedLocalCall(t *testing.T)
 	}
 }
 
+func TestCloudWorkerRoutingGuidanceKeepsLightweightResearchLocal(t *testing.T) {
+	for _, required := range []string{
+		"Prefer the smallest sufficient tool path",
+		"use web_search for lightweight web research",
+		"static_site_publish for a self-contained HTML result",
+		"Research plus report or static-page generation is not by itself a reason to start a Worker",
+	} {
+		if !strings.Contains(cloudWorkerRoutingGuidance, required) {
+			t.Fatalf("lightweight local routing guidance is missing %q", required)
+		}
+	}
+}
+
 func TestCloudWorkerRoutingGuidanceKeepsPlanOnlyRequestsNonExecuting(t *testing.T) {
 	if !strings.Contains(cloudWorkerRoutingGuidance, "intent=proposal_only") ||
 		!strings.Contains(cloudWorkerRoutingGuidance, "answer directly without calling the tool") {
