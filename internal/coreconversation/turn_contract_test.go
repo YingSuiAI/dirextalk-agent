@@ -1013,6 +1013,75 @@ func TestExecuteTurnContinuesOutputLimitFromDurableEventsAfterRestart(t *testing
 	}
 }
 
+func TestExecuteTurnForcesCorrectableStaticSiteRetryAcrossOutputContinuation(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	createdAt := time.Now().UTC().Add(-time.Minute)
+	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: `{"html":"unfinished`}
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID, Prompt: "publish the page",
+		ProfileID: profile.ProfileID, ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+		State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: createdAt}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
+	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn}, events: []TurnEvent{
+		{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: createdAt},
+	}}
+	newService := func(model ModelRunner) *Service {
+		service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+			return []ResolvedIntrinsic{{Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}}, Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+				return IntrinsicExecutionResult{}, ErrInvalid
+			}}}, nil
+		}))
+		return service
+	}
+
+	newService(fixedToolCallsTurnModel{calls: []ToolCall{call}}).executeTurn(context.Background(), turn.ID)
+	current, err := store.GetTurn(context.Background(), turn.ID)
+	var correction *ToolResult
+	for _, event := range store.events {
+		if event.ToolResult != nil {
+			correction = event.ToolResult
+		}
+	}
+	if err != nil || current.State != TurnAccepted || correction == nil || correction.Content != staticSitePublishCorrection || correction.ToolName != coremodel.IntrinsicStaticSitePublishToolName {
+		t.Fatalf("malformed intrinsic call was not corrected: turn=%+v correction=%+v err=%v", current, correction, err)
+	}
+	partial := &outputContinuationTurnModel{partial: true}
+	newService(partial).executeTurn(context.Background(), turn.ID)
+	final := &outputContinuationTurnModel{}
+	newService(final).executeTurn(context.Background(), turn.ID)
+	if len(partial.requests) != 1 || len(final.requests) != 1 ||
+		partial.requests[0].ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || final.requests[0].ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName {
+		t.Fatalf("forced tool was not retained across continuation: partial=%+v final=%+v", partial.requests, final.requests)
+	}
+}
+
+func TestAppendTurnToolHistoryClearsStaticSiteForceAfterNextResult(t *testing.T) {
+	createdAt := time.Now().UTC().Add(-time.Minute)
+	first := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: `{}`}
+	firstResult := ToolResult{CallID: first.ID, ToolName: first.Name, Content: staticSitePublishCorrection, IsError: true}
+	second := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: `{"html":"<h1>done</h1>"}`}
+	secondResult := ToolResult{CallID: second.ID, ToolName: second.Name, Content: "published"}
+	turn := Turn{ID: uuid.NewString(), ProfileID: testTurnSnapshot().ProfileID, LastSequence: 6}
+	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{turn: turn}, events: []TurnEvent{
+		{TurnID: turn.ID, Sequence: 1, Kind: TurnEventStarted, CreatedAt: createdAt},
+		{TurnID: turn.ID, Sequence: 2, Kind: TurnEventToolCall, ToolCall: &first, CreatedAt: createdAt.Add(time.Second)},
+		{TurnID: turn.ID, Sequence: 3, Kind: TurnEventToolResult, ToolResult: &firstResult, CreatedAt: createdAt.Add(2 * time.Second)},
+		{TurnID: turn.ID, Sequence: 4, Kind: TurnEventStarted, CreatedAt: createdAt.Add(3 * time.Second)},
+		{TurnID: turn.ID, Sequence: 5, Kind: TurnEventToolCall, ToolCall: &second, CreatedAt: createdAt.Add(4 * time.Second)},
+		{TurnID: turn.ID, Sequence: 6, Kind: TurnEventToolResult, ToolResult: &secondResult, CreatedAt: createdAt.Add(5 * time.Second)},
+	}}
+	conversation := Conversation{ID: uuid.NewString(), CreatedAt: createdAt, UpdatedAt: createdAt}
+	history, err := (&Service{turns: store}).appendTurnToolHistory(context.Background(), turn, &conversation, false)
+	if err != nil || history.forcedToolName != "" {
+		t.Fatalf("history=%+v err=%v", history, err)
+	}
+}
+
 func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()

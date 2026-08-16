@@ -19,11 +19,12 @@ import (
 )
 
 const (
-	MaxTurnModelDispatches     = 500
-	MaxTurnModelActiveDuration = 24 * time.Hour
-	toolLoopNudgeGuidance      = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
-	toolLoopSynthesisGuidance  = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
-	outputContinuationGuidance = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
+	MaxTurnModelDispatches      = 500
+	MaxTurnModelActiveDuration  = 24 * time.Hour
+	toolLoopNudgeGuidance       = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
+	toolLoopSynthesisGuidance   = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
+	outputContinuationGuidance  = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
+	staticSitePublishCorrection = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
 )
 
 type Service struct {
@@ -1722,7 +1723,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		}
 	}
 	modelIntrinsicTools := intrinsicTools
-	if history.loopRecovery == toolLoopSynthesize {
+	if history.loopRecovery == toolLoopSynthesize && history.forcedToolName == "" {
 		modelExtensions = nil
 		modelExtensionSnapshots = nil
 		modelIntrinsicTools = nil
@@ -1782,11 +1783,13 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			if containsCloudWorkerIntrinsic(modelIntrinsicTools) {
 				systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 			}
-			switch history.loopRecovery {
-			case toolLoopNudge:
-				systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
-			case toolLoopSynthesize:
-				systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
+			if history.forcedToolName == "" {
+				switch history.loopRecovery {
+				case toolLoopNudge:
+					systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
+				case toolLoopSynthesize:
+					systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
+				}
 			}
 			// Force the current streaming runner so active provider streams are
 			// bounded only by their inactivity watchdog. Visible assistant text and
@@ -1802,6 +1805,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				},
 				Snapshot:              turn.ProfileSnapshot,
 				ProfileSnapshot:       turn.ProfileSnapshot,
+				ForcedToolName:        history.forcedToolName,
 				Intrinsics:            append([]ResolvedIntrinsic(nil), modelIntrinsicTools...),
 				Extensions:            modelExtensions,
 				ExtensionSnapshots:    modelExtensionSnapshots,
@@ -1892,8 +1896,32 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				seenCallIDs := make(map[string]struct{}, len(calls))
 				for index, call := range calls {
 					if call.Validate() != nil {
-						_, _ = s.turns.FailTurn(ctx, lease, "invalid_tool_call", "model returned an invalid tool call")
-						return
+						correctableIntrinsic := call.validateIdentityAndBounds() == nil
+						if correctableIntrinsic {
+							correctableIntrinsic = false
+							for _, intrinsic := range intrinsicTools {
+								if intrinsic.Tool.Name == call.Name {
+									correctableIntrinsic = true
+									break
+								}
+							}
+						}
+						if !correctableIntrinsic {
+							_, _ = s.turns.FailTurn(ctx, lease, "invalid_tool_call", "model returned an invalid tool call")
+							return
+						}
+						call.Arguments = `{}`
+						calls[index] = call
+						for callIndex := range out.result.ToolCalls {
+							if out.result.ToolCalls[callIndex].ID == call.ID {
+								out.result.ToolCalls[callIndex] = call
+							}
+						}
+						for callIndex := range out.result.Message.ToolCalls {
+							if out.result.Message.ToolCalls[callIndex].ID == call.ID {
+								out.result.Message.ToolCalls[callIndex] = call
+							}
+						}
 					}
 					if _, duplicate := seenCallIDs[call.ID]; duplicate {
 						_, _ = s.turns.FailTurn(ctx, lease, "duplicate_tool_call", "model returned a duplicate tool call")
@@ -2275,7 +2303,7 @@ func recordCorrectableIntrinsicError(ctx context.Context, store OrderedConversat
 	}
 	content := "tool arguments are invalid; correct them according to the tool schema and call again"
 	if call.Name == coremodel.IntrinsicStaticSitePublishToolName {
-		content = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
+		content = staticSitePublishCorrection
 	}
 	result := ToolResult{
 		CallID: call.ID, ToolName: call.Name, IsError: true,
@@ -2542,6 +2570,7 @@ type turnHistoryReplay struct {
 	continuationContent string
 	priorReasoning      string
 	continueOutput      bool
+	forcedToolName      string
 	loopRecovery        toolLoopRecovery
 }
 
@@ -2588,6 +2617,7 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 	var continuationContent strings.Builder
 	var completedReasoning strings.Builder
 	continueOutput := false
+	forcedToolName := ""
 	batchComplete := func() bool {
 		return len(batch.calls) != 0 && len(batch.results) == len(batch.calls)
 	}
@@ -2680,6 +2710,12 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 				return turnHistoryReplay{}, ErrConflict
 			}
 			result := *event.ToolResult
+			if coremodel.IsIntrinsicToolName(result.ToolName) {
+				forcedToolName = ""
+				if result.ToolName == coremodel.IntrinsicStaticSitePublishToolName && result.IsError && result.Content == staticSitePublishCorrection {
+					forcedToolName = result.ToolName
+				}
+			}
 			authority.state, authority.result = turnToolCallTerminal, &result
 			authorities[event.ToolResult.CallID] = authority
 			batch.results[event.ToolResult.CallID] = batchResult{result: result, createdAt: event.CreatedAt}
@@ -2704,7 +2740,7 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 	}
 	return turnHistoryReplay{
 		authorities: authorities, continuationContent: continuationContent.String(), priorReasoning: completedReasoning.String(),
-		continueOutput: continueOutput, loopRecovery: toolLoopRecoveryFor(loopPairs),
+		continueOutput: continueOutput, forcedToolName: forcedToolName, loopRecovery: toolLoopRecoveryFor(loopPairs),
 	}, nil
 }
 

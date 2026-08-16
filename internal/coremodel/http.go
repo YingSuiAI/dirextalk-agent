@@ -412,6 +412,9 @@ func openAIPayload(p Profile, r CompletionRequest, stream bool) map[string]any {
 	if len(r.Tools) > 0 {
 		m["tools"] = openAITools(r.Tools)
 	}
+	if r.ForcedToolName != "" {
+		m["tool_choice"] = map[string]any{"type": "function", "function": map[string]any{"name": r.ForcedToolName}}
+	}
 	return m
 }
 func openAIMessages(messages []Message) []any {
@@ -528,6 +531,9 @@ func anthropicPayload(p Profile, r CompletionRequest, stream bool) map[string]an
 		}
 		m["tools"] = ts
 	}
+	if r.ForcedToolName != "" {
+		m["tool_choice"] = map[string]any{"type": "tool", "name": r.ForcedToolName}
+	}
 	return m
 }
 
@@ -611,6 +617,9 @@ func geminiPayload(p Profile, r CompletionRequest) map[string]any {
 			fds = append(fds, map[string]any{"name": t.Name, "description": t.Description, "parameters": t.InputSchema})
 		}
 		m["tools"] = []any{map[string]any{"functionDeclarations": fds}}
+	}
+	if r.ForcedToolName != "" {
+		m["toolConfig"] = map[string]any{"functionCallingConfig": map[string]any{"mode": "ANY", "allowedFunctionNames": []string{r.ForcedToolName}}}
 	}
 	return m
 }

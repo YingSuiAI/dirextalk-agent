@@ -241,6 +241,31 @@ func TestProviderPayloadsMapToolExchanges(t *testing.T) {
 	}
 }
 
+func TestProviderPayloadsForceNamedTool(t *testing.T) {
+	request := CompletionRequest{
+		Messages:       []Message{{Role: RoleUser, Content: "publish"}},
+		Tools:          []Tool{{Name: IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}}},
+		ForcedToolName: IntrinsicStaticSitePublishToolName,
+	}
+	open := openAIPayload(validProfile(ProviderOpenAICompatible, "https://example.com", "k"), request, false)
+	openChoice := open["tool_choice"].(map[string]any)
+	openFunction := openChoice["function"].(map[string]any)
+	if openChoice["type"] != "function" || openFunction["name"] != IntrinsicStaticSitePublishToolName {
+		t.Fatalf("OpenAI forced tool choice=%+v", openChoice)
+	}
+	ant := anthropicPayload(validProfile(ProviderAnthropic, "https://example.com", "k"), request, false)
+	antChoice := ant["tool_choice"].(map[string]any)
+	if antChoice["type"] != "tool" || antChoice["name"] != IntrinsicStaticSitePublishToolName {
+		t.Fatalf("Anthropic forced tool choice=%+v", antChoice)
+	}
+	gem := geminiPayload(validProfile(ProviderGemini, "https://example.com", "k"), request)
+	gemConfig := gem["toolConfig"].(map[string]any)["functionCallingConfig"].(map[string]any)
+	allowed := gemConfig["allowedFunctionNames"].([]string)
+	if gemConfig["mode"] != "ANY" || len(allowed) != 1 || allowed[0] != IntrinsicStaticSitePublishToolName {
+		t.Fatalf("Gemini forced tool config=%+v", gemConfig)
+	}
+}
+
 func TestProviderSafeIntrinsicNamesRoundTripPayloadsAndResponses(t *testing.T) {
 	for _, name := range []string{IntrinsicScheduleCreateToolName, IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicStaticSitePublishToolName} {
 		if !toolNamePattern.MatchString(name) || strings.Contains(name, ".") {

@@ -141,7 +141,13 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 			tools = append(tools, tool)
 		}
 	}
-	return p, client, coremodel.CompletionRequest{Messages: messages, Tools: tools}, nil
+	forcedToolName := strings.TrimSpace(req.ForcedToolName)
+	if forcedToolName != "" {
+		if _, exists := seenTools[forcedToolName]; !exists {
+			return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
+		}
+	}
+	return p, client, coremodel.CompletionRequest{Messages: messages, Tools: tools, ForcedToolName: forcedToolName}, nil
 }
 
 func (r *ModelRunner) Run(ctx context.Context, req coreconversation.ModelRunRequest) (coreconversation.ModelRunResult, error) {

@@ -305,6 +305,7 @@ type ModelRunRequest struct {
 	Profile               ResolvedProfile
 	Snapshot              coremodel.ExecutionSnapshot
 	ProfileSnapshot       coremodel.ExecutionSnapshot
+	ForcedToolName        string
 	Intrinsics            []ResolvedIntrinsic
 	Extensions            []ResolvedExtension
 	ExtensionSnapshots    []ExtensionExecutionSnapshot
@@ -925,8 +926,8 @@ func containsTool(names []string, want string) bool {
 	return false
 }
 func (c ToolCall) Validate() error {
-	if strings.TrimSpace(c.ID) == "" || strings.TrimSpace(c.Name) == "" || len(c.ID) > MaxToolCallIDBytes || len(c.Name) > MaxToolNameBytes || len(c.ExecutionID) > MaxToolCallIDBytes || len(c.Arguments) > MaxToolArgumentsBytes || !utf8.ValidString(c.ID) || !utf8.ValidString(c.Name) || !utf8.ValidString(c.ExecutionID) || !utf8.ValidString(c.Arguments) {
-		return ErrInvalid
+	if err := c.validateIdentityAndBounds(); err != nil {
+		return err
 	}
 	var v any
 	if err := json.Unmarshal([]byte(c.Arguments), &v); err != nil {
@@ -934,6 +935,13 @@ func (c ToolCall) Validate() error {
 	}
 	if _, ok := v.(map[string]any); !ok {
 		return fmt.Errorf("%w: tool arguments must be object", ErrInvalid)
+	}
+	return nil
+}
+
+func (c ToolCall) validateIdentityAndBounds() error {
+	if strings.TrimSpace(c.ID) == "" || strings.TrimSpace(c.Name) == "" || len(c.ID) > MaxToolCallIDBytes || len(c.Name) > MaxToolNameBytes || len(c.ExecutionID) > MaxToolCallIDBytes || len(c.Arguments) > MaxToolArgumentsBytes || !utf8.ValidString(c.ID) || !utf8.ValidString(c.Name) || !utf8.ValidString(c.ExecutionID) || !utf8.ValidString(c.Arguments) {
+		return ErrInvalid
 	}
 	return nil
 }

@@ -105,6 +105,7 @@ func TestInfoCapabilitySanitizesClosedCatalogConsumerProjection(t *testing.T) {
 						"MAX_TOKENS":         float64(16384),
 						"INPUT_TOKEN_LIMIT":  float64(32768),
 						"OUTPUT_TOKEN_LIMIT": float64(65536),
+						"top_provider":       map[string]any{"max_completion_tokens": float64(131072)},
 						"metadata":           map[string]any{"safe": "drop"},
 						"access_token":       "drop",
 					},
@@ -116,6 +117,7 @@ func TestInfoCapabilitySanitizesClosedCatalogConsumerProjection(t *testing.T) {
 						"output_modalities":  []any{"text", ""},
 						"max_input_tokens":   1.5,
 						"max_output_tokens":  json.Number("9223372036854775808"),
+						"top_provider":       map[string]any{"max_completion_tokens": 0},
 						"max_tokens":         json.Number("8192.0"),
 						"input_token_limit":  json.Number("32768"),
 						"output_token_limit": json.Number("65536"),
@@ -158,7 +160,7 @@ func TestInfoCapabilitySanitizesClosedCatalogConsumerProjection(t *testing.T) {
 
 	wantModelKeys := map[string]struct{}{
 		"id": {}, "provider": {}, "name": {}, "object": {}, "created": {}, "created_at": {}, "owned_by": {}, "type": {},
-		"input_modalities": {}, "output_modalities": {}, "max_input_tokens": {}, "max_output_tokens": {}, "max_tokens": {},
+		"input_modalities": {}, "output_modalities": {}, "max_completion_tokens": {}, "max_input_tokens": {}, "max_output_tokens": {}, "max_tokens": {},
 		"input_token_limit": {}, "output_token_limit": {},
 	}
 	valid := payload.Models[0]
@@ -174,11 +176,12 @@ func TestInfoCapabilitySanitizesClosedCatalogConsumerProjection(t *testing.T) {
 		}
 	}
 	for key, want := range map[string]float64{
-		"max_input_tokens":   4096,
-		"max_output_tokens":  8192,
-		"max_tokens":         16384,
-		"input_token_limit":  32768,
-		"output_token_limit": 65536,
+		"max_completion_tokens": 131072,
+		"max_input_tokens":      4096,
+		"max_output_tokens":     8192,
+		"max_tokens":            16384,
+		"input_token_limit":     32768,
+		"output_token_limit":    65536,
 	} {
 		if got, ok := valid[key].(float64); !ok || got != want {
 			t.Fatalf("valid numeric field %q = %#v, want %v", key, valid[key], want)
@@ -197,7 +200,7 @@ func TestInfoCapabilitySanitizesClosedCatalogConsumerProjection(t *testing.T) {
 	}
 
 	malformed := payload.Models[1]
-	for _, key := range []string{"name", "input_modalities", "output_modalities", "max_input_tokens", "max_output_tokens"} {
+	for _, key := range []string{"name", "input_modalities", "output_modalities", "max_completion_tokens", "max_input_tokens", "max_output_tokens"} {
 		if _, ok := malformed[key]; ok {
 			t.Fatalf("malformed field %q survived: %#v", key, malformed)
 		}
@@ -237,15 +240,16 @@ func TestInfoCapabilityRetainsClosedModelNumericTokenFields(t *testing.T) {
 		BackendsFunc: func(context.Context) (BackendsSnapshot, error) { return BackendsSnapshot{}, nil },
 		ModelsFunc: func(context.Context, ModelCatalogRequest) (ModelCatalogResult, error) {
 			return ModelCatalogResult{Models: []map[string]any{{
-				"id":                 "typed-model",
-				"provider":           "openrouter",
-				"max_input_tokens":   int64(4096),
-				"max_output_tokens":  int64(8192),
-				"max_tokens":         int64(16384),
-				"input_token_limit":  int64(32768),
-				"output_token_limit": int64(65536),
-				"access_token":       "must-drop",
-				"token":              "must-drop",
+				"id":                    "typed-model",
+				"provider":              "openrouter",
+				"max_completion_tokens": int64(131072),
+				"max_input_tokens":      int64(4096),
+				"max_output_tokens":     int64(8192),
+				"max_tokens":            int64(16384),
+				"input_token_limit":     int64(32768),
+				"output_token_limit":    int64(65536),
+				"access_token":          "must-drop",
+				"token":                 "must-drop",
 			}}}, nil
 		},
 	})
@@ -264,11 +268,12 @@ func TestInfoCapabilityRetainsClosedModelNumericTokenFields(t *testing.T) {
 	}
 	model := payload.Models[0]
 	for field, want := range map[string]float64{
-		"max_input_tokens":   4096,
-		"max_output_tokens":  8192,
-		"max_tokens":         16384,
-		"input_token_limit":  32768,
-		"output_token_limit": 65536,
+		"max_completion_tokens": 131072,
+		"max_input_tokens":      4096,
+		"max_output_tokens":     8192,
+		"max_tokens":            16384,
+		"input_token_limit":     32768,
+		"output_token_limit":    65536,
 	} {
 		if got, ok := model[field].(float64); !ok || got != want {
 			t.Fatalf("numeric field %q = %#v, want %v", field, model[field], want)
@@ -301,6 +306,10 @@ func TestModelCatalogResultSchemaClosesModelProjection(t *testing.T) {
 		t.Fatalf("model schema is not closed: %s", schemaJSON)
 	}
 	modelProperties := model["properties"].(map[string]any)
+	maxCompletion, ok := modelProperties["max_completion_tokens"].(map[string]any)
+	if !ok || maxCompletion["type"] != "integer" || maxCompletion["minimum"] != float64(1) {
+		t.Fatalf("max_completion_tokens schema=%#v", maxCompletion)
+	}
 	outputModalities, ok := modelProperties["output_modalities"].(map[string]any)
 	if !ok || outputModalities["type"] != "array" {
 		t.Fatalf("output_modalities missing from model schema: %s", schemaJSON)

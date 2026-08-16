@@ -199,10 +199,12 @@ profile listing. It resolves either a write-only request credential or an
 Agent-owned profile ID, performs a bounded provider request, and returns only
 normalized non-secret model metadata. OpenRouter conversation discovery uses
 the text-output filter; embedding discovery uses its dedicated embeddings
-catalog endpoint. A resolved profile supplies only its provider credential and
-origin; the requested catalog kind is independent, so an existing OpenRouter
-conversation profile can bootstrap embedding discovery before an embedding
-profile exists.
+catalog endpoint. Its positive `max_completion_tokens`, including the nested
+`top_provider` value, is projected into the closed public catalog so clients
+can select the advertised output budget. A resolved profile supplies only its
+provider credential and origin; the requested catalog kind is independent, so
+an existing OpenRouter conversation profile can bootstrap embedding discovery
+before an embedding profile exists.
 
 When Web Search is enabled and configured, the conversation resolver adds one
 compiled `web_search` tool. The resolver decrypts the credential only to prove
@@ -271,7 +273,14 @@ schedule without its conversation receipt or a receipt without its schedule.
 The intrinsic accepts a renewed epoch of the same active turn lease and commits
 under that current epoch. Invalid model-supplied intrinsic arguments are stored
 as an error tool result for correction in the next model round rather than
-discarding the turn.
+discarding the turn. A known intrinsic call with valid bounded identity but
+malformed arguments is normalized to the same correctable result; malformed
+identity, unknown tools, oversize input, and external extension calls remain
+terminal. While the latest completed intrinsic result is the
+dedicated invalid-arguments correction for `static_site_publish`, the next
+provider request forces that named tool through the provider-native tool-choice
+field; the force survives partial-output continuation and clears after the next
+non-correction intrinsic result.
 
 Single-page static publication uses the Core-owned `static_site_publish`
 intrinsic. One HTML file is published directly and is not wrapped in an

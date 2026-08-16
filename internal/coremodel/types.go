@@ -458,8 +458,9 @@ type Tool struct {
 }
 
 type CompletionRequest struct {
-	Messages []Message
-	Tools    []Tool
+	Messages       []Message
+	Tools          []Tool
+	ForcedToolName string
 }
 
 type Completion struct {

@@ -724,8 +724,13 @@ func sanitizeModelMap(input map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	out := make(map[string]any, len(input))
+	var topProvider any
 	for key, value := range input {
 		lower := strings.ToLower(strings.TrimSpace(key))
+		if lower == "top_provider" {
+			topProvider = value
+			continue
+		}
 		if !isClosedModelField(lower) {
 			continue
 		}
@@ -734,12 +739,24 @@ func sanitizeModelMap(input map[string]any) map[string]any {
 			out[lower] = clean
 		}
 	}
+	if _, exists := out["max_completion_tokens"]; !exists {
+		if nested, ok := topProvider.(map[string]any); ok {
+			for key, value := range nested {
+				if strings.EqualFold(strings.TrimSpace(key), "max_completion_tokens") {
+					if clean, keep := sanitizeModelValue("max_completion_tokens", value); keep {
+						out["max_completion_tokens"] = clean
+					}
+					break
+				}
+			}
+		}
+	}
 	return out
 }
 
 func isClosedModelField(key string) bool {
 	switch key {
-	case "context_length", "context_window", "created", "created_at", "id", "input_modalities", "input_token_limit", "max_input_tokens", "max_output_tokens", "max_tokens", "name", "object", "output_modalities", "output_token_limit", "owned_by", "provider", "type":
+	case "context_length", "context_window", "created", "created_at", "id", "input_modalities", "input_token_limit", "max_completion_tokens", "max_input_tokens", "max_output_tokens", "max_tokens", "name", "object", "output_modalities", "output_token_limit", "owned_by", "provider", "type":
 		return true
 	default:
 		return false
@@ -748,7 +765,7 @@ func isClosedModelField(key string) bool {
 
 func isClosedModelNumericField(key string) bool {
 	switch key {
-	case "context_length", "context_window", "max_input_tokens", "max_output_tokens", "max_tokens", "input_token_limit", "output_token_limit":
+	case "context_length", "context_window", "max_completion_tokens", "max_input_tokens", "max_output_tokens", "max_tokens", "input_token_limit", "output_token_limit":
 		return true
 	default:
 		return false
@@ -757,6 +774,12 @@ func isClosedModelNumericField(key string) bool {
 
 func sanitizeModelValue(key string, value any) (any, bool) {
 	switch key {
+	case "max_completion_tokens":
+		clean, keep := sanitizeModelIntegerValue(value)
+		if !keep || clean.(int64) <= 0 {
+			return nil, false
+		}
+		return clean, true
 	case "context_length", "context_window", "max_input_tokens", "max_output_tokens", "max_tokens", "input_token_limit", "output_token_limit":
 		return sanitizeModelIntegerValue(value)
 	case "created":
@@ -1009,7 +1032,7 @@ const (
 	runtimeRunSchema                 = `{"additionalProperties":false,"properties":{"argv":{"items":{"type":"string","maxLength":4096},"maxItems":64,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"stdin":{"maxLength":65536,"type":"string"},"timeout_ms":{"maximum":600000,"minimum":0,"type":"integer"},"tool":{"pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$","type":"string"}},"required":["tool"],"type":"object"}`
 	runtimeRunResultSchema           = `{"additionalProperties":false,"properties":{"duration_ms":{"type":"integer"},"exit_code":{"type":"integer"},"stderr":{"type":"string"},"stdout":{"type":"string"},"tool":{"type":"string"}},"required":["exit_code","tool"],"type":"object"}`
 	modelCatalogSchema               = `{"additionalProperties":false,"properties":{"api_key":{"type":"string","writeOnly":true},"base_url":{"type":"string"},"client_model_profile_id":{"type":"string"},"model_kind":{"default":"conversation","enum":["conversation","embedding","speech"],"type":"string"},"model_profile_id":{"type":"string"},"provider":{"type":"string"}},"type":"object"}`
-	modelCatalogResultSchemaTemplate = `{"additionalProperties":false,"properties":{"models":{"items":{"additionalProperties":false,"properties":{"context_length":{"type":"integer"},"context_window":{"type":"integer"},"created":{"type":"number"},"created_at":{"type":"string"},"id":{"type":"string"},"input_modalities":{"items":{"type":"string"},"type":"array"},"input_token_limit":{"type":"integer"},"max_input_tokens":{"type":"integer"},"max_output_tokens":{"type":"integer"},"max_tokens":{"type":"integer"},"name":{"type":"string"},"object":{"type":"string"},"output_modalities":{"items":{"enum":__OUTPUT_MODALITIES_ENUM__,"type":"string"},"type":"array"},"output_token_limit":{"type":"integer"},"owned_by":{"type":"string"},"provider":{"type":"string"},"type":{"type":"string"}},"required":["id","provider"],"type":"object"},"type":"array"},"providers":{"items":{"additionalProperties":false,"properties":{"default_base_url":{"type":"string"},"dynamic_models":{"type":"boolean"},"provider":{"type":"string"},"requires_api_key":{"type":"boolean"}},"required":["provider","requires_api_key","dynamic_models"],"type":"object"},"type":"array"}},"required":["models","providers"],"type":"object"}`
+	modelCatalogResultSchemaTemplate = `{"additionalProperties":false,"properties":{"models":{"items":{"additionalProperties":false,"properties":{"context_length":{"type":"integer"},"context_window":{"type":"integer"},"created":{"type":"number"},"created_at":{"type":"string"},"id":{"type":"string"},"input_modalities":{"items":{"type":"string"},"type":"array"},"input_token_limit":{"type":"integer"},"max_completion_tokens":{"minimum":1,"type":"integer"},"max_input_tokens":{"type":"integer"},"max_output_tokens":{"type":"integer"},"max_tokens":{"type":"integer"},"name":{"type":"string"},"object":{"type":"string"},"output_modalities":{"items":{"enum":__OUTPUT_MODALITIES_ENUM__,"type":"string"},"type":"array"},"output_token_limit":{"type":"integer"},"owned_by":{"type":"string"},"provider":{"type":"string"},"type":{"type":"string"}},"required":["id","provider"],"type":"object"},"type":"array"},"providers":{"items":{"additionalProperties":false,"properties":{"default_base_url":{"type":"string"},"dynamic_models":{"type":"boolean"},"provider":{"type":"string"},"requires_api_key":{"type":"boolean"}},"required":["provider","requires_api_key","dynamic_models"],"type":"object"},"type":"array"}},"required":["models","providers"],"type":"object"}`
 	nativeConfigGetSchema            = `{"additionalProperties":false,"properties":{},"type":"object"}`
 	nativeConfigUpdateSchema         = `{"additionalProperties":false,"properties":{"enabled":{"type":"boolean"},"expected_revision":{"minimum":0,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"mcp_blocked_room_ids":{"items":{"type":"string"},"maxItems":512,"type":"array"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"type":"object"}},"required":["idempotency_key"],"type":"object"}`
 	nativeConfigResultSchema         = `{"additionalProperties":false,"properties":{"enabled":{"type":"boolean"},"mcp_blocked_room_ids":{"items":{"type":"string"},"type":"array"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"required":["display_name","avatar_url"],"type":"object"},"revision":{"type":"integer"}},"required":["revision","native_agent_identity","enabled","mcp_blocked_room_ids"],"type":"object"}`

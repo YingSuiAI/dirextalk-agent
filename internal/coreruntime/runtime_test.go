@@ -390,11 +390,11 @@ func TestModelRunnerForwardsResolvedExtensionToolsToProvider(t *testing.T) {
 	client := &captureClient{}
 	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
 	ext := coreconversation.ResolvedExtension{Tools: []coremodel.Tool{{Name: "product_contacts_list", Description: "list contacts", InputSchema: map[string]any{"type": "object"}}}}
-	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}), Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "test"}}}, Extensions: []coreconversation.ResolvedExtension{ext}})
+	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}), Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "test"}}}, Extensions: []coreconversation.ResolvedExtension{ext}, ForcedToolName: "product_contacts_list"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(client.req.Tools) != 1 || client.req.Tools[0].Name != "product_contacts_list" {
+	if len(client.req.Tools) != 1 || client.req.Tools[0].Name != "product_contacts_list" || client.req.ForcedToolName != "product_contacts_list" {
 		t.Fatalf("provider tool catalog=%+v", client.req.Tools)
 	}
 }

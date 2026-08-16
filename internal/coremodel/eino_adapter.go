@@ -32,7 +32,7 @@ type einoClient struct {
 }
 
 func (c *einoClient) Generate(ctx context.Context, request CompletionRequest) (Completion, error) {
-	model, err := newEinoModel(c.delegate, request.Tools)
+	model, err := newEinoModel(c.delegate, request.Tools, request.ForcedToolName)
 	if err != nil {
 		return Completion{}, err
 	}
@@ -45,7 +45,7 @@ func (c *einoClient) Generate(ctx context.Context, request CompletionRequest) (C
 
 func (c *einoClient) Stream(ctx context.Context, request CompletionRequest) (Stream, error) {
 	streamCtx, cancel := context.WithCancel(ctx)
-	model, err := newEinoModel(c.delegate, request.Tools)
+	model, err := newEinoModel(c.delegate, request.Tools, request.ForcedToolName)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -62,11 +62,12 @@ type einoModel struct {
 	delegate    Client
 	definitions map[string]Tool
 	tools       []Tool
+	forcedTool  string
 }
 
 var _ einoComponentsModel.ToolCallingChatModel = (*einoModel)(nil)
 
-func newEinoModel(delegate Client, tools []Tool) (*einoModel, error) {
+func newEinoModel(delegate Client, tools []Tool, forcedTool string) (*einoModel, error) {
 	definitions := make(map[string]Tool, len(tools))
 	infos := make([]*schema.ToolInfo, 0, len(tools))
 	for _, definition := range tools {
@@ -83,7 +84,12 @@ func newEinoModel(delegate Client, tools []Tool) (*einoModel, error) {
 		definitions[definition.Name] = definition
 		infos = append(infos, info)
 	}
-	base := &einoModel{delegate: delegate, definitions: definitions}
+	if forcedTool != "" {
+		if _, exists := definitions[forcedTool]; !exists {
+			return nil, ErrInvalidCompletionRequest
+		}
+	}
+	base := &einoModel{delegate: delegate, definitions: definitions, forcedTool: forcedTool}
 	if len(infos) == 0 {
 		return base, nil
 	}
@@ -95,7 +101,7 @@ func newEinoModel(delegate Client, tools []Tool) (*einoModel, error) {
 }
 
 func (m *einoModel) WithTools(infos []*schema.ToolInfo) (einoComponentsModel.ToolCallingChatModel, error) {
-	bound := &einoModel{delegate: m.delegate, definitions: m.definitions, tools: make([]Tool, 0, len(infos))}
+	bound := &einoModel{delegate: m.delegate, definitions: m.definitions, tools: make([]Tool, 0, len(infos)), forcedTool: m.forcedTool}
 	seen := make(map[string]struct{}, len(infos))
 	for _, info := range infos {
 		if info == nil || info.Name == "" {
@@ -119,7 +125,7 @@ func (m *einoModel) Generate(ctx context.Context, input []*schema.Message, _ ...
 	if err != nil {
 		return nil, err
 	}
-	request := CompletionRequest{Messages: messages, Tools: append([]Tool(nil), m.tools...)}
+	request := CompletionRequest{Messages: messages, Tools: append([]Tool(nil), m.tools...), ForcedToolName: m.forcedTool}
 	if err := ValidateCompletionRequest(request); err != nil {
 		return nil, err
 	}
@@ -137,7 +143,7 @@ func (m *einoModel) Stream(ctx context.Context, input []*schema.Message, _ ...ei
 		cancel()
 		return nil, err
 	}
-	request := CompletionRequest{Messages: messages, Tools: append([]Tool(nil), m.tools...)}
+	request := CompletionRequest{Messages: messages, Tools: append([]Tool(nil), m.tools...), ForcedToolName: m.forcedTool}
 	if err := ValidateCompletionRequest(request); err != nil {
 		cancel()
 		return nil, err
