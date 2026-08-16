@@ -132,6 +132,39 @@ type twoRoundReadOnlyModel struct {
 	requests []ModelRunRequest
 }
 
+type repeatingToolTurnModel struct {
+	toolName string
+	runs     int
+}
+
+type bufferedSteerModel struct {
+	emitted chan struct{}
+}
+
+func (m *bufferedSteerModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
+	return ModelRunResult{}, ErrInvalid
+}
+
+func (m *bufferedSteerModel) Stream(ctx context.Context, _ ModelRunRequest, emit func(ModelDelta) error) (ModelRunResult, error) {
+	if err := emit(ModelDelta{ReasoningContent: "reasoning before steer"}); err != nil {
+		return ModelRunResult{}, err
+	}
+	close(m.emitted)
+	<-ctx.Done()
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "superseded", CreatedAt: time.Now().UTC()}}, nil
+}
+
+func (m *repeatingToolTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
+	m.runs++
+	call := ToolCall{ID: uuid.NewString(), Name: m.toolName, Arguments: `{}`}
+	message := Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: []ToolCall{call}, CreatedAt: time.Now().UTC()}
+	return ModelRunResult{Message: message, ToolCalls: []ToolCall{call}}, nil
+}
+
+func (m *repeatingToolTurnModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
 func (m *twoRoundReadOnlyModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
 	m.requests = append(m.requests, request)
 	if len(m.requests) == 1 {
@@ -161,6 +194,22 @@ type readOnlyTurnStore struct {
 	dispatched      map[string]bool
 	prepareCalls    int
 	prepared        ToolAttempt
+}
+
+type orderingSteerStore struct{ *readOnlyTurnStore }
+
+func (s *orderingSteerStore) RequestTurnSteer(_ context.Context, cmd TurnSteerCommand) (Turn, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.turn.LastSequence++
+	s.turn.Revision++
+	s.turn.State = TurnAccepted
+	s.dispatchState = ""
+	s.events = append(s.events, TurnEvent{TurnID: s.turn.ID, Sequence: s.turn.LastSequence, Revision: s.turn.Revision,
+		Kind: TurnEventSteered, Text: cmd.Instruction, MutationID: cmd.RequestID, ExpectedRevision: cmd.ExpectedRevision, CreatedAt: time.Now().UTC()})
+	returned := s.turn
+	returned.State = TurnWaitingConfirmation // Avoid starting a second supervisor in this focused ordering test.
+	return returned, true, nil
 }
 
 func (s *readOnlyTurnStore) RequestTurnSteer(context.Context, TurnSteerCommand) (Turn, bool, error) {
@@ -321,7 +370,12 @@ func (s *readOnlyTurnStore) TurnEventBounds(context.Context, string) (int64, int
 func (s *readOnlyTurnStore) PrepareTurnModel(context.Context, TurnLease) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.turn.ModelDispatchCount >= MaxTurnModelDispatches || s.turn.ModelActiveDuration >= MaxTurnModelActiveDuration {
+		return Turn{}, ErrModelBudgetExhausted
+	}
 	s.dispatchState = "dispatched"
+	s.turn.ModelDispatchCount++
+	s.turn.ModelDispatchStartedAt = time.Now().UTC()
 	return s.turn, nil
 }
 
@@ -338,6 +392,10 @@ func (s *readOnlyTurnStore) RecordTurnModelResult(_ context.Context, _ TurnLease
 		return ErrConflict
 	}
 	s.dispatch, s.dispatchState = result, "completed"
+	if !s.turn.ModelDispatchStartedAt.IsZero() {
+		s.turn.ModelActiveDuration += time.Since(s.turn.ModelDispatchStartedAt)
+		s.turn.ModelDispatchStartedAt = time.Time{}
+	}
 	return nil
 }
 
@@ -756,6 +814,58 @@ func TestExecuteTurnDurableUsesStreamingPathBeyondLegacyTotalWindow(t *testing.T
 	}
 }
 
+func TestSteerFlushesBufferedProviderOutputBeforeSteeredEvent(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+		Prompt: "initial prompt", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
+		ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC()}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: turn.CreatedAt, UpdatedAt: turn.CreatedAt}
+	store := &orderingSteerStore{readOnlyTurnStore: &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}}
+	model := &bufferedSteerModel{emitted: make(chan struct{})}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		service.executeTurn(context.Background(), turn.ID)
+		close(done)
+	}()
+	select {
+	case <-model.emitted:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not emit buffered reasoning")
+	}
+	if _, err = service.SteerTurn(context.Background(), TurnSteerCommand{RequestID: uuid.NewString(), TurnID: turn.ID, ExpectedRevision: 1, Instruction: "new guidance"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("superseded provider generation did not stop")
+	}
+	store.mu.Lock()
+	events := append([]TurnEvent(nil), store.events...)
+	store.mu.Unlock()
+	deltaIndex, steerIndex := -1, -1
+	for index, event := range events {
+		if event.Kind == TurnEventDelta && event.ReasoningContent == "reasoning before steer" {
+			deltaIndex = index
+		}
+		if event.Kind == TurnEventSteered && event.Text == "new guidance" {
+			steerIndex = index
+		}
+	}
+	if deltaIndex < 0 || steerIndex < 0 || deltaIndex >= steerIndex || events[deltaIndex].Sequence >= events[steerIndex].Sequence {
+		t.Fatalf("buffered provider output crossed steer boundary: %+v", events)
+	}
+}
+
 func TestExecuteTurnReplayDoesNotDuplicateTerminalReasoningDelta(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
@@ -1162,6 +1272,47 @@ func TestDurableReadOnlyToolErrorReturnsToModelAndCompletesSecondRound(t *testin
 	}
 	if toolCalls != 1 || toolResults != 1 || done != 1 {
 		t.Fatalf("durable events=%+v", store.events)
+	}
+}
+
+func TestExecuteTurnStopsRepeatedToolRoundsWithoutFinalResponse(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1", Digest: strings.Repeat("a", 64), AllowedTools: []string{"repeat_lookup"}}
+	snapshot := ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: selection.Version,
+		Source: "mcp:installed", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64),
+		ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64),
+		ToolNames: []string{"repeat_lookup"}, ReadOnly: true}
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+		Prompt: "keep looking forever", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
+		ProfileSnapshotDigest: profile.Digest(), ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot},
+		ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(),
+		State:                   TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC()}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: turn.CreatedAt, UpdatedAt: turn.CreatedAt}
+	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events: []TurnEvent{{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}}}
+	model := &repeatingToolTurnModel{toolName: "repeat_lookup"}
+	resolver := extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+		return []ResolvedExtension{{Selection: selection, Snapshot: snapshot,
+			Tools: []coremodel.Tool{{Name: "repeat_lookup", InputSchema: map[string]any{"type": "object"}}},
+			Execute: func(_ context.Context, request ToolExecutionRequest) (ToolResult, error) {
+				return ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: `{"ok":true}`}, nil
+			}}}, nil
+	})
+	service, err := NewService(store, model, resolver, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt <= MaxTurnModelDispatches; attempt++ {
+		service.executeTurn(context.Background(), turn.ID)
+	}
+	current, err := store.GetTurn(context.Background(), turn.ID)
+	if err != nil || current.State != TurnFailed || store.failedCode != modelBudgetExhaustedCode {
+		t.Fatalf("turn=%+v failed_code=%q err=%v", current, store.failedCode, err)
+	}
+	if model.runs != MaxTurnModelDispatches || current.ModelDispatchCount != MaxTurnModelDispatches {
+		t.Fatalf("model_runs=%d dispatch_count=%d", model.runs, current.ModelDispatchCount)
 	}
 }
 

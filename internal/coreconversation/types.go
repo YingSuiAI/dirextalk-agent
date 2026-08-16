@@ -660,6 +660,7 @@ var (
 	ErrToolDispatchStarted     = errors.New("conversation tool dispatch already started")
 	ErrMemoryRecallUnavailable = errors.New("long-term memory recall is unavailable")
 	ErrExtensionsUnsupported   = errors.New("conversation extensions require durable turn")
+	ErrModelBudgetExhausted    = errors.New("conversation model budget exhausted")
 )
 
 func validUUID(s string) bool {

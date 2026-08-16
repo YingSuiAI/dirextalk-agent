@@ -167,6 +167,12 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-17**, Native conversation profiles gained a single positive
+  8192-token output default, turns gained durable 32-dispatch/30-minute
+  model-active budgets that exclude tool and Worker time, and provider deltas
+  gained bounded coalescing with final flush. OpenAI-compatible streams now
+  accept explicit nonempty `finish_reason` before clean EOF while still
+  rejecting unmarked truncation.
 - On **2026-08-11**, durable Native conversation rounds accepted ordered
   multi-tool batches. Focused unit and PostgreSQL 18 tests covered a built-in
   Web Search result followed by a confirmed local MCP call in the same retained

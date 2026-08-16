@@ -364,6 +364,9 @@ func validateProfile(p Profile, requireAPIKey bool) (Profile, error) {
 	if p.TopP != nil && (math.IsNaN(*p.TopP) || math.IsInf(*p.TopP, 0) || *p.TopP < 0 || *p.TopP > 1) {
 		return Profile{}, fmt.Errorf("%w: top_p out of range", ErrInvalidProfile)
 	}
+	if p.ModelKind == ModelKindConversation && p.MaxOutputTokens <= 0 {
+		p.MaxOutputTokens = DefaultConversationMaxOutputTokens
+	}
 	if p.MaxOutputTokens < 0 || p.MaxOutputTokens > 1<<20 {
 		return Profile{}, fmt.Errorf("%w: max output tokens out of range", ErrInvalidProfile)
 	}

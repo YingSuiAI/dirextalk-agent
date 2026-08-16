@@ -316,6 +316,7 @@ func TestCoreConversationTurnSteerInvalidatesProviderLeaseAndCommitsGuidancePost
 	if _, err = h.store.PrepareTurnModel(context.Background(), staleLease); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(2 * time.Millisecond)
 	steer := core.TurnSteerCommand{
 		RequestID: uuid.NewString(), TurnID: turn.ID,
 		ExpectedRevision: turn.Revision, Instruction: "focus on the concise answer",
@@ -329,6 +330,9 @@ func TestCoreConversationTurnSteerInvalidatesProviderLeaseAndCommitsGuidancePost
 	}
 	if steered.ID != turn.ID || steered.State != core.TurnAccepted || steered.Revision != turn.Revision+1 || steered.LastSequence != turn.LastSequence+1 {
 		t.Fatalf("steered turn=%+v", steered)
+	}
+	if steered.ModelDispatchCount != 1 || steered.ModelActiveDuration <= 0 || !steered.ModelDispatchStartedAt.IsZero() {
+		t.Fatalf("steered model budget=%+v", steered)
 	}
 	if err = h.store.RecordTurnModelResult(context.Background(), staleLease, core.ModelRunResult{}); err != core.ErrConflict {
 		t.Fatalf("stale provider result err=%v", err)
@@ -378,9 +382,14 @@ func TestCoreConversationTurnDispatchRecoveryPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = h.store.PrepareTurnModel(context.Background(), lease); err != nil {
+	prepared, err := h.store.PrepareTurnModel(context.Background(), lease)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if prepared.ModelDispatchCount != 1 || prepared.ModelDispatchStartedAt.IsZero() || prepared.ModelActiveDuration != 0 {
+		t.Fatalf("prepared model budget=%+v", prepared)
+	}
+	time.Sleep(2 * time.Millisecond)
 	if err = h.store.MarkTurnModelUncertain(context.Background(), lease, "provider_uncertain", "unknown"); err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +397,7 @@ func TestCoreConversationTurnDispatchRecoveryPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := h.store.GetTurn(context.Background(), turn.ID)
-	if err != nil || got.State != core.TurnFailed {
+	if err != nil || got.State != core.TurnFailed || got.ModelDispatchCount != 1 || got.ModelActiveDuration <= 0 || !got.ModelDispatchStartedAt.IsZero() {
 		t.Fatalf("turn=%+v err=%v", got, err)
 	}
 }

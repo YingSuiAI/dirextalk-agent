@@ -283,11 +283,13 @@ the release URL; there is no duplicate byte-download capability.
 
 Eino adapts each model round, while the Agent-owned Task ledger remains the
 durable orchestrator for model dispatch, tool calls, retries, recovery, and
-uncertain outcomes. Task orchestration has no fixed model/tool round count: a
-terminal model response, cancellation, the task execution deadline/context,
-or a durable uncertain/error outcome ends execution. The nonnegative round
-ordinal is only durable ledger and replay identity. Core v1 does not expose
-Eino graphs as a user-authored workflow surface.
+uncertain outcomes. A Native conversation turn is bounded by 32 provider
+dispatches and 30 minutes of cumulative model-active time; tool, Worker, and
+confirmation execution or waiting do not consume that clock. Exhaustion is a
+durable `model_budget_exhausted` terminal outcome. Other background Tasks keep
+their own execution deadline/context. The nonnegative round ordinal remains
+durable ledger and replay identity. Core v1 does not expose Eino graphs as a
+user-authored workflow surface.
 
 A durable model round may return multiple tool calls. Core persists the exact
 model result once and processes calls in producer order, retaining that batch

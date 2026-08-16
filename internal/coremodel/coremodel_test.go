@@ -371,7 +371,7 @@ func TestUpdateProfileFullReplacementAndMultilinePrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.BaseURL != "https://api.anthropic.com" || updated.SystemPrompt != "line one\n\tline two" || updated.Temperature != nil || updated.TopP != nil || updated.MaxOutputTokens != 0 || updated.ContextWindow != 8192 || updated.ReasoningEffort != "high" || updated.APIKey != key {
+	if updated.BaseURL != "https://api.anthropic.com" || updated.SystemPrompt != "line one\n\tline two" || updated.Temperature != nil || updated.TopP != nil || updated.MaxOutputTokens != DefaultConversationMaxOutputTokens || updated.ContextWindow != 8192 || updated.ReasoningEffort != "high" || updated.APIKey != key {
 		t.Fatalf("replacement mismatch: %#v", updated)
 	}
 	updated, err = UpdateProfile(updated, ProfileSpec{ID: old.ID, DisplayName: "New", Provider: ProviderAnthropic, Model: "claude-test", ContextWindow: 16384, ContextWindowSet: true, ReasoningEffort: "low", ReasoningEffortSet: true})
@@ -631,8 +631,34 @@ func TestProviderStreamsRejectRawEOFWithoutTerminalMarker(t *testing.T) {
 		{ProviderGemini, `{"candidates":[{"content":{"parts":[{"text":"x"}]}}]}`},
 	}
 	for _, tc := range cases {
-		body := &closeTrackingBody{Reader: strings.NewReader("data: " + tc.event + "\n\n")}
-		client, err := NewClient(validProfile(tc.provider, "https://example.com", "k"), WithHTTPClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		for _, suffix := range []string{"\n\n", ""} {
+			body := &closeTrackingBody{Reader: strings.NewReader("data: " + tc.event + suffix)}
+			client, err := NewClient(validProfile(tc.provider, "https://example.com", "k"), WithHTTPClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Body: body, Header: make(http.Header)}, nil
+			})))
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream, err := client.Stream(context.Background(), CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = stream.Recv(); err != nil {
+				t.Fatalf("first delta %s suffix=%q: %v", tc.provider, suffix, err)
+			}
+			if _, err = stream.Recv(); err == nil || err == io.EOF || !body.closed {
+				t.Fatalf("truncated %s suffix=%q: err=%v closed=%v", tc.provider, suffix, err, body.closed)
+			}
+		}
+	}
+}
+
+func TestOpenAIFinishReasonTerminatesAfterFinalContentAndToolDelta(t *testing.T) {
+	for _, suffix := range []string{"\n\n", ""} {
+		body := &closeTrackingBody{Reader: strings.NewReader(
+			"data: {\"choices\":[{\"delta\":{\"content\":\"last text\",\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}" + suffix,
+		)}
+		client, err := NewClient(validProfile(ProviderOpenAICompatible, "https://example.com", "k"), WithHTTPClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: 200, Body: body, Header: make(http.Header)}, nil
 		})))
 		if err != nil {
@@ -642,12 +668,38 @@ func TestProviderStreamsRejectRawEOFWithoutTerminalMarker(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = stream.Recv(); err != nil {
-			t.Fatalf("first delta %s: %v", tc.provider, err)
+		delta, err := stream.Recv()
+		if err != nil || delta.Content != "last text" || len(delta.ToolCalls) != 1 || delta.ToolCalls[0].Function.Name != "lookup" || delta.ToolCalls[0].Function.Arguments != "{}" {
+			t.Fatalf("suffix=%q final delta=%#v err=%v", suffix, delta, err)
 		}
-		if _, err = stream.Recv(); err == nil || err == io.EOF || !body.closed {
-			t.Fatalf("truncated %s: err=%v closed=%v", tc.provider, err, body.closed)
+		if _, err = stream.Recv(); err != io.EOF || !body.closed {
+			t.Fatalf("suffix=%q finish_reason not terminal: err=%v closed=%v", suffix, err, body.closed)
 		}
+	}
+}
+
+func TestConversationProfileDefaultsNonPositiveMaxOutputTokensInSnapshot(t *testing.T) {
+	for _, value := range []int{0, -1} {
+		profile := validProfile(ProviderOpenAICompatible, "https://example.com", "k")
+		profile.MaxOutputTokens = value
+		normalized, err := ValidateProfile(profile)
+		if err != nil {
+			t.Fatalf("value=%d: %v", value, err)
+		}
+		if normalized.MaxOutputTokens != DefaultConversationMaxOutputTokens {
+			t.Fatalf("value=%d normalized=%d", value, normalized.MaxOutputTokens)
+		}
+		snapshot := SnapshotFromProfile(profile)
+		if snapshot.MaxOutputTokens != DefaultConversationMaxOutputTokens || snapshot.Profile().MaxOutputTokens != DefaultConversationMaxOutputTokens {
+			t.Fatalf("value=%d snapshot=%+v", value, snapshot)
+		}
+	}
+	embedding := validProfile(ProviderOpenAICompatible, "https://example.com", "k")
+	embedding.ModelKind = ModelKindEmbedding
+	embedding.MaxOutputTokens = 0
+	normalized, err := ValidateProfile(embedding)
+	if err != nil || normalized.MaxOutputTokens != 0 {
+		t.Fatalf("embedding profile=%+v err=%v", normalized, err)
 	}
 }
 

@@ -258,11 +258,14 @@ func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key str
 	var dispatchResult []byte
 	var dispatchState string
 	var dispatchEpoch uint64
+	var modelDispatchCount uint32
+	var modelActiveMilliseconds int64
+	var modelDispatchStartedAt *time.Time
 	var last int64
 	var extensionRaw, attachmentRaw []byte
 	var snapshotKeyVersion uint32
 	var snapshotNonce, snapshotCiphertext []byte
-	err := q.QueryRow(ctx, `SELECT turn_id,request_id,request_fingerprint,owner_id,account_generation,conversation_id,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,attachment_snapshot_json,attachment_snapshot_digest,state,cancel_requested,cancel_request_id,cancel_request_fingerprint,revision,last_sequence,terminal_code,terminal_summary,response_json,dispatch_state,dispatch_epoch,dispatch_result_json,created_at,updated_at FROM core_conversation_turns WHERE request_id=$1 OR turn_id=$1`, key).Scan(&out.ID, &out.RequestID, &out.RequestFingerprint, &out.OwnerID, &out.AccountGeneration, &conv, &out.Prompt, &profile, &expected, &snapshot, &digest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &extensionRaw, &extensionDigest, &attachmentRaw, &attachmentDigest, &state, &cancel, &cancelRequestID, &cancelRequestFingerprint, &out.Revision, &last, &code, &summary, &responseRaw, &dispatchState, &dispatchEpoch, &dispatchResult, &out.CreatedAt, &out.UpdatedAt)
+	err := q.QueryRow(ctx, `SELECT turn_id,request_id,request_fingerprint,owner_id,account_generation,conversation_id,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,attachment_snapshot_json,attachment_snapshot_digest,state,cancel_requested,cancel_request_id,cancel_request_fingerprint,revision,last_sequence,terminal_code,terminal_summary,response_json,dispatch_state,dispatch_epoch,dispatch_result_json,model_dispatch_count,model_active_milliseconds,model_dispatch_started_at,created_at,updated_at FROM core_conversation_turns WHERE request_id=$1 OR turn_id=$1`, key).Scan(&out.ID, &out.RequestID, &out.RequestFingerprint, &out.OwnerID, &out.AccountGeneration, &conv, &out.Prompt, &profile, &expected, &snapshot, &digest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &extensionRaw, &extensionDigest, &attachmentRaw, &attachmentDigest, &state, &cancel, &cancelRequestID, &cancelRequestFingerprint, &out.Revision, &last, &code, &summary, &responseRaw, &dispatchState, &dispatchEpoch, &dispatchResult, &modelDispatchCount, &modelActiveMilliseconds, &modelDispatchStartedAt, &out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -315,6 +318,11 @@ func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key str
 	}
 	out.TerminalCode, out.TerminalSummary = code, summary
 	out.DispatchState, out.DispatchEpoch = dispatchState, dispatchEpoch
+	out.ModelDispatchCount = modelDispatchCount
+	out.ModelActiveDuration = time.Duration(modelActiveMilliseconds) * time.Millisecond
+	if modelDispatchStartedAt != nil {
+		out.ModelDispatchStartedAt = modelDispatchStartedAt.UTC()
+	}
 	if len(dispatchResult) > 0 && (out.State == core.TurnAccepted || out.State == core.TurnRunning || out.State == core.TurnWaitingConfirmation) {
 		envelope, envelopeErr := loadDurableTurnDispatchEnvelope(dispatchResult)
 		if envelopeErr != nil {
@@ -504,8 +512,12 @@ func (s *CoreConversationStore) RenewTurn(ctx context.Context, id, lease string,
 
 func (s *CoreConversationStore) PrepareTurnModel(ctx context.Context, lease core.TurnLease) (core.Turn, error) {
 	var out core.Turn
-	err := s.pool.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='' RETURNING turn_id`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&out.ID)
+	err := s.pool.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,model_dispatch_count=model_dispatch_count+1,model_dispatch_started_at=clock_timestamp(),updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='' AND model_dispatch_count < $4 AND model_active_milliseconds < $5 RETURNING turn_id`, lease.Turn.ID, lease.LeaseID, lease.Epoch, core.MaxTurnModelDispatches, core.MaxTurnModelActiveDuration.Milliseconds()).Scan(&out.ID)
 	if err != nil {
+		current, getErr := s.GetTurn(ctx, lease.Turn.ID)
+		if getErr == nil && (current.ModelDispatchCount >= core.MaxTurnModelDispatches || current.ModelActiveDuration >= core.MaxTurnModelActiveDuration) {
+			return core.Turn{}, core.ErrModelBudgetExhausted
+		}
 		return core.Turn{}, core.ErrConflict
 	}
 	return s.GetTurn(ctx, out.ID)
@@ -537,7 +549,7 @@ func (s *CoreConversationStore) RecordTurnModelResult(ctx context.Context, lease
 		return err
 	}
 	raw, _ := json.Marshal(envelope)
-	command, err := s.pool.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_state='completed',dispatch_result_json=$2,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$3 AND lease_epoch=$4 AND state='running' AND dispatch_state='dispatched'`, lease.Turn.ID, raw, lease.LeaseID, lease.Epoch)
+	command, err := s.pool.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_state='completed',dispatch_result_json=$2,model_active_milliseconds=model_active_milliseconds+GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (clock_timestamp()-model_dispatch_started_at))*1000))::bigint,model_dispatch_started_at=NULL,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$3 AND lease_epoch=$4 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NOT NULL`, lease.Turn.ID, raw, lease.LeaseID, lease.Epoch)
 	if err != nil {
 		return err
 	}
@@ -830,7 +842,7 @@ func conversationToolEventAuthorityTx(ctx context.Context, tx pgx.Tx, turnID, ca
 }
 
 func (s *CoreConversationStore) MarkTurnModelUncertain(ctx context.Context, lease core.TurnLease, code, summary string) error {
-	command, err := s.pool.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_state='uncertain',terminal_code=$2,terminal_summary=$3,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$4 AND lease_epoch=$5 AND state='running' AND dispatch_state='dispatched'`, lease.Turn.ID, code, summary, lease.LeaseID, lease.Epoch)
+	command, err := s.pool.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_state='uncertain',terminal_code=$2,terminal_summary=$3,model_active_milliseconds=model_active_milliseconds+GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (clock_timestamp()-model_dispatch_started_at))*1000))::bigint,model_dispatch_started_at=NULL,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$4 AND lease_epoch=$5 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NOT NULL`, lease.Turn.ID, code, summary, lease.LeaseID, lease.Epoch)
 	if err != nil {
 		return err
 	}
@@ -1259,7 +1271,7 @@ func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.Tu
 		var cloudTaskID, cloudConfirmationID string
 		cloudErr := tx.QueryRow(ctx, `SELECT e.task_id::text,e.confirmation_id::text
 			FROM core_cloud_worker_executions e JOIN core_tasks t ON t.task_id=e.task_id
-			WHERE e.turn_id=$1 AND e.state IN ('waiting_user','queued','provisioning','running','cleaning')
+			WHERE e.turn_id=$1 AND e.state NOT IN ('succeeded','failed','canceled','rejected','expired')
 			ORDER BY e.created_at DESC,e.execution_id DESC LIMIT 1 FOR UPDATE OF t`, c.TurnID).Scan(&cloudTaskID, &cloudConfirmationID)
 		if cloudErr == nil {
 			task, taskErr := NewCoreTaskStore(s.Store).taskTxLocked(ctx, tx, cloudTaskID, false)
@@ -1501,7 +1513,10 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 		turn, getErr := s.GetTurn(ctx, c.TurnID)
 		return turn, false, getErr
 	}
-	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',dispatch_state='',dispatch_epoch=0,dispatch_result_json=NULL,lease_id=NULL,lease_expires_at=NULL,lease_epoch=lease_epoch+1,revision=revision+1,updated_at=$2 WHERE turn_id=$1 AND revision=$3 AND state IN ('accepted','running') AND cancel_requested=false`, c.TurnID, now, c.ExpectedRevision)
+	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',dispatch_state='',dispatch_epoch=0,dispatch_result_json=NULL,
+		model_active_milliseconds=model_active_milliseconds+CASE WHEN model_dispatch_started_at IS NULL THEN 0 ELSE GREATEST(0,FLOOR(EXTRACT(EPOCH FROM ($2-model_dispatch_started_at))*1000))::bigint END,
+		model_dispatch_started_at=NULL,lease_id=NULL,lease_expires_at=NULL,lease_epoch=lease_epoch+1,revision=revision+1,updated_at=$2
+		WHERE turn_id=$1 AND revision=$3 AND state IN ('accepted','running') AND cancel_requested=false`, c.TurnID, now, c.ExpectedRevision)
 	if err != nil {
 		return core.Turn{}, false, err
 	}

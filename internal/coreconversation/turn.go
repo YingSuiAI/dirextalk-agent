@@ -66,6 +66,9 @@ type Turn struct {
 	DispatchState            string          `json:"-"`
 	DispatchEpoch            uint64          `json:"-"`
 	DispatchResult           *ModelRunResult `json:"-"`
+	ModelDispatchCount       uint32          `json:"-"`
+	ModelActiveDuration      time.Duration   `json:"-"`
+	ModelDispatchStartedAt   time.Time       `json:"-"`
 	LastSequence             int64
 	CreatedAt                time.Time
 	UpdatedAt                time.Time

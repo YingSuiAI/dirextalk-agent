@@ -870,18 +870,23 @@ func (s *sseStream) Recv() (Delta, error) {
 				s.finish()
 				return Delta{}, ErrStreamIdleTimeout
 			}
-			if errors.Is(err, io.EOF) {
+			if !errors.Is(err, io.EOF) || len(line) == 0 {
 				s.finish()
-				if s.source != nil && s.source.n > maxResponseBytes {
+				if errors.Is(err, io.EOF) && s.source != nil && s.source.n > maxResponseBytes {
 					return Delta{}, ErrStreamTruncated
 				}
-				if !s.terminal {
-					return Delta{}, ErrStreamTruncated
+				if errors.Is(err, io.EOF) {
+					if !s.terminal {
+						return Delta{}, ErrStreamTruncated
+					}
+					return Delta{}, io.EOF
 				}
-				return Delta{}, io.EOF
+				return Delta{}, ErrProviderUnavailable
 			}
-			s.finish()
-			return Delta{}, ErrProviderUnavailable
+			if s.source != nil && s.source.n > maxResponseBytes {
+				s.finish()
+				return Delta{}, ErrStreamTruncated
+			}
 		}
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "data:") {
@@ -928,6 +933,14 @@ func (s *sseStream) Recv() (Delta, error) {
 
 func streamTerminal(provider ModelProvider, event map[string]any) bool {
 	switch provider {
+	case ProviderOpenAICompatible:
+		choices, _ := event["choices"].([]any)
+		if len(choices) == 0 {
+			return false
+		}
+		choice, _ := choices[0].(map[string]any)
+		reason, _ := choice["finish_reason"].(string)
+		return strings.TrimSpace(reason) != ""
 	case ProviderAnthropic:
 		typ, _ := event["type"].(string)
 		return typ == "message_stop"

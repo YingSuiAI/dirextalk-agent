@@ -91,23 +91,30 @@ retain their frozen revision CAS.
   embedding, and speech client-profile defaults. The tool default is an
   independent binding to a conversation-kind profile; it never falls back to
   the conversation default and rejects embedding- or speech-kind profiles.
+- A conversation profile whose supplied `max_output_tokens` is nonpositive is
+  normalized to the single positive default of 8192 before persistence. The
+  immutable turn snapshot exposes and dispatches that exact effective value.
 - Durable Task events/results are fenced by Task revision, attempt, and lease
   epoch. `WatchEvents` resumes strictly after its supplied sequence.
 - `Chat`, `StreamChat`, and `StartTurn` require a positive, exact
   `model_profile_id`/`model_profile_revision`/`credential_version` triple.
   Partial or stale pins fail before provider work; there is no default-profile
   fallback, and durable replays retain their original snapshot.
-- A Native conversation model stream has no total execution deadline. Its
-  five-minute safety limit measures only provider inactivity and is renewed by
-  every byte received from the SSE stream, including keepalives. Model output
-  and tool-call progress may therefore continue for longer than five minutes;
+- A Native conversation turn permits at most 32 provider dispatches and 30
+  minutes of cumulative model-active time. Only provider execution consumes
+  the time budget: tool, sandbox, Worker, and user-confirmation execution or
+  waiting do not. Independently, each provider stream's five-minute safety
+  limit measures only inactivity and is renewed by every byte received from
+  the SSE stream, including keepalives. Model output may therefore continue
+  for longer than five minutes while remaining inside the cumulative budget;
   individual tool or sandbox executions keep their own resource limits. If a
   dispatched provider stream produces no data for the full idle interval, the
   turn fails with `provider_timeout` and an unknown-outcome summary. The
   dispatch is never replayed automatically, and recovery preserves the
   persisted timeout classification.
 - Native conversation progress durably publishes assistant `delta` text and
-  additive `reasoning_content` as they arrive from the provider, followed by
+  additive `reasoning_content` in bounded coalesced events as they arrive from
+  the provider, followed by
   the terminal response containing the full accumulated `reasoning_content`.
   Reasoning uses the same durable event path rather than a parallel stream. It
   publishes the existing `tool_call` event only after the model step and tool
@@ -117,6 +124,10 @@ retain their frozen revision CAS.
   persist the same public ordering while their private pending/dispatched
   envelope remains the at-most-once authority and is never exposed as an
   additional client event.
+- OpenAI-compatible streams accept either `[DONE]` or a nonempty first-choice
+  `finish_reason` as an explicit terminal signal. A clean EOF after that signal
+  preserves the final content/tool-call delta; EOF without either signal is
+  still `provider_stream_truncated`.
 - On every Native conversation turn, `Chat`, `StreamChat`, and `StartTurn`
   compose two memory layers before model dispatch. Working memory remains the
   durable conversation summary plus recent transcript window. Long-term memory

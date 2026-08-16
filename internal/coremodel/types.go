@@ -24,6 +24,11 @@ const (
 	ModelKindConversation = "conversation"
 	ModelKindEmbedding    = "embedding"
 	ModelKindSpeech       = "speech"
+
+	// DefaultConversationMaxOutputTokens is the single effective default for
+	// conversation profiles. Persisted profiles and immutable turn snapshots
+	// must carry this positive value instead of relying on provider defaults.
+	DefaultConversationMaxOutputTokens = 8192
 )
 
 type Profile struct {
@@ -128,6 +133,9 @@ type ExecutionSnapshot struct {
 }
 
 func SnapshotFromProfile(p Profile) ExecutionSnapshot {
+	if (p.ModelKind == "" || p.ModelKind == ModelKindConversation) && p.MaxOutputTokens <= 0 {
+		p.MaxOutputTokens = DefaultConversationMaxOutputTokens
+	}
 	return ExecutionSnapshot{ProfileID: p.ID, Revision: p.Revision, CredentialVersion: credentialVersion(p), Provider: p.Provider, ModelKind: p.ModelKind, BaseURL: p.BaseURL,
 		Model: p.Model, APIKey: p.APIKey, SystemPrompt: p.SystemPrompt, Temperature: cloneFloat(p.Temperature),
 		TopP: cloneFloat(p.TopP), MaxOutputTokens: p.MaxOutputTokens, ContextWindow: p.ContextWindow, ReasoningEffort: p.ReasoningEffort}

@@ -18,6 +18,11 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	MaxTurnModelDispatches     = 32
+	MaxTurnModelActiveDuration = 30 * time.Minute
+)
+
 type Service struct {
 	store            Store
 	models           ModelRunner
@@ -38,6 +43,8 @@ type Service struct {
 	cancelSignals    map[string]chan struct{}
 	runtimeMu        sync.Mutex
 	runtime          map[string]*turnRuntime
+	turnOrderingMu   sync.Mutex
+	turnOrdering     map[string]*turnDeltaOrdering
 }
 
 // MemoryRecallResolver supplies a bounded, already-delimited model-only
@@ -109,7 +116,7 @@ func NewService(store Store, models ModelRunner, extensions ExtensionResolver, p
 		extensions = noopExtensions{}
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
-	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, leaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}}
+	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, leaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}}
 	if turns, ok := store.(TurnStore); ok {
 		s.turns = turns
 	}
@@ -1209,7 +1216,20 @@ func (s *Service) SteerTurn(ctx context.Context, cmd TurnSteerCommand) (Turn, er
 	if !ok {
 		return Turn{}, ErrInvalid
 	}
-	turn, interrupt, err := store.RequestTurnSteer(ctx, cmd)
+	ordering := s.currentTurnOrdering(cmd.TurnID)
+	var turn Turn
+	var interrupt bool
+	commit := func() error {
+		var commitErr error
+		turn, interrupt, commitErr = store.RequestTurnSteer(ctx, cmd)
+		return commitErr
+	}
+	var err error
+	if ordering == nil {
+		err = commit()
+	} else {
+		err = ordering.buffer.Fence(commit)
+	}
 	if err != nil {
 		return Turn{}, err
 	}
@@ -1658,24 +1678,53 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			seen[intrinsic.Tool.Name] = struct{}{}
 		}
 	}
+	modelCtx := child
+	modelCancel := func() {}
 	if durableDispatch {
 		if !replayed {
-			if _, err = dispatchStore.PrepareTurnModel(ctx, lease); err != nil {
+			prepared, prepareErr := dispatchStore.PrepareTurnModel(ctx, lease)
+			if errors.Is(prepareErr, ErrModelBudgetExhausted) {
+				_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
+				return
+			}
+			if prepareErr != nil {
 				if current, getErr := s.turns.GetTurn(ctx, turn.ID); getErr == nil && current.DispatchState == "dispatched" {
 					_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, "provider_uncertain", "model dispatch outcome is unknown")
 					_, _ = s.turns.FailTurn(ctx, lease, "provider_uncertain", "model dispatch outcome is unknown")
 				}
 				return
 			}
+			turn.ModelDispatchCount = prepared.ModelDispatchCount
+			turn.ModelActiveDuration = prepared.ModelActiveDuration
+			remaining := MaxTurnModelActiveDuration - prepared.ModelActiveDuration
+			if remaining <= 0 {
+				_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
+				_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
+				return
+			}
+			modelCtx, modelCancel = context.WithTimeout(child, remaining)
 		}
 	}
+	defer modelCancel()
 	if replayed {
 		resultCh <- struct {
 			result ModelRunResult
 			err    error
 		}{replay, nil}
 	} else {
+		deltaBuffer := newTurnDeltaBuffer(defaultTurnDeltaFlushBytes, defaultTurnDeltaFlushInterval, func(delta ModelDelta) error {
+			_, appendErr := s.turns.AppendTurnEvent(ctx, id, TurnEvent{
+				Kind:             TurnEventDelta,
+				Text:             delta.Text,
+				ReasoningContent: delta.ReasoningContent,
+			})
+			return appendErr
+		})
+		ordering := &turnDeltaOrdering{buffer: deltaBuffer}
+		s.registerTurnOrdering(id, ordering)
 		go func() {
+			defer modelCancel()
+			defer s.unregisterTurnOrdering(id, ordering)
 			profile := turn.ProfileSnapshot.Profile()
 			systemPrompt := profile.SystemPrompt
 			if containsStaticSiteIntrinsic(intrinsicTools) {
@@ -1687,7 +1736,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			// Force the current streaming runner so active provider streams are
 			// bounded only by their inactivity watchdog. Visible assistant text and
 			// provider reasoning use the same durable delta ordering.
-			result, runErr := s.runModel(child, ModelRunRequest{
+			result, runErr := s.runModel(modelCtx, ModelRunRequest{
 				Conversation: modelConversation,
 				Profile: ResolvedProfile{
 					ID:           profile.ID,
@@ -1702,17 +1751,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				Extensions:            resolvedExtensions,
 				ExtensionSnapshots:    append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...),
 				InputPartsByMessageID: inputParts,
-			}, func(delta ModelDelta) error {
-				if delta.Text == "" && delta.ReasoningContent == "" {
-					return nil
-				}
-				_, appendErr := s.turns.AppendTurnEvent(ctx, id, TurnEvent{
-					Kind:             TurnEventDelta,
-					Text:             delta.Text,
-					ReasoningContent: delta.ReasoningContent,
-				})
-				return appendErr
-			})
+			}, deltaBuffer.Append)
+			flushErr := deltaBuffer.Close()
+			if runErr == nil && flushErr != nil {
+				runErr = flushErr
+			}
+			if errors.Is(modelCtx.Err(), context.DeadlineExceeded) && child.Err() == nil {
+				runErr = ErrModelBudgetExhausted
+			}
 			resultCh <- struct {
 				result ModelRunResult
 				err    error
@@ -1973,6 +2019,26 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	}
 }
 
+func (s *Service) registerTurnOrdering(id string, ordering *turnDeltaOrdering) {
+	s.turnOrderingMu.Lock()
+	s.turnOrdering[id] = ordering
+	s.turnOrderingMu.Unlock()
+}
+
+func (s *Service) unregisterTurnOrdering(id string, ordering *turnDeltaOrdering) {
+	s.turnOrderingMu.Lock()
+	if s.turnOrdering[id] == ordering {
+		delete(s.turnOrdering, id)
+	}
+	s.turnOrderingMu.Unlock()
+}
+
+func (s *Service) currentTurnOrdering(id string) *turnDeltaOrdering {
+	s.turnOrderingMu.Lock()
+	defer s.turnOrderingMu.Unlock()
+	return s.turnOrdering[id]
+}
+
 func (s *Service) resolveTurnAttachmentInputParts(ctx context.Context, turn Turn, steers []TurnSteer) (map[string][]coremodel.MessageInputPart, error) {
 	resolver, _ := s.turns.(TurnAttachmentContentResolver)
 	return resolveTurnAttachmentInputParts(ctx, resolver, turn, steers)
@@ -2036,9 +2102,14 @@ const (
 	modelDispatchUncertainSummary = "model dispatch outcome is unknown"
 	modelResponseTimeoutCode      = "provider_timeout"
 	modelResponseTimeoutSummary   = "model stream stopped producing progress; outcome is unknown; send a new turn to retry"
+	modelBudgetExhaustedCode      = "model_budget_exhausted"
+	modelBudgetExhaustedSummary   = "model execution budget was exhausted before a final response"
 )
 
 func classifyModelDispatchFailure(err error) (string, string) {
+	if errors.Is(err, ErrModelBudgetExhausted) {
+		return modelBudgetExhaustedCode, modelBudgetExhaustedSummary
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return modelResponseTimeoutCode, modelResponseTimeoutSummary
 	}

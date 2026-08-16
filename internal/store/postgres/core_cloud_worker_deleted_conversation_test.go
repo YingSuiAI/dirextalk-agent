@@ -469,6 +469,13 @@ func TestCloudWorkerPostgresStopTurnCancelsRetainedServiceReuse(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			var conversationToolAttempts int
+			if err := h.store.pool.QueryRow(h.ctx, `SELECT count(*) FROM core_conversation_tool_attempts WHERE turn_id=$1`, h.command.TurnID).Scan(&conversationToolAttempts); err != nil {
+				t.Fatal(err)
+			}
+			if conversationToolAttempts != 0 {
+				t.Fatalf("Cloud Worker turn unexpectedly owns %d conversation tool attempts", conversationToolAttempts)
+			}
 			requestID := uuid.NewString()
 			canceled, err := h.conversation.RequestTurnCancel(h.ctx, core.TurnCancelCommand{RequestID: requestID, TurnID: h.command.TurnID})
 			if err != nil || canceled.State != core.TurnCanceled || !canceled.CancelRequested || canceled.CancelRequestID != requestID {

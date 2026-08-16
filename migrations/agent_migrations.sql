@@ -2570,3 +2570,13 @@ DROP TABLE core_cloud_worker_offer_outbox;
 DROP TABLE core_cloud_worker_artifacts;
 DROP TABLE core_cloud_worker_resources;
 -- dirextalk-agent migration end 000018_remove_legacy_cloud_worker_schema.up.sql
+-- dirextalk-agent migration begin 000019_conversation_model_budget.up.sql
+UPDATE core_model_profiles
+SET max_output_tokens = 8192
+WHERE model_kind = 'conversation' AND max_output_tokens <= 0;
+
+ALTER TABLE core_conversation_turns
+    ADD COLUMN model_dispatch_count integer NOT NULL DEFAULT 0 CHECK (model_dispatch_count >= 0),
+    ADD COLUMN model_active_milliseconds bigint NOT NULL DEFAULT 0 CHECK (model_active_milliseconds >= 0),
+    ADD COLUMN model_dispatch_started_at timestamptz;
+-- dirextalk-agent migration end 000019_conversation_model_budget.up.sql
