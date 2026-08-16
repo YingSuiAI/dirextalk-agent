@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.138
+
+1. Move the Native Agent chat data plane to durable HTTP writes, resumable SSE, and authoritative Agent-owned history while preserving cancellation, continuation, reasoning, Task, Plan, and attachment projections.
+2. Publish Cloud Worker tools whenever the Native HTTP data plane is enabled, including complete confirmation, progress, result, artifact, and historical references.
+3. Allow local isolated commands to run for up to ten minutes while retaining the existing CPU budget, and avoid repeating an identical local resource failure within one model turn.
+
 ## v1.0.101
 
 1. Commit a successful SSH Worker report directly to its durable conversation turn, preserving task, plan, run, and artifact references without a second model dispatch.
