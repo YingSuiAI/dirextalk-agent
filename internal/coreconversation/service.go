@@ -21,6 +21,9 @@ import (
 const (
 	MaxTurnModelDispatches     = 32
 	MaxTurnModelActiveDuration = 30 * time.Minute
+	maxSuccessfulWebSearches   = 3
+	webSearchToolName          = "web_search"
+	webSearchBudgetGuidance    = "This turn has enough web-search evidence. Synthesize the answer immediately from the available evidence and state any remaining gaps. Do not repeat the research through another tool."
 )
 
 type Service struct {
@@ -1543,6 +1546,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		_, _ = s.turns.FailTurn(ctx, lease, "tool_history_unavailable", "durable tool history is unavailable")
 		return
 	}
+	webSearchBudgetReached := successfulToolCallCount(toolCallAuthorities, webSearchToolName) >= maxSuccessfulWebSearches
 	var turnSteers []TurnSteer
 	if steerStore, ok := s.turns.(TurnSteerStore); ok {
 		turnSteers, err = steerStore.ListTurnSteers(ctx, turn.ID)
@@ -1566,6 +1570,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
 			return
 		}
+	}
+	modelExtensionSnapshots := append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)
+	if webSearchBudgetReached {
+		resolvedExtensions, modelExtensionSnapshots = withoutModelExtensionTool(resolvedExtensions, modelExtensionSnapshots, webSearchToolName)
 	}
 	if turn.ExpectedRevision != nil {
 		expectedRevision := *turn.ExpectedRevision
@@ -1733,6 +1741,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			if containsCloudWorkerIntrinsic(intrinsicTools) {
 				systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 			}
+			if webSearchBudgetReached {
+				systemPrompt = appendSystemPrompt(systemPrompt, webSearchBudgetGuidance)
+			}
 			// Force the current streaming runner so active provider streams are
 			// bounded only by their inactivity watchdog. Visible assistant text and
 			// provider reasoning use the same durable delta ordering.
@@ -1749,7 +1760,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				ProfileSnapshot:       turn.ProfileSnapshot,
 				Intrinsics:            append([]ResolvedIntrinsic(nil), intrinsicTools...),
 				Extensions:            resolvedExtensions,
-				ExtensionSnapshots:    append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...),
+				ExtensionSnapshots:    modelExtensionSnapshots,
 				InputPartsByMessageID: inputParts,
 			}, deltaBuffer.Append)
 			flushErr := deltaBuffer.Close()
@@ -2238,6 +2249,74 @@ func (s *Service) resolveAcceptedTurnExtensionsForContinuation(ctx context.Conte
 
 func contextBoundExtensionSource(source string) bool {
 	return source == "builtin:web_search:tavily" || source == "builtin:knowledge:semantic" || source == "product-capability"
+}
+
+func successfulToolCallCount(authorities map[string]turnToolCallAuthority, toolName string) int {
+	count := 0
+	for _, authority := range authorities {
+		if authority.state == turnToolCallTerminal && authority.call.Name == toolName && authority.result != nil && !authority.result.IsError {
+			count++
+		}
+	}
+	return count
+}
+
+func withoutModelExtensionTool(resolved []ResolvedExtension, snapshots []ExtensionExecutionSnapshot, toolName string) ([]ResolvedExtension, []ExtensionExecutionSnapshot) {
+	filtered := make([]ResolvedExtension, 0, len(resolved))
+	kept := make(map[string]struct{}, len(resolved))
+	for _, extension := range resolved {
+		hasExcludedTool := containsTool(extension.Selection.AllowedTools, toolName) || containsTool(extension.Snapshot.ToolNames, toolName)
+		for _, tool := range extension.Tools {
+			hasExcludedTool = hasExcludedTool || tool.Name == toolName
+		}
+		if !hasExcludedTool {
+			filtered = append(filtered, extension)
+			kept[extension.Selection.ID] = struct{}{}
+			continue
+		}
+		extension.Selection.AllowedTools = withoutToolName(extension.Selection.AllowedTools, toolName)
+		extension.Snapshot.Selection.AllowedTools = withoutToolName(extension.Snapshot.Selection.AllowedTools, toolName)
+		extension.Snapshot.ToolNames = withoutToolName(extension.Snapshot.ToolNames, toolName)
+		tools := make([]coremodel.Tool, 0, len(extension.Tools))
+		for _, tool := range extension.Tools {
+			if tool.Name != toolName {
+				tools = append(tools, tool)
+			}
+		}
+		extension.Tools = tools
+		if len(extension.Tools) == 0 && len(extension.Snapshot.ToolNames) == 0 && len(extension.Selection.AllowedTools) == 0 {
+			continue
+		}
+		filtered = append(filtered, extension)
+		kept[extension.Selection.ID] = struct{}{}
+	}
+	filteredSnapshots := make([]ExtensionExecutionSnapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		if _, ok := kept[snapshot.Selection.ID]; !ok {
+			continue
+		}
+		snapshot.Selection.AllowedTools = withoutToolName(snapshot.Selection.AllowedTools, toolName)
+		snapshot.ToolNames = withoutToolName(snapshot.ToolNames, toolName)
+		filteredSnapshots = append(filteredSnapshots, snapshot)
+	}
+	return filtered, filteredSnapshots
+}
+
+func withoutToolName(names []string, excluded string) []string {
+	filtered := make([]string, 0, len(names))
+	for _, name := range names {
+		if name != excluded {
+			filtered = append(filtered, name)
+		}
+	}
+	return filtered
+}
+
+func appendSystemPrompt(base, guidance string) string {
+	if strings.TrimSpace(base) == "" {
+		return guidance
+	}
+	return strings.TrimSpace(base) + "\n\n" + guidance
 }
 
 type turnToolCallState uint8

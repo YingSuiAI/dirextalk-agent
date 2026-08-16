@@ -217,6 +217,11 @@ encrypted repository. Its model-facing contract requests one focused search
 with enough results, permits another only for a distinct missing fact, and
 directs the model to synthesize sufficient evidence instead of repeating
 equivalent searches for exhaustive confirmation.
+Each turn exposes at most three successful `web_search` executions. After the
+third successful result is durable, subsequent model requests remove only
+`web_search` from the resolved extension catalog and matching request snapshot,
+retain every unrelated extension and intrinsic tool, and instruct the model to
+synthesize the available evidence immediately while stating remaining gaps.
 
 When Knowledge is enabled, the same resolver chain adds one Agent-owned,
 read-only `knowledge_search` tool for authenticated Native conversations. It

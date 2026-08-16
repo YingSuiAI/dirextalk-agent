@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -1534,6 +1535,82 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 		!strings.Contains(model.request.Profile.SystemPrompt, "not the lifetime") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "does not need to mention AWS") {
 		t.Fatalf("model request lost intrinsic or extension: %+v", model.request)
+	}
+}
+
+func TestExecuteTurnRemovesOnlyWebSearchAfterThreeSuccessfulCalls(t *testing.T) {
+	profile := testTurnSnapshot()
+	profile.SystemPrompt = "base instruction"
+	conversationID := uuid.NewString()
+	selection := ExtensionSelection{
+		Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1", Digest: strings.Repeat("a", 64),
+		AllowedTools: []string{webSearchToolName, "local_lookup"},
+	}
+	snapshot := ExtensionExecutionSnapshot{
+		Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "mcp:test",
+		ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64),
+		NetworkBindingDigest: strings.Repeat("d", 64), ToolNames: []string{webSearchToolName, "local_lookup"}, ReadOnly: true,
+	}
+	resolved := ResolvedExtension{
+		Selection: selection, Snapshot: snapshot,
+		Tools: []coremodel.Tool{
+			{Name: webSearchToolName, InputSchema: map[string]any{"type": "object"}},
+			{Name: "local_lookup", InputSchema: map[string]any{"type": "object"}},
+		},
+	}
+	createdAt := time.Now().UTC()
+	events := []TurnEvent{{Kind: TurnEventAccepted, CreatedAt: createdAt}}
+	for index := 0; index < maxSuccessfulWebSearches; index++ {
+		call := ToolCall{ID: uuid.NewString(), Name: webSearchToolName, Arguments: fmt.Sprintf(`{"query":"query %d"}`, index)}
+		result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: fmt.Sprintf(`{"result":%d}`, index)}
+		events = append(events,
+			TurnEvent{Kind: TurnEventStarted, CreatedAt: createdAt.Add(time.Duration(len(events)) * time.Second)},
+			TurnEvent{Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: createdAt.Add(time.Duration(len(events)+1) * time.Second)},
+			TurnEvent{Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: createdAt.Add(time.Duration(len(events)+2) * time.Second)},
+		)
+	}
+	for index := range events {
+		events[index].Sequence = int64(index + 1)
+	}
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID, Prompt: "summarize the research",
+		ProfileID: profile.ProfileID, ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+		ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(),
+		State: TurnAccepted, Revision: 1, LastSequence: int64(len(events)), CreatedAt: createdAt,
+	}
+	for index := range events {
+		events[index].TurnID = turn.ID
+	}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
+	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn}, events: events}
+	model := &capturingTurnModel{}
+	service, err := NewService(store, model, extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+		return []ResolvedExtension{resolved}, nil
+	}), snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+		return []ResolvedIntrinsic{{
+			Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}},
+			Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+				return IntrinsicExecutionResult{TurnCommitted: true}, nil
+			},
+		}}, nil
+	}))
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	request := model.request
+	if model.runs != 1 || len(request.Intrinsics) != 1 || request.Intrinsics[0].Tool.Name != coremodel.IntrinsicStaticSitePublishToolName ||
+		len(request.Extensions) != 1 || len(request.Extensions[0].Tools) != 1 || request.Extensions[0].Tools[0].Name != "local_lookup" ||
+		!reflect.DeepEqual(request.Extensions[0].Selection.AllowedTools, []string{"local_lookup"}) ||
+		!reflect.DeepEqual(request.Extensions[0].Snapshot.ToolNames, []string{"local_lookup"}) ||
+		len(request.ExtensionSnapshots) != 1 || !reflect.DeepEqual(request.ExtensionSnapshots[0].Selection.AllowedTools, []string{"local_lookup"}) ||
+		!reflect.DeepEqual(request.ExtensionSnapshots[0].ToolNames, []string{"local_lookup"}) ||
+		!strings.Contains(request.Profile.SystemPrompt, webSearchBudgetGuidance) {
+		t.Fatalf("budgeted model request=%+v", request)
 	}
 }
 
