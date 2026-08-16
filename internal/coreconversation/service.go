@@ -19,10 +19,11 @@ import (
 )
 
 const (
-	MaxTurnModelDispatches     = 32
-	MaxTurnModelActiveDuration = 30 * time.Minute
+	MaxTurnModelDispatches     = 500
+	MaxTurnModelActiveDuration = 24 * time.Hour
 	toolLoopNudgeGuidance      = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
 	toolLoopSynthesisGuidance  = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
+	outputContinuationGuidance = "Continue from the previous response fragment without restarting or repeating it. Preserve the work already completed. If a tool call was cut off, issue it again as one complete call."
 )
 
 type Service struct {
@@ -488,6 +489,9 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 	var references []Reference
 	var toolSummaries []string
 	var reasoningContent strings.Builder
+	var continuationContent strings.Builder
+	var continuationReasoning strings.Builder
+	var continuationMessages []Message
 	for round := 0; ; round++ {
 		if err := ctx.Err(); err != nil {
 			return ChatResponse{}, ErrCanceled
@@ -527,7 +531,12 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 			if modelContextErr != nil {
 				return ChatResponse{}, modelContextErr
 			}
-			result, err = s.runModelHeartbeat(ctx, ModelRunRequest{Conversation: modelConversation, Profile: resolvedProfile, Snapshot: lease.ProfileSnapshot, Extensions: exts}, lease, cmd, deltaEmit)
+			modelConversation.Messages = append(modelConversation.Messages, continuationMessages...)
+			roundProfile := resolvedProfile
+			if len(continuationMessages) != 0 {
+				roundProfile.SystemPrompt = appendSystemPrompt(roundProfile.SystemPrompt, outputContinuationGuidance)
+			}
+			result, err = s.runModelHeartbeat(ctx, ModelRunRequest{Conversation: modelConversation, Profile: roundProfile, Snapshot: lease.ProfileSnapshot, Extensions: exts}, lease, cmd, deltaEmit)
 			if err != nil {
 				return ChatResponse{}, err
 			}
@@ -538,7 +547,10 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 		if len(result.Message.ToolCalls) == 0 && len(result.ToolCalls) > 0 {
 			result.Message.ToolCalls = append([]ToolCall(nil), result.ToolCalls...)
 		}
-		reasoningContent.WriteString(result.Message.ReasoningContent)
+		if !result.Continue && len(continuationMessages) != 0 {
+			result.Message.Content = continuationContent.String() + result.Message.Content
+			result.Message.ReasoningContent = continuationReasoning.String() + result.Message.ReasoningContent
+		}
 		result.Message.ModelProfileID = cmd.ProfileID
 		result.Message.RelatedTaskIDs = append([]string(nil), result.RelatedTaskIDs...)
 		result.Message.RelatedPlanIDs = append([]string(nil), result.RelatedPlanIDs...)
@@ -549,8 +561,13 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 		result.Message.References = stableReferences(append(result.Message.References, references...))
 		result.Message.ToolSummaries = stableStrings(append(result.Message.ToolSummaries, toolSummaries...))
 		result.Message.CreatedAt = nextMessageTime(conv, result.Message.CreatedAt)
-		if err := result.Message.Validate(); err != nil {
-			return ChatResponse{}, fmt.Errorf("model message: %w", err)
+		if result.Continue && !validModelContinuation(result) {
+			return ChatResponse{}, ErrInvalid
+		}
+		if !result.Continue {
+			if validationErr := result.Message.Validate(); validationErr != nil {
+				return ChatResponse{}, fmt.Errorf("model message: %w", validationErr)
+			}
 		}
 		if result.Done && len(result.Message.ToolCalls) > 0 {
 			return ChatResponse{}, ErrInvalid
@@ -571,6 +588,16 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 				return ChatResponse{}, err
 			}
 		}
+		if result.Continue {
+			continuationContent.WriteString(result.Message.Content)
+			continuationReasoning.WriteString(result.Message.ReasoningContent)
+			continuationMessages = append(continuationMessages, result.Message.Snapshot())
+			continue
+		}
+		continuationContent.Reset()
+		continuationReasoning.Reset()
+		continuationMessages = nil
+		reasoningContent.WriteString(result.Message.ReasoningContent)
 		if len(result.Message.ToolCalls) == 0 {
 			result.Message.ReasoningContent = reasoningContent.String()
 			if err := result.Message.Validate(); err != nil {
@@ -1540,11 +1567,21 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "durable conversation context is invalid")
 		return
 	}
-	toolCallAuthorities, priorReasoning, loopRecovery, err := s.appendTurnToolHistory(ctx, turn, &conv)
+	dispatchStore, durableDispatch := s.turns.(TurnDispatchStore)
+	var replay ModelRunResult
+	var replayed bool
+	if durableDispatch {
+		replay, replayed, err = dispatchStore.LoadTurnModelResult(ctx, turn.ID)
+		if err != nil {
+			return
+		}
+	}
+	history, err := s.appendTurnToolHistory(ctx, turn, &conv, replayed && !replay.Continue)
 	if err != nil {
 		_, _ = s.turns.FailTurn(ctx, lease, "tool_history_unavailable", "durable tool history is unavailable")
 		return
 	}
+	toolCallAuthorities := history.authorities
 	var turnSteers []TurnSteer
 	if steerStore, ok := s.turns.(TurnSteerStore); ok {
 		turnSteers, err = steerStore.ListTurnSteers(ctx, turn.ID)
@@ -1610,7 +1647,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		}
 		return
 	}
-	dispatchStore, durableDispatch := s.turns.(TurnDispatchStore)
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cancelSignal := make(chan struct{})
@@ -1622,14 +1658,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		result ModelRunResult
 		err    error
 	}, 1)
-	var replay ModelRunResult
-	var replayed bool
-	if durableDispatch {
-		replay, replayed, err = dispatchStore.LoadTurnModelResult(ctx, turn.ID)
-		if err != nil {
-			return
-		}
-	}
 	var recalledMemory string
 	if !replayed && s.memoryRecall != nil {
 		recallCtx, recallCancel := context.WithTimeout(ctx, 15*time.Second)
@@ -1683,7 +1711,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		}
 	}
 	modelIntrinsicTools := intrinsicTools
-	if loopRecovery == toolLoopSynthesize {
+	if history.loopRecovery == toolLoopSynthesize {
 		modelExtensions = nil
 		modelExtensionSnapshots = nil
 		modelIntrinsicTools = nil
@@ -1743,7 +1771,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			if containsCloudWorkerIntrinsic(modelIntrinsicTools) {
 				systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 			}
-			switch loopRecovery {
+			if history.continueOutput {
+				systemPrompt = appendSystemPrompt(systemPrompt, outputContinuationGuidance)
+			}
+			switch history.loopRecovery {
 			case toolLoopNudge:
 				systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
 			case toolLoopSynthesize:
@@ -1807,6 +1838,35 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			if t, e := s.turns.GetTurn(ctx, id); e == nil && t.CancelRequested {
 				if cancelStore, ok := s.turns.(TurnCancelStore); ok {
 					_, _ = cancelStore.MarkTurnCanceledRequested(ctx, id)
+				}
+				return
+			}
+			if out.result.Continue {
+				out.result.Message.ModelProfileID = turn.ProfileID
+				out.result.Message.CreatedAt = nextMessageTime(conv, s.clock())
+				if out.result.Message.ID == "" {
+					out.result.Message.ID = uuid.NewString()
+				}
+				if !validModelContinuation(out.result) {
+					_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_result", "model returned an invalid continuation")
+					return
+				}
+				if !durableDispatch {
+					_, _ = s.turns.FailTurn(ctx, lease, "model_continuation_unavailable", "model continuation could not be persisted")
+					return
+				}
+				if !replayed {
+					if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
+						return
+					}
+				}
+				roundStore, ok := s.turns.(OrderedConversationToolStore)
+				if !ok {
+					_, _ = s.turns.FailTurn(ctx, lease, "model_continuation_unavailable", "model continuation could not be persisted")
+					return
+				}
+				if _, err := roundStore.CompleteConversationToolRound(ctx, lease); err != nil {
+					return
 				}
 				return
 			}
@@ -1992,7 +2052,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				}
 			}
 			m := out.result.Message
-			m.ReasoningContent = priorReasoning + m.ReasoningContent
+			m.Content = history.continuationContent + m.Content
+			m.ReasoningContent = history.priorReasoning + m.ReasoningContent
 			historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
 			m.RelatedTaskIDs = stableIDs(append(append(m.RelatedTaskIDs, out.result.RelatedTaskIDs...), historyTasks...))
 			m.RelatedPlanIDs = stableIDs(append(append(m.RelatedPlanIDs, out.result.RelatedPlanIDs...), historyPlans...))
@@ -2139,6 +2200,18 @@ func classifyModelDispatchFailure(err error) (string, string) {
 		return modelResponseTimeoutCode, modelResponseTimeoutSummary
 	}
 	return modelDispatchUncertainCode, modelDispatchUncertainSummary
+}
+
+func validModelContinuation(result ModelRunResult) bool {
+	if !result.Continue || result.Done || len(result.ToolCalls) != 0 || len(result.Message.ToolCalls) != 0 ||
+		(result.Message.Content == "" && result.Message.ReasoningContent == "") {
+		return false
+	}
+	message := result.Message
+	if message.Content == "" {
+		message.Content = "continuation"
+	}
+	return message.Validate() == nil
 }
 
 func uncertainModelFailure(turn Turn) (string, string) {
@@ -2452,16 +2525,24 @@ func hasUnappliedDeferredWorkerSteer(steers []TurnSteer, appliedSteerIDs []strin
 	return false
 }
 
-func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation) (map[string]turnToolCallAuthority, string, toolLoopRecovery, error) {
+type turnHistoryReplay struct {
+	authorities         map[string]turnToolCallAuthority
+	continuationContent string
+	priorReasoning      string
+	continueOutput      bool
+	loopRecovery        toolLoopRecovery
+}
+
+func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation, ignoreLatestOutputFragment bool) (turnHistoryReplay, error) {
 	if conversation == nil {
-		return nil, "", toolLoopNone, ErrInvalid
+		return turnHistoryReplay{}, ErrInvalid
 	}
 	const pageSize = 1000
 	var events []TurnEvent
 	for cursor := int64(0); ; {
 		page, err := s.turns.LoadTurnEvents(ctx, turn.ID, cursor, pageSize)
 		if err != nil {
-			return nil, "", toolLoopNone, err
+			return turnHistoryReplay{}, err
 		}
 		if len(page) == 0 {
 			break
@@ -2469,7 +2550,7 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		events = append(events, page...)
 		next := page[len(page)-1].Sequence
 		if next <= cursor {
-			return nil, "", toolLoopNone, ErrConflict
+			return turnHistoryReplay{}, ErrConflict
 		}
 		cursor = next
 		if len(page) < pageSize {
@@ -2484,14 +2565,17 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		createdAt time.Time
 	}
 	type toolBatch struct {
-		content   strings.Builder
-		reasoning strings.Builder
-		calls     []ToolCall
-		results   map[string]batchResult
-		createdAt time.Time
+		content       strings.Builder
+		reasoning     strings.Builder
+		calls         []ToolCall
+		results       map[string]batchResult
+		createdAt     time.Time
+		firstSequence int64
 	}
 	batch := toolBatch{results: make(map[string]batchResult)}
+	var continuationContent strings.Builder
 	var completedReasoning strings.Builder
+	continueOutput := false
 	batchComplete := func() bool {
 		return len(batch.calls) != 0 && len(batch.results) == len(batch.calls)
 	}
@@ -2502,6 +2586,7 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		if !batchComplete() {
 			return ErrConflict
 		}
+		continueOutput = false
 		createdAt := nextMessageTime(*conversation, batch.createdAt)
 		conversation.Messages = append(conversation.Messages, Message{
 			ID:   uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-batch:"+turn.ID+":"+batch.calls[0].ID)).String(),
@@ -2521,27 +2606,53 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		batch = toolBatch{results: make(map[string]batchResult)}
 		return nil
 	}
+	flushContinuation := func() {
+		if len(batch.calls) != 0 || (batch.content.Len() == 0 && batch.reasoning.Len() == 0) {
+			return
+		}
+		createdAt := nextMessageTime(*conversation, batch.createdAt)
+		conversation.Messages = append(conversation.Messages, Message{
+			ID:   uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("turn-output-fragment:%s:%d", turn.ID, batch.firstSequence))).String(),
+			Role: RoleAssistant, Content: batch.content.String(), ReasoningContent: batch.reasoning.String(),
+			CreatedAt: createdAt, ModelProfileID: turn.ProfileID,
+		})
+		continuationContent.WriteString(batch.content.String())
+		completedReasoning.WriteString(batch.reasoning.String())
+		continueOutput = true
+		batch = toolBatch{results: make(map[string]batchResult)}
+	}
 	for _, event := range events {
 		switch event.Kind {
 		case TurnEventSteered:
+			flushContinuation()
+			continueOutput = false
 			loopActions = make(map[string]ToolCall)
 			loopPairs = loopPairs[:0]
 		case TurnEventStarted:
 			if batchComplete() {
 				if err := flushBatch(); err != nil {
-					return nil, "", toolLoopNone, err
+					return turnHistoryReplay{}, err
 				}
+			} else if ignoreLatestOutputFragment && event.Sequence == turn.LastSequence {
+				batch = toolBatch{results: make(map[string]batchResult)}
+			} else {
+				flushContinuation()
 			}
 		case TurnEventDelta:
+			if batch.firstSequence == 0 {
+				batch.firstSequence = event.Sequence
+				batch.createdAt = event.CreatedAt
+			}
 			batch.content.WriteString(event.Text)
 			batch.reasoning.WriteString(event.ReasoningContent)
 		case TurnEventToolCall:
 			if event.ToolCall == nil || event.ToolCall.Validate() != nil {
-				return nil, "", toolLoopNone, ErrConflict
+				return turnHistoryReplay{}, ErrConflict
 			}
 			if _, exists := authorities[event.ToolCall.ID]; exists {
-				return nil, "", toolLoopNone, ErrConflict
+				return turnHistoryReplay{}, ErrConflict
 			}
+			continueOutput = false
 			authorities[event.ToolCall.ID] = turnToolCallAuthority{call: *event.ToolCall, state: turnToolCallPending}
 			loopActions[event.ToolCall.ID] = *event.ToolCall
 			if len(batch.calls) == 0 {
@@ -2550,11 +2661,11 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 			batch.calls = append(batch.calls, *event.ToolCall)
 		case TurnEventToolResult:
 			if event.ToolResult == nil || event.ToolResult.Validate() != nil {
-				return nil, "", toolLoopNone, ErrConflict
+				return turnHistoryReplay{}, ErrConflict
 			}
 			authority, exists := authorities[event.ToolResult.CallID]
 			if !exists || authority.state == turnToolCallTerminal || event.ToolResult.ToolName != authority.call.Name {
-				return nil, "", toolLoopNone, ErrConflict
+				return turnHistoryReplay{}, ErrConflict
 			}
 			result := *event.ToolResult
 			authority.state, authority.result = turnToolCallTerminal, &result
@@ -2563,7 +2674,7 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 			if action, ok := loopActions[event.ToolResult.CallID]; ok {
 				identity, identityErr := toolLoopPairIdentity(action, result)
 				if identityErr != nil {
-					return nil, "", toolLoopNone, ErrConflict
+					return turnHistoryReplay{}, ErrConflict
 				}
 				if len(loopPairs) == cap(loopPairs) {
 					copy(loopPairs, loopPairs[1:])
@@ -2576,10 +2687,13 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 	}
 	if batchComplete() {
 		if err := flushBatch(); err != nil {
-			return nil, "", toolLoopNone, err
+			return turnHistoryReplay{}, err
 		}
 	}
-	return authorities, completedReasoning.String(), toolLoopRecoveryFor(loopPairs), nil
+	return turnHistoryReplay{
+		authorities: authorities, continuationContent: continuationContent.String(), priorReasoning: completedReasoning.String(),
+		continueOutput: continueOutput, loopRecovery: toolLoopRecoveryFor(loopPairs),
+	}, nil
 }
 
 func conversationForTurnContinuation(conversation Conversation, turn Turn) (Conversation, int, bool, error) {

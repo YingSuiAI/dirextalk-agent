@@ -314,6 +314,7 @@ type ModelRunResult struct {
 	Message        Message
 	ToolCalls      []ToolCall
 	Done           bool
+	Continue       bool
 	RelatedTaskIDs []string
 	RelatedPlanIDs []string
 	References     []Reference

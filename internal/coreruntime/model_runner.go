@@ -175,10 +175,15 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 	var content strings.Builder
 	var reasoning strings.Builder
 	callsByIndex := map[int]coreconversation.ToolCall{}
+	outputLimited := false
 	for {
 		d, e := stream.Recv()
 		if e != nil {
 			if errors.Is(e, io.EOF) {
+				break
+			}
+			if errors.Is(e, coremodel.ErrOutputLimitReached) && (content.Len() != 0 || reasoning.Len() != 0 || len(callsByIndex) != 0) {
+				outputLimited = true
 				break
 			}
 			r.logProviderFailure(ctx, p.ID, e)
@@ -219,17 +224,20 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 			}
 		}
 	}
-	indices := make([]int, 0, len(callsByIndex))
-	for i := range callsByIndex {
-		indices = append(indices, i)
-	}
-	sort.Ints(indices)
-	calls := make([]coreconversation.ToolCall, 0, len(indices))
-	for _, i := range indices {
-		calls = append(calls, callsByIndex[i])
+	var calls []coreconversation.ToolCall
+	if !outputLimited {
+		indices := make([]int, 0, len(callsByIndex))
+		for i := range callsByIndex {
+			indices = append(indices, i)
+		}
+		sort.Ints(indices)
+		calls = make([]coreconversation.ToolCall, 0, len(indices))
+		for _, i := range indices {
+			calls = append(calls, callsByIndex[i])
+		}
 	}
 	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: content.String(), ReasoningContent: reasoning.String(), ToolCalls: calls, ModelProfileID: p.ID}
-	return coreconversation.ModelRunResult{Message: msg, ToolCalls: calls, Done: len(calls) == 0}, nil
+	return coreconversation.ModelRunResult{Message: msg, ToolCalls: calls, Done: len(calls) == 0 && !outputLimited, Continue: outputLimited}, nil
 }
 
 var _ coreconversation.ModelRunner = (*ModelRunner)(nil)

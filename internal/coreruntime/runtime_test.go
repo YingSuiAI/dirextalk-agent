@@ -158,6 +158,22 @@ func TestModelRunnerToolDoneAndStreamError(t *testing.T) {
 	}
 }
 
+func TestModelRunnerPreservesOutputLimitedFragmentWithoutPartialToolCall(t *testing.T) {
+	id := "00000000-0000-4000-8000-000000000001"
+	client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{
+		{Content: "first half", ReasoningContent: "reasoning", ToolCalls: []coremodel.ToolCall{{Index: 0, ID: "partial", Function: coremodel.FunctionCall{Name: "lookup", Arguments: `{"query":"cut`}}}},
+	}, err: coremodel.ErrOutputLimitReached}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	request := coreconversation.ModelRunRequest{
+		Snapshot:     coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}),
+		Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "test"}}},
+	}
+	result, err := runner.Stream(context.Background(), request, nil)
+	if err != nil || !result.Continue || result.Done || result.Message.Content != "first half" || result.Message.ReasoningContent != "reasoning" || len(result.ToolCalls) != 0 || len(result.Message.ToolCalls) != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
 func TestModelRunnerUsesTurnAugmentedSystemPrompt(t *testing.T) {
 	id := "00000000-0000-4000-8000-000000000001"
 	var profile coremodel.Profile

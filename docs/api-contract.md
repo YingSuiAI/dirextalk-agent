@@ -100,10 +100,11 @@ retain their frozen revision CAS.
   `model_profile_id`/`model_profile_revision`/`credential_version` triple.
   Partial or stale pins fail before provider work; there is no default-profile
   fallback, and durable replays retain their original snapshot.
-- A Native conversation turn permits at most 32 provider dispatches and 30
-  minutes of cumulative model-active time. Only provider execution consumes
-  the time budget: tool, sandbox, Worker, and user-confirmation execution or
-  waiting do not. Independently, each provider stream's five-minute safety
+- A Native conversation turn retains an emergency fuse of 500 provider
+  dispatches and 24 hours of cumulative model-active time. Only provider
+  execution consumes the time budget: tool, sandbox, Worker, and
+  user-confirmation execution or waiting do not. Independently, each provider
+  stream's five-minute safety
   limit measures only inactivity and is renewed by every byte received from
   the SSE stream, including keepalives. Model output may therefore continue
   for longer than five minutes while remaining inside the cumulative budget;
@@ -129,9 +130,12 @@ retain their frozen revision CAS.
 - OpenAI-compatible streams accept either `[DONE]` or a nonempty first-choice
   `finish_reason` as an explicit terminal signal. A clean EOF after that signal
   preserves the final content/tool-call delta; EOF without either signal is
-  still `provider_stream_truncated`. The `length` finish reason preserves its
-  final delta but terminates as `provider_stream_truncated`, because the
-  requested response is incomplete. OpenAI-compatible reasoning uses the
+  still `provider_stream_truncated`. The `length` finish reason is distinct
+  from a transport truncation: Core durably closes the current output fragment,
+  preserves its text and reasoning, and continues the same turn with the frozen
+  model context and full accepted tool catalog. An incomplete tool-call
+  fragment is never dispatched; the next model round must issue it again as one
+  complete call. OpenAI-compatible reasoning uses the
   `reasoning_content` response and assistant-message field so a reasoning model
   can continue a tool round with the exact prior reasoning. A provider HTTP
   4xx is a terminal `provider_rejected` outcome rather than an unknown dispatch

@@ -28,6 +28,7 @@ var (
 	ErrProviderUnavailable = errors.New("model provider is unavailable")
 	ErrInvalidResponse     = errors.New("invalid model provider response")
 	ErrStreamTruncated     = errors.New("model provider stream terminated before completion")
+	ErrOutputLimitReached  = errors.New("model provider reached its output limit")
 	ErrStreamIdleTimeout   = fmt.Errorf("model provider stream idle timeout: %w", context.DeadlineExceeded)
 )
 
@@ -926,9 +927,9 @@ func (s *sseStream) Recv() (Delta, error) {
 			s.finish()
 			return Delta{}, ErrProviderUnavailable
 		}
-		if streamIncomplete(s.provider, event) {
+		if streamOutputLimited(s.provider, event) {
 			s.terminal = true
-			s.terminalErr = ErrStreamTruncated
+			s.terminalErr = ErrOutputLimitReached
 		} else if streamTerminal(s.provider, event) {
 			s.terminal = true
 		}
@@ -950,17 +951,31 @@ func (s *sseStream) Recv() (Delta, error) {
 	}
 }
 
-func streamIncomplete(provider ModelProvider, event map[string]any) bool {
-	if provider != ProviderOpenAICompatible {
+func streamOutputLimited(provider ModelProvider, event map[string]any) bool {
+	switch provider {
+	case ProviderOpenAICompatible:
+		choices, _ := event["choices"].([]any)
+		if len(choices) == 0 {
+			return false
+		}
+		choice, _ := choices[0].(map[string]any)
+		reason, _ := choice["finish_reason"].(string)
+		return strings.EqualFold(strings.TrimSpace(reason), "length")
+	case ProviderAnthropic:
+		delta, _ := event["delta"].(map[string]any)
+		reason, _ := delta["stop_reason"].(string)
+		return strings.EqualFold(strings.TrimSpace(reason), "max_tokens")
+	case ProviderGemini:
+		candidates, _ := event["candidates"].([]any)
+		if len(candidates) == 0 {
+			return false
+		}
+		candidate, _ := candidates[0].(map[string]any)
+		reason, _ := candidate["finishReason"].(string)
+		return strings.EqualFold(strings.TrimSpace(reason), "MAX_TOKENS")
+	default:
 		return false
 	}
-	choices, _ := event["choices"].([]any)
-	if len(choices) == 0 {
-		return false
-	}
-	choice, _ := choices[0].(map[string]any)
-	reason, _ := choice["finish_reason"].(string)
-	return strings.TrimSpace(reason) == "length"
 }
 
 func streamTerminal(provider ModelProvider, event map[string]any) bool {

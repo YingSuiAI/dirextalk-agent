@@ -678,7 +678,7 @@ func TestOpenAIFinishReasonTerminatesAfterFinalContentAndToolDelta(t *testing.T)
 	}
 }
 
-func TestOpenAIFinishReasonLengthPreservesDeltaThenReportsTruncation(t *testing.T) {
+func TestOpenAIFinishReasonLengthPreservesDeltaThenReportsOutputLimit(t *testing.T) {
 	body := &closeTrackingBody{Reader: strings.NewReader(
 		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"unfinished reasoning\"},\"finish_reason\":\"length\"}]}\n\n",
 	)}
@@ -696,7 +696,7 @@ func TestOpenAIFinishReasonLengthPreservesDeltaThenReportsTruncation(t *testing.
 	if err != nil || delta.ReasoningContent != "unfinished reasoning" {
 		t.Fatalf("final partial delta=%#v err=%v", delta, err)
 	}
-	if _, err = stream.Recv(); !errors.Is(err, ErrStreamTruncated) || !body.closed {
+	if _, err = stream.Recv(); !errors.Is(err, ErrOutputLimitReached) || !body.closed {
 		t.Fatalf("length finish reason err=%v closed=%v", err, body.closed)
 	}
 }

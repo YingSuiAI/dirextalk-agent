@@ -103,6 +103,33 @@ type capturingTurnModel struct {
 	runs    int
 }
 
+type outputContinuationTurnModel struct {
+	partial  bool
+	requests []ModelRunRequest
+}
+
+func (m *outputContinuationTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
+	return ModelRunResult{}, ErrInvalid
+}
+
+func (m *outputContinuationTurnModel) Stream(_ context.Context, request ModelRunRequest, emit func(ModelDelta) error) (ModelRunResult, error) {
+	m.requests = append(m.requests, request)
+	if m.partial {
+		if emit != nil {
+			if err := emit(ModelDelta{Text: "first ", ReasoningContent: "reasoning one"}); err != nil {
+				return ModelRunResult{}, err
+			}
+		}
+		return ModelRunResult{Continue: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "first ", ReasoningContent: "reasoning one", CreatedAt: time.Now().UTC()}}, nil
+	}
+	if emit != nil {
+		if err := emit(ModelDelta{Text: "second", ReasoningContent: "reasoning two"}); err != nil {
+			return ModelRunResult{}, err
+		}
+	}
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "second", ReasoningContent: "reasoning two", CreatedAt: time.Now().UTC()}}, nil
+}
+
 type delayedStreamingTurnModel struct {
 	delay       time.Duration
 	runCalls    int
@@ -923,6 +950,68 @@ func TestExecuteTurnReplayDoesNotDuplicateTerminalReasoningDelta(t *testing.T) {
 	}
 }
 
+func TestExecuteTurnContinuesOutputLimitFromDurableEventsAfterRestart(t *testing.T) {
+	profile := testTurnSnapshot()
+	profile.SystemPrompt = "base instruction"
+	conversationID := uuid.NewString()
+	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1", Digest: strings.Repeat("a", 64), AllowedTools: []string{"lookup"}}
+	snapshot := ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "mcp:test",
+		ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64),
+		NetworkBindingDigest: strings.Repeat("d", 64), ToolNames: []string{"lookup"}, ReadOnly: true}
+	resolved := ResolvedExtension{Selection: selection, Snapshot: snapshot, Tools: []coremodel.Tool{{Name: "lookup", InputSchema: map[string]any{"type": "object"}}}}
+	createdAt := time.Now().UTC().Add(-time.Minute)
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID, Prompt: "write a long answer",
+		ProfileID: profile.ProfileID, ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+		ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(),
+		State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: createdAt}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
+	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn}, events: []TurnEvent{{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: createdAt}}}
+	newService := func(model ModelRunner) *Service {
+		service, err := NewService(store, model, extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+			return []ResolvedExtension{resolved}, nil
+		}), snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+			return []ResolvedIntrinsic{{Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}}, Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+				return IntrinsicExecutionResult{TurnCommitted: true}, nil
+			}}}, nil
+		}))
+		return service
+	}
+
+	firstModel := &outputContinuationTurnModel{partial: true}
+	newService(firstModel).executeTurn(context.Background(), turn.ID)
+	if current, err := store.GetTurn(context.Background(), turn.ID); err != nil || current.State != TurnAccepted || current.Response != nil {
+		t.Fatalf("partial turn=%+v err=%v", current, err)
+	}
+
+	finalModel := &outputContinuationTurnModel{}
+	newService(finalModel).executeTurn(context.Background(), turn.ID)
+	terminal, err := store.GetTurn(context.Background(), turn.ID)
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "first second" || terminal.Response.Message.ReasoningContent != "reasoning onereasoning two" {
+		t.Fatalf("terminal=%+v err=%v", terminal, err)
+	}
+	if len(finalModel.requests) != 1 {
+		t.Fatalf("final model requests=%d", len(finalModel.requests))
+	}
+	request := finalModel.requests[0]
+	if len(request.Extensions) != 1 || len(request.ExtensionSnapshots) != 1 || len(request.Intrinsics) != 1 || !strings.Contains(request.Profile.SystemPrompt, outputContinuationGuidance) {
+		t.Fatalf("continuation lost tools or guidance: %+v", request)
+	}
+	partialFound := false
+	for _, message := range request.Conversation.Messages {
+		if message.Role == RoleAssistant && message.Content == "first " && message.ReasoningContent == "reasoning one" && len(message.ToolCalls) == 0 {
+			partialFound = true
+		}
+	}
+	if !partialFound {
+		t.Fatalf("durable partial response missing from continuation context: %+v", request.Conversation.Messages)
+	}
+}
+
 func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
@@ -1314,12 +1403,12 @@ func TestAppendTurnToolHistoryPreservesAssistantMultiToolBatch(t *testing.T) {
 	conversation := Conversation{ID: uuid.NewString(), CreatedAt: createdAt.Add(-time.Hour), UpdatedAt: createdAt.Add(-time.Hour)}
 	service := &Service{turns: store}
 
-	authorities, reasoning, recovery, err := service.appendTurnToolHistory(context.Background(), turn, &conversation)
+	history, err := service.appendTurnToolHistory(context.Background(), turn, &conversation, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reasoning != "compare both" || recovery != toolLoopNone || len(authorities) != 2 || len(conversation.Messages) != 3 {
-		t.Fatalf("reasoning=%q recovery=%d authorities=%d messages=%+v", reasoning, recovery, len(authorities), conversation.Messages)
+	if history.priorReasoning != "compare both" || history.loopRecovery != toolLoopNone || len(history.authorities) != 2 || len(conversation.Messages) != 3 {
+		t.Fatalf("reasoning=%q recovery=%d authorities=%d messages=%+v", history.priorReasoning, history.loopRecovery, len(history.authorities), conversation.Messages)
 	}
 	assistant := conversation.Messages[0]
 	if assistant.Role != RoleAssistant || assistant.Content != "checking " || assistant.ReasoningContent != "compare both" || !reflect.DeepEqual(assistant.ToolCalls, []ToolCall{first, second}) {
@@ -1343,7 +1432,7 @@ func TestExecuteTurnStopsRepeatedToolRoundsWithoutFinalResponse(t *testing.T) {
 		Prompt: "keep looking forever", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
 		ProfileSnapshotDigest: profile.Digest(), ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot},
 		ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(),
-		State:                   TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC()}
+		State:                   TurnAccepted, Revision: 1, LastSequence: 1, ModelDispatchCount: MaxTurnModelDispatches - 1, CreatedAt: time.Now().UTC()}
 	base := newFakeStore()
 	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: turn.CreatedAt, UpdatedAt: turn.CreatedAt}
 	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
@@ -1360,14 +1449,13 @@ func TestExecuteTurnStopsRepeatedToolRoundsWithoutFinalResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for attempt := 0; attempt <= MaxTurnModelDispatches; attempt++ {
-		service.executeTurn(context.Background(), turn.ID)
-	}
+	service.executeTurn(context.Background(), turn.ID)
+	service.executeTurn(context.Background(), turn.ID)
 	current, err := store.GetTurn(context.Background(), turn.ID)
 	if err != nil || current.State != TurnFailed || store.failedCode != modelBudgetExhaustedCode {
 		t.Fatalf("turn=%+v failed_code=%q err=%v", current, store.failedCode, err)
 	}
-	if model.runs != MaxTurnModelDispatches || current.ModelDispatchCount != MaxTurnModelDispatches {
+	if model.runs != 1 || current.ModelDispatchCount != MaxTurnModelDispatches {
 		t.Fatalf("model_runs=%d dispatch_count=%d", model.runs, current.ModelDispatchCount)
 	}
 }
