@@ -243,6 +243,10 @@ multi-tenant model.
   reuse, list, get, or destroy. There is no EIP field or operation. `destroy_worker`
   requires its explicit confirmation literal and the complete identity
   returned by list/get; a busy or changed resource identity fails closed.
+  Once that authorization and exact identity are resolved, Agent removes and
+  reads back owned Route53 records, then completes EC2, security-group, key and
+  local-state cleanup in a bounded server-owned context; a client disconnect
+  does not cancel the accepted cleanup.
   If credentials rotate after a provisioning intent, recovery only discovers
   and persists resources carrying that intent's exact tags so partial resources
   remain destroyable; it never creates a missing resource or resumes execution.

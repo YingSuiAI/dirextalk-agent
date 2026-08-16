@@ -117,11 +117,15 @@ type workerDestroyerStub struct {
 	finalizeCalls int
 	request       sshworker.DestroyRequest
 	finalized     sshworker.WorkerIdentity
+	resourceHook  func(context.Context) error
 }
 
-func (destroyer *workerDestroyerStub) DestroyWorkerResources(_ context.Context, request sshworker.DestroyRequest) error {
+func (destroyer *workerDestroyerStub) DestroyWorkerResources(ctx context.Context, request sshworker.DestroyRequest) error {
 	destroyer.resourceCalls++
 	destroyer.request = request
+	if destroyer.resourceHook != nil {
+		return destroyer.resourceHook(ctx)
+	}
 	return nil
 }
 
@@ -544,6 +548,57 @@ func TestDestroyWorkerReportsDNSFailureAfterComputeDestruction(t *testing.T) {
 	}
 	if services, listErr := repository.List(context.Background(), identity); listErr != nil || len(services) != 0 {
 		t.Fatalf("resolved workload state remains: %+v err=%v", services, listErr)
+	}
+}
+
+func TestDestroyWorkerCompletesAfterRequestCancellationDuringTerminationWait(t *testing.T) {
+	identity := workerIdentityFixture()
+	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.Credential = sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision, AccountID: binding.AccountID, Region: binding.Region}
+	repository, err := sshworkload.NewRepository(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := sshworkload.Service{Worker: identity, TaskID: "task-a", WorkloadID: "web", Port: 8080, HealthPath: "/health"}
+	domain := &sshworkload.Domain{ZoneID: "Z123", Hostname: "app.example.test", BoundIPv4: "203.0.113.10", TTL: 300}
+	if err = repository.PutService(context.Background(), service); err != nil {
+		t.Fatal(err)
+	}
+	if err = repository.SetDomain(context.Background(), identity, service.WorkloadID, domain); err != nil {
+		t.Fatal(err)
+	}
+	dns := &route53Stub{record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}, exists: true}
+	requestCtx, cancel := context.WithCancel(context.Background())
+	terminationStarted, terminationWaitCompleted := false, false
+	destroyer := &workerDestroyerStub{resourceHook: func(ctx context.Context) error {
+		if dns.deletes != 1 || dns.exists {
+			return errors.New("provider cleanup started before DNS removal read-back")
+		}
+		terminationStarted = true
+		cancel()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		terminationWaitCompleted = true
+		return nil
+	}}
+	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository,
+		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{identity.Credential: {}},
+		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns}}
+	request := sshworker.DestroyRequest{Identity: identity, Authorization: sshworker.DestroyAuthorization{Authorized: true, Proof: "destroy"}}
+	if err = executor.destroyWorkerResources(requestCtx, destroyer, request); err != nil {
+		t.Fatalf("server-owned destroy completion failed after disconnect: %v", err)
+	}
+	if requestCtx.Err() == nil || !terminationStarted || !terminationWaitCompleted ||
+		destroyer.resourceCalls != 1 || destroyer.finalizeCalls != 1 || dns.deletes != 1 || dns.exists {
+		t.Fatalf("destroy did not complete after disconnect: destroyer=%+v dns=%+v request_err=%v", destroyer, dns, requestCtx.Err())
+	}
+	if services, listErr := repository.List(context.Background(), identity); listErr != nil || len(services) != 0 {
+		t.Fatalf("finalized workload state remains: %+v err=%v", services, listErr)
 	}
 }
 

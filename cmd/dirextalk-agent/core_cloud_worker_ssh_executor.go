@@ -796,14 +796,18 @@ type workerDestroyer interface {
 	FinalizeWorkerDestroy(context.Context, sshworker.DestroyRequest) error
 }
 
+const retainedWorkerDestroyCompletionTimeout = 10 * time.Minute
+
 func (executor *sshWorkerExecutor) destroyWorkerResources(ctx context.Context, provider workerDestroyer, request sshworker.DestroyRequest) error {
+	completionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), retainedWorkerDestroyCompletionTimeout)
+	defer cancel()
 	if !completeWorkerResourceIdentity(request.Identity) {
-		if err := provider.DestroyWorkerResources(ctx, request); err != nil {
+		if err := provider.DestroyWorkerResources(completionCtx, request); err != nil {
 			return err
 		}
-		return provider.FinalizeWorkerDestroy(ctx, request)
+		return provider.FinalizeWorkerDestroy(completionCtx, request)
 	}
-	services, err := executor.workloads.List(ctx, request.Identity)
+	services, err := executor.workloads.List(completionCtx, request.Identity)
 	if err != nil {
 		return err
 	}
@@ -812,9 +816,9 @@ func (executor *sshWorkerExecutor) destroyWorkerResources(ctx context.Context, p
 		if service.Domain == nil {
 			continue
 		}
-		dnsErr = errors.Join(dnsErr, executor.deleteDomain(ctx, service, "destroy_worker"))
+		dnsErr = errors.Join(dnsErr, executor.deleteDomain(completionCtx, service, "destroy_worker"))
 	}
-	if err = provider.DestroyWorkerResources(ctx, request); err != nil {
+	if err = provider.DestroyWorkerResources(completionCtx, request); err != nil {
 		return err
 	}
 	if dnsErr != nil {
@@ -822,10 +826,10 @@ func (executor *sshWorkerExecutor) destroyWorkerResources(ctx context.Context, p
 		// so a later owner-authorized cleanup can retry the unresolved record.
 		return dnsErr
 	}
-	if err = executor.workloads.RemoveWorker(ctx, request.Identity); err != nil {
+	if err = executor.workloads.RemoveWorker(completionCtx, request.Identity); err != nil {
 		return err
 	}
-	return provider.FinalizeWorkerDestroy(ctx, request)
+	return provider.FinalizeWorkerDestroy(completionCtx, request)
 }
 
 func completeWorkerResourceIdentity(identity sshworker.WorkerIdentity) bool {
