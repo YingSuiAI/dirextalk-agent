@@ -31,10 +31,8 @@ release_init() {
   RELEASE_VERIFIED=$RELEASE_OUTPUT_DIR/verified.json
   RELEASE_IMAGE=dirextalk/agent:$RELEASE_VERSION
   RELEASE_EXPECTED_BRANCH=${AGENT_RELEASE_EXPECTED_BRANCH:-main}
-  RELEASE_MESSAGE_SERVER_ROOT=${DIREXTALK_MESSAGE_SERVER_ROOT:-$RELEASE_REPO_ROOT/../dirextalk-message-server}
   export RELEASE_VERSION RELEASE_REPO_ROOT RELEASE_OUTPUT_DIR RELEASE_CONFIG
   export RELEASE_CONTEXT RELEASE_VERIFIED RELEASE_IMAGE RELEASE_EXPECTED_BRANCH
-  export RELEASE_MESSAGE_SERVER_ROOT
 }
 
 release_require_tools() {
@@ -105,21 +103,6 @@ release_preflight() {
   RELEASE_BUILD_TIME=$(git show -s --format=%cI HEAD)
   [[ "$RELEASE_BUILD_TIME" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || release_die 'commit build time is invalid'
   export RELEASE_COMMIT RELEASE_BUILD_TIME
-}
-
-release_require_message_server() {
-  local root head
-  root=$(cd "$RELEASE_MESSAGE_SERVER_ROOT" && pwd -P) || release_die 'Message Server checkout is unavailable'
-  for path in p2p/native_agent_catalog.go internal/agentgateway/runner.go internal/agentgateway/catalog_requirements.go; do
-    [[ -f "$root/$path" ]] || release_die "Message Server release input is missing: $path"
-  done
-  [[ -z "$(git -C "$root" status --porcelain=v1 --untracked-files=all)" ]] || \
-    release_die 'Message Server release input must be clean'
-  head=$(git -C "$root" rev-parse HEAD)
-  [[ "$head" =~ ^[0-9a-f]{40}$ && "$head" == "$(release_remote_main "$root")" ]] || \
-    release_die 'Message Server release input must exactly match origin/main'
-  RELEASE_MESSAGE_SERVER_ROOT=$root
-  export RELEASE_MESSAGE_SERVER_ROOT
 }
 
 release_write_json() {

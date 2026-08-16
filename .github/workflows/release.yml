@@ -33,21 +33,11 @@ jobs:
           --health-retries 10
     outputs:
       agent_commit: ${{ steps.identity.outputs.agent_commit }}
-      message_server_commit: ${{ steps.identity.outputs.message_server_commit }}
     steps:
       - name: Check out Agent main
         uses: actions/checkout@v4
         with:
           path: agent
-          ref: main
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Check out Message Server main
-        uses: actions/checkout@v4
-        with:
-          repository: YingSuiAI/dirextalk-message-server
-          path: message-server
           ref: main
           fetch-depth: 0
           persist-credentials: false
@@ -64,16 +54,11 @@ jobs:
         run: go install github.com/bufbuild/buf/cmd/buf@"$BUF_VERSION"
 
       - id: identity
-        name: Bind verified source commits
+        name: Bind verified source commit
         run: |
           agent_commit=$(git -C agent rev-parse HEAD)
-          message_server_commit=$(git -C message-server rev-parse HEAD)
           test "$agent_commit" = "$(git -C agent ls-remote --exit-code origin refs/heads/main | awk '{print $1}')"
-          test "$message_server_commit" = "$(git -C message-server ls-remote --exit-code origin refs/heads/main | awk '{print $1}')"
-          {
-            echo "agent_commit=$agent_commit"
-            echo "message_server_commit=$message_server_commit"
-          } >>"$GITHUB_OUTPUT"
+          echo "agent_commit=$agent_commit" >>"$GITHUB_OUTPUT"
 
       - name: Prepare release
         working-directory: agent
@@ -85,7 +70,6 @@ jobs:
         working-directory: agent
         env:
           AGENT_TEST_POSTGRES_DSN: postgres://postgres:123789@127.0.0.1:5432/postgres?sslmode=disable
-          DIREXTALK_MESSAGE_SERVER_ROOT: ${{ github.workspace }}/message-server
           RELEASE_VERSION_INPUT: ${{ inputs.version }}
         run: bash scripts/release/verify.sh "$RELEASE_VERSION_INPUT"
 
@@ -115,15 +99,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Check out exact verified Message Server commit
-        uses: actions/checkout@v4
-        with:
-          repository: YingSuiAI/dirextalk-message-server
-          path: message-server
-          ref: ${{ needs.verify.outputs.message_server_commit }}
-          fetch-depth: 0
-          persist-credentials: false
-
       - uses: actions/setup-go@v5
         with:
           go-version-file: agent/go.mod
@@ -140,19 +115,15 @@ jobs:
       - name: Require verified commits to remain current main
         env:
           VERIFIED_AGENT_COMMIT: ${{ needs.verify.outputs.agent_commit }}
-          VERIFIED_MESSAGE_SERVER_COMMIT: ${{ needs.verify.outputs.message_server_commit }}
         run: |
           test "$(git -C agent rev-parse HEAD)" = "$VERIFIED_AGENT_COMMIT"
-          test "$(git -C message-server rev-parse HEAD)" = "$VERIFIED_MESSAGE_SERVER_COMMIT"
           test "$VERIFIED_AGENT_COMMIT" = "$(git -C agent ls-remote --exit-code origin refs/heads/main | awk '{print $1}')"
-          test "$VERIFIED_MESSAGE_SERVER_COMMIT" = "$(git -C message-server ls-remote --exit-code origin refs/heads/main | awk '{print $1}')"
           git -C agent checkout -B main "$VERIFIED_AGENT_COMMIT"
 
       - name: Recreate commit-bound verification evidence
         working-directory: agent
         env:
           AGENT_TEST_POSTGRES_DSN: postgres://postgres:123789@127.0.0.1:5432/postgres?sslmode=disable
-          DIREXTALK_MESSAGE_SERVER_ROOT: ${{ github.workspace }}/message-server
           RELEASE_VERSION_INPUT: ${{ inputs.version }}
         run: |
           bash scripts/release/prepare.sh "$RELEASE_VERSION_INPUT"
@@ -177,6 +148,5 @@ jobs:
         working-directory: agent
         env:
           GH_TOKEN: ${{ github.token }}
-          DIREXTALK_MESSAGE_SERVER_ROOT: ${{ github.workspace }}/message-server
           RELEASE_VERSION_INPUT: ${{ inputs.version }}
         run: bash scripts/release/publish.sh "$RELEASE_VERSION_INPUT"

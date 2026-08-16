@@ -8,7 +8,6 @@ release_preflight
 release_require_json "$RELEASE_CONTEXT" prepared
 release_require_json "$RELEASE_VERIFIED" verified
 release_require_tools docker gh
-release_require_message_server
 cd "$RELEASE_REPO_ROOT"
 
 repository=YingSuiAI/dirextalk-agent

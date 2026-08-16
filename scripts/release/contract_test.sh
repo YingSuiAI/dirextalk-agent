@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-version=v1.0.79
+version=v1.0.110
 head_commit=1111111111111111111111111111111111111111
 other_commit=2222222222222222222222222222222222222222
 
@@ -40,11 +40,7 @@ if [[ "\${1:-}" == -C ]]; then
 fi
 case "\${1:-}" in
   status)
-    if [[ "\$root" == "\$AGENT_RELEASE_TEST_MESSAGE_SERVER_ROOT" ]]; then
-      printf '%s' "\${FAKE_MESSAGE_SERVER_DIRTY:-}"
-    else
-      printf '%s' "\${FAKE_AGENT_DIRTY:-}"
-    fi
+    printf '%s' "\${FAKE_AGENT_DIRTY:-}"
     ;;
   branch)
     printf '%s\n' "\${FAKE_AGENT_BRANCH:-main}"
@@ -52,11 +48,7 @@ case "\${1:-}" in
   rev-parse)
     case "\${2:-}" in
       HEAD)
-        if [[ "\$root" == "\$AGENT_RELEASE_TEST_MESSAGE_SERVER_ROOT" ]]; then
-          printf '%s\n' "\${FAKE_MESSAGE_SERVER_HEAD:-$head_commit}"
-        else
-          printf '%s\n' "\${FAKE_AGENT_HEAD:-$head_commit}"
-        fi
+        printf '%s\n' "\${FAKE_AGENT_HEAD:-$head_commit}"
         ;;
       refs/tags/*'^{}') printf '%s\n' "\${FAKE_LOCAL_TAG_COMMIT:-\${FAKE_AGENT_HEAD:-$head_commit}}" ;;
       *) exit 2 ;;
@@ -64,11 +56,7 @@ case "\${1:-}" in
     ;;
   ls-remote)
     if [[ "\$*" == *'refs/heads/main'* ]]; then
-      if [[ "\$root" == "\$AGENT_RELEASE_TEST_MESSAGE_SERVER_ROOT" ]]; then
-        printf '%s\trefs/heads/main\n' "\${FAKE_MESSAGE_SERVER_REMOTE_HEAD:-\${FAKE_MESSAGE_SERVER_HEAD:-$head_commit}}"
-      else
-        printf '%s\trefs/heads/main\n' "\${FAKE_AGENT_REMOTE_HEAD:-\${FAKE_AGENT_HEAD:-$head_commit}}"
-      fi
+      printf '%s\trefs/heads/main\n' "\${FAKE_AGENT_REMOTE_HEAD:-\${FAKE_AGENT_HEAD:-$head_commit}}"
     elif [[ "\$*" == *'refs/tags/'* ]]; then
       if [[ -f "\$AGENT_RELEASE_TEST_GIT_STATE.remote-tag" || -n "\${FAKE_REMOTE_TAG_COMMIT:-}" ]]; then
         requested_ref=\${*: -1}
@@ -107,7 +95,7 @@ EOF
   cat >"$fixture/bin/go" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'go message_server_root=%s %s\n' "${DIREXTALK_MESSAGE_SERVER_ROOT:-}" "$*" >>"$AGENT_RELEASE_TEST_LOG"
+printf 'go %s\n' "$*" >>"$AGENT_RELEASE_TEST_LOG"
 [[ -z "${FAKE_GO_FAIL_PATTERN:-}" || "$*" != *"$FAKE_GO_FAIL_PATTERN"* ]]
 EOF
 
@@ -186,18 +174,14 @@ make_fixture() {
   fixture=$tmp/$name
   mkdir -p "$fixture/repo/scripts/release" "$fixture/repo/release" \
     "$fixture/repo/internal/buildinfo" "$fixture/repo/migrations" \
-    "$fixture/message-server/p2p" "$fixture/message-server/internal/agentgateway" \
     "$fixture/git-state" "$fixture/gh-state" "$fixture/docker-state"
   cp "$repo_root/scripts/release/"{lib,prepare,verify,publish}.sh "$fixture/repo/scripts/release/"
   cp "$repo_root/internal/buildinfo/version.go" "$fixture/repo/internal/buildinfo/version.go"
   cp "$repo_root/migrations/embed.go" "$fixture/repo/migrations/embed.go"
   printf '# Agent releases\n\n## %s\n\nStable Agent release.\n' "$version" >"$fixture/repo/release/RELEASE_NOTES.md"
-  printf '{"version":"%s","schema_version":15,"schema_compat_version":1}\n' "$version" \
+  printf '{"version":"%s","schema_version":18,"schema_compat_version":1}\n' "$version" \
     >"$fixture/repo/release/$version.json"
-  touch "$fixture/message-server/p2p/native_agent_catalog.go" \
-    "$fixture/message-server/internal/agentgateway/runner.go" \
-    "$fixture/message-server/internal/agentgateway/catalog_requirements.go" \
-    "$fixture/commands.log"
+  touch "$fixture/commands.log"
   install_fake_tools "$fixture"
   printf '%s\n' "$fixture"
 }
@@ -210,13 +194,11 @@ run_script() {
     PATH="$fixture/bin:$PATH" \
       AGENT_RELEASE_REPO_ROOT="$fixture/repo" \
       AGENT_RELEASE_CONTRACT_TEST=1 \
-      DIREXTALK_MESSAGE_SERVER_ROOT="$fixture/message-server" \
       AGENT_TEST_POSTGRES_DSN='postgres://fixture.invalid/agent' \
       AGENT_RELEASE_TEST_LOG="$fixture/commands.log" \
       AGENT_RELEASE_TEST_GIT_STATE="$fixture/git-state" \
       AGENT_RELEASE_TEST_GH_STATE="$fixture/gh-state" \
       AGENT_RELEASE_TEST_DOCKER_STATE="$fixture/docker-state" \
-      AGENT_RELEASE_TEST_MESSAGE_SERVER_ROOT="$fixture/message-server" \
       "$@" bash "$fixture/repo/scripts/release/$script" "$requested_version"
   )
 }
@@ -253,14 +235,14 @@ if run_script "$fixture" prepare.sh "$version" env FAKE_AGENT_REMOTE_HEAD="$othe
 fi
 
 fixture=$(make_fixture source-version)
-sed -i 's/v1\.0\.79/v9.9.9/' "$fixture/repo/internal/buildinfo/version.go"
+sed -i "s/$version/v9.9.9/" "$fixture/repo/internal/buildinfo/version.go"
 if run_script "$fixture" prepare.sh "$version" env; then fail 'prepare accepted source version drift'; fi
 
 # Verification builds and probes the three real entry points. Evidence is commit and
 # version-tag bound, without carrying a local Docker image ID across workflow jobs.
 fixture=$(make_fixture verify)
 prepare_and_verify "$fixture"
-grep -F "go message_server_root=$fixture/message-server test -p 1 -parallel 1 ./... -count=1" "$fixture/commands.log" >/dev/null || \
+grep -F "go test -p 1 -parallel 1 ./... -count=1" "$fixture/commands.log" >/dev/null || \
   fail 'verify omitted the Agent test suite'
 grep -F 'docker build --pull' "$fixture/commands.log" >/dev/null || fail 'verify omitted the local image build'
 for binary in dirextalk-agent dirextalk-extension-runner dirextalk-core-runner; do

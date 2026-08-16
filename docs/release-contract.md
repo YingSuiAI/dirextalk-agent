@@ -14,8 +14,8 @@ tag, one annotated Git tag, and one matching formal GitHub Release.
 
 Repository metadata does not select an upgrade target or minimum Message
 Server. The deployment-owned central `agents` channel remains the only upgrade
-authorization. A formal release additionally runs the Agent catalog preflight
-against a clean Message Server checkout whose `HEAD` equals its `origin/main`.
+authorization. Agent releases do not depend on a sibling Message Server
+checkout or its retired action/schema catalog.
 
 ## Verification and publication
 
@@ -29,7 +29,7 @@ bash scripts/release/publish.sh vX.Y.Z
 
 Prepare requires a clean Agent `main` whose `HEAD` exactly equals
 `origin/main`, matching current metadata, and matching notes. Verify runs the
-Go suite with the sibling Message Server catalog input, builds all commands,
+Agent Go suite, builds all commands,
 builds the unified image, checks its version/revision/created labels, and
 requires all three production binaries to print the requested version.
 Canonical local evidence is bound to the commit and version tag.
