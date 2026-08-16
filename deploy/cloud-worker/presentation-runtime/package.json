@@ -1,0 +1,11 @@
+{
+  "name": "dirextalk-cloud-worker-presentation-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned offline PPTX authoring and visual qualification runtime for the official Pi Worker image.",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "jszip": "3.10.1",
+    "pptxgenjs": "4.0.1"
+  }
+}

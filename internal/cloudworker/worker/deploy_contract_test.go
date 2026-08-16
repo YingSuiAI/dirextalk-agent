@@ -68,10 +68,14 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 		"AmbientCapabilities=CAP_SETUID CAP_SETGID",
 		"SocketBindDeny=any",
 		"AssertFileIsExecutable=/usr/local/bin/dirextalk-cloud-worker",
+		"AssertFileIsExecutable=/usr/local/bin/dirextalk-presentation",
+		"AssertFileIsExecutable=/usr/local/lib/dirextalk-cloud-worker/presentation/node",
 		"AssertPathExists=/usr/local/share/dirextalk-cloud-worker/installation.json",
 		"AssertPathExists=/usr/local/share/dirextalk-cloud-worker/control-plane-ca.pem",
 		"AssertPathExists=/usr/local/share/dirextalk-cloud-worker/outbound-proxy-ca.pem",
 		"AssertPathExists=/usr/local/share/dirextalk-cloud-worker/pi-egress.nft",
+		"AssertPathExists=/usr/local/share/dirextalk-cloud-worker/presentation-runtime.tar.gz",
+		"AssertPathExists=/usr/local/share/dirextalk-cloud-worker/presentation-runtime.sha256",
 		"NoExecPaths=/",
 		"ExecPaths=/usr",
 	} {
@@ -174,6 +178,10 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 		"render-pi-egress-policy.sh",
 		"qualify-image.sh /out/rootfs/usr/local/sbin/dirextalk-cloud-worker-qualify",
 		"rootfs-files.allowlist /out/rootfs/usr/local/share/dirextalk-cloud-worker/rootfs-files.allowlist",
+		"node:22.23.2-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436",
+		"presentation-runtime.tar.gz",
+		"/usr/local/lib/dirextalk-cloud-worker/presentation/node",
+		"/usr/local/bin/dirextalk-presentation",
 	} {
 		if !strings.Contains(containerfile, required) {
 			t.Fatalf("rootfs build lacks %q", required)
@@ -346,6 +354,10 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 		"its live service",
 		"systemd-networkd identity changed",
 		"non-loopback inbound listener",
+		"qualify_presentation_runtime",
+		"qualified LibreOffice 25.8.7 runtime is missing",
+		"qualified Noto Sans CJK SC font is missing",
+		"dirextalk-presentation 1.0.0",
 	} {
 		if !strings.Contains(qualifier, required) {
 			t.Fatalf("AMI qualifier lacks %q", required)
@@ -368,9 +380,13 @@ func TestRootfsToAMIBuildIsPinnedExplicitAndFailClosed(t *testing.T) {
 	for _, required := range []string{
 		"0555 0 0 usr/local/bin/dirextalk-cloud-worker",
 		"0555 0 0 usr/local/bin/dirextalk-cloud-worker-exec-gate",
+		"0555 0 0 usr/local/bin/dirextalk-presentation",
 		"0444 0 0 usr/local/lib/systemd/system/dirextalk-cloud-worker-boot-qualification.service",
 		"0551 0 65531 usr/local/lib/dirextalk-cloud-worker/pi/pi",
+		"0555 0 0 usr/local/lib/dirextalk-cloud-worker/presentation/node",
 		"0555 0 0 usr/local/sbin/dirextalk-cloud-worker-qualify",
+		"0444 0 0 usr/local/share/dirextalk-cloud-worker/presentation-runtime.sha256",
+		"0444 0 0 usr/local/share/dirextalk-cloud-worker/presentation-runtime.tar.gz",
 		"0444 0 0 usr/local/share/dirextalk-cloud-worker/rootfs-files.allowlist",
 	} {
 		if !strings.Contains(allowlist, required) {

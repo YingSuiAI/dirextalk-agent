@@ -1,4 +1,23 @@
 ARG GO_BUILD_BASE
+
+FROM --platform=linux/amd64 node:22.23.2-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS presentation
+
+WORKDIR /runtime
+COPY deploy/cloud-worker/presentation-runtime/package.json deploy/cloud-worker/presentation-runtime/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts \
+    && rm -rf node_modules/.bin /root/.npm
+COPY --chmod=0500 deploy/cloud-worker/presentation-runtime/harden-image-size.sh ./harden-image-size.sh
+RUN ./harden-image-size.sh \
+    && rm -f harden-image-size.sh \
+    && mkdir -p /out \
+    && install -m 0555 /usr/local/bin/node /out/node
+COPY --chmod=0400 deploy/cloud-worker/presentation-runtime/cli.cjs ./cli.cjs
+RUN tar --create --gzip --file /out/presentation-runtime.tar.gz \
+        --format=ustar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+        --dereference . \
+    && sha256sum /out/presentation-runtime.tar.gz | awk '{print $1}' \
+        > /out/presentation-runtime.sha256
+
 FROM --platform=linux/amd64 ${GO_BUILD_BASE} AS build
 
 ARG TARGETOS=linux
@@ -64,6 +83,10 @@ RUN mkdir -p \
     && install -m 0444 /out/pi/photon_rs_bg.wasm /out/rootfs/usr/local/lib/dirextalk-cloud-worker/pi/photon_rs_bg.wasm \
     && install -m 0444 /out/pi/theme/*.json /out/rootfs/usr/local/lib/dirextalk-cloud-worker/pi/theme/
 
+COPY --from=presentation --chmod=0444 /out/presentation-runtime.tar.gz /out/rootfs/usr/local/share/dirextalk-cloud-worker/presentation-runtime.tar.gz
+COPY --from=presentation --chmod=0444 /out/presentation-runtime.sha256 /out/rootfs/usr/local/share/dirextalk-cloud-worker/presentation-runtime.sha256
+COPY --from=presentation --chmod=0555 /out/node /out/rootfs/usr/local/lib/dirextalk-cloud-worker/presentation/node
+COPY --chmod=0555 deploy/cloud-worker/dirextalk-presentation /out/rootfs/usr/local/bin/dirextalk-presentation
 COPY --chmod=0444 deploy/cloud-worker/dirextalk-result.ts /out/rootfs/usr/local/lib/dirextalk-cloud-worker/pi/dirextalk-result.ts
 COPY --chmod=0444 deploy/cloud-worker/dirextalk-cloud-worker.service /out/rootfs/usr/local/lib/systemd/system/dirextalk-cloud-worker.service
 COPY --chmod=0444 deploy/cloud-worker/dirextalk-cloud-worker-exec-gate.service /out/rootfs/usr/local/lib/systemd/system/dirextalk-cloud-worker-exec-gate.service

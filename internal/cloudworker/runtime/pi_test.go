@@ -98,6 +98,8 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 	}
 	if strings.Contains(arguments, task.Objective) || strings.Contains(arguments, string(credential)) ||
 		strings.Contains(strings.ToLower(arguments), "mcp") ||
+		!strings.Contains(argumentValue(process.spec.Arguments, "--system-prompt"), "dirextalk-presentation guide") ||
+		!strings.Contains(argumentValue(process.spec.Arguments, "--system-prompt"), "Do not claim visual verification") ||
 		argumentValue(process.spec.Arguments, "--provider") != task.ModelProvider ||
 		argumentValue(process.spec.Arguments, "--model") != task.Model ||
 		argumentValue(process.spec.Arguments, "--tools") !=

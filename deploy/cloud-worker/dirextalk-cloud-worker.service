@@ -5,10 +5,14 @@ Wants=network-online.target
 Requires=dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service dirextalk-cloud-worker-boot-qualification.service
 After=network-online.target dirextalk-cloud-worker-network.service dirextalk-cloud-worker-exec-gate.service dirextalk-cloud-worker-boot-qualification.service
 AssertFileIsExecutable=/usr/local/bin/dirextalk-cloud-worker
+AssertFileIsExecutable=/usr/local/bin/dirextalk-presentation
+AssertFileIsExecutable=/usr/local/lib/dirextalk-cloud-worker/presentation/node
 AssertPathExists=/usr/local/share/dirextalk-cloud-worker/installation.json
 AssertPathExists=/usr/local/share/dirextalk-cloud-worker/control-plane-ca.pem
 AssertPathExists=/usr/local/share/dirextalk-cloud-worker/outbound-proxy-ca.pem
 AssertPathExists=/usr/local/share/dirextalk-cloud-worker/pi-egress.nft
+AssertPathExists=/usr/local/share/dirextalk-cloud-worker/presentation-runtime.tar.gz
+AssertPathExists=/usr/local/share/dirextalk-cloud-worker/presentation-runtime.sha256
 
 [Service]
 Type=exec

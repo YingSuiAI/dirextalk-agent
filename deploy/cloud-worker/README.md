@@ -4,7 +4,8 @@ This directory builds the immutable root filesystem and the only reviewed
 rootfs-to-AMI installation path for exactly one
 `ephemeral-pi-task` / `pi_json_task_v1` Worker. It contains only the Worker
 binary, the independent privileged execution Gate, the pinned Pi release, the
-single result extension, a deployment-pinned WorkerControl CA, the read-only
+single result extension, the immutable presentation authoring runtime, a
+deployment-pinned WorkerControl CA, the read-only
 qualification command, and hardened systemd units. It intentionally contains no
 Agent configuration, local model credential, MCP, Skill, Knowledge,
 Extension Runner, installer, SSM agent, maintenance service, or inbound
@@ -62,6 +63,16 @@ there is no unpinned fallback. The qualified Amazon Linux source also supplies
 the root-owned, non-symlink system trust bundle at
 `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`; the Worker payload does
 not replace the source image's system roots.
+
+The same source AMI also pins LibreOffice `25.8.7`, Poppler command-line tools,
+fontconfig, and the Noto Sans CJK fonts used to render and inspect presentations.
+The rootfs adds a digest-bound pure-JavaScript PptxGenJS runtime plus an immutable
+x86 Node executable. Pi creates native editable `.pptx` files with
+`dirextalk-presentation`, then renders every slide to PDF and PNG and emits
+`presentation-qa.json`. Strict mode fails when OOXML is corrupt, slide objects
+leave the canvas, probable text overflow or overlap is detected, rendered page
+counts differ, or source text disappears from the rendered PDF. The runtime
+does not install packages or contact a package registry during a task.
 
 The semantic `ami_digest` must equal canonical `installation.json`; it is
 tagged on the AMI, build instance, root volume, and snapshot. The distinct
@@ -135,6 +146,11 @@ open and resolves traversal and reads with Linux `openat2` beneath that fd,
 rejecting symlinks, magic links, mount crossings, hardlinks, and root identity
 replacement. Delta collection begins only after the execution gate proves the
 Worker cgroup contains no Pi or tool descendant.
+
+Workspace result and artifact envelopes allow up to 64 MiB so an editable deck,
+its source, PDF, slide previews, and QA report can return together. The same
+limit is enforced by Worker collection and Agent ingestion; individual task
+configuration may choose a lower bound but never a higher one.
 
 The execution Gate is a separate root-owned systemd service and is the only
 image process with `CAP_SYS_ADMIN` (plus `CAP_KILL` for fenced cleanup and

@@ -17,6 +17,7 @@ const piSettingsJSON = `{"compaction":{"enabled":true},"enableInstallTelemetry":
 
 const piSystemPrompt = `Execute exactly one authorized Dirextalk Cloud Worker task.
 Use only the enabled tools and supplied workspace. Never inspect credential locations or reveal private configuration.
+When the objective requests a PowerPoint or slide deck, run dirextalk-presentation guide, create an editable .pptx, and use its strict build or verify workflow. Do not claim visual verification unless every slide rendered and the quality report passed.
 Call dirextalk_submit_result exactly once as the final action.`
 
 type PiConfig struct {

@@ -64,7 +64,7 @@ assert_target() {
 }
 target_path() { printf '%s/%s\n' "${target_root%/}" "$1"; }
 
-for command in rpm systemctl systemd-analyze readelf getcap nft ss awk grep sed cat stat sha256sum setpriv mkfifo readlink; do
+for command in rpm systemctl systemd-analyze readelf getcap nft ss awk grep sed cat stat sha256sum setpriv mkfifo readlink libreoffice pdfinfo pdftoppm pdftotext fc-match; do
     command -v "$command" >/dev/null 2>&1 || { echo "qualification dependency is missing: $command" >&2; exit 69; }
 done
 
@@ -111,9 +111,10 @@ while read -r mode uid gid path; do
 done < "$allowlist"
 
 for binary in \
-    usr/local/bin/dirextalk-cloud-worker \
-    usr/local/bin/dirextalk-cloud-worker-exec-gate \
-    usr/local/lib/dirextalk-cloud-worker/pi/pi
+	usr/local/bin/dirextalk-cloud-worker \
+	usr/local/bin/dirextalk-cloud-worker-exec-gate \
+	usr/local/lib/dirextalk-cloud-worker/pi/pi \
+	usr/local/lib/dirextalk-cloud-worker/presentation/node
 do
     file=$(target_path "$binary")
     readelf -h "$file" | grep -Eq 'Class:[[:space:]]+ELF64' || { echo "not an ELF64 binary: $binary" >&2; exit 66; }
@@ -294,13 +295,80 @@ qualify_pi_execution_boundary() (
     cleanup_probe
 )
 
+qualify_presentation_runtime() (
+    set -eu
+    presentation=$(target_path usr/local/bin/dirextalk-presentation)
+    archive=$(target_path usr/local/share/dirextalk-cloud-worker/presentation-runtime.tar.gz)
+    digest_file=$(target_path usr/local/share/dirextalk-cloud-worker/presentation-runtime.sha256)
+    node=$(target_path usr/local/lib/dirextalk-cloud-worker/presentation/node)
+    [ "$(stat -Lc '%a:%u:%g:%h' -- "$presentation")" = 555:0:0:1 ] || {
+        echo "presentation command boundary mismatch" >&2
+        exit 66
+    }
+    [ "$(stat -Lc '%a:%u:%g:%h' -- "$node")" = 555:0:0:1 ] || {
+        echo "presentation Node boundary mismatch" >&2
+        exit 66
+    }
+    expected=$(cat "$digest_file")
+    printf '%s' "$expected" | grep -Eq '^[a-f0-9]{64}$' || {
+        echo "presentation runtime digest stamp is invalid" >&2
+        exit 66
+    }
+    [ "$(sha256sum "$archive" | awk '{print $1}')" = "$expected" ] || {
+        echo "presentation runtime archive drifted" >&2
+        exit 66
+    }
+    libreoffice --version | grep -Eq '^LibreOffice 25\.8\.7(\.|$)' || {
+        echo "qualified LibreOffice 25.8.7 runtime is missing" >&2
+        exit 69
+    }
+    pdfinfo -v 2>&1 | grep -Eq '^pdfinfo version [0-9]+' || {
+        echo "qualified Poppler pdfinfo runtime is missing" >&2
+        exit 69
+    }
+    pdftoppm -v 2>&1 | grep -Eq '^pdftoppm version [0-9]+' || {
+        echo "qualified Poppler pdftoppm runtime is missing" >&2
+        exit 69
+    }
+    pdftotext -v 2>&1 | grep -Eq '^pdftotext version [0-9]+' || {
+        echo "qualified Poppler pdftotext runtime is missing" >&2
+        exit 69
+    }
+    fc-match 'Noto Sans CJK SC' | grep -Eq 'NotoSansCJK|Noto Sans CJK' || {
+        echo "qualified Noto Sans CJK SC font is missing" >&2
+        exit 69
+    }
+
+    probe_root=$(mktemp -d)
+    cleanup_presentation() { rm -rf -- "$probe_root"; }
+    trap cleanup_presentation EXIT HUP INT TERM
+    chown 65532:65532 "$probe_root"
+    chmod 0700 "$probe_root"
+    if version=$(setpriv --reuid=65532 --regid=65532 --clear-groups \
+        env -i PATH=/usr/local/bin:/usr/bin:/bin HOME="$probe_root" \
+        XDG_CACHE_HOME="$probe_root/cache" "$presentation" version 2>&1); then
+        printf '%s\n' "$version" | grep -Fxq 'dirextalk-presentation 1.0.0' || {
+            echo "presentation runtime version drifted" >&2
+            exit 66
+        }
+    else
+        status=$?
+        echo "presentation runtime probe failed with status $status: $version" >&2
+        exit 69
+    fi
+    cleanup_presentation
+)
+
 if [ "$phase" = offline ]; then
     [ "$target_root" = / ] || { echo "offline nft syntax qualification requires the mounted build root" >&2; exit 65; }
     qualify_pi_execution_boundary
+    qualify_presentation_runtime
     nft --check --file "$(target_path usr/local/share/dirextalk-cloud-worker/pi-egress.nft)"
     echo "cloud-worker image offline qualification: PASS"
     exit 0
 fi
+
+qualify_presentation_runtime
 
 for unit in \
     dirextalk-cloud-worker-network.service \

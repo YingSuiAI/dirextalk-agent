@@ -1,0 +1,54 @@
+#!/bin/sh
+set -eu
+
+runtime_archive=/usr/local/share/dirextalk-cloud-worker/presentation-runtime.tar.gz
+runtime_digest_file=/usr/local/share/dirextalk-cloud-worker/presentation-runtime.sha256
+
+[ -f "$runtime_archive" ] && [ ! -L "$runtime_archive" ] || {
+    echo "presentation runtime archive is missing" >&2
+    exit 69
+}
+[ -f "$runtime_digest_file" ] && [ ! -L "$runtime_digest_file" ] || {
+    echo "presentation runtime digest is missing" >&2
+    exit 69
+}
+expected_digest=$(cat "$runtime_digest_file")
+printf '%s' "$expected_digest" | grep -Eq '^[a-f0-9]{64}$' || {
+    echo "presentation runtime digest is invalid" >&2
+    exit 66
+}
+[ "$(sha256sum "$runtime_archive" | awk '{print $1}')" = "$expected_digest" ] || {
+    echo "presentation runtime archive digest mismatch" >&2
+    exit 66
+}
+
+cache_parent=${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/dirextalk-presentation
+runtime_root=$cache_parent/$expected_digest
+if [ ! -f "$runtime_root/cli.cjs" ]; then
+    mkdir -p "$cache_parent"
+    chmod 0700 "$cache_parent"
+    work_dir=$(mktemp -d "$cache_parent/.extract.XXXXXX")
+    cleanup() { rm -rf -- "$work_dir"; }
+    trap cleanup EXIT HUP INT TERM
+    tar -tzf "$runtime_archive" | while IFS= read -r entry; do
+        case "$entry" in
+            /*|..|../*|*/../*|*/..) echo "unsafe presentation runtime path" >&2; exit 66 ;;
+        esac
+    done
+    tar -xzf "$runtime_archive" -C "$work_dir" --no-same-owner --no-same-permissions
+    if find "$work_dir" -mindepth 1 ! -type d ! -type f -print -quit | grep -q .; then
+        echo "presentation runtime contains a link or special file" >&2
+        exit 66
+    fi
+    chmod -R u=rwX,go= "$work_dir"
+    if mv "$work_dir" "$runtime_root" 2>/dev/null; then
+        trap - EXIT HUP INT TERM
+    elif [ ! -f "$runtime_root/cli.cjs" ]; then
+        echo "presentation runtime extraction raced without a valid winner" >&2
+        exit 70
+    fi
+fi
+
+export NODE_PATH=$runtime_root/node_modules
+exec /usr/local/lib/dirextalk-cloud-worker/presentation/node \
+    --jitless "$runtime_root/cli.cjs" "$@"

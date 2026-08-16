@@ -133,9 +133,10 @@ cmp -s "$allowlist" "$staging/usr/local/share/dirextalk-cloud-worker/rootfs-file
 }
 
 for reserved in \
-    usr/local/bin/dirextalk-cloud-worker \
-    usr/local/bin/dirextalk-cloud-worker-exec-gate \
-    usr/local/lib/dirextalk-cloud-worker \
+	usr/local/bin/dirextalk-cloud-worker \
+	usr/local/bin/dirextalk-cloud-worker-exec-gate \
+	usr/local/bin/dirextalk-presentation \
+	usr/local/lib/dirextalk-cloud-worker \
     usr/local/sbin/dirextalk-cloud-worker-qualify \
     usr/local/share/dirextalk-cloud-worker \
     usr/local/lib/systemd/system/dirextalk-cloud-worker.service \

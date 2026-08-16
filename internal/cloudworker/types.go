@@ -31,7 +31,7 @@ const (
 	// MaxCloudWorkerOutputBytes is the authorization-visible hard cap shared
 	// with the Pi runtime/result collector. A quote must never authorize an
 	// output the Worker cannot upload and the Agent cannot centrally verify.
-	MaxCloudWorkerOutputBytes uint64 = 8 << 20
+	MaxCloudWorkerOutputBytes uint64 = 64 << 20
 )
 
 var (

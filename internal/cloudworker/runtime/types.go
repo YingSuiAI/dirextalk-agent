@@ -40,8 +40,8 @@ const (
 	MaxProcessOutputBytes     = 8 << 20
 	MaxFinalArtifactBytes     = 512 << 10
 	MaxPatchBytes             = 7 << 20
-	MaxArtifactBytes          = 8 << 20
-	MaxResultBytes            = 8 << 20
+	MaxArtifactBytes          = 64 << 20
+	MaxResultBytes            = 64 << 20
 	MaxOutputTokens           = 10_000_000
 	MaxContextWindow          = 100_000_000
 	MaxArtifactsPerResult     = 3
