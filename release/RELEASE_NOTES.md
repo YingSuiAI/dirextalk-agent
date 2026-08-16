@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.153
+
+1. Keep completed lightweight Web Search research, summaries, reports, and static pages off Cloud Worker while preserving escalation for required builds, deployments, services, and unavailable execution capabilities.
+
 ## v1.0.152
 
 1. Replay one provider assistant response containing reasoning, content, and multiple tool calls as its original batch followed by matching tool results, preserving provider-compatible order across confirmation and restart.
