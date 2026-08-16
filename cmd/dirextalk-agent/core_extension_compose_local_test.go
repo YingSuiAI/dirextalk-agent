@@ -259,7 +259,7 @@ func TestLocalSandboxConversationStoresVerifiedArtifactsUnderTurnAuthority(t *te
 	}
 	authority := localartifact.Authority{OwnerID: ownerID, AccountGeneration: generation}
 	artifacts, next, err := repository.ListLocalSandbox(context.Background(), authority, executionID, "", 20)
-	if err != nil || next != "" || len(artifacts) != 3 {
+	if err != nil || next != "" || len(artifacts) != 2 {
 		t.Fatalf("artifacts=%+v next=%q err=%v", artifacts, next, err)
 	}
 	var report localartifact.Artifact
@@ -279,7 +279,7 @@ func TestLocalSandboxConversationStoresVerifiedArtifactsUnderTurnAuthority(t *te
 		t.Fatalf("stored=%s", store.result)
 	}
 	executionOutput, err := repository.GetLocalSandboxExecution(context.Background(), authority, executionID)
-	if err != nil || executionOutput.ExitCode != 0 || executionOutput.StdoutArtifactID == "" || executionOutput.StderrArtifactID == "" {
+	if err != nil || executionOutput.ExitCode != 0 || executionOutput.StdoutArtifactID == "" || executionOutput.StderrArtifactID != "" {
 		t.Fatalf("execution=%+v err=%v", executionOutput, err)
 	}
 }

@@ -631,7 +631,13 @@ func (executor CommandSSHExecutor) collectRuntimeArtifacts(ctx context.Context, 
 		if err = decoder.Decode(&artifact); errors.Is(err, io.EOF) {
 			return count, nil
 		}
-		if err != nil || artifact.Size < 0 || total+artifact.Size > request.MaxResultBytes || count >= MaxLinkedArtifacts-reservedTextArtifacts {
+		if err != nil || artifact.Size < 0 || total+artifact.Size > request.MaxResultBytes {
+			return count, ErrResultTooLarge
+		}
+		if artifact.Size == 0 {
+			continue
+		}
+		if count >= MaxLinkedArtifacts-reservedTextArtifacts {
 			return count, ErrResultTooLarge
 		}
 		command, commandErr := request.Runtime.Artifact(artifact.Name)

@@ -58,6 +58,7 @@ turn identity/revision/timestamp plus execution ID, status, and optional phase;
 it does not duplicate Worker inventory or require client polling.
 
 Cloud Worker and local sandbox result files use the same Agent-owned local artifact repository with separate internal namespaces. Existing Cloud Worker metadata and deterministic artifact IDs remain unchanged. Public artifact metadata contains stable IDs, media type, size, and SHA-256, never a Worker or sandbox filesystem path. The artifact request `record_kind` selects the namespace, and `agent.execution.v2.artifacts.download` revalidates the stored identity before returning bounded chunks. Artifact reads do not contact AWS.
+Zero-byte stdout, stderr, and result files are omitted before remote transfer and before local artifact metadata is created.
 
 `agent.execution.v2.artifacts.delete` requires an idempotency key and removes only the selected artifact metadata and bytes. A durable deletion receipt completes partial removal after restart and makes an exact retry return the original successful result. It does not delete or stop the associated execution, task, run, sandbox, or Worker.
 

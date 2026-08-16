@@ -114,8 +114,10 @@ case "$remote" in
     [[ "$(count download)" -gt 1 ]] || exit 255
     printf 'data'
     ;;
+	*"'artifact'"*"'empty.txt'"*) count empty-download >/dev/null ;;
   *"'artifact'"*)
     [[ "$(count list)" -gt 1 ]] || exit 255
+	printf '%s\n' '{"name":"empty.txt","size":0}'
     printf '%s\n' '{"name":"report.txt","size":4}'
     ;;
   *"'start'"*) count start >/dev/null ;;
@@ -130,6 +132,9 @@ esac
 	}
 	if result.ArtifactCount != 1 || string(sink.text) != "completed after reconnect\n" || string(sink.artifacts["report.txt"]) != "data" {
 		t.Fatalf("result=%+v text=%q artifacts=%q", result, sink.text, sink.artifacts)
+	}
+	if _, err = os.Stat(filepath.Join(state, "empty-download.count")); !os.IsNotExist(err) {
+		t.Fatalf("zero-byte artifact was transferred: %v", err)
 	}
 	for _, name := range []string{"status", "log", "list", "download"} {
 		if got := readCount(t, state, name); got != 2 {

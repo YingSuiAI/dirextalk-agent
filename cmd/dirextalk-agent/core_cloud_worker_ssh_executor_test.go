@@ -23,6 +23,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
 
 type serviceWorkerStub struct {
@@ -491,7 +492,7 @@ func TestExecutionArtifactsRejectsMoreThanTerminalFileLimit(t *testing.T) {
 	if err = sink.StoreText(context.Background(), nil, nil, 0); err != nil {
 		t.Fatal(err)
 	}
-	for index := 0; index < 127; index++ {
+	for index := 0; index < coretask.MaxFileCount+1; index++ {
 		name := fmt.Sprintf("artifact-%03d.txt", index)
 		if err = sink.StoreArtifact(context.Background(), name, bytes.NewReader([]byte{byte(index)}), 1); err != nil {
 			t.Fatal(err)

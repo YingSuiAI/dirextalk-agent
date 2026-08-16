@@ -91,6 +91,41 @@ func TestSinkPersistsSSHOutputAndArtifactsAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestSinkOmitsZeroByteOutputsAndArtifacts(t *testing.T) {
+	repository, err := NewRepository(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := Authority{OwnerID: "owner-1", AccountGeneration: 7}
+	executionID := uuid.NewString()
+	sink, err := repository.Bind(authority, executionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = sink.StoreText(context.Background(), []byte("output"), nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err = sink.StoreArtifact(context.Background(), "empty.txt", bytes.NewReader(nil), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err = sink.StoreArtifact(context.Background(), "report.txt", bytes.NewBufferString("report"), 6); err != nil {
+		t.Fatal(err)
+	}
+	items, next, err := repository.List(context.Background(), authority, executionID, "", 10)
+	if err != nil || next != "" || len(items) != 2 {
+		t.Fatalf("List() = %#v, %q, %v", items, next, err)
+	}
+	for _, item := range items {
+		if item.SizeBytes == 0 || item.Name == "stderr.txt" || item.Name == "empty.txt" {
+			t.Fatalf("zero-byte artifact was persisted: %#v", item)
+		}
+	}
+	output, err := repository.GetExecution(context.Background(), authority, executionID)
+	if err != nil || output.StdoutArtifactID == "" || output.StderrArtifactID != "" {
+		t.Fatalf("execution output = %#v, %v", output, err)
+	}
+}
+
 func TestRepositoryDeletesOnlyExactAuthorityArtifact(t *testing.T) {
 	repository, err := NewRepository(filepath.Join(t.TempDir(), "artifacts"))
 	if err != nil {
@@ -106,7 +141,7 @@ func TestRepositoryDeletesOnlyExactAuthorityArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	items, _, err := repository.ListLocalSandbox(context.Background(), authority, executionID, "", 10)
-	if err != nil || len(items) != 2 {
+	if err != nil || len(items) != 1 {
 		t.Fatalf("List() = %#v, %v", items, err)
 	}
 	artifact := items[0]

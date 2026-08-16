@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.140
+
+1. Omit zero-byte Worker stdout, stderr, and result files before remote transfer and local artifact metadata creation, while preserving non-empty deliverables.
+
 ## v1.0.139
 
 1. Preserve explicit zero estimated and maximum costs in Cloud Worker confirmation quotes, so retained Worker reuse remains a valid public DTO and renders from authoritative history.

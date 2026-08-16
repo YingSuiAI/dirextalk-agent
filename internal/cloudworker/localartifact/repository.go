@@ -106,8 +106,9 @@ func (receipt deletionReceipt) validate() error {
 }
 
 func (output ExecutionOutput) validate() error {
-	if output.Authority.validate() != nil || !validID(output.ExecutionID) || !validID(output.StdoutArtifactID) ||
-		!validID(output.StderrArtifactID) || output.UpdatedAt.IsZero() {
+	if output.Authority.validate() != nil || !validID(output.ExecutionID) ||
+		(output.StdoutArtifactID != "" && !validID(output.StdoutArtifactID)) ||
+		(output.StderrArtifactID != "" && !validID(output.StderrArtifactID)) || output.UpdatedAt.IsZero() {
 		return ErrInvalid
 	}
 	return nil
@@ -190,23 +191,33 @@ func (sink *Sink) StoreText(ctx context.Context, stdout, stderr []byte, exitCode
 		int64(len(stdout)) > MaxArtifactBytes || int64(len(stderr)) > MaxArtifactBytes {
 		return ErrInvalid
 	}
-	stdoutArtifact, err := sink.store(ctx, "stdout", "stdout.txt", "text/plain; charset=utf-8", int64(len(stdout)), bytes.NewReader(stdout))
-	if err != nil {
-		return err
+	var stdoutArtifactID, stderrArtifactID string
+	if len(stdout) > 0 {
+		artifact, err := sink.store(ctx, "stdout", "stdout.txt", "text/plain; charset=utf-8", int64(len(stdout)), bytes.NewReader(stdout))
+		if err != nil {
+			return err
+		}
+		stdoutArtifactID = artifact.ArtifactID
 	}
-	stderrArtifact, err := sink.store(ctx, "stderr", "stderr.txt", "text/plain; charset=utf-8", int64(len(stderr)), bytes.NewReader(stderr))
-	if err != nil {
-		return err
+	if len(stderr) > 0 {
+		artifact, err := sink.store(ctx, "stderr", "stderr.txt", "text/plain; charset=utf-8", int64(len(stderr)), bytes.NewReader(stderr))
+		if err != nil {
+			return err
+		}
+		stderrArtifactID = artifact.ArtifactID
 	}
 	output := ExecutionOutput{Authority: sink.authority, ExecutionID: sink.executionID, ExitCode: exitCode,
-		StdoutArtifactID: stdoutArtifact.ArtifactID, StderrArtifactID: stderrArtifact.ArtifactID,
+		StdoutArtifactID: stdoutArtifactID, StderrArtifactID: stderrArtifactID,
 		UpdatedAt: sink.repository.now().UTC()}
 	return sink.repository.saveExecution(sink.namespace, output)
 }
 
 func (sink *Sink) StoreArtifact(ctx context.Context, name string, reader io.Reader, size int64) error {
-	if sink == nil || reader == nil || !validName(name) || size < 0 || size > MaxArtifactBytes {
+	if sink == nil || ctx == nil || ctx.Err() != nil || reader == nil || !validName(name) || size < 0 || size > MaxArtifactBytes {
 		return ErrInvalid
+	}
+	if size == 0 {
+		return nil
 	}
 	mediaType := mime.TypeByExtension(strings.ToLower(path.Ext(name)))
 	if mediaType == "" {
