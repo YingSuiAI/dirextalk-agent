@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.158
+
 1. Force the provider-native `static_site_publish` tool choice after its dedicated invalid-HTML correction, retaining that retry across partial output and clearing it after the next valid intrinsic result.
 2. Route malformed bounded arguments from a known intrinsic into its existing correctable result without weakening unknown or extension tool validation.
 3. Project OpenRouter's positive direct or nested `max_completion_tokens` into the closed public model catalog.
