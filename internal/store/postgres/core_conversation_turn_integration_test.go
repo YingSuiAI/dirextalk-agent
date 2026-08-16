@@ -258,6 +258,49 @@ func TestCoreConversationTurnCancelCompletionFencePostgres(t *testing.T) {
 	}
 }
 
+func TestCoreConversationCompletionReplacesStoppedFirstTurnProvisionalTitlePostgres(t *testing.T) {
+	h := openTurnDB(t)
+	firstCommand := turnCommand()
+	firstCommand.Prompt = "请帮我部署一个服务"
+	first, err := h.store.StartTurn(context.Background(), firstCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.store.RequestTurnCancel(context.Background(), core.TurnCancelCommand{RequestID: uuid.NewString(), TurnID: first.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.store.MarkTurnCanceledRequested(context.Background(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	secondCommand := turnCommand()
+	secondCommand.ConversationID = first.ConversationID
+	secondCommand.Prompt = "继续完成"
+	revision := uint64(1)
+	secondCommand.ExpectedRevision = &revision
+	second, err := h.store.StartTurn(context.Background(), secondCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createTestProfile(context.Background(), t, h.store.Store, second.ProfileID, "test", "integration-secret")
+	lease, err := h.store.ClaimTurn(context.Background(), second.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := core.ChatResponse{
+		RequestID: second.RequestID, ConversationID: second.ConversationID, Revision: 2,
+		Message:           core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "done", ModelProfileID: second.ProfileID, CreatedAt: time.Now().UTC()},
+		ConversationTitle: "服务部署进度", ConversationTitleSource: first.Prompt,
+	}
+	if _, err = h.store.CommitTurn(context.Background(), lease, response); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := h.store.LoadConversation(context.Background(), second.ConversationID)
+	if err != nil || conversation.Title != "服务部署进度" {
+		t.Fatalf("conversation=%+v err=%v", conversation, err)
+	}
+}
+
 func TestCoreConversationTurnSteerInvalidatesProviderLeaseAndCommitsGuidancePostgres(t *testing.T) {
 	h := openTurnDB(t)
 	cmd := turnCommand()

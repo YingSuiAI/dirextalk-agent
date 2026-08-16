@@ -264,7 +264,9 @@ retain their frozen revision CAS.
 - Accepting the first turn of an untitled conversation immediately persists a
   deterministic, normalized, bounded prompt-prefix title. Successful first-turn
   title generation may replace that provisional value; later user titles are
-  not overwritten.
+  not overwritten. If that first turn is stopped before it commits a message,
+  the next successful turn still uses the earliest durable turn prompt to
+  replace the provisional value with the generated title.
 - Stored credentials are write-only from ordinary read/list APIs. Responses
   expose status, fingerprints, revisions, or binding digests, never secret
   bytes. Agent-owned secret fields use the configured encrypted-at-rest store.

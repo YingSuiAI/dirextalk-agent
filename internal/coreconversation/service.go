@@ -1512,7 +1512,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if err != nil {
 		conv = Conversation{ID: turn.ConversationID, Revision: 0, CreatedAt: s.clock(), UpdatedAt: s.clock()}
 	}
-	conversationTitleUserText := firstConversationUserText(conv, turn.Prompt)
+	conversationTitleUserText := s.durableConversationTitleSource(ctx, conv, turn)
 	conv, persistedMessageCount, currentUserCommitted, err := conversationForTurnContinuation(conv, turn)
 	if err != nil {
 		_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "durable conversation context is invalid")
@@ -1575,7 +1575,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			Message: message, Done: true, ModelProfileID: turn.ProfileID,
 			RelatedTaskIDs: append([]string(nil), historyTasks...), RelatedPlanIDs: append([]string(nil), historyPlans...),
 			References: cloneReferences(historyReferences), ToolSummaries: append([]string(nil), historySummaries...),
-			ToolResults: historyResults, ConversationTitle: conversationTitleFallback(conversationTitleUserText),
+			ToolResults: historyResults, ConversationTitle: conversationTitleFallback(conversationTitleUserText), ConversationTitleSource: conversationTitleUserText,
 		}
 		if _, commitErr := s.turns.CommitTurn(ctx, lease, response); commitErr != nil {
 			current, readErr := s.turns.GetTurn(ctx, turn.ID)
@@ -1949,7 +1949,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			conv.Revision++
 			conv.UpdatedAt = s.clock()
 			conversationTitle := s.replaceProvisionalConversationTitle(ctx, conv.Title, conversationTitleUserText, m.Content)
-			response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision, Message: m, Done: true, ModelProfileID: turn.ProfileID, RelatedTaskIDs: append([]string(nil), m.RelatedTaskIDs...), RelatedPlanIDs: append([]string(nil), m.RelatedPlanIDs...), References: cloneReferences(m.References), ToolSummaries: append([]string(nil), m.ToolSummaries...), ToolResults: historyResults, ConversationTitle: conversationTitle}
+			response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision, Message: m, Done: true, ModelProfileID: turn.ProfileID, RelatedTaskIDs: append([]string(nil), m.RelatedTaskIDs...), RelatedPlanIDs: append([]string(nil), m.RelatedPlanIDs...), References: cloneReferences(m.References), ToolSummaries: append([]string(nil), m.ToolSummaries...), ToolResults: historyResults, ConversationTitle: conversationTitle, ConversationTitleSource: conversationTitleUserText}
 			if _, commitErr := s.turns.CommitTurn(ctx, lease, response); commitErr != nil {
 				current, readErr := s.turns.GetTurn(ctx, turn.ID)
 				if readErr == nil && current.State == TurnCompleted {

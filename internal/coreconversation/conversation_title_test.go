@@ -156,12 +156,18 @@ func TestUntitledExistingConversationUsesFirstPersistedUserMessage(t *testing.T)
 
 type titleCapturingTurnStore struct {
 	*readOnlyTurnStore
-	conversationTitle string
+	conversationTitle       string
+	conversationTitleSource string
+	turns                   []Turn
 }
 
 func (s *titleCapturingTurnStore) CommitTurn(ctx context.Context, lease TurnLease, response ChatResponse) (Turn, error) {
-	s.conversationTitle = response.ConversationTitle
+	s.conversationTitle, s.conversationTitleSource = response.ConversationTitle, response.ConversationTitleSource
 	return s.readOnlyTurnStore.CommitTurn(ctx, lease, response)
+}
+
+func (s *titleCapturingTurnStore) ListTurns(context.Context, string, string, int) ([]Turn, string, error) {
+	return append([]Turn(nil), s.turns...), "", nil
 }
 
 func TestDurableTurnCarriesAutomaticTitleIntoAtomicCommit(t *testing.T) {
@@ -191,5 +197,48 @@ func TestDurableTurnCarriesAutomaticTitleIntoAtomicCommit(t *testing.T) {
 	service.executeTurn(context.Background(), turn.ID)
 	if store.conversationTitle != "AWS 服务部署" {
 		t.Fatalf("committed title=%q", store.conversationTitle)
+	}
+}
+
+func TestSuccessfulTurnReplacesProvisionalTitleLeftByStoppedFirstTurn(t *testing.T) {
+	snapshot := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	stopped := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+		Prompt: "请帮我部署一个服务", ProfileID: snapshot.ProfileID,
+		State: TurnCanceled, Revision: 2, CreatedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	current := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+		Prompt: "继续完成", ProfileID: snapshot.ProfileID,
+		ProfileSnapshot: snapshot, ProfileSnapshotDigest: snapshot.Digest(),
+		State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC(),
+	}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{
+		ID: conversationID, Title: ProvisionalConversationTitle(stopped.Prompt), Revision: 1,
+		CreatedAt: stopped.CreatedAt, UpdatedAt: stopped.CreatedAt,
+	}
+	store := &titleCapturingTurnStore{
+		readOnlyTurnStore: &readOnlyTurnStore{
+			publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: current},
+			events:                []TurnEvent{{TurnID: current.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: current.CreatedAt}},
+		},
+		turns: []Turn{stopped},
+	}
+	service, err := NewService(store, &capturingTurnModel{}, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+		return snapshot, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source string
+	service.SetConversationTitleGenerator(conversationTitleGeneratorFunc(func(_ context.Context, userText, _ string) (string, error) {
+		source = userText
+		return "服务部署进度", nil
+	}))
+	service.executeTurn(context.Background(), current.ID)
+	if source != stopped.Prompt || store.conversationTitle != "服务部署进度" || store.conversationTitleSource != stopped.Prompt {
+		t.Fatalf("source=%q committed_title=%q committed_source=%q", source, store.conversationTitle, store.conversationTitleSource)
 	}
 }

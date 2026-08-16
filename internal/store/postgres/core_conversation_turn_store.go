@@ -975,7 +975,7 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 	if result.RowsAffected() != 1 {
 		return core.ErrConflict
 	}
-	convResult, err := tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,$2,$3,$4,$4) ON CONFLICT(conversation_id) DO UPDATE SET title=CASE WHEN core_conversations.title='' OR core_conversations.title=$6 THEN EXCLUDED.title ELSE core_conversations.title END,revision=$3,updated_at=$4 WHERE core_conversations.revision=$5`, response.ConversationID, response.ConversationTitle, response.Revision, now, response.Revision-1, core.ProvisionalConversationTitle(turn.Prompt))
+	convResult, err := tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,$2,$3,$4,$4) ON CONFLICT(conversation_id) DO UPDATE SET title=CASE WHEN core_conversations.title='' OR core_conversations.title=$6 OR core_conversations.title=$7 THEN EXCLUDED.title ELSE core_conversations.title END,revision=$3,updated_at=$4 WHERE core_conversations.revision=$5`, response.ConversationID, response.ConversationTitle, response.Revision, now, response.Revision-1, core.ProvisionalConversationTitle(turn.Prompt), core.ProvisionalConversationTitle(response.ConversationTitleSource))
 	if err != nil {
 		return err
 	}

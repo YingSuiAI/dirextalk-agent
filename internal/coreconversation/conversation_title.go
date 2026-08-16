@@ -62,6 +62,19 @@ func firstConversationUserText(conversation Conversation, currentPrompt string) 
 	return currentPrompt
 }
 
+func (s *Service) durableConversationTitleSource(ctx context.Context, conversation Conversation, current Turn) string {
+	if persisted := firstConversationUserText(conversation, ""); strings.TrimSpace(persisted) != "" {
+		return persisted
+	}
+	if lister, ok := s.turns.(TurnLister); ok {
+		turns, _, err := lister.ListTurns(ctx, current.ConversationID, "", 1)
+		if err == nil && len(turns) == 1 && strings.TrimSpace(turns[0].Prompt) != "" {
+			return turns[0].Prompt
+		}
+	}
+	return current.Prompt
+}
+
 func conversationTitleFallback(userText string) string {
 	return ProvisionalConversationTitle(userText)
 }

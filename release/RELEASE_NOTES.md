@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.143
+
+1. Replace a provisional conversation title left by a stopped first turn when the next turn completes successfully, using the earliest durable prompt without overwriting user-assigned titles.
+
 ## v1.0.142
 
 1. Preserve empty Native Agent conversation history, conversation lists, turn lists, and attachment collections as JSON arrays so first-fresh clients can start chat without a null-shape failure.
