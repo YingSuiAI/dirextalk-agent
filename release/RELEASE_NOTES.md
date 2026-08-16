@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v1.0.148
+
+1. Bound each durable conversation turn to 32 model dispatches and 30 minutes of cumulative model execution, with a visible terminal result when the budget is exhausted.
+2. Apply an 8,192-token default to conversation profiles and immutable turn snapshots that do not specify an output limit.
+3. Accept OpenAI-compatible streams that finish with a non-empty `finish_reason`, including an unterminated final SSE frame, while preserving final text and tool calls.
+4. Coalesce durable reasoning deltas without changing their order across steer boundaries, and allow stopped Cloud Worker turns without a conversation-tool attempt record.
+
 ## v1.0.147
 
 1. Preserve a prompt-derived first-turn title and durable stop summary when a retained Cloud Worker turn is canceled.
