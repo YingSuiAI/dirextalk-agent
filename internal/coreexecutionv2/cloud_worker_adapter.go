@@ -178,6 +178,14 @@ func cloudWorkerPlanProjection(plan cloudworker.Plan) CloudWorkerObject {
 	for _, grant := range plan.NetworkGrants {
 		networkGrants = append(networkGrants, grant)
 	}
+	limits := map[string]any{
+		"max_runtime_seconds": plan.Limits.MaxRuntimeSeconds,
+		"max_output_bytes":    plan.Limits.MaxOutputBytes,
+	}
+	if plan.Limits.MinimumRuntimeSeconds > 0 && plan.Limits.ExpectedRuntimeSeconds > 0 {
+		limits["minimum_runtime_seconds"] = plan.Limits.MinimumRuntimeSeconds
+		limits["expected_runtime_seconds"] = plan.Limits.ExpectedRuntimeSeconds
+	}
 	return CloudWorkerObject{
 		"owner_id": plan.OwnerID, "account_generation": plan.AccountGeneration,
 		"plan_id": plan.PlanID, "revision": plan.Revision, "status": plan.Status, "digest": plan.Digest,
@@ -202,9 +210,7 @@ func cloudWorkerPlanProjection(plan cloudworker.Plan) CloudWorkerObject {
 			"root_device_name": plan.Compute.RootDeviceName, "volume_type": plan.Compute.VolumeType,
 			"volume_iops": plan.Compute.VolumeIOPS, "volume_throughput_mib": plan.Compute.VolumeThroughputMiB,
 		},
-		"limits": map[string]any{
-			"max_runtime_seconds": plan.Limits.MaxRuntimeSeconds, "max_output_bytes": plan.Limits.MaxOutputBytes,
-		},
+		"limits":         limits,
 		"network_grants": networkGrants, "secret_grants": secretGrants,
 		"artifact_retention_seconds": plan.ArtifactRetentionSeconds,
 		"quote": map[string]any{

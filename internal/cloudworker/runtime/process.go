@@ -198,7 +198,12 @@ func (runner OSProcessRunner) Run(ctx context.Context, spec ProcessSpec) (Proces
 		waitErr = command.Wait()
 	}
 	if gateRun != nil && startErr == nil {
-		proof, topologyErr := gateRun.Terminal(ctx)
+		// Process cancellation may be the intentional finish boundary. Read the
+		// terminal process-tree proof with a fresh bounded context after the tree
+		// has stopped so partial outputs can still be sealed safely.
+		terminalCtx, cancelTerminal := context.WithTimeout(context.Background(), 2*time.Second)
+		proof, topologyErr := gateRun.Terminal(terminalCtx)
+		cancelTerminal()
 		if topologyErr != nil || proof.ValidateTerminal() != nil {
 			logProcessFailure("gate_terminal", FailureCodeProcessTopology)
 			lifecycleErr = errors.Join(

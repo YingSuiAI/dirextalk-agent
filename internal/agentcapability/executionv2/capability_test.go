@@ -208,12 +208,12 @@ func TestArtifactDownloadDescriptorSchemaIsStrictAndPinned(t *testing.T) {
 	if operation == nil {
 		t.Fatal("artifacts_download is not published by the ready Cloud Worker route")
 	}
-	const input = `{"additionalProperties":false,"properties":{"artifact_id":{"type":"string"},"max_chunk_bytes":{"maximum":524288,"minimum":1,"type":"integer"},"offset_bytes":{"maximum":8388607,"minimum":0,"type":"integer"},"record_kind":{"enum":["cloud_worker"],"type":"string"}},"required":["record_kind","artifact_id","offset_bytes","max_chunk_bytes"],"type":"object"}`
+	const input = `{"additionalProperties":false,"properties":{"artifact_id":{"type":"string"},"max_chunk_bytes":{"maximum":524288,"minimum":1,"type":"integer"},"offset_bytes":{"maximum":67108863,"minimum":0,"type":"integer"},"record_kind":{"enum":["cloud_worker"],"type":"string"}},"required":["record_kind","artifact_id","offset_bytes","max_chunk_bytes"],"type":"object"}`
 	const result = `{"additionalProperties":false,"properties":{"account_generation":{"minimum":1,"type":"integer"},"artifact_id":{"type":"string"},"artifact_sha256":{"type":"string"},"chunk_sha256":{"type":"string"},"data_base64":{"type":"string"},"eof":{"type":"boolean"},"execution_id":{"type":"string"},"next_offset_bytes":{"minimum":1,"type":"integer"},"offset_bytes":{"minimum":0,"type":"integer"},"owner_id":{"type":"string"},"size_bytes":{"minimum":1,"type":"integer"}},"required":["owner_id","account_generation","artifact_id","execution_id","offset_bytes","data_base64","chunk_sha256","artifact_sha256","size_bytes","next_offset_bytes","eof"],"type":"object"}`
 	if operation.GetInputSchemaJson() != input || operation.GetResultSchemaJson() != result {
 		t.Fatalf("schema drift\ninput=%s\nresult=%s", operation.GetInputSchemaJson(), operation.GetResultSchemaJson())
 	}
-	if got := hex.EncodeToString(operation.GetInputSchemaDigest()); got != "1f89699ab07b14d135619ee5f6b2ffd0d8d0821fb8f1ba236662814c0586706c" {
+	if got := hex.EncodeToString(operation.GetInputSchemaDigest()); got != "f086e0c778fd7f08411a280aad3deddfdc07378749379b324bc215aa1b939a51" {
 		t.Fatalf("input digest=%s", got)
 	}
 	if got := hex.EncodeToString(operation.GetResultSchemaDigest()); got != "6ea5feead715aa50feeff464e6da618564f9b6e422025c94743faf173478689d" {

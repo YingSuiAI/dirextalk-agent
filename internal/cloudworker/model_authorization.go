@@ -44,9 +44,10 @@ func ModelAuthorizationFromSnapshot(snapshot coremodel.ExecutionSnapshot) (Model
 // effectivePlanLimits validates the model's per-request output limit. The Plan
 // deliberately has no cumulative token budget: Pi may make as many model calls
 // as the approved task runtime permits.
-func effectivePlanLimits(defaults Limits, authorization ModelAuthorization) (Limits, error) {
+func effectivePlanLimits(defaults Limits, authorization ModelAuthorization, estimate RuntimeEstimate) (Limits, error) {
 	copy := authorization
-	if validateLimits(defaults) != nil || defaults.MaxTokens != 0 || copy.Seal() != nil {
+	if validateLimits(defaults) != nil || defaults.MaxTokens != 0 || copy.Seal() != nil ||
+		estimate.validate(defaults.MaxRuntimeSeconds) != nil {
 		return Limits{}, ErrInvalid
 	}
 	if copy.ContextWindow < MinimumPiContextWindow {
@@ -55,7 +56,25 @@ func effectivePlanLimits(defaults Limits, authorization ModelAuthorization) (Lim
 	if _, err := effectiveModelOutputTokens(copy); err != nil {
 		return Limits{}, err
 	}
+	defaults.MinimumRuntimeSeconds = estimate.MinimumSeconds
+	defaults.ExpectedRuntimeSeconds = estimate.ExpectedSeconds
+	defaults.MaxRuntimeSeconds = estimate.MaximumSeconds
 	return defaults, nil
+}
+
+func runtimeEstimateFromLimits(limits Limits) RuntimeEstimate {
+	if limits.MinimumRuntimeSeconds == 0 && limits.ExpectedRuntimeSeconds == 0 {
+		return RuntimeEstimate{
+			MinimumSeconds:  limits.MaxRuntimeSeconds,
+			ExpectedSeconds: limits.MaxRuntimeSeconds,
+			MaximumSeconds:  limits.MaxRuntimeSeconds,
+		}
+	}
+	return RuntimeEstimate{
+		MinimumSeconds:  limits.MinimumRuntimeSeconds,
+		ExpectedSeconds: limits.ExpectedRuntimeSeconds,
+		MaximumSeconds:  limits.MaxRuntimeSeconds,
+	}
 }
 
 // effectiveModelOutputTokens returns the model-qualified ceiling for one Pi

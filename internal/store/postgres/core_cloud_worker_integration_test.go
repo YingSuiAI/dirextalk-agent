@@ -134,7 +134,8 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 		ExpectedTurnRevision: lease.Turn.Revision, Objective: "Produce a verified cloud result",
 		ObjectiveSummary: "Verified cloud result", UserPromptDigest: pgCloudDigest(lease.Turn.Prompt),
 		ProposalReason: cloudworker.ProposalReasonExplicitUserCloud, InputManifest: cloudworker.InputManifest{},
-		WorkspaceMode: cloudworker.WorkspaceNone, ModelAuthorization: authorization}
+		WorkspaceMode: cloudworker.WorkspaceNone, ModelAuthorization: authorization,
+		RuntimeEstimate: cloudworker.RuntimeEstimate{MinimumSeconds: 600, ExpectedSeconds: 1200, MaximumSeconds: 1800}}
 	return &pgCloudWorkerHarness{ctx: ctx, store: store, cloud: cloudStore, tasks: NewCoreTaskStore(store),
 		confirmations: confirmationStore, confirmation: confirmationService, conversation: conversation,
 		service: service, lease: lease, command: command, now: now, owner: owner, generation: generation, cleanup: cleanup}
@@ -144,6 +145,7 @@ func (h *pgCloudWorkerHarness) propose(t *testing.T) cloudworker.Offer {
 	t.Helper()
 	arguments, _ := json.Marshal(map[string]any{
 		"objective": h.command.Objective, "workspace_mode": string(h.command.WorkspaceMode),
+		"runtime": map[string]any{"minimum_seconds": 600, "expected_seconds": 1200, "maximum_seconds": 1800},
 	})
 	h.recordProposalModelResult(t, uuid.NewString(), arguments)
 	offer, err := h.service.Propose(h.ctx, h.command)

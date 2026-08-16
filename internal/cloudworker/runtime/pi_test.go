@@ -166,6 +166,45 @@ func TestPiRunnerUsesPinnedClosedInvocationAndExactMaxTokens(t *testing.T) {
 	}
 }
 
+func TestPiRunnerPreservesWorkspaceOutputsAtFinishBoundary(t *testing.T) {
+	contextJSON := []byte(`{"scope":"approved"}`)
+	task := validTask(contextJSON, WorkspaceWrite)
+	workspace := filepath.Join(t.TempDir(), "isolated-workspace")
+	if err := os.Mkdir(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	process := &deadlineProcess{}
+	collector := &fakeOutputCollector{artifacts: []Artifact{{
+		Name: "changes.patch", MediaType: "text/plain; charset=utf-8",
+		Content: []byte("diff --git a/report.md b/report.md\n"),
+	}}}
+	executor := newTestExecutor(t, task, Inputs{
+		InputManifestJSON: bytes.Clone(contextJSON),
+		Workspace: Workspace{
+			Directory: workspace, Mode: WorkspaceWrite,
+			SHA256: task.WorkspaceSHA256, Isolated: true,
+		},
+	}, process, collector)
+	executor.finishBefore = time.Now().UTC().Add(2 * time.Second)
+
+	result, err := executor.Run(context.Background(), task, validModelGrant(task))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer DestroyResult(&result)
+	if len(result.Artifacts) != 2 || result.Artifacts[1].Name != "changes.patch" || collector.calls != 1 {
+		t.Fatalf("partial result=%+v collector=%+v", result, collector)
+	}
+	final, _, err := ParsePiFinalV1(result.Artifacts[0].Content)
+	if err != nil || final.Status != "partial" || len(final.Deliverables) != 1 ||
+		final.Deliverables[0] != "changes.patch" {
+		t.Fatalf("partial final=%+v err=%v", final, err)
+	}
+	if process.deadline.IsZero() || !bytes.Contains(process.stdin, []byte("Submit a partial result")) {
+		t.Fatalf("process deadline=%s prompt=%q", process.deadline, process.stdin)
+	}
+}
+
 func TestWritePiModelsConfigSelectsExactAPIInterface(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -635,6 +674,18 @@ type fakeProcess struct {
 	settingsConfig []byte
 	directoryMode  os.FileMode
 	calls          int
+}
+
+type deadlineProcess struct {
+	deadline time.Time
+	stdin    []byte
+}
+
+func (process *deadlineProcess) Run(ctx context.Context, spec ProcessSpec) (ProcessOutput, error) {
+	process.deadline, _ = ctx.Deadline()
+	process.stdin = bytes.Clone(spec.Stdin)
+	<-ctx.Done()
+	return ProcessOutput{}, ctx.Err()
 }
 
 func (process *fakeProcess) Run(_ context.Context, spec ProcessSpec) (ProcessOutput, error) {

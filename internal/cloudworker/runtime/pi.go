@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,19 +30,23 @@ type PiConfig struct {
 	StateRoot  string
 	SearchPath string
 	RuntimeGID uint32
-	Now        func() time.Time
+	// FinishBefore ends model/tool work while the Worker claim is still valid,
+	// leaving time to preserve outputs, upload them, and complete the session.
+	FinishBefore time.Time
+	Now          func() time.Time
 }
 
 type PiExecutor struct {
-	release    PiRelease
-	models     []QualifiedModel
-	inputs     InputResolver
-	processes  ProcessRunner
-	outputs    OutputCollector
-	stateRoot  string
-	searchPath string
-	runtimeGID uint32
-	now        func() time.Time
+	release      PiRelease
+	models       []QualifiedModel
+	inputs       InputResolver
+	processes    ProcessRunner
+	outputs      OutputCollector
+	stateRoot    string
+	searchPath   string
+	runtimeGID   uint32
+	finishBefore time.Time
+	now          func() time.Time
 }
 
 func NewPiExecutor(config PiConfig) (*PiExecutor, error) {
@@ -75,8 +80,8 @@ func NewPiExecutor(config PiConfig) (*PiExecutor, error) {
 		release: config.Release, models: models, inputs: config.Inputs,
 		processes: config.Processes, outputs: config.Outputs,
 		stateRoot: config.StateRoot, searchPath: config.SearchPath,
-		runtimeGID: config.RuntimeGID,
-		now:        config.Now,
+		runtimeGID: config.RuntimeGID, finishBefore: config.FinishBefore.UTC(),
+		now: config.Now,
 	}, nil
 }
 
@@ -168,12 +173,21 @@ func (executor *PiExecutor) Run(
 		}
 		defer baseline.Destroy()
 	}
-	prompt, err := piPrompt(task, inputs.InputManifestJSON)
+	prompt, err := piPrompt(task, inputs.InputManifestJSON, executor.finishBefore)
 	if err != nil {
 		return Result{}, err
 	}
 	defer clear(prompt)
-	processOutput, err := executor.processes.Run(grantCtx, ProcessSpec{
+	processCtx := grantCtx
+	cancelProcess := func() {}
+	if !executor.finishBefore.IsZero() {
+		if !executor.finishBefore.After(executor.now()) {
+			return executor.collectDeadlinePartial(grantCtx, task, workspace, baseline)
+		}
+		processCtx, cancelProcess = context.WithDeadline(grantCtx, executor.finishBefore)
+	}
+	defer cancelProcess()
+	processOutput, err := executor.processes.Run(processCtx, ProcessSpec{
 		Executable:               executor.release.Executable.Path,
 		ExpectedExecutableSHA256: task.PiExecutableSHA256,
 		Arguments:                piArguments(task, executor.release.ResultExtension.Path),
@@ -193,6 +207,9 @@ func (executor *PiExecutor) Run(
 		MaxStderrBytes: MaxFinalArtifactBytes,
 	})
 	if err != nil {
+		if errors.Is(processCtx.Err(), context.DeadlineExceeded) && grantCtx.Err() == nil {
+			return executor.collectDeadlinePartial(grantCtx, task, workspace, baseline)
+		}
 		return Result{}, fmt.Errorf("run Pi: %w", err)
 	}
 	defer clear(processOutput.Stdout)
@@ -239,6 +256,60 @@ func (executor *PiExecutor) Run(
 	result := Result{Usage: usage, Artifacts: artifacts}
 	if result.ValidateFor(task.WorkspaceMode) != nil ||
 		resultArtifactBytes(result) > task.MaxOutputBytes {
+		DestroyResult(&result)
+		return Result{}, newFailure(FailureStageOutput, FailureCodeOutputInvalid)
+	}
+	return result, nil
+}
+
+func (executor *PiExecutor) collectDeadlinePartial(
+	ctx context.Context,
+	task Task,
+	workspace string,
+	baseline WorkspaceBaseline,
+) (Result, error) {
+	if executor == nil || ctx == nil || task.WorkspaceMode != WorkspaceWrite ||
+		executor.outputs == nil || task.MaxOutputBytes <= MaxFinalArtifactBytes {
+		return Result{}, newFailure(FailureStageProcess, FailureCodeProcessTimeout)
+	}
+	outputs, err := executor.outputs.Collect(
+		ctx, workspace, baseline, task.MaxOutputBytes-MaxFinalArtifactBytes,
+	)
+	if err != nil {
+		destroyArtifacts(outputs)
+		return Result{}, newFailure(FailureStageOutput, FailureCodeOutputInvalid)
+	}
+	deliverables := make([]string, 0, len(outputs))
+	for _, artifact := range outputs {
+		if artifact.Name == "final.json" {
+			destroyArtifacts(outputs)
+			return Result{}, newFailure(FailureStageOutput, FailureCodeOutputInvalid)
+		}
+		deliverables = append(deliverables, artifact.Name)
+	}
+	finalRaw, err := json.Marshal(PiFinalV1{
+		SchemaVersion: PiFinalSchemaV1,
+		Status:        "partial",
+		Summary:       "The authorized work window ended before the task reached a final result. Completed workspace outputs were preserved for review.",
+		Deliverables:  deliverables,
+		Tests:         []string{},
+		Risks:         []string{"The requested work is incomplete and requires review before use."},
+	})
+	if err != nil {
+		destroyArtifacts(outputs)
+		return Result{}, newFailure(FailureStageOutput, FailureCodeOutputInvalid)
+	}
+	_, finalJSON, err := ParsePiFinalV1(finalRaw)
+	clear(finalRaw)
+	if err != nil {
+		destroyArtifacts(outputs)
+		return Result{}, err
+	}
+	artifacts := append([]Artifact{{
+		Name: "final.json", MediaType: "application/json", Content: finalJSON,
+	}}, outputs...)
+	result := Result{Usage: Usage{}, Artifacts: artifacts}
+	if result.ValidateFor(task.WorkspaceMode) != nil || resultArtifactBytes(result) > task.MaxOutputBytes {
 		DestroyResult(&result)
 		return Result{}, newFailure(FailureStageOutput, FailureCodeOutputInvalid)
 	}
@@ -415,7 +486,7 @@ func piTools(mode WorkspaceMode) string {
 	}
 }
 
-func piPrompt(task Task, inputManifestJSON []byte) ([]byte, error) {
+func piPrompt(task Task, inputManifestJSON []byte, finishBefore time.Time) ([]byte, error) {
 	if task.Validate() != nil || !isCanonicalJSON(inputManifestJSON) ||
 		len(inputManifestJSON) > MaxInputManifestBytes ||
 		!matchesDigest(inputManifestJSON, task.InputManifestSHA256) {
@@ -427,6 +498,11 @@ func piPrompt(task Task, inputManifestJSON []byte) ([]byte, error) {
 	prompt.WriteString(task.TaskID)
 	prompt.WriteString("\nExecution ID: ")
 	prompt.WriteString(task.ExecutionID)
+	if !finishBefore.IsZero() {
+		prompt.WriteString("\nFinish model and tool work no later than: ")
+		prompt.WriteString(finishBefore.UTC().Format(time.RFC3339))
+		prompt.WriteString(". Submit a partial result before that time if the full objective cannot be completed.\n")
+	}
 	prompt.WriteString("\nObjective:\n")
 	prompt.WriteString(task.Objective)
 	prompt.WriteString("\n\nImmutable input manifest JSON (SHA-256 verified):\n")

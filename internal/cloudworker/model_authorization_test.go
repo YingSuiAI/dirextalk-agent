@@ -44,7 +44,11 @@ func TestLegacyModelAuthorizationRemainsReadableButCannotAuthorizeNewWork(t *tes
 	if !bytes.Equal(legacyRaw, projectedRaw) {
 		t.Fatalf("legacy plan projection drifted: %s != %s", legacyRaw, projectedRaw)
 	}
-	if _, err := effectivePlanLimits(Limits{MaxRuntimeSeconds: 3600, MaxTokens: 1000, MaxOutputBytes: 1 << 20}, authorization); !errors.Is(err, ErrInvalid) {
+	if _, err := effectivePlanLimits(
+		Limits{MaxRuntimeSeconds: 3600, MaxTokens: 1000, MaxOutputBytes: 1 << 20},
+		authorization,
+		RuntimeEstimate{MinimumSeconds: 600, ExpectedSeconds: 1200, MaximumSeconds: 1800},
+	); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("legacy authorization created new work: %v", err)
 	}
 }
@@ -79,7 +83,11 @@ func TestEffectivePlanLimitsBindProfileAndPiRequestCeilings(t *testing.T) {
 			if authorization.MaximumOutputTokens != uint64(test.profileMax) {
 				t.Fatalf("profile maximum = %d", authorization.MaximumOutputTokens)
 			}
-			limits, err := effectivePlanLimits(defaults, authorization)
+			limits, err := effectivePlanLimits(
+				defaults,
+				authorization,
+				RuntimeEstimate{MinimumSeconds: 600, ExpectedSeconds: 1200, MaximumSeconds: 1800},
+			)
 			requestMaximum, requestErr := effectiveModelOutputTokens(authorization)
 			if test.wantErr {
 				if !errors.Is(err, ErrInvalid) || !errors.Is(requestErr, ErrInvalid) {
@@ -88,8 +96,33 @@ func TestEffectivePlanLimitsBindProfileAndPiRequestCeilings(t *testing.T) {
 				return
 			}
 			if err != nil || requestErr != nil || limits.MaxTokens != 0 ||
+				limits.MinimumRuntimeSeconds != 600 || limits.ExpectedRuntimeSeconds != 1200 || limits.MaxRuntimeSeconds != 1800 ||
 				requestMaximum != test.want {
 				t.Fatalf("effective limits = %+v request_max=%d errors=%v/%v", limits, requestMaximum, err, requestErr)
+			}
+		})
+	}
+}
+
+func TestEffectivePlanLimitsRejectInvalidRuntimeEstimate(t *testing.T) {
+	t.Parallel()
+	authorization, err := ModelAuthorizationFromSnapshot(testModelExecutionSnapshot(4096))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults := Limits{MaxRuntimeSeconds: 3600, MaxOutputBytes: 1 << 20}
+	for _, test := range []struct {
+		name     string
+		estimate RuntimeEstimate
+	}{
+		{name: "below minimum", estimate: RuntimeEstimate{MinimumSeconds: 59, ExpectedSeconds: 120, MaximumSeconds: 300}},
+		{name: "expected before minimum", estimate: RuntimeEstimate{MinimumSeconds: 600, ExpectedSeconds: 300, MaximumSeconds: 900}},
+		{name: "maximum before expected", estimate: RuntimeEstimate{MinimumSeconds: 300, ExpectedSeconds: 900, MaximumSeconds: 600}},
+		{name: "above policy", estimate: RuntimeEstimate{MinimumSeconds: 600, ExpectedSeconds: 1800, MaximumSeconds: 3601}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := effectivePlanLimits(defaults, authorization, test.estimate); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("estimate %+v error = %v, want ErrInvalid", test.estimate, err)
 			}
 		})
 	}

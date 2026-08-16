@@ -57,7 +57,11 @@ func compileRequoteOffer(
 			plan.NetworkGrants, modelAuthorization.BaseURL,
 		)
 	}
-	limits, err := effectivePlanLimits(baseLimits, modelAuthorization)
+	limits, err := effectivePlanLimits(
+		baseLimits,
+		modelAuthorization,
+		runtimeEstimateFromLimits(old.Limits),
+	)
 	if err != nil {
 		return RequoteOfferCommand{}, err
 	}

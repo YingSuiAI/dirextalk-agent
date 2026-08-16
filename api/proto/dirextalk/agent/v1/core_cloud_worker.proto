@@ -55,6 +55,8 @@ message CoreCloudWorkerLimits {
   uint64 max_runtime_seconds = 1;
   uint64 max_tokens = 2;
   uint64 max_output_bytes = 3;
+  uint64 minimum_runtime_seconds = 4;
+  uint64 expected_runtime_seconds = 5;
 }
 
 // Public Cloud Worker grants expose only their approved purpose. Private

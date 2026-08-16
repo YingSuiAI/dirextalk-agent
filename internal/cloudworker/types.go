@@ -290,8 +290,32 @@ type ComputeSpec struct {
 	HostNetworkPolicySHA256 string `json:"host_network_policy_sha256"`
 }
 
+// RuntimeEstimate is Central's task-specific schedule proposal. Trusted code
+// checks it against the server policy before copying it into an immutable Plan.
+type RuntimeEstimate struct {
+	MinimumSeconds  uint64 `json:"minimum_seconds"`
+	ExpectedSeconds uint64 `json:"expected_seconds"`
+	MaximumSeconds  uint64 `json:"maximum_seconds"`
+}
+
+func (value RuntimeEstimate) validate(policyMaximum uint64) error {
+	if value.MinimumSeconds < 60 ||
+		value.MinimumSeconds > value.ExpectedSeconds ||
+		value.ExpectedSeconds > value.MaximumSeconds ||
+		value.MaximumSeconds > policyMaximum ||
+		policyMaximum > uint64((24*time.Hour)/time.Second) {
+		return ErrInvalid
+	}
+	return nil
+}
+
 type Limits struct {
-	MaxRuntimeSeconds uint64 `json:"max_runtime_seconds"`
+	// MinimumRuntimeSeconds and ExpectedRuntimeSeconds were added after the
+	// first production Plan schema. Zero for both preserves legacy Plan digests;
+	// every newly compiled Plan carries a complete task-specific estimate.
+	MinimumRuntimeSeconds  uint64 `json:"minimum_runtime_seconds,omitempty"`
+	ExpectedRuntimeSeconds uint64 `json:"expected_runtime_seconds,omitempty"`
+	MaxRuntimeSeconds      uint64 `json:"max_runtime_seconds"`
 	// MaxTokens is present only when reading or validating a legacy Plan. New
 	// Plans leave it at zero and are bounded by runtime/cancellation plus the
 	// selected model profile's per-request output limit.
@@ -1127,6 +1151,14 @@ func (r *ModelEndpointBinding) Seal(network NetworkPolicy, model ModelAuthorizat
 func validateLimits(value Limits) error {
 	if value.MaxRuntimeSeconds == 0 || value.MaxRuntimeSeconds > uint64((24*time.Hour)/time.Second) ||
 		value.MaxTokens > 10_000_000 || value.MaxOutputBytes == 0 || value.MaxOutputBytes > MaxCloudWorkerOutputBytes {
+		return ErrInvalid
+	}
+	legacy := value.MinimumRuntimeSeconds == 0 && value.ExpectedRuntimeSeconds == 0
+	if !legacy && (RuntimeEstimate{
+		MinimumSeconds:  value.MinimumRuntimeSeconds,
+		ExpectedSeconds: value.ExpectedRuntimeSeconds,
+		MaximumSeconds:  value.MaxRuntimeSeconds,
+	}).validate(value.MaxRuntimeSeconds) != nil {
 		return ErrInvalid
 	}
 	return nil

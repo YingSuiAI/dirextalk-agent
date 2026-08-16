@@ -47,6 +47,7 @@ func credentialProposalCommand() ProposeCommand {
 		ProposalReason:   ProposalReasonExplicitUserCloud,
 		InputManifest:    InputManifest{Schema: InputManifestSchema, Items: []InputManifestItem{}},
 		WorkspaceMode:    WorkspaceNone,
+		RuntimeEstimate:  RuntimeEstimate{MinimumSeconds: 600, ExpectedSeconds: 1200, MaximumSeconds: 1800},
 		ModelAuthorization: ModelAuthorization{
 			ModelProfileID: uuid.NewString(), ModelProfileRevision: 2,
 			Provider: "openai_compatible", BaseURL: "https://api.openai.com/v1", Model: "gpt-test", Interface: "openai_compatible",

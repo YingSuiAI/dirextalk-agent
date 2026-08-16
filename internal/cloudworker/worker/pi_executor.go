@@ -28,6 +28,8 @@ type PiTaskExecutorConfig struct {
 // leak into a later execution.
 type PiTaskExecutor struct{ config PiTaskExecutorConfig }
 
+const maximumPiFinishReserve = 5 * time.Minute
+
 func NewPiTaskExecutor(config PiTaskExecutorConfig) (*PiTaskExecutor, error) {
 	if config.Processes == nil || config.Workspaces == nil || config.RuntimeGID == 0 {
 		return nil, ErrInvalid
@@ -100,12 +102,40 @@ func (executor *PiTaskExecutor) Run(
 		Outputs: executor.config.Outputs, StateRoot: executor.config.StateRoot,
 		SearchPath: executor.config.SearchPath, Now: executor.config.Now,
 		RuntimeGID: executor.config.RuntimeGID,
+		FinishBefore: piFinishBefore(
+			executor.config.Now(), claimed.NotAfter, claimed.HeartbeatInterval,
+		),
 	})
 	if err != nil {
 		resolver.destroy()
 		return cloudruntime.Result{}, ErrInvalid
 	}
 	return runner.Run(ctx, claimed.Task, claimed.ModelGrant)
+}
+
+func piFinishBefore(now, notAfter time.Time, heartbeat time.Duration) time.Time {
+	remaining := notAfter.UTC().Sub(now.UTC())
+	if remaining <= 0 || heartbeat <= 0 {
+		return time.Time{}
+	}
+	reserve := remaining / 10
+	minimumReserve := 3 * heartbeat
+	if minimumReserve < 15*time.Second {
+		minimumReserve = 15 * time.Second
+	}
+	if reserve < minimumReserve {
+		reserve = minimumReserve
+	}
+	if reserve > maximumPiFinishReserve {
+		reserve = maximumPiFinishReserve
+	}
+	if reserve >= remaining/2 {
+		reserve = remaining / 4
+	}
+	if reserve <= 0 {
+		return time.Time{}
+	}
+	return notAfter.UTC().Add(-reserve).Truncate(time.Second)
 }
 
 type claimedInputResolver struct {

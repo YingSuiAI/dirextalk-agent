@@ -177,7 +177,9 @@ type CloudWorker struct {
 	MaximumCatalogAge             time.Duration `yaml:"maximum_catalog_age" mapstructure:"maximum_catalog_age"`
 	ContingencyBasisPoints        uint32        `yaml:"contingency_basis_points" mapstructure:"contingency_basis_points"`
 	AbsoluteHardLimitMicros       int64         `yaml:"absolute_hard_limit_micros" mapstructure:"absolute_hard_limit_micros"`
-	MaxRuntime                    time.Duration `yaml:"max_runtime" mapstructure:"max_runtime"`
+	// MaxRuntime is the trusted upper policy bound for a task-specific runtime
+	// estimate. It is not copied into every new Plan as a fixed duration.
+	MaxRuntime time.Duration `yaml:"max_runtime" mapstructure:"max_runtime"`
 	// MaxTokens keeps older deployment YAML readable. It is ignored when new
 	// Plans are composed and may be removed from operator configuration.
 	MaxTokens                uint64        `yaml:"max_tokens" mapstructure:"max_tokens"`

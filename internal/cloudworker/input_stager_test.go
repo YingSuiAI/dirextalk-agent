@@ -140,6 +140,7 @@ func stagingFixture(t *testing.T, now time.Time) (Plan, Execution, LaunchPrerequ
 		TurnLeaseID: uuid.NewString(), TurnLeaseEpoch: 2, ExpectedTurnRevision: 1, Objective: "edit input", ObjectiveSummary: "edit input",
 		UserPromptDigest: digestValue("prompt"), ProposalReason: ProposalReasonExplicitUserCloud, InputManifest: manifest, WorkspaceMode: WorkspaceWrite,
 		ModelAuthorization: model,
+		RuntimeEstimate:    RuntimeEstimate{MinimumSeconds: 600, ExpectedSeconds: 1200, MaximumSeconds: 1800},
 	})
 	if err != nil {
 		t.Fatal(err)
