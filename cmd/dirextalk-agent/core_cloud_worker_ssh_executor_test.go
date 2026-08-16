@@ -290,7 +290,7 @@ func TestProjectDomainForWorkerReportsDriftWithoutChangingPersistedTarget(t *tes
 	}
 }
 
-func TestHostnameReuseRejectsConflictingPortsButAllowsSameWorkloadUpdate(t *testing.T) {
+func TestHostnameReuseRejectsConflictingPortsButAllowsExactSameWorkload(t *testing.T) {
 	requested := &cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.example.test"}
 	for _, test := range []struct {
 		name, workload string
@@ -312,6 +312,36 @@ func TestHostnameReuseRejectsConflictingPortsButAllowsSameWorkloadUpdate(t *test
 			got, err := executor.workerSupportsService(context.Background(), worker, requested)
 			if err != nil || got != test.want {
 				t.Fatalf("compatible=%t want=%t err=%v", got, test.want, err)
+			}
+		})
+	}
+}
+
+func TestHostnameReuseRejectsChangedWorkloadAndHostnameCollisions(t *testing.T) {
+	requested := &cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.example.test"}
+	for _, test := range []struct {
+		name, workload, health, hostname string
+	}{
+		{name: "changed-health", workload: "web", health: "/ready"},
+		{name: "same-workload-other-hostname", workload: "web", health: "/health", hostname: "old.example.test"},
+		{name: "other-workload-same-hostname", workload: "other", health: "/health", hostname: "app.example.test"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			identity := workerIdentityFixture()
+			repository, _ := sshworkload.NewRepository(t.TempDir())
+			if err := repository.PutService(context.Background(), sshworkload.Service{Worker: identity, TaskID: "old-task", WorkloadID: test.workload, Port: 8080, HealthPath: test.health}); err != nil {
+				t.Fatal(err)
+			}
+			if test.hostname != "" {
+				if err := repository.SetDomain(context.Background(), identity, test.workload, &sshworkload.Domain{ZoneID: "Z1", Hostname: test.hostname, TTL: 300, BoundIPv4: "203.0.113.10"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			executor := &sshWorkerExecutor{workloads: repository}
+			worker := sshworker.WorkerRecord{WorkerID: identity.WorkerID, OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration,
+				Credential: identity.Credential, Instance: sshworker.Instance{ID: identity.InstanceID}, KeyPair: sshworker.KeyPair{ID: identity.KeyPairID}, SecurityGroup: sshworker.SecurityGroup{ID: identity.SecurityGroupID}}
+			if compatible, err := executor.workerSupportsService(context.Background(), worker, requested); err != nil || compatible {
+				t.Fatalf("compatible=%t err=%v", compatible, err)
 			}
 		})
 	}

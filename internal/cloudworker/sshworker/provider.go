@@ -128,6 +128,11 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 		return ExecutionResult{}, errors.Join(runErr, provider.failExecution(ctx, &execution, &worker))
 	}
 	result.WorkerID = worker.WorkerID
+	if request.Finalize != nil {
+		if err := request.Finalize(ctx, worker.WorkerID); err != nil {
+			return result, errors.Join(err, provider.failExecution(ctx, &execution, &worker))
+		}
+	}
 	completionPersisted, err := provider.completeExecution(ctx, &execution, &worker, result)
 	if err != nil && !completionPersisted {
 		return result, err

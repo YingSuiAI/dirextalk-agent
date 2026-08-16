@@ -120,7 +120,11 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 		ConfirmationProof: run.ConfirmationProof, ModelSnapshot: run.ModelSnapshot,
 		ReuseOnly: run.Plan.PersistentWorkerReuse, ReuseWorkerID: run.Plan.ReuseWorkerID,
 		ReportProgress: func(progressCtx context.Context, phase, message string) error {
-			return handler.store.Progress(progressCtx, &run, phase, message)
+			progressErr := handler.store.Progress(progressCtx, &run, phase, message)
+			if errors.Is(progressErr, cloudworker.ErrLeaseConflict) {
+				return context.Canceled
+			}
+			return progressErr
 		},
 	})
 	if executeErr != nil {

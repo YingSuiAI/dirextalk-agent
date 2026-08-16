@@ -133,6 +133,7 @@ type ExecuteRequest struct {
 	Sink               ResultSink
 	ResolveGuidance    func(context.Context) (RuntimeGuidance, error)
 	ReportProgress     func(context.Context, string, string) error
+	Finalize           func(context.Context, string) error
 	ReuseOnly          bool
 	ReuseWorkerID      string
 }

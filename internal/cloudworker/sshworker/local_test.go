@@ -219,19 +219,16 @@ esac
 	previousInterval := runtimeProgressInterval
 	runtimeProgressInterval = 0
 	t.Cleanup(func() { runtimeProgressInterval = previousInterval })
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	request := sshRequestFixture(t, &recordingResultSink{artifacts: make(map[string][]byte)})
 	progress := 0
-	request.ReportProgress = func(ctx context.Context, _, _ string) error {
+	request.ReportProgress = func(context.Context, string, string) error {
 		progress++
 		if progress == 2 {
-			cancel()
-			return ctx.Err()
+			return context.Canceled
 		}
 		return nil
 	}
-	_, err := (CommandSSHExecutor{SSHPath: ssh}).Execute(ctx, request)
+	_, err := (CommandSSHExecutor{SSHPath: ssh}).Execute(context.Background(), request)
 	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrAmbiguous) || readCount(t, state, "stop") != 1 {
 		t.Fatalf("cancel result err=%v stop=%d", err, readCount(t, state, "stop"))
 	}

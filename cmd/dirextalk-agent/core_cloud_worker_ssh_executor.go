@@ -180,6 +180,22 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	if request.ReuseOnly {
 		confirmation = sshworker.Confirmation{}
 	}
+	publicationSummary := ""
+	var finalize func(context.Context, string) error
+	if service != nil {
+		finalize = func(finalizeCtx context.Context, workerID string) error {
+			if request.ReportProgress != nil {
+				if progressErr := request.ReportProgress(finalizeCtx, "verifying_service", "Verifying deployed service"); progressErr != nil {
+					return progressErr
+				}
+			}
+			publication, publishErr := executor.publishService(finalizeCtx, provider, sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, identity, workerID, request.ExecutionID, *request.Service, request.ReportProgress)
+			if publishErr == nil {
+				publicationSummary = publication.summary()
+			}
+			return publishErr
+		}
+	}
 	result, err := provider.Execute(ctx, sshworker.ExecuteRequest{ExecutionID: request.ExecutionID,
 		Authority: sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, Credential: identity,
 		Confirmation: confirmation, Discovery: discovery, ReuseOnly: request.ReuseOnly, ReuseWorkerID: request.ReuseWorkerID,
@@ -189,7 +205,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		WorkspacePath: workspacePath, MaxWorkspaceBytes: 512 << 20, MaxResultBytes: int64(request.Limits.MaxOutputBytes), Sink: sink,
 		ResolveGuidance: func(guidanceCtx context.Context) (sshworker.RuntimeGuidance, error) {
 			return executor.resolveDeferredWorkerGuidance(guidanceCtx, request)
-		}, ReportProgress: request.ReportProgress})
+		}, ReportProgress: request.ReportProgress, Finalize: finalize})
 	workerResult := sshflow.Result{ExitCode: result.ExitCode, WorkerID: result.WorkerID}
 	workerResult.AppliedSteerIDs = append([]string(nil), result.AppliedSteerIDs...)
 	artifacts, artifactErr := executor.executionArtifacts(ctx, localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, request.ExecutionID)
@@ -201,6 +217,9 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	if workerResult.Summary == "" {
 		workerResult.Summary = fmt.Sprintf("Cloud Worker %s completed with exit code %d and %d artifacts", workerResult.WorkerID, result.ExitCode, result.ArtifactCount)
 	}
+	if publicationSummary != "" {
+		workerResult.Summary = boundedWorkerSummary(workerResult.Summary + "\n\n" + publicationSummary)
+	}
 	if errors.Is(err, sshworker.ErrAmbiguous) {
 		err = errors.Join(sshflow.ErrExecutionUncertain, err)
 	}
@@ -209,20 +228,6 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	}
 	if result.ExitCode != 0 {
 		return workerResult, fmt.Errorf("remote Worker exited with code %d", result.ExitCode)
-	}
-	if service != nil {
-		if request.ReportProgress != nil {
-			if progressErr := request.ReportProgress(ctx, "verifying_service", "Verifying deployed service"); progressErr != nil {
-				return workerResult, progressErr
-			}
-		}
-		publication, publishErr := executor.publishService(ctx, provider, sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, identity, result.WorkerID, request.ExecutionID, *request.Service, request.ReportProgress)
-		if publishErr != nil {
-			return workerResult, publishErr
-		}
-		if detail := publication.summary(); detail != "" {
-			workerResult.Summary = boundedWorkerSummary(workerResult.Summary + "\n\n" + detail)
-		}
 	}
 	return workerResult, nil
 }
@@ -598,6 +603,16 @@ func (executor *sshWorkerExecutor) workerSupportsService(ctx context.Context, wo
 		reserved[80], reserved[443] = struct{}{}, struct{}{}
 	}
 	for _, service := range services {
+		if service.WorkloadID == requested.WorkloadID {
+			if service.Port != requested.Port || service.HealthPath != requested.HealthPath ||
+				(service.Domain != nil && remoteservice.CanonicalHostname(service.Domain.Hostname) != remoteservice.CanonicalHostname(requested.Hostname)) {
+				return false, nil
+			}
+		}
+		if requested.Hostname != "" && service.WorkloadID != requested.WorkloadID && service.Domain != nil &&
+			remoteservice.CanonicalHostname(service.Domain.Hostname) == remoteservice.CanonicalHostname(requested.Hostname) {
+			return false, nil
+		}
 		if _, conflict := reserved[service.Port]; conflict {
 			if service.WorkloadID == requested.WorkloadID && service.Port == requested.Port {
 				continue

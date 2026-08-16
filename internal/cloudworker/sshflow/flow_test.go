@@ -13,14 +13,16 @@ import (
 )
 
 type flowStore struct {
-	run         Run
-	beginErr    error
-	completeErr error
-	failErr     error
-	completed   int
-	failed      int
-	summary     string
-	progress    []string
+	run              Run
+	beginErr         error
+	completeErr      error
+	failErr          error
+	completed        int
+	failed           int
+	summary          string
+	progress         []string
+	progressErr      error
+	progressErrAfter int
 }
 
 func (store *flowStore) Begin(context.Context, coretask.Task) (Run, error) {
@@ -28,6 +30,9 @@ func (store *flowStore) Begin(context.Context, coretask.Task) (Run, error) {
 }
 func (store *flowStore) Progress(_ context.Context, _ *Run, phase, _ string) error {
 	store.progress = append(store.progress, phase)
+	if store.progressErr != nil && (store.progressErrAfter == 0 || len(store.progress) >= store.progressErrAfter) {
+		return store.progressErr
+	}
 	return nil
 }
 func (store *flowStore) Complete(_ context.Context, _ Run, _ Result) error {
@@ -53,10 +58,23 @@ func (executor *flowExecutor) Execute(_ context.Context, request Request) (Resul
 	executor.request = request
 	for _, phase := range executor.progressStages {
 		if request.ReportProgress != nil {
-			_ = request.ReportProgress(context.Background(), phase, phase)
+			if err := request.ReportProgress(context.Background(), phase, phase); err != nil {
+				return executor.result, err
+			}
 		}
 	}
 	return executor.result, executor.err
+}
+
+func TestHandlerMapsCanceledProgressFenceToExecutionCancellation(t *testing.T) {
+	store := &flowStore{run: Run{Plan: cloudworker.Plan{ExecutionID: "33333333-3333-4333-8333-333333333333"}}, progressErr: cloudworker.ErrLeaseConflict,
+		progressErrAfter: 2, failErr: cloudworker.ErrLeaseConflict}
+	executor := &flowExecutor{progressStages: []string{"executing_remote_task"}}
+	handler, _ := NewHandler(store, executor)
+	outcome := handler.Handle(context.Background(), runningCloudTask())
+	if !errors.Is(outcome.Err, context.Canceled) || store.completed != 0 || store.failed != 1 {
+		t.Fatalf("outcome=%+v store=%+v", outcome, store)
+	}
 }
 
 func runningCloudTask() coretask.Task {

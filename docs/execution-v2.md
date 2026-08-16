@@ -40,6 +40,11 @@ Remote work is durable by task ID. The Agent uses short SSH operations to:
 
 A dropped SSH connection does not erase remote state or authorize a duplicate start. Jobs terminalize when their remote task finishes. Stopping the owning turn cancels its active execution without destroying the retained Worker. Services may remain active across turns until the owner stops them or destroys the Worker.
 
+A Worker remains busy until service persistence, public-port changes, optional
+Route53 publication, and TLS verification finish. Reuse of an existing service
+requires the same workload port and health path, and cannot claim a hostname
+already bound to another workload on that Worker.
+
 When a service execution includes a user-requested hostname, Agent
 keeps the application on an unused localhost port and manages an Ubuntu Caddy
 reverse proxy with exact-host on-demand TLS that persists after the model run.

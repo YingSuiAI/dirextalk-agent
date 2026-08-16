@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.146
+
+1. Stop the exact remote SSH runtime when a canceled task invalidates progress before the WorkerPool lease-renewal tick.
+2. Keep a retained Worker busy through service publication, Route53, and TLS verification, releasing it only after finalization.
+3. Reject retained-service reuse before remote execution when the existing workload definition or hostname binding conflicts.
+
 ## v1.0.145
 
 1. Execute every suitable retained Worker reuse directly, including persistent services and hostname publication, while preserving confirmation for first Worker creation.

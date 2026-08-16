@@ -528,7 +528,7 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 		status, err = executor.waitRuntime(ctx, sshPath, base, request.Runtime, request.ReportProgress)
 	}
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 			stop, stopErr := request.Runtime.Stop()
 			if stopErr == nil {
 				stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
@@ -536,7 +536,7 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 				cancel()
 			}
 			if stopErr == nil {
-				return ExecutionResult{}, ctx.Err()
+				return ExecutionResult{}, context.Canceled
 			}
 			return ExecutionResult{}, errors.Join(ErrAmbiguous, ctx.Err(), stopErr)
 		}

@@ -487,6 +487,29 @@ func TestFailExecutionUsesFreshContextAfterCancellation(t *testing.T) {
 	}
 }
 
+func TestProviderKeepsWorkerBusyThroughFinalization(t *testing.T) {
+	store := newMemoryStore()
+	provider, err := New(newFakeAWS(), &fakeKeys{}, &fakeSSH{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := requestFixture()
+	request.Finalize = func(_ context.Context, workerID string) error {
+		worker := store.workers[workerID]
+		if worker.Phase != WorkerBusy || worker.CurrentExecutionID != request.ExecutionID {
+			t.Fatalf("worker was released before finalization: %+v", worker)
+		}
+		return nil
+	}
+	if _, err = provider.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	worker := store.workers[request.ExecutionID]
+	if worker.Phase != WorkerIdle || worker.CurrentExecutionID != "" {
+		t.Fatalf("worker was not released after finalization: %+v", worker)
+	}
+}
+
 func TestPersistedRemoteSuccessSurvivesWorkerReleaseFailure(t *testing.T) {
 	base := newMemoryStore()
 	store := &releaseFailingStore{memoryStore: base, failIdleSaves: 1}
