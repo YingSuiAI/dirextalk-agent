@@ -2,10 +2,12 @@
 
 This document defines the Agent-owned API at HEAD. The canonical public
 surface is the versioned Protobuf under
-[`api/proto/dirextalk/agent/v1`](../api/proto/dirextalk/agent/v1); generated Go
-files are derived artifacts. Message Server owns the Flutter-facing
-`agent.*` action and Native Agent stream proxy. Flutter never connects to this
-listener directly, and Online Agent remains the separate Matrix transport.
+[`api/proto/dirextalk/agent/v1`](../api/proto/dirextalk/agent/v1) plus the
+same-origin `/agent/v1` HTTP data plane. Generated Go files are derived
+artifacts. Message Server owns login/account control and issues short-lived
+Agent session tickets; Agent owns Native chat, attachments, confirmations,
+Worker operations, history, recovery, and streaming. Online Agent remains the
+separate Matrix transport.
 
 ## Services
 
@@ -21,8 +23,8 @@ Core gRPC composition may register:
 - `WorkloadService` for durable workload planning and operations.
 
 Cloud Workers expose no inbound Agent gRPC service. Their lifecycle and task
-observation use Agent-initiated SSH only; Flutter and Message Server continue
-to use the authenticated Capability boundary.
+observation use Agent-initiated SSH only; Flutter uses the ticket-authenticated
+same-origin Agent HTTP data plane.
 
 Registration means only that an authenticated RPC endpoint is present; it does
 not publish a client capability or prove that an optional provider is ready.
@@ -31,8 +33,8 @@ registered on the Core gRPC server. The exact `agent.execution.v2.*` operations
 in [execution-v2.md](execution-v2.md) are exposed only through the neutral
 Capability service after their production graph and readiness proof pass.
 
-Health and reflection are optional. Core has no REST API, admin UI, or
-multi-user authorization surface.
+Health and reflection are optional. Core has no admin UI or multi-user role
+surface.
 
 `AgentService.GetInstanceInfo` and authenticated `agent.info.v1/get_backends`
 expose the immutable image `release_version` separately from `api_version`. Release
@@ -53,6 +55,32 @@ The token is compared in constant time, stripped before handlers run, never
 stored in PostgreSQL, and rotated by atomic file replacement followed by
 restart. There is no remote token-management API, caller scope, device, or
 multi-tenant model.
+
+The owner-facing data plane is plain HTTP only on the internal container
+network and is published by Caddy at the node's same-origin `/agent/v1/*`
+path. It accepts a compact Ed25519 JWS signed with the existing capability
+grant key. The 15-minute ticket binds issuer, Agent-data audience, owner MXID,
+account generation, session and nonce UUIDs, scopes, issue time, and expiry.
+Expiry is checked when a request or SSE connection is admitted and does not
+become a deadline for an already accepted turn or established stream.
+
+`POST /agent/v1/capabilities/{capability_id}/operations/{operation}` is the
+canonical generic facade. Read operations return their Agent-authored result
+with 200. Mutations require a UUID `Idempotency-Key` transport header unless
+their existing body `idempotency_key` supplies the same value, durably admit
+the frozen tuple, and return 202 with `operation_id`, `idempotency_key`, state,
+and replay status. Unknown outcomes are recovered only by exact replay or
+`GET /agent/v1/operations/{operation_id}`. The Agent never waits for execution
+or a stream to finish inside the mutation request.
+
+Native chat uses explicit conversation/turn routes. Starting a turn calls the
+durable `start_turn` admission and returns 202 only after the authoritative
+turn exists; its `operation_id` equals `turn_id`. `GET /agent/v1/turns/{id}`
+and conversation GETs are authoritative. Independent SSE at
+`GET /agent/v1/operations/{turn_id}/events` resumes from the greater of
+`after_seq` and `Last-Event-ID` and reads the durable turn-event ledger
+directly. Stop binds only turn ID plus idempotency; steer and attachment chunks
+retain their frozen revision CAS.
 
 ## Request and response invariants
 
@@ -210,13 +238,13 @@ multi-tenant model.
   re-runs the intrinsic, or creates a successor turn. The typed
   result returns the original turn idempotency identity plus the separate steer
   mutation receipt; prompt/profile data stays private.
-- Capability `agent.chat.v1/stream_chat` starts and watches the same durable
-  conversation turn exposed by `list_turns`. Its canonical Capability
-  `operation_id` is the public `turn_id`; the request id remains the distinct
-  client-message idempotency identity. Disconnecting a WatchOperation consumer
-  does not cancel execution, while cancelling the Capability operation requests
+- Capability `agent.chat.v1/start_turn` admits the same durable conversation
+  turn exposed by `get_turn` and `list_turns`, then returns without watching
+  execution. Its HTTP `operation_id` is the public `turn_id`; the request id
+  remains the distinct client-message idempotency identity. Disconnecting an
+  SSE consumer does not cancel execution; only `stop_turn` requests
   cancellation of that exact durable turn. A Cloud Worker lifecycle change is
-  projected on this stream as `kind=worker_status` with only the existing turn
+  projected on SSE as `kind=worker_status` with only the existing turn
   identity and revision, event `created_at`, exact `execution_id`, and canonical
   `status`. New execution offers still use the separate
   `waiting_confirmation` event. The Worker projection is written in the same
@@ -478,11 +506,10 @@ remote task or require a long-lived callback connection. Job and service
 workloads share this protocol; service lifetime is independent of the
 conversation turn until the owner stops it or destroys its Worker.
 
-Message Server reaches Agent through the authenticated Capability boundary and
-projects only its existing ProductCore action names and Native Agent stream
-frames to Flutter. Product Capability callbacks use their separate mTLS
-direction; the two services keep separate databases, credentials, and
-execution histories.
+Flutter discovers and calls Agent-owned capabilities through the scoped HTTP
+catalog. Message Server is not a Native Agent action facade. Product Capability
+callbacks use their separate asynchronous mTLS direction; the two services
+keep separate databases, credentials, and execution histories.
 
 ## Contract changes
 

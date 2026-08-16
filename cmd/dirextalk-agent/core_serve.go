@@ -20,6 +20,7 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
+	"github.com/YingSuiAI/dirextalk-agent/internal/agenthttp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/app"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
@@ -379,6 +380,7 @@ func serveCore(cfg config.Config) error {
 	// verification at either gRPC boundary.
 	chainFence := capabilityclient.NewChainFence()
 	var capabilityServer *capabilityserver.Server
+	var agentHTTPServer *http.Server
 	var productCapabilityClient *capabilityclient.Client
 	var voiceCallbackServer *http.Server
 	if cfg.CoreVoiceEnabled && cfg.CoreVoiceCallbackEnabled {
@@ -453,7 +455,7 @@ func serveCore(cfg config.Config) error {
 			return fmt.Errorf("recover conversation turns: %w", err)
 		}
 	}
-	if cfg.CapabilityEnabled {
+	if cfg.CapabilityEnabled || cfg.AgentHTTPEnabled {
 		capabilityOpManager := operation.NewManager(store.Pool())
 		// Purge closes ordinary capability watchers as soon as the account is
 		// sealed. The deprovision watcher is tagged and retained so its handler
@@ -551,29 +553,48 @@ func serveCore(cfg config.Config) error {
 				ConfigStore: configStore,
 			},
 		})
-		capabilityServer, err = capabilityserver.New(&capabilityserver.Config{
-			ListenAddr: cfg.CapabilityListenAddress, CACertFile: cfg.CapabilityCACertFile,
-			ServerCertFile: cfg.CapabilityTLSCertFile, ServerKeyFile: cfg.CapabilityTLSKeyFile,
-			TokenFile: cfg.CapabilityTokenFile, InstanceID: cfg.InstanceID,
-			GrantPublicKeyFile: cfg.CapabilityGrantPublicKeyFile,
-			PeerInstanceID:     cfg.CapabilityPeerInstanceID,
-			AccountGeneration:  cfg.CapabilityAccountGeneration, PeerCommonName: cfg.CapabilityPeerCommonName,
-			MaxConcurrentQuery: cfg.CapabilityMaxConcurrentQuery, MaxConcurrentWatch: cfg.CapabilityMaxConcurrentWatch,
-			ChainFence: chainFence, MutationGuard: deprovisionService,
-		}, capabilityRegistryAdapter{registry: registry}, capabilityOpManager)
-		if err != nil {
-			if knowledgeComposition != nil {
-				knowledgeComposition.Close()
+		if cfg.CapabilityEnabled {
+			capabilityServer, err = capabilityserver.New(&capabilityserver.Config{
+				ListenAddr: cfg.CapabilityListenAddress, CACertFile: cfg.CapabilityCACertFile,
+				ServerCertFile: cfg.CapabilityTLSCertFile, ServerKeyFile: cfg.CapabilityTLSKeyFile,
+				TokenFile: cfg.CapabilityTokenFile, InstanceID: cfg.InstanceID,
+				GrantPublicKeyFile: cfg.CapabilityGrantPublicKeyFile,
+				PeerInstanceID:     cfg.CapabilityPeerInstanceID,
+				AccountGeneration:  cfg.CapabilityAccountGeneration, PeerCommonName: cfg.CapabilityPeerCommonName,
+				MaxConcurrentQuery: cfg.CapabilityMaxConcurrentQuery, MaxConcurrentWatch: cfg.CapabilityMaxConcurrentWatch,
+				ChainFence: chainFence, MutationGuard: deprovisionService,
+			}, capabilityRegistryAdapter{registry: registry}, capabilityOpManager)
+			if err != nil {
+				if knowledgeComposition != nil {
+					knowledgeComposition.Close()
+				}
+				return fmt.Errorf("initialize Agent Capability server: %w", err)
 			}
-			return fmt.Errorf("initialize Agent Capability server: %w", err)
-		}
-		if err := capabilityServer.Start(); err != nil {
-			if knowledgeComposition != nil {
-				knowledgeComposition.Close()
+			if err := capabilityServer.Start(); err != nil {
+				if knowledgeComposition != nil {
+					knowledgeComposition.Close()
+				}
+				return fmt.Errorf("start Agent Capability server: %w", err)
 			}
-			return fmt.Errorf("start Agent Capability server: %w", err)
+			slog.Info("dirextalk-agent Capability gRPC server ready", "listen", cfg.CapabilityListenAddress, "instance_id", cfg.InstanceID)
 		}
-		slog.Info("dirextalk-agent Capability gRPC server ready", "listen", cfg.CapabilityListenAddress, "instance_id", cfg.InstanceID)
+		if cfg.AgentHTTPEnabled {
+			handler, handlerErr := agenthttp.New(agenthttp.Config{PublicKeyFile: cfg.CapabilityGrantPublicKeyFile, AccountGeneration: cfg.CapabilityAccountGeneration, Registry: registry, Operations: capabilityOpManager, Conversation: conversation})
+			if handlerErr != nil {
+				return fmt.Errorf("initialize Agent HTTP data plane: %w", handlerErr)
+			}
+			httpListener, listenErr := net.Listen("tcp", cfg.AgentHTTPListenAddress)
+			if listenErr != nil {
+				return fmt.Errorf("listen for Agent HTTP data plane: %w", listenErr)
+			}
+			agentHTTPServer = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 16 << 10}
+			go func() {
+				if serveErr := agentHTTPServer.Serve(httpListener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+					slog.Error("Agent HTTP data plane stopped", "error", serveErr)
+				}
+			}()
+			slog.Info("dirextalk-agent HTTP data plane ready", "listen", cfg.AgentHTTPListenAddress, "base_path", "/agent/v1")
+		}
 	}
 	listener, err := net.Listen("tcp", cfg.ListenAddress)
 	if err != nil {
@@ -583,6 +604,11 @@ func serveCore(cfg config.Config) error {
 		if capabilityServer != nil {
 			closeCtx, closeCancel := context.WithTimeout(context.Background(), cfg.CoreShutdownGrace)
 			_ = capabilityServer.Stop(closeCtx)
+			closeCancel()
+		}
+		if agentHTTPServer != nil {
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), cfg.CoreShutdownGrace)
+			_ = agentHTTPServer.Shutdown(closeCtx)
 			closeCancel()
 		}
 		if productCapabilityClient != nil {
@@ -602,6 +628,9 @@ func serveCore(cfg config.Config) error {
 	}
 	return runCoreLifecycle(processCtx, listener, coreServer, scheduleLoop, workerPool, cfg.CoreShutdownGrace, func() {
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), cfg.CoreShutdownGrace)
+		if agentHTTPServer != nil {
+			_ = agentHTTPServer.Shutdown(closeCtx)
+		}
 		if capabilityServer != nil {
 			_ = capabilityServer.Stop(closeCtx)
 		}

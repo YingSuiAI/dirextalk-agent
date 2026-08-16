@@ -1,9 +1,9 @@
 # Dirextalk Agent Core v1 development specification
 
 > This document freezes the Agent-owned product and implementation boundary at
-> HEAD. Message Server owns the public action/stream proxy and Product
-> Capability callback; Flutter uses that proxy and never connects to Agent Core
-> directly. Production activation and live verification remain separate gates;
+> HEAD. Message Server owns login/account control, short-lived session-ticket
+> issuance, and Product Capability callbacks; Flutter uses the same-origin
+> Agent HTTP data plane. Production activation and live verification remain separate gates;
 > capability advertisement stays disabled until its exact readiness proof is
 > present.
 
@@ -31,15 +31,14 @@ planning notes; no compatibility path or fixture fallback is part of Core v1.
 - The Agent also owns the current `agent.execution.v2.*` analysis, target,
   plan, deployment, run, artifact, service-binding, and secret records.
   Authorization is owned only by the generic CoreConfirmation domain; there
-  is no Execution V2 confirmation shadow. Message Server remains a public
-  action facade only; execution data and idempotency/event history are stored
-  in the Agent database.
+  is no Execution V2 confirmation shadow or Message Server action facade;
+  execution data and idempotency/event history are stored in the Agent database.
 - Message Server calls Agent Core over TLS gRPC/Capability mTLS with
   deployment-generated protected credentials and account-generation fences. The
   Agent-to-Message-Server Product Capability callback is a separate direction;
   neither side shares the other's database or execution history.
-- Flutter receives only Message Server's owner-authenticated ProductCore
-  actions and Native Agent stream frames. Online Agent remains the real private
+- Flutter obtains an owner-authenticated short-lived ticket from Message Server
+  and sends Native Agent data requests directly through `/agent/v1/*`. Online Agent remains the real private
   Matrix `agent_room_id` conversation and does not share Native Agent history,
   model state, or online-state inference.
 - Agent product/runtime code, Protobuf, migrations, and its deployment image
@@ -447,8 +446,8 @@ immutable fact ID is the stale-write fence and UUID idempotency keys make
 retries durable. Knowledge source CRUD is not a second memory surface.
 Per-turn recall ranks current facts against the prompt, then adds a bounded
 recent timeline. This internal
-projection does not change the Message Server action envelope or make the
-Message Server an Agent-memory database.
+projection does not create another public action envelope or make Message
+Server an Agent-memory database.
 
 ### AWS
 
@@ -557,6 +556,6 @@ complete read, cancellation, event, artifact, and management contract is
 
 ## Non-goals
 
-No REST public API, multi-user RBAC, Agent clusters or pools, task priority,
+No multi-user RBAC, Agent clusters or pools, task priority,
 graph authoring, product adapters, or standalone admin UI is specified.
 Status and release evidence are maintained in the [delivery tracker](delivery-tracker.md).

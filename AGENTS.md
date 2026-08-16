@@ -12,7 +12,7 @@ MCP/Skills, Knowledge, AWS/Execution V2 state, and runner processes.
 - [API contract](docs/api-contract.md) defines the Agent-owned Protobuf and
   service behavior.
 - [Message Server integration contract](docs/message-server-integration-development-contract.md)
-  defines the cross-repository proxy and capability boundary.
+  defines the cross-repository control/data-plane boundary.
 - [Core v1 specification](docs/core-v1-development-spec.md) defines the
   product and implementation contract.
 - [Delivery tracker](docs/delivery-tracker.md) records implementation status
@@ -28,10 +28,10 @@ path or fixture fallback.
 
 ## Ownership and integration boundaries
 
-- Message Server owns owner authentication, ProductCore action envelopes,
-  Native Agent stream frames, and Product Capability callbacks. Flutter talks
-  to Message Server only; it never connects directly to the Agent listener or
-  receives the Agent service token.
+- Message Server owns login/account control, short-lived Agent session-ticket
+  issuance, and Product Capability callbacks. Caddy forwards same-origin
+  `/agent/v1/*` requests to the Agent-owned HTTP data plane; Flutter never
+  receives the long-lived Agent service token or connects to an internal port.
 - Online Agent Matrix-room traffic is a separate transport from the
   Message-Server-proxied Native Agent runtime.
 - Agent-owned mutable data and credentials stay in Agent storage. Secret values
@@ -51,8 +51,7 @@ path or fixture fallback.
   Migration versions and checksums are immutable once the baseline is
   committed.
 - Do not add multi-tenancy, Agent clusters/pools, graph/DAG authoring, task
-  priority, REST APIs, or a standalone admin UI without an explicit contract
-  change.
+  priority, or a standalone admin UI without an explicit contract change.
 
 ## Configuration and storage
 

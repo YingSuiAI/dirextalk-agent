@@ -36,10 +36,11 @@ contract](message-server-integration-development-contract.md), and
   counters. Enabling without a configured embedding profile fails with a typed
   precondition; disabling capture/recall preserves durable memory data, and
   clearing the active embedding binding also turns the opt-in off.
-- Neutral `agent.chat.v1/stream_chat` now executes through the same durable
-  conversation-turn ledger used by list, cancellation, replay, and recovery;
-  its Capability operation identity is the public turn identity while the
-  client-message request identity remains a separate idempotency fence.
+- The same-origin Agent HTTP data plane validates short-lived scoped session
+  tickets and owns Native chat, attachments, confirmations, Worker operations,
+  history, recovery, and SSE. `start_turn` returns only after durable turn
+  admission, while execution and `Last-Event-ID` replay use the authoritative
+  conversation-turn ledger independently of the POST lifecycle.
 - Revision-fenced `agent.chat.v1/steer_turn` now persists additional user
   guidance in the current turn ledger. It interrupts a provider generation
   before tool publication, preserves an unconfirmed or already dispatched
@@ -116,11 +117,8 @@ contract](message-server-integration-development-contract.md), and
 - Native durable turns expose the canonical public `turn_id` through
   `list_turns` together with the original start `idempotency_key`, and use the
   turn id as the durable Capability operation identity. Typed `stop_turn`
-  performs a revision-fenced conversation cancellation and returns only the
-  public turn projection plus its cancellation idempotency key. A release
-  preflight compares every Message Server readiness-baseline action, binding,
-  and schema pin against the actual Agent descriptor constructors and reports
-  all catalog differences in one run.
+  binds only the authoritative turn id and its own idempotency key and returns
+  the public turn projection plus that cancellation idempotency key.
 - Native durable turns expose the Core-owned `agent_schedule_create` intrinsic
   with model input limited to schedule intent/trigger/timeout. Turn authority
   supplies owner generation, conversation, and profile; PostgreSQL commits the
@@ -148,7 +146,6 @@ contract](message-server-integration-development-contract.md), and
 ```text
 go test ./...
 go vet ./...
-DIREXTALK_MESSAGE_SERVER_ROOT=../dirextalk-message-server go test ./internal/agentcapability -run '^TestMessageServerBaselineCatalogPreflight$' -count=1 -v
 go build ./cmd/dirextalk-agent ./cmd/dirextalk-extension-runner ./cmd/dirextalk-core-runner
 buf lint
 git diff --check
@@ -174,11 +171,6 @@ support.
   queued, remote/static lane bypass, durable restart behavior, and lease
   reclaim without overselling. Extension Runner capacity and its aggregate
   1 GiB container-memory bound also passed focused Linux tests.
-- On **2026-08-08**, the release catalog preflight checked all 66 current
-  Message Server readiness-baseline actions against 11 actual Agent descriptor
-  constructors with no remaining missing binding, operation, or schema digest.
-  Focused tests also covered strict typed turn cancellation, revision/key
-  forwarding, closed output, unknown fields, and the pinned stop/list schemas.
 - On **2026-08-07**, focused extension, MCP HTTP, and Agent Capability tests
   covered exact header-free official-registry inspection, installation without
   secret input, credential-free invocation, omitted Authorization headers,

@@ -766,7 +766,7 @@ func TestManagerCancelWaitsForExplicitHandlerCancellation(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 	manager := NewManager(db)
-	op := &Operation{ID: "op-explicit-cancel", CapabilityID: "agent.chat.v1", OperationName: "stream_chat", RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	op := &Operation{ID: "op-explicit-cancel", CapabilityID: "test.durable.v1", OperationName: "run", RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
 	if err := manager.Start(context.Background(), op); err != nil {
 		t.Fatal(err)
 	}
@@ -800,7 +800,7 @@ func TestManagerDeadlineDoesNotCarryExplicitCancelCause(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 	manager := NewManager(db)
-	op := &Operation{ID: "op-deadline", CapabilityID: "agent.chat.v1", OperationName: "stream_chat", RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	op := &Operation{ID: "op-deadline", CapabilityID: "test.durable.v1", OperationName: "run", RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
 	if err := manager.Start(context.Background(), op); err != nil {
 		t.Fatal(err)
 	}
@@ -839,7 +839,7 @@ func TestManagerDomainCancellationUsesCancelledTerminal(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 	manager := NewManager(db)
-	op := &Operation{ID: "op-domain-cancel", CapabilityID: "agent.chat.v1", OperationName: "stream_chat", RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	op := &Operation{ID: "op-domain-cancel", CapabilityID: "test.durable.v1", OperationName: "run", RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
 	if err := manager.Start(context.Background(), op); err != nil {
 		t.Fatal(err)
 	}

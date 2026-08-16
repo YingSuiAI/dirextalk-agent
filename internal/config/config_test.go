@@ -56,6 +56,20 @@ func TestLoadAcceptsExplicitVoiceCallbackRelayTokenField(t *testing.T) {
 	}
 }
 
+func TestValidateAgentHTTPReusesTheGrantKeyAndDefaultsTheInternalListener(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "grant.pub")
+	if err := os.WriteFile(keyPath, make([]byte, 32), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{AgentHTTPEnabled: true, CapabilityAccountGeneration: 7, CapabilityGrantPublicKeyFile: keyPath}
+	if err := ValidateAgentHTTP(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AgentHTTPListenAddress != "0.0.0.0:8082" || cfg.CapabilityGrantPublicKeyFile != keyPath {
+		t.Fatalf("Agent HTTP config = %#v", cfg)
+	}
+}
+
 func TestValidateCoreRequiresTokenAndBounds(t *testing.T) {
 	cfg := validCoreConfig(t)
 	if err := ValidateCore(&cfg); err != nil {

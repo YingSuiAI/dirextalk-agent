@@ -1,6 +1,6 @@
 # Agent-owned Execution V2
 
-`agent.execution.v2.*` is the public read and management surface for Agent-owned execution. Message Server authenticates the owner and proxies operations; it does not keep Agent plans, runs, confirmations, Worker state, AWS credentials, or artifact bodies.
+`agent.execution.v2.*` is the public read and management surface for Agent-owned execution. Flutter calls it through the ticket-authenticated same-origin Agent HTTP data plane; Message Server does not keep or proxy Agent plans, runs, confirmations, Worker state, AWS credentials, or artifact bodies.
 
 ## Cloud Worker authority
 

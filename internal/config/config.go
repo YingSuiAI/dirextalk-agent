@@ -36,18 +36,24 @@ type Config struct {
 	// may reuse the Core certificate/token when no separate material is
 	// mounted, but production deployments should provide an independent
 	// directional token file.
-	CapabilityEnabled                  bool          `yaml:"capability_enabled" mapstructure:"capability_enabled"`
-	CapabilityListenAddress            string        `yaml:"capability_grpc_listen" mapstructure:"capability_grpc_listen"`
-	CapabilityCACertFile               string        `yaml:"capability_ca_cert_file" mapstructure:"capability_ca_cert_file"`
-	CapabilityTLSCertFile              string        `yaml:"capability_tls_cert_file" mapstructure:"capability_tls_cert_file"`
-	CapabilityTLSKeyFile               string        `yaml:"capability_tls_key_file" mapstructure:"capability_tls_key_file"`
-	CapabilityTokenFile                string        `yaml:"capability_token_file" mapstructure:"capability_token_file"`
-	CapabilityGrantPublicKeyFile       string        `yaml:"capability_grant_public_key_file" mapstructure:"capability_grant_public_key_file"`
-	CapabilityPeerCommonName           string        `yaml:"capability_peer_common_name" mapstructure:"capability_peer_common_name"`
-	CapabilityPeerInstanceID           string        `yaml:"capability_peer_instance_id" mapstructure:"capability_peer_instance_id"`
-	CapabilityAccountGeneration        int64         `yaml:"capability_account_generation" mapstructure:"capability_account_generation"`
-	CapabilityMaxConcurrentQuery       int           `yaml:"capability_max_concurrent_query" mapstructure:"capability_max_concurrent_query"`
-	CapabilityMaxConcurrentWatch       int           `yaml:"capability_max_concurrent_watch" mapstructure:"capability_max_concurrent_watch"`
+	CapabilityEnabled            bool   `yaml:"capability_enabled" mapstructure:"capability_enabled"`
+	CapabilityListenAddress      string `yaml:"capability_grpc_listen" mapstructure:"capability_grpc_listen"`
+	CapabilityCACertFile         string `yaml:"capability_ca_cert_file" mapstructure:"capability_ca_cert_file"`
+	CapabilityTLSCertFile        string `yaml:"capability_tls_cert_file" mapstructure:"capability_tls_cert_file"`
+	CapabilityTLSKeyFile         string `yaml:"capability_tls_key_file" mapstructure:"capability_tls_key_file"`
+	CapabilityTokenFile          string `yaml:"capability_token_file" mapstructure:"capability_token_file"`
+	CapabilityGrantPublicKeyFile string `yaml:"capability_grant_public_key_file" mapstructure:"capability_grant_public_key_file"`
+	CapabilityPeerCommonName     string `yaml:"capability_peer_common_name" mapstructure:"capability_peer_common_name"`
+	CapabilityPeerInstanceID     string `yaml:"capability_peer_instance_id" mapstructure:"capability_peer_instance_id"`
+	CapabilityAccountGeneration  int64  `yaml:"capability_account_generation" mapstructure:"capability_account_generation"`
+	CapabilityMaxConcurrentQuery int    `yaml:"capability_max_concurrent_query" mapstructure:"capability_max_concurrent_query"`
+	CapabilityMaxConcurrentWatch int    `yaml:"capability_max_concurrent_watch" mapstructure:"capability_max_concurrent_watch"`
+	// AgentHTTP exposes the owner-facing data plane behind the node's
+	// same-origin edge proxy. Session tickets are signed by the existing
+	// Message Server capability-grant key and verified with that key's public
+	// half; no long-lived Agent service token crosses this listener.
+	AgentHTTPEnabled                   bool          `yaml:"agent_http_enabled" mapstructure:"agent_http_enabled"`
+	AgentHTTPListenAddress             string        `yaml:"agent_http_listen" mapstructure:"agent_http_listen"`
 	ProductCapabilityEnabled           bool          `yaml:"product_capability_enabled" mapstructure:"product_capability_enabled"`
 	ProductCapabilityAddress           string        `yaml:"product_capability_address" mapstructure:"product_capability_address"`
 	ProductCapabilityCACertFile        string        `yaml:"product_capability_ca_cert_file" mapstructure:"product_capability_ca_cert_file"`
@@ -230,9 +236,43 @@ func ValidateCore(cfg *Config) error {
 	if err := ValidateCapability(cfg); err != nil {
 		return err
 	}
+	if err := ValidateAgentHTTP(cfg); err != nil {
+		return err
+	}
 	if err := ValidateProductCapability(cfg); err != nil {
 		return err
 	}
+	return nil
+}
+
+// ValidateAgentHTTP validates the internal, Caddy-fronted Agent data plane.
+// It deliberately reuses capability_grant_public_key_file so deployments do
+// not acquire another signing-key lifecycle.
+func ValidateAgentHTTP(cfg *Config) error {
+	if cfg == nil || !cfg.AgentHTTPEnabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.AgentHTTPListenAddress) == "" {
+		cfg.AgentHTTPListenAddress = "0.0.0.0:8082"
+	}
+	if cfg.CapabilityAccountGeneration <= 0 {
+		return errors.New("capability_account_generation must be positive when agent_http_enabled")
+	}
+	if strings.TrimSpace(cfg.CapabilityGrantPublicKeyFile) == "" {
+		return errors.New("capability_grant_public_key_file is required when agent_http_enabled")
+	}
+	grantKey, err := canonicalPath(cfg.CapabilityGrantPublicKeyFile)
+	if err != nil {
+		return fmt.Errorf("canonicalize capability_grant_public_key_file: %w", err)
+	}
+	key, err := os.ReadFile(grantKey)
+	if err != nil {
+		return fmt.Errorf("capability_grant_public_key_file cannot be read: %w", err)
+	}
+	if _, err := capv1.ParseGrantPublicKey(key); err != nil {
+		return fmt.Errorf("capability_grant_public_key_file is invalid: %w", err)
+	}
+	cfg.CapabilityGrantPublicKeyFile = grantKey
 	return nil
 }
 

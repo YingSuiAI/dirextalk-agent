@@ -9,11 +9,22 @@ import (
 	"testing"
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfig"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
 func capabilityTestContext() context.Context {
 	return capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{ChainId: "00000000-0000-4000-8000-000000000001", RootOperationId: "00000000-0000-4000-8000-000000000002", Route: "ms→agent"}, &capv1.PermissionContext{AuthenticatedOwnerId: "owner-1", AccountGeneration: 1})
+}
+
+type configStoreStub struct{}
+
+func (configStoreStub) Get(context.Context, string) (coreconfig.Config, error) {
+	return coreconfig.Config{}, nil
+}
+
+func (configStoreStub) Update(context.Context, string, coreconfig.Update) (coreconfig.Config, error) {
+	return coreconfig.Config{}, nil
 }
 
 func TestInfoCapabilityUsesAuthenticatedContextAndNormalizesOutput(t *testing.T) {
@@ -403,7 +414,7 @@ func TestMiscDescriptorsCarrySchemaDigests(t *testing.T) {
 }
 
 func TestNativeConfigUsesOnlyModeSpecificIdentity(t *testing.T) {
-	capability := NewConfigCapability(releaseConfigStore{})
+	capability := NewConfigCapability(configStoreStub{})
 	descriptor := capability.Descriptor()
 	for _, operation := range descriptor.GetOperations() {
 		if strings.Contains(operation.GetInputSchemaJson(), `"display_name"`) &&

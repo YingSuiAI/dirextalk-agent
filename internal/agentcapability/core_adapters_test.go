@@ -12,7 +12,6 @@ import (
 	"time"
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
-	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
@@ -249,294 +248,6 @@ func TestCloudWorkerConfirmationCapabilityExposesPreRunIdentityAndQuote(t *testi
 	}
 }
 
-func TestEmitCapabilityProgressFailsClosedWhenLedgerRejectsEvent(t *testing.T) {
-	want := errors.New("ledger unavailable")
-	err := emitCapabilityProgress(context.Background(), "operation-1", coreconversation.StreamEvent{Kind: coreconversation.EventDelta, Text: "partial"}, func(context.Context, string, []byte) error {
-		return want
-	})
-	if err == nil || !errors.Is(err, want) {
-		t.Fatalf("progress failure was swallowed: %v", err)
-	}
-	if err := emitCapabilityProgress(context.Background(), "operation-1", coreconversation.StreamEvent{Kind: coreconversation.EventDone}, nil); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestConsumeChatStreamFailsClosedOnErrorOrMissingDone(t *testing.T) {
-	response := &coreconversation.ChatResponse{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Done: true}
-	tests := []struct {
-		name    string
-		events  []coreconversation.StreamEvent
-		wantOK  bool
-		wantErr error
-	}{
-		{name: "error", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventStarted}, {Kind: coreconversation.EventError, ErrCode: "execution_failed"}}, wantErr: coreconversation.ErrChatFailed},
-		{name: "conflict", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventError, ErrCode: "conflict"}}, wantErr: coreconversation.ErrConflict},
-		{name: "in flight", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventError, ErrCode: "in_flight"}}, wantErr: coreconversation.ErrInFlight},
-		{name: "canceled", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventError, ErrCode: "canceled"}}, wantErr: coreconversation.ErrCanceled},
-		{name: "eof without done", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventStarted}, {Kind: coreconversation.EventDelta, Text: "partial"}}, wantErr: coreconversation.ErrChatFailed},
-		{name: "done without response", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventDone}}, wantErr: coreconversation.ErrChatFailed},
-		{name: "commit backed done", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventStarted}, {Kind: coreconversation.EventDone, Response: response}}, wantOK: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			stream := make(chan coreconversation.StreamEvent, len(tt.events))
-			for _, event := range tt.events {
-				stream <- event
-			}
-			close(stream)
-			raw, err := consumeChatStream(context.Background(), "stream_chat", stream, nil)
-			if tt.wantOK {
-				if err != nil || len(raw) == 0 {
-					t.Fatalf("successful stream raw=%s err=%v", raw, err)
-				}
-				return
-			}
-			if !errors.Is(err, tt.wantErr) || raw != nil {
-				t.Fatalf("stream did not fail closed: raw=%s err=%v", raw, err)
-			}
-		})
-	}
-}
-
-func TestConsumeChatStreamErrorsRemainClassifiable(t *testing.T) {
-	tests := []struct {
-		name     string
-		event    coreconversation.StreamEvent
-		wantCode string
-	}{
-		{name: "conflict", event: coreconversation.StreamEvent{Kind: coreconversation.EventError, ErrCode: "conflict"}, wantCode: "CONFLICT"},
-		{name: "in flight", event: coreconversation.StreamEvent{Kind: coreconversation.EventError, ErrCode: "in_flight"}, wantCode: "CONFLICT"},
-		{name: "execution failed", event: coreconversation.StreamEvent{Kind: coreconversation.EventError, ErrCode: "execution_failed"}, wantCode: "PRECONDITION_FAILED"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			stream := make(chan coreconversation.StreamEvent, 1)
-			stream <- tt.event
-			close(stream)
-			_, err := consumeChatStream(context.Background(), "stream_chat", stream, nil)
-			code, _, ok := capabilityoperation.FailureDetails(classifyCapabilityError(err))
-			if !ok || code != tt.wantCode {
-				t.Fatalf("classified code=%q ok=%v err=%v", code, ok, err)
-			}
-		})
-	}
-
-	stream := make(chan coreconversation.StreamEvent, 1)
-	stream <- coreconversation.StreamEvent{Kind: coreconversation.EventError, ErrCode: "canceled"}
-	close(stream)
-	_, err := consumeChatStream(context.Background(), "stream_chat", stream, nil)
-	classified := classifyCapabilityError(err)
-	code, _, ok := capabilityoperation.FailureDetails(classified)
-	if !ok || code != "CANCELLED" || errors.Is(classified, context.Canceled) || !errors.Is(classified, coreconversation.ErrCanceled) {
-		t.Fatalf("cancellation classification=%v", classified)
-	}
-}
-
-func TestConsumeDurableTurnStreamPersistsReplayableProgressAndTerminal(t *testing.T) {
-	operationID := uuid.NewString()
-	profileID := uuid.NewString()
-	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: operationID, ConversationID: uuid.NewString(), Revision: 1}
-	message := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "complete", ReasoningContent: "full reasoning", CreatedAt: time.Now().UTC(), ModelProfileID: profileID}
-	response := &coreconversation.ChatResponse{RequestID: operationID, ConversationID: turn.ConversationID, Revision: 2, Message: message, Done: true, ModelProfileID: profileID}
-	events := make(chan coreconversation.TurnEvent, 4)
-	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: coreconversation.TurnEventAccepted}
-	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 2, Revision: 1, Kind: coreconversation.TurnEventStarted}
-	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 3, Revision: 1, Kind: coreconversation.TurnEventDelta, Text: "visible progress", ReasoningContent: "reasoning chunk"}
-	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 4, Revision: 2, Kind: coreconversation.TurnEventDone, Response: response}
-	close(events)
-
-	var progressIDs []string
-	var progressEvents []map[string]any
-	ctx := capabilityoperation.WithOperationID(context.Background(), operationID)
-	raw, err := consumeDurableTurnStream(ctx, "stream_chat", turn, events, func(_ context.Context, gotID string, payload []byte) error {
-		var event map[string]any
-		if err := json.Unmarshal(payload, &event); err != nil {
-			return err
-		}
-		progressIDs = append(progressIDs, gotID)
-		progressEvents = append(progressEvents, event)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(progressEvents) != 3 || len(progressIDs) != 3 {
-		t.Fatalf("progress ids=%v events=%+v", progressIDs, progressEvents)
-	}
-	for index, event := range progressEvents {
-		assertValueMatchesAdvertisedObjectSchema(t, []byte(durableChatStreamEventSchema), event)
-		if progressIDs[index] != operationID || event["idempotency_key"] != operationID || event["conversation_id"] != turn.ConversationID || event["turn_id"] != turn.ID || event["revision"] != float64(1) {
-			t.Fatalf("progress[%d] id=%q event=%+v", index, progressIDs[index], event)
-		}
-		if _, present := event["request_id"]; present {
-			t.Fatalf("progress[%d] leaked Core request_id: %+v", index, event)
-		}
-		if _, present := event["turn_sequence"]; present {
-			t.Fatalf("progress[%d] leaked Core turn_sequence: %+v", index, event)
-		}
-	}
-	if progressEvents[0]["kind"] != "accepted" || progressEvents[1]["kind"] != "started" ||
-		progressEvents[2]["kind"] != "delta" || progressEvents[2]["text"] != "visible progress" || progressEvents[2]["reasoning_content"] != "reasoning chunk" {
-		t.Fatalf("progress events=%+v", progressEvents)
-	}
-	var result map[string]any
-	if json.Unmarshal(raw, &result) != nil || result["idempotency_key"] != operationID || result["conversation_id"] != turn.ConversationID || result["done"] != true || result["revision"] != float64(2) {
-		t.Fatalf("terminal result=%s", raw)
-	}
-	assertValueMatchesAdvertisedObjectSchema(t, []byte(durableChatStreamResultSchema), result)
-	messageResult, _ := result["message"].(map[string]any)
-	if messageResult["reasoning_content"] != "full reasoning" {
-		t.Fatalf("terminal reasoning result=%s", raw)
-	}
-	if _, present := result["request_id"]; present {
-		t.Fatalf("terminal result leaked Core request_id: %s", raw)
-	}
-}
-
-func assertValueMatchesAdvertisedObjectSchema(t *testing.T, schemaJSON []byte, value map[string]any) {
-	t.Helper()
-	var schema struct {
-		AdditionalProperties bool                       `json:"additionalProperties"`
-		Properties           map[string]json.RawMessage `json:"properties"`
-		Required             []string                   `json:"required"`
-	}
-	if err := json.Unmarshal(schemaJSON, &schema); err != nil {
-		t.Fatalf("decode advertised schema: %v", err)
-	}
-	if schema.AdditionalProperties {
-		t.Fatal("advertised durable wire schema must reject additional properties")
-	}
-	for field := range value {
-		if _, allowed := schema.Properties[field]; !allowed {
-			t.Fatalf("wire field %q is outside advertised schema: %+v", field, value)
-		}
-	}
-	for _, field := range schema.Required {
-		if _, present := value[field]; !present {
-			t.Fatalf("wire value omits required field %q: %+v", field, value)
-		}
-	}
-}
-
-func TestDurableChatWireProjectionFailsClosedOnInvalidAuthority(t *testing.T) {
-	profileID := uuid.NewString()
-	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Revision: 1}
-	messageSize := uint64(204)
-	responseSize := uint64(204)
-	messageReference := coreconversation.Reference{
-		Kind: "execution_artifact", AccountGeneration: 1, ExecutionID: uuid.NewString(), ArtifactID: uuid.NewString(),
-		RecordKind: "local_sandbox", Name: "acceptance.html", MediaType: "text/html; charset=utf-8", SizeBytes: &messageSize,
-		SHA256: "6c92a64c09d549e494241899bedf1542026bd1684f915b51bd8b67b58f637479",
-	}
-	responseReference := messageReference
-	responseReference.SizeBytes = &responseSize
-	message := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "complete", CreatedAt: time.Now().UTC(), ModelProfileID: profileID, References: []coreconversation.Reference{messageReference}}
-	response := coreconversation.ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 2, Message: message, Done: true, ModelProfileID: profileID, References: []coreconversation.Reference{responseReference}}
-	if _, err := projectDurableChatStreamResult(turn, response); err != nil {
-		t.Fatal(err)
-	}
-	*response.References[0].SizeBytes++
-	if _, err := projectDurableChatStreamResult(turn, response); !errors.Is(err, coreconversation.ErrChatFailed) {
-		t.Fatalf("mismatched artifact size err=%v", err)
-	}
-	*response.References[0].SizeBytes--
-	badResponse := response
-	badResponse.RequestID = uuid.NewString()
-	if _, err := projectDurableChatStreamResult(turn, badResponse); !errors.Is(err, coreconversation.ErrChatFailed) {
-		t.Fatalf("mismatched result identity err=%v", err)
-	}
-	event := coreconversation.StreamEvent{Kind: coreconversation.EventDelta, RequestID: turn.RequestID, ConversationID: turn.ConversationID, Text: "partial"}
-	if _, err := projectDurableChatStreamEvent(turn, 0, event); !errors.Is(err, coreconversation.ErrChatFailed) {
-		t.Fatalf("zero event revision err=%v", err)
-	}
-}
-
-func TestConsumeDurableTurnStreamProjectsTerminalFailureAndReplayGap(t *testing.T) {
-	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
-	tests := []struct {
-		name         string
-		event        coreconversation.TurnEvent
-		wantErr      error
-		wantCode     string
-		wantProgress int
-	}{
-		{name: "cancelled", event: coreconversation.TurnEvent{Kind: coreconversation.TurnEventCanceled, Revision: 2}, wantErr: coreconversation.ErrCanceled, wantCode: "canceled", wantProgress: 1},
-		{name: "failed", event: coreconversation.TurnEvent{Kind: coreconversation.TurnEventError, Revision: 2, ErrorCode: "provider_failed", ErrorSummary: "safe summary"}, wantErr: coreconversation.ErrChatFailed, wantCode: "provider_failed", wantProgress: 1},
-		{name: "replay gap", event: coreconversation.TurnEvent{ReplayGap: true, FirstSequence: 4, LastSequence: 7}, wantErr: coreconversation.ErrChatFailed, wantCode: "replay_gap"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			projected := durableTurnStreamEvent(turn, tt.event)
-			if projected == nil || projected.Kind != coreconversation.EventError || projected.ErrCode != tt.wantCode {
-				t.Fatalf("projected event=%+v", projected)
-			}
-			events := make(chan coreconversation.TurnEvent, 1)
-			events <- tt.event
-			close(events)
-			progressCalls := 0
-			var progress map[string]any
-			_, err := consumeDurableTurnStream(context.Background(), "stream_chat", turn, events, func(_ context.Context, operationID string, raw []byte) error {
-				if operationID != "stream_chat" {
-					t.Fatalf("operation id=%q", operationID)
-				}
-				progressCalls++
-				return json.Unmarshal(raw, &progress)
-			})
-			if !errors.Is(err, tt.wantErr) || progressCalls != tt.wantProgress {
-				t.Fatalf("progress=%d payload=%+v err=%v", progressCalls, progress, err)
-			}
-			if tt.wantProgress == 1 && (progress["kind"] != "error" || progress["error_code"] != tt.wantCode ||
-				progress["idempotency_key"] != turn.RequestID || progress["conversation_id"] != turn.ConversationID || progress["turn_id"] != turn.ID ||
-				progress["revision"] != float64(tt.event.Revision)) {
-				t.Fatalf("terminal progress=%+v", progress)
-			}
-		})
-	}
-}
-
-type durableTurnCancelerStub struct {
-	turn     coreconversation.Turn
-	commands []coreconversation.TurnCancelCommand
-}
-
-func (s *durableTurnCancelerStub) GetTurn(context.Context, string) (coreconversation.Turn, error) {
-	return s.turn, nil
-}
-
-func (s *durableTurnCancelerStub) CancelTurn(_ context.Context, command coreconversation.TurnCancelCommand) (coreconversation.Turn, error) {
-	s.commands = append(s.commands, command)
-	s.turn.CancelRequested = true
-	return s.turn, nil
-}
-
-func TestCancelDurableTurnUsesDeterministicRequestIdentity(t *testing.T) {
-	accepted := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), Revision: 1, State: coreconversation.TurnAccepted}
-	stub := &durableTurnCancelerStub{turn: coreconversation.Turn{ID: accepted.ID, RequestID: accepted.RequestID, Revision: 4, State: coreconversation.TurnRunning}}
-	if err := cancelDurableTurn(stub, accepted); err != nil {
-		t.Fatal(err)
-	}
-	if err := cancelDurableTurn(stub, accepted); err != nil {
-		t.Fatal(err)
-	}
-	if len(stub.commands) != 2 {
-		t.Fatalf("cancel commands=%+v", stub.commands)
-	}
-	wantRequestID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("capability-turn-cancel:"+accepted.RequestID)).String()
-	for _, command := range stub.commands {
-		if command.TurnID != accepted.ID || command.RequestID != wantRequestID {
-			t.Fatalf("cancel command=%+v", command)
-		}
-	}
-	stub.turn.State = coreconversation.TurnCompleted
-	if err := cancelDurableTurn(stub, accepted); err != nil {
-		t.Fatal(err)
-	}
-	if len(stub.commands) != 2 {
-		t.Fatalf("terminal turn was cancelled again: %+v", stub.commands)
-	}
-}
-
 func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrder(t *testing.T) {
 	conversationID := uuid.NewString()
 	profileID := uuid.NewString()
@@ -762,21 +473,6 @@ func TestChatCapabilityRequiresExplicitProfilePins(t *testing.T) {
 
 func stringPtrForAdapterTest(value string) *string { return &value }
 
-func TestCapabilityProgressUsesDurableOperationContext(t *testing.T) {
-	ctx := capabilityoperation.WithOperationID(context.Background(), "durable-operation-id")
-	var got string
-	err := emitCapabilityProgress(ctx, "stream_chat", coreconversation.StreamEvent{Kind: coreconversation.EventDelta, Text: "partial"}, func(_ context.Context, operationID string, _ []byte) error {
-		got = operationID
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "durable-operation-id" {
-		t.Fatalf("progress ledger id = %q", got)
-	}
-}
-
 func TestCoreDescriptorsBindSchemasAndDigests(t *testing.T) {
 	for _, descriptor := range []*capv1.CapabilityDescriptor{
 		descriptorForTest("agent.chat.v1"),
@@ -1001,7 +697,7 @@ func TestExtensionMutationHandlerRejectsLegacySecretValueAlias(t *testing.T) {
 
 func TestChatCapabilitySchemaRequiresProfilePins(t *testing.T) {
 	descriptor := (&coreChatCapability{}).Descriptor()
-	for _, operationID := range []string{"chat", "stream_chat"} {
+	for _, operationID := range []string{"chat", "start_turn"} {
 		var operation *capv1.OperationDescriptor
 		for _, candidate := range descriptor.GetOperations() {
 			if candidate.GetOperationId() == operationID {
@@ -1047,17 +743,17 @@ func TestDurableStreamChatParsesExactExtensionSelections(t *testing.T) {
 		t.Fatalf("selection=%+v", selection)
 	}
 
-	var streamOperation *capv1.OperationDescriptor
+	var startOperation *capv1.OperationDescriptor
 	for _, operation := range (&coreChatCapability{}).Descriptor().GetOperations() {
-		if operation.GetOperationId() == "stream_chat" {
-			streamOperation = operation
+		if operation.GetOperationId() == "start_turn" {
+			startOperation = operation
 			break
 		}
 	}
-	if streamOperation == nil || !strings.Contains(streamOperation.GetInputSchemaJson(), `"extensions"`) ||
-		!strings.Contains(streamOperation.GetInputSchemaJson(), `"pinned_version"`) ||
-		!strings.Contains(streamOperation.GetInputSchemaJson(), `"additionalProperties":false`) {
-		t.Fatalf("stream_chat schema=%v", streamOperation)
+	if startOperation == nil || !strings.Contains(startOperation.GetInputSchemaJson(), `"extensions"`) ||
+		!strings.Contains(startOperation.GetInputSchemaJson(), `"pinned_version"`) ||
+		!strings.Contains(startOperation.GetInputSchemaJson(), `"additionalProperties":false`) {
+		t.Fatalf("start_turn schema=%v", startOperation)
 	}
 }
 
@@ -1090,95 +786,24 @@ func TestDurableStreamChatRejectsInexactExtensionSelections(t *testing.T) {
 	}
 }
 
-func TestChatCapabilityPinsDurableStreamResultAndEventSchemas(t *testing.T) {
+func TestStartTurnIsAnAdmissionMutationWithoutAnEmbeddedWatch(t *testing.T) {
 	descriptor := (&coreChatCapability{}).Descriptor()
 	for _, operation := range descriptor.GetOperations() {
-		if operation.GetOperationId() != "stream_chat" {
+		if operation.GetOperationId() != "start_turn" {
 			continue
 		}
-		if strings.Contains(operation.GetEventSchemaJson(), `"attempt_id"`) {
-			t.Fatalf("stream event schema exposes retired attempt identity: %s", operation.GetEventSchemaJson())
+		if operation.GetOperationType() != capv1.OperationType_OPERATION_TYPE_MUTATION {
+			t.Fatalf("start_turn type = %s", operation.GetOperationType())
 		}
-		checks := []struct {
-			name   string
-			schema string
-			want   string
-		}{
-			{name: "result", schema: operation.GetResultSchemaJson(), want: "e517caf92e89459a4b9e6318b519765499bfa0e30c077c0bf004cfd852ea5545"},
-			{name: "event", schema: operation.GetEventSchemaJson(), want: "7eedc9a60b558c8031805be2279b224a734c60e3223d80ce7397281ccdfea2e8"},
+		if operation.GetEventSchemaJson() != "" || len(operation.GetEventSchemaDigest()) != 0 {
+			t.Fatalf("start_turn retained an embedded watch schema")
 		}
-		for _, check := range checks {
-			digest := sha256.Sum256([]byte(check.schema))
-			if got := hex.EncodeToString(digest[:]); got != check.want {
-				t.Fatalf("stream %s schema digest = %s, want %s: %s", check.name, got, check.want, check.schema)
-			}
+		if operation.GetResultSchemaJson() != publicTurnResultSchema {
+			t.Fatalf("start_turn result schema = %s", operation.GetResultSchemaJson())
 		}
 		return
 	}
-	t.Fatal("stream_chat descriptor is missing")
-}
-
-func TestConsumeDurableTurnStreamPublishesWaitingConfirmationProgress(t *testing.T) {
-	requestID, turnID, conversationID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	profileID := uuid.NewString()
-	executionID, confirmationID := uuid.NewString(), uuid.NewString()
-	now := time.Now().UTC()
-	message := coreconversation.Message{
-		ID: uuid.NewString(), Role: coreconversation.RoleAssistant,
-		Content: "Cloud Worker quote is ready for confirmation.", ModelProfileID: profileID,
-		CreatedAt: now,
-	}
-	if err := message.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	events := make(chan coreconversation.TurnEvent, 4)
-	events <- coreconversation.TurnEvent{TurnID: turnID, Sequence: 1, Revision: 1, Kind: coreconversation.TurnEventAccepted, CreatedAt: now}
-	events <- coreconversation.TurnEvent{TurnID: turnID, Sequence: 2, Revision: 1, Kind: coreconversation.TurnEventStarted, CreatedAt: now}
-	events <- coreconversation.TurnEvent{TurnID: turnID, Sequence: 3, Kind: coreconversation.TurnEventWaitingConfirmation,
-		Revision: 2, ConfirmationID: confirmationID, ExecutionID: executionID,
-		Status: "waiting_confirmation", CreatedAt: now}
-	events <- coreconversation.TurnEvent{TurnID: turnID, Sequence: 4, Revision: 3, Kind: coreconversation.TurnEventDone,
-		Response: &coreconversation.ChatResponse{RequestID: requestID, ConversationID: conversationID, Revision: 3,
-			Message: message, Done: true, ModelProfileID: profileID}, CreatedAt: now}
-	close(events)
-	var progress []map[string]any
-	raw, err := consumeDurableTurnStream(
-		context.Background(), "stream_chat",
-		coreconversation.Turn{ID: turnID, RequestID: requestID, ConversationID: conversationID, State: coreconversation.TurnCompleted, Revision: 9},
-		events,
-		func(_ context.Context, operationID string, raw []byte) error {
-			if operationID != "stream_chat" {
-				t.Fatalf("operation id = %q", operationID)
-			}
-			var event map[string]any
-			if err := json.Unmarshal(raw, &event); err != nil {
-				return err
-			}
-			progress = append(progress, event)
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var response durableChatStreamResult
-	if err := json.Unmarshal(raw, &response); err != nil {
-		t.Fatal(err)
-	}
-	if !response.Done || response.IdempotencyKey != requestID || response.Revision != 3 || response.Message.ID != message.ID ||
-		len(progress) != 3 || progress[0]["kind"] != "accepted" || progress[1]["kind"] != "started" || progress[2]["kind"] != "waiting_confirmation" ||
-		progress[0]["idempotency_key"] != requestID || progress[0]["conversation_id"] != conversationID || progress[0]["turn_id"] != turnID ||
-		progress[0]["revision"] != float64(1) || progress[1]["revision"] != float64(1) {
-		t.Fatalf("offer response=%+v progress=%+v", response, progress)
-	}
-	waiting := progress[2]
-	if waiting["confirmation_id"] != confirmationID || waiting["execution_id"] != executionID ||
-		waiting["status"] != "waiting_confirmation" || waiting["revision"] != float64(2) {
-		t.Fatalf("waiting confirmation progress=%+v", waiting)
-	}
-	if _, leaked := waiting["attempt_id"]; leaked {
-		t.Fatalf("waiting confirmation leaked attempt identity: %+v", waiting)
-	}
+	t.Fatal("start_turn descriptor is missing")
 }
 
 func TestDurableWaitingConfirmationProgressRejectsInexactIdentityAndStatus(t *testing.T) {

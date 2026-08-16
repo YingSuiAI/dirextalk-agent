@@ -1,5 +1,5 @@
 // Package executionv2 adapts the Agent-owned execution-plan/v2 service to the
-// neutral Capability API.  Message Server maps its frozen action names to the
+// neutral Capability API. The scoped Agent HTTP catalog exposes the
 // operation IDs below; no business-server database or HTTP endpoint is used.
 package executionv2
 

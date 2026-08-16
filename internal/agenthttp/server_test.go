@@ -1,0 +1,260 @@
+package agenthttp
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
+	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
+	"github.com/google/uuid"
+	_ "github.com/mattn/go-sqlite3"
+)
+
+type testCapability struct {
+	calls atomic.Int32
+}
+
+type admissionStore struct {
+	coreconversation.Store
+	coreconversation.TurnStore
+	turn   coreconversation.Turn
+	starts int
+}
+
+func (s *admissionStore) StartTurn(_ context.Context, command coreconversation.TurnStartCommand) (coreconversation.Turn, error) {
+	s.starts++
+	now := time.Now().UTC()
+	s.turn = coreconversation.Turn{
+		ID: command.TurnID, RequestID: command.RequestID, OwnerID: command.OwnerID,
+		AccountGeneration: command.AccountGeneration, ConversationID: command.ConversationID,
+		State: coreconversation.TurnCompleted, Revision: 1, LastSequence: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	return s.turn, nil
+}
+
+func (s *admissionStore) GetTurn(_ context.Context, id string) (coreconversation.Turn, error) {
+	if s.turn.ID != id {
+		return coreconversation.Turn{}, sql.ErrNoRows
+	}
+	return s.turn, nil
+}
+
+type admissionModel struct{}
+
+func (admissionModel) Run(context.Context, coreconversation.ModelRunRequest) (coreconversation.ModelRunResult, error) {
+	return coreconversation.ModelRunResult{}, nil
+}
+
+type admissionProfile struct{ snapshot coremodel.ExecutionSnapshot }
+
+func (p admissionProfile) ResolveProfileSnapshot(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+	return p.snapshot, nil
+}
+
+func (c *testCapability) Descriptor() *capv1.CapabilityDescriptor {
+	return &capv1.CapabilityDescriptor{CapabilityId: "test.data.v1", SemanticVersion: "1.0.0", ProtocolVersion: 1, Readiness: true, Operations: []*capv1.OperationDescriptor{
+		{OperationId: "read", OperationType: capv1.OperationType_OPERATION_TYPE_READ, RequiredScopes: []string{"test:read"}, InputSchemaJson: `{"type":"object"}`, ResultSchemaJson: `{"type":"object"}`, MaxRequestSizeBytes: 1024},
+		{OperationId: "mutate", OperationType: capv1.OperationType_OPERATION_TYPE_MUTATION, RequiredScopes: []string{"test:write"}, InputSchemaJson: `{"type":"object"}`, ResultSchemaJson: `{"type":"object"}`, MaxRequestSizeBytes: 1024},
+		{OperationId: "stream", OperationType: capv1.OperationType_OPERATION_TYPE_DURABLE_STREAM, RequiredScopes: []string{"test:stream"}, InputSchemaJson: `{"type":"object"}`, ResultSchemaJson: `{"type":"object"}`, MaxRequestSizeBytes: 1024},
+	}}
+}
+
+func (c *testCapability) HandleOperation(_ context.Context, operationID string, raw []byte) ([]byte, error) {
+	c.calls.Add(1)
+	return json.Marshal(map[string]any{"operation": operationID, "input": json.RawMessage(raw)})
+}
+
+type testHarness struct {
+	server     *Server
+	privateKey ed25519.PrivateKey
+	now        time.Time
+	manager    *operation.Manager
+	capability *testCapability
+	db         *sql.DB
+}
+
+func newTestHarness(t *testing.T) testHarness {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "grant.pub")
+	if err := os.WriteFile(keyPath, publicKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err = db.Exec(`
+CREATE TABLE operations (id TEXT PRIMARY KEY, capability_id TEXT NOT NULL, operation_name TEXT NOT NULL, state TEXT NOT NULL, request_json BLOB NOT NULL DEFAULT X'7B7D' CHECK (request_json = X'7B7D'), root_request_digest BLOB NOT NULL, request_digest BLOB NOT NULL, result_json BLOB, error_code TEXT, error_message TEXT, expected_revision INTEGER DEFAULT 0, actual_revision INTEGER DEFAULT 0, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, completed_at TIMESTAMP, owner_id TEXT NOT NULL, account_generation INTEGER NOT NULL);
+CREATE TABLE operation_events (id INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL, event_type TEXT NOT NULL, event_json BLOB NOT NULL, created_at TIMESTAMP NOT NULL);`); err != nil {
+		t.Fatal(err)
+	}
+	manager := operation.NewManager(db)
+	registry := agentcapability.NewRegistry()
+	capability := &testCapability{}
+	registry.Register(capability)
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	server, err := New(Config{PublicKeyFile: keyPath, AccountGeneration: 7, Registry: registry, Operations: manager, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return testHarness{server: server, privateKey: privateKey, now: now, manager: manager, capability: capability, db: db}
+}
+
+func (h testHarness) ticket(t *testing.T, scopes []string, expires time.Time) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"EdDSA","typ":"JWT"}`))
+	issuedAt := h.now
+	if !expires.After(h.now) {
+		issuedAt = expires.Add(-time.Minute)
+	}
+	claims, err := json.Marshal(ticketClaims{Issuer: ticketIssuer, Audience: ticketAudience, OwnerID: "@owner:s3.example", AccountGeneration: 7, SessionID: uuid.NewString(), Nonce: uuid.NewString(), Scopes: scopes, IssuedAt: issuedAt.Unix(), ExpiresAt: expires.Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := base64.RawURLEncoding.EncodeToString(claims)
+	signingInput := header + "." + payload
+	signature := ed25519.Sign(h.privateKey, []byte(signingInput))
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func requestWithTicket(method, target, body, ticket string) *http.Request {
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+ticket)
+	request.Header.Set("Content-Type", "application/json")
+	return request
+}
+
+func TestSessionTicketExpiryAndScopeAreEnforcedAtTheHTTPBoundary(t *testing.T) {
+	h := newTestHarness(t)
+	expired := h.ticket(t, []string{"test:read"}, h.now.Add(-time.Second))
+	recorder := httptest.NewRecorder()
+	h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/read", `{}`, expired))
+	if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), "AGENT_TICKET_EXPIRED") {
+		t.Fatalf("expired response = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	readOnly := h.ticket(t, []string{"test:read"}, h.now.Add(15*time.Minute))
+	recorder = httptest.NewRecorder()
+	h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/mutate", `{"idempotency_key":"`+uuid.NewString()+`"}`, readOnly))
+	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "AGENT_TICKET_FORBIDDEN") {
+		t.Fatalf("scope response = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestMutationAdmissionReplaysTheFrozenIdempotencyTuple(t *testing.T) {
+	h := newTestHarness(t)
+	ticket := h.ticket(t, []string{"test:write"}, h.now.Add(15*time.Minute))
+	key := uuid.NewString()
+	body := `{"idempotency_key":"` + key + `","value":"same"}`
+	var first map[string]any
+	for attempt := 0; attempt < 2; attempt++ {
+		recorder := httptest.NewRecorder()
+		h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/mutate", body, ticket))
+		if recorder.Code != http.StatusAccepted {
+			t.Fatalf("attempt %d response = %d %s", attempt, recorder.Code, recorder.Body.String())
+		}
+		var receipt map[string]any
+		if json.Unmarshal(recorder.Body.Bytes(), &receipt) != nil {
+			t.Fatal("invalid receipt")
+		}
+		if attempt == 0 {
+			first = receipt
+		} else if receipt["operation_id"] != first["operation_id"] || receipt["replayed"] != true {
+			t.Fatalf("replay receipt = %#v, first = %#v", receipt, first)
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/mutate", `{"idempotency_key":"`+key+`","value":"changed"}`, ticket))
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("changed tuple response = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestChatStartReturnsAcceptedOnlyAfterTheAuthoritativeTurnExists(t *testing.T) {
+	h := newTestHarness(t)
+	profileID := uuid.NewString()
+	snapshot := coremodel.ExecutionSnapshot{ProfileID: profileID, Revision: 3, CredentialVersion: 2, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://model.example/v1", Model: "test", APIKey: "secret"}
+	store := &admissionStore{}
+	conversation, err := coreconversation.NewService(store, admissionModel{}, nil, admissionProfile{snapshot: snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conversation.Close() })
+	registry := agentcapability.NewCoreRegistry(agentcapability.CoreBindings{Conversation: conversation})
+	server := *h.server
+	server.registry = registry
+	server.conversation = conversation
+
+	key, conversationID := uuid.NewString(), uuid.NewString()
+	ticket := h.ticket(t, []string{"agent:chat:write"}, h.now.Add(15*time.Minute))
+	body := `{"idempotency_key":"` + key + `","message":"hello","model_profile_id":"` + profileID + `","model_profile_revision":3,"credential_version":2}`
+	request := requestWithTicket(http.MethodPost, "/agent/v1/conversations/"+conversationID+"/turns", body, ticket)
+	request.Header.Set("Idempotency-Key", key)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("start response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var receipt struct {
+		OperationID    string `json:"operation_id"`
+		TurnID         string `json:"turn_id"`
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if store.starts != 1 || receipt.OperationID == "" || receipt.OperationID != receipt.TurnID || receipt.IdempotencyKey != key || store.turn.ID != receipt.TurnID || store.turn.RequestID != key {
+		t.Fatalf("receipt=%+v persisted turn=%+v starts=%d", receipt, store.turn, store.starts)
+	}
+}
+
+func TestSSEResumesStrictlyAfterTheLargestSequence(t *testing.T) {
+	h := newTestHarness(t)
+	ticket := h.ticket(t, []string{"test:stream"}, h.now.Add(15*time.Minute))
+	operationID := uuid.NewString()
+	op := &operation.Operation{ID: operationID, CapabilityID: "test.data.v1", OperationName: "stream", RequestJSON: []byte(`{}`), OwnerID: "@owner:s3.example", AccountGeneration: 7}
+	if _, _, err := h.manager.StartOrGet(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	h.manager.Execute(context.Background(), operationID, func(ctx context.Context, _ *operation.Operation) ([]byte, error) {
+		if err := h.manager.Progress(ctx, operationID, []byte(`{"kind":"delta","text":"hello"}`)); err != nil {
+			return nil, err
+		}
+		return []byte(`{"done":true}`), nil
+	})
+
+	stored, err := h.manager.Get(context.Background(), operationID)
+	if err != nil || stored.State != operation.StateCompleted {
+		t.Fatalf("terminal operation = %#v, %v", stored, err)
+	}
+	recorder := httptest.NewRecorder()
+	request := requestWithTicket(http.MethodGet, "/agent/v1/operations/"+operationID+"/events?after_seq=1", "", ticket)
+	request.Header.Set("Last-Event-ID", "2")
+	h.server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), "id: 1\n") || strings.Contains(recorder.Body.String(), "id: 2\n") || !strings.Contains(recorder.Body.String(), "event: result") {
+		t.Fatalf("resumed SSE = %d %s", recorder.Code, recorder.Body.String())
+	}
+}

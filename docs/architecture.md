@@ -2,19 +2,19 @@
 
 Dirextalk Agent is a private process for one user and one Dirextalk
 deployment. It is the Agent-owned runtime outside Message Server. Message
-Server is the owner-authenticated proxy for Flutter; Online Agent's Matrix
-room is a separate transport from Native Agent Core.
+Server authenticates the owner and issues a short-lived Agent session ticket;
+the same-origin edge forwards Native Agent data requests directly to Agent.
+Online Agent's Matrix room is a separate transport from Native Agent Core.
 
 ## Runtime topology
 
 ```text
-Flutter (owner access_token)
-      |
-      v
-Message Server ProductCore + Native Agent stream facade
-      |  authenticated Capability boundary
-      v
-CoreServer (TLS token interceptor, optional health/reflection)
+Flutter -- login/account --> Message Server -- short-lived session ticket
+   |
+   +-- same-origin /agent/v1/* --> Caddy --> Agent HTTP data plane
+                                             |
+                                             v
+                                      Agent-owned domains
       |
       +-- model profiles / conversations / Tasks / schedules
       +-- confirmations / MCP / Skills / Knowledge / AWS credentials
@@ -69,11 +69,12 @@ Worker.
   state, Tasks, confirmations, Knowledge, Web Search, AWS credentials, Cloud
   Worker execution views, and
   runner processes.
-- Message Server owns owner authentication, ProductCore action envelopes,
-  Native Agent stream frames, and Product Capability callbacks. It does not
-  share the Agent database or execution history.
-- Flutter owns the user experience and local projection only. It calls Message
-  Server, not the Agent listener. Online Agent history and status remain in the
+- Message Server owns owner authentication, account control, short-lived Agent
+  session-ticket issuance, and Product Capability callbacks. It does not share
+  the Agent database or execution history.
+- Flutter owns the user experience and local projection. It uses the node's
+  same-origin `/agent/v1/*` route and never receives the internal listener or
+  long-lived Agent service token. Online Agent history and status remain in the
   real Matrix `agent_room_id` transport.
 
 ## Data and security boundaries
@@ -86,10 +87,13 @@ Execution V2 invariants are defined in the [API contract](api-contract.md),
 [Core v1 specification](core-v1-development-spec.md), and
 [Execution V2 contract](execution-v2.md).
 
-The gRPC listener uses TLS 1.3 and one protected deployment token. The token is
+The private gRPC listener uses TLS 1.3 and one protected deployment token. The token is
 compared in constant time, never persisted, and rotated by atomic file
-replacement followed by restart. There is no remote token-management API,
-multi-tenant authorization, or caller-scope model.
+replacement followed by restart. The same-origin HTTP data plane validates
+15-minute compact Ed25519 session tickets signed with the existing capability
+grant key. Tickets bind owner, account generation, session, audience, scopes,
+issue time, and expiry; they are admission credentials, not execution
+deadlines. There is no remote token-management API or multi-tenant role model.
 
 MCP and Skill execution uses a separate isolated extension runner. Core Runner
 work uses a separate descriptor-only boundary. Neither runner receives the
@@ -105,5 +109,5 @@ data root.
 
 ## Non-goals
 
-Core v1 does not add REST, an admin UI, multi-user RBAC, Agent clusters/pools,
-task priority, graph authoring, or deployment automation.
+Core v1 does not add an admin UI, multi-user RBAC, Agent clusters/pools, task
+priority, graph authoring, or deployment automation.
