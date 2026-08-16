@@ -243,6 +243,9 @@ func (c *Capability) projectStatus(ctx context.Context, status sshworker.WorkerS
 		if err != nil {
 			return nil, capabilityoperation.NewFailure("UNAVAILABLE", "Worker workload status is unavailable", err)
 		}
+		if workloads == nil {
+			workloads = make([]WorkloadStatus, 0)
+		}
 		value["workloads"] = workloads
 	}
 	return value, nil

@@ -183,6 +183,19 @@ func TestListProjectsObservedPublicIPv4TaskQuoteAndWorkload(t *testing.T) {
 	}
 }
 
+func TestAvailableWorkerProjectsNilWorkloadsAsEmptyArray(t *testing.T) {
+	credential, status := fixture()
+	capability, _ := NewCapability(Bindings{
+		Credentials: credentialStub{credential: credential},
+		Workers:     &managerStub{statuses: []sshworker.WorkerStatus{status}},
+		Workloads:   workloadStub{},
+	})
+	raw, err := capability.HandleOperation(ownerContext(), "list_workers", []byte(`{}`))
+	if err != nil || !bytes.Contains(raw, []byte(`"workloads":[]`)) || bytes.Contains(raw, []byte(`"workloads":null`)) {
+		t.Fatalf("nil workload projection=%s err=%v", raw, err)
+	}
+}
+
 func TestDestroyPassesExactIdentityAndProof(t *testing.T) {
 	credential, status := fixture()
 	manager := &managerStub{statuses: []sshworker.WorkerStatus{status}}
