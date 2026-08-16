@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.149
+
+1. Preserve DeepSeek-compatible `reasoning_content` across tool-call rounds so the provider accepts the follow-up request and the conversation can reach a final answer.
+2. Report deterministic provider HTTP 4xx rejections as `provider_rejected` instead of an unknown dispatch outcome.
+
 ## v1.0.148
 
 1. Bound each durable conversation turn to 32 model dispatches and 30 minutes of cumulative model execution, with a visible terminal result when the budget is exhausted.
