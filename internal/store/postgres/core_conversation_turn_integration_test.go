@@ -291,7 +291,9 @@ func TestCoreConversationTurnSteerInvalidatesProviderLeaseAndCommitsGuidancePost
 
 func TestCoreConversationTurnDispatchRecoveryPostgres(t *testing.T) {
 	h := openTurnDB(t)
-	turn, err := h.store.StartTurn(context.Background(), turnCommand())
+	cmd := turnCommand()
+	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
+	turn, err := h.store.StartTurn(context.Background(), cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,8 +498,11 @@ func newConversationToolPrepareFixture(t *testing.T, callID string) *conversatio
 		SecretBindingDigest: strings.Repeat("e", 64), ToolNames: []string{"write_html"}, RequiresConfirmation: true,
 	}
 	cmd := turnCommand()
+	cmd.OwnerID = "@conversation-tool:test"
+	cmd.AccountGeneration = 1
 	cmd.Extensions = []core.ExtensionSelection{snapshot.Selection}
 	cmd.ExtensionSnapshots = []core.ExtensionExecutionSnapshot{snapshot}
+	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
 	turn, err := h.store.StartTurn(context.Background(), cmd)
 	if err != nil {
 		t.Fatal(err)

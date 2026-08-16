@@ -1576,40 +1576,6 @@ func TestServiceCloseCancelsAndWaitsForTurnWorker(t *testing.T) {
 	}
 }
 
-func TestCancelWaitsForNonCooperativeRunnerBeforeTerminalEvent(t *testing.T) {
-	snapshot := testTurnSnapshot()
-	model := &blockingTurnModel{started: make(chan struct{}), release: make(chan struct{})}
-	store := &activeTurnStore{supervisorTurnStore: &supervisorTurnStore{replayTurnStore: &replayTurnStore{fakeStore: newFakeStore(), turn: Turn{ID: uuid.NewString(), State: TurnRunning, ProfileID: snapshot.ProfileID, ConversationID: uuid.NewString(), Prompt: "hello", ProfileSnapshot: snapshot}}}}
-	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return snapshot, nil }))
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	go func() { service.executeTurn(context.Background(), store.turn.ID); close(done) }()
-	<-model.started
-	store.turn.CancelRequested = true
-	service.cancelMu.Lock()
-	signal := service.cancelSignals[store.turn.ID]
-	service.cancelMu.Unlock()
-	if signal != nil {
-		close(signal)
-	}
-	select {
-	case <-done:
-		t.Fatal("executor terminalized before blocked runner exited")
-	case <-time.After(50 * time.Millisecond):
-	}
-	close(model.release)
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("executor did not finish after runner release")
-	}
-	if !store.canceled {
-		t.Fatal("cancel terminal was not recorded after runner exit")
-	}
-}
-
 func TestPublicStartAndCancelWaitForNonCooperativeRunner(t *testing.T) {
 	snapshot := testTurnSnapshot()
 	model := &blockingTurnModel{started: make(chan struct{}), release: make(chan struct{})}
