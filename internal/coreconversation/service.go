@@ -1427,7 +1427,7 @@ func (s *Service) WatchTurnEvents(ctx context.Context, id string, after int64, l
 			return
 		} else if first > 0 && cursor < first-1 {
 			select {
-			case out <- TurnEvent{TurnID: id, ReplayGap: true, FirstSequence: first, LastSequence: last}:
+			case out <- TurnEvent{TurnID: id, Sequence: first - 1, ReplayGap: true, FirstSequence: first, LastSequence: last}:
 			case <-ctx.Done():
 				return
 			}

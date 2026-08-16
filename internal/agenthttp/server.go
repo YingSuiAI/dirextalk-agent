@@ -450,7 +450,11 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, reques
 		var payload any
 		if event.ReplayGap {
 			eventType = "replay_gap"
-			payload = map[string]any{"first_sequence": event.FirstSequence, "last_sequence": event.LastSequence}
+			payload = map[string]any{
+				"turn_id": turn.ID, "idempotency_key": turn.RequestID,
+				"conversation_id": turn.ConversationID, "revision": turn.Revision,
+				"first_sequence": event.FirstSequence, "last_sequence": event.LastSequence,
+			}
 		} else if event.Err != nil {
 			eventType = "error"
 			payload = map[string]any{"code": "stream_failed", "message": event.Err.Error()}

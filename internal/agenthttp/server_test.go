@@ -33,6 +33,7 @@ type admissionStore struct {
 	coreconversation.Store
 	coreconversation.TurnStore
 	turn   coreconversation.Turn
+	events []coreconversation.TurnEvent
 	starts int
 }
 
@@ -53,6 +54,23 @@ func (s *admissionStore) GetTurn(_ context.Context, id string) (coreconversation
 		return coreconversation.Turn{}, sql.ErrNoRows
 	}
 	return s.turn, nil
+}
+
+func (s *admissionStore) TurnEventBounds(context.Context, string) (int64, int64, error) {
+	if len(s.events) == 0 {
+		return 0, 0, nil
+	}
+	return s.events[0].Sequence, s.events[len(s.events)-1].Sequence, nil
+}
+
+func (s *admissionStore) LoadTurnEvents(_ context.Context, _ string, after int64, limit int) ([]coreconversation.TurnEvent, error) {
+	result := make([]coreconversation.TurnEvent, 0, len(s.events))
+	for _, event := range s.events {
+		if event.Sequence > after && len(result) < limit {
+			result = append(result, event)
+		}
+	}
+	return result, nil
 }
 
 type admissionModel struct{}
@@ -256,5 +274,37 @@ func TestSSEResumesStrictlyAfterTheLargestSequence(t *testing.T) {
 	h.server.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), "id: 1\n") || strings.Contains(recorder.Body.String(), "id: 2\n") || !strings.Contains(recorder.Body.String(), "event: result") {
 		t.Fatalf("resumed SSE = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestTurnSSEReplayGapUsesThePositiveCursorBeforeTheFirstRetainedEvent(t *testing.T) {
+	h := newTestHarness(t)
+	now := time.Now().UTC()
+	turn := coreconversation.Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:s3.example",
+		AccountGeneration: 7, ConversationID: uuid.NewString(), State: coreconversation.TurnCompleted,
+		Revision: 3, LastSequence: 4, CreatedAt: now, UpdatedAt: now,
+	}
+	store := &admissionStore{turn: turn, events: []coreconversation.TurnEvent{{
+		TurnID: turn.ID, Sequence: 4, Revision: 3, Kind: coreconversation.TurnEventDone, CreatedAt: now,
+	}}}
+	conversation, err := coreconversation.NewService(store, admissionModel{}, nil, admissionProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conversation.Close() })
+	registry := agentcapability.NewCoreRegistry(agentcapability.CoreBindings{Conversation: conversation})
+	server := *h.server
+	server.registry = registry
+	server.conversation = conversation
+
+	ticket := h.ticket(t, []string{"agent:chat:read"}, h.now.Add(15*time.Minute))
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, requestWithTicket(http.MethodGet, "/agent/v1/operations/"+turn.ID+"/events?after_seq=0", "", ticket))
+	body := recorder.Body.String()
+	gap := strings.Index(body, "id: 3\nevent: replay_gap")
+	retained := strings.Index(body, "id: 4\nevent: done")
+	if recorder.Code != http.StatusOK || gap < 0 || retained <= gap || !strings.Contains(body, `"turn_id":"`+turn.ID+`"`) || !strings.Contains(body, `"idempotency_key":"`+turn.RequestID+`"`) || !strings.Contains(body, `"conversation_id":"`+turn.ConversationID+`"`) {
+		t.Fatalf("replay-gap SSE = %d %s", recorder.Code, body)
 	}
 }
