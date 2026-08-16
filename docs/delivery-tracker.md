@@ -126,6 +126,8 @@ contract](message-server-integration-development-contract.md), and
   generation may replace. Durable SSE also retains accepted steer boundaries,
   instruction text, and steer attachment presentation for cache-free reasoning
   segment recovery.
+- Empty Native chat history, conversation, turn, and attachment collections
+  retain their array wire shape through the direct HTTP data plane.
 - Native durable turns expose the Core-owned `agent_schedule_create` intrinsic
   with model input limited to schedule intent/trigger/timeout. Turn authority
   supplies owner generation, conversation, and profile; PostgreSQL commits the

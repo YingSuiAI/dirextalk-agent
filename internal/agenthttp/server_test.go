@@ -32,9 +32,25 @@ type testCapability struct {
 type admissionStore struct {
 	coreconversation.Store
 	coreconversation.TurnStore
-	turn   coreconversation.Turn
-	events []coreconversation.TurnEvent
-	starts int
+	turn         coreconversation.Turn
+	conversation coreconversation.Conversation
+	events       []coreconversation.TurnEvent
+	starts       int
+}
+
+func (s *admissionStore) LoadConversation(_ context.Context, id string) (coreconversation.Conversation, error) {
+	if s.conversation.ID != id {
+		return coreconversation.Conversation{}, sql.ErrNoRows
+	}
+	return s.conversation, nil
+}
+
+func (s *admissionStore) ListConversations(context.Context, string, int) ([]coreconversation.Conversation, string, error) {
+	return nil, "", nil
+}
+
+func (s *admissionStore) ListTurns(context.Context, string, string, int) ([]coreconversation.Turn, string, error) {
+	return nil, "", nil
 }
 
 func (s *admissionStore) StartTurn(_ context.Context, command coreconversation.TurnStartCommand) (coreconversation.Turn, error) {
@@ -246,6 +262,40 @@ func TestChatStartReturnsAcceptedOnlyAfterTheAuthoritativeTurnExists(t *testing.
 	}
 	if store.starts != 1 || receipt.OperationID == "" || receipt.OperationID != receipt.TurnID || receipt.IdempotencyKey != key || store.turn.ID != receipt.TurnID || store.turn.RequestID != key {
 		t.Fatalf("receipt=%+v persisted turn=%+v starts=%d", receipt, store.turn, store.starts)
+	}
+}
+
+func TestEmptyNativeConversationHTTPReadsReturnArrays(t *testing.T) {
+	h := newTestHarness(t)
+	now := time.Now().UTC()
+	conversationID := uuid.NewString()
+	store := &admissionStore{conversation: coreconversation.Conversation{
+		ID: conversationID, Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}}
+	conversation, err := coreconversation.NewService(store, admissionModel{}, nil, admissionProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conversation.Close() })
+	server := *h.server
+	server.registry = agentcapability.NewCoreRegistry(agentcapability.CoreBindings{Conversation: conversation})
+	server.conversation = conversation
+	ticket := h.ticket(t, []string{"agent:chat:read"}, h.now.Add(15*time.Minute))
+
+	for _, test := range []struct {
+		path  string
+		field string
+	}{
+		{path: "/agent/v1/conversations/" + conversationID, field: "messages"},
+		{path: "/agent/v1/conversations", field: "conversations"},
+		{path: "/agent/v1/conversations/" + conversationID + "/turns", field: "turns"},
+	} {
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, requestWithTicket(http.MethodGet, test.path, "", ticket))
+		var response map[string]json.RawMessage
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &response) != nil || string(response[test.field]) != "[]" {
+			t.Fatalf("GET %s %s array = %d %s", test.path, test.field, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.142
+
+1. Preserve empty Native Agent conversation history, conversation lists, turn lists, and attachment collections as JSON arrays so first-fresh clients can start chat without a null-shape failure.
+
 ## v1.0.141
 
 1. Restore owner-visible durable turn prompts, safe attachment presentation, steer boundaries, reasoning segments, and immediate provisional conversation titles from Agent authority after cache loss or SSE reconnect.

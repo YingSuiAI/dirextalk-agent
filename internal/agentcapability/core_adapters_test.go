@@ -385,6 +385,28 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 	}
 }
 
+func TestEmptyNativeChatProjectionsRemainJSONArrays(t *testing.T) {
+	conversationID := uuid.NewString()
+	messages, next, err := pageConversationMessages(conversationID, nil, "", 100)
+	if err != nil || next != "" {
+		t.Fatalf("empty message page=%+v next=%q err=%v", messages, next, err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"messages":      messages,
+		"turns":         publicTurnMetadataList(nil),
+		"conversations": make([]publicConversation, 0),
+		"attachments":   coreconversation.PresentTurnAttachments(nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"messages", "turns", "conversations", "attachments"} {
+		if !bytes.Contains(payload, []byte(`"`+field+`":[]`)) {
+			t.Fatalf("empty %s is not an array: %s", field, payload)
+		}
+	}
+}
+
 func TestConversationProjectionUsesOnlyFlutterPublicFields(t *testing.T) {
 	now := time.Now().UTC()
 	deletedAt := now.Add(time.Second)

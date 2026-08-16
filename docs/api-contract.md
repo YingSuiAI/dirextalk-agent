@@ -201,7 +201,9 @@ retain their frozen revision CAS.
   (`source_id`, `kind`, `name`, `mime_type`, and `size_bytes`). Attachment
   content, digest, source revision, status, and expiry remain private. The first history page
   contains the newest bounded messages in ascending sequence order, and its
-  opaque cursor is bound to the conversation id and prior sequence.
+  opaque cursor is bound to the conversation id and prior sequence. Empty
+  `messages`, `conversations`, `turns`, and attachment collections are JSON
+  arrays, never `null`.
 - Capability `agent.chat.v1/list_turns` accepts only a canonical conversation
   UUID, an optional opaque page token of at most 4,096 bytes, and an optional
   limit from 1 through 1,000. Its closed result projects exactly `turn_id`,

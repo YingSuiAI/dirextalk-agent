@@ -354,7 +354,8 @@ func pageConversationMessages(conversationID string, values []coreconversation.M
 	if start < 0 {
 		start = 0
 	}
-	page := append([]publicConversationMessage(nil), projected[start:end]...)
+	page := make([]publicConversationMessage, end-start)
+	copy(page, projected[start:end])
 	next := ""
 	if start > 0 && len(page) > 0 {
 		next = encodeConversationMessageCursor(conversationID, page[0].MessageSeq)
