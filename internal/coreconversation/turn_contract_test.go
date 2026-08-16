@@ -998,17 +998,18 @@ func TestExecuteTurnContinuesOutputLimitFromDurableEventsAfterRestart(t *testing
 		t.Fatalf("final model requests=%d", len(finalModel.requests))
 	}
 	request := finalModel.requests[0]
-	if len(request.Extensions) != 1 || len(request.ExtensionSnapshots) != 1 || len(request.Intrinsics) != 1 || !strings.Contains(request.Profile.SystemPrompt, outputContinuationGuidance) {
+	if len(request.Extensions) != 1 || len(request.ExtensionSnapshots) != 1 || len(request.Intrinsics) != 1 ||
+		!strings.HasPrefix(request.Profile.SystemPrompt, "base instruction") || strings.Contains(request.Profile.SystemPrompt, outputContinuationGuidance) {
 		t.Fatalf("continuation lost tools or guidance: %+v", request)
 	}
-	partialFound := false
-	for _, message := range request.Conversation.Messages {
-		if message.Role == RoleAssistant && message.Content == "first " && message.ReasoningContent == "reasoning one" && len(message.ToolCalls) == 0 {
-			partialFound = true
-		}
+	messages := request.Conversation.Messages
+	if len(messages) < 2 {
+		t.Fatalf("continuation context=%+v", messages)
 	}
-	if !partialFound {
-		t.Fatalf("durable partial response missing from continuation context: %+v", request.Conversation.Messages)
+	partial, instruction := messages[len(messages)-2], messages[len(messages)-1]
+	if partial.Role != RoleAssistant || partial.Content != "first " || partial.ReasoningContent != "reasoning one" || len(partial.ToolCalls) != 0 ||
+		instruction.Role != RoleUser || instruction.Content != outputContinuationGuidance {
+		t.Fatalf("continuation request must end with partial assistant then suffix instruction: %+v", messages)
 	}
 }
 

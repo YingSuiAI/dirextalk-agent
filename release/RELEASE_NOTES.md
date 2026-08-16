@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.156
+
+1. Continue output-limited responses from an explicit model-visible suffix request so long reasoning, text, and tool work resume without restarting or repeating prior fragments.
+2. Correct an invalid static-page call by requesting the complete HTML argument immediately, without another analysis or draft loop.
+
 ## v1.0.155
 
 1. Continue provider output-limit responses from durable text and reasoning fragments with the full accepted tool context, while keeping true transport truncation distinct and never executing a cut-off tool call.

@@ -23,7 +23,7 @@ const (
 	MaxTurnModelActiveDuration = 24 * time.Hour
 	toolLoopNudgeGuidance      = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
 	toolLoopSynthesisGuidance  = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
-	outputContinuationGuidance = "Continue from the previous response fragment without restarting or repeating it. Preserve the work already completed. If a tool call was cut off, issue it again as one complete call."
+	outputContinuationGuidance = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
 )
 
 type Service struct {
@@ -532,11 +532,14 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 				return ChatResponse{}, modelContextErr
 			}
 			modelConversation.Messages = append(modelConversation.Messages, continuationMessages...)
-			roundProfile := resolvedProfile
 			if len(continuationMessages) != 0 {
-				roundProfile.SystemPrompt = appendSystemPrompt(roundProfile.SystemPrompt, outputContinuationGuidance)
+				continuation, continuationErr := outputContinuationMessage(modelConversation, cmd.ProfileID, fmt.Sprintf("chat:%s:%d", cmd.RequestID, round), s.clock())
+				if continuationErr != nil {
+					return ChatResponse{}, continuationErr
+				}
+				modelConversation.Messages = append(modelConversation.Messages, continuation)
 			}
-			result, err = s.runModelHeartbeat(ctx, ModelRunRequest{Conversation: modelConversation, Profile: roundProfile, Snapshot: lease.ProfileSnapshot, Extensions: exts}, lease, cmd, deltaEmit)
+			result, err = s.runModelHeartbeat(ctx, ModelRunRequest{Conversation: modelConversation, Profile: resolvedProfile, Snapshot: lease.ProfileSnapshot, Extensions: exts}, lease, cmd, deltaEmit)
 			if err != nil {
 				return ChatResponse{}, err
 			}
@@ -1682,6 +1685,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				return
 			}
 		}
+		if history.continueOutput {
+			continuation, continuationErr := outputContinuationMessage(modelConversation, turn.ProfileID, fmt.Sprintf("turn:%s:%d", turn.ID, turn.LastSequence), s.clock())
+			if continuationErr != nil {
+				_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "model continuation context is invalid")
+				return
+			}
+			modelConversation.Messages = append(modelConversation.Messages, continuation)
+		}
 	}
 	var inputParts map[string][]coremodel.MessageInputPart
 	if !replayed {
@@ -1770,9 +1781,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 			if containsCloudWorkerIntrinsic(modelIntrinsicTools) {
 				systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
-			}
-			if history.continueOutput {
-				systemPrompt = appendSystemPrompt(systemPrompt, outputContinuationGuidance)
 			}
 			switch history.loopRecovery {
 			case toolLoopNudge:
@@ -2265,9 +2273,13 @@ func recordCorrectableIntrinsicError(ctx context.Context, store OrderedConversat
 	if _, err := store.BeginConversationToolDispatch(ctx, lease, call); err != nil {
 		return err
 	}
+	content := "tool arguments are invalid; correct them according to the tool schema and call again"
+	if call.Name == coremodel.IntrinsicStaticSitePublishToolName {
+		content = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
+	}
 	result := ToolResult{
 		CallID: call.ID, ToolName: call.Name, IsError: true,
-		Content: "tool arguments are invalid; correct them according to the tool schema and call again",
+		Content: content,
 	}
 	if err := store.RecordConversationToolResult(ctx, lease, result); err != nil {
 		return err
@@ -2777,6 +2789,20 @@ func modelConversationForTurn(conv Conversation, insertAt int, turn Turn, recall
 	out.Messages = append(prefix, transient...)
 	out.Messages = append(out.Messages, suffix...)
 	return out, nil
+}
+
+func outputContinuationMessage(conversation Conversation, profileID, identity string, now time.Time) (Message, error) {
+	message := Message{
+		ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("model-output-continuation:"+identity)).String(),
+		Role:           RoleUser,
+		Content:        outputContinuationGuidance,
+		CreatedAt:      nextMessageTime(conversation, now),
+		ModelProfileID: profileID,
+	}
+	if err := message.Validate(); err != nil {
+		return Message{}, err
+	}
+	return message, nil
 }
 
 func appendTurnSteers(conversation Conversation, turn Turn, steers []TurnSteer, now time.Time) (Conversation, error) {

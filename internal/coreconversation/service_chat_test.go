@@ -56,6 +56,51 @@ func (m *capturingChatModel) Stream(ctx context.Context, request ModelRunRequest
 	return result, err
 }
 
+type outputContinuationChatModel struct {
+	requests []ModelRunRequest
+}
+
+func (m *outputContinuationChatModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
+	m.requests = append(m.requests, request)
+	if len(m.requests) == 1 {
+		return ModelRunResult{Continue: true, Message: Message{
+			ID: uuid.NewString(), Role: RoleAssistant, Content: "first ", ReasoningContent: "reasoning one", CreatedAt: time.Now().UTC(),
+		}}, nil
+	}
+	return ModelRunResult{Done: true, Message: Message{
+		ID: uuid.NewString(), Role: RoleAssistant, Content: "second", ReasoningContent: "reasoning two", CreatedAt: time.Now().UTC(),
+	}}, nil
+}
+
+func (m *outputContinuationChatModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
+func TestChatOutputContinuationEndsWithExplicitSuffixInstruction(t *testing.T) {
+	store := newFakeStore()
+	model := &outputContinuationChatModel{}
+	service, err := NewService(store, model, fakeExt{}, fakeProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := service.Chat(context.Background(), command())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Message.Content != "first second" || response.Message.ReasoningContent != "reasoning onereasoning two" || len(model.requests) != 2 {
+		t.Fatalf("response=%+v requests=%d", response, len(model.requests))
+	}
+	messages := model.requests[1].Conversation.Messages
+	if len(messages) < 2 {
+		t.Fatalf("continuation context=%+v", messages)
+	}
+	partial, instruction := messages[len(messages)-2], messages[len(messages)-1]
+	if partial.Role != RoleAssistant || partial.Content != "first " || partial.ReasoningContent != "reasoning one" ||
+		instruction.Role != RoleUser || instruction.Content != outputContinuationGuidance {
+		t.Fatalf("continuation request must end with partial assistant then suffix instruction: %+v", messages)
+	}
+}
+
 func TestStreamChatRecallsOnlyIntoModelRequestForNewConversation(t *testing.T) {
 	store := newFakeStore()
 	model := &capturingChatModel{}

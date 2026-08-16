@@ -115,6 +115,18 @@ func TestStaticSiteIntrinsicRejectsArchivesPathsAndOversizeHTML(t *testing.T) {
 	if len(publisher.publications) != 0 || len(store.commands) != 0 {
 		t.Fatalf("invalid input reached publisher/store")
 	}
+	turnStore := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{turn: lease.Turn}}
+	call := ToolCall{ID: "site-guidance", Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: `{}`}
+	err := recordCorrectableIntrinsicError(context.Background(), turnStore, lease, call)
+	var correction *ToolResult
+	for _, event := range turnStore.events {
+		if event.ToolResult != nil {
+			correction = event.ToolResult
+		}
+	}
+	if err != nil || correction == nil || !strings.Contains(correction.Content, "invoke static_site_publish again immediately with the required non-empty html string") || !strings.Contains(correction.Content, "do not repeat analysis") {
+		t.Fatalf("static site correction=%+v err=%v", correction, err)
+	}
 }
 
 func TestStaticSiteSkillIsEmbeddedWithoutFrontmatter(t *testing.T) {
