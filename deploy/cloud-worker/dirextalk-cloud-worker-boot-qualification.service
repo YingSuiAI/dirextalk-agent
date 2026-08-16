@@ -12,8 +12,10 @@ ExecStart=/usr/local/sbin/dirextalk-cloud-worker-qualify --phase boot --target-r
 RemainAfterExit=yes
 StandardOutput=journal+console
 StandardError=journal+console
-CapabilityBoundingSet=CAP_NET_ADMIN
-AmbientCapabilities=CAP_NET_ADMIN
+# NET_ADMIN is used by the live nftables checks. SETUID/SETGID are restricted
+# to this trusted oneshot so its presentation probe can run as the Pi identity.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SETUID CAP_SETGID
+AmbientCapabilities=CAP_NET_ADMIN CAP_SETUID CAP_SETGID
 NoNewPrivileges=yes
 PrivateDevices=yes
 PrivateTmp=yes

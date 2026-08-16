@@ -125,8 +125,8 @@ func TestImmutableAMIRootfsSeparatesPiIdentityIMDSAndProxyTrust(t *testing.T) {
 		"--ami-digest-file /usr/local/share/dirextalk-cloud-worker/installation.json",
 		"--rootfs-sha256-file /usr/local/share/dirextalk-cloud-worker/rootfs-bundle.sha256",
 		"--nftables-nevra-file /usr/local/share/dirextalk-cloud-worker/nftables.nevra",
-		"CapabilityBoundingSet=CAP_NET_ADMIN",
-		"AmbientCapabilities=CAP_NET_ADMIN",
+		"CapabilityBoundingSet=CAP_NET_ADMIN CAP_SETUID CAP_SETGID",
+		"AmbientCapabilities=CAP_NET_ADMIN CAP_SETUID CAP_SETGID",
 	} {
 		if !strings.Contains(bootQualificationUnit, required) {
 			t.Fatalf("boot qualification unit lacks %q", required)

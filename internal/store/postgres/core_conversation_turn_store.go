@@ -498,10 +498,19 @@ func (s *CoreConversationStore) RenewTurn(ctx context.Context, id, lease string,
 }
 
 func (s *CoreConversationStore) PrepareTurnModel(ctx context.Context, lease core.TurnLease) (core.Turn, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.Turn{}, err
+	}
+	defer tx.Rollback(ctx)
+
 	out := lease.Turn
-	err := s.pool.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='' RETURNING dispatch_epoch,updated_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&out.DispatchEpoch, &out.UpdatedAt)
+	err = tx.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='' RETURNING dispatch_epoch,updated_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&out.DispatchEpoch, &out.UpdatedAt)
 	if err != nil {
 		return core.Turn{}, core.ErrConflict
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.Turn{}, err
 	}
 	out.DispatchState = "dispatched"
 	return out, nil

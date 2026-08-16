@@ -2453,3 +2453,17 @@ ALTER TABLE core_cloud_worker_model_grants
     ADD CONSTRAINT core_cloud_worker_model_grants_check
         CHECK (max_tokens = 0 OR reserved_tokens <= max_tokens - settled_tokens);
 -- dirextalk-agent migration end 000015_cloud_worker_runtime_bounded_model_usage.up.sql
+-- dirextalk-agent migration begin 000016_cloud_worker_64mib_deliverables.up.sql
+-- The runtime, result validator, and public download API already authorize a
+-- 64 MiB execution output. Keep the durable Worker claim and artifact rows on
+-- that same bound so presentation and document deliverables can be published.
+ALTER TABLE core_cloud_worker_launch_expectations
+    DROP CONSTRAINT IF EXISTS core_cloud_worker_launch_expectati_maximum_artifact_bytes_check,
+    ADD CONSTRAINT core_cloud_worker_launch_expectati_maximum_artifact_bytes_check
+        CHECK (maximum_artifact_bytes BETWEEN 1 AND 67108864);
+
+ALTER TABLE core_cloud_worker_artifacts
+    DROP CONSTRAINT IF EXISTS core_cloud_worker_artifacts_size_bytes_check,
+    ADD CONSTRAINT core_cloud_worker_artifacts_size_bytes_check
+        CHECK (size_bytes BETWEEN 1 AND 67108864);
+-- dirextalk-agent migration end 000016_cloud_worker_64mib_deliverables.up.sql

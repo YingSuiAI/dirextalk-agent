@@ -6,11 +6,11 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 15 {
-		t.Fatalf("CurrentVersion = %d, want 15", CurrentVersion)
+	if CurrentVersion != 16 {
+		t.Fatalf("CurrentVersion = %d, want 16", CurrentVersion)
 	}
 	entries := Entries()
-	if int64(len(entries)) != CurrentVersion || entries[0] != "000001_core_v1_fresh.up.sql" || entries[11] != "000012_managed_node_prepared_cleanup.up.sql" || entries[12] != "000013_cloud_worker_model_grant_snapshot.up.sql" || entries[13] != "000014_cloud_worker_central_completion.up.sql" || entries[14] != "000015_cloud_worker_runtime_bounded_model_usage.up.sql" {
+	if int64(len(entries)) != CurrentVersion || entries[0] != "000001_core_v1_fresh.up.sql" || entries[11] != "000012_managed_node_prepared_cleanup.up.sql" || entries[12] != "000013_cloud_worker_model_grant_snapshot.up.sql" || entries[13] != "000014_cloud_worker_central_completion.up.sql" || entries[14] != "000015_cloud_worker_runtime_bounded_model_usage.up.sql" || entries[15] != "000016_cloud_worker_64mib_deliverables.up.sql" {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
 	script, err := Files.ReadFile(entries[0])

@@ -55,6 +55,7 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 		"000013_cloud_worker_model_grant_snapshot.up.sql",
 		"000014_cloud_worker_central_completion.up.sql",
 		"000015_cloud_worker_runtime_bounded_model_usage.up.sql",
+		"000016_cloud_worker_64mib_deliverables.up.sql",
 	}
 	if !slices.Equal(entries, wantEntries) {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Cloud Worker migrations", entries)
@@ -146,6 +147,16 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	centralCompletion := Ordered()[13]
 	if centralCompletion.Version != 14 || !bytes.Contains(centralCompletion.Script, []byte("DROP CONSTRAINT IF EXISTS core_cloud_worker_completion_outbox_result_message_id_fkey")) {
 		t.Fatal("Central completion migration did not release the premature result-message foreign key")
+	}
+	deliverableLimit := Ordered()[15]
+	for _, needle := range []string{
+		"core_cloud_worker_launch_expectati_maximum_artifact_bytes_check",
+		"core_cloud_worker_artifacts_size_bytes_check",
+		"BETWEEN 1 AND 67108864",
+	} {
+		if deliverableLimit.Version != 16 || !bytes.Contains(deliverableLimit.Script, []byte(needle)) {
+			t.Fatalf("Cloud Worker deliverable limit migration missing %q", needle)
+		}
 	}
 	if !bytes.Contains(cloudWorker.Script, []byte(cloudworker.PostgresOutputJournalSchemaRequirement)) {
 		t.Fatal("Cloud Worker migration drifted from the output journal schema requirement")

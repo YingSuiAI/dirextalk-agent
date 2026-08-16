@@ -33,7 +33,7 @@ var (
 
 const (
 	DefaultChallengeTTL = 5 * time.Minute
-	MaximumClaimBytes   = int64(8 << 20)
+	MaximumClaimBytes   = int64(64 << 20)
 	maximumProofBytes   = 64 << 10
 )
 

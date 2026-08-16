@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/execgate"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // CloudWorkerControlStore is the private WorkerControl durability boundary.
@@ -204,6 +206,7 @@ func (s *CloudWorkerControlStore) SetLaunchExpectation(ctx context.Context, supp
 	}
 	canonical, err := expectation.Canonical()
 	if err != nil || !reflect.DeepEqual(canonical, expectation) {
+		logWorkerExpectationRejection(supplied, "non_canonical_expectation")
 		return control.ErrInvalid
 	}
 	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
@@ -214,6 +217,7 @@ func (s *CloudWorkerControlStore) SetLaunchExpectation(ctx context.Context, supp
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	currentTask, err := NewCoreTaskStore(s.store).taskTxLocked(ctx, tx, supplied.ID, false)
 	if err != nil || validateCloudWorkerTaskFence(currentTask, supplied, now) != nil {
+		logWorkerExpectationRejection(supplied, "stale_task_fence")
 		return control.ErrStaleLease
 	}
 	plan, execution, err := cloudWorkerPlanAndExecutionTx(ctx, tx, currentTask.Spec.Payload.CloudWorker, true)
@@ -221,10 +225,12 @@ func (s *CloudWorkerControlStore) SetLaunchExpectation(ctx context.Context, supp
 		execution.State == cloudworker.StateCleaning || execution.State == cloudworker.StateSucceeded ||
 		execution.State == cloudworker.StateFailed || execution.State == cloudworker.StateCanceled ||
 		execution.State == cloudworker.StateRejected || execution.State == cloudworker.StateExpired {
+		logWorkerExpectationRejection(supplied, "execution_not_publishable")
 		return control.ErrStaleLease
 	}
 	if canonical.OwnerID != plan.OwnerID || canonical.AccountGeneration != plan.AccountGeneration ||
 		canonical.AccountID != plan.AWS.AccountID || canonical.Region != plan.AWS.Region {
+		logWorkerExpectationRejection(supplied, "plan_scope_mismatch")
 		return control.ErrIdentityRejected
 	}
 
@@ -235,6 +241,7 @@ func (s *CloudWorkerControlStore) SetLaunchExpectation(ctx context.Context, supp
 	if err = tx.QueryRow(ctx, `SELECT task_attempt,lease_epoch,runtime_task_sha256,input_manifest_sha256,
 		launch_identity,aws_identity_json FROM core_cloud_worker_launch_material WHERE execution_id=$1 FOR UPDATE`, plan.ExecutionID).Scan(
 		&initialAttempt, &initialEpoch, &runtimeDigest, &inputDigest, &launchIdentity, &initialIdentityRaw); err != nil {
+		logWorkerExpectationRejection(supplied, "launch_material_unavailable")
 		return control.ErrIdentityRejected
 	}
 	var initialIdentity cloudaws.ExecutionIdentity
@@ -242,6 +249,7 @@ func (s *CloudWorkerControlStore) SetLaunchExpectation(ctx context.Context, supp
 		initialIdentity.ExecutionID != plan.ExecutionID || initialIdentity.TaskID != plan.TaskID ||
 		initialIdentity.TaskAttempt != initialAttempt || initialIdentity.LeaseEpoch != initialEpoch ||
 		initialIdentity.LaunchIdentity != launchIdentity || canonical.LaunchIdentity != launchIdentity {
+		logWorkerExpectationRejection(supplied, "launch_material_identity_mismatch")
 		return control.ErrIdentityRejected
 	}
 
@@ -255,6 +263,7 @@ func (s *CloudWorkerControlStore) SetLaunchExpectation(ctx context.Context, supp
 		&ledgerOwner, &ledgerAccount, &ledgerGeneration, &ledgerRegion, &ledgerExecution, &ledgerTask,
 		&ledgerAttempt, &ledgerEpoch, &ledgerLaunch, &ledgerPlanDigest, &ledgerInfrastructureDigest,
 		&ledgerIntentDigest, &ledgerState, &ledgerRaw); err != nil {
+		logWorkerExpectationRejection(supplied, "aws_ledger_unavailable")
 		return control.ErrIdentityRejected
 	}
 	var ledger cloudaws.LedgerRecord
@@ -265,6 +274,7 @@ func (s *CloudWorkerControlStore) SetLaunchExpectation(ctx context.Context, supp
 		ledgerLaunch != launchIdentity || ledgerPlanDigest != ledger.Plan.Digest ||
 		ledgerInfrastructureDigest != ledger.Plan.InfrastructureDigest || ledgerIntentDigest != ledger.Intent.IntentDigest ||
 		!ledger.Identity.Equal(initialIdentity) {
+		logWorkerExpectationRejection(supplied, "aws_ledger_identity_mismatch")
 		return control.ErrIdentityRejected
 	}
 	ec2 := ledger.Resources[cloudaws.ResourceEC2]
@@ -300,6 +310,21 @@ func (s *CloudWorkerControlStore) SetLaunchExpectation(ctx context.Context, supp
 		instanceProfile.Observation.Generation != ledger.Identity.Generation ||
 		!cloudaws.ContainsRequiredTags(instanceProfile.Observation.Tags, requiredTags) ||
 		!equalControlExpectation(expected, canonical) {
+		slog.Warn("[cloud-worker.control] launch_expectation_rejected",
+			"reason", "active_resource_identity_mismatch",
+			"task_id", supplied.ID,
+			"execution_id", plan.ExecutionID,
+			"ec2_state", ec2.State,
+			"ec2_exists", ec2.Observation.Exists,
+			"ec2_tags_match", cloudaws.ContainsRequiredTags(ec2.Observation.Tags, requiredTags),
+			"role_state", role.State,
+			"role_exists", role.Observation.Exists,
+			"role_tags_match", cloudaws.ContainsRequiredTags(role.Observation.Tags, requiredTags),
+			"profile_state", instanceProfile.State,
+			"profile_identity_state", instanceProfile.IdentityState,
+			"profile_exists", instanceProfile.Observation.Exists,
+			"profile_tags_match", cloudaws.ContainsRequiredTags(instanceProfile.Observation.Tags, requiredTags),
+			"expectation_match", equalControlExpectation(expected, canonical))
 		return control.ErrIdentityRejected
 	}
 
@@ -374,9 +399,31 @@ func (s *CloudWorkerControlStore) SetLaunchExpectation(ctx context.Context, supp
 		canonical.LaunchIdentity, canonical.RoleARN, canonical.RoleID, canonical.InstanceProfileID, tagsRaw, runtimeDigest, inputDigest,
 		artifactBucket, artifactPrefix, maximumArtifactBytes, now)
 	if err != nil || inserted.RowsAffected() != 1 {
+		attrs := []any{"reason", "expectation_insert_conflict", "task_id", supplied.ID,
+			"execution_id", plan.ExecutionID, "task_attempt", supplied.Attempt,
+			"lease_epoch", supplied.LeaseEpoch, "task_revision", supplied.Revision}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			attrs = append(attrs, "database_code", pgErr.Code, "database_constraint", pgErr.ConstraintName)
+		}
+		slog.Warn("[cloud-worker.control] launch_expectation_rejected", attrs...)
 		return control.ErrConflict
 	}
 	return tx.Commit(ctx)
+}
+
+func logWorkerExpectationRejection(task coretask.Task, reason string) {
+	executionID := ""
+	if task.Spec.Payload.CloudWorker != nil {
+		executionID = task.Spec.Payload.CloudWorker.ExecutionID
+	}
+	slog.Warn("[cloud-worker.control] launch_expectation_rejected",
+		"reason", reason,
+		"task_id", task.ID,
+		"execution_id", executionID,
+		"task_attempt", task.Attempt,
+		"lease_epoch", task.LeaseEpoch,
+		"task_revision", task.Revision)
 }
 
 func (s *CloudWorkerControlStore) CreateChallenge(ctx context.Context, record control.ChallengeRecord) error {
