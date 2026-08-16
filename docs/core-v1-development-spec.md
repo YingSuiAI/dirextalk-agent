@@ -480,7 +480,10 @@ pool, MCP, Skills, Knowledge, Conversation Tools, and Extension Runner. The
 Core intrinsic `cloud_worker_propose` creates an offer when the user explicitly
 requests cloud work or trusted scheduler evidence shows that the selected
 substantial task exceeds the local runtime. Model wording and a local failure
-are not authority. A cloud or local-only veto wins.
+are not authority. A cloud or local-only veto wins. The intrinsic requires an
+explicit `execute` or `proposal_only` intent. Proposal-only returns a durable
+non-executing summary without pricing, offer, Task, confirmation, or execution
+state, so an idle retained Worker cannot turn a planning-only request into work.
 
 A proposal carries provider-neutral minimum vCPU, memory, disk, and estimated
 runtime requirements. Agent intersects current-generation x86_64 on-demand

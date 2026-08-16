@@ -302,8 +302,13 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		if quoteErr != nil || live.ComputeMicrosPerHour == 0 {
 			return Offer{}, errors.Join(ErrProviderUnavailable, quoteErr)
 		}
-		quote = Quote{Currency: live.Currency, ComputeMicrosPerHour: live.ComputeMicrosPerHour, SourceTime: live.SourceTime,
+		amountMicros, maximumAuthorizedMicros := live.AmountMicros, live.MaximumAuthorizedCostMicros
+		if plan.WorkloadKind == WorkloadService {
+			amountMicros, maximumAuthorizedMicros = 0, 0
+		}
+		quote = Quote{AmountMicros: amountMicros, Currency: live.Currency, ComputeMicrosPerHour: live.ComputeMicrosPerHour, SourceTime: live.SourceTime,
 			ExpiresAt: live.ExpiresAt, BasisDigest: plan.AuthorizationBasisDigest, CatalogRevisionDigest: live.CatalogRevisionDigest}
+		quote.MaximumAuthorizedCostMicros = maximumAuthorizedMicros
 		if err = quote.Seal(); err != nil {
 			return Offer{}, err
 		}

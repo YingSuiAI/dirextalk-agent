@@ -435,6 +435,10 @@ clients use `agent.execution.v2.plans.get/list`,
 `agent.execution.v2.runs.get/list/cancel/events`, and
 `agent.execution.v2.artifacts.get/download/delete`; they use
 `agent.core.confirmations.get/list/confirm/reject` for authorization. Every
+tool call declares `intent=execute` or `intent=proposal_only`. Execute preserves
+normal retained-Worker reuse and new-Worker confirmation behavior. Proposal-only
+commits a non-executing plan summary before pricing or offer persistence and
+creates no plan, execution, Task, confirmation, or Worker action. Every executing
 proposal carries minimum vCPU, memory, disk, and estimated runtime rather than
 an AWS instance type. Agent intersects current-generation Linux on-demand
 products with actual regional offerings and selects the cheapest satisfying

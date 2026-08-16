@@ -5,6 +5,8 @@
 ## v1.0.143
 
 1. Replace a provisional conversation title left by a stopped first turn when the next turn completes successfully, using the earliest durable prompt without overwriting user-assigned titles.
+2. Require an explicit Cloud Worker execution intent so planning-only requests cannot start a retained Worker, while preserving immediate reuse for actual execution.
+3. Keep live estimated and maximum costs for finite retained jobs, omit those open-ended fields for persistent services, and continue exposing the hourly price for both.
 
 ## v1.0.142
 

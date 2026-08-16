@@ -29,13 +29,15 @@ type proposalAWSBindingResolver struct {
 }
 
 type capacityReuseResolver struct {
-	err       error
-	calls     int
-	selection WorkerReuseSelection
-	found     bool
+	err          error
+	calls        int
+	resolveCalls int
+	selection    WorkerReuseSelection
+	found        bool
 }
 
 func (resolver *capacityReuseResolver) ResolveIdleWorker(context.Context, string, uint64, AWSBinding, ComputeRequirements, *ServiceSpec) (WorkerReuseSelection, bool, error) {
+	resolver.resolveCalls++
 	return resolver.selection, resolver.found, nil
 }
 
@@ -149,6 +151,46 @@ func TestServiceChecksWorkerCapacityBeforeQuote(t *testing.T) {
 	}
 	if reuse.calls != 1 || quoter.last.OwnerID != "" || len(store.commands) != 0 {
 		t.Fatalf("capacity failure crossed quote/store boundary: calls=%d quote=%+v offers=%d", reuse.calls, quoter.last, len(store.commands))
+	}
+}
+
+func TestServiceRetainedWorkerQuoteMatchesWorkloadLifetime(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		workloadKind WorkloadKind
+		service      *ServiceSpec
+		wantAmount   int64
+		wantMaximum  int64
+	}{
+		{name: "finite job", workloadKind: WorkloadJob, wantAmount: 12_000, wantMaximum: 15_000},
+		{name: "persistent service", workloadKind: WorkloadService, service: &ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 8, 16, 10, 0, 0, 0, time.UTC)
+			store := &intrinsicStore{}
+			service, err := NewServiceWithAWSBindingResolver(store, intrinsicDefaults(now), FakeQuoter{
+				AmountMicros: 12_000, MaximumAuthorizedMicros: 15_000, ComputeMicrosPerHour: 29_200,
+				TTL: 5 * time.Minute, Now: func() time.Time { return now },
+			}, &proposalAWSBindingResolver{binding: intrinsicAWSBinding()}, func() time.Time { return now })
+			if err != nil {
+				t.Fatal(err)
+			}
+			reuse := &capacityReuseResolver{found: true, selection: WorkerReuseSelection{WorkerID: uuid.NewString(), Compute: ComputeSpec{
+				InstanceType: "t3.small", Architecture: "x86_64", VCPU: 2, MemoryGiB: 2,
+				RootDeviceName: "/dev/xvda", VolumeGiB: 20, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125,
+			}}}
+			enableCredentialProposalDependencies(t, service, reuse)
+			command := credentialProposalCommand()
+			command.WorkloadKind, command.Service = test.workloadKind, test.service
+			offer, err := service.Propose(context.Background(), command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !offer.Plan.PersistentWorkerReuse || offer.Execution.State != StateQueued || offer.Plan.Quote.ComputeMicrosPerHour != 29_200 ||
+				offer.Plan.Quote.AmountMicros != test.wantAmount || offer.Plan.Quote.MaximumAuthorizedCostMicros != test.wantMaximum {
+				t.Fatalf("retained Worker offer=%+v execution=%+v", offer.Plan, offer.Execution)
+			}
+		})
 	}
 }
 

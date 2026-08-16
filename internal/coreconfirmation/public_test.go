@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestCloudWorkerPublicQuotePreservesZeroPricingFields(t *testing.T) {
+func TestCloudWorkerPublicQuoteUsesWorkloadSpecificPricingShape(t *testing.T) {
 	now := time.Date(2026, 8, 16, 8, 0, 0, 0, time.UTC)
 	binding := Binding{
 		OperationDomain: "cloud_worker.execute",
@@ -28,8 +28,8 @@ func TestCloudWorkerPublicQuotePreservesZeroPricingFields(t *testing.T) {
 	if !strings.Contains(text, `"target_kind":"persistent_service"`) {
 		t.Fatalf("target kind missing: %s", text)
 	}
-	if !strings.Contains(text, `"amount_micros":0`) || !strings.Contains(text, `"maximum_authorized_cost_micros":0`) {
-		t.Fatalf("persistent service zero pricing fields missing: %s", text)
+	if strings.Contains(text, `"amount_micros"`) || strings.Contains(text, `"maximum_authorized_cost_micros"`) {
+		t.Fatalf("persistent service exposed finite-task pricing fields: %s", text)
 	}
 
 	binding.TargetKind = "persistent_worker_reuse"
@@ -41,7 +41,7 @@ func TestCloudWorkerPublicQuotePreservesZeroPricingFields(t *testing.T) {
 	}
 	text = string(encoded)
 	if !strings.Contains(text, `"amount_micros":0`) || !strings.Contains(text, `"maximum_authorized_cost_micros":0`) {
-		t.Fatalf("retained reuse zero pricing fields missing: %s", text)
+		t.Fatalf("finite retained job omitted paired zero pricing fields: %s", text)
 	}
 	if !strings.Contains(text, `"target_kind":"persistent_worker_reuse"`) {
 		t.Fatalf("retained reuse target kind missing: %s", text)

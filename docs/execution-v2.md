@@ -6,6 +6,11 @@
 
 Cloud Worker plans are created only inside an authoritative Native Agent turn by `cloud_worker_propose`. A client cannot create a Worker run directly. The proposal atomically creates the plan, execution, `CLOUD_WORKER` CoreTask, and pending CoreConfirmation.
 
+The intrinsic input has one explicit intent. `execute` enters the normal offer
+and retained-Worker path. `proposal_only` commits a non-executing plan summary
+before provider pricing or durable offer creation; it creates no plan, Task,
+confirmation, execution, or Worker action.
+
 The intrinsic may propose cloud execution for an explicit request or when trusted scheduler evidence proves that a substantial selected task exceeds the local runtime. Model text and a local failure are not authority. A cloud or local-only veto rejects the path.
 
 The intrinsic supplies minimum vCPU, memory, disk, and estimated runtime, never an AWS instance type. Agent reads current-generation Linux on-demand products, intersects them with actual regional EC2 offerings, and chooses the cheapest x86_64 shape satisfying the request. The plan and confirmation expose the selected exact shape and hourly compute price. Bounded jobs also expose estimated cost and maximum authorized cost; persistent services omit those two open-ended values.

@@ -244,6 +244,11 @@ support.
   runtime test also proves a session-changing descendant is removed when the
   remote execution budget expires. This is code-level evidence and performs no
   AWS mutation.
+- On **2026-08-16**, the Cloud Worker intrinsic gained a required execution
+  intent. Focused tests prove that proposal-only requests commit a non-executing
+  summary without crossing the offer or retained-Worker boundary, while finite
+  retained jobs keep live estimated and maximum costs and persistent services
+  expose only their hourly price. This evidence performs no AWS mutation.
 
 ## Remaining release gates
 

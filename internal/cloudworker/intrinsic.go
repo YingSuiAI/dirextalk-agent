@@ -168,6 +168,7 @@ func (p *ProposeIntrinsic) EnableRetainedWorkerManagement(manager RetainedWorker
 
 type proposeIntrinsicArguments struct {
 	AttachmentIDs           []string `json:"attachment_ids,omitempty"`
+	Intent                  string   `json:"intent"`
 	Objective               string   `json:"objective"`
 	WorkspaceMode           string   `json:"workspace_mode"`
 	MinVCPU                 uint32   `json:"min_vcpu"`
@@ -197,6 +198,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		workspaceModes = []any{string(WorkspaceNone), string(WorkspaceReadOnly), string(WorkspaceWrite)}
 	}
 	properties := map[string]any{
+		"intent":                    map[string]any{"type": "string", "enum": []any{"execute", "proposal_only"}, "description": "Use execute only when the user wants the workload to run. Use proposal_only when the user explicitly asks for a plan without starting or authorizing Worker work; it returns a non-executing summary and creates no offer, task, confirmation, or execution."},
 		"objective":                 map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes, "description": "Describe only the workload to run on the Worker. Never instruct the Worker to call AWS CLI, Route53, or another DNS API; the Agent host owns DNS publication."},
 		"workspace_mode":            map[string]any{"type": "string", "enum": workspaceModes},
 		"workload_kind":             map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob), "description": "Use job only for finite execution. You MUST use service when the requested result is a persistent network service, website, API, daemon, or other endpoint that must remain available after this run."},
@@ -211,7 +213,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	if attachmentSchema != nil {
 		properties["attachment_ids"] = attachmentSchema
 	}
-	description := "Run work in a suitable retained execution environment, or propose a priced reusable environment when none is available. Use it for substantial project or shell execution, deployment, build, test, durable file delivery, long-running compute, and actual follow-up work in a retained environment. Declare the task's actual minimum min_vcpu, min_memory_gib, and disk_gib; do not inflate them to a fixed workload size or reduce them below the task's real requirements. Prefer an available idle retained Worker from retained_worker_inventory when its vcpu, memory_gib, and volume_gib satisfy those minimums. Use workload_kind=job only for finite execution and omit service. You MUST use workload_kind=service and provide service.workload_id, service.port, and service.health_path when deploying a persistent website, API, daemon, or other network endpoint. service.port is the application's internal port and MUST NOT be 80 or 443 when a hostname is requested. Static files must be served by a lightweight local HTTP service on that internal port. When the user requests a hostname, you MUST also provide service.hostname. The Agent runner owns Caddy and the Agent host owns DNS: MUST NOT ask the remote Worker or model to edit Caddy or use AWS CLI, Route53, or another DNS API. Give estimated_runtime_minutes enough budget for setup, dependency installation, build, configuration, verification, result collection, and reasonable margin; it is not the lifetime of the retained Worker or deployed service. Do not call this tool only to inspect status; answer status questions from the live retained_worker_inventory below. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. Retained Worker reuse normally needs no creation confirmation. Publishing a requested hostname produces one owner confirmation for the hostname-bound plan. New resources start only after the owner reviews and confirms the offer."
+	description := "Run work in a suitable retained execution environment, or return a non-executing plan summary. Set intent=execute only when the user wants the workload to run. If the user explicitly asks only for a plan or says not to start the Worker, set intent=proposal_only; that path creates no offer, task, confirmation, or execution. Prefer answering conceptual planning questions directly without this tool. Use it for substantial project or shell execution, deployment, build, test, durable file delivery, long-running compute, and actual follow-up work in a retained environment. Declare the task's actual minimum min_vcpu, min_memory_gib, and disk_gib; do not inflate them to a fixed workload size or reduce them below the task's real requirements. Prefer an available idle retained Worker from retained_worker_inventory when its vcpu, memory_gib, and volume_gib satisfy those minimums. Use workload_kind=job only for finite execution and omit service. You MUST use workload_kind=service and provide service.workload_id, service.port, and service.health_path when deploying a persistent website, API, daemon, or other network endpoint. service.port is the application's internal port and MUST NOT be 80 or 443 when a hostname is requested. Static files must be served by a lightweight local HTTP service on that internal port. When the user requests a hostname, you MUST also provide service.hostname. The Agent runner owns Caddy and the Agent host owns DNS: MUST NOT ask the remote Worker or model to edit Caddy or use AWS CLI, Route53, or another DNS API. Give estimated_runtime_minutes enough budget for setup, dependency installation, build, configuration, verification, result collection, and reasonable margin; it is not the lifetime of the retained Worker or deployed service. Do not call this tool only to inspect status; answer status questions from the live retained_worker_inventory below. The user does not need to mention cloud or remote execution. Do not use it for ordinary conversation or simple reasoning, or when the user requires local execution or forbids cloud use. Retained Worker reuse with intent=execute normally needs no creation confirmation. Publishing a requested hostname produces one owner confirmation for the hostname-bound plan. New resources start only after the owner reviews and confirms the offer."
 	inventory := `{"status":"unavailable"}`
 	var currentInventory RetainedWorkerInventory
 	inventoryReady := false
@@ -229,7 +231,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"required":             []any{"objective", "workspace_mode", "min_vcpu", "min_memory_gib", "disk_gib", "estimated_runtime_minutes"},
+			"required":             []any{"intent", "objective", "workspace_mode", "min_vcpu", "min_memory_gib", "disk_gib", "estimated_runtime_minutes"},
 			"properties":           properties,
 		},
 	}
@@ -375,6 +377,9 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		}
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
+	if arguments.Intent == "proposal_only" {
+		return p.commitProposalOnly(ctx, bound, request, arguments)
+	}
 	mode := WorkspaceMode(arguments.WorkspaceMode)
 	if hasCloudExecutionVeto(bound.Turn.Prompt) {
 		return coreconversation.IntrinsicExecutionResult{}, ErrCloudIntentRequired
@@ -451,6 +456,37 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 	return coreconversation.IntrinsicExecutionResult{TurnCommitted: true}, nil
 }
 
+func (p *ProposeIntrinsic) commitProposalOnly(ctx context.Context, bound coreconversation.TurnLease, request coreconversation.IntrinsicExecutionRequest, arguments proposeIntrinsicArguments) (coreconversation.IntrinsicExecutionResult, error) {
+	if p.turns == nil || request.ConversationRevision == 0 || bound.Turn.CreatedAt.IsZero() {
+		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	detail := fmt.Sprintf("Plan only — no Worker was started.\n\nObjective: %s\nWorkload: %s\nMinimum resources: %d vCPU, %d GiB memory, %d GiB disk\nExecution budget: %d minutes",
+		arguments.Objective, arguments.WorkloadKind, arguments.MinVCPU, arguments.MinMemoryGiB, arguments.DiskGiB, arguments.EstimatedRuntimeMinutes)
+	if arguments.Service != nil {
+		detail += fmt.Sprintf("\nService: %s on port %d (health %s)", arguments.Service.WorkloadID, arguments.Service.Port, arguments.Service.HealthPath)
+		if arguments.Service.Hostname != "" {
+			detail += " at " + arguments.Service.Hostname
+		}
+	}
+	detail += "\n\nRequest execution separately when ready. A suitable retained Worker may then start immediately; creating a Worker or publishing a hostname requires owner confirmation."
+	message := coreconversation.Message{
+		ID:   uuid.NewSHA1(uuid.NameSpaceOID, []byte("cloud-worker-proposal-only-message:"+bound.Turn.ID+":"+request.Call.ID)).String(),
+		Role: coreconversation.RoleAssistant, Content: detail,
+		CreatedAt: bound.Turn.CreatedAt.UTC().Add(time.Microsecond), ModelProfileID: bound.Turn.ProfileID,
+	}
+	if message.Validate() != nil {
+		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	response := coreconversation.ChatResponse{
+		RequestID: bound.Turn.RequestID, ConversationID: bound.Turn.ConversationID,
+		Revision: request.ConversationRevision + 1, Message: message, Done: true, ModelProfileID: bound.Turn.ProfileID,
+	}
+	if _, err := p.turns.CommitTurn(ctx, request.Lease, response); err != nil {
+		return coreconversation.IntrinsicExecutionResult{}, err
+	}
+	return coreconversation.IntrinsicExecutionResult{TurnCommitted: true}, nil
+}
+
 func turnAllowsSelectedWorkspaceArchive(turn coreconversation.Turn, selected []string) bool {
 	if !turnAllowsAttachments(turn, selected) {
 		return false
@@ -483,6 +519,9 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
 	arguments.Objective = strings.TrimSpace(arguments.Objective)
+	if arguments.Intent != "execute" && arguments.Intent != "proposal_only" {
+		return proposeIntrinsicArguments{}, ErrInvalid
+	}
 	if arguments.WorkloadKind == "" {
 		arguments.WorkloadKind = string(WorkloadJob)
 	}

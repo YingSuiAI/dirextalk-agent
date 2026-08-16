@@ -153,6 +153,9 @@ func intrinsicFixture(t *testing.T, prompt string, manifests IntrinsicManifestRe
 
 func executeIntrinsic(t *testing.T, intrinsic *ProposeIntrinsic, lease coreconversation.TurnLease, arguments map[string]any, callID string) error {
 	t.Helper()
+	if _, exists := arguments["intent"]; !exists {
+		arguments["intent"] = "execute"
+	}
 	for key, value := range map[string]any{"min_vcpu": 2, "min_memory_gib": 2, "disk_gib": 20, "estimated_runtime_minutes": 60} {
 		if _, exists := arguments[key]; !exists {
 			arguments[key] = value
@@ -163,7 +166,7 @@ func executeIntrinsic(t *testing.T, intrinsic *ProposeIntrinsic, lease coreconve
 		t.Fatalf("intrinsic catalog: tools=%+v err=%v", tools, err)
 	}
 	if !strings.Contains(tools[0].Tool.Description, "retained execution environment") ||
-		!strings.Contains(tools[0].Tool.Description, "Retained Worker reuse normally needs no creation confirmation") ||
+		!strings.Contains(tools[0].Tool.Description, "Retained Worker reuse with intent=execute normally needs no creation confirmation") ||
 		strings.Contains(tools[0].Tool.Description, "ephemeral") {
 		t.Fatalf("stale Worker lifecycle description: %q", tools[0].Tool.Description)
 	}
@@ -225,34 +228,74 @@ func TestCloudExecutionVetoOnlyRejectsExplicitCloudNegation(t *testing.T) {
 }
 
 func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
-	arguments, err := parseProposeIntrinsicArguments([]byte("{\n  \"workspace_mode\": \"none\", \"objective\": \"run once\", \"min_vcpu\":2, \"min_memory_gib\":2, \"disk_gib\":20, \"estimated_runtime_minutes\":60\n}"))
+	if _, err := parseProposeIntrinsicArguments([]byte(`{"objective":"run once","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60}`)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing execution intent accepted: %v", err)
+	}
+	arguments, err := parseProposeIntrinsicArguments([]byte("{\n  \"intent\": \"execute\", \"workspace_mode\": \"none\", \"objective\": \"run once\", \"min_vcpu\":2, \"min_memory_gib\":2, \"disk_gib\":20, \"estimated_runtime_minutes\":60\n}"))
 	if err != nil || arguments.Objective != "run once" || arguments.WorkspaceMode != string(WorkspaceNone) || len(arguments.AttachmentIDs) != 0 {
 		t.Fatalf("arguments=%+v err=%v", arguments, err)
 	}
 	if arguments.WorkloadKind != string(WorkloadJob) || arguments.Service != nil {
 		t.Fatalf("job defaults were not applied: %+v", arguments)
 	}
-	arguments, err = parseProposeIntrinsicArguments([]byte(`{"objective":"inspect","workspace_mode":"write","min_vcpu":1,"min_memory_gib":1,"disk_gib":2,"estimated_runtime_minutes":15}`))
+	arguments, err = parseProposeIntrinsicArguments([]byte(`{"intent":"execute","objective":"inspect","workspace_mode":"write","min_vcpu":1,"min_memory_gib":1,"disk_gib":2,"estimated_runtime_minutes":15}`))
 	if err != nil || arguments.DiskGiB != 8 {
 		t.Fatalf("small positive disk estimate was not normalized: arguments=%+v err=%v", arguments, err)
 	}
-	service, err := parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"memory-api","port":8080,"health_path":"/health","hostname":"API.Example.Test."}}`))
+	service, err := parseProposeIntrinsicArguments([]byte(`{"intent":"execute","objective":"deploy","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"memory-api","port":8080,"health_path":"/health","hostname":"API.Example.Test."}}`))
 	if err != nil || service.Service == nil || service.Service.WorkloadID != "memory-api" || service.Service.Port != 8080 || service.Service.Hostname != "api.example.test" {
 		t.Fatalf("service arguments=%+v err=%v", service, err)
 	}
-	if _, err = parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"memory-api","port":8080,"health_path":"/health","hostname":"not a hostname"}}`)); !errors.Is(err, ErrInvalid) {
+	if _, err = parseProposeIntrinsicArguments([]byte(`{"intent":"execute","objective":"deploy","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"memory-api","port":8080,"health_path":"/health","hostname":"not a hostname"}}`)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid hostname accepted: %v", err)
 	}
-	if _, err = parseProposeIntrinsicArguments([]byte(`{"objective":"deploy","workspace_mode":"none","workload_kind":"service"}`)); !errors.Is(err, ErrInvalid) {
+	if _, err = parseProposeIntrinsicArguments([]byte(`{"intent":"execute","objective":"deploy","workspace_mode":"none","workload_kind":"service"}`)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("missing service spec accepted: %v", err)
 	}
-	arguments, err = parseProposeIntrinsicArguments([]byte(`{"objective":"create a project","workspace_mode":"write","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60}`))
+	arguments, err = parseProposeIntrinsicArguments([]byte(`{"intent":"execute","objective":"create a project","workspace_mode":"write","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60}`))
 	if err != nil || arguments.WorkspaceMode != string(WorkspaceWrite) || len(arguments.AttachmentIDs) != 0 {
 		t.Fatalf("empty write workspace arguments=%+v err=%v", arguments, err)
 	}
-	arguments, err = parseProposeIntrinsicArguments([]byte(`{"objective":"inspect","workspace_mode":"read_only","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60}`))
+	arguments, err = parseProposeIntrinsicArguments([]byte(`{"intent":"execute","objective":"inspect","workspace_mode":"read_only","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60}`))
 	if err != nil || arguments.WorkspaceMode != string(WorkspaceNone) {
 		t.Fatalf("empty read-only workspace was not normalized: arguments=%+v err=%v", arguments, err)
+	}
+}
+
+func TestProposeOnlyCommitsSummaryWithoutCreatingOrStartingRetainedWorkerWork(t *testing.T) {
+	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-capability")}
+	intrinsic, store, lease := intrinsicFixture(t, "Only give me a deployment plan; do not start the Worker.", nil, intrinsicBudget{evidence: evidence})
+	lease.Turn.CreatedAt = time.Date(2026, 8, 16, 9, 0, 0, 0, time.UTC)
+	reuse := &capacityReuseResolver{found: true, selection: WorkerReuseSelection{WorkerID: uuid.NewString(), Compute: ComputeSpec{
+		InstanceType: "t3.small", Architecture: "x86_64", VCPU: 2, MemoryGiB: 2,
+		RootDeviceName: "/dev/xvda", VolumeGiB: 20, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125,
+	}}}
+	if err := intrinsic.service.EnablePersistentWorkerReuse(reuse); err != nil {
+		t.Fatal(err)
+	}
+	committer := &intrinsicTurnCommitter{}
+	manager := &intrinsicWorkerManager{}
+	if err := intrinsic.EnableRetainedWorkerManagement(manager, committer); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("tools=%+v err=%v", tools, err)
+	}
+	raw := json.RawMessage(`{"intent":"proposal_only","objective":"deploy the service","workspace_mode":"write","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":30,"workload_kind":"service","service":{"workload_id":"web","port":8080,"health_path":"/health"}}`)
+	result, err := tools[0].Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
+		Lease: lease, ConversationRevision: 4, CanonicalArguments: raw,
+		Call: coreconversation.ToolCall{ID: "proposal-only-call", Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(raw)},
+	})
+	if err != nil || !result.TurnCommitted {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if len(store.commands) != 0 || reuse.resolveCalls != 0 || reuse.calls != 0 {
+		t.Fatalf("proposal-only crossed execution boundary: offers=%d resolve_calls=%d capacity_calls=%d", len(store.commands), reuse.resolveCalls, reuse.calls)
+	}
+	if !committer.response.Done || committer.response.Revision != 5 || !strings.Contains(committer.response.Message.Content, "no Worker was started") ||
+		!strings.Contains(committer.response.Message.Content, "2 vCPU, 2 GiB memory, 20 GiB disk") {
+		t.Fatalf("proposal-only response=%+v", committer.response)
 	}
 }
 
@@ -394,7 +437,7 @@ func TestIntrinsicProposalUsesRenewedTurnLease(t *testing.T) {
 	renewed := bound
 	renewed.Epoch++
 	renewed.ExpiresAt = renewed.ExpiresAt.Add(time.Minute)
-	raw := json.RawMessage(`{"objective":"deploy the service","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"web","port":8080,"health_path":"/health","hostname":"App.Example.Test."}}`)
+	raw := json.RawMessage(`{"intent":"execute","objective":"deploy the service","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"web","port":8080,"health_path":"/health","hostname":"App.Example.Test."}}`)
 	result, err := tools[0].Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
 		Lease: renewed,
 		Call: coreconversation.ToolCall{
@@ -496,11 +539,15 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 	if !ok {
 		t.Fatalf("properties schema=%#v", tools[0].Tool.InputSchema["properties"])
 	}
-	for _, field := range []string{"min_vcpu", "min_memory_gib", "disk_gib", "estimated_runtime_minutes"} {
+	for _, field := range []string{"intent", "min_vcpu", "min_memory_gib", "disk_gib", "estimated_runtime_minutes"} {
 		definition, ok := properties[field].(map[string]any)
 		if !ok || strings.TrimSpace(fmt.Sprint(definition["description"])) == "" {
 			t.Fatalf("sizing description %s=%#v", field, properties[field])
 		}
+	}
+	intentDescription := fmt.Sprint(properties["intent"].(map[string]any)["description"])
+	if !strings.Contains(intentDescription, "proposal_only") || !strings.Contains(intentDescription, "creates no offer") {
+		t.Fatalf("intent guidance=%q", intentDescription)
 	}
 	runtimeDescription := fmt.Sprint(properties["estimated_runtime_minutes"].(map[string]any)["description"])
 	if !strings.Contains(runtimeDescription, "environment setup") || !strings.Contains(runtimeDescription, "configuration") ||
