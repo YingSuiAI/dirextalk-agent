@@ -217,11 +217,15 @@ encrypted repository. Its model-facing contract requests one focused search
 with enough results, permits another only for a distinct missing fact, and
 directs the model to synthesize sufficient evidence instead of repeating
 equivalent searches for exhaustive confirmation.
-Each turn exposes at most three successful `web_search` executions. After the
-third successful result is durable, subsequent model requests remove only
-`web_search` from the resolved extension catalog and matching request snapshot,
-retain every unrelated extension and intrinsic tool, and instruct the model to
-synthesize the available evidence immediately while stating remaining gaps.
+The conversation runtime detects only exact action/result repetition and exact
+A/B alternation in the recent ordered tool history since the latest steer.
+Canonical action identity ignores call identity and argument key order, while
+normalized result identity ignores transport call IDs and timestamps. Three
+identical pairs or six A/B pairs add a brief correction while preserving every
+accepted extension and intrinsic. Only a fourth identical pair or eighth A/B
+pair makes the next model request a one-pass, tool-free synthesis from all
+durable evidence, with remaining gaps stated explicitly. Different arguments
+or results are productive progress and never trigger this recovery.
 
 When Knowledge is enabled, the same resolver chain adds one Agent-owned,
 read-only `knowledge_search` tool for authenticated Native conversations. It

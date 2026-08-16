@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -1315,12 +1314,12 @@ func TestAppendTurnToolHistoryPreservesAssistantMultiToolBatch(t *testing.T) {
 	conversation := Conversation{ID: uuid.NewString(), CreatedAt: createdAt.Add(-time.Hour), UpdatedAt: createdAt.Add(-time.Hour)}
 	service := &Service{turns: store}
 
-	authorities, reasoning, err := service.appendTurnToolHistory(context.Background(), turn, &conversation)
+	authorities, reasoning, recovery, err := service.appendTurnToolHistory(context.Background(), turn, &conversation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reasoning != "compare both" || len(authorities) != 2 || len(conversation.Messages) != 3 {
-		t.Fatalf("reasoning=%q authorities=%d messages=%+v", reasoning, len(authorities), conversation.Messages)
+	if reasoning != "compare both" || recovery != toolLoopNone || len(authorities) != 2 || len(conversation.Messages) != 3 {
+		t.Fatalf("reasoning=%q recovery=%d authorities=%d messages=%+v", reasoning, recovery, len(authorities), conversation.Messages)
 	}
 	assistant := conversation.Messages[0]
 	if assistant.Role != RoleAssistant || assistant.Content != "checking " || assistant.ReasoningContent != "compare both" || !reflect.DeepEqual(assistant.ToolCalls, []ToolCall{first, second}) {
@@ -1538,79 +1537,117 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 	}
 }
 
-func TestExecuteTurnRemovesOnlyWebSearchAfterThreeSuccessfulCalls(t *testing.T) {
-	profile := testTurnSnapshot()
-	profile.SystemPrompt = "base instruction"
-	conversationID := uuid.NewString()
-	selection := ExtensionSelection{
-		Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1", Digest: strings.Repeat("a", 64),
-		AllowedTools: []string{webSearchToolName, "local_lookup"},
+func TestExecuteTurnAppliesStagedToolLoopRecovery(t *testing.T) {
+	type pair struct{ arguments, content string }
+	tests := []struct {
+		name       string
+		pairs      []pair
+		steerAfter int
+		want       toolLoopRecovery
+	}{
+		{name: "different searches keep all tools", pairs: []pair{
+			{`{"query":"one"}`, `{"result":1}`}, {`{"query":"two"}`, `{"result":2}`}, {`{"query":"three"}`, `{"result":3}`},
+		}, want: toolLoopNone},
+		{name: "different results are progress", pairs: []pair{
+			{`{"query":"same"}`, `{"result":1}`}, {`{"query":"same"}`, `{"result":2}`}, {`{"query":"same"}`, `{"result":3}`},
+		}, want: toolLoopNone},
+		{name: "two identical pairs keep all tools", pairs: []pair{
+			{`{"query":"same"}`, `{"result":1}`}, {`{"query":"same"}`, `{"result":1}`},
+		}, want: toolLoopNone},
+		{name: "first exact repeat nudges with tools", pairs: []pair{
+			{`{"query":"same","limit":5}`, `{"result":1,"call_id":"first","timestamp":"old"}`},
+			{`{"limit":5,"query":"same"}`, `{"timestamp":"new","call_id":"second","result":1}`},
+			{`{"query":"same","limit":5}`, `{"result":1,"call_id":"third","timestamp":"later"}`},
+		}, want: toolLoopNudge},
+		{name: "continued exact repeat synthesizes without tools", pairs: []pair{
+			{`{"query":"same"}`, `{"result":1}`}, {`{"query":"same"}`, `{"result":1}`},
+			{`{"query":"same"}`, `{"result":1}`}, {`{"query":"same"}`, `{"result":1}`},
+		}, want: toolLoopSynthesize},
+		{name: "alternating loop first nudges with tools", pairs: []pair{
+			{`{"query":"a"}`, `{"result":"a"}`}, {`{"query":"b"}`, `{"result":"b"}`},
+			{`{"query":"a"}`, `{"result":"a"}`}, {`{"query":"b"}`, `{"result":"b"}`},
+			{`{"query":"a"}`, `{"result":"a"}`}, {`{"query":"b"}`, `{"result":"b"}`},
+		}, want: toolLoopNudge},
+		{name: "continued alternating loop synthesizes without tools", pairs: []pair{
+			{`{"query":"a"}`, `{"result":"a"}`}, {`{"query":"b"}`, `{"result":"b"}`},
+			{`{"query":"a"}`, `{"result":"a"}`}, {`{"query":"b"}`, `{"result":"b"}`},
+			{`{"query":"a"}`, `{"result":"a"}`}, {`{"query":"b"}`, `{"result":"b"}`},
+			{`{"query":"a"}`, `{"result":"a"}`}, {`{"query":"b"}`, `{"result":"b"}`},
+		}, want: toolLoopSynthesize},
+		{name: "steer resets recent loop", pairs: []pair{
+			{`{"query":"same"}`, `{"result":1}`}, {`{"query":"same"}`, `{"result":1}`},
+			{`{"query":"same"}`, `{"result":1}`}, {`{"query":"same"}`, `{"result":1}`},
+		}, steerAfter: 3, want: toolLoopNone},
 	}
-	snapshot := ExtensionExecutionSnapshot{
-		Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "mcp:test",
-		ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64),
-		NetworkBindingDigest: strings.Repeat("d", 64), ToolNames: []string{webSearchToolName, "local_lookup"}, ReadOnly: true,
-	}
-	resolved := ResolvedExtension{
-		Selection: selection, Snapshot: snapshot,
-		Tools: []coremodel.Tool{
-			{Name: webSearchToolName, InputSchema: map[string]any{"type": "object"}},
-			{Name: "local_lookup", InputSchema: map[string]any{"type": "object"}},
-		},
-	}
-	createdAt := time.Now().UTC()
-	events := []TurnEvent{{Kind: TurnEventAccepted, CreatedAt: createdAt}}
-	for index := 0; index < maxSuccessfulWebSearches; index++ {
-		call := ToolCall{ID: uuid.NewString(), Name: webSearchToolName, Arguments: fmt.Sprintf(`{"query":"query %d"}`, index)}
-		result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: fmt.Sprintf(`{"result":%d}`, index)}
-		events = append(events,
-			TurnEvent{Kind: TurnEventStarted, CreatedAt: createdAt.Add(time.Duration(len(events)) * time.Second)},
-			TurnEvent{Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: createdAt.Add(time.Duration(len(events)+1) * time.Second)},
-			TurnEvent{Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: createdAt.Add(time.Duration(len(events)+2) * time.Second)},
-		)
-	}
-	for index := range events {
-		events[index].Sequence = int64(index + 1)
-	}
-	turn := Turn{
-		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID, Prompt: "summarize the research",
-		ProfileID: profile.ProfileID, ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
-		ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(),
-		State: TurnAccepted, Revision: 1, LastSequence: int64(len(events)), CreatedAt: createdAt,
-	}
-	for index := range events {
-		events[index].TurnID = turn.ID
-	}
-	base := newFakeStore()
-	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
-	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn}, events: events}
-	model := &capturingTurnModel{}
-	service, err := NewService(store, model, extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
-		return []ResolvedExtension{resolved}, nil
-	}), snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
-	if err != nil {
-		t.Fatal(err)
-	}
-	service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
-		return []ResolvedIntrinsic{{
-			Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}},
-			Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
-				return IntrinsicExecutionResult{TurnCommitted: true}, nil
-			},
-		}}, nil
-	}))
 
-	service.executeTurn(context.Background(), turn.ID)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := testTurnSnapshot()
+			profile.SystemPrompt = "base instruction"
+			conversationID := uuid.NewString()
+			selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1", Digest: strings.Repeat("a", 64), AllowedTools: []string{"web_search", "local_lookup"}}
+			snapshot := ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "mcp:test",
+				ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64),
+				NetworkBindingDigest: strings.Repeat("d", 64), ToolNames: append([]string(nil), selection.AllowedTools...), ReadOnly: true}
+			resolved := ResolvedExtension{Selection: selection, Snapshot: snapshot, Tools: []coremodel.Tool{
+				{Name: "web_search", InputSchema: map[string]any{"type": "object"}},
+				{Name: "local_lookup", InputSchema: map[string]any{"type": "object"}},
+			}}
+			createdAt := time.Now().UTC()
+			events := []TurnEvent{{Kind: TurnEventAccepted, CreatedAt: createdAt}}
+			for index, value := range test.pairs {
+				call := ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: value.arguments}
+				result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: value.content}
+				events = append(events, TurnEvent{Kind: TurnEventStarted}, TurnEvent{Kind: TurnEventToolCall, ToolCall: &call}, TurnEvent{Kind: TurnEventToolResult, ToolResult: &result})
+				if test.steerAfter == index+1 {
+					events = append(events, TurnEvent{Kind: TurnEventSteered, Text: "change direction"})
+				}
+			}
+			turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID, Prompt: "finish the research",
+				ProfileID: profile.ProfileID, ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+				ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(),
+				State: TurnAccepted, Revision: 1, LastSequence: int64(len(events)), CreatedAt: createdAt}
+			for index := range events {
+				events[index].TurnID = turn.ID
+				events[index].Sequence = int64(index + 1)
+				events[index].CreatedAt = createdAt.Add(time.Duration(index) * time.Second)
+			}
+			base := newFakeStore()
+			base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
+			store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn}, events: events}
+			model := &capturingTurnModel{}
+			service, err := NewService(store, model, extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+				return []ResolvedExtension{resolved}, nil
+			}), snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+				return []ResolvedIntrinsic{{Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}}, Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+					return IntrinsicExecutionResult{TurnCommitted: true}, nil
+				}}}, nil
+			}))
 
-	request := model.request
-	if model.runs != 1 || len(request.Intrinsics) != 1 || request.Intrinsics[0].Tool.Name != coremodel.IntrinsicStaticSitePublishToolName ||
-		len(request.Extensions) != 1 || len(request.Extensions[0].Tools) != 1 || request.Extensions[0].Tools[0].Name != "local_lookup" ||
-		!reflect.DeepEqual(request.Extensions[0].Selection.AllowedTools, []string{"local_lookup"}) ||
-		!reflect.DeepEqual(request.Extensions[0].Snapshot.ToolNames, []string{"local_lookup"}) ||
-		len(request.ExtensionSnapshots) != 1 || !reflect.DeepEqual(request.ExtensionSnapshots[0].Selection.AllowedTools, []string{"local_lookup"}) ||
-		!reflect.DeepEqual(request.ExtensionSnapshots[0].ToolNames, []string{"local_lookup"}) ||
-		!strings.Contains(request.Profile.SystemPrompt, webSearchBudgetGuidance) {
-		t.Fatalf("budgeted model request=%+v", request)
+			service.executeTurn(context.Background(), turn.ID)
+
+			request := model.request
+			if model.runs != 1 {
+				t.Fatalf("model runs=%d", model.runs)
+			}
+			if test.want == toolLoopSynthesize {
+				if len(request.Intrinsics) != 0 || len(request.Extensions) != 0 || len(request.ExtensionSnapshots) != 0 || !strings.Contains(request.Profile.SystemPrompt, toolLoopSynthesisGuidance) {
+					t.Fatalf("synthesis request retained tools or guidance is missing: %+v", request)
+				}
+				return
+			}
+			if len(request.Intrinsics) != 1 || request.Intrinsics[0].Tool.Name != coremodel.IntrinsicStaticSitePublishToolName ||
+				len(request.Extensions) != 1 || len(request.Extensions[0].Tools) != 2 || len(request.ExtensionSnapshots) != 1 {
+				t.Fatalf("productive request lost accepted tools: %+v", request)
+			}
+			if got := strings.Contains(request.Profile.SystemPrompt, toolLoopNudgeGuidance); got != (test.want == toolLoopNudge) || strings.Contains(request.Profile.SystemPrompt, toolLoopSynthesisGuidance) {
+				t.Fatalf("recovery guidance mismatch: %q", request.Profile.SystemPrompt)
+			}
+		})
 	}
 }
 

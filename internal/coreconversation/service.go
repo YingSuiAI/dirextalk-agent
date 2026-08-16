@@ -21,9 +21,8 @@ import (
 const (
 	MaxTurnModelDispatches     = 32
 	MaxTurnModelActiveDuration = 30 * time.Minute
-	maxSuccessfulWebSearches   = 3
-	webSearchToolName          = "web_search"
-	webSearchBudgetGuidance    = "This turn has enough web-search evidence. Synthesize the answer immediately from the available evidence and state any remaining gaps. Do not repeat the research through another tool."
+	toolLoopNudgeGuidance      = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
+	toolLoopSynthesisGuidance  = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
 )
 
 type Service struct {
@@ -1541,12 +1540,11 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "durable conversation context is invalid")
 		return
 	}
-	toolCallAuthorities, priorReasoning, err := s.appendTurnToolHistory(ctx, turn, &conv)
+	toolCallAuthorities, priorReasoning, loopRecovery, err := s.appendTurnToolHistory(ctx, turn, &conv)
 	if err != nil {
 		_, _ = s.turns.FailTurn(ctx, lease, "tool_history_unavailable", "durable tool history is unavailable")
 		return
 	}
-	webSearchBudgetReached := successfulToolCallCount(toolCallAuthorities, webSearchToolName) >= maxSuccessfulWebSearches
 	var turnSteers []TurnSteer
 	if steerStore, ok := s.turns.(TurnSteerStore); ok {
 		turnSteers, err = steerStore.ListTurnSteers(ctx, turn.ID)
@@ -1571,10 +1569,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			return
 		}
 	}
+	modelExtensions := resolvedExtensions
 	modelExtensionSnapshots := append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)
-	if webSearchBudgetReached {
-		resolvedExtensions, modelExtensionSnapshots = withoutModelExtensionTool(resolvedExtensions, modelExtensionSnapshots, webSearchToolName)
-	}
 	if turn.ExpectedRevision != nil {
 		expectedRevision := *turn.ExpectedRevision
 		if currentUserCommitted {
@@ -1686,6 +1682,12 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			seen[intrinsic.Tool.Name] = struct{}{}
 		}
 	}
+	modelIntrinsicTools := intrinsicTools
+	if loopRecovery == toolLoopSynthesize {
+		modelExtensions = nil
+		modelExtensionSnapshots = nil
+		modelIntrinsicTools = nil
+	}
 	modelCtx := child
 	modelCancel := func() {}
 	if durableDispatch {
@@ -1735,14 +1737,17 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			defer s.unregisterTurnOrdering(id, ordering)
 			profile := turn.ProfileSnapshot.Profile()
 			systemPrompt := profile.SystemPrompt
-			if containsStaticSiteIntrinsic(intrinsicTools) {
+			if containsStaticSiteIntrinsic(modelIntrinsicTools) {
 				systemPrompt = staticSiteSystemPrompt(systemPrompt)
 			}
-			if containsCloudWorkerIntrinsic(intrinsicTools) {
+			if containsCloudWorkerIntrinsic(modelIntrinsicTools) {
 				systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 			}
-			if webSearchBudgetReached {
-				systemPrompt = appendSystemPrompt(systemPrompt, webSearchBudgetGuidance)
+			switch loopRecovery {
+			case toolLoopNudge:
+				systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
+			case toolLoopSynthesize:
+				systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
 			}
 			// Force the current streaming runner so active provider streams are
 			// bounded only by their inactivity watchdog. Visible assistant text and
@@ -1758,8 +1763,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				},
 				Snapshot:              turn.ProfileSnapshot,
 				ProfileSnapshot:       turn.ProfileSnapshot,
-				Intrinsics:            append([]ResolvedIntrinsic(nil), intrinsicTools...),
-				Extensions:            resolvedExtensions,
+				Intrinsics:            append([]ResolvedIntrinsic(nil), modelIntrinsicTools...),
+				Extensions:            modelExtensions,
 				ExtensionSnapshots:    modelExtensionSnapshots,
 				InputPartsByMessageID: inputParts,
 			}, deltaBuffer.Append)
@@ -2251,72 +2256,113 @@ func contextBoundExtensionSource(source string) bool {
 	return source == "builtin:web_search:tavily" || source == "builtin:knowledge:semantic" || source == "product-capability"
 }
 
-func successfulToolCallCount(authorities map[string]turnToolCallAuthority, toolName string) int {
-	count := 0
-	for _, authority := range authorities {
-		if authority.state == turnToolCallTerminal && authority.call.Name == toolName && authority.result != nil && !authority.result.IsError {
-			count++
-		}
-	}
-	return count
-}
-
-func withoutModelExtensionTool(resolved []ResolvedExtension, snapshots []ExtensionExecutionSnapshot, toolName string) ([]ResolvedExtension, []ExtensionExecutionSnapshot) {
-	filtered := make([]ResolvedExtension, 0, len(resolved))
-	kept := make(map[string]struct{}, len(resolved))
-	for _, extension := range resolved {
-		hasExcludedTool := containsTool(extension.Selection.AllowedTools, toolName) || containsTool(extension.Snapshot.ToolNames, toolName)
-		for _, tool := range extension.Tools {
-			hasExcludedTool = hasExcludedTool || tool.Name == toolName
-		}
-		if !hasExcludedTool {
-			filtered = append(filtered, extension)
-			kept[extension.Selection.ID] = struct{}{}
-			continue
-		}
-		extension.Selection.AllowedTools = withoutToolName(extension.Selection.AllowedTools, toolName)
-		extension.Snapshot.Selection.AllowedTools = withoutToolName(extension.Snapshot.Selection.AllowedTools, toolName)
-		extension.Snapshot.ToolNames = withoutToolName(extension.Snapshot.ToolNames, toolName)
-		tools := make([]coremodel.Tool, 0, len(extension.Tools))
-		for _, tool := range extension.Tools {
-			if tool.Name != toolName {
-				tools = append(tools, tool)
-			}
-		}
-		extension.Tools = tools
-		if len(extension.Tools) == 0 && len(extension.Snapshot.ToolNames) == 0 && len(extension.Selection.AllowedTools) == 0 {
-			continue
-		}
-		filtered = append(filtered, extension)
-		kept[extension.Selection.ID] = struct{}{}
-	}
-	filteredSnapshots := make([]ExtensionExecutionSnapshot, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		if _, ok := kept[snapshot.Selection.ID]; !ok {
-			continue
-		}
-		snapshot.Selection.AllowedTools = withoutToolName(snapshot.Selection.AllowedTools, toolName)
-		snapshot.ToolNames = withoutToolName(snapshot.ToolNames, toolName)
-		filteredSnapshots = append(filteredSnapshots, snapshot)
-	}
-	return filtered, filteredSnapshots
-}
-
-func withoutToolName(names []string, excluded string) []string {
-	filtered := make([]string, 0, len(names))
-	for _, name := range names {
-		if name != excluded {
-			filtered = append(filtered, name)
-		}
-	}
-	return filtered
-}
-
 func appendSystemPrompt(base, guidance string) string {
 	if strings.TrimSpace(base) == "" {
 		return guidance
 	}
 	return strings.TrimSpace(base) + "\n\n" + guidance
+}
+
+type toolLoopRecovery uint8
+
+const (
+	toolLoopNone toolLoopRecovery = iota
+	toolLoopNudge
+	toolLoopSynthesize
+)
+
+func toolLoopRecoveryFor(pairs []string) toolLoopRecovery {
+	if repeatedTail(pairs, 4) || alternatingTail(pairs, 8) {
+		return toolLoopSynthesize
+	}
+	if repeatedTail(pairs, 3) || alternatingTail(pairs, 6) {
+		return toolLoopNudge
+	}
+	return toolLoopNone
+}
+
+func repeatedTail(values []string, count int) bool {
+	if len(values) < count {
+		return false
+	}
+	tail := values[len(values)-count:]
+	for index := 1; index < len(tail); index++ {
+		if tail[index] != tail[0] {
+			return false
+		}
+	}
+	return true
+}
+
+func alternatingTail(values []string, count int) bool {
+	if len(values) < count || count < 4 {
+		return false
+	}
+	tail := values[len(values)-count:]
+	if tail[0] == tail[1] {
+		return false
+	}
+	for index := 2; index < len(tail); index++ {
+		if tail[index] != tail[index%2] {
+			return false
+		}
+	}
+	return true
+}
+
+func toolLoopPairIdentity(call ToolCall, result ToolResult) (string, error) {
+	arguments, err := canonicalJSON(call.Arguments, MaxToolArgumentsBytes)
+	if err != nil {
+		return "", err
+	}
+	type resultIdentity struct {
+		Content string `json:"content"`
+		IsError bool   `json:"is_error"`
+		Summary string `json:"summary,omitempty"`
+	}
+	normalizedResult, err := json.Marshal(resultIdentity{
+		Content: normalizeToolLoopPayload(result.Content),
+		IsError: result.IsError,
+		Summary: normalizeToolLoopPayload(result.Summary),
+	})
+	if err != nil {
+		return "", err
+	}
+	return digest(strings.TrimSpace(call.Name) + "\n" + string(arguments) + "\n" + string(normalizedResult)), nil
+}
+
+func normalizeToolLoopPayload(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	var value any
+	if json.Unmarshal([]byte(trimmed), &value) == nil {
+		removeToolLoopTransportFields(value)
+		if canonical, err := json.Marshal(value); err == nil {
+			return string(canonical)
+		}
+	}
+	return strings.Join(strings.Fields(trimmed), " ")
+}
+
+func removeToolLoopTransportFields(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			normalizedKey := strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(key))
+			switch normalizedKey {
+			case "callid", "timestamp", "createdat", "updatedat":
+				delete(typed, key)
+			default:
+				removeToolLoopTransportFields(child)
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			removeToolLoopTransportFields(child)
+		}
+	}
 }
 
 type turnToolCallState uint8
@@ -2406,16 +2452,16 @@ func hasUnappliedDeferredWorkerSteer(steers []TurnSteer, appliedSteerIDs []strin
 	return false
 }
 
-func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation) (map[string]turnToolCallAuthority, string, error) {
+func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation) (map[string]turnToolCallAuthority, string, toolLoopRecovery, error) {
 	if conversation == nil {
-		return nil, "", ErrInvalid
+		return nil, "", toolLoopNone, ErrInvalid
 	}
 	const pageSize = 1000
 	var events []TurnEvent
 	for cursor := int64(0); ; {
 		page, err := s.turns.LoadTurnEvents(ctx, turn.ID, cursor, pageSize)
 		if err != nil {
-			return nil, "", err
+			return nil, "", toolLoopNone, err
 		}
 		if len(page) == 0 {
 			break
@@ -2423,7 +2469,7 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		events = append(events, page...)
 		next := page[len(page)-1].Sequence
 		if next <= cursor {
-			return nil, "", ErrConflict
+			return nil, "", toolLoopNone, ErrConflict
 		}
 		cursor = next
 		if len(page) < pageSize {
@@ -2431,6 +2477,8 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		}
 	}
 	authorities := make(map[string]turnToolCallAuthority)
+	loopActions := make(map[string]ToolCall)
+	loopPairs := make([]string, 0, 8)
 	type batchResult struct {
 		result    ToolResult
 		createdAt time.Time
@@ -2475,10 +2523,13 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 	}
 	for _, event := range events {
 		switch event.Kind {
+		case TurnEventSteered:
+			loopActions = make(map[string]ToolCall)
+			loopPairs = loopPairs[:0]
 		case TurnEventStarted:
 			if batchComplete() {
 				if err := flushBatch(); err != nil {
-					return nil, "", err
+					return nil, "", toolLoopNone, err
 				}
 			}
 		case TurnEventDelta:
@@ -2486,36 +2537,49 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 			batch.reasoning.WriteString(event.ReasoningContent)
 		case TurnEventToolCall:
 			if event.ToolCall == nil || event.ToolCall.Validate() != nil {
-				return nil, "", ErrConflict
+				return nil, "", toolLoopNone, ErrConflict
 			}
 			if _, exists := authorities[event.ToolCall.ID]; exists {
-				return nil, "", ErrConflict
+				return nil, "", toolLoopNone, ErrConflict
 			}
 			authorities[event.ToolCall.ID] = turnToolCallAuthority{call: *event.ToolCall, state: turnToolCallPending}
+			loopActions[event.ToolCall.ID] = *event.ToolCall
 			if len(batch.calls) == 0 {
 				batch.createdAt = event.CreatedAt
 			}
 			batch.calls = append(batch.calls, *event.ToolCall)
 		case TurnEventToolResult:
 			if event.ToolResult == nil || event.ToolResult.Validate() != nil {
-				return nil, "", ErrConflict
+				return nil, "", toolLoopNone, ErrConflict
 			}
 			authority, exists := authorities[event.ToolResult.CallID]
 			if !exists || authority.state == turnToolCallTerminal || event.ToolResult.ToolName != authority.call.Name {
-				return nil, "", ErrConflict
+				return nil, "", toolLoopNone, ErrConflict
 			}
 			result := *event.ToolResult
 			authority.state, authority.result = turnToolCallTerminal, &result
 			authorities[event.ToolResult.CallID] = authority
 			batch.results[event.ToolResult.CallID] = batchResult{result: result, createdAt: event.CreatedAt}
+			if action, ok := loopActions[event.ToolResult.CallID]; ok {
+				identity, identityErr := toolLoopPairIdentity(action, result)
+				if identityErr != nil {
+					return nil, "", toolLoopNone, ErrConflict
+				}
+				if len(loopPairs) == cap(loopPairs) {
+					copy(loopPairs, loopPairs[1:])
+					loopPairs = loopPairs[:len(loopPairs)-1]
+				}
+				loopPairs = append(loopPairs, identity)
+				delete(loopActions, event.ToolResult.CallID)
+			}
 		}
 	}
 	if batchComplete() {
 		if err := flushBatch(); err != nil {
-			return nil, "", err
+			return nil, "", toolLoopNone, err
 		}
 	}
-	return authorities, completedReasoning.String(), nil
+	return authorities, completedReasoning.String(), toolLoopRecoveryFor(loopPairs), nil
 }
 
 func conversationForTurnContinuation(conversation Conversation, turn Turn) (Conversation, int, bool, error) {

@@ -4,7 +4,7 @@
 
 ## v1.0.154
 
-1. Bound each turn to three successful Web Search executions, then preserve unrelated tools while directing the Agent to complete from existing evidence and state remaining gaps.
+1. Recover narrowly from exact repeated tool action/result loops: preserve every accepted tool during the first correction, then use one tool-free synthesis pass only if the same exact or A/B loop continues; different actions or results and post-steer work remain fully capable.
 
 ## v1.0.153
 
