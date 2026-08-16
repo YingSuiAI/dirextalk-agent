@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.150
+
+1. Prefer existing lightweight web research, local transformation, and static-site tools before proposing a paid Cloud Worker; network-backed research or HTML output alone no longer justifies remote execution.
+
 ## v1.0.149
 
 1. Preserve DeepSeek-compatible `reasoning_content` across tool-call rounds so the provider accepts the follow-up request and the conversation can reach a final answer.
