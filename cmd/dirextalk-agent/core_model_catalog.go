@@ -497,9 +497,16 @@ func normalizeCatalogModelsWithSecret(provider string, rawModels []map[string]an
 		}
 		name := firstCatalogString(raw["display_name"], raw["displayName"], raw["name"], id)
 		model := map[string]any{"id": id, "name": name, "provider": provider}
-		for _, key := range []string{"object", "created", "created_at", "owned_by", "type", "context_length", "context_window", "max_input_tokens", "max_output_tokens", "max_tokens", "input_token_limit", "output_token_limit"} {
+		for _, key := range []string{"object", "created", "created_at", "owned_by", "type", "context_length", "context_window", "max_completion_tokens", "max_input_tokens", "max_output_tokens", "max_tokens", "input_token_limit", "output_token_limit"} {
 			if value, ok := safeCatalogValue(key, raw[key]); ok {
 				model[key] = value
+			}
+		}
+		if _, exists := model["max_completion_tokens"]; !exists {
+			if topProvider, ok := raw["top_provider"].(map[string]any); ok {
+				if value, keep := safeCatalogValue("max_completion_tokens", topProvider["max_completion_tokens"]); keep {
+					model["max_completion_tokens"] = value
+				}
 			}
 		}
 		if modalities, present := catalogInputModalities(raw); present && len(modalities) > 0 {
@@ -756,6 +763,12 @@ func safeCatalogValue(field string, value any) (any, bool) {
 		return value, value != ""
 	case "created":
 		return catalogNumberValue(value)
+	case "max_completion_tokens":
+		integer, ok := catalogIntegerValue(value)
+		if !ok || integer.(int64) <= 0 {
+			return nil, false
+		}
+		return integer, true
 	case "context_length", "context_window", "max_input_tokens", "max_output_tokens", "max_tokens", "input_token_limit", "output_token_limit":
 		return catalogIntegerValue(value)
 	default:

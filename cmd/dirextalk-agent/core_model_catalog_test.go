@@ -41,7 +41,7 @@ func TestCoreModelCatalogOpenRouterConversationUsesTextFilterAndSafeNormalizatio
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotQuery, gotAuth = r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"openai/gpt-4o","name":"GPT-4o","architecture":{"output_modalities":[" TEXT ","text"," IMAGE ","text"],"input_modalities":[" TEXT ","image","IMAGE","audio"]},"context_length":128000,"api_key":"upstream-key","authorization":"Bearer upstream-key","metadata":{"api_key":"nested-key"}},{"id":"prefix/request-key","name":"must-drop-id"},{"id":"must-drop-name","displayName":"alias/request-key","owned_by":"owner/request-key"},{"id":"openai/text-embedding-3-small","architecture":{"output_modalities":["embedding"]}},{"id":"openai/gpt-image-1","architecture":{"output_modalities":["image"]}},{"id":"openai/gpt-4o","name":"duplicate"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"openai/gpt-4o","name":"GPT-4o","architecture":{"output_modalities":[" TEXT ","text"," IMAGE ","text"],"input_modalities":[" TEXT ","image","IMAGE","audio"]},"context_length":128000,"top_provider":{"max_completion_tokens":131072},"api_key":"upstream-key","authorization":"Bearer upstream-key","metadata":{"api_key":"nested-key"}},{"id":"anthropic/claude-sonnet","name":"Claude Sonnet","architecture":{"output_modalities":["text"],"input_modalities":["text"]},"max_completion_tokens":65536,"top_provider":{"max_completion_tokens":32768}},{"id":"prefix/request-key","name":"must-drop-id"},{"id":"must-drop-name","displayName":"alias/request-key","owned_by":"owner/request-key"},{"id":"openai/text-embedding-3-small","architecture":{"output_modalities":["embedding"]}},{"id":"openai/gpt-image-1","architecture":{"output_modalities":["image"]}},{"id":"openai/gpt-4o","name":"duplicate"}]}`))
 	}))
 	defer server.Close()
 
@@ -54,8 +54,14 @@ func TestCoreModelCatalogOpenRouterConversationUsesTextFilterAndSafeNormalizatio
 	if gotPath != "/v1/models" || gotQuery != "output_modalities=text" || gotAuth != "Bearer request-key" {
 		t.Fatalf("provider request path=%q query=%q auth=%q", gotPath, gotQuery, gotAuth)
 	}
-	if len(result.Models) != 1 || result.Models[0]["id"] != "openai/gpt-4o" || result.Models[0]["name"] != "GPT-4o" {
+	if len(result.Models) != 2 || result.Models[0]["id"] != "openai/gpt-4o" || result.Models[0]["name"] != "GPT-4o" {
 		t.Fatalf("unexpected conversation models: %#v", result.Models)
+	}
+	if got := result.Models[0]["max_completion_tokens"]; got != int64(131072) {
+		t.Fatalf("nested OpenRouter max_completion_tokens = %#v, want 131072", got)
+	}
+	if result.Models[1]["id"] != "anthropic/claude-sonnet" || result.Models[1]["max_completion_tokens"] != int64(65536) {
+		t.Fatalf("direct OpenRouter max_completion_tokens did not take precedence: %#v", result.Models[1])
 	}
 	if got, want := result.Models[0]["input_modalities"], []string{"text", "image"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("input modalities = %#v, want %#v", got, want)
