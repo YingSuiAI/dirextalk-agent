@@ -344,11 +344,11 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 	planID := uuid.NewString()
 	now := time.Now().UTC()
 	messages := []coreconversation.Message{
-		{ID: uuid.NewString(), Sequence: 1, Role: coreconversation.RoleUser, Content: "first", ModelProfileID: profileID, CreatedAt: now},
+		{ID: uuid.NewString(), Sequence: 1, Role: coreconversation.RoleUser, Content: "first", ModelProfileID: profileID, CreatedAt: now, Attachments: []coreconversation.AttachmentPresentation{{SourceID: uuid.NewString(), Kind: "file", Name: "notes.md", MediaType: "text/markdown", SizeBytes: 42}}},
 		{ID: uuid.NewString(), Sequence: 2, Role: coreconversation.RoleTool, ToolResults: []coreconversation.ToolResult{{CallID: "call", Content: "private tool payload"}}, ModelProfileID: profileID, CreatedAt: now.Add(time.Second)},
 		{ID: uuid.NewString(), Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ReasoningContent: "durable reasoning", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second), Status: "failed", RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID}},
 		{ID: uuid.NewString(), Sequence: 4, Role: coreconversation.RoleSystem, Content: "private system context", ModelProfileID: profileID, CreatedAt: now.Add(3 * time.Second)},
-		{ID: uuid.NewString(), Sequence: 5, Role: coreconversation.RoleUser, Content: "third", ModelProfileID: profileID, CreatedAt: now.Add(4 * time.Second)},
+		{ID: uuid.NewString(), Sequence: 5, Role: coreconversation.RoleUser, Content: "third", ModelProfileID: profileID, CreatedAt: now.Add(4 * time.Second), Attachments: []coreconversation.AttachmentPresentation{{SourceID: uuid.NewString(), Kind: "image", Name: "screen.png", MediaType: "image/png", SizeBytes: 84}}},
 	}
 	page, next, err := pageConversationMessages(conversationID, messages, "", 2)
 	if err != nil {
@@ -367,12 +367,18 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 	if !bytes.Contains(raw, []byte(`"related_task_ids":["`+taskID+`"]`)) || !bytes.Contains(raw, []byte(`"related_plan_ids":["`+planID+`"]`)) {
 		t.Fatalf("public history lost related task or plan ids: %s", raw)
 	}
+	if !bytes.Contains(raw, []byte(`"attachments":[{"source_id":"`)) || !bytes.Contains(raw, []byte(`"name":"screen.png"`)) {
+		t.Fatalf("public history lost attachment presentation: %s", raw)
+	}
 	older, finalCursor, err := pageConversationMessages(conversationID, messages, next, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(older) != 1 || older[0].MessageSeq != 1 || finalCursor != "" {
 		t.Fatalf("older page=%+v next=%q", older, finalCursor)
+	}
+	if len(older[0].Attachments) != 1 || older[0].Attachments[0].Name != "notes.md" {
+		t.Fatalf("older attachment presentation=%+v", older[0].Attachments)
 	}
 	if _, _, err := pageConversationMessages(uuid.NewString(), messages, next, 2); !errors.Is(err, coreconversation.ErrInvalid) {
 		t.Fatalf("cross-conversation cursor err=%v", err)
@@ -1084,6 +1090,40 @@ func TestDurableDoneEventProjectsAuthoritativeResponse(t *testing.T) {
 	}
 }
 
+func TestDurableSteeredEventProjectsInstructionBoundaryAndSafeAttachments(t *testing.T) {
+	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
+	steerID, sourceID := uuid.NewString(), uuid.NewString()
+	event := coreconversation.TurnEvent{
+		Kind: coreconversation.TurnEventSteered, Sequence: 4, Revision: 3, Text: "use the uploaded runbook",
+		MutationID: steerID, ExpectedRevision: 3, Status: "deferred_tool", CreatedAt: time.Now().UTC(),
+		AttachmentSources: []coreconversation.TurnAttachment{{
+			SourceID: sourceID, Revision: 1, TurnRequestID: steerID, Kind: "file", Name: "runbook.md",
+			MediaType: "text/markdown", SizeBytes: 42, SHA256: strings.Repeat("a", 64),
+			Status: coreconversation.TurnAttachmentCommitted, ExpiresAt: time.Now().UTC().Add(time.Hour),
+		}},
+	}
+	raw, err := ProjectDurableTurnEventJSON(turn, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projected map[string]any
+	if err = json.Unmarshal(raw, &projected); err != nil {
+		t.Fatal(err)
+	}
+	attachments := projected["attachments"].([]any)
+	if projected["kind"] != "steered" || projected["idempotency_key"] != turn.RequestID || projected["steer_idempotency_key"] != steerID ||
+		projected["turn_id"] != turn.ID || projected["revision"] != float64(3) || projected["text"] != event.Text ||
+		projected["status"] != "deferred_tool" || len(attachments) != 1 || len(attachments[0].(map[string]any)) != 5 ||
+		attachments[0].(map[string]any)["source_id"] != sourceID {
+		t.Fatalf("steered projection=%s", raw)
+	}
+	for _, private := range []string{"sha256", "expires_at", "turn_request_id", "revision"} {
+		if _, leaked := attachments[0].(map[string]any)[private]; leaked {
+			t.Fatalf("private attachment field %q leaked: %s", private, raw)
+		}
+	}
+}
+
 func TestListTurnsCapabilityPublishesOnlyCanonicalMetadata(t *testing.T) {
 	createdAt := time.Date(2026, 8, 6, 1, 2, 3, 0, time.UTC)
 	metadata := publicTurnMetadataList([]coreconversation.Turn{{
@@ -1091,7 +1131,7 @@ func TestListTurnsCapabilityPublishesOnlyCanonicalMetadata(t *testing.T) {
 		RequestID:               "33333333-3333-4333-8333-333333333333",
 		RequestFingerprint:      "fingerprint-must-not-cross",
 		ConversationID:          "22222222-2222-4222-8222-222222222222",
-		Prompt:                  "prompt-must-not-cross",
+		Prompt:                  "deploy the attached project",
 		ProfileID:               "profile-must-not-cross",
 		Revision:                3,
 		State:                   coreconversation.TurnCompleted,
@@ -1102,6 +1142,11 @@ func TestListTurnsCapabilityPublishesOnlyCanonicalMetadata(t *testing.T) {
 		UpdatedAt:               createdAt.Add(time.Second),
 		ProfileSnapshotDigest:   "snapshot-must-not-cross",
 		ExtensionSnapshotDigest: "extensions-must-not-cross",
+		AttachmentSources: []coreconversation.TurnAttachment{{
+			SourceID: uuid.NewString(), Revision: 1, TurnRequestID: "33333333-3333-4333-8333-333333333333",
+			Kind: "file", Name: "project.md", MediaType: "text/markdown", SizeBytes: 42,
+			SHA256: strings.Repeat("a", 64), Status: coreconversation.TurnAttachmentCommitted, ExpiresAt: createdAt.Add(time.Hour),
+		}},
 	}})
 	raw, err := json.Marshal(map[string]any{"turns": metadata, "next_page_token": "next"})
 	if err != nil {
@@ -1113,11 +1158,15 @@ func TestListTurnsCapabilityPublishesOnlyCanonicalMetadata(t *testing.T) {
 	}
 	turns := envelope["turns"].([]any)
 	turn := turns[0].(map[string]any)
-	if len(turn) != 10 || turn["turn_id"] == nil || turn["idempotency_key"] != "33333333-3333-4333-8333-333333333333" ||
-		turn["conversation_id"] == nil || turn["state"] != "completed" {
+	if len(turn) != 12 || turn["turn_id"] == nil || turn["idempotency_key"] != "33333333-3333-4333-8333-333333333333" ||
+		turn["conversation_id"] == nil || turn["prompt"] != "deploy the attached project" || turn["state"] != "completed" {
 		t.Fatalf("canonical turn metadata = %#v", turn)
 	}
-	for _, forbidden := range []string{"ID", "RequestID", "Prompt", "ProfileID", "request_id", "prompt", "profile_id", "ProfileSnapshot"} {
+	attachments := turn["attachments"].([]any)
+	if len(attachments) != 1 || len(attachments[0].(map[string]any)) != 5 || attachments[0].(map[string]any)["name"] != "project.md" {
+		t.Fatalf("canonical turn attachments = %#v", attachments)
+	}
+	for _, forbidden := range []string{"ID", "RequestID", "Prompt", "ProfileID", "request_id", "profile_id", "ProfileSnapshot", "sha256", "expires_at"} {
 		if _, leaked := turn[forbidden]; leaked {
 			t.Fatalf("private turn field %q leaked: %#v", forbidden, turn)
 		}
@@ -1128,8 +1177,8 @@ func TestListTurnsCapabilityPublishesOnlyCanonicalMetadata(t *testing.T) {
 		if operation.GetOperationId() != "list_turns" {
 			continue
 		}
-		if strings.Contains(operation.GetResultSchemaJson(), "prompt") ||
-			strings.Contains(operation.GetResultSchemaJson(), "profile") ||
+		if !strings.Contains(operation.GetResultSchemaJson(), `"prompt"`) ||
+			!strings.Contains(operation.GetResultSchemaJson(), `"attachments"`) || strings.Contains(operation.GetResultSchemaJson(), "profile") ||
 			!strings.Contains(operation.GetResultSchemaJson(), `"additionalProperties":false`) {
 			t.Fatalf("unsafe list_turns result schema: %s", operation.GetResultSchemaJson())
 		}
@@ -1202,7 +1251,7 @@ func newStopTurnCapability(t *testing.T) (*coreChatCapability, *stopTurnCapabili
 	now := time.Date(2026, 8, 8, 7, 8, 9, 0, time.UTC)
 	store := &stopTurnCapabilityStore{turn: coreconversation.Turn{
 		ID: uuid.NewString(), ConversationID: uuid.NewString(), RequestID: uuid.NewString(),
-		Prompt: "must-not-cross", ProfileID: uuid.NewString(), Revision: 4, LastSequence: 7,
+		Prompt: "cancel this turn", ProfileID: uuid.NewString(), Revision: 4, LastSequence: 7,
 		State: coreconversation.TurnCanceled, TerminalCode: "canceled", TerminalSummary: "turn canceled",
 		CreatedAt: now, UpdatedAt: now.Add(time.Second),
 	}}
@@ -1228,10 +1277,10 @@ func TestStopTurnCapabilityCallsConversationServiceAndReturnsOnlyPublicMetadata(
 	if err := json.Unmarshal(result, &output); err != nil {
 		t.Fatal(err)
 	}
-	if len(output) != 10 || output["idempotency_key"] != key || output["turn_id"] != store.turn.ID || output["state"] != "canceled" {
+	if len(output) != 12 || output["idempotency_key"] != key || output["turn_id"] != store.turn.ID || output["prompt"] != store.turn.Prompt || output["state"] != "canceled" {
 		t.Fatalf("public stop_turn result=%s", result)
 	}
-	for _, forbidden := range []string{"request_id", "prompt", "profile_id", "cancel_requested", "request_fingerprint"} {
+	for _, forbidden := range []string{"request_id", "profile_id", "cancel_requested", "request_fingerprint"} {
 		if _, present := output[forbidden]; present {
 			t.Fatalf("private field %q leaked: %s", forbidden, result)
 		}
@@ -1273,7 +1322,7 @@ func TestStopTurnDescriptorMatchesPinnedMessageServerContract(t *testing.T) {
 		if got := hex.EncodeToString(inputDigest[:]); got != "eaa73fde17ad29c4d721b6e07e17e0f472d88fb63b2d6b0112f6d385f67445da" {
 			t.Fatalf("stop_turn input digest=%s schema=%s", got, operation.GetInputSchemaJson())
 		}
-		if got := hex.EncodeToString(resultDigest[:]); got != "5031fafc12966ca78f1c41730d87f967f622647042719a67dca2619cfb737763" {
+		if got := hex.EncodeToString(resultDigest[:]); got != "a8f6399e2fe56d7570614d21ea007bf22e67a4bbb353ccc0ebf534c55ed4f128" {
 			t.Fatalf("stop_turn result digest=%s schema=%s", got, operation.GetResultSchemaJson())
 		}
 		return
@@ -1310,7 +1359,7 @@ func newSteerTurnCapability(t *testing.T) (*coreChatCapability, *steerTurnCapabi
 	now := time.Date(2026, 8, 9, 7, 8, 9, 0, time.UTC)
 	store := &steerTurnCapabilityStore{turn: coreconversation.Turn{
 		ID: uuid.NewString(), ConversationID: uuid.NewString(), RequestID: uuid.NewString(),
-		Prompt: "must-not-cross", ProfileID: uuid.NewString(), Revision: 5, LastSequence: 8,
+		Prompt: "steer this turn", ProfileID: uuid.NewString(), Revision: 5, LastSequence: 8,
 		State: coreconversation.TurnAccepted, CreatedAt: now, UpdatedAt: now.Add(time.Second),
 	}}
 	service, err := coreconversation.NewService(store, stopTurnModelRunner{}, nil, stopTurnProfileResolver{})
@@ -1337,10 +1386,10 @@ func TestSteerTurnCapabilityCallsConversationServiceAndReturnsTypedReceipt(t *te
 	if err := json.Unmarshal(result, &output); err != nil {
 		t.Fatal(err)
 	}
-	if len(output) != 11 || output["idempotency_key"] != store.turn.RequestID || output["steer_idempotency_key"] != key || output["turn_id"] != store.turn.ID || output["state"] != "accepted" {
+	if len(output) != 13 || output["idempotency_key"] != store.turn.RequestID || output["steer_idempotency_key"] != key || output["turn_id"] != store.turn.ID || output["prompt"] != store.turn.Prompt || output["state"] != "accepted" {
 		t.Fatalf("public steer_turn result=%s", result)
 	}
-	for _, forbidden := range []string{"instruction", "prompt", "profile_id", "request_fingerprint"} {
+	for _, forbidden := range []string{"instruction", "profile_id", "request_fingerprint"} {
 		if _, present := output[forbidden]; present {
 			t.Fatalf("private field %q leaked: %s", forbidden, result)
 		}

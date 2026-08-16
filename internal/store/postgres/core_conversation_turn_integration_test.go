@@ -94,6 +94,40 @@ func turnCommand() core.TurnStartCommand {
 	return core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: s.ProfileID, ExpectedProfileRevision: s.Revision, ExpectedCredentialVersion: s.CredentialVersion, ProfileSnapshot: s}
 }
 
+func TestCoreConversationFirstTurnPersistsProvisionalTitleAtAcceptancePostgres(t *testing.T) {
+	h := openTurnDB(t)
+	cmd := turnCommand()
+	cmd.Prompt = "  请帮我部署服务。后续要求  "
+	turn, err := h.store.StartTurn(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := h.store.LoadConversation(context.Background(), turn.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conversation.Title != "请帮我部署服务" || conversation.Revision != 1 || len(conversation.Messages) != 0 {
+		t.Fatalf("accepted conversation=%+v", conversation)
+	}
+
+	existingID := uuid.NewString()
+	if err = h.store.CreateConversation(context.Background(), core.Conversation{ID: existingID, Revision: 1}, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	cmd = turnCommand()
+	cmd.ConversationID = existingID
+	cmd.Prompt = "existing empty conversation"
+	revision := uint64(1)
+	cmd.ExpectedRevision = &revision
+	if _, err = h.store.StartTurn(context.Background(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err = h.store.LoadConversation(context.Background(), existingID)
+	if err != nil || conversation.Title != "existing empty conversation" || conversation.Revision != revision {
+		t.Fatalf("existing accepted conversation=%+v err=%v", conversation, err)
+	}
+}
+
 func TestCoreConversationTurnConcurrentStartIdempotencyPostgres(t *testing.T) {
 	h := openTurnDB(t)
 	cmd := turnCommand()

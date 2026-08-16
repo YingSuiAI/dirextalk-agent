@@ -111,19 +111,20 @@ type Message struct {
 	// Sequence is the durable transcript ordinal loaded from PostgreSQL. New
 	// in-memory messages keep it at zero until the atomic conversation commit;
 	// public history adapters use it without exposing Core-only payload fields.
-	Sequence         int64        `json:"-"`
-	Role             Role         `json:"role"`
-	Content          string       `json:"content,omitempty"`
-	ReasoningContent string       `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCall   `json:"tool_calls,omitempty"`
-	ToolResults      []ToolResult `json:"tool_results,omitempty"`
-	CreatedAt        time.Time    `json:"created_at"`
-	ModelProfileID   string       `json:"model_profile_id"`
-	RelatedTaskIDs   []string     `json:"related_task_ids,omitempty"`
-	RelatedPlanIDs   []string     `json:"related_plan_ids,omitempty"`
-	References       []Reference  `json:"references,omitempty"`
-	ToolSummaries    []string     `json:"tool_summaries,omitempty"`
-	Status           string       `json:"status,omitempty"`
+	Sequence         int64                    `json:"-"`
+	Role             Role                     `json:"role"`
+	Content          string                   `json:"content,omitempty"`
+	ReasoningContent string                   `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall               `json:"tool_calls,omitempty"`
+	ToolResults      []ToolResult             `json:"tool_results,omitempty"`
+	CreatedAt        time.Time                `json:"created_at"`
+	ModelProfileID   string                   `json:"model_profile_id"`
+	RelatedTaskIDs   []string                 `json:"related_task_ids,omitempty"`
+	RelatedPlanIDs   []string                 `json:"related_plan_ids,omitempty"`
+	References       []Reference              `json:"references,omitempty"`
+	ToolSummaries    []string                 `json:"tool_summaries,omitempty"`
+	Attachments      []AttachmentPresentation `json:"attachments,omitempty"`
+	Status           string                   `json:"status,omitempty"`
 }
 
 type Conversation struct {

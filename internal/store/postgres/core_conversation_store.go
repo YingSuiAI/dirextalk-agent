@@ -305,6 +305,7 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 		_ = json.Unmarshal(payload, &persisted)
 		c.Messages[i].Status = persisted.Status
 		c.Messages[i].ReasoningContent = persisted.ReasoningContent
+		c.Messages[i].Attachments = persisted.Attachments
 		executionIDs := make(map[string]string, len(persisted.ToolCalls))
 		for _, call := range persisted.ToolCalls {
 			executionIDs[call.ID] = call.ExecutionID

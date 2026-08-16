@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"testing"
@@ -146,5 +147,27 @@ func TestConversationAttachmentBecomesExactCloudWorkerSource(t *testing.T) {
 	}
 	if _, err = conversation.ResolveCloudWorkerManifest(ctx, lease, cloudworker.WorkspaceReadOnly, []string{uuid.NewString()}); !errors.Is(err, cloudworker.ErrInvalid) {
 		t.Fatalf("unbound source resolved manifest: %v", err)
+	}
+
+	response := core.ChatResponse{
+		RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 2, Done: true,
+		Message:           core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "done", ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC()},
+		ConversationTitle: "Attachment deployment",
+	}
+	if _, err = conversation.CommitTurn(ctx, lease, response); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := conversation.LoadConversation(ctx, turn.ConversationID)
+	if err != nil || len(persisted.Messages) != 2 || len(persisted.Messages[0].Attachments) != 1 {
+		t.Fatalf("persisted attachment transcript=%+v err=%v", persisted, err)
+	}
+	presentation := persisted.Messages[0].Attachments[0]
+	if presentation.SourceID != attachment.SourceID || presentation.Kind != attachment.Kind || presentation.Name != attachment.Name ||
+		presentation.MediaType != attachment.MediaType || presentation.SizeBytes != attachment.SizeBytes {
+		t.Fatalf("attachment presentation=%+v", presentation)
+	}
+	raw, err := json.Marshal(persisted.Messages[0])
+	if err != nil || bytes.Contains(raw, []byte(contentSHA256)) || bytes.Contains(raw, []byte(`"revision"`)) || bytes.Contains(raw, []byte(`"expires_at"`)) {
+		t.Fatalf("transcript attachment leaked source authority: %s err=%v", raw, err)
 	}
 }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.141
+
+1. Restore owner-visible durable turn prompts, safe attachment presentation, steer boundaries, reasoning segments, and immediate provisional conversation titles from Agent authority after cache loss or SSE reconnect.
+
 ## v1.0.140
 
 1. Omit zero-byte Worker stdout, stderr, and result files before remote transfer and local artifact metadata creation, while preserving non-empty deliverables.

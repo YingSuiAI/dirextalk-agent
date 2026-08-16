@@ -29,6 +29,17 @@ func (s *Service) automaticConversationTitle(ctx context.Context, current, userT
 	if strings.TrimSpace(current) != "" {
 		return current
 	}
+	return s.generatedConversationTitle(ctx, userText, assistantText)
+}
+
+func (s *Service) replaceProvisionalConversationTitle(ctx context.Context, current, userText, assistantText string) string {
+	if strings.TrimSpace(current) != "" && current != ProvisionalConversationTitle(userText) {
+		return current
+	}
+	return s.generatedConversationTitle(ctx, userText, assistantText)
+}
+
+func (s *Service) generatedConversationTitle(ctx context.Context, userText, assistantText string) string {
 	if s.titleGenerator != nil {
 		generated, err := s.titleGenerator.GenerateConversationTitle(ctx, conversationTitleSource(userText), conversationTitleSource(assistantText))
 		if err == nil {
@@ -37,7 +48,7 @@ func (s *Service) automaticConversationTitle(ctx context.Context, current, userT
 			}
 		}
 	}
-	return conversationTitleFallback(userText)
+	return ProvisionalConversationTitle(userText)
 }
 
 func firstConversationUserText(conversation Conversation, currentPrompt string) string {
@@ -52,6 +63,12 @@ func firstConversationUserText(conversation Conversation, currentPrompt string) 
 }
 
 func conversationTitleFallback(userText string) string {
+	return ProvisionalConversationTitle(userText)
+}
+
+// ProvisionalConversationTitle gives a newly accepted first turn a durable,
+// deterministic title before model execution finishes.
+func ProvisionalConversationTitle(userText string) string {
 	value := strings.TrimSpace(userText)
 	for index, r := range value {
 		if index > 0 && (r == '\n' || r == '\r' || r == '。' || r == '！' || r == '？' || r == '.' || r == '!' || r == '?') {
@@ -59,7 +76,15 @@ func conversationTitleFallback(userText string) string {
 			break
 		}
 	}
-	return normalizeConversationTitle(value)
+	if title := normalizeConversationTitle(value); title != "" {
+		return title
+	}
+	value = strings.Join(strings.Fields(strings.TrimSpace(userText)), " ")
+	runes := []rune(value)
+	if len(runes) > conversationTitleMaxRunes {
+		runes = runes[:conversationTitleMaxRunes]
+	}
+	return strings.TrimSpace(string(runes))
 }
 
 func normalizeConversationTitle(value string) string {

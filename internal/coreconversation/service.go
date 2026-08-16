@@ -1948,7 +1948,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			conv.Messages = append(conv.Messages, Message{ID: uuid.NewString(), Role: RoleUser, Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: userTime}, m)
 			conv.Revision++
 			conv.UpdatedAt = s.clock()
-			conversationTitle := s.automaticConversationTitle(ctx, conv.Title, conversationTitleUserText, m.Content)
+			conversationTitle := s.replaceProvisionalConversationTitle(ctx, conv.Title, conversationTitleUserText, m.Content)
 			response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision, Message: m, Done: true, ModelProfileID: turn.ProfileID, RelatedTaskIDs: append([]string(nil), m.RelatedTaskIDs...), RelatedPlanIDs: append([]string(nil), m.RelatedPlanIDs...), References: cloneReferences(m.References), ToolSummaries: append([]string(nil), m.ToolSummaries...), ToolResults: historyResults, ConversationTitle: conversationTitle}
 			if _, commitErr := s.turns.CommitTurn(ctx, lease, response); commitErr != nil {
 				current, readErr := s.turns.GetTurn(ctx, turn.ID)

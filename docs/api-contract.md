@@ -197,7 +197,9 @@ retain their frozen revision CAS.
 - Capability conversation reads use a closed Flutter-facing projection.
   Conversations expose only id/title/revision/timestamps/status; history
   exposes only user/assistant messages with durable sequence, terminal status,
-  additive `reasoning_content`, and a references array. The first history page
+  additive `reasoning_content`, references, and attachment presentation
+  (`source_id`, `kind`, `name`, `mime_type`, and `size_bytes`). Attachment
+  content, digest, source revision, status, and expiry remain private. The first history page
   contains the newest bounded messages in ascending sequence order, and its
   opaque cursor is bound to the conversation id and prior sequence.
 - Capability `agent.chat.v1/list_turns` accepts only a canonical conversation
@@ -205,16 +207,18 @@ retain their frozen revision CAS.
   limit from 1 through 1,000. Its closed result projects exactly `turn_id`,
   the original start `idempotency_key`, `conversation_id`, `state`, `revision`,
   `last_sequence`, `terminal_code`, `terminal_summary`, `created_at`, and
-  `updated_at`; prompts, request fingerprints, model/profile data, credentials,
-  and execution snapshots never cross the Capability boundary.
+  `updated_at`, durable `prompt`, and the same non-sensitive attachment
+  presentation. Request fingerprints, model/profile data, credentials, and
+  execution snapshots never cross the Capability boundary.
 - Capability `agent.chat.v1/stop_turn` is the monotonic durable-turn
   cancellation mutation. It accepts exactly `idempotency_key` and `turn_id`,
   calls the conversation service cancellation
   path, and returns only the same public turn metadata plus the cancellation
   request `idempotency_key`. The request is bound to the immutable turn ID and
   replays after later turn state changes; it does not use the changing turn
-  revision. It does not alias generic Capability operation cancellation,
-  accept unknown fields, or expose the original prompt/profile.
+  revision. It does not alias generic Capability operation cancellation or
+  accept unknown fields; the owner-visible prompt and attachment presentation
+  remain recoverable while profile and execution bindings stay private.
 - Capability `agent.chat.v1/steer_turn` appends one non-empty instruction to
   the same accepted/running durable turn, or to a confirmation-waiting turn
   whose current Cloud Worker offer is unconfirmed, queued, or running. It
@@ -237,7 +241,12 @@ retain their frozen revision CAS.
   notice only for those unapplied mutations. Core never re-proposes the Worker,
   re-runs the intrinsic, or creates a successor turn. The typed
   result returns the original turn idempotency identity plus the separate steer
-  mutation receipt; prompt/profile data stays private.
+  mutation receipt; owner-visible prompt and attachment presentation remain
+  recoverable while profile data stays private.
+  Durable SSE replay emits each accepted steer as `kind=steered` with the
+  original turn idempotency key, separate `steer_idempotency_key`, instruction
+  text, non-sensitive attachment presentation, revision, status, and timestamp;
+  its SSE sequence remains the `Last-Event-ID` recovery cursor.
 - Capability `agent.chat.v1/start_turn` admits the same durable conversation
   turn exposed by `get_turn` and `list_turns`, then returns without watching
   execution. Its HTTP `operation_id` is the public `turn_id`; the request id
@@ -250,6 +259,10 @@ retain their frozen revision CAS.
   `waiting_confirmation` event. The Worker projection is written in the same
   transaction as `queued`, `provisioning`, `running`, and terminal execution
   changes; it is not synthesized by polling.
+- Accepting the first turn of an untitled conversation immediately persists a
+  deterministic, normalized, bounded prompt-prefix title. Successful first-turn
+  title generation may replace that provisional value; later user titles are
+  not overwritten.
 - Stored credentials are write-only from ordinary read/list APIs. Responses
   expose status, fingerprints, revisions, or binding digests, never secret
   bytes. Agent-owned secret fields use the configured encrypted-at-rest store.

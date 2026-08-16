@@ -153,11 +153,14 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 	}
 	if c.ExpectedRevision != nil {
 		var revision uint64
-		if err = tx.QueryRow(ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1 AND deleted_at IS NULL`, c.ConversationID).Scan(&revision); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1 AND deleted_at IS NULL FOR UPDATE`, c.ConversationID).Scan(&revision); err != nil {
 			return core.Turn{}, core.ErrConflict
 		}
 		if revision != *c.ExpectedRevision {
 			return core.Turn{}, core.ErrConflict
+		}
+		if _, err = tx.Exec(ctx, `UPDATE core_conversations SET title=$2 WHERE conversation_id=$1 AND title='' AND NOT EXISTS (SELECT 1 FROM core_messages WHERE conversation_id=$1)`, c.ConversationID, core.ProvisionalConversationTitle(c.Prompt)); err != nil {
+			return core.Turn{}, err
 		}
 	}
 	// A turn may open a new conversation. Materialize its empty revision
@@ -165,7 +168,7 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 	// completion transaction advances this row with the fenced revision.
 	now := time.Now().UTC()
 	if c.ExpectedRevision == nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,'',1,$2,$2) ON CONFLICT(conversation_id) DO NOTHING`, c.ConversationID, now); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,$2,1,$3,$3) ON CONFLICT(conversation_id) DO NOTHING`, c.ConversationID, core.ProvisionalConversationTitle(c.Prompt), now); err != nil {
 			return core.Turn{}, err
 		}
 	}
@@ -972,7 +975,7 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 	if result.RowsAffected() != 1 {
 		return core.ErrConflict
 	}
-	convResult, err := tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,$2,$3,$4,$4) ON CONFLICT(conversation_id) DO UPDATE SET title=CASE WHEN core_conversations.title='' THEN EXCLUDED.title ELSE core_conversations.title END,revision=$3,updated_at=$4 WHERE core_conversations.revision=$5`, response.ConversationID, response.ConversationTitle, response.Revision, now, response.Revision-1)
+	convResult, err := tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,$2,$3,$4,$4) ON CONFLICT(conversation_id) DO UPDATE SET title=CASE WHEN core_conversations.title='' OR core_conversations.title=$6 THEN EXCLUDED.title ELSE core_conversations.title END,revision=$3,updated_at=$4 WHERE core_conversations.revision=$5`, response.ConversationID, response.ConversationTitle, response.Revision, now, response.Revision-1, core.ProvisionalConversationTitle(turn.Prompt))
 	if err != nil {
 		return err
 	}
@@ -995,7 +998,7 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 	transcript := make([]core.Message, 0, len(steers)+2)
 	firstUserAt := response.Message.CreatedAt.Add(-time.Duration(len(steers)+1) * time.Microsecond)
 	if !userAlreadyCommitted {
-		transcript = append(transcript, core.Message{ID: userMessageID, Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: firstUserAt})
+		transcript = append(transcript, core.Message{ID: userMessageID, Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: firstUserAt, Attachments: core.PresentTurnAttachments(turn.AttachmentSources)})
 	}
 	for index, steer := range steers {
 		transcript = append(transcript, core.Message{
@@ -1004,6 +1007,7 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 			Content:        steer.Instruction,
 			ModelProfileID: lease.Turn.ProfileID,
 			CreatedAt:      firstUserAt.Add(time.Duration(index+1) * time.Microsecond),
+			Attachments:    core.PresentTurnAttachments(steer.AttachmentSources),
 		})
 	}
 	transcript = append(transcript, response.Message)
@@ -1114,7 +1118,7 @@ func failedTurnTranscriptTx(ctx context.Context, tx pgx.Tx, turn core.Turn, code
 		return err
 	}
 	if !userAlreadyCommitted {
-		user := core.Message{ID: userMessageID, Role: core.RoleUser, Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: createdAt}
+		user := core.Message{ID: userMessageID, Role: core.RoleUser, Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: createdAt, Attachments: core.PresentTurnAttachments(turn.AttachmentSources)}
 		if user.Validate() != nil {
 			return core.ErrInvalid
 		}
@@ -1208,7 +1212,7 @@ func listTurnSteersTx(ctx context.Context, tx pgx.Tx, turnID string) ([]core.Tur
 		if event.Status != "" && event.Status != deferredTurnSteerStatus {
 			return nil, core.ErrConflict
 		}
-		result = append(result, core.TurnSteer{RequestID: event.MutationID, Instruction: event.Text, ExpectedRevision: event.ExpectedRevision, Sequence: sequence, CreatedAt: createdAt.UTC(), Deferred: event.Status == deferredTurnSteerStatus})
+		result = append(result, core.TurnSteer{RequestID: event.MutationID, Instruction: event.Text, ExpectedRevision: event.ExpectedRevision, Sequence: sequence, CreatedAt: createdAt.UTC(), Deferred: event.Status == deferredTurnSteerStatus, AttachmentSources: event.AttachmentSources})
 	}
 	return result, rows.Err()
 }

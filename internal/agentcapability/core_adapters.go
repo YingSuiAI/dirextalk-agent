@@ -181,21 +181,22 @@ type durableStreamExtensionSelection struct {
 	AllowedTools  []string `json:"allowed_tools"`
 }
 
-// publicTurnMetadata is the common safe turn projection allowed to cross the
-// Capability boundary. In particular, prompt, request fingerprints,
-// model/profile data, and decrypted execution snapshots remain Agent-private.
-// Callers add only the action-authoritative idempotency key: the original turn
-// request for list_turns, or the cancellation request for stop_turn.
+// publicTurnMetadata is the common owner-facing turn projection. The durable
+// prompt and non-sensitive attachment presentation survive client cache loss;
+// request fingerprints, model/profile data, and execution snapshots remain
+// Agent-private. Callers add only the action-authoritative idempotency key.
 type publicTurnMetadata struct {
-	TurnID          string                     `json:"turn_id"`
-	ConversationID  string                     `json:"conversation_id"`
-	State           coreconversation.TurnState `json:"state"`
-	Revision        uint64                     `json:"revision"`
-	LastSequence    int64                      `json:"last_sequence"`
-	TerminalCode    string                     `json:"terminal_code"`
-	TerminalSummary string                     `json:"terminal_summary"`
-	CreatedAt       time.Time                  `json:"created_at"`
-	UpdatedAt       time.Time                  `json:"updated_at"`
+	TurnID          string                                    `json:"turn_id"`
+	ConversationID  string                                    `json:"conversation_id"`
+	Prompt          string                                    `json:"prompt"`
+	Attachments     []coreconversation.AttachmentPresentation `json:"attachments"`
+	State           coreconversation.TurnState                `json:"state"`
+	Revision        uint64                                    `json:"revision"`
+	LastSequence    int64                                     `json:"last_sequence"`
+	TerminalCode    string                                    `json:"terminal_code"`
+	TerminalSummary string                                    `json:"terminal_summary"`
+	CreatedAt       time.Time                                 `json:"created_at"`
+	UpdatedAt       time.Time                                 `json:"updated_at"`
 }
 
 type publicStoppedTurn struct {
@@ -224,16 +225,17 @@ type publicConversation struct {
 }
 
 type publicConversationMessage struct {
-	MessageID        string                       `json:"message_id"`
-	Role             string                       `json:"role"`
-	Content          string                       `json:"content"`
-	ReasoningContent string                       `json:"reasoning_content,omitempty"`
-	RelatedTaskIDs   []string                     `json:"related_task_ids"`
-	RelatedPlanIDs   []string                     `json:"related_plan_ids"`
-	CreatedAt        time.Time                    `json:"created_at"`
-	MessageSeq       int64                        `json:"message_seq"`
-	Status           string                       `json:"status"`
-	References       []coreconversation.Reference `json:"references"`
+	MessageID        string                                    `json:"message_id"`
+	Role             string                                    `json:"role"`
+	Content          string                                    `json:"content"`
+	ReasoningContent string                                    `json:"reasoning_content,omitempty"`
+	RelatedTaskIDs   []string                                  `json:"related_task_ids"`
+	RelatedPlanIDs   []string                                  `json:"related_plan_ids"`
+	CreatedAt        time.Time                                 `json:"created_at"`
+	MessageSeq       int64                                     `json:"message_seq"`
+	Status           string                                    `json:"status"`
+	References       []coreconversation.Reference              `json:"references"`
+	Attachments      []coreconversation.AttachmentPresentation `json:"attachments"`
 }
 
 type conversationMessageCursor struct {
@@ -271,6 +273,10 @@ func projectConversationMessages(values []coreconversation.Message) []publicConv
 		if references == nil {
 			references = make([]coreconversation.Reference, 0)
 		}
+		attachments := make([]coreconversation.AttachmentPresentation, 0)
+		if value.Role == coreconversation.RoleUser {
+			attachments = append(attachments, value.Attachments...)
+		}
 		relatedTaskIDs := append([]string(nil), value.RelatedTaskIDs...)
 		if relatedTaskIDs == nil {
 			relatedTaskIDs = make([]string, 0)
@@ -294,6 +300,7 @@ func projectConversationMessages(values []coreconversation.Message) []publicConv
 			MessageSeq:       sequence,
 			Status:           status,
 			References:       references,
+			Attachments:      attachments,
 		})
 	}
 	return result
@@ -359,6 +366,8 @@ func projectPublicTurnMetadata(value coreconversation.Turn) publicTurnMetadata {
 	return publicTurnMetadata{
 		TurnID:          value.ID,
 		ConversationID:  value.ConversationID,
+		Prompt:          value.Prompt,
+		Attachments:     coreconversation.PresentTurnAttachments(value.AttachmentSources),
 		State:           value.State,
 		Revision:        value.Revision,
 		LastSequence:    value.LastSequence,
@@ -754,25 +763,27 @@ func decodeCanonicalAttachmentChunk(value string) ([]byte, error) {
 // durableChatStreamEvent is the direct HTTP/SSE wire DTO. TurnSequence remains
 // an internal replay cursor and is intentionally not exposed.
 type durableChatStreamEvent struct {
-	Kind             string                       `json:"kind"`
-	IdempotencyKey   string                       `json:"idempotency_key"`
-	ConversationID   string                       `json:"conversation_id"`
-	TurnID           string                       `json:"turn_id"`
-	Revision         uint64                       `json:"revision"`
-	Text             string                       `json:"text,omitempty"`
-	ReasoningContent string                       `json:"reasoning_content,omitempty"`
-	RelatedTaskIDs   []string                     `json:"related_task_ids,omitempty"`
-	RelatedPlanIDs   []string                     `json:"related_plan_ids,omitempty"`
-	References       []coreconversation.Reference `json:"references,omitempty"`
-	ToolCall         *coreconversation.ToolCall   `json:"tool_call,omitempty"`
-	ToolResult       *coreconversation.ToolResult `json:"tool_result,omitempty"`
-	ErrorCode        string                       `json:"error_code,omitempty"`
-	ErrorSummary     string                       `json:"error_summary,omitempty"`
-	ConfirmationID   string                       `json:"confirmation_id,omitempty"`
-	ExecutionID      string                       `json:"execution_id,omitempty"`
-	Status           string                       `json:"status,omitempty"`
-	Phase            string                       `json:"phase,omitempty"`
-	CreatedAt        string                       `json:"created_at,omitempty"`
+	Kind                string                                     `json:"kind"`
+	IdempotencyKey      string                                     `json:"idempotency_key"`
+	ConversationID      string                                     `json:"conversation_id"`
+	TurnID              string                                     `json:"turn_id"`
+	Revision            uint64                                     `json:"revision"`
+	Text                string                                     `json:"text,omitempty"`
+	ReasoningContent    string                                     `json:"reasoning_content,omitempty"`
+	RelatedTaskIDs      []string                                   `json:"related_task_ids,omitempty"`
+	RelatedPlanIDs      []string                                   `json:"related_plan_ids,omitempty"`
+	References          []coreconversation.Reference               `json:"references,omitempty"`
+	ToolCall            *coreconversation.ToolCall                 `json:"tool_call,omitempty"`
+	ToolResult          *coreconversation.ToolResult               `json:"tool_result,omitempty"`
+	ErrorCode           string                                     `json:"error_code,omitempty"`
+	ErrorSummary        string                                     `json:"error_summary,omitempty"`
+	ConfirmationID      string                                     `json:"confirmation_id,omitempty"`
+	ExecutionID         string                                     `json:"execution_id,omitempty"`
+	Status              string                                     `json:"status,omitempty"`
+	Phase               string                                     `json:"phase,omitempty"`
+	CreatedAt           string                                     `json:"created_at,omitempty"`
+	SteerIdempotencyKey string                                     `json:"steer_idempotency_key,omitempty"`
+	Attachments         *[]coreconversation.AttachmentPresentation `json:"attachments,omitempty"`
 }
 
 func projectDurableChatStreamEvent(turn coreconversation.Turn, revision uint64, event coreconversation.StreamEvent) (durableChatStreamEvent, error) {
@@ -831,6 +842,25 @@ func projectDurableWorkerStatusEvent(turn coreconversation.Turn, event coreconve
 	return projected, nil
 }
 
+func projectDurableSteeredEvent(turn coreconversation.Turn, event coreconversation.TurnEvent) (durableChatStreamEvent, error) {
+	if event.Revision == 0 || !coretask.ValidUUID(event.MutationID) || strings.TrimSpace(event.Text) == "" || event.CreatedAt.IsZero() {
+		return durableChatStreamEvent{}, coreconversation.ErrChatFailed
+	}
+	projected, err := projectDurableChatStreamEvent(turn, event.Revision, coreconversation.StreamEvent{
+		Kind: coreconversation.StreamEventKind(coreconversation.TurnEventSteered), Text: event.Text,
+		RequestID: turn.RequestID, ConversationID: turn.ConversationID,
+	})
+	if err != nil {
+		return durableChatStreamEvent{}, err
+	}
+	attachments := coreconversation.PresentTurnAttachments(event.AttachmentSources)
+	projected.SteerIdempotencyKey = event.MutationID
+	projected.Attachments = &attachments
+	projected.Status = event.Status
+	projected.CreatedAt = event.CreatedAt.UTC().Format(time.RFC3339Nano)
+	return projected, nil
+}
+
 func durableTurnStreamEvent(turn coreconversation.Turn, event coreconversation.TurnEvent) *coreconversation.StreamEvent {
 	base := coreconversation.StreamEvent{TurnSequence: event.Sequence, RequestID: turn.RequestID, ConversationID: turn.ConversationID}
 	switch event.Kind {
@@ -869,6 +899,8 @@ func ProjectDurableTurnEventJSON(turn coreconversation.Turn, event coreconversat
 		projected, err = projectDurableWaitingConfirmationEvent(turn, event)
 	case coreconversation.TurnEventWorkerStatus:
 		projected, err = projectDurableWorkerStatusEvent(turn, event)
+	case coreconversation.TurnEventSteered:
+		projected, err = projectDurableSteeredEvent(turn, event)
 	default:
 		stream := durableTurnStreamEvent(turn, event)
 		if stream == nil {
@@ -1966,9 +1998,11 @@ func descriptor(id, name, description string, specs []opSpec) *capv1.CapabilityD
 	return d
 }
 
-const publicTurnResultSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"last_sequence":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["accepted","running","waiting_confirmation","completed","canceled","failed"],"type":"string"},"terminal_code":{"type":"string"},"terminal_summary":{"type":"string"},"turn_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["turn_id","idempotency_key","conversation_id","state","revision","last_sequence","terminal_code","terminal_summary","created_at","updated_at"],"type":"object"}`
+const publicAttachmentResultSchema = `{"additionalProperties":false,"properties":{"kind":{"enum":["image","file","workspace_archive"],"type":"string"},"mime_type":{"type":"string"},"name":{"type":"string"},"size_bytes":{"minimum":1,"type":"integer"},"source_id":{"format":"uuid","type":"string"}},"required":["source_id","kind","name","mime_type","size_bytes"],"type":"object"}`
 
-const publicSteeredTurnResultSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"last_sequence":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["accepted","running","waiting_confirmation"],"type":"string"},"steer_idempotency_key":{"format":"uuid","type":"string"},"terminal_code":{"type":"string"},"terminal_summary":{"type":"string"},"turn_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["turn_id","idempotency_key","steer_idempotency_key","conversation_id","state","revision","last_sequence","terminal_code","terminal_summary","created_at","updated_at"],"type":"object"}`
+const publicTurnResultSchema = `{"additionalProperties":false,"properties":{"attachments":{"items":` + publicAttachmentResultSchema + `,"maxItems":4,"type":"array"},"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"last_sequence":{"minimum":0,"type":"integer"},"prompt":{"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["accepted","running","waiting_confirmation","completed","canceled","failed"],"type":"string"},"terminal_code":{"type":"string"},"terminal_summary":{"type":"string"},"turn_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["turn_id","idempotency_key","conversation_id","prompt","attachments","state","revision","last_sequence","terminal_code","terminal_summary","created_at","updated_at"],"type":"object"}`
+
+const publicSteeredTurnResultSchema = `{"additionalProperties":false,"properties":{"attachments":{"items":` + publicAttachmentResultSchema + `,"maxItems":4,"type":"array"},"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"idempotency_key":{"format":"uuid","type":"string"},"last_sequence":{"minimum":0,"type":"integer"},"prompt":{"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["accepted","running","waiting_confirmation"],"type":"string"},"steer_idempotency_key":{"format":"uuid","type":"string"},"terminal_code":{"type":"string"},"terminal_summary":{"type":"string"},"turn_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["turn_id","idempotency_key","steer_idempotency_key","conversation_id","prompt","attachments","state","revision","last_sequence","terminal_code","terminal_summary","created_at","updated_at"],"type":"object"}`
 
 const durableStreamExtensionSelectionSchema = `{"additionalProperties":false,"properties":{"allowed_tools":{"items":{"maxLength":256,"minLength":1,"type":"string"},"maxItems":64,"minItems":1,"type":"array","uniqueItems":true},"digest":{"pattern":"^[a-f0-9]{64}$","type":"string"},"id":{"format":"uuid","type":"string"},"kind":{"const":"mcp","type":"string"},"pinned_version":{"maxLength":256,"minLength":1,"type":"string"}},"required":["kind","id","pinned_version","digest","allowed_tools"],"type":"object"}`
 

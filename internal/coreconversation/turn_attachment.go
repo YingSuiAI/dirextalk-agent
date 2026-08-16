@@ -50,6 +50,30 @@ type TurnAttachment struct {
 	ExpiresAt     time.Time            `json:"expires_at"`
 }
 
+// AttachmentPresentation is the stable, non-sensitive attachment metadata
+// kept with user transcript messages and exposed to the owner UI.
+type AttachmentPresentation struct {
+	SourceID  string `json:"source_id"`
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	MediaType string `json:"mime_type"`
+	SizeBytes uint64 `json:"size_bytes"`
+}
+
+func PresentTurnAttachments(values []TurnAttachment) []AttachmentPresentation {
+	result := make([]AttachmentPresentation, 0, len(values))
+	for _, value := range values {
+		result = append(result, AttachmentPresentation{
+			SourceID:  value.SourceID,
+			Kind:      value.Kind,
+			Name:      value.Name,
+			MediaType: value.MediaType,
+			SizeBytes: value.SizeBytes,
+		})
+	}
+	return result
+}
+
 func (attachment TurnAttachment) Validate() error {
 	if !validUUID(attachment.SourceID) || attachment.Revision != 1 ||
 		!validUUID(attachment.TurnRequestID) || !ValidTurnAttachmentKind(attachment.Kind) ||

@@ -119,6 +119,13 @@ contract](message-server-integration-development-contract.md), and
   turn id as the durable Capability operation identity. Typed `stop_turn`
   binds only the authoritative turn id and its own idempotency key and returns
   the public turn projection plus that cancellation idempotency key.
+- Native owner history now recovers each durable turn prompt and non-sensitive
+  attachment presentation from Agent authority, persists the same presentation
+  on completed/failed user transcript messages, and gives an untitled first
+  turn an immediate deterministic provisional title that normal title
+  generation may replace. Durable SSE also retains accepted steer boundaries,
+  instruction text, and steer attachment presentation for cache-free reasoning
+  segment recovery.
 - Native durable turns expose the Core-owned `agent_schedule_create` intrinsic
   with model input limited to schedule intent/trigger/timeout. Turn authority
   supplies owner generation, conversation, and profile; PostgreSQL commits the

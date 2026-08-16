@@ -82,6 +82,16 @@ func TestConversationTitleFallsBackToFirstSentence(t *testing.T) {
 	}
 }
 
+func TestProvisionalConversationTitleIsImmediateDeterministicAndBounded(t *testing.T) {
+	input := "  `请帮我部署服务。后面还有很长的说明`  "
+	if got := ProvisionalConversationTitle(input); got != "请帮我部署服务" || got != ProvisionalConversationTitle(input) || len([]rune(got)) > conversationTitleMaxRunes {
+		t.Fatalf("provisional title=%q", got)
+	}
+	if got := ProvisionalConversationTitle("？！"); got != "？！" {
+		t.Fatalf("punctuation-only provisional title=%q", got)
+	}
+}
+
 func TestAutomaticConversationTitleDoesNotOverwriteManualTitle(t *testing.T) {
 	store := newFakeStore()
 	cmd := command()
