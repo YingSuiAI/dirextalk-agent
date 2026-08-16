@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.151
+
+1. Guide Web Search turns to use one sufficiently broad query, reserve follow-up searches for distinct missing facts, and synthesize available evidence instead of looping over equivalent queries for exhaustive confirmation.
+
 ## v1.0.150
 
 1. Prefer existing lightweight web research, local transformation, and static-site tools before proposing a paid Cloud Worker; network-backed research or HTML output alone no longer justifies remote execution.
