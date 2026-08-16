@@ -501,7 +501,8 @@ second quote or confirmation step. Reusing a sufficiently large idle retained Wo
 performs no creation mutation and needs no new creation confirmation. The live
 intrinsic inventory includes its instance type, vCPU, memory, and disk; the
 model declares the task's actual minimums and prefers an adequate idle Worker
-without inflating or reducing those requirements. A live hourly read still
+without inflating or reducing those requirements. The same direct reuse applies
+to persistent services and hostname publication. A live hourly read still
 reports its ongoing server cost.
 Destroying a retained Worker is a separate explicit owner action available
 from both the owner client and the Native Agent conversation. The conversation
@@ -525,7 +526,7 @@ inside a task-named systemd scope; timeout cancellation stops that scope so
 session-changing descendants cannot continue after the task is terminal.
 
 Worker results are copied into the Agent-owned local artifact repository and
-returned to the original durable turn. When a confirmed service plan includes
+returned to the original durable turn. When an executing user-requested service plan includes
 a user-requested hostname, the application listens on its unused internal
 localhost port while the active runtime installs the Ubuntu Caddy package and
 publishes one managed per-workload reverse proxy with exact-host on-demand TLS.
@@ -533,8 +534,8 @@ Certificate issuance therefore starts only on the first HTTPS handshake after
 host-owned DNS read-back. Agent opens only ports 80 and 443, then uses the same
 App-uploaded credential to find
 the longest matching public Route53 hosted zone and UPSERT an A record to the
-Worker public IPv4. The hostname is part of the confirmed plan, so this does
-not create a second confirmation. Agent reports HTTPS ready only after a
+Worker public IPv4. New Worker creation confirmation also covers the hostname;
+retained Worker reuse publishes it directly without another confirmation. Agent reports HTTPS ready only after a
 bounded public health probe succeeds. If no matching zone is available,
 service deployment still succeeds and the result returns the public IPv4 plus
 manual A-record instructions. DNS-only post-deployment binding is not exposed.

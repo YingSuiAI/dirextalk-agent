@@ -163,7 +163,7 @@ func TestServiceRetainedWorkerQuoteMatchesWorkloadLifetime(t *testing.T) {
 		wantMaximum  int64
 	}{
 		{name: "finite job", workloadKind: WorkloadJob, wantAmount: 12_000, wantMaximum: 15_000},
-		{name: "persistent service", workloadKind: WorkloadService, service: &ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health"}},
+		{name: "persistent service with hostname", workloadKind: WorkloadService, service: &ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.example.test"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 8, 16, 10, 0, 0, 0, time.UTC)

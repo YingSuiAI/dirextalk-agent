@@ -15,7 +15,7 @@ The intrinsic may propose cloud execution for an explicit request or when truste
 
 The intrinsic supplies minimum vCPU, memory, disk, and estimated runtime, never an AWS instance type. Agent reads current-generation Linux on-demand products, intersects them with actual regional EC2 offerings, and chooses the cheapest x86_64 shape satisfying the request. The plan and confirmation expose the selected exact shape and hourly compute price. Bounded jobs also expose estimated cost and maximum authorized cost; persistent services omit those two open-ended values.
 
-Creating a Worker requires a fresh AWS Price List quote for EC2 and gp3 storage. The owner confirms that exact quote once before the Agent creates a key pair, security group, or instance. Reusing an idle retained Worker is allowed only when its actual vCPU, memory, and disk meet the new request. It needs no creation confirmation, but its ongoing hourly cost is still read live and displayed. Destroying a Worker is a separate owner-confirmed action.
+Creating a Worker requires a fresh AWS Price List quote for EC2 and gp3 storage. The owner confirms that exact quote once before the Agent creates a key pair, security group, or instance. Reusing an idle retained Worker is allowed only when its actual vCPU, memory, and disk meet the new request. It executes directly without another confirmation, including persistent services and hostname publication, while its ongoing hourly cost is still read live and displayed. Destroying a Worker is a separate owner-confirmed action.
 
 Worker destruction is available through the owner-facing management action and
 the Core-owned `cloud_worker_destroy` conversation intrinsic. The intrinsic is
@@ -38,16 +38,17 @@ Remote work is durable by task ID. The Agent uses short SSH operations to:
 - list and download artifacts;
 - stop a workload or destroy the Worker.
 
-A dropped SSH connection does not erase remote state or authorize a duplicate start. Jobs terminalize when their remote task finishes. Services may remain active across turns until the owner stops them or destroys the Worker.
+A dropped SSH connection does not erase remote state or authorize a duplicate start. Jobs terminalize when their remote task finishes. Stopping the owning turn cancels its active execution without destroying the retained Worker. Services may remain active across turns until the owner stops them or destroys the Worker.
 
-When a confirmed service proposal includes a user-requested hostname, Agent
+When a service execution includes a user-requested hostname, Agent
 keeps the application on an unused localhost port and manages an Ubuntu Caddy
 reverse proxy with exact-host on-demand TLS that persists after the model run.
 Certificate issuance starts only when the host probes HTTPS after DNS
 read-back. Agent opens only ports 80 and 443, then uses the App-uploaded
 credential to find the longest matching public
 Route53 hosted zone and UPSERT an A record to the Worker's current public IPv4.
-The hostname is already bound by the single Worker confirmation. Agent reports
+For a new Worker, its single creation confirmation also covers the hostname;
+reuse publishes the hostname directly without another confirmation. Agent reports
 HTTPS ready only after a bounded public health probe succeeds. If no matching
 zone is available, the service still succeeds and returns the IPv4 and manual
 A-record instructions. DNS-only post-deployment binding is not exposed.

@@ -206,6 +206,37 @@ esac
 	}
 }
 
+func TestCommandSSHExecutorStopsRemoteRuntimeWhenCanceled(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `
+case "$remote" in
+  *"'status'"*) printf '%s\n' '{"phase":"running","exit_code":0}' ;;
+  *"'stop'"*) count stop >/dev/null ;;
+  *) exit 64 ;;
+esac
+`)
+	withoutRetryDelay(t)
+	previousInterval := runtimeProgressInterval
+	runtimeProgressInterval = 0
+	t.Cleanup(func() { runtimeProgressInterval = previousInterval })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := sshRequestFixture(t, &recordingResultSink{artifacts: make(map[string][]byte)})
+	progress := 0
+	request.ReportProgress = func(ctx context.Context, _, _ string) error {
+		progress++
+		if progress == 2 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	}
+	_, err := (CommandSSHExecutor{SSHPath: ssh}).Execute(ctx, request)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrAmbiguous) || readCount(t, state, "stop") != 1 {
+		t.Fatalf("cancel result err=%v stop=%d", err, readCount(t, state, "stop"))
+	}
+}
+
 func sshRequestFixture(t *testing.T, sink ResultSink) SSHRequest {
 	t.Helper()
 	return SSHRequest{

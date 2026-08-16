@@ -220,7 +220,9 @@ retain their frozen revision CAS.
   replays after later turn state changes; it does not use the changing turn
   revision. It does not alias generic Capability operation cancellation or
   accept unknown fields; the owner-visible prompt and attachment presentation
-  remain recoverable while profile and execution bindings stay private.
+  remain recoverable while profile and execution bindings stay private. When
+  the turn is parked on an active Cloud Worker execution, the same mutation
+  cancels that execution and its Task without destroying the retained Worker.
 - Capability `agent.chat.v1/steer_turn` appends one non-empty instruction to
   the same accepted/running durable turn, or to a confirmation-waiting turn
   whose current Cloud Worker offer is unconfirmed, queued, or running. It
@@ -453,7 +455,8 @@ Reusing an already retained idle Worker requires its actual vCPU, memory, and
 disk to satisfy the request. The live model inventory exposes each retained
 Worker's instance type, vCPU, memory, and disk so the intrinsic can declare the
 task's actual minimums and prefer an adequate idle Worker. It needs no creation
-confirmation, but Agent still reads and displays its live ongoing hourly cost. Worker destruction is a
+confirmation and executes directly for jobs, persistent services, and hostname
+publication, but Agent still reads and displays its live ongoing hourly cost. Worker destruction is a
 separate explicit owner-confirmed operation. The owner may invoke it from the
 Worker management surface or explicitly ask the Native Agent to destroy one
 of the retained Worker IDs in the live owner-scoped inventory. The conversation

@@ -528,6 +528,18 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 		status, err = executor.waitRuntime(ctx, sshPath, base, request.Runtime, request.ReportProgress)
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			stop, stopErr := request.Runtime.Stop()
+			if stopErr == nil {
+				stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+				stopErr = retrySSH(stopCtx, sshPath, base, stop.Shell)
+				cancel()
+			}
+			if stopErr == nil {
+				return ExecutionResult{}, ctx.Err()
+			}
+			return ExecutionResult{}, errors.Join(ErrAmbiguous, ctx.Err(), stopErr)
+		}
 		return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
 	}
 	if request.ReportProgress != nil {

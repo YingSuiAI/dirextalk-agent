@@ -197,7 +197,7 @@ func projectCloudWorkerConfirmationTx(ctx context.Context, tx pgx.Tx, cur coreco
 }
 
 // terminalizeCloudWorkerTurnTx closes the original Native Agent turn when an
-// offer is rejected or expires before any provider mutation. The conversation
+// offer is rejected, expires, or its execution is canceled. The conversation
 // receives an explicit durable assistant message and turn event; App caches
 // are never expected to invent a terminal response from a stale offer card.
 func terminalizeCloudWorkerTurnTx(
@@ -257,6 +257,10 @@ func terminalizeCloudWorkerTurnTx(
 		turnState, eventKind = string(core.TurnCanceled), core.TurnEventCanceled
 		code = "user_canceled"
 		summary = "Cloud Worker task was canceled before dispatch. No AWS resources were created."
+		if confirmation.State == coreconfirmation.StateConsumed {
+			confirmationState = string(coreconfirmation.StateConsumed)
+			summary = "Cloud Worker task was stopped. Any retained Worker remains available."
+		}
 	}
 	references := cloudWorkerReferences(plan, execution, uint64(confirmation.Revision+1), confirmationState)
 	message := core.Message{

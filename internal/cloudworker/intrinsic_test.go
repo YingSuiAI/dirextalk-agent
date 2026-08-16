@@ -171,7 +171,8 @@ func executeIntrinsic(t *testing.T, intrinsic *ProposeIntrinsic, lease coreconve
 		t.Fatalf("intrinsic catalog: tools=%+v err=%v", tools, err)
 	}
 	if !strings.Contains(tools[0].Tool.Description, "retained execution environment") ||
-		!strings.Contains(tools[0].Tool.Description, "Retained Worker reuse with intent=execute normally needs no creation confirmation") ||
+		!strings.Contains(tools[0].Tool.Description, "Only creating a new Worker requires owner confirmation") ||
+		!strings.Contains(tools[0].Tool.Description, "retained Worker reuse executes directly, including persistent services and hostname publication") ||
 		strings.Contains(tools[0].Tool.Description, "ephemeral") {
 		t.Fatalf("stale Worker lifecycle description: %q", tools[0].Tool.Description)
 	}
@@ -571,7 +572,7 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 	if !strings.Contains(workloadDescription, "MUST use service") || !strings.Contains(serviceDescription, "MUST set service.hostname") ||
 		!strings.Contains(objectiveDescription, "Never instruct the Worker") || !strings.Contains(tools[0].Tool.Description, "MUST use workload_kind=service") ||
 		!strings.Contains(tools[0].Tool.Description, "MUST NOT be 80 or 443") || !strings.Contains(tools[0].Tool.Description, "lightweight local HTTP service") ||
-		!strings.Contains(tools[0].Tool.Description, "MUST NOT ask the remote Worker") || !strings.Contains(tools[0].Tool.Description, "one owner confirmation") {
+		!strings.Contains(tools[0].Tool.Description, "MUST NOT ask the remote Worker") || !strings.Contains(tools[0].Tool.Description, "Only creating a new Worker requires owner confirmation") {
 		t.Fatalf("workload guidance schema=%q service=%q tool=%q", workloadDescription, serviceDescription, tools[0].Tool.Description)
 	}
 	attachments, ok := properties["attachment_ids"].(map[string]any)

@@ -235,8 +235,8 @@ type Plan struct {
 	UpdatedAt                time.Time            `json:"updated_at"`
 }
 
-func (p Plan) RequiresOwnerConfirmation() bool {
-	return !p.PersistentWorkerReuse || (p.Service != nil && p.Service.Hostname != "")
+func (p Plan) RequiresWorkerCreationConfirmation() bool {
+	return !p.PersistentWorkerReuse
 }
 
 type Execution struct {

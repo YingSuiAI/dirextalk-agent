@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.145
+
+1. Execute every suitable retained Worker reuse directly, including persistent services and hostname publication, while preserving confirmation for first Worker creation.
+2. Make Native Agent stop cancel queued or running retained-Worker executions while preserving the Worker for later reuse.
+
 ## v1.0.144
 
 1. Preserve a durable prompt-derived conversation title when a planning-only Cloud Worker intrinsic completes without a title-model call.

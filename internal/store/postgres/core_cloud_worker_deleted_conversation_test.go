@@ -431,3 +431,68 @@ func TestCloudWorkerPostgresCancelPendingOfferAndReplay(t *testing.T) {
 		t.Fatalf("confirmation=%s task=%s turn=%s", confirmationState, taskStatus, turnState)
 	}
 }
+
+func TestCloudWorkerPostgresStopTurnCancelsRetainedServiceReuse(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		startExecution    bool
+		confirmationState coreconfirmation.State
+	}{
+		{name: "queued", confirmationState: coreconfirmation.StateExpired},
+		{name: "running", startExecution: true, confirmationState: coreconfirmation.StateConsumed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newPGCloudWorkerHarness(t)
+			defer h.cleanup()
+			if err := h.service.EnablePersistentWorkerReuse(pgCloudRetainedReuseResolver{workerID: uuid.NewString()}); err != nil {
+				t.Fatal(err)
+			}
+			h.command.WorkloadKind = cloudworker.WorkloadService
+			h.command.Service = &cloudworker.ServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health", Hostname: "app.example.test"}
+			offer := h.propose(t)
+			if offer.Execution.State != cloudworker.StateQueued || offer.Confirmation.State != coreconfirmation.StateConfirmed {
+				t.Fatalf("direct reuse offer=%+v", offer)
+			}
+			if test.startExecution {
+				task, _, err := NewCoreTaskStore(h.store).ClaimNextDue(h.ctx, "stop-worker", h.now, 2*time.Minute, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sshStore, err := NewSSHWorkerStore(h.store, "cloud-worker/artifacts")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = sshStore.Begin(h.ctx, task); err != nil {
+					t.Fatal(err)
+				}
+			}
+			requestID := uuid.NewString()
+			canceled, err := h.conversation.RequestTurnCancel(h.ctx, core.TurnCancelCommand{RequestID: requestID, TurnID: h.command.TurnID})
+			if err != nil || canceled.State != core.TurnCanceled || !canceled.CancelRequested || canceled.CancelRequestID != requestID {
+				t.Fatalf("canceled turn=%+v err=%v", canceled, err)
+			}
+			replayed, err := h.conversation.RequestTurnCancel(h.ctx, core.TurnCancelCommand{RequestID: requestID, TurnID: h.command.TurnID})
+			if err != nil || replayed.State != core.TurnCanceled || replayed.CancelRequestID != requestID {
+				t.Fatalf("replayed turn=%+v err=%v", replayed, err)
+			}
+			var executionState, taskState, confirmationState, turnState string
+			var consumedReleased, activeReservation bool
+			if err = h.store.pool.QueryRow(h.ctx, `SELECT e.state,t.status,c.state,c.consumed_released,u.state,
+				EXISTS(SELECT 1 FROM core_confirmation_reservations r WHERE r.confirmation_id=c.confirmation_id AND r.active)
+				FROM core_cloud_worker_executions e
+				JOIN core_tasks t ON t.task_id=e.task_id
+				JOIN core_confirmations c ON c.confirmation_id=e.confirmation_id
+				JOIN core_conversation_turns u ON u.turn_id=e.turn_id
+				WHERE e.execution_id=$1`, offer.Execution.ExecutionID).Scan(
+				&executionState, &taskState, &confirmationState, &consumedReleased, &turnState, &activeReservation); err != nil {
+				t.Fatal(err)
+			}
+			if executionState != string(cloudworker.StateCanceled) || taskState != string(coretask.StatusCanceled) ||
+				confirmationState != string(test.confirmationState) || turnState != string(core.TurnCanceled) || activeReservation ||
+				(consumedReleased != test.startExecution) {
+				t.Fatalf("execution=%s task=%s confirmation=%s released=%t turn=%s active_reservation=%t",
+					executionState, taskState, confirmationState, consumedReleased, turnState, activeReservation)
+			}
+		})
+	}
+}

@@ -19,6 +19,7 @@ type RuntimeAction string
 
 const (
 	RuntimeStart         RuntimeAction = "start"
+	RuntimeStop          RuntimeAction = "stop"
 	RuntimeStatus        RuntimeAction = "status"
 	RuntimeLog           RuntimeAction = "log"
 	RuntimeArtifact      RuntimeAction = "artifact"
@@ -54,6 +55,13 @@ func (protocol RuntimeProtocol) Status() (RuntimeCommand, error) {
 		return RuntimeCommand{}, ErrInvalid
 	}
 	return RuntimeCommand{Shell: runnerCommand(RuntimeStatus, protocol.TaskID)}, nil
+}
+
+func (protocol RuntimeProtocol) Stop() (RuntimeCommand, error) {
+	if !protocol.valid() {
+		return RuntimeCommand{}, ErrInvalid
+	}
+	return RuntimeCommand{Shell: runnerCommand(RuntimeStop, protocol.TaskID)}, nil
 }
 
 func (protocol RuntimeProtocol) Log(offset int64) (RuntimeCommand, error) {

@@ -66,6 +66,7 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "start": err = start(arg(2))
+	case "stop": err = stop(arg(2))
 	case "run": err = run(arg(2))
 	case "status": err = status(arg(2))
 	case "log": err = logOutput(arg(2), arg(3))
@@ -75,6 +76,21 @@ func main() {
 	default: err = errors.New("unknown action")
 	}
 	if err != nil { fatal(err.Error()) }
+}
+
+func stop(taskID string) error {
+	current, err := loadStatus(taskID)
+	if err != nil { return err }
+	if current.Phase != "running" { return json.NewEncoder(os.Stdout).Encode(current) }
+	unit := "dirextalk-worker-" + taskID + ".scope"
+	stopErr := exec.Command("systemctl", "--user", "stop", unit).Run()
+	if current.PID > 0 {
+		if killErr := syscall.Kill(-current.PID, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, syscall.ESRCH) { stopErr = errors.Join(stopErr, killErr) }
+	}
+	current.Phase, current.ExitCode, current.FinishedAt = "failed", 130, time.Now().UTC().Format(time.RFC3339)
+	if err = saveStatus(taskID, current); err != nil { return errors.Join(stopErr, err) }
+	if stopErr != nil { return stopErr }
+	return json.NewEncoder(os.Stdout).Encode(current)
 }
 
 func start(taskID string) error {

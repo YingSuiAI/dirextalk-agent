@@ -326,7 +326,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	if err != nil {
 		return Offer{}, err
 	}
-	if reuse && !plan.RequiresOwnerConfirmation() {
+	if reuse && !plan.RequiresWorkerCreationConfirmation() {
 		execution, err = execution.Transition(StateQueued, now)
 		if err != nil {
 			return Offer{}, err

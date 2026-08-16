@@ -140,7 +140,7 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	}
 	plan, execution := command.Plan, command.Execution
 	expectedExecutionState := cloudworker.StateWaitingUser
-	requiresConfirmation := plan.RequiresOwnerConfirmation()
+	requiresConfirmation := plan.RequiresWorkerCreationConfirmation()
 	if !requiresConfirmation {
 		expectedExecutionState = cloudworker.StateQueued
 	}
@@ -691,6 +691,92 @@ func pruneCloudWorkerEventsTx(ctx context.Context, tx pgx.Tx, executionID string
 	return err
 }
 
+func cancelCloudWorkerExecutionTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	task coretask.Task,
+	confirmation coreconfirmation.Confirmation,
+	plan cloudworker.Plan,
+	execution cloudworker.Execution,
+	mutationID string,
+	now time.Time,
+) (cloudworker.Execution, error) {
+	if tx == nil || !coretask.ValidUUID(mutationID) || now.IsZero() ||
+		(execution.State != cloudworker.StateWaitingUser && execution.State != cloudworker.StateQueued &&
+			execution.State != cloudworker.StateProvisioning && execution.State != cloudworker.StateRunning && execution.State != cloudworker.StateCleaning) ||
+		(task.Status != coretask.StatusWaitingUser && task.Status != coretask.StatusQueued && task.Status != coretask.StatusRunning) ||
+		(confirmation.State != coreconfirmation.StatePending && confirmation.State != coreconfirmation.StateConfirmed && confirmation.State != coreconfirmation.StateConsumed) ||
+		plan.TaskID != task.ID || plan.ConfirmationID != confirmation.ConfirmationID ||
+		cloudworker.ValidateFrozenBinding(plan, execution, confirmation.Binding) != nil {
+		return cloudworker.Execution{}, cloudworker.ErrConflict
+	}
+	beforeDispatch := task.Status != coretask.StatusRunning
+	summary := "Cloud Worker task stopped by user"
+	if beforeDispatch {
+		summary = "Cloud Worker task canceled before dispatch"
+	}
+	leaseEpoch := task.LeaseEpoch
+	if task.Status == coretask.StatusRunning {
+		leaseEpoch++
+	}
+	result, err := tx.Exec(ctx, `UPDATE core_tasks SET status='canceled',failure_code='user_canceled',
+		failure_summary=$2,lease_epoch=$3,lease_holder='',lease_expires_at=NULL,
+		revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$4
+		WHERE task_id=$1 AND revision=$5 AND status=$6`, task.ID, summary, leaseEpoch, now, task.Revision, task.Status)
+	if err != nil || result.RowsAffected() != 1 {
+		if err != nil {
+			return cloudworker.Execution{}, err
+		}
+		return cloudworker.Execution{}, cloudworker.ErrConflict
+	}
+	if task.Status == coretask.StatusRunning {
+		if _, err = tx.Exec(ctx, `UPDATE core_task_runtime_concurrency
+			SET running_count=GREATEST(0,running_count-1),revision=revision+1,updated_at=$1
+			WHERE singleton=true`, now); err != nil {
+			return cloudworker.Execution{}, err
+		}
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,error_code,error_summary,occurred_at)
+		SELECT task_id,progress_sequence,$2,attempt,'canceled','canceled','user_canceled',$3,$4
+		FROM core_tasks WHERE task_id=$1`, task.ID, deterministicCloudWorkerUUID("cancel-task", mutationID), summary, now); err != nil {
+		return cloudworker.Execution{}, err
+	}
+	if confirmation.State == coreconfirmation.StateConsumed {
+		result, err = tx.Exec(ctx, `UPDATE core_confirmation_reservations SET active=false
+			WHERE confirmation_id=$1 AND task_id=$2 AND active=true`, confirmation.ConfirmationID, task.ID)
+		if err != nil || result.RowsAffected() != 1 {
+			return cloudworker.Execution{}, cloudworker.ErrConflict
+		}
+		result, err = tx.Exec(ctx, `UPDATE core_confirmations SET consumed_released=true,revision=revision+1,updated_at=$2
+			WHERE confirmation_id=$1 AND state='consumed' AND revision=$3 AND consumed_released=false`, confirmation.ConfirmationID, now, confirmation.Revision)
+	} else {
+		result, err = tx.Exec(ctx, `UPDATE core_confirmations SET state='expired',revision=revision+1,
+			terminal_code='user_canceled',terminal_reason='user_canceled',updated_at=$2
+			WHERE confirmation_id=$1 AND revision=$3 AND state=$4`, confirmation.ConfirmationID, now, confirmation.Revision, confirmation.State)
+	}
+	if err != nil || result.RowsAffected() != 1 {
+		if err != nil {
+			return cloudworker.Execution{}, err
+		}
+		return cloudworker.Execution{}, cloudworker.ErrConflict
+	}
+	next, err := execution.Transition(cloudworker.StateCanceled, now)
+	if err != nil {
+		return cloudworker.Execution{}, err
+	}
+	next.FailureCode, next.FailureSummary = "user_canceled", summary
+	if err = next.Seal(); err != nil {
+		return cloudworker.Execution{}, err
+	}
+	if err = saveCloudWorkerExecutionTx(ctx, tx, execution, next, "execution_canceled"); err != nil {
+		return cloudworker.Execution{}, err
+	}
+	if err = terminalizeCloudWorkerTurnTx(ctx, tx, confirmation, plan, next, cloudworker.StateCanceled, now); err != nil {
+		return cloudworker.Execution{}, err
+	}
+	return next, nil
+}
+
 func (s *CloudWorkerStore) RequestCancel(ctx context.Context, owner string, accountGeneration uint64, runID string, expectedRevision uint64, idempotencyKey string) (cloudworker.Execution, error) {
 	owner = strings.TrimSpace(owner)
 	if s == nil || s.store == nil || owner == "" || accountGeneration == 0 || !coretask.ValidUUID(runID) ||
@@ -746,11 +832,11 @@ func (s *CloudWorkerStore) RequestCancel(ctx context.Context, owner string, acco
 	if err != nil {
 		return cloudworker.Execution{}, err
 	}
-	confirmation, err := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1 FOR UPDATE`, confirmationID))
+	plan, execution, err := cloudWorkerPlanAndExecutionTx(ctx, tx, task.Spec.Payload.CloudWorker, true)
 	if err != nil {
 		return cloudworker.Execution{}, err
 	}
-	plan, execution, err := cloudWorkerPlanAndExecutionTx(ctx, tx, task.Spec.Payload.CloudWorker, true)
+	confirmation, err := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1 FOR UPDATE`, confirmationID))
 	if err != nil || plan.OwnerID != owner || plan.AccountGeneration != accountGeneration || plan.ExecutionID != executionID ||
 		plan.TaskID != taskID || plan.ConfirmationID != confirmationID || cloudworker.ValidateFrozenBinding(plan, execution, confirmation.Binding) != nil {
 		return cloudworker.Execution{}, cloudworker.ErrStaleAuthorization
@@ -764,33 +850,8 @@ func (s *CloudWorkerStore) RequestCancel(ctx context.Context, owner string, acco
 		return cloudworker.Execution{}, cloudworker.ErrConflict
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	if result, updateErr := tx.Exec(ctx, `UPDATE core_tasks SET status='canceled',failure_code='user_canceled',
-		failure_summary='Cloud Worker task canceled before dispatch',revision=revision+1,progress_sequence=progress_sequence+1,
-		updated_at=$2 WHERE task_id=$1 AND revision=$3 AND status=$4`, taskID, now, task.Revision, task.Status); updateErr != nil || result.RowsAffected() != 1 {
-		return cloudworker.Execution{}, cloudworker.ErrConflict
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,error_code,error_summary,occurred_at)
-		SELECT task_id,progress_sequence,$2,attempt,'canceled','canceled','user_canceled','Cloud Worker task canceled before dispatch',$3
-		FROM core_tasks WHERE task_id=$1`, taskID, deterministicCloudWorkerUUID("cancel-task", idempotencyKey), now); err != nil {
-		return cloudworker.Execution{}, err
-	}
-	if result, updateErr := tx.Exec(ctx, `UPDATE core_confirmations SET state='expired',revision=revision+1,
-		terminal_code='user_canceled',terminal_reason='user_canceled',updated_at=$2
-		WHERE confirmation_id=$1 AND revision=$3 AND state=$4`, confirmationID, now, confirmation.Revision, confirmation.State); updateErr != nil || result.RowsAffected() != 1 {
-		return cloudworker.Execution{}, cloudworker.ErrConflict
-	}
-	next, err := execution.Transition(cloudworker.StateCanceled, now)
+	next, err := cancelCloudWorkerExecutionTx(ctx, tx, task, confirmation, plan, execution, idempotencyKey, now)
 	if err != nil {
-		return cloudworker.Execution{}, err
-	}
-	next.FailureCode, next.FailureSummary = "user_canceled", "Cloud Worker task canceled before dispatch"
-	if err = next.Seal(); err != nil {
-		return cloudworker.Execution{}, err
-	}
-	if err = saveCloudWorkerExecutionTx(ctx, tx, execution, next, "execution_canceled"); err != nil {
-		return cloudworker.Execution{}, err
-	}
-	if err = terminalizeCloudWorkerTurnTx(ctx, tx, confirmation, plan, next, cloudworker.StateCanceled, now); err != nil {
 		return cloudworker.Execution{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_cloud_worker_mutation_replays(

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/google/uuid"
@@ -1251,10 +1252,46 @@ func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.Tu
 		return turn, nil
 	}
 	now := time.Now().UTC()
-	// A turn blocked on owner confirmation has no provider call in flight.  The
-	// cancel mutation therefore wins deterministically and compensates its
-	// waiting task/confirmation before exposing the terminal turn.
+	// A parked turn is owned either by a confirmation-gated conversation tool or
+	// by its Cloud Worker execution. Cancel the owning task before exposing the
+	// terminal turn so no queued or remote work survives the stop mutation.
 	if turn.State == core.TurnWaitingConfirmation {
+		var cloudTaskID, cloudConfirmationID string
+		cloudErr := tx.QueryRow(ctx, `SELECT e.task_id::text,e.confirmation_id::text
+			FROM core_cloud_worker_executions e JOIN core_tasks t ON t.task_id=e.task_id
+			WHERE e.turn_id=$1 AND e.state IN ('waiting_user','queued','provisioning','running','cleaning')
+			ORDER BY e.created_at DESC,e.execution_id DESC LIMIT 1 FOR UPDATE OF t`, c.TurnID).Scan(&cloudTaskID, &cloudConfirmationID)
+		if cloudErr == nil {
+			task, taskErr := NewCoreTaskStore(s.Store).taskTxLocked(ctx, tx, cloudTaskID, false)
+			if taskErr != nil {
+				return core.Turn{}, core.ErrConflict
+			}
+			plan, execution, loadErr := cloudWorkerPlanAndExecutionTx(ctx, tx, task.Spec.Payload.CloudWorker, true)
+			if loadErr != nil {
+				return core.Turn{}, core.ErrConflict
+			}
+			confirmation, confirmationErr := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1 FOR UPDATE`, cloudConfirmationID))
+			if confirmationErr != nil || plan.TurnID != c.TurnID || plan.TaskID != cloudTaskID || plan.ConfirmationID != cloudConfirmationID ||
+				cloudworker.ValidateFrozenBinding(plan, execution, confirmation.Binding) != nil {
+				return core.Turn{}, core.ErrConflict
+			}
+			if _, cancelErr := cancelCloudWorkerExecutionTx(ctx, tx, task, confirmation, plan, execution, c.RequestID, now); cancelErr != nil {
+				return core.Turn{}, core.ErrConflict
+			}
+			result, updateErr := tx.Exec(ctx, `UPDATE core_conversation_turns SET cancel_requested=true,
+				cancel_request_id=$2,cancel_request_fingerprint=$3
+				WHERE turn_id=$1 AND state='canceled' AND cancel_requested=false`, c.TurnID, c.RequestID, cancelFingerprint)
+			if updateErr != nil || result.RowsAffected() != 1 {
+				return core.Turn{}, core.ErrConflict
+			}
+			if err = tx.Commit(ctx); err != nil {
+				return core.Turn{}, err
+			}
+			return s.GetTurn(ctx, c.TurnID)
+		}
+		if !errors.Is(cloudErr, pgx.ErrNoRows) {
+			return core.Turn{}, cloudErr
+		}
 		var taskID, lockedTaskID string
 		if err = tx.QueryRow(ctx, `SELECT task_id::text FROM core_conversation_tool_attempts WHERE turn_id=$1 AND state='waiting_confirmation'`, c.TurnID).Scan(&taskID); err != nil {
 			return core.Turn{}, core.ErrConflict

@@ -162,17 +162,18 @@ func TestRuntimeProtocolCompilesResumableCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, _ := material.Protocol.Status()
+	stop, _ := material.Protocol.Stop()
 	logCommand, _ := material.Protocol.Log(512)
 	list, _ := material.Protocol.Artifact("")
 	download, _ := material.Protocol.Artifact("reports/load.html")
 	server, _ := material.Protocol.ServerStatus()
 	service, _ := material.Protocol.ServiceStatus()
-	for name, command := range map[string]RuntimeCommand{"status": status, "log": logCommand, "list": list, "download": download, "server": server, "service": service} {
+	for name, command := range map[string]RuntimeCommand{"status": status, "stop": stop, "log": logCommand, "list": list, "download": download, "server": server, "service": service} {
 		if command.Shell == "" || len(command.Stdin) != 0 {
 			t.Fatalf("%s command is invalid: %#v", name, command)
 		}
 	}
-	if !strings.Contains(logCommand.Shell, "'512'") || !strings.Contains(download.Shell, "'reports/load.html'") || !strings.Contains(server.Shell, "'server-status'") || !strings.Contains(service.Shell, "'service-status'") {
+	if !strings.Contains(stop.Shell, "'stop'") || !strings.Contains(logCommand.Shell, "'512'") || !strings.Contains(download.Shell, "'reports/load.html'") || !strings.Contains(server.Shell, "'server-status'") || !strings.Contains(service.Shell, "'service-status'") {
 		t.Fatalf("unexpected protocol commands: %#v %#v %#v", logCommand, download, server)
 	}
 	if _, err := material.Protocol.Log(-1); err == nil {
