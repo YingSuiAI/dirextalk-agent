@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.152
+
+1. Replay one provider assistant response containing reasoning, content, and multiple tool calls as its original batch followed by matching tool results, preserving provider-compatible order across confirmation and restart.
+2. Treat OpenAI-compatible `finish_reason=length` as a truncated response after preserving its final delta, rather than committing an incomplete reasoning-only response as successful.
+
 ## v1.0.151
 
 1. Guide Web Search turns to use one sufficiently broad query, reserve follow-up searches for distinct missing facts, and synthesize available evidence instead of looping over equivalent queries for exhaustive confirmation.
