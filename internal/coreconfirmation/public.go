@@ -67,11 +67,12 @@ func (b PublicBinding) MarshalJSON() ([]byte, error) {
 		OperationDomain   string       `json:"operation_domain"`
 		TargetID          string       `json:"target_id"`
 		TargetRevision    int64        `json:"target_revision"`
+		TargetKind        string       `json:"target_kind"`
 		ExecutionID       string       `json:"execution_id"`
 		PlanID            string       `json:"plan_id"`
 		PlanRevision      int64        `json:"plan_revision"`
 		Quote             *PublicQuote `json:"quote"`
-	}{b.OwnerID, b.AccountGeneration, b.OperationDomain, b.TargetID, b.TargetRevision,
+	}{b.OwnerID, b.AccountGeneration, b.OperationDomain, b.TargetID, b.TargetRevision, b.TargetKind,
 		b.ExecutionID, b.PlanID, b.PlanRevision, b.Quote})
 }
 
@@ -90,6 +91,7 @@ func (b Binding) Public() PublicBinding {
 		return PublicBinding{
 			OwnerID: strings.TrimSpace(b.OwnerID), AccountGeneration: b.AccountGeneration,
 			OperationDomain: b.OperationDomain, TargetID: b.TargetID, TargetRevision: b.TargetRevision,
+			TargetKind:  b.TargetKind,
 			ExecutionID: b.ExecutionID, PlanID: b.PlanID, PlanRevision: b.PlanRevision,
 			Quote: quote,
 		}

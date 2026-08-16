@@ -26,6 +26,24 @@ type taskEventsServiceStub struct {
 	progress []coretask.Progress
 }
 
+type taskProjectionServiceStub struct {
+	coretask.Service
+	task coretask.Task
+}
+
+func (s *taskProjectionServiceStub) GetTask(context.Context, string) (coretask.Task, error) {
+	return s.task, nil
+}
+func (s *taskProjectionServiceStub) ListTasks(context.Context, coretask.TaskListQuery) ([]coretask.Task, string, error) {
+	return []coretask.Task{s.task}, "next", nil
+}
+func (s *taskProjectionServiceStub) CancelTask(context.Context, coretask.CancelCommand) (coretask.Task, error) {
+	return s.task, nil
+}
+func (s *taskProjectionServiceStub) RetryTask(context.Context, coretask.RetryCommand) (coretask.Task, error) {
+	return s.task, nil
+}
+
 func (s *taskEventsServiceStub) CreateTask(context.Context, coretask.CreateTaskCommand) (coretask.Task, error) {
 	return coretask.Task{}, errors.New("unexpected CreateTask")
 }
@@ -88,6 +106,77 @@ func TestTaskEventsCapabilityProjectsProtoContractFields(t *testing.T) {
 		if _, exists := event[legacy]; exists {
 			t.Fatalf("task event retained internal field %q: %#v", legacy, event)
 		}
+	}
+}
+
+func TestTaskCapabilityProjectsFlatPublicTask(t *testing.T) {
+	now := time.Date(2035, 1, 2, 3, 4, 5, 0, time.UTC)
+	taskID := uuid.NewString()
+	extensionID := uuid.NewString()
+	service := &taskProjectionServiceStub{task: coretask.Task{
+		ID: taskID,
+		Spec: coretask.TaskSpec{
+			Goal: "finish work", ConversationID: uuid.NewString(), ModelProfileID: uuid.NewString(),
+			AttachmentRefs: []string{"attachment"}, KnowledgeRefs: []string{"knowledge"}, TimeoutSeconds: 90,
+			Extensions: []coretask.ExtensionSelection{{Kind: coretask.ExtensionMCP, ID: extensionID, Version: "1.2.3", Digest: strings.Repeat("a", 64), AllowedTools: []string{"run"}}},
+		},
+		Status: coretask.StatusSucceeded, Attempt: 1, LeaseEpoch: 2, Revision: 3,
+		AvailableAt: now, CreatedAt: now, UpdatedAt: now,
+		Result: &coretask.Result{JSON: json.RawMessage(`{"answer":"ok"}`)},
+	}}
+	capability := &coreTaskCapability{service: service}
+	tests := []struct {
+		operation string
+		input     string
+		list      bool
+	}{
+		{operation: "get_task", input: `{"task_id":"` + taskID + `"}`},
+		{operation: "list_tasks", input: `{}`, list: true},
+		{operation: "cancel_task", input: `{"task_id":"` + taskID + `","idempotency_key":"` + uuid.NewString() + `"}`},
+		{operation: "retry_task", input: `{"task_id":"` + taskID + `","idempotency_key":"` + uuid.NewString() + `"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.operation, func(t *testing.T) {
+			raw, err := capability.HandleOperation(context.Background(), test.operation, []byte(test.input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var response map[string]any
+			if err := json.Unmarshal(raw, &response); err != nil {
+				t.Fatal(err)
+			}
+			var projected map[string]any
+			if test.list {
+				items, ok := response["tasks"].([]any)
+				if !ok || len(items) != 1 || response["next_page_token"] != "next" {
+					t.Fatalf("invalid task page: %s", raw)
+				}
+				projected = items[0].(map[string]any)
+			} else {
+				var ok bool
+				projected, ok = response["task"].(map[string]any)
+				if !ok {
+					t.Fatalf("missing task envelope: %s", raw)
+				}
+			}
+			if projected["task_id"] != taskID || projected["kind"] != "agent" || projected["goal"] != "finish work" {
+				t.Fatalf("public task identity mismatch: %s", raw)
+			}
+			for _, forbidden := range []string{"id", "spec", "snapshot", "lease", "progress_sequence", "execution_deadline_at"} {
+				if _, present := projected[forbidden]; present {
+					t.Fatalf("public task exposed %q: %s", forbidden, raw)
+				}
+			}
+			extensions := projected["extensions"].([]any)
+			extension := extensions[0].(map[string]any)
+			if extension["id"] != extensionID || extension["pinned_version"] != "1.2.3" {
+				t.Fatalf("extension projection mismatch: %s", raw)
+			}
+			result := projected["result"].(map[string]any)
+			if result["answer"] != "ok" {
+				t.Fatalf("result projection mismatch: %s", raw)
+			}
+		})
 	}
 }
 
@@ -251,11 +340,13 @@ func TestCloudWorkerConfirmationCapabilityExposesPreRunIdentityAndQuote(t *testi
 func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrder(t *testing.T) {
 	conversationID := uuid.NewString()
 	profileID := uuid.NewString()
+	taskID := uuid.NewString()
+	planID := uuid.NewString()
 	now := time.Now().UTC()
 	messages := []coreconversation.Message{
 		{ID: uuid.NewString(), Sequence: 1, Role: coreconversation.RoleUser, Content: "first", ModelProfileID: profileID, CreatedAt: now},
 		{ID: uuid.NewString(), Sequence: 2, Role: coreconversation.RoleTool, ToolResults: []coreconversation.ToolResult{{CallID: "call", Content: "private tool payload"}}, ModelProfileID: profileID, CreatedAt: now.Add(time.Second)},
-		{ID: uuid.NewString(), Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ReasoningContent: "durable reasoning", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second), Status: "failed"},
+		{ID: uuid.NewString(), Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ReasoningContent: "durable reasoning", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second), Status: "failed", RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID}},
 		{ID: uuid.NewString(), Sequence: 4, Role: coreconversation.RoleSystem, Content: "private system context", ModelProfileID: profileID, CreatedAt: now.Add(3 * time.Second)},
 		{ID: uuid.NewString(), Sequence: 5, Role: coreconversation.RoleUser, Content: "third", ModelProfileID: profileID, CreatedAt: now.Add(4 * time.Second)},
 	}
@@ -272,6 +363,9 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 	}
 	if bytes.Contains(raw, []byte("private tool payload")) || bytes.Contains(raw, []byte("private system context")) || !bytes.Contains(raw, []byte(`"reasoning_content":"durable reasoning"`)) || !bytes.Contains(raw, []byte(`"references":[]`)) {
 		t.Fatalf("public history leaked Core-only fields: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"related_task_ids":["`+taskID+`"]`)) || !bytes.Contains(raw, []byte(`"related_plan_ids":["`+planID+`"]`)) {
+		t.Fatalf("public history lost related task or plan ids: %s", raw)
 	}
 	older, finalCursor, err := pageConversationMessages(conversationID, messages, next, 2)
 	if err != nil {
@@ -553,6 +647,68 @@ type capturingExtensionService struct {
 	execute        coreextension.ExecuteRequest
 	inspect        coreextension.Inspection
 	calls          int
+}
+
+type projectionExtensionService struct {
+	coreextension.Service
+	installation coreextension.Installation
+}
+
+func (s *projectionExtensionService) Get(context.Context, string) (coreextension.Installation, error) {
+	return s.installation, nil
+}
+
+func (s *projectionExtensionService) List(context.Context, coreextension.ListQuery) (coreextension.InstallationPage, error) {
+	return coreextension.InstallationPage{Installations: []coreextension.Installation{s.installation}, NextPageToken: "next"}, nil
+}
+
+func TestExtensionReadsUsePublicInstallationIdentityAndEnvelope(t *testing.T) {
+	now := time.Date(2035, 1, 2, 3, 4, 5, 0, time.UTC)
+	installationID := uuid.NewString()
+	service := &projectionExtensionService{installation: coreextension.Installation{
+		ID:        installationID,
+		Candidate: coreextension.Candidate{ID: "builtin", Kind: coreextension.KindMCP, Source: coreextension.SourceBuiltin, Name: "builtin", Transport: coreextension.TransportStdioStatic},
+		Kind:      coreextension.KindMCP, Source: coreextension.SourceBuiltin, CandidateID: "builtin", Name: "builtin", Transport: coreextension.TransportStdioStatic,
+		Revision: 1, State: coreextension.StateInstalled, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}}
+	capability := &coreExtensionCapability{service: service}
+	for _, test := range []struct {
+		operation string
+		list      bool
+	}{
+		{operation: "get_skill"}, {operation: "get_mcp"}, {operation: "list_skills", list: true}, {operation: "list_mcp", list: true},
+	} {
+		t.Run(test.operation, func(t *testing.T) {
+			raw, err := capability.HandleOperation(context.Background(), test.operation, []byte(`{"installation_id":"`+installationID+`"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var response map[string]any
+			if err := json.Unmarshal(raw, &response); err != nil {
+				t.Fatal(err)
+			}
+			var installation map[string]any
+			if test.list {
+				items, ok := response["installations"].([]any)
+				if !ok || len(items) != 1 || response["next_page_token"] != "next" {
+					t.Fatalf("invalid installation page: %s", raw)
+				}
+				installation = items[0].(map[string]any)
+			} else {
+				var ok bool
+				installation, ok = response["installation"].(map[string]any)
+				if !ok {
+					t.Fatalf("missing installation envelope: %s", raw)
+				}
+			}
+			if installation["installation_id"] != installationID {
+				t.Fatalf("installation identity mismatch: %s", raw)
+			}
+			if _, legacy := installation["id"]; legacy {
+				t.Fatalf("installation exposed legacy id: %s", raw)
+			}
+		})
+	}
 }
 
 func (s *capturingExtensionService) Inspect(_ context.Context, _ coreextension.InspectRequest) (coreextension.Inspection, error) {
@@ -893,6 +1049,38 @@ func TestDurableWorkerProgressProjectsPhaseOnExistingStatusEvent(t *testing.T) {
 	}
 	if projected.Status != "running" || projected.Phase != "connecting_worker" || projected.Text != "" || projected.ExecutionID != event.ExecutionID {
 		t.Fatalf("projected Worker progress=%+v", projected)
+	}
+}
+
+func TestDurableDoneEventProjectsAuthoritativeResponse(t *testing.T) {
+	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
+	taskID, planID := uuid.NewString(), uuid.NewString()
+	reference := coreconversation.Reference{Kind: "cloud_worker", TaskID: taskID, PlanID: planID}
+	event := coreconversation.TurnEvent{
+		Kind: coreconversation.TurnEventDone, Revision: 6,
+		Response: &coreconversation.ChatResponse{
+			RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 6, Done: true,
+			Message:        coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "final answer", ReasoningContent: "final reasoning"},
+			RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID}, References: []coreconversation.Reference{reference},
+		},
+	}
+	raw, err := ProjectDurableTurnEventJSON(turn, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projected map[string]any
+	if err := json.Unmarshal(raw, &projected); err != nil {
+		t.Fatal(err)
+	}
+	if projected["kind"] != "done" || projected["text"] != "final answer" || projected["reasoning_content"] != "final reasoning" {
+		t.Fatalf("terminal response text projection mismatch: %s", raw)
+	}
+	if projected["related_task_ids"].([]any)[0] != taskID || projected["related_plan_ids"].([]any)[0] != planID {
+		t.Fatalf("terminal related ids projection mismatch: %s", raw)
+	}
+	references := projected["references"].([]any)
+	if len(references) != 1 || references[0].(map[string]any)["task_id"] != taskID {
+		t.Fatalf("terminal references projection mismatch: %s", raw)
 	}
 }
 

@@ -228,6 +228,8 @@ type publicConversationMessage struct {
 	Role             string                       `json:"role"`
 	Content          string                       `json:"content"`
 	ReasoningContent string                       `json:"reasoning_content,omitempty"`
+	RelatedTaskIDs   []string                     `json:"related_task_ids"`
+	RelatedPlanIDs   []string                     `json:"related_plan_ids"`
 	CreatedAt        time.Time                    `json:"created_at"`
 	MessageSeq       int64                        `json:"message_seq"`
 	Status           string                       `json:"status"`
@@ -269,6 +271,14 @@ func projectConversationMessages(values []coreconversation.Message) []publicConv
 		if references == nil {
 			references = make([]coreconversation.Reference, 0)
 		}
+		relatedTaskIDs := append([]string(nil), value.RelatedTaskIDs...)
+		if relatedTaskIDs == nil {
+			relatedTaskIDs = make([]string, 0)
+		}
+		relatedPlanIDs := append([]string(nil), value.RelatedPlanIDs...)
+		if relatedPlanIDs == nil {
+			relatedPlanIDs = make([]string, 0)
+		}
 		status := value.Status
 		if status == "" {
 			status = "done"
@@ -278,6 +288,8 @@ func projectConversationMessages(values []coreconversation.Message) []publicConv
 			Role:             string(value.Role),
 			Content:          value.Content,
 			ReasoningContent: value.ReasoningContent,
+			RelatedTaskIDs:   relatedTaskIDs,
+			RelatedPlanIDs:   relatedPlanIDs,
 			CreatedAt:        value.CreatedAt,
 			MessageSeq:       sequence,
 			Status:           status,
@@ -749,6 +761,9 @@ type durableChatStreamEvent struct {
 	Revision         uint64                       `json:"revision"`
 	Text             string                       `json:"text,omitempty"`
 	ReasoningContent string                       `json:"reasoning_content,omitempty"`
+	RelatedTaskIDs   []string                     `json:"related_task_ids,omitempty"`
+	RelatedPlanIDs   []string                     `json:"related_plan_ids,omitempty"`
+	References       []coreconversation.Reference `json:"references,omitempty"`
 	ToolCall         *coreconversation.ToolCall   `json:"tool_call,omitempty"`
 	ToolResult       *coreconversation.ToolResult `json:"tool_result,omitempty"`
 	ErrorCode        string                       `json:"error_code,omitempty"`
@@ -765,12 +780,20 @@ func projectDurableChatStreamEvent(turn coreconversation.Turn, revision uint64, 
 		event.RequestID != turn.RequestID || event.ConversationID != turn.ConversationID {
 		return durableChatStreamEvent{}, coreconversation.ErrChatFailed
 	}
-	return durableChatStreamEvent{
+	projected := durableChatStreamEvent{
 		Kind: string(event.Kind), IdempotencyKey: turn.RequestID, ConversationID: turn.ConversationID,
 		TurnID: turn.ID, Revision: revision, Text: event.Text, ReasoningContent: event.ReasoningContent,
 		ToolCall: event.ToolCall, ToolResult: event.ToolResult,
 		ErrorCode: event.ErrCode, ErrorSummary: event.ErrSummary,
-	}, nil
+	}
+	if event.Response != nil {
+		projected.Text = event.Response.Message.Content
+		projected.ReasoningContent = event.Response.Message.ReasoningContent
+		projected.RelatedTaskIDs = append([]string(nil), event.Response.RelatedTaskIDs...)
+		projected.RelatedPlanIDs = append([]string(nil), event.Response.RelatedPlanIDs...)
+		projected.References = append([]coreconversation.Reference(nil), event.Response.References...)
+	}
+	return projected, nil
 }
 
 func projectDurableWaitingConfirmationEvent(turn coreconversation.Turn, event coreconversation.TurnEvent) (durableChatStreamEvent, error) {
@@ -1115,6 +1138,80 @@ func (c *coreModelCapability) bindKnowledgeEmbedding(ctx context.Context) error 
 
 type coreTaskCapability struct{ service coretask.Service }
 
+type publicTaskExtension struct {
+	Kind          coretask.ExtensionKind `json:"kind"`
+	ID            string                 `json:"id"`
+	PinnedVersion string                 `json:"pinned_version"`
+	Digest        string                 `json:"digest"`
+	AllowedTools  []string               `json:"allowed_tools,omitempty"`
+}
+
+type publicTask struct {
+	TaskID           string                                `json:"task_id"`
+	Goal             string                                `json:"goal"`
+	ConversationID   string                                `json:"conversation_id,omitempty"`
+	ModelProfileID   string                                `json:"model_profile_id"`
+	AttachmentRefs   []string                              `json:"attachment_refs,omitempty"`
+	Extensions       []publicTaskExtension                 `json:"extensions,omitempty"`
+	KnowledgeRefs    []string                              `json:"knowledge_refs,omitempty"`
+	TimeoutSeconds   int64                                 `json:"timeout_seconds,omitempty"`
+	Status           coretask.Status                       `json:"status"`
+	Attempt          uint32                                `json:"attempt"`
+	LeaseEpoch       uint64                                `json:"lease_epoch"`
+	AvailableAt      time.Time                             `json:"available_at"`
+	RetryOfTaskID    string                                `json:"retry_of_task_id,omitempty"`
+	Result           any                                   `json:"result,omitempty"`
+	FailureCode      string                                `json:"failure_code,omitempty"`
+	FailureSummary   string                                `json:"failure_summary,omitempty"`
+	Revision         uint64                                `json:"revision"`
+	CreatedAt        time.Time                             `json:"created_at"`
+	UpdatedAt        time.Time                             `json:"updated_at"`
+	Kind             coretask.TaskKind                     `json:"kind"`
+	Workload         *coretask.WorkloadTaskPayload         `json:"workload,omitempty"`
+	ConversationTool *coretask.ConversationToolTaskPayload `json:"conversation_tool,omitempty"`
+	CloudWorker      *coretask.CloudWorkerTaskPayload      `json:"cloud_worker,omitempty"`
+}
+
+func projectTask(task coretask.Task) publicTask {
+	kind := task.Spec.Kind
+	if kind == "" {
+		kind = coretask.TaskKindAgent
+	}
+	extensions := make([]publicTaskExtension, 0, len(task.Spec.Extensions))
+	for _, extension := range task.Spec.Extensions {
+		extensions = append(extensions, publicTaskExtension{Kind: extension.Kind, ID: extension.ID, PinnedVersion: extension.Version, Digest: extension.Digest, AllowedTools: append([]string{}, extension.AllowedTools...)})
+	}
+	var result any
+	if task.Result != nil {
+		if len(task.Result.JSON) > 0 {
+			var value map[string]any
+			if json.Unmarshal(task.Result.JSON, &value) == nil {
+				result = value
+			}
+		}
+		if result == nil {
+			value := map[string]any{}
+			if task.Result.Text != "" {
+				value["text"] = task.Result.Text
+			}
+			if task.Result.Summary != "" {
+				value["summary"] = task.Result.Summary
+			}
+			if len(task.Result.Files) > 0 {
+				value["files"] = task.Result.Files
+			}
+			result = value
+		}
+	}
+	return publicTask{
+		TaskID: task.ID, Goal: task.Spec.Goal, ConversationID: task.Spec.ConversationID, ModelProfileID: task.Spec.ModelProfileID,
+		AttachmentRefs: append([]string{}, task.Spec.AttachmentRefs...), Extensions: extensions, KnowledgeRefs: append([]string{}, task.Spec.KnowledgeRefs...), TimeoutSeconds: task.Spec.TimeoutSeconds,
+		Status: task.Status, Attempt: task.Attempt, LeaseEpoch: task.LeaseEpoch, AvailableAt: task.AvailableAt, RetryOfTaskID: task.RetryOfTaskID,
+		Result: result, FailureCode: task.FailureCode, FailureSummary: task.FailureSummary, Revision: task.Revision, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt,
+		Kind: kind, Workload: task.Spec.Payload.Workload, ConversationTool: task.Spec.Payload.ConversationTool, CloudWorker: task.Spec.Payload.CloudWorker,
+	}
+}
+
 func (c *coreTaskCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.tasks.v1", "Tasks", "Core durable task operations", []opSpec{
 		{"create_task", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:tasks:write"}, {"get_task", capv1.OperationType_OPERATION_TYPE_READ, "agent:tasks:read"}, {"list_tasks", capv1.OperationType_OPERATION_TYPE_READ, "agent:tasks:read"}, {"list_task_events", capv1.OperationType_OPERATION_TYPE_READ, "agent:tasks:read"}, {"cancel_task", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:tasks:write"}, {"retry_task", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:tasks:write"},
@@ -1141,7 +1238,7 @@ func (c *coreTaskCapability) HandleOperation(ctx context.Context, operationID st
 		return marshalResult(t, err)
 	case "get_task":
 		t, err := c.service.GetTask(ctx, stringValue(in, "task_id"))
-		return marshalResult(t, err)
+		return marshalResult(map[string]any{"task": projectTask(t)}, err)
 	case "list_tasks":
 		var taskStatus *coretask.Status
 		if rawStatus := stringValue(in, "status"); rawStatus != "" {
@@ -1149,7 +1246,11 @@ func (c *coreTaskCapability) HandleOperation(ctx context.Context, operationID st
 			taskStatus = &v
 		}
 		items, next, err := c.service.ListTasks(ctx, coretask.TaskListQuery{Cursor: stringValue(in, "page_token"), Limit: pageSize(in, 50), Status: taskStatus, IncludeDeleted: boolValue(in, "include_deleted")})
-		return marshalResult(map[string]any{"tasks": items, "next_page_token": next}, err)
+		projected := make([]publicTask, 0, len(items))
+		for _, item := range items {
+			projected = append(projected, projectTask(item))
+		}
+		return marshalResult(map[string]any{"tasks": projected, "next_page_token": next}, err)
 	case "list_task_events":
 		items, next, err := c.service.ListProgress(ctx, stringValue(in, "task_id"), uint64Value(in, "after_sequence"), intValue(in, "limit", 100))
 		if err != nil {
@@ -1165,13 +1266,13 @@ func (c *coreTaskCapability) HandleOperation(ctx context.Context, operationID st
 		rev := uintValue(in, "expected_revision")
 		digest, _ := coretask.CanonicalMutationDigest(map[string]any{"operation": "cancel", "task_id": taskID, "revision": rev, "reason": stringValue(in, "reason")})
 		t, err := c.service.CancelTask(ctx, coretask.CancelCommand{TaskID: taskID, Reason: stringValue(in, "reason"), At: time.Now().UTC(), Mutation: coretask.MutationCommand{IdempotencyKey: key, RequestDigest: digest, ExpectedRevision: rev}})
-		return marshalResult(t, err)
+		return marshalResult(map[string]any{"task": projectTask(t)}, err)
 	case "retry_task":
 		taskID := stringValue(in, "task_id")
 		rev := uintValue(in, "expected_revision")
 		digest, _ := coretask.CanonicalMutationDigest(map[string]any{"operation": "retry", "task_id": taskID, "revision": rev})
 		t, err := c.service.RetryTask(ctx, coretask.RetryCommand{TaskID: taskID, At: time.Now().UTC(), Mutation: coretask.MutationCommand{IdempotencyKey: key, RequestDigest: digest, ExpectedRevision: rev}})
-		return marshalResult(t, err)
+		return marshalResult(map[string]any{"task": projectTask(t)}, err)
 	default:
 		return nil, fmt.Errorf("unknown task operation %q", operationID)
 	}
@@ -1485,6 +1586,45 @@ type coreExtensionCapability struct {
 	product *capabilityclient.Client
 }
 
+type publicInstallation struct {
+	InstallationID    string                                `json:"installation_id"`
+	Candidate         coreextension.Candidate               `json:"candidate"`
+	Kind              coreextension.Kind                    `json:"kind"`
+	Source            coreextension.Source                  `json:"source"`
+	CandidateID       string                                `json:"candidate_id"`
+	Name              string                                `json:"name"`
+	Description       string                                `json:"description,omitempty"`
+	Transport         coreextension.Transport               `json:"transport"`
+	Revision          int64                                 `json:"revision"`
+	State             coreextension.State                   `json:"state"`
+	Enabled           bool                                  `json:"enabled"`
+	ActiveVersionID   string                                `json:"active_version_id,omitempty"`
+	ProposedVersionID string                                `json:"proposed_version_id,omitempty"`
+	Versions          []coreextension.PublicVersionRecord   `json:"versions,omitempty"`
+	NetworkGrants     []coreextension.NetworkGrant          `json:"network_grants"`
+	SecretGrants      []coreextension.SecretGrantDescriptor `json:"secret_grants"`
+	CreatedAt         time.Time                             `json:"created_at"`
+	UpdatedAt         time.Time                             `json:"updated_at"`
+}
+
+func projectInstallation(installation coreextension.Installation) publicInstallation {
+	public := installation.Public()
+	return publicInstallation{
+		InstallationID: public.ID, Candidate: public.Candidate, Kind: public.Kind, Source: public.Source, CandidateID: public.CandidateID,
+		Name: public.Name, Description: public.Description, Transport: public.Transport, Revision: public.Revision, State: public.State, Enabled: public.Enabled,
+		ActiveVersionID: public.ActiveVersionID, ProposedVersionID: public.ProposedVersionID, Versions: public.Versions,
+		NetworkGrants: public.NetworkGrants, SecretGrants: public.SecretGrants, CreatedAt: public.CreatedAt, UpdatedAt: public.UpdatedAt,
+	}
+}
+
+func projectInstallationPage(page coreextension.InstallationPage) map[string]any {
+	installations := make([]publicInstallation, 0, len(page.Installations))
+	for _, installation := range page.Installations {
+		installations = append(installations, projectInstallation(installation))
+	}
+	return map[string]any{"installations": installations, "next_page_token": page.NextPageToken}
+}
+
 func (c *coreExtensionCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.skills.v1", "Skills and MCP", "Core isolated Skills/MCP operations", []opSpec{
 		{"discover_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"get_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"list_skills", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"inspect_skill", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"install_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"update_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"remove_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:write"}, {"list_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"discover_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"get_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"inspect_mcp", capv1.OperationType_OPERATION_TYPE_READ, "agent:mcp:read"}, {"install_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"update_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"remove_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:write"}, {"list_tools", capv1.OperationType_OPERATION_TYPE_READ, "agent:skills:read"}, {"invoke_skill", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:skills:execute"}, {"execute_mcp", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:mcp:execute"}, {"invoke_product", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:product:execute"},
@@ -1527,16 +1667,16 @@ func (c *coreExtensionCapability) HandleOperation(ctx context.Context, operation
 		return marshalResult(map[string]any{"candidates": page.Candidates, "next_page_token": page.NextPageToken}, err)
 	case "list_skills":
 		p, err := c.service.List(ctx, coreextension.ListQuery{Kind: coreextension.KindSkill, Source: coreextension.Source(stringValue(in, "source")), PageSize: pageSize(in, 50), PageToken: stringValue(in, "page_token"), State: coreextension.State(stringValue(in, "state"))})
-		return marshalResult(p.Public(), err)
+		return marshalResult(projectInstallationPage(p), err)
 	case "list_mcp":
 		p, err := c.service.List(ctx, coreextension.ListQuery{Kind: coreextension.KindMCP, PageSize: pageSize(in, 50), PageToken: stringValue(in, "page_token"), Source: coreextension.Source(stringValue(in, "source")), State: coreextension.State(stringValue(in, "state"))})
-		return marshalResult(p.Public(), err)
+		return marshalResult(projectInstallationPage(p), err)
 	case "get_skill":
 		x, err := c.service.Get(ctx, stringValue(in, "installation_id"))
-		return marshalResult(x.Public(), err)
+		return marshalResult(map[string]any{"installation": projectInstallation(x)}, err)
 	case "get_mcp":
 		x, err := c.service.Get(ctx, stringValue(in, "installation_id"))
-		return marshalResult(x.Public(), err)
+		return marshalResult(map[string]any{"installation": projectInstallation(x)}, err)
 	case "inspect_skill", "inspect_mcp":
 		candidate, err := candidateFromInput(in)
 		if err != nil {
