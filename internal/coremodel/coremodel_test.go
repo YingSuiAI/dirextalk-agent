@@ -678,6 +678,29 @@ func TestOpenAIFinishReasonTerminatesAfterFinalContentAndToolDelta(t *testing.T)
 	}
 }
 
+func TestOpenAIFinishReasonLengthPreservesDeltaThenReportsTruncation(t *testing.T) {
+	body := &closeTrackingBody{Reader: strings.NewReader(
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"unfinished reasoning\"},\"finish_reason\":\"length\"}]}\n\n",
+	)}
+	client, err := NewClient(validProfile(ProviderOpenAICompatible, "https://example.com", "k"), WithHTTPClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: body, Header: make(http.Header)}, nil
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.Stream(context.Background(), CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta, err := stream.Recv()
+	if err != nil || delta.ReasoningContent != "unfinished reasoning" {
+		t.Fatalf("final partial delta=%#v err=%v", delta, err)
+	}
+	if _, err = stream.Recv(); !errors.Is(err, ErrStreamTruncated) || !body.closed {
+		t.Fatalf("length finish reason err=%v closed=%v", err, body.closed)
+	}
+}
+
 func TestConversationProfileDefaultsNonPositiveMaxOutputTokensInSnapshot(t *testing.T) {
 	for _, value := range []int{0, -1} {
 		profile := validProfile(ProviderOpenAICompatible, "https://example.com", "k")

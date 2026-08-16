@@ -1288,6 +1288,46 @@ func TestDurableReadOnlyToolErrorReturnsToModelAndCompletesSecondRound(t *testin
 	}
 }
 
+func TestAppendTurnToolHistoryPreservesAssistantMultiToolBatch(t *testing.T) {
+	turn := Turn{ID: uuid.NewString(), ProfileID: uuid.NewString()}
+	first := ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"one"}`}
+	second := ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"two"}`}
+	firstResult := ToolResult{CallID: first.ID, ToolName: first.Name, Content: `{"result":1}`}
+	secondResult := ToolResult{CallID: second.ID, ToolName: second.Name, Content: `{"result":2}`}
+	createdAt := time.Now().UTC()
+	base := newFakeStore()
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events: []TurnEvent{
+			{TurnID: turn.ID, Sequence: 1, Kind: TurnEventStarted, CreatedAt: createdAt},
+			{TurnID: turn.ID, Sequence: 2, Kind: TurnEventDelta, Text: "checking ", ReasoningContent: "compare both", CreatedAt: createdAt.Add(time.Second)},
+			{TurnID: turn.ID, Sequence: 3, Kind: TurnEventToolCall, ToolCall: &first, CreatedAt: createdAt.Add(2 * time.Second)},
+			{TurnID: turn.ID, Sequence: 4, Kind: TurnEventToolResult, ToolResult: &firstResult, CreatedAt: createdAt.Add(3 * time.Second)},
+			{TurnID: turn.ID, Sequence: 5, Kind: TurnEventToolCall, ToolCall: &second, CreatedAt: createdAt.Add(4 * time.Second)},
+			{TurnID: turn.ID, Sequence: 6, Kind: TurnEventToolResult, ToolResult: &secondResult, CreatedAt: createdAt.Add(5 * time.Second)},
+			{TurnID: turn.ID, Sequence: 7, Kind: TurnEventStarted, CreatedAt: createdAt.Add(6 * time.Second)},
+		},
+	}
+	conversation := Conversation{ID: uuid.NewString(), CreatedAt: createdAt.Add(-time.Hour), UpdatedAt: createdAt.Add(-time.Hour)}
+	service := &Service{turns: store}
+
+	authorities, reasoning, err := service.appendTurnToolHistory(context.Background(), turn, &conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reasoning != "compare both" || len(authorities) != 2 || len(conversation.Messages) != 3 {
+		t.Fatalf("reasoning=%q authorities=%d messages=%+v", reasoning, len(authorities), conversation.Messages)
+	}
+	assistant := conversation.Messages[0]
+	if assistant.Role != RoleAssistant || assistant.Content != "checking " || assistant.ReasoningContent != "compare both" || !reflect.DeepEqual(assistant.ToolCalls, []ToolCall{first, second}) {
+		t.Fatalf("assistant batch=%+v", assistant)
+	}
+	if conversation.Messages[1].Role != RoleTool || !reflect.DeepEqual(conversation.Messages[1].ToolResults, []ToolResult{firstResult}) ||
+		conversation.Messages[2].Role != RoleTool || !reflect.DeepEqual(conversation.Messages[2].ToolResults, []ToolResult{secondResult}) {
+		t.Fatalf("tool results=%+v", conversation.Messages[1:])
+	}
+}
+
 func TestExecuteTurnStopsRepeatedToolRoundsWithoutFinalResponse(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()

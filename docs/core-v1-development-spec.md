@@ -303,6 +303,9 @@ concurrency limit. A model round is released for the next provider dispatch
 only after every call in the retained batch has a durable result. A read-only
 tool execution error is recorded as an error result for the next model round,
 so invalid arguments or a provider failure do not discard the conversation.
+The next model request replays that round as one assistant message with its
+content, reasoning, and complete call batch, followed by one result message per
+call in producer order.
 Immediate read-only dispatch uses a compact private pending/dispatched/terminal
 authority inside the current versioned turn-dispatch envelope; it never consumes
 or leaks a public conversation event sequence. Public history contains only the

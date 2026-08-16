@@ -2352,12 +2352,59 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		}
 	}
 	authorities := make(map[string]turnToolCallAuthority)
-	reasoningByCall := make(map[string]string)
-	var completedReasoning, pendingReasoning strings.Builder
+	type batchResult struct {
+		result    ToolResult
+		createdAt time.Time
+	}
+	type toolBatch struct {
+		content   strings.Builder
+		reasoning strings.Builder
+		calls     []ToolCall
+		results   map[string]batchResult
+		createdAt time.Time
+	}
+	batch := toolBatch{results: make(map[string]batchResult)}
+	var completedReasoning strings.Builder
+	batchComplete := func() bool {
+		return len(batch.calls) != 0 && len(batch.results) == len(batch.calls)
+	}
+	flushBatch := func() error {
+		if len(batch.calls) == 0 {
+			return nil
+		}
+		if !batchComplete() {
+			return ErrConflict
+		}
+		createdAt := nextMessageTime(*conversation, batch.createdAt)
+		conversation.Messages = append(conversation.Messages, Message{
+			ID:   uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-batch:"+turn.ID+":"+batch.calls[0].ID)).String(),
+			Role: RoleAssistant, Content: batch.content.String(), ReasoningContent: batch.reasoning.String(),
+			ToolCalls: append([]ToolCall(nil), batch.calls...), CreatedAt: createdAt, ModelProfileID: turn.ProfileID,
+		})
+		completedReasoning.WriteString(batch.reasoning.String())
+		for _, call := range batch.calls {
+			stored := batch.results[call.ID]
+			createdAt = nextMessageTime(*conversation, stored.createdAt)
+			conversation.Messages = append(conversation.Messages, Message{
+				ID:   uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-result:"+turn.ID+":"+call.ID)).String(),
+				Role: RoleTool, ToolResults: []ToolResult{stored.result}, References: cloneReferences(stored.result.References),
+				CreatedAt: createdAt, ModelProfileID: turn.ProfileID,
+			})
+		}
+		batch = toolBatch{results: make(map[string]batchResult)}
+		return nil
+	}
 	for _, event := range events {
 		switch event.Kind {
+		case TurnEventStarted:
+			if batchComplete() {
+				if err := flushBatch(); err != nil {
+					return nil, "", err
+				}
+			}
 		case TurnEventDelta:
-			pendingReasoning.WriteString(event.ReasoningContent)
+			batch.content.WriteString(event.Text)
+			batch.reasoning.WriteString(event.ReasoningContent)
 		case TurnEventToolCall:
 			if event.ToolCall == nil || event.ToolCall.Validate() != nil {
 				return nil, "", ErrConflict
@@ -2366,9 +2413,10 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 				return nil, "", ErrConflict
 			}
 			authorities[event.ToolCall.ID] = turnToolCallAuthority{call: *event.ToolCall, state: turnToolCallPending}
-			reasoningByCall[event.ToolCall.ID] = pendingReasoning.String()
-			completedReasoning.WriteString(pendingReasoning.String())
-			pendingReasoning.Reset()
+			if len(batch.calls) == 0 {
+				batch.createdAt = event.CreatedAt
+			}
+			batch.calls = append(batch.calls, *event.ToolCall)
 		case TurnEventToolResult:
 			if event.ToolResult == nil || event.ToolResult.Validate() != nil {
 				return nil, "", ErrConflict
@@ -2380,11 +2428,12 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 			result := *event.ToolResult
 			authority.state, authority.result = turnToolCallTerminal, &result
 			authorities[event.ToolResult.CallID] = authority
-			createdAt := nextMessageTime(*conversation, event.CreatedAt)
-			conversation.Messages = append(conversation.Messages,
-				Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-call:"+turn.ID+":"+authority.call.ID)).String(), Role: RoleAssistant, ReasoningContent: reasoningByCall[authority.call.ID], ToolCalls: []ToolCall{authority.call}, CreatedAt: createdAt, ModelProfileID: turn.ProfileID},
-				Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-result:"+turn.ID+":"+authority.call.ID)).String(), Role: RoleTool, ToolResults: []ToolResult{result}, References: cloneReferences(result.References), CreatedAt: createdAt.Add(time.Nanosecond), ModelProfileID: turn.ProfileID},
-			)
+			batch.results[event.ToolResult.CallID] = batchResult{result: result, createdAt: event.CreatedAt}
+		}
+	}
+	if batchComplete() {
+		if err := flushBatch(); err != nil {
+			return nil, "", err
 		}
 	}
 	return authorities, completedReasoning.String(), nil

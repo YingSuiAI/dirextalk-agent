@@ -742,16 +742,17 @@ func decodeCompletion(provider ModelProvider, body []byte, _ http.Header) (Compl
 }
 
 type sseStream struct {
-	reader     *bufio.Reader
-	body       io.ReadCloser
-	provider   ModelProvider
-	closed     bool
-	toolIDs    map[int]string
-	nextToolID int
-	cancel     context.CancelFunc
-	source     *countingReader
-	idle       *streamIdleWatchdog
-	terminal   bool
+	reader      *bufio.Reader
+	body        io.ReadCloser
+	provider    ModelProvider
+	closed      bool
+	toolIDs     map[int]string
+	nextToolID  int
+	cancel      context.CancelFunc
+	source      *countingReader
+	idle        *streamIdleWatchdog
+	terminal    bool
+	terminalErr error
 }
 
 type countingReader struct {
@@ -865,6 +866,11 @@ func (s *sseStream) Recv() (Delta, error) {
 		if s.closed {
 			return Delta{}, io.EOF
 		}
+		if s.terminalErr != nil {
+			err := s.terminalErr
+			s.finish()
+			return Delta{}, err
+		}
 		if s.terminal {
 			s.finish()
 			return Delta{}, io.EOF
@@ -920,7 +926,10 @@ func (s *sseStream) Recv() (Delta, error) {
 			s.finish()
 			return Delta{}, ErrProviderUnavailable
 		}
-		if streamTerminal(s.provider, event) {
+		if streamIncomplete(s.provider, event) {
+			s.terminal = true
+			s.terminalErr = ErrStreamTruncated
+		} else if streamTerminal(s.provider, event) {
 			s.terminal = true
 		}
 		if s.toolIDs == nil {
@@ -930,10 +939,28 @@ func (s *sseStream) Recv() (Delta, error) {
 			return d, nil
 		}
 		if s.terminal {
+			if s.terminalErr != nil {
+				err := s.terminalErr
+				s.finish()
+				return Delta{}, err
+			}
 			s.finish()
 			return Delta{}, io.EOF
 		}
 	}
+}
+
+func streamIncomplete(provider ModelProvider, event map[string]any) bool {
+	if provider != ProviderOpenAICompatible {
+		return false
+	}
+	choices, _ := event["choices"].([]any)
+	if len(choices) == 0 {
+		return false
+	}
+	choice, _ := choices[0].(map[string]any)
+	reason, _ := choice["finish_reason"].(string)
+	return strings.TrimSpace(reason) == "length"
 }
 
 func streamTerminal(provider ModelProvider, event map[string]any) bool {

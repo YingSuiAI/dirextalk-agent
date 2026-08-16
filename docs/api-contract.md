@@ -123,11 +123,15 @@ retain their frozen revision CAS.
   already-published call before the existing safe terminal error. Durable turns
   persist the same public ordering while their private pending/dispatched
   envelope remains the at-most-once authority and is never exposed as an
-  additional client event.
+  additional client event. Provider replay reconstructs one assistant message
+  containing the model round's content, reasoning, and complete tool-call
+  batch, followed by the matching tool-result messages in call order.
 - OpenAI-compatible streams accept either `[DONE]` or a nonempty first-choice
   `finish_reason` as an explicit terminal signal. A clean EOF after that signal
   preserves the final content/tool-call delta; EOF without either signal is
-  still `provider_stream_truncated`. OpenAI-compatible reasoning uses the
+  still `provider_stream_truncated`. The `length` finish reason preserves its
+  final delta but terminates as `provider_stream_truncated`, because the
+  requested response is incomplete. OpenAI-compatible reasoning uses the
   `reasoning_content` response and assistant-message field so a reasoning model
   can continue a tool round with the exact prior reasoning. A provider HTTP
   4xx is a terminal `provider_rejected` outcome rather than an unknown dispatch
