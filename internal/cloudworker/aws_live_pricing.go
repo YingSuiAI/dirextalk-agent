@@ -69,7 +69,7 @@ func (catalog *AWSLivePricingCatalog) Snapshot(ctx context.Context, request Pric
 	}
 	credential, err := catalog.credentials.ResolveCredentialRevision(ctx, request.CredentialID, request.CredentialRevision)
 	if err != nil || credential.Validate() != nil || credential.ReferenceID != request.CredentialID ||
-		credential.Region != request.Region || credential.AccountID != request.AccountID {
+		credential.AccountID != request.AccountID {
 		return PricingCatalogSnapshot{}, ErrStaleAuthorization
 	}
 	client, err := catalog.factory.New(credential)

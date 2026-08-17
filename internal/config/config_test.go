@@ -56,6 +56,20 @@ func TestLoadAcceptsExplicitVoiceCallbackRelayTokenField(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsExplicitCloudWorkerHostRegion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("core_cloud_worker_host_region: us-west-2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CoreCloudWorkerHostRegion != "us-west-2" {
+		t.Fatalf("Cloud Worker host region = %q", cfg.CoreCloudWorkerHostRegion)
+	}
+}
+
 func TestValidateAgentHTTPReusesTheGrantKeyAndDefaultsTheInternalListener(t *testing.T) {
 	keyPath := filepath.Join(t.TempDir(), "grant.pub")
 	if err := os.WriteFile(keyPath, make([]byte, 32), 0o600); err != nil {
@@ -67,6 +81,24 @@ func TestValidateAgentHTTPReusesTheGrantKeyAndDefaultsTheInternalListener(t *tes
 	}
 	if cfg.AgentHTTPListenAddress != "0.0.0.0:8082" || cfg.CapabilityGrantPublicKeyFile != keyPath {
 		t.Fatalf("Agent HTTP config = %#v", cfg)
+	}
+}
+
+func TestValidateCoreCloudWorkerRequiresCanonicalHostRegion(t *testing.T) {
+	for _, region := range []string{"us-east-1", "us-gov-west-1", "cn-north-1"} {
+		cfg := Config{AgentHTTPEnabled: true, CoreCloudWorkerHostRegion: region}
+		if err := ValidateCoreCloudWorker(&cfg); err != nil {
+			t.Fatalf("region %q rejected: %v", region, err)
+		}
+	}
+	if err := ValidateCoreCloudWorker(&Config{AgentHTTPEnabled: true}); err != nil {
+		t.Fatalf("missing optional host region should withhold Cloud Worker only: %v", err)
+	}
+	for _, region := range []string{" us-east-1", "US-EAST-1", "local-1", "us-east-01"} {
+		cfg := Config{AgentHTTPEnabled: true, CoreCloudWorkerHostRegion: region}
+		if err := ValidateCoreCloudWorker(&cfg); err == nil {
+			t.Fatalf("region %q accepted", region)
+		}
 	}
 }
 

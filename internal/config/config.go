@@ -79,6 +79,7 @@ type Config struct {
 	CoreWorkloadEnabled                bool          `yaml:"core_workload_enabled" mapstructure:"core_workload_enabled"`
 	CoreWorkloadRunnerSocket           string        `yaml:"core_workload_runner_socket" mapstructure:"core_workload_runner_socket"`
 	CoreWorkloadRunnerUID              uint32        `yaml:"core_workload_runner_uid" mapstructure:"core_workload_runner_uid"`
+	CoreCloudWorkerHostRegion          string        `yaml:"core_cloud_worker_host_region" mapstructure:"core_cloud_worker_host_region"`
 	CoreStaticSitesEnabled             bool          `yaml:"core_static_sites_enabled" mapstructure:"core_static_sites_enabled"`
 	CoreStaticSitesRoot                string        `yaml:"core_static_sites_root" mapstructure:"core_static_sites_root"`
 	CoreStaticSitesPublicOrigin        string        `yaml:"core_static_sites_public_origin" mapstructure:"core_static_sites_public_origin"`
@@ -239,8 +240,50 @@ func ValidateCore(cfg *Config) error {
 	if err := ValidateAgentHTTP(cfg); err != nil {
 		return err
 	}
+	if err := ValidateCoreCloudWorker(cfg); err != nil {
+		return err
+	}
 	if err := ValidateProductCapability(cfg); err != nil {
 		return err
+	}
+	return nil
+}
+
+// ValidateCoreCloudWorker validates the optional host-owned deployment region.
+// When it is absent the Agent stays available but does not compose Cloud Worker
+// operations. Uploaded AWS credential regions never select Worker resources.
+func ValidateCoreCloudWorker(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	region := strings.TrimSpace(cfg.CoreCloudWorkerHostRegion)
+	if region == "" && cfg.CoreCloudWorkerHostRegion == "" {
+		return nil
+	}
+	parts := strings.Split(region, "-")
+	if region == "" || region != cfg.CoreCloudWorkerHostRegion || len(parts) < 3 || len(parts[0]) != 2 {
+		return errors.New("core_cloud_worker_host_region must be a canonical AWS region")
+	}
+	for index, part := range parts {
+		if part == "" {
+			return errors.New("core_cloud_worker_host_region must be a canonical AWS region")
+		}
+		for _, current := range part {
+			if current < 'a' || current > 'z' {
+				if index == len(parts)-1 && current >= '0' && current <= '9' {
+					continue
+				}
+				return errors.New("core_cloud_worker_host_region must be a canonical AWS region")
+			}
+		}
+	}
+	for _, current := range parts[len(parts)-1] {
+		if current < '0' || current > '9' {
+			return errors.New("core_cloud_worker_host_region must be a canonical AWS region")
+		}
+	}
+	if parts[len(parts)-1][0] == '0' {
+		return errors.New("core_cloud_worker_host_region must be a canonical AWS region")
 	}
 	return nil
 }

@@ -360,7 +360,8 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   Exactly one credential may be active: concurrent creates are serialized and
   a second create is rejected until the current credential is deleted.
 - Optional `agent.worker.v1` publishes only after the persistent SSH Worker
-  manager and the sole current verified AWS credential source are composed.
+  manager, the host-owned deployment Region, and the sole current verified AWS
+  credential source are composed.
   `list_workers` and `get_worker` expose the exact
   AWS resource identity, observed EC2 state and ordinary auto-assigned public
   IPv4, Worker/task phase, server load and last-seen time, live hourly quote,
@@ -537,7 +538,9 @@ creates no plan, execution, Task, confirmation, or Worker action. Every executin
 proposal carries minimum vCPU, memory, disk, and estimated runtime rather than
 an AWS instance type. Agent intersects current-generation Linux on-demand
 products with actual regional offerings and selects the cheapest satisfying
-x86_64 shape. Every proposal performs a fresh AWS Price List read for that
+x86_64 shape in the deployment host's identity-verified AWS Region. The
+uploaded credential's default Region is not resource-placement authority.
+Every proposal performs a fresh AWS Price List read for that
 exact EC2 shape and gp3 volume. The quote is not served from a persisted pricing
 catalog. Confirmation exposes the exact shape and hourly compute price. A
 bounded job also exposes its estimated cost and maximum authorized cost; a

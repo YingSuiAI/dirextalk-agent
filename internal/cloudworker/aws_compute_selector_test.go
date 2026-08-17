@@ -54,14 +54,18 @@ func TestAWSComputeSelectorRejectsRegionPrefixCollision(t *testing.T) {
 	credential := &livePricingCredential{handle: workaws.CredentialHandle{ReferenceID: "11111111-1111-4111-8111-111111111111",
 		Region: "ap-northeast-1", AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:user/test", AccessKeyID: "access", SecretAccessKey: "secret"}}
 	ec2Provider := &computeSelectionAWS{regionalLocation: "ap-northeast-10"}
-	selector, err := NewAWSComputeSelector(credential, computeSelectionFactory{ec2: ec2Provider})
+	factory := &computeSelectionFactory{ec2: ec2Provider}
+	selector, err := NewAWSComputeSelector(credential, factory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding := AWSBinding{AccountID: credential.handle.AccountID, Region: credential.handle.Region, CredentialID: credential.handle.ReferenceID, CredentialRevision: 7}
+	binding := AWSBinding{AccountID: credential.handle.AccountID, Region: "ap-northeast-2", CredentialID: credential.handle.ReferenceID, CredentialRevision: 7}
 	_, err = selector.SelectCompute(context.Background(), binding, ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 4, DiskGiB: 20, EstimatedRuntimeMinutes: 30})
 	if !errors.Is(err, ErrProviderUnavailable) {
 		t.Fatalf("prefix-collision region err=%v, want provider unavailable", err)
+	}
+	if factory.ec2Region != binding.Region {
+		t.Fatalf("EC2 region=%q, want host region %q", factory.ec2Region, binding.Region)
 	}
 }
 
@@ -82,24 +86,29 @@ func (computeSelectionPricing) GetProducts(context.Context, *pricing.GetProducts
 	}}, nil
 }
 
-type computeSelectionFactory struct{ ec2 *computeSelectionAWS }
+type computeSelectionFactory struct {
+	ec2       *computeSelectionAWS
+	ec2Region string
+}
 
-func (factory computeSelectionFactory) NewEC2(workaws.CredentialHandle) (AWSComputeSelectionAPI, error) {
+func (factory *computeSelectionFactory) NewEC2(_ workaws.CredentialHandle, region string) (AWSComputeSelectionAPI, error) {
+	factory.ec2Region = region
 	return factory.ec2, nil
 }
-func (computeSelectionFactory) NewPricing(workaws.CredentialHandle) (AWSPriceListAPI, error) {
+func (*computeSelectionFactory) NewPricing(workaws.CredentialHandle) (AWSPriceListAPI, error) {
 	return computeSelectionPricing{}, nil
 }
 
 func TestAWSComputeSelectorChoosesCheapestAvailableShapeSatisfyingRequirements(t *testing.T) {
 	credential := &livePricingCredential{handle: workaws.CredentialHandle{ReferenceID: "11111111-1111-4111-8111-111111111111",
 		Region: "ap-northeast-1", AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:user/test", AccessKeyID: "access", SecretAccessKey: "secret"}}
-	ec2Provider := &computeSelectionAWS{}
-	selector, err := NewAWSComputeSelector(credential, computeSelectionFactory{ec2: ec2Provider})
+	ec2Provider := &computeSelectionAWS{regionalLocation: "ap-northeast-2"}
+	factory := &computeSelectionFactory{ec2: ec2Provider}
+	selector, err := NewAWSComputeSelector(credential, factory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding := AWSBinding{AccountID: credential.handle.AccountID, Region: credential.handle.Region, CredentialID: credential.handle.ReferenceID, CredentialRevision: 7}
+	binding := AWSBinding{AccountID: credential.handle.AccountID, Region: "ap-northeast-2", CredentialID: credential.handle.ReferenceID, CredentialRevision: 7}
 	cheap, err := selector.SelectCompute(context.Background(), binding, ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 2, DiskGiB: 24, EstimatedRuntimeMinutes: 30})
 	if err != nil || cheap.InstanceType != "t3.small" || cheap.VCPU != 2 || cheap.MemoryGiB != 2 || cheap.VolumeGiB != 24 {
 		t.Fatalf("cheap=%+v err=%v", cheap, err)
@@ -110,5 +119,8 @@ func TestAWSComputeSelectorChoosesCheapestAvailableShapeSatisfyingRequirements(t
 	}
 	if ec2Provider.offeringLocationType != ec2types.LocationTypeRegion {
 		t.Fatalf("offering location type=%q, want region", ec2Provider.offeringLocationType)
+	}
+	if factory.ec2Region != binding.Region {
+		t.Fatalf("EC2 region=%q, want host region %q", factory.ec2Region, binding.Region)
 	}
 }

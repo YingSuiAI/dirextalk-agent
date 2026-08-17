@@ -67,7 +67,7 @@ func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact worka
 func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudworker.AWSBinding) (*sshworker.Provider, sshworker.CredentialIdentity, error) {
 	handle, err := executor.exact.ResolveCredentialRevision(ctx, binding.CredentialID, binding.CredentialRevision)
 	identity := sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision, AccountID: binding.AccountID, Region: binding.Region}
-	if err != nil || handle.ReferenceID != identity.CredentialID || handle.AccountID != identity.AccountID || handle.Region != identity.Region {
+	if err != nil || handle.Validate() != nil || handle.ReferenceID != identity.CredentialID || handle.AccountID != identity.AccountID {
 		return nil, identity, errors.Join(cloudworker.ErrStaleAuthorization, err)
 	}
 	executor.mu.Lock()
@@ -79,7 +79,7 @@ func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudwo
 	if err != nil {
 		return nil, identity, err
 	}
-	config := awssdk.Config{Region: handle.Region, Credentials: credentialProvider}
+	config := awssdk.Config{Region: binding.Region, Credentials: credentialProvider}
 	handle.AccessKeyID, handle.SecretAccessKey, handle.SessionToken = "", "", ""
 	client, err := sshworker.NewSDK(config, sshworker.HTTPPublicIPReader{})
 	if err != nil {

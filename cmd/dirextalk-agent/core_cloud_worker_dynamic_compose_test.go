@@ -18,6 +18,11 @@ func TestDynamicCloudWorkerCompositionIsEnabledForNativeHTTPDataPlane(t *testing
 	}
 
 	composition, err = composeDynamicCloudWorkerProposal(config.Config{AgentHTTPEnabled: true}, nil, nil, nil)
+	if err != nil || composition != nil {
+		t.Fatalf("missing host region should withhold Cloud Worker composition: composition=%v err=%v", composition, err)
+	}
+
+	composition, err = composeDynamicCloudWorkerProposal(config.Config{AgentHTTPEnabled: true, CoreCloudWorkerHostRegion: "us-west-2"}, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "dependencies are incomplete") || composition != nil {
 		t.Fatalf("native HTTP composition=%v err=%v", composition, err)
 	}

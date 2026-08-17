@@ -24,17 +24,17 @@ type AWSComputeSelectionAPI interface {
 }
 
 type AWSComputeSelectionFactory interface {
-	NewEC2(workaws.CredentialHandle) (AWSComputeSelectionAPI, error)
+	NewEC2(workaws.CredentialHandle, string) (AWSComputeSelectionAPI, error)
 	NewPricing(workaws.CredentialHandle) (AWSPriceListAPI, error)
 }
 
 type SDKAWSComputeSelectionFactory struct{}
 
-func (SDKAWSComputeSelectionFactory) NewEC2(credential workaws.CredentialHandle) (AWSComputeSelectionAPI, error) {
-	if credential.Validate() != nil {
+func (SDKAWSComputeSelectionFactory) NewEC2(credential workaws.CredentialHandle, region string) (AWSComputeSelectionAPI, error) {
+	if credential.Validate() != nil || strings.TrimSpace(region) == "" || strings.TrimSpace(region) != region {
 		return nil, ErrStaleAuthorization
 	}
-	config := aws.Config{Region: credential.Region, Credentials: credentials.NewStaticCredentialsProvider(
+	config := aws.Config{Region: region, Credentials: credentials.NewStaticCredentialsProvider(
 		credential.AccessKeyID, credential.SecretAccessKey, credential.SessionToken)}
 	return ec2.NewFromConfig(config), nil
 }
@@ -69,10 +69,10 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 		return ComputeSpec{}, ErrInvalid
 	}
 	credential, err := selector.credentials.ResolveCredentialRevision(ctx, binding.CredentialID, binding.CredentialRevision)
-	if err != nil || credential.Validate() != nil || credential.ReferenceID != binding.CredentialID || credential.AccountID != binding.AccountID || credential.Region != binding.Region {
+	if err != nil || credential.Validate() != nil || credential.ReferenceID != binding.CredentialID || credential.AccountID != binding.AccountID {
 		return ComputeSpec{}, ErrStaleAuthorization
 	}
-	ec2Client, err := selector.factory.NewEC2(credential)
+	ec2Client, err := selector.factory.NewEC2(credential, binding.Region)
 	if err != nil || ec2Client == nil {
 		return ComputeSpec{}, ErrProviderUnavailable
 	}
