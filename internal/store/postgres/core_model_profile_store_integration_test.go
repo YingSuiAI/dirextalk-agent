@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -76,7 +77,7 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := "integration-secret"
-	profile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "integration", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.com", Model: "test", APIKey: key, ContextWindow: 32768, ReasoningEffort: "medium", Revision: 1, CreatedAt: nowUTC(), UpdatedAt: nowUTC()}
+	profile := coremodel.Profile{ID: uuid.NewString(), ClientProfileID: uuid.NewString(), DisplayName: "integration", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, ProviderSecrets: map[string]string{"organization": "historical-secret"}, BaseURL: "https://example.com", Model: "test", APIKey: key, ContextWindow: 32768, ReasoningEffort: "medium", Revision: 1, CreatedAt: nowUTC(), UpdatedAt: nowUTC()}
 	createKey := uuid.NewString()
 	createDigest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	snap, err := store.CreateProfile(ctx, profile, createKey, createDigest)
@@ -105,6 +106,7 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 	}
 	concurrentProfile := profile
 	concurrentProfile.ID = uuid.NewString()
+	concurrentProfile.ClientProfileID = uuid.NewString()
 	concurrentProfile.DisplayName = "concurrent"
 	concurrentKey := uuid.NewString()
 	concurrentDigest := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
@@ -241,9 +243,79 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 	profile.ReasoningEffort = "high"
 	profile.Revision = 2
 	profile.UpdatedAt = nowUTC()
+	conversationID := uuid.NewString()
+	if _, err = pool.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title) VALUES($1,'historical')`, conversationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id) VALUES('conversation',$1,$2)`, conversationID, profile.ID); err != nil {
+		t.Fatal(err)
+	}
 	updated, err := store.UpdateProfile(ctx, profile, uuid.NewString(), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1)
 	if err != nil || updated.Profile.ContextWindow != 65536 || updated.Profile.ReasoningEffort != "high" {
 		t.Fatalf("update parameters = %#v, err=%v", updated, err)
+	}
+	lifecycleDeleteKey := uuid.NewString()
+	lifecycleDeleteDigest := strings.Repeat("d", 64)
+	deleted, err := store.DeleteProfile(ctx, profile.ID, lifecycleDeleteKey, lifecycleDeleteDigest, 2)
+	if err != nil || !deleted.Deleted {
+		t.Fatalf("delete with historical conversation ref=%#v err=%v", deleted, err)
+	}
+	replayedDelete, err := store.DeleteProfile(ctx, profile.ID, lifecycleDeleteKey, lifecycleDeleteDigest, 2)
+	if err != nil || !replayedDelete.Replay || !replayedDelete.Deleted {
+		t.Fatalf("delete replay=%#v err=%v", replayedDelete, err)
+	}
+	if _, err = store.GetProfile(ctx, profile.ID); !errors.Is(err, coremodel.ErrProfileNotFound) {
+		t.Fatalf("deleted profile readback err=%v", err)
+	}
+	var clientID *string
+	var apiConfigured bool
+	var apiNonce, apiCipher, providerNonce, providerCipher []byte
+	var deletedAt *time.Time
+	if err = pool.QueryRow(ctx, `SELECT client_profile_id,api_key_configured,api_key_nonce,api_key_ciphertext,provider_secrets_nonce,provider_secrets_ciphertext,deleted_at FROM core_model_profiles WHERE profile_id=$1`, profile.ID).Scan(&clientID, &apiConfigured, &apiNonce, &apiCipher, &providerNonce, &providerCipher, &deletedAt); err != nil {
+		t.Fatal(err)
+	}
+	if clientID != nil || apiConfigured || apiNonce != nil || apiCipher != nil || providerNonce != nil || providerCipher != nil || deletedAt == nil {
+		t.Fatalf("profile was not credential-free tombstone: client=%v configured=%v deleted=%v", clientID, apiConfigured, deletedAt)
+	}
+	executionSnapshot := coretask.ModelProfileSnapshot{
+		ProfileID: profile.ID, Revision: 1, SecretRef: fmt.Sprintf("model-profile:%s:1", profile.ID),
+		Provider: string(profile.Provider), BaseURL: profile.BaseURL, Model: profile.Model,
+		ContextWindow: profile.ContextWindow, ReasoningEffort: profile.ReasoningEffort,
+	}
+	executionSnapshot.Digest = coreTaskModelSnapshotDigest(executionSnapshot)
+	resolvedHistoricalProfile, resolveErr := store.ResolveExecutionProfile(ctx, executionSnapshot)
+	if resolveErr != nil || resolvedHistoricalProfile.APIKey != key {
+		t.Fatalf("historical revision secret was not preserved: profile=%#v err=%v", resolvedHistoricalProfile.Public(), resolveErr)
+	}
+	var conversationRefs int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM core_model_profile_active_refs WHERE profile_id=$1 AND owner_kind='conversation'`, profile.ID).Scan(&conversationRefs); err != nil || conversationRefs != 1 {
+		t.Fatalf("conversation refs=%d err=%v", conversationRefs, err)
+	}
+
+	staleTaskProfile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "stale-task", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.com", Model: "test", APIKey: key, Revision: 1, CreatedAt: nowUTC(), UpdatedAt: nowUTC()}
+	if _, err = store.CreateProfile(ctx, staleTaskProfile, uuid.NewString(), strings.Repeat("e", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id) VALUES('task',$1,$2)`, uuid.NewString(), staleTaskProfile.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DeleteProfile(ctx, staleTaskProfile.ID, uuid.NewString(), strings.Repeat("f", 64), 1); err != nil {
+		t.Fatalf("stale terminal task ref blocked delete: %v", err)
+	}
+
+	liveScheduleProfile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "live-schedule", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.com", Model: "test", APIKey: key, Revision: 1, CreatedAt: nowUTC(), UpdatedAt: nowUTC()}
+	if _, err = store.CreateProfile(ctx, liveScheduleProfile, uuid.NewString(), strings.Repeat("1", 64)); err != nil {
+		t.Fatal(err)
+	}
+	now := nowUTC()
+	runAt := now.Add(time.Hour)
+	schedule := coretask.Schedule{ID: uuid.NewString(), Name: "live profile consumer", Spec: coretask.TaskTemplate{Goal: "future task", ModelProfileID: liveScheduleProfile.ID}, RunAt: &runAt, Timezone: "UTC", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	scheduleDigest, _ := coretask.CanonicalMutationDigest(schedule)
+	if _, err = NewCoreScheduleStore(store).CreateSchedule(ctx, coretask.CreateScheduleCommand{Schedule: schedule, Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: scheduleDigest}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DeleteProfile(ctx, liveScheduleProfile.ID, uuid.NewString(), strings.Repeat("2", 64), 1); !errors.Is(err, coremodel.ErrProfileInUse) {
+		t.Fatalf("live schedule delete err=%v", err)
 	}
 }
 

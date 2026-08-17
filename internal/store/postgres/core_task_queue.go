@@ -113,6 +113,9 @@ func (s *CoreTaskStore) ClaimNextDue(ctx context.Context, holder string, at time
 		if _, e = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,error_code,error_summary,occurred_at) SELECT task_id,progress_sequence,$2,attempt,'failed','task_timed_out','task timed out',$3 FROM core_tasks WHERE task_id=$1`, id, uuid.New(), at.UTC()); e != nil {
 			return coretask.Task{}, coretask.Lease{}, e
 		}
+		if _, e = tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs WHERE owner_kind='task' AND owner_id=$1`, id); e != nil {
+			return coretask.Task{}, coretask.Lease{}, e
+		}
 		if e = tx.Commit(ctx); e != nil {
 			return coretask.Task{}, coretask.Lease{}, e
 		}
@@ -242,6 +245,9 @@ func (s *CoreTaskStore) coreTerminal(ctx context.Context, f coretask.Fence, at t
 		return coretask.Task{}, e
 	}
 	if _, e = tx.Exec(ctx, `UPDATE core_tasks SET progress_sequence=progress_sequence+1 WHERE task_id=$1`, f.TaskID); e != nil {
+		return coretask.Task{}, e
+	}
+	if _, e = tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs WHERE owner_kind='task' AND owner_id=$1`, f.TaskID); e != nil {
 		return coretask.Task{}, e
 	}
 	t, e := s.taskTx(ctx, tx, f.TaskID, false)
@@ -441,6 +447,9 @@ func (s *CoreTaskStore) CancelTask(ctx context.Context, c coretask.CancelCommand
 			return coretask.Task{}, e
 		}
 		if _, e = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,error_code,error_summary,occurred_at) SELECT task_id,progress_sequence,$2,attempt,'canceled','user_canceled',$3,$4 FROM core_tasks WHERE task_id=$1`, c.TaskID, uuid.New(), c.Reason, c.At.UTC()); e != nil {
+			return coretask.Task{}, e
+		}
+		if _, e = tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs WHERE owner_kind='task' AND owner_id=$1`, c.TaskID); e != nil {
 			return coretask.Task{}, e
 		}
 		return s.taskTx(ctx, tx, c.TaskID, false)

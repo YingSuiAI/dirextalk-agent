@@ -112,6 +112,11 @@ contract](message-server-integration-development-contract.md), and
   profile binding across memory/PostgreSQL stores, Protobuf, and
   `agent.models.v1` sync/list schemas and results; speech/embedding bindings
   are rejected and no conversation-default fallback is synthesized.
+- Model updates and tombstone deletes remain available after historical
+  conversation or snapshotted Task use. Tombstones preserve revision history
+  while clearing live credentials; only future schedule/Knowledge consumers
+  retain the profile-in-use gate. Generic Task terminal transitions release
+  their now-historical active-reference rows.
 - Closed Capability conversation/history DTOs, conversation-bound newest-first
   history cursors, strict UUID mutation keys, typed/redacted domain failures,
   and post-composition durable-turn recovery.

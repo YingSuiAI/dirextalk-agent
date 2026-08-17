@@ -91,6 +91,10 @@ retain their frozen revision CAS.
   embedding, and speech client-profile defaults. The tool default is an
   independent binding to a conversation-kind profile; it never falls back to
   the conversation default and rejects embedding- or speech-kind profiles.
+- Profile updates ignore historical conversation and Task references because
+  those consumers own immutable execution snapshots. Delete tombstones every
+  model kind and clears only the live client binding and credentials; it
+  remains blocked by a nondeleted schedule or active Knowledge generation.
 - A conversation profile whose supplied `max_output_tokens` is nonpositive is
   normalized to the single positive default of 8192 before persistence. The
   immutable turn snapshot exposes and dispatches that exact effective value.

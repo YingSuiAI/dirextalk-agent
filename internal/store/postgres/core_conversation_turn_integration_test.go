@@ -301,6 +301,65 @@ func TestCoreConversationCompletionReplacesStoppedFirstTurnProvisionalTitlePostg
 	}
 }
 
+func TestCoreConversationContinuesWithNewProfileAfterOldProfileTombstonePostgres(t *testing.T) {
+	h := openTurnDB(t)
+	ctx := context.Background()
+
+	firstCommand := turnCommand()
+	createTestProfile(ctx, t, h.store.Store, firstCommand.ProfileID, "old-model", "old-secret")
+	first, err := h.store.StartTurn(ctx, firstCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstLease, err := h.store.ClaimTurn(ctx, first.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.store.CommitTurn(ctx, firstLease, core.ChatResponse{
+		RequestID: first.RequestID, ConversationID: first.ConversationID, Revision: 2,
+		Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "old answer", ModelProfileID: first.ProfileID, CreatedAt: time.Now().UTC()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, deleteErr := h.store.Store.DeleteProfile(ctx, first.ProfileID, uuid.NewString(), strings.Repeat("a", 64), 1); deleteErr != nil || !deleted.Deleted {
+		t.Fatalf("tombstone old profile=%#v err=%v", deleted, deleteErr)
+	}
+
+	secondCommand := turnCommand()
+	secondCommand.ConversationID = first.ConversationID
+	secondCommand.Prompt = "continue with the replacement model"
+	expectedRevision := uint64(2)
+	secondCommand.ExpectedRevision = &expectedRevision
+	createTestProfile(ctx, t, h.store.Store, secondCommand.ProfileID, "new-model", "new-secret")
+	second, err := h.store.StartTurn(ctx, secondCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondLease, err := h.store.ClaimTurn(ctx, second.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.store.CommitTurn(ctx, secondLease, core.ChatResponse{
+		RequestID: second.RequestID, ConversationID: second.ConversationID, Revision: 3,
+		Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "new answer", ModelProfileID: second.ProfileID, CreatedAt: time.Now().UTC()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	conversation, err := h.store.LoadConversation(ctx, first.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conversation.Messages) != 4 {
+		t.Fatalf("messages=%+v", conversation.Messages)
+	}
+	for i, wantProfileID := range []string{first.ProfileID, first.ProfileID, second.ProfileID, second.ProfileID} {
+		if conversation.Messages[i].ModelProfileID != wantProfileID {
+			t.Fatalf("message[%d].profile_id=%q want %q", i, conversation.Messages[i].ModelProfileID, wantProfileID)
+		}
+	}
+}
+
 func TestCoreConversationTurnSteerInvalidatesProviderLeaseAndCommitsGuidancePostgres(t *testing.T) {
 	h := openTurnDB(t)
 	cmd := turnCommand()

@@ -355,13 +355,6 @@ func (s *Store) UpdateProfile(ctx context.Context, p coremodel.Profile, key, dig
 	p.CreatedAt = p.CreatedAt.UTC().Truncate(time.Microsecond)
 	p.UpdatedAt = p.UpdatedAt.UTC().Truncate(time.Microsecond)
 	return s.mutateProfile(ctx, profileUpdateOp, key, digest, func(tx pgx.Tx) (coremodel.MutationSnapshot, error) {
-		var refs int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM core_model_profile_active_refs WHERE profile_id=$1`, p.ID).Scan(&refs); err != nil {
-			return coremodel.MutationSnapshot{}, ErrProfileStoreUnavailable
-		}
-		if refs > 0 {
-			return coremodel.MutationSnapshot{}, coremodel.ErrProfileInUse
-		}
 		modalities, providerConfig, providerSecretStatus := profileMetadataJSON(p)
 		envelope, sealErr := s.sealProfileSecret(p)
 		if sealErr != nil {
@@ -406,31 +399,25 @@ func (s *Store) DeleteProfile(ctx context.Context, id, key, digest string, expec
 		if p.Revision != expected {
 			return coremodel.MutationSnapshot{}, coremodel.ErrRevisionConflict
 		}
-		var refs int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM core_model_profile_active_refs WHERE profile_id=$1`, id).Scan(&refs); err != nil {
+		var liveFutureRef bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1
+			FROM core_model_profile_active_refs ref
+			LEFT JOIN core_schedules schedule ON ref.owner_kind='schedule' AND schedule.schedule_id=ref.owner_id
+			WHERE ref.profile_id=$1 AND (
+				ref.owner_kind='knowledge_generation' OR
+				(ref.owner_kind='schedule' AND schedule.deleted_at IS NULL)
+			)
+		)`, id).Scan(&liveFutureRef); err != nil {
 			return coremodel.MutationSnapshot{}, ErrProfileStoreUnavailable
 		}
-		if refs > 0 {
+		if liveFutureRef {
 			return coremodel.MutationSnapshot{}, coremodel.ErrProfileInUse
 		}
-		// Embedding jobs retain immutable profile FKs for task provenance. Once
-		// Knowledge has retired every active generation, tombstone the current
-		// profile and wipe its live credential while preserving those historical
-		// references. Other profile kinds retain the established hard-delete
-		// behavior.
-		if p.ModelKind == coremodel.ModelKindEmbedding {
-			if _, err := tx.Exec(ctx, `UPDATE core_model_profiles SET client_profile_id=NULL,api_key_configured=false,api_key_nonce=NULL,api_key_ciphertext=NULL,provider_secrets_nonce=NULL,provider_secrets_ciphertext=NULL,provider_secret_status='{}'::jsonb,deleted_at=clock_timestamp(),updated_at=clock_timestamp() WHERE profile_id=$1`, id); err != nil {
-				return coremodel.MutationSnapshot{}, mapProfileDBError(err)
-			}
-			return coremodel.MutationSnapshot{Profile: p.Public(), Deleted: true}, nil
-		}
-		// Secret revisions are immutable task snapshot material. They may be
-		// retired only when no durable task snapshot still names this profile;
-		// otherwise the FK deliberately turns deletion into a conflict.
-		if _, err := tx.Exec(ctx, `DELETE FROM core_model_profile_secret_revisions WHERE profile_id=$1 AND NOT EXISTS (SELECT 1 FROM core_task_execution_snapshots WHERE snapshot_json->'model'->>'profile_id'=$1::text)`, id); err != nil {
-			return coremodel.MutationSnapshot{}, mapProfileDBError(err)
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM core_model_profiles WHERE profile_id=$1`, id); err != nil {
+		// Every model kind keeps one tombstoned profile row. Historical
+		// conversations and immutable revision snapshots continue to name that
+		// row, while the write-facing client id and live credentials are removed.
+		if _, err := tx.Exec(ctx, `UPDATE core_model_profiles SET client_profile_id=NULL,api_key_configured=false,api_key_nonce=NULL,api_key_ciphertext=NULL,provider_secrets_nonce=NULL,provider_secrets_ciphertext=NULL,provider_secret_status='{}'::jsonb,deleted_at=clock_timestamp(),updated_at=clock_timestamp() WHERE profile_id=$1`, id); err != nil {
 			return coremodel.MutationSnapshot{}, mapProfileDBError(err)
 		}
 		return coremodel.MutationSnapshot{Profile: p.Public(), Deleted: true}, nil

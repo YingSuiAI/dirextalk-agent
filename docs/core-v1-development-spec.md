@@ -165,6 +165,12 @@ role defaults. The tool role references only a conversation-kind profile and
 has no implicit conversation-default fallback; an absent tool binding remains
 absent. The Protobuf and `agent.models.v1` Capability contracts project the
 profile kind/modalities and all role defaults without credential material.
+Historical conversations and Tasks retain immutable model snapshots, so their
+profile references do not block a later profile update or deletion. Deletion
+tombstones every model kind, clears its live client id and credentials, and
+preserves the profile row plus revision secrets for history and replay. A
+nondeleted schedule or active Knowledge generation remains a future consumer
+and rejects deletion until it is removed.
 
 Every Chat, StreamChat, and StartTurn request carries the exact model-profile
 pin triple: `model_profile_id`, `model_profile_revision`, and
