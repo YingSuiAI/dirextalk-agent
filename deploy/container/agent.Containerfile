@@ -7,7 +7,7 @@ FROM --platform=linux/amd64 docker.io/library/node:24.18.1-alpine3.23@sha256:ba6
 FROM --platform=linux/amd64 docker.io/library/alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS ssh_runtime
 RUN apk add --no-cache openssh-client-default
 
-FROM --platform=linux/amd64 docker.io/library/golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS build
+FROM --platform=linux/amd64 docker.io/library/golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS build
 WORKDIR /src
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG VERSION=dev
