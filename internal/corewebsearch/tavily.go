@@ -17,7 +17,7 @@ const (
 	tavilyEndpoint   = "https://api.tavily.com/search"
 	tavilyTimeout    = 15 * time.Second
 	maxResponseBytes = 2 << 20
-	maxQueryRunes    = 1000
+	MaxQueryRunes    = 1000
 	maxResults       = 10
 	maxAnswerBytes   = 3000
 	maxTitleBytes    = 300
@@ -48,7 +48,7 @@ func newTavilyClientForTest(client *http.Client, endpoint string) *TavilyClient 
 func (c *TavilyClient) Search(ctx context.Context, apiKey, query string, requestedResults int) (SearchResult, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	query = strings.TrimSpace(query)
-	if c == nil || c.client == nil || apiKey == "" || query == "" || !utf8.ValidString(query) || utf8.RuneCountInString(query) > maxQueryRunes {
+	if c == nil || c.client == nil || apiKey == "" || query == "" || !utf8.ValidString(query) || utf8.RuneCountInString(query) > MaxQueryRunes {
 		return SearchResult{}, ErrInvalid
 	}
 	if requestedResults <= 0 {

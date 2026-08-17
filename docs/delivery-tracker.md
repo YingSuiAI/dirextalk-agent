@@ -74,8 +74,9 @@ contract](message-server-integration-development-contract.md), and
 - Four immutable, network-free Dirextalk built-in Skills use the existing
   extension installation model. Fresh state seeds them once; removal remains
   removed across restart, while explicit reinstall continues through the
-  reviewed confirmation lifecycle. GitHub and skills.sh remain available as
-  separately pinned external sources.
+  reviewed confirmation lifecycle. Native turns resolve the selected pinned
+  `SKILL.md` once and inject it as one instruction block without a fake tool.
+  GitHub and skills.sh remain available as separately pinned external sources.
 - Two default, network-free, read-only MCP installations expose live server
   time and server load through the same isolated MCP lifecycle and durable
   one-time seed semantics as other installed extensions.

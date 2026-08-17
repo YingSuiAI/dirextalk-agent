@@ -390,8 +390,10 @@ version, content, artifact, schema, network, and secret bindings. MCP supports
 local stdio and remote HTTPS Streamable HTTP. A remote registry declaration
 without required authentication has no credential reference or secret grant and
 sends no Authorization header; a supported required bearer credential keeps its
-write-only, version-bound secret grant. Skills use the pinned Skill artifact and
-instructions. Local code runs only through the separate Linux
+write-only, version-bound secret grant. A Skill selected for a Native
+conversation resolves its exact pinned `SKILL.md` once at turn admission and
+enters the model as one instruction block without inventing a tool. Skills use
+the same pinned artifact reader as durable Tasks. Local code runs only through the separate Linux
 extension runner with another UID, namespaces, a task workspace, and explicit
 secrets. No in-process or unconfirmed fallback is allowed.
 Four Dirextalk-owned general Skills are bundled as a network-free `builtin`

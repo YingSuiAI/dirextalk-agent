@@ -385,8 +385,10 @@ retain their frozen revision CAS.
   the explicit `default_tool_client_profile_id`
   conversation profile and current credential server-side with no fallback,
   and never writes conversation, history, Task, or execution replay state.
-  Search alone uses the fenced Tavily path with at most five results and sends
-  its evidence as separate untrusted model context. Model execution is one
+  Search alone uses the fenced Tavily path with at most five results, bounds
+  the provider query to Tavily's 1,000-rune limit while preserving the full
+  selected text for the model, and sends its evidence as separate untrusted
+  model context. Model execution is one
   shot, limited to 60 seconds and 64 KiB of output.
   Because `execute` is a Capability MUTATION, the common operation ledger
   retains the bounded output/sources JSON as its ordinary plaintext result and
@@ -429,6 +431,10 @@ as ordinary installed records under the public identifiers
 keeps the seed fence, so a process
 restart cannot recreate the installation; an owner may explicitly discover
 and reinstall the current built-in version.
+When the owner selects an installed Skill for a Native conversation, the Agent
+reads the exact pinned artifact at admission and injects all selected Skills
+once as a single model instruction block. Skill selection does not synthesize
+an MCP tool or create a parallel execution path.
 Two network-free, read-only built-in MCP installations are also seeded once:
 `dirextalk-server-time` exposes `server_time`, and `dirextalk-server-load`
 exposes `server_load`. They use ordinary installed-extension records, the

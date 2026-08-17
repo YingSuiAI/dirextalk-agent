@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
@@ -44,8 +45,9 @@ type coreExtensionComposition struct {
 }
 
 type conversationExtensionResolver struct {
-	store     extensionGetter
-	automatic *coreconversation.ExtensionSelection
+	store       extensionGetter
+	skillReader skillArtifactReader
+	automatic   *coreconversation.ExtensionSelection
 }
 
 func (r conversationExtensionResolver) ResolveExtensions(ctx context.Context, selections []coreconversation.ExtensionSelection) ([]coreconversation.ResolvedExtension, error) {
@@ -59,7 +61,7 @@ func (r conversationExtensionResolver) ResolveExtensions(ctx context.Context, se
 	}
 	out := make([]coreconversation.ResolvedExtension, 0, len(selections))
 	for _, selection := range selections {
-		if selection.Validate() != nil || len(selection.AllowedTools) == 0 {
+		if selection.Validate() != nil || (selection.Kind == coreconversation.ExtensionSkill) != (len(selection.AllowedTools) == 0) {
 			return nil, coreextension.ErrInvalid
 		}
 		installation, err := r.store.Get(ctx, selection.ID)
@@ -78,6 +80,24 @@ func (r conversationExtensionResolver) ResolveExtensions(ctx context.Context, se
 		if version == nil || extensionVersionPin(*version) != selection.Version || version.ContentDigest != selection.Digest ||
 			!coretask.ValidDigest(version.ContentDigest) || !coretask.ValidDigest(version.ArtifactDigest) {
 			return nil, coreextension.ErrConflict
+		}
+		if selection.Kind == coreconversation.ExtensionSkill {
+			instructions, err := readPinnedSkillVersion(ctx, r.skillReader, *version)
+			if err != nil {
+				return nil, err
+			}
+			normalizedSelection := selection
+			normalizedSelection.AllowedTools = nil
+			out = append(out, coreconversation.ResolvedExtension{
+				Selection: normalizedSelection,
+				Snapshot: coreconversation.ExtensionExecutionSnapshot{
+					Selection: normalizedSelection, InstallationID: installation.ID, VersionID: version.VersionID,
+					InstallationRevision: uint64(installation.Revision), Source: string(installation.Source),
+					ContentDigest: version.ContentDigest, ArtifactDigest: version.ArtifactDigest,
+					SkillInstructions: instructions, ReadOnly: true,
+				},
+			})
+			continue
 		}
 		descriptors := make(map[string]coreextension.Tool, len(version.Tools))
 		for _, tool := range version.Tools {
@@ -388,11 +408,18 @@ func (r *pinnedSkillResolver) ResolveSkillInstructions(ctx context.Context, in c
 	if !found || v.ContentDigest != in.ContentDigest || v.ArtifactDigest != in.ArtifactDigest || v.Execution.Skill == nil || v.Execution.Skill.Digest == "" {
 		return "", coreextension.ErrConflict
 	}
-	b, err := r.runner.ReadSkill(ctx, in.ArtifactDigest, v.Execution.Skill.RelativePath)
+	return readPinnedSkillVersion(ctx, r.runner, v)
+}
+
+func readPinnedSkillVersion(ctx context.Context, reader skillArtifactReader, version coreextension.VersionRecord) (string, error) {
+	if reader == nil || version.Execution.Skill == nil || version.Execution.Skill.Digest == "" {
+		return "", coreextension.ErrConflict
+	}
+	b, err := reader.ReadSkill(ctx, version.ArtifactDigest, version.Execution.Skill.RelativePath)
 	if err != nil {
 		return "", err
 	}
-	if len(b) > coretask.MaxResultTextBytes || digestBytes(b) != v.Execution.Skill.Digest {
+	if len(b) == 0 || len(b) > coretask.MaxResultTextBytes || !utf8.Valid(b) || digestBytes(b) != version.Execution.Skill.Digest {
 		return "", coreextension.ErrConflict
 	}
 	return string(b), nil
@@ -560,7 +587,7 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
 		}
 	}
-	return &coreExtensionComposition{domain: service, mcpService: mcpService, skillService: skillService, taskHandler: dispatch, lifecycleHandler: lifecycleHandler, executionHandler: executionHandler, conversationToolHandler: conversationToolHandler, conversationResolver: conversationExtensionResolver{store: extStore, automatic: &localSandboxSelection}, toolDispatcher: &pinnedExtensionDispatcher{tasks: postgres.NewCoreTaskStore(store), store: extStore, coord: execCoord, local: local, remote: remote}, skillResolver: &pinnedSkillResolver{store: extStore, runner: runner}, artifactCleaner: artifactCleaner}, nil
+	return &coreExtensionComposition{domain: service, mcpService: mcpService, skillService: skillService, taskHandler: dispatch, lifecycleHandler: lifecycleHandler, executionHandler: executionHandler, conversationToolHandler: conversationToolHandler, conversationResolver: conversationExtensionResolver{store: extStore, skillReader: runner, automatic: &localSandboxSelection}, toolDispatcher: &pinnedExtensionDispatcher{tasks: postgres.NewCoreTaskStore(store), store: extStore, coord: execCoord, local: local, remote: remote}, skillResolver: &pinnedSkillResolver{store: extStore, runner: runner}, artifactCleaner: artifactCleaner}, nil
 }
 
 func resolveBuiltinLocalSandboxSelection(ctx context.Context, service coreextension.Service, store extensionGetter) (coreconversation.ExtensionSelection, error) {

@@ -424,6 +424,28 @@ func TestModelRunnerForwardsResolvedExtensionToolsToProvider(t *testing.T) {
 	}
 }
 
+func TestModelRunnerInjectsSelectedSkillsOnce(t *testing.T) {
+	id := "00000000-0000-4000-8000-000000000001"
+	client := &captureClient{}
+	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	extensions := []coreconversation.ResolvedExtension{
+		{Selection: coreconversation.ExtensionSelection{Kind: coreconversation.ExtensionSkill}, Snapshot: coreconversation.ExtensionExecutionSnapshot{SkillInstructions: "first workflow"}},
+		{Selection: coreconversation.ExtensionSelection{Kind: coreconversation.ExtensionSkill}, Snapshot: coreconversation.ExtensionExecutionSnapshot{SkillInstructions: "second workflow"}},
+	}
+	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{
+		Snapshot:     coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}),
+		Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "deploy"}}},
+		Extensions:   extensions,
+	})
+	if err != nil || len(client.req.Messages) != 2 || client.req.Messages[0].Role != coremodel.RoleSystem || client.req.Messages[1].Content != "deploy" {
+		t.Fatalf("request=%+v err=%v", client.req, err)
+	}
+	skillPrompt := client.req.Messages[0].Content
+	if strings.Count(skillPrompt, "<selected_skill_instructions>") != 1 || strings.Count(skillPrompt, "<skill>") != 2 || !strings.Contains(skillPrompt, "first workflow") || !strings.Contains(skillPrompt, "second workflow") {
+		t.Fatalf("skill prompt=%q", skillPrompt)
+	}
+}
+
 func TestModelRunnerRejectsMissingExactExtensionToolSchemas(t *testing.T) {
 	id := "00000000-0000-4000-8000-000000000001"
 	snapshot := coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1})

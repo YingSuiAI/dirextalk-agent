@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -11,6 +13,17 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
+
+type conversationSkillReader struct {
+	content []byte
+	digest  string
+	path    string
+}
+
+func (r *conversationSkillReader) ReadSkill(_ context.Context, digest, path string) ([]byte, error) {
+	r.digest, r.path = digest, path
+	return append([]byte(nil), r.content...), nil
+}
 
 func conversationResolverInstallation() coreextension.Installation {
 	installID := "00000000-0000-4000-8000-000000000001"
@@ -56,6 +69,33 @@ func TestConversationExtensionResolverPublishesOnlyExactAllowedToolSchemas(t *te
 	properties, ok := extension.Tools[0].InputSchema["properties"].(map[string]any)
 	if !ok || properties["text"] == nil || extension.Snapshot.ToolSchemaDigest != toolSchemaDigest(installation.Versions[0].Tools[:1]) {
 		t.Fatalf("exact schema was not preserved: tool=%+v snapshot=%+v", extension.Tools[0], extension.Snapshot)
+	}
+}
+
+func TestConversationExtensionResolverInjectsPinnedSkillInstructionsWithoutTools(t *testing.T) {
+	content := []byte("# Deploy service\n\nFollow the deployment workflow.")
+	skillDigest := sha256.Sum256(content)
+	installation := conversationResolverInstallation()
+	installation.Kind = coreextension.KindSkill
+	installation.Versions[0].Tools = nil
+	installation.Versions[0].Execution = coreextension.ExecutionDescriptor{Skill: &coreextension.SkillEntry{
+		RelativePath: "SKILL.md", Digest: hex.EncodeToString(skillDigest[:]),
+	}}
+	selection := conversationResolverSelection(installation)
+	selection.Kind = coreconversation.ExtensionSkill
+	selection.AllowedTools = nil
+	reader := &conversationSkillReader{content: content}
+
+	resolved, err := (conversationExtensionResolver{store: compositionExtensionStore{installation: installation}, skillReader: reader}).ResolveExtensions(context.Background(), []coreconversation.ExtensionSelection{selection})
+	if err != nil || len(resolved) != 1 {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	extension := resolved[0]
+	if len(extension.Tools) != 0 || extension.Snapshot.SkillInstructions != string(content) || !extension.Snapshot.ReadOnly || extension.Snapshot.RequiresConfirmation {
+		t.Fatalf("resolved skill=%+v", extension)
+	}
+	if reader.digest != installation.Versions[0].ArtifactDigest || reader.path != "SKILL.md" {
+		t.Fatalf("reader digest=%q path=%q", reader.digest, reader.path)
 	}
 }
 

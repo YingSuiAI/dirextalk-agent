@@ -91,7 +91,7 @@ func TestTavilySearchRejectsRedirectStatusOversizeAndTimeout(t *testing.T) {
 
 func TestTavilySearchValidatesQuery(t *testing.T) {
 	client := newTavilyClientForTest(http.DefaultClient, "http://example.invalid")
-	for _, query := range []string{"", strings.Repeat("x", maxQueryRunes+1)} {
+	for _, query := range []string{"", strings.Repeat("x", MaxQueryRunes+1)} {
 		if _, err := client.Search(context.Background(), "key", query, 1); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("query length=%d err=%v", len(query), err)
 		}

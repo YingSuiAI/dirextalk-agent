@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
@@ -59,6 +60,7 @@ func (*recordingClient) Stream(context.Context, coremodel.CompletionRequest) (co
 
 type fakeSearch struct {
 	max        int
+	query      string
 	resolved   *corewebsearch.ResolvedConfig
 	resolveErr error
 }
@@ -74,7 +76,23 @@ func (f *fakeSearch) Resolve(context.Context, string, int64) (corewebsearch.Reso
 }
 func (f *fakeSearch) SearchResolved(_ context.Context, _ string, _ int64, _ corewebsearch.ResolvedConfig, query string, max int) (corewebsearch.SearchResult, error) {
 	f.max = max
+	f.query = query
 	return corewebsearch.SearchResult{Results: []corewebsearch.SearchItem{{Title: "Title", URL: "https://example.test", Content: "Evidence"}}}, nil
+}
+
+func TestSearchBoundsProviderQueryWithoutTruncatingModelInput(t *testing.T) {
+	config := Config{Enabled: true, Revision: 1, UpdatedAt: time.Now().UTC(), Tools: []Tool{{ID: "search", Name: "Search", SystemPrompt: "search system", Order: 0, Enabled: true}}}
+	client := &recordingClient{output: "answer"}
+	search := &fakeSearch{}
+	service := newTestService(t, &memoryRepository{config: &config}, search, client)
+	selected := strings.Repeat("界", corewebsearch.MaxQueryRunes+5)
+
+	if _, err := service.Execute(context.Background(), ExecuteCommand{OwnerID: "owner", AccountGeneration: 1, ToolID: "search", SelectedText: selected, OutputLanguage: OutputEnglish}); err != nil {
+		t.Fatal(err)
+	}
+	if utf8.RuneCountInString(search.query) != corewebsearch.MaxQueryRunes || client.request.Messages[len(client.request.Messages)-1].Content != selected {
+		t.Fatalf("query_runes=%d model_input_runes=%d", utf8.RuneCountInString(search.query), utf8.RuneCountInString(client.request.Messages[len(client.request.Messages)-1].Content))
+	}
 }
 
 func newTestService(t *testing.T, repository Repository, search WebSearch, client *recordingClient) *Service {

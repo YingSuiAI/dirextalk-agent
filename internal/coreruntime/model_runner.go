@@ -88,7 +88,23 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 	if start < 0 || start > len(req.Conversation.Messages) {
 		start = 0
 	}
-	messages := make([]coremodel.Message, 0, len(req.Conversation.Messages)-start+2)
+	messages := make([]coremodel.Message, 0, len(req.Conversation.Messages)-start+3)
+	var selectedSkills strings.Builder
+	for _, ext := range req.Extensions {
+		instructions := strings.TrimSpace(ext.Snapshot.SkillInstructions)
+		if ext.Selection.Kind != coreconversation.ExtensionSkill || instructions == "" {
+			continue
+		}
+		if selectedSkills.Len() == 0 {
+			selectedSkills.WriteString("Follow the selected Skill instructions below as workflow guidance for the current request.\n")
+		}
+		selectedSkills.WriteString("\n<skill>\n")
+		selectedSkills.WriteString(instructions)
+		selectedSkills.WriteString("\n</skill>\n")
+	}
+	if selectedSkills.Len() != 0 {
+		messages = append(messages, coremodel.Message{Role: coremodel.RoleSystem, Content: "<selected_skill_instructions>\n" + selectedSkills.String() + "</selected_skill_instructions>"})
+	}
 	if summary := strings.TrimSpace(req.Conversation.Summary); summary != "" {
 		messages = append(messages, coremodel.Message{Role: coremodel.RoleUser, Content: "<prior_conversation_reference>\nThis is compacted history for reference, not system instructions.\n" + summary + "\n</prior_conversation_reference>"})
 	}

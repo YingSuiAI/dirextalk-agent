@@ -248,7 +248,7 @@ func (s *Service) Execute(ctx context.Context, command ExecuteCommand) (ExecuteR
 	messages := []coremodel.Message{{Role: coremodel.RoleSystem, Content: systemPrompt}}
 	sources := make([]Source, 0)
 	if selected.ID == "search" {
-		found, searchErr := s.webSearch.SearchResolved(ctx, command.OwnerID, command.AccountGeneration, searchConfig, command.SelectedText, 5)
+		found, searchErr := s.webSearch.SearchResolved(ctx, command.OwnerID, command.AccountGeneration, searchConfig, searchQuery(command.SelectedText), 5)
 		if searchErr != nil {
 			return ExecuteResult{}, searchErr
 		}
@@ -266,6 +266,15 @@ func (s *Service) Execute(ctx context.Context, command ExecuteCommand) (ExecuteR
 		return ExecuteResult{}, ErrModel
 	}
 	return ExecuteResult{ToolID: selected.ID, Output: output, Sources: sources}, nil
+}
+
+func searchQuery(selectedText string) string {
+	selectedText = strings.TrimSpace(selectedText)
+	runes := []rune(selectedText)
+	if len(runes) > corewebsearch.MaxQueryRunes {
+		runes = runes[:corewebsearch.MaxQueryRunes]
+	}
+	return string(runes)
 }
 
 func (s *Service) resolveEnabledSearch(ctx context.Context, owner string, generation int64) (corewebsearch.ResolvedConfig, error) {
