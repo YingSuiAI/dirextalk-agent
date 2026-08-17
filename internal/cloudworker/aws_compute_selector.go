@@ -61,6 +61,18 @@ type pricedInstanceShape struct {
 	hourlyMicros       uint64
 }
 
+type computeSelectionStageError struct{ stage string }
+
+func (e computeSelectionStageError) Error() string {
+	return "cloudworker: compute selection " + e.stage + " unavailable"
+}
+
+func (e computeSelectionStageError) Unwrap() error { return ErrProviderUnavailable }
+
+func computeSelectionUnavailable(stage string) error {
+	return computeSelectionStageError{stage: stage}
+}
+
 // SelectCompute reads current-generation Linux shared-tenancy on-demand
 // products, intersects them with the region's actual EC2 offerings, and
 // chooses the cheapest x86_64 shape satisfying the request.
@@ -74,21 +86,63 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 	}
 	ec2Client, err := selector.factory.NewEC2(credential, binding.Region)
 	if err != nil || ec2Client == nil {
-		return ComputeSpec{}, ErrProviderUnavailable
+		return ComputeSpec{}, computeSelectionUnavailable("offerings")
 	}
 	pricingClient, err := selector.factory.NewPricing(credential)
 	if err != nil || pricingClient == nil {
-		return ComputeSpec{}, ErrProviderUnavailable
+		return ComputeSpec{}, computeSelectionUnavailable("pricing")
 	}
 	shapes, err := listPricedInstanceShapes(ctx, pricingClient, binding.Region, requirements)
 	if err != nil || len(shapes) == 0 {
-		return ComputeSpec{}, ErrProviderUnavailable
+		return ComputeSpec{}, computeSelectionUnavailable("pricing")
 	}
 	names := make([]string, 0, len(shapes))
 	for name := range shapes {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	offered := make(map[string]bool)
+	for start := 0; start < len(names); start += 100 {
+		end := start + 100
+		if end > len(names) {
+			end = len(names)
+		}
+		var next *string
+		for page := 0; page < 5; page++ {
+			output, callErr := ec2Client.DescribeInstanceTypeOfferings(ctx, &ec2.DescribeInstanceTypeOfferingsInput{
+				// The selector needs regional availability, not one row per
+				// availability zone. Querying availability-zone rows multiplies
+				// every candidate by the region's AZ count and can exhaust the
+				// bounded pagination window in large regions such as us-east-1.
+				LocationType: ec2types.LocationTypeRegion, MaxResults: aws.Int32(100), NextToken: next,
+				Filters: []ec2types.Filter{{Name: aws.String("instance-type"), Values: names[start:end]}},
+			})
+			if callErr != nil || output == nil {
+				return ComputeSpec{}, computeSelectionUnavailable("offerings")
+			}
+			for _, offering := range output.InstanceTypeOfferings {
+				name := string(offering.InstanceType)
+				if _, ok := shapes[name]; ok && aws.ToString(offering.Location) == binding.Region {
+					offered[name] = true
+				}
+			}
+			if strings.TrimSpace(aws.ToString(output.NextToken)) == "" {
+				break
+			}
+			if page == 4 {
+				return ComputeSpec{}, computeSelectionUnavailable("offerings")
+			}
+			next = output.NextToken
+		}
+	}
+	names = names[:0]
+	for name := range offered {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return ComputeSpec{}, computeSelectionUnavailable("offerings")
+	}
 	eligible := make(map[string]pricedInstanceShape)
 	for start := 0; start < len(names); start += 100 {
 		end := start + 100
@@ -101,7 +155,7 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 		}
 		output, callErr := ec2Client.DescribeInstanceTypes(ctx, &ec2.DescribeInstanceTypesInput{InstanceTypes: types})
 		if callErr != nil || output == nil {
-			return ComputeSpec{}, ErrProviderUnavailable
+			return ComputeSpec{}, computeSelectionUnavailable("describe_types")
 		}
 		for _, value := range output.InstanceTypes {
 			name := string(value.InstanceType)
@@ -122,59 +176,22 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 		}
 	}
 	if len(eligible) == 0 {
-		return ComputeSpec{}, ErrProviderUnavailable
+		return ComputeSpec{}, computeSelectionUnavailable("describe_types")
 	}
-	available := make(map[string]bool)
 	names = names[:0]
 	for name := range eligible {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	for start := 0; start < len(names); start += 100 {
-		end := start + 100
-		if end > len(names) {
-			end = len(names)
-		}
-		var next *string
-		for page := 0; page < 5; page++ {
-			output, callErr := ec2Client.DescribeInstanceTypeOfferings(ctx, &ec2.DescribeInstanceTypeOfferingsInput{
-				// The selector needs regional availability, not one row per
-				// availability zone.  Querying availability-zone rows multiplies
-				// every candidate by the region's AZ count and can exhaust the
-				// bounded pagination window in large regions such as us-east-1.
-				LocationType: ec2types.LocationTypeRegion, MaxResults: aws.Int32(100), NextToken: next,
-				Filters: []ec2types.Filter{{Name: aws.String("instance-type"), Values: names[start:end]}},
-			})
-			if callErr != nil || output == nil {
-				return ComputeSpec{}, ErrProviderUnavailable
-			}
-			for _, offering := range output.InstanceTypeOfferings {
-				name := string(offering.InstanceType)
-				if _, ok := eligible[name]; ok && aws.ToString(offering.Location) == binding.Region {
-					available[name] = true
-				}
-			}
-			if strings.TrimSpace(aws.ToString(output.NextToken)) == "" {
-				break
-			}
-			if page == 4 {
-				return ComputeSpec{}, ErrProviderUnavailable
-			}
-			next = output.NextToken
-		}
-	}
 	var selected pricedInstanceShape
 	for _, name := range names {
 		shape := eligible[name]
-		if !available[name] {
-			continue
-		}
 		if selected.name == "" || shape.hourlyMicros < selected.hourlyMicros || (shape.hourlyMicros == selected.hourlyMicros && shape.name < selected.name) {
 			selected = shape
 		}
 	}
 	if selected.name == "" {
-		return ComputeSpec{}, ErrProviderUnavailable
+		return ComputeSpec{}, computeSelectionUnavailable("describe_types")
 	}
 	return ComputeSpec{InstanceType: selected.name, Architecture: selected.architecture, VCPU: selected.vcpu, MemoryGiB: selected.memoryGiB,
 		RootDeviceName: "/dev/xvda", VolumeGiB: requirements.DiskGiB, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}, nil
