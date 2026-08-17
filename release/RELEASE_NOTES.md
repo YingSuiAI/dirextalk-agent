@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v1.0.161
+
+1. Make Native Agent session tickets, forced refresh, SSE cursor validation, replay, and terminal outcomes deterministic across expiry, reconnect, and ambiguous mutations.
+2. Keep OpenAI-compatible model discovery and conversation dispatch on one API root, reject invalid HTML provider responses, and preserve precise non-replayable failure outcomes.
+3. Bind Cloud Worker pricing, proposal, Route 53, EC2, and execution to the authenticated deployment-node Region while retaining exact credential account, identity, and revision fences.
+4. Bound Native turn execution, provider streams, tool loops, sandbox output, and remote result collection while preserving durable recovery without duplicate SSH execution.
+5. Preserve current model lifecycle, pinned Skill integrity, tool contracts, and reasoning/event projections across historical use and resumed conversations.
+
 ## v1.0.158
 
 1. Force the provider-native `static_site_publish` tool choice after its dedicated invalid-HTML correction, retaining that retry across partial output and clearing it after the next valid intrinsic result.
