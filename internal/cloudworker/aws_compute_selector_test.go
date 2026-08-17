@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
@@ -16,11 +19,23 @@ import (
 type computeSelectionAWS struct {
 	offeringLocationType ec2types.LocationType
 	regionalLocation     string
+	offeredTypes         map[string]bool
+	calls                *[]string
+	describedTypes       []string
+	offeringsErr         error
+	describeTypesErr     error
 }
 
-func (*computeSelectionAWS) DescribeInstanceTypes(_ context.Context, input *ec2.DescribeInstanceTypesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error) {
+func (provider *computeSelectionAWS) DescribeInstanceTypes(_ context.Context, input *ec2.DescribeInstanceTypesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error) {
+	if provider.calls != nil {
+		*provider.calls = append(*provider.calls, "describe_types")
+	}
+	if provider.describeTypesErr != nil {
+		return nil, provider.describeTypesErr
+	}
 	result := &ec2.DescribeInstanceTypesOutput{}
 	for _, name := range input.InstanceTypes {
+		provider.describedTypes = append(provider.describedTypes, string(name))
 		vcpu, memory := int32(2), int64(2048)
 		if string(name) == "m7i-flex.large" {
 			memory = 8192
@@ -33,6 +48,12 @@ func (*computeSelectionAWS) DescribeInstanceTypes(_ context.Context, input *ec2.
 }
 
 func (provider *computeSelectionAWS) DescribeInstanceTypeOfferings(_ context.Context, input *ec2.DescribeInstanceTypeOfferingsInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+	if provider.calls != nil {
+		*provider.calls = append(*provider.calls, "offerings")
+	}
+	if provider.offeringsErr != nil {
+		return nil, provider.offeringsErr
+	}
 	provider.offeringLocationType = input.LocationType
 	if input.LocationType == ec2types.LocationTypeAvailabilityZone {
 		// Model a large region where AZ-expanded results still have a sixth
@@ -45,6 +66,9 @@ func (provider *computeSelectionAWS) DescribeInstanceTypeOfferings(_ context.Con
 	}
 	result := &ec2.DescribeInstanceTypeOfferingsOutput{}
 	for _, name := range input.Filters[0].Values {
+		if provider.offeredTypes != nil && !provider.offeredTypes[name] {
+			continue
+		}
 		result.InstanceTypeOfferings = append(result.InstanceTypeOfferings, ec2types.InstanceTypeOffering{InstanceType: ec2types.InstanceType(name), Location: aws.String(location)})
 	}
 	return result, nil
@@ -69,9 +93,18 @@ func TestAWSComputeSelectorRejectsRegionPrefixCollision(t *testing.T) {
 	}
 }
 
-type computeSelectionPricing struct{}
+type computeSelectionPricing struct {
+	calls *[]string
+	err   error
+}
 
-func (computeSelectionPricing) GetProducts(context.Context, *pricing.GetProductsInput, ...func(*pricing.Options)) (*pricing.GetProductsOutput, error) {
+func (provider computeSelectionPricing) GetProducts(context.Context, *pricing.GetProductsInput, ...func(*pricing.Options)) (*pricing.GetProductsOutput, error) {
+	if provider.calls != nil {
+		*provider.calls = append(*provider.calls, "pricing")
+	}
+	if provider.err != nil {
+		return nil, provider.err
+	}
 	document := func(name, memory, hourly string) string {
 		value := map[string]any{
 			"product": map[string]any{"productFamily": "Compute Instance", "attributes": map[string]string{"instanceType": name, "vcpu": "2", "memory": memory}},
@@ -81,6 +114,7 @@ func (computeSelectionPricing) GetProducts(context.Context, *pricing.GetProducts
 		return string(raw)
 	}
 	return &pricing.GetProductsOutput{PriceList: []string{
+		document("g3.4xlarge", "122 GiB", "0.01"),
 		document("t3.small", "2 GiB", "0.03"),
 		document("m7i-flex.large", "8 GiB", "0.08"),
 	}}, nil
@@ -89,21 +123,28 @@ func (computeSelectionPricing) GetProducts(context.Context, *pricing.GetProducts
 type computeSelectionFactory struct {
 	ec2       *computeSelectionAWS
 	ec2Region string
+	pricing   AWSPriceListAPI
 }
 
 func (factory *computeSelectionFactory) NewEC2(_ workaws.CredentialHandle, region string) (AWSComputeSelectionAPI, error) {
 	factory.ec2Region = region
 	return factory.ec2, nil
 }
-func (*computeSelectionFactory) NewPricing(workaws.CredentialHandle) (AWSPriceListAPI, error) {
+func (factory *computeSelectionFactory) NewPricing(workaws.CredentialHandle) (AWSPriceListAPI, error) {
+	if factory.pricing != nil {
+		return factory.pricing, nil
+	}
 	return computeSelectionPricing{}, nil
 }
 
 func TestAWSComputeSelectorChoosesCheapestAvailableShapeSatisfyingRequirements(t *testing.T) {
 	credential := &livePricingCredential{handle: workaws.CredentialHandle{ReferenceID: "11111111-1111-4111-8111-111111111111",
 		Region: "ap-northeast-1", AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:user/test", AccessKeyID: "access", SecretAccessKey: "secret"}}
-	ec2Provider := &computeSelectionAWS{regionalLocation: "ap-northeast-2"}
-	factory := &computeSelectionFactory{ec2: ec2Provider}
+	var calls []string
+	ec2Provider := &computeSelectionAWS{regionalLocation: "ap-northeast-2", offeredTypes: map[string]bool{
+		"t3.small": true, "m7i-flex.large": true,
+	}, calls: &calls}
+	factory := &computeSelectionFactory{ec2: ec2Provider, pricing: computeSelectionPricing{calls: &calls}}
 	selector, err := NewAWSComputeSelector(credential, factory)
 	if err != nil {
 		t.Fatal(err)
@@ -122,5 +163,48 @@ func TestAWSComputeSelectorChoosesCheapestAvailableShapeSatisfyingRequirements(t
 	}
 	if factory.ec2Region != binding.Region {
 		t.Fatalf("EC2 region=%q, want host region %q", factory.ec2Region, binding.Region)
+	}
+	if slices.Contains(ec2Provider.describedTypes, "g3.4xlarge") {
+		t.Fatalf("DescribeInstanceTypes received retired regional type: %v", ec2Provider.describedTypes)
+	}
+	if len(calls) < 3 || !slices.Equal(calls[:3], []string{"pricing", "offerings", "describe_types"}) {
+		t.Fatalf("AWS selection call order=%v, want pricing then offerings then describe_types", calls)
+	}
+}
+
+func TestAWSComputeSelectorRedactsProviderFailuresByStage(t *testing.T) {
+	credential := &livePricingCredential{handle: workaws.CredentialHandle{ReferenceID: "11111111-1111-4111-8111-111111111111",
+		Region: "ap-northeast-1", AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:user/test", AccessKeyID: "access", SecretAccessKey: "secret"}}
+	binding := AWSBinding{AccountID: credential.handle.AccountID, Region: "ap-northeast-2", CredentialID: credential.handle.ReferenceID, CredentialRevision: 7}
+	sensitive := errors.New("SignatureDoesNotMatch secret-access-key credential-body")
+	tests := []struct {
+		name, wantStage string
+		ec2             *computeSelectionAWS
+		pricing         AWSPriceListAPI
+	}{
+		{name: "pricing", wantStage: "pricing", ec2: &computeSelectionAWS{}, pricing: computeSelectionPricing{err: sensitive}},
+		{name: "offerings", wantStage: "offerings", ec2: &computeSelectionAWS{offeringsErr: sensitive}},
+		{name: "describe types", wantStage: "describe_types", ec2: &computeSelectionAWS{regionalLocation: binding.Region, describeTypesErr: sensitive}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			selector, err := NewAWSComputeSelector(credential, &computeSelectionFactory{ec2: test.ec2, pricing: test.pricing})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = selector.SelectCompute(context.Background(), binding, ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 2, DiskGiB: 20, EstimatedRuntimeMinutes: 30})
+			if !errors.Is(err, ErrProviderUnavailable) {
+				t.Fatalf("err=%v, want provider unavailable", err)
+			}
+			var stageErr computeSelectionStageError
+			if !errors.As(err, &stageErr) || stageErr.stage != test.wantStage {
+				t.Fatalf("err=%v stage=%q, want %q", err, stageErr.stage, test.wantStage)
+			}
+			for _, leaked := range []string{"SignatureDoesNotMatch", "secret-access-key", "credential-body"} {
+				if strings.Contains(err.Error(), leaked) {
+					t.Fatal(fmt.Errorf("provider error leaked %q: %w", leaked, err))
+				}
+			}
+		})
 	}
 }
