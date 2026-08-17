@@ -340,11 +340,13 @@ type ResolvedExtension struct {
 
 // ResolvedIntrinsic is a Core-owned model tool. It is deliberately separate
 // from extension snapshots and never crosses MCP, Skills, or Extension Runner
-// resolution. The executor must atomically commit the durable turn before it
-// reports success.
+// resolution. Read-only intrinsics return a ToolResult that Core persists
+// before resuming the turn. All other intrinsics must atomically commit the
+// durable turn before reporting success.
 type ResolvedIntrinsic struct {
-	Tool    coremodel.Tool
-	Execute func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error)
+	Tool     coremodel.Tool
+	ReadOnly bool
+	Execute  func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error)
 }
 
 type IntrinsicExecutionRequest struct {
@@ -360,6 +362,7 @@ type IntrinsicExecutionRequest struct {
 
 type IntrinsicExecutionResult struct {
 	TurnCommitted bool
+	ToolResult    *ToolResult
 }
 
 type IntrinsicResolver interface {

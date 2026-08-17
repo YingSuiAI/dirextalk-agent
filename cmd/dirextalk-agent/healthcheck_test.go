@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func TestHealthcheckAuthenticatesAndVerifiesCoreDiscovery(t *testing.T) {
@@ -93,6 +95,32 @@ func mustStream(a *auth.AgentTokenAuthenticator) grpc.StreamServerInterceptor {
 func TestHealthcheckRejectsRemoteListenAddress(t *testing.T) {
 	if _, err := healthcheckAddress("192.0.2.10:9443"); err == nil {
 		t.Fatal("readiness accepted a remote address")
+	}
+}
+
+func TestWaitForHealthcheckConnectionHonorsDeadline(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := grpc.NewClient("passthrough:///"+address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err = waitForHealthcheckConnection(ctx, conn)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("connection wait error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("connection wait exceeded its bound: %v", elapsed)
 	}
 }
 

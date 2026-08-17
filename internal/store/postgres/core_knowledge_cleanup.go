@@ -230,7 +230,9 @@ func (r *CoreKnowledgeStore) resumeKnowledgeCleanup(ctx context.Context, command
 			err = updateKnowledgeReplayHash(ctx, tx, "delete", replayKey.String(), requestHash, knowledgeReplay{Source: current}, coreknowledge.ErrCleanupPending)
 		}
 		if err == nil {
-			err = tx.Commit(ctx)
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				return current, coreknowledge.ErrCleanupPending
+			}
 		}
 		return current, coreknowledge.ErrCleanupPending
 	}

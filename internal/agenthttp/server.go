@@ -28,15 +28,22 @@ import (
 )
 
 const (
-	ticketIssuer         = "dirextalk-message-server"
-	ticketAudience       = "dirextalk-agent-data"
-	maxTicketTTL         = 15 * time.Minute
-	maxBodyBytes         = 2 << 20
-	sseRetryMilliseconds = 3000
-	sseHeartbeatInterval = 12 * time.Second
+	ticketIssuer                  = "dirextalk-message-server"
+	ticketAudience                = "dirextalk-agent-data"
+	maxTicketTTL                  = 15 * time.Minute
+	maxBodyBytes                  = 2 << 20
+	sseRetryMilliseconds          = 3000
+	sseHeartbeatInterval          = 12 * time.Second
+	idempotencyKeyConflictMessage = "Idempotency-Key conflicts with idempotency_key"
+	invalidIdempotencyKeyMessage  = "Idempotency-Key must be a UUID"
 )
 
 var errSSEUnavailable = errors.New("streaming is unavailable")
+
+var (
+	errIdempotencyKeyConflict = errors.New(idempotencyKeyConflictMessage)
+	errInvalidIdempotencyKey  = errors.New(invalidIdempotencyKeyMessage)
+)
 
 type sseFrame struct {
 	sequence  int64
@@ -265,7 +272,7 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request, reques
 		if injected != nil {
 			raw, err = injectObject(raw, injected)
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, errorBody{Code: "AGENT_REQUEST_INVALID", Message: err.Error()})
+				writeJSON(w, http.StatusBadRequest, errorBody{Code: "AGENT_REQUEST_INVALID", Message: "Agent route binding conflicts with request"})
 				return
 			}
 		}
@@ -279,7 +286,7 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request, reques
 		ctx := s.operationContext(r.Context(), request, uuid.NewString(), sha256.Sum256(canonical))
 		result, err := capability.HandleOperation(ctx, operationID, canonical)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, errorBody{Code: "AGENT_OPERATION_FAILED", Message: err.Error()})
+			writeOperationError(w, err)
 			return
 		}
 		writeRawJSON(w, http.StatusOK, result)
@@ -287,14 +294,18 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request, reques
 	}
 	key, keyErr := mutationIdempotencyKey(canonical, r.Header.Get("Idempotency-Key"))
 	if keyErr != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody{Code: "AGENT_REQUEST_INVALID", Message: keyErr.Error()})
+		message := invalidIdempotencyKeyMessage
+		if errors.Is(keyErr, errIdempotencyKeyConflict) {
+			message = idempotencyKeyConflictMessage
+		}
+		writeJSON(w, http.StatusBadRequest, errorBody{Code: "AGENT_REQUEST_INVALID", Message: message})
 		return
 	}
 	digest := sha256.Sum256(bytes.Join([][]byte{[]byte(descriptor.GetCapabilityId()), []byte{0}, []byte(operationID), []byte{0}, canonical}, nil))
 	ledgerID := deterministicOperationID(request.claims.OwnerID, request.claims.AccountGeneration, capabilityID, operationID, key)
 	if capabilityID == "agent.chat.v1" && operationID == "start_turn" {
 		if s.conversation == nil {
-			writeJSON(w, http.StatusServiceUnavailable, errorBody{Code: "AGENT_OPERATION_FAILED", Message: "durable conversation service is unavailable"})
+			writeOperationError(w, operation.NewFailure("UNAVAILABLE", "Agent conversation service is unavailable", errors.New("durable conversation service is unavailable")))
 			return
 		}
 		replayed := false
@@ -302,7 +313,7 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request, reques
 		replayed = getErr == nil
 		ctx := operation.WithOperationID(s.operationContext(r.Context(), request, ledgerID, digest), ledgerID)
 		if _, err := capability.HandleOperation(ctx, operationID, canonical); err != nil {
-			writeJSON(w, http.StatusConflict, errorBody{Code: "AGENT_OPERATION_CONFLICT", Message: err.Error()})
+			writeOperationError(w, err)
 			return
 		}
 		turn, err := s.conversation.GetTurn(r.Context(), ledgerID)
@@ -317,11 +328,7 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request, reques
 	ledger := &operation.Operation{ID: ledgerID, CapabilityID: capabilityID, OperationName: operationID, RequestJSON: canonical, RootRequestDigest: digest[:], RequestDigest: digest[:], ExpectedRevision: expectedRevision, OwnerID: request.claims.OwnerID, AccountGeneration: request.claims.AccountGeneration}
 	accepted, created, err := s.operations.StartOrGet(r.Context(), ledger)
 	if err != nil {
-		status := http.StatusConflict
-		if errors.Is(err, operation.ErrInvalid) {
-			status = http.StatusBadRequest
-		}
-		writeJSON(w, status, errorBody{Code: "AGENT_OPERATION_CONFLICT", Message: err.Error()})
+		writeOperationStoreError(w, err)
 		return
 	}
 	if created {
@@ -348,7 +355,7 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request, requ
 			digest := sha256.Sum256(input)
 			result, resultErr := capability.HandleOperation(s.operationContext(r.Context(), request, operationID, digest), "get_turn", input)
 			if resultErr != nil {
-				writeJSON(w, http.StatusBadRequest, errorBody{Code: "AGENT_OPERATION_FAILED", Message: resultErr.Error()})
+				writeOperationError(w, resultErr)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"operation_id": operationID, "state": string(turn.State), "sequence": turn.LastSequence, "result": json.RawMessage(result)})
@@ -356,7 +363,11 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request, requ
 		}
 	}
 	op, err := s.operations.Get(r.Context(), operationID)
-	if err != nil || op.OwnerID != request.claims.OwnerID || op.AccountGeneration != request.claims.AccountGeneration {
+	if err != nil {
+		writeOperationStoreError(w, err)
+		return
+	}
+	if op.OwnerID != request.claims.OwnerID || op.AccountGeneration != request.claims.AccountGeneration {
 		writeJSON(w, http.StatusNotFound, errorBody{Code: "AGENT_OPERATION_NOT_FOUND", Message: "Agent operation not found"})
 		return
 	}
@@ -388,7 +399,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, request re
 		}
 	}
 	op, err := s.operations.Get(r.Context(), operationID)
-	if err != nil || op.OwnerID != request.claims.OwnerID || op.AccountGeneration != request.claims.AccountGeneration {
+	if err != nil {
+		writeOperationStoreError(w, err)
+		return
+	}
+	if op.OwnerID != request.claims.OwnerID || op.AccountGeneration != request.claims.AccountGeneration {
 		writeJSON(w, http.StatusNotFound, errorBody{Code: "AGENT_OPERATION_NOT_FOUND", Message: "Agent operation not found"})
 		return
 	}
@@ -399,7 +414,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, request re
 	after := eventCursor(r)
 	events, err := s.operations.Watch(r.Context(), operationID, after)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorBody{Code: "AGENT_OPERATION_NOT_FOUND", Message: "Agent operation not found"})
+		writeOperationStoreError(w, err)
 		return
 	}
 	err = streamSSE(r.Context(), w, events, sseHeartbeatInterval, func(event operation.Event) (sseFrame, bool) {
@@ -426,15 +441,83 @@ func eventCursor(r *http.Request) int64 {
 	return after
 }
 
+func writeOperationStoreError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, operation.ErrInvalid):
+		err = operation.NewFailure("INVALID_ARGUMENT", "Agent request is invalid", err)
+	case errors.Is(err, operation.ErrNotFound):
+		err = operation.NewFailure("NOT_FOUND", "Agent operation not found", err)
+	case errors.Is(err, operation.ErrIdempotencyConflict):
+		err = operation.NewFailure("CONFLICT", "Agent state changed; refresh and retry", err)
+	default:
+		err = operation.NewFailure("UNAVAILABLE", "Agent operation service is unavailable", err)
+	}
+	writeOperationError(w, err)
+}
+
+func writeTurnLookupError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, coreconversation.ErrInvalid):
+		err = operation.NewFailure("INVALID_ARGUMENT", "Agent request is invalid", err)
+	case errors.Is(err, coreconversation.ErrConflict), errors.Is(err, coreconversation.ErrDeleted):
+		err = operation.NewFailure("NOT_FOUND", "Agent turn not found", err)
+	default:
+		err = operation.NewFailure("UNAVAILABLE", "Agent conversation service is unavailable", err)
+	}
+	writeOperationError(w, err)
+}
+
+func writeOperationError(w http.ResponseWriter, err error) {
+	code, message, ok := operation.FailureDetails(err)
+	if !ok {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			code, message = "UNAVAILABLE", "Agent operation was interrupted; retry"
+		} else {
+			code, message = "UPSTREAM_FAILED", "Agent operation failed"
+		}
+	}
+	status := http.StatusBadGateway
+	publicCode := "AGENT_OPERATION_FAILED"
+	switch code {
+	case "INVALID_ARGUMENT":
+		status, publicCode = http.StatusBadRequest, "AGENT_REQUEST_INVALID"
+	case "PERMISSION_DENIED":
+		status, publicCode = http.StatusForbidden, "AGENT_OPERATION_FORBIDDEN"
+	case "NOT_FOUND":
+		status, publicCode = http.StatusNotFound, "AGENT_OPERATION_NOT_FOUND"
+	case "CONFLICT":
+		status, publicCode = http.StatusConflict, "AGENT_OPERATION_CONFLICT"
+	case "PRECONDITION_FAILED":
+		status, publicCode = http.StatusPreconditionFailed, "AGENT_OPERATION_PRECONDITION_FAILED"
+	case "NOT_READY":
+		status, publicCode = http.StatusServiceUnavailable, "AGENT_OPERATION_NOT_READY"
+	case "UNAVAILABLE":
+		status, publicCode = http.StatusServiceUnavailable, "AGENT_OPERATION_UNAVAILABLE"
+	case "RESOURCE_EXHAUSTED":
+		status, publicCode = http.StatusTooManyRequests, "AGENT_OPERATION_RESOURCE_EXHAUSTED"
+	case "UNCERTAIN":
+		status, publicCode = http.StatusConflict, "AGENT_OPERATION_UNCERTAIN"
+	case "CANCELLED":
+		status, publicCode = http.StatusConflict, "AGENT_OPERATION_CANCELLED"
+	case "CYCLE_DETECTED":
+		status, publicCode = http.StatusConflict, "AGENT_OPERATION_CONFLICT"
+	}
+	writeJSON(w, status, errorBody{Code: publicCode, Message: message})
+}
+
 func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, request requestContext, turnID string, after int64) {
 	turn, err := s.conversation.GetTurn(r.Context(), turnID)
-	if err != nil || turn.OwnerID != request.claims.OwnerID || turn.AccountGeneration != uint64(request.claims.AccountGeneration) {
+	if err != nil {
+		writeTurnLookupError(w, err)
+		return
+	}
+	if turn.OwnerID != request.claims.OwnerID || turn.AccountGeneration != uint64(request.claims.AccountGeneration) {
 		writeJSON(w, http.StatusNotFound, errorBody{Code: "AGENT_OPERATION_NOT_FOUND", Message: "Agent turn not found"})
 		return
 	}
 	events, err := s.conversation.WatchTurnEvents(r.Context(), turnID, after, 1000)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorBody{Code: "AGENT_OPERATION_NOT_FOUND", Message: "Agent turn not found"})
+		writeTurnLookupError(w, err)
 		return
 	}
 	err = streamSSE(r.Context(), w, events, sseHeartbeatInterval, func(event coreconversation.TurnEvent) (sseFrame, bool) {
@@ -449,12 +532,12 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, reques
 			}
 		} else if event.Err != nil {
 			eventType = "error"
-			payload = map[string]any{"code": "stream_failed", "message": event.Err.Error()}
+			payload = map[string]any{"code": "stream_failed", "message": "Agent event stream failed"}
 		} else {
 			projected, projectErr := agentcapability.ProjectDurableTurnEventJSON(turn, event)
 			if projectErr != nil {
 				eventType = "error"
-				payload = map[string]any{"code": "projection_failed", "message": projectErr.Error()}
+				payload = map[string]any{"code": "projection_failed", "message": "Agent event projection failed"}
 			} else if len(projected) == 0 {
 				return sseFrame{}, false
 			} else {
@@ -568,13 +651,13 @@ func mutationIdempotencyKey(raw []byte, header string) (string, error) {
 	bodyKey := strings.TrimSpace(value.IdempotencyKey)
 	headerKey := strings.TrimSpace(header)
 	if bodyKey != "" && headerKey != "" && bodyKey != headerKey {
-		return "", errors.New("Idempotency-Key conflicts with idempotency_key")
+		return "", errIdempotencyKeyConflict
 	}
 	if headerKey == "" {
 		headerKey = bodyKey
 	}
 	if !validUUID(headerKey) {
-		return "", errors.New("Idempotency-Key must be a UUID")
+		return "", errInvalidIdempotencyKey
 	}
 	return headerKey, nil
 }

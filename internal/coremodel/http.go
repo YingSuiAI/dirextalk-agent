@@ -25,22 +25,40 @@ const maxRequestBytes = 2 << 20
 const maxMultimodalEncodedRequestBytes = 16 << 20
 
 var (
-	ErrProviderUnavailable = errors.New("model provider is unavailable")
-	ErrInvalidResponse     = errors.New("invalid model provider response")
-	ErrStreamTruncated     = errors.New("model provider stream terminated before completion")
-	ErrOutputLimitReached  = errors.New("model provider reached its output limit")
-	ErrStreamIdleTimeout   = fmt.Errorf("model provider stream idle timeout: %w", context.DeadlineExceeded)
+	ErrProviderUnavailable   = errors.New("model provider is unavailable")
+	ErrProviderRejected      = errors.New("model provider rejected the request")
+	ErrProviderRateLimited   = errors.New("model provider rate limited the request")
+	ErrProviderServerFailure = errors.New("model provider server failure")
+	ErrProviderTimeout       = fmt.Errorf("model provider request timed out: %w", context.DeadlineExceeded)
+	ErrInvalidResponse       = errors.New("invalid model provider response")
+	ErrStreamTruncated       = errors.New("model provider stream terminated before completion")
+	ErrOutputLimitReached    = errors.New("model provider reached its output limit")
+	ErrStreamIdleTimeout     = fmt.Errorf("model provider stream idle timeout: %w", context.DeadlineExceeded)
 )
 
 type providerHTTPStatusError struct {
-	class string
+	statusCode int
 }
 
 func (e *providerHTTPStatusError) Error() string { return ErrProviderUnavailable.Error() }
-func (e *providerHTTPStatusError) Unwrap() error { return ErrProviderUnavailable }
+func (e *providerHTTPStatusError) Unwrap() []error {
+	var kind error
+	switch {
+	case e.statusCode == http.StatusTooManyRequests:
+		kind = ErrProviderRateLimited
+	case e.statusCode >= 400 && e.statusCode < 500:
+		kind = ErrProviderRejected
+	case e.statusCode >= 500 && e.statusCode < 600:
+		kind = ErrProviderServerFailure
+	}
+	if kind == nil {
+		return []error{ErrProviderUnavailable}
+	}
+	return []error{ErrProviderUnavailable, kind}
+}
 
 func providerHTTPStatusFailure(statusCode int) error {
-	return &providerHTTPStatusError{class: fmt.Sprintf("provider_http_%dxx", statusCode/100)}
+	return &providerHTTPStatusError{statusCode: statusCode}
 }
 
 // SafeFailureClass reduces model-provider failures to a stable diagnostic
@@ -52,9 +70,11 @@ func SafeFailureClass(err error) string {
 	}
 	var statusErr *providerHTTPStatusError
 	if errors.As(err, &statusErr) {
-		return statusErr.class
+		return fmt.Sprintf("provider_http_%dxx", statusErr.statusCode/100)
 	}
 	switch {
+	case errors.Is(err, ErrProviderTimeout), errors.Is(err, ErrStreamIdleTimeout), errors.Is(err, context.DeadlineExceeded):
+		return "provider_timeout"
 	case errors.Is(err, ErrInvalidResponse):
 		return "provider_invalid_response"
 	case errors.Is(err, ErrStreamTruncated):
@@ -64,6 +84,20 @@ func SafeFailureClass(err error) string {
 	default:
 		return ""
 	}
+}
+
+func providerRequestFailure(ctx context.Context, err error) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return ErrProviderTimeout
+	}
+	var timeout interface{ Timeout() bool }
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return ErrProviderTimeout
+	}
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	return ErrProviderUnavailable
 }
 
 type HTTPClient interface {
@@ -170,15 +204,12 @@ func (t *connectionTester) TestConnection(ctx context.Context, profile Profile) 
 	setHeaders(req, p)
 	resp, err := t.http.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return ErrProviderUnavailable
+		return providerRequestFailure(ctx, err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ErrProviderUnavailable
+		return providerHTTPStatusFailure(resp.StatusCode)
 	}
 	return nil
 }
@@ -318,6 +349,7 @@ func (c *providerClient) Stream(ctx context.Context, request CompletionRequest) 
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		failure := providerRequestFailure(streamCtx, err)
 		if idle != nil {
 			idle.Stop()
 		}
@@ -325,10 +357,7 @@ func (c *providerClient) Stream(ctx context.Context, request CompletionRequest) 
 		if idle != nil && idle.TimedOut() {
 			return nil, ErrStreamIdleTimeout
 		}
-		if streamCtx.Err() != nil {
-			return nil, streamCtx.Err()
-		}
-		return nil, ErrProviderUnavailable
+		return nil, failure
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if idle != nil {
@@ -364,15 +393,12 @@ func (c *providerClient) do(ctx context.Context, payload any, stream bool) ([]by
 	setHeaders(req, c.profile)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, 0, nil, ctx.Err()
-		}
-		return nil, 0, nil, ErrProviderUnavailable
+		return nil, 0, nil, providerRequestFailure(ctx, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return nil, 0, nil, ErrProviderUnavailable
+		return nil, 0, nil, providerRequestFailure(ctx, err)
 	}
 	if len(body) > maxResponseBytes {
 		return nil, 0, nil, ErrProviderUnavailable
@@ -1036,6 +1062,39 @@ func (s *sseStream) finish() {
 		_ = s.body.Close()
 	}
 }
+
+func (s *sseStream) readEvent() (string, error) {
+	dataLines := make([]string, 0, 1)
+	for {
+		line, err := s.reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", err
+		}
+		line = strings.TrimSuffix(line, "\n")
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			if len(dataLines) != 0 {
+				return strings.Join(dataLines, "\n"), nil
+			}
+		} else if !strings.HasPrefix(line, ":") {
+			field, value, found := strings.Cut(line, ":")
+			if !found {
+				value = ""
+			}
+			if field == "data" {
+				value = strings.TrimPrefix(value, " ")
+				dataLines = append(dataLines, value)
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			if len(dataLines) != 0 {
+				return strings.Join(dataLines, "\n"), nil
+			}
+			return "", io.EOF
+		}
+	}
+}
+
 func (s *sseStream) Recv() (Delta, error) {
 	for {
 		if s.closed {
@@ -1050,35 +1109,23 @@ func (s *sseStream) Recv() (Delta, error) {
 			s.finish()
 			return Delta{}, io.EOF
 		}
-		line, err := s.reader.ReadString('\n')
+		data, err := s.readEvent()
 		if err != nil {
 			if s.idle != nil && s.idle.TimedOut() {
 				s.finish()
 				return Delta{}, ErrStreamIdleTimeout
 			}
-			if !errors.Is(err, io.EOF) || len(line) == 0 {
-				s.finish()
-				if errors.Is(err, io.EOF) && s.source != nil && s.source.n > maxResponseBytes {
-					return Delta{}, ErrStreamTruncated
-				}
-				if errors.Is(err, io.EOF) {
-					if !s.terminal {
-						return Delta{}, ErrStreamTruncated
-					}
-					return Delta{}, io.EOF
-				}
-				return Delta{}, ErrProviderUnavailable
-			}
-			if s.source != nil && s.source.n > maxResponseBytes {
-				s.finish()
+			s.finish()
+			if errors.Is(err, io.EOF) {
 				return Delta{}, ErrStreamTruncated
 			}
+			return Delta{}, providerRequestFailure(context.Background(), err)
 		}
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "data:") {
-			continue
+		if s.source != nil && s.source.n > maxResponseBytes {
+			s.finish()
+			return Delta{}, ErrStreamTruncated
 		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		data = strings.TrimSpace(data)
 		if data == "[DONE]" {
 			if s.provider != ProviderOpenAICompatible {
 				s.finish()

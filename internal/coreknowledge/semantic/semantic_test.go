@@ -136,7 +136,8 @@ func TestMemoryStoreFenceIdempotencyAndDeterministicPointID(t *testing.T) {
 	if err := m.Upsert(context.Background(), "source-a", 1, []Chunk{chunk}); err != nil {
 		t.Fatal(err)
 	}
-	if PointID("source-a", 1, "0") != PointID("source-a", 1, "0") || PointID("source-a", 1, "0") == PointID("source-a", 2, "0") {
+	pointID := PointID("source-a", 1, "0")
+	if pointID != PointID("source-a", 1, "0") || pointID == PointID("source-a", 2, "0") {
 		t.Fatal("point ID is not deterministic/fenced")
 	}
 	got, err := m.Search(context.Background(), []float32{1, 0}, []Binding{{SourceID: "source-a", Revision: 1}}, 10)

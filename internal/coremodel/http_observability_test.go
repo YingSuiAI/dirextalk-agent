@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenAICompatibleToolRoundReplaysReasoningContent(t *testing.T) {
@@ -91,22 +93,80 @@ func TestOpenAICompatibleToolRoundReplaysReasoningContent(t *testing.T) {
 }
 
 func TestSafeFailureClassDistinguishesProviderFailureKinds(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusTooManyRequests)
-	}))
-	defer server.Close()
-	client, err := NewClient(validProfile(ProviderOpenAICompatible, server.URL, "private-key"), WithHTTPClient(server.Client()))
+	const responseSecret = "private-provider-response"
+	for _, test := range []struct {
+		name   string
+		status int
+		class  string
+		kind   error
+	}{
+		{name: "rejected", status: http.StatusBadRequest, class: "provider_http_4xx", kind: ErrProviderRejected},
+		{name: "rate limited", status: http.StatusTooManyRequests, class: "provider_http_4xx", kind: ErrProviderRateLimited},
+		{name: "server", status: http.StatusServiceUnavailable, class: "provider_http_5xx", kind: ErrProviderServerFailure},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			profile := validProfile(ProviderOpenAICompatible, "https://example.test", "private-key")
+			providerHTTP := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: test.status, Body: io.NopCloser(strings.NewReader(responseSecret)), Header: make(http.Header)}, nil
+			})
+			client, err := NewClient(profile, WithHTTPClient(providerHTTP))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tester := NewConnectionTester(WithHTTPClient(providerHTTP))
+			request := CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "private prompt"}}}
+			for operation, run := range map[string]func() error{
+				"connection": func() error { return tester.TestConnection(context.Background(), profile) },
+				"generate":   func() error { _, runErr := client.Generate(context.Background(), request); return runErr },
+				"stream":     func() error { _, runErr := client.Stream(context.Background(), request); return runErr },
+			} {
+				gotErr := run()
+				if !errors.Is(gotErr, ErrProviderUnavailable) || !errors.Is(gotErr, test.kind) || SafeFailureClass(gotErr) != test.class {
+					t.Fatalf("%s status=%d err=%v class=%q", operation, test.status, gotErr, SafeFailureClass(gotErr))
+				}
+				if strings.Contains(gotErr.Error(), responseSecret) || strings.Contains(gotErr.Error(), "private-key") || strings.Contains(gotErr.Error(), "private prompt") {
+					t.Fatalf("%s status error leaked secrets: %v", operation, gotErr)
+				}
+			}
+		})
+	}
+
+	timeoutClient, err := NewClient(validProfile(ProviderOpenAICompatible, "https://example.test", "private-key"), WithHTTPClient(roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})), WithTimeout(10*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, httpErr := client.Generate(context.Background(), CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "private prompt"}}})
+	_, timeoutErr := timeoutClient.Generate(context.Background(), CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "private prompt"}}})
+	if !errors.Is(timeoutErr, ErrProviderTimeout) || !errors.Is(timeoutErr, context.DeadlineExceeded) || SafeFailureClass(timeoutErr) != "provider_timeout" {
+		t.Fatalf("timeout err=%v class=%q", timeoutErr, SafeFailureClass(timeoutErr))
+	}
+	if strings.Contains(timeoutErr.Error(), "private-key") || strings.Contains(timeoutErr.Error(), "private prompt") {
+		t.Fatalf("timeout error leaked secrets: %v", timeoutErr)
+	}
+	_, streamTimeoutErr := timeoutClient.Stream(context.Background(), CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "private prompt"}}})
+	if !errors.Is(streamTimeoutErr, ErrProviderTimeout) || !errors.Is(streamTimeoutErr, context.DeadlineExceeded) || SafeFailureClass(streamTimeoutErr) != "provider_timeout" {
+		t.Fatalf("stream timeout err=%v class=%q", streamTimeoutErr, SafeFailureClass(streamTimeoutErr))
+	}
+	transportTimeoutClient, err := NewClient(validProfile(ProviderOpenAICompatible, "https://example.test", "private-key"), WithHTTPClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, timeoutTestError("private transport detail")
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, transportTimeoutErr := transportTimeoutClient.Generate(context.Background(), CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "private prompt"}}})
+	if !errors.Is(transportTimeoutErr, ErrProviderTimeout) || !errors.Is(transportTimeoutErr, context.DeadlineExceeded) || strings.Contains(transportTimeoutErr.Error(), "private transport detail") {
+		t.Fatalf("transport timeout err=%v class=%q", transportTimeoutErr, SafeFailureClass(transportTimeoutErr))
+	}
+
 	for _, test := range []struct {
 		name string
 		err  error
 		want string
 	}{
 		{name: "request", err: ErrProviderUnavailable, want: "provider_request_failure"},
-		{name: "http", err: httpErr, want: "provider_http_4xx"},
+		{name: "idle timeout", err: ErrStreamIdleTimeout, want: "provider_timeout"},
 		{name: "invalid response", err: ErrInvalidResponse, want: "provider_invalid_response"},
 		{name: "truncated stream", err: ErrStreamTruncated, want: "provider_stream_truncated"},
 		{name: "unrelated", err: errors.New("private detail"), want: ""},
@@ -117,7 +177,9 @@ func TestSafeFailureClassDistinguishesProviderFailureKinds(t *testing.T) {
 			}
 		})
 	}
-	if !errors.Is(httpErr, ErrProviderUnavailable) {
-		t.Fatalf("HTTP status error no longer preserves ErrProviderUnavailable: %v", httpErr)
-	}
 }
+
+type timeoutTestError string
+
+func (e timeoutTestError) Error() string { return string(e) }
+func (timeoutTestError) Timeout() bool   { return true }

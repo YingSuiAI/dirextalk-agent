@@ -43,9 +43,16 @@ contract](message-server-integration-development-contract.md), and
   conversation-turn ledger independently of the POST lifecycle. Operation and
   turn streams advertise a three-second reconnect delay, emit 12-second idle
   heartbeats, and terminate on cancellation or transport write failure without
-  changing durable event sequences.
+  changing durable event sequences. Typed operation/store/turn failures map to
+  fixed HTTP statuses and safe messages; unclassified capability failures
+  become a redacted 502, availability failures become 503, and SSE
+  projection/store errors do not expose their causes.
 - Native turns enforce a 24-dispatch and 20-minute cumulative model-active
-  budget through the same durable admission counters used during recovery.
+  budget through the same durable admission counters used during recovery, plus
+  a 20-call tool budget. Conservative loop detection ignores only argument key
+  order, transport call IDs/timestamps, and safe unquoted local-shell spacing;
+  it first nudges with tools intact and uses tool-free synthesis only after a
+  continued exact or A/B repetition, resetting on steer.
   Gemini-generated tool-call IDs are unique against the prior transcript, and
   adjacent Anthropic tool results use one ordered result-message batch. Debug
   formatting of immutable execution snapshots omits both credentials and the
@@ -54,9 +61,11 @@ contract](message-server-integration-development-contract.md), and
   `os/exec` selects an optimized reader path, and its structured result reports
   explicit `stdout_truncated` and `stderr_truncated` booleans. Requested result
   files remain collected and verified by the outer isolated execution path.
-- Pull requests run the repository-owned Go test, vet, command-build, and Buf
-  lint checks with read-only GitHub permissions; release publication remains a
-  separate manual workflow.
+- Pull requests run the repository-owned Go test, vet, command-build, Buf lint,
+  pinned `staticcheck` SA, and pinned `govulncheck` gates with read-only GitHub
+  permissions. A parallel race-detector job covers the maintained high-risk
+  conversation, provider, HTTP, execution, SSH Worker, and built-in MCP
+  packages; release publication remains a separate manual workflow.
 - Revision-fenced `agent.chat.v1/steer_turn` now persists additional user
   guidance in the current turn ledger. It interrupts a provider generation
   before tool publication, preserves an unconfirmed or already dispatched
@@ -166,7 +175,16 @@ contract](message-server-integration-development-contract.md), and
   Worker/execution records are bound to the authenticated owner/account
   generation; historical provisioning recovery is read-only, partial cleanup
   is retryable, and one unavailable AWS observation no longer hides the rest
-  of the retained inventory.
+  of the retained inventory. Static model tool definitions now expose a
+  separate bounded, durably recorded read-only `cloud_worker_inventory` result
+  instead of embedding live state. SSH uses a persistent per-Worker host-key pin,
+  `RemoteCompleted`/`CollectOnly` prevents workload restart during collection
+  recovery, persisted deterministic `TaskFailed` remains terminal while
+  identity-fenced release bookkeeping reconciles without SSH, and logs plus
+  artifacts consume one result-byte budget.
+- The toolchain is Go 1.26.6. Security-driven dependency updates include gRPC
+  1.82.1, `x/net` 0.55.0, and `x/text` 0.39.0, with their required supporting
+  Go modules refreshed.
 - Confirmation expiry processes each durable candidate in its own transaction.
   A stale binding or CAS conflict remains unchanged and is reported for retry,
   while other expired confirmations in the same sweep still commit; repository
@@ -177,8 +195,11 @@ contract](message-server-integration-development-contract.md), and
 ```text
 go test ./...
 go vet ./...
+staticcheck -checks=SA* ./...
+govulncheck ./...
 go build ./cmd/dirextalk-agent ./cmd/dirextalk-extension-runner ./cmd/dirextalk-core-runner
 buf lint
+go test -race ./internal/coreconversation ./internal/coremodel ./internal/agenthttp ./internal/coreextension/execution ./internal/coreworkload/runner ./internal/cloudworker/sshworker ./cmd/dirextalk-builtin-mcp
 git diff --check
 ```
 
@@ -190,11 +211,20 @@ support.
 ## Verified evidence
 
 - On **2026-08-17**, Native conversation profiles gained a single positive
-  8192-token output default, turns gained durable 32-dispatch/30-minute
-  model-active budgets that exclude tool and Worker time, and provider deltas
-  gained bounded coalescing with final flush. OpenAI-compatible streams now
-  accept explicit nonempty `finish_reason` before clean EOF while still
-  rejecting unmarked truncation.
+  8192-token output default. Turns enforce 24 provider dispatches, 20 minutes of
+  model-active time excluding tool and Worker time, and 20 accepted tool calls.
+  Focused regressions cover conservative exact/A-B loop recovery, tool-free
+  final synthesis, full SSE event framing, provider error classes, safe HTTP
+  error projection, static read-only Worker inventory, SSH host-key persistence,
+  collection-only recovery, and the shared Worker result-byte ceiling.
+  Provider deltas retain bounded coalescing with final flush, and
+  OpenAI-compatible streams accept explicit nonempty `finish_reason` before
+  clean EOF while still rejecting unmarked truncation.
+- On **2026-08-17**, the PR workflow adds pinned `staticcheck` 0.7.0 and
+  `govulncheck` 1.7.0 plus a bounded high-risk race lane. Go 1.26.6, gRPC
+  1.82.1, `x/net` 0.55.0, and `x/text` 0.39.0 close the reachable findings that
+  motivated the dependency refresh. This is repository-level verification and
+  does not claim a new deployment or cross-repository acceptance run.
 - On **2026-08-11**, durable Native conversation rounds accepted ordered
   multi-tool batches. Focused unit and PostgreSQL 18 tests covered a built-in
   Web Search result followed by a confirmed local MCP call in the same retained

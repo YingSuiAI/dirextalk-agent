@@ -30,14 +30,53 @@ jobs:
           BUF_VERSION: v1.58.0
         run: go install github.com/bufbuild/buf/cmd/buf@"$BUF_VERSION"
 
+      - name: Install analysis tools
+        env:
+          GOVULNCHECK_VERSION: v1.7.0
+          STATICCHECK_VERSION: v0.7.0
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@"$GOVULNCHECK_VERSION"
+          go install honnef.co/go/tools/cmd/staticcheck@"$STATICCHECK_VERSION"
+
       - name: Test
         run: go test ./...
 
       - name: Vet
         run: go vet ./...
 
+      - name: Static analysis
+        run: staticcheck -checks=SA* ./...
+
+      - name: Vulnerability scan
+        run: govulncheck ./...
+
       - name: Build commands
         run: go build ./cmd/...
 
       - name: Lint Protobuf
         run: buf lint
+
+  race:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test high-risk packages with race detector
+        run: >-
+          go test -race
+          ./internal/coreconversation
+          ./internal/coremodel
+          ./internal/agenthttp
+          ./internal/coreextension/execution
+          ./internal/coreworkload/runner
+          ./internal/cloudworker/sshworker
+          ./cmd/dirextalk-builtin-mcp

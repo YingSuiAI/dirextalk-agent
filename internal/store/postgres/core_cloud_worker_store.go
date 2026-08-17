@@ -381,7 +381,7 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		}
 		return cloudworker.Offer{}, err
 	}
-	nextTurnSequence := turn.LastSequence
+	var nextTurnSequence uint64
 	if requiresConfirmation {
 		event, eventErr := core.NewWaitingConfirmationTurnEvent(plan.ConfirmationID, plan.ExecutionID)
 		if eventErr != nil {

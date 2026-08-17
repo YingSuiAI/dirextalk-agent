@@ -63,9 +63,8 @@ type IntrinsicBudgetResolver interface {
 	ResolveCloudWorkerBudgetEvidence(context.Context, coreconversation.TurnLease) (*LocalBudgetEvidence, error)
 }
 
-// RetainedWorkerInventoryResolver projects a bounded, live, owner-scoped view
-// of persistent Workers into the model's current round. It is read-only and
-// never exposes lifecycle mutations.
+// RetainedWorkerInventoryResolver returns a live owner-scoped view of
+// persistent Workers. The inventory intrinsic bounds its model-facing result.
 type RetainedWorkerInventoryResolver interface {
 	ResolveRetainedWorkerInventory(context.Context, string, uint64) (RetainedWorkerInventory, error)
 }
@@ -133,17 +132,9 @@ type RetainedWorkerWorkload struct {
 	Hostname    string `json:"hostname,omitempty"`
 }
 
-const maxModelToolDescriptionBytes = 4096
+const maxModelInventoryBytes = 4096
 
-func boundedWorkerToolDescription(base string, inventory RetainedWorkerInventory, ready bool) string {
-	prefix := strings.TrimSpace(base) + "\nretained_worker_inventory="
-	budget := maxModelToolDescriptionBytes - len(prefix)
-	if budget < 2 {
-		return strings.TrimSpace(base)
-	}
-	if !ready {
-		return prefix + `{"status":"unavailable"}`
-	}
+func boundedWorkerInventoryJSON(inventory RetainedWorkerInventory) []byte {
 	workers := append([]RetainedWorkerSnapshot(nil), inventory.Workers...)
 	sort.Slice(workers, func(i, j int) bool {
 		if workers[i].WorkerID == workers[j].WorkerID {
@@ -153,10 +144,13 @@ func boundedWorkerToolDescription(base string, inventory RetainedWorkerInventory
 	})
 	projected := make([]any, 0, len(workers))
 	encode := func(items []any, truncated bool) []byte {
-		raw, _ := json.Marshal(map[string]any{
-			"observed_at": inventory.ObservedAt, "at_capacity": inventory.AtCapacity,
+		raw, err := json.Marshal(map[string]any{
+			"schema": "cloud_worker_inventory/v1", "observed_at": inventory.ObservedAt, "at_capacity": inventory.AtCapacity,
 			"worker_count": len(workers), "workers": items, "truncated": truncated,
 		})
+		if err != nil {
+			return []byte(`{"schema":"cloud_worker_inventory/v1","truncated":true}`)
+		}
 		return raw
 	}
 	for _, worker := range workers {
@@ -180,23 +174,20 @@ func boundedWorkerToolDescription(base string, inventory RetainedWorkerInventory
 			}
 		}
 		candidate := append(append([]any(nil), projected...), item)
-		if len(encode(candidate, true)) > budget {
+		if len(encode(candidate, true)) > maxModelInventoryBytes {
 			break
 		}
 		projected = candidate
 	}
 	raw := encode(projected, len(projected) != len(workers))
-	for len(raw) > budget && len(projected) > 0 {
+	for len(raw) > maxModelInventoryBytes && len(projected) > 0 {
 		projected = projected[:len(projected)-1]
 		raw = encode(projected, true)
 	}
-	if len(raw) > budget {
-		raw = []byte(`{"truncated":true}`)
+	if len(raw) > maxModelInventoryBytes {
+		raw = []byte(`{"schema":"cloud_worker_inventory/v1","truncated":true}`)
 	}
-	if len(raw) > budget {
-		return strings.TrimSpace(base)
-	}
-	return prefix + string(raw)
+	return raw
 }
 
 func boundedInventoryText(value string) string {
@@ -295,16 +286,9 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		properties["attachment_ids"] = attachmentSchema
 	}
 	description := "Run substantial project or shell work in a retained execution environment, or return a non-executing plan summary. Once workload_kind, actual minimum resources, and required service fields are known, invoke this tool immediately. Only creating a new Worker requires owner confirmation; retained Worker reuse executes directly, including persistent services and hostname publication."
-	var currentInventory RetainedWorkerInventory
-	inventoryReady := false
-	if p.workers != nil && strings.TrimSpace(bound.Turn.OwnerID) != "" && bound.Turn.AccountGeneration != 0 {
-		if current, inventoryErr := p.workers.ResolveRetainedWorkerInventory(ctx, bound.Turn.OwnerID, bound.Turn.AccountGeneration); inventoryErr == nil {
-			currentInventory, inventoryReady = current, true
-		}
-	}
 	tool := coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerProposeToolName,
-		Description: boundedWorkerToolDescription(description, currentInventory, inventoryReady),
+		Description: description,
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -318,29 +302,34 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 			return p.execute(ctx, bound, request)
 		},
 	}}
-	if p.manager == nil || p.turns == nil || !inventoryReady || len(currentInventory.Workers) == 0 {
+	if p.workers == nil || strings.TrimSpace(bound.Turn.OwnerID) == "" || bound.Turn.AccountGeneration == 0 {
 		return resolved, nil
 	}
-	workerChoices := make([]any, 0, len(currentInventory.Workers))
-	for _, worker := range currentInventory.Workers {
-		if !coretask.ValidUUID(worker.WorkerID) {
-			continue
-		}
-		detail := strings.TrimSpace(strings.Join([]string{worker.Availability, worker.EC2State, worker.WorkerPhase, worker.PublicIPv4}, " "))
-		workerChoices = append(workerChoices, map[string]any{"const": worker.WorkerID, "description": detail})
-	}
-	if len(workerChoices) == 0 {
+	resolved = append(resolved, coreconversation.ResolvedIntrinsic{
+		Tool: coremodel.Tool{
+			Name:        coremodel.IntrinsicCloudWorkerInventoryToolName,
+			Description: "Read the current owner-scoped retained Worker inventory. This is read-only and returns bounded status, capacity, load, task, address, pricing, and workload summary data.",
+			InputSchema: map[string]any{
+				"type": "object", "additionalProperties": false, "properties": map[string]any{},
+			},
+		},
+		ReadOnly: true,
+		Execute: func(ctx context.Context, request coreconversation.IntrinsicExecutionRequest) (coreconversation.IntrinsicExecutionResult, error) {
+			return p.executeInventory(ctx, bound, request)
+		},
+	})
+	if p.manager == nil {
 		return resolved, nil
 	}
 	resolved = append(resolved, coreconversation.ResolvedIntrinsic{
 		Tool: coremodel.Tool{
 			Name:        coremodel.IntrinsicCloudWorkerDestroyToolName,
-			Description: "Destroy one retained Worker only when the user explicitly asks to destroy it. A status question, completed task, or idle Worker is not authorization. Select the exact worker_id from the current owner-scoped inventory. This permanently removes the EC2 instance, key pair, security group, and any bound service state.",
+			Description: "Destroy one retained Worker only when the user explicitly asks to destroy it. A status question, completed task, or idle Worker is not authorization. First call cloud_worker_inventory, then pass the exact returned worker_id. This permanently removes the EC2 instance, key pair, security group, and any bound service state.",
 			InputSchema: map[string]any{
 				"type": "object", "additionalProperties": false,
 				"required": []any{"worker_id", "confirmation"},
 				"properties": map[string]any{
-					"worker_id":    map[string]any{"type": "string", "oneOf": workerChoices},
+					"worker_id":    map[string]any{"type": "string", "format": "uuid", "description": "Exact worker_id returned by cloud_worker_inventory."},
 					"confirmation": map[string]any{"type": "string", "const": "destroy_worker"},
 				},
 			},
@@ -350,6 +339,43 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		},
 	})
 	return resolved, nil
+}
+
+func (p *ProposeIntrinsic) executeInventory(ctx context.Context, bound coreconversation.TurnLease, request coreconversation.IntrinsicExecutionRequest) (coreconversation.IntrinsicExecutionResult, error) {
+	if ctx == nil || p.workers == nil || strings.TrimSpace(bound.Turn.OwnerID) == "" ||
+		bound.Turn.AccountGeneration == 0 || request.Lease.Turn.ID != bound.Turn.ID ||
+		request.Lease.Turn.RequestID != bound.Turn.RequestID || request.Lease.LeaseID != bound.LeaseID ||
+		request.Lease.Epoch < bound.Epoch || request.Call.Name != coremodel.IntrinsicCloudWorkerInventoryToolName ||
+		request.Call.Validate() != nil {
+		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	decoder := json.NewDecoder(bytes.NewReader(request.CanonicalArguments))
+	decoder.DisallowUnknownFields()
+	var arguments struct{}
+	if decoder.Decode(&arguments) != nil {
+		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	owner, err := p.owners.ResolveCloudWorkerOwner(ctx, request.Lease)
+	if err != nil || strings.TrimSpace(owner.OwnerID) != strings.TrimSpace(bound.Turn.OwnerID) ||
+		owner.AccountGeneration != bound.Turn.AccountGeneration {
+		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	inventory, err := p.workers.ResolveRetainedWorkerInventory(ctx, owner.OwnerID, owner.AccountGeneration)
+	if err != nil {
+		return coreconversation.IntrinsicExecutionResult{}, err
+	}
+	result := coreconversation.ToolResult{
+		CallID: request.Call.ID, ToolName: coremodel.IntrinsicCloudWorkerInventoryToolName,
+		Content: string(boundedWorkerInventoryJSON(inventory)), Summary: "Retained Worker inventory read",
+	}
+	if result.Validate() != nil {
+		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	return coreconversation.IntrinsicExecutionResult{ToolResult: &result}, nil
 }
 
 type destroyIntrinsicArguments struct {

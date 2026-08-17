@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -90,19 +91,27 @@ type fakeKeys struct {
 	mu                     sync.Mutex
 	ensure, lookup, delete int
 	deleteErr              error
+	path                   string
+}
+
+func (k *fakeKeys) privatePath() string {
+	if k.path != "" {
+		return k.path
+	}
+	return "/tmp/key"
 }
 
 func (k *fakeKeys) Ensure(context.Context, string) (string, []byte, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.ensure++
-	return "/tmp/key", []byte("public"), nil
+	return k.privatePath(), []byte("public"), nil
 }
 func (k *fakeKeys) LookupPrivate(context.Context, string) (string, bool, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.lookup++
-	return "/tmp/key", true, nil
+	return k.privatePath(), true, nil
 }
 func (k *fakeKeys) Delete(context.Context, string) error {
 	k.mu.Lock()
@@ -121,6 +130,45 @@ type fakeSSH struct {
 	hosts []string
 	err   error
 	seen  []SSHRequest
+}
+
+type collectionRetrySSH struct {
+	calls, starts int
+	seen          []SSHRequest
+}
+
+func (executor *collectionRetrySSH) Execute(ctx context.Context, request SSHRequest) (ExecutionResult, error) {
+	executor.calls++
+	executor.seen = append(executor.seen, request)
+	if !request.Resume {
+		executor.starts++
+	}
+	if request.RecordCompletion == nil {
+		return ExecutionResult{}, errors.New("completion recorder missing")
+	}
+	if err := request.RecordCompletion(ctx); err != nil {
+		return ExecutionResult{}, err
+	}
+	if executor.calls == 1 {
+		return ExecutionResult{}, errors.Join(errRetryableResultCollection, errors.New("artifact sink unavailable"))
+	}
+	return ExecutionResult{Summary: "collected", ArtifactCount: 1}, nil
+}
+
+type completedCollectionErrorSSH struct {
+	err   error
+	calls int
+}
+
+func (executor *completedCollectionErrorSSH) Execute(ctx context.Context, request SSHRequest) (ExecutionResult, error) {
+	executor.calls++
+	if request.RecordCompletion == nil {
+		return ExecutionResult{}, errors.New("completion recorder missing")
+	}
+	if err := request.RecordCompletion(ctx); err != nil {
+		return ExecutionResult{}, err
+	}
+	return ExecutionResult{}, executor.err
 }
 
 func (s *fakeSSH) Execute(_ context.Context, r SSHRequest) (ExecutionResult, error) {
@@ -462,6 +510,98 @@ func TestAmbiguousSSHExecutionKeepsWorkerBusyAndRunning(t *testing.T) {
 	}
 }
 
+func TestCompletedRemoteExecutionResumesCollectionWithoutRerunning(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	ssh := &collectionRetrySSH{}
+	keys := &fakeKeys{}
+	provider, err := New(cloud, keys, ssh, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := requestFixture()
+	if _, err = provider.Execute(context.Background(), request); err == nil || !strings.Contains(err.Error(), "artifact sink unavailable") {
+		t.Fatalf("first collection error=%v", err)
+	}
+	worker := store.workers[request.ExecutionID]
+	execution := store.executions[request.ExecutionID]
+	if execution.Phase != TaskRunning || !execution.RemoteCompleted || worker.Phase != WorkerBusy || worker.CurrentExecutionID != request.ExecutionID {
+		t.Fatalf("collection receipt execution=%+v worker=%+v", execution, worker)
+	}
+	provider, err = New(cloud, keys, ssh, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := provider.Execute(context.Background(), request)
+	if err != nil || result.Summary != "collected" {
+		t.Fatalf("resumed collection result=%+v err=%v", result, err)
+	}
+	if ssh.calls != 2 || ssh.starts != 1 || ssh.seen[0].Resume || ssh.seen[0].CollectOnly || !ssh.seen[1].Resume || !ssh.seen[1].CollectOnly || cloud.runs != 1 {
+		t.Fatalf("calls=%d starts=%d resume=[%t %t] collect_only=[%t %t] cloud_runs=%d", ssh.calls, ssh.starts, ssh.seen[0].Resume, ssh.seen[1].Resume, ssh.seen[0].CollectOnly, ssh.seen[1].CollectOnly, cloud.runs)
+	}
+}
+
+func TestDeterministicCollectionFailureFailsExecutionAndReleasesWorker(t *testing.T) {
+	for name, collectionErr := range map[string]error{"aggregate result limit": ErrResultTooLarge, "invalid result": ErrInvalid} {
+		t.Run(name, func(t *testing.T) {
+			cloud := newFakeAWS()
+			store := newMemoryStore()
+			provider, err := New(cloud, &fakeKeys{}, &completedCollectionErrorSSH{err: collectionErr}, store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := requestFixture()
+			if _, err = provider.Execute(context.Background(), request); !errors.Is(err, collectionErr) {
+				t.Fatalf("collection error=%v", err)
+			}
+			execution := store.executions[request.ExecutionID]
+			worker := store.workers[request.ExecutionID]
+			if execution.Phase != TaskFailed || !execution.RemoteCompleted || worker.Phase != WorkerIdle || worker.CurrentExecutionID != "" {
+				t.Fatalf("execution=%+v worker=%+v", execution, worker)
+			}
+		})
+	}
+}
+
+func TestFailedExecutionRetryOnlyReconcilesWorkerRelease(t *testing.T) {
+	cloud := newFakeAWS()
+	base := newMemoryStore()
+	store := &releaseFailingStore{memoryStore: base, failIdleSaves: 1}
+	ssh := &completedCollectionErrorSSH{err: ErrResultTooLarge}
+	keys := &fakeKeys{}
+	provider, err := New(cloud, keys, ssh, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := requestFixture()
+	if _, err = provider.Execute(context.Background(), request); !errors.Is(err, ErrResultTooLarge) {
+		t.Fatalf("initial result-limit error=%v", err)
+	}
+	execution := base.executions[request.ExecutionID]
+	worker := base.workers[request.ExecutionID]
+	if execution.Phase != TaskFailed || !execution.RemoteCompleted || worker.Phase != WorkerBusy || worker.CurrentExecutionID != request.ExecutionID || ssh.calls != 1 {
+		t.Fatalf("execution=%+v worker=%+v ssh_calls=%d", execution, worker, ssh.calls)
+	}
+
+	provider, err = New(cloud, keys, ssh, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err = provider.Execute(context.Background(), request); !errors.Is(err, ErrExecutionFailed) {
+			t.Fatalf("retry %d error=%v", attempt+1, err)
+		}
+		if ssh.calls != 1 {
+			t.Fatalf("retry %d invoked SSH: calls=%d", attempt+1, ssh.calls)
+		}
+	}
+	execution = base.executions[request.ExecutionID]
+	worker = base.workers[request.ExecutionID]
+	if execution.Phase != TaskFailed || worker.Phase != WorkerIdle || worker.CurrentExecutionID != "" || store.idleSaveCalls != 2 {
+		t.Fatalf("execution=%+v worker=%+v idle_saves=%d", execution, worker, store.idleSaveCalls)
+	}
+}
+
 func TestFailExecutionUsesFreshContextAfterCancellation(t *testing.T) {
 	base := newMemoryStore()
 	store := &contextAwareStore{memoryStore: base}
@@ -641,7 +781,7 @@ func TestAmbiguousCreateReconcilesAndDestroyRequiresExactAuthorization(t *testin
 	cloud := newFakeAWS()
 	cloud.ambiguous = true
 	store := newMemoryStore()
-	keys := &fakeKeys{}
+	keys := &fakeKeys{path: filepath.Join(t.TempDir(), "id_ed25519")}
 	provider, _ := New(cloud, keys, &fakeSSH{}, store)
 	r := requestFixture()
 	if _, err := provider.Execute(context.Background(), r); err != nil {

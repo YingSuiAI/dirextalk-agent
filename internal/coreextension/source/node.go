@@ -501,7 +501,7 @@ func parseNPMPackageTarball(raw []byte) ([]rawFile, error) {
 		switch header.Typeflag {
 		case tar.TypeDir:
 			continue
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 		default:
 			return nil, ErrUnsupported
 		}

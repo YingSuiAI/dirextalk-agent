@@ -34,6 +34,35 @@ func TestCronCalculatorTimezoneAndDOMDOW(t *testing.T) {
 	}
 }
 
+func TestDefaultErrorClassifierPreservesNetworkRetrySemantics(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want ErrorDisposition
+	}{
+		{name: "not found", err: coretask.ErrNotFound, want: ErrorRetryable},
+		{name: "timeout", err: retryNetworkError{timeout: true}, want: ErrorRetryable},
+		{name: "legacy temporary", err: retryNetworkError{temporary: true}, want: ErrorRetryable},
+		{name: "permanent network", err: retryNetworkError{}, want: ErrorFatal},
+		{name: "unknown", err: errors.New("unknown"), want: ErrorFatal},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := DefaultErrorClassifier(test.err); got != test.want {
+				t.Fatalf("DefaultErrorClassifier()=%v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+type retryNetworkError struct {
+	timeout   bool
+	temporary bool
+}
+
+func (retryNetworkError) Error() string     { return "network failure" }
+func (e retryNetworkError) Timeout() bool   { return e.timeout }
+func (e retryNetworkError) Temporary() bool { return e.temporary }
+
 type fakeProfiles struct{ p coremodel.Profile }
 
 func (f fakeProfiles) ResolveProfile(context.Context, string) (coremodel.Profile, error) {

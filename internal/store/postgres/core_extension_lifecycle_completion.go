@@ -108,7 +108,6 @@ func (s *CoreExtensionStore) completeLifecycle(ctx context.Context, c coreextens
 	}
 	newState := coreextension.StateFailed
 	newActive := active
-	newProposed := proposed
 	if !c.Success && proposed != "" {
 		var proposedRaw []byte
 		if e = tx.QueryRow(ctx, `SELECT version_json FROM core_extension_versions WHERE installation_id=$1 AND version_id=$2 FOR UPDATE`, c.InstallationID, proposed).Scan(&proposedRaw); e != nil {
@@ -133,10 +132,8 @@ func (s *CoreExtensionStore) completeLifecycle(ctx context.Context, c coreextens
 		if op == coreextension.OperationUninstall {
 			newState = coreextension.StateRemoved
 			newActive = ""
-			newProposed = ""
 		} else {
 			newActive = proposed
-			newProposed = ""
 		}
 		// Promotion and canonical secret replacement are part of the same
 		// transaction as the lifecycle/task terminal transition.
@@ -160,7 +157,6 @@ func (s *CoreExtensionStore) completeLifecycle(ctx context.Context, c coreextens
 		if _, e = tx.Exec(ctx, `UPDATE core_extension_secret_revisions SET state='rolled_back',updated_at=clock_timestamp() WHERE installation_id=$1 AND state='staged'`, c.InstallationID); e != nil {
 			return coreextension.Installation{}, e
 		}
-		newProposed = ""
 		if active != "" && op != coreextension.OperationInstall {
 			newState = coreextension.StateInstalled
 		}
@@ -192,7 +188,7 @@ func (s *CoreExtensionStore) completeLifecycle(ctx context.Context, c coreextens
 			}
 		}
 	}
-	if _, e = tx.Exec(ctx, `UPDATE core_extension_installations SET state=$2,enabled=CASE WHEN $5='install' THEN true WHEN $5='uninstall' THEN false ELSE enabled END,active_version_id=NULLIF($3,'')::uuid,proposed_version_id=NULLIF($4,'')::uuid,revision=revision+1,updated_at=clock_timestamp() WHERE installation_id=$1`, c.InstallationID, string(newState), newActive, newProposed, op); e != nil {
+	if _, e = tx.Exec(ctx, `UPDATE core_extension_installations SET state=$2,enabled=CASE WHEN $5='install' THEN true WHEN $5='uninstall' THEN false ELSE enabled END,active_version_id=NULLIF($3,'')::uuid,proposed_version_id=NULLIF($4,'')::uuid,revision=revision+1,updated_at=clock_timestamp() WHERE installation_id=$1`, c.InstallationID, string(newState), newActive, "", op); e != nil {
 		return coreextension.Installation{}, e
 	}
 	statusTask := "failed"

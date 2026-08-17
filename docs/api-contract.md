@@ -73,6 +73,15 @@ and replay status. Unknown outcomes are recovered only by exact replay or
 `GET /agent/v1/operations/{operation_id}`. The Agent never waits for execution
 or a stream to finish inside the mutation request.
 
+The HTTP façade maps typed operation failures to a fixed, redacted status
+surface: invalid argument 400, permission denied 403, not found 404, conflict,
+uncertain, cancelled, or cycle detected 409, failed precondition 412, resource
+exhaustion 429, and not-ready or unavailable 503. An unclassified capability
+failure is a redacted 502, while store or service availability failures are
+503. Store and turn lookup failures are first reduced to the same typed surface;
+neither JSON errors nor SSE error frames expose database, provider, or other
+internal error text.
+
 Native chat uses explicit conversation/turn routes. Starting a turn calls the
 durable `start_turn` admission and returns 202 only after the authoritative
 turn exists; its `operation_id` equals `turn_id`. `GET /agent/v1/turns/{id}`
@@ -116,7 +125,11 @@ retain their frozen revision CAS.
   dispatched provider stream produces no data for the full idle interval, the
   turn fails with `provider_timeout` and an unknown-outcome summary. The
   dispatch is never replayed automatically, and recovery preserves the
-  persisted timeout classification.
+  persisted timeout classification. Independently, one turn may accept at most
+  20 distinct tool calls. Once that count is reached, the next model request
+  receives no tools and must synthesize from accumulated evidence. A provider
+  batch that would cross the limit terminates as `tool_budget_exhausted`
+  without dispatching the excess calls.
 - Provider adapters preserve provider-issued tool-call IDs. When Gemini omits
   an ID, Core allocates one that cannot collide with any tool call already in
   the frozen request transcript, for both unary and streaming responses.
@@ -147,9 +160,26 @@ retain their frozen revision CAS.
   dispatched; the next model round must issue it again as one complete call.
   OpenAI-compatible reasoning uses the
   `reasoning_content` response and assistant-message field so a reasoning model
-  can continue a tool round with the exact prior reasoning. A provider HTTP
-  4xx is a terminal `provider_rejected` outcome rather than an unknown dispatch
-  outcome.
+  can continue a tool round with the exact prior reasoning. The adapter parses
+  complete SSE events rather than individual lines: CRLF is accepted, comments
+  and non-`data` fields are ignored, and multiple `data` fields are joined in
+  order before JSON decoding. Provider failures retain a typed internal
+  taxonomy for cancellation, request/deadline timeout, idle timeout, HTTP 429,
+  other HTTP 4xx, HTTP 5xx, unavailable transport, invalid response, truncated
+  stream, and output limit. Safe diagnostics collapse status failures to their
+  HTTP class and never include response bodies. A provider HTTP 4xx, including
+  429, is a terminal `provider_rejected` turn outcome; timeouts become
+  `provider_timeout`, while an unclassified transport or 5xx outcome remains
+  `provider_uncertain` and is not automatically replayed.
+- Recent tool-loop recovery is deliberately conservative and resets at an
+  accepted steer. It recognizes only repeated canonical action/result pairs or
+  exact A/B alternation. Argument object key order and harmless unquoted local
+  shell whitespace are equivalent, while quoted shell content remains exact;
+  result identity ignores only transport call IDs and timestamps. Three equal
+  pairs or six alternating pairs add corrective guidance without removing
+  tools. Only a fourth equal pair or eighth alternating pair makes the next
+  provider request tool-free for one-pass synthesis. Different arguments or
+  results remain progress.
 - On every Native conversation turn, `Chat`, `StreamChat`, and `StartTurn`
   compose two memory layers before model dispatch. Working memory remains the
   durable conversation summary plus recent transcript window. Long-term memory
@@ -497,17 +527,25 @@ persistent service omits those two open-ended values. Confirmation validates
 the offer revision and expiry; after confirmation the task executes directly
 without a second pricing or replacement-offer pass.
 Reusing an already retained idle Worker requires its actual vCPU, memory, and
-disk to satisfy the request. The live model inventory exposes each retained
-Worker's instance type, vCPU, memory, and disk so the intrinsic can declare the
-task's actual minimums and prefer an adequate idle Worker. It needs no creation
-confirmation and executes directly for jobs, persistent services, and hostname
-publication, but Agent still reads and displays its live ongoing hourly cost. Worker destruction is a
+disk to satisfy the request. The model-facing tool definitions are static and
+contain no live Worker identity or state. The separate read-only
+`cloud_worker_inventory` intrinsic revalidates the current turn owner and
+account generation at execution, then returns an at-most-4-KiB
+`cloud_worker_inventory/v1` `ToolResult` containing bounded current capacity,
+status, task, address, pricing, load, and workload summaries. That result is
+durably recorded as nonterminal ordinary tool history and flows to the next
+model round.
+The model uses it to declare actual minimums and prefer an adequate idle Worker.
+Reuse needs no creation confirmation and executes directly for jobs, persistent
+services, and hostname publication, but Agent still reads and displays its live
+ongoing hourly cost. Worker destruction is a
 separate explicit owner-confirmed operation. The owner may invoke it from the
 Worker management surface or explicitly ask the Native Agent to destroy one
-of the retained Worker IDs in the live owner-scoped inventory. The conversation
-intrinsic accepts no provider identity from the model, re-resolves the exact
-stored Worker under the current owner/account generation, and commits the
-terminal conversation response only after destruction completes.
+of the retained Worker IDs returned by `cloud_worker_inventory`. The static
+destroy schema accepts that exact UUID plus its confirmation literal; the
+conversation intrinsic accepts no provider identity from the model, re-resolves
+the exact stored Worker under the current owner/account generation, and commits
+the terminal conversation response only after destruction completes.
 The intrinsic may create a priced offer for an explicit cloud request or when
 trusted Native scheduler evidence proves that the local conversation runtime
 lacks the general project/shell executor required by a substantial task. The
@@ -518,11 +556,25 @@ manager supports no more than five retained Workers for one authenticated
 owner/account generation across credential revisions. It discovers the newest
 Canonical official Ubuntu 24.04 LTS image and the
 default VPC/subnet at runtime, assigns an ordinary public IPv4, and uses
-outbound SSH. Image identity remains internal provider data. There is no EIP,
+outbound SSH. First contact uses `accept-new` into a persistent `known_hosts`
+file beside the Worker private key; later connections require that pinned host
+key. The file must be a single-link, owner-owned regular file with mode 0600,
+is opened without following symlinks, and is removed with the Worker key.
+Image identity remains internal provider data. There is no EIP,
 custom AMI, S3/KMS, WorkerControl callback, model relay, Worker domain, or
 deployment-time binding. Terminal Worker output returns to the same durable
 turn as a tool result with related task/plan IDs and local Agent-owned artifact
-metadata. The proposal's estimated runtime covers environment setup,
+metadata. Remote workload completion is persisted before result collection.
+When collection or its sink fails transiently, recovery sets `CollectOnly` from
+that `RemoteCompleted` fence and may retry logs/artifacts without preparing or
+starting the remote workload again; deterministic invalid or over-budget
+results persist `TaskFailed` and release the retained Worker. A same-ID retry
+of that failure remains terminal and never invokes SSH; it may only reconcile
+Worker-release bookkeeping after exact owner, account-generation, credential,
+Worker, and execution identity checks. Logs plus artifacts share the
+execution's single result-byte budget, so artifact reads cannot exceed
+the bytes remaining after logs. The proposal's estimated runtime covers
+environment setup,
 dependencies, model execution, the full requested active run or observation
 duration, result collection, and reasonable margin rather than treating an
 explicitly requested duration as the whole execution budget. A successful

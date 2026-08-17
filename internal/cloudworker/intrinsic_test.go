@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -68,8 +69,16 @@ type intrinsicWorkerManager struct {
 }
 
 func (manager *intrinsicWorkerManager) DestroyRetainedWorker(_ context.Context, owner string, generation uint64, workerID, proof string) error {
-	if owner != manager.owner || generation != manager.gen {
-		return ErrInvalid
+	manager.owner, manager.gen = owner, generation
+	found := false
+	for _, worker := range manager.value.Workers {
+		if worker.WorkerID == workerID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ErrNotFound
 	}
 	manager.destroyedWorker, manager.destroyProof = workerID, proof
 	return nil
@@ -182,6 +191,17 @@ func executeIntrinsic(t *testing.T, intrinsic *ProposeIntrinsic, lease coreconve
 		t.Fatal("successful intrinsic did not report atomic turn commit")
 	}
 	return err
+}
+
+func resolvedIntrinsicByName(t *testing.T, tools []coreconversation.ResolvedIntrinsic, name string) coreconversation.ResolvedIntrinsic {
+	t.Helper()
+	for _, tool := range tools {
+		if tool.Tool.Name == name {
+			return tool
+		}
+	}
+	t.Fatalf("intrinsic %q not found in %+v", name, tools)
+	return coreconversation.ResolvedIntrinsic{}
 }
 
 func bindIntrinsicAttachments(t *testing.T, lease *coreconversation.TurnLease, ids ...string) {
@@ -299,11 +319,12 @@ func TestProposeOnlyCommitsSummaryWithoutCreatingOrStartingRetainedWorkerWork(t 
 		t.Fatal(err)
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(tools) != 1 {
+	if err != nil || len(tools) != 3 {
 		t.Fatalf("tools=%+v err=%v", tools, err)
 	}
+	propose := resolvedIntrinsicByName(t, tools, coremodel.IntrinsicCloudWorkerProposeToolName)
 	raw := json.RawMessage(`{"intent":"proposal_only","objective":"deploy the service","workspace_mode":"write","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":30,"workload_kind":"service","service":{"workload_id":"web","port":8080,"health_path":"/health"}}`)
-	result, err := tools[0].Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
+	result, err := propose.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
 		Lease: lease, ConversationRevision: 4, CanonicalArguments: raw,
 		Call: coreconversation.ToolCall{ID: "proposal-only-call", Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(raw)},
 	})
@@ -342,29 +363,86 @@ func TestProposeIntrinsicNormalizesServiceOutOfJobArguments(t *testing.T) {
 	}
 }
 
-func TestIntrinsicDescriptionIncludesLiveRetainedWorkerInventory(t *testing.T) {
+func TestIntrinsicInventoryReturnsLiveOwnerScopedSnapshot(t *testing.T) {
 	intrinsic, _, lease := intrinsicFixture(t, "check the retained worker load", nil, nil)
-	resolver := &intrinsicWorkerInventory{value: RetainedWorkerInventory{ObservedAt: time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC), Workers: []RetainedWorkerSnapshot{{WorkerID: "worker-1", InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 20, Availability: "available", EC2State: "running", WorkerPhase: "idle", PublicIPv4: "203.0.113.8", Server: &RetainedWorkerServer{Load1: 0.5, Load5: 0.25, Load15: 0.1}}}}}
+	lease.Turn.CreatedAt = time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	workerID := uuid.NewString()
+	resolver := &intrinsicWorkerInventory{value: RetainedWorkerInventory{
+		ObservedAt: lease.Turn.CreatedAt,
+		Workers: []RetainedWorkerSnapshot{{
+			WorkerID: workerID, InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 20,
+			Availability: "available", EC2State: "running", WorkerPhase: "idle", PublicIPv4: "203.0.113.8",
+			Server: &RetainedWorkerServer{Load1: 0.5, Load5: 0.25, Load15: 0.1},
+		}},
+	}}
 	if err := intrinsic.EnableRetainedWorkerInventory(resolver); err != nil {
 		t.Fatal(err)
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(tools) != 1 {
+	if err != nil || len(tools) != 2 {
 		t.Fatalf("tools=%+v err=%v", tools, err)
 	}
-	description := tools[0].Tool.Description
-	for _, expected := range []string{`"worker_id":"worker-1"`, `"instance_type":"t3.small"`, `"vcpu":2`, `"memory_gib":2`, `"volume_gib":20`, `"availability":"available"`, `"public_ipv4":"203.0.113.8"`, `"load_1":0.5`, `"worker_count":1`} {
-		if !strings.Contains(description, expected) {
-			t.Fatalf("inventory description missing %s: %s", expected, description)
+	if resolver.owner != "" || resolver.gen != 0 {
+		t.Fatalf("tool resolution read live inventory: owner=%q generation=%d", resolver.owner, resolver.gen)
+	}
+	for _, tool := range tools {
+		if strings.Contains(tool.Tool.Description, workerID) || strings.Contains(tool.Tool.Description, "retained_worker_inventory=") {
+			t.Fatalf("dynamic inventory leaked into %s definition: %+v", tool.Tool.Name, tool.Tool)
 		}
 	}
-	if resolver.owner != lease.Turn.OwnerID || resolver.gen != lease.Turn.AccountGeneration {
-		t.Fatalf("inventory authority=%q/%d", resolver.owner, resolver.gen)
+	inventoryTool := resolvedIntrinsicByName(t, tools, coremodel.IntrinsicCloudWorkerInventoryToolName)
+	if !inventoryTool.ReadOnly {
+		t.Fatal("inventory intrinsic is not declared read-only")
+	}
+	raw := json.RawMessage(`{}`)
+	result, err := inventoryTool.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
+		Lease: lease, ConversationRevision: 4, CanonicalArguments: raw,
+		Call: coreconversation.ToolCall{ID: "inventory-call", Name: coremodel.IntrinsicCloudWorkerInventoryToolName, Arguments: string(raw)},
+	})
+	if err != nil || result.TurnCommitted || result.ToolResult == nil || result.ToolResult.Validate() != nil {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	content := result.ToolResult.Content
+	for _, expected := range []string{`"worker_id":"worker-1"`, `"instance_type":"t3.small"`, `"vcpu":2`, `"memory_gib":2`, `"volume_gib":20`, `"availability":"available"`, `"public_ipv4":"203.0.113.8"`, `"load_1":0.5`, `"worker_count":1`} {
+		if expected == `"worker_id":"worker-1"` {
+			expected = `"worker_id":"` + workerID + `"`
+		}
+		if !strings.Contains(content, expected) {
+			t.Fatalf("inventory result missing %s: %s", expected, content)
+		}
+	}
+	if resolver.owner != lease.Turn.OwnerID || resolver.gen != lease.Turn.AccountGeneration || result.ToolResult.CallID != "inventory-call" ||
+		result.ToolResult.ToolName != coremodel.IntrinsicCloudWorkerInventoryToolName {
+		t.Fatalf("inventory authority=%q/%d result=%+v", resolver.owner, resolver.gen, result)
 	}
 }
 
-func TestIntrinsicDescriptionBoundsRetainedWorkerInventory(t *testing.T) {
+func TestIntrinsicInventoryRevalidatesOwnerGeneration(t *testing.T) {
 	intrinsic, _, lease := intrinsicFixture(t, "inspect retained workers", nil, nil)
+	lease.Turn.CreatedAt = time.Date(2026, 8, 17, 11, 0, 0, 0, time.UTC)
+	resolver := &intrinsicWorkerInventory{}
+	if err := intrinsic.EnableRetainedWorkerInventory(resolver); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventoryTool := resolvedIntrinsicByName(t, tools, coremodel.IntrinsicCloudWorkerInventoryToolName)
+	intrinsic.owners.(*intrinsicOwner).owner.AccountGeneration++
+	raw := json.RawMessage(`{}`)
+	result, err := inventoryTool.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
+		Lease: lease, ConversationRevision: 2, CanonicalArguments: raw,
+		Call: coreconversation.ToolCall{ID: "stale-generation-inventory-call", Name: coremodel.IntrinsicCloudWorkerInventoryToolName, Arguments: string(raw)},
+	})
+	if !errors.Is(err, ErrInvalid) || result.TurnCommitted || result.ToolResult != nil || resolver.owner != "" {
+		t.Fatalf("stale generation result=%+v err=%v resolver=%+v", result, err, resolver)
+	}
+}
+
+func TestIntrinsicDefinitionsAreStaticAndInventoryResultIsBounded(t *testing.T) {
+	intrinsic, _, lease := intrinsicFixture(t, "inspect retained workers", nil, nil)
+	lease.Turn.CreatedAt = time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 	workers := make([]RetainedWorkerSnapshot, 20)
 	for index := range workers {
 		workers[index] = RetainedWorkerSnapshot{
@@ -374,22 +452,48 @@ func TestIntrinsicDescriptionBoundsRetainedWorkerInventory(t *testing.T) {
 			Workloads: make([]RetainedWorkerWorkload, 200),
 		}
 	}
-	resolver := &intrinsicWorkerInventory{value: RetainedWorkerInventory{ObservedAt: time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC), AtCapacity: true, Workers: workers}}
-	if err := intrinsic.EnableRetainedWorkerInventory(resolver); err != nil {
+	manager := &intrinsicWorkerManager{intrinsicWorkerInventory: intrinsicWorkerInventory{value: RetainedWorkerInventory{ObservedAt: lease.Turn.CreatedAt, AtCapacity: true, Workers: workers}}}
+	committer := &intrinsicTurnCommitter{}
+	if err := intrinsic.EnableRetainedWorkerManagement(manager, committer); err != nil {
 		t.Fatal(err)
 	}
 	first, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(first) != 1 {
+	if err != nil || len(first) != 3 {
 		t.Fatalf("first tools=%+v err=%v", first, err)
 	}
+	manager.value = RetainedWorkerInventory{ObservedAt: lease.Turn.CreatedAt.Add(time.Minute)}
 	second, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
-	description := first[0].Tool.Description
-	if err != nil || len(second) != 1 || description != second[0].Tool.Description || len(description) > maxModelToolDescriptionBytes ||
-		strings.Contains(description, "SECRET-MARKER") || !strings.Contains(description, `"worker_count":20`) || !strings.Contains(description, `"truncated":true`) {
-		t.Fatalf("bounded description bytes=%d deterministic=%t value=%q err=%v", len(description), len(second) == 1 && description == second[0].Tool.Description, description, err)
+	if err != nil || len(second) != 3 || manager.owner != "" || manager.gen != 0 {
+		t.Fatalf("second tools=%+v inventory authority=%q/%d err=%v", second, manager.owner, manager.gen, err)
 	}
-	if err := coremodel.ValidateCompletionRequest(coremodel.CompletionRequest{Messages: []coremodel.Message{{Role: coremodel.RoleUser, Content: "inspect"}}, Tools: []coremodel.Tool{first[0].Tool}}); err != nil {
-		t.Fatalf("bounded tool failed model validation: %v", err)
+	for _, name := range []string{coremodel.IntrinsicCloudWorkerProposeToolName, coremodel.IntrinsicCloudWorkerInventoryToolName, coremodel.IntrinsicCloudWorkerDestroyToolName} {
+		firstTool := resolvedIntrinsicByName(t, first, name).Tool
+		secondTool := resolvedIntrinsicByName(t, second, name).Tool
+		if !reflect.DeepEqual(firstTool, secondTool) {
+			t.Fatalf("%s definition changed with live inventory: first=%+v second=%+v", name, firstTool, secondTool)
+		}
+	}
+	manager.value = RetainedWorkerInventory{ObservedAt: lease.Turn.CreatedAt, AtCapacity: true, Workers: workers}
+	inventoryTool := resolvedIntrinsicByName(t, first, coremodel.IntrinsicCloudWorkerInventoryToolName)
+	raw := json.RawMessage(`{}`)
+	result, err := inventoryTool.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
+		Lease: lease, ConversationRevision: 2, CanonicalArguments: raw,
+		Call: coreconversation.ToolCall{ID: "bounded-inventory-call", Name: coremodel.IntrinsicCloudWorkerInventoryToolName, Arguments: string(raw)},
+	})
+	content := ""
+	if result.ToolResult != nil {
+		content = result.ToolResult.Content
+	}
+	if err != nil || result.TurnCommitted || result.ToolResult == nil || len(content) > maxModelInventoryBytes || strings.Contains(content, "SECRET-MARKER") ||
+		!strings.Contains(content, `"worker_count":20`) || !strings.Contains(content, `"truncated":true`) {
+		t.Fatalf("bounded inventory bytes=%d value=%q result=%+v err=%v", len(content), content, result, err)
+	}
+	modelTools := make([]coremodel.Tool, 0, len(first))
+	for _, tool := range first {
+		modelTools = append(modelTools, tool.Tool)
+	}
+	if err := coremodel.ValidateCompletionRequest(coremodel.CompletionRequest{Messages: []coremodel.Message{{Role: coremodel.RoleUser, Content: "inspect"}}, Tools: modelTools}); err != nil {
+		t.Fatalf("static tools failed model validation: %v", err)
 	}
 }
 
@@ -407,13 +511,27 @@ func TestIntrinsicDestroysExactRetainedWorkerFromConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(tools) != 2 || tools[1].Tool.Name != coremodel.IntrinsicCloudWorkerDestroyToolName {
+	if err != nil || len(tools) != 3 {
 		t.Fatalf("tools=%+v err=%v", tools, err)
+	}
+	destroy := resolvedIntrinsicByName(t, tools, coremodel.IntrinsicCloudWorkerDestroyToolName)
+	properties := destroy.Tool.InputSchema["properties"].(map[string]any)
+	workerIDSchema := properties["worker_id"].(map[string]any)
+	if workerIDSchema["format"] != "uuid" || workerIDSchema["type"] != "string" || workerIDSchema["oneOf"] != nil || strings.Contains(destroy.Tool.Description, workerID) {
+		t.Fatalf("destroy tool is not static: %+v", destroy.Tool)
+	}
+	unknownRaw := []byte(fmt.Sprintf(`{"worker_id":%q,"confirmation":"destroy_worker"}`, uuid.NewString()))
+	unknownResult, unknownErr := destroy.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
+		Lease: lease, ConversationRevision: 8, CanonicalArguments: unknownRaw,
+		Call: coreconversation.ToolCall{ID: "unknown-destroy-call", Name: coremodel.IntrinsicCloudWorkerDestroyToolName, Arguments: string(unknownRaw)},
+	})
+	if !errors.Is(unknownErr, ErrNotFound) || unknownResult.TurnCommitted || committer.response.Done {
+		t.Fatalf("unknown worker result=%+v err=%v response=%+v", unknownResult, unknownErr, committer.response)
 	}
 	raw := []byte(fmt.Sprintf(`{"worker_id":%q,"confirmation":"destroy_worker"}`, workerID))
 	renewed := lease
 	renewed.Epoch++
-	result, err := tools[1].Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
+	result, err := destroy.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{
 		Lease: renewed, ConversationRevision: 8, CanonicalArguments: raw,
 		Call: coreconversation.ToolCall{ID: "destroy-call", Name: coremodel.IntrinsicCloudWorkerDestroyToolName, Arguments: string(raw)},
 	})

@@ -116,7 +116,7 @@ func TestCoreServerBufconnTLSAuthAndCoreCapabilities(t *testing.T) {
 	lis := bufconn.Listen(1 << 20)
 	go func() { _ = server.Serve(lis) }()
 	defer server.Stop()
-	conn, err := grpc.DialContext(context.Background(), "bufnet", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }), grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13})))
+	conn, err := grpc.NewClient("passthrough:///bufnet", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }), grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13})))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestCoreServerTLSAuthHealthReflectionAndTokenRotation(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = listener.Close() })
 		go func() { _ = server.Serve(listener) }()
-		conn, err := grpc.Dial(listener.Addr().String(), grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13})))
+		conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13})))
 		if err != nil {
 			listener.Close()
 			server.Stop()

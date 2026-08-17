@@ -438,12 +438,12 @@ func TestGeminiPayloadProjectsWorkerSchemaToDocumentedSubset(t *testing.T) {
 }
 
 func TestProviderSafeIntrinsicNamesRoundTripPayloadsAndResponses(t *testing.T) {
-	for _, name := range []string{IntrinsicScheduleCreateToolName, IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicStaticSitePublishToolName} {
-		if !toolNamePattern.MatchString(name) || strings.Contains(name, ".") {
+	for _, name := range []string{IntrinsicScheduleCreateToolName, IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerInventoryToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicStaticSitePublishToolName} {
+		if !IsIntrinsicToolName(name) || !toolNamePattern.MatchString(name) || strings.Contains(name, ".") {
 			t.Fatalf("intrinsic tool name is not provider-safe: %q", name)
 		}
 	}
-	name := IntrinsicScheduleCreateToolName
+	name := IntrinsicCloudWorkerInventoryToolName
 	request := CompletionRequest{
 		Messages: []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call-1", Type: "function", Function: FunctionCall{Name: name, Arguments: `{}`}}}}},
 		Tools:    []Tool{{Name: name, InputSchema: map[string]any{"type": "object"}}},
@@ -814,6 +814,36 @@ func TestStreamProviderErrorAndResponseLimit(t *testing.T) {
 	}
 	if _, err = stream.Recv(); err == nil || err == io.EOF || !large.closed {
 		t.Fatalf("response limit not surfaced: %v closed=%v", err, large.closed)
+	}
+}
+
+func TestProviderStreamParsesCompleteSSEEvents(t *testing.T) {
+	body := &closeTrackingBody{Reader: strings.NewReader(
+		": keepalive\r\n" +
+			"event: message\r\n" +
+			"data: {\"choices\":[\r\n" +
+			": comment inside event\r\n" +
+			"data: {\"delta\":{\"content\":\"joined\"}}]}\r\n" +
+			"\r\n" +
+			": another comment\r\n" +
+			"data: [DONE]\r\n\r\n",
+	)}
+	client, err := NewClient(validProfile(ProviderOpenAICompatible, "https://example.com", "k"), WithHTTPClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: body, Header: make(http.Header)}, nil
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.Stream(context.Background(), CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta, err := stream.Recv()
+	if err != nil || delta.Content != "joined" {
+		t.Fatalf("multi-line SSE delta=%#v err=%v", delta, err)
+	}
+	if _, err = stream.Recv(); !errors.Is(err, io.EOF) || !body.closed {
+		t.Fatalf("SSE terminal err=%v closed=%v", err, body.closed)
 	}
 }
 

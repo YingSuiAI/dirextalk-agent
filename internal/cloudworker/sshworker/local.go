@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type FileStore struct {
@@ -350,6 +352,7 @@ type remoteRuntimeStatus struct {
 }
 
 var errRuntimeNotStarted = errors.New("remote runtime is not started")
+var errRetryableResultCollection = errors.New("retryable remote result collection failure")
 
 const sshReadAttempts = 3
 
@@ -389,7 +392,10 @@ func (source CommandStatusSource) ObserveService(ctx context.Context, worker Wor
 	if sshPath == "" {
 		sshPath = "ssh"
 	}
-	base := []string{"-i", key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/dev/null", worker.SSHUser + "@" + worker.Instance.PublicIP}
+	base, err := sshBaseArguments(key, worker.SSHUser, worker.Instance.PublicIP)
+	if err != nil {
+		return ServiceRuntimeStatus{}, err
+	}
 	body, err := retrySSHOutput(ctx, sshPath, base, runnerCommand(RuntimeServiceStatus, taskID), 64<<10)
 	if err != nil {
 		return ServiceRuntimeStatus{}, err
@@ -416,7 +422,10 @@ func (source CommandStatusSource) Observe(ctx context.Context, worker WorkerReco
 	if sshPath == "" {
 		sshPath = "ssh"
 	}
-	base := []string{"-i", key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/dev/null", worker.SSHUser + "@" + worker.Instance.PublicIP}
+	base, err := sshBaseArguments(key, worker.SSHUser, worker.Instance.PublicIP)
+	if err != nil {
+		return RunnerMetrics{}, err
+	}
 	body, err := retrySSHOutput(ctx, sshPath, base, runnerCommand(RuntimeServerStatus), 64<<10)
 	if err != nil {
 		return RunnerMetrics{}, err
@@ -453,21 +462,17 @@ func (source CommandStatusSource) HourlyQuote(ctx context.Context, worker Worker
 func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHRequest) (ExecutionResult, error) {
 	if request.Host == "" || request.User == "" || !filepath.IsAbs(request.PrivateKeyPath) ||
 		len(request.WorkerScript) == 0 || !request.Runtime.valid() || request.Runtime.TaskID != request.ExecutionID ||
-		request.MaxWorkspaceBytes <= 0 || request.MaxResultBytes <= 0 || request.Sink == nil {
+		request.MaxWorkspaceBytes <= 0 || request.MaxResultBytes <= 0 || request.Sink == nil || request.CollectOnly && !request.Resume {
 		return ExecutionResult{}, ErrInvalid
 	}
 	sshPath := executor.SSHPath
 	if sshPath == "" {
 		sshPath = "ssh"
 	}
-	knownHosts, err := os.CreateTemp("", "dirextalk-worker-known-hosts-*")
+	base, err := sshBaseArguments(request.PrivateKeyPath, request.User, request.Host)
 	if err != nil {
 		return ExecutionResult{}, err
 	}
-	knownHosts.Close()
-	defer os.Remove(knownHosts.Name())
-	base := []string{"-i", request.PrivateKeyPath, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
-		"-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + knownHosts.Name(), request.User + "@" + request.Host}
 	taskRoot := "/tmp/dirextalk-worker/tasks/" + request.ExecutionID
 	workspaceRoot := taskRoot + "/workspace"
 	artifactRoot := taskRoot + "/artifacts"
@@ -513,7 +518,7 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 		}
 	}
 	status, err := executor.waitRuntime(ctx, sshPath, base, request.Runtime, request.ReportProgress)
-	if request.Resume && errors.Is(err, errRuntimeNotStarted) {
+	if request.Resume && !request.CollectOnly && errors.Is(err, errRuntimeNotStarted) {
 		appliedSteerIDs, err = applyRuntimeGuidance(ctx, sshPath, base, taskRoot, request.ResolveGuidance)
 		if err != nil {
 			return ExecutionResult{}, err
@@ -542,9 +547,14 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 		}
 		return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
 	}
+	if request.RecordCompletion != nil {
+		if err := request.RecordCompletion(ctx); err != nil {
+			return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
+		}
+	}
 	if request.ReportProgress != nil {
 		if err := request.ReportProgress(ctx, "collecting_result", "Collecting Worker result and artifacts"); err != nil {
-			return ExecutionResult{}, err
+			return ExecutionResult{}, errors.Join(errRetryableResultCollection, err)
 		}
 	}
 	logCommand, err := request.Runtime.Log(0)
@@ -553,12 +563,16 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 	}
 	logBody, err := retrySSHOutput(ctx, sshPath, base, logCommand.Shell, request.MaxResultBytes)
 	if err != nil {
+		if errors.Is(err, ErrResultTooLarge) {
+			return ExecutionResult{}, err
+		}
 		return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
 	}
 	if err := request.Sink.StoreText(ctx, logBody, nil, status.ExitCode); err != nil {
-		return ExecutionResult{}, err
+		return ExecutionResult{}, errors.Join(errRetryableResultCollection, err)
 	}
-	artifactCount, err := executor.collectRuntimeArtifacts(ctx, sshPath, base, request)
+	// Logs and artifacts consume one execution-wide result budget.
+	artifactCount, err := executor.collectRuntimeArtifacts(ctx, sshPath, base, request, request.MaxResultBytes-int64(len(logBody)))
 	if err != nil {
 		return ExecutionResult{}, err
 	}
@@ -627,13 +641,19 @@ func (executor CommandSSHExecutor) waitRuntime(ctx context.Context, sshPath stri
 	}
 }
 
-func (executor CommandSSHExecutor) collectRuntimeArtifacts(ctx context.Context, sshPath string, base []string, request SSHRequest) (int, error) {
+func (executor CommandSSHExecutor) collectRuntimeArtifacts(ctx context.Context, sshPath string, base []string, request SSHRequest, maxArtifactBytes int64) (int, error) {
+	if maxArtifactBytes < 0 {
+		return 0, ErrResultTooLarge
+	}
 	listCommand, err := request.Runtime.Artifact("")
 	if err != nil {
 		return 0, err
 	}
 	body, err := retrySSHOutput(ctx, sshPath, base, listCommand.Shell, 1<<20)
 	if err != nil {
+		if errors.Is(err, ErrResultTooLarge) {
+			return 0, err
+		}
 		return 0, errors.Join(ErrAmbiguous, err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
@@ -643,7 +663,7 @@ func (executor CommandSSHExecutor) collectRuntimeArtifacts(ctx context.Context, 
 		if err = decoder.Decode(&artifact); errors.Is(err, io.EOF) {
 			return count, nil
 		}
-		if err != nil || artifact.Size < 0 || total+artifact.Size > request.MaxResultBytes {
+		if err != nil || artifact.Size < 0 || artifact.Size > maxArtifactBytes-total {
 			return count, ErrResultTooLarge
 		}
 		if artifact.Size == 0 {
@@ -658,17 +678,37 @@ func (executor CommandSSHExecutor) collectRuntimeArtifacts(ctx context.Context, 
 		}
 		data, commandErr := retrySSHOutput(ctx, sshPath, base, command.Shell, artifact.Size)
 		if commandErr != nil {
+			if errors.Is(commandErr, ErrResultTooLarge) {
+				return count, commandErr
+			}
 			return count, errors.Join(ErrAmbiguous, commandErr)
 		}
 		if int64(len(data)) != artifact.Size {
 			return count, ErrInvalid
 		}
 		if err = request.Sink.StoreArtifact(ctx, artifact.Name, bytes.NewReader(data), artifact.Size); err != nil {
-			return count, err
+			return count, errors.Join(errRetryableResultCollection, err)
 		}
 		total += artifact.Size
 		count++
 	}
+}
+
+func sshBaseArguments(privateKeyPath, user, host string) ([]string, error) {
+	if !filepath.IsAbs(privateKeyPath) || strings.TrimSpace(user) == "" || strings.TrimSpace(host) == "" {
+		return nil, ErrInvalid
+	}
+	knownHostsPath := privateKeyPath + ".known_hosts"
+	fd, err := unix.Open(knownHostsPath, unix.O_WRONLY|unix.O_APPEND|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(fd)
+	var stat unix.Stat_t
+	if err = unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o777 != 0o600 || stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 {
+		return nil, ErrInvalid
+	}
+	return []string{"-i", privateKeyPath, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + knownHostsPath, user + "@" + host}, nil
 }
 
 func sshOutput(ctx context.Context, sshPath string, base []string, remote string, limit int64) ([]byte, error) {

@@ -16,14 +16,15 @@ import (
 )
 
 var (
-	ErrInvalid        = errors.New("invalid ssh worker request")
-	ErrNotConfirmed   = errors.New("ssh worker creation is not confirmed")
-	ErrNotAuthorized  = errors.New("ssh worker destruction is not authorized")
-	ErrIdentity       = errors.New("AWS worker identity mismatch")
-	ErrAmbiguous      = errors.New("AWS operation outcome is ambiguous")
-	ErrCapacity       = errors.New("AWS worker capacity reached")
-	ErrBusy           = errors.New("ssh worker is busy")
-	ErrResultTooLarge = errors.New("ssh worker result exceeds its limit")
+	ErrInvalid         = errors.New("invalid ssh worker request")
+	ErrNotConfirmed    = errors.New("ssh worker creation is not confirmed")
+	ErrNotAuthorized   = errors.New("ssh worker destruction is not authorized")
+	ErrIdentity        = errors.New("AWS worker identity mismatch")
+	ErrAmbiguous       = errors.New("AWS operation outcome is ambiguous")
+	ErrCapacity        = errors.New("AWS worker capacity reached")
+	ErrBusy            = errors.New("ssh worker is busy")
+	ErrExecutionFailed = errors.New("ssh worker execution has already failed")
+	ErrResultTooLarge  = errors.New("ssh worker result exceeds its limit")
 )
 
 const (
@@ -197,7 +198,10 @@ type SSHRequest struct {
 	Sink                                                                       ResultSink
 	ResolveGuidance                                                            func(context.Context) (RuntimeGuidance, error)
 	ReportProgress                                                             func(context.Context, string, string) error
-	Resume                                                                     bool
+	// RecordCompletion durably separates remote workload completion from
+	// retryable result collection. CollectOnly forbids starting the workload.
+	RecordCompletion    func(context.Context) error
+	Resume, CollectOnly bool
 }
 type SSHExecutor interface {
 	Execute(context.Context, SSHRequest) (ExecutionResult, error)
@@ -278,8 +282,11 @@ type ExecutionRecord struct {
 	AccountGeneration uint64             `json:"account_generation"`
 	Credential        CredentialIdentity `json:"credential"`
 	Phase             TaskPhase          `json:"phase"`
-	Result            ExecutionResult    `json:"result"`
-	UpdatedAt         time.Time          `json:"updated_at"`
+	// RemoteCompleted is the durable fence that permits collection retries but
+	// never another start for this execution identity.
+	RemoteCompleted bool            `json:"remote_completed,omitempty"`
+	Result          ExecutionResult `json:"result"`
+	UpdatedAt       time.Time       `json:"updated_at"`
 }
 
 type Store interface {
