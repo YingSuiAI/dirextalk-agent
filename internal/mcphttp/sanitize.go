@@ -159,6 +159,14 @@ func sanitizeToolMetadata(content string) string {
 	return truncateUTF8(content, 4096)
 }
 
+// SanitizeStructuredText is the narrow projection helper for trusted adapters
+// that copy selected strings out of ToolResult.StructuredContent. Callers still
+// own domain validation and must never persist the remaining structured value.
+func SanitizeStructuredText(content string, limit int) string {
+	content = strings.TrimSpace(redactSensitiveText(content))
+	return truncateUTF8(content, limit)
+}
+
 func redactSensitiveText(content string) string {
 	content = strings.ReplaceAll(content, "\x00", "")
 	content = privateKeyPattern.ReplaceAllString(content, "[REDACTED]")

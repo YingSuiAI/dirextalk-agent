@@ -22,8 +22,11 @@ require (
 
 require (
 	github.com/aws/aws-sdk-go-v2/service/pricing v1.44.2
+	github.com/matrix-org/gomatrixserverlib v0.0.0-20250815065806-6697d93cbcba
 	github.com/pgvector/pgvector-go/pgx v0.4.1
 )
+
+require golang.org/x/crypto v0.51.0 // indirect
 
 require (
 	github.com/pgvector/pgvector-go v0.4.1

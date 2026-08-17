@@ -1479,6 +1479,7 @@ func TestDurableReadOnlyIntrinsicResultReturnsToNextModelRound(t *testing.T) {
 	conversationID := uuid.NewString()
 	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerInventoryToolName, Arguments: `{}`}
 	inventory := `{"schema":"cloud_worker_inventory/v1","worker_count":1,"workers":[{"worker_id":"` + uuid.NewString() + `"}]}`
+	roomReference := Reference{Kind: "room", RoomID: "!worker-room:example.test", RoomType: "group", Title: "Worker room"}
 	base := newFakeStore()
 	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:example.test", AccountGeneration: 7,
@@ -1516,7 +1517,7 @@ func TestDurableReadOnlyIntrinsicResultReturnsToNextModelRound(t *testing.T) {
 				if recordedCalls != 1 || recordedResults != 0 {
 					t.Fatalf("intrinsic dispatch ordering calls=%d results=%d events=%+v", recordedCalls, recordedResults, store.events)
 				}
-				return IntrinsicExecutionResult{ToolResult: &ToolResult{Content: inventory, Summary: "Retained Worker inventory read"}}, nil
+				return IntrinsicExecutionResult{ToolResult: &ToolResult{Content: inventory, Summary: "Retained Worker inventory read", References: []Reference{roomReference}}}, nil
 			},
 		}}, nil
 	}))
@@ -1533,7 +1534,7 @@ func TestDurableReadOnlyIntrinsicResultReturnsToNextModelRound(t *testing.T) {
 		}
 		if event.ToolResult != nil && event.ToolResult.CallID == call.ID {
 			resultIndex = index
-			if event.ToolResult.ToolName != call.Name || event.ToolResult.Content != inventory || event.ToolResult.Validate() != nil {
+			if event.ToolResult.ToolName != call.Name || event.ToolResult.Content != inventory || event.ToolResult.Validate() != nil || !reflect.DeepEqual(event.ToolResult.References, []Reference{roomReference}) {
 				t.Fatalf("durable intrinsic result=%+v", event.ToolResult)
 			}
 		}
@@ -1545,13 +1546,52 @@ func TestDurableReadOnlyIntrinsicResultReturnsToNextModelRound(t *testing.T) {
 	service.executeTurn(context.Background(), turn.ID)
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
 	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "final answer" ||
-		len(model.requests) != 2 || executions != 1 {
+		len(model.requests) != 2 || executions != 1 || !reflect.DeepEqual(terminal.Response.References, []Reference{roomReference}) {
 		t.Fatalf("terminal=%+v model_rounds=%d executions=%d err=%v", terminal, len(model.requests), executions, err)
 	}
 	secondRound := model.requests[1].Conversation.Messages
 	if len(secondRound) != 3 || len(secondRound[1].ToolCalls) != 1 || secondRound[1].ToolCalls[0].ID != call.ID ||
-		len(secondRound[2].ToolResults) != 1 || secondRound[2].ToolResults[0].Content != inventory || secondRound[2].ToolResults[0].ToolName != call.Name {
+		len(secondRound[2].ToolResults) != 1 || secondRound[2].ToolResults[0].Content != inventory || secondRound[2].ToolResults[0].ToolName != call.Name ||
+		!reflect.DeepEqual(secondRound[2].References, []Reference{roomReference}) {
 		t.Fatalf("second-round intrinsic context=%+v", secondRound)
+	}
+}
+
+func TestTurnToolMetadataCapsDurableAggregateReferences(t *testing.T) {
+	firstReferences := make([]Reference, 0, MaxReferences)
+	for index := 0; index < MaxReferences; index++ {
+		firstReferences = append(firstReferences, Reference{
+			Kind:   "room",
+			RoomID: fmt.Sprintf("!room-%02d:example.test", index),
+		})
+	}
+	overflowReference := Reference{Kind: "room", RoomID: "!overflow:example.test"}
+	messages := []Message{
+		{Role: RoleTool, ToolResults: []ToolResult{{
+			CallID: uuid.NewString(), Content: `{}`, References: firstReferences,
+		}}},
+		{Role: RoleTool, ToolResults: []ToolResult{{
+			CallID: uuid.NewString(), Content: `{}`, References: []Reference{overflowReference},
+		}}},
+	}
+
+	_, _, aggregate, _, results := turnToolMetadata(messages)
+	if len(aggregate) != MaxReferences || len(results) != 2 {
+		t.Fatalf("aggregate=%d results=%d", len(aggregate), len(results))
+	}
+	if !reflect.DeepEqual(aggregate, firstReferences) {
+		t.Fatalf("aggregate order changed: got=%+v want=%+v", aggregate, firstReferences)
+	}
+	if len(results[0].References) != MaxReferences ||
+		!reflect.DeepEqual(results[1].References, []Reference{overflowReference}) {
+		t.Fatalf("per-tool references were truncated: %+v", results)
+	}
+	message := Message{
+		ID: uuid.NewString(), Role: RoleAssistant, Content: "done",
+		CreatedAt: time.Now().UTC(), ModelProfileID: uuid.NewString(), References: aggregate,
+	}
+	if err := message.Validate(); err != nil {
+		t.Fatalf("bounded durable aggregate is invalid: %v", err)
 	}
 }
 

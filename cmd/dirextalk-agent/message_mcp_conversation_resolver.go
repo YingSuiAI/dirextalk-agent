@@ -11,12 +11,14 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/mcphttp"
 	"github.com/google/uuid"
+	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
 const (
@@ -131,7 +133,11 @@ func (r *messageMCPConversationResolver) ResolveExtensions(ctx context.Context, 
 				}
 				return coreconversation.ToolResult{}, runErr
 			}
-			return coreconversation.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: result.Content, IsError: result.IsError}, nil
+			toolResult := coreconversation.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: result.Content, IsError: result.IsError}
+			if !result.IsError {
+				toolResult.References = messageMCPRoomReferences(request.Call.Name, result.StructuredContent)
+			}
+			return toolResult, nil
 		},
 	})
 	return resolved, nil
@@ -150,4 +156,121 @@ func messageMCPToolDigest(endpoint string, tools []coremodel.Tool) string {
 
 func messageMCPMutationTool(name string) bool {
 	return strings.HasSuffix(name, "__dirextalk_messages_send") || strings.HasSuffix(name, "__dirextalk_channel_comments_create")
+}
+
+type messageMCPRoomSummary struct {
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	RoomID  string `json:"room_id"`
+	LastMsg string `json:"last_msg"`
+}
+
+type messageMCPContactSummary struct {
+	DisplayName string `json:"display_name"`
+	RoomID      string `json:"room_id"`
+}
+
+func messageMCPRoomReferences(toolName string, structured json.RawMessage) []coreconversation.Reference {
+	if len(structured) == 0 {
+		return nil
+	}
+	var references []coreconversation.Reference
+	switch toolName {
+	case "mcp__message__dirextalk_rooms_search":
+		var result struct {
+			Rooms []messageMCPRoomSummary `json:"rooms"`
+		}
+		if json.Unmarshal(structured, &result) != nil {
+			return nil
+		}
+		for _, room := range result.Rooms {
+			if len(references) >= coreconversation.MaxReferences {
+				break
+			}
+			roomType, ok := messageMCPRoomType(room.Type)
+			if !ok {
+				continue
+			}
+			references = appendMessageMCPRoomReference(references, room.RoomID, roomType, room.Name, room.LastMsg)
+		}
+	case "mcp__message__dirextalk_contacts_list", "mcp__message__dirextalk_contacts_search":
+		var result struct {
+			Contacts []messageMCPContactSummary `json:"contacts"`
+		}
+		if json.Unmarshal(structured, &result) != nil {
+			return nil
+		}
+		for _, contact := range result.Contacts {
+			if len(references) >= coreconversation.MaxReferences {
+				break
+			}
+			references = appendMessageMCPRoomReference(references, contact.RoomID, "contact", contact.DisplayName, "")
+		}
+	case "mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_messages_send",
+		"mcp__message__dirextalk_room_members_list", "mcp__message__dirextalk_channel_posts_list":
+		var result struct {
+			RoomID string `json:"room_id"`
+			Name   string `json:"name"`
+		}
+		if json.Unmarshal(structured, &result) != nil {
+			return nil
+		}
+		references = appendMessageMCPRoomReference(references, result.RoomID, "", result.Name, "")
+	}
+	return references
+}
+
+func appendMessageMCPRoomReference(references []coreconversation.Reference, roomID, roomType, title, preview string) []coreconversation.Reference {
+	if len(references) >= coreconversation.MaxReferences {
+		return references
+	}
+	roomID, ok := canonicalMessageMCPRoomID(roomID)
+	if !ok {
+		return references
+	}
+	for _, existing := range references {
+		if existing.RoomID == roomID {
+			return references
+		}
+	}
+	reference := coreconversation.Reference{
+		Kind: "room", RoomID: roomID, RoomType: roomType,
+		Title:   safeMessageMCPPresentation(title, 512),
+		Preview: safeMessageMCPPresentation(preview, coreconversation.MaxSummaryBytes),
+	}
+	if reference.Validate() != nil {
+		return references
+	}
+	return append(references, reference)
+}
+
+func canonicalMessageMCPRoomID(value string) (string, bool) {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > 512 {
+		return "", false
+	}
+	roomID, err := spec.NewRoomID(value)
+	if err != nil || roomID.String() != value {
+		return "", false
+	}
+	return roomID.String(), true
+}
+
+func messageMCPRoomType(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "contact", "group", "channel", "agent", "system":
+		return value, true
+	default:
+		return "", false
+	}
+}
+
+func safeMessageMCPPresentation(value string, limit int) string {
+	value = mcphttp.SanitizeStructuredText(value, limit)
+	for _, current := range value {
+		if unicode.IsControl(current) {
+			return ""
+		}
+	}
+	return value
 }

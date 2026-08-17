@@ -60,7 +60,10 @@ the enclosing HTTP/gRPC admission remains authenticated. Its exact endpoint and
 advertised tool schemas form the deterministic synthetic snapshot. Core records
 dispatch before each tool call and never automatically repeats a call whose
 completion is unknown; ambiguous Message mutations require an authoritative
-read before the model decides whether to retry.
+read before the model decides whether to retry. Successful calls retain bounded
+structured content only long enough to project known Message Server room and
+contact shapes into validated `room` references; arbitrary structured fields
+and nested channel posts/comments are not persisted as references.
 
 Text tools cross only as the owner-client `agent.text_tools.v1` descriptor.
 The Agent HTTP data plane accepts the canonical typed config/update/execute
