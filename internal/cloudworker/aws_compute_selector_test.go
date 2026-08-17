@@ -3,6 +3,7 @@ package cloudworker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
@@ -12,9 +13,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/pricing"
 )
 
-type computeSelectionAWS struct{}
+type computeSelectionAWS struct {
+	offeringLocationType ec2types.LocationType
+	regionalLocation     string
+}
 
-func (computeSelectionAWS) DescribeInstanceTypes(_ context.Context, input *ec2.DescribeInstanceTypesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error) {
+func (*computeSelectionAWS) DescribeInstanceTypes(_ context.Context, input *ec2.DescribeInstanceTypesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error) {
 	result := &ec2.DescribeInstanceTypesOutput{}
 	for _, name := range input.InstanceTypes {
 		vcpu, memory := int32(2), int64(2048)
@@ -28,12 +32,37 @@ func (computeSelectionAWS) DescribeInstanceTypes(_ context.Context, input *ec2.D
 	return result, nil
 }
 
-func (computeSelectionAWS) DescribeInstanceTypeOfferings(_ context.Context, input *ec2.DescribeInstanceTypeOfferingsInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+func (provider *computeSelectionAWS) DescribeInstanceTypeOfferings(_ context.Context, input *ec2.DescribeInstanceTypeOfferingsInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+	provider.offeringLocationType = input.LocationType
+	if input.LocationType == ec2types.LocationTypeAvailabilityZone {
+		// Model a large region where AZ-expanded results still have a sixth
+		// page. The old five-page availability-zone query fails closed here.
+		return &ec2.DescribeInstanceTypeOfferingsOutput{NextToken: aws.String("more-availability-zones")}, nil
+	}
+	location := provider.regionalLocation
+	if location == "" {
+		location = "ap-northeast-1"
+	}
 	result := &ec2.DescribeInstanceTypeOfferingsOutput{}
 	for _, name := range input.Filters[0].Values {
-		result.InstanceTypeOfferings = append(result.InstanceTypeOfferings, ec2types.InstanceTypeOffering{InstanceType: ec2types.InstanceType(name), Location: aws.String("ap-northeast-1a")})
+		result.InstanceTypeOfferings = append(result.InstanceTypeOfferings, ec2types.InstanceTypeOffering{InstanceType: ec2types.InstanceType(name), Location: aws.String(location)})
 	}
 	return result, nil
+}
+
+func TestAWSComputeSelectorRejectsRegionPrefixCollision(t *testing.T) {
+	credential := &livePricingCredential{handle: workaws.CredentialHandle{ReferenceID: "11111111-1111-4111-8111-111111111111",
+		Region: "ap-northeast-1", AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:user/test", AccessKeyID: "access", SecretAccessKey: "secret"}}
+	ec2Provider := &computeSelectionAWS{regionalLocation: "ap-northeast-10"}
+	selector, err := NewAWSComputeSelector(credential, computeSelectionFactory{ec2: ec2Provider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := AWSBinding{AccountID: credential.handle.AccountID, Region: credential.handle.Region, CredentialID: credential.handle.ReferenceID, CredentialRevision: 7}
+	_, err = selector.SelectCompute(context.Background(), binding, ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 4, DiskGiB: 20, EstimatedRuntimeMinutes: 30})
+	if !errors.Is(err, ErrProviderUnavailable) {
+		t.Fatalf("prefix-collision region err=%v, want provider unavailable", err)
+	}
 }
 
 type computeSelectionPricing struct{}
@@ -53,10 +82,10 @@ func (computeSelectionPricing) GetProducts(context.Context, *pricing.GetProducts
 	}}, nil
 }
 
-type computeSelectionFactory struct{}
+type computeSelectionFactory struct{ ec2 *computeSelectionAWS }
 
-func (computeSelectionFactory) NewEC2(workaws.CredentialHandle) (AWSComputeSelectionAPI, error) {
-	return computeSelectionAWS{}, nil
+func (factory computeSelectionFactory) NewEC2(workaws.CredentialHandle) (AWSComputeSelectionAPI, error) {
+	return factory.ec2, nil
 }
 func (computeSelectionFactory) NewPricing(workaws.CredentialHandle) (AWSPriceListAPI, error) {
 	return computeSelectionPricing{}, nil
@@ -65,7 +94,8 @@ func (computeSelectionFactory) NewPricing(workaws.CredentialHandle) (AWSPriceLis
 func TestAWSComputeSelectorChoosesCheapestAvailableShapeSatisfyingRequirements(t *testing.T) {
 	credential := &livePricingCredential{handle: workaws.CredentialHandle{ReferenceID: "11111111-1111-4111-8111-111111111111",
 		Region: "ap-northeast-1", AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:user/test", AccessKeyID: "access", SecretAccessKey: "secret"}}
-	selector, err := NewAWSComputeSelector(credential, computeSelectionFactory{})
+	ec2Provider := &computeSelectionAWS{}
+	selector, err := NewAWSComputeSelector(credential, computeSelectionFactory{ec2: ec2Provider})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,5 +107,8 @@ func TestAWSComputeSelectorChoosesCheapestAvailableShapeSatisfyingRequirements(t
 	larger, err := selector.SelectCompute(context.Background(), binding, ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 4, DiskGiB: 40, EstimatedRuntimeMinutes: 60})
 	if err != nil || larger.InstanceType != "m7i-flex.large" || larger.MemoryGiB != 8 || larger.VolumeGiB != 40 {
 		t.Fatalf("larger=%+v err=%v", larger, err)
+	}
+	if ec2Provider.offeringLocationType != ec2types.LocationTypeRegion {
+		t.Fatalf("offering location type=%q, want region", ec2Provider.offeringLocationType)
 	}
 }

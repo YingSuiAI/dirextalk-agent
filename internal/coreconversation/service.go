@@ -2363,6 +2363,9 @@ func intrinsicTerminalFailure(toolName string, err error) (string, string) {
 	if toolName == coremodel.IntrinsicCloudWorkerDestroyToolName {
 		return "cloud_worker_destroy_failed", "Worker could not be destroyed"
 	}
+	if toolName == coremodel.IntrinsicCloudWorkerProposeToolName {
+		return "cloud_worker_proposal_failed", "AWS Worker proposal could not be created"
+	}
 	if toolName == coremodel.IntrinsicScheduleCreateToolName {
 		return "schedule_persistence_failed", "Schedule could not be saved"
 	}

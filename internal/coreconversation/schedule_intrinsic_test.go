@@ -312,6 +312,10 @@ func TestIntrinsicFailureClassificationIsSpecificAndRedacted(t *testing.T) {
 	if code != "invalid_intrinsic_arguments" || summary != "Core intrinsic arguments are invalid" {
 		t.Fatalf("invalid Worker arguments classification code=%q summary=%q", code, summary)
 	}
+	code, summary = intrinsicTerminalFailure(coremodel.IntrinsicCloudWorkerProposeToolName, errors.New("private AWS provider detail"))
+	if code != "cloud_worker_proposal_failed" || summary != "AWS Worker proposal could not be created" || strings.Contains(summary, "private") {
+		t.Fatalf("Worker proposal classification code=%q summary=%q", code, summary)
+	}
 
 	privateErr := errors.New("database unavailable: private connection detail")
 	persistenceErr := executeScheduleForTest(t, &conversationScheduleStoreStub{err: privateErr}, lease, "call-persistence", map[string]any{

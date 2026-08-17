@@ -138,7 +138,11 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 		var next *string
 		for page := 0; page < 5; page++ {
 			output, callErr := ec2Client.DescribeInstanceTypeOfferings(ctx, &ec2.DescribeInstanceTypeOfferingsInput{
-				LocationType: ec2types.LocationTypeAvailabilityZone, MaxResults: aws.Int32(100), NextToken: next,
+				// The selector needs regional availability, not one row per
+				// availability zone.  Querying availability-zone rows multiplies
+				// every candidate by the region's AZ count and can exhaust the
+				// bounded pagination window in large regions such as us-east-1.
+				LocationType: ec2types.LocationTypeRegion, MaxResults: aws.Int32(100), NextToken: next,
 				Filters: []ec2types.Filter{{Name: aws.String("instance-type"), Values: names[start:end]}},
 			})
 			if callErr != nil || output == nil {
@@ -146,7 +150,7 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 			}
 			for _, offering := range output.InstanceTypeOfferings {
 				name := string(offering.InstanceType)
-				if _, ok := eligible[name]; ok && strings.HasPrefix(aws.ToString(offering.Location), binding.Region) {
+				if _, ok := eligible[name]; ok && aws.ToString(offering.Location) == binding.Region {
 					available[name] = true
 				}
 			}
