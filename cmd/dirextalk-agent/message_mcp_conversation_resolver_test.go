@@ -140,6 +140,30 @@ func TestMessageMCPResolverMapsOnlyKnownRoomResultShapes(t *testing.T) {
 	}
 }
 
+func TestCanonicalMessageMCPRoomIDUsesMatrixValidation(t *testing.T) {
+	domainless := "!" + strings.Repeat("A", 43)
+	for _, valid := range []string{
+		"!room:example.test",
+		"!room:example.test:8448",
+		domainless,
+	} {
+		if got, ok := canonicalMessageMCPRoomID(valid); !ok || got != valid {
+			t.Fatalf("valid room ID %q rejected: got=%q ok=%t", valid, got, ok)
+		}
+	}
+	for _, invalid := range []string{
+		"!room:example.test/path",
+		"!room:example.test:bad",
+		"!room:example.test:8448:extra",
+		" !room:example.test",
+		"!short-domainless",
+	} {
+		if got, ok := canonicalMessageMCPRoomID(invalid); ok || got != "" {
+			t.Fatalf("invalid room ID %q accepted: got=%q ok=%t", invalid, got, ok)
+		}
+	}
+}
+
 func TestMountedMessageMCPTokenIsReadFreshAndStrict(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "message-token")
 	if err := os.WriteFile(path, []byte("first-token"), 0o600); err != nil {

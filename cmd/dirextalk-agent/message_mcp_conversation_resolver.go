@@ -12,13 +12,13 @@ import (
 	"sort"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/mcphttp"
 	"github.com/google/uuid"
+	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
 const (
@@ -245,19 +245,14 @@ func appendMessageMCPRoomReference(references []coreconversation.Reference, room
 }
 
 func canonicalMessageMCPRoomID(value string) (string, bool) {
-	if value == "" || value != strings.TrimSpace(value) || len(value) > 512 || !utf8.ValidString(value) || value[0] != '!' {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > 512 {
 		return "", false
 	}
-	separator := strings.IndexByte(value, ':')
-	if separator <= 1 || separator == len(value)-1 {
+	roomID, err := spec.NewRoomID(value)
+	if err != nil || roomID.String() != value {
 		return "", false
 	}
-	for _, current := range value {
-		if unicode.IsSpace(current) || unicode.IsControl(current) {
-			return "", false
-		}
-	}
-	return value, true
+	return roomID.String(), true
 }
 
 func messageMCPRoomType(value string) (string, bool) {

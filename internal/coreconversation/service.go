@@ -235,7 +235,11 @@ func stableStrings(in []string) []string {
 }
 func stableReferences(in []Reference) []Reference {
 	seen := make(map[string]struct{}, len(in))
-	out := make([]Reference, 0, len(in))
+	capacity := len(in)
+	if capacity > MaxReferences {
+		capacity = MaxReferences
+	}
+	out := make([]Reference, 0, capacity)
 	for _, value := range in {
 		key := referenceKey(value)
 		if _, duplicate := seen[key]; duplicate {
@@ -243,6 +247,9 @@ func stableReferences(in []Reference) []Reference {
 		}
 		seen[key] = struct{}{}
 		out = append(out, value)
+		if len(out) == MaxReferences {
+			break
+		}
 	}
 	return out
 }

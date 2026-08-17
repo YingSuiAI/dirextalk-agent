@@ -1557,6 +1557,44 @@ func TestDurableReadOnlyIntrinsicResultReturnsToNextModelRound(t *testing.T) {
 	}
 }
 
+func TestTurnToolMetadataCapsDurableAggregateReferences(t *testing.T) {
+	firstReferences := make([]Reference, 0, MaxReferences)
+	for index := 0; index < MaxReferences; index++ {
+		firstReferences = append(firstReferences, Reference{
+			Kind:   "room",
+			RoomID: fmt.Sprintf("!room-%02d:example.test", index),
+		})
+	}
+	overflowReference := Reference{Kind: "room", RoomID: "!overflow:example.test"}
+	messages := []Message{
+		{Role: RoleTool, ToolResults: []ToolResult{{
+			CallID: uuid.NewString(), Content: `{}`, References: firstReferences,
+		}}},
+		{Role: RoleTool, ToolResults: []ToolResult{{
+			CallID: uuid.NewString(), Content: `{}`, References: []Reference{overflowReference},
+		}}},
+	}
+
+	_, _, aggregate, _, results := turnToolMetadata(messages)
+	if len(aggregate) != MaxReferences || len(results) != 2 {
+		t.Fatalf("aggregate=%d results=%d", len(aggregate), len(results))
+	}
+	if !reflect.DeepEqual(aggregate, firstReferences) {
+		t.Fatalf("aggregate order changed: got=%+v want=%+v", aggregate, firstReferences)
+	}
+	if len(results[0].References) != MaxReferences ||
+		!reflect.DeepEqual(results[1].References, []Reference{overflowReference}) {
+		t.Fatalf("per-tool references were truncated: %+v", results)
+	}
+	message := Message{
+		ID: uuid.NewString(), Role: RoleAssistant, Content: "done",
+		CreatedAt: time.Now().UTC(), ModelProfileID: uuid.NewString(), References: aggregate,
+	}
+	if err := message.Validate(); err != nil {
+		t.Fatalf("bounded durable aggregate is invalid: %v", err)
+	}
+}
+
 func TestReadOnlyIntrinsicDispatchedReplayIsNotReexecuted(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
