@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.162
+
+1. Restore Native Agent access to Message Server MCP tools by loading the stable protected Agent token, while preventing ambiguous mutation retries and preserving tool snapshots across Agent restarts.
+2. Filter AWS Price List candidates through the deployment Region's current EC2 instance-type offerings before describing their specifications, so retired SKUs cannot abort Worker proposals.
+3. Classify AWS compute-selection failures by pricing, offerings, and instance-type description stages without exposing provider credentials or signed request details.
+
 ## v1.0.161
 
 1. Make Native Agent session tickets, forced refresh, SSE cursor validation, replay, and terminal outcomes deterministic across expiry, reconnect, and ambiguous mutations.
