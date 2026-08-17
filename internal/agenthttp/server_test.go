@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,7 +29,34 @@ import (
 
 type testCapability struct {
 	calls atomic.Int32
+	err   error
 }
+
+type sseTestWriter struct {
+	header     http.Header
+	writes     chan string
+	failAfter  int
+	writeCount int
+}
+
+func newSSETestWriter() *sseTestWriter {
+	return &sseTestWriter{header: make(http.Header), writes: make(chan string, 4)}
+}
+
+func (w *sseTestWriter) Header() http.Header { return w.header }
+
+func (w *sseTestWriter) WriteHeader(int) {}
+
+func (w *sseTestWriter) Write(value []byte) (int, error) {
+	if w.failAfter > 0 && w.writeCount >= w.failAfter {
+		return 0, io.ErrClosedPipe
+	}
+	w.writeCount++
+	w.writes <- string(value)
+	return len(value), nil
+}
+
+func (w *sseTestWriter) Flush() {}
 
 type admissionStore struct {
 	coreconversation.Store
@@ -36,6 +65,8 @@ type admissionStore struct {
 	conversation coreconversation.Conversation
 	events       []coreconversation.TurnEvent
 	starts       int
+	startErr     error
+	boundsErr    error
 }
 
 func (s *admissionStore) LoadConversation(_ context.Context, id string) (coreconversation.Conversation, error) {
@@ -55,6 +86,9 @@ func (s *admissionStore) ListTurns(context.Context, string, string, int) ([]core
 
 func (s *admissionStore) StartTurn(_ context.Context, command coreconversation.TurnStartCommand) (coreconversation.Turn, error) {
 	s.starts++
+	if s.startErr != nil {
+		return coreconversation.Turn{}, s.startErr
+	}
 	now := time.Now().UTC()
 	s.turn = coreconversation.Turn{
 		ID: command.TurnID, RequestID: command.RequestID, OwnerID: command.OwnerID,
@@ -73,6 +107,9 @@ func (s *admissionStore) GetTurn(_ context.Context, id string) (coreconversation
 }
 
 func (s *admissionStore) TurnEventBounds(context.Context, string) (int64, int64, error) {
+	if s.boundsErr != nil {
+		return 0, 0, s.boundsErr
+	}
 	if len(s.events) == 0 {
 		return 0, 0, nil
 	}
@@ -111,6 +148,9 @@ func (c *testCapability) Descriptor() *capv1.CapabilityDescriptor {
 
 func (c *testCapability) HandleOperation(_ context.Context, operationID string, raw []byte) ([]byte, error) {
 	c.calls.Add(1)
+	if c.err != nil {
+		return nil, c.err
+	}
 	return json.Marshal(map[string]any{"operation": operationID, "input": json.RawMessage(raw)})
 }
 
@@ -222,8 +262,53 @@ func TestMutationAdmissionReplaysTheFrozenIdempotencyTuple(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/mutate", `{"idempotency_key":"`+key+`","value":"changed"}`, ticket))
-	if recorder.Code != http.StatusConflict {
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"code":"AGENT_OPERATION_CONFLICT"`) || !strings.Contains(recorder.Body.String(), "refresh and retry") || strings.Contains(recorder.Body.String(), operation.ErrIdempotencyConflict.Error()) {
 		t.Fatalf("changed tuple response = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDirectReadMapsTypedFailuresWithoutLeakingInternals(t *testing.T) {
+	tests := []struct {
+		name        string
+		failure     error
+		wantStatus  int
+		wantCode    string
+		wantMessage string
+	}{
+		{name: "invalid", failure: operation.NewFailure("INVALID_ARGUMENT", "Agent request is invalid", errors.New("private invalid detail")), wantStatus: http.StatusBadRequest, wantCode: "AGENT_REQUEST_INVALID", wantMessage: "Agent request is invalid"},
+		{name: "permission", failure: operation.NewFailure("PERMISSION_DENIED", "Product operation is not permitted", errors.New("private permission detail")), wantStatus: http.StatusForbidden, wantCode: "AGENT_OPERATION_FORBIDDEN", wantMessage: "Product operation is not permitted"},
+		{name: "not found", failure: operation.NewFailure("NOT_FOUND", "Agent resource was not found", errors.New("private lookup detail")), wantStatus: http.StatusNotFound, wantCode: "AGENT_OPERATION_NOT_FOUND", wantMessage: "Agent resource was not found"},
+		{name: "conflict", failure: operation.NewFailure("CONFLICT", "Agent state changed; refresh and retry", errors.New("private revision detail")), wantStatus: http.StatusConflict, wantCode: "AGENT_OPERATION_CONFLICT", wantMessage: "Agent state changed; refresh and retry"},
+		{name: "precondition", failure: operation.NewFailure("PRECONDITION_FAILED", "Product operation prerequisites are not satisfied", errors.New("private prerequisite detail")), wantStatus: http.StatusPreconditionFailed, wantCode: "AGENT_OPERATION_PRECONDITION_FAILED", wantMessage: "Product operation prerequisites are not satisfied"},
+		{name: "unavailable", failure: operation.NewFailure("UNAVAILABLE", "Agent dependency is unavailable", errors.New("private dependency detail")), wantStatus: http.StatusServiceUnavailable, wantCode: "AGENT_OPERATION_UNAVAILABLE", wantMessage: "Agent dependency is unavailable"},
+		{name: "exhausted", failure: operation.NewFailure("RESOURCE_EXHAUSTED", "Product service capacity is exhausted", errors.New("private quota detail")), wantStatus: http.StatusTooManyRequests, wantCode: "AGENT_OPERATION_RESOURCE_EXHAUSTED", wantMessage: "Product service capacity is exhausted"},
+		{name: "unclassified", failure: errors.New("private upstream secret-sentinel"), wantStatus: http.StatusBadGateway, wantCode: "AGENT_OPERATION_FAILED", wantMessage: "Agent operation failed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			h := newTestHarness(t)
+			h.capability.err = test.failure
+			ticket := h.ticket(t, []string{"test:read"}, h.now.Add(15*time.Minute))
+			recorder := httptest.NewRecorder()
+			h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/read", `{}`, ticket))
+			var response errorBody
+			if json.Unmarshal(recorder.Body.Bytes(), &response) != nil || recorder.Code != test.wantStatus || response.Code != test.wantCode || response.Message != test.wantMessage || strings.Contains(recorder.Body.String(), "private") || strings.Contains(recorder.Body.String(), "secret-sentinel") {
+				t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestMutationAdmissionMapsStorageFailureToRetryableUnavailable(t *testing.T) {
+	h := newTestHarness(t)
+	if err := h.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ticket := h.ticket(t, []string{"test:write"}, h.now.Add(15*time.Minute))
+	recorder := httptest.NewRecorder()
+	h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/mutate", `{"idempotency_key":"`+uuid.NewString()+`"}`, ticket))
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"AGENT_OPERATION_UNAVAILABLE"`) || !strings.Contains(recorder.Body.String(), "operation service is unavailable") || strings.Contains(recorder.Body.String(), "database is closed") {
+		t.Fatalf("storage failure response = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -262,6 +347,31 @@ func TestChatStartReturnsAcceptedOnlyAfterTheAuthoritativeTurnExists(t *testing.
 	}
 	if store.starts != 1 || receipt.OperationID == "" || receipt.OperationID != receipt.TurnID || receipt.IdempotencyKey != key || store.turn.ID != receipt.TurnID || store.turn.RequestID != key {
 		t.Fatalf("receipt=%+v persisted turn=%+v starts=%d", receipt, store.turn, store.starts)
+	}
+}
+
+func TestChatStartMapsInvalidAdmissionInsteadOfCollapsingToConflict(t *testing.T) {
+	h := newTestHarness(t)
+	profileID := uuid.NewString()
+	snapshot := coremodel.ExecutionSnapshot{ProfileID: profileID, Revision: 3, CredentialVersion: 2, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://model.example/v1", Model: "test", APIKey: "secret"}
+	store := &admissionStore{startErr: errors.Join(coreconversation.ErrInvalid, errors.New("private admission detail"))}
+	conversation, err := coreconversation.NewService(store, admissionModel{}, nil, admissionProfile{snapshot: snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conversation.Close() })
+	server := *h.server
+	server.registry = agentcapability.NewCoreRegistry(agentcapability.CoreBindings{Conversation: conversation})
+	server.conversation = conversation
+
+	key := uuid.NewString()
+	body := `{"idempotency_key":"` + key + `","message":"hello","model_profile_id":"` + profileID + `","model_profile_revision":3,"credential_version":2}`
+	request := requestWithTicket(http.MethodPost, "/agent/v1/conversations/"+uuid.NewString()+"/turns", body, h.ticket(t, []string{"agent:chat:write"}, h.now.Add(15*time.Minute)))
+	request.Header.Set("Idempotency-Key", key)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"AGENT_REQUEST_INVALID"`) || strings.Contains(recorder.Body.String(), "private admission detail") {
+		t.Fatalf("start response = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -322,7 +432,7 @@ func TestSSEResumesStrictlyAfterTheLargestSequence(t *testing.T) {
 	request := requestWithTicket(http.MethodGet, "/agent/v1/operations/"+operationID+"/events?after_seq=1", "", ticket)
 	request.Header.Set("Last-Event-ID", "2")
 	h.server.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), "id: 1\n") || strings.Contains(recorder.Body.String(), "id: 2\n") || !strings.Contains(recorder.Body.String(), "event: result") {
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(recorder.Body.String(), "retry: 3000\n\n") || strings.Contains(recorder.Body.String(), "id: 1\n") || strings.Contains(recorder.Body.String(), "id: 2\n") || !strings.Contains(recorder.Body.String(), "event: result") {
 		t.Fatalf("resumed SSE = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
@@ -354,7 +464,84 @@ func TestTurnSSEReplayGapUsesThePositiveCursorBeforeTheFirstRetainedEvent(t *tes
 	body := recorder.Body.String()
 	gap := strings.Index(body, "id: 3\nevent: replay_gap")
 	retained := strings.Index(body, "id: 4\nevent: done")
-	if recorder.Code != http.StatusOK || gap < 0 || retained <= gap || !strings.Contains(body, `"turn_id":"`+turn.ID+`"`) || !strings.Contains(body, `"idempotency_key":"`+turn.RequestID+`"`) || !strings.Contains(body, `"conversation_id":"`+turn.ConversationID+`"`) {
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(body, "retry: 3000\n\n") || gap < 0 || retained <= gap || !strings.Contains(body, `"turn_id":"`+turn.ID+`"`) || !strings.Contains(body, `"idempotency_key":"`+turn.RequestID+`"`) || !strings.Contains(body, `"conversation_id":"`+turn.ConversationID+`"`) {
 		t.Fatalf("replay-gap SSE = %d %s", recorder.Code, body)
+	}
+}
+
+func TestTurnSSEErrorFrameRedactsStoreFailure(t *testing.T) {
+	h := newTestHarness(t)
+	now := time.Now().UTC()
+	turn := coreconversation.Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:s3.example",
+		AccountGeneration: 7, ConversationID: uuid.NewString(), State: coreconversation.TurnRunning,
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	store := &admissionStore{turn: turn, boundsErr: errors.New("private database secret-sentinel")}
+	conversation, err := coreconversation.NewService(store, admissionModel{}, nil, admissionProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conversation.Close() })
+	server := *h.server
+	server.registry = agentcapability.NewCoreRegistry(agentcapability.CoreBindings{Conversation: conversation})
+	server.conversation = conversation
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, requestWithTicket(http.MethodGet, "/agent/v1/operations/"+turn.ID+"/events", "", h.ticket(t, []string{"agent:chat:read"}, h.now.Add(15*time.Minute))))
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK || !strings.Contains(body, `"code":"stream_failed"`) || !strings.Contains(body, `"message":"Agent event stream failed"`) || strings.Contains(body, "secret-sentinel") {
+		t.Fatalf("stream failure response = %d %s", recorder.Code, body)
+	}
+}
+
+func TestSSETransportSendsHeartbeatAndStopsOnCancellation(t *testing.T) {
+	writer := newSSETestWriter()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- streamSSE(ctx, writer, make(chan struct{}), 5*time.Millisecond, func(struct{}) (sseFrame, bool) {
+			return sseFrame{}, false
+		})
+	}()
+
+	select {
+	case value := <-writer.writes:
+		if value != "retry: 3000\n\n" {
+			t.Fatalf("retry frame = %q", value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retry frame was not written")
+	}
+	select {
+	case value := <-writer.writes:
+		if value != ": keepalive\n\n" {
+			t.Fatalf("heartbeat frame = %q", value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat frame was not written")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("stream error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream did not stop after cancellation")
+	}
+}
+
+func TestSSETransportStopsOnWriteFailure(t *testing.T) {
+	writer := newSSETestWriter()
+	writer.failAfter = 1
+	events := make(chan int, 1)
+	events <- 7
+	err := streamSSE(context.Background(), writer, events, time.Hour, func(value int) (sseFrame, bool) {
+		return sseFrame{sequence: int64(value), eventType: "progress", data: []byte(`{"ok":true}`)}, true
+	})
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("stream error = %v", err)
 	}
 }

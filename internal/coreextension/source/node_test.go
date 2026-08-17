@@ -11,6 +11,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -60,6 +62,43 @@ func nodeTarballFixture(t *testing.T, files map[string]string) []byte {
 		t.Fatal(err)
 	}
 	return compressed.Bytes()
+}
+
+func TestParseNPMPackageTarballAcceptsLegacyNULRegularType(t *testing.T) {
+	compressed := nodeTarballFixture(t, map[string]string{"server.js": "export {}\n"})
+	gz, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tape, err := io.ReadAll(gz)
+	if err != nil || gz.Close() != nil || len(tape) < 512 {
+		t.Fatalf("read tar tape: bytes=%d err=%v", len(tape), err)
+	}
+	setLegacyNULRegularType(tape[:512])
+	var legacy bytes.Buffer
+	zw := gzip.NewWriter(&legacy)
+	if _, err := zw.Write(tape); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err := parseNPMPackageTarball(legacy.Bytes())
+	if err != nil || len(files) != 1 || files[0].Path != "server.js" {
+		t.Fatalf("legacy regular files=%#v err=%v", files, err)
+	}
+}
+
+func setLegacyNULRegularType(header []byte) {
+	header[156] = 0
+	for index := 148; index < 156; index++ {
+		header[index] = ' '
+	}
+	checksum := 0
+	for _, value := range header {
+		checksum += int(value)
+	}
+	copy(header[148:156], fmt.Sprintf("%06o\x00 ", checksum))
 }
 
 func nodeSRI(content []byte) string {

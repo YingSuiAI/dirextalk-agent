@@ -69,9 +69,10 @@ func (r *knowledgeRPCRepo) ContentPort() coreknowledge.StreamingContentPort {
 }
 
 type uploadRPCStream struct {
-	ctx  context.Context
-	reqs []*agentv1.CoreKnowledgeServiceUploadRequest
-	out  *agentv1.CoreKnowledgeServiceUploadResponse
+	ctx     context.Context
+	reqs    []*agentv1.CoreKnowledgeServiceUploadRequest
+	recvErr error
+	out     *agentv1.CoreKnowledgeServiceUploadResponse
 }
 
 func (s *uploadRPCStream) SetHeader(metadata.MD) error  { return nil }
@@ -82,11 +83,33 @@ func (s *uploadRPCStream) SendMsg(any) error            { return nil }
 func (s *uploadRPCStream) RecvMsg(any) error            { return io.EOF }
 func (s *uploadRPCStream) Recv() (*agentv1.CoreKnowledgeServiceUploadRequest, error) {
 	if len(s.reqs) == 0 {
+		if s.recvErr != nil {
+			return nil, s.recvErr
+		}
 		return nil, io.EOF
 	}
 	r := s.reqs[0]
 	s.reqs = s.reqs[1:]
 	return r, nil
+}
+
+func TestCoreKnowledgeUploadPreservesGRPCStreamTerminationStatus(t *testing.T) {
+	repo := &knowledgeRPCRepo{}
+	core, err := coreknowledge.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewCoreKnowledgeService(core)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []codes.Code{codes.Canceled, codes.DeadlineExceeded} {
+		streamErr := status.Error(code, "stream terminated")
+		err := svc.Upload(&uploadRPCStream{ctx: context.Background(), recvErr: streamErr})
+		if status.Code(err) != code {
+			t.Fatalf("stream termination code = %v, want %v", status.Code(err), code)
+		}
+	}
 }
 func (s *uploadRPCStream) SendAndClose(v *agentv1.CoreKnowledgeServiceUploadResponse) error {
 	s.out = v

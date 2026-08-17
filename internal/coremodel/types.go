@@ -166,7 +166,7 @@ func (s ExecutionSnapshot) Digest() string {
 
 func (s ExecutionSnapshot) Redacted() map[string]any {
 	return map[string]any{"profile_id": s.ProfileID, "revision": s.Revision, "credential_version": s.CredentialVersion, "provider": s.Provider,
-		"base_url": s.BaseURL, "model": s.Model, "system_prompt": s.SystemPrompt, "temperature": s.Temperature,
+		"base_url": s.BaseURL, "model": s.Model, "temperature": s.Temperature,
 		"top_p": s.TopP, "max_output_tokens": s.MaxOutputTokens, "context_window": s.ContextWindow,
 		"reasoning_effort": s.ReasoningEffort, "api_key_configured": s.APIKey != ""}
 }

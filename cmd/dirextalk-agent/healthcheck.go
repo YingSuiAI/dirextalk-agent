@@ -16,6 +16,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 )
 
@@ -67,17 +68,19 @@ func runHealthcheckOptions(cfg config.Config, options healthcheckOptions) error 
 
 	ctx, cancel := context.WithTimeout(context.Background(), healthcheckTimeout)
 	defer cancel()
-	conn, err := grpc.DialContext(ctx, address,
+	conn, err := grpc.NewClient(address,
 		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
 			RootCAs: roots, ServerName: serverName, MinVersion: tls.VersionTLS13,
 		})),
 		grpc.WithPerRPCCredentials(readinessCredentials{token: token}),
-		grpc.WithBlock(),
 	)
 	if err != nil {
-		return fmt.Errorf("dial local Agent readiness endpoint: %w", err)
+		return fmt.Errorf("create local Agent readiness client: %w", err)
 	}
 	defer conn.Close()
+	if err := waitForHealthcheckConnection(ctx, conn); err != nil {
+		return fmt.Errorf("dial local Agent readiness endpoint: %w", err)
+	}
 	client := agentv1.NewAgentServiceClient(conn)
 	info, err := client.GetInstanceInfo(ctx, &agentv1.GetInstanceInfoRequest{})
 	if err != nil {
@@ -119,6 +122,25 @@ func runHealthcheckOptions(cfg config.Config, options healthcheckOptions) error 
 		}
 	}
 	return nil
+}
+
+func waitForHealthcheckConnection(ctx context.Context, conn *grpc.ClientConn) error {
+	if conn == nil {
+		return errors.New("healthcheck client connection is required")
+	}
+	conn.Connect()
+	for {
+		state := conn.GetState()
+		switch state {
+		case connectivity.Ready:
+			return nil
+		case connectivity.Shutdown:
+			return errors.New("healthcheck client connection shut down")
+		}
+		if !conn.WaitForStateChange(ctx, state) {
+			return ctx.Err()
+		}
+	}
 }
 
 func validHealthcheckServerName(value string) bool {

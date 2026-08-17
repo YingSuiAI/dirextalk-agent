@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	MaxTurnModelDispatches          = 500
-	MaxTurnModelActiveDuration      = 24 * time.Hour
+	MaxTurnModelDispatches          = 24
+	MaxTurnModelActiveDuration      = 20 * time.Minute
+	MaxTurnToolCalls                = 20
 	toolLoopNudgeGuidance           = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
 	toolLoopSynthesisGuidance       = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
 	outputContinuationGuidance      = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
@@ -856,9 +857,6 @@ func (s *Service) StreamChat(ctx context.Context, cmd ChatCommand) (<-chan Strea
 		}
 		if err != nil {
 			_ = s.store.ReleaseChat(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch)
-			if ctx.Err() != nil {
-				err = ErrCanceled
-			}
 			e := safeStreamError(cmd.RequestID, "execution_failed")
 			e.ConversationID = conv.ID
 			send(e)
@@ -1724,7 +1722,11 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		}
 	}
 	modelIntrinsicTools := intrinsicTools
-	if history.loopRecovery == toolLoopSynthesize && history.forcedToolName == "" {
+	toolCallBudgetExhausted := len(toolCallAuthorities) >= MaxTurnToolCalls
+	if toolCallBudgetExhausted {
+		history.forcedToolName = ""
+	}
+	if toolCallBudgetExhausted || (history.loopRecovery == toolLoopSynthesize && history.forcedToolName == "") {
 		modelExtensions = nil
 		modelExtensionSnapshots = nil
 		modelIntrinsicTools = nil
@@ -1784,7 +1786,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			if containsCloudWorkerIntrinsic(modelIntrinsicTools) {
 				systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 			}
-			if history.forcedToolName == "" {
+			if toolCallBudgetExhausted {
+				systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
+			} else if history.forcedToolName == "" {
 				switch history.loopRecovery {
 				case toolLoopNudge:
 					systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
@@ -1895,6 +1899,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					calls = out.result.Message.ToolCalls
 				}
 				seenCallIDs := make(map[string]struct{}, len(calls))
+				newToolCalls := 0
 				for index, call := range calls {
 					if call.Validate() != nil {
 						correctableIntrinsic := call.validateIdentityAndBounds() == nil
@@ -1932,11 +1937,23 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						_, _ = s.turns.FailTurn(ctx, lease, "duplicate_tool_call", "model reused a completed tool call identity")
 						return
 					}
+					if _, exists := toolCallAuthorities[call.ID]; !exists {
+						newToolCalls++
+					}
 					seenCallIDs[call.ID] = struct{}{}
 					if coremodel.IsIntrinsicToolName(call.Name) && index != len(calls)-1 {
 						_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_order_invalid", "Core intrinsic tool must be the final call in a model round")
 						return
 					}
+				}
+				if len(toolCallAuthorities)+newToolCalls > MaxTurnToolCalls {
+					if durableDispatch && !replayed {
+						if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
+							return
+						}
+					}
+					_, _ = s.turns.FailTurn(ctx, lease, toolBudgetExhaustedCode, toolBudgetExhaustedSummary)
+					return
 				}
 				if durableDispatch && !replayed {
 					if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
@@ -1971,6 +1988,51 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 							}
 							return
 						}
+						if intrinsic.ReadOnly {
+							if err = roundStore.RecordConversationToolCall(ctx, lease, call); err != nil {
+								return
+							}
+							execute, dispatchErr := roundStore.BeginConversationToolDispatch(ctx, lease, call)
+							if dispatchErr != nil {
+								return
+							}
+							if !execute {
+								_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "tool_dispatch_uncertain", "read-only intrinsic dispatch outcome is unknown")
+								return
+							}
+							intrinsicResult, intrinsicErr := intrinsic.Execute(ctx, IntrinsicExecutionRequest{
+								Lease: lease, Call: call, CanonicalArguments: arguments,
+								ConversationRevision: conv.Revision,
+							})
+							if intrinsicErr != nil {
+								if child.Err() != nil {
+									return
+								}
+								code, summary := intrinsicTerminalFailure(call.Name, intrinsicErr)
+								_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, code, summary)
+								return
+							}
+							if intrinsicResult.TurnCommitted || intrinsicResult.ToolResult == nil {
+								_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "invalid_intrinsic_result", "read-only intrinsic returned an invalid result")
+								return
+							}
+							result := *intrinsicResult.ToolResult
+							if result.CallID == "" {
+								result.CallID = call.ID
+							}
+							if result.ToolName == "" {
+								result.ToolName = call.Name
+							}
+							if result.Validate() != nil || result.CallID != call.ID || result.ToolName != call.Name {
+								_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "invalid_intrinsic_result", "read-only intrinsic returned an invalid result")
+								return
+							}
+							if err = roundStore.RecordConversationToolResult(ctx, lease, result); err != nil {
+								return
+							}
+							toolCallAuthorities[call.ID] = turnToolCallAuthority{call: call, state: turnToolCallTerminal, result: &result}
+							continue
+						}
 						intrinsicResult, intrinsicErr := intrinsic.Execute(ctx, IntrinsicExecutionRequest{
 							Lease: lease, Call: call, CanonicalArguments: arguments,
 							ConversationRevision: conv.Revision,
@@ -1981,7 +2043,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 							}
 							return
 						}
-						if intrinsicErr != nil || !intrinsicResult.TurnCommitted {
+						if intrinsicErr != nil || !intrinsicResult.TurnCommitted || intrinsicResult.ToolResult != nil {
 							code, summary := intrinsicTerminalFailure(call.Name, intrinsicErr)
 							_, _ = s.turns.FailTurn(ctx, lease, code, summary)
 						}
@@ -2061,7 +2123,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						return
 					}
 					argsDigest := digest(string(args))
-					attemptID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-tool:"+turn.RequestID+":"+call.ID)).String()
 					round := uint32(callIndex)
 					if recovery, recoveryOK := s.turns.(ConversationToolRecoveryStore); recoveryOK {
 						if previous, previousErr := recovery.ObserveConversationTool(ctx, id); previousErr == nil {
@@ -2070,7 +2131,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 							}
 						}
 					}
-					attemptID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("conversation-tool:%s:%d:%s", turn.RequestID, round, call.ID))).String()
+					attemptID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("conversation-tool:%s:%d:%s", turn.RequestID, round, call.ID))).String()
 					_, _, _, prepErr := toolStore.PrepareConversationTool(ctx, PrepareToolCommand{Lease: lease, Round: round, Call: call, Snapshot: bound, CanonicalArguments: args, ArgumentsDigest: argsDigest, SafeSummary: "conversation tool call " + call.Name, IdempotencyKey: attemptID, ExpiresAt: s.clock().Add(10 * time.Minute)})
 					if prepErr != nil {
 						_, _ = s.turns.FailTurn(ctx, lease, "tool_prepare_failed", "conversation tool preparation failed")
@@ -2218,6 +2279,8 @@ const (
 	modelResponseTimeoutSummary   = "model stream stopped producing progress; outcome is unknown; send a new turn to retry"
 	modelBudgetExhaustedCode      = "model_budget_exhausted"
 	modelBudgetExhaustedSummary   = "model execution budget was exhausted before a final response"
+	toolBudgetExhaustedCode       = "tool_budget_exhausted"
+	toolBudgetExhaustedSummary    = "tool call budget was exhausted before a final response"
 	modelProviderRejectedCode     = "provider_rejected"
 	modelProviderRejectedSummary  = "model provider rejected the request"
 )
@@ -2429,6 +2492,19 @@ func toolLoopPairIdentity(call ToolCall, result ToolResult) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if strings.TrimSpace(call.Name) == "local_sandbox_run" {
+		var values map[string]any
+		if json.Unmarshal(arguments, &values) != nil {
+			return "", ErrInvalid
+		}
+		if script, ok := values["script"].(string); ok {
+			values["script"] = normalizeSimpleShellSpacing(script)
+			arguments, err = json.Marshal(values)
+			if err != nil {
+				return "", err
+			}
+		}
+	}
 	type resultIdentity struct {
 		Content string `json:"content"`
 		IsError bool   `json:"is_error"`
@@ -2443,6 +2519,35 @@ func toolLoopPairIdentity(call ToolCall, result ToolResult) (string, error) {
 		return "", err
 	}
 	return digest(strings.TrimSpace(call.Name) + "\n" + string(arguments) + "\n" + string(normalizedResult)), nil
+}
+
+func normalizeSimpleShellSpacing(raw string) string {
+	for _, value := range raw {
+		switch value {
+		case '\'', '"', '\\', '\n', '\r', ';', '&', '|', '<', '>', '(', ')', '{', '}', '$', '`', '#', '*', '?', '[', ']', '~':
+			return raw
+		}
+	}
+	trimmed := strings.Trim(raw, " \t")
+	if trimmed == "" {
+		return ""
+	}
+	var normalized strings.Builder
+	normalized.Grow(len(trimmed))
+	spacing := false
+	for index := 0; index < len(trimmed); index++ {
+		switch trimmed[index] {
+		case ' ', '\t':
+			spacing = true
+		default:
+			if spacing && normalized.Len() != 0 {
+				normalized.WriteByte(' ')
+			}
+			spacing = false
+			normalized.WriteByte(trimmed[index])
+		}
+	}
+	return normalized.String()
 }
 
 func normalizeToolLoopPayload(raw string) string {

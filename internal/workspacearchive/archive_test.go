@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -34,11 +35,12 @@ func TestValidateAndExtractCommonTarWorkspace(t *testing.T) {
 
 func TestValidateRejectsUnsafeArchives(t *testing.T) {
 	tests := map[string][]tarEntryForTest{
-		"traversal": {{header: tar.Header{Name: "../escape", Typeflag: tar.TypeReg, Mode: 0o644}, body: []byte("x")}},
-		"absolute":  {{header: tar.Header{Name: "/escape", Typeflag: tar.TypeReg, Mode: 0o644}, body: []byte("x")}},
-		"symlink":   {{header: tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "target", Mode: 0o777}}},
-		"hardlink":  {{header: tar.Header{Name: "link", Typeflag: tar.TypeLink, Linkname: "target", Mode: 0o644}}},
-		"fifo":      {{header: tar.Header{Name: "pipe", Typeflag: tar.TypeFifo, Mode: 0o644}}},
+		"traversal":        {{header: tar.Header{Name: "../escape", Typeflag: tar.TypeReg, Mode: 0o644}, body: []byte("x")}},
+		"absolute":         {{header: tar.Header{Name: "/escape", Typeflag: tar.TypeReg, Mode: 0o644}, body: []byte("x")}},
+		"symlink":          {{header: tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "target", Mode: 0o777}}},
+		"hardlink":         {{header: tar.Header{Name: "link", Typeflag: tar.TypeLink, Linkname: "target", Mode: 0o644}}},
+		"fifo":             {{header: tar.Header{Name: "pipe", Typeflag: tar.TypeFifo, Mode: 0o644}}},
+		"xattr PAX record": {{header: tar.Header{Name: "a", Typeflag: tar.TypeReg, Mode: 0o644, PAXRecords: map[string]string{"SCHILY.xattr.user.test": "value"}}, body: []byte("x")}},
 		"duplicate": {
 			{header: tar.Header{Name: "a", Typeflag: tar.TypeReg, Mode: 0o644}, body: []byte("x")},
 			{header: tar.Header{Name: "a", Typeflag: tar.TypeReg, Mode: 0o644}, body: []byte("y")},
@@ -86,6 +88,44 @@ func TestValidateRejectsUnsafeArchives(t *testing.T) {
 	if err := Validate(bytes.NewReader(compressed.Bytes())); err == nil {
 		t.Fatal("tar trailing data accepted")
 	}
+}
+
+func TestValidateAcceptsLegacyNULRegularType(t *testing.T) {
+	var uncompressed bytes.Buffer
+	tape := tar.NewWriter(&uncompressed)
+	if err := tape.WriteHeader(&tar.Header{Name: "legacy.txt", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tape.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tape.Close(); err != nil {
+		t.Fatal(err)
+	}
+	setLegacyNULRegularType(uncompressed.Bytes()[:512])
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	if _, err := gz.Write(uncompressed.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(bytes.NewReader(compressed.Bytes())); err != nil {
+		t.Fatalf("legacy regular archive rejected: %v", err)
+	}
+}
+
+func setLegacyNULRegularType(header []byte) {
+	header[156] = 0
+	for index := 148; index < 156; index++ {
+		header[index] = ' '
+	}
+	checksum := 0
+	for _, value := range header {
+		checksum += int(value)
+	}
+	copy(header[148:156], fmt.Sprintf("%06o\x00 ", checksum))
 }
 
 type tarEntryForTest struct {

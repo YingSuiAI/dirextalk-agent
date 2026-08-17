@@ -117,9 +117,13 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	result, runErr := provider.ssh.Execute(ctx, SSHRequest{ExecutionID: request.ExecutionID, Host: target, User: worker.SSHUser,
 		PrivateKeyPath: privateKey, WorkerScript: request.WorkerScript, WorkerScriptSHA256: request.WorkerScriptSHA256,
 		Runtime: request.Runtime, WorkspacePath: request.WorkspacePath, MaxWorkspaceBytes: request.MaxWorkspaceBytes, MaxResultBytes: request.MaxResultBytes, Sink: request.Sink,
-		ResolveGuidance: request.ResolveGuidance, ReportProgress: request.ReportProgress, Resume: resume})
+		ResolveGuidance: request.ResolveGuidance, ReportProgress: request.ReportProgress,
+		RecordCompletion: func(recordCtx context.Context) error {
+			return provider.recordRemoteCompletion(recordCtx, &execution)
+		}, Resume: resume, CollectOnly: execution.RemoteCompleted})
 	if runErr != nil {
-		if errors.Is(runErr, ErrAmbiguous) {
+		deterministicCollectionFailure := errors.Is(runErr, ErrResultTooLarge) || errors.Is(runErr, ErrInvalid)
+		if !deterministicCollectionFailure && (errors.Is(runErr, ErrAmbiguous) || errors.Is(runErr, errRetryableResultCollection)) {
 			provider.pool.mu.Lock()
 			delete(provider.active, execution.ExecutionID)
 			provider.pool.mu.Unlock()
@@ -139,7 +143,7 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	}
 	if err != nil {
 		provider.pool.mu.Lock()
-		_ = provider.reconcileCompletedWorkerReleaseLocked(ctx, execution)
+		_ = provider.reconcileTerminalWorkerReleaseLocked(ctx, execution, TaskCompleted)
 		provider.pool.mu.Unlock()
 	}
 	return result, nil
@@ -158,8 +162,12 @@ func (provider *Provider) lease(ctx context.Context, request ExecuteRequest) (Wo
 		return WorkerRecord{}, ExecutionRecord{}, false, false, ErrIdentity
 	}
 	if exists && execution.Phase == TaskCompleted {
-		_ = provider.reconcileCompletedWorkerReleaseLocked(ctx, execution)
+		_ = provider.reconcileTerminalWorkerReleaseLocked(ctx, execution, TaskCompleted)
 		return WorkerRecord{}, execution, true, false, nil
+	}
+	if exists && execution.Phase == TaskFailed {
+		reconcileErr := provider.reconcileTerminalWorkerReleaseLocked(ctx, execution, TaskFailed)
+		return WorkerRecord{}, execution, false, false, errors.Join(ErrExecutionFailed, reconcileErr)
 	}
 	if _, running := provider.active[request.ExecutionID]; running {
 		return WorkerRecord{}, ExecutionRecord{}, false, false, ErrBusy
@@ -442,8 +450,25 @@ func (provider *Provider) completeExecution(ctx context.Context, execution *Exec
 	return true, provider.releaseLocked(ctx, worker, execution.ExecutionID)
 }
 
-func (provider *Provider) reconcileCompletedWorkerReleaseLocked(ctx context.Context, execution ExecutionRecord) error {
-	if execution.Phase != TaskCompleted || execution.WorkerID == "" {
+func (provider *Provider) recordRemoteCompletion(ctx context.Context, execution *ExecutionRecord) error {
+	provider.pool.mu.Lock()
+	defer provider.pool.mu.Unlock()
+	if execution.RemoteCompleted {
+		return nil
+	}
+	if execution.Phase != TaskRunning {
+		return ErrIdentity
+	}
+	execution.RemoteCompleted = true
+	if err := provider.saveExecution(ctx, execution); err != nil {
+		execution.RemoteCompleted = false
+		return err
+	}
+	return nil
+}
+
+func (provider *Provider) reconcileTerminalWorkerReleaseLocked(ctx context.Context, execution ExecutionRecord, phase TaskPhase) error {
+	if phase != TaskCompleted && phase != TaskFailed || execution.Phase != phase || execution.WorkerID == "" {
 		return ErrInvalid
 	}
 	worker, found, err := provider.store.LoadWorker(ctx, execution.WorkerID)
@@ -453,11 +478,13 @@ func (provider *Provider) reconcileCompletedWorkerReleaseLocked(ctx context.Cont
 	if !found {
 		return ErrIdentity
 	}
+	if worker.authority() != execution.authority() || !sameLogicalCredential(worker.Credential, execution.Credential) {
+		return ErrIdentity
+	}
 	if worker.Phase == WorkerIdle && worker.CurrentExecutionID == "" {
 		return nil
 	}
-	if worker.authority() != execution.authority() || !sameLogicalCredential(worker.Credential, execution.Credential) ||
-		worker.Phase != WorkerBusy || worker.CurrentExecutionID != execution.ExecutionID {
+	if worker.Phase != WorkerBusy || worker.CurrentExecutionID != execution.ExecutionID {
 		return ErrIdentity
 	}
 	next := worker

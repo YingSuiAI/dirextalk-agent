@@ -55,7 +55,7 @@ func (s *CoreKnowledgeService) Upload(stream grpc.ClientStreamingServer[agentv1.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
-		if errors.Is(err, grpc.ErrClientConnClosing) {
+		if status.Code(err) == codes.Canceled || status.Code(err) == codes.DeadlineExceeded {
 			return err
 		}
 		if err == io.EOF {

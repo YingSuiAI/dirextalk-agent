@@ -24,11 +24,11 @@ func TestBoundedSummaryPreservesUTF8AndByteLimit(t *testing.T) {
 			if got == "" || !strings.HasPrefix(test.input, got) {
 				t.Fatalf("bounded summary is not a non-empty rune prefix")
 			}
-			for _, current := range test.input[len([]byte(got)):] {
+			if remainder := test.input[len([]byte(got)):]; remainder != "" {
+				current, _ := utf8.DecodeRuneInString(remainder)
 				if len([]byte(got))+len(string(current)) <= coretask.MaxSummaryBytes {
 					t.Fatalf("summary left room for the next rune: bytes=%d next=%q", len([]byte(got)), current)
 				}
-				break
 			}
 		})
 	}

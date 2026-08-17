@@ -3,7 +3,6 @@ package coreruntime
 import (
 	"context"
 	"errors"
-	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,8 +59,12 @@ func DefaultErrorClassifier(err error) ErrorDisposition {
 	if errors.Is(err, coretask.ErrNotFound) {
 		return ErrorRetryable
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+	var timeout interface{ Timeout() bool }
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return ErrorRetryable
+	}
+	var temporary interface{ Temporary() bool }
+	if errors.As(err, &temporary) && temporary.Temporary() {
 		return ErrorRetryable
 	}
 	var pgErr *pgconn.PgError

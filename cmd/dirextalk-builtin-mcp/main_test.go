@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -67,9 +69,48 @@ func TestLocalSandboxToolReturnsBoundedShellResult(t *testing.T) {
 		t.Fatalf("local sandbox result=%#v err=%v", result, err)
 	}
 	payload := result["structuredContent"].(map[string]any)
-	if payload["stdout"] != "stdout" || payload["stderr"] != "stderr" || payload["exit_code"] != 0 {
+	if payload["stdout"] != "stdout" || payload["stderr"] != "stderr" || payload["stdout_truncated"] != false || payload["stderr_truncated"] != false || payload["exit_code"] != 0 {
 		t.Fatalf("local sandbox payload=%#v", payload)
 	}
+}
+
+func TestLocalSandboxToolReportsOutputTruncation(t *testing.T) {
+	original := newLocalSandboxCommand
+	originalPrepare := prepareLocalSandboxApplets
+	t.Cleanup(func() {
+		newLocalSandboxCommand = original
+		prepareLocalSandboxApplets = originalPrepare
+	})
+	prepareLocalSandboxApplets = func() error { return nil }
+	newLocalSandboxCommand = func(string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestLocalSandboxOutputHelperProcess")
+		cmd.Env = append(os.Environ(), "DIREXTALK_TEST_LOCAL_SANDBOX_OUTPUT=1")
+		return cmd
+	}
+
+	result, err := call(localSandboxKind, json.RawMessage(`{"name":"local_sandbox_run","arguments":{"script":"ignored"}}`))
+	if err != nil || result["isError"] != false {
+		t.Fatalf("local sandbox result=%#v err=%v", result, err)
+	}
+	payload := result["structuredContent"].(map[string]any)
+	stdout, stdoutOK := payload["stdout"].(string)
+	stderr, stderrOK := payload["stderr"].(string)
+	if !stdoutOK || !stderrOK || len(stdout) != localSandboxMaxOutputBytes || len(stderr) != localSandboxMaxOutputBytes {
+		t.Fatalf("local sandbox output lengths stdout=%d stderr=%d", len(stdout), len(stderr))
+	}
+	if payload["stdout_truncated"] != true || payload["stderr_truncated"] != true {
+		t.Fatalf("local sandbox truncation metadata=%#v", payload)
+	}
+}
+
+func TestLocalSandboxOutputHelperProcess(t *testing.T) {
+	if os.Getenv("DIREXTALK_TEST_LOCAL_SANDBOX_OUTPUT") != "1" {
+		return
+	}
+	output := bytes.Repeat([]byte("x"), localSandboxMaxOutputBytes+1)
+	_, _ = os.Stdout.Write(output)
+	_, _ = os.Stderr.Write(output)
+	os.Exit(0)
 }
 
 func TestLocalSandboxPreparesBusyBoxAppletsBeforeRunningScript(t *testing.T) {

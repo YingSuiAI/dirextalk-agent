@@ -63,6 +63,26 @@ esac
 	}
 }
 
+func TestCommandSSHExecutorNeverRestartsAfterRemoteCompletionReceipt(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `
+case "$remote" in
+  *"'status'"*) printf '%s\n' '{"phase":"not_started","exit_code":0}' ;;
+  *"'start'"*) count start >/dev/null ;;
+  *) exit 64 ;;
+esac
+`)
+	request := sshRequestFixture(t, &recordingResultSink{artifacts: make(map[string][]byte)})
+	request.CollectOnly = true
+	_, err := (CommandSSHExecutor{SSHPath: ssh}).Execute(context.Background(), request)
+	if !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("missing completed runtime error=%v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(state, "start.count")); !os.IsNotExist(statErr) {
+		t.Fatalf("completed remote task restarted: %v", statErr)
+	}
+}
+
 func TestCommandSSHExecutorAppliesDeferredGuidanceBeforeRuntimeStart(t *testing.T) {
 	state := t.TempDir()
 	ssh := writeFakeSSH(t, state, `
@@ -144,6 +164,79 @@ esac
 	if _, err = os.Stat(filepath.Join(state, "start.count")); !os.IsNotExist(err) {
 		t.Fatalf("resume unexpectedly restarted an existing runtime: %v", err)
 	}
+}
+
+func TestCommandSSHExecutorSharesResultBudgetAcrossLogsAndArtifacts(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `
+case "$remote" in
+  *"'status'"*) printf '%s\n' '{"phase":"completed","exit_code":0}' ;;
+  *"'log'"*) printf '12345' ;;
+  *"'artifact'"*"'report.txt'"*) count download >/dev/null; printf 'data' ;;
+  *"'artifact'"*) printf '%s\n' '{"name":"report.txt","size":4}' ;;
+  *) exit 64 ;;
+esac
+`)
+	sink := &recordingResultSink{artifacts: make(map[string][]byte)}
+	request := sshRequestFixture(t, sink)
+	request.MaxResultBytes = 8
+	_, err := (CommandSSHExecutor{SSHPath: ssh}).Execute(context.Background(), request)
+	if !errors.Is(err, ErrResultTooLarge) {
+		t.Fatalf("aggregate result budget error=%v", err)
+	}
+	if string(sink.text) != "12345" {
+		t.Fatalf("stored log=%q", sink.text)
+	}
+	if _, statErr := os.Stat(filepath.Join(state, "download.count")); !os.IsNotExist(statErr) {
+		t.Fatalf("artifact crossed remaining result budget: %v", statErr)
+	}
+}
+
+func TestSSHConnectionsPinKnownHostBesideWorkerKeyUntilKeyDeletion(t *testing.T) {
+	keys, err := NewLocalKeyMaterial(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKey, _, err := keys.Ensure(context.Background(), "worker-pinned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := sshBaseArguments(privateKey, "ubuntu", "203.0.113.20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	knownHosts := privateKey + ".known_hosts"
+	info, err := os.Stat(knownHosts)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		t.Fatalf("known_hosts info=%v err=%v", info, err)
+	}
+	if !containsString(arguments, "StrictHostKeyChecking=accept-new") || !containsString(arguments, "UserKnownHostsFile="+knownHosts) {
+		t.Fatalf("SSH arguments=%q", arguments)
+	}
+	if err = os.WriteFile(knownHosts, []byte("pinned-host-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = sshBaseArguments(privateKey, "ubuntu", "203.0.113.20"); err != nil {
+		t.Fatal(err)
+	}
+	if body, readErr := os.ReadFile(knownHosts); readErr != nil || string(body) != "pinned-host-key\n" {
+		t.Fatalf("known_hosts=%q err=%v", body, readErr)
+	}
+	if err = keys.Delete(context.Background(), "worker-pinned"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(knownHosts); !os.IsNotExist(err) {
+		t.Fatalf("known_hosts survived key deletion: %v", err)
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCommandSSHExecutorReportsProgressWhileRuntimeIsRunning(t *testing.T) {

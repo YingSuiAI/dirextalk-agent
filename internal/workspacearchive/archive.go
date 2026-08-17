@@ -143,7 +143,7 @@ func validateHeader(header *tar.Header) (string, entryKind, bool, error) {
 	if name == "" && header.Typeflag == tar.TypeDir {
 		return "", 0, true, nil
 	}
-	if !validPath(name) || header.Linkname != "" || header.Xattrs != nil || !validPAX(header.PAXRecords) {
+	if !validPath(name) || header.Linkname != "" || !validPAX(header.PAXRecords) {
 		return "", 0, false, ErrInvalid
 	}
 	switch header.Typeflag {
@@ -152,7 +152,7 @@ func validateHeader(header *tar.Header) (string, entryKind, bool, error) {
 			return "", 0, false, ErrInvalid
 		}
 		return name, entryDirectory, false, nil
-	case tar.TypeReg, tar.TypeRegA:
+	case tar.TypeReg:
 		if header.Size < 0 || header.Size > MaxEntryBytes || header.Mode&^0o755 != 0 {
 			return "", 0, false, ErrInvalid
 		}

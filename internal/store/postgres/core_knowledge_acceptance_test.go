@@ -38,10 +38,8 @@ func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("DIREXTALK_TEST_DATABASE_URL")) == "" && strings.TrimSpace(os.Getenv("AGENT_TEST_POSTGRES_DSN")) == "" {
 		t.Setenv("DIREXTALK_TEST_DATABASE_URL", acceptancePostgresDSN)
 	}
-	ctx := context.Background()
-	baseCtx, baseRepo, cleanup := knowledgePGFixture(t)
+	ctx, baseRepo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
-	ctx = baseCtx
 
 	mountRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(mountRoot, "docs"), 0o700); err != nil {

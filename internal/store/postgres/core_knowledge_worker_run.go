@@ -100,8 +100,6 @@ func (w *knowledgeTaskWorker) run(ctx context.Context, task coretask.Task) corer
 		if sourceStatus != string(coreknowledge.SourceStatusIndexing) || revision != int64(p.ExpectedSourceRevision[n]) {
 			return w.fail(ctx, task, "knowledge_source_stale", "source revision changed")
 		}
-		if n == 0 { /* first progress is emitted after the immutable fence checks */
-		}
 		if kind == string(coreknowledge.SourceKindMount) && len(manifestRaw) > 2 {
 			var manifest coreknowledge.DirectoryManifest
 			if json.Unmarshal(manifestRaw, &manifest) != nil {

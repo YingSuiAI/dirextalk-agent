@@ -305,8 +305,6 @@ func (p Plan) Normalize() (Plan, error) {
 	if p.ImageDigest != "" && !ValidDigest(p.ImageDigest) {
 		return Plan{}, ErrInvalid
 	}
-	if p.ExpiresAt.Before(time.Now().UTC()) { /* expiry is checked by service; retain historical plans */
-	}
 	p.NetworkGrants = normalizeStrings(p.NetworkGrants)
 	p.SecretGrants = normalizeStrings(p.SecretGrants)
 	p.CommandSteps = append([]string(nil), p.CommandSteps...)

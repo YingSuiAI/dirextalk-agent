@@ -151,8 +151,11 @@ func (e *LocalExecutor) ListTools(ctx context.Context, in LocalInvocation) ([]co
 // as a normal task result with a stable summary, never retried in-process.
 func (e *LocalExecutor) CallTool(ctx context.Context, in LocalInvocation, name string, input json.RawMessage) (coretask.Result, error) {
 	receipt, err := e.callTool(ctx, in, name, input, false)
+	if err != nil {
+		return coretask.Result{}, err
+	}
 	defer receipt.Close()
-	return receipt.Result, err
+	return receipt.Result, nil
 }
 
 // CallToolWithResultFiles is the durable local-sandbox handoff. Only runner-

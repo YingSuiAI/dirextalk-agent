@@ -196,7 +196,19 @@ Provider tool requests keep the Agent-owned schema authoritative. Gemini
 receives only fields declared by its documented `Schema` contract; unsupported
 JSON Schema keywords are removed, while string `const` choices are projected
 to the supported enum form. Agent still validates the original complete schema
-when a tool executes.
+when a tool executes. Provider-issued tool-call IDs remain authoritative;
+Gemini calls without an ID receive a transcript-unique generated ID, and
+adjacent Anthropic tool results are sent as one ordered user content-block
+batch.
+
+Streaming adapters parse full SSE events with CRLF support, comment and
+non-`data` field elision, and ordered joining of multiple `data` fields before
+provider JSON decoding. Provider failure types distinguish cancellation,
+request and idle timeouts, rate limiting, other 4xx rejection, 5xx failure,
+transport unavailability, invalid responses, truncation, and output limits.
+Only safe classes cross the conversation boundary: 4xx is
+`provider_rejected`, timeout is `provider_timeout`, and otherwise uncertain
+dispatch remains `provider_uncertain` without automatic replay.
 
 An accepted or running durable turn may receive revision-fenced same-turn
 guidance. A confirmation-waiting turn also accepts guidance after its Cloud
@@ -245,6 +257,10 @@ accepted extension and intrinsic. Only a fourth identical pair or eighth A/B
 pair makes the next model request a one-pass, tool-free synthesis from all
 durable evidence, with remaining gaps stated explicitly. Different arguments
 or results are productive progress and never trigger this recovery.
+The recovery is subordinate to the turn-wide maximum of 20 accepted tool calls.
+At the limit, Core removes all extension and intrinsic tools for one synthesis
+request; a returned batch that would exceed the limit fails durably as
+`tool_budget_exhausted` before any excess call is dispatched.
 
 When Knowledge is enabled, the same resolver chain adds one Agent-owned,
 read-only `knowledge_search` tool for authenticated Native conversations. It
@@ -319,14 +335,14 @@ release UUID plus an idempotency UUID and derives the exact filesystem identity
 from the owner/account-generation receipt. Public downloads continue to use
 the release URL; there is no duplicate byte-download capability.
 
-Eino adapts each model round, while the Agent-owned Task ledger remains the
-durable orchestrator for model dispatch, tool calls, retries, recovery, and
-uncertain outcomes. A Native conversation turn retains a 500-dispatch,
-24-hour cumulative model-active emergency fuse; tool, Worker, and
-confirmation execution or waiting do not consume that clock. Exhaustion is a
+Eino adapts each model round, while the current conversation turn store owns
+dispatch admission, persisted results, recovery, and uncertain outcomes. A
+Native conversation turn retains a 24-dispatch, 20-minute cumulative
+model-active fuse; tool, Worker, and confirmation execution or waiting do not
+consume that clock. Exhaustion is a
 durable `model_budget_exhausted` terminal outcome. Other background Tasks keep
 their own execution deadline/context. The nonnegative round ordinal remains
-durable ledger and replay identity. Core v1 does not expose Eino graphs as a
+the current replay identity. Core v1 does not expose Eino graphs as a
 user-authored workflow surface.
 
 A provider-declared output limit is a completed fragment, not an unknown
@@ -563,17 +579,23 @@ A proposal atomically creates the plan, execution, `CLOUD_WORKER` Task and
 `CoreConfirmation`. Creating a Worker requires a fresh EC2/EBS price read and
 confirmation of that exact quote before any AWS mutation. Confirmation of the
 current unexpired offer authorizes the first AWS write directly; there is no
-second quote or confirmation step. Reusing a sufficiently large idle retained Worker
-performs no creation mutation and needs no new creation confirmation. The live
-intrinsic inventory includes its instance type, vCPU, memory, and disk; the
-model declares the task's actual minimums and prefers an adequate idle Worker
-without inflating or reducing those requirements. The same direct reuse applies
+second quote or confirmation step. Reusing a sufficiently large idle retained
+Worker performs no creation mutation and needs no new creation confirmation.
+The live inventory is read only through the static `cloud_worker_inventory`
+intrinsic, whose definition contains no Worker identity or state. Execution
+revalidates the turn owner/account generation and returns a bounded ordinary
+`ToolResult`; Core records it in ordinary tool history without terminally
+committing the turn, so the next model round can use the current instance type,
+vCPU, memory, disk, status, load, pricing, and workload summary. The model
+declares the task's actual minimums and prefers an adequate idle Worker without
+inflating or reducing those requirements. The same direct reuse applies
 to persistent services and hostname publication. A live hourly read still
 reports its ongoing server cost.
 Destroying a retained Worker is a separate explicit owner action available
 from both the owner client and the Native Agent conversation. The conversation
-tool enumerates only the current owner-scoped retained Worker IDs and resolves
-the full provider identity from Agent storage at execution time.
+flow first reads the current owner-scoped retained Worker IDs and passes the
+exact returned UUID to the static destroy tool. Provider identity is resolved
+only from Agent storage at execution time.
 
 The manager keeps at most five Workers for the authenticated owner/account
 generation. It discovers the newest Canonical official Ubuntu 24.04 LTS image
@@ -582,6 +604,9 @@ connects by outbound SSH. Agent uses short SSH operations to start work, read
 status and load, stream logs by offset, and list or copy artifacts. A dropped
 connection does not erase remote state. Job and service workloads share this
 protocol, and a service may remain running across conversation turns.
+The first accepted SSH host key is retained beside the Worker private key in an
+owner-owned 0600 `known_hosts` file; subsequent status, execution, and
+observation connections use that same pin, and key deletion removes both.
 The existing Task event stream and originating turn `worker_status` event
 report environment preparation, Worker selection/provisioning, connection,
 remote execution (including periodic durable updates while it remains
@@ -592,7 +617,17 @@ inside a task-named systemd scope; timeout cancellation stops that scope so
 session-changing descendants cannot continue after the task is terminal.
 
 Worker results are copied into the Agent-owned local artifact repository and
-returned to the original durable turn. When an executing user-requested service plan includes
+returned to the original durable turn. Finite execution persists
+`RemoteCompleted` after observing remote completion and before collecting the
+result. A transient collection failure leaves the execution running and the
+Worker busy; restart recovery uses `CollectOnly` and cannot start that workload
+again. Deterministic invalid or oversized results fail the execution and
+release the Worker. That persisted `TaskFailed` result remains terminal on a
+same-ID retry: retry performs no SSH work and may only reconcile the
+authority-, credential-, Worker-, and execution-fenced release bookkeeping.
+The configured result-byte ceiling is shared by logs and all artifacts rather
+than applied independently to each. When an executing
+user-requested service plan includes
 a user-requested hostname, the application listens on its unused internal
 localhost port while the active runtime installs the Ubuntu Caddy package and
 publishes one managed per-workload reverse proxy with exact-host on-demand TLS.
