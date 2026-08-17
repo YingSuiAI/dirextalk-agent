@@ -22,6 +22,14 @@ func TestNormalizeBaseURLDefaultsAndStrictHTTPS(t *testing.T) {
 	if err != nil || got != "https://api.openai.com/v1" {
 		t.Fatalf("openai default: %q %v", got, err)
 	}
+	got, err = NormalizeBaseURL(ProviderOpenAICompatible, "https://gateway.example///")
+	if err != nil || got != "https://gateway.example/v1" {
+		t.Fatalf("openai-compatible bare origin: %q %v", got, err)
+	}
+	got, err = NormalizeBaseURL(ProviderOpenAICompatible, "https://gateway.example/openai/v1/")
+	if err != nil || got != "https://gateway.example/openai/v1" {
+		t.Fatalf("openai-compatible explicit API root: %q %v", got, err)
+	}
 	got, err = NormalizeBaseURL(ProviderAnthropic, "https://api.anthropic.com///")
 	if err != nil || got != "https://api.anthropic.com" {
 		t.Fatalf("anthropic normalize: %q %v", got, err)
@@ -123,7 +131,7 @@ func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
 func TestConnectionHeadersAndOpenAIGenerate(t *testing.T) {
 	const key = "openai-secret"
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/models" {
+		if r.URL.Path == "/v1/models" {
 			if r.Header.Get("Authorization") != "Bearer "+key {
 				t.Errorf("authorization header mismatch")
 			}
@@ -131,7 +139,7 @@ func TestConnectionHeadersAndOpenAIGenerate(t *testing.T) {
 			_, _ = io.WriteString(w, `{"data":[]}`)
 			return
 		}
-		if r.URL.Path != "/chat/completions" {
+		if r.URL.Path != "/v1/chat/completions" {
 			t.Errorf("path %s", r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "Bearer "+key {
@@ -140,7 +148,7 @@ func TestConnectionHeadersAndOpenAIGenerate(t *testing.T) {
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"hello"}}]}`)
 	}))
 	defer server.Close()
-	p := validProfile(ProviderOpenAICompatible, server.URL, key)
+	p := validProfile(ProviderOpenAICompatible, server.URL+"/v1", key)
 	tester := NewConnectionTester(WithHTTPClient(server.Client()))
 	if err := tester.TestConnection(context.Background(), p); err != nil {
 		t.Fatal(err)
@@ -152,6 +160,73 @@ func TestConnectionHeadersAndOpenAIGenerate(t *testing.T) {
 	completion, err := client.Generate(context.Background(), CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "hi"}}})
 	if err != nil || completion.Message.Content != "hello" {
 		t.Fatalf("completion=%#v err=%v", completion, err)
+	}
+}
+
+func TestOpenAICompatibleBareOriginUsesV1ForConnectionAndStream(t *testing.T) {
+	const key = "openai-secret"
+	var paths []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[]}`)
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		default:
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(w, "<html>gateway landing page</html>")
+		}
+	}))
+	defer server.Close()
+
+	profile := validProfile(ProviderOpenAICompatible, server.URL, key)
+	tester := NewConnectionTester(WithHTTPClient(server.Client()))
+	if err := tester.TestConnection(context.Background(), profile); err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewClient(profile, WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.Stream(context.Background(), CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta, err := stream.Recv()
+	if err != nil || delta.Content != "hello" {
+		t.Fatalf("delta=%#v err=%v paths=%v", delta, err, paths)
+	}
+	if _, err = stream.Recv(); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal err=%v paths=%v", err, paths)
+	}
+	if !reflect.DeepEqual(paths, []string{"/v1/models", "/v1/chat/completions"}) {
+		t.Fatalf("paths=%v", paths)
+	}
+}
+
+func TestProviderRejectsHTMLSuccessBeforeTreatingItAsModelTraffic(t *testing.T) {
+	htmlResponse := func() *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader("<html>gateway landing page</html>")),
+		}
+	}
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) { return htmlResponse(), nil })
+	profile := validProfile(ProviderOpenAICompatible, "https://gateway.example", "key")
+	if err := NewConnectionTester(WithHTTPClient(transport)).TestConnection(context.Background(), profile); !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("connection err=%v", err)
+	}
+	client, err := NewClient(profile, WithHTTPClient(transport))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.Stream(context.Background(), CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "hi"}}}); !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("stream err=%v", err)
 	}
 }
 

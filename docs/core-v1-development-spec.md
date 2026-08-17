@@ -159,6 +159,9 @@ so profile, extension, Knowledge, attachment, and secret bindings cannot drift
 while a request is running. Agent and Cloud Worker task creation rejects
 non-conversation profiles, and execution verifies the exact protected-secret
 reference plus the digest of every snapshotted provider parameter.
+For OpenAI-compatible profiles, a bare HTTPS origin normalizes once to `/v1`;
+an explicit gateway path remains exact. Model discovery and completion append
+their operation paths to that same normalized root.
 
 Profile sync durably stores separate conversation, tool, embedding, and speech
 role defaults. The tool role references only a conversation-kind profile and
@@ -537,11 +540,14 @@ the credential ID, revision, and secret field. Missing keys, wrong keys, and
 version mismatches fail closed. Provider code materializes credentials only
 for the request-local SDK call and never logs them.
 
-Cloud Worker readiness is independent of deploy-time infrastructure. It is
-derived at request time from the durable Task/confirmation stores, local
-artifact repository, persistent SSH Worker manager, and the sole active
-App-uploaded AWS credential. The [API contract](api-contract.md) defines
-publication gates; evidence and remaining verification are recorded in the
+Cloud Worker readiness is derived at request time from the durable
+Task/confirmation stores, local artifact repository, persistent SSH Worker
+manager, the sole active App-uploaded AWS credential, and the host-owned AWS
+Region recorded from the deployment node's immutable identity. Missing Region
+configuration withholds Cloud Worker publication without taking down other
+Agent capabilities. The credential's stored default Region is not placement
+authority. The [API contract](api-contract.md) defines publication gates;
+evidence and remaining verification are recorded in the
 [delivery tracker](delivery-tracker.md).
 
 ### Persistent SSH Cloud Worker
@@ -569,7 +575,7 @@ behavior unavailable through specialized tools remain eligible for Worker use.
 
 A proposal carries provider-neutral minimum vCPU, memory, disk, and estimated
 runtime requirements. Agent intersects current-generation x86_64 on-demand
-products with the Region's actual EC2 offerings and selects the cheapest shape
+products with the deployment host Region's actual EC2 offerings and selects the cheapest shape
 that satisfies them. The plan and confirmation expose that exact shape and its
 live hourly compute price. Bounded jobs also expose their estimated cost and
 maximum authorized cost; persistent services do not present a finite task cost

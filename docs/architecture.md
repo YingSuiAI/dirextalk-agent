@@ -33,9 +33,11 @@ are absent from the public registry until their composition and readiness
 checks pass. Background model, extension, Knowledge, and AWS work use the same
 durable Task/event path; the Agent never creates a parallel execution history.
 Local Agent/MCP/Skill/Knowledge work remains on the existing sandbox and worker
-pool. Cloud Worker readiness is derived at request time from the sole active
-AWS credential uploaded and verified through the App; deployment configuration
-does not bind a Worker account, Region, image, network, domain, or credential.
+pool. Cloud Worker readiness requires both the sole active AWS credential
+uploaded and verified through the App and the host-owned, identity-verified AWS
+Region supplied by deployment. The uploaded credential's default Region remains
+credential metadata and cannot redirect Worker resources. Deployment does not
+bind a Worker account, image, network, domain, or credential.
 Before creating a new Worker, the Agent reads the current AWS EC2 and EBS price,
 presents the exact quote, and performs no AWS mutation until the owner confirms
 it. Reusing an existing idle Worker does not create infrastructure and does not

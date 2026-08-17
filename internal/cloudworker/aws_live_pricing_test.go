@@ -24,7 +24,10 @@ func (resolver *livePricingCredential) ResolveCredentialRevision(_ context.Conte
 	return resolver.handle, nil
 }
 
-type livePricingClient struct{ calls int }
+type livePricingClient struct {
+	calls   int
+	regions []string
+}
 
 func (client *livePricingClient) GetProducts(_ context.Context, input *pricing.GetProductsInput, _ ...func(*pricing.Options)) (*pricing.GetProductsOutput, error) {
 	client.calls++
@@ -32,6 +35,7 @@ func (client *livePricingClient) GetProducts(_ context.Context, input *pricing.G
 	for _, filter := range input.Filters {
 		attributes[aws.ToString(filter.Field)] = aws.ToString(filter.Value)
 	}
+	client.regions = append(client.regions, attributes["regionCode"])
 	unit, amount, family := "Hrs", "0.0208", "Compute Instance"
 	if attributes["volumeApiName"] == "gp3" {
 		unit, amount, family = "GB-Mo", "0.08", "Storage"
@@ -66,7 +70,7 @@ func TestAWSLivePricingCatalogReadsAWSForEveryQuoteWithoutCatalogState(t *testin
 		t.Fatal(err)
 	}
 	request := PricingCatalogRequest{
-		AccountID: "123456789012", AccountGeneration: 1, Region: "ap-northeast-1",
+		AccountID: "123456789012", AccountGeneration: 1, Region: "ap-northeast-2",
 		CredentialID: credential.handle.ReferenceID, CredentialRevision: 7,
 		InstanceType: "t3.small", Architecture: "x86_64", VolumeGiB: 20, VolumeType: "gp3",
 		VolumeIOPS: 3000, VolumeThroughput: 125, MaxRuntimeSeconds: 3600, MaxTokens: 1000,
@@ -83,5 +87,10 @@ func TestAWSLivePricingCatalogReadsAWSForEveryQuoteWithoutCatalogState(t *testin
 	if credential.calls != 2 || client.calls != 6 || first.Rates.ComputeMicrosPerHour != 20_800 || first.Rates.PublicIPv4MicrosPerHour != 5_000 ||
 		first.Rates.EBSStorageMicrosPerGiBMonth != 80_000 || first.RevisionDigest != second.RevisionDigest {
 		t.Fatalf("credential_calls=%d price_calls=%d first=%+v second=%+v", credential.calls, client.calls, first, second)
+	}
+	for _, region := range client.regions {
+		if region != request.Region {
+			t.Fatalf("pricing region=%q, want host region %q", region, request.Region)
+		}
 	}
 }

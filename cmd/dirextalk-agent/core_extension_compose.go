@@ -422,7 +422,14 @@ func readPinnedSkillVersion(ctx context.Context, reader skillArtifactReader, ver
 	if len(b) == 0 || len(b) > coretask.MaxResultTextBytes || !utf8.Valid(b) || digestBytes(b) != version.Execution.Skill.Digest {
 		return "", coreextension.ErrConflict
 	}
-	return string(b), nil
+	// The immutable digest binds the artifact bytes above. Normalize text only
+	// after that proof so CRLF-authored Skills produce the provider-safe LF
+	// prompt form without weakening artifact identity.
+	instructions := strings.ReplaceAll(strings.ReplaceAll(string(b), "\r\n", "\n"), "\r", "\n")
+	if coremodel.ValidateCompletionRequest(coremodel.CompletionRequest{Messages: []coremodel.Message{{Role: coremodel.RoleUser, Content: instructions}}}) != nil {
+		return "", coreextension.ErrConflict
+	}
+	return instructions, nil
 }
 
 func schemaDigest(raw json.RawMessage) string {

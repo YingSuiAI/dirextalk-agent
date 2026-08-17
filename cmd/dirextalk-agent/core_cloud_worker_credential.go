@@ -2,34 +2,41 @@ package main
 
 import (
 	"context"
+	"strings"
 
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 )
 
 // cloudWorkerCredentialAuthority performs a fresh, double-revision-fenced
 // read through the durable CoreAWS credential store. A verified sole active
-// credential becomes proposal-ready immediately; no deployment binding is
-// cached in process configuration.
+// credential becomes proposal-ready immediately. The host-owned deployment
+// region is immutable process configuration and is never taken from the
+// uploaded credential's default region.
 type cloudWorkerCredentialAuthority struct {
 	credentials workaws.CredentialResolver
 	revisions   workaws.CredentialRevisionResolver
 	exact       workaws.ExactCredentialResolver
 	list        func(context.Context, int, string) (coreaws.CredentialPage, error)
+	hostRegion  string
 }
 
 func newCloudWorkerCredentialAuthority(
 	credentials workaws.CredentialResolver,
 	revisions workaws.CredentialRevisionResolver,
 	exact workaws.ExactCredentialResolver,
+	hostRegion string,
 	list func(context.Context, int, string) (coreaws.CredentialPage, error),
 ) (*cloudWorkerCredentialAuthority, error) {
-	if credentials == nil || revisions == nil || exact == nil || list == nil {
+	regionConfig := config.Config{CoreCloudWorkerHostRegion: hostRegion}
+	if credentials == nil || revisions == nil || exact == nil || list == nil || strings.TrimSpace(hostRegion) == "" ||
+		config.ValidateCoreCloudWorker(&regionConfig) != nil {
 		return nil, cloudworker.ErrInvalid
 	}
-	return &cloudWorkerCredentialAuthority{credentials: credentials, revisions: revisions, exact: exact, list: list}, nil
+	return &cloudWorkerCredentialAuthority{credentials: credentials, revisions: revisions, exact: exact, list: list, hostRegion: hostRegion}, nil
 }
 
 func (authority *cloudWorkerCredentialAuthority) ResolveCurrentAWSBinding(ctx context.Context) (cloudworker.AWSBinding, error) {
@@ -54,14 +61,15 @@ func (authority *cloudWorkerCredentialAuthority) ResolveCurrentAWSBinding(ctx co
 		return cloudworker.AWSBinding{}, cloudworker.ErrStaleAuthorization
 	}
 	after, err := authority.revisions.CredentialRevision(ctx, credentialID)
-	binding := cloudworker.AWSBinding{AccountID: credential.AccountID, Region: credential.Region,
+	credentialBinding := cloudworker.AWSBinding{AccountID: credential.AccountID, Region: credential.Region,
 		CredentialID: credential.ReferenceID, CredentialRevision: after}
 	if err != nil || before != after || credential.Validate() != nil ||
-		binding.AccountID != view.AccountID || binding.Region != view.Region || binding.CredentialID != view.ID ||
-		int64(binding.CredentialRevision) != view.Revision {
+		credentialBinding.AccountID != view.AccountID || credentialBinding.Region != view.Region || credentialBinding.CredentialID != view.ID ||
+		int64(credentialBinding.CredentialRevision) != view.Revision {
 		return cloudworker.AWSBinding{}, cloudworker.ErrStaleAuthorization
 	}
-	return binding, nil
+	credentialBinding.Region = authority.hostRegion
+	return credentialBinding, nil
 }
 
 func (authority *cloudWorkerCredentialAuthority) HasCurrentVerifiedAWSBinding(ctx context.Context) bool {
@@ -85,15 +93,14 @@ func (authority *cloudWorkerCredentialAuthority) ResolveExactAWSBinding(ctx cont
 }
 
 func (authority *cloudWorkerCredentialAuthority) ResolveExactCredential(ctx context.Context, expected cloudworker.AWSBinding) (workaws.CredentialHandle, error) {
-	if authority == nil || authority.exact == nil || ctx == nil || expected.CredentialRevision == 0 {
+	if authority == nil || authority.exact == nil || ctx == nil || expected.CredentialRevision == 0 || expected.Region != authority.hostRegion {
 		return workaws.CredentialHandle{}, cloudworker.ErrInvalid
 	}
 	credential, err := authority.exact.ResolveCredentialRevision(ctx, expected.CredentialID, expected.CredentialRevision)
 	if err != nil {
 		return workaws.CredentialHandle{}, cloudworker.ErrStaleAuthorization
 	}
-	if credential.Validate() != nil || credential.ReferenceID != expected.CredentialID ||
-		credential.AccountID != expected.AccountID || credential.Region != expected.Region {
+	if credential.Validate() != nil || credential.ReferenceID != expected.CredentialID || credential.AccountID != expected.AccountID {
 		return workaws.CredentialHandle{}, cloudworker.ErrStaleAuthorization
 	}
 	return credential, nil
@@ -101,7 +108,7 @@ func (authority *cloudWorkerCredentialAuthority) ResolveExactCredential(ctx cont
 
 // cloudWorkerAWSCredentialsProvider deliberately is not wrapped in the AWS SDK
 // credentials cache. The SDK therefore calls Retrieve for every request, and
-// every request repeats the durable double-revision and account/region fence
+// every request repeats the durable credential ID/revision/account fence
 // before any signed AWS traffic can leave the process.
 type cloudWorkerAWSCredentialsProvider struct {
 	authority *cloudWorkerCredentialAuthority

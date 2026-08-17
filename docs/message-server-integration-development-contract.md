@@ -15,6 +15,16 @@ same-origin `/agent/v1/*` edge route. Caddy forwards the full path to Agent's
 internal HTTP listener; it never publishes the listener itself. Flutter never
 receives the long-lived Agent service token.
 
+The cross-client v1 session shape and Agent error vocabulary are frozen by
+`internal/agenthttp/testdata/session_stream_contract_v1.json`. The Message
+Server session response supplies `ticket`, `expires_at`, `server_time`,
+`base_path`, `session_id`, and `scopes`, with RFC3339 UTC timestamps,
+`base_path=/agent/v1`, and a 900-second ticket TTL. Agent returns exactly
+`AGENT_TICKET_EXPIRED`, `AGENT_TICKET_STALE`, `AGENT_TICKET_INVALID`, or
+`AGENT_TICKET_SCOPE_FORBIDDEN` for their named ticket conditions. If SSE
+`after_seq` and `Last-Event-ID` are both present, they must be equal; otherwise
+Agent returns HTTP 400 with `AGENT_CURSOR_CONFLICT` and does not open a stream.
+
 The Agent owns the independent runtime, database, files, secrets, model and
 conversation state, Tasks, Knowledge, Web Search, AWS, Execution V2, and
 runner processes and the Native Agent HTTP/SSE protocol. Message Server owns

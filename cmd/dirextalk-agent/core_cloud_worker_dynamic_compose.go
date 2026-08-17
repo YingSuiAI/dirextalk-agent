@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	workercap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/worker"
@@ -22,6 +23,9 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if !cfg.CapabilityEnabled && !cfg.AgentHTTPEnabled {
 		return nil, nil
 	}
+	if strings.TrimSpace(cfg.CoreCloudWorkerHostRegion) == "" {
+		return nil, nil
+	}
 	if store == nil || conversationStore == nil || workerState == nil {
 		return nil, fmt.Errorf("dynamic Cloud Worker proposal dependencies are incomplete")
 	}
@@ -35,7 +39,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if !revisionsOK || !exactOK {
 		return nil, fmt.Errorf("dynamic Cloud Worker credential authority is unavailable")
 	}
-	authority, err := newCloudWorkerCredentialAuthority(credentials, revisions, exact, awsStore.ListCredentials)
+	authority, err := newCloudWorkerCredentialAuthority(credentials, revisions, exact, cfg.CoreCloudWorkerHostRegion, awsStore.ListCredentials)
 	if err != nil {
 		return nil, fmt.Errorf("initialize dynamic Cloud Worker credential authority: %w", err)
 	}

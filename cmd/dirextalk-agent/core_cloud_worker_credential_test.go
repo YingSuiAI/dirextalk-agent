@@ -27,6 +27,8 @@ type cloudWorkerCredentialResolverFake struct {
 	exactErr        error
 }
 
+const fixtureCloudWorkerHostRegion = "ap-northeast-2"
+
 func (resolver *cloudWorkerCredentialResolverFake) ResolveCredentialRevision(_ context.Context, _ string, revision uint64) (workaws.CredentialHandle, error) {
 	resolver.exactCalls++
 	if resolver.exactErr != nil || revision != resolver.exactRevision {
@@ -70,7 +72,7 @@ func cloudWorkerCredentialAuthorityFixture(t *testing.T) (*cloudWorkerCredential
 		ID: binding.CredentialID, Region: binding.Region, AccountID: binding.AccountID,
 		Revision: int64(binding.CredentialRevision), VerifiedRevision: int64(binding.CredentialRevision), TestedAt: time.Now().UTC(),
 	}}
-	authority, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, func(context.Context, int, string) (coreaws.CredentialPage, error) {
+	authority, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, fixtureCloudWorkerHostRegion, func(context.Context, int, string) (coreaws.CredentialPage, error) {
 		return coreaws.CredentialPage{Items: resolver.views}, nil
 	})
 	if err != nil {
@@ -82,7 +84,8 @@ func cloudWorkerCredentialAuthorityFixture(t *testing.T) (*cloudWorkerCredential
 func TestCloudWorkerCredentialAuthorityDoubleFencesRevisionAndIdentity(t *testing.T) {
 	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
 	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
-	if err != nil || binding.CredentialID != resolver.handle.ReferenceID || resolver.revisionCalls != 2 || resolver.credentialCalls != 1 {
+	if err != nil || binding.CredentialID != resolver.handle.ReferenceID || binding.Region != fixtureCloudWorkerHostRegion ||
+		resolver.revisionCalls != 2 || resolver.credentialCalls != 1 {
 		t.Fatalf("exact authority binding=%+v revision_calls=%d credential_calls=%d err=%v",
 			binding, resolver.revisionCalls, resolver.credentialCalls, err)
 	}
@@ -106,6 +109,26 @@ func TestCloudWorkerCredentialAuthorityDoubleFencesRevisionAndIdentity(t *testin
 	}
 }
 
+func TestCloudWorkerCredentialAuthorityRejectsInvalidOrChangedHostRegion(t *testing.T) {
+	_, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	for _, region := range []string{"", " us-east-1", "local-1"} {
+		if _, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, region, func(context.Context, int, string) (coreaws.CredentialPage, error) {
+			return coreaws.CredentialPage{Items: resolver.views}, nil
+		}); !errors.Is(err, cloudworker.ErrInvalid) {
+			t.Fatalf("host region %q returned %v", region, err)
+		}
+	}
+	authority, _ := cloudWorkerCredentialAuthorityFixture(t)
+	expected, err := authority.ResolveCurrentAWSBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected.Region = "us-west-2"
+	if _, err = authority.ResolveExactAWSBinding(context.Background(), expected); !errors.Is(err, cloudworker.ErrInvalid) {
+		t.Fatalf("changed host region returned %v", err)
+	}
+}
+
 func TestCloudWorkerCredentialReadinessTracksCurrentVerifiedView(t *testing.T) {
 	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
 	if !authority.HasCurrentVerifiedAWSBinding(context.Background()) {
@@ -123,7 +146,7 @@ func TestCloudWorkerCredentialReadinessTracksCurrentVerifiedView(t *testing.T) {
 
 func TestCloudWorkerCredentialAuthorityKeepsExactRevisionAfterRotateAndDisable(t *testing.T) {
 	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
-	expected := cloudworker.AWSBinding{AccountID: resolver.handle.AccountID, Region: resolver.handle.Region, CredentialID: resolver.handle.ReferenceID, CredentialRevision: resolver.exactRevision}
+	expected := cloudworker.AWSBinding{AccountID: resolver.handle.AccountID, Region: fixtureCloudWorkerHostRegion, CredentialID: resolver.handle.ReferenceID, CredentialRevision: resolver.exactRevision}
 	resolver.revisions = []uint64{4, 4}
 	resolver.views[0].Revision, resolver.views[0].VerifiedRevision = 4, 4
 	if current, err := authority.ResolveCurrentAWSBinding(context.Background()); err != nil || current.CredentialRevision != 4 {

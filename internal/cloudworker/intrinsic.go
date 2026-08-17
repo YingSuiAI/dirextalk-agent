@@ -687,6 +687,8 @@ func intrinsicProposalErrorClass(err error) string {
 		return "none"
 	case errors.Is(err, ErrPricingCatalogStale):
 		return "pricing_catalog_stale"
+	case errors.Is(err, ErrProviderUnavailable):
+		return "provider_unavailable"
 	case errors.Is(err, ErrQuoteExpired):
 		return "quote_expired"
 	case errors.Is(err, ErrStaleAuthorization):

@@ -43,7 +43,11 @@ contract](message-server-integration-development-contract.md), and
   conversation-turn ledger independently of the POST lifecycle. Operation and
   turn streams advertise a three-second reconnect delay, emit 12-second idle
   heartbeats, and terminate on cancellation or transport write failure without
-  changing durable event sequences. Typed operation/store/turn failures map to
+  changing durable event sequences. The shared v1 session fixture freezes the
+  Message/Flutter bootstrap fields, the four typed ticket errors distinguish
+  expired, stale-generation, invalid, and missing-scope tickets, and dual SSE
+  cursors must match or fail with `AGENT_CURSOR_CONFLICT` before streaming.
+  Typed operation/store/turn failures map to
   fixed HTTP statuses and safe messages; unclassified capability failures
   become a redacted 502, availability failures become 503, and SSE
   projection/store errors do not expose their causes.
@@ -166,12 +170,16 @@ contract](message-server-integration-development-contract.md), and
   replay-safe transaction.
 - The current Cloud Worker path uses a real `CLOUD_WORKER` CoreTask and
   CoreConfirmation with the sole App-uploaded, STS-verified AWS credential.
+  Resource placement, live pricing, Route53, and execution use the deployment
+  node's identity-verified AWS Region; the credential's default Region remains
+  metadata and cannot redirect Worker resources. Missing host Region withholds
+  Cloud Worker publication while keeping the rest of Agent available.
   New Worker creation uses a fresh EC2/EBS quote and exact owner confirmation;
   retained idle Workers are reused without another creation. The manager
   supports at most five ordinary-public-IPv4 EC2 Workers, discovers the current
   Canonical official Ubuntu 24.04 LTS image and default network live, and copies
   remote results into Agent-owned local artifact storage. It has no EIP, S3/KMS,
-  custom AMI, WorkerControl, model relay, or deployment-time Worker binding.
+  custom AMI, WorkerControl, model relay, or deploy-time account/credential binding.
   Worker/execution records are bound to the authenticated owner/account
   generation; historical provisioning recovery is read-only, partial cleanup
   is retryable, and one unavailable AWS observation no longer hides the rest
@@ -220,6 +228,12 @@ support.
   Provider deltas retain bounded coalescing with final flush, and
   OpenAI-compatible streams accept explicit nonempty `finish_reason` before
   clean EOF while still rejecting unmarked truncation.
+- On **2026-08-17**, OpenAI-compatible bare origins normalize to `/v1`, keeping
+  model discovery and completion on one API root and rejecting successful HTML
+  landing pages as invalid provider responses. Pinned Skill bytes retain their
+  immutable raw digest while CRLF and bare CR normalize to LF before prompt
+  validation. Focused regressions cover the production failure shape where a
+  gateway root returned HTML and every model turn ended without a delta.
 - On **2026-08-17**, the PR workflow adds pinned `staticcheck` 0.7.0 and
   `govulncheck` 1.7.0 plus a bounded high-risk race lane. Go 1.26.6, gRPC
   1.82.1, `x/net` 0.55.0, and `x/text` 0.39.0 close the reachable findings that

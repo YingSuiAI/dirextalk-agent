@@ -2283,17 +2283,31 @@ const (
 	toolBudgetExhaustedSummary    = "tool call budget was exhausted before a final response"
 	modelProviderRejectedCode     = "provider_rejected"
 	modelProviderRejectedSummary  = "model provider rejected the request"
+	modelRequestInvalidCode       = "invalid_model_request"
+	modelRequestInvalidSummary    = "model request is invalid"
+	modelProviderResponseCode     = "provider_invalid_response"
+	modelProviderResponseSummary  = "model provider returned an invalid response"
+	modelProviderTruncatedCode    = "provider_stream_truncated"
+	modelProviderTruncatedSummary = "model provider stream ended before completion"
 )
 
 func classifyModelDispatchFailure(err error) (string, string) {
+	if errors.Is(err, coremodel.ErrInvalidCompletionRequest) || errors.Is(err, coremodel.ErrCompletionRequestTooLarge) {
+		return modelRequestInvalidCode, modelRequestInvalidSummary
+	}
 	if errors.Is(err, ErrModelBudgetExhausted) {
 		return modelBudgetExhaustedCode, modelBudgetExhaustedSummary
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return modelResponseTimeoutCode, modelResponseTimeoutSummary
 	}
-	if coremodel.SafeFailureClass(err) == "provider_http_4xx" {
+	switch coremodel.SafeFailureClass(err) {
+	case "provider_http_4xx":
 		return modelProviderRejectedCode, modelProviderRejectedSummary
+	case "provider_invalid_response":
+		return modelProviderResponseCode, modelProviderResponseSummary
+	case "provider_stream_truncated":
+		return modelProviderTruncatedCode, modelProviderTruncatedSummary
 	}
 	var timeout interface{ Timeout() bool }
 	if errors.As(err, &timeout) && timeout.Timeout() {
@@ -2348,6 +2362,9 @@ func intrinsicTerminalFailure(toolName string, err error) (string, string) {
 	}
 	if toolName == coremodel.IntrinsicCloudWorkerDestroyToolName {
 		return "cloud_worker_destroy_failed", "Worker could not be destroyed"
+	}
+	if toolName == coremodel.IntrinsicCloudWorkerProposeToolName {
+		return "cloud_worker_proposal_failed", "AWS Worker proposal could not be created"
 	}
 	if toolName == coremodel.IntrinsicScheduleCreateToolName {
 		return "schedule_persistence_failed", "Schedule could not be saved"

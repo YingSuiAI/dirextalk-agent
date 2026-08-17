@@ -73,7 +73,8 @@ func TestConversationExtensionResolverPublishesOnlyExactAllowedToolSchemas(t *te
 }
 
 func TestConversationExtensionResolverInjectsPinnedSkillInstructionsWithoutTools(t *testing.T) {
-	content := []byte("# Deploy service\n\nFollow the deployment workflow.")
+	content := []byte("# Deploy service\r\n\r\nFollow the deployment\rworkflow.")
+	wantInstructions := "# Deploy service\n\nFollow the deployment\nworkflow."
 	skillDigest := sha256.Sum256(content)
 	installation := conversationResolverInstallation()
 	installation.Kind = coreextension.KindSkill
@@ -91,7 +92,7 @@ func TestConversationExtensionResolverInjectsPinnedSkillInstructionsWithoutTools
 		t.Fatalf("resolved=%+v err=%v", resolved, err)
 	}
 	extension := resolved[0]
-	if len(extension.Tools) != 0 || extension.Snapshot.SkillInstructions != string(content) || !extension.Snapshot.ReadOnly || extension.Snapshot.RequiresConfirmation {
+	if len(extension.Tools) != 0 || extension.Snapshot.SkillInstructions != wantInstructions || !extension.Snapshot.ReadOnly || extension.Snapshot.RequiresConfirmation {
 		t.Fatalf("resolved skill=%+v", extension)
 	}
 	if reader.digest != installation.Versions[0].ArtifactDigest || reader.path != "SKILL.md" {

@@ -63,6 +63,13 @@ grant key. The 15-minute ticket binds issuer, Agent-data audience, owner MXID,
 account generation, session and nonce UUIDs, scopes, issue time, and expiry.
 Expiry is checked when a request or SSE connection is admitted and does not
 become a deadline for an already accepted turn or established stream.
+Ticket admission exposes four exact typed codes: an expired ticket is
+`AGENT_TICKET_EXPIRED`, an account-generation mismatch is
+`AGENT_TICKET_STALE`, malformed claims or an invalid signature, issuer, or
+audience are `AGENT_TICKET_INVALID`, and a valid ticket missing an operation's
+required scope is `AGENT_TICKET_SCOPE_FORBIDDEN`. The versioned shared fixture
+at `internal/agenthttp/testdata/session_stream_contract_v1.json` freezes these
+codes together with the Message/Flutter session response fields.
 
 `POST /agent/v1/capabilities/{capability_id}/operations/{operation}` is the
 canonical generic facade. Read operations return their Agent-authored result
@@ -86,10 +93,12 @@ Native chat uses explicit conversation/turn routes. Starting a turn calls the
 durable `start_turn` admission and returns 202 only after the authoritative
 turn exists; its `operation_id` equals `turn_id`. `GET /agent/v1/turns/{id}`
 and conversation GETs are authoritative. Independent SSE at
-`GET /agent/v1/operations/{turn_id}/events` resumes from the greater of
-`after_seq` and `Last-Event-ID` and reads the durable turn-event ledger
-directly. Stop binds only turn ID plus idempotency; steer and attachment chunks
-retain their frozen revision CAS.
+`GET /agent/v1/operations/{turn_id}/events` resumes after the cursor supplied
+by `after_seq` or `Last-Event-ID` and reads the durable turn-event ledger
+directly. When both cursors are present they must represent the same
+non-negative sequence; a mismatch returns HTTP 400 with
+`AGENT_CURSOR_CONFLICT` before the stream is opened. Stop binds only turn ID
+plus idempotency; steer and attachment chunks retain their frozen revision CAS.
 
 ## Request and response invariants
 
@@ -107,6 +116,11 @@ retain their frozen revision CAS.
 - A conversation profile whose supplied `max_output_tokens` is nonpositive is
   normalized to the single positive default of 8192 before persistence. The
   immutable turn snapshot exposes and dispatches that exact effective value.
+- An OpenAI-compatible profile treats a bare HTTPS origin as the conventional
+  `/v1` API root. An explicit nonempty path remains authoritative. Connection
+  tests and completion requests therefore derive `models` and
+  `chat/completions` from the same normalized API root; a successful HTML
+  landing-page response is rejected as `provider_invalid_response`.
 - Durable Task events/results are fenced by Task revision, attempt, and lease
   epoch. `WatchEvents` resumes strictly after its supplied sequence.
 - `Chat`, `StreamChat`, and `StartTurn` require a positive, exact
@@ -169,8 +183,12 @@ retain their frozen revision CAS.
   stream, and output limit. Safe diagnostics collapse status failures to their
   HTTP class and never include response bodies. A provider HTTP 4xx, including
   429, is a terminal `provider_rejected` turn outcome; timeouts become
-  `provider_timeout`, while an unclassified transport or 5xx outcome remains
-  `provider_uncertain` and is not automatically replayed.
+  `provider_timeout`, invalid local completion input becomes
+  `invalid_model_request`, and invalid or prematurely terminated provider
+  streams retain the distinct `provider_invalid_response` or
+  `provider_stream_truncated` code. An unclassified transport or 5xx outcome
+  remains `provider_uncertain`. No dispatched failure is automatically
+  replayed.
 - Recent tool-loop recovery is deliberately conservative and resets at an
   accepted steer. It recognizes only repeated canonical action/result pairs or
   exact A/B alternation. Argument object key order and harmless unquoted local
@@ -342,7 +360,8 @@ retain their frozen revision CAS.
   Exactly one credential may be active: concurrent creates are serialized and
   a second create is rejected until the current credential is deleted.
 - Optional `agent.worker.v1` publishes only after the persistent SSH Worker
-  manager and the sole current verified AWS credential source are composed.
+  manager, the host-owned deployment Region, and the sole current verified AWS
+  credential source are composed.
   `list_workers` and `get_worker` expose the exact
   AWS resource identity, observed EC2 state and ordinary auto-assigned public
   IPv4, Worker/task phase, server load and last-seen time, live hourly quote,
@@ -519,7 +538,9 @@ creates no plan, execution, Task, confirmation, or Worker action. Every executin
 proposal carries minimum vCPU, memory, disk, and estimated runtime rather than
 an AWS instance type. Agent intersects current-generation Linux on-demand
 products with actual regional offerings and selects the cheapest satisfying
-x86_64 shape. Every proposal performs a fresh AWS Price List read for that
+x86_64 shape in the deployment host's identity-verified AWS Region. The
+uploaded credential's default Region is not resource-placement authority.
+Every proposal performs a fresh AWS Price List read for that
 exact EC2 shape and gp3 volume. The quote is not served from a persisted pricing
 catalog. Confirmation exposes the exact shape and hourly compute price. A
 bounded job also exposes its estimated cost and maximum authorized cost; a
