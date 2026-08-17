@@ -443,13 +443,36 @@ func TestModelRunnerForwardsResolvedExtensionToolsToProvider(t *testing.T) {
 	id := "00000000-0000-4000-8000-000000000001"
 	client := &captureClient{}
 	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
-	ext := coreconversation.ResolvedExtension{Tools: []coremodel.Tool{{Name: "product_contacts_list", Description: "list contacts", InputSchema: map[string]any{"type": "object"}}}}
-	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}), Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "test"}}}, Extensions: []coreconversation.ResolvedExtension{ext}, ForcedToolName: "product_contacts_list"})
+	toolNames := []string{
+		"mcp__message__dirextalk_contacts_list",
+		"mcp__message__dirextalk_contacts_search",
+		"mcp__message__dirextalk_rooms_search",
+		"mcp__message__dirextalk_messages_list",
+		"mcp__message__dirextalk_messages_send",
+		"mcp__message__dirextalk_room_members_list",
+		"mcp__message__dirextalk_channel_posts_list",
+		"mcp__message__dirextalk_channel_comments_list",
+		"mcp__message__dirextalk_channel_comments_create",
+	}
+	tools := make([]coremodel.Tool, 0, len(toolNames))
+	for _, name := range toolNames {
+		tools = append(tools, coremodel.Tool{Name: name, InputSchema: map[string]any{"type": "object"}})
+	}
+	ext := coreconversation.ResolvedExtension{
+		Snapshot: coreconversation.ExtensionExecutionSnapshot{Source: "message-mcp", ToolNames: append([]string(nil), toolNames...)},
+		Tools:    tools,
+	}
+	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}), Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "test"}}}, Extensions: []coreconversation.ResolvedExtension{ext}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(client.req.Tools) != 1 || client.req.Tools[0].Name != "product_contacts_list" || client.req.ForcedToolName != "product_contacts_list" {
+	if len(client.req.Tools) != len(toolNames) {
 		t.Fatalf("provider tool catalog=%+v", client.req.Tools)
+	}
+	for index, name := range toolNames {
+		if client.req.Tools[index].Name != name {
+			t.Fatalf("provider tool[%d]=%q want=%q", index, client.req.Tools[index].Name, name)
+		}
 	}
 }
 
