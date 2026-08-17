@@ -533,6 +533,28 @@ type supervisorRetryTurnStore struct {
 	successOnce    sync.Once
 }
 
+type recoverableMessageMCPStore struct {
+	*readOnlyTurnStore
+	terminal chan struct{}
+	once     sync.Once
+}
+
+func (s *recoverableMessageMCPStore) ListRecoverableTurns(context.Context) ([]Turn, error) {
+	return []Turn{s.turn}, nil
+}
+
+func (s *recoverableMessageMCPStore) FailTurn(ctx context.Context, lease TurnLease, code, summary string) (Turn, error) {
+	turn, err := s.readOnlyTurnStore.FailTurn(ctx, lease, code, summary)
+	s.once.Do(func() { close(s.terminal) })
+	return turn, err
+}
+
+func (s *recoverableMessageMCPStore) FailConversationToolDispatch(ctx context.Context, lease TurnLease, call ToolCall, code, summary string) (Turn, error) {
+	turn, err := s.readOnlyTurnStore.FailConversationToolDispatch(ctx, lease, call, code, summary)
+	s.once.Do(func() { close(s.terminal) })
+	return turn, err
+}
+
 func (s *supervisorRetryTurnStore) GetTurn(ctx context.Context, id string) (Turn, error) {
 	s.readMu.Lock()
 	if s.transientReads > 0 {
@@ -2150,6 +2172,56 @@ func TestExecuteTurnRestartFailsUncertainWithoutRepeatingDispatchedReadOnlyTool(
 	}
 	if results != 1 || terminalErrors != 1 {
 		t.Fatalf("terminal results=%d errors=%d events=%+v", results, terminalErrors, store.events)
+	}
+}
+
+func TestRecoverTurnsResolvesMessageMCPSnapshotWithoutAmbientPermissionAndDoesNotReplayMutation(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	toolName := "mcp__message__dirextalk_messages_send"
+	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1.0.0", Digest: strings.Repeat("a", 64), AllowedTools: []string{toolName}}
+	snapshot := ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "message-mcp", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64), ToolNames: []string{toolName}, ReadOnly: true}
+	call := ToolCall{ID: uuid.NewString(), Name: toolName, Arguments: `{"room_id":"!room:example.test","msg":"hello"}`}
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:example.test", AccountGeneration: 7, ConversationID: conversationID, Prompt: "send", ProfileID: profile.ProfileID, ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(), ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(), State: TurnAccepted, Revision: 1, LastSequence: 2, CreatedAt: time.Now().UTC()}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: turn.CreatedAt, UpdatedAt: turn.CreatedAt}
+	modelResult := ModelRunResult{Message: Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: []ToolCall{call}, CreatedAt: turn.CreatedAt}, ToolCalls: []ToolCall{call}}
+	store := &recoverableMessageMCPStore{
+		readOnlyTurnStore: &readOnlyTurnStore{
+			publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+			events: []TurnEvent{
+				{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt},
+				{TurnID: turn.ID, Sequence: 2, Revision: 1, Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: turn.CreatedAt.Add(time.Microsecond)},
+			},
+			dispatchState: "completed", dispatch: modelResult, dispatched: map[string]bool{call.ID: true},
+		},
+		terminal: make(chan struct{}),
+	}
+	executions := 0
+	resolved := ResolvedExtension{Selection: selection, Snapshot: snapshot, Tools: []coremodel.Tool{{Name: call.Name, InputSchema: map[string]any{"type": "object"}}}, Execute: func(context.Context, ToolExecutionRequest) (ToolResult, error) {
+		executions++
+		return ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{}`}, nil
+	}}
+	service, err := NewService(store, &capturingTurnModel{}, extensionResolverFunc(func(_ context.Context, selections []ExtensionSelection) ([]ResolvedExtension, error) {
+		if len(selections) != 0 {
+			t.Fatalf("context-bound Message MCP selection leaked to installed extension resolver: %+v", selections)
+		}
+		return []ResolvedExtension{resolved}, nil
+	}), snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	if err := service.RecoverTurns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-store.terminal:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("recovered Message MCP turn did not reach a terminal dispatch fence: state=%s code=%q", store.turn.State, store.failedCode)
+	}
+	if executions != 0 || store.failedCode != "tool_dispatch_uncertain" || store.turn.State != TurnFailed {
+		t.Fatalf("executions=%d code=%q state=%s", executions, store.failedCode, store.turn.State)
 	}
 }
 

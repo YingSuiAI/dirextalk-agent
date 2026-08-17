@@ -21,6 +21,11 @@ core_extension_staging_root: /var/lib/dirextalk-agent/extension-staging
 core_extension_workspace_root: /var/lib/dirextalk-agent/extension-workspaces
 core_extension_runner_socket: /run/dirextalk-agent/extension-runner.sock
 core_extension_runner_uid: 65531
+# Optional fixed Message Server Streamable HTTP MCP source. The bearer value
+# stays in the protected mounted file and never appears in this YAML.
+core_message_mcp_enabled: false
+# core_message_mcp_endpoint: http://message-server:8008/mcp
+# core_message_mcp_token_file: /run/secrets/message_mcp_token
 # Optional single-file static-site publication. The host provisioner owns this
 # bind mount; Agent writes immutable releases beneath public/, while Caddy sees
 # only that public subtree read-only at /.sites/.

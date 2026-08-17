@@ -76,6 +76,9 @@ type Config struct {
 	CoreExtensionWorkspaceRoot         string        `yaml:"core_extension_workspace_root" mapstructure:"core_extension_workspace_root"`
 	CoreExtensionRunnerSocket          string        `yaml:"core_extension_runner_socket" mapstructure:"core_extension_runner_socket"`
 	CoreExtensionRunnerUID             uint32        `yaml:"core_extension_runner_uid" mapstructure:"core_extension_runner_uid"`
+	CoreMessageMCPEnabled              bool          `yaml:"core_message_mcp_enabled" mapstructure:"core_message_mcp_enabled"`
+	CoreMessageMCPEndpoint             string        `yaml:"core_message_mcp_endpoint" mapstructure:"core_message_mcp_endpoint"`
+	CoreMessageMCPTokenFile            string        `yaml:"core_message_mcp_token_file" mapstructure:"core_message_mcp_token_file"`
 	CoreWorkloadEnabled                bool          `yaml:"core_workload_enabled" mapstructure:"core_workload_enabled"`
 	CoreWorkloadRunnerSocket           string        `yaml:"core_workload_runner_socket" mapstructure:"core_workload_runner_socket"`
 	CoreWorkloadRunnerUID              uint32        `yaml:"core_workload_runner_uid" mapstructure:"core_workload_runner_uid"`
@@ -184,6 +187,9 @@ func ValidateCore(cfg *Config) error {
 		return err
 	}
 	if err := ValidateCoreExtension(cfg); err != nil {
+		return err
+	}
+	if err := ValidateCoreMessageMCP(cfg); err != nil {
 		return err
 	}
 	if err := ValidateCoreWorkload(cfg); err != nil {
@@ -622,6 +628,30 @@ func ValidateProductCapability(cfg *Config) error {
 		return errors.New("product_capability_token_file must resolve to a regular file")
 	}
 	cfg.ProductCapabilityTokenFile = token
+	return nil
+}
+
+// ValidateCoreMessageMCP validates the optional owner-configured Message
+// Server MCP source. The bearer value remains outside YAML and is resolved
+// from the protected mounted file for every outbound request.
+func ValidateCoreMessageMCP(cfg *Config) error {
+	if cfg == nil || !cfg.CoreMessageMCPEnabled {
+		return nil
+	}
+	rawEndpoint := strings.TrimSpace(cfg.CoreMessageMCPEndpoint)
+	endpoint, err := url.Parse(rawEndpoint)
+	if err != nil || rawEndpoint != "http://message-server:8008/mcp" || endpoint.String() != rawEndpoint {
+		return errors.New("core_message_mcp_endpoint must be http://message-server:8008/mcp")
+	}
+	tokenFile, err := canonicalPath(cfg.CoreMessageMCPTokenFile)
+	if err != nil {
+		return fmt.Errorf("canonicalize core_message_mcp_token_file: %w", err)
+	}
+	if err := ValidateMountedSecretFile(tokenFile); err != nil {
+		return fmt.Errorf("core_message_mcp_token_file: %w", err)
+	}
+	cfg.CoreMessageMCPEndpoint = endpoint.String()
+	cfg.CoreMessageMCPTokenFile = tokenFile
 	return nil
 }
 

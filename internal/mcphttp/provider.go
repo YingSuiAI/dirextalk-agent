@@ -149,7 +149,44 @@ func New(configs []ServerConfig, secrets SecretResolver, optionValues ...Option)
 	return &Provider{servers: servers, secrets: secrets, policy: opts.policy, client: client, timeout: opts.timeout}, nil
 }
 
+// NewTrustedInternal creates one owner-configured MCP connection that may use
+// plain HTTP on a private service network. Every request is pinned to the exact
+// configured endpoint and bypasses ambient proxy settings.
+func NewTrustedInternal(config ServerConfig, secrets SecretResolver) (*Provider, error) {
+	return newTrustedInternal(config, secrets, nil)
+}
+
+func newTrustedInternal(config ServerConfig, secrets SecretResolver, transport http.RoundTripper) (*Provider, error) {
+	server, err := normalizeInternalServerConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	if server.secretRef != "" && secrets == nil {
+		return nil, fmt.Errorf("%w: credential resolver is required", ErrInvalidConfig)
+	}
+	if transport == nil {
+		transport = newInternalTransport()
+	}
+	return &Provider{
+		servers: []configuredServer{server}, secrets: secrets,
+		policy: exactEndpointPolicy{endpoint: server.endpoint.String()},
+		client: &http.Client{
+			Transport:     transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+		timeout: defaultTimeout,
+	}, nil
+}
+
 func normalizeServerConfig(config ServerConfig) (configuredServer, error) {
+	return normalizeServerConfigWithParser(config, parseTrustedEndpoint)
+}
+
+func normalizeInternalServerConfig(config ServerConfig) (configuredServer, error) {
+	return normalizeServerConfigWithParser(config, parseInternalEndpoint)
+}
+
+func normalizeServerConfigWithParser(config ServerConfig, parse func(string) (*url.URL, error)) (configuredServer, error) {
 	id := strings.TrimSpace(config.ID)
 	if !serverIDPattern.MatchString(id) {
 		return configuredServer{}, fmt.Errorf("%w: invalid server id", ErrInvalidConfig)
@@ -161,7 +198,7 @@ func normalizeServerConfig(config ServerConfig) (configuredServer, error) {
 	if transport != "streamable_http" && transport != "streamable-http" {
 		return configuredServer{}, fmt.Errorf("%w: unsupported transport", ErrInvalidConfig)
 	}
-	endpoint, err := parseTrustedEndpoint(config.Endpoint)
+	endpoint, err := parse(config.Endpoint)
 	if err != nil {
 		return configuredServer{}, err
 	}

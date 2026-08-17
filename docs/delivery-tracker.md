@@ -109,6 +109,11 @@ contract](message-server-integration-development-contract.md), and
 - Two default, network-free, read-only MCP installations expose live server
   time and server load through the same isolated MCP lifecycle and durable
   one-time seed semantics as other installed extensions.
+- Authenticated Native conversations automatically load the fixed Message
+  Server Streamable HTTP MCP catalog. Its stable bootstrap bearer is read from
+  a protected mounted file for every request, the synthetic catalog snapshot
+  is schema-bound, and recorded dispatches are never replayed after an unknown
+  mutation outcome.
 - Knowledge mounts, uploads, indexing, semantic-search composition,
   and the bounded read-only `knowledge_search` Native conversation tool.
   Semantic generations now use pgvector inside Agent PostgreSQL with exact

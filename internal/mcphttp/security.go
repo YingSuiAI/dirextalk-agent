@@ -39,12 +39,20 @@ var deniedAddressRanges = []netip.Prefix{
 }
 
 func parseTrustedEndpoint(raw string) (*url.URL, error) {
+	return parseEndpoint(raw, false)
+}
+
+func parseInternalEndpoint(raw string) (*url.URL, error) {
+	return parseEndpoint(raw, true)
+}
+
+func parseEndpoint(raw string, allowHTTP bool) (*url.URL, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || len(raw) > 2048 || strings.ContainsAny(raw, "\r\n\x00") {
 		return nil, fmt.Errorf("%w: invalid endpoint", ErrInvalidConfig)
 	}
 	endpoint, err := url.Parse(raw)
-	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.Opaque != "" {
+	if err != nil || (endpoint.Scheme != "https" && !(allowHTTP && endpoint.Scheme == "http")) || endpoint.Host == "" || endpoint.Opaque != "" {
 		return nil, fmt.Errorf("%w: endpoint must use HTTPS", ErrInvalidConfig)
 	}
 	if endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
@@ -61,6 +69,26 @@ func parseTrustedEndpoint(raw string) (*url.URL, error) {
 		}
 	}
 	return endpoint, nil
+}
+
+type exactEndpointPolicy struct{ endpoint string }
+
+func (p exactEndpointPolicy) Validate(_ context.Context, endpoint *url.URL) error {
+	if endpoint == nil || endpoint.String() != p.endpoint {
+		return ErrEndpointDenied
+	}
+	return nil
+}
+
+func newInternalTransport() http.RoundTripper {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	transport.MaxResponseHeaderBytes = 64 << 10
+	transport.ResponseHeaderTimeout = 10 * time.Second
+	transport.ForceAttemptHTTP2 = true
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	return transport
 }
 
 type publicEndpointPolicy struct {

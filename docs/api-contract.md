@@ -649,9 +649,12 @@ workloads share this protocol; service lifetime is independent of the
 conversation turn until the owner stops it or destroys its Worker.
 
 Flutter discovers and calls Agent-owned capabilities through the scoped HTTP
-catalog. Message Server is not a Native Agent action facade. Product Capability
-callbacks use their separate asynchronous mTLS direction; the two services
-keep separate databases, credentials, and execution histories.
+catalog. The one fixed Message Server Streamable HTTP MCP source exposes
+ProductCore contacts, rooms, messages, and channels to authenticated Native
+conversations with the deployment-owned `agent_token`; it is not a second
+Agent catalog or execution ledger. Product Capability callbacks retain their
+separate asynchronous mTLS direction, and the two services keep separate
+databases, credentials, and execution histories.
 
 ## Contract changes
 

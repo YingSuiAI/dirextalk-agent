@@ -89,6 +89,46 @@ func TestProviderNegotiatesStreamableHTTPAndCallsTool(t *testing.T) {
 	capture.assertAuthorizationRemoved(t)
 }
 
+func TestTrustedInternalProviderPinsHTTPAndClearsBearer(t *testing.T) {
+	t.Parallel()
+	if transport, ok := newInternalTransport().(*http.Transport); !ok || transport.Proxy != nil {
+		t.Fatal("trusted internal MCP transport must bypass ambient proxies")
+	}
+	harness := &mcpHarness{
+		t: t, credential: testCredential,
+		tools:      []map[string]any{{"name": "dirextalk_contacts_list", "inputSchema": map[string]any{"type": "object"}}},
+		callResult: map[string]any{"content": []map[string]any{{"type": "text", "text": "Bearer " + testCredential}}},
+	}
+	server := httptest.NewServer(http.HandlerFunc(harness.handle))
+	t.Cleanup(server.Close)
+	resolver := &recordingResolver{value: []byte(testCredential)}
+	capture := &capturingTransport{base: server.Client().Transport}
+	provider, err := newTrustedInternal(ServerConfig{ID: "message", Endpoint: server.URL + "/mcp", SecretRef: "mounted:message"}, resolver, capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherEndpoint, _ := url.Parse(server.URL + "/other")
+	if !errors.Is(provider.policy.Validate(context.Background(), otherEndpoint), ErrEndpointDenied) {
+		t.Fatal("trusted internal provider accepted a different endpoint")
+	}
+	tools, err := provider.Tools(context.Background())
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("tools=%#v err=%v", tools, err)
+	}
+	result, err := tools[0].Run(context.Background(), ToolInvocation{Name: tools[0].Definition.Name, Arguments: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result.Content, testCredential) || !strings.Contains(result.Content, "[REDACTED]") {
+		t.Fatalf("credential was not redacted: %q", result.Content)
+	}
+	resolver.assertReturnedBuffersZeroed(t)
+	capture.assertAuthorizationRemoved(t)
+	if _, err := New([]ServerConfig{{ID: "message", Endpoint: server.URL + "/mcp"}}, nil); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("generic MCP accepted internal HTTP endpoint: %v", err)
+	}
+}
+
 func TestProviderWithoutCredentialOmitsAuthorization(t *testing.T) {
 	t.Parallel()
 	harness := &mcpHarness{t: t, tools: []map[string]any{{"name": "ping", "inputSchema": map[string]any{"type": "object"}}}}
