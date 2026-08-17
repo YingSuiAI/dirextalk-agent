@@ -145,9 +145,15 @@ func ParsePiEvents(stream []byte) (Usage, []byte, error) {
 			if event.ToolName != PiResultToolName {
 				continue
 			}
-			if finalSeen || event.IsError {
+			if finalSeen {
 				clear(finalJSON)
 				return Usage{}, nil, piEventInvalid()
+			}
+			// Pi reports truncated or schema-invalid tool calls as ordinary tool
+			// errors and can correct them in a later turn. Only a successful result
+			// tool call is terminal for this protocol.
+			if event.IsError {
+				continue
 			}
 			var result piToolResult
 			if json.Unmarshal(event.Result, &result) != nil || !result.Terminate {

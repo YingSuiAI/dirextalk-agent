@@ -440,7 +440,23 @@ func TestParsePiEventsAcceptsPiManagedRetryAndContinuationRuns(t *testing.T) {
 			`{"type":"agent_settled"}` + "\n",
 	)
 
-	usage, finalJSON, err := ParsePiEvents(stream)
+	buffer := newProcessOutputBuffer(ProcessStdoutPiEventsV1, MaxProcessOutputBytes, nil)
+	for len(stream) > 0 {
+		chunk := min(23, len(stream))
+		if _, err := buffer.Write(stream[:chunk]); err != nil {
+			t.Fatal(err)
+		}
+		stream = stream[chunk:]
+	}
+	buffer.finalize()
+	if buffer.exceededLimit() {
+		t.Fatal("Pi-managed retry lifecycle exceeded retained output limit")
+	}
+	retained := buffer.clone()
+	buffer.destroy()
+	defer clear(retained)
+
+	usage, finalJSON, err := ParsePiEvents(retained)
 	if err != nil {
 		t.Fatalf("parse Pi-managed retry: %v", err)
 	}
@@ -453,6 +469,70 @@ func TestParsePiEventsAcceptsPiManagedRetryAndContinuationRuns(t *testing.T) {
 	defer clear(canonical)
 	if err != nil || final.Summary != "Recovered and completed the task." {
 		t.Fatalf("retry final=%+v err=%v", final, err)
+	}
+}
+
+func TestParsePiEventsAcceptsCorrectedResultAfterTruncatedToolCall(t *testing.T) {
+	t.Parallel()
+	stream := []byte(
+		`{"type":"session","version":3,"id":"session-1"}` + "\n" +
+			`{"type":"agent_start"}` + "\n" +
+			`{"type":"message_end","message":{"role":"assistant","stopReason":"length","usage":{"input":100,"output":80,"cacheRead":10,"cacheWrite":0,"reasoning":5}}}` + "\n" +
+			`{"type":"tool_execution_end","toolName":"dirextalk_submit_result","result":{"content":[{"type":"text","text":"Tool call was truncated and was not executed."}],"details":{}},"isError":true}` + "\n" +
+			`{"type":"message_end","message":{"role":"toolResult"}}` + "\n" +
+			`{"type":"message_end","message":{"role":"user"}}` + "\n" +
+			`{"type":"message_end","message":{"role":"assistant","stopReason":"toolUse","usage":{"input":220,"output":40,"cacheRead":20,"cacheWrite":0,"reasoning":7}}}` + "\n" +
+			`{"type":"tool_execution_end","toolName":"dirextalk_submit_result","result":{"content":[{"type":"text","text":"Final result submitted."}],"details":{"status":"completed","summary":"Recovered after the truncated result call.","deliverables":["deck.pptx"],"tests":["Presentation QA passed."],"risks":[]},"terminate":true},"isError":false}` + "\n" +
+			`{"type":"agent_end","willRetry":false}` + "\n" +
+			`{"type":"agent_settled"}` + "\n",
+	)
+
+	buffer := newProcessOutputBuffer(ProcessStdoutPiEventsV1, MaxProcessOutputBytes, nil)
+	for len(stream) > 0 {
+		chunk := min(23, len(stream))
+		if _, err := buffer.Write(stream[:chunk]); err != nil {
+			t.Fatal(err)
+		}
+		stream = stream[chunk:]
+	}
+	buffer.finalize()
+	if buffer.exceededLimit() {
+		t.Fatal("corrected result lifecycle exceeded retained output limit")
+	}
+	retained := buffer.clone()
+	buffer.destroy()
+	defer clear(retained)
+
+	usage, finalJSON, err := ParsePiEvents(retained)
+	if err != nil {
+		t.Fatalf("parse corrected result submission: %v", err)
+	}
+	defer clear(finalJSON)
+	if usage.InputTokens != 350 || usage.OutputTokens != 120 ||
+		usage.CachedInputTokens != 30 || usage.ReasoningOutputTokens != 12 {
+		t.Fatalf("corrected result usage=%+v", usage)
+	}
+	if !bytes.Contains(finalJSON, []byte(`"deliverables":["deck.pptx"]`)) {
+		t.Fatalf("corrected final=%s", finalJSON)
+	}
+}
+
+func TestParsePiEventsReportsFinalMissingAfterOnlyFailedResultCalls(t *testing.T) {
+	t.Parallel()
+	stream := []byte(
+		`{"type":"session","version":3,"id":"session-1"}` + "\n" +
+			`{"type":"agent_start"}` + "\n" +
+			`{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{"input":100,"output":20}}}` + "\n" +
+			`{"type":"tool_execution_end","toolName":"dirextalk_submit_result","result":{"details":{}},"isError":true}` + "\n" +
+			`{"type":"agent_end","willRetry":false}` + "\n" +
+			`{"type":"agent_settled"}` + "\n",
+	)
+
+	_, finalJSON, err := ParsePiEvents(stream)
+	clear(finalJSON)
+	failure, ok := FailureOf(err)
+	if !ok || failure.Stage != FailureStagePi || failure.Code != FailureCodePiFinalMissing {
+		t.Fatalf("failed result-only stream error=%v failure=%+v", err, failure)
 	}
 }
 
