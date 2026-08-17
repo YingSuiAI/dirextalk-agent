@@ -150,8 +150,9 @@ func (s *clientSession) callTool(ctx context.Context, name string, arguments map
 
 func decodeCallToolResult(data json.RawMessage) (ToolResult, error) {
 	var result struct {
-		Content []json.RawMessage `json:"content"`
-		IsError bool              `json:"isError"`
+		Content           []json.RawMessage `json:"content"`
+		StructuredContent json.RawMessage   `json:"structuredContent"`
+		IsError           bool              `json:"isError"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil || result.Content == nil {
 		return ToolResult{}, ErrProtocol
@@ -170,9 +171,29 @@ func decodeCallToolResult(data json.RawMessage) (ToolResult, error) {
 		}
 	}
 	return ToolResult{
-		Content: sanitizeToolResult(strings.Join(texts, "\n")),
-		IsError: result.IsError,
+		Content:           sanitizeToolResult(strings.Join(texts, "\n")),
+		StructuredContent: boundedStructuredContent(result.StructuredContent),
+		IsError:           result.IsError,
 	}, nil
+}
+
+func boundedStructuredContent(raw json.RawMessage) json.RawMessage {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || len(raw) > maxStructuredBytes || bytes.Equal(raw, []byte("null")) {
+		return nil
+	}
+	// MCP structuredContent is an object. Retaining only that shape prevents a
+	// generic server from turning this private adapter seam into an arbitrary
+	// payload channel, while the response-wide limit bounds memory use.
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) != nil || object == nil {
+		return nil
+	}
+	var compact bytes.Buffer
+	if json.Compact(&compact, raw) != nil || compact.Len() > maxStructuredBytes {
+		return nil
+	}
+	return append(json.RawMessage(nil), compact.Bytes()...)
 }
 
 func (s *clientSession) request(ctx context.Context, method string, params any, negotiated bool) (json.RawMessage, string, error) {

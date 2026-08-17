@@ -38,8 +38,11 @@ type ToolInvocation struct {
 }
 
 // ToolResult is model-visible output after capability-level redaction and
-// bounded serialization.
+// bounded serialization. StructuredContent is an ephemeral, bounded copy for
+// trusted adapters that project known fields into their own validated domain
+// types; it must not be persisted or exposed wholesale.
 type ToolResult struct {
-	Content string
-	IsError bool
+	Content           string
+	StructuredContent json.RawMessage
+	IsError           bool
 }

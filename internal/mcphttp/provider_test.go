@@ -423,6 +423,9 @@ func TestProviderRedactsAndBoundsToolResults(t *testing.T) {
 		}},
 		callResult: map[string]any{
 			"content": []map[string]any{{"type": "text", "text": unsafeText}},
+			"structuredContent": map[string]any{
+				"room_id": "!room:example.test", "name": "private " + testCredential,
+			},
 			"isError": true,
 		},
 	}
@@ -451,6 +454,30 @@ func TestProviderRedactsAndBoundsToolResults(t *testing.T) {
 		if strings.Contains(result.Content, forbidden) {
 			t.Fatalf("result leaked %q", forbidden)
 		}
+		if bytes.Contains(result.StructuredContent, []byte(forbidden)) {
+			t.Fatalf("structured result leaked %q", forbidden)
+		}
+	}
+	var structured map[string]any
+	if len(result.StructuredContent) == 0 || json.Unmarshal(result.StructuredContent, &structured) != nil || structured["room_id"] != "!room:example.test" {
+		t.Fatalf("structured result was not retained safely: %s", result.StructuredContent)
+	}
+}
+
+func TestDecodeCallToolResultRetainsOnlyBoundedStructuredObjects(t *testing.T) {
+	t.Parallel()
+	valid, err := decodeCallToolResult(json.RawMessage(`{"content":[],"structuredContent":{"room_id":"!room:example.test"}}`))
+	if err != nil || string(valid.StructuredContent) != `{"room_id":"!room:example.test"}` {
+		t.Fatalf("valid structured content=%s err=%v", valid.StructuredContent, err)
+	}
+	array, err := decodeCallToolResult(json.RawMessage(`{"content":[],"structuredContent":[{"room_id":"!room:example.test"}]}`))
+	if err != nil || len(array.StructuredContent) != 0 {
+		t.Fatalf("array structured content=%s err=%v", array.StructuredContent, err)
+	}
+	oversizedPayload := `{"content":[],"structuredContent":{"padding":"` + strings.Repeat("x", maxStructuredBytes) + `"}}`
+	oversized, err := decodeCallToolResult(json.RawMessage(oversizedPayload))
+	if err != nil || len(oversized.StructuredContent) != 0 {
+		t.Fatalf("oversized structured content bytes=%d err=%v", len(oversized.StructuredContent), err)
 	}
 }
 
