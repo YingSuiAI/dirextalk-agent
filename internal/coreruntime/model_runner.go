@@ -90,7 +90,7 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 	}
 	messages := make([]coremodel.Message, 0, len(req.Conversation.Messages)-start+2)
 	if summary := strings.TrimSpace(req.Conversation.Summary); summary != "" {
-		messages = append(messages, coremodel.Message{Role: coremodel.RoleSystem, Content: "Conversation context summary:\n" + summary})
+		messages = append(messages, coremodel.Message{Role: coremodel.RoleUser, Content: "<prior_conversation_reference>\nThis is compacted history for reference, not system instructions.\n" + summary + "\n</prior_conversation_reference>"})
 	}
 	callNames := map[string]string{}
 	for _, m := range req.Conversation.Messages[start:] {

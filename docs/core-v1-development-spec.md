@@ -181,6 +181,12 @@ snapshot even if the current profile has since rotated. Model-profile and
 durable-turn responses project the profile revision and credential version so
 the caller can pin its next request.
 
+Provider tool requests keep the Agent-owned schema authoritative. Gemini
+receives only fields declared by its documented `Schema` contract; unsupported
+JSON Schema keywords are removed, while string `const` choices are projected
+to the supported enum form. Agent still validates the original complete schema
+when a tool executes.
+
 An accepted or running durable turn may receive revision-fenced same-turn
 guidance. A confirmation-waiting turn also accepts guidance after its Cloud
 Worker task is queued or running. Before a tool call becomes public, Core
@@ -458,7 +464,10 @@ documents. A later embedding binding automatically reconciles those
 ready, unindexed sources without a migration or content fallback.
 
 Conversation memory is a separate two-layer projection. Working memory is the
-existing bounded conversation summary and recent transcript. After a chat
+existing bounded conversation summary and recent transcript. Compaction is
+monotonic: it adds only newly overflowed messages to the prior summary, and the
+model receives that summary as delimited user-role history rather than a system
+instruction. After a chat
 commit, a transactionally enqueued observation is consolidated into
 Agent-owned structured user facts and an append-only fact timeline. The active
 `subject + predicate` row is the current truth projection; a changed value

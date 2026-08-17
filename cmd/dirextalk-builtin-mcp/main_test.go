@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,6 +13,9 @@ func TestToolsAreReadOnlyAndReturnLiveValues(t *testing.T) {
 		definition := tool(kind)
 		if definition["name"] != kind {
 			t.Fatalf("tool(%s)=%#v", kind, definition)
+		}
+		if kind == "server_load" && !strings.Contains(definition["description"].(string), "Agent node") {
+			t.Fatalf("server_load target is ambiguous: %#v", definition)
 		}
 		result, err := call(kind, json.RawMessage(`{"name":"`+kind+`","arguments":{}}`))
 		if err != nil || result["isError"] != false {
@@ -54,6 +58,9 @@ func TestLocalSandboxToolReturnsBoundedShellResult(t *testing.T) {
 	definition := tool(localSandboxKind)
 	if definition["name"] != localSandboxToolName {
 		t.Fatalf("local sandbox definition=%#v", definition)
+	}
+	if description := definition["description"].(string); strings.Contains(description, "cloud_worker_propose") || !strings.Contains(description, "another suitable available tool") {
+		t.Fatalf("local sandbox routing description=%q", description)
 	}
 	result, err := call(localSandboxKind, json.RawMessage(`{"name":"local_sandbox_run","arguments":{"script":"printf stdout; printf stderr >&2; printf artifact > result.txt","result_paths":["result.txt"]}}`))
 	if err != nil || result["isError"] != false {

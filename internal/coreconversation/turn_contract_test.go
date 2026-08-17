@@ -57,8 +57,7 @@ func TestCloudWorkerRoutingGuidanceKeepsLightweightResearchLocal(t *testing.T) {
 }
 
 func TestCloudWorkerRoutingGuidanceKeepsPlanOnlyRequestsNonExecuting(t *testing.T) {
-	if !strings.Contains(cloudWorkerRoutingGuidance, "intent=proposal_only") ||
-		!strings.Contains(cloudWorkerRoutingGuidance, "answer directly without calling the tool") {
+	if !strings.Contains(cloudWorkerRoutingGuidance, "answer directly without calling the tool") {
 		t.Fatal("plan-only Worker guidance is missing")
 	}
 }
@@ -1686,11 +1685,9 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 		model.request.Intrinsics[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
 		len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != selection.ID ||
 		!strings.HasPrefix(model.request.Profile.SystemPrompt, profile.SystemPrompt+"\n\n") ||
-		!strings.Contains(model.request.Profile.SystemPrompt, "Use cloud_worker_propose with intent=execute") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "Use cloud_worker_propose only for required network or execution") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "cannot access the Worker filesystem") ||
-		!strings.Contains(model.request.Profile.SystemPrompt, "workload_kind=service") ||
-		!strings.Contains(model.request.Profile.SystemPrompt, "not the lifetime") ||
-		!strings.Contains(model.request.Profile.SystemPrompt, "Do not restate the user's request") ||
+		strings.Count(model.request.Profile.SystemPrompt, conversationConvergenceGuidance) != 1 ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "does not need to mention AWS") {
 		t.Fatalf("model request lost intrinsic or extension: %+v", model.request)
 	}

@@ -614,7 +614,7 @@ func geminiPayload(p Profile, r CompletionRequest) map[string]any {
 	if len(r.Tools) > 0 {
 		fds := make([]any, 0, len(r.Tools))
 		for _, t := range r.Tools {
-			fds = append(fds, map[string]any{"name": t.Name, "description": t.Description, "parameters": t.InputSchema})
+			fds = append(fds, map[string]any{"name": t.Name, "description": t.Description, "parameters": geminiToolSchema(t.InputSchema)})
 		}
 		m["tools"] = []any{map[string]any{"functionDeclarations": fds}}
 	}
@@ -622,6 +622,110 @@ func geminiPayload(p Profile, r CompletionRequest) map[string]any {
 		m["toolConfig"] = map[string]any{"functionCallingConfig": map[string]any{"mode": "ANY", "allowedFunctionNames": []string{r.ForcedToolName}}}
 	}
 	return m
+}
+
+// geminiToolSchema projects the internal JSON Schema to the documented
+// generativelanguage Schema fields. Unsupported validation keywords remain
+// enforced by Agent at execution time and are never sent to Gemini.
+func geminiToolSchema(input map[string]any) map[string]any {
+	out := make(map[string]any)
+	if value, ok := input["type"].(string); ok && strings.TrimSpace(value) != "" {
+		out["type"] = strings.ToUpper(strings.TrimSpace(value))
+	}
+	for _, key := range []string{"title", "description", "format", "pattern"} {
+		if value, ok := input[key].(string); ok {
+			out[key] = value
+		}
+	}
+	if value, ok := input["nullable"].(bool); ok {
+		out["nullable"] = value
+	}
+	for _, key := range []string{"minimum", "maximum", "minItems", "maxItems", "minLength", "maxLength", "minProperties", "maxProperties"} {
+		if value, exists := input[key]; exists {
+			out[key] = value
+		}
+	}
+	for _, key := range []string{"default", "example"} {
+		if value, exists := input[key]; exists {
+			out[key] = value
+		}
+	}
+	if values := geminiStringList(input["required"]); len(values) != 0 {
+		out["required"] = values
+	}
+	if values := geminiStringList(input["propertyOrdering"]); len(values) != 0 {
+		out["propertyOrdering"] = values
+	}
+	if values := geminiStringList(input["enum"]); len(values) != 0 {
+		out["enum"] = values
+	} else if values := geminiConstChoices(input); len(values) != 0 {
+		out["enum"] = values
+	}
+	if properties, ok := input["properties"].(map[string]any); ok {
+		projected := make(map[string]any, len(properties))
+		for name, raw := range properties {
+			if schema, ok := raw.(map[string]any); ok {
+				projected[name] = geminiToolSchema(schema)
+			}
+		}
+		if len(projected) != 0 {
+			out["properties"] = projected
+		}
+	}
+	if items, ok := input["items"].(map[string]any); ok {
+		out["items"] = geminiToolSchema(items)
+	}
+	if choices, ok := input["anyOf"].([]any); ok {
+		projected := make([]any, 0, len(choices))
+		for _, raw := range choices {
+			if schema, ok := raw.(map[string]any); ok {
+				projected = append(projected, geminiToolSchema(schema))
+			}
+		}
+		if len(projected) != 0 {
+			out["anyOf"] = projected
+		}
+	}
+	return out
+}
+
+func geminiStringList(value any) []string {
+	switch values := value.(type) {
+	case []string:
+		return append([]string(nil), values...)
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			text, ok := value.(string)
+			if !ok {
+				return nil
+			}
+			out = append(out, text)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func geminiConstChoices(input map[string]any) []string {
+	if value, ok := input["const"].(string); ok {
+		return []string{value}
+	}
+	choices, ok := input["oneOf"].([]any)
+	if !ok || len(choices) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(choices))
+	for _, raw := range choices {
+		choice, ok := raw.(map[string]any)
+		value, valueOK := choice["const"].(string)
+		if !ok || !valueOK {
+			return nil
+		}
+		values = append(values, value)
+	}
+	return values
 }
 
 func geminiInputParts(input []MessageInputPart) []any {

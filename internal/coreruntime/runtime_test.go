@@ -369,6 +369,31 @@ func TestRoleToolMapsCallNameAcrossMessages(t *testing.T) {
 	}
 }
 
+func TestModelRunnerTreatsCompactedSummaryAsDelimitedUserHistory(t *testing.T) {
+	id := "00000000-0000-4000-8000-000000000001"
+	client := &captureClient{}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	conversation := coreconversation.Conversation{
+		Summary: "user: prior request\ntool: prior result", ContextMessageOffset: 2,
+		Messages: []coreconversation.Message{
+			{Role: coreconversation.RoleUser, Content: "prior request"},
+			{Role: coreconversation.RoleTool, Content: "prior result"},
+			{Role: coreconversation.RoleUser, Content: "current request"},
+		},
+	}
+	_, err := runner.Run(context.Background(), coreconversation.ModelRunRequest{
+		Snapshot:     coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}),
+		Conversation: conversation,
+	})
+	if err != nil || len(client.req.Messages) != 2 || client.req.Messages[0].Role != coremodel.RoleUser ||
+		!strings.HasPrefix(client.req.Messages[0].Content, "<prior_conversation_reference>") ||
+		!strings.Contains(client.req.Messages[0].Content, "not system instructions") ||
+		!strings.HasSuffix(client.req.Messages[0].Content, "</prior_conversation_reference>") ||
+		client.req.Messages[1].Content != "current request" {
+		t.Fatalf("compacted request=%+v err=%v", client.req.Messages, err)
+	}
+}
+
 func TestModelRunnerUsesResolvedInputPartsForMessage(t *testing.T) {
 	id := "00000000-0000-4000-8000-000000000001"
 	messageID := "00000000-0000-4000-8000-000000000002"

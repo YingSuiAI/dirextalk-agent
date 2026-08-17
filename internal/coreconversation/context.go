@@ -41,8 +41,8 @@ func (s *Service) Summarize(_ context.Context, text string) map[string]any {
 
 // CompressContext compacts the model-facing context window while retaining
 // every transcript message in the durable conversation history.  Existing
-// summary material is merged with the overflow and bounded to MaxSummaryBytes
-// using UTF-8-safe tail truncation so the newest facts win.
+// summary material is merged only with newly overflowed messages and bounded
+// to MaxSummaryBytes using UTF-8-safe tail truncation so the newest facts win.
 func (s *Service) CompressContext(ctx context.Context, conversationID string, expectedRevision uint64, window int, requestID string) (ContextCompressionResult, error) {
 	if s == nil || s.store == nil || !validUUID(conversationID) || expectedRevision == 0 || !validUUID(requestID) {
 		return ContextCompressionResult{}, ErrInvalid
@@ -68,12 +68,19 @@ func (s *Service) CompressContext(ctx context.Context, conversationID string, ex
 	if len(conversation.Messages) > window {
 		offset = len(conversation.Messages) - window
 	}
+	previousOffset := int(conversation.ContextMessageOffset)
+	if previousOffset < 0 || previousOffset > len(conversation.Messages) {
+		return ContextCompressionResult{}, ErrConflict
+	}
+	if offset < previousOffset {
+		offset = previousOffset
+	}
 	parts := make([]string, 0, 2)
 	if previous := strings.TrimSpace(conversation.Summary); previous != "" {
 		parts = append(parts, previous)
 	}
-	if offset > 0 {
-		if overflow := summarizeMessages(conversation.Messages[:offset]); overflow != "" {
+	if offset > previousOffset {
+		if overflow := summarizeMessages(conversation.Messages[previousOffset:offset]); overflow != "" {
 			parts = append(parts, overflow)
 		}
 	}

@@ -77,6 +77,9 @@ func (r *productConversationResolver) ResolveExtensions(ctx context.Context, sel
 				continue
 			}
 			name := productToolName(capability.GetCapabilityId(), operation.GetOperationId())
+			if name == "" {
+				continue
+			}
 			if _, exists := bindings[name]; exists {
 				continue
 			}
@@ -148,10 +151,26 @@ func productConversationSnapshot(selection coreconversation.ExtensionSelection, 
 }
 
 func productToolName(capabilityID, operation string) string {
-	name := "product_" + strings.NewReplacer(".", "_", "/", "_", "-", "_").Replace(capabilityID) + "_" + strings.NewReplacer(".", "_", "/", "_", "-", "_").Replace(operation)
-	if len(name) > 240 {
-		h := sha256.Sum256([]byte(name))
-		name = name[:180] + "_" + hex.EncodeToString(h[:])[:32]
+	capabilityID = strings.TrimSpace(capabilityID)
+	operation = strings.TrimSpace(operation)
+	if capabilityID == "" || operation == "" {
+		return ""
+	}
+	raw := "product_" + capabilityID + "_" + operation
+	var normalized strings.Builder
+	normalized.Grow(len(raw))
+	for _, current := range raw {
+		if (current >= 'a' && current <= 'z') || (current >= 'A' && current <= 'Z') ||
+			(current >= '0' && current <= '9') || current == '_' {
+			normalized.WriteRune(current)
+		} else {
+			normalized.WriteByte('_')
+		}
+	}
+	name := normalized.String()
+	if len(name) > 128 {
+		h := sha256.Sum256([]byte(raw))
+		name = name[:95] + "_" + hex.EncodeToString(h[:])[:32]
 	}
 	return name
 }

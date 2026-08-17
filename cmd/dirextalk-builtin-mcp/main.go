@@ -125,12 +125,12 @@ func serve(kind string) error {
 func tool(kind string) map[string]any {
 	description := "Return the current server time in UTC."
 	if kind == "server_load" {
-		description = "Return the current server load, uptime, process count, and memory totals."
+		description = "Return the current Agent node load, uptime, process count, and memory totals."
 	}
 	if kind == localSandboxKind {
 		return map[string]any{
 			"name":        localSandboxToolName,
-			"description": "Run a small offline shell script in an ephemeral isolated workspace whose current working directory is /work. Use only for tasks that fit 30 CPU seconds, 256 MiB memory, 32 processes, and 16 MiB total files. Network access is unavailable; use cloud_worker_propose for network, build, deploy, long-running, or larger tasks.",
+			"description": "Run a small offline shell script in an ephemeral isolated workspace rooted at /work. Use only for tasks within 30 CPU seconds, 256 MiB memory, 32 processes, 16 MiB total files, and no network. For out-of-scope work, choose another suitable available tool.",
 			"inputSchema": map[string]any{
 				"type": "object", "additionalProperties": false,
 				"properties": map[string]any{

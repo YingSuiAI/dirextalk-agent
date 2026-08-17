@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -263,6 +264,44 @@ func TestProviderPayloadsForceNamedTool(t *testing.T) {
 	allowed := gemConfig["allowedFunctionNames"].([]string)
 	if gemConfig["mode"] != "ANY" || len(allowed) != 1 || allowed[0] != IntrinsicStaticSitePublishToolName {
 		t.Fatalf("Gemini forced tool config=%+v", gemConfig)
+	}
+}
+
+func TestGeminiPayloadProjectsWorkerSchemaToDocumentedSubset(t *testing.T) {
+	request := CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "deploy"}}, Tools: []Tool{{
+		Name: "cloud_worker_propose", Description: "run work", InputSchema: map[string]any{
+			"type": "object", "additionalProperties": false, "required": []any{"workspace_mode", "service"},
+			"properties": map[string]any{
+				"workspace_mode": map[string]any{"type": "string", "description": "workspace relation", "enum": []any{"none", "read_only", "write"}},
+				"service": map[string]any{"type": "object", "additionalProperties": false, "required": []any{"workload_id", "health_path"}, "properties": map[string]any{
+					"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9-]+$"},
+					"health_path": map[string]any{"type": "string", "description": "health", "pattern": "^/"},
+				}},
+				"attachment_ids": map[string]any{"type": "array", "uniqueItems": true, "items": map[string]any{"type": "string", "oneOf": []any{
+					map[string]any{"const": "attachment-a", "title": "A"}, map[string]any{"const": "attachment-b", "title": "B"},
+				}}},
+			},
+		},
+	}}}
+	payload := geminiPayload(validProfile(ProviderGemini, "https://example.com", "k"), request)
+	declarations := payload["tools"].([]any)[0].(map[string]any)["functionDeclarations"].([]any)
+	parameters := declarations[0].(map[string]any)["parameters"].(map[string]any)
+	properties := parameters["properties"].(map[string]any)
+	service := properties["service"].(map[string]any)
+	workloadID := service["properties"].(map[string]any)["workload_id"].(map[string]any)
+	attachments := properties["attachment_ids"].(map[string]any)
+	items := attachments["items"].(map[string]any)
+	if parameters["type"] != "OBJECT" || !reflect.DeepEqual(parameters["required"], []string{"workspace_mode", "service"}) ||
+		properties["workspace_mode"].(map[string]any)["description"] != "workspace relation" || service["type"] != "OBJECT" ||
+		workloadID["type"] != "STRING" || workloadID["pattern"] != "^[a-z0-9-]+$" || workloadID["minLength"] != 1 ||
+		items["type"] != "STRING" || !reflect.DeepEqual(items["enum"], []string{"attachment-a", "attachment-b"}) {
+		t.Fatalf("Gemini worker parameters=%#v", parameters)
+	}
+	encoded, _ := json.Marshal(parameters)
+	for _, unsupported := range []string{`"additionalProperties"`, `"uniqueItems"`, `"oneOf"`, `"const"`} {
+		if strings.Contains(string(encoded), unsupported) {
+			t.Fatalf("Gemini schema retained unsupported %s: %s", unsupported, encoded)
+		}
 	}
 }
 

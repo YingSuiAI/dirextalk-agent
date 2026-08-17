@@ -19,12 +19,13 @@ import (
 )
 
 const (
-	MaxTurnModelDispatches      = 500
-	MaxTurnModelActiveDuration  = 24 * time.Hour
-	toolLoopNudgeGuidance       = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
-	toolLoopSynthesisGuidance   = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
-	outputContinuationGuidance  = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
-	staticSitePublishCorrection = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
+	MaxTurnModelDispatches          = 500
+	MaxTurnModelActiveDuration      = 24 * time.Hour
+	toolLoopNudgeGuidance           = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
+	toolLoopSynthesisGuidance       = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
+	outputContinuationGuidance      = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
+	staticSitePublishCorrection     = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
+	conversationConvergenceGuidance = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
 )
 
 type Service struct {
@@ -1776,7 +1777,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			defer modelCancel()
 			defer s.unregisterTurnOrdering(id, ordering)
 			profile := turn.ProfileSnapshot.Profile()
-			systemPrompt := profile.SystemPrompt
+			systemPrompt := appendSystemPrompt(profile.SystemPrompt, conversationConvergenceGuidance)
 			if containsStaticSiteIntrinsic(modelIntrinsicTools) {
 				systemPrompt = staticSiteSystemPrompt(systemPrompt)
 			}

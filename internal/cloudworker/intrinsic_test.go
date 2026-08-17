@@ -255,6 +255,16 @@ func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
 	if _, err = parseProposeIntrinsicArguments([]byte(`{"intent":"execute","objective":"deploy","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":{"workload_id":"memory-api","port":8080,"health_path":"/health","hostname":"not a hostname"}}`)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid hostname accepted: %v", err)
 	}
+	for _, serviceJSON := range []string{
+		`{"workload_id":"Memory_API","port":8080,"health_path":"/health"}`,
+		`{"workload_id":"memory-api","port":8080,"health_path":"//health"}`,
+		`{"workload_id":"memory-api","port":8080,"health_path":"/bad path"}`,
+	} {
+		raw := []byte(`{"intent":"execute","objective":"deploy","workspace_mode":"none","min_vcpu":2,"min_memory_gib":2,"disk_gib":20,"estimated_runtime_minutes":60,"workload_kind":"service","service":` + serviceJSON + `}`)
+		if _, err = parseProposeIntrinsicArguments(raw); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("invalid service shape %s accepted: %v", serviceJSON, err)
+		}
+	}
 	if _, err = parseProposeIntrinsicArguments([]byte(`{"intent":"execute","objective":"deploy","workspace_mode":"none","workload_kind":"service"}`)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("missing service spec accepted: %v", err)
 	}
@@ -343,13 +353,43 @@ func TestIntrinsicDescriptionIncludesLiveRetainedWorkerInventory(t *testing.T) {
 		t.Fatalf("tools=%+v err=%v", tools, err)
 	}
 	description := tools[0].Tool.Description
-	for _, expected := range []string{`"worker_id":"worker-1"`, `"instance_type":"t3.small"`, `"vcpu":2`, `"memory_gib":2`, `"volume_gib":20`, `"availability":"available"`, `"public_ipv4":"203.0.113.8"`, `"load_1":0.5`, "actual minimum", "Prefer an available idle retained Worker"} {
+	for _, expected := range []string{`"worker_id":"worker-1"`, `"instance_type":"t3.small"`, `"vcpu":2`, `"memory_gib":2`, `"volume_gib":20`, `"availability":"available"`, `"public_ipv4":"203.0.113.8"`, `"load_1":0.5`, `"worker_count":1`} {
 		if !strings.Contains(description, expected) {
 			t.Fatalf("inventory description missing %s: %s", expected, description)
 		}
 	}
 	if resolver.owner != lease.Turn.OwnerID || resolver.gen != lease.Turn.AccountGeneration {
 		t.Fatalf("inventory authority=%q/%d", resolver.owner, resolver.gen)
+	}
+}
+
+func TestIntrinsicDescriptionBoundsRetainedWorkerInventory(t *testing.T) {
+	intrinsic, _, lease := intrinsicFixture(t, "inspect retained workers", nil, nil)
+	workers := make([]RetainedWorkerSnapshot, 20)
+	for index := range workers {
+		workers[index] = RetainedWorkerSnapshot{
+			WorkerID: uuid.NewString(), InstanceType: "type-" + strings.Repeat("x", 512), VCPU: 8, MemoryGiB: 32, VolumeGiB: 80,
+			Availability: strings.Repeat("available", 64), EC2State: "running", WorkerPhase: "idle", PublicIPv4: "203.0.113.8",
+			Error: "SECRET-MARKER-" + strings.Repeat("private", 512), Server: &RetainedWorkerServer{Load1: 1.25, Load5: 0.75, Load15: 0.5},
+			Workloads: make([]RetainedWorkerWorkload, 200),
+		}
+	}
+	resolver := &intrinsicWorkerInventory{value: RetainedWorkerInventory{ObservedAt: time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC), AtCapacity: true, Workers: workers}}
+	if err := intrinsic.EnableRetainedWorkerInventory(resolver); err != nil {
+		t.Fatal(err)
+	}
+	first, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first tools=%+v err=%v", first, err)
+	}
+	second, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
+	description := first[0].Tool.Description
+	if err != nil || len(second) != 1 || description != second[0].Tool.Description || len(description) > maxModelToolDescriptionBytes ||
+		strings.Contains(description, "SECRET-MARKER") || !strings.Contains(description, `"worker_count":20`) || !strings.Contains(description, `"truncated":true`) {
+		t.Fatalf("bounded description bytes=%d deterministic=%t value=%q err=%v", len(description), len(second) == 1 && description == second[0].Tool.Description, description, err)
+	}
+	if err := coremodel.ValidateCompletionRequest(coremodel.CompletionRequest{Messages: []coremodel.Message{{Role: coremodel.RoleUser, Content: "inspect"}}, Tools: []coremodel.Tool{first[0].Tool}}); err != nil {
+		t.Fatalf("bounded tool failed model validation: %v", err)
 	}
 }
 
@@ -563,22 +603,29 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 	runtimeDescription := fmt.Sprint(properties["estimated_runtime_minutes"].(map[string]any)["description"])
 	if !strings.Contains(runtimeDescription, "environment setup") || !strings.Contains(runtimeDescription, "configuration") ||
 		!strings.Contains(runtimeDescription, "verification") || !strings.Contains(runtimeDescription, "reasonable margin") ||
-		!strings.Contains(runtimeDescription, "not the lifetime") || !strings.Contains(tools[0].Tool.Description, "not the lifetime") {
+		!strings.Contains(runtimeDescription, "not the lifetime") {
 		t.Fatalf("runtime sizing guidance schema=%q tool=%q", runtimeDescription, tools[0].Tool.Description)
 	}
 	workloadDescription := fmt.Sprint(properties["workload_kind"].(map[string]any)["description"])
 	serviceDescription := fmt.Sprint(properties["service"].(map[string]any)["description"])
-	objectiveDescription := fmt.Sprint(properties["objective"].(map[string]any)["description"])
-	if !strings.Contains(workloadDescription, "MUST use service") || !strings.Contains(serviceDescription, "MUST set service.hostname") ||
-		!strings.Contains(objectiveDescription, "Never instruct the Worker") || !strings.Contains(tools[0].Tool.Description, "MUST use workload_kind=service") ||
-		!strings.Contains(tools[0].Tool.Description, "MUST NOT be 80 or 443") || !strings.Contains(tools[0].Tool.Description, "lightweight local HTTP service") ||
-		!strings.Contains(tools[0].Tool.Description, "invoke this tool immediately") ||
-		!strings.Contains(tools[0].Tool.Description, "MUST NOT ask the remote Worker") || !strings.Contains(tools[0].Tool.Description, "Only creating a new Worker requires owner confirmation") {
+	serviceProperties := properties["service"].(map[string]any)["properties"].(map[string]any)
+	workloadID := serviceProperties["workload_id"].(map[string]any)
+	healthPath := serviceProperties["health_path"].(map[string]any)
+	hostname := serviceProperties["hostname"].(map[string]any)
+	workspaceDescription := fmt.Sprint(properties["workspace_mode"].(map[string]any)["description"])
+	if !strings.Contains(workloadDescription, "MUST use service") || !strings.Contains(serviceDescription, "Required for workload_kind=service") ||
+		workloadID["pattern"] != "^[a-z0-9-]+$" ||
+		healthPath["pattern"] != `^/(?:$|[^/\s#][^\s#]*)$` || !strings.Contains(fmt.Sprint(hostname["description"]), "Agent owns Caddy and DNS") ||
+		!strings.Contains(workspaceDescription, "read_only with one or more attachment_ids") ||
+		!strings.Contains(tools[0].Tool.Description, "invoke this tool immediately") || !strings.Contains(tools[0].Tool.Description, "Only creating a new Worker requires owner confirmation") {
 		t.Fatalf("workload guidance schema=%q service=%q tool=%q", workloadDescription, serviceDescription, tools[0].Tool.Description)
 	}
 	attachments, ok := properties["attachment_ids"].(map[string]any)
 	if !ok || attachments["maxItems"] != 2 {
 		t.Fatalf("attachment schema=%#v", properties["attachment_ids"])
+	}
+	if !strings.Contains(fmt.Sprint(attachments["description"]), "workspace_mode=none") {
+		t.Fatalf("attachment/workspace relation missing: %#v", attachments)
 	}
 	items, ok := attachments["items"].(map[string]any)
 	if !ok {

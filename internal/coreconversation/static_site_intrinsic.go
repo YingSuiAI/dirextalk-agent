@@ -27,7 +27,7 @@ func staticSiteIntrinsic(store ConversationStaticSiteStore, publisher StaticSite
 	return ResolvedIntrinsic{
 		Tool: coremodel.Tool{
 			Name:        coremodel.IntrinsicStaticSitePublishToolName,
-			Description: "Publish one self-contained, script-free HTML page at a durable URL under the Dirextalk main domain. Put all CSS and data in the HTML. JavaScript, external network requests, forms, archives, and model-supplied paths are not supported.",
+			Description: "Publish one self-contained, script-free HTML page at a durable Dirextalk URL. Include all CSS and data; no JavaScript, network requests, forms, archives, or model-supplied paths.",
 			InputSchema: map[string]any{
 				"type": "object", "additionalProperties": false,
 				"required": []any{"html"},

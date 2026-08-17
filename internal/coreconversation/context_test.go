@@ -37,6 +37,18 @@ func TestCompressContextRetainsTranscriptAndBoundsModelWindow(t *testing.T) {
 	if err != nil || len(stored.Messages) != 15 || stored.ContextMessageOffset != 3 {
 		t.Fatalf("stored conversation=%+v err=%v", stored, err)
 	}
+	for i := 15; i < 18; i++ {
+		stored.Messages = append(stored.Messages, Message{ID: uuid.NewString(), Role: RoleUser, Content: "fact-" + string(rune('a'+i)), ModelProfileID: profileID, CreatedAt: now.Add(time.Duration(i+1) * time.Second)})
+	}
+	store.conv[conversationID] = stored
+	second, err := service.CompressContext(context.Background(), conversationID, 2, 12, uuid.NewString())
+	if err != nil || second.Conversation.ContextMessageOffset != 6 || strings.Count(second.Summary, "fact-a") != 1 || !strings.Contains(second.Summary, "fact-f") {
+		t.Fatalf("incremental compression=%+v err=%v", second, err)
+	}
+	third, err := service.CompressContext(context.Background(), conversationID, second.Revision, 12, uuid.NewString())
+	if err != nil || third.Summary != second.Summary || strings.Count(third.Summary, "fact-a") != 1 {
+		t.Fatalf("repeated compression duplicated summary: second=%q third=%q err=%v", second.Summary, third.Summary, err)
+	}
 }
 
 func TestSummarizeTextIsDeterministicAndBounded(t *testing.T) {

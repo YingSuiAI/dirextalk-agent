@@ -133,6 +133,84 @@ type RetainedWorkerWorkload struct {
 	Hostname    string `json:"hostname,omitempty"`
 }
 
+const maxModelToolDescriptionBytes = 4096
+
+func boundedWorkerToolDescription(base string, inventory RetainedWorkerInventory, ready bool) string {
+	prefix := strings.TrimSpace(base) + "\nretained_worker_inventory="
+	budget := maxModelToolDescriptionBytes - len(prefix)
+	if budget < 2 {
+		return strings.TrimSpace(base)
+	}
+	if !ready {
+		return prefix + `{"status":"unavailable"}`
+	}
+	workers := append([]RetainedWorkerSnapshot(nil), inventory.Workers...)
+	sort.Slice(workers, func(i, j int) bool {
+		if workers[i].WorkerID == workers[j].WorkerID {
+			return workers[i].InstanceType < workers[j].InstanceType
+		}
+		return workers[i].WorkerID < workers[j].WorkerID
+	})
+	projected := make([]any, 0, len(workers))
+	encode := func(items []any, truncated bool) []byte {
+		raw, _ := json.Marshal(map[string]any{
+			"observed_at": inventory.ObservedAt, "at_capacity": inventory.AtCapacity,
+			"worker_count": len(workers), "workers": items, "truncated": truncated,
+		})
+		return raw
+	}
+	for _, worker := range workers {
+		item := map[string]any{
+			"worker_id": boundedInventoryText(worker.WorkerID), "instance_type": boundedInventoryText(worker.InstanceType),
+			"vcpu": worker.VCPU, "memory_gib": worker.MemoryGiB, "volume_gib": worker.VolumeGiB,
+			"availability": boundedInventoryText(worker.Availability), "ec2_state": boundedInventoryText(worker.EC2State),
+			"worker_phase": boundedInventoryText(worker.WorkerPhase), "public_ipv4": boundedInventoryText(worker.PublicIPv4),
+			"workload_count": len(worker.Workloads),
+		}
+		if worker.CurrentTask != nil {
+			item["current_task"] = map[string]any{"execution_id": boundedInventoryText(worker.CurrentTask.ExecutionID), "phase": boundedInventoryText(worker.CurrentTask.Phase)}
+		}
+		if worker.Server != nil {
+			item["server"] = worker.Server
+		}
+		if worker.HourlyQuote != nil {
+			item["hourly_quote"] = map[string]any{
+				"currency": boundedInventoryText(worker.HourlyQuote.Currency), "micros_per_hour": worker.HourlyQuote.MicrosPerHour,
+				"observed_at": worker.HourlyQuote.ObservedAt, "expires_at": worker.HourlyQuote.ExpiresAt,
+			}
+		}
+		candidate := append(append([]any(nil), projected...), item)
+		if len(encode(candidate, true)) > budget {
+			break
+		}
+		projected = candidate
+	}
+	raw := encode(projected, len(projected) != len(workers))
+	for len(raw) > budget && len(projected) > 0 {
+		projected = projected[:len(projected)-1]
+		raw = encode(projected, true)
+	}
+	if len(raw) > budget {
+		raw = []byte(`{"truncated":true}`)
+	}
+	if len(raw) > budget {
+		return strings.TrimSpace(base)
+	}
+	return prefix + string(raw)
+}
+
+func boundedInventoryText(value string) string {
+	value = strings.TrimSpace(strings.ToValidUTF8(value, ""))
+	if len(value) <= 128 {
+		return value
+	}
+	for len(value) > 128 {
+		_, size := utf8.DecodeLastRuneInString(value)
+		value = value[:len(value)-size]
+	}
+	return value
+}
+
 type ProposeIntrinsic struct {
 	service   *Service
 	owners    IntrinsicOwnerResolver
@@ -199,35 +277,34 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	}
 	properties := map[string]any{
 		"intent":                    map[string]any{"type": "string", "enum": []any{"execute", "proposal_only"}, "description": "Use execute only when the user wants the workload to run. Use proposal_only when the user explicitly asks for a plan without starting or authorizing Worker work; it returns a non-executing summary and creates no offer, task, confirmation, or execution."},
-		"objective":                 map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes, "description": "Describe only the workload to run on the Worker. Never instruct the Worker to call AWS CLI, Route53, or another DNS API; the Agent host owns DNS publication."},
-		"workspace_mode":            map[string]any{"type": "string", "enum": workspaceModes},
+		"objective":                 map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes, "description": "Describe only the workload to run on the Worker."},
+		"workspace_mode":            map[string]any{"type": "string", "enum": workspaceModes, "description": "Use none without attachment_ids, read_only with one or more attachment_ids, or write with optional attachment_ids."},
 		"workload_kind":             map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob), "description": "Use job only for finite execution. You MUST use service when the requested result is a persistent network service, website, API, daemon, or other endpoint that must remain available after this run."},
 		"min_vcpu":                  map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Minimum virtual CPU count needed for the task."},
 		"min_memory_gib":            map[string]any{"type": "integer", "minimum": 1, "maximum": 1024, "description": "Minimum memory in GiB needed for the task."},
 		"disk_gib":                  map[string]any{"type": "integer", "minimum": 8, "maximum": 16384, "description": "Working disk capacity in GiB needed for inputs, dependencies, and outputs."},
 		"estimated_runtime_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "Sufficient task execution budget in minutes for environment setup, dependency installation, build, configuration, verification, result collection, and reasonable margin. This is not the lifetime of a retained Worker or deployed service."},
-		"service": map[string]any{"type": "object", "description": "REQUIRED when workload_kind is service; omit for job. service.port is the application's internal port and MUST NOT be 80 or 443. Static files must be served by a lightweight local HTTP service on that internal port. When the user requests a hostname, you MUST set service.hostname. The Agent runner owns Caddy and the Agent host owns DNS; never ask the model to edit Caddy or call AWS CLI, Route53, or another DNS API.", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
-			"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128}, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535, "description": "Application's internal HTTP port. MUST NOT be 80 or 443 when hostname is set."}, "health_path": map[string]any{"type": "string", "minLength": 1, "maxLength": 2048}, "hostname": map[string]any{"type": "string", "minLength": 1, "maxLength": 253},
+		"service": map[string]any{"type": "object", "description": "Required for workload_kind=service; omit for job.", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
+			"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9-]+$", "description": "Stable lowercase letters, digits, and hyphens only."},
+			"port":        map[string]any{"type": "integer", "minimum": 1, "maximum": 65535, "description": "Internal HTTP port; not 80 or 443 when hostname is set."},
+			"health_path": map[string]any{"type": "string", "minLength": 1, "maxLength": 2048, "pattern": `^/(?:$|[^/\s#][^\s#]*)$`, "description": "Absolute HTTP path beginning with one slash, without whitespace or fragments."},
+			"hostname":    map[string]any{"type": "string", "minLength": 1, "maxLength": 253, "description": "Set when the user requests a hostname. Agent owns Caddy and DNS; do not instruct the Worker to configure them."},
 		}},
 	}
 	if attachmentSchema != nil {
 		properties["attachment_ids"] = attachmentSchema
 	}
-	description := "Run substantial project or shell execution, deployment, build, test, durable file delivery, long-running compute, or follow-up work in a retained environment. Set intent=execute when the user wants it run. For an explicit plan-only request, set intent=proposal_only; it creates no offer, task, confirmation, or execution. Declare the task's actual minimum min_vcpu, min_memory_gib, and disk_gib without inflating or reducing them. Prefer an available idle retained Worker whose inventory resources satisfy those minimums. Use workload_kind=job for finite work and omit service. You MUST use workload_kind=service with service.workload_id, service.port, and service.health_path for a persistent website, API, daemon, or other network endpoint. The internal service.port MUST NOT be 80 or 443 when a hostname is requested. Serve static files through a lightweight local HTTP service on that port, and include service.hostname when requested. The Agent runner owns Caddy and the Agent host owns DNS; MUST NOT ask the remote Worker to edit Caddy or use AWS CLI, Route53, or another DNS API. Once workload_kind, actual minimum resources, and any required service fields are known, invoke this tool immediately. Give estimated_runtime_minutes enough budget for setup, dependencies, build, configuration, verification, result collection, and reasonable margin; it is not the lifetime of the retained Worker or deployed service. Answer status questions from retained_worker_inventory without calling this tool. The user does not need to mention cloud or remote execution. Do not use it for ordinary reasoning or when the user requires local execution or forbids cloud use. Only creating a new Worker requires owner confirmation; retained Worker reuse executes directly, including services and hostname publication. New resources start only after owner confirmation."
-	inventory := `{"status":"unavailable"}`
+	description := "Run substantial project or shell work in a retained execution environment, or return a non-executing plan summary. Once workload_kind, actual minimum resources, and required service fields are known, invoke this tool immediately. Only creating a new Worker requires owner confirmation; retained Worker reuse executes directly, including persistent services and hostname publication."
 	var currentInventory RetainedWorkerInventory
 	inventoryReady := false
 	if p.workers != nil && strings.TrimSpace(bound.Turn.OwnerID) != "" && bound.Turn.AccountGeneration != 0 {
 		if current, inventoryErr := p.workers.ResolveRetainedWorkerInventory(ctx, bound.Turn.OwnerID, bound.Turn.AccountGeneration); inventoryErr == nil {
-			if raw, marshalErr := json.Marshal(current); marshalErr == nil && len(raw) <= 64<<10 {
-				inventory = string(raw)
-				currentInventory, inventoryReady = current, true
-			}
+			currentInventory, inventoryReady = current, true
 		}
 	}
 	tool := coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerProposeToolName,
-		Description: description + "\nretained_worker_inventory=" + inventory,
+		Description: boundedWorkerToolDescription(description, currentInventory, inventoryReady),
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -362,7 +439,8 @@ func frozenTurnAttachmentSchema(turn coreconversation.Turn) map[string]any {
 	}
 	return map[string]any{
 		"type": "array", "minItems": 1, "maxItems": len(choices), "uniqueItems": true,
-		"items": map[string]any{"oneOf": choices},
+		"description": "Omit with workspace_mode=none, provide one or more with read_only, and optionally provide with write.",
+		"items":       map[string]any{"type": "string", "oneOf": choices},
 	}
 }
 

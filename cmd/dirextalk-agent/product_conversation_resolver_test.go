@@ -108,3 +108,19 @@ func TestProductToolSchemaRequiresAdvertisedDigestAndNonEmptySchema(t *testing.T
 		t.Fatal("empty schema was accepted")
 	}
 }
+
+func TestProductToolNameIsProviderBoundedAndCollisionResistant(t *testing.T) {
+	first := productToolName("capability."+strings.Repeat("a", 180), "operation/"+strings.Repeat("x", 80))
+	second := productToolName("capability."+strings.Repeat("a", 180), "operation/"+strings.Repeat("y", 80))
+	if len(first) != 128 || len(second) != 128 || first == second {
+		t.Fatalf("bounded names first=%q (%d) second=%q (%d)", first, len(first), second, len(second))
+	}
+	for _, current := range first + second {
+		if (current < 'a' || current > 'z') && (current < 'A' || current > 'Z') && (current < '0' || current > '9') && current != '_' && current != '-' {
+			t.Fatalf("provider-unsafe generated tool name character %q", current)
+		}
+	}
+	if got := productToolName("", "list"); got != "" {
+		t.Fatalf("empty capability produced tool %q", got)
+	}
+}
