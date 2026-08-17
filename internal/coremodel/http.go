@@ -211,7 +211,19 @@ func (t *connectionTester) TestConnection(ctx context.Context, profile Profile) 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return providerHTTPStatusFailure(resp.StatusCode)
 	}
+	if providerReturnedHTML(resp.Header) {
+		return ErrInvalidResponse
+	}
 	return nil
+}
+
+func providerReturnedHTML(header http.Header) bool {
+	raw := strings.TrimSpace(header.Get("Content-Type"))
+	if raw == "" {
+		return false
+	}
+	mediaType, _, _ := strings.Cut(raw, ";")
+	return strings.EqualFold(strings.TrimSpace(mediaType), "text/html")
 }
 
 func connectionURL(p Profile) string {
@@ -366,6 +378,14 @@ func (c *providerClient) Stream(ctx context.Context, request CompletionRequest) 
 		cancel()
 		resp.Body.Close()
 		return nil, providerHTTPStatusFailure(resp.StatusCode)
+	}
+	if providerReturnedHTML(resp.Header) {
+		if idle != nil {
+			idle.Stop()
+		}
+		cancel()
+		resp.Body.Close()
+		return nil, ErrInvalidResponse
 	}
 	source := &countingReader{r: io.LimitReader(resp.Body, maxResponseBytes+1)}
 	if idle != nil {

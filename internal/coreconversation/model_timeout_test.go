@@ -22,6 +22,22 @@ type budgetBlockingTurnModel struct {
 	streamCalls int
 }
 
+type failingTurnModel struct {
+	failure     error
+	runCalls    int
+	streamCalls int
+}
+
+func (m *failingTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
+	m.runCalls++
+	return ModelRunResult{}, errors.New("non-streaming model path must not be used")
+}
+
+func (m *failingTurnModel) Stream(context.Context, ModelRunRequest, func(ModelDelta) error) (ModelRunResult, error) {
+	m.streamCalls++
+	return ModelRunResult{}, m.failure
+}
+
 func (*budgetBlockingTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
 	return ModelRunResult{}, errors.New("non-streaming model path must not be used")
 }
@@ -109,6 +125,55 @@ func TestExecuteTurnClassifiesProviderTimeoutWithoutReplay(t *testing.T) {
 	}
 }
 
+func TestExecuteTurnPersistsPreciseModelFailureClassification(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		failure error
+		code    string
+		summary string
+	}{
+		{name: "invalid local request", failure: coremodel.ErrInvalidCompletionRequest, code: modelRequestInvalidCode, summary: modelRequestInvalidSummary},
+		{name: "invalid provider response", failure: coremodel.ErrInvalidResponse, code: modelProviderResponseCode, summary: modelProviderResponseSummary},
+		{name: "truncated provider stream", failure: coremodel.ErrStreamTruncated, code: modelProviderTruncatedCode, summary: modelProviderTruncatedSummary},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := testTurnSnapshot()
+			conversationID := uuid.NewString()
+			base := newFakeStore()
+			base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+			turn := Turn{
+				ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+				Prompt: "run model", ProfileID: snapshot.ProfileID,
+				ProfileSnapshot: snapshot, ProfileSnapshotDigest: snapshot.Digest(), State: TurnAccepted,
+				Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC(),
+			}
+			store := &timeoutTurnStore{readOnlyTurnStore: &readOnlyTurnStore{
+				publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+				events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+			}}
+			model := &failingTurnModel{failure: test.failure}
+			service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+				return snapshot, nil
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			service.executeTurn(context.Background(), turn.ID)
+
+			if store.turn.State != TurnFailed || store.failedCode != test.code || store.failedSummary != test.summary {
+				t.Fatalf("terminal turn=%+v code=%q summary=%q", store.turn, store.failedCode, store.failedSummary)
+			}
+			if store.uncertainCode != test.code || store.uncertainSummary != test.summary || store.dispatchState != "uncertain" {
+				t.Fatalf("dispatch=%q code=%q summary=%q", store.dispatchState, store.uncertainCode, store.uncertainSummary)
+			}
+			if model.runCalls != 0 || model.streamCalls != 1 {
+				t.Fatalf("model Run calls=%d Stream calls=%d", model.runCalls, model.streamCalls)
+			}
+		})
+	}
+}
+
 func TestTurnModelBudgetUsesStabilityCaps(t *testing.T) {
 	if MaxTurnModelDispatches != 24 {
 		t.Fatalf("model dispatch cap=%d", MaxTurnModelDispatches)
@@ -157,6 +222,15 @@ func TestExecuteTurnAppliesPersistedModelActiveDurationBudget(t *testing.T) {
 
 func TestModelDispatchFailureClassification(t *testing.T) {
 	for _, failure := range []error{
+		fmt.Errorf("wrapped: %w", coremodel.ErrInvalidCompletionRequest),
+		fmt.Errorf("wrapped: %w", coremodel.ErrCompletionRequestTooLarge),
+	} {
+		code, summary := classifyModelDispatchFailure(failure)
+		if code != modelRequestInvalidCode || summary != modelRequestInvalidSummary {
+			t.Fatalf("invalid request=%v code=%q summary=%q", failure, code, summary)
+		}
+	}
+	for _, failure := range []error{
 		fmt.Errorf("wrapped: %w", context.DeadlineExceeded),
 		fmt.Errorf("wrapped: %w", coremodel.ErrStreamIdleTimeout),
 	} {
@@ -168,6 +242,19 @@ func TestModelDispatchFailureClassification(t *testing.T) {
 	code, summary := classifyModelDispatchFailure(errors.New("provider unavailable"))
 	if code != modelDispatchUncertainCode || summary != modelDispatchUncertainSummary {
 		t.Fatalf("provider code=%q summary=%q", code, summary)
+	}
+	for _, test := range []struct {
+		failure error
+		code    string
+		summary string
+	}{
+		{failure: coremodel.ErrInvalidResponse, code: modelProviderResponseCode, summary: modelProviderResponseSummary},
+		{failure: coremodel.ErrStreamTruncated, code: modelProviderTruncatedCode, summary: modelProviderTruncatedSummary},
+	} {
+		code, summary = classifyModelDispatchFailure(test.failure)
+		if code != test.code || summary != test.summary {
+			t.Fatalf("provider failure=%v code=%q summary=%q", test.failure, code, summary)
+		}
 	}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -189,27 +276,40 @@ func TestModelDispatchFailureClassification(t *testing.T) {
 	}
 }
 
-func TestSupervisorPreservesPersistedTimeoutClassificationWithoutReplay(t *testing.T) {
-	snapshot := testTurnSnapshot()
-	turn := Turn{
-		ID: uuid.NewString(), State: TurnRunning, DispatchState: "uncertain",
-		TerminalCode: modelResponseTimeoutCode, TerminalSummary: modelResponseTimeoutSummary,
-	}
-	store := &timeoutRecoveryStore{supervisorTurnStore: &supervisorTurnStore{replayTurnStore: &replayTurnStore{fakeStore: newFakeStore(), turn: turn}}}
-	model := &timeoutTurnModel{}
-	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
-		return snapshot, nil
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestSupervisorPreservesPersistedModelFailureClassificationWithoutReplay(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		code    string
+		summary string
+	}{
+		{name: "timeout", code: modelResponseTimeoutCode, summary: modelResponseTimeoutSummary},
+		{name: "invalid local request", code: modelRequestInvalidCode, summary: modelRequestInvalidSummary},
+		{name: "invalid provider response", code: modelProviderResponseCode, summary: modelProviderResponseSummary},
+		{name: "truncated provider stream", code: modelProviderTruncatedCode, summary: modelProviderTruncatedSummary},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := testTurnSnapshot()
+			turn := Turn{
+				ID: uuid.NewString(), State: TurnRunning, DispatchState: "uncertain",
+				TerminalCode: test.code, TerminalSummary: test.summary,
+			}
+			store := &timeoutRecoveryStore{supervisorTurnStore: &supervisorTurnStore{replayTurnStore: &replayTurnStore{fakeStore: newFakeStore(), turn: turn}}}
+			model := &timeoutTurnModel{}
+			service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+				return snapshot, nil
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	service.runTurnSupervisor(context.Background(), turn.ID)
+			service.runTurnSupervisor(context.Background(), turn.ID)
 
-	if store.code != modelResponseTimeoutCode || store.summary != modelResponseTimeoutSummary {
-		t.Fatalf("recovered code=%q summary=%q", store.code, store.summary)
-	}
-	if model.runCalls != 0 || model.streamCalls != 0 {
-		t.Fatalf("uncertain provider dispatch replayed Run=%d Stream=%d", model.runCalls, model.streamCalls)
+			if store.code != test.code || store.summary != test.summary {
+				t.Fatalf("recovered code=%q summary=%q", store.code, store.summary)
+			}
+			if model.runCalls != 0 || model.streamCalls != 0 {
+				t.Fatalf("uncertain provider dispatch replayed Run=%d Stream=%d", model.runCalls, model.streamCalls)
+			}
+		})
 	}
 }

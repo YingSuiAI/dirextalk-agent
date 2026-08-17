@@ -159,6 +159,9 @@ so profile, extension, Knowledge, attachment, and secret bindings cannot drift
 while a request is running. Agent and Cloud Worker task creation rejects
 non-conversation profiles, and execution verifies the exact protected-secret
 reference plus the digest of every snapshotted provider parameter.
+For OpenAI-compatible profiles, a bare HTTPS origin normalizes once to `/v1`;
+an explicit gateway path remains exact. Model discovery and completion append
+their operation paths to that same normalized root.
 
 Profile sync durably stores separate conversation, tool, embedding, and speech
 role defaults. The tool role references only a conversation-kind profile and

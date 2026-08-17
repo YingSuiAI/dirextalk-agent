@@ -224,6 +224,12 @@ support.
   Provider deltas retain bounded coalescing with final flush, and
   OpenAI-compatible streams accept explicit nonempty `finish_reason` before
   clean EOF while still rejecting unmarked truncation.
+- On **2026-08-17**, OpenAI-compatible bare origins normalize to `/v1`, keeping
+  model discovery and completion on one API root and rejecting successful HTML
+  landing pages as invalid provider responses. Pinned Skill bytes retain their
+  immutable raw digest while CRLF and bare CR normalize to LF before prompt
+  validation. Focused regressions cover the production failure shape where a
+  gateway root returned HTML and every model turn ended without a delta.
 - On **2026-08-17**, the PR workflow adds pinned `staticcheck` 0.7.0 and
   `govulncheck` 1.7.0 plus a bounded high-risk race lane. Go 1.26.6, gRPC
   1.82.1, `x/net` 0.55.0, and `x/text` 0.39.0 close the reachable findings that

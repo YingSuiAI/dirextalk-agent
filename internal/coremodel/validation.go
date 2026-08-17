@@ -312,6 +312,12 @@ func NormalizeBaseURL(provider ModelProvider, raw string) (string, error) {
 		return "", ErrInvalidBaseURL
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
+	// OpenAI-compatible base URLs name the API root. A bare origin therefore
+	// resolves to the conventional /v1 root; explicit gateway prefixes remain
+	// exact and receive only the operation suffix.
+	if provider == ProviderOpenAICompatible && u.Path == "" {
+		u.Path = "/v1"
+	}
 	u.RawPath = ""
 	return u.String(), nil
 }
@@ -400,9 +406,9 @@ func validateProfile(p Profile, requireAPIKey bool) (Profile, error) {
 
 // normalizeProviderName keeps the persisted provider vocabulary deliberately
 // small while accepting the provider names commonly used by OpenRouter and
-// other OpenAI-compatible gateways at the API boundary.  A caller-supplied
-// BaseURL remains authoritative; only an omitted URL receives the alias's
-// safe default endpoint.
+// other OpenAI-compatible gateways at the API boundary. A caller-supplied
+// nonempty path remains authoritative; an omitted URL receives the alias's
+// safe default endpoint and a bare OpenAI-compatible origin receives /v1.
 func normalizeProviderName(provider ModelProvider) ModelProvider {
 	raw := strings.ToLower(strings.TrimSpace(string(provider)))
 	switch raw {

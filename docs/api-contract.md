@@ -116,6 +116,11 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
 - A conversation profile whose supplied `max_output_tokens` is nonpositive is
   normalized to the single positive default of 8192 before persistence. The
   immutable turn snapshot exposes and dispatches that exact effective value.
+- An OpenAI-compatible profile treats a bare HTTPS origin as the conventional
+  `/v1` API root. An explicit nonempty path remains authoritative. Connection
+  tests and completion requests therefore derive `models` and
+  `chat/completions` from the same normalized API root; a successful HTML
+  landing-page response is rejected as `provider_invalid_response`.
 - Durable Task events/results are fenced by Task revision, attempt, and lease
   epoch. `WatchEvents` resumes strictly after its supplied sequence.
 - `Chat`, `StreamChat`, and `StartTurn` require a positive, exact
@@ -178,8 +183,12 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   stream, and output limit. Safe diagnostics collapse status failures to their
   HTTP class and never include response bodies. A provider HTTP 4xx, including
   429, is a terminal `provider_rejected` turn outcome; timeouts become
-  `provider_timeout`, while an unclassified transport or 5xx outcome remains
-  `provider_uncertain` and is not automatically replayed.
+  `provider_timeout`, invalid local completion input becomes
+  `invalid_model_request`, and invalid or prematurely terminated provider
+  streams retain the distinct `provider_invalid_response` or
+  `provider_stream_truncated` code. An unclassified transport or 5xx outcome
+  remains `provider_uncertain`. No dispatched failure is automatically
+  replayed.
 - Recent tool-loop recovery is deliberately conservative and resets at an
   accepted steer. It recognizes only repeated canonical action/result pairs or
   exact A/B alternation. Argument object key order and harmless unquoted local
