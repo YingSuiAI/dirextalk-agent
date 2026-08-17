@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.163
+
+1. Resolve Message MCP conversation references against validated Matrix room IDs and retain bounded reference aggregation.
+
 ## v1.0.162
 
 1. Restore Native Agent access to Message Server MCP tools by loading the stable protected Agent token, while preventing ambiguous mutation retries and preserving tool snapshots across Agent restarts.
