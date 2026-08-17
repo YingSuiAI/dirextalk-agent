@@ -189,6 +189,12 @@ func (i *KnowledgeIndexer) RequestIndex(ctx context.Context, request coreknowled
 	if _, err = tx.Exec(ctx, `INSERT INTO core_knowledge_index_jobs(job_id,task_id,source_ids,expected_revisions,profile_id,profile_revision,collection_config_digest,generation,status,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$9)`, jobID, taskID, idsJSON, revsJSON, profileID, profileRevision, configDigest, generation, now); err != nil {
 		return coreknowledge.TaskReference{}, coreknowledge.ErrConflict
 	}
+	// Admission itself is a live generation consumer. Keep this job-owned ref
+	// from the RequestIndex commit until the same terminal transaction either
+	// retires it or replaces it with promoted source-owned refs.
+	if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id) VALUES('knowledge_generation',$1,$2)`, jobID, profileID); err != nil {
+		return coreknowledge.TaskReference{}, coreknowledge.ErrConflict
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_knowledge_index_stages(generation,job_id,created_at) VALUES($1,$2,$3)`, generation, jobID, now); err != nil {
 		return coreknowledge.TaskReference{}, coreknowledge.ErrConflict
 	}

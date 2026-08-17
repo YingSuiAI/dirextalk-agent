@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
@@ -103,6 +104,72 @@ func TestCoreScheduleStorePostgresAtomicMaterialization(t *testing.T) {
 	}
 	if _, err = tasks.DeleteTask(ctx, coretask.DeleteTaskCommand{TaskID: triggered.ID, Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("e", 64), ExpectedRevision: triggered.Revision}, At: now}); !errors.Is(err, coretask.ErrConflict) {
 		t.Fatalf("running delete = %v", err)
+	}
+}
+
+func TestCoreScheduleProfileFenceSerializesCreateUpdateAndDeletePostgres(t *testing.T) {
+	ctx, store, originalProfileID, closeFixture := coreTaskScheduleFixture(t)
+	defer closeFixture()
+	schedules := NewCoreScheduleStore(store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	newSchedule := func(profileID string) coretask.Schedule {
+		runAt := now.Add(time.Hour)
+		return coretask.Schedule{ID: uuid.NewString(), Name: "profile fence", Spec: coretask.TaskTemplate{Goal: "scheduled", ModelProfileID: profileID}, RunAt: &runAt, NextRunAt: runAt, Timezone: "UTC", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	}
+	runCreateDeleteRace := func(profileID string, schedule coretask.Schedule) {
+		start := make(chan struct{})
+		var createErr, deleteErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, createErr = schedules.CreateSchedule(ctx, coretask.CreateScheduleCommand{Schedule: schedule, Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("7", 64)}})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, deleteErr = store.DeleteProfile(ctx, profileID, uuid.NewString(), strings.Repeat("8", 64), 1)
+		}()
+		close(start)
+		wg.Wait()
+		if !((createErr == nil && errors.Is(deleteErr, coremodel.ErrProfileInUse)) || (deleteErr == nil && errors.Is(createErr, coretask.ErrNotFound))) {
+			t.Fatalf("create/delete race: create=%v delete=%v", createErr, deleteErr)
+		}
+	}
+
+	createProfileID := uuid.NewString()
+	createTestProfile(ctx, t, store, createProfileID, "create-race", "secret")
+	runCreateDeleteRace(createProfileID, newSchedule(createProfileID))
+
+	updateProfileID := uuid.NewString()
+	createTestProfile(ctx, t, store, updateProfileID, "update-race", "secret")
+	base := newSchedule(originalProfileID)
+	created, err := schedules.CreateSchedule(ctx, coretask.CreateScheduleCommand{Schedule: base, Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("9", 64)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := created
+	updated.Spec.ModelProfileID = updateProfileID
+	updated.UpdatedAt = now.Add(time.Second)
+	start := make(chan struct{})
+	var updateErr, deleteErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, updateErr = schedules.UpdateSchedule(ctx, coretask.UpdateScheduleCommand{Schedule: updated, Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("a", 64), ExpectedRevision: created.Revision}})
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, deleteErr = store.DeleteProfile(ctx, updateProfileID, uuid.NewString(), strings.Repeat("b", 64), 1)
+	}()
+	close(start)
+	wg.Wait()
+	if !((updateErr == nil && errors.Is(deleteErr, coremodel.ErrProfileInUse)) || (deleteErr == nil && errors.Is(updateErr, coretask.ErrNotFound))) {
+		t.Fatalf("update/delete race: update=%v delete=%v", updateErr, deleteErr)
 	}
 }
 

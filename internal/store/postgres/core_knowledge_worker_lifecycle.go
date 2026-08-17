@@ -208,5 +208,8 @@ func cancelKnowledgeIndexTaskTx(ctx context.Context, tx pgx.Tx, taskID string, n
 	if _, err := tx.Exec(ctx, `UPDATE core_knowledge_sources SET status='ready',error_code='user_canceled',updated_at=$2 WHERE source_id IN (SELECT jsonb_array_elements_text(source_ids)::uuid FROM core_knowledge_index_jobs WHERE task_id=$1) AND status='indexing'`, taskID, now); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs ref USING core_knowledge_index_jobs job WHERE ref.owner_kind='knowledge_generation' AND ref.owner_id=job.job_id AND job.task_id=$1`, taskID); err != nil {
+		return err
+	}
 	return nil
 }

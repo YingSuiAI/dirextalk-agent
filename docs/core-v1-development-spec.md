@@ -170,7 +170,12 @@ profile references do not block a later profile update or deletion. Deletion
 tombstones every model kind, clears its live client id and credentials, and
 preserves the profile row plus revision secrets for history and replay. A
 nondeleted schedule or active Knowledge generation remains a future consumer
-and rejects deletion until it is removed.
+and rejects deletion until it is removed. Schedule create/update transactions
+hold a shared lock on the nondeleted profile through schedule/reference commit.
+Knowledge indexing creates its generation reference in the `RequestIndex`
+transaction and retires that job-owned reference only in the matching
+success, failure, or cancellation transaction; successful promotion replaces
+it with the source-owned generation reference.
 
 Every Chat, StreamChat, and StartTurn request carries the exact model-profile
 pin triple: `model_profile_id`, `model_profile_revision`, and

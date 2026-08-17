@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
@@ -316,6 +317,46 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 	}
 	if _, err = store.DeleteProfile(ctx, liveScheduleProfile.ID, uuid.NewString(), strings.Repeat("2", 64), 1); !errors.Is(err, coremodel.ErrProfileInUse) {
 		t.Fatalf("live schedule delete err=%v", err)
+	}
+}
+
+func TestKnowledgeIndexAdmissionFencesProfileDeletionUntilCancelPostgres(t *testing.T) {
+	ctx, store, _, closeFixture := coreTaskScheduleFixture(t)
+	defer closeFixture()
+	profileID := uuid.NewString()
+	createTestEmbeddingProfile(ctx, t, store, profileID, "embedding", "secret")
+	sourceID := uuid.NewString()
+	if _, err := store.pool.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,kind,status,title,digest,size_bytes,media_type,revision) VALUES($1,'mount','ready','admission source',$2,1,'text/plain',1)`, sourceID, strings.Repeat("c", 64)); err != nil {
+		t.Fatal(err)
+	}
+	indexer, err := NewKnowledgeIndexer(store, profileID, strings.Repeat("d", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := indexer.RequestIndex(ctx, coreknowledge.IndexRequest{IdempotencyKey: uuid.NewString(), SourceIDs: []string{sourceID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DeleteProfile(ctx, profileID, uuid.NewString(), strings.Repeat("e", 64), 1); !errors.Is(err, coremodel.ErrProfileInUse) {
+		t.Fatalf("queued generation delete err=%v", err)
+	}
+	tasks := NewCoreTaskStore(store)
+	claimed, _, err := tasks.ClaimNextDue(ctx, "knowledge-ref-test", time.Now().UTC().Add(time.Second), time.Minute, 1)
+	if err != nil || claimed.ID != ref.TaskID {
+		t.Fatalf("claimed=%+v ref=%+v err=%v", claimed, ref, err)
+	}
+	if _, err = store.DeleteProfile(ctx, profileID, uuid.NewString(), strings.Repeat("f", 64), 1); !errors.Is(err, coremodel.ErrProfileInUse) {
+		t.Fatalf("running generation delete err=%v", err)
+	}
+	if _, err = tasks.CancelTask(ctx, coretask.CancelCommand{TaskID: claimed.ID, Reason: "test terminal", Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("1", 64), ExpectedRevision: claimed.Revision}, At: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	var admissionRefs int
+	if err = store.pool.QueryRow(ctx, `SELECT count(*) FROM core_model_profile_active_refs ref JOIN core_knowledge_index_jobs job ON job.job_id=ref.owner_id WHERE ref.owner_kind='knowledge_generation' AND ref.profile_id=$1`, profileID).Scan(&admissionRefs); err != nil || admissionRefs != 0 {
+		t.Fatalf("terminal admission refs=%d err=%v", admissionRefs, err)
+	}
+	if _, err = store.DeleteProfile(ctx, profileID, uuid.NewString(), strings.Repeat("2", 64), 1); err != nil {
+		t.Fatalf("terminal generation blocked delete: %v", err)
 	}
 }
 

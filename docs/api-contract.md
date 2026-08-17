@@ -437,7 +437,8 @@ restart cannot recreate the installation; an owner may explicitly discover
 and reinstall the current built-in version.
 When the owner selects an installed Skill for a Native conversation, the Agent
 reads the exact pinned artifact at admission and injects all selected Skills
-once as a single model instruction block. Skill selection does not synthesize
+once as one clearly delimited user-role guidance block; Skill content never
+receives system-message authority. Skill selection does not synthesize
 an MCP tool or create a parallel execution path.
 Two network-free, read-only built-in MCP installations are also seeded once:
 `dirextalk-server-time` exposes `server_time`, and `dirextalk-server-load`

@@ -2,11 +2,13 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
@@ -109,5 +111,23 @@ func TestConversationScheduleRollsBackWhenTurnCompletionConflictsPostgres(t *tes
 	}
 	if scheduleCount != 0 || replayCount != 0 || turn.State != core.TurnRunning || turn.Response != nil {
 		t.Fatalf("partial commit: schedule=%d replay=%d turn=%+v", scheduleCount, replayCount, turn)
+	}
+}
+
+func TestConversationScheduleRejectsTombstonedProfilePostgres(t *testing.T) {
+	h := openTurnDB(t)
+	command := conversationScheduleCommand(t, h)
+	if _, err := h.store.Store.DeleteProfile(context.Background(), command.Schedule.Spec.ModelProfileID, uuid.NewString(), strings.Repeat("d", 64), 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.CommitConversationSchedule(context.Background(), command); !errors.Is(err, coretask.ErrNotFound) {
+		t.Fatalf("commit with tombstoned profile err=%v", err)
+	}
+	turn, err := h.store.GetTurn(context.Background(), command.Lease.Turn.ID)
+	if err != nil || turn.State != core.TurnRunning {
+		t.Fatalf("turn=%+v err=%v", turn, err)
+	}
+	if _, err = h.store.Store.GetProfile(context.Background(), command.Schedule.Spec.ModelProfileID); !errors.Is(err, coremodel.ErrProfileNotFound) {
+		t.Fatalf("profile readback err=%v", err)
 	}
 }

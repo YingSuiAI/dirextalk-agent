@@ -41,6 +41,24 @@ func (s *CoreScheduleStore) LookupScheduleMutation(ctx context.Context, operatio
 
 func NewCoreScheduleStore(s *Store) *CoreScheduleStore { return &CoreScheduleStore{store: s} }
 
+func lockLiveScheduleProfileTx(ctx context.Context, tx pgx.Tx, profileID string) error {
+	if profileID == "" {
+		return nil
+	}
+	var lockedID string
+	err := tx.QueryRow(ctx, `SELECT profile_id::text FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL FOR SHARE`, profileID).Scan(&lockedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coretask.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if lockedID != profileID {
+		return coretask.ErrConflict
+	}
+	return nil
+}
+
 func (s *CoreScheduleStore) FindOccurrence(ctx context.Context, scheduleID, triggerKey string) (coretask.Occurrence, error) {
 	if !coretask.ValidUUID(scheduleID) || !coretask.ValidUUID(triggerKey) {
 		return coretask.Occurrence{}, coretask.ErrInvalid
@@ -241,6 +259,9 @@ func (s *CoreScheduleStore) CreateSchedule(ctx context.Context, c coretask.Creat
 	}
 	return s.coreScheduleMutate(ctx, "create", c.Mutation, func(tx pgx.Tx) (coretask.Schedule, error) {
 		v, _ := c.Schedule.Normalize()
+		if err := lockLiveScheduleProfileTx(ctx, tx, v.Spec.ModelProfileID); err != nil {
+			return coretask.Schedule{}, err
+		}
 		if v.NextRunAt.IsZero() {
 			if v.RunAt != nil {
 				v.NextRunAt = v.RunAt.UTC()
@@ -316,6 +337,9 @@ func (s *CoreScheduleStore) UpdateSchedule(ctx context.Context, c coretask.Updat
 			return old, coretask.ErrRevisionConflict
 		}
 		value, _ := c.Schedule.Normalize()
+		if err = lockLiveScheduleProfileTx(ctx, tx, value.Spec.ModelProfileID); err != nil {
+			return old, err
+		}
 		// A trigger-changing update owns a fresh cursor. Paused schedules retain
 		// that future cursor; enabled recurring schedules never persist NULL.
 		triggerKindChanged := (old.RunAt == nil) != (value.RunAt == nil)

@@ -64,6 +64,9 @@ func (s *CoreConversationStore) CommitConversationSchedule(ctx context.Context, 
 			return coretask.Schedule{}, coretask.ErrInvalid
 		}
 	}
+	if err = lockLiveScheduleProfileTx(ctx, tx, schedule.Spec.ModelProfileID); err != nil {
+		return coretask.Schedule{}, err
+	}
 	templateRaw, _ := json.Marshal(schedule.Spec)
 	if _, err = tx.Exec(ctx, `INSERT INTO core_schedules(schedule_id,name,task_template,run_at,cron,timezone,paused,next_run_at,last_scheduled_for,revision,created_at,updated_at) VALUES($1,$2,$3,$4,NULLIF($5,''),$6,false,$7,NULL,$8,$9,$9)`, schedule.ID, schedule.Name, templateRaw, schedule.RunAt, schedule.Cron, schedule.Timezone, schedule.NextRunAt, schedule.Revision, schedule.CreatedAt); err != nil {
 		return coretask.Schedule{}, err

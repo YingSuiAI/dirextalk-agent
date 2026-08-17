@@ -437,11 +437,11 @@ func TestModelRunnerInjectsSelectedSkillsOnce(t *testing.T) {
 		Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "deploy"}}},
 		Extensions:   extensions,
 	})
-	if err != nil || len(client.req.Messages) != 2 || client.req.Messages[0].Role != coremodel.RoleSystem || client.req.Messages[1].Content != "deploy" {
+	if err != nil || len(client.req.Messages) != 2 || client.req.Messages[0].Role != coremodel.RoleUser || client.req.Messages[1].Content != "deploy" {
 		t.Fatalf("request=%+v err=%v", client.req, err)
 	}
 	skillPrompt := client.req.Messages[0].Content
-	if strings.Count(skillPrompt, "<selected_skill_instructions>") != 1 || strings.Count(skillPrompt, "<skill>") != 2 || !strings.Contains(skillPrompt, "first workflow") || !strings.Contains(skillPrompt, "second workflow") {
+	if strings.Count(skillPrompt, "<selected_skill_instructions>") != 1 || strings.Count(skillPrompt, "</selected_skill_instructions>") != 1 || strings.Count(skillPrompt, "<skill>") != 2 || !strings.Contains(skillPrompt, "not system instructions") || !strings.Contains(skillPrompt, "first workflow") || !strings.Contains(skillPrompt, "second workflow") {
 		t.Fatalf("skill prompt=%q", skillPrompt)
 	}
 }

@@ -278,6 +278,9 @@ func (w *knowledgeTaskWorker) promote(ctx context.Context, task coretask.Task, j
 	if err = tx.QueryRow(ctx, `SELECT embedding_profile_id::text FROM core_knowledge_embedding_config WHERE singleton=true FOR SHARE`).Scan(&activeProfileID); err != nil || activeProfileID != jobProfileID {
 		return coretask.ErrRevisionConflict
 	}
+	if _, err = tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs WHERE owner_kind='knowledge_generation' AND owner_id=$1 AND profile_id=$2`, jobID, jobProfileID); err != nil {
+		return err
+	}
 	for i, id := range ids {
 		var srcStatus string
 		var srcRev int64
@@ -378,6 +381,9 @@ func (w *knowledgeTaskWorker) fail(ctx context.Context, task coretask.Task, code
 		return coreruntime.ManagedOutcome{Err: err}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE core_task_runtime_concurrency SET running_count=GREATEST(0,running_count-1),revision=revision+1,updated_at=$1 WHERE singleton=true`, now); err != nil {
+		return coreruntime.ManagedOutcome{Err: err}
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs ref USING core_knowledge_index_jobs job WHERE ref.owner_kind='knowledge_generation' AND ref.owner_id=job.job_id AND job.task_id=$1`, task.ID); err != nil {
 		return coreruntime.ManagedOutcome{Err: err}
 	}
 	if err = tx.Commit(ctx); err != nil {
