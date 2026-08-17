@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -36,6 +37,11 @@ const (
 	sseHeartbeatInterval          = 12 * time.Second
 	idempotencyKeyConflictMessage = "Idempotency-Key conflicts with idempotency_key"
 	invalidIdempotencyKeyMessage  = "Idempotency-Key must be a UUID"
+	agentTicketExpiredCode        = "AGENT_TICKET_EXPIRED"
+	agentTicketStaleCode          = "AGENT_TICKET_STALE"
+	agentTicketInvalidCode        = "AGENT_TICKET_INVALID"
+	agentTicketScopeForbiddenCode = "AGENT_TICKET_SCOPE_FORBIDDEN"
+	agentCursorConflictCode       = "AGENT_CURSOR_CONFLICT"
 )
 
 var errSSEUnavailable = errors.New("streaming is unavailable")
@@ -153,18 +159,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) authenticate(r *http.Request) (requestContext, int, *errorBody) {
 	value := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 	if value == "" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-		return requestContext{}, http.StatusUnauthorized, &errorBody{Code: "AGENT_TICKET_INVALID", Message: "Agent session ticket is required"}
+		return requestContext{}, http.StatusUnauthorized, &errorBody{Code: agentTicketInvalidCode, Message: "Agent session ticket is required"}
 	}
 	claims, expired, err := verifyTicket(value, s.publicKey, s.now())
 	if err != nil {
-		code := "AGENT_TICKET_INVALID"
+		code := agentTicketInvalidCode
 		if expired {
-			code = "AGENT_TICKET_EXPIRED"
+			code = agentTicketExpiredCode
 		}
 		return requestContext{}, http.StatusUnauthorized, &errorBody{Code: code, Message: "Agent session ticket is invalid or expired"}
 	}
 	if claims.AccountGeneration != s.accountGeneration {
-		return requestContext{}, http.StatusForbidden, &errorBody{Code: "AGENT_TICKET_FORBIDDEN", Message: "Agent account generation does not match"}
+		return requestContext{}, http.StatusForbidden, &errorBody{Code: agentTicketStaleCode, Message: "Agent account generation does not match"}
 	}
 	permission := &capv1.PermissionContext{AuthenticatedOwnerId: claims.OwnerID, AccountGeneration: claims.AccountGeneration, GrantedScopes: append([]string(nil), claims.Scopes...), CapabilityGrant: []byte(value)}
 	return requestContext{claims: claims, permission: permission}, 0, nil
@@ -197,7 +203,10 @@ func verifyTicket(token string, key ed25519.PublicKey, now time.Time) (ticketCla
 	var claims ticketClaims
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&claims) != nil || claims.Issuer != ticketIssuer || claims.Audience != ticketAudience || strings.TrimSpace(claims.OwnerID) == "" || claims.AccountGeneration <= 0 || !validUUID(claims.SessionID) || !validUUID(claims.Nonce) || len(claims.Scopes) == 0 || claims.IssuedAt <= 0 || claims.ExpiresAt <= claims.IssuedAt || time.Duration(claims.ExpiresAt-claims.IssuedAt)*time.Second > maxTicketTTL {
+	decodeErr := decoder.Decode(&claims)
+	var trailing json.RawMessage
+	eofErr := decoder.Decode(&trailing)
+	if decodeErr != nil || !errors.Is(eofErr, io.EOF) || claims.Issuer != ticketIssuer || claims.Audience != ticketAudience || strings.TrimSpace(claims.OwnerID) == "" || claims.AccountGeneration <= 0 || !validUUID(claims.SessionID) || !validUUID(claims.Nonce) || len(claims.Scopes) == 0 || claims.IssuedAt <= 0 || claims.ExpiresAt <= claims.IssuedAt || time.Duration(claims.ExpiresAt-claims.IssuedAt)*time.Second > maxTicketTTL {
 		return ticketClaims{}, false, errors.New("invalid ticket claims")
 	}
 	nowUnix := now.Unix()
@@ -252,7 +261,7 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request, reques
 		return
 	}
 	if !hasScopes(request.claims.Scopes, opDescriptor.GetRequiredScopes()) {
-		writeJSON(w, http.StatusForbidden, errorBody{Code: "AGENT_TICKET_FORBIDDEN", Message: "Agent session ticket does not grant this operation"})
+		writeJSON(w, http.StatusForbidden, errorBody{Code: agentTicketScopeForbiddenCode, Message: "Agent session ticket does not grant this operation"})
 		return
 	}
 	var raw []byte
@@ -348,7 +357,7 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request, requ
 		if turn, turnErr := s.conversation.GetTurn(r.Context(), operationID); turnErr == nil && turn.OwnerID == request.claims.OwnerID && turn.AccountGeneration == uint64(request.claims.AccountGeneration) {
 			capability, _, descriptor, ok := s.resolve("agent.chat.v1", "get_turn")
 			if !ok || !hasScopes(request.claims.Scopes, descriptor.GetRequiredScopes()) {
-				writeJSON(w, http.StatusForbidden, errorBody{Code: "AGENT_TICKET_FORBIDDEN", Message: "Agent session ticket does not grant this operation"})
+				writeJSON(w, http.StatusForbidden, errorBody{Code: agentTicketScopeForbiddenCode, Message: "Agent session ticket does not grant this operation"})
 				return
 			}
 			input, _ := json.Marshal(map[string]string{"turn_id": operationID})
@@ -372,7 +381,7 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request, requ
 		return
 	}
 	if _, _, descriptor, ok := s.resolve(op.CapabilityID, op.OperationName); !ok || !hasScopes(request.claims.Scopes, descriptor.GetRequiredScopes()) {
-		writeJSON(w, http.StatusForbidden, errorBody{Code: "AGENT_TICKET_FORBIDDEN", Message: "Agent session ticket does not grant this operation"})
+		writeJSON(w, http.StatusForbidden, errorBody{Code: agentTicketScopeForbiddenCode, Message: "Agent session ticket does not grant this operation"})
 		return
 	}
 	result := map[string]any{"operation_id": op.ID, "state": string(op.State), "sequence": op.Sequence}
@@ -390,10 +399,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, request re
 		if turn, turnErr := s.conversation.GetTurn(r.Context(), operationID); turnErr == nil && turn.OwnerID == request.claims.OwnerID && turn.AccountGeneration == uint64(request.claims.AccountGeneration) {
 			_, _, descriptor, ok := s.resolve("agent.chat.v1", "get_turn")
 			if !ok || !hasScopes(request.claims.Scopes, descriptor.GetRequiredScopes()) {
-				writeJSON(w, http.StatusForbidden, errorBody{Code: "AGENT_TICKET_FORBIDDEN", Message: "Agent session ticket does not grant this operation"})
+				writeJSON(w, http.StatusForbidden, errorBody{Code: agentTicketScopeForbiddenCode, Message: "Agent session ticket does not grant this operation"})
 				return
 			}
-			after := eventCursor(r)
+			after, failure := eventCursor(r)
+			if failure != nil {
+				writeJSON(w, http.StatusBadRequest, failure)
+				return
+			}
 			s.handleTurnEvents(w, r, request, operationID, after)
 			return
 		}
@@ -408,10 +421,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, request re
 		return
 	}
 	if _, _, descriptor, ok := s.resolve(op.CapabilityID, op.OperationName); !ok || !hasScopes(request.claims.Scopes, descriptor.GetRequiredScopes()) {
-		writeJSON(w, http.StatusForbidden, errorBody{Code: "AGENT_TICKET_FORBIDDEN", Message: "Agent session ticket does not grant this operation"})
+		writeJSON(w, http.StatusForbidden, errorBody{Code: agentTicketScopeForbiddenCode, Message: "Agent session ticket does not grant this operation"})
 		return
 	}
-	after := eventCursor(r)
+	after, failure := eventCursor(r)
+	if failure != nil {
+		writeJSON(w, http.StatusBadRequest, failure)
+		return
+	}
 	events, err := s.operations.Watch(r.Context(), operationID, after)
 	if err != nil {
 		writeOperationStoreError(w, err)
@@ -431,14 +448,45 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, request re
 	}
 }
 
-func eventCursor(r *http.Request) int64 {
-	after := int64(0)
-	for _, value := range []string{r.URL.Query().Get("after_seq"), r.Header.Get("Last-Event-ID")} {
-		if parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil && parsed > after {
-			after = parsed
-		}
+func eventCursor(r *http.Request) (int64, *errorBody) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return 0, &errorBody{Code: "AGENT_REQUEST_INVALID", Message: "SSE cursor query must be valid URL encoding"}
 	}
-	return after
+	afterValue, afterPresent := query["after_seq"]
+	lastValues, lastPresent := r.Header[http.CanonicalHeaderKey("Last-Event-ID")]
+	if afterPresent && len(afterValue) != 1 || lastPresent && len(lastValues) != 1 {
+		return 0, &errorBody{Code: "AGENT_REQUEST_INVALID", Message: "SSE cursor must be a single non-negative integer"}
+	}
+	var after, last int64
+	var afterErr, lastErr error
+	if afterPresent {
+		after, afterErr = parseEventCursor(afterValue[0])
+	}
+	if lastPresent {
+		last, lastErr = parseEventCursor(lastValues[0])
+	}
+	if afterErr != nil || lastErr != nil {
+		return 0, &errorBody{Code: "AGENT_REQUEST_INVALID", Message: "SSE cursor must be a non-negative integer"}
+	}
+	if afterPresent && lastPresent && after != last {
+		return 0, &errorBody{Code: agentCursorConflictCode, Message: "after_seq and Last-Event-ID must match"}
+	}
+	if afterPresent {
+		return after, nil
+	}
+	if lastPresent {
+		return last, nil
+	}
+	return 0, nil
+}
+
+func parseEventCursor(value string) (int64, error) {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || parsed < 0 {
+		return 0, errors.New("invalid SSE cursor")
+	}
+	return parsed, nil
 }
 
 func writeOperationStoreError(w http.ResponseWriter, err error) {

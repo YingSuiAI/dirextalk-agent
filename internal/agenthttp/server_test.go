@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -198,16 +199,25 @@ CREATE TABLE operation_events (id INTEGER PRIMARY KEY AUTOINCREMENT, operation_i
 
 func (h testHarness) ticket(t *testing.T, scopes []string, expires time.Time) string {
 	t.Helper()
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"EdDSA","typ":"JWT"}`))
 	issuedAt := h.now
 	if !expires.After(h.now) {
 		issuedAt = expires.Add(-time.Minute)
 	}
-	claims, err := json.Marshal(ticketClaims{Issuer: ticketIssuer, Audience: ticketAudience, OwnerID: "@owner:s3.example", AccountGeneration: 7, SessionID: uuid.NewString(), Nonce: uuid.NewString(), Scopes: scopes, IssuedAt: issuedAt.Unix(), ExpiresAt: expires.Unix()})
+	return h.signTicket(t, ticketClaims{Issuer: ticketIssuer, Audience: ticketAudience, OwnerID: "@owner:s3.example", AccountGeneration: 7, SessionID: uuid.NewString(), Nonce: uuid.NewString(), Scopes: scopes, IssuedAt: issuedAt.Unix(), ExpiresAt: expires.Unix()})
+}
+
+func (h testHarness) signTicket(t *testing.T, claims ticketClaims) string {
+	t.Helper()
+	payloadBytes, err := json.Marshal(claims)
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload := base64.RawURLEncoding.EncodeToString(claims)
+	return h.signTicketPayload(payloadBytes)
+}
+
+func (h testHarness) signTicketPayload(payloadBytes []byte) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"EdDSA","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString(payloadBytes)
 	signingInput := header + "." + payload
 	signature := ed25519.Sign(h.privateKey, []byte(signingInput))
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
@@ -232,8 +242,66 @@ func TestSessionTicketExpiryAndScopeAreEnforcedAtTheHTTPBoundary(t *testing.T) {
 	readOnly := h.ticket(t, []string{"test:read"}, h.now.Add(15*time.Minute))
 	recorder = httptest.NewRecorder()
 	h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/mutate", `{"idempotency_key":"`+uuid.NewString()+`"}`, readOnly))
-	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "AGENT_TICKET_FORBIDDEN") {
+	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), agentTicketScopeForbiddenCode) {
 		t.Fatalf("scope response = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestSessionTicketFailuresHaveStableTypedCodes(t *testing.T) {
+	h := newTestHarness(t)
+	validClaims := ticketClaims{Issuer: ticketIssuer, Audience: ticketAudience, OwnerID: "@owner:s3.example", AccountGeneration: 7, SessionID: uuid.NewString(), Nonce: uuid.NewString(), Scopes: []string{"test:read"}, IssuedAt: h.now.Unix(), ExpiresAt: h.now.Add(15 * time.Minute).Unix()}
+	tamperedParts := strings.Split(h.signTicket(t, validClaims), ".")
+	tamperedSignature, err := base64.RawURLEncoding.DecodeString(tamperedParts[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperedSignature[0] ^= 1
+	tampered := tamperedParts[0] + "." + tamperedParts[1] + "." + base64.RawURLEncoding.EncodeToString(tamperedSignature)
+	wrongIssuer := validClaims
+	wrongIssuer.Issuer = "other-issuer"
+	wrongAudience := validClaims
+	wrongAudience.Audience = "other-audience"
+	stale := validClaims
+	stale.AccountGeneration++
+	validPayload, err := json.Marshal(validClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name       string
+		ticket     string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "malformed", ticket: "not-a-compact-jws", wantStatus: http.StatusUnauthorized, wantCode: agentTicketInvalidCode},
+		{name: "signature", ticket: tampered, wantStatus: http.StatusUnauthorized, wantCode: agentTicketInvalidCode},
+		{name: "issuer", ticket: h.signTicket(t, wrongIssuer), wantStatus: http.StatusUnauthorized, wantCode: agentTicketInvalidCode},
+		{name: "audience", ticket: h.signTicket(t, wrongAudience), wantStatus: http.StatusUnauthorized, wantCode: agentTicketInvalidCode},
+		{name: "trailing JSON", ticket: h.signTicketPayload(append(append([]byte(nil), validPayload...), []byte(`{}`)...)), wantStatus: http.StatusUnauthorized, wantCode: agentTicketInvalidCode},
+		{name: "trailing bytes", ticket: h.signTicketPayload(append(append([]byte(nil), validPayload...), []byte(`not-json`)...)), wantStatus: http.StatusUnauthorized, wantCode: agentTicketInvalidCode},
+		{name: "account generation", ticket: h.signTicket(t, stale), wantStatus: http.StatusForbidden, wantCode: agentTicketStaleCode},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/read", `{}`, test.ticket))
+			var failure errorBody
+			if recorder.Code != test.wantStatus || json.Unmarshal(recorder.Body.Bytes(), &failure) != nil || failure.Code != test.wantCode {
+				t.Fatalf("response=%d %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestSessionStreamContractV1Fixture(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("testdata", "session_stream_contract_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const expected = `{"version":1,"session_response":{"required_fields":["ticket","expires_at","server_time","base_path","session_id","scopes"],"base_path":"/agent/v1","timestamp_format":"rfc3339_utc","ticket_ttl_seconds":900},"errors":{"expired":"AGENT_TICKET_EXPIRED","stale":"AGENT_TICKET_STALE","invalid":"AGENT_TICKET_INVALID","scope_forbidden":"AGENT_TICKET_SCOPE_FORBIDDEN"},"sse":{"cursor_conflict":"AGENT_CURSOR_CONFLICT"}}`
+	var got, want any
+	if json.Unmarshal(fixture, &got) != nil || json.Unmarshal([]byte(expected), &want) != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("session stream fixture=%s", fixture)
 	}
 }
 
@@ -409,7 +477,7 @@ func TestEmptyNativeConversationHTTPReadsReturnArrays(t *testing.T) {
 	}
 }
 
-func TestSSEResumesStrictlyAfterTheLargestSequence(t *testing.T) {
+func TestSSEReplayRequiresMatchingExplicitCursors(t *testing.T) {
 	h := newTestHarness(t)
 	ticket := h.ticket(t, []string{"test:stream"}, h.now.Add(15*time.Minute))
 	operationID := uuid.NewString()
@@ -429,11 +497,42 @@ func TestSSEResumesStrictlyAfterTheLargestSequence(t *testing.T) {
 		t.Fatalf("terminal operation = %#v, %v", stored, err)
 	}
 	recorder := httptest.NewRecorder()
-	request := requestWithTicket(http.MethodGet, "/agent/v1/operations/"+operationID+"/events?after_seq=1", "", ticket)
+	request := requestWithTicket(http.MethodGet, "/agent/v1/operations/"+operationID+"/events?after_seq=2", "", ticket)
 	request.Header.Set("Last-Event-ID", "2")
 	h.server.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(recorder.Body.String(), "retry: 3000\n\n") || strings.Contains(recorder.Body.String(), "id: 1\n") || strings.Contains(recorder.Body.String(), "id: 2\n") || !strings.Contains(recorder.Body.String(), "event: result") {
 		t.Fatalf("resumed SSE = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = requestWithTicket(http.MethodGet, "/agent/v1/operations/"+operationID+"/events?after_seq=1", "", ticket)
+	request.Header.Set("Last-Event-ID", "2")
+	h.server.ServeHTTP(recorder, request)
+	var failure errorBody
+	if recorder.Code != http.StatusBadRequest || json.Unmarshal(recorder.Body.Bytes(), &failure) != nil || failure.Code != agentCursorConflictCode || recorder.Header().Get("Content-Type") == "text/event-stream" {
+		t.Fatalf("conflicting SSE cursor = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	for name, request := range map[string]*http.Request{
+		"malformed percent escape": func() *http.Request {
+			value := requestWithTicket(http.MethodGet, "/agent/v1/operations/"+operationID+"/events", "", ticket)
+			value.URL.RawQuery = "after_seq=%ZZ"
+			return value
+		}(),
+		"malformed cursor plus valid header": func() *http.Request {
+			value := requestWithTicket(http.MethodGet, "/agent/v1/operations/"+operationID+"/events?after_seq=bad", "", ticket)
+			value.Header.Set("Last-Event-ID", "2")
+			return value
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			h.server.ServeHTTP(recorder, request)
+			var failure errorBody
+			if recorder.Code != http.StatusBadRequest || json.Unmarshal(recorder.Body.Bytes(), &failure) != nil || failure.Code != "AGENT_REQUEST_INVALID" || recorder.Header().Get("Content-Type") == "text/event-stream" {
+				t.Fatalf("invalid SSE cursor = %d %s", recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }
 

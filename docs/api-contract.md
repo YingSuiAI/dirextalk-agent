@@ -63,6 +63,13 @@ grant key. The 15-minute ticket binds issuer, Agent-data audience, owner MXID,
 account generation, session and nonce UUIDs, scopes, issue time, and expiry.
 Expiry is checked when a request or SSE connection is admitted and does not
 become a deadline for an already accepted turn or established stream.
+Ticket admission exposes four exact typed codes: an expired ticket is
+`AGENT_TICKET_EXPIRED`, an account-generation mismatch is
+`AGENT_TICKET_STALE`, malformed claims or an invalid signature, issuer, or
+audience are `AGENT_TICKET_INVALID`, and a valid ticket missing an operation's
+required scope is `AGENT_TICKET_SCOPE_FORBIDDEN`. The versioned shared fixture
+at `internal/agenthttp/testdata/session_stream_contract_v1.json` freezes these
+codes together with the Message/Flutter session response fields.
 
 `POST /agent/v1/capabilities/{capability_id}/operations/{operation}` is the
 canonical generic facade. Read operations return their Agent-authored result
@@ -86,10 +93,12 @@ Native chat uses explicit conversation/turn routes. Starting a turn calls the
 durable `start_turn` admission and returns 202 only after the authoritative
 turn exists; its `operation_id` equals `turn_id`. `GET /agent/v1/turns/{id}`
 and conversation GETs are authoritative. Independent SSE at
-`GET /agent/v1/operations/{turn_id}/events` resumes from the greater of
-`after_seq` and `Last-Event-ID` and reads the durable turn-event ledger
-directly. Stop binds only turn ID plus idempotency; steer and attachment chunks
-retain their frozen revision CAS.
+`GET /agent/v1/operations/{turn_id}/events` resumes after the cursor supplied
+by `after_seq` or `Last-Event-ID` and reads the durable turn-event ledger
+directly. When both cursors are present they must represent the same
+non-negative sequence; a mismatch returns HTTP 400 with
+`AGENT_CURSOR_CONFLICT` before the stream is opened. Stop binds only turn ID
+plus idempotency; steer and attachment chunks retain their frozen revision CAS.
 
 ## Request and response invariants
 

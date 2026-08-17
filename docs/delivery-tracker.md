@@ -43,7 +43,11 @@ contract](message-server-integration-development-contract.md), and
   conversation-turn ledger independently of the POST lifecycle. Operation and
   turn streams advertise a three-second reconnect delay, emit 12-second idle
   heartbeats, and terminate on cancellation or transport write failure without
-  changing durable event sequences. Typed operation/store/turn failures map to
+  changing durable event sequences. The shared v1 session fixture freezes the
+  Message/Flutter bootstrap fields, the four typed ticket errors distinguish
+  expired, stale-generation, invalid, and missing-scope tickets, and dual SSE
+  cursors must match or fail with `AGENT_CURSOR_CONFLICT` before streaming.
+  Typed operation/store/turn failures map to
   fixed HTTP statuses and safe messages; unclassified capability failures
   become a redacted 502, availability failures become 503, and SSE
   projection/store errors do not expose their causes.
