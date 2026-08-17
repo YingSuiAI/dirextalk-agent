@@ -28,11 +28,21 @@ import (
 )
 
 const (
-	ticketIssuer   = "dirextalk-message-server"
-	ticketAudience = "dirextalk-agent-data"
-	maxTicketTTL   = 15 * time.Minute
-	maxBodyBytes   = 2 << 20
+	ticketIssuer         = "dirextalk-message-server"
+	ticketAudience       = "dirextalk-agent-data"
+	maxTicketTTL         = 15 * time.Minute
+	maxBodyBytes         = 2 << 20
+	sseRetryMilliseconds = 3000
+	sseHeartbeatInterval = 12 * time.Second
 )
+
+var errSSEUnavailable = errors.New("streaming is unavailable")
+
+type sseFrame struct {
+	sequence  int64
+	eventType string
+	data      []byte
+}
 
 type Config struct {
 	PublicKeyFile     string
@@ -392,25 +402,17 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, request re
 		writeJSON(w, http.StatusNotFound, errorBody{Code: "AGENT_OPERATION_NOT_FOUND", Message: "Agent operation not found"})
 		return
 	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeJSON(w, http.StatusInternalServerError, errorBody{Code: "AGENT_SSE_UNAVAILABLE", Message: "streaming is unavailable"})
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-	for event := range events {
+	err = streamSSE(r.Context(), w, events, sseHeartbeatInterval, func(event operation.Event) (sseFrame, bool) {
 		payload := any(json.RawMessage(event.EventJSON))
 		var decoded any
 		if json.Unmarshal(event.EventJSON, &decoded) == nil {
 			payload = decoded
 		}
 		data, _ := json.Marshal(map[string]any{"operation_id": event.OperationID, "sequence": event.Sequence, "type": event.EventType, "payload": payload, "created_at": event.CreatedAt.UTC()})
-		_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, event.EventType, data)
-		flusher.Flush()
+		return sseFrame{sequence: event.Sequence, eventType: event.EventType, data: data}, true
+	})
+	if errors.Is(err, errSSEUnavailable) {
+		writeJSON(w, http.StatusInternalServerError, errorBody{Code: "AGENT_SSE_UNAVAILABLE", Message: "streaming is unavailable"})
 	}
 }
 
@@ -435,17 +437,7 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, reques
 		writeJSON(w, http.StatusNotFound, errorBody{Code: "AGENT_OPERATION_NOT_FOUND", Message: "Agent turn not found"})
 		return
 	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeJSON(w, http.StatusInternalServerError, errorBody{Code: "AGENT_SSE_UNAVAILABLE", Message: "streaming is unavailable"})
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-	for event := range events {
+	err = streamSSE(r.Context(), w, events, sseHeartbeatInterval, func(event coreconversation.TurnEvent) (sseFrame, bool) {
 		eventType := string(event.Kind)
 		var payload any
 		if event.ReplayGap {
@@ -464,14 +456,62 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, reques
 				eventType = "error"
 				payload = map[string]any{"code": "projection_failed", "message": projectErr.Error()}
 			} else if len(projected) == 0 {
-				continue
+				return sseFrame{}, false
 			} else {
 				payload = json.RawMessage(projected)
 			}
 		}
 		data, _ := json.Marshal(map[string]any{"operation_id": turnID, "sequence": event.Sequence, "type": eventType, "payload": payload, "created_at": event.CreatedAt.UTC()})
-		_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, eventType, data)
-		flusher.Flush()
+		return sseFrame{sequence: event.Sequence, eventType: eventType, data: data}, true
+	})
+	if errors.Is(err, errSSEUnavailable) {
+		writeJSON(w, http.StatusInternalServerError, errorBody{Code: "AGENT_SSE_UNAVAILABLE", Message: "streaming is unavailable"})
+	}
+}
+
+func streamSSE[T any](ctx context.Context, w http.ResponseWriter, events <-chan T, heartbeatInterval time.Duration, render func(T) (sseFrame, bool)) error {
+	if _, ok := w.(http.Flusher); !ok {
+		return errSSEUnavailable
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	controller := http.NewResponseController(w)
+	writeAndFlush := func(value string) error {
+		if _, err := io.WriteString(w, value); err != nil {
+			return err
+		}
+		return controller.Flush()
+	}
+	if err := writeAndFlush(fmt.Sprintf("retry: %d\n\n", sseRetryMilliseconds)); err != nil {
+		return err
+	}
+	heartbeat := time.NewTicker(heartbeatInterval)
+	defer heartbeat.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-heartbeat.C:
+			if err := writeAndFlush(": keepalive\n\n"); err != nil {
+				return err
+			}
+		case event, ok := <-events:
+			if !ok {
+				return nil
+			}
+			frame, emit := render(event)
+			if !emit {
+				continue
+			}
+			if err := writeAndFlush(fmt.Sprintf("id: %d\nevent: %s\ndata: %s\n\n", frame.sequence, frame.eventType, frame.data)); err != nil {
+				return err
+			}
+		}
 	}
 }
 

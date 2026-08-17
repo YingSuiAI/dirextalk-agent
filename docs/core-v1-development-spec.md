@@ -196,7 +196,10 @@ Provider tool requests keep the Agent-owned schema authoritative. Gemini
 receives only fields declared by its documented `Schema` contract; unsupported
 JSON Schema keywords are removed, while string `const` choices are projected
 to the supported enum form. Agent still validates the original complete schema
-when a tool executes.
+when a tool executes. Provider-issued tool-call IDs remain authoritative;
+Gemini calls without an ID receive a transcript-unique generated ID, and
+adjacent Anthropic tool results are sent as one ordered user content-block
+batch.
 
 An accepted or running durable turn may receive revision-fenced same-turn
 guidance. A confirmation-waiting turn also accepts guidance after its Cloud

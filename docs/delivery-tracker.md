@@ -40,7 +40,23 @@ contract](message-server-integration-development-contract.md), and
   tickets and owns Native chat, attachments, confirmations, Worker operations,
   history, recovery, and SSE. `start_turn` returns only after durable turn
   admission, while execution and `Last-Event-ID` replay use the authoritative
-  conversation-turn ledger independently of the POST lifecycle.
+  conversation-turn ledger independently of the POST lifecycle. Operation and
+  turn streams advertise a three-second reconnect delay, emit 12-second idle
+  heartbeats, and terminate on cancellation or transport write failure without
+  changing durable event sequences.
+- Native turns enforce a 24-dispatch and 20-minute cumulative model-active
+  budget through the same durable admission counters used during recovery.
+  Gemini-generated tool-call IDs are unique against the prior transcript, and
+  adjacent Anthropic tool results use one ordered result-message batch. Debug
+  formatting of immutable execution snapshots omits both credentials and the
+  complete system prompt.
+- Built-in local sandbox output is capped at 64 KiB per stream even when
+  `os/exec` selects an optimized reader path, and its structured result reports
+  explicit `stdout_truncated` and `stderr_truncated` booleans. Requested result
+  files remain collected and verified by the outer isolated execution path.
+- Pull requests run the repository-owned Go test, vet, command-build, and Buf
+  lint checks with read-only GitHub permissions; release publication remains a
+  separate manual workflow.
 - Revision-fenced `agent.chat.v1/steer_turn` now persists additional user
   guidance in the current turn ledger. It interrupts a provider generation
   before tool publication, preserves an unconfirmed or already dispatched

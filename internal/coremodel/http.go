@@ -260,7 +260,7 @@ func (c *providerClient) Generate(ctx context.Context, request CompletionRequest
 	if status < 200 || status >= 300 {
 		return Completion{}, providerHTTPStatusFailure(status)
 	}
-	return decodeCompletion(c.profile.Provider, body, headers)
+	return decodeCompletionWithGeminiToolIDs(c.profile.Provider, body, headers, newGeminiToolCallIDAllocator(request.Messages))
 }
 
 func (c *providerClient) Stream(ctx context.Context, request CompletionRequest) (Stream, error) {
@@ -342,7 +342,7 @@ func (c *providerClient) Stream(ctx context.Context, request CompletionRequest) 
 	if idle != nil {
 		source.onRead = idle.Touch
 	}
-	stream := &sseStream{reader: bufio.NewReader(source), body: resp.Body, provider: c.profile.Provider, cancel: cancel, source: source, idle: idle}
+	stream := &sseStream{reader: bufio.NewReader(source), body: resp.Body, provider: c.profile.Provider, cancel: cancel, source: source, idle: idle, geminiToolIDs: newGeminiToolCallIDAllocator(request.Messages)}
 	cancel = nil // ownership transfers to the returned stream
 	return stream, nil
 }
@@ -475,6 +475,14 @@ func openAITools(tools []Tool) []any {
 func anthropicPayload(p Profile, r CompletionRequest, stream bool) map[string]any {
 	messages := make([]map[string]any, 0, len(r.Messages))
 	system := p.SystemPrompt
+	toolResults := make([]any, 0)
+	flushToolResults := func() {
+		if len(toolResults) == 0 {
+			return
+		}
+		messages = append(messages, map[string]any{"role": "user", "content": toolResults})
+		toolResults = nil
+	}
 	for _, m := range r.Messages {
 		if m.Role == RoleSystem {
 			if system != "" {
@@ -483,9 +491,12 @@ func anthropicPayload(p Profile, r CompletionRequest, stream bool) map[string]an
 			system += m.Content
 			continue
 		}
+		if m.Role == RoleTool {
+			toolResults = append(toolResults, map[string]any{"type": "tool_result", "tool_use_id": m.ToolCallID, "content": m.Content})
+			continue
+		}
+		flushToolResults()
 		switch m.Role {
-		case RoleTool:
-			messages = append(messages, map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": m.ToolCallID, "content": m.Content}}})
 		case RoleAssistant:
 			blocks := make([]any, 0, len(m.ToolCalls)+1)
 			if m.Content != "" {
@@ -511,6 +522,7 @@ func anthropicPayload(p Profile, r CompletionRequest, stream bool) map[string]an
 			messages = append(messages, map[string]any{"role": string(m.Role), "content": content})
 		}
 	}
+	flushToolResults()
 	m := map[string]any{"model": p.Model, "messages": messages, "max_tokens": p.MaxOutputTokens, "stream": stream}
 	if m["max_tokens"] == 0 {
 		m["max_tokens"] = 1024
@@ -582,7 +594,7 @@ func geminiPayload(p Profile, r CompletionRequest) map[string]any {
 			if name == "" {
 				name = m.ToolCallID
 			}
-			parts = []any{map[string]any{"functionResponse": map[string]any{"name": name, "response": response}}}
+			parts = []any{map[string]any{"functionResponse": map[string]any{"id": m.ToolCallID, "name": name, "response": response}}}
 			role = "user"
 		}
 		for _, call := range m.ToolCalls {
@@ -590,7 +602,7 @@ func geminiPayload(p Profile, r CompletionRequest) map[string]any {
 			if json.Unmarshal([]byte(call.Function.Arguments), &args) != nil {
 				args = map[string]any{}
 			}
-			parts = append(parts, map[string]any{"functionCall": map[string]any{"name": call.Function.Name, "args": args}})
+			parts = append(parts, map[string]any{"functionCall": map[string]any{"id": call.ID, "name": call.Function.Name, "args": args}})
 		}
 		contents = append(contents, map[string]any{"role": role, "parts": parts})
 	}
@@ -743,7 +755,45 @@ func geminiInputParts(input []MessageInputPart) []any {
 	return parts
 }
 
-func decodeCompletion(provider ModelProvider, body []byte, _ http.Header) (Completion, error) {
+type geminiToolCallIDAllocator struct {
+	used map[string]struct{}
+	next int
+}
+
+func newGeminiToolCallIDAllocator(messages []Message) *geminiToolCallIDAllocator {
+	allocator := &geminiToolCallIDAllocator{used: make(map[string]struct{})}
+	for _, message := range messages {
+		allocator.reserve(message.ToolCallID)
+		for _, call := range message.ToolCalls {
+			allocator.reserve(call.ID)
+		}
+	}
+	return allocator
+}
+
+func (a *geminiToolCallIDAllocator) reserve(id string) {
+	if id != "" {
+		a.used[id] = struct{}{}
+	}
+}
+
+func (a *geminiToolCallIDAllocator) allocate() string {
+	for {
+		id := fmt.Sprintf("tool-%d", a.next)
+		a.next++
+		if _, exists := a.used[id]; exists {
+			continue
+		}
+		a.used[id] = struct{}{}
+		return id
+	}
+}
+
+func decodeCompletion(provider ModelProvider, body []byte, headers http.Header) (Completion, error) {
+	return decodeCompletionWithGeminiToolIDs(provider, body, headers, newGeminiToolCallIDAllocator(nil))
+}
+
+func decodeCompletionWithGeminiToolIDs(provider ModelProvider, body []byte, _ http.Header, geminiToolIDs *geminiToolCallIDAllocator) (Completion, error) {
 	var root map[string]any
 	if json.Unmarshal(body, &root) != nil {
 		return Completion{}, ErrInvalidResponse
@@ -790,6 +840,7 @@ func decodeCompletion(provider ModelProvider, body []byte, _ http.Header) (Compl
 					Parts []struct {
 						Text         string `json:"text"`
 						FunctionCall *struct {
+							ID   string         `json:"id"`
 							Name string         `json:"name"`
 							Args map[string]any `json:"args"`
 						} `json:"functionCall"`
@@ -806,11 +857,20 @@ func decodeCompletion(provider ModelProvider, body []byte, _ http.Header) (Compl
 		}
 		var msg Message
 		msg.Role = RoleAssistant
+		for _, part := range g.Candidates[0].Content.Parts {
+			if part.FunctionCall != nil {
+				geminiToolIDs.reserve(part.FunctionCall.ID)
+			}
+		}
 		for i, part := range g.Candidates[0].Content.Parts {
 			msg.Content += part.Text
 			if part.FunctionCall != nil {
 				a, _ := json.Marshal(part.FunctionCall.Args)
-				msg.ToolCalls = append(msg.ToolCalls, ToolCall{ID: fmt.Sprintf("tool-%d", i), Type: "function", Function: FunctionCall{Name: part.FunctionCall.Name, Arguments: string(a)}})
+				id := part.FunctionCall.ID
+				if id == "" {
+					id = geminiToolIDs.allocate()
+				}
+				msg.ToolCalls = append(msg.ToolCalls, ToolCall{Index: i, ID: id, Type: "function", Function: FunctionCall{Name: part.FunctionCall.Name, Arguments: string(a)}})
 			}
 		}
 		return Completion{Message: msg, Usage: Usage{InputTokens: g.Usage.PromptTokenCount, OutputTokens: g.Usage.CandidatesTokenCount, TotalTokens: g.Usage.PromptTokenCount + g.Usage.CandidatesTokenCount}}, nil
@@ -856,17 +916,18 @@ func decodeCompletion(provider ModelProvider, body []byte, _ http.Header) (Compl
 }
 
 type sseStream struct {
-	reader      *bufio.Reader
-	body        io.ReadCloser
-	provider    ModelProvider
-	closed      bool
-	toolIDs     map[int]string
-	nextToolID  int
-	cancel      context.CancelFunc
-	source      *countingReader
-	idle        *streamIdleWatchdog
-	terminal    bool
-	terminalErr error
+	reader        *bufio.Reader
+	body          io.ReadCloser
+	provider      ModelProvider
+	closed        bool
+	toolIDs       map[int]string
+	nextToolID    int
+	geminiToolIDs *geminiToolCallIDAllocator
+	cancel        context.CancelFunc
+	source        *countingReader
+	idle          *streamIdleWatchdog
+	terminal      bool
+	terminalErr   error
 }
 
 type countingReader struct {
@@ -1049,7 +1110,7 @@ func (s *sseStream) Recv() (Delta, error) {
 		if s.toolIDs == nil {
 			s.toolIDs = make(map[int]string)
 		}
-		if d, ok := decodeDeltaStateCounter(s.provider, []byte(data), s.toolIDs, &s.nextToolID); ok {
+		if d, ok := decodeDeltaStateWithGeminiToolIDs(s.provider, []byte(data), s.toolIDs, &s.nextToolID, s.geminiToolIDs); ok {
 			return d, nil
 		}
 		if s.terminal {
@@ -1126,6 +1187,14 @@ func decodeDeltaState(provider ModelProvider, body []byte, toolIDs map[int]strin
 }
 
 func decodeDeltaStateCounter(provider ModelProvider, body []byte, toolIDs map[int]string, nextToolID *int) (Delta, bool) {
+	allocator := &geminiToolCallIDAllocator{used: make(map[string]struct{}), next: *nextToolID}
+	for _, id := range toolIDs {
+		allocator.reserve(id)
+	}
+	return decodeDeltaStateWithGeminiToolIDs(provider, body, toolIDs, nextToolID, allocator)
+}
+
+func decodeDeltaStateWithGeminiToolIDs(provider ModelProvider, body []byte, toolIDs map[int]string, nextToolID *int, geminiToolIDs *geminiToolCallIDAllocator) (Delta, bool) {
 	var m map[string]any
 	if json.Unmarshal(body, &m) != nil {
 		return Delta{}, false
@@ -1183,6 +1252,14 @@ func decodeDeltaStateCounter(provider ModelProvider, body []byte, toolIDs map[in
 			parts, _ := cont["parts"].([]any)
 			for _, rawPart := range parts {
 				part, _ := rawPart.(map[string]any)
+				fc, _ := part["functionCall"].(map[string]any)
+				if fc != nil {
+					id, _ := fc["id"].(string)
+					geminiToolIDs.reserve(id)
+				}
+			}
+			for _, rawPart := range parts {
+				part, _ := rawPart.(map[string]any)
 				if text, _ := part["text"].(string); text != "" {
 					content.WriteString(text)
 				}
@@ -1193,8 +1270,12 @@ func decodeDeltaStateCounter(provider ModelProvider, body []byte, toolIDs map[in
 				name, _ := fc["name"].(string)
 				args, _ := json.Marshal(fc["args"])
 				idx := *nextToolID
-				id := fmt.Sprintf("tool-%d", idx)
 				(*nextToolID)++
+				id, _ := fc["id"].(string)
+				if id == "" {
+					id = geminiToolIDs.allocate()
+				}
+				toolIDs[idx] = id
 				calls = append(calls, ToolCall{Index: idx, ID: id, Type: "function", Function: FunctionCall{Name: name, Arguments: string(args)}})
 			}
 		}

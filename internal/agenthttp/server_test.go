@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,6 +30,32 @@ import (
 type testCapability struct {
 	calls atomic.Int32
 }
+
+type sseTestWriter struct {
+	header     http.Header
+	writes     chan string
+	failAfter  int
+	writeCount int
+}
+
+func newSSETestWriter() *sseTestWriter {
+	return &sseTestWriter{header: make(http.Header), writes: make(chan string, 4)}
+}
+
+func (w *sseTestWriter) Header() http.Header { return w.header }
+
+func (w *sseTestWriter) WriteHeader(int) {}
+
+func (w *sseTestWriter) Write(value []byte) (int, error) {
+	if w.failAfter > 0 && w.writeCount >= w.failAfter {
+		return 0, io.ErrClosedPipe
+	}
+	w.writeCount++
+	w.writes <- string(value)
+	return len(value), nil
+}
+
+func (w *sseTestWriter) Flush() {}
 
 type admissionStore struct {
 	coreconversation.Store
@@ -322,7 +350,7 @@ func TestSSEResumesStrictlyAfterTheLargestSequence(t *testing.T) {
 	request := requestWithTicket(http.MethodGet, "/agent/v1/operations/"+operationID+"/events?after_seq=1", "", ticket)
 	request.Header.Set("Last-Event-ID", "2")
 	h.server.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), "id: 1\n") || strings.Contains(recorder.Body.String(), "id: 2\n") || !strings.Contains(recorder.Body.String(), "event: result") {
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(recorder.Body.String(), "retry: 3000\n\n") || strings.Contains(recorder.Body.String(), "id: 1\n") || strings.Contains(recorder.Body.String(), "id: 2\n") || !strings.Contains(recorder.Body.String(), "event: result") {
 		t.Fatalf("resumed SSE = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
@@ -354,7 +382,58 @@ func TestTurnSSEReplayGapUsesThePositiveCursorBeforeTheFirstRetainedEvent(t *tes
 	body := recorder.Body.String()
 	gap := strings.Index(body, "id: 3\nevent: replay_gap")
 	retained := strings.Index(body, "id: 4\nevent: done")
-	if recorder.Code != http.StatusOK || gap < 0 || retained <= gap || !strings.Contains(body, `"turn_id":"`+turn.ID+`"`) || !strings.Contains(body, `"idempotency_key":"`+turn.RequestID+`"`) || !strings.Contains(body, `"conversation_id":"`+turn.ConversationID+`"`) {
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(body, "retry: 3000\n\n") || gap < 0 || retained <= gap || !strings.Contains(body, `"turn_id":"`+turn.ID+`"`) || !strings.Contains(body, `"idempotency_key":"`+turn.RequestID+`"`) || !strings.Contains(body, `"conversation_id":"`+turn.ConversationID+`"`) {
 		t.Fatalf("replay-gap SSE = %d %s", recorder.Code, body)
+	}
+}
+
+func TestSSETransportSendsHeartbeatAndStopsOnCancellation(t *testing.T) {
+	writer := newSSETestWriter()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- streamSSE(ctx, writer, make(chan struct{}), 5*time.Millisecond, func(struct{}) (sseFrame, bool) {
+			return sseFrame{}, false
+		})
+	}()
+
+	select {
+	case value := <-writer.writes:
+		if value != "retry: 3000\n\n" {
+			t.Fatalf("retry frame = %q", value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retry frame was not written")
+	}
+	select {
+	case value := <-writer.writes:
+		if value != ": keepalive\n\n" {
+			t.Fatalf("heartbeat frame = %q", value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat frame was not written")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("stream error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream did not stop after cancellation")
+	}
+}
+
+func TestSSETransportStopsOnWriteFailure(t *testing.T) {
+	writer := newSSETestWriter()
+	writer.failAfter = 1
+	events := make(chan int, 1)
+	events <- 7
+	err := streamSSE(context.Background(), writer, events, time.Hour, func(value int) (sseFrame, bool) {
+		return sseFrame{sequence: int64(value), eventType: "progress", data: []byte(`{"ok":true}`)}, true
+	})
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("stream error = %v", err)
 	}
 }

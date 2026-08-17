@@ -91,6 +91,27 @@ func TestProfileRedactionAndUpdatePreservesKey(t *testing.T) {
 	}
 }
 
+func TestExecutionSnapshotRedactionOmitsPromptAndCredential(t *testing.T) {
+	snapshot := ExecutionSnapshot{
+		ProfileID: "11111111-1111-4111-8111-111111111111", Revision: 2, CredentialVersion: 3,
+		Provider: ProviderGemini, Model: "gemini-test", APIKey: "super-secret-key", SystemPrompt: "private system instructions",
+	}
+
+	redacted := snapshot.Redacted()
+	if _, ok := redacted["system_prompt"]; ok {
+		t.Fatalf("redacted snapshot exposed system prompt: %#v", redacted)
+	}
+	encoded := snapshot.String()
+	for _, secret := range []string{snapshot.APIKey, snapshot.SystemPrompt} {
+		if strings.Contains(encoded, secret) {
+			t.Fatalf("redacted snapshot string exposed %q: %s", secret, encoded)
+		}
+	}
+	if redacted["api_key_configured"] != true {
+		t.Fatalf("redacted snapshot lost credential presence: %#v", redacted)
+	}
+}
+
 func stringify(v any) string {
 	return strings.TrimSpace(strings.ReplaceAll(strings.TrimSpace(toJSON(v)), " ", ""))
 }
@@ -239,6 +260,117 @@ func TestProviderPayloadsMapToolExchanges(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("Gemini payload missing %s: %s", want, text)
 		}
+	}
+}
+
+func TestGeminiGeneratedToolCallIDsRemainUniqueAcrossRounds(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"q":"x"}}}]}}]}`)
+	}))
+	defer server.Close()
+	client, err := NewClient(validProfile(ProviderGemini, server.URL, "key"), WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "first"}}}
+	first, err := client.Generate(context.Background(), request)
+	if err != nil || len(first.Message.ToolCalls) != 1 {
+		t.Fatalf("first completion=%#v err=%v", first, err)
+	}
+	firstCall := first.Message.ToolCalls[0]
+	request.Messages = append(request.Messages,
+		first.Message,
+		Message{Role: RoleTool, ToolCallID: firstCall.ID, Name: firstCall.Function.Name, Content: `{"value":1}`},
+	)
+	second, err := client.Generate(context.Background(), request)
+	if err != nil || len(second.Message.ToolCalls) != 1 {
+		t.Fatalf("second completion=%#v err=%v", second, err)
+	}
+	if firstCall.ID == "" || second.Message.ToolCalls[0].ID == "" || second.Message.ToolCalls[0].ID == firstCall.ID {
+		t.Fatalf("generated Gemini tool IDs collided across rounds: first=%q second=%q", firstCall.ID, second.Message.ToolCalls[0].ID)
+	}
+
+	completion, err := decodeCompletion(ProviderGemini, []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"id":"provider-call-1","name":"lookup","args":{}}}]}}]}`), nil)
+	if err != nil || len(completion.Message.ToolCalls) != 1 || completion.Message.ToolCalls[0].ID != "provider-call-1" {
+		t.Fatalf("provider Gemini tool ID was not preserved: completion=%#v err=%v", completion, err)
+	}
+}
+
+func TestGeminiPayloadPreservesParallelSameNameToolCallIDs(t *testing.T) {
+	request := CompletionRequest{Messages: []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "call-1", Type: "function", Function: FunctionCall{Name: "lookup", Arguments: `{"q":"first"}`}},
+			{ID: "call-2", Type: "function", Function: FunctionCall{Name: "lookup", Arguments: `{"q":"second"}`}},
+		}},
+		{Role: RoleTool, ToolCallID: "call-1", Name: "lookup", Content: `{"value":1}`},
+		{Role: RoleTool, ToolCallID: "call-2", Name: "lookup", Content: `{"value":2}`},
+	}}
+	payload := geminiPayload(validProfile(ProviderGemini, "https://example.test", "key"), request)
+	contents := payload["contents"].([]any)
+	modelParts := contents[0].(map[string]any)["parts"].([]any)
+	firstCall := modelParts[0].(map[string]any)["functionCall"].(map[string]any)
+	secondCall := modelParts[1].(map[string]any)["functionCall"].(map[string]any)
+	firstResult := contents[1].(map[string]any)["parts"].([]any)[0].(map[string]any)["functionResponse"].(map[string]any)
+	secondResult := contents[2].(map[string]any)["parts"].([]any)[0].(map[string]any)["functionResponse"].(map[string]any)
+	if firstCall["name"] != "lookup" || secondCall["name"] != "lookup" ||
+		firstCall["id"] != "call-1" || secondCall["id"] != "call-2" ||
+		firstResult["id"] != "call-1" || secondResult["id"] != "call-2" {
+		t.Fatalf("Gemini parallel call correlation was not preserved: %#v", contents)
+	}
+}
+
+func TestGeminiStreamGeneratedToolCallIDsRemainUniqueAcrossRounds(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{}}}]},\"finishReason\":\"STOP\"}]}\n\n")
+	}))
+	defer server.Close()
+	client, err := NewClient(validProfile(ProviderGemini, server.URL, "key"), WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiveCall := func(request CompletionRequest) ToolCall {
+		t.Helper()
+		stream, streamErr := client.Stream(context.Background(), request)
+		if streamErr != nil {
+			t.Fatal(streamErr)
+		}
+		defer stream.Close()
+		delta, receiveErr := stream.Recv()
+		if receiveErr != nil || len(delta.ToolCalls) != 1 {
+			t.Fatalf("delta=%#v err=%v", delta, receiveErr)
+		}
+		return delta.ToolCalls[0]
+	}
+	request := CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "first"}}}
+	first := receiveCall(request)
+	request.Messages = append(request.Messages,
+		Message{Role: RoleAssistant, ToolCalls: []ToolCall{first}},
+		Message{Role: RoleTool, ToolCallID: first.ID, Name: first.Function.Name, Content: `{}`},
+	)
+	second := receiveCall(request)
+	if first.ID == "" || second.ID == "" || first.ID == second.ID {
+		t.Fatalf("generated Gemini stream tool IDs collided across rounds: first=%q second=%q", first.ID, second.ID)
+	}
+}
+
+func TestAnthropicPayloadBatchesAdjacentToolResults(t *testing.T) {
+	request := CompletionRequest{Messages: []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "call-1", Type: "function", Function: FunctionCall{Name: "lookup", Arguments: `{"q":"x"}`}},
+			{ID: "call-2", Type: "function", Function: FunctionCall{Name: "fetch", Arguments: `{"id":"y"}`}},
+		}},
+		{Role: RoleTool, ToolCallID: "call-1", Name: "lookup", Content: `{"value":1}`},
+		{Role: RoleTool, ToolCallID: "call-2", Name: "fetch", Content: `{"value":2}`},
+	}}
+	payload := anthropicPayload(validProfile(ProviderAnthropic, "https://example.test", "key"), request, false)
+	messages := payload["messages"].([]map[string]any)
+	if len(messages) != 2 {
+		t.Fatalf("Anthropic tool results were not batched: %#v", messages)
+	}
+	resultBlocks := messages[1]["content"].([]any)
+	if messages[1]["role"] != "user" || len(resultBlocks) != 2 ||
+		resultBlocks[0].(map[string]any)["tool_use_id"] != "call-1" || resultBlocks[1].(map[string]any)["tool_use_id"] != "call-2" {
+		t.Fatalf("Anthropic result batch=%#v", messages[1])
 	}
 }
 

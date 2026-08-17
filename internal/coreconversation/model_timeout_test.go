@@ -18,6 +18,20 @@ type timeoutTurnModel struct {
 	streamCalls int
 }
 
+type budgetBlockingTurnModel struct {
+	streamCalls int
+}
+
+func (*budgetBlockingTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
+	return ModelRunResult{}, errors.New("non-streaming model path must not be used")
+}
+
+func (m *budgetBlockingTurnModel) Stream(ctx context.Context, _ ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	m.streamCalls++
+	<-ctx.Done()
+	return ModelRunResult{}, ctx.Err()
+}
+
 func (m *timeoutTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
 	m.runCalls++
 	return ModelRunResult{}, errors.New("non-streaming model path must not be used")
@@ -92,6 +106,52 @@ func TestExecuteTurnClassifiesProviderTimeoutWithoutReplay(t *testing.T) {
 	}
 	if model.runCalls != 0 || model.streamCalls != 1 {
 		t.Fatalf("model Run calls=%d Stream calls=%d", model.runCalls, model.streamCalls)
+	}
+}
+
+func TestTurnModelBudgetUsesStabilityCaps(t *testing.T) {
+	if MaxTurnModelDispatches != 24 {
+		t.Fatalf("model dispatch cap=%d", MaxTurnModelDispatches)
+	}
+	if MaxTurnModelActiveDuration != 20*time.Minute {
+		t.Fatalf("model active duration cap=%s", MaxTurnModelActiveDuration)
+	}
+}
+
+func TestExecuteTurnAppliesPersistedModelActiveDurationBudget(t *testing.T) {
+	snapshot := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+		Prompt: "finish within the remaining budget", ProfileID: snapshot.ProfileID,
+		ProfileSnapshot: snapshot, ProfileSnapshotDigest: snapshot.Digest(), State: TurnAccepted,
+		Revision: 1, LastSequence: 1, ModelActiveDuration: MaxTurnModelActiveDuration - 20*time.Millisecond,
+		CreatedAt: time.Now().UTC(),
+	}
+	store := &timeoutTurnStore{readOnlyTurnStore: &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}}
+	model := &budgetBlockingTurnModel{}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+		return snapshot, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	if store.turn.State != TurnFailed || store.failedCode != modelBudgetExhaustedCode || store.failedSummary != modelBudgetExhaustedSummary {
+		t.Fatalf("terminal turn=%+v code=%q summary=%q", store.turn, store.failedCode, store.failedSummary)
+	}
+	if store.uncertainCode != modelBudgetExhaustedCode || store.uncertainSummary != modelBudgetExhaustedSummary {
+		t.Fatalf("durable uncertain code=%q summary=%q", store.uncertainCode, store.uncertainSummary)
+	}
+	if model.streamCalls != 1 {
+		t.Fatalf("model Stream calls=%d", model.streamCalls)
 	}
 }
 

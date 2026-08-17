@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	MaxTurnModelDispatches          = 500
-	MaxTurnModelActiveDuration      = 24 * time.Hour
+	MaxTurnModelDispatches          = 24
+	MaxTurnModelActiveDuration      = 20 * time.Minute
 	toolLoopNudgeGuidance           = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
 	toolLoopSynthesisGuidance       = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
 	outputContinuationGuidance      = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."

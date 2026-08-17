@@ -231,7 +231,14 @@ func runLocalSandbox(arguments map[string]any) (map[string]any, error) {
 		}
 		exitCode = exitErr.ExitCode()
 	}
-	payload := map[string]any{"stdout": stdout.String(), "stderr": stderr.String(), "exit_code": exitCode, "result_files": []any{}}
+	payload := map[string]any{
+		"stdout":           stdout.String(),
+		"stderr":           stderr.String(),
+		"stdout_truncated": stdout.Truncated(),
+		"stderr_truncated": stderr.Truncated(),
+		"exit_code":        exitCode,
+		"result_files":     []any{},
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -239,19 +246,29 @@ func runLocalSandbox(arguments map[string]any) (map[string]any, error) {
 	return map[string]any{"content": []any{map[string]any{"type": "text", "text": string(encoded)}}, "structuredContent": payload, "isError": exitCode != 0}, nil
 }
 
-type boundedOutput struct{ bytes.Buffer }
+type boundedOutput struct {
+	buffer    bytes.Buffer
+	truncated bool
+}
 
 func (w *boundedOutput) Write(p []byte) (int, error) {
 	n := len(p)
-	remaining := localSandboxMaxOutputBytes - w.Len()
+	remaining := localSandboxMaxOutputBytes - w.buffer.Len()
+	if len(p) > remaining {
+		w.truncated = true
+	}
 	if remaining > 0 {
 		if len(p) > remaining {
 			p = p[:remaining]
 		}
-		_, _ = w.Buffer.Write(p)
+		_, _ = w.buffer.Write(p)
 	}
 	return n, nil
 }
+
+func (w *boundedOutput) String() string { return w.buffer.String() }
+
+func (w *boundedOutput) Truncated() bool { return w.truncated }
 
 func validResultPath(value string) bool {
 	return value != "" && len(value) <= 512 && !strings.HasPrefix(value, "/") && !strings.ContainsAny(value, "\\\x00") && path.Clean(value) == value && value != "." && value != ".." && !strings.HasPrefix(value, "../")

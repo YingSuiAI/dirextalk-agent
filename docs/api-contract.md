@@ -104,8 +104,8 @@ retain their frozen revision CAS.
   `model_profile_id`/`model_profile_revision`/`credential_version` triple.
   Partial or stale pins fail before provider work; there is no default-profile
   fallback, and durable replays retain their original snapshot.
-- A Native conversation turn retains an emergency fuse of 500 provider
-  dispatches and 24 hours of cumulative model-active time. Only provider
+- A Native conversation turn retains a hard fuse of 24 provider dispatches
+  and 20 minutes of cumulative model-active time. Only provider
   execution consumes the time budget: tool, sandbox, Worker, and
   user-confirmation execution or waiting do not. Independently, each provider
   stream's five-minute safety
@@ -117,6 +117,11 @@ retain their frozen revision CAS.
   turn fails with `provider_timeout` and an unknown-outcome summary. The
   dispatch is never replayed automatically, and recovery preserves the
   persisted timeout classification.
+- Provider adapters preserve provider-issued tool-call IDs. When Gemini omits
+  an ID, Core allocates one that cannot collide with any tool call already in
+  the frozen request transcript, for both unary and streaming responses.
+  Consecutive Anthropic tool results are emitted as one user message containing
+  the complete ordered `tool_result` block batch.
 - Native conversation progress durably publishes assistant `delta` text and
   additive `reasoning_content` in bounded coalesced events as they arrive from
   the provider, followed by
@@ -279,6 +284,10 @@ retain their frozen revision CAS.
   original turn idempotency key, separate `steer_idempotency_key`, instruction
   text, non-sensitive attachment presentation, revision, status, and timestamp;
   its SSE sequence remains the `Last-Event-ID` recovery cursor.
+- Every accepted operation or turn SSE stream begins with `retry: 3000`, emits
+  a comment heartbeat every 12 seconds while idle, and stops on request
+  cancellation or a failed write/flush. Heartbeats do not advance the durable
+  event cursor or alter replay semantics.
 - Capability `agent.chat.v1/start_turn` admits the same durable conversation
   turn exposed by `get_turn` and `list_turns`, then returns without watching
   execution. Its HTTP `operation_id` is the public `turn_id`; the request id
