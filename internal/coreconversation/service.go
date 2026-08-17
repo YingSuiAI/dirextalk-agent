@@ -2447,7 +2447,7 @@ func (s *Service) resolveAcceptedTurnExtensionsForContinuation(ctx context.Conte
 }
 
 func contextBoundExtensionSource(source string) bool {
-	return source == "builtin:web_search:tavily" || source == "builtin:knowledge:semantic" || source == "product-capability"
+	return source == "builtin:web_search:tavily" || source == "builtin:knowledge:semantic" || source == "product-capability" || source == "message-mcp"
 }
 
 func appendSystemPrompt(base, guidance string) string {

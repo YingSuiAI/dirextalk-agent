@@ -70,6 +70,37 @@ func TestLoadAcceptsExplicitCloudWorkerHostRegion(t *testing.T) {
 	}
 }
 
+func TestValidateCoreMessageMCPFailsClosedAndCanonicalizesTokenFile(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "message-token")
+	if err := os.WriteFile(tokenFile, []byte("matrix-agent-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		CoreMessageMCPEnabled:   true,
+		CoreMessageMCPEndpoint:  "http://message-server:8008/mcp",
+		CoreMessageMCPTokenFile: tokenFile,
+	}
+	if err := ValidateCoreMessageMCP(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CoreMessageMCPTokenFile != tokenFile {
+		t.Fatalf("token path=%q", cfg.CoreMessageMCPTokenFile)
+	}
+	for _, mutate := range []func(*Config){
+		func(value *Config) { value.CoreMessageMCPEndpoint = "https://message.example/mcp" },
+		func(value *Config) { value.CoreMessageMCPEndpoint = "http://other-service:8008/mcp" },
+		func(value *Config) { value.CoreMessageMCPEndpoint = "http://message-server:8008/other" },
+		func(value *Config) { value.CoreMessageMCPEndpoint = "http://message-server:8008/mcp?token=bad" },
+		func(value *Config) { value.CoreMessageMCPTokenFile = filepath.Join(t.TempDir(), "missing") },
+	} {
+		candidate := cfg
+		mutate(&candidate)
+		if err := ValidateCoreMessageMCP(&candidate); err == nil {
+			t.Fatalf("invalid Message MCP config accepted: %+v", candidate)
+		}
+	}
+}
+
 func TestValidateAgentHTTPReusesTheGrantKeyAndDefaultsTheInternalListener(t *testing.T) {
 	keyPath := filepath.Join(t.TempDir(), "grant.pub")
 	if err := os.WriteFile(keyPath, make([]byte, 32), 0o600); err != nil {

@@ -50,6 +50,18 @@ belong to controlled outbound web traffic and cannot redirect the authenticated
 peer channel. Callbacks do not become a second Agent database or execution
 ledger, and neither direction accepts raw Agent secrets from Flutter.
 
+Native conversations also receive one deployment-owned Message Server MCP
+source at the fixed `core_message_mcp_endpoint`. Agent authenticates each
+Streamable HTTP request with the stable bootstrap `agent_token` read from
+`core_message_mcp_token_file`; the token value is never stored in YAML, Agent
+PostgreSQL, logs, tool metadata, or model-visible results. This source is
+composed only inside Core conversation admission and persisted-turn recovery;
+the enclosing HTTP/gRPC admission remains authenticated. Its exact endpoint and
+advertised tool schemas form the deterministic synthetic snapshot. Core records
+dispatch before each tool call and never automatically repeats a call whose
+completion is unknown; ambiguous Message mutations require an authoritative
+read before the model decides whether to retry.
+
 Text tools cross only as the owner-client `agent.text_tools.v1` descriptor.
 The Agent HTTP data plane accepts the canonical typed config/update/execute
 payloads and does not accept an inline model profile, credential, prompt

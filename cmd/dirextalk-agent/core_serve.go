@@ -436,6 +436,13 @@ func serveCore(cfg config.Config) error {
 	if extensionComposition != nil {
 		conversationResolver = extensionComposition.conversationResolver
 	}
+	if cfg.CoreMessageMCPEnabled {
+		messageMCPProvider, providerErr := newMessageMCPProvider(cfg.CoreMessageMCPEndpoint, cfg.CoreMessageMCPTokenFile)
+		if providerErr != nil {
+			return fmt.Errorf("initialize Message MCP client: %w", providerErr)
+		}
+		conversationResolver = &messageMCPConversationResolver{base: conversationResolver, provider: messageMCPProvider, endpoint: cfg.CoreMessageMCPEndpoint}
+	}
 	if productCapabilityClient != nil {
 		conversationResolver = &productConversationResolver{base: conversationResolver, product: productCapabilityClient}
 	}
