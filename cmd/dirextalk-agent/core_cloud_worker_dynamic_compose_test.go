@@ -3,11 +3,15 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 )
 
 func TestDynamicCloudWorkerCompositionIsEnabledForNativeHTTPDataPlane(t *testing.T) {
+	if cloudWorkerDefaultQuoteTTL != 15*time.Minute {
+		t.Fatalf("default quote TTL=%s, want 15m", cloudWorkerDefaultQuoteTTL)
+	}
 	composition, err := composeDynamicCloudWorkerProposal(config.Config{}, nil, nil, nil)
 	if err != nil || composition != nil {
 		t.Fatalf("disabled composition=%v err=%v", composition, err)

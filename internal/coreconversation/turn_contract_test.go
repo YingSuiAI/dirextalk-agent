@@ -1690,6 +1690,7 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 		!strings.Contains(model.request.Profile.SystemPrompt, "cannot access the Worker filesystem") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "workload_kind=service") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "not the lifetime") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "Do not restate the user's request") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "does not need to mention AWS") {
 		t.Fatalf("model request lost intrinsic or extension: %+v", model.request)
 	}

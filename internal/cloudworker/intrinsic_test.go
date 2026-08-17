@@ -572,6 +572,7 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 	if !strings.Contains(workloadDescription, "MUST use service") || !strings.Contains(serviceDescription, "MUST set service.hostname") ||
 		!strings.Contains(objectiveDescription, "Never instruct the Worker") || !strings.Contains(tools[0].Tool.Description, "MUST use workload_kind=service") ||
 		!strings.Contains(tools[0].Tool.Description, "MUST NOT be 80 or 443") || !strings.Contains(tools[0].Tool.Description, "lightweight local HTTP service") ||
+		!strings.Contains(tools[0].Tool.Description, "invoke this tool immediately") ||
 		!strings.Contains(tools[0].Tool.Description, "MUST NOT ask the remote Worker") || !strings.Contains(tools[0].Tool.Description, "Only creating a new Worker requires owner confirmation") {
 		t.Fatalf("workload guidance schema=%q service=%q tool=%q", workloadDescription, serviceDescription, tools[0].Tool.Description)
 	}

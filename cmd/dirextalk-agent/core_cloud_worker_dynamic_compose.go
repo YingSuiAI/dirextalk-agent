@@ -16,7 +16,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 )
 
-const cloudWorkerDefaultQuoteTTL = 5 * time.Minute
+const cloudWorkerDefaultQuoteTTL = 15 * time.Minute
 
 func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store, conversationStore *postgres.CoreConversationStore, workerState *sshworker.FileStore) (*coreCloudWorkerComposition, error) {
 	if !cfg.CapabilityEnabled && !cfg.AgentHTTPEnabled {
