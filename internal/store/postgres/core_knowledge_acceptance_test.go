@@ -94,7 +94,7 @@ func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 	}))
 	defer embedding.Close()
 
-	profile := acceptanceProfileResolver{profile: coremodel.Profile{ID: profileID, Revision: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: embedding.URL, Model: "acceptance-embed", APIKey: "acceptance-secret"}}
+	profile := acceptanceProfileResolver{profile: coremodel.Profile{ID: profileID, Revision: 1, Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, BaseURL: embedding.URL, Model: "acceptance-embed", APIKey: "acceptance-secret"}}
 	embedder, err := semantic.NewHTTPEmbedder(semantic.HTTPEmbedderConfig{Dimension: 2})
 	if err != nil {
 		t.Fatal(err)

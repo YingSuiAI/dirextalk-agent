@@ -54,7 +54,7 @@ func TestCoreMemoryPostgresConflictTimelineOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	profile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "memory", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.invalid", Model: "test", APIKey: "integration-secret", ContextWindow: 32768, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	profile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "memory", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.invalid", Model: "test", APIKey: "integration-secret", ContextWindow: 32768, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	if _, err = store.CreateProfile(ctx, profile, uuid.NewString(), strings.Repeat("a", 64)); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestCoreMemoryPostgresConflictTimelineOptIn(t *testing.T) {
 	if _, err = memoryStore.UpdateConfig(ctx, corememory.ConfigMutation{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("b", 64), ExpectedRevision: 0, Enabled: true, Now: now}); !errors.Is(err, corememory.ErrEmbeddingNotConfigured) {
 		t.Fatalf("enable without embedding error=%v", err)
 	}
-	embeddingProfile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "embedding", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://example.invalid", Model: "embed-test", APIKey: "integration-secret", ContextWindow: 32768, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	embeddingProfile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "embedding", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://example.invalid", Model: "embed-test", APIKey: "integration-secret", ContextWindow: 32768, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	if _, err = store.CreateProfile(ctx, embeddingProfile, uuid.NewString(), strings.Repeat("c", 64)); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestCoreMemoryPostgresOwnerFactMutationsAreFencedAndIdempotent(t *testing.T
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	originalValidFrom := now.Add(2 * time.Minute)
 	profileID, conversationID, observationID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	profile := coremodel.Profile{ID: profileID, DisplayName: "memory", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.invalid", Model: "test", APIKey: "integration-secret", ContextWindow: 32768, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	profile := coremodel.Profile{ID: profileID, DisplayName: "memory", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.invalid", Model: "test", APIKey: "integration-secret", ContextWindow: 32768, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	if _, err = store.CreateProfile(ctx, profile, uuid.NewString(), strings.Repeat("9", 64)); err != nil {
 		t.Fatal(err)
 	}
