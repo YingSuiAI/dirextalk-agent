@@ -27,6 +27,7 @@ const (
 	outputContinuationGuidance      = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
 	staticSitePublishCorrection     = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
 	conversationConvergenceGuidance = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
+	messageMCPRoutingGuidance       = "For requests that need authoritative Dirextalk contacts, rooms, or messages, use the available Dirextalk tools. If a Message mutation has unknown completion, read authoritative state before deciding whether to retry; never retry blindly."
 )
 
 type Service struct {
@@ -1787,6 +1788,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			defer s.unregisterTurnOrdering(id, ordering)
 			profile := turn.ProfileSnapshot.Profile()
 			systemPrompt := appendSystemPrompt(profile.SystemPrompt, conversationConvergenceGuidance)
+			systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, modelExtensions)
 			if containsStaticSiteIntrinsic(modelIntrinsicTools) {
 				systemPrompt = staticSiteSystemPrompt(systemPrompt)
 			}
@@ -2455,6 +2457,22 @@ func (s *Service) resolveAcceptedTurnExtensionsForContinuation(ctx context.Conte
 
 func contextBoundExtensionSource(source string) bool {
 	return source == "builtin:web_search:tavily" || source == "builtin:knowledge:semantic" || source == "product-capability" || source == "message-mcp"
+}
+
+func containsMessageMCPExtension(extensions []ResolvedExtension) bool {
+	for _, extension := range extensions {
+		if extension.Snapshot.Source == "message-mcp" {
+			return true
+		}
+	}
+	return false
+}
+
+func appendMessageMCPRoutingGuidance(base string, extensions []ResolvedExtension) string {
+	if !containsMessageMCPExtension(extensions) {
+		return base
+	}
+	return appendSystemPrompt(base, messageMCPRoutingGuidance)
 }
 
 func appendSystemPrompt(base, guidance string) string {
