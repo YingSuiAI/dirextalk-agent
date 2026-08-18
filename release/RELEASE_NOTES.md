@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.166
+
+1. Add durable Native Agent tools to bind or unbind Route 53 domains for retained Worker services after deployment, with exact identity fencing, explicit confirmation, replay-safe recovery, and provider read-back.
+2. Limit each owner account generation to four retained SSH Workers and report the updated capacity consistently.
+
 ## v1.0.165
 
 1. Restore missing `cpu`, `memory`, and `pids` controllers from each runner's own delegated cgroup during readiness, while preserving fail-closed validation and the existing host delegation boundary.
