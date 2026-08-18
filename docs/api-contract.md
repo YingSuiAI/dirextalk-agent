@@ -3,9 +3,12 @@
 This document defines the Agent-owned API at HEAD. The canonical public
 surface is the versioned Protobuf under
 [`api/proto/dirextalk/agent/v1`](../api/proto/dirextalk/agent/v1) plus the
-same-origin `/agent/v1` HTTP data plane. Generated Go files are derived
-artifacts. Message Server owns login/account control and issues short-lived
-Agent session tickets; Agent owns Native chat, attachments, confirmations,
+same-origin `/agent/v1` HTTP data plane. The HTTP/session/SSE wire authority is
+the Agent Data Plane V2 OpenAPI contract and conformance vectors in
+`github.com/YingSuiAI/dirextalk-capability-api` at the immutable `v1.1.0` tag;
+the v2 contract deliberately retains the `/agent/v1` base path. Generated Go
+files are derived artifacts. Message Server owns login/account control and
+issues short-lived Agent session tickets; Agent owns Native chat, attachments, confirmations,
 Worker operations, history, recovery, and streaming. Online Agent remains the
 separate Matrix transport.
 
@@ -67,9 +70,10 @@ Ticket admission exposes four exact typed codes: an expired ticket is
 `AGENT_TICKET_EXPIRED`, an account-generation mismatch is
 `AGENT_TICKET_STALE`, malformed claims or an invalid signature, issuer, or
 audience are `AGENT_TICKET_INVALID`, and a valid ticket missing an operation's
-required scope is `AGENT_TICKET_SCOPE_FORBIDDEN`. The versioned shared fixture
-at `internal/agenthttp/testdata/session_stream_contract_v1.json` freezes these
-codes together with the Message/Flutter session response fields.
+required scope is `AGENT_TICKET_SCOPE_FORBIDDEN`. The shared V2 conformance
+vectors freeze these codes and the generated `AgentSessionResponse`, scope,
+receipt, snapshot, error, and SSE shapes for Agent, Message Server, and Flutter;
+this repository does not retain a local fixture copy or a parallel v1 DTO path.
 
 `POST /agent/v1/capabilities/{capability_id}/operations/{operation}` is the
 canonical generic facade. Read operations return their Agent-authored result
@@ -90,7 +94,12 @@ neither JSON errors nor SSE error frames expose database, provider, or other
 internal error text. JSON failures use one envelope with `code`, `message`,
 `category`, `retryable`, `request_id`, optional `retry_after_ms`, optional
 `operation_id`/`turn_id`, and allowlisted `details`; operation polling embeds
-the same shape for terminal errors.
+the same shape for terminal errors. `details` is the generated closed
+`ErrorDetails` type, so arbitrary maps and raw upstream fields cannot cross the
+boundary. When `retry_after_ms` is present, the HTTP `Retry-After` header carries
+the same delay rounded up to whole seconds. Generic operation and Turn SSE
+events whose `type` is `error` carry this same generated error envelope as
+their payload.
 
 Native chat uses explicit conversation/turn routes. Starting a turn calls the
 durable `start_turn` admission and returns 202 only after the authoritative
@@ -345,7 +354,9 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   event cursor or alter replay semantics.
 - Turn SSE data envelopes always carry independent `operation_id`, `turn_id`,
   and `conversation_id` fields. This version still requires the operation and
-  turn identifiers to be equal, but consumers must parse and validate both.
+  turn identifiers to be equal, and the Agent projection rejects missing,
+  invalid, or unequal identities before emitting a frame; consumers must still
+  parse and validate both.
 - Capability `agent.chat.v1/start_turn` admits the same durable conversation
   turn exposed by `get_turn` and `list_turns`, then returns without watching
   execution. Its HTTP `operation_id` is the public `turn_id`; the request id

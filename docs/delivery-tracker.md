@@ -43,14 +43,19 @@ contract](message-server-integration-development-contract.md), and
   conversation-turn ledger independently of the POST lifecycle. Operation and
   turn streams advertise a three-second reconnect delay, emit 12-second idle
   heartbeats, and terminate on cancellation or transport write failure without
-  changing durable event sequences. The shared v1 session fixture freezes the
-  Message/Flutter bootstrap fields, the four typed ticket errors distinguish
-  expired, stale-generation, invalid, and missing-scope tickets, and dual SSE
-  cursors must match or fail with `AGENT_CURSOR_CONFLICT` before streaming.
+  changing durable event sequences. The shared Agent Data Plane V2 contract at
+  immutable `dirextalk-capability-api v1.1.0` supplies generated session,
+  scope, operation, error, and SSE DTOs; the Agent consumes its shared vectors
+  directly and no longer keeps a local v1 fixture. The four typed ticket errors
+  distinguish expired, stale-generation, invalid, and missing-scope tickets,
+  and dual SSE cursors must match or fail with `AGENT_CURSOR_CONFLICT` before streaming.
   Typed operation/store/turn failures map to
   fixed HTTP statuses and safe messages; unclassified capability failures
-  become a redacted 502, availability failures become 503, and SSE
-  projection/store errors do not expose their causes.
+  become a redacted 502, unavailable failures become 503, and SSE
+  projection/store errors do not expose their causes. HTTP, polling, and SSE
+  terminal errors share the closed generated envelope; `Retry-After` and
+  `retry_after_ms` represent the same delay, and Turn receipts/frames validate
+  explicit equal operation and turn identities.
 - Native turns enforce a 24-dispatch and 20-minute cumulative model-active
   budget through the same durable admission counters used during recovery, plus
   a 20-call tool budget. Tool results with validated runtime references persist
@@ -364,6 +369,16 @@ support.
   summary without crossing the offer or retained-Worker boundary, while finite
   retained jobs keep live estimated and maximum costs and persistent services
   expose only their hourly price. This evidence performs no AWS mutation.
+- On **2026-08-18**, the Agent pinned `dirextalk-capability-api v1.1.0` and
+  replaced handwritten session-adjacent operation/error/SSE transport shapes
+  with generated Agent Data Plane V2 DTOs and scope/category/state constants.
+  Focused conformance reads all shared valid and invalid vectors from the pinned
+  module, rejects unknown error details and invalid Turn identities, proves
+  polling/SSE error parity, and proves `Retry-After` rounding from
+  `retry_after_ms`. The former repository-local v1 fixture was removed. The
+  full suite passed 1,748 tests, the maintained high-risk race lane passed 469
+  tests, and vet, SA staticcheck 0.7.0, govulncheck 1.7.0, command builds, Buf
+  lint, and diff checks passed.
 
 ## Remaining release gates
 

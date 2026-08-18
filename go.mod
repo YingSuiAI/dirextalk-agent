@@ -26,7 +26,10 @@ require (
 	github.com/pgvector/pgvector-go/pgx v0.4.1
 )
 
-require golang.org/x/crypto v0.51.0 // indirect
+require (
+	github.com/oapi-codegen/runtime v1.1.1 // indirect
+	golang.org/x/crypto v0.51.0 // indirect
+)
 
 require (
 	github.com/pgvector/pgvector-go v0.4.1
@@ -34,7 +37,7 @@ require (
 )
 
 require (
-	github.com/YingSuiAI/dirextalk-capability-api v1.0.3
+	github.com/YingSuiAI/dirextalk-capability-api v1.1.0
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.35 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.35 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.36 // indirect

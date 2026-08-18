@@ -24,6 +24,7 @@ import (
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	agentdatav2 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/agent/data/v2"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 )
@@ -92,42 +93,6 @@ type requestContext struct {
 	permission *capv1.PermissionContext
 }
 
-type errorBody struct {
-	Code         string         `json:"code"`
-	Message      string         `json:"message"`
-	Category     string         `json:"category"`
-	Retryable    bool           `json:"retryable"`
-	RetryAfterMS *int64         `json:"retry_after_ms,omitempty"`
-	RequestID    string         `json:"request_id"`
-	OperationID  string         `json:"operation_id,omitempty"`
-	TurnID       string         `json:"turn_id,omitempty"`
-	Details      map[string]any `json:"details,omitempty"`
-}
-
-func (e errorBody) normalized(status int) errorBody {
-	if e.RequestID == "" {
-		e.RequestID = uuid.NewString()
-	}
-	if e.Category == "" {
-		switch {
-		case status == http.StatusUnauthorized || status == http.StatusForbidden:
-			e.Category = "authorization"
-		case status == http.StatusTooManyRequests:
-			e.Category = "rate_limit"
-		case status >= 500:
-			e.Category = "availability"
-		case status == http.StatusConflict || status == http.StatusPreconditionFailed:
-			e.Category = "conflict"
-		default:
-			e.Category = "validation"
-		}
-	}
-	if status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable || status == http.StatusBadGateway || status == http.StatusGatewayTimeout {
-		e.Retryable = true
-	}
-	return e
-}
-
 func New(cfg Config) (*Server, error) {
 	if cfg.Registry == nil || cfg.Operations == nil || cfg.AccountGeneration <= 0 {
 		return nil, errors.New("Agent HTTP dependencies are incomplete")
@@ -154,7 +119,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	request, status, failure := s.authenticate(r)
 	if failure != nil {
-		writeJSON(w, status, failure)
+		writeDataPlaneError(w, status, *failure)
 		return
 	}
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/agent/v1/"), "/")
@@ -183,14 +148,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && len(parts) == 2 && parts[0] == "attachments":
 		s.handleCapability(w, r, request, "agent.chat.v1", map[string]string{"begin": "upload_attachment_begin", "append": "upload_attachment_append", "commit": "upload_attachment_commit"}[parts[1]], nil)
 	default:
-		writeJSON(w, http.StatusNotFound, errorBody{Code: "AGENT_ROUTE_NOT_FOUND", Message: "Agent data-plane route not found"})
+		writeDataPlaneError(w, http.StatusNotFound, dataPlaneError(http.StatusNotFound, "AGENT_ROUTE_NOT_FOUND", "Agent data-plane route not found"))
 	}
 }
 
-func (s *Server) authenticate(r *http.Request) (requestContext, int, *errorBody) {
+func (s *Server) authenticate(r *http.Request) (requestContext, int, *agentdatav2.ErrorEnvelope) {
 	value := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 	if value == "" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-		return requestContext{}, http.StatusUnauthorized, &errorBody{Code: agentTicketInvalidCode, Message: "Agent session ticket is required"}
+		failure := dataPlaneError(http.StatusUnauthorized, agentTicketInvalidCode, "Agent session ticket is required")
+		return requestContext{}, http.StatusUnauthorized, &failure
 	}
 	claims, expired, err := verifyTicket(value, s.publicKey, s.now())
 	if err != nil {
@@ -198,10 +164,12 @@ func (s *Server) authenticate(r *http.Request) (requestContext, int, *errorBody)
 		if expired {
 			code = agentTicketExpiredCode
 		}
-		return requestContext{}, http.StatusUnauthorized, &errorBody{Code: code, Message: "Agent session ticket is invalid or expired"}
+		failure := dataPlaneError(http.StatusUnauthorized, code, "Agent session ticket is invalid or expired")
+		return requestContext{}, http.StatusUnauthorized, &failure
 	}
 	if claims.AccountGeneration != s.accountGeneration {
-		return requestContext{}, http.StatusForbidden, &errorBody{Code: agentTicketStaleCode, Message: "Agent account generation does not match"}
+		failure := dataPlaneError(http.StatusForbidden, agentTicketStaleCode, "Agent account generation does not match")
+		return requestContext{}, http.StatusForbidden, &failure
 	}
 	permission := &capv1.PermissionContext{AuthenticatedOwnerId: claims.OwnerID, AccountGeneration: claims.AccountGeneration, GrantedScopes: append([]string(nil), claims.Scopes...), CapabilityGrant: []byte(value)}
 	return requestContext{claims: claims, permission: permission}, 0, nil
@@ -288,11 +256,17 @@ func (s *Server) handleCatalog(w http.ResponseWriter, request requestContext) {
 func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request, request requestContext, capabilityID, operationID string, injected any) {
 	capability, descriptor, opDescriptor, ok := s.resolve(capabilityID, operationID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, errorBody{Code: "AGENT_OPERATION_NOT_FOUND", Message: "Agent capability operation not found"})
+		writeDataPlaneError(w, http.StatusNotFound, dataPlaneError(http.StatusNotFound, "AGENT_OPERATION_NOT_FOUND", "Agent capability operation not found"))
 		return
 	}
 	if !hasScopes(request.claims.Scopes, opDescriptor.GetRequiredScopes()) {
-		writeJSON(w, http.StatusForbidden, errorBody{Code: agentTicketScopeForbiddenCode, Message: "Agent session ticket does not grant this operation"})
+		var options []errorEnvelopeOption
+		if len(opDescriptor.GetRequiredScopes()) == 1 {
+			if requiredScope, known := authoritativeAgentDataScope(opDescriptor.GetRequiredScopes()[0]); known {
+				options = append(options, withErrorDetails(agentdatav2.ErrorDetails{RequiredScope: &requiredScope}))
+			}
+		}
+		writeDataPlaneError(w, http.StatusForbidden, dataPlaneError(http.StatusForbidden, agentTicketScopeForbiddenCode, "Agent session ticket does not grant this operation", options...))
 		return
 	}
 	var raw []byte
@@ -306,20 +280,20 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request, reques
 		var err error
 		raw, err = io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 		if err != nil || len(bytes.TrimSpace(raw)) == 0 || !json.Valid(raw) {
-			writeJSON(w, http.StatusBadRequest, errorBody{Code: "AGENT_REQUEST_INVALID", Message: "Agent operation request must be valid JSON"})
+			writeDataPlaneError(w, http.StatusBadRequest, dataPlaneError(http.StatusBadRequest, "AGENT_REQUEST_INVALID", "Agent operation request must be valid JSON"))
 			return
 		}
 		if injected != nil {
 			raw, err = injectObject(raw, injected)
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, errorBody{Code: "AGENT_REQUEST_INVALID", Message: "Agent route binding conflicts with request"})
+				writeDataPlaneError(w, http.StatusBadRequest, dataPlaneError(http.StatusBadRequest, "AGENT_REQUEST_INVALID", "Agent route binding conflicts with request"))
 				return
 			}
 		}
 	}
 	canonical, err := capv1.CanonicalizeJSON(raw)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody{Code: "AGENT_REQUEST_INVALID", Message: "Agent operation request must be a JSON object"})
+		writeDataPlaneError(w, http.StatusBadRequest, dataPlaneError(http.StatusBadRequest, "AGENT_REQUEST_INVALID", "Agent operation request must be a JSON object"))
 		return
 	}
 	if opDescriptor.GetOperationType() == capv1.OperationType_OPERATION_TYPE_READ {
@@ -338,7 +312,7 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request, reques
 		if errors.Is(keyErr, errIdempotencyKeyConflict) {
 			message = idempotencyKeyConflictMessage
 		}
-		writeJSON(w, http.StatusBadRequest, errorBody{Code: "AGENT_REQUEST_INVALID", Message: message})
+		writeDataPlaneError(w, http.StatusBadRequest, dataPlaneError(http.StatusBadRequest, "AGENT_REQUEST_INVALID", message))
 		return
 	}
 	digest := sha256.Sum256(bytes.Join([][]byte{[]byte(descriptor.GetCapabilityId()), []byte{0}, []byte(operationID), []byte{0}, canonical}, nil))
@@ -358,10 +332,15 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request, reques
 		}
 		turn, err := s.conversation.GetTurn(r.Context(), ledgerID)
 		if err != nil || turn.ID != ledgerID || turn.RequestID != key {
-			writeJSON(w, http.StatusInternalServerError, errorBody{Code: "AGENT_OPERATION_FAILED", Message: "durable turn admission was not persisted"})
+			writeDataPlaneError(w, http.StatusInternalServerError, dataPlaneError(http.StatusInternalServerError, "AGENT_OPERATION_FAILED", "durable turn admission was not persisted", withOperationIdentity(ledgerID), withTurnIdentity(ledgerID)))
 			return
 		}
-		writeJSON(w, http.StatusAccepted, map[string]any{"operation_id": ledgerID, "turn_id": ledgerID, "idempotency_key": key, "state": string(turn.State), "replayed": replayed})
+		receipt, projectionErr := newTurnOperationReceipt(ledgerID, turn.ID, key, string(turn.State), replayed)
+		if projectionErr != nil {
+			writeDataPlaneError(w, http.StatusInternalServerError, dataPlaneError(http.StatusInternalServerError, "AGENT_CONTRACT_PROJECTION_FAILED", "Agent response could not be projected", withOperationIdentity(ledgerID), withTurnIdentity(turn.ID)))
+			return
+		}
+		writeJSON(w, http.StatusAccepted, receipt)
 		return
 	}
 	expectedRevision := expectedRevision(canonical)
@@ -379,7 +358,11 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request, reques
 			return capability.HandleOperation(handlerCtx, operationID, canonical)
 		})
 	}
-	receipt := map[string]any{"operation_id": ledgerID, "idempotency_key": key, "state": string(accepted.State), "replayed": !created}
+	receipt, projectionErr := newOperationReceipt(ledgerID, key, string(accepted.State), !created)
+	if projectionErr != nil {
+		writeDataPlaneError(w, http.StatusInternalServerError, dataPlaneError(http.StatusInternalServerError, "AGENT_CONTRACT_PROJECTION_FAILED", "Agent response could not be projected", withOperationIdentity(ledgerID)))
+		return
+	}
 	writeJSON(w, http.StatusAccepted, receipt)
 }
 
@@ -388,7 +371,7 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request, requ
 		if turn, turnErr := s.conversation.GetTurn(r.Context(), operationID); turnErr == nil && turn.OwnerID == request.claims.OwnerID && turn.AccountGeneration == uint64(request.claims.AccountGeneration) {
 			capability, _, descriptor, ok := s.resolve("agent.chat.v1", "get_turn")
 			if !ok || !hasScopes(request.claims.Scopes, descriptor.GetRequiredScopes()) {
-				writeJSON(w, http.StatusForbidden, errorBody{Code: agentTicketScopeForbiddenCode, Message: "Agent session ticket does not grant this operation"})
+				writeDataPlaneError(w, http.StatusForbidden, dataPlaneError(http.StatusForbidden, agentTicketScopeForbiddenCode, "Agent session ticket does not grant this operation"))
 				return
 			}
 			input, _ := json.Marshal(map[string]string{"turn_id": operationID})
@@ -398,7 +381,18 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request, requ
 				writeOperationError(w, resultErr)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"operation_id": operationID, "state": string(turn.State), "sequence": turn.LastSequence, "result": json.RawMessage(result)})
+			var failure *agentdatav2.ErrorEnvelope
+			if turn.TerminalCode != "" {
+				projected := turnEventErrorEnvelope(turn.ID, turn.TerminalCode, turn.TerminalSummary)
+				failure = &projected
+				result = nil
+			}
+			snapshot, projectionErr := newOperationSnapshot(operationID, turn.ID, turn.ConversationID, string(turn.State), turn.LastSequence, result, failure)
+			if projectionErr != nil {
+				writeDataPlaneError(w, http.StatusInternalServerError, dataPlaneError(http.StatusInternalServerError, "AGENT_CONTRACT_PROJECTION_FAILED", "Agent response could not be projected", withOperationIdentity(operationID), withTurnIdentity(turn.ID)))
+				return
+			}
+			writeJSON(w, http.StatusOK, snapshot)
 			return
 		}
 	}
@@ -408,40 +402,39 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request, requ
 		return
 	}
 	if op.OwnerID != request.claims.OwnerID || op.AccountGeneration != request.claims.AccountGeneration {
-		writeJSON(w, http.StatusNotFound, errorBody{Code: "AGENT_OPERATION_NOT_FOUND", Message: "Agent operation not found"})
+		writeDataPlaneError(w, http.StatusNotFound, dataPlaneError(http.StatusNotFound, "AGENT_OPERATION_NOT_FOUND", "Agent operation not found"))
 		return
 	}
 	if _, _, descriptor, ok := s.resolve(op.CapabilityID, op.OperationName); !ok || !hasScopes(request.claims.Scopes, descriptor.GetRequiredScopes()) {
-		writeJSON(w, http.StatusForbidden, errorBody{Code: agentTicketScopeForbiddenCode, Message: "Agent session ticket does not grant this operation"})
+		writeDataPlaneError(w, http.StatusForbidden, dataPlaneError(http.StatusForbidden, agentTicketScopeForbiddenCode, "Agent session ticket does not grant this operation"))
 		return
 	}
-	result := map[string]any{"operation_id": op.ID, "state": string(op.State), "sequence": op.Sequence}
-	if len(op.ResultJSON) > 0 {
-		result["result"] = json.RawMessage(op.ResultJSON)
-	}
+	var failure *agentdatav2.ErrorEnvelope
 	if op.ErrorCode != "" {
-		result["error"] = operationPollingError(op.ID, op.ErrorCode, op.ErrorMessage)
+		projected := operationPollingError(op)
+		failure = &projected
 	}
-	writeJSON(w, http.StatusOK, result)
+	snapshot, projectionErr := newOperationSnapshot(op.ID, "", "", string(op.State), op.Sequence, op.ResultJSON, failure)
+	if projectionErr != nil {
+		writeDataPlaneError(w, http.StatusInternalServerError, dataPlaneError(http.StatusInternalServerError, "AGENT_CONTRACT_PROJECTION_FAILED", "Agent response could not be projected", withOperationIdentity(op.ID)))
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
-func operationPollingError(operationID, code, message string) errorBody {
-	status := http.StatusConflict
-	switch code {
-	case "RESOURCE_EXHAUSTED":
-		status = http.StatusTooManyRequests
-	case "UNAVAILABLE", "NOT_READY":
-		status = http.StatusServiceUnavailable
-	case "UPSTREAM_FAILED":
-		status = http.StatusBadGateway
-	case "INVALID_ARGUMENT":
-		status = http.StatusBadRequest
-	case "PERMISSION_DENIED":
-		status = http.StatusForbidden
-	case "NOT_FOUND":
-		status = http.StatusNotFound
+func operationPollingError(op *operation.Operation) agentdatav2.ErrorEnvelope {
+	var details *agentdatav2.ErrorDetails
+	if op.ExpectedRevision > 0 || op.ActualRevision > 0 {
+		projected := agentdatav2.ErrorDetails{}
+		if op.ExpectedRevision > 0 {
+			projected.ExpectedRevision = &op.ExpectedRevision
+		}
+		if op.ActualRevision > 0 {
+			projected.ActualRevision = &op.ActualRevision
+		}
+		details = &projected
 	}
-	return errorBody{Code: code, Message: message, Category: "operation", OperationID: operationID}.normalized(status)
+	return operationErrorEnvelope(op.ID, op.ErrorCode, op.ErrorMessage, details)
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, request requestContext, operationID string) {
@@ -449,12 +442,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, request re
 		if turn, turnErr := s.conversation.GetTurn(r.Context(), operationID); turnErr == nil && turn.OwnerID == request.claims.OwnerID && turn.AccountGeneration == uint64(request.claims.AccountGeneration) {
 			_, _, descriptor, ok := s.resolve("agent.chat.v1", "get_turn")
 			if !ok || !hasScopes(request.claims.Scopes, descriptor.GetRequiredScopes()) {
-				writeJSON(w, http.StatusForbidden, errorBody{Code: agentTicketScopeForbiddenCode, Message: "Agent session ticket does not grant this operation"})
+				writeDataPlaneError(w, http.StatusForbidden, dataPlaneError(http.StatusForbidden, agentTicketScopeForbiddenCode, "Agent session ticket does not grant this operation"))
 				return
 			}
 			after, failure := eventCursor(r)
 			if failure != nil {
-				writeJSON(w, http.StatusBadRequest, failure)
+				writeDataPlaneError(w, http.StatusBadRequest, *failure)
 				return
 			}
 			s.handleTurnEvents(w, r, request, operationID, after)
@@ -467,16 +460,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, request re
 		return
 	}
 	if op.OwnerID != request.claims.OwnerID || op.AccountGeneration != request.claims.AccountGeneration {
-		writeJSON(w, http.StatusNotFound, errorBody{Code: "AGENT_OPERATION_NOT_FOUND", Message: "Agent operation not found"})
+		writeDataPlaneError(w, http.StatusNotFound, dataPlaneError(http.StatusNotFound, "AGENT_OPERATION_NOT_FOUND", "Agent operation not found"))
 		return
 	}
 	if _, _, descriptor, ok := s.resolve(op.CapabilityID, op.OperationName); !ok || !hasScopes(request.claims.Scopes, descriptor.GetRequiredScopes()) {
-		writeJSON(w, http.StatusForbidden, errorBody{Code: agentTicketScopeForbiddenCode, Message: "Agent session ticket does not grant this operation"})
+		writeDataPlaneError(w, http.StatusForbidden, dataPlaneError(http.StatusForbidden, agentTicketScopeForbiddenCode, "Agent session ticket does not grant this operation"))
 		return
 	}
 	after, failure := eventCursor(r)
 	if failure != nil {
-		writeJSON(w, http.StatusBadRequest, failure)
+		writeDataPlaneError(w, http.StatusBadRequest, *failure)
 		return
 	}
 	events, err := s.operations.Watch(r.Context(), operationID, after)
@@ -486,27 +479,45 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, request re
 	}
 	err = streamSSE(r.Context(), w, events, sseHeartbeatInterval, func(event operation.Event) (sseFrame, bool) {
 		payload := any(json.RawMessage(event.EventJSON))
-		var decoded any
-		if json.Unmarshal(event.EventJSON, &decoded) == nil {
-			payload = decoded
+		if event.EventType == "error" {
+			var failure struct {
+				Code    string `json:"error_code"`
+				Message string `json:"error_message"`
+			}
+			if strictJSON(event.EventJSON, &failure) == nil {
+				payload = operationErrorEnvelope(event.OperationID, failure.Code, failure.Message, nil)
+			} else {
+				payload = dataPlaneError(http.StatusInternalServerError, "AGENT_CONTRACT_PROJECTION_FAILED", "Agent event projection failed", withOperationIdentity(event.OperationID))
+			}
+		} else {
+			var decoded any
+			if json.Unmarshal(event.EventJSON, &decoded) == nil {
+				payload = decoded
+			}
 		}
-		data, _ := json.Marshal(map[string]any{"operation_id": event.OperationID, "sequence": event.Sequence, "type": event.EventType, "payload": payload, "created_at": event.CreatedAt.UTC()})
+		envelope, projectionErr := newOperationSSEEnvelope(event.OperationID, event.Sequence, event.EventType, payload, event.CreatedAt)
+		if projectionErr != nil {
+			return sseFrame{}, false
+		}
+		data, _ := json.Marshal(envelope)
 		return sseFrame{sequence: event.Sequence, eventType: event.EventType, data: data}, true
 	})
 	if errors.Is(err, errSSEUnavailable) {
-		writeJSON(w, http.StatusInternalServerError, errorBody{Code: "AGENT_SSE_UNAVAILABLE", Message: "streaming is unavailable"})
+		writeDataPlaneError(w, http.StatusInternalServerError, dataPlaneError(http.StatusInternalServerError, "AGENT_SSE_UNAVAILABLE", "streaming is unavailable", withOperationIdentity(operationID)))
 	}
 }
 
-func eventCursor(r *http.Request) (int64, *errorBody) {
+func eventCursor(r *http.Request) (int64, *agentdatav2.ErrorEnvelope) {
 	query, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
-		return 0, &errorBody{Code: "AGENT_REQUEST_INVALID", Message: "SSE cursor query must be valid URL encoding"}
+		failure := dataPlaneError(http.StatusBadRequest, "AGENT_REQUEST_INVALID", "SSE cursor query must be valid URL encoding")
+		return 0, &failure
 	}
 	afterValue, afterPresent := query["after_seq"]
 	lastValues, lastPresent := r.Header[http.CanonicalHeaderKey("Last-Event-ID")]
 	if afterPresent && len(afterValue) != 1 || lastPresent && len(lastValues) != 1 {
-		return 0, &errorBody{Code: "AGENT_REQUEST_INVALID", Message: "SSE cursor must be a single non-negative integer"}
+		failure := dataPlaneError(http.StatusBadRequest, "AGENT_REQUEST_INVALID", "SSE cursor must be a single non-negative integer")
+		return 0, &failure
 	}
 	var after, last int64
 	var afterErr, lastErr error
@@ -517,10 +528,12 @@ func eventCursor(r *http.Request) (int64, *errorBody) {
 		last, lastErr = parseEventCursor(lastValues[0])
 	}
 	if afterErr != nil || lastErr != nil {
-		return 0, &errorBody{Code: "AGENT_REQUEST_INVALID", Message: "SSE cursor must be a non-negative integer"}
+		failure := dataPlaneError(http.StatusBadRequest, "AGENT_REQUEST_INVALID", "SSE cursor must be a non-negative integer")
+		return 0, &failure
 	}
 	if afterPresent && lastPresent && after != last {
-		return 0, &errorBody{Code: agentCursorConflictCode, Message: "after_seq and Last-Event-ID must match"}
+		failure := dataPlaneError(http.StatusBadRequest, agentCursorConflictCode, "after_seq and Last-Event-ID must match")
+		return 0, &failure
 	}
 	if afterPresent {
 		return after, nil
@@ -566,41 +579,8 @@ func writeTurnLookupError(w http.ResponseWriter, err error) {
 }
 
 func writeOperationError(w http.ResponseWriter, err error) {
-	code, message, ok := operation.FailureDetails(err)
-	if !ok {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			code, message = "UNAVAILABLE", "Agent operation was interrupted; retry"
-		} else {
-			code, message = "UPSTREAM_FAILED", "Agent operation failed"
-		}
-	}
-	status := http.StatusBadGateway
-	publicCode := "AGENT_OPERATION_FAILED"
-	switch code {
-	case "INVALID_ARGUMENT":
-		status, publicCode = http.StatusBadRequest, "AGENT_REQUEST_INVALID"
-	case "PERMISSION_DENIED":
-		status, publicCode = http.StatusForbidden, "AGENT_OPERATION_FORBIDDEN"
-	case "NOT_FOUND":
-		status, publicCode = http.StatusNotFound, "AGENT_OPERATION_NOT_FOUND"
-	case "CONFLICT":
-		status, publicCode = http.StatusConflict, "AGENT_OPERATION_CONFLICT"
-	case "PRECONDITION_FAILED":
-		status, publicCode = http.StatusPreconditionFailed, "AGENT_OPERATION_PRECONDITION_FAILED"
-	case "NOT_READY":
-		status, publicCode = http.StatusServiceUnavailable, "AGENT_OPERATION_NOT_READY"
-	case "UNAVAILABLE":
-		status, publicCode = http.StatusServiceUnavailable, "AGENT_OPERATION_UNAVAILABLE"
-	case "RESOURCE_EXHAUSTED":
-		status, publicCode = http.StatusTooManyRequests, "AGENT_OPERATION_RESOURCE_EXHAUSTED"
-	case "UNCERTAIN":
-		status, publicCode = http.StatusConflict, "AGENT_OPERATION_UNCERTAIN"
-	case "CANCELLED":
-		status, publicCode = http.StatusConflict, "AGENT_OPERATION_CANCELLED"
-	case "CYCLE_DETECTED":
-		status, publicCode = http.StatusConflict, "AGENT_OPERATION_CONFLICT"
-	}
-	writeJSON(w, status, errorBody{Code: publicCode, Message: message})
+	status, envelope := operationErrorFromError("", err)
+	writeDataPlaneError(w, status, envelope)
 }
 
 func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, request requestContext, turnID string, after int64) {
@@ -610,7 +590,7 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, reques
 		return
 	}
 	if turn.OwnerID != request.claims.OwnerID || turn.AccountGeneration != uint64(request.claims.AccountGeneration) {
-		writeJSON(w, http.StatusNotFound, errorBody{Code: "AGENT_OPERATION_NOT_FOUND", Message: "Agent turn not found"})
+		writeDataPlaneError(w, http.StatusNotFound, dataPlaneError(http.StatusNotFound, "AGENT_OPERATION_NOT_FOUND", "Agent turn not found"))
 		return
 	}
 	events, err := s.conversation.WatchTurnEvents(r.Context(), turnID, after, 1000)
@@ -630,23 +610,37 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, reques
 			}
 		} else if event.Err != nil {
 			eventType = "error"
-			payload = map[string]any{"code": "stream_failed", "message": "Agent event stream failed"}
+			payload = dataPlaneError(http.StatusServiceUnavailable, "AGENT_OPERATION_UNAVAILABLE", "Agent event stream failed", withOperationIdentity(turnID), withTurnIdentity(turnID))
+		} else if event.Kind == coreconversation.TurnEventError {
+			eventType = "error"
+			payload = turnEventErrorEnvelope(turnID, event.ErrorCode, event.ErrorSummary)
 		} else {
 			projected, projectErr := agentcapability.ProjectDurableTurnEventJSON(turn, event)
 			if projectErr != nil {
 				eventType = "error"
-				payload = map[string]any{"code": "projection_failed", "message": "Agent event projection failed"}
+				payload = dataPlaneError(http.StatusInternalServerError, "AGENT_CONTRACT_PROJECTION_FAILED", "Agent event projection failed", withOperationIdentity(turnID), withTurnIdentity(turnID))
 			} else if len(projected) == 0 {
 				return sseFrame{}, false
 			} else {
 				payload = json.RawMessage(projected)
 			}
 		}
-		data, _ := json.Marshal(map[string]any{"operation_id": turnID, "turn_id": turnID, "conversation_id": turn.ConversationID, "sequence": event.Sequence, "type": eventType, "payload": payload, "created_at": event.CreatedAt.UTC()})
+		createdAt := event.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = turn.UpdatedAt
+		}
+		if createdAt.IsZero() {
+			createdAt = s.now()
+		}
+		envelope, projectionErr := newTurnSSEEnvelope(turnID, turn.ID, turn.ConversationID, event.Sequence, eventType, payload, createdAt)
+		if projectionErr != nil {
+			return sseFrame{}, false
+		}
+		data, _ := json.Marshal(envelope)
 		return sseFrame{sequence: event.Sequence, eventType: eventType, data: data}, true
 	})
 	if errors.Is(err, errSSEUnavailable) {
-		writeJSON(w, http.StatusInternalServerError, errorBody{Code: "AGENT_SSE_UNAVAILABLE", Message: "streaming is unavailable"})
+		writeDataPlaneError(w, http.StatusInternalServerError, dataPlaneError(http.StatusInternalServerError, "AGENT_SSE_UNAVAILABLE", "streaming is unavailable", withOperationIdentity(turnID), withTurnIdentity(turnID)))
 	}
 }
 
@@ -841,15 +835,6 @@ func writeRawJSON(w http.ResponseWriter, status int, raw []byte) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
-	switch failure := value.(type) {
-	case errorBody:
-		value = failure.normalized(status)
-	case *errorBody:
-		if failure != nil {
-			normalized := failure.normalized(status)
-			value = normalized
-		}
-	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)

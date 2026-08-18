@@ -10,8 +10,11 @@
 This document is the current product and implementation boundary for the
 independent Agent service. The versioned Protobuf in
 `api/proto/dirextalk/agent/v1` and the PostgreSQL migrations are the executable
-contract. A public or schema change updates this document and its contract tests
-together.
+contract for private gRPC and durable storage. The owner-facing HTTP/session/SSE
+wire authority is the generated Agent Data Plane V2 contract pinned from
+`dirextalk-capability-api v1.1.0`; the shared conformance vectors replace local
+fixture copies. A public or schema change updates this document and its contract
+tests together.
 
 The companion Message Server integration contract is
 [`docs/message-server-integration-development-contract.md`](message-server-integration-development-contract.md).
