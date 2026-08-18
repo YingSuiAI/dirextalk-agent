@@ -264,15 +264,20 @@ encrypted repository. Its model-facing contract requests one focused search
 with enough results, permits another only for a distinct missing fact, and
 directs the model to synthesize sufficient evidence instead of repeating
 equivalent searches for exhaustive confirmation.
-The conversation runtime detects only exact action/result repetition and exact
-A/B alternation in the recent ordered tool history since the latest steer.
-Canonical action identity ignores call identity and argument key order, while
-normalized result identity ignores transport call IDs and timestamps. Three
-identical pairs or six A/B pairs add a brief correction while preserving every
-accepted extension and intrinsic. Only a fourth identical pair or eighth A/B
-pair makes the next model request a one-pass, tool-free synthesis from all
-durable evidence, with remaining gaps stated explicitly. Different arguments
-or results are productive progress and never trigger this recovery.
+At each immediate or deferred tool-result transaction, the runtime derives a
+versioned `ProgressObservation` when the result carries validated runtime
+references. Its effective digest covers the normalized action, bounded result,
+artifact/workspace changes, external receipts/resource state, error class, and
+completed step while excluding call IDs, model-authored argument wrappers,
+timestamps, and reference presentation fields. The third consecutive equal
+digest since the latest steer atomically records the result and terminates the
+turn as `AGENT_STALLED_NO_PROGRESS`; restart and lease transfer preserve that
+window, and a durable steer starts a new one. A changed artifact digest,
+resource revision/status/state, or receipt identity resets the count.
+Tools without a structured runtime observation retain the conservative exact
+action/result and A/B fallback. Three identical pairs or six A/B pairs add a
+brief correction with tools intact; a fourth identical pair or eighth A/B pair
+makes the next request a one-pass, tool-free synthesis from durable evidence.
 The recovery is subordinate to the turn-wide maximum of 20 accepted tool calls.
 At the limit, Core removes all extension and intrinsic tools for one synthesis
 request; a returned batch that would exceed the limit fails durably as
@@ -515,11 +520,16 @@ fences in-flight indexing, and removes promoted vectors while preserving source
 documents. A later embedding binding automatically reconciles those
 ready, unindexed sources without a migration or content fallback.
 
-Conversation memory is a separate two-layer projection. Working memory is the
-existing bounded conversation summary and recent transcript. Compaction is
-monotonic: it adds only newly overflowed messages to the prior summary, and the
-model receives that summary as delimited user-role history rather than a system
-instruction. After a chat
+Conversation memory is a separate two-layer projection. Working memory is a
+versioned, schema-constrained `WorkingContext` plus the recent transcript.
+Original goal and exact user constraints come only from durable user input;
+artifact, external-resource, side-effect, and tool-receipt identities come only
+from validated runtime references. Compaction may update decisions, completed
+and pending steps, and the last failure, but PostgreSQL compares the protected
+digest and rejects a stale or rewritten protected projection instead of
+overwriting it. The model receives the structured JSON as delimited user-role
+reference data, never as a system instruction. The complete raw transcript is
+retained as audit truth. After a chat
 commit, a transactionally enqueued observation is consolidated into
 Agent-owned structured user facts and an append-only fact timeline. The active
 `subject + predicate` row is the current truth projection; a changed value

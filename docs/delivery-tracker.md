@@ -53,10 +53,16 @@ contract](message-server-integration-development-contract.md), and
   projection/store errors do not expose their causes.
 - Native turns enforce a 24-dispatch and 20-minute cumulative model-active
   budget through the same durable admission counters used during recovery, plus
-  a 20-call tool budget. Conservative loop detection ignores only argument key
-  order, transport call IDs/timestamps, and safe unquoted local-shell spacing;
-  it first nudges with tools intact and uses tool-free synthesis only after a
-  continued exact or A/B repetition, resetting on steer.
+  a 20-call tool budget. Tool results with validated runtime references persist
+  versioned progress observations in the immediate-result or deferred-resume
+  transaction. The third unchanged effective digest fails durably as
+  `AGENT_STALLED_NO_PROGRESS`; argument/presentation wrappers do not count as
+  progress, restart preserves the count, and steer resets it. Results without
+  structured observations retain conservative exact/A-B loop recovery.
+  Conversation compaction now persists a versioned structured WorkingContext;
+  protected user goals/constraints and runtime resource/receipt identities use
+  a separate digest CAS, while only decisions, steps, and last-failure summaries
+  are compressor-owned. The model no longer receives the free-form summary.
   Gemini-generated tool-call IDs are unique against the prior transcript, and
   adjacent Anthropic tool results use one ordered result-message batch. Debug
   formatting of immutable execution snapshots omits both credentials and the
@@ -223,6 +229,18 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-18**, immediate tool-result and deferred-resume transactions
+  began persisting versioned progress observations. Focused tests cover
+  wrapper/presentation-insensitive digests, state-change reset, unstructured
+  fallback, restart continuity, steer reset, the third-observation terminal
+  event, and shared immediate/deferred windows. Context compaction now rebuilds
+  a schema-constrained WorkingContext from the retained transcript, protects
+  exact user/resource/receipt fields with a separate CAS digest, and excludes
+  the legacy free-form summary from model input. `go test ./...` passed 1733
+  tests, the maintained race lane passed 455 tests, and vet, SA staticcheck,
+  govulncheck 1.7.0, command builds, Buf lint, and diff checks passed. The new
+  PostgreSQL transaction/CAS cases remain opt-in because
+  `AGENT_TEST_POSTGRES_DSN` was not configured in this environment.
 - On **2026-08-18**, durable Turn admission began atomically freezing the
   compiled system prompt, explicit request dialect/profile configuration,
   intrinsic schemas, extension/attachment identity, and execution policy.

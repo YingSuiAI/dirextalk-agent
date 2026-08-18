@@ -35,7 +35,24 @@ func (s *CoreConversationStore) CommitChatCompletion(ctx context.Context, a core
 	if a.Conversation.ContextMessageOffset > uint64(^uint64(0)>>1) || len(a.Conversation.Summary) > core.MaxSummaryBytes {
 		return core.ChatResponse{}, core.ErrInvalid
 	}
-	if _, e = tx.Exec(ctx, `INSERT INTO core_conversation_contexts(conversation_id,summary,message_offset,updated_at) VALUES($1,$2,$3,$4) ON CONFLICT(conversation_id) DO UPDATE SET summary=$2,message_offset=$3,updated_at=$4`, a.Conversation.ID, a.Conversation.Summary, int64(a.Conversation.ContextMessageOffset), a.Conversation.UpdatedAt); e != nil {
+	working := a.Conversation.WorkingContext
+	if working.Version == "" {
+		working = core.NewWorkingContext()
+	}
+	if working.Validate() != nil || a.Conversation.WorkingContextProtectedDigest != "" && a.Conversation.WorkingContextProtectedDigest != working.ProtectedDigest() {
+		return core.ChatResponse{}, core.ErrInvalid
+	}
+	var storedProtectedDigest string
+	contextErr := tx.QueryRow(ctx, `SELECT protected_digest FROM core_conversation_contexts WHERE conversation_id=$1 FOR UPDATE`, a.Conversation.ID).Scan(&storedProtectedDigest)
+	if contextErr == nil {
+		if a.Conversation.WorkingContextProtectedDigest == "" || storedProtectedDigest != a.Conversation.WorkingContextProtectedDigest || storedProtectedDigest != working.ProtectedDigest() {
+			return core.ChatResponse{}, core.ErrConflict
+		}
+	} else if !errors.Is(contextErr, pgx.ErrNoRows) {
+		return core.ChatResponse{}, contextErr
+	}
+	workingRaw, _ := json.Marshal(working)
+	if _, e = tx.Exec(ctx, `INSERT INTO core_conversation_contexts(conversation_id,summary,message_offset,working_context_version,working_context_json,protected_digest,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(conversation_id) DO UPDATE SET summary=$2,message_offset=$3,working_context_version=$4,working_context_json=$5,protected_digest=$6,updated_at=$7`, a.Conversation.ID, a.Conversation.Summary, int64(a.Conversation.ContextMessageOffset), core.WorkingContextVersion, workingRaw, working.ProtectedDigest(), a.Conversation.UpdatedAt); e != nil {
 		return core.ChatResponse{}, e
 	}
 	for i, m := range a.Conversation.Messages {

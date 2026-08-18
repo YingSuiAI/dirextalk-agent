@@ -885,6 +885,20 @@ func (s *CoreConversationStore) RecordConversationToolResult(ctx context.Context
 		return err
 	}
 	raw, _ := json.Marshal(envelope)
+	stalled, err := recordConversationProgressTx(ctx, tx, lease.Turn.ID, result.CallID, result, lastSequence+1, now)
+	if err != nil {
+		return err
+	}
+	if stalled {
+		var turn core.Turn
+		if err = s.scanTurn(ctx, tx, lease.Turn.ID, &turn); err != nil {
+			return err
+		}
+		if err = failTurnNoProgressTx(ctx, tx, turn, raw, lastSequence+1, now); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
 	if _, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_result_json=$2,updated_at=$3 WHERE turn_id=$1`, lease.Turn.ID, raw, now); err != nil {
 		return err
 	}
@@ -992,13 +1006,14 @@ const (
 )
 
 type conversationToolEventAuthority struct {
-	state  conversationToolCallState
-	call   core.ToolCall
-	result *core.ToolResult
+	state          conversationToolCallState
+	call           core.ToolCall
+	result         *core.ToolResult
+	resultSequence int64
 }
 
 func conversationToolEventAuthorityTx(ctx context.Context, tx pgx.Tx, turnID, callID string) (conversationToolEventAuthority, error) {
-	rows, err := tx.Query(ctx, `SELECT payload_json FROM core_conversation_turn_events WHERE turn_id=$1 AND kind IN ($2,$3) ORDER BY sequence`, turnID, string(core.TurnEventToolCall), string(core.TurnEventToolResult))
+	rows, err := tx.Query(ctx, `SELECT sequence,payload_json FROM core_conversation_turn_events WHERE turn_id=$1 AND kind IN ($2,$3) ORDER BY sequence`, turnID, string(core.TurnEventToolCall), string(core.TurnEventToolResult))
 	if err != nil {
 		return conversationToolEventAuthority{}, err
 	}
@@ -1006,7 +1021,8 @@ func conversationToolEventAuthorityTx(ctx context.Context, tx pgx.Tx, turnID, ca
 	var authority conversationToolEventAuthority
 	for rows.Next() {
 		var raw []byte
-		if err = rows.Scan(&raw); err != nil {
+		var sequence int64
+		if err = rows.Scan(&sequence, &raw); err != nil {
 			return conversationToolEventAuthority{}, err
 		}
 		var event core.TurnEvent
@@ -1030,7 +1046,7 @@ func conversationToolEventAuthorityTx(ctx context.Context, tx pgx.Tx, turnID, ca
 				return conversationToolEventAuthority{}, core.ErrConflict
 			}
 			result := *event.ToolResult
-			authority.result, authority.state = &result, conversationToolCallTerminal
+			authority.result, authority.resultSequence, authority.state = &result, sequence, conversationToolCallTerminal
 		}
 	}
 	return authority, rows.Err()

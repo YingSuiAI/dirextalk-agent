@@ -2636,3 +2636,36 @@ CREATE UNIQUE INDEX core_conversation_model_attempts_active_idx
     ON core_conversation_model_attempts(turn_id)
     WHERE state = 'dispatched';
 -- dirextalk-agent migration end 000021_turn_model_attempts.up.sql
+-- dirextalk-agent migration begin 000022_progress_working_context.up.sql
+ALTER TABLE core_conversation_contexts
+    ADD COLUMN working_context_version text NOT NULL DEFAULT 'dirextalk.working-context/v1',
+    ADD COLUMN working_context_json jsonb NOT NULL DEFAULT '{"version":"dirextalk.working-context/v1"}'::jsonb,
+    ADD COLUMN protected_digest char(64) NOT NULL DEFAULT 'd794f7992e10c9a8eb0480182ed31641307d9aade5e5483443152d30f8143ff2',
+    ADD CONSTRAINT core_conversation_contexts_working_version_check CHECK (working_context_version = 'dirextalk.working-context/v1'),
+    ADD CONSTRAINT core_conversation_contexts_working_json_check CHECK (
+        jsonb_typeof(working_context_json) = 'object'
+        AND working_context_json->>'version' = working_context_version
+        AND pg_column_size(working_context_json) <= 4194304
+    ),
+    ADD CONSTRAINT core_conversation_contexts_protected_digest_check CHECK (protected_digest ~ '^[a-f0-9]{64}$');
+
+CREATE TABLE core_conversation_progress_observations (
+    turn_id uuid NOT NULL,
+    call_id text NOT NULL CHECK (length(call_id) BETWEEN 1 AND 256),
+    event_sequence bigint NOT NULL CHECK (event_sequence > 0),
+    steer_sequence bigint NOT NULL CHECK (steer_sequence >= 0 AND steer_sequence < event_sequence),
+    observation_json jsonb NOT NULL CHECK (
+        jsonb_typeof(observation_json) = 'object'
+        AND observation_json->>'version' = 'dirextalk.progress-observation/v1'
+        AND pg_column_size(observation_json) <= 1048576
+    ),
+    effective_digest char(64) NOT NULL CHECK (effective_digest ~ '^[a-f0-9]{64}$'),
+    consecutive_count smallint NOT NULL CHECK (consecutive_count BETWEEN 1 AND 3),
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (turn_id,call_id),
+    UNIQUE (turn_id,event_sequence),
+    FOREIGN KEY (turn_id,event_sequence) REFERENCES core_conversation_turn_events(turn_id,sequence) ON DELETE RESTRICT
+);
+CREATE INDEX core_conversation_progress_window_idx
+    ON core_conversation_progress_observations(turn_id,steer_sequence,event_sequence DESC);
+-- dirextalk-agent migration end 000022_progress_working_context.up.sql

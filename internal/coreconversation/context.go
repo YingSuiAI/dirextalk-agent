@@ -40,9 +40,9 @@ func (s *Service) Summarize(_ context.Context, text string) map[string]any {
 }
 
 // CompressContext compacts the model-facing context window while retaining
-// every transcript message in the durable conversation history.  Existing
-// summary material is merged only with newly overflowed messages and bounded
-// to MaxSummaryBytes using UTF-8-safe tail truncation so the newest facts win.
+// every transcript message in durable history. The model memory is a
+// versioned WorkingContext; Summary is only its bounded human-readable
+// projection and is never used as model state.
 func (s *Service) CompressContext(ctx context.Context, conversationID string, expectedRevision uint64, window int, requestID string) (ContextCompressionResult, error) {
 	if s == nil || s.store == nil || !validUUID(conversationID) || expectedRevision == 0 || !validUUID(requestID) {
 		return ContextCompressionResult{}, ErrInvalid
@@ -75,25 +75,39 @@ func (s *Service) CompressContext(ctx context.Context, conversationID string, ex
 	if offset < previousOffset {
 		offset = previousOffset
 	}
-	parts := make([]string, 0, 2)
-	if previous := strings.TrimSpace(conversation.Summary); previous != "" {
-		parts = append(parts, previous)
+	working := conversation.WorkingContext
+	contextStart := previousOffset
+	if working.Version == "" {
+		working = NewWorkingContext()
+		// Upgrade old compacted rows from the still-authoritative transcript.
+		contextStart = 0
 	}
-	if offset > previousOffset {
-		if overflow := summarizeMessages(conversation.Messages[previousOffset:offset]); overflow != "" {
-			parts = append(parts, overflow)
+	if previousOffset > 0 && working.Empty() {
+		// Migration v22 initializes old summary rows with an empty structured
+		// value. Rebuild their protected state from the retained transcript.
+		contextStart = 0
+	}
+	if working.Validate() != nil {
+		return ContextCompressionResult{}, ErrConflict
+	}
+	if offset > contextStart {
+		working, err = AdvanceWorkingContextFromTranscript(working, conversation.Messages[contextStart:offset])
+		if err != nil {
+			return ContextCompressionResult{}, err
 		}
 	}
-	summary := boundConversationSummary(strings.Join(parts, "\n"))
+	summary := working.SummaryText()
 
 	var persisted Conversation
 	if compressor, ok := s.store.(ConversationContextStore); ok {
-		persisted, err = compressor.CompressConversationContext(ctx, conversationID, summary, uint64(offset), expectedRevision, requestID)
+		persisted, err = compressor.CompressConversationContext(ctx, conversationID, summary, working, conversation.WorkingContextProtectedDigest, uint64(offset), expectedRevision, requestID)
 	} else {
 		persisted = conversation
-		changed := persisted.Summary != summary || persisted.ContextMessageOffset != uint64(offset)
+		changed := persisted.Summary != summary || persisted.ContextMessageOffset != uint64(offset) || persisted.WorkingContext.ProtectedDigest() != working.ProtectedDigest()
 		if changed {
 			persisted.Summary = summary
+			persisted.WorkingContext = working
+			persisted.WorkingContextProtectedDigest = working.ProtectedDigest()
 			persisted.ContextMessageOffset = uint64(offset)
 			persisted.Revision++
 			persisted.UpdatedAt = s.clock()
@@ -117,6 +131,8 @@ func (s *Service) CompressContext(ctx context.Context, conversationID string, ex
 		persisted.UpdatedAt = conversation.UpdatedAt
 	}
 	persisted.Summary = summary
+	persisted.WorkingContext = working
+	persisted.WorkingContextProtectedDigest = working.ProtectedDigest()
 	persisted.ContextMessageOffset = uint64(offset)
 	if persisted.Revision == 0 {
 		persisted.Revision = conversation.Revision
@@ -133,27 +149,7 @@ func (s *Service) CompressContext(ctx context.Context, conversationID string, ex
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
-	return ContextCompressionResult{ConversationID: conversationID, Summary: summary, Messages: recent, Revision: persisted.Revision, UpdatedAt: updatedAt, Compression: "deterministic", Conversation: persisted}, nil
-}
-
-func summarizeMessages(messages []Message) string {
-	parts := make([]string, 0, len(messages))
-	for _, message := range messages {
-		content := strings.TrimSpace(message.Content)
-		if content != "" {
-			parts = append(parts, string(message.Role)+": "+content)
-		}
-		for _, result := range message.ToolResults {
-			value := strings.TrimSpace(result.Summary)
-			if value == "" {
-				value = strings.TrimSpace(result.Content)
-			}
-			if value != "" {
-				parts = append(parts, "tool: "+value)
-			}
-		}
-	}
-	return strings.Join(parts, "\n")
+	return ContextCompressionResult{ConversationID: conversationID, Summary: summary, WorkingContext: working.Snapshot(), Messages: recent, Revision: persisted.Revision, UpdatedAt: updatedAt, Compression: "working_context_v1", Conversation: persisted}, nil
 }
 
 func boundConversationSummary(value string) string {

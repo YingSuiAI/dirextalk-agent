@@ -128,28 +128,31 @@ type Message struct {
 }
 
 type Conversation struct {
-	ID                   string     `json:"id"`
-	Title                string     `json:"title,omitempty"`
-	Revision             uint64     `json:"revision"`
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
-	DeletedAt            *time.Time `json:"deleted_at,omitempty"`
-	Summary              string     `json:"summary,omitempty"`
-	ContextMessageOffset uint64     `json:"context_message_offset,omitempty"`
-	Messages             []Message  `json:"messages"`
+	ID                            string         `json:"id"`
+	Title                         string         `json:"title,omitempty"`
+	Revision                      uint64         `json:"revision"`
+	CreatedAt                     time.Time      `json:"created_at"`
+	UpdatedAt                     time.Time      `json:"updated_at"`
+	DeletedAt                     *time.Time     `json:"deleted_at,omitempty"`
+	Summary                       string         `json:"summary,omitempty"`
+	WorkingContext                WorkingContext `json:"working_context,omitempty"`
+	WorkingContextProtectedDigest string         `json:"-"`
+	ContextMessageOffset          uint64         `json:"context_message_offset,omitempty"`
+	Messages                      []Message      `json:"messages"`
 }
 
 // ContextCompressionResult is the Agent-owned result of a context compaction
 // mutation.  The full transcript remains durable; Messages is the bounded
 // model context window selected by the operation.
 type ContextCompressionResult struct {
-	ConversationID string       `json:"conversation_id"`
-	Summary        string       `json:"summary"`
-	Messages       []Message    `json:"messages"`
-	Revision       uint64       `json:"revision"`
-	UpdatedAt      time.Time    `json:"updated_at"`
-	Compression    string       `json:"compression"`
-	Conversation   Conversation `json:"conversation"`
+	ConversationID string         `json:"conversation_id"`
+	Summary        string         `json:"summary"`
+	WorkingContext WorkingContext `json:"working_context"`
+	Messages       []Message      `json:"messages"`
+	Revision       uint64         `json:"revision"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+	Compression    string         `json:"compression"`
+	Conversation   Conversation   `json:"conversation"`
 }
 
 type ExtensionSelection struct {
@@ -525,7 +528,7 @@ type ConversationRenameStore interface {
 // compaction.  It updates only Agent-owned conversation state; transcript rows
 // are intentionally retained for authoritative history and auditability.
 type ConversationContextStore interface {
-	CompressConversationContext(context.Context, string, string, uint64, uint64, string) (Conversation, error)
+	CompressConversationContext(context.Context, string, string, WorkingContext, string, uint64, uint64, string) (Conversation, error)
 }
 
 func (c CreateConversationCommand) Validate() error {
@@ -1030,6 +1033,13 @@ func (c Conversation) ValidateForPersistence() error {
 	if !validUUID(c.ID) || len(c.Title) > 512 || !utf8.ValidString(c.Title) || len(c.Summary) > MaxSummaryBytes || !utf8.ValidString(c.Summary) || c.Revision == 0 || len(c.Messages) > MaxMessages || c.ContextMessageOffset > uint64(len(c.Messages)) || c.CreatedAt.IsZero() || c.UpdatedAt.IsZero() || c.CreatedAt.Location() != time.UTC || c.UpdatedAt.Location() != time.UTC || c.UpdatedAt.Before(c.CreatedAt) {
 		return ErrInvalid
 	}
+	if c.WorkingContext.Version == "" {
+		if c.WorkingContextProtectedDigest != "" {
+			return ErrInvalid
+		}
+	} else if c.WorkingContext.Validate() != nil || c.WorkingContextProtectedDigest != "" && c.WorkingContextProtectedDigest != c.WorkingContext.ProtectedDigest() {
+		return ErrInvalid
+	}
 	if c.DeletedAt != nil && (c.DeletedAt.IsZero() || c.DeletedAt.Location() != time.UTC || c.DeletedAt.Before(c.UpdatedAt)) {
 		return ErrInvalid
 	}
@@ -1175,6 +1185,7 @@ func validateProfilePins(snapshot coremodel.ExecutionSnapshot, profileID string,
 
 func (c Conversation) Snapshot() Conversation {
 	out := c
+	out.WorkingContext = c.WorkingContext.Snapshot()
 	out.Messages = append([]Message(nil), c.Messages...)
 	for i := range out.Messages {
 		out.Messages[i].ToolCalls = append([]ToolCall(nil), out.Messages[i].ToolCalls...)

@@ -699,6 +699,10 @@ type conversationToolPrepareFixture struct {
 }
 
 func newConversationToolPrepareFixture(t *testing.T, callID string) *conversationToolPrepareFixture {
+	return newConversationToolPrepareFixtureForTool(t, callID, "write_html")
+}
+
+func newConversationToolPrepareFixtureForTool(t *testing.T, callID, toolName string) *conversationToolPrepareFixture {
 	t.Helper()
 	h := openTurnDB(t)
 	installationID, versionID := uuid.NewString(), uuid.NewString()
@@ -721,12 +725,12 @@ func newConversationToolPrepareFixture(t *testing.T, callID string) *conversatio
 	snapshot := core.ExtensionExecutionSnapshot{
 		Selection: core.ExtensionSelection{
 			Kind: core.ExtensionMCP, ID: installationID, Version: versionID,
-			Digest: contentDigest, AllowedTools: []string{"write_html"},
+			Digest: contentDigest, AllowedTools: []string{toolName},
 		},
 		InstallationID: installationID, VersionID: versionID, InstallationRevision: 4,
 		Source: "github", ContentDigest: contentDigest, ArtifactDigest: artifactDigest,
 		ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64),
-		SecretBindingDigest: strings.Repeat("e", 64), ToolNames: []string{"write_html"}, RequiresConfirmation: true,
+		SecretBindingDigest: strings.Repeat("e", 64), ToolNames: []string{toolName}, RequiresConfirmation: true,
 	}
 	cmd := turnCommand()
 	cmd.OwnerID = "@conversation-tool:test"
@@ -746,11 +750,11 @@ func newConversationToolPrepareFixture(t *testing.T, callID string) *conversatio
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := core.ToolCall{ID: callID, Name: "write_html", Arguments: string(arguments)}
+	call := core.ToolCall{ID: callID, Name: toolName, Arguments: string(arguments)}
 	prepare := core.PrepareToolCommand{
 		Lease: lease, Round: 0, Call: call, Snapshot: snapshot,
 		CanonicalArguments: arguments, ArgumentsDigest: conversationArgsDigest(arguments),
-		SafeSummary: "conversation tool call write_html", IdempotencyKey: uuid.NewString(),
+		SafeSummary: "conversation tool call " + toolName, IdempotencyKey: uuid.NewString(),
 		ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
 	}
 	return &conversationToolPrepareFixture{

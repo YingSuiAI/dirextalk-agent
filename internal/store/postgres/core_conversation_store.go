@@ -268,12 +268,17 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 	var del *time.Time
 	var summary string
 	var offset int64
-	if e := s.pool.QueryRow(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.conversation_id=$1`, id).Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &del, &summary, &offset); e != nil {
+	var workingRaw []byte
+	var protectedDigest *string
+	if e := s.pool.QueryRow(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0),x.working_context_json,x.protected_digest FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.conversation_id=$1`, id).Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &del, &summary, &offset, &workingRaw, &protectedDigest); e != nil {
 		return c, core.ErrConflict
 	}
 	normalizeConversationTimesPG(&c, del)
 	if offset < 0 {
 		return c, core.ErrConflict
+	}
+	if e := decodeWorkingContextPG(workingRaw, protectedDigest, &c); e != nil {
+		return c, e
 	}
 	c.Summary, c.ContextMessageOffset = summary, uint64(offset)
 	rows, e := s.pool.Query(ctx, `SELECT message_id,sequence,role,content,model_profile_id,created_at,payload_json,related_task_ids,related_plan_ids,references_json,tool_summaries FROM core_messages WHERE conversation_id=$1 ORDER BY sequence`, id)
@@ -354,7 +359,7 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 	var rows pgx.Rows
 	var e error
 	if strings.TrimSpace(token) == "" {
-		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL ORDER BY c.updated_at DESC,c.conversation_id LIMIT $1`, limit)
+		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0),x.working_context_json,x.protected_digest FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL ORDER BY c.updated_at DESC,c.conversation_id LIMIT $1`, limit)
 	} else {
 		parts := strings.SplitN(token, "|", 2)
 		if len(parts) != 2 {
@@ -364,7 +369,7 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 		if pe != nil || !coreUUID(parts[1]) {
 			return nil, "", core.ErrInvalid
 		}
-		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL AND (c.updated_at < $1 OR (c.updated_at = $1 AND c.conversation_id > $2)) ORDER BY c.updated_at DESC,c.conversation_id ASC LIMIT $3`, ct, parts[1], limit)
+		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0),x.working_context_json,x.protected_digest FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL AND (c.updated_at < $1 OR (c.updated_at = $1 AND c.conversation_id > $2)) ORDER BY c.updated_at DESC,c.conversation_id ASC LIMIT $3`, ct, parts[1], limit)
 	}
 	if e != nil {
 		return nil, "", e
@@ -376,12 +381,17 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 		var d *time.Time
 		var summary string
 		var offset int64
-		if e = rows.Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &d, &summary, &offset); e != nil {
+		var workingRaw []byte
+		var protectedDigest *string
+		if e = rows.Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &d, &summary, &offset, &workingRaw, &protectedDigest); e != nil {
 			return nil, "", e
 		}
 		normalizeConversationTimesPG(&c, d)
 		if offset < 0 {
 			return nil, "", core.ErrConflict
+		}
+		if e = decodeWorkingContextPG(workingRaw, protectedDigest, &c); e != nil {
+			return nil, "", e
 		}
 		c.Summary, c.ContextMessageOffset = summary, uint64(offset)
 		out = append(out, c)
@@ -392,6 +402,28 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 		next = last.UpdatedAt.Format(time.RFC3339Nano) + "|" + last.ID
 	}
 	return out, next, nil
+}
+
+func decodeWorkingContextPG(raw []byte, protectedDigest *string, conversation *core.Conversation) error {
+	if conversation == nil {
+		return core.ErrInvalid
+	}
+	working := core.NewWorkingContext()
+	digest := working.ProtectedDigest()
+	if len(raw) != 0 {
+		if protectedDigest == nil || json.Unmarshal(raw, &working) != nil {
+			return core.ErrConflict
+		}
+		digest = *protectedDigest
+	} else if protectedDigest != nil {
+		return core.ErrConflict
+	}
+	if working.Validate() != nil || working.ProtectedDigest() != digest {
+		return core.ErrConflict
+	}
+	conversation.WorkingContext = working
+	conversation.WorkingContextProtectedDigest = digest
+	return nil
 }
 func coreUUID(value string) bool {
 	id, e := uuid.Parse(value)
