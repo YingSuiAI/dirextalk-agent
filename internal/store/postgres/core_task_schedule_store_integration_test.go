@@ -157,7 +157,7 @@ func TestCoreTaskGenericPayloadPersistenceAndScheduleParity(t *testing.T) {
 		t.Fatalf("extension roundtrip=%+v err=%v", got, err)
 	}
 	embeddingProfile := uuid.NewString()
-	if _, err = store.CreateProfile(ctx, coremodel.Profile{ID: embeddingProfile, DisplayName: "embedding", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://example.invalid", Model: "embedding-test", APIKey: "test", Revision: 1, CreatedAt: now, UpdatedAt: now}, uuid.NewString(), strings.Repeat("d", 64)); err != nil {
+	if _, err = store.CreateProfile(ctx, coremodel.Profile{ID: embeddingProfile, DisplayName: "embedding", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://example.invalid", Model: "embedding-test", APIKey: "test", Revision: 1, CreatedAt: now, UpdatedAt: now}, uuid.NewString(), strings.Repeat("d", 64)); err != nil {
 		t.Fatal(err)
 	}
 	knowledge := create(coretask.TaskSpec{Kind: coretask.TaskKindKnowledgeIndex, Goal: "index", ModelProfileID: embeddingProfile, IdempotencyKey: uuid.NewString(), Payload: coretask.TaskPayload{KnowledgeIndex: &coretask.KnowledgeIndexTaskPayload{SourceIDs: []string{"source-a"}, ExpectedSourceRevision: []uint64{2}, CollectionConfigDigest: strings.Repeat("b", 64)}}})

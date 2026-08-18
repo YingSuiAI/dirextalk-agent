@@ -78,7 +78,7 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := "integration-secret"
-	profile := coremodel.Profile{ID: uuid.NewString(), ClientProfileID: uuid.NewString(), DisplayName: "integration", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, ProviderSecrets: map[string]string{"organization": "historical-secret"}, BaseURL: "https://example.com", Model: "test", APIKey: key, ContextWindow: 32768, ReasoningEffort: "medium", Revision: 1, CreatedAt: nowUTC(), UpdatedAt: nowUTC()}
+	profile := coremodel.Profile{ID: uuid.NewString(), ClientProfileID: uuid.NewString(), DisplayName: "integration", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation, ProviderSecrets: map[string]string{"organization": "historical-secret"}, BaseURL: "https://example.com", Model: "test", APIKey: key, ContextWindow: 32768, ReasoningEffort: "medium", Revision: 1, CreatedAt: nowUTC(), UpdatedAt: nowUTC()}
 	createKey := uuid.NewString()
 	createDigest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	snap, err := store.CreateProfile(ctx, profile, createKey, createDigest)
@@ -98,7 +98,7 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 	if loaded.APIKey != key {
 		t.Fatal("secret did not persist")
 	}
-	if loaded.ContextWindow != profile.ContextWindow || loaded.ReasoningEffort != profile.ReasoningEffort {
+	if loaded.ContextWindow != profile.ContextWindow || loaded.ReasoningEffort != profile.ReasoningEffort || loaded.RequestDialect != profile.RequestDialect {
 		t.Fatalf("stored parameters = (%d,%q), want (%d,%q)", loaded.ContextWindow, loaded.ReasoningEffort, profile.ContextWindow, profile.ReasoningEffort)
 	}
 	replay, err := store.CreateProfile(ctx, profile, createKey, createDigest)
@@ -293,7 +293,7 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 		t.Fatalf("conversation refs=%d err=%v", conversationRefs, err)
 	}
 
-	staleTaskProfile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "stale-task", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.com", Model: "test", APIKey: key, Revision: 1, CreatedAt: nowUTC(), UpdatedAt: nowUTC()}
+	staleTaskProfile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "stale-task", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.com", Model: "test", APIKey: key, Revision: 1, CreatedAt: nowUTC(), UpdatedAt: nowUTC()}
 	if _, err = store.CreateProfile(ctx, staleTaskProfile, uuid.NewString(), strings.Repeat("e", 64)); err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 		t.Fatalf("stale terminal task ref blocked delete: %v", err)
 	}
 
-	liveScheduleProfile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "live-schedule", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.com", Model: "test", APIKey: key, Revision: 1, CreatedAt: nowUTC(), UpdatedAt: nowUTC()}
+	liveScheduleProfile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "live-schedule", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.com", Model: "test", APIKey: key, Revision: 1, CreatedAt: nowUTC(), UpdatedAt: nowUTC()}
 	if _, err = store.CreateProfile(ctx, liveScheduleProfile, uuid.NewString(), strings.Repeat("1", 64)); err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 		DefaultToolProfileID:         "two",
 		Entries: []coremodel.SyncProfileEntry{{
 			ClientProfileID: "one", ExpectedRevision: int64PtrStore(1), DisplayName: "One",
-			Provider: coremodel.ProviderOpenAICompatible, Model: "model",
+			Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, Model: "model",
 		}},
 	})
 	if err != nil || len(unchanged.Profiles) != 1 || unchanged.Profiles[0].Revision != 1 || unchanged.Profiles[0].CredentialVersion != 1 || !unchanged.Profiles[0].UpdatedAt.Equal(beforeNoOp.UpdatedAt) {
@@ -448,16 +448,16 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	}
 	_, err = store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("a2", 32), coremodel.SyncProfileCommand{Entries: []coremodel.SyncProfileEntry{{
 		ClientProfileID: "one", ExpectedRevision: int64PtrStore(2), DisplayName: "One",
-		Provider: coremodel.ProviderOpenAICompatible, Model: "model",
+		Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, Model: "model",
 	}}})
 	if !errors.Is(err, coremodel.ErrRevisionConflict) {
 		t.Fatalf("PostgreSQL stale no-op sync err=%v", err)
 	}
-	_, err = store.SyncProfiles(ctx, uuid.NewString(), "abababababababababababababababababababababababababababababababab", coremodel.SyncProfileCommand{DefaultToolProfileID: "embed", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "embed", DisplayName: "Embed", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, Model: "embed", APIKey: stringPtrStore("embed-secret")}}})
+	_, err = store.SyncProfiles(ctx, uuid.NewString(), "abababababababababababababababababababababababababababababababab", coremodel.SyncProfileCommand{DefaultToolProfileID: "embed", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "embed", DisplayName: "Embed", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindEmbedding, Model: "embed", APIKey: stringPtrStore("embed-secret")}}})
 	if !errors.Is(err, coremodel.ErrInvalidProfile) {
 		t.Fatalf("PostgreSQL accepted embedding tool default: %v", err)
 	}
-	updated, err := store.SyncProfiles(ctx, uuid.NewString(), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", coremodel.SyncProfileCommand{DefaultConversationProfileID: "two", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(1), DisplayName: "Two rotated", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: stringPtrStore("rotated")}}})
+	updated, err := store.SyncProfiles(ctx, uuid.NewString(), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", coremodel.SyncProfileCommand{DefaultConversationProfileID: "two", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(1), DisplayName: "Two rotated", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, Model: "model", APIKey: stringPtrStore("rotated")}}})
 	if err != nil || len(updated.Profiles) != 1 || updated.Profiles[0].Revision != 2 {
 		t.Fatalf("update sync=%+v err=%v", updated, err)
 	}
@@ -465,7 +465,7 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	if err != nil || resolved.APIKey != "rotated" {
 		t.Fatalf("rotated key=%q err=%v", resolved.APIKey, err)
 	}
-	_, err = store.SyncProfiles(ctx, uuid.NewString(), "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", coremodel.SyncProfileCommand{DefaultConversationProfileID: "missing", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(2), DisplayName: "should rollback", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}})
+	_, err = store.SyncProfiles(ctx, uuid.NewString(), "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", coremodel.SyncProfileCommand{DefaultConversationProfileID: "missing", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(2), DisplayName: "should rollback", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, Model: "model", APIKey: nil}}})
 	if !errors.Is(err, coremodel.ErrProfileNotFound) {
 		t.Fatalf("invalid default err=%v", err)
 	}
@@ -473,7 +473,7 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	if err = pool.QueryRow(ctx, `SELECT default_conversation_client_profile_id FROM core_model_profile_defaults WHERE singleton=true`).Scan(&defaultID); err != nil || defaultID != "two" {
 		t.Fatalf("default changed after failed batch: default=%q err=%v", defaultID, err)
 	}
-	_, err = store.SyncProfiles(ctx, uuid.NewString(), "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", coremodel.SyncProfileCommand{DefaultConversationProfileID: "one", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "one", ExpectedRevision: int64PtrStore(1), DisplayName: "should rollback", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}, {ClientProfileID: "two", ExpectedRevision: int64PtrStore(99), DisplayName: "stale", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}})
+	_, err = store.SyncProfiles(ctx, uuid.NewString(), "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", coremodel.SyncProfileCommand{DefaultConversationProfileID: "one", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "one", ExpectedRevision: int64PtrStore(1), DisplayName: "should rollback", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, Model: "model", APIKey: nil}, {ClientProfileID: "two", ExpectedRevision: int64PtrStore(99), DisplayName: "stale", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, Model: "model", APIKey: nil}}})
 	if !errors.Is(err, coremodel.ErrRevisionConflict) {
 		t.Fatalf("stale sync err=%v", err)
 	}
@@ -484,7 +484,7 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	if one.Revision != 1 || one.DisplayName != "One" {
 		t.Fatalf("stale batch changed one=%+v", one)
 	}
-	replayCommand := coremodel.SyncProfileCommand{DefaultConversationProfileID: "two", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(2), DisplayName: "Two rotated", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}}
+	replayCommand := coremodel.SyncProfileCommand{DefaultConversationProfileID: "two", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(2), DisplayName: "Two rotated", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, Model: "model", APIKey: nil}}}
 	replayKey := uuid.NewString()
 	replay, err := store.SyncProfiles(ctx, replayKey, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", replayCommand)
 	if err != nil {
@@ -549,7 +549,7 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 }
 
 func syncStoreEntry(id, name, key string) coremodel.SyncProfileEntry {
-	return coremodel.SyncProfileEntry{ClientProfileID: id, DisplayName: name, Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: stringPtrStore(key)}
+	return coremodel.SyncProfileEntry{ClientProfileID: id, DisplayName: name, Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, Model: "model", APIKey: stringPtrStore(key)}
 }
 func stringPtrStore(v string) *string { return &v }
 func int64PtrStore(v int64) *int64    { return &v }

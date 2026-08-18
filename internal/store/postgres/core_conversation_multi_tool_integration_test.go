@@ -70,14 +70,9 @@ func waitConversationTurnState(t *testing.T, store *CoreConversationStore, turnI
 func TestCoreConversationToolRoundPersistsOrderedWebThenLocalRecovery(t *testing.T) {
 	fixture := newConversationToolPrepareFixture(t, uuid.NewString())
 	ctx := context.Background()
-	if _, err := fixture.h.store.PrepareTurnModel(ctx, fixture.lease); err != nil {
-		t.Fatal(err)
-	}
 	webCall := core.ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"GitHub trending"}`}
 	modelResult := core.ModelRunResult{ToolCalls: []core.ToolCall{webCall, fixture.call}}
-	if err := fixture.h.store.RecordTurnModelResult(ctx, fixture.lease, modelResult); err != nil {
-		t.Fatal(err)
-	}
+	persistConversationToolBatch(t, fixture, modelResult.ToolCalls)
 	if err := fixture.h.store.RecordConversationToolCall(ctx, fixture.lease, webCall); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +264,14 @@ func TestConversationWebThenLocalSurvivesServiceRestartPostgres(t *testing.T) {
 func persistConversationToolBatch(t *testing.T, fixture *conversationToolPrepareFixture, calls []core.ToolCall) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := fixture.h.store.PrepareTurnModel(ctx, fixture.lease); err != nil {
+	prepared, err := fixture.h.store.PrepareTurnModel(ctx, fixture.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.RuntimeSnapshot == nil || fixture.turn.RuntimeSnapshot == nil || prepared.RuntimeSnapshot.Digest() != fixture.turn.RuntimeSnapshot.Digest() {
+		t.Fatalf("multi-tool attempt lost admitted runtime: prepared=%+v admitted=%+v", prepared.RuntimeSnapshot, fixture.turn.RuntimeSnapshot)
+	}
+	if err = fixture.h.store.BindTurnModelRuntime(ctx, fixture.lease, *prepared.RuntimeSnapshot); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.h.store.RecordTurnModelResult(ctx, fixture.lease, core.ModelRunResult{ToolCalls: calls}); err != nil {

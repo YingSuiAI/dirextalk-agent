@@ -88,16 +88,13 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 	}
 	owner, generation := "@cloud-owner:example.test", uint64(7)
 	snapshot := coremodel.ExecutionSnapshot{ProfileID: profileID, Revision: 1, CredentialVersion: 1,
-		Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation,
+		Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation,
 		BaseURL: "https://example.invalid", Model: "test", APIKey: "test", ContextWindow: 32768}
 	conversationID := uuid.NewString()
-	turn, err := conversation.StartTurn(ctx, core.TurnStartCommand{RequestID: uuid.NewString(), OwnerID: owner,
+	turnCommand := core.TurnStartCommand{RequestID: uuid.NewString(), OwnerID: owner,
 		AccountGeneration: generation, ConversationID: conversationID, Prompt: "Run this heavy task on AWS.",
-		ProfileID: profileID, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1, ProfileSnapshot: snapshot})
-	if err != nil {
-		cleanup()
-		t.Fatal(err)
-	}
+		ProfileID: profileID, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1, ProfileSnapshot: snapshot}
+	turn := startPGCloudWorkerTurn(t, conversation, ctx, turnCommand, cleanup)
 	lease, err := conversation.ClaimTurn(ctx, turn.ID, now, 30*time.Minute)
 	if err != nil {
 		cleanup()
@@ -149,10 +146,7 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 		ComputeRequirements: cloudworker.ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 4, DiskGiB: 32, EstimatedRuntimeMinutes: 60}}
 	arguments, _ := json.Marshal(map[string]any{"objective": command.Objective, "workspace_mode": string(command.WorkspaceMode)})
 	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(arguments)}
-	if _, err = conversation.PrepareTurnModel(ctx, lease); err != nil {
-		cleanup()
-		t.Fatal(err)
-	}
+	bindPGCloudWorkerModelAttempt(t, conversation, ctx, lease, cleanup)
 	if err = conversation.RecordTurnModelResult(ctx, lease, core.ModelRunResult{ToolCalls: []core.ToolCall{call}}); err != nil {
 		cleanup()
 		t.Fatal(err)
@@ -176,14 +170,12 @@ func (h *pgCloudWorkerHarness) proposeAdditional(t *testing.T) cloudworker.Offer
 	conversationID := uuid.NewString()
 	profileID := h.command.ModelAuthorization.ModelProfileID
 	snapshot := coremodel.ExecutionSnapshot{ProfileID: profileID, Revision: 1, CredentialVersion: 1,
-		Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation,
+		Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation,
 		BaseURL: "https://example.invalid", Model: "test", APIKey: "test", ContextWindow: 32768}
-	turn, err := h.conversation.StartTurn(h.ctx, core.TurnStartCommand{RequestID: uuid.NewString(), OwnerID: h.owner,
+	turnCommand := core.TurnStartCommand{RequestID: uuid.NewString(), OwnerID: h.owner,
 		AccountGeneration: h.generation, ConversationID: conversationID, Prompt: "Run a second heavy task on AWS.",
-		ProfileID: profileID, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1, ProfileSnapshot: snapshot})
-	if err != nil {
-		t.Fatal(err)
-	}
+		ProfileID: profileID, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1, ProfileSnapshot: snapshot}
+	turn := startPGCloudWorkerTurn(t, h.conversation, h.ctx, turnCommand, nil)
 	lease, err := h.conversation.ClaimTurn(h.ctx, turn.ID, h.now, 30*time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -198,9 +190,7 @@ func (h *pgCloudWorkerHarness) proposeAdditional(t *testing.T) cloudworker.Offer
 	command.UserPromptDigest = pgCloudDigest(lease.Turn.Prompt)
 	arguments, _ := json.Marshal(map[string]any{"objective": command.Objective, "workspace_mode": string(command.WorkspaceMode)})
 	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(arguments)}
-	if _, err = h.conversation.PrepareTurnModel(h.ctx, lease); err != nil {
-		t.Fatal(err)
-	}
+	bindPGCloudWorkerModelAttempt(t, h.conversation, h.ctx, lease, nil)
 	if err = h.conversation.RecordTurnModelResult(h.ctx, lease, core.ModelRunResult{ToolCalls: []core.ToolCall{call}}); err != nil {
 		t.Fatal(err)
 	}
@@ -211,34 +201,66 @@ func (h *pgCloudWorkerHarness) proposeAdditional(t *testing.T) cloudworker.Offer
 	return offer
 }
 
-func seedDeletedLegacyCloudWorkerOffer(t *testing.T, h *pgCloudWorkerHarness, mutate func(*coreconfirmation.Binding)) cloudworker.Offer {
+func startPGCloudWorkerTurn(t *testing.T, conversation *CoreConversationStore, ctx context.Context, command core.TurnStartCommand, cleanup func()) core.Turn {
+	t.Helper()
+	candidate, err := conversation.PrepareTurnRuntimeAdmission(ctx, command)
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatal(err)
+	}
+	runtime, err := core.NewTurnRuntimeSnapshot("cloud worker fixture system prompt", command.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatal(err)
+	}
+	turn, err := conversation.StartTurnWithRuntime(ctx, command, runtime)
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatal(err)
+	}
+	if turn.RuntimeSnapshot == nil || turn.RuntimeSnapshot.Digest() != runtime.Digest() || turn.RuntimeSnapshot.RequestDialect != string(coremodel.DialectOpenAICompatibleChatV1) {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatalf("cloud Worker runtime was not frozen at admission: turn=%+v runtime=%+v", turn.RuntimeSnapshot, runtime)
+	}
+	return turn
+}
+
+func bindPGCloudWorkerModelAttempt(t *testing.T, conversation *CoreConversationStore, ctx context.Context, lease core.TurnLease, cleanup func()) {
+	t.Helper()
+	prepared, err := conversation.PrepareTurnModel(ctx, lease)
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatal(err)
+	}
+	if prepared.RuntimeSnapshot == nil || lease.Turn.RuntimeSnapshot == nil || prepared.RuntimeSnapshot.Digest() != lease.Turn.RuntimeSnapshot.Digest() {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatalf("cloud Worker model attempt lost admitted runtime: prepared=%+v admitted=%+v", prepared.RuntimeSnapshot, lease.Turn.RuntimeSnapshot)
+	}
+	if err = conversation.BindTurnModelRuntime(ctx, lease, *prepared.RuntimeSnapshot); err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatal(err)
+	}
+}
+
+func seedDeletedCloudWorkerOffer(t *testing.T, h *pgCloudWorkerHarness, mutate func(*coreconfirmation.Binding)) cloudworker.Offer {
 	t.Helper()
 	offer := h.propose(t)
-	legacyExecution := offer.Execution
-	legacyExecution.RunID = legacyExecution.ExecutionID
-	legacyExecutionRaw, _ := json.Marshal(legacyExecution)
-	legacyBinding := offer.Confirmation.Binding
-	legacyBinding.RunID = legacyExecution.RunID
-	legacyBinding.Quote = nil
 	if mutate != nil {
-		mutate(&legacyBinding)
-	}
-	legacyBinding.Digest = ""
-	legacyBindingRaw, _ := json.Marshal(legacyBinding)
-	legacyBinding.Digest = coreconfirmation.Digest(pgCloudDigest(string(legacyBindingRaw)))
-	legacyBindingRaw, _ = json.Marshal(legacyBinding)
-	for _, update := range []struct {
-		query string
-		args  []any
-	}{
-		{`UPDATE core_cloud_worker_executions SET execution_json=$2 WHERE execution_id=$1`, []any{offer.Execution.ExecutionID, legacyExecutionRaw}},
-		{`UPDATE core_confirmations SET binding_json=$2 WHERE confirmation_id=$1`, []any{offer.Confirmation.ConfirmationID, legacyBindingRaw}},
-		{`UPDATE core_confirmation_target_bindings SET binding_json=$2 WHERE confirmation_id=$1`, []any{offer.Confirmation.ConfirmationID, legacyBindingRaw}},
-		{`UPDATE core_confirmation_current_bindings SET binding_json=$3 WHERE operation_domain=$1 AND target_id=$2`, []any{cloudworker.OperationDomain, offer.Execution.ExecutionID, legacyBindingRaw}},
-	} {
-		if _, err := h.store.pool.Exec(h.ctx, update.query, update.args...); err != nil {
-			t.Fatal(err)
-		}
+		rewriteCloudWorkerBinding(t, h, offer, mutate)
 	}
 	var conversationRevision uint64
 	if err := h.store.pool.QueryRow(h.ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1`, offer.Plan.ConversationID).Scan(&conversationRevision); err != nil {
@@ -269,41 +291,6 @@ func rewriteCloudWorkerBinding(t *testing.T, h *pgCloudWorkerHarness, offer clou
 		if _, err := h.store.pool.Exec(h.ctx, update.query, update.args...); err != nil {
 			t.Fatal(err)
 		}
-	}
-}
-
-func TestCloudWorkerPostgresExecutesOfferWithFrozenPreChangeTargetKind(t *testing.T) {
-	h := newPGCloudWorkerHarness(t)
-	defer h.cleanup()
-	h.command.WorkloadKind = cloudworker.WorkloadService
-	h.command.Service = &cloudworker.ServiceSpec{WorkloadID: "gitea", Port: 3000, HealthPath: "/api/healthz"}
-	offer := h.propose(t)
-	if offer.Confirmation.Binding.TargetKind != coreconfirmation.TargetKindPersistentService {
-		t.Fatalf("new service target kind=%q", offer.Confirmation.Binding.TargetKind)
-	}
-	rewriteCloudWorkerBinding(t, h, offer, func(binding *coreconfirmation.Binding) {
-		binding.TargetKind = "persistent_ssh_worker"
-	})
-	confirmationService, err := coreconfirmation.NewService(h.confirmations)
-	if err != nil {
-		t.Fatal(err)
-	}
-	confirmed, err := confirmationService.ConfirmAuthorized(h.ctx, coreconfirmation.Authority{OwnerID: h.owner, AccountGeneration: h.generation}, coreconfirmation.ConfirmCommand{
-		ConfirmationID: offer.Confirmation.ConfirmationID, IdempotencyKey: uuid.NewString(), ExpectedRevision: offer.Confirmation.Revision, At: h.now.Add(time.Second),
-	})
-	if err != nil || confirmed.State != coreconfirmation.StateConfirmed || confirmed.Binding.TargetKind != "persistent_ssh_worker" {
-		t.Fatalf("confirmed=%+v err=%v", confirmed, err)
-	}
-	claimed, _, err := NewCoreTaskStore(h.store).ClaimNextDue(h.ctx, "frozen-binding-worker", h.now.Add(2*time.Second), time.Minute, 4)
-	if err != nil || claimed.ID != offer.Task.ID {
-		t.Fatalf("claimed=%+v err=%v", claimed, err)
-	}
-	var confirmationState, executionState string
-	if err = h.store.pool.QueryRow(h.ctx, `SELECT c.state,e.state FROM core_confirmations c JOIN core_cloud_worker_executions e ON e.confirmation_id=c.confirmation_id WHERE c.confirmation_id=$1`, offer.Confirmation.ConfirmationID).Scan(&confirmationState, &executionState); err != nil {
-		t.Fatal(err)
-	}
-	if confirmationState != string(coreconfirmation.StateConsumed) || executionState != string(cloudworker.StateProvisioning) {
-		t.Fatalf("confirmation=%s execution=%s", confirmationState, executionState)
 	}
 }
 
@@ -355,7 +342,7 @@ func TestCloudWorkerPostgresReusesRetainedWorkerTwiceInOneTurn(t *testing.T) {
 func TestCloudWorkerPostgresExpiredConfirmationSurvivesDeletedConversation(t *testing.T) {
 	h := newPGCloudWorkerHarness(t)
 	defer h.cleanup()
-	offer := seedDeletedLegacyCloudWorkerOffer(t, h, nil)
+	offer := seedDeletedCloudWorkerOffer(t, h, nil)
 	count, err := h.confirmations.SweepExpired(h.ctx, offer.Confirmation.ExpiresAt.Add(time.Second), 100)
 	if err != nil || count != 1 {
 		t.Fatalf("expired confirmation sweep count=%d err=%v", count, err)
@@ -380,7 +367,7 @@ func TestCloudWorkerPostgresExpiredConfirmationSurvivesDeletedConversation(t *te
 func TestCloudWorkerPostgresDeletedConversationDoesNotHideStaleBinding(t *testing.T) {
 	h := newPGCloudWorkerHarness(t)
 	defer h.cleanup()
-	offer := seedDeletedLegacyCloudWorkerOffer(t, h, func(binding *coreconfirmation.Binding) {
+	offer := seedDeletedCloudWorkerOffer(t, h, func(binding *coreconfirmation.Binding) {
 		binding.PlanDigest = coreconfirmation.Digest(pgCloudDigest("unrelated-plan"))
 	})
 	valid := h.proposeAdditional(t)

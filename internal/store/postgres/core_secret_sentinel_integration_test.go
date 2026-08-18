@@ -27,7 +27,7 @@ func TestCoreSecretSentinelAcrossAgentTables(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	profileID := uuid.NewString()
 	profile := coremodel.Profile{
-		ID: profileID, DisplayName: "sentinel", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation,
+		ID: profileID, DisplayName: "sentinel", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation,
 		ProviderConfig: map[string]any{
 			"api_key": canary,
 			"nested":  map[string]any{"secret_access_key": canary, "safe": "metadata"},
@@ -70,8 +70,20 @@ func TestCoreSecretSentinelAcrossAgentTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	turnCommand := core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "sentinel", ProfileID: profileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ProfileSnapshot: snapshot}
-	if _, err := conversationStore.StartTurn(ctx, turnCommand); err != nil {
+	candidate, err := conversationStore.PrepareTurnRuntimeAdmission(ctx, turnCommand)
+	if err != nil {
 		t.Fatal(err)
+	}
+	runtime, err := core.NewTurnRuntimeSnapshot("sentinel system prompt", snapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := conversationStore.StartTurnWithRuntime(ctx, turnCommand, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turn.RuntimeSnapshot == nil || turn.RuntimeSnapshot.Digest() != runtime.Digest() || turn.RuntimeSnapshot.RequestDialect != string(coremodel.DialectOpenAICompatibleChatV1) {
+		t.Fatalf("sentinel runtime freeze=%+v want=%+v", turn.RuntimeSnapshot, runtime)
 	}
 
 	installID, versionID, referenceID := uuid.New(), uuid.New(), uuid.New()
