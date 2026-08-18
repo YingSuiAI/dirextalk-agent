@@ -120,7 +120,7 @@ func (s *ModelProfileService) Sync(ctx context.Context, req *agentv1.ModelProfil
 			value := *entry.ApiKey
 			key = &value
 		}
-		e := coremodel.SyncProfileEntry{ClientProfileID: entry.ClientProfileId, ExpectedRevision: entry.ExpectedRevision, DisplayName: entry.DisplayName, Provider: provider, ModelKind: entry.ModelKind, InputModalities: append([]string(nil), entry.InputModalities...), BaseURL: entry.BaseUrl, Model: entry.Model, SystemPrompt: entry.SystemPrompt, APIKey: key, Temperature: entry.Temperature, TopP: entry.TopP, MaxOutputTokens: int(entry.MaxOutputTokens), ContextWindow: int(entry.ContextWindow), ReasoningEffort: entry.ReasoningEffort}
+		e := coremodel.SyncProfileEntry{ClientProfileID: entry.ClientProfileId, ExpectedRevision: entry.ExpectedRevision, DisplayName: entry.DisplayName, Provider: provider, RequestDialect: coremodel.RequestDialect(entry.RequestDialect), ModelKind: entry.ModelKind, InputModalities: append([]string(nil), entry.InputModalities...), BaseURL: entry.BaseUrl, Model: entry.Model, SystemPrompt: entry.SystemPrompt, APIKey: key, Temperature: entry.Temperature, TopP: entry.TopP, MaxOutputTokens: int(entry.MaxOutputTokens), ContextWindow: int(entry.ContextWindow), ReasoningEffort: entry.ReasoningEffort}
 		cmd.Entries = append(cmd.Entries, e)
 	}
 	result, err := s.profiles.Sync(ctx, cmd)
@@ -142,8 +142,11 @@ func createSpec(req *agentv1.ModelProfileServiceCreateRequest) (coremodel.Profil
 	if strings.TrimSpace(req.ApiKey) == "" {
 		return coremodel.ProfileSpec{}, coremodel.ErrAPIKeyUnavailable
 	}
+	if strings.TrimSpace(req.RequestDialect) == "" {
+		return coremodel.ProfileSpec{}, coremodel.ErrInvalidProfile
+	}
 	key := req.ApiKey
-	return coremodel.ProfileSpec{ID: "", DisplayName: req.DisplayName, Provider: provider, BaseURL: req.BaseUrl, Model: req.Model, APIKey: &key, SystemPrompt: req.SystemPrompt, Temperature: req.Temperature, TopP: req.TopP, MaxOutputTokens: int(req.MaxOutputTokens), ContextWindow: int(req.ContextWindow), ReasoningEffort: req.ReasoningEffort}, nil
+	return coremodel.ProfileSpec{ID: "", DisplayName: req.DisplayName, Provider: provider, RequestDialect: coremodel.RequestDialect(req.RequestDialect), BaseURL: req.BaseUrl, Model: req.Model, APIKey: &key, SystemPrompt: req.SystemPrompt, Temperature: req.Temperature, TopP: req.TopP, MaxOutputTokens: int(req.MaxOutputTokens), ContextWindow: int(req.ContextWindow), ReasoningEffort: req.ReasoningEffort}, nil
 }
 func updateSpec(req *agentv1.ModelProfileServiceUpdateRequest) (coremodel.ProfileSpec, error) {
 	spec := coremodel.ProfileSpec{ID: req.ProfileId, Patch: true}
@@ -157,6 +160,10 @@ func updateSpec(req *agentv1.ModelProfileServiceUpdateRequest) (coremodel.Profil
 		}
 		spec.Provider, spec.ProviderSet = provider, true
 	}
+	if req.RequestDialect == nil || strings.TrimSpace(*req.RequestDialect) == "" {
+		return coremodel.ProfileSpec{}, coremodel.ErrInvalidProfile
+	}
+	spec.RequestDialect, spec.RequestDialectSet = coremodel.RequestDialect(*req.RequestDialect), true
 	if req.BaseUrl != nil {
 		spec.BaseURL, spec.BaseURLSet = *req.BaseUrl, true
 	}
@@ -238,7 +245,7 @@ func fromProtoProvider(v agentv1.CoreModelProvider) (coremodel.ModelProvider, er
 	}
 }
 func publicProfileProto(p coremodel.PublicProfile) *agentv1.CoreModelProfile {
-	out := &agentv1.CoreModelProfile{ProfileId: p.ID, ClientProfileId: p.ClientProfileID, DisplayName: p.DisplayName, Provider: toProtoProvider(p.Provider), ModelKind: p.ModelKind, InputModalities: append([]string(nil), p.InputModalities...), BaseUrl: p.BaseURL, Model: p.Model, SystemPrompt: p.SystemPrompt, ApiKeyConfigured: p.APIKeyConfigured, MaxOutputTokens: int32(p.MaxOutputTokens), ContextWindow: int32(p.ContextWindow), ReasoningEffort: p.ReasoningEffort, Revision: p.Revision, CredentialVersion: p.CredentialVersion}
+	out := &agentv1.CoreModelProfile{ProfileId: p.ID, ClientProfileId: p.ClientProfileID, DisplayName: p.DisplayName, Provider: toProtoProvider(p.Provider), RequestDialect: string(p.RequestDialect), ModelKind: p.ModelKind, InputModalities: append([]string(nil), p.InputModalities...), BaseUrl: p.BaseURL, Model: p.Model, SystemPrompt: p.SystemPrompt, ApiKeyConfigured: p.APIKeyConfigured, MaxOutputTokens: int32(p.MaxOutputTokens), ContextWindow: int32(p.ContextWindow), ReasoningEffort: p.ReasoningEffort, Revision: p.Revision, CredentialVersion: p.CredentialVersion}
 	if p.Temperature != nil {
 		v := *p.Temperature
 		out.Temperature = &v

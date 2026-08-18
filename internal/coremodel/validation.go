@@ -329,6 +329,13 @@ func validateStoredProfile(p Profile) (Profile, error) { return validateProfile(
 func validateProfile(p Profile, requireAPIKey bool) (Profile, error) {
 	rawProvider := p.Provider
 	p.Provider = normalizeProviderName(p.Provider)
+	p.RequestDialect = RequestDialect(strings.ToLower(strings.TrimSpace(string(p.RequestDialect))))
+	// Generic validation is also used by narrow unit/provider boundaries that
+	// construct transient profiles. Public profile admission rejects an omitted
+	// dialect before reaching this current-wire compatibility normalization.
+	if p.RequestDialect == "" {
+		p.RequestDialect = currentEquivalentDialect(p.Provider)
+	}
 	p.ModelKind = strings.ToLower(strings.TrimSpace(p.ModelKind))
 	if p.ModelKind == "" {
 		p.ModelKind = ModelKindConversation
@@ -340,6 +347,12 @@ func validateProfile(p Profile, requireAPIKey bool) (Profile, error) {
 	case ModelKindConversation, ModelKindEmbedding, ModelKindSpeech:
 	default:
 		return Profile{}, fmt.Errorf("%w: unsupported model kind", ErrInvalidProfile)
+	}
+	if !validRequestDialect(p.Provider, p.RequestDialect) {
+		return Profile{}, fmt.Errorf("%w: request dialect is required and must match provider", ErrInvalidProfile)
+	}
+	if p.RequestDialect == DialectOpenAIReasoningChatV1 && (p.Temperature != nil || p.TopP != nil) {
+		return Profile{}, fmt.Errorf("%w: reasoning request dialect does not support temperature or top_p", ErrInvalidProfile)
 	}
 	if len(p.InputModalities) > 16 {
 		return Profile{}, fmt.Errorf("%w: too many input modalities", ErrInvalidProfile)
@@ -404,6 +417,36 @@ func validateProfile(p Profile, requireAPIKey bool) (Profile, error) {
 	return p, nil
 }
 
+func currentEquivalentDialect(provider ModelProvider) RequestDialect {
+	switch provider {
+	case ProviderOpenAICompatible:
+		return DialectOpenAICompatibleChatV1
+	case ProviderAnthropic:
+		return DialectAnthropicMessagesV1
+	case ProviderGemini:
+		return DialectGeminiGenerateV1Beta
+	case ProviderVolcVoice:
+		return DialectVolcVoiceV1
+	default:
+		return ""
+	}
+}
+
+func validRequestDialect(provider ModelProvider, dialect RequestDialect) bool {
+	switch provider {
+	case ProviderOpenAICompatible:
+		return dialect == DialectOpenAICompatibleChatV1 || dialect == DialectOpenAIReasoningChatV1
+	case ProviderAnthropic:
+		return dialect == DialectAnthropicMessagesV1
+	case ProviderGemini:
+		return dialect == DialectGeminiGenerateV1Beta
+	case ProviderVolcVoice:
+		return dialect == DialectVolcVoiceV1
+	default:
+		return false
+	}
+}
+
 // normalizeProviderName keeps the persisted provider vocabulary deliberately
 // small while accepting the provider names commonly used by OpenRouter and
 // other OpenAI-compatible gateways at the API boundary. A caller-supplied
@@ -425,7 +468,7 @@ func NewProfile(spec ProfileSpec) (Profile, error) {
 	if (spec.APIKey == nil || *spec.APIKey == "") && spec.Provider != ProviderVolcVoice && spec.ModelKind != ModelKindSpeech {
 		return Profile{}, ErrAPIKeyUnavailable
 	}
-	p := Profile{ID: spec.ID, DisplayName: spec.DisplayName, Provider: spec.Provider,
+	p := Profile{ID: spec.ID, DisplayName: spec.DisplayName, Provider: spec.Provider, RequestDialect: spec.RequestDialect,
 		ModelKind: spec.ModelKind, InputModalities: append([]string(nil), spec.InputModalities...), ProviderConfig: cloneMap(spec.ProviderConfig), ProviderSecrets: cloneStringMap(spec.ProviderSecrets), BaseURL: spec.BaseURL, Model: spec.Model,
 		SystemPrompt: spec.SystemPrompt, Temperature: spec.Temperature, TopP: spec.TopP,
 		MaxOutputTokens: spec.MaxOutputTokens, ContextWindow: spec.ContextWindow,
@@ -438,7 +481,7 @@ func NewProfile(spec ProfileSpec) (Profile, error) {
 
 func UpdateProfile(existing Profile, spec ProfileSpec) (Profile, error) {
 	p := existing
-	patchMode := spec.Patch || spec.DisplayNameSet || spec.ProviderSet || spec.BaseURLSet || spec.ModelSet || spec.SystemPromptSet || spec.MaxOutputTokensSet || spec.ContextWindowSet || spec.ReasoningEffortSet || spec.ModelKind != "" || spec.InputModalities != nil || spec.ProviderConfig != nil || spec.ProviderSecrets != nil
+	patchMode := spec.Patch || spec.DisplayNameSet || spec.ProviderSet || spec.RequestDialectSet || spec.BaseURLSet || spec.ModelSet || spec.SystemPromptSet || spec.MaxOutputTokensSet || spec.ContextWindowSet || spec.ReasoningEffortSet || spec.ModelKind != "" || spec.InputModalities != nil || spec.ProviderConfig != nil || spec.ProviderSecrets != nil
 	if spec.ID == "" || strings.TrimSpace(spec.ID) != existing.ID {
 		return Profile{}, fmt.Errorf("%w: profile id is immutable", ErrInvalidProfile)
 	}
@@ -451,6 +494,9 @@ func UpdateProfile(existing Profile, spec ProfileSpec) (Profile, error) {
 	}
 	if !patchMode || spec.ProviderSet {
 		p.Provider = spec.Provider
+	}
+	if !patchMode || spec.RequestDialectSet {
+		p.RequestDialect = spec.RequestDialect
 	}
 	if spec.ModelKind != "" {
 		p.ModelKind = spec.ModelKind

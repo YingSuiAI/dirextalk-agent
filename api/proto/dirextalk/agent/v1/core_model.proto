@@ -42,6 +42,7 @@ message CoreModelProfile {
   int64 credential_version = 17;
   string model_kind = 18;
   repeated string input_modalities = 19;
+  string request_dialect = 20;
 }
 
 message CoreModelProfileSyncEntry {
@@ -60,6 +61,7 @@ message CoreModelProfileSyncEntry {
   string reasoning_effort = 13;
   string model_kind = 14;
   repeated string input_modalities = 15;
+  string request_dialect = 16;
 }
 
 message ModelProfileServiceCreateRequest {
@@ -75,6 +77,7 @@ message ModelProfileServiceCreateRequest {
   int32 max_output_tokens = 10;
   int32 context_window = 11;
   string reasoning_effort = 12;
+  string request_dialect = 13;
 }
 message ModelProfileServiceCreateResponse { CoreModelProfile profile = 1; }
 
@@ -112,6 +115,7 @@ message ModelProfileServiceUpdateRequest {
   optional int32 max_output_tokens = 13;
   optional int32 context_window = 14;
   optional string reasoning_effort = 15;
+  optional string request_dialect = 16;
 }
 message ModelProfileServiceUpdateResponse { CoreModelProfile profile = 1; }
 

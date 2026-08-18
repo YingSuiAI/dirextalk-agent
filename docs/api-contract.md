@@ -87,7 +87,10 @@ exhaustion 429, and not-ready or unavailable 503. An unclassified capability
 failure is a redacted 502, while store or service availability failures are
 503. Store and turn lookup failures are first reduced to the same typed surface;
 neither JSON errors nor SSE error frames expose database, provider, or other
-internal error text.
+internal error text. JSON failures use one envelope with `code`, `message`,
+`category`, `retryable`, `request_id`, optional `retry_after_ms`, optional
+`operation_id`/`turn_id`, and allowlisted `details`; operation polling embeds
+the same shape for terminal errors.
 
 Native chat uses explicit conversation/turn routes. Starting a turn calls the
 durable `start_turn` admission and returns 202 only after the authoritative
@@ -149,6 +152,10 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   the frozen request transcript, for both unary and streaming responses.
   Consecutive Anthropic tool results are emitted as one user message containing
   the complete ordered `tool_result` block batch.
+- Model profile create/sync requires an explicit `request_dialect`, and update
+  requires it even when unchanged. Profile reads return the selected dialect;
+  durable execution snapshots and their digests bind it so a model name never
+  selects request behavior implicitly.
 - Native conversation progress durably publishes assistant `delta` text and
   additive `reasoning_content` in bounded coalesced events as they arrive from
   the provider, followed by
@@ -336,6 +343,9 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   a comment heartbeat every 12 seconds while idle, and stops on request
   cancellation or a failed write/flush. Heartbeats do not advance the durable
   event cursor or alter replay semantics.
+- Turn SSE data envelopes always carry independent `operation_id`, `turn_id`,
+  and `conversation_id` fields. This version still requires the operation and
+  turn identifiers to be equal, but consumers must parse and validate both.
 - Capability `agent.chat.v1/start_turn` admits the same durable conversation
   turn exposed by `get_turn` and `list_turns`, then returns without watching
   execution. Its HTTP `operation_id` is the public `turn_id`; the request id

@@ -427,13 +427,15 @@ func (c *providerClient) do(ctx context.Context, payload any, stream bool) ([]by
 }
 
 func (c *providerClient) payload(r CompletionRequest, stream bool) (any, error) {
-	switch c.profile.Provider {
-	case ProviderAnthropic:
+	switch c.profile.RequestDialect {
+	case DialectAnthropicMessagesV1:
 		return anthropicPayload(c.profile, r, stream), nil
-	case ProviderGemini:
+	case DialectGeminiGenerateV1Beta:
 		return geminiPayload(c.profile, r), nil
-	default:
+	case DialectOpenAICompatibleChatV1, DialectOpenAIReasoningChatV1:
 		return openAIPayload(c.profile, r, stream), nil
+	default:
+		return nil, ErrInvalidProfile
 	}
 }
 
@@ -449,7 +451,9 @@ func openAIPayload(p Profile, r CompletionRequest, stream bool) map[string]any {
 	if p.TopP != nil {
 		m["top_p"] = *p.TopP
 	}
-	if p.MaxOutputTokens > 0 {
+	if p.MaxOutputTokens > 0 && p.RequestDialect == DialectOpenAIReasoningChatV1 {
+		m["max_completion_tokens"] = p.MaxOutputTokens
+	} else if p.MaxOutputTokens > 0 {
 		m["max_tokens"] = p.MaxOutputTokens
 	}
 	if p.ReasoningEffort != "" {

@@ -1032,6 +1032,7 @@ type syncProfileInput struct {
 	ExpectedRevision *int64            `json:"expected_revision,omitempty"`
 	DisplayName      string            `json:"display_name"`
 	Provider         string            `json:"provider"`
+	RequestDialect   string            `json:"request_dialect"`
 	ModelKind        string            `json:"model_kind"`
 	InputModalities  []string          `json:"input_modalities,omitempty"`
 	ProviderConfig   map[string]any    `json:"provider_config,omitempty"`
@@ -1050,7 +1051,7 @@ type syncProfileInput struct {
 func (v syncProfileInput) command() coremodel.SyncProfileEntry {
 	return coremodel.SyncProfileEntry{
 		ClientProfileID: v.ClientProfileID, ExpectedRevision: v.ExpectedRevision,
-		DisplayName: v.DisplayName, Provider: coremodel.ModelProvider(strings.ToLower(strings.TrimSpace(v.Provider))),
+		DisplayName: v.DisplayName, Provider: coremodel.ModelProvider(strings.ToLower(strings.TrimSpace(v.Provider))), RequestDialect: coremodel.RequestDialect(strings.ToLower(strings.TrimSpace(v.RequestDialect))),
 		ModelKind: v.ModelKind, InputModalities: append([]string(nil), v.InputModalities...),
 		ProviderConfig: v.ProviderConfig, ProviderSecrets: v.ProviderSecrets, BaseURL: v.BaseURL,
 		Model: v.Model, SystemPrompt: v.SystemPrompt, APIKey: v.APIKey, Temperature: v.Temperature,
@@ -1087,6 +1088,9 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 		}
 		cmd := coremodel.SyncProfileCommand{IdempotencyKey: key, Entries: make([]coremodel.SyncProfileEntry, 0, len(entries))}
 		for _, entry := range entries {
+			if strings.TrimSpace(entry.RequestDialect) == "" {
+				return nil, coremodel.ErrInvalidProfile
+			}
 			cmd.Entries = append(cmd.Entries, entry.command())
 		}
 		cmd.DefaultConversationProfileID = stringValue(in, "default_conversation_client_profile_id")

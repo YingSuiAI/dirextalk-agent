@@ -360,8 +360,12 @@ func TestDirectReadMapsTypedFailuresWithoutLeakingInternals(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/read", `{}`, ticket))
 			var response errorBody
-			if json.Unmarshal(recorder.Body.Bytes(), &response) != nil || recorder.Code != test.wantStatus || response.Code != test.wantCode || response.Message != test.wantMessage || strings.Contains(recorder.Body.String(), "private") || strings.Contains(recorder.Body.String(), "secret-sentinel") {
+			if json.Unmarshal(recorder.Body.Bytes(), &response) != nil || recorder.Code != test.wantStatus || response.Code != test.wantCode || response.Message != test.wantMessage || response.Category == "" || response.RequestID == "" || strings.Contains(recorder.Body.String(), "private") || strings.Contains(recorder.Body.String(), "secret-sentinel") {
 				t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
+			}
+			wantRetryable := test.wantStatus == http.StatusTooManyRequests || test.wantStatus == http.StatusServiceUnavailable || test.wantStatus == http.StatusBadGateway
+			if response.Retryable != wantRetryable {
+				t.Fatalf("retryable=%v, want %v: %s", response.Retryable, wantRetryable, recorder.Body.String())
 			}
 		})
 	}
@@ -383,7 +387,7 @@ func TestMutationAdmissionMapsStorageFailureToRetryableUnavailable(t *testing.T)
 func TestChatStartReturnsAcceptedOnlyAfterTheAuthoritativeTurnExists(t *testing.T) {
 	h := newTestHarness(t)
 	profileID := uuid.NewString()
-	snapshot := coremodel.ExecutionSnapshot{ProfileID: profileID, Revision: 3, CredentialVersion: 2, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://model.example/v1", Model: "test", APIKey: "secret"}
+	snapshot := coremodel.ExecutionSnapshot{ProfileID: profileID, Revision: 3, CredentialVersion: 2, Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, BaseURL: "https://model.example/v1", Model: "test", APIKey: "secret"}
 	store := &admissionStore{}
 	conversation, err := coreconversation.NewService(store, admissionModel{}, nil, admissionProfile{snapshot: snapshot})
 	if err != nil {
@@ -563,7 +567,7 @@ func TestTurnSSEReplayGapUsesThePositiveCursorBeforeTheFirstRetainedEvent(t *tes
 	body := recorder.Body.String()
 	gap := strings.Index(body, "id: 3\nevent: replay_gap")
 	retained := strings.Index(body, "id: 4\nevent: done")
-	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(body, "retry: 3000\n\n") || gap < 0 || retained <= gap || !strings.Contains(body, `"turn_id":"`+turn.ID+`"`) || !strings.Contains(body, `"idempotency_key":"`+turn.RequestID+`"`) || !strings.Contains(body, `"conversation_id":"`+turn.ConversationID+`"`) {
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(body, "retry: 3000\n\n") || gap < 0 || retained <= gap || !strings.Contains(body, `"operation_id":"`+turn.ID+`"`) || !strings.Contains(body, `"turn_id":"`+turn.ID+`"`) || !strings.Contains(body, `"conversation_id":"`+turn.ConversationID+`"`) || !strings.Contains(body, `"idempotency_key":"`+turn.RequestID+`"`) {
 		t.Fatalf("replay-gap SSE = %d %s", recorder.Code, body)
 	}
 }

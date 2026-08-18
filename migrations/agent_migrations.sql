@@ -2580,3 +2580,24 @@ ALTER TABLE core_conversation_turns
     ADD COLUMN model_active_milliseconds bigint NOT NULL DEFAULT 0 CHECK (model_active_milliseconds >= 0),
     ADD COLUMN model_dispatch_started_at timestamptz;
 -- dirextalk-agent migration end 000019_conversation_model_budget.up.sql
+-- dirextalk-agent migration begin 000020_model_request_dialects.up.sql
+ALTER TABLE core_model_profiles
+    ADD COLUMN request_dialect text;
+
+UPDATE core_model_profiles
+SET request_dialect = CASE provider
+    WHEN 'openai_compatible' THEN 'openai_compatible_chat_v1'
+    WHEN 'anthropic' THEN 'anthropic_messages_2023_06'
+    WHEN 'gemini' THEN 'gemini_generate_content_v1beta'
+    WHEN 'volc_voice' THEN 'volc_voice_v1'
+END;
+
+ALTER TABLE core_model_profiles
+    ALTER COLUMN request_dialect SET NOT NULL,
+    ADD CONSTRAINT core_model_profiles_request_dialect_check CHECK (
+        (provider = 'openai_compatible' AND request_dialect IN ('openai_compatible_chat_v1','openai_reasoning_chat_v1')) OR
+        (provider = 'anthropic' AND request_dialect = 'anthropic_messages_2023_06') OR
+        (provider = 'gemini' AND request_dialect = 'gemini_generate_content_v1beta') OR
+        (provider = 'volc_voice' AND request_dialect = 'volc_voice_v1')
+    );
+-- dirextalk-agent migration end 000020_model_request_dialects.up.sql

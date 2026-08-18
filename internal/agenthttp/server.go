@@ -93,8 +93,39 @@ type requestContext struct {
 }
 
 type errorBody struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code         string         `json:"code"`
+	Message      string         `json:"message"`
+	Category     string         `json:"category"`
+	Retryable    bool           `json:"retryable"`
+	RetryAfterMS *int64         `json:"retry_after_ms,omitempty"`
+	RequestID    string         `json:"request_id"`
+	OperationID  string         `json:"operation_id,omitempty"`
+	TurnID       string         `json:"turn_id,omitempty"`
+	Details      map[string]any `json:"details,omitempty"`
+}
+
+func (e errorBody) normalized(status int) errorBody {
+	if e.RequestID == "" {
+		e.RequestID = uuid.NewString()
+	}
+	if e.Category == "" {
+		switch {
+		case status == http.StatusUnauthorized || status == http.StatusForbidden:
+			e.Category = "authorization"
+		case status == http.StatusTooManyRequests:
+			e.Category = "rate_limit"
+		case status >= 500:
+			e.Category = "availability"
+		case status == http.StatusConflict || status == http.StatusPreconditionFailed:
+			e.Category = "conflict"
+		default:
+			e.Category = "validation"
+		}
+	}
+	if status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable || status == http.StatusBadGateway || status == http.StatusGatewayTimeout {
+		e.Retryable = true
+	}
+	return e
 }
 
 func New(cfg Config) (*Server, error) {
@@ -389,9 +420,28 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request, requ
 		result["result"] = json.RawMessage(op.ResultJSON)
 	}
 	if op.ErrorCode != "" {
-		result["error"] = map[string]string{"code": op.ErrorCode, "message": op.ErrorMessage}
+		result["error"] = operationPollingError(op.ID, op.ErrorCode, op.ErrorMessage)
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func operationPollingError(operationID, code, message string) errorBody {
+	status := http.StatusConflict
+	switch code {
+	case "RESOURCE_EXHAUSTED":
+		status = http.StatusTooManyRequests
+	case "UNAVAILABLE", "NOT_READY":
+		status = http.StatusServiceUnavailable
+	case "UPSTREAM_FAILED":
+		status = http.StatusBadGateway
+	case "INVALID_ARGUMENT":
+		status = http.StatusBadRequest
+	case "PERMISSION_DENIED":
+		status = http.StatusForbidden
+	case "NOT_FOUND":
+		status = http.StatusNotFound
+	}
+	return errorBody{Code: code, Message: message, Category: "operation", OperationID: operationID}.normalized(status)
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request, request requestContext, operationID string) {
@@ -592,7 +642,7 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, reques
 				payload = json.RawMessage(projected)
 			}
 		}
-		data, _ := json.Marshal(map[string]any{"operation_id": turnID, "sequence": event.Sequence, "type": eventType, "payload": payload, "created_at": event.CreatedAt.UTC()})
+		data, _ := json.Marshal(map[string]any{"operation_id": turnID, "turn_id": turnID, "conversation_id": turn.ConversationID, "sequence": event.Sequence, "type": eventType, "payload": payload, "created_at": event.CreatedAt.UTC()})
 		return sseFrame{sequence: event.Sequence, eventType: eventType, data: data}, true
 	})
 	if errors.Is(err, errSSEUnavailable) {
@@ -791,6 +841,15 @@ func writeRawJSON(w http.ResponseWriter, status int, raw []byte) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	switch failure := value.(type) {
+	case errorBody:
+		value = failure.normalized(status)
+	case *errorBody:
+		if failure != nil {
+			normalized := failure.normalized(status)
+			value = normalized
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
