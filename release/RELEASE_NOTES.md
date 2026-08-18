@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v1.0.164
+
+1. Classify Message MCP tools from complete standard annotations, retain the catalog through bounded transient discovery failures, omit unavailable catalogs without blocking ordinary chat, and retry only annotated reads while never replaying mutations after ambiguous outcomes.
+2. Require an explicit provider request dialect and allow one physical provider retry only before any output is visible, while freezing the complete admitted runtime and fencing every attempt across restart and lease transfer.
+3. Detect durable no-progress runtime loops from structured observations and preserve a schema-constrained working context whose user constraints and validated resource or receipt identities cannot be rewritten during compaction.
+4. Adopt the generated Agent Data Plane V2 operation, error, and SSE contracts with closed redacted error envelopes, explicit operation/turn/conversation identities, validated cursors, durable replay, and terminal projections.
+
 ## v1.0.163
 
 1. Resolve Message MCP conversation references against validated Matrix room IDs and retain bounded reference aggregation.
