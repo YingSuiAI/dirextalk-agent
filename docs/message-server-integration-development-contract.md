@@ -58,12 +58,23 @@ PostgreSQL, logs, tool metadata, or model-visible results. This source is
 composed only inside Core conversation admission and persisted-turn recovery;
 the enclosing HTTP/gRPC admission remains authenticated. Its exact endpoint and
 advertised tool schemas form the deterministic synthetic snapshot. Core records
-dispatch before each tool call and never automatically repeats a call whose
-completion is unknown; ambiguous Message mutations require an authoritative
-read before the model decides whether to retry. Successful calls retain bounded
-structured content only long enough to project known Message Server room and
-contact shapes into validated `room` references; arbitrary structured fields
-and nested channel posts/comments are not persisted as references.
+the standard MCP `readOnlyHint`, `destructiveHint`, `idempotentHint`, and
+`openWorldHint` annotations as part of that snapshot. Only a complete,
+internally consistent read annotation is treated as read-only; missing or
+contradictory metadata is an unsafe mutation. A five-minute fresh catalog is
+retained with stale-if-error use up to one hour. Discovery failure without a
+valid retained catalog omits Message MCP for a new turn instead of blocking
+ordinary chat, while accepted snapshots cannot silently change schema or
+effect. Core records dispatch before each tool call and never automatically
+repeats a mutation whose completion is unknown; ambiguous Message mutations
+require an authoritative read before the model decides whether to retry. An
+annotated read may re-discover the exact same catalog and retry once after an
+unavailable/no-response result. Successful calls retain bounded structured
+content only long enough to project known Message Server room and contact
+shapes into validated `room` references; arbitrary structured fields and
+nested channel posts/comments are not persisted as references. The current
+Message MCP endpoint is stateless and does not use `Mcp-Session-Id`; no
+speculative session manager or session generation is part of this contract.
 
 Text tools cross only as the owner-client `agent.text_tools.v1` descriptor.
 The Agent HTTP data plane accepts the canonical typed config/update/execute

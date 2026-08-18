@@ -6,11 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
@@ -22,14 +25,26 @@ import (
 )
 
 const (
-	messageMCPServerID  = "message"
-	messageMCPSecretRef = "mounted:message-mcp-token"
+	messageMCPServerID        = "message"
+	messageMCPSecretRef       = "mounted:message-mcp-token"
+	messageMCPCatalogFreshTTL = 5 * time.Minute
+	messageMCPCatalogStaleTTL = time.Hour
 )
 
 type messageMCPConversationResolver struct {
 	base     coreconversation.ExtensionResolver
 	provider mcphttp.ToolProvider
 	endpoint string
+	now      func() time.Time
+
+	cacheMu sync.Mutex
+	cache   *messageMCPCatalog
+}
+
+type messageMCPCatalog struct {
+	discoveredAt time.Time
+	digest       string
+	tools        []mcphttp.Tool
 }
 
 type mountedMessageMCPToken struct{ path string }
@@ -71,46 +86,121 @@ func (r *messageMCPConversationResolver) ResolveExtensions(ctx context.Context, 
 	if r == nil || r.provider == nil || strings.TrimSpace(r.endpoint) == "" {
 		return resolved, nil
 	}
+	catalog, available, err := r.messageMCPCatalog(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	if !available || len(catalog.tools) == 0 {
+		return resolved, nil
+	}
+	resolved = append(resolved, r.messageMCPCatalogExtension(catalog))
+	return resolved, nil
+}
+
+func (r *messageMCPConversationResolver) messageMCPCatalog(ctx context.Context, force bool) (messageMCPCatalog, bool, error) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	now := time.Now().UTC()
+	if r.now != nil {
+		now = r.now().UTC()
+	}
+	if !force && r.cache != nil && !now.Before(r.cache.discoveredAt) && now.Sub(r.cache.discoveredAt) <= messageMCPCatalogFreshTTL {
+		return *r.cache, true, nil
+	}
 	remoteTools, err := r.provider.Tools(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("message MCP tools unavailable: %w", err)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return messageMCPCatalog{}, false, ctxErr
+		}
+		if !force && r.cache != nil && !now.Before(r.cache.discoveredAt) && now.Sub(r.cache.discoveredAt) <= messageMCPCatalogStaleTTL {
+			return *r.cache, true, nil
+		}
+		if force {
+			return messageMCPCatalog{}, false, err
+		}
+		// Message MCP is optional for a new turn. Its discovery failure cannot
+		// prevent ordinary conversation with the base extension catalog.
+		return messageMCPCatalog{}, false, nil
 	}
-	sort.Slice(remoteTools, func(i, j int) bool { return remoteTools[i].Definition.Name < remoteTools[j].Definition.Name })
-	tools := make([]coremodel.Tool, 0, len(remoteTools))
-	runners := make(map[string]mcphttp.Tool, len(remoteTools))
-	allowed := make([]string, 0, len(remoteTools))
-	for _, remote := range remoteTools {
-		name := strings.TrimSpace(remote.Definition.Name)
-		if name == "" {
-			return nil, fmt.Errorf("message MCP advertised an invalid tool")
+	catalog, err := validateMessageMCPCatalog(r.endpoint, remoteTools, now)
+	if err != nil {
+		if !force && r.cache != nil && !now.Before(r.cache.discoveredAt) && now.Sub(r.cache.discoveredAt) <= messageMCPCatalogStaleTTL {
+			return *r.cache, true, nil
 		}
-		if _, duplicate := runners[name]; duplicate {
-			return nil, fmt.Errorf("message MCP advertised duplicate tool %q", name)
+		if force {
+			return messageMCPCatalog{}, false, err
 		}
+		return messageMCPCatalog{}, false, nil
+	}
+	r.cache = &catalog
+	return catalog, true, nil
+}
+
+func validateMessageMCPCatalog(endpoint string, tools []mcphttp.Tool, discoveredAt time.Time) (messageMCPCatalog, error) {
+	ordered := append([]mcphttp.Tool(nil), tools...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Definition.Name < ordered[j].Definition.Name })
+	seen := make(map[string]struct{}, len(ordered))
+	for index := range ordered {
+		name := strings.TrimSpace(ordered[index].Definition.Name)
+		if name == "" || name != ordered[index].Definition.Name || ordered[index].Run == nil {
+			return messageMCPCatalog{}, fmt.Errorf("message MCP advertised an invalid tool")
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return messageMCPCatalog{}, fmt.Errorf("message MCP advertised duplicate tool %q", name)
+		}
+		seen[name] = struct{}{}
+		if ordered[index].Effect != mcphttp.ToolEffectReadOnly && ordered[index].Effect != mcphttp.ToolEffectUnsafeMutation {
+			// A provider that did not supply a validated effect is conservative.
+			ordered[index].Effect = mcphttp.ToolEffectUnsafeMutation
+		}
+	}
+	return messageMCPCatalog{discoveredAt: discoveredAt, digest: messageMCPToolDigest(endpoint, ordered), tools: ordered}, nil
+}
+
+func messageMCPToolDigest(endpoint string, tools []mcphttp.Tool) string {
+	type catalogTool struct {
+		Definition coremodel.Tool     `json:"definition"`
+		Effect     mcphttp.ToolEffect `json:"effect"`
+	}
+	ordered := make([]catalogTool, 0, len(tools))
+	for _, tool := range tools {
+		ordered = append(ordered, catalogTool{Definition: tool.Definition, Effect: tool.Effect})
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Definition.Name < ordered[j].Definition.Name })
+	raw, _ := json.Marshal(struct {
+		Endpoint string        `json:"endpoint"`
+		Tools    []catalogTool `json:"tools"`
+	}{Endpoint: endpoint, Tools: ordered})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func (r *messageMCPConversationResolver) messageMCPCatalogExtension(catalog messageMCPCatalog) coreconversation.ResolvedExtension {
+	tools := make([]coremodel.Tool, 0, len(catalog.tools))
+	runners := make(map[string]mcphttp.Tool, len(catalog.tools))
+	allowed := make([]string, 0, len(catalog.tools))
+	for _, remote := range catalog.tools {
+		name := remote.Definition.Name
 		tools = append(tools, remote.Definition)
 		allowed = append(allowed, name)
 		runners[name] = remote
 	}
-	if len(tools) == 0 {
-		return resolved, nil
-	}
-	contentDigest := messageMCPToolDigest(r.endpoint, tools)
+	contentDigest := catalog.digest
 	selection := coreconversation.ExtensionSelection{
 		Kind:    coreconversation.ExtensionMCP,
 		ID:      uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:message-mcp:"+contentDigest)).String(),
 		Version: "1.0.0", Digest: contentDigest, AllowedTools: append([]string(nil), allowed...),
 	}
 	artifactDigest := digestBytes([]byte("message-mcp-artifact:" + r.endpoint))
-	schemaDigest := productToolsSchemaDigest(tools)
-	resolved = append(resolved, coreconversation.ResolvedExtension{
+	return coreconversation.ResolvedExtension{
 		Selection: selection,
 		Snapshot: coreconversation.ExtensionExecutionSnapshot{
 			Selection: selection, InstallationID: selection.ID, VersionID: selection.Version,
 			Source: "message-mcp", ContentDigest: contentDigest, ArtifactDigest: artifactDigest,
-			ToolSchemaDigest: schemaDigest, ToolNames: append([]string(nil), allowed...),
-			// Core's inline path records dispatch before the network call and never
-			// replays a dispatched call after restart. This coarse flag is required
-			// for synthetic tools even though this catalog includes mutations.
+			ToolSchemaDigest: productToolsSchemaDigest(tools), ToolNames: append([]string(nil), allowed...),
+			// This flag selects Core's dispatch-recorded inline execution path for
+			// synthetic tools. Per-tool replay safety comes from Tool.Effect below;
+			// setting this false would route into the installed-extension executor.
 			ReadOnly: true,
 		},
 		Tools: tools,
@@ -123,9 +213,20 @@ func (r *messageMCPConversationResolver) ResolveExtensions(ctx context.Context, 
 			if len(arguments) == 0 {
 				arguments = json.RawMessage(`{}`)
 			}
+			readOnly := tool.Effect.ReadOnly()
 			result, runErr := tool.Run(callCtx, mcphttp.ToolInvocation{Name: request.Call.Name, Arguments: arguments})
+			if runErr != nil && readOnly && errors.Is(runErr, mcphttp.ErrProviderUnavailable) {
+				if rediscovered, available, discoveryErr := r.messageMCPCatalog(callCtx, true); discoveryErr == nil && available && rediscovered.digest == catalog.digest {
+					for _, candidate := range rediscovered.tools {
+						if candidate.Definition.Name == request.Call.Name && candidate.Effect == mcphttp.ToolEffectReadOnly {
+							result, runErr = candidate.Run(callCtx, mcphttp.ToolInvocation{Name: request.Call.Name, Arguments: arguments})
+							break
+						}
+					}
+				}
+			}
 			if runErr != nil {
-				if messageMCPMutationTool(request.Call.Name) {
+				if !readOnly {
 					return coreconversation.ToolResult{
 						CallID: request.Call.ID, ToolName: request.Call.Name, IsError: true,
 						Content: "Message operation completion is unknown. Read authoritative state before deciding whether to retry; do not retry blindly.",
@@ -139,23 +240,7 @@ func (r *messageMCPConversationResolver) ResolveExtensions(ctx context.Context, 
 			}
 			return toolResult, nil
 		},
-	})
-	return resolved, nil
-}
-
-func messageMCPToolDigest(endpoint string, tools []coremodel.Tool) string {
-	ordered := append([]coremodel.Tool(nil), tools...)
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Name < ordered[j].Name })
-	raw, _ := json.Marshal(struct {
-		Endpoint string           `json:"endpoint"`
-		Tools    []coremodel.Tool `json:"tools"`
-	}{Endpoint: endpoint, Tools: ordered})
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
-}
-
-func messageMCPMutationTool(name string) bool {
-	return strings.HasSuffix(name, "__dirextalk_messages_send") || strings.HasSuffix(name, "__dirextalk_channel_comments_create")
+	}
 }
 
 type messageMCPRoomSummary struct {

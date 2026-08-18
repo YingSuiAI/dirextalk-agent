@@ -243,6 +243,7 @@ func (p *Provider) Tools(ctx context.Context) ([]Tool, error) {
 					Description: remote.Description,
 					InputSchema: cloneSchema(remote.InputSchema),
 				},
+				Effect: remote.Effect,
 				Run: func(callCtx context.Context, invocation ToolInvocation) (ToolResult, error) {
 					if strings.TrimSpace(invocation.Name) != toolName {
 						return ToolResult{}, ErrUnsafeToolArguments
@@ -260,9 +261,18 @@ func (p *Provider) Tools(ctx context.Context) ([]Tool, error) {
 }
 
 type remoteTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	InputSchema map[string]any         `json:"inputSchema"`
+	Annotations *remoteToolAnnotations `json:"annotations"`
+	Effect      ToolEffect             `json:"-"`
+}
+
+type remoteToolAnnotations struct {
+	ReadOnlyHint    *bool `json:"readOnlyHint"`
+	DestructiveHint *bool `json:"destructiveHint"`
+	IdempotentHint  *bool `json:"idempotentHint"`
+	OpenWorldHint   *bool `json:"openWorldHint"`
 }
 
 var modelToolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -277,7 +287,20 @@ func validateRemoteTool(tool remoteTool) (remoteTool, error) {
 		return remoteTool{}, err
 	}
 	tool.InputSchema = cloneSchema(tool.InputSchema)
+	tool.Effect = strictToolEffect(tool.Annotations)
+	tool.Annotations = nil
 	return tool, nil
+}
+
+func strictToolEffect(annotations *remoteToolAnnotations) ToolEffect {
+	if annotations == nil || annotations.ReadOnlyHint == nil || annotations.DestructiveHint == nil ||
+		annotations.IdempotentHint == nil || annotations.OpenWorldHint == nil {
+		return ToolEffectUnsafeMutation
+	}
+	if *annotations.ReadOnlyHint && !*annotations.DestructiveHint && *annotations.IdempotentHint {
+		return ToolEffectReadOnly
+	}
+	return ToolEffectUnsafeMutation
 }
 
 func cloneSchema(schema map[string]any) map[string]any {

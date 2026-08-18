@@ -223,6 +223,15 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-18**, the automatic Message MCP catalog began deriving strict
+  read/unsafe-mutation effects from the complete standard annotation set and
+  binding those effects into immutable catalog identity. Five-minute fresh and
+  one-hour stale-if-error caching keeps ordinary chat available during MCP
+  discovery outages; exact-catalog re-discovery permits one safe read retry,
+  while writes remain single-dispatch with outcome-unknown projection. Focused
+  tests cover missing/contradictory annotations, effect drift, cache expiry,
+  discovery degradation, retry fencing, and a stateless handler recreation
+  without `Mcp-Session-Id`.
 - On **2026-08-17**, Native conversation profiles gained a single positive
   8192-token output default. Turns enforce 24 provider dispatches, 20 minutes of
   model-active time excluding tool and Worker time, and 20 accepted tool calls.

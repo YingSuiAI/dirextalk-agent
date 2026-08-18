@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -28,6 +29,9 @@ func TestProviderNegotiatesStreamableHTTPAndCallsTool(t *testing.T) {
 		tools: []map[string]any{{
 			"name":        "search",
 			"description": "Search the trusted documentation service.",
+			"annotations": map[string]any{
+				"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true,
+			},
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"query": map[string]any{"type": "string"}},
@@ -66,6 +70,9 @@ func TestProviderNegotiatesStreamableHTTPAndCallsTool(t *testing.T) {
 	if tools[0].Definition.InputSchema["type"] != "object" {
 		t.Fatalf("missing input schema: %#v", tools[0].Definition.InputSchema)
 	}
+	if tools[0].Effect != ToolEffectReadOnly {
+		t.Fatalf("tool effect=%q, want %q", tools[0].Effect, ToolEffectReadOnly)
+	}
 
 	result, err := tools[0].Run(context.Background(), ToolInvocation{Name: tools[0].Definition.Name,
 		Arguments: json.RawMessage(`{"query":"durable tasks"}`),
@@ -87,6 +94,98 @@ func TestProviderNegotiatesStreamableHTTPAndCallsTool(t *testing.T) {
 	}
 	resolver.assertReturnedBuffersZeroed(t)
 	capture.assertAuthorizationRemoved(t)
+}
+
+func TestProviderClassifiesToolAnnotationsConservatively(t *testing.T) {
+	t.Parallel()
+	boolean := func(value bool) *bool { return &value }
+	tests := []struct {
+		name        string
+		annotations *remoteToolAnnotations
+		want        ToolEffect
+	}{
+		{name: "missing annotations", want: ToolEffectUnsafeMutation},
+		{name: "missing one standard hint", annotations: &remoteToolAnnotations{
+			ReadOnlyHint: boolean(true), DestructiveHint: boolean(false), IdempotentHint: boolean(true),
+		}, want: ToolEffectUnsafeMutation},
+		{name: "contradictory read and destructive", annotations: &remoteToolAnnotations{
+			ReadOnlyHint: boolean(true), DestructiveHint: boolean(true), IdempotentHint: boolean(true), OpenWorldHint: boolean(false),
+		}, want: ToolEffectUnsafeMutation},
+		{name: "read declared non-idempotent", annotations: &remoteToolAnnotations{
+			ReadOnlyHint: boolean(true), DestructiveHint: boolean(false), IdempotentHint: boolean(false), OpenWorldHint: boolean(false),
+		}, want: ToolEffectUnsafeMutation},
+		{name: "fully annotated closed-world read", annotations: &remoteToolAnnotations{
+			ReadOnlyHint: boolean(true), DestructiveHint: boolean(false), IdempotentHint: boolean(true), OpenWorldHint: boolean(false),
+		}, want: ToolEffectReadOnly},
+		{name: "fully annotated open-world read", annotations: &remoteToolAnnotations{
+			ReadOnlyHint: boolean(true), DestructiveHint: boolean(false), IdempotentHint: boolean(true), OpenWorldHint: boolean(true),
+		}, want: ToolEffectReadOnly},
+		{name: "non-destructive idempotent write remains a write", annotations: &remoteToolAnnotations{
+			ReadOnlyHint: boolean(false), DestructiveHint: boolean(false), IdempotentHint: boolean(true), OpenWorldHint: boolean(false),
+		}, want: ToolEffectUnsafeMutation},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := strictToolEffect(test.annotations); got != test.want {
+				t.Fatalf("effect=%q want=%q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestTrustedInternalStatelessToolSurvivesHandlerRecreation(t *testing.T) {
+	t.Parallel()
+	var generation atomic.Int64
+	generation.Store(1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got := request.Header.Get("Mcp-Session-Id"); got != "" {
+			t.Errorf("stateless server received session header %q", got)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var rpcRequest testRPCRequest
+		if json.NewDecoder(request.Body).Decode(&rpcRequest) != nil {
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		switch rpcRequest.Method {
+		case "initialize":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": rpcRequest.ID, "result": map[string]any{
+				"protocolVersion": protocolVersion, "capabilities": map[string]any{"tools": map[string]any{}},
+			}})
+		case "notifications/initialized":
+			writer.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": rpcRequest.ID, "result": map[string]any{"tools": []map[string]any{{
+				"name": "generation", "inputSchema": map[string]any{"type": "object"}, "annotations": map[string]any{
+					"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
+				},
+			}}}})
+		case "tools/call":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": rpcRequest.ID, "result": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": fmt.Sprintf("generation-%d", generation.Load())}},
+			}})
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	provider, err := newTrustedInternal(ServerConfig{ID: "message", Endpoint: server.URL + "/mcp"}, nil, server.Client().Transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := provider.Tools(context.Background())
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("tools=%#v err=%v", tools, err)
+	}
+	// Replacing the handler's complete state models a stateless Message MCP
+	// process recreation at the same deployment-owned endpoint.
+	generation.Store(2)
+	result, err := tools[0].Run(context.Background(), ToolInvocation{Name: tools[0].Definition.Name, Arguments: json.RawMessage(`{}`)})
+	if err != nil || result.Content != "generation-2" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
 }
 
 func TestTrustedInternalProviderPinsHTTPAndClearsBearer(t *testing.T) {
