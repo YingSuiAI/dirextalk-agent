@@ -170,7 +170,7 @@ EOF
 }
 
 make_fixture() {
-  local name=$1 fixture
+  local name=$1 fixture schema_version
   fixture=$tmp/$name
   mkdir -p "$fixture/repo/scripts/release" "$fixture/repo/release" \
     "$fixture/repo/internal/buildinfo" "$fixture/repo/migrations" \
@@ -178,8 +178,13 @@ make_fixture() {
   cp "$repo_root/scripts/release/"{lib,prepare,verify,publish}.sh "$fixture/repo/scripts/release/"
   cp "$repo_root/internal/buildinfo/version.go" "$fixture/repo/internal/buildinfo/version.go"
   cp "$repo_root/migrations/embed.go" "$fixture/repo/migrations/embed.go"
+  sed -i "s/CurrentReleaseVersion = \"[^\"]*\"/CurrentReleaseVersion = \"$version\"/" \
+    "$fixture/repo/internal/buildinfo/version.go"
+  schema_version=$(sed -n -E 's/.*CurrentVersion = int64\(([0-9]+)\).*/\1/p' \
+    "$fixture/repo/migrations/embed.go")
+  [[ "$schema_version" =~ ^[1-9][0-9]*$ ]] || fail 'cannot derive fixture schema version'
   printf '# Agent releases\n\n## %s\n\nStable Agent release.\n' "$version" >"$fixture/repo/release/RELEASE_NOTES.md"
-  printf '{"version":"%s","schema_version":18,"schema_compat_version":1}\n' "$version" \
+  printf '{"version":"%s","schema_version":%s,"schema_compat_version":1}\n' "$version" "$schema_version" \
     >"$fixture/repo/release/$version.json"
   touch "$fixture/commands.log"
   install_fake_tools "$fixture"
