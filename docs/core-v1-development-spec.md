@@ -10,8 +10,11 @@
 This document is the current product and implementation boundary for the
 independent Agent service. The versioned Protobuf in
 `api/proto/dirextalk/agent/v1` and the PostgreSQL migrations are the executable
-contract. A public or schema change updates this document and its contract tests
-together.
+contract for private gRPC and durable storage. The owner-facing HTTP/session/SSE
+wire authority is the generated Agent Data Plane V2 contract pinned from
+`dirextalk-capability-api v1.1.0`; the shared conformance vectors replace local
+fixture copies. A public or schema change updates this document and its contract
+tests together.
 
 The companion Message Server integration contract is
 [`docs/message-server-integration-development-contract.md`](message-server-integration-development-contract.md).
@@ -159,6 +162,15 @@ so profile, extension, Knowledge, attachment, and secret bindings cannot drift
 while a request is running. Agent and Cloud Worker task creation rejects
 non-conversation profiles, and execution verifies the exact protected-secret
 reference plus the digest of every snapshotted provider parameter.
+Conversation profiles also persist an explicit versioned request dialect.
+`openai_compatible_chat_v1` retains the compatible `max_tokens` projection,
+while `openai_reasoning_chat_v1` uses `max_completion_tokens` and rejects
+temperature or top-p sampling. Anthropic and Gemini use
+`anthropic_messages_2023_06` and `gemini_generate_content_v1beta` respectively;
+the runtime never infers a dialect from a model name.
+Create, update, and sync admission require that dialect explicitly; only
+already-persisted rows may pass through the current-wire normalization used by
+storage loading and migration.
 For OpenAI-compatible profiles, a bare HTTPS origin normalizes once to `/v1`;
 an explicit gateway path remains exact. Model discovery and completion append
 their operation paths to that same normalized root.
@@ -211,7 +223,11 @@ request and idle timeouts, rate limiting, other 4xx rejection, 5xx failure,
 transport unavailability, invalid responses, truncation, and output limits.
 Only safe classes cross the conversation boundary: 4xx is
 `provider_rejected`, timeout is `provider_timeout`, and otherwise uncertain
-dispatch remains `provider_uncertain` without automatic replay.
+dispatch remains `provider_uncertain`. Before any text, reasoning, or tool-call
+delta is visible, one physical retry is allowed only for 408, 429, 502, 503,
+504, or a confirmed dial failure. `Retry-After` seconds and HTTP dates are
+honored up to 30 seconds; other transport failures and all post-output failures
+are never replayed.
 
 An accepted or running durable turn may receive revision-fenced same-turn
 guidance. A confirmation-waiting turn also accepts guidance after its Cloud
@@ -251,15 +267,20 @@ encrypted repository. Its model-facing contract requests one focused search
 with enough results, permits another only for a distinct missing fact, and
 directs the model to synthesize sufficient evidence instead of repeating
 equivalent searches for exhaustive confirmation.
-The conversation runtime detects only exact action/result repetition and exact
-A/B alternation in the recent ordered tool history since the latest steer.
-Canonical action identity ignores call identity and argument key order, while
-normalized result identity ignores transport call IDs and timestamps. Three
-identical pairs or six A/B pairs add a brief correction while preserving every
-accepted extension and intrinsic. Only a fourth identical pair or eighth A/B
-pair makes the next model request a one-pass, tool-free synthesis from all
-durable evidence, with remaining gaps stated explicitly. Different arguments
-or results are productive progress and never trigger this recovery.
+At each immediate or deferred tool-result transaction, the runtime derives a
+versioned `ProgressObservation` when the result carries validated runtime
+references. Its effective digest covers the normalized action, bounded result,
+artifact/workspace changes, external receipts/resource state, error class, and
+completed step while excluding call IDs, model-authored argument wrappers,
+timestamps, and reference presentation fields. The third consecutive equal
+digest since the latest steer atomically records the result and terminates the
+turn as `AGENT_STALLED_NO_PROGRESS`; restart and lease transfer preserve that
+window, and a durable steer starts a new one. A changed artifact digest,
+resource revision/status/state, or receipt identity resets the count.
+Tools without a structured runtime observation retain the conservative exact
+action/result and A/B fallback. Three identical pairs or six A/B pairs add a
+brief correction with tools intact; a fourth identical pair or eighth A/B pair
+makes the next request a one-pass, tool-free synthesis from durable evidence.
 The recovery is subordinate to the turn-wide maximum of 20 accepted tool calls.
 At the limit, Core removes all extension and intrinsic tools for one synthesis
 request; a returned batch that would exceed the limit fails durably as
@@ -339,8 +360,15 @@ from the owner/account-generation receipt. Public downloads continue to use
 the release URL; there is no duplicate byte-download capability.
 
 Eino adapts each model round, while the current conversation turn store owns
-dispatch admission, persisted results, recovery, and uncertain outcomes. A
-Native conversation turn retains a 24-dispatch, 20-minute cumulative
+dispatch admission, persisted results, recovery, and uncertain outcomes. Turn
+acceptance atomically binds the complete compiled system prompt, profile and
+request-dialect digest, intrinsic tool schemas, extension/attachment digests,
+and versioned execution policy. Runtime validation occurs before the first
+provider reservation; mismatch or a missing admission snapshot fails with
+`TURN_RUNTIME_INCOMPATIBLE`. Every physical provider attempt is then reserved
+in a durable fenced attempt ledger before HTTP dispatch, including the single
+allowed retry, and a retry copies the exact runtime snapshot. A Native
+conversation turn retains a 24-physical-attempt, 20-minute cumulative
 model-active fuse; tool, Worker, and confirmation execution or waiting do not
 consume that clock. Exhaustion is a
 durable `model_budget_exhausted` terminal outcome. Other background Tasks keep
@@ -495,11 +523,16 @@ fences in-flight indexing, and removes promoted vectors while preserving source
 documents. A later embedding binding automatically reconciles those
 ready, unindexed sources without a migration or content fallback.
 
-Conversation memory is a separate two-layer projection. Working memory is the
-existing bounded conversation summary and recent transcript. Compaction is
-monotonic: it adds only newly overflowed messages to the prior summary, and the
-model receives that summary as delimited user-role history rather than a system
-instruction. After a chat
+Conversation memory is a separate two-layer projection. Working memory is a
+versioned, schema-constrained `WorkingContext` plus the recent transcript.
+Original goal and exact user constraints come only from durable user input;
+artifact, external-resource, side-effect, and tool-receipt identities come only
+from validated runtime references. Compaction may update decisions, completed
+and pending steps, and the last failure, but PostgreSQL compares the protected
+digest and rejects a stale or rewritten protected projection instead of
+overwriting it. The model receives the structured JSON as delimited user-role
+reference data, never as a system instruction. The complete raw transcript is
+retained as audit truth. After a chat
 commit, a transactionally enqueued observation is consolidated into
 Agent-owned structured user facts and an append-only fact timeline. The active
 `subject + predicate` row is the current truth projection; a changed value

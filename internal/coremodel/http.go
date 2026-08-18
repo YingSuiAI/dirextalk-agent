@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,19 +27,21 @@ const maxRequestBytes = 2 << 20
 const maxMultimodalEncodedRequestBytes = 16 << 20
 
 var (
-	ErrProviderUnavailable   = errors.New("model provider is unavailable")
-	ErrProviderRejected      = errors.New("model provider rejected the request")
-	ErrProviderRateLimited   = errors.New("model provider rate limited the request")
-	ErrProviderServerFailure = errors.New("model provider server failure")
-	ErrProviderTimeout       = fmt.Errorf("model provider request timed out: %w", context.DeadlineExceeded)
-	ErrInvalidResponse       = errors.New("invalid model provider response")
-	ErrStreamTruncated       = errors.New("model provider stream terminated before completion")
-	ErrOutputLimitReached    = errors.New("model provider reached its output limit")
-	ErrStreamIdleTimeout     = fmt.Errorf("model provider stream idle timeout: %w", context.DeadlineExceeded)
+	ErrProviderUnavailable    = errors.New("model provider is unavailable")
+	ErrProviderConnectFailure = errors.New("model provider connection failed before dispatch")
+	ErrProviderRejected       = errors.New("model provider rejected the request")
+	ErrProviderRateLimited    = errors.New("model provider rate limited the request")
+	ErrProviderServerFailure  = errors.New("model provider server failure")
+	ErrProviderTimeout        = fmt.Errorf("model provider request timed out: %w", context.DeadlineExceeded)
+	ErrInvalidResponse        = errors.New("invalid model provider response")
+	ErrStreamTruncated        = errors.New("model provider stream terminated before completion")
+	ErrOutputLimitReached     = errors.New("model provider reached its output limit")
+	ErrStreamIdleTimeout      = fmt.Errorf("model provider stream idle timeout: %w", context.DeadlineExceeded)
 )
 
 type providerHTTPStatusError struct {
 	statusCode int
+	retryAfter time.Duration
 }
 
 func (e *providerHTTPStatusError) Error() string { return ErrProviderUnavailable.Error() }
@@ -57,8 +61,61 @@ func (e *providerHTTPStatusError) Unwrap() []error {
 	return []error{ErrProviderUnavailable, kind}
 }
 
-func providerHTTPStatusFailure(statusCode int) error {
-	return &providerHTTPStatusError{statusCode: statusCode}
+func providerHTTPStatusFailure(statusCode int, header http.Header) error {
+	return &providerHTTPStatusError{statusCode: statusCode, retryAfter: parseRetryAfter(header.Get("Retry-After"), time.Now().UTC())}
+}
+
+type RetryMetadata struct {
+	Retryable   bool
+	RateLimited bool
+	RetryAfter  time.Duration
+}
+
+// PreOutputRetryMetadata authorizes only failures known to occur before any
+// response stream was accepted. Callers must additionally prove that no
+// content, reasoning, or tool-call delta became visible.
+func PreOutputRetryMetadata(err error) RetryMetadata {
+	var statusErr *providerHTTPStatusError
+	if errors.As(err, &statusErr) {
+		switch statusErr.statusCode {
+		case http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return RetryMetadata{Retryable: true, RateLimited: statusErr.statusCode == http.StatusTooManyRequests, RetryAfter: boundedRetryDelay(statusErr.retryAfter)}
+		}
+	}
+	if errors.Is(err, ErrProviderConnectFailure) {
+		return RetryMetadata{Retryable: true}
+	}
+	return RetryMetadata{}
+}
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		if seconds >= 30 {
+			return 30 * time.Second
+		}
+		return boundedRetryDelay(time.Duration(seconds) * time.Second)
+	}
+	if at, err := http.ParseTime(value); err == nil && at.After(now) {
+		return boundedRetryDelay(at.Sub(now))
+	}
+	return 0
+}
+
+func boundedRetryDelay(value time.Duration) time.Duration {
+	if value <= 0 {
+		return 0
+	}
+	if value > 30*time.Second {
+		return 30 * time.Second
+	}
+	return value
 }
 
 // SafeFailureClass reduces model-provider failures to a stable diagnostic
@@ -96,6 +153,10 @@ func providerRequestFailure(ctx context.Context, err error) error {
 	}
 	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
 		return context.Canceled
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return fmt.Errorf("%w: %w", ErrProviderUnavailable, ErrProviderConnectFailure)
 	}
 	return ErrProviderUnavailable
 }
@@ -209,7 +270,7 @@ func (t *connectionTester) TestConnection(ctx context.Context, profile Profile) 
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return providerHTTPStatusFailure(resp.StatusCode)
+		return providerHTTPStatusFailure(resp.StatusCode, resp.Header)
 	}
 	if providerReturnedHTML(resp.Header) {
 		return ErrInvalidResponse
@@ -301,7 +362,7 @@ func (c *providerClient) Generate(ctx context.Context, request CompletionRequest
 		return Completion{}, err
 	}
 	if status < 200 || status >= 300 {
-		return Completion{}, providerHTTPStatusFailure(status)
+		return Completion{}, providerHTTPStatusFailure(status, headers)
 	}
 	return decodeCompletionWithGeminiToolIDs(c.profile.Provider, body, headers, newGeminiToolCallIDAllocator(request.Messages))
 }
@@ -377,7 +438,7 @@ func (c *providerClient) Stream(ctx context.Context, request CompletionRequest) 
 		}
 		cancel()
 		resp.Body.Close()
-		return nil, providerHTTPStatusFailure(resp.StatusCode)
+		return nil, providerHTTPStatusFailure(resp.StatusCode, resp.Header)
 	}
 	if providerReturnedHTML(resp.Header) {
 		if idle != nil {
@@ -427,13 +488,15 @@ func (c *providerClient) do(ctx context.Context, payload any, stream bool) ([]by
 }
 
 func (c *providerClient) payload(r CompletionRequest, stream bool) (any, error) {
-	switch c.profile.Provider {
-	case ProviderAnthropic:
+	switch c.profile.RequestDialect {
+	case DialectAnthropicMessagesV1:
 		return anthropicPayload(c.profile, r, stream), nil
-	case ProviderGemini:
+	case DialectGeminiGenerateV1Beta:
 		return geminiPayload(c.profile, r), nil
-	default:
+	case DialectOpenAICompatibleChatV1, DialectOpenAIReasoningChatV1:
 		return openAIPayload(c.profile, r, stream), nil
+	default:
+		return nil, ErrInvalidProfile
 	}
 }
 
@@ -449,7 +512,9 @@ func openAIPayload(p Profile, r CompletionRequest, stream bool) map[string]any {
 	if p.TopP != nil {
 		m["top_p"] = *p.TopP
 	}
-	if p.MaxOutputTokens > 0 {
+	if p.MaxOutputTokens > 0 && p.RequestDialect == DialectOpenAIReasoningChatV1 {
+		m["max_completion_tokens"] = p.MaxOutputTokens
+	} else if p.MaxOutputTokens > 0 {
 		m["max_tokens"] = p.MaxOutputTokens
 	}
 	if p.ReasoningEffort != "" {

@@ -15,7 +15,7 @@ func TestModelProfileRPCMapsAndRedacts(t *testing.T) {
 	repo := coremodel.NewMemoryProfileRepository()
 	domain, _ := coremodel.NewService(repo, coremodel.ConnectionTesterFunc(func(context.Context, coremodel.Profile) error { return nil }))
 	service, _ := NewModelProfileService(domain)
-	response, err := service.Create(context.Background(), &agentv1.ModelProfileServiceCreateRequest{IdempotencyKey: "11111111-1111-4111-8111-111111111111", DisplayName: "Primary", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "test", ApiKey: "rpc-secret", ContextWindow: 32768, ReasoningEffort: "medium"})
+	response, err := service.Create(context.Background(), &agentv1.ModelProfileServiceCreateRequest{IdempotencyKey: "11111111-1111-4111-8111-111111111111", DisplayName: "Primary", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, RequestDialect: string(coremodel.DialectOpenAICompatibleChatV1), Model: "test", ApiKey: "rpc-secret", ContextWindow: 32768, ReasoningEffort: "medium"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestModelProfileRPCMapsAndRedacts(t *testing.T) {
 	contextWindow := int32(65536)
 	patched, err := service.Update(context.Background(), &agentv1.ModelProfileServiceUpdateRequest{
 		IdempotencyKey: "33333333-3333-4333-8333-333333333333", ProfileId: response.Profile.ProfileId, ExpectedRevision: 1,
-		ContextWindow: &contextWindow,
+		ContextWindow: &contextWindow, RequestDialect: stringPtrRPC(string(coremodel.DialectOpenAICompatibleChatV1)),
 	})
 	if err != nil || patched.Profile.ContextWindow != 65536 || patched.Profile.DisplayName != "Primary" || patched.Profile.Model != "test" {
 		t.Fatalf("one-field patch=%#v err=%v", patched, err)
@@ -62,7 +62,7 @@ func TestModelProfileRPCTestConnectionIdempotent(t *testing.T) {
 		return nil
 	}))
 	service, _ := NewModelProfileService(domain)
-	created, err := service.Create(context.Background(), &agentv1.ModelProfileServiceCreateRequest{IdempotencyKey: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", DisplayName: "one", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "m", ApiKey: "k"})
+	created, err := service.Create(context.Background(), &agentv1.ModelProfileServiceCreateRequest{IdempotencyKey: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", DisplayName: "one", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, RequestDialect: string(coremodel.DialectOpenAICompatibleChatV1), Model: "m", ApiKey: "k"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestModelProfileRPCTestConnectionIdempotent(t *testing.T) {
 	if err != nil || !second.Reachable || calls != 1 {
 		t.Fatalf("replay test=%#v err=%v calls=%d", second, err, calls)
 	}
-	other, err := service.Create(context.Background(), &agentv1.ModelProfileServiceCreateRequest{IdempotencyKey: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", DisplayName: "two", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "m", ApiKey: "k"})
+	other, err := service.Create(context.Background(), &agentv1.ModelProfileServiceCreateRequest{IdempotencyKey: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", DisplayName: "two", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, RequestDialect: string(coremodel.DialectOpenAICompatibleChatV1), Model: "m", ApiKey: "k"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,8 +97,8 @@ func TestModelProfileRPCSyncPresenceAndOrder(t *testing.T) {
 		DefaultConversationClientProfileId: "two",
 		DefaultToolClientProfileId:         "one",
 		Entries: []*agentv1.CoreModelProfileSyncEntry{
-			{ClientProfileId: "one", DisplayName: "One", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, ModelKind: coremodel.ModelKindConversation, InputModalities: []string{"text", "image"}, Model: "model", ApiKey: stringPtrRPC("one-secret")},
-			{ClientProfileId: "two", DisplayName: "Two", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "model", ApiKey: stringPtrRPC("two-secret")},
+			{ClientProfileId: "one", DisplayName: "One", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, RequestDialect: string(coremodel.DialectOpenAICompatibleChatV1), ModelKind: coremodel.ModelKindConversation, InputModalities: []string{"text", "image"}, Model: "model", ApiKey: stringPtrRPC("one-secret")},
+			{ClientProfileId: "two", DisplayName: "Two", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, RequestDialect: string(coremodel.DialectOpenAICompatibleChatV1), Model: "model", ApiKey: stringPtrRPC("two-secret")},
 		},
 	})
 	if err != nil || len(first.Profiles) != 2 || first.Profiles[0].ClientProfileId != "one" || first.Profiles[0].ModelKind != coremodel.ModelKindConversation || len(first.Profiles[0].InputModalities) != 2 || first.DefaultConversationClientProfileId != "two" || first.DefaultToolClientProfileId != "one" {
@@ -113,17 +113,37 @@ func TestModelProfileRPCSyncPresenceAndOrder(t *testing.T) {
 	}
 	second, err := service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
 		IdempotencyKey: "a0000000-0000-4000-8000-000000000041", DefaultConversationClientProfileId: "two",
-		Entries: []*agentv1.CoreModelProfileSyncEntry{{ClientProfileId: "two", ExpectedRevision: int64PtrRPC(1), DisplayName: "Two v2", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "model"}},
+		Entries: []*agentv1.CoreModelProfileSyncEntry{{ClientProfileId: "two", ExpectedRevision: int64PtrRPC(1), DisplayName: "Two v2", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, RequestDialect: string(coremodel.DialectOpenAICompatibleChatV1), Model: "model"}},
 	})
 	if err != nil || len(second.Profiles) != 1 || second.Profiles[0].Revision != 2 {
 		t.Fatalf("preserve sync=%+v err=%v", second, err)
 	}
 	_, err = service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
 		IdempotencyKey: "a0000000-0000-4000-8000-000000000042", DefaultConversationClientProfileId: "two",
-		Entries: []*agentv1.CoreModelProfileSyncEntry{{ClientProfileId: "two", ExpectedRevision: int64PtrRPC(2), DisplayName: "Two v3", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "model", ApiKey: stringPtrRPC("")}},
+		Entries: []*agentv1.CoreModelProfileSyncEntry{{ClientProfileId: "two", ExpectedRevision: int64PtrRPC(2), DisplayName: "Two v3", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, RequestDialect: string(coremodel.DialectOpenAICompatibleChatV1), Model: "model", ApiKey: stringPtrRPC("")}},
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("empty present key code=%v err=%v", status.Code(err), err)
+	}
+}
+
+func TestModelProfileRPCSyncRequiresExplicitRequestDialect(t *testing.T) {
+	repo := coremodel.NewMemoryProfileRepository()
+	domain, err := coremodel.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, _ := NewModelProfileService(domain)
+	_, err = service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
+		IdempotencyKey: "a0000000-0000-4000-8000-000000000043",
+		Entries: []*agentv1.CoreModelProfileSyncEntry{{
+			ClientProfileId: "missing-dialect", DisplayName: "Missing dialect",
+			Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE,
+			Model:    "model", ApiKey: stringPtrRPC("secret"),
+		}},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("blank request dialect code=%v err=%v", status.Code(err), err)
 	}
 }
 

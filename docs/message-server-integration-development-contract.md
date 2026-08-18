@@ -15,8 +15,11 @@ same-origin `/agent/v1/*` edge route. Caddy forwards the full path to Agent's
 internal HTTP listener; it never publishes the listener itself. Flutter never
 receives the long-lived Agent service token.
 
-The cross-client v1 session shape and Agent error vocabulary are frozen by
-`internal/agenthttp/testdata/session_stream_contract_v1.json`. The Message
+The cross-client session, operation, error, and SSE shapes are frozen by the
+Agent Data Plane V2 OpenAPI contract and shared conformance vectors in
+`dirextalk-capability-api v1.1.0`. Agent and Message Server consume the generated
+Go DTOs and scope constants, while Flutter consumes the generated Dart package;
+none keeps a local v1 fixture or parallel handwritten wire DTO. The Message
 Server session response supplies `ticket`, `expires_at`, `server_time`,
 `base_path`, `session_id`, and `scopes`, with RFC3339 UTC timestamps,
 `base_path=/agent/v1`, and a 900-second ticket TTL. Agent returns exactly
@@ -24,6 +27,12 @@ Server session response supplies `ticket`, `expires_at`, `server_time`,
 `AGENT_TICKET_SCOPE_FORBIDDEN` for their named ticket conditions. If SSE
 `after_seq` and `Last-Event-ID` are both present, they must be equal; otherwise
 Agent returns HTTP 400 with `AGENT_CURSOR_CONFLICT` and does not open a stream.
+Agent mutation admission and polling use generated operation receipts and
+snapshots. HTTP failures, embedded polling failures, and SSE error payloads use
+the same generated closed error envelope; an optional `Retry-After` header is
+the envelope's `retry_after_ms` rounded up to seconds. Turn receipts and Turn
+SSE frames carry explicit `operation_id`, `turn_id`, and `conversation_id`, and
+this contract requires `operation_id == turn_id`.
 
 The Agent owns the independent runtime, database, files, secrets, model and
 conversation state, Tasks, Knowledge, Web Search, AWS, Execution V2, and

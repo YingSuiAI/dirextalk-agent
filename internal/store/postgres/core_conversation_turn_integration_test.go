@@ -90,7 +90,7 @@ func openTurnDB(t *testing.T) *turnDBHarness {
 }
 
 func turnCommand() core.TurnStartCommand {
-	s := coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid", Model: "test", APIKey: "integration-secret"}
+	s := coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, BaseURL: "https://example.invalid", Model: "test", APIKey: "integration-secret"}
 	return core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: s.ProfileID, ExpectedProfileRevision: s.Revision, ExpectedCredentialVersion: s.CredentialVersion, ProfileSnapshot: s}
 }
 
@@ -461,6 +461,92 @@ func TestCoreConversationTurnDispatchRecoveryPostgres(t *testing.T) {
 	}
 }
 
+func TestCoreConversationPhysicalModelAttemptsAreFencedAndDurablePostgres(t *testing.T) {
+	h := openTurnDB(t)
+	ctx := context.Background()
+	cmd := turnCommand()
+	cmd.ProfileSnapshot.RequestDialect = coremodel.DialectOpenAICompatibleChatV1
+	candidate, err := h.store.PrepareTurnRuntimeAdmission(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := core.NewTurnRuntimeSnapshot("frozen system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := h.store.StartTurnWithRuntime(ctx, cmd, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedRuntime, err := core.NewTurnRuntimeSnapshot("changed system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.store.StartTurnWithRuntime(ctx, cmd, changedRuntime); !errors.Is(err, core.ErrTurnRuntimeIncompatible) {
+		t.Fatalf("changed admitted runtime replay err=%v", err)
+	}
+	lease, err := h.store.ClaimTurn(ctx, turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.ValidateTurnRuntime(ctx, lease, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.store.PrepareTurnModel(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.BindTurnModelRuntime(ctx, lease, runtime); err != nil {
+		t.Fatal(err)
+	}
+	renewed, err := h.store.RenewTurn(ctx, turn.ID, lease.LeaseID, lease.Epoch, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := core.ModelAttemptFailure{Code: "provider_rate_limited", Summary: "rate limited", RateLimited: true, RetryAfterMS: 30_000}
+	if err = h.store.MarkTurnModelRetryable(ctx, lease, failure); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("stale lease retryable err=%v", err)
+	}
+	if err = h.store.MarkTurnModelRetryable(ctx, renewed, failure); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := h.store.PrepareTurnModelRetry(ctx, renewed)
+	if err != nil || prepared.ModelDispatchCount != 2 {
+		t.Fatalf("prepared=%+v err=%v", prepared, err)
+	}
+	if err = h.store.BindTurnModelRuntime(ctx, renewed, runtime); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.MarkTurnModelAttemptUncertain(ctx, renewed, core.ModelAttemptFailure{Code: "provider_uncertain", Summary: "unknown"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := h.pool.Query(ctx, `SELECT attempt_sequence,state,rate_limited,retry_after_ms,runtime_snapshot_digest FROM core_conversation_model_attempts WHERE turn_id=$1 ORDER BY attempt_sequence`, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type attempt struct {
+		sequence    int
+		state       string
+		rateLimited bool
+		retryAfter  int64
+		digest      string
+	}
+	var attempts []attempt
+	for rows.Next() {
+		var value attempt
+		if err = rows.Scan(&value.sequence, &value.state, &value.rateLimited, &value.retryAfter, &value.digest); err != nil {
+			t.Fatal(err)
+		}
+		attempts = append(attempts, value)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 2 || attempts[0].state != "retryable" || !attempts[0].rateLimited || attempts[0].retryAfter != 30_000 || attempts[1].state != "uncertain" || attempts[0].digest != runtime.Digest() || attempts[1].digest != runtime.Digest() {
+		t.Fatalf("attempts=%+v", attempts)
+	}
+}
+
 func TestCoreConversationTurnMigrationConstraintsPostgres(t *testing.T) {
 	h := openTurnDB(t)
 	if _, err := h.pool.Exec(context.Background(), `INSERT INTO core_conversation_turns(turn_id,request_id,request_fingerprint,prompt,profile_id,profile_snapshot_json,profile_snapshot_digest,state) VALUES($1,$2,$3,'x',$4,'{}',$5,'completed')`, uuid.New(), uuid.New(), strings.Repeat("a", 64), uuid.New(), strings.Repeat("b", 64)); err == nil {
@@ -613,6 +699,10 @@ type conversationToolPrepareFixture struct {
 }
 
 func newConversationToolPrepareFixture(t *testing.T, callID string) *conversationToolPrepareFixture {
+	return newConversationToolPrepareFixtureForTool(t, callID, "write_html")
+}
+
+func newConversationToolPrepareFixtureForTool(t *testing.T, callID, toolName string) *conversationToolPrepareFixture {
 	t.Helper()
 	h := openTurnDB(t)
 	installationID, versionID := uuid.NewString(), uuid.NewString()
@@ -635,12 +725,12 @@ func newConversationToolPrepareFixture(t *testing.T, callID string) *conversatio
 	snapshot := core.ExtensionExecutionSnapshot{
 		Selection: core.ExtensionSelection{
 			Kind: core.ExtensionMCP, ID: installationID, Version: versionID,
-			Digest: contentDigest, AllowedTools: []string{"write_html"},
+			Digest: contentDigest, AllowedTools: []string{toolName},
 		},
 		InstallationID: installationID, VersionID: versionID, InstallationRevision: 4,
 		Source: "github", ContentDigest: contentDigest, ArtifactDigest: artifactDigest,
 		ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64),
-		SecretBindingDigest: strings.Repeat("e", 64), ToolNames: []string{"write_html"}, RequiresConfirmation: true,
+		SecretBindingDigest: strings.Repeat("e", 64), ToolNames: []string{toolName}, RequiresConfirmation: true,
 	}
 	cmd := turnCommand()
 	cmd.OwnerID = "@conversation-tool:test"
@@ -648,7 +738,15 @@ func newConversationToolPrepareFixture(t *testing.T, callID string) *conversatio
 	cmd.Extensions = []core.ExtensionSelection{snapshot.Selection}
 	cmd.ExtensionSnapshots = []core.ExtensionExecutionSnapshot{snapshot}
 	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
-	turn, err := h.store.StartTurn(context.Background(), cmd)
+	candidate, err := h.store.PrepareTurnRuntimeAdmission(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := core.NewTurnRuntimeSnapshot("fixture system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := h.store.StartTurnWithRuntime(context.Background(), cmd, runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,11 +758,11 @@ func newConversationToolPrepareFixture(t *testing.T, callID string) *conversatio
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := core.ToolCall{ID: callID, Name: "write_html", Arguments: string(arguments)}
+	call := core.ToolCall{ID: callID, Name: toolName, Arguments: string(arguments)}
 	prepare := core.PrepareToolCommand{
 		Lease: lease, Round: 0, Call: call, Snapshot: snapshot,
 		CanonicalArguments: arguments, ArgumentsDigest: conversationArgsDigest(arguments),
-		SafeSummary: "conversation tool call write_html", IdempotencyKey: uuid.NewString(),
+		SafeSummary: "conversation tool call " + toolName, IdempotencyKey: uuid.NewString(),
 		ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
 	}
 	return &conversationToolPrepareFixture{

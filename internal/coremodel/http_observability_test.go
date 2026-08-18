@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -176,6 +177,45 @@ func TestSafeFailureClassDistinguishesProviderFailureKinds(t *testing.T) {
 				t.Fatalf("SafeFailureClass()=%q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestPreOutputRetryMetadataAllowlistAndRetryAfter(t *testing.T) {
+	date := time.Now().UTC().Add(time.Hour).Format(http.TimeFormat)
+	tests := []struct {
+		status      int
+		retryAfter  string
+		want        bool
+		rateLimited bool
+		wantDelay   time.Duration
+	}{
+		{status: 408, want: true},
+		{status: 429, retryAfter: "7", want: true, rateLimited: true, wantDelay: 7 * time.Second},
+		{status: 502, want: true},
+		{status: 503, retryAfter: date, want: true, wantDelay: 30 * time.Second},
+		{status: 504, want: true},
+		{status: 429, retryAfter: "9223372036854775807", want: true, rateLimited: true, wantDelay: 30 * time.Second},
+		{status: 500, want: false},
+		{status: 400, want: false},
+	}
+	for _, test := range tests {
+		header := make(http.Header)
+		header.Set("Retry-After", test.retryAfter)
+		got := PreOutputRetryMetadata(providerHTTPStatusFailure(test.status, header))
+		if got.Retryable != test.want || got.RateLimited != test.rateLimited || got.RetryAfter != test.wantDelay {
+			t.Fatalf("status=%d metadata=%+v", test.status, got)
+		}
+	}
+}
+
+func TestPreOutputRetryMetadataOnlyAcceptsConfirmedDialFailure(t *testing.T) {
+	dial := providerRequestFailure(context.Background(), &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("refused")})
+	if got := PreOutputRetryMetadata(dial); !got.Retryable {
+		t.Fatalf("dial metadata=%+v err=%v", got, dial)
+	}
+	generic := providerRequestFailure(context.Background(), errors.New("ambiguous transport failure"))
+	if got := PreOutputRetryMetadata(generic); got.Retryable {
+		t.Fatalf("ambiguous transport metadata=%+v err=%v", got, generic)
 	}
 }
 

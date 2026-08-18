@@ -13,7 +13,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -23,6 +22,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	agentdatav2 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/agent/data/v2"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
@@ -98,6 +98,30 @@ func (s *admissionStore) StartTurn(_ context.Context, command coreconversation.T
 		CreatedAt: now, UpdatedAt: now,
 	}
 	return s.turn, nil
+}
+
+func (s *admissionStore) PrepareTurnRuntimeAdmission(_ context.Context, command coreconversation.TurnStartCommand) (coreconversation.Turn, error) {
+	return coreconversation.Turn{
+		ID: command.TurnID, RequestID: command.RequestID, OwnerID: command.OwnerID,
+		AccountGeneration: command.AccountGeneration, ConversationID: command.ConversationID,
+		Prompt: command.Prompt, ProfileID: command.ProfileID, ProfileSnapshot: command.ProfileSnapshot,
+		ProfileSnapshotDigest: command.ProfileSnapshot.Digest(), ExtensionSnapshots: command.ExtensionSnapshots,
+		ExtensionSnapshotDigest: command.ExtensionSnapshotDigest(), State: coreconversation.TurnAccepted,
+		Revision: 1, CreatedAt: time.Now().UTC(),
+	}, nil
+}
+
+func (s *admissionStore) StartTurnWithRuntime(ctx context.Context, command coreconversation.TurnStartCommand, runtime coreconversation.TurnRuntimeSnapshot) (coreconversation.Turn, error) {
+	turn, err := s.StartTurn(ctx, command)
+	if err == nil {
+		s.turn.RuntimeSnapshot = &runtime
+		turn = s.turn
+	}
+	return turn, err
+}
+
+func (s *admissionStore) ValidateTurnRuntime(context.Context, coreconversation.TurnLease, coreconversation.TurnRuntimeSnapshot) error {
+	return nil
 }
 
 func (s *admissionStore) GetTurn(_ context.Context, id string) (coreconversation.Turn, error) {
@@ -285,23 +309,11 @@ func TestSessionTicketFailuresHaveStableTypedCodes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/read", `{}`, test.ticket))
-			var failure errorBody
+			var failure agentdatav2.ErrorEnvelope
 			if recorder.Code != test.wantStatus || json.Unmarshal(recorder.Body.Bytes(), &failure) != nil || failure.Code != test.wantCode {
 				t.Fatalf("response=%d %s", recorder.Code, recorder.Body.String())
 			}
 		})
-	}
-}
-
-func TestSessionStreamContractV1Fixture(t *testing.T) {
-	fixture, err := os.ReadFile(filepath.Join("testdata", "session_stream_contract_v1.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	const expected = `{"version":1,"session_response":{"required_fields":["ticket","expires_at","server_time","base_path","session_id","scopes"],"base_path":"/agent/v1","timestamp_format":"rfc3339_utc","ticket_ttl_seconds":900},"errors":{"expired":"AGENT_TICKET_EXPIRED","stale":"AGENT_TICKET_STALE","invalid":"AGENT_TICKET_INVALID","scope_forbidden":"AGENT_TICKET_SCOPE_FORBIDDEN"},"sse":{"cursor_conflict":"AGENT_CURSOR_CONFLICT"}}`
-	var got, want any
-	if json.Unmarshal(fixture, &got) != nil || json.Unmarshal([]byte(expected), &want) != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("session stream fixture=%s", fixture)
 	}
 }
 
@@ -310,20 +322,20 @@ func TestMutationAdmissionReplaysTheFrozenIdempotencyTuple(t *testing.T) {
 	ticket := h.ticket(t, []string{"test:write"}, h.now.Add(15*time.Minute))
 	key := uuid.NewString()
 	body := `{"idempotency_key":"` + key + `","value":"same"}`
-	var first map[string]any
+	var first agentdatav2.OperationReceipt
 	for attempt := 0; attempt < 2; attempt++ {
 		recorder := httptest.NewRecorder()
 		h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/mutate", body, ticket))
 		if recorder.Code != http.StatusAccepted {
 			t.Fatalf("attempt %d response = %d %s", attempt, recorder.Code, recorder.Body.String())
 		}
-		var receipt map[string]any
+		var receipt agentdatav2.OperationReceipt
 		if json.Unmarshal(recorder.Body.Bytes(), &receipt) != nil {
 			t.Fatal("invalid receipt")
 		}
 		if attempt == 0 {
 			first = receipt
-		} else if receipt["operation_id"] != first["operation_id"] || receipt["replayed"] != true {
+		} else if receipt.OperationId != first.OperationId || !receipt.Replayed {
 			t.Fatalf("replay receipt = %#v, first = %#v", receipt, first)
 		}
 	}
@@ -359,9 +371,13 @@ func TestDirectReadMapsTypedFailuresWithoutLeakingInternals(t *testing.T) {
 			ticket := h.ticket(t, []string{"test:read"}, h.now.Add(15*time.Minute))
 			recorder := httptest.NewRecorder()
 			h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/test.data.v1/operations/read", `{}`, ticket))
-			var response errorBody
-			if json.Unmarshal(recorder.Body.Bytes(), &response) != nil || recorder.Code != test.wantStatus || response.Code != test.wantCode || response.Message != test.wantMessage || strings.Contains(recorder.Body.String(), "private") || strings.Contains(recorder.Body.String(), "secret-sentinel") {
+			var response agentdatav2.ErrorEnvelope
+			if json.Unmarshal(recorder.Body.Bytes(), &response) != nil || recorder.Code != test.wantStatus || response.Code != test.wantCode || response.Message != test.wantMessage || response.Category == "" || response.RequestId == "" || strings.Contains(recorder.Body.String(), "private") || strings.Contains(recorder.Body.String(), "secret-sentinel") {
 				t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
+			}
+			wantRetryable := test.wantStatus == http.StatusTooManyRequests || test.wantStatus == http.StatusServiceUnavailable || test.wantStatus == http.StatusBadGateway
+			if response.Retryable != wantRetryable {
+				t.Fatalf("retryable=%v, want %v: %s", response.Retryable, wantRetryable, recorder.Body.String())
 			}
 		})
 	}
@@ -383,7 +399,7 @@ func TestMutationAdmissionMapsStorageFailureToRetryableUnavailable(t *testing.T)
 func TestChatStartReturnsAcceptedOnlyAfterTheAuthoritativeTurnExists(t *testing.T) {
 	h := newTestHarness(t)
 	profileID := uuid.NewString()
-	snapshot := coremodel.ExecutionSnapshot{ProfileID: profileID, Revision: 3, CredentialVersion: 2, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://model.example/v1", Model: "test", APIKey: "secret"}
+	snapshot := coremodel.ExecutionSnapshot{ProfileID: profileID, Revision: 3, CredentialVersion: 2, Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, BaseURL: "https://model.example/v1", Model: "test", APIKey: "secret"}
 	store := &admissionStore{}
 	conversation, err := coreconversation.NewService(store, admissionModel{}, nil, admissionProfile{snapshot: snapshot})
 	if err != nil {
@@ -405,15 +421,11 @@ func TestChatStartReturnsAcceptedOnlyAfterTheAuthoritativeTurnExists(t *testing.
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("start response = %d %s", recorder.Code, recorder.Body.String())
 	}
-	var receipt struct {
-		OperationID    string `json:"operation_id"`
-		TurnID         string `json:"turn_id"`
-		IdempotencyKey string `json:"idempotency_key"`
-	}
+	var receipt agentdatav2.TurnOperationReceipt
 	if err := json.Unmarshal(recorder.Body.Bytes(), &receipt); err != nil {
 		t.Fatal(err)
 	}
-	if store.starts != 1 || receipt.OperationID == "" || receipt.OperationID != receipt.TurnID || receipt.IdempotencyKey != key || store.turn.ID != receipt.TurnID || store.turn.RequestID != key {
+	if store.starts != 1 || receipt.OperationId == uuid.Nil || receipt.OperationId != receipt.TurnId || receipt.IdempotencyKey.String() != key || store.turn.ID != receipt.TurnId.String() || store.turn.RequestID != key {
 		t.Fatalf("receipt=%+v persisted turn=%+v starts=%d", receipt, store.turn, store.starts)
 	}
 }
@@ -508,7 +520,7 @@ func TestSSEReplayRequiresMatchingExplicitCursors(t *testing.T) {
 	request = requestWithTicket(http.MethodGet, "/agent/v1/operations/"+operationID+"/events?after_seq=1", "", ticket)
 	request.Header.Set("Last-Event-ID", "2")
 	h.server.ServeHTTP(recorder, request)
-	var failure errorBody
+	var failure agentdatav2.ErrorEnvelope
 	if recorder.Code != http.StatusBadRequest || json.Unmarshal(recorder.Body.Bytes(), &failure) != nil || failure.Code != agentCursorConflictCode || recorder.Header().Get("Content-Type") == "text/event-stream" {
 		t.Fatalf("conflicting SSE cursor = %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -528,11 +540,62 @@ func TestSSEReplayRequiresMatchingExplicitCursors(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			h.server.ServeHTTP(recorder, request)
-			var failure errorBody
+			var failure agentdatav2.ErrorEnvelope
 			if recorder.Code != http.StatusBadRequest || json.Unmarshal(recorder.Body.Bytes(), &failure) != nil || failure.Code != "AGENT_REQUEST_INVALID" || recorder.Header().Get("Content-Type") == "text/event-stream" {
 				t.Fatalf("invalid SSE cursor = %d %s", recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestPollingAndSSEErrorsUseTheSameGeneratedEnvelope(t *testing.T) {
+	h := newTestHarness(t)
+	operationID := uuid.NewString()
+	op := &operation.Operation{
+		ID: operationID, CapabilityID: "test.data.v1", OperationName: "stream",
+		RequestJSON: []byte(`{}`), OwnerID: "@owner:s3.example", AccountGeneration: 7,
+	}
+	if _, _, err := h.manager.StartOrGet(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.manager.Fail(context.Background(), operationID, "RESOURCE_EXHAUSTED", "Agent provider rate limit was reached"); err != nil {
+		t.Fatal(err)
+	}
+	ticket := h.ticket(t, []string{"test:stream"}, h.now.Add(15*time.Minute))
+
+	pollRecorder := httptest.NewRecorder()
+	h.server.ServeHTTP(pollRecorder, requestWithTicket(http.MethodGet, "/agent/v1/operations/"+operationID, "", ticket))
+	var snapshot agentdatav2.OperationSnapshot
+	if pollRecorder.Code != http.StatusOK || json.Unmarshal(pollRecorder.Body.Bytes(), &snapshot) != nil || snapshot.Error == nil {
+		t.Fatalf("poll response = %d %s", pollRecorder.Code, pollRecorder.Body.String())
+	}
+
+	streamRecorder := httptest.NewRecorder()
+	h.server.ServeHTTP(streamRecorder, requestWithTicket(http.MethodGet, "/agent/v1/operations/"+operationID+"/events", "", ticket))
+	var streamFailure agentdatav2.ErrorEnvelope
+	frames := strings.Split(streamRecorder.Body.String(), "\n\n")
+	for _, frame := range frames {
+		if !strings.Contains(frame, "event: error") {
+			continue
+		}
+		for _, line := range strings.Split(frame, "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var envelope agentdatav2.OperationSseEnvelope
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			payload, err := json.Marshal(envelope.Payload)
+			if err != nil || json.Unmarshal(payload, &streamFailure) != nil {
+				t.Fatalf("invalid SSE error payload: %s, %v", payload, err)
+			}
+		}
+	}
+	if streamRecorder.Code != http.StatusOK || streamFailure.Code == "" || snapshot.Error.Code != streamFailure.Code ||
+		snapshot.Error.Message != streamFailure.Message || snapshot.Error.Category != streamFailure.Category ||
+		snapshot.Error.Retryable != streamFailure.Retryable || streamFailure.OperationId == nil || streamFailure.OperationId.String() != operationID {
+		t.Fatalf("poll error=%+v SSE error=%+v stream=%s", snapshot.Error, streamFailure, streamRecorder.Body.String())
 	}
 }
 
@@ -563,7 +626,7 @@ func TestTurnSSEReplayGapUsesThePositiveCursorBeforeTheFirstRetainedEvent(t *tes
 	body := recorder.Body.String()
 	gap := strings.Index(body, "id: 3\nevent: replay_gap")
 	retained := strings.Index(body, "id: 4\nevent: done")
-	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(body, "retry: 3000\n\n") || gap < 0 || retained <= gap || !strings.Contains(body, `"turn_id":"`+turn.ID+`"`) || !strings.Contains(body, `"idempotency_key":"`+turn.RequestID+`"`) || !strings.Contains(body, `"conversation_id":"`+turn.ConversationID+`"`) {
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(body, "retry: 3000\n\n") || gap < 0 || retained <= gap || !strings.Contains(body, `"operation_id":"`+turn.ID+`"`) || !strings.Contains(body, `"turn_id":"`+turn.ID+`"`) || !strings.Contains(body, `"conversation_id":"`+turn.ConversationID+`"`) || !strings.Contains(body, `"idempotency_key":"`+turn.RequestID+`"`) {
 		t.Fatalf("replay-gap SSE = %d %s", recorder.Code, body)
 	}
 }
@@ -589,7 +652,7 @@ func TestTurnSSEErrorFrameRedactsStoreFailure(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, requestWithTicket(http.MethodGet, "/agent/v1/operations/"+turn.ID+"/events", "", h.ticket(t, []string{"agent:chat:read"}, h.now.Add(15*time.Minute))))
 	body := recorder.Body.String()
-	if recorder.Code != http.StatusOK || !strings.Contains(body, `"code":"stream_failed"`) || !strings.Contains(body, `"message":"Agent event stream failed"`) || strings.Contains(body, "secret-sentinel") {
+	if recorder.Code != http.StatusOK || !strings.Contains(body, `"code":"AGENT_OPERATION_UNAVAILABLE"`) || !strings.Contains(body, `"message":"Agent event stream failed"`) || !strings.Contains(body, `"category":"unavailable"`) || strings.Contains(body, "secret-sentinel") {
 		t.Fatalf("stream failure response = %d %s", recorder.Code, body)
 	}
 }

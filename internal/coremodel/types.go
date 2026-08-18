@@ -13,11 +13,21 @@ import (
 
 type ModelProvider string
 
+type RequestDialect string
+
 const (
 	ProviderOpenAICompatible ModelProvider = "openai_compatible"
 	ProviderAnthropic        ModelProvider = "anthropic"
 	ProviderGemini           ModelProvider = "gemini"
 	ProviderVolcVoice        ModelProvider = "volc_voice"
+)
+
+const (
+	DialectOpenAICompatibleChatV1 RequestDialect = "openai_compatible_chat_v1"
+	DialectOpenAIReasoningChatV1  RequestDialect = "openai_reasoning_chat_v1"
+	DialectAnthropicMessagesV1    RequestDialect = "anthropic_messages_2023_06"
+	DialectGeminiGenerateV1Beta   RequestDialect = "gemini_generate_content_v1beta"
+	DialectVolcVoiceV1            RequestDialect = "volc_voice_v1"
 )
 
 const (
@@ -36,6 +46,7 @@ type Profile struct {
 	ClientProfileID string
 	DisplayName     string
 	Provider        ModelProvider
+	RequestDialect  RequestDialect
 	ModelKind       string
 	InputModalities []string
 	ProviderConfig  map[string]any
@@ -66,6 +77,7 @@ type Profile struct {
 func (p Profile) SameConfiguration(other Profile) bool {
 	return p.DisplayName == other.DisplayName &&
 		p.Provider == other.Provider &&
+		p.RequestDialect == other.RequestDialect &&
 		p.ModelKind == other.ModelKind &&
 		equalStrings(p.InputModalities, other.InputModalities) &&
 		reflect.DeepEqual(redactProviderConfig(p.ProviderConfig), redactProviderConfig(other.ProviderConfig)) &&
@@ -116,33 +128,34 @@ func equalFloat(left, right *float64) bool {
 // to a durable Core conversation request. It is internal state only; callers
 // must use Redacted/ String when presenting it.
 type ExecutionSnapshot struct {
-	ProfileID         string        `json:"profile_id"`
-	Revision          int64         `json:"revision"`
-	CredentialVersion int64         `json:"credential_version"`
-	Provider          ModelProvider `json:"provider"`
-	ModelKind         string        `json:"model_kind,omitempty"`
-	BaseURL           string        `json:"base_url"`
-	Model             string        `json:"model"`
-	APIKey            string        `json:"api_key"`
-	SystemPrompt      string        `json:"system_prompt"`
-	Temperature       *float64      `json:"temperature,omitempty"`
-	TopP              *float64      `json:"top_p,omitempty"`
-	MaxOutputTokens   int           `json:"max_output_tokens"`
-	ContextWindow     int           `json:"context_window"`
-	ReasoningEffort   string        `json:"reasoning_effort"`
+	ProfileID         string         `json:"profile_id"`
+	Revision          int64          `json:"revision"`
+	CredentialVersion int64          `json:"credential_version"`
+	Provider          ModelProvider  `json:"provider"`
+	RequestDialect    RequestDialect `json:"request_dialect"`
+	ModelKind         string         `json:"model_kind,omitempty"`
+	BaseURL           string         `json:"base_url"`
+	Model             string         `json:"model"`
+	APIKey            string         `json:"api_key"`
+	SystemPrompt      string         `json:"system_prompt"`
+	Temperature       *float64       `json:"temperature,omitempty"`
+	TopP              *float64       `json:"top_p,omitempty"`
+	MaxOutputTokens   int            `json:"max_output_tokens"`
+	ContextWindow     int            `json:"context_window"`
+	ReasoningEffort   string         `json:"reasoning_effort"`
 }
 
 func SnapshotFromProfile(p Profile) ExecutionSnapshot {
 	if (p.ModelKind == "" || p.ModelKind == ModelKindConversation) && p.MaxOutputTokens <= 0 {
 		p.MaxOutputTokens = DefaultConversationMaxOutputTokens
 	}
-	return ExecutionSnapshot{ProfileID: p.ID, Revision: p.Revision, CredentialVersion: credentialVersion(p), Provider: p.Provider, ModelKind: p.ModelKind, BaseURL: p.BaseURL,
+	return ExecutionSnapshot{ProfileID: p.ID, Revision: p.Revision, CredentialVersion: credentialVersion(p), Provider: p.Provider, RequestDialect: p.RequestDialect, ModelKind: p.ModelKind, BaseURL: p.BaseURL,
 		Model: p.Model, APIKey: p.APIKey, SystemPrompt: p.SystemPrompt, Temperature: cloneFloat(p.Temperature),
 		TopP: cloneFloat(p.TopP), MaxOutputTokens: p.MaxOutputTokens, ContextWindow: p.ContextWindow, ReasoningEffort: p.ReasoningEffort}
 }
 
 func (s ExecutionSnapshot) Profile() Profile {
-	return Profile{ID: s.ProfileID, DisplayName: "snapshot", Provider: s.Provider, ModelKind: s.ModelKind, BaseURL: s.BaseURL, Model: s.Model, APIKey: s.APIKey,
+	return Profile{ID: s.ProfileID, DisplayName: "snapshot", Provider: s.Provider, RequestDialect: s.RequestDialect, ModelKind: s.ModelKind, BaseURL: s.BaseURL, Model: s.Model, APIKey: s.APIKey,
 		SystemPrompt: s.SystemPrompt, Temperature: cloneFloat(s.Temperature), TopP: cloneFloat(s.TopP),
 		MaxOutputTokens: s.MaxOutputTokens, ContextWindow: s.ContextWindow, ReasoningEffort: s.ReasoningEffort, Revision: s.Revision, CredentialVersion: s.CredentialVersion}
 }
@@ -165,7 +178,7 @@ func (s ExecutionSnapshot) Digest() string {
 }
 
 func (s ExecutionSnapshot) Redacted() map[string]any {
-	return map[string]any{"profile_id": s.ProfileID, "revision": s.Revision, "credential_version": s.CredentialVersion, "provider": s.Provider,
+	return map[string]any{"profile_id": s.ProfileID, "revision": s.Revision, "credential_version": s.CredentialVersion, "provider": s.Provider, "request_dialect": s.RequestDialect,
 		"base_url": s.BaseURL, "model": s.Model, "temperature": s.Temperature,
 		"top_p": s.TopP, "max_output_tokens": s.MaxOutputTokens, "context_window": s.ContextWindow,
 		"reasoning_effort": s.ReasoningEffort, "api_key_configured": s.APIKey != ""}
@@ -180,6 +193,7 @@ type ProfileSpec struct {
 	ID                 string
 	DisplayName        string
 	Provider           ModelProvider
+	RequestDialect     RequestDialect
 	ModelKind          string
 	InputModalities    []string
 	ProviderConfig     map[string]any
@@ -197,6 +211,7 @@ type ProfileSpec struct {
 	Patch              bool
 	DisplayNameSet     bool
 	ProviderSet        bool
+	RequestDialectSet  bool
 	BaseURLSet         bool
 	ModelSet           bool
 	SystemPromptSet    bool
@@ -216,6 +231,7 @@ type SyncProfileEntry struct {
 	ExpectedRevision *int64            `json:"expected_revision,omitempty"`
 	DisplayName      string            `json:"display_name"`
 	Provider         ModelProvider     `json:"provider"`
+	RequestDialect   RequestDialect    `json:"request_dialect"`
 	ModelKind        string            `json:"model_kind,omitempty"`
 	InputModalities  []string          `json:"input_modalities,omitempty"`
 	ProviderConfig   map[string]any    `json:"provider_config,omitempty"`
@@ -254,6 +270,7 @@ type PublicProfile struct {
 	ClientProfileID      string          `json:"client_profile_id,omitempty"`
 	DisplayName          string          `json:"display_name"`
 	Provider             ModelProvider   `json:"provider"`
+	RequestDialect       RequestDialect  `json:"request_dialect"`
 	ModelKind            string          `json:"model_kind"`
 	InputModalities      []string        `json:"input_modalities,omitempty"`
 	ProviderConfig       map[string]any  `json:"provider_config,omitempty"`
@@ -291,7 +308,7 @@ func (p Profile) Public() PublicProfile {
 	if len(secretStatus) == 0 && len(p.ProviderSecretStatus) > 0 {
 		secretStatus = cloneBoolMap(p.ProviderSecretStatus)
 	}
-	return PublicProfile{ID: p.ID, ClientProfileID: p.ClientProfileID, DisplayName: p.DisplayName, Provider: p.Provider, ModelKind: modelKind,
+	return PublicProfile{ID: p.ID, ClientProfileID: p.ClientProfileID, DisplayName: p.DisplayName, Provider: p.Provider, RequestDialect: p.RequestDialect, ModelKind: modelKind,
 		InputModalities: append([]string(nil), p.InputModalities...), ProviderConfig: redactProviderConfig(p.ProviderConfig), ProviderSecretStatus: secretStatus,
 		BaseURL: p.BaseURL, Model: p.Model, SystemPrompt: p.SystemPrompt,
 		Temperature: temperature, TopP: topP, MaxOutputTokens: p.MaxOutputTokens,

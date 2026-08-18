@@ -318,6 +318,7 @@ func (s *CoreConversationStore) ResumeConversationTurn(ctx context.Context, turn
 		return core.ErrConflict
 	}
 	now := time.Now().UTC()
+	resultSequence := authority.resultSequence
 	references, referenceErr := conversationToolAttemptReferences(attempt)
 	if referenceErr != nil {
 		return core.ErrConflict
@@ -337,8 +338,16 @@ func (s *CoreConversationStore) ResumeConversationTurn(ctx context.Context, turn
 			return err
 		}
 		lastSequence++
+		resultSequence = lastSequence
 	} else if authority.result == nil || !reflect.DeepEqual(*authority.result, result) {
 		return core.ErrConflict
+	}
+	if resultSequence <= 0 {
+		return core.ErrConflict
+	}
+	stalled, err := recordConversationProgressTx(ctx, tx, turnID, result.CallID, result, resultSequence, now)
+	if err != nil {
+		return err
 	}
 	entry := &envelope.Calls[callIndex]
 	if entry.State == durableTurnToolCallTerminal {
@@ -352,6 +361,16 @@ func (s *CoreConversationStore) ResumeConversationTurn(ctx context.Context, turn
 		entry.State, entry.ResultDigest = durableTurnToolCallTerminal, durableTurnToolResultDigest(result)
 	}
 	dispatchRaw, _ = json.Marshal(envelope)
+	if stalled {
+		var turn core.Turn
+		if err = s.scanTurn(ctx, tx, turnID, &turn); err != nil {
+			return err
+		}
+		if err = failTurnNoProgressTx(ctx, tx, turn, dispatchRaw, lastSequence, now); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
 	revisionIncrement := 0
 	if state == string(core.TurnWaitingConfirmation) {
 		revisionIncrement = 1

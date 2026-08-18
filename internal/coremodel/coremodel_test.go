@@ -1027,6 +1027,32 @@ func TestConversationProfileDefaultsNonPositiveMaxOutputTokensInSnapshot(t *test
 	}
 }
 
+func TestVersionedRequestDialectControlsOpenAIOutputLimitProjection(t *testing.T) {
+	compatible := Profile{Model: "chat", RequestDialect: DialectOpenAICompatibleChatV1, MaxOutputTokens: 321}
+	compatiblePayload := openAIPayload(compatible, CompletionRequest{}, false)
+	if compatiblePayload["max_tokens"] != 321 || compatiblePayload["max_completion_tokens"] != nil {
+		t.Fatalf("compatible payload=%#v", compatiblePayload)
+	}
+	reasoning := Profile{Model: "reasoning", RequestDialect: DialectOpenAIReasoningChatV1, MaxOutputTokens: 654}
+	reasoningPayload := openAIPayload(reasoning, CompletionRequest{}, false)
+	if reasoningPayload["max_completion_tokens"] != 654 || reasoningPayload["max_tokens"] != nil {
+		t.Fatalf("reasoning payload=%#v", reasoningPayload)
+	}
+}
+
+func TestReasoningRequestDialectRejectsUnsupportedSampling(t *testing.T) {
+	temperature := 0.4
+	profile := Profile{ID: "11111111-1111-4111-8111-111111111111", DisplayName: "reasoning", Provider: ProviderOpenAICompatible, RequestDialect: DialectOpenAIReasoningChatV1, BaseURL: "https://example.test/v1", Model: "reasoning", APIKey: "secret", Temperature: &temperature}
+	if _, err := ValidateProfile(profile); !errors.Is(err, ErrInvalidProfile) {
+		t.Fatalf("sampling err=%v", err)
+	}
+	profile.Temperature = nil
+	profile.RequestDialect = DialectAnthropicMessagesV1
+	if _, err := ValidateProfile(profile); !errors.Is(err, ErrInvalidProfile) {
+		t.Fatalf("mismatched dialect err=%v", err)
+	}
+}
+
 func TestGeminiFinishMarkerTerminatesAfterDelta(t *testing.T) {
 	body := &closeTrackingBody{Reader: strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"x\"}]},\"finishReason\":\"STOP\"}]}\n\n")}
 	client, err := NewClient(validProfile(ProviderGemini, "https://example.com", "k"), WithHTTPClient(roundTripFunc(func(*http.Request) (*http.Response, error) {

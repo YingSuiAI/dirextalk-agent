@@ -122,6 +122,66 @@ func durableTurnToolCallIndex(envelope durableTurnDispatchEnvelope, call core.To
 // StartTurn stores the complete immutable request binding and its accepted
 // event in one transaction. A request UUID is the idempotency identity.
 func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartCommand) (core.Turn, error) {
+	return s.startTurn(ctx, c, nil)
+}
+
+func (s *CoreConversationStore) PrepareTurnRuntimeAdmission(ctx context.Context, c core.TurnStartCommand) (core.Turn, error) {
+	c.AcceptedAttachmentIDs = append([]string(nil), c.AcceptedAttachmentIDs...)
+	c.AttachmentSources = nil
+	if err := c.Validate(); err != nil {
+		return core.Turn{}, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.Turn{}, err
+	}
+	defer tx.Rollback(ctx)
+	turnID := c.TurnID
+	if turnID == "" {
+		turnID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn:"+c.RequestID)).String()
+	}
+	if err = resolveAcceptedTurnAttachments(ctx, tx, &c, turnID); err != nil {
+		return core.Turn{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.Turn{}, err
+	}
+	now := time.Now().UTC()
+	return core.Turn{
+		ID: turnID, RequestID: c.RequestID, OwnerID: c.OwnerID, AccountGeneration: c.AccountGeneration,
+		ConversationID: c.ConversationID, Prompt: c.Prompt, ProfileID: c.ProfileID,
+		ExpectedRevision: cloneRevision(c.ExpectedRevision), State: core.TurnAccepted, Revision: 1,
+		CreatedAt: now, UpdatedAt: now, ProfileSnapshot: c.ProfileSnapshot,
+		ProfileSnapshotDigest: c.ProfileSnapshot.Digest(), ExtensionSnapshots: append([]core.ExtensionExecutionSnapshot(nil), c.ExtensionSnapshots...),
+		ExtensionSnapshotDigest: c.ExtensionSnapshotDigest(), AttachmentSources: append([]core.TurnAttachment(nil), c.AttachmentSources...),
+		AttachmentSnapshotDigest: core.TurnAttachmentSnapshotDigest(c.AttachmentSources),
+	}, nil
+}
+
+func (s *CoreConversationStore) StartTurnWithRuntime(ctx context.Context, c core.TurnStartCommand, runtime core.TurnRuntimeSnapshot) (core.Turn, error) {
+	if runtime.Validate() != nil {
+		return core.Turn{}, core.ErrInvalid
+	}
+	return s.startTurn(ctx, c, &runtime)
+}
+
+func (s *CoreConversationStore) ValidateTurnRuntime(ctx context.Context, lease core.TurnLease, runtime core.TurnRuntimeSnapshot) error {
+	if runtime.Validate() != nil {
+		return core.ErrInvalid
+	}
+	var raw []byte
+	var storedDigest *string
+	if err := s.pool.QueryRow(ctx, `SELECT runtime_snapshot_json,runtime_snapshot_digest FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running'`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&raw, &storedDigest); err != nil {
+		return core.ErrConflict
+	}
+	var stored core.TurnRuntimeSnapshot
+	if storedDigest == nil || json.Unmarshal(raw, &stored) != nil || stored.Validate() != nil || stored.Digest() != *storedDigest || *storedDigest != runtime.Digest() {
+		return core.ErrTurnRuntimeIncompatible
+	}
+	return nil
+}
+
+func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartCommand, admittedRuntime *core.TurnRuntimeSnapshot) (core.Turn, error) {
 	// The caller selects source UUIDs only. Immutable metadata is always
 	// resolved from the attachment authority while this transaction holds the
 	// source locks.
@@ -144,6 +204,9 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 		fp := c.Fingerprint()
 		if existing.ProfileSnapshotDigest != c.ProfileSnapshot.Digest() || existing.RequestFingerprint != fp {
 			return core.Turn{}, core.ErrConflict
+		}
+		if admittedRuntime != nil && (existing.RuntimeSnapshot == nil || existing.RuntimeSnapshot.Digest() != admittedRuntime.Digest()) {
+			return core.Turn{}, core.ErrTurnRuntimeIncompatible
 		}
 		if err = tx.Commit(ctx); err != nil {
 			return core.Turn{}, err
@@ -180,6 +243,20 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 	if err = resolveAcceptedTurnAttachments(ctx, tx, &c, turnID); err != nil {
 		return core.Turn{}, err
 	}
+	var runtimeSnapshot *core.TurnRuntimeSnapshot
+	var runtimeRaw []byte
+	var runtimeDigest any
+	if admittedRuntime != nil {
+		if admittedRuntime.Validate() != nil || admittedRuntime.ProfileSnapshotDigest != c.ProfileSnapshot.Digest() ||
+			admittedRuntime.RequestDialect != string(c.ProfileSnapshot.RequestDialect) || admittedRuntime.ExtensionDigest != c.ExtensionSnapshotDigest() ||
+			admittedRuntime.AttachmentDigest != core.TurnAttachmentSnapshotDigest(c.AttachmentSources) {
+			return core.Turn{}, core.ErrInvalid
+		}
+		built := *admittedRuntime
+		runtimeSnapshot = &built
+		runtimeRaw, _ = json.Marshal(built)
+		runtimeDigest = built.Digest()
+	}
 	fp := c.Fingerprint()
 	metadataSnapshot := c.ProfileSnapshot
 	metadataSnapshot.APIKey = ""
@@ -201,7 +278,7 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 	}
 	attachmentRaw, _ := json.Marshal(attachmentSnapshots)
 	attachmentDigest := core.TurnAttachmentSnapshotDigest(c.AttachmentSources)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turns(turn_id,request_id,conversation_id,request_fingerprint,owner_id,account_generation,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,attachment_snapshot_json,attachment_snapshot_digest,state,revision,last_sequence,lease_epoch,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'accepted',1,1,1,$19,$19)`, turnID, c.RequestID, nullableUUIDPG(c.ConversationID), fp, c.OwnerID, c.AccountGeneration, c.Prompt, c.ProfileID, nullableUint64(c.ExpectedRevision), raw, c.ProfileSnapshot.Digest(), envelope.KeyVersion, envelope.Nonce, envelope.Ciphertext, extRaw, c.ExtensionSnapshotDigest(), attachmentRaw, attachmentDigest, now); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turns(turn_id,request_id,conversation_id,request_fingerprint,owner_id,account_generation,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,attachment_snapshot_json,attachment_snapshot_digest,runtime_snapshot_json,runtime_snapshot_digest,state,revision,last_sequence,lease_epoch,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'accepted',1,1,1,$21,$21)`, turnID, c.RequestID, nullableUUIDPG(c.ConversationID), fp, c.OwnerID, c.AccountGeneration, c.Prompt, c.ProfileID, nullableUint64(c.ExpectedRevision), raw, c.ProfileSnapshot.Digest(), envelope.KeyVersion, envelope.Nonce, envelope.Ciphertext, extRaw, c.ExtensionSnapshotDigest(), attachmentRaw, attachmentDigest, nullableJSONPG(runtimeRaw), runtimeDigest, now); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			_ = tx.Rollback(ctx)
@@ -225,7 +302,14 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 	if err = tx.Commit(ctx); err != nil {
 		return core.Turn{}, err
 	}
-	return core.Turn{ID: turnID, RequestID: c.RequestID, RequestFingerprint: fp, OwnerID: c.OwnerID, AccountGeneration: c.AccountGeneration, ConversationID: c.ConversationID, Prompt: c.Prompt, ProfileID: c.ProfileID, ExpectedRevision: cloneRevision(c.ExpectedRevision), Revision: 1, State: core.TurnAccepted, LastSequence: 1, CreatedAt: now, UpdatedAt: now, ProfileSnapshot: c.ProfileSnapshot, ProfileSnapshotDigest: c.ProfileSnapshot.Digest(), ExtensionSnapshots: append([]core.ExtensionExecutionSnapshot(nil), c.ExtensionSnapshots...), ExtensionSnapshotDigest: c.ExtensionSnapshotDigest(), AttachmentSources: append([]core.TurnAttachment(nil), c.AttachmentSources...), AttachmentSnapshotDigest: attachmentDigest}, nil
+	return core.Turn{ID: turnID, RequestID: c.RequestID, RequestFingerprint: fp, OwnerID: c.OwnerID, AccountGeneration: c.AccountGeneration, ConversationID: c.ConversationID, Prompt: c.Prompt, ProfileID: c.ProfileID, ExpectedRevision: cloneRevision(c.ExpectedRevision), Revision: 1, State: core.TurnAccepted, LastSequence: 1, CreatedAt: now, UpdatedAt: now, ProfileSnapshot: c.ProfileSnapshot, ProfileSnapshotDigest: c.ProfileSnapshot.Digest(), ExtensionSnapshots: append([]core.ExtensionExecutionSnapshot(nil), c.ExtensionSnapshots...), ExtensionSnapshotDigest: c.ExtensionSnapshotDigest(), AttachmentSources: append([]core.TurnAttachment(nil), c.AttachmentSources...), AttachmentSnapshotDigest: attachmentDigest, RuntimeSnapshot: runtimeSnapshot}, nil
+}
+
+func nullableJSONPG(raw []byte) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	return raw
 }
 
 func nullableUint64(v *uint64) any {
@@ -249,9 +333,10 @@ type turnRow interface {
 func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key string, out *core.Turn) error {
 	var conv, profile *uuid.UUID
 	var expected *int64
-	var snapshot []byte
+	var snapshot, runtimeRaw []byte
 	var responseRaw []byte
 	var digest, extensionDigest, attachmentDigest, state, code, summary string
+	var runtimeDigest *string
 	var cancel bool
 	var cancelRequestID *uuid.UUID
 	var cancelRequestFingerprint *string
@@ -265,7 +350,7 @@ func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key str
 	var extensionRaw, attachmentRaw []byte
 	var snapshotKeyVersion uint32
 	var snapshotNonce, snapshotCiphertext []byte
-	err := q.QueryRow(ctx, `SELECT turn_id,request_id,request_fingerprint,owner_id,account_generation,conversation_id,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,attachment_snapshot_json,attachment_snapshot_digest,state,cancel_requested,cancel_request_id,cancel_request_fingerprint,revision,last_sequence,terminal_code,terminal_summary,response_json,dispatch_state,dispatch_epoch,dispatch_result_json,model_dispatch_count,model_active_milliseconds,model_dispatch_started_at,created_at,updated_at FROM core_conversation_turns WHERE request_id=$1 OR turn_id=$1`, key).Scan(&out.ID, &out.RequestID, &out.RequestFingerprint, &out.OwnerID, &out.AccountGeneration, &conv, &out.Prompt, &profile, &expected, &snapshot, &digest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &extensionRaw, &extensionDigest, &attachmentRaw, &attachmentDigest, &state, &cancel, &cancelRequestID, &cancelRequestFingerprint, &out.Revision, &last, &code, &summary, &responseRaw, &dispatchState, &dispatchEpoch, &dispatchResult, &modelDispatchCount, &modelActiveMilliseconds, &modelDispatchStartedAt, &out.CreatedAt, &out.UpdatedAt)
+	err := q.QueryRow(ctx, `SELECT turn_id,request_id,request_fingerprint,owner_id,account_generation,conversation_id,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,attachment_snapshot_json,attachment_snapshot_digest,runtime_snapshot_json,runtime_snapshot_digest,state,cancel_requested,cancel_request_id,cancel_request_fingerprint,revision,last_sequence,terminal_code,terminal_summary,response_json,dispatch_state,dispatch_epoch,dispatch_result_json,model_dispatch_count,model_active_milliseconds,model_dispatch_started_at,created_at,updated_at FROM core_conversation_turns WHERE request_id=$1 OR turn_id=$1`, key).Scan(&out.ID, &out.RequestID, &out.RequestFingerprint, &out.OwnerID, &out.AccountGeneration, &conv, &out.Prompt, &profile, &expected, &snapshot, &digest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &extensionRaw, &extensionDigest, &attachmentRaw, &attachmentDigest, &runtimeRaw, &runtimeDigest, &state, &cancel, &cancelRequestID, &cancelRequestFingerprint, &out.Revision, &last, &code, &summary, &responseRaw, &dispatchState, &dispatchEpoch, &dispatchResult, &modelDispatchCount, &modelActiveMilliseconds, &modelDispatchStartedAt, &out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -308,6 +393,15 @@ func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key str
 			return core.ErrConflict
 		}
 	} else if attachmentDigest != "" {
+		return core.ErrConflict
+	}
+	if len(runtimeRaw) != 0 {
+		var runtime core.TurnRuntimeSnapshot
+		if runtimeDigest == nil || json.Unmarshal(runtimeRaw, &runtime) != nil || runtime.Validate() != nil || runtime.Digest() != *runtimeDigest {
+			return core.ErrConflict
+		}
+		out.RuntimeSnapshot = &runtime
+	} else if runtimeDigest != nil {
 		return core.ErrConflict
 	}
 	if cancelRequestID != nil {
@@ -511,8 +605,16 @@ func (s *CoreConversationStore) RenewTurn(ctx context.Context, id, lease string,
 }
 
 func (s *CoreConversationStore) PrepareTurnModel(ctx context.Context, lease core.TurnLease) (core.Turn, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.Turn{}, err
+	}
+	defer tx.Rollback(ctx)
 	var out core.Turn
-	err := s.pool.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,model_dispatch_count=model_dispatch_count+1,model_dispatch_started_at=clock_timestamp(),updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='' AND model_dispatch_count < $4 AND model_active_milliseconds < $5 RETURNING turn_id`, lease.Turn.ID, lease.LeaseID, lease.Epoch, core.MaxTurnModelDispatches, core.MaxTurnModelActiveDuration.Milliseconds()).Scan(&out.ID)
+	var attempt uint32
+	var dispatchEpoch uint64
+	var started time.Time
+	err = tx.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,model_dispatch_count=model_dispatch_count+1,model_dispatch_started_at=clock_timestamp(),updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='' AND model_dispatch_count < $4 AND model_active_milliseconds < $5 RETURNING turn_id,model_dispatch_count,dispatch_epoch,model_dispatch_started_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch, core.MaxTurnModelDispatches, core.MaxTurnModelActiveDuration.Milliseconds()).Scan(&out.ID, &attempt, &dispatchEpoch, &started)
 	if err != nil {
 		current, getErr := s.GetTurn(ctx, lease.Turn.ID)
 		if getErr == nil && (current.ModelDispatchCount >= core.MaxTurnModelDispatches || current.ModelActiveDuration >= core.MaxTurnModelActiveDuration) {
@@ -520,7 +622,91 @@ func (s *CoreConversationStore) PrepareTurnModel(ctx context.Context, lease core
 		}
 		return core.Turn{}, core.ErrConflict
 	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_model_attempts(turn_id,attempt_sequence,dispatch_epoch,lease_id,lease_epoch,state,started_at) VALUES($1,$2,$3,$4,$5,'dispatched',$6)`, lease.Turn.ID, attempt, dispatchEpoch, lease.LeaseID, lease.Epoch, started); err != nil {
+		return core.Turn{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.Turn{}, err
+	}
 	return s.GetTurn(ctx, out.ID)
+}
+
+func (s *CoreConversationStore) MarkTurnModelRetryable(ctx context.Context, lease core.TurnLease, failure core.ModelAttemptFailure) error {
+	if failure.Validate() != nil {
+		return core.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	result, err := tx.Exec(ctx, `UPDATE core_conversation_model_attempts SET state='retryable',failure_code=$2,rate_limited=$3,retry_after_ms=$4,finished_at=clock_timestamp() WHERE turn_id=$1 AND state='dispatched' AND lease_id=$5 AND lease_epoch <= $6 AND runtime_snapshot_json IS NOT NULL`, lease.Turn.ID, failure.Code, failure.RateLimited, failure.RetryAfterMS, lease.LeaseID, lease.Epoch)
+	if err != nil || result.RowsAffected() != 1 {
+		return core.ErrConflict
+	}
+	result, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET model_active_milliseconds=model_active_milliseconds+GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (clock_timestamp()-model_dispatch_started_at))*1000))::bigint,model_dispatch_started_at=NULL,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NOT NULL`, lease.Turn.ID, lease.LeaseID, lease.Epoch)
+	if err != nil || result.RowsAffected() != 1 {
+		return core.ErrConflict
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *CoreConversationStore) BindTurnModelRuntime(ctx context.Context, lease core.TurnLease, snapshot core.TurnRuntimeSnapshot) error {
+	if snapshot.Validate() != nil {
+		return core.ErrInvalid
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return core.ErrInvalid
+	}
+	digest := snapshot.Digest()
+	result, err := s.pool.Exec(ctx, `UPDATE core_conversation_model_attempts SET runtime_snapshot_json=$2,runtime_snapshot_digest=$3 WHERE turn_id=$1 AND state='dispatched' AND lease_id=$4 AND lease_epoch <= $5 AND runtime_snapshot_json IS NULL`, lease.Turn.ID, raw, digest, lease.LeaseID, lease.Epoch)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 1 {
+		return nil
+	}
+	var storedRaw []byte
+	var storedDigest string
+	if err = s.pool.QueryRow(ctx, `SELECT runtime_snapshot_json,runtime_snapshot_digest FROM core_conversation_model_attempts WHERE turn_id=$1 AND state='dispatched' AND lease_id=$2 AND lease_epoch <= $3`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&storedRaw, &storedDigest); err != nil {
+		return core.ErrConflict
+	}
+	var stored core.TurnRuntimeSnapshot
+	if json.Unmarshal(storedRaw, &stored) != nil || stored.Validate() != nil || stored.Digest() != storedDigest || storedDigest != digest {
+		return core.ErrTurnRuntimeIncompatible
+	}
+	return nil
+}
+
+func (s *CoreConversationStore) PrepareTurnModelRetry(ctx context.Context, lease core.TurnLease) (core.Turn, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.Turn{}, err
+	}
+	defer tx.Rollback(ctx)
+	var attempt uint32
+	var dispatchEpoch uint64
+	var started time.Time
+	err = tx.QueryRow(ctx, `UPDATE core_conversation_turns SET model_dispatch_count=model_dispatch_count+1,model_dispatch_started_at=clock_timestamp(),updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NULL AND model_dispatch_count < $4 AND model_active_milliseconds < $5 AND EXISTS (SELECT 1 FROM core_conversation_model_attempts a WHERE a.turn_id=$1 AND a.attempt_sequence=core_conversation_turns.model_dispatch_count AND a.state='retryable') RETURNING model_dispatch_count,dispatch_epoch,model_dispatch_started_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch, core.MaxTurnModelDispatches, core.MaxTurnModelActiveDuration.Milliseconds()).Scan(&attempt, &dispatchEpoch, &started)
+	if err != nil {
+		current, getErr := s.GetTurn(ctx, lease.Turn.ID)
+		if getErr == nil && (current.ModelDispatchCount >= core.MaxTurnModelDispatches || current.ModelActiveDuration >= core.MaxTurnModelActiveDuration) {
+			return core.Turn{}, core.ErrModelBudgetExhausted
+		}
+		return core.Turn{}, core.ErrConflict
+	}
+	inserted, insertErr := tx.Exec(ctx, `INSERT INTO core_conversation_model_attempts(turn_id,attempt_sequence,dispatch_epoch,lease_id,lease_epoch,state,runtime_snapshot_json,runtime_snapshot_digest,started_at) SELECT $1,$2,$3,$4,$5,'dispatched',runtime_snapshot_json,runtime_snapshot_digest,$6 FROM core_conversation_model_attempts WHERE turn_id=$1 AND attempt_sequence=$2-1 AND state='retryable' AND runtime_snapshot_json IS NOT NULL`, lease.Turn.ID, attempt, dispatchEpoch, lease.LeaseID, lease.Epoch, started)
+	if insertErr != nil {
+		return core.Turn{}, insertErr
+	}
+	if inserted.RowsAffected() != 1 {
+		return core.Turn{}, core.ErrConflict
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.Turn{}, err
+	}
+	return s.GetTurn(ctx, lease.Turn.ID)
 }
 
 func (s *CoreConversationStore) LoadTurnModelResult(ctx context.Context, id string) (core.ModelRunResult, bool, error) {
@@ -549,14 +735,23 @@ func (s *CoreConversationStore) RecordTurnModelResult(ctx context.Context, lease
 		return err
 	}
 	raw, _ := json.Marshal(envelope)
-	command, err := s.pool.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_state='completed',dispatch_result_json=$2,model_active_milliseconds=model_active_milliseconds+GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (clock_timestamp()-model_dispatch_started_at))*1000))::bigint,model_dispatch_started_at=NULL,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$3 AND lease_epoch=$4 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NOT NULL`, lease.Turn.ID, raw, lease.LeaseID, lease.Epoch)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	command, err := tx.Exec(ctx, `UPDATE core_conversation_model_attempts SET state='completed',finished_at=clock_timestamp() WHERE turn_id=$1 AND state='dispatched' AND lease_id=$2 AND lease_epoch <= $3 AND runtime_snapshot_json IS NOT NULL`, lease.Turn.ID, lease.LeaseID, lease.Epoch)
+	if err != nil || command.RowsAffected() != 1 {
+		return core.ErrConflict
+	}
+	command, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_state='completed',dispatch_result_json=$2,model_active_milliseconds=model_active_milliseconds+GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (clock_timestamp()-model_dispatch_started_at))*1000))::bigint,model_dispatch_started_at=NULL,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$3 AND lease_epoch=$4 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NOT NULL`, lease.Turn.ID, raw, lease.LeaseID, lease.Epoch)
 	if err != nil {
 		return err
 	}
 	if command.RowsAffected() != 1 {
 		return core.ErrConflict
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (s *CoreConversationStore) RecordConversationToolCall(ctx context.Context, lease core.TurnLease, call core.ToolCall) error {
@@ -690,6 +885,20 @@ func (s *CoreConversationStore) RecordConversationToolResult(ctx context.Context
 		return err
 	}
 	raw, _ := json.Marshal(envelope)
+	stalled, err := recordConversationProgressTx(ctx, tx, lease.Turn.ID, result.CallID, result, lastSequence+1, now)
+	if err != nil {
+		return err
+	}
+	if stalled {
+		var turn core.Turn
+		if err = s.scanTurn(ctx, tx, lease.Turn.ID, &turn); err != nil {
+			return err
+		}
+		if err = failTurnNoProgressTx(ctx, tx, turn, raw, lastSequence+1, now); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
 	if _, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_result_json=$2,updated_at=$3 WHERE turn_id=$1`, lease.Turn.ID, raw, now); err != nil {
 		return err
 	}
@@ -797,13 +1006,14 @@ const (
 )
 
 type conversationToolEventAuthority struct {
-	state  conversationToolCallState
-	call   core.ToolCall
-	result *core.ToolResult
+	state          conversationToolCallState
+	call           core.ToolCall
+	result         *core.ToolResult
+	resultSequence int64
 }
 
 func conversationToolEventAuthorityTx(ctx context.Context, tx pgx.Tx, turnID, callID string) (conversationToolEventAuthority, error) {
-	rows, err := tx.Query(ctx, `SELECT payload_json FROM core_conversation_turn_events WHERE turn_id=$1 AND kind IN ($2,$3) ORDER BY sequence`, turnID, string(core.TurnEventToolCall), string(core.TurnEventToolResult))
+	rows, err := tx.Query(ctx, `SELECT sequence,payload_json FROM core_conversation_turn_events WHERE turn_id=$1 AND kind IN ($2,$3) ORDER BY sequence`, turnID, string(core.TurnEventToolCall), string(core.TurnEventToolResult))
 	if err != nil {
 		return conversationToolEventAuthority{}, err
 	}
@@ -811,7 +1021,8 @@ func conversationToolEventAuthorityTx(ctx context.Context, tx pgx.Tx, turnID, ca
 	var authority conversationToolEventAuthority
 	for rows.Next() {
 		var raw []byte
-		if err = rows.Scan(&raw); err != nil {
+		var sequence int64
+		if err = rows.Scan(&sequence, &raw); err != nil {
 			return conversationToolEventAuthority{}, err
 		}
 		var event core.TurnEvent
@@ -835,21 +1046,37 @@ func conversationToolEventAuthorityTx(ctx context.Context, tx pgx.Tx, turnID, ca
 				return conversationToolEventAuthority{}, core.ErrConflict
 			}
 			result := *event.ToolResult
-			authority.result, authority.state = &result, conversationToolCallTerminal
+			authority.result, authority.resultSequence, authority.state = &result, sequence, conversationToolCallTerminal
 		}
 	}
 	return authority, rows.Err()
 }
 
 func (s *CoreConversationStore) MarkTurnModelUncertain(ctx context.Context, lease core.TurnLease, code, summary string) error {
-	command, err := s.pool.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_state='uncertain',terminal_code=$2,terminal_summary=$3,model_active_milliseconds=model_active_milliseconds+GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (clock_timestamp()-model_dispatch_started_at))*1000))::bigint,model_dispatch_started_at=NULL,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$4 AND lease_epoch=$5 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NOT NULL`, lease.Turn.ID, code, summary, lease.LeaseID, lease.Epoch)
+	return s.MarkTurnModelAttemptUncertain(ctx, lease, core.ModelAttemptFailure{Code: code, Summary: summary})
+}
+
+func (s *CoreConversationStore) MarkTurnModelAttemptUncertain(ctx context.Context, lease core.TurnLease, failure core.ModelAttemptFailure) error {
+	if failure.Validate() != nil {
+		return core.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	command, err := tx.Exec(ctx, `UPDATE core_conversation_model_attempts SET state='uncertain',failure_code=$2,rate_limited=$3,retry_after_ms=$4,finished_at=clock_timestamp() WHERE turn_id=$1 AND state='dispatched' AND lease_id=$5 AND lease_epoch <= $6`, lease.Turn.ID, failure.Code, failure.RateLimited, failure.RetryAfterMS, lease.LeaseID, lease.Epoch)
+	if err != nil || command.RowsAffected() != 1 {
+		return core.ErrConflict
+	}
+	command, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_state='uncertain',terminal_code=$2,terminal_summary=$3,model_active_milliseconds=model_active_milliseconds+GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (clock_timestamp()-model_dispatch_started_at))*1000))::bigint,model_dispatch_started_at=NULL,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$4 AND lease_epoch=$5 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NOT NULL`, lease.Turn.ID, failure.Code, failure.Summary, lease.LeaseID, lease.Epoch)
 	if err != nil {
 		return err
 	}
 	if command.RowsAffected() != 1 {
 		return core.ErrConflict
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (s *CoreConversationStore) AppendTurnEvent(ctx context.Context, id string, event core.TurnEvent) (core.TurnEvent, error) {

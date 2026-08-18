@@ -78,6 +78,7 @@ type Turn struct {
 	ExtensionSnapshotDigest  string                       `json:"-"`
 	AttachmentSources        []TurnAttachment             `json:"-"`
 	AttachmentSnapshotDigest string                       `json:"-"`
+	RuntimeSnapshot          *TurnRuntimeSnapshot         `json:"-"`
 }
 
 type TurnEvent struct {
@@ -289,6 +290,7 @@ type OrderedConversationToolStore interface {
 }
 
 type TurnStore interface {
+	TurnRuntimeAdmissionStore
 	StartTurn(context.Context, TurnStartCommand) (Turn, error)
 	GetTurn(context.Context, string) (Turn, error)
 	ListRecoverableTurns(context.Context) ([]Turn, error)
@@ -313,6 +315,15 @@ type TurnRequestLookup interface {
 	GetTurnByRequestID(context.Context, string) (Turn, error)
 }
 
+// TurnRuntimeAdmissionStore reads an owner-fenced attachment candidate, lets
+// the service build the runtime snapshot without holding storage locks, then
+// atomically revalidates the candidate while accepting the Turn and its event.
+type TurnRuntimeAdmissionStore interface {
+	PrepareTurnRuntimeAdmission(context.Context, TurnStartCommand) (Turn, error)
+	StartTurnWithRuntime(context.Context, TurnStartCommand, TurnRuntimeSnapshot) (Turn, error)
+	ValidateTurnRuntime(context.Context, TurnLease, TurnRuntimeSnapshot) error
+}
+
 // TurnLister is the fresh Agent-owned history contract used by capability
 // clients. It is optional on TurnStore to avoid making recovery-only stores
 // implement a public listing surface.
@@ -325,6 +336,124 @@ type TurnDispatchStore interface {
 	LoadTurnModelResult(context.Context, string) (ModelRunResult, bool, error)
 	RecordTurnModelResult(context.Context, TurnLease, ModelRunResult) error
 	MarkTurnModelUncertain(context.Context, TurnLease, string, string) error
+}
+
+type ModelAttemptFailure struct {
+	Code         string
+	Summary      string
+	RateLimited  bool
+	RetryAfterMS int64
+}
+
+const TurnRuntimeSnapshotVersion = 1
+
+type TurnRuntimeSnapshot struct {
+	Version               int               `json:"version"`
+	CompiledSystemPrompt  string            `json:"compiled_system_prompt"`
+	SystemPromptDigest    string            `json:"system_prompt_digest"`
+	ProfileSnapshotDigest string            `json:"profile_snapshot_digest"`
+	RequestDialect        string            `json:"request_dialect"`
+	IntrinsicTools        []coremodel.Tool  `json:"intrinsic_tools"`
+	IntrinsicDigest       string            `json:"intrinsic_digest"`
+	ExtensionDigest       string            `json:"extension_digest"`
+	AttachmentDigest      string            `json:"attachment_digest"`
+	ExecutionPolicy       map[string]uint64 `json:"execution_policy"`
+	ExecutionPolicyDigest string            `json:"execution_policy_digest"`
+}
+
+func NewTurnRuntimeSnapshot(systemPrompt string, profile coremodel.ExecutionSnapshot, intrinsics []ResolvedIntrinsic, extensionDigest, attachmentDigest string) (TurnRuntimeSnapshot, error) {
+	tools := make([]coremodel.Tool, 0, len(intrinsics))
+	for _, intrinsic := range intrinsics {
+		if intrinsic.Execute == nil || intrinsic.Tool.InputSchema == nil || !coremodel.IsIntrinsicToolName(intrinsic.Tool.Name) {
+			return TurnRuntimeSnapshot{}, ErrInvalid
+		}
+		tools = append(tools, intrinsic.Tool)
+	}
+	policy := map[string]uint64{
+		"max_model_attempts":            MaxTurnModelDispatches,
+		"max_model_active_millis":       uint64(MaxTurnModelActiveDuration.Milliseconds()),
+		"max_tool_calls":                MaxTurnToolCalls,
+		"tool_loop_policy_version":      1,
+		"provider_retry_policy_version": 1,
+	}
+	intrinsicRaw, err := json.Marshal(tools)
+	if err != nil {
+		return TurnRuntimeSnapshot{}, ErrInvalid
+	}
+	policyRaw, _ := json.Marshal(policy)
+	snapshot := TurnRuntimeSnapshot{
+		Version: TurnRuntimeSnapshotVersion, CompiledSystemPrompt: systemPrompt,
+		SystemPromptDigest: digest(systemPrompt), ProfileSnapshotDigest: profile.Digest(),
+		RequestDialect: string(profile.RequestDialect), IntrinsicTools: tools,
+		IntrinsicDigest: digest(string(intrinsicRaw)), ExtensionDigest: extensionDigest,
+		AttachmentDigest: attachmentDigest,
+		ExecutionPolicy:  policy, ExecutionPolicyDigest: digest(string(policyRaw)),
+	}
+	if snapshot.Validate() != nil {
+		return TurnRuntimeSnapshot{}, ErrInvalid
+	}
+	return snapshot, nil
+}
+
+func (s TurnRuntimeSnapshot) Validate() error {
+	if s.Version != TurnRuntimeSnapshotVersion || s.SystemPromptDigest != digest(s.CompiledSystemPrompt) ||
+		!validReferenceDigest(s.ProfileSnapshotDigest) || !validRuntimeRequestDialect(s.RequestDialect) ||
+		(len(s.ExtensionDigest) != 0 && !validReferenceDigest(s.ExtensionDigest)) ||
+		(len(s.AttachmentDigest) != 0 && !validReferenceDigest(s.AttachmentDigest)) {
+		return ErrInvalid
+	}
+	intrinsicRaw, err := json.Marshal(s.IntrinsicTools)
+	if err != nil || s.IntrinsicDigest != digest(string(intrinsicRaw)) {
+		return ErrInvalid
+	}
+	for _, tool := range s.IntrinsicTools {
+		if !coremodel.IsIntrinsicToolName(tool.Name) || tool.InputSchema == nil {
+			return ErrInvalid
+		}
+	}
+	policyRaw, err := json.Marshal(s.ExecutionPolicy)
+	if err != nil || len(s.ExecutionPolicy) != 5 || s.ExecutionPolicyDigest != digest(string(policyRaw)) ||
+		s.ExecutionPolicy["max_model_attempts"] != MaxTurnModelDispatches ||
+		s.ExecutionPolicy["max_model_active_millis"] != uint64(MaxTurnModelActiveDuration.Milliseconds()) ||
+		s.ExecutionPolicy["max_tool_calls"] != MaxTurnToolCalls ||
+		s.ExecutionPolicy["tool_loop_policy_version"] != 1 || s.ExecutionPolicy["provider_retry_policy_version"] != 1 {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func validRuntimeRequestDialect(value string) bool {
+	switch coremodel.RequestDialect(value) {
+	case coremodel.DialectOpenAICompatibleChatV1, coremodel.DialectOpenAIReasoningChatV1,
+		coremodel.DialectAnthropicMessagesV1, coremodel.DialectGeminiGenerateV1Beta:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s TurnRuntimeSnapshot) Digest() string {
+	raw, _ := json.Marshal(s)
+	return digest(string(raw))
+}
+
+func (f ModelAttemptFailure) Validate() error {
+	if strings.TrimSpace(f.Code) != f.Code || f.Code == "" || len(f.Code) > 128 ||
+		strings.TrimSpace(f.Summary) != f.Summary || f.Summary == "" || len(f.Summary) > 4096 ||
+		f.RetryAfterMS < 0 || f.RetryAfterMS > 30_000 {
+		return ErrInvalid
+	}
+	return nil
+}
+
+// TurnModelAttemptStore extends the logical model-round fence with one row per
+// physical provider request. A retry is legal only after the active attempt
+// was durably classified retryable without producing output.
+type TurnModelAttemptStore interface {
+	BindTurnModelRuntime(context.Context, TurnLease, TurnRuntimeSnapshot) error
+	MarkTurnModelRetryable(context.Context, TurnLease, ModelAttemptFailure) error
+	PrepareTurnModelRetry(context.Context, TurnLease) (Turn, error)
+	MarkTurnModelAttemptUncertain(context.Context, TurnLease, ModelAttemptFailure) error
 }
 
 type TurnCancelStore interface {

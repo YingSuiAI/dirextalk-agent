@@ -7,11 +7,11 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 19 {
-		t.Fatalf("CurrentVersion = %d, want 19", CurrentVersion)
+	if CurrentVersion != 22 {
+		t.Fatalf("CurrentVersion = %d, want 22", CurrentVersion)
 	}
 	entries := Entries()
-	wantEntries := []string{"000001_core_v1_fresh.up.sql", "000002_knowledge_search_provenance.up.sql", "000003_aws_credential_test_claims.up.sql", "000004_knowledge_pgvector.up.sql", "000005_cloud_worker_v1.up.sql", "000006_image_tools_v1.up.sql", "000007_unbounded_agent_rounds.up.sql", "000008_cloud_worker_progress_events.up.sql", "000009_static_site_releases.up.sql", "000010_builtin_skill_seeds.up.sql", "000011_managed_node_mcp_quotas.up.sql", "000012_managed_node_prepared_cleanup.up.sql", "000013_structured_memory_v2.up.sql", "000014_memory_controls.up.sql", "000015_remove_default_client_profile_alias.up.sql", "000016_remove_cloud_worker_result_message.up.sql", "000017_builtin_mcp_seeds.up.sql", "000018_remove_legacy_cloud_worker_schema.up.sql", "000019_conversation_model_budget.up.sql"}
+	wantEntries := []string{"000001_core_v1_fresh.up.sql", "000002_knowledge_search_provenance.up.sql", "000003_aws_credential_test_claims.up.sql", "000004_knowledge_pgvector.up.sql", "000005_cloud_worker_v1.up.sql", "000006_image_tools_v1.up.sql", "000007_unbounded_agent_rounds.up.sql", "000008_cloud_worker_progress_events.up.sql", "000009_static_site_releases.up.sql", "000010_builtin_skill_seeds.up.sql", "000011_managed_node_mcp_quotas.up.sql", "000012_managed_node_prepared_cleanup.up.sql", "000013_structured_memory_v2.up.sql", "000014_memory_controls.up.sql", "000015_remove_default_client_profile_alias.up.sql", "000016_remove_cloud_worker_result_message.up.sql", "000017_builtin_mcp_seeds.up.sql", "000018_remove_legacy_cloud_worker_schema.up.sql", "000019_conversation_model_budget.up.sql", "000020_model_request_dialects.up.sql", "000021_turn_model_attempts.up.sql", "000022_progress_working_context.up.sql"}
 	if !reflect.DeepEqual(entries, wantEntries) {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}

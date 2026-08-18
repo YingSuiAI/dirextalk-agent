@@ -43,20 +43,31 @@ contract](message-server-integration-development-contract.md), and
   conversation-turn ledger independently of the POST lifecycle. Operation and
   turn streams advertise a three-second reconnect delay, emit 12-second idle
   heartbeats, and terminate on cancellation or transport write failure without
-  changing durable event sequences. The shared v1 session fixture freezes the
-  Message/Flutter bootstrap fields, the four typed ticket errors distinguish
-  expired, stale-generation, invalid, and missing-scope tickets, and dual SSE
-  cursors must match or fail with `AGENT_CURSOR_CONFLICT` before streaming.
+  changing durable event sequences. The shared Agent Data Plane V2 contract at
+  immutable `dirextalk-capability-api v1.1.0` supplies generated session,
+  scope, operation, error, and SSE DTOs; the Agent consumes its shared vectors
+  directly and no longer keeps a local v1 fixture. The four typed ticket errors
+  distinguish expired, stale-generation, invalid, and missing-scope tickets,
+  and dual SSE cursors must match or fail with `AGENT_CURSOR_CONFLICT` before streaming.
   Typed operation/store/turn failures map to
   fixed HTTP statuses and safe messages; unclassified capability failures
-  become a redacted 502, availability failures become 503, and SSE
-  projection/store errors do not expose their causes.
+  become a redacted 502, unavailable failures become 503, and SSE
+  projection/store errors do not expose their causes. HTTP, polling, and SSE
+  terminal errors share the closed generated envelope; `Retry-After` and
+  `retry_after_ms` represent the same delay, and Turn receipts/frames validate
+  explicit equal operation and turn identities.
 - Native turns enforce a 24-dispatch and 20-minute cumulative model-active
   budget through the same durable admission counters used during recovery, plus
-  a 20-call tool budget. Conservative loop detection ignores only argument key
-  order, transport call IDs/timestamps, and safe unquoted local-shell spacing;
-  it first nudges with tools intact and uses tool-free synthesis only after a
-  continued exact or A/B repetition, resetting on steer.
+  a 20-call tool budget. Tool results with validated runtime references persist
+  versioned progress observations in the immediate-result or deferred-resume
+  transaction. The third unchanged effective digest fails durably as
+  `AGENT_STALLED_NO_PROGRESS`; argument/presentation wrappers do not count as
+  progress, restart preserves the count, and steer resets it. Results without
+  structured observations retain conservative exact/A-B loop recovery.
+  Conversation compaction now persists a versioned structured WorkingContext;
+  protected user goals/constraints and runtime resource/receipt identities use
+  a separate digest CAS, while only decisions, steps, and last-failure summaries
+  are compressor-owned. The model no longer receives the free-form summary.
   Gemini-generated tool-call IDs are unique against the prior transcript, and
   adjacent Anthropic tool results use one ordered result-message batch. Debug
   formatting of immutable execution snapshots omits both credentials and the
@@ -223,6 +234,29 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-18**, immediate tool-result and deferred-resume transactions
+  began persisting versioned progress observations. Focused tests cover
+  wrapper/presentation-insensitive digests, state-change reset, unstructured
+  fallback, restart continuity, steer reset, the third-observation terminal
+  event, and shared immediate/deferred windows. Context compaction now rebuilds
+  a schema-constrained WorkingContext from the retained transcript, protects
+  exact user/resource/receipt fields with a separate CAS digest, and excludes
+  the legacy free-form summary from model input. `go test ./...` passed 1733
+  tests, the maintained race lane passed 455 tests, and vet, SA staticcheck,
+  govulncheck 1.7.0, command builds, Buf lint, and diff checks passed. The new
+  PostgreSQL transaction/CAS cases remain opt-in because
+  `AGENT_TEST_POSTGRES_DSN` was not configured in this environment.
+- On **2026-08-18**, durable Turn admission began atomically freezing the
+  compiled system prompt, explicit request dialect/profile configuration,
+  intrinsic schemas, extension/attachment identity, and execution policy.
+  Each physical provider attempt now consumes the 24-attempt fuse before
+  dispatch. Only pre-output 408/429/502/503/504 or confirmed dial failures may
+  retry once, with bounded `Retry-After`; visible output and ambiguous
+  transport outcomes never replay. Focused unit/race checks cover retry
+  allowlisting, delta/tool-call replay denial, exact-once retry, budget
+  accounting, runtime mismatch, deterministic restart input, and admission
+  failure. PostgreSQL transition/fencing coverage remains opt-in through
+  `AGENT_TEST_POSTGRES_DSN`.
 - On **2026-08-18**, the automatic Message MCP catalog began deriving strict
   read/unsafe-mutation effects from the complete standard annotation set and
   binding those effects into immutable catalog identity. Five-minute fresh and
@@ -335,6 +369,16 @@ support.
   summary without crossing the offer or retained-Worker boundary, while finite
   retained jobs keep live estimated and maximum costs and persistent services
   expose only their hourly price. This evidence performs no AWS mutation.
+- On **2026-08-18**, the Agent pinned `dirextalk-capability-api v1.1.0` and
+  replaced handwritten session-adjacent operation/error/SSE transport shapes
+  with generated Agent Data Plane V2 DTOs and scope/category/state constants.
+  Focused conformance reads all shared valid and invalid vectors from the pinned
+  module, rejects unknown error details and invalid Turn identities, proves
+  polling/SSE error parity, and proves `Retry-After` rounding from
+  `retry_after_ms`. The former repository-local v1 fixture was removed. The
+  full suite passed 1,748 tests, the maintained high-risk race lane passed 469
+  tests, and vet, SA staticcheck 0.7.0, govulncheck 1.7.0, command builds, Buf
+  lint, and diff checks passed.
 
 ## Remaining release gates
 
