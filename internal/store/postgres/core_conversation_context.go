@@ -58,8 +58,15 @@ func (s *CoreConversationStore) CompressConversationContext(ctx context.Context,
 	var existingOffset int64
 	var existingWorkingRaw []byte
 	var existingProtectedDigest *string
-	if err = tx.QueryRow(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0),x.working_context_json,x.protected_digest FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.conversation_id=$1 FOR UPDATE`, id).Scan(&out.ID, &out.Title, &out.Revision, &out.CreatedAt, &out.UpdatedAt, &deleted, &existingSummary, &existingOffset, &existingWorkingRaw, &existingProtectedDigest); err != nil {
+	// Lock the authoritative conversation before reading its optional context.
+	// PostgreSQL rejects FOR UPDATE on the nullable side of an outer join, and
+	// every context writer follows this conversation-then-context lock order.
+	if err = tx.QueryRow(ctx, `SELECT conversation_id,title,revision,created_at,updated_at,deleted_at FROM core_conversations WHERE conversation_id=$1 FOR UPDATE`, id).Scan(&out.ID, &out.Title, &out.Revision, &out.CreatedAt, &out.UpdatedAt, &deleted); err != nil {
 		return core.Conversation{}, core.ErrConflict
+	}
+	contextErr := tx.QueryRow(ctx, `SELECT summary,message_offset,working_context_json,protected_digest FROM core_conversation_contexts WHERE conversation_id=$1 FOR UPDATE`, id).Scan(&existingSummary, &existingOffset, &existingWorkingRaw, &existingProtectedDigest)
+	if contextErr != nil && !errors.Is(contextErr, pgx.ErrNoRows) {
+		return core.Conversation{}, contextErr
 	}
 	existingWorking := core.NewWorkingContext()
 	storedProtectedDigest := existingWorking.ProtectedDigest()

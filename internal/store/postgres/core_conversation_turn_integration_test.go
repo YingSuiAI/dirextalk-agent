@@ -90,7 +90,7 @@ func openTurnDB(t *testing.T) *turnDBHarness {
 }
 
 func turnCommand() core.TurnStartCommand {
-	s := coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid", Model: "test", APIKey: "integration-secret"}
+	s := coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, BaseURL: "https://example.invalid", Model: "test", APIKey: "integration-secret"}
 	return core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: s.ProfileID, ExpectedProfileRevision: s.Revision, ExpectedCredentialVersion: s.CredentialVersion, ProfileSnapshot: s}
 }
 
@@ -738,7 +738,15 @@ func newConversationToolPrepareFixtureForTool(t *testing.T, callID, toolName str
 	cmd.Extensions = []core.ExtensionSelection{snapshot.Selection}
 	cmd.ExtensionSnapshots = []core.ExtensionExecutionSnapshot{snapshot}
 	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
-	turn, err := h.store.StartTurn(context.Background(), cmd)
+	candidate, err := h.store.PrepareTurnRuntimeAdmission(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := core.NewTurnRuntimeSnapshot("fixture system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := h.store.StartTurnWithRuntime(context.Background(), cmd, runtime)
 	if err != nil {
 		t.Fatal(err)
 	}

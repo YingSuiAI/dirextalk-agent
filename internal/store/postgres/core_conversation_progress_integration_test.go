@@ -133,6 +133,12 @@ func TestDeferredConversationProgressSharesImmediateNoProgressWindowPostgres(t *
 	if _, err = fixture.h.store.PrepareTurnModel(ctx, lease); err != nil {
 		t.Fatal(err)
 	}
+	if lease.Turn.RuntimeSnapshot == nil {
+		t.Fatal("deferred progress fixture is missing its admitted runtime snapshot")
+	}
+	if err = fixture.h.store.BindTurnModelRuntime(ctx, lease, *lease.Turn.RuntimeSnapshot); err != nil {
+		t.Fatal(err)
+	}
 	call := core.ToolCall{ID: uuid.NewString(), Name: coreextension.BuiltinLocalSandboxToolName, Arguments: `{"script":"inspect unchanged state"}`}
 	if err = fixture.h.store.RecordTurnModelResult(ctx, lease, core.ModelRunResult{ToolCalls: []core.ToolCall{call}}); err != nil {
 		t.Fatal(err)
@@ -192,25 +198,34 @@ func runStructuredProgressRound(t *testing.T, store *CoreConversationStore, turn
 			t.Fatal(err)
 		}
 	}
-	if _, err = store.PrepareTurnModel(ctx, lease); err != nil {
-		t.Fatal(err)
+	prepared, err := store.PrepareTurnModel(ctx, lease)
+	if err != nil {
+		t.Fatalf("round %d prepare model: %v", round, err)
+	}
+	if prepared.RuntimeSnapshot == nil {
+		t.Fatalf("round %d is missing its admitted runtime snapshot", round)
+	}
+	if err = store.BindTurnModelRuntime(ctx, lease, *prepared.RuntimeSnapshot); err != nil {
+		t.Fatalf("round %d bind model runtime: %v", round, err)
 	}
 	arguments, _ := json.Marshal(map[string]any{"wrapper": map[string]any{"round": round}})
 	call := core.ToolCall{ID: uuid.NewString(), Name: toolName, Arguments: string(arguments)}
 	if err = store.RecordTurnModelResult(ctx, lease, core.ModelRunResult{ToolCalls: []core.ToolCall{call}}); err != nil {
-		t.Fatal(err)
+		t.Fatalf("round %d record model result: %v", round, err)
 	}
 	if err = store.RecordConversationToolCall(ctx, lease, call); err != nil {
-		t.Fatal(err)
+		t.Fatalf("round %d record tool call: %v", round, err)
 	}
 	if execute, dispatchErr := store.BeginConversationToolDispatch(ctx, lease, call); dispatchErr != nil || !execute {
 		t.Fatalf("dispatch execute=%v err=%v", execute, dispatchErr)
 	}
 	result := core.ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"healthy":true}`, References: []core.Reference{reference}}
-	result.References[0].Title = fmt.Sprintf("presentation title %d", round)
-	result.References[0].Preview = fmt.Sprintf("presentation preview %d", round)
+	if reference.Kind == "room" || reference.Kind == "channel_post" {
+		result.References[0].Title = fmt.Sprintf("presentation title %d", round)
+		result.References[0].Preview = fmt.Sprintf("presentation preview %d", round)
+	}
 	if err = store.RecordConversationToolResult(ctx, lease, result); err != nil {
-		t.Fatal(err)
+		t.Fatalf("round %d record tool result: %v", round, err)
 	}
 	turn, err := store.GetTurn(ctx, turnID)
 	if err != nil {
@@ -221,7 +236,7 @@ func runStructuredProgressRound(t *testing.T, store *CoreConversationStore, turn
 	}
 	turn, err = store.CompleteConversationToolRound(ctx, lease)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("round %d complete tool round: %v", round, err)
 	}
 	return turn
 }

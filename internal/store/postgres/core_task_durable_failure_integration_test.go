@@ -130,7 +130,7 @@ func testSecretKeyring(t *testing.T) *secretbox.Keyring {
 func createTestProfile(ctx context.Context, t *testing.T, store *Store, id, model, apiKey string) {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	if _, err := store.CreateProfile(ctx, coremodel.Profile{ID: id, DisplayName: "test", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.invalid", Model: model, APIKey: apiKey, ContextWindow: 32768, Revision: 1, CreatedAt: now, UpdatedAt: now}, uuid.NewString(), strings.Repeat("a", 64)); err != nil {
+	if _, err := store.CreateProfile(ctx, coremodel.Profile{ID: id, DisplayName: "test", Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.invalid", Model: model, APIKey: apiKey, ContextWindow: 32768, Revision: 1, CreatedAt: now, UpdatedAt: now}, uuid.NewString(), strings.Repeat("a", 64)); err != nil {
 		t.Fatal(err)
 	}
 }
