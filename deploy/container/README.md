@@ -59,9 +59,12 @@ cgroup driver with those delegated slices. The default stack renders all three
 runtime containers with their isolated entrypoints. Both runner cgroup binds
 set `create_host_path: false`: Compose refuses to start if the host paths are
 missing or are ordinary directories, and each runner readiness probe still
-requires a real delegated cgroup-v2 subtree. WSL Docker cgroupfs environments
-without delegated subtrees are therefore rejected; provision the roots on a
-native systemd+cgroup-v2 host before running `up`.
+requires a real delegated cgroup-v2 subtree. After validating that root and its
+exposed controllers, the shared Linux backend idempotently enables only `cpu`,
+`memory`, and `pids` in `cgroup.subtree_control`, reads the result back, and
+fails readiness at `cgroup_delegation` if either operation fails. WSL Docker
+cgroupfs environments without delegated subtrees are therefore rejected;
+provision the roots on a native systemd+cgroup-v2 host before running `up`.
 If an existing protected environment predates these parent variables, bootstrap
 replays the migration with a protected journal and backups; interrupted runs
 complete or restore the environment before normal validation and reuse.
