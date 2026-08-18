@@ -508,12 +508,11 @@ func digestCloudWorkerValue(value any) string {
 }
 
 func cloudWorkerTaskTimeout(limits cloudworker.Limits) (int64, error) {
-	if limits.MaxRuntimeSeconds == 0 || limits.MaxRuntimeSeconds > uint64(coretask.MaxTimeoutSeconds) ||
-		cloudworker.EphemeralCleanupReserveSeconds > uint64(coretask.MaxTimeoutSeconds) ||
-		limits.MaxRuntimeSeconds > uint64(coretask.MaxTimeoutSeconds)-cloudworker.EphemeralCleanupReserveSeconds {
+	lifetimeSeconds, err := limits.EphemeralLifetimeSeconds()
+	if err != nil || lifetimeSeconds > uint64(coretask.MaxTimeoutSeconds) {
 		return 0, cloudworker.ErrInvalid
 	}
-	return int64(limits.MaxRuntimeSeconds + cloudworker.EphemeralCleanupReserveSeconds), nil
+	return int64(lifetimeSeconds), nil
 }
 
 func (s *CloudWorkerStore) GetPlan(ctx context.Context, owner, id string, revision uint64) (cloudworker.Plan, error) {

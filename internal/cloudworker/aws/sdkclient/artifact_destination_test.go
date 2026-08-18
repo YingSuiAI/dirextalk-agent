@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
@@ -11,7 +12,20 @@ import (
 	kmstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
+
+type blockingArtifactDestinationSTS struct{ calls int }
+
+func (fake *blockingArtifactDestinationSTS) GetCallerIdentity(
+	ctx context.Context,
+	_ *sts.GetCallerIdentityInput,
+	_ ...func(*sts.Options),
+) (*sts.GetCallerIdentityOutput, error) {
+	fake.calls++
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
 
 type artifactDestinationS3Fake struct {
 	head       *s3.HeadBucketOutput
@@ -89,6 +103,29 @@ func TestS3ArtifactDestinationReadinessRequiresDurablePrivateEncryptedStorage(t 
 				t.Fatalf("unsafe destination error = %v", err)
 			}
 		})
+	}
+}
+
+func TestS3ArtifactDestinationReadinessBoundsAndRetriesHungProviderCalls(t *testing.T) {
+	config, bucket, keyARN, s3Fake, kmsFake := artifactDestinationFixture()
+	stsFake := &blockingArtifactDestinationSTS{}
+	check, err := newS3ArtifactDestinationReadiness(config, stsFake, s3Fake, kmsFake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check.attemptTimeout = 10 * time.Millisecond
+	check.attempts = 2
+
+	started := time.Now()
+	err = check.Readiness(context.Background(), bucket, keyARN)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, cloudworker.ErrArtifactDestinationUnavailable) {
+		t.Fatalf("hung provider error = %v", err)
+	}
+	if stsFake.calls != 2 {
+		t.Fatalf("STS calls = %d, want 2 bounded read-only attempts", stsFake.calls)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("hung provider took %s", elapsed)
 	}
 }
 

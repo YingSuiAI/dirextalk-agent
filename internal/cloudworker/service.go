@@ -179,26 +179,33 @@ type DeliverableContext struct {
 }
 
 type Defaults struct {
-	AWS                      AWSBinding
-	Compute                  ComputeSpec
-	Placement                PlacementSpec
-	NetworkPolicy            NetworkPolicy
-	ArtifactBucket           string
-	ArtifactBasePrefix       string
-	ArtifactKMSKeyARN        string
-	ArtifactVersioned        bool
-	WorkerBootstrap          WorkerBootstrap
-	Limits                   Limits
-	NetworkGrants            []string
-	SecretGrants             []SecretGrant
-	ArtifactRetentionSeconds uint64
-	QuoteAmountMicros        int64
-	MaximumAuthorizedMicros  int64
-	QuoteTTL                 time.Duration
+	AWS                           AWSBinding
+	Compute                       ComputeSpec
+	Placement                     PlacementSpec
+	NetworkPolicy                 NetworkPolicy
+	ArtifactBucket                string
+	ArtifactBasePrefix            string
+	ArtifactKMSKeyARN             string
+	ArtifactVersioned             bool
+	WorkerBootstrap               WorkerBootstrap
+	Limits                        Limits
+	InfrastructureLifetimeSeconds uint64
+	NetworkGrants                 []string
+	SecretGrants                  []SecretGrant
+	ArtifactRetentionSeconds      uint64
+	QuoteAmountMicros             int64
+	MaximumAuthorizedMicros       int64
+	QuoteTTL                      time.Duration
 }
 
 func (d Defaults) Validate() error {
-	if validateAWS(d.AWS) != nil || validateCompute(d.Compute) != nil || !validAWSID(d.Placement.VPCID, "vpc") || !validAWSID(d.Placement.SubnetID, "subnet") || d.Placement.IAMPolicyDigest != "" || validateLimits(d.Limits) != nil || d.Limits.MaxTokens != 0 || d.ArtifactRetentionSeconds == 0 || d.QuoteTTL <= 0 || d.QuoteTTL > 24*time.Hour || d.QuoteAmountMicros < 0 || d.MaximumAuthorizedMicros < d.QuoteAmountMicros {
+	if validateAWS(d.AWS) != nil || validateCompute(d.Compute) != nil || !validAWSID(d.Placement.VPCID, "vpc") || !validAWSID(d.Placement.SubnetID, "subnet") || d.Placement.IAMPolicyDigest != "" ||
+		d.Limits.MaxRuntimeSeconds != 0 || d.Limits.MinimumRuntimeSeconds != 0 || d.Limits.ExpectedRuntimeSeconds != 0 || d.Limits.InfrastructureLifetimeSeconds != 0 ||
+		d.Limits.ColdStartSeconds < 60 || d.Limits.ColdStartSeconds > uint64((30*time.Minute)/time.Second) || d.Limits.MaxTokens != 0 ||
+		d.Limits.MaxOutputBytes == 0 || d.Limits.MaxOutputBytes > MaxCloudWorkerOutputBytes ||
+		d.InfrastructureLifetimeSeconds < d.Limits.ColdStartSeconds+60+EphemeralCleanupReserveSeconds ||
+		d.InfrastructureLifetimeSeconds > uint64((30*24*time.Hour)/time.Second) ||
+		d.ArtifactRetentionSeconds == 0 || d.QuoteTTL <= 0 || d.QuoteTTL > 24*time.Hour || d.QuoteAmountMicros < 0 || d.MaximumAuthorizedMicros < d.QuoteAmountMicros {
 		return ErrInvalid
 	}
 	network := d.NetworkPolicy
@@ -335,7 +342,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	if err := command.ModelAuthorization.Seal(); err != nil {
 		return Offer{}, err
 	}
-	limits, err := effectivePlanLimits(s.defaults.Limits, command.ModelAuthorization, command.RuntimeEstimate)
+	limits, err := effectivePlanLimits(s.defaults.Limits, s.defaults.InfrastructureLifetimeSeconds, command.ModelAuthorization, command.RuntimeEstimate)
 	if err != nil {
 		return Offer{}, err
 	}

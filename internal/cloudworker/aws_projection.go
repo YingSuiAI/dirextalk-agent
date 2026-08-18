@@ -109,6 +109,10 @@ func BuildAWSDispatch(plan Plan, execution Execution, authorization LaunchAuthor
 		s3Grants = append(s3Grants, cloudaws.S3ObjectGrant{Access: cloudaws.S3ReadExactVersion, Bucket: item.S3Bucket, Key: item.S3Key, VersionID: item.S3VersionID})
 	}
 	s3Grants = append(s3Grants, cloudaws.S3ObjectGrant{Access: cloudaws.S3WritePrefix, Bucket: copy.ArtifactGrant.Bucket, Key: copy.ArtifactGrant.KeyPrefix})
+	lifetimeSeconds, err := copy.Limits.EphemeralLifetimeSeconds()
+	if err != nil {
+		return cloudaws.Plan{}, cloudaws.DispatchIntent{}, fmt.Errorf("%w: AWS lifetime", ErrInvalid)
+	}
 	projected, err := cloudaws.SealPlan(cloudaws.Plan{
 		Identity: identity, Recipe: cloudaws.RecipePiTask, Adapter: cloudaws.AdapterPiJSON,
 		AMIID: copy.Compute.AMIID, AMIDigest: copy.Compute.AMIDigest, WorkerDigest: copy.Compute.WorkerReleaseDigest,
@@ -129,7 +133,7 @@ func BuildAWSDispatch(plan Plan, execution Execution, authorization LaunchAuthor
 		TaskSHA256: authorization.RuntimeTaskSHA256, InputManifestDigest: authorization.InputManifestSHA256,
 		ModelAuthorizationDigest: copy.ModelAuthorization.BindingDigest, ArtifactBindingDigest: copy.ArtifactGrant.Digest,
 		S3Grants: s3Grants, ArtifactRetentionSeconds: uint32(copy.ArtifactRetentionSeconds),
-		DestroyDeadline: recordedAt.Add(time.Duration(copy.Limits.MaxRuntimeSeconds+EphemeralCleanupReserveSeconds) * time.Second),
+		DestroyDeadline: recordedAt.Add(time.Duration(lifetimeSeconds) * time.Second),
 		Digest:          copy.Digest,
 	})
 	if err != nil {

@@ -118,7 +118,7 @@ type Controller struct {
 // Provider cannot be injected here, so production can never run Pi locally or
 // bypass WorkerControl/result collection.
 func NewController(config ControllerConfig) (*Controller, error) {
-	if config.Store == nil || config.Quoter == nil || validateLimits(config.BaseLimits) != nil || config.AWSBindings == nil || config.ArtifactReadiness == nil || config.ModelAuthorizations == nil || config.Stager == nil || config.Outputs == nil || config.Qualifications == nil ||
+	if config.Store == nil || config.Quoter == nil || validatePlanLimitDefaults(config.BaseLimits) != nil || config.AWSBindings == nil || config.ArtifactReadiness == nil || config.ModelAuthorizations == nil || config.Stager == nil || config.Outputs == nil || config.Qualifications == nil ||
 		config.AWS == nil || config.Sessions == nil || config.Results == nil {
 		return nil, ErrInvalid
 	}
@@ -751,9 +751,13 @@ func (c *Controller) awaitAndCollect(ctx context.Context, task coretask.Task, ru
 			session.Fence.AccountGeneration != run.plan.AccountGeneration {
 			return ProviderResult{}, ErrStaleAuthorization
 		}
+		workerDeadline, deadlineErr := workerSessionDeadline(task, run, session)
+		if deadlineErr != nil {
+			return ProviderResult{}, deadlineErr
+		}
 		switch session.State {
 		case control.SessionActive:
-			if !now.Before(deadline) {
+			if !now.Before(workerDeadline) {
 				return ProviderResult{}, errControllerRuntimeDeadline
 			}
 			currentFence := runtimeFenceForTask(task, run.plan)
@@ -777,7 +781,7 @@ func (c *Controller) awaitAndCollect(ctx context.Context, task coretask.Task, ru
 				return ProviderResult{}, waitErr
 			}
 		case control.SessionCompleted:
-			if session.FinishedAt.IsZero() || session.FinishedAt.UTC().After(deadline) {
+			if session.FinishedAt.IsZero() || session.FinishedAt.UTC().After(workerDeadline) {
 				return ProviderResult{}, errControllerRuntimeDeadline
 			}
 			if run.execution.State == StateAwaitingWorker {
@@ -838,17 +842,48 @@ func runtimeFenceForSession(session control.Session) RuntimeTaskFence {
 		AccountGeneration: session.Fence.AccountGeneration, Attempt: session.Fence.Attempt, LeaseEpoch: session.Fence.LeaseEpoch}
 }
 
-// authorizedRuntimeDeadline is derived exclusively from durable authority.
-// Reclaiming a CoreTask lease therefore cannot grant a Worker more time. The
-// AWS destroy deadline reserves its final cleanup window, while cleanup itself
-// deliberately runs outside this runtime deadline.
+// authorizedRuntimeDeadline uses the operator-owned infrastructure lifetime for
+// current Plans. Expected runtime is never an execution deadline. Historical
+// Plans retain their original bounded-runtime behavior.
 func authorizedRuntimeDeadline(task coretask.Task, run *controllerRun) (time.Time, error) {
-	if run == nil || task.ExecutionDeadlineAt == nil || run.authorization.AuthorizedAt.IsZero() ||
-		run.plan.Limits.MaxRuntimeSeconds == 0 {
+	if run == nil || task.ExecutionDeadlineAt == nil || run.authorization.AuthorizedAt.IsZero() {
 		return time.Time{}, ErrStaleAuthorization
 	}
 	authorizedAt := run.authorization.AuthorizedAt.UTC()
-	runtimeDeadline := authorizedAt.Add(time.Duration(run.plan.Limits.MaxRuntimeSeconds) * time.Second)
+	if run.plan.Limits.InfrastructureLifetimeSeconds != 0 {
+		taskDeadline := task.ExecutionDeadlineAt.UTC().Truncate(time.Second)
+		if !run.hasAWSDispatch() {
+			// The provider destroy deadline starts when BuildAWSDispatch seals
+			// the intent. Before that boundary only the Core task deadline
+			// exists; requiring a not-yet-created AWS deadline traps an approved
+			// execution in a reclaim loop before Provider.Prepare.
+			if !taskDeadline.After(authorizedAt.Truncate(time.Second)) {
+				return time.Time{}, ErrStaleAuthorization
+			}
+			return taskDeadline, nil
+		}
+		if run.awsPlan.DestroyDeadline.IsZero() {
+			return time.Time{}, ErrStaleAuthorization
+		}
+		destroyWorkDeadline := run.awsPlan.DestroyDeadline.UTC().Add(-time.Duration(EphemeralCleanupReserveSeconds) * time.Second)
+		deadline := destroyWorkDeadline
+		if taskDeadline.Before(deadline) {
+			deadline = taskDeadline
+		}
+		deadline = deadline.Truncate(time.Second)
+		if !deadline.After(authorizedAt.Truncate(time.Second)) || deadline.After(destroyWorkDeadline) || deadline.After(taskDeadline) {
+			return time.Time{}, ErrStaleAuthorization
+		}
+		return deadline, nil
+	}
+	if run.plan.Limits.MaxRuntimeSeconds == 0 {
+		return time.Time{}, ErrStaleAuthorization
+	}
+	cloudWindowSeconds, err := run.plan.Limits.CloudWindowSeconds()
+	if err != nil {
+		return time.Time{}, ErrStaleAuthorization
+	}
+	runtimeDeadline := authorizedAt.Add(time.Duration(cloudWindowSeconds) * time.Second)
 	taskDeadline := task.ExecutionDeadlineAt.UTC()
 	deadline := runtimeDeadline
 	if taskDeadline.Before(deadline) {
@@ -868,6 +903,31 @@ func authorizedRuntimeDeadline(task coretask.Task, run *controllerRun) (time.Tim
 		return time.Time{}, ErrStaleAuthorization
 	}
 	return deadline, nil
+}
+
+func workerSessionDeadline(task coretask.Task, run *controllerRun, session control.Session) (time.Time, error) {
+	cloudDeadline, err := authorizedRuntimeDeadline(task, run)
+	if err != nil || session.ClaimedAt.IsZero() || run == nil || run.authorization.AuthorizedAt.IsZero() {
+		return time.Time{}, ErrStaleAuthorization
+	}
+	claimedAt := session.ClaimedAt.UTC()
+	if claimedAt.Before(run.authorization.AuthorizedAt.UTC()) || !claimedAt.Before(cloudDeadline) {
+		return time.Time{}, ErrStaleAuthorization
+	}
+	if run.plan.Limits.InfrastructureLifetimeSeconds != 0 {
+		return cloudDeadline, nil
+	}
+	if run.plan.Limits.MaxRuntimeSeconds == 0 {
+		return time.Time{}, ErrStaleAuthorization
+	}
+	workerDeadline := claimedAt.Add(time.Duration(run.plan.Limits.MaxRuntimeSeconds) * time.Second).Truncate(time.Second)
+	if cloudDeadline.Before(workerDeadline) {
+		workerDeadline = cloudDeadline
+	}
+	if !workerDeadline.After(claimedAt.Truncate(time.Second)) {
+		return time.Time{}, ErrStaleAuthorization
+	}
+	return workerDeadline, nil
 }
 
 func (c *Controller) checkRuntimeDeadline(task coretask.Task, run *controllerRun) error {

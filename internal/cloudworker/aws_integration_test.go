@@ -108,8 +108,14 @@ func TestBuildAWSDispatchAllowsPinnedCatalogOlderThanFreshQuote(t *testing.T) {
 	authorization := LaunchAuthorization{LaunchPrerequisite: prerequisite, RuntimeTaskSHA256: material.RuntimeTaskSHA256,
 		InputManifestSHA256: material.InputManifestSHA256, StagedManifestSHA256: material.StagedManifestSHA256,
 		AuthorizedAt: now.Add(time.Second)}
-	if _, _, err = BuildAWSDispatch(plan, execution, authorization, staged, material, plan.Quote, now.Add(2*time.Second)); err != nil {
+	recordedAt := now.Add(2 * time.Second)
+	awsPlan, _, err := BuildAWSDispatch(plan, execution, authorization, staged, material, plan.Quote, recordedAt)
+	if err != nil {
 		t.Fatalf("fresh quote backed by pinned catalog was rejected: %v", err)
+	}
+	lifetimeSeconds, err := plan.Limits.EphemeralLifetimeSeconds()
+	if err != nil || awsPlan.DestroyDeadline != recordedAt.Add(time.Duration(lifetimeSeconds)*time.Second) {
+		t.Fatalf("destroy deadline=%s lifetime=%d err=%v", awsPlan.DestroyDeadline, lifetimeSeconds, err)
 	}
 }
 

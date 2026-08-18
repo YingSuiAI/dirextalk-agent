@@ -47,7 +47,7 @@ func TestPinnedPricingCatalogBindsFileAndExactRequest(t *testing.T) {
 		AccountID: document.AccountID, AccountGeneration: 7, Region: document.Region,
 		InstanceType: document.InstanceType, Architecture: document.Architecture,
 		VolumeGiB: 32, VolumeType: document.VolumeType, VolumeIOPS: 3000,
-		VolumeThroughput: 125, MaxRuntimeSeconds: 3600, MaxTokens: 2000,
+		VolumeThroughput: 125, ExpectedRuntimeSeconds: 3600, MaxTokens: 2000,
 		BasisDigest: digestValue("basis"), WorkspaceMode: WorkspaceNone,
 	}
 	snapshot, err := catalog.Snapshot(context.Background(), request)

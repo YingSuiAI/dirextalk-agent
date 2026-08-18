@@ -29,7 +29,7 @@ func compileRequoteOffer(
 	modelAuthorization ModelAuthorization,
 ) (RequoteOfferCommand, error) {
 	modelDigest := modelAuthorization.BindingDigest
-	if ctx == nil || quoter == nil || validateLimits(baseLimits) != nil || old.Seal() != nil || validateAWS(awsBinding) != nil ||
+	if ctx == nil || quoter == nil || validatePlanLimitDefaults(baseLimits) != nil || old.Seal() != nil || validateAWS(awsBinding) != nil ||
 		modelAuthorization.Seal() != nil || modelAuthorization.BindingDigest != modelDigest ||
 		modelAuthorization.ModelProfileID != old.ModelAuthorization.ModelProfileID {
 		return RequoteOfferCommand{}, ErrInvalid
@@ -57,8 +57,13 @@ func compileRequoteOffer(
 			plan.NetworkGrants, modelAuthorization.BaseURL,
 		)
 	}
+	infrastructureLifetimeSeconds, err := old.Limits.EphemeralLifetimeSeconds()
+	if err != nil {
+		return RequoteOfferCommand{}, err
+	}
 	limits, err := effectivePlanLimits(
 		baseLimits,
+		infrastructureLifetimeSeconds,
 		modelAuthorization,
 		runtimeEstimateFromLimits(old.Limits),
 	)

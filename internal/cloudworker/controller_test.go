@@ -672,7 +672,7 @@ func newControllerTestFixture(t *testing.T) *controllerTestFixture {
 	}
 	session := control.Session{SessionID: uuid.NewString(), Fence: control.TaskFence{ExecutionID: plan.ExecutionID, TaskID: plan.TaskID,
 		AccountGeneration: plan.AccountGeneration, Attempt: task.Attempt, LeaseEpoch: task.LeaseEpoch}, State: control.SessionCompleted,
-		ClaimedAt: now.Add(-time.Second), HeartbeatAt: now, FinishedAt: now}
+		ClaimedAt: now, HeartbeatAt: now, FinishedAt: now}
 	sessions := &controllerTestSessions{trace: trace, session: session}
 	artifact := Artifact{ArtifactID: uuid.NewString(), ExecutionID: plan.ExecutionID, Kind: "result", Name: "result.txt",
 		MediaType: "text/plain", SizeBytes: 12, SHA256: digestValue("controller-result"), Status: ArtifactVerified, CreatedAt: now}
@@ -1518,11 +1518,12 @@ func TestControllerLeaseLossExitsWithoutCleanup(t *testing.T) {
 func TestControllerReclaimKeepsAuthorizedRuntimeDeadlineAndCleans(t *testing.T) {
 	fixture := newControllerTestFixture(t)
 	fixture.primeAuthorized(t, true)
-	originalAuthorizedAt := fixture.store.authorization.AuthorizedAt
 	fixture.reclaim()
 	fixture.sessions.session.State = control.SessionActive
 	fixture.sessions.session.HeartbeatAt = fixture.now
-	fixture.now = originalAuthorizedAt.Add(time.Duration(fixture.store.plan.Limits.MaxRuntimeSeconds)*time.Second + time.Second)
+	fixture.now = fixture.store.awsRecord.Plan.DestroyDeadline.
+		Add(-time.Duration(EphemeralCleanupReserveSeconds) * time.Second).
+		Add(time.Second)
 	fixture.store.now = fixture.now
 	fixture.task.Lease.ExpiresAt = fixture.now.Add(time.Minute)
 
@@ -1542,6 +1543,78 @@ func TestControllerReclaimKeepsAuthorizedRuntimeDeadlineAndCleans(t *testing.T) 
 		fixture.trace.index("begin_cleanup") > fixture.trace.index("aws_destroy") ||
 		fixture.trace.index("aws_destroy") > fixture.trace.index("terminal:failed") {
 		t.Fatalf("runtime deadline was not fence-first and cleanup-verified: %v", fixture.trace.entries)
+	}
+}
+
+func TestWorkerSessionDeadlineStartsAfterQualifiedColdStart(t *testing.T) {
+	authorizedAt := time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC)
+	taskDeadline := authorizedAt.Add(time.Hour)
+	run := &controllerRun{
+		plan:          Plan{Limits: Limits{ColdStartSeconds: 10 * 60, MaxRuntimeSeconds: 2 * 60, MaxOutputBytes: 1 << 20}},
+		authorization: LaunchAuthorization{AuthorizedAt: authorizedAt},
+	}
+	task := coretask.Task{ExecutionDeadlineAt: &taskDeadline}
+	cloudDeadline, err := authorizedRuntimeDeadline(task, run)
+	if err != nil || cloudDeadline != authorizedAt.Add(12*time.Minute) {
+		t.Fatalf("cloud deadline=%s err=%v", cloudDeadline, err)
+	}
+	session := control.Session{ClaimedAt: authorizedAt.Add(5 * time.Minute)}
+	workerDeadline, err := workerSessionDeadline(task, run, session)
+	if err != nil || workerDeadline != session.ClaimedAt.Add(2*time.Minute) {
+		t.Fatalf("worker deadline=%s err=%v", workerDeadline, err)
+	}
+}
+
+func TestCurrentPlanPredispatchDeadlineUsesCoreTaskAuthority(t *testing.T) {
+	authorizedAt := time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC)
+	taskDeadline := authorizedAt.Add(24 * time.Hour)
+	run := &controllerRun{
+		plan: Plan{Limits: Limits{
+			ExpectedRuntimeSeconds:        15 * 60,
+			InfrastructureLifetimeSeconds: 2 * 60 * 60,
+			ColdStartSeconds:              10 * 60,
+			MaxOutputBytes:                1 << 20,
+		}},
+		authorization: LaunchAuthorization{AuthorizedAt: authorizedAt},
+	}
+
+	deadline, err := authorizedRuntimeDeadline(
+		coretask.Task{ExecutionDeadlineAt: &taskDeadline},
+		run,
+	)
+	if err != nil || deadline != taskDeadline {
+		t.Fatalf("predispatch deadline=%s err=%v, want task deadline %s", deadline, err, taskDeadline)
+	}
+}
+
+func TestCurrentPlanDeadlineUsesInfrastructureLifetimeNotExpectedRuntime(t *testing.T) {
+	fixture := newControllerTestFixture(t)
+	fixture.primeAuthorized(t, true)
+	run := &controllerRun{
+		plan:          fixture.store.plan,
+		authorization: fixture.store.authorization,
+		awsPlan:       fixture.store.awsRecord.Plan,
+		intent:        fixture.store.awsRecord.Intent,
+	}
+	// One minute is only a completion estimate. The Worker remains authorized
+	// until the separately configured AWS destroy deadline reserves cleanup.
+	run.plan.Limits = Limits{
+		ExpectedRuntimeSeconds:        60,
+		InfrastructureLifetimeSeconds: 2 * 60 * 60,
+		ColdStartSeconds:              600,
+		MaxOutputBytes:                1 << 20,
+	}
+	taskDeadline := run.authorization.AuthorizedAt.Add(3 * time.Hour)
+	fixture.task.ExecutionDeadlineAt = &taskDeadline
+	deadline, err := authorizedRuntimeDeadline(fixture.task, run)
+	want := run.awsPlan.DestroyDeadline.Add(-time.Duration(EphemeralCleanupReserveSeconds) * time.Second).Truncate(time.Second)
+	if err != nil || deadline != want {
+		t.Fatalf("deadline=%s err=%v, want infrastructure deadline %s", deadline, err, want)
+	}
+	session := control.Session{ClaimedAt: run.authorization.AuthorizedAt.Add(time.Minute)}
+	workerDeadline, err := workerSessionDeadline(fixture.task, run, session)
+	if err != nil || workerDeadline != want {
+		t.Fatalf("worker deadline=%s err=%v, want infrastructure deadline %s", workerDeadline, err, want)
 	}
 }
 

@@ -30,7 +30,7 @@ func TestProductionQuoterUsesFreshBoundCatalogAndHardMaximum(t *testing.T) {
 		t.Fatalf("unexpected production quote: %+v", quote)
 	}
 	if catalog.calls != 1 || catalog.last.AccountID != request.AWS.AccountID || catalog.last.Region != request.AWS.Region ||
-		catalog.last.InstanceType != request.Compute.InstanceType || catalog.last.MaxRuntimeSeconds != request.Limits.MaxRuntimeSeconds ||
+		catalog.last.InstanceType != request.Compute.InstanceType || catalog.last.ExpectedRuntimeSeconds != request.Limits.ExpectedRuntimeSeconds ||
 		catalog.last.MaxTokens != request.Limits.MaxTokens || catalog.last.BasisDigest != request.AuthorizationBasisDigest {
 		t.Fatalf("catalog request was not fully bound: %+v", catalog.last)
 	}
@@ -179,7 +179,23 @@ func productionQuoteRequest() QuoteRequest {
 		Compute: ComputeSpec{InstanceType: "c7i.large", Architecture: "x86_64", RootDeviceName: "/dev/xvda", VolumeGiB: 32,
 			VolumeType: "gp3", VolumeIOPS: 4000, VolumeThroughputMiB: 250, AMIID: "ami-0123456789abcdef0", AMIDigest: digestValue("ami"),
 			WorkerReleaseDigest: digestValue("worker"), PiRuntimeDigest: digestValue("pi"), HostNetworkPolicySHA256: digestValue("host-network-policy")},
-		Limits: Limits{MaxRuntimeSeconds: 3600, MaxOutputBytes: 1 << 20},
+		Limits: Limits{ExpectedRuntimeSeconds: 3600, InfrastructureLifetimeSeconds: 4200, MaxOutputBytes: 1 << 20},
+	}
+}
+
+func TestEstimateMaximumCostIncludesQualifiedColdStart(t *testing.T) {
+	rates := PricingCatalogRates{ComputeMicrosPerHour: 3600, EBSStorageMicrosPerGiBMonth: 1,
+		PublicIPv4MicrosPerHour: 3600, ModelMicrosPerThousandTokens: 1}
+	compute := ComputeSpec{VolumeGiB: 8, VolumeIOPS: 3000, VolumeThroughputMiB: 125}
+	withoutColdStart, err := estimateMaximumCost(rates, compute,
+		Limits{MaxRuntimeSeconds: 120, MaxOutputBytes: 1}, EphemeralCleanupReserveSeconds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withColdStart, err := estimateMaximumCost(rates, compute,
+		Limits{ColdStartSeconds: 600, MaxRuntimeSeconds: 120, MaxOutputBytes: 1}, EphemeralCleanupReserveSeconds)
+	if err != nil || withColdStart <= withoutColdStart {
+		t.Fatalf("without cold start=%d with cold start=%d err=%v", withoutColdStart, withColdStart, err)
 	}
 }
 

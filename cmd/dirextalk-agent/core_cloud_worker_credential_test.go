@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
@@ -171,6 +172,10 @@ func TestCloudWorkerSDKFactoryReconstructsExactRevisionFromPersistedProviderID(t
 	)
 	if err != nil || adapter.ProviderID != providerID || adapter.AccountGeneration != 7 {
 		t.Fatalf("reconstructed adapter=%+v err=%v", adapter, err)
+	}
+	timeoutClient, ok := sdkConfig.HTTPClient.(interface{ GetTimeout() time.Duration })
+	if !ok || timeoutClient.GetTimeout() != cloudWorkerAWSRequestTimeout {
+		t.Fatalf("AWS HTTP timeout = %v, want %v", sdkConfig.HTTPClient, cloudWorkerAWSRequestTimeout)
 	}
 	credential, err := sdkConfig.Credentials.Retrieve(context.Background())
 	if err != nil || credential.AccessKeyID != resolver.handle.AccessKeyID || credential.SecretAccessKey != resolver.handle.SecretAccessKey {

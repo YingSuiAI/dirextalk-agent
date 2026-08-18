@@ -196,7 +196,7 @@ func cloudWorkerComposeConfig(t *testing.T) config.Config {
 			IIDCertificateFile:            iidFile, PricingCatalogFile: pricingFile, PricingCatalogSHA256: pricingDigest,
 			RuntimeQualificationFile: qualificationFile, RuntimeQualificationSHA256: qualificationDigest,
 			QuoteTTL: 5 * time.Minute, MaximumCatalogAge: 15 * time.Minute, AbsoluteHardLimitMicros: 20_000_000,
-			MaxRuntime: time.Hour, MaxTokens: 2000, MaxOutputBytes: 1 << 20,
+			MaxRuntime: time.Hour, ColdStart: 10 * time.Minute, MaxTokens: 2000, MaxOutputBytes: 1 << 20,
 			ControllerPollInterval: time.Second, WorkerHeartbeatInterval: time.Second,
 			ReaperInterval: time.Second, CompletionOutboxInterval: time.Second,
 		},
@@ -264,5 +264,39 @@ func TestComposeCoreCloudWorkerConstructsAndRunsProductionCleaners(t *testing.T)
 	}
 	if !composition.stopped {
 		t.Fatal("production Cloud Worker private composition did not stop")
+	}
+}
+
+func TestCloudWorkerConfigRequiresQualifiedColdStart(t *testing.T) {
+	cfg := cloudWorkerComposeConfig(t)
+	cfg.CoreCloudWorker.ColdStart = 0
+	if err := config.ValidateCoreCloudWorker(&cfg); err == nil {
+		t.Fatal("missing release-qualified cold start was accepted")
+	}
+	cfg = cloudWorkerComposeConfig(t)
+	if err := config.ValidateCoreCloudWorker(&cfg); err != nil {
+		t.Fatalf("qualified cold start was rejected: %v", err)
+	}
+}
+
+func TestCloudWorkerConfigMigratesLegacyMaxRuntimeToInstanceLifetime(t *testing.T) {
+	cfg := cloudWorkerComposeConfig(t)
+	cfg.CoreCloudWorker.InstanceLifetime = 0
+	cfg.CoreCloudWorker.MaxRuntime = time.Hour
+	if err := config.ValidateCoreCloudWorker(&cfg); err != nil {
+		t.Fatalf("legacy lifetime alias rejected: %v", err)
+	}
+	if cfg.CoreCloudWorker.InstanceLifetime != time.Hour {
+		t.Fatalf("legacy lifetime was not migrated: %s", cfg.CoreCloudWorker.InstanceLifetime)
+	}
+
+	cfg = cloudWorkerComposeConfig(t)
+	cfg.CoreCloudWorker.MaxRuntime = time.Hour
+	cfg.CoreCloudWorker.InstanceLifetime = 2 * time.Hour
+	if err := config.ValidateCoreCloudWorker(&cfg); err != nil {
+		t.Fatalf("explicit instance lifetime rejected: %v", err)
+	}
+	if cfg.CoreCloudWorker.InstanceLifetime != 2*time.Hour {
+		t.Fatalf("explicit instance lifetime was overwritten: %s", cfg.CoreCloudWorker.InstanceLifetime)
 	}
 }

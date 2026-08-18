@@ -77,7 +77,7 @@ func (authority *WorkerAuthority) IssueWorkerClaimMaterial(ctx context.Context, 
 	if !resumeMatchesSession(resume, task, session) {
 		return rpcapi.WorkerClaimMaterial{}, control.ErrIdentityRejected
 	}
-	deadline, err := workerHardDeadline(resume, task, authority.now().UTC(), authority.heartbeatInterval)
+	deadline, err := workerHardDeadline(resume, task, session, authority.now().UTC(), authority.heartbeatInterval)
 	if err != nil {
 		return rpcapi.WorkerClaimMaterial{}, err
 	}
@@ -238,22 +238,48 @@ func resumeMatchesSession(resume cloudworker.ResumeContext, task coretask.Task, 
 	return true
 }
 
-func workerHardDeadline(resume cloudworker.ResumeContext, task coretask.Task, now time.Time, heartbeat time.Duration) (time.Time, error) {
+func workerHardDeadline(resume cloudworker.ResumeContext, task coretask.Task, session control.Session, now time.Time, heartbeat time.Duration) (time.Time, error) {
 	if task.ExecutionDeadlineAt == nil || resume.InitialAuthorization.AuthorizedAt.IsZero() ||
-		resume.Plan.Limits.MaxRuntimeSeconds == 0 || resume.AWSRecord.Plan.DestroyDeadline.IsZero() {
+		resume.AWSRecord.Plan.DestroyDeadline.IsZero() || session.ClaimedAt.IsZero() {
 		return time.Time{}, cloudworker.ErrStaleAuthorization
 	}
-	runtimeDeadline := resume.InitialAuthorization.AuthorizedAt.UTC().Add(time.Duration(resume.Plan.Limits.MaxRuntimeSeconds) * time.Second)
+	authorizedAt := resume.InitialAuthorization.AuthorizedAt.UTC()
+	claimedAt := session.ClaimedAt.UTC()
+	if claimedAt.Before(authorizedAt) {
+		return time.Time{}, cloudworker.ErrStaleAuthorization
+	}
 	destroyDeadline := resume.AWSRecord.Plan.DestroyDeadline.UTC().Add(-time.Duration(cloudworker.EphemeralCleanupReserveSeconds) * time.Second)
 	taskDeadline := task.ExecutionDeadlineAt.UTC()
+	if resume.Plan.Limits.InfrastructureLifetimeSeconds != 0 {
+		deadline := destroyDeadline
+		if taskDeadline.Before(deadline) {
+			deadline = taskDeadline
+		}
+		deadline = deadline.Truncate(time.Second)
+		if deadline.After(destroyDeadline) || deadline.After(taskDeadline) ||
+			!deadline.After(now.UTC().Add(2*heartbeat)) ||
+			!deadline.After(now.UTC().Add(cloudruntime.MinimumModelGrantLifetime)) {
+			return time.Time{}, cloudworker.ErrStaleAuthorization
+		}
+		return deadline, nil
+	}
+	if resume.Plan.Limits.MaxRuntimeSeconds == 0 {
+		return time.Time{}, cloudworker.ErrStaleAuthorization
+	}
+	cloudWindowSeconds, err := resume.Plan.Limits.CloudWindowSeconds()
+	if err != nil {
+		return time.Time{}, cloudworker.ErrStaleAuthorization
+	}
+	runtimeDeadline := claimedAt.Add(time.Duration(resume.Plan.Limits.MaxRuntimeSeconds) * time.Second)
+	cloudDeadline := authorizedAt.Add(time.Duration(cloudWindowSeconds) * time.Second)
 	deadline := runtimeDeadline
-	for _, candidate := range []time.Time{destroyDeadline, taskDeadline} {
+	for _, candidate := range []time.Time{cloudDeadline, destroyDeadline, taskDeadline} {
 		if candidate.Before(deadline) {
 			deadline = candidate
 		}
 	}
 	deadline = deadline.Truncate(time.Second)
-	if deadline.After(runtimeDeadline) || deadline.After(destroyDeadline) || deadline.After(taskDeadline) ||
+	if deadline.After(runtimeDeadline) || deadline.After(cloudDeadline) || deadline.After(destroyDeadline) || deadline.After(taskDeadline) ||
 		!deadline.After(now.UTC().Add(2*heartbeat)) ||
 		!deadline.After(now.UTC().Add(cloudruntime.MinimumModelGrantLifetime)) {
 		return time.Time{}, cloudworker.ErrStaleAuthorization

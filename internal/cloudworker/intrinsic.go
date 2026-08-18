@@ -103,10 +103,10 @@ func NewProposeIntrinsic(service *Service, owners IntrinsicOwnerResolver, manife
 }
 
 type proposeIntrinsicArguments struct {
-	AttachmentIDs []string        `json:"attachment_ids,omitempty"`
-	Objective     string          `json:"objective"`
-	Runtime       RuntimeEstimate `json:"runtime"`
-	WorkspaceMode string          `json:"workspace_mode"`
+	AttachmentIDs          []string `json:"attachment_ids,omitempty"`
+	Objective              string   `json:"objective"`
+	ExpectedRuntimeSeconds uint64   `json:"expected_runtime_seconds"`
+	WorkspaceMode          string   `json:"workspace_mode"`
 }
 
 func (p *ProposeIntrinsic) ResolveIntrinsicTools(_ context.Context, lease coreconversation.TurnLease) ([]coreconversation.ResolvedIntrinsic, error) {
@@ -115,28 +115,20 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(_ context.Context, lease coreco
 	}
 	bound := lease
 	properties := map[string]any{
-		"objective": map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes},
-		"runtime": map[string]any{
-			"type": "object", "additionalProperties": false,
-			"required": []any{"minimum_seconds", "expected_seconds", "maximum_seconds"},
-			"properties": map[string]any{
-				"minimum_seconds":  map[string]any{"type": "integer", "minimum": 60, "maximum": p.service.defaults.Limits.MaxRuntimeSeconds},
-				"expected_seconds": map[string]any{"type": "integer", "minimum": 60, "maximum": p.service.defaults.Limits.MaxRuntimeSeconds},
-				"maximum_seconds":  map[string]any{"type": "integer", "minimum": 60, "maximum": p.service.defaults.Limits.MaxRuntimeSeconds},
-			},
-		},
-		"workspace_mode": map[string]any{"type": "string", "enum": []any{string(WorkspaceNone), string(WorkspaceReadOnly), string(WorkspaceWrite)}},
+		"objective":                map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes},
+		"expected_runtime_seconds": map[string]any{"type": "integer", "minimum": 60, "maximum": MaximumExpectedRuntimeSeconds},
+		"workspace_mode":           map[string]any{"type": "string", "enum": []any{string(WorkspaceNone), string(WorkspaceReadOnly), string(WorkspaceWrite)}},
 	}
 	if attachmentSchema := frozenTurnAttachmentSchema(bound.Turn); attachmentSchema != nil {
 		properties["attachment_ids"] = attachmentSchema
 	}
 	tool := coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerProposeToolName,
-		Description: "Propose a priced ephemeral AWS Pi Worker for a substantial delegated task that benefits from isolated execution, durable file delivery, tests, or long-running compute. Estimate realistic minimum, expected, and maximum task runtimes from the requested deliverables, inputs, tools, and verification work; these are task execution estimates, not a reason to wait before completing. Central may propose this without explicit cloud wording. Do not use it for ordinary conversation, simple reasoning, or when the user requires local execution or forbids cloud use. This creates only an offer; AWS resources start only after the user reviews and confirms it.",
+		Description: "Propose a priced ephemeral AWS Pi Worker for a substantial delegated task that benefits from isolated execution, durable file delivery, tests, or long-running compute. Provide one realistic expected completion time based on the requested deliverables, inputs, tools, and verification work. It is a user-facing estimate used for pricing, not an execution deadline. Central may propose this without explicit cloud wording. Do not use it for ordinary conversation, simple reasoning, or when the user requires local execution or forbids cloud use. This creates only an offer; AWS resources start only after the user reviews and confirms it.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"required":             []any{"objective", "runtime", "workspace_mode"},
+			"required":             []any{"objective", "expected_runtime_seconds", "workspace_mode"},
 			"properties":           properties,
 		},
 	}
@@ -183,10 +175,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
 	lease := request.Lease
-	arguments, err := parseProposeIntrinsicArguments(
-		request.CanonicalArguments,
-		p.service.defaults.Limits.MaxRuntimeSeconds,
-	)
+	arguments, err := parseProposeIntrinsicArguments(request.CanonicalArguments)
 	if err != nil {
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
@@ -250,7 +239,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		ProposalReason: reason, LocalBudgetEvidence: budget, InputManifest: manifest,
 		WorkspaceMode:      mode,
 		ModelAuthorization: modelAuthorization,
-		RuntimeEstimate:    arguments.Runtime,
+		RuntimeEstimate:    RuntimeEstimate{ExpectedSeconds: arguments.ExpectedRuntimeSeconds},
 	})
 	if err != nil {
 		slog.Warn("[cloud-worker.intrinsic] proposal_failed",
@@ -283,7 +272,7 @@ func turnAllowsSelectedWorkspaceArchive(turn coreconversation.Turn, selected []s
 	return false
 }
 
-func parseProposeIntrinsicArguments(raw json.RawMessage, policyMaximum uint64) (proposeIntrinsicArguments, error) {
+func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArguments, error) {
 	if len(raw) == 0 || len(raw) > coreconversation.MaxToolArgumentsBytes {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
@@ -299,7 +288,7 @@ func parseProposeIntrinsicArguments(raw json.RawMessage, policyMaximum uint64) (
 	}
 	arguments.Objective = strings.TrimSpace(arguments.Objective)
 	if arguments.Objective == "" || len(arguments.Objective) > coretask.MaxGoalBytes || !utf8.ValidString(arguments.Objective) ||
-		arguments.Runtime.validate(policyMaximum) != nil ||
+		(RuntimeEstimate{ExpectedSeconds: arguments.ExpectedRuntimeSeconds}).validate() != nil ||
 		!validateWorkspaceMode(WorkspaceMode(arguments.WorkspaceMode)) || len(arguments.AttachmentIDs) > coreconversation.MaxTurnAttachments {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}

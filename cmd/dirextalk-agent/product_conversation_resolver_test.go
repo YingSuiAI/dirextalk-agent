@@ -95,6 +95,29 @@ func TestProductToolSchemaRequiresAdvertisedDigestAndNonEmptySchema(t *testing.T
 	}
 }
 
+func TestProductToolSetReadOnlyRequiresEveryAdvertisedToolToBeReadOnly(t *testing.T) {
+	bindings := map[string]productConversationTool{
+		"list": {readOnly: true},
+		"get":  {readOnly: true},
+		"send": {readOnly: false},
+	}
+	if !productToolSetReadOnly(bindings, []string{"list", "get"}) {
+		t.Fatal("all-read Product catalog was not marked read-only")
+	}
+	for name, tools := range map[string][]string{
+		"empty":         nil,
+		"mixed":         {"list", "send"},
+		"unknown tool":  {"list", "missing"},
+		"mutation only": {"send"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if productToolSetReadOnly(bindings, tools) {
+				t.Fatal("unsafe Product tool set was marked read-only")
+			}
+		})
+	}
+}
+
 func TestPermissionWithProductControlGrantBindsWatchAction(t *testing.T) {
 	base := &capv1.PermissionContext{AuthenticatedOwnerId: "owner", AccountGeneration: 4, CapabilityGrant: []byte("start-grant"), GrantedScopes: []string{"contacts:write"}}
 	started := &capv1.StartOperationResponse{ControlGrants: []*capv1.OperationControlGrantEnvelope{{Action: "watch", Grant: []byte("watch-grant"), ExpiresAtUnixMs: time.Now().Add(time.Minute).UnixMilli()}, {Action: "cancel", Grant: []byte("cancel-grant"), ExpiresAtUnixMs: time.Now().Add(time.Minute).UnixMilli()}}}

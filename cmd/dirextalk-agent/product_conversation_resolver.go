@@ -95,7 +95,7 @@ func (r *productConversationResolver) ResolveExtensions(ctx context.Context, sel
 	artifactDigest := digestBytes([]byte("product-capability-artifact:" + digest))
 	resolved = append(resolved, coreconversation.ResolvedExtension{
 		Selection: selection,
-		Snapshot:  coreconversation.ExtensionExecutionSnapshot{Selection: selection, InstallationID: selectionID, VersionID: "1.0.0", Source: "product-capability", ContentDigest: digest, ArtifactDigest: artifactDigest, ToolSchemaDigest: schemaDigest, ToolNames: allowedNames, RequiresConfirmation: false},
+		Snapshot:  coreconversation.ExtensionExecutionSnapshot{Selection: selection, InstallationID: selectionID, VersionID: "1.0.0", Source: "product-capability", ContentDigest: digest, ArtifactDigest: artifactDigest, ToolSchemaDigest: schemaDigest, ToolNames: allowedNames, RequiresConfirmation: false, ReadOnly: productToolSetReadOnly(bindings, allowedNames)},
 		Tools:     tools,
 		Execute: func(toolCtx context.Context, request coreconversation.ToolExecutionRequest) (coreconversation.ToolResult, error) {
 			binding, exists := bindings[request.Call.Name]
@@ -212,6 +212,19 @@ func (r *productConversationResolver) ResolveExtensions(ctx context.Context, sel
 		},
 	})
 	return resolved, nil
+}
+
+func productToolSetReadOnly(bindings map[string]productConversationTool, names []string) bool {
+	if len(names) == 0 {
+		return false
+	}
+	for _, name := range names {
+		binding, ok := bindings[name]
+		if !ok || !binding.readOnly {
+			return false
+		}
+	}
+	return true
 }
 
 func productToolName(capabilityID, operation string) string {

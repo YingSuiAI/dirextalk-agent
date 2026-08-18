@@ -135,7 +135,7 @@ func newPGCloudWorkerHarness(t *testing.T) *pgCloudWorkerHarness {
 		ObjectiveSummary: "Verified cloud result", UserPromptDigest: pgCloudDigest(lease.Turn.Prompt),
 		ProposalReason: cloudworker.ProposalReasonExplicitUserCloud, InputManifest: cloudworker.InputManifest{},
 		WorkspaceMode: cloudworker.WorkspaceNone, ModelAuthorization: authorization,
-		RuntimeEstimate: cloudworker.RuntimeEstimate{MinimumSeconds: 600, ExpectedSeconds: 1200, MaximumSeconds: 1800}}
+		RuntimeEstimate: cloudworker.RuntimeEstimate{ExpectedSeconds: 1200}}
 	return &pgCloudWorkerHarness{ctx: ctx, store: store, cloud: cloudStore, tasks: NewCoreTaskStore(store),
 		confirmations: confirmationStore, confirmation: confirmationService, conversation: conversation,
 		service: service, lease: lease, command: command, now: now, owner: owner, generation: generation, cleanup: cleanup}

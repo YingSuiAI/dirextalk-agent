@@ -105,10 +105,9 @@ func composeCoreCloudWorker(
 			Protocol: cloudworker.WorkerControlProtocolV1, Endpoint: worker.WorkerControlEndpoint,
 			TLSServerName: worker.WorkerControlServerName, TrustBundleDigest: worker.WorkerControlTrustSHA256,
 		},
-		// The configured maximum is the policy ceiling exposed to Central's
-		// proposal tool. The sealed Plan receives Central's validated estimate.
-		Limits:        cloudworker.Limits{MaxRuntimeSeconds: uint64(worker.MaxRuntime / time.Second), MaxOutputBytes: worker.MaxOutputBytes},
-		NetworkGrants: append([]string(nil), worker.AllowedFQDNs...), ArtifactRetentionSeconds: uint64(worker.ArtifactRetention / time.Second),
+		Limits:                        cloudworker.Limits{ColdStartSeconds: uint64(worker.ColdStart / time.Second), MaxOutputBytes: worker.MaxOutputBytes},
+		InfrastructureLifetimeSeconds: uint64(worker.InstanceLifetime / time.Second),
+		NetworkGrants:                 append([]string(nil), worker.AllowedFQDNs...), ArtifactRetentionSeconds: uint64(worker.ArtifactRetention / time.Second),
 		QuoteAmountMicros: 0, MaximumAuthorizedMicros: worker.AbsoluteHardLimitMicros, QuoteTTL: worker.QuoteTTL,
 	}
 	credentialResolver, err := postgres.NewCoreWorkloadCredentialResolver(postgres.NewCoreAWSStore(store))

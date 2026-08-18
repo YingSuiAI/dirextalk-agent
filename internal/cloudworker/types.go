@@ -290,32 +290,35 @@ type ComputeSpec struct {
 	HostNetworkPolicySHA256 string `json:"host_network_policy_sha256"`
 }
 
-// RuntimeEstimate is Central's task-specific schedule proposal. Trusted code
-// checks it against the server policy before copying it into an immutable Plan.
+// RuntimeEstimate is Central's user-facing completion estimate. It affects the
+// quote, but never creates a task execution deadline.
 type RuntimeEstimate struct {
-	MinimumSeconds  uint64 `json:"minimum_seconds"`
 	ExpectedSeconds uint64 `json:"expected_seconds"`
-	MaximumSeconds  uint64 `json:"maximum_seconds"`
 }
 
-func (value RuntimeEstimate) validate(policyMaximum uint64) error {
-	if value.MinimumSeconds < 60 ||
-		value.MinimumSeconds > value.ExpectedSeconds ||
-		value.ExpectedSeconds > value.MaximumSeconds ||
-		value.MaximumSeconds > policyMaximum ||
-		policyMaximum > uint64((24*time.Hour)/time.Second) {
+const MaximumExpectedRuntimeSeconds = uint64((24 * time.Hour) / time.Second)
+
+func (value RuntimeEstimate) validate() error {
+	if value.ExpectedSeconds < 60 || value.ExpectedSeconds > MaximumExpectedRuntimeSeconds {
 		return ErrInvalid
 	}
 	return nil
 }
 
 type Limits struct {
-	// MinimumRuntimeSeconds and ExpectedRuntimeSeconds were added after the
-	// first production Plan schema. Zero for both preserves legacy Plan digests;
-	// every newly compiled Plan carries a complete task-specific estimate.
+	// MinimumRuntimeSeconds and MaxRuntimeSeconds are retained only so signed
+	// historical Plans remain readable. New Plans contain one expected runtime.
 	MinimumRuntimeSeconds  uint64 `json:"minimum_runtime_seconds,omitempty"`
 	ExpectedRuntimeSeconds uint64 `json:"expected_runtime_seconds,omitempty"`
-	MaxRuntimeSeconds      uint64 `json:"max_runtime_seconds"`
+	MaxRuntimeSeconds      uint64 `json:"max_runtime_seconds,omitempty"`
+	// InfrastructureLifetimeSeconds is the operator-owned fail-safe lifetime
+	// for temporary AWS resources. It is not a task runtime estimate and is not
+	// projected to the App.
+	InfrastructureLifetimeSeconds uint64 `json:"infrastructure_lifetime_seconds,omitempty"`
+	// ColdStartSeconds is the qualified upper bound for provisioning the
+	// selected runtime. It is operator-owned release metadata, never a model
+	// estimate, and does not consume the Worker's task execution window.
+	ColdStartSeconds uint64 `json:"cold_start_seconds,omitempty"`
 	// MaxTokens is present only when reading or validating a legacy Plan. New
 	// Plans leave it at zero and are bounded by runtime/cancellation plus the
 	// selected model profile's per-request output limit.
@@ -1149,19 +1152,61 @@ func (r *ModelEndpointBinding) Seal(network NetworkPolicy, model ModelAuthorizat
 }
 
 func validateLimits(value Limits) error {
-	if value.MaxRuntimeSeconds == 0 || value.MaxRuntimeSeconds > uint64((24*time.Hour)/time.Second) ||
+	if value.ColdStartSeconds > uint64((30*time.Minute)/time.Second) ||
 		value.MaxTokens > 10_000_000 || value.MaxOutputBytes == 0 || value.MaxOutputBytes > MaxCloudWorkerOutputBytes {
 		return ErrInvalid
 	}
-	legacy := value.MinimumRuntimeSeconds == 0 && value.ExpectedRuntimeSeconds == 0
-	if !legacy && (RuntimeEstimate{
-		MinimumSeconds:  value.MinimumRuntimeSeconds,
-		ExpectedSeconds: value.ExpectedRuntimeSeconds,
-		MaximumSeconds:  value.MaxRuntimeSeconds,
-	}).validate(value.MaxRuntimeSeconds) != nil {
+	legacy := value.InfrastructureLifetimeSeconds == 0
+	if legacy {
+		if value.MaxRuntimeSeconds == 0 || value.MaxRuntimeSeconds > MaximumExpectedRuntimeSeconds {
+			return ErrInvalid
+		}
+		if value.MinimumRuntimeSeconds != 0 || value.ExpectedRuntimeSeconds != 0 {
+			if value.MinimumRuntimeSeconds < 60 || value.MinimumRuntimeSeconds > value.ExpectedRuntimeSeconds ||
+				value.ExpectedRuntimeSeconds > value.MaxRuntimeSeconds {
+				return ErrInvalid
+			}
+		}
+		return nil
+	}
+	if value.MinimumRuntimeSeconds != 0 || value.MaxRuntimeSeconds != 0 ||
+		(RuntimeEstimate{ExpectedSeconds: value.ExpectedRuntimeSeconds}).validate() != nil ||
+		value.InfrastructureLifetimeSeconds > uint64((30*24*time.Hour)/time.Second) {
+		return ErrInvalid
+	}
+	needed, err := checkedAdd64(value.ColdStartSeconds, value.ExpectedRuntimeSeconds)
+	if err == nil {
+		needed, err = checkedAdd64(needed, EphemeralCleanupReserveSeconds)
+	}
+	if err != nil || value.InfrastructureLifetimeSeconds < needed {
 		return ErrInvalid
 	}
 	return nil
+}
+
+// CloudWindowSeconds is retained for enforcing historical Plans only. New
+// Plans deliberately have no task-specific execution ceiling.
+func (value Limits) CloudWindowSeconds() (uint64, error) {
+	if validateLimits(value) != nil || value.InfrastructureLifetimeSeconds != 0 {
+		return 0, ErrInvalid
+	}
+	return checkedAdd64(value.ColdStartSeconds, value.MaxRuntimeSeconds)
+}
+
+// EphemeralLifetimeSeconds additionally reserves the fixed cleanup window
+// used to prove that every temporary AWS resource has been destroyed.
+func (value Limits) EphemeralLifetimeSeconds() (uint64, error) {
+	if validateLimits(value) != nil {
+		return 0, ErrInvalid
+	}
+	if value.InfrastructureLifetimeSeconds != 0 {
+		return value.InfrastructureLifetimeSeconds, nil
+	}
+	window, err := value.CloudWindowSeconds()
+	if err != nil {
+		return 0, err
+	}
+	return checkedAdd64(window, EphemeralCleanupReserveSeconds)
 }
 
 func normalizeSecretGrants(values *[]SecretGrant) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	cloudaws "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/aws"
@@ -11,8 +12,11 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/control"
 	cloudresult "github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/result"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/google/uuid"
 )
+
+const cloudWorkerAWSRequestTimeout = 60 * time.Second
 
 // cloudWorkerSDKFactory is the single revision-aware construction boundary.
 // It never caches SDK clients or secret bytes: every external operation first
@@ -61,7 +65,8 @@ func (factory *cloudWorkerSDKFactory) sdkForBinding(ctx context.Context, binding
 		return awssdk.Config{}, sdkclient.Config{}, err
 	}
 	sdkConfig := awssdk.Config{Region: binding.Region, Credentials: credentials,
-		Retryer: func() awssdk.Retryer { return awssdk.NopRetryer{} }}
+		HTTPClient: awshttp.NewBuildableClient().WithTimeout(cloudWorkerAWSRequestTimeout),
+		Retryer:    func() awssdk.Retryer { return awssdk.NopRetryer{} }}
 	adapter := sdkclient.Config{AccountID: binding.AccountID, AccountGeneration: factory.accountGeneration,
 		Region: binding.Region, ProviderID: cloudWorkerCredentialProviderID(binding)}
 	return sdkConfig, adapter, nil

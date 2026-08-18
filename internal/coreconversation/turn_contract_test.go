@@ -34,6 +34,76 @@ func TestConversationToolAttemptContentRestoresSafeFailureSummary(t *testing.T) 
 	}
 }
 
+func TestAppendTurnToolHistoryKeepsParallelCallsInOneAssistantMessage(t *testing.T) {
+	turn := Turn{ID: uuid.NewString(), ProfileID: uuid.NewString()}
+	firstCall := ToolCall{ID: "call-1", Name: "search", Arguments: `{"query":"first"}`}
+	secondCall := ToolCall{ID: "call-2", Name: "search", Arguments: `{"query":"second"}`}
+	firstResult := ToolResult{CallID: firstCall.ID, ToolName: firstCall.Name, Content: `{"items":[]}`}
+	secondResult := ToolResult{CallID: secondCall.ID, ToolName: secondCall.Name, Content: `{"items":[1]}`}
+	now := time.Now().UTC()
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore(), turn: turn},
+		events: []TurnEvent{
+			{TurnID: turn.ID, Sequence: 1, Kind: TurnEventToolCall, ToolCall: &firstCall, CreatedAt: now},
+			{TurnID: turn.ID, Sequence: 2, Kind: TurnEventToolResult, ToolResult: &firstResult, CreatedAt: now.Add(time.Millisecond)},
+			{TurnID: turn.ID, Sequence: 3, Kind: TurnEventToolCall, ToolCall: &secondCall, CreatedAt: now.Add(2 * time.Millisecond)},
+			{TurnID: turn.ID, Sequence: 4, Kind: TurnEventToolResult, ToolResult: &secondResult, CreatedAt: now.Add(3 * time.Millisecond)},
+		},
+	}
+	service := &Service{turns: store}
+	conversation := Conversation{ID: uuid.NewString()}
+
+	authorities, err := service.appendTurnToolHistory(context.Background(), turn, &conversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(authorities) != 2 || len(conversation.Messages) != 2 {
+		t.Fatalf("authorities=%d messages=%+v", len(authorities), conversation.Messages)
+	}
+	assistant, tool := conversation.Messages[0], conversation.Messages[1]
+	if assistant.Role != RoleAssistant || len(assistant.ToolCalls) != 2 || assistant.ToolCalls[0].ID != firstCall.ID || assistant.ToolCalls[1].ID != secondCall.ID {
+		t.Fatalf("assistant tool-call batch=%+v", assistant)
+	}
+	if tool.Role != RoleTool || len(tool.ToolResults) != 2 || tool.ToolResults[0].CallID != firstCall.ID || tool.ToolResults[1].CallID != secondCall.ID {
+		t.Fatalf("tool-result batch=%+v", tool)
+	}
+}
+
+func TestAppendTurnToolHistoryPreservesDistinctModelRounds(t *testing.T) {
+	turn := Turn{ID: uuid.NewString(), ProfileID: uuid.NewString()}
+	firstCall := ToolCall{ID: "call-1", Name: "search", Arguments: `{"query":"first"}`}
+	secondCall := ToolCall{ID: "call-2", Name: "search", Arguments: `{"query":"second"}`}
+	firstResult := ToolResult{CallID: firstCall.ID, ToolName: firstCall.Name, Content: `{"items":[]}`}
+	secondResult := ToolResult{CallID: secondCall.ID, ToolName: secondCall.Name, Content: `{"items":[1]}`}
+	now := time.Now().UTC()
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore(), turn: turn},
+		events: []TurnEvent{
+			{TurnID: turn.ID, Sequence: 1, Kind: TurnEventStarted, CreatedAt: now},
+			{TurnID: turn.ID, Sequence: 2, Kind: TurnEventToolCall, ToolCall: &firstCall, CreatedAt: now.Add(time.Millisecond)},
+			{TurnID: turn.ID, Sequence: 3, Kind: TurnEventToolResult, ToolResult: &firstResult, CreatedAt: now.Add(2 * time.Millisecond)},
+			{TurnID: turn.ID, Sequence: 4, Kind: TurnEventStarted, CreatedAt: now.Add(3 * time.Millisecond)},
+			{TurnID: turn.ID, Sequence: 5, Kind: TurnEventToolCall, ToolCall: &secondCall, CreatedAt: now.Add(4 * time.Millisecond)},
+			{TurnID: turn.ID, Sequence: 6, Kind: TurnEventToolResult, ToolResult: &secondResult, CreatedAt: now.Add(5 * time.Millisecond)},
+		},
+	}
+	service := &Service{turns: store}
+	conversation := Conversation{ID: uuid.NewString()}
+
+	if _, err := service.appendTurnToolHistory(context.Background(), turn, &conversation); err != nil {
+		t.Fatal(err)
+	}
+	if len(conversation.Messages) != 4 {
+		t.Fatalf("messages=%+v", conversation.Messages)
+	}
+	if got := conversation.Messages[0].ToolCalls; len(got) != 1 || got[0].ID != firstCall.ID {
+		t.Fatalf("first round=%+v", conversation.Messages[:2])
+	}
+	if got := conversation.Messages[2].ToolCalls; len(got) != 1 || got[0].ID != secondCall.ID {
+		t.Fatalf("second round=%+v", conversation.Messages[2:])
+	}
+}
+
 type replayTurnStore struct {
 	*fakeStore
 	turn Turn

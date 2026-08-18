@@ -129,7 +129,7 @@ func intrinsicDefaults(now time.Time) Defaults {
 		NetworkPolicy:  NetworkPolicy{DNSResolverCIDRs: []string{"10.0.0.2/32"}, TLSProxyCIDRs: []string{"10.0.0.3/32"}, AllowedFQDNs: []string{"worker.example.test", "relay.example.test"}, OutboundProxyURL: "https://proxy.example.test:443", OutboundProxyServerName: "proxy.example.test", OutboundProxyTrustBundleSHA256: digestValue("proxy-ca")},
 		ArtifactBucket: "dirextalk-worker-artifacts", ArtifactBasePrefix: "executions/", ArtifactKMSKeyARN: "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111", ArtifactVersioned: true,
 		WorkerBootstrap: WorkerBootstrap{Protocol: WorkerControlProtocolV1, Endpoint: "https://worker.example.test:8443", TLSServerName: "worker.example.test", TrustBundleDigest: digestValue("worker-ca")},
-		Limits:          Limits{MaxRuntimeSeconds: 3600, MaxOutputBytes: 1 << 20}, ArtifactRetentionSeconds: 3600,
+		Limits:          Limits{ColdStartSeconds: 600, MaxOutputBytes: 1 << 20}, InfrastructureLifetimeSeconds: 7200, ArtifactRetentionSeconds: 3600,
 		QuoteAmountMicros: 1000, MaximumAuthorizedMicros: 2000, QuoteTTL: 5 * time.Minute,
 	}
 }
@@ -154,10 +154,8 @@ func intrinsicFixture(t *testing.T, prompt string, manifests IntrinsicManifestRe
 
 func executeIntrinsic(t *testing.T, intrinsic *ProposeIntrinsic, lease coreconversation.TurnLease, arguments map[string]any, callID string) error {
 	t.Helper()
-	if _, exists := arguments["runtime"]; !exists {
-		arguments["runtime"] = map[string]any{
-			"minimum_seconds": 600, "expected_seconds": 1200, "maximum_seconds": 1800,
-		}
+	if _, exists := arguments["expected_runtime_seconds"]; !exists {
+		arguments["expected_runtime_seconds"] = 1200
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
 	if err != nil || len(tools) != 1 || tools[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
@@ -271,15 +269,15 @@ func TestCloudExecutionVetoPreservesNegationScope(t *testing.T) {
 }
 
 func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
-	arguments, err := parseProposeIntrinsicArguments([]byte("{\n  \"workspace_mode\": \"none\", \"objective\": \"run once\", \"runtime\": {\"minimum_seconds\": 60, \"expected_seconds\": 120, \"maximum_seconds\": 300}\n}"), 3600)
+	arguments, err := parseProposeIntrinsicArguments([]byte("{\n  \"workspace_mode\": \"none\", \"objective\": \"run once\", \"expected_runtime_seconds\": 120\n}"))
 	if err != nil || arguments.Objective != "run once" || arguments.WorkspaceMode != string(WorkspaceNone) || len(arguments.AttachmentIDs) != 0 {
 		t.Fatalf("arguments=%+v err=%v", arguments, err)
 	}
-	arguments, err = parseProposeIntrinsicArguments([]byte(`{"objective":"create a project","runtime":{"minimum_seconds":60,"expected_seconds":120,"maximum_seconds":300},"workspace_mode":"write"}`), 3600)
+	arguments, err = parseProposeIntrinsicArguments([]byte(`{"objective":"create a project","expected_runtime_seconds":120,"workspace_mode":"write"}`))
 	if err != nil || arguments.WorkspaceMode != string(WorkspaceWrite) || len(arguments.AttachmentIDs) != 0 {
 		t.Fatalf("empty write workspace arguments=%+v err=%v", arguments, err)
 	}
-	if _, err = parseProposeIntrinsicArguments([]byte(`{"objective":"inspect","runtime":{"minimum_seconds":60,"expected_seconds":120,"maximum_seconds":300},"workspace_mode":"read_only"}`), 3600); !errors.Is(err, ErrInvalid) {
+	if _, err = parseProposeIntrinsicArguments([]byte(`{"objective":"inspect","expected_runtime_seconds":120,"workspace_mode":"read_only"}`)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("empty read-only workspace accepted: %v", err)
 	}
 }
@@ -304,11 +302,9 @@ func TestIntrinsicAcceptsHeartbeatRenewalAndRejectsLeaseReplacement(t *testing.T
 		t.Fatalf("resolve intrinsic: tools=%d err=%v", len(tools), err)
 	}
 	raw, _ := json.Marshal(map[string]any{
-		"objective": "create the final pptx",
-		"runtime": map[string]any{
-			"minimum_seconds": 600, "expected_seconds": 1200, "maximum_seconds": 2400,
-		},
-		"workspace_mode": "write",
+		"objective":                "create the final pptx",
+		"expected_runtime_seconds": 1200,
+		"workspace_mode":           "write",
 	})
 	call := coreconversation.ToolCall{ID: "call-after-heartbeat", Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: string(raw)}
 

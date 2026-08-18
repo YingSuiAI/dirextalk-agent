@@ -168,6 +168,12 @@ func mapCloudWorkerPortError(err error) error {
 	}
 }
 
+// The first production Message Server schema requires max_tokens and rejects
+// unknown runtime-estimate fields. Keep this projection wire-compatible while
+// the authoritative Plan retains its dynamic estimate and no cumulative token
+// budget. This value is never copied into Worker authorization or enforcement.
+const legacyCloudWorkerProjectionMaxTokens uint64 = 10_000_000
+
 func cloudWorkerPlanProjection(plan cloudworker.Plan) CloudWorkerObject {
 	publicGrants := cloudworker.ProjectPublicSecretGrants(plan.SecretGrants)
 	secretGrants := make([]any, 0, len(publicGrants))
@@ -178,13 +184,12 @@ func cloudWorkerPlanProjection(plan cloudworker.Plan) CloudWorkerObject {
 	for _, grant := range plan.NetworkGrants {
 		networkGrants = append(networkGrants, grant)
 	}
-	limits := map[string]any{
-		"max_runtime_seconds": plan.Limits.MaxRuntimeSeconds,
-		"max_output_bytes":    plan.Limits.MaxOutputBytes,
-	}
-	if plan.Limits.MinimumRuntimeSeconds > 0 && plan.Limits.ExpectedRuntimeSeconds > 0 {
-		limits["minimum_runtime_seconds"] = plan.Limits.MinimumRuntimeSeconds
+	limits := map[string]any{"max_output_bytes": plan.Limits.MaxOutputBytes}
+	if plan.Limits.InfrastructureLifetimeSeconds != 0 {
 		limits["expected_runtime_seconds"] = plan.Limits.ExpectedRuntimeSeconds
+	} else {
+		limits["max_runtime_seconds"] = plan.Limits.MaxRuntimeSeconds
+		limits["max_tokens"] = legacyCloudWorkerProjectionMaxTokens
 	}
 	return CloudWorkerObject{
 		"owner_id": plan.OwnerID, "account_generation": plan.AccountGeneration,

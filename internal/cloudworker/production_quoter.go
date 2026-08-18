@@ -20,19 +20,20 @@ type PricingCatalog interface {
 }
 
 type PricingCatalogRequest struct {
-	AccountID         string        `json:"account_id"`
-	AccountGeneration uint64        `json:"account_generation"`
-	Region            string        `json:"region"`
-	InstanceType      string        `json:"instance_type"`
-	Architecture      string        `json:"architecture"`
-	VolumeGiB         uint64        `json:"volume_gib"`
-	VolumeType        string        `json:"volume_type"`
-	VolumeIOPS        uint64        `json:"volume_iops"`
-	VolumeThroughput  uint64        `json:"volume_throughput_mib"`
-	MaxRuntimeSeconds uint64        `json:"max_runtime_seconds"`
-	MaxTokens         uint64        `json:"max_tokens,omitempty"`
-	BasisDigest       string        `json:"basis_digest"`
-	WorkspaceMode     WorkspaceMode `json:"workspace_mode"`
+	AccountID              string        `json:"account_id"`
+	AccountGeneration      uint64        `json:"account_generation"`
+	Region                 string        `json:"region"`
+	InstanceType           string        `json:"instance_type"`
+	Architecture           string        `json:"architecture"`
+	VolumeGiB              uint64        `json:"volume_gib"`
+	VolumeType             string        `json:"volume_type"`
+	VolumeIOPS             uint64        `json:"volume_iops"`
+	VolumeThroughput       uint64        `json:"volume_throughput_mib"`
+	ColdStartSeconds       uint64        `json:"cold_start_seconds,omitempty"`
+	ExpectedRuntimeSeconds uint64        `json:"expected_runtime_seconds"`
+	MaxTokens              uint64        `json:"max_tokens,omitempty"`
+	BasisDigest            string        `json:"basis_digest"`
+	WorkspaceMode          WorkspaceMode `json:"workspace_mode"`
 }
 
 func (request PricingCatalogRequest) digest() string { return digestValue(request) }
@@ -164,8 +165,9 @@ func (quoter *ProductionQuoter) quote(ctx context.Context, request QuoteRequest)
 	catalogRequest := PricingCatalogRequest{AccountID: request.AWS.AccountID, AccountGeneration: request.AccountGeneration,
 		Region: request.AWS.Region, InstanceType: request.Compute.InstanceType, Architecture: request.Compute.Architecture,
 		VolumeGiB: request.Compute.VolumeGiB, VolumeType: request.Compute.VolumeType, VolumeIOPS: request.Compute.VolumeIOPS,
-		VolumeThroughput: request.Compute.VolumeThroughputMiB, MaxRuntimeSeconds: request.Limits.MaxRuntimeSeconds,
-		MaxTokens: request.Limits.MaxTokens, BasisDigest: request.AuthorizationBasisDigest, WorkspaceMode: request.WorkspaceMode}
+		VolumeThroughput: request.Compute.VolumeThroughputMiB, ColdStartSeconds: request.Limits.ColdStartSeconds,
+		ExpectedRuntimeSeconds: request.Limits.ExpectedRuntimeSeconds,
+		MaxTokens:              request.Limits.MaxTokens, BasisDigest: request.AuthorizationBasisDigest, WorkspaceMode: request.WorkspaceMode}
 	snapshot, err := quoter.catalog.Snapshot(ctx, catalogRequest)
 	if err != nil {
 		return Quote{}, errors.Join(ErrInvalid, err)
@@ -206,7 +208,17 @@ func validateProductionQuoteRequest(request QuoteRequest) error {
 }
 
 func estimateMaximumCost(rates PricingCatalogRates, compute ComputeSpec, limits Limits, cleanupReserveSeconds uint64) (uint64, error) {
-	runtimeSeconds, err := checkedAdd64(limits.MaxRuntimeSeconds, cleanupReserveSeconds)
+	if validateLimits(limits) != nil {
+		return 0, ErrInvalid
+	}
+	expectedSeconds := limits.ExpectedRuntimeSeconds
+	if expectedSeconds == 0 {
+		expectedSeconds = limits.MaxRuntimeSeconds
+	}
+	runtimeSeconds, err := checkedAdd64(limits.ColdStartSeconds, expectedSeconds)
+	if err == nil {
+		runtimeSeconds, err = checkedAdd64(runtimeSeconds, cleanupReserveSeconds)
+	}
 	if err != nil {
 		return 0, err
 	}

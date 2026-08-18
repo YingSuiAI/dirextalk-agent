@@ -84,7 +84,7 @@ func buildCloudWorkerPublicFixture(t *testing.T) cloudWorkerPublicFixture {
 		ProposalReason:   ProposalReasonExplicitUserCloud,
 		InputManifest:    InputManifest{Schema: InputManifestSchema, Items: []InputManifestItem{}},
 		WorkspaceMode:    WorkspaceNone,
-		RuntimeEstimate:  RuntimeEstimate{MinimumSeconds: 600, ExpectedSeconds: 1200, MaximumSeconds: 1800},
+		RuntimeEstimate:  RuntimeEstimate{ExpectedSeconds: 1200},
 		ModelAuthorization: ModelAuthorization{
 			ModelProfileID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", ModelProfileRevision: 4,
 			Provider: "openai", BaseURL: "https://api.openai.com/v1", Model: "gpt-fixture", Interface: "openai_responses",
@@ -223,7 +223,7 @@ func TestCloudWorkerPublicFixtureV1(t *testing.T) {
 		"artifact_grant", "worker_bootstrap", "model_relay", "aws_infrastructure_digest",
 		"authorization_basis_digest", "basis_digest", "provider_id", "launch_identity", "s3_bucket",
 		"s3_key", "s3_version_id", "bearer_token", "session_token", "api_key",
-		"runtime_task_json", "reference_id",
+		"runtime_task_json", "reference_id", "infrastructure_lifetime_seconds", "cold_start_seconds",
 	} {
 		if containsJSONKey(raw, forbidden) {
 			t.Fatalf("public fixture leaks private key %q", forbidden)

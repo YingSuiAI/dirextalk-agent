@@ -63,7 +63,7 @@ type PublicPlan struct {
 	ModelAuthorization       PublicModelAuthorization `json:"model_authorization"`
 	AWS                      PublicAWSBinding         `json:"aws"`
 	Compute                  ComputeSpec              `json:"compute"`
-	Limits                   Limits                   `json:"limits"`
+	Limits                   PublicLimits             `json:"limits"`
 	NetworkGrants            []string                 `json:"network_grants"`
 	SecretGrants             []PublicSecretGrant      `json:"secret_grants"`
 	ArtifactRetentionSeconds uint64                   `json:"artifact_retention_seconds"`
@@ -71,6 +71,19 @@ type PublicPlan struct {
 	ExecutionDigest          string                   `json:"execution_digest"`
 	CreatedAt                time.Time                `json:"created_at"`
 	UpdatedAt                time.Time                `json:"updated_at"`
+}
+
+// PublicLimits contains only the user-facing completion estimate and output
+// allowance. Provisioning and infrastructure cleanup bounds remain private
+// operator policy; exposing them would incorrectly turn those safety rails
+// into apparent task deadlines.
+type PublicLimits struct {
+	// Legacy fields remain readable for already-sealed historical plans.
+	MinimumRuntimeSeconds  uint64 `json:"minimum_runtime_seconds,omitempty"`
+	ExpectedRuntimeSeconds uint64 `json:"expected_runtime_seconds,omitempty"`
+	MaxRuntimeSeconds      uint64 `json:"max_runtime_seconds,omitempty"`
+	MaxTokens              uint64 `json:"max_tokens,omitempty"`
+	MaxOutputBytes         uint64 `json:"max_output_bytes"`
 }
 
 type PublicAWSBinding struct {
@@ -118,7 +131,13 @@ func (p Plan) Public() (PublicPlan, error) {
 			Interface: p.ModelAuthorization.Interface, CredentialVersion: p.ModelAuthorization.CredentialVersion,
 		},
 		AWS:     PublicAWSBinding{AccountID: p.AWS.AccountID, Region: p.AWS.Region, CredentialRevision: p.AWS.CredentialRevision},
-		Compute: p.Compute, Limits: p.Limits,
+		Compute: p.Compute,
+		Limits: PublicLimits{
+			MinimumRuntimeSeconds:  p.Limits.MinimumRuntimeSeconds,
+			ExpectedRuntimeSeconds: p.Limits.ExpectedRuntimeSeconds,
+			MaxRuntimeSeconds:      p.Limits.MaxRuntimeSeconds,
+			MaxTokens:              p.Limits.MaxTokens, MaxOutputBytes: p.Limits.MaxOutputBytes,
+		},
 		NetworkGrants:            append(make([]string, 0, len(p.NetworkGrants)), p.NetworkGrants...),
 		SecretGrants:             ProjectPublicSecretGrants(p.SecretGrants),
 		ArtifactRetentionSeconds: p.ArtifactRetentionSeconds,

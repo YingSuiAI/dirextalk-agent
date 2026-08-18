@@ -44,10 +44,9 @@ func ModelAuthorizationFromSnapshot(snapshot coremodel.ExecutionSnapshot) (Model
 // effectivePlanLimits validates the model's per-request output limit. The Plan
 // deliberately has no cumulative token budget: Pi may make as many model calls
 // as the approved task runtime permits.
-func effectivePlanLimits(defaults Limits, authorization ModelAuthorization, estimate RuntimeEstimate) (Limits, error) {
+func effectivePlanLimits(defaults Limits, infrastructureLifetimeSeconds uint64, authorization ModelAuthorization, estimate RuntimeEstimate) (Limits, error) {
 	copy := authorization
-	if validateLimits(defaults) != nil || defaults.MaxTokens != 0 || copy.Seal() != nil ||
-		estimate.validate(defaults.MaxRuntimeSeconds) != nil {
+	if validatePlanLimitDefaults(defaults) != nil || copy.Seal() != nil || estimate.validate() != nil {
 		return Limits{}, ErrInvalid
 	}
 	if copy.ContextWindow < MinimumPiContextWindow {
@@ -56,25 +55,28 @@ func effectivePlanLimits(defaults Limits, authorization ModelAuthorization, esti
 	if _, err := effectiveModelOutputTokens(copy); err != nil {
 		return Limits{}, err
 	}
-	defaults.MinimumRuntimeSeconds = estimate.MinimumSeconds
 	defaults.ExpectedRuntimeSeconds = estimate.ExpectedSeconds
-	defaults.MaxRuntimeSeconds = estimate.MaximumSeconds
+	defaults.InfrastructureLifetimeSeconds = infrastructureLifetimeSeconds
+	if validateLimits(defaults) != nil {
+		return Limits{}, ErrInvalid
+	}
 	return defaults, nil
 }
 
+func validatePlanLimitDefaults(defaults Limits) error {
+	if defaults.MaxRuntimeSeconds != 0 || defaults.MinimumRuntimeSeconds != 0 || defaults.ExpectedRuntimeSeconds != 0 ||
+		defaults.InfrastructureLifetimeSeconds != 0 || defaults.ColdStartSeconds < 60 || defaults.ColdStartSeconds > 30*60 ||
+		defaults.MaxTokens != 0 || defaults.MaxOutputBytes == 0 || defaults.MaxOutputBytes > MaxCloudWorkerOutputBytes {
+		return ErrInvalid
+	}
+	return nil
+}
+
 func runtimeEstimateFromLimits(limits Limits) RuntimeEstimate {
-	if limits.MinimumRuntimeSeconds == 0 && limits.ExpectedRuntimeSeconds == 0 {
-		return RuntimeEstimate{
-			MinimumSeconds:  limits.MaxRuntimeSeconds,
-			ExpectedSeconds: limits.MaxRuntimeSeconds,
-			MaximumSeconds:  limits.MaxRuntimeSeconds,
-		}
+	if limits.ExpectedRuntimeSeconds == 0 {
+		return RuntimeEstimate{ExpectedSeconds: limits.MaxRuntimeSeconds}
 	}
-	return RuntimeEstimate{
-		MinimumSeconds:  limits.MinimumRuntimeSeconds,
-		ExpectedSeconds: limits.ExpectedRuntimeSeconds,
-		MaximumSeconds:  limits.MaxRuntimeSeconds,
-	}
+	return RuntimeEstimate{ExpectedSeconds: limits.ExpectedRuntimeSeconds}
 }
 
 // effectiveModelOutputTokens returns the model-qualified ceiling for one Pi

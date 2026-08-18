@@ -177,9 +177,15 @@ type CloudWorker struct {
 	MaximumCatalogAge             time.Duration `yaml:"maximum_catalog_age" mapstructure:"maximum_catalog_age"`
 	ContingencyBasisPoints        uint32        `yaml:"contingency_basis_points" mapstructure:"contingency_basis_points"`
 	AbsoluteHardLimitMicros       int64         `yaml:"absolute_hard_limit_micros" mapstructure:"absolute_hard_limit_micros"`
-	// MaxRuntime is the trusted upper policy bound for a task-specific runtime
-	// estimate. It is not copied into every new Plan as a fixed duration.
+	// MaxRuntime is a deprecated compatibility alias for InstanceLifetime.
+	// It is never exposed as a task execution limit.
 	MaxRuntime time.Duration `yaml:"max_runtime" mapstructure:"max_runtime"`
+	// InstanceLifetime is the operator-owned emergency lifetime for temporary
+	// AWS resources. Normal task completion destroys them immediately.
+	InstanceLifetime time.Duration `yaml:"instance_lifetime" mapstructure:"instance_lifetime"`
+	// ColdStart is the qualified provisioning ceiling for this exact Worker
+	// release. It is separate from model-estimated task execution time.
+	ColdStart time.Duration `yaml:"cold_start" mapstructure:"cold_start"`
 	// MaxTokens keeps older deployment YAML readable. It is ignored when new
 	// Plans are composed and may be removed from operator configuration.
 	MaxTokens                uint64        `yaml:"max_tokens" mapstructure:"max_tokens"`
@@ -533,6 +539,9 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 	if worker.QuoteTTL == 0 {
 		worker.QuoteTTL = 5 * time.Minute
 	}
+	if worker.InstanceLifetime == 0 {
+		worker.InstanceLifetime = worker.MaxRuntime
+	}
 	if worker.ControllerPollInterval == 0 {
 		worker.ControllerPollInterval = 500 * time.Millisecond
 	}
@@ -547,7 +556,8 @@ func ValidateCoreCloudWorker(cfg *Config) error {
 	}
 	if worker.QuoteTTL <= 0 || worker.QuoteTTL > 15*time.Minute || worker.MaximumCatalogAge < 0 || worker.MaximumCatalogAge > 15*time.Minute ||
 		worker.ContingencyBasisPoints > 10_000 || worker.AbsoluteHardLimitMicros <= 0 ||
-		worker.MaxRuntime < time.Minute || worker.MaxRuntime > 24*time.Hour || worker.MaxRuntime%time.Second != 0 ||
+		worker.InstanceLifetime < 30*time.Minute || worker.InstanceLifetime > 30*24*time.Hour || worker.InstanceLifetime%time.Second != 0 ||
+		worker.ColdStart < time.Minute || worker.ColdStart > 30*time.Minute || worker.ColdStart%time.Second != 0 ||
 		worker.MaxOutputBytes == 0 || worker.MaxOutputBytes > cloudworker.MaxCloudWorkerOutputBytes ||
 		worker.ControllerPollInterval <= 0 || worker.ControllerPollInterval > 30*time.Second ||
 		worker.WorkerHeartbeatInterval < time.Second || worker.WorkerHeartbeatInterval > time.Minute ||

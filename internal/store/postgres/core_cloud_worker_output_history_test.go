@@ -133,7 +133,7 @@ func newSharedPGCloudWorkerHarness(t *testing.T, base *pgCloudWorkerHarness) *pg
 		ObjectiveSummary: "Another verified cloud result", UserPromptDigest: pgCloudDigest(lease.Turn.Prompt),
 		ProposalReason: cloudworker.ProposalReasonExplicitUserCloud, InputManifest: cloudworker.InputManifest{},
 		WorkspaceMode: cloudworker.WorkspaceNone, ModelAuthorization: authorization,
-		RuntimeEstimate: cloudworker.RuntimeEstimate{MinimumSeconds: 600, ExpectedSeconds: 1200, MaximumSeconds: 1800},
+		RuntimeEstimate: cloudworker.RuntimeEstimate{ExpectedSeconds: 1200},
 	}
 	return &pgCloudWorkerHarness{
 		ctx: base.ctx, store: base.store, cloud: cloudStore, tasks: NewCoreTaskStore(base.store),
