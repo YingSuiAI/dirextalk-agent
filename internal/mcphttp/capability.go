@@ -28,8 +28,22 @@ func (f ToolProviderFunc) Tools(ctx context.Context) ([]Tool, error) {
 
 type Tool struct {
 	Definition coremodel.Tool
+	Effect     ToolEffect
 	Run        func(context.Context, ToolInvocation) (ToolResult, error)
 }
+
+// ToolEffect is the conservative execution class derived from the complete
+// standard MCP tool annotations. Only an internally consistent, fully
+// annotated read is safe to replay. Every incomplete or contradictory
+// annotation set is an unsafe mutation.
+type ToolEffect string
+
+const (
+	ToolEffectReadOnly       ToolEffect = "read_only"
+	ToolEffectUnsafeMutation ToolEffect = "unsafe_mutation"
+)
+
+func (e ToolEffect) ReadOnly() bool { return e == ToolEffectReadOnly }
 
 // ToolInvocation binds a call to its model tool name and canonical arguments.
 type ToolInvocation struct {
