@@ -154,8 +154,29 @@ func (b LinuxBackend) validateCgroupPrerequisites(ctx context.Context) error {
 	if e != nil || !hasController(string(controllers), "cpu") || !hasController(string(controllers), "memory") || !hasController(string(controllers), "pids") {
 		return unavailableAt("cgroup_controllers")
 	}
+	return ensureCgroupDelegation(filepath.Join(b.CgroupRoot, "cgroup.subtree_control"), os.ReadFile, writeCgroup)
+}
+
+func ensureCgroupDelegation(path string, readFile func(string) ([]byte, error), writeFile func(string, string) error) error {
+	current, err := readFile(path)
+	if err != nil {
+		return unavailableAt("cgroup_delegation")
+	}
+	var commands []string
 	for _, name := range []string{"cpu", "memory", "pids"} {
-		if !hasController(string(mustReadFile(filepath.Join(b.CgroupRoot, "cgroup.subtree_control"))), name) {
+		if !hasController(string(current), name) {
+			commands = append(commands, "+"+name)
+		}
+	}
+	if len(commands) > 0 && writeFile(path, strings.Join(commands, " ")) != nil {
+		return unavailableAt("cgroup_delegation")
+	}
+	current, err = readFile(path)
+	if err != nil {
+		return unavailableAt("cgroup_delegation")
+	}
+	for _, name := range []string{"cpu", "memory", "pids"} {
+		if !hasController(string(current), name) {
 			return unavailableAt("cgroup_delegation")
 		}
 	}
@@ -427,11 +448,6 @@ func probeIDs() (string, string, string, error) {
 	return ids[0], ids[1], ids[2], nil
 }
 
-func mustReadFile(path string) []byte {
-	b, _ := os.ReadFile(path)
-	return b
-}
-
 func writeCgroup(path, value string) error {
 	f, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
@@ -486,8 +502,9 @@ func (b LinuxBackend) StartV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	// Active readiness is owned by the runner startup/operation boundary. Do not
 	// launch a second disposable sandbox inside every real StartV2: the actual
 	// cgroup creation, namespace handshake and mount construction below already
-	// fail closed. Retain this non-mutating cgroup-v2 prerequisite check so a
-	// direct caller can never execute against an ordinary directory.
+	// fail closed. Retain this idempotent cgroup-v2 prerequisite path so a
+	// direct caller can never execute against an ordinary directory or without
+	// the three required controllers delegated to child cgroups.
 	if err := b.validateCgroupPrerequisites(ctx); err != nil {
 		return nil, err
 	}
