@@ -54,6 +54,12 @@ type Service struct {
 	turnOrdering     map[string]*turnDeltaOrdering
 }
 
+type turnModelOutcome struct {
+	result ModelRunResult
+	err    error
+	retry  coremodel.RetryMetadata
+}
+
 // MemoryRecallResolver supplies a bounded, already-delimited model-only
 // context for the current turn. Implementations must never return raw
 // credentials, source metadata, or unbounded content.
@@ -1107,6 +1113,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if err := validateProfilePins(cmd.ProfileSnapshot, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); err != nil {
 		return Turn{}, err
 	}
+	var admissionExtensions []ResolvedExtension
 	if len(cmd.ExtensionSnapshots) == 0 {
 		if s.extensions == nil {
 			return Turn{}, ErrInvalid
@@ -1138,11 +1145,26 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 		if err := validateUniqueSnapshotTools(cmd.ExtensionSnapshots); err != nil {
 			return Turn{}, err
 		}
+		admissionExtensions = append([]ResolvedExtension(nil), resolved...)
+	} else {
+		var resolveErr error
+		admissionExtensions, resolveErr = s.resolveAcceptedTurnExtensions(ctx, cmd.ExtensionSnapshots)
+		if resolveErr != nil {
+			return Turn{}, resolveErr
+		}
 	}
 	if err := cmd.Validate(); err != nil {
 		return Turn{}, err
 	}
-	turn, err := s.turns.StartTurn(ctx, cmd)
+	candidate, err := s.turns.PrepareTurnRuntimeAdmission(ctx, cmd)
+	if err != nil {
+		return Turn{}, err
+	}
+	runtimeSnapshot, err := s.buildTurnAdmissionRuntime(ctx, candidate, admissionExtensions)
+	if err != nil {
+		return Turn{}, err
+	}
+	turn, err := s.turns.StartTurnWithRuntime(ctx, cmd, runtimeSnapshot)
 	if err != nil {
 		return Turn{}, err
 	}
@@ -1150,6 +1172,23 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 		s.startTurnSupervisor(turn.ID, context.WithoutCancel(ctx))
 	}
 	return turn, nil
+}
+
+func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, extensions []ResolvedExtension) (TurnRuntimeSnapshot, error) {
+	intrinsics, err := s.resolveIntrinsicTools(ctx, TurnLease{Turn: turn, LeaseID: "runtime-admission", Epoch: 1})
+	if err != nil {
+		return TurnRuntimeSnapshot{}, err
+	}
+	profile := turn.ProfileSnapshot.Profile()
+	systemPrompt := appendSystemPrompt(profile.SystemPrompt, conversationConvergenceGuidance)
+	systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, extensions)
+	if containsStaticSiteIntrinsic(intrinsics) {
+		systemPrompt = staticSiteSystemPrompt(systemPrompt)
+	}
+	if containsCloudWorkerIntrinsic(intrinsics) {
+		systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
+	}
+	return NewTurnRuntimeSnapshot(systemPrompt, turn.ProfileSnapshot, intrinsics, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest)
 }
 
 func (s *Service) GetTurn(ctx context.Context, id string) (Turn, error) {
@@ -1665,10 +1704,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	s.cancelSignals[id] = cancelSignal
 	s.cancelMu.Unlock()
 	defer func() { s.cancelMu.Lock(); delete(s.cancelSignals, id); s.cancelMu.Unlock() }()
-	resultCh := make(chan struct {
-		result ModelRunResult
-		err    error
-	}, 1)
+	resultCh := make(chan turnModelOutcome, 1)
 	var recalledMemory string
 	if !replayed && s.memoryRecall != nil {
 		recallCtx, recallCancel := context.WithTimeout(ctx, 15*time.Second)
@@ -1739,40 +1775,93 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		modelExtensionSnapshots = nil
 		modelIntrinsicTools = nil
 	}
+	profile := turn.ProfileSnapshot.Profile()
+	systemPrompt := appendSystemPrompt(profile.SystemPrompt, conversationConvergenceGuidance)
+	systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, modelExtensions)
+	if containsStaticSiteIntrinsic(modelIntrinsicTools) {
+		systemPrompt = staticSiteSystemPrompt(systemPrompt)
+	}
+	if containsCloudWorkerIntrinsic(modelIntrinsicTools) {
+		systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
+	}
+	if toolCallBudgetExhausted {
+		systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
+	} else if history.forcedToolName == "" {
+		switch history.loopRecovery {
+		case toolLoopNudge:
+			systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
+		case toolLoopSynthesize:
+			systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
+		}
+	}
+	frozenModelRequest := ModelRunRequest{
+		Conversation: modelConversation,
+		Profile: ResolvedProfile{
+			ID:           profile.ID,
+			DisplayName:  profile.DisplayName,
+			Provider:     string(profile.Provider),
+			Model:        profile.Model,
+			SystemPrompt: systemPrompt,
+		},
+		Snapshot:              turn.ProfileSnapshot,
+		ProfileSnapshot:       turn.ProfileSnapshot,
+		ForcedToolName:        history.forcedToolName,
+		Intrinsics:            append([]ResolvedIntrinsic(nil), modelIntrinsicTools...),
+		Extensions:            modelExtensions,
+		ExtensionSnapshots:    modelExtensionSnapshots,
+		InputPartsByMessageID: inputParts,
+	}
+	var runtimeSnapshot TurnRuntimeSnapshot
+	if !replayed {
+		extensionDigest := TurnStartCommand{ExtensionSnapshots: modelExtensionSnapshots}.ExtensionSnapshotDigest()
+		var snapshotErr error
+		runtimeSnapshot, snapshotErr = NewTurnRuntimeSnapshot(systemPrompt, turn.ProfileSnapshot, modelIntrinsicTools, extensionDigest, turn.AttachmentSnapshotDigest)
+		if snapshotErr != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
+			return
+		}
+		if validateErr := s.turns.ValidateTurnRuntime(ctx, lease, runtimeSnapshot); validateErr != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
+			return
+		}
+	}
 	modelCtx := child
 	modelCancel := func() {}
-	if durableDispatch {
-		if !replayed {
-			prepared, prepareErr := dispatchStore.PrepareTurnModel(ctx, lease)
-			if errors.Is(prepareErr, ErrModelBudgetExhausted) {
-				_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
-				return
+	if durableDispatch && !replayed {
+		prepared, prepareErr := dispatchStore.PrepareTurnModel(ctx, lease)
+		if errors.Is(prepareErr, ErrModelBudgetExhausted) {
+			_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
+			return
+		}
+		if prepareErr != nil {
+			if current, getErr := s.turns.GetTurn(ctx, turn.ID); getErr == nil && current.DispatchState == "dispatched" {
+				_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, modelDispatchUncertainCode, modelDispatchUncertainSummary)
+				_, _ = s.turns.FailTurn(ctx, lease, modelDispatchUncertainCode, modelDispatchUncertainSummary)
 			}
-			if prepareErr != nil {
-				if current, getErr := s.turns.GetTurn(ctx, turn.ID); getErr == nil && current.DispatchState == "dispatched" {
-					_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, "provider_uncertain", "model dispatch outcome is unknown")
-					_, _ = s.turns.FailTurn(ctx, lease, "provider_uncertain", "model dispatch outcome is unknown")
+			return
+		}
+		turn.ModelDispatchCount = prepared.ModelDispatchCount
+		turn.ModelActiveDuration = prepared.ModelActiveDuration
+		remaining := MaxTurnModelActiveDuration - prepared.ModelActiveDuration
+		if remaining <= 0 {
+			_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
+			_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
+			return
+		}
+		modelCtx, modelCancel = context.WithTimeout(child, remaining)
+	}
+	defer modelCancel()
+	if !replayed {
+		if attempts, ok := s.turns.(TurnModelAttemptStore); ok {
+			if bindErr := attempts.BindTurnModelRuntime(ctx, lease, runtimeSnapshot); bindErr != nil {
+				if errors.Is(bindErr, ErrTurnRuntimeIncompatible) {
+					_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
 				}
 				return
 			}
-			turn.ModelDispatchCount = prepared.ModelDispatchCount
-			turn.ModelActiveDuration = prepared.ModelActiveDuration
-			remaining := MaxTurnModelActiveDuration - prepared.ModelActiveDuration
-			if remaining <= 0 {
-				_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
-				_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
-				return
-			}
-			modelCtx, modelCancel = context.WithTimeout(child, remaining)
 		}
 	}
-	defer modelCancel()
-	if replayed {
-		resultCh <- struct {
-			result ModelRunResult
-			err    error
-		}{replay, nil}
-	} else {
+	runAttempt := func() {
 		deltaBuffer := newTurnDeltaBuffer(defaultTurnDeltaFlushBytes, defaultTurnDeltaFlushInterval, func(delta ModelDelta) error {
 			_, appendErr := s.turns.AppendTurnEvent(ctx, id, TurnEvent{
 				Kind:             TurnEventDelta,
@@ -1784,47 +1873,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		ordering := &turnDeltaOrdering{buffer: deltaBuffer}
 		s.registerTurnOrdering(id, ordering)
 		go func() {
-			defer modelCancel()
 			defer s.unregisterTurnOrdering(id, ordering)
-			profile := turn.ProfileSnapshot.Profile()
-			systemPrompt := appendSystemPrompt(profile.SystemPrompt, conversationConvergenceGuidance)
-			systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, modelExtensions)
-			if containsStaticSiteIntrinsic(modelIntrinsicTools) {
-				systemPrompt = staticSiteSystemPrompt(systemPrompt)
-			}
-			if containsCloudWorkerIntrinsic(modelIntrinsicTools) {
-				systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
-			}
-			if toolCallBudgetExhausted {
-				systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
-			} else if history.forcedToolName == "" {
-				switch history.loopRecovery {
-				case toolLoopNudge:
-					systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
-				case toolLoopSynthesize:
-					systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
+			visibleOutput := false
+			result, runErr := s.runModel(modelCtx, frozenModelRequest, func(delta ModelDelta) error {
+				if delta.Text != "" || delta.ReasoningContent != "" || delta.ToolCall != nil {
+					visibleOutput = true
 				}
-			}
-			// Force the current streaming runner so active provider streams are
-			// bounded only by their inactivity watchdog. Visible assistant text and
-			// provider reasoning use the same durable delta ordering.
-			result, runErr := s.runModel(modelCtx, ModelRunRequest{
-				Conversation: modelConversation,
-				Profile: ResolvedProfile{
-					ID:           profile.ID,
-					DisplayName:  profile.DisplayName,
-					Provider:     string(profile.Provider),
-					Model:        profile.Model,
-					SystemPrompt: systemPrompt,
-				},
-				Snapshot:              turn.ProfileSnapshot,
-				ProfileSnapshot:       turn.ProfileSnapshot,
-				ForcedToolName:        history.forcedToolName,
-				Intrinsics:            append([]ResolvedIntrinsic(nil), modelIntrinsicTools...),
-				Extensions:            modelExtensions,
-				ExtensionSnapshots:    modelExtensionSnapshots,
-				InputPartsByMessageID: inputParts,
-			}, deltaBuffer.Append)
+				return deltaBuffer.Append(delta)
+			})
 			flushErr := deltaBuffer.Close()
 			if runErr == nil && flushErr != nil {
 				runErr = flushErr
@@ -1832,11 +1888,17 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			if errors.Is(modelCtx.Err(), context.DeadlineExceeded) && child.Err() == nil {
 				runErr = ErrModelBudgetExhausted
 			}
-			resultCh <- struct {
-				result ModelRunResult
-				err    error
-			}{result, runErr}
+			retry := coremodel.PreOutputRetryMetadata(runErr)
+			if visibleOutput || flushErr != nil {
+				retry = coremodel.RetryMetadata{}
+			}
+			resultCh <- turnModelOutcome{result: result, err: runErr, retry: retry}
 		}()
+	}
+	if replayed {
+		resultCh <- turnModelOutcome{result: replay}
+	} else {
+		runAttempt()
 	}
 	interval := s.leaseTTL / 3
 	if interval <= 0 {
@@ -1844,10 +1906,28 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	}
 	heartbeat := time.NewTicker(interval)
 	defer heartbeat.Stop()
+	var retryTimer <-chan time.Time
+	cancelEvents := (<-chan struct{})(cancelSignal)
+	retryCount := 0
 	for {
 		select {
 		case out := <-resultCh:
 			if out.err != nil {
+				if out.retry.Retryable && retryCount == 0 && !replayed {
+					if attempts, ok := s.turns.(TurnModelAttemptStore); ok {
+						code, summary := classifyModelDispatchFailure(out.err)
+						delay := out.retry.RetryAfter
+						if delay <= 0 {
+							delay = deterministicRetryBackoff(turn.ID, retryCount)
+						}
+						failure := ModelAttemptFailure{Code: code, Summary: summary, RateLimited: out.retry.RateLimited, RetryAfterMS: delay.Milliseconds()}
+						if attempts.MarkTurnModelRetryable(ctx, lease, failure) == nil {
+							retryCount++
+							retryTimer = time.After(delay)
+							continue
+						}
+					}
+				}
 				if t, e := s.turns.GetTurn(ctx, id); e == nil && t.CancelRequested {
 					if cancelStore, ok := s.turns.(TurnCancelStore); ok {
 						_, _ = cancelStore.MarkTurnCanceledRequested(ctx, id)
@@ -1855,7 +1935,12 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				} else {
 					code, summary := classifyModelDispatchFailure(out.err)
 					if durableDispatch {
-						_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, code, summary)
+						failure := ModelAttemptFailure{Code: code, Summary: summary, RateLimited: out.retry.RateLimited, RetryAfterMS: out.retry.RetryAfter.Milliseconds()}
+						if attempts, ok := s.turns.(TurnModelAttemptStore); ok {
+							_ = attempts.MarkTurnModelAttemptUncertain(ctx, lease, failure)
+						} else {
+							_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, code, summary)
+						}
 					}
 					_, _ = s.turns.FailTurn(ctx, lease, code, summary)
 				}
@@ -2188,6 +2273,40 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				_, _ = s.turns.FailTurn(ctx, lease, "turn_commit_failed", "conversation response could not be committed")
 			}
 			return
+		case <-retryTimer:
+			retryTimer = nil
+			if child.Err() != nil {
+				return
+			}
+			if errors.Is(modelCtx.Err(), context.DeadlineExceeded) {
+				_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
+				return
+			}
+			if current, getErr := s.turns.GetTurn(ctx, id); getErr != nil || current.CancelRequested {
+				if getErr == nil {
+					if cancelStore, ok := s.turns.(TurnCancelStore); ok {
+						_, _ = cancelStore.MarkTurnCanceledRequested(ctx, id)
+					}
+				}
+				return
+			}
+			attempts, ok := s.turns.(TurnModelAttemptStore)
+			if !ok {
+				_, _ = s.turns.FailTurn(ctx, lease, modelDispatchUncertainCode, modelDispatchUncertainSummary)
+				return
+			}
+			prepared, prepareErr := attempts.PrepareTurnModelRetry(ctx, lease)
+			if errors.Is(prepareErr, ErrModelBudgetExhausted) {
+				_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
+				return
+			}
+			if prepareErr != nil {
+				_, _ = s.turns.FailTurn(ctx, lease, modelDispatchUncertainCode, modelDispatchUncertainSummary)
+				return
+			}
+			turn.ModelDispatchCount = prepared.ModelDispatchCount
+			turn.ModelActiveDuration = prepared.ModelActiveDuration
+			runAttempt()
 		case <-heartbeat.C:
 			t, e := s.turns.GetTurn(ctx, id)
 			if e == nil && t.CancelRequested {
@@ -2197,8 +2316,12 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			if err != nil {
 				cancel()
 			}
-		case <-cancelSignal:
+		case <-cancelEvents:
+			cancelEvents = nil
 			cancel()
+			if retryTimer != nil {
+				return
+			}
 		}
 	}
 }
@@ -2282,22 +2405,26 @@ func resolveTurnAttachmentInputParts(ctx context.Context, resolver TurnAttachmen
 }
 
 const (
-	modelDispatchUncertainCode    = "provider_uncertain"
-	modelDispatchUncertainSummary = "model dispatch outcome is unknown"
-	modelResponseTimeoutCode      = "provider_timeout"
-	modelResponseTimeoutSummary   = "model stream stopped producing progress; outcome is unknown; send a new turn to retry"
-	modelBudgetExhaustedCode      = "model_budget_exhausted"
-	modelBudgetExhaustedSummary   = "model execution budget was exhausted before a final response"
-	toolBudgetExhaustedCode       = "tool_budget_exhausted"
-	toolBudgetExhaustedSummary    = "tool call budget was exhausted before a final response"
-	modelProviderRejectedCode     = "provider_rejected"
-	modelProviderRejectedSummary  = "model provider rejected the request"
-	modelRequestInvalidCode       = "invalid_model_request"
-	modelRequestInvalidSummary    = "model request is invalid"
-	modelProviderResponseCode     = "provider_invalid_response"
-	modelProviderResponseSummary  = "model provider returned an invalid response"
-	modelProviderTruncatedCode    = "provider_stream_truncated"
-	modelProviderTruncatedSummary = "model provider stream ended before completion"
+	modelDispatchUncertainCode      = "provider_uncertain"
+	modelDispatchUncertainSummary   = "model dispatch outcome is unknown"
+	modelResponseTimeoutCode        = "provider_timeout"
+	modelResponseTimeoutSummary     = "model stream stopped producing progress; outcome is unknown; send a new turn to retry"
+	modelBudgetExhaustedCode        = "model_budget_exhausted"
+	modelBudgetExhaustedSummary     = "model execution budget was exhausted before a final response"
+	toolBudgetExhaustedCode         = "tool_budget_exhausted"
+	toolBudgetExhaustedSummary      = "tool call budget was exhausted before a final response"
+	modelProviderRejectedCode       = "provider_rejected"
+	modelProviderRejectedSummary    = "model provider rejected the request"
+	modelProviderRateLimitedCode    = "provider_rate_limited"
+	modelProviderRateLimitedSummary = "model provider rate limit was reached"
+	turnRuntimeIncompatibleCode     = "TURN_RUNTIME_INCOMPATIBLE"
+	turnRuntimeIncompatibleSummary  = "accepted turn runtime is incompatible with this runtime"
+	modelRequestInvalidCode         = "invalid_model_request"
+	modelRequestInvalidSummary      = "model request is invalid"
+	modelProviderResponseCode       = "provider_invalid_response"
+	modelProviderResponseSummary    = "model provider returned an invalid response"
+	modelProviderTruncatedCode      = "provider_stream_truncated"
+	modelProviderTruncatedSummary   = "model provider stream ended before completion"
 )
 
 func classifyModelDispatchFailure(err error) (string, string) {
@@ -2309,6 +2436,9 @@ func classifyModelDispatchFailure(err error) (string, string) {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return modelResponseTimeoutCode, modelResponseTimeoutSummary
+	}
+	if errors.Is(err, coremodel.ErrProviderRateLimited) {
+		return modelProviderRateLimitedCode, modelProviderRateLimitedSummary
 	}
 	switch coremodel.SafeFailureClass(err) {
 	case "provider_http_4xx":
@@ -2323,6 +2453,11 @@ func classifyModelDispatchFailure(err error) (string, string) {
 		return modelResponseTimeoutCode, modelResponseTimeoutSummary
 	}
 	return modelDispatchUncertainCode, modelDispatchUncertainSummary
+}
+
+func deterministicRetryBackoff(turnID string, retry int) time.Duration {
+	hash := sha256.Sum256([]byte(fmt.Sprintf("turn-model-retry:%s:%d", turnID, retry)))
+	return 250*time.Millisecond + time.Duration(uint16(hash[0])<<8|uint16(hash[1]))%500*time.Millisecond
 }
 
 func validModelContinuation(result ModelRunResult) bool {

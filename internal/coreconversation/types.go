@@ -666,6 +666,7 @@ var (
 	ErrMemoryRecallUnavailable = errors.New("long-term memory recall is unavailable")
 	ErrExtensionsUnsupported   = errors.New("conversation extensions require durable turn")
 	ErrModelBudgetExhausted    = errors.New("conversation model budget exhausted")
+	ErrTurnRuntimeIncompatible = errors.New("conversation turn runtime is incompatible")
 )
 
 func validUUID(s string) bool {

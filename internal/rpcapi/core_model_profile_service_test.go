@@ -127,5 +127,25 @@ func TestModelProfileRPCSyncPresenceAndOrder(t *testing.T) {
 	}
 }
 
+func TestModelProfileRPCSyncRequiresExplicitRequestDialect(t *testing.T) {
+	repo := coremodel.NewMemoryProfileRepository()
+	domain, err := coremodel.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, _ := NewModelProfileService(domain)
+	_, err = service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
+		IdempotencyKey: "a0000000-0000-4000-8000-000000000043",
+		Entries: []*agentv1.CoreModelProfileSyncEntry{{
+			ClientProfileId: "missing-dialect", DisplayName: "Missing dialect",
+			Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE,
+			Model:    "model", ApiKey: stringPtrRPC("secret"),
+		}},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("blank request dialect code=%v err=%v", status.Code(err), err)
+	}
+}
+
 func stringPtrRPC(v string) *string { return &v }
 func int64PtrRPC(v int64) *int64    { return &v }

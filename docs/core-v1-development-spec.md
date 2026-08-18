@@ -165,6 +165,9 @@ while `openai_reasoning_chat_v1` uses `max_completion_tokens` and rejects
 temperature or top-p sampling. Anthropic and Gemini use
 `anthropic_messages_2023_06` and `gemini_generate_content_v1beta` respectively;
 the runtime never infers a dialect from a model name.
+Create, update, and sync admission require that dialect explicitly; only
+already-persisted rows may pass through the current-wire normalization used by
+storage loading and migration.
 For OpenAI-compatible profiles, a bare HTTPS origin normalizes once to `/v1`;
 an explicit gateway path remains exact. Model discovery and completion append
 their operation paths to that same normalized root.
@@ -217,7 +220,11 @@ request and idle timeouts, rate limiting, other 4xx rejection, 5xx failure,
 transport unavailability, invalid responses, truncation, and output limits.
 Only safe classes cross the conversation boundary: 4xx is
 `provider_rejected`, timeout is `provider_timeout`, and otherwise uncertain
-dispatch remains `provider_uncertain` without automatic replay.
+dispatch remains `provider_uncertain`. Before any text, reasoning, or tool-call
+delta is visible, one physical retry is allowed only for 408, 429, 502, 503,
+504, or a confirmed dial failure. `Retry-After` seconds and HTTP dates are
+honored up to 30 seconds; other transport failures and all post-output failures
+are never replayed.
 
 An accepted or running durable turn may receive revision-fenced same-turn
 guidance. A confirmation-waiting turn also accepts guidance after its Cloud
@@ -345,8 +352,15 @@ from the owner/account-generation receipt. Public downloads continue to use
 the release URL; there is no duplicate byte-download capability.
 
 Eino adapts each model round, while the current conversation turn store owns
-dispatch admission, persisted results, recovery, and uncertain outcomes. A
-Native conversation turn retains a 24-dispatch, 20-minute cumulative
+dispatch admission, persisted results, recovery, and uncertain outcomes. Turn
+acceptance atomically binds the complete compiled system prompt, profile and
+request-dialect digest, intrinsic tool schemas, extension/attachment digests,
+and versioned execution policy. Runtime validation occurs before the first
+provider reservation; mismatch or a missing admission snapshot fails with
+`TURN_RUNTIME_INCOMPATIBLE`. Every physical provider attempt is then reserved
+in a durable fenced attempt ledger before HTTP dispatch, including the single
+allowed retry, and a retry copies the exact runtime snapshot. A Native
+conversation turn retains a 24-physical-attempt, 20-minute cumulative
 model-active fuse; tool, Worker, and confirmation execution or waiting do not
 consume that clock. Exhaustion is a
 durable `model_budget_exhausted` terminal outcome. Other background Tasks keep

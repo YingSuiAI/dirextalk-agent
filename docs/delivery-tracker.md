@@ -223,6 +223,17 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-18**, durable Turn admission began atomically freezing the
+  compiled system prompt, explicit request dialect/profile configuration,
+  intrinsic schemas, extension/attachment identity, and execution policy.
+  Each physical provider attempt now consumes the 24-attempt fuse before
+  dispatch. Only pre-output 408/429/502/503/504 or confirmed dial failures may
+  retry once, with bounded `Retry-After`; visible output and ambiguous
+  transport outcomes never replay. Focused unit/race checks cover retry
+  allowlisting, delta/tool-call replay denial, exact-once retry, budget
+  accounting, runtime mismatch, deterministic restart input, and admission
+  failure. PostgreSQL transition/fencing coverage remains opt-in through
+  `AGENT_TEST_POSTGRES_DSN`.
 - On **2026-08-18**, the automatic Message MCP catalog began deriving strict
   read/unsafe-mutation effects from the complete standard annotation set and
   binding those effects into immutable catalog identity. Five-minute fresh and

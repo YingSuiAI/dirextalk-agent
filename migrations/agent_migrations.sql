@@ -2601,3 +2601,38 @@ ALTER TABLE core_model_profiles
         (provider = 'volc_voice' AND request_dialect = 'volc_voice_v1')
     );
 -- dirextalk-agent migration end 000020_model_request_dialects.up.sql
+-- dirextalk-agent migration begin 000021_turn_model_attempts.up.sql
+ALTER TABLE core_conversation_turns
+    ADD COLUMN runtime_snapshot_json jsonb,
+    ADD COLUMN runtime_snapshot_digest char(64),
+    ADD CONSTRAINT core_conversation_turns_runtime_snapshot_pair_check CHECK ((runtime_snapshot_json IS NULL) = (runtime_snapshot_digest IS NULL)),
+    ADD CONSTRAINT core_conversation_turns_runtime_snapshot_json_check CHECK (runtime_snapshot_json IS NULL OR (jsonb_typeof(runtime_snapshot_json) = 'object' AND pg_column_size(runtime_snapshot_json) <= 1048576)),
+    ADD CONSTRAINT core_conversation_turns_runtime_snapshot_digest_check CHECK (runtime_snapshot_digest IS NULL OR runtime_snapshot_digest ~ '^[a-f0-9]{64}$');
+
+CREATE TABLE core_conversation_model_attempts (
+    turn_id uuid NOT NULL REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    attempt_sequence integer NOT NULL CHECK (attempt_sequence BETWEEN 1 AND 24),
+    dispatch_epoch bigint NOT NULL CHECK (dispatch_epoch > 0),
+    lease_id uuid NOT NULL,
+    lease_epoch bigint NOT NULL CHECK (lease_epoch > 0),
+    state text NOT NULL CHECK (state IN ('dispatched','retryable','completed','uncertain')),
+    failure_code text NOT NULL DEFAULT '' CHECK (length(failure_code) <= 128),
+    rate_limited boolean NOT NULL DEFAULT false,
+    retry_after_ms bigint NOT NULL DEFAULT 0 CHECK (retry_after_ms BETWEEN 0 AND 30000),
+    runtime_snapshot_json jsonb,
+    runtime_snapshot_digest char(64),
+    started_at timestamptz NOT NULL,
+    finished_at timestamptz,
+    PRIMARY KEY (turn_id, attempt_sequence),
+    CHECK ((state = 'dispatched') = (finished_at IS NULL)),
+    CHECK ((state IN ('retryable','uncertain')) = (failure_code <> '')),
+    CHECK (state <> 'completed' OR failure_code = ''),
+    CHECK ((runtime_snapshot_json IS NULL) = (runtime_snapshot_digest IS NULL)),
+    CHECK (runtime_snapshot_json IS NULL OR (jsonb_typeof(runtime_snapshot_json) = 'object' AND pg_column_size(runtime_snapshot_json) <= 1048576)),
+    CHECK (runtime_snapshot_digest IS NULL OR runtime_snapshot_digest ~ '^[a-f0-9]{64}$')
+);
+
+CREATE UNIQUE INDEX core_conversation_model_attempts_active_idx
+    ON core_conversation_model_attempts(turn_id)
+    WHERE state = 'dispatched';
+-- dirextalk-agent migration end 000021_turn_model_attempts.up.sql

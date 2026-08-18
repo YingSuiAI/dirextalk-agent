@@ -100,6 +100,30 @@ func (s *admissionStore) StartTurn(_ context.Context, command coreconversation.T
 	return s.turn, nil
 }
 
+func (s *admissionStore) PrepareTurnRuntimeAdmission(_ context.Context, command coreconversation.TurnStartCommand) (coreconversation.Turn, error) {
+	return coreconversation.Turn{
+		ID: command.TurnID, RequestID: command.RequestID, OwnerID: command.OwnerID,
+		AccountGeneration: command.AccountGeneration, ConversationID: command.ConversationID,
+		Prompt: command.Prompt, ProfileID: command.ProfileID, ProfileSnapshot: command.ProfileSnapshot,
+		ProfileSnapshotDigest: command.ProfileSnapshot.Digest(), ExtensionSnapshots: command.ExtensionSnapshots,
+		ExtensionSnapshotDigest: command.ExtensionSnapshotDigest(), State: coreconversation.TurnAccepted,
+		Revision: 1, CreatedAt: time.Now().UTC(),
+	}, nil
+}
+
+func (s *admissionStore) StartTurnWithRuntime(ctx context.Context, command coreconversation.TurnStartCommand, runtime coreconversation.TurnRuntimeSnapshot) (coreconversation.Turn, error) {
+	turn, err := s.StartTurn(ctx, command)
+	if err == nil {
+		s.turn.RuntimeSnapshot = &runtime
+		turn = s.turn
+	}
+	return turn, err
+}
+
+func (s *admissionStore) ValidateTurnRuntime(context.Context, coreconversation.TurnLease, coreconversation.TurnRuntimeSnapshot) error {
+	return nil
+}
+
 func (s *admissionStore) GetTurn(_ context.Context, id string) (coreconversation.Turn, error) {
 	if s.turn.ID != id {
 		return coreconversation.Turn{}, sql.ErrNoRows

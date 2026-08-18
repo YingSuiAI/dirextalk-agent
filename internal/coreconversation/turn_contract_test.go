@@ -586,6 +586,26 @@ func (s *publicActiveTurnStore) StartTurn(_ context.Context, cmd TurnStartComman
 	s.turn = Turn{ID: turnID, RequestID: cmd.RequestID, ConversationID: cmd.ConversationID, Prompt: cmd.Prompt, ProfileID: cmd.ProfileID, ProfileSnapshot: cmd.ProfileSnapshot, ProfileSnapshotDigest: cmd.ProfileSnapshot.Digest(), Revision: 1, State: TurnAccepted, LastSequence: 1}
 	return s.turn, nil
 }
+func (s *publicActiveTurnStore) PrepareTurnRuntimeAdmission(_ context.Context, cmd TurnStartCommand) (Turn, error) {
+	turnID := cmd.TurnID
+	if turnID == "" {
+		turnID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn:"+cmd.RequestID)).String()
+	}
+	return Turn{ID: turnID, RequestID: cmd.RequestID, OwnerID: cmd.OwnerID, AccountGeneration: cmd.AccountGeneration, ConversationID: cmd.ConversationID, Prompt: cmd.Prompt, ProfileID: cmd.ProfileID, ProfileSnapshot: cmd.ProfileSnapshot, ProfileSnapshotDigest: cmd.ProfileSnapshot.Digest(), ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), cmd.ExtensionSnapshots...), ExtensionSnapshotDigest: cmd.ExtensionSnapshotDigest(), State: TurnAccepted, Revision: 1, CreatedAt: time.Now().UTC()}, nil
+}
+func (s *publicActiveTurnStore) StartTurnWithRuntime(ctx context.Context, cmd TurnStartCommand, runtime TurnRuntimeSnapshot) (Turn, error) {
+	turn, err := s.StartTurn(ctx, cmd)
+	if err == nil {
+		s.mu.Lock()
+		s.turn.RuntimeSnapshot = &runtime
+		turn = s.turn
+		s.mu.Unlock()
+	}
+	return turn, err
+}
+func (s *publicActiveTurnStore) ValidateTurnRuntime(context.Context, TurnLease, TurnRuntimeSnapshot) error {
+	return nil
+}
 func (s *publicActiveTurnStore) GetTurn(_ context.Context, _ string) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -698,6 +718,15 @@ func (s *supervisorTurnStore) FailTurnUncertain(context.Context, string, string,
 func (s *replayTurnStore) StartTurn(context.Context, TurnStartCommand) (Turn, error) {
 	return s.turn, nil
 }
+func (s *replayTurnStore) PrepareTurnRuntimeAdmission(context.Context, TurnStartCommand) (Turn, error) {
+	return s.turn, nil
+}
+func (s *replayTurnStore) StartTurnWithRuntime(context.Context, TurnStartCommand, TurnRuntimeSnapshot) (Turn, error) {
+	return s.turn, nil
+}
+func (s *replayTurnStore) ValidateTurnRuntime(context.Context, TurnLease, TurnRuntimeSnapshot) error {
+	return nil
+}
 func (s *replayTurnStore) GetTurn(context.Context, string) (Turn, error) { return s.turn, nil }
 func (s *replayTurnStore) GetTurnByRequestID(context.Context, string) (Turn, error) {
 	return s.turn, nil
@@ -732,7 +761,7 @@ func (s *replayTurnStore) FailTurn(context.Context, TurnLease, string, string) (
 }
 
 func testTurnSnapshot() coremodel.ExecutionSnapshot {
-	return coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid", Model: "test", APIKey: "bound-secret"}
+	return coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, BaseURL: "https://example.invalid/v1", Model: "test", APIKey: "bound-secret"}
 }
 
 func TestStartTurnFingerprintBindsImmutableSnapshotAndPrompt(t *testing.T) {

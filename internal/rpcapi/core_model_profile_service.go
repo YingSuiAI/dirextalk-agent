@@ -111,6 +111,9 @@ func (s *ModelProfileService) Sync(ctx context.Context, req *agentv1.ModelProfil
 		if entry == nil {
 			return nil, grpcProfileError(coremodel.ErrInvalidProfile)
 		}
+		if strings.TrimSpace(entry.RequestDialect) == "" {
+			return nil, grpcProfileError(coremodel.ErrInvalidProfile)
+		}
 		provider, err := fromProtoProvider(entry.Provider)
 		if err != nil {
 			return nil, grpcProfileError(err)
