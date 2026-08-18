@@ -203,13 +203,15 @@ func boundedInventoryText(value string) string {
 }
 
 type ProposeIntrinsic struct {
-	service   *Service
-	owners    IntrinsicOwnerResolver
-	manifests IntrinsicManifestResolver
-	budgets   IntrinsicBudgetResolver
-	workers   RetainedWorkerInventoryResolver
-	manager   RetainedWorkerManager
-	turns     IntrinsicTurnCommitter
+	service     *Service
+	owners      IntrinsicOwnerResolver
+	manifests   IntrinsicManifestResolver
+	budgets     IntrinsicBudgetResolver
+	workers     RetainedWorkerInventoryResolver
+	manager     RetainedWorkerManager
+	turns       IntrinsicTurnCommitter
+	domains     RetainedWorkerDomainManager
+	domainTools coreconversation.IntrinsicToolStore
 }
 
 func NewProposeIntrinsic(service *Service, owners IntrinsicOwnerResolver, manifests IntrinsicManifestResolver, budgets IntrinsicBudgetResolver) (*ProposeIntrinsic, error) {
@@ -338,6 +340,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 			return p.executeDestroy(ctx, bound, request)
 		},
 	})
+	resolved = append(resolved, cloudWorkerDomainTools(p, bound)...)
 	return resolved, nil
 }
 

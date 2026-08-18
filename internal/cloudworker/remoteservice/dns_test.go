@@ -91,26 +91,26 @@ func TestRoute53DeleteReadsBackAbsence(t *testing.T) {
 	}
 }
 
-func TestRoute53LiteralCapabilityConfirmation(t *testing.T) {
+func TestRoute53PlannedMutationRevalidatesAndReadsBack(t *testing.T) {
 	mutation := dnsFixture(DNSUpsertA)
 	client := &fakeRoute53{}
-	if err := ReconcileLiteral(context.Background(), client, mutation, "bind_domain"); err != nil || !client.exists {
+	if err := ReconcilePlannedUpsert(context.Background(), client, mutation); err != nil || !client.exists {
 		t.Fatalf("bind err=%v client=%#v", err, client)
 	}
-	assertCalls(t, client.calls, "verify", "upsert", "verify", "read")
+	assertCalls(t, client.calls, "verify", "read", "verify", "upsert", "verify", "read")
 
 	client.calls = nil
 	mutation.Action = DNSDeleteA
-	if err := ReconcileLiteral(context.Background(), client, mutation, "unbind_domain"); err != nil || client.exists {
+	if err := ReconcilePlannedDelete(context.Background(), client, mutation); err != nil || client.exists {
 		t.Fatalf("unbind err=%v client=%#v", err, client)
 	}
 	assertCalls(t, client.calls, "verify", "read", "verify", "delete", "verify", "read")
 }
 
-func TestRoute53LiteralStopsWhenAccountDrifts(t *testing.T) {
+func TestRoute53PlannedMutationStopsWhenAccountDrifts(t *testing.T) {
 	mutation := dnsFixture(DNSDeleteA)
 	client := &fakeRoute53{record: mutation.Record, exists: true, verifyErrAt: 2}
-	if err := ReconcileLiteral(context.Background(), client, mutation, "unbind_domain"); !errors.Is(err, errAccountDrift) {
+	if err := ReconcilePlannedDelete(context.Background(), client, mutation); !errors.Is(err, errAccountDrift) {
 		t.Fatalf("delete drift error = %v", err)
 	}
 	assertCalls(t, client.calls, "verify", "read", "verify")
@@ -120,12 +120,27 @@ func TestRoute53LiteralStopsWhenAccountDrifts(t *testing.T) {
 
 	mutation.Action = DNSUpsertA
 	client = &fakeRoute53{verifyErrAt: 2}
-	if err := ReconcileLiteral(context.Background(), client, mutation, "bind_domain"); !errors.Is(err, errAccountDrift) {
+	if err := ReconcilePlannedUpsert(context.Background(), client, mutation); !errors.Is(err, errAccountDrift) {
 		t.Fatalf("upsert drift error = %v", err)
 	}
-	assertCalls(t, client.calls, "verify", "upsert", "verify")
-	if client.upserts != 1 {
+	assertCalls(t, client.calls, "verify", "read", "verify")
+	if client.upserts != 0 {
 		t.Fatalf("upsert count = %d", client.upserts)
+	}
+}
+
+func TestRoute53PlannedBindRefusesToReplaceChangedRecord(t *testing.T) {
+	mutation := dnsFixture(DNSUpsertA)
+	changed := mutation.Record
+	changed.IPv4 = "203.0.113.99"
+	client := &fakeRoute53{record: changed, exists: true}
+
+	if err := ReconcilePlannedUpsert(context.Background(), client, mutation); !errors.Is(err, ErrReadback) {
+		t.Fatalf("changed-record bind error = %v", err)
+	}
+	assertCalls(t, client.calls, "verify", "read")
+	if client.upserts != 0 || client.record != changed {
+		t.Fatalf("changed record was overwritten: %#v", client)
 	}
 }
 

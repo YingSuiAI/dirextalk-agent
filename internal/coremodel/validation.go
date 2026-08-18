@@ -26,17 +26,19 @@ var geminiModelPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,256}$`)
 var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 const (
-	IntrinsicCloudWorkerProposeToolName   = "cloud_worker_propose"
-	IntrinsicCloudWorkerInventoryToolName = "cloud_worker_inventory"
-	IntrinsicCloudWorkerDestroyToolName   = "cloud_worker_destroy"
-	IntrinsicScheduleCreateToolName       = "agent_schedule_create"
-	IntrinsicStaticSitePublishToolName    = "static_site_publish"
-	maxImageInputBytes                    = 8 << 20
+	IntrinsicCloudWorkerProposeToolName      = "cloud_worker_propose"
+	IntrinsicCloudWorkerInventoryToolName    = "cloud_worker_inventory"
+	IntrinsicCloudWorkerDestroyToolName      = "cloud_worker_destroy"
+	IntrinsicCloudWorkerDomainBindToolName   = "cloud_worker_domain_bind"
+	IntrinsicCloudWorkerDomainUnbindToolName = "cloud_worker_domain_unbind"
+	IntrinsicScheduleCreateToolName          = "agent_schedule_create"
+	IntrinsicStaticSitePublishToolName       = "static_site_publish"
+	maxImageInputBytes                       = 8 << 20
 )
 
 func IsIntrinsicToolName(value string) bool {
 	switch value {
-	case IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerInventoryToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicScheduleCreateToolName, IntrinsicStaticSitePublishToolName:
+	case IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerInventoryToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicCloudWorkerDomainBindToolName, IntrinsicCloudWorkerDomainUnbindToolName, IntrinsicScheduleCreateToolName, IntrinsicStaticSitePublishToolName:
 		return true
 	default:
 		return false

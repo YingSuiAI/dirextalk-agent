@@ -28,7 +28,7 @@ var (
 )
 
 const (
-	MaxWorkers            = 5
+	MaxWorkers            = 4
 	MaxLinkedArtifacts    = 128
 	reservedTextArtifacts = 2
 	maxWorkerScriptBytes  = 1 << 20

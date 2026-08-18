@@ -268,6 +268,28 @@ type ConversationToolStore interface {
 	PrepareConversationTool(context.Context, PrepareToolCommand) (ToolAttempt, coretask.Task, coreconfirmation.Confirmation, error)
 }
 
+// PrepareIntrinsicToolCommand is the Core-owned counterpart to an extension
+// tool handoff. The store validates the tool against the frozen runtime
+// snapshot and atomically creates the conversation-tool task, confirmation,
+// attempt, waiting turn state, and event.
+type PrepareIntrinsicToolCommand struct {
+	Lease              TurnLease
+	Round              uint32
+	Call               ToolCall
+	CanonicalArguments json.RawMessage
+	ArgumentsDigest    string
+	SafeSummary        string
+	IdempotencyKey     string
+	ExpiresAt          time.Time
+	Payload            coretask.ConversationToolTaskPayload
+	Binding            coreconfirmation.Binding
+}
+
+type IntrinsicToolStore interface {
+	OrderedConversationToolStore
+	PrepareIntrinsicTool(context.Context, PrepareIntrinsicToolCommand) (ToolAttempt, coretask.Task, coreconfirmation.Confirmation, error)
+}
+
 type ConversationToolRecoveryStore interface {
 	ObserveConversationTool(context.Context, string) (ToolAttempt, error)
 	ResumeConversationTurn(context.Context, string) error

@@ -389,14 +389,23 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   availability and optional workload hostname/managed-domain status. An
   unavailable historical
   credential or one failed AWS observation is projected on that retained
-  Worker without hiding other records. At most five retained Workers may exist
+  Worker without hiding other records. At most four retained Workers may exist
   for one authenticated owner/account generation across credential revisions;
   a destroying Worker whose compute resources are already gone does not occupy
-  a slot while DNS cleanup is retried. A domain is optional per workload;
-  `bind_domain` and `unbind_domain` pass their explicit confirmation literal
-  to the Route53 port, which maps the A record to the current public IPv4 and
-  performs read-back. Route53 support may be unavailable when the current
-  account/zone is not configured; this does not suppress Worker creation,
+  a slot while DNS cleanup is retried. A domain is optional per workload.
+  Native Agent conversations expose separate `cloud_worker_domain_bind` and
+  `cloud_worker_domain_unbind` model tools after Worker creation; they are not
+  owner-client `agent.worker.v1` mutations. Bind accepts only `worker_id`,
+  `workload_id`, and `hostname`; unbind accepts only `worker_id` and
+  `workload_id`. Each model call freezes the exact owner generation, Worker,
+  credential revision, workload, hosted zone, A record, and intent digest into
+  a durable Task and a distinct Core confirmation domain. Confirmation is
+  owner-owned state, never a model argument. Confirmed bind maps a 300-second A
+  record to the authoritatively observed current public IPv4; confirmed unbind
+  deletes only the exact persisted record and may proceed while the Worker is
+  unavailable. Both verify the owning account and read-back and refuse to
+  overwrite or remove a changed record. Route53 support may be unavailable
+  when the current account/zone is not configured; this does not suppress Worker creation,
   reuse, list, get, or destroy. There is no EIP field or operation. `destroy_worker`
   requires its explicit confirmation literal and the complete identity
   returned by list/get; a busy or changed resource identity fails closed.
@@ -594,7 +603,7 @@ lacks the general project/shell executor required by a substantial task. The
 model may select it without cloud or remote wording, but model text and local
 failures are not capability evidence. Cloud/local-only vetoes remain binding,
 and AWS resources start only after the owner confirms the pending quote. The
-manager supports no more than five retained Workers for one authenticated
+manager supports no more than four retained Workers for one authenticated
 owner/account generation across credential revisions. It discovers the newest
 Canonical official Ubuntu 24.04 LTS image and the
 default VPC/subnet at runtime, assigns an ordinary public IPv4, and uses

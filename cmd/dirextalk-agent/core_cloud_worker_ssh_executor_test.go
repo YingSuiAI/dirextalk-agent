@@ -137,7 +137,10 @@ func (destroyer *workerDestroyerStub) FinalizeWorkerDestroy(_ context.Context, r
 	return nil
 }
 func (route53 *route53Stub) ReadA(context.Context, string, string) (remoteservice.ARecord, bool, error) {
-	return route53.record, route53.exists, route53.readErr
+	if route53.readErr != nil && route53.upserts > 0 {
+		return route53.record, route53.exists, route53.readErr
+	}
+	return route53.record, route53.exists, nil
 }
 
 type workerStatusPricingCatalog struct {
@@ -497,6 +500,59 @@ func TestPublishServiceReturnsManualDNSWhenNoHostedZoneMatches(t *testing.T) {
 	if err != nil || stored.Domain != nil || stored.Hostname != service.Hostname || dns.upserts != 0 || publication.ZoneID != "" ||
 		!strings.Contains(publication.summary(), worker.status.PublicIP) || !strings.Contains(publication.summary(), "Create an A record") {
 		t.Fatalf("publication=%+v stored=%+v dns=%+v err=%v", publication, stored, dns, err)
+	}
+}
+
+func TestUnbindDomainUsesExactPersistedRecordAndKeepsWorker(t *testing.T) {
+	identity := workerIdentityFixture()
+	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.Credential = sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision, AccountID: binding.AccountID, Region: binding.Region}
+	repository, err := sshworkload.NewRepository(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := sshworkload.Service{Worker: identity, TaskID: "task-a", WorkloadID: "web", Port: 8080, HealthPath: "/health"}
+	if err = repository.PutService(context.Background(), service); err != nil {
+		t.Fatal(err)
+	}
+	domain := &sshworkload.Domain{ZoneID: "Z123", Hostname: "app.example.test", TTL: 300, BoundIPv4: "203.0.113.10"}
+	if err = repository.SetDomain(context.Background(), identity, service.WorkloadID, domain); err != nil {
+		t.Fatal(err)
+	}
+	dns := &route53Stub{record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}, exists: true}
+	expected := coretask.CloudWorkerDomainTaskPayload{Operation: "unbind", OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration,
+		CredentialID: identity.Credential.CredentialID, CredentialRevision: identity.Credential.CredentialRevision,
+		AWSAccountID: identity.Credential.AccountID, Region: identity.Credential.Region, WorkerID: identity.WorkerID,
+		InstanceID: identity.InstanceID, KeyPairID: identity.KeyPairID, SecurityGroupID: identity.SecurityGroupID,
+		WorkloadID: service.WorkloadID, Hostname: domain.Hostname, ZoneID: domain.ZoneID, TargetIPv4: domain.BoundIPv4, TTL: domain.TTL}
+	expected.IntentDigest = cloudWorkerDomainIntentDigest(expected)
+	stale := false
+	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository,
+		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{identity.Credential: {}},
+		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns},
+		resolveDomain: func(context.Context, string, uint64, string, string, string, string) (coretask.CloudWorkerDomainTaskPayload, error) {
+			if stale {
+				return coretask.CloudWorkerDomainTaskPayload{}, cloudworker.ErrStaleAuthorization
+			}
+			return expected, nil
+		}}
+
+	got, err := executor.ApplyRetainedWorkerDomain(context.Background(), expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repository.Get(context.Background(), identity, service.WorkloadID)
+	if err != nil || stored.Domain != nil || dns.deletes != 1 || got.Hostname != domain.Hostname || got.TargetIPv4 != domain.BoundIPv4 {
+		t.Fatalf("domain=%+v stored=%+v deletes=%d err=%v", got, stored, dns.deletes, err)
+	}
+
+	stale = true
+	if _, err = executor.ApplyRetainedWorkerDomain(context.Background(), expected); !errors.Is(err, cloudworker.ErrStaleAuthorization) || dns.deletes != 1 {
+		t.Fatalf("stale identity error=%v deletes=%d", err, dns.deletes)
 	}
 }
 

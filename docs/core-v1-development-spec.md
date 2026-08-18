@@ -636,7 +636,7 @@ flow first reads the current owner-scoped retained Worker IDs and passes the
 exact returned UUID to the static destroy tool. Provider identity is resolved
 only from Agent storage at execution time.
 
-The manager keeps at most five Workers for the authenticated owner/account
+The manager keeps at most four Workers for the authenticated owner/account
 generation. It discovers the newest Canonical official Ubuntu 24.04 LTS image
 and the default VPC/subnet, launches an instance with an ordinary public IPv4, and
 connects by outbound SSH. Agent uses short SSH operations to start work, read
@@ -678,8 +678,17 @@ Worker public IPv4. New Worker creation confirmation also covers the hostname;
 retained Worker reuse publishes it directly without another confirmation. Agent reports HTTPS ready only after a
 bounded public health probe succeeds. If no matching zone is available,
 service deployment still succeeds and the result returns the public IPv4 plus
-manual A-record instructions. DNS-only post-deployment binding is not exposed.
-Route53 is not required for Worker creation or ordinary execution. There is no EIP, custom AMI, S3/KMS artifact
+manual A-record instructions. A later Native Agent conversation may bind or
+unbind a same-account Route53 A record for an exact retained Worker workload
+through the separate `cloud_worker_domain_bind` and
+`cloud_worker_domain_unbind` model tools. Neither tool accepts confirmation as
+an argument. Each enters the existing durable Task/CoreConfirmation flow,
+freezes exact owner, credential, Worker, workload, hosted-zone, and record
+identity, and revalidates that identity before each Route53 call. Bind uses the
+Worker's authoritatively observed current public IPv4; unbind removes only the
+exact persisted record and does not require the Worker to be available. Both
+verify the mutation by read-back. Route53 is not required for Worker creation or
+ordinary execution. There is no EIP, custom AMI, S3/KMS artifact
 path, WorkerControl listener, model relay, or deploy-time Worker binding. The
 complete read, cancellation, event, artifact, and management contract is
 [Execution V2](execution-v2.md).

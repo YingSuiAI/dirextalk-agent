@@ -563,7 +563,7 @@ const confirmationSelect = `SELECT confirmation_id,binding_json,task_id,state,re
 // rejected/expired/canceled approval incapable of later reaching a runner and
 // releases the turn for the next model round.
 func terminalizeConversationToolTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.Confirmation, attemptState, reason string, at time.Time, resumeTurn bool) error {
-	if cur.Binding.OperationDomain != "conversation_tool" {
+	if cur.Binding.OperationDomain != "conversation_tool" && cur.Binding.OperationDomain != "cloud_worker.domain.bind" && cur.Binding.OperationDomain != "cloud_worker.domain.unbind" {
 		return nil
 	}
 	var turnID string

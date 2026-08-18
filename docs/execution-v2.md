@@ -26,7 +26,7 @@ completes. Status or load questions never authorize destruction.
 
 ## Persistent SSH Workers
 
-The Agent manages at most five retained Workers for the authenticated owner and account generation. It uses the sole active AWS credential uploaded and STS-verified through the App, discovers the newest Canonical official Ubuntu 24.04 LTS image and the account's default VPC/subnet, and creates an ordinary EC2 instance with an auto-assigned public IPv4.
+The Agent manages at most four retained Workers for the authenticated owner and account generation. It uses the sole active AWS credential uploaded and STS-verified through the App, discovers the newest Canonical official Ubuntu 24.04 LTS image and the account's default VPC/subnet, and creates an ordinary EC2 instance with an auto-assigned public IPv4.
 
 The Agent connects by outbound SSH with Agent-owned key material. There is no inbound Agent callback, EIP, custom AMI, S3/KMS artifact path, WorkerControl service, model relay, or deploy-time Worker configuration.
 
@@ -56,8 +56,18 @@ For a new Worker, its single creation confirmation also covers the hostname;
 reuse publishes the hostname directly without another confirmation. Agent reports
 HTTPS ready only after a bounded public health probe succeeds. If no matching
 zone is available, the service still succeeds and returns the IPv4 and manual
-A-record instructions. DNS-only post-deployment binding is not exposed.
-Route53 is not required for Worker creation, reuse, observation, or ordinary jobs.
+A-record instructions. Independently of service creation, a Native Agent
+conversation may later call `cloud_worker_domain_bind` or
+`cloud_worker_domain_unbind` for an exact retained Worker workload. The model
+provides only resource arguments; Core creates the owner confirmation and
+durable `waiting_confirmation` Task. Bind resolves the matching hosted zone on
+the Agent and targets the Worker's authoritatively observed current public
+IPv4. Unbind uses the exact persisted record and remains available when the
+Worker itself is unavailable. Before mutation and every Route53 call, Agent
+revalidates the frozen owner generation, current credential revision, Worker
+resource identity, workload, zone, and record. Both mutations verify the owning
+account and Route53 read-back. Route53 is not required for Worker creation,
+reuse, observation, or ordinary jobs.
 
 ## Results and artifacts
 

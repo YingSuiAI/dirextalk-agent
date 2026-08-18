@@ -132,9 +132,11 @@ contract](message-server-integration-development-contract.md), and
   limits, and the closed Knowledge quota status/error contract.
 - App-managed AWS credentials with STS identity verification, plus
   `WorkloadService` planning/confirmation with a fenced `WORKLOAD` Task.
-- Optional `agent.worker.v1` has closed owner-client list/get/destroy and
-  Route53 bind/unbind adapters for the maximum-five persistent SSH Worker
-  pool. It reports the current ordinary public IPv4 and optional
+- Optional `agent.worker.v1` has closed owner-client list/get/destroy for the
+  maximum-four persistent SSH Worker pool. Separate Native conversation
+  `cloud_worker_domain_bind` and `cloud_worker_domain_unbind` tools use the
+  durable Core confirmation/Task path and exact Route53 adapters. Inventory
+  reports the current ordinary public IPv4 and optional
   workload/domain state, never EIP. Worker creation, reuse, observation, and
   destroy require the Worker manager and verified-credential ports; optional
   Route53 operations additionally require a usable same-account hosted zone.
@@ -192,7 +194,7 @@ contract](message-server-integration-development-contract.md), and
   Cloud Worker publication while keeping the rest of Agent available.
   New Worker creation uses a fresh EC2/EBS quote and exact owner confirmation;
   retained idle Workers are reused without another creation. The manager
-  supports at most five ordinary-public-IPv4 EC2 Workers, discovers the current
+  supports at most four ordinary-public-IPv4 EC2 Workers, discovers the current
   Canonical official Ubuntu 24.04 LTS image and default network live, and copies
   remote results into Agent-owned local artifact storage. It has no EIP, S3/KMS,
   custom AMI, WorkerControl, model relay, or deploy-time account/credential binding.
@@ -339,7 +341,7 @@ support.
 - On **2026-08-13**, the active implementation replaced that historical
   inbound/custom-image path with the persistent SSH Worker manager. Focused
   tests covered AWS-owned AL2023/default-network discovery, ordinary public IPv4,
-  maximum-five capacity, confirmed creation, retained idle reuse, explicit
+  maximum-four capacity, confirmed creation, retained idle reuse, explicit
   destroy, reconnectable task status/log/artifact commands, live server-load
   observation, and local artifact storage. This evidence is code-level and
   does not claim a new live AWS mutation.

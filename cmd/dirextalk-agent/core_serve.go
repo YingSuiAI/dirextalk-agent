@@ -26,6 +26,7 @@ import (
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	capabilityserver "github.com/YingSuiAI/dirextalk-agent/internal/capability/server"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
@@ -307,10 +308,22 @@ func serveCore(cfg config.Config) error {
 			}
 			return fmt.Errorf("register Core Extension task handler: %w", err)
 		}
-		if extensionComposition.conversationToolHandler == nil {
-			return fmt.Errorf("conversation tool handler is unavailable")
+	}
+	if extensionComposition != nil || (cloudComposition != nil && cloudComposition.domainTaskHandler != nil) {
+		conversationToolHandler := func(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
+			payload := task.Spec.Payload.ConversationTool
+			if payload != nil && payload.ExecutionTarget == coretask.ExtensionExecutionTargetCoreIntrinsic {
+				if cloudComposition == nil || cloudComposition.domainTaskHandler == nil {
+					return coreruntime.ManagedOutcome{Err: cloudworker.ErrInvalid, TerminalOwned: true}
+				}
+				return cloudComposition.domainTaskHandler(ctx, task)
+			}
+			if extensionComposition == nil || extensionComposition.conversationToolHandler == nil {
+				return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
+			}
+			return extensionComposition.conversationToolHandler(ctx, task)
 		}
-		if err := taskExecutor.RegisterHandler(coretask.TaskKindConversationTool, extensionComposition.conversationToolHandler); err != nil {
+		if err := taskExecutor.RegisterHandler(coretask.TaskKindConversationTool, conversationToolHandler); err != nil {
 			return fmt.Errorf("register conversation tool task handler: %w", err)
 		}
 	}

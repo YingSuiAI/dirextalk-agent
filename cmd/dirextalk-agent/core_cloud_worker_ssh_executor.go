@@ -35,20 +35,21 @@ import (
 )
 
 type sshWorkerExecutor struct {
-	authority   *cloudWorkerCredentialAuthority
-	exact       workaws.ExactCredentialResolver
-	providers   map[sshworker.CredentialIdentity]*sshworker.Provider
-	artifacts   *localartifact.Repository
-	pricing     cloudworker.PricingCatalog
-	sources     cloudworker.SourceReader
-	steers      coreconversation.TurnSteerStore
-	state       *sshworker.FileStore
-	pool        *sshworker.Pool
-	workloads   *sshworkload.Repository
-	route53     map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53
-	root        string
-	verifyHTTPS func(context.Context, string, string, string, func(context.Context, string, string) error) error
-	mu          sync.Mutex
+	authority     *cloudWorkerCredentialAuthority
+	exact         workaws.ExactCredentialResolver
+	providers     map[sshworker.CredentialIdentity]*sshworker.Provider
+	artifacts     *localartifact.Repository
+	pricing       cloudworker.PricingCatalog
+	sources       cloudworker.SourceReader
+	steers        coreconversation.TurnSteerStore
+	state         *sshworker.FileStore
+	pool          *sshworker.Pool
+	workloads     *sshworkload.Repository
+	route53       map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53
+	root          string
+	verifyHTTPS   func(context.Context, string, string, string, func(context.Context, string, string) error) error
+	resolveDomain func(context.Context, string, uint64, string, string, string, string) (coretask.CloudWorkerDomainTaskPayload, error)
+	mu            sync.Mutex
 }
 
 func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.SourceReader, steers coreconversation.TurnSteerStore, state *sshworker.FileStore, root string) (*sshWorkerExecutor, error) {
@@ -849,7 +850,7 @@ func (executor *sshWorkerExecutor) destroyWorkerResources(ctx context.Context, p
 		if service.Domain == nil && service.PendingDomain == nil {
 			continue
 		}
-		dnsErr = errors.Join(dnsErr, executor.deleteDomain(completionCtx, service, "destroy_worker"))
+		dnsErr = errors.Join(dnsErr, executor.deleteDomain(completionCtx, service))
 	}
 	if err = provider.DestroyWorkerResources(completionCtx, request); err != nil {
 		return err
@@ -869,7 +870,9 @@ func completeWorkerResourceIdentity(identity sshworker.WorkerIdentity) bool {
 	return strings.TrimSpace(identity.InstanceID) != "" && strings.TrimSpace(identity.KeyPairID) != "" && strings.TrimSpace(identity.SecurityGroupID) != ""
 }
 
-func (executor *sshWorkerExecutor) deleteDomain(ctx context.Context, service sshworkload.Service, confirmation string) error {
+const workerDomainTTL uint32 = 300
+
+func (executor *sshWorkerExecutor) deleteDomain(ctx context.Context, service sshworkload.Service) error {
 	if service.Domain == nil && service.PendingDomain == nil {
 		return nil
 	}
@@ -880,22 +883,19 @@ func (executor *sshWorkerExecutor) deleteDomain(ctx context.Context, service ssh
 	var result error
 	pendingDeleted := false
 	if service.PendingDomain != nil {
-		err := remoteservice.ReconcileLiteral(ctx, dns, domainMutation(service.Worker.Credential.AccountID, service.Worker.WorkerID, service.WorkloadID, remoteservice.DNSDeleteA, service.PendingDomain), confirmation)
+		err := remoteservice.ReconcilePlannedDelete(ctx, dns, domainMutation(service.Worker.Credential.AccountID, service.Worker.WorkerID, service.WorkloadID, remoteservice.DNSDeleteA, service.PendingDomain))
 		pendingDeleted = err == nil
 		if err != nil && !(errors.Is(err, remoteservice.ErrReadback) && sameDomainRecordKey(service.PendingDomain, service.Domain)) {
 			result = errors.Join(result, err)
 		}
 	}
 	if service.Domain != nil && !(pendingDeleted && sameDomainRecordKey(service.PendingDomain, service.Domain)) {
-		result = errors.Join(result, remoteservice.ReconcileLiteral(ctx, dns, domainMutation(service.Worker.Credential.AccountID, service.Worker.WorkerID, service.WorkloadID, remoteservice.DNSDeleteA, service.Domain), confirmation))
+		result = errors.Join(result, remoteservice.ReconcilePlannedDelete(ctx, dns, domainMutation(service.Worker.Credential.AccountID, service.Worker.WorkerID, service.WorkloadID, remoteservice.DNSDeleteA, service.Domain)))
 	}
 	if result != nil {
 		return result
 	}
-	if confirmation == "destroy_worker" {
-		return nil
-	}
-	return executor.workloads.SetDomain(ctx, service.Worker, service.WorkloadID, nil)
+	return nil
 }
 
 func domainMutation(accountID, workerID, workloadID string, action remoteservice.DNSAction, domain *sshworkload.Domain) remoteservice.DNSMutation {

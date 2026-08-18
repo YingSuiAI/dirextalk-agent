@@ -36,22 +36,6 @@ type ConfirmedDNSMutation struct {
 	Confirmation ExactConfirmation
 }
 
-// ReconcileLiteral applies an owner-authorized Worker domain operation and
-// verifies the resulting Route53 record. Capability operations already bind
-// the exact Worker/workload/record arguments and accept only the literal
-// bind_domain or unbind_domain confirmation.
-func ReconcileLiteral(ctx context.Context, client Route53, mutation DNSMutation, confirmation string) error {
-	if ctx == nil || client == nil || mutation.validate() != nil ||
-		(mutation.Action == DNSUpsertA && confirmation != "bind_domain") ||
-		(mutation.Action == DNSDeleteA && confirmation != "unbind_domain" && confirmation != "destroy_worker") {
-		return ErrNotConfirmed
-	}
-	if mutation.Action == DNSUpsertA {
-		return ReconcilePlannedUpsert(ctx, client, mutation)
-	}
-	return ReconcilePlannedDelete(ctx, client, mutation)
-}
-
 // ReconcilePlannedDelete removes one exact record already authorized by its
 // owning Worker operation and verifies that it is absent.
 func ReconcilePlannedDelete(ctx context.Context, client Route53, mutation DNSMutation) error {
@@ -98,6 +82,16 @@ func ReconcilePlannedUpsert(ctx context.Context, client Route53, mutation DNSMut
 		return ErrInvalid
 	}
 	if err := client.VerifyAccount(ctx, mutation.AccountID); err != nil {
+		return err
+	}
+	current, exists, err := client.ReadA(ctx, mutation.Record.ZoneID, canonicalHostname(mutation.Record.Hostname))
+	if err != nil {
+		return err
+	}
+	if exists && !sameRecord(current, mutation.Record) {
+		return ErrReadback
+	}
+	if err = client.VerifyAccount(ctx, mutation.AccountID); err != nil {
 		return err
 	}
 	if err := client.UpsertA(ctx, mutation); err != nil {

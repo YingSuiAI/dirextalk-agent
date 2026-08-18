@@ -25,7 +25,7 @@ Flutter -- login/account --> Message Server -- short-lived session ticket
       +-- Core Runner through a separate authenticated Unix socket
       +-- persistent SSH Worker manager / local artifact repository
               |
-              +-- outbound SSH to at most five ordinary EC2 Workers
+              +-- outbound SSH to at most four ordinary EC2 Workers
 ```
 
 `serveCore` composes enabled domains before starting workers. Optional domains
@@ -45,7 +45,7 @@ require another creation quote. A retained Worker is destroyed only by an
 explicit owner action, either through the owner client management operation or
 the Native Agent's owner-scoped `cloud_worker_destroy` intrinsic.
 
-The Worker manager supports at most five retained Workers for the current
+The Worker manager supports at most four retained Workers for the current
 credential. It discovers the newest Canonical official Ubuntu 24.04 LTS image
 and the account's default VPC/subnet at runtime, creates one EC2 instance with an
 ordinary auto-assigned public IPv4, and connects from Agent by outbound SSH.
