@@ -47,7 +47,9 @@ func (s *CoreConversationStore) PrepareIntrinsicTool(ctx context.Context, c core
 	callArgs, callArgsErr := canonicalJSON(json.RawMessage(c.Call.Arguments), core.MaxToolArgumentsBytes)
 	if err != nil || callArgsErr != nil || !bytes.Equal(callArgs, args) || conversationArgsDigest(args) != c.ArgumentsDigest || c.Payload.ExecutionTarget != coretask.ExtensionExecutionTargetCoreIntrinsic ||
 		c.Payload.CloudWorkerDomain == nil || c.Payload.TurnID != c.Lease.Turn.ID || c.Payload.AttemptID != c.IdempotencyKey ||
-		c.Payload.CallID != c.Call.ID || c.Payload.ToolName != c.Call.Name || c.Payload.ArgumentsDigest != c.ArgumentsDigest ||
+		c.Payload.Round != c.Round || c.Payload.CallID != c.Call.ID || c.Payload.ToolName != c.Call.Name || c.Payload.ArgumentsDigest != c.ArgumentsDigest ||
+		c.Payload.SafeSummary != c.SafeSummary || c.Payload.ExtensionSnapshotDigest != "" || c.Payload.InstallationID != "" ||
+		c.Payload.VersionID != "" || c.Payload.InstallationRevision != 0 || c.Payload.ToolSchemaDigest != "" || c.Payload.ConfirmationID != "" ||
 		c.Binding.TargetID != c.Payload.AttemptID || c.Binding.SelectedTool != c.Call.Name ||
 		c.Payload.CloudWorkerDomain.Operation != operation || c.Payload.CloudWorkerDomain.OwnerID != c.Lease.Turn.OwnerID ||
 		c.Payload.CloudWorkerDomain.AccountGeneration != c.Lease.Turn.AccountGeneration || c.Binding.OperationDomain != operationDomain ||
