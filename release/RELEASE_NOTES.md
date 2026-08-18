@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.165
+
+1. Restore missing `cpu`, `memory`, and `pids` controllers from each runner's own delegated cgroup during readiness, while preserving fail-closed validation and the existing host delegation boundary.
+
 ## v1.0.164
 
 1. Classify Message MCP tools from complete standard annotations, retain the catalog through bounded transient discovery failures, omit unavailable catalogs without blocking ordinary chat, and retry only annotated reads while never replaying mutations after ambiguous outcomes.
