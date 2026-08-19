@@ -148,6 +148,10 @@ contract](message-server-integration-development-contract.md), and
   workload/domain state, never EIP. Worker creation, reuse, observation, and
   destroy require the Worker manager and verified-credential ports; optional
   Route53 operations additionally require a usable same-account hosted zone.
+- `agent.servers.v1` and migration 23 provide the unified server/artifact
+  inventory: the immutable Agent node and baseline backend-service artifact,
+  named/created retained Workers, four newly-created artifact projections,
+  owner-scoped pagination, and one catalog-aware Worker destruction cascade.
 - Neutral Capability Knowledge mutations now require explicit UUID idempotency
   keys, and AWS credential tests have durable, secret-free replay receipts.
   Provider tests use a persisted claim outside database locks; same-key active

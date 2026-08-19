@@ -212,6 +212,7 @@ type Plan struct {
 	Adapter                  string               `json:"adapter"`
 	Objective                string               `json:"-"`
 	ObjectiveSummary         string               `json:"objective_summary"`
+	ServerName               string               `json:"server_name,omitempty"`
 	ObjectiveDigest          string               `json:"objective_digest"`
 	WorkloadKind             WorkloadKind         `json:"workload_kind"`
 	Service                  *ServiceSpec         `json:"service,omitempty"`
@@ -475,6 +476,7 @@ func (p *Plan) Seal() error {
 	p.OwnerID = strings.TrimSpace(p.OwnerID)
 	p.Objective = strings.TrimSpace(p.Objective)
 	p.ObjectiveSummary = strings.TrimSpace(p.ObjectiveSummary)
+	p.ServerName = strings.TrimSpace(p.ServerName)
 	p.RecipeID = strings.TrimSpace(p.RecipeID)
 	p.Adapter = strings.TrimSpace(p.Adapter)
 	p.Status = strings.TrimSpace(p.Status)
@@ -482,7 +484,7 @@ func (p *Plan) Seal() error {
 		p.WorkloadKind = WorkloadJob
 	}
 	p.CreatedAt, p.UpdatedAt = p.CreatedAt.UTC(), p.UpdatedAt.UTC()
-	if p.OwnerID == "" || len(p.OwnerID) > 512 || p.AccountGeneration == 0 || !validUUID(p.PlanID) || !validUUID(p.ExecutionID) || !validUUID(p.TaskID) || !validUUID(p.ConfirmationID) || !validUUID(p.ConversationID) || !validUUID(p.TurnID) || p.Revision == 0 || p.Status != string(StateWaitingUser) || p.RecipeID != RecipeEphemeralPiTask || p.Adapter != AdapterPiJSONTaskV1 || p.Objective == "" || len(p.Objective) > coretask.MaxGoalBytes || !utf8.ValidString(p.Objective) || p.ObjectiveSummary == "" || len(p.ObjectiveSummary) > coretask.MaxSummaryBytes || !utf8.ValidString(p.ObjectiveSummary) || !validDigest(p.UserPromptDigest) || !validateWorkspaceMode(p.WorkspaceMode) || p.CreatedAt.IsZero() || p.UpdatedAt.IsZero() {
+	if p.OwnerID == "" || len(p.OwnerID) > 512 || p.AccountGeneration == 0 || !validUUID(p.PlanID) || !validUUID(p.ExecutionID) || !validUUID(p.TaskID) || !validUUID(p.ConfirmationID) || !validUUID(p.ConversationID) || !validUUID(p.TurnID) || p.Revision == 0 || p.Status != string(StateWaitingUser) || p.RecipeID != RecipeEphemeralPiTask || p.Adapter != AdapterPiJSONTaskV1 || p.Objective == "" || len(p.Objective) > coretask.MaxGoalBytes || !utf8.ValidString(p.Objective) || p.ObjectiveSummary == "" || len(p.ObjectiveSummary) > coretask.MaxSummaryBytes || !utf8.ValidString(p.ObjectiveSummary) || len([]rune(p.ServerName)) > 80 || !validDigest(p.UserPromptDigest) || !validateWorkspaceMode(p.WorkspaceMode) || p.CreatedAt.IsZero() || p.UpdatedAt.IsZero() {
 		return ErrInvalid
 	}
 	if (p.WorkloadKind == WorkloadJob && p.Service != nil) || (p.WorkloadKind == WorkloadService && (p.Service == nil || p.Service.validate() != nil)) ||
@@ -514,7 +516,10 @@ func (p *Plan) Seal() error {
 		Limits                                                               Limits
 		QuoteDigest                                                          string
 	}{p.OwnerID, p.PlanID, p.ExecutionID, p.ConversationID, p.TurnID, p.AccountGeneration, p.Revision, p.RecipeID, p.Adapter, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.AWS, p.Compute, p.Limits, p.Quote.Digest}
-	var executionDigestBasis any = executionBasis
+	var executionDigestBasis any = struct {
+		Basis      any
+		ServerName string
+	}{executionBasis, p.ServerName}
 	if p.WorkloadKind == WorkloadService {
 		executionDigestBasis = struct {
 			Basis        any
@@ -590,7 +595,10 @@ func (p *Plan) sealAuthorizationBasis() error {
 		Compute                                                ComputeSpec
 		Limits                                                 Limits
 	}{p.OwnerID, p.ConversationID, p.TurnID, p.RecipeID, p.Adapter, p.AccountGeneration, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.AWS, p.Compute, p.Limits}
-	var authorizationDigestBasis any = authorizationBasis
+	var authorizationDigestBasis any = struct {
+		Basis      any
+		ServerName string
+	}{authorizationBasis, p.ServerName}
 	if p.WorkloadKind == WorkloadService {
 		authorizationDigestBasis = struct {
 			Basis        any

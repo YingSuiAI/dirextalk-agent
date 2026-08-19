@@ -104,6 +104,9 @@ func (s *CoreConversationStore) DeleteRelease(ctx context.Context, authority cor
 		if tag.RowsAffected() != 1 {
 			return corestaticsite.ErrConflict
 		}
+		if _, commitErr = tx.Exec(ctx, `DELETE FROM core_server_artifacts WHERE owner_id=$1 AND account_generation=$2 AND source_kind='static_site_release' AND source_id=$3`, authority.OwnerID, authority.AccountGeneration, command.ReleaseID); commitErr != nil {
+			return commitErr
+		}
 		if _, commitErr = tx.Exec(ctx, `INSERT INTO core_mutation_replays(operation,idempotency_key,request_hash,response_json) VALUES('static_site.delete',$1,$2,$3)`, command.IdempotencyKey, command.Fingerprint, replayRaw); commitErr != nil {
 			return commitErr
 		}

@@ -240,6 +240,16 @@ func (store *SSHWorkerStore) terminal(ctx context.Context, run sshflow.Run, work
 	if err != nil {
 		return err
 	}
+	for _, artifact := range artifacts {
+		catalogID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:cloud-worker-artifact:"+artifact.ArtifactID)).String()
+		if _, err = tx.Exec(ctx, `INSERT INTO core_server_artifacts
+			(artifact_id,owner_id,account_generation,server_id,server_kind,artifact_kind,source_kind,source_id,name,status,record_kind,execution_id,media_type,size_bytes,metadata_json,deletion_state,created_at,updated_at)
+			VALUES($1,$2,$3,$4,'worker','execution_file','cloud_worker_artifact',$5,$6,'verified','cloud_worker',$7,$8,$9,jsonb_build_object('sha256',$10::text),'active',$11,$11)
+			ON CONFLICT(owner_id,account_generation,source_kind,source_id) DO NOTHING`, catalogID, plan.OwnerID, plan.AccountGeneration,
+			workerResult.WorkerID, artifact.ArtifactID, artifact.Name, plan.ExecutionID, artifact.MediaType, artifact.SizeBytes, artifact.SHA256, now); err != nil {
+			return err
+		}
+	}
 	artifactIDs := make([]string, 0, len(artifacts))
 	files := make([]coretask.FileRef, 0, len(artifacts))
 	for _, artifact := range artifacts {

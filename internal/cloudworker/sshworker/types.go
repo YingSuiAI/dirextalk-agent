@@ -117,6 +117,7 @@ func (discovery Discovery) validate() error {
 
 type ExecuteRequest struct {
 	ExecutionID        string
+	ServerName         string
 	Authority          OwnerAuthority
 	Credential         CredentialIdentity
 	Confirmation       Confirmation // consumed only when a new worker is required
@@ -150,6 +151,9 @@ func (request ExecuteRequest) validate() error {
 		return ErrInvalid
 	}
 	if (request.ReuseOnly && !validID(request.ReuseWorkerID)) || (!request.ReuseOnly && request.ReuseWorkerID != "") {
+		return ErrInvalid
+	}
+	if request.ServerName != strings.TrimSpace(request.ServerName) || len([]rune(request.ServerName)) > 80 {
 		return ErrInvalid
 	}
 	return nil
@@ -261,6 +265,7 @@ type WorkerRecord struct {
 	AccountGeneration    uint64             `json:"account_generation"`
 	Credential           CredentialIdentity `json:"credential"`
 	CreationProof        string             `json:"creation_proof"`
+	DisplayName          string             `json:"display_name,omitempty"`
 	Phase                WorkerPhase        `json:"phase"`
 	SSHUser              string             `json:"ssh_user"`
 	InstanceType         string             `json:"instance_type"`
@@ -359,6 +364,8 @@ const (
 
 type WorkerStatus struct {
 	Identity           WorkerIdentity
+	DisplayName        string
+	CreatedAt          time.Time
 	InstanceType       string
 	VCPU, MemoryGiB    uint32
 	VolumeGiB          int32
@@ -374,7 +381,7 @@ type WorkerStatus struct {
 }
 
 func UnavailableStatus(worker WorkerRecord, observedAt time.Time, message string) WorkerStatus {
-	return WorkerStatus{Identity: workerIdentity(worker), InstanceType: worker.InstanceType, VCPU: worker.VCPU,
+	return WorkerStatus{Identity: workerIdentity(worker), DisplayName: worker.DisplayName, CreatedAt: worker.CreatedAt, InstanceType: worker.InstanceType, VCPU: worker.VCPU,
 		MemoryGiB: worker.MemoryGiB, VolumeGiB: worker.VolumeGiB, Availability: WorkerUnavailable, Error: message,
 		EC2State: "unknown", WorkerPhase: worker.Phase, CurrentExecutionID: worker.CurrentExecutionID, ObservedAt: observedAt.UTC()}
 }

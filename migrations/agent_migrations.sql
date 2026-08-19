@@ -2669,3 +2669,46 @@ CREATE TABLE core_conversation_progress_observations (
 CREATE INDEX core_conversation_progress_window_idx
     ON core_conversation_progress_observations(turn_id,steer_sequence,event_sequence DESC);
 -- dirextalk-agent migration end 000022_progress_working_context.up.sql
+-- dirextalk-agent migration begin 000023_server_artifact_inventory.up.sql
+-- Unified owner-facing server/artifact catalog. Artifact bytes and runtime
+-- state remain owned by their existing repositories; this table is only the
+-- authoritative server binding and list projection.
+CREATE TABLE core_server_artifacts (
+    artifact_id uuid PRIMARY KEY,
+    owner_id text NOT NULL CHECK (owner_id = btrim(owner_id) AND length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    server_id uuid NOT NULL,
+    server_kind text NOT NULL CHECK (server_kind IN ('primary','worker')),
+    artifact_kind text NOT NULL CHECK (artifact_kind IN ('system_service','static_page','execution_file','deployed_service')),
+    source_kind text NOT NULL CHECK (source_kind IN ('agent_backend','static_site_release','local_sandbox_artifact','cloud_worker_artifact','worker_workload')),
+    source_id text NOT NULL CHECK (source_id = btrim(source_id) AND length(source_id) BETWEEN 1 AND 512),
+    name text NOT NULL CHECK (name = btrim(name) AND length(name) BETWEEN 1 AND 1024),
+    status text NOT NULL CHECK (status = btrim(status) AND length(status) BETWEEN 1 AND 128),
+    public_url text CHECK (public_url IS NULL OR (public_url = btrim(public_url) AND length(public_url) BETWEEN 1 AND 4096)),
+    domain text CHECK (domain IS NULL OR (domain = btrim(domain) AND length(domain) BETWEEN 1 AND 253)),
+    public_ipv4 text CHECK (public_ipv4 IS NULL OR (public_ipv4 = btrim(public_ipv4) AND length(public_ipv4) BETWEEN 7 AND 45)),
+    port integer CHECK (port IS NULL OR port BETWEEN 1 AND 65535),
+    health text CHECK (health IS NULL OR (health = btrim(health) AND length(health) BETWEEN 1 AND 128)),
+    record_kind text CHECK (record_kind IS NULL OR record_kind IN ('local_sandbox','cloud_worker')),
+    execution_id uuid,
+    media_type text CHECK (media_type IS NULL OR (media_type = btrim(media_type) AND length(media_type) BETWEEN 1 AND 255)),
+    size_bytes bigint CHECK (size_bytes IS NULL OR size_bytes >= 0),
+    metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(metadata_json) = 'object' AND pg_column_size(metadata_json) <= 1048576),
+    deletion_state text NOT NULL DEFAULT 'active' CHECK (deletion_state IN ('active','deleting')),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    UNIQUE (owner_id,account_generation,source_kind,source_id),
+    CHECK ((server_kind = 'primary') = (artifact_kind IN ('system_service','static_page') OR source_kind = 'local_sandbox_artifact')),
+    CHECK ((artifact_kind,source_kind) IN (('system_service','agent_backend'),('static_page','static_site_release'),('execution_file','local_sandbox_artifact'),('execution_file','cloud_worker_artifact'),('deployed_service','worker_workload'))),
+    CHECK ((artifact_kind = 'execution_file') = (record_kind IS NOT NULL AND execution_id IS NOT NULL AND media_type IS NOT NULL AND size_bytes IS NOT NULL)),
+    CHECK (artifact_kind <> 'execution_file' OR (source_kind = 'local_sandbox_artifact' AND record_kind = 'local_sandbox') OR (source_kind = 'cloud_worker_artifact' AND record_kind = 'cloud_worker')),
+    CHECK (artifact_kind <> 'system_service' OR (source_kind = 'agent_backend' AND deletion_state = 'active')),
+    CHECK (artifact_kind <> 'static_page' OR source_kind = 'static_site_release'),
+    CHECK (artifact_kind <> 'deployed_service' OR (source_kind = 'worker_workload' AND port IS NOT NULL))
+);
+CREATE INDEX core_server_artifacts_server_page_idx
+    ON core_server_artifacts(owner_id,account_generation,server_id,created_at DESC,artifact_id DESC)
+    WHERE deletion_state = 'active';
+CREATE INDEX core_server_artifacts_server_cleanup_idx
+    ON core_server_artifacts(owner_id,account_generation,server_id,deletion_state,artifact_id);
+-- dirextalk-agent migration end 000023_server_artifact_inventory.up.sql

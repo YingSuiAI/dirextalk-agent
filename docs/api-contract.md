@@ -444,6 +444,21 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   retained Worker. Account deprovision is rejected before destructive mutation
   while any retained Worker remains on the Agent, including an older owner or
   account generation; the owner must destroy every such Worker and retry.
+- Always-ready `agent.servers.v1` is the owner-client inventory projection for
+  the primary Agent node and retained Workers. `list_servers` pins the immutable
+  `agent_instance_metadata` identity first and orders Workers by persisted
+  creation time and ID; `get_server` resolves one stable server ID;
+  `list_artifacts` pages the server-bound catalog with the non-deletable Agent
+  backend service first; `delete_artifact` deletes only static pages and local
+  or Worker execution files through their owning repository; `destroy_server`
+  rejects the primary node and busy Workers. The
+  `core_server_artifacts` catalog is the authoritative binding/index, not an
+  artifact body store. New static pages, sandbox files, Worker files, services,
+  and domain changes update it; pre-migration history is not backfilled. All
+  Worker destroy surfaces converge on one exact-identity cascade that marks the
+  catalog deleting, removes indexed execution bodies, service/DNS/AWS state,
+  reads back Worker absence, and only then removes its catalog rows. Conversation,
+  Task, run, and audit records are retained.
 - Every `agent.knowledge.v1` mutation, including `index_sources`, requires an
   explicit canonical UUID `idempotency_key`; missing or malformed keys are
   rejected, while read operations do not require one. Neutral

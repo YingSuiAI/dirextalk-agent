@@ -9,10 +9,12 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/execution"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreserver"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/google/uuid"
 )
 
-func collectLocalSandboxArtifacts(ctx context.Context, repository *localartifact.Repository, ownerID string, accountGeneration uint64, executionID string, receipt *execution.LocalToolReceipt) (coretask.Result, error) {
+func collectLocalSandboxArtifacts(ctx context.Context, repository *localartifact.Repository, ownerID string, accountGeneration uint64, executionID string, receipt *execution.LocalToolReceipt, catalogs ...coreserver.Repository) (coretask.Result, error) {
 	if repository == nil || receipt == nil || len(receipt.Result.Files) != len(receipt.ResultFiles) {
 		return coretask.Result{}, localartifact.ErrInvalid
 	}
@@ -49,6 +51,26 @@ func collectLocalSandboxArtifacts(ctx context.Context, repository *localartifact
 	artifacts, next, err := repository.ListLocalSandbox(ctx, authority, executionID, "", 200)
 	if err != nil || next != "" {
 		return coretask.Result{}, errors.Join(err, localartifact.ErrInvalid)
+	}
+	if len(catalogs) > 0 && catalogs[0] != nil {
+		catalog := catalogs[0]
+		instance, catalogErr := catalog.Instance(ctx)
+		if catalogErr != nil {
+			return coretask.Result{}, catalogErr
+		}
+		authority := coreserver.Authority{OwnerID: ownerID, AccountGeneration: accountGeneration}
+		for _, artifact := range artifacts {
+			catalogErr = catalog.Upsert(ctx, authority, coreserver.Artifact{
+				ArtifactID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:local-sandbox-artifact:"+artifact.ArtifactID)).String(),
+				ServerID:   instance.ID, ServerKind: coreserver.ServerPrimary, ArtifactKind: coreserver.ArtifactExecutionFile,
+				SourceKind: "local_sandbox_artifact", SourceID: artifact.ArtifactID, Name: artifact.Name, Status: "verified",
+				RecordKind: coreexecutionv2.RecordKindLocalSandbox, ExecutionID: artifact.ExecutionID, MediaType: artifact.MediaType,
+				SizeBytes: artifact.SizeBytes, Metadata: map[string]any{"sha256": artifact.SHA256}, CreatedAt: artifact.CreatedAt, UpdatedAt: artifact.CreatedAt,
+			})
+			if catalogErr != nil {
+				return coretask.Result{}, catalogErr
+			}
+		}
 	}
 	return attachLocalSandboxArtifacts(receipt.Result, artifacts)
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreserver"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
 
@@ -18,14 +19,19 @@ type cloudWorkerExecutionAdapter struct {
 type localCloudWorkerExecutionAdapter struct {
 	*cloudWorkerExecutionAdapter
 	artifacts *localartifact.Repository
+	catalog   coreserver.Repository
 }
 
 // NewLocalCloudWorkerExecutionPort keeps SSH Worker output on this Agent.
-func NewLocalCloudWorkerExecutionPort(store CloudWorkerAuthorityStore, artifacts *localartifact.Repository) (CloudWorkerExecutionPort, error) {
+func NewLocalCloudWorkerExecutionPort(store CloudWorkerAuthorityStore, artifacts *localartifact.Repository, catalogs ...coreserver.Repository) (CloudWorkerExecutionPort, error) {
 	if store == nil || artifacts == nil {
 		return nil, ErrInvalid
 	}
-	return &localCloudWorkerExecutionAdapter{cloudWorkerExecutionAdapter: &cloudWorkerExecutionAdapter{store: store}, artifacts: artifacts}, nil
+	adapter := &localCloudWorkerExecutionAdapter{cloudWorkerExecutionAdapter: &cloudWorkerExecutionAdapter{store: store}, artifacts: artifacts}
+	if len(catalogs) > 0 {
+		adapter.catalog = catalogs[0]
+	}
+	return adapter, nil
 }
 
 func (adapter *localCloudWorkerExecutionAdapter) GetArtifact(ctx context.Context, request CloudWorkerArtifactGetRequest) (CloudWorkerObject, error) {
@@ -42,6 +48,15 @@ func (adapter *localCloudWorkerExecutionAdapter) GetArtifact(ctx context.Context
 	}
 	if err != nil {
 		return nil, mapLocalArtifactError(err)
+	}
+	if adapter.catalog != nil {
+		sourceKind := "cloud_worker_artifact"
+		if request.RecordKind == RecordKindLocalSandbox {
+			sourceKind = "local_sandbox_artifact"
+		}
+		if err = adapter.catalog.DeleteBySource(ctx, coreserver.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, sourceKind, request.ArtifactID); err != nil {
+			return nil, err
+		}
 	}
 	return localArtifactProjection(artifact), nil
 }

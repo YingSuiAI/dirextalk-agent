@@ -102,9 +102,9 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker management: %w", err)
 	}
-	executionPort, err := coreexecutionv2.NewLocalCloudWorkerExecutionPort(postgres.NewCloudWorkerStore(store), artifacts)
+	executionPort, err := coreexecutionv2.NewLocalCloudWorkerExecutionPort(postgres.NewCloudWorkerStore(store), artifacts, postgres.NewCoreServerArtifactStore(store.Pool()))
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker Execution V2 reads: %w", err)
 	}
-	return &coreCloudWorkerComposition{domain: domain, intrinsic: intrinsic, taskHandler: handler.TaskHandler(), workerCapability: management, executionPort: executionPort}, nil
+	return &coreCloudWorkerComposition{domain: domain, intrinsic: intrinsic, taskHandler: handler.TaskHandler(), workerCapability: management, executionPort: executionPort, executor: executor}, nil
 }

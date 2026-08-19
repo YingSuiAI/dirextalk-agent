@@ -149,6 +149,18 @@ func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context
 	if err != nil {
 		return cloudworker.RetainedWorkerDomainResult{}, err
 	}
+	stored, err := executor.workloads.Get(ctx, identity, expected.WorkloadID)
+	if err != nil {
+		return cloudworker.RetainedWorkerDomainResult{}, err
+	}
+	publication := servicePublication{PublicIPv4: expected.TargetIPv4, Port: stored.Port, HealthPath: stored.HealthPath}
+	if expected.Operation == "bind" {
+		publication.Hostname, publication.ZoneID = expected.Hostname, expected.ZoneID
+	}
+	if err = executor.upsertServiceArtifact(ctx, sshworker.OwnerAuthority{OwnerID: expected.OwnerID, AccountGeneration: expected.AccountGeneration}, expected.WorkerID,
+		cloudworker.ServiceSpec{WorkloadID: stored.WorkloadID, Port: stored.Port, HealthPath: stored.HealthPath, Hostname: publication.Hostname}, publication, "healthy"); err != nil {
+		return cloudworker.RetainedWorkerDomainResult{}, err
+	}
 	state := "current"
 	if expected.Operation == "unbind" {
 		state = "absent"

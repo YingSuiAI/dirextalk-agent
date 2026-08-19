@@ -3,7 +3,6 @@ package main
 import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
-	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 )
@@ -12,10 +11,11 @@ import (
 // consumed by the Core server. Worker lifecycle is owned by sshworker.
 type coreCloudWorkerComposition struct {
 	domain           *cloudworker.Service
-	intrinsic        coreconversation.IntrinsicResolver
+	intrinsic        *cloudworker.ProposeIntrinsic
 	executionPort    coreexecutionv2.CloudWorkerExecutionPort
 	taskHandler      coreruntime.TaskHandler
 	workerCapability agentcapability.Capability
+	executor         *sshWorkerExecutor
 }
 
 func (composition *coreCloudWorkerComposition) Cleaners() []coreLifecycleCleaner {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -61,6 +62,16 @@ func (s *CoreConversationStore) CommitConversationStaticSite(ctx context.Context
 		command.Receipt.ReleaseID, command.Receipt.SiteID, command.Lease.Turn.OwnerID, command.Lease.Turn.AccountGeneration,
 		command.Lease.Turn.ConversationID, command.Lease.Turn.ID, command.Lease.Turn.RequestID, command.Receipt.PublicPath,
 		command.Receipt.SHA256, command.Receipt.SizeBytes, command.Response.Message.CreatedAt); err != nil {
+		return core.StaticSiteReceipt{}, err
+	}
+	artifactID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:static-site:"+command.Receipt.ReleaseID)).String()
+	if _, err = tx.Exec(ctx, `INSERT INTO core_server_artifacts
+		(artifact_id,owner_id,account_generation,server_id,server_kind,artifact_kind,source_kind,source_id,name,status,public_url,size_bytes,metadata_json,deletion_state,created_at,updated_at)
+		SELECT $1,$2,$3,agent_instance_id,'primary','static_page','static_site_release',$4,'已发布页面','published',$5,$6,
+		jsonb_build_object('site_id',$7::text,'conversation_id',$8::text,'public_path',$5::text),'active',$9,$9 FROM agent_instance_metadata WHERE singleton=true
+		ON CONFLICT(owner_id,account_generation,source_kind,source_id) DO NOTHING`, artifactID, command.Lease.Turn.OwnerID,
+		command.Lease.Turn.AccountGeneration, command.Receipt.ReleaseID, command.Receipt.PublicPath, command.Receipt.SizeBytes,
+		command.Receipt.SiteID, command.Lease.Turn.ConversationID, command.Response.Message.CreatedAt); err != nil {
 		return core.StaticSiteReceipt{}, err
 	}
 	if err = s.commitTurnTx(ctx, tx, command.Lease, command.Response); err != nil {

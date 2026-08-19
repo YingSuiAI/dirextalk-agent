@@ -26,6 +26,7 @@ var (
 	coreImageToolsRequiredOperations  = []string{"upload_begin", "upload_append", "upload_commit", "extract_text", "translate_text"}
 	coreStaticSitesRequiredOperations = []string{"list_releases", "delete_release"}
 	coreWorkersRequiredOperations     = []string{"list_workers", "get_worker", "destroy_worker"}
+	coreServersRequiredOperations     = []string{"list_servers", "get_server", "list_artifacts", "delete_artifact", "destroy_server"}
 )
 
 // newCoreInfoProvider exposes only non-secret process metadata. The embedded
@@ -112,6 +113,11 @@ func coreDescriptorTokens(descriptor *capv1.CapabilityDescriptor) []string {
 	case "agent.worker.v1":
 		if coreDescriptorHasOperations(descriptor, coreWorkersRequiredOperations) {
 			return []string{"workers.server"}
+		}
+		return nil
+	case "agent.servers.v1":
+		if coreDescriptorHasOperations(descriptor, coreServersRequiredOperations) {
+			return []string{"servers.server"}
 		}
 		return nil
 	case "agent.schedules.v1":
