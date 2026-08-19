@@ -45,11 +45,11 @@ func scheduledAgentTaskHandler(conversation scheduledConversationService, profil
 
 		requestID := scheduledAgentUUID("scheduled-agent-request:" + task.ID)
 		turnID := scheduledAgentUUID("scheduled-agent-turn:" + task.ID)
-		chainID := scheduledAgentUUID("scheduled-agent-chain:" + task.ID)
-		rootOperationID := scheduledAgentUUID("scheduled-agent-root-operation:" + task.ID)
-		executionCtx := capabilityclient.WithCallContext(ctx, &capv1.CallContext{
-			ChainId: chainID, RootOperationId: rootOperationID, Route: "scheduled-agent",
-		}, &capv1.PermissionContext{
+		// Scheduled Message MCP, Knowledge, and Web Search resolution needs the
+		// durable owner fence, but it is not an authenticated Product call chain.
+		// Leaving CallContext absent also keeps unrelated Product tools out of the
+		// scheduled resolver path instead of fabricating an invalid call route.
+		executionCtx := capabilityclient.WithCallContext(ctx, nil, &capv1.PermissionContext{
 			AuthenticatedOwnerId: payload.OwnerID,
 			AccountGeneration:    int64(payload.AccountGeneration),
 		})

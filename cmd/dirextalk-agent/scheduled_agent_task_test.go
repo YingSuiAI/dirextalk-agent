@@ -58,10 +58,8 @@ func TestScheduledAgentTaskUsesDeterministicNativeTurnAndReturnsMarkdownOnly(t *
 	}
 	assertScheduledAuthority(t, resolver.ctx, task)
 	assertScheduledAuthority(t, conversation.ctxs[0], task)
-	call, ok := capabilityclient.CallContextFromContext(conversation.ctxs[0])
-	if !ok || call.GetChainId() != scheduledAgentUUID("scheduled-agent-chain:"+task.ID) ||
-		call.GetRootOperationId() != scheduledAgentUUID("scheduled-agent-root-operation:"+task.ID) || call.GetRoute() != "scheduled-agent" {
-		t.Fatalf("call context=%+v", call)
+	if call, ok := capabilityclient.CallContextFromContext(conversation.ctxs[0]); ok || call != nil {
+		t.Fatalf("scheduled execution fabricated Product call context=%+v", call)
 	}
 }
 
