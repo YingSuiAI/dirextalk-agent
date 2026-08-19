@@ -113,11 +113,24 @@ func TestScheduleIntrinsicCapabilitySchemaAndAvailabilityGate(t *testing.T) {
 	}
 	capabilitySchema, ok := properties["capability"].(map[string]any)
 	nameSchema, nameOK := properties["name"].(map[string]any)
+	capabilityDescription, descriptionOK := capabilitySchema["description"].(string)
 	if !ok || !nameOK || len(capabilitySchema["enum"].([]any)) != 9 || !strings.Contains(nameSchema["description"].(string), "only schedule card title") ||
 		!strings.Contains(intrinsic.Tool.Description, "closed supported capability") || !strings.Contains(intrinsic.Tool.Description, "refuse every other") ||
 		!strings.Contains(intrinsic.Tool.Description, "does not promise a push notification") || !strings.Contains(intrinsic.Tool.Description, "never blindly retry an unknown outcome") ||
-		!strings.Contains(intrinsic.Tool.Description, "does not create a channel post") {
+		!strings.Contains(intrinsic.Tool.Description, "does not create a channel post") || !descriptionOK ||
+		strings.Count(intrinsic.Tool.Description, scheduledCapabilitySelectionGuidance) != 1 ||
+		strings.Count(capabilityDescription, scheduledCapabilitySelectionGuidance) != 1 ||
+		!strings.HasSuffix(scheduleCreateGuidance, scheduledCapabilitySelectionGuidance) {
 		t.Fatalf("schedule intrinsic schema=%#v description=%q", intrinsic.Tool.InputSchema, intrinsic.Tool.Description)
+	}
+	for _, fragment := range []string{
+		"scheduled_note is only for self-contained text", "MUST NOT summarize or claim facts from Matrix rooms", "MUST use chat_summary",
+		"chat_summary_delivery only when the user explicitly asks to send", "Web-source-only summary MUST use web_research",
+		"Web search followed by a Matrix room send MUST use web_digest_delivery", "Never claim external data is absent without successfully executing",
+	} {
+		if !strings.Contains(scheduledCapabilitySelectionGuidance, fragment) {
+			t.Fatalf("capability selection guidance missing %q: %q", fragment, scheduledCapabilitySelectionGuidance)
+		}
 	}
 
 	tests := []struct {

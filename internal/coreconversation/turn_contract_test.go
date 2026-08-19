@@ -2065,7 +2065,8 @@ func TestExecuteTurnRejectsModelOnlyScheduleSuccessReceipt(t *testing.T) {
 	if getErr != nil || store.failedCode != "schedule_commit_missing" || current.State != TurnFailed || current.Response != nil {
 		t.Fatalf("model-only schedule receipt committed: turn=%+v failure=%q err=%v", current, store.failedCode, getErr)
 	}
-	if len(model.request.Intrinsics) != 1 || !strings.Contains(model.request.Profile.SystemPrompt, scheduleCreateGuidance) {
+	if len(model.request.Intrinsics) != 1 || !strings.Contains(model.request.Profile.SystemPrompt, scheduleCreateGuidance) ||
+		strings.Count(model.request.Profile.SystemPrompt, scheduledCapabilitySelectionGuidance) != 1 {
 		t.Fatalf("schedule intrinsic guidance missing from model request: %+v", model.request)
 	}
 }

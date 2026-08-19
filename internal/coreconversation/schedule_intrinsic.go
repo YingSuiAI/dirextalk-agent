@@ -19,7 +19,9 @@ import (
 
 const scheduledCapabilityCorrection = "Unsupported scheduled capability. Supported workflows are scheduled_note, chat_summary, web_research, room_message, contact_report, room_member_report, channel_digest, chat_summary_delivery, and web_digest_delivery; refuse every other scheduled workflow. scheduled_note saves Markdown in Native Agent conversation and schedule history but does not promise a push notification."
 
-const scheduleCreateGuidance = "For a user request to create a supported schedule, call agent_schedule_create exactly once and do not claim success before that call succeeds. Never invent a schedule_id or a successful schedule receipt. A successful agent_schedule_create commits the final response itself, so stop immediately after the tool result. If the requested scheduled workflow is unsupported, do not call the tool and clearly refuse it."
+const scheduledCapabilitySelectionGuidance = "Capability boundaries: scheduled_note is only for self-contained text generated from the scheduled goal and MUST NOT summarize or claim facts from Matrix rooms, chat history, Web sources, contacts, room members, or channels. Any request to summarize Matrix room or chat messages or history MUST use chat_summary, or chat_summary_delivery only when the user explicitly asks to send the result. A Web-source-only summary MUST use web_research. Web search followed by a Matrix room send MUST use web_digest_delivery. Never claim external data is absent without successfully executing the selected capability's required read tools."
+
+const scheduleCreateGuidance = "For a user request to create a supported schedule, call agent_schedule_create exactly once and do not claim success before that call succeeds. Never invent a schedule_id or a successful schedule receipt. A successful agent_schedule_create commits the final response itself, so stop immediately after the tool result. If the requested scheduled workflow is unsupported, do not call the tool and clearly refuse it. " + scheduledCapabilitySelectionGuidance
 
 type scheduleIntrinsicArguments struct {
 	Name           string                       `json:"name"`
@@ -53,7 +55,7 @@ func scheduleIntrinsic(store ConversationScheduleStore, bound TurnLease) Resolve
 	return ResolvedIntrinsic{
 		Tool: coremodel.Tool{
 			Name:        coremodel.IntrinsicScheduleCreateToolName,
-			Description: "Create a durable one-time or recurring Agent schedule in this conversation. A supported schedule request must call this tool exactly once; never invent a schedule_id or claim success without its result, and stop after its successful result because Core commits the final response. Choose exactly one closed supported capability and refuse every other workflow. scheduled_note saves final Markdown in Native Agent conversation and schedule history but does not promise a push notification. room_message, chat_summary_delivery, and web_digest_delivery may perform the explicitly requested Matrix message write at most once and never blindly retry an unknown outcome; web_digest_delivery sends to a group/channel room and does not create a channel post. Name is the sole schedule-card title and must be a concise human-readable task name extracted from the user's request. Identity, conversation, model profile, and account generation are injected by Core and must not be supplied as arguments.",
+			Description: "Create a durable one-time or recurring Agent schedule in this conversation. A supported schedule request must call this tool exactly once; never invent a schedule_id or claim success without its result, and stop after its successful result because Core commits the final response. Choose exactly one closed supported capability and refuse every other workflow. " + scheduledCapabilitySelectionGuidance + " scheduled_note saves final Markdown in Native Agent conversation and schedule history but does not promise a push notification. room_message, chat_summary_delivery, and web_digest_delivery may perform the explicitly requested Matrix message write at most once and never blindly retry an unknown outcome; web_digest_delivery sends to a group/channel room and does not create a channel post. Name is the sole schedule-card title and must be a concise human-readable task name extracted from the user's request. Identity, conversation, model profile, and account generation are injected by Core and must not be supplied as arguments.",
 			InputSchema: map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -65,7 +67,7 @@ func scheduleIntrinsic(store ConversationScheduleStore, bound TurnLease) Resolve
 						string(coretask.ScheduledCapabilityScheduledNote), string(coretask.ScheduledCapabilityChatSummary), string(coretask.ScheduledCapabilityWebResearch), string(coretask.ScheduledCapabilityRoomMessage),
 						string(coretask.ScheduledCapabilityContactReport), string(coretask.ScheduledCapabilityRoomMemberReport), string(coretask.ScheduledCapabilityChannelDigest), string(coretask.ScheduledCapabilityChatSummaryDelivery),
 						string(coretask.ScheduledCapabilityWebDigestDelivery),
-					}, "description": "Closed scheduled workflow. Refuse unsupported workflows instead of inventing another value."},
+					}, "description": "Closed scheduled workflow. Refuse unsupported workflows instead of inventing another value. " + scheduledCapabilitySelectionGuidance},
 					"run_at":          map[string]any{"type": "string", "format": "date-time"},
 					"cron":            map[string]any{"type": "string"},
 					"timezone":        map[string]any{"type": "string", "minLength": 1, "maxLength": 128},

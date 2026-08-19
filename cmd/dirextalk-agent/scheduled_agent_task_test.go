@@ -55,6 +55,7 @@ func TestScheduledAgentTaskUsesDeterministicNativeTurnAndReturnsMarkdownOnly(t *
 		!strings.Contains(wantPrompt, "Authoritative occurrence local time: 2026-08-19T09:00:00+08:00") ||
 		!strings.Contains(wantPrompt, "Scheduled capability: chat_summary") ||
 		!strings.Contains(wantPrompt, "mcp__message__dirextalk_messages_list at most once") ||
+		!strings.Contains(wantPrompt, "only nonempty final Markdown text") ||
 		!strings.HasSuffix(wantPrompt, "Scheduled goal:\n"+task.Spec.Goal) {
 		t.Fatalf("scheduled prompt is not deterministic and occurrence-anchored: %q", wantPrompt)
 	}
@@ -167,6 +168,10 @@ func TestScheduledAgentTaskPinsScheduledNoteToNoToolsOrIntrinsics(t *testing.T) 
 	if !command.ExtensionSnapshotsPinned || command.ExtensionSnapshots == nil || len(command.ExtensionSnapshots) != 0 || command.IntrinsicPolicy != coreconversation.TurnIntrinsicPolicyNone {
 		t.Fatalf("scheduled note runtime was not pinned empty: %+v", command)
 	}
+	if !strings.Contains(command.Prompt, "self-contained Markdown generated from the scheduled goal") ||
+		!strings.Contains(command.Prompt, "do not summarize or claim facts from Matrix rooms") {
+		t.Fatalf("scheduled note scope guidance missing: %q", command.Prompt)
+	}
 }
 
 func TestScheduledAgentTaskPinsOrderedWebDigestDeliverySources(t *testing.T) {
@@ -235,7 +240,8 @@ func TestScheduledCapabilityExecutionGuidanceConvergesSinglePassWorkflows(t *tes
 			capability: coretask.ScheduledCapabilityChatSummary,
 			ordered: []string{
 				"exact room ID", "skip mcp__message__dirextalk_rooms_search", "otherwise call it at most once",
-				"mcp__message__dirextalk_messages_list at most once", "immediately synthesize", "call no more tools",
+				"mcp__message__dirextalk_messages_list at most once", "Do not claim there are no messages", "completed successfully and returned no messages",
+				"immediately synthesize", "call no more tools",
 			},
 		},
 		{
@@ -243,13 +249,23 @@ func TestScheduledCapabilityExecutionGuidanceConvergesSinglePassWorkflows(t *tes
 			capability: coretask.ScheduledCapabilityWebResearch,
 			ordered: []string{
 				"web_search exactly once", "one focused query", "bounded max_results", "synthesize the research", "call no more tools",
+				"Every source citation", "[descriptive title](https://...)", "never a bare URL",
+			},
+		},
+		{
+			name:       "chat summary delivery",
+			capability: coretask.ScheduledCapabilityChatSummaryDelivery,
+			ordered: []string{
+				"mcp__message__dirextalk_messages_list at most once", "Do not claim there are no messages", "completed successfully and returned no messages",
+				"Synthesize the summary", "mcp__message__dirextalk_messages_send exactly once", "call no more tools",
 			},
 		},
 		{
 			name:       "web digest delivery",
 			capability: coretask.ScheduledCapabilityWebDigestDelivery,
 			ordered: []string{
-				"web_search exactly once", "synthesize the digest", "exact room ID", "mcp__message__dirextalk_messages_send exactly once",
+				"web_search exactly once", "synthesize the digest", "Every source citation", "[descriptive title](https://...)", "never a bare URL",
+				"exact room ID", "mcp__message__dirextalk_messages_send exactly once",
 				"unknown completion", "report the delivery status", "call no more tools",
 			},
 		},
@@ -262,7 +278,8 @@ func TestScheduledCapabilityExecutionGuidanceConvergesSinglePassWorkflows(t *tes
 			}
 			assertOrderedScheduledGuidance(t, guidance, test.ordered)
 			if !strings.Contains(guidance, "must not issue a second model tool call") ||
-				!strings.Contains(guidance, "instead of searching or sending again") {
+				!strings.Contains(guidance, "instead of searching or sending again") ||
+				!strings.Contains(guidance, "Never claim external data is absent unless") {
 				t.Fatalf("guidance lacks common single-pass rule: %q", guidance)
 			}
 		})
