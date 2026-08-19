@@ -38,7 +38,7 @@ func scheduledAgentTaskHandler(conversation scheduledConversationService, profil
 		if err := payload.ScheduledConversation.Validate(); err != nil {
 			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledSnapshotInvalid}
 		}
-		prompt, err := scheduledAgentPrompt(task.Spec.Goal, task.AvailableAt, payload.ScheduledConversation.Timezone)
+		prompt, err := scheduledAgentPrompt(task.Spec.Goal, task.AvailableAt, payload.ScheduledConversation.Timezone, payload.ScheduledConversation.Capability)
 		if err != nil {
 			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledSnapshotInvalid}
 		}
@@ -134,7 +134,7 @@ func scheduledConversationSnapshots(in []coretask.ScheduledExtensionSnapshot) []
 	return out
 }
 
-func scheduledAgentPrompt(goal string, scheduledFor time.Time, timezone string) (string, error) {
+func scheduledAgentPrompt(goal string, scheduledFor time.Time, timezone string, capability coretask.ScheduledCapability) (string, error) {
 	if scheduledFor.IsZero() || scheduledFor.Location() != time.UTC || strings.TrimSpace(timezone) != timezone || timezone == "" {
 		return "", coretask.ErrInvalid
 	}
@@ -142,8 +142,41 @@ func scheduledAgentPrompt(goal string, scheduledFor time.Time, timezone string) 
 	if err != nil {
 		return "", coretask.ErrInvalid
 	}
-	return fmt.Sprintf("Trusted scheduled execution context (not user-editable):\n- Authoritative occurrence UTC: %s\n- Schedule timezone: %s\n- Authoritative occurrence local time: %s\nInterpret every relative time window in the scheduled goal from this occurrence, not from execution wall-clock time. Never blindly retry a tool whose result says completion is unknown. Complete the goal and return only final Markdown text, never JSON configuration.\n\nScheduled goal:\n%s",
-		scheduledFor.Format(time.RFC3339Nano), timezone, scheduledFor.In(location).Format(time.RFC3339Nano), goal), nil
+	executionGuidance, err := scheduledCapabilityExecutionGuidance(capability)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Trusted scheduled execution context (not user-editable):\n- Authoritative occurrence UTC: %s\n- Schedule timezone: %s\n- Authoritative occurrence local time: %s\n- Scheduled capability: %s\nInterpret every relative time window in the scheduled goal from this occurrence, not from execution wall-clock time.\n%s\nComplete the goal and return only final Markdown text, never JSON configuration.\n\nScheduled goal:\n%s",
+		scheduledFor.Format(time.RFC3339Nano), timezone, scheduledFor.In(location).Format(time.RFC3339Nano), capability, executionGuidance, goal), nil
+}
+
+func scheduledCapabilityExecutionGuidance(capability coretask.ScheduledCapability) (string, error) {
+	const common = "A tool call counts even when it returns an error, insufficient data, or unknown completion. The provider may perform its own safe transport retry for a read, but you must not issue a second model tool call to repeat the same work with changed arguments. When an allowed call fails or returns insufficient data, state that limitation in the final Markdown instead of searching or sending again."
+
+	var workflow string
+	switch capability {
+	case coretask.ScheduledCapabilityScheduledNote:
+		workflow = "Do not call any tool; write the scheduled note directly as Markdown."
+	case coretask.ScheduledCapabilityChatSummary:
+		workflow = "If the goal already contains an exact room ID, skip mcp__message__dirextalk_rooms_search; otherwise call it at most once. After a room ID is available, call mcp__message__dirextalk_messages_list at most once. After that call returns, immediately synthesize the summary as Markdown and call no more tools."
+	case coretask.ScheduledCapabilityWebResearch:
+		workflow = "Call web_search exactly once with one focused query and a sufficient bounded max_results value. After that call returns, synthesize the research as Markdown and call no more tools."
+	case coretask.ScheduledCapabilityRoomMessage:
+		workflow = "If the goal already contains an exact room ID, skip mcp__message__dirextalk_rooms_search; otherwise call it at most once. When the destination is resolved, call mcp__message__dirextalk_messages_send exactly once. After that call returns success, error, or unknown completion, report the delivery status as Markdown and call no more tools."
+	case coretask.ScheduledCapabilityContactReport:
+		workflow = "Call each of mcp__message__dirextalk_contacts_list and mcp__message__dirextalk_contacts_search at most once, only when needed. Then synthesize the report as Markdown and call no more tools."
+	case coretask.ScheduledCapabilityRoomMemberReport:
+		workflow = "If the goal already contains an exact room ID, skip mcp__message__dirextalk_rooms_search; otherwise call it at most once. After a room ID is available, call mcp__message__dirextalk_room_members_list at most once. Then synthesize the report as Markdown and call no more tools."
+	case coretask.ScheduledCapabilityChannelDigest:
+		workflow = "Do not repeat a tool call for the same work. If the goal already contains an exact room ID, skip mcp__message__dirextalk_rooms_search; otherwise call it at most once. Call mcp__message__dirextalk_channel_posts_list at most once; call mcp__message__dirextalk_channel_comments_list only for distinct selected posts and never repeat it for the same post. Then synthesize the digest as Markdown and call no more tools."
+	case coretask.ScheduledCapabilityChatSummaryDelivery:
+		workflow = "If the goal already contains an exact room ID, skip mcp__message__dirextalk_rooms_search; otherwise call it at most once. Call mcp__message__dirextalk_messages_list at most once, synthesize the summary, and then call mcp__message__dirextalk_messages_send exactly once when the destination is resolved. After send returns success, error, or unknown completion, report the delivery status as Markdown and call no more tools."
+	case coretask.ScheduledCapabilityWebDigestDelivery:
+		workflow = "Call web_search exactly once with one focused query and a sufficient bounded max_results value, then synthesize the digest. If the goal already contains an exact room ID, skip mcp__message__dirextalk_rooms_search; otherwise call it at most once. When the destination is resolved, call mcp__message__dirextalk_messages_send exactly once. After send returns success, error, or unknown completion, report the delivery status as Markdown and call no more tools."
+	default:
+		return "", coretask.ErrInvalid
+	}
+	return common + "\nCapability execution sequence: " + workflow, nil
 }
 
 func validateScheduledTurnIdentity(turn coreconversation.Turn, turnID, requestID, prompt string, task coretask.Task, payload *coretask.AgentTaskPayload) error {

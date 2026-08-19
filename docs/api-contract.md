@@ -326,8 +326,15 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   Its trusted prompt binds the immutable occurrence `Task.AvailableAt` in UTC,
   the persisted schedule timezone, and the corresponding local timestamp;
   relative windows are evaluated from that occurrence rather than delayed
-  execution wall-clock time. Crash recovery therefore resumes the same prompt
-  and transcript commit. A successful
+  execution wall-clock time. The same trusted prompt supplies capability-level
+  single-pass execution guidance: room lookup is skipped when an exact room ID
+  is already present and otherwise attempted at most once; summary message
+  reads are attempted at most once; Web research performs one focused
+  `web_search`; delivery workflows synthesize before one message send. A
+  model-issued tool call is not repeated with altered arguments after error,
+  insufficient data, or unknown completion; any provider-internal safe retry
+  remains below that model-call boundary. Crash recovery therefore resumes the
+  same prompt and transcript commit. A successful
   Task exposes exactly the committed assistant Markdown as `result.text` and
   leaves `result.json` empty; it does not append another assistant message.
   Background execution carries only the persisted owner and positive account

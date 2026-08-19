@@ -364,8 +364,14 @@ Scheduled Agent Tasks use the durable Native `StartTurn` path, not the generic
 Task agent loop. Request and turn UUIDs derive from the occurrence Task UUID,
 and the immutable prompt binds `Task.AvailableAt` as the authoritative UTC
 occurrence plus the persisted schedule timezone and local occurrence time.
-Relative windows therefore do not drift when execution is delayed. Reclaim
-after a crash resumes the same turn and cannot append a second user
+Relative windows therefore do not drift when execution is delayed. The trusted
+prompt also supplies capability-level single-pass guidance: an exact room ID
+skips lookup, otherwise lookup is attempted at most once; summary reads are
+attempted at most once; Web research performs one focused search; delivery
+workflows synthesize before one send. A model-issued call is not repeated with
+different arguments after error, insufficient data, or unknown completion;
+safe provider-internal read retry stays below that model-call boundary.
+Reclaim after a crash resumes the same turn and cannot append a second user
 or assistant message. The Task succeeds with only the already-committed Native
 assistant Markdown in `result.text`; no response JSON or duplicate transcript
 message is produced. The internal execution context binds only the persisted

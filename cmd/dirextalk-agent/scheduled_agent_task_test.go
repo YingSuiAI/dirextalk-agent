@@ -39,7 +39,7 @@ func TestScheduledAgentTaskUsesDeterministicNativeTurnAndReturnsMarkdownOnly(t *
 	}
 	wantRequestID := scheduledAgentUUID("scheduled-agent-request:" + task.ID)
 	wantTurnID := scheduledAgentUUID("scheduled-agent-turn:" + task.ID)
-	wantPrompt, err := scheduledAgentPrompt(task.Spec.Goal, task.AvailableAt, task.Spec.Payload.Agent.ScheduledConversation.Timezone)
+	wantPrompt, err := scheduledAgentPrompt(task.Spec.Goal, task.AvailableAt, task.Spec.Payload.Agent.ScheduledConversation.Timezone, task.Spec.Payload.Agent.ScheduledConversation.Capability)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +53,8 @@ func TestScheduledAgentTaskUsesDeterministicNativeTurnAndReturnsMarkdownOnly(t *
 	if conversation.commands[1].Prompt != wantPrompt || conversation.commands[1].Fingerprint() != command.Fingerprint() ||
 		!strings.Contains(wantPrompt, "Authoritative occurrence UTC: 2026-08-19T01:00:00Z") ||
 		!strings.Contains(wantPrompt, "Authoritative occurrence local time: 2026-08-19T09:00:00+08:00") ||
+		!strings.Contains(wantPrompt, "Scheduled capability: chat_summary") ||
+		!strings.Contains(wantPrompt, "mcp__message__dirextalk_messages_list at most once") ||
 		!strings.HasSuffix(wantPrompt, "Scheduled goal:\n"+task.Spec.Goal) {
 		t.Fatalf("scheduled prompt is not deterministic and occurrence-anchored: %q", wantPrompt)
 	}
@@ -215,10 +217,70 @@ func TestScheduledAgentPromptRejectsMissingOccurrenceAuthority(t *testing.T) {
 		{name: "invalid timezone", at: time.Date(2026, 8, 19, 1, 0, 0, 0, time.UTC), timezone: "Mars/Olympus"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := scheduledAgentPrompt("goal", test.at, test.timezone); !errors.Is(err, coretask.ErrInvalid) {
+			if _, err := scheduledAgentPrompt("goal", test.at, test.timezone, coretask.ScheduledCapabilityChatSummary); !errors.Is(err, coretask.ErrInvalid) {
 				t.Fatalf("err=%v", err)
 			}
 		})
+	}
+}
+
+func TestScheduledCapabilityExecutionGuidanceConvergesSinglePassWorkflows(t *testing.T) {
+	tests := []struct {
+		name       string
+		capability coretask.ScheduledCapability
+		ordered    []string
+	}{
+		{
+			name:       "chat summary",
+			capability: coretask.ScheduledCapabilityChatSummary,
+			ordered: []string{
+				"exact room ID", "skip mcp__message__dirextalk_rooms_search", "otherwise call it at most once",
+				"mcp__message__dirextalk_messages_list at most once", "immediately synthesize", "call no more tools",
+			},
+		},
+		{
+			name:       "web research",
+			capability: coretask.ScheduledCapabilityWebResearch,
+			ordered: []string{
+				"web_search exactly once", "one focused query", "bounded max_results", "synthesize the research", "call no more tools",
+			},
+		},
+		{
+			name:       "web digest delivery",
+			capability: coretask.ScheduledCapabilityWebDigestDelivery,
+			ordered: []string{
+				"web_search exactly once", "synthesize the digest", "exact room ID", "mcp__message__dirextalk_messages_send exactly once",
+				"unknown completion", "report the delivery status", "call no more tools",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			guidance, err := scheduledCapabilityExecutionGuidance(test.capability)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOrderedScheduledGuidance(t, guidance, test.ordered)
+			if !strings.Contains(guidance, "must not issue a second model tool call") ||
+				!strings.Contains(guidance, "instead of searching or sending again") {
+				t.Fatalf("guidance lacks common single-pass rule: %q", guidance)
+			}
+		})
+	}
+	if _, err := scheduledCapabilityExecutionGuidance(coretask.ScheduledCapability("unknown")); !errors.Is(err, coretask.ErrInvalid) {
+		t.Fatalf("invalid capability err=%v", err)
+	}
+}
+
+func assertOrderedScheduledGuidance(t *testing.T, guidance string, fragments []string) {
+	t.Helper()
+	offset := 0
+	for _, fragment := range fragments {
+		index := strings.Index(guidance[offset:], fragment)
+		if index < 0 {
+			t.Fatalf("guidance missing ordered fragment %q after byte %d: %q", fragment, offset, guidance)
+		}
+		offset += index + len(fragment)
 	}
 }
 
