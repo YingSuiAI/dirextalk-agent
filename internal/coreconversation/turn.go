@@ -203,8 +203,12 @@ type TurnStartCommand struct {
 	// accepted set, including when it is empty. Internal background adapters use
 	// this to prevent an empty pinned set from acquiring current automatic tools.
 	ExtensionSnapshotsPinned bool
-	AcceptedAttachmentIDs    []string
-	AttachmentSources        []TurnAttachment
+	// IntrinsicPolicy is persisted into the immutable runtime snapshot. Scheduled
+	// background turns use "none" so they cannot create nested schedules or run
+	// unrelated Core side effects.
+	IntrinsicPolicy       TurnIntrinsicPolicy
+	AcceptedAttachmentIDs []string
+	AttachmentSources     []TurnAttachment
 }
 
 type TurnCancelCommand struct {
@@ -351,21 +355,36 @@ type ModelAttemptFailure struct {
 
 const TurnRuntimeSnapshotVersion = 1
 
+type TurnIntrinsicPolicy string
+
+const TurnIntrinsicPolicyNone TurnIntrinsicPolicy = "none"
+
 type TurnRuntimeSnapshot struct {
-	Version               int               `json:"version"`
-	CompiledSystemPrompt  string            `json:"compiled_system_prompt"`
-	SystemPromptDigest    string            `json:"system_prompt_digest"`
-	ProfileSnapshotDigest string            `json:"profile_snapshot_digest"`
-	RequestDialect        string            `json:"request_dialect"`
-	IntrinsicTools        []coremodel.Tool  `json:"intrinsic_tools"`
-	IntrinsicDigest       string            `json:"intrinsic_digest"`
-	ExtensionDigest       string            `json:"extension_digest"`
-	AttachmentDigest      string            `json:"attachment_digest"`
-	ExecutionPolicy       map[string]uint64 `json:"execution_policy"`
-	ExecutionPolicyDigest string            `json:"execution_policy_digest"`
+	Version               int                 `json:"version"`
+	CompiledSystemPrompt  string              `json:"compiled_system_prompt"`
+	SystemPromptDigest    string              `json:"system_prompt_digest"`
+	ProfileSnapshotDigest string              `json:"profile_snapshot_digest"`
+	RequestDialect        string              `json:"request_dialect"`
+	IntrinsicTools        []coremodel.Tool    `json:"intrinsic_tools"`
+	IntrinsicDigest       string              `json:"intrinsic_digest"`
+	IntrinsicPolicy       TurnIntrinsicPolicy `json:"intrinsic_policy,omitempty"`
+	ExtensionDigest       string              `json:"extension_digest"`
+	AttachmentDigest      string              `json:"attachment_digest"`
+	ExecutionPolicy       map[string]uint64   `json:"execution_policy"`
+	ExecutionPolicyDigest string              `json:"execution_policy_digest"`
 }
 
 func NewTurnRuntimeSnapshot(systemPrompt string, profile coremodel.ExecutionSnapshot, intrinsics []ResolvedIntrinsic, extensionDigest, attachmentDigest string) (TurnRuntimeSnapshot, error) {
+	return newTurnRuntimeSnapshot(systemPrompt, profile, intrinsics, extensionDigest, attachmentDigest, "")
+}
+
+func newTurnRuntimeSnapshot(systemPrompt string, profile coremodel.ExecutionSnapshot, intrinsics []ResolvedIntrinsic, extensionDigest, attachmentDigest string, intrinsicPolicy TurnIntrinsicPolicy) (TurnRuntimeSnapshot, error) {
+	if intrinsicPolicy != "" && intrinsicPolicy != TurnIntrinsicPolicyNone {
+		return TurnRuntimeSnapshot{}, ErrInvalid
+	}
+	if intrinsicPolicy == TurnIntrinsicPolicyNone && len(intrinsics) != 0 {
+		return TurnRuntimeSnapshot{}, ErrInvalid
+	}
 	tools := make([]coremodel.Tool, 0, len(intrinsics))
 	for _, intrinsic := range intrinsics {
 		if intrinsic.Execute == nil || intrinsic.Tool.InputSchema == nil || !coremodel.IsIntrinsicToolName(intrinsic.Tool.Name) {
@@ -388,7 +407,7 @@ func NewTurnRuntimeSnapshot(systemPrompt string, profile coremodel.ExecutionSnap
 	snapshot := TurnRuntimeSnapshot{
 		Version: TurnRuntimeSnapshotVersion, CompiledSystemPrompt: systemPrompt,
 		SystemPromptDigest: digest(systemPrompt), ProfileSnapshotDigest: profile.Digest(),
-		RequestDialect: string(profile.RequestDialect), IntrinsicTools: tools,
+		RequestDialect: string(profile.RequestDialect), IntrinsicTools: tools, IntrinsicPolicy: intrinsicPolicy,
 		IntrinsicDigest: digest(string(intrinsicRaw)), ExtensionDigest: extensionDigest,
 		AttachmentDigest: attachmentDigest,
 		ExecutionPolicy:  policy, ExecutionPolicyDigest: digest(string(policyRaw)),
@@ -403,7 +422,9 @@ func (s TurnRuntimeSnapshot) Validate() error {
 	if s.Version != TurnRuntimeSnapshotVersion || s.SystemPromptDigest != digest(s.CompiledSystemPrompt) ||
 		!validReferenceDigest(s.ProfileSnapshotDigest) || !validRuntimeRequestDialect(s.RequestDialect) ||
 		(len(s.ExtensionDigest) != 0 && !validReferenceDigest(s.ExtensionDigest)) ||
-		(len(s.AttachmentDigest) != 0 && !validReferenceDigest(s.AttachmentDigest)) {
+		(len(s.AttachmentDigest) != 0 && !validReferenceDigest(s.AttachmentDigest)) ||
+		(s.IntrinsicPolicy != "" && s.IntrinsicPolicy != TurnIntrinsicPolicyNone) ||
+		(s.IntrinsicPolicy == TurnIntrinsicPolicyNone && len(s.IntrinsicTools) != 0) {
 		return ErrInvalid
 	}
 	intrinsicRaw, err := json.Marshal(s.IntrinsicTools)
@@ -514,6 +535,9 @@ func (c TurnStartCommand) Validate() error {
 	if c.ExtensionSnapshotsPinned && len(c.Extensions) != 0 {
 		return ErrInvalid
 	}
+	if c.IntrinsicPolicy != "" && c.IntrinsicPolicy != TurnIntrinsicPolicyNone {
+		return ErrInvalid
+	}
 	if len(c.Extensions) > 0 && len(c.ExtensionSnapshots) == 0 {
 		return ErrInvalid
 	}
@@ -578,6 +602,9 @@ func (c TurnStartCommand) Fingerprint() string {
 	// identity, including for a deliberately empty snapshot set.
 	if c.ExtensionSnapshotsPinned {
 		values = append(values, "extension_snapshots_pinned")
+	}
+	if c.IntrinsicPolicy != "" {
+		values = append(values, "intrinsic_policy", c.IntrinsicPolicy)
 	}
 	return digest(turnStructDigest(values...))
 }

@@ -100,6 +100,14 @@ func TestCoreScheduleOutputsNewestFirstStablePaginationPostgres(t *testing.T) {
 	if _, _, err := schedules.ListScheduleOutputs(ctx, schedule.ID, "not-a-cursor", 2); !errors.Is(err, coretask.ErrInvalid) {
 		t.Fatalf("invalid cursor err=%v", err)
 	}
+	if _, _, err := schedules.ListScheduleOutputs(ctx, uuid.NewString(), next, 2); !errors.Is(err, coretask.ErrInvalid) {
+		t.Fatalf("cross-schedule cursor err=%v", err)
+	}
+	for _, token := range []string{" " + next, next + " "} {
+		if _, _, err := schedules.ListScheduleOutputs(ctx, schedule.ID, token, 2); !errors.Is(err, coretask.ErrInvalid) {
+			t.Fatalf("non-canonical cursor %q err=%v", token, err)
+		}
+	}
 }
 
 func TestCoreScheduleStorePostgresAtomicMaterialization(t *testing.T) {

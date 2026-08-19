@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -108,6 +109,7 @@ type occurrenceReader interface {
 }
 
 type scheduleOutputCursor struct {
+	ScheduleID   string `json:"schedule_id"`
 	ScheduledFor string `json:"scheduled_for"`
 	OccurrenceID string `json:"occurrence_id"`
 }
@@ -116,20 +118,24 @@ type scheduleOutputCursor struct {
 // in one query. The descending tuple cursor is stable when multiple
 // occurrences share the same scheduled time.
 func (s *CoreScheduleStore) ListScheduleOutputs(ctx context.Context, scheduleID, token string, limit int) ([]coretask.ScheduleOutput, string, error) {
-	if !coretask.ValidUUID(scheduleID) || limit <= 0 || limit > 200 || len(token) > 4096 {
+	if !coretask.ValidUUID(scheduleID) || limit <= 0 || limit > 200 || len(token) > 4096 || token != strings.TrimSpace(token) {
 		return nil, "", coretask.ErrInvalid
 	}
 	var before time.Time
 	var beforeID string
 	if token != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(token)
-		if err != nil {
+		if err != nil || base64.RawURLEncoding.EncodeToString(raw) != token {
 			return nil, "", coretask.ErrInvalid
 		}
 		var cursor scheduleOutputCursor
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.DisallowUnknownFields()
-		if decoder.Decode(&cursor) != nil || decoder.Decode(&struct{}{}) == nil || cursor.ScheduledFor == "" || !coretask.ValidUUID(cursor.OccurrenceID) {
+		if decoder.Decode(&cursor) != nil || decoder.Decode(&struct{}{}) == nil || cursor.ScheduleID != scheduleID || cursor.ScheduledFor == "" || !coretask.ValidUUID(cursor.OccurrenceID) {
+			return nil, "", coretask.ErrInvalid
+		}
+		canonicalRaw, _ := json.Marshal(cursor)
+		if !bytes.Equal(raw, canonicalRaw) {
 			return nil, "", coretask.ErrInvalid
 		}
 		before, err = time.Parse(time.RFC3339Nano, cursor.ScheduledFor)
@@ -181,7 +187,7 @@ func (s *CoreScheduleStore) ListScheduleOutputs(ctx context.Context, scheduleID,
 	if len(outputs) > limit {
 		last := outputs[limit-1]
 		outputs = outputs[:limit]
-		raw, _ := json.Marshal(scheduleOutputCursor{ScheduledFor: last.ScheduledFor.Format(time.RFC3339Nano), OccurrenceID: last.OccurrenceID})
+		raw, _ := json.Marshal(scheduleOutputCursor{ScheduleID: scheduleID, ScheduledFor: last.ScheduledFor.Format(time.RFC3339Nano), OccurrenceID: last.OccurrenceID})
 		next = base64.RawURLEncoding.EncodeToString(raw)
 	}
 	return outputs, next, nil

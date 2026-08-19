@@ -35,6 +35,13 @@ func scheduledAgentTaskHandler(conversation scheduledConversationService, profil
 			task.Spec.ModelProfileID != task.Snapshot.Model.ProfileID || strings.TrimSpace(payload.OwnerID) == "" || payload.AccountGeneration == 0 {
 			return coreruntime.ManagedOutcome{Err: coretask.ErrInvalid}
 		}
+		if err := payload.ScheduledConversation.Validate(); err != nil {
+			return coreruntime.ManagedOutcome{Err: err}
+		}
+		prompt, err := scheduledAgentPrompt(task.Spec.Goal, task.AvailableAt, payload.ScheduledConversation.Timezone)
+		if err != nil {
+			return coreruntime.ManagedOutcome{Err: err}
+		}
 
 		requestID := scheduledAgentUUID("scheduled-agent-request:" + task.ID)
 		turnID := scheduledAgentUUID("scheduled-agent-turn:" + task.ID)
@@ -62,18 +69,19 @@ func scheduledAgentTaskHandler(conversation scheduledConversationService, profil
 			OwnerID:                   payload.OwnerID,
 			AccountGeneration:         payload.AccountGeneration,
 			ConversationID:            task.Spec.ConversationID,
-			Prompt:                    task.Spec.Goal,
+			Prompt:                    prompt,
 			ProfileID:                 profileSnapshot.ProfileID,
 			ExpectedProfileRevision:   profileSnapshot.Revision,
 			ExpectedCredentialVersion: profileSnapshot.CredentialVersion,
 			ProfileSnapshot:           profileSnapshot,
 			ExtensionSnapshots:        extensions,
 			ExtensionSnapshotsPinned:  true,
+			IntrinsicPolicy:           coreconversation.TurnIntrinsicPolicyNone,
 		})
 		if err != nil {
 			return coreruntime.ManagedOutcome{Err: err}
 		}
-		if err := validateScheduledTurnIdentity(turn, turnID, requestID, task, payload); err != nil {
+		if err := validateScheduledTurnIdentity(turn, turnID, requestID, prompt, task, payload); err != nil {
 			return coreruntime.ManagedOutcome{Err: err}
 		}
 
@@ -96,7 +104,7 @@ func scheduledAgentTaskHandler(conversation scheduledConversationService, profil
 				if err != nil {
 					return coreruntime.ManagedOutcome{Err: err}
 				}
-				if err := validateScheduledTurnIdentity(turn, turnID, requestID, task, payload); err != nil {
+				if err := validateScheduledTurnIdentity(turn, turnID, requestID, prompt, task, payload); err != nil {
 					return coreruntime.ManagedOutcome{Err: err}
 				}
 			}
@@ -124,9 +132,21 @@ func scheduledConversationSnapshots(in []coretask.ScheduledExtensionSnapshot) []
 	return out
 }
 
-func validateScheduledTurnIdentity(turn coreconversation.Turn, turnID, requestID string, task coretask.Task, payload *coretask.AgentTaskPayload) error {
+func scheduledAgentPrompt(goal string, scheduledFor time.Time, timezone string) (string, error) {
+	if scheduledFor.IsZero() || scheduledFor.Location() != time.UTC || strings.TrimSpace(timezone) != timezone || timezone == "" {
+		return "", coretask.ErrInvalid
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return "", coretask.ErrInvalid
+	}
+	return fmt.Sprintf("Trusted scheduled execution context (not user-editable):\n- Authoritative occurrence UTC: %s\n- Schedule timezone: %s\n- Authoritative occurrence local time: %s\nInterpret every relative time window in the scheduled goal from this occurrence, not from execution wall-clock time. Never blindly retry a tool whose result says completion is unknown. Complete the goal and return only final Markdown text, never JSON configuration.\n\nScheduled goal:\n%s",
+		scheduledFor.Format(time.RFC3339Nano), timezone, scheduledFor.In(location).Format(time.RFC3339Nano), goal), nil
+}
+
+func validateScheduledTurnIdentity(turn coreconversation.Turn, turnID, requestID, prompt string, task coretask.Task, payload *coretask.AgentTaskPayload) error {
 	if turn.ID != turnID || turn.RequestID != requestID || turn.ConversationID != task.Spec.ConversationID ||
-		turn.Prompt != task.Spec.Goal || turn.ProfileID != task.Spec.ModelProfileID ||
+		turn.Prompt != prompt || turn.ProfileID != task.Spec.ModelProfileID ||
 		turn.OwnerID != payload.OwnerID || turn.AccountGeneration != payload.AccountGeneration {
 		return coreconversation.ErrConflict
 	}

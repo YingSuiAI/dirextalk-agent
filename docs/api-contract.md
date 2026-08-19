@@ -268,11 +268,22 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   store is composed. Model input is limited to a concise human-readable `name`
   (the sole schedule-card title), `goal`, required closed `capability`, exactly
   one `run_at` or `cron` plus IANA `timezone`, and optional
-  `timeout_seconds`. The only accepted capabilities are `chat_summary`
-  (`message-mcp`: `dirextalk_rooms_search`, `dirextalk_messages_list`),
-  `web_research` (`builtin:web_search:tavily`: `web_search`), and
-  `room_message` (`message-mcp`: `dirextalk_rooms_search`,
-  `dirextalk_messages_send`). Core checks those exact creating-Turn snapshot
+  `timeout_seconds`. The closed capabilities are:
+  `scheduled_note` (no tools), `chat_summary` (`message-mcp`:
+  `dirextalk_rooms_search`, `dirextalk_messages_list`), `web_research`
+  (`builtin:web_search:tavily`: `web_search`), `room_message`
+  (`message-mcp`: `dirextalk_rooms_search`, `dirextalk_messages_send`),
+  `contact_report` (`message-mcp`: `dirextalk_contacts_list`,
+  `dirextalk_contacts_search`), `room_member_report` (`message-mcp`:
+  `dirextalk_rooms_search`, `dirextalk_room_members_list`), `channel_digest`
+  (`message-mcp`: `dirextalk_rooms_search`, `dirextalk_channel_posts_list`,
+  `dirextalk_channel_comments_list`), and `chat_summary_delivery`
+  (`message-mcp`: `dirextalk_rooms_search`, `dirextalk_messages_list`,
+  `dirextalk_messages_send`), plus the ordered two-source
+  `web_digest_delivery` (`builtin:web_search:tavily`: `web_search`, then
+  `message-mcp`: `dirextalk_rooms_search`, `dirextalk_messages_send`). It sends
+  one Matrix message to a group/channel room and never creates a channel post.
+  Core checks those exact creating-Turn snapshot
   bindings before normalization or persistence. Unknown workflows, wrong
   sources, and missing tools return a bounded correctable intrinsic error and
   write no schedule row; installed extensions are not a generic scheduled-
@@ -281,19 +292,30 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   the fenced turn lease. Owner and generation persist only in the typed
   `task_template.payload.agent` authority object; credentials and
   attachment/Knowledge references are not accepted. The internal payload also
-  snapshots the creating turn's installed MCP/Skill, Message MCP, and Tavily
-  Web Search bindings. Product Capability and semantic Knowledge bindings are
-  excluded because their request-time authority cannot be delegated to a
-  background occurrence. Due Tasks revalidate every retained snapshot and fail
-  closed on drift. An explicitly empty retained set stays empty rather than
-  resolving tools that were installed or enabled after schedule creation.
+  snapshots only the exact provider-facing tools required by the selected
+  capability; `scheduled_note` persists an explicitly empty set. Installed
+  MCP/Skill, unrelated Message MCP, Product Capability, and semantic Knowledge
+  bindings are excluded. Due Tasks revalidate the retained snapshot, filter the
+  live resolver catalog back to that exact tool set, and fail closed on drift.
   A due schedule delegates through the durable Native Turn executor with
   deterministic request/turn identities derived from the occurrence Task.
-  Crash recovery therefore resumes the same transcript commit. A successful
+  Its trusted prompt binds the immutable occurrence `Task.AvailableAt` in UTC,
+  the persisted schedule timezone, and the corresponding local timestamp;
+  relative windows are evaluated from that occurrence rather than delayed
+  execution wall-clock time. Crash recovery therefore resumes the same prompt
+  and transcript commit. A successful
   Task exposes exactly the committed assistant Markdown as `result.text` and
   leaves `result.json` empty; it does not append another assistant message.
   Background execution carries only the persisted owner and positive account
-  generation, with no synthesized Product Capability grant or scope.
+  generation, with no synthesized Product Capability grant or scope. Its
+  immutable runtime policy exposes no Core intrinsics, preventing nested
+  schedule creation, static-site publication, Cloud Worker actions, or other
+  unrelated side effects.
+  `scheduled_note` is visible as Native conversation/schedule-history Markdown
+  and does not promise Matrix or operating-system push delivery. The
+  `room_message`, `chat_summary_delivery`, and `web_digest_delivery` Matrix
+  writes are dispatch-recorded before the provider call; an unknown completion
+  result is returned as an error observation and is never retried blindly.
   Schedule creation, its replay receipt,
   both transcript messages, terminal turn response, and done event commit in
   one transaction. Schedule and idempotency identities are deterministic from
@@ -304,7 +326,9 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   `page_token`, revalidates the live schedule before reading, and returns
   newest-first occurrence output ordered by
   `(scheduled_for, occurrence_id)` descending with a stable descending tuple
-  cursor. Each closed item exposes only `occurrence_id`, `task_id`,
+  cursor. Tokens are canonical (surrounding whitespace is invalid) and bound to
+  the requested `schedule_id`, so they cannot be replayed across schedules.
+  Each closed item exposes only `occurrence_id`, `task_id`,
   `scheduled_for`, current Task `status`, `created_at`, `updated_at`, optional
   safe Task `result`, and optional `failure_code`/`failure_summary`. Task
   payloads, goals, model or extension snapshots, owner authority, and secrets

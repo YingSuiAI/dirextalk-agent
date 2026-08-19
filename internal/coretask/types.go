@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -54,25 +55,74 @@ type AgentTaskPayload struct {
 type ScheduledCapability string
 
 const (
-	ScheduledCapabilityChatSummary ScheduledCapability = "chat_summary"
-	ScheduledCapabilityWebResearch ScheduledCapability = "web_research"
-	ScheduledCapabilityRoomMessage ScheduledCapability = "room_message"
+	ScheduledCapabilityScheduledNote       ScheduledCapability = "scheduled_note"
+	ScheduledCapabilityChatSummary         ScheduledCapability = "chat_summary"
+	ScheduledCapabilityWebResearch         ScheduledCapability = "web_research"
+	ScheduledCapabilityRoomMessage         ScheduledCapability = "room_message"
+	ScheduledCapabilityContactReport       ScheduledCapability = "contact_report"
+	ScheduledCapabilityRoomMemberReport    ScheduledCapability = "room_member_report"
+	ScheduledCapabilityChannelDigest       ScheduledCapability = "channel_digest"
+	ScheduledCapabilityChatSummaryDelivery ScheduledCapability = "chat_summary_delivery"
+	ScheduledCapabilityWebDigestDelivery   ScheduledCapability = "web_digest_delivery"
 )
 
-// RequiredBinding returns the immutable extension source and logical tool
-// names required to create and later execute this scheduled workflow. Message
-// MCP exposes these logical names to its remote server under a provider-owned
-// mcp__message__ prefix.
-func (c ScheduledCapability) RequiredBinding() (string, []string, error) {
+// ScheduledCapabilityToolBinding names one model-facing provider tool and its
+// human-readable logical name. Both names are immutable capability contract.
+type ScheduledCapabilityToolBinding struct {
+	LogicalName  string
+	ProviderName string
+}
+
+// ScheduledCapabilityBinding is one ordered extension source in a scheduled
+// workflow. A capability may require multiple sources; order is authoritative.
+type ScheduledCapabilityBinding struct {
+	Source string
+	Tools  []ScheduledCapabilityToolBinding
+}
+
+func messageScheduledBinding(names ...string) ScheduledCapabilityBinding {
+	tools := make([]ScheduledCapabilityToolBinding, 0, len(names))
+	for _, name := range names {
+		tools = append(tools, ScheduledCapabilityToolBinding{LogicalName: name, ProviderName: "mcp__message__" + name})
+	}
+	return ScheduledCapabilityBinding{Source: "message-mcp", Tools: tools}
+}
+
+func directScheduledBinding(source string, names ...string) ScheduledCapabilityBinding {
+	tools := make([]ScheduledCapabilityToolBinding, 0, len(names))
+	for _, name := range names {
+		tools = append(tools, ScheduledCapabilityToolBinding{LogicalName: name, ProviderName: name})
+	}
+	return ScheduledCapabilityBinding{Source: source, Tools: tools}
+}
+
+// RequiredBindings returns the complete ordered multi-source capability
+// closure. No caller may add a source or provider tool to this list.
+func (c ScheduledCapability) RequiredBindings() ([]ScheduledCapabilityBinding, error) {
 	switch c {
+	case ScheduledCapabilityScheduledNote:
+		return []ScheduledCapabilityBinding{}, nil
 	case ScheduledCapabilityChatSummary:
-		return "message-mcp", []string{"dirextalk_rooms_search", "dirextalk_messages_list"}, nil
+		return []ScheduledCapabilityBinding{messageScheduledBinding("dirextalk_rooms_search", "dirextalk_messages_list")}, nil
 	case ScheduledCapabilityWebResearch:
-		return "builtin:web_search:tavily", []string{"web_search"}, nil
+		return []ScheduledCapabilityBinding{directScheduledBinding("builtin:web_search:tavily", "web_search")}, nil
 	case ScheduledCapabilityRoomMessage:
-		return "message-mcp", []string{"dirextalk_rooms_search", "dirextalk_messages_send"}, nil
+		return []ScheduledCapabilityBinding{messageScheduledBinding("dirextalk_rooms_search", "dirextalk_messages_send")}, nil
+	case ScheduledCapabilityContactReport:
+		return []ScheduledCapabilityBinding{messageScheduledBinding("dirextalk_contacts_list", "dirextalk_contacts_search")}, nil
+	case ScheduledCapabilityRoomMemberReport:
+		return []ScheduledCapabilityBinding{messageScheduledBinding("dirextalk_rooms_search", "dirextalk_room_members_list")}, nil
+	case ScheduledCapabilityChannelDigest:
+		return []ScheduledCapabilityBinding{messageScheduledBinding("dirextalk_rooms_search", "dirextalk_channel_posts_list", "dirextalk_channel_comments_list")}, nil
+	case ScheduledCapabilityChatSummaryDelivery:
+		return []ScheduledCapabilityBinding{messageScheduledBinding("dirextalk_rooms_search", "dirextalk_messages_list", "dirextalk_messages_send")}, nil
+	case ScheduledCapabilityWebDigestDelivery:
+		return []ScheduledCapabilityBinding{
+			directScheduledBinding("builtin:web_search:tavily", "web_search"),
+			messageScheduledBinding("dirextalk_rooms_search", "dirextalk_messages_send"),
+		}, nil
 	default:
-		return "", nil, ErrInvalid
+		return nil, ErrInvalid
 	}
 }
 
@@ -83,7 +133,33 @@ func (c ScheduledCapability) RequiredBinding() (string, []string, error) {
 // resolver and must be revalidated before each scheduled turn starts.
 type ScheduledConversationOrigin struct {
 	Capability         ScheduledCapability          `json:"capability"`
-	ExtensionSnapshots []ScheduledExtensionSnapshot `json:"extension_snapshots,omitempty"`
+	Timezone           string                       `json:"timezone"`
+	ExtensionSnapshots []ScheduledExtensionSnapshot `json:"extension_snapshots"`
+}
+
+func (o ScheduledConversationOrigin) Validate() error {
+	capability := ScheduledCapability(strings.TrimSpace(string(o.Capability)))
+	timezone := strings.TrimSpace(o.Timezone)
+	if capability != o.Capability || timezone != o.Timezone || timezone == "" || len([]byte(timezone)) > 128 || !utf8.ValidString(timezone) {
+		return ErrInvalid
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return ErrInvalid
+	}
+	if _, err := capability.RequiredBindings(); err != nil {
+		return err
+	}
+	if o.ExtensionSnapshots == nil {
+		return ErrInvalid
+	}
+	snapshots, err := normalizeScheduledCapabilitySnapshots(capability, o.ExtensionSnapshots)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(snapshots, o.ExtensionSnapshots) {
+		return ErrInvalid
+	}
+	return nil
 }
 
 // ScheduledExtensionSnapshot mirrors only the immutable, non-secret portion
@@ -422,17 +498,17 @@ func normalizePayload(s *TaskSpec) error {
 			}
 			if p.ScheduledConversation != nil {
 				p.ScheduledConversation.Capability = ScheduledCapability(strings.TrimSpace(string(p.ScheduledConversation.Capability)))
-				if _, _, err := p.ScheduledConversation.Capability.RequiredBinding(); err != nil {
-					return err
+				if strings.TrimSpace(p.ScheduledConversation.Timezone) != p.ScheduledConversation.Timezone || p.ScheduledConversation.Timezone == "" || len([]byte(p.ScheduledConversation.Timezone)) > 128 || !utf8.ValidString(p.ScheduledConversation.Timezone) {
+					return ErrInvalid
 				}
-				snapshots, err := normalizeScheduledExtensionSnapshots(p.ScheduledConversation.ExtensionSnapshots)
+				if _, err := time.LoadLocation(p.ScheduledConversation.Timezone); err != nil {
+					return ErrInvalid
+				}
+				snapshots, err := normalizeScheduledCapabilitySnapshots(p.ScheduledConversation.Capability, p.ScheduledConversation.ExtensionSnapshots)
 				if err != nil {
 					return err
 				}
 				p.ScheduledConversation.ExtensionSnapshots = snapshots
-				if !scheduledCapabilityAvailable(p.ScheduledConversation.Capability, snapshots) {
-					return ErrInvalid
-				}
 			}
 		}
 	case TaskKindExtension:
@@ -613,33 +689,49 @@ func normalizeScheduledExtensionSnapshots(in []ScheduledExtensionSnapshot) ([]Sc
 	return out, nil
 }
 
-func scheduledCapabilityAvailable(capability ScheduledCapability, snapshots []ScheduledExtensionSnapshot) bool {
-	source, requiredTools, err := capability.RequiredBinding()
+func normalizeScheduledCapabilitySnapshots(capability ScheduledCapability, in []ScheduledExtensionSnapshot) ([]ScheduledExtensionSnapshot, error) {
+	bindings, err := capability.RequiredBindings()
 	if err != nil {
-		return false
+		return nil, err
 	}
-	available := make(map[string]struct{})
-	for _, snapshot := range snapshots {
-		if snapshot.Source != source {
-			continue
-		}
-		for _, tool := range snapshot.ToolNames {
-			if source == "message-mcp" {
-				const prefix = "mcp__message__"
-				if !strings.HasPrefix(tool, prefix) {
-					continue
-				}
-				tool = strings.TrimPrefix(tool, prefix)
+	snapshots, err := normalizeScheduledExtensionSnapshots(in)
+	if err != nil {
+		return nil, err
+	}
+	if len(snapshots) != len(bindings) {
+		return nil, ErrInvalid
+	}
+	ordered := make([]ScheduledExtensionSnapshot, 0, len(bindings))
+	used := make(map[int]struct{}, len(snapshots))
+	for _, binding := range bindings {
+		match := -1
+		for index := range snapshots {
+			if snapshots[index].Source != binding.Source {
+				continue
 			}
-			available[tool] = struct{}{}
+			if match != -1 {
+				return nil, ErrInvalid
+			}
+			match = index
 		}
-	}
-	for _, required := range requiredTools {
-		if _, ok := available[required]; !ok {
-			return false
+		if match == -1 {
+			return nil, ErrInvalid
 		}
+		if _, duplicate := used[match]; duplicate {
+			return nil, ErrInvalid
+		}
+		wantTools := make([]string, 0, len(binding.Tools))
+		for _, tool := range binding.Tools {
+			wantTools = append(wantTools, tool.ProviderName)
+		}
+		sort.Strings(wantTools)
+		if !equalStringSet(snapshots[match].ToolNames, wantTools) {
+			return nil, ErrInvalid
+		}
+		used[match] = struct{}{}
+		ordered = append(ordered, snapshots[match])
 	}
-	return true
+	return ordered, nil
 }
 
 func equalStringSet(left, right []string) bool {

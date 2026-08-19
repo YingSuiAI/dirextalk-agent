@@ -195,23 +195,32 @@ contract](message-server-integration-development-contract.md), and
   retain their array wire shape through the direct HTTP data plane.
 - Native durable turns expose the Core-owned `agent_schedule_create` intrinsic
   with model input limited to a concise sole card title, schedule
-  intent/trigger/timeout, and the closed `chat_summary`, `web_research`, or
-  `room_message` capability. Turn authority
+  intent/trigger/timeout, and the closed `scheduled_note`, `chat_summary`,
+  `web_research`, `room_message`, `contact_report`, `room_member_report`,
+  `channel_digest`, `chat_summary_delivery`, or ordered two-source
+  `web_digest_delivery` capability. The last sends a Matrix message to a
+  group/channel room and does not create a channel post. `scheduled_note`
+  records Native Markdown without promising push delivery. Turn authority
   supplies owner generation, conversation, and profile; PostgreSQL commits the
   schedule/replay and terminal transcript/event as one deterministic,
   replay-safe transaction. Creation now requires each capability's exact
   source-bound creating-Turn tools and returns a correctable no-write rejection
-  for unknown or unavailable workflows. Due occurrences now execute through deterministic,
-  replay-safe Native Turns, reusing the creating turn's accepted installed
-  MCP/Skill, Message MCP, and Tavily Web Search snapshots while excluding
-  request-scoped Product Capability and semantic Knowledge. Successful Task
+  for unknown or unavailable workflows. Due occurrences now execute through
+  deterministic, replay-safe Native Turns, retaining and exposing only the
+  selected capability's exact Message MCP or Tavily tools. Installed MCP/Skill,
+  unrelated catalog tools, Product Capability, semantic Knowledge, and every
+  Core intrinsic are excluded. Occurrence prompts bind the immutable scheduled
+  UTC time and persisted timezone rather than execution wall-clock time; Matrix
+  writes are dispatch-recorded and unknown outcomes are never blindly retried.
+  Successful Task
   output is the single committed assistant Markdown in `result.text`, without
   JSON configuration or a duplicate assistant message.
 - `agent.schedules.v1/list_outputs` now exposes a closed, newest-first,
   cursor-paginated occurrence result projection after schedule identity
   revalidation. It joins authoritative current Task status/result/failure
-  fields directly, retains soft-deleted Task history, and excludes templates,
-  payloads, snapshots, authority, and secrets.
+  fields directly, uses canonical schedule-bound cursors, retains soft-deleted
+  Task history, and excludes templates, payloads, snapshots, authority, and
+  secrets.
 - The current Cloud Worker path uses a real `CLOUD_WORKER` CoreTask and
   CoreConfirmation with the sole App-uploaded, STS-verified AWS credential.
   Resource placement, live pricing, Route53, and execution use the deployment
@@ -262,17 +271,19 @@ support.
 
 ## Verified evidence
 
-- On **2026-08-19**, scheduled Native workflows gained the closed
-  `chat_summary`, `web_research`, and `room_message` creation gate with exact
-  creating-Turn tool requirements, correctable no-write rejection, persisted
-  capability identity, and sole-card-title guidance. The schedules capability
-  also gained closed newest-first `list_outputs` history with stable tuple
+- On **2026-08-19**, scheduled Native workflows gained the closed nine-
+  capability creation gate (`scheduled_note`, `chat_summary`, `web_research`,
+  `room_message`, `contact_report`, `room_member_report`, `channel_digest`,
+  `chat_summary_delivery`, and ordered multi-source `web_digest_delivery`) with
+  exact creating-Turn tool requirements, correctable no-write rejection,
+  persisted capability identity, and sole-card-title guidance. The schedules
+  capability also gained closed newest-first `list_outputs` history with stable tuple
   pagination and safe current Task result/failure projection. A focused
   PostgreSQL 18 + pgvector run exercised equal-time UUID ordering, two-page
-  no-duplicate traversal, soft-deleted Task history, and terminal/current
-  projections. The six affected package suites passed 657 tests, the full Go
-  suite passed 1801 tests, and `go vet ./...`, `go build ./cmd/...`, and diff
-  checks passed.
+  no-duplicate traversal, schedule-bound canonical cursors, soft-deleted Task
+  history, and terminal/current projections. The six affected package suites
+  passed 723 tests, the full Go suite passed 1874 tests, and `go vet ./...`,
+  `go build ./cmd/...`, and diff checks passed.
 - On **2026-08-18**, immediate tool-result and deferred-resume transactions
   began persisting versioned progress observations. Focused tests cover
   wrapper/presentation-insensitive digests, state-change reset, unstructured

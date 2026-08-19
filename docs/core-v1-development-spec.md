@@ -320,7 +320,13 @@ scheduler.
 Natural-language Native turns create schedules only through the Core-owned
 `agent_schedule_create` intrinsic. The model supplies a concise task name as
 the only schedule-card title, the bounded schedule intent and trigger, and one
-closed capability: `chat_summary`, `web_research`, or `room_message`. Core
+closed capability: `scheduled_note`, `chat_summary`, `web_research`,
+`room_message`, `contact_report`, `room_member_report`, `channel_digest`, or
+`chat_summary_delivery`, plus the ordered two-source `web_digest_delivery`.
+The latter searches the web and then sends a Matrix message to a group/channel
+room; it never creates a channel post. `scheduled_note` requires an explicitly
+empty tool set; the remaining capabilities bind exactly the Message MCP or
+Tavily sources and tools declared by the API contract. Core
 binds the authenticated owner/account generation, current conversation, and
 pinned model profile from the durable turn lease. Before any schedule write it
 requires the exact capability tools from the creating Turn's immutable
@@ -329,22 +335,30 @@ tools produce a correctable intrinsic result and no schedule row; installed
 extensions do not provide a generic scheduled-workflow capability.
 The schedule template persists exactly the typed `payload.agent` owner and
 positive generation authority in addition to its conversation/profile fields;
-it contains no credential or arbitrary reference fields. It also carries the
-creating turn's redacted, immutable execution snapshots for installed MCPs and
-Skills plus the owner-bound Message MCP and Tavily Web Search catalogs.
-Product Capability and semantic Knowledge snapshots are deliberately excluded
-because a background occurrence cannot inherit their request-time grants or
-context. Each due occurrence revalidates those accepted snapshots through the
-live Native resolver and fails closed on catalog or installation drift. A
-creating turn with no eligible snapshots remains explicitly pinned to no
-extensions and cannot acquire tools installed or enabled later.
+it contains no credential or arbitrary reference fields. It carries only the
+redacted, immutable snapshot and provider-facing tool names required by the
+selected capability. Installed MCP/Skill, unrelated Message MCP, Product
+Capability, and semantic Knowledge snapshots are excluded. Each due occurrence
+revalidates those exact snapshots through the live Native resolver, filters out
+every nonaccepted tool, and fails closed on catalog drift.
 Scheduled Agent Tasks use the durable Native `StartTurn` path, not the generic
 Task agent loop. Request and turn UUIDs derive from the occurrence Task UUID,
-so reclaim after a crash resumes the same turn and cannot append a second user
+and the immutable prompt binds `Task.AvailableAt` as the authoritative UTC
+occurrence plus the persisted schedule timezone and local occurrence time.
+Relative windows therefore do not drift when execution is delayed. Reclaim
+after a crash resumes the same turn and cannot append a second user
 or assistant message. The Task succeeds with only the already-committed Native
 assistant Markdown in `result.text`; no response JSON or duplicate transcript
 message is produced. The internal execution context binds only the persisted
 owner and account generation and never mints Product Capability scopes.
+The admitted runtime snapshot also pins an intrinsic policy of `none`, so a
+scheduled turn cannot see schedule creation, static-site, Cloud Worker, or any
+other Core intrinsic.
+`scheduled_note` writes only Native conversation and schedule-history Markdown;
+it does not promise Matrix or operating-system push delivery. Message writes
+in `room_message`, `chat_summary_delivery`, and `web_digest_delivery` are
+durably dispatch-recorded before execution. Unknown provider completion is not
+retried blindly and may terminate the occurrence without a duplicate send.
 The PostgreSQL boundary atomically commits the schedule, idempotency replay,
 turn response/event, and transcript, so recovery cannot expose either a
 schedule without its conversation receipt or a receipt without its schedule.
@@ -363,8 +377,9 @@ non-correction intrinsic result.
 Schedule output history is read through
 `agent.schedules.v1/list_outputs`. The adapter first revalidates the live
 schedule identity, then performs one direct occurrence/Task join ordered by
-`(scheduled_for, occurrence_id)` descending. Its opaque cursor preserves that
-tuple order across equal schedule times without duplicates. The projection is
+`(scheduled_for, occurrence_id)` descending. Its opaque cursor is canonical,
+bound to the requested schedule identity, and preserves that tuple order across
+equal schedule times without duplicates. The projection is
 closed to occurrence/task identity and times, current Task status, the same
 safe Task result shape, and bounded failure fields; schedule templates, Task
 payloads, model/extension snapshots, owner authority, and secrets remain

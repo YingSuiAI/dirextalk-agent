@@ -157,7 +157,7 @@ func newAttemptTurnService(t *testing.T, model *retrySequenceModel) (*Service, *
 		t.Fatal(err)
 	}
 	service.now = func() time.Time { return now }
-	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil)
+	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,6 +228,25 @@ func TestAdmittedTurnRejectsChangedRuntimeBeforeProviderDispatch(t *testing.T) {
 	service.executeTurn(context.Background(), turn.ID)
 	if model.callCount() != 0 || store.failedCode != turnRuntimeIncompatibleCode || store.turn.ModelDispatchCount != 0 {
 		t.Fatalf("calls=%d failure=%q attempts=%d", model.callCount(), store.failedCode, store.turn.ModelDispatchCount)
+	}
+}
+
+func TestPersistedScheduledRuntimeNeverResolvesIntrinsicsDuringExecution(t *testing.T) {
+	model := &retrySequenceModel{}
+	service, store, turn := newAttemptTurnService(t, model)
+	resolverCalls := 0
+	service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+		resolverCalls++
+		return nil, errors.New("scheduled runtime must not resolve intrinsics")
+	}))
+	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, TurnIntrinsicPolicyNone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.turn.RuntimeSnapshot = &runtime
+	service.executeTurn(context.Background(), turn.ID)
+	if resolverCalls != 0 || model.callCount() != 1 || len(model.requests[0].Intrinsics) != 0 || store.failedCode != "" || store.turn.State != TurnCompleted {
+		t.Fatalf("resolver_calls=%d model_calls=%d request_intrinsics=%+v failure=%q state=%s", resolverCalls, model.callCount(), model.requests[0].Intrinsics, store.failedCode, store.turn.State)
 	}
 }
 

@@ -822,6 +822,11 @@ func TestStartTurnFingerprintBindsImmutableSnapshotAndPrompt(t *testing.T) {
 	if rotated.Fingerprint() == cmd.Fingerprint() {
 		t.Fatal("profile snapshot mutation was not bound by the request digest")
 	}
+	isolated := cmd
+	isolated.IntrinsicPolicy = TurnIntrinsicPolicyNone
+	if isolated.Validate() != nil || isolated.Fingerprint() == cmd.Fingerprint() {
+		t.Fatal("intrinsic policy was not bound by the request digest")
+	}
 }
 
 func TestAppendTurnSteersKeepsGuidanceInsideCurrentModelTurn(t *testing.T) {
@@ -1883,7 +1888,7 @@ func TestExecuteTurnPublishesCanonicalWaitingConfirmationForLocalTool(t *testing
 		store,
 		fixedToolCallsTurnModel{calls: []ToolCall{call}},
 		extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
-			return []ResolvedExtension{{Selection: selection, Snapshot: snapshot}}, nil
+			return []ResolvedExtension{{Selection: selection, Snapshot: snapshot, Tools: []coremodel.Tool{{Name: "local_task", InputSchema: map[string]any{"type": "object"}}}}}, nil
 		}),
 		snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }),
 	)
@@ -2182,9 +2187,15 @@ func TestResolveAcceptedTurnExtensionsIgnoresToolsAddedAfterAcceptance(t *testin
 		ToolSchemaDigest: strings.Repeat("1", 64), NetworkBindingDigest: strings.Repeat("2", 64),
 		ToolNames: []string{"added_later"}, ReadOnly: true,
 	}
+	resolvedSnapshot := acceptedSnapshot
+	resolvedSnapshot.ToolNames = []string{"accepted_lookup", "added_same_extension"}
+	resolvedSnapshot.Selection.AllowedTools = append(resolvedSnapshot.Selection.AllowedTools, "added_same_extension")
 	service := &Service{extensions: extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
 		return []ResolvedExtension{
-			{Selection: acceptedSelection, Snapshot: acceptedSnapshot},
+			{Selection: resolvedSnapshot.Selection, Snapshot: resolvedSnapshot, Tools: []coremodel.Tool{
+				{Name: "accepted_lookup", InputSchema: map[string]any{"type": "object"}},
+				{Name: "added_same_extension", InputSchema: map[string]any{"type": "object"}},
+			}},
 			{Selection: addedSelection, Snapshot: addedSnapshot},
 		}, nil
 	})}
@@ -2193,8 +2204,112 @@ func TestResolveAcceptedTurnExtensionsIgnoresToolsAddedAfterAcceptance(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resolved) != 1 || resolved[0].Selection.ID != acceptedSelection.ID {
+	if len(resolved) != 1 || resolved[0].Selection.ID != acceptedSelection.ID ||
+		len(resolved[0].Tools) != 1 || resolved[0].Tools[0].Name != "accepted_lookup" ||
+		len(resolved[0].Snapshot.ToolNames) != 1 || resolved[0].Snapshot.ToolNames[0] != "accepted_lookup" {
 		t.Fatalf("resolved extensions=%+v", resolved)
+	}
+}
+
+func TestResolveAcceptedTurnExtensionsRejectsImmutableBindingDrift(t *testing.T) {
+	selection := ExtensionSelection{
+		Kind: ExtensionMCP, ID: uuid.NewString(), Version: "message-config-1",
+		Digest: strings.Repeat("a", 64), AllowedTools: []string{"accepted_lookup"},
+	}
+	accepted := ExtensionExecutionSnapshot{
+		Selection: selection, InstallationID: selection.ID, VersionID: selection.Version,
+		Source: "message-mcp", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64),
+		ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64),
+		SecretBindingDigest: strings.Repeat("e", 64), ToolNames: []string{"accepted_lookup"}, ReadOnly: true,
+	}
+	mutations := []struct {
+		name   string
+		mutate func(*ExtensionExecutionSnapshot)
+	}{
+		{name: "kind", mutate: func(snapshot *ExtensionExecutionSnapshot) { snapshot.Selection.Kind = ExtensionSkill }},
+		{name: "installation", mutate: func(snapshot *ExtensionExecutionSnapshot) { snapshot.InstallationID = uuid.NewString() }},
+		{name: "version id", mutate: func(snapshot *ExtensionExecutionSnapshot) { snapshot.VersionID = "replacement" }},
+		{name: "installation revision", mutate: func(snapshot *ExtensionExecutionSnapshot) { snapshot.InstallationRevision++ }},
+		{name: "source", mutate: func(snapshot *ExtensionExecutionSnapshot) { snapshot.Source = "replacement" }},
+		{name: "network binding", mutate: func(snapshot *ExtensionExecutionSnapshot) { snapshot.NetworkBindingDigest = strings.Repeat("f", 64) }},
+		{name: "secret binding", mutate: func(snapshot *ExtensionExecutionSnapshot) { snapshot.SecretBindingDigest = strings.Repeat("f", 64) }},
+		{name: "confirmation", mutate: func(snapshot *ExtensionExecutionSnapshot) { snapshot.RequiresConfirmation = true }},
+		{name: "execution lane", mutate: func(snapshot *ExtensionExecutionSnapshot) { snapshot.ReadOnly = false }},
+	}
+	for _, test := range mutations {
+		t.Run(test.name, func(t *testing.T) {
+			resolved := accepted
+			test.mutate(&resolved)
+			service := &Service{extensions: extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+				return []ResolvedExtension{{
+					Selection: resolved.Selection, Snapshot: resolved,
+					Tools: []coremodel.Tool{{Name: "accepted_lookup", InputSchema: map[string]any{"type": "object"}}},
+				}}, nil
+			})}
+			if _, err := service.resolveAcceptedTurnExtensions(context.Background(), []ExtensionExecutionSnapshot{accepted}); !errors.Is(err, ErrConflict) {
+				t.Fatalf("drift was accepted: err=%v snapshot=%+v", err, resolved)
+			}
+		})
+	}
+}
+
+func TestResolveAcceptedTurnExtensionsPreservesPinnedMultiSourceOrder(t *testing.T) {
+	webSelection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "web-config-1", Digest: strings.Repeat("a", 64), AllowedTools: []string{"web_search"}}
+	web := ExtensionExecutionSnapshot{
+		Selection: webSelection, InstallationID: webSelection.ID, VersionID: webSelection.Version,
+		Source: "builtin:web_search:tavily", ContentDigest: webSelection.Digest, ArtifactDigest: strings.Repeat("b", 64),
+		ToolSchemaDigest: strings.Repeat("c", 64), ToolNames: []string{"web_search"}, ReadOnly: true,
+	}
+	messageSelection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "message-config-1", Digest: strings.Repeat("d", 64), AllowedTools: []string{"mcp__message__dirextalk_messages_send", "mcp__message__dirextalk_rooms_search"}}
+	message := ExtensionExecutionSnapshot{
+		Selection: messageSelection, InstallationID: messageSelection.ID, VersionID: messageSelection.Version,
+		Source: "message-mcp", ContentDigest: messageSelection.Digest, ArtifactDigest: strings.Repeat("e", 64),
+		ToolSchemaDigest: strings.Repeat("f", 64), ToolNames: append([]string(nil), messageSelection.AllowedTools...), ReadOnly: true,
+	}
+	service := &Service{extensions: extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+		return []ResolvedExtension{
+			{Selection: messageSelection, Snapshot: message, Tools: []coremodel.Tool{
+				{Name: "mcp__message__dirextalk_contacts_list", InputSchema: map[string]any{"type": "object"}},
+				{Name: "mcp__message__dirextalk_messages_send", InputSchema: map[string]any{"type": "object"}},
+				{Name: "mcp__message__dirextalk_rooms_search", InputSchema: map[string]any{"type": "object"}},
+			}},
+			{Selection: webSelection, Snapshot: web, Tools: []coremodel.Tool{{Name: "web_search", InputSchema: map[string]any{"type": "object"}}}},
+		}, nil
+	})}
+	resolved, err := service.resolveAcceptedTurnExtensions(context.Background(), []ExtensionExecutionSnapshot{web, message})
+	if err != nil || len(resolved) != 2 || resolved[0].Snapshot.Source != "builtin:web_search:tavily" || resolved[1].Snapshot.Source != "message-mcp" || len(resolved[1].Tools) != 2 {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+}
+
+func TestTurnRuntimeIntrinsicPolicyNoneSkipsResolversAndRejectsTools(t *testing.T) {
+	profile := testTurnSnapshot()
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:example.test", AccountGeneration: 1,
+		ConversationID: uuid.NewString(), Prompt: "scheduled summary", ProfileID: profile.ProfileID,
+		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+	}
+	resolverCalls := 0
+	service := &Service{}
+	service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+		resolverCalls++
+		return nil, errors.New("must not resolve")
+	}))
+	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, TurnIntrinsicPolicyNone)
+	if err != nil || resolverCalls != 0 || runtime.IntrinsicPolicy != TurnIntrinsicPolicyNone || len(runtime.IntrinsicTools) != 0 {
+		t.Fatalf("runtime=%+v resolver_calls=%d err=%v", runtime, resolverCalls, err)
+	}
+	tool := ResolvedIntrinsic{
+		Tool: coremodel.Tool{Name: coremodel.IntrinsicScheduleCreateToolName, InputSchema: map[string]any{"type": "object"}},
+		Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+			return IntrinsicExecutionResult{}, nil
+		},
+	}
+	if _, err := newTurnRuntimeSnapshot("system", profile, []ResolvedIntrinsic{tool}, "", "", TurnIntrinsicPolicyNone); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("policy none accepted intrinsic tool: %v", err)
+	}
+	if _, err := newTurnRuntimeSnapshot("system", profile, nil, "", "", "future-policy"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unknown intrinsic policy was accepted: %v", err)
 	}
 }
 

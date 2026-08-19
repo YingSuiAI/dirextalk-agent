@@ -159,6 +159,8 @@ func TestScheduleCapabilityListOutputsUsesClosedSafeProjection(t *testing.T) {
 	for _, invalid := range []string{
 		`{"schedule_id":"` + scheduleID + `","page_size":null}`,
 		`{"schedule_id":"` + scheduleID + `","page_token":null}`,
+		`{"schedule_id":"` + scheduleID + `","page_token":" cursor"}`,
+		`{"schedule_id":"` + scheduleID + `","page_token":"cursor "}`,
 	} {
 		if _, err = capability.HandleOperation(capabilityTestContext(), "list_outputs", []byte(invalid)); !errors.Is(err, coretask.ErrInvalid) {
 			t.Fatalf("invalid optional input %s err=%v", invalid, err)

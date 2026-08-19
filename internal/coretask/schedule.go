@@ -246,7 +246,9 @@ func (o ScheduleOutput) Validate() error {
 	if !ValidUUID(o.OccurrenceID) || !ValidUUID(o.ScheduleID) || !ValidUUID(o.TaskID) ||
 		o.ScheduledFor.IsZero() || o.CreatedAt.IsZero() || o.UpdatedAt.IsZero() ||
 		o.ScheduledFor.Location() != time.UTC || o.CreatedAt.Location() != time.UTC || o.UpdatedAt.Location() != time.UTC ||
-		o.UpdatedAt.Before(o.CreatedAt) || !validStatus(o.Status) {
+		o.UpdatedAt.Before(o.CreatedAt) || !validStatus(o.Status) ||
+		len([]byte(o.FailureCode)) > 128 || !utf8.ValidString(o.FailureCode) ||
+		len([]byte(o.FailureSummary)) > MaxSummaryBytes || !utf8.ValidString(o.FailureSummary) {
 		return ErrInvalid
 	}
 	if o.Result != nil && o.Result.Validate() != nil {

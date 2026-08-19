@@ -207,7 +207,7 @@ const scheduleCreateSchema = `{"additionalProperties":false,"properties":{"idemp
 const scheduleGetSchema = `{"additionalProperties":false,"properties":{"schedule_id":{"format":"uuid","type":"string"}},"required":["schedule_id"],"type":"object"}`
 const scheduleListSchema = `{"additionalProperties":false,"properties":{"page_size":{"maximum":200,"minimum":1,"type":"integer"},"page_token":{"type":"string"}},"type":"object"}`
 const scheduleOutputListSchema = `{"additionalProperties":false,"properties":{"page_size":{"maximum":200,"minimum":1,"type":"integer"},"page_token":{"type":"string"},"schedule_id":{"format":"uuid","type":"string"}},"required":["schedule_id"],"type":"object"}`
-const scheduleOutputObjectSchema = `{"additionalProperties":false,"properties":{"created_at":{"format":"date-time","type":"string"},"failure_code":{"type":"string"},"failure_summary":{"type":"string"},"occurrence_id":{"format":"uuid","type":"string"},"result":{"type":"object"},"scheduled_for":{"format":"date-time","type":"string"},"status":{"enum":["queued","running","succeeded","failed","waiting_user","canceled"],"type":"string"},"task_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["occurrence_id","task_id","scheduled_for","status","created_at","updated_at"],"type":"object"}`
+const scheduleOutputObjectSchema = `{"additionalProperties":false,"properties":{"created_at":{"format":"date-time","type":"string"},"failure_code":{"maxLength":128,"type":"string"},"failure_summary":{"maxLength":4096,"type":"string"},"occurrence_id":{"format":"uuid","type":"string"},"result":{"type":"object"},"scheduled_for":{"format":"date-time","type":"string"},"status":{"enum":["queued","running","succeeded","failed","waiting_user","canceled"],"type":"string"},"task_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["occurrence_id","task_id","scheduled_for","status","created_at","updated_at"],"type":"object"}`
 const scheduleUpdateSchema = `{"additionalProperties":false,"properties":{"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"name":{"type":"string"},"schedule_id":{"format":"uuid","type":"string"},"task_template":{"type":"object"},"trigger":{"type":"object"}},"required":["idempotency_key","schedule_id","expected_revision"],"type":"object"}`
 const scheduleMutationSchema = `{"additionalProperties":false,"properties":{"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"schedule_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","schedule_id","expected_revision"],"type":"object"}`
 const scheduleTriggerSchema = `{"additionalProperties":false,"properties":{"idempotency_key":{"format":"uuid","type":"string"},"schedule_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","schedule_id"],"type":"object"}`
@@ -278,11 +278,11 @@ func parseScheduleOutputInput(in map[string]json.RawMessage) (string, string, in
 	}
 	pageToken := ""
 	if raw, ok := in["page_token"]; ok {
-		if strings.TrimSpace(string(raw)) == "null" || json.Unmarshal(raw, &pageToken) != nil || len(pageToken) > 4096 {
+		if strings.TrimSpace(string(raw)) == "null" || json.Unmarshal(raw, &pageToken) != nil || len(pageToken) > 4096 || pageToken != strings.TrimSpace(pageToken) {
 			return "", "", 0, coretask.ErrInvalid
 		}
 	}
-	return scheduleID, strings.TrimSpace(pageToken), pageSize, nil
+	return scheduleID, pageToken, pageSize, nil
 }
 
 func scheduleFromCreateInput(ctx context.Context, in map[string]json.RawMessage, now time.Time) (coretask.Schedule, error) {

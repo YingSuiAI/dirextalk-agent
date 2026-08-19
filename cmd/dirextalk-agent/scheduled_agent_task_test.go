@@ -37,12 +37,22 @@ func TestScheduledAgentTaskUsesDeterministicNativeTurnAndReturnsMarkdownOnly(t *
 	}
 	wantRequestID := scheduledAgentUUID("scheduled-agent-request:" + task.ID)
 	wantTurnID := scheduledAgentUUID("scheduled-agent-turn:" + task.ID)
+	wantPrompt, err := scheduledAgentPrompt(task.Spec.Goal, task.AvailableAt, task.Spec.Payload.Agent.ScheduledConversation.Timezone)
+	if err != nil {
+		t.Fatal(err)
+	}
 	command := conversation.commands[0]
 	if command.RequestID != wantRequestID || command.TurnID != wantTurnID || command.ConversationID != task.Spec.ConversationID ||
-		command.Prompt != task.Spec.Goal || command.OwnerID != task.Spec.Payload.Agent.OwnerID ||
-		command.AccountGeneration != task.Spec.Payload.Agent.AccountGeneration || len(command.ExtensionSnapshots) != 1 ||
+		command.Prompt != wantPrompt || command.OwnerID != task.Spec.Payload.Agent.OwnerID ||
+		command.AccountGeneration != task.Spec.Payload.Agent.AccountGeneration || command.IntrinsicPolicy != coreconversation.TurnIntrinsicPolicyNone || len(command.ExtensionSnapshots) != 1 ||
 		command.ExtensionSnapshots[0].Source != "message-mcp" || len(command.ExtensionSnapshots[0].ToolNames) != 2 || command.ExtensionSnapshots[0].ToolNames[0] != "mcp__message__dirextalk_messages_list" {
 		t.Fatalf("start command=%+v", command)
+	}
+	if conversation.commands[1].Prompt != wantPrompt || conversation.commands[1].Fingerprint() != command.Fingerprint() ||
+		!strings.Contains(wantPrompt, "Authoritative occurrence UTC: 2026-08-19T01:00:00Z") ||
+		!strings.Contains(wantPrompt, "Authoritative occurrence local time: 2026-08-19T09:00:00+08:00") ||
+		!strings.HasSuffix(wantPrompt, "Scheduled goal:\n"+task.Spec.Goal) {
+		t.Fatalf("scheduled prompt is not deterministic and occurrence-anchored: %q", wantPrompt)
 	}
 	assertScheduledAuthority(t, resolver.ctx, task)
 	assertScheduledAuthority(t, conversation.ctxs[0], task)
@@ -99,8 +109,101 @@ func TestScheduledAgentTaskDefaultsCredentialVersionFromPinnedRevision(t *testin
 		t.Fatalf("outcome=%+v commands=%+v", outcome, conversation.commands)
 	}
 	command := conversation.commands[0]
-	if command.ExpectedCredentialVersion != 9 || command.ProfileSnapshot.CredentialVersion != 9 || command.ProfileSnapshot.Validate() != nil || !command.ExtensionSnapshotsPinned {
+	if command.ExpectedCredentialVersion != 9 || command.ProfileSnapshot.CredentialVersion != 9 || command.ProfileSnapshot.Validate() != nil || !command.ExtensionSnapshotsPinned || command.IntrinsicPolicy != coreconversation.TurnIntrinsicPolicyNone {
 		t.Fatalf("invalid reconstructed snapshot: command=%+v", command)
+	}
+}
+
+func TestScheduledAgentTaskRejectsCapabilitySnapshotExpansionBeforeStartingTurn(t *testing.T) {
+	profileID := uuid.NewString()
+	resolver := &scheduledProfileStub{profile: coremodel.Profile{
+		ID: profileID, DisplayName: "scheduled", Provider: coremodel.ProviderOpenAICompatible,
+		BaseURL: "https://model.invalid/v1", Model: "test", APIKey: "secret", Revision: 4, CredentialVersion: 4,
+	}}
+	conversation := &scheduledConversationStub{turns: make(map[string]coreconversation.Turn), markdown: "must not run"}
+	task := scheduledTaskFixture(profileID)
+	origin := task.Spec.Payload.Agent.ScheduledConversation
+	origin.ExtensionSnapshots[0].Selection.AllowedTools = append(origin.ExtensionSnapshots[0].Selection.AllowedTools, "mcp__message__dirextalk_messages_send")
+	origin.ExtensionSnapshots[0].ToolNames = append(origin.ExtensionSnapshots[0].ToolNames, "mcp__message__dirextalk_messages_send")
+
+	outcome := scheduledAgentTaskHandler(conversation, resolver)(context.Background(), task)
+	if !errors.Is(outcome.Err, coretask.ErrInvalid) || conversation.starts != 0 || resolver.ctx != nil {
+		t.Fatalf("outcome=%+v starts=%d resolver_called=%v", outcome, conversation.starts, resolver.ctx != nil)
+	}
+}
+
+func TestScheduledAgentTaskPinsScheduledNoteToNoToolsOrIntrinsics(t *testing.T) {
+	profileID := uuid.NewString()
+	resolver := &scheduledProfileStub{profile: coremodel.Profile{
+		ID: profileID, DisplayName: "scheduled", Provider: coremodel.ProviderOpenAICompatible,
+		BaseURL: "https://model.invalid/v1", Model: "test", APIKey: "secret", Revision: 4, CredentialVersion: 4,
+	}}
+	conversation := &scheduledConversationStub{turns: make(map[string]coreconversation.Turn), markdown: "记得喝水"}
+	task := scheduledTaskFixture(profileID)
+	task.Spec.Payload.Agent.ScheduledConversation.Capability = coretask.ScheduledCapabilityScheduledNote
+	task.Spec.Payload.Agent.ScheduledConversation.ExtensionSnapshots = []coretask.ScheduledExtensionSnapshot{}
+
+	outcome := scheduledAgentTaskHandler(conversation, resolver)(context.Background(), task)
+	if outcome.Err != nil || outcome.Result.Text != "记得喝水" || len(conversation.commands) != 1 {
+		t.Fatalf("outcome=%+v commands=%+v", outcome, conversation.commands)
+	}
+	command := conversation.commands[0]
+	if !command.ExtensionSnapshotsPinned || command.ExtensionSnapshots == nil || len(command.ExtensionSnapshots) != 0 || command.IntrinsicPolicy != coreconversation.TurnIntrinsicPolicyNone {
+		t.Fatalf("scheduled note runtime was not pinned empty: %+v", command)
+	}
+}
+
+func TestScheduledAgentTaskPinsOrderedWebDigestDeliverySources(t *testing.T) {
+	profileID := uuid.NewString()
+	resolver := &scheduledProfileStub{profile: coremodel.Profile{
+		ID: profileID, DisplayName: "scheduled", Provider: coremodel.ProviderOpenAICompatible,
+		BaseURL: "https://model.invalid/v1", Model: "test", APIKey: "secret", Revision: 4, CredentialVersion: 4,
+	}}
+	conversation := &scheduledConversationStub{turns: make(map[string]coreconversation.Turn), markdown: "# Web digest\n\nSent to the room."}
+	task := scheduledTaskFixture(profileID)
+	origin := task.Spec.Payload.Agent.ScheduledConversation
+	origin.Capability = coretask.ScheduledCapabilityWebDigestDelivery
+	message := origin.ExtensionSnapshots[0]
+	message.Selection.AllowedTools = []string{"mcp__message__dirextalk_messages_send", "mcp__message__dirextalk_rooms_search"}
+	message.ToolNames = append([]string(nil), message.Selection.AllowedTools...)
+	webID := uuid.NewString()
+	webDigest := strings.Repeat("d", 64)
+	web := coretask.ScheduledExtensionSnapshot{
+		Selection:      coretask.ExtensionSelection{Kind: coretask.ExtensionMCP, ID: webID, Version: "web-config-1", Digest: webDigest, AllowedTools: []string{"web_search"}},
+		InstallationID: webID, VersionID: "web-config-1", Source: "builtin:web_search:tavily", ContentDigest: webDigest,
+		ArtifactDigest: strings.Repeat("e", 64), ToolSchemaDigest: strings.Repeat("f", 64), ToolNames: []string{"web_search"}, ReadOnly: true,
+	}
+	origin.ExtensionSnapshots = []coretask.ScheduledExtensionSnapshot{web, message}
+
+	outcome := scheduledAgentTaskHandler(conversation, resolver)(context.Background(), task)
+	if outcome.Err != nil || outcome.Result.Text != conversation.markdown || len(conversation.commands) != 1 {
+		t.Fatalf("outcome=%+v commands=%+v", outcome, conversation.commands)
+	}
+	command := conversation.commands[0]
+	if len(command.ExtensionSnapshots) != 2 || command.ExtensionSnapshots[0].Source != "builtin:web_search:tavily" || command.ExtensionSnapshots[1].Source != "message-mcp" ||
+		len(command.ExtensionSnapshots[0].ToolNames) != 1 || command.ExtensionSnapshots[0].ToolNames[0] != "web_search" ||
+		len(command.ExtensionSnapshots[1].ToolNames) != 2 || command.ExtensionSnapshots[1].ToolNames[0] != "mcp__message__dirextalk_messages_send" ||
+		command.IntrinsicPolicy != coreconversation.TurnIntrinsicPolicyNone || !command.ExtensionSnapshotsPinned {
+		t.Fatalf("ordered scheduled runtime=%+v", command)
+	}
+}
+
+func TestScheduledAgentPromptRejectsMissingOccurrenceAuthority(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		at       time.Time
+		timezone string
+	}{
+		{name: "zero occurrence", timezone: "UTC"},
+		{name: "non UTC occurrence", at: time.Date(2026, 8, 19, 9, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60)), timezone: "Asia/Shanghai"},
+		{name: "missing timezone", at: time.Date(2026, 8, 19, 1, 0, 0, 0, time.UTC)},
+		{name: "invalid timezone", at: time.Date(2026, 8, 19, 1, 0, 0, 0, time.UTC), timezone: "Mars/Olympus"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := scheduledAgentPrompt("goal", test.at, test.timezone); !errors.Is(err, coretask.ErrInvalid) {
+				t.Fatalf("err=%v", err)
+			}
+		})
 	}
 }
 
@@ -170,12 +273,13 @@ func scheduledTaskFixture(profileID string) coretask.Task {
 	toolID := uuid.NewString()
 	digest := strings.Repeat("a", 64)
 	return coretask.Task{
-		ID: uuid.NewString(),
+		ID:          uuid.NewString(),
+		AvailableAt: time.Date(2026, 8, 19, 1, 0, 0, 0, time.UTC),
 		Spec: coretask.TaskSpec{
 			Kind: coretask.TaskKindAgent, Goal: "summarize the room", ConversationID: uuid.NewString(), ModelProfileID: profileID,
 			Payload: coretask.TaskPayload{Agent: &coretask.AgentTaskPayload{
 				OwnerID: "@owner:example.test", AccountGeneration: 7,
-				ScheduledConversation: &coretask.ScheduledConversationOrigin{Capability: coretask.ScheduledCapabilityChatSummary, ExtensionSnapshots: []coretask.ScheduledExtensionSnapshot{{
+				ScheduledConversation: &coretask.ScheduledConversationOrigin{Capability: coretask.ScheduledCapabilityChatSummary, Timezone: "Asia/Shanghai", ExtensionSnapshots: []coretask.ScheduledExtensionSnapshot{{
 					Selection:      coretask.ExtensionSelection{Kind: coretask.ExtensionMCP, ID: toolID, Version: "1", Digest: digest, AllowedTools: []string{"mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_rooms_search"}},
 					InstallationID: toolID, VersionID: "message-config-1", Source: "message-mcp", ContentDigest: digest,
 					ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64), ToolNames: []string{"mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_rooms_search"}, ReadOnly: true,

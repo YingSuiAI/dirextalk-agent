@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -111,8 +113,10 @@ func TestScheduleIntrinsicCapabilitySchemaAndAvailabilityGate(t *testing.T) {
 	}
 	capabilitySchema, ok := properties["capability"].(map[string]any)
 	nameSchema, nameOK := properties["name"].(map[string]any)
-	if !ok || !nameOK || len(capabilitySchema["enum"].([]any)) != 3 || !strings.Contains(nameSchema["description"].(string), "only schedule card title") ||
-		!strings.Contains(intrinsic.Tool.Description, "only currently supported scheduled workflows") || !strings.Contains(intrinsic.Tool.Description, "refuse every other") {
+	if !ok || !nameOK || len(capabilitySchema["enum"].([]any)) != 9 || !strings.Contains(nameSchema["description"].(string), "only schedule card title") ||
+		!strings.Contains(intrinsic.Tool.Description, "closed supported capability") || !strings.Contains(intrinsic.Tool.Description, "refuse every other") ||
+		!strings.Contains(intrinsic.Tool.Description, "does not promise a push notification") || !strings.Contains(intrinsic.Tool.Description, "never blindly retry an unknown outcome") ||
+		!strings.Contains(intrinsic.Tool.Description, "does not create a channel post") {
 		t.Fatalf("schedule intrinsic schema=%#v description=%q", intrinsic.Tool.InputSchema, intrinsic.Tool.Description)
 	}
 
@@ -121,11 +125,39 @@ func TestScheduleIntrinsicCapabilitySchemaAndAvailabilityGate(t *testing.T) {
 		capability string
 		snapshots  []ExtensionExecutionSnapshot
 		want       coretask.ScheduledCapability
+		wantSource string
+		wantTools  []string
 	}{
-		{name: "chat summary", capability: "chat_summary", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_list")}, want: coretask.ScheduledCapabilityChatSummary},
-		{name: "web research", capability: "web_research", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("builtin:web_search:tavily", "web_search")}, want: coretask.ScheduledCapabilityWebResearch},
-		{name: "room message", capability: "room_message", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_send")}, want: coretask.ScheduledCapabilityRoomMessage},
+		{name: "scheduled note", capability: "scheduled_note", want: coretask.ScheduledCapabilityScheduledNote},
+		{name: "chat summary", capability: "chat_summary", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_list")}, want: coretask.ScheduledCapabilityChatSummary, wantSource: "message-mcp", wantTools: []string{"mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_list"}},
+		{name: "web research", capability: "web_research", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("builtin:web_search:tavily", "web_search")}, want: coretask.ScheduledCapabilityWebResearch, wantSource: "builtin:web_search:tavily", wantTools: []string{"web_search"}},
+		{name: "room message", capability: "room_message", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_send")}, want: coretask.ScheduledCapabilityRoomMessage, wantSource: "message-mcp", wantTools: []string{"mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_send"}},
+		{name: "contact report", capability: "contact_report", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_contacts_list", "mcp__message__dirextalk_contacts_search")}, want: coretask.ScheduledCapabilityContactReport, wantSource: "message-mcp", wantTools: []string{"mcp__message__dirextalk_contacts_list", "mcp__message__dirextalk_contacts_search"}},
+		{name: "room member report", capability: "room_member_report", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_room_members_list")}, want: coretask.ScheduledCapabilityRoomMemberReport, wantSource: "message-mcp", wantTools: []string{"mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_room_members_list"}},
+		{name: "channel digest", capability: "channel_digest", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_channel_posts_list", "mcp__message__dirextalk_channel_comments_list")}, want: coretask.ScheduledCapabilityChannelDigest, wantSource: "message-mcp", wantTools: []string{"mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_channel_posts_list", "mcp__message__dirextalk_channel_comments_list"}},
+		{name: "chat summary delivery", capability: "chat_summary_delivery", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_messages_send")}, want: coretask.ScheduledCapabilityChatSummaryDelivery, wantSource: "message-mcp", wantTools: []string{"mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_messages_send"}},
 	}
+	webDigestSnapshots := []ExtensionExecutionSnapshot{
+		scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_contacts_list", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_send"),
+		scheduleSyntheticSnapshot("builtin:web_search:tavily", "web_search"),
+	}
+	t.Run("web digest delivery", func(t *testing.T) {
+		candidate := scheduleIntrinsicLease()
+		candidate.Turn.ExtensionSnapshots = webDigestSnapshots
+		store := &conversationScheduleStoreStub{}
+		err := executeScheduleForTest(t, store, candidate, uuid.NewString(), map[string]any{
+			"name": "web digest delivery", "goal": "research and send a Matrix message to the room", "capability": "web_digest_delivery", "run_at": "2026-08-09T00:00:00Z",
+		})
+		if err != nil || len(store.commands) != 1 {
+			t.Fatalf("commands=%+v err=%v", store.commands, err)
+		}
+		origin := store.commands[0].Schedule.Spec.Payload.Agent.ScheduledConversation
+		if origin.Capability != coretask.ScheduledCapabilityWebDigestDelivery || len(origin.ExtensionSnapshots) != 2 ||
+			origin.ExtensionSnapshots[0].Source != "builtin:web_search:tavily" || !reflect.DeepEqual(origin.ExtensionSnapshots[0].ToolNames, []string{"web_search"}) ||
+			origin.ExtensionSnapshots[1].Source != "message-mcp" || !reflect.DeepEqual(origin.ExtensionSnapshots[1].ToolNames, []string{"mcp__message__dirextalk_messages_send", "mcp__message__dirextalk_rooms_search"}) {
+			t.Fatalf("multi-source origin=%+v", origin)
+		}
+	})
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := scheduleIntrinsicLease()
@@ -134,8 +166,23 @@ func TestScheduleIntrinsicCapabilitySchemaAndAvailabilityGate(t *testing.T) {
 			err := executeScheduleForTest(t, store, candidate, uuid.NewString(), map[string]any{
 				"name": test.name, "goal": "perform workflow", "capability": test.capability, "run_at": "2026-08-09T00:00:00Z",
 			})
-			if err != nil || len(store.commands) != 1 || store.commands[0].Schedule.Spec.Payload.Agent.ScheduledConversation.Capability != test.want {
+			if err != nil || len(store.commands) != 1 {
 				t.Fatalf("commands=%+v err=%v", store.commands, err)
+			}
+			origin := store.commands[0].Schedule.Spec.Payload.Agent.ScheduledConversation
+			if origin.Capability != test.want || origin.Timezone != "UTC" || origin.ExtensionSnapshots == nil {
+				t.Fatalf("origin=%+v", origin)
+			}
+			if test.wantSource == "" {
+				if len(origin.ExtensionSnapshots) != 0 {
+					t.Fatalf("zero-tool origin=%+v", origin)
+				}
+				return
+			}
+			wantTools := append([]string(nil), test.wantTools...)
+			sort.Strings(wantTools)
+			if len(origin.ExtensionSnapshots) != 1 || origin.ExtensionSnapshots[0].Source != test.wantSource || !reflect.DeepEqual(origin.ExtensionSnapshots[0].ToolNames, wantTools) || !reflect.DeepEqual(origin.ExtensionSnapshots[0].Selection.AllowedTools, wantTools) {
+				t.Fatalf("origin=%+v", origin)
 			}
 		})
 	}
@@ -149,6 +196,12 @@ func TestScheduleIntrinsicCapabilitySchemaAndAvailabilityGate(t *testing.T) {
 		{name: "chat summary missing exact search", capability: "chat_summary", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_messages_list")}},
 		{name: "web research wrong source", capability: "web_research", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__web_search")}},
 		{name: "room message missing send", capability: "room_message", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search")}},
+		{name: "contact report missing search", capability: "contact_report", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_contacts_list")}},
+		{name: "room member report missing members", capability: "room_member_report", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search")}},
+		{name: "channel digest missing comments", capability: "channel_digest", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_channel_posts_list")}},
+		{name: "chat summary delivery missing send", capability: "chat_summary_delivery", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_list")}},
+		{name: "web digest delivery missing web source", capability: "web_digest_delivery", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_send")}},
+		{name: "web digest delivery missing message source", capability: "web_digest_delivery", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("builtin:web_search:tavily", "web_search")}},
 	}
 	for _, test := range rejections {
 		t.Run(test.name, func(t *testing.T) {
@@ -357,17 +410,21 @@ func TestScheduleIntrinsicInjectsTurnAuthorityAndUsesDeterministicIdentity(t *te
 	}
 }
 
-func TestScheduleIntrinsicPersistsOnlyScheduledConversationSafeExtensions(t *testing.T) {
+func TestScheduleIntrinsicPersistsOnlyCapabilityTools(t *testing.T) {
 	lease := scheduleIntrinsicLease()
 	installedID, installedVersionID := uuid.NewString(), uuid.NewString()
 	messageID, webID := uuid.NewString(), uuid.NewString()
 	digestA, digestB, digestC := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
 	lease.Turn.ExtensionSnapshots = []ExtensionExecutionSnapshot{
 		{
-			Selection:      ExtensionSelection{Kind: ExtensionMCP, ID: messageID, Version: "1.0.0", Digest: digestA, AllowedTools: []string{"mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_rooms_search"}},
+			Selection: ExtensionSelection{Kind: ExtensionMCP, ID: messageID, Version: "1.0.0", Digest: digestA, AllowedTools: []string{
+				"mcp__message__dirextalk_contacts_list", "mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_messages_send", "mcp__message__dirextalk_rooms_search",
+			}},
 			InstallationID: messageID, VersionID: "1.0.0",
 			Source: "message-mcp", ContentDigest: digestA, ArtifactDigest: digestB, ToolSchemaDigest: digestC,
-			ToolNames: []string{"mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_rooms_search"}, ReadOnly: true,
+			ToolNames: []string{
+				"mcp__message__dirextalk_contacts_list", "mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_messages_send", "mcp__message__dirextalk_rooms_search",
+			}, ReadOnly: true,
 		},
 		{
 			Selection:      ExtensionSelection{Kind: ExtensionMCP, ID: webID, Version: "config-2", Digest: digestB, AllowedTools: []string{"web_search"}},
@@ -396,15 +453,13 @@ func TestScheduleIntrinsicPersistsOnlyScheduledConversationSafeExtensions(t *tes
 		t.Fatalf("execute schedule intrinsic: %v", err)
 	}
 	origin := store.commands[0].Schedule.Spec.Payload.Agent.ScheduledConversation
-	if origin == nil || origin.Capability != coretask.ScheduledCapabilityChatSummary || len(origin.ExtensionSnapshots) != 3 {
+	if origin == nil || origin.Capability != coretask.ScheduledCapabilityChatSummary || len(origin.ExtensionSnapshots) != 1 {
 		t.Fatalf("scheduled origin=%+v", origin)
 	}
-	sources := map[string]bool{}
-	for _, snapshot := range origin.ExtensionSnapshots {
-		sources[snapshot.Source] = true
-	}
-	if !sources["message-mcp"] || !sources["builtin:web_search:tavily"] || !sources["registry"] || sources["product-capability"] || sources["builtin:knowledge:semantic"] {
-		t.Fatalf("scheduled sources=%v", sources)
+	snapshot := origin.ExtensionSnapshots[0]
+	wantTools := []string{"mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_rooms_search"}
+	if snapshot.Source != "message-mcp" || !reflect.DeepEqual(snapshot.ToolNames, wantTools) || !reflect.DeepEqual(snapshot.Selection.AllowedTools, wantTools) || snapshot.SkillInstructions != "" {
+		t.Fatalf("scheduled capability snapshot=%+v", snapshot)
 	}
 }
 
@@ -433,6 +488,20 @@ func TestScheduleIntrinsicAcceptsOneTimeTriggerAndRejectsForgedOrAmbiguousInput(
 	}
 	if got := store.commands[0].Schedule.RunAt; got == nil || !got.Equal(time.Date(2026, 8, 8, 18, 3, 4, 0, time.UTC)) {
 		t.Fatalf("run_at=%v", got)
+	}
+	oneTimeOrigin := store.commands[0].Schedule.Spec.Payload.Agent.ScheduledConversation
+	if store.commands[0].Schedule.Timezone != "UTC" || oneTimeOrigin.Timezone != "UTC" {
+		t.Fatalf("one-time timezone schedule=%q origin=%q", store.commands[0].Schedule.Timezone, oneTimeOrigin.Timezone)
+	}
+	cronStore := &conversationScheduleStoreStub{}
+	if err := executeScheduleForTest(t, cronStore, lease, "call-cron", map[string]any{
+		"name": "daily", "goal": "summary", "capability": "chat_summary", "cron": "0 9 * * *", "timezone": "Asia/Shanghai",
+	}); err != nil {
+		t.Fatalf("cron schedule: %v", err)
+	}
+	cronOrigin := cronStore.commands[0].Schedule.Spec.Payload.Agent.ScheduledConversation
+	if cronStore.commands[0].Schedule.Timezone != "Asia/Shanghai" || cronOrigin.Timezone != "Asia/Shanghai" {
+		t.Fatalf("cron timezone schedule=%q origin=%q", cronStore.commands[0].Schedule.Timezone, cronOrigin.Timezone)
 	}
 	cases := []map[string]any{
 		{"name": "forged", "goal": "x", "capability": "chat_summary", "run_at": "2026-08-09T00:00:00Z", "owner_id": "attacker"},

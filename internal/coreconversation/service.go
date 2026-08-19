@@ -1168,7 +1168,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if err != nil {
 		return Turn{}, err
 	}
-	runtimeSnapshot, err := s.buildTurnAdmissionRuntime(ctx, candidate, admissionExtensions)
+	runtimeSnapshot, err := s.buildTurnAdmissionRuntime(ctx, candidate, admissionExtensions, cmd.IntrinsicPolicy)
 	if err != nil {
 		return Turn{}, err
 	}
@@ -1182,10 +1182,14 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	return turn, nil
 }
 
-func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, extensions []ResolvedExtension) (TurnRuntimeSnapshot, error) {
-	intrinsics, err := s.resolveIntrinsicTools(ctx, TurnLease{Turn: turn, LeaseID: "runtime-admission", Epoch: 1})
-	if err != nil {
-		return TurnRuntimeSnapshot{}, err
+func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, extensions []ResolvedExtension, intrinsicPolicy TurnIntrinsicPolicy) (TurnRuntimeSnapshot, error) {
+	var intrinsics []ResolvedIntrinsic
+	if intrinsicPolicy != TurnIntrinsicPolicyNone {
+		var err error
+		intrinsics, err = s.resolveIntrinsicTools(ctx, TurnLease{Turn: turn, LeaseID: "runtime-admission", Epoch: 1})
+		if err != nil {
+			return TurnRuntimeSnapshot{}, err
+		}
 	}
 	profile := turn.ProfileSnapshot.Profile()
 	systemPrompt := appendSystemPrompt(profile.SystemPrompt, conversationConvergenceGuidance)
@@ -1196,7 +1200,7 @@ func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, exte
 	if containsCloudWorkerIntrinsic(intrinsics) {
 		systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 	}
-	return NewTurnRuntimeSnapshot(systemPrompt, turn.ProfileSnapshot, intrinsics, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest)
+	return newTurnRuntimeSnapshot(systemPrompt, turn.ProfileSnapshot, intrinsics, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy)
 }
 
 func (s *Service) GetTurn(ctx context.Context, id string) (Turn, error) {
@@ -1754,10 +1758,17 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			return
 		}
 	}
-	intrinsicTools, err := s.resolveIntrinsicTools(ctx, lease)
-	if err != nil {
-		_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_unavailable", "Core intrinsic tool is unavailable")
-		return
+	intrinsicPolicy := TurnIntrinsicPolicy("")
+	if turn.RuntimeSnapshot != nil {
+		intrinsicPolicy = turn.RuntimeSnapshot.IntrinsicPolicy
+	}
+	var intrinsicTools []ResolvedIntrinsic
+	if intrinsicPolicy != TurnIntrinsicPolicyNone {
+		intrinsicTools, err = s.resolveIntrinsicTools(ctx, lease)
+		if err != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_unavailable", "Core intrinsic tool is unavailable")
+			return
+		}
 	}
 	if len(intrinsicTools) != 0 {
 		seen := make(map[string]struct{}, len(intrinsicTools))
@@ -1823,7 +1834,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if !replayed {
 		extensionDigest := TurnStartCommand{ExtensionSnapshots: modelExtensionSnapshots}.ExtensionSnapshotDigest()
 		var snapshotErr error
-		runtimeSnapshot, snapshotErr = NewTurnRuntimeSnapshot(systemPrompt, turn.ProfileSnapshot, modelIntrinsicTools, extensionDigest, turn.AttachmentSnapshotDigest)
+		runtimeSnapshot, snapshotErr = newTurnRuntimeSnapshot(systemPrompt, turn.ProfileSnapshot, modelIntrinsicTools, extensionDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy)
 		if snapshotErr != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
 			return
@@ -2575,14 +2586,14 @@ func (s *Service) resolveAcceptedTurnExtensionsForContinuation(ctx context.Conte
 	if err != nil {
 		return nil, ErrConflict
 	}
-	expected := make(map[string]string, len(snapshots))
+	expected := make(map[string]ExtensionExecutionSnapshot, len(snapshots))
 	for _, snapshot := range snapshots {
 		if omitContextBound && contextBoundExtensionSource(snapshot.Source) {
 			continue
 		}
-		expected[snapshot.Selection.ID] = snapshot.ContentDigest + ":" + snapshot.ArtifactDigest + ":" + snapshot.ToolSchemaDigest
+		expected[snapshot.Selection.ID] = snapshot
 	}
-	accepted := make([]ResolvedExtension, 0, len(snapshots))
+	acceptedByID := make(map[string]ResolvedExtension, len(snapshots))
 	matched := make(map[string]struct{}, len(snapshots))
 	for _, extension := range resolved {
 		snapshot := snapshotForResolved(extension)
@@ -2593,14 +2604,52 @@ func (s *Service) resolveAcceptedTurnExtensionsForContinuation(ctx context.Conte
 			// exclude them without invalidating the accepted tools.
 			continue
 		}
-		if _, duplicate := matched[snapshot.Selection.ID]; duplicate || want != snapshot.ContentDigest+":"+snapshot.ArtifactDigest+":"+snapshot.ToolSchemaDigest {
+		if _, duplicate := matched[snapshot.Selection.ID]; duplicate ||
+			snapshot.Selection.Kind != want.Selection.Kind || snapshot.Selection.ID != want.Selection.ID ||
+			snapshot.Selection.Version != want.Selection.Version || snapshot.Selection.Digest != want.Selection.Digest ||
+			snapshot.InstallationID != want.InstallationID || snapshot.VersionID != want.VersionID || snapshot.InstallationRevision != want.InstallationRevision ||
+			snapshot.Source != want.Source || snapshot.ContentDigest != want.ContentDigest || snapshot.ArtifactDigest != want.ArtifactDigest ||
+			snapshot.ToolSchemaDigest != want.ToolSchemaDigest || snapshot.NetworkBindingDigest != want.NetworkBindingDigest ||
+			snapshot.SecretBindingDigest != want.SecretBindingDigest || snapshot.SkillInstructions != want.SkillInstructions ||
+			snapshot.RequiresConfirmation != want.RequiresConfirmation || snapshot.ReadOnly != want.ReadOnly {
 			return nil, ErrConflict
 		}
+		toolsByName := make(map[string]coremodel.Tool, len(extension.Tools))
+		for _, tool := range extension.Tools {
+			if _, duplicate := toolsByName[tool.Name]; duplicate {
+				return nil, ErrConflict
+			}
+			toolsByName[tool.Name] = tool
+		}
+		tools := make([]coremodel.Tool, 0, len(want.ToolNames))
+		for _, name := range want.ToolNames {
+			tool, ok := toolsByName[name]
+			if !ok || tool.InputSchema == nil {
+				return nil, ErrConflict
+			}
+			tools = append(tools, tool)
+		}
 		matched[snapshot.Selection.ID] = struct{}{}
-		accepted = append(accepted, extension)
+		acceptedByID[snapshot.Selection.ID] = ResolvedExtension{
+			Selection: want.Selection,
+			Snapshot:  want,
+			Tools:     tools,
+			Execute:   extension.Execute,
+		}
 	}
 	if len(matched) != len(expected) {
 		return nil, ErrConflict
+	}
+	accepted := make([]ResolvedExtension, 0, len(expected))
+	for _, snapshot := range snapshots {
+		if omitContextBound && contextBoundExtensionSource(snapshot.Source) {
+			continue
+		}
+		extension, ok := acceptedByID[snapshot.Selection.ID]
+		if !ok {
+			return nil, ErrConflict
+		}
+		accepted = append(accepted, extension)
 	}
 	return accepted, nil
 }
