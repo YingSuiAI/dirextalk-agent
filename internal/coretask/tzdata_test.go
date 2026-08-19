@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,10 +35,26 @@ func TestNamedScheduleTimezoneDoesNotDependOnHostZoneinfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	goRootOutput, err := exec.Command("go", "env", "GOROOT").CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve GOROOT through go env: %v\n%s", err, goRootOutput)
+	}
+	goRoot := strings.TrimSpace(string(goRootOutput))
+	if goRoot == "" {
+		t.Fatal("resolve GOROOT through go env: empty output")
+	}
 	args := []string{"--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev"}
-	for _, source := range []string{"/usr/share/zoneinfo", "/usr/share/lib/zoneinfo", "/usr/lib/locale/TZ", "/etc/zoneinfo", filepath.Join(runtime.GOROOT(), "lib/time")} {
-		if info, statErr := os.Stat(source); statErr == nil && info.IsDir() {
+	for _, source := range []string{"/usr/share/zoneinfo", "/usr/share/lib/zoneinfo", "/usr/lib/locale/TZ", "/etc/zoneinfo", filepath.Join(goRoot, "lib/time")} {
+		info, statErr := os.Stat(source)
+		switch {
+		case statErr == nil && info.IsDir():
 			args = append(args, "--tmpfs", source)
+		case os.IsNotExist(statErr):
+			continue
+		case statErr != nil:
+			t.Fatalf("inspect zoneinfo source %q: %v", source, statErr)
+		default:
+			t.Fatalf("zoneinfo source %q is not a directory", source)
 		}
 	}
 	args = append(args, executable, "-test.run=^TestNamedScheduleTimezoneDoesNotDependOnHostZoneinfo$", "-test.count=1")
