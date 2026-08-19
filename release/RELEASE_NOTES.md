@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.172
+
+1. Require supported natural-language schedule creation to invoke `agent_schedule_create` exactly once, and fail closed instead of committing a model-invented schedule ID or success receipt.
+2. Persist conversation, tool, and embedding defaults independently in stable profile creation order, preserving valid selections while advancing and wrapping after an invalid or deleted selection and recovering legacy-null bindings.
+3. Resolve schedule creation and every occurrence through the converged conversation default so configured profiles remain usable without freezing the creating Turn's model or changing Markdown-only scheduled output.
+
 ## v1.0.171
 
 1. Resolve each Native scheduled occurrence against the current default conversation model while exact replay and reclaim retain the committed occurrence snapshot.
