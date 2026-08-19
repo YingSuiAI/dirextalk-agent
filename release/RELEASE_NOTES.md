@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.173
+
+1. Keep the filesystem-isolated timezone regression compatible with supported Go toolchains by resolving GOROOT through `go env` and failing closed on invalid zoneinfo sources.
+
 ## v1.0.172
 
 1. Require supported natural-language schedule creation to invoke `agent_schedule_create` exactly once, and fail closed instead of committing a model-invented schedule ID or success receipt.
