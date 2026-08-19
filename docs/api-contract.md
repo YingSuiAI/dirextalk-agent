@@ -288,8 +288,11 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   sources, and missing tools return a bounded correctable intrinsic error and
   write no schedule row; installed extensions are not a generic scheduled-
   workflow escape hatch.
-  Owner, account generation, conversation, and model profile are injected from
-  the fenced turn lease. Owner and generation persist only in the typed
+  Owner, account generation, and conversation are injected from the fenced
+  turn lease. A valid explicit default conversation model is required when the
+  schedule is accepted, but the schedule template persists an empty
+  `model_profile_id`; it never freezes the model used by the creating Turn.
+  Owner and generation persist only in the typed
   `task_template.payload.agent` authority object; credentials and
   attachment/Knowledge references are not accepted. The internal payload also
   snapshots only the exact provider-facing tools required by the selected
@@ -297,6 +300,14 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   MCP/Skill, unrelated Message MCP, Product Capability, and semantic Knowledge
   bindings are excluded. Due Tasks revalidate the retained snapshot, filter the
   live resolver catalog back to that exact tool set, and fail closed on drift.
+  Each occurrence transaction resolves and locks the current explicit default
+  conversation model, then pins its exact profile id, revision, credential
+  version, request dialect, model kind, configuration, and protected secret
+  reference in that occurrence Task. Exact `trigger_now` replay and Task
+  retry/reclaim reuse the committed Task snapshot even if the default changes;
+  a later occurrence uses the later default. A missing, deleted, wrong-kind, or
+  invalid default rejects schedule creation or blocks later materialization
+  without creating an occurrence/Task, fallback, silent skip, or auto-pause.
   A due schedule delegates through the durable Native Turn executor with
   deterministic request/turn identities derived from the occurrence Task.
   Its trusted prompt binds the immutable occurrence `Task.AvailableAt` in UTC,

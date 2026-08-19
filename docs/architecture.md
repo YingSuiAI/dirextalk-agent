@@ -66,7 +66,14 @@ is an authority and no local failure automatically authorizes a paid Cloud
 Worker.
 
 Schedules created by a Native turn remain on the same durable conversation
-architecture when they become due. The occurrence Task carries redacted
+architecture when they become due. The schedule stores no model-profile
+binding. Its occurrence transaction resolves and locks the current explicit
+default conversation model and pins the exact profile revision, credential
+version, request dialect, model kind, configuration, and protected secret
+reference into that occurrence Task; replay/reclaim reuses the committed
+snapshot while a later occurrence may select a later default. Missing or
+invalid defaults fail closed without a fallback or occurrence write. The
+occurrence Task also carries redacted
 snapshots for installed MCP/Skills and the owner-bound Message MCP and Web
 Search catalogs, revalidates them through the live resolver, and starts one
 deterministically identified Native Turn. Product Capability and semantic

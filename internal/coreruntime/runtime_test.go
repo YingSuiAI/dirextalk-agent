@@ -1004,3 +1004,18 @@ func TestWorkerPoolMissingSnapshotPersistsStableFailureCode(t *testing.T) {
 		t.Fatalf("failed=%d code=%q", failed, code)
 	}
 }
+
+func TestScheduledFailureProjectionIsBoundedAndStageSpecific(t *testing.T) {
+	for _, test := range []struct {
+		err           error
+		code, summary string
+	}{
+		{ErrScheduledSnapshotInvalid, "scheduled_snapshot_invalid", "scheduled execution snapshot is unavailable or invalid"},
+		{ErrScheduledTurnAdmission, "scheduled_turn_admission_failed", "scheduled conversation turn could not be admitted"},
+	} {
+		code, summary := taskFailureProjection(test.err)
+		if code != test.code || summary != test.summary {
+			t.Fatalf("projection for %v = %q/%q", test.err, code, summary)
+		}
+	}
+}

@@ -279,8 +279,9 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 		t.Fatalf("profile was not credential-free tombstone: client=%v configured=%v deleted=%v", clientID, apiConfigured, deletedAt)
 	}
 	executionSnapshot := coretask.ModelProfileSnapshot{
-		ProfileID: profile.ID, Revision: 1, SecretRef: fmt.Sprintf("model-profile:%s:1", profile.ID),
-		Provider: string(profile.Provider), BaseURL: profile.BaseURL, Model: profile.Model,
+		ProfileID: profile.ID, Revision: 1, CredentialVersion: 1, SecretRef: fmt.Sprintf("model-profile:%s:1", profile.ID),
+		Provider: string(profile.Provider), RequestDialect: string(profile.RequestDialect), ModelKind: profile.ModelKind,
+		BaseURL: profile.BaseURL, Model: profile.Model,
 		ContextWindow: profile.ContextWindow, ReasoningEffort: profile.ReasoningEffort,
 	}
 	executionSnapshot.Digest = coreTaskModelSnapshotDigest(executionSnapshot)

@@ -326,21 +326,33 @@ closed capability: `scheduled_note`, `chat_summary`, `web_research`,
 The latter searches the web and then sends a Matrix message to a group/channel
 room; it never creates a channel post. `scheduled_note` requires an explicitly
 empty tool set; the remaining capabilities bind exactly the Message MCP or
-Tavily sources and tools declared by the API contract. Core
-binds the authenticated owner/account generation, current conversation, and
-pinned model profile from the durable turn lease. Before any schedule write it
+Tavily sources and tools declared by the API contract. Core binds the
+authenticated owner/account generation and current conversation from the
+durable turn lease. It requires a valid explicit default conversation model
+before accepting the schedule, but does not persist the creating Turn's model
+as schedule authority. Before any schedule write it
 requires the exact capability tools from the creating Turn's immutable
 Message MCP or Tavily snapshot. Unknown workflows, wrong sources, and missing
 tools produce a correctable intrinsic result and no schedule row; installed
 extensions do not provide a generic scheduled-workflow capability.
 The schedule template persists exactly the typed `payload.agent` owner and
-positive generation authority in addition to its conversation/profile fields;
-it contains no credential or arbitrary reference fields. It carries only the
+positive generation authority plus its conversation; its model-profile field
+is empty and it contains no credential or arbitrary reference fields. It carries only the
 redacted, immutable snapshot and provider-facing tool names required by the
 selected capability. Installed MCP/Skill, unrelated Message MCP, Product
 Capability, and semantic Knowledge snapshots are excluded. Each due occurrence
 revalidates those exact snapshots through the live Native resolver, filters out
-every nonaccepted tool, and fails closed on catalog drift.
+every nonaccepted tool, and fails closed on catalog drift. In the same
+transaction that accepts each occurrence, Core resolves and locks the owner's
+then-current explicit default conversation model, writes that exact profile,
+revision, credential version, request dialect, model kind, configuration and
+secret reference into the occurrence Task execution snapshot, and creates the
+Task-level profile reference. Retry/reclaim reuses that snapshot and never
+re-resolves the default. A missing, deleted, wrong-kind, or otherwise invalid
+default rejects schedule creation; if it becomes unavailable later, the due or
+manually triggered occurrence remains uncreated until model configuration is
+repaired. Core never falls back to another profile or silently skips/pauses the
+schedule.
 Scheduled Agent Tasks use the durable Native `StartTurn` path, not the generic
 Task agent loop. Request and turn UUIDs derive from the occurrence Task UUID,
 and the immutable prompt binds `Task.AvailableAt` as the authoritative UTC

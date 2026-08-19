@@ -10,6 +10,7 @@ import (
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
@@ -18,6 +19,7 @@ func TestScheduledAgentTaskUsesDeterministicNativeTurnAndReturnsMarkdownOnly(t *
 	profileID := uuid.NewString()
 	resolver := &scheduledProfileStub{profile: coremodel.Profile{
 		ID: profileID, DisplayName: "scheduled", Provider: coremodel.ProviderOpenAICompatible,
+		RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation,
 		BaseURL: "https://model.invalid/v1", Model: "test", APIKey: "secret", Revision: 4, CredentialVersion: 4,
 	}}
 	conversation := &scheduledConversationStub{turns: make(map[string]coreconversation.Turn), markdown: "# Daily summary\n\n- One item"}
@@ -84,7 +86,9 @@ func TestScheduledTurnOutcomeRejectsNonSuccessTerminalStates(t *testing.T) {
 
 func TestScheduledAgentTaskFailsClosedOnTurnIdentityDrift(t *testing.T) {
 	profileID := uuid.NewString()
-	resolver := &scheduledProfileStub{profile: coremodel.Profile{ID: profileID, DisplayName: "scheduled", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://model.invalid/v1", Model: "test", APIKey: "secret", Revision: 4}}
+	resolver := &scheduledProfileStub{profile: coremodel.Profile{ID: profileID, DisplayName: "scheduled", Provider: coremodel.ProviderOpenAICompatible,
+		RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation,
+		BaseURL: "https://model.invalid/v1", Model: "test", APIKey: "secret", Revision: 4, CredentialVersion: 4}}
 	conversation := &scheduledConversationStub{turns: make(map[string]coreconversation.Turn), markdown: "ok", driftOwner: true}
 	outcome := scheduledAgentTaskHandler(conversation, resolver)(context.Background(), scheduledTaskFixture(profileID))
 	if !errors.Is(outcome.Err, coreconversation.ErrConflict) {
@@ -92,25 +96,21 @@ func TestScheduledAgentTaskFailsClosedOnTurnIdentityDrift(t *testing.T) {
 	}
 }
 
-func TestScheduledAgentTaskDefaultsCredentialVersionFromPinnedRevision(t *testing.T) {
+func TestScheduledAgentTaskRejectsMissingCredentialVersionBeforeStartingTurn(t *testing.T) {
 	profileID := uuid.NewString()
 	resolver := &scheduledProfileStub{profile: coremodel.Profile{
 		ID: profileID, DisplayName: "scheduled", Provider: coremodel.ProviderOpenAICompatible,
+		RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation,
 		BaseURL: "https://model.invalid/v1", Model: "test", APIKey: "secret", Revision: 9,
-		// ResolveExecutionProfile reconstructs historical task profiles without
-		// setting CredentialVersion; SnapshotFromProfile must pin it to Revision.
 		CredentialVersion: 0,
 	}}
 	conversation := &scheduledConversationStub{turns: make(map[string]coreconversation.Turn), markdown: "valid markdown"}
 	task := scheduledTaskFixture(profileID)
 	task.Snapshot.Model.Revision = 9
+	task.Snapshot.Model.CredentialVersion = 3
 	outcome := scheduledAgentTaskHandler(conversation, resolver)(context.Background(), task)
-	if outcome.Err != nil || outcome.Result.Text != "valid markdown" || len(conversation.commands) != 1 {
+	if !errors.Is(outcome.Err, coreruntime.ErrScheduledSnapshotInvalid) || len(conversation.commands) != 0 {
 		t.Fatalf("outcome=%+v commands=%+v", outcome, conversation.commands)
-	}
-	command := conversation.commands[0]
-	if command.ExpectedCredentialVersion != 9 || command.ProfileSnapshot.CredentialVersion != 9 || command.ProfileSnapshot.Validate() != nil || !command.ExtensionSnapshotsPinned || command.IntrinsicPolicy != coreconversation.TurnIntrinsicPolicyNone {
-		t.Fatalf("invalid reconstructed snapshot: command=%+v", command)
 	}
 }
 
@@ -118,6 +118,7 @@ func TestScheduledAgentTaskRejectsCapabilitySnapshotExpansionBeforeStartingTurn(
 	profileID := uuid.NewString()
 	resolver := &scheduledProfileStub{profile: coremodel.Profile{
 		ID: profileID, DisplayName: "scheduled", Provider: coremodel.ProviderOpenAICompatible,
+		RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation,
 		BaseURL: "https://model.invalid/v1", Model: "test", APIKey: "secret", Revision: 4, CredentialVersion: 4,
 	}}
 	conversation := &scheduledConversationStub{turns: make(map[string]coreconversation.Turn), markdown: "must not run"}
@@ -127,8 +128,22 @@ func TestScheduledAgentTaskRejectsCapabilitySnapshotExpansionBeforeStartingTurn(
 	origin.ExtensionSnapshots[0].ToolNames = append(origin.ExtensionSnapshots[0].ToolNames, "mcp__message__dirextalk_messages_send")
 
 	outcome := scheduledAgentTaskHandler(conversation, resolver)(context.Background(), task)
-	if !errors.Is(outcome.Err, coretask.ErrInvalid) || conversation.starts != 0 || resolver.ctx != nil {
+	if !errors.Is(outcome.Err, coreruntime.ErrScheduledSnapshotInvalid) || conversation.starts != 0 || resolver.ctx != nil {
 		t.Fatalf("outcome=%+v starts=%d resolver_called=%v", outcome, conversation.starts, resolver.ctx != nil)
+	}
+}
+
+func TestScheduledAgentTaskClassifiesTurnAdmissionWithoutLeakingProviderError(t *testing.T) {
+	profileID := uuid.NewString()
+	resolver := &scheduledProfileStub{profile: coremodel.Profile{
+		ID: profileID, DisplayName: "scheduled", Provider: coremodel.ProviderOpenAICompatible,
+		RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation,
+		BaseURL: "https://model.invalid/v1", Model: "test", APIKey: "secret", Revision: 4, CredentialVersion: 4,
+	}}
+	conversation := &scheduledConversationStub{turns: make(map[string]coreconversation.Turn), startErr: errors.New("provider-secret-sentinel")}
+	outcome := scheduledAgentTaskHandler(conversation, resolver)(context.Background(), scheduledTaskFixture(profileID))
+	if outcome.Err != coreruntime.ErrScheduledTurnAdmission || strings.Contains(outcome.Err.Error(), "sentinel") {
+		t.Fatalf("unsafe admission classification: %v", outcome.Err)
 	}
 }
 
@@ -136,6 +151,7 @@ func TestScheduledAgentTaskPinsScheduledNoteToNoToolsOrIntrinsics(t *testing.T) 
 	profileID := uuid.NewString()
 	resolver := &scheduledProfileStub{profile: coremodel.Profile{
 		ID: profileID, DisplayName: "scheduled", Provider: coremodel.ProviderOpenAICompatible,
+		RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation,
 		BaseURL: "https://model.invalid/v1", Model: "test", APIKey: "secret", Revision: 4, CredentialVersion: 4,
 	}}
 	conversation := &scheduledConversationStub{turns: make(map[string]coreconversation.Turn), markdown: "记得喝水"}
@@ -157,6 +173,7 @@ func TestScheduledAgentTaskPinsOrderedWebDigestDeliverySources(t *testing.T) {
 	profileID := uuid.NewString()
 	resolver := &scheduledProfileStub{profile: coremodel.Profile{
 		ID: profileID, DisplayName: "scheduled", Provider: coremodel.ProviderOpenAICompatible,
+		RequestDialect: coremodel.DialectOpenAICompatibleChatV1, ModelKind: coremodel.ModelKindConversation,
 		BaseURL: "https://model.invalid/v1", Model: "test", APIKey: "secret", Revision: 4, CredentialVersion: 4,
 	}}
 	conversation := &scheduledConversationStub{turns: make(map[string]coreconversation.Turn), markdown: "# Web digest\n\nSent to the room."}
@@ -226,12 +243,16 @@ type scheduledConversationStub struct {
 	creates    int
 	gets       int
 	driftOwner bool
+	startErr   error
 }
 
 func (s *scheduledConversationStub) StartTurn(ctx context.Context, command coreconversation.TurnStartCommand) (coreconversation.Turn, error) {
 	s.starts++
 	s.commands = append(s.commands, command)
 	s.ctxs = append(s.ctxs, ctx)
+	if s.startErr != nil {
+		return coreconversation.Turn{}, s.startErr
+	}
 	if err := command.Validate(); err != nil {
 		return coreconversation.Turn{}, err
 	}
@@ -286,7 +307,10 @@ func scheduledTaskFixture(profileID string) coretask.Task {
 				}}},
 			}},
 		},
-		Snapshot: &coretask.ExecutionSnapshot{Model: coretask.ModelProfileSnapshot{ProfileID: profileID, Revision: 4}},
+		Snapshot: &coretask.ExecutionSnapshot{Model: coretask.ModelProfileSnapshot{
+			ProfileID: profileID, Revision: 4, CredentialVersion: 4,
+			Provider: string(coremodel.ProviderOpenAICompatible), RequestDialect: string(coremodel.DialectOpenAICompatibleChatV1), ModelKind: coremodel.ModelKindConversation,
+		}},
 	}
 }
 

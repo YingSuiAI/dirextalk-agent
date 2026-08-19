@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -59,6 +60,49 @@ func lockLiveScheduleProfileTx(ctx context.Context, tx pgx.Tx, profileID string)
 		return coretask.ErrConflict
 	}
 	return nil
+}
+
+// resolveScheduledDefaultProfileTx binds only a Native scheduled template to
+// the current explicit conversation default. The returned copy becomes the
+// occurrence TaskSpec; the stored schedule remains model-independent.
+func resolveScheduledDefaultProfileTx(ctx context.Context, tx pgx.Tx, template coretask.TaskTemplate) (coretask.TaskTemplate, error) {
+	normalized, err := template.Normalize()
+	if err != nil {
+		return coretask.TaskTemplate{}, coretask.ErrInvalid
+	}
+	if normalized.ModelProfileID != "" {
+		return normalized, nil
+	}
+	payload := normalized.Payload.Agent
+	if payload == nil || payload.ScheduledConversation == nil || strings.TrimSpace(payload.OwnerID) == "" || payload.AccountGeneration == 0 {
+		return coretask.TaskTemplate{}, coretask.ErrInvalid
+	}
+	var ownerAnchored, deprovisioned bool
+	if err = tx.QueryRow(ctx, `SELECT
+		EXISTS (SELECT 1 FROM core_conversation_turns WHERE conversation_id=$1 AND owner_id=$2 AND account_generation=$3),
+		EXISTS (SELECT 1 FROM agent_account_deprovisions WHERE owner_id=$2 AND account_generation=$3)`,
+		normalized.ConversationID, payload.OwnerID, payload.AccountGeneration).Scan(&ownerAnchored, &deprovisioned); err != nil {
+		return coretask.TaskTemplate{}, err
+	}
+	if !ownerAnchored || deprovisioned {
+		return coretask.TaskTemplate{}, coretask.ErrConflict
+	}
+	var profileID string
+	err = tx.QueryRow(ctx, `SELECT profile.profile_id::text
+		FROM core_model_profile_defaults defaults
+		JOIN core_model_profiles profile ON profile.client_profile_id=defaults.default_conversation_client_profile_id
+		WHERE defaults.singleton=true AND profile.deleted_at IS NULL AND profile.model_kind=$1
+		AND profile.api_key_configured=true AND profile.revision>0 AND profile.credential_version>0
+		AND btrim(profile.request_dialect)<>''
+		FOR SHARE OF defaults,profile`, coremodel.ModelKindConversation).Scan(&profileID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coretask.TaskTemplate{}, coretask.ErrNotFound
+	}
+	if err != nil {
+		return coretask.TaskTemplate{}, err
+	}
+	normalized.ModelProfileID = profileID
+	return normalized, nil
 }
 
 func (s *CoreScheduleStore) FindOccurrence(ctx context.Context, scheduleID, triggerKey string) (coretask.Occurrence, error) {
@@ -294,7 +338,11 @@ func (s *CoreScheduleStore) MaterializeNextDue(ctx context.Context, now time.Tim
 	}
 	occID := coretaskDeterministic(schedule.ID + ":scheduled:" + due.Format(time.RFC3339Nano))
 	taskID := coretaskDeterministic(occID + ":task")
-	spec, err := schedule.Spec.Materialize(coretaskDeterministic(occID+":idempotency"), due)
+	resolvedTemplate, err := resolveScheduledDefaultProfileTx(ctx, tx, schedule.Spec)
+	if err != nil {
+		return false, err
+	}
+	spec, err := resolvedTemplate.Materialize(coretaskDeterministic(occID+":idempotency"), due)
 	if err != nil {
 		return false, err
 	}
@@ -569,7 +617,13 @@ func (s *CoreScheduleStore) TriggerNow(ctx context.Context, c coretask.TriggerSc
 	if err != nil {
 		return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, err
 	}
-	spec, err := coretask.MaterializeOccurrence(schedule, occ)
+	resolvedTemplate, err := resolveScheduledDefaultProfileTx(ctx, tx, schedule.Spec)
+	if err != nil {
+		return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, err
+	}
+	resolvedSchedule := schedule
+	resolvedSchedule.Spec = resolvedTemplate
+	spec, err := coretask.MaterializeOccurrence(resolvedSchedule, occ)
 	if err != nil {
 		return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, err
 	}

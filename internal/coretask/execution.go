@@ -18,19 +18,22 @@ import (
 )
 
 type ModelProfileSnapshot struct {
-	ProfileID       string   `json:"profile_id"`
-	Revision        int64    `json:"revision"`
-	Digest          string   `json:"digest"`
-	SecretRef       string   `json:"secret_ref"`
-	Provider        string   `json:"provider"`
-	BaseURL         string   `json:"base_url"`
-	Model           string   `json:"model"`
-	SystemPrompt    string   `json:"system_prompt"`
-	Temperature     *float64 `json:"temperature,omitempty"`
-	TopP            *float64 `json:"top_p,omitempty"`
-	MaxOutputTokens int      `json:"max_output_tokens"`
-	ContextWindow   int      `json:"context_window"`
-	ReasoningEffort string   `json:"reasoning_effort"`
+	ProfileID         string   `json:"profile_id"`
+	Revision          int64    `json:"revision"`
+	CredentialVersion int64    `json:"credential_version"`
+	Digest            string   `json:"digest"`
+	SecretRef         string   `json:"secret_ref"`
+	Provider          string   `json:"provider"`
+	RequestDialect    string   `json:"request_dialect"`
+	ModelKind         string   `json:"model_kind"`
+	BaseURL           string   `json:"base_url"`
+	Model             string   `json:"model"`
+	SystemPrompt      string   `json:"system_prompt"`
+	Temperature       *float64 `json:"temperature,omitempty"`
+	TopP              *float64 `json:"top_p,omitempty"`
+	MaxOutputTokens   int      `json:"max_output_tokens"`
+	ContextWindow     int      `json:"context_window"`
+	ReasoningEffort   string   `json:"reasoning_effort"`
 }
 
 type ExtensionExecutionSnapshot struct {
@@ -159,7 +162,8 @@ func (s ExecutionSnapshot) Validate() error {
 		return ErrInvalid
 	}
 	if s.Model.ProfileID != "" {
-		if !ValidUUID(s.Model.ProfileID) || s.Model.Revision <= 0 || len(s.Model.Digest) != 64 || len(s.Model.SecretRef) == 0 || s.Model.Provider == "" || s.Model.BaseURL == "" || s.Model.Model == "" {
+		if !ValidUUID(s.Model.ProfileID) || s.Model.Revision <= 0 || s.Model.CredentialVersion <= 0 || len(s.Model.Digest) != 64 || len(s.Model.SecretRef) == 0 ||
+			s.Model.Provider == "" || s.Model.RequestDialect == "" || s.Model.ModelKind == "" || s.Model.BaseURL == "" || s.Model.Model == "" {
 			return ErrInvalid
 		}
 		if _, err := hex.DecodeString(s.Model.Digest); err != nil {

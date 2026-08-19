@@ -20,8 +20,9 @@ func TestTaskAgentContinuesPastLegacyRoundLimitUntilTerminalResponse(t *testing.
 	schemaDigest := sha256.Sum256(schema)
 	snapshot := coretask.ExecutionSnapshot{
 		Model: coretask.ModelProfileSnapshot{
-			ProfileID: uuid.NewString(), Revision: 1, Digest: repeatHex("a"), SecretRef: "profile-secret",
-			Provider: string(coremodel.ProviderOpenAICompatible), BaseURL: "https://model.invalid/v1", Model: "test-model",
+			ProfileID: uuid.NewString(), Revision: 1, CredentialVersion: 1, Digest: repeatHex("a"), SecretRef: "profile-secret",
+			Provider: string(coremodel.ProviderOpenAICompatible), RequestDialect: string(coremodel.DialectOpenAICompatibleChatV1), ModelKind: coremodel.ModelKindConversation,
+			BaseURL: "https://model.invalid/v1", Model: "test-model",
 		},
 		Extensions: []coretask.ExtensionExecutionSnapshot{{
 			Kind: coretask.ExtensionMCP, InstallationID: uuid.NewString(), Revision: 1,

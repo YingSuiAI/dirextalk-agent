@@ -201,7 +201,12 @@ contract](message-server-integration-development-contract.md), and
   `web_digest_delivery` capability. The last sends a Matrix message to a
   group/channel room and does not create a channel post. `scheduled_note`
   records Native Markdown without promising push delivery. Turn authority
-  supplies owner generation, conversation, and profile; PostgreSQL commits the
+  supplies owner generation and conversation; the schedule stores no model
+  binding. PostgreSQL requires a valid explicit default conversation model at
+  creation, then resolves and pins the then-current default independently for
+  each occurrence while exact replay/reclaim reuses that occurrence snapshot.
+  Missing or invalid defaults fail closed without fallback, occurrence write,
+  silent skip, or auto-pause. PostgreSQL commits the
   schedule/replay and terminal transcript/event as one deterministic,
   replay-safe transaction. Creation now requires each capability's exact
   source-bound creating-Turn tools and returns a correctable no-write rejection
@@ -214,7 +219,9 @@ contract](message-server-integration-development-contract.md), and
   writes are dispatch-recorded and unknown outcomes are never blindly retried.
   Successful Task
   output is the single committed assistant Markdown in `result.text`, without
-  JSON configuration or a duplicate assistant message.
+  JSON configuration or a duplicate assistant message. Scheduled snapshot and
+  Native Turn admission failures use bounded stage-specific failure codes
+  instead of leaking provider errors through the generic model failure.
 - `agent.schedules.v1/list_outputs` now exposes a closed, newest-first,
   cursor-paginated occurrence result projection after schedule identity
   revalidation. It joins authoritative current Task status/result/failure
@@ -271,6 +278,17 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-19**, Native schedules stopped retaining the creating Turn's
+  model profile. Schedule creation now requires a valid explicit conversation
+  default without storing a schedule profile reference; each occurrence
+  transaction pins the then-current default's exact revision, credential
+  version, request dialect, model kind, configuration, and secret reference.
+  Exact trigger replay/reclaim retains that occurrence snapshot, while later
+  occurrences observe later defaults. Missing defaults fail without writing an
+  occurrence/Task. Focused Core/runtime/conversation/Agent suites passed 533
+  tests; the focused PostgreSQL 18 + pgvector schedule/profile integration set
+  passed; the full Go suite passed 1878 tests; `go vet ./...`,
+  `go build ./cmd/...`, and diff checks passed.
 - On **2026-08-19**, scheduled Native workflows gained the closed nine-
   capability creation gate (`scheduled_note`, `chat_summary`, `web_research`,
   `room_message`, `contact_report`, `room_member_report`, `channel_digest`,

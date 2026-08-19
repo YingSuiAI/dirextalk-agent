@@ -397,9 +397,25 @@ type TaskTemplate struct {
 }
 
 func (t TaskTemplate) Normalize() (TaskTemplate, error) {
-	s, err := (TaskSpec{Kind: t.Kind, Payload: t.Payload, Goal: t.Goal, ConversationID: t.ConversationID, AttachmentRefs: t.AttachmentRefs, ModelProfileID: t.ModelProfileID, Extensions: t.Extensions, KnowledgeRefs: t.KnowledgeRefs, TimeoutSeconds: t.TimeoutSeconds, IdempotencyKey: "00000000-0000-4000-8000-000000000001"}).Normalize()
+	kind := t.Kind
+	if kind == "" {
+		kind = TaskKindAgent
+	}
+	dynamicScheduledProfile := kind == TaskKindAgent && strings.TrimSpace(t.ModelProfileID) == "" &&
+		t.Payload.Agent != nil && t.Payload.Agent.ScheduledConversation != nil
+	modelProfileID := t.ModelProfileID
+	if dynamicScheduledProfile {
+		// Native schedules intentionally do not freeze the model selected by the
+		// creating turn. Materialization replaces this validation-only sentinel
+		// with the then-current default before producing an ordinary TaskSpec.
+		modelProfileID = "00000000-0000-4000-8000-000000000001"
+	}
+	s, err := (TaskSpec{Kind: t.Kind, Payload: t.Payload, Goal: t.Goal, ConversationID: t.ConversationID, AttachmentRefs: t.AttachmentRefs, ModelProfileID: modelProfileID, Extensions: t.Extensions, KnowledgeRefs: t.KnowledgeRefs, TimeoutSeconds: t.TimeoutSeconds, IdempotencyKey: "00000000-0000-4000-8000-000000000001"}).Normalize()
 	if err != nil {
 		return TaskTemplate{}, err
+	}
+	if dynamicScheduledProfile {
+		s.ModelProfileID = ""
 	}
 	return TaskTemplate{Kind: s.Kind, Payload: s.Payload, Goal: s.Goal, ConversationID: s.ConversationID, AttachmentRefs: s.AttachmentRefs, ModelProfileID: s.ModelProfileID, Extensions: s.Extensions, KnowledgeRefs: s.KnowledgeRefs, TimeoutSeconds: s.TimeoutSeconds}, nil
 }

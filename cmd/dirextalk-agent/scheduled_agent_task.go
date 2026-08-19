@@ -27,20 +27,20 @@ type scheduledConversationService interface {
 func scheduledAgentTaskHandler(conversation scheduledConversationService, profiles coreruntime.SnapshotProfileResolver) coreruntime.TaskHandler {
 	return func(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
 		if conversation == nil || profiles == nil {
-			return coreruntime.ManagedOutcome{Err: errors.New("scheduled Agent dependencies are unavailable")}
+			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledSnapshotInvalid}
 		}
 		payload := task.Spec.Payload.Agent
 		if task.Spec.Kind != coretask.TaskKindAgent || payload == nil || payload.ScheduledConversation == nil ||
 			task.Snapshot == nil || task.Snapshot.Model.ProfileID == "" || task.Spec.ConversationID == "" ||
 			task.Spec.ModelProfileID != task.Snapshot.Model.ProfileID || strings.TrimSpace(payload.OwnerID) == "" || payload.AccountGeneration == 0 {
-			return coreruntime.ManagedOutcome{Err: coretask.ErrInvalid}
+			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledSnapshotInvalid}
 		}
 		if err := payload.ScheduledConversation.Validate(); err != nil {
-			return coreruntime.ManagedOutcome{Err: err}
+			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledSnapshotInvalid}
 		}
 		prompt, err := scheduledAgentPrompt(task.Spec.Goal, task.AvailableAt, payload.ScheduledConversation.Timezone)
 		if err != nil {
-			return coreruntime.ManagedOutcome{Err: err}
+			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledSnapshotInvalid}
 		}
 
 		requestID := scheduledAgentUUID("scheduled-agent-request:" + task.ID)
@@ -56,11 +56,13 @@ func scheduledAgentTaskHandler(conversation scheduledConversationService, profil
 
 		profile, err := profiles.ResolveExecutionProfile(executionCtx, task.Snapshot.Model)
 		if err != nil {
-			return coreruntime.ManagedOutcome{Err: err}
+			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledSnapshotInvalid}
 		}
 		profileSnapshot := coremodel.SnapshotFromProfile(profile)
-		if profileSnapshot.ProfileID != task.Snapshot.Model.ProfileID || profileSnapshot.Revision != task.Snapshot.Model.Revision {
-			return coreruntime.ManagedOutcome{Err: coretask.ErrRevisionConflict}
+		if profileSnapshot.ProfileID != task.Snapshot.Model.ProfileID || profileSnapshot.Revision != task.Snapshot.Model.Revision ||
+			profileSnapshot.CredentialVersion != task.Snapshot.Model.CredentialVersion ||
+			string(profileSnapshot.RequestDialect) != task.Snapshot.Model.RequestDialect || profileSnapshot.ModelKind != task.Snapshot.Model.ModelKind {
+			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledSnapshotInvalid}
 		}
 		extensions := scheduledConversationSnapshots(payload.ScheduledConversation.ExtensionSnapshots)
 		turn, err := conversation.StartTurn(executionCtx, coreconversation.TurnStartCommand{
@@ -79,7 +81,7 @@ func scheduledAgentTaskHandler(conversation scheduledConversationService, profil
 			IntrinsicPolicy:           coreconversation.TurnIntrinsicPolicyNone,
 		})
 		if err != nil {
-			return coreruntime.ManagedOutcome{Err: err}
+			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledTurnAdmission}
 		}
 		if err := validateScheduledTurnIdentity(turn, turnID, requestID, prompt, task, payload); err != nil {
 			return coreruntime.ManagedOutcome{Err: err}

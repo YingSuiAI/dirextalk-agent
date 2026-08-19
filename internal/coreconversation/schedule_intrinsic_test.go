@@ -400,7 +400,7 @@ func TestScheduleIntrinsicInjectsTurnAuthorityAndUsesDeterministicIdentity(t *te
 		t.Fatalf("intrinsic identity was not deterministic: first=%+v second=%+v", first.Mutation, second.Mutation)
 	}
 	template := first.Schedule.Spec
-	if template.Kind != coretask.TaskKindAgent || template.ConversationID != lease.Turn.ConversationID || template.ModelProfileID != lease.Turn.ProfileID ||
+	if template.Kind != coretask.TaskKindAgent || template.ConversationID != lease.Turn.ConversationID || template.ModelProfileID != "" ||
 		template.Goal != "summarize the conversation" || template.TimeoutSeconds != 120 || len(template.AttachmentRefs) != 0 || len(template.Extensions) != 0 || len(template.KnowledgeRefs) != 0 ||
 		template.Payload.Agent == nil || template.Payload.Agent.OwnerID != lease.Turn.OwnerID || template.Payload.Agent.AccountGeneration != lease.Turn.AccountGeneration || template.Payload.Agent.ScheduledConversation == nil {
 		t.Fatalf("untrusted schedule template: %+v", template)

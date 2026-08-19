@@ -74,3 +74,23 @@ func TestExecutionSnapshotDigestCanonicalizesPinnedToolSchema(t *testing.T) {
 		t.Fatalf("semantic schema drift error=%v, want ErrRevisionConflict", err)
 	}
 }
+
+func TestExecutionSnapshotRejectsPreContractModelSnapshot(t *testing.T) {
+	snapshot := ExecutionSnapshot{Model: ModelProfileSnapshot{
+		ProfileID: "00000000-0000-4000-8000-000000000001", Revision: 2, CredentialVersion: 1,
+		Digest: strings.Repeat("a", 64), SecretRef: "model-profile:00000000-0000-4000-8000-000000000001:2",
+		Provider: "openai_compatible", RequestDialect: "openai_reasoning_chat_v1", ModelKind: "conversation",
+		BaseURL: "https://example.invalid/v1", Model: "reasoning-model", MaxOutputTokens: 1024,
+	}}
+	if err := snapshot.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	legacy := snapshot
+	legacy.Model.CredentialVersion = 0
+	legacy.Model.RequestDialect = ""
+	legacy.Model.ModelKind = ""
+	legacy.Digest, _ = legacy.ComputeDigest()
+	if err := legacy.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("pre-contract snapshot did not fail closed: %v", err)
+	}
+}

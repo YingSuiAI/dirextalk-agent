@@ -401,7 +401,7 @@ func (c ConversationScheduleCommand) Validate() error {
 		return ErrInvalid
 	}
 	template := c.Schedule.Spec
-	if template.Kind != coretask.TaskKindAgent || template.ConversationID != turn.ConversationID || template.ModelProfileID != turn.ProfileID ||
+	if template.Kind != coretask.TaskKindAgent || template.ConversationID != turn.ConversationID || template.ModelProfileID != "" ||
 		len(template.AttachmentRefs) != 0 || len(template.Extensions) != 0 || len(template.KnowledgeRefs) != 0 || template.Payload.Agent == nil ||
 		template.Payload.Agent.OwnerID != strings.TrimSpace(turn.OwnerID) || template.Payload.Agent.AccountGeneration != turn.AccountGeneration ||
 		template.Payload.ConversationTool != nil || template.Payload.Extension != nil || template.Payload.KnowledgeIndex != nil ||

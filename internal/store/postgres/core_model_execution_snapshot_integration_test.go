@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -15,6 +16,16 @@ import (
 func TestResolveExecutionProfileBuildsExecutableClientProfile(t *testing.T) {
 	ctx, store, profileID, closeFixture := coreTaskScheduleFixture(t)
 	defer closeFixture()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := store.UpdateProfile(ctx, coremodel.Profile{
+		ID: profileID, DisplayName: "scheduled reasoning", Provider: coremodel.ProviderOpenAICompatible,
+		RequestDialect: coremodel.DialectOpenAIReasoningChatV1, ModelKind: coremodel.ModelKindConversation,
+		BaseURL: "https://example.invalid", Model: "test", APIKey: "test", ContextWindow: 32768,
+		Revision: 2, CredentialVersion: 1, CreatedAt: now, UpdatedAt: now,
+	}, uuid.NewString(), strings.Repeat("b", 64), 1); err != nil {
+		t.Fatal(err)
+	}
 
 	tasks := NewCoreTaskStore(store)
 	key := uuid.NewString()
@@ -40,18 +51,31 @@ func TestResolveExecutionProfileBuildsExecutableClientProfile(t *testing.T) {
 		t.Fatalf("create snapshotted task: task=%+v err=%v", task, err)
 	}
 	snapshot := task.Snapshot.Model
+	if snapshot.Revision != 2 || snapshot.CredentialVersion != 1 ||
+		snapshot.RequestDialect != string(coremodel.DialectOpenAIReasoningChatV1) || snapshot.ModelKind != coremodel.ModelKindConversation {
+		t.Fatalf("model snapshot lost execution contract: revision=%d credential_version=%d request_dialect=%q model_kind=%q",
+			snapshot.Revision, snapshot.CredentialVersion, snapshot.RequestDialect, snapshot.ModelKind)
+	}
 	profile, err := store.ResolveExecutionProfile(ctx, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.DisplayName != "snapshot" || profile.ModelKind != coremodel.ModelKindConversation || !profile.APIKeyConfigured || profile.APIKey == "" {
-		t.Fatalf("resolved execution profile is incomplete: display_name=%q model_kind=%q api_key_configured=%t", profile.DisplayName, profile.ModelKind, profile.APIKeyConfigured)
+	if profile.DisplayName != "snapshot" || profile.Revision != 2 || profile.CredentialVersion != 1 ||
+		profile.RequestDialect != coremodel.DialectOpenAIReasoningChatV1 || profile.ModelKind != coremodel.ModelKindConversation || !profile.APIKeyConfigured || profile.APIKey == "" {
+		t.Fatalf("resolved execution profile is incomplete: display_name=%q revision=%d credential_version=%d request_dialect=%q model_kind=%q api_key_configured=%t",
+			profile.DisplayName, profile.Revision, profile.CredentialVersion, profile.RequestDialect, profile.ModelKind, profile.APIKeyConfigured)
 	}
 	if _, err = coremodel.ValidateProfile(profile); err != nil {
 		t.Fatalf("resolved execution profile is invalid: %v", err)
 	}
 	if _, err = coremodel.NewClient(profile); err != nil {
 		t.Fatalf("resolved execution profile cannot create a model client: %v", err)
+	}
+	runtimeProfile := coremodel.SnapshotFromProfile(profile)
+	runtimeSnapshot, err := coreconversation.NewTurnRuntimeSnapshot("scheduled", runtimeProfile, nil, "", "")
+	if err != nil || runtimeProfile.Validate() != nil || runtimeSnapshot.Validate() != nil ||
+		runtimeSnapshot.RequestDialect != string(coremodel.DialectOpenAIReasoningChatV1) {
+		t.Fatalf("resolved snapshot cannot enter Native Turn: profile=%s runtime=%+v err=%v", runtimeProfile, runtimeSnapshot, err)
 	}
 	tampered := snapshot
 	tampered.SecretRef += "-tampered"
@@ -62,6 +86,16 @@ func TestResolveExecutionProfileBuildsExecutableClientProfile(t *testing.T) {
 	tampered.Model = "different-model"
 	if _, err = store.ResolveExecutionProfile(ctx, tampered); !errors.Is(err, coretask.ErrRevisionConflict) {
 		t.Fatalf("tampered model snapshot error=%v", err)
+	}
+	tampered = snapshot
+	tampered.CredentialVersion++
+	if _, err = store.ResolveExecutionProfile(ctx, tampered); !errors.Is(err, coretask.ErrRevisionConflict) {
+		t.Fatalf("tampered credential version error=%v", err)
+	}
+	tampered = snapshot
+	tampered.RequestDialect = ""
+	if _, err = store.ResolveExecutionProfile(ctx, tampered); !errors.Is(err, coretask.ErrRevisionConflict) {
+		t.Fatalf("missing request dialect error=%v", err)
 	}
 }
 

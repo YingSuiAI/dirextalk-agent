@@ -340,6 +340,11 @@ func (p *WorkerPool) execute(parent context.Context, task coretask.Task, lease c
 		_ = p.store.TimeoutTask(writeCtx, coretask.TimeoutCommand{Fence: fence, At: time.Now().UTC()})
 		return
 	}
+	errorCode, errorSummary := taskFailureProjection(err)
+	_ = p.store.FailTask(writeCtx, coretask.FailCommand{Fence: fence, ErrorCode: errorCode, ErrorSummary: errorSummary, At: time.Now().UTC()})
+}
+
+func taskFailureProjection(err error) (string, string) {
 	errorCode := "model_error"
 	errorSummary := "model execution failed"
 	if errors.Is(err, ErrToolUncertain) {
@@ -362,7 +367,15 @@ func (p *WorkerPool) execute(parent context.Context, task coretask.Task, lease c
 		errorCode = "task_unsupported"
 		errorSummary = "task input is unsupported in Core v1"
 	}
-	_ = p.store.FailTask(writeCtx, coretask.FailCommand{Fence: fence, ErrorCode: errorCode, ErrorSummary: errorSummary, At: time.Now().UTC()})
+	if errors.Is(err, ErrScheduledSnapshotInvalid) {
+		errorCode = "scheduled_snapshot_invalid"
+		errorSummary = "scheduled execution snapshot is unavailable or invalid"
+	}
+	if errors.Is(err, ErrScheduledTurnAdmission) {
+		errorCode = "scheduled_turn_admission_failed"
+		errorSummary = "scheduled conversation turn could not be admitted"
+	}
+	return errorCode, errorSummary
 }
 
 func boundedSummary(s string) string {

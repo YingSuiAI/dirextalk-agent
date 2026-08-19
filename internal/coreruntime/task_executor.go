@@ -73,6 +73,14 @@ type SkillInstructionResolver interface {
 
 var ErrToolUncertain = errors.New("tool_uncertain")
 
+var (
+	// These sentinels expose only the bounded scheduled-execution stage. The
+	// underlying profile/admission error may contain provider or secret-bearing
+	// details and must not enter Task failure projections.
+	ErrScheduledSnapshotInvalid = errors.New("scheduled_snapshot_invalid")
+	ErrScheduledTurnAdmission   = errors.New("scheduled_turn_admission_failed")
+)
+
 type ManagedOutcome struct {
 	Result        coretask.Result
 	Err           error

@@ -2,6 +2,7 @@ package coretask
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -48,5 +49,37 @@ func TestAgentScheduleAuthorityPayloadRejectsMissingOrMixedAuthority(t *testing.
 		if _, err := candidate.Normalize(); err == nil {
 			t.Fatalf("payload unexpectedly accepted: %+v", payload)
 		}
+	}
+}
+
+func TestNativeScheduledTemplateDefersModelButMaterializedTaskRequiresExactProfile(t *testing.T) {
+	template := TaskTemplate{
+		Kind: TaskKindAgent,
+		Payload: TaskPayload{Agent: &AgentTaskPayload{
+			OwnerID: "@owner:example.test", AccountGeneration: 7,
+			ScheduledConversation: &ScheduledConversationOrigin{
+				Capability: ScheduledCapabilityScheduledNote, Timezone: "UTC", ExtensionSnapshots: []ScheduledExtensionSnapshot{},
+			},
+		}},
+		Goal: "scheduled goal", ConversationID: uuid.NewString(),
+	}
+	normalized, err := template.Normalize()
+	if err != nil || normalized.ModelProfileID != "" {
+		t.Fatalf("dynamic template=%+v err=%v", normalized, err)
+	}
+	if _, err = normalized.Materialize(uuid.NewString(), time.Now().UTC()); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unresolved template materialized without a model: %v", err)
+	}
+	ordinary := TaskSpec{
+		Kind: TaskKindAgent, Payload: normalized.Payload, Goal: normalized.Goal, ConversationID: normalized.ConversationID,
+		IdempotencyKey: uuid.NewString(), AvailableAt: time.Now().UTC(),
+	}
+	if _, err = ordinary.Normalize(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("ordinary task accepted an empty model profile: %v", err)
+	}
+	resolved := normalized
+	resolved.ModelProfileID = uuid.NewString()
+	if _, err = resolved.Materialize(uuid.NewString(), time.Now().UTC()); err != nil {
+		t.Fatalf("resolved occurrence did not materialize: %v", err)
 	}
 }

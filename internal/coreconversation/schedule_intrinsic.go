@@ -118,7 +118,7 @@ func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleSto
 				OwnerID: strings.TrimSpace(turn.OwnerID), AccountGeneration: turn.AccountGeneration,
 				ScheduledConversation: &coretask.ScheduledConversationOrigin{Capability: args.Capability, Timezone: scheduleTimezone, ExtensionSnapshots: scheduledSnapshots},
 			}},
-			Goal: args.Goal, ConversationID: turn.ConversationID, ModelProfileID: turn.ProfileID, TimeoutSeconds: args.TimeoutSeconds,
+			Goal: args.Goal, ConversationID: turn.ConversationID, TimeoutSeconds: args.TimeoutSeconds,
 		},
 		Cron: args.Cron, Timezone: scheduleTimezone, Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
