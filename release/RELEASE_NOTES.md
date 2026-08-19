@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v1.0.170
+
+1. Embed timezone data and execute due schedules through real durable Native Agent turns with immutable occurrence and timezone context.
+2. Admit exactly nine scheduled workflows, including ordered multi-source `web_digest_delivery`, with no generic extension escape hatch.
+3. Pin persisted and live tools to each workflow's exact closure, disable Core intrinsics for background turns, and retain durable loop convergence without blindly retrying unknown writes.
+4. Expose successful schedule results and history as the committed assistant Markdown only, without JSON configuration or duplicate transcript messages.
+
 ## v1.0.169
 
 1. Report the immutable Agent release version from the unauthenticated internal health endpoint without coupling version observation to runner readiness.
