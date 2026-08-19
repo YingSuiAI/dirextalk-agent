@@ -39,7 +39,7 @@ func (s *CoreServerArtifactStore) EnsurePrimaryArtifact(ctx context.Context, aut
 	artifactID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:primary-backend:"+authority.OwnerID+":"+fmt.Sprint(authority.AccountGeneration)+":"+instance.ID)).String()
 	_, err := s.pool.Exec(ctx, `INSERT INTO core_server_artifacts
 		(artifact_id,owner_id,account_generation,server_id,server_kind,artifact_kind,source_kind,source_id,name,status,public_url,metadata_json,deletion_state,created_at,updated_at)
-		VALUES($1,$2,$3,$4,'primary','system_service','agent_backend',$4,'Dirextalk 后端服务','healthy',NULLIF($5,''),'{}'::jsonb,'active',$6,$6)
+		VALUES($1,$2,$3,$4::uuid,'primary','system_service','agent_backend',$4::uuid::text,'Dirextalk 后端服务','healthy',NULLIF($5,''),'{}'::jsonb,'active',$6,$6)
 		ON CONFLICT(owner_id,account_generation,source_kind,source_id) DO UPDATE SET
 		public_url=EXCLUDED.public_url,status='healthy',updated_at=clock_timestamp()`, artifactID, authority.OwnerID, authority.AccountGeneration, instance.ID, strings.TrimRight(strings.TrimSpace(origin), "/"), instance.CreatedAt.UTC())
 	return err
