@@ -1180,7 +1180,7 @@ func (s *CoreConversationStore) TurnEventBounds(ctx context.Context, id string) 
 
 func (s *CoreConversationStore) CommitTurn(ctx context.Context, lease core.TurnLease, response core.ChatResponse) (core.Turn, error) {
 	response.Message.CreatedAt = response.Message.CreatedAt.UTC().Truncate(time.Microsecond)
-	if response.Message.CreatedAt.IsZero() {
+	if response.Message.CreatedAt.IsZero() || bindTurnResponseIdentity(&response, lease.Turn.ID) != nil {
 		return core.Turn{}, core.ErrInvalid
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -1206,7 +1206,6 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 		turn.AccountGeneration != lease.Turn.AccountGeneration || turn.ConversationID != lease.Turn.ConversationID || turn.ProfileID != lease.Turn.ProfileID {
 		return core.ErrConflict
 	}
-	response.Message.TurnID = turn.ID
 	raw, _ := json.Marshal(response)
 	now := time.Now().UTC()
 	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='completed',revision=revision+1,response_json=$2,lease_id=NULL,lease_expires_at=NULL,updated_at=$3 WHERE turn_id=$1 AND lease_id=$4 AND lease_epoch=$5 AND state='running'`, lease.Turn.ID, raw, now, lease.LeaseID, lease.Epoch)
@@ -1297,6 +1296,15 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, turn.LastSequence+1, core.TurnEvent{Kind: core.TurnEventDone, Message: &response.Message, Response: &response}, now); err != nil {
 		return err
 	}
+	return nil
+}
+
+func bindTurnResponseIdentity(response *core.ChatResponse, turnID string) error {
+	if response == nil || uuid.Validate(turnID) != nil ||
+		(response.Message.TurnID != "" && response.Message.TurnID != turnID) {
+		return core.ErrInvalid
+	}
+	response.Message.TurnID = turnID
 	return nil
 }
 

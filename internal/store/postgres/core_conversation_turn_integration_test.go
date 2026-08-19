@@ -619,7 +619,7 @@ func TestCoreConversationFailedTurnPersistsPartialTranscriptOncePostgres(t *test
 			createTestProfile(context.Background(), t, h.store.Store, turn.ProfileID, "test", "integration-secret")
 			initialRevision := uint64(1)
 			if test.userAlreadyCommitted {
-				message := core.Message{ID: core.TurnUserMessageID(turn.RequestID), Role: core.RoleUser, Content: turn.Prompt,
+				message := core.Message{ID: core.TurnUserMessageID(turn.RequestID), TurnID: turn.ID, Role: core.RoleUser, Content: turn.Prompt,
 					ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC().Add(-time.Second).Truncate(time.Microsecond)}
 				tx, txErr := h.pool.Begin(context.Background())
 				if txErr != nil {

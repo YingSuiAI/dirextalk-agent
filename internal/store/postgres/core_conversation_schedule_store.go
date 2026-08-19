@@ -17,7 +17,7 @@ import (
 // turn, and done event share one PostgreSQL transaction.
 func (s *CoreConversationStore) CommitConversationSchedule(ctx context.Context, command core.ConversationScheduleCommand) (coretask.Schedule, error) {
 	command.Response.Message.CreatedAt = command.Response.Message.CreatedAt.UTC().Truncate(time.Microsecond)
-	if command.Validate() != nil {
+	if bindTurnResponseIdentity(&command.Response, command.Lease.Turn.ID) != nil || command.Validate() != nil {
 		return coretask.Schedule{}, core.ErrInvalid
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})

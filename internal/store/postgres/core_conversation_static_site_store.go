@@ -15,7 +15,7 @@ import (
 // receipt are derived from the recorded model call by the intrinsic.
 func (s *CoreConversationStore) CommitConversationStaticSite(ctx context.Context, command core.ConversationStaticSiteCommand) (core.StaticSiteReceipt, error) {
 	command.Response.Message.CreatedAt = command.Response.Message.CreatedAt.UTC().Truncate(time.Microsecond)
-	if command.Validate() != nil {
+	if bindTurnResponseIdentity(&command.Response, command.Lease.Turn.ID) != nil || command.Validate() != nil {
 		return core.StaticSiteReceipt{}, core.ErrInvalid
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
