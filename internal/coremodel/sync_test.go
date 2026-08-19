@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestSyncProfilesIsAtomicAndBatchIdempotent(t *testing.T) {
@@ -102,8 +103,8 @@ func TestSyncProfilesPersistsIndependentConversationKindToolDefault(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.DefaultToolProfileID != "" {
-		t.Fatalf("tool default fell back to conversation: %+v", first)
+	if first.DefaultConversationProfileID != "chat" || first.DefaultToolProfileID != "chat" {
+		t.Fatalf("unique configured conversation profile did not converge both independent roles: %+v", first)
 	}
 	bound, err := svc.Sync(context.Background(), SyncProfileCommand{
 		IdempotencyKey:       "a0000000-0000-4000-8000-000000000061",
@@ -114,7 +115,7 @@ func TestSyncProfilesPersistsIndependentConversationKindToolDefault(t *testing.T
 		t.Fatalf("tool default=%+v err=%v", bound, err)
 	}
 	page, err := svc.List(context.Background(), ListProfileCommand{Limit: 10})
-	if err != nil || page.Defaults.ToolClientProfileID != "tool" || page.Defaults.ConversationClientProfileID != "" {
+	if err != nil || page.Defaults.ToolClientProfileID != "tool" || page.Defaults.ConversationClientProfileID != "chat" {
 		t.Fatalf("durable defaults=%+v err=%v", page.Defaults, err)
 	}
 
@@ -132,6 +133,77 @@ func TestSyncProfilesPersistsIndependentConversationKindToolDefault(t *testing.T
 	}
 	if _, err = repo.SyncProfiles(context.Background(), "a0000000-0000-4000-8000-000000000065", "memory-store-tool-kind", SyncProfileCommand{DefaultToolProfileID: "embed"}); !errors.Is(err, ErrInvalidProfile) {
 		t.Fatalf("memory repository accepted embedding tool default: %v", err)
+	}
+}
+
+func TestConfiguredModelDefaultsConvergeByRole(t *testing.T) {
+	valid := func(clientID, kind string) Profile {
+		createdAt := time.Unix(1, 0).UTC()
+		switch clientID {
+		case "chat-two", "tool-two", "embed-two":
+			createdAt = time.Unix(2, 0).UTC()
+		case "chat-three", "tool-three", "embed-three":
+			createdAt = time.Unix(3, 0).UTC()
+		}
+		return Profile{ID: SyncProfileID(clientID), ClientProfileID: clientID, Provider: ProviderOpenAICompatible,
+			RequestDialect: DialectOpenAICompatibleChatV1, ModelKind: kind, APIKey: "configured", Revision: 1, CredentialVersion: 1, CreatedAt: createdAt}
+	}
+	tests := []struct {
+		name     string
+		role     string
+		current  string
+		profiles []Profile
+		want     string
+	}{
+		{name: "conversation zero", role: ModelKindConversation},
+		{name: "conversation unique", role: ModelKindConversation, profiles: []Profile{valid("chat-one", ModelKindConversation)}, want: "chat-one"},
+		{name: "conversation multiple selects first", role: ModelKindConversation, profiles: []Profile{valid("chat-two", ModelKindConversation), valid("chat-one", ModelKindConversation)}, want: "chat-one"},
+		{name: "conversation preserves explicit among multiple", role: ModelKindConversation, current: "chat-two", profiles: []Profile{valid("chat-one", ModelKindConversation), valid("chat-two", ModelKindConversation)}, want: "chat-two"},
+		{name: "conversation invalid default converges unique", role: ModelKindConversation, current: "removed", profiles: []Profile{valid("chat-one", ModelKindConversation)}, want: "chat-one"},
+		{name: "conversation invalid default selects next", role: ModelKindConversation, current: "chat-one", profiles: []Profile{func() Profile { p := valid("chat-one", ModelKindConversation); p.APIKey = ""; return p }(), valid("chat-two", ModelKindConversation), valid("chat-three", ModelKindConversation)}, want: "chat-two"},
+		{name: "conversation invalid last wraps first", role: ModelKindConversation, current: "chat-three", profiles: []Profile{valid("chat-one", ModelKindConversation), valid("chat-two", ModelKindConversation), func() Profile { p := valid("chat-three", ModelKindConversation); p.APIKey = ""; return p }()}, want: "chat-one"},
+		{name: "tool zero", role: "tool"},
+		{name: "tool unique", role: "tool", profiles: []Profile{valid("tool-one", ModelKindConversation)}, want: "tool-one"},
+		{name: "tool multiple selects first", role: "tool", profiles: []Profile{valid("tool-two", ModelKindConversation), valid("tool-one", ModelKindConversation)}, want: "tool-one"},
+		{name: "tool preserves explicit among multiple", role: "tool", current: "tool-two", profiles: []Profile{valid("tool-one", ModelKindConversation), valid("tool-two", ModelKindConversation)}, want: "tool-two"},
+		{name: "tool invalid default converges unique", role: "tool", current: "removed", profiles: []Profile{valid("tool-one", ModelKindConversation)}, want: "tool-one"},
+		{name: "tool invalid default selects next", role: "tool", current: "tool-one", profiles: []Profile{func() Profile { p := valid("tool-one", ModelKindConversation); p.APIKey = ""; return p }(), valid("tool-two", ModelKindConversation)}, want: "tool-two"},
+		{name: "embedding zero", role: ModelKindEmbedding},
+		{name: "embedding unique", role: ModelKindEmbedding, profiles: []Profile{valid("embed-one", ModelKindEmbedding)}, want: "embed-one"},
+		{name: "embedding multiple selects first", role: ModelKindEmbedding, profiles: []Profile{valid("embed-two", ModelKindEmbedding), valid("embed-one", ModelKindEmbedding)}, want: "embed-one"},
+		{name: "embedding preserves explicit among multiple", role: ModelKindEmbedding, current: "embed-two", profiles: []Profile{valid("embed-one", ModelKindEmbedding), valid("embed-two", ModelKindEmbedding)}, want: "embed-two"},
+		{name: "embedding invalid default converges unique", role: ModelKindEmbedding, current: "removed", profiles: []Profile{valid("embed-one", ModelKindEmbedding)}, want: "embed-one"},
+		{name: "embedding invalid last wraps first", role: ModelKindEmbedding, current: "embed-two", profiles: []Profile{valid("embed-one", ModelKindEmbedding), func() Profile { p := valid("embed-two", ModelKindEmbedding); p.APIKey = ""; return p }()}, want: "embed-one"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profiles := make(map[string]Profile, len(test.profiles))
+			for _, profile := range test.profiles {
+				profiles[profile.ID] = profile
+			}
+			defaults := ProfileDefaults{}
+			switch test.role {
+			case ModelKindConversation:
+				defaults.ConversationClientProfileID = test.current
+			case "tool":
+				defaults.ToolClientProfileID = test.current
+			case ModelKindEmbedding:
+				defaults.EmbeddingClientProfileID = test.current
+			}
+			got := convergeMemoryProfileDefaults(defaults, profiles)
+			var selected string
+			switch test.role {
+			case ModelKindConversation:
+				selected = got.ConversationClientProfileID
+			case "tool":
+				selected = got.ToolClientProfileID
+			case ModelKindEmbedding:
+				selected = got.EmbeddingClientProfileID
+			}
+			if selected != test.want {
+				t.Fatalf("selected=%q want=%q defaults=%+v", selected, test.want, got)
+			}
+		})
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,6 +18,8 @@ import (
 )
 
 const scheduledCapabilityCorrection = "Unsupported scheduled capability. Supported workflows are scheduled_note, chat_summary, web_research, room_message, contact_report, room_member_report, channel_digest, chat_summary_delivery, and web_digest_delivery; refuse every other scheduled workflow. scheduled_note saves Markdown in Native Agent conversation and schedule history but does not promise a push notification."
+
+const scheduleCreateGuidance = "For a user request to create a supported schedule, call agent_schedule_create exactly once and do not claim success before that call succeeds. Never invent a schedule_id or a successful schedule receipt. A successful agent_schedule_create commits the final response itself, so stop immediately after the tool result. If the requested scheduled workflow is unsupported, do not call the tool and clearly refuse it."
 
 type scheduleIntrinsicArguments struct {
 	Name           string                       `json:"name"`
@@ -50,7 +53,7 @@ func scheduleIntrinsic(store ConversationScheduleStore, bound TurnLease) Resolve
 	return ResolvedIntrinsic{
 		Tool: coremodel.Tool{
 			Name:        coremodel.IntrinsicScheduleCreateToolName,
-			Description: "Create a durable one-time or recurring Agent schedule in this conversation. Choose exactly one closed supported capability and refuse every other workflow. scheduled_note saves final Markdown in Native Agent conversation and schedule history but does not promise a push notification. room_message, chat_summary_delivery, and web_digest_delivery may perform the explicitly requested Matrix message write at most once and never blindly retry an unknown outcome; web_digest_delivery sends to a group/channel room and does not create a channel post. Name is the sole schedule-card title and must be a concise human-readable task name extracted from the user's request. Identity, conversation, model profile, and account generation are injected by Core and must not be supplied as arguments.",
+			Description: "Create a durable one-time or recurring Agent schedule in this conversation. A supported schedule request must call this tool exactly once; never invent a schedule_id or claim success without its result, and stop after its successful result because Core commits the final response. Choose exactly one closed supported capability and refuse every other workflow. scheduled_note saves final Markdown in Native Agent conversation and schedule history but does not promise a push notification. room_message, chat_summary_delivery, and web_digest_delivery may perform the explicitly requested Matrix message write at most once and never blindly retry an unknown outcome; web_digest_delivery sends to a group/channel room and does not create a channel post. Name is the sole schedule-card title and must be a concise human-readable task name extracted from the user's request. Identity, conversation, model profile, and account generation are injected by Core and must not be supplied as arguments.",
 			InputSchema: map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -78,6 +81,41 @@ func scheduleIntrinsic(store ConversationScheduleStore, bound TurnLease) Resolve
 			return executeScheduleIntrinsic(ctx, store, bound, request)
 		},
 	}
+}
+
+func containsScheduleIntrinsic(intrinsics []ResolvedIntrinsic) bool {
+	for _, intrinsic := range intrinsics {
+		if intrinsic.Tool.Name == coremodel.IntrinsicScheduleCreateToolName {
+			return true
+		}
+	}
+	return false
+}
+
+func scheduleSystemPrompt(systemPrompt string) string {
+	return appendSystemPrompt(systemPrompt, scheduleCreateGuidance)
+}
+
+// isReservedScheduleSuccessReceipt recognizes only Core's authoritative
+// schedule receipt. A model-only answer may discuss schedules, but it cannot
+// emit this structured success receipt because no schedule mutation committed.
+func isReservedScheduleSuccessReceipt(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Scheduled ") || !strings.HasSuffix(line, ").") {
+			continue
+		}
+		body := strings.TrimSuffix(strings.TrimPrefix(line, "Scheduled "), ").")
+		separator := strings.LastIndex(body, " (schedule_id: ")
+		if separator <= 0 {
+			continue
+		}
+		name, scheduleID := body[:separator], body[separator+len(" (schedule_id: "):]
+		if _, err := strconv.Unquote(name); err == nil && validUUID(scheduleID) {
+			return true
+		}
+	}
+	return false
 }
 
 func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleStore, bound TurnLease, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {

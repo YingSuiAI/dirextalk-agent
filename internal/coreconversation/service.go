@@ -1197,6 +1197,9 @@ func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, exte
 	if containsStaticSiteIntrinsic(intrinsics) {
 		systemPrompt = staticSiteSystemPrompt(systemPrompt)
 	}
+	if containsScheduleIntrinsic(intrinsics) {
+		systemPrompt = scheduleSystemPrompt(systemPrompt)
+	}
 	if containsCloudWorkerIntrinsic(intrinsics) {
 		systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 	}
@@ -1800,6 +1803,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if containsStaticSiteIntrinsic(modelIntrinsicTools) {
 		systemPrompt = staticSiteSystemPrompt(systemPrompt)
 	}
+	if containsScheduleIntrinsic(modelIntrinsicTools) {
+		systemPrompt = scheduleSystemPrompt(systemPrompt)
+	}
 	if containsCloudWorkerIntrinsic(modelIntrinsicTools) {
 		systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 	}
@@ -2265,6 +2271,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			m := out.result.Message
 			m.Content = history.continuationContent + m.Content
 			m.ReasoningContent = history.priorReasoning + m.ReasoningContent
+			if containsScheduleIntrinsic(intrinsicTools) && isReservedScheduleSuccessReceipt(m.Content) {
+				_, _ = s.turns.FailTurn(ctx, lease, "schedule_commit_missing", "schedule success requires an authoritative Core schedule commit")
+				return
+			}
 			historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
 			m.RelatedTaskIDs = stableIDs(append(append(m.RelatedTaskIDs, out.result.RelatedTaskIDs...), historyTasks...))
 			m.RelatedPlanIDs = stableIDs(append(append(m.RelatedPlanIDs, out.result.RelatedPlanIDs...), historyPlans...))

@@ -549,6 +549,85 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	}
 }
 
+func TestConfiguredModelDefaultsConvergeDurablyPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	ctx := context.Background()
+	store := h.store.Store
+
+	empty, err := store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("0", 64), coremodel.SyncProfileCommand{})
+	if err != nil || empty.DefaultConversationProfileID != "" || empty.DefaultToolProfileID != "" || empty.DefaultEmbeddingProfileID != "" {
+		t.Fatalf("zero-profile defaults=%+v err=%v", empty, err)
+	}
+	chatOne, err := store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("1", 64), coremodel.SyncProfileCommand{Entries: []coremodel.SyncProfileEntry{syncStoreEntry("chat-one", "Chat one", "secret-one")}})
+	if err != nil || chatOne.DefaultConversationProfileID != "chat-one" || chatOne.DefaultToolProfileID != "chat-one" {
+		t.Fatalf("unique conversation defaults=%+v err=%v", chatOne, err)
+	}
+	chatTwo, err := store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("2", 64), coremodel.SyncProfileCommand{Entries: []coremodel.SyncProfileEntry{syncStoreEntry("chat-two", "Chat two", "secret-two")}})
+	if err != nil || chatTwo.DefaultConversationProfileID != "chat-one" || chatTwo.DefaultToolProfileID != "chat-one" {
+		t.Fatalf("multiple conversation profiles changed explicit defaults=%+v err=%v", chatTwo, err)
+	}
+	if _, err = h.pool.Exec(ctx, `UPDATE core_model_profile_defaults SET default_conversation_client_profile_id=NULL,default_tool_client_profile_id=NULL WHERE singleton=true`); err != nil {
+		t.Fatal(err)
+	}
+	legacyNull, err := store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("a", 64), coremodel.SyncProfileCommand{})
+	if err != nil || legacyNull.DefaultConversationProfileID != "chat-one" || legacyNull.DefaultToolProfileID != "chat-one" {
+		t.Fatalf("legacy-null roles did not select stable first profile: defaults=%+v err=%v", legacyNull, err)
+	}
+	selected, err := store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("3", 64), coremodel.SyncProfileCommand{DefaultConversationProfileID: "chat-two", DefaultToolProfileID: "chat-one"})
+	if err != nil || selected.DefaultConversationProfileID != "chat-two" || selected.DefaultToolProfileID != "chat-one" {
+		t.Fatalf("independent conversation/tool selection=%+v err=%v", selected, err)
+	}
+	if _, err = store.DeleteProfile(ctx, chatTwo.Profiles[0].ID, uuid.NewString(), strings.Repeat("4", 64), 1); err != nil {
+		t.Fatal(err)
+	}
+	defaults, err := store.GetProfileDefaults(ctx)
+	if err != nil || defaults.ConversationClientProfileID != "chat-one" || defaults.ToolClientProfileID != "chat-one" {
+		t.Fatalf("deleted conversation default did not converge uniquely: defaults=%+v err=%v", defaults, err)
+	}
+
+	embedOneEntry := syncStoreEntry("embed-one", "Embed one", "embed-secret-one")
+	embedOneEntry.ModelKind = coremodel.ModelKindEmbedding
+	embedTwoEntry := syncStoreEntry("embed-two", "Embed two", "embed-secret-two")
+	embedTwoEntry.ModelKind = coremodel.ModelKindEmbedding
+	embedOne, err := store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("5", 64), coremodel.SyncProfileCommand{Entries: []coremodel.SyncProfileEntry{embedOneEntry}})
+	if err != nil || embedOne.DefaultEmbeddingProfileID != "embed-one" {
+		t.Fatalf("unique embedding default=%+v err=%v", embedOne, err)
+	}
+	embedTwo, err := store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("6", 64), coremodel.SyncProfileCommand{Entries: []coremodel.SyncProfileEntry{embedTwoEntry}})
+	if err != nil || embedTwo.DefaultEmbeddingProfileID != "embed-one" {
+		t.Fatalf("multiple embeddings changed explicit default=%+v err=%v", embedTwo, err)
+	}
+	selected, err = store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("7", 64), coremodel.SyncProfileCommand{DefaultEmbeddingProfileID: "embed-two"})
+	if err != nil || selected.DefaultEmbeddingProfileID != "embed-two" {
+		t.Fatalf("explicit embedding selection=%+v err=%v", selected, err)
+	}
+	if _, err = store.DeleteProfile(ctx, embedTwo.Profiles[0].ID, uuid.NewString(), strings.Repeat("8", 64), 1); err != nil {
+		t.Fatal(err)
+	}
+	defaults, err = store.GetProfileDefaults(ctx)
+	if err != nil || defaults.EmbeddingClientProfileID != "embed-one" || defaults.ConversationClientProfileID != "chat-one" || defaults.ToolClientProfileID != "chat-one" {
+		t.Fatalf("deleted embedding default did not converge independently: defaults=%+v err=%v", defaults, err)
+	}
+	chatThree, err := store.SyncProfiles(ctx, uuid.NewString(), strings.Repeat("b", 64), coremodel.SyncProfileCommand{Entries: []coremodel.SyncProfileEntry{syncStoreEntry("chat-three", "Chat three", "secret-three")}})
+	if err != nil || chatThree.DefaultConversationProfileID != "chat-one" || chatThree.DefaultToolProfileID != "chat-one" {
+		t.Fatalf("valid explicit selections changed after adding candidate: defaults=%+v err=%v", chatThree, err)
+	}
+	invalidated, err := store.GetProfile(ctx, chatOne.Profiles[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidated.APIKey = ""
+	invalidated.Revision++
+	invalidated.UpdatedAt = time.Now().UTC().Truncate(time.Microsecond)
+	if _, err = store.UpdateProfile(ctx, invalidated, uuid.NewString(), strings.Repeat("c", 64), 1); err != nil {
+		t.Fatal(err)
+	}
+	defaults, err = store.GetProfileDefaults(ctx)
+	if err != nil || defaults.ConversationClientProfileID != "chat-three" || defaults.ToolClientProfileID != "chat-three" || defaults.EmbeddingClientProfileID != "embed-one" {
+		t.Fatalf("invalid current defaults did not advance independently: defaults=%+v err=%v", defaults, err)
+	}
+}
+
 func syncStoreEntry(id, name, key string) coremodel.SyncProfileEntry {
 	return coremodel.SyncProfileEntry{ClientProfileID: id, DisplayName: name, Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, Model: "model", APIKey: stringPtrStore(key)}
 }

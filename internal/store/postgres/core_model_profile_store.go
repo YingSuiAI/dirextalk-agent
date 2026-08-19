@@ -214,6 +214,9 @@ func (s *Store) CreateProfile(ctx context.Context, p coremodel.Profile, key, dig
 				return coremodel.MutationSnapshot{}, mapProfileDBError(err)
 			}
 		}
+		if _, err = convergeConfiguredModelDefaultsTx(ctx, tx); err != nil {
+			return coremodel.MutationSnapshot{}, err
+		}
 		return coremodel.MutationSnapshot{Profile: p.Public()}, nil
 	})
 }
@@ -383,6 +386,9 @@ func (s *Store) UpdateProfile(ctx context.Context, p coremodel.Profile, key, dig
 				return coremodel.MutationSnapshot{}, mapProfileDBError(err)
 			}
 		}
+		if _, err = convergeConfiguredModelDefaultsTx(ctx, tx); err != nil {
+			return coremodel.MutationSnapshot{}, err
+		}
 		return coremodel.MutationSnapshot{Profile: p.Public()}, nil
 	})
 }
@@ -417,7 +423,20 @@ func (s *Store) DeleteProfile(ctx context.Context, id, key, digest string, expec
 		// Every model kind keeps one tombstoned profile row. Historical
 		// conversations and immutable revision snapshots continue to name that
 		// row, while the write-facing client id and live credentials are removed.
-		if _, err := tx.Exec(ctx, `UPDATE core_model_profiles SET client_profile_id=NULL,api_key_configured=false,api_key_nonce=NULL,api_key_ciphertext=NULL,provider_secrets_nonce=NULL,provider_secrets_ciphertext=NULL,provider_secret_status='{}'::jsonb,deleted_at=clock_timestamp(),updated_at=clock_timestamp() WHERE profile_id=$1`, id); err != nil {
+		// Keep the client id until role convergence has used this profile's durable
+		// creation position to choose the next configured profile (with wrap).
+		if _, err := tx.Exec(ctx, `UPDATE core_model_profiles SET deleted_at=clock_timestamp(),updated_at=clock_timestamp() WHERE profile_id=$1`, id); err != nil {
+			return coremodel.MutationSnapshot{}, mapProfileDBError(err)
+		}
+		if _, err := convergeConfiguredModelDefaultsTx(ctx, tx); err != nil {
+			return coremodel.MutationSnapshot{}, err
+		}
+		if p.ClientProfileID != "" {
+			if _, err := tx.Exec(ctx, `UPDATE core_model_profile_defaults SET default_speech_client_profile_id=NULLIF(default_speech_client_profile_id,$1),updated_at=clock_timestamp() WHERE singleton=true`, p.ClientProfileID); err != nil {
+				return coremodel.MutationSnapshot{}, mapProfileDBError(err)
+			}
+		}
+		if _, err := tx.Exec(ctx, `UPDATE core_model_profiles SET client_profile_id=NULL,api_key_configured=false,api_key_nonce=NULL,api_key_ciphertext=NULL,provider_secrets_nonce=NULL,provider_secrets_ciphertext=NULL,provider_secret_status='{}'::jsonb WHERE profile_id=$1`, id); err != nil {
 			return coremodel.MutationSnapshot{}, mapProfileDBError(err)
 		}
 		return coremodel.MutationSnapshot{Profile: p.Public(), Deleted: true}, nil
@@ -455,6 +474,9 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 		return out, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
+		return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
+	}
+	if err = lockModelDefaultConvergenceTx(ctx, tx); err != nil {
 		return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
 	}
 	seen := make(map[string]struct{}, len(cmd.Entries))
@@ -592,19 +614,21 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 		out.Profiles = append(out.Profiles, p.Public())
 	}
 	for _, binding := range []struct {
-		value string
-		kind  string
+		value            string
+		kind             string
+		mustBeConfigured bool
 	}{
-		{out.DefaultConversationProfileID, coremodel.ModelKindConversation},
-		{out.DefaultToolProfileID, coremodel.ModelKindConversation},
-		{out.DefaultEmbeddingProfileID, coremodel.ModelKindEmbedding},
-		{out.DefaultSpeechProfileID, coremodel.ModelKindSpeech},
+		{out.DefaultConversationProfileID, coremodel.ModelKindConversation, true},
+		{out.DefaultToolProfileID, coremodel.ModelKindConversation, true},
+		{out.DefaultEmbeddingProfileID, coremodel.ModelKindEmbedding, true},
+		{out.DefaultSpeechProfileID, coremodel.ModelKindSpeech, false},
 	} {
 		if binding.value == "" {
 			continue
 		}
 		var kind string
-		if err = tx.QueryRow(ctx, `SELECT model_kind FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL`, binding.value).Scan(&kind); errors.Is(err, pgx.ErrNoRows) {
+		var configured bool
+		if err = tx.QueryRow(ctx, `SELECT model_kind,api_key_configured AND revision>0 AND credential_version>0 AND btrim(request_dialect)<>'' FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL`, binding.value).Scan(&kind, &configured); errors.Is(err, pgx.ErrNoRows) {
 			return coremodel.SyncProfileResult{}, coremodel.ErrProfileNotFound
 		}
 		if err != nil {
@@ -613,10 +637,26 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 		if kind != binding.kind {
 			return coremodel.SyncProfileResult{}, coremodel.ErrInvalidProfile
 		}
+		if binding.mustBeConfigured && !configured {
+			return coremodel.SyncProfileResult{}, coremodel.ErrAPIKeyUnavailable
+		}
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_defaults(singleton,default_conversation_client_profile_id,default_tool_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id,updated_at) VALUES(true,$1,$2,$3,$4,clock_timestamp()) ON CONFLICT (singleton) DO UPDATE SET default_conversation_client_profile_id=EXCLUDED.default_conversation_client_profile_id,default_tool_client_profile_id=EXCLUDED.default_tool_client_profile_id,default_embedding_client_profile_id=EXCLUDED.default_embedding_client_profile_id,default_speech_client_profile_id=EXCLUDED.default_speech_client_profile_id,updated_at=EXCLUDED.updated_at`, nullableClientProfileID(out.DefaultConversationProfileID), nullableClientProfileID(out.DefaultToolProfileID), nullableClientProfileID(out.DefaultEmbeddingProfileID), nullableClientProfileID(out.DefaultSpeechProfileID)); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_defaults(singleton,default_conversation_client_profile_id,default_tool_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id,updated_at)
+		VALUES(true,$1,$2,$3,$4,clock_timestamp())
+		ON CONFLICT (singleton) DO UPDATE SET
+		default_conversation_client_profile_id=CASE WHEN $1::text IS NULL THEN core_model_profile_defaults.default_conversation_client_profile_id ELSE EXCLUDED.default_conversation_client_profile_id END,
+		default_tool_client_profile_id=CASE WHEN $2::text IS NULL THEN core_model_profile_defaults.default_tool_client_profile_id ELSE EXCLUDED.default_tool_client_profile_id END,
+		default_embedding_client_profile_id=CASE WHEN $3::text IS NULL THEN core_model_profile_defaults.default_embedding_client_profile_id ELSE EXCLUDED.default_embedding_client_profile_id END,
+		default_speech_client_profile_id=EXCLUDED.default_speech_client_profile_id,updated_at=EXCLUDED.updated_at`, nullableClientProfileID(out.DefaultConversationProfileID), nullableClientProfileID(out.DefaultToolProfileID), nullableClientProfileID(out.DefaultEmbeddingProfileID), nullableClientProfileID(out.DefaultSpeechProfileID)); err != nil {
 		return coremodel.SyncProfileResult{}, mapProfileDBError(err)
 	}
+	defaults, err := convergeConfiguredModelDefaultsTx(ctx, tx)
+	if err != nil {
+		return coremodel.SyncProfileResult{}, err
+	}
+	out.DefaultConversationProfileID = defaults.ConversationClientProfileID
+	out.DefaultToolProfileID = defaults.ToolClientProfileID
+	out.DefaultEmbeddingProfileID = defaults.EmbeddingClientProfileID
 	encoded, err := json.Marshal(out)
 	if err != nil {
 		return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
@@ -667,6 +707,9 @@ func (s *Store) mutateProfile(ctx context.Context, operation, key, digest string
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return coremodel.MutationSnapshot{}, ErrProfileStoreUnavailable
 	}
+	if err := lockModelDefaultConvergenceTx(ctx, tx); err != nil {
+		return coremodel.MutationSnapshot{}, ErrProfileStoreUnavailable
+	}
 	snap, err := apply(tx)
 	if err != nil {
 		return coremodel.MutationSnapshot{}, err
@@ -682,6 +725,97 @@ func (s *Store) mutateProfile(ctx context.Context, operation, key, digest string
 		return coremodel.MutationSnapshot{}, ErrProfileStoreUnavailable
 	}
 	return snap, nil
+}
+
+func lockModelDefaultConvergenceTx(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('core_model_profile_defaults:converge',0))`)
+	return err
+}
+
+func convergeConfiguredModelDefaultsTx(ctx context.Context, tx pgx.Tx) (coremodel.ProfileDefaults, error) {
+	if err := lockModelDefaultConvergenceTx(ctx, tx); err != nil {
+		return coremodel.ProfileDefaults{}, ErrProfileStoreUnavailable
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO core_model_profile_defaults(singleton,updated_at) VALUES(true,clock_timestamp()) ON CONFLICT (singleton) DO NOTHING`); err != nil {
+		return coremodel.ProfileDefaults{}, mapProfileDBError(err)
+	}
+	var current coremodel.ProfileDefaults
+	var conversation, tool, embedding, speech *string
+	if err := tx.QueryRow(ctx, `SELECT default_conversation_client_profile_id,default_tool_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id FROM core_model_profile_defaults WHERE singleton=true FOR UPDATE`).Scan(&conversation, &tool, &embedding, &speech); err != nil {
+		return coremodel.ProfileDefaults{}, ErrProfileStoreUnavailable
+	}
+	if conversation != nil {
+		current.ConversationClientProfileID = *conversation
+	}
+	if tool != nil {
+		current.ToolClientProfileID = *tool
+	}
+	if embedding != nil {
+		current.EmbeddingClientProfileID = *embedding
+	}
+	if speech != nil {
+		current.SpeechClientProfileID = *speech
+	}
+	conversationID, err := convergedConfiguredDefaultTx(ctx, tx, current.ConversationClientProfileID, coremodel.ModelKindConversation)
+	if err != nil {
+		return coremodel.ProfileDefaults{}, err
+	}
+	toolID, err := convergedConfiguredDefaultTx(ctx, tx, current.ToolClientProfileID, coremodel.ModelKindConversation)
+	if err != nil {
+		return coremodel.ProfileDefaults{}, err
+	}
+	embeddingID, err := convergedConfiguredDefaultTx(ctx, tx, current.EmbeddingClientProfileID, coremodel.ModelKindEmbedding)
+	if err != nil {
+		return coremodel.ProfileDefaults{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_model_profile_defaults SET default_conversation_client_profile_id=$1,default_tool_client_profile_id=$2,default_embedding_client_profile_id=$3,updated_at=clock_timestamp() WHERE singleton=true`, nullableClientProfileID(conversationID), nullableClientProfileID(toolID), nullableClientProfileID(embeddingID)); err != nil {
+		return coremodel.ProfileDefaults{}, mapProfileDBError(err)
+	}
+	return coremodel.ProfileDefaults{ConversationClientProfileID: conversationID, ToolClientProfileID: toolID, EmbeddingClientProfileID: embeddingID, SpeechClientProfileID: current.SpeechClientProfileID}, nil
+}
+
+func convergedConfiguredDefaultTx(ctx context.Context, tx pgx.Tx, current, kind string) (string, error) {
+	if current != "" {
+		var valid bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL AND model_kind=$2 AND api_key_configured=true AND revision>0 AND credential_version>0 AND btrim(request_dialect)<>'')`, current, kind).Scan(&valid); err != nil {
+			return "", ErrProfileStoreUnavailable
+		}
+		if valid {
+			return current, nil
+		}
+	}
+	var candidate string
+	var anchorCreatedAt time.Time
+	var anchorProfileID string
+	anchorErr := pgx.ErrNoRows
+	if current != "" {
+		anchorErr = tx.QueryRow(ctx, `SELECT created_at,profile_id::text FROM core_model_profiles WHERE client_profile_id=$1`, current).Scan(&anchorCreatedAt, &anchorProfileID)
+		if anchorErr != nil && !errors.Is(anchorErr, pgx.ErrNoRows) {
+			return "", ErrProfileStoreUnavailable
+		}
+	}
+	if anchorErr == nil {
+		err := tx.QueryRow(ctx, `SELECT client_profile_id FROM core_model_profiles
+			WHERE client_profile_id IS NOT NULL AND deleted_at IS NULL AND model_kind=$1 AND api_key_configured=true AND revision>0 AND credential_version>0 AND btrim(request_dialect)<>''
+			ORDER BY CASE WHEN (created_at,profile_id)>($2,$3::uuid) THEN 0 ELSE 1 END,created_at,profile_id LIMIT 1 FOR SHARE`, kind, anchorCreatedAt, anchorProfileID).Scan(&candidate)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		if err != nil {
+			return "", ErrProfileStoreUnavailable
+		}
+		return candidate, nil
+	}
+	err := tx.QueryRow(ctx, `SELECT client_profile_id FROM core_model_profiles
+		WHERE client_profile_id IS NOT NULL AND deleted_at IS NULL AND model_kind=$1 AND api_key_configured=true AND revision>0 AND credential_version>0 AND btrim(request_dialect)<>''
+		ORDER BY created_at,profile_id LIMIT 1 FOR SHARE`, kind).Scan(&candidate)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", ErrProfileStoreUnavailable
+	}
+	return candidate, nil
 }
 
 func (s *Store) loadProfile(ctx context.Context, id string, requireKey bool) (coremodel.Profile, error) {

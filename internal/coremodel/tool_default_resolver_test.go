@@ -2,11 +2,10 @@ package coremodel
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
-func TestResolveDefaultToolProfileHasNoConversationFallback(t *testing.T) {
+func TestResolveDefaultToolProfileUsesIndependentAutoBinding(t *testing.T) {
 	repository := NewMemoryProfileRepository()
 	service, err := NewService(repository, nil)
 	if err != nil {
@@ -21,8 +20,9 @@ func TestResolveDefaultToolProfileHasNoConversationFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.ResolveDefaultToolProfile(context.Background()); !errors.Is(err, ErrProfileNotFound) {
-		t.Fatalf("conversation fallback error=%v", err)
+	resolved, err := service.ResolveDefaultToolProfile(context.Background())
+	if err != nil || resolved.ClientProfileID != "chat" {
+		t.Fatalf("unique tool role did not auto-bind its configured candidate: resolved=%+v err=%v", resolved.Public(), err)
 	}
 	_, err = service.Sync(context.Background(), SyncProfileCommand{
 		IdempotencyKey:       "b0000000-0000-4000-8000-000000000002",
@@ -32,7 +32,7 @@ func TestResolveDefaultToolProfileHasNoConversationFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := service.ResolveDefaultToolProfile(context.Background())
+	resolved, err = service.ResolveDefaultToolProfile(context.Background())
 	if err != nil || resolved.ClientProfileID != "tool" || resolved.APIKey != key {
 		t.Fatalf("resolved=%+v err=%v", resolved.Public(), err)
 	}

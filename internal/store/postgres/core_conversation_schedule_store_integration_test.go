@@ -31,7 +31,7 @@ func conversationScheduleCommand(t *testing.T, h *turnDBHarness) core.Conversati
 	}, uuid.NewString(), strings.Repeat("c", 64)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = h.pool.Exec(context.Background(), `INSERT INTO core_model_profile_defaults(singleton,default_conversation_client_profile_id,updated_at) VALUES(true,'scheduled-default',clock_timestamp())`); err != nil {
+	if _, err = h.pool.Exec(context.Background(), `INSERT INTO core_model_profile_defaults(singleton,default_conversation_client_profile_id,updated_at) VALUES(true,'scheduled-default',clock_timestamp()) ON CONFLICT (singleton) DO UPDATE SET default_conversation_client_profile_id=EXCLUDED.default_conversation_client_profile_id,updated_at=EXCLUDED.updated_at`); err != nil {
 		t.Fatal(err)
 	}
 	lease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
@@ -178,7 +178,7 @@ func TestNativeSchedulePinsCurrentDefaultPerOccurrenceAndReplaysExactTaskPostgre
 	}
 }
 
-func TestNativeScheduleTriggerWithoutCurrentDefaultCreatesNothingPostgres(t *testing.T) {
+func TestNativeScheduleTriggerWithoutConfiguredConversationProfileCreatesNothingPostgres(t *testing.T) {
 	h := openTurnDB(t)
 	ctx := context.Background()
 	command := conversationScheduleCommand(t, h)
@@ -186,14 +186,14 @@ func TestNativeScheduleTriggerWithoutCurrentDefaultCreatesNothingPostgres(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = h.pool.Exec(ctx, `DELETE FROM core_model_profile_defaults WHERE singleton=true`); err != nil {
+	if _, err = h.store.Store.DeleteProfile(ctx, command.Lease.Turn.ProfileID, uuid.NewString(), strings.Repeat("9", 64), 1); err != nil {
 		t.Fatal(err)
 	}
 	trigger := coretask.TriggerScheduleCommand{ScheduleID: created.ID, Mutation: coretask.MutationCommand{
 		IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("2", 64),
 	}, At: time.Now().UTC()}
 	if _, _, _, err = NewCoreScheduleStore(h.store.Store).TriggerNow(ctx, trigger); !errors.Is(err, coretask.ErrNotFound) {
-		t.Fatalf("trigger without current default err=%v", err)
+		t.Fatalf("trigger without configured conversation profile err=%v", err)
 	}
 	var occurrences, tasks, replays int
 	if err = h.pool.QueryRow(ctx, `SELECT
@@ -231,17 +231,41 @@ func TestConversationScheduleRollsBackWhenTurnCompletionConflictsPostgres(t *tes
 	}
 }
 
-func TestConversationScheduleRejectsMissingCurrentDefaultPostgres(t *testing.T) {
+func TestConversationScheduleConvergesUniqueLegacyNullDefaultPostgres(t *testing.T) {
 	h := openTurnDB(t)
 	command := conversationScheduleCommand(t, h)
 	if _, err := h.pool.Exec(context.Background(), `DELETE FROM core_model_profile_defaults WHERE singleton=true`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.store.CommitConversationSchedule(context.Background(), command); !errors.Is(err, coretask.ErrNotFound) {
-		t.Fatalf("commit without current default err=%v", err)
+	if _, err := h.store.CommitConversationSchedule(context.Background(), command); err != nil {
+		t.Fatalf("commit with unique configured profile err=%v", err)
 	}
-	turn, err := h.store.GetTurn(context.Background(), command.Lease.Turn.ID)
-	if err != nil || turn.State != core.TurnRunning {
-		t.Fatalf("turn=%+v err=%v", turn, err)
+	defaults, err := h.store.Store.GetProfileDefaults(context.Background())
+	if err != nil || defaults.ConversationClientProfileID != "scheduled-default" {
+		t.Fatalf("durable converged defaults=%+v err=%v", defaults, err)
+	}
+}
+
+func TestConversationScheduleConvergesFirstLegacyNullDefaultPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	command := conversationScheduleCommand(t, h)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := h.store.Store.CreateProfile(context.Background(), coremodel.Profile{
+		ID: uuid.NewString(), ClientProfileID: "scheduled-second", DisplayName: "scheduled second",
+		Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1,
+		ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.invalid", Model: "test",
+		APIKey: "integration-secret", Revision: 1, CredentialVersion: 1, CreatedAt: now, UpdatedAt: now,
+	}, uuid.NewString(), strings.Repeat("d", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.pool.Exec(context.Background(), `UPDATE core_model_profile_defaults SET default_conversation_client_profile_id=NULL WHERE singleton=true`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.CommitConversationSchedule(context.Background(), command); err != nil {
+		t.Fatalf("commit with multiple configured profiles err=%v", err)
+	}
+	defaults, err := h.store.Store.GetProfileDefaults(context.Background())
+	if err != nil || defaults.ConversationClientProfileID != "scheduled-default" {
+		t.Fatalf("stable first default=%+v err=%v", defaults, err)
 	}
 }

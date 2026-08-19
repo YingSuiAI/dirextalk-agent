@@ -878,6 +878,7 @@ func (r *MemoryProfileRepository) CreateProfile(_ context.Context, p Profile, ke
 	}
 	snap := MutationSnapshot{Profile: p.Public()}
 	r.profiles[p.ID] = cloneProfile(p)
+	r.defaults = convergeMemoryProfileDefaults(r.defaults, r.profiles)
 	stored := snap
 	stored.Profile = clonePublicProfile(snap.Profile)
 	r.idempotency["create:"+key] = struct {
@@ -976,6 +977,7 @@ func (r *MemoryProfileRepository) UpdateProfile(_ context.Context, p Profile, ke
 		return MutationSnapshot{}, ErrRevisionConflict
 	}
 	r.profiles[p.ID] = cloneProfile(p)
+	r.defaults = convergeMemoryProfileDefaults(r.defaults, r.profiles)
 	snap := MutationSnapshot{Profile: p.Public()}
 	stored := snap
 	stored.Profile = clonePublicProfile(snap.Profile)
@@ -1068,6 +1070,17 @@ func (r *MemoryProfileRepository) DeleteProfile(_ context.Context, id, key, dige
 	if r.refs[id] > 0 {
 		return MutationSnapshot{}, ErrProfileInUse
 	}
+	anchorProfiles := make(map[string]Profile, len(r.profiles))
+	for profileID, profile := range r.profiles {
+		anchorProfiles[profileID] = profile
+	}
+	anchor := anchorProfiles[id]
+	anchor.APIKey = ""
+	anchorProfiles[id] = anchor
+	if r.defaults.SpeechClientProfileID == p.ClientProfileID {
+		r.defaults.SpeechClientProfileID = ""
+	}
+	r.defaults = convergeMemoryProfileDefaults(r.defaults, anchorProfiles)
 	delete(r.profiles, id)
 	snap := MutationSnapshot{Profile: p.Public(), Deleted: true}
 	r.deleted[id] = clonePublicProfile(snap.Profile)
@@ -1200,17 +1213,70 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 			return SyncProfileResult{}, ErrInvalidProfile
 		}
 	}
-	out.DefaultConversationProfileID = cmd.DefaultConversationProfileID
-	out.DefaultToolProfileID = cmd.DefaultToolProfileID
-	out.DefaultEmbeddingProfileID = cmd.DefaultEmbeddingProfileID
-	out.DefaultSpeechProfileID = cmd.DefaultSpeechProfileID
 	for id, p := range work {
 		r.profiles[id] = p
 	}
-	r.defaults = ProfileDefaults{ConversationClientProfileID: out.DefaultConversationProfileID, ToolClientProfileID: out.DefaultToolProfileID, EmbeddingClientProfileID: out.DefaultEmbeddingProfileID, SpeechClientProfileID: out.DefaultSpeechProfileID}
+	defaults := r.defaults
+	if cmd.DefaultConversationProfileID != "" {
+		defaults.ConversationClientProfileID = cmd.DefaultConversationProfileID
+	}
+	if cmd.DefaultToolProfileID != "" {
+		defaults.ToolClientProfileID = cmd.DefaultToolProfileID
+	}
+	if cmd.DefaultEmbeddingProfileID != "" {
+		defaults.EmbeddingClientProfileID = cmd.DefaultEmbeddingProfileID
+	}
+	defaults.SpeechClientProfileID = cmd.DefaultSpeechProfileID
+	r.defaults = convergeMemoryProfileDefaults(defaults, r.profiles)
+	out.DefaultConversationProfileID = r.defaults.ConversationClientProfileID
+	out.DefaultToolProfileID = r.defaults.ToolClientProfileID
+	out.DefaultEmbeddingProfileID = r.defaults.EmbeddingClientProfileID
+	out.DefaultSpeechProfileID = r.defaults.SpeechClientProfileID
 	r.syncIdempotency[key] = struct {
 		Digest string
 		Result SyncProfileResult
 	}{digest, out}
 	return out, nil
+}
+
+func convergeMemoryProfileDefaults(current ProfileDefaults, profiles map[string]Profile) ProfileDefaults {
+	current.ConversationClientProfileID = convergedMemoryProfileDefault(current.ConversationClientProfileID, ModelKindConversation, profiles)
+	current.ToolClientProfileID = convergedMemoryProfileDefault(current.ToolClientProfileID, ModelKindConversation, profiles)
+	current.EmbeddingClientProfileID = convergedMemoryProfileDefault(current.EmbeddingClientProfileID, ModelKindEmbedding, profiles)
+	return current
+}
+
+func convergedMemoryProfileDefault(current, kind string, profiles map[string]Profile) string {
+	candidates := make([]Profile, 0, len(profiles))
+	var anchor *Profile
+	for _, profile := range profiles {
+		if profile.ClientProfileID == current {
+			copy := profile
+			anchor = &copy
+		}
+		if profile.ClientProfileID == "" || profile.ModelKind != kind || strings.TrimSpace(profile.APIKey) == "" || profile.Revision <= 0 || profile.CredentialVersion <= 0 || strings.TrimSpace(string(profile.RequestDialect)) == "" {
+			continue
+		}
+		if profile.ClientProfileID == current {
+			return current
+		}
+		candidates = append(candidates, profile)
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].CreatedAt.Equal(candidates[j].CreatedAt) {
+			return candidates[i].ID < candidates[j].ID
+		}
+		return candidates[i].CreatedAt.Before(candidates[j].CreatedAt)
+	})
+	if anchor != nil {
+		for _, candidate := range candidates {
+			if candidate.CreatedAt.After(anchor.CreatedAt) || (candidate.CreatedAt.Equal(anchor.CreatedAt) && candidate.ID > anchor.ID) {
+				return candidate.ClientProfileID
+			}
+		}
+	}
+	return candidates[0].ClientProfileID
 }

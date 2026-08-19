@@ -87,14 +87,20 @@ func resolveScheduledDefaultProfileTx(ctx context.Context, tx pgx.Tx, template c
 	if !ownerAnchored || deprovisioned {
 		return coretask.TaskTemplate{}, coretask.ErrConflict
 	}
+	defaults, err := convergeConfiguredModelDefaultsTx(ctx, tx)
+	if err != nil {
+		return coretask.TaskTemplate{}, err
+	}
+	if defaults.ConversationClientProfileID == "" {
+		return coretask.TaskTemplate{}, coretask.ErrNotFound
+	}
 	var profileID string
 	err = tx.QueryRow(ctx, `SELECT profile.profile_id::text
-		FROM core_model_profile_defaults defaults
-		JOIN core_model_profiles profile ON profile.client_profile_id=defaults.default_conversation_client_profile_id
-		WHERE defaults.singleton=true AND profile.deleted_at IS NULL AND profile.model_kind=$1
+		FROM core_model_profiles profile
+		WHERE profile.client_profile_id=$1 AND profile.deleted_at IS NULL AND profile.model_kind=$2
 		AND profile.api_key_configured=true AND profile.revision>0 AND profile.credential_version>0
 		AND btrim(profile.request_dialect)<>''
-		FOR SHARE OF defaults,profile`, coremodel.ModelKindConversation).Scan(&profileID)
+		FOR SHARE`, defaults.ConversationClientProfileID, coremodel.ModelKindConversation).Scan(&profileID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coretask.TaskTemplate{}, coretask.ErrNotFound
 	}

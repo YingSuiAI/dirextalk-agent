@@ -194,6 +194,20 @@ func (m *delayedStreamingTurnModel) Stream(ctx context.Context, _ ModelRunReques
 
 type fixedToolCallsTurnModel struct{ calls []ToolCall }
 
+type fixedResponseTurnModel struct {
+	content string
+	request ModelRunRequest
+}
+
+func (m *fixedResponseTurnModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
+	m.request = request
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: m.content, CreatedAt: time.Now().UTC()}}, nil
+}
+
+func (m *fixedResponseTurnModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
 func (m fixedToolCallsTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
 	message := Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: append([]ToolCall(nil), m.calls...), CreatedAt: time.Now().UTC()}
 	return ModelRunResult{Message: message, ToolCalls: append([]ToolCall(nil), m.calls...)}, nil
@@ -2012,6 +2026,47 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 		strings.Count(model.request.Profile.SystemPrompt, conversationConvergenceGuidance) != 1 ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "does not need to mention AWS") {
 		t.Fatalf("model request lost intrinsic or extension: %+v", model.request)
+	}
+}
+
+func TestExecuteTurnRejectsModelOnlyScheduleSuccessReceipt(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	createdAt := time.Now().UTC().Add(-time.Minute)
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:example.test", AccountGeneration: 1,
+		ConversationID: conversationID, Prompt: "create a daily summary schedule", ProfileID: profile.ProfileID,
+		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: createdAt,
+	}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: createdAt}},
+	}
+	model := &fixedResponseTurnModel{content: fmt.Sprintf("Scheduled %q (schedule_id: %s).", "daily summary", uuid.NewString())}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+		return []ResolvedIntrinsic{{
+			Tool: coremodel.Tool{Name: coremodel.IntrinsicScheduleCreateToolName, InputSchema: map[string]any{"type": "object"}},
+			Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+				t.Fatal("model-only schedule receipt unexpectedly executed intrinsic")
+				return IntrinsicExecutionResult{}, nil
+			},
+		}}, nil
+	}))
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	current, getErr := store.GetTurn(context.Background(), turn.ID)
+	if getErr != nil || store.failedCode != "schedule_commit_missing" || current.State != TurnFailed || current.Response != nil {
+		t.Fatalf("model-only schedule receipt committed: turn=%+v failure=%q err=%v", current, store.failedCode, getErr)
+	}
+	if len(model.request.Intrinsics) != 1 || !strings.Contains(model.request.Profile.SystemPrompt, scheduleCreateGuidance) {
+		t.Fatalf("schedule intrinsic guidance missing from model request: %+v", model.request)
 	}
 }
 

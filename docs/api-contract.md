@@ -128,6 +128,14 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   embedding, and speech client-profile defaults. The tool default is an
   independent binding to a conversation-kind profile; it never falls back to
   the conversation default and rejects embedding- or speech-kind profiles.
+  Conversation, tool, and embedding roles converge independently over live,
+  credential-configured profiles of the required kind. A still-valid explicit
+  selection is preserved. Otherwise Core selects the next eligible profile
+  after the invalid/deleted selection, wrapping to the first; a legacy-null
+  role selects the first. The authoritative order is durable profile creation
+  order (`created_at`, then `profile_id` as the total-order tie-breaker). Zero
+  eligible profiles leaves that role unset. Speech retains explicit-only
+  behavior.
 - Profile updates ignore historical conversation and Task references because
   those consumers own immutable execution snapshots. Delete tombstones every
   model kind and clears only the live client binding and credentials; it
@@ -265,7 +273,11 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   Capability.
 - Authenticated durable Native turns receive the Core-owned
   `agent_schedule_create` intrinsic when the PostgreSQL conversation/schedule
-  store is composed. Model input is limited to a concise human-readable `name`
+  store is composed. A supported creation request must invoke it exactly once;
+  only its successful atomic commit may emit the reserved `Scheduled ...
+  (schedule_id: ...)` receipt. A model-only success receipt fails the Turn and
+  writes no response or schedule. Unsupported workflows are refused without a
+  tool call. Model input is limited to a concise human-readable `name`
   (the sole schedule-card title), `goal`, required closed `capability`, exactly
   one `run_at` or `cron` plus IANA `timezone`, and optional
   `timeout_seconds`. The closed capabilities are:
@@ -289,7 +301,7 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   write no schedule row; installed extensions are not a generic scheduled-
   workflow escape hatch.
   Owner, account generation, and conversation are injected from the fenced
-  turn lease. A valid explicit default conversation model is required when the
+  turn lease. A valid converged default conversation model is required when the
   schedule is accepted, but the schedule template persists an empty
   `model_profile_id`; it never freezes the model used by the creating Turn.
   Owner and generation persist only in the typed
@@ -300,14 +312,15 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   MCP/Skill, unrelated Message MCP, Product Capability, and semantic Knowledge
   bindings are excluded. Due Tasks revalidate the retained snapshot, filter the
   live resolver catalog back to that exact tool set, and fail closed on drift.
-  Each occurrence transaction resolves and locks the current explicit default
+  Each occurrence transaction converges, resolves, and locks the current default
   conversation model, then pins its exact profile id, revision, credential
   version, request dialect, model kind, configuration, and protected secret
   reference in that occurrence Task. Exact `trigger_now` replay and Task
   retry/reclaim reuse the committed Task snapshot even if the default changes;
-  a later occurrence uses the later default. A missing, deleted, wrong-kind, or
-  invalid default rejects schedule creation or blocks later materialization
-  without creating an occurrence/Task, fallback, silent skip, or auto-pause.
+  a later occurrence uses the later default. Legacy-null and invalid bindings
+  first converge by the same stable creation order; only zero eligible
+  conversation profiles rejects creation or blocks later materialization,
+  without creating an occurrence/Task, silent skip, or auto-pause.
   A due schedule delegates through the durable Native Turn executor with
   deterministic request/turn identities derived from the occurrence Task.
   Its trusted prompt binds the immutable occurrence `Task.AvailableAt` in UTC,

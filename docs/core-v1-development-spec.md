@@ -318,7 +318,11 @@ has no priority, DAG/graph, task dependency authoring, or cluster/pool
 scheduler.
 
 Natural-language Native turns create schedules only through the Core-owned
-`agent_schedule_create` intrinsic. The model supplies a concise task name as
+`agent_schedule_create` intrinsic. A supported creation request calls it
+exactly once. Only the intrinsic's atomic commit emits the reserved schedule
+success receipt; a model-only receipt fails the Turn without a response or
+schedule, while unsupported workflows are refused without a tool call. The
+model supplies a concise task name as
 the only schedule-card title, the bounded schedule intent and trigger, and one
 closed capability: `scheduled_note`, `chat_summary`, `web_research`,
 `room_message`, `contact_report`, `room_member_report`, `channel_digest`, or
@@ -328,7 +332,7 @@ room; it never creates a channel post. `scheduled_note` requires an explicitly
 empty tool set; the remaining capabilities bind exactly the Message MCP or
 Tavily sources and tools declared by the API contract. Core binds the
 authenticated owner/account generation and current conversation from the
-durable turn lease. It requires a valid explicit default conversation model
+durable turn lease. It requires a valid converged default conversation model
 before accepting the schedule, but does not persist the creating Turn's model
 as schedule authority. Before any schedule write it
 requires the exact capability tools from the creating Turn's immutable
@@ -343,16 +347,19 @@ selected capability. Installed MCP/Skill, unrelated Message MCP, Product
 Capability, and semantic Knowledge snapshots are excluded. Each due occurrence
 revalidates those exact snapshots through the live Native resolver, filters out
 every nonaccepted tool, and fails closed on catalog drift. In the same
-transaction that accepts each occurrence, Core resolves and locks the owner's
-then-current explicit default conversation model, writes that exact profile,
+transaction that accepts each occurrence, Core converges, resolves, and locks
+the owner's then-current default conversation model, writes that exact profile,
 revision, credential version, request dialect, model kind, configuration and
 secret reference into the occurrence Task execution snapshot, and creates the
 Task-level profile reference. Retry/reclaim reuses that snapshot and never
-re-resolves the default. A missing, deleted, wrong-kind, or otherwise invalid
-default rejects schedule creation; if it becomes unavailable later, the due or
-manually triggered occurrence remains uncreated until model configuration is
-repaired. Core never falls back to another profile or silently skips/pauses the
-schedule.
+re-resolves the default. Conversation, tool, and embedding defaults independently
+preserve a valid explicit selection; otherwise they select the next eligible
+configured profile after the invalid/deleted selection and wrap to the first.
+Legacy-null selects the first, using durable (`created_at`, `profile_id`)
+creation order; zero eligible profiles leaves the role unset. Tool selection
+does not read the conversation binding, and speech remains explicit-only. A
+schedule remains uncreated only while the converged conversation role has no
+eligible profile; Core never silently skips or pauses it.
 Scheduled Agent Tasks use the durable Native `StartTurn` path, not the generic
 Task agent loop. Request and turn UUIDs derive from the occurrence Task UUID,
 and the immutable prompt binds `Task.AvailableAt` as the authoritative UTC
