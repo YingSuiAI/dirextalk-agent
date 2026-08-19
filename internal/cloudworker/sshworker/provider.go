@@ -266,7 +266,8 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 	if !exists {
 		worker = WorkerRecord{WorkerID: workerID, OwnerID: request.Authority.OwnerID, AccountGeneration: request.Authority.AccountGeneration,
 			Credential: request.Credential, CreationProof: request.Confirmation.Proof,
-			Phase: WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, VCPU: request.VCPU, MemoryGiB: request.MemoryGiB, VolumeGiB: request.VolumeGiB, CreatedAt: provider.now().UTC()}
+			DisplayName: strings.TrimSpace(request.ServerName),
+			Phase:       WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, VCPU: request.VCPU, MemoryGiB: request.MemoryGiB, VolumeGiB: request.VolumeGiB, CreatedAt: provider.now().UTC()}
 		worker.UpdatedAt = provider.now().UTC()
 		if err := provider.store.SaveWorkerIntent(ctx, worker, func(ctx context.Context) error {
 			return provider.authorizeCreate(ctx, request.Credential)
@@ -686,7 +687,7 @@ func (provider *Provider) ListWorkers(ctx context.Context, authority OwnerAuthor
 		if worker.authority() != authority || worker.Credential != credential || worker.Phase == WorkerDestroyed {
 			continue
 		}
-		status := WorkerStatus{Identity: workerIdentity(worker), InstanceType: worker.InstanceType, VCPU: worker.VCPU,
+		status := WorkerStatus{Identity: workerIdentity(worker), DisplayName: worker.DisplayName, CreatedAt: worker.CreatedAt, InstanceType: worker.InstanceType, VCPU: worker.VCPU,
 			MemoryGiB: worker.MemoryGiB, VolumeGiB: worker.VolumeGiB, Availability: WorkerAvailable, EC2State: "unknown", WorkerPhase: worker.Phase,
 			CurrentExecutionID: worker.CurrentExecutionID, ObservedAt: provider.now().UTC()}
 		instance, found := Instance{}, false

@@ -29,27 +29,30 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreserver"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workspacearchive"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/google/uuid"
 )
 
 type sshWorkerExecutor struct {
-	authority     *cloudWorkerCredentialAuthority
-	exact         workaws.ExactCredentialResolver
-	providers     map[sshworker.CredentialIdentity]*sshworker.Provider
-	artifacts     *localartifact.Repository
-	pricing       cloudworker.PricingCatalog
-	sources       cloudworker.SourceReader
-	steers        coreconversation.TurnSteerStore
-	state         *sshworker.FileStore
-	pool          *sshworker.Pool
-	workloads     *sshworkload.Repository
-	route53       map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53
-	root          string
-	verifyHTTPS   func(context.Context, string, string, string, func(context.Context, string, string) error) error
-	resolveDomain func(context.Context, string, uint64, string, string, string, string) (cloudworker.RetainedWorkerDomainIntent, error)
-	mu            sync.Mutex
+	authority       *cloudWorkerCredentialAuthority
+	exact           workaws.ExactCredentialResolver
+	providers       map[sshworker.CredentialIdentity]*sshworker.Provider
+	artifacts       *localartifact.Repository
+	pricing         cloudworker.PricingCatalog
+	sources         cloudworker.SourceReader
+	steers          coreconversation.TurnSteerStore
+	state           *sshworker.FileStore
+	pool            *sshworker.Pool
+	workloads       *sshworkload.Repository
+	route53         map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53
+	root            string
+	verifyHTTPS     func(context.Context, string, string, string, func(context.Context, string, string) error) error
+	resolveDomain   func(context.Context, string, uint64, string, string, string, string) (cloudworker.RetainedWorkerDomainIntent, error)
+	serverArtifacts coreserver.Repository
+	mu              sync.Mutex
 }
 
 func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.SourceReader, steers coreconversation.TurnSteerStore, state *sshworker.FileStore, root string) (*sshWorkerExecutor, error) {
@@ -201,7 +204,8 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		}
 	}
 	result, err := provider.Execute(ctx, sshworker.ExecuteRequest{ExecutionID: request.ExecutionID,
-		Authority: sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, Credential: identity,
+		ServerName: request.ServerName,
+		Authority:  sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, Credential: identity,
 		Confirmation: confirmation, Discovery: discovery, ReuseOnly: request.ReuseOnly, ReuseWorkerID: request.ReuseWorkerID,
 		InstanceType: request.Compute.InstanceType, VCPU: request.Compute.VCPU, MemoryGiB: request.Compute.MemoryGiB,
 		VolumeGiB: int32(request.Compute.VolumeGiB), WorkerScript: material.WorkerScript,
@@ -468,7 +472,11 @@ func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider 
 		}
 	}
 	if service.Hostname == "" {
-		return servicePublication{}, nil
+		publication := servicePublication{Port: service.Port, HealthPath: service.HealthPath}
+		if err = executor.upsertServiceArtifact(ctx, authority, workerID, service, publication, "running"); err != nil {
+			return servicePublication{}, err
+		}
+		return publication, nil
 	}
 	if _, err = executor.currentBindingForCredential(ctx, credential); err != nil {
 		return servicePublication{}, err
@@ -487,20 +495,32 @@ func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider 
 	dns := executor.route53For(ctx, credential)
 	if dns == nil {
 		publication.DNSLookupFailed = true
+		if err = executor.upsertServiceArtifact(ctx, authority, workerID, service, publication, "running"); err != nil {
+			return servicePublication{}, err
+		}
 		return publication, nil
 	}
 	if err = dns.VerifyAccount(ctx, credential.AccountID); err != nil {
 		publication.DNSLookupFailed = true
 		slog.Warn("[cloud-worker.route53] account_verification_failed", "error", err, "hostname", publication.Hostname)
+		if err = executor.upsertServiceArtifact(ctx, authority, workerID, service, publication, "running"); err != nil {
+			return servicePublication{}, err
+		}
 		return publication, nil
 	}
 	zoneID, found, resolveErr := dns.ResolveHostedZone(ctx, publication.Hostname)
 	if resolveErr != nil {
 		publication.DNSLookupFailed = true
 		slog.Warn("[cloud-worker.route53] hosted_zone_lookup_failed", "error", resolveErr, "hostname", publication.Hostname)
+		if err = executor.upsertServiceArtifact(ctx, authority, workerID, service, publication, "running"); err != nil {
+			return servicePublication{}, err
+		}
 		return publication, nil
 	}
 	if !found {
+		if err = executor.upsertServiceArtifact(ctx, authority, workerID, service, publication, "running"); err != nil {
+			return servicePublication{}, err
+		}
 		return publication, nil
 	}
 	domain := &sshworkload.Domain{ZoneID: zoneID, Hostname: publication.Hostname, TTL: 300, BoundIPv4: publication.PublicIPv4}
@@ -533,7 +553,31 @@ func (executor *sshWorkerExecutor) publishService(ctx context.Context, provider 
 		return publication, err
 	}
 	publication.TLSReady = true
+	if err = executor.upsertServiceArtifact(ctx, authority, workerID, service, publication, "healthy"); err != nil {
+		return servicePublication{}, err
+	}
 	return publication, nil
+}
+
+func (executor *sshWorkerExecutor) upsertServiceArtifact(ctx context.Context, authority sshworker.OwnerAuthority, workerID string, service cloudworker.ServiceSpec, publication servicePublication, health string) error {
+	if executor.serverArtifacts == nil {
+		return nil
+	}
+	publicURL := ""
+	if publication.Hostname != "" {
+		publicURL = "https://" + publication.Hostname
+	}
+	if publicURL == "" && publication.PublicIPv4 != "" {
+		publicURL = fmt.Sprintf("http://%s:%d", publication.PublicIPv4, service.Port)
+	}
+	now := time.Now().UTC()
+	return executor.serverArtifacts.Upsert(ctx, coreserver.Authority{OwnerID: authority.OwnerID, AccountGeneration: authority.AccountGeneration}, coreserver.Artifact{
+		ArtifactID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:worker-service:"+workerID+":"+service.WorkloadID)).String(),
+		ServerID:   workerID, ServerKind: coreserver.ServerWorker, ArtifactKind: coreserver.ArtifactDeployedService,
+		SourceKind: "worker_workload", SourceID: workerID + ":" + service.WorkloadID, Name: service.WorkloadID, Status: "running",
+		PublicURL: publicURL, Domain: publication.Hostname, PublicIPv4: publication.PublicIPv4, Port: service.Port, Health: health,
+		Metadata: map[string]any{"health_path": service.HealthPath, "zone_id": publication.ZoneID}, CreatedAt: now, UpdatedAt: now,
+	})
 }
 
 func verifyPublicServiceHTTPS(ctx context.Context, hostname, publicIPv4, healthPath string, report func(context.Context, string, string) error) error {

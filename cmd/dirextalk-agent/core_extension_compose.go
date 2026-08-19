@@ -24,6 +24,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/source"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreserver"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
@@ -207,7 +208,7 @@ type conversationToolInvocationResolver interface {
 	ResolveConversationInvocation(context.Context, coretask.Task) (execution.Invocation, error)
 }
 
-func conversationToolTaskHandler(store conversationToolAttemptStore, coord conversationToolInvocationResolver, local *execution.LocalExecutor, remote *execution.RemoteExecutor, skillReader skillArtifactReader, artifacts *localartifact.Repository) coreruntime.TaskHandler {
+func conversationToolTaskHandler(store conversationToolAttemptStore, coord conversationToolInvocationResolver, local *execution.LocalExecutor, remote *execution.RemoteExecutor, skillReader skillArtifactReader, artifacts *localartifact.Repository, catalogs ...coreserver.Repository) coreruntime.TaskHandler {
 	return func(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
 		if store == nil || coord == nil {
 			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
@@ -243,7 +244,7 @@ func conversationToolTaskHandler(store conversationToolAttemptStore, coord conve
 				receipt, err = local.CallToolWithResultFiles(ctx, *invocation.Local, invocation.Local.Tool, invocation.Local.Input)
 				if err == nil {
 					defer receipt.Close()
-					result, err = collectLocalSandboxArtifacts(ctx, artifacts, invocation.OwnerID, invocation.AccountGeneration, attempt.ExecutionID, &receipt)
+					result, err = collectLocalSandboxArtifacts(ctx, artifacts, invocation.OwnerID, invocation.AccountGeneration, attempt.ExecutionID, &receipt, catalogs...)
 				}
 			} else {
 				result, err = local.CallTool(ctx, *invocation.Local, invocation.Local.Tool, invocation.Local.Input)
@@ -577,7 +578,7 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	if err != nil {
 		return nil, fmt.Errorf("local sandbox artifacts: %w", err)
 	}
-	conversationToolHandler := conversationToolTaskHandler(conversationStore, execCoord, local, remote, runner, localArtifacts)
+	conversationToolHandler := conversationToolTaskHandler(conversationStore, execCoord, local, remote, runner, localArtifacts, postgres.NewCoreServerArtifactStore(store.Pool()))
 	dispatch := func(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
 		if task.Spec.Kind == coretask.TaskKindConversationTool {
 			return conversationToolHandler(ctx, task)

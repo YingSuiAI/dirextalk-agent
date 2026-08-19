@@ -171,6 +171,7 @@ type ProposeCommand struct {
 	ExpectedTurnRevision uint64
 	Objective            string
 	ObjectiveSummary     string
+	ServerName           string
 	WorkloadKind         WorkloadKind
 	Service              *ServiceSpec
 	UserPromptDigest     string
@@ -284,13 +285,16 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		Status: string(StateWaitingUser), ExecutionID: executionID, TaskID: taskID,
 		ConfirmationID: confirmationID, ConversationID: command.ConversationID,
 		TurnID: command.TurnID, RecipeID: RecipeEphemeralPiTask, Adapter: AdapterPiJSONTaskV1,
-		Objective: command.Objective, ObjectiveSummary: summary, UserPromptDigest: command.UserPromptDigest,
+		Objective: command.Objective, ObjectiveSummary: summary, ServerName: strings.TrimSpace(command.ServerName), UserPromptDigest: command.UserPromptDigest,
 		WorkloadKind: command.WorkloadKind, Service: command.Service,
 		ProposalReason: command.ProposalReason, LocalBudgetEvidence: budgetEvidence,
 		InputManifest: command.InputManifest, InputManifestDigest: manifestDigest, WorkspaceMode: command.WorkspaceMode,
 		ModelAuthorization: command.ModelAuthorization,
 		AWS:                awsBinding, Compute: compute, PersistentWorkerReuse: reuse, ReuseWorkerID: selection.WorkerID, Limits: limits,
 		CreatedAt: now, UpdatedAt: now,
+	}
+	if reuse {
+		plan.ServerName = ""
 	}
 	if err := plan.sealAuthorizationBasis(); err != nil {
 		return Offer{}, err

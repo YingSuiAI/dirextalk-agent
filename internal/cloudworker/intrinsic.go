@@ -241,6 +241,7 @@ type proposeIntrinsicArguments struct {
 	AttachmentIDs           []string `json:"attachment_ids,omitempty"`
 	Intent                  string   `json:"intent"`
 	Objective               string   `json:"objective"`
+	ServerName              string   `json:"server_name,omitempty"`
 	WorkspaceMode           string   `json:"workspace_mode"`
 	MinVCPU                 uint32   `json:"min_vcpu"`
 	MinMemoryGiB            uint32   `json:"min_memory_gib"`
@@ -271,6 +272,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	properties := map[string]any{
 		"intent":                    map[string]any{"type": "string", "enum": []any{"execute", "proposal_only"}, "description": "Use execute only when the user wants the workload to run. Use proposal_only when the user explicitly asks for a plan without starting or authorizing Worker work; it returns a non-executing summary and creates no offer, task, confirmation, or execution."},
 		"objective":                 map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes, "description": "Describe only the workload to run on the Worker."},
+		"server_name":               map[string]any{"type": "string", "minLength": 1, "maxLength": 80, "description": "A short user-facing name for a newly created server. Reused servers keep their existing name."},
 		"workspace_mode":            map[string]any{"type": "string", "enum": workspaceModes, "description": "Use none without attachment_ids, read_only with one or more attachment_ids, or write with optional attachment_ids."},
 		"workload_kind":             map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob), "description": "Use job only for finite execution. You MUST use service when the requested result is a persistent network service, website, API, daemon, or other endpoint that must remain available after this run."},
 		"min_vcpu":                  map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Minimum virtual CPU count needed for the task."},
@@ -294,7 +296,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"required":             []any{"intent", "objective", "workspace_mode", "min_vcpu", "min_memory_gib", "disk_gib", "estimated_runtime_minutes"},
+			"required":             []any{"intent", "objective", "server_name", "workspace_mode", "min_vcpu", "min_memory_gib", "disk_gib", "estimated_runtime_minutes"},
 			"properties":           properties,
 		},
 	}
@@ -535,7 +537,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		IdempotencyKey: idempotencyKey, ConversationID: bound.Turn.ConversationID,
 		TurnID: bound.Turn.ID, TurnLeaseID: request.Lease.LeaseID, TurnLeaseEpoch: request.Lease.Epoch,
 		ExpectedTurnRevision: bound.Turn.Revision, Objective: arguments.Objective,
-		ObjectiveSummary: arguments.Objective, UserPromptDigest: hex.EncodeToString(promptDigest[:]),
+		ObjectiveSummary: arguments.Objective, ServerName: arguments.ServerName, UserPromptDigest: hex.EncodeToString(promptDigest[:]),
 		WorkloadKind: WorkloadKind(arguments.WorkloadKind), Service: func() *ServiceSpec {
 			if arguments.Service == nil {
 				return nil
@@ -632,6 +634,7 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
 	arguments.Objective = strings.TrimSpace(arguments.Objective)
+	arguments.ServerName = strings.TrimSpace(arguments.ServerName)
 	if arguments.Intent != "execute" && arguments.Intent != "proposal_only" {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
@@ -643,7 +646,7 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 	} else if arguments.Service != nil {
 		arguments.Service.Hostname = remoteservice.CanonicalHostname(arguments.Service.Hostname)
 	}
-	if arguments.Objective == "" || len(arguments.Objective) > coretask.MaxGoalBytes || !utf8.ValidString(arguments.Objective) || !validateWorkspaceMode(WorkspaceMode(arguments.WorkspaceMode)) || len(arguments.AttachmentIDs) > coreconversation.MaxTurnAttachments {
+	if arguments.Objective == "" || len(arguments.Objective) > coretask.MaxGoalBytes || !utf8.ValidString(arguments.Objective) || len([]rune(arguments.ServerName)) > 80 || !utf8.ValidString(arguments.ServerName) || !validateWorkspaceMode(WorkspaceMode(arguments.WorkspaceMode)) || len(arguments.AttachmentIDs) > coreconversation.MaxTurnAttachments {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
 	// Providers occasionally return a smaller positive disk estimate even

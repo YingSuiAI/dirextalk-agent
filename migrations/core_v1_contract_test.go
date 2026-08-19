@@ -1,17 +1,18 @@
 package migrations
 
 import (
+	"bytes"
 	"reflect"
 	"strings"
 	"testing"
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 22 {
-		t.Fatalf("CurrentVersion = %d, want 22", CurrentVersion)
+	if CurrentVersion != 23 {
+		t.Fatalf("CurrentVersion = %d, want 23", CurrentVersion)
 	}
 	entries := Entries()
-	wantEntries := []string{"000001_core_v1_fresh.up.sql", "000002_knowledge_search_provenance.up.sql", "000003_aws_credential_test_claims.up.sql", "000004_knowledge_pgvector.up.sql", "000005_cloud_worker_v1.up.sql", "000006_image_tools_v1.up.sql", "000007_unbounded_agent_rounds.up.sql", "000008_cloud_worker_progress_events.up.sql", "000009_static_site_releases.up.sql", "000010_builtin_skill_seeds.up.sql", "000011_managed_node_mcp_quotas.up.sql", "000012_managed_node_prepared_cleanup.up.sql", "000013_structured_memory_v2.up.sql", "000014_memory_controls.up.sql", "000015_remove_default_client_profile_alias.up.sql", "000016_remove_cloud_worker_result_message.up.sql", "000017_builtin_mcp_seeds.up.sql", "000018_remove_legacy_cloud_worker_schema.up.sql", "000019_conversation_model_budget.up.sql", "000020_model_request_dialects.up.sql", "000021_turn_model_attempts.up.sql", "000022_progress_working_context.up.sql"}
+	wantEntries := []string{"000001_core_v1_fresh.up.sql", "000002_knowledge_search_provenance.up.sql", "000003_aws_credential_test_claims.up.sql", "000004_knowledge_pgvector.up.sql", "000005_cloud_worker_v1.up.sql", "000006_image_tools_v1.up.sql", "000007_unbounded_agent_rounds.up.sql", "000008_cloud_worker_progress_events.up.sql", "000009_static_site_releases.up.sql", "000010_builtin_skill_seeds.up.sql", "000011_managed_node_mcp_quotas.up.sql", "000012_managed_node_prepared_cleanup.up.sql", "000013_structured_memory_v2.up.sql", "000014_memory_controls.up.sql", "000015_remove_default_client_profile_alias.up.sql", "000016_remove_cloud_worker_result_message.up.sql", "000017_builtin_mcp_seeds.up.sql", "000018_remove_legacy_cloud_worker_schema.up.sql", "000019_conversation_model_budget.up.sql", "000020_model_request_dialects.up.sql", "000021_turn_model_attempts.up.sql", "000022_progress_working_context.up.sql", "000023_server_artifact_inventory.up.sql"}
 	if !reflect.DeepEqual(entries, wantEntries) {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
@@ -115,6 +116,23 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 	for _, needle := range []string{"core_workload_plans", "core_workloads", "core_workload_operations", "core_workload_events", "core_workload_idempotency", "target_identity_json", "actual_snapshot_json", "desired_plan_json", "dispatch_lease_until", "core_tasks_task_kind_chk", "CORE_RUNNER", "agent_capability_operations", "agent_capability_operation_events", "core_voice_sessions", "core_voice_turns", "core_voice_events", "core_voice_replays", "tombstone_expires_at"} {
 		if !strings.Contains(contents, needle) {
 			t.Errorf("fresh Core v1 baseline missing %q", needle)
+		}
+	}
+}
+
+func TestServerArtifactInventoryMigrationOwnsBindingAndPagingConstraints(t *testing.T) {
+	migration := Ordered()[22]
+	for _, needle := range []string{
+		"CREATE TABLE core_server_artifacts",
+		"UNIQUE (owner_id,account_generation,source_kind,source_id)",
+		"core_server_artifacts_server_page_idx",
+		"artifact_kind IN ('system_service','static_page','execution_file','deployed_service')",
+		"('execution_file','local_sandbox_artifact')",
+		"record_kind = 'cloud_worker'",
+		"deletion_state IN ('active','deleting')",
+	} {
+		if !bytes.Contains(migration.Script, []byte(needle)) {
+			t.Fatalf("migration 23 missing %q", needle)
 		}
 	}
 }

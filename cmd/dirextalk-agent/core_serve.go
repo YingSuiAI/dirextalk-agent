@@ -20,12 +20,14 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
+	workercap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/agenthttp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/app"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	capabilityserver "github.com/YingSuiAI/dirextalk-agent/internal/capability/server"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
@@ -39,6 +41,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreserver"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corestaticsite"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
@@ -224,6 +227,31 @@ func serveCore(cfg config.Config) error {
 	}
 	if err != nil {
 		return fmt.Errorf("initialize Cloud Worker composition: %w", err)
+	}
+	serverArtifactStore := postgres.NewCoreServerArtifactStore(store.Pool())
+	var serverWorkerInventory coreserver.WorkerInventory
+	var serverArtifactFiles *localartifact.Repository
+	if cloudComposition != nil && cloudComposition.executor != nil {
+		cloudComposition.executor.serverArtifacts = serverArtifactStore
+		serverWorkerInventory = coreServerWorkerInventory{executor: cloudComposition.executor}
+		serverArtifactFiles = cloudComposition.executor.artifacts
+	}
+	serverInventoryService, err := coreserver.NewService(serverArtifactStore, serverWorkerInventory,
+		coreServerArtifactDeleter{staticSites: staticSiteService, artifacts: serverArtifactFiles}, coreserver.Config{
+			PrimaryName: "Dirextalk 主服务器", PrimaryOrigin: cfg.CoreStaticSitesPublicOrigin, PrimaryRegion: cfg.CoreCloudWorkerHostRegion,
+		})
+	if err != nil {
+		return fmt.Errorf("initialize server artifact inventory: %w", err)
+	}
+	if cloudComposition != nil && cloudComposition.executor != nil {
+		managedWorkers := serverManagedWorkerManager{executor: cloudComposition.executor, servers: serverInventoryService}
+		cloudComposition.workerCapability, err = workercap.NewCapability(workercap.Bindings{Credentials: sshWorkerCredentials{cloudComposition.executor}, Workers: managedWorkers, Workloads: managedWorkers})
+		if err != nil {
+			return fmt.Errorf("bind catalog-aware Worker management: %w", err)
+		}
+		if err = cloudComposition.intrinsic.EnableRetainedWorkerManagement(managedWorkers, conversationStore); err != nil {
+			return fmt.Errorf("bind catalog-aware Worker conversation management: %w", err)
+		}
 	}
 	var knowledgeComposition *coreKnowledgeComposition
 	if !lifecycleFence.IsSealed() {
@@ -520,6 +548,7 @@ func serveCore(cfg config.Config) error {
 				return knowledgeComposition.memory
 			}(),
 			StaticSites: staticSiteService,
+			Servers:     serverInventoryService,
 			Extensions: func() coreextension.Service {
 				if extensionComposition == nil {
 					return nil

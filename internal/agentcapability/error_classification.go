@@ -14,6 +14,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreserver"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corestaticsite"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretexttool"
@@ -56,6 +57,16 @@ func classifyCapabilityError(err error) error {
 		return err
 	}
 	switch {
+	case errors.Is(err, coreserver.ErrPrimary):
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "The primary Dirextalk server cannot be destroyed", err)
+	case errors.Is(err, coreserver.ErrBusy):
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "The server is busy", err)
+	case errors.Is(err, coreserver.ErrNotFound):
+		return capabilityoperation.NewFailure("NOT_FOUND", "The server or artifact was not found", err)
+	case errors.Is(err, coreserver.ErrConflict):
+		return capabilityoperation.NewFailure("CONFLICT", "Server inventory changed; refresh and retry", err)
+	case errors.Is(err, coreserver.ErrInvalid):
+		return capabilityoperation.NewFailure("INVALID_ARGUMENT", "Server inventory request is invalid", err)
 	case errors.Is(err, coredeprovision.ErrRetainedWorkers):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", coredeprovision.RetainedWorkersMessage, err)
 	case errors.Is(err, coreextension.ErrInstallBusy):
