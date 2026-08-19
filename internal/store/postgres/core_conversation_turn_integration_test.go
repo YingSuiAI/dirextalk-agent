@@ -584,6 +584,9 @@ func TestCoreConversationTurnHistoryAndEventsAtomicPostgres(t *testing.T) {
 	if err := conversation.ValidateForPersistence(); err != nil {
 		t.Fatalf("persisted turn conversation is invalid: %v", err)
 	}
+	if conversation.Messages[0].TurnID != turn.ID || conversation.Messages[1].TurnID != turn.ID {
+		t.Fatalf("persisted transcript lost turn identity: %+v", conversation.Messages)
+	}
 	userAt, assistantAt := conversation.Messages[0].CreatedAt, conversation.Messages[1].CreatedAt
 	if userAt.Location() != time.UTC || assistantAt.Location() != time.UTC || userAt.Nanosecond()%int(time.Microsecond) != 0 || assistantAt.Nanosecond()%int(time.Microsecond) != 0 || assistantAt.Sub(userAt) != time.Microsecond {
 		t.Fatalf("turn timestamps are not persistably ordered: user=%s assistant=%s", userAt.Format(time.RFC3339Nano), assistantAt.Format(time.RFC3339Nano))
@@ -656,6 +659,9 @@ func TestCoreConversationFailedTurnPersistsPartialTranscriptOncePostgres(t *test
 			}
 			if conversation.Messages[0].ID != core.TurnUserMessageID(turn.RequestID) || conversation.Messages[0].Content != turn.Prompt {
 				t.Fatalf("failed user transcript=%+v", conversation.Messages[0])
+			}
+			if conversation.Messages[0].TurnID != turn.ID || conversation.Messages[1].TurnID != turn.ID {
+				t.Fatalf("failed transcript lost turn identity: %+v", conversation.Messages)
 			}
 			assistant := conversation.Messages[1]
 			if assistant.Status != "failed" || assistant.Role != core.RoleAssistant ||

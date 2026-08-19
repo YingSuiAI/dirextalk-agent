@@ -226,6 +226,7 @@ type publicConversation struct {
 
 type publicConversationMessage struct {
 	MessageID        string                                    `json:"message_id"`
+	TurnID           string                                    `json:"turn_id,omitempty"`
 	Role             string                                    `json:"role"`
 	Content          string                                    `json:"content"`
 	ReasoningContent string                                    `json:"reasoning_content,omitempty"`
@@ -291,6 +292,7 @@ func projectConversationMessages(values []coreconversation.Message) []publicConv
 		}
 		result = append(result, publicConversationMessage{
 			MessageID:        value.ID,
+			TurnID:           value.TurnID,
 			Role:             string(value.Role),
 			Content:          value.Content,
 			ReasoningContent: value.ReasoningContent,

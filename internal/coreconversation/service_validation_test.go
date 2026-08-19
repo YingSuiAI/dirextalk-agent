@@ -43,6 +43,24 @@ func TestNextMessageTimeUsesPersistableMicrosecondOrdering(t *testing.T) {
 		t.Fatalf("later timestamp=%s", later.Format(time.RFC3339Nano))
 	}
 }
+
+func TestMessageTurnIdentityMustBeCanonicalWhenPresent(t *testing.T) {
+	message := Message{
+		ID:             uuid.NewString(),
+		TurnID:         uuid.NewString(),
+		Role:           RoleAssistant,
+		Content:        "done",
+		CreatedAt:      time.Now().UTC(),
+		ModelProfileID: uuid.NewString(),
+	}
+	if err := message.Validate(); err != nil {
+		t.Fatalf("valid turn-bound message: %v", err)
+	}
+	message.TurnID = "not-a-turn-id"
+	if err := message.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("invalid turn identity err=%v", err)
+	}
+}
 func TestDigestIncludesAllowedTools(t *testing.T) {
 	id := uuid.NewString()
 	a := []ResolvedExtension{{Selection: ExtensionSelection{ID: id, Kind: ExtensionMCP, Version: "1", Digest: "d", AllowedTools: []string{"b", "a"}}}}
