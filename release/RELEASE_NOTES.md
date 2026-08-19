@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.176
+
+1. Distinguish self-contained scheduled notes from Matrix and Web summaries, require successful external reads before claiming data is absent, return nonempty Markdown, and render Web citations as descriptive links.
+
 ## v1.0.175
 
 1. Give each scheduled capability a trusted single-pass tool sequence so summaries and research stop after one read or search and delivery stops after one send, while retaining Markdown-only output.
