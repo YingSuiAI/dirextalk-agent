@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.167
+
+1. Execute retained Worker Route 53 bind and unbind tools directly from the authoritative Native turn without a second client confirmation, while preserving exact identity revalidation, provider read-back, and idempotent retry after commit failure.
+2. Reject hostnames that are not owned by a matching public Route 53 hosted zone in the current verified AWS account with explicit correctable guidance and no DNS write.
+
 ## v1.0.166
 
 1. Add durable Native Agent tools to bind or unbind Route 53 domains for retained Worker services after deployment, with exact identity fencing, explicit confirmation, replay-safe recovery, and provider read-back.
