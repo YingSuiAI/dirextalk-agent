@@ -338,9 +338,9 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 
 	confirmationProjection := confirmationState
 	references := cloudWorkerReferences(plan, execution, 1, confirmationProjection)
-	userMessage := core.Message{ID: deterministicCloudWorkerUUID("conversation-turn-user", turn.RequestID), Role: core.RoleUser,
+	userMessage := core.Message{ID: deterministicCloudWorkerUUID("conversation-turn-user", turn.RequestID), TurnID: plan.TurnID, Role: core.RoleUser,
 		Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: plan.CreatedAt.Add(-time.Microsecond)}
-	offerMessage := core.Message{ID: deterministicCloudWorkerUUID("cloud-worker-offer-message", plan.ExecutionID), Role: core.RoleAssistant,
+	offerMessage := core.Message{ID: deterministicCloudWorkerUUID("cloud-worker-offer-message", plan.ExecutionID), TurnID: plan.TurnID, Role: core.RoleAssistant,
 		Content: "Cloud Worker quote is ready for confirmation.", ModelProfileID: turn.ProfileID,
 		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, References: references,
 		CreatedAt: plan.CreatedAt}

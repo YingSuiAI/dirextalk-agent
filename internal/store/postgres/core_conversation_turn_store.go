@@ -1206,6 +1206,7 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 		turn.AccountGeneration != lease.Turn.AccountGeneration || turn.ConversationID != lease.Turn.ConversationID || turn.ProfileID != lease.Turn.ProfileID {
 		return core.ErrConflict
 	}
+	response.Message.TurnID = turn.ID
 	raw, _ := json.Marshal(response)
 	now := time.Now().UTC()
 	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='completed',revision=revision+1,response_json=$2,lease_id=NULL,lease_expires_at=NULL,updated_at=$3 WHERE turn_id=$1 AND lease_id=$4 AND lease_epoch=$5 AND state='running'`, lease.Turn.ID, raw, now, lease.LeaseID, lease.Epoch)
@@ -1238,11 +1239,12 @@ func (s *CoreConversationStore) commitTurnTx(ctx context.Context, tx pgx.Tx, lea
 	transcript := make([]core.Message, 0, len(steers)+2)
 	firstUserAt := response.Message.CreatedAt.Add(-time.Duration(len(steers)+1) * time.Microsecond)
 	if !userAlreadyCommitted {
-		transcript = append(transcript, core.Message{ID: userMessageID, Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: firstUserAt, Attachments: core.PresentTurnAttachments(turn.AttachmentSources)})
+		transcript = append(transcript, core.Message{ID: userMessageID, TurnID: turn.ID, Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: firstUserAt, Attachments: core.PresentTurnAttachments(turn.AttachmentSources)})
 	}
 	for index, steer := range steers {
 		transcript = append(transcript, core.Message{
 			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-steer-user:"+steer.RequestID)).String(),
+			TurnID:         turn.ID,
 			Role:           core.RoleUser,
 			Content:        steer.Instruction,
 			ModelProfileID: lease.Turn.ProfileID,
@@ -1358,7 +1360,7 @@ func failedTurnTranscriptTx(ctx context.Context, tx pgx.Tx, turn core.Turn, code
 		return err
 	}
 	if !userAlreadyCommitted {
-		user := core.Message{ID: userMessageID, Role: core.RoleUser, Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: createdAt, Attachments: core.PresentTurnAttachments(turn.AttachmentSources)}
+		user := core.Message{ID: userMessageID, TurnID: turn.ID, Role: core.RoleUser, Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: createdAt, Attachments: core.PresentTurnAttachments(turn.AttachmentSources)}
 		if user.Validate() != nil {
 			return core.ErrInvalid
 		}
@@ -1370,6 +1372,7 @@ func failedTurnTranscriptTx(ctx context.Context, tx pgx.Tx, turn core.Turn, code
 	}
 	assistant := core.Message{
 		ID:               uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-failed-assistant:"+turn.RequestID)).String(),
+		TurnID:           turn.ID,
 		Role:             core.RoleAssistant,
 		Content:          failedTurnAssistantContent(partial.String(), code, summary),
 		ReasoningContent: reasoning.String(),

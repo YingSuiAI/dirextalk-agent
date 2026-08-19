@@ -294,6 +294,7 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
 - Capability conversation reads use a closed Flutter-facing projection.
   Conversations expose only id/title/revision/timestamps/status; history
   exposes only user/assistant messages with durable sequence, terminal status,
+  additive owning `turn_id` when the message belongs to a durable Turn,
   additive `reasoning_content`, references, and attachment presentation
   (`source_id`, `kind`, `name`, `mime_type`, and `size_bytes`). Attachment
   content, digest, source revision, status, and expiry remain private. The first history page

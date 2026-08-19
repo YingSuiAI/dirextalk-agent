@@ -340,13 +340,14 @@ func TestCloudWorkerConfirmationCapabilityExposesPreRunIdentityAndQuote(t *testi
 func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrder(t *testing.T) {
 	conversationID := uuid.NewString()
 	profileID := uuid.NewString()
+	turnID := uuid.NewString()
 	taskID := uuid.NewString()
 	planID := uuid.NewString()
 	now := time.Now().UTC()
 	messages := []coreconversation.Message{
 		{ID: uuid.NewString(), Sequence: 1, Role: coreconversation.RoleUser, Content: "first", ModelProfileID: profileID, CreatedAt: now, Attachments: []coreconversation.AttachmentPresentation{{SourceID: uuid.NewString(), Kind: "file", Name: "notes.md", MediaType: "text/markdown", SizeBytes: 42}}},
 		{ID: uuid.NewString(), Sequence: 2, Role: coreconversation.RoleTool, ToolResults: []coreconversation.ToolResult{{CallID: "call", Content: "private tool payload"}}, ModelProfileID: profileID, CreatedAt: now.Add(time.Second)},
-		{ID: uuid.NewString(), Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ReasoningContent: "durable reasoning", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second), Status: "failed", RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID}},
+		{ID: uuid.NewString(), TurnID: turnID, Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ReasoningContent: "durable reasoning", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second), Status: "failed", RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID}},
 		{ID: uuid.NewString(), Sequence: 4, Role: coreconversation.RoleSystem, Content: "private system context", ModelProfileID: profileID, CreatedAt: now.Add(3 * time.Second)},
 		{ID: uuid.NewString(), Sequence: 5, Role: coreconversation.RoleUser, Content: "third", ModelProfileID: profileID, CreatedAt: now.Add(4 * time.Second), Attachments: []coreconversation.AttachmentPresentation{{SourceID: uuid.NewString(), Kind: "image", Name: "screen.png", MediaType: "image/png", SizeBytes: 84}}},
 	}
@@ -366,6 +367,9 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 	}
 	if !bytes.Contains(raw, []byte(`"related_task_ids":["`+taskID+`"]`)) || !bytes.Contains(raw, []byte(`"related_plan_ids":["`+planID+`"]`)) {
 		t.Fatalf("public history lost related task or plan ids: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"turn_id":"`+turnID+`"`)) {
+		t.Fatalf("public history lost durable turn identity: %s", raw)
 	}
 	if !bytes.Contains(raw, []byte(`"attachments":[{"source_id":"`)) || !bytes.Contains(raw, []byte(`"name":"screen.png"`)) {
 		t.Fatalf("public history lost attachment presentation: %s", raw)

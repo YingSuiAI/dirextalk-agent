@@ -309,6 +309,7 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 		_ = s.pool.QueryRow(ctx, `SELECT payload_json FROM core_messages WHERE message_id=$1`, c.Messages[i].ID).Scan(&payload)
 		_ = json.Unmarshal(payload, &persisted)
 		c.Messages[i].Status = persisted.Status
+		c.Messages[i].TurnID = persisted.TurnID
 		c.Messages[i].ReasoningContent = persisted.ReasoningContent
 		c.Messages[i].Attachments = persisted.Attachments
 		executionIDs := make(map[string]string, len(persisted.ToolCalls))

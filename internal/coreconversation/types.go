@@ -107,7 +107,8 @@ type Reference struct {
 }
 
 type Message struct {
-	ID string `json:"id"`
+	ID     string `json:"id"`
+	TurnID string `json:"turn_id,omitempty"`
 	// Sequence is the durable transcript ordinal loaded from PostgreSQL. New
 	// in-memory messages keep it at zero until the atomic conversation commit;
 	// public history adapters use it without exposing Core-only payload fields.
@@ -987,6 +988,9 @@ func (r ToolResult) Validate() error {
 }
 func (m Message) Validate() error {
 	if !validUUID(m.ID) || m.CreatedAt.IsZero() || m.CreatedAt.Location() != time.UTC || !validUUID(m.ModelProfileID) || len(m.ToolCalls) > MaxToolCallsPerMessage || len(m.ToolResults) > MaxToolResultsPerMessage {
+		return ErrInvalid
+	}
+	if m.TurnID != "" && !validUUID(m.TurnID) {
 		return ErrInvalid
 	}
 	if len(m.RelatedTaskIDs) > MaxRelatedTaskIDs || len(m.RelatedPlanIDs) > MaxRelatedPlanIDs || len(m.ToolSummaries) > MaxRelatedTaskIDs || validateReferences(m.References) != nil {
