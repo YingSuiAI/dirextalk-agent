@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.171
+
+1. Resolve each Native scheduled occurrence against the current default conversation model while exact replay and reclaim retain the committed occurrence snapshot.
+2. Pin the credential version, request dialect, and model kind with the rest of the execution contract so scheduled turns can enter the model and use their captured Message MCP or Web Search tool closure.
+3. Reject unavailable defaults without partial occurrence state and expose bounded scheduled-snapshot or turn-admission failures without leaking provider details.
+
 ## v1.0.170
 
 1. Embed timezone data and execute due schedules through real durable Native Agent turns with immutable occurrence and timezone context.
