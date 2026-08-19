@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.174
+
+1. Admit scheduled Message MCP and Web Search turns with their durable owner fence without fabricating an invalid Product Capability call context.
+
 ## v1.0.173
 
 1. Keep the filesystem-isolated timezone regression compatible with supported Go toolchains by resolving GOROOT through `go env` and failing closed on invalid zoneinfo sources.
