@@ -199,8 +199,12 @@ type TurnStartCommand struct {
 	ProfileSnapshot           coremodel.ExecutionSnapshot
 	Extensions                []ExtensionSelection
 	ExtensionSnapshots        []ExtensionExecutionSnapshot
-	AcceptedAttachmentIDs     []string
-	AttachmentSources         []TurnAttachment
+	// ExtensionSnapshotsPinned declares that ExtensionSnapshots is the complete
+	// accepted set, including when it is empty. Internal background adapters use
+	// this to prevent an empty pinned set from acquiring current automatic tools.
+	ExtensionSnapshotsPinned bool
+	AcceptedAttachmentIDs    []string
+	AttachmentSources        []TurnAttachment
 }
 
 type TurnCancelCommand struct {
@@ -507,6 +511,9 @@ func (c TurnStartCommand) Validate() error {
 			return err
 		}
 	}
+	if c.ExtensionSnapshotsPinned && len(c.Extensions) != 0 {
+		return ErrInvalid
+	}
 	if len(c.Extensions) > 0 && len(c.ExtensionSnapshots) == 0 {
 		return ErrInvalid
 	}
@@ -550,7 +557,7 @@ func (s ExtensionExecutionSnapshot) Validate() error {
 }
 
 func (c TurnStartCommand) Fingerprint() string {
-	return digest(turnStructDigest(
+	values := []any{
 		c.TurnID,
 		c.RequestID,
 		strings.TrimSpace(c.OwnerID),
@@ -565,7 +572,14 @@ func (c TurnStartCommand) Fingerprint() string {
 		c.ExtensionSnapshotDigest(),
 		c.AcceptedAttachmentIDs,
 		TurnAttachmentSnapshotDigest(c.AttachmentSources),
-	))
+	}
+	// Keep the ordinary false form byte-for-byte compatible with already
+	// accepted turns. The internal explicit-pin marker still has its own replay
+	// identity, including for a deliberately empty snapshot set.
+	if c.ExtensionSnapshotsPinned {
+		values = append(values, "extension_snapshots_pinned")
+	}
+	return digest(turnStructDigest(values...))
 }
 
 func (c TurnStartCommand) ExtensionSnapshotDigest() string {

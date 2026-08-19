@@ -269,8 +269,21 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   `run_at` or `cron` plus IANA `timezone`, and optional `timeout_seconds`.
   Owner, account generation, conversation, and model profile are injected from
   the fenced turn lease. Owner and generation persist only in the typed
-  `task_template.payload.agent` authority object; credentials,
-  attachment/Knowledge references, and extension bindings are not accepted.
+  `task_template.payload.agent` authority object; credentials and
+  attachment/Knowledge references are not accepted. The internal payload also
+  snapshots the creating turn's installed MCP/Skill, Message MCP, and Tavily
+  Web Search bindings. Product Capability and semantic Knowledge bindings are
+  excluded because their request-time authority cannot be delegated to a
+  background occurrence. Due Tasks revalidate every retained snapshot and fail
+  closed on drift. An explicitly empty retained set stays empty rather than
+  resolving tools that were installed or enabled after schedule creation.
+  A due schedule delegates through the durable Native Turn executor with
+  deterministic request/turn identities derived from the occurrence Task.
+  Crash recovery therefore resumes the same transcript commit. A successful
+  Task exposes exactly the committed assistant Markdown as `result.text` and
+  leaves `result.json` empty; it does not append another assistant message.
+  Background execution carries only the persisted owner and positive account
+  generation, with no synthesized Product Capability grant or scope.
   Schedule creation, its replay receipt,
   both transcript messages, terminal turn response, and done event commit in
   one transaction. Schedule and idempotency identities are deterministic from

@@ -1067,11 +1067,13 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if cmd.TurnID == "" {
 		cmd.TurnID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn:"+cmd.RequestID)).String()
 	}
-	if automatic, ok := s.extensions.(AutomaticExtensionSelector); ok {
-		var mergeErr error
-		cmd.Extensions, mergeErr = automatic.MergeAutomaticExtensions(ctx, cmd.Extensions)
-		if mergeErr != nil {
-			return Turn{}, mergeErr
+	if !cmd.ExtensionSnapshotsPinned {
+		if automatic, ok := s.extensions.(AutomaticExtensionSelector); ok {
+			var mergeErr error
+			cmd.Extensions, mergeErr = automatic.MergeAutomaticExtensions(ctx, cmd.Extensions)
+			if mergeErr != nil {
+				return Turn{}, mergeErr
+			}
 		}
 	}
 	cmd.AcceptedAttachmentIDs = append([]string(nil), cmd.AcceptedAttachmentIDs...)
@@ -1083,7 +1085,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 			check.ProfileSnapshot = existing.ProfileSnapshot
 			check.ExtensionSnapshots = append([]ExtensionExecutionSnapshot(nil), existing.ExtensionSnapshots...)
 			check.AttachmentSources = append([]TurnAttachment(nil), existing.AttachmentSources...)
-			if len(check.Extensions) == 0 {
+			if !check.ExtensionSnapshotsPinned && len(check.Extensions) == 0 {
 				check.Extensions = snapshotSelections(existing.ExtensionSnapshots)
 			}
 			if err := check.Validate(); err != nil {
@@ -1114,7 +1116,13 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 		return Turn{}, err
 	}
 	var admissionExtensions []ResolvedExtension
-	if len(cmd.ExtensionSnapshots) == 0 {
+	if cmd.ExtensionSnapshotsPinned {
+		var resolveErr error
+		admissionExtensions, resolveErr = s.resolveAcceptedTurnExtensions(ctx, cmd.ExtensionSnapshots)
+		if resolveErr != nil {
+			return Turn{}, resolveErr
+		}
+	} else if len(cmd.ExtensionSnapshots) == 0 {
 		if s.extensions == nil {
 			return Turn{}, ErrInvalid
 		}
@@ -2672,20 +2680,28 @@ func alternatingTail(values []string, count int) bool {
 }
 
 func toolLoopPairIdentity(call ToolCall, result ToolResult) (string, error) {
-	arguments, err := canonicalJSON(call.Arguments, MaxToolArgumentsBytes)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(call.Name) == "local_sandbox_run" {
-		var values map[string]any
-		if json.Unmarshal(arguments, &values) != nil {
-			return "", ErrInvalid
+	var arguments []byte
+	var err error
+	// An unchanged error from the same tool is not progress even when the
+	// model keeps varying its arguments. Excluding failed-call arguments lets
+	// the existing staged loop policy converge while a changed error or any
+	// successful result still escapes the repeated identity.
+	if !result.IsError {
+		arguments, err = canonicalJSON(call.Arguments, MaxToolArgumentsBytes)
+		if err != nil {
+			return "", err
 		}
-		if script, ok := values["script"].(string); ok {
-			values["script"] = normalizeSimpleShellSpacing(script)
-			arguments, err = json.Marshal(values)
-			if err != nil {
-				return "", err
+		if strings.TrimSpace(call.Name) == "local_sandbox_run" {
+			var values map[string]any
+			if json.Unmarshal(arguments, &values) != nil {
+				return "", ErrInvalid
+			}
+			if script, ok := values["script"].(string); ok {
+				values["script"] = normalizeSimpleShellSpacing(script)
+				arguments, err = json.Marshal(values)
+				if err != nil {
+					return "", err
+				}
 			}
 		}
 	}

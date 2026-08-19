@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata"
 	"unicode/utf8"
 
 	"github.com/google/uuid"

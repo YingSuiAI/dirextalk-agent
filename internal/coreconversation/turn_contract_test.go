@@ -84,6 +84,39 @@ func (replayAutomaticResolver) ResolveExtensions(context.Context, []ExtensionSel
 	return nil, ErrInvalid
 }
 
+type countingAutomaticResolver struct {
+	selection        ExtensionSelection
+	snapshot         ExtensionExecutionSnapshot
+	merges, resolves int
+}
+
+func (r *countingAutomaticResolver) MergeAutomaticExtensions(_ context.Context, selections []ExtensionSelection) ([]ExtensionSelection, error) {
+	r.merges++
+	return append(append([]ExtensionSelection(nil), selections...), r.selection), nil
+}
+
+func (r *countingAutomaticResolver) ResolveExtensions(_ context.Context, selections []ExtensionSelection) ([]ResolvedExtension, error) {
+	r.resolves++
+	if len(selections) != 1 || selections[0].ID != r.selection.ID {
+		return nil, ErrConflict
+	}
+	return []ResolvedExtension{{Selection: r.selection, Snapshot: r.snapshot}}, nil
+}
+
+type terminalAdmissionStore struct {
+	*publicActiveTurnStore
+	commands []TurnStartCommand
+}
+
+func (s *terminalAdmissionStore) StartTurnWithRuntime(_ context.Context, command TurnStartCommand, _ TurnRuntimeSnapshot) (Turn, error) {
+	s.commands = append(s.commands, command)
+	return Turn{
+		ID: command.TurnID, RequestID: command.RequestID, OwnerID: command.OwnerID, AccountGeneration: command.AccountGeneration,
+		ConversationID: command.ConversationID, Prompt: command.Prompt, ProfileID: command.ProfileID,
+		ProfileSnapshot: command.ProfileSnapshot, ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), command.ExtensionSnapshots...), State: TurnCompleted,
+	}, nil
+}
+
 type supervisorTurnStore struct {
 	*replayTurnStore
 	claimed, canceled, uncertain bool
@@ -1983,6 +2016,7 @@ func TestExecuteTurnAppliesStagedToolLoopRecovery(t *testing.T) {
 		name       string
 		pairs      []pair
 		steerAfter int
+		isError    bool
 		want       toolLoopRecovery
 	}{
 		{name: "different searches keep all tools", pairs: []pair{
@@ -1991,6 +2025,22 @@ func TestExecuteTurnAppliesStagedToolLoopRecovery(t *testing.T) {
 		{name: "different results are progress", pairs: []pair{
 			{`{"query":"same"}`, `{"result":1}`}, {`{"query":"same"}`, `{"result":2}`}, {`{"query":"same"}`, `{"result":3}`},
 		}, want: toolLoopNone},
+		{name: "varied failed arguments still nudge", pairs: []pair{
+			{`{"cron":"30 15 * * *","timezone":"Asia/Shanghai"}`, `tool arguments are invalid`},
+			{`{"cron":"0 30 15 * * *","timezone":"Asia/Shanghai"}`, `tool arguments are invalid`},
+			{`{"cron":"30 15 * * *","timezone":"UTC"}`, `tool arguments are invalid`},
+		}, isError: true, want: toolLoopNudge},
+		{name: "continued varied failed arguments synthesize", pairs: []pair{
+			{`{"cron":"30 15 * * *","timezone":"Asia/Shanghai"}`, `tool arguments are invalid`},
+			{`{"cron":"0 30 15 * * *","timezone":"Asia/Shanghai"}`, `tool arguments are invalid`},
+			{`{"cron":"30 15 * * *","timezone":"UTC"}`, `tool arguments are invalid`},
+			{`{"cron":"30 15 * * *","timezone":"Etc/UTC"}`, `tool arguments are invalid`},
+		}, isError: true, want: toolLoopSynthesize},
+		{name: "changed failure is corrective progress", pairs: []pair{
+			{`{"query":"one"}`, `missing query`},
+			{`{"query":"two"}`, `rate limited`},
+			{`{"query":"three"}`, `provider unavailable`},
+		}, isError: true, want: toolLoopNone},
 		{name: "two identical pairs keep all tools", pairs: []pair{
 			{`{"query":"same"}`, `{"result":1}`}, {`{"query":"same"}`, `{"result":1}`},
 		}, want: toolLoopNone},
@@ -2057,7 +2107,7 @@ func TestExecuteTurnAppliesStagedToolLoopRecovery(t *testing.T) {
 			events := []TurnEvent{{Kind: TurnEventAccepted, CreatedAt: createdAt}}
 			for index, value := range test.pairs {
 				call := ToolCall{ID: uuid.NewString(), Name: toolName, Arguments: value.arguments}
-				result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: value.content}
+				result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: value.content, IsError: test.isError}
 				events = append(events, TurnEvent{Kind: TurnEventStarted}, TurnEvent{Kind: TurnEventToolCall, ToolCall: &call}, TurnEvent{Kind: TurnEventToolResult, ToolResult: &result})
 				if test.steerAfter == index+1 {
 					events = append(events, TurnEvent{Kind: TurnEventSteered, Text: "change direction"})
@@ -2328,6 +2378,65 @@ func TestStartTurnReplayDoesNotResolveRotatedProfile(t *testing.T) {
 	}
 	if resolved != 0 {
 		t.Fatal("replay resolved mutable current profile")
+	}
+}
+
+func TestStartTurnDistinguishesExplicitEmptyExtensionPinsFromAutomaticSelection(t *testing.T) {
+	profile := testTurnSnapshot()
+	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1.0.0", Digest: strings.Repeat("a", 64), AllowedTools: []string{"automatic_lookup"}}
+	extensionSnapshot := ExtensionExecutionSnapshot{
+		Selection: selection, InstallationID: selection.ID, VersionID: uuid.NewString(), InstallationRevision: 1,
+		Source: "builtin", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64),
+		ToolSchemaDigest: strings.Repeat("c", 64), ToolNames: append([]string(nil), selection.AllowedTools...), ReadOnly: true,
+	}
+	newCommand := func() TurnStartCommand {
+		return TurnStartCommand{
+			TurnID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello",
+			ProfileID: profile.ProfileID, ExpectedProfileRevision: profile.Revision,
+			ExpectedCredentialVersion: profile.CredentialVersion, ProfileSnapshot: profile,
+		}
+	}
+
+	pinnedResolver := &countingAutomaticResolver{selection: selection, snapshot: extensionSnapshot}
+	pinnedStore := &terminalAdmissionStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore()}}
+	pinnedService, err := NewService(pinnedStore, &fakeModel{}, pinnedResolver, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+		return coremodel.ExecutionSnapshot{}, errors.New("pinned profile must not resolve")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pinnedService.Close() })
+	pinned := newCommand()
+	pinned.ExtensionSnapshotsPinned = true
+	if pinned.Validate() != nil {
+		t.Fatalf("explicit empty pin is invalid: %v", pinned.Validate())
+	}
+	ordinaryIdentity := pinned
+	ordinaryIdentity.ExtensionSnapshotsPinned = false
+	if pinned.Fingerprint() == ordinaryIdentity.Fingerprint() {
+		t.Fatal("explicit empty pin was omitted from replay identity")
+	}
+	if _, err = pinnedService.StartTurn(context.Background(), pinned); err != nil {
+		t.Fatalf("start explicitly empty turn: %v", err)
+	}
+	if pinnedResolver.merges != 0 || pinnedResolver.resolves != 0 || len(pinnedStore.commands) != 1 || len(pinnedStore.commands[0].ExtensionSnapshots) != 0 {
+		t.Fatalf("explicit empty pin acquired tools: merges=%d resolves=%d command=%+v", pinnedResolver.merges, pinnedResolver.resolves, pinnedStore.commands)
+	}
+
+	ordinaryResolver := &countingAutomaticResolver{selection: selection, snapshot: extensionSnapshot}
+	ordinaryStore := &terminalAdmissionStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore()}}
+	ordinaryService, err := NewService(ordinaryStore, &fakeModel{}, ordinaryResolver, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+		return coremodel.ExecutionSnapshot{}, errors.New("ordinary pinned profile must not resolve")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ordinaryService.Close() })
+	if _, err = ordinaryService.StartTurn(context.Background(), newCommand()); err != nil {
+		t.Fatalf("start ordinary empty turn: %v", err)
+	}
+	if ordinaryResolver.merges != 1 || ordinaryResolver.resolves != 1 || len(ordinaryStore.commands) != 1 || len(ordinaryStore.commands[0].ExtensionSnapshots) != 1 || ordinaryStore.commands[0].ExtensionSnapshots[0].Selection.ID != selection.ID {
+		t.Fatalf("ordinary empty turn did not resolve automatic tools: merges=%d resolves=%d command=%+v", ordinaryResolver.merges, ordinaryResolver.resolves, ordinaryStore.commands)
 	}
 }
 

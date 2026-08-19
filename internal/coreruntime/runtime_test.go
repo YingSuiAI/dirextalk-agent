@@ -287,6 +287,47 @@ func TestTaskExecutorManagedDispatch(t *testing.T) {
 	}
 }
 
+func TestTaskExecutorRoutesOnlyMarkedAgentTasksToScheduledHandler(t *testing.T) {
+	ex, err := NewTaskExecutor(fakeProfiles{}, func(coremodel.Profile) (coremodel.Client, error) { return &fakeClient{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	ex.SetScheduledAgentHandler(func(context.Context, coretask.Task) ManagedOutcome {
+		calls++
+		return ManagedOutcome{Result: coretask.Result{Text: "scheduled markdown"}}
+	})
+	marked := coretask.Task{Spec: coretask.TaskSpec{Kind: coretask.TaskKindAgent, Payload: coretask.TaskPayload{Agent: &coretask.AgentTaskPayload{
+		OwnerID: "owner", AccountGeneration: 1, ScheduledConversation: &coretask.ScheduledConversationOrigin{},
+	}}}}
+	out, executeErr := ex.ExecuteManaged(context.Background(), marked)
+	if executeErr != nil || out.Err != nil || out.Result.Text != "scheduled markdown" || calls != 1 {
+		t.Fatalf("marked outcome=%+v err=%v calls=%d", out, executeErr, calls)
+	}
+
+	ordinary := marked
+	ordinary.Spec.Payload.Agent.ScheduledConversation = nil
+	out, executeErr = ex.ExecuteManaged(context.Background(), ordinary)
+	if executeErr != nil || out.Err == nil || !strings.Contains(out.Err.Error(), "execution snapshot is required") || calls != 1 {
+		t.Fatalf("ordinary outcome=%+v err=%v calls=%d", out, executeErr, calls)
+	}
+}
+
+func TestTaskExecutorFailsClosedWithoutScheduledHandler(t *testing.T) {
+	ex, err := NewTaskExecutor(fakeProfiles{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, executeErr := ex.ExecuteManaged(context.Background(), coretask.Task{Spec: coretask.TaskSpec{
+		Kind: coretask.TaskKindAgent, Payload: coretask.TaskPayload{Agent: &coretask.AgentTaskPayload{
+			OwnerID: "owner", AccountGeneration: 1, ScheduledConversation: &coretask.ScheduledConversationOrigin{},
+		}},
+	}})
+	if executeErr == nil || out.Err != nil || !strings.Contains(executeErr.Error(), "scheduled Agent handler") {
+		t.Fatalf("outcome=%+v err=%v", out, executeErr)
+	}
+}
+
 func TestCloudWorkerHandlerDoesNotReplaceLocalAgentRoute(t *testing.T) {
 	ex, err := NewTaskExecutor(fakeProfiles{}, func(coremodel.Profile) (coremodel.Client, error) {
 		t.Fatal("local Agent task reached the model factory without its immutable snapshot")

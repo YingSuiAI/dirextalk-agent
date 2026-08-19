@@ -95,7 +95,10 @@ func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleSto
 	schedule := coretask.Schedule{
 		ID: scheduleID, Name: args.Name,
 		Spec: coretask.TaskTemplate{
-			Kind: coretask.TaskKindAgent, Payload: coretask.TaskPayload{Agent: &coretask.AgentTaskPayload{OwnerID: strings.TrimSpace(turn.OwnerID), AccountGeneration: turn.AccountGeneration}},
+			Kind: coretask.TaskKindAgent, Payload: coretask.TaskPayload{Agent: &coretask.AgentTaskPayload{
+				OwnerID: strings.TrimSpace(turn.OwnerID), AccountGeneration: turn.AccountGeneration,
+				ScheduledConversation: &coretask.ScheduledConversationOrigin{ExtensionSnapshots: scheduledExtensionSnapshots(turn.ExtensionSnapshots)},
+			}},
 			Goal: args.Goal, ConversationID: turn.ConversationID, ModelProfileID: turn.ProfileID, TimeoutSeconds: args.TimeoutSeconds,
 		},
 		Cron: args.Cron, Timezone: args.Timezone, Revision: 1, CreatedAt: now, UpdatedAt: now,
@@ -151,6 +154,35 @@ func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleSto
 		return IntrinsicExecutionResult{}, err
 	}
 	return IntrinsicExecutionResult{TurnCommitted: true}, nil
+}
+
+func scheduledExtensionSnapshots(snapshots []ExtensionExecutionSnapshot) []coretask.ScheduledExtensionSnapshot {
+	out := make([]coretask.ScheduledExtensionSnapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		// Product Capability and semantic Knowledge tools depend on request-time
+		// grants/context that a background occurrence does not inherit. Persist
+		// only installed MCP/Skills and the two owner-bound synthetic catalogs
+		// whose live resolvers can revalidate the exact accepted snapshot.
+		supportedSynthetic := snapshot.Source == "message-mcp" || snapshot.Source == "builtin:web_search:tavily"
+		supportedInstalled := !contextBoundExtensionSource(snapshot.Source) && !strings.HasPrefix(snapshot.Source, "builtin:") && snapshot.InstallationRevision > 0 && validUUID(snapshot.InstallationID) && validUUID(snapshot.VersionID)
+		if !supportedSynthetic && !supportedInstalled {
+			continue
+		}
+		out = append(out, coretask.ScheduledExtensionSnapshot{
+			Selection: coretask.ExtensionSelection{
+				Kind: coretask.ExtensionKind(snapshot.Selection.Kind), ID: snapshot.Selection.ID,
+				Version: snapshot.Selection.Version, Digest: snapshot.Selection.Digest,
+				AllowedTools: append([]string(nil), snapshot.Selection.AllowedTools...),
+			},
+			InstallationID: snapshot.InstallationID, VersionID: snapshot.VersionID,
+			InstallationRevision: snapshot.InstallationRevision, Source: snapshot.Source,
+			ContentDigest: snapshot.ContentDigest, ArtifactDigest: snapshot.ArtifactDigest,
+			ToolSchemaDigest: snapshot.ToolSchemaDigest, NetworkBindingDigest: snapshot.NetworkBindingDigest,
+			SecretBindingDigest: snapshot.SecretBindingDigest, ToolNames: append([]string(nil), snapshot.ToolNames...),
+			SkillInstructions: snapshot.SkillInstructions, RequiresConfirmation: snapshot.RequiresConfirmation, ReadOnly: snapshot.ReadOnly,
+		})
+	}
+	return out
 }
 
 func parseScheduleIntrinsicArguments(raw json.RawMessage) (scheduleIntrinsicArguments, error) {

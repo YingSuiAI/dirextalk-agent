@@ -221,6 +221,7 @@ func serveCore(cfg config.Config) error {
 		return fmt.Errorf("initialize task executor: %w", err)
 	}
 	taskExecutor.SetAgentLedger(taskStore)
+	taskExecutor.SetScheduledAgentHandler(scheduledAgentTaskHandler(conversation, store))
 	var cloudComposition *coreCloudWorkerComposition
 	if retainedWorkers != nil {
 		cloudComposition, err = composeDynamicCloudWorkerProposal(cfg, store, conversationStore, retainedWorkers.store)

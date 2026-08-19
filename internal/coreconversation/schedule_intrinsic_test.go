@@ -241,11 +241,62 @@ func TestScheduleIntrinsicInjectsTurnAuthorityAndUsesDeterministicIdentity(t *te
 	template := first.Schedule.Spec
 	if template.Kind != coretask.TaskKindAgent || template.ConversationID != lease.Turn.ConversationID || template.ModelProfileID != lease.Turn.ProfileID ||
 		template.Goal != "summarize the conversation" || template.TimeoutSeconds != 120 || len(template.AttachmentRefs) != 0 || len(template.Extensions) != 0 || len(template.KnowledgeRefs) != 0 ||
-		template.Payload.Agent == nil || template.Payload.Agent.OwnerID != lease.Turn.OwnerID || template.Payload.Agent.AccountGeneration != lease.Turn.AccountGeneration {
+		template.Payload.Agent == nil || template.Payload.Agent.OwnerID != lease.Turn.OwnerID || template.Payload.Agent.AccountGeneration != lease.Turn.AccountGeneration || template.Payload.Agent.ScheduledConversation == nil {
 		t.Fatalf("untrusted schedule template: %+v", template)
 	}
 	if first.Lease.Turn.OwnerID != lease.Turn.OwnerID || first.Lease.Turn.AccountGeneration != lease.Turn.AccountGeneration || first.Response.Revision != 5 || first.Response.ConversationID != lease.Turn.ConversationID || first.Response.ModelProfileID != lease.Turn.ProfileID {
 		t.Fatalf("turn authority was not injected: %+v", first)
+	}
+}
+
+func TestScheduleIntrinsicPersistsOnlyScheduledConversationSafeExtensions(t *testing.T) {
+	lease := scheduleIntrinsicLease()
+	installedID, installedVersionID := uuid.NewString(), uuid.NewString()
+	messageID, webID := uuid.NewString(), uuid.NewString()
+	digestA, digestB, digestC := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+	lease.Turn.ExtensionSnapshots = []ExtensionExecutionSnapshot{
+		{
+			Selection:      ExtensionSelection{Kind: ExtensionMCP, ID: messageID, Version: "1.0.0", Digest: digestA, AllowedTools: []string{"dirextalk_messages_list"}},
+			InstallationID: messageID, VersionID: "1.0.0",
+			Source: "message-mcp", ContentDigest: digestA, ArtifactDigest: digestB, ToolSchemaDigest: digestC,
+			ToolNames: []string{"dirextalk_messages_list"}, ReadOnly: true,
+		},
+		{
+			Selection:      ExtensionSelection{Kind: ExtensionMCP, ID: webID, Version: "config-2", Digest: digestB, AllowedTools: []string{"web_search"}},
+			InstallationID: webID, VersionID: "config-2",
+			Source: "builtin:web_search:tavily", ContentDigest: digestB, ArtifactDigest: digestC, ToolSchemaDigest: digestA,
+			ToolNames: []string{"web_search"}, ReadOnly: true,
+		},
+		{
+			Selection:      ExtensionSelection{Kind: ExtensionSkill, ID: installedID, Version: "1.2.3", Digest: digestC},
+			InstallationID: installedID, VersionID: installedVersionID, InstallationRevision: 4, Source: "registry",
+			ContentDigest: digestC, ArtifactDigest: digestA, SkillInstructions: "Use the installed workflow.",
+		},
+		{
+			Selection: ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1.0.0", Digest: digestA, AllowedTools: []string{"product_rooms_list"}},
+			Source:    "product-capability", ContentDigest: digestA, ArtifactDigest: digestB, ToolNames: []string{"product_rooms_list"}, ReadOnly: true,
+		},
+		{
+			Selection: ExtensionSelection{Kind: ExtensionKnowledge, ID: uuid.NewString(), Version: "1.0.0", Digest: digestA, AllowedTools: []string{"knowledge_search"}},
+			Source:    "builtin:knowledge:semantic", ContentDigest: digestA, ArtifactDigest: digestB, ToolNames: []string{"knowledge_search"}, ReadOnly: true,
+		},
+	}
+	store := &conversationScheduleStoreStub{}
+	if err := executeScheduleForTest(t, store, lease, uuid.NewString(), map[string]any{
+		"name": "daily", "goal": "summarize messages", "cron": "0 9 * * *", "timezone": "Asia/Shanghai",
+	}); err != nil {
+		t.Fatalf("execute schedule intrinsic: %v", err)
+	}
+	origin := store.commands[0].Schedule.Spec.Payload.Agent.ScheduledConversation
+	if origin == nil || len(origin.ExtensionSnapshots) != 3 {
+		t.Fatalf("scheduled origin=%+v", origin)
+	}
+	sources := map[string]bool{}
+	for _, snapshot := range origin.ExtensionSnapshots {
+		sources[snapshot.Source] = true
+	}
+	if !sources["message-mcp"] || !sources["builtin:web_search:tavily"] || !sources["registry"] || sources["product-capability"] || sources["builtin:knowledge:semantic"] {
+		t.Fatalf("scheduled sources=%v", sources)
 	}
 }
 

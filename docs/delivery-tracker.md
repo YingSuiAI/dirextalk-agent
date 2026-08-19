@@ -197,7 +197,12 @@ contract](message-server-integration-development-contract.md), and
   with model input limited to schedule intent/trigger/timeout. Turn authority
   supplies owner generation, conversation, and profile; PostgreSQL commits the
   schedule/replay and terminal transcript/event as one deterministic,
-  replay-safe transaction.
+  replay-safe transaction. Due occurrences now execute through deterministic,
+  replay-safe Native Turns, reusing the creating turn's accepted installed
+  MCP/Skill, Message MCP, and Tavily Web Search snapshots while excluding
+  request-scoped Product Capability and semantic Knowledge. Successful Task
+  output is the single committed assistant Markdown in `result.text`, without
+  JSON configuration or a duplicate assistant message.
 - The current Cloud Worker path uses a real `CLOUD_WORKER` CoreTask and
   CoreConfirmation with the sole App-uploaded, STS-verified AWS credential.
   Resource placement, live pricing, Route53, and execution use the deployment

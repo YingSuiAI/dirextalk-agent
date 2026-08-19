@@ -323,7 +323,22 @@ intent and trigger; Core binds the authenticated owner/account generation,
 current conversation, and pinned model profile from the durable turn lease.
 The schedule template persists exactly the typed `payload.agent` owner and
 positive generation authority in addition to its conversation/profile fields;
-it contains no credential or arbitrary reference fields.
+it contains no credential or arbitrary reference fields. It also carries the
+creating turn's redacted, immutable execution snapshots for installed MCPs and
+Skills plus the owner-bound Message MCP and Tavily Web Search catalogs.
+Product Capability and semantic Knowledge snapshots are deliberately excluded
+because a background occurrence cannot inherit their request-time grants or
+context. Each due occurrence revalidates those accepted snapshots through the
+live Native resolver and fails closed on catalog or installation drift. A
+creating turn with no eligible snapshots remains explicitly pinned to no
+extensions and cannot acquire tools installed or enabled later.
+Scheduled Agent Tasks use the durable Native `StartTurn` path, not the generic
+Task agent loop. Request and turn UUIDs derive from the occurrence Task UUID,
+so reclaim after a crash resumes the same turn and cannot append a second user
+or assistant message. The Task succeeds with only the already-committed Native
+assistant Markdown in `result.text`; no response JSON or duplicate transcript
+message is produced. The internal execution context binds only the persisted
+owner and account generation and never mints Product Capability scopes.
 The PostgreSQL boundary atomically commits the schedule, idempotency replay,
 turn response/event, and transcript, so recovery cannot expose either a
 schedule without its conversation receipt or a receipt without its schedule.

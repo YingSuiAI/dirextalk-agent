@@ -65,6 +65,17 @@ expiry and restart use the same persisted lane state, so no in-memory semaphore
 is an authority and no local failure automatically authorizes a paid Cloud
 Worker.
 
+Schedules created by a Native turn remain on the same durable conversation
+architecture when they become due. The occurrence Task carries redacted
+snapshots for installed MCP/Skills and the owner-bound Message MCP and Web
+Search catalogs, revalidates them through the live resolver, and starts one
+deterministically identified Native Turn. Product Capability and semantic
+Knowledge are not inherited because their request-time authority is absent.
+Only the persisted owner/account generation enters the background capability
+context. Task recovery resumes the same turn, and successful Task presentation
+is exactly that turn's committed assistant Markdown rather than a second JSON
+response or transcript write.
+
 ## Ownership
 
 - Agent owns its PostgreSQL database, files, credentials, model/conversation

@@ -43,8 +43,38 @@ const (
 // schedule created from an authenticated conversation turn. It contains only
 // immutable account authority, never credentials or arbitrary references.
 type AgentTaskPayload struct {
-	OwnerID           string `json:"owner_id"`
-	AccountGeneration uint64 `json:"account_generation"`
+	OwnerID               string                       `json:"owner_id"`
+	AccountGeneration     uint64                       `json:"account_generation"`
+	ScheduledConversation *ScheduledConversationOrigin `json:"scheduled_conversation,omitempty"`
+}
+
+// ScheduledConversationOrigin is the internal durable handoff from a Native
+// conversation turn into a scheduled Agent Task. It is intentionally absent
+// from ordinary user-created Agent Tasks. The snapshots are redacted execution
+// bindings; credentials and executable closures remain behind the live Native
+// resolver and must be revalidated before each scheduled turn starts.
+type ScheduledConversationOrigin struct {
+	ExtensionSnapshots []ScheduledExtensionSnapshot `json:"extension_snapshots,omitempty"`
+}
+
+// ScheduledExtensionSnapshot mirrors only the immutable, non-secret portion
+// of a Native turn extension snapshot without introducing a coretask ->
+// coreconversation package cycle.
+type ScheduledExtensionSnapshot struct {
+	Selection            ExtensionSelection `json:"selection"`
+	InstallationID       string             `json:"installation_id"`
+	VersionID            string             `json:"version_id"`
+	InstallationRevision uint64             `json:"installation_revision,omitempty"`
+	Source               string             `json:"source"`
+	ContentDigest        string             `json:"content_digest"`
+	ArtifactDigest       string             `json:"artifact_digest"`
+	ToolSchemaDigest     string             `json:"tool_schema_digest,omitempty"`
+	NetworkBindingDigest string             `json:"network_binding_digest,omitempty"`
+	SecretBindingDigest  string             `json:"secret_binding_digest,omitempty"`
+	ToolNames            []string           `json:"tool_names,omitempty"`
+	SkillInstructions    string             `json:"skill_instructions,omitempty"`
+	RequiresConfirmation bool               `json:"requires_confirmation"`
+	ReadOnly             bool               `json:"read_only"`
 }
 
 // WorkloadTaskPayload is the immutable execution fence for a workload
@@ -361,6 +391,13 @@ func normalizePayload(s *TaskSpec) error {
 			if p.OwnerID == "" || len([]byte(p.OwnerID)) > 512 || !utf8.ValidString(p.OwnerID) || p.AccountGeneration == 0 {
 				return ErrInvalid
 			}
+			if p.ScheduledConversation != nil {
+				snapshots, err := normalizeScheduledExtensionSnapshots(p.ScheduledConversation.ExtensionSnapshots)
+				if err != nil {
+					return err
+				}
+				p.ScheduledConversation.ExtensionSnapshots = snapshots
+			}
 		}
 	case TaskKindExtension:
 		if count != 1 || s.Payload.Extension == nil {
@@ -471,6 +508,85 @@ func normalizePayload(s *TaskSpec) error {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func normalizeScheduledExtensionSnapshots(in []ScheduledExtensionSnapshot) ([]ScheduledExtensionSnapshot, error) {
+	if len(in) > MaxRefCount {
+		return nil, ErrInvalid
+	}
+	out := make([]ScheduledExtensionSnapshot, 0, len(in))
+	seenSelections := make(map[string]struct{}, len(in))
+	seenTools := make(map[string]struct{})
+	for _, snapshot := range in {
+		normalizedSelections, err := normalizeExtensions([]ExtensionSelection{snapshot.Selection})
+		if err != nil || len(normalizedSelections) != 1 {
+			return nil, ErrInvalid
+		}
+		snapshot.Selection = normalizedSelections[0]
+		snapshot.InstallationID = strings.TrimSpace(snapshot.InstallationID)
+		snapshot.VersionID = strings.TrimSpace(snapshot.VersionID)
+		snapshot.Source = strings.TrimSpace(snapshot.Source)
+		snapshot.ContentDigest = strings.ToLower(strings.TrimSpace(snapshot.ContentDigest))
+		snapshot.ArtifactDigest = strings.ToLower(strings.TrimSpace(snapshot.ArtifactDigest))
+		snapshot.ToolSchemaDigest = strings.ToLower(strings.TrimSpace(snapshot.ToolSchemaDigest))
+		snapshot.NetworkBindingDigest = strings.ToLower(strings.TrimSpace(snapshot.NetworkBindingDigest))
+		snapshot.SecretBindingDigest = strings.ToLower(strings.TrimSpace(snapshot.SecretBindingDigest))
+		if snapshot.InstallationID != snapshot.Selection.ID || snapshot.VersionID == "" || snapshot.Source == "" ||
+			snapshot.ContentDigest != snapshot.Selection.Digest || !ValidDigest(snapshot.ContentDigest) || !ValidDigest(snapshot.ArtifactDigest) ||
+			(snapshot.ToolSchemaDigest != "" && !ValidDigest(snapshot.ToolSchemaDigest)) ||
+			(snapshot.NetworkBindingDigest != "" && !ValidDigest(snapshot.NetworkBindingDigest)) ||
+			(snapshot.SecretBindingDigest != "" && !ValidDigest(snapshot.SecretBindingDigest)) ||
+			len([]byte(snapshot.SkillInstructions)) > MaxGoalBytes || !utf8.ValidString(snapshot.SkillInstructions) {
+			return nil, ErrInvalid
+		}
+		switch snapshot.Source {
+		case "message-mcp", "builtin:web_search:tavily":
+			if snapshot.InstallationRevision != 0 || snapshot.RequiresConfirmation || !snapshot.ReadOnly || snapshot.SkillInstructions != "" {
+				return nil, ErrInvalid
+			}
+		case "product-capability", "builtin:knowledge:semantic":
+			return nil, ErrInvalid
+		default:
+			if strings.HasPrefix(snapshot.Source, "builtin:") || snapshot.InstallationRevision == 0 || !ValidUUID(snapshot.VersionID) {
+				return nil, ErrInvalid
+			}
+		}
+		snapshot.ToolNames, err = normalizeRefs(snapshot.ToolNames)
+		if err != nil || !equalStringSet(snapshot.ToolNames, snapshot.Selection.AllowedTools) {
+			return nil, ErrInvalid
+		}
+		selectionKey := string(snapshot.Selection.Kind) + ":" + snapshot.Selection.ID
+		if _, duplicate := seenSelections[selectionKey]; duplicate {
+			return nil, ErrConflict
+		}
+		seenSelections[selectionKey] = struct{}{}
+		for _, name := range snapshot.ToolNames {
+			if _, duplicate := seenTools[name]; duplicate {
+				return nil, ErrConflict
+			}
+			seenTools[name] = struct{}{}
+		}
+		out = append(out, snapshot)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Selection.Kind != out[j].Selection.Kind {
+			return out[i].Selection.Kind < out[j].Selection.Kind
+		}
+		return out[i].Selection.ID < out[j].Selection.ID
+	})
+	return out, nil
+}
+
+func equalStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func ValidDigest(value string) bool {

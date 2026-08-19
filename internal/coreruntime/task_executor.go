@@ -22,6 +22,7 @@ type TaskExecutor struct {
 	skillInstructions SkillInstructionResolver
 	mu                sync.RWMutex
 	handlers          map[coretask.TaskKind]TaskHandler
+	scheduledAgent    TaskHandler
 	workload          *coreworkload.Handler
 }
 
@@ -104,6 +105,15 @@ func (e *TaskExecutor) SetSkillInstructionResolver(s SkillInstructionResolver) {
 // task worker must not write a second terminal state.
 func (e *TaskExecutor) SetWorkloadHandler(h *coreworkload.Handler) { e.workload = h }
 
+// SetScheduledAgentHandler wires the Native conversation execution path used
+// only by schedule-intrinsic Agent tasks carrying a ScheduledConversation
+// origin. Ordinary Agent Tasks continue through the generic Agent loop.
+func (e *TaskExecutor) SetScheduledAgentHandler(handler TaskHandler) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.scheduledAgent = handler
+}
+
 func (e *TaskExecutor) RegisterHandler(kind coretask.TaskKind, handler TaskHandler) error {
 	if (kind != coretask.TaskKindExtension && kind != coretask.TaskKindConversationTool && kind != coretask.TaskKindKnowledgeIndex && kind != coretask.TaskKindWorkload && kind != coretask.TaskKindCloudWorker) || handler == nil {
 		return errors.New("invalid task handler")
@@ -141,6 +151,22 @@ func (e *TaskExecutor) ExecuteManaged(ctx context.Context, task coretask.Task) (
 		// A generic handler cannot win a deadline race merely by returning a
 		// result after its context expired. Domain-owned terminal transitions
 		// remain authoritative because they already fenced the task atomically.
+		if !outcome.TerminalOwned {
+			if err := execCtx.Err(); err != nil {
+				outcome.Result = coretask.Result{}
+				outcome.Err = err
+			}
+		}
+		return outcome, nil
+	}
+	if task.Spec.Payload.Agent != nil && task.Spec.Payload.Agent.ScheduledConversation != nil {
+		e.mu.RLock()
+		h := e.scheduledAgent
+		e.mu.RUnlock()
+		if h == nil {
+			return ManagedOutcome{}, errors.New("scheduled Agent handler is not registered")
+		}
+		outcome := h(execCtx, task)
 		if !outcome.TerminalOwned {
 			if err := execCtx.Err(); err != nil {
 				outcome.Result = coretask.Result{}
