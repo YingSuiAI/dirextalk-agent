@@ -318,9 +318,15 @@ has no priority, DAG/graph, task dependency authoring, or cluster/pool
 scheduler.
 
 Natural-language Native turns create schedules only through the Core-owned
-`agent_schedule_create` intrinsic. The model supplies the bounded schedule
-intent and trigger; Core binds the authenticated owner/account generation,
-current conversation, and pinned model profile from the durable turn lease.
+`agent_schedule_create` intrinsic. The model supplies a concise task name as
+the only schedule-card title, the bounded schedule intent and trigger, and one
+closed capability: `chat_summary`, `web_research`, or `room_message`. Core
+binds the authenticated owner/account generation, current conversation, and
+pinned model profile from the durable turn lease. Before any schedule write it
+requires the exact capability tools from the creating Turn's immutable
+Message MCP or Tavily snapshot. Unknown workflows, wrong sources, and missing
+tools produce a correctable intrinsic result and no schedule row; installed
+extensions do not provide a generic scheduled-workflow capability.
 The schedule template persists exactly the typed `payload.agent` owner and
 positive generation authority in addition to its conversation/profile fields;
 it contains no credential or arbitrary reference fields. It also carries the
@@ -353,6 +359,16 @@ dedicated invalid-arguments correction for `static_site_publish`, the next
 provider request forces that named tool through the provider-native tool-choice
 field; the force survives partial-output continuation and clears after the next
 non-correction intrinsic result.
+
+Schedule output history is read through
+`agent.schedules.v1/list_outputs`. The adapter first revalidates the live
+schedule identity, then performs one direct occurrence/Task join ordered by
+`(scheduled_for, occurrence_id)` descending. Its opaque cursor preserves that
+tuple order across equal schedule times without duplicates. The projection is
+closed to occurrence/task identity and times, current Task status, the same
+safe Task result shape, and bounded failure fields; schedule templates, Task
+payloads, model/extension snapshots, owner authority, and secrets remain
+private. Soft-deleted Task rows remain part of occurrence history.
 
 Single-page static publication uses the Core-owned `static_site_publish`
 intrinsic. One HTML file is published directly and is not wrapped in an

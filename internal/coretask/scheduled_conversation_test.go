@@ -9,7 +9,7 @@ import (
 )
 
 func TestScheduledConversationSnapshotAdmission(t *testing.T) {
-	message := scheduledSnapshot(ExtensionMCP, "message-mcp", "messages_list")
+	message := scheduledSnapshot(ExtensionMCP, "message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_list")
 	message.VersionID = "message-config-1"
 	message.ReadOnly = true
 	web := scheduledSnapshot(ExtensionMCP, "builtin:web_search:tavily", "web_search")
@@ -37,7 +37,7 @@ func TestScheduledConversationSnapshotAdmission(t *testing.T) {
 }
 
 func TestScheduledConversationSnapshotFailsClosed(t *testing.T) {
-	base := scheduledSnapshot(ExtensionMCP, "message-mcp", "messages_list")
+	base := scheduledSnapshot(ExtensionMCP, "message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_list")
 	base.VersionID = "message-config-1"
 	base.ReadOnly = true
 
@@ -81,13 +81,37 @@ func TestScheduledConversationSnapshotFailsClosed(t *testing.T) {
 	}
 }
 
+func TestScheduledConversationCapabilityFailsClosed(t *testing.T) {
+	chat := scheduledSnapshot(ExtensionMCP, "message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_list")
+	chat.VersionID = "message-config-1"
+	chat.ReadOnly = true
+	tests := []struct {
+		name       string
+		capability ScheduledCapability
+		snapshots  []ScheduledExtensionSnapshot
+	}{
+		{name: "missing capability", snapshots: []ScheduledExtensionSnapshot{chat}},
+		{name: "unknown capability", capability: "installed_workflow", snapshots: []ScheduledExtensionSnapshot{chat}},
+		{name: "missing exact tool", capability: ScheduledCapabilityRoomMessage, snapshots: []ScheduledExtensionSnapshot{chat}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spec := scheduledAgentSpec(test.snapshots...)
+			spec.Payload.Agent.ScheduledConversation.Capability = test.capability
+			if _, err := spec.Normalize(); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
 func scheduledAgentSpec(snapshots ...ScheduledExtensionSnapshot) TaskSpec {
 	return TaskSpec{
 		Kind: TaskKindAgent, Goal: "summarize messages", ConversationID: uuid.NewString(), ModelProfileID: uuid.NewString(),
 		IdempotencyKey: uuid.NewString(),
 		Payload: TaskPayload{Agent: &AgentTaskPayload{
 			OwnerID: "@owner:example.test", AccountGeneration: 7,
-			ScheduledConversation: &ScheduledConversationOrigin{ExtensionSnapshots: snapshots},
+			ScheduledConversation: &ScheduledConversationOrigin{Capability: ScheduledCapabilityChatSummary, ExtensionSnapshots: snapshots},
 		}},
 	}
 }

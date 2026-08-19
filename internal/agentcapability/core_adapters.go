@@ -1225,35 +1225,39 @@ func projectTask(task coretask.Task) publicTask {
 	for _, extension := range task.Spec.Extensions {
 		extensions = append(extensions, publicTaskExtension{Kind: extension.Kind, ID: extension.ID, PinnedVersion: extension.Version, Digest: extension.Digest, AllowedTools: append([]string{}, extension.AllowedTools...)})
 	}
+	return publicTask{
+		TaskID: task.ID, Goal: task.Spec.Goal, ConversationID: task.Spec.ConversationID, ModelProfileID: task.Spec.ModelProfileID,
+		AttachmentRefs: append([]string{}, task.Spec.AttachmentRefs...), Extensions: extensions, KnowledgeRefs: append([]string{}, task.Spec.KnowledgeRefs...), TimeoutSeconds: task.Spec.TimeoutSeconds,
+		Status: task.Status, Attempt: task.Attempt, LeaseEpoch: task.LeaseEpoch, AvailableAt: task.AvailableAt, RetryOfTaskID: task.RetryOfTaskID,
+		Result: projectTaskResult(task.Result), FailureCode: task.FailureCode, FailureSummary: task.FailureSummary, Revision: task.Revision, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt,
+		Kind: kind, Workload: task.Spec.Payload.Workload, ConversationTool: task.Spec.Payload.ConversationTool, CloudWorker: task.Spec.Payload.CloudWorker,
+	}
+}
+
+func projectTaskResult(taskResult *coretask.Result) any {
 	var result any
-	if task.Result != nil {
-		if len(task.Result.JSON) > 0 {
+	if taskResult != nil {
+		if len(taskResult.JSON) > 0 {
 			var value map[string]any
-			if json.Unmarshal(task.Result.JSON, &value) == nil {
+			if json.Unmarshal(taskResult.JSON, &value) == nil {
 				result = value
 			}
 		}
 		if result == nil {
 			value := map[string]any{}
-			if task.Result.Text != "" {
-				value["text"] = task.Result.Text
+			if taskResult.Text != "" {
+				value["text"] = taskResult.Text
 			}
-			if task.Result.Summary != "" {
-				value["summary"] = task.Result.Summary
+			if taskResult.Summary != "" {
+				value["summary"] = taskResult.Summary
 			}
-			if len(task.Result.Files) > 0 {
-				value["files"] = task.Result.Files
+			if len(taskResult.Files) > 0 {
+				value["files"] = taskResult.Files
 			}
 			result = value
 		}
 	}
-	return publicTask{
-		TaskID: task.ID, Goal: task.Spec.Goal, ConversationID: task.Spec.ConversationID, ModelProfileID: task.Spec.ModelProfileID,
-		AttachmentRefs: append([]string{}, task.Spec.AttachmentRefs...), Extensions: extensions, KnowledgeRefs: append([]string{}, task.Spec.KnowledgeRefs...), TimeoutSeconds: task.Spec.TimeoutSeconds,
-		Status: task.Status, Attempt: task.Attempt, LeaseEpoch: task.LeaseEpoch, AvailableAt: task.AvailableAt, RetryOfTaskID: task.RetryOfTaskID,
-		Result: result, FailureCode: task.FailureCode, FailureSummary: task.FailureSummary, Revision: task.Revision, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt,
-		Kind: kind, Workload: task.Spec.Payload.Workload, ConversationTool: task.Spec.Payload.ConversationTool, CloudWorker: task.Spec.Payload.CloudWorker,
-	}
+	return result
 }
 
 func (c *coreTaskCapability) Descriptor() *capv1.CapabilityDescriptor {

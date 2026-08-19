@@ -17,12 +17,13 @@ import (
 )
 
 type scheduleIntrinsicArguments struct {
-	Name           string `json:"name"`
-	Goal           string `json:"goal"`
-	RunAt          string `json:"run_at,omitempty"`
-	Cron           string `json:"cron,omitempty"`
-	Timezone       string `json:"timezone,omitempty"`
-	TimeoutSeconds int64  `json:"timeout_seconds,omitempty"`
+	Name           string                       `json:"name"`
+	Goal           string                       `json:"goal"`
+	Capability     coretask.ScheduledCapability `json:"capability"`
+	RunAt          string                       `json:"run_at,omitempty"`
+	Cron           string                       `json:"cron,omitempty"`
+	Timezone       string                       `json:"timezone,omitempty"`
+	TimeoutSeconds int64                        `json:"timeout_seconds,omitempty"`
 }
 
 func (s *Service) resolveIntrinsicTools(ctx context.Context, lease TurnLease) ([]ResolvedIntrinsic, error) {
@@ -47,14 +48,15 @@ func scheduleIntrinsic(store ConversationScheduleStore, bound TurnLease) Resolve
 	return ResolvedIntrinsic{
 		Tool: coremodel.Tool{
 			Name:        coremodel.IntrinsicScheduleCreateToolName,
-			Description: "Create a durable one-time or recurring Agent schedule in this conversation. Identity, conversation, model profile, and account generation are injected by Core and must not be supplied as arguments.",
+			Description: "Create a durable one-time or recurring Agent schedule in this conversation. The only currently supported scheduled workflows are chat_summary, web_research, and room_message; choose the matching capability only when its required tools are present, and refuse every other scheduled workflow. Name is the sole schedule-card title and must be a concise human-readable task name extracted from the user's request. Identity, conversation, model profile, and account generation are injected by Core and must not be supplied as arguments.",
 			InputSchema: map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
-				"required":             []any{"name", "goal"},
+				"required":             []any{"name", "goal", "capability"},
 				"properties": map[string]any{
-					"name":            map[string]any{"type": "string", "minLength": 1, "maxLength": 512},
+					"name":            map[string]any{"type": "string", "minLength": 1, "maxLength": 512, "description": "Concise human-readable task name extracted from the user request; this is the only schedule card title."},
 					"goal":            map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes},
+					"capability":      map[string]any{"type": "string", "enum": []any{string(coretask.ScheduledCapabilityChatSummary), string(coretask.ScheduledCapabilityWebResearch), string(coretask.ScheduledCapabilityRoomMessage)}, "description": "Closed scheduled workflow. Refuse unsupported workflows instead of inventing another value."},
 					"run_at":          map[string]any{"type": "string", "format": "date-time"},
 					"cron":            map[string]any{"type": "string"},
 					"timezone":        map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
@@ -86,6 +88,9 @@ func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleSto
 	if strings.TrimSpace(turn.OwnerID) == "" || turn.AccountGeneration == 0 || !validUUID(turn.ConversationID) || !validUUID(turn.ProfileID) || turn.CreatedAt.IsZero() {
 		return IntrinsicExecutionResult{}, ErrInvalid
 	}
+	if err = requireScheduledCapability(args.Capability, turn.ExtensionSnapshots); err != nil {
+		return IntrinsicExecutionResult{}, err
+	}
 	// Turn creation is the immutable time anchor for the same recorded model
 	// call across lease recovery. Wall-clock time here would change the replay
 	// digest and turn response after an uncertain commit.
@@ -97,7 +102,7 @@ func executeScheduleIntrinsic(ctx context.Context, store ConversationScheduleSto
 		Spec: coretask.TaskTemplate{
 			Kind: coretask.TaskKindAgent, Payload: coretask.TaskPayload{Agent: &coretask.AgentTaskPayload{
 				OwnerID: strings.TrimSpace(turn.OwnerID), AccountGeneration: turn.AccountGeneration,
-				ScheduledConversation: &coretask.ScheduledConversationOrigin{ExtensionSnapshots: scheduledExtensionSnapshots(turn.ExtensionSnapshots)},
+				ScheduledConversation: &coretask.ScheduledConversationOrigin{Capability: args.Capability, ExtensionSnapshots: scheduledExtensionSnapshots(turn.ExtensionSnapshots)},
 			}},
 			Goal: args.Goal, ConversationID: turn.ConversationID, ModelProfileID: turn.ProfileID, TimeoutSeconds: args.TimeoutSeconds,
 		},
@@ -185,6 +190,51 @@ func scheduledExtensionSnapshots(snapshots []ExtensionExecutionSnapshot) []coret
 	return out
 }
 
+type scheduledCapabilityUnavailableError struct {
+	correction string
+}
+
+func (e scheduledCapabilityUnavailableError) Error() string {
+	return "scheduled capability is unavailable"
+}
+func (e scheduledCapabilityUnavailableError) Unwrap() error { return ErrInvalid }
+func (e scheduledCapabilityUnavailableError) IntrinsicCorrection() string {
+	return e.correction
+}
+
+func requireScheduledCapability(capability coretask.ScheduledCapability, snapshots []ExtensionExecutionSnapshot) error {
+	source, requiredTools, err := capability.RequiredBinding()
+	if err != nil {
+		return scheduledCapabilityUnavailableError{correction: "Unsupported scheduled capability. Only chat_summary, web_research, and room_message are currently supported; refuse every other scheduled workflow."}
+	}
+	available := make(map[string]struct{})
+	for _, snapshot := range snapshots {
+		if snapshot.Source != source {
+			continue
+		}
+		for _, tool := range snapshot.ToolNames {
+			if source == "message-mcp" {
+				const prefix = "mcp__message__"
+				if !strings.HasPrefix(tool, prefix) {
+					continue
+				}
+				tool = strings.TrimPrefix(tool, prefix)
+			}
+			available[tool] = struct{}{}
+		}
+	}
+	missing := make([]string, 0, len(requiredTools))
+	for _, tool := range requiredTools {
+		if _, ok := available[tool]; !ok {
+			missing = append(missing, tool)
+		}
+	}
+	if len(missing) != 0 {
+		return scheduledCapabilityUnavailableError{correction: fmt.Sprintf("Scheduled capability %q is unavailable because the creating turn lacks %s tool(s): %s. Do not create this schedule; explain that the requested scheduled workflow is currently unavailable.", capability, source, strings.Join(missing, ", "))}
+	}
+	return nil
+}
+
 func parseScheduleIntrinsicArguments(raw json.RawMessage) (scheduleIntrinsicArguments, error) {
 	if len(raw) == 0 || len(raw) > MaxToolArgumentsBytes {
 		return scheduleIntrinsicArguments{}, ErrInvalid
@@ -196,9 +246,13 @@ func parseScheduleIntrinsicArguments(raw json.RawMessage) (scheduleIntrinsicArgu
 		return scheduleIntrinsicArguments{}, ErrInvalid
 	}
 	args.Name, args.Goal = strings.TrimSpace(args.Name), strings.TrimSpace(args.Goal)
+	args.Capability = coretask.ScheduledCapability(strings.TrimSpace(string(args.Capability)))
 	args.RunAt, args.Cron, args.Timezone = strings.TrimSpace(args.RunAt), strings.TrimSpace(args.Cron), strings.TrimSpace(args.Timezone)
 	if args.Name == "" || args.Goal == "" || !utf8.ValidString(args.Name) || !utf8.ValidString(args.Goal) || len([]byte(args.Name)) > 512 || len([]byte(args.Goal)) > coretask.MaxGoalBytes || args.TimeoutSeconds < 0 || args.TimeoutSeconds > coretask.MaxTimeoutSeconds {
 		return scheduleIntrinsicArguments{}, ErrInvalid
+	}
+	if _, _, err := args.Capability.RequiredBinding(); err != nil {
+		return scheduleIntrinsicArguments{}, scheduledCapabilityUnavailableError{correction: "Unsupported scheduled capability. Only chat_summary, web_research, and room_message are currently supported; refuse every other scheduled workflow."}
 	}
 	if (args.RunAt == "") == (args.Cron == "") || (args.RunAt != "" && args.Timezone != "") || (args.Cron != "" && args.Timezone == "") {
 		return scheduleIntrinsicArguments{}, ErrInvalid

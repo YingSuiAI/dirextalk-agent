@@ -41,7 +41,7 @@ func TestScheduledAgentTaskUsesDeterministicNativeTurnAndReturnsMarkdownOnly(t *
 	if command.RequestID != wantRequestID || command.TurnID != wantTurnID || command.ConversationID != task.Spec.ConversationID ||
 		command.Prompt != task.Spec.Goal || command.OwnerID != task.Spec.Payload.Agent.OwnerID ||
 		command.AccountGeneration != task.Spec.Payload.Agent.AccountGeneration || len(command.ExtensionSnapshots) != 1 ||
-		command.ExtensionSnapshots[0].Source != "message-mcp" || command.ExtensionSnapshots[0].ToolNames[0] != "messages_list" {
+		command.ExtensionSnapshots[0].Source != "message-mcp" || len(command.ExtensionSnapshots[0].ToolNames) != 2 || command.ExtensionSnapshots[0].ToolNames[0] != "mcp__message__dirextalk_messages_list" {
 		t.Fatalf("start command=%+v", command)
 	}
 	assertScheduledAuthority(t, resolver.ctx, task)
@@ -175,10 +175,10 @@ func scheduledTaskFixture(profileID string) coretask.Task {
 			Kind: coretask.TaskKindAgent, Goal: "summarize the room", ConversationID: uuid.NewString(), ModelProfileID: profileID,
 			Payload: coretask.TaskPayload{Agent: &coretask.AgentTaskPayload{
 				OwnerID: "@owner:example.test", AccountGeneration: 7,
-				ScheduledConversation: &coretask.ScheduledConversationOrigin{ExtensionSnapshots: []coretask.ScheduledExtensionSnapshot{{
-					Selection:      coretask.ExtensionSelection{Kind: coretask.ExtensionMCP, ID: toolID, Version: "1", Digest: digest, AllowedTools: []string{"messages_list"}},
+				ScheduledConversation: &coretask.ScheduledConversationOrigin{Capability: coretask.ScheduledCapabilityChatSummary, ExtensionSnapshots: []coretask.ScheduledExtensionSnapshot{{
+					Selection:      coretask.ExtensionSelection{Kind: coretask.ExtensionMCP, ID: toolID, Version: "1", Digest: digest, AllowedTools: []string{"mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_rooms_search"}},
 					InstallationID: toolID, VersionID: "message-config-1", Source: "message-mcp", ContentDigest: digest,
-					ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64), ToolNames: []string{"messages_list"}, ReadOnly: true,
+					ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64), ToolNames: []string{"mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_rooms_search"}, ReadOnly: true,
 				}}},
 			}},
 		},

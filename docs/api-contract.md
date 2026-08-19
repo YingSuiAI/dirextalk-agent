@@ -265,8 +265,18 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   Capability.
 - Authenticated durable Native turns receive the Core-owned
   `agent_schedule_create` intrinsic when the PostgreSQL conversation/schedule
-  store is composed. Model input is limited to `name`, `goal`, exactly one
-  `run_at` or `cron` plus IANA `timezone`, and optional `timeout_seconds`.
+  store is composed. Model input is limited to a concise human-readable `name`
+  (the sole schedule-card title), `goal`, required closed `capability`, exactly
+  one `run_at` or `cron` plus IANA `timezone`, and optional
+  `timeout_seconds`. The only accepted capabilities are `chat_summary`
+  (`message-mcp`: `dirextalk_rooms_search`, `dirextalk_messages_list`),
+  `web_research` (`builtin:web_search:tavily`: `web_search`), and
+  `room_message` (`message-mcp`: `dirextalk_rooms_search`,
+  `dirextalk_messages_send`). Core checks those exact creating-Turn snapshot
+  bindings before normalization or persistence. Unknown workflows, wrong
+  sources, and missing tools return a bounded correctable intrinsic error and
+  write no schedule row; installed extensions are not a generic scheduled-
+  workflow escape hatch.
   Owner, account generation, conversation, and model profile are injected from
   the fenced turn lease. Owner and generation persist only in the typed
   `task_template.payload.agent` authority object; credentials and
@@ -289,6 +299,17 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   one transaction. Schedule and idempotency identities are deterministic from
   the accepted turn/request/tool-call identity, so an uncertain same-call retry
   replays without creating another schedule.
+- `agent.schedules.v1/list_outputs` is an `agent:schedules:read` operation. It
+  requires `schedule_id`, accepts a 1..200 `page_size` and opaque
+  `page_token`, revalidates the live schedule before reading, and returns
+  newest-first occurrence output ordered by
+  `(scheduled_for, occurrence_id)` descending with a stable descending tuple
+  cursor. Each closed item exposes only `occurrence_id`, `task_id`,
+  `scheduled_for`, current Task `status`, `created_at`, `updated_at`, optional
+  safe Task `result`, and optional `failure_code`/`failure_summary`. Task
+  payloads, goals, model or extension snapshots, owner authority, and secrets
+  are never projected. Soft-deleted Task rows remain readable through their
+  immutable schedule occurrence.
 - Authenticated durable Native turns receive `static_site_publish` only when
   the Agent-owned static-site root passes startup readiness. The model supplies
   one self-contained UTF-8 `html` document of at most 192 KiB; it never

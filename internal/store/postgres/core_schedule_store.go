@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -104,6 +105,86 @@ func (s *CoreScheduleStore) GetOccurrence(ctx context.Context, id string) (coret
 type occurrenceReader interface {
 	ListOccurrences(context.Context, string, string, int) ([]coretask.Occurrence, string, error)
 	GetOccurrence(context.Context, string) (coretask.Occurrence, error)
+}
+
+type scheduleOutputCursor struct {
+	ScheduledFor string `json:"scheduled_for"`
+	OccurrenceID string `json:"occurrence_id"`
+}
+
+// ListScheduleOutputs reads the occurrence order and authoritative Task state
+// in one query. The descending tuple cursor is stable when multiple
+// occurrences share the same scheduled time.
+func (s *CoreScheduleStore) ListScheduleOutputs(ctx context.Context, scheduleID, token string, limit int) ([]coretask.ScheduleOutput, string, error) {
+	if !coretask.ValidUUID(scheduleID) || limit <= 0 || limit > 200 || len(token) > 4096 {
+		return nil, "", coretask.ErrInvalid
+	}
+	var before time.Time
+	var beforeID string
+	if token != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(token)
+		if err != nil {
+			return nil, "", coretask.ErrInvalid
+		}
+		var cursor scheduleOutputCursor
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&cursor) != nil || decoder.Decode(&struct{}{}) == nil || cursor.ScheduledFor == "" || !coretask.ValidUUID(cursor.OccurrenceID) {
+			return nil, "", coretask.ErrInvalid
+		}
+		before, err = time.Parse(time.RFC3339Nano, cursor.ScheduledFor)
+		if err != nil || before.Location() != time.UTC || before.Format(time.RFC3339Nano) != cursor.ScheduledFor {
+			return nil, "", coretask.ErrInvalid
+		}
+		beforeID = cursor.OccurrenceID
+	}
+	rows, err := s.store.pool.Query(ctx, `
+		SELECT o.occurrence_id,o.schedule_id,o.task_id,o.scheduled_for,
+		       t.status,t.result_json,COALESCE(t.failure_code,''),COALESCE(t.failure_summary,''),t.created_at,t.updated_at
+		FROM core_schedule_occurrences o
+		JOIN core_tasks t ON t.task_id=o.task_id
+		WHERE o.schedule_id=$1
+		  AND ($2::timestamptz IS NULL OR (o.scheduled_for,o.occurrence_id)<($2,$3::uuid))
+		ORDER BY o.scheduled_for DESC,o.occurrence_id DESC
+		LIMIT $4`, scheduleID, nullableScheduleTime(before), nullableScheduleUUID(beforeID), limit+1)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	outputs := make([]coretask.ScheduleOutput, 0, limit+1)
+	for rows.Next() {
+		var output coretask.ScheduleOutput
+		var status string
+		var resultRaw []byte
+		if err := rows.Scan(&output.OccurrenceID, &output.ScheduleID, &output.TaskID, &output.ScheduledFor,
+			&status, &resultRaw, &output.FailureCode, &output.FailureSummary, &output.CreatedAt, &output.UpdatedAt); err != nil {
+			return nil, "", err
+		}
+		output.Status = coretask.Status(status)
+		output.ScheduledFor, output.CreatedAt, output.UpdatedAt = output.ScheduledFor.UTC(), output.CreatedAt.UTC(), output.UpdatedAt.UTC()
+		if len(resultRaw) != 0 {
+			var result coretask.Result
+			if json.Unmarshal(resultRaw, &result) != nil {
+				return nil, "", coretask.ErrInvalid
+			}
+			output.Result = &result
+		}
+		if output.Validate() != nil {
+			return nil, "", coretask.ErrInvalid
+		}
+		outputs = append(outputs, output)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(outputs) > limit {
+		last := outputs[limit-1]
+		outputs = outputs[:limit]
+		raw, _ := json.Marshal(scheduleOutputCursor{ScheduledFor: last.ScheduledFor.Format(time.RFC3339Nano), OccurrenceID: last.OccurrenceID})
+		next = base64.RawURLEncoding.EncodeToString(raw)
+	}
+	return outputs, next, nil
 }
 
 func (s *CoreScheduleStore) ListOccurrences(ctx context.Context, scheduleID, token string, limit int) ([]coretask.Occurrence, string, error) {

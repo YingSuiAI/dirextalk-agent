@@ -289,6 +289,13 @@ type ScheduleStore interface {
 	DeleteSchedule(context.Context, ScheduleMutationCommand) (Schedule, error)
 }
 
+// ScheduleOutputStore is the narrow newest-first occurrence/Task history read
+// used by the schedules capability. It is separate from ScheduleStore so
+// mutation-only embeddings do not need to implement a presentation query.
+type ScheduleOutputStore interface {
+	ListScheduleOutputs(context.Context, string, string, int) ([]ScheduleOutput, string, error)
+}
+
 type ProgressWatcher interface {
 	ListProgress(context.Context, string, uint64, int) ([]Progress, string, error)
 	WatchProgress(context.Context, string, uint64) (<-chan Progress, error)

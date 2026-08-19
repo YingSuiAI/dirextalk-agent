@@ -59,8 +59,115 @@ func scheduleIntrinsicLease() TurnLease {
 		Turn: Turn{
 			ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:example.test", AccountGeneration: 9,
 			ConversationID: uuid.NewString(), ProfileID: uuid.NewString(), ExpectedRevision: &revision, Revision: 2, State: TurnRunning, CreatedAt: createdAt, UpdatedAt: createdAt,
+			ExtensionSnapshots: []ExtensionExecutionSnapshot{scheduleChatSummarySnapshot()},
 		},
 		LeaseID: uuid.NewString(), Epoch: 3, ExpiresAt: time.Now().UTC().Add(time.Minute),
+	}
+}
+
+func scheduleChatSummarySnapshot() ExtensionExecutionSnapshot {
+	id := uuid.NewString()
+	digest := strings.Repeat("a", 64)
+	tools := []string{"mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_rooms_search"}
+	return ExtensionExecutionSnapshot{
+		Selection:      ExtensionSelection{Kind: ExtensionMCP, ID: id, Version: "message-config-1", Digest: digest, AllowedTools: append([]string(nil), tools...)},
+		InstallationID: id, VersionID: "message-config-1", Source: "message-mcp", ContentDigest: digest,
+		ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64), ToolNames: append([]string(nil), tools...), ReadOnly: true,
+	}
+}
+
+func scheduleExtensionResolver(snapshot ExtensionExecutionSnapshot) ExtensionResolver {
+	tools := make([]coremodel.Tool, 0, len(snapshot.ToolNames))
+	for _, name := range snapshot.ToolNames {
+		tools = append(tools, coremodel.Tool{Name: name, InputSchema: map[string]any{"type": "object"}})
+	}
+	return extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+		return []ResolvedExtension{{Selection: snapshot.Selection, Snapshot: snapshot, Tools: tools, Execute: func(context.Context, ToolExecutionRequest) (ToolResult, error) {
+			return ToolResult{}, errors.New("unexpected scheduled capability tool execution")
+		}}}, nil
+	})
+}
+
+func scheduleSyntheticSnapshot(source string, tools ...string) ExtensionExecutionSnapshot {
+	id := uuid.NewString()
+	digest := strings.Repeat("d", 64)
+	version := "message-config-1"
+	if source == "builtin:web_search:tavily" {
+		version = "web-config-1"
+	}
+	return ExtensionExecutionSnapshot{
+		Selection:      ExtensionSelection{Kind: ExtensionMCP, ID: id, Version: version, Digest: digest, AllowedTools: append([]string(nil), tools...)},
+		InstallationID: id, VersionID: version, Source: source, ContentDigest: digest,
+		ArtifactDigest: strings.Repeat("e", 64), ToolSchemaDigest: strings.Repeat("f", 64), ToolNames: append([]string(nil), tools...), ReadOnly: true,
+	}
+}
+
+func TestScheduleIntrinsicCapabilitySchemaAndAvailabilityGate(t *testing.T) {
+	lease := scheduleIntrinsicLease()
+	intrinsic := scheduleIntrinsic(&conversationScheduleStoreStub{}, lease)
+	properties, ok := intrinsic.Tool.InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties=%#v", intrinsic.Tool.InputSchema["properties"])
+	}
+	capabilitySchema, ok := properties["capability"].(map[string]any)
+	nameSchema, nameOK := properties["name"].(map[string]any)
+	if !ok || !nameOK || len(capabilitySchema["enum"].([]any)) != 3 || !strings.Contains(nameSchema["description"].(string), "only schedule card title") ||
+		!strings.Contains(intrinsic.Tool.Description, "only currently supported scheduled workflows") || !strings.Contains(intrinsic.Tool.Description, "refuse every other") {
+		t.Fatalf("schedule intrinsic schema=%#v description=%q", intrinsic.Tool.InputSchema, intrinsic.Tool.Description)
+	}
+
+	tests := []struct {
+		name       string
+		capability string
+		snapshots  []ExtensionExecutionSnapshot
+		want       coretask.ScheduledCapability
+	}{
+		{name: "chat summary", capability: "chat_summary", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_list")}, want: coretask.ScheduledCapabilityChatSummary},
+		{name: "web research", capability: "web_research", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("builtin:web_search:tavily", "web_search")}, want: coretask.ScheduledCapabilityWebResearch},
+		{name: "room message", capability: "room_message", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search", "mcp__message__dirextalk_messages_send")}, want: coretask.ScheduledCapabilityRoomMessage},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := scheduleIntrinsicLease()
+			candidate.Turn.ExtensionSnapshots = test.snapshots
+			store := &conversationScheduleStoreStub{}
+			err := executeScheduleForTest(t, store, candidate, uuid.NewString(), map[string]any{
+				"name": test.name, "goal": "perform workflow", "capability": test.capability, "run_at": "2026-08-09T00:00:00Z",
+			})
+			if err != nil || len(store.commands) != 1 || store.commands[0].Schedule.Spec.Payload.Agent.ScheduledConversation.Capability != test.want {
+				t.Fatalf("commands=%+v err=%v", store.commands, err)
+			}
+		})
+	}
+
+	rejections := []struct {
+		name       string
+		capability string
+		snapshots  []ExtensionExecutionSnapshot
+	}{
+		{name: "unknown capability", capability: "installed_workflow", snapshots: []ExtensionExecutionSnapshot{scheduleChatSummarySnapshot()}},
+		{name: "chat summary missing exact search", capability: "chat_summary", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_messages_list")}},
+		{name: "web research wrong source", capability: "web_research", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__web_search")}},
+		{name: "room message missing send", capability: "room_message", snapshots: []ExtensionExecutionSnapshot{scheduleSyntheticSnapshot("message-mcp", "mcp__message__dirextalk_rooms_search")}},
+	}
+	for _, test := range rejections {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := scheduleIntrinsicLease()
+			candidate.Turn.ExtensionSnapshots = test.snapshots
+			store := &conversationScheduleStoreStub{}
+			err := executeScheduleForTest(t, store, candidate, uuid.NewString(), map[string]any{
+				"name": test.name, "goal": "perform workflow", "capability": test.capability, "run_at": "2026-08-09T00:00:00Z",
+			})
+			var correction IntrinsicCorrectionError
+			if !errors.Is(err, ErrInvalid) || !errors.As(err, &correction) || strings.TrimSpace(correction.IntrinsicCorrection()) == "" || len(store.commands) != 0 {
+				t.Fatalf("commands=%+v err=%v correction=%q", store.commands, err, func() string {
+					if correction == nil {
+						return ""
+					}
+					return correction.IntrinsicCorrection()
+				}())
+			}
+		})
 	}
 }
 
@@ -97,7 +204,7 @@ func TestScheduleIntrinsicUsesLoadedRevisionWhenClientCASIsOmitted(t *testing.T)
 	lease.Turn.ExpectedRevision = nil
 	store := &conversationScheduleStoreStub{}
 	arguments := map[string]any{
-		"name": "existing conversation", "goal": "send reminder", "run_at": "2026-08-09T02:03:04Z",
+		"name": "existing conversation", "goal": "send reminder", "capability": "chat_summary", "run_at": "2026-08-09T02:03:04Z",
 	}
 	if err := executeScheduleForTestAtRevision(t, store, lease, "call-existing", arguments, 5); err != nil {
 		t.Fatalf("execute schedule intrinsic: %v", err)
@@ -116,7 +223,7 @@ func TestScheduleIntrinsicUsesRenewedTurnLease(t *testing.T) {
 	renewed.Epoch++
 	renewed.ExpiresAt = renewed.ExpiresAt.Add(time.Minute)
 	store := &conversationScheduleStoreStub{}
-	raw := json.RawMessage(`{"name":"每日纳斯达克行情总结","goal":"生成并发布每日行情页面","cron":"30 21 * * *","timezone":"Asia/Shanghai","timeout_seconds":600}`)
+	raw := json.RawMessage(`{"name":"每日纳斯达克行情总结","goal":"生成并发布每日行情页面","capability":"chat_summary","cron":"30 21 * * *","timezone":"Asia/Shanghai","timeout_seconds":600}`)
 	result, err := scheduleIntrinsic(store, bound).Execute(context.Background(), IntrinsicExecutionRequest{
 		Lease: renewed,
 		Call: ToolCall{
@@ -146,6 +253,7 @@ func TestExecuteTurnPassesLoadedConversationRevisionToScheduleIntrinsic(t *testi
 		ConversationID: conversationID, Prompt: "schedule this", ProfileID: profile.ProfileID,
 		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
 		State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC(),
+		ExtensionSnapshots: []ExtensionExecutionSnapshot{scheduleChatSummarySnapshot()},
 	}
 	turnStore := &readOnlyTurnStore{
 		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
@@ -155,10 +263,10 @@ func TestExecuteTurnPassesLoadedConversationRevisionToScheduleIntrinsic(t *testi
 	store := &executingScheduleTurnStore{readOnlyTurnStore: turnStore, conversationScheduleStoreStub: scheduleStore}
 	call := ToolCall{
 		ID: uuid.NewString(), Name: coremodel.IntrinsicScheduleCreateToolName,
-		Arguments: `{"name":"existing conversation","goal":"send reminder","run_at":"2026-08-09T02:03:04Z"}`,
+		Arguments: `{"name":"existing conversation","goal":"send reminder","capability":"chat_summary","run_at":"2026-08-09T02:03:04Z"}`,
 	}
 	model := &twoRoundReadOnlyModel{call: call}
-	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+	service, err := NewService(store, model, scheduleExtensionResolver(turn.ExtensionSnapshots[0]), snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
 		return profile, nil
 	}))
 	if err != nil {
@@ -179,7 +287,7 @@ func TestExecuteTurnReturnsInvalidScheduleArgumentsToModel(t *testing.T) {
 		ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:example.test", AccountGeneration: 9,
 		ConversationID: conversationID, Prompt: "schedule this", ProfileID: profile.ProfileID,
 		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 1,
-		LastSequence: 1, CreatedAt: time.Now().UTC(),
+		LastSequence: 1, CreatedAt: time.Now().UTC(), ExtensionSnapshots: []ExtensionExecutionSnapshot{scheduleChatSummarySnapshot()},
 	}
 	turnStore := &readOnlyTurnStore{
 		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
@@ -188,10 +296,10 @@ func TestExecuteTurnReturnsInvalidScheduleArgumentsToModel(t *testing.T) {
 	scheduleStore := &conversationScheduleStoreStub{}
 	store := &executingScheduleTurnStore{readOnlyTurnStore: turnStore, conversationScheduleStoreStub: scheduleStore}
 	model := &correctingScheduleModel{calls: []ToolCall{
-		{ID: uuid.NewString(), Name: coremodel.IntrinsicScheduleCreateToolName, Arguments: `{"name":"daily","goal":"publish summary","cron":"30 21 * * * *","timezone":"Asia/Shanghai","timeout_seconds":600}`},
-		{ID: uuid.NewString(), Name: coremodel.IntrinsicScheduleCreateToolName, Arguments: `{"name":"daily","goal":"publish summary","cron":"30 21 * * *","timezone":"Asia/Shanghai","timeout_seconds":600}`},
+		{ID: uuid.NewString(), Name: coremodel.IntrinsicScheduleCreateToolName, Arguments: `{"name":"daily","goal":"publish summary","capability":"chat_summary","cron":"30 21 * * * *","timezone":"Asia/Shanghai","timeout_seconds":600}`},
+		{ID: uuid.NewString(), Name: coremodel.IntrinsicScheduleCreateToolName, Arguments: `{"name":"daily","goal":"publish summary","capability":"chat_summary","cron":"30 21 * * *","timezone":"Asia/Shanghai","timeout_seconds":600}`},
 	}}
-	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	service, err := NewService(store, model, scheduleExtensionResolver(turn.ExtensionSnapshots[0]), snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +331,7 @@ func TestScheduleIntrinsicInjectsTurnAuthorityAndUsesDeterministicIdentity(t *te
 	lease := scheduleIntrinsicLease()
 	store := &conversationScheduleStoreStub{}
 	arguments := map[string]any{
-		"name": "daily summary", "goal": "summarize the conversation", "cron": "0 9 * * *", "timezone": "Asia/Shanghai", "timeout_seconds": 120,
+		"name": "daily summary", "goal": "summarize the conversation", "capability": "chat_summary", "cron": "0 9 * * *", "timezone": "Asia/Shanghai", "timeout_seconds": 120,
 	}
 	if err := executeScheduleForTest(t, store, lease, "call-1", arguments); err != nil {
 		t.Fatalf("execute schedule intrinsic: %v", err)
@@ -256,10 +364,10 @@ func TestScheduleIntrinsicPersistsOnlyScheduledConversationSafeExtensions(t *tes
 	digestA, digestB, digestC := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
 	lease.Turn.ExtensionSnapshots = []ExtensionExecutionSnapshot{
 		{
-			Selection:      ExtensionSelection{Kind: ExtensionMCP, ID: messageID, Version: "1.0.0", Digest: digestA, AllowedTools: []string{"dirextalk_messages_list"}},
+			Selection:      ExtensionSelection{Kind: ExtensionMCP, ID: messageID, Version: "1.0.0", Digest: digestA, AllowedTools: []string{"mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_rooms_search"}},
 			InstallationID: messageID, VersionID: "1.0.0",
 			Source: "message-mcp", ContentDigest: digestA, ArtifactDigest: digestB, ToolSchemaDigest: digestC,
-			ToolNames: []string{"dirextalk_messages_list"}, ReadOnly: true,
+			ToolNames: []string{"mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_rooms_search"}, ReadOnly: true,
 		},
 		{
 			Selection:      ExtensionSelection{Kind: ExtensionMCP, ID: webID, Version: "config-2", Digest: digestB, AllowedTools: []string{"web_search"}},
@@ -283,12 +391,12 @@ func TestScheduleIntrinsicPersistsOnlyScheduledConversationSafeExtensions(t *tes
 	}
 	store := &conversationScheduleStoreStub{}
 	if err := executeScheduleForTest(t, store, lease, uuid.NewString(), map[string]any{
-		"name": "daily", "goal": "summarize messages", "cron": "0 9 * * *", "timezone": "Asia/Shanghai",
+		"name": "daily", "goal": "summarize messages", "capability": "chat_summary", "cron": "0 9 * * *", "timezone": "Asia/Shanghai",
 	}); err != nil {
 		t.Fatalf("execute schedule intrinsic: %v", err)
 	}
 	origin := store.commands[0].Schedule.Spec.Payload.Agent.ScheduledConversation
-	if origin == nil || len(origin.ExtensionSnapshots) != 3 {
+	if origin == nil || origin.Capability != coretask.ScheduledCapabilityChatSummary || len(origin.ExtensionSnapshots) != 3 {
 		t.Fatalf("scheduled origin=%+v", origin)
 	}
 	sources := map[string]bool{}
@@ -319,7 +427,7 @@ func TestScheduleIntrinsicAcceptsOneTimeTriggerAndRejectsForgedOrAmbiguousInput(
 	lease := scheduleIntrinsicLease()
 	store := &conversationScheduleStoreStub{}
 	if err := executeScheduleForTest(t, store, lease, "call-once", map[string]any{
-		"name": "once", "goal": "send reminder", "run_at": "2026-08-09T02:03:04+08:00",
+		"name": "once", "goal": "send reminder", "capability": "chat_summary", "run_at": "2026-08-09T02:03:04+08:00",
 	}); err != nil {
 		t.Fatalf("one-time schedule: %v", err)
 	}
@@ -327,11 +435,11 @@ func TestScheduleIntrinsicAcceptsOneTimeTriggerAndRejectsForgedOrAmbiguousInput(
 		t.Fatalf("run_at=%v", got)
 	}
 	cases := []map[string]any{
-		{"name": "forged", "goal": "x", "run_at": "2026-08-09T00:00:00Z", "owner_id": "attacker"},
-		{"name": "ambiguous", "goal": "x", "run_at": "2026-08-09T00:00:00Z", "cron": "0 9 * * *", "timezone": "UTC"},
-		{"name": "missing zone", "goal": "x", "cron": "0 9 * * *"},
-		{"name": "bad zone", "goal": "x", "cron": "0 9 * * *", "timezone": "Mars/Olympus"},
-		{"name": "refs", "goal": "x", "run_at": "2026-08-09T00:00:00Z", "attachment_refs": []string{uuid.NewString()}},
+		{"name": "forged", "goal": "x", "capability": "chat_summary", "run_at": "2026-08-09T00:00:00Z", "owner_id": "attacker"},
+		{"name": "ambiguous", "goal": "x", "capability": "chat_summary", "run_at": "2026-08-09T00:00:00Z", "cron": "0 9 * * *", "timezone": "UTC"},
+		{"name": "missing zone", "goal": "x", "capability": "chat_summary", "cron": "0 9 * * *"},
+		{"name": "bad zone", "goal": "x", "capability": "chat_summary", "cron": "0 9 * * *", "timezone": "Mars/Olympus"},
+		{"name": "refs", "goal": "x", "capability": "chat_summary", "run_at": "2026-08-09T00:00:00Z", "attachment_refs": []string{uuid.NewString()}},
 	}
 	for index, arguments := range cases {
 		if err := executeScheduleForTest(t, store, lease, "bad-"+string(rune('a'+index)), arguments); !errors.Is(err, ErrInvalid) {
@@ -344,7 +452,7 @@ func TestScheduleIntrinsicStoreFailureDoesNotReportCommittedTurn(t *testing.T) {
 	lease := scheduleIntrinsicLease()
 	store := &conversationScheduleStoreStub{err: errors.New("persistence unavailable")}
 	if err := executeScheduleForTest(t, store, lease, "call-1", map[string]any{
-		"name": "once", "goal": "send reminder", "run_at": "2026-08-09T00:00:00Z",
+		"name": "once", "goal": "send reminder", "capability": "chat_summary", "run_at": "2026-08-09T00:00:00Z",
 	}); err == nil {
 		t.Fatal("store failure was ignored")
 	}
@@ -353,7 +461,7 @@ func TestScheduleIntrinsicStoreFailureDoesNotReportCommittedTurn(t *testing.T) {
 func TestIntrinsicFailureClassificationIsSpecificAndRedacted(t *testing.T) {
 	lease := scheduleIntrinsicLease()
 	invalidErr := executeScheduleForTest(t, &conversationScheduleStoreStub{}, lease, "call-invalid", map[string]any{
-		"name": "invalid", "goal": "send reminder", "cron": "not a cron", "timezone": "UTC",
+		"name": "invalid", "goal": "send reminder", "capability": "chat_summary", "cron": "not a cron", "timezone": "UTC",
 	})
 	code, summary := intrinsicTerminalFailure(coremodel.IntrinsicScheduleCreateToolName, invalidErr)
 	if code != "invalid_intrinsic_arguments" || summary != "Core intrinsic arguments are invalid" {
@@ -370,7 +478,7 @@ func TestIntrinsicFailureClassificationIsSpecificAndRedacted(t *testing.T) {
 
 	privateErr := errors.New("database unavailable: private connection detail")
 	persistenceErr := executeScheduleForTest(t, &conversationScheduleStoreStub{err: privateErr}, lease, "call-persistence", map[string]any{
-		"name": "once", "goal": "send reminder", "run_at": "2026-08-09T00:00:00Z",
+		"name": "once", "goal": "send reminder", "capability": "chat_summary", "run_at": "2026-08-09T00:00:00Z",
 	})
 	code, summary = intrinsicTerminalFailure(coremodel.IntrinsicScheduleCreateToolName, persistenceErr)
 	if code != "schedule_persistence_failed" || summary != "Schedule could not be saved" || strings.Contains(summary, "private") {

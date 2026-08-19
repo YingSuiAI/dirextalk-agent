@@ -50,6 +50,7 @@ func (c *coreScheduleCapability) Descriptor() *capv1.CapabilityDescriptor {
 		{"create_schedule", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:schedules:write"},
 		{"get_schedule", capv1.OperationType_OPERATION_TYPE_READ, "agent:schedules:read"},
 		{"list_schedules", capv1.OperationType_OPERATION_TYPE_READ, "agent:schedules:read"},
+		{"list_outputs", capv1.OperationType_OPERATION_TYPE_READ, "agent:schedules:read"},
 		{"update_schedule", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:schedules:write"},
 		{"pause_schedule", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:schedules:write"},
 		{"resume_schedule", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:schedules:write"},
@@ -96,6 +97,34 @@ func (c *coreScheduleCapability) HandleOperation(ctx context.Context, operationI
 			items = append(items, scheduleProjection(schedule))
 		}
 		return marshalResult(map[string]any{"schedules": items, "next_page_token": next}, err)
+	case "list_outputs":
+		scheduleID, pageToken, pageSize, err := parseScheduleOutputInput(in)
+		if err != nil {
+			return nil, err
+		}
+		schedule, err := c.store.GetSchedule(ctx, scheduleID)
+		if err != nil {
+			return nil, err
+		}
+		if schedule.ID != scheduleID {
+			return nil, coretask.ErrConflict
+		}
+		reader, ok := c.store.(coretask.ScheduleOutputStore)
+		if !ok {
+			return nil, fmt.Errorf("schedule output store is not configured")
+		}
+		outputs, next, err := reader.ListScheduleOutputs(ctx, scheduleID, pageToken, pageSize)
+		if err != nil {
+			return nil, err
+		}
+		projected := make([]publicScheduleOutput, 0, len(outputs))
+		for _, output := range outputs {
+			if output.Validate() != nil || output.ScheduleID != scheduleID {
+				return nil, coretask.ErrInvalid
+			}
+			projected = append(projected, projectScheduleOutput(output))
+		}
+		return marshalResult(map[string]any{"outputs": projected, "next_page_token": next}, nil)
 	case "update_schedule":
 		expected := uintValue(in, "expected_revision")
 		schedule, err := c.store.GetSchedule(ctx, stringValue(in, "schedule_id"))
@@ -177,6 +206,8 @@ const scheduleObjectSchema = `{"additionalProperties":false,"properties":{"creat
 const scheduleCreateSchema = `{"additionalProperties":false,"properties":{"idempotency_key":{"format":"uuid","type":"string"},"name":{"type":"string"},"task_template":{"type":"object"},"trigger":{"type":"object"}},"required":["idempotency_key","name","task_template","trigger"],"type":"object"}`
 const scheduleGetSchema = `{"additionalProperties":false,"properties":{"schedule_id":{"format":"uuid","type":"string"}},"required":["schedule_id"],"type":"object"}`
 const scheduleListSchema = `{"additionalProperties":false,"properties":{"page_size":{"maximum":200,"minimum":1,"type":"integer"},"page_token":{"type":"string"}},"type":"object"}`
+const scheduleOutputListSchema = `{"additionalProperties":false,"properties":{"page_size":{"maximum":200,"minimum":1,"type":"integer"},"page_token":{"type":"string"},"schedule_id":{"format":"uuid","type":"string"}},"required":["schedule_id"],"type":"object"}`
+const scheduleOutputObjectSchema = `{"additionalProperties":false,"properties":{"created_at":{"format":"date-time","type":"string"},"failure_code":{"type":"string"},"failure_summary":{"type":"string"},"occurrence_id":{"format":"uuid","type":"string"},"result":{"type":"object"},"scheduled_for":{"format":"date-time","type":"string"},"status":{"enum":["queued","running","succeeded","failed","waiting_user","canceled"],"type":"string"},"task_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["occurrence_id","task_id","scheduled_for","status","created_at","updated_at"],"type":"object"}`
 const scheduleUpdateSchema = `{"additionalProperties":false,"properties":{"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"name":{"type":"string"},"schedule_id":{"format":"uuid","type":"string"},"task_template":{"type":"object"},"trigger":{"type":"object"}},"required":["idempotency_key","schedule_id","expected_revision"],"type":"object"}`
 const scheduleMutationSchema = `{"additionalProperties":false,"properties":{"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"schedule_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","schedule_id","expected_revision"],"type":"object"}`
 const scheduleTriggerSchema = `{"additionalProperties":false,"properties":{"idempotency_key":{"format":"uuid","type":"string"},"schedule_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","schedule_id"],"type":"object"}`
@@ -190,6 +221,8 @@ func scheduleCapabilitySchemas(operation string) (string, string) {
 		return scheduleGetSchema, object
 	case "list_schedules":
 		return scheduleListSchema, `{"additionalProperties":false,"properties":{"next_page_token":{"type":"string"},"schedules":{"items":` + scheduleObjectSchema + `,"type":"array"}},"required":["schedules","next_page_token"],"type":"object"}`
+	case "list_outputs":
+		return scheduleOutputListSchema, `{"additionalProperties":false,"properties":{"next_page_token":{"type":"string"},"outputs":{"items":` + scheduleOutputObjectSchema + `,"type":"array"}},"required":["outputs","next_page_token"],"type":"object"}`
 	case "update_schedule":
 		return scheduleUpdateSchema, object
 	case "pause_schedule", "resume_schedule":
@@ -201,6 +234,55 @@ func scheduleCapabilitySchemas(operation string) (string, string) {
 	default:
 		return "", ""
 	}
+}
+
+type publicScheduleOutput struct {
+	OccurrenceID   string          `json:"occurrence_id"`
+	TaskID         string          `json:"task_id"`
+	ScheduledFor   time.Time       `json:"scheduled_for"`
+	Status         coretask.Status `json:"status"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	Result         any             `json:"result,omitempty"`
+	FailureCode    string          `json:"failure_code,omitempty"`
+	FailureSummary string          `json:"failure_summary,omitempty"`
+}
+
+func projectScheduleOutput(output coretask.ScheduleOutput) publicScheduleOutput {
+	return publicScheduleOutput{
+		OccurrenceID: output.OccurrenceID, TaskID: output.TaskID, ScheduledFor: output.ScheduledFor.UTC(), Status: output.Status,
+		CreatedAt: output.CreatedAt.UTC(), UpdatedAt: output.UpdatedAt.UTC(), Result: projectTaskResult(output.Result),
+		FailureCode: output.FailureCode, FailureSummary: output.FailureSummary,
+	}
+}
+
+func parseScheduleOutputInput(in map[string]json.RawMessage) (string, string, int, error) {
+	for key := range in {
+		switch key {
+		case "schedule_id", "page_size", "page_token":
+		default:
+			return "", "", 0, coretask.ErrInvalid
+		}
+	}
+	scheduleID := stringValue(in, "schedule_id")
+	if !coretask.ValidUUID(scheduleID) {
+		return "", "", 0, coretask.ErrInvalid
+	}
+	pageSize := 50
+	if raw, ok := in["page_size"]; ok {
+		var parsed int
+		if json.Unmarshal(raw, &parsed) != nil || parsed < 1 || parsed > 200 {
+			return "", "", 0, coretask.ErrInvalid
+		}
+		pageSize = parsed
+	}
+	pageToken := ""
+	if raw, ok := in["page_token"]; ok {
+		if strings.TrimSpace(string(raw)) == "null" || json.Unmarshal(raw, &pageToken) != nil || len(pageToken) > 4096 {
+			return "", "", 0, coretask.ErrInvalid
+		}
+	}
+	return scheduleID, strings.TrimSpace(pageToken), pageSize, nil
 }
 
 func scheduleFromCreateInput(ctx context.Context, in map[string]json.RawMessage, now time.Time) (coretask.Schedule, error) {

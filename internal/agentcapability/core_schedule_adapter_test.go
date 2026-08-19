@@ -3,6 +3,7 @@ package agentcapability
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,10 +11,17 @@ import (
 )
 
 type scheduleStoreFake struct {
-	schedule coretask.Schedule
-	create   coretask.CreateScheduleCommand
-	listPage string
-	listSize int
+	schedule   coretask.Schedule
+	create     coretask.CreateScheduleCommand
+	listPage   string
+	listSize   int
+	getID      string
+	getErr     error
+	outputs    []coretask.ScheduleOutput
+	outputID   string
+	outputPage string
+	outputSize int
+	outputNext string
 }
 
 func (f *scheduleStoreFake) FindOccurrence(context.Context, string, string) (coretask.Occurrence, error) {
@@ -26,7 +34,12 @@ func (f *scheduleStoreFake) CreateSchedule(_ context.Context, command coretask.C
 	f.create, f.schedule = command, command.Schedule
 	return command.Schedule, nil
 }
-func (f *scheduleStoreFake) GetSchedule(context.Context, string) (coretask.Schedule, error) {
+
+func (f *scheduleStoreFake) GetSchedule(_ context.Context, id string) (coretask.Schedule, error) {
+	f.getID = id
+	if f.getErr != nil {
+		return coretask.Schedule{}, f.getErr
+	}
 	return f.schedule, nil
 }
 func (f *scheduleStoreFake) ListSchedules(_ context.Context, page string, size int) ([]coretask.Schedule, string, error) {
@@ -48,6 +61,10 @@ func (f *scheduleStoreFake) TriggerNow(context.Context, coretask.TriggerSchedule
 func (f *scheduleStoreFake) DeleteSchedule(context.Context, coretask.ScheduleMutationCommand) (coretask.Schedule, error) {
 	return f.schedule, nil
 }
+func (f *scheduleStoreFake) ListScheduleOutputs(_ context.Context, scheduleID, page string, size int) ([]coretask.ScheduleOutput, string, error) {
+	f.outputID, f.outputPage, f.outputSize = scheduleID, page, size
+	return append([]coretask.ScheduleOutput(nil), f.outputs...), f.outputNext, nil
+}
 
 func TestScheduleCapabilityPublishesOnlyCanonicalCoreOperations(t *testing.T) {
 	descriptor := (&coreScheduleCapability{}).Descriptor()
@@ -57,8 +74,24 @@ func TestScheduleCapabilityPublishesOnlyCanonicalCoreOperations(t *testing.T) {
 		if operation.GetInputSchemaJson() == "" || operation.GetResultSchemaJson() == "" {
 			t.Fatalf("operation %q lacks exact schemas", operation.GetOperationId())
 		}
+		if operation.GetOperationId() == "list_outputs" {
+			wantInput, wantResult := scheduleCapabilitySchemas("list_outputs")
+			if operation.GetInputSchemaJson() != wantInput || operation.GetResultSchemaJson() != wantResult {
+				t.Fatalf("list_outputs schemas drifted: input=%s result=%s", operation.GetInputSchemaJson(), operation.GetResultSchemaJson())
+			}
+			var resultSchema map[string]any
+			if json.Unmarshal([]byte(operation.GetResultSchemaJson()), &resultSchema) != nil || resultSchema["additionalProperties"] != false {
+				t.Fatalf("list_outputs result schema is not closed: %s", operation.GetResultSchemaJson())
+			}
+			properties := resultSchema["properties"].(map[string]any)
+			outputs := properties["outputs"].(map[string]any)
+			item := outputs["items"].(map[string]any)
+			if item["additionalProperties"] != false {
+				t.Fatalf("schedule output item schema is not closed: %#v", item)
+			}
+		}
 	}
-	for _, name := range []string{"create_schedule", "get_schedule", "list_schedules", "update_schedule", "pause_schedule", "resume_schedule", "trigger_schedule", "delete_schedule"} {
+	for _, name := range []string{"create_schedule", "get_schedule", "list_schedules", "list_outputs", "update_schedule", "pause_schedule", "resume_schedule", "trigger_schedule", "delete_schedule"} {
 		if !seen[name] {
 			t.Fatalf("canonical operation %q missing", name)
 		}
@@ -66,6 +99,69 @@ func TestScheduleCapabilityPublishesOnlyCanonicalCoreOperations(t *testing.T) {
 	for _, removed := range []string{"list_runs", "get_run"} {
 		if seen[removed] {
 			t.Fatalf("legacy operation %q remains published", removed)
+		}
+	}
+}
+
+func TestScheduleCapabilityListOutputsUsesClosedSafeProjection(t *testing.T) {
+	at := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	scheduleID := "00000000-0000-4000-8000-000000000201"
+	store := &scheduleStoreFake{
+		schedule: coretask.Schedule{ID: scheduleID}, outputNext: "next-output",
+		outputs: []coretask.ScheduleOutput{{
+			OccurrenceID: "00000000-0000-4000-8000-000000000401", ScheduleID: scheduleID, TaskID: "00000000-0000-4000-8000-000000000501",
+			ScheduledFor: at, Status: coretask.StatusSucceeded, Result: &coretask.Result{Text: "# Daily summary\n\n- One item"}, CreatedAt: at.Add(time.Second), UpdatedAt: at.Add(2 * time.Second),
+		}},
+	}
+	capability := &coreScheduleCapability{store: store}
+	raw, err := capability.HandleOperation(capabilityTestContext(), "list_outputs", []byte(`{"schedule_id":"`+scheduleID+`","page_size":7,"page_token":"cursor"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.getID != scheduleID || store.outputID != scheduleID || store.outputPage != "cursor" || store.outputSize != 7 {
+		t.Fatalf("schedule pre-read/output query=%q/%q page=%q size=%d", store.getID, store.outputID, store.outputPage, store.outputSize)
+	}
+	var result map[string]any
+	if json.Unmarshal(raw, &result) != nil || result["next_page_token"] != "next-output" {
+		t.Fatalf("result=%s", raw)
+	}
+	outputs, ok := result["outputs"].([]any)
+	if !ok || len(outputs) != 1 {
+		t.Fatalf("outputs=%#v", result["outputs"])
+	}
+	output, ok := outputs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("output=%#v", outputs[0])
+	}
+	for _, required := range []string{"occurrence_id", "task_id", "scheduled_for", "status", "created_at", "updated_at", "result"} {
+		if _, exists := output[required]; !exists {
+			t.Fatalf("required field %q missing from %#v", required, output)
+		}
+	}
+	for _, forbidden := range []string{"schedule_id", "goal", "payload", "snapshot", "extensions", "model_profile_id", "owner_id", "account_generation"} {
+		if _, exists := output[forbidden]; exists {
+			t.Fatalf("private field %q leaked: %#v", forbidden, output)
+		}
+	}
+	projectedResult, ok := output["result"].(map[string]any)
+	if !ok || projectedResult["text"] != "# Daily summary\n\n- One item" || len(projectedResult) != 1 {
+		t.Fatalf("safe task result=%#v", output["result"])
+	}
+
+	store.getErr = coretask.ErrNotFound
+	store.outputID = ""
+	if _, err = capability.HandleOperation(capabilityTestContext(), "list_outputs", []byte(`{"schedule_id":"`+scheduleID+`"}`)); !errors.Is(err, coretask.ErrNotFound) || store.outputID != "" {
+		t.Fatalf("missing schedule was not fenced before output read: err=%v outputID=%q", err, store.outputID)
+	}
+	if _, err = capability.HandleOperation(capabilityTestContext(), "list_outputs", []byte(`{"schedule_id":"`+scheduleID+`","private":true}`)); !errors.Is(err, coretask.ErrInvalid) {
+		t.Fatalf("unknown input field err=%v", err)
+	}
+	for _, invalid := range []string{
+		`{"schedule_id":"` + scheduleID + `","page_size":null}`,
+		`{"schedule_id":"` + scheduleID + `","page_token":null}`,
+	} {
+		if _, err = capability.HandleOperation(capabilityTestContext(), "list_outputs", []byte(invalid)); !errors.Is(err, coretask.ErrInvalid) {
+			t.Fatalf("invalid optional input %s err=%v", invalid, err)
 		}
 	}
 }

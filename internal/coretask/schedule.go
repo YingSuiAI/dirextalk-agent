@@ -226,6 +226,35 @@ type Occurrence struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// ScheduleOutput is the bounded read projection joining one immutable
+// occurrence identity to its authoritative Task terminal/current state. It is
+// deliberately narrower than Task and cannot expose payloads or snapshots.
+type ScheduleOutput struct {
+	OccurrenceID   string
+	ScheduleID     string
+	TaskID         string
+	ScheduledFor   time.Time
+	Status         Status
+	Result         *Result
+	FailureCode    string
+	FailureSummary string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+func (o ScheduleOutput) Validate() error {
+	if !ValidUUID(o.OccurrenceID) || !ValidUUID(o.ScheduleID) || !ValidUUID(o.TaskID) ||
+		o.ScheduledFor.IsZero() || o.CreatedAt.IsZero() || o.UpdatedAt.IsZero() ||
+		o.ScheduledFor.Location() != time.UTC || o.CreatedAt.Location() != time.UTC || o.UpdatedAt.Location() != time.UTC ||
+		o.UpdatedAt.Before(o.CreatedAt) || !validStatus(o.Status) {
+		return ErrInvalid
+	}
+	if o.Result != nil && o.Result.Validate() != nil {
+		return ErrInvalid
+	}
+	return nil
+}
+
 func (o Occurrence) Validate() error {
 	if !ValidUUID(o.ID) || !ValidUUID(o.ScheduleID) || !ValidUUID(o.TaskID) || o.ScheduledFor.IsZero() || o.CreatedAt.IsZero() {
 		return ErrInvalid

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,95 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
+
+func TestCoreScheduleOutputsNewestFirstStablePaginationPostgres(t *testing.T) {
+	ctx, store, profile, closeFixture := coreTaskScheduleFixture(t)
+	defer closeFixture()
+	schedules := NewCoreScheduleStore(store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	runAt := now.Add(24 * time.Hour)
+	schedule := coretask.Schedule{
+		ID: uuid.NewString(), Name: "output history", Spec: coretask.TaskTemplate{Goal: "scheduled output", ModelProfileID: profile},
+		RunAt: &runAt, NextRunAt: runAt, Timezone: "UTC", Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := schedules.CreateSchedule(ctx, coretask.CreateScheduleCommand{Schedule: schedule, Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("a", 64)}}); err != nil {
+		t.Fatal(err)
+	}
+
+	times := []time.Time{now, now.Add(time.Minute), now.Add(time.Minute), now.Add(2 * time.Minute)}
+	occurrences := make([]coretask.Occurrence, 0, len(times))
+	for index, at := range times {
+		_, occurrence, _, err := schedules.TriggerNow(ctx, coretask.TriggerScheduleCommand{
+			ScheduleID: schedule.ID, At: at,
+			Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat(string(rune('b'+index)), 64)},
+		})
+		if err != nil {
+			t.Fatalf("trigger %d: %v", index, err)
+		}
+		occurrences = append(occurrences, occurrence)
+	}
+	if occurrences[1].ScheduledFor != occurrences[2].ScheduledFor {
+		t.Fatalf("tie setup drifted: %s != %s", occurrences[1].ScheduledFor, occurrences[2].ScheduledFor)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE core_tasks SET status='succeeded',attempt=1,result_json=$2::jsonb,updated_at=$3 WHERE task_id=$1`, occurrences[0].TaskID, `{"text":"# Oldest summary"}`, now.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE core_tasks SET status='failed',attempt=1,failure_code='scheduled_tool_failed',failure_summary='Scheduled tool failed',updated_at=$2 WHERE task_id=$1`, occurrences[1].TaskID, now.Add(4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE core_tasks SET deleted_at=$2,updated_at=$2 WHERE task_id=$1`, occurrences[2].TaskID, now.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE core_tasks SET status='canceled',failure_code='user_canceled',failure_summary='Canceled',updated_at=$2 WHERE task_id=$1`, occurrences[3].TaskID, now.Add(6*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	expected := append([]coretask.Occurrence(nil), occurrences...)
+	sort.Slice(expected, func(i, j int) bool {
+		if expected[i].ScheduledFor.Equal(expected[j].ScheduledFor) {
+			return expected[i].ID > expected[j].ID
+		}
+		return expected[i].ScheduledFor.After(expected[j].ScheduledFor)
+	})
+	first, next, err := schedules.ListScheduleOutputs(ctx, schedule.ID, "", 2)
+	if err != nil || len(first) != 2 || next == "" {
+		t.Fatalf("first page=%+v next=%q err=%v", first, next, err)
+	}
+	second, final, err := schedules.ListScheduleOutputs(ctx, schedule.ID, next, 2)
+	if err != nil || len(second) != 2 || final != "" {
+		t.Fatalf("second page=%+v next=%q err=%v", second, final, err)
+	}
+	all := append(first, second...)
+	seen := make(map[string]struct{}, len(all))
+	for index, output := range all {
+		if output.OccurrenceID != expected[index].ID || output.ScheduleID != schedule.ID || output.TaskID != expected[index].TaskID {
+			t.Fatalf("output[%d]=%+v want occurrence=%+v", index, output, expected[index])
+		}
+		if _, duplicate := seen[output.OccurrenceID]; duplicate {
+			t.Fatalf("duplicate output %s", output.OccurrenceID)
+		}
+		seen[output.OccurrenceID] = struct{}{}
+	}
+	byOccurrence := make(map[string]coretask.ScheduleOutput, len(all))
+	for _, output := range all {
+		byOccurrence[output.OccurrenceID] = output
+	}
+	if output := byOccurrence[occurrences[0].ID]; output.Status != coretask.StatusSucceeded || output.Result == nil || output.Result.Text != "# Oldest summary" {
+		t.Fatalf("succeeded projection=%+v", output)
+	}
+	if output := byOccurrence[occurrences[1].ID]; output.Status != coretask.StatusFailed || output.FailureCode != "scheduled_tool_failed" || output.FailureSummary != "Scheduled tool failed" || output.Result != nil {
+		t.Fatalf("failed projection=%+v", output)
+	}
+	if output := byOccurrence[occurrences[2].ID]; output.Status != coretask.StatusQueued {
+		t.Fatalf("deleted Task history was omitted or changed: %+v", output)
+	}
+	if output := byOccurrence[occurrences[3].ID]; output.Status != coretask.StatusCanceled || output.FailureCode != "user_canceled" {
+		t.Fatalf("current status projection=%+v", output)
+	}
+	if _, _, err := schedules.ListScheduleOutputs(ctx, schedule.ID, "not-a-cursor", 2); !errors.Is(err, coretask.ErrInvalid) {
+		t.Fatalf("invalid cursor err=%v", err)
+	}
+}
 
 func TestCoreScheduleStorePostgresAtomicMaterialization(t *testing.T) {
 	ctx, store, profile, closeFixture := coreTaskScheduleFixture(t)

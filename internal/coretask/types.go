@@ -48,12 +48,41 @@ type AgentTaskPayload struct {
 	ScheduledConversation *ScheduledConversationOrigin `json:"scheduled_conversation,omitempty"`
 }
 
+// ScheduledCapability is the closed workflow contract selected when a Native
+// conversation creates a durable schedule. It is not a generic permission to
+// replay every extension that happened to be available on the creating turn.
+type ScheduledCapability string
+
+const (
+	ScheduledCapabilityChatSummary ScheduledCapability = "chat_summary"
+	ScheduledCapabilityWebResearch ScheduledCapability = "web_research"
+	ScheduledCapabilityRoomMessage ScheduledCapability = "room_message"
+)
+
+// RequiredBinding returns the immutable extension source and logical tool
+// names required to create and later execute this scheduled workflow. Message
+// MCP exposes these logical names to its remote server under a provider-owned
+// mcp__message__ prefix.
+func (c ScheduledCapability) RequiredBinding() (string, []string, error) {
+	switch c {
+	case ScheduledCapabilityChatSummary:
+		return "message-mcp", []string{"dirextalk_rooms_search", "dirextalk_messages_list"}, nil
+	case ScheduledCapabilityWebResearch:
+		return "builtin:web_search:tavily", []string{"web_search"}, nil
+	case ScheduledCapabilityRoomMessage:
+		return "message-mcp", []string{"dirextalk_rooms_search", "dirextalk_messages_send"}, nil
+	default:
+		return "", nil, ErrInvalid
+	}
+}
+
 // ScheduledConversationOrigin is the internal durable handoff from a Native
 // conversation turn into a scheduled Agent Task. It is intentionally absent
 // from ordinary user-created Agent Tasks. The snapshots are redacted execution
 // bindings; credentials and executable closures remain behind the live Native
 // resolver and must be revalidated before each scheduled turn starts.
 type ScheduledConversationOrigin struct {
+	Capability         ScheduledCapability          `json:"capability"`
 	ExtensionSnapshots []ScheduledExtensionSnapshot `json:"extension_snapshots,omitempty"`
 }
 
@@ -392,11 +421,18 @@ func normalizePayload(s *TaskSpec) error {
 				return ErrInvalid
 			}
 			if p.ScheduledConversation != nil {
+				p.ScheduledConversation.Capability = ScheduledCapability(strings.TrimSpace(string(p.ScheduledConversation.Capability)))
+				if _, _, err := p.ScheduledConversation.Capability.RequiredBinding(); err != nil {
+					return err
+				}
 				snapshots, err := normalizeScheduledExtensionSnapshots(p.ScheduledConversation.ExtensionSnapshots)
 				if err != nil {
 					return err
 				}
 				p.ScheduledConversation.ExtensionSnapshots = snapshots
+				if !scheduledCapabilityAvailable(p.ScheduledConversation.Capability, snapshots) {
+					return ErrInvalid
+				}
 			}
 		}
 	case TaskKindExtension:
@@ -575,6 +611,35 @@ func normalizeScheduledExtensionSnapshots(in []ScheduledExtensionSnapshot) ([]Sc
 		return out[i].Selection.ID < out[j].Selection.ID
 	})
 	return out, nil
+}
+
+func scheduledCapabilityAvailable(capability ScheduledCapability, snapshots []ScheduledExtensionSnapshot) bool {
+	source, requiredTools, err := capability.RequiredBinding()
+	if err != nil {
+		return false
+	}
+	available := make(map[string]struct{})
+	for _, snapshot := range snapshots {
+		if snapshot.Source != source {
+			continue
+		}
+		for _, tool := range snapshot.ToolNames {
+			if source == "message-mcp" {
+				const prefix = "mcp__message__"
+				if !strings.HasPrefix(tool, prefix) {
+					continue
+				}
+				tool = strings.TrimPrefix(tool, prefix)
+			}
+			available[tool] = struct{}{}
+		}
+	}
+	for _, required := range requiredTools {
+		if _, ok := available[required]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func equalStringSet(left, right []string) bool {
