@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.168
+
+1. Expose each durable Turn identity on its Agent-owned conversation history messages so clients can reconcile optimistic response bubbles with server-owned message IDs across active recovery and terminal readback.
+
 ## v1.0.167
 
 1. Execute retained Worker Route 53 bind and unbind tools directly from the authoritative Native turn without a second client confirmation, while preserving exact identity revalidation, provider read-back, and idempotent retry after commit failure.
