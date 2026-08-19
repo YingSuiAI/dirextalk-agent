@@ -211,7 +211,7 @@ type ProposeIntrinsic struct {
 	manager     RetainedWorkerManager
 	turns       IntrinsicTurnCommitter
 	domains     RetainedWorkerDomainManager
-	domainTools coreconversation.IntrinsicToolStore
+	domainTurns IntrinsicTurnCommitter
 }
 
 func NewProposeIntrinsic(service *Service, owners IntrinsicOwnerResolver, manifests IntrinsicManifestResolver, budgets IntrinsicBudgetResolver) (*ProposeIntrinsic, error) {
@@ -320,26 +320,25 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 			return p.executeInventory(ctx, bound, request)
 		},
 	})
-	if p.manager == nil {
-		return resolved, nil
-	}
-	resolved = append(resolved, coreconversation.ResolvedIntrinsic{
-		Tool: coremodel.Tool{
-			Name:        coremodel.IntrinsicCloudWorkerDestroyToolName,
-			Description: "Destroy one retained Worker only when the user explicitly asks to destroy it. A status question, completed task, or idle Worker is not authorization. First call cloud_worker_inventory, then pass the exact returned worker_id. This permanently removes the EC2 instance, key pair, security group, and any bound service state.",
-			InputSchema: map[string]any{
-				"type": "object", "additionalProperties": false,
-				"required": []any{"worker_id", "confirmation"},
-				"properties": map[string]any{
-					"worker_id":    map[string]any{"type": "string", "format": "uuid", "description": "Exact worker_id returned by cloud_worker_inventory."},
-					"confirmation": map[string]any{"type": "string", "const": "destroy_worker"},
+	if p.manager != nil {
+		resolved = append(resolved, coreconversation.ResolvedIntrinsic{
+			Tool: coremodel.Tool{
+				Name:        coremodel.IntrinsicCloudWorkerDestroyToolName,
+				Description: "Destroy one retained Worker only when the user explicitly asks to destroy it. A status question, completed task, or idle Worker is not authorization. First call cloud_worker_inventory, then pass the exact returned worker_id. This permanently removes the EC2 instance, key pair, security group, and any bound service state.",
+				InputSchema: map[string]any{
+					"type": "object", "additionalProperties": false,
+					"required": []any{"worker_id", "confirmation"},
+					"properties": map[string]any{
+						"worker_id":    map[string]any{"type": "string", "format": "uuid", "description": "Exact worker_id returned by cloud_worker_inventory."},
+						"confirmation": map[string]any{"type": "string", "const": "destroy_worker"},
+					},
 				},
 			},
-		},
-		Execute: func(ctx context.Context, request coreconversation.IntrinsicExecutionRequest) (coreconversation.IntrinsicExecutionResult, error) {
-			return p.executeDestroy(ctx, bound, request)
-		},
-	})
+			Execute: func(ctx context.Context, request coreconversation.IntrinsicExecutionRequest) (coreconversation.IntrinsicExecutionResult, error) {
+				return p.executeDestroy(ctx, bound, request)
+			},
+		})
+	}
 	resolved = append(resolved, cloudWorkerDomainTools(p, bound)...)
 	return resolved, nil
 }

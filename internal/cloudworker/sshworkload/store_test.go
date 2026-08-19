@@ -36,8 +36,15 @@ func TestRepositoryPersistsServiceAndExactDomain(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, _ = reopened.Get(context.Background(), identity, service.WorkloadID)
-	if stored.Domain != nil {
+	if stored.Domain != nil || stored.RemovedDomain == nil || *stored.RemovedDomain != *domain {
 		t.Fatalf("domain was not cleared: %+v", stored)
+	}
+	if err = reopened.SetDomain(context.Background(), identity, service.WorkloadID, domain); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ = reopened.Get(context.Background(), identity, service.WorkloadID)
+	if stored.Domain == nil || stored.RemovedDomain != nil {
+		t.Fatalf("new binding did not clear removal receipt: %+v", stored)
 	}
 }
 

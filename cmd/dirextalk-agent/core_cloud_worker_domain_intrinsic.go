@@ -8,90 +8,97 @@ import (
 	"errors"
 	"reflect"
 	"strings"
-	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
-	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
-	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
 
-func cloudWorkerDomainIntentDigest(payload coretask.CloudWorkerDomainTaskPayload) string {
+func cloudWorkerDomainIntentDigest(payload cloudworker.RetainedWorkerDomainIntent) string {
 	payload.IntentDigest = ""
 	raw, _ := json.Marshal(payload)
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
 
-func (executor *sshWorkerExecutor) ResolveRetainedWorkerDomain(ctx context.Context, ownerID string, accountGeneration uint64, operation, workerID, workloadID, hostname string) (coretask.CloudWorkerDomainTaskPayload, error) {
+func (executor *sshWorkerExecutor) ResolveRetainedWorkerDomain(ctx context.Context, ownerID string, accountGeneration uint64, operation, workerID, workloadID, hostname string) (cloudworker.RetainedWorkerDomainIntent, error) {
 	if executor != nil && executor.resolveDomain != nil {
 		return executor.resolveDomain(ctx, ownerID, accountGeneration, operation, workerID, workloadID, hostname)
 	}
 	if executor == nil || ctx == nil || strings.TrimSpace(ownerID) == "" || accountGeneration == 0 ||
 		(operation != "bind" && operation != "unbind") || !coretask.ValidUUID(workerID) || strings.TrimSpace(workloadID) == "" ||
 		(operation == "bind" && !remoteservice.ValidHostname(hostname)) || (operation == "unbind" && strings.TrimSpace(hostname) != "") {
-		return coretask.CloudWorkerDomainTaskPayload{}, cloudworker.ErrInvalid
+		return cloudworker.RetainedWorkerDomainIntent{}, cloudworker.ErrInvalid
 	}
 	worker, found, err := executor.state.LoadWorker(ctx, workerID)
 	if err != nil || !found || worker.OwnerID != ownerID || worker.AccountGeneration != accountGeneration || worker.Phase == sshworker.WorkerDestroyed {
-		return coretask.CloudWorkerDomainTaskPayload{}, errors.Join(sshworker.ErrIdentity, err)
+		return cloudworker.RetainedWorkerDomainIntent{}, errors.Join(sshworker.ErrIdentity, err)
 	}
 	identity := sshworker.WorkerIdentity{OwnerID: ownerID, AccountGeneration: accountGeneration, WorkerID: worker.WorkerID,
 		Credential: worker.Credential, InstanceID: worker.Instance.ID, KeyPairID: worker.KeyPair.ID, SecurityGroupID: worker.SecurityGroup.ID}
 	if !completeWorkerResourceIdentity(identity) {
-		return coretask.CloudWorkerDomainTaskPayload{}, sshworker.ErrIdentity
+		return cloudworker.RetainedWorkerDomainIntent{}, sshworker.ErrIdentity
 	}
 	var status sshworker.WorkerStatus
 	if operation == "bind" {
 		status, err = executor.ObserveWorker(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, identity)
 		if err != nil || status.Availability != sshworker.WorkerAvailable {
-			return coretask.CloudWorkerDomainTaskPayload{}, errors.Join(sshworker.ErrIdentity, err)
+			return cloudworker.RetainedWorkerDomainIntent{}, errors.Join(sshworker.ErrIdentity, err)
 		}
 	} else if _, err = executor.currentBindingForCredential(ctx, identity.Credential); err != nil {
 		// Exact DNS cleanup does not depend on EC2 or SSH availability, but it
 		// still requires the same current credential identity as the persisted
 		// Worker before freezing or reusing the cleanup authority.
-		return coretask.CloudWorkerDomainTaskPayload{}, errors.Join(sshworker.ErrIdentity, err)
+		return cloudworker.RetainedWorkerDomainIntent{}, errors.Join(sshworker.ErrIdentity, err)
 	}
 	service, err := executor.workloads.Get(ctx, identity, workloadID)
 	if err != nil {
-		return coretask.CloudWorkerDomainTaskPayload{}, errors.Join(sshworker.ErrIdentity, err)
+		return cloudworker.RetainedWorkerDomainIntent{}, errors.Join(sshworker.ErrIdentity, err)
 	}
 	var domain *sshworkload.Domain
 	if operation == "bind" {
 		canonical := remoteservice.CanonicalHostname(hostname)
 		if status.PublicIP == "" || (service.Hostname != "" && remoteservice.CanonicalHostname(service.Hostname) != canonical) {
-			return coretask.CloudWorkerDomainTaskPayload{}, sshworker.ErrIdentity
+			return cloudworker.RetainedWorkerDomainIntent{}, sshworker.ErrIdentity
 		}
 		dns := executor.route53For(ctx, identity.Credential)
 		if dns == nil {
-			return coretask.CloudWorkerDomainTaskPayload{}, remoteservice.ErrInvalid
+			return cloudworker.RetainedWorkerDomainIntent{}, remoteservice.ErrInvalid
 		}
 		if err = dns.VerifyAccount(ctx, identity.Credential.AccountID); err != nil {
-			return coretask.CloudWorkerDomainTaskPayload{}, err
+			return cloudworker.RetainedWorkerDomainIntent{}, err
 		}
 		zoneID, found, resolveErr := dns.ResolveHostedZone(ctx, canonical)
-		if resolveErr != nil || !found {
-			return coretask.CloudWorkerDomainTaskPayload{}, errors.Join(remoteservice.ErrInvalid, resolveErr)
+		if resolveErr != nil {
+			return cloudworker.RetainedWorkerDomainIntent{}, resolveErr
+		}
+		if !found {
+			return cloudworker.RetainedWorkerDomainIntent{}, cloudworker.ErrRetainedWorkerPublicRoute53Required
 		}
 		domain = &sshworkload.Domain{ZoneID: zoneID, Hostname: canonical, TTL: workerDomainTTL, BoundIPv4: status.PublicIP}
 		if service.Domain != nil && !reflect.DeepEqual(*service.Domain, *domain) {
-			return coretask.CloudWorkerDomainTaskPayload{}, sshworker.ErrIdentity
+			return cloudworker.RetainedWorkerDomainIntent{}, sshworker.ErrIdentity
 		}
 		if service.PendingDomain != nil && !reflect.DeepEqual(*service.PendingDomain, *domain) {
-			return coretask.CloudWorkerDomainTaskPayload{}, sshworker.ErrIdentity
+			return cloudworker.RetainedWorkerDomainIntent{}, sshworker.ErrIdentity
 		}
 	} else {
-		if service.Domain == nil {
-			return coretask.CloudWorkerDomainTaskPayload{}, sshworker.ErrIdentity
+		if service.PendingDomain != nil {
+			return cloudworker.RetainedWorkerDomainIntent{}, sshworker.ErrIdentity
 		}
-		copy := *service.Domain
+		persisted := service.Domain
+		if persisted == nil {
+			persisted = service.RemovedDomain
+		}
+		if persisted == nil {
+			return cloudworker.RetainedWorkerDomainIntent{}, sshworker.ErrIdentity
+		}
+		copy := *persisted
 		domain = &copy
 	}
-	payload := coretask.CloudWorkerDomainTaskPayload{Operation: operation, OwnerID: ownerID, AccountGeneration: accountGeneration,
+	payload := cloudworker.RetainedWorkerDomainIntent{Operation: operation, OwnerID: ownerID, AccountGeneration: accountGeneration,
 		CredentialID: identity.Credential.CredentialID, CredentialRevision: identity.Credential.CredentialRevision,
 		AWSAccountID: identity.Credential.AccountID, Region: identity.Credential.Region, WorkerID: identity.WorkerID,
 		InstanceID: identity.InstanceID, KeyPairID: identity.KeyPairID, SecurityGroupID: identity.SecurityGroupID,
@@ -100,7 +107,7 @@ func (executor *sshWorkerExecutor) ResolveRetainedWorkerDomain(ctx context.Conte
 	return payload, nil
 }
 
-func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context, expected coretask.CloudWorkerDomainTaskPayload) (cloudworker.RetainedWorkerDomainResult, error) {
+func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context, expected cloudworker.RetainedWorkerDomainIntent) (cloudworker.RetainedWorkerDomainResult, error) {
 	if executor == nil || ctx == nil || expected.IntentDigest == "" || cloudWorkerDomainIntentDigest(expected) != expected.IntentDigest {
 		return cloudworker.RetainedWorkerDomainResult{}, cloudworker.ErrInvalid
 	}
@@ -152,7 +159,7 @@ func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context
 
 type domainIntentRoute53 struct {
 	executor *sshWorkerExecutor
-	expected coretask.CloudWorkerDomainTaskPayload
+	expected cloudworker.RetainedWorkerDomainIntent
 	client   remoteservice.HostedZoneRoute53
 }
 
@@ -194,45 +201,4 @@ func (f *domainIntentRoute53) ReadA(ctx context.Context, zoneID, hostname string
 		return remoteservice.ARecord{}, false, err
 	}
 	return f.client.ReadA(ctx, zoneID, hostname)
-}
-
-func cloudWorkerDomainTaskHandler(store conversationToolAttemptStore, manager cloudworker.RetainedWorkerDomainManager) coreruntime.TaskHandler {
-	return func(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
-		if store == nil || manager == nil || task.Spec.Payload.ConversationTool == nil || task.Spec.Payload.ConversationTool.CloudWorkerDomain == nil || task.Lease == nil {
-			return coreruntime.ManagedOutcome{Err: cloudworker.ErrInvalid, TerminalOwned: true}
-		}
-		finish := func(state string, result json.RawMessage, code, summary string) error {
-			finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			defer cancel()
-			return store.FinishConversationTool(finishCtx, task, state, result, code, summary)
-		}
-		_, err := store.BeginConversationTool(ctx, task)
-		if err != nil && !errors.Is(err, coreconversation.ErrToolDispatchStarted) {
-			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
-		}
-		result, applyErr := manager.ApplyRetainedWorkerDomain(ctx, *task.Spec.Payload.ConversationTool.CloudWorkerDomain)
-		if applyErr != nil {
-			if errors.Is(applyErr, cloudworker.ErrStaleAuthorization) || errors.Is(applyErr, sshworker.ErrIdentity) || errors.Is(applyErr, remoteservice.ErrInvalid) {
-				finishErr := finish("failed", nil, "cloud_worker_domain_stale", "Cloud Worker domain authority changed before execution")
-				return coreruntime.ManagedOutcome{Err: errors.Join(applyErr, finishErr), TerminalOwned: true}
-			}
-			finishErr := finish("uncertain", nil, "cloud_worker_domain_uncertain", "Cloud Worker domain mutation outcome is unknown")
-			return coreruntime.ManagedOutcome{Err: errors.Join(applyErr, finishErr), TerminalOwned: true}
-		}
-		stored := coretask.Result{JSON: mustDomainJSON(result), Summary: "Cloud Worker domain updated"}
-		if stored.Validate() != nil {
-			finishErr := finish("failed", nil, "cloud_worker_domain_result_invalid", "Cloud Worker domain result is invalid")
-			return coreruntime.ManagedOutcome{Err: errors.Join(cloudworker.ErrInvalid, finishErr), TerminalOwned: true}
-		}
-		raw, _ := json.Marshal(stored)
-		if err = finish("completed", raw, "", ""); err != nil {
-			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
-		}
-		return coreruntime.ManagedOutcome{Result: stored, TerminalOwned: true}
-	}
-}
-
-func mustDomainJSON(value any) json.RawMessage {
-	raw, _ := json.Marshal(value)
-	return raw
 }

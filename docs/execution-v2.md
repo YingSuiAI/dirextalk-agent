@@ -59,14 +59,22 @@ zone is available, the service still succeeds and returns the IPv4 and manual
 A-record instructions. Independently of service creation, a Native Agent
 conversation may later call `cloud_worker_domain_bind` or
 `cloud_worker_domain_unbind` for an exact retained Worker workload. The model
-provides only resource arguments; Core creates the owner confirmation and
-durable `waiting_confirmation` Task. Bind resolves the matching hosted zone on
+provides only resource arguments; the authoritative Native turn executes the
+call directly and creates no second confirmation, Task, action card, or
+`waiting_confirmation` state. Bind resolves the matching hosted zone on
 the Agent and targets the Worker's authoritatively observed current public
-IPv4. Unbind uses the exact persisted record and remains available when the
+IPv4 only for a longest-suffix matching public Route53 zone owned by the
+current verified AWS account. Private, external/manual, and cross-account
+zones have no fallback; no match yields an explicit correctable tool error with
+no Apply, provider write, binding persistence, or turn-success commit. Manual
+DNS instructions remain only an initial service-deployment outcome. Unbind uses the exact persisted record and remains available when the
 Worker itself is unavailable. Before mutation and every Route53 call, Agent
-revalidates the frozen owner generation, current credential revision, Worker
-resource identity, workload, zone, and record. Both mutations verify the owning
-account and Route53 read-back. Route53 is not required for Worker creation,
+revalidates the resolved owner generation, AWS account, current credential
+revision, Worker resource identity, workload, zone, and record. Both mutations
+verify the owning account and Route53 provider read-back. Agent retains the
+active binding or last exact removed-record receipt so a retry after provider
+mutation but before final turn commit idempotently reconciles and reads back the
+same record again. Route53 is not required for Worker creation,
 reuse, observation, or ordinary jobs.
 
 ## Results and artifacts

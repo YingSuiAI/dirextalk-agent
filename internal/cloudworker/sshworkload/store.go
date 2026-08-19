@@ -32,6 +32,10 @@ type Service struct {
 	Hostname      string                   `json:"hostname,omitempty"`
 	Domain        *Domain                  `json:"domain,omitempty"`
 	PendingDomain *Domain                  `json:"pending_domain,omitempty"`
+	// RemovedDomain retains the exact last deletion identity so a direct Native
+	// turn can reconcile an already-absent Route53 record after its final chat
+	// commit was interrupted. It is never projected as an active binding.
+	RemovedDomain *Domain `json:"removed_domain,omitempty"`
 }
 
 type Domain struct {
@@ -79,6 +83,11 @@ func (repository *Repository) PutService(_ context.Context, service Service) err
 			}
 			service.Domain = services[index].Domain
 			service.PendingDomain = services[index].PendingDomain
+			service.RemovedDomain = services[index].RemovedDomain
+			if service.Hostname != "" && service.RemovedDomain != nil &&
+				remoteservice.CanonicalHostname(service.Hostname) != remoteservice.CanonicalHostname(service.RemovedDomain.Hostname) {
+				service.RemovedDomain = nil
+			}
 			services[index] = service
 			return repository.writeLocked(service.Worker, services)
 		}
@@ -126,6 +135,14 @@ func (repository *Repository) SetDomain(_ context.Context, identity sshworker.Wo
 	for index := range services {
 		if services[index].WorkloadID == workloadID {
 			next := services[index]
+			if domain == nil {
+				if next.Domain != nil {
+					removed := *next.Domain
+					next.RemovedDomain = &removed
+				}
+			} else {
+				next.RemovedDomain = nil
+			}
 			next.Domain = domain
 			next.PendingDomain = nil
 			if validateService(next) != nil {
@@ -185,6 +202,7 @@ func (repository *Repository) CommitDomain(_ context.Context, identity sshworker
 		}
 		services[index].Domain = services[index].PendingDomain
 		services[index].PendingDomain = nil
+		services[index].RemovedDomain = nil
 		return repository.writeLocked(identity, services)
 	}
 	return ErrNotFound
@@ -260,7 +278,8 @@ func (repository *Repository) path(workerID string) string {
 func validateService(service Service) error {
 	if validateWorker(service.Worker) != nil || !validID(service.TaskID) || !validID(service.WorkloadID) || service.Port == 0 ||
 		!validHealthPath(service.HealthPath) || (service.Hostname != "" && !remoteservice.ValidHostname(service.Hostname)) ||
-		!validServiceDomain(service.Hostname, service.Domain) || !validServiceDomain(service.Hostname, service.PendingDomain) {
+		!validServiceDomain(service.Hostname, service.Domain) || !validServiceDomain(service.Hostname, service.PendingDomain) ||
+		!validServiceDomain(service.Hostname, service.RemovedDomain) {
 		return ErrInvalid
 	}
 	return nil

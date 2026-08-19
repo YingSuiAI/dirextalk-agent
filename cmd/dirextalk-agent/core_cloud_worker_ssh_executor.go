@@ -48,7 +48,7 @@ type sshWorkerExecutor struct {
 	route53       map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53
 	root          string
 	verifyHTTPS   func(context.Context, string, string, string, func(context.Context, string, string) error) error
-	resolveDomain func(context.Context, string, uint64, string, string, string, string) (coretask.CloudWorkerDomainTaskPayload, error)
+	resolveDomain func(context.Context, string, uint64, string, string, string, string) (cloudworker.RetainedWorkerDomainIntent, error)
 	mu            sync.Mutex
 }
 

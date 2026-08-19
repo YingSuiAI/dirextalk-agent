@@ -69,14 +69,20 @@ type intrinsicWorkerManager struct {
 }
 
 type intrinsicDomainManager struct {
-	intent coretask.CloudWorkerDomainTaskPayload
-	owner  string
-	gen    uint64
-	op     string
+	intent     RetainedWorkerDomainIntent
+	applied    RetainedWorkerDomainIntent
+	owner      string
+	gen        uint64
+	op         string
+	resolveErr error
+	applyCalls int
 }
 
-func (m *intrinsicDomainManager) ResolveRetainedWorkerDomain(_ context.Context, owner string, generation uint64, operation, workerID, workloadID, hostname string) (coretask.CloudWorkerDomainTaskPayload, error) {
+func (m *intrinsicDomainManager) ResolveRetainedWorkerDomain(_ context.Context, owner string, generation uint64, operation, workerID, workloadID, hostname string) (RetainedWorkerDomainIntent, error) {
 	m.owner, m.gen, m.op = owner, generation, operation
+	if m.resolveErr != nil {
+		return RetainedWorkerDomainIntent{}, m.resolveErr
+	}
 	intent := m.intent
 	intent.Operation, intent.OwnerID, intent.AccountGeneration = operation, owner, generation
 	intent.WorkerID, intent.WorkloadID = workerID, workloadID
@@ -86,34 +92,15 @@ func (m *intrinsicDomainManager) ResolveRetainedWorkerDomain(_ context.Context, 
 	return intent, nil
 }
 
-func (m *intrinsicDomainManager) ApplyRetainedWorkerDomain(context.Context, coretask.CloudWorkerDomainTaskPayload) (RetainedWorkerDomainResult, error) {
-	return RetainedWorkerDomainResult{}, nil
-}
-
-type intrinsicDomainToolStore struct {
-	call    coreconversation.ToolCall
-	command coreconversation.PrepareIntrinsicToolCommand
-}
-
-func (s *intrinsicDomainToolStore) RecordConversationToolCall(_ context.Context, _ coreconversation.TurnLease, call coreconversation.ToolCall) error {
-	s.call = call
-	return nil
-}
-func (*intrinsicDomainToolStore) BeginConversationToolDispatch(context.Context, coreconversation.TurnLease, coreconversation.ToolCall) (bool, error) {
-	return false, nil
-}
-func (*intrinsicDomainToolStore) RecordConversationToolResult(context.Context, coreconversation.TurnLease, coreconversation.ToolResult) error {
-	return nil
-}
-func (*intrinsicDomainToolStore) FailConversationToolDispatch(context.Context, coreconversation.TurnLease, coreconversation.ToolCall, string, string) (coreconversation.Turn, error) {
-	return coreconversation.Turn{}, nil
-}
-func (*intrinsicDomainToolStore) CompleteConversationToolRound(context.Context, coreconversation.TurnLease) (coreconversation.Turn, error) {
-	return coreconversation.Turn{}, nil
-}
-func (s *intrinsicDomainToolStore) PrepareIntrinsicTool(_ context.Context, command coreconversation.PrepareIntrinsicToolCommand) (coreconversation.ToolAttempt, coretask.Task, coreconfirmation.Confirmation, error) {
-	s.command = command
-	return coreconversation.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{ConfirmationID: uuid.NewString(), State: coreconfirmation.StatePending}, nil
+func (m *intrinsicDomainManager) ApplyRetainedWorkerDomain(_ context.Context, intent RetainedWorkerDomainIntent) (RetainedWorkerDomainResult, error) {
+	m.applyCalls++
+	m.applied = intent
+	recordState := "current"
+	if intent.Operation == "unbind" {
+		recordState = "absent"
+	}
+	return RetainedWorkerDomainResult{WorkerID: intent.WorkerID, WorkloadID: intent.WorkloadID, Hostname: intent.Hostname,
+		TargetIPv4: intent.TargetIPv4, ZoneID: intent.ZoneID, RecordState: recordState}, nil
 }
 
 func (manager *intrinsicWorkerManager) DestroyRetainedWorker(_ context.Context, owner string, generation uint64, workerID, proof string) error {
@@ -136,10 +123,16 @@ type intrinsicTurnCommitter struct {
 	lease    coreconversation.TurnLease
 	response coreconversation.ChatResponse
 	turns    []coreconversation.Turn
+	calls    int
+	err      error
 }
 
 func (committer *intrinsicTurnCommitter) CommitTurn(_ context.Context, lease coreconversation.TurnLease, response coreconversation.ChatResponse) (coreconversation.Turn, error) {
+	committer.calls++
 	committer.lease, committer.response = lease, response
+	if committer.err != nil {
+		return coreconversation.Turn{}, committer.err
+	}
 	turn := lease.Turn
 	turn.State, turn.Response = coreconversation.TurnCompleted, &response
 	return turn, nil
@@ -596,48 +589,119 @@ func TestIntrinsicDestroysExactRetainedWorkerFromConversation(t *testing.T) {
 	}
 }
 
-func TestIntrinsicDomainToolsAreIndependentAndEnterDurableConfirmation(t *testing.T) {
+func TestIntrinsicDomainToolsExecuteDirectlyWithoutConfirmationWait(t *testing.T) {
 	intrinsic, _, lease := intrinsicFixture(t, "bind the deployed service domain", nil, nil)
 	lease.Turn.CreatedAt = time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
 	workerID := uuid.NewString()
-	manager := &intrinsicWorkerManager{intrinsicWorkerInventory: intrinsicWorkerInventory{value: RetainedWorkerInventory{Workers: []RetainedWorkerSnapshot{{WorkerID: workerID}}}}}
-	if err := intrinsic.EnableRetainedWorkerManagement(manager, &intrinsicTurnCommitter{}); err != nil {
+	inventory := &intrinsicWorkerInventory{value: RetainedWorkerInventory{Workers: []RetainedWorkerSnapshot{{WorkerID: workerID}}}}
+	if err := intrinsic.EnableRetainedWorkerInventory(inventory); err != nil {
 		t.Fatal(err)
 	}
-	domainManager := &intrinsicDomainManager{intent: coretask.CloudWorkerDomainTaskPayload{
+	domainManager := &intrinsicDomainManager{intent: RetainedWorkerDomainIntent{
 		CredentialID: uuid.NewString(), CredentialRevision: 3, AWSAccountID: "123456789012", Region: "us-east-1",
 		InstanceID: "i-123", KeyPairID: "key-123", SecurityGroupID: "sg-123", ZoneID: "Z123",
 		TargetIPv4: "203.0.113.10", TTL: 300, IntentDigest: strings.Repeat("a", 64),
 	}}
-	durable := &intrinsicDomainToolStore{}
-	if err := intrinsic.EnableRetainedWorkerDomains(domainManager, durable); err != nil {
+	committer := &intrinsicTurnCommitter{}
+	if err := intrinsic.EnableRetainedWorkerDomains(domainManager, committer); err != nil {
 		t.Fatal(err)
 	}
 	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(tools) != 5 {
+	if err != nil || len(tools) != 4 {
 		t.Fatalf("tools=%+v err=%v", tools, err)
 	}
 	bind := resolvedIntrinsicByName(t, tools, coremodel.IntrinsicCloudWorkerDomainBindToolName)
 	unbind := resolvedIntrinsicByName(t, tools, coremodel.IntrinsicCloudWorkerDomainUnbindToolName)
 	for _, tool := range []coreconversation.ResolvedIntrinsic{bind, unbind} {
 		raw, _ := json.Marshal(tool.Tool.InputSchema)
-		if strings.Contains(string(raw), "confirmation") || !strings.Contains(tool.Tool.Description, "explicit owner confirmation") {
-			t.Fatalf("model authorization leaked into tool schema: %s %+v", raw, tool.Tool)
+		if strings.Contains(string(raw), "confirmation") || strings.Contains(tool.Tool.Description, "confirmation") {
+			t.Fatalf("obsolete confirmation contract leaked into model tool: %s %+v", raw, tool.Tool)
 		}
 	}
 	bindRaw := json.RawMessage(fmt.Sprintf(`{"worker_id":%q,"workload_id":"web","hostname":"app.example.com"}`, workerID))
 	result, err := bind.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{Lease: lease, ConversationRevision: 4, CanonicalArguments: bindRaw,
 		Call: coreconversation.ToolCall{ID: "domain-bind-call", Name: coremodel.IntrinsicCloudWorkerDomainBindToolName, Arguments: string(bindRaw)}})
-	if err != nil || !result.TurnCommitted || durable.call.Name != coremodel.IntrinsicCloudWorkerDomainBindToolName ||
-		durable.command.Binding.OperationDomain != "cloud_worker.domain.bind" || durable.command.Binding.OwnerID != lease.Turn.OwnerID ||
-		durable.command.Payload.CloudWorkerDomain == nil || durable.command.Payload.CloudWorkerDomain.CredentialRevision != 3 ||
+	if err != nil || !result.TurnCommitted || domainManager.applied.IntentDigest == "" || domainManager.applied.CredentialRevision != 3 ||
 		domainManager.owner != lease.Turn.OwnerID || domainManager.gen != lease.Turn.AccountGeneration || domainManager.op != "bind" {
-		t.Fatalf("result=%+v err=%v command=%+v manager=%+v", result, err, durable.command, domainManager)
+		t.Fatalf("result=%+v err=%v manager=%+v", result, err, domainManager)
+	}
+	if !committer.response.Done || committer.response.Revision != 5 || !strings.Contains(committer.response.Message.Content, "app.example.com") ||
+		strings.Contains(committer.response.Message.Content, "confirmation") {
+		t.Fatalf("direct domain response=%+v", committer.response)
 	}
 	unbindRaw := json.RawMessage(fmt.Sprintf(`{"worker_id":%q,"workload_id":"web","hostname":"forged.example.com"}`, workerID))
 	if _, err = unbind.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{Lease: lease, ConversationRevision: 4, CanonicalArguments: unbindRaw,
 		Call: coreconversation.ToolCall{ID: "domain-unbind-call", Name: coremodel.IntrinsicCloudWorkerDomainUnbindToolName, Arguments: string(unbindRaw)}}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("unbind accepted model-supplied hostname: %v", err)
+	}
+}
+
+func TestIntrinsicDomainUnbindExecutesExactPersistedRecordDirectly(t *testing.T) {
+	intrinsic, _, lease := intrinsicFixture(t, "remove the deployed service domain", nil, nil)
+	lease.Turn.CreatedAt = time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
+	workerID := uuid.NewString()
+	manager := &intrinsicWorkerManager{intrinsicWorkerInventory: intrinsicWorkerInventory{value: RetainedWorkerInventory{Workers: []RetainedWorkerSnapshot{{WorkerID: workerID}}}}}
+	if err := intrinsic.EnableRetainedWorkerManagement(manager, &intrinsicTurnCommitter{}); err != nil {
+		t.Fatal(err)
+	}
+	domainManager := &intrinsicDomainManager{intent: RetainedWorkerDomainIntent{
+		CredentialID: uuid.NewString(), CredentialRevision: 4, AWSAccountID: "123456789012", Region: "us-east-1",
+		InstanceID: "i-456", KeyPairID: "key-456", SecurityGroupID: "sg-456", WorkloadID: "web",
+		Hostname: "app.example.com", ZoneID: "Z456", TargetIPv4: "203.0.113.11", TTL: 300,
+		IntentDigest: strings.Repeat("b", 64),
+	}}
+	committer := &intrinsicTurnCommitter{}
+	if err := intrinsic.EnableRetainedWorkerDomains(domainManager, committer); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unbind := resolvedIntrinsicByName(t, tools, coremodel.IntrinsicCloudWorkerDomainUnbindToolName)
+	raw := json.RawMessage(fmt.Sprintf(`{"worker_id":%q,"workload_id":"web"}`, workerID))
+	request := coreconversation.IntrinsicExecutionRequest{Lease: lease, ConversationRevision: 6, CanonicalArguments: raw,
+		Call: coreconversation.ToolCall{ID: "domain-unbind-direct-call", Name: coremodel.IntrinsicCloudWorkerDomainUnbindToolName, Arguments: string(raw)}}
+	commitErr := errors.New("turn commit unavailable")
+	committer.err = commitErr
+	if result, err := unbind.Execute(context.Background(), request); !errors.Is(err, commitErr) || result.TurnCommitted || domainManager.applyCalls != 1 {
+		t.Fatalf("interrupted commit result=%+v err=%v manager=%+v", result, err, domainManager)
+	}
+	committer.err = nil
+	result, err := unbind.Execute(context.Background(), request)
+	if err != nil || !result.TurnCommitted || domainManager.op != "unbind" || domainManager.applied.Hostname != "app.example.com" {
+		t.Fatalf("result=%+v err=%v manager=%+v", result, err, domainManager)
+	}
+	if domainManager.applyCalls != 2 || committer.calls != 2 || !committer.response.Done || committer.response.Revision != 7 || committer.response.Message.Content !=
+		"Domain app.example.com was removed from Worker "+workerID+" workload web." {
+		t.Fatalf("direct unbind response=%+v", committer.response)
+	}
+}
+
+func TestIntrinsicDomainBindReturnsCorrectablePublicRoute53ErrorWithoutApply(t *testing.T) {
+	intrinsic, _, lease := intrinsicFixture(t, "bind a domain outside Route53", nil, nil)
+	lease.Turn.CreatedAt = time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	workerID := uuid.NewString()
+	manager := &intrinsicWorkerManager{intrinsicWorkerInventory: intrinsicWorkerInventory{value: RetainedWorkerInventory{Workers: []RetainedWorkerSnapshot{{WorkerID: workerID}}}}}
+	if err := intrinsic.EnableRetainedWorkerManagement(manager, &intrinsicTurnCommitter{}); err != nil {
+		t.Fatal(err)
+	}
+	domainManager := &intrinsicDomainManager{resolveErr: ErrRetainedWorkerPublicRoute53Required}
+	committer := &intrinsicTurnCommitter{}
+	if err := intrinsic.EnableRetainedWorkerDomains(domainManager, committer); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bind := resolvedIntrinsicByName(t, tools, coremodel.IntrinsicCloudWorkerDomainBindToolName)
+	raw := json.RawMessage(fmt.Sprintf(`{"worker_id":%q,"workload_id":"web","hostname":"outside.example.net"}`, workerID))
+	result, err := bind.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{Lease: lease, ConversationRevision: 3, CanonicalArguments: raw,
+		Call: coreconversation.ToolCall{ID: "domain-public-zone-required", Name: coremodel.IntrinsicCloudWorkerDomainBindToolName, Arguments: string(raw)}})
+	if !errors.Is(err, ErrRetainedWorkerPublicRoute53Required) || !errors.Is(err, coreconversation.ErrInvalid) ||
+		err.Error() != retainedWorkerPublicRoute53Correction || result.TurnCommitted || domainManager.applyCalls != 0 || committer.response.Done {
+		t.Fatalf("result=%+v err=%v manager=%+v response=%+v", result, err, domainManager, committer.response)
 	}
 }
 

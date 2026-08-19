@@ -210,7 +210,7 @@ func (b Binding) normalized() (Binding, error) {
 		quote.SourceTime, quote.ExpiresAt = quote.SourceTime.UTC(), quote.ExpiresAt.UTC()
 		b.Quote = &quote
 	}
-	if b.OperationDomain == "extension.execute" || b.OperationDomain == "cloud_worker.domain.bind" || b.OperationDomain == "cloud_worker.domain.unbind" {
+	if b.OperationDomain == "extension.execute" {
 		if b.OwnerID == "" || b.AccountGeneration == 0 {
 			return Binding{}, ErrInvalid
 		}

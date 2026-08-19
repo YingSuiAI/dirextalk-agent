@@ -562,8 +562,11 @@ Server an Agent-memory database.
 AWS Capability adds revision-fenced idempotent STS identity checks. Worker
 selection, live pricing, EC2 lifecycle, and Route53 remain behind the Cloud
 Worker domain rather than a generic AWS resource graph. Confirmation is
-mandatory for Worker spend or exposure operations; model and extension tools
-cannot bypass it.
+mandatory for Worker creation and its quoted spend/exposure intent; model and
+extension tools cannot bypass it. A later domain-only bind or unbind on an
+already retained workload is executed directly by its authoritative Native
+turn after exact identity revalidation and provider read-back, without a
+second confirmation or Task.
 
 AWS credential access is always composed so the sole App-uploaded credential
 can immediately publish Worker readiness. All durable Core secret envelopes
@@ -682,12 +685,22 @@ manual A-record instructions. A later Native Agent conversation may bind or
 unbind a same-account Route53 A record for an exact retained Worker workload
 through the separate `cloud_worker_domain_bind` and
 `cloud_worker_domain_unbind` model tools. Neither tool accepts confirmation as
-an argument. Each enters the existing durable Task/CoreConfirmation flow,
-freezes exact owner, credential, Worker, workload, hosted-zone, and record
-identity, and revalidates that identity before each Route53 call. Bind uses the
-Worker's authoritatively observed current public IPv4; unbind removes only the
-exact persisted record and does not require the Worker to be available. Both
-verify the mutation by read-back. Route53 is not required for Worker creation or
+an argument. The authoritative Native turn executes each tool directly and
+creates no second confirmation, Task, action card, or `waiting_confirmation`
+state. It resolves and revalidates exact owner generation, AWS account,
+credential revision, Worker resource identity, workload, hosted-zone, and
+record identity before each Route53 call. Bind uses the Worker's
+authoritatively observed current public IPv4 and requires a longest-suffix
+matching public hosted zone owned by the current verified AWS account. Private,
+external/manual, and cross-account zones are unsupported; no match returns a
+stable correctable tool error before Apply, provider write, binding persistence,
+or turn-success commit. The manual-DNS result allowed during initial service
+deployment is not a fallback for this later bind tool. Unbind removes only the exact
+persisted record and does not require the Worker to be available. Both verify
+the mutation by provider read-back. Active binding state and the last exact
+removed record provide idempotent reconciliation when a provider mutation
+succeeds but the final turn commit must retry; the retry revalidates the same
+identity and repeats provider read-back. Route53 is not required for Worker creation or
 ordinary execution. There is no EIP, custom AMI, S3/KMS artifact
 path, WorkerControl listener, model relay, or deploy-time Worker binding. The
 complete read, cancellation, event, artifact, and management contract is

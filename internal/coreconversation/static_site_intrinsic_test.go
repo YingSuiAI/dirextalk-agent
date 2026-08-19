@@ -11,6 +11,12 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 )
 
+type intrinsicCorrectionTestError struct{ content string }
+
+func (err intrinsicCorrectionTestError) Error() string               { return err.content }
+func (err intrinsicCorrectionTestError) Unwrap() error               { return ErrInvalid }
+func (err intrinsicCorrectionTestError) IntrinsicCorrection() string { return err.content }
+
 type staticSitePublisherStub struct {
 	publications []StaticSitePublication
 	err          error
@@ -117,7 +123,7 @@ func TestStaticSiteIntrinsicRejectsArchivesPathsAndOversizeHTML(t *testing.T) {
 	}
 	turnStore := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{turn: lease.Turn}}
 	call := ToolCall{ID: "site-guidance", Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: `{}`}
-	err := recordCorrectableIntrinsicError(context.Background(), turnStore, lease, call)
+	err := recordCorrectableIntrinsicError(context.Background(), turnStore, lease, call, ErrInvalid)
 	var correction *ToolResult
 	for _, event := range turnStore.events {
 		if event.ToolResult != nil {
@@ -127,6 +133,22 @@ func TestStaticSiteIntrinsicRejectsArchivesPathsAndOversizeHTML(t *testing.T) {
 	if err != nil || correction == nil || !strings.Contains(correction.Content, "invoke static_site_publish again immediately with the required non-empty html string") || !strings.Contains(correction.Content, "do not repeat analysis") {
 		t.Fatalf("static site correction=%+v err=%v", correction, err)
 	}
+}
+
+func TestCorrectableIntrinsicErrorPersistsSpecificGuidance(t *testing.T) {
+	lease := scheduleIntrinsicLease()
+	turnStore := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{turn: lease.Turn}}
+	call := ToolCall{ID: "domain-guidance", Name: coremodel.IntrinsicCloudWorkerDomainBindToolName, Arguments: `{}`}
+	want := "select a hostname from an owned public Route53 hosted zone"
+	if err := recordCorrectableIntrinsicError(context.Background(), turnStore, lease, call, intrinsicCorrectionTestError{content: want}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range turnStore.events {
+		if event.ToolResult != nil && event.ToolResult.Content == want && event.ToolResult.IsError {
+			return
+		}
+	}
+	t.Fatalf("specific correction was not persisted: %+v", turnStore.events)
 }
 
 func TestStaticSiteSkillIsEmbeddedWithoutFrontmatter(t *testing.T) {

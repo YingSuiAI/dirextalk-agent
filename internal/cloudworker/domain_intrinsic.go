@@ -3,8 +3,6 @@ package cloudworker
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -28,40 +26,77 @@ type RetainedWorkerDomainResult struct {
 	RecordState string `json:"record_status"`
 }
 
+const retainedWorkerPublicRoute53Correction = "The hostname is not owned by a public Route53 hosted zone in the current AWS account; only Route53-hosted domains are supported."
+
+type retainedWorkerPublicRoute53Error struct{}
+
+func (retainedWorkerPublicRoute53Error) Error() string { return retainedWorkerPublicRoute53Correction }
+func (retainedWorkerPublicRoute53Error) Unwrap() error { return coreconversation.ErrInvalid }
+func (retainedWorkerPublicRoute53Error) IntrinsicCorrection() string {
+	return retainedWorkerPublicRoute53Correction
+}
+
+// ErrRetainedWorkerPublicRoute53Required is a stable, correctable model-tool
+// error for hostnames outside the current verified account's public zones.
+var ErrRetainedWorkerPublicRoute53Required error = retainedWorkerPublicRoute53Error{}
+
+// RetainedWorkerDomainIntent is the exact, secret-free provider authority
+// resolved from one authoritative Native conversation tool call. The manager
+// revalidates every field before and around Route53 mutation.
+type RetainedWorkerDomainIntent struct {
+	Operation          string
+	OwnerID            string
+	AccountGeneration  uint64
+	CredentialID       string
+	CredentialRevision uint64
+	AWSAccountID       string
+	Region             string
+	WorkerID           string
+	InstanceID         string
+	KeyPairID          string
+	SecurityGroupID    string
+	WorkloadID         string
+	Hostname           string
+	ZoneID             string
+	TargetIPv4         string
+	TTL                uint32
+	IntentDigest       string
+}
+
 // RetainedWorkerDomainManager resolves a model-visible ID pair into one exact,
 // secret-free provider authority and later revalidates it before mutation.
 type RetainedWorkerDomainManager interface {
-	ResolveRetainedWorkerDomain(context.Context, string, uint64, string, string, string, string) (coretask.CloudWorkerDomainTaskPayload, error)
-	ApplyRetainedWorkerDomain(context.Context, coretask.CloudWorkerDomainTaskPayload) (RetainedWorkerDomainResult, error)
+	ResolveRetainedWorkerDomain(context.Context, string, uint64, string, string, string, string) (RetainedWorkerDomainIntent, error)
+	ApplyRetainedWorkerDomain(context.Context, RetainedWorkerDomainIntent) (RetainedWorkerDomainResult, error)
 }
 
-func (p *ProposeIntrinsic) EnableRetainedWorkerDomains(manager RetainedWorkerDomainManager, store coreconversation.IntrinsicToolStore) error {
-	if p == nil || manager == nil || store == nil {
+func (p *ProposeIntrinsic) EnableRetainedWorkerDomains(manager RetainedWorkerDomainManager, turns IntrinsicTurnCommitter) error {
+	if p == nil || manager == nil || turns == nil {
 		return ErrInvalid
 	}
-	p.domains, p.domainTools = manager, store
+	p.domains, p.domainTurns = manager, turns
 	return nil
 }
 
 func cloudWorkerDomainTools(p *ProposeIntrinsic, bound coreconversation.TurnLease) []coreconversation.ResolvedIntrinsic {
-	if p == nil || p.domains == nil || p.domainTools == nil {
+	if p == nil || p.domains == nil || p.domainTurns == nil {
 		return nil
 	}
 	worker := map[string]any{"type": "string", "format": "uuid", "description": "Exact worker_id returned by cloud_worker_inventory."}
 	workload := map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9-]+$", "description": "Exact service workload_id returned by cloud_worker_inventory."}
 	bind := coreconversation.ResolvedIntrinsic{Tool: coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerDomainBindToolName,
-		Description: "Bind a Route53 hostname to an already deployed retained Worker service. First call cloud_worker_inventory and pass its exact worker_id and workload_id. This operation always pauses for explicit owner confirmation; tool arguments are never authorization.",
+		Description: "Bind a hostname owned by a matching public Route53 hosted zone in the current verified AWS account to an already deployed retained Worker service. First call cloud_worker_inventory and pass its exact worker_id and workload_id. The authoritative Native turn executes this operation directly and verifies Route53 read-back. External/manual DNS, private zones, and cross-account zones are unsupported.",
 		InputSchema: map[string]any{"type": "object", "additionalProperties": false, "required": []any{"worker_id", "workload_id", "hostname"}, "properties": map[string]any{
 			"worker_id": worker, "workload_id": workload,
-			"hostname": map[string]any{"type": "string", "minLength": 1, "maxLength": 253, "description": "Route53 hostname to bind."},
+			"hostname": map[string]any{"type": "string", "minLength": 1, "maxLength": 253, "description": "Hostname in a matching public Route53 hosted zone owned by the current verified AWS account."},
 		}},
 	}, Execute: func(ctx context.Context, request coreconversation.IntrinsicExecutionRequest) (coreconversation.IntrinsicExecutionResult, error) {
 		return p.executeDomain(ctx, bound, request, "bind")
 	}}
 	unbind := coreconversation.ResolvedIntrinsic{Tool: coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerDomainUnbindToolName,
-		Description: "Remove the exact persisted Route53 record from an already deployed retained Worker service without destroying the Worker or service. First call cloud_worker_inventory. This operation always pauses for explicit owner confirmation.",
+		Description: "Remove the exact persisted Route53 record from an already deployed retained Worker service without destroying the Worker or service. First call cloud_worker_inventory. The authoritative Native turn executes this operation directly and verifies Route53 read-back.",
 		InputSchema: map[string]any{"type": "object", "additionalProperties": false, "required": []any{"worker_id", "workload_id"}, "properties": map[string]any{
 			"worker_id": worker, "workload_id": workload,
 		}},
@@ -82,14 +117,14 @@ func (p *ProposeIntrinsic) executeDomain(ctx context.Context, bound coreconversa
 	if operation == "unbind" {
 		wantTool = coremodel.IntrinsicCloudWorkerDomainUnbindToolName
 	}
-	if ctx == nil || p == nil || p.domains == nil || p.domainTools == nil || request.Call.Name != wantTool ||
+	if ctx == nil || p == nil || p.domains == nil || p.domainTurns == nil || request.Call.Name != wantTool ||
 		request.Lease.Turn.ID != bound.Turn.ID || request.Lease.Turn.RequestID != bound.Turn.RequestID || request.Lease.LeaseID != bound.LeaseID ||
-		request.Lease.Epoch < bound.Epoch || request.Call.Validate() != nil || request.ConversationRevision == 0 {
+		request.Lease.Epoch < bound.Epoch || request.Call.Validate() != nil || request.ConversationRevision == 0 || bound.Turn.CreatedAt.IsZero() {
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
 	args, err := parseDomainIntrinsicArguments(request.CanonicalArguments, operation)
 	if err != nil {
-		return coreconversation.IntrinsicExecutionResult{}, err
+		return coreconversation.IntrinsicExecutionResult{}, errors.Join(coreconversation.ErrInvalid, err)
 	}
 	owner, err := p.owners.ResolveCloudWorkerOwner(ctx, request.Lease)
 	if err != nil || owner.OwnerID != bound.Turn.OwnerID || owner.AccountGeneration != bound.Turn.AccountGeneration {
@@ -99,44 +134,29 @@ func (p *ProposeIntrinsic) executeDomain(ctx context.Context, bound coreconversa
 	if err != nil {
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
-	canonical := append(json.RawMessage(nil), request.CanonicalArguments...)
-	argsSum := sha256.Sum256(canonical)
-	argsDigest := hex.EncodeToString(argsSum[:])
-	round := uint32(0)
-	if recovery, ok := p.domainTools.(coreconversation.ConversationToolRecoveryStore); ok {
-		if previous, observeErr := recovery.ObserveConversationTool(ctx, bound.Turn.ID); observeErr == nil {
-			round = previous.Round + 1
-		}
-	}
-	attemptID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("cloud-worker-domain:%s:%d:%s", bound.Turn.RequestID, round, request.Call.ID))).String()
-	zeroDigest := coreconfirmation.Digest(strings.Repeat("0", 64))
-	credentialSum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", intent.CredentialID, intent.CredentialRevision)))
-	binding := coreconfirmation.Binding{
-		OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration,
-		OperationDomain: "cloud_worker.domain." + operation, TargetID: attemptID, TargetRevision: 1,
-		TargetKind: coreconfirmation.TargetKindPersistentService, SourceVersion: "cloud-worker-domain/v1",
-		ContentDigest: coreconfirmation.Digest(intent.IntentDigest), ParameterDigest: coreconfirmation.Digest(argsDigest),
-		NetworkDigest: coreconfirmation.Digest(intent.IntentDigest), SecretGrantDigest: coreconfirmation.Digest(hex.EncodeToString(credentialSum[:])),
-		ManifestDigest: zeroDigest, ExecutionDigest: zeroDigest, PermissionDigest: zeroDigest, SelectedTool: wantTool,
-	}
-	binding, err = binding.Normalize()
+	result, err := p.domains.ApplyRetainedWorkerDomain(ctx, intent)
 	if err != nil {
-		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
-	}
-	if err = p.domainTools.RecordConversationToolCall(ctx, request.Lease, request.Call); err != nil {
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
-	payload := coretask.ConversationToolTaskPayload{
-		TurnID: bound.Turn.ID, AttemptID: attemptID, Round: round, CallID: request.Call.ID,
-		ToolName: wantTool, ArgumentsDigest: argsDigest, SafeSummary: "Cloud Worker domain " + operation,
-		ExecutionTarget: coretask.ExtensionExecutionTargetCoreIntrinsic, CloudWorkerDomain: &intent,
+	wantState := "current"
+	content := fmt.Sprintf("Domain %s now points to Worker %s workload %s at %s.", result.Hostname, result.WorkerID, result.WorkloadID, result.TargetIPv4)
+	if operation == "unbind" {
+		wantState = "absent"
+		content = fmt.Sprintf("Domain %s was removed from Worker %s workload %s.", result.Hostname, result.WorkerID, result.WorkloadID)
 	}
-	_, _, confirmation, err := p.domainTools.PrepareIntrinsicTool(ctx, coreconversation.PrepareIntrinsicToolCommand{
-		Lease: request.Lease, Round: round, Call: request.Call, CanonicalArguments: canonical, ArgumentsDigest: argsDigest,
-		SafeSummary: payload.SafeSummary, IdempotencyKey: attemptID, ExpiresAt: time.Now().UTC().Add(10 * time.Minute), Payload: payload, Binding: binding,
-	})
-	if err != nil || confirmation.ConfirmationID == "" || confirmation.State != coreconfirmation.StatePending {
-		return coreconversation.IntrinsicExecutionResult{}, errors.Join(err, ErrConflict)
+	if result.WorkerID != intent.WorkerID || result.WorkloadID != intent.WorkloadID || result.Hostname != intent.Hostname ||
+		result.TargetIPv4 != intent.TargetIPv4 || result.ZoneID != intent.ZoneID || result.RecordState != wantState {
+		return coreconversation.IntrinsicExecutionResult{}, ErrConflict
+	}
+	message := coreconversation.Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("cloud-worker-domain-message:"+bound.Turn.ID+":"+request.Call.ID)).String(),
+		Role: coreconversation.RoleAssistant, Content: content, CreatedAt: bound.Turn.CreatedAt.UTC().Add(time.Microsecond), ModelProfileID: bound.Turn.ProfileID}
+	if message.Validate() != nil {
+		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
+	}
+	response := coreconversation.ChatResponse{RequestID: bound.Turn.RequestID, ConversationID: bound.Turn.ConversationID,
+		Revision: request.ConversationRevision + 1, Message: message, Done: true, ModelProfileID: bound.Turn.ProfileID}
+	if _, err = p.domainTurns.CommitTurn(ctx, request.Lease, response); err != nil {
+		return coreconversation.IntrinsicExecutionResult{}, err
 	}
 	return coreconversation.IntrinsicExecutionResult{TurnCommitted: true}, nil
 }
@@ -157,7 +177,7 @@ func parseDomainIntrinsicArguments(raw json.RawMessage, operation string) (domai
 	}
 	args.WorkerID, args.WorkloadID, args.Hostname = strings.TrimSpace(args.WorkerID), strings.TrimSpace(args.WorkloadID), strings.TrimSpace(args.Hostname)
 	if !coretask.ValidUUID(args.WorkerID) || args.WorkloadID == "" || len(args.WorkloadID) > 128 ||
-		(operation == "bind" && args.Hostname == "") || (operation == "unbind" && args.Hostname != "") {
+		(operation == "bind" && !remoteservice.ValidHostname(args.Hostname)) || (operation == "unbind" && args.Hostname != "") {
 		return domainIntrinsicArguments{}, ErrInvalid
 	}
 	return args, nil

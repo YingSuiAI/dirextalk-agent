@@ -106,5 +106,5 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker Execution V2 reads: %w", err)
 	}
-	return &coreCloudWorkerComposition{domain: domain, intrinsic: intrinsic, taskHandler: handler.TaskHandler(), domainTaskHandler: cloudWorkerDomainTaskHandler(conversationStore, executor), workerCapability: management, executionPort: executionPort}, nil
+	return &coreCloudWorkerComposition{domain: domain, intrinsic: intrinsic, taskHandler: handler.TaskHandler(), workerCapability: management, executionPort: executionPort}, nil
 }

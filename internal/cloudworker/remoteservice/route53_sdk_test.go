@@ -56,6 +56,30 @@ func TestRoute53SDKResolvesLongestPublicZoneDeterministically(t *testing.T) {
 	}
 }
 
+func TestRoute53SDKRejectsPrivateOnlyAndNonMatchingZonesWithoutWrite(t *testing.T) {
+	tests := []struct {
+		name  string
+		zones []route53types.HostedZone
+	}{
+		{name: "private only", zones: []route53types.HostedZone{{
+			Id: aws.String("/hostedzone/Z-PRIVATE"), Name: aws.String("example.com."), Config: &route53types.HostedZoneConfig{PrivateZone: true},
+		}}},
+		{name: "non matching public zone", zones: []route53types.HostedZone{{
+			Id: aws.String("/hostedzone/Z-OTHER"), Name: aws.String("other.example."),
+		}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			api := &fakeRoute53API{zones: []*route53.ListHostedZonesOutput{{HostedZones: test.zones}}}
+			client := newRoute53SDK(api, fakeRoute53STS{accountID: "123456789012"})
+			zoneID, found, err := client.ResolveHostedZone(context.Background(), "app.example.com")
+			if err != nil || found || zoneID != "" || len(api.changes) != 0 {
+				t.Fatalf("zone=%q found=%v err=%v writes=%d", zoneID, found, err, len(api.changes))
+			}
+		})
+	}
+}
+
 func TestRoute53SDKWritesAndReadsExactARecord(t *testing.T) {
 	api := &fakeRoute53API{records: []route53types.ResourceRecordSet{{
 		Name: aws.String("app.example.com."), Type: route53types.RRTypeA, TTL: aws.Int64(300),

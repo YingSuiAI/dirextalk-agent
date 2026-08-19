@@ -368,6 +368,14 @@ type IntrinsicExecutionResult struct {
 	ToolResult    *ToolResult
 }
 
+// IntrinsicCorrectionError lets a Core-owned intrinsic return bounded,
+// actionable guidance to the model without treating a correctable resource
+// selection as a terminal turn failure.
+type IntrinsicCorrectionError interface {
+	error
+	IntrinsicCorrection() string
+}
+
 type IntrinsicResolver interface {
 	ResolveIntrinsicTools(context.Context, TurnLease) ([]ResolvedIntrinsic, error)
 }

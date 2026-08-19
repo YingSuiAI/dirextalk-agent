@@ -524,7 +524,7 @@ func TestUnbindDomainUsesExactPersistedRecordAndKeepsWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	dns := &route53Stub{record: remoteservice.ARecord{ZoneID: domain.ZoneID, Hostname: domain.Hostname, IPv4: domain.BoundIPv4, TTL: domain.TTL}, exists: true}
-	expected := coretask.CloudWorkerDomainTaskPayload{Operation: "unbind", OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration,
+	expected := cloudworker.RetainedWorkerDomainIntent{Operation: "unbind", OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration,
 		CredentialID: identity.Credential.CredentialID, CredentialRevision: identity.Credential.CredentialRevision,
 		AWSAccountID: identity.Credential.AccountID, Region: identity.Credential.Region, WorkerID: identity.WorkerID,
 		InstanceID: identity.InstanceID, KeyPairID: identity.KeyPairID, SecurityGroupID: identity.SecurityGroupID,
@@ -534,9 +534,9 @@ func TestUnbindDomainUsesExactPersistedRecordAndKeepsWorker(t *testing.T) {
 	executor := &sshWorkerExecutor{authority: authority, exact: resolver, workloads: repository,
 		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{identity.Credential: {}},
 		route53:   map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53{identity.Credential: dns},
-		resolveDomain: func(context.Context, string, uint64, string, string, string, string) (coretask.CloudWorkerDomainTaskPayload, error) {
+		resolveDomain: func(context.Context, string, uint64, string, string, string, string) (cloudworker.RetainedWorkerDomainIntent, error) {
 			if stale {
-				return coretask.CloudWorkerDomainTaskPayload{}, cloudworker.ErrStaleAuthorization
+				return cloudworker.RetainedWorkerDomainIntent{}, cloudworker.ErrStaleAuthorization
 			}
 			return expected, nil
 		}}

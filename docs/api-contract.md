@@ -397,14 +397,25 @@ plus idempotency; steer and attachment chunks retain their frozen revision CAS.
   `cloud_worker_domain_unbind` model tools after Worker creation; they are not
   owner-client `agent.worker.v1` mutations. Bind accepts only `worker_id`,
   `workload_id`, and `hostname`; unbind accepts only `worker_id` and
-  `workload_id`. Each model call freezes the exact owner generation, Worker,
-  credential revision, workload, hosted zone, A record, and intent digest into
-  a durable Task and a distinct Core confirmation domain. Confirmation is
-  owner-owned state, never a model argument. Confirmed bind maps a 300-second A
-  record to the authoritatively observed current public IPv4; confirmed unbind
-  deletes only the exact persisted record and may proceed while the Worker is
-  unavailable. Both verify the owning account and read-back and refuse to
-  overwrite or remove a changed record. Route53 support may be unavailable
+  `workload_id`. The authoritative Native turn executes each call directly; it
+  creates no second confirmation, Task, action card, or `waiting_confirmation`
+  state. Each call resolves and revalidates the exact owner generation, AWS
+  account, credential revision, Worker resource identity, workload, hosted zone,
+  A record, and intent digest. Bind maps a 300-second A record to the
+  authoritatively observed current public IPv4 only when the hostname has a
+  longest-suffix matching public Route53 hosted zone visible through the
+  current verified AWS account. It accepts no private, external/manual, or
+  cross-account zone fallback. No match returns an explicit correctable tool
+  error before Apply, provider write, binding persistence, or turn-success
+  commit. Unbind deletes only the exact
+  persisted record and may proceed while the Worker is unavailable. Both verify
+  the owning account and provider read-back and refuse to
+  overwrite or remove a changed record. Initial service creation may still
+  return manual A-record instructions when it cannot publish DNS; the later
+  domain-bind tool never uses that fallback. Bind state and the last exact removed
+  record are retained locally so a retry after Route53 mutation but before the
+  final turn commit reconciles the same provider result idempotently and
+  read-backs it again. Route53 support may be unavailable
   when the current account/zone is not configured; this does not suppress Worker creation,
   reuse, list, get, or destroy. There is no EIP field or operation. `destroy_worker`
   requires its explicit confirmation literal and the complete identity

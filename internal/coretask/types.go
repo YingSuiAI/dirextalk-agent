@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/netip"
 	"path"
 	"sort"
 	"strings"
@@ -97,7 +96,6 @@ const (
 	ExtensionExecutionTargetLocalSandbox    ExtensionExecutionTarget = "local_sandbox"
 	ExtensionExecutionTargetRemoteExtension ExtensionExecutionTarget = "remote_extension"
 	ExtensionExecutionTargetStaticSkill     ExtensionExecutionTarget = "static_skill"
-	ExtensionExecutionTargetCoreIntrinsic   ExtensionExecutionTarget = "core_intrinsic"
 )
 
 const (
@@ -119,47 +117,23 @@ type ExtensionTaskPayload struct {
 }
 
 // ConversationToolTaskPayload is the exact durable handoff from a turn to
-// the common task/runner path. Model arguments are represented by their digest
-// and a bounded safe summary; a Core intrinsic may additionally seal its
-// secret-free provider authority for execution after confirmation.
+// the common task/runner path. It contains only IDs and digests; arguments
+// are represented by their digest and a bounded safe summary.
 type ConversationToolTaskPayload struct {
-	TurnID                  string                        `json:"turn_id"`
-	AttemptID               string                        `json:"attempt_id"`
-	Round                   uint32                        `json:"round"`
-	CallID                  string                        `json:"call_id"`
-	ExtensionSnapshotDigest string                        `json:"extension_snapshot_digest"`
-	InstallationID          string                        `json:"installation_id"`
-	VersionID               string                        `json:"version_id"`
-	InstallationRevision    uint64                        `json:"installation_revision"`
-	ToolName                string                        `json:"tool_name"`
-	ToolSchemaDigest        string                        `json:"tool_schema_digest"`
-	ArgumentsDigest         string                        `json:"arguments_digest"`
-	ConfirmationID          string                        `json:"confirmation_id,omitempty"`
-	SafeSummary             string                        `json:"safe_summary,omitempty"`
-	ExecutionTarget         ExtensionExecutionTarget      `json:"execution_target"`
-	CloudWorkerDomain       *CloudWorkerDomainTaskPayload `json:"cloud_worker_domain,omitempty"`
-}
-
-// CloudWorkerDomainTaskPayload is the exact, secret-free authority frozen by
-// a confirmed Native Agent domain tool call.
-type CloudWorkerDomainTaskPayload struct {
-	Operation          string `json:"operation"`
-	OwnerID            string `json:"owner_id"`
-	AccountGeneration  uint64 `json:"account_generation"`
-	CredentialID       string `json:"credential_id"`
-	CredentialRevision uint64 `json:"credential_revision"`
-	AWSAccountID       string `json:"aws_account_id"`
-	Region             string `json:"region"`
-	WorkerID           string `json:"worker_id"`
-	InstanceID         string `json:"instance_id"`
-	KeyPairID          string `json:"key_pair_id"`
-	SecurityGroupID    string `json:"security_group_id"`
-	WorkloadID         string `json:"workload_id"`
-	Hostname           string `json:"hostname"`
-	ZoneID             string `json:"zone_id"`
-	TargetIPv4         string `json:"target_ipv4"`
-	TTL                uint32 `json:"ttl"`
-	IntentDigest       string `json:"intent_digest"`
+	TurnID                  string                   `json:"turn_id"`
+	AttemptID               string                   `json:"attempt_id"`
+	Round                   uint32                   `json:"round"`
+	CallID                  string                   `json:"call_id"`
+	ExtensionSnapshotDigest string                   `json:"extension_snapshot_digest"`
+	InstallationID          string                   `json:"installation_id"`
+	VersionID               string                   `json:"version_id"`
+	InstallationRevision    uint64                   `json:"installation_revision"`
+	ToolName                string                   `json:"tool_name"`
+	ToolSchemaDigest        string                   `json:"tool_schema_digest"`
+	ArgumentsDigest         string                   `json:"arguments_digest"`
+	ConfirmationID          string                   `json:"confirmation_id,omitempty"`
+	SafeSummary             string                   `json:"safe_summary,omitempty"`
+	ExecutionTarget         ExtensionExecutionTarget `json:"execution_target"`
 }
 
 type KnowledgeIndexTaskPayload struct {
@@ -435,13 +409,6 @@ func normalizePayload(s *TaskSpec) error {
 		if !ValidUUID(p.TurnID) || !ValidUUID(p.AttemptID) || strings.TrimSpace(p.CallID) == "" || len([]byte(p.CallID)) > MaxToolCallIDBytes || !utf8.ValidString(p.CallID) || !ValidUUID(p.InstallationID) || !ValidUUID(p.VersionID) || p.InstallationRevision == 0 || strings.TrimSpace(p.ToolName) == "" || !ValidDigest(p.ExtensionSnapshotDigest) || !ValidDigest(p.ToolSchemaDigest) || !ValidDigest(p.ArgumentsDigest) || len([]byte(p.SafeSummary)) > MaxSummaryBytes || !validExtensionExecutionTarget(p.ExecutionTarget) {
 			return ErrInvalid
 		}
-		if p.ExecutionTarget == ExtensionExecutionTargetCoreIntrinsic {
-			if normalizeCloudWorkerDomainPayload(p.CloudWorkerDomain) != nil {
-				return ErrInvalid
-			}
-		} else if p.CloudWorkerDomain != nil {
-			return ErrInvalid
-		}
 	case TaskKindKnowledgeIndex:
 		if count != 1 || s.Payload.KnowledgeIndex == nil {
 			return ErrInvalid
@@ -557,41 +524,11 @@ func validExtensionOperation(op ExtensionOperation) bool {
 
 func validExtensionExecutionTarget(target ExtensionExecutionTarget) bool {
 	switch target {
-	case ExtensionExecutionTargetLocalSandbox, ExtensionExecutionTargetRemoteExtension, ExtensionExecutionTargetStaticSkill, ExtensionExecutionTargetCoreIntrinsic:
+	case ExtensionExecutionTargetLocalSandbox, ExtensionExecutionTargetRemoteExtension, ExtensionExecutionTargetStaticSkill:
 		return true
 	default:
 		return false
 	}
-}
-
-func normalizeCloudWorkerDomainPayload(p *CloudWorkerDomainTaskPayload) error {
-	if p == nil {
-		return ErrInvalid
-	}
-	p.OwnerID = strings.TrimSpace(p.OwnerID)
-	p.CredentialID = strings.TrimSpace(p.CredentialID)
-	p.AWSAccountID = strings.TrimSpace(p.AWSAccountID)
-	p.Region = strings.TrimSpace(p.Region)
-	p.WorkerID = strings.TrimSpace(p.WorkerID)
-	p.InstanceID = strings.TrimSpace(p.InstanceID)
-	p.KeyPairID = strings.TrimSpace(p.KeyPairID)
-	p.SecurityGroupID = strings.TrimSpace(p.SecurityGroupID)
-	p.WorkloadID = strings.TrimSpace(p.WorkloadID)
-	p.Hostname = strings.TrimSpace(p.Hostname)
-	p.ZoneID = strings.TrimSpace(p.ZoneID)
-	p.TargetIPv4 = strings.TrimSpace(p.TargetIPv4)
-	p.IntentDigest = strings.TrimSpace(p.IntentDigest)
-	address, addressErr := netip.ParseAddr(p.TargetIPv4)
-	if (p.Operation != "bind" && p.Operation != "unbind") || p.OwnerID == "" || len(p.OwnerID) > 512 ||
-		p.AccountGeneration == 0 || !ValidUUID(p.CredentialID) || p.CredentialRevision == 0 ||
-		len(p.AWSAccountID) != 12 || strings.Trim(p.AWSAccountID, "0123456789") != "" || p.Region == "" || len(p.Region) > 64 ||
-		!ValidUUID(p.WorkerID) || p.InstanceID == "" || p.KeyPairID == "" || p.SecurityGroupID == "" ||
-		p.WorkloadID == "" || len(p.WorkloadID) > 128 || p.Hostname == "" || len(p.Hostname) > 253 ||
-		p.ZoneID == "" || len(p.ZoneID) > 128 || addressErr != nil || !address.Is4() || p.TTL < 60 || p.TTL > 86400 ||
-		!ValidDigest(p.IntentDigest) {
-		return ErrInvalid
-	}
-	return nil
 }
 
 func normalizeRefs(refs []string) ([]string, error) {

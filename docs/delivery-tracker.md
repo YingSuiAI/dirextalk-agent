@@ -135,7 +135,15 @@ contract](message-server-integration-development-contract.md), and
 - Optional `agent.worker.v1` has closed owner-client list/get/destroy for the
   maximum-four persistent SSH Worker pool. Separate Native conversation
   `cloud_worker_domain_bind` and `cloud_worker_domain_unbind` tools use the
-  durable Core confirmation/Task path and exact Route53 adapters. Inventory
+  authoritative turn's direct execution path and exact Route53 adapters, with
+  no second confirmation, Task, action card, or `waiting_confirmation` state.
+  Each call revalidates the exact owner, account, credential, Worker, workload,
+  zone, and record identity before provider mutation and read-back. Active and
+  last-removed record state makes a post-mutation/final-turn-commit retry an
+  idempotent provider reconciliation with another read-back. Bind accepts only
+  a matching public Route53 zone in the current verified account; private,
+  external/manual, cross-account, and no-match cases perform no Apply/write and
+  return an explicit correctable tool error. Inventory
   reports the current ordinary public IPv4 and optional
   workload/domain state, never EIP. Worker creation, reuse, observation, and
   destroy require the Worker manager and verified-credential ports; optional

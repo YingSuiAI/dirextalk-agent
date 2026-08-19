@@ -2077,7 +2077,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						}
 						arguments, argumentsErr := canonicalJSON(call.Arguments, MaxToolArgumentsBytes)
 						if argumentsErr != nil {
-							if recordErr := recordCorrectableIntrinsicError(ctx, roundStore, lease, call); recordErr != nil {
+							if recordErr := recordCorrectableIntrinsicError(ctx, roundStore, lease, call, argumentsErr); recordErr != nil {
 								_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_error_result_failed", "Core intrinsic error result could not be saved")
 							}
 							return
@@ -2132,7 +2132,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 							ConversationRevision: conv.Revision,
 						})
 						if errors.Is(intrinsicErr, ErrInvalid) {
-							if recordErr := recordCorrectableIntrinsicError(ctx, roundStore, lease, call); recordErr != nil {
+							if recordErr := recordCorrectableIntrinsicError(ctx, roundStore, lease, call, intrinsicErr); recordErr != nil {
 								_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_error_result_failed", "Core intrinsic error result could not be saved")
 							}
 							return
@@ -2519,7 +2519,7 @@ func intrinsicTerminalFailure(toolName string, err error) (string, string) {
 	return "intrinsic_failed", "Core intrinsic operation failed"
 }
 
-func recordCorrectableIntrinsicError(ctx context.Context, store OrderedConversationToolStore, lease TurnLease, call ToolCall) error {
+func recordCorrectableIntrinsicError(ctx context.Context, store OrderedConversationToolStore, lease TurnLease, call ToolCall, intrinsicErr error) error {
 	if err := store.RecordConversationToolCall(ctx, lease, call); err != nil {
 		return err
 	}
@@ -2527,6 +2527,13 @@ func recordCorrectableIntrinsicError(ctx context.Context, store OrderedConversat
 		return err
 	}
 	content := "tool arguments are invalid; correct them according to the tool schema and call again"
+	var correction IntrinsicCorrectionError
+	if errors.As(intrinsicErr, &correction) {
+		candidate := strings.TrimSpace(correction.IntrinsicCorrection())
+		if candidate != "" && len(candidate) <= 1024 {
+			content = candidate
+		}
+	}
 	if call.Name == coremodel.IntrinsicStaticSitePublishToolName {
 		content = staticSitePublishCorrection
 	}
