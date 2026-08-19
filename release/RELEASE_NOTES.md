@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.175
+
+1. Give each scheduled capability a trusted single-pass tool sequence so summaries and research stop after one read or search and delivery stops after one send, while retaining Markdown-only output.
+
 ## v1.0.174
 
 1. Admit scheduled Message MCP and Web Search turns with their durable owner fence without fabricating an invalid Product Capability call context.
