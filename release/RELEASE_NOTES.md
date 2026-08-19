@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.169
+
+1. Report the immutable Agent release version from the unauthenticated internal health endpoint without coupling version observation to runner readiness.
+2. Require OCI identity, all three binary versions, and the live Agent HTTP release version to match before a stable image or `latest` tag can succeed.
+
 ## v1.0.168
 
 1. Expose each durable Turn identity on its Agent-owned conversation history messages so clients can reconcile optimistic response bubbles with server-owned message IDs across active recovery and terminal readback.
