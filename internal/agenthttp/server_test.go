@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
+	"github.com/YingSuiAI/dirextalk-agent/internal/buildinfo"
 	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -252,6 +253,30 @@ func requestWithTicket(method, target, body, ticket string) *http.Request {
 	request.Header.Set("Authorization", "Bearer "+ticket)
 	request.Header.Set("Content-Type", "application/json")
 	return request
+}
+
+func TestHealthReportsOnlyStatusAndImmutableReleaseVersionWithoutAuthentication(t *testing.T) {
+	h := newTestHarness(t)
+	originalVersion := buildinfo.ReleaseVersion
+	buildinfo.ReleaseVersion = "v1.0.168"
+	t.Cleanup(func() { buildinfo.ReleaseVersion = originalVersion })
+
+	recorder := httptest.NewRecorder()
+	h.server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/agent/v1/health", nil))
+
+	var response map[string]any
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &response) != nil {
+		t.Fatalf("health response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if len(response) != 2 || response["status"] != "ok" || response["release_version"] != "v1.0.168" {
+		t.Fatalf("health response = %#v", response)
+	}
+
+	recorder = httptest.NewRecorder()
+	h.server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/agent/v1/health", nil))
+	if recorder.Code != http.StatusUnauthorized || strings.Contains(recorder.Body.String(), "release_version") {
+		t.Fatalf("non-GET health response = %d %s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func TestSessionTicketExpiryAndScopeAreEnforcedAtTheHTTPBoundary(t *testing.T) {

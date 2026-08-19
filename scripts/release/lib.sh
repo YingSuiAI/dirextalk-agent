@@ -181,4 +181,110 @@ release_verify_image() {
       release_die "$binary version probe failed"
     [[ "$output" == "$RELEASE_VERSION" ]] || release_die "$binary reports a different version"
   done
+  release_verify_http_version "$ref"
 }
+
+release_verify_http_version() (
+  set -euo pipefail
+  local ref=$1 probe_dir probe_id network postgres_name agent_name response status
+  local postgres_image='pgvector/pgvector:pg18@sha256:691673308c99d2161ba298736f3147f1f22d79de2fb7ec93ae9b4afcab870b62'
+  local probe_client_image='docker.io/library/alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40'
+  release_require_tools openssl
+  probe_dir=$(mktemp -d "$RELEASE_OUTPUT_DIR/http-version-probe.XXXXXX")
+  probe_id="agent-release-${BASHPID}-${RANDOM}"
+  network="$probe_id"
+  postgres_name="$probe_id-postgres"
+  agent_name="$probe_id-agent"
+  # shellcheck disable=SC2329 # Invoked by the EXIT trap below.
+  cleanup() {
+    docker rm -f "$agent_name" "$postgres_name" >/dev/null 2>&1 || true
+    docker network rm "$network" >/dev/null 2>&1 || true
+    rm -rf "$probe_dir"
+  }
+  trap cleanup EXIT
+
+  umask 077
+  printf '%s' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' >"$probe_dir/service-token"
+  head -c 32 /dev/zero >"$probe_dir/core-secret-master-key"
+  chmod 0400 "$probe_dir/core-secret-master-key"
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+    -keyout "$probe_dir/tls-key" -out "$probe_dir/tls-cert" -days 1 \
+    -subj '/CN=localhost' >/dev/null 2>&1
+  openssl genpkey -algorithm ED25519 -out "$probe_dir/grant-private-key" >/dev/null 2>&1
+  openssl pkey -in "$probe_dir/grant-private-key" -pubout \
+    -out "$probe_dir/grant-public-key" >/dev/null 2>&1
+  rm -f "$probe_dir/grant-private-key"
+  printf '%s\n' 'postgresql://postgres:agent-release-probe@postgres:5432/postgres?sslmode=disable' \
+    >"$probe_dir/database-url"
+  mkdir "$probe_dir/extension-staging"
+  chmod 0700 "$probe_dir/extension-staging"
+  cat >"$probe_dir/config.yaml" <<'EOF'
+instance_id: 00000000-0000-4000-8000-000000000001
+database_url_file: /probe/database-url
+grpc_listen: ":9443"
+tls_cert_file: /probe/tls-cert
+tls_key_file: /probe/tls-key
+service_token_file: /probe/service-token
+core_secret_master_key_file: /probe/core-secret-master-key
+core_secret_master_key_version: 1
+core_extension_staging_root: /probe/extension-staging
+agent_http_enabled: true
+agent_http_listen: "0.0.0.0:8082"
+capability_grant_public_key_file: /probe/grant-public-key
+capability_account_generation: 1
+enable_health_service: true
+enable_reflection: false
+EOF
+
+  docker network create "$network" >/dev/null
+  docker run --detach --name "$postgres_name" --network "$network" --network-alias postgres \
+    --env POSTGRES_PASSWORD=agent-release-probe \
+    --health-cmd 'pg_isready -U postgres' --health-interval 1s --health-timeout 3s --health-retries 30 \
+    "$postgres_image" >/dev/null
+  status=
+  for _ in {1..30}; do
+    status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$postgres_name") || \
+      release_die 'release probe PostgreSQL inspection failed'
+    [[ "$status" != healthy ]] || break
+    [[ "$status" != unhealthy ]] || release_die 'release probe PostgreSQL is unhealthy'
+    sleep 1
+  done
+  [[ "$status" == healthy ]] || release_die 'release probe PostgreSQL did not become healthy'
+
+  docker run --rm --network "$network" --user "$(id -u):$(id -g)" \
+    --volume "$probe_dir:/probe" "$ref" --config /probe/config.yaml migrate >/dev/null || \
+    release_die 'Agent release HTTP probe migration failed'
+  docker run --detach --name "$agent_name" --network "$network" --network-alias agent \
+    --user "$(id -u):$(id -g)" --volume "$probe_dir:/probe" \
+    "$ref" --config /probe/config.yaml serve >/dev/null || \
+    release_die 'Agent release HTTP probe failed to start'
+
+  response=
+  for _ in {1..30}; do
+    if response=$(docker run --rm --network "$network" "$probe_client_image" \
+        wget -qO- http://agent:8082/agent/v1/health 2>/dev/null); then
+      break
+    fi
+    status=$(docker inspect --format '{{.State.Running}}' "$agent_name") || \
+      release_die 'running Agent HTTP probe inspection failed'
+    if [[ "$status" != true ]]; then
+      docker logs "$agent_name" >&2 || true
+      release_die 'running Agent stopped before its HTTP probe'
+    fi
+    sleep 1
+  done
+  if [[ -z "$response" ]]; then
+    docker logs "$agent_name" >&2 || true
+    release_die 'running Agent HTTP probe did not become available'
+  fi
+  python3 - "$response" "$RELEASE_VERSION" <<'PY' || release_die 'running Agent HTTP release version does not match'
+import json, sys
+
+try:
+    value = json.loads(sys.argv[1])
+except Exception as exc:
+    raise SystemExit(f"invalid Agent HTTP health response: {exc}")
+if value != {"status": "ok", "release_version": sys.argv[2]}:
+    raise SystemExit("Agent HTTP health response does not match the release")
+PY
+)

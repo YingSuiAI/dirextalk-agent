@@ -31,7 +31,9 @@ Prepare requires a clean Agent `main` whose `HEAD` exactly equals
 `origin/main`, matching current metadata, and matching notes. Verify runs the
 Agent Go suite, builds all commands,
 builds the unified image, checks its version/revision/created labels, and
-requires all three production binaries to print the requested version.
+requires all three production binaries to print the requested version. It then
+runs the Agent against an isolated, ephemeral PostgreSQL instance and requires
+the unauthenticated HTTP health response to report that same `release_version`.
 Canonical local evidence is bound to the commit and version tag.
 
 Publish revalidates the clean, synchronized `main` source and its prepare and
@@ -40,14 +42,16 @@ the script pulls that tag and rechecks its version/revision/created labels and
 all three production binaries. It creates or reuses the matching annotated Git
 tag and formal GitHub Release. Only after the GitHub Release succeeds does it
 move `dirextalk/agent:latest` to the released version tag, pull `latest`, and
-repeat the same label and binary probes. A failed build, pull, probe, tag push,
-or GitHub Release leaves `latest` untouched.
+repeat the same label, binary, and running HTTP probes. The probe containers
+receive no Docker socket and are removed after each check. A failed build,
+version-tag pull or probe, tag push, or GitHub Release leaves `latest`
+untouched; a failed final pulled-`latest` probe prevents release success.
 
 The release contract deliberately does not require registry digest comparison,
 attestation or SBOM parsing, cross-job local image identity, `latest` history
 ordering, or registry race simulation. The checked-in version, source revision,
-image labels, executable versions, Git tag, GitHub Release, and pulled `latest`
-probe are the maintained release identity.
+image labels, executable versions, running HTTP `release_version`, Git tag,
+GitHub Release, and pulled `latest` probe are the maintained release identity.
 
 The formal GitHub Release title is `Dirextalk Agent vX.Y.Z`, its body is the
 checked-in version section. Publication requires explicit authorization;

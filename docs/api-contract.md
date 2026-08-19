@@ -75,6 +75,13 @@ vectors freeze these codes and the generated `AgentSessionResponse`, scope,
 receipt, snapshot, error, and SSE shapes for Agent, Message Server, and Flutter;
 this repository does not retain a local fixture copy or a parallel v1 DTO path.
 
+`GET /agent/v1/health` is the only unauthenticated data-plane route. It returns
+exactly `{"status":"ok","release_version":"vX.Y.Z"}` for an immutable release
+build, or `release_version: "dev"` for a local build. This is process liveness
+and release-identity observation only: it does not expose Core or extension
+runner readiness, mutation availability, secrets, Docker access, release
+discovery, or update actions.
+
 `POST /agent/v1/capabilities/{capability_id}/operations/{operation}` is the
 canonical generic facade. Read operations return their Agent-authored result
 with 200. Mutations require a UUID `Idempotency-Key` transport header unless

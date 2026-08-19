@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
+	"github.com/YingSuiAI/dirextalk-agent/internal/buildinfo"
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
@@ -113,8 +114,8 @@ func New(cfg Config) (*Server, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/agent/v1/health" {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	if r.Method == http.MethodGet && r.URL.Path == "/agent/v1/health" {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "release_version": buildinfo.Version()})
 		return
 	}
 	request, status, failure := s.authenticate(r)

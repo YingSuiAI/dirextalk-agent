@@ -121,6 +121,7 @@ if [[ "${1:-} ${2:-}" == 'image inspect' ]]; then
     printf '%s\n' "$RELEASE_VERSION|${FAKE_IMAGE_REVISION:-$RELEASE_COMMIT}|$RELEASE_BUILD_TIME"
   fi
 elif [[ "${1:-}" == run ]]; then
+  command=$*
   binary=
   ref=
   while (( $# )); do
@@ -128,14 +129,31 @@ elif [[ "${1:-}" == run ]]; then
     if [[ "$1" == dirextalk/agent:* ]]; then ref=$1; fi
     shift
   done
-  if [[ -n "${FAKE_VERSION_PROBE_FAIL_BINARY:-}" && "$binary" == */"$FAKE_VERSION_PROBE_FAIL_BINARY" ]]; then
+  if [[ "$command" == *'wget -qO- http://agent:8082/agent/v1/health'* ]]; then
+    [[ "${FAKE_HTTP_PROBE_FAIL:-0}" != 1 ]] || exit 1
+    reported=${FAKE_HTTP_RELEASE_VERSION:-$RELEASE_VERSION}
+    if [[ "$ref" == 'dirextalk/agent:latest' && -n "${FAKE_LATEST_HTTP_RELEASE_VERSION:-}" ]]; then
+      reported=$FAKE_LATEST_HTTP_RELEASE_VERSION
+    fi
+    printf '{"status":"ok","release_version":"%s"}\n' "$reported"
+  elif [[ "$command" == *'--config /probe/config.yaml migrate'* ]]; then
+    [[ "${FAKE_HTTP_MIGRATION_FAIL:-0}" != 1 ]]
+  elif [[ "$command" == *'--config /probe/config.yaml serve'* || "$command" == *'pgvector/pgvector:pg18@sha256:'* ]]; then
+    printf '%s\n' fake-container
+  elif [[ -n "${FAKE_VERSION_PROBE_FAIL_BINARY:-}" && "$binary" == */"$FAKE_VERSION_PROBE_FAIL_BINARY" ]]; then
     exit 1
-  fi
-  if [[ "$ref" == 'dirextalk/agent:latest' && -n "${FAKE_LATEST_PROBE_FAIL_BINARY:-}" && \
+  elif [[ "$ref" == 'dirextalk/agent:latest' && -n "${FAKE_LATEST_PROBE_FAIL_BINARY:-}" && \
         "$binary" == */"$FAKE_LATEST_PROBE_FAIL_BINARY" ]]; then
     exit 1
+  else
+    printf '%s\n' "${FAKE_BINARY_VERSION:-$RELEASE_VERSION}"
   fi
-  printf '%s\n' "${FAKE_BINARY_VERSION:-$RELEASE_VERSION}"
+elif [[ "${1:-}" == inspect ]]; then
+  if [[ "$*" == *'.State.Health'* ]]; then
+    printf '%s\n' healthy
+  else
+    printf '%s\n' true
+  fi
 elif [[ "${1:-} ${2:-} ${3:-}" == 'buildx imagetools create' ]]; then
   : >"$AGENT_RELEASE_TEST_DOCKER_STATE.latest"
 fi
@@ -254,6 +272,11 @@ for binary in dirextalk-agent dirextalk-extension-runner dirextalk-core-runner; 
   grep -F -- "--entrypoint /usr/local/bin/$binary" "$fixture/commands.log" >/dev/null || \
     fail "verify omitted the $binary version probe"
 done
+grep -F 'wget -qO- http://agent:8082/agent/v1/health' "$fixture/commands.log" >/dev/null || \
+  fail 'verify omitted the running Agent HTTP release-version probe'
+if grep -F '/var/run/docker.sock' "$fixture/commands.log" >/dev/null; then
+  fail 'running Agent HTTP probe mounted the Docker socket'
+fi
 python3 - "$fixture/repo/.release/$version/verified.json" <<'PY' || fail 'verified evidence is not minimal'
 import json, pathlib, sys
 value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -265,6 +288,12 @@ fixture=$(make_fixture verify-probe-failure)
 run_script "$fixture" prepare.sh "$version" env
 if run_script "$fixture" verify.sh "$version" env FAKE_VERSION_PROBE_FAIL_BINARY=dirextalk-core-runner; then
   fail 'verify ignored a binary version failure'
+fi
+
+fixture=$(make_fixture verify-http-version-failure)
+run_script "$fixture" prepare.sh "$version" env
+if run_script "$fixture" verify.sh "$version" env FAKE_HTTP_RELEASE_VERSION=v9.9.9; then
+  fail 'verify ignored the running Agent HTTP release-version mismatch'
 fi
 
 # A GitHub Release failure must leave latest untouched.
@@ -328,6 +357,16 @@ for binary in dirextalk-agent dirextalk-extension-runner dirextalk-core-runner; 
   count=$(grep -Fc -- "--entrypoint /usr/local/bin/$binary" "$fixture/commands.log")
   [[ "$count" == 2 ]] || fail "publish did not probe $binary on version and latest"
 done
+health_count=$(grep -Fc 'wget -qO- http://agent:8082/agent/v1/health' "$fixture/commands.log")
+[[ "$health_count" == 2 ]] || fail 'publish did not probe running Agent HTTP on version and latest'
+
+fixture=$(make_fixture version-http-probe-failure)
+prepare_and_verify "$fixture"
+: >"$fixture/commands.log"
+if run_script "$fixture" publish.sh "$version" env FAKE_HTTP_RELEASE_VERSION=v9.9.9; then
+  fail 'publish ignored the pulled version Agent HTTP release-version mismatch'
+fi
+assert_latest_not_moved "$fixture" 'version HTTP probe failure'
 
 fixture=$(make_fixture latest-probe-failure)
 prepare_and_verify "$fixture"
