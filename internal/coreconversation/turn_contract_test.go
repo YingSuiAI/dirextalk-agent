@@ -35,6 +35,36 @@ func TestConversationToolAttemptContentRestoresSafeFailureSummary(t *testing.T) 
 	}
 }
 
+func observedTestToolResult(result ToolResult) ToolResult {
+	if result.Outcome != "" {
+		return result
+	}
+	outcome := ToolOutcomeSuccess
+	mutation := ToolMutationNone
+	if result.IsError {
+		outcome = ToolOutcomeNotFound
+	}
+	if result.ToolName == coremodel.IntrinsicStaticSitePublishToolName && result.Content == staticSitePublishCorrection {
+		outcome = ToolOutcomeInvalid
+	}
+	if result.ToolName == coremodel.IntrinsicCloudWorkerProposeToolName {
+		mutation = ToolMutationChanged
+		result.StateChanged = true
+		if result.IsError {
+			outcome = ToolOutcomeFatal
+		}
+	}
+	summary := result.Summary
+	if strings.TrimSpace(summary) == "" {
+		summary = "test tool observation"
+	}
+	result = result.WithObservation(outcome, summary, mutation)
+	if outcome == ToolOutcomeInvalid {
+		result.Retry.ValidationCorrections = 1
+	}
+	return result
+}
+
 func TestCloudWorkerRoutingGuidanceDoesNotRepeatExhaustedLocalCall(t *testing.T) {
 	if !strings.Contains(cloudWorkerRoutingGuidance, "Do not repeat an identical local_sandbox_run after a local resource failure in the same turn") {
 		t.Fatal("local resource guidance still permits the model to immediately repeat an exhausted call")
@@ -196,6 +226,11 @@ func (m *delayedStreamingTurnModel) Stream(ctx context.Context, _ ModelRunReques
 
 type fixedToolCallsTurnModel struct{ calls []ToolCall }
 
+type capturingToolCallsTurnModel struct {
+	calls   []ToolCall
+	request ModelRunRequest
+}
+
 type fixedResponseTurnModel struct {
 	content string
 	request ModelRunRequest
@@ -216,6 +251,16 @@ func (m fixedToolCallsTurnModel) Run(context.Context, ModelRunRequest) (ModelRun
 }
 
 func (m fixedToolCallsTurnModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
+func (m *capturingToolCallsTurnModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
+	m.request = request
+	message := Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: append([]ToolCall(nil), m.calls...), CreatedAt: time.Now().UTC()}
+	return ModelRunResult{Message: message, ToolCalls: append([]ToolCall(nil), m.calls...)}, nil
+}
+
+func (m *capturingToolCallsTurnModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
 	return m.Run(ctx, request)
 }
 
@@ -1255,9 +1300,9 @@ func TestExecuteTurnForcesCorrectableStaticSiteRetryAcrossOutputContinuation(t *
 func TestAppendTurnToolHistoryClearsStaticSiteForceAfterNextResult(t *testing.T) {
 	createdAt := time.Now().UTC().Add(-time.Minute)
 	first := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: `{}`}
-	firstResult := ToolResult{CallID: first.ID, ToolName: first.Name, Content: staticSitePublishCorrection, IsError: true}
+	firstResult := observedTestToolResult(ToolResult{CallID: first.ID, ToolName: first.Name, Content: staticSitePublishCorrection, IsError: true})
 	second := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: `{"html":"<h1>done</h1>"}`}
-	secondResult := ToolResult{CallID: second.ID, ToolName: second.Name, Content: "published"}
+	secondResult := observedTestToolResult(ToolResult{CallID: second.ID, ToolName: second.Name, Content: "published"})
 	turn := Turn{ID: uuid.NewString(), ProfileID: testTurnSnapshot().ProfileID, LastSequence: 6}
 	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{turn: turn}, events: []TurnEvent{
 		{TurnID: turn.ID, Sequence: 1, Kind: TurnEventStarted, CreatedAt: createdAt},
@@ -1299,14 +1344,14 @@ func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *t
 		ExtensionSnapshots: snapshots, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: snapshots}.ExtensionSnapshotDigest()}
 	taskID, planID := uuid.NewString(), uuid.NewString()
 	webCall := ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"worker recovery"}`}
-	webResult := ToolResult{CallID: webCall.ID, ToolName: webCall.Name, Content: `{"results":[]}`}
+	webResult := observedTestToolResult(ToolResult{CallID: webCall.ID, ToolName: webCall.Name, Content: `{"results":[]}`})
 	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
 	reference := Reference{Kind: "execution_plan", AccountGeneration: 1, TaskID: taskID,
 		PlanID: planID, PlanRevision: 1, Status: "waiting_user"}
 	workerID := uuid.NewString()
-	result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"schema":"dirextalk.ssh-worker-completion/v1","status":"succeeded","worker_id":"` + workerID + `","worker_report":"deployment finished"}`,
+	result := observedTestToolResult(ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"schema":"dirextalk.ssh-worker-completion/v1","status":"succeeded","worker_id":"` + workerID + `","worker_report":"deployment finished"}`,
 		RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID},
-		References: []Reference{reference}, Summary: "Cloud Worker result returned"}
+		References: []Reference{reference}, Summary: "Cloud Worker result returned"})
 	prefix := Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "earlier answer",
 		ModelProfileID: profile.ProfileID, CreatedAt: createdAt.Add(-time.Minute)}
 	durableUser := Message{ID: TurnUserMessageID(requestID), Role: RoleUser, Content: turn.Prompt,
@@ -1354,7 +1399,7 @@ func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *t
 		!reflect.DeepEqual(response.RelatedTaskIDs, []string{taskID}) ||
 		!reflect.DeepEqual(response.RelatedPlanIDs, []string{planID}) ||
 		!reflect.DeepEqual(response.References, []Reference{reference}) ||
-		!reflect.DeepEqual(response.ToolSummaries, []string{result.Summary}) ||
+		!reflect.DeepEqual(response.ToolSummaries, []string{webResult.Summary, result.Summary}) ||
 		len(response.ToolResults) != 2 || response.ToolResults[1].CallID != call.ID {
 		t.Fatalf("terminal response metadata=%+v", response)
 	}
@@ -1373,10 +1418,16 @@ func TestExecuteTurnAllowsFailedWorkerFollowUpProposalForDeferredSteer(t *testin
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
 	createdAt := time.Now().UTC().Add(-time.Minute)
+	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "config-1", Digest: strings.Repeat("1", 64), AllowedTools: []string{"unrelated_lookup"}}
+	snapshot := ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: selection.Version,
+		Source: "mcp:installed", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("2", 64),
+		ToolSchemaDigest: strings.Repeat("3", 64), NetworkBindingDigest: strings.Repeat("4", 64),
+		ToolNames: []string{"unrelated_lookup"}, ReadOnly: true}
 	turn := Turn{
 		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
 		Prompt: "deploy the service remotely", ProfileID: profile.ProfileID,
 		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+		ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(),
 		State: TurnAccepted, Revision: 3, LastSequence: 6, CreatedAt: createdAt,
 	}
 	taskID, planID := uuid.NewString(), uuid.NewString()
@@ -1384,12 +1435,12 @@ func TestExecuteTurnAllowsFailedWorkerFollowUpProposalForDeferredSteer(t *testin
 	originalCall := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
 	reference := Reference{Kind: "execution_plan", AccountGeneration: 1, TaskID: taskID,
 		PlanID: planID, PlanRevision: 1, Status: "failed"}
-	originalResult := ToolResult{
+	originalResult := observedTestToolResult(ToolResult{
 		CallID: originalCall.ID, ToolName: originalCall.Name, IsError: true,
 		Content: `{"schema":"dirextalk.ssh-worker-completion/v1","execution_id":"` + executionID + `","status":"failed","worker_id":"` + uuid.NewString() + `","persistent_worker":true,"worker_report":"HTTP 403: model unavailable in region","central_instruction":"Continue the current conversation using the Worker report and local artifacts."}`,
 		Summary: "Cloud Worker result returned", RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID},
 		References: []Reference{reference},
-	}
+	})
 	repeatCall := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
 	steer := TurnSteer{RequestID: uuid.NewString(), Instruction: "retry using the retained Worker", ExpectedRevision: 2,
 		Sequence: 5, CreatedAt: createdAt.Add(4 * time.Second), Deferred: true}
@@ -1408,25 +1459,38 @@ func TestExecuteTurnAllowsFailedWorkerFollowUpProposalForDeferredSteer(t *testin
 		},
 	}
 	executeCalls := 0
-	service, err := NewService(store, fixedToolCallsTurnModel{calls: []ToolCall{repeatCall}}, nil,
+	model := &capturingToolCallsTurnModel{calls: []ToolCall{repeatCall}}
+	service, err := NewService(store, model, extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+		return []ResolvedExtension{{Selection: selection, Snapshot: snapshot,
+			Tools: []coremodel.Tool{{Name: "unrelated_lookup", InputSchema: map[string]any{"type": "object"}}},
+			Execute: func(context.Context, ToolExecutionRequest) (ToolResult, error) {
+				return ToolResult{}, errors.New("unrelated extension must not execute")
+			}}}, nil
+	}),
 		snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
 	if err != nil {
 		t.Fatal(err)
 	}
 	service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
-		return []ResolvedIntrinsic{{
-			Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerProposeToolName, InputSchema: map[string]any{"type": "object"}},
-			Execute: func(ctx context.Context, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
-				executeCalls++
-				response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID,
-					Revision: request.ConversationRevision + 1, Done: true, ModelProfileID: turn.ProfileID,
-					Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "follow-up Worker execution accepted",
-						ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC()},
-				}
-				_, commitErr := store.CommitTurn(ctx, request.Lease, response)
-				return IntrinsicExecutionResult{TurnCommitted: commitErr == nil}, commitErr
+		return []ResolvedIntrinsic{
+			{
+				Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerProposeToolName, InputSchema: map[string]any{"type": "object"}},
+				Execute: func(ctx context.Context, request IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+					executeCalls++
+					response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID,
+						Revision: request.ConversationRevision + 1, Done: true, ModelProfileID: turn.ProfileID,
+						Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "follow-up Worker execution accepted",
+							ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC()},
+					}
+					_, commitErr := store.CommitTurn(ctx, request.Lease, response)
+					return IntrinsicExecutionResult{TurnCommitted: commitErr == nil}, commitErr
+				},
 			},
-		}}, nil
+			{Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerInventoryToolName, InputSchema: map[string]any{"type": "object"}}, ReadOnly: true,
+				Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+					return IntrinsicExecutionResult{}, errors.New("unrelated intrinsic must not execute")
+				}},
+		}, nil
 	}))
 
 	service.executeTurn(context.Background(), turn.ID)
@@ -1444,6 +1508,10 @@ func TestExecuteTurnAllowsFailedWorkerFollowUpProposalForDeferredSteer(t *testin
 	if terminal.Response.Message.Content != "follow-up Worker execution accepted" {
 		t.Fatalf("terminal response=%+v", terminal.Response)
 	}
+	if model.request.ForcedToolName != coremodel.IntrinsicCloudWorkerProposeToolName || len(model.request.Intrinsics) != 1 ||
+		model.request.Intrinsics[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName || len(model.request.Extensions) != 0 {
+		t.Fatalf("deferred Worker follow-up restored unrelated tools: %+v", model.request)
+	}
 }
 
 func TestExecuteTurnContinuesSucceededCloudWorkerWithDeferredSteer(t *testing.T) {
@@ -1456,9 +1524,9 @@ func TestExecuteTurnContinuesSucceededCloudWorkerWithDeferredSteer(t *testing.T)
 		LastSequence: 9, CreatedAt: createdAt}
 	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
 	executionID := uuid.NewString()
-	result := ToolResult{CallID: call.ID, ToolName: call.Name,
+	result := observedTestToolResult(ToolResult{CallID: call.ID, ToolName: call.Name,
 		Content: `{"schema":"dirextalk.ssh-worker-completion/v1","status":"succeeded","worker_id":"worker-one","worker_report":"deployment finished"}`,
-		Summary: "Cloud Worker result returned"}
+		Summary: "Cloud Worker result returned"})
 	steer := TurnSteer{RequestID: uuid.NewString(), Instruction: "also report the service URL",
 		ExpectedRevision: 2, Sequence: 3, CreatedAt: createdAt.Add(3 * time.Second), Deferred: true}
 	base := newFakeStore()
@@ -1503,8 +1571,34 @@ func TestExecuteTurnContinuesSucceededCloudWorkerWithDeferredSteer(t *testing.T)
 	if !foundSteer || !foundWorkerResult {
 		t.Fatalf("follow-up context steer=%v worker_result=%v messages=%+v", foundSteer, foundWorkerResult, model.request.Conversation.Messages)
 	}
-	if hasUnappliedDeferredWorkerSteer([]TurnSteer{steer}, []string{steer.RequestID}) {
+	if hasUnappliedDeferredWorkerSteer([]TurnSteer{steer}, []string{steer.RequestID}, nil) {
 		t.Fatal("applied Worker steer reported as deferred")
+	}
+}
+
+func TestDeferredWorkerFollowUpIsConsumedOnceAndUsesLatestCompletion(t *testing.T) {
+	steer := TurnSteer{RequestID: uuid.NewString(), Sequence: 5, Deferred: true}
+	originalCall := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
+	originalResult := observedTestToolResult(ToolResult{CallID: originalCall.ID, ToolName: originalCall.Name, IsError: true,
+		Content: `{"schema":"dirextalk.ssh-worker-completion/v1","status":"failed","worker_report":"original failed","applied_steer_ids":["older-steer"]}`})
+	authorities := map[string]turnToolCallAuthority{originalCall.ID: {
+		call: originalCall, state: turnToolCallTerminal, result: &originalResult, callSequence: 2, resultSequence: 6,
+	}}
+	if !hasUnappliedDeferredWorkerSteer([]TurnSteer{steer}, nil, authorities) {
+		t.Fatal("deferred steer was consumed by the Worker call that preceded it")
+	}
+	followUpCall := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
+	followUpResult := observedTestToolResult(ToolResult{CallID: followUpCall.ID, ToolName: followUpCall.Name, IsError: true,
+		Content: `{"schema":"dirextalk.ssh-worker-completion/v1","status":"failed","worker_report":"follow-up failed","applied_steer_ids":["newer-steer"]}`})
+	authorities[followUpCall.ID] = turnToolCallAuthority{
+		call: followUpCall, state: turnToolCallTerminal, result: &followUpResult, callSequence: 7, resultSequence: 8,
+	}
+	if hasUnappliedDeferredWorkerSteer([]TurnSteer{steer}, nil, authorities) {
+		t.Fatal("one post-steer Worker proposal did not consume the bounded follow-up")
+	}
+	content, _, applied, ok := terminalCloudWorkerResult(authorities, "failed")
+	if !ok || content != "follow-up failed" || !reflect.DeepEqual(applied, []string{"older-steer", "newer-steer"}) {
+		t.Fatalf("latest completion content=%q applied=%v ok=%v", content, applied, ok)
 	}
 }
 
@@ -1685,7 +1779,9 @@ func TestDurableReadOnlyIntrinsicResultReturnsToNextModelRound(t *testing.T) {
 				if recordedCalls != 1 || recordedResults != 0 {
 					t.Fatalf("intrinsic dispatch ordering calls=%d results=%d events=%+v", recordedCalls, recordedResults, store.events)
 				}
-				return IntrinsicExecutionResult{ToolResult: &ToolResult{Content: inventory, Summary: "Retained Worker inventory read", References: []Reference{roomReference}}}, nil
+				result := ToolResult{Content: inventory, References: []Reference{roomReference}}.
+					WithObservation(ToolOutcomeSuccess, "Retained Worker inventory read", ToolMutationNone)
+				return IntrinsicExecutionResult{ToolResult: &result}, nil
 			},
 		}}, nil
 	}))
@@ -1735,12 +1831,12 @@ func TestTurnToolMetadataCapsDurableAggregateReferences(t *testing.T) {
 	}
 	overflowReference := Reference{Kind: "room", RoomID: "!overflow:example.test"}
 	messages := []Message{
-		{Role: RoleTool, ToolResults: []ToolResult{{
+		{Role: RoleTool, ToolResults: []ToolResult{observedTestToolResult(ToolResult{
 			CallID: uuid.NewString(), Content: `{}`, References: firstReferences,
-		}}},
-		{Role: RoleTool, ToolResults: []ToolResult{{
+		})}},
+		{Role: RoleTool, ToolResults: []ToolResult{observedTestToolResult(ToolResult{
 			CallID: uuid.NewString(), Content: `{}`, References: []Reference{overflowReference},
-		}}},
+		})}},
 	}
 
 	_, _, aggregate, _, results := turnToolMetadata(messages)
@@ -1812,8 +1908,8 @@ func TestAppendTurnToolHistoryPreservesAssistantMultiToolBatch(t *testing.T) {
 	turn := Turn{ID: uuid.NewString(), ProfileID: uuid.NewString()}
 	first := ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"one"}`}
 	second := ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"two"}`}
-	firstResult := ToolResult{CallID: first.ID, ToolName: first.Name, Content: `{"result":1}`}
-	secondResult := ToolResult{CallID: second.ID, ToolName: second.Name, Content: `{"result":2}`}
+	firstResult := observedTestToolResult(ToolResult{CallID: first.ID, ToolName: first.Name, Content: `{"result":1}`})
+	secondResult := observedTestToolResult(ToolResult{CallID: second.ID, ToolName: second.Name, Content: `{"result":2}`})
 	createdAt := time.Now().UTC()
 	base := newFakeStore()
 	store := &readOnlyTurnStore{
@@ -1870,7 +1966,7 @@ func TestExecuteTurnStopsRepeatedToolRoundsWithoutFinalResponse(t *testing.T) {
 		return []ResolvedExtension{{Selection: selection, Snapshot: snapshot,
 			Tools: []coremodel.Tool{{Name: "repeat_lookup", InputSchema: map[string]any{"type": "object"}}},
 			Execute: func(_ context.Context, request ToolExecutionRequest) (ToolResult, error) {
-				return ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: `{"ok":true}`}, nil
+				return observedTestToolResult(ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: `{"ok":true}`}), nil
 			}}}, nil
 	})
 	service, err := NewService(store, model, resolver, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
@@ -1907,7 +2003,7 @@ func TestExecuteTurnEnforcesDurableToolCallBudget(t *testing.T) {
 	events := []TurnEvent{{Kind: TurnEventAccepted, CreatedAt: createdAt}}
 	for index := 0; index < MaxAdmittedTurnToolCalls; index++ {
 		call := ToolCall{ID: uuid.NewString(), Name: "repeat_lookup", Arguments: fmt.Sprintf(`{"index":%d}`, index)}
-		result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"ok":true}`}
+		result := observedTestToolResult(ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"ok":true}`})
 		events = append(events,
 			TurnEvent{Kind: TurnEventStarted},
 			TurnEvent{Kind: TurnEventToolCall, ToolCall: &call},
@@ -1934,7 +2030,7 @@ func TestExecuteTurnEnforcesDurableToolCallBudget(t *testing.T) {
 			Tools: []coremodel.Tool{{Name: "repeat_lookup", InputSchema: map[string]any{"type": "object"}}},
 			Execute: func(_ context.Context, request ToolExecutionRequest) (ToolResult, error) {
 				executions++
-				return ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: `{"ok":true}`}, nil
+				return observedTestToolResult(ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: `{"ok":true}`}), nil
 			}}}, nil
 	})
 	service, err := NewService(store, model, resolver, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
@@ -2264,7 +2360,7 @@ func TestExecuteTurnAppliesStagedToolLoopRecovery(t *testing.T) {
 			events := []TurnEvent{{Kind: TurnEventAccepted, CreatedAt: createdAt}}
 			for index, value := range test.pairs {
 				call := ToolCall{ID: uuid.NewString(), Name: toolName, Arguments: value.arguments}
-				result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: value.content, IsError: test.isError}
+				result := observedTestToolResult(ToolResult{CallID: call.ID, ToolName: call.Name, Content: value.content, IsError: test.isError})
 				events = append(events, TurnEvent{Kind: TurnEventStarted}, TurnEvent{Kind: TurnEventToolCall, ToolCall: &call}, TurnEvent{Kind: TurnEventToolResult, ToolResult: &result})
 				if test.steerAfter == index+1 {
 					events = append(events, TurnEvent{Kind: TurnEventSteered, Text: "change direction"})
@@ -2482,7 +2578,7 @@ func TestExecuteTurnProcessesWebSearchBeforeLocalMCPFromSameModelRound(t *testin
 	var executionOrder []string
 	resolvedWeb := ResolvedExtension{Selection: webSelection, Snapshot: webSnapshot, Tools: []coremodel.Tool{{Name: "web_search", InputSchema: map[string]any{"type": "object"}}}, Execute: func(context.Context, ToolExecutionRequest) (ToolResult, error) {
 		executionOrder = append(executionOrder, "web_search")
-		return ToolResult{CallID: webCall.ID, ToolName: webCall.Name, Content: `{"results":[]}`}, nil
+		return observedTestToolResult(ToolResult{CallID: webCall.ID, ToolName: webCall.Name, Content: `{"results":[]}`}), nil
 	}}
 	resolvedLocal := ResolvedExtension{Selection: localSelection, Snapshot: localSnapshot, Tools: []coremodel.Tool{{Name: "write_html", InputSchema: map[string]any{"type": "object"}}}}
 	service, err := NewService(store, fixedToolCallsTurnModel{calls: []ToolCall{webCall, localCall}}, extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {

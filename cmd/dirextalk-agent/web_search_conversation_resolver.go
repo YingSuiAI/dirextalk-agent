@@ -105,28 +105,42 @@ func (r *webSearchConversationResolver) ResolveExtensions(ctx context.Context, s
 			decoder := json.NewDecoder(bytes.NewBufferString(request.Call.Arguments))
 			decoder.DisallowUnknownFields()
 			if err := decoder.Decode(&input); err != nil {
-				return coreconversation.ToolResult{}, corewebsearch.ErrInvalid
+				return coreconversation.ToolResult{}, webSearchConversationExecutionError(corewebsearch.ErrInvalid)
 			}
 			var tail any
 			if err := decoder.Decode(&tail); !errors.Is(err, io.EOF) {
-				return coreconversation.ToolResult{}, corewebsearch.ErrInvalid
+				return coreconversation.ToolResult{}, webSearchConversationExecutionError(corewebsearch.ErrInvalid)
 			}
 			toolPermission, ok := capabilityclient.PermissionFromContext(toolCtx)
 			if !ok || toolPermission == nil {
-				return coreconversation.ToolResult{}, corewebsearch.ErrInvalid
+				return coreconversation.ToolResult{}, coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeAuth, "Web search authorization is unavailable", 0, corewebsearch.ErrInvalid)
 			}
 			toolOwnerID := strings.TrimSpace(toolPermission.GetAuthenticatedOwnerId())
 			toolGeneration := toolPermission.GetAccountGeneration()
 			result, err := r.service.SearchResolved(toolCtx, toolOwnerID, toolGeneration, snapshot, input.Query, input.MaxResults)
 			if err != nil {
-				return coreconversation.ToolResult{}, err
+				return coreconversation.ToolResult{}, webSearchConversationExecutionError(err)
 			}
 			body, err := json.Marshal(result)
 			if err != nil {
 				return coreconversation.ToolResult{}, corewebsearch.ErrProvider
 			}
-			return coreconversation.ToolResult{CallID: request.Call.ID, ToolName: "web_search", Content: string(body), Summary: fmt.Sprintf("Web search returned %d result(s)", len(result.Results))}, nil
+			toolResult := coreconversation.ToolResult{CallID: request.Call.ID, ToolName: "web_search", Content: string(body), Summary: fmt.Sprintf("Web search returned %d result(s)", len(result.Results))}
+			return toolResult.WithObservation(coreconversation.ToolOutcomeSuccess, toolResult.Summary, coreconversation.ToolMutationNone), nil
 		},
 	})
 	return resolved, nil
+}
+
+func webSearchConversationExecutionError(err error) error {
+	switch {
+	case errors.Is(err, corewebsearch.ErrInvalid):
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeInvalid, "Web search arguments are invalid", 0, err)
+	case errors.Is(err, corewebsearch.ErrNotConfigured), errors.Is(err, corewebsearch.ErrDisabled):
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeUserInput, "Web search must be configured and enabled", 0, err)
+	case errors.Is(err, corewebsearch.ErrProvider), errors.Is(err, corewebsearch.ErrRepository):
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeRetryable, "Web search provider is temporarily unavailable", 0, err)
+	default:
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeFatal, "Web search failed", 0, err)
+	}
 }

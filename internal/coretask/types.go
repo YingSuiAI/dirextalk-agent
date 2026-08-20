@@ -269,6 +269,7 @@ type ConversationToolTaskPayload struct {
 	ConfirmationID          string                   `json:"confirmation_id,omitempty"`
 	SafeSummary             string                   `json:"safe_summary,omitempty"`
 	ExecutionTarget         ExtensionExecutionTarget `json:"execution_target"`
+	ReadOnly                bool                     `json:"read_only"`
 }
 
 type KnowledgeIndexTaskPayload struct {

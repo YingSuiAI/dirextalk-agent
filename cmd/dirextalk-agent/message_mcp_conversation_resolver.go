@@ -215,26 +215,30 @@ func (r *messageMCPConversationResolver) messageMCPCatalogExtension(catalog mess
 			}
 			readOnly := tool.Effect.ReadOnly()
 			result, runErr := tool.Run(callCtx, mcphttp.ToolInvocation{Name: request.Call.Name, Arguments: arguments})
-			if runErr != nil && readOnly && errors.Is(runErr, mcphttp.ErrProviderUnavailable) {
-				if rediscovered, available, discoveryErr := r.messageMCPCatalog(callCtx, true); discoveryErr == nil && available && rediscovered.digest == catalog.digest {
-					for _, candidate := range rediscovered.tools {
-						if candidate.Definition.Name == request.Call.Name && candidate.Effect == mcphttp.ToolEffectReadOnly {
-							result, runErr = candidate.Run(callCtx, mcphttp.ToolInvocation{Name: request.Call.Name, Arguments: arguments})
-							break
-						}
-					}
-				}
-			}
 			if runErr != nil {
 				if !readOnly {
-					return coreconversation.ToolResult{
+					observation := coreconversation.ToolResult{
 						CallID: request.Call.ID, ToolName: request.Call.Name, IsError: true,
-						Content: "Message operation completion is unknown. Read authoritative state before deciding whether to retry; do not retry blindly.",
-					}, nil
+						Content: "Message operation completion is unknown. Read authoritative state before deciding whether to retry.",
+					}.WithObservation(coreconversation.ToolOutcomeUnknownMutation, "Message operation completion is unknown", coreconversation.ToolMutationUnknown)
+					return observation, nil
 				}
-				return coreconversation.ToolResult{}, runErr
+				if errors.Is(runErr, mcphttp.ErrProviderUnavailable) {
+					return coreconversation.ToolResult{}, coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeRetryable, "Message MCP provider is unavailable", 0, runErr)
+				}
+				return coreconversation.ToolResult{}, coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeFatal, "Message MCP tool failed", 0, runErr)
 			}
 			toolResult := coreconversation.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: result.Content, IsError: result.IsError}
+			if result.IsError && !readOnly {
+				toolResult = toolResult.WithObservation(coreconversation.ToolOutcomeUnknownMutation, "Message operation completion is unknown", coreconversation.ToolMutationUnknown)
+			} else if result.IsError {
+				toolResult = toolResult.WithObservation(coreconversation.ToolOutcomeFatal, "Message MCP tool reported a failure", coreconversation.ToolMutationNone)
+			} else if readOnly {
+				toolResult = toolResult.WithObservation(coreconversation.ToolOutcomeSuccess, "Message MCP read completed", coreconversation.ToolMutationNone)
+			} else {
+				toolResult.StateChanged = true
+				toolResult = toolResult.WithObservation(coreconversation.ToolOutcomeSuccess, "Message operation completed", coreconversation.ToolMutationChanged)
+			}
 			if !result.IsError {
 				toolResult.References = messageMCPRoomReferences(request.Call.Name, result.StructuredContent)
 			}

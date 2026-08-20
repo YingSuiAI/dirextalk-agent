@@ -1111,7 +1111,7 @@ func (s *CoreConversationStore) BeginConversationToolDispatch(ctx context.Contex
 }
 
 func (s *CoreConversationStore) RecordConversationToolResult(ctx context.Context, lease core.TurnLease, result core.ToolResult) error {
-	if result.Validate() != nil {
+	if result.ValidateObservation() != nil {
 		return core.ErrInvalid
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -1199,8 +1199,9 @@ func (s *CoreConversationStore) FailConversationToolDispatch(ctx context.Context
 	if err != nil || envelope.Calls[index].State != durableTurnToolCallDispatched {
 		return core.Turn{}, core.ErrConflict
 	}
-	result := core.ToolResult{CallID: call.ID, ToolName: call.Name, Content: summary, IsError: true}
-	if result.Validate() != nil {
+	result := core.ToolResult{CallID: call.ID, ToolName: call.Name, Content: summary}.
+		WithObservation(core.ToolOutcomeFatal, summary, core.ToolMutationNone)
+	if result.ValidateObservation() != nil {
 		return core.Turn{}, core.ErrInvalid
 	}
 	envelope.Calls[index].State, envelope.Calls[index].ResultDigest = durableTurnToolCallTerminal, durableTurnToolResultDigest(result)
@@ -1313,7 +1314,7 @@ func conversationToolEventAuthorityTx(ctx context.Context, tx pgx.Tx, turnID, ca
 			if event.ToolResult == nil || event.ToolResult.CallID != callID {
 				continue
 			}
-			if authority.state != conversationToolCallPending || event.ToolResult.Validate() != nil || event.ToolResult.ToolName != authority.call.Name {
+			if authority.state != conversationToolCallPending || event.ToolResult.ValidateObservation() != nil || event.ToolResult.ToolName != authority.call.Name {
 				return conversationToolEventAuthority{}, core.ErrConflict
 			}
 			result := *event.ToolResult
@@ -1835,15 +1836,23 @@ func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.Tu
 		}
 	}
 	if turn.State == core.TurnRunning {
-		var dispatchedTask, lockedTaskID string
-		if scanErr := tx.QueryRow(ctx, `SELECT task_id::text FROM core_conversation_tool_attempts WHERE turn_id=$1 AND state='dispatched'`, c.TurnID).Scan(&dispatchedTask); scanErr == nil {
+		var dispatchedTask, lockedTaskID, callID, toolName string
+		if scanErr := tx.QueryRow(ctx, `SELECT a.task_id::text,t.payload_json#>>'{conversation_tool,call_id}',a.tool_name
+				FROM core_conversation_tool_attempts a JOIN core_tasks t ON t.task_id=a.task_id
+				WHERE a.turn_id=$1 AND a.state='dispatched'`, c.TurnID).Scan(&dispatchedTask, &callID, &toolName); scanErr == nil {
 			if scanErr = tx.QueryRow(ctx, `SELECT task_id::text FROM core_tasks WHERE task_id=$1 FOR UPDATE`, dispatchedTask).Scan(&lockedTaskID); scanErr != nil || lockedTaskID != dispatchedTask {
 				return core.Turn{}, core.ErrConflict
 			}
 			if scanErr = tx.QueryRow(ctx, `SELECT task_id::text FROM core_conversation_tool_attempts WHERE turn_id=$1 AND task_id=$2 AND state='dispatched' FOR UPDATE`, c.TurnID, dispatchedTask).Scan(&lockedTaskID); scanErr != nil || lockedTaskID != dispatchedTask {
 				return core.Turn{}, core.ErrConflict
 			}
-			if _, scanErr = tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state='uncertain',result_json=NULL,updated_at=$2 WHERE task_id=$1 AND state='dispatched'`, dispatchedTask, now); scanErr != nil {
+			observation := core.ToolResult{CallID: callID, ToolName: toolName, Content: "turn canceled after tool dispatch; reconciliation required", RelatedTaskIDs: []string{dispatchedTask}}.
+				WithObservation(core.ToolOutcomeUnknownMutation, "Conversation tool completion is unknown", core.ToolMutationUnknown)
+			if observation.ValidateObservation() != nil {
+				return core.Turn{}, core.ErrConflict
+			}
+			observationRaw, _ := json.Marshal(observation)
+			if _, scanErr = tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state='uncertain',result_json=$2,updated_at=$3 WHERE task_id=$1 AND state='dispatched'`, dispatchedTask, observationRaw, now); scanErr != nil {
 				return core.Turn{}, scanErr
 			}
 			if _, scanErr = tx.Exec(ctx, `UPDATE core_tasks SET status='failed',failure_code='tool_uncertain',failure_summary='turn canceled after tool dispatch; reconciliation required',lease_holder='',lease_expires_at=NULL,revision=revision+1,updated_at=$2 WHERE task_id=$1 AND status='running'`, dispatchedTask, now); scanErr != nil {

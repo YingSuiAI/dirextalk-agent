@@ -3,6 +3,7 @@ package coreruntime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -431,11 +432,49 @@ func TestRoleToolMapsCallNameAcrossMessages(t *testing.T) {
 	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
 	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}), Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{
 		{Role: coreconversation.RoleAssistant, ReasoningContent: "tool reasoning", ToolCalls: []coreconversation.ToolCall{{ID: "call-1", Name: "lookup", Arguments: "{}"}}},
-		{Role: coreconversation.RoleAssistant, ToolResults: []coreconversation.ToolResult{{CallID: "call-1", Content: "ok"}}},
+		{Role: coreconversation.RoleAssistant, ToolResults: []coreconversation.ToolResult{(coreconversation.ToolResult{CallID: "call-1", Content: "ok"}).WithObservation(coreconversation.ToolOutcomeSuccess, "lookup completed", coreconversation.ToolMutationNone)}},
 	}}})
 	got := client.req
 	if err != nil || len(got.Messages) != 2 || got.Messages[0].ReasoningContent != "tool reasoning" || got.Messages[1].ToolCallID != "call-1" || got.Messages[1].Name != "lookup" {
 		t.Fatalf("request=%+v err=%v", got, err)
+	}
+}
+
+func TestModelRunnerSendsOnlyCanonicalToolObservationEnvelope(t *testing.T) {
+	id := "00000000-0000-4000-8000-000000000001"
+	client := &captureClient{}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	result := coreconversation.ToolResult{
+		CallID: "call-1", ToolName: "lookup", Content: `{"items":[1]}`,
+		Outcome: coreconversation.ToolOutcomePartial, Summary: "one page returned", Cursor: "next-page",
+		Retry:         coreconversation.ToolRetryMetadata{TransientRetries: 1, TransientLimit: 1, ValidationLimit: 1},
+		MutationState: coreconversation.ToolMutationNone,
+	}
+	_, err := runner.Run(context.Background(), coreconversation.ModelRunRequest{
+		Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}),
+		Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{
+			{Role: coreconversation.RoleAssistant, ToolCalls: []coreconversation.ToolCall{{ID: "call-1", Name: "lookup", Arguments: "{}"}}},
+			{Role: coreconversation.RoleTool, ToolResults: []coreconversation.ToolResult{result}},
+		}},
+	})
+	if err != nil || len(client.req.Messages) != 2 {
+		t.Fatalf("request=%+v err=%v", client.req, err)
+	}
+	var envelope struct {
+		Schema        string                                  `json:"schema"`
+		Outcome       coreconversation.ToolObservationOutcome `json:"outcome"`
+		Data          json.RawMessage                         `json:"data"`
+		Summary       string                                  `json:"summary"`
+		Cursor        string                                  `json:"cursor"`
+		Retry         coreconversation.ToolRetryMetadata      `json:"retry"`
+		MutationState coreconversation.ToolMutationState      `json:"mutation_state"`
+	}
+	content := client.req.Messages[1].Content
+	if json.Unmarshal([]byte(content), &envelope) != nil || envelope.Schema != coreconversation.ToolObservationSchema ||
+		envelope.Outcome != coreconversation.ToolOutcomePartial || string(envelope.Data) != `{"items":[1]}` ||
+		envelope.Summary != result.Summary || envelope.Cursor != result.Cursor || envelope.Retry.TransientRetries != 1 ||
+		envelope.MutationState != coreconversation.ToolMutationNone || strings.Contains(content, "call_id") || strings.Contains(content, "tool_name") {
+		t.Fatalf("model observation=%s", content)
 	}
 }
 

@@ -412,6 +412,7 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 	payload, _ := json.Marshal(completion)
 	toolResult := core.ToolResult{CallID: calls[0].ID, ToolName: coremodel.IntrinsicCloudWorkerProposeToolName,
 		Content: string(payload), IsError: terminal != cloudworker.StateSucceeded,
+		StateChanged: true, MutationState: core.ToolMutationChanged,
 		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, Summary: "Cloud Worker result returned",
 		References: []core.Reference{
 			{Kind: "execution_plan", AccountGeneration: plan.AccountGeneration, TaskID: plan.TaskID,
@@ -420,6 +421,11 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 				PlanID: plan.PlanID, PlanRevision: plan.Revision, RunID: execution.RunID,
 				RunRevision: execution.Revision, ExecutionID: execution.ExecutionID, Status: string(execution.State)},
 		},
+	}
+	if terminal == cloudworker.StateSucceeded {
+		toolResult = toolResult.WithObservation(core.ToolOutcomeSuccess, "Cloud Worker completed", core.ToolMutationChanged)
+	} else {
+		toolResult = toolResult.WithObservation(core.ToolOutcomeFatal, "Cloud Worker failed", core.ToolMutationChanged)
 	}
 	if toolResult.Validate() != nil {
 		return core.ToolCall{}, core.ToolResult{}, errSSHWorkerStoreInvalid

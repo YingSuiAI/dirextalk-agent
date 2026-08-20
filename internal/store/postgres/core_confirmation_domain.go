@@ -566,11 +566,19 @@ func terminalizeConversationToolTx(ctx context.Context, tx pgx.Tx, cur coreconfi
 	if cur.Binding.OperationDomain != "conversation_tool" {
 		return nil
 	}
-	var turnID string
-	if err := tx.QueryRow(ctx, `SELECT turn_id::text FROM core_conversation_tool_attempts WHERE task_id=$1 AND attempt_id=$2 FOR UPDATE`, cur.TaskID, cur.Binding.TargetID).Scan(&turnID); err != nil {
+	var turnID, callID, toolName string
+	if err := tx.QueryRow(ctx, `SELECT a.turn_id::text,t.payload_json#>>'{conversation_tool,call_id}',a.tool_name
+		FROM core_conversation_tool_attempts a JOIN core_tasks t ON t.task_id=a.task_id
+		WHERE a.task_id=$1 AND a.attempt_id=$2 FOR UPDATE`, cur.TaskID, cur.Binding.TargetID).Scan(&turnID, &callID, &toolName); err != nil {
 		return err
 	}
-	attemptUpdate, err := tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state=$2::text,result_json=jsonb_build_object('status',$2::text,'code',$3::text),updated_at=$4 WHERE task_id=$1 AND attempt_id=$5 AND state='waiting_confirmation'`, cur.TaskID, attemptState, reason, at.UTC(), cur.Binding.TargetID)
+	result := core.ToolResult{CallID: callID, ToolName: toolName, Content: reason, RelatedTaskIDs: []string{cur.TaskID}}.
+		WithObservation(core.ToolOutcomeUserInput, "Conversation tool authorization was not granted", core.ToolMutationNone)
+	if result.Validate() != nil {
+		return coreconfirmation.ErrConflict
+	}
+	resultRaw, _ := json.Marshal(result)
+	attemptUpdate, err := tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state=$2::text,result_json=$3,updated_at=$4 WHERE task_id=$1 AND attempt_id=$5 AND state='waiting_confirmation'`, cur.TaskID, attemptState, resultRaw, at.UTC(), cur.Binding.TargetID)
 	if err != nil || attemptUpdate.RowsAffected() != 1 {
 		if err != nil {
 			return err

@@ -83,26 +83,27 @@ func (r *knowledgeConversationResolver) ResolveExtensions(ctx context.Context, s
 		Tools: []coremodel.Tool{{Name: knowledgeConversationToolName, Description: "Search the owner's ready, indexed Knowledge sources for relevant passages.", InputSchema: schema}},
 		Execute: func(toolCtx context.Context, request coreconversation.ToolExecutionRequest) (coreconversation.ToolResult, error) {
 			if request.Call.Name != knowledgeConversationToolName {
-				return coreconversation.ToolResult{}, coreknowledge.ErrInvalid
+				return coreconversation.ToolResult{}, knowledgeConversationExecutionError(coreknowledge.ErrInvalid)
 			}
 			toolPermission, ok := capabilityclient.PermissionFromContext(toolCtx)
 			if !ok || toolPermission == nil || strings.TrimSpace(toolPermission.GetAuthenticatedOwnerId()) != ownerID || toolPermission.GetAccountGeneration() != accountGeneration {
-				return coreconversation.ToolResult{}, coreknowledge.ErrInvalid
+				return coreconversation.ToolResult{}, coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeAuth, "Knowledge search authorization is unavailable", 0, coreknowledge.ErrInvalid)
 			}
 			input, err := decodeKnowledgeConversationInput(request.Call.Arguments)
 			if err != nil {
-				return coreconversation.ToolResult{}, err
+				return coreconversation.ToolResult{}, knowledgeConversationExecutionError(err)
 			}
 			page, err := r.search.Search(toolCtx, coreknowledge.SearchQuery{Query: input.Query, SourceIDs: input.SourceIDs, Limit: input.Limit})
 			if err != nil {
-				return coreconversation.ToolResult{}, knowledgeConversationError(err)
+				return coreconversation.ToolResult{}, knowledgeConversationExecutionError(err)
 			}
 			bounded := boundedKnowledgeConversationResult(page)
 			body, err := json.Marshal(bounded)
 			if err != nil {
-				return coreconversation.ToolResult{}, coreknowledge.ErrConflict
+				return coreconversation.ToolResult{}, knowledgeConversationExecutionError(coreknowledge.ErrConflict)
 			}
-			return coreconversation.ToolResult{CallID: request.Call.ID, ToolName: knowledgeConversationToolName, Content: string(body), Summary: fmt.Sprintf("Knowledge search returned %d result(s)", len(bounded.Items))}, nil
+			toolResult := coreconversation.ToolResult{CallID: request.Call.ID, ToolName: knowledgeConversationToolName, Content: string(body), Summary: fmt.Sprintf("Knowledge search returned %d result(s)", len(bounded.Items))}
+			return toolResult.WithObservation(coreconversation.ToolOutcomeSuccess, toolResult.Summary, coreconversation.ToolMutationNone), nil
 		},
 	})
 	return resolved, nil
@@ -170,19 +171,19 @@ func boundedKnowledgeConversationResult(page coreknowledge.SearchPage) knowledge
 	return knowledgeConversationResult{Items: items, SearchMode: "semantic", SearchProvenance: page.SearchProvenance}
 }
 
-func knowledgeConversationError(err error) error {
-	for _, public := range []error{
-		coreknowledge.ErrInvalid,
-		coreknowledge.ErrNotFound,
-		coreknowledge.ErrConflict,
-		coreknowledge.ErrLimitExceeded,
-		coreknowledge.ErrIneligible,
-	} {
-		if errors.Is(err, public) {
-			return public
-		}
+func knowledgeConversationExecutionError(err error) error {
+	switch {
+	case errors.Is(err, coreknowledge.ErrInvalid), errors.Is(err, coreknowledge.ErrLimitExceeded):
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeInvalid, "Knowledge search arguments are invalid", 0, err)
+	case errors.Is(err, coreknowledge.ErrNotFound):
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeNotFound, "No matching Knowledge source was found", 0, err)
+	case errors.Is(err, coreknowledge.ErrIneligible):
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeUserInput, "The selected Knowledge source is not ready for search", 0, err)
+	case errors.Is(err, coreknowledge.ErrConflict):
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeFatal, "Knowledge search state conflicted", 0, err)
+	default:
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeFatal, "Knowledge search failed", 0, coreknowledge.ErrConflict)
 	}
-	return coreknowledge.ErrConflict
 }
 
 func truncateKnowledgeConversationSnippet(value string) string {

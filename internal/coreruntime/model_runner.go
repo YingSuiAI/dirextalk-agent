@@ -123,7 +123,11 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 			messages = append(messages, pm)
 		}
 		for _, tr := range m.ToolResults {
-			messages = append(messages, coremodel.Message{Role: coremodel.RoleTool, Content: tr.Content, ToolCallID: tr.CallID, Name: callNames[tr.CallID]})
+			observation, observationErr := tr.ModelObservationJSON()
+			if observationErr != nil {
+				return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
+			}
+			messages = append(messages, coremodel.Message{Role: coremodel.RoleTool, Content: observation, ToolCallID: tr.CallID, Name: callNames[tr.CallID]})
 		}
 	}
 	tools := make([]coremodel.Tool, 0)

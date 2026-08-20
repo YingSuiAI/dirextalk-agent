@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -767,7 +768,7 @@ func (s *Service) runTurnSupervisor(ctx context.Context, id string) {
 		}
 		if turn.State == TurnAccepted {
 			if recovery, ok := s.turns.(ConversationToolRecoveryStore); ok {
-				if attempt, observeErr := recovery.ObserveConversationTool(ctx, id); observeErr == nil && (attempt.State == "completed" || attempt.State == "denied" || attempt.State == "canceled") {
+				if attempt, observeErr := recovery.ObserveConversationTool(ctx, id); observeErr == nil && (attempt.State == "completed" || attempt.State == "denied" || attempt.State == "canceled" || attempt.State == "uncertain") {
 					if resumeErr := recovery.ResumeConversationTurn(ctx, id); resumeErr != nil {
 						if !waitTurnSupervisor(ctx, backoff, wake) {
 							return
@@ -781,7 +782,7 @@ func (s *Service) runTurnSupervisor(ctx context.Context, id string) {
 		if turn.State == TurnWaitingConfirmation {
 			if recovery, ok := s.turns.(ConversationToolRecoveryStore); ok {
 				attempt, observeErr := recovery.ObserveConversationTool(ctx, id)
-				if observeErr == nil && (attempt.State == "completed" || attempt.State == "denied" || attempt.State == "canceled") {
+				if observeErr == nil && (attempt.State == "completed" || attempt.State == "denied" || attempt.State == "canceled" || attempt.State == "uncertain") {
 					_ = recovery.ResumeConversationTurn(ctx, id)
 					continue
 				}
@@ -1076,7 +1077,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if failedWorker {
 		_, _, workerSteersApplied, _ = terminalCloudWorkerResult(toolCallAuthorities, "failed")
 	}
-	unappliedWorkerSteer := hasUnappliedDeferredWorkerSteer(turnSteers, workerSteersApplied)
+	unappliedWorkerSteer := hasUnappliedDeferredWorkerSteer(turnSteers, workerSteersApplied, toolCallAuthorities)
 	autoFinalizeWorker := terminalWorker && !unappliedWorkerSteer
 	var resolvedExtensions []ResolvedExtension
 	if !autoFinalizeWorker {
@@ -1224,6 +1225,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			seen[intrinsic.Tool.Name] = struct{}{}
 		}
 	}
+	deferredWorkerFollowUp := history.supervisorTerminal && failedWorker && unappliedWorkerSteer && containsCloudWorkerIntrinsic(intrinsicTools)
 	executionPolicy := turn.RuntimeSnapshot.ExecutionPolicy
 	toolCallBudgetExhausted := uint32(len(toolCallAuthorities)) >= executionPolicy.MaxToolCalls
 	profile := turn.ProfileSnapshot.Profile()
@@ -1252,6 +1254,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if !finalizing {
 		var reason TurnFinalizationReason
 		switch {
+		case history.supervisorTerminal && !deferredWorkerFollowUp:
+			reason = TurnFinalizationToolOutcome
 		case toolCallBudgetExhausted:
 			reason = TurnFinalizationToolBudget
 		case history.loopRecovery == toolLoopSynthesize:
@@ -1275,6 +1279,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	case finalizing:
 		directive = NewTurnDispatchDirective(TurnDispatchGuidanceLoopSynthesis, TurnDispatchToolsNone, "")
 		directive.FinalizationReason = finalization.Reason
+	case deferredWorkerFollowUp:
+		directive = NewTurnDispatchDirective(TurnDispatchGuidanceNone, TurnDispatchToolsAdmitted, coremodel.IntrinsicCloudWorkerProposeToolName)
 	case history.forcedToolName != "":
 		directive = NewTurnDispatchDirective(TurnDispatchGuidanceNone, TurnDispatchToolsAdmitted, history.forcedToolName)
 	case history.loopRecovery == toolLoopNudge:
@@ -1355,6 +1361,17 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		modelExtensions = nil
 		modelExtensionSnapshots = nil
 		modelIntrinsicTools = nil
+	}
+	if deferredWorkerFollowUp {
+		modelExtensions = nil
+		modelExtensionSnapshots = nil
+		modelIntrinsicTools = nil
+		for _, intrinsic := range intrinsicTools {
+			if intrinsic.Tool.Name == coremodel.IntrinsicCloudWorkerProposeToolName {
+				modelIntrinsicTools = []ResolvedIntrinsic{intrinsic}
+				break
+			}
+		}
 	}
 	switch directive.Guidance {
 	case TurnDispatchGuidanceLoopNudge:
@@ -1672,28 +1689,24 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 								_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "tool_dispatch_uncertain", "read-only intrinsic dispatch outcome is unknown")
 								return
 							}
-							intrinsicResult, intrinsicErr := intrinsic.Execute(ctx, IntrinsicExecutionRequest{
-								Lease: lease, Call: call, CanonicalArguments: arguments,
-								ConversationRevision: conv.Revision,
-							})
-							if intrinsicErr != nil {
-								if child.Err() != nil {
-									return
+							result := executeImmediateTool(child, call, func(runCtx context.Context, _ ToolExecutionRequest) (ToolResult, error) {
+								intrinsicResult, intrinsicErr := intrinsic.Execute(runCtx, IntrinsicExecutionRequest{
+									Lease: lease, Call: call, CanonicalArguments: arguments,
+									ConversationRevision: conv.Revision,
+								})
+								if intrinsicErr != nil {
+									if errors.Is(intrinsicErr, ErrInvalid) {
+										intrinsicErr = NewToolExecutionError(ToolOutcomeInvalid, "Core intrinsic arguments are invalid", 0, intrinsicErr)
+									}
+									return ToolResult{}, intrinsicErr
 								}
-								code, summary := intrinsicTerminalFailure(call.Name, intrinsicErr)
-								_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, code, summary)
+								if intrinsicResult.TurnCommitted || intrinsicResult.ToolResult == nil {
+									return ToolResult{}, NewToolExecutionError(ToolOutcomeFatal, "read-only intrinsic returned an invalid result", 0, ErrInvalid)
+								}
+								return *intrinsicResult.ToolResult, nil
+							})
+							if child.Err() != nil {
 								return
-							}
-							if intrinsicResult.TurnCommitted || intrinsicResult.ToolResult == nil {
-								_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "invalid_intrinsic_result", "read-only intrinsic returned an invalid result")
-								return
-							}
-							result := *intrinsicResult.ToolResult
-							if result.CallID == "" {
-								result.CallID = call.ID
-							}
-							if result.ToolName == "" {
-								result.ToolName = call.Name
 							}
 							if result.Validate() != nil || result.CallID != call.ID || result.ToolName != call.Name {
 								_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "invalid_intrinsic_result", "read-only intrinsic returned an invalid result")
@@ -1760,25 +1773,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 							_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "tool_dispatch_uncertain", "read-only tool dispatch outcome is unknown")
 							return
 						}
-						result, executeErr := executable.Execute(child, ToolExecutionRequest{Call: call})
-						if executeErr != nil {
-							if child.Err() != nil {
-								return
-							}
-							// Tool errors are model observations, not conversation failures.
-							// Returning a bounded error result lets the model correct invalid
-							// arguments or choose another tool in the next round.
-							result = ToolResult{
-								CallID:   call.ID,
-								ToolName: call.Name,
-								Content:  "tool execution failed; correct the arguments or use another available tool",
-								IsError:  true,
-							}
+						result := executeImmediateTool(child, call, executable.Execute)
+						if child.Err() != nil {
+							return
 						}
-						if result.CallID == "" {
-							result.CallID = call.ID
-						}
-						result.ToolName = call.Name
 						if result.Validate() != nil || result.CallID != call.ID {
 							_, _ = roundStore.FailConversationToolDispatch(ctx, lease, call, "invalid_tool_result", "read-only tool returned an invalid result")
 							return
@@ -2027,6 +2025,8 @@ func finalizationStop(reason TurnFinalizationReason) (string, string) {
 		return "tool_loop_no_progress", "repeated tool rounds produced no new evidence"
 	case TurnFinalizationToolBudget:
 		return toolBudgetExhaustedCode, toolBudgetExhaustedSummary
+	case TurnFinalizationToolOutcome:
+		return "terminal_tool_outcome", "tool execution reached a terminal outcome that cannot be retried safely"
 	case TurnFinalizationModelBudget:
 		return modelBudgetExhaustedCode, modelBudgetExhaustedSummary
 	case TurnFinalizationProvider:
@@ -2281,6 +2281,8 @@ func recordCorrectableIntrinsicError(ctx context.Context, store OrderedConversat
 		CallID: call.ID, ToolName: call.Name, IsError: true,
 		Content: content,
 	}
+	result = result.WithObservation(ToolOutcomeInvalid, content, ToolMutationNone)
+	result.Retry.ValidationCorrections = 1
 	if err := store.RecordConversationToolResult(ctx, lease, result); err != nil {
 		return err
 	}
@@ -2562,9 +2564,11 @@ const (
 )
 
 type turnToolCallAuthority struct {
-	call   ToolCall
-	state  turnToolCallState
-	result *ToolResult
+	call           ToolCall
+	state          turnToolCallState
+	result         *ToolResult
+	callSequence   int64
+	resultSequence int64
 }
 
 func terminalCloudWorkerContent(authorities map[string]turnToolCallAuthority) (string, []string, bool) {
@@ -2587,32 +2591,62 @@ func terminalFailedCloudWorkerContent(authorities map[string]turnToolCallAuthori
 }
 
 func terminalCloudWorkerResult(authorities map[string]turnToolCallAuthority, status string) (string, string, []string, bool) {
+	type completion struct {
+		callID          string
+		sequence        int64
+		status          string
+		workerID        string
+		content         string
+		appliedSteerIDs []string
+	}
+	completions := make([]completion, 0, len(authorities))
 	for _, authority := range authorities {
 		if authority.state != turnToolCallTerminal || authority.call.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
 			authority.result == nil || authority.result.ToolName != coremodel.IntrinsicCloudWorkerProposeToolName {
 			continue
 		}
-		var completion struct {
+		var parsed struct {
 			Schema          string   `json:"schema"`
 			Status          string   `json:"status"`
 			WorkerID        string   `json:"worker_id"`
 			WorkerReport    string   `json:"worker_report"`
 			AppliedSteerIDs []string `json:"applied_steer_ids"`
 		}
-		if json.Unmarshal([]byte(authority.result.Content), &completion) != nil ||
-			completion.Schema != "dirextalk.ssh-worker-completion/v1" || completion.Status != status {
+		if json.Unmarshal([]byte(authority.result.Content), &parsed) != nil || parsed.Schema != "dirextalk.ssh-worker-completion/v1" ||
+			(parsed.Status != "succeeded" && parsed.Status != "failed") {
 			continue
 		}
-		content := strings.TrimSpace(completion.WorkerReport)
+		content := strings.TrimSpace(parsed.WorkerReport)
 		if content == "" {
 			content = strings.TrimSpace(authority.result.Summary)
 		}
 		if content == "" {
 			continue
 		}
-		return content, strings.TrimSpace(completion.WorkerID), completion.AppliedSteerIDs, true
+		completions = append(completions, completion{
+			callID: authority.call.ID, sequence: authority.resultSequence, status: parsed.Status,
+			workerID: strings.TrimSpace(parsed.WorkerID), content: content,
+			appliedSteerIDs: append([]string(nil), parsed.AppliedSteerIDs...),
+		})
 	}
-	return "", "", nil, false
+	if len(completions) == 0 {
+		return "", "", nil, false
+	}
+	sort.Slice(completions, func(i, j int) bool {
+		if completions[i].sequence == completions[j].sequence {
+			return completions[i].callID < completions[j].callID
+		}
+		return completions[i].sequence < completions[j].sequence
+	})
+	appliedSteerIDs := make([]string, 0)
+	for _, value := range completions {
+		appliedSteerIDs = stableStrings(append(appliedSteerIDs, value.appliedSteerIDs...))
+	}
+	latest := completions[len(completions)-1]
+	if latest.status != status {
+		return "", "", appliedSteerIDs, false
+	}
+	return latest.content, latest.workerID, appliedSteerIDs, true
 }
 
 func modelResultCallsTool(result ModelRunResult, toolName string) bool {
@@ -2626,14 +2660,24 @@ func modelResultCallsTool(result ModelRunResult, toolName string) bool {
 	return false
 }
 
-func hasUnappliedDeferredWorkerSteer(steers []TurnSteer, appliedSteerIDs []string) bool {
+func hasUnappliedDeferredWorkerSteer(steers []TurnSteer, appliedSteerIDs []string, authorities map[string]turnToolCallAuthority) bool {
 	applied := make(map[string]struct{}, len(appliedSteerIDs))
 	for _, id := range appliedSteerIDs {
 		applied[id] = struct{}{}
 	}
 	for _, steer := range steers {
 		if steer.Deferred {
-			if _, ok := applied[steer.RequestID]; !ok {
+			if _, ok := applied[steer.RequestID]; ok {
+				continue
+			}
+			consumed := false
+			for _, authority := range authorities {
+				if authority.call.Name == coremodel.IntrinsicCloudWorkerProposeToolName && authority.callSequence > steer.Sequence {
+					consumed = true
+					break
+				}
+			}
+			if !consumed {
 				return true
 			}
 		}
@@ -2647,6 +2691,7 @@ type turnHistoryReplay struct {
 	priorReasoning      string
 	continueOutput      bool
 	forcedToolName      string
+	supervisorTerminal  bool
 	loopRecovery        toolLoopRecovery
 }
 
@@ -2694,6 +2739,8 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 	var completedReasoning strings.Builder
 	continueOutput := false
 	forcedToolName := ""
+	invalidResults := make(map[string]uint8)
+	supervisorTerminal := false
 	batchComplete := func() bool {
 		return len(batch.calls) != 0 && len(batch.results) == len(batch.calls)
 	}
@@ -2746,6 +2793,9 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 			continueOutput = false
 			loopActions = make(map[string]ToolCall)
 			loopPairs = loopPairs[:0]
+			invalidResults = make(map[string]uint8)
+			forcedToolName = ""
+			supervisorTerminal = false
 		case TurnEventStarted:
 			if batchComplete() {
 				if err := flushBatch(); err != nil {
@@ -2771,14 +2821,14 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 				return turnHistoryReplay{}, ErrConflict
 			}
 			continueOutput = false
-			authorities[event.ToolCall.ID] = turnToolCallAuthority{call: *event.ToolCall, state: turnToolCallPending}
+			authorities[event.ToolCall.ID] = turnToolCallAuthority{call: *event.ToolCall, state: turnToolCallPending, callSequence: event.Sequence}
 			loopActions[event.ToolCall.ID] = *event.ToolCall
 			if len(batch.calls) == 0 {
 				batch.createdAt = event.CreatedAt
 			}
 			batch.calls = append(batch.calls, *event.ToolCall)
 		case TurnEventToolResult:
-			if event.ToolResult == nil || event.ToolResult.Validate() != nil {
+			if event.ToolResult == nil || event.ToolResult.ValidateObservation() != nil {
 				return turnHistoryReplay{}, ErrConflict
 			}
 			authority, exists := authorities[event.ToolResult.CallID]
@@ -2786,13 +2836,29 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 				return turnHistoryReplay{}, ErrConflict
 			}
 			result := *event.ToolResult
-			if coremodel.IsIntrinsicToolName(result.ToolName) {
-				forcedToolName = ""
-				if result.ToolName == coremodel.IntrinsicStaticSitePublishToolName && result.IsError && result.Content == staticSitePublishCorrection {
+			switch result.Outcome {
+			case ToolOutcomeInvalid:
+				invalidResults[result.ToolName]++
+				supervisorTerminal = supervisorTerminal || invalidResults[result.ToolName] > result.Retry.ValidationLimit
+				if invalidResults[result.ToolName] == 1 && result.Retry.ValidationCorrections == result.Retry.ValidationLimit {
 					forcedToolName = result.ToolName
+				} else if forcedToolName == result.ToolName {
+					forcedToolName = ""
+				}
+			case ToolOutcomeAuth, ToolOutcomeUserInput, ToolOutcomeFatal, ToolOutcomeUnknownMutation:
+				supervisorTerminal = true
+				if forcedToolName == result.ToolName {
+					forcedToolName = ""
+				}
+			case ToolOutcomeRetryable:
+				supervisorTerminal = supervisorTerminal || result.Retry.TransientRetries >= result.Retry.TransientLimit
+			case ToolOutcomeSuccess, ToolOutcomePartial, ToolOutcomeNotFound:
+				invalidResults[result.ToolName] = 0
+				if forcedToolName == result.ToolName {
+					forcedToolName = ""
 				}
 			}
-			authority.state, authority.result = turnToolCallTerminal, &result
+			authority.state, authority.result, authority.resultSequence = turnToolCallTerminal, &result, event.Sequence
 			authorities[event.ToolResult.CallID] = authority
 			batch.results[event.ToolResult.CallID] = batchResult{result: result, createdAt: event.CreatedAt}
 			if action, ok := loopActions[event.ToolResult.CallID]; ok {
@@ -2814,9 +2880,12 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 			return turnHistoryReplay{}, err
 		}
 	}
+	if supervisorTerminal {
+		forcedToolName = ""
+	}
 	return turnHistoryReplay{
 		authorities: authorities, continuationContent: continuationContent.String(), priorReasoning: completedReasoning.String(),
-		continueOutput: continueOutput, forcedToolName: forcedToolName, loopRecovery: toolLoopRecoveryFor(loopPairs),
+		continueOutput: continueOutput, forcedToolName: forcedToolName, supervisorTerminal: supervisorTerminal, loopRecovery: toolLoopRecoveryFor(loopPairs),
 	}, nil
 }
 

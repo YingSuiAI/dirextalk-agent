@@ -2779,3 +2779,64 @@ CREATE TABLE core_conversation_turn_finalizations (
     CHECK ((owner_id = '' AND account_generation = 0) OR (owner_id <> '' AND account_generation > 0))
 );
 -- dirextalk-agent migration end 000025_turn_finalization_intents.up.sql
+-- dirextalk-agent migration begin 000026_tool_observations.up.sql
+-- Tool-supervisor terminal decisions are durable, and an unknown mutation is
+-- resumed as a model-visible observation instead of failing the turn outside
+-- the normal no-tools final synthesis path.
+ALTER TABLE core_conversation_turn_finalizations
+    DROP CONSTRAINT core_conversation_turn_finalizations_reason_check,
+    ADD CONSTRAINT core_conversation_turn_finalizations_reason_check CHECK (reason IN (
+        'tool_loop_no_progress','tool_budget_exhausted','model_budget_exhausted',
+        'provider_failure','invalid_terminal_output','terminal_tool_outcome'
+    ));
+ALTER TABLE core_conversation_tool_attempts
+    DROP CONSTRAINT core_conversation_tool_attempts_check,
+    ADD CONSTRAINT core_conversation_tool_attempts_result_check CHECK (
+        (state IN ('completed','denied','canceled','uncertain') AND result_json IS NOT NULL)
+        OR (state IN ('waiting_confirmation','dispatched') AND result_json IS NULL)
+    ),
+    ADD CONSTRAINT core_conversation_tool_attempts_observation_check CHECK (
+        result_json IS NULL OR (
+            result_json ?& ARRAY['call_id','tool_name','content','outcome','retry','mutation_state','summary']
+            AND jsonb_typeof(result_json->'call_id') = 'string'
+            AND length(result_json->>'call_id') BETWEEN 1 AND 256
+            AND jsonb_typeof(result_json->'tool_name') = 'string'
+            AND length(result_json->>'tool_name') BETWEEN 1 AND 256
+            AND jsonb_typeof(result_json->'content') = 'string'
+            AND jsonb_typeof(result_json->'summary') = 'string'
+            AND length(btrim(result_json->>'summary')) BETWEEN 1 AND 4096
+            AND jsonb_typeof(result_json->'outcome') = 'string'
+            AND result_json->>'outcome' IN ('success','partial','not_found','invalid','auth','user_input','retryable','fatal','unknown_mutation')
+            AND jsonb_typeof(result_json->'retry') = 'object'
+            AND (result_json->'retry') ?& ARRAY['transient_retries','transient_limit','validation_corrections','validation_limit']
+            AND result_json#>'{retry,transient_retries}' IN ('0'::jsonb,'1'::jsonb)
+            AND result_json#>'{retry,transient_limit}' = '1'::jsonb
+            AND result_json#>'{retry,validation_corrections}' IN ('0'::jsonb,'1'::jsonb)
+            AND result_json#>'{retry,validation_limit}' = '1'::jsonb
+            AND CASE
+                WHEN NOT (result_json->'retry') ? 'retry_after_milliseconds' THEN true
+                WHEN jsonb_typeof(result_json#>'{retry,retry_after_milliseconds}') <> 'number' THEN false
+                WHEN result_json#>>'{retry,retry_after_milliseconds}' !~ '^[0-9]+$' THEN false
+                ELSE (result_json#>>'{retry,retry_after_milliseconds}')::numeric BETWEEN 0 AND 30000
+            END
+            AND jsonb_typeof(result_json->'mutation_state') = 'string'
+            AND (
+                (result_json->>'outcome' = 'unknown_mutation'
+                    AND result_json->>'mutation_state' = 'unknown'
+                    AND COALESCE(result_json->'state_changed','false'::jsonb) = 'false'::jsonb)
+                OR
+                (result_json->>'outcome' <> 'unknown_mutation'
+                    AND result_json->>'mutation_state' IN ('none','unchanged','changed'))
+            )
+            AND (
+                (result_json->>'outcome' IN ('success','partial')
+                    AND COALESCE(result_json->'is_error','false'::jsonb) = 'false'::jsonb)
+                OR
+                (result_json->>'outcome' IN ('not_found','invalid','auth','user_input','retryable','fatal','unknown_mutation')
+                    AND result_json->'is_error' = 'true'::jsonb)
+            )
+            AND (NOT result_json ? 'state_changed' OR jsonb_typeof(result_json->'state_changed') = 'boolean')
+            AND (COALESCE(result_json->'state_changed','false'::jsonb) = 'false'::jsonb OR result_json->>'mutation_state' = 'changed')
+        )
+    );
+-- dirextalk-agent migration end 000026_tool_observations.up.sql

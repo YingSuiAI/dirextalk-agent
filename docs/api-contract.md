@@ -201,7 +201,20 @@ or stream after admission. It never cancels the accepted Turn; callers use
   an error/configuration JSON terminal. A provider batch that would cross the
   admitted tool-call limit does
   not dispatch the excess calls and enters the same persisted tool-free
-  finalization path.
+  finalization path. Every model-visible tool result is the persisted
+  `dirextalk.tool-observation/v1` envelope with a closed outcome, bounded
+  retry/correction metadata, mutation state, summary, references, and cursor.
+  Core retries only explicit `retryable` read-only observations once, honors
+  no more than 30 seconds of retry delay without overwriting a
+  producer-consumed retry, and permits one `invalid` argument correction.
+  Exhausted correction/retry,
+  `auth`, `user_input`, `fatal`, and `unknown_mutation` observations enter the
+  same tools-disabled finalization path; a same-turn steer resets that tool
+  supervisor window. Observation-free provider results fail closed rather
+  than being inferred from content or `is_error`.
+  An unapplied same-turn steer deferred during a failed Cloud Worker call may
+  admit only one forced `cloud_worker_propose` follow-up; that dispatch exposes
+  no extension or unrelated intrinsic tool.
 - Provider adapters preserve provider-issued tool-call IDs. When Gemini omits
   an ID, Core allocates one that cannot collide with any tool call already in
   the frozen request transcript, for both unary and streaming responses.
@@ -253,8 +266,9 @@ or stream after admission. It never cancels the accepted Turn; callers use
   described below remains available. After that ordinary path stops, these
   classifications become the stop reason for the single no-tools finalization
   attempt or its completed Markdown fallback; they do not by themselves expose
-  a failed-turn JSON result. Unknown external tool side effects, authorization,
-  integrity, and persistence failures retain failed-turn semantics.
+  a failed-turn JSON result. Unknown external tool side effects and
+  authorization become explicit terminal tool observations; integrity and
+  persistence failures retain failed-turn semantics.
 - Recent tool-loop recovery is deliberately conservative and resets at an
   accepted steer. It recognizes only repeated canonical action/result pairs or
   exact A/B alternation. Argument object key order and harmless unquoted local

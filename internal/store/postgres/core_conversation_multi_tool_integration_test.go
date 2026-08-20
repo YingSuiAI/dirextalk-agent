@@ -393,6 +393,32 @@ func TestFinalizationFailureFallsBackToMarkdownPostgres(t *testing.T) {
 	}
 }
 
+func TestTerminalToolOutcomeFinalizationFailureFallsBackPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	turn := startPersistedFinalization(t, h, core.TurnFinalizationToolOutcome)
+	model := &finalizationConversationModel{failure: coremodel.ErrInvalidResponse}
+	service, err := core.NewService(h.store, model, staticConversationExtensions{}, staticConversationProfile{snapshot: turn.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+
+	terminal := recoverConversationTurnUntilTerminal(t, service, h.store, turn.ID, 8*time.Second)
+	assertTerminalFallbackMarkdown(t, terminal)
+	if !strings.Contains(terminal.Response.Message.Content, "`provider_invalid_response`: model provider returned an invalid response") {
+		t.Fatalf("terminal fallback=%q", terminal.Response.Message.Content)
+	}
+	requests := model.snapshotRequests()
+	if len(requests) != 1 {
+		t.Fatalf("finalization requests=%d", len(requests))
+	}
+	assertFinalizationModelRequest(t, requests[0])
+	directives := loadPersistedTurnDirectives(t, h, terminal)
+	if len(directives) != 1 || directives[0].directive.FinalizationReason != core.TurnFinalizationToolOutcome || directives[0].directive.ToolMode != core.TurnDispatchToolsNone {
+		t.Fatalf("directives=%+v", directives)
+	}
+}
+
 func TestFinalizationAllowanceIgnoresOrdinaryBudgetCapsPostgres(t *testing.T) {
 	for _, test := range []struct {
 		name         string
@@ -466,7 +492,8 @@ func TestLoopSynthesisCompletesWithStrictRuntimeValidationPostgres(t *testing.T)
 	h := openTurnDB(t)
 	model := &loopRecoveryConversationModel{}
 	service, started := startWebDirectiveTurn(t, h, model, func(_ context.Context, request core.ToolExecutionRequest) (core.ToolResult, error) {
-		return core.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: `{"result":1}`}, nil
+		return core.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: `{"result":1}`}.
+			WithObservation(core.ToolOutcomeSuccess, "web search completed", core.ToolMutationNone), nil
 	})
 	defer service.Close()
 
@@ -494,7 +521,8 @@ func TestLoopNudgePreservesFrozenRuntimePostgres(t *testing.T) {
 	h := openTurnDB(t)
 	model := &loopRecoveryConversationModel{finalizeOnNudge: true}
 	service, started := startWebDirectiveTurn(t, h, model, func(_ context.Context, request core.ToolExecutionRequest) (core.ToolResult, error) {
-		return core.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: `{"result":1}`}, nil
+		return core.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: `{"result":1}`}.
+			WithObservation(core.ToolOutcomeSuccess, "web search completed", core.ToolMutationNone), nil
 	})
 	defer service.Close()
 	terminal := recoverConversationTurnUntilTerminal(t, service, h.store, started.ID, 12*time.Second)
@@ -515,7 +543,8 @@ func TestToolBudgetFinalizationPreservesFrozenRuntimePostgres(t *testing.T) {
 	h := openTurnDB(t)
 	model := &toolBudgetConversationModel{}
 	service, started := startWebDirectiveTurn(t, h, model, func(_ context.Context, request core.ToolExecutionRequest) (core.ToolResult, error) {
-		return core.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: request.Call.Arguments}, nil
+		return core.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: request.Call.Arguments}.
+			WithObservation(core.ToolOutcomeSuccess, "web search completed", core.ToolMutationNone), nil
 	})
 	defer service.Close()
 	terminal := recoverConversationTurnUntilTerminal(t, service, h.store, started.ID, 15*time.Second)
@@ -582,7 +611,9 @@ func TestCoreConversationToolRoundPersistsOrderedWebThenLocalRecovery(t *testing
 	if execute, err := fixture.h.store.BeginConversationToolDispatch(ctx, fixture.lease, webCall); err != nil || !execute {
 		t.Fatalf("web dispatch execute=%v err=%v", execute, err)
 	}
-	if err := fixture.h.store.RecordConversationToolResult(ctx, fixture.lease, core.ToolResult{CallID: webCall.ID, ToolName: webCall.Name, Content: `{"results":[]}`}); err != nil {
+	webResult := core.ToolResult{CallID: webCall.ID, ToolName: webCall.Name, Content: `{"results":[]}`}.
+		WithObservation(core.ToolOutcomeSuccess, "Web search returned no results", core.ToolMutationNone)
+	if err := fixture.h.store.RecordConversationToolResult(ctx, fixture.lease, webResult); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.h.store.RecordConversationToolCall(ctx, fixture.lease, fixture.call); err != nil {
@@ -649,6 +680,120 @@ func TestCoreConversationToolRoundPersistsOrderedWebThenLocalRecovery(t *testing
 	}
 }
 
+func TestConversationUnknownMutationProjectsOnceAndFinalizesWithoutToolsPostgres(t *testing.T) {
+	fixture := newConversationToolPrepareFixture(t, uuid.NewString())
+	ctx := context.Background()
+	persistConversationToolBatch(t, fixture, []core.ToolCall{fixture.call})
+	if err := fixture.h.store.RecordConversationToolCall(ctx, fixture.lease, fixture.call); err != nil {
+		t.Fatal(err)
+	}
+	_, task, confirmation, err := fixture.h.store.PrepareConversationTool(ctx, fixture.prepare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmationService, err := coreconfirmation.NewService(NewCoreConfirmationStore(fixture.h.store.Store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = confirmationService.Confirm(ctx, coreconfirmation.ConfirmCommand{
+		ConfirmationID: confirmation.ConfirmationID, IdempotencyKey: uuid.NewString(),
+		ExpectedRevision: confirmation.Revision, At: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := NewCoreTaskStore(fixture.h.store.Store)
+	claimed, _, err := tasks.ClaimNextDue(ctx, "unknown-mutation-restart", time.Now().UTC(), time.Minute, 4)
+	if err != nil || claimed.ID != task.ID {
+		t.Fatalf("claimed=%+v err=%v", claimed, err)
+	}
+	if _, err = fixture.h.store.BeginConversationTool(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	if err = fixture.h.store.FinishConversationTool(ctx, claimed, "uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown"); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := NewCoreConversationStore(fixture.h.store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.ResumeConversationTurn(ctx, fixture.turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.ResumeConversationTurn(ctx, fixture.turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	var projected *core.ToolResult
+	projectedCount := 0
+	for _, event := range mustLoadTurnEvents(t, restarted, fixture.turn.ID) {
+		if event.Kind == core.TurnEventToolResult && event.ToolResult != nil && event.ToolResult.CallID == fixture.call.ID {
+			projectedCount++
+			candidate := *event.ToolResult
+			projected = &candidate
+		}
+	}
+	if projectedCount != 1 || projected == nil || projected.ValidateObservation() != nil ||
+		projected.Outcome != core.ToolOutcomeUnknownMutation || projected.MutationState != core.ToolMutationUnknown ||
+		projected.Retry != core.DefaultToolRetryMetadata() {
+		t.Fatalf("projected_count=%d projected=%+v", projectedCount, projected)
+	}
+	recoveredTurn, err := restarted.GetTurn(ctx, fixture.turn.ID)
+	if err != nil || recoveredTurn.RuntimeSnapshot == nil {
+		t.Fatalf("recovered turn=%+v err=%v", recoveredTurn, err)
+	}
+	recoveredRuntime, err := core.NewTurnRuntimeSnapshotForMode(
+		"When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions.",
+		recoveredTurn.ProfileSnapshot, nil, recoveredTurn.ExtensionSnapshotDigest, recoveredTurn.AttachmentSnapshotDigest,
+		recoveredTurn.RuntimeSnapshot.ExecutionPolicy.Mode,
+	)
+	recoveredRuntime.IntrinsicPolicy = core.TurnIntrinsicPolicyNone
+	if err != nil || recoveredRuntime.Digest() != recoveredTurn.RuntimeSnapshot.Digest() {
+		t.Fatalf("recovered runtime=%+v stored=%+v err=%v", recoveredRuntime, recoveredTurn.RuntimeSnapshot, err)
+	}
+	finalizationDirective := core.NewTurnDispatchDirective(core.TurnDispatchGuidanceLoopSynthesis, core.TurnDispatchToolsNone, "")
+	finalizationDirective.FinalizationReason = core.TurnFinalizationToolOutcome
+	if err = finalizationDirective.ValidateFor(recoveredRuntime, recoveredTurn.ExtensionSnapshots); err != nil {
+		t.Fatalf("finalization directive=%+v err=%v", finalizationDirective, err)
+	}
+
+	resolved := core.ResolvedExtension{
+		Selection: fixture.snapshot.Selection, Snapshot: fixture.snapshot,
+		Tools: []coremodel.Tool{{Name: fixture.call.Name, InputSchema: map[string]any{"type": "object"}}},
+	}
+	model := &finalizationConversationModel{result: core.ModelRunResult{Done: true, Message: core.Message{
+		ID: uuid.NewString(), Role: core.RoleAssistant, Content: "unknown mutation synthesis", CreatedAt: time.Now().UTC(),
+	}}}
+	service, err := core.NewService(restarted, model, staticConversationExtensions{resolved: []core.ResolvedExtension{resolved}}, staticConversationProfile{snapshot: fixture.turn.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	terminal := recoverConversationTurnUntilTerminal(t, service, restarted, fixture.turn.ID, 8*time.Second)
+	if terminal.State != core.TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "unknown mutation synthesis" {
+		t.Fatalf("terminal=%+v", terminal)
+	}
+	requests := model.snapshotRequests()
+	if len(requests) != 1 {
+		t.Fatalf("finalization requests=%d", len(requests))
+	}
+	assertFinalizationModelRequest(t, requests[0])
+	seenObservation := false
+	for _, message := range requests[0].Conversation.Messages {
+		for _, result := range message.ToolResults {
+			seenObservation = seenObservation || (result.CallID == fixture.call.ID && result.Outcome == core.ToolOutcomeUnknownMutation &&
+				result.MutationState == core.ToolMutationUnknown && result.Retry == core.DefaultToolRetryMetadata())
+		}
+	}
+	if !seenObservation {
+		t.Fatalf("finalization context lost unknown-mutation observation: %+v", requests[0].Conversation.Messages)
+	}
+	directives := loadPersistedTurnDirectives(t, fixture.h, terminal)
+	last := directives[len(directives)-1].directive
+	if len(directives) != 2 || last.FinalizationReason != core.TurnFinalizationToolOutcome || last.ToolMode != core.TurnDispatchToolsNone {
+		t.Fatalf("directives=%+v", directives)
+	}
+}
+
 func TestConversationWebThenLocalSurvivesServiceRestartPostgres(t *testing.T) {
 	fixture := newConversationToolPrepareFixture(t, uuid.NewString())
 	if _, err := fixture.h.store.MarkTurnCanceled(context.Background(), fixture.lease); err != nil {
@@ -666,7 +811,8 @@ func TestConversationWebThenLocalSurvivesServiceRestartPostgres(t *testing.T) {
 		executionMu.Lock()
 		webExecutions++
 		executionMu.Unlock()
-		return core.ToolResult{CallID: webCall.ID, ToolName: webCall.Name, Content: `{"results":[]}`}, nil
+		return core.ToolResult{CallID: webCall.ID, ToolName: webCall.Name, Content: `{"results":[]}`}.
+			WithObservation(core.ToolOutcomeSuccess, "web search completed", core.ToolMutationNone), nil
 	}}
 	localResolved := core.ResolvedExtension{Selection: fixture.snapshot.Selection, Snapshot: fixture.snapshot, Tools: []coremodel.Tool{{Name: localCall.Name, InputSchema: map[string]any{"type": "object"}}}}
 	resolver := staticConversationExtensions{resolved: []core.ResolvedExtension{webResolved, localResolved}}

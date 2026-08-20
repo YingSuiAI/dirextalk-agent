@@ -121,8 +121,33 @@ func TestMessageMCPResolverExecutesOnceAndSurfacesMutationUnknown(t *testing.T) 
 	}
 	callID := uuid.NewString()
 	result, err := resolved[0].Execute(context.Background(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{ID: callID, Name: toolName, Arguments: `{}`}})
-	if err != nil || calls != 1 || !result.IsError || result.CallID != callID || !strings.Contains(result.Content, "completion is unknown") || !strings.Contains(result.Content, "do not retry blindly") {
+	if err != nil || calls != 1 || !result.IsError || result.CallID != callID || result.Outcome != coreconversation.ToolOutcomeUnknownMutation || result.MutationState != coreconversation.ToolMutationUnknown || !strings.Contains(result.Content, "completion is unknown") {
 		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestMessageMCPResolverMutationErrorResultIsUnknown(t *testing.T) {
+	toolName := "mcp__message__dirextalk_messages_send"
+	resolver := &messageMCPConversationResolver{
+		endpoint: "http://message-server:8008/mcp",
+		provider: fixedMessageMCPProvider{tools: []mcphttp.Tool{{
+			Definition: coremodel.Tool{Name: toolName, InputSchema: map[string]any{"type": "object"}},
+			Effect:     mcphttp.ToolEffectUnsafeMutation,
+			Run: func(context.Context, mcphttp.ToolInvocation) (mcphttp.ToolResult, error) {
+				return mcphttp.ToolResult{Content: "remote operation reported an error", IsError: true}, nil
+			},
+		}}},
+	}
+	resolved, err := resolver.ResolveExtensions(context.Background(), nil)
+	if err != nil || len(resolved) != 1 {
+		t.Fatalf("resolved=%#v err=%v", resolved, err)
+	}
+	result, err := resolved[0].Execute(context.Background(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{
+		ID: uuid.NewString(), Name: toolName, Arguments: `{}`,
+	}})
+	if err != nil || result.Outcome != coreconversation.ToolOutcomeUnknownMutation ||
+		result.MutationState != coreconversation.ToolMutationUnknown || !result.IsError || result.StateChanged || result.ValidateObservation() != nil {
+		t.Fatalf("result=%+v err=%v", result, err)
 	}
 }
 
@@ -176,7 +201,7 @@ func (b fixedMessageMCPBase) ResolveExtensions(context.Context, []coreconversati
 	return append([]coreconversation.ResolvedExtension(nil), b.extensions...), nil
 }
 
-func TestMessageMCPResolverReadRetriesOnceOnlyAfterExactRediscovery(t *testing.T) {
+func TestMessageMCPResolverReadReturnsRetryableWithoutResolverRetry(t *testing.T) {
 	oldCalls, newCalls := 0, 0
 	name := "mcp__message__read_named_like_dirextalk_messages_send"
 	oldTool := messageMCPTestTool(name, mcphttp.ToolEffectReadOnly, func(context.Context, mcphttp.ToolInvocation) (mcphttp.ToolResult, error) {
@@ -193,11 +218,12 @@ func TestMessageMCPResolverReadRetriesOnceOnlyAfterExactRediscovery(t *testing.T
 	if err != nil || len(resolved) != 1 || !resolved[0].Snapshot.ReadOnly {
 		t.Fatalf("resolved=%#v err=%v", resolved, err)
 	}
-	result, err := resolved[0].Execute(context.Background(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{
+	_, err = resolved[0].Execute(context.Background(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{
 		ID: uuid.NewString(), Name: name, Arguments: `{}`,
 	}})
-	if err != nil || result.Content != "recovered read" || oldCalls != 1 || newCalls != 1 || provider.callCount() != 2 {
-		t.Fatalf("result=%+v old=%d new=%d discoveries=%d err=%v", result, oldCalls, newCalls, provider.callCount(), err)
+	observation, classified := coreconversation.ToolExecutionErrorObservation(err)
+	if !classified || observation.Outcome != coreconversation.ToolOutcomeRetryable || oldCalls != 1 || newCalls != 0 || provider.callCount() != 1 {
+		t.Fatalf("observation=%+v old=%d new=%d discoveries=%d err=%v", observation, oldCalls, newCalls, provider.callCount(), err)
 	}
 }
 
@@ -220,7 +246,8 @@ func TestMessageMCPResolverReadDoesNotRetryAcrossCatalogDrift(t *testing.T) {
 		t.Fatalf("resolved=%#v err=%v", resolved, err)
 	}
 	_, err = resolved[0].Execute(context.Background(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{ID: uuid.NewString(), Name: name, Arguments: `{}`}})
-	if !errors.Is(err, mcphttp.ErrProviderUnavailable) || oldCalls != 1 || changedCalls != 0 || provider.callCount() != 2 {
+	observation, classified := coreconversation.ToolExecutionErrorObservation(err)
+	if !classified || observation.Outcome != coreconversation.ToolOutcomeRetryable || !errors.Is(err, mcphttp.ErrProviderUnavailable) || oldCalls != 1 || changedCalls != 0 || provider.callCount() != 1 {
 		t.Fatalf("old=%d changed=%d discoveries=%d err=%v", oldCalls, changedCalls, provider.callCount(), err)
 	}
 }
@@ -239,7 +266,7 @@ func TestMessageMCPResolverUnsafeEffectNeverRetriesRegardlessOfName(t *testing.T
 		t.Fatalf("resolved=%#v err=%v", resolved, err)
 	}
 	result, err := resolved[0].Execute(context.Background(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{ID: uuid.NewString(), Name: name, Arguments: `{}`}})
-	if err != nil || !result.IsError || !strings.Contains(result.Content, "completion is unknown") || calls != 1 || provider.callCount() != 1 {
+	if err != nil || !result.IsError || result.Outcome != coreconversation.ToolOutcomeUnknownMutation || !strings.Contains(result.Content, "completion is unknown") || calls != 1 || provider.callCount() != 1 {
 		t.Fatalf("result=%+v calls=%d discoveries=%d err=%v", result, calls, provider.callCount(), err)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -882,6 +883,39 @@ type conversationToolPrepareFixture struct {
 	prepare   core.PrepareToolCommand
 }
 
+func TestConversationToolObservationConstraintRejectsMissingOrPrematureResultPostgres(t *testing.T) {
+	fixture := newConversationToolPrepareFixture(t, uuid.NewString())
+	attempt, _, _, err := fixture.h.store.PrepareConversationTool(context.Background(), fixture.prepare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name       string
+		query      string
+		constraint string
+	}{
+		{name: "uncertain without observation", query: `UPDATE core_conversation_tool_attempts SET state='uncertain',result_json=NULL WHERE attempt_id=$1`, constraint: "core_conversation_tool_attempts_result_check"},
+		{name: "uncertain malformed observation", query: `UPDATE core_conversation_tool_attempts SET state='uncertain',result_json='{}'::jsonb WHERE attempt_id=$1`, constraint: "core_conversation_tool_attempts_observation_check"},
+		{name: "retry delay exceeds bound", query: `UPDATE core_conversation_tool_attempts SET state='uncertain',result_json='{"call_id":"call","tool_name":"write_html","content":"unavailable","is_error":true,"outcome":"fatal","retry":{"transient_retries":0,"transient_limit":1,"validation_corrections":0,"validation_limit":1,"retry_after_milliseconds":30001},"mutation_state":"none","summary":"unavailable"}'::jsonb WHERE attempt_id=$1`, constraint: "core_conversation_tool_attempts_observation_check"},
+		{name: "waiting with observation", query: `UPDATE core_conversation_tool_attempts SET result_json='{"call_id":"call","tool_name":"write_html","content":"unknown","is_error":true,"outcome":"unknown_mutation","retry":{"transient_retries":0,"transient_limit":1,"validation_corrections":0,"validation_limit":1},"mutation_state":"unknown","summary":"unknown"}'::jsonb WHERE attempt_id=$1`, constraint: "core_conversation_tool_attempts_result_check"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, updateErr := fixture.h.pool.Exec(context.Background(), test.query, attempt.ID)
+			var pgErr *pgconn.PgError
+			if !errors.As(updateErr, &pgErr) || pgErr.ConstraintName != test.constraint {
+				t.Fatalf("err=%v constraint=%q", updateErr, pgErrConstraint(pgErr))
+			}
+		})
+	}
+}
+
+func pgErrConstraint(err *pgconn.PgError) string {
+	if err == nil {
+		return ""
+	}
+	return err.ConstraintName
+}
+
 func newConversationToolPrepareFixture(t *testing.T, callID string) *conversationToolPrepareFixture {
 	return newConversationToolPrepareFixtureForTool(t, callID, "write_html")
 }
@@ -919,6 +953,7 @@ func newConversationToolPrepareFixtureForTool(t *testing.T, callID, toolName str
 	cmd := turnCommand()
 	cmd.OwnerID = "@conversation-tool:test"
 	cmd.AccountGeneration = 1
+	cmd.IntrinsicPolicy = core.TurnIntrinsicPolicyNone
 	cmd.Extensions = []core.ExtensionSelection{snapshot.Selection}
 	cmd.ExtensionSnapshots = []core.ExtensionExecutionSnapshot{snapshot}
 	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
@@ -926,10 +961,11 @@ func newConversationToolPrepareFixtureForTool(t *testing.T, callID, toolName str
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := core.NewTurnRuntimeSnapshotForMode("fixture system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest, cmd.ExecutionMode)
+	runtime, err := core.NewTurnRuntimeSnapshotForMode("When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions.", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest, cmd.ExecutionMode)
 	if err != nil {
 		t.Fatal(err)
 	}
+	runtime.IntrinsicPolicy = core.TurnIntrinsicPolicyNone
 	turn, err := h.store.StartTurnWithRuntime(context.Background(), cmd, runtime)
 	if err != nil {
 		t.Fatal(err)
@@ -1077,9 +1113,10 @@ func TestCoreConversationToolFailedResourceSummarySurvivesRestartPostgres(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	var recovered coretask.Result
+	var recovered core.ToolResult
 	if observed.ID != attempt.ID || observed.State != "denied" || json.Unmarshal(observed.Result, &recovered) != nil ||
-		recovered.Validate() != nil || recovered.Summary != execution.LocalResourceBusySummary ||
+		recovered.ValidateObservation() != nil || recovered.Summary != execution.LocalResourceBusySummary || recovered.Content != execution.LocalResourceBusySummary ||
+		recovered.Outcome != core.ToolOutcomeFatal || recovered.MutationState != core.ToolMutationUnchanged ||
 		strings.Contains(string(observed.Result), "protected detail") {
 		t.Fatalf("restarted attempt=%+v recovered=%+v", observed, recovered)
 	}
@@ -1232,15 +1269,21 @@ func TestCoreConversationToolPrepareCreatesAtomicTaskAndConfirmationPostgres(t *
 		t.Fatalf("terminal=%+v err=%v", terminal, err)
 	}
 	var terminalAttempt string
-	if err = h.pool.QueryRow(context.Background(), `SELECT state FROM core_conversation_tool_attempts WHERE attempt_id=$1`, attempt.ID).Scan(&terminalAttempt); err != nil || terminalAttempt != "uncertain" {
+	var terminalResultRaw []byte
+	if err = h.pool.QueryRow(context.Background(), `SELECT state,result_json FROM core_conversation_tool_attempts WHERE attempt_id=$1`, attempt.ID).Scan(&terminalAttempt, &terminalResultRaw); err != nil || terminalAttempt != "uncertain" || len(terminalResultRaw) == 0 {
 		t.Fatalf("attempt_state=%q err=%v", terminalAttempt, err)
 	}
+	var uncertainObservation core.ToolResult
+	if json.Unmarshal(terminalResultRaw, &uncertainObservation) != nil || uncertainObservation.ValidateObservation() != nil ||
+		uncertainObservation.Outcome != core.ToolOutcomeUnknownMutation || uncertainObservation.MutationState != core.ToolMutationUnknown {
+		t.Fatalf("uncertain observation=%s", terminalResultRaw)
+	}
 	terminalTurn, err := h.store.GetTurn(context.Background(), turn.ID)
-	if err != nil || terminalTurn.State != core.TurnFailed || terminalTurn.TerminalCode != "tool_uncertain" || terminalTurn.TerminalSummary != "tool dispatch outcome is unknown" {
+	if err != nil || terminalTurn.State != core.TurnWaitingConfirmation || terminalTurn.TerminalCode != "" || terminalTurn.TerminalSummary != "" {
 		t.Fatalf("terminal_turn=%+v err=%v", terminalTurn, err)
 	}
 	events, err := h.store.LoadTurnEvents(context.Background(), turn.ID, 0, 100)
-	if err != nil || len(events) == 0 || events[len(events)-1].Kind != core.TurnEventError || events[len(events)-1].ErrorCode != "tool_uncertain" {
+	if err != nil || len(events) == 0 || events[len(events)-1].Kind != core.TurnEventWaitingConfirmation {
 		t.Fatalf("terminal events=%+v err=%v", events, err)
 	}
 

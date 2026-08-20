@@ -375,8 +375,8 @@ func (p *ProposeIntrinsic) executeInventory(ctx context.Context, bound coreconve
 	result := coreconversation.ToolResult{
 		CallID: request.Call.ID, ToolName: coremodel.IntrinsicCloudWorkerInventoryToolName,
 		Content: string(boundedWorkerInventoryJSON(inventory)), Summary: "Retained Worker inventory read",
-	}
-	if result.Validate() != nil {
+	}.WithObservation(coreconversation.ToolOutcomeSuccess, "Retained Worker inventory read", coreconversation.ToolMutationNone)
+	if result.ValidateObservation() != nil {
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
 	return coreconversation.IntrinsicExecutionResult{ToolResult: &result}, nil

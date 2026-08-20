@@ -360,6 +360,7 @@ const (
 	TurnFinalizationModelBudget   TurnFinalizationReason = "model_budget_exhausted"
 	TurnFinalizationProvider      TurnFinalizationReason = "provider_failure"
 	TurnFinalizationInvalidOutput TurnFinalizationReason = "invalid_terminal_output"
+	TurnFinalizationToolOutcome   TurnFinalizationReason = "terminal_tool_outcome"
 )
 
 // TurnFinalizationIntent is the durable decision that an ordinary accepted
@@ -380,7 +381,7 @@ func (i TurnFinalizationIntent) Validate() error {
 	}
 	switch i.Reason {
 	case TurnFinalizationToolLoop, TurnFinalizationToolBudget, TurnFinalizationModelBudget,
-		TurnFinalizationProvider, TurnFinalizationInvalidOutput:
+		TurnFinalizationProvider, TurnFinalizationInvalidOutput, TurnFinalizationToolOutcome:
 		return nil
 	default:
 		return ErrInvalid

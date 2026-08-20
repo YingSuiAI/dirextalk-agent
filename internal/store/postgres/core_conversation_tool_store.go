@@ -125,7 +125,7 @@ func (s *CoreConversationStore) PrepareConversationTool(ctx context.Context, c c
 	if c.Snapshot.RequiresConfirmation {
 		confID = uuid.NewString()
 	}
-	payload := coretask.ConversationToolTaskPayload{TurnID: c.Lease.Turn.ID, AttemptID: attemptID, Round: c.Round, CallID: c.Call.ID, ExtensionSnapshotDigest: c.Snapshot.ContentDigest, InstallationID: c.Snapshot.InstallationID, VersionID: c.Snapshot.VersionID, InstallationRevision: c.Snapshot.InstallationRevision, ToolName: c.Call.Name, ToolSchemaDigest: c.Snapshot.ToolSchemaDigest, ArgumentsDigest: c.ArgumentsDigest, ConfirmationID: confID, SafeSummary: c.SafeSummary, ExecutionTarget: executionTarget}
+	payload := coretask.ConversationToolTaskPayload{TurnID: c.Lease.Turn.ID, AttemptID: attemptID, Round: c.Round, CallID: c.Call.ID, ExtensionSnapshotDigest: c.Snapshot.ContentDigest, InstallationID: c.Snapshot.InstallationID, VersionID: c.Snapshot.VersionID, InstallationRevision: c.Snapshot.InstallationRevision, ToolName: c.Call.Name, ToolSchemaDigest: c.Snapshot.ToolSchemaDigest, ArgumentsDigest: c.ArgumentsDigest, ConfirmationID: confID, SafeSummary: c.SafeSummary, ExecutionTarget: executionTarget, ReadOnly: c.Snapshot.ReadOnly}
 	spec := coretask.TaskSpec{Kind: coretask.TaskKindConversationTool, Goal: "conversation tool " + c.Call.Name, ConversationID: c.Lease.Turn.ConversationID, IdempotencyKey: c.IdempotencyKey, Payload: coretask.TaskPayload{ConversationTool: &payload}, AvailableAt: now}
 	raw, _ := json.Marshal(spec.Payload)
 	taskStatus := coretask.StatusWaitingUser
@@ -287,7 +287,7 @@ func (s *CoreConversationStore) ResumeConversationTurn(ctx context.Context, turn
 	var resultRaw []byte
 	if err = tx.QueryRow(ctx, `SELECT a.attempt_id::text,a.task_id::text,a.round,t.payload_json#>>'{conversation_tool,call_id}',a.execution_id::text,a.tool_name,a.state,a.safe_summary,a.result_json
 		FROM core_conversation_tool_attempts a JOIN core_tasks t ON t.task_id=a.task_id
-		WHERE a.turn_id=$1 AND a.state IN ('completed','denied','canceled') ORDER BY a.round DESC,a.created_at DESC LIMIT 1`, turnID).
+		WHERE a.turn_id=$1 AND a.state IN ('completed','denied','canceled','uncertain') ORDER BY a.round DESC,a.created_at DESC LIMIT 1`, turnID).
 		Scan(&attempt.ID, &attempt.TaskID, &attempt.Round, &attempt.CallID, &attempt.ExecutionID, &attempt.ToolName, &attempt.State, &attempt.SafeSummary, &resultRaw); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return core.ErrConflict
@@ -323,8 +323,13 @@ func (s *CoreConversationStore) ResumeConversationTurn(ctx context.Context, turn
 	if referenceErr != nil {
 		return core.ErrConflict
 	}
-	result := core.ToolResult{CallID: attempt.CallID, ToolName: attempt.ToolName, Content: conversationToolAttemptContent(attempt), IsError: attempt.State != "completed", References: references}
-	if result.Validate() != nil {
+	var result core.ToolResult
+	if json.Unmarshal(attempt.Result, &result) != nil || result.CallID != attempt.CallID || result.ToolName != attempt.ToolName ||
+		!reflect.DeepEqual(result.RelatedTaskIDs, []string{attempt.TaskID}) {
+		return core.ErrConflict
+	}
+	result.References = references
+	if result.ValidateObservation() != nil {
 		return core.ErrConflict
 	}
 	if authority.state != conversationToolCallTerminal {
@@ -381,35 +386,26 @@ func (s *CoreConversationStore) ResumeConversationTurn(ctx context.Context, turn
 	return tx.Commit(ctx)
 }
 
-func conversationToolAttemptContent(attempt core.ToolAttempt) string {
-	content := attempt.SafeSummary
-	if len(attempt.Result) > 0 {
-		var stored coretask.Result
-		if json.Unmarshal(attempt.Result, &stored) == nil && stored.Validate() == nil {
-			switch {
-			case stored.Text != "":
-				content = stored.Text
-			case len(stored.JSON) > 0:
-				content = string(stored.JSON)
-			case stored.Summary != "":
-				content = stored.Summary
-			}
-		}
-	}
-	if attempt.State != "completed" && content == "" {
-		return "tool call denied"
-	}
-	return content
-}
-
 func conversationToolAttemptReferences(attempt core.ToolAttempt) ([]core.Reference, error) {
 	if attempt.ToolName != coreextension.BuiltinLocalSandboxToolName || attempt.State != "completed" || len(attempt.Result) == 0 {
 		return nil, nil
 	}
-	var stored coretask.Result
-	if json.Unmarshal(attempt.Result, &stored) != nil || stored.Validate() != nil {
+	var stored core.ToolResult
+	if json.Unmarshal(attempt.Result, &stored) != nil || stored.ValidateObservation() != nil {
 		return nil, core.ErrConflict
 	}
+	if len(stored.References) == 0 || len(stored.References) > core.MaxReferences {
+		return nil, core.ErrConflict
+	}
+	for _, reference := range stored.References {
+		if reference.Kind != "execution_artifact" || reference.Validate() != nil {
+			return nil, core.ErrConflict
+		}
+	}
+	return append([]core.Reference(nil), stored.References...), nil
+}
+
+func localSandboxResultReferences(raw json.RawMessage) ([]core.Reference, error) {
 	var payload struct {
 		Structured struct {
 			Artifacts []struct {
@@ -424,7 +420,7 @@ func conversationToolAttemptReferences(attempt core.ToolAttempt) ([]core.Referen
 			} `json:"artifacts"`
 		} `json:"structuredContent"`
 	}
-	if json.Unmarshal(stored.JSON, &payload) != nil || len(payload.Structured.Artifacts) == 0 || len(payload.Structured.Artifacts) > core.MaxReferences {
+	if json.Unmarshal(raw, &payload) != nil || len(payload.Structured.Artifacts) == 0 || len(payload.Structured.Artifacts) > core.MaxReferences {
 		return nil, core.ErrConflict
 	}
 	result := make([]core.Reference, 0, len(payload.Structured.Artifacts))
@@ -436,6 +432,90 @@ func conversationToolAttemptReferences(attempt core.ToolAttempt) ([]core.Referen
 			return nil, core.ErrConflict
 		}
 		result = append(result, reference)
+	}
+	return result, nil
+}
+
+func conversationToolTerminalResult(task coretask.Task, state string, raw json.RawMessage, code, summary string) (core.ToolResult, error) {
+	payload := task.Spec.Payload.ConversationTool
+	if payload == nil {
+		return core.ToolResult{}, coretask.ErrInvalid
+	}
+	content := strings.TrimSpace(summary)
+	observationSummary := content
+	outcome := core.ToolOutcomeFatal
+	mutation := core.ToolMutationNone
+	stateChanged := false
+	var resultReferences []core.Reference
+	if !payload.ReadOnly {
+		outcome = core.ToolOutcomeUnknownMutation
+		mutation = core.ToolMutationUnknown
+	}
+	if state == "completed" {
+		var stored coretask.Result
+		if json.Unmarshal(raw, &stored) != nil || stored.Validate() != nil {
+			return core.ToolResult{}, coretask.ErrInvalid
+		}
+		var references []core.Reference
+		if payload.ToolName == coreextension.BuiltinLocalSandboxToolName {
+			var referencesErr error
+			references, referencesErr = localSandboxResultReferences(stored.JSON)
+			if referencesErr != nil {
+				return core.ToolResult{}, coretask.ErrInvalid
+			}
+		}
+		switch {
+		case stored.Text != "":
+			content = stored.Text
+		case len(stored.JSON) != 0:
+			content = string(stored.JSON)
+		case stored.Summary != "":
+			content = stored.Summary
+		default:
+			content = payload.SafeSummary
+		}
+		observationSummary = strings.TrimSpace(stored.Summary)
+		if observationSummary == "" {
+			observationSummary = "Conversation tool completed"
+		}
+		outcome = core.ToolOutcomeSuccess
+		resultReferences = references
+		if payload.ReadOnly {
+			mutation = core.ToolMutationNone
+		} else {
+			mutation = core.ToolMutationChanged
+			stateChanged = true
+		}
+	} else if state == "uncertain" {
+		if payload.ReadOnly {
+			outcome = core.ToolOutcomeFatal
+			mutation = core.ToolMutationNone
+		} else {
+			outcome = core.ToolOutcomeUnknownMutation
+			mutation = core.ToolMutationUnknown
+		}
+	} else if code == "tool_arguments_invalid" {
+		outcome = core.ToolOutcomeInvalid
+		mutation = core.ToolMutationNone
+	} else if !payload.ReadOnly && (code == "tool_resolution_failed" || code == "local_resource_busy") {
+		outcome = core.ToolOutcomeFatal
+		mutation = core.ToolMutationUnchanged
+	}
+	if content == "" {
+		content = "conversation tool returned no additional detail"
+	}
+	if observationSummary == "" {
+		observationSummary = "Conversation tool failed"
+	}
+	result := core.ToolResult{
+		CallID: payload.CallID, ToolName: payload.ToolName, Content: content,
+		RelatedTaskIDs: []string{task.ID}, References: resultReferences, StateChanged: stateChanged,
+	}.WithObservation(outcome, observationSummary, mutation)
+	if outcome == core.ToolOutcomeInvalid {
+		result.Retry.ValidationCorrections = 1
+	}
+	if result.Validate() != nil {
+		return core.ToolResult{}, coretask.ErrInvalid
 	}
 	return result, nil
 }
@@ -529,15 +609,18 @@ func (s *CoreConversationStore) FinishConversationTool(ctx context.Context, task
 		if strings.TrimSpace(code) == "" || strings.TrimSpace(summary) == "" || strings.TrimSpace(summary) != summary || recovered.Validate() != nil {
 			return coretask.ErrInvalid
 		}
-		var marshalErr error
-		result, marshalErr = json.Marshal(recovered)
-		if marshalErr != nil {
-			return coretask.ErrInvalid
-		}
 		// The generic Task schema represents failure through code/summary and
 		// requires result_json to remain NULL. The attempt owns the recoverable
 		// tool result used by the next model round.
 		taskResult = nil
+	}
+	attemptResult, resultErr := conversationToolTerminalResult(task, state, result, code, summary)
+	if resultErr != nil {
+		return resultErr
+	}
+	attemptResultRaw, marshalErr := json.Marshal(attemptResult)
+	if marshalErr != nil || len(attemptResultRaw) > coretask.MaxResultBytes {
+		return coretask.ErrInvalid
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -565,7 +648,7 @@ func (s *CoreConversationStore) FinishConversationTool(ctx context.Context, task
 		return coretask.ErrLeaseConflict
 	}
 	var turnID string
-	if err = tx.QueryRow(ctx, `UPDATE core_conversation_tool_attempts SET state=$2,result_json=CASE WHEN $2 IN ('completed','denied','canceled') THEN CASE WHEN $3::jsonb IS NULL THEN jsonb_build_object('status',$2,'code',$4::text) ELSE $3::jsonb END ELSE NULL END,updated_at=$5 WHERE task_id=$1 AND state='dispatched' RETURNING turn_id::text`, task.ID, attemptState, result, code, now).Scan(&turnID); err != nil {
+	if err = tx.QueryRow(ctx, `UPDATE core_conversation_tool_attempts SET state=$2,result_json=$3,updated_at=$4 WHERE task_id=$1 AND state='dispatched' RETURNING turn_id::text`, task.ID, attemptState, attemptResultRaw, now).Scan(&turnID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return coretask.ErrLeaseConflict
 		}
@@ -573,18 +656,6 @@ func (s *CoreConversationStore) FinishConversationTool(ctx context.Context, task
 	}
 	if turnID != task.Spec.Payload.ConversationTool.TurnID {
 		return coretask.ErrLeaseConflict
-	}
-	if state == "uncertain" {
-		var lastSequence int64
-		if err = tx.QueryRow(ctx, `UPDATE core_conversation_turns SET state='failed',terminal_code=$2,terminal_summary=$3,revision=revision+1,updated_at=$4 WHERE turn_id=$1 AND state='waiting_confirmation' RETURNING last_sequence`, turnID, code, summary, now).Scan(&lastSequence); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return coretask.ErrLeaseConflict
-			}
-			return err
-		}
-		if err = insertTurnEventTx(ctx, tx, turnID, lastSequence+1, core.TurnEvent{Kind: core.TurnEventError, ErrorCode: code, ErrorSummary: summary}, now); err != nil {
-			return err
-		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE core_tasks SET progress_sequence=progress_sequence+1 WHERE task_id=$1`, task.ID); err != nil {
 		return err

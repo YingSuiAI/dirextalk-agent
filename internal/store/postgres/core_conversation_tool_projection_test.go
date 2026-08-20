@@ -10,6 +10,40 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestConversationToolFailureObservationHonorsReadOnlyProof(t *testing.T) {
+	callID := uuid.NewString()
+	taskID := uuid.NewString()
+	base := coretask.Task{ID: taskID, Spec: coretask.TaskSpec{Kind: coretask.TaskKindConversationTool, Payload: coretask.TaskPayload{
+		ConversationTool: &coretask.ConversationToolTaskPayload{CallID: callID, ToolName: "lookup"},
+	}}}
+	for _, test := range []struct {
+		name         string
+		state        string
+		readOnly     bool
+		code         string
+		wantOutcome  core.ToolObservationOutcome
+		wantMutation core.ToolMutationState
+	}{
+		{name: "read-only failure", state: "failed", readOnly: true, code: "provider_failed", wantOutcome: core.ToolOutcomeFatal, wantMutation: core.ToolMutationNone},
+		{name: "read-only uncertain", state: "uncertain", readOnly: true, code: "tool_uncertain", wantOutcome: core.ToolOutcomeFatal, wantMutation: core.ToolMutationNone},
+		{name: "mutation failure", state: "failed", code: "provider_failed", wantOutcome: core.ToolOutcomeUnknownMutation, wantMutation: core.ToolMutationUnknown},
+		{name: "mutation uncertain", state: "uncertain", code: "tool_uncertain", wantOutcome: core.ToolOutcomeUnknownMutation, wantMutation: core.ToolMutationUnknown},
+		{name: "pre-dispatch invalid", state: "failed", code: "tool_arguments_invalid", wantOutcome: core.ToolOutcomeInvalid, wantMutation: core.ToolMutationNone},
+		{name: "known pre-provider mutation failure", state: "failed", code: "tool_resolution_failed", wantOutcome: core.ToolOutcomeFatal, wantMutation: core.ToolMutationUnchanged},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			task := base
+			payload := *base.Spec.Payload.ConversationTool
+			payload.ReadOnly = test.readOnly
+			task.Spec.Payload.ConversationTool = &payload
+			result, err := conversationToolTerminalResult(task, test.state, nil, test.code, "bounded failure")
+			if err != nil || result.Outcome != test.wantOutcome || result.MutationState != test.wantMutation || result.ValidateObservation() != nil {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestLocalSandboxAttemptProjectsDurableExecutionArtifactReference(t *testing.T) {
 	size := uint64(0)
 	reference := core.Reference{Kind: "execution_artifact", AccountGeneration: 7, RecordKind: "local_sandbox",
@@ -24,7 +58,16 @@ func TestLocalSandboxAttemptProjectsDurableExecutionArtifactReference(t *testing
 		"media_type": reference.MediaType, "size_bytes": *reference.SizeBytes, "sha256": reference.SHA256,
 	}}}}
 	resultJSON, _ := json.Marshal(payload)
-	stored, _ := json.Marshal(coretask.Result{JSON: resultJSON, Summary: "local MCP tool result"})
+	callID := uuid.NewString()
+	taskID := uuid.NewString()
+	resultRaw, _ := json.Marshal(coretask.Result{Text: "sandbox completed", JSON: resultJSON, Summary: "local MCP tool result"})
+	toolResult, err := conversationToolTerminalResult(coretask.Task{ID: taskID, Spec: coretask.TaskSpec{Payload: coretask.TaskPayload{
+		ConversationTool: &coretask.ConversationToolTaskPayload{CallID: callID, ToolName: coreextension.BuiltinLocalSandboxToolName},
+	}}}, "completed", resultRaw, "", "")
+	if err != nil || toolResult.Content != "sandbox completed" || len(toolResult.References) != 1 {
+		t.Fatalf("tool result=%+v err=%v", toolResult, err)
+	}
+	stored, _ := json.Marshal(toolResult)
 	references, err := conversationToolAttemptReferences(core.ToolAttempt{ToolName: coreextension.BuiltinLocalSandboxToolName, State: "completed", Result: stored})
 	if err != nil || len(references) != 1 || references[0].ArtifactID != reference.ArtifactID || references[0].SizeBytes == nil || *references[0].SizeBytes != 0 {
 		t.Fatalf("references=%+v err=%v", references, err)

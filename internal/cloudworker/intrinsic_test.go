@@ -440,7 +440,7 @@ func TestIntrinsicInventoryReturnsLiveOwnerScopedSnapshot(t *testing.T) {
 		Lease: lease, ConversationRevision: 4, CanonicalArguments: raw,
 		Call: coreconversation.ToolCall{ID: "inventory-call", Name: coremodel.IntrinsicCloudWorkerInventoryToolName, Arguments: string(raw)},
 	})
-	if err != nil || result.TurnCommitted || result.ToolResult == nil || result.ToolResult.Validate() != nil {
+	if err != nil || result.TurnCommitted || result.ToolResult == nil || result.ToolResult.ValidateObservation() != nil {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	content := result.ToolResult.Content
@@ -453,7 +453,8 @@ func TestIntrinsicInventoryReturnsLiveOwnerScopedSnapshot(t *testing.T) {
 		}
 	}
 	if resolver.owner != lease.Turn.OwnerID || resolver.gen != lease.Turn.AccountGeneration || result.ToolResult.CallID != "inventory-call" ||
-		result.ToolResult.ToolName != coremodel.IntrinsicCloudWorkerInventoryToolName {
+		result.ToolResult.ToolName != coremodel.IntrinsicCloudWorkerInventoryToolName || result.ToolResult.Outcome != coreconversation.ToolOutcomeSuccess ||
+		result.ToolResult.MutationState != coreconversation.ToolMutationNone || result.ToolResult.StateChanged {
 		t.Fatalf("inventory authority=%q/%d result=%+v", resolver.owner, resolver.gen, result)
 	}
 }

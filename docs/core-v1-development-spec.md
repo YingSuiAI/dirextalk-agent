@@ -224,6 +224,28 @@ Gemini calls without an ID receive a transcript-unique generated ID, and
 adjacent Anthropic tool results are sent as one ordered user content-block
 batch.
 
+Every durable, model-visible tool result is an explicit
+`dirextalk.tool-observation/v1` observation. Its closed outcome is one of
+`success`, `partial`, `not_found`, `invalid`, `auth`, `user_input`,
+`retryable`, `fatal`, or `unknown_mutation`; the same record carries bounded
+retry/correction counters, mutation state, summary, references, and cursor.
+Core never infers an observation outcome from legacy content or `is_error`.
+The immediate-tool supervisor retries only an explicitly `retryable`,
+authoritative read-only dispatch, once, under the same call fence. It admits at
+most 30 seconds of producer-requested retry delay, preserves any retry already
+consumed by the producer, and does not consume the retry when its context is
+canceled during that delay. It admits one model argument correction after
+`invalid`; exhausted correction/retry,
+authorization, user-input, fatal, and unknown-mutation outcomes persist a
+terminal tool finalization intent and remove tools from the final synthesis.
+An accepted same-turn steer starts a new supervisor window. Mutating Task
+failures without an immutable no-mutation receipt are always
+`unknown_mutation` and are never replayed blindly. The one narrower exception
+is unapplied user guidance deferred while a Cloud Worker call was active: after
+that Worker fails, Core may dispatch one forced `cloud_worker_propose` follow-up
+with every extension and other intrinsic removed; the fatal outcome never
+restores the turn's general tool authority.
+
 Streaming adapters parse full SSE events with CRLF support, comment and
 non-`data` field elision, and ordered joining of multiple `data` fields before
 provider JSON decoding. Provider failure types distinguish cancellation,

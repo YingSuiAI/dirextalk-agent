@@ -15,6 +15,8 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -102,12 +104,12 @@ func (r *productConversationResolver) ResolveExtensions(ctx context.Context, sel
 		Execute: func(toolCtx context.Context, request coreconversation.ToolExecutionRequest) (coreconversation.ToolResult, error) {
 			binding, exists := bindings[request.Call.Name]
 			if !exists {
-				return coreconversation.ToolResult{}, fmt.Errorf("product tool %q is not in the described catalog", request.Call.Name)
+				return coreconversation.ToolResult{}, productConversationExecutionError(codes.InvalidArgument, fmt.Errorf("product tool %q is not in the described catalog", request.Call.Name))
 			}
 			parent, parentOK := capabilityclient.CallContextFromContext(toolCtx)
 			grant, grantOK := capabilityclient.PermissionFromContext(toolCtx)
 			if !parentOK || !grantOK || parent == nil || grant == nil {
-				return coreconversation.ToolResult{}, fmt.Errorf("product capability context is missing")
+				return coreconversation.ToolResult{}, productConversationExecutionError(codes.Unauthenticated, fmt.Errorf("product capability context is missing"))
 			}
 			requestJSON := []byte(request.Call.Arguments)
 			if len(requestJSON) == 0 {
@@ -115,31 +117,49 @@ func (r *productConversationResolver) ResolveExtensions(ctx context.Context, sel
 			}
 			canonicalRequest, err := capv1.CanonicalizeJSON(requestJSON)
 			if err != nil {
-				return coreconversation.ToolResult{}, fmt.Errorf("product tool arguments must be canonical JSON: %w", err)
+				return coreconversation.ToolResult{}, productConversationExecutionError(codes.InvalidArgument, fmt.Errorf("product tool arguments must be canonical JSON: %w", err))
 			}
 			businessInput, err := capv1.ParseBusinessInput(canonicalRequest)
 			if err != nil {
-				return coreconversation.ToolResult{}, err
+				return coreconversation.ToolResult{}, productConversationExecutionError(codes.InvalidArgument, err)
 			}
 			rootDigest, err := capv1.ComputeRootRequestDigest(binding.protocolVersion, binding.capabilityID, binding.capabilityVer, binding.schemaDigest, binding.operation, 0, businessInput, nil)
 			if err != nil {
-				return coreconversation.ToolResult{}, err
+				return coreconversation.ToolResult{}, productConversationExecutionError(codes.InvalidArgument, err)
 			}
 			delegation, err := r.product.ExchangeProductDelegation(toolCtx, parent, capv1.ExchangeProductTargetKind_EXCHANGE_PRODUCT_TARGET_KIND_QUERY, "", binding.capabilityID, binding.operation, canonicalRequest, 0, grant)
 			if err != nil {
-				return coreconversation.ToolResult{}, err
+				return coreconversation.ToolResult{}, productConversationExecutionError(status.Code(err), err)
 			}
 			if !bytes.Equal(rootDigest, delegation.RootRequestDigest) {
-				return coreconversation.ToolResult{}, fmt.Errorf("product delegation root digest mismatch")
+				return coreconversation.ToolResult{}, productConversationExecutionError(codes.Internal, fmt.Errorf("product delegation root digest mismatch"))
 			}
 			result, callErr := r.product.QueryWithPermission(toolCtx, parent, binding.capabilityID, binding.operation, canonicalRequest, delegation.Permission)
 			if callErr != nil {
-				return coreconversation.ToolResult{}, callErr
+				return coreconversation.ToolResult{}, productConversationExecutionError(status.Code(callErr), callErr)
 			}
-			return coreconversation.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: string(result)}, nil
+			toolResult := coreconversation.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: string(result)}
+			return toolResult.WithObservation(coreconversation.ToolOutcomeSuccess, "Product query completed", coreconversation.ToolMutationNone), nil
 		},
 	})
 	return resolved, nil
+}
+
+func productConversationExecutionError(code codes.Code, err error) error {
+	switch code {
+	case codes.InvalidArgument:
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeInvalid, "Product query arguments are invalid", 0, err)
+	case codes.NotFound:
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeNotFound, "Product query found no matching resource", 0, err)
+	case codes.Unauthenticated, codes.PermissionDenied:
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeAuth, "Product query authorization is unavailable", 0, err)
+	case codes.FailedPrecondition:
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeUserInput, "Product query requires additional input", 0, err)
+	case codes.Unavailable, codes.ResourceExhausted, codes.DeadlineExceeded:
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeRetryable, "Product query service is temporarily unavailable", 0, err)
+	default:
+		return coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeFatal, "Product query failed", 0, err)
+	}
 }
 
 func productConversationSnapshot(selection coreconversation.ExtensionSelection, contentDigest, artifactDigest, schemaDigest string, toolNames []string) coreconversation.ExtensionExecutionSnapshot {

@@ -32,6 +32,8 @@ const (
 	MaxRelatedPlanIDs        = 32
 	MaxReferences            = 32
 	MaxSummaryBytes          = 4096
+	MaxToolCursorBytes       = 4096
+	MaxToolRetryAfterMS      = 30_000
 )
 
 type Role string
@@ -50,14 +52,149 @@ type ToolCall struct {
 	ExecutionID string `json:"execution_id,omitempty"`
 }
 type ToolResult struct {
-	CallID         string      `json:"call_id"`
-	ToolName       string      `json:"tool_name,omitempty"`
-	Content        string      `json:"content"`
-	IsError        bool        `json:"is_error,omitempty"`
-	RelatedTaskIDs []string    `json:"related_task_ids,omitempty"`
-	RelatedPlanIDs []string    `json:"related_plan_ids,omitempty"`
-	References     []Reference `json:"references,omitempty"`
-	Summary        string      `json:"summary,omitempty"`
+	CallID         string                 `json:"call_id"`
+	ToolName       string                 `json:"tool_name,omitempty"`
+	Content        string                 `json:"content"`
+	IsError        bool                   `json:"is_error,omitempty"`
+	Outcome        ToolObservationOutcome `json:"outcome,omitempty"`
+	StateChanged   bool                   `json:"state_changed,omitempty"`
+	Retry          ToolRetryMetadata      `json:"retry,omitempty"`
+	Cursor         string                 `json:"cursor,omitempty"`
+	MutationState  ToolMutationState      `json:"mutation_state,omitempty"`
+	RelatedTaskIDs []string               `json:"related_task_ids,omitempty"`
+	RelatedPlanIDs []string               `json:"related_plan_ids,omitempty"`
+	References     []Reference            `json:"references,omitempty"`
+	Summary        string                 `json:"summary,omitempty"`
+}
+
+const ToolObservationSchema = "dirextalk.tool-observation/v1"
+
+type ToolObservationOutcome string
+
+const (
+	ToolOutcomeSuccess         ToolObservationOutcome = "success"
+	ToolOutcomePartial         ToolObservationOutcome = "partial"
+	ToolOutcomeNotFound        ToolObservationOutcome = "not_found"
+	ToolOutcomeInvalid         ToolObservationOutcome = "invalid"
+	ToolOutcomeAuth            ToolObservationOutcome = "auth"
+	ToolOutcomeUserInput       ToolObservationOutcome = "user_input"
+	ToolOutcomeRetryable       ToolObservationOutcome = "retryable"
+	ToolOutcomeFatal           ToolObservationOutcome = "fatal"
+	ToolOutcomeUnknownMutation ToolObservationOutcome = "unknown_mutation"
+)
+
+type ToolMutationState string
+
+const (
+	ToolMutationNone      ToolMutationState = "none"
+	ToolMutationUnchanged ToolMutationState = "unchanged"
+	ToolMutationChanged   ToolMutationState = "changed"
+	ToolMutationUnknown   ToolMutationState = "unknown"
+)
+
+type ToolRetryMetadata struct {
+	TransientRetries       uint8  `json:"transient_retries"`
+	TransientLimit         uint8  `json:"transient_limit"`
+	ValidationCorrections  uint8  `json:"validation_corrections"`
+	ValidationLimit        uint8  `json:"validation_limit"`
+	RetryAfterMilliseconds uint32 `json:"retry_after_milliseconds,omitempty"`
+}
+
+func DefaultToolRetryMetadata() ToolRetryMetadata {
+	return ToolRetryMetadata{TransientLimit: 1, ValidationLimit: 1}
+}
+
+type toolObservationEnvelope struct {
+	Schema        string                 `json:"schema"`
+	Outcome       ToolObservationOutcome `json:"outcome"`
+	Data          any                    `json:"data"`
+	StateChanged  bool                   `json:"state_changed"`
+	Summary       string                 `json:"summary"`
+	References    []Reference            `json:"references,omitempty"`
+	Cursor        string                 `json:"cursor,omitempty"`
+	Retry         ToolRetryMetadata      `json:"retry"`
+	MutationState ToolMutationState      `json:"mutation_state"`
+}
+
+// WithObservation fills the durable supervisor fields without changing the
+// provider data carried in Content. Tool producer boundaries call it before
+// persistence; an observation-free ToolResult is never model-visible.
+func (r ToolResult) WithObservation(outcome ToolObservationOutcome, summary string, mutation ToolMutationState) ToolResult {
+	r.Outcome = outcome
+	r.Summary = strings.TrimSpace(summary)
+	r.MutationState = mutation
+	if r.Retry.TransientLimit == 0 && r.Retry.ValidationLimit == 0 {
+		r.Retry = DefaultToolRetryMetadata()
+	}
+	r.IsError = outcome != ToolOutcomeSuccess && outcome != ToolOutcomePartial
+	return r
+}
+
+// ModelObservationJSON is the sole model-facing representation of a tool
+// result. It omits transport identities and exposes only the bounded semantic
+// observation persisted by Core.
+func (r ToolResult) ModelObservationJSON() (string, error) {
+	if err := r.ValidateObservation(); err != nil {
+		return "", err
+	}
+	var data any = r.Content
+	if json.Valid([]byte(r.Content)) {
+		data = json.RawMessage(r.Content)
+	}
+	raw, err := json.Marshal(toolObservationEnvelope{
+		Schema: ToolObservationSchema, Outcome: r.Outcome, Data: data,
+		StateChanged: r.StateChanged, Summary: r.Summary,
+		References: cloneReferences(r.References), Cursor: r.Cursor,
+		Retry: r.Retry, MutationState: r.MutationState,
+	})
+	if err != nil || len(raw) > MaxToolResultsBytes {
+		return "", ErrInvalid
+	}
+	return string(raw), nil
+}
+
+func (r ToolResult) ValidateObservation() error {
+	if r.Outcome == "" {
+		return ErrInvalid
+	}
+	return r.Validate()
+}
+
+type toolExecutionError struct {
+	outcome                ToolObservationOutcome
+	summary                string
+	retryAfterMilliseconds uint32
+	cause                  error
+}
+
+func (e toolExecutionError) Error() string { return e.summary }
+func (e toolExecutionError) Unwrap() error { return e.cause }
+
+type ToolExecutionErrorDetails struct {
+	Outcome                ToolObservationOutcome
+	Summary                string
+	RetryAfterMilliseconds uint32
+}
+
+func NewToolExecutionError(outcome ToolObservationOutcome, summary string, retryAfterMilliseconds uint32, cause error) error {
+	summary = strings.TrimSpace(summary)
+	switch outcome {
+	case ToolOutcomeNotFound, ToolOutcomeInvalid, ToolOutcomeAuth, ToolOutcomeUserInput, ToolOutcomeRetryable, ToolOutcomeFatal, ToolOutcomeUnknownMutation:
+	default:
+		return ErrInvalid
+	}
+	if summary == "" || len(summary) > MaxSummaryBytes || !utf8.ValidString(summary) || retryAfterMilliseconds > MaxToolRetryAfterMS {
+		return ErrInvalid
+	}
+	return toolExecutionError{outcome: outcome, summary: summary, retryAfterMilliseconds: retryAfterMilliseconds, cause: cause}
+}
+
+func ToolExecutionErrorObservation(err error) (ToolExecutionErrorDetails, bool) {
+	var classified toolExecutionError
+	if !errors.As(err, &classified) {
+		return ToolExecutionErrorDetails{}, false
+	}
+	return ToolExecutionErrorDetails{Outcome: classified.outcome, Summary: classified.summary, RetryAfterMilliseconds: classified.retryAfterMilliseconds}, true
 }
 
 type Reference struct {
@@ -976,8 +1113,42 @@ func (r ToolResult) Validate() error {
 	if err := validateText(r.Content, MaxToolResultsBytes); err != nil {
 		return err
 	}
-	if len(r.RelatedTaskIDs) > MaxRelatedTaskIDs || len(r.RelatedPlanIDs) > MaxRelatedPlanIDs || len(r.Summary) > MaxSummaryBytes || !utf8.ValidString(r.Summary) || validateReferences(r.References) != nil {
+	if len(r.RelatedTaskIDs) > MaxRelatedTaskIDs || len(r.RelatedPlanIDs) > MaxRelatedPlanIDs || len(r.Summary) > MaxSummaryBytes || !utf8.ValidString(r.Summary) || len(r.Cursor) > MaxToolCursorBytes || !utf8.ValidString(r.Cursor) || validateReferences(r.References) != nil {
 		return ErrInvalid
+	}
+	if r.Outcome != "" {
+		switch r.Outcome {
+		case ToolOutcomeSuccess, ToolOutcomePartial:
+			if r.IsError {
+				return ErrInvalid
+			}
+		case ToolOutcomeNotFound, ToolOutcomeInvalid, ToolOutcomeAuth, ToolOutcomeUserInput, ToolOutcomeRetryable, ToolOutcomeFatal, ToolOutcomeUnknownMutation:
+			if !r.IsError {
+				return ErrInvalid
+			}
+		default:
+			return ErrInvalid
+		}
+		if strings.TrimSpace(r.Summary) == "" || r.Retry.TransientLimit != 1 || r.Retry.ValidationLimit != 1 ||
+			r.Retry.TransientRetries > r.Retry.TransientLimit || r.Retry.ValidationCorrections > r.Retry.ValidationLimit ||
+			r.Retry.RetryAfterMilliseconds > MaxToolRetryAfterMS {
+			return ErrInvalid
+		}
+		switch r.MutationState {
+		case ToolMutationNone, ToolMutationUnchanged, ToolMutationChanged:
+			if r.Outcome == ToolOutcomeUnknownMutation {
+				return ErrInvalid
+			}
+		case ToolMutationUnknown:
+			if r.Outcome != ToolOutcomeUnknownMutation || r.StateChanged {
+				return ErrInvalid
+			}
+		default:
+			return ErrInvalid
+		}
+		if r.StateChanged && r.MutationState != ToolMutationChanged {
+			return ErrInvalid
+		}
 	}
 	for _, id := range r.RelatedTaskIDs {
 		if !validUUID(id) {
@@ -1036,7 +1207,7 @@ func (m Message) Validate() error {
 		}
 	}
 	for _, r := range m.ToolResults {
-		if r.Validate() != nil {
+		if r.ValidateObservation() != nil {
 			return ErrInvalid
 		}
 	}

@@ -433,6 +433,17 @@ support.
   provider/invalid-output fallback, durable partial preservation, dispatch and
   active-time exhaustion, intent-before-dispatch restart, and no replay after a
   final dispatch has started.
+- On **2026-08-20**, Native tool results adopted the closed
+  `dirextalk.tool-observation/v1` contract with explicit outcomes, bounded
+  read-only retry and invalid-argument correction, mutation state, summaries,
+  references, and cursors. Observation-free results fail closed; mutating
+  failures without an unchanged receipt become `unknown_mutation`. Migration
+  26 constrains terminal attempt observations. Focused Core and PostgreSQL 18
+  + pgvector tests cover steer reset, retry/correction exhaustion, malformed
+  observation rejection, restart projection exactly once, tools-disabled
+  finalization, Message MCP mutation uncertainty, Worker-only deferred
+  follow-up, 30-second retry-delay bounds/cancellation, read-only uncertainty,
+  and Worker continuation.
 - On **2026-08-20**, admitted execution policy v1 replaced equality checks
   against binary defaults. `Chat`, `StreamChat`, and `StartTurn` now accept the
   optional closed interactive/deep/worker-orchestration selector while trusted
