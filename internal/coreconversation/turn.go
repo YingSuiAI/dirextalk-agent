@@ -212,6 +212,9 @@ type TurnStartCommand struct {
 	// ExecutionMode selects one bounded admission preset. The admitted values,
 	// not this selector or later binary defaults, become durable authority.
 	ExecutionMode TurnExecutionMode
+	// ConstrainedWorkflow is set only by trusted internal adapters. Owner RPC
+	// surfaces cannot select the reserved scheduled execution mode.
+	ConstrainedWorkflow TurnConstrainedWorkflow
 }
 
 type TurnCancelCommand struct {
@@ -361,6 +364,7 @@ const (
 	TurnFinalizationProvider      TurnFinalizationReason = "provider_failure"
 	TurnFinalizationInvalidOutput TurnFinalizationReason = "invalid_terminal_output"
 	TurnFinalizationToolOutcome   TurnFinalizationReason = "terminal_tool_outcome"
+	TurnFinalizationWorkflow      TurnFinalizationReason = "constrained_workflow"
 )
 
 // TurnFinalizationIntent is the durable decision that an ordinary accepted
@@ -381,7 +385,7 @@ func (i TurnFinalizationIntent) Validate() error {
 	}
 	switch i.Reason {
 	case TurnFinalizationToolLoop, TurnFinalizationToolBudget, TurnFinalizationModelBudget,
-		TurnFinalizationProvider, TurnFinalizationInvalidOutput, TurnFinalizationToolOutcome:
+		TurnFinalizationProvider, TurnFinalizationInvalidOutput, TurnFinalizationToolOutcome, TurnFinalizationWorkflow:
 		return nil
 	default:
 		return ErrInvalid
@@ -496,7 +500,7 @@ func (d TurnDispatchDirective) Digest() string {
 	return digest(string(raw))
 }
 
-const TurnRuntimeSnapshotVersion = 2
+const TurnRuntimeSnapshotVersion = 3
 
 type TurnIntrinsicPolicy string
 
@@ -594,18 +598,19 @@ func NormalizeClientTurnExecutionMode(mode TurnExecutionMode) (TurnExecutionMode
 }
 
 type TurnRuntimeSnapshot struct {
-	Version               int                 `json:"version"`
-	CompiledSystemPrompt  string              `json:"compiled_system_prompt"`
-	SystemPromptDigest    string              `json:"system_prompt_digest"`
-	ProfileSnapshotDigest string              `json:"profile_snapshot_digest"`
-	RequestDialect        string              `json:"request_dialect"`
-	IntrinsicTools        []coremodel.Tool    `json:"intrinsic_tools"`
-	IntrinsicDigest       string              `json:"intrinsic_digest"`
-	IntrinsicPolicy       TurnIntrinsicPolicy `json:"intrinsic_policy,omitempty"`
-	ExtensionDigest       string              `json:"extension_digest"`
-	AttachmentDigest      string              `json:"attachment_digest"`
-	ExecutionPolicy       TurnExecutionPolicy `json:"execution_policy"`
-	ExecutionPolicyDigest string              `json:"execution_policy_digest"`
+	Version               int                     `json:"version"`
+	CompiledSystemPrompt  string                  `json:"compiled_system_prompt"`
+	SystemPromptDigest    string                  `json:"system_prompt_digest"`
+	ProfileSnapshotDigest string                  `json:"profile_snapshot_digest"`
+	RequestDialect        string                  `json:"request_dialect"`
+	IntrinsicTools        []coremodel.Tool        `json:"intrinsic_tools"`
+	IntrinsicDigest       string                  `json:"intrinsic_digest"`
+	IntrinsicPolicy       TurnIntrinsicPolicy     `json:"intrinsic_policy,omitempty"`
+	ExtensionDigest       string                  `json:"extension_digest"`
+	AttachmentDigest      string                  `json:"attachment_digest"`
+	ExecutionPolicy       TurnExecutionPolicy     `json:"execution_policy"`
+	ExecutionPolicyDigest string                  `json:"execution_policy_digest"`
+	ConstrainedWorkflow   TurnConstrainedWorkflow `json:"constrained_workflow,omitempty"`
 }
 
 func NewTurnRuntimeSnapshot(systemPrompt string, profile coremodel.ExecutionSnapshot, intrinsics []ResolvedIntrinsic, extensionDigest, attachmentDigest string) (TurnRuntimeSnapshot, error) {
@@ -617,7 +622,7 @@ func NewTurnRuntimeSnapshotForMode(systemPrompt string, profile coremodel.Execut
 	if err != nil {
 		return TurnRuntimeSnapshot{}, err
 	}
-	return newTurnRuntimeSnapshotWithPolicy(systemPrompt, profile, intrinsics, extensionDigest, attachmentDigest, "", policy)
+	return newTurnRuntimeSnapshotWithPolicy(systemPrompt, profile, intrinsics, extensionDigest, attachmentDigest, "", policy, TurnConstrainedWorkflow{})
 }
 
 func newTurnRuntimeSnapshot(systemPrompt string, profile coremodel.ExecutionSnapshot, intrinsics []ResolvedIntrinsic, extensionDigest, attachmentDigest string, intrinsicPolicy TurnIntrinsicPolicy) (TurnRuntimeSnapshot, error) {
@@ -625,10 +630,10 @@ func newTurnRuntimeSnapshot(systemPrompt string, profile coremodel.ExecutionSnap
 	if err != nil {
 		return TurnRuntimeSnapshot{}, err
 	}
-	return newTurnRuntimeSnapshotWithPolicy(systemPrompt, profile, intrinsics, extensionDigest, attachmentDigest, intrinsicPolicy, policy)
+	return newTurnRuntimeSnapshotWithPolicy(systemPrompt, profile, intrinsics, extensionDigest, attachmentDigest, intrinsicPolicy, policy, TurnConstrainedWorkflow{})
 }
 
-func newTurnRuntimeSnapshotWithPolicy(systemPrompt string, profile coremodel.ExecutionSnapshot, intrinsics []ResolvedIntrinsic, extensionDigest, attachmentDigest string, intrinsicPolicy TurnIntrinsicPolicy, policy TurnExecutionPolicy) (TurnRuntimeSnapshot, error) {
+func newTurnRuntimeSnapshotWithPolicy(systemPrompt string, profile coremodel.ExecutionSnapshot, intrinsics []ResolvedIntrinsic, extensionDigest, attachmentDigest string, intrinsicPolicy TurnIntrinsicPolicy, policy TurnExecutionPolicy, workflow TurnConstrainedWorkflow) (TurnRuntimeSnapshot, error) {
 	if intrinsicPolicy != "" && intrinsicPolicy != TurnIntrinsicPolicyNone {
 		return TurnRuntimeSnapshot{}, ErrInvalid
 	}
@@ -636,6 +641,9 @@ func newTurnRuntimeSnapshotWithPolicy(systemPrompt string, profile coremodel.Exe
 		return TurnRuntimeSnapshot{}, ErrInvalid
 	}
 	if policy.Validate() != nil {
+		return TurnRuntimeSnapshot{}, ErrInvalid
+	}
+	if (policy.Mode == TurnExecutionScheduled) != !workflow.IsZero() || (!workflow.IsZero() && workflow.Validate() != nil) {
 		return TurnRuntimeSnapshot{}, ErrInvalid
 	}
 	tools := make([]coremodel.Tool, 0, len(intrinsics))
@@ -657,6 +665,7 @@ func newTurnRuntimeSnapshotWithPolicy(systemPrompt string, profile coremodel.Exe
 		IntrinsicDigest: digest(string(intrinsicRaw)), ExtensionDigest: extensionDigest,
 		AttachmentDigest: attachmentDigest,
 		ExecutionPolicy:  policy, ExecutionPolicyDigest: digest(string(policyRaw)),
+		ConstrainedWorkflow: workflow,
 	}
 	if snapshot.Validate() != nil {
 		return TurnRuntimeSnapshot{}, ErrInvalid
@@ -671,6 +680,10 @@ func (s TurnRuntimeSnapshot) Validate() error {
 		(len(s.AttachmentDigest) != 0 && !validReferenceDigest(s.AttachmentDigest)) ||
 		(s.IntrinsicPolicy != "" && s.IntrinsicPolicy != TurnIntrinsicPolicyNone) ||
 		(s.IntrinsicPolicy == TurnIntrinsicPolicyNone && len(s.IntrinsicTools) != 0) {
+		return ErrInvalid
+	}
+	if (s.ExecutionPolicy.Mode == TurnExecutionScheduled) != !s.ConstrainedWorkflow.IsZero() ||
+		(!s.ConstrainedWorkflow.IsZero() && s.ConstrainedWorkflow.Validate() != nil) {
 		return ErrInvalid
 	}
 	intrinsicRaw, err := json.Marshal(s.IntrinsicTools)
@@ -780,7 +793,12 @@ func (c TurnStartCommand) Validate() error {
 	if c.IntrinsicPolicy != "" && c.IntrinsicPolicy != TurnIntrinsicPolicyNone {
 		return ErrInvalid
 	}
-	if _, err := AdmittedTurnExecutionPolicy(normalizeTurnExecutionMode(c.ExecutionMode)); err != nil {
+	mode := normalizeTurnExecutionMode(c.ExecutionMode)
+	if _, err := AdmittedTurnExecutionPolicy(mode); err != nil {
+		return ErrInvalid
+	}
+	if (mode == TurnExecutionScheduled) != !c.ConstrainedWorkflow.IsZero() ||
+		(!c.ConstrainedWorkflow.IsZero() && c.ConstrainedWorkflow.Validate() != nil) {
 		return ErrInvalid
 	}
 	if len(c.Extensions) > 0 && len(c.ExtensionSnapshots) == 0 {
@@ -843,6 +861,9 @@ func (c TurnStartCommand) Fingerprint() string {
 		TurnAttachmentSnapshotDigest(c.AttachmentSources),
 		"execution_mode",
 		normalizeTurnExecutionMode(c.ExecutionMode),
+	}
+	if !c.ConstrainedWorkflow.IsZero() {
+		values = append(values, "constrained_workflow", c.ConstrainedWorkflow)
 	}
 	// Keep the ordinary false form byte-for-byte compatible with already
 	// accepted turns. The internal explicit-pin marker still has its own replay

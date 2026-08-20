@@ -71,9 +71,10 @@ contract](message-server-integration-development-contract.md), and
   or unsafe policies fail before claim/event mutation. Worker-owned runtime and
   Task limits remain independent. Tool results with validated runtime references persist
   versioned progress observations in the immediate-result or deferred-resume
-  transaction. The third unchanged effective digest fails durably as
-  `AGENT_STALLED_NO_PROGRESS`; argument/presentation wrappers do not count as
-  progress, restart preserves the count, and steer resets it. Results without
+  transaction. Three repetitions of a semantic cycle of length one through
+  four atomically prepare a durable tools-disabled Markdown finalization;
+  argument/presentation wrappers do not count as progress, restart preserves
+  the cycle, and steer resets it. Results without
   structured observations retain conservative exact/A-B loop recovery.
   Conversation compaction now persists a versioned structured WorkingContext;
   protected user goals/constraints and runtime resource/receipt identities use
@@ -289,6 +290,17 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-20**, scheduled execution began binding its closed persisted
+  capability into the immutable Turn runtime and enforcing the corresponding
+  single-pass state machine from durable tool-call sequence. Stable
+  `web_source` and `knowledge_chunk` references now bind canonical source and
+  chunk identities plus content digests, and semantic no-progress recognizes
+  repeated cycles of length one through four before durable tools-disabled
+  Markdown finalization. Focused PostgreSQL 18 + pgvector restart tests proved
+  exact-once replay of an admitted pending scheduled tool, one tools-none
+  consumer call for a produced `tool_loop_no_progress` intent with no replay after
+  completion, and exactly one forced static-site correction before final
+  Markdown. Focused Core, resolver, RPC, migration, and PostgreSQL suites passed.
 - On **2026-08-20**, every physical model dispatch gained a separate durable
   directive that may add bounded loop guidance, force one already-admitted
   tool, or remove all tools for final synthesis without changing the immutable

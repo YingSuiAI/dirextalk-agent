@@ -387,7 +387,7 @@ func turnEventErrorEnvelope(turnID, code, message string) agentdatav2.ErrorEnvel
 		publicCode = "AGENT_OPERATION_FAILED"
 	}
 	switch {
-	case normalized == "TURN_RUNTIME_INCOMPATIBLE", normalized == "AGENT_STALLED_NO_PROGRESS",
+	case normalized == "TURN_RUNTIME_INCOMPATIBLE",
 		strings.Contains(normalized, "UNCERTAIN"), strings.Contains(normalized, "CONFLICT"):
 		status = http.StatusConflict
 	case strings.Contains(normalized, "RATE_LIMIT") || strings.Contains(normalized, "RESOURCE_EXHAUSTED"):

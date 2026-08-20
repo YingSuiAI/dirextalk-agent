@@ -204,6 +204,13 @@ or stream after admission. It never cancels the accepted Turn; callers use
   finalization path. Every model-visible tool result is the persisted
   `dirextalk.tool-observation/v1` envelope with a closed outcome, bounded
   retry/correction metadata, mutation state, summary, references, and cursor.
+  Structured observations detect semantic cycles of length one through four;
+  the third repetition inside the current steer epoch atomically preserves the
+  terminal tool result and prepares a `tool_loop_no_progress` finalization
+  intent. Restart
+  consumes that intent with exactly one tools-disabled Markdown synthesis and
+  never replays it after completion. Presentation text, query wrappers, and
+  transport identities do not count as progress.
   Core retries only explicit `retryable` read-only observations once, honors
   no more than 30 seconds of retry delay without overwriting a
   producer-consumed retry, and permits one `invalid` argument correction.
@@ -212,6 +219,14 @@ or stream after admission. It never cancels the accepted Turn; callers use
   same tools-disabled finalization path; a same-turn steer resets that tool
   supervisor window. Observation-free provider results fail closed rather
   than being inferred from content or `is_error`.
+  Evidence-bearing references expose stable provenance through
+  `CoreConversationReference.source_id`, `chunk_id`, and `content_digest`.
+  Web results use `web_source` with a canonical URL source identity (lowercase
+  scheme/host, no default port or fragment, `/` for an empty path, and sorted
+  query parameters) plus the result-content digest. Knowledge results use
+  `knowledge_chunk` with the durable source/chunk identities and passage
+  digest. These identities, rather than titles, previews, or snippets, feed
+  progress detection.
   An unapplied same-turn steer deferred during a failed Cloud Worker call may
   admit only one forced `cloud_worker_propose` follow-up; that dispatch exposes
   no extension or unrelated intrinsic tool.
@@ -382,8 +397,20 @@ or stream after admission. It never cancels the accepted Turn; callers use
   `web_search`; delivery workflows synthesize before one message send. A
   model-issued tool call is not repeated with altered arguments after error,
   insufficient data, or unknown completion; any provider-internal safe retry
-  remains below that model-call boundary. Crash recovery therefore resumes the
-  same prompt and transcript commit. A successful
+  remains below that model-call boundary. The immutable scheduled Turn runtime
+  also binds the persisted capability as a closed constrained workflow. Core
+  rebuilds admitted-call state from durable call sequence, permits at most one
+  new scheduled call per provider round, and counts any terminal observation
+  as completion. A restart may dispatch only the exact single persisted
+  pending call; it cannot reauthorize a batch, changed call, terminal
+  duplicate, or out-of-order tool. Channel-comment reads additionally require
+  a distinct `post_id` projected by the preceding posts-list result. At a
+  capability's forced terminal boundary, Core performs one no-tools Markdown
+  synthesis. `contact_report` after a contacts-list result and
+  `channel_digest` after a posts-list result may instead use the ordinary
+  request to return final Markdown or issue only their still-admitted optional
+  search/distinct-comment reads. Crash recovery therefore resumes the same
+  prompt and transcript commit. A successful
   Task exposes exactly the committed assistant Markdown as `result.text` and
   leaves `result.json` empty; it does not append another assistant message.
   Background execution carries only the persisted owner and positive account

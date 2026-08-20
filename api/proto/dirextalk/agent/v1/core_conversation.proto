@@ -51,6 +51,9 @@ message CoreConversationReference {
   string media_type = 27;
   optional uint64 size_bytes = 28;
   string sha256 = 29;
+  string source_id = 30;
+  string chunk_id = 31;
+  string content_digest = 32;
 }
 
 message CoreConversationMessage {

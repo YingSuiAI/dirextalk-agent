@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -241,6 +243,9 @@ type Reference struct {
 	MediaType            string  `json:"media_type,omitempty"`
 	SizeBytes            *uint64 `json:"size_bytes,omitempty"`
 	SHA256               string  `json:"sha256,omitempty"`
+	SourceID             string  `json:"source_id,omitempty"`
+	ChunkID              string  `json:"chunk_id,omitempty"`
+	ContentDigest        string  `json:"content_digest,omitempty"`
 }
 
 type Message struct {
@@ -870,9 +875,91 @@ func (r Reference) Validate() error {
 			return ErrInvalid
 		}
 		return nil
+	case "web_source":
+		return validateWebSourceReference(r)
+	case "knowledge_chunk":
+		return validateKnowledgeChunkReference(r)
 	default:
 		return ErrInvalid
 	}
+}
+
+func validateWebSourceReference(r Reference) error {
+	canonical, ok := CanonicalWebSourceID(r.SourceID)
+	if !ok || canonical != r.SourceID ||
+		r.ChunkID != "" || !validReferenceDigest(r.ContentDigest) || !validReferencePresentation(r) {
+		return ErrInvalid
+	}
+	copy := r
+	copy.Kind, copy.SourceID, copy.ContentDigest, copy.Title, copy.Preview = "", "", "", "", ""
+	if copy != (Reference{}) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+// CanonicalWebSourceID returns the one stable source identity accepted by the
+// Web evidence boundary. Fragments and equivalent transport spellings cannot
+// manufacture a new progress identity.
+func CanonicalWebSourceID(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 4096 {
+		return "", false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User != nil || parsed.Host == "" {
+		return "", false
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", false
+	}
+	hostname := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if hostname == "" {
+		return "", false
+	}
+	port := parsed.Port()
+	if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
+		port = ""
+	}
+	if port != "" {
+		parsed.Host = net.JoinHostPort(hostname, port)
+	} else if strings.Contains(hostname, ":") {
+		parsed.Host = "[" + hostname + "]"
+	} else {
+		parsed.Host = hostname
+	}
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	if parsed.Path == "" {
+		parsed.Path = "/"
+	}
+	parsed.RawPath = ""
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return "", false
+	}
+	for key := range query {
+		sort.Strings(query[key])
+	}
+	parsed.RawQuery = query.Encode()
+	parsed.ForceQuery = false
+	canonical := parsed.String()
+	return canonical, canonical != "" && len(canonical) <= 4096
+}
+
+func validateKnowledgeChunkReference(r Reference) error {
+	if !validUUID(r.SourceID) || r.ChunkID == "" || r.ChunkID != strings.TrimSpace(r.ChunkID) ||
+		len(r.ChunkID) > 1024 || !utf8.ValidString(r.ChunkID) || strings.ContainsAny(r.ChunkID, "\r\n\x00") ||
+		!validReferenceDigest(r.ContentDigest) || !validReferencePresentation(r) {
+		return ErrInvalid
+	}
+	copy := r
+	copy.Kind, copy.SourceID, copy.ChunkID, copy.ContentDigest, copy.Title, copy.Preview = "", "", "", "", "", ""
+	if copy != (Reference{}) {
+		return ErrInvalid
+	}
+	return nil
 }
 
 func validateExecutionArtifactReference(r Reference) error {
@@ -992,7 +1079,8 @@ func hasExecutionReferenceFields(r Reference) bool {
 		r.StageDigest != "" || r.TargetID != "" || r.TargetRevision != 0 || r.TargetDigest != "" ||
 		r.PreviewDigest != "" || r.BindingDigest != "" || r.RiskLevel != "" || r.GateType != "" ||
 		r.BindingID != "" || r.BindingRevision != 0 || r.ProjectID != "" || r.Status != "" || r.State != "" ||
-		r.RecordKind != "" || r.ArtifactID != "" || r.Name != "" || r.MediaType != "" || r.SizeBytes != nil || r.SHA256 != ""
+		r.RecordKind != "" || r.ArtifactID != "" || r.Name != "" || r.MediaType != "" || r.SizeBytes != nil || r.SHA256 != "" ||
+		r.SourceID != "" || r.ChunkID != "" || r.ContentDigest != ""
 }
 
 func validReferencePresentation(r Reference) bool {

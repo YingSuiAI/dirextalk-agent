@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
@@ -126,10 +127,51 @@ func (r *webSearchConversationResolver) ResolveExtensions(ctx context.Context, s
 				return coreconversation.ToolResult{}, corewebsearch.ErrProvider
 			}
 			toolResult := coreconversation.ToolResult{CallID: request.Call.ID, ToolName: "web_search", Content: string(body), Summary: fmt.Sprintf("Web search returned %d result(s)", len(result.Results))}
+			toolResult.References = webSearchEvidenceReferences(result.Results)
 			return toolResult.WithObservation(coreconversation.ToolOutcomeSuccess, toolResult.Summary, coreconversation.ToolMutationNone), nil
 		},
 	})
 	return resolved, nil
+}
+
+func webSearchEvidenceReferences(items []corewebsearch.SearchItem) []coreconversation.Reference {
+	references := make([]coreconversation.Reference, 0, min(len(items), coreconversation.MaxReferences))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		sourceID, ok := coreconversation.CanonicalWebSourceID(item.URL)
+		if !ok {
+			continue
+		}
+		if _, duplicate := seen[sourceID]; duplicate {
+			continue
+		}
+		contentSum := sha256.Sum256([]byte(item.Content))
+		reference := coreconversation.Reference{
+			Kind: "web_source", SourceID: sourceID, ContentDigest: hex.EncodeToString(contentSum[:]),
+			Title: boundedEvidencePresentation(item.Title, 512), Preview: boundedEvidencePresentation(item.Content, coreconversation.MaxSummaryBytes),
+		}
+		if reference.Validate() != nil {
+			continue
+		}
+		seen[sourceID] = struct{}{}
+		references = append(references, reference)
+		if len(references) == coreconversation.MaxReferences {
+			break
+		}
+	}
+	return references
+}
+
+func boundedEvidencePresentation(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func webSearchConversationExecutionError(err error) error {

@@ -91,6 +91,56 @@ type staticSiteCorrectionConversationModel struct {
 	requests []core.ModelRunRequest
 }
 
+type scheduledRestartConversationModel struct {
+	mu       sync.Mutex
+	call     core.ToolCall
+	requests []core.ModelRunRequest
+}
+
+func (m *scheduledRestartConversationModel) Run(_ context.Context, request core.ModelRunRequest) (core.ModelRunResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requests = append(m.requests, request)
+	if len(request.Extensions) == 0 {
+		return core.ModelRunResult{Done: true, Message: core.Message{
+			ID: uuid.NewString(), Role: core.RoleAssistant, Content: "## Scheduled result\n\nOne durable execution.", CreatedAt: time.Now().UTC(),
+		}}, nil
+	}
+	return core.ModelRunResult{
+		Message:   core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, ToolCalls: []core.ToolCall{m.call}, CreatedAt: time.Now().UTC()},
+		ToolCalls: []core.ToolCall{m.call},
+	}, nil
+}
+
+func (m *scheduledRestartConversationModel) Stream(ctx context.Context, request core.ModelRunRequest, _ func(core.ModelDelta) error) (core.ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
+func (m *scheduledRestartConversationModel) snapshotRequests() []core.ModelRunRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]core.ModelRunRequest(nil), m.requests...)
+}
+
+type blockedConversationToolDispatchStore struct {
+	*CoreConversationStore
+	mu       sync.Mutex
+	attempts int
+}
+
+func (s *blockedConversationToolDispatchStore) BeginConversationToolDispatch(context.Context, core.TurnLease, core.ToolCall) (bool, error) {
+	s.mu.Lock()
+	s.attempts++
+	s.mu.Unlock()
+	return false, errors.New("injected pre-dispatch process failure")
+}
+
+func (s *blockedConversationToolDispatchStore) attemptCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts
+}
+
 func (m *staticSiteCorrectionConversationModel) Run(_ context.Context, request core.ModelRunRequest) (core.ModelRunResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -563,39 +613,248 @@ func TestToolBudgetFinalizationPreservesFrozenRuntimePostgres(t *testing.T) {
 	}
 }
 
-func TestStaticSiteCorrectionYieldsToFinalizationPostgres(t *testing.T) {
+func TestStaticSiteCorrectionRestartsOnceThenFinalizesWithoutToolsPostgres(t *testing.T) {
 	h := openTurnDB(t)
 	cmd := turnCommand()
 	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
 	model := &staticSiteCorrectionConversationModel{}
+	var mutationMu sync.Mutex
+	mutationAttempts := 0
+	resolver := coreIntrinsicResolverFunc(func(context.Context, core.TurnLease) ([]core.ResolvedIntrinsic, error) {
+		return []core.ResolvedIntrinsic{{
+			Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}},
+			Execute: func(context.Context, core.IntrinsicExecutionRequest) (core.IntrinsicExecutionResult, error) {
+				mutationMu.Lock()
+				mutationAttempts++
+				mutationMu.Unlock()
+				return core.IntrinsicExecutionResult{}, core.ErrInvalid
+			},
+		}}, nil
+	})
 	service, err := core.NewService(h.store, model, staticConversationExtensions{}, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
 	if err != nil {
 		t.Fatal(err)
 	}
-	service.SetIntrinsicResolver(coreIntrinsicResolverFunc(func(context.Context, core.TurnLease) ([]core.ResolvedIntrinsic, error) {
-		return []core.ResolvedIntrinsic{{
-			Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}},
-			Execute: func(context.Context, core.IntrinsicExecutionRequest) (core.IntrinsicExecutionResult, error) {
-				return core.IntrinsicExecutionResult{}, core.ErrInvalid
-			},
-		}}, nil
-	}))
-	defer service.Close()
+	service.SetIntrinsicResolver(resolver)
 	started, err := service.StartTurn(context.Background(), cmd)
+	if err != nil {
+		service.Close()
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	firstInvalid := false
+	for time.Now().Before(deadline) {
+		for _, event := range mustLoadTurnEvents(t, h.store, started.ID) {
+			if event.Kind == core.TurnEventToolResult && event.ToolResult != nil && event.ToolResult.ToolName == coremodel.IntrinsicStaticSitePublishToolName && event.ToolResult.Outcome == core.ToolOutcomeInvalid {
+				firstInvalid = true
+				break
+			}
+		}
+		if firstInvalid {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err = service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mutationMu.Lock()
+	preRestartAttempts := mutationAttempts
+	mutationMu.Unlock()
+	if !firstInvalid || preRestartAttempts != 1 || len(model.snapshotRequests()) != 1 {
+		t.Fatalf("before restart invalid=%v mutation_attempts=%d model_requests=%d", firstInvalid, preRestartAttempts, len(model.snapshotRequests()))
+	}
+
+	restartedStore, err := NewCoreConversationStore(h.store.Store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	terminal := recoverConversationTurnUntilTerminal(t, service, h.store, started.ID, 12*time.Second)
+	restartedService, err := core.NewService(restartedStore, model, staticConversationExtensions{}, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedService.SetIntrinsicResolver(resolver)
+	terminal := recoverConversationTurnUntilTerminal(t, restartedService, restartedStore, started.ID, 8*time.Second)
+	if err = restartedService.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if terminal.State != core.TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "static-site synthesis" {
 		t.Fatalf("static-site terminal=%+v", terminal)
 	}
 	requests := model.snapshotRequests()
-	if len(requests) != 5 || requests[1].ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || requests[3].ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || len(requests[4].Intrinsics) != 0 || requests[4].ForcedToolName != "" {
+	if len(requests) != 3 || requests[0].ForcedToolName != "" || requests[1].ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || len(requests[2].Intrinsics) != 0 || requests[2].ForcedToolName != "" {
 		t.Fatalf("static-site requests=%+v", requests)
 	}
+	mutationMu.Lock()
+	gotMutationAttempts := mutationAttempts
+	mutationMu.Unlock()
+	if gotMutationAttempts != 2 {
+		t.Fatalf("static-site mutation attempts=%d want=2", gotMutationAttempts)
+	}
 	directives := loadPersistedTurnDirectives(t, h, terminal)
-	if len(directives) != 5 || directives[1].directive.ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || directives[3].directive.ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || directives[4].directive.Guidance != core.TurnDispatchGuidanceLoopSynthesis || directives[4].directive.ToolMode != core.TurnDispatchToolsNone {
+	if len(directives) != 3 || directives[0].directive.ForcedToolName != "" || directives[1].directive.ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || directives[2].directive.Guidance != core.TurnDispatchGuidanceLoopSynthesis || directives[2].directive.ToolMode != core.TurnDispatchToolsNone {
 		t.Fatalf("static-site directives=%+v", directives)
+	}
+
+	secondStore, err := NewCoreConversationStore(h.store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondService, err := core.NewService(secondStore, model, staticConversationExtensions{}, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondService.SetIntrinsicResolver(resolver)
+	if err = secondService.RecoverTurns(context.Background()); err != nil {
+		secondService.Close()
+		t.Fatal(err)
+	}
+	if err = secondService.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(model.snapshotRequests()) != 3 {
+		t.Fatalf("completed static-site recovery called model again: requests=%d", len(model.snapshotRequests()))
+	}
+	mutationMu.Lock()
+	gotMutationAttempts = mutationAttempts
+	mutationMu.Unlock()
+	if gotMutationAttempts != 2 {
+		t.Fatalf("completed static-site recovery mutated again: attempts=%d", gotMutationAttempts)
+	}
+}
+
+func TestScheduledPendingToolDispatchReplaysOnceAfterRestartPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	selection := core.ExtensionSelection{Kind: core.ExtensionMCP, ID: uuid.NewString(), Version: "web-1", Digest: strings.Repeat("1", 64), AllowedTools: []string{"web_search"}}
+	snapshot := core.ExtensionExecutionSnapshot{
+		Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "builtin:web_search:tavily",
+		ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("2", 64), ToolSchemaDigest: strings.Repeat("3", 64),
+		NetworkBindingDigest: strings.Repeat("4", 64), ToolNames: []string{"web_search"}, ReadOnly: true,
+	}
+	call := core.ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"scheduled restart"}`}
+	model := &scheduledRestartConversationModel{call: call}
+	var executionMu sync.Mutex
+	executions := 0
+	resolved := core.ResolvedExtension{
+		Selection: selection, Snapshot: snapshot,
+		Tools: []coremodel.Tool{{Name: call.Name, InputSchema: map[string]any{"type": "object"}}},
+		Execute: func(_ context.Context, request core.ToolExecutionRequest) (core.ToolResult, error) {
+			executionMu.Lock()
+			executions++
+			executionMu.Unlock()
+			return core.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: `{"results":["durable"]}`}.
+				WithObservation(core.ToolOutcomeSuccess, "scheduled web search completed", core.ToolMutationNone), nil
+		},
+	}
+	resolver := staticConversationExtensions{resolved: []core.ResolvedExtension{resolved}}
+	cmd := turnCommand()
+	cmd.ExecutionMode = core.TurnExecutionScheduled
+	cmd.ConstrainedWorkflow = core.NewScheduledTurnWorkflow(coretask.ScheduledCapabilityWebResearch)
+	cmd.IntrinsicPolicy = core.TurnIntrinsicPolicyNone
+	cmd.Extensions = []core.ExtensionSelection{selection}
+	cmd.ExtensionSnapshots = []core.ExtensionExecutionSnapshot{snapshot}
+	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
+
+	blockedStore := &blockedConversationToolDispatchStore{CoreConversationStore: h.store}
+	service, err := core.NewService(blockedStore, model, resolver, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := service.StartTurn(context.Background(), cmd)
+	if err != nil {
+		service.Close()
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		pending := false
+		terminal := false
+		for _, event := range mustLoadTurnEvents(t, h.store, started.ID) {
+			pending = pending || (event.Kind == core.TurnEventToolCall && event.ToolCall != nil && event.ToolCall.ID == call.ID)
+			terminal = terminal || (event.Kind == core.TurnEventToolResult && event.ToolResult != nil && event.ToolResult.CallID == call.ID)
+		}
+		if pending && !terminal && blockedStore.attemptCount() > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err = service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if blockedStore.attemptCount() == 0 || len(model.snapshotRequests()) != 1 {
+		t.Fatalf("pre-restart dispatch_attempts=%d model_requests=%d", blockedStore.attemptCount(), len(model.snapshotRequests()))
+	}
+	executionMu.Lock()
+	gotExecutions := executions
+	executionMu.Unlock()
+	if gotExecutions != 0 {
+		t.Fatalf("tool executed before injected restart: %d", gotExecutions)
+	}
+	if _, err = h.pool.Exec(context.Background(), `UPDATE core_conversation_turns SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE turn_id=$1`, started.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	restartedStore, err := NewCoreConversationStore(h.store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedService, err := core.NewService(restartedStore, model, resolver, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := recoverConversationTurnUntilTerminal(t, restartedService, restartedStore, started.ID, 8*time.Second)
+	if err = restartedService.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if terminal.State != core.TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "## Scheduled result\n\nOne durable execution." {
+		t.Fatalf("terminal=%+v", terminal)
+	}
+	requests := model.snapshotRequests()
+	if len(requests) != 2 || len(requests[0].Extensions) != 1 || len(requests[1].Extensions) != 0 {
+		t.Fatalf("scheduled requests=%+v", requests)
+	}
+	executionMu.Lock()
+	gotExecutions = executions
+	executionMu.Unlock()
+	if gotExecutions != 1 {
+		t.Fatalf("tool executions=%d want=1", gotExecutions)
+	}
+	calls, results := 0, 0
+	for _, event := range mustLoadTurnEvents(t, restartedStore, started.ID) {
+		if event.Kind == core.TurnEventToolCall && event.ToolCall != nil && event.ToolCall.ID == call.ID {
+			calls++
+		}
+		if event.Kind == core.TurnEventToolResult && event.ToolResult != nil && event.ToolResult.CallID == call.ID {
+			results++
+		}
+	}
+	if calls != 1 || results != 1 {
+		t.Fatalf("durable tool pairs calls=%d results=%d", calls, results)
+	}
+
+	secondRestartStore, err := NewCoreConversationStore(h.store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRestart, err := core.NewService(secondRestartStore, model, resolver, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = secondRestart.RecoverTurns(context.Background()); err != nil {
+		secondRestart.Close()
+		t.Fatal(err)
+	}
+	if err = secondRestart.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(model.snapshotRequests()) != 2 {
+		t.Fatalf("completed recovery called model again: requests=%d", len(model.snapshotRequests()))
+	}
+	executionMu.Lock()
+	gotExecutions = executions
+	executionMu.Unlock()
+	if gotExecutions != 1 {
+		t.Fatalf("completed recovery executed tool again: %d", gotExecutions)
 	}
 }
 

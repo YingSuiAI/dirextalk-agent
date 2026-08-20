@@ -80,6 +80,7 @@ func scheduledAgentTaskHandler(conversation scheduledConversationService, profil
 			ExtensionSnapshotsPinned:  true,
 			IntrinsicPolicy:           coreconversation.TurnIntrinsicPolicyNone,
 			ExecutionMode:             coreconversation.TurnExecutionScheduled,
+			ConstrainedWorkflow:       coreconversation.NewScheduledTurnWorkflow(payload.ScheduledConversation.Capability),
 		})
 		if err != nil {
 			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledTurnAdmission}

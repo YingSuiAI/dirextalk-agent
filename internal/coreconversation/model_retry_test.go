@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
 
@@ -160,7 +161,7 @@ func newAttemptTurnService(t *testing.T, model *retrySequenceModel) (*Service, *
 		t.Fatal(err)
 	}
 	service.now = func() time.Time { return now }
-	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, "", TurnExecutionDeep)
+	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, "", TurnExecutionDeep, TurnConstrainedWorkflow{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +252,7 @@ func TestPersistedScheduledRuntimeNeverResolvesIntrinsicsDuringExecution(t *test
 		resolverCalls++
 		return nil, errors.New("scheduled runtime must not resolve intrinsics")
 	}))
-	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, TurnIntrinsicPolicyNone, TurnExecutionScheduled)
+	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, TurnIntrinsicPolicyNone, TurnExecutionScheduled, NewScheduledTurnWorkflow(coretask.ScheduledCapabilityScheduledNote))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -551,7 +551,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if err != nil {
 		return Turn{}, err
 	}
-	runtimeSnapshot, err := s.buildTurnAdmissionRuntime(ctx, candidate, admissionExtensions, cmd.IntrinsicPolicy, cmd.ExecutionMode)
+	runtimeSnapshot, err := s.buildTurnAdmissionRuntime(ctx, candidate, admissionExtensions, cmd.IntrinsicPolicy, cmd.ExecutionMode, cmd.ConstrainedWorkflow)
 	if err != nil {
 		return Turn{}, err
 	}
@@ -565,7 +565,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	return turn, nil
 }
 
-func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, extensions []ResolvedExtension, intrinsicPolicy TurnIntrinsicPolicy, executionMode TurnExecutionMode) (TurnRuntimeSnapshot, error) {
+func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, extensions []ResolvedExtension, intrinsicPolicy TurnIntrinsicPolicy, executionMode TurnExecutionMode, workflow TurnConstrainedWorkflow) (TurnRuntimeSnapshot, error) {
 	var intrinsics []ResolvedIntrinsic
 	if intrinsicPolicy != TurnIntrinsicPolicyNone {
 		var err error
@@ -590,7 +590,7 @@ func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, exte
 	if err != nil {
 		return TurnRuntimeSnapshot{}, err
 	}
-	return newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsics, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, policy)
+	return newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsics, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, policy, workflow)
 }
 
 func (s *Service) GetTurn(ctx context.Context, id string) (Turn, error) {
@@ -1227,6 +1227,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	}
 	deferredWorkerFollowUp := history.supervisorTerminal && failedWorker && unappliedWorkerSteer && containsCloudWorkerIntrinsic(intrinsicTools)
 	executionPolicy := turn.RuntimeSnapshot.ExecutionPolicy
+	var scheduledState *scheduledWorkflowState
+	if !finalizing && !turn.RuntimeSnapshot.ConstrainedWorkflow.IsZero() {
+		scheduledState, err = scheduledWorkflowStateFor(turn.RuntimeSnapshot.ConstrainedWorkflow, history.authorities)
+		if err != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
+			return
+		}
+	}
 	toolCallBudgetExhausted := uint32(len(toolCallAuthorities)) >= executionPolicy.MaxToolCalls
 	profile := turn.ProfileSnapshot.Profile()
 	systemPrompt := appendSystemPrompt(profile.SystemPrompt, conversationConvergenceGuidance)
@@ -1240,7 +1248,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if containsCloudWorkerIntrinsic(intrinsicTools) {
 		systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 	}
-	runtimeSnapshot, snapshotErr := newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsicTools, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, executionPolicy)
+	runtimeSnapshot, snapshotErr := newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsicTools, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, executionPolicy, turn.RuntimeSnapshot.ConstrainedWorkflow)
 	if snapshotErr != nil {
 		_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
 		return
@@ -1260,6 +1268,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			reason = TurnFinalizationToolBudget
 		case history.loopRecovery == toolLoopSynthesize:
 			reason = TurnFinalizationToolLoop
+		case scheduledState != nil && scheduledState.RequiresToolFreeFinalization():
+			reason = TurnFinalizationWorkflow
 		}
 		if reason != "" {
 			if !durableFinalization {
@@ -1579,6 +1589,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				if len(calls) == 0 {
 					calls = out.result.Message.ToolCalls
 				}
+				forcedStaticSiteViolation := history.forcedToolName == coremodel.IntrinsicStaticSitePublishToolName &&
+					validateStaticSiteCorrectionCalls(history.forcedToolName, calls) != nil
 				seenCallIDs := make(map[string]struct{}, len(calls))
 				newToolCalls := 0
 				for index, call := range calls {
@@ -1622,7 +1634,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						newToolCalls++
 					}
 					seenCallIDs[call.ID] = struct{}{}
-					if coremodel.IsIntrinsicToolName(call.Name) && index != len(calls)-1 {
+					if coremodel.IsIntrinsicToolName(call.Name) && index != len(calls)-1 && !forcedStaticSiteViolation {
 						_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_order_invalid", "Core intrinsic tool must be the final call in a model round")
 						return
 					}
@@ -1638,6 +1650,35 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						return
 					}
 					finalization = NewTurnFinalizationIntent(TurnFinalizationToolBudget)
+					if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, nil); err != nil {
+						return
+					}
+					s.executeTurn(ctx, id)
+					return
+				}
+				workflowViolation := forcedStaticSiteViolation
+				if scheduledState != nil {
+					switch {
+					case len(calls) == 1 && newToolCalls == 1:
+						workflowViolation = scheduledState.acceptCall(calls[0], nil) != nil
+					case len(calls) == 1 && newToolCalls == 0:
+						previous, exists := toolCallAuthorities[calls[0].ID]
+						workflowViolation = !replayed || !exists || previous.state != turnToolCallPending || previous.call != calls[0]
+					default:
+						workflowViolation = true
+					}
+				}
+				if workflowViolation {
+					if durableDispatch && !replayed {
+						if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
+							return
+						}
+					}
+					if !durableFinalization {
+						_, _ = s.turns.FailTurn(ctx, lease, "finalization_store_unavailable", "durable turn finalization store is unavailable")
+						return
+					}
+					finalization = NewTurnFinalizationIntent(TurnFinalizationWorkflow)
 					if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, nil); err != nil {
 						return
 					}
@@ -1818,6 +1859,19 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
 					return
 				}
+			}
+			if !finalizing && (history.forcedToolName == coremodel.IntrinsicStaticSitePublishToolName ||
+				(scheduledState != nil && !scheduledState.ReadyForFinal())) {
+				if !durableFinalization {
+					_, _ = s.turns.FailTurn(ctx, lease, "finalization_store_unavailable", "durable turn finalization store is unavailable")
+					return
+				}
+				finalization = NewTurnFinalizationIntent(TurnFinalizationWorkflow)
+				if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, nil); err != nil {
+					return
+				}
+				s.executeTurn(ctx, id)
+				return
 			}
 			m := out.result.Message
 			m.Content = history.continuationContent + m.Content
@@ -2027,6 +2081,8 @@ func finalizationStop(reason TurnFinalizationReason) (string, string) {
 		return toolBudgetExhaustedCode, toolBudgetExhaustedSummary
 	case TurnFinalizationToolOutcome:
 		return "terminal_tool_outcome", "tool execution reached a terminal outcome that cannot be retried safely"
+	case TurnFinalizationWorkflow:
+		return "constrained_workflow", "the constrained workflow reached its final tool boundary"
 	case TurnFinalizationModelBudget:
 		return modelBudgetExhaustedCode, modelBudgetExhaustedSummary
 	case TurnFinalizationProvider:

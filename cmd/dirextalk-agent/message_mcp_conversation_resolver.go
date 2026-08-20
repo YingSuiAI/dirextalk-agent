@@ -296,7 +296,7 @@ func messageMCPRoomReferences(toolName string, structured json.RawMessage) []cor
 			references = appendMessageMCPRoomReference(references, contact.RoomID, "contact", contact.DisplayName, "")
 		}
 	case "mcp__message__dirextalk_messages_list", "mcp__message__dirextalk_messages_send",
-		"mcp__message__dirextalk_room_members_list", "mcp__message__dirextalk_channel_posts_list":
+		"mcp__message__dirextalk_room_members_list":
 		var result struct {
 			RoomID string `json:"room_id"`
 			Name   string `json:"name"`
@@ -305,6 +305,46 @@ func messageMCPRoomReferences(toolName string, structured json.RawMessage) []cor
 			return nil
 		}
 		references = appendMessageMCPRoomReference(references, result.RoomID, "", result.Name, "")
+	case "mcp__message__dirextalk_channel_posts_list":
+		var result struct {
+			RoomID    string `json:"room_id"`
+			ChannelID string `json:"channel_id"`
+			Name      string `json:"name"`
+			Posts     []struct {
+				PostID string `json:"post_id"`
+				Title  string `json:"title"`
+				Msg    string `json:"msg"`
+			} `json:"posts"`
+		}
+		if json.Unmarshal(structured, &result) != nil {
+			return nil
+		}
+		roomID, roomOK := canonicalMessageMCPRoomID(result.RoomID)
+		channelID := strings.TrimSpace(result.ChannelID)
+		if !roomOK || channelID == "" || channelID != result.ChannelID || len(channelID) > 512 {
+			return nil
+		}
+		seenPosts := make(map[string]struct{}, len(result.Posts))
+		for _, post := range result.Posts {
+			postID := strings.TrimSpace(post.PostID)
+			if postID == "" || postID != post.PostID || len(postID) > 512 {
+				continue
+			}
+			if _, duplicate := seenPosts[postID]; duplicate {
+				continue
+			}
+			reference := coreconversation.Reference{
+				Kind: "channel_post", RoomID: roomID, ChannelID: channelID, PostID: postID,
+				Title: safeMessageMCPPresentation(post.Title, 512), Preview: safeMessageMCPPresentation(post.Msg, coreconversation.MaxSummaryBytes),
+			}
+			if reference.Validate() == nil {
+				references = append(references, reference)
+				seenPosts[postID] = struct{}{}
+			}
+			if len(references) == coreconversation.MaxReferences {
+				break
+			}
+		}
 	}
 	return references
 }

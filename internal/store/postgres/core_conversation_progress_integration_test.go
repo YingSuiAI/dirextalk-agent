@@ -12,6 +12,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
@@ -45,7 +46,7 @@ func TestConversationWorkingContextProtectedCASPostgres(t *testing.T) {
 	}
 }
 
-func TestConversationProgressPersistsAcrossRestartAndResetsAtSteerPostgres(t *testing.T) {
+func TestConversationProgressFinalizesAcrossRestartAndResetsAtSteerPostgres(t *testing.T) {
 	fixture := newConversationToolPrepareFixture(t, uuid.NewString())
 	ctx := context.Background()
 	store := fixture.h.store
@@ -82,8 +83,12 @@ func TestConversationProgressPersistsAcrossRestartAndResetsAtSteerPostgres(t *te
 		}
 	}
 	terminal := runStructuredProgressRound(t, restarted, fixture.turn.ID, 4, "inspect_room", reference, nil)
-	if terminal.State != core.TurnFailed || terminal.TerminalCode != core.AgentStalledNoProgressCode || terminal.TerminalSummary != core.AgentStalledNoProgressSummary {
+	if terminal.State != core.TurnAccepted || terminal.TerminalCode != "" || terminal.TerminalSummary != "" || terminal.Response != nil {
 		t.Fatalf("terminal turn=%+v", terminal)
+	}
+	intent, finalizing, err := restarted.LoadTurnFinalization(ctx, fixture.turn.ID)
+	if err != nil || !finalizing || intent.Reason != core.TurnFinalizationToolLoop {
+		t.Fatalf("finalization=%+v present=%v err=%v", intent, finalizing, err)
 	}
 	rows, err := fixture.h.pool.Query(ctx, `SELECT consecutive_count FROM core_conversation_progress_observations WHERE turn_id=$1 ORDER BY event_sequence`, fixture.turn.ID)
 	if err != nil {
@@ -105,8 +110,102 @@ func TestConversationProgressPersistsAcrossRestartAndResetsAtSteerPostgres(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) < 2 || events[len(events)-2].Kind != core.TurnEventToolResult || events[len(events)-1].Kind != core.TurnEventError || events[len(events)-1].ErrorCode != core.AgentStalledNoProgressCode {
+	if len(events) < 1 || events[len(events)-1].Kind != core.TurnEventToolResult {
 		t.Fatalf("terminal events=%+v", events)
+	}
+	for _, event := range events {
+		if event.Kind == core.TurnEventError {
+			t.Fatalf("semantic no-progress bypassed Markdown finalization: %+v", event)
+		}
+	}
+
+	consumerStore, err := NewCoreConversationStore(store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := core.ResolvedExtension{
+		Selection: fixture.snapshot.Selection, Snapshot: fixture.snapshot,
+		Tools: []coremodel.Tool{{Name: fixture.call.Name, InputSchema: map[string]any{"type": "object"}}},
+	}
+	model := &finalizationConversationModel{result: core.ModelRunResult{Done: true, Message: core.Message{
+		ID: uuid.NewString(), Role: core.RoleAssistant, Content: "## No-progress result\n\nStopped the repeated cycle.", CreatedAt: time.Now().UTC(),
+	}}}
+	service, err := core.NewService(consumerStore, model, staticConversationExtensions{resolved: []core.ResolvedExtension{resolved}}, staticConversationProfile{snapshot: fixture.turn.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := recoverConversationTurnUntilTerminal(t, service, consumerStore, fixture.turn.ID, 8*time.Second)
+	if err = service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	requests := model.snapshotRequests()
+	if completed.State != core.TurnCompleted || completed.Response == nil || completed.Response.Message.Content != "## No-progress result\n\nStopped the repeated cycle." || len(requests) != 1 {
+		t.Fatalf("completed=%+v requests=%d", completed, len(requests))
+	}
+	assertFinalizationModelRequest(t, requests[0])
+	directives := loadPersistedTurnDirectives(t, fixture.h, completed)
+	last := directives[len(directives)-1].directive
+	if last.FinalizationReason != core.TurnFinalizationToolLoop || last.ToolMode != core.TurnDispatchToolsNone {
+		t.Fatalf("directives=%+v", directives)
+	}
+
+	secondStore, err := NewCoreConversationStore(store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondService, err := core.NewService(secondStore, model, staticConversationExtensions{resolved: []core.ResolvedExtension{resolved}}, staticConversationProfile{snapshot: fixture.turn.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = secondService.RecoverTurns(context.Background()); err != nil {
+		secondService.Close()
+		t.Fatal(err)
+	}
+	if err = secondService.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(model.snapshotRequests()) != 1 {
+		t.Fatalf("completed no-progress recovery called model again: requests=%d", len(model.snapshotRequests()))
+	}
+}
+
+func TestConversationProgressDetectsSemanticCyclesLengthOneThroughFourPostgres(t *testing.T) {
+	for cycleLength := 1; cycleLength <= 4; cycleLength++ {
+		t.Run(fmt.Sprintf("cycle_%d", cycleLength), func(t *testing.T) {
+			fixture := newConversationToolPrepareFixture(t, uuid.NewString())
+			store := fixture.h.store
+			references := make([]core.Reference, cycleLength)
+			for index := range references {
+				references[index] = core.Reference{Kind: "room", RoomID: fmt.Sprintf("!cycle-%d-%d:example.test", cycleLength, index), RoomType: "group"}
+			}
+			for round := 0; round < cycleLength*3; round++ {
+				if round == cycleLength {
+					restarted, err := NewCoreConversationStore(store.Store)
+					if err != nil {
+						t.Fatal(err)
+					}
+					store = restarted
+				}
+				var admitted *core.TurnLease
+				if round == 0 {
+					admitted = &fixture.lease
+				}
+				turn := runStructuredProgressRound(t, store, fixture.turn.ID, round, "semantic_search", references[round%cycleLength], admitted)
+				intent, finalizing, err := store.LoadTurnFinalization(context.Background(), fixture.turn.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if round+1 < cycleLength*3 {
+					if finalizing || turn.State != core.TurnAccepted {
+						t.Fatalf("round=%d turn=%+v intent=%+v finalizing=%v", round, turn, intent, finalizing)
+					}
+					continue
+				}
+				if !finalizing || intent.Reason != core.TurnFinalizationToolLoop || turn.State != core.TurnAccepted {
+					t.Fatalf("terminal round=%d turn=%+v intent=%+v finalizing=%v", round, turn, intent, finalizing)
+				}
+			}
+		})
 	}
 }
 
@@ -180,8 +279,9 @@ func TestDeferredConversationProgressSharesImmediateNoProgressWindowPostgres(t *
 		t.Fatal(err)
 	}
 	terminal, err := restarted.GetTurn(ctx, fixture.turn.ID)
-	if err != nil || terminal.State != core.TurnFailed || terminal.TerminalCode != core.AgentStalledNoProgressCode {
-		t.Fatalf("deferred terminal=%+v err=%v", terminal, err)
+	intent, finalizing, finalizationErr := restarted.LoadTurnFinalization(ctx, fixture.turn.ID)
+	if err != nil || terminal.State != core.TurnAccepted || finalizationErr != nil || !finalizing || intent.Reason != core.TurnFinalizationToolLoop {
+		t.Fatalf("deferred terminal=%+v intent=%+v finalizing=%v err=%v finalization_err=%v", terminal, intent, finalizing, err, finalizationErr)
 	}
 }
 
@@ -220,6 +320,12 @@ func runStructuredProgressRound(t *testing.T, store *CoreConversationStore, turn
 		t.Fatalf("dispatch execute=%v err=%v", execute, dispatchErr)
 	}
 	result := core.ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"healthy":true}`, References: []core.Reference{reference}}
+	mutation := core.ToolMutationNone
+	if reference.Kind == "execution_artifact" {
+		result.StateChanged = true
+		mutation = core.ToolMutationChanged
+	}
+	result = result.WithObservation(core.ToolOutcomeSuccess, "structured progress observed", mutation)
 	if reference.Kind == "room" || reference.Kind == "channel_post" {
 		result.References[0].Title = fmt.Sprintf("presentation title %d", round)
 		result.References[0].Preview = fmt.Sprintf("presentation preview %d", round)
@@ -231,7 +337,9 @@ func runStructuredProgressRound(t *testing.T, store *CoreConversationStore, turn
 	if err != nil {
 		t.Fatal(err)
 	}
-	if turn.State == core.TurnFailed {
+	if _, finalizing, loadErr := store.LoadTurnFinalization(ctx, turnID); loadErr != nil {
+		t.Fatal(loadErr)
+	} else if finalizing {
 		return turn
 	}
 	turn, err = store.CompleteConversationToolRound(ctx, lease)

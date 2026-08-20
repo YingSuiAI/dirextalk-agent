@@ -320,10 +320,10 @@ func TestMessageMCPResolverMapsOnlyKnownRoomResultShapes(t *testing.T) {
 			want:       []coreconversation.Reference{{Kind: "room", RoomID: "!ada:example.test", RoomType: "contact", Title: "Ada"}},
 		},
 		{
-			name:       "room scoped result ignores posts",
+			name:       "channel posts project deduplicated post identities",
 			toolName:   "mcp__message__dirextalk_channel_posts_list",
-			structured: `{"room_id":"!channel:example.test","name":"Engineering","channel_id":"channel-1","posts":[{"post_id":"post-1","msg":"do not project"}]}`,
-			want:       []coreconversation.Reference{{Kind: "room", RoomID: "!channel:example.test", Title: "Engineering"}},
+			structured: `{"room_id":"!channel:example.test","name":"Engineering","channel_id":"channel-1","posts":[{"post_id":"post-1","msg":"first"},{"post_id":"post-1","msg":"duplicate"}]}`,
+			want:       []coreconversation.Reference{{Kind: "channel_post", RoomID: "!channel:example.test", ChannelID: "channel-1", PostID: "post-1", Preview: "first"}},
 		},
 		{
 			name:       "unknown tool cannot project matching data",
@@ -352,7 +352,7 @@ func TestMessageMCPResolverMapsOnlyKnownRoomResultShapes(t *testing.T) {
 				t.Fatalf("result=%+v want=%+v err=%v", result, test.want, err)
 			}
 			for _, reference := range result.References {
-				if reference.Kind != "room" || reference.Validate() != nil {
+				if reference.Validate() != nil {
 					t.Fatalf("invalid projected reference: %+v", reference)
 				}
 			}

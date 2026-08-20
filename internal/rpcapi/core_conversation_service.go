@@ -107,6 +107,7 @@ func referenceProto(r coreconversation.Reference) *agentv1.CoreConversationRefer
 		ChannelId: r.ChannelID, PostId: r.PostID, Title: r.Title, Preview: r.Preview,
 		RecordKind: r.RecordKind, ArtifactId: r.ArtifactID, Name: r.Name, MediaType: r.MediaType,
 		SizeBytes: r.SizeBytes, Sha256: r.SHA256,
+		SourceId: r.SourceID, ChunkId: r.ChunkID, ContentDigest: r.ContentDigest,
 	}
 }
 

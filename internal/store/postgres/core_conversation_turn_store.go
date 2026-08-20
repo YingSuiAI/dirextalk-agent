@@ -1165,7 +1165,7 @@ func (s *CoreConversationStore) RecordConversationToolResult(ctx context.Context
 		if err = s.scanTurn(ctx, tx, lease.Turn.ID, &turn); err != nil {
 			return err
 		}
-		if err = failTurnNoProgressTx(ctx, tx, turn, raw, lastSequence+1, now); err != nil {
+		if err = prepareTurnNoProgressFinalizationTx(ctx, tx, turn, lastSequence+1, now); err != nil {
 			return err
 		}
 		return tx.Commit(ctx)

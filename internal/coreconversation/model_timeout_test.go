@@ -200,7 +200,7 @@ func TestExecuteTurnAppliesPersistedModelActiveDurationBudget(t *testing.T) {
 	policy.MaxModelActiveMilliseconds = 200
 	policy.MaxToolCalls--
 	systemPrompt := appendSystemPrompt(snapshot.SystemPrompt, conversationConvergenceGuidance)
-	runtime, err := newTurnRuntimeSnapshotWithPolicy(systemPrompt, snapshot, nil, "", "", "", policy)
+	runtime, err := newTurnRuntimeSnapshotWithPolicy(systemPrompt, snapshot, nil, "", "", "", policy, TurnConstrainedWorkflow{})
 	if err != nil {
 		t.Fatal(err)
 	}

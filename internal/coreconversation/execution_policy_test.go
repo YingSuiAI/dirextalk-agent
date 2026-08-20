@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
 
@@ -119,7 +120,7 @@ func TestScheduledTurnAdmissionPersistsScheduledExecutionPolicy(t *testing.T) {
 		RequestID: uuid.NewString(), Prompt: "scheduled work", ProfileID: profile.ProfileID,
 		ExpectedProfileRevision: profile.Revision, ExpectedCredentialVersion: profile.CredentialVersion,
 		ProfileSnapshot: profile, ExtensionSnapshotsPinned: true, IntrinsicPolicy: TurnIntrinsicPolicyNone,
-		ExecutionMode: TurnExecutionScheduled,
+		ExecutionMode: TurnExecutionScheduled, ConstrainedWorkflow: NewScheduledTurnWorkflow(coretask.ScheduledCapabilityScheduledNote),
 	}
 	if _, err = service.StartTurn(context.Background(), command); err != nil {
 		t.Fatal(err)
@@ -162,7 +163,7 @@ func TestExecuteTurnRejectsUnsupportedAdmittedPolicyBeforeTurnMutation(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := newTurnRuntimeSnapshotWithPolicy("", turn.ProfileSnapshot, nil, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, "", policy)
+	runtime, err := newTurnRuntimeSnapshotWithPolicy("", turn.ProfileSnapshot, nil, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, "", policy, TurnConstrainedWorkflow{})
 	if err != nil {
 		t.Fatal(err)
 	}

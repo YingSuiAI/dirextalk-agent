@@ -2840,3 +2840,12 @@ ALTER TABLE core_conversation_tool_attempts
         )
     );
 -- dirextalk-agent migration end 000026_tool_observations.up.sql
+-- dirextalk-agent migration begin 000027_constrained_workflow_finalization.up.sql
+ALTER TABLE core_conversation_turn_finalizations
+    DROP CONSTRAINT core_conversation_turn_finalizations_reason_check,
+    ADD CONSTRAINT core_conversation_turn_finalizations_reason_check CHECK (reason IN (
+        'tool_loop_no_progress','tool_budget_exhausted','model_budget_exhausted',
+        'provider_failure','invalid_terminal_output','terminal_tool_outcome',
+        'constrained_workflow'
+    ));
+-- dirextalk-agent migration end 000027_constrained_workflow_finalization.up.sql

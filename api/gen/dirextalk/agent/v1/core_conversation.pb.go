@@ -135,6 +135,9 @@ type CoreConversationReference struct {
 	MediaType            string                 `protobuf:"bytes,27,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
 	SizeBytes            *uint64                `protobuf:"varint,28,opt,name=size_bytes,json=sizeBytes,proto3,oneof" json:"size_bytes,omitempty"`
 	Sha256               string                 `protobuf:"bytes,29,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	SourceId             string                 `protobuf:"bytes,30,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
+	ChunkId              string                 `protobuf:"bytes,31,opt,name=chunk_id,json=chunkId,proto3" json:"chunk_id,omitempty"`
+	ContentDigest        string                 `protobuf:"bytes,32,opt,name=content_digest,json=contentDigest,proto3" json:"content_digest,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -368,6 +371,27 @@ func (x *CoreConversationReference) GetSizeBytes() uint64 {
 func (x *CoreConversationReference) GetSha256() string {
 	if x != nil {
 		return x.Sha256
+	}
+	return ""
+}
+
+func (x *CoreConversationReference) GetSourceId() string {
+	if x != nil {
+		return x.SourceId
+	}
+	return ""
+}
+
+func (x *CoreConversationReference) GetChunkId() string {
+	if x != nil {
+		return x.ChunkId
+	}
+	return ""
+}
+
+func (x *CoreConversationReference) GetContentDigest() string {
+	if x != nil {
+		return x.ContentDigest
 	}
 	return ""
 }
@@ -2573,7 +2597,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xb1\a\n" +
+	"updated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\x90\b\n" +
 	"\x19CoreConversationReference\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12-\n" +
 	"\x12account_generation\x18\x02 \x01(\x04R\x11accountGeneration\x12\x17\n" +
@@ -2611,7 +2635,10 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"media_type\x18\x1b \x01(\tR\tmediaType\x12\"\n" +
 	"\n" +
 	"size_bytes\x18\x1c \x01(\x04H\x00R\tsizeBytes\x88\x01\x01\x12\x16\n" +
-	"\x06sha256\x18\x1d \x01(\tR\x06sha256B\r\n" +
+	"\x06sha256\x18\x1d \x01(\tR\x06sha256\x12\x1b\n" +
+	"\tsource_id\x18\x1e \x01(\tR\bsourceId\x12\x19\n" +
+	"\bchunk_id\x18\x1f \x01(\tR\achunkId\x12%\n" +
+	"\x0econtent_digest\x18  \x01(\tR\rcontentDigestB\r\n" +
 	"\v_size_bytes\"\xba\x04\n" +
 	"\x17CoreConversationMessage\x12\x1d\n" +
 	"\n" +

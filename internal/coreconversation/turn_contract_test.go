@@ -783,7 +783,7 @@ func (s *publicActiveTurnStore) GetTurn(_ context.Context, _ string) (Turn, erro
 	if s.turn.RuntimeSnapshot == nil && s.turn.ProfileSnapshot.Validate() == nil {
 		policy, _ := AdmittedTurnExecutionPolicy(TurnExecutionDeep)
 		systemPrompt := appendSystemPrompt(s.turn.ProfileSnapshot.SystemPrompt, conversationConvergenceGuidance)
-		runtime, err := newTurnRuntimeSnapshotWithPolicy(systemPrompt, s.turn.ProfileSnapshot, nil, s.turn.ExtensionSnapshotDigest, s.turn.AttachmentSnapshotDigest, "", policy)
+		runtime, err := newTurnRuntimeSnapshotWithPolicy(systemPrompt, s.turn.ProfileSnapshot, nil, s.turn.ExtensionSnapshotDigest, s.turn.AttachmentSnapshotDigest, "", policy, TurnConstrainedWorkflow{})
 		if err == nil {
 			s.turn.RuntimeSnapshot = &runtime
 		}
@@ -1291,8 +1291,10 @@ func TestExecuteTurnForcesCorrectableStaticSiteRetryAcrossOutputContinuation(t *
 	newService(partial).executeTurn(context.Background(), turn.ID)
 	final := &outputContinuationTurnModel{}
 	newService(final).executeTurn(context.Background(), turn.ID)
-	if len(partial.requests) != 1 || len(final.requests) != 1 ||
-		partial.requests[0].ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || final.requests[0].ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName {
+	if len(partial.requests) != 1 || len(final.requests) != 2 ||
+		partial.requests[0].ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || final.requests[0].ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName ||
+		final.requests[1].ForcedToolName != "" || len(final.requests[1].Intrinsics) != 0 || len(final.requests[1].Extensions) != 0 ||
+		store.finalization == nil || store.finalization.Reason != TurnFinalizationWorkflow {
 		t.Fatalf("forced tool was not retained across continuation: partial=%+v final=%+v", partial.requests, final.requests)
 	}
 }
@@ -2543,7 +2545,7 @@ func TestTurnRuntimeIntrinsicPolicyNoneSkipsResolversAndRejectsTools(t *testing.
 		resolverCalls++
 		return nil, errors.New("must not resolve")
 	}))
-	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, TurnIntrinsicPolicyNone, TurnExecutionScheduled)
+	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, TurnIntrinsicPolicyNone, TurnExecutionScheduled, NewScheduledTurnWorkflow(coretask.ScheduledCapabilityScheduledNote))
 	if err != nil || resolverCalls != 0 || runtime.IntrinsicPolicy != TurnIntrinsicPolicyNone || len(runtime.IntrinsicTools) != 0 {
 		t.Fatalf("runtime=%+v resolver_calls=%d err=%v", runtime, resolverCalls, err)
 	}

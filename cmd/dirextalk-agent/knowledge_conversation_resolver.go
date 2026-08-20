@@ -103,10 +103,36 @@ func (r *knowledgeConversationResolver) ResolveExtensions(ctx context.Context, s
 				return coreconversation.ToolResult{}, knowledgeConversationExecutionError(coreknowledge.ErrConflict)
 			}
 			toolResult := coreconversation.ToolResult{CallID: request.Call.ID, ToolName: knowledgeConversationToolName, Content: string(body), Summary: fmt.Sprintf("Knowledge search returned %d result(s)", len(bounded.Items))}
+			toolResult.References = knowledgeEvidenceReferences(bounded.Items)
 			return toolResult.WithObservation(coreconversation.ToolOutcomeSuccess, toolResult.Summary, coreconversation.ToolMutationNone), nil
 		},
 	})
 	return resolved, nil
+}
+
+func knowledgeEvidenceReferences(items []coreknowledge.SearchMatch) []coreconversation.Reference {
+	references := make([]coreconversation.Reference, 0, min(len(items), coreconversation.MaxReferences))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		identity := item.SourceID + "\x00" + item.ChunkRef
+		if _, duplicate := seen[identity]; duplicate {
+			continue
+		}
+		contentSum := sha256.Sum256([]byte(item.Snippet))
+		reference := coreconversation.Reference{
+			Kind: "knowledge_chunk", SourceID: item.SourceID, ChunkID: item.ChunkRef,
+			ContentDigest: hex.EncodeToString(contentSum[:]), Preview: boundedEvidencePresentation(item.Snippet, coreconversation.MaxSummaryBytes),
+		}
+		if reference.Validate() != nil {
+			continue
+		}
+		seen[identity] = struct{}{}
+		references = append(references, reference)
+		if len(references) == coreconversation.MaxReferences {
+			break
+		}
+	}
+	return references
 }
 
 type knowledgeConversationInput struct {

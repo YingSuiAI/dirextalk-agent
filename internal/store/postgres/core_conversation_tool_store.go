@@ -371,7 +371,7 @@ func (s *CoreConversationStore) ResumeConversationTurn(ctx context.Context, turn
 		if err = s.scanTurn(ctx, tx, turnID, &turn); err != nil {
 			return err
 		}
-		if err = failTurnNoProgressTx(ctx, tx, turn, dispatchRaw, lastSequence, now); err != nil {
+		if err = prepareTurnNoProgressFinalizationTx(ctx, tx, turn, lastSequence, now); err != nil {
 			return err
 		}
 		return tx.Commit(ctx)
