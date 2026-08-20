@@ -239,7 +239,7 @@ func serveCore(cfg config.Config) error {
 	}
 	serverInventoryService, err := coreserver.NewService(serverArtifactStore, serverWorkerInventory,
 		coreServerArtifactDeleter{staticSites: staticSiteService, artifacts: serverArtifactFiles}, coreserver.Config{
-			PrimaryName: "Dirextalk 主服务器", PrimaryOrigin: cfg.CoreStaticSitesPublicOrigin, PrimaryRegion: cfg.CoreCloudWorkerHostRegion,
+			PrimaryName: "Dirextalk", PrimaryOrigin: cfg.CoreStaticSitesPublicOrigin, PrimaryRegion: cfg.CoreCloudWorkerHostRegion,
 		})
 	if err != nil {
 		return fmt.Errorf("initialize server artifact inventory: %w", err)

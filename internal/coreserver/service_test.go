@@ -123,7 +123,7 @@ func TestListServersPinsPrimaryAndSortsWorkersOldestFirst(t *testing.T) {
 	primaryID, newerID, olderID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	repository := &repositoryFake{instance: Instance{ID: primaryID, CreatedAt: now.Add(-time.Hour)}}
 	workers := &workersFake{servers: []Server{{ServerID: newerID, CreatedAt: now}, {ServerID: olderID, CreatedAt: now.Add(-time.Minute)}}}
-	service, err := NewService(repository, workers, nil, Config{PrimaryName: "Dirextalk 主服务器", PrimaryOrigin: "https://agent.example", PrimaryRegion: "ap-southeast-1"})
+	service, err := NewService(repository, workers, nil, Config{PrimaryName: "Dirextalk", PrimaryOrigin: "https://agent.example", PrimaryRegion: "ap-southeast-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestListServersPinsPrimaryAndSortsWorkersOldestFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(servers) != 3 || servers[0].ServerID != primaryID || servers[0].CanDestroy || servers[0].ArtifactCount != 1 || servers[1].ServerID != olderID || servers[2].ServerID != newerID {
+	if len(servers) != 3 || servers[0].ServerID != primaryID || servers[0].Name != "Dirextalk" || servers[0].CanDestroy || servers[0].ArtifactCount != 1 || servers[1].ServerID != olderID || servers[2].ServerID != newerID {
 		t.Fatalf("servers = %#v", servers)
 	}
 }
