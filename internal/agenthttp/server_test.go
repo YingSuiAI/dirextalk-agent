@@ -296,6 +296,70 @@ func TestSessionTicketExpiryAndScopeAreEnforcedAtTheHTTPBoundary(t *testing.T) {
 	}
 }
 
+func TestGeneratedServerReadScopePublishesOnlyServerReadCatalogOperations(t *testing.T) {
+	h := newTestHarness(t)
+	h.server.registry.Register(agentcapability.NewCoreServerCapability(nil))
+	readScope := string(agentdatav2.AgentDataScopeAgentServersRead)
+	ticket := h.ticket(t, []string{readScope}, h.now.Add(15*time.Minute))
+	recorder := httptest.NewRecorder()
+	h.server.ServeHTTP(recorder, requestWithTicket(http.MethodGet, "/agent/v1/catalog", "", ticket))
+
+	var catalog struct {
+		Capabilities []struct {
+			CapabilityID string `json:"capability_id"`
+			Operations   []struct {
+				OperationID    string   `json:"operation_id"`
+				RequiredScopes []string `json:"required_scopes"`
+			} `json:"operations"`
+		} `json:"capabilities"`
+	}
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &catalog) != nil {
+		t.Fatalf("catalog response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var operations map[string][]string
+	for _, capability := range catalog.Capabilities {
+		if capability.CapabilityID != "agent.servers.v1" {
+			continue
+		}
+		operations = make(map[string][]string, len(capability.Operations))
+		for _, operation := range capability.Operations {
+			operations[operation.OperationID] = operation.RequiredScopes
+		}
+	}
+	if len(operations) != 3 {
+		t.Fatalf("server read operations = %v", operations)
+	}
+	for _, operationID := range []string{"list_servers", "get_server", "list_artifacts"} {
+		scopes := operations[operationID]
+		if len(scopes) != 1 || scopes[0] != readScope {
+			t.Fatalf("%s scopes = %v, want %q", operationID, scopes, readScope)
+		}
+	}
+
+	missingScopeTicket := h.ticket(t, []string{string(agentdatav2.AgentDataScopeAgentChatRead)}, h.now.Add(15*time.Minute))
+	recorder = httptest.NewRecorder()
+	h.server.ServeHTTP(recorder, requestWithTicket(http.MethodGet, "/agent/v1/catalog", "", missingScopeTicket))
+	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), `"capability_id":"agent.servers.v1"`) {
+		t.Fatalf("missing-scope catalog response = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestMissingServerReadScopeReturnsTypedGeneratedScope(t *testing.T) {
+	h := newTestHarness(t)
+	h.server.registry.Register(agentcapability.NewCoreServerCapability(nil))
+	ticket := h.ticket(t, []string{string(agentdatav2.AgentDataScopeAgentChatRead)}, h.now.Add(15*time.Minute))
+	recorder := httptest.NewRecorder()
+	h.server.ServeHTTP(recorder, requestWithTicket(http.MethodPost, "/agent/v1/capabilities/agent.servers.v1/operations/list_servers", `{}`, ticket))
+
+	var failure agentdatav2.ErrorEnvelope
+	if recorder.Code != http.StatusForbidden || json.Unmarshal(recorder.Body.Bytes(), &failure) != nil {
+		t.Fatalf("forbidden response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if failure.Code != agentTicketScopeForbiddenCode || failure.Details == nil || failure.Details.RequiredScope == nil || *failure.Details.RequiredScope != agentdatav2.AgentDataScopeAgentServersRead {
+		t.Fatalf("forbidden envelope = %+v", failure)
+	}
+}
+
 func TestSessionTicketFailuresHaveStableTypedCodes(t *testing.T) {
 	h := newTestHarness(t)
 	validClaims := ticketClaims{Issuer: ticketIssuer, Audience: ticketAudience, OwnerID: "@owner:s3.example", AccountGeneration: 7, SessionID: uuid.NewString(), Nonce: uuid.NewString(), Scopes: []string{"test:read"}, IssuedAt: h.now.Unix(), ExpiresAt: h.now.Add(15 * time.Minute).Unix()}

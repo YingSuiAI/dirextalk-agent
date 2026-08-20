@@ -1,5 +1,5 @@
-github.com/YingSuiAI/dirextalk-capability-api v1.1.0 h1:IH7EAjm8V5zNAba4FPXcD5iuEkvBEoEM6ECpuRNQ9vQ=
-github.com/YingSuiAI/dirextalk-capability-api v1.1.0/go.mod h1:vmWXwI2JE3+Fr4cSlXx+VVmUKmvt9I5dfUZFB8Dq9GE=
+github.com/YingSuiAI/dirextalk-capability-api v1.2.0 h1:32hwLMaLzUsBgOUnTb3goph0+PVWTLCm1mO4OmY1EQ4=
+github.com/YingSuiAI/dirextalk-capability-api v1.2.0/go.mod h1:vmWXwI2JE3+Fr4cSlXx+VVmUKmvt9I5dfUZFB8Dq9GE=
 github.com/airbrake/gobrake v3.6.1+incompatible/go.mod h1:wM4gu3Cn0W0K7GUuVWnlXZU11AGBXMILnrdOU8Kn00o=
 github.com/aws/aws-sdk-go-v2 v1.43.4 h1:b9FTvbRwy+JCsfp2Wp6wV/KbOx3Aj7nkoFb2cRX0IhE=
 github.com/aws/aws-sdk-go-v2 v1.43.4/go.mod h1:70vwSy16txshwG+g55WkpgPKDIByzHI8ccBsOteo3bQ=

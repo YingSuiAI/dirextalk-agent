@@ -5,7 +5,7 @@ surface is the versioned Protobuf under
 [`api/proto/dirextalk/agent/v1`](../api/proto/dirextalk/agent/v1) plus the
 same-origin `/agent/v1` HTTP data plane. The HTTP/session/SSE wire authority is
 the Agent Data Plane V2 OpenAPI contract and conformance vectors in
-`github.com/YingSuiAI/dirextalk-capability-api` at the immutable `v1.1.0` tag;
+`github.com/YingSuiAI/dirextalk-capability-api` at the immutable `v1.2.0` tag;
 the v2 contract deliberately retains the `/agent/v1` base path. Generated Go
 files are derived artifacts. Message Server owns login/account control and
 issues short-lived Agent session tickets; Agent owns Native chat, attachments, confirmations,

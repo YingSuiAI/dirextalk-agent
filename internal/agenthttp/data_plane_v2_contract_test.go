@@ -18,7 +18,7 @@ import (
 )
 
 const capabilityAPIModule = "github.com/YingSuiAI/dirextalk-capability-api"
-const capabilityAPIVersion = "v1.1.0"
+const capabilityAPIVersion = "v1.2.0"
 
 type conformanceManifest struct {
 	Contract string `json:"contract"`
@@ -183,8 +183,15 @@ func TestRetryAfterHeaderMatchesErrorEnvelopeDelay(t *testing.T) {
 }
 
 func TestAuthoritativeScopeAdapterRejectsUnknownDescriptorScope(t *testing.T) {
-	if scope, ok := authoritativeAgentDataScope(string(agentdatav2.AgentDataScopeAgentChatWrite)); !ok || scope != agentdatav2.AgentDataScopeAgentChatWrite {
-		t.Fatalf("generated scope was not recognized: %q, %v", scope, ok)
+	for _, expected := range []agentdatav2.AgentDataScope{
+		agentdatav2.AgentDataScopeAgentChatWrite,
+		agentdatav2.AgentDataScopeAgentServersRead,
+		agentdatav2.AgentDataScopeAgentServersWrite,
+		agentdatav2.AgentDataScopeAgentServersDestroy,
+	} {
+		if scope, ok := authoritativeAgentDataScope(string(expected)); !ok || scope != expected {
+			t.Fatalf("generated scope was not recognized: %q, %v", scope, ok)
+		}
 	}
 	if scope, ok := authoritativeAgentDataScope("test:write"); ok || scope != "" {
 		t.Fatalf("unknown scope crossed the generated enum boundary: %q, %v", scope, ok)

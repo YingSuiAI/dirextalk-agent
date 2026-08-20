@@ -51,7 +51,7 @@ contract](message-server-integration-development-contract.md), and
   turn streams advertise a three-second reconnect delay, emit 12-second idle
   heartbeats, and terminate on cancellation or transport write failure without
   changing durable event sequences. The shared Agent Data Plane V2 contract at
-  immutable `dirextalk-capability-api v1.1.0` supplies generated session,
+  immutable `dirextalk-capability-api v1.2.0` supplies generated session,
   scope, operation, error, and SSE DTOs; the Agent consumes its shared vectors
   directly and no longer keeps a local v1 fixture. The four typed ticket errors
   distinguish expired, stale-generation, invalid, and missing-scope tickets,
@@ -420,6 +420,11 @@ support.
   behavior. Focused PostgreSQL 18 + pgvector tests exercised Chat, StreamChat,
   and StartTurn through the same persisted cancellation and precharged model
   budget terminals (`canceled` and `model_budget_exhausted`).
+- On **2026-08-20**, the Agent pinned `dirextalk-capability-api v1.2.0` and
+  recognized its generated `agent:servers:read`, `agent:servers:write`, and
+  `agent:servers:destroy` scopes. Focused descriptor, HTTP catalog, typed
+  forbidden-error, and shared-conformance tests verify that server inventory
+  operations are published only to correctly scoped owner tickets.
 - On **2026-08-14**, the current Cloud Worker tests cover proposal-time live
   selection and pricing, deterministic offer/confirmation binding, dynamic AWS
   credential readiness, SSH execution, retained Worker identity, local artifact

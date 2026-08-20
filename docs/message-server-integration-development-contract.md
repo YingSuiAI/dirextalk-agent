@@ -17,7 +17,7 @@ receives the long-lived Agent service token.
 
 The cross-client session, operation, error, and SSE shapes are frozen by the
 Agent Data Plane V2 OpenAPI contract and shared conformance vectors in
-`dirextalk-capability-api v1.1.0`. Agent and Message Server consume the generated
+`dirextalk-capability-api v1.2.0`. Agent and Message Server consume the generated
 Go DTOs and scope constants, while Flutter consumes the generated Dart package;
 none keeps a local v1 fixture or parallel handwritten wire DTO. The Message
 Server session response supplies `ticket`, `expires_at`, `server_time`,
