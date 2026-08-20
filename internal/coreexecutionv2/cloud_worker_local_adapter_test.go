@@ -12,8 +12,25 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/localartifact"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreserver"
 	"github.com/google/uuid"
 )
+
+type artifactCatalogDelete struct {
+	authority  coreserver.Authority
+	sourceKind string
+	sourceID   string
+}
+
+type artifactCatalogStub struct {
+	deletes []artifactCatalogDelete
+	err     error
+}
+
+func (catalog *artifactCatalogStub) DeleteBySource(_ context.Context, authority coreserver.Authority, sourceKind, sourceID string) error {
+	catalog.deletes = append(catalog.deletes, artifactCatalogDelete{authority: authority, sourceKind: sourceKind, sourceID: sourceID})
+	return catalog.err
+}
 
 func TestLocalCloudWorkerArtifactReadAndDownload(t *testing.T) {
 	repository, err := localartifact.NewRepository(t.TempDir())
@@ -27,11 +44,15 @@ func TestLocalCloudWorkerArtifactReadAndDownload(t *testing.T) {
 		t.Fatal(err)
 	}
 	items, _, _ := repository.List(context.Background(), authority, executionID, "", 10)
-	adapter := &localCloudWorkerExecutionAdapter{artifacts: repository}
+	catalog := &artifactCatalogStub{}
+	adapter := &localCloudWorkerExecutionAdapter{artifacts: repository, catalog: catalog}
 	requestAuthority := Authority{OwnerID: authority.OwnerID, AccountGeneration: authority.AccountGeneration}
 	artifact, err := adapter.GetArtifact(context.Background(), CloudWorkerArtifactGetRequest{Authority: requestAuthority, RecordKind: RecordKindCloudWorker, ArtifactID: items[0].ArtifactID})
 	if err != nil || artifact["execution_id"] != executionID {
 		t.Fatalf("artifact=%#v err=%v", artifact, err)
+	}
+	if len(catalog.deletes) != 0 {
+		t.Fatalf("read deleted server inventory row: %+v", catalog.deletes)
 	}
 	chunk, err := adapter.DownloadArtifact(context.Background(), CloudWorkerArtifactDownloadRequest{Authority: requestAuthority, RecordKind: RecordKindCloudWorker, ArtifactID: items[0].ArtifactID, MaxChunkBytes: 64})
 	if err != nil || string(chunk.Data) != "worker report" || !chunk.EOF {
@@ -41,6 +62,11 @@ func TestLocalCloudWorkerArtifactReadAndDownload(t *testing.T) {
 	deleted, err := adapter.DeleteArtifact(context.Background(), CloudWorkerArtifactDeleteRequest{Authority: requestAuthority, RecordKind: RecordKindCloudWorker, ArtifactID: items[0].ArtifactID, IdempotencyKey: idempotencyKey})
 	if err != nil || deleted["artifact_id"] != items[0].ArtifactID {
 		t.Fatalf("deleted=%#v err=%v", deleted, err)
+	}
+	if len(catalog.deletes) != 1 || catalog.deletes[0].authority.OwnerID != authority.OwnerID ||
+		catalog.deletes[0].authority.AccountGeneration != authority.AccountGeneration ||
+		catalog.deletes[0].sourceKind != "cloud_worker_artifact" || catalog.deletes[0].sourceID != items[0].ArtifactID {
+		t.Fatalf("server inventory delete=%+v", catalog.deletes)
 	}
 	if _, err = adapter.DeleteArtifact(context.Background(), CloudWorkerArtifactDeleteRequest{Authority: requestAuthority, RecordKind: RecordKindCloudWorker, ArtifactID: items[0].ArtifactID, IdempotencyKey: idempotencyKey}); err != nil {
 		t.Fatalf("Cloud Worker delete replay: %v", err)
@@ -65,15 +91,27 @@ func TestLocalArtifactAdapterFencesRecordKindAndDeletesOnlyArtifact(t *testing.T
 	if err != nil || len(items) != 1 {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}
-	adapter := &localCloudWorkerExecutionAdapter{artifacts: repository}
+	catalog := &artifactCatalogStub{}
+	adapter := &localCloudWorkerExecutionAdapter{artifacts: repository, catalog: catalog}
 	requestAuthority := Authority{OwnerID: authority.OwnerID, AccountGeneration: authority.AccountGeneration}
 	if _, err = adapter.GetArtifact(context.Background(), CloudWorkerArtifactGetRequest{Authority: requestAuthority, RecordKind: RecordKindCloudWorker, ArtifactID: items[0].ArtifactID}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("wrong record kind read error = %v", err)
+	}
+	if _, err = adapter.GetArtifact(context.Background(), CloudWorkerArtifactGetRequest{Authority: requestAuthority, RecordKind: RecordKindLocalSandbox, ArtifactID: items[0].ArtifactID}); err != nil {
+		t.Fatalf("local sandbox read: %v", err)
+	}
+	if len(catalog.deletes) != 0 {
+		t.Fatalf("local sandbox read deleted server inventory row: %+v", catalog.deletes)
 	}
 	idempotencyKey := uuid.NewString()
 	deleted, err := adapter.DeleteArtifact(context.Background(), CloudWorkerArtifactDeleteRequest{Authority: requestAuthority, RecordKind: RecordKindLocalSandbox, ArtifactID: items[0].ArtifactID, IdempotencyKey: idempotencyKey})
 	if err != nil || deleted["artifact_id"] != items[0].ArtifactID {
 		t.Fatalf("deleted=%#v err=%v", deleted, err)
+	}
+	if len(catalog.deletes) != 1 || catalog.deletes[0].authority.OwnerID != authority.OwnerID ||
+		catalog.deletes[0].authority.AccountGeneration != authority.AccountGeneration ||
+		catalog.deletes[0].sourceKind != "local_sandbox_artifact" || catalog.deletes[0].sourceID != items[0].ArtifactID {
+		t.Fatalf("local sandbox server inventory delete=%+v", catalog.deletes)
 	}
 	replayed, err := adapter.DeleteArtifact(context.Background(), CloudWorkerArtifactDeleteRequest{Authority: requestAuthority, RecordKind: RecordKindLocalSandbox, ArtifactID: items[0].ArtifactID, IdempotencyKey: idempotencyKey})
 	if err != nil || replayed["artifact_id"] != items[0].ArtifactID {
