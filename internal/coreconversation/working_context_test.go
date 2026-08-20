@@ -1,6 +1,8 @@
 package coreconversation
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -55,5 +57,30 @@ func TestWorkingContextRetainsExactInputsAndRuntimeIdentitiesAcrossRounds(t *tes
 		!reflect.DeepEqual(second.Artifacts, []Reference{artifact}) || !reflect.DeepEqual(second.SideEffectIdentities, []Reference{artifact}) ||
 		!reflect.DeepEqual(second.ToolReceipts, []Reference{artifact}) || !reflect.DeepEqual(second.CompletedSteps, []string{"artifact written"}) {
 		t.Fatalf("working context lost protected state: %+v", second)
+	}
+}
+
+func TestWorkingContextProjectionMetadataIsProtectedAndLegacyDigestStable(t *testing.T) {
+	legacy := NewWorkingContext()
+	if got := legacy.ProtectedDigest(); got != "d794f7992e10c9a8eb0480182ed31641307d9aade5e5483443152d30f8143ff2" {
+		t.Fatalf("legacy empty digest=%s", got)
+	}
+	firstID, throughID := uuid.NewString(), uuid.NewString()
+	raw := []byte(`{"version":"dirextalk.working-context/v1","original_goal":"keep the exact goal","projection":{"source":"authoritative_transcript","scope":{"first_message_id":"` + firstID + `","through_message_id":"` + throughID + `","message_count":2},"supersedes_protected_digest":"` + legacy.ProtectedDigest() + `"}}`)
+	var current WorkingContext
+	if err := json.Unmarshal(raw, &current); err != nil || current.Validate() != nil {
+		t.Fatalf("projection metadata rejected: context=%+v err=%v", current, err)
+	}
+	encoded, err := json.Marshal(current)
+	if err != nil || !bytes.Contains(encoded, []byte(`"projection"`)) || current.ProtectedDigest() == legacy.ProtectedDigest() {
+		t.Fatalf("projection metadata was not retained/protected: %s err=%v digest=%s", encoded, err, current.ProtectedDigest())
+	}
+	proposal := current.Snapshot()
+	mutated := bytes.Replace(encoded, []byte(throughID), []byte(uuid.NewString()), 1)
+	if err = json.Unmarshal(mutated, &proposal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ApplyWorkingContextCompression(current, proposal); !errors.Is(err, ErrConflict) {
+		t.Fatalf("projection scope rewrite err=%v", err)
 	}
 }

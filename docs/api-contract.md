@@ -304,7 +304,24 @@ or stream after admission. It never cancels the accepted Turn; callers use
   results remain progress.
 - On every Native conversation turn, `Chat`, `StreamChat`, and `StartTurn`
   compose two memory layers before model dispatch. Working memory remains the
-  durable conversation summary plus recent transcript window. Long-term memory
+  versioned structured `WorkingContext` plus the recent authoritative
+  transcript window; the free-form summary is not model input. Before accepting
+  an existing-conversation Turn, Core estimates the frozen model envelope as
+  `ceil(total UTF-8 bytes / 4)` using the compiled system prompt, current
+  prompt, structured WorkingContext JSON, retained transcript payloads,
+  selected Skill instructions, and admitted intrinsic/extension tool schemas.
+  When that estimate exceeds 80% of
+  `context_window - max_output_tokens`, Core projects the smallest completed
+  transcript prefix that brings the retained envelope under the threshold,
+  without splitting an assistant tool-call/result round. If no suffix fits, it
+  projects the whole completed prefix. The projection, message offset, source
+  scope, and superseded protected digest are persisted atomically with Turn
+  admission without advancing the public conversation revision; PostgreSQL
+  rechecks that revision, the prior offset/digest, transcript count, and
+  boundary message IDs under the admission lock. Unknown/nonpositive model
+  input budgets disable automatic compaction. Explicit owner
+  `compress_context` remains a public revision-bearing mutation. The complete
+  transcript remains authoritative and is never deleted. Long-term memory
   combines relevance-ranked current user facts with a bounded newest-first
   fact timeline. Current facts take precedence over older timeline entries.
   The bounded envelope is inserted as

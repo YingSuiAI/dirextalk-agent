@@ -7,8 +7,9 @@ import (
 )
 
 const (
-	WorkingContextVersion  = "dirextalk.working-context/v1"
-	MaxWorkingContextBytes = 4 << 20
+	WorkingContextVersion                           = "dirextalk.working-context/v1"
+	WorkingContextProjectionAuthoritativeTranscript = "authoritative_transcript"
+	MaxWorkingContextBytes                          = 4 << 20
 )
 
 // WorkingContext is the versioned, schema-constrained model memory. Protected
@@ -16,17 +17,33 @@ const (
 // runtime references. Compressor-owned fields may summarize decisions and
 // steps, but cannot replace those protected identities.
 type WorkingContext struct {
-	Version              string                 `json:"version"`
-	OriginalGoal         string                 `json:"original_goal,omitempty"`
-	ExactUserConstraints []string               `json:"exact_user_constraints,omitempty"`
-	Decisions            []string               `json:"decisions,omitempty"`
-	CompletedSteps       []string               `json:"completed_steps,omitempty"`
-	PendingSteps         []string               `json:"pending_steps,omitempty"`
-	Artifacts            []Reference            `json:"artifacts,omitempty"`
-	ExternalResources    []Reference            `json:"external_resources,omitempty"`
-	SideEffectIdentities []Reference            `json:"side_effect_identities,omitempty"`
-	ToolReceipts         []Reference            `json:"tool_receipts,omitempty"`
-	LastFailure          *WorkingContextFailure `json:"last_failure,omitempty"`
+	Version              string                    `json:"version"`
+	OriginalGoal         string                    `json:"original_goal,omitempty"`
+	ExactUserConstraints []string                  `json:"exact_user_constraints,omitempty"`
+	Decisions            []string                  `json:"decisions,omitempty"`
+	CompletedSteps       []string                  `json:"completed_steps,omitempty"`
+	PendingSteps         []string                  `json:"pending_steps,omitempty"`
+	Artifacts            []Reference               `json:"artifacts,omitempty"`
+	ExternalResources    []Reference               `json:"external_resources,omitempty"`
+	SideEffectIdentities []Reference               `json:"side_effect_identities,omitempty"`
+	ToolReceipts         []Reference               `json:"tool_receipts,omitempty"`
+	LastFailure          *WorkingContextFailure    `json:"last_failure,omitempty"`
+	Projection           *WorkingContextProjection `json:"projection,omitempty"`
+}
+
+// WorkingContextProjection records the authoritative transcript prefix from
+// which protected WorkingContext state was derived. It is protected metadata:
+// compressor proposals cannot rewrite or erase its provenance.
+type WorkingContextProjection struct {
+	Source                    string                        `json:"source"`
+	Scope                     WorkingContextProjectionScope `json:"scope"`
+	SupersedesProtectedDigest string                        `json:"supersedes_protected_digest"`
+}
+
+type WorkingContextProjectionScope struct {
+	FirstMessageID   string `json:"first_message_id"`
+	ThroughMessageID string `json:"through_message_id"`
+	MessageCount     uint64 `json:"message_count"`
 }
 
 type WorkingContextFailure struct {
@@ -50,6 +67,13 @@ func (w WorkingContext) Validate() error {
 		len(w.LastFailure.Code) > 128 || !utf8.ValidString(w.LastFailure.Code) ||
 		strings.TrimSpace(w.LastFailure.Summary) != w.LastFailure.Summary || w.LastFailure.Summary == "" ||
 		len(w.LastFailure.Summary) > MaxSummaryBytes || !utf8.ValidString(w.LastFailure.Summary)) {
+		return ErrInvalid
+	}
+	if w.Projection != nil && (w.Projection.Source != WorkingContextProjectionAuthoritativeTranscript ||
+		!validUUID(w.Projection.Scope.FirstMessageID) || !validUUID(w.Projection.Scope.ThroughMessageID) ||
+		w.Projection.Scope.MessageCount == 0 || w.Projection.Scope.MessageCount > MaxMessages ||
+		(w.Projection.Scope.MessageCount > 1 && w.Projection.Scope.FirstMessageID == w.Projection.Scope.ThroughMessageID) ||
+		!validReferenceDigest(w.Projection.SupersedesProtectedDigest)) {
 		return ErrInvalid
 	}
 	raw, err := json.Marshal(w)
@@ -113,14 +137,20 @@ func validateWorkingContextReferences(values []Reference) error {
 
 func (w WorkingContext) ProtectedDigest() string {
 	protected := struct {
-		Version              string      `json:"version"`
-		OriginalGoal         string      `json:"original_goal,omitempty"`
-		ExactUserConstraints []string    `json:"exact_user_constraints,omitempty"`
-		Artifacts            []Reference `json:"artifacts,omitempty"`
-		ExternalResources    []Reference `json:"external_resources,omitempty"`
-		SideEffectIdentities []Reference `json:"side_effect_identities,omitempty"`
-		ToolReceipts         []Reference `json:"tool_receipts,omitempty"`
-	}{w.Version, w.OriginalGoal, w.ExactUserConstraints, w.Artifacts, w.ExternalResources, w.SideEffectIdentities, w.ToolReceipts}
+		Version              string                    `json:"version"`
+		OriginalGoal         string                    `json:"original_goal,omitempty"`
+		ExactUserConstraints []string                  `json:"exact_user_constraints,omitempty"`
+		Artifacts            []Reference               `json:"artifacts,omitempty"`
+		ExternalResources    []Reference               `json:"external_resources,omitempty"`
+		SideEffectIdentities []Reference               `json:"side_effect_identities,omitempty"`
+		ToolReceipts         []Reference               `json:"tool_receipts,omitempty"`
+		Projection           *WorkingContextProjection `json:"projection,omitempty"`
+	}{
+		Version: w.Version, OriginalGoal: w.OriginalGoal, ExactUserConstraints: w.ExactUserConstraints,
+		Artifacts: w.Artifacts, ExternalResources: w.ExternalResources,
+		SideEffectIdentities: w.SideEffectIdentities, ToolReceipts: w.ToolReceipts,
+		Projection: cloneWorkingContextProjection(w.Projection),
+	}
 	raw, _ := json.Marshal(protected)
 	return digest(string(raw))
 }
@@ -252,7 +282,16 @@ func (w WorkingContext) Snapshot() WorkingContext {
 		failure := *w.LastFailure
 		out.LastFailure = &failure
 	}
+	out.Projection = cloneWorkingContextProjection(w.Projection)
 	return out
+}
+
+func cloneWorkingContextProjection(value *WorkingContextProjection) *WorkingContextProjection {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	return &out
 }
 
 func (w WorkingContext) ModelText() string {
@@ -266,7 +305,7 @@ func (w WorkingContext) ModelText() string {
 func (w WorkingContext) Empty() bool {
 	return w.OriginalGoal == "" && len(w.ExactUserConstraints) == 0 && len(w.Decisions) == 0 &&
 		len(w.CompletedSteps) == 0 && len(w.PendingSteps) == 0 && len(w.Artifacts) == 0 &&
-		len(w.ExternalResources) == 0 && len(w.SideEffectIdentities) == 0 && len(w.ToolReceipts) == 0 && w.LastFailure == nil
+		len(w.ExternalResources) == 0 && len(w.SideEffectIdentities) == 0 && len(w.ToolReceipts) == 0 && w.LastFailure == nil && w.Projection == nil
 }
 
 func (w WorkingContext) SummaryText() string {

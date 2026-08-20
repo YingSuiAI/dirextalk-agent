@@ -686,7 +686,26 @@ and pending steps, and the last failure, but PostgreSQL compares the protected
 digest and rejects a stale or rewritten protected projection instead of
 overwriting it. The model receives the structured JSON as delimited user-role
 reference data, never as a system instruction. The complete raw transcript is
-retained as audit truth. After a chat
+retained as audit truth. Automatic compaction is derived only after the Turn's
+profile, compiled system prompt, selected Skill instructions, and intrinsic and
+extension schemas are frozen. Its deterministic estimator is
+`ceil(total UTF-8 bytes / 4)` over those inputs, the current prompt,
+WorkingContext JSON, and authoritative retained message payloads. A known
+positive input budget triggers at
+`floor(0.8 * (context_window - max_output_tokens))`; a nonpositive or unknown
+budget does not compact. The planner advances the smallest safe prefix while
+preserving the largest suffix and never splits an assistant tool-call/result
+round; if no suffix fits, it advances through the whole completed prefix. The
+new projection records `source=authoritative_transcript`, the total first/through
+message-ID scope and count, and the superseded protected digest. That metadata
+is itself protected, while legacy JSON that omits it retains its existing
+protected digest. PostgreSQL applies the projection and offset in the same
+transaction as `StartTurnWithRuntime`, without incrementing the public
+conversation revision, after revalidating the revision, prior offset/digest,
+transcript count, and boundary IDs under lock. The derived sidecar changes
+neither the public Turn request fingerprint nor the immutable runtime digest.
+Explicit owner `compress_context` remains revision-bearing and uses the same
+protected projection metadata. After a chat
 commit, a transactionally enqueued observation is consolidated into
 Agent-owned structured user facts and an append-only fact timeline. The active
 `subject + predicate` row is the current truth projection; a changed value

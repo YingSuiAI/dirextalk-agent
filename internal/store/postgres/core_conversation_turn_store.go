@@ -227,6 +227,11 @@ func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartC
 		if _, err = tx.Exec(ctx, `UPDATE core_conversations SET title=$2 WHERE conversation_id=$1 AND title='' AND NOT EXISTS (SELECT 1 FROM core_messages WHERE conversation_id=$1)`, c.ConversationID, core.ProvisionalConversationTitle(c.Prompt)); err != nil {
 			return core.Turn{}, err
 		}
+		if c.ContextCompaction != nil {
+			if err = applyAutomaticTurnContextCompaction(ctx, tx, c.ConversationID, revision, *c.ContextCompaction); err != nil {
+				return core.Turn{}, err
+			}
+		}
 	}
 	// A turn may open a new conversation. Materialize its empty revision
 	// baseline before inserting the turn so the foreign key is valid; the
@@ -309,6 +314,58 @@ func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartC
 		return core.Turn{}, err
 	}
 	return core.Turn{ID: turnID, RequestID: c.RequestID, RequestFingerprint: fp, OwnerID: c.OwnerID, AccountGeneration: c.AccountGeneration, ConversationID: c.ConversationID, Prompt: c.Prompt, ProfileID: c.ProfileID, ExpectedRevision: cloneRevision(c.ExpectedRevision), Revision: 1, State: core.TurnAccepted, LastSequence: 1, CreatedAt: now, UpdatedAt: now, ProfileSnapshot: c.ProfileSnapshot, ProfileSnapshotDigest: c.ProfileSnapshot.Digest(), ExtensionSnapshots: append([]core.ExtensionExecutionSnapshot(nil), c.ExtensionSnapshots...), ExtensionSnapshotDigest: c.ExtensionSnapshotDigest(), AttachmentSources: append([]core.TurnAttachment(nil), c.AttachmentSources...), AttachmentSnapshotDigest: attachmentDigest, RuntimeSnapshot: runtimeSnapshot}, nil
+}
+
+func applyAutomaticTurnContextCompaction(ctx context.Context, tx pgx.Tx, conversationID string, revision uint64, plan core.TurnContextCompaction) error {
+	if !coreUUID(conversationID) || plan.Validate() != nil || revision != plan.ExpectedRevision {
+		return core.ErrInvalid
+	}
+	var existingOffset int64
+	var existingWorkingRaw []byte
+	var existingProtectedDigest *string
+	contextErr := tx.QueryRow(ctx, `SELECT message_offset,working_context_json,protected_digest FROM core_conversation_contexts WHERE conversation_id=$1 FOR UPDATE`, conversationID).Scan(&existingOffset, &existingWorkingRaw, &existingProtectedDigest)
+	if contextErr != nil && !errors.Is(contextErr, pgx.ErrNoRows) {
+		return contextErr
+	}
+	existing := core.Conversation{}
+	if err := decodeWorkingContextPG(existingWorkingRaw, existingProtectedDigest, &existing); err != nil {
+		return err
+	}
+	if existingOffset < 0 || uint64(existingOffset) != plan.ExpectedPreviousOffset ||
+		existing.WorkingContextProtectedDigest != plan.ExpectedPreviousProtectedDigest {
+		return core.ErrConflict
+	}
+	var messageCount int64
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM core_messages WHERE conversation_id=$1`, conversationID).Scan(&messageCount); err != nil {
+		return err
+	}
+	if messageCount < 0 || uint64(messageCount) != plan.ExpectedTranscriptCount {
+		return core.ErrConflict
+	}
+	var firstID, throughID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT message_id FROM core_messages WHERE conversation_id=$1 ORDER BY sequence LIMIT 1 FOR SHARE`, conversationID).Scan(&firstID); err != nil {
+		return core.ErrConflict
+	}
+	if err := tx.QueryRow(ctx, `SELECT message_id FROM core_messages WHERE conversation_id=$1 ORDER BY sequence OFFSET $2 LIMIT 1 FOR SHARE`, conversationID, int64(plan.Offset-1)).Scan(&throughID); err != nil {
+		return core.ErrConflict
+	}
+	if firstID.String() != plan.FirstMessageID || throughID.String() != plan.ThroughMessageID {
+		return core.ErrConflict
+	}
+	if plan.Offset < plan.ExpectedTranscriptCount {
+		var retainedID uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT message_id FROM core_messages WHERE conversation_id=$1 ORDER BY sequence OFFSET $2 LIMIT 1 FOR SHARE`, conversationID, int64(plan.Offset)).Scan(&retainedID); err != nil || retainedID.String() != plan.RetainedFirstMessageID {
+			return core.ErrConflict
+		}
+	}
+	workingRaw, err := json.Marshal(plan.WorkingContext)
+	if err != nil {
+		return core.ErrInvalid
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_contexts(conversation_id,summary,message_offset,working_context_version,working_context_json,protected_digest,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(conversation_id) DO UPDATE SET summary=$2,message_offset=$3,working_context_version=$4,working_context_json=$5,protected_digest=$6,updated_at=$7`, conversationID, plan.Summary, int64(plan.Offset), core.WorkingContextVersion, workingRaw, plan.WorkingContext.ProtectedDigest(), time.Now().UTC()); err != nil {
+		return err
+	}
+	return nil
 }
 
 func nullableJSONPG(raw []byte) any {

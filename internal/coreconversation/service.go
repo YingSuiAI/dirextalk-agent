@@ -695,6 +695,27 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if err != nil {
 		return Turn{}, err
 	}
+	if cmd.ExpectedRevision != nil && cmd.ProfileSnapshot.ContextWindow > 0 && cmd.ProfileSnapshot.ContextWindow-cmd.ProfileSnapshot.MaxOutputTokens > 0 {
+		conversation, loadErr := s.store.LoadConversation(ctx, cmd.ConversationID)
+		if loadErr != nil {
+			return Turn{}, loadErr
+		}
+		envelope := automaticContextCompactionEnvelope{
+			CompiledSystemPrompt: runtimeSnapshot.CompiledSystemPrompt,
+			Prompt:               cmd.Prompt,
+			IntrinsicTools:       append([]coremodel.Tool(nil), runtimeSnapshot.IntrinsicTools...),
+		}
+		for _, extension := range admissionExtensions {
+			if extension.Selection.Kind == ExtensionSkill && strings.TrimSpace(extension.Snapshot.SkillInstructions) != "" {
+				envelope.SkillInstructions = append(envelope.SkillInstructions, extension.Snapshot.SkillInstructions)
+			}
+			envelope.ExtensionTools = append(envelope.ExtensionTools, extension.Tools...)
+		}
+		cmd.ContextCompaction, err = planAutomaticContextCompaction(conversation, envelope, cmd.ProfileSnapshot.ContextWindow, cmd.ProfileSnapshot.MaxOutputTokens)
+		if err != nil {
+			return Turn{}, err
+		}
+	}
 	turn, err := s.turns.StartTurnWithRuntime(ctx, cmd, runtimeSnapshot)
 	if err != nil {
 		return Turn{}, err

@@ -242,6 +242,10 @@ type TurnStartCommand struct {
 	// ConstrainedWorkflow is set only by trusted internal adapters. Owner RPC
 	// surfaces cannot select the reserved scheduled execution mode.
 	ConstrainedWorkflow TurnConstrainedWorkflow
+	// ContextCompaction is derived after the immutable runtime inputs are
+	// resolved. It is internal admission maintenance and intentionally does not
+	// participate in the public request fingerprint or runtime digest.
+	ContextCompaction *TurnContextCompaction `json:"-"`
 }
 
 type TurnCancelCommand struct {
@@ -845,6 +849,10 @@ func (c TurnStartCommand) Validate() error {
 		seenAttachments[id] = struct{}{}
 	}
 	if len(c.AttachmentSources) > 0 && ValidateAcceptedTurnAttachments(c.RequestID, c.AcceptedAttachmentIDs, c.AttachmentSources) != nil {
+		return ErrInvalid
+	}
+	if c.ContextCompaction != nil && (c.ExpectedRevision == nil || c.ContextCompaction.Validate() != nil ||
+		c.ContextCompaction.ExpectedRevision != *c.ExpectedRevision) {
 		return ErrInvalid
 	}
 	return nil

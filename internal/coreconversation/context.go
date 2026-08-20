@@ -90,8 +90,19 @@ func (s *Service) CompressContext(ctx context.Context, conversationID string, ex
 	if working.Validate() != nil {
 		return ContextCompressionResult{}, ErrConflict
 	}
+	previousProtectedDigest := conversation.WorkingContextProtectedDigest
+	if previousProtectedDigest == "" {
+		previousProtectedDigest = working.ProtectedDigest()
+	}
+	if working.ProtectedDigest() != previousProtectedDigest {
+		return ContextCompressionResult{}, ErrConflict
+	}
 	if offset > contextStart {
 		working, err = AdvanceWorkingContextFromTranscript(working, conversation.Messages[contextStart:offset])
+		if err != nil {
+			return ContextCompressionResult{}, err
+		}
+		working, err = projectWorkingContextFromAuthoritativeTranscript(working, conversation.Messages, offset, previousProtectedDigest)
 		if err != nil {
 			return ContextCompressionResult{}, err
 		}

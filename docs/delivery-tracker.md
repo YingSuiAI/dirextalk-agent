@@ -89,7 +89,14 @@ contract](message-server-integration-development-contract.md), and
   Conversation compaction now persists a versioned structured WorkingContext;
   protected user goals/constraints and runtime resource/receipt identities use
   a separate digest CAS, while only decisions, steps, and last-failure summaries
-  are compressor-owned. The model no longer receives the free-form summary.
+  are compressor-owned. At existing-conversation Turn admission, a deterministic
+  frozen-envelope estimate automatically advances the smallest completed safe
+  transcript prefix above the 80% input-budget threshold. The new offset,
+  total-prefix provenance, and protected digest are persisted in the same
+  transaction as the Turn without advancing public conversation revision;
+  stale revision, prior context, transcript count, or boundary IDs reject the
+  admission. Explicit owner compression remains revision-bearing. The model no
+  longer receives the free-form summary.
   Gemini-generated tool-call IDs are unique against the prior transcript, and
   adjacent Anthropic tool results use one ordered result-message batch. Debug
   formatting of immutable execution snapshots omits both credentials and the
@@ -307,6 +314,22 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-20**, existing-conversation Turn admission gained deterministic
+  automatic WorkingContext compaction from the frozen profile input budget,
+  compiled prompt, selected Skill instructions, and admitted tool schemas. The
+  planner preserves the largest safe transcript suffix, protects total-prefix
+  provenance, leaves public conversation revision and Turn/runtime identity
+  unchanged, and persists with the accepted Turn. Core and model-runtime suites
+  passed 329 tests; the PostgreSQL unit suite passed 39 tests. Focused
+  PostgreSQL 18 + pgvector acceptance proved atomic restart-stable admission,
+  protected-context CAS, owner/account preservation, and rejection of stale
+  conversation revision, prior offset/digest, transcript count, and all three
+  boundary IDs. Focused vet and diff checks passed. One local unified-image
+  candidate (`sha256:42801b8ceedecfd8e5d0697a77f364a482182ce2b64503942e27d28948459a35`)
+  reported `v1.0.177` from all three production binaries, applied the fresh
+  PG18+pgvector migration bundle through schema version 27, and returned that
+  exact version from live `/agent/v1/health`; the candidate and its isolated
+  probe resources were removed after verification.
 - On **2026-08-20**, scheduled execution began binding its closed persisted
   capability into the immutable Turn runtime and enforcing the corresponding
   single-pass state machine from durable tool-call sequence. Stable
