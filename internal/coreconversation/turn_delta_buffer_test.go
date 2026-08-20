@@ -33,7 +33,7 @@ func TestTurnDeltaBufferCoalescesAndFlushesFinalBytes(t *testing.T) {
 	if err := buffer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	want := []ModelDelta{{ReasoningContent: "12"}, {Text: "abc"}, {ReasoningContent: "3"}}
+	want := []ModelDelta{{Text: "abc"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("durable deltas=%+v want=%+v", got, want)
 	}
@@ -42,14 +42,13 @@ func TestTurnDeltaBufferCoalescesAndFlushesFinalBytes(t *testing.T) {
 func TestTurnDeltaBufferFenceOrdersSteerAfterProviderOutput(t *testing.T) {
 	var got []string
 	buffer := newTurnDeltaBuffer(1024, time.Hour, func(delta ModelDelta) error {
-		if delta.ReasoningContent != "" {
-			got = append(got, "reasoning:"+delta.ReasoningContent)
-		} else {
-			got = append(got, "text:"+delta.Text)
-		}
+		got = append(got, "text:"+delta.Text)
 		return nil
 	})
-	if err := buffer.Append(ModelDelta{ReasoningContent: "before steer"}); err != nil {
+	if err := buffer.Append(ModelDelta{ReasoningContent: "private reasoning"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := buffer.Append(ModelDelta{Text: "before steer"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := buffer.Fence(func() error {
@@ -61,7 +60,7 @@ func TestTurnDeltaBufferFenceOrdersSteerAfterProviderOutput(t *testing.T) {
 	if err := buffer.Append(ModelDelta{Text: "late provider output"}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"reasoning:before steer", "steer"}
+	want := []string{"text:before steer", "steer"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ordered events=%v want=%v", got, want)
 	}
@@ -78,11 +77,8 @@ func TestTurnDeltaBufferTimerFlushesWithoutDroppingTail(t *testing.T) {
 	}
 	select {
 	case delta := <-flushed:
-		if delta.ReasoningContent != "thinking" {
-			t.Fatalf("timer delta=%+v", delta)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timer did not flush")
+		t.Fatalf("raw reasoning was flushed: %+v", delta)
+	case <-time.After(30 * time.Millisecond):
 	}
 	if err := buffer.Append(ModelDelta{Text: "tail"}); err != nil {
 		t.Fatal(err)

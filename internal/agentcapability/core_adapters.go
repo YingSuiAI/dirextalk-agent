@@ -230,18 +230,17 @@ type publicConversation struct {
 }
 
 type publicConversationMessage struct {
-	MessageID        string                                    `json:"message_id"`
-	TurnID           string                                    `json:"turn_id,omitempty"`
-	Role             string                                    `json:"role"`
-	Content          string                                    `json:"content"`
-	ReasoningContent string                                    `json:"reasoning_content,omitempty"`
-	RelatedTaskIDs   []string                                  `json:"related_task_ids"`
-	RelatedPlanIDs   []string                                  `json:"related_plan_ids"`
-	CreatedAt        time.Time                                 `json:"created_at"`
-	MessageSeq       int64                                     `json:"message_seq"`
-	Status           string                                    `json:"status"`
-	References       []coreconversation.Reference              `json:"references"`
-	Attachments      []coreconversation.AttachmentPresentation `json:"attachments"`
+	MessageID      string                                    `json:"message_id"`
+	TurnID         string                                    `json:"turn_id,omitempty"`
+	Role           string                                    `json:"role"`
+	Content        string                                    `json:"content"`
+	RelatedTaskIDs []string                                  `json:"related_task_ids"`
+	RelatedPlanIDs []string                                  `json:"related_plan_ids"`
+	CreatedAt      time.Time                                 `json:"created_at"`
+	MessageSeq     int64                                     `json:"message_seq"`
+	Status         string                                    `json:"status"`
+	References     []coreconversation.Reference              `json:"references"`
+	Attachments    []coreconversation.AttachmentPresentation `json:"attachments"`
 }
 
 type conversationMessageCursor struct {
@@ -296,18 +295,17 @@ func projectConversationMessages(values []coreconversation.Message) []publicConv
 			status = "done"
 		}
 		result = append(result, publicConversationMessage{
-			MessageID:        value.ID,
-			TurnID:           value.TurnID,
-			Role:             string(value.Role),
-			Content:          value.Content,
-			ReasoningContent: value.ReasoningContent,
-			RelatedTaskIDs:   relatedTaskIDs,
-			RelatedPlanIDs:   relatedPlanIDs,
-			CreatedAt:        value.CreatedAt,
-			MessageSeq:       sequence,
-			Status:           status,
-			References:       references,
-			Attachments:      attachments,
+			MessageID:      value.ID,
+			TurnID:         value.TurnID,
+			Role:           string(value.Role),
+			Content:        value.Content,
+			RelatedTaskIDs: relatedTaskIDs,
+			RelatedPlanIDs: relatedPlanIDs,
+			CreatedAt:      value.CreatedAt,
+			MessageSeq:     sequence,
+			Status:         status,
+			References:     references,
+			Attachments:    attachments,
 		})
 	}
 	return result
@@ -805,7 +803,6 @@ type durableChatStreamEvent struct {
 	TurnID              string                                     `json:"turn_id"`
 	Revision            uint64                                     `json:"revision"`
 	Text                string                                     `json:"text,omitempty"`
-	ReasoningContent    string                                     `json:"reasoning_content,omitempty"`
 	RelatedTaskIDs      []string                                   `json:"related_task_ids,omitempty"`
 	RelatedPlanIDs      []string                                   `json:"related_plan_ids,omitempty"`
 	References          []coreconversation.Reference               `json:"references,omitempty"`
@@ -829,13 +826,12 @@ func projectDurableChatStreamEvent(turn coreconversation.Turn, revision uint64, 
 	}
 	projected := durableChatStreamEvent{
 		Kind: string(event.Kind), IdempotencyKey: turn.RequestID, ConversationID: turn.ConversationID,
-		TurnID: turn.ID, Revision: revision, Text: event.Text, ReasoningContent: event.ReasoningContent,
+		TurnID: turn.ID, Revision: revision, Text: event.Text,
 		ToolCall: event.ToolCall, ToolResult: event.ToolResult,
 		ErrorCode: event.ErrCode, ErrorSummary: event.ErrSummary,
 	}
 	if event.Response != nil {
 		projected.Text = event.Response.Message.Content
-		projected.ReasoningContent = event.Response.Message.ReasoningContent
 		projected.RelatedTaskIDs = append([]string(nil), event.Response.RelatedTaskIDs...)
 		projected.RelatedPlanIDs = append([]string(nil), event.Response.RelatedPlanIDs...)
 		projected.References = append([]coreconversation.Reference(nil), event.Response.References...)
@@ -905,7 +901,7 @@ func durableTurnStreamEvent(turn coreconversation.Turn, event coreconversation.T
 	case coreconversation.TurnEventStarted:
 		base.Kind = coreconversation.EventStarted
 	case coreconversation.TurnEventDelta:
-		base.Kind, base.Text, base.ReasoningContent = coreconversation.EventDelta, event.Text, event.ReasoningContent
+		base.Kind, base.Text = coreconversation.EventDelta, event.Text
 	case coreconversation.TurnEventToolCall:
 		base.Kind, base.ToolCall = coreconversation.EventToolCall, event.ToolCall
 	case coreconversation.TurnEventToolResult:

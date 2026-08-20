@@ -110,7 +110,7 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 	}
 	callNames := map[string]string{}
 	for _, m := range req.Conversation.Messages[start:] {
-		pm := coremodel.Message{Role: coremodel.Role(m.Role), Content: m.Content, ReasoningContent: m.ReasoningContent}
+		pm := coremodel.Message{Role: coremodel.Role(m.Role), Content: m.Content}
 		if parts := req.InputPartsByMessageID[m.ID]; len(parts) != 0 {
 			pm.Content = ""
 			pm.InputParts = append([]coremodel.MessageInputPart(nil), parts...)
@@ -128,6 +128,14 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 				return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
 			}
 			messages = append(messages, coremodel.Message{Role: coremodel.RoleTool, Content: observation, ToolCallID: tr.CallID, Name: callNames[tr.CallID]})
+		}
+	}
+	if req.TransientProviderReasoning != "" {
+		for index := len(messages) - 1; index >= 0; index-- {
+			if messages[index].Role == coremodel.RoleAssistant && len(messages[index].ToolCalls) != 0 {
+				messages[index].ReasoningContent = req.TransientProviderReasoning
+				break
+			}
 		}
 	}
 	tools := make([]coremodel.Tool, 0)
@@ -180,11 +188,11 @@ func (r *ModelRunner) Run(ctx context.Context, req coreconversation.ModelRunRequ
 		r.logProviderFailure(ctx, p.ID, err)
 		return coreconversation.ModelRunResult{}, err
 	}
-	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.Role(comp.Message.Role), Content: comp.Message.Content, ReasoningContent: comp.Message.ReasoningContent, ModelProfileID: p.ID}
+	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.Role(comp.Message.Role), Content: comp.Message.Content, ModelProfileID: p.ID}
 	for _, tc := range comp.Message.ToolCalls {
 		msg.ToolCalls = append(msg.ToolCalls, coreconversation.ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
 	}
-	return coreconversation.ModelRunResult{Message: msg, ToolCalls: msg.ToolCalls, Done: len(msg.ToolCalls) == 0}, nil
+	return coreconversation.ModelRunResult{Message: msg, ToolCalls: msg.ToolCalls, Done: len(msg.ToolCalls) == 0, TransientProviderReasoning: comp.Message.ReasoningContent}, nil
 }
 
 func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunRequest, emit func(coreconversation.ModelDelta) error) (coreconversation.ModelRunResult, error) {
@@ -267,8 +275,8 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 			calls = append(calls, callsByIndex[i])
 		}
 	}
-	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: content.String(), ReasoningContent: reasoning.String(), ToolCalls: calls, ModelProfileID: p.ID}
-	return coreconversation.ModelRunResult{Message: msg, ToolCalls: calls, Done: len(calls) == 0 && !continueOutput, Continue: continueOutput}, nil
+	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: content.String(), ToolCalls: calls, ModelProfileID: p.ID}
+	return coreconversation.ModelRunResult{Message: msg, ToolCalls: calls, Done: len(calls) == 0 && !continueOutput, Continue: continueOutput, TransientProviderReasoning: reasoning.String()}, nil
 }
 
 var _ coreconversation.ModelRunner = (*ModelRunner)(nil)

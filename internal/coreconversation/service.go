@@ -23,6 +23,9 @@ const (
 	MaxAdmittedTurnModelActiveDuration = 20 * time.Minute
 	MaxTurnFinalizationDispatches      = 1
 	MaxTurnFinalizationDuration        = 30 * time.Second
+	turnModelFirstPayloadDeadline      = 15 * time.Second
+	turnModelMeaningfulActionDeadline  = 90 * time.Second
+	turnModelSingleDispatchDeadline    = 5 * time.Minute
 	MaxAdmittedTurnToolCalls           = 20
 	toolLoopNudgeGuidance              = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
 	toolLoopSynthesisGuidance          = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
@@ -31,6 +34,112 @@ const (
 	conversationConvergenceGuidance    = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
 	messageMCPRoutingGuidance          = "For requests that need authoritative Dirextalk contacts, rooms, or messages, use the available Dirextalk tools. If a Message mutation has unknown completion, read authoritative state before deciding whether to retry; never retry blindly."
 )
+
+type turnModelDeadlines struct {
+	firstPayload     time.Duration
+	meaningfulAction time.Duration
+	singleDispatch   time.Duration
+}
+
+var (
+	errTurnModelFirstPayloadDeadline     = fmt.Errorf("model provider produced no payload before the deadline: %w", context.DeadlineExceeded)
+	errTurnModelMeaningfulActionDeadline = fmt.Errorf("model provider produced no meaningful action before the deadline: %w", context.DeadlineExceeded)
+	errTurnModelSingleDispatchDeadline   = fmt.Errorf("model provider dispatch exceeded its deadline: %w", context.DeadlineExceeded)
+)
+
+func defaultTurnModelDeadlines() turnModelDeadlines {
+	return turnModelDeadlines{
+		firstPayload:     turnModelFirstPayloadDeadline,
+		meaningfulAction: turnModelMeaningfulActionDeadline,
+		singleDispatch:   turnModelSingleDispatchDeadline,
+	}
+}
+
+// turnModelDeadlineGuard owns only one physical provider dispatch. The
+// admitted model-active context remains the stronger outer budget.
+type turnModelDeadlineGuard struct {
+	mu               sync.Mutex
+	parent           context.Context
+	cancel           context.CancelCauseFunc
+	firstPayload     *time.Timer
+	meaningfulAction *time.Timer
+	singleDispatch   *time.Timer
+	failure          error
+	closed           bool
+}
+
+func newTurnModelDeadlineGuard(parent context.Context, deadlines turnModelDeadlines, outerLimit time.Duration) (context.Context, *turnModelDeadlineGuard) {
+	ctx, cancel := context.WithCancelCause(parent)
+	guard := &turnModelDeadlineGuard{parent: parent, cancel: cancel}
+	install := func(duration time.Duration, failure error) *time.Timer {
+		if duration <= 0 || outerLimit > 0 && duration >= outerLimit {
+			return nil
+		}
+		return time.AfterFunc(duration, func() { guard.expire(failure) })
+	}
+	guard.firstPayload = install(deadlines.firstPayload, errTurnModelFirstPayloadDeadline)
+	guard.meaningfulAction = install(deadlines.meaningfulAction, errTurnModelMeaningfulActionDeadline)
+	guard.singleDispatch = install(deadlines.singleDispatch, errTurnModelSingleDispatchDeadline)
+	return ctx, guard
+}
+
+func (g *turnModelDeadlineGuard) expire(failure error) {
+	g.mu.Lock()
+	if g.closed || g.failure != nil || g.parent.Err() != nil {
+		g.mu.Unlock()
+		return
+	}
+	g.failure = failure
+	g.mu.Unlock()
+	g.cancel(failure)
+}
+
+func nonemptyProviderPayload(delta ModelDelta) bool {
+	if delta.Text != "" || delta.ReasoningContent != "" {
+		return true
+	}
+	return delta.ToolCall != nil && (delta.ToolCall.ID != "" || delta.ToolCall.Name != "" || delta.ToolCall.Arguments != "")
+}
+
+func meaningfulProviderAction(delta ModelDelta) bool {
+	return strings.TrimSpace(delta.Text) != "" || delta.ToolCall != nil && delta.ToolCall.Validate() == nil
+}
+
+func (g *turnModelDeadlineGuard) observe(delta ModelDelta) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return
+	}
+	if nonemptyProviderPayload(delta) && g.firstPayload != nil {
+		g.firstPayload.Stop()
+		g.firstPayload = nil
+	}
+	if meaningfulProviderAction(delta) && g.meaningfulAction != nil {
+		g.meaningfulAction.Stop()
+		g.meaningfulAction = nil
+	}
+}
+
+// finish treats a runner terminal return as a meaningful action and releases
+// all timers. Parent cancellation or expiry remains stronger while the runner
+// unwinds; otherwise a dispatch-local deadline that already won is returned.
+func (g *turnModelDeadlineGuard) finish() error {
+	g.mu.Lock()
+	g.closed = true
+	for _, timer := range []*time.Timer{g.firstPayload, g.meaningfulAction, g.singleDispatch} {
+		if timer != nil {
+			timer.Stop()
+		}
+	}
+	failure := g.failure
+	if g.parent.Err() != nil {
+		failure = nil
+	}
+	g.mu.Unlock()
+	g.cancel(nil)
+	return failure
+}
 
 type Service struct {
 	store            Store
@@ -54,6 +163,9 @@ type Service struct {
 	runtime          map[string]*turnRuntime
 	turnOrderingMu   sync.Mutex
 	turnOrdering     map[string]*turnDeltaOrdering
+	modelDeadlines   turnModelDeadlines
+	continuityMu     sync.Mutex
+	continuity       map[string]string
 }
 
 type turnModelOutcome struct {
@@ -131,11 +243,37 @@ func NewService(store Store, models ModelRunner, extensions ExtensionResolver, p
 		extensions = noopExtensions{}
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
-	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}}
+	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}, modelDeadlines: defaultTurnModelDeadlines(), continuity: map[string]string{}}
 	if turns, ok := store.(TurnStore); ok {
 		s.turns = turns
 	}
 	return s, nil
+}
+
+func (s *Service) takeProviderContinuity(turnID string) string {
+	// One durable turn has exactly one in-process supervisor and one fenced
+	// provider lease, so TurnID is sufficient for this live-only handoff.
+	s.continuityMu.Lock()
+	defer s.continuityMu.Unlock()
+	value := s.continuity[turnID]
+	delete(s.continuity, turnID)
+	return value
+}
+
+func (s *Service) retainProviderContinuity(turnID, value string) {
+	s.continuityMu.Lock()
+	defer s.continuityMu.Unlock()
+	if value == "" {
+		delete(s.continuity, turnID)
+		return
+	}
+	s.continuity[turnID] = value
+}
+
+func (s *Service) clearProviderContinuity() {
+	s.continuityMu.Lock()
+	clear(s.continuity)
+	s.continuityMu.Unlock()
 }
 
 func NewOrchestrator(store Store, models ModelRunner, extensions ExtensionResolver, profiles SnapshotProfileResolver) (*Orchestrator, error) {
@@ -636,6 +774,7 @@ func (s *Service) CancelTurn(ctx context.Context, cmd TurnCancelCommand) (Turn, 
 	}
 	turn, err := s.turns.RequestTurnCancel(ctx, cmd)
 	if err == nil {
+		s.retainProviderContinuity(cmd.TurnID, "")
 		s.runtimeMu.Lock()
 		if runtime := s.runtime[cmd.TurnID]; runtime != nil {
 			select {
@@ -717,6 +856,7 @@ func (s *Service) SteerTurn(ctx context.Context, cmd TurnSteerCommand) (Turn, er
 	if !interrupt {
 		return turn, nil
 	}
+	s.retainProviderContinuity(cmd.TurnID, "")
 	s.cancelMu.Lock()
 	if signal := s.cancelSignals[cmd.TurnID]; signal != nil {
 		select {
@@ -888,6 +1028,7 @@ func (s *Service) startTurnSupervisor(id string, parent context.Context) {
 		defer cancel()
 		defer close(runtime.done)
 		defer func() { s.runtimeMu.Lock(); delete(s.runtime, id); s.runtimeMu.Unlock() }()
+		defer s.retainProviderContinuity(id, "")
 		stop := make(chan struct{})
 		go func() {
 			select {
@@ -909,6 +1050,7 @@ func (s *Service) Close() error {
 }
 
 func (s *Service) CloseContext(ctx context.Context) error {
+	defer s.clearProviderContinuity()
 	if s.lifecycleCancel != nil {
 		s.lifecycleCancel()
 	}
@@ -1301,6 +1443,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		return
 	}
 	modelCtx := child
+	modelDeadlineCap := time.Duration(0)
 	if durableDispatch && !replayed {
 		prepared, prepareErr := dispatchStore.PrepareTurnModel(ctx, lease, directive)
 		if errors.Is(prepareErr, ErrModelBudgetExhausted) {
@@ -1351,6 +1494,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			commitFallback(finalization, failure.Code, failure.Summary)
 			return
 		}
+		modelDeadlineCap = remaining
 		var modelCancel context.CancelFunc
 		modelCtx, modelCancel = context.WithTimeout(child, remaining)
 		defer modelCancel()
@@ -1407,6 +1551,12 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		InputPartsByMessageID: inputParts,
 	}
 	if !replayed {
+		continuity := s.takeProviderContinuity(id)
+		if !finalizing && directive.ToolMode == TurnDispatchToolsAdmitted && len(toolCallAuthorities) != 0 {
+			frozenModelRequest.TransientProviderReasoning = continuity
+		}
+	}
+	if !replayed {
 		if attempts, ok := s.turns.(TurnModelAttemptStore); ok {
 			if bindErr := attempts.BindTurnModelRuntime(ctx, lease, runtimeSnapshot); bindErr != nil {
 				if errors.Is(bindErr, ErrTurnRuntimeIncompatible) {
@@ -1419,9 +1569,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	runAttempt := func() {
 		deltaBuffer := newTurnDeltaBuffer(defaultTurnDeltaFlushBytes, defaultTurnDeltaFlushInterval, func(delta ModelDelta) error {
 			_, appendErr := s.turns.AppendTurnEvent(ctx, id, TurnEvent{
-				Kind:             TurnEventDelta,
-				Text:             delta.Text,
-				ReasoningContent: delta.ReasoningContent,
+				Kind: TurnEventDelta,
+				Text: delta.Text,
 			})
 			return appendErr
 		})
@@ -1429,22 +1578,34 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		s.registerTurnOrdering(id, ordering)
 		go func() {
 			defer s.unregisterTurnOrdering(id, ordering)
-			visibleOutput := false
-			result, runErr := s.runModel(modelCtx, frozenModelRequest, func(delta ModelDelta) error {
-				if delta.Text != "" || delta.ReasoningContent != "" || delta.ToolCall != nil {
-					visibleOutput = true
+			dispatchCtx, deadlineGuard := newTurnModelDeadlineGuard(modelCtx, s.modelDeadlines, modelDeadlineCap)
+			providerPayload := false
+			var callbackErr error
+			result, runErr := s.runModel(dispatchCtx, frozenModelRequest, func(delta ModelDelta) error {
+				deadlineGuard.observe(delta)
+				if nonemptyProviderPayload(delta) {
+					providerPayload = true
 				}
-				return deltaBuffer.Append(delta)
+				callbackErr = deltaBuffer.Append(ModelDelta{Text: delta.Text})
+				return callbackErr
 			})
+			deadlineErr := deadlineGuard.finish()
 			flushErr := deltaBuffer.Close()
 			if runErr == nil && flushErr != nil {
 				runErr = flushErr
 			}
-			if errors.Is(modelCtx.Err(), context.DeadlineExceeded) && child.Err() == nil {
+			if callbackErr == nil && flushErr == nil && deadlineErr != nil &&
+				(runErr == nil || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
+				runErr = deadlineErr
+			}
+			if callbackErr == nil && flushErr == nil && errors.Is(modelCtx.Err(), context.DeadlineExceeded) && child.Err() == nil {
 				runErr = ErrModelBudgetExhausted
 			}
 			retry := coremodel.PreOutputRetryMetadata(runErr)
-			if visibleOutput || flushErr != nil {
+			// Once any provider payload is accepted, including raw reasoning or an
+			// incomplete tool fragment, a latency watchdog failure must not trigger
+			// the one pre-output provider retry.
+			if providerPayload || flushErr != nil {
 				retry = coremodel.RetryMetadata{}
 			}
 			resultCh <- turnModelOutcome{result: result, err: runErr, retry: retry}
@@ -1685,6 +1846,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					s.executeTurn(ctx, id)
 					return
 				}
+				s.retainProviderContinuity(id, out.result.TransientProviderReasoning)
 				if durableDispatch && !replayed {
 					if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
 						return
@@ -1875,7 +2037,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 			m := out.result.Message
 			m.Content = history.continuationContent + m.Content
-			m.ReasoningContent = history.priorReasoning + m.ReasoningContent
 			if containsScheduleIntrinsic(intrinsicTools) && isReservedScheduleSuccessReceipt(m.Content) {
 				_, _ = s.turns.FailTurn(ctx, lease, "schedule_commit_missing", "schedule success requires an authoritative Core schedule commit")
 				return
@@ -2258,7 +2419,7 @@ func deterministicRetryBackoff(turnID string, retry int) time.Duration {
 
 func validModelContinuation(result ModelRunResult) bool {
 	if !result.Continue || result.Done || len(result.ToolCalls) != 0 || len(result.Message.ToolCalls) != 0 ||
-		(result.Message.Content == "" && result.Message.ReasoningContent == "") {
+		result.Message.Content == "" {
 		return false
 	}
 	message := result.Message
@@ -2744,7 +2905,6 @@ func hasUnappliedDeferredWorkerSteer(steers []TurnSteer, appliedSteerIDs []strin
 type turnHistoryReplay struct {
 	authorities         map[string]turnToolCallAuthority
 	continuationContent string
-	priorReasoning      string
 	continueOutput      bool
 	forcedToolName      string
 	supervisorTerminal  bool
@@ -2784,7 +2944,6 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 	}
 	type toolBatch struct {
 		content       strings.Builder
-		reasoning     strings.Builder
 		calls         []ToolCall
 		results       map[string]batchResult
 		createdAt     time.Time
@@ -2792,7 +2951,6 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 	}
 	batch := toolBatch{results: make(map[string]batchResult)}
 	var continuationContent strings.Builder
-	var completedReasoning strings.Builder
 	continueOutput := false
 	forcedToolName := ""
 	invalidResults := make(map[string]uint8)
@@ -2811,10 +2969,9 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		createdAt := nextMessageTime(*conversation, batch.createdAt)
 		conversation.Messages = append(conversation.Messages, Message{
 			ID:   uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-tool-batch:"+turn.ID+":"+batch.calls[0].ID)).String(),
-			Role: RoleAssistant, Content: batch.content.String(), ReasoningContent: batch.reasoning.String(),
+			Role: RoleAssistant, Content: batch.content.String(),
 			ToolCalls: append([]ToolCall(nil), batch.calls...), CreatedAt: createdAt, ModelProfileID: turn.ProfileID,
 		})
-		completedReasoning.WriteString(batch.reasoning.String())
 		for _, call := range batch.calls {
 			stored := batch.results[call.ID]
 			createdAt = nextMessageTime(*conversation, stored.createdAt)
@@ -2828,17 +2985,16 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		return nil
 	}
 	flushContinuation := func() {
-		if len(batch.calls) != 0 || (batch.content.Len() == 0 && batch.reasoning.Len() == 0) {
+		if len(batch.calls) != 0 || batch.content.Len() == 0 {
 			return
 		}
 		createdAt := nextMessageTime(*conversation, batch.createdAt)
 		conversation.Messages = append(conversation.Messages, Message{
 			ID:   uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("turn-output-fragment:%s:%d", turn.ID, batch.firstSequence))).String(),
-			Role: RoleAssistant, Content: batch.content.String(), ReasoningContent: batch.reasoning.String(),
+			Role: RoleAssistant, Content: batch.content.String(),
 			CreatedAt: createdAt, ModelProfileID: turn.ProfileID,
 		})
 		continuationContent.WriteString(batch.content.String())
-		completedReasoning.WriteString(batch.reasoning.String())
 		continueOutput = true
 		batch = toolBatch{results: make(map[string]batchResult)}
 	}
@@ -2868,7 +3024,6 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 				batch.createdAt = event.CreatedAt
 			}
 			batch.content.WriteString(event.Text)
-			batch.reasoning.WriteString(event.ReasoningContent)
 		case TurnEventToolCall:
 			if event.ToolCall == nil || event.ToolCall.Validate() != nil {
 				return turnHistoryReplay{}, ErrConflict
@@ -2940,7 +3095,7 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 		forcedToolName = ""
 	}
 	return turnHistoryReplay{
-		authorities: authorities, continuationContent: continuationContent.String(), priorReasoning: completedReasoning.String(),
+		authorities: authorities, continuationContent: continuationContent.String(),
 		continueOutput: continueOutput, forcedToolName: forcedToolName, supervisorTerminal: supervisorTerminal, loopRecovery: toolLoopRecoveryFor(loopPairs),
 	}, nil
 }

@@ -347,7 +347,7 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 	messages := []coreconversation.Message{
 		{ID: uuid.NewString(), Sequence: 1, Role: coreconversation.RoleUser, Content: "first", ModelProfileID: profileID, CreatedAt: now, Attachments: []coreconversation.AttachmentPresentation{{SourceID: uuid.NewString(), Kind: "file", Name: "notes.md", MediaType: "text/markdown", SizeBytes: 42}}},
 		{ID: uuid.NewString(), Sequence: 2, Role: coreconversation.RoleTool, ToolResults: []coreconversation.ToolResult{{CallID: "call", Content: "private tool payload"}}, ModelProfileID: profileID, CreatedAt: now.Add(time.Second)},
-		{ID: uuid.NewString(), TurnID: turnID, Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ReasoningContent: "durable reasoning", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second), Status: "failed", RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID}},
+		{ID: uuid.NewString(), TurnID: turnID, Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second), Status: "failed", RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID}},
 		{ID: uuid.NewString(), Sequence: 4, Role: coreconversation.RoleSystem, Content: "private system context", ModelProfileID: profileID, CreatedAt: now.Add(3 * time.Second)},
 		{ID: uuid.NewString(), Sequence: 5, Role: coreconversation.RoleUser, Content: "third", ModelProfileID: profileID, CreatedAt: now.Add(4 * time.Second), Attachments: []coreconversation.AttachmentPresentation{{SourceID: uuid.NewString(), Kind: "image", Name: "screen.png", MediaType: "image/png", SizeBytes: 84}}},
 	}
@@ -362,7 +362,7 @@ func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrd
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(raw, []byte("private tool payload")) || bytes.Contains(raw, []byte("private system context")) || !bytes.Contains(raw, []byte(`"reasoning_content":"durable reasoning"`)) || !bytes.Contains(raw, []byte(`"references":[]`)) {
+	if bytes.Contains(raw, []byte("private tool payload")) || bytes.Contains(raw, []byte("private system context")) || bytes.Contains(raw, []byte(`"reasoning_content"`)) || !bytes.Contains(raw, []byte(`"references":[]`)) {
 		t.Fatalf("public history leaked Core-only fields: %s", raw)
 	}
 	if !bytes.Contains(raw, []byte(`"related_task_ids":["`+taskID+`"]`)) || !bytes.Contains(raw, []byte(`"related_plan_ids":["`+planID+`"]`)) {
@@ -1140,7 +1140,7 @@ func TestDurableDoneEventProjectsAuthoritativeResponse(t *testing.T) {
 		Kind: coreconversation.TurnEventDone, Revision: 6,
 		Response: &coreconversation.ChatResponse{
 			RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 6, Done: true,
-			Message:        coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "final answer", ReasoningContent: "final reasoning"},
+			Message:        coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "final answer"},
 			RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID}, References: []coreconversation.Reference{reference},
 		},
 	}
@@ -1152,8 +1152,11 @@ func TestDurableDoneEventProjectsAuthoritativeResponse(t *testing.T) {
 	if err := json.Unmarshal(raw, &projected); err != nil {
 		t.Fatal(err)
 	}
-	if projected["kind"] != "done" || projected["text"] != "final answer" || projected["reasoning_content"] != "final reasoning" {
+	if projected["kind"] != "done" || projected["text"] != "final answer" {
 		t.Fatalf("terminal response text projection mismatch: %s", raw)
+	}
+	if _, exposed := projected["reasoning_content"]; exposed {
+		t.Fatalf("terminal response exposed reasoning field: %s", raw)
 	}
 	if projected["related_task_ids"].([]any)[0] != taskID || projected["related_plan_ids"].([]any)[0] != planID {
 		t.Fatalf("terminal related ids projection mismatch: %s", raw)

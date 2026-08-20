@@ -1,11 +1,30 @@
 package postgres
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 )
+
+func TestDurableTurnDispatchEnvelopeExcludesTransientProviderReasoning(t *testing.T) {
+	result := core.ModelRunResult{TransientProviderReasoning: "private provider reasoning"}
+	envelope, err := newDurableTurnDispatchEnvelope(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Result.TransientProviderReasoning != "" {
+		t.Fatalf("durable envelope retained transient reasoning: %+v", envelope.Result)
+	}
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("reasoning")) {
+		t.Fatalf("durable envelope JSON exposed transient reasoning: %s", raw)
+	}
+}
 
 func TestReferenceArrayJSONPGAlwaysEncodesJSONArray(t *testing.T) {
 	tests := []struct {

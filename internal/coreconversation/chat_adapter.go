@@ -136,7 +136,7 @@ func streamEventFromTurnEvent(turn Turn, event TurnEvent) *StreamEvent {
 	case TurnEventStarted:
 		base.Kind = EventStarted
 	case TurnEventDelta:
-		base.Kind, base.Text, base.ReasoningContent = EventDelta, event.Text, event.ReasoningContent
+		base.Kind, base.Text = EventDelta, event.Text
 	case TurnEventToolCall:
 		base.Kind, base.ToolCall = EventToolCall, event.ToolCall
 	case TurnEventToolResult:

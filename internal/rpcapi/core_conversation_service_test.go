@@ -110,19 +110,32 @@ func TestTurnEventProtoRetainsNonWaitingTerminalReferences(t *testing.T) {
 	}
 }
 
-func TestTurnEventAndMessageProtoExposeReasoningContent(t *testing.T) {
+func TestPublicConversationProtosReserveAndExcludeReasoningContent(t *testing.T) {
 	event := coreconversation.TurnEvent{
 		TurnID: uuid.NewString(), Sequence: 2, Revision: 1, Kind: coreconversation.TurnEventDelta,
-		ReasoningContent: "reasoning chunk", CreatedAt: time.Now().UTC(),
+		Text: "answer chunk", CreatedAt: time.Now().UTC(),
 	}
 	response, err := turnEventProto(event)
-	if err != nil || response.GetEvent().GetReasoningContent() != event.ReasoningContent {
-		t.Fatalf("reasoning event=%+v err=%v", response, err)
+	if err != nil || response.GetEvent().GetText() != event.Text {
+		t.Fatalf("public event=%+v err=%v", response, err)
 	}
-	message := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "answer", ReasoningContent: "full reasoning", ModelProfileID: uuid.NewString(), CreatedAt: time.Now().UTC()}
+	message := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: "answer", ModelProfileID: uuid.NewString(), CreatedAt: time.Now().UTC()}
 	projected := msgProto(message, 2, uuid.NewString())
-	if projected.GetReasoningContent() != message.ReasoningContent {
-		t.Fatalf("reasoning message=%+v", projected)
+	if projected.GetContent() != message.Content {
+		t.Fatalf("public message=%+v", projected)
+	}
+	for _, contract := range []struct {
+		name   string
+		number int32
+		desc   protoreflect.MessageDescriptor
+	}{
+		{name: "conversation message", number: 13, desc: (&agentv1.CoreConversationMessage{}).ProtoReflect().Descriptor()},
+		{name: "stream delta", number: 2, desc: (&agentv1.CoreStreamChatDelta{}).ProtoReflect().Descriptor()},
+		{name: "turn event", number: 21, desc: (&agentv1.CoreConversationTurnEvent{}).ProtoReflect().Descriptor()},
+	} {
+		if contract.desc.Fields().ByName("reasoning_content") != nil || !contract.desc.ReservedRanges().Has(protoreflect.FieldNumber(contract.number)) || !contract.desc.ReservedNames().Has("reasoning_content") {
+			t.Fatalf("%s reasoning field is not removed and reserved", contract.name)
+		}
 	}
 }
 

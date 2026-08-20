@@ -30,7 +30,7 @@ func newTurnDeltaBuffer(limit int, interval time.Duration, appendDelta func(Mode
 }
 
 func (b *turnDeltaBuffer) Append(delta ModelDelta) error {
-	if delta.Text == "" && delta.ReasoningContent == "" {
+	if delta.Text == "" {
 		return nil
 	}
 	b.mu.Lock()
@@ -38,14 +38,13 @@ func (b *turnDeltaBuffer) Append(delta ModelDelta) error {
 	if b.closed || b.err != nil {
 		return b.err
 	}
-	if len(b.segments) != 0 && sameDeltaChannels(b.segments[len(b.segments)-1], delta) {
+	if len(b.segments) != 0 {
 		last := &b.segments[len(b.segments)-1]
 		last.Text += delta.Text
-		last.ReasoningContent += delta.ReasoningContent
 	} else {
 		b.segments = append(b.segments, delta)
 	}
-	b.bytes += len(delta.Text) + len(delta.ReasoningContent)
+	b.bytes += len(delta.Text)
 	if b.bytes >= b.limit {
 		return b.flushLocked()
 	}
@@ -113,11 +112,6 @@ func (b *turnDeltaBuffer) flushLocked() error {
 		}
 	}
 	return b.err
-}
-
-func sameDeltaChannels(left, right ModelDelta) bool {
-	return (left.Text != "") == (right.Text != "") &&
-		(left.ReasoningContent != "") == (right.ReasoningContent != "")
 }
 
 type turnDeltaOrdering struct {

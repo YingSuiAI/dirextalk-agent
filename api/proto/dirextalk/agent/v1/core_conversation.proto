@@ -57,6 +57,8 @@ message CoreConversationReference {
 }
 
 message CoreConversationMessage {
+  reserved 13;
+  reserved "reasoning_content";
   string message_id = 1;
   string conversation_id = 2;
   int64 sequence = 3;
@@ -69,7 +71,6 @@ message CoreConversationMessage {
   google.protobuf.Timestamp created_at = 10;
   repeated string related_plan_ids = 11;
   repeated CoreConversationReference references = 12;
-  string reasoning_content = 13;
 }
 
 message ConversationServiceCreateRequest {
@@ -137,8 +138,9 @@ message ConversationServiceStreamChatRequest {
   string execution_mode = 10;
 }
 message CoreStreamChatDelta {
+  reserved 2;
+  reserved "reasoning_content";
   string text = 1;
-  string reasoning_content = 2;
 }
 message CoreStreamChatToolProgress {
   string name = 1;
@@ -217,6 +219,8 @@ message ConversationServiceWatchTurnEventsRequest {
   int32 limit = 3;
 }
 message CoreConversationTurnEvent {
+  reserved 21;
+  reserved "reasoning_content";
   reserved 13;
   reserved "attempt_id";
 
@@ -240,7 +244,6 @@ message CoreConversationTurnEvent {
   repeated CoreConversationReference references = 19;
   // The positive turn revision captured atomically when this event was written.
   uint64 revision = 20;
-  string reasoning_content = 21;
   string phase = 22;
 }
 message ConversationServiceCancelTurnRequest {

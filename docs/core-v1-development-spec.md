@@ -253,11 +253,13 @@ request and idle timeouts, rate limiting, other 4xx rejection, 5xx failure,
 transport unavailability, invalid responses, truncation, and output limits.
 Only safe classes cross the conversation boundary: 4xx is
 `provider_rejected`, timeout is `provider_timeout`, and otherwise uncertain
-dispatch remains `provider_uncertain`. Before any text, reasoning, or tool-call
-delta is visible, one physical retry is allowed only for 408, 429, 502, 503,
-504, or a confirmed dial failure. `Retry-After` seconds and HTTP dates are
-honored up to 30 seconds; other transport failures and all post-output failures
-are never replayed. Once ordinary provider work stops because of one of these
+dispatch remains `provider_uncertain`. Before any nonempty provider payload,
+one physical retry is allowed only for 408, 429, 502, 503, 504, or a confirmed
+dial failure. Provider reasoning and incomplete tool-call fragments count as
+nonempty payload for this no-replay boundary even though neither is a
+meaningful action. `Retry-After` seconds and HTTP dates are honored up to 30
+seconds; other transport failures and all post-payload failures are never
+replayed. Once ordinary provider work stops because of one of these
 classifications, invalid or empty terminal output, no-progress tool use, or an
 ordinary model/tool budget, Core persists a versioned finalization intent. The
 intent admits one separate tools-disabled provider attempt with a 30-second
@@ -494,7 +496,15 @@ lease fence. Tool-budget and no-progress finalization outrank a prior
 correctable-tool force so correction cannot suppress terminal synthesis. Tool,
 Worker, and confirmation execution or waiting do not consume the admitted
 model-active clock. Worker-owned runtime, token, output, remote-process, and
-Task deadlines remain separate from the main conversation ReAct policy. A
+Task deadlines remain separate from the main conversation ReAct policy. Every
+physical provider dispatch has nonrenewing deadlines measured from dispatch
+start: 15 seconds to the first nonempty payload, 90 seconds to the first
+meaningful action, and five minutes absolute. Reasoning may satisfy the first
+deadline; keepalives, empty deltas, reasoning, and incomplete tool-call
+fragments cannot satisfy the second. User-visible text, a complete valid tool
+call, or a normal runner return is meaningful. The admitted remaining
+model-active clock is stronger and owns equal expirations as
+`model_budget_exhausted`; a dispatch-local expiry is `provider_timeout`. A
 durable finalization intent may reserve one additional physical attempt, so the
 ledger permits at most sequence 25 without changing the admitted ordinary
 fuse. The finalization attempt has no intrinsic tools,
@@ -515,11 +525,12 @@ round ordinal remains the current replay identity. Core v1 does not expose Eino
 graphs as a user-authored workflow surface.
 
 A provider-declared output limit is a completed fragment, not an unknown
-transport outcome. Core persists its streamed text and reasoning, releases the
-model round, and reconstructs that fragment from ordered turn events before
-continuing with the same frozen context and complete accepted tool catalog,
-including after restart. A partial tool call from the limited fragment is not
-published or executed; the continuation may issue a fresh complete call.
+transport outcome. Core persists its streamed text, releases the model round,
+and reconstructs that fragment from ordered turn events before continuing with
+the same frozen context and complete accepted tool catalog, including after
+restart. Provider reasoning is never part of that durable reconstruction. A
+partial tool call from the limited fragment is not published or executed; the
+continuation may issue a fresh complete call.
 
 A durable model round may return multiple tool calls. Core persists the exact
 model result once and processes calls in producer order, retaining that batch
@@ -531,8 +542,13 @@ only after every call in the retained batch has a durable result. A read-only
 tool execution error is recorded as an error result for the next model round,
 so invalid arguments or a provider failure do not discard the conversation.
 The next model request replays that round as one assistant message with its
-content, reasoning, and complete call batch, followed by one result message per
-call in producer order.
+content and complete call batch, followed by one result message per call in
+producer order. Provider reasoning is absent from public and durable messages,
+events, transcripts, history, and model-result envelopes. The live process may
+carry parsed OpenAI-compatible reasoning exactly once into the immediately
+following non-finalization, tools-admitted continuation for the same turn; it
+is consumed on use and cleared by restart, cancel, steer, supervisor exit, or
+service close.
 Immediate read-only dispatch uses a compact private pending/dispatched/terminal
 authority inside the current versioned turn-dispatch envelope; it never consumes
 or leaks a public conversation event sequence. Public history contains only the

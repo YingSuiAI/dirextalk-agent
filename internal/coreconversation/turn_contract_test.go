@@ -185,14 +185,14 @@ func (m *outputContinuationTurnModel) Stream(_ context.Context, request ModelRun
 				return ModelRunResult{}, err
 			}
 		}
-		return ModelRunResult{Continue: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "first ", ReasoningContent: "reasoning one", CreatedAt: time.Now().UTC()}}, nil
+		return ModelRunResult{Continue: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "first ", CreatedAt: time.Now().UTC()}, TransientProviderReasoning: "reasoning one"}, nil
 	}
 	if emit != nil {
 		if err := emit(ModelDelta{Text: "second", ReasoningContent: "reasoning two"}); err != nil {
 			return ModelRunResult{}, err
 		}
 	}
-	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "second", ReasoningContent: "reasoning two", CreatedAt: time.Now().UTC()}}, nil
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "second", CreatedAt: time.Now().UTC()}, TransientProviderReasoning: "reasoning two"}, nil
 }
 
 type delayedStreamingTurnModel struct {
@@ -221,7 +221,7 @@ func (m *delayedStreamingTurnModel) Stream(ctx context.Context, _ ModelRunReques
 	case <-ctx.Done():
 		return ModelRunResult{}, ctx.Err()
 	}
-	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", ReasoningContent: "durable reasoning", CreatedAt: time.Now().UTC()}}, nil
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", CreatedAt: time.Now().UTC()}, TransientProviderReasoning: "private terminal reasoning"}, nil
 }
 
 type fixedToolCallsTurnModel struct{ calls []ToolCall }
@@ -307,16 +307,16 @@ func (m *repeatingToolTurnModel) Stream(ctx context.Context, request ModelRunReq
 func (m *twoRoundReadOnlyModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
 	m.requests = append(m.requests, request)
 	if len(m.requests) == 1 {
-		message := Message{ID: uuid.NewString(), Role: RoleAssistant, ReasoningContent: "tool reasoning", ToolCalls: []ToolCall{m.call}, CreatedAt: time.Now().UTC()}
-		return ModelRunResult{Message: message, ToolCalls: []ToolCall{m.call}}, nil
+		message := Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: []ToolCall{m.call}, CreatedAt: time.Now().UTC()}
+		return ModelRunResult{Message: message, ToolCalls: []ToolCall{m.call}, TransientProviderReasoning: "tool reasoning"}, nil
 	}
-	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", ReasoningContent: "final reasoning", CreatedAt: time.Now().UTC()}}, nil
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", CreatedAt: time.Now().UTC()}, TransientProviderReasoning: "final reasoning"}, nil
 }
 
 func (m *twoRoundReadOnlyModel) Stream(ctx context.Context, request ModelRunRequest, emit func(ModelDelta) error) (ModelRunResult, error) {
 	result, err := m.Run(ctx, request)
 	if err == nil && emit != nil {
-		err = emit(ModelDelta{ReasoningContent: result.Message.ReasoningContent})
+		err = emit(ModelDelta{ReasoningContent: result.TransientProviderReasoning})
 	}
 	return result, err
 }
@@ -1072,7 +1072,7 @@ func TestExecuteTurnDurableUsesStreamingPathBeyondLegacyTotalWindow(t *testing.T
 	elapsed := time.Since(started)
 
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
-	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "final answer" || terminal.Response.Message.ReasoningContent != "durable reasoning" {
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "final answer" {
 		t.Fatalf("terminal=%+v err=%v", terminal, err)
 	}
 	if model.runCalls != 0 || model.streamCalls != 1 {
@@ -1082,11 +1082,11 @@ func TestExecuteTurnDurableUsesStreamingPathBeyondLegacyTotalWindow(t *testing.T
 		t.Fatalf("durable streaming elapsed=%s delay=%s legacy_window=%s", elapsed, model.delay, simulatedLegacyTotalWindow)
 	}
 	if len(store.events) != 4 || store.events[0].Kind != TurnEventAccepted || store.events[1].Kind != TurnEventStarted ||
-		store.events[2].Kind != TurnEventDelta || store.events[2].Text != "intermediate-only delta" || store.events[2].ReasoningContent != "durable reasoning" || store.events[3].Kind != TurnEventDone {
+		store.events[2].Kind != TurnEventDelta || store.events[2].Text != "intermediate-only delta" || store.events[3].Kind != TurnEventDone {
 		t.Fatalf("durable events=%+v", store.events)
 	}
 	replayed, err := store.LoadTurnEvents(context.Background(), turn.ID, 0, 1000)
-	if err != nil || len(replayed) != 4 || replayed[2].Kind != TurnEventDelta || replayed[2].Text != "intermediate-only delta" || replayed[2].ReasoningContent != "durable reasoning" || replayed[3].Kind != TurnEventDone {
+	if err != nil || len(replayed) != 4 || replayed[2].Kind != TurnEventDelta || replayed[2].Text != "intermediate-only delta" || replayed[3].Kind != TurnEventDone {
 		t.Fatalf("replayed durable events=%+v err=%v", replayed, err)
 	}
 	if strings.Contains(terminal.Response.Message.Content, "intermediate-only delta") {
@@ -1132,41 +1132,38 @@ func TestSteerFlushesBufferedProviderOutputBeforeSteeredEvent(t *testing.T) {
 	store.mu.Lock()
 	events := append([]TurnEvent(nil), store.events...)
 	store.mu.Unlock()
-	deltaIndex, steerIndex := -1, -1
+	steerIndex := -1
 	for index, event := range events {
-		if event.Kind == TurnEventDelta && event.ReasoningContent == "reasoning before steer" {
-			deltaIndex = index
+		if event.Kind == TurnEventDelta {
+			t.Fatalf("raw reasoning entered durable event history: %+v", events)
 		}
 		if event.Kind == TurnEventSteered && event.Text == "new guidance" {
 			steerIndex = index
 		}
 	}
-	if deltaIndex < 0 || steerIndex < 0 || deltaIndex >= steerIndex || events[deltaIndex].Sequence >= events[steerIndex].Sequence {
-		t.Fatalf("buffered provider output crossed steer boundary: %+v", events)
+	if steerIndex < 0 {
+		t.Fatalf("steer event missing: %+v", events)
 	}
 }
 
-func TestExecuteTurnReplayDoesNotDuplicateTerminalReasoningDelta(t *testing.T) {
+func TestExecuteTurnReplayDoesNotExposeTransientProviderReasoning(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
 	turn := Turn{
 		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
 		Prompt: "recover the completed provider response", ProfileID: profile.ProfileID,
 		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
-		State: TurnAccepted, Revision: 1, LastSequence: 2, CreatedAt: time.Now().UTC(),
+		State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC(),
 	}
 	base := newFakeStore()
 	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	store := &readOnlyTurnStore{
 		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
-		events: []TurnEvent{
-			{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt},
-			{TurnID: turn.ID, Sequence: 2, Revision: 1, Kind: TurnEventDelta, ReasoningContent: "final reasoning", CreatedAt: turn.CreatedAt.Add(time.Second)},
-		},
-		dispatchState: "completed",
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+		dispatchState:         "completed",
 		dispatch: ModelRunResult{Done: true, Message: Message{
-			ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", ReasoningContent: "final reasoning", CreatedAt: time.Now().UTC(),
-		}},
+			ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", CreatedAt: time.Now().UTC(),
+		}, TransientProviderReasoning: "private replay reasoning"},
 	}
 	model := &capturingTurnModel{}
 	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
@@ -1178,9 +1175,6 @@ func TestExecuteTurnReplayDoesNotDuplicateTerminalReasoningDelta(t *testing.T) {
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
 	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil {
 		t.Fatalf("terminal=%+v err=%v", terminal, err)
-	}
-	if got := terminal.Response.Message.ReasoningContent; got != "final reasoning" {
-		t.Fatalf("replayed terminal reasoning=%q", got)
 	}
 	if model.runs != 0 {
 		t.Fatalf("replayed provider result invoked model %d times", model.runs)
@@ -1228,7 +1222,7 @@ func TestExecuteTurnContinuesOutputLimitFromDurableEventsAfterRestart(t *testing
 	finalModel := &outputContinuationTurnModel{}
 	newService(finalModel).executeTurn(context.Background(), turn.ID)
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
-	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "first second" || terminal.Response.Message.ReasoningContent != "reasoning onereasoning two" {
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "first second" {
 		t.Fatalf("terminal=%+v err=%v", terminal, err)
 	}
 	if len(finalModel.requests) != 1 {
@@ -1244,7 +1238,7 @@ func TestExecuteTurnContinuesOutputLimitFromDurableEventsAfterRestart(t *testing
 		t.Fatalf("continuation context=%+v", messages)
 	}
 	partial, instruction := messages[len(messages)-2], messages[len(messages)-1]
-	if partial.Role != RoleAssistant || partial.Content != "first " || partial.ReasoningContent != "reasoning one" || len(partial.ToolCalls) != 0 ||
+	if partial.Role != RoleAssistant || partial.Content != "first " || len(partial.ToolCalls) != 0 || request.TransientProviderReasoning != "" ||
 		instruction.Role != RoleUser || instruction.Content != outputContinuationGuidance {
 		t.Fatalf("continuation request must end with partial assistant then suffix instruction: %+v", messages)
 	}
@@ -1716,10 +1710,10 @@ func TestDurableReadOnlyToolErrorReturnsToModelAndCompletesSecondRound(t *testin
 	}
 	service.executeTurn(context.Background(), turn.ID)
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
-	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "final answer" || terminal.Response.Message.ReasoningContent != "tool reasoningfinal reasoning" || len(model.requests) != 2 {
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "final answer" || len(model.requests) != 2 {
 		t.Fatalf("terminal=%+v model rounds=%d err=%v", terminal, len(model.requests), err)
 	}
-	if len(model.requests[1].Conversation.Messages) != 3 || len(model.requests[1].Conversation.Messages[1].ToolCalls) != 1 || model.requests[1].Conversation.Messages[1].ReasoningContent != "tool reasoning" || len(model.requests[1].Conversation.Messages[2].ToolResults) != 1 || !model.requests[1].Conversation.Messages[2].ToolResults[0].IsError {
+	if len(model.requests[1].Conversation.Messages) != 3 || len(model.requests[1].Conversation.Messages[1].ToolCalls) != 1 || model.requests[1].TransientProviderReasoning != "" || len(model.requests[1].Conversation.Messages[2].ToolResults) != 1 || !model.requests[1].Conversation.Messages[2].ToolResults[0].IsError {
 		t.Fatalf("second-round durable context=%+v", model.requests[1].Conversation.Messages)
 	}
 	var toolCalls, toolResults, done int
@@ -1818,8 +1812,11 @@ func TestDurableReadOnlyIntrinsicResultReturnsToNextModelRound(t *testing.T) {
 	secondRound := model.requests[1].Conversation.Messages
 	if len(secondRound) != 3 || len(secondRound[1].ToolCalls) != 1 || secondRound[1].ToolCalls[0].ID != call.ID ||
 		len(secondRound[2].ToolResults) != 1 || secondRound[2].ToolResults[0].Content != inventory || secondRound[2].ToolResults[0].ToolName != call.Name ||
-		!reflect.DeepEqual(secondRound[2].References, []Reference{roomReference}) {
+		!reflect.DeepEqual(secondRound[2].References, []Reference{roomReference}) || model.requests[1].TransientProviderReasoning != "tool reasoning" {
 		t.Fatalf("second-round intrinsic context=%+v", secondRound)
+	}
+	if service.takeProviderContinuity(turn.ID) != "" {
+		t.Fatal("transient reasoning survived one-shot consumption")
 	}
 }
 
@@ -1918,7 +1915,7 @@ func TestAppendTurnToolHistoryPreservesAssistantMultiToolBatch(t *testing.T) {
 		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
 		events: []TurnEvent{
 			{TurnID: turn.ID, Sequence: 1, Kind: TurnEventStarted, CreatedAt: createdAt},
-			{TurnID: turn.ID, Sequence: 2, Kind: TurnEventDelta, Text: "checking ", ReasoningContent: "compare both", CreatedAt: createdAt.Add(time.Second)},
+			{TurnID: turn.ID, Sequence: 2, Kind: TurnEventDelta, Text: "checking ", CreatedAt: createdAt.Add(time.Second)},
 			{TurnID: turn.ID, Sequence: 3, Kind: TurnEventToolCall, ToolCall: &first, CreatedAt: createdAt.Add(2 * time.Second)},
 			{TurnID: turn.ID, Sequence: 4, Kind: TurnEventToolResult, ToolResult: &firstResult, CreatedAt: createdAt.Add(3 * time.Second)},
 			{TurnID: turn.ID, Sequence: 5, Kind: TurnEventToolCall, ToolCall: &second, CreatedAt: createdAt.Add(4 * time.Second)},
@@ -1933,11 +1930,11 @@ func TestAppendTurnToolHistoryPreservesAssistantMultiToolBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if history.priorReasoning != "compare both" || history.loopRecovery != toolLoopNone || len(history.authorities) != 2 || len(conversation.Messages) != 3 {
-		t.Fatalf("reasoning=%q recovery=%d authorities=%d messages=%+v", history.priorReasoning, history.loopRecovery, len(history.authorities), conversation.Messages)
+	if history.loopRecovery != toolLoopNone || len(history.authorities) != 2 || len(conversation.Messages) != 3 {
+		t.Fatalf("recovery=%d authorities=%d messages=%+v", history.loopRecovery, len(history.authorities), conversation.Messages)
 	}
 	assistant := conversation.Messages[0]
-	if assistant.Role != RoleAssistant || assistant.Content != "checking " || assistant.ReasoningContent != "compare both" || !reflect.DeepEqual(assistant.ToolCalls, []ToolCall{first, second}) {
+	if assistant.Role != RoleAssistant || assistant.Content != "checking " || !reflect.DeepEqual(assistant.ToolCalls, []ToolCall{first, second}) {
 		t.Fatalf("assistant batch=%+v", assistant)
 	}
 	if conversation.Messages[1].Role != RoleTool || !reflect.DeepEqual(conversation.Messages[1].ToolResults, []ToolResult{firstResult}) ||

@@ -19,9 +19,10 @@ import (
 )
 
 type countingConversationModel struct {
-	mu     sync.Mutex
-	result core.ModelRunResult
-	runs   int
+	mu       sync.Mutex
+	result   core.ModelRunResult
+	runs     int
+	requests []core.ModelRunRequest
 }
 
 type finalizationConversationModel struct {
@@ -29,6 +30,44 @@ type finalizationConversationModel struct {
 	result   core.ModelRunResult
 	failure  error
 	requests []core.ModelRunRequest
+}
+
+type firstPayloadWatchdogModel struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (*firstPayloadWatchdogModel) Run(context.Context, core.ModelRunRequest) (core.ModelRunResult, error) {
+	return core.ModelRunResult{}, errors.New("non-streaming model path must not be used")
+}
+
+func (m *firstPayloadWatchdogModel) Stream(ctx context.Context, _ core.ModelRunRequest, _ func(core.ModelDelta) error) (core.ModelRunResult, error) {
+	m.mu.Lock()
+	m.calls++
+	m.mu.Unlock()
+	<-ctx.Done()
+	return core.ModelRunResult{}, ctx.Err()
+}
+
+func (m *firstPayloadWatchdogModel) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
+type blockingFinalizationDispatchStore struct {
+	*CoreConversationStore
+	once    sync.Once
+	reached chan struct{}
+}
+
+func (s *blockingFinalizationDispatchStore) PrepareTurnModel(ctx context.Context, lease core.TurnLease, directive core.TurnDispatchDirective) (core.Turn, error) {
+	if directive.FinalizationReason == "" {
+		return s.CoreConversationStore.PrepareTurnModel(ctx, lease, directive)
+	}
+	s.once.Do(func() { close(s.reached) })
+	<-ctx.Done()
+	return core.Turn{}, ctx.Err()
 }
 
 func (m *finalizationConversationModel) Run(_ context.Context, request core.ModelRunRequest) (core.ModelRunResult, error) {
@@ -184,10 +223,11 @@ func (m *toolBudgetConversationModel) snapshotRequests() []core.ModelRunRequest 
 	return append([]core.ModelRunRequest(nil), m.requests...)
 }
 
-func (m *countingConversationModel) Run(context.Context, core.ModelRunRequest) (core.ModelRunResult, error) {
+func (m *countingConversationModel) Run(_ context.Context, request core.ModelRunRequest) (core.ModelRunResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.runs++
+	m.requests = append(m.requests, request)
 	return m.result, nil
 }
 
@@ -199,6 +239,12 @@ func (m *countingConversationModel) count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.runs
+}
+
+func (m *countingConversationModel) snapshotRequests() []core.ModelRunRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]core.ModelRunRequest(nil), m.requests...)
 }
 
 type staticConversationExtensions struct{ resolved []core.ResolvedExtension }
@@ -357,6 +403,90 @@ func TestFinalizationIntentRestartDispatchesOncePostgres(t *testing.T) {
 	directives := loadPersistedTurnDirectives(t, h, terminal)
 	if len(directives) != 1 || directives[0].directive.FinalizationReason != core.TurnFinalizationModelBudget || directives[0].directive.ToolMode != core.TurnDispatchToolsNone {
 		t.Fatalf("directives=%+v", directives)
+	}
+}
+
+func TestDispatchFirstPayloadDeadlineFinalizesOnceAcrossRestartPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	cmd := turnCommand()
+	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
+	blocked := &blockingFinalizationDispatchStore{CoreConversationStore: h.store, reached: make(chan struct{})}
+	watchdogModel := &firstPayloadWatchdogModel{}
+	service, err := core.NewService(blocked, watchdogModel, staticConversationExtensions{}, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := service.StartTurn(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocked.reached:
+	case <-time.After(25 * time.Second):
+		t.Fatal("first-payload watchdog did not prepare finalization")
+	}
+	intent, finalizing, err := h.store.LoadTurnFinalization(context.Background(), turn.ID)
+	if err != nil || !finalizing || intent.Reason != core.TurnFinalizationProvider {
+		t.Fatalf("watchdog finalization=%+v present=%v err=%v", intent, finalizing, err)
+	}
+	if err = service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if watchdogModel.callCount() != 1 {
+		t.Fatalf("ordinary watchdog dispatches=%d", watchdogModel.callCount())
+	}
+	if _, err = h.pool.Exec(context.Background(), `UPDATE core_conversation_turns SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE turn_id=$1`, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := NewCoreConversationStore(h.store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalModel := &finalizationConversationModel{result: core.ModelRunResult{Done: true, Message: core.Message{
+		ID: uuid.NewString(), Role: core.RoleAssistant, Content: "watchdog restart synthesis", CreatedAt: time.Now().UTC(),
+	}}}
+	restartedService, err := core.NewService(restarted, finalModel, staticConversationExtensions{}, staticConversationProfile{snapshot: turn.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := recoverConversationTurnUntilTerminal(t, restartedService, restarted, turn.ID, 8*time.Second)
+	if err = restartedService.Close(); err != nil {
+		t.Fatal(err)
+	}
+	requests := finalModel.snapshotRequests()
+	if terminal.State != core.TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "watchdog restart synthesis" ||
+		terminal.TerminalCode != "provider_timeout" || len(requests) != 1 {
+		t.Fatalf("terminal=%+v finalization_requests=%d", terminal, len(requests))
+	}
+	assertFinalizationModelRequest(t, requests[0])
+	if requests[0].TransientProviderReasoning != "" {
+		t.Fatalf("finalization received provider continuity: %+v", requests[0])
+	}
+	var attempts int
+	if err = h.pool.QueryRow(context.Background(), `SELECT count(*) FROM core_conversation_model_attempts WHERE turn_id=$1`, turn.ID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("physical attempts=%d, want one watchdog dispatch plus one finalization", attempts)
+	}
+	assertSingleTurnTerminalEvent(t, restarted, turn.ID, core.TurnEventDone, "")
+
+	noReplayModel := &finalizationConversationModel{result: core.ModelRunResult{Done: true, Message: core.Message{
+		ID: uuid.NewString(), Role: core.RoleAssistant, Content: "must not replay", CreatedAt: time.Now().UTC(),
+	}}}
+	thirdService, err := core.NewService(restarted, noReplayModel, staticConversationExtensions{}, staticConversationProfile{snapshot: turn.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = thirdService.RecoverTurns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err = thirdService.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(noReplayModel.snapshotRequests()) != 0 {
+		t.Fatal("completed watchdog finalization replayed after restart")
 	}
 }
 
@@ -1062,7 +1192,7 @@ func TestConversationWebThenLocalSurvivesServiceRestartPostgres(t *testing.T) {
 	webSnapshot := core.ExtensionExecutionSnapshot{Selection: webSelection, InstallationID: webSelection.ID, VersionID: webSelection.Version, Source: "builtin:web_search:tavily", ContentDigest: webSelection.Digest, ArtifactDigest: strings.Repeat("2", 64), ToolSchemaDigest: strings.Repeat("3", 64), NetworkBindingDigest: strings.Repeat("4", 64), ToolNames: []string{"web_search"}, ReadOnly: true}
 	webCall := core.ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"bounded"}`}
 	localCall := core.ToolCall{ID: uuid.NewString(), Name: "write_html", Arguments: `{"content":"bounded"}`}
-	batch := core.ModelRunResult{Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, ToolCalls: []core.ToolCall{webCall, localCall}, CreatedAt: time.Now().UTC()}, ToolCalls: []core.ToolCall{webCall, localCall}}
+	batch := core.ModelRunResult{Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, ToolCalls: []core.ToolCall{webCall, localCall}, CreatedAt: time.Now().UTC()}, ToolCalls: []core.ToolCall{webCall, localCall}, TransientProviderReasoning: "private restart reasoning"}
 	batchModel := &countingConversationModel{result: batch}
 	webExecutions := 0
 	var executionMu sync.Mutex
@@ -1099,6 +1229,13 @@ func TestConversationWebThenLocalSurvivesServiceRestartPostgres(t *testing.T) {
 	}
 	if batchModel.count() != 1 || gotWebExecutions != 1 || preparedCount != 1 {
 		t.Fatalf("before restart model=%d web=%d local_prepare=%d", batchModel.count(), gotWebExecutions, preparedCount)
+	}
+	var dispatchJSON string
+	if err = fixture.h.pool.QueryRow(context.Background(), `SELECT dispatch_result_json::text FROM core_conversation_turns WHERE turn_id=$1`, started.ID).Scan(&dispatchJSON); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(dispatchJSON, "private restart reasoning") || strings.Contains(dispatchJSON, "reasoning_content") {
+		t.Fatalf("durable dispatch envelope exposed transient reasoning: %s", dispatchJSON)
 	}
 	attempt, err := fixture.h.store.ObserveConversationTool(context.Background(), started.ID)
 	if err != nil {
@@ -1154,6 +1291,10 @@ func TestConversationWebThenLocalSurvivesServiceRestartPostgres(t *testing.T) {
 	executionMu.Unlock()
 	if batchModel.count() != 1 || finalModel.count() != 1 || gotWebExecutions != 1 {
 		t.Fatalf("after restart batch_model=%d final_model=%d web=%d", batchModel.count(), finalModel.count(), gotWebExecutions)
+	}
+	finalRequests := finalModel.snapshotRequests()
+	if len(finalRequests) != 1 || finalRequests[0].TransientProviderReasoning != "" {
+		t.Fatalf("provider reasoning survived service restart: %+v", finalRequests)
 	}
 	var calls, results int
 	for _, event := range mustLoadTurnEvents(t, restartedStore, started.ID) {

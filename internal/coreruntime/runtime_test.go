@@ -180,7 +180,7 @@ func TestModelRunnerToolDoneAndStreamError(t *testing.T) {
 		deltas = append(deltas, delta)
 		return nil
 	})
-	if err != nil || !res.Done || res.Message.Content != "ok" || res.Message.ReasoningContent != "think then answer" || !coretask.ValidUUID(res.Message.ID) {
+	if err != nil || !res.Done || res.Message.Content != "ok" || res.TransientProviderReasoning != "think then answer" || !coretask.ValidUUID(res.Message.ID) {
 		t.Fatalf("successful stream result=%+v err=%v", res, err)
 	}
 	if len(deltas) != 3 || deltas[0].ReasoningContent != "think " || deltas[1].Text != "ok" || deltas[2].ReasoningContent != "then answer" {
@@ -199,7 +199,7 @@ func TestModelRunnerPreservesOutputLimitedFragmentWithoutPartialToolCall(t *test
 		Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{{Role: coreconversation.RoleUser, Content: "test"}}},
 	}
 	result, err := runner.Stream(context.Background(), request, nil)
-	if err != nil || !result.Continue || result.Done || result.Message.Content != "first half" || result.Message.ReasoningContent != "reasoning" || len(result.ToolCalls) != 0 || len(result.Message.ToolCalls) != 0 {
+	if err != nil || !result.Continue || result.Done || result.Message.Content != "first half" || result.TransientProviderReasoning != "reasoning" || len(result.ToolCalls) != 0 || len(result.Message.ToolCalls) != 0 {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 }
@@ -221,7 +221,7 @@ func TestModelRunnerContinuesRecoverableProviderFailureOnlyAfterPartialOutput(t 
 			}}, err: failure}}
 			runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return partialClient, nil })
 			result, err := runner.Stream(context.Background(), request, nil)
-			if err != nil || !result.Continue || result.Done || result.Message.Content != "first half" || result.Message.ReasoningContent != "reasoning" || len(result.ToolCalls) != 0 || len(result.Message.ToolCalls) != 0 {
+			if err != nil || !result.Continue || result.Done || result.Message.Content != "first half" || result.TransientProviderReasoning != "reasoning" || len(result.ToolCalls) != 0 || len(result.Message.ToolCalls) != 0 {
 				t.Fatalf("partial result=%+v err=%v", result, err)
 			}
 
@@ -430,8 +430,8 @@ func TestRoleToolMapsCallNameAcrossMessages(t *testing.T) {
 	id := "00000000-0000-4000-8000-000000000001"
 	client := &captureClient{}
 	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
-	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}), Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{
-		{Role: coreconversation.RoleAssistant, ReasoningContent: "tool reasoning", ToolCalls: []coreconversation.ToolCall{{ID: "call-1", Name: "lookup", Arguments: "{}"}}},
+	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}), TransientProviderReasoning: "tool reasoning", Conversation: coreconversation.Conversation{Messages: []coreconversation.Message{
+		{Role: coreconversation.RoleAssistant, ToolCalls: []coreconversation.ToolCall{{ID: "call-1", Name: "lookup", Arguments: "{}"}}},
 		{Role: coreconversation.RoleAssistant, ToolResults: []coreconversation.ToolResult{(coreconversation.ToolResult{CallID: "call-1", Content: "ok"}).WithObservation(coreconversation.ToolOutcomeSuccess, "lookup completed", coreconversation.ToolMutationNone)}},
 	}}})
 	got := client.req

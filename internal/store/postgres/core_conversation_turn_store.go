@@ -58,6 +58,7 @@ func durableTurnToolResultDigest(result core.ToolResult) string {
 }
 
 func newDurableTurnDispatchEnvelope(result core.ModelRunResult) (durableTurnDispatchEnvelope, error) {
+	result.TransientProviderReasoning = ""
 	envelope := durableTurnDispatchEnvelope{Version: durableTurnDispatchEnvelopeVersion, Result: result}
 	calls := durableTurnModelCalls(result)
 	seen := make(map[string]struct{}, len(calls))
@@ -1603,7 +1604,7 @@ func failedTurnTranscriptTx(ctx context.Context, tx pgx.Tx, turn core.Turn, code
 	if err != nil {
 		return err
 	}
-	var partial, reasoning strings.Builder
+	var partial strings.Builder
 	for rows.Next() {
 		var raw []byte
 		var event core.TurnEvent
@@ -1612,7 +1613,6 @@ func failedTurnTranscriptTx(ctx context.Context, tx pgx.Tx, turn core.Turn, code
 			return core.ErrConflict
 		}
 		partial.WriteString(event.Text)
-		reasoning.WriteString(event.ReasoningContent)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
@@ -1651,14 +1651,13 @@ func failedTurnTranscriptTx(ctx context.Context, tx pgx.Tx, turn core.Turn, code
 		createdAt = createdAt.Add(time.Microsecond)
 	}
 	assistant := core.Message{
-		ID:               uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-failed-assistant:"+turn.RequestID)).String(),
-		TurnID:           turn.ID,
-		Role:             core.RoleAssistant,
-		Content:          failedTurnAssistantContent(partial.String(), code, summary),
-		ReasoningContent: reasoning.String(),
-		ModelProfileID:   turn.ProfileID,
-		CreatedAt:        createdAt,
-		Status:           "failed",
+		ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-failed-assistant:"+turn.RequestID)).String(),
+		TurnID:         turn.ID,
+		Role:           core.RoleAssistant,
+		Content:        failedTurnAssistantContent(partial.String(), code, summary),
+		ModelProfileID: turn.ProfileID,
+		CreatedAt:      createdAt,
+		Status:         "failed",
 	}
 	if assistant.Validate() != nil {
 		return core.ErrInvalid

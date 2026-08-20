@@ -397,22 +397,21 @@ func (x *CoreConversationReference) GetContentDigest() string {
 }
 
 type CoreConversationMessage struct {
-	state            protoimpl.MessageState       `protogen:"open.v1"`
-	MessageId        string                       `protobuf:"bytes,1,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
-	ConversationId   string                       `protobuf:"bytes,2,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	Sequence         int64                        `protobuf:"varint,3,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	Role             string                       `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
-	Content          string                       `protobuf:"bytes,5,opt,name=content,proto3" json:"content,omitempty"`
-	ModelProfileId   string                       `protobuf:"bytes,6,opt,name=model_profile_id,json=modelProfileId,proto3" json:"model_profile_id,omitempty"`
-	Payload          *structpb.Struct             `protobuf:"bytes,7,opt,name=payload,proto3" json:"payload,omitempty"`
-	RelatedTaskIds   []string                     `protobuf:"bytes,8,rep,name=related_task_ids,json=relatedTaskIds,proto3" json:"related_task_ids,omitempty"`
-	ToolSummaries    []string                     `protobuf:"bytes,9,rep,name=tool_summaries,json=toolSummaries,proto3" json:"tool_summaries,omitempty"`
-	CreatedAt        *timestamppb.Timestamp       `protobuf:"bytes,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	RelatedPlanIds   []string                     `protobuf:"bytes,11,rep,name=related_plan_ids,json=relatedPlanIds,proto3" json:"related_plan_ids,omitempty"`
-	References       []*CoreConversationReference `protobuf:"bytes,12,rep,name=references,proto3" json:"references,omitempty"`
-	ReasoningContent string                       `protobuf:"bytes,13,opt,name=reasoning_content,json=reasoningContent,proto3" json:"reasoning_content,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state          protoimpl.MessageState       `protogen:"open.v1"`
+	MessageId      string                       `protobuf:"bytes,1,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
+	ConversationId string                       `protobuf:"bytes,2,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	Sequence       int64                        `protobuf:"varint,3,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	Role           string                       `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
+	Content        string                       `protobuf:"bytes,5,opt,name=content,proto3" json:"content,omitempty"`
+	ModelProfileId string                       `protobuf:"bytes,6,opt,name=model_profile_id,json=modelProfileId,proto3" json:"model_profile_id,omitempty"`
+	Payload        *structpb.Struct             `protobuf:"bytes,7,opt,name=payload,proto3" json:"payload,omitempty"`
+	RelatedTaskIds []string                     `protobuf:"bytes,8,rep,name=related_task_ids,json=relatedTaskIds,proto3" json:"related_task_ids,omitempty"`
+	ToolSummaries  []string                     `protobuf:"bytes,9,rep,name=tool_summaries,json=toolSummaries,proto3" json:"tool_summaries,omitempty"`
+	CreatedAt      *timestamppb.Timestamp       `protobuf:"bytes,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	RelatedPlanIds []string                     `protobuf:"bytes,11,rep,name=related_plan_ids,json=relatedPlanIds,proto3" json:"related_plan_ids,omitempty"`
+	References     []*CoreConversationReference `protobuf:"bytes,12,rep,name=references,proto3" json:"references,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CoreConversationMessage) Reset() {
@@ -527,13 +526,6 @@ func (x *CoreConversationMessage) GetReferences() []*CoreConversationReference {
 		return x.References
 	}
 	return nil
-}
-
-func (x *CoreConversationMessage) GetReasoningContent() string {
-	if x != nil {
-		return x.ReasoningContent
-	}
-	return ""
 }
 
 type ConversationServiceCreateRequest struct {
@@ -1261,11 +1253,10 @@ func (x *ConversationServiceStreamChatRequest) GetExecutionMode() string {
 }
 
 type CoreStreamChatDelta struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	Text             string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
-	ReasoningContent string                 `protobuf:"bytes,2,opt,name=reasoning_content,json=reasoningContent,proto3" json:"reasoning_content,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Text          string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CoreStreamChatDelta) Reset() {
@@ -1301,13 +1292,6 @@ func (*CoreStreamChatDelta) Descriptor() ([]byte, []int) {
 func (x *CoreStreamChatDelta) GetText() string {
 	if x != nil {
 		return x.Text
-	}
-	return ""
-}
-
-func (x *CoreStreamChatDelta) GetReasoningContent() string {
-	if x != nil {
-		return x.ReasoningContent
 	}
 	return ""
 }
@@ -2141,11 +2125,10 @@ type CoreConversationTurnEvent struct {
 	RelatedPlanIds []string                     `protobuf:"bytes,18,rep,name=related_plan_ids,json=relatedPlanIds,proto3" json:"related_plan_ids,omitempty"`
 	References     []*CoreConversationReference `protobuf:"bytes,19,rep,name=references,proto3" json:"references,omitempty"`
 	// The positive turn revision captured atomically when this event was written.
-	Revision         uint64 `protobuf:"varint,20,opt,name=revision,proto3" json:"revision,omitempty"`
-	ReasoningContent string `protobuf:"bytes,21,opt,name=reasoning_content,json=reasoningContent,proto3" json:"reasoning_content,omitempty"`
-	Phase            string `protobuf:"bytes,22,opt,name=phase,proto3" json:"phase,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	Revision      uint64 `protobuf:"varint,20,opt,name=revision,proto3" json:"revision,omitempty"`
+	Phase         string `protobuf:"bytes,22,opt,name=phase,proto3" json:"phase,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CoreConversationTurnEvent) Reset() {
@@ -2309,13 +2292,6 @@ func (x *CoreConversationTurnEvent) GetRevision() uint64 {
 		return x.Revision
 	}
 	return 0
-}
-
-func (x *CoreConversationTurnEvent) GetReasoningContent() string {
-	if x != nil {
-		return x.ReasoningContent
-	}
-	return ""
 }
 
 func (x *CoreConversationTurnEvent) GetPhase() string {
@@ -2639,7 +2615,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\tsource_id\x18\x1e \x01(\tR\bsourceId\x12\x19\n" +
 	"\bchunk_id\x18\x1f \x01(\tR\achunkId\x12%\n" +
 	"\x0econtent_digest\x18  \x01(\tR\rcontentDigestB\r\n" +
-	"\v_size_bytes\"\xba\x04\n" +
+	"\v_size_bytes\"\xa6\x04\n" +
 	"\x17CoreConversationMessage\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\tR\tmessageId\x12'\n" +
@@ -2657,8 +2633,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\x10related_plan_ids\x18\v \x03(\tR\x0erelatedPlanIds\x12M\n" +
 	"\n" +
 	"references\x18\f \x03(\v2-.dirextalk.agent.v1.CoreConversationReferenceR\n" +
-	"references\x12+\n" +
-	"\x11reasoning_content\x18\r \x01(\tR\x10reasoningContent\"a\n" +
+	"referencesJ\x04\b\r\x10\x0eR\x11reasoning_content\"a\n" +
 	" ConversationServiceCreateRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\"m\n" +
@@ -2726,10 +2701,9 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	" \x01(\tR\rexecutionModeB\x14\n" +
 	"\x12_expected_revisionB\x19\n" +
 	"\x17_model_profile_revisionB\x15\n" +
-	"\x13_credential_version\"V\n" +
+	"\x13_credential_version\"B\n" +
 	"\x13CoreStreamChatDelta\x12\x12\n" +
-	"\x04text\x18\x01 \x01(\tR\x04text\x12+\n" +
-	"\x11reasoning_content\x18\x02 \x01(\tR\x10reasoningContent\"\x92\x02\n" +
+	"\x04text\x18\x01 \x01(\tR\x04textJ\x04\b\x02\x10\x03R\x11reasoning_content\"\x92\x02\n" +
 	"\x1aCoreStreamChatToolProgress\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12(\n" +
@@ -2808,7 +2782,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	")ConversationServiceWatchTurnEventsRequest\x12\x17\n" +
 	"\aturn_id\x18\x01 \x01(\tR\x06turnId\x12%\n" +
 	"\x0eafter_sequence\x18\x02 \x01(\x03R\rafterSequence\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\xe6\x06\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\xd2\x06\n" +
 	"\x19CoreConversationTurnEvent\x12\x17\n" +
 	"\aturn_id\x18\x01 \x01(\tR\x06turnId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x03R\bsequence\x12\x12\n" +
@@ -2835,9 +2809,8 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\n" +
 	"references\x18\x13 \x03(\v2-.dirextalk.agent.v1.CoreConversationReferenceR\n" +
 	"references\x12\x1a\n" +
-	"\brevision\x18\x14 \x01(\x04R\brevision\x12+\n" +
-	"\x11reasoning_content\x18\x15 \x01(\tR\x10reasoningContent\x12\x14\n" +
-	"\x05phase\x18\x16 \x01(\tR\x05phaseJ\x04\b\r\x10\x0eR\n" +
+	"\brevision\x18\x14 \x01(\x04R\brevision\x12\x14\n" +
+	"\x05phase\x18\x16 \x01(\tR\x05phaseJ\x04\b\x15\x10\x16J\x04\b\r\x10\x0eR\x11reasoning_contentR\n" +
 	"attempt_id\"h\n" +
 	"$ConversationServiceCancelTurnRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x17\n" +

@@ -87,7 +87,6 @@ type TurnEvent struct {
 	Revision          uint64
 	Kind              TurnEventKind
 	Text              string
-	ReasoningContent  string
 	Message           *Message
 	Response          *ChatResponse
 	ToolCall          *ToolCall

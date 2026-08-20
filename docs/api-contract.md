@@ -174,16 +174,21 @@ or stream after admission. It never cancels the accepted Turn; callers use
   with the current binary presets, so a safe preset change cannot strand an
   active turn. Unsupported versions, unknown modes, out-of-range values, or a
   mode/runtime mismatch fail before a provider reservation or turn mutation.
-- Only ordinary provider
-  execution consumes the time budget: tool, sandbox, Worker, and
-  user-confirmation execution or waiting do not. Independently, each provider
-  stream's five-minute safety
-  limit measures only inactivity and is renewed by every byte received from
-  the SSE stream, including keepalives. Model output may therefore continue
-  for longer than five minutes while remaining inside the cumulative budget;
-  individual tool or sandbox executions keep their own resource limits. If a
-  dispatched provider stream produces no data for the full idle interval, the
-  ordinary attempt is classified as `provider_timeout`. Provider failure,
+- Only ordinary provider execution consumes the admitted model-active time
+  budget; tool, sandbox, Worker, and user-confirmation execution or waiting do
+  not. Each physical provider dispatch also has three dispatch-local deadlines,
+  all measured from dispatch start and never renewed: 15 seconds for the first
+  nonempty provider payload, 90 seconds for the first meaningful action, and
+  an absolute five-minute dispatch limit. Reasoning may satisfy the first-
+  payload deadline, but keepalives, empty deltas, reasoning, and incomplete
+  tool-call fragments are not meaningful actions. User-visible text, a
+  complete valid tool call, or a normal runner return is meaningful. The
+  admitted remaining model-active duration is the stronger outer bound; when
+  it equals a local deadline, expiration remains `model_budget_exhausted`.
+  Provider-adapter request and stream-idle deadlines remain internal transport
+  bounds and cannot extend any dispatch-local deadline. A dispatch-local
+  deadline becomes `provider_timeout`, does not replay after any nonempty
+  payload, and enters the single finalization path described below. Provider failure,
   invalid or empty terminal output, repeated no-progress tool use, and either
   ordinary budget cap first persist an immutable turn-finalization intent.
   That intent admits exactly one additional physical provider attempt with an
@@ -239,35 +244,39 @@ or stream after admission. It never cancels the accepted Turn; callers use
   requires it even when unchanged. Profile reads return the selected dialect;
   durable execution snapshots and their digests bind it so a model name never
   selects request behavior implicitly.
-- Native conversation progress durably publishes assistant `delta` text and
-  additive `reasoning_content` in bounded coalesced events as they arrive from
-  the provider, followed by
-  the terminal response containing the full accumulated `reasoning_content`.
-  Reasoning uses the same durable event path rather than a parallel stream. It
-  publishes the existing `tool_call` event only after the model step and tool
+- Native conversation progress durably publishes only assistant `delta` text
+  in bounded coalesced events as it arrives from the provider. Provider
+  reasoning is absent from public messages, stream events, Capability JSON,
+  RPC projections, conversation history, failed transcripts, and every durable
+  model-result envelope. A complete model step publishes the existing
+  `tool_call` event only after the model step and tool
   identity are durable, and before the extension is dispatched. A successful
   call is followed by its exact `tool_result`; a failed dispatch retains the
   already-published call before the existing safe terminal error. Durable turns
   persist the same public ordering while their private pending/dispatched
   envelope remains the at-most-once authority and is never exposed as an
   additional client event. Provider replay reconstructs one assistant message
-  containing the model round's content, reasoning, and complete tool-call
-  batch, followed by the matching tool-result messages in call order.
+  containing the model round's content and complete tool-call batch, followed
+  by the matching tool-result messages in call order. An OpenAI-compatible
+  adapter may parse provider reasoning internally and pass it once, in live
+  process memory only, to the immediately following non-finalization,
+  tools-admitted continuation of that same turn. It is consumed once, omitted
+  from tools-disabled finalization, and unavailable after restart, cancel,
+  steer, supervisor exit, or service close.
 - OpenAI-compatible streams accept either `[DONE]` or a nonempty first-choice
   `finish_reason` as an explicit terminal signal. A clean EOF after that signal
   preserves the final content/tool-call delta. If a stream truncation, request
-  failure, or idle timeout occurs after a content, reasoning, or tool delta,
+  failure, or idle timeout occurs after content or a complete tool delta,
   Core durably closes that side-effect-free output fragment and continues the
-  same turn; the same failure before any delta remains terminal. The `length`
+  same turn; the same failure before such output remains terminal. The `length`
   finish reason uses the same continuation with the frozen model context and
   full accepted tool catalog. An incomplete tool-call fragment is never
   dispatched; the next model round must issue it again as one complete call.
-  OpenAI-compatible reasoning uses the
-  `reasoning_content` response and assistant-message field so a reasoning model
-  can continue a tool round with the exact prior reasoning. The adapter parses
-  complete SSE events rather than individual lines: CRLF is accepted, comments
-  and non-`data` fields are ignored, and multiple `data` fields are joined in
-  order before JSON decoding. Provider failures retain a typed internal
+  OpenAI-compatible provider reasoning is parsed only for the bounded live-only
+  continuity described above. The adapter parses complete SSE events rather
+  than individual lines: CRLF is accepted, comments and non-`data` fields are
+  ignored, and multiple `data` fields are joined in order before JSON decoding.
+  Provider failures retain a typed internal
   taxonomy for cancellation, request/deadline timeout, idle timeout, HTTP 429,
   other HTTP 4xx, HTTP 5xx, unavailable transport, invalid response, truncated
   stream, and output limit. Safe diagnostics collapse status failures to their
@@ -467,7 +476,7 @@ or stream after admission. It never cancels the accepted Turn; callers use
   Conversations expose only id/title/revision/timestamps/status; history
   exposes only user/assistant messages with durable sequence, terminal status,
   additive owning `turn_id` when the message belongs to a durable Turn,
-  additive `reasoning_content`, references, and attachment presentation
+  references, and attachment presentation
   (`source_id`, `kind`, `name`, `mime_type`, and `size_bytes`). Attachment
   content, digest, source revision, status, and expiry remain private. The first history page
   contains the newest bounded messages in ascending sequence order, and its

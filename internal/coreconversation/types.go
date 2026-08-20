@@ -254,20 +254,19 @@ type Message struct {
 	// Sequence is the durable transcript ordinal loaded from PostgreSQL. New
 	// in-memory messages keep it at zero until the atomic conversation commit;
 	// public history adapters use it without exposing Core-only payload fields.
-	Sequence         int64                    `json:"-"`
-	Role             Role                     `json:"role"`
-	Content          string                   `json:"content,omitempty"`
-	ReasoningContent string                   `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCall               `json:"tool_calls,omitempty"`
-	ToolResults      []ToolResult             `json:"tool_results,omitempty"`
-	CreatedAt        time.Time                `json:"created_at"`
-	ModelProfileID   string                   `json:"model_profile_id"`
-	RelatedTaskIDs   []string                 `json:"related_task_ids,omitempty"`
-	RelatedPlanIDs   []string                 `json:"related_plan_ids,omitempty"`
-	References       []Reference              `json:"references,omitempty"`
-	ToolSummaries    []string                 `json:"tool_summaries,omitempty"`
-	Attachments      []AttachmentPresentation `json:"attachments,omitempty"`
-	Status           string                   `json:"status,omitempty"`
+	Sequence       int64                    `json:"-"`
+	Role           Role                     `json:"role"`
+	Content        string                   `json:"content,omitempty"`
+	ToolCalls      []ToolCall               `json:"tool_calls,omitempty"`
+	ToolResults    []ToolResult             `json:"tool_results,omitempty"`
+	CreatedAt      time.Time                `json:"created_at"`
+	ModelProfileID string                   `json:"model_profile_id"`
+	RelatedTaskIDs []string                 `json:"related_task_ids,omitempty"`
+	RelatedPlanIDs []string                 `json:"related_plan_ids,omitempty"`
+	References     []Reference              `json:"references,omitempty"`
+	ToolSummaries  []string                 `json:"tool_summaries,omitempty"`
+	Attachments    []AttachmentPresentation `json:"attachments,omitempty"`
+	Status         string                   `json:"status,omitempty"`
 }
 
 type Conversation struct {
@@ -381,24 +380,23 @@ const (
 )
 
 type StreamEvent struct {
-	Kind             StreamEventKind `json:"kind"`
-	TurnSequence     int64           `json:"turn_sequence,omitempty"`
-	TurnID           string          `json:"turn_id,omitempty"`
-	Revision         uint64          `json:"revision,omitempty"`
-	RequestID        string          `json:"request_id"`
-	ConversationID   string          `json:"conversation_id"`
-	Text             string          `json:"text,omitempty"`
-	ReasoningContent string          `json:"reasoning_content,omitempty"`
-	ToolCall         *ToolCall       `json:"tool_call,omitempty"`
-	ToolResult       *ToolResult     `json:"tool_result,omitempty"`
-	Response         *ChatResponse   `json:"response,omitempty"`
-	Err              string          `json:"error,omitempty"`
-	ErrCode          string          `json:"error_code,omitempty"`
-	ErrSummary       string          `json:"error_summary,omitempty"`
-	ConfirmationID   string          `json:"confirmation_id,omitempty"`
-	ExecutionID      string          `json:"execution_id,omitempty"`
-	Status           string          `json:"status,omitempty"`
-	Phase            string          `json:"phase,omitempty"`
+	Kind           StreamEventKind `json:"kind"`
+	TurnSequence   int64           `json:"turn_sequence,omitempty"`
+	TurnID         string          `json:"turn_id,omitempty"`
+	Revision       uint64          `json:"revision,omitempty"`
+	RequestID      string          `json:"request_id"`
+	ConversationID string          `json:"conversation_id"`
+	Text           string          `json:"text,omitempty"`
+	ToolCall       *ToolCall       `json:"tool_call,omitempty"`
+	ToolResult     *ToolResult     `json:"tool_result,omitempty"`
+	Response       *ChatResponse   `json:"response,omitempty"`
+	Err            string          `json:"error,omitempty"`
+	ErrCode        string          `json:"error_code,omitempty"`
+	ErrSummary     string          `json:"error_summary,omitempty"`
+	ConfirmationID string          `json:"confirmation_id,omitempty"`
+	ExecutionID    string          `json:"execution_id,omitempty"`
+	Status         string          `json:"status,omitempty"`
+	Phase          string          `json:"phase,omitempty"`
 }
 
 type ClaimStatus string
@@ -466,6 +464,9 @@ type ModelRunRequest struct {
 	Extensions            []ResolvedExtension
 	ExtensionSnapshots    []ExtensionExecutionSnapshot
 	InputPartsByMessageID map[string][]coremodel.MessageInputPart
+	// TransientProviderReasoning is live-process provider continuity for the
+	// immediately preceding tool round. It is never public or durable.
+	TransientProviderReasoning string
 }
 type ModelRunResult struct {
 	Message        Message
@@ -476,6 +477,9 @@ type ModelRunResult struct {
 	RelatedPlanIDs []string
 	References     []Reference
 	ToolSummaries  []string
+	// TransientProviderReasoning may be carried only to the next live provider
+	// tool round. Durable model-result stores must discard it.
+	TransientProviderReasoning string `json:"-"`
 }
 type ResolvedProfile struct {
 	ID           string
@@ -1280,7 +1284,7 @@ func (m Message) Validate() error {
 	default:
 		return ErrInvalid
 	}
-	if len(m.Content) > MaxContentBytes || len(m.ReasoningContent) > MaxContentBytes || !utf8.ValidString(m.ReasoningContent) {
+	if len(m.Content) > MaxContentBytes {
 		return ErrInvalid
 	}
 	if m.Status != "" && m.Status != "done" && (m.Status != "failed" || m.Role != RoleAssistant) {

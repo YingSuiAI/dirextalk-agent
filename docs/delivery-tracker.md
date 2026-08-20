@@ -84,6 +84,13 @@ contract](message-server-integration-development-contract.md), and
   adjacent Anthropic tool results use one ordered result-message batch. Debug
   formatting of immutable execution snapshots omits both credentials and the
   complete system prompt.
+- Every physical Native provider dispatch now has nonrenewing 15-second first-
+  payload, 90-second first-meaningful-action, and five-minute absolute
+  deadlines beneath the admitted model-active budget. Deadline failures enter
+  the existing single tools-disabled finalization path. Provider reasoning
+  remains adapter-internal and may bridge only the next live tools-admitted
+  continuation once; it is absent from public DTOs, Protobuf, durable deltas,
+  model-result envelopes, transcripts, history, and restart state.
 - Built-in local sandbox output is capped at 64 KiB per stream even when
   `os/exec` selects an optimized reader path, and its structured result reports
   explicit `stdout_truncated` and `stderr_truncated` booleans. Requested result
@@ -464,6 +471,21 @@ support.
   those values directly. Interactive uses 8/5 minutes/8 and the three extended
   modes use 24/20 minutes/20. Unsupported or unsafe stored policies fail before
   claim mutation, and Cloud Worker runtime limits remain independently owned.
+- On **2026-08-20**, focused Core lifecycle tests verified the dispatch-local
+  first-payload, meaningful-action, and absolute deadlines, equal-expiration
+  ownership by the admitted model-active budget, one finalization after
+  reasoning-only or incomplete-tool timeout, and parent-cancellation priority.
+  Focused runtime, Capability, and RPC tests verified live-only one-shot tool-
+  round reasoning continuity and the absence/reservation of public
+  `reasoning_content`; five affected packages also passed compile-only checks.
+  Eight focused PostgreSQL 18 + pgvector cases included a real 15-second
+  first-payload watchdog, finalization across service restart exactly once,
+  durable-envelope exclusion, and loss of live-only continuity after restart.
+  A local unified-image candidate (`sha256:42a9198f02a1620e0d674ef7e2976f519bbd8e33a1872817a28d51dfea24de41`)
+  reported the same version from all three production binaries, applied a
+  fresh migration ledger through version/count 27/27, and returned the exact
+  version from live `/agent/v1/health`; the candidate and isolated probe
+  resources were removed after verification.
 - On **2026-08-20**, the Agent pinned `dirextalk-capability-api v1.2.0` and
   recognized its generated `agent:servers:read`, `agent:servers:write`, and
   `agent:servers:destroy` scopes. Focused descriptor, HTTP catalog, typed

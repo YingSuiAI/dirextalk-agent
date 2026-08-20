@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,45 @@ type failingTurnModel struct {
 	failure     error
 	runCalls    int
 	streamCalls int
+}
+
+type deadlineTurnModel struct {
+	mode          string
+	streamCalls   int
+	firstCanceled time.Duration
+}
+
+func (*deadlineTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
+	return ModelRunResult{}, errors.New("non-streaming model path must not be used")
+}
+
+func (m *deadlineTurnModel) Stream(ctx context.Context, _ ModelRunRequest, emit func(ModelDelta) error) (ModelRunResult, error) {
+	m.streamCalls++
+	if m.streamCalls > 1 {
+		return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", CreatedAt: time.Now().UTC()}}, nil
+	}
+	started := time.Now()
+	switch m.mode {
+	case "reasoning":
+		if err := emit(ModelDelta{ReasoningContent: "private reasoning"}); err != nil {
+			return ModelRunResult{}, err
+		}
+	case "tool fragment":
+		if err := emit(ModelDelta{ToolCall: &ToolCall{ID: "call-1", Name: "search", Arguments: `{`}}); err != nil {
+			return ModelRunResult{}, err
+		}
+	case "text":
+		if err := emit(ModelDelta{Text: "visible progress"}); err != nil {
+			return ModelRunResult{}, err
+		}
+	case "whitespace":
+		if err := emit(ModelDelta{Text: "  \n\t"}); err != nil {
+			return ModelRunResult{}, err
+		}
+	}
+	<-ctx.Done()
+	m.firstCanceled = time.Since(started)
+	return ModelRunResult{}, ctx.Err()
 }
 
 func (m *failingTurnModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
@@ -116,7 +156,6 @@ func TestExecuteTurnClassifiesProviderTimeoutWithoutReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	service.executeTurn(context.Background(), turn.ID)
 
 	if store.turn.State != TurnCompleted || store.turn.Response == nil {
@@ -190,6 +229,100 @@ func TestTurnModelBudgetUsesStabilityCaps(t *testing.T) {
 	}
 }
 
+func TestTurnModelDeadlineConstantsUseExistingProviderBounds(t *testing.T) {
+	if turnModelFirstPayloadDeadline != 15*time.Second {
+		t.Fatalf("first payload deadline=%s", turnModelFirstPayloadDeadline)
+	}
+	if turnModelMeaningfulActionDeadline != 90*time.Second {
+		t.Fatalf("meaningful action deadline=%s", turnModelMeaningfulActionDeadline)
+	}
+	if turnModelSingleDispatchDeadline != 5*time.Minute {
+		t.Fatalf("single dispatch deadline=%s", turnModelSingleDispatchDeadline)
+	}
+}
+
+func TestTurnModelDeadlineGuardPreservesParentCancellation(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		expire bool
+	}{
+		{name: "parent canceled before watchdog"},
+		{name: "parent canceled while watchdog result unwinds", expire: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parent, cancel := context.WithCancel(context.Background())
+			_, guard := newTurnModelDeadlineGuard(parent, turnModelDeadlines{}, 0)
+			if test.expire {
+				guard.expire(errTurnModelMeaningfulActionDeadline)
+			}
+			cancel()
+			if !test.expire {
+				guard.expire(errTurnModelMeaningfulActionDeadline)
+			}
+			if failure := guard.finish(); failure != nil {
+				t.Fatalf("parent cancellation was reclassified as %v", failure)
+			}
+		})
+	}
+}
+
+func TestExecuteTurnEnforcesProviderDispatchDeadlinesBeforeFinalization(t *testing.T) {
+	deadlines := turnModelDeadlines{firstPayload: 20 * time.Millisecond, meaningfulAction: 80 * time.Millisecond, singleDispatch: 160 * time.Millisecond}
+	for _, test := range []struct {
+		name string
+		mode string
+		want time.Duration
+	}{
+		{name: "first payload", want: deadlines.firstPayload},
+		{name: "reasoning is not meaningful", mode: "reasoning", want: deadlines.meaningfulAction},
+		{name: "whitespace text is not meaningful", mode: "whitespace", want: deadlines.meaningfulAction},
+		{name: "incomplete tool fragment is not meaningful", mode: "tool fragment", want: deadlines.meaningfulAction},
+		{name: "single dispatch is absolute after visible text", mode: "text", want: deadlines.singleDispatch},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := testTurnSnapshot()
+			conversationID := uuid.NewString()
+			base := newFakeStore()
+			base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+			turn := Turn{
+				ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+				Prompt: "finish the turn", ProfileID: snapshot.ProfileID,
+				ProfileSnapshot: snapshot, ProfileSnapshotDigest: snapshot.Digest(), State: TurnAccepted,
+				Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC(),
+			}
+			store := &timeoutTurnStore{readOnlyTurnStore: &readOnlyTurnStore{
+				publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+				events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+			}}
+			model := &deadlineTurnModel{mode: test.mode}
+			service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+				return snapshot, nil
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			service.modelDeadlines = deadlines
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+
+			service.executeTurn(ctx, turn.ID)
+
+			if model.firstCanceled < test.want*3/4 || model.firstCanceled > test.want+60*time.Millisecond {
+				t.Fatalf("first dispatch canceled after %s, want around %s", model.firstCanceled, test.want)
+			}
+			if model.streamCalls != 2 {
+				t.Fatalf("model Stream calls=%d, want one timed-out dispatch plus one finalization", model.streamCalls)
+			}
+			if store.turn.State != TurnCompleted || store.turn.Response == nil || !strings.HasSuffix(store.turn.Response.Message.Content, "final answer") {
+				t.Fatalf("terminal turn=%+v", store.turn)
+			}
+			if store.turn.TerminalCode != modelResponseTimeoutCode || store.turn.TerminalSummary != modelResponseTimeoutSummary {
+				t.Fatalf("terminal code=%q summary=%q", store.turn.TerminalCode, store.turn.TerminalSummary)
+			}
+		})
+	}
+}
+
 func TestExecuteTurnAppliesPersistedModelActiveDurationBudget(t *testing.T) {
 	snapshot := testTurnSnapshot()
 	policy, err := AdmittedTurnExecutionPolicy(TurnExecutionDeep)
@@ -224,6 +357,12 @@ func TestExecuteTurnAppliesPersistedModelActiveDurationBudget(t *testing.T) {
 	}))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Equality belongs to the stronger admitted model-active budget, so the
+	// dispatch watchdog must not race it into provider_timeout.
+	service.modelDeadlines = turnModelDeadlines{
+		firstPayload: time.Second, meaningfulAction: time.Second,
+		singleDispatch: 20 * time.Millisecond,
 	}
 
 	service.executeTurn(context.Background(), turn.ID)

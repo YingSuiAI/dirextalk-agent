@@ -93,13 +93,60 @@ func TestExecuteTurnFinalizesProviderFailureAsUsefulMarkdown(t *testing.T) {
 	}
 }
 
+func TestToolsNoneFinalizationNeverReceivesTransientProviderReasoning(t *testing.T) {
+	model := &terminalResultTurnModel{result: ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "bounded final answer", CreatedAt: time.Now().UTC()}}}
+	service, store, turn := newTerminalFinalizationFixture(t, model)
+	call := ToolCall{ID: uuid.NewString(), Name: "lookup", Arguments: `{}`}
+	result := (ToolResult{CallID: call.ID, ToolName: call.Name, Content: "found"}).WithObservation(ToolOutcomeSuccess, "lookup completed", ToolMutationNone)
+	store.turn.LastSequence = 3
+	store.events = append(store.events,
+		TurnEvent{TurnID: turn.ID, Sequence: 2, Revision: 1, Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: turn.CreatedAt.Add(time.Second)},
+		TurnEvent{TurnID: turn.ID, Sequence: 3, Revision: 1, Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: turn.CreatedAt.Add(2 * time.Second)},
+	)
+	intent := NewTurnFinalizationIntent(TurnFinalizationToolOutcome)
+	store.finalization = &intent
+	service.retainProviderContinuity(turn.ID, "private tool-round reasoning")
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	if len(model.requests) != 1 || model.requests[0].TransientProviderReasoning != "" || len(model.requests[0].Intrinsics) != 0 || len(model.requests[0].Extensions) != 0 {
+		t.Fatalf("tools-none finalization request=%+v", model.requests)
+	}
+	if got := service.takeProviderContinuity(turn.ID); got != "" {
+		t.Fatalf("finalization retained provider reasoning %q", got)
+	}
+}
+
+func TestProviderContinuityIsLiveOnlyConsumedOnceAndClearedOnClose(t *testing.T) {
+	turnID := uuid.NewString()
+	service := &Service{continuity: map[string]string{}}
+	service.retainProviderContinuity(turnID, "private reasoning")
+	if got := service.takeProviderContinuity(turnID); got != "private reasoning" {
+		t.Fatalf("first take=%q", got)
+	}
+	if got := service.takeProviderContinuity(turnID); got != "" {
+		t.Fatalf("continuity replayed on second take: %q", got)
+	}
+	restarted := &Service{continuity: map[string]string{}}
+	if got := restarted.takeProviderContinuity(turnID); got != "" {
+		t.Fatalf("continuity survived restart: %q", got)
+	}
+	service.retainProviderContinuity(turnID, "private reasoning")
+	if err := service.CloseContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := service.takeProviderContinuity(turnID); got != "" {
+		t.Fatalf("continuity survived service close: %q", got)
+	}
+}
+
 func TestExecuteTurnFinalizesInvalidOrEmptyOutputAsUsefulMarkdown(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		result ModelRunResult
 	}{
 		{name: "empty", result: ModelRunResult{Done: true}},
-		{name: "invalid terminal", result: ModelRunResult{Done: true, Message: Message{Role: RoleAssistant, ReasoningContent: "reasoning only"}}},
+		{name: "invalid terminal", result: ModelRunResult{Done: true, Message: Message{Role: RoleAssistant}, TransientProviderReasoning: "reasoning only"}},
 		{name: "invalid continuation", result: ModelRunResult{Continue: true, Done: true, Message: Message{Role: RoleAssistant, Content: "invalid continuation"}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -62,6 +62,75 @@ func (s *terminalChatAdapterStore) StartTurnWithRuntime(_ context.Context, comma
 	return turn, nil
 }
 
+func TestChatAndStartTurnContractsHaveNoReasoningField(t *testing.T) {
+	store := &terminalChatAdapterStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore()},
+		state:                 TurnCompleted, content: "public answer",
+	}
+	service, err := NewService(store, &fakeModel{}, noopExtensions{}, durableAdapterProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatCommand := command()
+	turn, err := service.StartTurn(context.Background(), turnCommandFromChat(chatCommand))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turn.Response == nil || turn.Response.Message.Content != store.content {
+		t.Fatalf("public StartTurn response=%+v", turn.Response)
+	}
+	response, err := service.Chat(context.Background(), chatCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Message.Content != store.content {
+		t.Fatalf("public Chat response=%+v", response)
+	}
+}
+
+func TestStreamChatAndWatchTurnEventsContractsHaveNoReasoningField(t *testing.T) {
+	profileID := uuid.NewString()
+	response := ChatResponse{
+		RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Revision: 1, Done: true, ModelProfileID: profileID,
+		Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "public answer", ModelProfileID: profileID, CreatedAt: time.Now().UTC()},
+	}
+	store := &streamingChatAdapterStore{
+		terminalChatAdapterStore: &terminalChatAdapterStore{
+			publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore()},
+			state:                 TurnCompleted, content: response.Message.Content,
+		},
+		events: []TurnEvent{
+			{Kind: TurnEventAccepted},
+			{Kind: TurnEventDelta, Text: "public "},
+		},
+	}
+	chatCommand := ChatCommand{RequestID: response.RequestID, Prompt: "answer", ProfileID: profileID, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1}
+	response.ConversationID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation:"+chatCommand.RequestID)).String()
+	store.events = append(store.events, TurnEvent{Kind: TurnEventDone, Response: &response})
+	service, err := NewService(store, &fakeModel{}, noopExtensions{}, durableAdapterProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := service.StreamChat(context.Background(), chatCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamed []StreamEvent
+	for event := range stream {
+		streamed = append(streamed, event)
+	}
+	if len(streamed) != len(store.events) {
+		t.Fatalf("streamed events=%+v", streamed)
+	}
+	turnID := store.turn.ID
+	watched, err := service.WatchTurnEvents(context.Background(), turnID, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range watched {
+	}
+}
+
 type streamingChatAdapterStore struct {
 	*terminalChatAdapterStore
 	events      []TurnEvent
