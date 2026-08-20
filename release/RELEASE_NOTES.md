@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v1.0.178
+
+1. Enforce durable convergence for scheduled and constrained workflows so admitted Message MCP and Web Search steps complete before synthesis, repeated no-progress paths terminate, and successful turns finalize as nonempty Markdown without exposing hidden reasoning.
+2. Persist versioned execution policies, tool observations, and compact working context across retries, restarts, lease transfer, and steering while preserving validated constraints and resource identities.
+3. Bound model-provider latency and degrade optional memory-recall failures without discarding otherwise valid Native turn progress.
+4. Keep Worker artifact reads outside inventory cleanup and use Dirextalk as the canonical primary server name without changing external resource identities.
+
 ## v1.0.177
 
 1. Persist each model dispatch directive under the current Turn lease so loop guidance, forced admitted tools, and final synthesis survive retry and restart without expanding the frozen runtime.
