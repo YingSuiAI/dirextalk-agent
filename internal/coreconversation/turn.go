@@ -702,6 +702,8 @@ func (c TurnStartCommand) ExtensionSnapshotDigest() string {
 	}
 	items := append([]ExtensionExecutionSnapshot(nil), c.ExtensionSnapshots...)
 	for i := range items {
+		items[i].Selection.AllowedTools = append([]string(nil), items[i].Selection.AllowedTools...)
+		sort.Strings(items[i].Selection.AllowedTools)
 		items[i].ToolNames = append([]string(nil), items[i].ToolNames...)
 		sort.Strings(items[i].ToolNames)
 	}

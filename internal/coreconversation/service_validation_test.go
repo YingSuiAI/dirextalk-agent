@@ -61,15 +61,23 @@ func TestMessageTurnIdentityMustBeCanonicalWhenPresent(t *testing.T) {
 		t.Fatalf("invalid turn identity err=%v", err)
 	}
 }
-func TestDigestIncludesAllowedTools(t *testing.T) {
+func TestDurableExtensionSnapshotDigestIncludesAllowedTools(t *testing.T) {
 	id := uuid.NewString()
-	a := []ResolvedExtension{{Selection: ExtensionSelection{ID: id, Kind: ExtensionMCP, Version: "1", Digest: "d", AllowedTools: []string{"b", "a"}}}}
-	b := []ResolvedExtension{{Selection: ExtensionSelection{ID: id, Kind: ExtensionMCP, Version: "1", Digest: "d", AllowedTools: []string{"a", "b"}}}}
-	if digestExtensions(a) != digestExtensions(b) {
+	snapshot := func(tools ...string) ExtensionExecutionSnapshot {
+		return ExtensionExecutionSnapshot{
+			Selection:      ExtensionSelection{ID: id, Kind: ExtensionMCP, Version: "1", Digest: digest("selection"), AllowedTools: tools},
+			InstallationID: id, VersionID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("version:"+id)).String(), Source: "registry",
+			ContentDigest: digest("content"), ArtifactDigest: digest("artifact"), ToolNames: append([]string(nil), tools...),
+		}
+	}
+	a := TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot("b", "a")}}
+	b := TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot("a", "b")}}
+	if a.ExtensionSnapshotDigest() != b.ExtensionSnapshotDigest() {
 		t.Fatal("digest not normalized")
 	}
-	b[0].Selection.AllowedTools = []string{"a"}
-	if digestExtensions(a) == digestExtensions(b) {
+	b.ExtensionSnapshots[0].Selection.AllowedTools = []string{"a"}
+	b.ExtensionSnapshots[0].ToolNames = []string{"a"}
+	if a.ExtensionSnapshotDigest() == b.ExtensionSnapshotDigest() {
 		t.Fatal("digest omitted tools")
 	}
 }

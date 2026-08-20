@@ -23,6 +23,13 @@ contract](message-server-integration-development-contract.md), and
   their recent conflict-preserving timeline, and exact-promoted-revision
   semantic Knowledge passages; current facts explicitly outrank stale
   passages and the envelope is not persisted or returned.
+- Chat, StreamChat, and StartTurn now enter one durable Turn execution owner.
+  Unary Chat returns the authoritative terminal Turn response, while StreamChat
+  projects the persisted accepted/model/tool/confirmation/Worker/steer/terminal
+  event order. RPC disconnect detaches observation without canceling accepted
+  work; explicit CancelTurn remains the only stop mutation. The legacy Chat
+  lease-driven model-step/tool-execution path and second model executor have
+  been removed from the service.
 - Successful exchanges atomically enqueue restart-safe memory consolidation.
   A bounded model extraction records explicit durable user facts only; repeated
   values confirm, changed values supersede with validity history, and explicit
@@ -407,6 +414,12 @@ support.
   change, reports them as stale rather than indexed, and requeues a source
   whose active embedding profile revision advanced. Empty exact-binding recall
   remained a successful empty context without calling the semantic backend.
+- On **2026-08-20**, focused Core and RPC tests verified the Chat/StreamChat
+  durable adapter, terminal replay after service recreation, ordered lifecycle
+  projection, profile-pin rotation, title atomicity, and disconnect-without-stop
+  behavior. Focused PostgreSQL 18 + pgvector tests exercised Chat, StreamChat,
+  and StartTurn through the same persisted cancellation and precharged model
+  budget terminals (`canceled` and `model_budget_exhausted`).
 - On **2026-08-14**, the current Cloud Worker tests cover proposal-time live
   selection and pricing, deterministic offer/confirmation binding, dynamic AWS
   credential readiness, SSH execution, retained Worker identity, local artifact

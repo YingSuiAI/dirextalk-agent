@@ -202,7 +202,6 @@ type ChatCommand struct {
 	ExpectedCredentialVersion int64                `json:"expected_credential_version"`
 	Extensions                []ExtensionSelection `json:"extensions,omitempty"`
 	ExpectedRevision          *uint64              `json:"expected_revision,omitempty"`
-	LeaseTTL                  time.Duration        `json:"-"`
 }
 
 type ChatResponse struct {
@@ -226,17 +225,23 @@ type ChatResponse struct {
 type StreamEventKind string
 
 const (
-	EventStarted    StreamEventKind = "started"
-	EventDelta      StreamEventKind = "delta"
-	EventToolCall   StreamEventKind = "tool_call"
-	EventToolResult StreamEventKind = "tool_result"
-	EventDone       StreamEventKind = "done"
-	EventError      StreamEventKind = "error"
+	EventAccepted            StreamEventKind = "accepted"
+	EventStarted             StreamEventKind = "started"
+	EventDelta               StreamEventKind = "delta"
+	EventToolCall            StreamEventKind = "tool_call"
+	EventToolResult          StreamEventKind = "tool_result"
+	EventWaitingConfirmation StreamEventKind = "waiting_confirmation"
+	EventWorkerStatus        StreamEventKind = "worker_status"
+	EventSteered             StreamEventKind = "steered"
+	EventDone                StreamEventKind = "done"
+	EventError               StreamEventKind = "error"
 )
 
 type StreamEvent struct {
 	Kind             StreamEventKind `json:"kind"`
 	TurnSequence     int64           `json:"turn_sequence,omitempty"`
+	TurnID           string          `json:"turn_id,omitempty"`
+	Revision         uint64          `json:"revision,omitempty"`
 	RequestID        string          `json:"request_id"`
 	ConversationID   string          `json:"conversation_id"`
 	Text             string          `json:"text,omitempty"`
@@ -247,6 +252,10 @@ type StreamEvent struct {
 	Err              string          `json:"error,omitempty"`
 	ErrCode          string          `json:"error_code,omitempty"`
 	ErrSummary       string          `json:"error_summary,omitempty"`
+	ConfirmationID   string          `json:"confirmation_id,omitempty"`
+	ExecutionID      string          `json:"execution_id,omitempty"`
+	Status           string          `json:"status,omitempty"`
+	Phase            string          `json:"phase,omitempty"`
 }
 
 type ClaimStatus string
@@ -573,11 +582,6 @@ type ToolExecutionLedger interface {
 type Store interface {
 	ConversationStore
 	ConversationMutationStore
-	ChatLedger
-	ToolExecutionLedger
-	CommitChatCompletion(context.Context, AtomicCompletion) (ChatResponse, error)
-	LoadModelStep(context.Context, string, string, string, uint64, string, int) (ModelRunResult, bool, error)
-	RecordModelStep(context.Context, string, string, string, uint64, string, int, ModelRunResult) error
 }
 type ModelRunner interface {
 	Run(context.Context, ModelRunRequest) (ModelRunResult, error)
@@ -602,7 +606,7 @@ type AutomaticExtensionSelector interface {
 }
 
 // SnapshotProfileResolver is used only to bind a new request. Recovery uses
-// the immutable snapshot persisted on its ChatLease.
+// the immutable snapshot persisted on its durable Turn.
 type SnapshotProfileResolver interface {
 	ResolveProfileSnapshot(context.Context, string) (coremodel.ExecutionSnapshot, error)
 }

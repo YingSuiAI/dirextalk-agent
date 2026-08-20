@@ -207,6 +207,14 @@ snapshot even if the current profile has since rotated. Model-profile and
 durable-turn responses project the profile revision and credential version so
 the caller can pin its next request.
 
+Chat, StreamChat, and StartTurn have one durable execution owner. Chat adapts
+its request into StartTurn and waits for the authoritative terminal response;
+StreamChat adapts the same request and projects the persisted Turn event ledger
+in sequence order, including confirmation, Cloud Worker, and steer lifecycle
+events. The former Chat ledger/model/tool executor is not retained. Once
+admission succeeds, canceling a caller context detaches only that waiter or
+stream; durable cancellation remains an explicit CancelTurn mutation.
+
 Provider tool requests keep the Agent-owned schema authoritative. Gemini
 receives only fields declared by its documented `Schema` contract; unsupported
 JSON Schema keywords are removed, while string `const` choices are projected

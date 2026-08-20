@@ -29,9 +29,9 @@ func TestChatRejectsPartialProfilePins(t *testing.T) {
 func TestChatRejectsMismatchedResolvedProfilePinsBeforeModelExecution(t *testing.T) {
 	profileID := uuid.NewString()
 	current := pinTestSnapshot(profileID, 2, 3)
-	store := newFakeStore()
+	store := &publicActiveTurnStore{fakeStore: newFakeStore()}
 	model := &trackingModel{}
-	service, err := NewService(store, model, fakeExt{}, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+	service, err := NewService(store, model, noopExtensions{}, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) {
 		return current, nil
 	}))
 	if err != nil {
@@ -55,9 +55,12 @@ func TestChatRejectsMismatchedResolvedProfilePinsBeforeModelExecution(t *testing
 func TestChatReplayUsesBoundPinsAfterCredentialRotation(t *testing.T) {
 	profileID := uuid.NewString()
 	resolver := &mutableSnapshotResolver{snapshot: pinTestSnapshot(profileID, 1, 1)}
-	store := newFakeStore()
+	store := &terminalChatAdapterStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore()},
+		state:                 TurnCompleted, content: "pinned response",
+	}
 	model := &trackingModel{}
-	service, err := NewService(store, model, fakeExt{}, resolver)
+	service, err := NewService(store, model, noopExtensions{}, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,13 +74,13 @@ func TestChatReplayUsesBoundPinsAfterCredentialRotation(t *testing.T) {
 	if _, err := service.Chat(context.Background(), stale); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale pins after credential rotation err=%v", err)
 	}
-	if model.count() != 1 {
+	if model.count() != 0 || store.startCalls != 1 {
 		t.Fatalf("stale request ran model after rotation: %d", model.count())
 	}
 	if _, err := service.Chat(context.Background(), first); err != nil {
 		t.Fatalf("bound replay after rotation failed: %v", err)
 	}
-	if model.count() != 1 {
+	if model.count() != 0 || store.startCalls != 1 {
 		t.Fatalf("bound replay invoked model after rotation: %d", model.count())
 	}
 }
@@ -96,6 +99,7 @@ func pinTestSnapshot(profileID string, revision, credentialVersion int64) coremo
 		Revision:          revision,
 		CredentialVersion: credentialVersion,
 		Provider:          coremodel.ProviderOpenAICompatible,
+		RequestDialect:    coremodel.DialectOpenAICompatibleChatV1,
 		BaseURL:           "https://example.invalid",
 		Model:             "test-model",
 		APIKey:            "test-key",

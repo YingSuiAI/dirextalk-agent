@@ -41,6 +41,14 @@ func (integrationConversationRunner) Run(_ context.Context, request core.ModelRu
 	return core.ModelRunResult{Done: true, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "ok", ReasoningContent: "integration reasoning", CreatedAt: createdAt}}, nil
 }
 
+func (runner integrationConversationRunner) Stream(ctx context.Context, request core.ModelRunRequest, emit func(core.ModelDelta) error) (core.ModelRunResult, error) {
+	result, err := runner.Run(ctx, request)
+	if err == nil && emit != nil {
+		err = emit(core.ModelDelta{Text: result.Message.Content, ReasoningContent: result.Message.ReasoningContent})
+	}
+	return result, err
+}
+
 type integrationSnapshotResolver struct{ snapshot coremodel.ExecutionSnapshot }
 
 func (r integrationSnapshotResolver) ResolveProfileSnapshot(context.Context, string) (coremodel.ExecutionSnapshot, error) {

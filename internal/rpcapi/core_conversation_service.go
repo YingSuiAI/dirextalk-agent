@@ -245,6 +245,34 @@ func (s *CoreConversationService) Chat(ctx context.Context, r *agentv1.Conversat
 	}
 	return &agentv1.ConversationServiceChatResponse{Conversation: &agentv1.CoreConversation{ConversationId: res.ConversationID, Revision: int64(res.Revision)}, Message: msgProto(res.Message, int64(res.Revision), res.ConversationID), RelatedTaskIds: append([]string(nil), res.RelatedTaskIDs...), RelatedPlanIds: append([]string(nil), res.RelatedPlanIDs...), References: referenceProtos(res.References)}, nil
 }
+
+func durableTurnProgressProto(event coreconversation.StreamEvent) *agentv1.ConversationServiceStreamChatResponse {
+	name, progress := "", event.Status
+	switch event.Kind {
+	case coreconversation.EventAccepted:
+		progress = "accepted"
+	case coreconversation.EventStarted:
+		progress = "started"
+	case coreconversation.EventWaitingConfirmation:
+		name = "confirmation"
+		if progress == "" {
+			progress = "waiting_confirmation"
+		}
+	case coreconversation.EventWorkerStatus:
+		name = "cloud_worker"
+	case coreconversation.EventSteered:
+		name = "steer"
+		if progress == "" {
+			progress = "applied"
+		}
+	default:
+		return nil
+	}
+	return &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Tool{
+		Tool: &agentv1.CoreStreamChatToolProgress{Name: name, Status: progress},
+	}}
+}
+
 func (s *CoreConversationService) StreamChat(r *agentv1.ConversationServiceStreamChatRequest, stream agentv1.ConversationService_StreamChatServer) error {
 	if e := validateRPCChatRequest(r.GetExtensions(), r.GetKnowledgeRefs()); e != nil {
 		return e
@@ -259,10 +287,8 @@ func (s *CoreConversationService) StreamChat(r *agentv1.ConversationServiceStrea
 		return mapErr(e)
 	}
 	for ev := range ch {
-		var out *agentv1.ConversationServiceStreamChatResponse
+		out := durableTurnProgressProto(ev)
 		switch ev.Kind {
-		case coreconversation.EventStarted:
-			out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Tool{Tool: &agentv1.CoreStreamChatToolProgress{Status: "started"}}}
 		case coreconversation.EventDelta:
 			out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Delta{Delta: &agentv1.CoreStreamChatDelta{Text: ev.Text, ReasoningContent: ev.ReasoningContent}}}
 		case coreconversation.EventToolCall:
@@ -295,6 +321,8 @@ func (s *CoreConversationService) StreamChat(r *agentv1.ConversationServiceStrea
 
 func mapStreamError(code string) error {
 	switch code {
+	case "canceled":
+		return status.Error(codes.Canceled, "conversation turn canceled")
 	case "conflict":
 		return status.Error(codes.Aborted, "conversation conflict")
 	case "in_flight":

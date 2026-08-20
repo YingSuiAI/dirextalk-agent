@@ -8,8 +8,35 @@ import (
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
+
+func TestDurableTurnProgressProtoPreservesPublicStreamLifecycle(t *testing.T) {
+	for _, test := range []struct {
+		kind   coreconversation.StreamEventKind
+		status string
+		name   string
+		want   string
+	}{
+		{kind: coreconversation.EventAccepted, want: "accepted"},
+		{kind: coreconversation.EventStarted, want: "started"},
+		{kind: coreconversation.EventWaitingConfirmation, status: "waiting_confirmation", name: "confirmation", want: "waiting_confirmation"},
+		{kind: coreconversation.EventWorkerStatus, status: "provisioning", name: "cloud_worker", want: "provisioning"},
+		{kind: coreconversation.EventSteered, status: "deferred_tool", name: "steer", want: "deferred_tool"},
+	} {
+		t.Run(string(test.kind), func(t *testing.T) {
+			got := durableTurnProgressProto(coreconversation.StreamEvent{Kind: test.kind, Status: test.status})
+			if got == nil || got.GetTool().GetName() != test.name || got.GetTool().GetStatus() != test.want {
+				t.Fatalf("progress=%+v", got)
+			}
+		})
+	}
+	if code := status.Code(mapStreamError("canceled")); code != codes.Canceled {
+		t.Fatalf("canceled stream code=%s", code)
+	}
+}
 
 func TestTurnEventProtoPreservesEventTimeRevisionAndCanonicalWaitingShape(t *testing.T) {
 	waiting, err := coreconversation.NewWaitingConfirmationTurnEvent(uuid.NewString(), uuid.NewString())

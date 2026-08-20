@@ -25,13 +25,6 @@ func (s *Service) SetConversationTitleGenerator(generator ConversationTitleGener
 	s.titleGenerator = generator
 }
 
-func (s *Service) automaticConversationTitle(ctx context.Context, current, userText, assistantText string) string {
-	if strings.TrimSpace(current) != "" {
-		return current
-	}
-	return s.generatedConversationTitle(ctx, userText, assistantText)
-}
-
 func (s *Service) replaceProvisionalConversationTitle(ctx context.Context, current, userText, assistantText string) string {
 	if strings.TrimSpace(current) != "" && current != ProvisionalConversationTitle(userText) {
 		return current

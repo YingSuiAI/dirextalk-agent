@@ -119,6 +119,14 @@ non-negative sequence; a mismatch returns HTTP 400 with
 `AGENT_CURSOR_CONFLICT` before the stream is opened. Stop binds only turn ID
 plus idempotency; steer and attachment chunks retain their frozen revision CAS.
 
+The Protobuf `Chat` and `StreamChat` methods are projections of that same
+durable `StartTurn` owner, not independent model executors. `Chat` waits for the
+authoritative terminal Turn response; `StreamChat` projects accepted, started,
+delta, tool, confirmation, Worker, steer, done, and safe terminal-error events
+in durable ledger order. Canceling either RPC context only detaches that waiter
+or stream after admission. It never cancels the accepted Turn; callers use
+`CancelTurn`/`stop_turn` for that durable mutation.
+
 ## Request and response invariants
 
 - Mutations use the UUID idempotency keys defined by their Protobuf messages;

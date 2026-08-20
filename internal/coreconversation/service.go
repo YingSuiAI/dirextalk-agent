@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +40,7 @@ type Service struct {
 	titleGenerator   ConversationTitleGenerator
 	snapshots        SnapshotProfileResolver
 	now              func() time.Time
-	leaseTTL         time.Duration
+	turnLeaseTTL     time.Duration
 	turns            TurnStore
 	lifecycleCtx     context.Context
 	lifecycleCancel  context.CancelFunc
@@ -129,7 +128,7 @@ func NewService(store Store, models ModelRunner, extensions ExtensionResolver, p
 		extensions = noopExtensions{}
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
-	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, leaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}}
+	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}}
 	if turns, ok := store.(TurnStore); ok {
 		s.turns = turns
 	}
@@ -183,41 +182,7 @@ func validateUniqueSnapshotTools(in []ExtensionExecutionSnapshot) error {
 	}
 	return nil
 }
-func leaseTTL(c ChatCommand, d time.Duration) time.Duration {
-	if c.LeaseTTL > 0 {
-		return c.LeaseTTL
-	}
-	return d
-}
 func digest(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
-func digestExtensions(e []ResolvedExtension) string {
-	type item struct {
-		Kind                ExtensionKind `json:"kind"`
-		ID, Version, Digest string
-		Allowed             []string `json:"allowed_tools"`
-	}
-	items := make([]item, 0, len(e))
-	for _, x := range e {
-		a := append([]string(nil), x.Selection.AllowedTools...)
-		sort.Strings(a)
-		items = append(items, item{x.Selection.Kind, x.Selection.ID, x.Selection.Version, x.Selection.Digest, a})
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Kind != items[j].Kind {
-			return items[i].Kind < items[j].Kind
-		}
-		return items[i].ID < items[j].ID
-	})
-	b, _ := json.Marshal(items)
-	return digest(string(b))
-}
-func digestSelections(e []ExtensionSelection) string {
-	r := make([]ResolvedExtension, len(e))
-	for i, x := range e {
-		r[i] = ResolvedExtension{Selection: x}
-	}
-	return digestExtensions(r)
-}
 func stableIDs(in []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(in))
@@ -282,601 +247,12 @@ func (s *Service) runModel(ctx context.Context, req ModelRunRequest, emit func(M
 	}
 	return s.models.Run(ctx, req)
 }
-func (s *Service) runModelHeartbeat(ctx context.Context, req ModelRunRequest, lease *ChatLease, cmd ChatCommand, emit func(ModelDelta) error) (ModelRunResult, error) {
-	child, cancel := context.WithCancel(ctx)
-	defer cancel()
-	resultCh := make(chan struct {
-		r   ModelRunResult
-		err error
-	}, 1)
-	go func() {
-		r, e := s.runModel(child, req, emit)
-		resultCh <- struct {
-			r   ModelRunResult
-			err error
-		}{r, e}
-	}()
-	interval := leaseTTL(cmd, s.leaseTTL) / 3
-	if interval <= 0 || interval > time.Minute {
-		interval = time.Minute
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case out := <-resultCh:
-			return out.r, out.err
-		case <-ticker.C:
-			renewed, err := s.store.RenewChat(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch, s.clock(), leaseTTL(cmd, s.leaseTTL))
-			if err != nil {
-				cancel()
-				return ModelRunResult{}, err
-			}
-			*lease = renewed
-		case <-ctx.Done():
-			cancel()
-			return ModelRunResult{}, ErrCanceled
-		}
-	}
-}
-
-func (s *Service) bindProfileSnapshot(ctx context.Context, cmd ChatCommand, lease *ChatLease) error {
-	if lease.ProfileSnapshotDigest != "" {
-		if err := lease.ProfileSnapshot.Validate(); err != nil || lease.ProfileSnapshot.Digest() != lease.ProfileSnapshotDigest {
-			return ErrConflict
-		}
-		if err := validateProfilePins(lease.ProfileSnapshot, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); err != nil {
-			return err
-		}
-		return nil
-	}
-	binder, ok := s.store.(ChatProfileSnapshotBinder)
-	if !ok {
-		return ErrInvalid
-	}
-	if s.snapshots == nil {
-		return ErrInvalid
-	}
-	snap, err := s.snapshots.ResolveProfileSnapshot(ctx, cmd.ProfileID)
-	if err != nil {
-		return err
-	}
-	if err := snap.Validate(); err != nil {
-		return err
-	}
-	if err := validateProfilePins(snap, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); err != nil {
-		return err
-	}
-	bound, err := binder.BindChatProfileSnapshot(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch, lease.Fingerprint, snap)
-	if err != nil {
-		return err
-	}
-	*lease = bound
-	return nil
-}
-func (s *Service) executeToolHeartbeat(ctx context.Context, req ToolExecutionRequest, tl *ToolLease, cl *ChatLease, cmd ChatCommand, execute func(context.Context, ToolExecutionRequest) (ToolResult, error)) (ToolResult, error) {
-	child, cancel := context.WithCancel(ctx)
-	defer cancel()
-	out := make(chan struct {
-		r   ToolResult
-		err error
-	}, 1)
-	go func() {
-		r, e := execute(child, req)
-		out <- struct {
-			r   ToolResult
-			err error
-		}{r, e}
-	}()
-	interval := leaseTTL(cmd, s.leaseTTL) / 3
-	if interval <= 0 || interval > time.Minute {
-		interval = time.Minute
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case x := <-out:
-			return x.r, x.err
-		case <-ticker.C:
-			nr, e := s.store.RenewChat(ctx, cmd.RequestID, cl.LeaseID, cl.Epoch, s.clock(), leaseTTL(cmd, s.leaseTTL))
-			if e != nil {
-				cancel()
-				return ToolResult{}, e
-			}
-			*cl = nr
-			nt, e := s.store.RenewToolExecution(ctx, cmd.RequestID, tl.ToolCallID, tl.LeaseID, tl.Epoch, s.clock(), leaseTTL(cmd, s.leaseTTL))
-			if e != nil {
-				cancel()
-				return ToolResult{}, e
-			}
-			*tl = nt
-		case <-ctx.Done():
-			cancel()
-			return ToolResult{}, ErrCanceled
-		}
-	}
-}
-
 func (s *Service) Chat(ctx context.Context, cmd ChatCommand) (ChatResponse, error) {
-	if err := cmd.Validate(); err != nil {
-		return ChatResponse{}, err
-	}
-	// Extensions are durable-turn-only. Keeping unary Chat extension-free
-	// prevents a caller from creating an execution history without the durable
-	// confirmation/recovery ledger.
-	if len(cmd.Extensions) > 0 {
-		return ChatResponse{}, ErrExtensionsUnsupported
-	}
-	fp, _ := cmd.Fingerprint()
-	now := s.clock()
-	ttl := cmd.LeaseTTL
-	if ttl <= 0 {
-		ttl = s.leaseTTL
-	}
-	normExt := cmd.NormalizedExtensions()
-	lease, err := s.store.ClaimChat(ctx, cmd.RequestID, cmd.ConversationID, fp, cmd.ProfileID, normExt, now, ttl)
-	if err != nil {
-		return ChatResponse{}, err
-	}
-	if lease.ProfileID != "" && lease.ProfileID != cmd.ProfileID {
-		return ChatResponse{}, ErrConflict
-	}
-	if len(lease.Extensions) > 0 && digestSelections(lease.Extensions) != digestSelections(cmd.NormalizedExtensions()) {
-		return ChatResponse{}, ErrConflict
-	}
-	if lease.ProfileSnapshotDigest != "" {
-		if err := validateProfilePins(lease.ProfileSnapshot, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); err != nil {
-			return ChatResponse{}, err
-		}
-	}
-	if lease.Status == ClaimCompleted && lease.Response != nil {
-		return *lease.Response, nil
-	}
-	if lease.Status == ClaimConflict {
-		return ChatResponse{}, ErrConflict
-	}
-	if lease.Status == ClaimInFlight {
-		return ChatResponse{}, ErrInFlight
-	}
-	if lease.Status == ClaimFailed {
-		return ChatResponse{}, ErrChatFailed
-	}
-	if err := s.bindProfileSnapshot(ctx, cmd, &lease); err != nil {
-		_ = s.store.ReleaseChat(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch)
-		return ChatResponse{}, err
-	}
-	conv, err := s.loadOrCreate(ctx, cmd, lease)
-	if err != nil {
-		_ = s.store.ReleaseChat(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch)
-		return ChatResponse{}, err
-	}
-	resp, err := s.run(ctx, cmd, conv, &lease, nil)
-	if err != nil {
-		_ = s.store.ReleaseChat(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch)
-		return ChatResponse{}, err
-	}
-	return resp, nil
-}
-
-func (s *Service) loadOrCreate(ctx context.Context, cmd ChatCommand, lease ChatLease) (Conversation, error) {
-	if cmd.ConversationID != "" {
-		c, err := s.store.LoadConversation(ctx, cmd.ConversationID)
-		if err != nil {
-			return Conversation{}, err
-		}
-		if c.DeletedAt != nil {
-			return Conversation{}, ErrDeleted
-		}
-		if cmd.ExpectedRevision != nil && c.Revision != *cmd.ExpectedRevision {
-			return Conversation{}, ErrConflict
-		}
-		return c, nil
-	}
-	id := lease.ConversationID
-	if !validUUID(id) {
-		id = uuid.NewString()
-	}
-	now := s.clock()
-	return Conversation{ID: id, Revision: 0, CreatedAt: now, UpdatedAt: now, Messages: nil}, nil
-}
-
-func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, lease *ChatLease, emit func(StreamEvent)) (ChatResponse, error) {
-	if err := validateProfilePins(lease.ProfileSnapshot, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); err != nil {
-		return ChatResponse{}, err
-	}
-	if emit != nil {
-		emit(StreamEvent{Kind: EventStarted, RequestID: cmd.RequestID, ConversationID: conv.ID})
-	}
-	persistedMessageCount := len(conv.Messages)
-	conversationTitleUserText := firstConversationUserText(conv, cmd.Prompt)
-	var recalledMemory string
-	memoryRecallResolved := false
-	user := Message{ID: uuid.NewString(), Role: RoleUser, Content: cmd.Prompt, CreatedAt: nextMessageTime(conv, s.clock()), ModelProfileID: cmd.ProfileID}
-	conv.Messages = append(conv.Messages, user)
-	profile := lease.ProfileSnapshot.Profile()
-	resolvedProfile := ResolvedProfile{ID: profile.ID, DisplayName: profile.DisplayName, Provider: string(profile.Provider), Model: profile.Model, SystemPrompt: profile.SystemPrompt}
-	var err error
-	exts, err := s.extensions.ResolveExtensions(ctx, ChatCommand{Extensions: cmd.NormalizedExtensions()}.Extensions)
-	if err != nil {
-		return ChatResponse{}, err
-	}
-	var relatedTasks []string
-	var relatedPlans []string
-	var references []Reference
-	var toolSummaries []string
-	var reasoningContent strings.Builder
-	var continuationContent strings.Builder
-	var continuationReasoning strings.Builder
-	var continuationMessages []Message
-	for round := 0; ; round++ {
-		if err := ctx.Err(); err != nil {
-			return ChatResponse{}, ErrCanceled
-		}
-		if renewed, err := s.store.RenewChat(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch, s.clock(), leaseTTL(cmd, s.leaseTTL)); err != nil {
-			return ChatResponse{}, err
-		} else {
-			*lease = renewed
-		}
-		var deltaEmit func(ModelDelta) error
-		if emit != nil {
-			deltaEmit = func(d ModelDelta) error {
-				if emit == nil {
-					return nil
-				}
-				if d.Text != "" || d.ReasoningContent != "" {
-					emit(StreamEvent{Kind: EventDelta, RequestID: cmd.RequestID, ConversationID: conv.ID, Text: d.Text, ReasoningContent: d.ReasoningContent})
-				}
-				return nil
-			}
-		}
-		result, replayed, err := s.store.LoadModelStep(ctx, cmd.RequestID, lease.LeaseID, lease.Fingerprint, lease.Epoch, cmd.ProfileID, round)
-		if err != nil {
-			return ChatResponse{}, err
-		}
-		if !replayed {
-			if !memoryRecallResolved && s.memoryRecall != nil {
-				recallCtx, recallCancel := context.WithTimeout(ctx, 15*time.Second)
-				recalledMemory, err = s.memoryRecall.RecallMemory(recallCtx, cmd.Prompt)
-				recallCancel()
-				if err != nil {
-					return ChatResponse{}, ErrMemoryRecallUnavailable
-				}
-				memoryRecallResolved = true
-			}
-			modelConversation, modelContextErr := modelConversationWithRecalledMemory(conv, persistedMessageCount, recalledMemory, cmd.ProfileID, cmd.RequestID)
-			if modelContextErr != nil {
-				return ChatResponse{}, modelContextErr
-			}
-			modelConversation.Messages = append(modelConversation.Messages, continuationMessages...)
-			if len(continuationMessages) != 0 {
-				continuation, continuationErr := outputContinuationMessage(modelConversation, cmd.ProfileID, fmt.Sprintf("chat:%s:%d", cmd.RequestID, round), s.clock())
-				if continuationErr != nil {
-					return ChatResponse{}, continuationErr
-				}
-				modelConversation.Messages = append(modelConversation.Messages, continuation)
-			}
-			result, err = s.runModelHeartbeat(ctx, ModelRunRequest{Conversation: modelConversation, Profile: resolvedProfile, Snapshot: lease.ProfileSnapshot, Extensions: exts}, lease, cmd, deltaEmit)
-			if err != nil {
-				return ChatResponse{}, err
-			}
-		}
-		if err := ctx.Err(); err != nil {
-			return ChatResponse{}, ErrCanceled
-		}
-		if len(result.Message.ToolCalls) == 0 && len(result.ToolCalls) > 0 {
-			result.Message.ToolCalls = append([]ToolCall(nil), result.ToolCalls...)
-		}
-		if !result.Continue && len(continuationMessages) != 0 {
-			result.Message.Content = continuationContent.String() + result.Message.Content
-			result.Message.ReasoningContent = continuationReasoning.String() + result.Message.ReasoningContent
-		}
-		result.Message.ModelProfileID = cmd.ProfileID
-		result.Message.RelatedTaskIDs = append([]string(nil), result.RelatedTaskIDs...)
-		result.Message.RelatedPlanIDs = append([]string(nil), result.RelatedPlanIDs...)
-		result.Message.References = cloneReferences(result.References)
-		result.Message.ToolSummaries = append([]string(nil), result.ToolSummaries...)
-		result.Message.RelatedTaskIDs = stableIDs(append(result.Message.RelatedTaskIDs, relatedTasks...))
-		result.Message.RelatedPlanIDs = stableIDs(append(result.Message.RelatedPlanIDs, relatedPlans...))
-		result.Message.References = stableReferences(append(result.Message.References, references...))
-		result.Message.ToolSummaries = stableStrings(append(result.Message.ToolSummaries, toolSummaries...))
-		result.Message.CreatedAt = nextMessageTime(conv, result.Message.CreatedAt)
-		if result.Continue && !validModelContinuation(result) {
-			return ChatResponse{}, ErrInvalid
-		}
-		if !result.Continue {
-			if validationErr := result.Message.Validate(); validationErr != nil {
-				return ChatResponse{}, fmt.Errorf("model message: %w", validationErr)
-			}
-		}
-		if result.Done && len(result.Message.ToolCalls) > 0 {
-			return ChatResponse{}, ErrInvalid
-		}
-		if !replayed {
-			result.Message.RelatedTaskIDs = stableIDs(result.Message.RelatedTaskIDs)
-			result.Message.RelatedPlanIDs = stableIDs(result.Message.RelatedPlanIDs)
-			result.Message.References = stableReferences(result.Message.References)
-			result.Message.ToolSummaries = stableStrings(result.Message.ToolSummaries)
-			result.Message.ModelProfileID = cmd.ProfileID
-			result.Message.ToolCalls = append([]ToolCall(nil), result.Message.ToolCalls...)
-			result.RelatedTaskIDs = append([]string(nil), result.Message.RelatedTaskIDs...)
-			result.RelatedPlanIDs = append([]string(nil), result.Message.RelatedPlanIDs...)
-			result.References = cloneReferences(result.Message.References)
-			result.ToolSummaries = append([]string(nil), result.Message.ToolSummaries...)
-			result.ToolCalls = nil
-			if err := s.store.RecordModelStep(ctx, cmd.RequestID, lease.LeaseID, lease.Fingerprint, lease.Epoch, cmd.ProfileID, round, result); err != nil {
-				return ChatResponse{}, err
-			}
-		}
-		if result.Continue {
-			continuationContent.WriteString(result.Message.Content)
-			continuationReasoning.WriteString(result.Message.ReasoningContent)
-			continuationMessages = append(continuationMessages, result.Message.Snapshot())
-			continue
-		}
-		continuationContent.Reset()
-		continuationReasoning.Reset()
-		continuationMessages = nil
-		reasoningContent.WriteString(result.Message.ReasoningContent)
-		if len(result.Message.ToolCalls) == 0 {
-			result.Message.ReasoningContent = reasoningContent.String()
-			if err := result.Message.Validate(); err != nil {
-				return ChatResponse{}, fmt.Errorf("model message: %w", err)
-			}
-		}
-		conv.Messages = append(conv.Messages, result.Message)
-		if len(result.Message.ToolCalls) == 0 {
-			conv.Revision++
-			conv.UpdatedAt = s.clock()
-			conv.Title = s.automaticConversationTitle(ctx, conv.Title, conversationTitleUserText, result.Message.Content)
-			if err := conv.ValidateForPersistence(); err != nil {
-				return ChatResponse{}, fmt.Errorf("conversation: %w", err)
-			}
-			if err := ctx.Err(); err != nil {
-				return ChatResponse{}, ErrCanceled
-			}
-			var allToolResults []ToolResult
-			for _, persistedMessage := range conv.Messages {
-				allToolResults = append(allToolResults, persistedMessage.ToolResults...)
-			}
-			resp := ChatResponse{RequestID: cmd.RequestID, ConversationID: conv.ID, Revision: conv.Revision, Message: result.Message, Done: true, ModelProfileID: cmd.ProfileID, RelatedTaskIDs: result.Message.RelatedTaskIDs, RelatedPlanIDs: result.Message.RelatedPlanIDs, References: cloneReferences(result.Message.References), ToolSummaries: result.Message.ToolSummaries, ToolResults: allToolResults}
-			if renewed, err := s.store.RenewChat(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch, s.clock(), leaseTTL(cmd, s.leaseTTL)); err != nil {
-				return ChatResponse{}, err
-			} else {
-				*lease = renewed
-			}
-			if _, err := s.store.CommitChatCompletion(ctx, AtomicCompletion{RequestID: cmd.RequestID, LeaseID: lease.LeaseID, Epoch: lease.Epoch, Fingerprint: lease.Fingerprint, ExpectedRevision: conv.Revision - 1, Conversation: conv, Response: resp}); err != nil {
-				return ChatResponse{}, err
-			}
-			if emit != nil {
-				emit(StreamEvent{Kind: EventDone, RequestID: cmd.RequestID, ConversationID: conv.ID, Response: &resp})
-			}
-			return resp, nil
-		}
-		for _, call := range result.Message.ToolCalls {
-			var tr ToolResult
-			found := false
-			argsDigest := digest(call.Arguments)
-			extDigest := digestExtensions(exts)
-			tlease, claimErr := s.store.ClaimToolExecution(ctx, cmd.RequestID, call.ID, argsDigest, extDigest, s.clock(), leaseTTL(cmd, s.leaseTTL))
-			if claimErr != nil {
-				return ChatResponse{}, claimErr
-			}
-			call.ExecutionID = tlease.ExecutionID
-			for i := range conv.Messages[len(conv.Messages)-1].ToolCalls {
-				if conv.Messages[len(conv.Messages)-1].ToolCalls[i].ID == call.ID {
-					conv.Messages[len(conv.Messages)-1].ToolCalls[i].ExecutionID = call.ExecutionID
-				}
-			}
-			// The model step and tool execution claim are durable at this point,
-			// but no extension has been dispatched. Publish the existing public
-			// tool_call now so a streaming client can show real progress while
-			// execution is in flight. The dispatched fence below still prevents
-			// recovery from repeating an unknown external mutation.
-			if emit != nil {
-				cc := call
-				emit(StreamEvent{Kind: EventToolCall, RequestID: cmd.RequestID, ConversationID: conv.ID, ToolCall: &cc})
-			}
-			if tlease.Status == ToolClaimCompleted && tlease.Result != nil {
-				if tlease.Result.CallID != call.ID {
-					return ChatResponse{}, ErrConflict
-				}
-				tr = *tlease.Result
-				found = true
-			}
-			if tlease.Status == ToolClaimInFlight || tlease.Status == ToolClaimConflict {
-				return ChatResponse{}, ErrConflict
-			}
-			if tlease.Status == ToolClaimUncertain || tlease.Status == ToolClaimDispatched {
-				if err := s.store.TerminalizeToolUncertain(ctx, cmd.RequestID, call.ID, tlease.LeaseID, tlease.Epoch, lease.LeaseID, lease.Epoch, "tool_uncertain", "tool execution outcome is uncertain"); err != nil {
-					return ChatResponse{}, err
-				}
-				return ChatResponse{}, ErrChatFailed
-			}
-			toolCompleted := tlease.Status == ToolClaimCompleted
-			dispatched := false
-			if !toolCompleted {
-				defer func() {
-					if !toolCompleted {
-						if dispatched {
-							_ = s.store.TerminalizeToolUncertain(context.Background(), cmd.RequestID, call.ID, tlease.LeaseID, tlease.Epoch, lease.LeaseID, lease.Epoch, "tool_uncertain", "tool execution outcome is uncertain")
-						} else {
-							_ = s.store.ReleaseToolExecution(context.Background(), cmd.RequestID, call.ID, tlease.LeaseID, tlease.Epoch)
-						}
-					}
-				}()
-			}
-			if !found {
-				var candidates []ResolvedExtension
-				for _, e := range exts {
-					allowed := len(e.Selection.AllowedTools) == 0
-					for _, n := range e.Selection.AllowedTools {
-						if n == call.Name {
-							allowed = true
-						}
-					}
-					if allowed && e.Execute != nil {
-						candidates = append(candidates, e)
-					}
-				}
-				if len(candidates) > 1 {
-					return ChatResponse{}, ErrConflict
-				}
-				if len(candidates) == 1 {
-					if renewed, renewErr := s.store.RenewChat(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch, s.clock(), leaseTTL(cmd, s.leaseTTL)); renewErr != nil {
-						return ChatResponse{}, renewErr
-					} else {
-						*lease = renewed
-					}
-					if renewed, renewErr := s.store.RenewToolExecution(ctx, cmd.RequestID, call.ID, tlease.LeaseID, tlease.Epoch, s.clock(), leaseTTL(cmd, s.leaseTTL)); renewErr != nil {
-						return ChatResponse{}, renewErr
-					} else {
-						tlease = renewed
-					}
-					if err := s.store.MarkToolDispatched(ctx, cmd.RequestID, call.ID, tlease.LeaseID, tlease.Epoch); err != nil {
-						return ChatResponse{}, err
-					}
-					tlease.Status = ToolClaimDispatched
-					dispatched = true
-					rq := ToolExecutionRequest{RequestID: cmd.RequestID, ToolCallID: call.ID, ExecutionID: call.ExecutionID, ArgsDigest: argsDigest, ExtensionDigest: extDigest, Call: call}
-					tr, err = s.executeToolHeartbeat(ctx, rq, &tlease, lease, cmd, candidates[0].Execute)
-					found = true
-				}
-			}
-			if !found {
-				err = errors.New("tool unavailable")
-			}
-			if err != nil {
-				return ChatResponse{}, err
-			}
-			if tr.CallID == "" {
-				tr.CallID = call.ID
-			}
-			tr.ToolName = call.Name
-			if tr.CallID != call.ID {
-				return ChatResponse{}, ErrConflict
-			}
-			if tr.Validate() != nil {
-				return ChatResponse{}, ErrInvalid
-			}
-			if tlease.Status != ToolClaimCompleted {
-				if tlease.Status == ToolClaimConflict || tlease.Status == ToolClaimInFlight {
-					return ChatResponse{}, ErrConflict
-				}
-				if renewed, renewErr := s.store.RenewToolExecution(ctx, cmd.RequestID, call.ID, tlease.LeaseID, tlease.Epoch, s.clock(), leaseTTL(cmd, s.leaseTTL)); renewErr != nil {
-					return ChatResponse{}, renewErr
-				} else {
-					tlease = renewed
-				}
-				if _, err := s.store.CompleteToolExecution(ctx, ToolCompletion{RequestID: cmd.RequestID, ToolCallID: call.ID, LeaseID: tlease.LeaseID, Epoch: tlease.Epoch, ArgsDigest: argsDigest, ExtensionDigest: extDigest, Result: tr}); err != nil {
-					return ChatResponse{}, err
-				}
-				toolCompleted = true
-			}
-			tm := Message{ID: uuid.NewString(), Role: RoleTool, ToolResults: []ToolResult{tr}, CreatedAt: nextMessageTime(conv, s.clock()), ModelProfileID: cmd.ProfileID}
-			tm.RelatedTaskIDs = stableIDs(tr.RelatedTaskIDs)
-			tm.RelatedPlanIDs = stableIDs(tr.RelatedPlanIDs)
-			tm.References = stableReferences(tr.References)
-			if tr.Summary != "" {
-				tm.ToolSummaries = []string{tr.Summary}
-			}
-			relatedTasks = append(relatedTasks, tr.RelatedTaskIDs...)
-			relatedPlans = append(relatedPlans, tr.RelatedPlanIDs...)
-			references = append(references, tr.References...)
-			if tr.Summary != "" {
-				toolSummaries = append(toolSummaries, tr.Summary)
-			}
-			conv.Messages = append(conv.Messages, tm)
-			if emit != nil {
-				tt := tr
-				emit(StreamEvent{Kind: EventToolResult, RequestID: cmd.RequestID, ConversationID: conv.ID, ToolResult: &tt})
-			}
-		}
-	}
+	return s.chatViaTurn(ctx, cmd)
 }
 
 func (s *Service) StreamChat(ctx context.Context, cmd ChatCommand) (<-chan StreamEvent, error) {
-	if err := cmd.Validate(); err != nil {
-		return nil, err
-	}
-	if len(cmd.Extensions) > 0 {
-		return nil, ErrExtensionsUnsupported
-	}
-	ch := make(chan StreamEvent, 16)
-	go func() {
-		defer close(ch)
-		send := func(e StreamEvent) bool {
-			select {
-			case ch <- e:
-				return true
-			case <-ctx.Done():
-				return false
-			}
-		}
-		fp, _ := cmd.Fingerprint()
-		now := s.clock()
-		ttl := cmd.LeaseTTL
-		if ttl <= 0 {
-			ttl = s.leaseTTL
-		}
-		lease, err := s.store.ClaimChat(ctx, cmd.RequestID, cmd.ConversationID, fp, cmd.ProfileID, cmd.NormalizedExtensions(), now, ttl)
-		if err != nil {
-			send(safeStreamError(cmd.RequestID, "claim_failed"))
-			return
-		}
-		if (lease.ProfileID != "" && lease.ProfileID != cmd.ProfileID) || (len(lease.Extensions) > 0 && digestSelections(lease.Extensions) != digestSelections(cmd.NormalizedExtensions())) {
-			send(safeStreamError(cmd.RequestID, "conflict"))
-			return
-		}
-		if lease.ProfileSnapshotDigest != "" {
-			if pinErr := validateProfilePins(lease.ProfileSnapshot, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); pinErr != nil {
-				send(safeStreamError(cmd.RequestID, "conflict"))
-				return
-			}
-		}
-		if lease.Status == ClaimCompleted && lease.Response != nil {
-			r := *lease.Response
-			send(StreamEvent{Kind: EventDone, RequestID: r.RequestID, ConversationID: r.ConversationID, Response: &r})
-			return
-		}
-		if lease.Status == ClaimConflict || lease.Status == ClaimInFlight {
-			e := ErrConflict
-			if lease.Status == ClaimInFlight {
-				e = ErrInFlight
-			}
-			code := "conflict"
-			if e == ErrInFlight {
-				code = "in_flight"
-			}
-			send(safeStreamError(cmd.RequestID, code))
-			return
-		}
-		if lease.Status == ClaimFailed {
-			send(safeStreamError(cmd.RequestID, lease.FailureCode))
-			return
-		}
-		if err := s.bindProfileSnapshot(ctx, cmd, &lease); err != nil {
-			_ = s.store.ReleaseChat(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch)
-			send(safeStreamError(cmd.RequestID, "profile_snapshot_failed"))
-			return
-		}
-		conv, err := s.loadOrCreate(ctx, cmd, lease)
-		if err == nil {
-			_, err = s.run(ctx, cmd, conv, &lease, func(e StreamEvent) {
-				select {
-				case ch <- e:
-				case <-ctx.Done():
-				}
-			})
-		}
-		if err != nil {
-			_ = s.store.ReleaseChat(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch)
-			e := safeStreamError(cmd.RequestID, "execution_failed")
-			e.ConversationID = conv.ID
-			send(e)
-		}
-	}()
-	return ch, nil
+	return s.streamChatViaTurn(ctx, cmd)
 }
 
 func safeStreamError(requestID, code string) StreamEvent {
@@ -1601,7 +977,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if s.turns == nil {
 		return
 	}
-	lease, err := s.turns.ClaimTurn(ctx, id, s.clock(), s.leaseTTL)
+	lease, err := s.turns.ClaimTurn(ctx, id, s.clock(), s.turnLeaseTTL)
 	if err != nil {
 		return
 	}
@@ -1823,7 +1199,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		return
 	}
 	modelCtx := child
-	modelCancel := func() {}
 	if durableDispatch && !replayed {
 		prepared, prepareErr := dispatchStore.PrepareTurnModel(ctx, lease, directive)
 		if errors.Is(prepareErr, ErrModelBudgetExhausted) {
@@ -1845,7 +1220,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
 			return
 		}
+		var modelCancel context.CancelFunc
 		modelCtx, modelCancel = context.WithTimeout(child, remaining)
+		defer modelCancel()
 		persistedDirective, loadErr := dispatchStore.LoadTurnModelDirective(ctx, lease)
 		if loadErr != nil || persistedDirective.Digest() != directive.Digest() {
 			_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
@@ -1854,7 +1231,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		}
 		directive = persistedDirective
 	}
-	defer modelCancel()
 	modelExtensions := resolvedExtensions
 	modelExtensionSnapshots := append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)
 	modelIntrinsicTools := intrinsicTools
@@ -1937,7 +1313,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	} else {
 		runAttempt()
 	}
-	interval := s.leaseTTL / 3
+	interval := s.turnLeaseTTL / 3
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -2353,7 +1729,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			if e == nil && t.CancelRequested {
 				cancel()
 			}
-			lease, err = s.turns.RenewTurn(ctx, id, lease.LeaseID, lease.Epoch, s.clock(), s.leaseTTL)
+			lease, err = s.turns.RenewTurn(ctx, id, lease.LeaseID, lease.Epoch, s.clock(), s.turnLeaseTTL)
 			if err != nil {
 				cancel()
 			}
