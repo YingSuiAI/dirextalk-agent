@@ -15,7 +15,8 @@ func turnCommandFromChat(command ChatCommand) TurnStartCommand {
 		RequestID: command.RequestID, ConversationID: command.ConversationID, Prompt: command.Prompt,
 		ProfileID: command.ProfileID, ExpectedProfileRevision: command.ExpectedProfileRevision,
 		ExpectedCredentialVersion: command.ExpectedCredentialVersion, ExpectedRevision: expectedRevision,
-		Extensions: append([]ExtensionSelection(nil), command.Extensions...),
+		Extensions:    append([]ExtensionSelection(nil), command.Extensions...),
+		ExecutionMode: command.ExecutionMode,
 	}
 }
 

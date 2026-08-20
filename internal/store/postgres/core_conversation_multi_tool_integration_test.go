@@ -243,7 +243,7 @@ func startFinalizationAdmittedTurn(t *testing.T, h *turnDBHarness, cmd core.Turn
 		t.Fatal(err)
 	}
 	const convergencePrompt = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
-	runtime, err := core.NewTurnRuntimeSnapshot(convergencePrompt, cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	runtime, err := core.NewTurnRuntimeSnapshotForMode(convergencePrompt, cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest, cmd.ExecutionMode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,8 +400,8 @@ func TestFinalizationAllowanceIgnoresOrdinaryBudgetCapsPostgres(t *testing.T) {
 		activeMillis int64
 		wantCount    uint32
 	}{
-		{name: "dispatch count", count: core.MaxTurnModelDispatches, wantCount: core.MaxTurnModelDispatches + core.MaxTurnFinalizationDispatches},
-		{name: "active time", count: 7, activeMillis: core.MaxTurnModelActiveDuration.Milliseconds(), wantCount: 8},
+		{name: "dispatch count", count: core.MaxAdmittedTurnModelDispatches, wantCount: core.MaxAdmittedTurnModelDispatches + core.MaxTurnFinalizationDispatches},
+		{name: "active time", count: 7, activeMillis: core.MaxAdmittedTurnModelActiveDuration.Milliseconds(), wantCount: 8},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := openTurnDB(t)
@@ -523,12 +523,13 @@ func TestToolBudgetFinalizationPreservesFrozenRuntimePostgres(t *testing.T) {
 		t.Fatalf("budget terminal=%+v", terminal)
 	}
 	requests := model.snapshotRequests()
-	if len(requests) != core.MaxTurnToolCalls+1 || len(requests[len(requests)-1].Extensions) != 0 {
+	toolBudget := int(started.RuntimeSnapshot.ExecutionPolicy.MaxToolCalls)
+	if len(requests) != toolBudget+1 || len(requests[len(requests)-1].Extensions) != 0 {
 		t.Fatalf("budget request count=%d last=%+v", len(requests), requests[len(requests)-1])
 	}
 	directives := loadPersistedTurnDirectives(t, h, terminal)
 	last := directives[len(directives)-1].directive
-	if len(directives) != core.MaxTurnToolCalls+1 || last.Guidance != core.TurnDispatchGuidanceLoopSynthesis || last.ToolMode != core.TurnDispatchToolsNone {
+	if len(directives) != toolBudget+1 || last.Guidance != core.TurnDispatchGuidanceLoopSynthesis || last.ToolMode != core.TurnDispatchToolsNone {
 		t.Fatalf("budget directives=%+v", directives)
 	}
 }

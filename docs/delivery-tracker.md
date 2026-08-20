@@ -63,9 +63,13 @@ contract](message-server-integration-development-contract.md), and
   terminal errors share the closed generated envelope; `Retry-After` and
   `retry_after_ms` represent the same delay, and Turn receipts/frames validate
   explicit equal operation and turn identities.
-- Native turns enforce a 24-dispatch and 20-minute cumulative model-active
-  budget through the same durable admission counters used during recovery, plus
-  a 20-call tool budget. Tool results with validated runtime references persist
+- Native turns persist execution-policy version, mode, and admitted values, and
+  use those values through the same durable counters during recovery.
+  Interactive admits 8 dispatches, 5 model-active minutes, and 8 tool calls;
+  deep, scheduled, and Worker orchestration admit 24/20/20. Supported safe
+  historical values remain executable after preset changes, while unsupported
+  or unsafe policies fail before claim/event mutation. Worker-owned runtime and
+  Task limits remain independent. Tool results with validated runtime references persist
   versioned progress observations in the immediate-result or deferred-resume
   transaction. The third unchanged effective digest fails durably as
   `AGENT_STALLED_NO_PROGRESS`; argument/presentation wrappers do not count as
@@ -429,6 +433,14 @@ support.
   provider/invalid-output fallback, durable partial preservation, dispatch and
   active-time exhaustion, intent-before-dispatch restart, and no replay after a
   final dispatch has started.
+- On **2026-08-20**, admitted execution policy v1 replaced equality checks
+  against binary defaults. `Chat`, `StreamChat`, and `StartTurn` now accept the
+  optional closed interactive/deep/worker-orchestration selector while trusted
+  scheduled Tasks bind scheduled mode. Runtime snapshots persist bounded mode,
+  dispatch, active-time, and tool-call values; Service and PostgreSQL execute
+  those values directly. Interactive uses 8/5 minutes/8 and the three extended
+  modes use 24/20 minutes/20. Unsupported or unsafe stored policies fail before
+  claim mutation, and Cloud Worker runtime limits remain independently owned.
 - On **2026-08-20**, the Agent pinned `dirextalk-capability-api v1.2.0` and
   recognized its generated `agent:servers:read`, `agent:servers:write`, and
   `agent:servers:destroy` scopes. Focused descriptor, HTTP catalog, typed

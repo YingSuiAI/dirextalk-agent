@@ -202,6 +202,7 @@ type ChatCommand struct {
 	ExpectedCredentialVersion int64                `json:"expected_credential_version"`
 	Extensions                []ExtensionSelection `json:"extensions,omitempty"`
 	ExpectedRevision          *uint64              `json:"expected_revision,omitempty"`
+	ExecutionMode             TurnExecutionMode    `json:"execution_mode,omitempty"`
 }
 
 type ChatResponse struct {
@@ -1120,6 +1121,9 @@ func (c ChatCommand) Validate() error {
 	if err := validateText(c.Prompt, MaxContentBytes); err != nil {
 		return err
 	}
+	if _, err := NormalizeClientTurnExecutionMode(c.ExecutionMode); err != nil {
+		return err
+	}
 	for _, e := range c.Extensions {
 		if e.Validate() != nil {
 			return ErrInvalid
@@ -1138,6 +1142,7 @@ func (c ChatCommand) Fingerprint() (string, error) {
 		ExpectedCredentialVersion         int64
 		Extensions                        []ExtensionSelection
 		ExpectedRevision                  *uint64
+		ExecutionMode                     TurnExecutionMode
 	}
 	exts := append([]ExtensionSelection(nil), c.Extensions...)
 	for i := range exts {
@@ -1159,7 +1164,8 @@ func (c ChatCommand) Fingerprint() (string, error) {
 			uniq = append(uniq, e)
 		}
 	}
-	n := normalized{c.ConversationID, c.Prompt, c.ProfileID, c.ExpectedProfileRevision, c.ExpectedCredentialVersion, uniq, c.ExpectedRevision}
+	mode, _ := NormalizeClientTurnExecutionMode(c.ExecutionMode)
+	n := normalized{c.ConversationID, c.Prompt, c.ProfileID, c.ExpectedProfileRevision, c.ExpectedCredentialVersion, uniq, c.ExpectedRevision, mode}
 	b, err := json.Marshal(n)
 	if err != nil {
 		return "", err

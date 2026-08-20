@@ -111,6 +111,7 @@ message ConversationServiceChatRequest {
   optional int64 expected_revision = 7;
   optional int64 model_profile_revision = 8;
   optional int64 credential_version = 9;
+  string execution_mode = 10;
 }
 message ConversationServiceChatResponse {
   CoreConversation conversation = 1;
@@ -130,6 +131,7 @@ message ConversationServiceStreamChatRequest {
   optional int64 expected_revision = 7;
   optional int64 model_profile_revision = 8;
   optional int64 credential_version = 9;
+  string execution_mode = 10;
 }
 message CoreStreamChatDelta {
   string text = 1;
@@ -195,6 +197,7 @@ message ConversationServiceStartTurnRequest {
   repeated CoreExtensionSelection extensions = 6;
   optional int64 model_profile_revision = 7;
   optional int64 credential_version = 8;
+  string execution_mode = 9;
 }
 message ConversationServiceStartTurnResponse {
   CoreConversationTurn turn = 1;

@@ -79,6 +79,7 @@ func scheduledAgentTaskHandler(conversation scheduledConversationService, profil
 			ExtensionSnapshots:        extensions,
 			ExtensionSnapshotsPinned:  true,
 			IntrinsicPolicy:           coreconversation.TurnIntrinsicPolicyNone,
+			ExecutionMode:             coreconversation.TurnExecutionScheduled,
 		})
 		if err != nil {
 			return coreruntime.ManagedOutcome{Err: coreruntime.ErrScheduledTurnAdmission}

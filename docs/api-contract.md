@@ -162,8 +162,19 @@ or stream after admission. It never cancels the accepted Turn; callers use
   `model_profile_id`/`model_profile_revision`/`credential_version` triple.
   Partial or stale pins fail before provider work; there is no default-profile
   fallback, and durable replays retain their original snapshot.
-- A Native conversation turn retains an ordinary-work hard fuse of 24 provider
-  dispatches and 20 minutes of cumulative model-active time. Only ordinary provider
+- `Chat`, `StreamChat`, and `StartTurn` accept the optional closed
+  `execution_mode` values `interactive`, `deep`, and `worker_orchestration`;
+  omission means `interactive`. `scheduled` is reserved for the trusted due-Task
+  adapter and is rejected on owner chat surfaces. The selected mode is bound by
+  the request fingerprint and admits a versioned immutable policy: interactive
+  uses 8 provider dispatches, 5 minutes of cumulative model-active time, and 8
+  tool calls; deep, scheduled, and worker orchestration each use 24 dispatches,
+  20 minutes, and 20 tool calls. A supported policy version accepts previously
+  admitted safe values within those absolute maxima instead of comparing them
+  with the current binary presets, so a safe preset change cannot strand an
+  active turn. Unsupported versions, unknown modes, out-of-range values, or a
+  mode/runtime mismatch fail before a provider reservation or turn mutation.
+- Only ordinary provider
   execution consumes the time budget: tool, sandbox, Worker, and
   user-confirmation execution or waiting do not. Independently, each provider
   stream's five-minute safety
@@ -177,9 +188,9 @@ or stream after admission. It never cancels the accepted Turn; callers use
   ordinary budget cap first persist an immutable turn-finalization intent.
   That intent admits exactly one additional physical provider attempt with an
   independent 30-second timeout; it carries no intrinsic or extension tools,
-  is not charged to the ordinary 20-minute clock, and cannot retry. The total
-  physical attempt sequence can therefore reach 25 while the ordinary contract
-  remains 24 attempts. If the final attempt returns useful text, that text is
+  is not charged to the admitted ordinary clock, and cannot retry. The total
+  physical attempt sequence can therefore reach the admitted dispatch cap plus
+  one (at most 25). If the final attempt returns useful text, that text is
   the normal completed Markdown response. If it fails, is empty or invalid, or
   returns a tool call, Core commits a deterministic Markdown response with
   `Completed work`, `Best conclusion`, `Incomplete items`, and `Stop reason`
@@ -187,8 +198,8 @@ or stream after admission. It never cancels the accepted Turn; callers use
   the final dispatch may perform it once; a started, dispatched, or uncertain
   final attempt is never replayed and falls back deterministically. Clients see
   the result through the normal `done.message.content` projection rather than
-  an error/configuration JSON terminal. Independently, one turn may accept at
-  most 20 distinct tool calls. A provider batch that would cross the limit does
+  an error/configuration JSON terminal. A provider batch that would cross the
+  admitted tool-call limit does
   not dispatch the excess calls and enters the same persisted tool-free
   finalization path.
 - Provider adapters preserve provider-issued tool-call IDs. When Gemini omits

@@ -520,7 +520,11 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 		if err != nil {
 			return nil, err
 		}
-		cmd := coreconversation.ChatCommand{RequestID: key, ConversationID: stringValue(in, "conversation_id"), Prompt: stringValue(in, "message"), ProfileID: profileID, ExpectedProfileRevision: profileRevision, ExpectedCredentialVersion: credentialVersion}
+		executionMode, err := capabilityExecutionMode(in)
+		if err != nil {
+			return nil, err
+		}
+		cmd := coreconversation.ChatCommand{RequestID: key, ConversationID: stringValue(in, "conversation_id"), Prompt: stringValue(in, "message"), ProfileID: profileID, ExpectedProfileRevision: profileRevision, ExpectedCredentialVersion: credentialVersion, ExecutionMode: executionMode}
 		value, err := c.service.Chat(ctx, cmd)
 		return marshalResult(value, err)
 	case "upload_attachment_begin":
@@ -598,6 +602,10 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 		if err != nil {
 			return nil, err
 		}
+		executionMode, err := capabilityExecutionMode(in)
+		if err != nil {
+			return nil, err
+		}
 		profileID, profileRevision, credentialVersion, err := c.resolveProfilePins(in)
 		if err != nil {
 			return nil, err
@@ -616,6 +624,7 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 			ExpectedProfileRevision: profileRevision, ExpectedCredentialVersion: credentialVersion,
 			Extensions:            extensions,
 			AcceptedAttachmentIDs: stringSlice(in, "accepted_attachment_ids"),
+			ExecutionMode:         executionMode,
 		})
 		if err != nil {
 			return nil, err
@@ -666,7 +675,7 @@ func validateDurableStreamChatInput(in map[string]json.RawMessage) ([]coreconver
 	allowed := map[string]struct{}{
 		"idempotency_key": {}, "conversation_id": {}, "message": {},
 		"model_profile_id": {}, "model_profile_revision": {}, "credential_version": {},
-		"accepted_attachment_ids": {}, "extensions": {},
+		"accepted_attachment_ids": {}, "extensions": {}, "execution_mode": {},
 	}
 	for key := range in {
 		if _, ok := allowed[key]; !ok {
@@ -678,6 +687,9 @@ func validateDurableStreamChatInput(in map[string]json.RawMessage) ([]coreconver
 		int64Value(in, "model_profile_revision") <= 0 || int64Value(in, "credential_version") <= 0 ||
 		strings.TrimSpace(stringValue(in, "message")) == "" {
 		return nil, coreconversation.ErrInvalid
+	}
+	if _, err := capabilityExecutionMode(in); err != nil {
+		return nil, err
 	}
 	conversationID := stringValue(in, "conversation_id")
 	if conversationID != "" && !coretask.ValidUUID(conversationID) {
@@ -704,6 +716,22 @@ func validateDurableStreamChatInput(in map[string]json.RawMessage) ([]coreconver
 		return nil, err
 	}
 	return extensions, nil
+}
+
+func capabilityExecutionMode(in map[string]json.RawMessage) (coreconversation.TurnExecutionMode, error) {
+	raw, present := in["execution_mode"]
+	if !present {
+		return coreconversation.TurnExecutionInteractive, nil
+	}
+	var decoded any
+	if json.Unmarshal(raw, &decoded) != nil {
+		return "", coreconversation.ErrInvalid
+	}
+	value, ok := decoded.(string)
+	if !ok || value != strings.TrimSpace(value) {
+		return "", coreconversation.ErrInvalid
+	}
+	return coreconversation.NormalizeClientTurnExecutionMode(coreconversation.TurnExecutionMode(value))
 }
 
 func durableStreamExtensions(raw json.RawMessage) ([]coreconversation.ExtensionSelection, error) {
@@ -2089,7 +2117,7 @@ func operationInputSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:summarize":
 		return `{"type":"object","properties":{"text":{"type":"string"},"room_id":{"type":"string"}}}`
 	case "agent.chat.v1:chat":
-		return `{"type":"object","properties":{"idempotency_key":{"type":"string"},"conversation_id":{"type":"string"},"message":{"type":"string"},"model_profile_id":{"type":"string"},"model_profile_revision":{"type":"integer"},"credential_version":{"type":"integer"}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
+		return `{"type":"object","properties":{"idempotency_key":{"type":"string"},"conversation_id":{"type":"string"},"message":{"type":"string"},"model_profile_id":{"type":"string"},"model_profile_revision":{"type":"integer"},"credential_version":{"type":"integer"},"execution_mode":{"enum":["interactive","deep","worker_orchestration"],"type":"string"}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
 	case "agent.chat.v1:upload_attachment_begin":
 		return `{"additionalProperties":false,"properties":{"content_sha256":{"pattern":"^[a-f0-9]{64}$","type":"string"},"declared_size":{"maximum":8388608,"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"kind":{"enum":["image","file","workspace_archive"],"type":"string"},"mime_type":{"maxLength":255,"minLength":1,"type":"string"},"name":{"maxLength":255,"minLength":1,"type":"string"},"turn_request_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","turn_request_id","kind","name","mime_type","declared_size","content_sha256"],"type":"object"}`
 	case "agent.chat.v1:upload_attachment_append":
@@ -2097,7 +2125,7 @@ func operationInputSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:upload_attachment_commit":
 		return `{"additionalProperties":false,"properties":{"content_sha256":{"pattern":"^[a-f0-9]{64}$","type":"string"},"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"upload_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","upload_id","expected_revision","content_sha256"],"type":"object"}`
 	case "agent.chat.v1:start_turn":
-		return `{"additionalProperties":false,"type":"object","properties":{"accepted_attachment_ids":{"items":{"format":"uuid","type":"string"},"maxItems":4,"uniqueItems":true,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"message":{"minLength":1,"type":"string"},"model_profile_id":{"format":"uuid","type":"string"},"model_profile_revision":{"minimum":1,"type":"integer"},"credential_version":{"minimum":1,"type":"integer"},"extensions":{"items":` + durableStreamExtensionSelectionSchema + `,"maxItems":64,"minItems":1,"type":"array","uniqueItems":true}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
+		return `{"additionalProperties":false,"type":"object","properties":{"accepted_attachment_ids":{"items":{"format":"uuid","type":"string"},"maxItems":4,"uniqueItems":true,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"message":{"minLength":1,"type":"string"},"model_profile_id":{"format":"uuid","type":"string"},"model_profile_revision":{"minimum":1,"type":"integer"},"credential_version":{"minimum":1,"type":"integer"},"execution_mode":{"enum":["interactive","deep","worker_orchestration"],"type":"string"},"extensions":{"items":` + durableStreamExtensionSelectionSchema + `,"maxItems":64,"minItems":1,"type":"array","uniqueItems":true}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
 	case "agent.models.v1:sync_models":
 		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_tool_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"entries":{"type":"array"}},"required":["idempotency_key","entries"]}`
 	case "agent.models.v1:list_models":

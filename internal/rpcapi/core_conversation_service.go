@@ -166,6 +166,14 @@ func validateRPCChatRequest(extensions []*agentv1.CoreExtensionSelection, knowle
 	}
 	return nil
 }
+
+func rpcExecutionMode(value string) (coreconversation.TurnExecutionMode, error) {
+	mode, err := coreconversation.NormalizeClientTurnExecutionMode(coreconversation.TurnExecutionMode(value))
+	if err != nil {
+		return "", status.Error(codes.InvalidArgument, "unsupported execution mode")
+	}
+	return mode, nil
+}
 func summaryList(summary string) []string {
 	if summary == "" {
 		return nil
@@ -234,7 +242,11 @@ func (s *CoreConversationService) Chat(ctx context.Context, r *agentv1.Conversat
 	if e := validateRPCChatRequest(r.GetExtensions(), r.GetKnowledgeRefs()); e != nil {
 		return nil, e
 	}
-	cmd := coreconversation.ChatCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), ExpectedProfileRevision: r.GetModelProfileRevision(), ExpectedCredentialVersion: r.GetCredentialVersion(), Extensions: extensionCommands(r.GetExtensions())}
+	executionMode, e := rpcExecutionMode(r.GetExecutionMode())
+	if e != nil {
+		return nil, e
+	}
+	cmd := coreconversation.ChatCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), ExpectedProfileRevision: r.GetModelProfileRevision(), ExpectedCredentialVersion: r.GetCredentialVersion(), Extensions: extensionCommands(r.GetExtensions()), ExecutionMode: executionMode}
 	if r.ExpectedRevision != nil {
 		x := uint64(r.GetExpectedRevision())
 		cmd.ExpectedRevision = &x
@@ -277,7 +289,11 @@ func (s *CoreConversationService) StreamChat(r *agentv1.ConversationServiceStrea
 	if e := validateRPCChatRequest(r.GetExtensions(), r.GetKnowledgeRefs()); e != nil {
 		return e
 	}
-	cmd := coreconversation.ChatCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), ExpectedProfileRevision: r.GetModelProfileRevision(), ExpectedCredentialVersion: r.GetCredentialVersion(), Extensions: extensionCommands(r.GetExtensions())}
+	executionMode, e := rpcExecutionMode(r.GetExecutionMode())
+	if e != nil {
+		return e
+	}
+	cmd := coreconversation.ChatCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), ExpectedProfileRevision: r.GetModelProfileRevision(), ExpectedCredentialVersion: r.GetCredentialVersion(), Extensions: extensionCommands(r.GetExtensions()), ExecutionMode: executionMode}
 	if r.ExpectedRevision != nil {
 		x := uint64(r.GetExpectedRevision())
 		cmd.ExpectedRevision = &x
@@ -335,7 +351,11 @@ func mapStreamError(code string) error {
 }
 
 func (s *CoreConversationService) StartTurn(ctx context.Context, r *agentv1.ConversationServiceStartTurnRequest) (*agentv1.ConversationServiceStartTurnResponse, error) {
-	cmd := coreconversation.TurnStartCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), ExpectedProfileRevision: r.GetModelProfileRevision(), ExpectedCredentialVersion: r.GetCredentialVersion(), Extensions: extensionCommands(r.GetExtensions())}
+	executionMode, e := rpcExecutionMode(r.GetExecutionMode())
+	if e != nil {
+		return nil, e
+	}
+	cmd := coreconversation.TurnStartCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), ExpectedProfileRevision: r.GetModelProfileRevision(), ExpectedCredentialVersion: r.GetCredentialVersion(), Extensions: extensionCommands(r.GetExtensions()), ExecutionMode: executionMode}
 	if r.ExpectedRevision != nil {
 		x := uint64(r.GetExpectedRevision())
 		cmd.ExpectedRevision = &x

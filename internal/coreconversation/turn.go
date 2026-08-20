@@ -209,6 +209,9 @@ type TurnStartCommand struct {
 	IntrinsicPolicy       TurnIntrinsicPolicy
 	AcceptedAttachmentIDs []string
 	AttachmentSources     []TurnAttachment
+	// ExecutionMode selects one bounded admission preset. The admitted values,
+	// not this selector or later binary defaults, become durable authority.
+	ExecutionMode TurnExecutionMode
 }
 
 type TurnCancelCommand struct {
@@ -492,11 +495,102 @@ func (d TurnDispatchDirective) Digest() string {
 	return digest(string(raw))
 }
 
-const TurnRuntimeSnapshotVersion = 1
+const TurnRuntimeSnapshotVersion = 2
 
 type TurnIntrinsicPolicy string
 
 const TurnIntrinsicPolicyNone TurnIntrinsicPolicy = "none"
+
+const TurnExecutionPolicyVersion = 1
+
+type TurnExecutionMode string
+
+const (
+	TurnExecutionInteractive         TurnExecutionMode = "interactive"
+	TurnExecutionDeep                TurnExecutionMode = "deep"
+	TurnExecutionScheduled           TurnExecutionMode = "scheduled"
+	TurnExecutionWorkerOrchestration TurnExecutionMode = "worker_orchestration"
+)
+
+const (
+	interactiveTurnModelDispatches     = 8
+	interactiveTurnModelActiveDuration = 5 * time.Minute
+	interactiveTurnToolCalls           = 8
+)
+
+// TurnExecutionPolicy is the immutable ordinary ReAct budget admitted with a
+// turn. Validation deliberately accepts every safe value in the supported
+// version instead of comparing against the current preset for its mode.
+type TurnExecutionPolicy struct {
+	Version                    int               `json:"version"`
+	Mode                       TurnExecutionMode `json:"mode"`
+	MaxModelDispatches         uint32            `json:"max_model_dispatches"`
+	MaxModelActiveMilliseconds uint64            `json:"max_model_active_milliseconds"`
+	MaxToolCalls               uint32            `json:"max_tool_calls"`
+	ToolLoopPolicyVersion      uint32            `json:"tool_loop_policy_version"`
+	ProviderRetryPolicyVersion uint32            `json:"provider_retry_policy_version"`
+}
+
+func AdmittedTurnExecutionPolicy(mode TurnExecutionMode) (TurnExecutionPolicy, error) {
+	policy := TurnExecutionPolicy{
+		Version: TurnExecutionPolicyVersion, Mode: mode,
+		ToolLoopPolicyVersion: 1, ProviderRetryPolicyVersion: 1,
+	}
+	switch mode {
+	case TurnExecutionInteractive:
+		policy.MaxModelDispatches = interactiveTurnModelDispatches
+		policy.MaxModelActiveMilliseconds = uint64(interactiveTurnModelActiveDuration.Milliseconds())
+		policy.MaxToolCalls = interactiveTurnToolCalls
+	case TurnExecutionDeep, TurnExecutionScheduled, TurnExecutionWorkerOrchestration:
+		policy.MaxModelDispatches = MaxAdmittedTurnModelDispatches
+		policy.MaxModelActiveMilliseconds = uint64(MaxAdmittedTurnModelActiveDuration.Milliseconds())
+		policy.MaxToolCalls = MaxAdmittedTurnToolCalls
+	default:
+		return TurnExecutionPolicy{}, ErrInvalid
+	}
+	return policy, nil
+}
+
+func (p TurnExecutionPolicy) Validate() error {
+	switch p.Mode {
+	case TurnExecutionInteractive, TurnExecutionDeep, TurnExecutionScheduled, TurnExecutionWorkerOrchestration:
+	default:
+		return ErrInvalid
+	}
+	if p.Version != TurnExecutionPolicyVersion || p.MaxModelDispatches == 0 || p.MaxModelDispatches > MaxAdmittedTurnModelDispatches ||
+		p.MaxModelActiveMilliseconds == 0 || p.MaxModelActiveMilliseconds > uint64(MaxAdmittedTurnModelActiveDuration.Milliseconds()) ||
+		p.MaxToolCalls == 0 || p.MaxToolCalls > MaxAdmittedTurnToolCalls ||
+		p.ToolLoopPolicyVersion != 1 || p.ProviderRetryPolicyVersion != 1 {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func (p TurnExecutionPolicy) MaxModelActiveDuration() time.Duration {
+	if p.Validate() != nil {
+		return 0
+	}
+	return time.Duration(p.MaxModelActiveMilliseconds) * time.Millisecond
+}
+
+func normalizeTurnExecutionMode(mode TurnExecutionMode) TurnExecutionMode {
+	if mode == "" {
+		return TurnExecutionInteractive
+	}
+	return mode
+}
+
+// NormalizeClientTurnExecutionMode admits only owner-selected foreground
+// modes. Scheduled is reserved for the trusted durable Task adapter.
+func NormalizeClientTurnExecutionMode(mode TurnExecutionMode) (TurnExecutionMode, error) {
+	mode = normalizeTurnExecutionMode(mode)
+	switch mode {
+	case TurnExecutionInteractive, TurnExecutionDeep, TurnExecutionWorkerOrchestration:
+		return mode, nil
+	default:
+		return "", ErrInvalid
+	}
+}
 
 type TurnRuntimeSnapshot struct {
 	Version               int                 `json:"version"`
@@ -509,19 +603,38 @@ type TurnRuntimeSnapshot struct {
 	IntrinsicPolicy       TurnIntrinsicPolicy `json:"intrinsic_policy,omitempty"`
 	ExtensionDigest       string              `json:"extension_digest"`
 	AttachmentDigest      string              `json:"attachment_digest"`
-	ExecutionPolicy       map[string]uint64   `json:"execution_policy"`
+	ExecutionPolicy       TurnExecutionPolicy `json:"execution_policy"`
 	ExecutionPolicyDigest string              `json:"execution_policy_digest"`
 }
 
 func NewTurnRuntimeSnapshot(systemPrompt string, profile coremodel.ExecutionSnapshot, intrinsics []ResolvedIntrinsic, extensionDigest, attachmentDigest string) (TurnRuntimeSnapshot, error) {
-	return newTurnRuntimeSnapshot(systemPrompt, profile, intrinsics, extensionDigest, attachmentDigest, "")
+	return NewTurnRuntimeSnapshotForMode(systemPrompt, profile, intrinsics, extensionDigest, attachmentDigest, TurnExecutionInteractive)
+}
+
+func NewTurnRuntimeSnapshotForMode(systemPrompt string, profile coremodel.ExecutionSnapshot, intrinsics []ResolvedIntrinsic, extensionDigest, attachmentDigest string, mode TurnExecutionMode) (TurnRuntimeSnapshot, error) {
+	policy, err := AdmittedTurnExecutionPolicy(mode)
+	if err != nil {
+		return TurnRuntimeSnapshot{}, err
+	}
+	return newTurnRuntimeSnapshotWithPolicy(systemPrompt, profile, intrinsics, extensionDigest, attachmentDigest, "", policy)
 }
 
 func newTurnRuntimeSnapshot(systemPrompt string, profile coremodel.ExecutionSnapshot, intrinsics []ResolvedIntrinsic, extensionDigest, attachmentDigest string, intrinsicPolicy TurnIntrinsicPolicy) (TurnRuntimeSnapshot, error) {
+	policy, err := AdmittedTurnExecutionPolicy(TurnExecutionInteractive)
+	if err != nil {
+		return TurnRuntimeSnapshot{}, err
+	}
+	return newTurnRuntimeSnapshotWithPolicy(systemPrompt, profile, intrinsics, extensionDigest, attachmentDigest, intrinsicPolicy, policy)
+}
+
+func newTurnRuntimeSnapshotWithPolicy(systemPrompt string, profile coremodel.ExecutionSnapshot, intrinsics []ResolvedIntrinsic, extensionDigest, attachmentDigest string, intrinsicPolicy TurnIntrinsicPolicy, policy TurnExecutionPolicy) (TurnRuntimeSnapshot, error) {
 	if intrinsicPolicy != "" && intrinsicPolicy != TurnIntrinsicPolicyNone {
 		return TurnRuntimeSnapshot{}, ErrInvalid
 	}
 	if intrinsicPolicy == TurnIntrinsicPolicyNone && len(intrinsics) != 0 {
+		return TurnRuntimeSnapshot{}, ErrInvalid
+	}
+	if policy.Validate() != nil {
 		return TurnRuntimeSnapshot{}, ErrInvalid
 	}
 	tools := make([]coremodel.Tool, 0, len(intrinsics))
@@ -530,13 +643,6 @@ func newTurnRuntimeSnapshot(systemPrompt string, profile coremodel.ExecutionSnap
 			return TurnRuntimeSnapshot{}, ErrInvalid
 		}
 		tools = append(tools, intrinsic.Tool)
-	}
-	policy := map[string]uint64{
-		"max_model_attempts":            MaxTurnModelDispatches,
-		"max_model_active_millis":       uint64(MaxTurnModelActiveDuration.Milliseconds()),
-		"max_tool_calls":                MaxTurnToolCalls,
-		"tool_loop_policy_version":      1,
-		"provider_retry_policy_version": 1,
 	}
 	intrinsicRaw, err := json.Marshal(tools)
 	if err != nil {
@@ -576,11 +682,7 @@ func (s TurnRuntimeSnapshot) Validate() error {
 		}
 	}
 	policyRaw, err := json.Marshal(s.ExecutionPolicy)
-	if err != nil || len(s.ExecutionPolicy) != 5 || s.ExecutionPolicyDigest != digest(string(policyRaw)) ||
-		s.ExecutionPolicy["max_model_attempts"] != MaxTurnModelDispatches ||
-		s.ExecutionPolicy["max_model_active_millis"] != uint64(MaxTurnModelActiveDuration.Milliseconds()) ||
-		s.ExecutionPolicy["max_tool_calls"] != MaxTurnToolCalls ||
-		s.ExecutionPolicy["tool_loop_policy_version"] != 1 || s.ExecutionPolicy["provider_retry_policy_version"] != 1 {
+	if err != nil || s.ExecutionPolicy.Validate() != nil || s.ExecutionPolicyDigest != digest(string(policyRaw)) {
 		return ErrInvalid
 	}
 	return nil
@@ -677,6 +779,9 @@ func (c TurnStartCommand) Validate() error {
 	if c.IntrinsicPolicy != "" && c.IntrinsicPolicy != TurnIntrinsicPolicyNone {
 		return ErrInvalid
 	}
+	if _, err := AdmittedTurnExecutionPolicy(normalizeTurnExecutionMode(c.ExecutionMode)); err != nil {
+		return ErrInvalid
+	}
 	if len(c.Extensions) > 0 && len(c.ExtensionSnapshots) == 0 {
 		return ErrInvalid
 	}
@@ -735,6 +840,8 @@ func (c TurnStartCommand) Fingerprint() string {
 		c.ExtensionSnapshotDigest(),
 		c.AcceptedAttachmentIDs,
 		TurnAttachmentSnapshotDigest(c.AttachmentSources),
+		"execution_mode",
+		normalizeTurnExecutionMode(c.ExecutionMode),
 	}
 	// Keep the ordinary false form byte-for-byte compatible with already
 	// accepted turns. The internal explicit-pin marker still has its own replay

@@ -146,3 +146,31 @@ func TestTurnProtoProjectsCompletedFinalizationMarkdownAsResult(t *testing.T) {
 		t.Fatalf("projected turn=%+v", projected)
 	}
 }
+
+func TestRPCExecutionModeIsClosedAndProtoExposesSelector(t *testing.T) {
+	for input, want := range map[string]coreconversation.TurnExecutionMode{
+		"":                     coreconversation.TurnExecutionInteractive,
+		"interactive":          coreconversation.TurnExecutionInteractive,
+		"deep":                 coreconversation.TurnExecutionDeep,
+		"worker_orchestration": coreconversation.TurnExecutionWorkerOrchestration,
+	} {
+		got, err := rpcExecutionMode(input)
+		if err != nil || got != want {
+			t.Fatalf("input=%q mode=%q err=%v", input, got, err)
+		}
+	}
+	for _, input := range []string{"scheduled", "future"} {
+		if _, err := rpcExecutionMode(input); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("input=%q err=%v", input, err)
+		}
+	}
+	for _, message := range []protoreflect.MessageDescriptor{
+		(&agentv1.ConversationServiceChatRequest{}).ProtoReflect().Descriptor(),
+		(&agentv1.ConversationServiceStreamChatRequest{}).ProtoReflect().Descriptor(),
+		(&agentv1.ConversationServiceStartTurnRequest{}).ProtoReflect().Descriptor(),
+	} {
+		if message.Fields().ByName("execution_mode") == nil {
+			t.Fatalf("%s lacks execution_mode", message.FullName())
+		}
+	}
+}

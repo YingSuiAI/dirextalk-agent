@@ -940,8 +940,56 @@ func TestDurableStreamChatParsesExactExtensionSelections(t *testing.T) {
 	}
 	if startOperation == nil || !strings.Contains(startOperation.GetInputSchemaJson(), `"extensions"`) ||
 		!strings.Contains(startOperation.GetInputSchemaJson(), `"pinned_version"`) ||
+		!strings.Contains(startOperation.GetInputSchemaJson(), `"execution_mode"`) ||
+		!strings.Contains(startOperation.GetInputSchemaJson(), `"worker_orchestration"`) ||
+		strings.Contains(startOperation.GetInputSchemaJson(), `"scheduled"`) ||
 		!strings.Contains(startOperation.GetInputSchemaJson(), `"additionalProperties":false`) {
 		t.Fatalf("start_turn schema=%v", startOperation)
+	}
+}
+
+func TestDurableStreamChatExecutionModeIsClosedAndDefaultsInteractive(t *testing.T) {
+	base := `{"idempotency_key":"` + uuid.NewString() + `","message":"investigate","model_profile_id":"` + uuid.NewString() + `","model_profile_revision":2,"credential_version":3`
+	for _, test := range []struct {
+		name string
+		mode string
+		want coreconversation.TurnExecutionMode
+		ok   bool
+	}{
+		{name: "omitted", want: coreconversation.TurnExecutionInteractive, ok: true},
+		{name: "interactive", mode: "interactive", want: coreconversation.TurnExecutionInteractive, ok: true},
+		{name: "deep", mode: "deep", want: coreconversation.TurnExecutionDeep, ok: true},
+		{name: "worker", mode: "worker_orchestration", want: coreconversation.TurnExecutionWorkerOrchestration, ok: true},
+		{name: "scheduled", mode: "scheduled"},
+		{name: "future", mode: "future"},
+		{name: "whitespace", mode: " deep "},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			raw := base
+			if test.mode != "" {
+				raw += `,"execution_mode":"` + test.mode + `"`
+			}
+			raw += `}`
+			var input map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(raw), &input); err != nil {
+				t.Fatal(err)
+			}
+			_, err := validateDurableStreamChatInput(input)
+			mode, modeErr := capabilityExecutionMode(input)
+			if test.ok {
+				if err != nil || modeErr != nil || mode != test.want {
+					t.Fatalf("mode=%q validation_err=%v mode_err=%v", mode, err, modeErr)
+				}
+			} else if !errors.Is(err, coreconversation.ErrInvalid) || !errors.Is(modeErr, coreconversation.ErrInvalid) {
+				t.Fatalf("validation_err=%v mode_err=%v", err, modeErr)
+			}
+		})
+	}
+	for _, raw := range []string{`null`, `1`, `true`, `{}`, `[]`} {
+		input := map[string]json.RawMessage{"execution_mode": json.RawMessage(raw)}
+		if _, err := capabilityExecutionMode(input); !errors.Is(err, coreconversation.ErrInvalid) {
+			t.Fatalf("non-string mode %s err=%v", raw, err)
+		}
 	}
 }
 

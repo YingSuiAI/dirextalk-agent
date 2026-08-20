@@ -46,7 +46,8 @@ func TestScheduledAgentTaskUsesDeterministicNativeTurnAndReturnsMarkdownOnly(t *
 	command := conversation.commands[0]
 	if command.RequestID != wantRequestID || command.TurnID != wantTurnID || command.ConversationID != task.Spec.ConversationID ||
 		command.Prompt != wantPrompt || command.OwnerID != task.Spec.Payload.Agent.OwnerID ||
-		command.AccountGeneration != task.Spec.Payload.Agent.AccountGeneration || command.IntrinsicPolicy != coreconversation.TurnIntrinsicPolicyNone || len(command.ExtensionSnapshots) != 1 ||
+		command.AccountGeneration != task.Spec.Payload.Agent.AccountGeneration || command.IntrinsicPolicy != coreconversation.TurnIntrinsicPolicyNone ||
+		command.ExecutionMode != coreconversation.TurnExecutionScheduled || len(command.ExtensionSnapshots) != 1 ||
 		command.ExtensionSnapshots[0].Source != "message-mcp" || len(command.ExtensionSnapshots[0].ToolNames) != 2 || command.ExtensionSnapshots[0].ToolNames[0] != "mcp__message__dirextalk_messages_list" {
 		t.Fatalf("start command=%+v", command)
 	}

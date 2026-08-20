@@ -106,10 +106,12 @@ func (r *countingAutomaticResolver) ResolveExtensions(_ context.Context, selecti
 type terminalAdmissionStore struct {
 	*publicActiveTurnStore
 	commands []TurnStartCommand
+	runtimes []TurnRuntimeSnapshot
 }
 
-func (s *terminalAdmissionStore) StartTurnWithRuntime(_ context.Context, command TurnStartCommand, _ TurnRuntimeSnapshot) (Turn, error) {
+func (s *terminalAdmissionStore) StartTurnWithRuntime(_ context.Context, command TurnStartCommand, runtime TurnRuntimeSnapshot) (Turn, error) {
 	s.commands = append(s.commands, command)
+	s.runtimes = append(s.runtimes, runtime)
 	return Turn{
 		ID: command.TurnID, RequestID: command.RequestID, OwnerID: command.OwnerID, AccountGeneration: command.AccountGeneration,
 		ConversationID: command.ConversationID, Prompt: command.Prompt, ProfileID: command.ProfileID,
@@ -516,14 +518,18 @@ func (s *readOnlyTurnStore) TurnEventBounds(context.Context, string) (int64, int
 func (s *readOnlyTurnStore) PrepareTurnModel(_ context.Context, _ TurnLease, directive TurnDispatchDirective) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.turn.RuntimeSnapshot == nil || s.turn.RuntimeSnapshot.ExecutionPolicy.Validate() != nil {
+		return Turn{}, ErrTurnRuntimeIncompatible
+	}
+	policy := s.turn.RuntimeSnapshot.ExecutionPolicy
 	finalizing := directive.FinalizationReason != ""
 	if finalizing {
 		if s.finalization == nil || s.finalization.Reason != directive.FinalizationReason || s.finalDispatched ||
-			s.turn.ModelDispatchCount >= MaxTurnModelDispatches+MaxTurnFinalizationDispatches {
+			s.turn.ModelDispatchCount >= policy.MaxModelDispatches+MaxTurnFinalizationDispatches {
 			return Turn{}, ErrModelBudgetExhausted
 		}
 		s.finalDispatched = true
-	} else if s.turn.ModelDispatchCount >= MaxTurnModelDispatches || s.turn.ModelActiveDuration >= MaxTurnModelActiveDuration {
+	} else if s.turn.ModelDispatchCount >= policy.MaxModelDispatches || s.turn.ModelActiveDuration >= policy.MaxModelActiveDuration() {
 		return Turn{}, ErrModelBudgetExhausted
 	}
 	s.dispatchState = "dispatched"
@@ -729,6 +735,14 @@ func (s *publicActiveTurnStore) ValidateTurnRuntime(context.Context, TurnLease, 
 func (s *publicActiveTurnStore) GetTurn(_ context.Context, _ string) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.turn.RuntimeSnapshot == nil && s.turn.ProfileSnapshot.Validate() == nil {
+		policy, _ := AdmittedTurnExecutionPolicy(TurnExecutionDeep)
+		systemPrompt := appendSystemPrompt(s.turn.ProfileSnapshot.SystemPrompt, conversationConvergenceGuidance)
+		runtime, err := newTurnRuntimeSnapshotWithPolicy(systemPrompt, s.turn.ProfileSnapshot, nil, s.turn.ExtensionSnapshotDigest, s.turn.AttachmentSnapshotDigest, "", policy)
+		if err == nil {
+			s.turn.RuntimeSnapshot = &runtime
+		}
+	}
 	return s.turn, nil
 }
 func (s *publicActiveTurnStore) terminalEventCount() int {
@@ -1846,7 +1860,7 @@ func TestExecuteTurnStopsRepeatedToolRoundsWithoutFinalResponse(t *testing.T) {
 		Prompt: "keep looking forever", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
 		ProfileSnapshotDigest: profile.Digest(), ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot},
 		ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(),
-		State:                   TurnAccepted, Revision: 1, LastSequence: 1, ModelDispatchCount: MaxTurnModelDispatches - 1, CreatedAt: time.Now().UTC()}
+		State:                   TurnAccepted, Revision: 1, LastSequence: 1, ModelDispatchCount: MaxAdmittedTurnModelDispatches - 1, CreatedAt: time.Now().UTC()}
 	base := newFakeStore()
 	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: turn.CreatedAt, UpdatedAt: turn.CreatedAt}
 	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
@@ -1870,7 +1884,7 @@ func TestExecuteTurnStopsRepeatedToolRoundsWithoutFinalResponse(t *testing.T) {
 		t.Fatalf("turn=%+v failed_code=%q err=%v", current, store.failedCode, err)
 	}
 	assertUsefulTerminalMarkdown(t, current, "")
-	if model.runs != 2 || current.ModelDispatchCount != MaxTurnModelDispatches+MaxTurnFinalizationDispatches {
+	if model.runs != 2 || current.ModelDispatchCount != MaxAdmittedTurnModelDispatches+MaxTurnFinalizationDispatches {
 		t.Fatalf("model_runs=%d dispatch_count=%d", model.runs, current.ModelDispatchCount)
 	}
 	if len(model.request.Extensions) != 0 || len(model.request.Intrinsics) != 0 || len(model.request.ExtensionSnapshots) != 0 {
@@ -1879,8 +1893,8 @@ func TestExecuteTurnStopsRepeatedToolRoundsWithoutFinalResponse(t *testing.T) {
 }
 
 func TestExecuteTurnEnforcesDurableToolCallBudget(t *testing.T) {
-	if MaxTurnToolCalls != 20 {
-		t.Fatalf("turn tool call cap=%d", MaxTurnToolCalls)
+	if MaxAdmittedTurnToolCalls != 20 {
+		t.Fatalf("turn tool call cap=%d", MaxAdmittedTurnToolCalls)
 	}
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
@@ -1891,7 +1905,7 @@ func TestExecuteTurnEnforcesDurableToolCallBudget(t *testing.T) {
 		ToolNames: []string{"repeat_lookup"}, ReadOnly: true}
 	createdAt := time.Now().UTC()
 	events := []TurnEvent{{Kind: TurnEventAccepted, CreatedAt: createdAt}}
-	for index := 0; index < MaxTurnToolCalls; index++ {
+	for index := 0; index < MaxAdmittedTurnToolCalls; index++ {
 		call := ToolCall{ID: uuid.NewString(), Name: "repeat_lookup", Arguments: fmt.Sprintf(`{"index":%d}`, index)}
 		result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"ok":true}`}
 		events = append(events,
@@ -2433,7 +2447,7 @@ func TestTurnRuntimeIntrinsicPolicyNoneSkipsResolversAndRejectsTools(t *testing.
 		resolverCalls++
 		return nil, errors.New("must not resolve")
 	}))
-	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, TurnIntrinsicPolicyNone)
+	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, TurnIntrinsicPolicyNone, TurnExecutionScheduled)
 	if err != nil || resolverCalls != 0 || runtime.IntrinsicPolicy != TurnIntrinsicPolicyNone || len(runtime.IntrinsicTools) != 0 {
 		t.Fatalf("runtime=%+v resolver_calls=%d err=%v", runtime, resolverCalls, err)
 	}

@@ -34,7 +34,7 @@ func (s *prechargedBudgetStore) StartTurnWithRuntime(ctx context.Context, comman
 	if err != nil {
 		return core.Turn{}, err
 	}
-	result, err := s.pool.Exec(ctx, `UPDATE core_conversation_turns SET model_dispatch_count=$2 WHERE turn_id=$1 AND state='accepted'`, turn.ID, core.MaxTurnModelDispatches)
+	result, err := s.pool.Exec(ctx, `UPDATE core_conversation_turns SET model_dispatch_count=$2 WHERE turn_id=$1 AND state='accepted'`, turn.ID, runtime.ExecutionPolicy.MaxModelDispatches)
 	if err != nil {
 		return core.Turn{}, err
 	}
@@ -184,22 +184,20 @@ func TestChatStreamAndStartTurnSharePostgresModelBudget(t *testing.T) {
 			command := adapterChatCommand(snapshot)
 			switch mode {
 			case "chat":
-				if _, err := service.Chat(context.Background(), command); !errors.Is(err, core.ErrChatFailed) {
-					t.Fatalf("chat budget err=%v", err)
+				if response, err := service.Chat(context.Background(), command); err != nil || !response.Done || response.Message.Content == "" {
+					t.Fatalf("chat budget response=%+v err=%v", response, err)
 				}
 			case "stream_chat":
 				stream, err := service.StreamChat(context.Background(), command)
 				if err != nil {
 					t.Fatal(err)
 				}
-				var code string
+				var done bool
 				for event := range stream {
-					if event.Kind == core.EventError {
-						code = event.ErrCode
-					}
+					done = done || event.Kind == core.EventDone && event.Response != nil && event.Response.Message.Content != ""
 				}
-				if code != "model_budget_exhausted" {
-					t.Fatalf("StreamChat terminal code=%q", code)
+				if !done {
+					t.Fatal("StreamChat did not project budget finalization as done Markdown")
 				}
 			case "start_turn":
 				turn, err := service.StartTurn(context.Background(), adapterTurnCommand(command))
@@ -207,12 +205,13 @@ func TestChatStreamAndStartTurnSharePostgresModelBudget(t *testing.T) {
 					t.Fatal(err)
 				}
 				events := watchAdapterTurn(t, service, turn.ID)
-				if len(events) == 0 || events[len(events)-1].Kind != core.TurnEventError || events[len(events)-1].ErrorCode != "model_budget_exhausted" {
+				if len(events) == 0 || events[len(events)-1].Kind != core.TurnEventDone || events[len(events)-1].Response == nil || events[len(events)-1].Response.Message.Content == "" {
 					t.Fatalf("events=%+v", events)
 				}
 			}
 			turn := waitAdapterTurn(t, store.CoreConversationStore, command.RequestID)
-			if turn.State != core.TurnFailed || turn.TerminalCode != "model_budget_exhausted" {
+			if turn.State != core.TurnCompleted || turn.Response == nil || turn.Response.Message.Content == "" || turn.RuntimeSnapshot == nil ||
+				turn.ModelDispatchCount != turn.RuntimeSnapshot.ExecutionPolicy.MaxModelDispatches+core.MaxTurnFinalizationDispatches {
 				t.Fatalf("turn=%+v", turn)
 			}
 		})

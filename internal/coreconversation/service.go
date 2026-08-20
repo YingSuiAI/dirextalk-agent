@@ -18,17 +18,17 @@ import (
 )
 
 const (
-	MaxTurnModelDispatches          = 24
-	MaxTurnModelActiveDuration      = 20 * time.Minute
-	MaxTurnFinalizationDispatches   = 1
-	MaxTurnFinalizationDuration     = 30 * time.Second
-	MaxTurnToolCalls                = 20
-	toolLoopNudgeGuidance           = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
-	toolLoopSynthesisGuidance       = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
-	outputContinuationGuidance      = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
-	staticSitePublishCorrection     = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
-	conversationConvergenceGuidance = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
-	messageMCPRoutingGuidance       = "For requests that need authoritative Dirextalk contacts, rooms, or messages, use the available Dirextalk tools. If a Message mutation has unknown completion, read authoritative state before deciding whether to retry; never retry blindly."
+	MaxAdmittedTurnModelDispatches     = 24
+	MaxAdmittedTurnModelActiveDuration = 20 * time.Minute
+	MaxTurnFinalizationDispatches      = 1
+	MaxTurnFinalizationDuration        = 30 * time.Second
+	MaxAdmittedTurnToolCalls           = 20
+	toolLoopNudgeGuidance              = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
+	toolLoopSynthesisGuidance          = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
+	outputContinuationGuidance         = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
+	staticSitePublishCorrection        = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
+	conversationConvergenceGuidance    = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
+	messageMCPRoutingGuidance          = "For requests that need authoritative Dirextalk contacts, rooms, or messages, use the available Dirextalk tools. If a Message mutation has unknown completion, read authoritative state before deciding whether to retry; never retry blindly."
 )
 
 type Service struct {
@@ -437,6 +437,10 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if err := validateText(cmd.Prompt, MaxContentBytes); err != nil {
 		return Turn{}, err
 	}
+	cmd.ExecutionMode = normalizeTurnExecutionMode(cmd.ExecutionMode)
+	if _, err := AdmittedTurnExecutionPolicy(cmd.ExecutionMode); err != nil {
+		return Turn{}, err
+	}
 	if cmd.ConversationID == "" {
 		// Derive a stable private conversation identity from the request UUID so
 		// an idempotent retry binds the same conversation before execution.
@@ -546,7 +550,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if err != nil {
 		return Turn{}, err
 	}
-	runtimeSnapshot, err := s.buildTurnAdmissionRuntime(ctx, candidate, admissionExtensions, cmd.IntrinsicPolicy)
+	runtimeSnapshot, err := s.buildTurnAdmissionRuntime(ctx, candidate, admissionExtensions, cmd.IntrinsicPolicy, cmd.ExecutionMode)
 	if err != nil {
 		return Turn{}, err
 	}
@@ -560,7 +564,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	return turn, nil
 }
 
-func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, extensions []ResolvedExtension, intrinsicPolicy TurnIntrinsicPolicy) (TurnRuntimeSnapshot, error) {
+func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, extensions []ResolvedExtension, intrinsicPolicy TurnIntrinsicPolicy, executionMode TurnExecutionMode) (TurnRuntimeSnapshot, error) {
 	var intrinsics []ResolvedIntrinsic
 	if intrinsicPolicy != TurnIntrinsicPolicyNone {
 		var err error
@@ -581,7 +585,11 @@ func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, exte
 	if containsCloudWorkerIntrinsic(intrinsics) {
 		systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 	}
-	return newTurnRuntimeSnapshot(systemPrompt, turn.ProfileSnapshot, intrinsics, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy)
+	policy, err := AdmittedTurnExecutionPolicy(normalizeTurnExecutionMode(executionMode))
+	if err != nil {
+		return TurnRuntimeSnapshot{}, err
+	}
+	return newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsics, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, policy)
 }
 
 func (s *Service) GetTurn(ctx context.Context, id string) (Turn, error) {
@@ -995,6 +1003,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if s.turns == nil {
 		return
 	}
+	admitted, err := s.turns.GetTurn(ctx, id)
+	if err != nil || admitted.RuntimeSnapshot == nil || admitted.RuntimeSnapshot.Validate() != nil {
+		return
+	}
 	lease, err := s.turns.ClaimTurn(ctx, id, s.clock(), s.turnLeaseTTL)
 	if err != nil {
 		return
@@ -1212,7 +1224,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			seen[intrinsic.Tool.Name] = struct{}{}
 		}
 	}
-	toolCallBudgetExhausted := len(toolCallAuthorities) >= MaxTurnToolCalls
+	executionPolicy := turn.RuntimeSnapshot.ExecutionPolicy
+	toolCallBudgetExhausted := uint32(len(toolCallAuthorities)) >= executionPolicy.MaxToolCalls
 	profile := turn.ProfileSnapshot.Profile()
 	systemPrompt := appendSystemPrompt(profile.SystemPrompt, conversationConvergenceGuidance)
 	systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, resolvedExtensions)
@@ -1225,7 +1238,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if containsCloudWorkerIntrinsic(intrinsicTools) {
 		systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 	}
-	runtimeSnapshot, snapshotErr := newTurnRuntimeSnapshot(systemPrompt, turn.ProfileSnapshot, intrinsicTools, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy)
+	runtimeSnapshot, snapshotErr := newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsicTools, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, executionPolicy)
 	if snapshotErr != nil {
 		_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
 		return
@@ -1299,7 +1312,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		}
 		turn.ModelDispatchCount = prepared.ModelDispatchCount
 		turn.ModelActiveDuration = prepared.ModelActiveDuration
-		remaining := MaxTurnModelActiveDuration - prepared.ModelActiveDuration
+		remaining := executionPolicy.MaxModelActiveDuration() - prepared.ModelActiveDuration
 		if finalizing {
 			remaining = MaxTurnFinalizationDuration
 		}
@@ -1597,7 +1610,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						return
 					}
 				}
-				if len(toolCallAuthorities)+newToolCalls > MaxTurnToolCalls {
+				if uint32(len(toolCallAuthorities)+newToolCalls) > executionPolicy.MaxToolCalls {
 					if durableDispatch && !replayed {
 						if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
 							return

@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -91,7 +93,7 @@ func openTurnDB(t *testing.T) *turnDBHarness {
 
 func turnCommand() core.TurnStartCommand {
 	s := coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, RequestDialect: coremodel.DialectOpenAICompatibleChatV1, BaseURL: "https://example.invalid", Model: "test", APIKey: "integration-secret"}
-	return core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: s.ProfileID, ExpectedProfileRevision: s.Revision, ExpectedCredentialVersion: s.CredentialVersion, ProfileSnapshot: s}
+	return core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: s.ProfileID, ExpectedProfileRevision: s.Revision, ExpectedCredentialVersion: s.CredentialVersion, ProfileSnapshot: s, ExecutionMode: core.TurnExecutionDeep}
 }
 
 func startAdmittedTurn(t *testing.T, h *turnDBHarness, cmd core.TurnStartCommand) core.Turn {
@@ -101,7 +103,7 @@ func startAdmittedTurn(t *testing.T, h *turnDBHarness, cmd core.TurnStartCommand
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := core.NewTurnRuntimeSnapshot("integration system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	runtime, err := core.NewTurnRuntimeSnapshotForMode("integration system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest, cmd.ExecutionMode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,6 +112,103 @@ func startAdmittedTurn(t *testing.T, h *turnDBHarness, cmd core.TurnStartCommand
 		t.Fatal(err)
 	}
 	return turn
+}
+
+func runtimeWithExecutionPolicy(t *testing.T, runtime core.TurnRuntimeSnapshot, policy core.TurnExecutionPolicy) core.TurnRuntimeSnapshot {
+	t.Helper()
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.ExecutionPolicy = policy
+	sum := sha256.Sum256(raw)
+	runtime.ExecutionPolicyDigest = fmt.Sprintf("%x", sum[:])
+	return runtime
+}
+
+func TestCoreConversationPersistsAndEnforcesSafeHistoricalExecutionPolicyPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	ctx := context.Background()
+	cmd := turnCommand()
+	candidate, err := h.store.PrepareTurnRuntimeAdmission(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := core.NewTurnRuntimeSnapshotForMode("historical policy", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest, cmd.ExecutionMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := runtime.ExecutionPolicy
+	policy.MaxModelDispatches = 3
+	policy.MaxModelActiveMilliseconds = uint64((2 * time.Minute).Milliseconds())
+	policy.MaxToolCalls = 2
+	runtime = runtimeWithExecutionPolicy(t, runtime, policy)
+	if err = runtime.Validate(); err != nil {
+		t.Fatalf("safe historical runtime invalid: %v", err)
+	}
+	turn, err := h.store.StartTurnWithRuntime(ctx, cmd, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := h.store.GetTurn(ctx, turn.ID)
+	if err != nil || stored.RuntimeSnapshot == nil || stored.RuntimeSnapshot.ExecutionPolicy != policy {
+		t.Fatalf("stored policy=%+v err=%v", stored.RuntimeSnapshot, err)
+	}
+	if _, err = h.pool.Exec(ctx, `UPDATE core_conversation_turns SET model_dispatch_count=$2 WHERE turn_id=$1`, turn.ID, policy.MaxModelDispatches); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := h.store.ClaimTurn(ctx, turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.store.PrepareTurnModel(ctx, lease, core.DefaultTurnDispatchDirective()); !errors.Is(err, core.ErrModelBudgetExhausted) {
+		t.Fatalf("historical dispatch cap was not enforced: %v", err)
+	}
+	current, err := h.store.GetTurn(ctx, turn.ID)
+	if err != nil || current.ModelDispatchCount != policy.MaxModelDispatches {
+		t.Fatalf("current=%+v err=%v", current, err)
+	}
+}
+
+func TestCoreConversationRejectsUnsupportedStoredPolicyBeforeClaimMutationPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	ctx := context.Background()
+	cmd := turnCommand()
+	turn := startAdmittedTurn(t, h, cmd)
+	invalid := *turn.RuntimeSnapshot
+	policy := invalid.ExecutionPolicy
+	policy.Version++
+	invalid = runtimeWithExecutionPolicy(t, invalid, policy)
+	raw, err := json.Marshal(invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.pool.Exec(ctx, `UPDATE core_conversation_turns SET runtime_snapshot_json=$2,runtime_snapshot_digest=$3 WHERE turn_id=$1`, turn.ID, raw, invalid.Digest()); err != nil {
+		t.Fatal(err)
+	}
+	type mutationState struct {
+		state        string
+		revision     uint64
+		lastSequence int64
+		leaseEpoch   uint64
+		leaseID      *uuid.UUID
+	}
+	load := func() mutationState {
+		var value mutationState
+		if scanErr := h.pool.QueryRow(ctx, `SELECT state,revision,last_sequence,lease_epoch,lease_id FROM core_conversation_turns WHERE turn_id=$1`, turn.ID).
+			Scan(&value.state, &value.revision, &value.lastSequence, &value.leaseEpoch, &value.leaseID); scanErr != nil {
+			t.Fatal(scanErr)
+		}
+		return value
+	}
+	before := load()
+	if _, err = h.store.ClaimTurn(ctx, turn.ID, time.Now().UTC(), time.Minute); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("unsupported policy claim err=%v", err)
+	}
+	after := load()
+	if before.state != after.state || before.revision != after.revision || before.lastSequence != after.lastSequence || before.leaseEpoch != after.leaseEpoch || before.leaseID != nil || after.leaseID != nil {
+		t.Fatalf("unsupported policy mutated claim authority: before=%+v after=%+v", before, after)
+	}
 }
 
 func TestCoreConversationFirstTurnPersistsProvisionalTitleAtAcceptancePostgres(t *testing.T) {
@@ -482,7 +581,7 @@ func TestCoreConversationPhysicalModelAttemptsAreFencedAndDurablePostgres(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := core.NewTurnRuntimeSnapshot("frozen system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	runtime, err := core.NewTurnRuntimeSnapshotForMode("frozen system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest, cmd.ExecutionMode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +589,7 @@ func TestCoreConversationPhysicalModelAttemptsAreFencedAndDurablePostgres(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedRuntime, err := core.NewTurnRuntimeSnapshot("changed system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	changedRuntime, err := core.NewTurnRuntimeSnapshotForMode("changed system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest, cmd.ExecutionMode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +675,7 @@ func TestLoopDirectiveSurvivesRestartPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := core.NewTurnRuntimeSnapshot("frozen system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	runtime, err := core.NewTurnRuntimeSnapshotForMode("frozen system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest, cmd.ExecutionMode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -827,7 +926,7 @@ func newConversationToolPrepareFixtureForTool(t *testing.T, callID, toolName str
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := core.NewTurnRuntimeSnapshot("fixture system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	runtime, err := core.NewTurnRuntimeSnapshotForMode("fixture system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest, cmd.ExecutionMode)
 	if err != nil {
 		t.Fatal(err)
 	}

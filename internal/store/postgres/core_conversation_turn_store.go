@@ -247,9 +247,14 @@ func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartC
 	var runtimeRaw []byte
 	var runtimeDigest any
 	if admittedRuntime != nil {
+		executionMode := c.ExecutionMode
+		if executionMode == "" {
+			executionMode = core.TurnExecutionInteractive
+		}
 		if admittedRuntime.Validate() != nil || admittedRuntime.ProfileSnapshotDigest != c.ProfileSnapshot.Digest() ||
 			admittedRuntime.RequestDialect != string(c.ProfileSnapshot.RequestDialect) || admittedRuntime.ExtensionDigest != c.ExtensionSnapshotDigest() ||
-			admittedRuntime.AttachmentDigest != core.TurnAttachmentSnapshotDigest(c.AttachmentSources) {
+			admittedRuntime.AttachmentDigest != core.TurnAttachmentSnapshotDigest(c.AttachmentSources) ||
+			admittedRuntime.ExecutionPolicy.Mode != executionMode {
 			return core.Turn{}, core.ErrInvalid
 		}
 		built := *admittedRuntime
@@ -637,7 +642,8 @@ func (s *CoreConversationStore) PrepareTurnModel(ctx context.Context, lease core
 	var dispatchEpoch uint64
 	var started time.Time
 	finalizing := directive.FinalizationReason != ""
-	maxDispatches := core.MaxTurnModelDispatches
+	policy := current.RuntimeSnapshot.ExecutionPolicy
+	maxDispatches := policy.MaxModelDispatches
 	if finalizing {
 		maxDispatches += core.MaxTurnFinalizationDispatches
 	}
@@ -652,12 +658,12 @@ func (s *CoreConversationStore) PrepareTurnModel(ctx context.Context, lease core
 		AND (NOT $7 OR NOT EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
 			WHERE d.turn_id=core_conversation_turns.turn_id AND d.directive_json ? 'finalization_reason'))
 		RETURNING turn_id,model_dispatch_count,dispatch_epoch,model_dispatch_started_at`,
-		lease.Turn.ID, lease.LeaseID, lease.Epoch, maxDispatches, core.MaxTurnModelActiveDuration.Milliseconds(),
+		lease.Turn.ID, lease.LeaseID, lease.Epoch, maxDispatches, policy.MaxModelActiveMilliseconds,
 		lease.Turn.Revision, finalizing, string(directive.FinalizationReason)).Scan(&out.ID, &attempt, &dispatchEpoch, &started)
 	if err != nil {
 		current, getErr := s.GetTurn(ctx, lease.Turn.ID)
-		if getErr == nil && ((!finalizing && (current.ModelDispatchCount >= core.MaxTurnModelDispatches || current.ModelActiveDuration >= core.MaxTurnModelActiveDuration)) ||
-			(finalizing && current.ModelDispatchCount >= core.MaxTurnModelDispatches+core.MaxTurnFinalizationDispatches)) {
+		if getErr == nil && current.RuntimeSnapshot != nil && ((!finalizing && (current.ModelDispatchCount >= policy.MaxModelDispatches || current.ModelActiveDuration >= policy.MaxModelActiveDuration())) ||
+			(finalizing && current.ModelDispatchCount >= policy.MaxModelDispatches+core.MaxTurnFinalizationDispatches)) {
 			return core.Turn{}, core.ErrModelBudgetExhausted
 		}
 		return core.Turn{}, core.ErrConflict
@@ -917,6 +923,17 @@ func (s *CoreConversationStore) PrepareTurnModelRetry(ctx context.Context, lease
 		return core.Turn{}, err
 	}
 	defer tx.Rollback(ctx)
+	var current core.Turn
+	if err = s.scanTurn(ctx, tx, lease.Turn.ID, &current); err != nil {
+		return core.Turn{}, core.ErrConflict
+	}
+	if current.RuntimeSnapshot == nil || lease.Turn.RuntimeSnapshot == nil ||
+		current.RequestID != lease.Turn.RequestID || current.OwnerID != lease.Turn.OwnerID || current.AccountGeneration != lease.Turn.AccountGeneration ||
+		current.ConversationID != lease.Turn.ConversationID || current.ProfileID != lease.Turn.ProfileID || current.Revision != lease.Turn.Revision ||
+		current.RuntimeSnapshot.Digest() != lease.Turn.RuntimeSnapshot.Digest() {
+		return core.Turn{}, core.ErrConflict
+	}
+	policy := current.RuntimeSnapshot.ExecutionPolicy
 	var attempt uint32
 	var dispatchEpoch uint64
 	var started time.Time
@@ -928,10 +945,10 @@ func (s *CoreConversationStore) PrepareTurnModelRetry(ctx context.Context, lease
 			AND NOT EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
 				WHERE d.turn_id=a.turn_id AND d.attempt_sequence=a.attempt_sequence AND d.dispatch_epoch=a.dispatch_epoch
 				AND d.directive_json ? 'finalization_reason'))
-		RETURNING model_dispatch_count,dispatch_epoch,model_dispatch_started_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch, core.MaxTurnModelDispatches, core.MaxTurnModelActiveDuration.Milliseconds()).Scan(&attempt, &dispatchEpoch, &started)
+		RETURNING model_dispatch_count,dispatch_epoch,model_dispatch_started_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch, policy.MaxModelDispatches, policy.MaxModelActiveMilliseconds).Scan(&attempt, &dispatchEpoch, &started)
 	if err != nil {
-		current, getErr := s.GetTurn(ctx, lease.Turn.ID)
-		if getErr == nil && (current.ModelDispatchCount >= core.MaxTurnModelDispatches || current.ModelActiveDuration >= core.MaxTurnModelActiveDuration) {
+		latest, getErr := s.GetTurn(ctx, lease.Turn.ID)
+		if getErr == nil && (latest.ModelDispatchCount >= policy.MaxModelDispatches || latest.ModelActiveDuration >= policy.MaxModelActiveDuration()) {
 			return core.Turn{}, core.ErrModelBudgetExhausted
 		}
 		return core.Turn{}, core.ErrConflict

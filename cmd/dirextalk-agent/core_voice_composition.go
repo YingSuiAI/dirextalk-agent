@@ -134,7 +134,7 @@ func (r coreConversationVoiceRunner) Run(ctx context.Context, _ string, session 
 		return fmt.Errorf("resolve voice conversation profile: %w", err)
 	}
 	snapshot := coremodel.SnapshotFromProfile(profile)
-	accepted, err := r.conversation.StartTurn(ctx, coreconversation.TurnStartCommand{RequestID: requestID, ConversationID: conversationID, Prompt: turn.Transcript, ProfileID: snapshot.ProfileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ProfileSnapshot: snapshot})
+	accepted, err := r.conversation.StartTurn(ctx, coreconversation.TurnStartCommand{RequestID: requestID, ConversationID: conversationID, Prompt: turn.Transcript, ProfileID: snapshot.ProfileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ProfileSnapshot: snapshot, ExecutionMode: coreconversation.TurnExecutionInteractive})
 	if err != nil {
 		return err
 	}

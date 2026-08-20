@@ -448,7 +448,16 @@ Eino adapts each model round, while the current conversation turn store owns
 dispatch admission, persisted results, recovery, and uncertain outcomes. Turn
 acceptance atomically binds the complete compiled system prompt, profile and
 request-dialect digest, intrinsic tool schemas, extension/attachment digests,
-and versioned execution policy. Runtime validation occurs before the first
+and versioned execution policy. Owner chat accepts only `interactive`, `deep`,
+or `worker_orchestration`, defaulting omission to `interactive`; only the
+trusted due-Task adapter may admit `scheduled`. Interactive admits 8 model
+dispatches, 5 cumulative model-active minutes, and 8 tool calls. Deep,
+scheduled, and worker orchestration admit 24 dispatches, 20 minutes, and 20
+tool calls. The supported policy version validates persisted values against
+absolute safety bounds rather than current presets, and every service and
+PostgreSQL budget decision reads those admitted values. Unsupported versions,
+unknown modes, unsafe values, and selector/runtime mismatches fail before turn
+claim or event mutation. Runtime validation occurs before the first
 provider reservation; mismatch or a missing admission snapshot fails with
 `TURN_RUNTIME_INCOMPATIBLE`. Every physical provider attempt is then reserved
 in a durable fenced attempt ledger before HTTP dispatch, including the single
@@ -460,12 +469,13 @@ tool already present in the admitted envelope, or remove all tools for final
 synthesis; it cannot change or expand the admitted prompt or tool catalog.
 Retry copies the same directive, and restart reads it through the current
 lease fence. Tool-budget and no-progress finalization outrank a prior
-correctable-tool force so correction cannot suppress terminal synthesis. A Native
-conversation turn retains a 24-physical-attempt, 20-minute cumulative
-model-active fuse; tool, Worker, and confirmation execution or waiting do not
-consume that clock. A durable finalization intent may reserve one additional
-physical attempt, so the ledger permits sequence 25 without changing the
-ordinary 24-attempt fuse. The finalization attempt has no intrinsic tools,
+correctable-tool force so correction cannot suppress terminal synthesis. Tool,
+Worker, and confirmation execution or waiting do not consume the admitted
+model-active clock. Worker-owned runtime, token, output, remote-process, and
+Task deadlines remain separate from the main conversation ReAct policy. A
+durable finalization intent may reserve one additional physical attempt, so the
+ledger permits at most sequence 25 without changing the admitted ordinary
+fuse. The finalization attempt has no intrinsic tools,
 extensions, extension snapshots, or forced tool; uses an independent 30-second
 deadline; never retries; and is not added to ordinary model-active time. Intent
 persistence before dispatch allows one attempt after restart. Persistence of a

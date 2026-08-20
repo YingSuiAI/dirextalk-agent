@@ -939,6 +939,7 @@ type ConversationServiceChatRequest struct {
 	ExpectedRevision     *int64                    `protobuf:"varint,7,opt,name=expected_revision,json=expectedRevision,proto3,oneof" json:"expected_revision,omitempty"`
 	ModelProfileRevision *int64                    `protobuf:"varint,8,opt,name=model_profile_revision,json=modelProfileRevision,proto3,oneof" json:"model_profile_revision,omitempty"`
 	CredentialVersion    *int64                    `protobuf:"varint,9,opt,name=credential_version,json=credentialVersion,proto3,oneof" json:"credential_version,omitempty"`
+	ExecutionMode        string                    `protobuf:"bytes,10,opt,name=execution_mode,json=executionMode,proto3" json:"execution_mode,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -1036,6 +1037,13 @@ func (x *ConversationServiceChatRequest) GetCredentialVersion() int64 {
 	return 0
 }
 
+func (x *ConversationServiceChatRequest) GetExecutionMode() string {
+	if x != nil {
+		return x.ExecutionMode
+	}
+	return ""
+}
+
 type ConversationServiceChatResponse struct {
 	state          protoimpl.MessageState       `protogen:"open.v1"`
 	Conversation   *CoreConversation            `protobuf:"bytes,1,opt,name=conversation,proto3" json:"conversation,omitempty"`
@@ -1123,6 +1131,7 @@ type ConversationServiceStreamChatRequest struct {
 	ExpectedRevision     *int64                    `protobuf:"varint,7,opt,name=expected_revision,json=expectedRevision,proto3,oneof" json:"expected_revision,omitempty"`
 	ModelProfileRevision *int64                    `protobuf:"varint,8,opt,name=model_profile_revision,json=modelProfileRevision,proto3,oneof" json:"model_profile_revision,omitempty"`
 	CredentialVersion    *int64                    `protobuf:"varint,9,opt,name=credential_version,json=credentialVersion,proto3,oneof" json:"credential_version,omitempty"`
+	ExecutionMode        string                    `protobuf:"bytes,10,opt,name=execution_mode,json=executionMode,proto3" json:"execution_mode,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -1218,6 +1227,13 @@ func (x *ConversationServiceStreamChatRequest) GetCredentialVersion() int64 {
 		return *x.CredentialVersion
 	}
 	return 0
+}
+
+func (x *ConversationServiceStreamChatRequest) GetExecutionMode() string {
+	if x != nil {
+		return x.ExecutionMode
+	}
+	return ""
 }
 
 type CoreStreamChatDelta struct {
@@ -1790,6 +1806,7 @@ type ConversationServiceStartTurnRequest struct {
 	Extensions           []*CoreExtensionSelection `protobuf:"bytes,6,rep,name=extensions,proto3" json:"extensions,omitempty"`
 	ModelProfileRevision *int64                    `protobuf:"varint,7,opt,name=model_profile_revision,json=modelProfileRevision,proto3,oneof" json:"model_profile_revision,omitempty"`
 	CredentialVersion    *int64                    `protobuf:"varint,8,opt,name=credential_version,json=credentialVersion,proto3,oneof" json:"credential_version,omitempty"`
+	ExecutionMode        string                    `protobuf:"bytes,9,opt,name=execution_mode,json=executionMode,proto3" json:"execution_mode,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -1878,6 +1895,13 @@ func (x *ConversationServiceStartTurnRequest) GetCredentialVersion() int64 {
 		return *x.CredentialVersion
 	}
 	return 0
+}
+
+func (x *ConversationServiceStartTurnRequest) GetExecutionMode() string {
+	if x != nil {
+		return x.ExecutionMode
+	}
+	return ""
 }
 
 type ConversationServiceStartTurnResponse struct {
@@ -2633,7 +2657,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12+\n" +
 	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\"#\n" +
-	"!ConversationServiceDeleteResponse\"\x92\x04\n" +
+	"!ConversationServiceDeleteResponse\"\xb9\x04\n" +
 	"\x1eConversationServiceChatRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x18\n" +
@@ -2645,7 +2669,9 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\x0eknowledge_refs\x18\x06 \x03(\tR\rknowledgeRefs\x120\n" +
 	"\x11expected_revision\x18\a \x01(\x03H\x00R\x10expectedRevision\x88\x01\x01\x129\n" +
 	"\x16model_profile_revision\x18\b \x01(\x03H\x01R\x14modelProfileRevision\x88\x01\x01\x122\n" +
-	"\x12credential_version\x18\t \x01(\x03H\x02R\x11credentialVersion\x88\x01\x01B\x14\n" +
+	"\x12credential_version\x18\t \x01(\x03H\x02R\x11credentialVersion\x88\x01\x01\x12%\n" +
+	"\x0eexecution_mode\x18\n" +
+	" \x01(\tR\rexecutionModeB\x14\n" +
 	"\x12_expected_revisionB\x19\n" +
 	"\x17_model_profile_revisionB\x15\n" +
 	"\x13_credential_version\"\xd5\x02\n" +
@@ -2656,7 +2682,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\x10related_plan_ids\x18\x04 \x03(\tR\x0erelatedPlanIds\x12M\n" +
 	"\n" +
 	"references\x18\x05 \x03(\v2-.dirextalk.agent.v1.CoreConversationReferenceR\n" +
-	"references\"\x98\x04\n" +
+	"references\"\xbf\x04\n" +
 	"$ConversationServiceStreamChatRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x18\n" +
@@ -2668,7 +2694,9 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\x0eknowledge_refs\x18\x06 \x03(\tR\rknowledgeRefs\x120\n" +
 	"\x11expected_revision\x18\a \x01(\x03H\x00R\x10expectedRevision\x88\x01\x01\x129\n" +
 	"\x16model_profile_revision\x18\b \x01(\x03H\x01R\x14modelProfileRevision\x88\x01\x01\x122\n" +
-	"\x12credential_version\x18\t \x01(\x03H\x02R\x11credentialVersion\x88\x01\x01B\x14\n" +
+	"\x12credential_version\x18\t \x01(\x03H\x02R\x11credentialVersion\x88\x01\x01\x12%\n" +
+	"\x0eexecution_mode\x18\n" +
+	" \x01(\tR\rexecutionModeB\x14\n" +
 	"\x12_expected_revisionB\x19\n" +
 	"\x17_model_profile_revisionB\x15\n" +
 	"\x13_credential_version\"V\n" +
@@ -2728,7 +2756,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\x16model_profile_revision\x18\x0f \x01(\x03H\x00R\x14modelProfileRevision\x88\x01\x01\x122\n" +
 	"\x12credential_version\x18\x10 \x01(\x03H\x01R\x11credentialVersion\x88\x01\x01B\x19\n" +
 	"\x17_model_profile_revisionB\x15\n" +
-	"\x13_credential_version\"\xf0\x03\n" +
+	"\x13_credential_version\"\x97\x04\n" +
 	"#ConversationServiceStartTurnRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x18\n" +
@@ -2739,7 +2767,8 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"extensions\x18\x06 \x03(\v2*.dirextalk.agent.v1.CoreExtensionSelectionR\n" +
 	"extensions\x129\n" +
 	"\x16model_profile_revision\x18\a \x01(\x03H\x01R\x14modelProfileRevision\x88\x01\x01\x122\n" +
-	"\x12credential_version\x18\b \x01(\x03H\x02R\x11credentialVersion\x88\x01\x01B\x14\n" +
+	"\x12credential_version\x18\b \x01(\x03H\x02R\x11credentialVersion\x88\x01\x01\x12%\n" +
+	"\x0eexecution_mode\x18\t \x01(\tR\rexecutionModeB\x14\n" +
 	"\x12_expected_revisionB\x19\n" +
 	"\x17_model_profile_revisionB\x15\n" +
 	"\x13_credential_version\"d\n" +

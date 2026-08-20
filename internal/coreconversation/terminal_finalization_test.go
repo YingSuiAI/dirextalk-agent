@@ -169,16 +169,16 @@ func TestExecuteTurnFinalizationHasIndependentDispatchAllowance(t *testing.T) {
 		{
 			name: "ordinary dispatch count exhausted",
 			mutate: func(turn *Turn) {
-				turn.ModelDispatchCount = MaxTurnModelDispatches
+				turn.ModelDispatchCount = MaxAdmittedTurnModelDispatches
 			},
-			want:   MaxTurnModelDispatches + MaxTurnFinalizationDispatches,
+			want:   MaxAdmittedTurnModelDispatches + MaxTurnFinalizationDispatches,
 			reason: TurnFinalizationModelBudget,
 		},
 		{
 			name: "ordinary active time exhausted",
 			mutate: func(turn *Turn) {
 				turn.ModelDispatchCount = 7
-				turn.ModelActiveDuration = MaxTurnModelActiveDuration
+				turn.ModelActiveDuration = MaxAdmittedTurnModelActiveDuration
 			},
 			want:   8,
 			reason: TurnFinalizationModelBudget,

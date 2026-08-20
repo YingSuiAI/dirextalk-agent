@@ -116,7 +116,10 @@ func (s *attemptTurnStore) MarkTurnModelRetryable(_ context.Context, _ TurnLease
 func (s *attemptTurnStore) PrepareTurnModelRetry(context.Context, TurnLease) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.turn.ModelDispatchCount >= MaxTurnModelDispatches {
+	if s.turn.RuntimeSnapshot == nil || s.turn.RuntimeSnapshot.ExecutionPolicy.Validate() != nil {
+		return Turn{}, ErrTurnRuntimeIncompatible
+	}
+	if s.turn.ModelDispatchCount >= s.turn.RuntimeSnapshot.ExecutionPolicy.MaxModelDispatches {
 		return Turn{}, ErrModelBudgetExhausted
 	}
 	if !s.retryable || s.directive.FinalizationReason != "" {
@@ -157,7 +160,7 @@ func newAttemptTurnService(t *testing.T, model *retrySequenceModel) (*Service, *
 		t.Fatal(err)
 	}
 	service.now = func() time.Time { return now }
-	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, "")
+	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, "", TurnExecutionDeep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,9 +219,9 @@ func TestTurnRetryCannotExceedPhysicalAttemptBudget(t *testing.T) {
 	connectFailure := errors.Join(coremodel.ErrProviderUnavailable, coremodel.ErrProviderConnectFailure)
 	model := &retrySequenceModel{outcomes: []retryModelOutcome{{err: connectFailure}, {}}}
 	service, store, turn := newAttemptTurnService(t, model)
-	store.turn.ModelDispatchCount = MaxTurnModelDispatches - 1
+	store.turn.ModelDispatchCount = MaxAdmittedTurnModelDispatches - 1
 	service.executeTurn(context.Background(), turn.ID)
-	if model.callCount() != 2 || store.turn.ModelDispatchCount != MaxTurnModelDispatches+MaxTurnFinalizationDispatches || store.turn.State != TurnCompleted {
+	if model.callCount() != 2 || store.turn.ModelDispatchCount != MaxAdmittedTurnModelDispatches+MaxTurnFinalizationDispatches || store.turn.State != TurnCompleted {
 		t.Fatalf("calls=%d attempts=%d", model.callCount(), store.turn.ModelDispatchCount)
 	}
 	if request := model.requests[1]; len(request.Intrinsics) != 0 || len(request.Extensions) != 0 || len(request.ExtensionSnapshots) != 0 {
@@ -248,7 +251,7 @@ func TestPersistedScheduledRuntimeNeverResolvesIntrinsicsDuringExecution(t *test
 		resolverCalls++
 		return nil, errors.New("scheduled runtime must not resolve intrinsics")
 	}))
-	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, TurnIntrinsicPolicyNone)
+	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, nil, TurnIntrinsicPolicyNone, TurnExecutionScheduled)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -182,16 +182,28 @@ func TestExecuteTurnPersistsPreciseModelFailureClassification(t *testing.T) {
 }
 
 func TestTurnModelBudgetUsesStabilityCaps(t *testing.T) {
-	if MaxTurnModelDispatches != 24 {
-		t.Fatalf("model dispatch cap=%d", MaxTurnModelDispatches)
+	if MaxAdmittedTurnModelDispatches != 24 {
+		t.Fatalf("model dispatch cap=%d", MaxAdmittedTurnModelDispatches)
 	}
-	if MaxTurnModelActiveDuration != 20*time.Minute {
-		t.Fatalf("model active duration cap=%s", MaxTurnModelActiveDuration)
+	if MaxAdmittedTurnModelActiveDuration != 20*time.Minute {
+		t.Fatalf("model active duration cap=%s", MaxAdmittedTurnModelActiveDuration)
 	}
 }
 
 func TestExecuteTurnAppliesPersistedModelActiveDurationBudget(t *testing.T) {
 	snapshot := testTurnSnapshot()
+	policy, err := AdmittedTurnExecutionPolicy(TurnExecutionDeep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.MaxModelDispatches--
+	policy.MaxModelActiveMilliseconds = 200
+	policy.MaxToolCalls--
+	systemPrompt := appendSystemPrompt(snapshot.SystemPrompt, conversationConvergenceGuidance)
+	runtime, err := newTurnRuntimeSnapshotWithPolicy(systemPrompt, snapshot, nil, "", "", "", policy)
+	if err != nil {
+		t.Fatal(err)
+	}
 	conversationID := uuid.NewString()
 	base := newFakeStore()
 	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
@@ -199,8 +211,8 @@ func TestExecuteTurnAppliesPersistedModelActiveDurationBudget(t *testing.T) {
 		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
 		Prompt: "finish within the remaining budget", ProfileID: snapshot.ProfileID,
 		ProfileSnapshot: snapshot, ProfileSnapshotDigest: snapshot.Digest(), State: TurnAccepted,
-		Revision: 1, LastSequence: 1, ModelActiveDuration: MaxTurnModelActiveDuration - 20*time.Millisecond,
-		CreatedAt: time.Now().UTC(),
+		Revision: 1, LastSequence: 1, ModelActiveDuration: policy.MaxModelActiveDuration() - 20*time.Millisecond,
+		CreatedAt: time.Now().UTC(), RuntimeSnapshot: &runtime,
 	}
 	store := &timeoutTurnStore{readOnlyTurnStore: &readOnlyTurnStore{
 		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
