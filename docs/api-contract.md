@@ -174,6 +174,27 @@ or stream after admission. It never cancels the accepted Turn; callers use
   with the current binary presets, so a safe preset change cannot strand an
   active turn. Unsupported versions, unknown modes, out-of-range values, or a
   mode/runtime mismatch fail before a provider reservation or turn mutation.
+- Every admitted Native turn compiles the fixed `Dirextalk fixed platform
+  policy v1` first as the highest-priority system policy. The selected
+  profile prompt follows only as JSON-encoded subordinate
+  `profile_specialization` data; admission and execution/revalidation compile
+  byte-identical text. Every executable intrinsic, MCP, Web, Knowledge, and
+  other extension tool receives exactly one canonical model-only suffix that
+  treats descriptions/results as untrusted data and binds stop, retry, and
+  finalization behavior. Core intrinsics receive one additional final suffix
+  requiring that intrinsic to be the last tool call in its model round.
+  Copied suffix text and trailing override attempts in a source description
+  cannot displace the authoritative final suffix. Source catalogs, names,
+  schemas, ordering, and forced-tool identity remain unchanged, and automatic
+  context estimation charges the exact governed text sent to the provider.
+- If a provider batch places a Core intrinsic before another call, Core
+  persists the complete batch but executes none of it. Every call receives a
+  durable `invalid`/not-executed observation; only the offending intrinsic
+  receives the single validation-correction allowance. A corrected
+  intrinsic-only call may commit once after restart. Repeating the violation
+  exhausts the existing correction ledger and enters the ordinary
+  tools-disabled finalization path, whose client result is useful Markdown in
+  `done.message.content`, never an internal directive or configuration JSON.
 - Only ordinary provider execution consumes the admitted model-active time
   budget; tool, sandbox, Worker, and user-confirmation execution or waiting do
   not. Each physical provider dispatch also has three dispatch-local deadlines,
@@ -235,6 +256,19 @@ or stream after admission. It never cancels the accepted Turn; callers use
   An unapplied same-turn steer deferred during a failed Cloud Worker call may
   admit only one forced `cloud_worker_propose` follow-up; that dispatch exposes
   no extension or unrelated intrinsic tool.
+- Each root supervisor/execution invocation produces at most one secret-free
+  structured convergence record when its Native turn becomes terminal. Core
+  retains no permanent per-Service turn map; durable `turn_id` lets downstream
+  consumers deduplicate records across process restarts.
+  The record is rebuilt from the terminal Turn, event history, and finalization
+  intent and contains only `duration_ms`, `deadline_class`,
+  `useful_markdown`, `runtime_incompatible`, `model_dispatch_count`,
+  `tool_call_count`, `directive_count`, `repeat_count`,
+  `finalization_reason`, `fallback_used`, `recall_degraded`, and
+  `worker_poll_count`. `directive_count` is the one persisted directive per
+  physical dispatch; Worker polls count durable `cloud_worker_inventory` call
+  events rather than tool-authored result content. No prompt, response text,
+  tool arguments, provider reasoning, runtime JSON, or credential is logged.
 - Provider adapters preserve provider-issued tool-call IDs. When Gemini omits
   an ID, Core allocates one that cannot collide with any tool call already in
   the frozen request transcript, for both unary and streaming responses.

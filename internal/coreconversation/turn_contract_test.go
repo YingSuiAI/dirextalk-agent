@@ -1231,7 +1231,7 @@ func TestExecuteTurnContinuesOutputLimitFromDurableEventsAfterRestart(t *testing
 	}
 	request := finalModel.requests[0]
 	if len(request.Extensions) != 1 || len(request.ExtensionSnapshots) != 1 || len(request.Intrinsics) != 1 ||
-		!strings.HasPrefix(request.Profile.SystemPrompt, "base instruction") || strings.Contains(request.Profile.SystemPrompt, outputContinuationGuidance) {
+		!strings.HasPrefix(request.Profile.SystemPrompt, compilePlatformSystemPrompt(profile.SystemPrompt)) || strings.Contains(request.Profile.SystemPrompt, outputContinuationGuidance) {
 		t.Fatalf("continuation lost tools or guidance: %+v", request)
 	}
 	messages := request.Conversation.Messages
@@ -2212,7 +2212,7 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 	if model.runs != 1 || len(model.request.Intrinsics) != 1 ||
 		model.request.Intrinsics[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
 		len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != selection.ID ||
-		!strings.HasPrefix(model.request.Profile.SystemPrompt, profile.SystemPrompt+"\n\n") ||
+		!strings.HasPrefix(model.request.Profile.SystemPrompt, compilePlatformSystemPrompt(profile.SystemPrompt)) ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "Use cloud_worker_propose only for required network or execution") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "cannot access the Worker filesystem") ||
 		strings.Count(model.request.Profile.SystemPrompt, conversationConvergenceGuidance) != 1 ||

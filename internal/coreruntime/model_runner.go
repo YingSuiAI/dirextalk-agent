@@ -147,7 +147,7 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 		if tool.InputSchema == nil {
 			return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
 		}
-		tools = append(tools, tool)
+		tools = append(tools, coreconversation.PlatformGovernedModelTool(tool, true))
 	}
 	for _, ext := range req.Extensions {
 		if len(ext.Tools) == 0 && len(ext.Snapshot.ToolNames) != 0 {
@@ -161,7 +161,7 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 				return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
 			}
 			seenTools[tool.Name] = struct{}{}
-			tools = append(tools, tool)
+			tools = append(tools, coreconversation.PlatformGovernedModelTool(tool, false))
 		}
 	}
 	forcedToolName := strings.TrimSpace(req.ForcedToolName)

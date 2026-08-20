@@ -1,9 +1,12 @@
 package coreconversation
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +25,12 @@ type retrySequenceModel struct {
 type retryModelOutcome struct {
 	delta *ModelDelta
 	err   error
+}
+
+type convergenceObserverFunc func(context.Context, ConvergenceRecord)
+
+func (f convergenceObserverFunc) ObserveConversationConvergence(ctx context.Context, record ConvergenceRecord) {
+	f(ctx, record)
 }
 
 func (m *retrySequenceModel) Run(ctx context.Context, request ModelRunRequest) (ModelRunResult, error) {
@@ -180,6 +189,49 @@ func TestTurnRetriesOneConnectFailureBeforeOutputAndChargesPhysicalAttempt(t *te
 	}
 	if store.turn.State != TurnCompleted {
 		t.Fatalf("turn state=%s failure=%q", store.turn.State, store.failedCode)
+	}
+}
+
+func TestCompletedTurnEmitsOneStructuredConvergenceRecord(t *testing.T) {
+	model := &retrySequenceModel{outcomes: []retryModelOutcome{{}}}
+	service, store, turn := newAttemptTurnService(t, model)
+	var output bytes.Buffer
+	service.SetConvergenceObserver(slogConvergenceObserver{logger: slog.New(slog.NewTextHandler(&output, nil))})
+	service.executeTurn(context.Background(), turn.ID)
+	if store.turn.State != TurnCompleted {
+		t.Fatalf("turn=%+v", store.turn)
+	}
+	logText := output.String()
+	if strings.Count(logText, "conversation turn convergence") != 1 {
+		t.Fatalf("terminal convergence record count=%d log=%q", strings.Count(logText, "conversation turn convergence"), logText)
+	}
+	for _, field := range []string{
+		"turn_id=" + turn.ID,
+		"duration_ms=", "deadline_class=none", "useful_markdown=true", "runtime_incompatible=false",
+		"model_dispatch_count=1", "tool_call_count=0", "directive_count=1", "repeat_count=0",
+		"finalization_reason=none", "fallback_used=false", "recall_degraded=false", "worker_poll_count=0",
+	} {
+		if !strings.Contains(logText, field) {
+			t.Fatalf("convergence record missing %q: %q", field, logText)
+		}
+	}
+}
+
+func TestCompletedTurnInvokesInjectedConvergenceObserverOnce(t *testing.T) {
+	model := &retrySequenceModel{outcomes: []retryModelOutcome{{}}}
+	service, store, turn := newAttemptTurnService(t, model)
+	var records []ConvergenceRecord
+	service.SetConvergenceObserver(convergenceObserverFunc(func(_ context.Context, record ConvergenceRecord) {
+		records = append(records, record)
+	}))
+	ctx, _ := withConvergenceRoot(context.Background(), turn.ID)
+	service.executeTurn(ctx, turn.ID)
+	service.executeTurn(ctx, turn.ID)
+	if store.turn.State != TurnCompleted || len(records) != 1 {
+		t.Fatalf("turn=%+v records=%+v", store.turn, records)
+	}
+	if records[0].TurnID != turn.ID || !records[0].UsefulMarkdown || records[0].DirectiveCount != 1 {
+		t.Fatalf("record=%+v", records[0])
 	}
 }
 

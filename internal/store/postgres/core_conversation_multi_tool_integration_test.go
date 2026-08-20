@@ -57,15 +57,24 @@ func (m *firstPayloadWatchdogModel) callCount() int {
 
 type blockingModelDispatchStore struct {
 	*CoreConversationStore
-	once          sync.Once
-	reached       chan struct{}
-	blockOrdinary bool
+	once            sync.Once
+	reached         chan struct{}
+	mu              sync.Mutex
+	ordinaryCalls   int
+	blockOrdinary   bool
+	blockOrdinaryAt int
 }
 
 func (s *blockingModelDispatchStore) PrepareTurnModel(ctx context.Context, lease core.TurnLease, directive core.TurnDispatchDirective) (core.Turn, error) {
 	shouldBlock := directive.FinalizationReason != ""
 	if s.blockOrdinary {
 		shouldBlock = directive.FinalizationReason == ""
+	}
+	if directive.FinalizationReason == "" && s.blockOrdinaryAt > 0 {
+		s.mu.Lock()
+		s.ordinaryCalls++
+		shouldBlock = s.ordinaryCalls == s.blockOrdinaryAt
+		s.mu.Unlock()
 	}
 	if !shouldBlock {
 		return s.CoreConversationStore.PrepareTurnModel(ctx, lease, directive)
@@ -139,6 +148,38 @@ type scheduledRestartConversationModel struct {
 	mu       sync.Mutex
 	call     core.ToolCall
 	requests []core.ModelRunRequest
+}
+
+type intrinsicOrderRestartConversationModel struct {
+	mu                sync.Mutex
+	invalidSchedule   core.ToolCall
+	trailingIntrinsic core.ToolCall
+	correctedSchedule core.ToolCall
+	requests          []core.ModelRunRequest
+}
+
+func (m *intrinsicOrderRestartConversationModel) Run(_ context.Context, request core.ModelRunRequest) (core.ModelRunResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requests = append(m.requests, request)
+	var calls []core.ToolCall
+	if len(m.requests) == 1 {
+		calls = []core.ToolCall{m.invalidSchedule, m.trailingIntrinsic}
+	} else {
+		calls = []core.ToolCall{m.correctedSchedule}
+	}
+	message := core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, ToolCalls: append([]core.ToolCall(nil), calls...), CreatedAt: time.Now().UTC()}
+	return core.ModelRunResult{Message: message, ToolCalls: append([]core.ToolCall(nil), calls...)}, nil
+}
+
+func (m *intrinsicOrderRestartConversationModel) Stream(ctx context.Context, request core.ModelRunRequest, _ func(core.ModelDelta) error) (core.ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
+func (m *intrinsicOrderRestartConversationModel) snapshotRequests() []core.ModelRunRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]core.ModelRunRequest(nil), m.requests...)
 }
 
 func (m *scheduledRestartConversationModel) Run(_ context.Context, request core.ModelRunRequest) (core.ModelRunResult, error) {
@@ -855,6 +896,135 @@ func TestStaticSiteCorrectionRestartsOnceThenFinalizesWithoutToolsPostgres(t *te
 	mutationMu.Unlock()
 	if gotMutationAttempts != 2 {
 		t.Fatalf("completed static-site recovery mutated again: attempts=%d", gotMutationAttempts)
+	}
+}
+
+func TestIntrinsicOrderCorrectionSurvivesRestartWithoutDuplicateSchedulePostgres(t *testing.T) {
+	h := openTurnDB(t)
+	cmd := turnCommand()
+	cmd.OwnerID = "@owner:example.test"
+	cmd.AccountGeneration = 7
+	cmd.Prompt = "每天九点写一条 Markdown 提醒"
+	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
+	const scheduledDefaultClientID = "intrinsic-order-restart-default"
+	if _, err := h.pool.Exec(context.Background(), `UPDATE core_model_profiles SET client_profile_id=$1 WHERE profile_id=$2`, scheduledDefaultClientID, cmd.ProfileID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.pool.Exec(context.Background(), `INSERT INTO core_model_profile_defaults(singleton,default_conversation_client_profile_id,updated_at) VALUES(true,$1,clock_timestamp()) ON CONFLICT (singleton) DO UPDATE SET default_conversation_client_profile_id=EXCLUDED.default_conversation_client_profile_id,updated_at=EXCLUDED.updated_at`, scheduledDefaultClientID); err != nil {
+		t.Fatal(err)
+	}
+	invalidSchedule := core.ToolCall{
+		ID: uuid.NewString(), Name: coremodel.IntrinsicScheduleCreateToolName,
+		Arguments: `{"name":"每日提醒","goal":"写一条简洁的 Markdown 提醒","capability":"scheduled_note","cron":"0 9 * * *","timezone":"Asia/Shanghai"}`,
+	}
+	correctedSchedule := invalidSchedule
+	correctedSchedule.ID = uuid.NewString()
+	trailingIntrinsic := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
+	model := &intrinsicOrderRestartConversationModel{
+		invalidSchedule: invalidSchedule, trailingIntrinsic: trailingIntrinsic, correctedSchedule: correctedSchedule,
+	}
+	var mutationMu sync.Mutex
+	trailingMutationAttempts := 0
+	resolver := coreIntrinsicResolverFunc(func(context.Context, core.TurnLease) ([]core.ResolvedIntrinsic, error) {
+		return []core.ResolvedIntrinsic{{
+			Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerProposeToolName, Description: "test trailing intrinsic", InputSchema: map[string]any{"type": "object"}},
+			Execute: func(context.Context, core.IntrinsicExecutionRequest) (core.IntrinsicExecutionResult, error) {
+				mutationMu.Lock()
+				trailingMutationAttempts++
+				mutationMu.Unlock()
+				return core.IntrinsicExecutionResult{TurnCommitted: true}, nil
+			},
+		}}, nil
+	})
+	blockedStore := &blockingModelDispatchStore{CoreConversationStore: h.store, reached: make(chan struct{}), blockOrdinaryAt: 2}
+	service, err := core.NewService(blockedStore, model, staticConversationExtensions{}, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetIntrinsicResolver(resolver)
+	started, err := service.StartTurn(context.Background(), cmd)
+	if err != nil {
+		service.Close()
+		t.Fatal(err)
+	}
+	select {
+	case <-blockedStore.reached:
+	case <-time.After(5 * time.Second):
+		service.Close()
+		t.Fatal("second ordinary model dispatch was not fenced")
+	}
+	firstCorrection := false
+	for _, event := range mustLoadTurnEvents(t, h.store, started.ID) {
+		if event.Kind == core.TurnEventToolResult && event.ToolResult != nil && event.ToolResult.CallID == invalidSchedule.ID &&
+			event.ToolResult.Outcome == core.ToolOutcomeInvalid && event.ToolResult.Retry.ValidationCorrections == 1 {
+			firstCorrection = true
+			break
+		}
+	}
+	if err = service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.pool.Exec(context.Background(), `UPDATE core_conversation_turns SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE turn_id=$1`, started.ID); err != nil {
+		t.Fatal(err)
+	}
+	mutationMu.Lock()
+	preRestartTrailingAttempts := trailingMutationAttempts
+	mutationMu.Unlock()
+	var scheduleCount int
+	if err = h.pool.QueryRow(context.Background(), `SELECT count(*) FROM core_schedules`).Scan(&scheduleCount); err != nil {
+		t.Fatal(err)
+	}
+	if !firstCorrection || preRestartTrailingAttempts != 0 || scheduleCount != 0 || len(model.snapshotRequests()) != 1 {
+		t.Fatalf("pre-restart correction=%v trailing_attempts=%d schedules=%d requests=%d", firstCorrection, preRestartTrailingAttempts, scheduleCount, len(model.snapshotRequests()))
+	}
+
+	restartedStore, err := NewCoreConversationStore(h.store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedService, err := core.NewService(restartedStore, model, staticConversationExtensions{}, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedService.SetIntrinsicResolver(resolver)
+	terminal := recoverConversationTurnUntilTerminal(t, restartedService, restartedStore, started.ID, 8*time.Second)
+	if err = restartedService.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if terminal.State != core.TurnCompleted || terminal.Response == nil || !terminal.Response.Done || strings.TrimSpace(terminal.Response.Message.Content) == "" {
+		t.Fatalf("terminal=%+v", terminal)
+	}
+	if err = h.pool.QueryRow(context.Background(), `SELECT count(*) FROM core_schedules`).Scan(&scheduleCount); err != nil {
+		t.Fatal(err)
+	}
+	mutationMu.Lock()
+	postRestartTrailingAttempts := trailingMutationAttempts
+	mutationMu.Unlock()
+	if scheduleCount != 1 || postRestartTrailingAttempts != 0 || len(model.snapshotRequests()) != 2 {
+		t.Fatalf("post-restart schedules=%d trailing_attempts=%d requests=%d", scheduleCount, postRestartTrailingAttempts, len(model.snapshotRequests()))
+	}
+
+	secondStore, err := NewCoreConversationStore(h.store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondService, err := core.NewService(secondStore, model, staticConversationExtensions{}, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondService.SetIntrinsicResolver(resolver)
+	if err = secondService.RecoverTurns(context.Background()); err != nil {
+		secondService.Close()
+		t.Fatal(err)
+	}
+	if err = secondService.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.pool.QueryRow(context.Background(), `SELECT count(*) FROM core_schedules`).Scan(&scheduleCount); err != nil {
+		t.Fatal(err)
+	}
+	if scheduleCount != 1 || len(model.snapshotRequests()) != 2 {
+		t.Fatalf("completed replay duplicated work: schedules=%d requests=%d", scheduleCount, len(model.snapshotRequests()))
 	}
 }
 

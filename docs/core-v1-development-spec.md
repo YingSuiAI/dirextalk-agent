@@ -215,6 +215,40 @@ events. The former Chat ledger/model/tool executor is not retained. Once
 admission succeeds, canceling a caller context detaches only that waiter or
 stream; durable cancellation remains an explicit CancelTurn mutation.
 
+The Native model envelope starts with one fixed platform-policy compiler. Its
+highest-priority policy precedes the selected profile, which is encoded as the
+single subordinate JSON field `profile_specialization`; admission, frozen
+runtime validation, restart recovery, and execution must produce byte-identical
+compiled text. Model-facing copies of every executable tool append one
+canonical untrusted-content/stop-retry-finalization suffix. Intrinsic copies
+append the additional final-call-in-round suffix after it. Normalization strips
+copied canonical sentences from untrusted source descriptions before appending
+the authoritative suffixes, while preserving the source catalog, name, schema,
+order, and forced-tool identity. The automatic context estimator uses those
+same copies so admission cannot undercharge provider input.
+
+Intrinsic ordering is validated before any call in the provider batch can
+cross an execution boundary. When an intrinsic is not last, Core durably
+records the whole batch and closed invalid observations for every call without
+executing an intrinsic, extension, MCP, search, or mutation. The offending
+intrinsic alone consumes the existing one-correction ledger. Recovery may then
+run one corrected intrinsic-only call and its atomic commit; a repeated
+violation enters the existing terminal-tool finalization ledger and performs
+one tools-disabled Markdown synthesis. No parallel retry state or compatibility
+path exists.
+
+Terminal execution calls one injectable `ConvergenceObserver` at most once per
+root supervisor/execution invocation. Core retains no permanent per-Service
+turn map; the default observer emits the structured `conversation turn
+convergence` log with durable `turn_id` for downstream cross-restart
+deduplication, rebuilt from the terminal Turn, event history, and finalization
+intent. It contains duration/deadline class, useful-Markdown and
+runtime-compatibility flags, model-dispatch/tool-call/directive/repeat counts,
+finalization reason, fallback and recall-degraded flags, and durable Worker
+inventory-poll count. Exactly one directive is persisted per physical model
+dispatch. The projection contains no prompt, response body, tool arguments,
+provider reasoning, runtime envelope, or secret.
+
 Provider tool requests keep the Agent-owned schema authoritative. Gemini
 receives only fields declared by its documented `Schema` contract; unsupported
 JSON Schema keywords are removed, while string `const` choices are projected

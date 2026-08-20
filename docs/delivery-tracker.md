@@ -108,15 +108,34 @@ contract](message-server-integration-development-contract.md), and
   remains adapter-internal and may bridge only the next live tools-admitted
   continuation once; it is absent from public DTOs, Protobuf, durable deltas,
   model-result envelopes, transcripts, history, and restart state.
+- Native runtime admission and execution now compile one byte-identical fixed
+  highest-priority platform policy before the JSON-encoded subordinate profile.
+  Model-facing copies of every executable tool end in one canonical
+  untrusted-content/stop-retry-finalization suffix, and intrinsics add the
+  final-call-in-round suffix; source catalogs, schemas, order, and forced-tool
+  identity do not change, and the context estimator charges the same text. An
+  intrinsic-before-trailing-call batch durably records every call as invalid
+  but executes none, admits one corrected intrinsic-only retry through the
+  existing correction ledger, and tools-none finalizes a repeated violation as
+  Markdown. A secret-free, injectable terminal convergence observer emits once
+  per root supervisor/execution invocation without retaining a permanent
+  per-Service turn map; durable `turn_id` supports cross-restart downstream
+  deduplication alongside `duration_ms`, `deadline_class`, `useful_markdown`,
+  `runtime_incompatible`, `model_dispatch_count`, `tool_call_count`,
+  `directive_count`, `repeat_count`, `finalization_reason`, `fallback_used`,
+  `recall_degraded`, and durable Worker `worker_poll_count`.
 - Built-in local sandbox output is capped at 64 KiB per stream even when
   `os/exec` selects an optimized reader path, and its structured result reports
   explicit `stdout_truncated` and `stderr_truncated` booleans. Requested result
   files remain collected and verified by the outer isolated execution path.
-- Pull requests run the repository-owned Go test, vet, command-build, Buf lint,
-  pinned `staticcheck` SA, and pinned `govulncheck` gates with read-only GitHub
-  permissions. A parallel race-detector job covers the maintained high-risk
-  conversation, provider, HTTP, execution, SSH Worker, and built-in MCP
-  packages; release publication remains a separate manual workflow.
+- Pull requests and pushes to `main` run the independent read-only focused
+  branch workflow with stable check names `focused-core`, `focused-race`,
+  `focused-postgres`, and `runtime-loop-scheduled`. The first runs both affected
+  conversation/runtime packages, the race lane targets policy correction and
+  terminal observation, PostgreSQL uses PG18+pgvector for the restart fence,
+  and the scheduled lane exercises its closed runtime loop. Stable tag checks
+  retain the repository-wide test/vet/build/Buf/static-analysis/vulnerability
+  gates; release publication remains a separate manual workflow.
 - Revision-fenced `agent.chat.v1/steer_turn` now persists additional user
   guidance in the current turn ledger. It interrupts a provider generation
   before tool publication, preserves an unconfirmed or already dispatched
@@ -341,6 +360,19 @@ support.
   consumer call for a produced `tool_loop_no_progress` intent with no replay after
   completion, and exactly one forced static-site correction before final
   Markdown. Focused Core, resolver, RPC, migration, and PostgreSQL suites passed.
+  P2-4 accumulated Core/conversation runtime verification passed 336 tests, and
+  five selective correction/terminal-observation race tests passed. The
+  non-vacuous `runtime-loop-scheduled` selection exercised 8 Core runtime, 6
+  Core Task, and 4 Core conversation tests. A real PostgreSQL 18 + pgvector
+  restart test proved that the invalid intrinsic-order batch executes nothing,
+  one corrected intrinsic-only continuation creates exactly one schedule after
+  restart, and another restart does not replay it. One local unified-image
+  candidate (`sha256:79e4831746fb03e4d42b5f26a5bfd54a0b7ce52764f5e8a994dfd809c6390b67`)
+  reported `v1.0.177` from all three production binaries, applied the fresh
+  migration ledger through version/count 27/27, and returned exactly
+  `{"status":"ok","release_version":"v1.0.177"}` from live
+  `/agent/v1/health`; the candidate and all isolated probe resources were
+  removed after verification.
 - On **2026-08-20**, every physical model dispatch gained a separate durable
   directive that may add bounded loop guidance, force one already-admitted
   tool, or remove all tools for final synthesis without changing the immutable

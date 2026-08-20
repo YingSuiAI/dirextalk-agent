@@ -35,6 +35,44 @@ type correctingScheduleModel struct {
 	requests []ModelRunRequest
 }
 
+type intrinsicOrderCorrectionModel struct {
+	invalid   []ToolCall
+	corrected ToolCall
+	repeat    bool
+	requests  []ModelRunRequest
+}
+
+func (m *intrinsicOrderCorrectionModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
+	m.requests = append(m.requests, request)
+	if len(request.Intrinsics) == 0 && len(request.Extensions) == 0 {
+		return ModelRunResult{Done: true, Message: Message{
+			ID: uuid.NewString(), Role: RoleAssistant,
+			Content: "## Schedule not created\n\nThe tool-call order remained invalid, so no schedule was created.", CreatedAt: time.Now().UTC(),
+		}}, nil
+	}
+	ordinaryRound := 0
+	for _, previous := range m.requests {
+		if len(previous.Intrinsics) != 0 || len(previous.Extensions) != 0 {
+			ordinaryRound++
+		}
+	}
+	calls := m.invalid
+	if ordinaryRound > 1 && !m.repeat {
+		calls = []ToolCall{m.corrected}
+	} else if ordinaryRound > 1 {
+		calls = append([]ToolCall(nil), m.invalid...)
+		for index := range calls {
+			calls[index].ID = uuid.NewString()
+		}
+	}
+	message := Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: append([]ToolCall(nil), calls...), CreatedAt: time.Now().UTC()}
+	return ModelRunResult{Message: message, ToolCalls: append([]ToolCall(nil), calls...)}, nil
+}
+
+func (m *intrinsicOrderCorrectionModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
 func (m *correctingScheduleModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
 	m.requests = append(m.requests, request)
 	call := m.calls[len(m.requests)-1]
@@ -379,6 +417,98 @@ func TestExecuteTurnReturnsInvalidScheduleArgumentsToModel(t *testing.T) {
 	}
 	if len(model.requests) != 2 || !conversationContainsToolError(model.requests[1].Conversation, coremodel.IntrinsicScheduleCreateToolName) {
 		t.Fatalf("corrected model round did not receive tool error: requests=%+v", model.requests)
+	}
+}
+
+func TestIntrinsicOrderViolationUsesOneCorrectionThenCommitsScheduleOnce(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 5, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:example.test", AccountGeneration: 9,
+		ConversationID: conversationID, Prompt: "每天九点总结群聊消息", ProfileID: profile.ProfileID,
+		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 1,
+		LastSequence: 1, CreatedAt: time.Now().UTC(), ExtensionSnapshots: []ExtensionExecutionSnapshot{scheduleChatSummarySnapshot()},
+	}
+	turnStore := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}
+	scheduleStore := &conversationScheduleStoreStub{}
+	store := &executingScheduleTurnStore{readOnlyTurnStore: turnStore, conversationScheduleStoreStub: scheduleStore}
+	invalidSchedule := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicScheduleCreateToolName, Arguments: `{"name":"每日群聊总结","goal":"总结群聊消息","capability":"chat_summary","cron":"0 9 * * *","timezone":"Asia/Shanghai"}`}
+	trailingRead := ToolCall{ID: uuid.NewString(), Name: "mcp__message__dirextalk_rooms_search", Arguments: `{"query":"群聊"}`}
+	correctedSchedule := invalidSchedule
+	correctedSchedule.ID = uuid.NewString()
+	model := &intrinsicOrderCorrectionModel{invalid: []ToolCall{invalidSchedule, trailingRead}, corrected: correctedSchedule}
+	service, err := NewService(store, model, scheduleExtensionResolver(turn.ExtensionSnapshots[0]), snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	service.executeTurn(context.Background(), turn.ID)
+	if turnStore.failedCode != "" || len(scheduleStore.commands) != 0 || turnStore.turn.State != TurnAccepted {
+		t.Fatalf("invalid batch was not held for correction: failed=%q commands=%d turn=%+v", turnStore.failedCode, len(scheduleStore.commands), turnStore.turn)
+	}
+	var correction *ToolResult
+	for _, event := range turnStore.events {
+		if event.ToolResult != nil && event.ToolResult.CallID == invalidSchedule.ID {
+			copy := *event.ToolResult
+			correction = &copy
+		}
+	}
+	if correction == nil || correction.Outcome != ToolOutcomeInvalid || correction.Retry.ValidationCorrections != 1 ||
+		!strings.Contains(correction.Summary, "Core intrinsic tool must be the final call in a model round") {
+		t.Fatalf("precise bounded correction missing: %+v events=%+v", correction, turnStore.events)
+	}
+
+	service.executeTurn(context.Background(), turn.ID)
+	if turnStore.failedCode != "" || len(scheduleStore.commands) != 1 || len(model.requests) != 2 {
+		t.Fatalf("corrected schedule did not commit once: failed=%q commands=%+v requests=%d", turnStore.failedCode, scheduleStore.commands, len(model.requests))
+	}
+	response := scheduleStore.commands[0].Response
+	if !response.Done || strings.TrimSpace(response.Message.Content) == "" || strings.Contains(response.Message.Content, "{\"") {
+		t.Fatalf("schedule response is not concise Markdown: %+v", response)
+	}
+}
+
+func TestRepeatedIntrinsicOrderViolationFinalizesUsefulMarkdown(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:example.test", AccountGeneration: 9,
+		ConversationID: conversationID, Prompt: "每天九点提醒我", ProfileID: profile.ProfileID,
+		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 1,
+		LastSequence: 1, CreatedAt: time.Now().UTC(), ExtensionSnapshots: []ExtensionExecutionSnapshot{scheduleChatSummarySnapshot()},
+	}
+	turnStore := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}
+	scheduleStore := &conversationScheduleStoreStub{}
+	store := &executingScheduleTurnStore{readOnlyTurnStore: turnStore, conversationScheduleStoreStub: scheduleStore}
+	scheduleCall := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicScheduleCreateToolName, Arguments: `{"name":"每日提醒","goal":"提醒用户","capability":"chat_summary","cron":"0 9 * * *","timezone":"Asia/Shanghai"}`}
+	trailingRead := ToolCall{ID: uuid.NewString(), Name: "mcp__message__dirextalk_rooms_search", Arguments: `{"query":"群聊"}`}
+	model := &intrinsicOrderCorrectionModel{invalid: []ToolCall{scheduleCall, trailingRead}, repeat: true}
+	service, err := NewService(store, model, scheduleExtensionResolver(turn.ExtensionSnapshots[0]), snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 3 && turnStore.turn.State != TurnCompleted; attempt++ {
+		service.executeTurn(context.Background(), turn.ID)
+	}
+	if turnStore.failedCode != "" || turnStore.turn.State != TurnCompleted || turnStore.turn.Response == nil || len(scheduleStore.commands) != 0 {
+		t.Fatalf("repeated violation did not finalize safely: failed=%q turn=%+v commands=%+v", turnStore.failedCode, turnStore.turn, scheduleStore.commands)
+	}
+	content := turnStore.turn.Response.Message.Content
+	if !strings.HasPrefix(content, "## Schedule not created") || strings.Contains(content, "Error (") || strings.Contains(content, `{"`) {
+		t.Fatalf("unsafe terminal output=%q", content)
+	}
+	if turnStore.finalization == nil || turnStore.finalization.Reason != TurnFinalizationToolOutcome {
+		t.Fatalf("finalization=%+v", turnStore.finalization)
 	}
 }
 

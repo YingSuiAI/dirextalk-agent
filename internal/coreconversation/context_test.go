@@ -47,11 +47,25 @@ func TestAutomaticContextCompactionPlannerUsesFrozenTokenBudgetAndSafeBoundary(t
 		t.Fatalf("below-threshold envelope planned compaction: plan=%+v err=%v", plan, err)
 	}
 
-	plan, err := planAutomaticContextCompaction(conversation, envelope, 700, 100)
+	expectedProjected, err := AdvanceWorkingContextFromTranscript(working, messages[:3])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan == nil || plan.Offset != 3 || plan.ThresholdTokens != 480 || plan.EstimatedTokensBefore <= plan.ThresholdTokens || plan.EstimatedTokensAfter > plan.ThresholdTokens {
+	expectedProjected, err = projectWorkingContextFromAuthoritativeTranscript(expectedProjected, messages, 3, working.ProtectedDigest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAfter := automaticContextEnvelopeEstimate(envelope, expectedProjected, messages[3:])
+	inputBudget := 1
+	for inputBudget*8/10 < wantAfter {
+		inputBudget++
+	}
+	wantThreshold := inputBudget * 8 / 10
+	plan, err := planAutomaticContextCompaction(conversation, envelope, inputBudget+100, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan == nil || plan.Offset != 3 || plan.ThresholdTokens != wantThreshold || plan.EstimatedTokensBefore <= plan.ThresholdTokens || plan.EstimatedTokensAfter != wantAfter || plan.EstimatedTokensAfter > plan.ThresholdTokens {
 		t.Fatalf("automatic compaction plan=%+v", plan)
 	}
 	if plan.ExpectedRevision != conversation.Revision || plan.ExpectedPreviousOffset != 0 ||

@@ -125,8 +125,12 @@ func automaticContextEnvelopeEstimate(envelope automaticContextCompactionEnvelop
 		bytes += len([]byte(selectedSkills))
 	}
 	tools := make([]coremodel.Tool, 0, len(envelope.IntrinsicTools)+len(envelope.ExtensionTools))
-	tools = append(tools, envelope.IntrinsicTools...)
-	tools = append(tools, envelope.ExtensionTools...)
+	for _, tool := range envelope.IntrinsicTools {
+		tools = append(tools, PlatformGovernedModelTool(tool, true))
+	}
+	for _, tool := range envelope.ExtensionTools {
+		tools = append(tools, PlatformGovernedModelTool(tool, false))
+	}
 	if len(tools) != 0 {
 		raw, _ := json.Marshal(tools)
 		bytes += len(raw)

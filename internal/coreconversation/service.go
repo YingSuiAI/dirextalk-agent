@@ -168,6 +168,8 @@ type Service struct {
 	memoryRecallTimeout time.Duration
 	continuityMu        sync.Mutex
 	continuity          map[string]string
+	convergenceMu       sync.Mutex
+	convergenceObserver ConvergenceObserver
 }
 
 type turnModelOutcome struct {
@@ -245,7 +247,7 @@ func NewService(store Store, models ModelRunner, extensions ExtensionResolver, p
 		extensions = noopExtensions{}
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
-	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}, modelDeadlines: defaultTurnModelDeadlines(), memoryRecallTimeout: turnMemoryRecallTimeout, continuity: map[string]string{}}
+	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}, modelDeadlines: defaultTurnModelDeadlines(), memoryRecallTimeout: turnMemoryRecallTimeout, continuity: map[string]string{}, convergenceObserver: slogConvergenceObserver{}}
 	if turns, ok := store.(TurnStore); ok {
 		s.turns = turns
 	}
@@ -736,7 +738,7 @@ func (s *Service) buildTurnAdmissionRuntime(ctx context.Context, turn Turn, exte
 		}
 	}
 	profile := turn.ProfileSnapshot.Profile()
-	systemPrompt := appendSystemPrompt(profile.SystemPrompt, conversationConvergenceGuidance)
+	systemPrompt := appendSystemPrompt(compilePlatformSystemPrompt(profile.SystemPrompt), conversationConvergenceGuidance)
 	systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, extensions)
 	if containsStaticSiteIntrinsic(intrinsics) {
 		systemPrompt = staticSiteSystemPrompt(systemPrompt)
@@ -1169,6 +1171,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if s.turns == nil {
 		return
 	}
+	ctx, convergence := withConvergenceRoot(ctx, id)
+	defer s.observeTerminalConvergence(ctx, convergence)
 	admitted, err := s.turns.GetTurn(ctx, id)
 	if err != nil || admitted.RuntimeSnapshot == nil || admitted.RuntimeSnapshot.Validate() != nil {
 		return
@@ -1410,7 +1414,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	}
 	toolCallBudgetExhausted := uint32(len(toolCallAuthorities)) >= executionPolicy.MaxToolCalls
 	profile := turn.ProfileSnapshot.Profile()
-	systemPrompt := appendSystemPrompt(profile.SystemPrompt, conversationConvergenceGuidance)
+	systemPrompt := appendSystemPrompt(compilePlatformSystemPrompt(profile.SystemPrompt), conversationConvergenceGuidance)
 	systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, resolvedExtensions)
 	if containsStaticSiteIntrinsic(intrinsicTools) {
 		systemPrompt = staticSiteSystemPrompt(systemPrompt)
@@ -1785,6 +1789,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					validateStaticSiteCorrectionCalls(history.forcedToolName, calls) != nil
 				seenCallIDs := make(map[string]struct{}, len(calls))
 				newToolCalls := 0
+				var intrinsicOrderViolation *ToolCall
 				for index, call := range calls {
 					if call.Validate() != nil {
 						correctableIntrinsic := call.validateIdentityAndBounds() == nil
@@ -1826,9 +1831,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						newToolCalls++
 					}
 					seenCallIDs[call.ID] = struct{}{}
-					if coremodel.IsIntrinsicToolName(call.Name) && index != len(calls)-1 && !forcedStaticSiteViolation {
-						_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_order_invalid", "Core intrinsic tool must be the final call in a model round")
-						return
+					if coremodel.IsIntrinsicToolName(call.Name) && index != len(calls)-1 && !forcedStaticSiteViolation && intrinsicOrderViolation == nil {
+						copy := call
+						intrinsicOrderViolation = &copy
 					}
 				}
 				if uint32(len(toolCallAuthorities)+newToolCalls) > executionPolicy.MaxToolCalls {
@@ -1846,6 +1851,22 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						return
 					}
 					s.executeTurn(ctx, id)
+					return
+				}
+				if intrinsicOrderViolation != nil {
+					if durableDispatch && !replayed {
+						if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
+							return
+						}
+					}
+					roundStore, ordered := s.turns.(OrderedConversationToolStore)
+					if !ordered {
+						_, _ = s.turns.FailTurn(ctx, lease, "tool_store_unavailable", "ordered conversation tool store is unavailable")
+						return
+					}
+					if recordErr := recordIntrinsicOrderCorrection(ctx, roundStore, lease, calls, intrinsicOrderViolation.ID, toolCallAuthorities); recordErr != nil {
+						_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_error_result_failed", "Core intrinsic order correction could not be saved")
+					}
 					return
 				}
 				workflowViolation := forcedStaticSiteViolation
@@ -2533,6 +2554,34 @@ func recordCorrectableIntrinsicError(ctx context.Context, store OrderedConversat
 	result.Retry.ValidationCorrections = 1
 	if err := store.RecordConversationToolResult(ctx, lease, result); err != nil {
 		return err
+	}
+	_, err := store.CompleteConversationToolRound(ctx, lease)
+	return err
+}
+
+func recordIntrinsicOrderCorrection(ctx context.Context, store OrderedConversationToolStore, lease TurnLease, calls []ToolCall, offendingCallID string, authorities map[string]turnToolCallAuthority) error {
+	const correction = "Core intrinsic tool must be the final call in a model round; execute no call from this invalid batch, then call only that intrinsic after any required reads are complete"
+	for _, call := range calls {
+		if previous, exists := authorities[call.ID]; exists && previous.state == turnToolCallTerminal {
+			continue
+		}
+		if err := store.RecordConversationToolCall(ctx, lease, call); err != nil {
+			return err
+		}
+		if _, err := store.BeginConversationToolDispatch(ctx, lease, call); err != nil {
+			return err
+		}
+		summary := "Tool call was not executed because a Core intrinsic was not the final call in the model round"
+		result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: summary}.
+			WithObservation(ToolOutcomeInvalid, summary, ToolMutationNone)
+		if call.ID == offendingCallID {
+			result.Content = correction
+			result.Summary = correction
+			result.Retry.ValidationCorrections = 1
+		}
+		if err := store.RecordConversationToolResult(ctx, lease, result); err != nil {
+			return err
+		}
 	}
 	_, err := store.CompleteConversationToolRound(ctx, lease)
 	return err

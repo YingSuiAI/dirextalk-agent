@@ -1,0 +1,123 @@
+name: Focused branch checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-focused-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused-core:
+    name: focused-core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test governed conversation runtime
+        run: >-
+          go test
+          ./internal/coreconversation
+          ./internal/coreruntime
+          -count=1
+
+  focused-race:
+    name: focused-race
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Race-test correction and terminal observation
+        run: >-
+          go test -race
+          ./internal/coreconversation
+          ./internal/coreruntime
+          -run 'Test(IntrinsicOrderViolation|RepeatedIntrinsicOrderViolation|CompletedTurn|ModelRunnerAppliesPlatform)'
+          -count=1
+
+  focused-postgres:
+    name: focused-postgres
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_PASSWORD: "123789"
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test intrinsic-order restart fence
+        env:
+          AGENT_TEST_POSTGRES_DSN: postgres://postgres:123789@127.0.0.1:5432/postgres?sslmode=disable
+        run: >-
+          go test
+          ./internal/store/postgres
+          -run '^TestIntrinsicOrderCorrectionSurvivesRestartWithoutDuplicateSchedulePostgres$'
+          -count=1
+
+  runtime-loop-scheduled:
+    name: runtime-loop-scheduled
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test scheduled runtime loop and frozen authority
+        run: >-
+          go test
+          ./internal/coreruntime
+          ./internal/coretask
+          ./internal/coreconversation
+          -run 'Test(TaskExecutorRoutesOnlyMarkedAgentTasksToScheduledHandler|TaskExecutorFailsClosedWithoutScheduledHandler|ScheduleLoop|ScheduledFailureProjectionIsBoundedAndStageSpecific|ScheduledConversation|ScheduledCapability|PersistedScheduledRuntimeNeverResolvesIntrinsicsDuringExecution|ScheduledWorkflow)'
+          -count=1
