@@ -2753,3 +2753,29 @@ CREATE TABLE core_conversation_model_dispatch_directives (
     )
 );
 -- dirextalk-agent migration end 000024_turn_dispatch_directives.up.sql
+-- dirextalk-agent migration begin 000025_turn_finalization_intents.up.sql
+-- Terminal convergence is decided durably before the optional final model
+-- dispatch. The immutable intent lets restart finish with the same bounded
+-- no-tools synthesis or deterministic Markdown fallback without replaying an
+-- unknown provider request.
+ALTER TABLE core_conversation_model_attempts
+    DROP CONSTRAINT core_conversation_model_attempts_attempt_sequence_check,
+    ADD CONSTRAINT core_conversation_model_attempts_attempt_sequence_check CHECK (attempt_sequence BETWEEN 1 AND 25);
+ALTER TABLE core_conversation_model_dispatch_directives
+    DROP CONSTRAINT core_conversation_model_dispatch_directi_attempt_sequence_check,
+    ADD CONSTRAINT core_conversation_model_dispatch_attempt_sequence_check CHECK (attempt_sequence BETWEEN 1 AND 25);
+CREATE TABLE core_conversation_turn_finalizations (
+    turn_id uuid NOT NULL REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    owner_id text NOT NULL CHECK (length(owner_id) <= 512),
+    account_generation bigint NOT NULL CHECK (account_generation >= 0),
+    turn_revision bigint NOT NULL CHECK (turn_revision > 0),
+    intent_version integer NOT NULL CHECK (intent_version = 1),
+    reason text NOT NULL CHECK (reason IN (
+        'tool_loop_no_progress','tool_budget_exhausted','model_budget_exhausted',
+        'provider_failure','invalid_terminal_output'
+    )),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (turn_id,turn_revision),
+    CHECK ((owner_id = '' AND account_generation = 0) OR (owner_id <> '' AND account_generation > 0))
+);
+-- dirextalk-agent migration end 000025_turn_finalization_intents.up.sql

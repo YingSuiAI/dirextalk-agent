@@ -125,3 +125,24 @@ func TestTurnEventAndMessageProtoExposeReasoningContent(t *testing.T) {
 		t.Fatalf("reasoning message=%+v", projected)
 	}
 }
+
+func TestTurnProtoProjectsCompletedFinalizationMarkdownAsResult(t *testing.T) {
+	const markdown = "## Completed work\n\n- Preserved durable output.\n\n## Best conclusion\n\n- Best available answer.\n\n## Incomplete items\n\n- Full synthesis unavailable.\n\n## Stop reason\n\n- `provider_timeout`: provider stopped"
+	profileID := uuid.NewString()
+	turn := coreconversation.Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), ProfileID: profileID,
+		State: coreconversation.TurnCompleted, Revision: 2, TerminalCode: "provider_timeout", TerminalSummary: "provider stopped",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		Response: &coreconversation.ChatResponse{
+			RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Revision: 2, Done: true, ModelProfileID: profileID,
+			Message: coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: markdown, ModelProfileID: profileID, CreatedAt: time.Now().UTC()},
+		},
+	}
+	turn.Response.RequestID = turn.RequestID
+	turn.Response.ConversationID = turn.ConversationID
+
+	projected := turnProto(turn)
+	if projected.GetState() != string(coreconversation.TurnCompleted) || projected.GetResult().GetContent() != markdown {
+		t.Fatalf("projected turn=%+v", projected)
+	}
+}

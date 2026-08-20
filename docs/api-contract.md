@@ -162,8 +162,8 @@ or stream after admission. It never cancels the accepted Turn; callers use
   `model_profile_id`/`model_profile_revision`/`credential_version` triple.
   Partial or stale pins fail before provider work; there is no default-profile
   fallback, and durable replays retain their original snapshot.
-- A Native conversation turn retains a hard fuse of 24 provider dispatches
-  and 20 minutes of cumulative model-active time. Only provider
+- A Native conversation turn retains an ordinary-work hard fuse of 24 provider
+  dispatches and 20 minutes of cumulative model-active time. Only ordinary provider
   execution consumes the time budget: tool, sandbox, Worker, and
   user-confirmation execution or waiting do not. Independently, each provider
   stream's five-minute safety
@@ -172,13 +172,25 @@ or stream after admission. It never cancels the accepted Turn; callers use
   for longer than five minutes while remaining inside the cumulative budget;
   individual tool or sandbox executions keep their own resource limits. If a
   dispatched provider stream produces no data for the full idle interval, the
-  turn fails with `provider_timeout` and an unknown-outcome summary. The
-  dispatch is never replayed automatically, and recovery preserves the
-  persisted timeout classification. Independently, one turn may accept at most
-  20 distinct tool calls. Once that count is reached, the next model request
-  receives no tools and must synthesize from accumulated evidence. A provider
-  batch that would cross the limit terminates as `tool_budget_exhausted`
-  without dispatching the excess calls.
+  ordinary attempt is classified as `provider_timeout`. Provider failure,
+  invalid or empty terminal output, repeated no-progress tool use, and either
+  ordinary budget cap first persist an immutable turn-finalization intent.
+  That intent admits exactly one additional physical provider attempt with an
+  independent 30-second timeout; it carries no intrinsic or extension tools,
+  is not charged to the ordinary 20-minute clock, and cannot retry. The total
+  physical attempt sequence can therefore reach 25 while the ordinary contract
+  remains 24 attempts. If the final attempt returns useful text, that text is
+  the normal completed Markdown response. If it fails, is empty or invalid, or
+  returns a tool call, Core commits a deterministic Markdown response with
+  `Completed work`, `Best conclusion`, `Incomplete items`, and `Stop reason`
+  sections, preserving durable partial text and tool metadata. A restart before
+  the final dispatch may perform it once; a started, dispatched, or uncertain
+  final attempt is never replayed and falls back deterministically. Clients see
+  the result through the normal `done.message.content` projection rather than
+  an error/configuration JSON terminal. Independently, one turn may accept at
+  most 20 distinct tool calls. A provider batch that would cross the limit does
+  not dispatch the excess calls and enters the same persisted tool-free
+  finalization path.
 - Provider adapters preserve provider-issued tool-call IDs. When Gemini omits
   an ID, Core allocates one that cannot collide with any tool call already in
   the frozen request transcript, for both unary and streaming responses.
@@ -221,13 +233,17 @@ or stream after admission. It never cancels the accepted Turn; callers use
   other HTTP 4xx, HTTP 5xx, unavailable transport, invalid response, truncated
   stream, and output limit. Safe diagnostics collapse status failures to their
   HTTP class and never include response bodies. A provider HTTP 4xx, including
-  429, is a terminal `provider_rejected` turn outcome; timeouts become
+  429, is classified as `provider_rejected`; timeouts become
   `provider_timeout`, invalid local completion input becomes
   `invalid_model_request`, and invalid or prematurely terminated provider
   streams retain the distinct `provider_invalid_response` or
   `provider_stream_truncated` code. An unclassified transport or 5xx outcome
-  remains `provider_uncertain`. No dispatched failure is automatically
-  replayed.
+  remains `provider_uncertain`. Before visible output, the one ordinary retry
+  described below remains available. After that ordinary path stops, these
+  classifications become the stop reason for the single no-tools finalization
+  attempt or its completed Markdown fallback; they do not by themselves expose
+  a failed-turn JSON result. Unknown external tool side effects, authorization,
+  integrity, and persistence failures retain failed-turn semantics.
 - Recent tool-loop recovery is deliberately conservative and resets at an
   accepted steer. It recognizes only repeated canonical action/result pairs or
   exact A/B alternation. Argument object key order and harmless unquoted local

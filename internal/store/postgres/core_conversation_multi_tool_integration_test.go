@@ -24,6 +24,30 @@ type countingConversationModel struct {
 	runs   int
 }
 
+type finalizationConversationModel struct {
+	mu       sync.Mutex
+	result   core.ModelRunResult
+	failure  error
+	requests []core.ModelRunRequest
+}
+
+func (m *finalizationConversationModel) Run(_ context.Context, request core.ModelRunRequest) (core.ModelRunResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requests = append(m.requests, request)
+	return m.result, m.failure
+}
+
+func (m *finalizationConversationModel) Stream(ctx context.Context, request core.ModelRunRequest, _ func(core.ModelDelta) error) (core.ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
+func (m *finalizationConversationModel) snapshotRequests() []core.ModelRunRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]core.ModelRunRequest(nil), m.requests...)
+}
+
 type loopRecoveryConversationModel struct {
 	mu              sync.Mutex
 	requests        []core.ModelRunRequest
@@ -210,6 +234,203 @@ func loadPersistedTurnDirectives(t *testing.T, h *turnDBHarness, turn core.Turn)
 		t.Fatal(err)
 	}
 	return result
+}
+
+func startFinalizationAdmittedTurn(t *testing.T, h *turnDBHarness, cmd core.TurnStartCommand) core.Turn {
+	t.Helper()
+	candidate, err := h.store.PrepareTurnRuntimeAdmission(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const convergencePrompt = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
+	runtime, err := core.NewTurnRuntimeSnapshot(convergencePrompt, cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := h.store.StartTurnWithRuntime(context.Background(), cmd, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return turn
+}
+
+func startPersistedFinalization(t *testing.T, h *turnDBHarness, reason core.TurnFinalizationReason) core.Turn {
+	t.Helper()
+	cmd := turnCommand()
+	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
+	turn := startFinalizationAdmittedTurn(t, h, cmd)
+	lease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.PrepareTurnFinalization(context.Background(), lease, core.NewTurnFinalizationIntent(reason), nil); err != nil {
+		t.Fatal(err)
+	}
+	return turn
+}
+
+func assertFinalizationModelRequest(t *testing.T, request core.ModelRunRequest) {
+	t.Helper()
+	if len(request.Intrinsics) != 0 || len(request.Extensions) != 0 || len(request.ExtensionSnapshots) != 0 || request.ForcedToolName != "" {
+		t.Fatalf("finalization request retained tools: %+v", request)
+	}
+}
+
+func assertTerminalFallbackMarkdown(t *testing.T, turn core.Turn) {
+	t.Helper()
+	if turn.State != core.TurnCompleted || turn.Response == nil {
+		t.Fatalf("turn did not complete: %+v", turn)
+	}
+	for _, heading := range []string{"## Completed work", "## Best conclusion", "## Incomplete items", "## Stop reason"} {
+		if !strings.Contains(turn.Response.Message.Content, heading) {
+			t.Fatalf("fallback omitted %q: %q", heading, turn.Response.Message.Content)
+		}
+	}
+}
+
+func TestFinalizationIntentRestartDispatchesOncePostgres(t *testing.T) {
+	h := openTurnDB(t)
+	turn := startPersistedFinalization(t, h, core.TurnFinalizationModelBudget)
+	model := &finalizationConversationModel{result: core.ModelRunResult{Done: true, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "restart synthesis", CreatedAt: time.Now().UTC()}}}
+	service, err := core.NewService(h.store, model, staticConversationExtensions{}, staticConversationProfile{snapshot: turn.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+
+	terminal := recoverConversationTurnUntilTerminal(t, service, h.store, turn.ID, 8*time.Second)
+	requests := model.snapshotRequests()
+	if terminal.State != core.TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "restart synthesis" || len(requests) != 1 {
+		t.Fatalf("terminal=%+v requests=%d", terminal, len(requests))
+	}
+	assertFinalizationModelRequest(t, requests[0])
+	directives := loadPersistedTurnDirectives(t, h, terminal)
+	if len(directives) != 1 || directives[0].directive.FinalizationReason != core.TurnFinalizationModelBudget || directives[0].directive.ToolMode != core.TurnDispatchToolsNone {
+		t.Fatalf("directives=%+v", directives)
+	}
+}
+
+func TestStartedFinalizationRestartFallsBackWithoutReplayPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	turn := startPersistedFinalization(t, h, core.TurnFinalizationProvider)
+	if _, err := h.pool.Exec(context.Background(), `UPDATE core_conversation_turns SET model_active_milliseconds=1234 WHERE turn_id=$1`, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directive := core.NewTurnDispatchDirective(core.TurnDispatchGuidanceLoopSynthesis, core.TurnDispatchToolsNone, "")
+	directive.FinalizationReason = core.TurnFinalizationProvider
+	prepared, err := h.store.PrepareTurnModel(context.Background(), lease, directive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.BindTurnModelRuntime(context.Background(), lease, *prepared.RuntimeSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.pool.Exec(context.Background(), `UPDATE core_conversation_turns SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE turn_id=$1`, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewCoreConversationStore(h.store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &finalizationConversationModel{result: core.ModelRunResult{Done: true, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "must not run", CreatedAt: time.Now().UTC()}}}
+	service, err := core.NewService(restarted, model, staticConversationExtensions{}, staticConversationProfile{snapshot: turn.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+
+	terminal := recoverConversationTurnUntilTerminal(t, service, restarted, turn.ID, 8*time.Second)
+	assertTerminalFallbackMarkdown(t, terminal)
+	if requests := model.snapshotRequests(); len(requests) != 0 {
+		t.Fatalf("unknown finalization dispatch replayed: %d request(s)", len(requests))
+	}
+	if terminal.ModelActiveDuration != 1234*time.Millisecond {
+		t.Fatalf("finalization dispatch changed ordinary active time: %s", terminal.ModelActiveDuration)
+	}
+	directives := loadPersistedTurnDirectives(t, h, terminal)
+	if len(directives) != 1 || directives[0].directive.FinalizationReason != core.TurnFinalizationProvider {
+		t.Fatalf("directives=%+v", directives)
+	}
+}
+
+func TestFinalizationFailureFallsBackToMarkdownPostgres(t *testing.T) {
+	toolCall := core.ToolCall{ID: uuid.NewString(), Name: "unexpected_tool", Arguments: `{}`}
+	for _, test := range []struct {
+		name    string
+		result  core.ModelRunResult
+		failure error
+	}{
+		{name: "provider failure", failure: coremodel.ErrInvalidResponse},
+		{name: "empty output", result: core.ModelRunResult{Done: true}},
+		{name: "tool call", result: core.ModelRunResult{Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, ToolCalls: []core.ToolCall{toolCall}, CreatedAt: time.Now().UTC()}, ToolCalls: []core.ToolCall{toolCall}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := openTurnDB(t)
+			turn := startPersistedFinalization(t, h, core.TurnFinalizationProvider)
+			model := &finalizationConversationModel{result: test.result, failure: test.failure}
+			service, err := core.NewService(h.store, model, staticConversationExtensions{}, staticConversationProfile{snapshot: turn.ProfileSnapshot})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer service.Close()
+
+			terminal := recoverConversationTurnUntilTerminal(t, service, h.store, turn.ID, 8*time.Second)
+			assertTerminalFallbackMarkdown(t, terminal)
+			requests := model.snapshotRequests()
+			if len(requests) != 1 {
+				t.Fatalf("finalization requests=%d", len(requests))
+			}
+			assertFinalizationModelRequest(t, requests[0])
+			directives := loadPersistedTurnDirectives(t, h, terminal)
+			if len(directives) != 1 || directives[0].directive.FinalizationReason != core.TurnFinalizationProvider {
+				t.Fatalf("directives=%+v", directives)
+			}
+		})
+	}
+}
+
+func TestFinalizationAllowanceIgnoresOrdinaryBudgetCapsPostgres(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		count        int
+		activeMillis int64
+		wantCount    uint32
+	}{
+		{name: "dispatch count", count: core.MaxTurnModelDispatches, wantCount: core.MaxTurnModelDispatches + core.MaxTurnFinalizationDispatches},
+		{name: "active time", count: 7, activeMillis: core.MaxTurnModelActiveDuration.Milliseconds(), wantCount: 8},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := openTurnDB(t)
+			cmd := turnCommand()
+			createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
+			turn := startFinalizationAdmittedTurn(t, h, cmd)
+			if _, err := h.pool.Exec(context.Background(), `UPDATE core_conversation_turns SET model_dispatch_count=$2,model_active_milliseconds=$3 WHERE turn_id=$1`, turn.ID, test.count, test.activeMillis); err != nil {
+				t.Fatal(err)
+			}
+			model := &finalizationConversationModel{result: core.ModelRunResult{Done: true, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "budget synthesis", CreatedAt: time.Now().UTC()}}}
+			service, err := core.NewService(h.store, model, staticConversationExtensions{}, staticConversationProfile{snapshot: turn.ProfileSnapshot})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer service.Close()
+
+			terminal := recoverConversationTurnUntilTerminal(t, service, h.store, turn.ID, 8*time.Second)
+			requests := model.snapshotRequests()
+			if terminal.State != core.TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "budget synthesis" ||
+				terminal.ModelDispatchCount != test.wantCount || terminal.ModelActiveDuration != time.Duration(test.activeMillis)*time.Millisecond || len(requests) != 1 {
+				t.Fatalf("terminal=%+v requests=%d", terminal, len(requests))
+			}
+			assertFinalizationModelRequest(t, requests[0])
+			directives := loadPersistedTurnDirectives(t, h, terminal)
+			if len(directives) != 1 || directives[0].sequence != int(test.wantCount) || directives[0].directive.FinalizationReason != core.TurnFinalizationModelBudget {
+				t.Fatalf("directives=%+v", directives)
+			}
+		})
+	}
 }
 
 func startWebDirectiveTurn(t *testing.T, h *turnDBHarness, model core.ModelRunner, execute func(context.Context, core.ToolExecutionRequest) (core.ToolResult, error)) (*core.Service, core.Turn) {

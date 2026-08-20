@@ -20,6 +20,8 @@ import (
 const (
 	MaxTurnModelDispatches          = 24
 	MaxTurnModelActiveDuration      = 20 * time.Minute
+	MaxTurnFinalizationDispatches   = 1
+	MaxTurnFinalizationDuration     = 30 * time.Second
 	MaxTurnToolCalls                = 20
 	toolLoopNudgeGuidance           = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
 	toolLoopSynthesisGuidance       = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
@@ -795,6 +797,22 @@ func (s *Service) runTurnSupervisor(ctx context.Context, id string) {
 			continue
 		}
 		if turn.DispatchState == "uncertain" {
+			if finalizations, ok := s.turns.(TurnFinalizationStore); ok {
+				if _, finalizing, loadErr := finalizations.LoadTurnFinalization(ctx, id); loadErr == nil && finalizing {
+					s.executeTurn(ctx, id)
+					if !waitTurnSupervisor(ctx, backoff, wake) {
+						return
+					}
+					backoff = nextTurnSupervisorBackoff(backoff)
+					continue
+				} else if loadErr != nil {
+					if !waitTurnSupervisor(ctx, backoff, wake) {
+						return
+					}
+					backoff = nextTurnSupervisorBackoff(backoff)
+					continue
+				}
+			}
 			if uncertainStore, ok := s.turns.(TurnUncertainStore); ok {
 				code, summary := uncertainModelFailure(turn)
 				if _, uncertainErr := uncertainStore.FailTurnUncertain(ctx, id, code, summary); uncertainErr == nil {
@@ -1023,6 +1041,15 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		return
 	}
 	toolCallAuthorities := history.authorities
+	finalizationStore, durableFinalization := s.turns.(TurnFinalizationStore)
+	var finalization TurnFinalizationIntent
+	finalizing := false
+	if durableFinalization {
+		finalization, finalizing, err = finalizationStore.LoadTurnFinalization(ctx, turn.ID)
+		if err != nil {
+			return
+		}
+	}
 	var turnSteers []TurnSteer
 	if steerStore, ok := s.turns.(TurnSteerStore); ok {
 		turnSteers, err = steerStore.ListTurnSteers(ctx, turn.ID)
@@ -1084,6 +1111,30 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 			_, _ = s.turns.FailTurn(ctx, lease, "turn_commit_failed", "conversation response could not be committed")
 		}
+		return
+	}
+	commitFallback := func(intent TurnFinalizationIntent, code, summary string) {
+		if commitErr := s.commitTurnFinalizationFallback(ctx, lease, conv, persistedMessageCount, conversationTitleUserText, intent, code, summary); commitErr != nil {
+			current, readErr := s.turns.GetTurn(ctx, turn.ID)
+			if readErr == nil && current.State == TurnCompleted {
+				return
+			}
+			_, _ = s.turns.FailTurn(ctx, lease, "turn_commit_failed", "conversation final response could not be committed")
+		}
+	}
+	if finalizing && (turn.DispatchState == "dispatched" || turn.DispatchState == "uncertain") {
+		code, summary := turn.TerminalCode, turn.TerminalSummary
+		if turn.DispatchState == "dispatched" && !turn.ModelDispatchStartedAt.IsZero() {
+			code, summary = modelDispatchUncertainCode, modelDispatchUncertainSummary
+			failure := ModelAttemptFailure{Code: code, Summary: summary}
+			if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, &failure); err != nil {
+				return
+			}
+		}
+		if code == "" || summary == "" {
+			code, summary = finalizationStop(finalization.Reason)
+		}
+		commitFallback(finalization, code, summary)
 		return
 	}
 	child, cancel := context.WithCancel(ctx)
@@ -1185,10 +1236,32 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			return
 		}
 	}
+	if !finalizing {
+		var reason TurnFinalizationReason
+		switch {
+		case toolCallBudgetExhausted:
+			reason = TurnFinalizationToolBudget
+		case history.loopRecovery == toolLoopSynthesize:
+			reason = TurnFinalizationToolLoop
+		}
+		if reason != "" {
+			if !durableFinalization {
+				_, _ = s.turns.FailTurn(ctx, lease, "finalization_store_unavailable", "durable turn finalization store is unavailable")
+				return
+			}
+			finalization = NewTurnFinalizationIntent(reason)
+			if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, nil); err != nil {
+				return
+			}
+			s.executeTurn(ctx, id)
+			return
+		}
+	}
 	directive := DefaultTurnDispatchDirective()
 	switch {
-	case toolCallBudgetExhausted || history.loopRecovery == toolLoopSynthesize:
+	case finalizing:
 		directive = NewTurnDispatchDirective(TurnDispatchGuidanceLoopSynthesis, TurnDispatchToolsNone, "")
+		directive.FinalizationReason = finalization.Reason
 	case history.forcedToolName != "":
 		directive = NewTurnDispatchDirective(TurnDispatchGuidanceNone, TurnDispatchToolsAdmitted, history.forcedToolName)
 	case history.loopRecovery == toolLoopNudge:
@@ -1202,7 +1275,19 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if durableDispatch && !replayed {
 		prepared, prepareErr := dispatchStore.PrepareTurnModel(ctx, lease, directive)
 		if errors.Is(prepareErr, ErrModelBudgetExhausted) {
-			_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
+			if !finalizing {
+				if !durableFinalization {
+					_, _ = s.turns.FailTurn(ctx, lease, "finalization_store_unavailable", "durable turn finalization store is unavailable")
+					return
+				}
+				finalization = NewTurnFinalizationIntent(TurnFinalizationModelBudget)
+				if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, nil); err != nil {
+					return
+				}
+				s.executeTurn(ctx, id)
+				return
+			}
+			commitFallback(finalization, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
 			return
 		}
 		if prepareErr != nil {
@@ -1215,9 +1300,26 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		turn.ModelDispatchCount = prepared.ModelDispatchCount
 		turn.ModelActiveDuration = prepared.ModelActiveDuration
 		remaining := MaxTurnModelActiveDuration - prepared.ModelActiveDuration
+		if finalizing {
+			remaining = MaxTurnFinalizationDuration
+		}
 		if remaining <= 0 {
-			_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
-			_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
+			if !finalizing {
+				if !durableFinalization {
+					_, _ = s.turns.FailTurn(ctx, lease, "finalization_store_unavailable", "durable turn finalization store is unavailable")
+					return
+				}
+				finalization = NewTurnFinalizationIntent(TurnFinalizationModelBudget)
+			}
+			failure := ModelAttemptFailure{Code: modelBudgetExhaustedCode, Summary: modelBudgetExhaustedSummary}
+			if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, &failure); err != nil {
+				return
+			}
+			if !finalizing {
+				s.executeTurn(ctx, id)
+				return
+			}
+			commitFallback(finalization, failure.Code, failure.Summary)
 			return
 		}
 		var modelCancel context.CancelFunc
@@ -1326,7 +1428,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		select {
 		case out := <-resultCh:
 			if out.err != nil {
-				if out.retry.Retryable && retryCount == 0 && !replayed {
+				if out.retry.Retryable && retryCount == 0 && !replayed && !finalizing {
 					if attempts, ok := s.turns.(TurnModelAttemptStore); ok {
 						code, summary := classifyModelDispatchFailure(out.err)
 						delay := out.retry.RetryAfter
@@ -1347,15 +1449,31 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					}
 				} else {
 					code, summary := classifyModelDispatchFailure(out.err)
-					if durableDispatch {
-						failure := ModelAttemptFailure{Code: code, Summary: summary, RateLimited: out.retry.RateLimited, RetryAfterMS: out.retry.RetryAfter.Milliseconds()}
-						if attempts, ok := s.turns.(TurnModelAttemptStore); ok {
-							_ = attempts.MarkTurnModelAttemptUncertain(ctx, lease, failure)
-						} else {
-							_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, code, summary)
+					if !durableFinalization {
+						if durableDispatch {
+							failure := ModelAttemptFailure{Code: code, Summary: summary, RateLimited: out.retry.RateLimited, RetryAfterMS: out.retry.RetryAfter.Milliseconds()}
+							if attempts, ok := s.turns.(TurnModelAttemptStore); ok {
+								_ = attempts.MarkTurnModelAttemptUncertain(ctx, lease, failure)
+							} else {
+								_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, code, summary)
+							}
 						}
+						_, _ = s.turns.FailTurn(ctx, lease, code, summary)
+						return
 					}
-					_, _ = s.turns.FailTurn(ctx, lease, code, summary)
+					wasFinalizing := finalizing
+					if !finalizing {
+						finalization = NewTurnFinalizationIntent(finalizationReasonForFailure(code))
+					}
+					failure := ModelAttemptFailure{Code: code, Summary: summary, RateLimited: out.retry.RateLimited, RetryAfterMS: out.retry.RetryAfter.Milliseconds()}
+					if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, &failure); err != nil {
+						return
+					}
+					if !wasFinalizing {
+						s.executeTurn(ctx, id)
+						return
+					}
+					commitFallback(finalization, code, summary)
 				}
 				return
 			}
@@ -1372,7 +1490,24 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 					out.result.Message.ID = uuid.NewString()
 				}
 				if !validModelContinuation(out.result) {
-					_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_result", "model returned an invalid continuation")
+					if !durableFinalization {
+						_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_result", "model returned an invalid continuation")
+						return
+					}
+					if durableDispatch && !replayed {
+						if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
+							return
+						}
+					}
+					if !finalizing {
+						finalization = NewTurnFinalizationIntent(TurnFinalizationInvalidOutput)
+						if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, nil); err != nil {
+							return
+						}
+						s.executeTurn(ctx, id)
+						return
+					}
+					commitFallback(finalization, "invalid_model_result", "model returned an invalid continuation")
 					return
 				}
 				if !durableDispatch {
@@ -1401,6 +1536,15 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				out.result.Message.ToolCalls = nil
 			}
 			if len(out.result.ToolCalls) != 0 || len(out.result.Message.ToolCalls) != 0 {
+				if finalizing {
+					if durableDispatch && !replayed {
+						if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
+							return
+						}
+					}
+					commitFallback(finalization, "invalid_model_result", "final synthesis returned a tool call after tools were disabled")
+					return
+				}
 				calls := out.result.ToolCalls
 				if len(calls) == 0 {
 					calls = out.result.Message.ToolCalls
@@ -1459,7 +1603,15 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 							return
 						}
 					}
-					_, _ = s.turns.FailTurn(ctx, lease, toolBudgetExhaustedCode, toolBudgetExhaustedSummary)
+					if !durableFinalization {
+						_, _ = s.turns.FailTurn(ctx, lease, "finalization_store_unavailable", "durable turn finalization store is unavailable")
+						return
+					}
+					finalization = NewTurnFinalizationIntent(TurnFinalizationToolBudget)
+					if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, nil); err != nil {
+						return
+					}
+					s.executeTurn(ctx, id)
 					return
 				}
 				if durableDispatch && !replayed {
@@ -1673,8 +1825,20 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			if m.ID == "" {
 				m.ID = uuid.NewString()
 			}
-			if err := m.Validate(); err != nil {
-				_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_result", "model returned invalid message")
+			if err := m.Validate(); err != nil || strings.TrimSpace(m.Content) == "" {
+				if !durableFinalization {
+					_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_result", "model returned invalid message")
+					return
+				}
+				if !finalizing {
+					finalization = NewTurnFinalizationIntent(TurnFinalizationInvalidOutput)
+					if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, nil); err != nil {
+						return
+					}
+					s.executeTurn(ctx, id)
+					return
+				}
+				commitFallback(finalization, "invalid_model_result", "model returned an invalid or empty terminal response")
 				return
 			}
 			conv.Messages = append(conv.Messages, Message{ID: uuid.NewString(), Role: RoleUser, Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: userTime}, m)
@@ -1696,7 +1860,15 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				return
 			}
 			if errors.Is(modelCtx.Err(), context.DeadlineExceeded) {
-				_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
+				if !durableFinalization {
+					_, _ = s.turns.FailTurn(ctx, lease, "finalization_store_unavailable", "durable turn finalization store is unavailable")
+					return
+				}
+				finalization = NewTurnFinalizationIntent(TurnFinalizationModelBudget)
+				if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, nil); err != nil {
+					return
+				}
+				s.executeTurn(ctx, id)
 				return
 			}
 			if current, getErr := s.turns.GetTurn(ctx, id); getErr != nil || current.CancelRequested {
@@ -1714,7 +1886,15 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 			prepared, prepareErr := attempts.PrepareTurnModelRetry(ctx, lease)
 			if errors.Is(prepareErr, ErrModelBudgetExhausted) {
-				_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
+				if !durableFinalization {
+					_, _ = s.turns.FailTurn(ctx, lease, "finalization_store_unavailable", "durable turn finalization store is unavailable")
+					return
+				}
+				finalization = NewTurnFinalizationIntent(TurnFinalizationModelBudget)
+				if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, nil); err != nil {
+					return
+				}
+				s.executeTurn(ctx, id)
 				return
 			}
 			if prepareErr != nil {
@@ -1819,6 +1999,136 @@ func resolveTurnAttachmentInputParts(ctx context.Context, resolver TurnAttachmen
 		}
 	}
 	return result, nil
+}
+
+func finalizationReasonForFailure(code string) TurnFinalizationReason {
+	if code == modelBudgetExhaustedCode {
+		return TurnFinalizationModelBudget
+	}
+	return TurnFinalizationProvider
+}
+
+func finalizationStop(reason TurnFinalizationReason) (string, string) {
+	switch reason {
+	case TurnFinalizationToolLoop:
+		return "tool_loop_no_progress", "repeated tool rounds produced no new evidence"
+	case TurnFinalizationToolBudget:
+		return toolBudgetExhaustedCode, toolBudgetExhaustedSummary
+	case TurnFinalizationModelBudget:
+		return modelBudgetExhaustedCode, modelBudgetExhaustedSummary
+	case TurnFinalizationProvider:
+		return modelDispatchUncertainCode, modelDispatchUncertainSummary
+	case TurnFinalizationInvalidOutput:
+		return "invalid_model_result", "model returned an invalid or empty terminal response"
+	default:
+		return "finalization_required", "the turn stopped before a complete final response was available"
+	}
+}
+
+func (s *Service) commitTurnFinalizationFallback(ctx context.Context, lease TurnLease, conv Conversation, persistedMessageCount int, titleSource string, intent TurnFinalizationIntent, code, summary string) error {
+	if intent.Validate() != nil {
+		return ErrInvalid
+	}
+	partial, err := s.loadTurnPartialOutput(ctx, lease.Turn.ID)
+	if err != nil {
+		return err
+	}
+	historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
+	content := terminalFallbackMarkdown(partial, len(historyResults), intent.Reason, code, summary)
+	createdAt := nextMessageTime(conv, s.clock()).Add(time.Microsecond)
+	message := Message{
+		ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-final-assistant:"+lease.Turn.RequestID)).String(),
+		Role:           RoleAssistant,
+		Content:        content,
+		ModelProfileID: lease.Turn.ProfileID,
+		CreatedAt:      createdAt,
+		RelatedTaskIDs: historyTasks,
+		RelatedPlanIDs: historyPlans,
+		References:     historyReferences,
+		ToolSummaries:  historySummaries,
+	}
+	if message.Validate() != nil {
+		return ErrInvalid
+	}
+	response := ChatResponse{
+		RequestID: lease.Turn.RequestID, ConversationID: lease.Turn.ConversationID, Revision: conv.Revision + 1,
+		Message: message, Done: true, ModelProfileID: lease.Turn.ProfileID,
+		RelatedTaskIDs: append([]string(nil), historyTasks...), RelatedPlanIDs: append([]string(nil), historyPlans...),
+		References: cloneReferences(historyReferences), ToolSummaries: append([]string(nil), historySummaries...),
+		ToolResults: historyResults, ConversationTitle: conversationTitleFallback(titleSource), ConversationTitleSource: titleSource,
+	}
+	_, err = s.turns.CommitTurn(ctx, lease, response)
+	return err
+}
+
+func (s *Service) loadTurnPartialOutput(ctx context.Context, turnID string) (string, error) {
+	_, last, err := s.turns.TurnEventBounds(ctx, turnID)
+	if err != nil || last == 0 {
+		return "", err
+	}
+	var output strings.Builder
+	for cursor := int64(0); cursor < last && output.Len() < MaxContentBytes/2; {
+		events, loadErr := s.turns.LoadTurnEvents(ctx, turnID, cursor, 256)
+		if loadErr != nil {
+			return "", loadErr
+		}
+		if len(events) == 0 {
+			return "", ErrConflict
+		}
+		for _, event := range events {
+			if event.Sequence <= cursor {
+				return "", ErrConflict
+			}
+			cursor = event.Sequence
+			if event.Kind == TurnEventDelta && event.Text != "" {
+				output.WriteString(event.Text)
+			}
+		}
+	}
+	return boundedTerminalText(strings.TrimSpace(output.String()), MaxContentBytes/2), nil
+}
+
+func terminalFallbackMarkdown(partial string, toolResults int, reason TurnFinalizationReason, code, summary string) string {
+	partial = strings.TrimSpace(partial)
+	completed := "- The request was accepted, but no final model text was produced."
+	best := "- No reliable additional conclusion can be made from the available output."
+	if partial != "" {
+		completed = partial
+		best = "- The partial output above is the best available conclusion."
+	} else if toolResults > 0 {
+		completed = fmt.Sprintf("- Collected and retained %d durable tool result(s).", toolResults)
+		best = "- The durable tool evidence was retained, but a reliable synthesis was not available."
+	}
+	if strings.TrimSpace(summary) == "" {
+		code, summary = finalizationStop(reason)
+	}
+	stop := boundedTerminalText(strings.TrimSpace(summary), MaxSummaryBytes)
+	if strings.TrimSpace(code) != "" {
+		stop = "`" + boundedTerminalText(strings.TrimSpace(code), 128) + "`: " + stop
+	}
+	content := "## Completed work\n\n" + completed +
+		"\n\n## Best conclusion\n\n" + best +
+		"\n\n## Incomplete items\n\n- A complete final answer to the request remains unavailable.\n\n" +
+		"## Stop reason\n\n- " + stop
+	return boundedTerminalText(content, MaxContentBytes)
+}
+
+func boundedTerminalText(value string, limit int) string {
+	if limit <= 0 || value == "" {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	var bounded strings.Builder
+	bounded.Grow(limit)
+	for _, current := range value {
+		if bounded.Len()+utf8.RuneLen(current) > limit {
+			break
+		}
+		bounded.WriteRune(current)
+	}
+	return bounded.String()
 }
 
 const (

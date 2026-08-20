@@ -281,12 +281,64 @@ type readOnlyTurnStore struct {
 	dispatchState   string
 	dispatch        ModelRunResult
 	directive       TurnDispatchDirective
+	finalization    *TurnFinalizationIntent
+	finalDispatched bool
 	failedCode      string
 	commitErr       error
 	commitCompletes bool
 	dispatched      map[string]bool
 	prepareCalls    int
 	prepared        ToolAttempt
+}
+
+func (s *readOnlyTurnStore) PrepareTurnFinalization(_ context.Context, _ TurnLease, intent TurnFinalizationIntent, failure *ModelAttemptFailure) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if intent.Validate() != nil || failure != nil && failure.Validate() != nil {
+		return ErrInvalid
+	}
+	newIntent := s.finalization == nil
+	if s.finalization != nil && *s.finalization != intent {
+		return ErrConflict
+	}
+	copy := intent
+	s.finalization = &copy
+	if failure == nil {
+		if newIntent {
+			s.dispatchState = ""
+			s.dispatch = ModelRunResult{}
+			s.turn.DispatchState = ""
+			s.turn.State = TurnAccepted
+		}
+		return nil
+	}
+	if s.dispatchState != "dispatched" && s.dispatchState != "uncertain" {
+		return ErrConflict
+	}
+	if newIntent {
+		if !s.turn.ModelDispatchStartedAt.IsZero() {
+			s.turn.ModelActiveDuration += time.Since(s.turn.ModelDispatchStartedAt)
+		}
+		s.dispatchState = ""
+		s.turn.DispatchState = ""
+		s.turn.State = TurnAccepted
+	} else {
+		s.dispatchState = "uncertain"
+		s.turn.DispatchState = "uncertain"
+	}
+	s.turn.TerminalCode = failure.Code
+	s.turn.TerminalSummary = failure.Summary
+	s.turn.ModelDispatchStartedAt = time.Time{}
+	return nil
+}
+
+func (s *readOnlyTurnStore) LoadTurnFinalization(context.Context, string) (TurnFinalizationIntent, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finalization == nil {
+		return TurnFinalizationIntent{}, false, nil
+	}
+	return *s.finalization, true, nil
 }
 
 type orderingSteerStore struct{ *readOnlyTurnStore }
@@ -392,6 +444,7 @@ func (s *readOnlyTurnStore) CompleteConversationToolRound(_ context.Context, _ T
 	s.turn.State = TurnAccepted
 	s.turn.Revision++
 	s.dispatchState, s.dispatch = "", ModelRunResult{}
+	s.turn.DispatchState = ""
 	return s.turn, nil
 }
 
@@ -463,10 +516,18 @@ func (s *readOnlyTurnStore) TurnEventBounds(context.Context, string) (int64, int
 func (s *readOnlyTurnStore) PrepareTurnModel(_ context.Context, _ TurnLease, directive TurnDispatchDirective) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.turn.ModelDispatchCount >= MaxTurnModelDispatches || s.turn.ModelActiveDuration >= MaxTurnModelActiveDuration {
+	finalizing := directive.FinalizationReason != ""
+	if finalizing {
+		if s.finalization == nil || s.finalization.Reason != directive.FinalizationReason || s.finalDispatched ||
+			s.turn.ModelDispatchCount >= MaxTurnModelDispatches+MaxTurnFinalizationDispatches {
+			return Turn{}, ErrModelBudgetExhausted
+		}
+		s.finalDispatched = true
+	} else if s.turn.ModelDispatchCount >= MaxTurnModelDispatches || s.turn.ModelActiveDuration >= MaxTurnModelActiveDuration {
 		return Turn{}, ErrModelBudgetExhausted
 	}
 	s.dispatchState = "dispatched"
+	s.turn.DispatchState = "dispatched"
 	s.directive = directive
 	s.turn.ModelDispatchCount++
 	s.turn.ModelDispatchStartedAt = time.Now().UTC()
@@ -495,10 +556,11 @@ func (s *readOnlyTurnStore) RecordTurnModelResult(_ context.Context, _ TurnLease
 		return ErrConflict
 	}
 	s.dispatch, s.dispatchState = result, "completed"
-	if !s.turn.ModelDispatchStartedAt.IsZero() {
+	s.turn.DispatchState = "completed"
+	if s.directive.FinalizationReason == "" && !s.turn.ModelDispatchStartedAt.IsZero() {
 		s.turn.ModelActiveDuration += time.Since(s.turn.ModelDispatchStartedAt)
-		s.turn.ModelDispatchStartedAt = time.Time{}
 	}
+	s.turn.ModelDispatchStartedAt = time.Time{}
 	return nil
 }
 
@@ -1804,11 +1866,15 @@ func TestExecuteTurnStopsRepeatedToolRoundsWithoutFinalResponse(t *testing.T) {
 	service.executeTurn(context.Background(), turn.ID)
 	service.executeTurn(context.Background(), turn.ID)
 	current, err := store.GetTurn(context.Background(), turn.ID)
-	if err != nil || current.State != TurnFailed || store.failedCode != modelBudgetExhaustedCode {
+	if err != nil || current.State != TurnCompleted || current.Response == nil {
 		t.Fatalf("turn=%+v failed_code=%q err=%v", current, store.failedCode, err)
 	}
-	if model.runs != 1 || current.ModelDispatchCount != MaxTurnModelDispatches {
+	assertUsefulTerminalMarkdown(t, current, "")
+	if model.runs != 2 || current.ModelDispatchCount != MaxTurnModelDispatches+MaxTurnFinalizationDispatches {
 		t.Fatalf("model_runs=%d dispatch_count=%d", model.runs, current.ModelDispatchCount)
+	}
+	if len(model.request.Extensions) != 0 || len(model.request.Intrinsics) != 0 || len(model.request.ExtensionSnapshots) != 0 {
+		t.Fatalf("finalization request retained tools: %+v", model.request)
 	}
 }
 
@@ -1865,14 +1931,19 @@ func TestExecuteTurnEnforcesDurableToolCallBudget(t *testing.T) {
 	service.executeTurn(context.Background(), turn.ID)
 
 	current, err := store.GetTurn(context.Background(), turn.ID)
-	if err != nil || current.State != TurnFailed || store.failedCode != toolBudgetExhaustedCode {
+	if err != nil || current.State != TurnCompleted || current.Response == nil {
 		t.Fatalf("turn=%+v failed_code=%q err=%v", current, store.failedCode, err)
 	}
+	assertUsefulTerminalMarkdown(t, current, "")
 	if model.runs != 1 || executions != 0 || store.dispatchState != "completed" {
 		t.Fatalf("model_runs=%d executions=%d dispatch=%q", model.runs, executions, store.dispatchState)
 	}
 	if len(model.request.Extensions) != 0 || len(model.request.ExtensionSnapshots) != 0 || !strings.Contains(model.request.Profile.SystemPrompt, toolLoopSynthesisGuidance) {
 		t.Fatalf("budget-exhausted request retained tools or omitted synthesis guidance: %+v", model.request)
+	}
+	directiveRaw, _ := json.Marshal(store.directive)
+	if !strings.Contains(string(directiveRaw), `"finalization_reason":"tool_budget_exhausted"`) {
+		t.Fatalf("tool-budget finalization intent was not persisted in the dispatch directive: %s", directiveRaw)
 	}
 }
 

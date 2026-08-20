@@ -20,6 +20,7 @@ type timeoutTurnModel struct {
 
 type budgetBlockingTurnModel struct {
 	streamCalls int
+	requests    []ModelRunRequest
 }
 
 type failingTurnModel struct {
@@ -42,8 +43,12 @@ func (*budgetBlockingTurnModel) Run(context.Context, ModelRunRequest) (ModelRunR
 	return ModelRunResult{}, errors.New("non-streaming model path must not be used")
 }
 
-func (m *budgetBlockingTurnModel) Stream(ctx context.Context, _ ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
+func (m *budgetBlockingTurnModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
 	m.streamCalls++
+	m.requests = append(m.requests, request)
+	if m.streamCalls > 1 {
+		return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", CreatedAt: time.Now().UTC()}}, nil
+	}
 	<-ctx.Done()
 	return ModelRunResult{}, ctx.Err()
 }
@@ -114,13 +119,14 @@ func TestExecuteTurnClassifiesProviderTimeoutWithoutReplay(t *testing.T) {
 
 	service.executeTurn(context.Background(), turn.ID)
 
-	if store.turn.State != TurnFailed || store.failedCode != modelResponseTimeoutCode || store.failedSummary != modelResponseTimeoutSummary {
+	if store.turn.State != TurnCompleted || store.turn.Response == nil {
 		t.Fatalf("terminal turn=%+v code=%q summary=%q", store.turn, store.failedCode, store.failedSummary)
 	}
-	if store.uncertainCode != modelResponseTimeoutCode || store.uncertainSummary != modelResponseTimeoutSummary {
-		t.Fatalf("durable uncertain code=%q summary=%q", store.uncertainCode, store.uncertainSummary)
+	assertUsefulTerminalMarkdown(t, store.turn, "")
+	if store.turn.TerminalCode != modelResponseTimeoutCode || store.turn.TerminalSummary != modelResponseTimeoutSummary {
+		t.Fatalf("durable finalization code=%q summary=%q", store.turn.TerminalCode, store.turn.TerminalSummary)
 	}
-	if model.runCalls != 0 || model.streamCalls != 1 {
+	if model.runCalls != 0 || model.streamCalls != 2 {
 		t.Fatalf("model Run calls=%d Stream calls=%d", model.runCalls, model.streamCalls)
 	}
 }
@@ -161,13 +167,14 @@ func TestExecuteTurnPersistsPreciseModelFailureClassification(t *testing.T) {
 
 			service.executeTurn(context.Background(), turn.ID)
 
-			if store.turn.State != TurnFailed || store.failedCode != test.code || store.failedSummary != test.summary {
+			if store.turn.State != TurnCompleted || store.turn.Response == nil {
 				t.Fatalf("terminal turn=%+v code=%q summary=%q", store.turn, store.failedCode, store.failedSummary)
 			}
-			if store.uncertainCode != test.code || store.uncertainSummary != test.summary || store.dispatchState != "uncertain" {
-				t.Fatalf("dispatch=%q code=%q summary=%q", store.dispatchState, store.uncertainCode, store.uncertainSummary)
+			assertUsefulTerminalMarkdown(t, store.turn, "")
+			if store.turn.TerminalCode != test.code || store.turn.TerminalSummary != test.summary {
+				t.Fatalf("durable finalization code=%q summary=%q", store.turn.TerminalCode, store.turn.TerminalSummary)
 			}
-			if model.runCalls != 0 || model.streamCalls != 1 {
+			if model.runCalls != 0 || model.streamCalls != 2 {
 				t.Fatalf("model Run calls=%d Stream calls=%d", model.runCalls, model.streamCalls)
 			}
 		})
@@ -209,14 +216,20 @@ func TestExecuteTurnAppliesPersistedModelActiveDurationBudget(t *testing.T) {
 
 	service.executeTurn(context.Background(), turn.ID)
 
-	if store.turn.State != TurnFailed || store.failedCode != modelBudgetExhaustedCode || store.failedSummary != modelBudgetExhaustedSummary {
+	if store.turn.State != TurnCompleted || store.turn.Response == nil {
 		t.Fatalf("terminal turn=%+v code=%q summary=%q", store.turn, store.failedCode, store.failedSummary)
 	}
-	if store.uncertainCode != modelBudgetExhaustedCode || store.uncertainSummary != modelBudgetExhaustedSummary {
-		t.Fatalf("durable uncertain code=%q summary=%q", store.uncertainCode, store.uncertainSummary)
+	if store.turn.Response.Message.Content != "final answer" {
+		t.Fatalf("terminal response=%q", store.turn.Response.Message.Content)
 	}
-	if model.streamCalls != 1 {
+	if store.turn.TerminalCode != modelBudgetExhaustedCode || store.turn.TerminalSummary != modelBudgetExhaustedSummary {
+		t.Fatalf("durable finalization code=%q summary=%q", store.turn.TerminalCode, store.turn.TerminalSummary)
+	}
+	if model.streamCalls != 2 {
 		t.Fatalf("model Stream calls=%d", model.streamCalls)
+	}
+	if request := model.requests[1]; len(request.Intrinsics) != 0 || len(request.Extensions) != 0 || len(request.ExtensionSnapshots) != 0 {
+		t.Fatalf("finalization request retained tools: %+v", request)
 	}
 }
 

@@ -235,7 +235,13 @@ dispatch remains `provider_uncertain`. Before any text, reasoning, or tool-call
 delta is visible, one physical retry is allowed only for 408, 429, 502, 503,
 504, or a confirmed dial failure. `Retry-After` seconds and HTTP dates are
 honored up to 30 seconds; other transport failures and all post-output failures
-are never replayed.
+are never replayed. Once ordinary provider work stops because of one of these
+classifications, invalid or empty terminal output, no-progress tool use, or an
+ordinary model/tool budget, Core persists a versioned finalization intent. The
+intent admits one separate tools-disabled provider attempt with a 30-second
+deadline and no retry. It does not consume the ordinary active-time budget. A
+provider dispatch already started under that intent is never replayed after
+restart.
 
 An accepted or running durable turn may receive revision-fenced same-turn
 guidance. A confirmation-waiting turn also accepts guidance after its Cloud
@@ -457,11 +463,24 @@ lease fence. Tool-budget and no-progress finalization outrank a prior
 correctable-tool force so correction cannot suppress terminal synthesis. A Native
 conversation turn retains a 24-physical-attempt, 20-minute cumulative
 model-active fuse; tool, Worker, and confirmation execution or waiting do not
-consume that clock. Exhaustion is a
-durable `model_budget_exhausted` terminal outcome. Other background Tasks keep
-their own execution deadline/context. The nonnegative round ordinal remains
-the current replay identity. Core v1 does not expose Eino graphs as a
-user-authored workflow surface.
+consume that clock. A durable finalization intent may reserve one additional
+physical attempt, so the ledger permits sequence 25 without changing the
+ordinary 24-attempt fuse. The finalization attempt has no intrinsic tools,
+extensions, extension snapshots, or forced tool; uses an independent 30-second
+deadline; never retries; and is not added to ordinary model-active time. Intent
+persistence before dispatch allows one attempt after restart. Persistence of a
+finalization dispatch directive is the no-replay boundary: a started,
+dispatched, or uncertain final attempt instead completes through deterministic
+fallback. A valid final response is committed normally. Provider failure,
+invalid/empty output, or a tool call from the final attempt produces a bounded
+four-section Markdown response that preserves durable partial deltas and the
+existing task, plan, reference, tool-summary, and tool-result projections.
+Completed fallback is emitted through the normal `done` response, not a failed
+turn. Integrity, authorization, persistence, revision/runtime-snapshot, and
+unknown external-side-effect failures remain terminal failures. Other
+background Tasks keep their own execution deadline/context. The nonnegative
+round ordinal remains the current replay identity. Core v1 does not expose Eino
+graphs as a user-authored workflow surface.
 
 A provider-declared output limit is a completed fragment, not an unknown
 transport outcome. Core persists its streamed text and reasoning, releases the

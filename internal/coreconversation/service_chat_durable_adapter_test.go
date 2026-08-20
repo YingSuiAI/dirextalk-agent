@@ -129,6 +129,32 @@ func TestChatUsesAuthoritativeDurableTurnTerminalResponse(t *testing.T) {
 	}
 }
 
+func TestStreamChatProjectsCompletedFinalizationAsDoneMarkdown(t *testing.T) {
+	const markdown = "## Completed work\n\n- Preserved durable output.\n\n## Best conclusion\n\n- Best available answer.\n\n## Incomplete items\n\n- Full synthesis unavailable.\n\n## Stop reason\n\n- `provider_timeout`: provider stopped"
+	store := &terminalChatAdapterStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore()},
+		state:                 TurnCompleted,
+		code:                  modelResponseTimeoutCode,
+		summary:               modelResponseTimeoutSummary,
+		content:               markdown,
+	}
+	service, err := NewService(store, &fakeModel{}, noopExtensions{}, durableAdapterProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := service.StreamChat(context.Background(), command())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminal StreamEvent
+	for event := range stream {
+		terminal = event
+	}
+	if terminal.Kind != EventDone || terminal.Response == nil || terminal.Response.Message.Content != markdown || terminal.ErrCode != "" || terminal.ErrSummary != "" {
+		t.Fatalf("terminal=%+v", terminal)
+	}
+}
+
 func TestChatSharesDurableTurnBudgetFailure(t *testing.T) {
 	store := &terminalChatAdapterStore{
 		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore()},

@@ -104,7 +104,7 @@ func (s *attemptTurnStore) ValidateTurnRuntime(_ context.Context, _ TurnLease, r
 func (s *attemptTurnStore) MarkTurnModelRetryable(_ context.Context, _ TurnLease, failure ModelAttemptFailure) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.dispatchState != "dispatched" || s.retryable || failure.Validate() != nil {
+	if s.dispatchState != "dispatched" || s.retryable || s.directive.FinalizationReason != "" || failure.Validate() != nil {
 		return ErrConflict
 	}
 	s.retryFailures = append(s.retryFailures, failure)
@@ -119,7 +119,7 @@ func (s *attemptTurnStore) PrepareTurnModelRetry(context.Context, TurnLease) (Tu
 	if s.turn.ModelDispatchCount >= MaxTurnModelDispatches {
 		return Turn{}, ErrModelBudgetExhausted
 	}
-	if !s.retryable {
+	if !s.retryable || s.directive.FinalizationReason != "" {
 		return Turn{}, ErrConflict
 	}
 	s.retryable = false
@@ -189,8 +189,11 @@ func TestTurnDoesNotRetryAfterVisibleDelta(t *testing.T) {
 			model := &retrySequenceModel{outcomes: []retryModelOutcome{{delta: &delta, err: connectFailure}, {}}}
 			service, store, turn := newAttemptTurnService(t, model)
 			service.executeTurn(context.Background(), turn.ID)
-			if model.callCount() != 1 || store.turn.ModelDispatchCount != 1 || len(store.retryFailures) != 0 {
+			if model.callCount() != 2 || store.turn.ModelDispatchCount != 2 || len(store.retryFailures) != 0 {
 				t.Fatalf("calls=%d attempts=%d retry_failures=%+v", model.callCount(), store.turn.ModelDispatchCount, store.retryFailures)
+			}
+			if request := model.requests[1]; len(request.Intrinsics) != 0 || len(request.Extensions) != 0 || len(request.ExtensionSnapshots) != 0 {
+				t.Fatalf("finalization request retained tools: %+v", request)
 			}
 		})
 	}
@@ -201,8 +204,11 @@ func TestTurnRetriesAtMostOnce(t *testing.T) {
 	model := &retrySequenceModel{outcomes: []retryModelOutcome{{err: connectFailure}, {err: connectFailure}, {}}}
 	service, store, turn := newAttemptTurnService(t, model)
 	service.executeTurn(context.Background(), turn.ID)
-	if model.callCount() != 2 || store.turn.ModelDispatchCount != 2 || len(store.retryFailures) != 1 || len(store.uncertain) != 1 {
+	if model.callCount() != 3 || store.turn.ModelDispatchCount != 3 || len(store.retryFailures) != 1 || store.turn.State != TurnCompleted {
 		t.Fatalf("calls=%d attempts=%d retry=%d uncertain=%d", model.callCount(), store.turn.ModelDispatchCount, len(store.retryFailures), len(store.uncertain))
+	}
+	if request := model.requests[2]; len(request.Intrinsics) != 0 || len(request.Extensions) != 0 || len(request.ExtensionSnapshots) != 0 {
+		t.Fatalf("finalization request retained tools: %+v", request)
 	}
 }
 
@@ -212,8 +218,11 @@ func TestTurnRetryCannotExceedPhysicalAttemptBudget(t *testing.T) {
 	service, store, turn := newAttemptTurnService(t, model)
 	store.turn.ModelDispatchCount = MaxTurnModelDispatches - 1
 	service.executeTurn(context.Background(), turn.ID)
-	if model.callCount() != 1 || store.turn.ModelDispatchCount != MaxTurnModelDispatches {
+	if model.callCount() != 2 || store.turn.ModelDispatchCount != MaxTurnModelDispatches+MaxTurnFinalizationDispatches || store.turn.State != TurnCompleted {
 		t.Fatalf("calls=%d attempts=%d", model.callCount(), store.turn.ModelDispatchCount)
+	}
+	if request := model.requests[1]; len(request.Intrinsics) != 0 || len(request.Extensions) != 0 || len(request.ExtensionSnapshots) != 0 {
+		t.Fatalf("finalization request retained tools: %+v", request)
 	}
 }
 

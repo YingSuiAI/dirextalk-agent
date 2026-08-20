@@ -636,10 +636,28 @@ func (s *CoreConversationStore) PrepareTurnModel(ctx context.Context, lease core
 	var attempt uint32
 	var dispatchEpoch uint64
 	var started time.Time
-	err = tx.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,model_dispatch_count=model_dispatch_count+1,model_dispatch_started_at=clock_timestamp(),updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='' AND model_dispatch_count < $4 AND model_active_milliseconds < $5 AND revision=$6 RETURNING turn_id,model_dispatch_count,dispatch_epoch,model_dispatch_started_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch, core.MaxTurnModelDispatches, core.MaxTurnModelActiveDuration.Milliseconds(), lease.Turn.Revision).Scan(&out.ID, &attempt, &dispatchEpoch, &started)
+	finalizing := directive.FinalizationReason != ""
+	maxDispatches := core.MaxTurnModelDispatches
+	if finalizing {
+		maxDispatches += core.MaxTurnFinalizationDispatches
+	}
+	err = tx.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,
+		model_dispatch_count=model_dispatch_count+1,model_dispatch_started_at=clock_timestamp(),updated_at=clock_timestamp()
+		WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state=''
+		AND model_dispatch_count < $4 AND ($7 OR model_active_milliseconds < $5) AND revision=$6
+		AND (NOT $7 OR EXISTS (SELECT 1 FROM core_conversation_turn_finalizations f
+			WHERE f.turn_id=core_conversation_turns.turn_id AND f.turn_revision=core_conversation_turns.revision
+			AND f.owner_id=core_conversation_turns.owner_id AND f.account_generation=core_conversation_turns.account_generation
+			AND f.reason=$8))
+		AND (NOT $7 OR NOT EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
+			WHERE d.turn_id=core_conversation_turns.turn_id AND d.directive_json ? 'finalization_reason'))
+		RETURNING turn_id,model_dispatch_count,dispatch_epoch,model_dispatch_started_at`,
+		lease.Turn.ID, lease.LeaseID, lease.Epoch, maxDispatches, core.MaxTurnModelActiveDuration.Milliseconds(),
+		lease.Turn.Revision, finalizing, string(directive.FinalizationReason)).Scan(&out.ID, &attempt, &dispatchEpoch, &started)
 	if err != nil {
 		current, getErr := s.GetTurn(ctx, lease.Turn.ID)
-		if getErr == nil && (current.ModelDispatchCount >= core.MaxTurnModelDispatches || current.ModelActiveDuration >= core.MaxTurnModelActiveDuration) {
+		if getErr == nil && ((!finalizing && (current.ModelDispatchCount >= core.MaxTurnModelDispatches || current.ModelActiveDuration >= core.MaxTurnModelActiveDuration)) ||
+			(finalizing && current.ModelDispatchCount >= core.MaxTurnModelDispatches+core.MaxTurnFinalizationDispatches)) {
 			return core.Turn{}, core.ErrModelBudgetExhausted
 		}
 		return core.Turn{}, core.ErrConflict
@@ -705,6 +723,142 @@ func (s *CoreConversationStore) LoadTurnModelDirective(ctx context.Context, leas
 	return directive, nil
 }
 
+func (s *CoreConversationStore) PrepareTurnFinalization(ctx context.Context, lease core.TurnLease, intent core.TurnFinalizationIntent, failure *core.ModelAttemptFailure) error {
+	if uuid.Validate(lease.Turn.ID) != nil || uuid.Validate(lease.LeaseID) != nil || lease.Epoch == 0 ||
+		lease.Turn.Revision == 0 || intent.Validate() != nil || failure != nil && failure.Validate() != nil {
+		return core.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var ownerID, state, dispatchState, leaseID, terminalCode, terminalSummary string
+	var accountGeneration, revision, leaseEpoch, dispatchEpoch uint64
+	var modelDispatchCount uint32
+	var modelDispatchStartedAt *time.Time
+	err = tx.QueryRow(ctx, `SELECT owner_id,account_generation,revision,state,COALESCE(lease_id::text,''),lease_epoch,
+		dispatch_state,dispatch_epoch,model_dispatch_count,model_dispatch_started_at,terminal_code,terminal_summary
+		FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, lease.Turn.ID).
+		Scan(&ownerID, &accountGeneration, &revision, &state, &leaseID, &leaseEpoch, &dispatchState, &dispatchEpoch,
+			&modelDispatchCount, &modelDispatchStartedAt, &terminalCode, &terminalSummary)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.ErrConflict
+	}
+	if err != nil {
+		return err
+	}
+	if state != string(core.TurnRunning) || leaseID != lease.LeaseID || leaseEpoch != lease.Epoch ||
+		revision != lease.Turn.Revision || ownerID != lease.Turn.OwnerID || accountGeneration != lease.Turn.AccountGeneration {
+		return core.ErrConflict
+	}
+	inserted, err := tx.Exec(ctx, `INSERT INTO core_conversation_turn_finalizations(
+		turn_id,owner_id,account_generation,turn_revision,intent_version,reason,created_at)
+		VALUES($1,$2,$3,$4,$5,$6,clock_timestamp()) ON CONFLICT (turn_id,turn_revision) DO NOTHING`,
+		lease.Turn.ID, ownerID, accountGeneration, revision, intent.Version, string(intent.Reason))
+	if err != nil {
+		return err
+	}
+	newIntent := inserted.RowsAffected() == 1
+	if !newIntent {
+		var storedVersion int
+		var storedReason string
+		if err = tx.QueryRow(ctx, `SELECT intent_version,reason FROM core_conversation_turn_finalizations
+			WHERE turn_id=$1 AND turn_revision=$2 AND owner_id=$3 AND account_generation=$4`,
+			lease.Turn.ID, revision, ownerID, accountGeneration).Scan(&storedVersion, &storedReason); err != nil ||
+			storedVersion != intent.Version || storedReason != string(intent.Reason) {
+			return core.ErrConflict
+		}
+	}
+	if failure != nil {
+		switch dispatchState {
+		case "dispatched":
+			if modelDispatchStartedAt == nil || modelDispatchCount == 0 || dispatchEpoch == 0 {
+				return core.ErrConflict
+			}
+			attempt, updateErr := tx.Exec(ctx, `UPDATE core_conversation_model_attempts a SET state='uncertain',failure_code=$4,
+				rate_limited=$5,retry_after_ms=$6,finished_at=clock_timestamp()
+				WHERE a.turn_id=$1 AND a.attempt_sequence=$2 AND a.dispatch_epoch=$3 AND a.state='dispatched'
+				AND (($7 AND NOT EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
+					WHERE d.turn_id=a.turn_id AND d.attempt_sequence=a.attempt_sequence AND d.dispatch_epoch=a.dispatch_epoch
+					AND d.directive_json ? 'finalization_reason'))
+				OR (NOT $7 AND EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
+					WHERE d.turn_id=a.turn_id AND d.attempt_sequence=a.attempt_sequence AND d.dispatch_epoch=a.dispatch_epoch
+					AND d.directive_json->>'finalization_reason'=$8)))`,
+				lease.Turn.ID, modelDispatchCount, dispatchEpoch, failure.Code, failure.RateLimited, failure.RetryAfterMS,
+				newIntent, string(intent.Reason))
+			if updateErr != nil {
+				return updateErr
+			}
+			if attempt.RowsAffected() != 1 {
+				return core.ErrConflict
+			}
+			nextState, nextDispatchState := string(core.TurnRunning), "uncertain"
+			var nextLeaseID any = lease.LeaseID
+			var nextLeaseExpiry any = lease.ExpiresAt
+			if newIntent {
+				nextState, nextDispatchState = string(core.TurnAccepted), ""
+				nextLeaseID, nextLeaseExpiry = nil, nil
+			}
+			turnUpdate, updateErr := tx.Exec(ctx, `UPDATE core_conversation_turns SET state=$6,dispatch_state=$7,
+				terminal_code=$2,terminal_summary=$3,
+				model_active_milliseconds=model_active_milliseconds+CASE WHEN $10 THEN GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (clock_timestamp()-model_dispatch_started_at))*1000))::bigint ELSE 0 END,
+				model_dispatch_started_at=NULL,lease_id=$8,lease_expires_at=$9,updated_at=clock_timestamp()
+				WHERE turn_id=$1 AND lease_id=$4 AND lease_epoch=$5 AND state='running' AND dispatch_state='dispatched'`,
+				lease.Turn.ID, failure.Code, failure.Summary, lease.LeaseID, lease.Epoch,
+				nextState, nextDispatchState, nextLeaseID, nextLeaseExpiry, newIntent)
+			if updateErr != nil {
+				return updateErr
+			}
+			if turnUpdate.RowsAffected() != 1 {
+				return core.ErrConflict
+			}
+		case "uncertain":
+			if newIntent || terminalCode != failure.Code || terminalSummary != failure.Summary {
+				return core.ErrConflict
+			}
+		default:
+			return core.ErrConflict
+		}
+	} else if newIntent {
+		if dispatchState != "" && dispatchState != "completed" && !(dispatchState == "dispatched" && modelDispatchStartedAt == nil) {
+			return core.ErrConflict
+		}
+		turnUpdate, updateErr := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',dispatch_state='',
+			dispatch_result_json=NULL,lease_id=NULL,lease_expires_at=NULL,updated_at=clock_timestamp()
+			WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running'`, lease.Turn.ID, lease.LeaseID, lease.Epoch)
+		if updateErr != nil {
+			return updateErr
+		}
+		if turnUpdate.RowsAffected() != 1 {
+			return core.ErrConflict
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *CoreConversationStore) LoadTurnFinalization(ctx context.Context, id string) (core.TurnFinalizationIntent, bool, error) {
+	if uuid.Validate(id) != nil {
+		return core.TurnFinalizationIntent{}, false, core.ErrInvalid
+	}
+	var intent core.TurnFinalizationIntent
+	err := s.pool.QueryRow(ctx, `SELECT f.intent_version,f.reason
+		FROM core_conversation_turn_finalizations f
+		JOIN core_conversation_turns t ON t.turn_id=f.turn_id AND t.revision=f.turn_revision
+		WHERE f.turn_id=$1 AND f.owner_id=t.owner_id AND f.account_generation=t.account_generation`, id).
+		Scan(&intent.Version, &intent.Reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.TurnFinalizationIntent{}, false, nil
+	}
+	if err != nil {
+		return core.TurnFinalizationIntent{}, false, err
+	}
+	if intent.Validate() != nil {
+		return core.TurnFinalizationIntent{}, false, core.ErrConflict
+	}
+	return intent, true, nil
+}
+
 func (s *CoreConversationStore) MarkTurnModelRetryable(ctx context.Context, lease core.TurnLease, failure core.ModelAttemptFailure) error {
 	if failure.Validate() != nil {
 		return core.ErrInvalid
@@ -714,7 +868,11 @@ func (s *CoreConversationStore) MarkTurnModelRetryable(ctx context.Context, leas
 		return err
 	}
 	defer tx.Rollback(ctx)
-	result, err := tx.Exec(ctx, `UPDATE core_conversation_model_attempts SET state='retryable',failure_code=$2,rate_limited=$3,retry_after_ms=$4,finished_at=clock_timestamp() WHERE turn_id=$1 AND state='dispatched' AND lease_id=$5 AND lease_epoch <= $6 AND runtime_snapshot_json IS NOT NULL`, lease.Turn.ID, failure.Code, failure.RateLimited, failure.RetryAfterMS, lease.LeaseID, lease.Epoch)
+	result, err := tx.Exec(ctx, `UPDATE core_conversation_model_attempts a SET state='retryable',failure_code=$2,rate_limited=$3,retry_after_ms=$4,finished_at=clock_timestamp()
+		WHERE a.turn_id=$1 AND a.state='dispatched' AND a.lease_id=$5 AND a.lease_epoch <= $6 AND a.runtime_snapshot_json IS NOT NULL
+		AND NOT EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
+			WHERE d.turn_id=a.turn_id AND d.attempt_sequence=a.attempt_sequence AND d.dispatch_epoch=a.dispatch_epoch
+			AND d.directive_json ? 'finalization_reason')`, lease.Turn.ID, failure.Code, failure.RateLimited, failure.RetryAfterMS, lease.LeaseID, lease.Epoch)
 	if err != nil || result.RowsAffected() != 1 {
 		return core.ErrConflict
 	}
@@ -762,7 +920,15 @@ func (s *CoreConversationStore) PrepareTurnModelRetry(ctx context.Context, lease
 	var attempt uint32
 	var dispatchEpoch uint64
 	var started time.Time
-	err = tx.QueryRow(ctx, `UPDATE core_conversation_turns SET model_dispatch_count=model_dispatch_count+1,model_dispatch_started_at=clock_timestamp(),updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NULL AND model_dispatch_count < $4 AND model_active_milliseconds < $5 AND EXISTS (SELECT 1 FROM core_conversation_model_attempts a WHERE a.turn_id=$1 AND a.attempt_sequence=core_conversation_turns.model_dispatch_count AND a.state='retryable') RETURNING model_dispatch_count,dispatch_epoch,model_dispatch_started_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch, core.MaxTurnModelDispatches, core.MaxTurnModelActiveDuration.Milliseconds()).Scan(&attempt, &dispatchEpoch, &started)
+	err = tx.QueryRow(ctx, `UPDATE core_conversation_turns SET model_dispatch_count=model_dispatch_count+1,model_dispatch_started_at=clock_timestamp(),updated_at=clock_timestamp()
+		WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='dispatched'
+		AND model_dispatch_started_at IS NULL AND model_dispatch_count < $4 AND model_active_milliseconds < $5
+		AND EXISTS (SELECT 1 FROM core_conversation_model_attempts a
+			WHERE a.turn_id=$1 AND a.attempt_sequence=core_conversation_turns.model_dispatch_count AND a.state='retryable'
+			AND NOT EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
+				WHERE d.turn_id=a.turn_id AND d.attempt_sequence=a.attempt_sequence AND d.dispatch_epoch=a.dispatch_epoch
+				AND d.directive_json ? 'finalization_reason'))
+		RETURNING model_dispatch_count,dispatch_epoch,model_dispatch_started_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch, core.MaxTurnModelDispatches, core.MaxTurnModelActiveDuration.Milliseconds()).Scan(&attempt, &dispatchEpoch, &started)
 	if err != nil {
 		current, getErr := s.GetTurn(ctx, lease.Turn.ID)
 		if getErr == nil && (current.ModelDispatchCount >= core.MaxTurnModelDispatches || current.ModelActiveDuration >= core.MaxTurnModelActiveDuration) {
@@ -825,7 +991,14 @@ func (s *CoreConversationStore) RecordTurnModelResult(ctx context.Context, lease
 	if err != nil || command.RowsAffected() != 1 {
 		return core.ErrConflict
 	}
-	command, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_state='completed',dispatch_result_json=$2,model_active_milliseconds=model_active_milliseconds+GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (clock_timestamp()-model_dispatch_started_at))*1000))::bigint,model_dispatch_started_at=NULL,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$3 AND lease_epoch=$4 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NOT NULL`, lease.Turn.ID, raw, lease.LeaseID, lease.Epoch)
+	command, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET dispatch_state='completed',dispatch_result_json=$2,
+		model_active_milliseconds=model_active_milliseconds+CASE WHEN EXISTS (
+			SELECT 1 FROM core_conversation_model_dispatch_directives d
+			WHERE d.turn_id=core_conversation_turns.turn_id AND d.attempt_sequence=core_conversation_turns.model_dispatch_count
+			AND d.dispatch_epoch=core_conversation_turns.dispatch_epoch AND d.directive_json ? 'finalization_reason'
+		) THEN 0 ELSE GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (clock_timestamp()-model_dispatch_started_at))*1000))::bigint END,
+		model_dispatch_started_at=NULL,updated_at=clock_timestamp()
+		WHERE turn_id=$1 AND lease_id=$3 AND lease_epoch=$4 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NOT NULL`, lease.Turn.ID, raw, lease.LeaseID, lease.Epoch)
 	if err != nil {
 		return err
 	}

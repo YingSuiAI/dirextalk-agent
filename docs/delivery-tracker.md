@@ -420,6 +420,15 @@ support.
   behavior. Focused PostgreSQL 18 + pgvector tests exercised Chat, StreamChat,
   and StartTurn through the same persisted cancellation and precharged model
   budget terminals (`canceled` and `model_budget_exhausted`).
+- On **2026-08-20**, Native-turn terminal finalization replaced ordinary
+  provider/budget/no-progress failed terminals with one persisted, independent,
+  tools-disabled final provider attempt and deterministic four-section Markdown
+  fallback. The ordinary fuse remains 24 dispatches and 20 minutes; migration
+  25 permits only the separately fenced sequence 25 and persists immutable
+  finalization intent. Focused Core and PostgreSQL 18 + pgvector tests cover
+  provider/invalid-output fallback, durable partial preservation, dispatch and
+  active-time exhaustion, intent-before-dispatch restart, and no replay after a
+  final dispatch has started.
 - On **2026-08-20**, the Agent pinned `dirextalk-capability-api v1.2.0` and
   recognized its generated `agent:servers:read`, `agent:servers:write`, and
   `agent:servers:destroy` scopes. Focused descriptor, HTTP catalog, typed

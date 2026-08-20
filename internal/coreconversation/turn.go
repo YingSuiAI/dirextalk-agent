@@ -347,6 +347,51 @@ type TurnDispatchStore interface {
 	MarkTurnModelUncertain(context.Context, TurnLease, string, string) error
 }
 
+const TurnFinalizationIntentVersion = 1
+
+type TurnFinalizationReason string
+
+const (
+	TurnFinalizationToolLoop      TurnFinalizationReason = "tool_loop_no_progress"
+	TurnFinalizationToolBudget    TurnFinalizationReason = "tool_budget_exhausted"
+	TurnFinalizationModelBudget   TurnFinalizationReason = "model_budget_exhausted"
+	TurnFinalizationProvider      TurnFinalizationReason = "provider_failure"
+	TurnFinalizationInvalidOutput TurnFinalizationReason = "invalid_terminal_output"
+)
+
+// TurnFinalizationIntent is the durable decision that an ordinary accepted
+// turn must stop autonomous work and converge on one useful terminal response.
+// It does not expand the admitted runtime and is immutable once persisted.
+type TurnFinalizationIntent struct {
+	Version int                    `json:"version"`
+	Reason  TurnFinalizationReason `json:"reason"`
+}
+
+func NewTurnFinalizationIntent(reason TurnFinalizationReason) TurnFinalizationIntent {
+	return TurnFinalizationIntent{Version: TurnFinalizationIntentVersion, Reason: reason}
+}
+
+func (i TurnFinalizationIntent) Validate() error {
+	if i.Version != TurnFinalizationIntentVersion {
+		return ErrInvalid
+	}
+	switch i.Reason {
+	case TurnFinalizationToolLoop, TurnFinalizationToolBudget, TurnFinalizationModelBudget,
+		TurnFinalizationProvider, TurnFinalizationInvalidOutput:
+		return nil
+	default:
+		return ErrInvalid
+	}
+}
+
+// TurnFinalizationStore persists finalization before a final provider dispatch
+// or deterministic fallback. When failure is non-nil, the active provider
+// attempt and the intent are classified in the same transaction.
+type TurnFinalizationStore interface {
+	PrepareTurnFinalization(context.Context, TurnLease, TurnFinalizationIntent, *ModelAttemptFailure) error
+	LoadTurnFinalization(context.Context, string) (TurnFinalizationIntent, bool, error)
+}
+
 type ModelAttemptFailure struct {
 	Code         string
 	Summary      string
@@ -376,10 +421,11 @@ const (
 // immutable capability envelope; a directive can add bounded loop guidance,
 // force one admitted tool, or remove every tool for final synthesis.
 type TurnDispatchDirective struct {
-	Version        int                  `json:"version"`
-	Guidance       TurnDispatchGuidance `json:"guidance"`
-	ToolMode       TurnDispatchToolMode `json:"tool_mode"`
-	ForcedToolName string               `json:"forced_tool_name,omitempty"`
+	Version            int                    `json:"version"`
+	Guidance           TurnDispatchGuidance   `json:"guidance"`
+	ToolMode           TurnDispatchToolMode   `json:"tool_mode"`
+	ForcedToolName     string                 `json:"forced_tool_name,omitempty"`
+	FinalizationReason TurnFinalizationReason `json:"finalization_reason,omitempty"`
 }
 
 func NewTurnDispatchDirective(guidance TurnDispatchGuidance, toolMode TurnDispatchToolMode, forcedToolName string) TurnDispatchDirective {
@@ -410,6 +456,12 @@ func (d TurnDispatchDirective) ValidateFor(runtime TurnRuntimeSnapshot, extensio
 	}
 	if d.Guidance == TurnDispatchGuidanceLoopNudge && d.ForcedToolName != "" {
 		return ErrInvalid
+	}
+	if d.FinalizationReason != "" {
+		if NewTurnFinalizationIntent(d.FinalizationReason).Validate() != nil ||
+			d.ToolMode != TurnDispatchToolsNone || d.Guidance != TurnDispatchGuidanceLoopSynthesis {
+			return ErrInvalid
+		}
 	}
 	if d.ForcedToolName == "" {
 		return nil
