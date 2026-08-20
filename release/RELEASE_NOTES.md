@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.177
+
+1. Persist each model dispatch directive under the current Turn lease so loop guidance, forced admitted tools, and final synthesis survive retry and restart without expanding the frozen runtime.
+2. Route Chat and StreamChat through the same durable Turn execution owner as StartTurn, preserving ordered lifecycle replay while RPC disconnect only detaches observation.
+3. Adopt Agent Data Plane V2 server inventory scopes so correctly scoped owner tickets can discover server and artifact operations with typed missing-scope errors.
+
 ## v1.0.176
 
 1. Distinguish self-contained scheduled notes from Matrix and Web summaries, require successful external reads before claiming data is absent, return nonempty Markdown, and render Web citations as descriptive links.
