@@ -439,6 +439,14 @@ provider reservation; mismatch or a missing admission snapshot fails with
 `TURN_RUNTIME_INCOMPATIBLE`. Every physical provider attempt is then reserved
 in a durable fenced attempt ledger before HTTP dispatch, including the single
 allowed retry, and a retry copies the exact runtime snapshot. A Native
+turn's dynamic loop control is a separate versioned dispatch directive bound
+to the turn revision, dispatch epoch, lease identity, physical attempt, and
+admitted-runtime digest. A directive may add the fixed loop nudge, force one
+tool already present in the admitted envelope, or remove all tools for final
+synthesis; it cannot change or expand the admitted prompt or tool catalog.
+Retry copies the same directive, and restart reads it through the current
+lease fence. Tool-budget and no-progress finalization outrank a prior
+correctable-tool force so correction cannot suppress terminal synthesis. A Native
 conversation turn retains a 24-physical-attempt, 20-minute cumulative
 model-active fuse; tool, Worker, and confirmation execution or waiting do not
 consume that clock. Exhaustion is a

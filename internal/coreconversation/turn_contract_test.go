@@ -280,6 +280,7 @@ type readOnlyTurnStore struct {
 	steers          []TurnSteer
 	dispatchState   string
 	dispatch        ModelRunResult
+	directive       TurnDispatchDirective
 	failedCode      string
 	commitErr       error
 	commitCompletes bool
@@ -459,16 +460,26 @@ func (s *readOnlyTurnStore) TurnEventBounds(context.Context, string) (int64, int
 	return s.events[0].Sequence, s.events[len(s.events)-1].Sequence, nil
 }
 
-func (s *readOnlyTurnStore) PrepareTurnModel(context.Context, TurnLease) (Turn, error) {
+func (s *readOnlyTurnStore) PrepareTurnModel(_ context.Context, _ TurnLease, directive TurnDispatchDirective) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.turn.ModelDispatchCount >= MaxTurnModelDispatches || s.turn.ModelActiveDuration >= MaxTurnModelActiveDuration {
 		return Turn{}, ErrModelBudgetExhausted
 	}
 	s.dispatchState = "dispatched"
+	s.directive = directive
 	s.turn.ModelDispatchCount++
 	s.turn.ModelDispatchStartedAt = time.Now().UTC()
 	return s.turn, nil
+}
+
+func (s *readOnlyTurnStore) LoadTurnModelDirective(context.Context, TurnLease) (TurnDispatchDirective, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dispatchState != "dispatched" {
+		return TurnDispatchDirective{}, ErrConflict
+	}
+	return s.directive, nil
 }
 
 func (s *readOnlyTurnStore) LoadTurnModelResult(context.Context, string) (ModelRunResult, bool, error) {

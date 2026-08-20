@@ -1671,8 +1671,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			return
 		}
 	}
-	modelExtensions := resolvedExtensions
-	modelExtensionSnapshots := append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)
 	if turn.ExpectedRevision != nil {
 		expectedRevision := *turn.ExpectedRevision
 		if currentUserCommitted {
@@ -1787,73 +1785,47 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			seen[intrinsic.Tool.Name] = struct{}{}
 		}
 	}
-	modelIntrinsicTools := intrinsicTools
 	toolCallBudgetExhausted := len(toolCallAuthorities) >= MaxTurnToolCalls
-	if toolCallBudgetExhausted {
-		history.forcedToolName = ""
-	}
-	if toolCallBudgetExhausted || (history.loopRecovery == toolLoopSynthesize && history.forcedToolName == "") {
-		modelExtensions = nil
-		modelExtensionSnapshots = nil
-		modelIntrinsicTools = nil
-	}
 	profile := turn.ProfileSnapshot.Profile()
 	systemPrompt := appendSystemPrompt(profile.SystemPrompt, conversationConvergenceGuidance)
-	systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, modelExtensions)
-	if containsStaticSiteIntrinsic(modelIntrinsicTools) {
+	systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, resolvedExtensions)
+	if containsStaticSiteIntrinsic(intrinsicTools) {
 		systemPrompt = staticSiteSystemPrompt(systemPrompt)
 	}
-	if containsScheduleIntrinsic(modelIntrinsicTools) {
+	if containsScheduleIntrinsic(intrinsicTools) {
 		systemPrompt = scheduleSystemPrompt(systemPrompt)
 	}
-	if containsCloudWorkerIntrinsic(modelIntrinsicTools) {
+	if containsCloudWorkerIntrinsic(intrinsicTools) {
 		systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
 	}
-	if toolCallBudgetExhausted {
-		systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
-	} else if history.forcedToolName == "" {
-		switch history.loopRecovery {
-		case toolLoopNudge:
-			systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
-		case toolLoopSynthesize:
-			systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
-		}
+	runtimeSnapshot, snapshotErr := newTurnRuntimeSnapshot(systemPrompt, turn.ProfileSnapshot, intrinsicTools, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy)
+	if snapshotErr != nil {
+		_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
+		return
 	}
-	frozenModelRequest := ModelRunRequest{
-		Conversation: modelConversation,
-		Profile: ResolvedProfile{
-			ID:           profile.ID,
-			DisplayName:  profile.DisplayName,
-			Provider:     string(profile.Provider),
-			Model:        profile.Model,
-			SystemPrompt: systemPrompt,
-		},
-		Snapshot:              turn.ProfileSnapshot,
-		ProfileSnapshot:       turn.ProfileSnapshot,
-		ForcedToolName:        history.forcedToolName,
-		Intrinsics:            append([]ResolvedIntrinsic(nil), modelIntrinsicTools...),
-		Extensions:            modelExtensions,
-		ExtensionSnapshots:    modelExtensionSnapshots,
-		InputPartsByMessageID: inputParts,
-	}
-	var runtimeSnapshot TurnRuntimeSnapshot
 	if !replayed {
-		extensionDigest := TurnStartCommand{ExtensionSnapshots: modelExtensionSnapshots}.ExtensionSnapshotDigest()
-		var snapshotErr error
-		runtimeSnapshot, snapshotErr = newTurnRuntimeSnapshot(systemPrompt, turn.ProfileSnapshot, modelIntrinsicTools, extensionDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy)
-		if snapshotErr != nil {
-			_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
-			return
-		}
 		if validateErr := s.turns.ValidateTurnRuntime(ctx, lease, runtimeSnapshot); validateErr != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
 			return
 		}
 	}
+	directive := DefaultTurnDispatchDirective()
+	switch {
+	case toolCallBudgetExhausted || history.loopRecovery == toolLoopSynthesize:
+		directive = NewTurnDispatchDirective(TurnDispatchGuidanceLoopSynthesis, TurnDispatchToolsNone, "")
+	case history.forcedToolName != "":
+		directive = NewTurnDispatchDirective(TurnDispatchGuidanceNone, TurnDispatchToolsAdmitted, history.forcedToolName)
+	case history.loopRecovery == toolLoopNudge:
+		directive = NewTurnDispatchDirective(TurnDispatchGuidanceLoopNudge, TurnDispatchToolsAdmitted, "")
+	}
+	if directive.ValidateFor(runtimeSnapshot, turn.ExtensionSnapshots) != nil {
+		_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
+		return
+	}
 	modelCtx := child
 	modelCancel := func() {}
 	if durableDispatch && !replayed {
-		prepared, prepareErr := dispatchStore.PrepareTurnModel(ctx, lease)
+		prepared, prepareErr := dispatchStore.PrepareTurnModel(ctx, lease, directive)
 		if errors.Is(prepareErr, ErrModelBudgetExhausted) {
 			_, _ = s.turns.FailTurn(ctx, lease, modelBudgetExhaustedCode, modelBudgetExhaustedSummary)
 			return
@@ -1874,8 +1846,48 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			return
 		}
 		modelCtx, modelCancel = context.WithTimeout(child, remaining)
+		persistedDirective, loadErr := dispatchStore.LoadTurnModelDirective(ctx, lease)
+		if loadErr != nil || persistedDirective.Digest() != directive.Digest() {
+			_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
+			_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
+			return
+		}
+		directive = persistedDirective
 	}
 	defer modelCancel()
+	modelExtensions := resolvedExtensions
+	modelExtensionSnapshots := append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)
+	modelIntrinsicTools := intrinsicTools
+	forcedToolName := directive.ForcedToolName
+	switch directive.ToolMode {
+	case TurnDispatchToolsNone:
+		modelExtensions = nil
+		modelExtensionSnapshots = nil
+		modelIntrinsicTools = nil
+	}
+	switch directive.Guidance {
+	case TurnDispatchGuidanceLoopNudge:
+		systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
+	case TurnDispatchGuidanceLoopSynthesis:
+		systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
+	}
+	frozenModelRequest := ModelRunRequest{
+		Conversation: modelConversation,
+		Profile: ResolvedProfile{
+			ID:           profile.ID,
+			DisplayName:  profile.DisplayName,
+			Provider:     string(profile.Provider),
+			Model:        profile.Model,
+			SystemPrompt: systemPrompt,
+		},
+		Snapshot:              turn.ProfileSnapshot,
+		ProfileSnapshot:       turn.ProfileSnapshot,
+		ForcedToolName:        forcedToolName,
+		Intrinsics:            append([]ResolvedIntrinsic(nil), modelIntrinsicTools...),
+		Extensions:            modelExtensions,
+		ExtensionSnapshots:    modelExtensionSnapshots,
+		InputPartsByMessageID: inputParts,
+	}
 	if !replayed {
 		if attempts, ok := s.turns.(TurnModelAttemptStore); ok {
 			if bindErr := attempts.BindTurnModelRuntime(ctx, lease, runtimeSnapshot); bindErr != nil {

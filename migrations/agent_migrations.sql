@@ -2712,3 +2712,44 @@ CREATE INDEX core_server_artifacts_server_page_idx
 CREATE INDEX core_server_artifacts_server_cleanup_idx
     ON core_server_artifacts(owner_id,account_generation,server_id,deletion_state,artifact_id);
 -- dirextalk-agent migration end 000023_server_artifact_inventory.up.sql
+-- dirextalk-agent migration begin 000024_turn_dispatch_directives.up.sql
+-- Dynamic model-dispatch controls are recorded separately from the admitted
+-- immutable runtime snapshot. Repeated attempts retain their exact directive
+-- and capability-envelope digest across process restart and retry.
+CREATE TABLE core_conversation_model_dispatch_directives (
+    turn_id uuid NOT NULL,
+    attempt_sequence integer NOT NULL CHECK (attempt_sequence BETWEEN 1 AND 24),
+    owner_id text NOT NULL CHECK (length(owner_id) <= 512),
+    account_generation bigint NOT NULL CHECK (account_generation >= 0),
+    turn_revision bigint NOT NULL CHECK (turn_revision > 0),
+    dispatch_epoch bigint NOT NULL CHECK (dispatch_epoch > 0),
+    lease_id uuid NOT NULL,
+    lease_epoch bigint NOT NULL CHECK (lease_epoch > 0),
+    runtime_snapshot_digest char(64) NOT NULL CHECK (runtime_snapshot_digest ~ '^[a-f0-9]{64}$'),
+    directive_json jsonb NOT NULL CHECK (
+        jsonb_typeof(directive_json) = 'object'
+        AND directive_json ? 'version'
+        AND directive_json ? 'guidance'
+        AND directive_json ? 'tool_mode'
+        AND directive_json->>'version' = '1'
+        AND directive_json->>'guidance' IN ('none','loop_nudge','loop_synthesis')
+        AND directive_json->>'tool_mode' IN ('admitted','none')
+        AND pg_column_size(directive_json) <= 4096
+    ),
+    directive_digest char(64) NOT NULL CHECK (directive_digest ~ '^[a-f0-9]{64}$'),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (turn_id,attempt_sequence),
+    FOREIGN KEY (turn_id,attempt_sequence)
+        REFERENCES core_conversation_model_attempts(turn_id,attempt_sequence) ON DELETE RESTRICT,
+    CHECK ((owner_id = '' AND account_generation = 0) OR (owner_id <> '' AND account_generation > 0)),
+    CHECK (
+        (directive_json->>'tool_mode' = 'none'
+            AND directive_json->>'guidance' = 'loop_synthesis'
+            AND NOT (directive_json ? 'forced_tool_name'))
+        OR
+        (directive_json->>'tool_mode' = 'admitted'
+            AND directive_json->>'guidance' IN ('none','loop_nudge')
+            AND (directive_json->>'guidance' = 'none' OR NOT (directive_json ? 'forced_tool_name')))
+    )
+);
+-- dirextalk-agent migration end 000024_turn_dispatch_directives.up.sql

@@ -604,17 +604,39 @@ func (s *CoreConversationStore) RenewTurn(ctx context.Context, id, lease string,
 	return core.TurnLease{Turn: turn, LeaseID: lease, Epoch: next, ExpiresAt: newExp}, nil
 }
 
-func (s *CoreConversationStore) PrepareTurnModel(ctx context.Context, lease core.TurnLease) (core.Turn, error) {
+func (s *CoreConversationStore) PrepareTurnModel(ctx context.Context, lease core.TurnLease, directive core.TurnDispatchDirective) (core.Turn, error) {
+	if uuid.Validate(lease.Turn.ID) != nil || uuid.Validate(lease.LeaseID) != nil || lease.Epoch == 0 || lease.Turn.Revision == 0 {
+		return core.Turn{}, core.ErrInvalid
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return core.Turn{}, err
 	}
 	defer tx.Rollback(ctx)
+	var current core.Turn
+	if err = s.scanTurn(ctx, tx, lease.Turn.ID, &current); errors.Is(err, pgx.ErrNoRows) {
+		return core.Turn{}, core.ErrConflict
+	} else if err != nil {
+		return core.Turn{}, err
+	}
+	if current.RuntimeSnapshot == nil || lease.Turn.RuntimeSnapshot == nil ||
+		current.RequestID != lease.Turn.RequestID || current.OwnerID != lease.Turn.OwnerID || current.AccountGeneration != lease.Turn.AccountGeneration ||
+		current.ConversationID != lease.Turn.ConversationID || current.ProfileID != lease.Turn.ProfileID || current.Revision != lease.Turn.Revision ||
+		current.RuntimeSnapshot.Digest() != lease.Turn.RuntimeSnapshot.Digest() {
+		return core.Turn{}, core.ErrConflict
+	}
+	if directive.ValidateFor(*current.RuntimeSnapshot, current.ExtensionSnapshots) != nil {
+		return core.Turn{}, core.ErrInvalid
+	}
+	directiveRaw, err := json.Marshal(directive)
+	if err != nil {
+		return core.Turn{}, core.ErrInvalid
+	}
 	var out core.Turn
 	var attempt uint32
 	var dispatchEpoch uint64
 	var started time.Time
-	err = tx.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,model_dispatch_count=model_dispatch_count+1,model_dispatch_started_at=clock_timestamp(),updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='' AND model_dispatch_count < $4 AND model_active_milliseconds < $5 RETURNING turn_id,model_dispatch_count,dispatch_epoch,model_dispatch_started_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch, core.MaxTurnModelDispatches, core.MaxTurnModelActiveDuration.Milliseconds()).Scan(&out.ID, &attempt, &dispatchEpoch, &started)
+	err = tx.QueryRow(ctx, `UPDATE core_conversation_turns SET dispatch_state='dispatched',dispatch_epoch=dispatch_epoch+1,model_dispatch_count=model_dispatch_count+1,model_dispatch_started_at=clock_timestamp(),updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='' AND model_dispatch_count < $4 AND model_active_milliseconds < $5 AND revision=$6 RETURNING turn_id,model_dispatch_count,dispatch_epoch,model_dispatch_started_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch, core.MaxTurnModelDispatches, core.MaxTurnModelActiveDuration.Milliseconds(), lease.Turn.Revision).Scan(&out.ID, &attempt, &dispatchEpoch, &started)
 	if err != nil {
 		current, getErr := s.GetTurn(ctx, lease.Turn.ID)
 		if getErr == nil && (current.ModelDispatchCount >= core.MaxTurnModelDispatches || current.ModelActiveDuration >= core.MaxTurnModelActiveDuration) {
@@ -625,10 +647,62 @@ func (s *CoreConversationStore) PrepareTurnModel(ctx context.Context, lease core
 	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_model_attempts(turn_id,attempt_sequence,dispatch_epoch,lease_id,lease_epoch,state,started_at) VALUES($1,$2,$3,$4,$5,'dispatched',$6)`, lease.Turn.ID, attempt, dispatchEpoch, lease.LeaseID, lease.Epoch, started); err != nil {
 		return core.Turn{}, err
 	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_model_dispatch_directives(turn_id,attempt_sequence,owner_id,account_generation,turn_revision,dispatch_epoch,lease_id,lease_epoch,runtime_snapshot_digest,directive_json,directive_digest,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, lease.Turn.ID, attempt, current.OwnerID, current.AccountGeneration, current.Revision, dispatchEpoch, lease.LeaseID, lease.Epoch, current.RuntimeSnapshot.Digest(), directiveRaw, directive.Digest(), started); err != nil {
+		return core.Turn{}, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return core.Turn{}, err
 	}
 	return s.GetTurn(ctx, out.ID)
+}
+
+func (s *CoreConversationStore) LoadTurnModelDirective(ctx context.Context, lease core.TurnLease) (core.TurnDispatchDirective, error) {
+	if uuid.Validate(lease.Turn.ID) != nil || uuid.Validate(lease.LeaseID) != nil || lease.Epoch == 0 || lease.Turn.Revision == 0 {
+		return core.TurnDispatchDirective{}, core.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.TurnDispatchDirective{}, err
+	}
+	defer tx.Rollback(ctx)
+	var current core.Turn
+	if err = s.scanTurn(ctx, tx, lease.Turn.ID, &current); errors.Is(err, pgx.ErrNoRows) {
+		return core.TurnDispatchDirective{}, core.ErrConflict
+	} else if err != nil {
+		return core.TurnDispatchDirective{}, err
+	}
+	if current.RuntimeSnapshot == nil || lease.Turn.RuntimeSnapshot == nil ||
+		current.RequestID != lease.Turn.RequestID || current.OwnerID != lease.Turn.OwnerID || current.AccountGeneration != lease.Turn.AccountGeneration ||
+		current.ConversationID != lease.Turn.ConversationID || current.ProfileID != lease.Turn.ProfileID || current.Revision != lease.Turn.Revision ||
+		current.RuntimeSnapshot.Digest() != lease.Turn.RuntimeSnapshot.Digest() {
+		return core.TurnDispatchDirective{}, core.ErrConflict
+	}
+	var raw []byte
+	var directiveDigest, runtimeDigest string
+	err = tx.QueryRow(ctx, `SELECT d.directive_json,d.directive_digest,d.runtime_snapshot_digest
+		FROM core_conversation_model_dispatch_directives d
+		JOIN core_conversation_model_attempts a ON a.turn_id=d.turn_id AND a.attempt_sequence=d.attempt_sequence
+		JOIN core_conversation_turns t ON t.turn_id=d.turn_id
+		WHERE d.turn_id=$1 AND t.lease_id=$2 AND t.lease_epoch=$3 AND t.revision=$4
+		AND d.owner_id=t.owner_id AND d.account_generation=t.account_generation
+		AND t.state='running' AND t.dispatch_state='dispatched' AND t.dispatch_epoch=d.dispatch_epoch
+		AND t.runtime_snapshot_digest=d.runtime_snapshot_digest
+		AND a.state='dispatched' AND a.dispatch_epoch=d.dispatch_epoch
+		AND a.lease_id=d.lease_id AND a.lease_epoch=d.lease_epoch
+		AND d.turn_revision=t.revision`, lease.Turn.ID, lease.LeaseID, lease.Epoch, lease.Turn.Revision).Scan(&raw, &directiveDigest, &runtimeDigest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.TurnDispatchDirective{}, core.ErrConflict
+	} else if err != nil {
+		return core.TurnDispatchDirective{}, err
+	}
+	var directive core.TurnDispatchDirective
+	if json.Unmarshal(raw, &directive) != nil || directive.ValidateFor(*current.RuntimeSnapshot, current.ExtensionSnapshots) != nil || directive.Digest() != directiveDigest || current.RuntimeSnapshot.Digest() != runtimeDigest {
+		return core.TurnDispatchDirective{}, core.ErrTurnRuntimeIncompatible
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.TurnDispatchDirective{}, err
+	}
+	return directive, nil
 }
 
 func (s *CoreConversationStore) MarkTurnModelRetryable(ctx context.Context, lease core.TurnLease, failure core.ModelAttemptFailure) error {
@@ -660,7 +734,7 @@ func (s *CoreConversationStore) BindTurnModelRuntime(ctx context.Context, lease 
 		return core.ErrInvalid
 	}
 	digest := snapshot.Digest()
-	result, err := s.pool.Exec(ctx, `UPDATE core_conversation_model_attempts SET runtime_snapshot_json=$2,runtime_snapshot_digest=$3 WHERE turn_id=$1 AND state='dispatched' AND lease_id=$4 AND lease_epoch <= $5 AND runtime_snapshot_json IS NULL`, lease.Turn.ID, raw, digest, lease.LeaseID, lease.Epoch)
+	result, err := s.pool.Exec(ctx, `UPDATE core_conversation_model_attempts a SET runtime_snapshot_json=$2,runtime_snapshot_digest=$3 WHERE a.turn_id=$1 AND a.state='dispatched' AND a.lease_id=$4 AND a.lease_epoch <= $5 AND a.runtime_snapshot_json IS NULL AND EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d WHERE d.turn_id=a.turn_id AND d.attempt_sequence=a.attempt_sequence AND d.dispatch_epoch=a.dispatch_epoch AND d.lease_id=a.lease_id AND d.lease_epoch=a.lease_epoch AND d.runtime_snapshot_digest=$3)`, lease.Turn.ID, raw, digest, lease.LeaseID, lease.Epoch)
 	if err != nil {
 		return err
 	}
@@ -701,6 +775,13 @@ func (s *CoreConversationStore) PrepareTurnModelRetry(ctx context.Context, lease
 		return core.Turn{}, insertErr
 	}
 	if inserted.RowsAffected() != 1 {
+		return core.Turn{}, core.ErrConflict
+	}
+	directiveInserted, insertErr := tx.Exec(ctx, `INSERT INTO core_conversation_model_dispatch_directives(turn_id,attempt_sequence,owner_id,account_generation,turn_revision,dispatch_epoch,lease_id,lease_epoch,runtime_snapshot_digest,directive_json,directive_digest,created_at) SELECT $1,$2,owner_id,account_generation,turn_revision,$3,$4,$5,runtime_snapshot_digest,directive_json,directive_digest,$6 FROM core_conversation_model_dispatch_directives WHERE turn_id=$1 AND attempt_sequence=$2-1 AND dispatch_epoch=$3 AND turn_revision=(SELECT revision FROM core_conversation_turns WHERE turn_id=$1)`, lease.Turn.ID, attempt, dispatchEpoch, lease.LeaseID, lease.Epoch, started)
+	if insertErr != nil {
+		return core.Turn{}, insertErr
+	}
+	if directiveInserted.RowsAffected() != 1 {
 		return core.Turn{}, core.ErrConflict
 	}
 	if err = tx.Commit(ctx); err != nil {

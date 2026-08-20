@@ -278,6 +278,16 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-20**, every physical model dispatch gained a separate durable
+  directive that may add bounded loop guidance, force one already-admitted
+  tool, or remove all tools for final synthesis without changing the immutable
+  Turn runtime capability envelope. PostgreSQL binds the directive to the
+  owner/account generation, Turn revision, dispatch epoch, lease, attempt, and
+  runtime digest; provider retry copies the same directive and restart reloads
+  it through those fences. Focused Core and migration suites passed 211 tests,
+  and 10 focused PostgreSQL 18 + pgvector cases covered loop nudge/synthesis,
+  tool-budget and static-site finalization, restart, retry, steer, and durable
+  progress behavior.
 - On **2026-08-19**, Native schedules stopped retaining the creating Turn's
   model profile. Schedule creation now requires a valid explicit conversation
   default without storing a schedule profile reference; each occurrence

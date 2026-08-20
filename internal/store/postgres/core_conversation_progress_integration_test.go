@@ -130,7 +130,7 @@ func TestDeferredConversationProgressSharesImmediateNoProgressWindowPostgres(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = fixture.h.store.PrepareTurnModel(ctx, lease); err != nil {
+	if _, err = fixture.h.store.PrepareTurnModel(ctx, lease, core.DefaultTurnDispatchDirective()); err != nil {
 		t.Fatal(err)
 	}
 	if lease.Turn.RuntimeSnapshot == nil {
@@ -198,7 +198,7 @@ func runStructuredProgressRound(t *testing.T, store *CoreConversationStore, turn
 			t.Fatal(err)
 		}
 	}
-	prepared, err := store.PrepareTurnModel(ctx, lease)
+	prepared, err := store.PrepareTurnModel(ctx, lease, core.DefaultTurnDispatchDirective())
 	if err != nil {
 		t.Fatalf("round %d prepare model: %v", round, err)
 	}

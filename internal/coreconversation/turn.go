@@ -340,7 +340,8 @@ type TurnLister interface {
 }
 
 type TurnDispatchStore interface {
-	PrepareTurnModel(context.Context, TurnLease) (Turn, error)
+	PrepareTurnModel(context.Context, TurnLease, TurnDispatchDirective) (Turn, error)
+	LoadTurnModelDirective(context.Context, TurnLease) (TurnDispatchDirective, error)
 	LoadTurnModelResult(context.Context, string) (ModelRunResult, bool, error)
 	RecordTurnModelResult(context.Context, TurnLease, ModelRunResult) error
 	MarkTurnModelUncertain(context.Context, TurnLease, string, string) error
@@ -351,6 +352,92 @@ type ModelAttemptFailure struct {
 	Summary      string
 	RateLimited  bool
 	RetryAfterMS int64
+}
+
+const TurnDispatchDirectiveVersion = 1
+
+type TurnDispatchGuidance string
+
+const (
+	TurnDispatchGuidanceNone          TurnDispatchGuidance = "none"
+	TurnDispatchGuidanceLoopNudge     TurnDispatchGuidance = "loop_nudge"
+	TurnDispatchGuidanceLoopSynthesis TurnDispatchGuidance = "loop_synthesis"
+)
+
+type TurnDispatchToolMode string
+
+const (
+	TurnDispatchToolsAdmitted TurnDispatchToolMode = "admitted"
+	TurnDispatchToolsNone     TurnDispatchToolMode = "none"
+)
+
+// TurnDispatchDirective is the durable, capability-reducing control applied
+// to one physical model dispatch. The admitted TurnRuntimeSnapshot remains the
+// immutable capability envelope; a directive can add bounded loop guidance,
+// force one admitted tool, or remove every tool for final synthesis.
+type TurnDispatchDirective struct {
+	Version        int                  `json:"version"`
+	Guidance       TurnDispatchGuidance `json:"guidance"`
+	ToolMode       TurnDispatchToolMode `json:"tool_mode"`
+	ForcedToolName string               `json:"forced_tool_name,omitempty"`
+}
+
+func NewTurnDispatchDirective(guidance TurnDispatchGuidance, toolMode TurnDispatchToolMode, forcedToolName string) TurnDispatchDirective {
+	return TurnDispatchDirective{Version: TurnDispatchDirectiveVersion, Guidance: guidance, ToolMode: toolMode, ForcedToolName: strings.TrimSpace(forcedToolName)}
+}
+
+func DefaultTurnDispatchDirective() TurnDispatchDirective {
+	return NewTurnDispatchDirective(TurnDispatchGuidanceNone, TurnDispatchToolsAdmitted, "")
+}
+
+func (d TurnDispatchDirective) ValidateFor(runtime TurnRuntimeSnapshot, extensions []ExtensionExecutionSnapshot) error {
+	if d.Version != TurnDispatchDirectiveVersion || runtime.Validate() != nil {
+		return ErrInvalid
+	}
+	switch d.Guidance {
+	case TurnDispatchGuidanceNone, TurnDispatchGuidanceLoopNudge, TurnDispatchGuidanceLoopSynthesis:
+	default:
+		return ErrInvalid
+	}
+	if d.ToolMode != TurnDispatchToolsAdmitted && d.ToolMode != TurnDispatchToolsNone {
+		return ErrInvalid
+	}
+	if d.Guidance == TurnDispatchGuidanceLoopSynthesis && d.ToolMode != TurnDispatchToolsNone {
+		return ErrInvalid
+	}
+	if d.ToolMode == TurnDispatchToolsNone && (d.ForcedToolName != "" || d.Guidance != TurnDispatchGuidanceLoopSynthesis) {
+		return ErrInvalid
+	}
+	if d.Guidance == TurnDispatchGuidanceLoopNudge && d.ForcedToolName != "" {
+		return ErrInvalid
+	}
+	if d.ForcedToolName == "" {
+		return nil
+	}
+	if d.Guidance != TurnDispatchGuidanceNone || strings.TrimSpace(d.ForcedToolName) != d.ForcedToolName || len(d.ForcedToolName) > MaxToolNameBytes || !utf8.ValidString(d.ForcedToolName) {
+		return ErrInvalid
+	}
+	for _, tool := range runtime.IntrinsicTools {
+		if tool.Name == d.ForcedToolName {
+			return nil
+		}
+	}
+	for _, extension := range extensions {
+		for _, name := range extension.ToolNames {
+			if name == d.ForcedToolName {
+				return nil
+			}
+		}
+	}
+	return ErrInvalid
+}
+
+func (d TurnDispatchDirective) Digest() string {
+	raw, err := json.Marshal(d)
+	if err != nil {
+		return ""
+	}
+	return digest(string(raw))
 }
 
 const TurnRuntimeSnapshotVersion = 1

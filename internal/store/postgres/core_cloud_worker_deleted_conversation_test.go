@@ -235,7 +235,7 @@ func startPGCloudWorkerTurn(t *testing.T, conversation *CoreConversationStore, c
 
 func bindPGCloudWorkerModelAttempt(t *testing.T, conversation *CoreConversationStore, ctx context.Context, lease core.TurnLease, cleanup func()) {
 	t.Helper()
-	prepared, err := conversation.PrepareTurnModel(ctx, lease)
+	prepared, err := conversation.PrepareTurnModel(ctx, lease, core.DefaultTurnDispatchDirective())
 	if err != nil {
 		if cleanup != nil {
 			cleanup()

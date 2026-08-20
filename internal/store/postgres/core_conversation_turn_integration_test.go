@@ -94,6 +94,24 @@ func turnCommand() core.TurnStartCommand {
 	return core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: s.ProfileID, ExpectedProfileRevision: s.Revision, ExpectedCredentialVersion: s.CredentialVersion, ProfileSnapshot: s}
 }
 
+func startAdmittedTurn(t *testing.T, h *turnDBHarness, cmd core.TurnStartCommand) core.Turn {
+	t.Helper()
+	ctx := context.Background()
+	candidate, err := h.store.PrepareTurnRuntimeAdmission(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := core.NewTurnRuntimeSnapshot("integration system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := h.store.StartTurnWithRuntime(ctx, cmd, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return turn
+}
+
 func TestCoreConversationFirstTurnPersistsProvisionalTitleAtAcceptancePostgres(t *testing.T) {
 	h := openTurnDB(t)
 	cmd := turnCommand()
@@ -363,16 +381,13 @@ func TestCoreConversationContinuesWithNewProfileAfterOldProfileTombstonePostgres
 func TestCoreConversationTurnSteerInvalidatesProviderLeaseAndCommitsGuidancePostgres(t *testing.T) {
 	h := openTurnDB(t)
 	cmd := turnCommand()
-	turn, err := h.store.StartTurn(context.Background(), cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
+	turn := startAdmittedTurn(t, h, cmd)
 	createTestProfile(context.Background(), t, h.store.Store, turn.ProfileID, "test", "integration-secret")
 	staleLease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = h.store.PrepareTurnModel(context.Background(), staleLease); err != nil {
+	if _, err = h.store.PrepareTurnModel(context.Background(), staleLease, core.DefaultTurnDispatchDirective()); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(2 * time.Millisecond)
@@ -433,15 +448,12 @@ func TestCoreConversationTurnDispatchRecoveryPostgres(t *testing.T) {
 	h := openTurnDB(t)
 	cmd := turnCommand()
 	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
-	turn, err := h.store.StartTurn(context.Background(), cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
+	turn := startAdmittedTurn(t, h, cmd)
 	lease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := h.store.PrepareTurnModel(context.Background(), lease)
+	prepared, err := h.store.PrepareTurnModel(context.Background(), lease, core.DefaultTurnDispatchDirective())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,10 +504,14 @@ func TestCoreConversationPhysicalModelAttemptsAreFencedAndDurablePostgres(t *tes
 	if err = h.store.ValidateTurnRuntime(ctx, lease, runtime); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = h.store.PrepareTurnModel(ctx, lease); err != nil {
+	if _, err = h.store.PrepareTurnModel(ctx, lease, core.DefaultTurnDispatchDirective()); err != nil {
 		t.Fatal(err)
 	}
 	if err = h.store.BindTurnModelRuntime(ctx, lease, runtime); err != nil {
+		t.Fatal(err)
+	}
+	firstDirective, err := h.store.LoadTurnModelDirective(ctx, lease)
+	if err != nil {
 		t.Fatal(err)
 	}
 	renewed, err := h.store.RenewTurn(ctx, turn.ID, lease.LeaseID, lease.Epoch, time.Now().UTC(), time.Minute)
@@ -515,6 +531,10 @@ func TestCoreConversationPhysicalModelAttemptsAreFencedAndDurablePostgres(t *tes
 	}
 	if err = h.store.BindTurnModelRuntime(ctx, renewed, runtime); err != nil {
 		t.Fatal(err)
+	}
+	retryDirective, err := h.store.LoadTurnModelDirective(ctx, renewed)
+	if err != nil || retryDirective.Digest() != firstDirective.Digest() {
+		t.Fatalf("retry directive=%+v first=%+v err=%v", retryDirective, firstDirective, err)
 	}
 	if err = h.store.MarkTurnModelAttemptUncertain(ctx, renewed, core.ModelAttemptFailure{Code: "provider_uncertain", Summary: "unknown"}); err != nil {
 		t.Fatal(err)
@@ -544,6 +564,65 @@ func TestCoreConversationPhysicalModelAttemptsAreFencedAndDurablePostgres(t *tes
 	}
 	if len(attempts) != 2 || attempts[0].state != "retryable" || !attempts[0].rateLimited || attempts[0].retryAfter != 30_000 || attempts[1].state != "uncertain" || attempts[0].digest != runtime.Digest() || attempts[1].digest != runtime.Digest() {
 		t.Fatalf("attempts=%+v", attempts)
+	}
+}
+
+func TestLoopDirectiveSurvivesRestartPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	ctx := context.Background()
+	cmd := turnCommand()
+	cmd.ProfileSnapshot.RequestDialect = coremodel.DialectOpenAICompatibleChatV1
+	candidate, err := h.store.PrepareTurnRuntimeAdmission(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := core.NewTurnRuntimeSnapshot("frozen system prompt", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := h.store.StartTurnWithRuntime(ctx, cmd, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := h.store.ClaimTurn(ctx, turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directive := core.NewTurnDispatchDirective(core.TurnDispatchGuidanceLoopNudge, core.TurnDispatchToolsAdmitted, "")
+	forged := lease
+	forged.Turn.OwnerID = "replacement-owner"
+	forged.Turn.AccountGeneration = 1
+	if _, err = h.store.PrepareTurnModel(ctx, forged, directive); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("forged directive write err=%v", err)
+	}
+	if _, err = h.store.PrepareTurnModel(ctx, lease, directive); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.BindTurnModelRuntime(ctx, lease, runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := NewCoreConversationStore(h.store.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := restarted.LoadTurnModelDirective(ctx, lease)
+	if err != nil || loaded.Digest() != directive.Digest() {
+		t.Fatalf("restart directive=%+v err=%v", loaded, err)
+	}
+	if _, err = restarted.LoadTurnModelDirective(ctx, forged); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("forged directive read err=%v", err)
+	}
+	renewed, err := restarted.RenewTurn(ctx, turn.ID, lease.LeaseID, lease.Epoch, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = restarted.LoadTurnModelDirective(ctx, lease); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("stale directive read err=%v", err)
+	}
+	loaded, err = restarted.LoadTurnModelDirective(ctx, renewed)
+	if err != nil || loaded.Digest() != directive.Digest() {
+		t.Fatalf("renewed directive=%+v err=%v", loaded, err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -21,6 +22,92 @@ type countingConversationModel struct {
 	mu     sync.Mutex
 	result core.ModelRunResult
 	runs   int
+}
+
+type loopRecoveryConversationModel struct {
+	mu              sync.Mutex
+	requests        []core.ModelRunRequest
+	finalizeOnNudge bool
+}
+
+func (m *loopRecoveryConversationModel) Run(_ context.Context, request core.ModelRunRequest) (core.ModelRunResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requests = append(m.requests, request)
+	if len(request.Extensions) == 0 || (m.finalizeOnNudge && strings.Contains(request.Profile.SystemPrompt, "tool action and result are repeating")) {
+		return core.ModelRunResult{
+			Done:    true,
+			Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "synthesized answer", CreatedAt: time.Now().UTC()},
+		}, nil
+	}
+	call := core.ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"same"}`}
+	return core.ModelRunResult{
+		Message:   core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, ToolCalls: []core.ToolCall{call}, CreatedAt: time.Now().UTC()},
+		ToolCalls: []core.ToolCall{call},
+	}, nil
+}
+
+func (m *loopRecoveryConversationModel) Stream(ctx context.Context, request core.ModelRunRequest, _ func(core.ModelDelta) error) (core.ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
+func (m *loopRecoveryConversationModel) snapshotRequests() []core.ModelRunRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]core.ModelRunRequest(nil), m.requests...)
+}
+
+type toolBudgetConversationModel struct {
+	mu       sync.Mutex
+	requests []core.ModelRunRequest
+}
+
+type staticSiteCorrectionConversationModel struct {
+	mu       sync.Mutex
+	requests []core.ModelRunRequest
+}
+
+func (m *staticSiteCorrectionConversationModel) Run(_ context.Context, request core.ModelRunRequest) (core.ModelRunResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requests = append(m.requests, request)
+	if len(request.Intrinsics) == 0 {
+		return core.ModelRunResult{Done: true, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "static-site synthesis", CreatedAt: time.Now().UTC()}}, nil
+	}
+	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: `{}`}
+	return core.ModelRunResult{Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, ToolCalls: []core.ToolCall{call}, CreatedAt: time.Now().UTC()}, ToolCalls: []core.ToolCall{call}}, nil
+}
+
+func (m *staticSiteCorrectionConversationModel) Stream(ctx context.Context, request core.ModelRunRequest, _ func(core.ModelDelta) error) (core.ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
+func (m *staticSiteCorrectionConversationModel) snapshotRequests() []core.ModelRunRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]core.ModelRunRequest(nil), m.requests...)
+}
+
+func (m *toolBudgetConversationModel) Run(_ context.Context, request core.ModelRunRequest) (core.ModelRunResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index := len(m.requests)
+	m.requests = append(m.requests, request)
+	if len(request.Extensions) == 0 {
+		return core.ModelRunResult{Done: true, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "budget synthesis", CreatedAt: time.Now().UTC()}}, nil
+	}
+	call := core.ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: fmt.Sprintf(`{"index":%d}`, index)}
+	return core.ModelRunResult{Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, ToolCalls: []core.ToolCall{call}, CreatedAt: time.Now().UTC()}, ToolCalls: []core.ToolCall{call}}, nil
+}
+
+func (m *toolBudgetConversationModel) Stream(ctx context.Context, request core.ModelRunRequest, _ func(core.ModelDelta) error) (core.ModelRunResult, error) {
+	return m.Run(ctx, request)
+}
+
+func (m *toolBudgetConversationModel) snapshotRequests() []core.ModelRunRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]core.ModelRunRequest(nil), m.requests...)
 }
 
 func (m *countingConversationModel) Run(context.Context, core.ModelRunRequest) (core.ModelRunResult, error) {
@@ -52,6 +139,12 @@ func (r staticConversationProfile) ResolveProfileSnapshot(context.Context, strin
 	return r.snapshot, nil
 }
 
+type coreIntrinsicResolverFunc func(context.Context, core.TurnLease) ([]core.ResolvedIntrinsic, error)
+
+func (f coreIntrinsicResolverFunc) ResolveIntrinsicTools(ctx context.Context, lease core.TurnLease) ([]core.ResolvedIntrinsic, error) {
+	return f(ctx, lease)
+}
+
 func waitConversationTurnState(t *testing.T, store *CoreConversationStore, turnID string, want core.TurnState, timeout time.Duration) core.Turn {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -65,6 +158,194 @@ func waitConversationTurnState(t *testing.T, store *CoreConversationStore, turnI
 	turn, err := store.GetTurn(context.Background(), turnID)
 	t.Fatalf("turn=%+v err=%v want=%s", turn, err, want)
 	return core.Turn{}
+}
+
+func recoverConversationTurnUntilTerminal(t *testing.T, service *core.Service, store *CoreConversationStore, turnID string, timeout time.Duration) core.Turn {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var terminal core.Turn
+	var err error
+	for time.Now().Before(deadline) {
+		if err = service.RecoverTurns(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		terminal, err = store.GetTurn(context.Background(), turnID)
+		if err == nil && (terminal.State == core.TurnCompleted || terminal.State == core.TurnFailed) {
+			return terminal
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("turn did not terminate: turn=%+v err=%v", terminal, err)
+	return core.Turn{}
+}
+
+type persistedTurnDirective struct {
+	sequence      int
+	directive     core.TurnDispatchDirective
+	digest        string
+	runtimeDigest string
+	attemptDigest string
+}
+
+func loadPersistedTurnDirectives(t *testing.T, h *turnDBHarness, turn core.Turn) []persistedTurnDirective {
+	t.Helper()
+	rows, err := h.pool.Query(context.Background(), `SELECT d.attempt_sequence,d.directive_json,d.directive_digest,d.runtime_snapshot_digest,a.runtime_snapshot_digest FROM core_conversation_model_dispatch_directives d JOIN core_conversation_model_attempts a ON a.turn_id=d.turn_id AND a.attempt_sequence=d.attempt_sequence WHERE d.turn_id=$1 ORDER BY d.attempt_sequence`, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var result []persistedTurnDirective
+	for rows.Next() {
+		var item persistedTurnDirective
+		var raw []byte
+		if err = rows.Scan(&item.sequence, &raw, &item.digest, &item.runtimeDigest, &item.attemptDigest); err != nil {
+			t.Fatal(err)
+		}
+		if json.Unmarshal(raw, &item.directive) != nil || turn.RuntimeSnapshot == nil || item.directive.ValidateFor(*turn.RuntimeSnapshot, turn.ExtensionSnapshots) != nil || item.directive.Digest() != item.digest || item.runtimeDigest != turn.RuntimeSnapshot.Digest() || item.attemptDigest != turn.RuntimeSnapshot.Digest() {
+			t.Fatalf("invalid persisted directive row=%+v raw=%s", item, raw)
+		}
+		result = append(result, item)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func startWebDirectiveTurn(t *testing.T, h *turnDBHarness, model core.ModelRunner, execute func(context.Context, core.ToolExecutionRequest) (core.ToolResult, error)) (*core.Service, core.Turn) {
+	t.Helper()
+	selection := core.ExtensionSelection{Kind: core.ExtensionMCP, ID: uuid.NewString(), Version: "web-1", Digest: strings.Repeat("1", 64), AllowedTools: []string{"web_search"}}
+	snapshot := core.ExtensionExecutionSnapshot{
+		Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "builtin:web_search:tavily",
+		ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("2", 64), ToolSchemaDigest: strings.Repeat("3", 64),
+		NetworkBindingDigest: strings.Repeat("4", 64), ToolNames: []string{"web_search"}, ReadOnly: true,
+	}
+	resolved := core.ResolvedExtension{
+		Selection: selection, Snapshot: snapshot,
+		Tools:   []coremodel.Tool{{Name: "web_search", InputSchema: map[string]any{"type": "object"}}},
+		Execute: execute,
+	}
+	cmd := turnCommand()
+	cmd.Extensions = []core.ExtensionSelection{selection}
+	cmd.ExtensionSnapshots = []core.ExtensionExecutionSnapshot{snapshot}
+	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
+	service, err := core.NewService(h.store, model, staticConversationExtensions{resolved: []core.ResolvedExtension{resolved}}, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := service.StartTurn(context.Background(), cmd)
+	if err != nil {
+		service.Close()
+		t.Fatal(err)
+	}
+	return service, started
+}
+
+func TestLoopSynthesisCompletesWithStrictRuntimeValidationPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	model := &loopRecoveryConversationModel{}
+	service, started := startWebDirectiveTurn(t, h, model, func(_ context.Context, request core.ToolExecutionRequest) (core.ToolResult, error) {
+		return core.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: `{"result":1}`}, nil
+	})
+	defer service.Close()
+
+	terminal := recoverConversationTurnUntilTerminal(t, service, h.store, started.ID, 12*time.Second)
+	if terminal.State != core.TurnCompleted {
+		t.Fatalf("loop recovery did not complete: state=%s terminal_code=%q model_requests=%d", terminal.State, terminal.TerminalCode, len(model.snapshotRequests()))
+	}
+	requests := model.snapshotRequests()
+	if len(requests) != 5 || !strings.Contains(requests[3].Profile.SystemPrompt, "tool action and result are repeating") || len(requests[4].Extensions) != 0 || requests[4].ForcedToolName != "" {
+		t.Fatalf("staged loop recovery requests=%+v", requests)
+	}
+	directives := loadPersistedTurnDirectives(t, h, terminal)
+	wantGuidance := []core.TurnDispatchGuidance{core.TurnDispatchGuidanceNone, core.TurnDispatchGuidanceNone, core.TurnDispatchGuidanceNone, core.TurnDispatchGuidanceLoopNudge, core.TurnDispatchGuidanceLoopSynthesis}
+	if len(directives) != len(wantGuidance) {
+		t.Fatalf("directives=%+v", directives)
+	}
+	for index, want := range wantGuidance {
+		if directives[index].directive.Guidance != want {
+			t.Fatalf("directive[%d]=%+v want guidance=%s", index, directives[index].directive, want)
+		}
+	}
+}
+
+func TestLoopNudgePreservesFrozenRuntimePostgres(t *testing.T) {
+	h := openTurnDB(t)
+	model := &loopRecoveryConversationModel{finalizeOnNudge: true}
+	service, started := startWebDirectiveTurn(t, h, model, func(_ context.Context, request core.ToolExecutionRequest) (core.ToolResult, error) {
+		return core.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: `{"result":1}`}, nil
+	})
+	defer service.Close()
+	terminal := recoverConversationTurnUntilTerminal(t, service, h.store, started.ID, 12*time.Second)
+	if terminal.State != core.TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "synthesized answer" {
+		t.Fatalf("nudge terminal=%+v", terminal)
+	}
+	requests := model.snapshotRequests()
+	if len(requests) != 4 || len(requests[3].Extensions) != 1 || !strings.Contains(requests[3].Profile.SystemPrompt, "tool action and result are repeating") {
+		t.Fatalf("nudge requests=%+v", requests)
+	}
+	directives := loadPersistedTurnDirectives(t, h, terminal)
+	if len(directives) != 4 || directives[3].directive.Guidance != core.TurnDispatchGuidanceLoopNudge || directives[3].directive.ToolMode != core.TurnDispatchToolsAdmitted {
+		t.Fatalf("nudge directives=%+v", directives)
+	}
+}
+
+func TestToolBudgetFinalizationPreservesFrozenRuntimePostgres(t *testing.T) {
+	h := openTurnDB(t)
+	model := &toolBudgetConversationModel{}
+	service, started := startWebDirectiveTurn(t, h, model, func(_ context.Context, request core.ToolExecutionRequest) (core.ToolResult, error) {
+		return core.ToolResult{CallID: request.Call.ID, ToolName: request.Call.Name, Content: request.Call.Arguments}, nil
+	})
+	defer service.Close()
+	terminal := recoverConversationTurnUntilTerminal(t, service, h.store, started.ID, 15*time.Second)
+	if terminal.State != core.TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "budget synthesis" {
+		t.Fatalf("budget terminal=%+v", terminal)
+	}
+	requests := model.snapshotRequests()
+	if len(requests) != core.MaxTurnToolCalls+1 || len(requests[len(requests)-1].Extensions) != 0 {
+		t.Fatalf("budget request count=%d last=%+v", len(requests), requests[len(requests)-1])
+	}
+	directives := loadPersistedTurnDirectives(t, h, terminal)
+	last := directives[len(directives)-1].directive
+	if len(directives) != core.MaxTurnToolCalls+1 || last.Guidance != core.TurnDispatchGuidanceLoopSynthesis || last.ToolMode != core.TurnDispatchToolsNone {
+		t.Fatalf("budget directives=%+v", directives)
+	}
+}
+
+func TestStaticSiteCorrectionYieldsToFinalizationPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	cmd := turnCommand()
+	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
+	model := &staticSiteCorrectionConversationModel{}
+	service, err := core.NewService(h.store, model, staticConversationExtensions{}, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetIntrinsicResolver(coreIntrinsicResolverFunc(func(context.Context, core.TurnLease) ([]core.ResolvedIntrinsic, error) {
+		return []core.ResolvedIntrinsic{{
+			Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}},
+			Execute: func(context.Context, core.IntrinsicExecutionRequest) (core.IntrinsicExecutionResult, error) {
+				return core.IntrinsicExecutionResult{}, core.ErrInvalid
+			},
+		}}, nil
+	}))
+	defer service.Close()
+	started, err := service.StartTurn(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := recoverConversationTurnUntilTerminal(t, service, h.store, started.ID, 12*time.Second)
+	if terminal.State != core.TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "static-site synthesis" {
+		t.Fatalf("static-site terminal=%+v", terminal)
+	}
+	requests := model.snapshotRequests()
+	if len(requests) != 5 || requests[1].ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || requests[3].ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || len(requests[4].Intrinsics) != 0 || requests[4].ForcedToolName != "" {
+		t.Fatalf("static-site requests=%+v", requests)
+	}
+	directives := loadPersistedTurnDirectives(t, h, terminal)
+	if len(directives) != 5 || directives[1].directive.ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || directives[3].directive.ForcedToolName != coremodel.IntrinsicStaticSitePublishToolName || directives[4].directive.Guidance != core.TurnDispatchGuidanceLoopSynthesis || directives[4].directive.ToolMode != core.TurnDispatchToolsNone {
+		t.Fatalf("static-site directives=%+v", directives)
+	}
 }
 
 func TestCoreConversationToolRoundPersistsOrderedWebThenLocalRecovery(t *testing.T) {
@@ -264,7 +545,7 @@ func TestConversationWebThenLocalSurvivesServiceRestartPostgres(t *testing.T) {
 func persistConversationToolBatch(t *testing.T, fixture *conversationToolPrepareFixture, calls []core.ToolCall) {
 	t.Helper()
 	ctx := context.Background()
-	prepared, err := fixture.h.store.PrepareTurnModel(ctx, fixture.lease)
+	prepared, err := fixture.h.store.PrepareTurnModel(ctx, fixture.lease, core.DefaultTurnDispatchDirective())
 	if err != nil {
 		t.Fatal(err)
 	}
