@@ -26,6 +26,7 @@ const (
 	turnModelFirstPayloadDeadline      = 15 * time.Second
 	turnModelMeaningfulActionDeadline  = 90 * time.Second
 	turnModelSingleDispatchDeadline    = 5 * time.Minute
+	turnMemoryRecallTimeout            = 3 * time.Second
 	MaxAdmittedTurnToolCalls           = 20
 	toolLoopNudgeGuidance              = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
 	toolLoopSynthesisGuidance          = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
@@ -142,30 +143,31 @@ func (g *turnModelDeadlineGuard) finish() error {
 }
 
 type Service struct {
-	store            Store
-	models           ModelRunner
-	extensions       ExtensionResolver
-	intrinsics       IntrinsicResolver
-	staticSites      StaticSitePublisher
-	staticSiteOrigin string
-	memoryRecall     MemoryRecallResolver
-	titleGenerator   ConversationTitleGenerator
-	snapshots        SnapshotProfileResolver
-	now              func() time.Time
-	turnLeaseTTL     time.Duration
-	turns            TurnStore
-	lifecycleCtx     context.Context
-	lifecycleCancel  context.CancelFunc
-	workers          sync.WaitGroup
-	cancelMu         sync.Mutex
-	cancelSignals    map[string]chan struct{}
-	runtimeMu        sync.Mutex
-	runtime          map[string]*turnRuntime
-	turnOrderingMu   sync.Mutex
-	turnOrdering     map[string]*turnDeltaOrdering
-	modelDeadlines   turnModelDeadlines
-	continuityMu     sync.Mutex
-	continuity       map[string]string
+	store               Store
+	models              ModelRunner
+	extensions          ExtensionResolver
+	intrinsics          IntrinsicResolver
+	staticSites         StaticSitePublisher
+	staticSiteOrigin    string
+	memoryRecall        MemoryRecallResolver
+	titleGenerator      ConversationTitleGenerator
+	snapshots           SnapshotProfileResolver
+	now                 func() time.Time
+	turnLeaseTTL        time.Duration
+	turns               TurnStore
+	lifecycleCtx        context.Context
+	lifecycleCancel     context.CancelFunc
+	workers             sync.WaitGroup
+	cancelMu            sync.Mutex
+	cancelSignals       map[string]chan struct{}
+	runtimeMu           sync.Mutex
+	runtime             map[string]*turnRuntime
+	turnOrderingMu      sync.Mutex
+	turnOrdering        map[string]*turnDeltaOrdering
+	modelDeadlines      turnModelDeadlines
+	memoryRecallTimeout time.Duration
+	continuityMu        sync.Mutex
+	continuity          map[string]string
 }
 
 type turnModelOutcome struct {
@@ -243,7 +245,7 @@ func NewService(store Store, models ModelRunner, extensions ExtensionResolver, p
 		extensions = noopExtensions{}
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
-	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}, modelDeadlines: defaultTurnModelDeadlines(), continuity: map[string]string{}}
+	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}, modelDeadlines: defaultTurnModelDeadlines(), memoryRecallTimeout: turnMemoryRecallTimeout, continuity: map[string]string{}}
 	if turns, ok := store.(TurnStore); ok {
 		s.turns = turns
 	}
@@ -1301,13 +1303,21 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	defer func() { s.cancelMu.Lock(); delete(s.cancelSignals, id); s.cancelMu.Unlock() }()
 	resultCh := make(chan turnModelOutcome, 1)
 	var recalledMemory string
-	if !replayed && s.memoryRecall != nil {
-		recallCtx, recallCancel := context.WithTimeout(ctx, 15*time.Second)
+	if !replayed && !history.memoryRecallDegraded && s.memoryRecall != nil {
+		recallCtx, recallCancel := context.WithTimeout(ctx, s.memoryRecallTimeout)
 		recalledMemory, err = s.memoryRecall.RecallMemory(recallCtx, turn.Prompt)
 		recallCancel()
 		if err != nil {
-			_, _ = s.turns.FailTurn(ctx, lease, "memory_recall_unavailable", "long-term memory recall is unavailable")
-			return
+			if ctx.Err() != nil {
+				return
+			}
+			warning, appendErr := s.turns.AppendTurnEvent(ctx, id, NewMemoryRecallDegradedTurnEvent())
+			if appendErr != nil {
+				return
+			}
+			turn.LastSequence = warning.Sequence
+			lease.Turn.LastSequence = warning.Sequence
+			recalledMemory = ""
 		}
 	}
 	var modelConversation Conversation
@@ -2903,12 +2913,13 @@ func hasUnappliedDeferredWorkerSteer(steers []TurnSteer, appliedSteerIDs []strin
 }
 
 type turnHistoryReplay struct {
-	authorities         map[string]turnToolCallAuthority
-	continuationContent string
-	continueOutput      bool
-	forcedToolName      string
-	supervisorTerminal  bool
-	loopRecovery        toolLoopRecovery
+	authorities          map[string]turnToolCallAuthority
+	continuationContent  string
+	continueOutput       bool
+	forcedToolName       string
+	supervisorTerminal   bool
+	memoryRecallDegraded bool
+	loopRecovery         toolLoopRecovery
 }
 
 func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation, ignoreLatestOutputFragment bool) (turnHistoryReplay, error) {
@@ -2955,6 +2966,7 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 	forcedToolName := ""
 	invalidResults := make(map[string]uint8)
 	supervisorTerminal := false
+	memoryRecallDegraded := false
 	batchComplete := func() bool {
 		return len(batch.calls) != 0 && len(batch.results) == len(batch.calls)
 	}
@@ -3000,6 +3012,11 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 	}
 	for _, event := range events {
 		switch event.Kind {
+		case TurnEventWarning:
+			if event.ValidateWarningAuthority() != nil || memoryRecallDegraded {
+				return turnHistoryReplay{}, ErrConflict
+			}
+			memoryRecallDegraded = true
 		case TurnEventSteered:
 			flushContinuation()
 			continueOutput = false
@@ -3096,7 +3113,8 @@ func (s *Service) appendTurnToolHistory(ctx context.Context, turn Turn, conversa
 	}
 	return turnHistoryReplay{
 		authorities: authorities, continuationContent: continuationContent.String(),
-		continueOutput: continueOutput, forcedToolName: forcedToolName, supervisorTerminal: supervisorTerminal, loopRecovery: toolLoopRecoveryFor(loopPairs),
+		continueOutput: continueOutput, forcedToolName: forcedToolName, supervisorTerminal: supervisorTerminal,
+		memoryRecallDegraded: memoryRecallDegraded, loopRecovery: toolLoopRecoveryFor(loopPairs),
 	}, nil
 }
 

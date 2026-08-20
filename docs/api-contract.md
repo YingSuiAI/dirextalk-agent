@@ -310,9 +310,20 @@ or stream after admission. It never cancels the accepted Turn; callers use
   The bounded envelope is inserted as
   explicitly delimited model-only reference data before the current prompt; it
   is never copied into conversation messages, turn/event payloads, public
-  Knowledge cursor snapshots, logs, or Capability results. An unavailable
-  structured-memory dependency fails closed before model dispatch; an empty recall is a
-  successful empty context.
+  Knowledge cursor snapshots, logs, or Capability results. Every current
+  automatic per-turn recall is optional and has a fixed internal three-second
+  deadline. A timeout or dependency failure while the turn remains live
+  appends one closed `memory_recall_degraded` warning, continues the same turn
+  without recalled memory, and never retries recall for that turn, including
+  after restart. The warning is projected as distinct safe progress through Watch,
+  StreamChat, and Capability streaming; it is never a delta, tool result,
+  model input, transcript message, runtime snapshot, or final Markdown field.
+  Parent/service cancellation wins without a warning or provider dispatch. An
+  empty recall remains a successful empty context. Authenticated explicit
+  `agent.memory.v1` operations remain fail closed. No current admitted turn
+  declares recall as an authorization or safety prerequisite; any future
+  required recall must be represented by immutable admitted state rather than
+  inferred from prompt text, execution mode, or tool selection.
 - Every successfully committed Native exchange atomically creates a private
   consolidation observation. A restart-safe worker uses the selected
   conversation model to extract only explicit durable user facts. Facts use a

@@ -36,6 +36,31 @@ func TestDurableTurnProgressProtoPreservesPublicStreamLifecycle(t *testing.T) {
 	if code := status.Code(mapStreamError("canceled")); code != codes.Canceled {
 		t.Fatalf("canceled stream code=%s", code)
 	}
+	warning := durableTurnProgressProto(coreconversation.StreamEvent{
+		Kind: coreconversation.EventWarning, Status: coreconversation.MemoryRecallDegradedStatus, Text: coreconversation.MemoryRecallDegradedText,
+	})
+	if warning == nil || warning.GetWarning().GetCode() != coreconversation.MemoryRecallDegradedStatus ||
+		warning.GetWarning().GetMessage() != coreconversation.MemoryRecallDegradedText || warning.GetTool() != nil {
+		t.Fatalf("warning progress=%+v", warning)
+	}
+}
+
+func TestTurnEventProtoProjectsOnlyCanonicalMemoryRecallWarning(t *testing.T) {
+	warning := coreconversation.NewMemoryRecallDegradedTurnEvent()
+	warning.TurnID, warning.Sequence, warning.Revision, warning.CreatedAt = uuid.NewString(), 2, 1, time.Now().UTC()
+	response, err := turnEventProto(warning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := response.GetEvent()
+	if got.GetKind() != string(coreconversation.TurnEventWarning) || got.GetStatus() != coreconversation.MemoryRecallDegradedStatus ||
+		got.GetText() != coreconversation.MemoryRecallDegradedText || got.GetErrorCode() != "" || got.GetErrorSummary() != "" {
+		t.Fatalf("warning event=%+v", got)
+	}
+	warning.Text = "private backend detail"
+	if _, err = turnEventProto(warning); !errors.Is(err, coreconversation.ErrChatFailed) {
+		t.Fatalf("unsafe warning err=%v", err)
+	}
 }
 
 func TestTurnEventProtoPreservesEventTimeRevisionAndCanonicalWaitingShape(t *testing.T) {

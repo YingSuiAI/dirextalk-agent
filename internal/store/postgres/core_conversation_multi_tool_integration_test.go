@@ -55,14 +55,19 @@ func (m *firstPayloadWatchdogModel) callCount() int {
 	return m.calls
 }
 
-type blockingFinalizationDispatchStore struct {
+type blockingModelDispatchStore struct {
 	*CoreConversationStore
-	once    sync.Once
-	reached chan struct{}
+	once          sync.Once
+	reached       chan struct{}
+	blockOrdinary bool
 }
 
-func (s *blockingFinalizationDispatchStore) PrepareTurnModel(ctx context.Context, lease core.TurnLease, directive core.TurnDispatchDirective) (core.Turn, error) {
-	if directive.FinalizationReason == "" {
+func (s *blockingModelDispatchStore) PrepareTurnModel(ctx context.Context, lease core.TurnLease, directive core.TurnDispatchDirective) (core.Turn, error) {
+	shouldBlock := directive.FinalizationReason != ""
+	if s.blockOrdinary {
+		shouldBlock = directive.FinalizationReason == ""
+	}
+	if !shouldBlock {
 		return s.CoreConversationStore.PrepareTurnModel(ctx, lease, directive)
 	}
 	s.once.Do(func() { close(s.reached) })
@@ -410,7 +415,7 @@ func TestDispatchFirstPayloadDeadlineFinalizesOnceAcrossRestartPostgres(t *testi
 	h := openTurnDB(t)
 	cmd := turnCommand()
 	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
-	blocked := &blockingFinalizationDispatchStore{CoreConversationStore: h.store, reached: make(chan struct{})}
+	blocked := &blockingModelDispatchStore{CoreConversationStore: h.store, reached: make(chan struct{})}
 	watchdogModel := &firstPayloadWatchdogModel{}
 	service, err := core.NewService(blocked, watchdogModel, staticConversationExtensions{}, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
 	if err != nil {

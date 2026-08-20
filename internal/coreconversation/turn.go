@@ -40,9 +40,15 @@ const (
 	TurnEventCanceled            TurnEventKind = "canceled"
 	TurnEventWaitingConfirmation TurnEventKind = "waiting_confirmation"
 	TurnEventWorkerStatus        TurnEventKind = "worker_status"
+	TurnEventWarning             TurnEventKind = "warning"
 	TurnEventToolCall            TurnEventKind = "tool_call"
 	TurnEventToolResult          TurnEventKind = "tool_result"
 	TurnEventSteered             TurnEventKind = "steered"
+)
+
+const (
+	MemoryRecallDegradedStatus = "memory_recall_degraded"
+	MemoryRecallDegradedText   = "Long-term memory is temporarily unavailable; continuing this turn without it."
 )
 
 type Turn struct {
@@ -142,6 +148,28 @@ func NewWorkerProgressTurnEvent(executionID, phase string) (TurnEvent, error) {
 		return TurnEvent{}, err
 	}
 	return event, nil
+}
+
+// NewMemoryRecallDegradedTurnEvent is the sole durable representation of an
+// optional per-turn recall failure. The closed text is safe for clients and is
+// never added to the model transcript or final response.
+func NewMemoryRecallDegradedTurnEvent() TurnEvent {
+	return TurnEvent{Kind: TurnEventWarning, Text: MemoryRecallDegradedText, Status: MemoryRecallDegradedStatus}
+}
+
+// ValidateWarningAuthority rejects arbitrary warning payloads. Turn identity,
+// ordering, revision, and creation time are persistence metadata populated by
+// the owning store and are intentionally allowed.
+func (e TurnEvent) ValidateWarningAuthority() error {
+	if e.Kind != TurnEventWarning || e.Text != MemoryRecallDegradedText || e.Status != MemoryRecallDegradedStatus ||
+		e.Message != nil || e.Response != nil || e.ToolCall != nil || e.ToolResult != nil || e.ConfirmationID != "" ||
+		e.ExecutionID != "" || e.Phase != "" || len(e.RelatedTaskIDs) != 0 || len(e.RelatedPlanIDs) != 0 ||
+		len(e.References) != 0 || e.ErrorCode != "" || e.ErrorSummary != "" || e.FirstSequence != 0 ||
+		e.LastSequence != 0 || e.ReplayGap || e.MutationID != "" || e.ExpectedRevision != 0 ||
+		len(e.AttachmentSources) != 0 || e.Err != nil {
+		return ErrInvalid
+	}
+	return nil
 }
 
 func (e TurnEvent) ValidateWorkerStatusAuthority() error {

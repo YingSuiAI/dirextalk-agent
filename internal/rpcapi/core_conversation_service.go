@@ -78,7 +78,9 @@ func turnProto(t coreconversation.Turn) *agentv1.CoreConversationTurn {
 }
 
 func turnEventProto(e coreconversation.TurnEvent) (*agentv1.ConversationServiceWatchTurnEventsResponse, error) {
-	if e.Revision == 0 || (e.Kind == coreconversation.TurnEventWaitingConfirmation && e.ValidateWaitingConfirmationAuthority() != nil) {
+	if e.Revision == 0 ||
+		(e.Kind == coreconversation.TurnEventWaitingConfirmation && e.ValidateWaitingConfirmationAuthority() != nil) ||
+		(e.Kind == coreconversation.TurnEventWarning && e.ValidateWarningAuthority() != nil) {
 		return nil, coreconversation.ErrChatFailed
 	}
 	out := &agentv1.CoreConversationTurnEvent{TurnId: e.TurnID, Sequence: e.Sequence, Revision: e.Revision, Kind: string(e.Kind), Text: e.Text, ErrorCode: e.ErrorCode, ErrorSummary: e.ErrorSummary, FirstSequence: e.FirstSequence, LastSequence: e.LastSequence, ReplayGap: e.ReplayGap, CreatedAt: timestamppb.New(e.CreatedAt), ConfirmationId: e.ConfirmationID, ExecutionId: e.ExecutionID, Status: e.Status, Phase: e.Phase, RelatedTaskIds: append([]string(nil), e.RelatedTaskIDs...), RelatedPlanIds: append([]string(nil), e.RelatedPlanIDs...), References: referenceProtos(e.References)}
@@ -273,6 +275,10 @@ func durableTurnProgressProto(event coreconversation.StreamEvent) *agentv1.Conve
 		}
 	case coreconversation.EventWorkerStatus:
 		name = "cloud_worker"
+	case coreconversation.EventWarning:
+		return &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Warning{
+			Warning: &agentv1.CoreStreamChatWarning{Code: event.Status, Message: event.Text},
+		}}
 	case coreconversation.EventSteered:
 		name = "steer"
 		if progress == "" {

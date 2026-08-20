@@ -374,6 +374,7 @@ const (
 	EventToolResult          StreamEventKind = "tool_result"
 	EventWaitingConfirmation StreamEventKind = "waiting_confirmation"
 	EventWorkerStatus        StreamEventKind = "worker_status"
+	EventWarning             StreamEventKind = "warning"
 	EventSteered             StreamEventKind = "steered"
 	EventDone                StreamEventKind = "done"
 	EventError               StreamEventKind = "error"

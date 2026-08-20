@@ -1132,6 +1132,29 @@ func TestDurableWorkerProgressProjectsPhaseOnExistingStatusEvent(t *testing.T) {
 	}
 }
 
+func TestDurableMemoryWarningProjectsClosedSafeProgress(t *testing.T) {
+	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
+	event := coreconversation.NewMemoryRecallDegradedTurnEvent()
+	event.Revision, event.CreatedAt = 3, time.Now().UTC()
+	raw, err := ProjectDurableTurnEventJSON(turn, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projected map[string]any
+	if err = json.Unmarshal(raw, &projected); err != nil {
+		t.Fatal(err)
+	}
+	if projected["kind"] != "warning" || projected["status"] != coreconversation.MemoryRecallDegradedStatus ||
+		projected["text"] != coreconversation.MemoryRecallDegradedText || projected["idempotency_key"] != turn.RequestID ||
+		projected["turn_id"] != turn.ID || projected["conversation_id"] != turn.ConversationID || len(projected) != 8 {
+		t.Fatalf("memory warning=%s", raw)
+	}
+	event.Text = "private backend detail"
+	if _, err = ProjectDurableTurnEventJSON(turn, event); !errors.Is(err, coreconversation.ErrChatFailed) {
+		t.Fatalf("unsafe memory warning err=%v", err)
+	}
+}
+
 func TestDurableDoneEventProjectsAuthoritativeResponse(t *testing.T) {
 	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
 	taskID, planID := uuid.NewString(), uuid.NewString()

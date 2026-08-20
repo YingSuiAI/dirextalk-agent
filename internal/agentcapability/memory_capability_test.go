@@ -3,6 +3,7 @@ package agentcapability
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -90,6 +91,13 @@ func TestMemoryCapabilityPublishesClosedOwnerOperations(t *testing.T) {
 	}
 	if _, err = capability.HandleOperation(context.Background(), "status", []byte(`{}`)); err == nil {
 		t.Fatal("status accepted unauthenticated context")
+	}
+}
+
+func TestExplicitMemoryCapabilityRemainsFailClosedWithoutService(t *testing.T) {
+	capability := NewCoreMemoryCapability(nil)
+	if _, err := capability.HandleOperation(capabilityTestContext(), "get_config", []byte(`{}`)); !errors.Is(err, corememory.ErrRepository) {
+		t.Fatalf("explicit memory read err=%v", err)
 	}
 }
 

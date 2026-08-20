@@ -1,6 +1,7 @@
 package coreconversation
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2706,10 +2707,13 @@ func TestRecoverTurnsResolvesMessageMCPSnapshotWithoutAmbientPermissionAndDoesNo
 	}
 }
 
-func TestExecuteTurnFailsClosedWhenMemoryRecallIsUnavailable(t *testing.T) {
+func TestExecuteTurnContinuesOnceWithDurableWarningWhenOptionalMemoryRecallFails(t *testing.T) {
 	snapshot := testTurnSnapshot()
-	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "remember", ProfileID: snapshot.ProfileID, ProfileSnapshot: snapshot, State: TurnAccepted, Revision: 1, CreatedAt: time.Now().UTC()}
-	store := &recallFailureTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore(), turn: turn}}
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "answer normally", ProfileID: snapshot.ProfileID, ProfileSnapshot: snapshot, State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC()}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore(), turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}
 	model := &capturingTurnModel{}
 	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return snapshot, nil }))
 	if err != nil {
@@ -2717,8 +2721,122 @@ func TestExecuteTurnFailsClosedWhenMemoryRecallIsUnavailable(t *testing.T) {
 	}
 	service.SetMemoryRecallResolver(memoryRecallFunc(func(context.Context, string) (string, error) { return "", errors.New("private backend detail") }))
 	service.executeTurn(context.Background(), turn.ID)
-	if model.runs != 0 || store.failedCode != "memory_recall_unavailable" || store.failedSummary != "long-term memory recall is unavailable" {
-		t.Fatalf("runs=%d code=%q summary=%q", model.runs, store.failedCode, store.failedSummary)
+	if model.runs != 1 || store.failedCode != "" || store.turn.State != TurnCompleted {
+		t.Fatalf("runs=%d code=%q state=%s", model.runs, store.failedCode, store.turn.State)
+	}
+	warnings := 0
+	for _, event := range store.events {
+		if event.Kind != TurnEventWarning {
+			continue
+		}
+		warnings++
+		if event.Status != MemoryRecallDegradedStatus || event.Text != MemoryRecallDegradedText {
+			t.Fatalf("unsafe memory warning: %+v", event)
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("memory warnings=%d events=%+v", warnings, store.events)
+	}
+	requestJSON, marshalErr := json.Marshal(model.request)
+	if marshalErr != nil || bytes.Contains(requestJSON, []byte("memory_recall_degraded")) || bytes.Contains(requestJSON, []byte("private backend detail")) {
+		t.Fatalf("memory warning became model authority: %s err=%v", requestJSON, marshalErr)
+	}
+	if store.turn.ModelDispatchCount != 1 {
+		t.Fatalf("provider dispatches=%d", store.turn.ModelDispatchCount)
+	}
+}
+
+func TestExecuteTurnRestartDoesNotRetryDurablyDegradedOptionalMemoryRecall(t *testing.T) {
+	snapshot := testTurnSnapshot()
+	createdAt := time.Now().UTC()
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "answer normally", ProfileID: snapshot.ProfileID, ProfileSnapshot: snapshot, State: TurnAccepted, Revision: 1, LastSequence: 3, CreatedAt: createdAt}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore(), turn: turn},
+		events: []TurnEvent{
+			{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: createdAt},
+			{TurnID: turn.ID, Sequence: 2, Revision: 1, Kind: TurnEventStarted, CreatedAt: createdAt.Add(time.Microsecond)},
+			{TurnID: turn.ID, Sequence: 3, Revision: 1, Kind: TurnEventWarning, Status: MemoryRecallDegradedStatus, Text: MemoryRecallDegradedText, CreatedAt: createdAt.Add(2 * time.Microsecond)},
+		},
+	}
+	model := &capturingTurnModel{}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return snapshot, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recalls := 0
+	service.SetMemoryRecallResolver(memoryRecallFunc(func(context.Context, string) (string, error) {
+		recalls++
+		return "", errors.New("must not retry")
+	}))
+	service.executeTurn(context.Background(), turn.ID)
+	if recalls != 0 || model.runs != 1 || store.failedCode != "" || store.turn.State != TurnCompleted {
+		t.Fatalf("recalls=%d runs=%d code=%q state=%s", recalls, model.runs, store.failedCode, store.turn.State)
+	}
+	warnings := 0
+	for _, event := range store.events {
+		if event.Kind == TurnEventWarning {
+			warnings++
+		}
+	}
+	if warnings != 1 || store.turn.ModelDispatchCount != 1 {
+		t.Fatalf("warnings=%d provider dispatches=%d events=%+v", warnings, store.turn.ModelDispatchCount, store.events)
+	}
+}
+
+func TestExecuteTurnBoundsOptionalMemoryRecallBeforeContinuing(t *testing.T) {
+	snapshot := testTurnSnapshot()
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "answer normally", ProfileID: snapshot.ProfileID, ProfileSnapshot: snapshot, State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC()}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore(), turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}
+	model := &capturingTurnModel{}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return snapshot, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.memoryRecallTimeout = 20 * time.Millisecond
+	service.SetMemoryRecallResolver(memoryRecallFunc(func(ctx context.Context, _ string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}))
+	started := time.Now()
+	service.executeTurn(context.Background(), turn.ID)
+	if elapsed := time.Since(started); elapsed < service.memoryRecallTimeout || elapsed > time.Second {
+		t.Fatalf("optional recall elapsed=%s timeout=%s", elapsed, service.memoryRecallTimeout)
+	}
+	if model.runs != 1 || store.turn.State != TurnCompleted || store.turn.ModelDispatchCount != 1 {
+		t.Fatalf("runs=%d state=%s provider dispatches=%d", model.runs, store.turn.State, store.turn.ModelDispatchCount)
+	}
+}
+
+func TestExecuteTurnParentCancellationDoesNotDegradeMemoryOrStartProvider(t *testing.T) {
+	snapshot := testTurnSnapshot()
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "answer normally", ProfileID: snapshot.ProfileID, ProfileSnapshot: snapshot, State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC()}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore(), turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Revision: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}
+	model := &capturingTurnModel{}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return snapshot, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetMemoryRecallResolver(memoryRecallFunc(func(ctx context.Context, _ string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	service.executeTurn(ctx, turn.ID)
+	warnings := 0
+	for _, event := range store.events {
+		if event.Kind == TurnEventWarning {
+			warnings++
+		}
+	}
+	if warnings != 0 || model.runs != 0 || store.turn.ModelDispatchCount != 0 {
+		t.Fatalf("warnings=%d runs=%d provider dispatches=%d", warnings, model.runs, store.turn.ModelDispatchCount)
 	}
 }
 

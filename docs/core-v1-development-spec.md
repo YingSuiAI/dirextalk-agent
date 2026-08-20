@@ -706,9 +706,16 @@ preserve the fact key and kind; deletes retract the selected active fact. The
 immutable fact ID is the stale-write fence and UUID idempotency keys make
 retries durable. Knowledge source CRUD is not a second memory surface.
 Per-turn recall ranks current facts against the prompt, then adds a bounded
-recent timeline. This internal
-projection does not create another public action envelope or make Message
-Server an Agent-memory database.
+recent timeline. All current automatic turn recall is optional: it has a fixed
+three-second deadline and, on timeout or dependency failure, records one
+restart-stable `memory_recall_degraded` warning, continues the same turn without
+memory, and never retries recall for that turn, including after restart. That
+warning is safe progress only; it never becomes model authority,
+conversation content, tool output, runtime JSON, or final Markdown. A canceled
+parent emits no degradation warning and starts no provider work. Explicit
+authenticated `agent.memory.v1` reads and mutations remain fail closed, and no
+current turn claims memory as an authorization or safety prerequisite. This
+internal projection does not make Message Server an Agent-memory database.
 
 ### AWS
 

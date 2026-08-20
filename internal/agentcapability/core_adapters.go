@@ -829,6 +829,7 @@ func projectDurableChatStreamEvent(turn coreconversation.Turn, revision uint64, 
 		TurnID: turn.ID, Revision: revision, Text: event.Text,
 		ToolCall: event.ToolCall, ToolResult: event.ToolResult,
 		ErrorCode: event.ErrCode, ErrorSummary: event.ErrSummary,
+		Status: event.Status, Phase: event.Phase,
 	}
 	if event.Response != nil {
 		projected.Text = event.Response.Message.Content
@@ -874,6 +875,21 @@ func projectDurableWorkerStatusEvent(turn coreconversation.Turn, event coreconve
 	return projected, nil
 }
 
+func projectDurableWarningEvent(turn coreconversation.Turn, event coreconversation.TurnEvent) (durableChatStreamEvent, error) {
+	if event.Revision == 0 || event.CreatedAt.IsZero() || event.ValidateWarningAuthority() != nil {
+		return durableChatStreamEvent{}, coreconversation.ErrChatFailed
+	}
+	projected, err := projectDurableChatStreamEvent(turn, event.Revision, coreconversation.StreamEvent{
+		Kind: coreconversation.EventWarning, Text: event.Text, Status: event.Status,
+		RequestID: turn.RequestID, ConversationID: turn.ConversationID,
+	})
+	if err != nil {
+		return durableChatStreamEvent{}, err
+	}
+	projected.CreatedAt = event.CreatedAt.UTC().Format(time.RFC3339Nano)
+	return projected, nil
+}
+
 func projectDurableSteeredEvent(turn coreconversation.Turn, event coreconversation.TurnEvent) (durableChatStreamEvent, error) {
 	if event.Revision == 0 || !coretask.ValidUUID(event.MutationID) || strings.TrimSpace(event.Text) == "" || event.CreatedAt.IsZero() {
 		return durableChatStreamEvent{}, coreconversation.ErrChatFailed
@@ -894,7 +910,7 @@ func projectDurableSteeredEvent(turn coreconversation.Turn, event coreconversati
 }
 
 func durableTurnStreamEvent(turn coreconversation.Turn, event coreconversation.TurnEvent) *coreconversation.StreamEvent {
-	base := coreconversation.StreamEvent{TurnSequence: event.Sequence, RequestID: turn.RequestID, ConversationID: turn.ConversationID}
+	base := coreconversation.StreamEvent{TurnSequence: event.Sequence, RequestID: turn.RequestID, ConversationID: turn.ConversationID, Status: event.Status}
 	switch event.Kind {
 	case coreconversation.TurnEventAccepted:
 		base.Kind = coreconversation.StreamEventKind("accepted")
@@ -902,6 +918,11 @@ func durableTurnStreamEvent(turn coreconversation.Turn, event coreconversation.T
 		base.Kind = coreconversation.EventStarted
 	case coreconversation.TurnEventDelta:
 		base.Kind, base.Text = coreconversation.EventDelta, event.Text
+	case coreconversation.TurnEventWarning:
+		if event.ValidateWarningAuthority() != nil {
+			return nil
+		}
+		base.Kind, base.Text = coreconversation.EventWarning, event.Text
 	case coreconversation.TurnEventToolCall:
 		base.Kind, base.ToolCall = coreconversation.EventToolCall, event.ToolCall
 	case coreconversation.TurnEventToolResult:
@@ -931,6 +952,8 @@ func ProjectDurableTurnEventJSON(turn coreconversation.Turn, event coreconversat
 		projected, err = projectDurableWaitingConfirmationEvent(turn, event)
 	case coreconversation.TurnEventWorkerStatus:
 		projected, err = projectDurableWorkerStatusEvent(turn, event)
+	case coreconversation.TurnEventWarning:
+		projected, err = projectDurableWarningEvent(turn, event)
 	case coreconversation.TurnEventSteered:
 		projected, err = projectDurableSteeredEvent(turn, event)
 	default:

@@ -23,6 +23,16 @@ contract](message-server-integration-development-contract.md), and
   their recent conflict-preserving timeline, and exact-promoted-revision
   semantic Knowledge passages; current facts explicitly outrank stale
   passages and the envelope is not persisted or returned.
+- All current automatic turn recall is optional and bounded to three seconds.
+  A live timeout or dependency failure persists one closed
+  `memory_recall_degraded` warning, continues the same turn without memory, and
+  never retries recall for that turn, including after restart. Watch,
+  StreamChat, and Capability streaming
+  project the warning distinctly without adding it to model input, transcript,
+  tool output, runtime JSON, or final Markdown; parent cancellation emits no
+  warning and starts no provider dispatch. Authenticated explicit
+  `agent.memory.v1` operations remain fail closed, and no current admitted turn
+  marks recall as authorization- or safety-required.
 - Chat, StreamChat, and StartTurn now enter one durable Turn execution owner.
   Unary Chat returns the authoritative terminal Turn response, while StreamChat
   projects the persisted accepted/model/tool/confirmation/Worker/steer/terminal

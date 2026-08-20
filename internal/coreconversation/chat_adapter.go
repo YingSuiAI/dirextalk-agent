@@ -145,6 +145,11 @@ func streamEventFromTurnEvent(turn Turn, event TurnEvent) *StreamEvent {
 		base.Kind = EventWaitingConfirmation
 	case TurnEventWorkerStatus:
 		base.Kind = EventWorkerStatus
+	case TurnEventWarning:
+		if event.ValidateWarningAuthority() != nil {
+			return nil
+		}
+		base.Kind, base.Text = EventWarning, event.Text
 	case TurnEventSteered:
 		base.Kind, base.Text = EventSteered, event.Text
 	case TurnEventDone:

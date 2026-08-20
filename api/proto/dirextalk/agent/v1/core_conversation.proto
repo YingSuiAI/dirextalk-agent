@@ -165,11 +165,16 @@ message CoreStreamChatDone {
   repeated string related_plan_ids = 4;
   repeated CoreConversationReference references = 5;
 }
+message CoreStreamChatWarning {
+  string code = 1;
+  string message = 2;
+}
 message ConversationServiceStreamChatResponse {
   oneof event {
     CoreStreamChatDelta delta = 1;
     CoreStreamChatToolProgress tool = 2;
     CoreStreamChatDone done = 3;
+    CoreStreamChatWarning warning = 4;
   }
 }
 

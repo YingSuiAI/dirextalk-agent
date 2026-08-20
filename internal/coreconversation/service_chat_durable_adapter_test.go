@@ -295,6 +295,7 @@ func TestStreamChatProjectsDurableTurnEventsInLedgerOrder(t *testing.T) {
 			{Kind: TurnEventToolResult, ToolResult: &result},
 			waiting,
 			{Kind: TurnEventWorkerStatus, ExecutionID: uuid.NewString(), Status: "running", Phase: "working"},
+			NewMemoryRecallDegradedTurnEvent(),
 			{Kind: TurnEventSteered, Text: "focus", Status: "deferred_tool"},
 		},
 	}
@@ -315,7 +316,7 @@ func TestStreamChatProjectsDurableTurnEventsInLedgerOrder(t *testing.T) {
 	for event := range stream {
 		got = append(got, event)
 	}
-	want := []StreamEventKind{EventAccepted, EventStarted, EventDelta, EventToolCall, EventToolResult, EventWaitingConfirmation, EventWorkerStatus, EventSteered, EventDone}
+	want := []StreamEventKind{EventAccepted, EventStarted, EventDelta, EventToolCall, EventToolResult, EventWaitingConfirmation, EventWorkerStatus, EventWarning, EventSteered, EventDone}
 	if len(got) != len(want) {
 		t.Fatalf("events=%+v", got)
 	}
@@ -324,8 +325,9 @@ func TestStreamChatProjectsDurableTurnEventsInLedgerOrder(t *testing.T) {
 			t.Fatalf("event[%d]=%+v want=%s", index, got[index], want[index])
 		}
 	}
-	if got[5].ConfirmationID != waiting.ConfirmationID || got[6].Status != "running" || got[6].Phase != "working" || got[7].Text != "focus" {
-		t.Fatalf("lifecycle projections=%+v", got[5:8])
+	if got[5].ConfirmationID != waiting.ConfirmationID || got[6].Status != "running" || got[6].Phase != "working" ||
+		got[7].Status != MemoryRecallDegradedStatus || got[7].Text != MemoryRecallDegradedText || got[8].Text != "focus" {
+		t.Fatalf("lifecycle projections=%+v", got[5:9])
 	}
 }
 
