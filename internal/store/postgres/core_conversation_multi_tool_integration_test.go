@@ -305,6 +305,37 @@ func (r staticConversationProfile) ResolveProfileSnapshot(context.Context, strin
 	return r.snapshot, nil
 }
 
+type turnAdmissionRuntimeCaptureStore struct {
+	*CoreConversationStore
+	runtime *core.TurnRuntimeSnapshot
+}
+
+func (s *turnAdmissionRuntimeCaptureStore) StartTurnWithRuntime(_ context.Context, _ core.TurnStartCommand, runtime core.TurnRuntimeSnapshot) (core.Turn, error) {
+	captured := runtime
+	s.runtime = &captured
+	return core.Turn{ID: uuid.NewString(), State: core.TurnCompleted}, nil
+}
+
+func captureProductionTurnAdmissionRuntime(t *testing.T, h *turnDBHarness, cmd core.TurnStartCommand, extensions []core.ResolvedExtension) core.TurnRuntimeSnapshot {
+	t.Helper()
+	store := &turnAdmissionRuntimeCaptureStore{CoreConversationStore: h.store}
+	service, err := core.NewService(store, &countingConversationModel{}, staticConversationExtensions{resolved: extensions}, staticConversationProfile{snapshot: cmd.ProfileSnapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.StartTurn(context.Background(), cmd); err != nil {
+		service.Close()
+		t.Fatal(err)
+	}
+	if err = service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if store.runtime == nil {
+		t.Fatal("production turn admission did not capture a runtime")
+	}
+	return *store.runtime
+}
+
 type coreIntrinsicResolverFunc func(context.Context, core.TurnLease) ([]core.ResolvedIntrinsic, error)
 
 func (f coreIntrinsicResolverFunc) ResolveIntrinsicTools(ctx context.Context, lease core.TurnLease) ([]core.ResolvedIntrinsic, error) {
@@ -380,15 +411,7 @@ func loadPersistedTurnDirectives(t *testing.T, h *turnDBHarness, turn core.Turn)
 
 func startFinalizationAdmittedTurn(t *testing.T, h *turnDBHarness, cmd core.TurnStartCommand) core.Turn {
 	t.Helper()
-	candidate, err := h.store.PrepareTurnRuntimeAdmission(context.Background(), cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const convergencePrompt = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
-	runtime, err := core.NewTurnRuntimeSnapshotForMode(convergencePrompt, cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest, cmd.ExecutionMode)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := captureProductionTurnAdmissionRuntime(t, h, cmd, nil)
 	turn, err := h.store.StartTurnWithRuntime(context.Background(), cmd, runtime)
 	if err != nil {
 		t.Fatal(err)
@@ -1305,14 +1328,9 @@ func TestConversationUnknownMutationProjectsOnceAndFinalizesWithoutToolsPostgres
 	if err != nil || recoveredTurn.RuntimeSnapshot == nil {
 		t.Fatalf("recovered turn=%+v err=%v", recoveredTurn, err)
 	}
-	recoveredRuntime, err := core.NewTurnRuntimeSnapshotForMode(
-		"When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions.",
-		recoveredTurn.ProfileSnapshot, nil, recoveredTurn.ExtensionSnapshotDigest, recoveredTurn.AttachmentSnapshotDigest,
-		recoveredTurn.RuntimeSnapshot.ExecutionPolicy.Mode,
-	)
-	recoveredRuntime.IntrinsicPolicy = core.TurnIntrinsicPolicyNone
-	if err != nil || recoveredRuntime.Digest() != recoveredTurn.RuntimeSnapshot.Digest() {
-		t.Fatalf("recovered runtime=%+v stored=%+v err=%v", recoveredRuntime, recoveredTurn.RuntimeSnapshot, err)
+	recoveredRuntime := *recoveredTurn.RuntimeSnapshot
+	if recoveredRuntime.Digest() != fixture.turn.RuntimeSnapshot.Digest() {
+		t.Fatalf("recovered runtime=%+v admitted=%+v", recoveredRuntime, fixture.turn.RuntimeSnapshot)
 	}
 	finalizationDirective := core.NewTurnDispatchDirective(core.TurnDispatchGuidanceLoopSynthesis, core.TurnDispatchToolsNone, "")
 	finalizationDirective.FinalizationReason = core.TurnFinalizationToolOutcome
@@ -1542,7 +1560,9 @@ func TestConversationToolTerminalUsesLiveSequencePostgres(t *testing.T) {
 			if execute, err := fixture.h.store.BeginConversationToolDispatch(context.Background(), fixture.lease, first); err != nil || !execute {
 				t.Fatalf("begin execute=%v err=%v", execute, err)
 			}
-			if err := fixture.h.store.RecordConversationToolResult(context.Background(), fixture.lease, core.ToolResult{CallID: first.ID, ToolName: first.Name, Content: `{}`}); err != nil {
+			result := (core.ToolResult{CallID: first.ID, ToolName: first.Name, Content: `{}`}).
+				WithObservation(core.ToolOutcomeSuccess, "web search completed", core.ToolMutationNone)
+			if err := fixture.h.store.RecordConversationToolResult(context.Background(), fixture.lease, result); err != nil {
 				t.Fatal(err)
 			}
 			failed, err := fixture.h.store.FailTurn(context.Background(), fixture.lease, terminal.code, "model tool batch failed")
@@ -1643,10 +1663,13 @@ func TestConversationToolStrictIdentityAndRoundCompletenessPostgres(t *testing.T
 	if execute, err := fixture.h.store.BeginConversationToolDispatch(context.Background(), fixture.lease, first); err != nil || !execute {
 		t.Fatalf("begin execute=%v err=%v", execute, err)
 	}
-	if err := fixture.h.store.RecordConversationToolResult(context.Background(), fixture.lease, core.ToolResult{CallID: first.ID, ToolName: "wrong_tool", Content: `{}`}); !errors.Is(err, core.ErrConflict) {
+	result := (core.ToolResult{CallID: first.ID, ToolName: first.Name, Content: `{}`}).
+		WithObservation(core.ToolOutcomeSuccess, "web search completed", core.ToolMutationNone)
+	wrongTool := result
+	wrongTool.ToolName = "wrong_tool"
+	if err := fixture.h.store.RecordConversationToolResult(context.Background(), fixture.lease, wrongTool); !errors.Is(err, core.ErrConflict) {
 		t.Fatalf("wrong tool result err=%v", err)
 	}
-	result := core.ToolResult{CallID: first.ID, ToolName: first.Name, Content: `{}`}
 	if err := fixture.h.store.RecordConversationToolResult(context.Background(), fixture.lease, result); err != nil {
 		t.Fatal(err)
 	}
@@ -1674,7 +1697,8 @@ func TestConversationToolCompactEnvelopePreservesLargeArgumentsAndResultPostgres
 	if execute, err := fixture.h.store.BeginConversationToolDispatch(context.Background(), fixture.lease, call); err != nil || !execute {
 		t.Fatalf("begin execute=%v err=%v", execute, err)
 	}
-	result := core.ToolResult{CallID: call.ID, ToolName: call.Name, Content: strings.Repeat("r", 760<<10)}
+	result := (core.ToolResult{CallID: call.ID, ToolName: call.Name, Content: strings.Repeat("r", 760<<10)}).
+		WithObservation(core.ToolOutcomeSuccess, "large read completed", core.ToolMutationNone)
 	if err := fixture.h.store.RecordConversationToolResult(context.Background(), fixture.lease, result); err != nil {
 		t.Fatal(err)
 	}

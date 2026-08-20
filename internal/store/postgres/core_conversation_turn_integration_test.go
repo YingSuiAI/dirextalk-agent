@@ -957,15 +957,12 @@ func newConversationToolPrepareFixtureForTool(t *testing.T, callID, toolName str
 	cmd.Extensions = []core.ExtensionSelection{snapshot.Selection}
 	cmd.ExtensionSnapshots = []core.ExtensionExecutionSnapshot{snapshot}
 	createTestProfile(context.Background(), t, h.store.Store, cmd.ProfileID, "test", "integration-secret")
-	candidate, err := h.store.PrepareTurnRuntimeAdmission(context.Background(), cmd)
-	if err != nil {
-		t.Fatal(err)
+	resolved := core.ResolvedExtension{
+		Selection: snapshot.Selection,
+		Snapshot:  snapshot,
+		Tools:     []coremodel.Tool{{Name: toolName, InputSchema: map[string]any{"type": "object"}}},
 	}
-	runtime, err := core.NewTurnRuntimeSnapshotForMode("When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions.", cmd.ProfileSnapshot, nil, candidate.ExtensionSnapshotDigest, candidate.AttachmentSnapshotDigest, cmd.ExecutionMode)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime.IntrinsicPolicy = core.TurnIntrinsicPolicyNone
+	runtime := captureProductionTurnAdmissionRuntime(t, h, cmd, []core.ResolvedExtension{resolved})
 	turn, err := h.store.StartTurnWithRuntime(context.Background(), cmd, runtime)
 	if err != nil {
 		t.Fatal(err)
