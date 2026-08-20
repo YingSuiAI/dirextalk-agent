@@ -19,7 +19,11 @@ type cloudWorkerExecutionAdapter struct {
 type localCloudWorkerExecutionAdapter struct {
 	*cloudWorkerExecutionAdapter
 	artifacts *localartifact.Repository
-	catalog   coreserver.Repository
+	catalog   serverArtifactCatalog
+}
+
+type serverArtifactCatalog interface {
+	DeleteBySource(context.Context, coreserver.Authority, string, string) error
 }
 
 // NewLocalCloudWorkerExecutionPort keeps SSH Worker output on this Agent.
@@ -49,15 +53,6 @@ func (adapter *localCloudWorkerExecutionAdapter) GetArtifact(ctx context.Context
 	if err != nil {
 		return nil, mapLocalArtifactError(err)
 	}
-	if adapter.catalog != nil {
-		sourceKind := "cloud_worker_artifact"
-		if request.RecordKind == RecordKindLocalSandbox {
-			sourceKind = "local_sandbox_artifact"
-		}
-		if err = adapter.catalog.DeleteBySource(ctx, coreserver.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, sourceKind, request.ArtifactID); err != nil {
-			return nil, err
-		}
-	}
 	return localArtifactProjection(artifact), nil
 }
 
@@ -75,6 +70,17 @@ func (adapter *localCloudWorkerExecutionAdapter) DeleteArtifact(ctx context.Cont
 	}
 	if err != nil {
 		return nil, mapLocalArtifactError(err)
+	}
+	if adapter.catalog != nil {
+		sourceKind := "cloud_worker_artifact"
+		if request.RecordKind == RecordKindLocalSandbox {
+			sourceKind = "local_sandbox_artifact"
+		}
+		if err = adapter.catalog.DeleteBySource(ctx,
+			coreserver.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration},
+			sourceKind, request.ArtifactID); err != nil {
+			return nil, err
+		}
 	}
 	return localArtifactProjection(artifact), nil
 }
