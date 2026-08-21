@@ -177,6 +177,20 @@ func TestDestroyServerResumesWorkerAlreadyDestroying(t *testing.T) {
 	}
 }
 
+func TestDestroyServerCleansOrphanedProvisioningWorker(t *testing.T) {
+	now := time.Now().UTC()
+	primaryID, workerID := uuid.NewString(), uuid.NewString()
+	repository := &repositoryFake{instance: Instance{ID: primaryID, CreatedAt: now}}
+	workers := &workersFake{servers: []Server{{ServerID: workerID, Status: "provisioning", Busy: true, CreatedAt: now}}}
+	service, _ := NewService(repository, workers, &deleterFake{}, Config{PrimaryName: "primary"})
+	if err := service.DestroyServer(context.Background(), Authority{OwnerID: "owner", AccountGeneration: 1}, workerID, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if !repository.marked || !workers.destroyed || !repository.deleted {
+		t.Fatalf("orphan cleanup = marked:%v worker:%v catalog:%v", repository.marked, workers.destroyed, repository.deleted)
+	}
+}
+
 func TestDestroyServerDeletesExecutionBodiesBeforeWorkerAndCatalog(t *testing.T) {
 	now := time.Now().UTC()
 	primaryID, workerID := uuid.NewString(), uuid.NewString()

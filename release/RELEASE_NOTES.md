@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.184
+
+1. Project partial Cloud Worker records as provisioning instead of available so the server page reports their real lifecycle state.
+2. Allow owner-confirmed server deletion to reach the serialized Worker destroy fence for orphaned provisioning records, while active creation remains protected by the provider lock.
+
 ## v1.0.183
 
 1. Make formal release verification provision and capability-check its own digest-pinned pgvector PostgreSQL 18 container, eliminating external test-database image drift.

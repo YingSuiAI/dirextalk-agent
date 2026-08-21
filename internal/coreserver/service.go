@@ -162,7 +162,10 @@ func (s *Service) DestroyServer(ctx context.Context, authority Authority, server
 		}
 		return err
 	}
-	if server.Busy && server.Status != "destroying" {
+	// A provisioning record may outlive a failed or canceled create attempt.
+	// Let the Worker provider's serialized destroy fence decide whether creation
+	// is still active so an orphaned partial record remains owner-deletable.
+	if server.Busy && server.Status != "destroying" && server.Status != "provisioning" {
 		return ErrBusy
 	}
 	if err = s.repository.MarkServerDeleting(ctx, authority, serverID); err != nil {

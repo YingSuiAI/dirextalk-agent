@@ -23,6 +23,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreserver"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
 
@@ -204,6 +205,29 @@ func TestSSHWorkerListAndGetProjectUnavailableHistoricalCredential(t *testing.T)
 	status, err := executor.ObserveWorker(context.Background(), authority, identity)
 	if err != nil || status.Availability != sshworker.WorkerUnavailable || status.Identity != identity {
 		t.Fatalf("get status=%+v err=%v", status, err)
+	}
+}
+
+func TestServerInventoryProjectsProvisioningWorkerAsCancelableCreation(t *testing.T) {
+	state, err := sshworker.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := workerIdentityFixture()
+	worker := sshworker.WorkerRecord{WorkerID: identity.WorkerID, OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration,
+		Credential: identity.Credential, DisplayName: "gitlab-server", Phase: sshworker.WorkerProvisioning}
+	if err = state.SaveWorker(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &cloudWorkerCredentialResolverFake{exactRevision: identity.Credential.CredentialRevision, exactErr: errors.New("historical secret unavailable")}
+	inventory := coreServerWorkerInventory{executor: &sshWorkerExecutor{exact: resolver, state: state}}
+	servers, err := inventory.List(context.Background(), coreserver.Authority{OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration})
+	if err != nil || len(servers) != 1 {
+		t.Fatalf("servers=%+v err=%v", servers, err)
+	}
+	server := servers[0]
+	if server.Status != string(sshworker.WorkerProvisioning) || !server.Busy || !server.CanDestroy || server.BusyReason != "服务器正在创建" {
+		t.Fatalf("provisioning server=%+v", server)
 	}
 }
 

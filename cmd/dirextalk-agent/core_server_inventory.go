@@ -43,7 +43,11 @@ func (inventory coreServerWorkerInventory) List(ctx context.Context, authority c
 		if busy {
 			busyReason = "服务器任务正在运行"
 		}
-		if status.WorkerPhase == sshworker.WorkerDestroying {
+		switch status.WorkerPhase {
+		case sshworker.WorkerProvisioning:
+			serverStatus = string(sshworker.WorkerProvisioning)
+			busyReason = "服务器正在创建"
+		case sshworker.WorkerDestroying:
 			serverStatus = string(sshworker.WorkerDestroying)
 			busyReason = "服务器正在销毁"
 		}
