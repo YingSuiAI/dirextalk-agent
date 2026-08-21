@@ -45,7 +45,13 @@ func (s *Service) ListServers(ctx context.Context, authority Authority) ([]Serve
 	if err != nil {
 		return nil, err
 	}
-	primary := Server{ServerID: instance.ID, ServerKind: ServerPrimary, Name: s.config.PrimaryName, Status: "healthy", Address: s.config.PrimaryOrigin, Region: s.config.PrimaryRegion, ArtifactCount: counts[instance.ID], CanDestroy: false, CreatedAt: instance.CreatedAt.UTC()}
+	primaryArtifactCount := counts[instance.ID]
+	if primaryArtifactCount > 0 {
+		// The primary catalog always contains one immutable backend-service row.
+		// It identifies the Agent node but is not a user-created deliverable.
+		primaryArtifactCount--
+	}
+	primary := Server{ServerID: instance.ID, ServerKind: ServerPrimary, Name: s.config.PrimaryName, Status: "healthy", Address: s.config.PrimaryOrigin, Region: s.config.PrimaryRegion, ArtifactCount: primaryArtifactCount, CanDestroy: false, CreatedAt: instance.CreatedAt.UTC()}
 	result := []Server{primary}
 	if s.workers != nil {
 		workers, listErr := s.workers.List(ctx, authority)

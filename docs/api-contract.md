@@ -690,7 +690,9 @@ or stream after admission. It never cancels the accepted Turn; callers use
 - Always-ready `agent.servers.v1` is the owner-client inventory projection for
   the primary Agent node and retained Workers. `list_servers` pins the immutable
   `agent_instance_metadata` identity first and orders Workers by persisted
-  creation time and ID; `get_server` resolves one stable server ID;
+  creation time and ID; its `artifact_count` includes only user-visible
+  deliverables and excludes the primary node's immutable backend-service row;
+  `get_server` resolves one stable server ID;
   `list_artifacts` pages the server-bound catalog with the non-deletable Agent
   backend service first; `delete_artifact` deletes only static pages and local
   or Worker execution files through their owning repository; `destroy_server`

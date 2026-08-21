@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.181
+
+1. Exclude the primary Agent node's immutable backend-service row from server artifact totals so summary counts match the user-visible artifact list.
+
 ## v1.0.180
 
 1. Make retained-service domain binding publish a complete Worker HTTPS route by reconciling the pinned-SSH Caddy proxy, public 80/443 rules, Route53 record, and direct-to-Worker TLS health before committing success.
