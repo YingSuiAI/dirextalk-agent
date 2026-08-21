@@ -27,7 +27,7 @@ func TestCloudWorkerOfferReferencesTrackConfirmedAndRunningState(t *testing.T) {
 	}
 	assertState := func(wantConfirmation, wantRun string) {
 		conversation, loadErr := conversationStore.LoadConversation(h.ctx, offer.Plan.ConversationID)
-		if loadErr != nil || len(conversation.Messages) != 2 || len(conversation.Messages[1].References) != 3 {
+		if loadErr != nil || len(conversation.Messages) < 2 || len(conversation.Messages[1].References) != 3 {
 			t.Fatalf("conversation=%+v err=%v", conversation, loadErr)
 		}
 		var confirmationState, runState string
@@ -68,6 +68,16 @@ func TestCloudWorkerOfferReferencesTrackConfirmedAndRunningState(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertState(string(coreconfirmation.StateConsumed), string(cloudworker.StateRunning))
+	turn, err := conversationStore.GetTurn(h.ctx, offer.Plan.TurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conversationStore.RequestTurnCancel(h.ctx, core.TurnCancelCommand{
+		RequestID: uuid.NewString(), TurnID: turn.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertState(string(coreconfirmation.StateConsumed), string(cloudworker.StateCanceled))
 }
 
 func TestSSHWorkerStoreRebindsConsumedReservationAfterTaskReclaim(t *testing.T) {

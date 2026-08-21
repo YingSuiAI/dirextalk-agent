@@ -19,18 +19,6 @@ jobs:
   verify:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: pgvector/pgvector:pg18
-        env:
-          POSTGRES_PASSWORD: "123789"
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     outputs:
       agent_commit: ${{ steps.identity.outputs.agent_commit }}
     steps:
@@ -69,7 +57,6 @@ jobs:
       - name: Verify release
         working-directory: agent
         env:
-          AGENT_TEST_POSTGRES_DSN: postgres://postgres:123789@127.0.0.1:5432/postgres?sslmode=disable
           RELEASE_VERSION_INPUT: ${{ inputs.version }}
         run: bash scripts/release/verify.sh "$RELEASE_VERSION_INPUT"
 
@@ -79,18 +66,6 @@ jobs:
     permissions:
       actions: write
       contents: write
-    services:
-      postgres:
-        image: pgvector/pgvector:pg18
-        env:
-          POSTGRES_PASSWORD: "123789"
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     steps:
       - name: Check out exact verified Agent commit
         uses: actions/checkout@v4
@@ -124,7 +99,6 @@ jobs:
       - name: Recreate commit-bound verification evidence
         working-directory: agent
         env:
-          AGENT_TEST_POSTGRES_DSN: postgres://postgres:123789@127.0.0.1:5432/postgres?sslmode=disable
           RELEASE_VERSION_INPUT: ${{ inputs.version }}
         run: |
           bash scripts/release/prepare.sh "$RELEASE_VERSION_INPUT"

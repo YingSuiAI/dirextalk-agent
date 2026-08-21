@@ -802,6 +802,13 @@ func cancelCloudWorkerExecutionTx(
 	if err = saveCloudWorkerExecutionTx(ctx, tx, execution, next, "execution_canceled"); err != nil {
 		return cloudworker.Execution{}, err
 	}
+	confirmationState := string(coreconfirmation.StateExpired)
+	if confirmation.State == coreconfirmation.StateConsumed {
+		confirmationState = string(coreconfirmation.StateConsumed)
+	}
+	if err = updateCloudWorkerOfferReferencesTx(ctx, tx, plan, next, uint64(confirmation.Revision+1), confirmationState); err != nil {
+		return cloudworker.Execution{}, err
+	}
 	if err = terminalizeCloudWorkerTurnTx(ctx, tx, confirmation, plan, next, cloudworker.StateCanceled, now); err != nil {
 		return cloudworker.Execution{}, err
 	}

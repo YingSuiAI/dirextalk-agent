@@ -14,7 +14,7 @@ die() {
 out_input=${1:-}
 [ -n "$out_input" ] || usage
 agent_image=${2:-dirextalk-agent:local}
-postgres_image=${3:-docker.io/library/postgres:18@sha256:3a82e1f56c8f0f5616a11103ac3d47e632c3938698946a7ad26da0df1334744a}
+postgres_image=${3:-docker.io/pgvector/pgvector:pg18@sha256:691673308c99d2161ba298736f3147f1f22d79de2fb7ec93ae9b4afcab870b62}
 tls_server_name=${4:-localhost}
 case "$tls_server_name" in
   ""|*[!A-Za-z0-9.-]*) echo "invalid TLS server name" >&2; exit 2 ;;

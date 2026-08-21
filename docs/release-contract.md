@@ -29,7 +29,8 @@ bash scripts/release/publish.sh vX.Y.Z
 
 Prepare requires a clean Agent `main` whose `HEAD` exactly equals
 `origin/main`, matching current metadata, and matching notes. Verify runs the
-Agent Go suite, builds all commands,
+Agent Go suite against a script-owned, digest-pinned `pgvector/pgvector:pg18`
+container on an ephemeral loopback port, builds all commands,
 builds the unified image, checks its version/revision/created labels, and
 requires all three production binaries to print the requested version. It then
 runs the Agent against an isolated, ephemeral PostgreSQL instance and requires

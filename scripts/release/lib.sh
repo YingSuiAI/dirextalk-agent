@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+readonly RELEASE_POSTGRES_IMAGE='pgvector/pgvector:pg18@sha256:691673308c99d2161ba298736f3147f1f22d79de2fb7ec93ae9b4afcab870b62'
+
 release_die() {
   printf 'Agent release gate failed: %s\n' "$*" >&2
   exit 1
@@ -184,10 +186,44 @@ release_verify_image() {
   release_verify_http_version "$ref"
 }
 
+release_with_test_postgres() (
+  set -euo pipefail
+  local postgres_name status host_binding host_port vector_version
+  postgres_name="agent-release-tests-${BASHPID}-${RANDOM}"
+  cleanup() {
+    docker rm -f "$postgres_name" >/dev/null 2>&1 || true
+  }
+  trap cleanup EXIT
+
+  docker run --detach --name "$postgres_name" \
+    --publish 127.0.0.1::5432 \
+    --env POSTGRES_PASSWORD=agent-release-tests \
+    --health-cmd 'pg_isready -U postgres' --health-interval 1s --health-timeout 3s --health-retries 30 \
+    "$RELEASE_POSTGRES_IMAGE" >/dev/null
+  status=
+  for _ in {1..30}; do
+    status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$postgres_name") || \
+      release_die 'release test PostgreSQL inspection failed'
+    [[ "$status" != healthy ]] || break
+    [[ "$status" != unhealthy ]] || release_die 'release test PostgreSQL is unhealthy'
+    sleep 1
+  done
+  [[ "$status" == healthy ]] || release_die 'release test PostgreSQL did not become healthy'
+  vector_version=$(docker exec "$postgres_name" psql -U postgres -Atc \
+    "SELECT default_version FROM pg_available_extensions WHERE name='vector'") || \
+    release_die 'release test PostgreSQL vector capability probe failed'
+  [[ -n "$vector_version" ]] || release_die 'release test PostgreSQL does not provide the vector extension'
+  host_binding=$(docker port "$postgres_name" 5432/tcp) || release_die 'release test PostgreSQL port lookup failed'
+  [[ "$host_binding" =~ ^127\.0\.0\.1:([1-9][0-9]*)$ ]] || release_die 'release test PostgreSQL loopback binding is invalid'
+  host_port=${BASH_REMATCH[1]}
+  AGENT_TEST_POSTGRES_DSN="postgres://postgres:agent-release-tests@127.0.0.1:$host_port/postgres?sslmode=disable"
+  export AGENT_TEST_POSTGRES_DSN
+  "$@"
+)
+
 release_verify_http_version() (
   set -euo pipefail
   local ref=$1 probe_dir probe_id network postgres_name agent_name response status
-  local postgres_image='pgvector/pgvector:pg18@sha256:691673308c99d2161ba298736f3147f1f22d79de2fb7ec93ae9b4afcab870b62'
   local probe_client_image='docker.io/library/alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40'
   release_require_tools openssl
   probe_dir=$(mktemp -d "$RELEASE_OUTPUT_DIR/http-version-probe.XXXXXX")
@@ -240,7 +276,7 @@ EOF
   docker run --detach --name "$postgres_name" --network "$network" --network-alias postgres \
     --env POSTGRES_PASSWORD=agent-release-probe \
     --health-cmd 'pg_isready -U postgres' --health-interval 1s --health-timeout 3s --health-retries 30 \
-    "$postgres_image" >/dev/null
+    "$RELEASE_POSTGRES_IMAGE" >/dev/null
   status=
   for _ in {1..30}; do
     status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$postgres_name") || \

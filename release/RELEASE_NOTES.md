@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.183
+
+1. Make formal release verification provision and capability-check its own digest-pinned pgvector PostgreSQL 18 container, eliminating external test-database image drift.
+2. Default local Agent stacks to the same pgvector baseline required by migrations and Knowledge vector storage.
+3. Refresh the original Cloud Worker quote references when a task is canceled so both the offer card and terminal message show the authoritative final state.
+
 ## v1.0.182
 
 1. Select a default subnet only from availability zones that currently offer the confirmed EC2 instance type, preventing unsupported-zone launch loops.

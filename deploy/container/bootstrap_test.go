@@ -72,6 +72,24 @@ func TestBootstrapLocalWritesCanonicalTokenAndAbsoluteEnvironment(t *testing.T) 
 	}
 }
 
+func TestBootstrapLocalDefaultsToPinnedPgvectorPostgres(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "protected")
+	script := filepath.Join("scripts", "bootstrap-local.sh")
+	cmd := exec.Command(script, out)
+	cmd.Env = append(os.Environ(), "PATH=/usr/bin:/bin")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("bootstrap: %v (%s)", err, output)
+	}
+	env, err := os.ReadFile(filepath.Join(out, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "DIREXTALK_POSTGRES_IMAGE_IMMUTABLE=docker.io/pgvector/pgvector:pg18@sha256:691673308c99d2161ba298736f3147f1f22d79de2fb7ec93ae9b4afcab870b62\n"
+	if !strings.Contains(string(env), want) {
+		t.Fatalf("bootstrap default PostgreSQL image must provide the vector extension: %s", env)
+	}
+}
+
 func TestBootstrapLocalRejectsInvalidIsolationControls(t *testing.T) {
 	script, err := filepath.Abs(filepath.Join("scripts", "bootstrap-local.sh"))
 	if err != nil {

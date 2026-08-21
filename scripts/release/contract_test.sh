@@ -154,6 +154,10 @@ elif [[ "${1:-}" == inspect ]]; then
   else
     printf '%s\n' true
   fi
+elif [[ "${1:-}" == exec && "$*" == *"pg_available_extensions"* ]]; then
+  printf '%s\n' '0.8.1'
+elif [[ "${1:-}" == port ]]; then
+  printf '%s\n' '127.0.0.1:55432'
 elif [[ "${1:-} ${2:-} ${3:-}" == 'buildx imagetools create' ]]; then
   : >"$AGENT_RELEASE_TEST_DOCKER_STATE.latest"
 fi
@@ -217,7 +221,6 @@ run_script() {
     PATH="$fixture/bin:$PATH" \
       AGENT_RELEASE_REPO_ROOT="$fixture/repo" \
       AGENT_RELEASE_CONTRACT_TEST=1 \
-      AGENT_TEST_POSTGRES_DSN='postgres://fixture.invalid/agent' \
       AGENT_RELEASE_TEST_LOG="$fixture/commands.log" \
       AGENT_RELEASE_TEST_GIT_STATE="$fixture/git-state" \
       AGENT_RELEASE_TEST_GH_STATE="$fixture/gh-state" \
@@ -267,6 +270,11 @@ fixture=$(make_fixture verify)
 prepare_and_verify "$fixture"
 grep -F "go test -p 1 -parallel 1 ./... -count=1" "$fixture/commands.log" >/dev/null || \
   fail 'verify omitted the Agent test suite'
+grep -F 'docker run --detach --name agent-release-tests-' "$fixture/commands.log" | \
+  grep -F 'pgvector/pgvector:pg18@sha256:691673308c99d2161ba298736f3147f1f22d79de2fb7ec93ae9b4afcab870b62' >/dev/null || \
+  fail 'verify did not provision the pinned pgvector PostgreSQL baseline'
+grep -F 'docker exec agent-release-tests-' "$fixture/commands.log" | grep -F 'pg_available_extensions' >/dev/null || \
+  fail 'verify omitted the vector capability probe'
 grep -F 'docker build --pull' "$fixture/commands.log" >/dev/null || fail 'verify omitted the local image build'
 for binary in dirextalk-agent dirextalk-extension-runner dirextalk-core-runner; do
   grep -F -- "--entrypoint /usr/local/bin/$binary" "$fixture/commands.log" >/dev/null || \

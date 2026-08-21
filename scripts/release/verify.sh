@@ -8,10 +8,9 @@ release_init "$@"
 release_preflight
 release_require_json "$RELEASE_CONTEXT" prepared
 release_require_tools go buf docker
-[[ -n "${AGENT_TEST_POSTGRES_DSN:-}" ]] || release_die 'AGENT_TEST_POSTGRES_DSN is required for formal verification'
 cd "$RELEASE_REPO_ROOT"
 
-go test -p 1 -parallel 1 ./... -count=1
+release_with_test_postgres go test -p 1 -parallel 1 ./... -count=1
 go build ./cmd/...
 buf lint
 

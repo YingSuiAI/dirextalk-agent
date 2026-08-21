@@ -37,6 +37,8 @@ deploy/container/scripts/readiness.sh "$PWD/deploy/container/compose.local.yaml"
 
 The bootstrap arguments are `OUTPUT_DIR [AGENT_IMAGE] [POSTGRES_IMAGE]
 [TLS_SERVER_NAME]`; the default Agent image is `dirextalk-agent:local`. The
+default PostgreSQL image is the digest-pinned `pgvector/pgvector:pg18` baseline
+required by Agent migrations and Knowledge vector storage. The
 generated `DIREXTALK_AGENT_IMAGE_IMMUTABLE` value is the only Agent image
 reference. The local Compose file starts `core`, `extension-runner`, and
 `core-runner` as three separate containers by default and overrides each
