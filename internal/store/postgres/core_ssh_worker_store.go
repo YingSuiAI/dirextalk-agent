@@ -107,6 +107,9 @@ func (store *SSHWorkerStore) Begin(ctx context.Context, supplied coretask.Task) 
 		}
 		execution = nextExecution
 	}
+	if err = updateCloudWorkerOfferReferencesTx(ctx, tx, plan, execution, uint64(confirmation.Revision), string(coreconfirmation.StateConsumed)); err != nil {
+		return sshflow.Run{}, err
+	}
 	proof := fmt.Sprintf("%s:%d:%s", confirmation.ConfirmationID, confirmation.Revision, confirmation.Binding.Digest)
 	if err = tx.Commit(ctx); err != nil {
 		return sshflow.Run{}, err
@@ -317,6 +320,9 @@ func (store *SSHWorkerStore) terminal(ctx context.Context, run sshflow.Run, work
 		eventType = "execution_failed"
 	}
 	if err = saveCloudWorkerExecutionTx(ctx, tx, currentExecution, next, eventType); err != nil {
+		return err
+	}
+	if err = updateCloudWorkerOfferReferencesTx(ctx, tx, plan, next, uint64(confirmation.Revision+1), string(coreconfirmation.StateConsumed)); err != nil {
 		return err
 	}
 	var statusSequence int64

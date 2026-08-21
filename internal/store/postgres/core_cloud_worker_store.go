@@ -516,6 +516,34 @@ func cloudWorkerReferences(plan cloudworker.Plan, execution cloudworker.Executio
 	return []core.Reference{planReference, runReference, confirmationReference}
 }
 
+// updateCloudWorkerOfferReferencesTx keeps the mutable link projections on
+// the original quote message current while its transcript content remains
+// immutable. Clients can therefore distinguish pending, confirmed, running,
+// and terminal work without inventing state from the original offer text.
+func updateCloudWorkerOfferReferencesTx(ctx context.Context, tx pgx.Tx, plan cloudworker.Plan, execution cloudworker.Execution, confirmationRevision uint64, confirmationState string) error {
+	if tx == nil || !coretask.ValidUUID(plan.PlanID) || !coretask.ValidUUID(plan.ExecutionID) || !coretask.ValidUUID(plan.ConversationID) ||
+		execution.ExecutionID != plan.ExecutionID || execution.PlanID != plan.PlanID || confirmationRevision == 0 || strings.TrimSpace(confirmationState) == "" {
+		return cloudworker.ErrInvalid
+	}
+	if plan.PersistentWorkerReuse {
+		return nil
+	}
+	references, err := referenceArrayJSONPG(cloudWorkerReferences(plan, execution, confirmationRevision, confirmationState))
+	if err != nil {
+		return err
+	}
+	messageID := deterministicCloudWorkerUUID("cloud-worker-offer-message", plan.ExecutionID)
+	updated, err := tx.Exec(ctx, `UPDATE core_messages SET references_json=$2
+		WHERE message_id=$1 AND conversation_id=$3`, messageID, references, plan.ConversationID)
+	if err != nil {
+		return err
+	}
+	if updated.RowsAffected() != 1 {
+		return cloudworker.ErrConflict
+	}
+	return nil
+}
+
 func deterministicCloudWorkerUUID(domain, value string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(domain+":"+value)).String()
 }
@@ -608,6 +636,9 @@ func (s *CloudWorkerStore) beginExecutionTx(ctx context.Context, tx pgx.Tx, curr
 		return cloudworker.Execution{}, err
 	}
 	if err = saveCloudWorkerExecutionTx(ctx, tx, execution, next, "execution_started"); err != nil {
+		return cloudworker.Execution{}, err
+	}
+	if err = updateCloudWorkerOfferReferencesTx(ctx, tx, plan, next, uint64(confirmation.Revision+1), string(coreconfirmation.StateConsumed)); err != nil {
 		return cloudworker.Execution{}, err
 	}
 	return next, nil

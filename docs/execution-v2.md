@@ -26,7 +26,7 @@ completes. Status or load questions never authorize destruction.
 
 ## Persistent SSH Workers
 
-The Agent manages at most four retained Workers for the authenticated owner and account generation. It uses the sole active AWS credential uploaded and STS-verified through the App, discovers the newest Canonical official Ubuntu 24.04 LTS image and the account's default VPC/subnet, and creates an ordinary EC2 instance with an auto-assigned public IPv4.
+The Agent manages at most four retained Workers for the authenticated owner and account generation. It uses the sole active AWS credential uploaded and STS-verified through the App, discovers the newest Canonical official Ubuntu 24.04 LTS image and the account's default VPC, and selects only a default subnet whose availability zone currently offers the confirmed instance type. It creates an ordinary EC2 instance with an auto-assigned public IPv4. A provider client rejection is a deterministic terminal failure; only an outcome that may have committed a provider mutation remains recoverable as uncertain.
 
 The Agent connects by outbound SSH with Agent-owned key material. There is no inbound Agent callback, EIP, custom AMI, S3/KMS artifact path, WorkerControl service, model relay, or deploy-time Worker configuration.
 

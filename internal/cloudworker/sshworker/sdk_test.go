@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 )
 
 type stubSTS struct{}
@@ -45,7 +46,10 @@ type mutationProbeEC2 struct {
 	images                                []ec2types.Image
 	vpcs                                  []ec2types.Vpc
 	subnets                               []ec2types.Subnet
+	offerings                             []ec2types.InstanceTypeOffering
+	offeringsInput                        *ec2.DescribeInstanceTypeOfferingsInput
 	runInput                              *ec2.RunInstancesInput
+	runErr                                error
 	key                                   *ec2types.KeyPairInfo
 	group                                 ec2types.SecurityGroup
 	instance                              *ec2types.Instance
@@ -63,6 +67,10 @@ func (probe *mutationProbeEC2) DescribeVpcs(context.Context, *ec2.DescribeVpcsIn
 }
 func (probe *mutationProbeEC2) DescribeSubnets(context.Context, *ec2.DescribeSubnetsInput, ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
 	return &ec2.DescribeSubnetsOutput{Subnets: probe.subnets}, nil
+}
+func (probe *mutationProbeEC2) DescribeInstanceTypeOfferings(_ context.Context, input *ec2.DescribeInstanceTypeOfferingsInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+	probe.offeringsInput = input
+	return &ec2.DescribeInstanceTypeOfferingsOutput{InstanceTypeOfferings: probe.offerings}, nil
 }
 func (probe *mutationProbeEC2) DescribeKeyPairs(context.Context, *ec2.DescribeKeyPairsInput, ...func(*ec2.Options)) (*ec2.DescribeKeyPairsOutput, error) {
 	if probe.events != nil {
@@ -134,6 +142,9 @@ func (probe *mutationProbeEC2) DescribeInstances(context.Context, *ec2.DescribeI
 func (probe *mutationProbeEC2) RunInstances(_ context.Context, input *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
 	probe.runCalls++
 	probe.runInput = input
+	if probe.runErr != nil {
+		return nil, probe.runErr
+	}
 	return &ec2.RunInstancesOutput{Instances: []ec2types.Instance{{InstanceId: aws.String("i-1"), PublicIpAddress: aws.String("203.0.113.20")}}}, nil
 }
 
@@ -172,13 +183,14 @@ func TestSDKDiscoverUsesCanonicalOwnerAndNewestUbuntu2404Image(t *testing.T) {
 		},
 		vpcs: []ec2types.Vpc{{VpcId: aws.String("vpc-default")}},
 		subnets: []ec2types.Subnet{
-			{SubnetId: aws.String("subnet-z")},
-			{SubnetId: aws.String("subnet-a")},
+			{SubnetId: aws.String("subnet-z"), AvailabilityZone: aws.String("region-under-test-z")},
+			{SubnetId: aws.String("subnet-a"), AvailabilityZone: aws.String("region-under-test-a")},
 		},
+		offerings: []ec2types.InstanceTypeOffering{{InstanceType: ec2types.InstanceTypeC5aXlarge, Location: aws.String("region-under-test-a")}},
 	}
 	credential := credentialFixture()
 	credential.Region = "region-under-test"
-	discovery, err := newSDK(credential.Region, probe, stubSTS{}, staticIP{}).Discover(context.Background(), credential)
+	discovery, err := newSDK(credential.Region, probe, stubSTS{}, staticIP{}).Discover(context.Background(), credential, "c5a.xlarge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,6 +209,19 @@ func TestSDKDiscoverUsesCanonicalOwnerAndNewestUbuntu2404Image(t *testing.T) {
 	}
 	if discovery.ImageID != "ami-newest" || discovery.ImageName != "ubuntu-noble-newest" || discovery.SSHUser != "ubuntu" || discovery.VPCID != "vpc-default" || discovery.SubnetID != "subnet-a" {
 		t.Fatalf("discovery = %#v", discovery)
+	}
+	if probe.offeringsInput == nil || probe.offeringsInput.LocationType != ec2types.LocationTypeAvailabilityZone || len(probe.offeringsInput.Filters) != 1 || !slices.Equal(probe.offeringsInput.Filters[0].Values, []string{"c5a.xlarge"}) {
+		t.Fatalf("instance type offerings input = %#v", probe.offeringsInput)
+	}
+}
+
+func TestSDKRunClassifiesClientRejectionAsDeterministic(t *testing.T) {
+	probe := &mutationProbeEC2{runErr: &smithy.GenericAPIError{Code: "Client.Unsupported", Message: "instance type is unsupported", Fault: smithy.FaultClient}}
+	client := newSDK("ap-east-1", probe, stubSTS{}, staticIP{})
+	_, err := client.RunInstance(context.Background(), credentialFixture(), Confirmation{Confirmed: true, Proof: "confirmation-1"}, LaunchRequest{
+		WorkerID: "worker-1", ClientToken: "token-1", InstanceType: "c5a.xlarge", VolumeGiB: 16, KeyName: "key", SecurityGroupID: "sg-1", Discovery: discoveryFixture(), Tags: ResourceTags{"owner": "test"}})
+	if !errors.Is(err, ErrProviderRejected) || errors.Is(err, ErrAmbiguous) || probe.runCalls != 1 {
+		t.Fatalf("RunInstance error=%v calls=%d", err, probe.runCalls)
 	}
 }
 

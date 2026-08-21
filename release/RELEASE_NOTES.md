@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.182
+
+1. Select a default subnet only from availability zones that currently offer the confirmed EC2 instance type, preventing unsupported-zone launch loops.
+2. Terminalize deterministic AWS client rejections instead of treating them as ambiguous mutations, while preserving read-back recovery for genuinely uncertain outcomes.
+3. Refresh the original Cloud Worker quote references as confirmation and execution advance so clients no longer display an authorized run as pending confirmation.
+
 ## v1.0.181
 
 1. Exclude the primary Agent node's immutable backend-service row from server artifact totals so summary counts match the user-visible artifact list.

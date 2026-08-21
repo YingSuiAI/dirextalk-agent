@@ -45,11 +45,11 @@ func NewWithPool(awsClient AWS, keys KeyMaterial, ssh SSHExecutor, store Store, 
 		pool: pool, authorizeCreate: authorizeCreate, active: make(map[string]struct{})}, nil
 }
 
-func (provider *Provider) Discover(ctx context.Context, credential CredentialIdentity) (Discovery, error) {
+func (provider *Provider) Discover(ctx context.Context, credential CredentialIdentity, instanceType string) (Discovery, error) {
 	if provider == nil || ctx == nil || credential.validate() != nil {
 		return Discovery{}, ErrInvalid
 	}
-	discovery, err := provider.aws.Discover(ctx, credential)
+	discovery, err := provider.aws.Discover(ctx, credential, instanceType)
 	if err != nil || discovery.validate() != nil {
 		return Discovery{}, errors.Join(ErrInvalid, err)
 	}
@@ -341,6 +341,9 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 		if err != nil {
 			instance, found, _ = provider.aws.FindInstance(ctx, request.Credential, clientToken, tags)
 			if !found {
+				if errors.Is(err, ErrProviderRejected) {
+					return WorkerRecord{}, err
+				}
 				return WorkerRecord{}, errors.Join(ErrAmbiguous, err)
 			}
 		}

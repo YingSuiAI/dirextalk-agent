@@ -16,15 +16,16 @@ import (
 )
 
 var (
-	ErrInvalid         = errors.New("invalid ssh worker request")
-	ErrNotConfirmed    = errors.New("ssh worker creation is not confirmed")
-	ErrNotAuthorized   = errors.New("ssh worker destruction is not authorized")
-	ErrIdentity        = errors.New("AWS worker identity mismatch")
-	ErrAmbiguous       = errors.New("AWS operation outcome is ambiguous")
-	ErrCapacity        = errors.New("AWS worker capacity reached")
-	ErrBusy            = errors.New("ssh worker is busy")
-	ErrExecutionFailed = errors.New("ssh worker execution has already failed")
-	ErrResultTooLarge  = errors.New("ssh worker result exceeds its limit")
+	ErrInvalid          = errors.New("invalid ssh worker request")
+	ErrNotConfirmed     = errors.New("ssh worker creation is not confirmed")
+	ErrNotAuthorized    = errors.New("ssh worker destruction is not authorized")
+	ErrIdentity         = errors.New("AWS worker identity mismatch")
+	ErrAmbiguous        = errors.New("AWS operation outcome is ambiguous")
+	ErrProviderRejected = errors.New("AWS rejected the worker operation")
+	ErrCapacity         = errors.New("AWS worker capacity reached")
+	ErrBusy             = errors.New("ssh worker is busy")
+	ErrExecutionFailed  = errors.New("ssh worker execution has already failed")
+	ErrResultTooLarge   = errors.New("ssh worker result exceeds its limit")
 )
 
 const (
@@ -173,7 +174,7 @@ type LaunchRequest struct {
 
 type AWS interface {
 	VerifyIdentity(context.Context, CredentialIdentity) error
-	Discover(context.Context, CredentialIdentity) (Discovery, error)
+	Discover(context.Context, CredentialIdentity, string) (Discovery, error)
 	ListInstances(context.Context, CredentialIdentity, ResourceTags) ([]Instance, error)
 	FindKeyPair(context.Context, CredentialIdentity, string, ResourceTags) (KeyPair, bool, error)
 	ImportKeyPair(context.Context, CredentialIdentity, Confirmation, string, []byte, ResourceTags) (KeyPair, error)

@@ -186,12 +186,21 @@ func projectCloudWorkerConfirmationTx(ctx context.Context, tx pgx.Tx, cur coreco
 	if err = saveCloudWorkerExecutionTx(ctx, tx, execution, transitioned, kind); err != nil {
 		return err
 	}
-	if next != cloudworker.StateRejected && next != cloudworker.StateExpired {
-		return nil
-	}
 	plan, err := scanCloudWorkerPlan(tx.QueryRow(ctx, cloudWorkerPlanSelect+` WHERE plan_id=$1`, execution.PlanID))
 	if err != nil || plan.ExecutionID != transitioned.ExecutionID || plan.TaskID != cur.TaskID || plan.ConfirmationID != cur.ConfirmationID {
 		return coreconfirmation.ErrStale
+	}
+	confirmationState := string(coreconfirmation.StateConfirmed)
+	if next == cloudworker.StateRejected {
+		confirmationState = string(coreconfirmation.StateRejected)
+	} else if next == cloudworker.StateExpired {
+		confirmationState = string(coreconfirmation.StateExpired)
+	}
+	if err = updateCloudWorkerOfferReferencesTx(ctx, tx, plan, transitioned, uint64(cur.Revision+1), confirmationState); err != nil {
+		return err
+	}
+	if next != cloudworker.StateRejected && next != cloudworker.StateExpired {
+		return nil
 	}
 	return terminalizeCloudWorkerTurnTx(ctx, tx, cur, plan, transitioned, next, at.UTC())
 }

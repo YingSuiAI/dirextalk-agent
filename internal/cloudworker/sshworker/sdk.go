@@ -15,12 +15,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 )
 
 type EC2API interface {
 	DescribeImages(context.Context, *ec2.DescribeImagesInput, ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error)
 	DescribeVpcs(context.Context, *ec2.DescribeVpcsInput, ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error)
 	DescribeSubnets(context.Context, *ec2.DescribeSubnetsInput, ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error)
+	DescribeInstanceTypeOfferings(context.Context, *ec2.DescribeInstanceTypeOfferingsInput, ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 	DescribeKeyPairs(context.Context, *ec2.DescribeKeyPairsInput, ...func(*ec2.Options)) (*ec2.DescribeKeyPairsOutput, error)
 	ImportKeyPair(context.Context, *ec2.ImportKeyPairInput, ...func(*ec2.Options)) (*ec2.ImportKeyPairOutput, error)
 	DeleteKeyPair(context.Context, *ec2.DeleteKeyPairInput, ...func(*ec2.Options)) (*ec2.DeleteKeyPairOutput, error)
@@ -96,7 +98,11 @@ func (client *SDK) VerifyIdentity(ctx context.Context, identity CredentialIdenti
 	}
 	return nil
 }
-func (client *SDK) Discover(ctx context.Context, identity CredentialIdentity) (Discovery, error) {
+func (client *SDK) Discover(ctx context.Context, identity CredentialIdentity, instanceType string) (Discovery, error) {
+	instanceType = strings.TrimSpace(instanceType)
+	if instanceType == "" {
+		return Discovery{}, ErrInvalid
+	}
 	if err := client.VerifyIdentity(ctx, identity); err != nil {
 		return Discovery{}, err
 	}
@@ -123,7 +129,34 @@ func (client *SDK) Discover(ctx context.Context, identity CredentialIdentity) (D
 	if err != nil || len(subnets.Subnets) == 0 {
 		return Discovery{}, errors.Join(ErrInvalid, err)
 	}
+	offerings, err := client.ec2.DescribeInstanceTypeOfferings(ctx, &ec2.DescribeInstanceTypeOfferingsInput{
+		LocationType: ec2types.LocationTypeAvailabilityZone,
+		Filters:      []ec2types.Filter{{Name: aws.String("instance-type"), Values: []string{instanceType}}},
+	})
+	if err != nil || len(offerings.InstanceTypeOfferings) == 0 {
+		return Discovery{}, errors.Join(ErrInvalid, err)
+	}
+	availableZones := make(map[string]struct{}, len(offerings.InstanceTypeOfferings))
+	for _, offering := range offerings.InstanceTypeOfferings {
+		if location := strings.TrimSpace(aws.ToString(offering.Location)); location != "" {
+			availableZones[location] = struct{}{}
+		}
+	}
+	compatible := subnets.Subnets[:0]
+	for _, subnet := range subnets.Subnets {
+		if _, ok := availableZones[aws.ToString(subnet.AvailabilityZone)]; ok {
+			compatible = append(compatible, subnet)
+		}
+	}
+	if len(compatible) == 0 {
+		return Discovery{}, ErrInvalid
+	}
+	subnets.Subnets = compatible
 	sort.Slice(subnets.Subnets, func(i, j int) bool {
+		leftZone, rightZone := aws.ToString(subnets.Subnets[i].AvailabilityZone), aws.ToString(subnets.Subnets[j].AvailabilityZone)
+		if leftZone != rightZone {
+			return leftZone < rightZone
+		}
 		return aws.ToString(subnets.Subnets[i].SubnetId) < aws.ToString(subnets.Subnets[j].SubnetId)
 	})
 	address, err := client.ip.PublicIP(ctx)
@@ -427,6 +460,10 @@ func (client *SDK) RunInstance(ctx context.Context, identity CredentialIdentity,
 	}
 	output, err := client.ec2.RunInstances(ctx, &ec2.RunInstancesInput{ImageId: aws.String(request.Discovery.ImageID), InstanceType: ec2types.InstanceType(request.InstanceType), MinCount: aws.Int32(1), MaxCount: aws.Int32(1), ClientToken: aws.String(request.ClientToken), KeyName: aws.String(request.KeyName), NetworkInterfaces: []ec2types.InstanceNetworkInterfaceSpecification{{DeviceIndex: aws.Int32(0), SubnetId: aws.String(request.Discovery.SubnetID), AssociatePublicIpAddress: aws.Bool(true), Groups: []string{request.SecurityGroupID}, DeleteOnTermination: aws.Bool(true)}}, BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String("/dev/xvda"), Ebs: &ec2types.EbsBlockDevice{DeleteOnTermination: aws.Bool(true), Encrypted: aws.Bool(true), VolumeSize: aws.Int32(request.VolumeGiB), VolumeType: ec2types.VolumeTypeGp3}}}, MetadataOptions: &ec2types.InstanceMetadataOptionsRequest{HttpTokens: ec2types.HttpTokensStateRequired, HttpEndpoint: ec2types.InstanceMetadataEndpointStateEnabled}, TagSpecifications: []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeInstance, Tags: sdkTags(request.Tags)}, {ResourceType: ec2types.ResourceTypeVolume, Tags: sdkTags(request.Tags)}}})
 	if err != nil || output == nil || len(output.Instances) != 1 {
+		var apiErr smithy.APIError
+		if err != nil && errors.As(err, &apiErr) && apiErr.ErrorFault() == smithy.FaultClient {
+			return Instance{}, errors.Join(ErrProviderRejected, err)
+		}
 		return Instance{}, errors.Join(ErrAmbiguous, err)
 	}
 	return sdkInstance(output.Instances[0]), nil

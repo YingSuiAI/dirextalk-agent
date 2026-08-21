@@ -162,7 +162,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 			return sshflow.Result{}, errors.Join(sshworker.ErrBusy, loadErr, compatibleErr)
 		}
 	}
-	discovery, err := provider.Discover(ctx, identity)
+	discovery, err := provider.Discover(ctx, identity, request.Compute.InstanceType)
 	if err != nil {
 		return sshflow.Result{}, err
 	}

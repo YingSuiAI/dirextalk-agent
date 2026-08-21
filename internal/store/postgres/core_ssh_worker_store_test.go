@@ -17,6 +17,59 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestCloudWorkerOfferReferencesTrackConfirmedAndRunningState(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+	offer := h.propose(t)
+	conversationStore, err := NewCoreConversationStore(h.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertState := func(wantConfirmation, wantRun string) {
+		conversation, loadErr := conversationStore.LoadConversation(h.ctx, offer.Plan.ConversationID)
+		if loadErr != nil || len(conversation.Messages) != 2 || len(conversation.Messages[1].References) != 3 {
+			t.Fatalf("conversation=%+v err=%v", conversation, loadErr)
+		}
+		var confirmationState, runState string
+		for _, reference := range conversation.Messages[1].References {
+			switch reference.Kind {
+			case "execution_confirmation":
+				confirmationState = reference.State
+			case "execution_run":
+				runState = reference.Status
+			}
+		}
+		if confirmationState != wantConfirmation || runState != wantRun {
+			t.Fatalf("confirmation=%q run=%q references=%+v", confirmationState, runState, conversation.Messages[1].References)
+		}
+	}
+	assertState(string(coreconfirmation.StatePending), string(cloudworker.StateWaitingUser))
+	confirmationService, err := coreconfirmation.NewService(h.confirmations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = confirmationService.Confirm(h.ctx, coreconfirmation.ConfirmCommand{
+		ConfirmationID: offer.Confirmation.ConfirmationID, IdempotencyKey: uuid.NewString(),
+		ExpectedRevision: offer.Confirmation.Revision, At: h.now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertState(string(coreconfirmation.StateConfirmed), string(cloudworker.StateQueued))
+	running, _, err := NewCoreTaskStore(h.store).ClaimNextDue(h.ctx, "offer-reference", h.now, 2*time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertState(string(coreconfirmation.StateConsumed), string(cloudworker.StateProvisioning))
+	sshStore, err := NewSSHWorkerStore(h.store, "cloud-worker/artifacts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = sshStore.Begin(h.ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	assertState(string(coreconfirmation.StateConsumed), string(cloudworker.StateRunning))
+}
+
 func TestSSHWorkerStoreRebindsConsumedReservationAfterTaskReclaim(t *testing.T) {
 	h := newPGCloudWorkerHarness(t)
 	defer h.cleanup()

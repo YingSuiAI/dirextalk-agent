@@ -184,6 +184,7 @@ type fakeAWS struct {
 	groups                        map[string]SecurityGroup
 	instances                     map[string]Instance
 	ambiguous                     bool
+	runErr                        error
 	publicPorts                   map[uint16]bool
 	publicPortTags                ResourceTags
 	afterFindKey                  func()
@@ -194,7 +195,7 @@ func newFakeAWS() *fakeAWS {
 	return &fakeAWS{keys: map[string]KeyPair{}, groups: map[string]SecurityGroup{}, instances: map[string]Instance{}, publicPorts: map[uint16]bool{}, observeErr: map[string]error{}}
 }
 func (a *fakeAWS) VerifyIdentity(context.Context, CredentialIdentity) error { return nil }
-func (a *fakeAWS) Discover(context.Context, CredentialIdentity) (Discovery, error) {
+func (a *fakeAWS) Discover(context.Context, CredentialIdentity, string) (Discovery, error) {
 	return discoveryFixture(), nil
 }
 func (a *fakeAWS) ListInstances(context.Context, CredentialIdentity, ResourceTags) ([]Instance, error) {
@@ -276,6 +277,9 @@ func (a *fakeAWS) RunInstance(_ context.Context, _ CredentialIdentity, c Confirm
 	}
 	a.mutations++
 	a.runs++
+	if a.runErr != nil {
+		return Instance{}, a.runErr
+	}
 	i := Instance{ID: "i-" + r.ClientToken, PublicIP: "203.0.113.20", State: "running", ClientToken: r.ClientToken}
 	a.instances[r.ClientToken] = i
 	if a.ambiguous {
@@ -484,6 +488,21 @@ func TestProvisioningIntentResumesWithoutConsumingAnotherSlot(t *testing.T) {
 	}
 	if cloud.runs != 1 || store.workers[request.ExecutionID].Phase != WorkerIdle {
 		t.Fatalf("provisioning retry runs=%d worker=%#v", cloud.runs, store.workers[request.ExecutionID])
+	}
+}
+
+func TestProviderPreservesDeterministicCreateRejection(t *testing.T) {
+	cloud := newFakeAWS()
+	cloud.runErr = errors.Join(ErrProviderRejected, errors.New("unsupported availability zone"))
+	store := newMemoryStore()
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	request := requestFixture()
+	_, err := provider.Execute(context.Background(), request)
+	if !errors.Is(err, ErrProviderRejected) || errors.Is(err, ErrAmbiguous) || cloud.runs != 1 {
+		t.Fatalf("Execute error=%v runs=%d", err, cloud.runs)
+	}
+	if worker := store.workers[request.ExecutionID]; worker.Phase != WorkerProvisioning || worker.Instance.ID != "" {
+		t.Fatalf("worker=%#v", worker)
 	}
 }
 

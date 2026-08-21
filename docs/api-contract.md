@@ -892,7 +892,9 @@ and AWS resources start only after the owner confirms the pending quote. The
 manager supports no more than four retained Workers for one authenticated
 owner/account generation across credential revisions. It discovers the newest
 Canonical official Ubuntu 24.04 LTS image and the
-default VPC/subnet at runtime, assigns an ordinary public IPv4, and uses
+default VPC at runtime, intersects its available default subnets with the
+selected instance type's current availability-zone offerings, assigns an
+ordinary public IPv4, and uses
 outbound SSH. First contact uses `accept-new` into a persistent `known_hosts`
 file beside the Worker private key; later connections require that pinned host
 key. The file must be a single-link, owner-owned regular file with mode 0600,
@@ -905,7 +907,9 @@ metadata. Remote workload completion is persisted before result collection.
 When collection or its sink fails transiently, recovery sets `CollectOnly` from
 that `RemoteCompleted` fence and may retry logs/artifacts without preparing or
 starting the remote workload again; deterministic invalid or over-budget
-results persist `TaskFailed` and release the retained Worker. A same-ID retry
+results and provider client rejections persist `TaskFailed` and release the
+retained Worker. Only an outcome that may have committed a provider mutation
+remains recoverable as uncertain. A same-ID retry
 of that failure remains terminal and never invokes SSH; it may only reconcile
 Worker-release bookkeeping after exact owner, account-generation, credential,
 Worker, and execution identity checks. Logs plus artifacts share the
