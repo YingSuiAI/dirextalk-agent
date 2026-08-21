@@ -853,10 +853,17 @@ contain no live Worker identity or state. The separate read-only
 `cloud_worker_inventory` intrinsic revalidates the current turn owner and
 account generation at execution, then returns an at-most-4-KiB
 `cloud_worker_inventory/v1` `ToolResult` containing bounded current capacity,
-status, task, address, pricing, load, and workload summaries. That result is
+status, task, address, pricing, load, and workload summaries. Each included
+workload summary carries its exact `workload_id`, kind, phase, active state,
+health, and optional port/hostname; per-Worker workload truncation is explicit.
+That result is
 durably recorded as nonterminal ordinary tool history and flows to the next
 model round.
 The model uses it to declare actual minimums and prefer an adequate idle Worker.
+For an existing service's hostname-only change, it must use the exact inventory
+IDs with `cloud_worker_domain_bind` or `cloud_worker_domain_unbind`; the proposal
+intrinsic rejects that route before pricing so it cannot create a second Worker
+quote.
 Reuse needs no creation confirmation and executes directly for jobs, persistent
 services, and hostname publication, but Agent still reads and displays its live
 ongoing hourly cost. Worker destruction is a

@@ -414,6 +414,9 @@ func TestIntrinsicInventoryReturnsLiveOwnerScopedSnapshot(t *testing.T) {
 			WorkerID: workerID, InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 20,
 			Availability: "available", EC2State: "running", WorkerPhase: "idle", PublicIPv4: "203.0.113.8",
 			Server: &RetainedWorkerServer{Load1: 0.5, Load5: 0.25, Load15: 0.1},
+			Workloads: []RetainedWorkerWorkload{{
+				WorkloadID: "gitea-svc", Kind: "service", Phase: "ready", ActiveState: "active", Health: "healthy", Port: 3000,
+			}},
 		}},
 	}}
 	if err := intrinsic.EnableRetainedWorkerInventory(resolver); err != nil {
@@ -444,7 +447,7 @@ func TestIntrinsicInventoryReturnsLiveOwnerScopedSnapshot(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	content := result.ToolResult.Content
-	for _, expected := range []string{`"worker_id":"worker-1"`, `"instance_type":"t3.small"`, `"vcpu":2`, `"memory_gib":2`, `"volume_gib":20`, `"availability":"available"`, `"public_ipv4":"203.0.113.8"`, `"load_1":0.5`, `"worker_count":1`} {
+	for _, expected := range []string{`"worker_id":"worker-1"`, `"instance_type":"t3.small"`, `"vcpu":2`, `"memory_gib":2`, `"volume_gib":20`, `"availability":"available"`, `"public_ipv4":"203.0.113.8"`, `"load_1":0.5`, `"worker_count":1`, `"workload_id":"gitea-svc"`, `"kind":"service"`, `"phase":"ready"`, `"active_state":"active"`, `"health":"healthy"`, `"port":3000`} {
 		if expected == `"worker_id":"worker-1"` {
 			expected = `"worker_id":"` + workerID + `"`
 		}
@@ -527,7 +530,7 @@ func TestIntrinsicDefinitionsAreStaticAndInventoryResultIsBounded(t *testing.T) 
 		content = result.ToolResult.Content
 	}
 	if err != nil || result.TurnCommitted || result.ToolResult == nil || len(content) > maxModelInventoryBytes || strings.Contains(content, "SECRET-MARKER") ||
-		!strings.Contains(content, `"worker_count":20`) || !strings.Contains(content, `"truncated":true`) {
+		!strings.Contains(content, `"worker_count":20`) || !strings.Contains(content, `"truncated":true`) || !strings.Contains(content, `"workloads_truncated":true`) {
 		t.Fatalf("bounded inventory bytes=%d value=%q result=%+v err=%v", len(content), content, result, err)
 	}
 	modelTools := make([]coremodel.Tool, 0, len(first))
@@ -811,6 +814,39 @@ func TestIntrinsicRequiresExplicitCloudOrTrustedLocalCapabilityEvidence(t *testi
 	}
 	if len(store.commands) != 0 {
 		t.Fatal("untrusted implicit request created an offer")
+	}
+}
+
+func TestIntrinsicRejectsExistingServiceDomainRequestBeforeCreatingQuote(t *testing.T) {
+	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-capability")}
+	intrinsic, store, lease := intrinsicFixture(t,
+		"帮我解析域名 gitea.dirextalk.ai 到当前服务",
+		nil, intrinsicBudget{evidence: evidence})
+	err := executeIntrinsic(t, intrinsic, lease, map[string]any{
+		"objective": "bind gitea.dirextalk.ai to the current service", "workspace_mode": "none",
+		"workload_kind": "service", "server_name": "gitea-server",
+		"service": map[string]any{"workload_id": "gitea", "port": 3000, "health_path": "/", "hostname": "gitea.dirextalk.ai"},
+	}, "wrong-domain-proposal")
+	if !errors.Is(err, ErrRetainedWorkerDomainToolRequired) {
+		t.Fatalf("domain-only proposal error=%v", err)
+	}
+	var correction coreconversation.IntrinsicCorrectionError
+	if !errors.As(err, &correction) || !strings.Contains(correction.IntrinsicCorrection(), "cloud_worker_domain_bind") {
+		t.Fatalf("domain-only proposal has no actionable correction: %v", err)
+	}
+	if len(store.commands) != 0 {
+		t.Fatalf("domain-only request created a priced offer: %+v", store.commands)
+	}
+}
+
+func TestExistingServiceDomainIntentDoesNotBlockNewServiceDeployment(t *testing.T) {
+	for _, prompt := range []string{
+		"部署一个新的 Gitea 服务，然后把域名 gitea.dirextalk.ai 绑定到当前服务",
+		"Create a new service and bind gitea.dirextalk.ai to the current service",
+	} {
+		if hasRetainedServiceDomainMutationIntent(prompt) {
+			t.Fatalf("new deployment misclassified as existing-service domain mutation: %q", prompt)
+		}
 	}
 }
 

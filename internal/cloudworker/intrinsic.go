@@ -25,6 +25,22 @@ import (
 
 var ErrCloudIntentRequired = errors.New("cloudworker: cloud proposal is not allowed for this turn")
 
+const retainedWorkerDomainToolCorrection = "This request only changes the hostname of an already deployed service. Call cloud_worker_inventory, then call cloud_worker_domain_bind or cloud_worker_domain_unbind with the exact returned worker_id and workload_id. Do not call cloud_worker_propose and do not create another Worker quote."
+
+type retainedWorkerDomainToolRequiredError struct{}
+
+func (retainedWorkerDomainToolRequiredError) Error() string {
+	return "cloudworker: existing service domain changes require the domain tool"
+}
+func (retainedWorkerDomainToolRequiredError) Unwrap() error { return coreconversation.ErrInvalid }
+func (retainedWorkerDomainToolRequiredError) IntrinsicCorrection() string {
+	return retainedWorkerDomainToolCorrection
+}
+
+// ErrRetainedWorkerDomainToolRequired prevents a domain-only request for an
+// existing service from crossing the paid Worker proposal boundary.
+var ErrRetainedWorkerDomainToolRequired error = retainedWorkerDomainToolRequiredError{}
+
 const (
 	englishCloudTarget = `(?:aws|ec2|cloud)`
 	chineseCloudTarget = `(?:云端|云上|云|云\s*worker|cloud\s*worker|ec2|aws)`
@@ -37,6 +53,9 @@ var (
 	chineseCloudNegation = regexp.MustCompile(
 		`(?:(?:不要|不用|不使用|禁止|别用|不可|不能|无需|不在)[^。！？；\r\n]{0,48}` + chineseCloudTarget + `|` +
 			chineseCloudTarget + `[^。！？；\r\n]{0,48}(?:不要|不用|不使用|禁止|别用|不可|不能|无需执行))`)
+	domainMutationTerm  = regexp.MustCompile(`(?i)(?:域名|绑定|解绑|\bdns\b|\bdomain\b|\bhostname\b)`)
+	retainedServiceTerm = regexp.MustCompile(`(?i)(?:(?:当前|现有|已有|这个|该|刚才|已经部署(?:好|完成)?的?)\s*(?:服务|应用|网站|接口|api|workload|worker)|\b(?:current|existing|this|that|already[ -]deployed|previously[ -]deployed)\s+(?:service|app|application|site|website|api|workload|worker)\b)`)
+	newServiceRequest   = regexp.MustCompile(`(?i)(?:(?:部署|创建|新建|安装|启动|搭建)\s*(?:(?:一个|一台)\s*)?(?:新的?|全新)?\s*(?:服务|应用|网站|接口|api|gitea|服务器|worker)|\b(?:deploy|create|install|start|set[ -]?up)\s+(?:a|an|new|another)\b)`)
 )
 
 // IntrinsicOwnerContext is resolved from Agent-owned account metadata. It is
@@ -132,7 +151,10 @@ type RetainedWorkerWorkload struct {
 	Hostname    string `json:"hostname,omitempty"`
 }
 
-const maxModelInventoryBytes = 4096
+const (
+	maxModelInventoryBytes              = 4096
+	maxModelInventoryWorkloadsPerWorker = 12
+)
 
 func boundedWorkerInventoryJSON(inventory RetainedWorkerInventory) []byte {
 	workers := append([]RetainedWorkerSnapshot(nil), inventory.Workers...)
@@ -154,6 +176,35 @@ func boundedWorkerInventoryJSON(inventory RetainedWorkerInventory) []byte {
 		return raw
 	}
 	for _, worker := range workers {
+		workloads := append([]RetainedWorkerWorkload(nil), worker.Workloads...)
+		sort.Slice(workloads, func(i, j int) bool {
+			if workloads[i].WorkloadID == workloads[j].WorkloadID {
+				if workloads[i].Kind == workloads[j].Kind {
+					return workloads[i].Port < workloads[j].Port
+				}
+				return workloads[i].Kind < workloads[j].Kind
+			}
+			return workloads[i].WorkloadID < workloads[j].WorkloadID
+		})
+		visibleWorkloads := workloads
+		if len(visibleWorkloads) > maxModelInventoryWorkloadsPerWorker {
+			visibleWorkloads = visibleWorkloads[:maxModelInventoryWorkloadsPerWorker]
+		}
+		workloadItems := make([]any, 0, len(visibleWorkloads))
+		for _, workload := range visibleWorkloads {
+			workloadItem := map[string]any{
+				"workload_id": boundedInventoryText(workload.WorkloadID), "kind": boundedInventoryText(workload.Kind),
+				"phase": boundedInventoryText(workload.Phase), "active_state": boundedInventoryText(workload.ActiveState),
+				"health": boundedInventoryText(workload.Health),
+			}
+			if workload.Port != 0 {
+				workloadItem["port"] = workload.Port
+			}
+			if hostname := boundedInventoryText(workload.Hostname); hostname != "" {
+				workloadItem["hostname"] = hostname
+			}
+			workloadItems = append(workloadItems, workloadItem)
+		}
 		item := map[string]any{
 			"worker_id": boundedInventoryText(worker.WorkerID), "instance_type": boundedInventoryText(worker.InstanceType),
 			"vcpu": worker.VCPU, "memory_gib": worker.MemoryGiB, "volume_gib": worker.VolumeGiB,
@@ -173,11 +224,24 @@ func boundedWorkerInventoryJSON(inventory RetainedWorkerInventory) []byte {
 				"observed_at": worker.HourlyQuote.ObservedAt, "expires_at": worker.HourlyQuote.ExpiresAt,
 			}
 		}
-		candidate := append(append([]any(nil), projected...), item)
-		if len(encode(candidate, true)) > maxModelInventoryBytes {
+		added := false
+		for {
+			item["workloads"] = workloadItems
+			item["workloads_truncated"] = len(workloadItems) != len(workloads)
+			candidate := append(append([]any(nil), projected...), item)
+			if len(encode(candidate, true)) <= maxModelInventoryBytes {
+				projected = candidate
+				added = true
+				break
+			}
+			if len(workloadItems) == 0 {
+				break
+			}
+			workloadItems = workloadItems[:len(workloadItems)-1]
+		}
+		if !added {
 			break
 		}
-		projected = candidate
 	}
 	raw := encode(projected, len(projected) != len(workers))
 	for len(raw) > maxModelInventoryBytes && len(projected) > 0 {
@@ -289,7 +353,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	if attachmentSchema != nil {
 		properties["attachment_ids"] = attachmentSchema
 	}
-	description := "Run substantial project or shell work in a retained execution environment, or return a non-executing plan summary. Once workload_kind, actual minimum resources, and required service fields are known, invoke this tool immediately. Only creating a new Worker requires owner confirmation; retained Worker reuse executes directly, including persistent services and hostname publication."
+	description := "Run substantial project or shell work in a retained execution environment, or return a non-executing plan summary. Once workload_kind, actual minimum resources, and required service fields are known, invoke this tool immediately. Only creating a new Worker requires owner confirmation; retained Worker reuse executes directly, including persistent services and hostname publication. Never use this tool only to bind, change, or remove a hostname for an already deployed service: call cloud_worker_inventory, then cloud_worker_domain_bind or cloud_worker_domain_unbind with its exact IDs."
 	tool := coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerProposeToolName,
 		Description: description,
@@ -484,6 +548,9 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 			return coreconversation.IntrinsicExecutionResult{}, coreconversation.ErrInvalid
 		}
 		return coreconversation.IntrinsicExecutionResult{}, err
+	}
+	if hasRetainedServiceDomainMutationIntent(bound.Turn.Prompt) {
+		return coreconversation.IntrinsicExecutionResult{}, ErrRetainedWorkerDomainToolRequired
 	}
 	if arguments.Intent == "proposal_only" {
 		return p.commitProposalOnly(ctx, bound, request, arguments)
@@ -742,6 +809,11 @@ func hasCloudExecutionVeto(prompt string) bool {
 		}
 	}
 	return false
+}
+
+func hasRetainedServiceDomainMutationIntent(prompt string) bool {
+	value := strings.TrimSpace(prompt)
+	return domainMutationTerm.MatchString(value) && retainedServiceTerm.MatchString(value) && !newServiceRequest.MatchString(value)
 }
 
 var _ coreconversation.IntrinsicResolver = (*ProposeIntrinsic)(nil)

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.179
+
+1. Return exact retained-service workload IDs and bounded status details from `cloud_worker_inventory` so hostname changes can target the already deployed service.
+2. Reject hostname-only changes for existing services before pricing when the model selects `cloud_worker_propose`, and direct the turn to `cloud_worker_domain_bind` or `cloud_worker_domain_unbind` instead of creating another Worker quote.
+
 ## v1.0.178
 
 1. Enforce durable convergence for scheduled and constrained workflows so admitted Message MCP and Web Search steps complete before synthesis, repeated no-progress paths terminate, and successful turns finalize as nonempty Markdown without exposing hidden reasoning.

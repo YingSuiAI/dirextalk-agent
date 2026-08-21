@@ -2215,6 +2215,7 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 		!strings.HasPrefix(model.request.Profile.SystemPrompt, compilePlatformSystemPrompt(profile.SystemPrompt)) ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "Use cloud_worker_propose only for required network or execution") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "cannot access the Worker filesystem") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "never create another Worker quote for that change") ||
 		strings.Count(model.request.Profile.SystemPrompt, conversationConvergenceGuidance) != 1 ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "does not need to mention AWS") {
 		t.Fatalf("model request lost intrinsic or extension: %+v", model.request)
