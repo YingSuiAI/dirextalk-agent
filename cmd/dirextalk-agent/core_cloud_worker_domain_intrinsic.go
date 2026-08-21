@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 
@@ -134,8 +135,31 @@ func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context
 	}
 	mutation := domainMutation(expected.AWSAccountID, expected.WorkerID, expected.WorkloadID, action, domain)
 	if expected.Operation == "bind" {
-		if err = executor.workloads.StageDomain(ctx, identity, expected.WorkloadID, domain); err == nil {
+		if err = executor.workloads.StageDomain(ctx, identity, expected.WorkloadID, domain); err != nil {
+			return cloudworker.RetainedWorkerDomainResult{}, fmt.Errorf("stage retained Worker domain: %w", err)
+		}
+		service, loadErr := executor.workloads.Get(ctx, identity, expected.WorkloadID)
+		if loadErr != nil {
+			return cloudworker.RetainedWorkerDomainResult{}, loadErr
+		}
+		if err = executor.reconcileRetainedServiceExposure(ctx, identity, service, expected.Hostname); err == nil {
+			err = executor.setRetainedDomainPublicPort(ctx, identity, 80, true)
+		}
+		if err == nil {
+			err = executor.setRetainedDomainPublicPort(ctx, identity, 443, true)
+		}
+		if err == nil {
 			err = remoteservice.ReconcilePlannedUpsert(ctx, fenced, mutation)
+		}
+		if err == nil {
+			verify := executor.verifyHTTPS
+			if verify == nil {
+				verify = verifyPublicServiceHTTPS
+			}
+			err = verify(ctx, expected.Hostname, expected.TargetIPv4, service.HealthPath, nil)
+		}
+		if err == nil {
+			err = executor.setRetainedDomainPublicPort(ctx, identity, service.Port, false)
 		}
 		if err == nil {
 			err = executor.workloads.CommitDomain(ctx, identity, expected.WorkloadID)
@@ -167,6 +191,34 @@ func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context
 	}
 	return cloudworker.RetainedWorkerDomainResult{WorkerID: expected.WorkerID, WorkloadID: expected.WorkloadID, Hostname: expected.Hostname,
 		TargetIPv4: expected.TargetIPv4, ZoneID: expected.ZoneID, RecordState: state}, nil
+}
+
+func (executor *sshWorkerExecutor) reconcileRetainedServiceExposure(ctx context.Context, identity sshworker.WorkerIdentity, service sshworkload.Service, hostname string) error {
+	if executor.reconcileServiceExposure != nil {
+		return executor.reconcileServiceExposure(ctx, identity, service, hostname)
+	}
+	if _, err := executor.currentBindingForCredential(ctx, identity.Credential); err != nil {
+		return err
+	}
+	provider, err := executor.providerForIdentity(ctx, identity.Credential)
+	if err != nil {
+		return err
+	}
+	return provider.ReconcileServiceExposure(ctx, identity, sshworker.ServiceExposure{WorkloadID: service.WorkloadID, Hostname: hostname, Port: service.Port})
+}
+
+func (executor *sshWorkerExecutor) setRetainedDomainPublicPort(ctx context.Context, identity sshworker.WorkerIdentity, port uint16, enabled bool) error {
+	if executor.setDomainPublicPort != nil {
+		return executor.setDomainPublicPort(ctx, identity, port, enabled)
+	}
+	if _, err := executor.currentBindingForCredential(ctx, identity.Credential); err != nil {
+		return err
+	}
+	provider, err := executor.providerForIdentity(ctx, identity.Credential)
+	if err != nil {
+		return err
+	}
+	return provider.SetPublicPort(ctx, identity, port, enabled)
 }
 
 type domainIntentRoute53 struct {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.180
+
+1. Make retained-service domain binding publish a complete Worker HTTPS route by reconciling the pinned-SSH Caddy proxy, public 80/443 rules, Route53 record, and direct-to-Worker TLS health before committing success.
+2. Keep failed publication stages fenced and retryable, and never replace a pre-existing unmanaged Worker Caddy configuration.
+
 ## v1.0.179
 
 1. Return exact retained-service workload IDs and bounded status details from `cloud_worker_inventory` so hostname changes can target the already deployed service.

@@ -37,22 +37,24 @@ import (
 )
 
 type sshWorkerExecutor struct {
-	authority       *cloudWorkerCredentialAuthority
-	exact           workaws.ExactCredentialResolver
-	providers       map[sshworker.CredentialIdentity]*sshworker.Provider
-	artifacts       *localartifact.Repository
-	pricing         cloudworker.PricingCatalog
-	sources         cloudworker.SourceReader
-	steers          coreconversation.TurnSteerStore
-	state           *sshworker.FileStore
-	pool            *sshworker.Pool
-	workloads       *sshworkload.Repository
-	route53         map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53
-	root            string
-	verifyHTTPS     func(context.Context, string, string, string, func(context.Context, string, string) error) error
-	resolveDomain   func(context.Context, string, uint64, string, string, string, string) (cloudworker.RetainedWorkerDomainIntent, error)
-	serverArtifacts coreserver.Repository
-	mu              sync.Mutex
+	authority                *cloudWorkerCredentialAuthority
+	exact                    workaws.ExactCredentialResolver
+	providers                map[sshworker.CredentialIdentity]*sshworker.Provider
+	artifacts                *localartifact.Repository
+	pricing                  cloudworker.PricingCatalog
+	sources                  cloudworker.SourceReader
+	steers                   coreconversation.TurnSteerStore
+	state                    *sshworker.FileStore
+	pool                     *sshworker.Pool
+	workloads                *sshworkload.Repository
+	route53                  map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53
+	root                     string
+	verifyHTTPS              func(context.Context, string, string, string, func(context.Context, string, string) error) error
+	resolveDomain            func(context.Context, string, uint64, string, string, string, string) (cloudworker.RetainedWorkerDomainIntent, error)
+	reconcileServiceExposure func(context.Context, sshworker.WorkerIdentity, sshworkload.Service, string) error
+	setDomainPublicPort      func(context.Context, sshworker.WorkerIdentity, uint16, bool) error
+	serverArtifacts          coreserver.Repository
+	mu                       sync.Mutex
 }
 
 func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.SourceReader, steers coreconversation.TurnSteerStore, state *sshworker.FileStore, root string) (*sshWorkerExecutor, error) {

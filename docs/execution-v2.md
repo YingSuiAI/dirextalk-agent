@@ -71,7 +71,12 @@ DNS instructions remain only an initial service-deployment outcome. Unbind uses 
 Worker itself is unavailable. Before mutation and every Route53 call, Agent
 revalidates the resolved owner generation, AWS account, current credential
 revision, Worker resource identity, workload, zone, and record. Both mutations
-verify the owning account and Route53 provider read-back. Agent retains the
+verify the owning account and Route53 provider read-back. Bind also reconciles
+the exact managed Caddy reverse proxy over the pinned Worker SSH identity,
+opens 80 and 443, proves HTTPS directly against that Worker's authoritative
+IPv4, and closes the direct workload port before committing success. Proxy,
+port, DNS, and HTTPS failures retain the staged identity for an idempotent
+retry and never yield a successful domain tool result. Agent retains the
 active binding or last exact removed-record receipt so a retry after provider
 mutation but before final turn commit idempotently reconciles and reads back the
 same record again. Route53 is not required for Worker creation,

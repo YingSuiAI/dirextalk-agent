@@ -648,8 +648,15 @@ or stream after admission. It never cancels the accepted Turn; callers use
   A record, and intent digest. Bind maps a 300-second A record to the
   authoritatively observed current public IPv4 only when the hostname has a
   longest-suffix matching public Route53 hosted zone visible through the
-  current verified AWS account. It accepts no private, external/manual, or
-  cross-account zone fallback. No match returns an explicit correctable tool
+  current verified AWS account. Before publishing that record, bind reconciles
+  the exact Agent-managed Caddy reverse proxy over the Worker's pinned SSH
+  identity and opens public ports 80 and 443. It then verifies HTTPS directly
+  against the authoritative Worker IPv4, closes the workload's direct public
+  port, and only then commits the binding and successful tool result. A proxy,
+  security-group, DNS, or HTTPS failure leaves the exact staged identity for an
+  idempotent retry and cannot be reported as a successful binding. It accepts
+  no private, external/manual, or cross-account zone fallback. No match returns
+  an explicit correctable tool
   error before Apply, provider write, binding persistence, or turn-success
   commit. Unbind deletes only the exact
   persisted record and may proceed while the Worker is unavailable. Both verify

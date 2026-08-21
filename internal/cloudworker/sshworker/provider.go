@@ -778,6 +778,28 @@ func (provider *Provider) SetPublicPort(ctx context.Context, identity WorkerIden
 		resourceTags(worker.WorkerID, worker.authority(), worker.Credential, worker.CreationProof), port, enabled)
 }
 
+// ReconcileServiceExposure installs the exact managed Caddy route
+// on a retained Worker after re-reading its complete persisted identity. The
+// pool fence prevents destroy from crossing this SSH mutation.
+func (provider *Provider) ReconcileServiceExposure(ctx context.Context, identity WorkerIdentity, exposure ServiceExposure) error {
+	provider.pool.mu.Lock()
+	defer provider.pool.mu.Unlock()
+	worker, found, err := provider.store.LoadWorker(ctx, identity.WorkerID)
+	if err != nil {
+		return err
+	}
+	if !found || workerIdentity(worker) != identity || worker.Phase == WorkerDestroyed {
+		return ErrIdentity
+	}
+	manager, ok := provider.status.(interface {
+		ReconcileServiceExposure(context.Context, WorkerRecord, ServiceExposure) error
+	})
+	if !ok {
+		return ErrInvalid
+	}
+	return manager.ReconcileServiceExposure(ctx, worker, exposure)
+}
+
 func (provider *Provider) ObserveWorker(ctx context.Context, identity WorkerIdentity) (WorkerStatus, error) {
 	statuses, err := provider.ListWorkers(ctx, identity.authority(), identity.Credential)
 	if err != nil {

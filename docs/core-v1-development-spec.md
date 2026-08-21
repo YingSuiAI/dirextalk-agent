@@ -911,8 +911,13 @@ stable correctable tool error before Apply, provider write, binding persistence,
 or turn-success commit. The manual-DNS result allowed during initial service
 deployment is not a fallback for this later bind tool. Unbind removes only the exact
 persisted record and does not require the Worker to be available. Both verify
-the mutation by provider read-back. Active binding state and the last exact
-removed record provide idempotent reconciliation when a provider mutation
+the mutation by provider read-back. A later bind is a complete publication
+transaction: over the pinned Worker identity it reconciles the Agent-managed
+Caddy route, opens ports 80 and 443, reconciles Route53, proves public HTTPS
+against the exact Worker IPv4, closes the direct workload port, and only then
+commits success. Any failed stage remains retryable under the same frozen
+identity and cannot produce an HTTPS-ready result. Active binding state and the
+last exact removed record provide idempotent reconciliation when a provider mutation
 succeeds but the final turn commit must retry; the retry revalidates the same
 identity and repeats provider read-back. Route53 is not required for Worker creation or
 ordinary execution. There is no EIP, custom AMI, S3/KMS artifact

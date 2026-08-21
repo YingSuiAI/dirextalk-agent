@@ -1047,9 +1047,12 @@ func TestCreateAuthorizerRevalidatesImmediatelyBeforeMutation(t *testing.T) {
 }
 
 type fakeStatus struct {
-	seen       []WorkerRecord
-	quoteCalls int
-	quoteErr   error
+	seen           []WorkerRecord
+	quoteCalls     int
+	quoteErr       error
+	exposureCalls  int
+	exposureWorker WorkerRecord
+	exposure       ServiceExposure
 }
 
 func (status *fakeStatus) Observe(_ context.Context, worker WorkerRecord) (RunnerMetrics, error) {
@@ -1062,6 +1065,36 @@ func (status *fakeStatus) HourlyQuote(context.Context, WorkerRecord) (HourlyQuot
 		return HourlyQuote{}, status.quoteErr
 	}
 	return HourlyQuote{Currency: "USD", MicrosPerHour: 25_000, ObservedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+func (status *fakeStatus) ReconcileServiceExposure(_ context.Context, worker WorkerRecord, exposure ServiceExposure) error {
+	status.exposureCalls++
+	status.exposureWorker, status.exposure = worker, exposure
+	return nil
+}
+
+func TestProviderReconcilesExposureOnlyForExactPersistedWorker(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	status := &fakeStatus{}
+	request := requestFixture()
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store, status)
+	if _, err := provider.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	worker := store.workers[request.ExecutionID]
+	identity := workerIdentity(worker)
+	exposure := ServiceExposure{WorkloadID: "web", Hostname: "app.example.test", Port: 8080}
+	changed := identity
+	changed.InstanceID = "i-replaced"
+	if err := provider.ReconcileServiceExposure(context.Background(), changed, exposure); !errors.Is(err, ErrIdentity) {
+		t.Fatalf("changed instance identity accepted: %v", err)
+	}
+	if err := provider.ReconcileServiceExposure(context.Background(), identity, exposure); err != nil {
+		t.Fatal(err)
+	}
+	if status.exposureCalls != 1 || status.exposureWorker.WorkerID != identity.WorkerID || status.exposure != exposure {
+		t.Fatalf("exposure reconciliation=%+v", status)
+	}
 }
 func TestListWorkersRefreshesPublicIPBeforeReadOnlyRunnerProbe(t *testing.T) {
 	cloud := newFakeAWS()

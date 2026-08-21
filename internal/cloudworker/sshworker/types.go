@@ -355,6 +355,14 @@ type StatusSource interface {
 	HourlyQuote(context.Context, WorkerRecord) (HourlyQuote, error)
 }
 
+// ServiceExposure is the exact Worker-side reverse-proxy identity for one
+// already-running persistent service.
+type ServiceExposure struct {
+	WorkloadID string
+	Hostname   string
+	Port       uint16
+}
+
 type WorkerAvailability string
 
 const (
