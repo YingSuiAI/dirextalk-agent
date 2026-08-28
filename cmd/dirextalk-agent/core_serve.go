@@ -482,7 +482,7 @@ func serveCore(cfg config.Config) error {
 	if knowledgeComposition != nil {
 		conversationResolver = &knowledgeConversationResolver{base: conversationResolver, search: knowledgeComposition.domain}
 	}
-	conversation.SetExtensionResolver(&webSearchConversationResolver{base: conversationResolver, service: webSearchService})
+	conversation.SetExtensionResolver(&webSearchConversationResolver{base: &githubMCPConversationResolver{base: conversationResolver, service: githubService}, service: webSearchService})
 	if knowledgeComposition != nil {
 		conversationStore.EnableMemoryCapture()
 		conversation.SetMemoryRecallResolver(coreMemoryRecallResolver{structured: knowledgeComposition.memory})

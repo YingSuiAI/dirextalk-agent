@@ -46,10 +46,11 @@ var serverIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 // Callers provide already-enabled servers; local process transports and raw
 // authorization headers are intentionally not representable.
 type ServerConfig struct {
-	ID        string `json:"id"`
-	Endpoint  string `json:"endpoint"`
-	SecretRef string `json:"secret_ref"`
-	Transport string `json:"transport,omitempty"`
+	ID        string            `json:"id"`
+	Endpoint  string            `json:"endpoint"`
+	SecretRef string            `json:"secret_ref"`
+	Transport string            `json:"transport,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
 }
 
 // EndpointPolicy is evaluated before every request and before resolving a
@@ -90,6 +91,7 @@ type configuredServer struct {
 	endpoint  *url.URL
 	secretRef string
 	transport string
+	headers   map[string]string
 }
 
 // Provider implements ToolProvider for a fixed trusted server set.
@@ -207,7 +209,14 @@ func normalizeServerConfigWithParser(config ServerConfig, parse func(string) (*u
 	if len(secretRef) > 512 || strings.ContainsAny(secretRef, "\r\n\x00") {
 		return configuredServer{}, fmt.Errorf("%w: invalid credential reference", ErrInvalidConfig)
 	}
-	return configuredServer{id: id, endpoint: endpoint, secretRef: secretRef, transport: transport}, nil
+	headers := map[string]string{}
+	for k, v := range config.Headers {
+		if strings.TrimSpace(k) == "" || strings.ContainsAny(k+v, "\r\n\x00") {
+			return configuredServer{}, ErrInvalidConfig
+		}
+		headers[k] = v
+	}
+	return configuredServer{id: id, endpoint: endpoint, secretRef: secretRef, transport: transport, headers: headers}, nil
 }
 
 func (p *Provider) Tools(ctx context.Context) ([]Tool, error) {

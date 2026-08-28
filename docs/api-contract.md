@@ -989,6 +989,15 @@ write-only and may only be removed through `github_token_clear`. The service
 encrypts the PAT with AAD bound to owner, generation, credential version and
 config revision, and tests it against GitHub's authenticated identity endpoint.
 
+When enabled, Core automatically resolves the official hosted GitHub MCP at
+`https://api.githubcopilot.com/mcp/` using that PAT as a Bearer credential. It
+requests only `repos,pull_requests`, fails closed for unknown tool identities,
+and exposes only repository, contents, branch, commit and pull-request tools.
+Every tool is marked `requires_confirmation` because remote annotations are not
+an authorization boundary. Credential resolution rechecks the authenticated
+owner, account generation and immutable config/credential revision immediately
+before each MCP request; no token is copied to a process environment or Worker.
+
 Core is a fresh-state service with no legacy public-API or database
 compatibility path. Any Protobuf or schema change updates this contract and
 focused boundary tests in the same change.

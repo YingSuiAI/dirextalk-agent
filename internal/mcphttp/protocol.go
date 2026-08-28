@@ -255,6 +255,9 @@ func (p *Provider) post(
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json, text/event-stream")
+	for key, value := range server.headers {
+		request.Header.Set(key, value)
+	}
 	if sessionID != "" {
 		request.Header.Set("Mcp-Session-Id", sessionID)
 	}
