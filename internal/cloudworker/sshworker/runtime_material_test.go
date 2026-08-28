@@ -381,7 +381,7 @@ func TestVendoredPiSubagentProvenanceAndBounds(t *testing.T) {
 
 func mustCompileRuntimeForTest(t *testing.T) RuntimeMaterial {
 	t.Helper()
-	material, err := CompileRuntime(RuntimeRequest{TaskID: "task-github", Objective: "use a repository", Architecture: "x86_64", Workload: WorkloadJob, MaxRuntimeSeconds: 60, Model: RuntimeModel{Provider: "openai_compatible", BaseURL: "https://models.example/v1", Name: "test", APIKey: "model-secret", GitHubPAT: "RIVER-LANTERN-PAT"}})
+	material, err := CompileRuntime(RuntimeRequest{TaskID: "task-github", Objective: "use a repository", Architecture: "x86_64", Workload: WorkloadJob, MaxRuntimeSeconds: 60, Model: RuntimeModel{Provider: "openai_compatible", BaseURL: "https://models.example/v1", Name: "test", APIKey: "model-secret"}})
 	if err != nil {
 		t.Fatal(err)
 	}

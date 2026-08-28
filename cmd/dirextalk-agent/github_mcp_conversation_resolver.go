@@ -83,9 +83,11 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 		}
 		seen[name] = struct{}{}
 		if _, allowed := githubMCPAllowed[name]; allowed {
-			if !t.Effect.ReadOnly() {
-				return out, nil
-			}
+			// GitHub's readonly endpoint and explicit header are an additional
+			// contract: its current read tools can omit idempotency annotations.
+			// Do not change generic MCP effect classification; only this exact
+			// curated allowlist is normalized to an observation-only operation.
+			t.Effect = mcphttp.ToolEffectReadOnly
 			selected = append(selected, t)
 		}
 	}
@@ -149,6 +151,23 @@ func (s githubMCPSecret) ResolveSecret(ctx context.Context, ref string) ([]byte,
 	var out []byte
 	e := s.service.WithTokenResolved(ctx, strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration(), s.snapshot, func(v string) error { out = []byte(v); return nil })
 	return out, e
+}
+
+// WithSecret holds coregithub's exact-binding fence across the actual HTTP
+// dispatch when mcphttp supports dispatch-scoped credentials.
+func (s githubMCPSecret) WithSecret(ctx context.Context, ref string, fn func([]byte) error) error {
+	if ref != githubMCPSecretRef || fn == nil {
+		return mcphttp.ErrCredentialUnavailable
+	}
+	p, ok := capabilityclient.PermissionFromContext(ctx)
+	if !ok || p == nil {
+		return mcphttp.ErrCredentialUnavailable
+	}
+	return s.service.WithTokenResolved(ctx, strings.TrimSpace(p.GetAuthenticatedOwnerId()), p.GetAccountGeneration(), s.snapshot, func(value string) error {
+		secret := []byte(value)
+		defer clear(secret)
+		return fn(secret)
+	})
 }
 func githubMCPProvider(service *coregithub.Service, s coregithub.ResolvedConfig) (mcphttp.ToolProvider, error) {
 	return mcphttp.New([]mcphttp.ServerConfig{{ID: "github", Endpoint: githubMCPEndpoint, SecretRef: githubMCPSecretRef, Headers: map[string]string{"X-MCP-Toolsets": "repos,pull_requests", "X-MCP-Readonly": "true"}}}, githubMCPSecret{service: service, snapshot: s})

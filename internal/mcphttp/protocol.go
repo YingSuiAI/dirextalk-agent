@@ -238,6 +238,24 @@ func (p *Provider) post(
 	payload []byte,
 	expectResponse bool,
 ) ([]byte, string, string, error) {
+	// A dispatch-scoped resolver keeps its authorization fence through this
+	// entire request. Re-enter with a byte-only resolver so the normal request
+	// implementation remains the single serialization/redaction path.
+	if server.secretRef != "" {
+		if dispatcher, ok := p.secrets.(SecretDispatcher); ok {
+			var resultBody []byte
+			var resultContentType, resultSessionID string
+			var dispatchErr error
+			err := dispatcher.WithSecret(ctx, server.secretRef, func(secret []byte) error {
+				defer zeroBytes(secret)
+				clone := *p
+				clone.secrets = staticSecretResolver{secret: append([]byte(nil), secret...)}
+				resultBody, resultContentType, resultSessionID, dispatchErr = clone.post(ctx, server, sessionID, version, payload, expectResponse)
+				return dispatchErr
+			})
+			return resultBody, resultContentType, resultSessionID, err
+		}
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 	if err := p.policy.Validate(requestCtx, cloneURL(server.endpoint)); err != nil {
@@ -305,6 +323,12 @@ func (p *Provider) post(
 		return nil, "", "", ErrProtocol
 	}
 	return body, response.Header.Get("Content-Type"), responseSessionID, nil
+}
+
+type staticSecretResolver struct{ secret []byte }
+
+func (r staticSecretResolver) ResolveSecret(_ context.Context, _ string) ([]byte, error) {
+	return r.secret, nil
 }
 
 func (p *Provider) resolveCredential(ctx context.Context, secretRef string) ([]byte, error) {

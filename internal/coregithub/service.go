@@ -165,7 +165,7 @@ func (s *Service) Update(ctx context.Context, command UpdateCommand) (Config, er
 	}
 	if command.GitHubToken != nil {
 		key := strings.TrimSpace(*command.GitHubToken)
-		if key == "" || len(key) > 4096 || command.GitHubTokenClear {
+		if key == "" || len(key) > 4096 || command.GitHubTokenClear || containsProtocolControl(key) {
 			return Config{}, ErrInvalid
 		}
 		command.GitHubToken = &key
@@ -186,6 +186,15 @@ func (s *Service) Update(ctx context.Context, command UpdateCommand) (Config, er
 		return Config{}, safeRepositoryError(err)
 	}
 	return sanitizeConfig(value), nil
+}
+
+func containsProtocolControl(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) Resolve(ctx context.Context, ownerID string, accountGeneration int64) (ResolvedConfig, error) {
@@ -220,11 +229,19 @@ func (s *Service) Test(ctx context.Context, ownerID string, accountGeneration in
 	// current credential after resolving the snapshot so a concurrent rotation
 	// or account fence cannot test stale plaintext.
 	current, release, err := s.repository.ResolveForDispatch(ctx, ownerID, accountGeneration, resolved)
-	if err == nil {
-		defer release()
+	if err == nil && release == nil {
+		err = ErrRepository
 	}
 	if err == nil {
 		err = s.tester.Identity(ctx, current.GitHubToken)
+	}
+	// ResolveForDispatch deliberately holds the durable account locks only
+	// while the provider request is in flight. MarkTested is a separate CAS
+	// mutation and must run after those locks are released.
+	if release != nil {
+		if releaseErr := release(); releaseErr != nil && err == nil {
+			err = ErrRepository
+		}
 	}
 	if err != nil {
 		return TestResult{}, safeProviderError(err)
@@ -254,7 +271,6 @@ func (s *Service) WithTokenResolved(ctx context.Context, ownerID string, account
 	if release == nil {
 		return ErrRepository
 	}
-	defer func() { _ = release() }()
 	defer func() { current.GitHubToken = "" }()
 	err = func() error {
 		if current.Revision != resolved.Revision || current.CredentialVersion != resolved.CredentialVersion || current.Provider != resolved.Provider || !current.GitHubTokenConfigured {

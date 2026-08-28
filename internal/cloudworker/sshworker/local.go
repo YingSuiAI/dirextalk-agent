@@ -504,13 +504,15 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 		if err != nil {
 			return ExecutionResult{}, err
 		}
-		start, err := request.Runtime.Start()
+		start, err := request.Runtime.StartWithSecrets(ctx)
 		if err != nil {
 			return ExecutionResult{}, err
 		}
 		if err = sshWithInput(ctx, sshPath, base, start.Shell, bytes.NewReader(start.Stdin)); err != nil {
+			clear(start.Stdin)
 			return ExecutionResult{}, errors.Join(ErrAmbiguous, err)
 		}
+		clear(start.Stdin)
 	}
 	if request.ReportProgress != nil {
 		if err := request.ReportProgress(ctx, "executing_remote_task", "Executing task on Worker"); err != nil {
@@ -523,13 +525,15 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 		if err != nil {
 			return ExecutionResult{}, err
 		}
-		start, startErr := request.Runtime.Start()
+		start, startErr := request.Runtime.StartWithSecrets(ctx)
 		if startErr != nil {
 			return ExecutionResult{}, startErr
 		}
 		if startErr = sshWithInput(ctx, sshPath, base, start.Shell, bytes.NewReader(start.Stdin)); startErr != nil {
+			clear(start.Stdin)
 			return ExecutionResult{}, errors.Join(ErrAmbiguous, startErr)
 		}
+		clear(start.Stdin)
 		status, err = executor.waitRuntime(ctx, sshPath, base, request.Runtime, request.ReportProgress)
 	}
 	if err != nil {

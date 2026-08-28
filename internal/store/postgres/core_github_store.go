@@ -83,7 +83,7 @@ func (s *CoreGitHubStore) Resolve(ctx context.Context, ownerID string, accountGe
 	if row.credentialVersion <= 0 || len(row.nonce) == 0 || len(row.ciphertext) == 0 {
 		return coregithub.ResolvedConfig{}, coregithub.ErrRepository
 	}
-	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration, row.config.Revision), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
+	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
 	if err != nil {
 		return coregithub.ResolvedConfig{}, coregithub.ErrRepository
 	}
@@ -168,7 +168,7 @@ func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutati
 			credentialVersion = 1
 		}
 		plaintext := []byte(*mutation.GitHubToken)
-		envelope, sealErr := s.store.sealDurableSecret(s.secretDomain(provider), githubSecretRecordID(mutation.OwnerID, mutation.AccountGeneration, current.config.Revision+1), credentialVersion, githubSecretField, plaintext)
+		envelope, sealErr := s.store.sealDurableSecret(s.secretDomain(provider), githubSecretRecordID(mutation.OwnerID, mutation.AccountGeneration), credentialVersion, githubSecretField, plaintext)
 		clearBytes(plaintext)
 		if sealErr != nil {
 			return coregithub.Config{}, coregithub.ErrRepository
@@ -291,7 +291,7 @@ func (s *CoreGitHubStore) ResolveForDispatch(ctx context.Context, ownerID string
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrDisabled
 	}
-	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration, row.config.Revision), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
+	plaintext, err := s.store.openDurableSecret(s.secretDomain(row.config.Provider), githubSecretRecordID(ownerID, accountGeneration), row.credentialVersion, githubSecretField, row.keyVersion, row.nonce, row.ciphertext)
 	if err != nil {
 		rollback()
 		return coregithub.ResolvedConfig{}, nil, coregithub.ErrRepository
@@ -357,8 +357,12 @@ func checkGitHubAdmissionTx(ctx context.Context, tx pgx.Tx, ownerID string, acco
 	return nil
 }
 
-func githubSecretRecordID(ownerID string, accountGeneration, revision int64) string {
-	return "owner=" + strconv.Itoa(len(ownerID)) + ":" + ownerID + ";generation=" + strconv.FormatInt(accountGeneration, 10) + ";revision=" + strconv.FormatInt(revision, 10)
+func githubSecretRecordID(ownerID string, accountGeneration int64) string {
+	// The owner generation is immutable for the lifetime of this record. The
+	// credential version is bound separately by the durable-secret envelope;
+	// configuration revision is intentionally excluded so an enable/disable or
+	// other metadata change cannot make the existing ciphertext undecryptable.
+	return "owner=" + strconv.Itoa(len(ownerID)) + ":" + ownerID + ";generation=" + strconv.FormatInt(accountGeneration, 10)
 }
 
 func githubIdentityLockKey(ownerID string, accountGeneration int64) string {

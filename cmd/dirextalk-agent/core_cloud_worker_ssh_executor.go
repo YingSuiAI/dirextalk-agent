@@ -151,16 +151,10 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	if err != nil || current != request.AWS {
 		return sshflow.Result{}, errors.Join(cloudworker.ErrStaleAuthorization, err)
 	}
-	githubPAT := ""
 	if request.GitHubBinding != nil {
 		if executor.github == nil {
 			return sshflow.Result{}, cloudworker.ErrStaleAuthorization
 		}
-		githubPAT, err = executor.github.ResolveExactGitHubPAT(ctx, request.GitHubBinding)
-		if err != nil {
-			return sshflow.Result{}, errors.Join(cloudworker.ErrStaleAuthorization, err)
-		}
-		defer func() { githubPAT = "" }()
 	}
 	workspacePath, cleanupWorkspace, err := executor.materializeWorkspace(ctx, request)
 	if err != nil {
@@ -190,9 +184,19 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	}
 	material, err := sshworker.CompileRuntime(sshworker.RuntimeRequest{TaskID: request.ExecutionID, Objective: request.Objective,
 		Architecture: request.Compute.Architecture, Workload: workload, MaxRuntimeSeconds: request.Limits.MaxRuntimeSeconds, Service: service,
-		Model: workerRuntimeModel(request.ModelSnapshot, githubPAT)})
+		Model: workerRuntimeModel(request.ModelSnapshot)})
 	if err != nil {
 		return sshflow.Result{}, err
+	}
+	if request.GitHubBinding != nil {
+		binding := *request.GitHubBinding
+		material.Protocol = material.Protocol.WithGitHubPATResolver(func(resolveCtx context.Context) (string, error) {
+			pat, resolveErr := executor.github.ResolveExactGitHubPAT(resolveCtx, &binding)
+			if resolveErr != nil {
+				return "", errors.Join(cloudworker.ErrStaleAuthorization, resolveErr)
+			}
+			return pat, nil
+		})
 	}
 	sink, err := executor.artifacts.Bind(localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, request.ExecutionID)
 	if err != nil {
@@ -299,9 +303,9 @@ func (executor *sshWorkerExecutor) resolveDeferredWorkerGuidance(ctx context.Con
 	return sshworker.RuntimeGuidance{SteerIDs: ids, Text: strings.TrimSpace(guidance.String())}, nil
 }
 
-func workerRuntimeModel(snapshot coremodel.ExecutionSnapshot, githubPAT string) sshworker.RuntimeModel {
+func workerRuntimeModel(snapshot coremodel.ExecutionSnapshot) sshworker.RuntimeModel {
 	return sshworker.RuntimeModel{Provider: string(snapshot.Provider), BaseURL: snapshot.BaseURL,
-		Name: snapshot.Model, APIKey: snapshot.APIKey, GitHubPAT: githubPAT, MaxOutputTokens: snapshot.MaxOutputTokens}
+		Name: snapshot.Model, APIKey: snapshot.APIKey, MaxOutputTokens: snapshot.MaxOutputTokens}
 }
 
 var errSSHWorkerArtifactLimit = fmt.Errorf("SSH Worker artifact count exceeds %d", coretask.MaxFileCount)

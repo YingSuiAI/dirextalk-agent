@@ -50,3 +50,14 @@ func TestGitHubConfigurationIsWriteOnlyAndConnectionTestUsesIdentity(t *testing.
 		t.Fatal("identity test did not receive resolved PAT")
 	}
 }
+
+func TestUpdateRejectsCredentialProtocolControls(t *testing.T) {
+	for _, token := range []string{"ghp_bad\nvalue", "ghp_bad\rvalue", "ghp_bad\x00value", "ghp_bad\tvalue"} {
+		repo := &testRepo{value: ResolvedConfig{Config: Config{Provider: ProviderGitHub}}}
+		s, _ := NewService(repo, &testIdentity{})
+		enabled := false
+		if _, err := s.Update(context.Background(), UpdateCommand{OwnerID: "owner", AccountGeneration: 1, IdempotencyKey: "00000000-0000-4000-8000-000000000001", ExpectedRevision: 0, Enabled: &enabled, GitHubToken: &token}); err != ErrInvalid {
+			t.Fatalf("token %q accepted: %v", token, err)
+		}
+	}
+}

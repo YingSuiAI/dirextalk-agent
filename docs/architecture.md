@@ -127,10 +127,15 @@ When enabled, a Worker plan retains only a private non-secret GitHub binding
 Immediately before every task start, including retained-Worker reuse, Agent
 re-resolves that exact binding and fails closed after rotation, clear, disable,
 or deprovision. The PAT crosses SSH stdin once, is task-scoped mode 0600, is
-available only through a github.com Git helper and process-local `gh` wrapper,
-and is removed on completion, error, or cancellation; it never enters durable
-plans, task specs, logs, scripts, artifacts, command arguments, or Pi's
-inherited environment.
+available through a github.com-only Git helper and process-local `gh` wrapper,
+and is removed on completion, error, or cancellation. The runner does not
+intentionally serialize it into durable plans, task specs, command arguments,
+scripts, ordinary logs, or Pi's inherited environment; ordinary runner output
+is exact-token redacted. The Worker is nevertheless a trusted delegate: Pi runs
+as the same user and can invoke the Git credential helper, so least-privilege
+selected-repository, short-expiry PATs are required. Rotation blocks future
+starts but cannot revoke an already-started run or prevent transformed
+credential exfiltration.
 The remote Pi runtime may expose only the vendored server-owned subagent
 extension pinned to Pi `v0.84.1`. It is loaded explicitly while extension
 discovery remains disabled, and it discovers only server-owned agent

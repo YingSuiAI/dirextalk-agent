@@ -80,8 +80,9 @@ func main() {
 
 func stop(taskID string) error {
 	current, err := loadStatus(taskID)
+	if os.IsNotExist(err) { cleanupGitHubRuntime(filepath.Join(root, "tasks", taskID)); return json.NewEncoder(os.Stdout).Encode(taskStatus{TaskID: taskID, Phase: "not_started"}) }
 	if err != nil { return err }
-	if current.Phase != "running" { return json.NewEncoder(os.Stdout).Encode(current) }
+	if current.Phase != "running" { cleanupGitHubRuntime(filepath.Join(root, "tasks", taskID)); return json.NewEncoder(os.Stdout).Encode(current) }
 	unit := "dirextalk-worker-" + taskID + ".scope"
 	stopErr := exec.Command("systemctl", "--user", "stop", unit).Run()
 	if current.PID > 0 {
@@ -111,6 +112,8 @@ func start(taskID string) error {
 	if decoder.Decode(&envelope) != nil || decoder.Decode(&struct{}{}) != io.EOF || envelope.Version != 1 || strings.TrimSpace(envelope.ModelAPIKey) == "" || len(envelope.ModelAPIKey) > 16384 || len(envelope.GitHubPAT) > 4096 { return errors.New("invalid runtime secret envelope") }
 	key := []byte(envelope.ModelAPIKey); defer clear(key)
 	if envelope.GitHubPAT != "" { pat := []byte(envelope.GitHubPAT); defer clear(pat); if err := os.WriteFile(taskPath(taskID, "github-pat"), pat, 0600); err != nil { return err } }
+	startedRun := false
+	defer func() { if !startedRun { cleanupGitHubRuntime(filepath.Join(root, "tasks", taskID)) } }()
 	logFile, err := os.OpenFile(taskPath(taskID, "runner.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil { return err }
 	defer logFile.Close()
@@ -122,6 +125,7 @@ func start(taskID string) error {
 	started := taskStatus{TaskID: taskID, Workload: spec.Workload, Phase: "running", PID: command.Process.Pid, StartedAt: time.Now().UTC().Format(time.RFC3339)}
 	if err := saveStatus(taskID, started); err != nil { _ = command.Process.Kill(); return err }
 	_ = command.Process.Release()
+	startedRun = true
 	return json.NewEncoder(os.Stdout).Encode(started)
 }
 
@@ -155,9 +159,10 @@ func run(taskID string) error {
 	objective, err := os.Open(taskPath(taskID, "objective.txt")); if err != nil { return finish(taskID, current, 1, err) }
 	defer objective.Close()
 	command.Dir = workspaceRoot; command.Stdin = objective
-	command.Stdout = io.MultiWriter(os.Stdout, report); command.Stderr = os.Stderr
-	command.Env = append(withoutGitHubTokenEnv(os.Environ()), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb")
+	command.Env = append(withoutGitHubTokenEnv(os.Environ()), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb", "DIREXTALK_WORKER_MODEL="+spec.Model)
 	if err := configureGitHubRuntime(taskRoot, command); err != nil { return finish(taskID, current, 1, err) }
+	pat, err := os.ReadFile(taskPath(taskID, "github-pat")); if os.IsNotExist(err) { pat = nil } else if err != nil { return finish(taskID, current, 1, err) }; defer clear(pat)
+	command.Stdout = redactingWriter{writer: io.MultiWriter(os.Stdout, report), secret: pat}; command.Stderr = redactingWriter{writer: os.Stderr, secret: pat}
 	err = command.Run(); code := 0
 	if errors.Is(runContext.Err(), context.DeadlineExceeded) { code, err = 124, errors.New("maximum runtime exceeded")
 	} else if err != nil { code = 1; var exit *exec.ExitError; if errors.As(err, &exit) { code = exit.ExitCode() } }
@@ -213,6 +218,9 @@ func finish(taskID string, current taskStatus, code int, runErr error) error {
 }
 
 func withoutGitHubTokenEnv(environment []string) []string { result := make([]string, 0, len(environment)); for _, value := range environment { if strings.HasPrefix(value, "GH_TOKEN=") || strings.HasPrefix(value, "GITHUB_TOKEN=") { continue }; result = append(result, value) }; return result }
+
+type redactingWriter struct { writer io.Writer; secret []byte }
+func (writer redactingWriter) Write(body []byte) (int, error) { if len(writer.secret) > 0 { redacted := strings.ReplaceAll(string(body), string(writer.secret), "[REDACTED]"); _, err := io.WriteString(writer.writer, redacted); return len(body), err }; _, err := writer.writer.Write(body); return len(body), err }
 
 func configureGitHubRuntime(taskRoot string, command *exec.Cmd) error {
 	patPath := filepath.Join(taskRoot, "github-pat")

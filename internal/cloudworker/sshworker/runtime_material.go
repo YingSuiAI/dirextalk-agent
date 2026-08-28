@@ -25,7 +25,7 @@ const (
 	piLinuxX64SHA256          = "5634d7ebd18274b63af3371e942f342d74bea012389575c1d1ff15ce6ca80c2f"
 	piLinuxARM64SHA256        = "ab95c058a4651b5ff5d8c878e524edfb776263c7a444f325505f247c056eecfc"
 	PiSubagentUpstreamCommit  = "53fa77ccd8a279eb87e92294ef3687b03ff80112"
-	PiSubagentExtensionSHA256 = "18afb492907c7f65e8df15a7bc11ad910e1bb4ac61ffe65957fa24d3144ee40c"
+	PiSubagentExtensionSHA256 = "4a0883d4393a7fb8af710deda9d688329deda68bbc9e233d5f671653bca8de23"
 
 	maxObjectiveBytes = 128 << 10
 )
@@ -38,7 +38,6 @@ type RuntimeModel struct {
 	BaseURL         string
 	Name            string
 	APIKey          string
-	GitHubPAT       string
 	MaxOutputTokens int
 }
 
@@ -197,7 +196,7 @@ chmod 700 "$worker_root/dirextalk-worker-runner"
 		TaskID:             request.TaskID,
 		WorkerScript:       []byte(script),
 		WorkerScriptSHA256: hex.EncodeToString(digest[:]),
-		Protocol:           RuntimeProtocol{TaskID: request.TaskID, secretEnvelope: encodeRuntimeSecretEnvelope(request.Model.APIKey, request.Model.GitHubPAT)},
+		Protocol:           RuntimeProtocol{TaskID: request.TaskID, secretEnvelope: encodeRuntimeSecretEnvelope(request.Model.APIKey, "")},
 	}, nil
 }
 
@@ -210,6 +209,23 @@ type runtimeSecretEnvelope struct {
 func encodeRuntimeSecretEnvelope(modelKey, githubPAT string) string {
 	raw, _ := json.Marshal(runtimeSecretEnvelope{Version: 1, ModelAPIKey: modelKey, GitHubPAT: githubPAT})
 	return base64.StdEncoding.EncodeToString(raw)
+}
+
+func encodeRuntimeSecretEnvelopeFromBase64(baseEnvelope, githubPAT string) string {
+	raw, err := base64.StdEncoding.DecodeString(baseEnvelope)
+	if err != nil {
+		return ""
+	}
+	var envelope runtimeSecretEnvelope
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Version != 1 || strings.TrimSpace(envelope.ModelAPIKey) == "" {
+		return ""
+	}
+	envelope.GitHubPAT = githubPAT
+	updated, err := json.Marshal(envelope)
+	if err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(updated)
 }
 
 func piArchive(architecture string) (string, string, error) {

@@ -1,6 +1,7 @@
 package sshworker
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -36,8 +37,17 @@ type RuntimeCommand struct {
 // Start detaches the workload and returns immediately. Status, Log, Artifact,
 // and ServerStatus may be called after any SSH reconnect.
 type RuntimeProtocol struct {
-	TaskID         string
-	secretEnvelope string
+	TaskID           string
+	secretEnvelope   string
+	resolveGitHubPAT func(context.Context) (string, error)
+}
+
+// WithGitHubPATResolver keeps only a final-dispatch resolver. It is invoked
+// by StartWithSecrets after bootstrap and guidance have completed, immediately
+// before the encrypted SSH stdin envelope is sent.
+func (protocol RuntimeProtocol) WithGitHubPATResolver(resolver func(context.Context) (string, error)) RuntimeProtocol {
+	protocol.resolveGitHubPAT = resolver
+	return protocol
 }
 
 func (protocol RuntimeProtocol) Start() (RuntimeCommand, error) {
@@ -48,6 +58,21 @@ func (protocol RuntimeProtocol) Start() (RuntimeCommand, error) {
 		Shell: runnerCommand(RuntimeStart, protocol.TaskID),
 		Stdin: []byte(protocol.secretEnvelope + "\n"),
 	}, nil
+}
+
+func (protocol RuntimeProtocol) StartWithSecrets(ctx context.Context) (RuntimeCommand, error) {
+	if protocol.resolveGitHubPAT == nil {
+		return protocol.Start()
+	}
+	pat, err := protocol.resolveGitHubPAT(ctx)
+	if err != nil {
+		return RuntimeCommand{}, err
+	}
+	defer func() { pat = "" }()
+	if strings.TrimSpace(pat) == "" {
+		return RuntimeCommand{}, ErrInvalid
+	}
+	return RuntimeCommand{Shell: runnerCommand(RuntimeStart, protocol.TaskID), Stdin: []byte(encodeRuntimeSecretEnvelopeFromBase64(protocol.secretEnvelope, pat) + "\n")}, nil
 }
 
 func (protocol RuntimeProtocol) Status() (RuntimeCommand, error) {

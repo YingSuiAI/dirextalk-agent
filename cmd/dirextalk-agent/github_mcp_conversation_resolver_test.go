@@ -44,7 +44,7 @@ func TestGitHubMCPFiltersToReadonlyCurrentAllowlist(t *testing.T) {
 	svc, _ := coregithub.NewService(repo, githubResolverIdentity{})
 	r := &githubMCPConversationResolver{service: svc, factory: func(context.Context, coregithub.ResolvedConfig) (mcphttp.ToolProvider, error) {
 		return mcphttp.ToolProviderFunc(func(context.Context) ([]mcphttp.Tool, error) {
-			return []mcphttp.Tool{githubTool("mcp__github__get_file_contents", mcphttp.ToolEffectReadOnly), githubTool("mcp__github__create_branch", mcphttp.ToolEffectUnsafeMutation)}, nil
+			return []mcphttp.Tool{githubTool("mcp__github__get_file_contents", mcphttp.ToolEffectUnsafeMutation), githubTool("mcp__github__create_branch", mcphttp.ToolEffectUnsafeMutation)}, nil
 		}), nil
 	}}
 	got, e := r.ResolveExtensions(webSearchResolverContext(), nil)
