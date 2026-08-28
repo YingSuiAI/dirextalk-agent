@@ -992,9 +992,13 @@ config revision, and tests it against GitHub's authenticated identity endpoint.
 When enabled, Core automatically resolves the official hosted GitHub MCP at
 `https://api.githubcopilot.com/mcp/` using that PAT as a Bearer credential. It
 requests only `repos,pull_requests`, fails closed for unknown tool identities,
-and exposes only repository, contents, branch, commit and pull-request tools.
-Every tool is marked `requires_confirmation` because remote annotations are not
-an authorization boundary. Credential resolution rechecks the authenticated
+and exposes only an explicit repository/contents/branch/commit/pull-request
+allowlist. Unrelated advertised tools are ignored; malformed, duplicate, or
+zero allowed definitions fail closed. Every tool is marked
+`requires_confirmation` because remote annotations are not an authorization
+boundary. Read tools retain their individual conservative effect classification;
+successful writes are recorded as changed and failed writes as unknown mutation.
+Credential resolution rechecks the authenticated
 owner, account generation and immutable config/credential revision immediately
 before each MCP request; no token is copied to a process environment or Worker.
 

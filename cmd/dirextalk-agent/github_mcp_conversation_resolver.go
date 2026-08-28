@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
@@ -20,7 +22,8 @@ const githubMCPEndpoint = "https://api.githubcopilot.com/mcp/"
 const githubMCPSecretRef = "agent:github:pat"
 
 var githubMCPAllowed = map[string]struct{}{
-	"mcp__github__get_repository": {}, "mcp__github__search_repositories": {}, "mcp__github__get_file_contents": {}, "mcp__github__list_branches": {}, "mcp__github__list_commits": {}, "mcp__github__list_pull_requests": {}, "mcp__github__get_pull_request": {},
+	"mcp__github__get_file_contents": {}, "mcp__github__list_branches": {}, "mcp__github__list_commits": {}, "mcp__github__get_commit": {}, "mcp__github__search_repositories": {}, "mcp__github__list_pull_requests": {}, "mcp__github__pull_request_read": {}, "mcp__github__search_pull_requests": {},
+	"mcp__github__create_branch": {}, "mcp__github__create_or_update_file": {}, "mcp__github__delete_file": {}, "mcp__github__push_files": {}, "mcp__github__create_pull_request": {}, "mcp__github__update_pull_request": {}, "mcp__github__update_pull_request_branch": {}, "mcp__github__merge_pull_request": {},
 }
 
 type githubMCPConversationResolver struct {
@@ -69,35 +72,61 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 	if e != nil {
 		return out, nil
 	}
+	selected := make([]mcphttp.Tool, 0, len(tools))
+	seen := make(map[string]struct{}, len(tools))
 	for _, t := range tools {
-		if _, ok := githubMCPAllowed[t.Definition.Name]; !ok || t.Run == nil {
+		name := strings.TrimSpace(t.Definition.Name)
+		if name == "" || name != t.Definition.Name || t.Run == nil {
 			return out, nil
 		}
+		if _, duplicate := seen[name]; duplicate {
+			return out, nil
+		}
+		seen[name] = struct{}{}
+		if _, allowed := githubMCPAllowed[name]; allowed {
+			selected = append(selected, t)
+		}
 	}
-	if len(tools) == 0 {
+	if len(selected) == 0 {
 		return out, nil
 	}
-	names := make([]string, 0, len(tools))
-	model := make([]coremodel.Tool, 0, len(tools))
+	sort.Slice(selected, func(i, j int) bool { return selected[i].Definition.Name < selected[j].Definition.Name })
+	names := make([]string, 0, len(selected))
+	model := make([]coremodel.Tool, 0, len(selected))
 	runs := map[string]mcphttp.Tool{}
-	for _, t := range tools {
+	for _, t := range selected {
 		names = append(names, t.Definition.Name)
 		model = append(model, t.Definition)
 		runs[t.Definition.Name] = t
 	}
-	sum := sha256.Sum256([]byte(strings.Join(names, "\x00")))
+	type digestTool struct {
+		Definition coremodel.Tool     `json:"definition"`
+		Effect     mcphttp.ToolEffect `json:"effect"`
+	}
+	digestTools := make([]digestTool, 0, len(selected))
+	for _, tool := range selected {
+		digestTools = append(digestTools, digestTool{Definition: tool.Definition, Effect: tool.Effect})
+	}
+	digestInput, _ := json.Marshal(digestTools)
+	sum := sha256.Sum256(digestInput)
 	digest := hex.EncodeToString(sum[:])
-	sel := coreconversation.ExtensionSelection{Kind: coreconversation.ExtensionMCP, ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:github-mcp")).String(), Version: fmt.Sprintf("config-%d", snap.Revision), Digest: digest, AllowedTools: names}
-	out = append(out, coreconversation.ResolvedExtension{Selection: sel, Snapshot: coreconversation.ExtensionExecutionSnapshot{Selection: sel, InstallationID: sel.ID, VersionID: sel.Version, Source: "github-mcp", ContentDigest: digest, ArtifactDigest: digest, ToolSchemaDigest: digest, ToolNames: names, ReadOnly: true, RequiresConfirmation: true}, Tools: model, Execute: func(c context.Context, q coreconversation.ToolExecutionRequest) (coreconversation.ToolResult, error) {
+	sel := coreconversation.ExtensionSelection{Kind: coreconversation.ExtensionMCP, ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:github-mcp:"+digest)).String(), Version: fmt.Sprintf("config-%d-%s", snap.Revision, digest[:12]), Digest: digest, AllowedTools: names}
+	out = append(out, coreconversation.ResolvedExtension{Selection: sel, Snapshot: coreconversation.ExtensionExecutionSnapshot{Selection: sel, InstallationID: sel.ID, VersionID: sel.Version, Source: "github-mcp", ContentDigest: digest, ArtifactDigest: digest, ToolSchemaDigest: digest, ToolNames: names, ReadOnly: false, RequiresConfirmation: true}, Tools: model, Execute: func(c context.Context, q coreconversation.ToolExecutionRequest) (coreconversation.ToolResult, error) {
 		t, ok := runs[q.Call.Name]
 		if !ok {
 			return coreconversation.ToolResult{}, coregithub.ErrInvalid
 		}
 		result, e := t.Run(c, mcphttp.ToolInvocation{Name: q.Call.Name, Arguments: []byte(q.Call.Arguments)})
-		if e != nil {
+		if e != nil || result.IsError {
+			if !t.Effect.ReadOnly() {
+				return coreconversation.ToolResult{CallID: q.Call.ID, ToolName: q.Call.Name, IsError: true, Content: "GitHub write completion is unknown. Read authoritative state before deciding whether to retry."}.WithObservation(coreconversation.ToolOutcomeUnknownMutation, "GitHub write completion is unknown", coreconversation.ToolMutationUnknown), nil
+			}
 			return coreconversation.ToolResult{}, coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeRetryable, "GitHub MCP unavailable", 0, e)
 		}
-		return coreconversation.ToolResult{CallID: q.Call.ID, ToolName: q.Call.Name, Content: result.Content, IsError: result.IsError}.WithObservation(coreconversation.ToolOutcomeSuccess, "GitHub MCP completed", coreconversation.ToolMutationNone), nil
+		if t.Effect.ReadOnly() {
+			return coreconversation.ToolResult{CallID: q.Call.ID, ToolName: q.Call.Name, Content: result.Content}.WithObservation(coreconversation.ToolOutcomeSuccess, "GitHub read completed", coreconversation.ToolMutationNone), nil
+		}
+		return coreconversation.ToolResult{CallID: q.Call.ID, ToolName: q.Call.Name, Content: result.Content, StateChanged: true}.WithObservation(coreconversation.ToolOutcomeSuccess, "GitHub write completed", coreconversation.ToolMutationChanged), nil
 	}})
 	return out, nil
 }
