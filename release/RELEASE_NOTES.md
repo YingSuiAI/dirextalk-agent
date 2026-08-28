@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.185
+
+1. Add encrypted, owner- and revision-fenced GitHub PAT configuration, official read-only GitHub MCP browsing, and confirmed Cloud Worker Git/PR credential delivery.
+2. Improve bounded Pi subagent reliability and normalize Web Search evidence into concise source-backed synthesis instead of raw provider fragments.
+
 ## v1.0.184
 
 1. Project partial Cloud Worker records as provisioning instead of available so the server page reports their real lifecycle state.
