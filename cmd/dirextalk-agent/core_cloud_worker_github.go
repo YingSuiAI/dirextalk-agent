@@ -30,20 +30,19 @@ func (authority *cloudWorkerGitHubAuthority) ResolveCurrentGitHubBinding(ctx con
 	return binding, nil
 }
 
-func (authority *cloudWorkerGitHubAuthority) ResolveExactGitHubPAT(ctx context.Context, binding *cloudworker.GitHubBinding) (string, error) {
+func (authority *cloudWorkerGitHubAuthority) DispatchExactGitHubPAT(ctx context.Context, binding *cloudworker.GitHubBinding, fn func(string) error) error {
 	if binding == nil {
-		return "", nil
+		return fn("")
 	}
-	if authority == nil || authority.service == nil || binding.Seal() != nil {
-		return "", cloudworker.ErrStaleAuthorization
+	if authority == nil || authority.service == nil || binding.Seal() != nil || fn == nil {
+		return cloudworker.ErrStaleAuthorization
 	}
 	resolved := coregithub.ResolvedConfig{Config: coregithub.Config{Enabled: true, Provider: coregithub.ProviderGitHub, GitHubTokenConfigured: true, Revision: int64(binding.ConfigRevision)}, CredentialVersion: int64(binding.CredentialVersion), OwnerID: binding.OwnerID, AccountGeneration: int64(binding.AccountGeneration)}
-	var token string
-	err := authority.service.WithTokenResolved(ctx, binding.OwnerID, int64(binding.AccountGeneration), resolved, func(value string) error { token = value; return nil })
-	if err != nil || token == "" {
-		return "", errors.Join(cloudworker.ErrStaleAuthorization, err)
+	err := authority.service.WithTokenResolved(ctx, binding.OwnerID, int64(binding.AccountGeneration), resolved, fn)
+	if err != nil {
+		return errors.Join(cloudworker.ErrStaleAuthorization, err)
 	}
-	return token, nil
+	return nil
 }
 
 var _ cloudworker.GitHubBindingResolver = (*cloudWorkerGitHubAuthority)(nil)

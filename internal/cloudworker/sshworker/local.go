@@ -504,17 +504,13 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 		if err != nil {
 			return ExecutionResult{}, err
 		}
-		start, err := request.Runtime.StartWithSecrets(ctx)
-		if err != nil {
-			return ExecutionResult{}, err
-		}
-		if err = sshWithInput(ctx, sshPath, base, start.Shell, bytes.NewReader(start.Stdin)); err != nil {
-			clear(start.Stdin)
+		if err = request.Runtime.DispatchStart(ctx, func(start RuntimeCommand) error {
+			return sshWithInput(ctx, sshPath, base, start.Shell, bytes.NewReader(start.Stdin))
+		}); err != nil {
 			if reconcileErr := reconcileAmbiguousRuntimeStart(ctx, sshPath, base, request.Runtime, err); reconcileErr != nil {
 				return ExecutionResult{}, reconcileErr
 			}
 		}
-		clear(start.Stdin)
 	}
 	if request.ReportProgress != nil {
 		if err := request.ReportProgress(ctx, "executing_remote_task", "Executing task on Worker"); err != nil {
@@ -527,17 +523,14 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 		if err != nil {
 			return ExecutionResult{}, err
 		}
-		start, startErr := request.Runtime.StartWithSecrets(ctx)
+		startErr := request.Runtime.DispatchStart(ctx, func(start RuntimeCommand) error {
+			return sshWithInput(ctx, sshPath, base, start.Shell, bytes.NewReader(start.Stdin))
+		})
 		if startErr != nil {
-			return ExecutionResult{}, startErr
-		}
-		if startErr = sshWithInput(ctx, sshPath, base, start.Shell, bytes.NewReader(start.Stdin)); startErr != nil {
-			clear(start.Stdin)
 			if reconcileErr := reconcileAmbiguousRuntimeStart(ctx, sshPath, base, request.Runtime, startErr); reconcileErr != nil {
 				return ExecutionResult{}, reconcileErr
 			}
 		}
-		clear(start.Stdin)
 		status, err = executor.waitRuntime(ctx, sshPath, base, request.Runtime, request.ReportProgress)
 	}
 	if err != nil {
@@ -592,11 +585,13 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 // becomes uncertain. The task ID embedded in RuntimeProtocol is the cleanup
 // identity used for the exact status and stop commands.
 func reconcileAmbiguousRuntimeStart(ctx context.Context, sshPath string, base []string, protocol RuntimeProtocol, startErr error) error {
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
 	statusCommand, err := protocol.Status()
 	if err != nil {
 		return errors.Join(ErrAmbiguous, startErr, err)
 	}
-	body, err := retrySSHOutput(ctx, sshPath, base, statusCommand.Shell, 64<<10)
+	body, err := retrySSHOutput(reconcileCtx, sshPath, base, statusCommand.Shell, 64<<10)
 	if err != nil {
 		return errors.Join(ErrAmbiguous, startErr, fmt.Errorf("runtime start status unavailable: %w", err))
 	}
@@ -610,9 +605,7 @@ func reconcileAmbiguousRuntimeStart(ctx context.Context, sshPath string, base []
 	case "not_started", "failed":
 		stopCommand, stopErr := protocol.Stop()
 		if stopErr == nil {
-			stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-			stopErr = retrySSH(stopCtx, sshPath, base, stopCommand.Shell)
-			cancel()
+			stopErr = retrySSH(reconcileCtx, sshPath, base, stopCommand.Shell)
 		}
 		return errors.Join(ErrAmbiguous, startErr, errRuntimeNotStarted, stopErr)
 	default:

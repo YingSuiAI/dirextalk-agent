@@ -7,6 +7,7 @@ const remoteRunnerSource = `package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -162,7 +163,7 @@ func run(taskID string) error {
 	command.Env = append(withoutGitHubTokenEnv(os.Environ()), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb", "DIREXTALK_WORKER_MODEL="+spec.Model)
 	if err := configureGitHubRuntime(taskRoot, command); err != nil { return finish(taskID, current, 1, err) }
 	pat, err := os.ReadFile(taskPath(taskID, "github-pat")); if os.IsNotExist(err) { pat = nil } else if err != nil { return finish(taskID, current, 1, err) }; defer clear(pat)
-	command.Stdout = redactingWriter{writer: io.MultiWriter(os.Stdout, report), secret: pat}; command.Stderr = redactingWriter{writer: os.Stderr, secret: pat}
+	stdout := &redactingWriter{writer: io.MultiWriter(os.Stdout, report), secret: pat}; stderr := &redactingWriter{writer: os.Stderr, secret: pat}; defer stdout.Flush(); defer stderr.Flush(); command.Stdout = stdout; command.Stderr = stderr
 	err = command.Run(); code := 0
 	if errors.Is(runContext.Err(), context.DeadlineExceeded) { code, err = 124, errors.New("maximum runtime exceeded")
 	} else if err != nil { code = 1; var exit *exec.ExitError; if errors.As(err, &exit) { code = exit.ExitCode() } }
@@ -219,8 +220,10 @@ func finish(taskID string, current taskStatus, code int, runErr error) error {
 
 func withoutGitHubTokenEnv(environment []string) []string { result := make([]string, 0, len(environment)); for _, value := range environment { if strings.HasPrefix(value, "GH_TOKEN=") || strings.HasPrefix(value, "GITHUB_TOKEN=") { continue }; result = append(result, value) }; return result }
 
-type redactingWriter struct { writer io.Writer; secret []byte }
-func (writer redactingWriter) Write(body []byte) (int, error) { if len(writer.secret) > 0 { redacted := strings.ReplaceAll(string(body), string(writer.secret), "[REDACTED]"); _, err := io.WriteString(writer.writer, redacted); return len(body), err }; _, err := writer.writer.Write(body); return len(body), err }
+type redactingWriter struct { writer io.Writer; secret, pending []byte }
+func (writer *redactingWriter) Write(body []byte) (int, error) { for _, value := range body { writer.pending = append(writer.pending, value); if len(writer.secret) > 0 && len(writer.pending) >= len(writer.secret) && bytes.HasSuffix(writer.pending, writer.secret) { prefix := writer.pending[:len(writer.pending)-len(writer.secret)]; if len(prefix) > 0 { if _, err := writer.writer.Write(prefix); err != nil { return len(body), err } }; if _, err := io.WriteString(writer.writer, "[REDACTED]"); err != nil { return len(body), err }; clear(writer.pending); writer.pending = writer.pending[:0]; continue }; for len(writer.pending) >= max(1, len(writer.secret)) { if _, err := writer.writer.Write(writer.pending[:1]); err != nil { return len(body), err }; copy(writer.pending, writer.pending[1:]); writer.pending = writer.pending[:len(writer.pending)-1] } }; return len(body), nil }
+func (writer *redactingWriter) Flush() error { if len(writer.pending) > 0 { _, err := writer.writer.Write(writer.pending); clear(writer.pending); writer.pending = nil; return err }; return nil }
+func max(a, b int) int { if a > b { return a }; return b }
 
 func configureGitHubRuntime(taskRoot string, command *exec.Cmd) error {
 	patPath := filepath.Join(taskRoot, "github-pat")

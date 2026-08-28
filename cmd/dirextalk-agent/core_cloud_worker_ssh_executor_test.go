@@ -44,9 +44,12 @@ type githubPATResolverStub struct {
 	calls int
 }
 
-func (resolver *githubPATResolverStub) ResolveExactGitHubPAT(context.Context, *cloudworker.GitHubBinding) (string, error) {
+func (resolver *githubPATResolverStub) DispatchExactGitHubPAT(_ context.Context, _ *cloudworker.GitHubBinding, fn func(string) error) error {
 	resolver.calls++
-	return "", resolver.err
+	if resolver.err != nil {
+		return resolver.err
+	}
+	return fn("stub-pat")
 }
 
 func (worker *serviceWorkerStub) ObserveWorker(context.Context, sshworker.WorkerIdentity) (sshworker.WorkerStatus, error) {

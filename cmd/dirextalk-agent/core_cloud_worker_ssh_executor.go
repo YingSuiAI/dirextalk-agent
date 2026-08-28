@@ -59,7 +59,7 @@ type sshWorkerExecutor struct {
 }
 
 type cloudWorkerGitHubPATResolver interface {
-	ResolveExactGitHubPAT(context.Context, *cloudworker.GitHubBinding) (string, error)
+	DispatchExactGitHubPAT(context.Context, *cloudworker.GitHubBinding, func(string) error) error
 }
 
 func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, github cloudWorkerGitHubPATResolver, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.SourceReader, steers coreconversation.TurnSteerStore, state *sshworker.FileStore, root string) (*sshWorkerExecutor, error) {
@@ -190,12 +190,11 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	}
 	if request.GitHubBinding != nil {
 		binding := *request.GitHubBinding
-		material.Protocol = material.Protocol.WithGitHubPATResolver(func(resolveCtx context.Context) (string, error) {
-			pat, resolveErr := executor.github.ResolveExactGitHubPAT(resolveCtx, &binding)
-			if resolveErr != nil {
-				return "", errors.Join(cloudworker.ErrStaleAuthorization, resolveErr)
+		material.Protocol = material.Protocol.WithGitHubPATDispatcher(func(resolveCtx context.Context, fn func(string) error) error {
+			if resolveErr := executor.github.DispatchExactGitHubPAT(resolveCtx, &binding, fn); resolveErr != nil {
+				return errors.Join(cloudworker.ErrStaleAuthorization, resolveErr)
 			}
-			return pat, nil
+			return nil
 		})
 	}
 	sink, err := executor.artifacts.Bind(localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, request.ExecutionID)

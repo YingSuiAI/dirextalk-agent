@@ -37,16 +37,16 @@ type RuntimeCommand struct {
 // Start detaches the workload and returns immediately. Status, Log, Artifact,
 // and ServerStatus may be called after any SSH reconnect.
 type RuntimeProtocol struct {
-	TaskID           string
-	secretEnvelope   string
-	resolveGitHubPAT func(context.Context) (string, error)
+	TaskID            string
+	secretEnvelope    string
+	dispatchGitHubPAT func(context.Context, func(string) error) error
 }
 
 // WithGitHubPATResolver keeps only a final-dispatch resolver. It is invoked
 // by StartWithSecrets after bootstrap and guidance have completed, immediately
 // before the encrypted SSH stdin envelope is sent.
-func (protocol RuntimeProtocol) WithGitHubPATResolver(resolver func(context.Context) (string, error)) RuntimeProtocol {
-	protocol.resolveGitHubPAT = resolver
+func (protocol RuntimeProtocol) WithGitHubPATDispatcher(dispatcher func(context.Context, func(string) error) error) RuntimeProtocol {
+	protocol.dispatchGitHubPAT = dispatcher
 	return protocol
 }
 
@@ -60,19 +60,27 @@ func (protocol RuntimeProtocol) Start() (RuntimeCommand, error) {
 	}, nil
 }
 
-func (protocol RuntimeProtocol) StartWithSecrets(ctx context.Context) (RuntimeCommand, error) {
-	if protocol.resolveGitHubPAT == nil {
-		return protocol.Start()
+func (protocol RuntimeProtocol) DispatchStart(ctx context.Context, dispatch func(RuntimeCommand) error) error {
+	if dispatch == nil {
+		return ErrInvalid
 	}
-	pat, err := protocol.resolveGitHubPAT(ctx)
-	if err != nil {
-		return RuntimeCommand{}, err
+	if protocol.dispatchGitHubPAT == nil {
+		command, err := protocol.Start()
+		if err != nil {
+			return err
+		}
+		defer clear(command.Stdin)
+		return dispatch(command)
 	}
-	defer func() { pat = "" }()
-	if strings.TrimSpace(pat) == "" {
-		return RuntimeCommand{}, ErrInvalid
-	}
-	return RuntimeCommand{Shell: runnerCommand(RuntimeStart, protocol.TaskID), Stdin: []byte(encodeRuntimeSecretEnvelopeFromBase64(protocol.secretEnvelope, pat) + "\n")}, nil
+	return protocol.dispatchGitHubPAT(ctx, func(pat string) error {
+		defer func() { pat = "" }()
+		if strings.TrimSpace(pat) == "" {
+			return ErrInvalid
+		}
+		command := RuntimeCommand{Shell: runnerCommand(RuntimeStart, protocol.TaskID), Stdin: []byte(encodeRuntimeSecretEnvelopeFromBase64(protocol.secretEnvelope, pat) + "\n")}
+		defer clear(command.Stdin)
+		return dispatch(command)
+	})
 }
 
 func (protocol RuntimeProtocol) Status() (RuntimeCommand, error) {

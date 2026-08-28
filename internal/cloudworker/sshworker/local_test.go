@@ -376,6 +376,22 @@ func TestAmbiguousRuntimeStartStatusFailureRemainsUncertain(t *testing.T) {
 	}
 }
 
+func TestAmbiguousRuntimeStartReconcilesAfterCallerCancellation(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `
+case "$remote" in
+  *"'status'"*) printf '%s\n' '{"phase":"failed"}' ;;
+  *"'stop'"*) count stop >/dev/null ;;
+  *) exit 64 ;;
+esac`)
+	ctx, cancel := context.WithCancel(context.Background()); cancel()
+	protocol := RuntimeProtocol{TaskID: "execution-recovery", secretEnvelope: encodeRuntimeSecretEnvelope("secret", "")}
+	err := reconcileAmbiguousRuntimeStart(ctx, ssh, nil, protocol, context.Canceled)
+	if !errors.Is(err, ErrAmbiguous) || readCount(t, state, "stop") != 1 {
+		t.Fatalf("err=%v stop=%d", err, readCount(t, state, "stop"))
+	}
+}
+
 func sshRequestFixture(t *testing.T, sink ResultSink) SSHRequest {
 	t.Helper()
 	return SSHRequest{

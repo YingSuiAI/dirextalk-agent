@@ -48,8 +48,13 @@ func TestCloudWorkerGitHubExactBindingRejectsRotationClearAndDeprovision(t *test
 	if err != nil || binding == nil {
 		t.Fatalf("binding=%+v err=%v", binding, err)
 	}
-	if token, err := authority.ResolveExactGitHubPAT(context.Background(), binding); err != nil || token != current.GitHubToken {
-		t.Fatalf("token=%q err=%v", token, err)
+	if err := authority.DispatchExactGitHubPAT(context.Background(), binding, func(token string) error {
+		if token != current.GitHubToken {
+			t.Fatalf("token=%q", token)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	for name, change := range map[string]func(){
 		"rotation":    func() { repository.current.CredentialVersion++ },
@@ -59,7 +64,7 @@ func TestCloudWorkerGitHubExactBindingRejectsRotationClearAndDeprovision(t *test
 		t.Run(name, func(t *testing.T) {
 			repository.current, repository.dispatchErr = current, nil
 			change()
-			if _, err := authority.ResolveExactGitHubPAT(context.Background(), binding); !errors.Is(err, cloudworker.ErrStaleAuthorization) {
+			if err := authority.DispatchExactGitHubPAT(context.Background(), binding, func(string) error { return nil }); !errors.Is(err, cloudworker.ErrStaleAuthorization) {
 				t.Fatalf("error=%v", err)
 			}
 		})
