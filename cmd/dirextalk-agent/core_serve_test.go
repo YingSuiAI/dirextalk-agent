@@ -126,7 +126,7 @@ func TestComposeCoreAWSGraphBuildsCredentialRPC(t *testing.T) {
 }
 
 func TestComposeCoreExtensionDisabledOmitsServicesAndHandler(t *testing.T) {
-	composition, err := composeCoreExtension(config.Config{}, nil)
+	composition, err := composeCoreExtension(config.Config{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestComposeCoreExtensionDisabledOmitsServicesAndHandler(t *testing.T) {
 
 func TestComposeCoreExtensionEnabledFailsClosedWithoutRunnerOrStore(t *testing.T) {
 	cfg := config.Config{CoreExtensionEnabled: true}
-	if _, err := composeCoreExtension(cfg, nil); err == nil {
+	if _, err := composeCoreExtension(cfg, nil, nil); err == nil {
 		t.Fatal("enabled Core Extension accepted missing runner/store configuration")
 	}
 }

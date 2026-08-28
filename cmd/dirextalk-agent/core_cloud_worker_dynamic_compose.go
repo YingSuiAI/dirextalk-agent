@@ -14,12 +14,13 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coregithub"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 )
 
 const cloudWorkerDefaultQuoteTTL = 15 * time.Minute
 
-func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store, conversationStore *postgres.CoreConversationStore, workerState *sshworker.FileStore) (*coreCloudWorkerComposition, error) {
+func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store, conversationStore *postgres.CoreConversationStore, workerState *sshworker.FileStore, githubService *coregithub.Service) (*coreCloudWorkerComposition, error) {
 	if !cfg.CapabilityEnabled && !cfg.AgentHTTPEnabled {
 		return nil, nil
 	}
@@ -72,12 +73,16 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize dynamic cloud_worker_propose: %w", err)
 	}
+	githubAuthority := &cloudWorkerGitHubAuthority{service: githubService}
+	if githubService == nil || intrinsic.EnableGitHubBinding(githubAuthority) != nil {
+		return nil, fmt.Errorf("initialize Cloud Worker GitHub credential authority")
+	}
 	root := filepath.Join(cfg.CoreExtensionStagingRoot, "cloud-worker")
 	artifacts, err := localartifact.NewRepository(filepath.Join(root, "artifacts"))
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker local artifacts: %w", err)
 	}
-	executor, err := newSSHWorkerExecutor(authority, exact, artifacts, pricing, conversationStore, conversationStore, workerState, root)
+	executor, err := newSSHWorkerExecutor(authority, githubAuthority, exact, artifacts, pricing, conversationStore, conversationStore, workerState, root)
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker executor: %w", err)
 	}

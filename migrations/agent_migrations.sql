@@ -2849,3 +2849,37 @@ ALTER TABLE core_conversation_turn_finalizations
         'constrained_workflow'
     ));
 -- dirextalk-agent migration end 000027_constrained_workflow_finalization.up.sql
+-- dirextalk-agent migration begin 000028_github_configuration.up.sql
+-- GitHub PAT envelope AAD is bound to immutable owner generation and
+-- credential version, so mutable config revision changes remain decryptable.
+CREATE TABLE core_github_configs (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    enabled boolean NOT NULL DEFAULT false,
+    provider text NOT NULL CHECK (provider IN ('github')),
+    github_token_configured boolean NOT NULL DEFAULT false,
+    credential_version bigint NOT NULL DEFAULT 0 CHECK (credential_version >= 0),
+    github_token_key_version integer NOT NULL DEFAULT 1 CHECK (github_token_key_version > 0),
+    github_token_nonce bytea,
+    github_token_ciphertext bytea,
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    tested_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    CHECK (github_token_configured = (github_token_ciphertext IS NOT NULL AND octet_length(github_token_ciphertext) >= 16)),
+    CHECK ((github_token_nonce IS NULL) = (github_token_ciphertext IS NULL)),
+    CHECK (github_token_nonce IS NULL OR octet_length(github_token_nonce) = 12),
+    CHECK (NOT github_token_configured OR credential_version > 0),
+    CHECK (NOT enabled OR github_token_configured),
+    PRIMARY KEY (owner_id, account_generation)
+);
+CREATE TABLE core_github_replays (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    idempotency_key uuid NOT NULL,
+    request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 65536),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (owner_id, account_generation, idempotency_key)
+);
+-- dirextalk-agent migration end 000028_github_configuration.up.sql

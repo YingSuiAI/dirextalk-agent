@@ -627,6 +627,55 @@ type recordingResolver struct {
 	returned [][]byte
 }
 
+type dispatchFenceResolver struct {
+	secret   []byte
+	revoked  bool
+	dispatch bool
+	requests int
+}
+
+func (r *dispatchFenceResolver) ResolveSecret(context.Context, string) ([]byte, error) {
+	return nil, errors.New("must use dispatch fence")
+}
+func (r *dispatchFenceResolver) WithSecret(_ context.Context, _ string, fn func([]byte) error) error {
+	if r.revoked {
+		return errors.New("credential revoked")
+	}
+	r.dispatch = true
+	defer func() { r.dispatch = false; zeroBytes(r.secret) }()
+	return fn(r.secret)
+}
+
+func TestProviderDispatchesCredentialOnlyInsideFinalHTTPFence(t *testing.T) {
+	resolver := &dispatchFenceResolver{secret: []byte(testCredential)}
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		resolver.requests++
+		if !resolver.dispatch || request.Header.Get("Authorization") != "Bearer "+testCredential {
+			t.Fatal("authorization escaped final dispatch fence")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{}}`))}, nil
+	})
+	provider, err := New([]ServerConfig{{ID: "fenced", Endpoint: "https://mcp.example.test/mcp", SecretRef: "secret://fenced"}}, resolver, WithEndpointPolicy(allowEndpointPolicy), WithRoundTripper(transport))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := provider.servers[0]
+	if _, _, _, err := provider.post(context.Background(), server, "", protocolVersion, []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call"}`), true); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.requests != 1 || !bytes.Equal(resolver.secret, make([]byte, len(testCredential))) {
+		t.Fatalf("requests=%d secret=%q", resolver.requests, resolver.secret)
+	}
+	resolver.secret = []byte(testCredential)
+	resolver.revoked = true
+	if _, _, _, err := provider.post(context.Background(), server, "", protocolVersion, []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call"}`), true); !errors.Is(err, ErrCredentialUnavailable) && err == nil {
+		t.Fatalf("revoked dispatch err=%v", err)
+	}
+	if resolver.requests != 1 {
+		t.Fatal("revoked credential reached HTTP")
+	}
+}
+
 func (r *recordingResolver) ResolveSecret(context.Context, string) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

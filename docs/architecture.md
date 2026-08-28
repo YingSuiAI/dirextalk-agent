@@ -122,6 +122,28 @@ fails closed rather than falling back in-process. A Cloud Worker receives no
 Agent database, AWS secret, local MCP registry, Skills registry, or Extension
 Runner. The task's selected model credential is supplied only to the remote Pi
 process and is not written to the Worker script, logs, status, or artifacts.
+When enabled, a Worker plan retains only a private non-secret GitHub binding
+(owner/generation, configuration and credential versions, and digest).
+Immediately before every task start, including retained-Worker reuse, Agent
+re-resolves that exact binding and fails closed after rotation, clear, disable,
+or deprovision. The PAT crosses SSH stdin once, is task-scoped mode 0600, is
+available through a github.com-only Git helper and process-local `gh` wrapper,
+and is removed on completion, error, or cancellation. The runner does not
+intentionally serialize it into durable plans, task specs, command arguments,
+scripts, ordinary logs, or Pi's inherited environment; ordinary runner output
+is exact-token redacted. The Worker is nevertheless a trusted delegate: Pi runs
+as the same user and can invoke the Git credential helper, so least-privilege
+selected-repository, short-expiry PATs are required. Rotation blocks future
+starts but cannot revoke an already-started run or prevent transformed
+credential exfiltration.
+The remote Pi runtime may expose only the vendored server-owned subagent
+extension pinned to Pi `v0.84.1`. It is loaded explicitly while extension
+discovery remains disabled, and it discovers only server-owned agent
+definitions under the Worker `PI_CODING_AGENT_DIR`. It never reads project
+agent definitions or workflow prompts. Parallel delegation is bounded to eight
+tasks and four concurrent subprocesses; child work requiring concurrent writes
+must use separate worktrees and branches, then revalidate and integrate through
+the parent worktree.
 Natural-language objectives are passed to Pi as input data and are never
 executed as shell source. The Agent authenticates each outbound SSH connection
 with Agent-owned SSH key material and copies bounded results back to its own

@@ -1,6 +1,7 @@
 package sshworker
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -36,18 +37,50 @@ type RuntimeCommand struct {
 // Start detaches the workload and returns immediately. Status, Log, Artifact,
 // and ServerStatus may be called after any SSH reconnect.
 type RuntimeProtocol struct {
-	TaskID          string
-	encodedModelKey string
+	TaskID            string
+	secretEnvelope    string
+	dispatchGitHubPAT func(context.Context, func(string) error) error
+}
+
+// WithGitHubPATResolver keeps only a final-dispatch resolver. It is invoked
+// by StartWithSecrets after bootstrap and guidance have completed, immediately
+// before the encrypted SSH stdin envelope is sent.
+func (protocol RuntimeProtocol) WithGitHubPATDispatcher(dispatcher func(context.Context, func(string) error) error) RuntimeProtocol {
+	protocol.dispatchGitHubPAT = dispatcher
+	return protocol
 }
 
 func (protocol RuntimeProtocol) Start() (RuntimeCommand, error) {
-	if !protocol.valid() || protocol.encodedModelKey == "" {
+	if !protocol.valid() || protocol.secretEnvelope == "" {
 		return RuntimeCommand{}, ErrInvalid
 	}
 	return RuntimeCommand{
 		Shell: runnerCommand(RuntimeStart, protocol.TaskID),
-		Stdin: []byte(protocol.encodedModelKey + "\n"),
+		Stdin: []byte(protocol.secretEnvelope + "\n"),
 	}, nil
+}
+
+func (protocol RuntimeProtocol) DispatchStart(ctx context.Context, dispatch func(RuntimeCommand) error) error {
+	if dispatch == nil {
+		return ErrInvalid
+	}
+	if protocol.dispatchGitHubPAT == nil {
+		command, err := protocol.Start()
+		if err != nil {
+			return err
+		}
+		defer clear(command.Stdin)
+		return dispatch(command)
+	}
+	return protocol.dispatchGitHubPAT(ctx, func(pat string) error {
+		defer func() { pat = "" }()
+		if strings.TrimSpace(pat) == "" {
+			return ErrInvalid
+		}
+		command := RuntimeCommand{Shell: runnerCommand(RuntimeStart, protocol.TaskID), Stdin: []byte(encodeRuntimeSecretEnvelopeFromBase64(protocol.secretEnvelope, pat) + "\n")}
+		defer clear(command.Stdin)
+		return dispatch(command)
+	})
 }
 
 func (protocol RuntimeProtocol) Status() (RuntimeCommand, error) {

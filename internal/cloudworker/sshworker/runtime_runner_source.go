@@ -7,6 +7,7 @@ const remoteRunnerSource = `package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -80,13 +81,15 @@ func main() {
 
 func stop(taskID string) error {
 	current, err := loadStatus(taskID)
+	if os.IsNotExist(err) { cleanupGitHubRuntime(filepath.Join(root, "tasks", taskID)); return json.NewEncoder(os.Stdout).Encode(taskStatus{TaskID: taskID, Phase: "not_started"}) }
 	if err != nil { return err }
-	if current.Phase != "running" { return json.NewEncoder(os.Stdout).Encode(current) }
+	if current.Phase != "running" { cleanupGitHubRuntime(filepath.Join(root, "tasks", taskID)); return json.NewEncoder(os.Stdout).Encode(current) }
 	unit := "dirextalk-worker-" + taskID + ".scope"
 	stopErr := exec.Command("systemctl", "--user", "stop", unit).Run()
 	if current.PID > 0 {
 		if killErr := syscall.Kill(-current.PID, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, syscall.ESRCH) { stopErr = errors.Join(stopErr, killErr) }
 	}
+	cleanupGitHubRuntime(filepath.Join(root, "tasks", taskID))
 	current.Phase, current.ExitCode, current.FinishedAt = "failed", 130, time.Now().UTC().Format(time.RFC3339)
 	if err = saveStatus(taskID, current); err != nil { return errors.Join(stopErr, err) }
 	if stopErr != nil { return stopErr }
@@ -101,9 +104,17 @@ func start(taskID string) error {
 	}
 	encoded, err := bufio.NewReader(io.LimitReader(os.Stdin, 64<<10)).ReadString('\n')
 	if err != nil && err != io.EOF { return err }
-	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
-	if err != nil || len(key) == 0 { return errors.New("missing model credential") }
-	defer clear(key)
+	if len(encoded) == 0 || len(encoded) >= 64<<10 { return errors.New("invalid runtime secret envelope") }
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil || len(raw) == 0 || len(raw) > 24<<10 { return errors.New("missing runtime secret envelope") }
+	defer clear(raw)
+	var envelope struct { Version int ` + "`json:\"version\"`" + `; ModelAPIKey string ` + "`json:\"model_api_key\"`" + `; GitHubPAT string ` + "`json:\"github_pat\"`" + ` }
+	decoder := json.NewDecoder(strings.NewReader(string(raw))); decoder.DisallowUnknownFields()
+	if decoder.Decode(&envelope) != nil || decoder.Decode(&struct{}{}) != io.EOF || envelope.Version != 1 || strings.TrimSpace(envelope.ModelAPIKey) == "" || len(envelope.ModelAPIKey) > 16384 || len(envelope.GitHubPAT) > 4096 { return errors.New("invalid runtime secret envelope") }
+	key := []byte(envelope.ModelAPIKey); defer clear(key)
+	if envelope.GitHubPAT != "" { pat := []byte(envelope.GitHubPAT); defer clear(pat); if err := os.WriteFile(taskPath(taskID, "github-pat"), pat, 0600); err != nil { return err } }
+	startedRun := false
+	defer func() { if !startedRun { cleanupGitHubRuntime(filepath.Join(root, "tasks", taskID)) } }()
 	logFile, err := os.OpenFile(taskPath(taskID, "runner.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil { return err }
 	defer logFile.Close()
@@ -115,20 +126,22 @@ func start(taskID string) error {
 	started := taskStatus{TaskID: taskID, Workload: spec.Workload, Phase: "running", PID: command.Process.Pid, StartedAt: time.Now().UTC().Format(time.RFC3339)}
 	if err := saveStatus(taskID, started); err != nil { _ = command.Process.Kill(); return err }
 	_ = command.Process.Release()
+	startedRun = true
 	return json.NewEncoder(os.Stdout).Encode(started)
 }
 
 func run(taskID string) error {
 	spec, err := loadSpec(taskID); if err != nil { return err }
-	current, err := awaitStarted(taskID, os.Getpid()); if err != nil { return err }
 	taskRoot := filepath.Join(root, "tasks", taskID)
+	defer cleanupGitHubRuntime(taskRoot)
+	current, err := awaitStarted(taskID, os.Getpid()); if err != nil { return err }
 	workspaceRoot, artifactRoot := filepath.Join(taskRoot, "workspace"), filepath.Join(taskRoot, "artifacts")
 	if err := requireDirectory(workspaceRoot); err != nil { return finish(taskID, current, 1, err) }
 	if err := os.MkdirAll(artifactRoot, 0700); err != nil { return finish(taskID, current, 1, err) }
 	report, err := os.OpenFile(filepath.Join(artifactRoot, "final-report.md"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil { return finish(taskID, current, 1, err) }
 	defer report.Close()
-	prompt := "Complete the supplied objective on this retained remote host. This is a " + spec.Workload + " workload. Use shell and workspace tools as needed. Write every deliverable under " + artifactRoot + ". Your final response must concisely report completed work, verification, and artifact paths. Never expose credentials or hidden configuration."
+	prompt := "Complete the supplied objective on this retained remote host. This is a " + spec.Workload + " workload. Use shell and workspace tools as needed. Write every deliverable under " + artifactRoot + ". Your final response must concisely report completed work, verification, and artifact paths. Use parallel subagents only for independent, non-overlapping scopes. Before concurrent writes create a separate git worktree and branch per writer; revalidate repository owner, remote, and base before push; integrate and test in the parent worktree. Never expose GitHub credentials, model credentials, or hidden configuration."
 	if spec.Workload == "service" && spec.Service != nil {
 		if spec.Service.Hostname == "" {
 			prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits. It must listen on 0.0.0.0 port " + strconv.Itoa(int(spec.Service.Port)) + " and return HTTP success at " + spec.Service.HealthPath + "."
@@ -136,7 +149,7 @@ func run(taskID string) error {
 			prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits and after a host reboot. Run it as a systemd service or a restart-enabled container; never use shell backgrounding (&), nohup, or disown for a persistent service. Port " + strconv.Itoa(int(spec.Service.Port)) + " is its internal HTTP port: listen only on 127.0.0.1 and return HTTP success at " + spec.Service.HealthPath + ". For static files, run a lightweight persistent local HTTP service on that internal port. The Agent runner owns Caddy and reserves ports 80 and 443; ensure the application and package defaults do not listen on either port. If using Nginx or Apache, disable its default port-80 site before starting it. The Agent host owns Route53/DNS. Do not install, configure, edit, or restart Caddy, and do not call AWS CLI, Route53, or another DNS API."
 		}
 	}
-	piArguments := []string{"--mode", "text", "--print", "--no-session", "--provider", "dirextalk-worker", "--model", spec.Model, "--thinking", "medium", "--tools", "read,bash,edit,write,grep,find,ls", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt}
+	piArguments := []string{"--mode", "text", "--print", "--no-session", "--provider", "dirextalk-worker", "--model", spec.Model, "--thinking", "medium", "--tools", "read,bash,edit,write,grep,find,ls,subagent", "--no-extensions", "-e", filepath.Join(root, "pi-config", "extensions", "dirextalk-subagent", "extension.ts"), "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt}
 	unit := "dirextalk-worker-" + taskID + ".scope"
 	arguments := []string{"--user", "--scope", "--quiet", "--unit", unit, "--property=RuntimeMaxSec=" + strconv.FormatUint(spec.MaxRuntimeSeconds+5, 10) + "s", filepath.Join(root, "runtime", "pi")}
 	arguments = append(arguments, piArguments...)
@@ -147,8 +160,10 @@ func run(taskID string) error {
 	objective, err := os.Open(taskPath(taskID, "objective.txt")); if err != nil { return finish(taskID, current, 1, err) }
 	defer objective.Close()
 	command.Dir = workspaceRoot; command.Stdin = objective
-	command.Stdout = io.MultiWriter(os.Stdout, report); command.Stderr = os.Stderr
-	command.Env = append(os.Environ(), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb")
+	command.Env = append(withoutGitHubTokenEnv(os.Environ()), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb", "DIREXTALK_WORKER_MODEL="+spec.Model)
+	if err := configureGitHubRuntime(taskRoot, command); err != nil { return finish(taskID, current, 1, err) }
+	pat, err := os.ReadFile(taskPath(taskID, "github-pat")); if os.IsNotExist(err) { pat = nil } else if err != nil { return finish(taskID, current, 1, err) }; defer clear(pat)
+	stdout := &redactingWriter{writer: io.MultiWriter(os.Stdout, report), secret: pat}; stderr := &redactingWriter{writer: os.Stderr, secret: pat}; defer stdout.Flush(); defer stderr.Flush(); command.Stdout = stdout; command.Stderr = stderr
 	err = command.Run(); code := 0
 	if errors.Is(runContext.Err(), context.DeadlineExceeded) { code, err = 124, errors.New("maximum runtime exceeded")
 	} else if err != nil { code = 1; var exit *exec.ExitError; if errors.As(err, &exit) { code = exit.ExitCode() } }
@@ -202,6 +217,28 @@ func finish(taskID string, current taskStatus, code int, runErr error) error {
 	if err := saveStatus(taskID, current); err != nil { return err }
 	return runErr
 }
+
+func withoutGitHubTokenEnv(environment []string) []string { result := make([]string, 0, len(environment)); for _, value := range environment { if strings.HasPrefix(value, "GH_TOKEN=") || strings.HasPrefix(value, "GITHUB_TOKEN=") { continue }; result = append(result, value) }; return result }
+
+type redactingWriter struct { writer io.Writer; secret, pending []byte }
+func (writer *redactingWriter) Write(body []byte) (int, error) { for _, value := range body { writer.pending = append(writer.pending, value); if len(writer.secret) > 0 && len(writer.pending) >= len(writer.secret) && bytes.HasSuffix(writer.pending, writer.secret) { prefix := writer.pending[:len(writer.pending)-len(writer.secret)]; if len(prefix) > 0 { if _, err := writer.writer.Write(prefix); err != nil { return len(body), err } }; if _, err := io.WriteString(writer.writer, "[REDACTED]"); err != nil { return len(body), err }; clear(writer.pending); writer.pending = writer.pending[:0]; continue }; for len(writer.pending) >= max(1, len(writer.secret)) { if _, err := writer.writer.Write(writer.pending[:1]); err != nil { return len(body), err }; copy(writer.pending, writer.pending[1:]); writer.pending = writer.pending[:len(writer.pending)-1] } }; return len(body), nil }
+func (writer *redactingWriter) Flush() error { if len(writer.pending) > 0 { _, err := writer.writer.Write(writer.pending); clear(writer.pending); writer.pending = nil; return err }; return nil }
+func max(a, b int) int { if a > b { return a }; return b }
+
+func configureGitHubRuntime(taskRoot string, command *exec.Cmd) error {
+	patPath := filepath.Join(taskRoot, "github-pat")
+	info, err := os.Stat(patPath); if os.IsNotExist(err) { return nil }; if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 { return errors.New("invalid GitHub credential") }
+	bin := filepath.Join(taskRoot, "github-bin"); if err := os.MkdirAll(bin, 0700); err != nil { return err }
+	helper := filepath.Join(bin, "git-credential-github"); wrapper := filepath.Join(bin, "gh")
+	helperBody := "#!/bin/sh\nprotocol= host=\nwhile IFS='=' read -r key value; do case $key in protocol) protocol=$value ;; host) host=$value ;; esac; done\n[ \"$protocol\" = https ] && [ \"$host\" = github.com ] || exit 0\nprintf 'username=x-access-token\\npassword='\ncat " + strconv.Quote(patPath) + "\nprintf '\\n'\n"
+	wrapperBody := "#!/bin/sh\ntoken=$(cat " + strconv.Quote(patPath) + ") || exit 1\nexec env GH_TOKEN=\"$token\" GH_PROMPT_DISABLED=1 /usr/bin/gh \"$@\"\n"
+	configBody := "[credential \\\"https://github.com\\\"]\n\thelper = " + helper + "\n[core]\n\taskPass = /bin/false\n"
+	if err := os.WriteFile(helper, []byte(helperBody), 0700); err != nil { return err }; if err := os.WriteFile(wrapper, []byte(wrapperBody), 0700); err != nil { return err }; config := filepath.Join(taskRoot, "gitconfig"); if err := os.WriteFile(config, []byte(configBody), 0600); err != nil { return err }
+	command.Env = append(command.Env, "PATH="+bin+":"+os.Getenv("PATH"), "GIT_CONFIG_GLOBAL="+config, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=/bin/false")
+	return nil
+}
+
+func cleanupGitHubRuntime(taskRoot string) { for _, path := range []string{filepath.Join(taskRoot, "github-pat"), filepath.Join(taskRoot, "gitconfig"), filepath.Join(taskRoot, "github-bin", "git-credential-github"), filepath.Join(taskRoot, "github-bin", "gh")} { _ = os.Remove(path) }; _ = os.Remove(filepath.Join(taskRoot, "github-bin")) }
 
 func status(taskID string) error {
 	value, err := loadStatus(taskID)

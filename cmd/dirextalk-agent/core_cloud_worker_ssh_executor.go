@@ -38,6 +38,7 @@ import (
 
 type sshWorkerExecutor struct {
 	authority                *cloudWorkerCredentialAuthority
+	github                   cloudWorkerGitHubPATResolver
 	exact                    workaws.ExactCredentialResolver
 	providers                map[sshworker.CredentialIdentity]*sshworker.Provider
 	artifacts                *localartifact.Repository
@@ -57,7 +58,11 @@ type sshWorkerExecutor struct {
 	mu                       sync.Mutex
 }
 
-func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.SourceReader, steers coreconversation.TurnSteerStore, state *sshworker.FileStore, root string) (*sshWorkerExecutor, error) {
+type cloudWorkerGitHubPATResolver interface {
+	DispatchExactGitHubPAT(context.Context, *cloudworker.GitHubBinding, func(string) error) error
+}
+
+func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, github cloudWorkerGitHubPATResolver, exact workaws.ExactCredentialResolver, artifacts *localartifact.Repository, pricing cloudworker.PricingCatalog, sources cloudworker.SourceReader, steers coreconversation.TurnSteerStore, state *sshworker.FileStore, root string) (*sshWorkerExecutor, error) {
 	if authority == nil || exact == nil || artifacts == nil || pricing == nil || sources == nil || steers == nil || state == nil || !filepath.IsAbs(root) {
 		return nil, sshworker.ErrInvalid
 	}
@@ -65,7 +70,7 @@ func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, exact worka
 	if err != nil {
 		return nil, err
 	}
-	return &sshWorkerExecutor{authority: authority, exact: exact, providers: make(map[sshworker.CredentialIdentity]*sshworker.Provider), artifacts: artifacts,
+	return &sshWorkerExecutor{authority: authority, github: github, exact: exact, providers: make(map[sshworker.CredentialIdentity]*sshworker.Provider), artifacts: artifacts,
 		pricing: pricing, sources: sources, steers: steers, state: state, pool: sshworker.NewPool(), workloads: workloads,
 		route53: make(map[sshworker.CredentialIdentity]remoteservice.HostedZoneRoute53), root: root}, nil
 }
@@ -146,6 +151,11 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	if err != nil || current != request.AWS {
 		return sshflow.Result{}, errors.Join(cloudworker.ErrStaleAuthorization, err)
 	}
+	if request.GitHubBinding != nil {
+		if executor.github == nil {
+			return sshflow.Result{}, cloudworker.ErrStaleAuthorization
+		}
+	}
 	workspacePath, cleanupWorkspace, err := executor.materializeWorkspace(ctx, request)
 	if err != nil {
 		return sshflow.Result{}, err
@@ -177,6 +187,15 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		Model: workerRuntimeModel(request.ModelSnapshot)})
 	if err != nil {
 		return sshflow.Result{}, err
+	}
+	if request.GitHubBinding != nil {
+		binding := *request.GitHubBinding
+		material.Protocol = material.Protocol.WithGitHubPATDispatcher(func(resolveCtx context.Context, fn func(string) error) error {
+			if resolveErr := executor.github.DispatchExactGitHubPAT(resolveCtx, &binding, fn); resolveErr != nil {
+				return errors.Join(cloudworker.ErrStaleAuthorization, resolveErr)
+			}
+			return nil
+		})
 	}
 	sink, err := executor.artifacts.Bind(localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, request.ExecutionID)
 	if err != nil {

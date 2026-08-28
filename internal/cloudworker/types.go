@@ -80,6 +80,17 @@ type ModelAuthorization struct {
 	BindingDigest           string `json:"binding_digest"`
 }
 
+// GitHubBinding is the optional, non-secret authorization snapshot for one
+// Worker task. The PAT itself is resolved only at remote-task start and is
+// never representable by a durable plan, task payload, or confirmation.
+type GitHubBinding struct {
+	OwnerID           string `json:"owner_id"`
+	AccountGeneration uint64 `json:"account_generation"`
+	ConfigRevision    uint64 `json:"config_revision"`
+	CredentialVersion uint64 `json:"credential_version"`
+	BindingDigest     string `json:"binding_digest"`
+}
+
 // InputManifest binds the immutable Agent-owned workspace sources that the SSH
 // Worker receives after the owner confirms the quote.
 type InputManifest struct {
@@ -224,6 +235,7 @@ type Plan struct {
 	InputManifestItemCount   uint64               `json:"input_manifest_item_count"`
 	WorkspaceMode            WorkspaceMode        `json:"workspace_mode"`
 	ModelAuthorization       ModelAuthorization   `json:"model_authorization"`
+	GitHubBinding            *GitHubBinding       `json:"-"`
 	AWS                      AWSBinding           `json:"aws"`
 	Compute                  ComputeSpec          `json:"compute"`
 	PersistentWorkerReuse    bool                 `json:"-"`
@@ -365,6 +377,23 @@ func (a *ModelAuthorization) Seal() error {
 		CredentialVersion       uint64
 		CredentialBindingDigest string
 	}{a.ModelProfileID, a.ModelProfileRevision, a.Provider, a.Model, a.Interface, a.MaximumOutputTokens, a.CredentialVersion, a.CredentialBindingDigest})
+	return nil
+}
+
+func (b *GitHubBinding) Seal() error {
+	if b == nil {
+		return ErrInvalid
+	}
+	b.OwnerID = strings.TrimSpace(b.OwnerID)
+	if b.OwnerID == "" || len(b.OwnerID) > 512 || b.AccountGeneration == 0 || b.ConfigRevision == 0 || b.CredentialVersion == 0 {
+		return ErrInvalid
+	}
+	b.BindingDigest = digestValue(struct {
+		OwnerID           string
+		AccountGeneration uint64
+		ConfigRevision    uint64
+		CredentialVersion uint64
+	}{b.OwnerID, b.AccountGeneration, b.ConfigRevision, b.CredentialVersion})
 	return nil
 }
 
@@ -511,11 +540,12 @@ func (p *Plan) Seal() error {
 		BudgetEvidence                                                       *LocalBudgetEvidence
 		WorkspaceMode                                                        WorkspaceMode
 		ModelAuthorization                                                   ModelAuthorization
+		GitHubBinding                                                        *GitHubBinding
 		AWS                                                                  AWSBinding
 		Compute                                                              ComputeSpec
 		Limits                                                               Limits
 		QuoteDigest                                                          string
-	}{p.OwnerID, p.PlanID, p.ExecutionID, p.ConversationID, p.TurnID, p.AccountGeneration, p.Revision, p.RecipeID, p.Adapter, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.AWS, p.Compute, p.Limits, p.Quote.Digest}
+	}{p.OwnerID, p.PlanID, p.ExecutionID, p.ConversationID, p.TurnID, p.AccountGeneration, p.Revision, p.RecipeID, p.Adapter, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.GitHubBinding, p.AWS, p.Compute, p.Limits, p.Quote.Digest}
 	var executionDigestBasis any = struct {
 		Basis      any
 		ServerName string
@@ -573,6 +603,11 @@ func (p *Plan) sealAuthorizationBasis() error {
 	if err := p.ModelAuthorization.Seal(); err != nil {
 		return err
 	}
+	if p.GitHubBinding != nil {
+		if err := p.GitHubBinding.Seal(); err != nil || p.GitHubBinding.OwnerID != p.OwnerID || p.GitHubBinding.AccountGeneration != p.AccountGeneration {
+			return ErrInvalid
+		}
+	}
 	p.ObjectiveDigest = digestValue(p.Objective)
 	if err := validateAWS(p.AWS); err != nil {
 		return err
@@ -591,10 +626,11 @@ func (p *Plan) sealAuthorizationBasis() error {
 		BudgetEvidence                                         *LocalBudgetEvidence
 		WorkspaceMode                                          WorkspaceMode
 		ModelAuthorization                                     ModelAuthorization
+		GitHubBinding                                          *GitHubBinding
 		AWS                                                    AWSBinding
 		Compute                                                ComputeSpec
 		Limits                                                 Limits
-	}{p.OwnerID, p.ConversationID, p.TurnID, p.RecipeID, p.Adapter, p.AccountGeneration, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.AWS, p.Compute, p.Limits}
+	}{p.OwnerID, p.ConversationID, p.TurnID, p.RecipeID, p.Adapter, p.AccountGeneration, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.GitHubBinding, p.AWS, p.Compute, p.Limits}
 	var authorizationDigestBasis any = struct {
 		Basis      any
 		ServerName string
@@ -783,11 +819,14 @@ func BindingForPlan(plan Plan) (coreconfirmation.Binding, error) {
 			}
 			return "persistent_ssh_worker"
 		}(), SourceVersion: plan.RecipeID,
-		SourceCommit:      "",
-		ContentDigest:     coreconfirmation.Digest(plan.ObjectiveDigest),
-		ManifestDigest:    coreconfirmation.Digest(plan.InputManifestDigest),
-		ExecutionDigest:   coreconfirmation.Digest(plan.ExecutionDigest),
-		PermissionDigest:  coreconfirmation.Digest(plan.ModelAuthorization.BindingDigest),
+		SourceCommit:    "",
+		ContentDigest:   coreconfirmation.Digest(plan.ObjectiveDigest),
+		ManifestDigest:  coreconfirmation.Digest(plan.InputManifestDigest),
+		ExecutionDigest: coreconfirmation.Digest(plan.ExecutionDigest),
+		PermissionDigest: coreconfirmation.Digest(digestValue(struct {
+			ModelBindingDigest string
+			GitHubBinding      *GitHubBinding
+		}{plan.ModelAuthorization.BindingDigest, plan.GitHubBinding})),
 		ParameterDigest:   coreconfirmation.Digest(plan.Digest),
 		NetworkDigest:     coreconfirmation.Digest(digestValue([]string{})),
 		SecretGrantDigest: coreconfirmation.Digest(digestValue([]string{})),

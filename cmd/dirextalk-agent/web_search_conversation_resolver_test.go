@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
@@ -94,7 +97,7 @@ func TestWebSearchConversationResolverInjectsStoredCredentialWithoutPersistingIt
 		t.Fatalf("resolved=%#v err=%v", resolved, err)
 	}
 	if !strings.Contains(resolved[0].Tools[0].Description, "do not repeat equivalent searches") ||
-		!strings.Contains(resolved[0].Tools[0].Description, "answer immediately") {
+		!strings.Contains(resolved[0].Tools[0].Description, "concise natural-language Markdown") {
 		t.Fatalf("web search completion guidance=%q", resolved[0].Tools[0].Description)
 	}
 	if err := resolved[0].Snapshot.Validate(); err != nil {
@@ -110,6 +113,56 @@ func TestWebSearchConversationResolverInjectsStoredCredentialWithoutPersistingIt
 	}
 }
 
+func TestWebSearchModelEvidenceNormalizesScreenshotLikeProviderMarkup(t *testing.T) {
+	envelope, accepted := webSearchModelEvidence(corewebsearch.SearchResult{Answer: "<3级\n# 周边地区 北京时 2026-08-19 18:00更新\n/\n/\n|\n| --- | --- |\n", Results: []corewebsearch.SearchItem{{Title: "<b>北京天气</b>", URL: "https://weather.example.test/beijing", Content: "<div>晴</div>\n/\n\n|\n---\n体感良好"}}})
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, forbidden := range []string{"<b>", "<div>", "\n/\n", "| --- |"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("model evidence retained %q: %s", forbidden, text)
+		}
+	}
+	if envelope.Summary != "<3级 周边地区 北京时 2026-08-19 18:00更新" || len(accepted) != 1 || envelope.Sources[0].URL != "https://weather.example.test/beijing" || envelope.Sources[0].Evidence != "晴 体感良好" {
+		t.Fatalf("normalized envelope=%+v", envelope)
+	}
+}
+
+func TestWebSearchModelEvidenceCanonicalizesDeduplicatesAndSkipsInvalidURLs(t *testing.T) {
+	envelope, accepted := webSearchModelEvidence(corewebsearch.SearchResult{Results: []corewebsearch.SearchItem{
+		{Title: "bad", URL: "ftp://example.test/a", Content: "bad"}, {Title: "credentials", URL: "https://user:pass@example.test/a", Content: "bad"},
+		{Title: "first", URL: "HTTPS://Example.TEST/a#fragment", Content: "line&#10;one"}, {Title: "duplicate", URL: "https://example.test/a", Content: "two"},
+	}})
+	if len(envelope.Sources) != 1 || len(accepted) != 1 || accepted[0].URL != envelope.Sources[0].URL || accepted[0].Content != "line one" {
+		t.Fatalf("envelope=%+v accepted=%+v", envelope, accepted)
+	}
+	references := webSearchEvidenceReferences(accepted)
+	if len(references) != 1 || references[0].SourceID != envelope.Sources[0].URL || references[0].ContentDigest == "" {
+		t.Fatalf("references=%+v", references)
+	}
+}
+
+func TestWebSearchToolGuidanceForbidsRawEvidenceDump(t *testing.T) {
+	for _, required := range []string{"concise natural-language Markdown", "descriptive linked citations", "Never dump raw tool JSON", "meaningless separator"} {
+		if !strings.Contains(webSearchToolDescription, required) {
+			t.Fatalf("missing guidance %q", required)
+		}
+	}
+}
+
+func TestNormalizeWebSearchTextUnescapesEntitiesDropsControlsAndKeepsUTF8Boundary(t *testing.T) {
+	got := normalizeWebSearchText("# &#x5317;&#x4EAC;\x00\n<strong>晴</strong>", 10)
+	if got != "北京 晴" || !utf8.ValidString(got) {
+		t.Fatalf("normalized=%q", got)
+	}
+	bounded := normalizeWebSearchText("天气🙂天气", 8)
+	if !utf8.ValidString(bounded) || bounded != "天气" {
+		t.Fatalf("utf8 boundary=%q", bounded)
+	}
+}
+
 func TestWebSearchConversationResolverReloadsAfterServiceRestartAndFingerprintIsSecretFree(t *testing.T) {
 	repository := &resolverWebSearchRepository{resolved: corewebsearch.ResolvedConfig{
 		Config: corewebsearch.Config{Enabled: true, Provider: corewebsearch.ProviderTavily, APIKeyConfigured: true, Revision: 4},
@@ -121,6 +174,13 @@ func TestWebSearchConversationResolverReloadsAfterServiceRestartAndFingerprintIs
 		t.Fatalf("first resolve=%#v err=%v", first, err)
 	}
 	firstDigest := first[0].Selection.Digest
+	legacySchema := sha256.Sum256([]byte(webSearchToolSchema))
+	legacyPayload, _ := json.Marshal(map[string]any{"provider": corewebsearch.ProviderTavily, "revision": int64(4), "tool_schema_digest": hex.EncodeToString(legacySchema[:])})
+	legacySum := sha256.Sum256(legacyPayload)
+	legacyArtifact := sha256.Sum256([]byte("dirextalk-agent:builtin:web_search:tavily:v1"))
+	if firstDigest == hex.EncodeToString(legacySum[:]) || first[0].Snapshot.ArtifactDigest == hex.EncodeToString(legacyArtifact[:]) {
+		t.Fatal("legacy evidence identity remained executable")
+	}
 	// A fresh service/resolver reads the same durable repository. The executable
 	// closure is rebuilt; no client request credential or in-memory cache is used.
 	repository.resolved.APIKey = "tvly-second"

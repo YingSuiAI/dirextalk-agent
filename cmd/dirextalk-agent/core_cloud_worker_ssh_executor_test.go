@@ -39,6 +39,19 @@ type serviceWorkerStub struct {
 	}
 }
 
+type githubPATResolverStub struct {
+	err   error
+	calls int
+}
+
+func (resolver *githubPATResolverStub) DispatchExactGitHubPAT(_ context.Context, _ *cloudworker.GitHubBinding, fn func(string) error) error {
+	resolver.calls++
+	if resolver.err != nil {
+		return resolver.err
+	}
+	return fn("stub-pat")
+}
+
 func (worker *serviceWorkerStub) ObserveWorker(context.Context, sshworker.WorkerIdentity) (sshworker.WorkerStatus, error) {
 	return worker.status, worker.err
 }
@@ -275,6 +288,25 @@ func TestSSHWorkerExecuteRejectsRotatedCurrentCredentialBeforeWorkspaceRead(t *t
 	}
 	if sources.calls != 0 {
 		t.Fatal("workspace source was read before current credential revalidation")
+	}
+}
+
+func TestSSHWorkerRetainedReuseRechecksGitHubBindingBeforeWorkspaceRead(t *testing.T) {
+	authority, _ := cloudWorkerCredentialAuthorityFixture(t)
+	awsBinding, err := authority.ResolveCurrentAWSBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	github := &githubPATResolverStub{err: errors.New("GitHub credential rotated")}
+	sources := &workspaceSourceStub{reads: make(map[string]cloudworker.SourceRead)}
+	binding := &cloudworker.GitHubBinding{OwnerID: "@owner:example.test", AccountGeneration: 7, ConfigRevision: 3, CredentialVersion: 5}
+	if err = binding.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	executor := &sshWorkerExecutor{authority: authority, github: github, sources: sources, root: t.TempDir()}
+	_, err = executor.Execute(context.Background(), sshflow.Request{AWS: awsBinding, GitHubBinding: binding, ReuseOnly: true, ReuseWorkerID: "11111111-1111-4111-8111-111111111111"})
+	if github.calls != 0 || sources.calls != 0 {
+		t.Fatalf("err=%v calls=%d sourceReads=%d", err, github.calls, sources.calls)
 	}
 }
 

@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
+	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
@@ -20,9 +23,80 @@ import (
 )
 
 const (
-	webSearchToolSchema      = `{"additionalProperties":false,"properties":{"max_results":{"description":"Choose enough results for the requested answer in the first search.","maximum":10,"minimum":1,"type":"integer"},"query":{"description":"One focused search query for a missing fact, not a paraphrase of an earlier query in this turn.","maxLength":1000,"minLength":1,"type":"string"}},"required":["query"],"type":"object"}`
-	webSearchToolDescription = "Search the public web for current information and sources. Start with one focused query and enough results. Search again only for a distinct missing fact; do not repeat equivalent searches. Once the evidence is sufficient, answer immediately and state any uncertainty instead of searching for exhaustive confirmation."
+	webSearchEvidenceContractVersion = "v2"
+	webSearchToolSchema              = `{"additionalProperties":false,"properties":{"max_results":{"description":"Choose enough results for the requested answer in the first search.","maximum":10,"minimum":1,"type":"integer"},"query":{"description":"One focused search query for a missing fact, not a paraphrase of an earlier query in this turn.","maxLength":1000,"minLength":1,"type":"string"}},"required":["query"],"type":"object"}`
+	webSearchToolDescription         = "Search the public web for current information and sources. Start with one focused query and enough results. Search again only for a distinct missing fact; do not repeat equivalent searches. Once the evidence is sufficient, synthesize a concise natural-language Markdown answer with descriptive linked citations. Never dump raw tool JSON, HTML, search snippets, or meaningless separator lines."
 )
+
+var webSearchHTMLTag = regexp.MustCompile(`(?is)<[A-Za-z!/][^>]*>`)
+var webSearchMarkdownSeparator = regexp.MustCompile(`^[| :\-]+$`)
+var webSearchHeading = regexp.MustCompile(`^#{1,6}\s+`)
+
+// webSearchEvidenceEnvelope is the sole model-facing Web Search projection.
+// It deliberately does not preserve provider JSON or presentation markup.
+type webSearchEvidenceEnvelope struct {
+	Summary string                    `json:"summary,omitempty"`
+	Sources []webSearchEvidenceSource `json:"sources"`
+}
+type webSearchEvidenceSource struct {
+	Title    string `json:"title"`
+	URL      string `json:"url"`
+	Evidence string `json:"evidence"`
+}
+
+func webSearchModelEvidence(result corewebsearch.SearchResult) (webSearchEvidenceEnvelope, []corewebsearch.SearchItem) {
+	envelope := webSearchEvidenceEnvelope{Summary: normalizeWebSearchText(result.Answer, 900), Sources: make([]webSearchEvidenceSource, 0, min(len(result.Results), 5))}
+	accepted := make([]corewebsearch.SearchItem, 0, cap(envelope.Sources))
+	seen := make(map[string]struct{}, cap(envelope.Sources))
+	for _, item := range result.Results {
+		if len(accepted) == cap(envelope.Sources) {
+			break
+		}
+		sourceID, ok := coreconversation.CanonicalWebSourceID(item.URL)
+		if !ok {
+			continue
+		}
+		if _, duplicate := seen[sourceID]; duplicate {
+			continue
+		}
+		seen[sourceID] = struct{}{}
+		normalized := corewebsearch.SearchItem{Title: normalizeWebSearchText(item.Title, 240), URL: sourceID, Content: normalizeWebSearchText(item.Content, 600), Score: item.Score}
+		accepted = append(accepted, normalized)
+		envelope.Sources = append(envelope.Sources, webSearchEvidenceSource{Title: normalized.Title, URL: normalized.URL, Evidence: normalized.Content})
+	}
+	return envelope, accepted
+}
+
+func normalizeWebSearchText(value string, limit int) string {
+	value = html.UnescapeString(value)
+	value = webSearchHTMLTag.ReplaceAllString(value, " ")
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return ' '
+		}
+		return r
+	}, value)
+	lines := strings.Split(value, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "/" || line == "|" || webSearchMarkdownSeparator.MatchString(line) {
+			continue
+		}
+		line = webSearchHeading.ReplaceAllString(line, "")
+		kept = append(kept, line)
+	}
+	value = strings.Join(kept, " ")
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return strings.TrimSpace(value)
+}
 
 type webSearchConversationResolver struct {
 	base    coreconversation.ExtensionResolver
@@ -67,10 +141,10 @@ func (r *webSearchConversationResolver) ResolveExtensions(ctx context.Context, s
 	schemaSum := sha256.Sum256([]byte(webSearchToolSchema))
 	schemaDigest := hex.EncodeToString(schemaSum[:])
 	version := fmt.Sprintf("config-%d", config.Revision)
-	digestPayload, _ := json.Marshal(map[string]any{"provider": config.Provider, "revision": config.Revision, "tool_schema_digest": schemaDigest})
+	digestPayload, _ := json.Marshal(map[string]any{"evidence_contract": webSearchEvidenceContractVersion, "provider": config.Provider, "revision": config.Revision, "tool_schema_digest": schemaDigest, "tool_description": webSearchToolDescription})
 	contentSum := sha256.Sum256(digestPayload)
 	contentDigest := hex.EncodeToString(contentSum[:])
-	artifactSum := sha256.Sum256([]byte("dirextalk-agent:builtin:web_search:tavily:v1"))
+	artifactSum := sha256.Sum256([]byte("dirextalk-agent:builtin:web_search:tavily:" + webSearchEvidenceContractVersion))
 	artifactDigest := hex.EncodeToString(artifactSum[:])
 	selectionID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk-agent:builtin:web_search")).String()
 	selection := coreconversation.ExtensionSelection{Kind: coreconversation.ExtensionMCP, ID: selectionID, Version: version, Digest: contentDigest, AllowedTools: []string{"web_search"}}
@@ -122,12 +196,13 @@ func (r *webSearchConversationResolver) ResolveExtensions(ctx context.Context, s
 			if err != nil {
 				return coreconversation.ToolResult{}, webSearchConversationExecutionError(err)
 			}
-			body, err := json.Marshal(result)
+			evidence, accepted := webSearchModelEvidence(result)
+			body, err := json.Marshal(evidence)
 			if err != nil {
 				return coreconversation.ToolResult{}, corewebsearch.ErrProvider
 			}
 			toolResult := coreconversation.ToolResult{CallID: request.Call.ID, ToolName: "web_search", Content: string(body), Summary: fmt.Sprintf("Web search returned %d result(s)", len(result.Results))}
-			toolResult.References = webSearchEvidenceReferences(result.Results)
+			toolResult.References = webSearchEvidenceReferences(accepted)
 			return toolResult.WithObservation(coreconversation.ToolOutcomeSuccess, toolResult.Summary, coreconversation.ToolMutationNone), nil
 		},
 	})

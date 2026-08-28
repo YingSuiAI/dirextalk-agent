@@ -14,6 +14,12 @@ type SecretResolver interface {
 	ResolveSecret(context.Context, string) ([]byte, error)
 }
 
+// SecretDispatcher optionally keeps a credential fence through construction
+// and dispatch of one outbound request. Existing resolvers remain compatible.
+type SecretDispatcher interface {
+	WithSecret(context.Context, string, func([]byte) error) error
+}
+
 // ToolProvider exposes only the fixed, trusted MCP server set configured by
 // the service owner. Model output cannot select endpoints or credentials.
 type ToolProvider interface {

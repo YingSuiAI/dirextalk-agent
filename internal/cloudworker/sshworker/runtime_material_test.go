@@ -39,7 +39,7 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 		"releases/download/v0.84.1/pi-linux-x64.tar.gz",
 		piLinuxX64SHA256,
 		"sudo apt-get -qq update",
-		"sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install ca-certificates curl git golang-go gzip tar",
+		"sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install ca-certificates curl git gh golang-go gzip tar",
 		`readonly task_root="$worker_root/tasks/task-001"`,
 		`dirextalk-worker-runner`,
 		`server-status`,
@@ -63,7 +63,7 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 		t.Fatalf("start command: %#v, %v", start, err)
 	}
 	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(start.Stdin)))
-	if err != nil || string(decoded) != secret {
+	if err != nil || !strings.Contains(string(decoded), `"version":1`) || !strings.Contains(string(decoded), secret) {
 		t.Fatalf("secret stdin did not round trip: %q, %v", decoded, err)
 	}
 	digest := sha256.Sum256(material.WorkerScript)
@@ -269,7 +269,7 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := exec.Command(runner, "start", jobID)
-	start.Stdin = strings.NewReader(base64.StdEncoding.EncodeToString([]byte("secret")) + "\n")
+	start.Stdin = strings.NewReader(encodeRuntimeSecretEnvelope("secret", "") + "\n")
 	if output, err = start.CombinedOutput(); err != nil {
 		t.Fatalf("start timeout job: %v: %s", err, output)
 	}
@@ -306,4 +306,84 @@ func TestEmbeddedRemoteRunnerUsesOnlyTaskScopedWorkspaceAndArtifacts(t *testing.
 			t.Fatalf("runner retains shared execution path %q", forbidden)
 		}
 	}
+}
+
+func TestEmbeddedRemoteRunnerScopesGitHubCredentialAndCleansIt(t *testing.T) {
+	for _, expected := range []string{
+		`github.com ] || exit 0`,
+		`GH_TOKEN=\"$token\"`,
+		`GIT_TERMINAL_PROMPT=0`,
+		`withoutGitHubTokenEnv`,
+		`cleanupGitHubRuntime(taskRoot)`,
+	} {
+		if !strings.Contains(remoteRunnerSource, expected) {
+			t.Fatalf("runner missing GitHub isolation %q", expected)
+		}
+	}
+	for _, forbidden := range []string{"github_pat", "GH_TOKEN=secret", "GITHUB_TOKEN=secret"} {
+		if strings.Contains(string(mustCompileRuntimeForTest(t).WorkerScript), forbidden) {
+			t.Fatalf("bootstrap contains credential sentinel %q", forbidden)
+		}
+	}
+}
+
+func TestWorkerLoadsOnlyExplicitBoundedServerSubagentExtension(t *testing.T) {
+	material := mustCompileRuntimeForTest(t)
+	script := string(material.WorkerScript)
+	for _, expected := range []string{
+		`"$config_root/extensions/dirextalk-subagent/extension.ts"`,
+		`"$config_root/agents/worker.md"`,
+		`mkdir -p -- "$config_root/extensions/dirextalk-subagent" "$config_root/agents"`,
+	} {
+		if !strings.Contains(script, expected) {
+			t.Fatalf("bootstrap missing server subagent material %q", expected)
+		}
+	}
+	for _, expected := range []string{
+		`"--tools", "read,bash,edit,write,grep,find,ls,subagent"`,
+		`"--no-extensions", "-e", filepath.Join(root, "pi-config", "extensions", "dirextalk-subagent", "extension.ts")`,
+		`"--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files"`,
+		"separate git worktree and branch per writer",
+		"Never expose GitHub credentials, model credentials",
+	} {
+		if !strings.Contains(remoteRunnerSource, expected) {
+			t.Fatalf("runner missing subagent contract %q", expected)
+		}
+	}
+	if strings.Contains(remoteRunnerSource, ".pi/agents") || strings.Contains(vendoredPiSubagentExtension, "agentScope") || strings.Contains(vendoredPiSubagentExtension, "confirmProjectAgents") {
+		t.Fatal("project agent discovery remains enabled")
+	}
+}
+
+func TestVendoredPiSubagentProvenanceAndBounds(t *testing.T) {
+	if PiReleaseVersion != "0.84.1" || PiSubagentUpstreamCommit != "53fa77ccd8a279eb87e92294ef3687b03ff80112" {
+		t.Fatalf("unexpected Pi provenance version=%s commit=%s", PiReleaseVersion, PiSubagentUpstreamCommit)
+	}
+	digest := sha256.Sum256([]byte(vendoredPiSubagentExtension))
+	if hex.EncodeToString(digest[:]) != PiSubagentExtensionSHA256 {
+		t.Fatalf("vendored extension digest mismatch")
+	}
+	provenance, err := os.ReadFile(filepath.Join("vendor", "pi-subagent", "v0.84.1", "PROVENANCE.md"))
+	if err != nil || !strings.Contains(string(provenance), PiSubagentUpstreamCommit) || !strings.Contains(string(provenance), "MIT") {
+		t.Fatalf("provenance=%q err=%v", provenance, err)
+	}
+	for _, expected := range []string{"MAX_PARALLEL_TASKS = 8", "MAX_CONCURRENCY = 4", "PI_CODING_AGENT_DIR/agents", "--no-extensions", "script.startsWith(\"/$bunfs/root/\")", "genericRuntime"} {
+		if !strings.Contains(vendoredPiSubagentExtension, expected) {
+			t.Fatalf("vendored subagent missing %q", expected)
+		}
+	}
+	for _, forbidden := range []string{"RIVER-LANTERN-PAT", "github_pat", "GH_TOKEN="} {
+		if strings.Contains(vendoredPiSubagentExtension, forbidden) || strings.Contains(vendoredPiSubagentWorkerAgent, forbidden) {
+			t.Fatalf("vendored material contains credential sentinel %q", forbidden)
+		}
+	}
+}
+
+func mustCompileRuntimeForTest(t *testing.T) RuntimeMaterial {
+	t.Helper()
+	material, err := CompileRuntime(RuntimeRequest{TaskID: "task-github", Objective: "use a repository", Architecture: "x86_64", Workload: WorkloadJob, MaxRuntimeSeconds: 60, Model: RuntimeModel{Provider: "openai_compatible", BaseURL: "https://models.example/v1", Name: "test", APIKey: "model-secret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return material
 }

@@ -180,6 +180,7 @@ type ProposeCommand struct {
 	InputManifest        InputManifest
 	WorkspaceMode        WorkspaceMode
 	ModelAuthorization   ModelAuthorization
+	GitHubBinding        *GitHubBinding
 	ComputeRequirements  ComputeRequirements
 }
 
@@ -289,8 +290,8 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		WorkloadKind: command.WorkloadKind, Service: command.Service,
 		ProposalReason: command.ProposalReason, LocalBudgetEvidence: budgetEvidence,
 		InputManifest: command.InputManifest, InputManifestDigest: manifestDigest, WorkspaceMode: command.WorkspaceMode,
-		ModelAuthorization: command.ModelAuthorization,
-		AWS:                awsBinding, Compute: compute, PersistentWorkerReuse: reuse, ReuseWorkerID: selection.WorkerID, Limits: limits,
+		ModelAuthorization: command.ModelAuthorization, GitHubBinding: command.GitHubBinding,
+		AWS: awsBinding, Compute: compute, PersistentWorkerReuse: reuse, ReuseWorkerID: selection.WorkerID, Limits: limits,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if reuse {
@@ -350,12 +351,13 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	}
 	requestRaw, _ := json.Marshal(struct {
 		OwnerID, ConversationID, TurnID, Objective, UserPromptDigest, InputManifestDigest, ModelBindingDigest, AuthorizationBasisDigest string
+		GitHubBinding                                                                                                                   *GitHubBinding
 		AccountGeneration                                                                                                               uint64
 		ProposalReason                                                                                                                  ProposalReason
 		BudgetEvidence                                                                                                                  *LocalBudgetEvidence
 		WorkspaceMode                                                                                                                   WorkspaceMode
 		ComputeRequirements                                                                                                             ComputeRequirements
-	}{plan.OwnerID, plan.ConversationID, plan.TurnID, plan.Objective, plan.UserPromptDigest, plan.InputManifestDigest, plan.ModelAuthorization.BindingDigest, plan.AuthorizationBasisDigest, plan.AccountGeneration, plan.ProposalReason, plan.LocalBudgetEvidence, plan.WorkspaceMode, command.ComputeRequirements})
+	}{plan.OwnerID, plan.ConversationID, plan.TurnID, plan.Objective, plan.UserPromptDigest, plan.InputManifestDigest, plan.ModelAuthorization.BindingDigest, plan.AuthorizationBasisDigest, plan.GitHubBinding, plan.AccountGeneration, plan.ProposalReason, plan.LocalBudgetEvidence, plan.WorkspaceMode, command.ComputeRequirements})
 	sum := sha256.Sum256(requestRaw)
 	return s.store.CreateOffer(ctx, CreateOfferCommand{IdempotencyKey: command.IdempotencyKey, RequestDigest: hex.EncodeToString(sum[:]), TurnLeaseID: command.TurnLeaseID, TurnLeaseEpoch: command.TurnLeaseEpoch, ExpectedTurnRevision: command.ExpectedTurnRevision, Plan: plan, Execution: execution, BindingJSON: bindingRaw, TaskPayload: payload})
 }

@@ -327,12 +327,77 @@ esac
 	}
 }
 
+func TestAmbiguousRuntimeStartAcceptsAuthoritativeRunningStatus(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `
+case "$remote" in
+  *"'status'"*) count status >/dev/null; printf '%s\n' '{"phase":"running"}' ;;
+  *"'stop'"*) count stop >/dev/null ;;
+  *) exit 64 ;;
+esac`)
+	protocol := RuntimeProtocol{TaskID: "execution-recovery", secretEnvelope: encodeRuntimeSecretEnvelope("secret", "")}
+	if err := reconcileAmbiguousRuntimeStart(context.Background(), ssh, nil, protocol, errors.New("connection reset")); err != nil {
+		t.Fatal(err)
+	}
+	if readCount(t, state, "status") != 1 {
+		t.Fatal("missing exact status probe")
+	}
+	if _, err := os.Stat(filepath.Join(state, "stop.count")); !os.IsNotExist(err) {
+		t.Fatal("running task was stopped")
+	}
+}
+
+func TestAmbiguousRuntimeStartStopsDefiniteNonRunningTask(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `
+case "$remote" in
+  *"'status'"*) printf '%s\n' '{"phase":"not_started"}' ;;
+  *"'stop'"*) count stop >/dev/null ;;
+  *) exit 64 ;;
+esac`)
+	protocol := RuntimeProtocol{TaskID: "execution-recovery", secretEnvelope: encodeRuntimeSecretEnvelope("secret", "")}
+	err := reconcileAmbiguousRuntimeStart(context.Background(), ssh, nil, protocol, errors.New("connection reset"))
+	if !errors.Is(err, ErrAmbiguous) || !errors.Is(err, errRuntimeNotStarted) || readCount(t, state, "stop") != 1 {
+		t.Fatalf("err=%v stop=%d", err, readCount(t, state, "stop"))
+	}
+}
+
+func TestAmbiguousRuntimeStartStatusFailureRemainsUncertain(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `case "$remote" in *"'status'"*) exit 1 ;; *) exit 64 ;; esac`)
+	withoutRetryDelay(t)
+	protocol := RuntimeProtocol{TaskID: "execution-recovery", secretEnvelope: encodeRuntimeSecretEnvelope("secret", "")}
+	err := reconcileAmbiguousRuntimeStart(context.Background(), ssh, nil, protocol, errors.New("connection reset"))
+	if !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(state, "stop.count")); !os.IsNotExist(err) {
+		t.Fatal("status failure triggered blind cleanup retry")
+	}
+}
+
+func TestAmbiguousRuntimeStartReconcilesAfterCallerCancellation(t *testing.T) {
+	state := t.TempDir()
+	ssh := writeFakeSSH(t, state, `
+case "$remote" in
+  *"'status'"*) printf '%s\n' '{"phase":"failed"}' ;;
+  *"'stop'"*) count stop >/dev/null ;;
+  *) exit 64 ;;
+esac`)
+	ctx, cancel := context.WithCancel(context.Background()); cancel()
+	protocol := RuntimeProtocol{TaskID: "execution-recovery", secretEnvelope: encodeRuntimeSecretEnvelope("secret", "")}
+	err := reconcileAmbiguousRuntimeStart(ctx, ssh, nil, protocol, context.Canceled)
+	if !errors.Is(err, ErrAmbiguous) || readCount(t, state, "stop") != 1 {
+		t.Fatalf("err=%v stop=%d", err, readCount(t, state, "stop"))
+	}
+}
+
 func sshRequestFixture(t *testing.T, sink ResultSink) SSHRequest {
 	t.Helper()
 	return SSHRequest{
 		ExecutionID: "execution-recovery", Host: "203.0.113.20", User: "ec2-user",
 		PrivateKeyPath: filepath.Join(t.TempDir(), "key"), WorkerScript: []byte("bootstrap"), WorkerScriptSHA256: "unused",
-		Runtime:           RuntimeProtocol{TaskID: "execution-recovery", encodedModelKey: "c2VjcmV0"},
+		Runtime:           RuntimeProtocol{TaskID: "execution-recovery", secretEnvelope: encodeRuntimeSecretEnvelope("secret", "")},
 		MaxWorkspaceBytes: 1 << 20, MaxResultBytes: 1 << 20, Sink: sink, Resume: true,
 	}
 }

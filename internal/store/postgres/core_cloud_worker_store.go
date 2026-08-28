@@ -28,10 +28,11 @@ type CloudWorkerStore struct{ store *Store }
 func NewCloudWorkerStore(store *Store) *CloudWorkerStore { return &CloudWorkerStore{store: store} }
 
 type privateCloudWorkerPlan struct {
-	Objective             string                    `json:"objective"`
-	InputManifest         cloudworker.InputManifest `json:"input_manifest"`
-	PersistentWorkerReuse bool                      `json:"persistent_worker_reuse,omitempty"`
-	ReuseWorkerID         string                    `json:"reuse_worker_id,omitempty"`
+	Objective             string                     `json:"objective"`
+	InputManifest         cloudworker.InputManifest  `json:"input_manifest"`
+	PersistentWorkerReuse bool                       `json:"persistent_worker_reuse,omitempty"`
+	ReuseWorkerID         string                     `json:"reuse_worker_id,omitempty"`
+	GitHubBinding         *cloudworker.GitHubBinding `json:"github_binding,omitempty"`
 }
 
 type cloudWorkerReplay struct {
@@ -50,6 +51,7 @@ func marshalCloudWorkerPlan(plan cloudworker.Plan) ([]byte, []byte, error) {
 	privateRaw, err := json.Marshal(privateCloudWorkerPlan{
 		Objective: copy.Objective, InputManifest: copy.InputManifest,
 		PersistentWorkerReuse: copy.PersistentWorkerReuse, ReuseWorkerID: copy.ReuseWorkerID,
+		GitHubBinding: copy.GitHubBinding,
 	})
 	if err != nil || len(publicRaw) > 1<<20 || len(privateRaw) > 1<<20 {
 		return nil, nil, cloudworker.ErrInvalid
@@ -81,6 +83,7 @@ func scanCloudWorkerPlan(row cloudWorkerRowScanner) (cloudworker.Plan, error) {
 	plan.Objective, plan.InputManifest = private.Objective, private.InputManifest
 	plan.PersistentWorkerReuse = private.PersistentWorkerReuse
 	plan.ReuseWorkerID = private.ReuseWorkerID
+	plan.GitHubBinding = private.GitHubBinding
 	if plan.Seal() != nil || plan.Revision != uint64(storedRevision) || plan.Digest != storedDigest ||
 		plan.ExecutionDigest != storedExecutionDigest || plan.AuthorizationBasisDigest != storedAuthorization ||
 		plan.Quote.Digest != storedQuote || plan.InputManifestDigest != storedManifest ||
@@ -340,8 +343,12 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	references := cloudWorkerReferences(plan, execution, 1, confirmationProjection)
 	userMessage := core.Message{ID: deterministicCloudWorkerUUID("conversation-turn-user", turn.RequestID), TurnID: plan.TurnID, Role: core.RoleUser,
 		Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: plan.CreatedAt.Add(-time.Microsecond)}
+	offerSummary := "Cloud Worker quote is ready for confirmation."
+	if plan.GitHubBinding != nil {
+		offerSummary += " GitHub repository access will be available."
+	}
 	offerMessage := core.Message{ID: deterministicCloudWorkerUUID("cloud-worker-offer-message", plan.ExecutionID), TurnID: plan.TurnID, Role: core.RoleAssistant,
-		Content: "Cloud Worker quote is ready for confirmation.", ModelProfileID: turn.ProfileID,
+		Content: offerSummary, ModelProfileID: turn.ProfileID,
 		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID}, References: references,
 		CreatedAt: plan.CreatedAt}
 	if userMessage.Validate() != nil || offerMessage.Validate() != nil {

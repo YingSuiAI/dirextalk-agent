@@ -35,6 +35,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coregithub"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreimagetool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge/semantic"
@@ -124,6 +125,10 @@ func serveCore(cfg config.Config) error {
 	webSearchService, err := corewebsearch.NewService(postgres.NewCoreWebSearchStore(store), corewebsearch.NewTavilyClient())
 	if err != nil {
 		return fmt.Errorf("initialize Web Search service: %w", err)
+	}
+	githubService, err := coregithub.NewService(postgres.NewCoreGitHubStore(store), coregithub.NewGitHubClient())
+	if err != nil {
+		return fmt.Errorf("initialize GitHub service: %w", err)
 	}
 	profiles, err := coremodel.NewService(store, coremodel.NewConnectionTester())
 	if err != nil {
@@ -224,7 +229,7 @@ func serveCore(cfg config.Config) error {
 	taskExecutor.SetScheduledAgentHandler(scheduledAgentTaskHandler(conversation, store))
 	var cloudComposition *coreCloudWorkerComposition
 	if retainedWorkers != nil {
-		cloudComposition, err = composeDynamicCloudWorkerProposal(cfg, store, conversationStore, retainedWorkers.store)
+		cloudComposition, err = composeDynamicCloudWorkerProposal(cfg, store, conversationStore, retainedWorkers.store, githubService)
 	}
 	if err != nil {
 		return fmt.Errorf("initialize Cloud Worker composition: %w", err)
@@ -271,7 +276,7 @@ func serveCore(cfg config.Config) error {
 	if awsComposition != nil && retainedWorkers != nil {
 		awsComposition.domain.SetCredentialDeleteGuard(retainedWorkers)
 	}
-	extensionComposition, err := composeCoreExtension(cfg, store)
+	extensionComposition, err := composeCoreExtension(cfg, store, githubService)
 	if err != nil {
 		if knowledgeComposition != nil {
 			knowledgeComposition.Close()
@@ -477,7 +482,7 @@ func serveCore(cfg config.Config) error {
 	if knowledgeComposition != nil {
 		conversationResolver = &knowledgeConversationResolver{base: conversationResolver, search: knowledgeComposition.domain}
 	}
-	conversation.SetExtensionResolver(&webSearchConversationResolver{base: conversationResolver, service: webSearchService})
+	conversation.SetExtensionResolver(&webSearchConversationResolver{base: &githubMCPConversationResolver{base: conversationResolver, service: githubService}, service: webSearchService})
 	if knowledgeComposition != nil {
 		conversationStore.EnableMemoryCapture()
 		conversation.SetMemoryRecallResolver(coreMemoryRecallResolver{structured: knowledgeComposition.memory})
@@ -571,6 +576,7 @@ func serveCore(cfg config.Config) error {
 				return awsComposition.domain
 			}(),
 			WebSearch:  webSearchService,
+			GitHub:     githubService,
 			TextTools:  textToolService,
 			ImageTools: imageToolService,
 			Voice:      voiceService,
