@@ -131,6 +131,14 @@ available only through a github.com Git helper and process-local `gh` wrapper,
 and is removed on completion, error, or cancellation; it never enters durable
 plans, task specs, logs, scripts, artifacts, command arguments, or Pi's
 inherited environment.
+The remote Pi runtime may expose only the vendored server-owned subagent
+extension pinned to Pi `v0.84.1`. It is loaded explicitly while extension
+discovery remains disabled, and it discovers only server-owned agent
+definitions under the Worker `PI_CODING_AGENT_DIR`. It never reads project
+agent definitions or workflow prompts. Parallel delegation is bounded to eight
+tasks and four concurrent subprocesses; child work requiring concurrent writes
+must use separate worktrees and branches, then revalidate and integrate through
+the parent worktree.
 Natural-language objectives are passed to Pi as input data and are never
 executed as shell source. The Agent authenticates each outbound SSH connection
 with Agent-owned SSH key material and copies bounded results back to its own

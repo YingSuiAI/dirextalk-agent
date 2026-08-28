@@ -327,6 +327,58 @@ func TestEmbeddedRemoteRunnerScopesGitHubCredentialAndCleansIt(t *testing.T) {
 	}
 }
 
+func TestWorkerLoadsOnlyExplicitBoundedServerSubagentExtension(t *testing.T) {
+	material := mustCompileRuntimeForTest(t)
+	script := string(material.WorkerScript)
+	for _, expected := range []string{
+		`"$config_root/extensions/dirextalk-subagent/extension.ts"`,
+		`"$config_root/agents/worker.md"`,
+		`mkdir -p -- "$config_root/extensions/dirextalk-subagent" "$config_root/agents"`,
+	} {
+		if !strings.Contains(script, expected) {
+			t.Fatalf("bootstrap missing server subagent material %q", expected)
+		}
+	}
+	for _, expected := range []string{
+		`"--tools", "read,bash,edit,write,grep,find,ls,subagent"`,
+		`"--no-extensions", "-e", filepath.Join(root, "pi-config", "extensions", "dirextalk-subagent", "extension.ts")`,
+		`"--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files"`,
+		"separate git worktree and branch per writer",
+		"Never expose GitHub credentials, model credentials",
+	} {
+		if !strings.Contains(remoteRunnerSource, expected) {
+			t.Fatalf("runner missing subagent contract %q", expected)
+		}
+	}
+	if strings.Contains(remoteRunnerSource, ".pi/agents") || strings.Contains(vendoredPiSubagentExtension, "agentScope") || strings.Contains(vendoredPiSubagentExtension, "confirmProjectAgents") {
+		t.Fatal("project agent discovery remains enabled")
+	}
+}
+
+func TestVendoredPiSubagentProvenanceAndBounds(t *testing.T) {
+	if PiReleaseVersion != "0.84.1" || PiSubagentUpstreamCommit != "53fa77ccd8a279eb87e92294ef3687b03ff80112" {
+		t.Fatalf("unexpected Pi provenance version=%s commit=%s", PiReleaseVersion, PiSubagentUpstreamCommit)
+	}
+	digest := sha256.Sum256([]byte(vendoredPiSubagentExtension))
+	if hex.EncodeToString(digest[:]) != PiSubagentExtensionSHA256 {
+		t.Fatalf("vendored extension digest mismatch")
+	}
+	provenance, err := os.ReadFile(filepath.Join("vendor", "pi-subagent", "v0.84.1", "PROVENANCE.md"))
+	if err != nil || !strings.Contains(string(provenance), PiSubagentUpstreamCommit) || !strings.Contains(string(provenance), "MIT") {
+		t.Fatalf("provenance=%q err=%v", provenance, err)
+	}
+	for _, expected := range []string{"MAX_PARALLEL_TASKS = 8", "MAX_CONCURRENCY = 4", "PI_CODING_AGENT_DIR/agents", "--no-extensions"} {
+		if !strings.Contains(vendoredPiSubagentExtension, expected) {
+			t.Fatalf("vendored subagent missing %q", expected)
+		}
+	}
+	for _, forbidden := range []string{"RIVER-LANTERN-PAT", "github_pat", "GH_TOKEN="} {
+		if strings.Contains(vendoredPiSubagentExtension, forbidden) || strings.Contains(vendoredPiSubagentWorkerAgent, forbidden) {
+			t.Fatalf("vendored material contains credential sentinel %q", forbidden)
+		}
+	}
+}
+
 func mustCompileRuntimeForTest(t *testing.T) RuntimeMaterial {
 	t.Helper()
 	material, err := CompileRuntime(RuntimeRequest{TaskID: "task-github", Objective: "use a repository", Architecture: "x86_64", Workload: WorkloadJob, MaxRuntimeSeconds: 60, Model: RuntimeModel{Provider: "openai_compatible", BaseURL: "https://models.example/v1", Name: "test", APIKey: "model-secret", GitHubPAT: "RIVER-LANTERN-PAT"}})

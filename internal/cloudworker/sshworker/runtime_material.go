@@ -2,6 +2,7 @@ package sshworker
 
 import (
 	"crypto/sha256"
+	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -12,11 +13,19 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
 )
 
+//go:embed vendor/pi-subagent/v0.84.1/extension.ts
+var vendoredPiSubagentExtension string
+
+//go:embed vendor/pi-subagent/v0.84.1/agents/worker.md
+var vendoredPiSubagentWorkerAgent string
+
 const (
 	PiReleaseVersion = "0.84.1"
 
-	piLinuxX64SHA256   = "5634d7ebd18274b63af3371e942f342d74bea012389575c1d1ff15ce6ca80c2f"
-	piLinuxARM64SHA256 = "ab95c058a4651b5ff5d8c878e524edfb776263c7a444f325505f247c056eecfc"
+	piLinuxX64SHA256          = "5634d7ebd18274b63af3371e942f342d74bea012389575c1d1ff15ce6ca80c2f"
+	piLinuxARM64SHA256        = "ab95c058a4651b5ff5d8c878e524edfb776263c7a444f325505f247c056eecfc"
+	PiSubagentUpstreamCommit  = "53fa77ccd8a279eb87e92294ef3687b03ff80112"
+	PiSubagentExtensionSHA256 = "18afb492907c7f65e8df15a7bc11ad910e1bb4ac61ffe65957fa24d3144ee40c"
 
 	maxObjectiveBytes = 128 << 10
 )
@@ -163,7 +172,10 @@ printf '%%s' %s | base64 --decode > "$config_root/models.json"
 printf '%%s' %s | base64 --decode > "$task_root/objective.txt"
 printf '%%s' %s | base64 --decode > "$task_root/spec.json"
 printf '%%s' %s | base64 --decode > "$worker_root/runner.go"
-chmod 600 "$config_root/models.json" "$task_root/objective.txt" "$task_root/spec.json" "$worker_root/runner.go"
+mkdir -p -- "$config_root/extensions/dirextalk-subagent" "$config_root/agents"
+printf '%%s' %s | base64 --decode > "$config_root/extensions/dirextalk-subagent/extension.ts"
+printf '%%s' %s | base64 --decode > "$config_root/agents/worker.md"
+chmod 600 "$config_root/models.json" "$task_root/objective.txt" "$task_root/spec.json" "$worker_root/runner.go" "$config_root/extensions/dirextalk-subagent/extension.ts" "$config_root/agents/worker.md"
 cd -- "$worker_root"
 go build -trimpath -ldflags='-s -w' -o "$worker_root/dirextalk-worker-runner" "$worker_root/runner.go"
 chmod 700 "$worker_root/dirextalk-worker-runner"
@@ -177,6 +189,8 @@ chmod 700 "$worker_root/dirextalk-worker-runner"
 		shellQuote(base64.StdEncoding.EncodeToString([]byte(objective))),
 		shellQuote(base64.StdEncoding.EncodeToString(spec)),
 		shellQuote(base64.StdEncoding.EncodeToString([]byte(remoteRunnerSource))),
+		shellQuote(base64.StdEncoding.EncodeToString([]byte(vendoredPiSubagentExtension))),
+		shellQuote(base64.StdEncoding.EncodeToString([]byte(vendoredPiSubagentWorkerAgent))),
 	)
 	digest := sha256.Sum256([]byte(script))
 	return RuntimeMaterial{
