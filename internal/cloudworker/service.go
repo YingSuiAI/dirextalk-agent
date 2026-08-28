@@ -185,15 +185,16 @@ type ProposeCommand struct {
 }
 
 type CreateOfferCommand struct {
-	IdempotencyKey       string
-	RequestDigest        string
-	TurnLeaseID          string
-	TurnLeaseEpoch       uint64
-	ExpectedTurnRevision uint64
-	Plan                 Plan
-	Execution            Execution
-	BindingJSON          json.RawMessage
-	TaskPayload          coretask.CloudWorkerTaskPayload
+	IdempotencyKey            string
+	RequestDigest             string
+	DeployedV185RequestDigest string
+	TurnLeaseID               string
+	TurnLeaseEpoch            uint64
+	ExpectedTurnRevision      uint64
+	Plan                      Plan
+	Execution                 Execution
+	BindingJSON               json.RawMessage
+	TaskPayload               coretask.CloudWorkerTaskPayload
 }
 
 func deterministicID(seed, key string) string {
@@ -349,17 +350,34 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		ConversationID: command.ConversationID, QuoteDigest: plan.Quote.Digest,
 		ExecutionDigest: plan.ExecutionDigest,
 	}
-	requestRaw, _ := json.Marshal(struct {
-		OwnerID, ConversationID, TurnID, Objective, UserPromptDigest, InputManifestDigest, ModelBindingDigest, AuthorizationBasisDigest string
-		GitHubBinding                                                                                                                   *GitHubBinding
-		AccountGeneration                                                                                                               uint64
-		ProposalReason                                                                                                                  ProposalReason
-		BudgetEvidence                                                                                                                  *LocalBudgetEvidence
-		WorkspaceMode                                                                                                                   WorkspaceMode
-		ComputeRequirements                                                                                                             ComputeRequirements
-	}{plan.OwnerID, plan.ConversationID, plan.TurnID, plan.Objective, plan.UserPromptDigest, plan.InputManifestDigest, plan.ModelAuthorization.BindingDigest, plan.AuthorizationBasisDigest, plan.GitHubBinding, plan.AccountGeneration, plan.ProposalReason, plan.LocalBudgetEvidence, plan.WorkspaceMode, command.ComputeRequirements})
-	sum := sha256.Sum256(requestRaw)
-	return s.store.CreateOffer(ctx, CreateOfferCommand{IdempotencyKey: command.IdempotencyKey, RequestDigest: hex.EncodeToString(sum[:]), TurnLeaseID: command.TurnLeaseID, TurnLeaseEpoch: command.TurnLeaseEpoch, ExpectedTurnRevision: command.ExpectedTurnRevision, Plan: plan, Execution: execution, BindingJSON: bindingRaw, TaskPayload: payload})
+	requestDigest, deployedV185RequestDigest := proposalRequestDigests(plan, command.ComputeRequirements)
+	return s.store.CreateOffer(ctx, CreateOfferCommand{IdempotencyKey: command.IdempotencyKey, RequestDigest: requestDigest, DeployedV185RequestDigest: deployedV185RequestDigest, TurnLeaseID: command.TurnLeaseID, TurnLeaseEpoch: command.TurnLeaseEpoch, ExpectedTurnRevision: command.ExpectedTurnRevision, Plan: plan, Execution: execution, BindingJSON: bindingRaw, TaskPayload: payload})
+}
+
+func proposalRequestDigests(plan Plan, requirements ComputeRequirements) (string, string) {
+	requestDigest := func(value Plan) string {
+		raw, _ := json.Marshal(struct {
+			OwnerID, ConversationID, TurnID, Objective, UserPromptDigest, InputManifestDigest, ModelBindingDigest, AuthorizationBasisDigest string
+			GitHubBinding                                                                                                                   any `json:",omitempty"`
+			AccountGeneration                                                                                                               uint64
+			ProposalReason                                                                                                                  ProposalReason
+			BudgetEvidence                                                                                                                  *LocalBudgetEvidence
+			WorkspaceMode                                                                                                                   WorkspaceMode
+			ComputeRequirements                                                                                                             ComputeRequirements
+		}{value.OwnerID, value.ConversationID, value.TurnID, value.Objective, value.UserPromptDigest, value.InputManifestDigest, value.ModelAuthorization.BindingDigest, value.AuthorizationBasisDigest, value.githubBindingDigestValue(), value.AccountGeneration, value.ProposalReason, value.LocalBudgetEvidence, value.WorkspaceMode, requirements})
+		sum := sha256.Sum256(raw)
+		return hex.EncodeToString(sum[:])
+	}
+	legacy := requestDigest(plan)
+	if plan.GitHubBinding == nil {
+		deployed := plan
+		deployed.v185NilGitHubDigest = true
+		if deployed.sealAuthorizationBasis() != nil {
+			return legacy, ""
+		}
+		return legacy, requestDigest(deployed)
+	}
+	return legacy, ""
 }
 
 // FakeQuoter is explicit test/dev infrastructure. It never performs an AWS

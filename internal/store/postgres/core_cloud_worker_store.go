@@ -84,7 +84,7 @@ func scanCloudWorkerPlan(row cloudWorkerRowScanner) (cloudworker.Plan, error) {
 	plan.PersistentWorkerReuse = private.PersistentWorkerReuse
 	plan.ReuseWorkerID = private.ReuseWorkerID
 	plan.GitHubBinding = private.GitHubBinding
-	if plan.Seal() != nil || plan.Revision != uint64(storedRevision) || plan.Digest != storedDigest ||
+	if plan.ValidatePersisted() != nil || plan.Revision != uint64(storedRevision) || plan.Digest != storedDigest ||
 		plan.ExecutionDigest != storedExecutionDigest || plan.AuthorizationBasisDigest != storedAuthorization ||
 		plan.Quote.Digest != storedQuote || plan.InputManifestDigest != storedManifest ||
 		plan.ModelAuthorization.BindingDigest != storedModel || plan.AWS.CredentialID != storedCredentialID ||
@@ -141,6 +141,9 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		command.TurnLeaseEpoch == 0 || command.ExpectedTurnRevision == 0 {
 		return cloudworker.Offer{}, cloudworker.ErrInvalid
 	}
+	if command.DeployedV185RequestDigest != "" && !coretask.ValidDigest(command.DeployedV185RequestDigest) {
+		return cloudworker.Offer{}, cloudworker.ErrInvalid
+	}
 	plan, execution := command.Plan, command.Execution
 	expectedExecutionState := cloudworker.StateWaitingUser
 	requiresConfirmation := plan.RequiresWorkerCreationConfirmation()
@@ -194,7 +197,8 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	var replayRaw []byte
 	err = tx.QueryRow(ctx, `SELECT request_digest,response_json FROM core_cloud_worker_offer_replays WHERE idempotency_key=$1 FOR UPDATE`, command.IdempotencyKey).Scan(&replayDigest, &replayRaw)
 	if err == nil {
-		if replayDigest != command.RequestDigest {
+		historicalV185Replay := replayDigest == command.DeployedV185RequestDigest && command.DeployedV185RequestDigest != ""
+		if replayDigest != command.RequestDigest && !historicalV185Replay {
 			return cloudworker.Offer{}, cloudworker.ErrConflict
 		}
 		var replay cloudWorkerReplay
@@ -204,6 +208,9 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 		offer, loadErr := s.offerTx(ctx, tx, replay.PlanID)
 		if loadErr != nil {
 			return cloudworker.Offer{}, loadErr
+		}
+		if historicalV185Replay && !offer.Plan.IsV185NilGitHubEncoding() {
+			return cloudworker.Offer{}, cloudworker.ErrConflict
 		}
 		if err = tx.Commit(ctx); err != nil {
 			return cloudworker.Offer{}, err

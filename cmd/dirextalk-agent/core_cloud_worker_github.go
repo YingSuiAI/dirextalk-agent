@@ -16,12 +16,25 @@ func (authority *cloudWorkerGitHubAuthority) ResolveCurrentGitHubBinding(ctx con
 	if authority == nil || authority.service == nil || generation == 0 {
 		return nil, cloudworker.ErrInvalid
 	}
+	config, err := authority.service.Get(ctx, ownerID, int64(generation))
+	if errors.Is(err, coregithub.ErrNotConfigured) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errors.Join(cloudworker.ErrStaleAuthorization, err)
+	}
+	if !config.Enabled || !config.GitHubTokenConfigured {
+		return nil, nil
+	}
 	resolved, err := authority.service.Resolve(ctx, ownerID, int64(generation))
 	if errors.Is(err, coregithub.ErrNotConfigured) || errors.Is(err, coregithub.ErrDisabled) {
 		return nil, nil
 	}
-	if err != nil || !resolved.Enabled {
+	if err != nil {
 		return nil, errors.Join(cloudworker.ErrStaleAuthorization, err)
+	}
+	if !resolved.Enabled {
+		return nil, nil
 	}
 	binding := &cloudworker.GitHubBinding{OwnerID: resolved.OwnerID, AccountGeneration: uint64(resolved.AccountGeneration), ConfigRevision: uint64(resolved.Revision), CredentialVersion: uint64(resolved.CredentialVersion)}
 	if err := binding.Seal(); err != nil {

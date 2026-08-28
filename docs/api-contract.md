@@ -34,6 +34,11 @@ binding states that GitHub repository access will be available; it never shows
 or carries a token. The binding is versioned owner authorization, not a secret
 grant: Agent rejects execution if the exact enabled GitHub config or credential
 version no longer exists at task start, including retained Worker reuse.
+Plans without that private binding never resolve GitHub configuration, acquire
+a PAT, or gain repository access later. In-place upgrades accept the two
+released unbound internal digest encodings from v1.0.184 and v1.0.185 without
+rewriting the plan or its confirmation; bound plans retain only their exact
+version-fenced encoding.
 
 Registration means only that an authenticated RPC endpoint is present; it does
 not publish a client capability or prove that an optional provider is ready.
@@ -1010,5 +1015,6 @@ owner, account generation and immutable config/credential revision immediately
 before each MCP request; no token is copied to a process environment or Worker.
 
 Core is a fresh-state service with no legacy public-API or database
-compatibility path. Any Protobuf or schema change updates this contract and
-focused boundary tests in the same change.
+compatibility path, except the explicit internal Cloud Worker v1.0.184/v1.0.185
+unbound-plan encoding support above. Any Protobuf or schema change updates this
+contract and focused boundary tests in the same change.

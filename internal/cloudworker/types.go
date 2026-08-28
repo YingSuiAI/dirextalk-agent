@@ -246,6 +246,31 @@ type Plan struct {
 	ExecutionDigest          string               `json:"execution_digest"`
 	CreatedAt                time.Time            `json:"created_at"`
 	UpdatedAt                time.Time            `json:"updated_at"`
+	// v185NilGitHubDigest marks the short-lived, unexported encoding emitted by
+	// the deployed v1.0.185 build for an otherwise ordinary plan. New unbound
+	// plans retain the pre-GitHub encoding; only persisted rows whose complete
+	// immutable digests prove this historical form may set the bit while loading.
+	v185NilGitHubDigest bool
+}
+
+func (p Plan) usesGitHubDigestFormat() bool {
+	return p.GitHubBinding != nil || p.v185NilGitHubDigest
+}
+
+// githubBindingDigestValue preserves the two released JSON encodings: a nil
+// interface omits the field (ordinary plans), while a typed nil pointer emits
+// the v1.0.185 null field. A real pointer is the bound GitHub form.
+func (p Plan) githubBindingDigestValue() any {
+	if !p.usesGitHubDigestFormat() {
+		return nil
+	}
+	return p.GitHubBinding
+}
+
+// IsV185NilGitHubEncoding reports the one historical, unbound persisted form.
+// It is intentionally derived only by ValidatePersisted, never from callers.
+func (p Plan) IsV185NilGitHubEncoding() bool {
+	return p.GitHubBinding == nil && p.v185NilGitHubDigest
 }
 
 func (p Plan) RequiresWorkerCreationConfirmation() bool {
@@ -502,6 +527,9 @@ func (p *Plan) Seal() error {
 	if p == nil {
 		return ErrInvalid
 	}
+	if p.v185NilGitHubDigest && p.GitHubBinding != nil {
+		return ErrInvalid
+	}
 	p.OwnerID = strings.TrimSpace(p.OwnerID)
 	p.Objective = strings.TrimSpace(p.Objective)
 	p.ObjectiveSummary = strings.TrimSpace(p.ObjectiveSummary)
@@ -540,12 +568,12 @@ func (p *Plan) Seal() error {
 		BudgetEvidence                                                       *LocalBudgetEvidence
 		WorkspaceMode                                                        WorkspaceMode
 		ModelAuthorization                                                   ModelAuthorization
-		GitHubBinding                                                        *GitHubBinding
+		GitHubBinding                                                        any `json:",omitempty"`
 		AWS                                                                  AWSBinding
 		Compute                                                              ComputeSpec
 		Limits                                                               Limits
 		QuoteDigest                                                          string
-	}{p.OwnerID, p.PlanID, p.ExecutionID, p.ConversationID, p.TurnID, p.AccountGeneration, p.Revision, p.RecipeID, p.Adapter, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.GitHubBinding, p.AWS, p.Compute, p.Limits, p.Quote.Digest}
+	}{p.OwnerID, p.PlanID, p.ExecutionID, p.ConversationID, p.TurnID, p.AccountGeneration, p.Revision, p.RecipeID, p.Adapter, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.githubBindingDigestValue(), p.AWS, p.Compute, p.Limits, p.Quote.Digest}
 	var executionDigestBasis any = struct {
 		Basis      any
 		ServerName string
@@ -570,6 +598,31 @@ func (p *Plan) Seal() error {
 		ExecutionDigest, TaskID, ConfirmationID string
 	}{p.ExecutionDigest, p.TaskID, p.ConfirmationID})
 	return nil
+}
+
+// ValidatePersisted verifies a complete immutable plan encoding without
+// rewriting it. v1.0.185 briefly included a nil GitHub binding in otherwise
+// ordinary digests. That deployed encoding is accepted only after every plan
+// digest agrees; explicit bindings always use the GitHub-aware encoding.
+func (p *Plan) ValidatePersisted() error {
+	if p == nil {
+		return ErrInvalid
+	}
+	storedDigest, storedExecution, storedAuthorization := p.Digest, p.ExecutionDigest, p.AuthorizationBasisDigest
+	for _, historicalV185Nil := range []bool{false, true} {
+		if historicalV185Nil && p.GitHubBinding != nil {
+			continue
+		}
+		candidate := *p
+		candidate.v185NilGitHubDigest = historicalV185Nil
+		if err := candidate.Seal(); err != nil || candidate.Digest != storedDigest ||
+			candidate.ExecutionDigest != storedExecution || candidate.AuthorizationBasisDigest != storedAuthorization {
+			continue
+		}
+		*p = candidate
+		return nil
+	}
+	return ErrConflict
 }
 
 func (p *Plan) sealAuthorizationBasis() error {
@@ -626,11 +679,11 @@ func (p *Plan) sealAuthorizationBasis() error {
 		BudgetEvidence                                         *LocalBudgetEvidence
 		WorkspaceMode                                          WorkspaceMode
 		ModelAuthorization                                     ModelAuthorization
-		GitHubBinding                                          *GitHubBinding
+		GitHubBinding                                          any `json:",omitempty"`
 		AWS                                                    AWSBinding
 		Compute                                                ComputeSpec
 		Limits                                                 Limits
-	}{p.OwnerID, p.ConversationID, p.TurnID, p.RecipeID, p.Adapter, p.AccountGeneration, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.GitHubBinding, p.AWS, p.Compute, p.Limits}
+	}{p.OwnerID, p.ConversationID, p.TurnID, p.RecipeID, p.Adapter, p.AccountGeneration, p.ObjectiveDigest, p.UserPromptDigest, p.InputManifestDigest, p.ProposalReason, p.LocalBudgetEvidence, p.WorkspaceMode, p.ModelAuthorization, p.githubBindingDigestValue(), p.AWS, p.Compute, p.Limits}
 	var authorizationDigestBasis any = struct {
 		Basis      any
 		ServerName string
@@ -807,6 +860,13 @@ func BindingForPlan(plan Plan) (coreconfirmation.Binding, error) {
 	if err != nil {
 		return coreconfirmation.Binding{}, err
 	}
+	permissionDigest := coreconfirmation.Digest(plan.ModelAuthorization.BindingDigest)
+	if plan.usesGitHubDigestFormat() {
+		permissionDigest = coreconfirmation.Digest(digestValue(struct {
+			ModelBindingDigest string
+			GitHubBinding      *GitHubBinding
+		}{plan.ModelAuthorization.BindingDigest, plan.GitHubBinding}))
+	}
 	binding := coreconfirmation.Binding{
 		OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration, OperationDomain: OperationDomain,
 		TargetID: plan.ExecutionID, TargetRevision: int64(plan.Revision),
@@ -819,14 +879,11 @@ func BindingForPlan(plan Plan) (coreconfirmation.Binding, error) {
 			}
 			return "persistent_ssh_worker"
 		}(), SourceVersion: plan.RecipeID,
-		SourceCommit:    "",
-		ContentDigest:   coreconfirmation.Digest(plan.ObjectiveDigest),
-		ManifestDigest:  coreconfirmation.Digest(plan.InputManifestDigest),
-		ExecutionDigest: coreconfirmation.Digest(plan.ExecutionDigest),
-		PermissionDigest: coreconfirmation.Digest(digestValue(struct {
-			ModelBindingDigest string
-			GitHubBinding      *GitHubBinding
-		}{plan.ModelAuthorization.BindingDigest, plan.GitHubBinding})),
+		SourceCommit:      "",
+		ContentDigest:     coreconfirmation.Digest(plan.ObjectiveDigest),
+		ManifestDigest:    coreconfirmation.Digest(plan.InputManifestDigest),
+		ExecutionDigest:   coreconfirmation.Digest(plan.ExecutionDigest),
+		PermissionDigest:  permissionDigest,
 		ParameterDigest:   coreconfirmation.Digest(plan.Digest),
 		NetworkDigest:     coreconfirmation.Digest(digestValue([]string{})),
 		SecretGrantDigest: coreconfirmation.Digest(digestValue([]string{})),
