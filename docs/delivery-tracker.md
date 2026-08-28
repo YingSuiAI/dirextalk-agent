@@ -9,6 +9,11 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Cloud Worker GitHub access remains opt-in: absent, disabled, or tokenless
+  frontend configuration creates an ordinary unbound plan and never blocks its
+  proposal, confirmation, reuse, or start. The v1.0.184 and deployed v1.0.185
+  unbound digest/confirmation encodings are both verified in-place, while an
+  explicitly bound plan remains strictly revision-fenced.
 - Core-only `dirextalk-agent` entrypoint with `migrate` and `serve`.
 - TLS 1.3 gRPC authentication, health/reflection, capability discovery, and
   PostgreSQL-backed profiles, conversations, Tasks, events, schedules,

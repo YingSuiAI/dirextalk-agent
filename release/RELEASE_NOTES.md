@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.186
+
+1. Preserve existing Worker plans, confirmations, and proposal replays across upgrades from v1.0.184 and v1.0.185 without rewriting historical authorization.
+2. Keep GitHub optional: unconfigured or disabled GitHub does not block ordinary Worker tasks or resolve their credentials, while explicitly bound tasks retain their credential-version checks.
+
 ## v1.0.185
 
 1. Add encrypted, owner- and revision-fenced GitHub PAT configuration, official read-only GitHub MCP browsing, and confirmed Cloud Worker Git/PR credential delivery.

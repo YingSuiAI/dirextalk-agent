@@ -20,6 +20,13 @@ import (
 
 type intrinsicStore struct{ commands []CreateOfferCommand }
 
+type intrinsicNoGitHubBinding struct{ calls int }
+
+func (resolver *intrinsicNoGitHubBinding) ResolveCurrentGitHubBinding(context.Context, string, uint64) (*GitHubBinding, error) {
+	resolver.calls++
+	return nil, nil
+}
+
 type intrinsicComputeSelector struct{ compute ComputeSpec }
 
 func (selector intrinsicComputeSelector) SelectCompute(context.Context, AWSBinding, ComputeRequirements) (ComputeSpec, error) {
@@ -754,6 +761,21 @@ func TestIntrinsicIsCoreOwnedStrictAndBindsDurableTurn(t *testing.T) {
 	}
 	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "x", "workspace_mode": "none", "owner_id": "forged", "account_generation": 99}, "call-2"); !errors.Is(err, coreconversation.ErrInvalid) {
 		t.Fatalf("forged trusted fields accepted: %v", err)
+	}
+}
+
+func TestProposeIntrinsicKeepsUnconfiguredGitHubOutOfWorkerPlan(t *testing.T) {
+	evidence := &LocalBudgetEvidence{BudgetID: uuid.NewString(), Revision: 1, Digest: digestValue("local-capability")}
+	intrinsic, store, lease := intrinsicFixture(t, "请明确使用 AWS Cloud Worker 执行这个任务，不要在本地执行。", nil, intrinsicBudget{evidence: evidence})
+	resolver := &intrinsicNoGitHubBinding{}
+	if err := intrinsic.EnableGitHubBinding(resolver); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeIntrinsic(t, intrinsic, lease, map[string]any{"objective": "analyze the repository", "workspace_mode": "none"}, "unconfigured-github"); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.calls != 1 || len(store.commands) != 1 || store.commands[0].Plan.GitHubBinding != nil {
+		t.Fatalf("calls=%d commands=%+v", resolver.calls, store.commands)
 	}
 }
 
