@@ -22,6 +22,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/execution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/source"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coregithub"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreserver"
@@ -448,7 +449,7 @@ func digestBytes(b []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtensionComposition, error) {
+func composeCoreExtension(cfg config.Config, store *postgres.Store, github *coregithub.Service) (*coreExtensionComposition, error) {
 	if !cfg.CoreExtensionEnabled {
 		return nil, nil
 	}
@@ -499,7 +500,10 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 		{coreextension.SourceSmithery, func(c source.HTTPConfig) (coreextension.SourceAdapter, error) { return source.NewSmithery(c) }},
 		{coreextension.SourceGlama, func(c source.HTTPConfig) (coreextension.SourceAdapter, error) { return source.NewGlama(c) }},
 		{coreextension.SourceGitHub, func(c source.HTTPConfig) (coreextension.SourceAdapter, error) {
-			return source.NewGitHubWithNodeResolver(c, nodeResolver)
+			if github == nil {
+				return nil, coreextension.ErrInvalid
+			}
+			return githubSourceAdapter{service: github, node: nodeResolver}, nil
 		}},
 		{coreextension.SourceNPM, func(c source.HTTPConfig) (coreextension.SourceAdapter, error) { return source.NewNPM(c, nodeResolver) }},
 		{coreextension.SourceSkillsSh, func(c source.HTTPConfig) (coreextension.SourceAdapter, error) { return source.NewSkillsSh(c) }},

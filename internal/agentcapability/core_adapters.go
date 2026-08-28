@@ -26,6 +26,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coregithub"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreimagetool"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
@@ -59,6 +60,7 @@ type CoreBindings struct {
 	ExecutionV2        *coreexecutionv2.Service
 	AWS                *coreaws.Service
 	WebSearch          *corewebsearch.Service
+	GitHub             *coregithub.Service
 	TextTools          *coretexttool.Service
 	ImageTools         *coreimagetool.Service
 	// Voice and Misc are optional composition ports.  The Core registry owns
@@ -89,6 +91,9 @@ func NewCoreRegistry(bindings CoreBindings) *Registry {
 	}
 	if bindings.WebSearch != nil {
 		r.Register(NewCoreWebSearchCapability(bindings.WebSearch))
+	}
+	if bindings.GitHub != nil {
+		r.Register(NewCoreGitHubCapability(bindings.GitHub))
 	}
 	if bindings.TextTools != nil {
 		r.Register(NewCoreTextToolCapability(bindings.TextTools))

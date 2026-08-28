@@ -978,6 +978,17 @@ databases, credentials, and execution histories.
 
 ## Contract changes
 
+### GitHub configuration
+
+`agent.github.v1` owns an optional GitHub PAT for one authenticated owner and
+account generation. `get_config` uses `agent:mcp:read`; `update_config` and
+`test` use `agent:mcp:write`. Reads expose only `enabled`,
+`github_token_configured`, a non-secret `github_token_hint`, revision and
+timestamps. Updates are idempotent and compare `expected_revision`; the PAT is
+write-only and may only be removed through `github_token_clear`. The service
+encrypts the PAT with AAD bound to owner, generation, credential version and
+config revision, and tests it against GitHub's authenticated identity endpoint.
+
 Core is a fresh-state service with no legacy public-API or database
 compatibility path. Any Protobuf or schema change updates this contract and
 focused boundary tests in the same change.

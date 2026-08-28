@@ -53,10 +53,14 @@ type HTTPConfig struct {
 	Timeout      time.Duration
 	MaxBodyBytes int64
 	BearerToken  string
-	AllowHTTP    bool
-	TestOnly     bool
-	Resolver     Resolver
-	Dialer       DialControl
+	// TokenDispatcher supplies a credential only around one HTTP request. It is
+	// deliberately a callback rather than a stored token so owner-bound secret
+	// services can revalidate their revision immediately before each dispatch.
+	TokenDispatcher func(context.Context, func(string) error) error
+	AllowHTTP       bool
+	TestOnly        bool
+	Resolver        Resolver
+	Dialer          DialControl
 }
 
 // Resolver is injectable only for bounded tests; production uses the system
@@ -69,13 +73,14 @@ type DialControl interface {
 }
 
 type client struct {
-	base     *url.URL
-	http     *http.Client
-	timeout  time.Duration
-	max      int64
-	token    string
-	resolver Resolver
-	testOnly bool
+	base          *url.URL
+	http          *http.Client
+	timeout       time.Duration
+	max           int64
+	token         string
+	dispatchToken func(context.Context, func(string) error) error
+	resolver      Resolver
+	testOnly      bool
 }
 
 func newClient(cfg HTTPConfig) (*client, error) {
@@ -144,7 +149,7 @@ func newClient(cfg HTTPConfig) (*client, error) {
 	if cfg.MaxBodyBytes <= 0 {
 		cfg.MaxBodyBytes = DefaultMaxBody
 	}
-	return &client{base: u, http: &copyClient, timeout: cfg.Timeout, max: cfg.MaxBodyBytes, token: cfg.BearerToken, resolver: cfg.Resolver, testOnly: cfg.TestOnly || cfg.AllowHTTP}, nil
+	return &client{base: u, http: &copyClient, timeout: cfg.Timeout, max: cfg.MaxBodyBytes, token: cfg.BearerToken, dispatchToken: cfg.TokenDispatcher, resolver: cfg.Resolver, testOnly: cfg.TestOnly || cfg.AllowHTTP}, nil
 }
 func newProviderClient(cfg HTTPConfig, authority string) (*client, error) {
 	if !cfg.TestOnly {
@@ -160,6 +165,25 @@ func newProviderClient(cfg HTTPConfig, authority string) (*client, error) {
 }
 
 func (c *client) get(ctx context.Context, p string, query url.Values) ([]byte, error) {
+	var result []byte
+	run := func(token string) error {
+		var err error
+		result, err = c.getWithToken(ctx, p, query, token)
+		return err
+	}
+	if c.dispatchToken != nil {
+		if err := c.dispatchToken(ctx, run); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+	if err := run(c.token); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *client) getWithToken(ctx context.Context, p string, query url.Values, token string) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -173,8 +197,8 @@ func (c *client) get(ctx context.Context, p string, query url.Values) ([]byte, e
 		return nil, fmt.Errorf("source request failed")
 	}
 	req.Header.Set("Accept", "application/json")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
