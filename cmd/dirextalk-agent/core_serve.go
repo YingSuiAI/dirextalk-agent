@@ -229,7 +229,7 @@ func serveCore(cfg config.Config) error {
 	taskExecutor.SetScheduledAgentHandler(scheduledAgentTaskHandler(conversation, store))
 	var cloudComposition *coreCloudWorkerComposition
 	if retainedWorkers != nil {
-		cloudComposition, err = composeDynamicCloudWorkerProposal(cfg, store, conversationStore, retainedWorkers.store)
+		cloudComposition, err = composeDynamicCloudWorkerProposal(cfg, store, conversationStore, retainedWorkers.store, githubService)
 	}
 	if err != nil {
 		return fmt.Errorf("initialize Cloud Worker composition: %w", err)

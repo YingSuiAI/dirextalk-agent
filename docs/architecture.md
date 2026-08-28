@@ -122,6 +122,15 @@ fails closed rather than falling back in-process. A Cloud Worker receives no
 Agent database, AWS secret, local MCP registry, Skills registry, or Extension
 Runner. The task's selected model credential is supplied only to the remote Pi
 process and is not written to the Worker script, logs, status, or artifacts.
+When enabled, a Worker plan retains only a private non-secret GitHub binding
+(owner/generation, configuration and credential versions, and digest).
+Immediately before every task start, including retained-Worker reuse, Agent
+re-resolves that exact binding and fails closed after rotation, clear, disable,
+or deprovision. The PAT crosses SSH stdin once, is task-scoped mode 0600, is
+available only through a github.com Git helper and process-local `gh` wrapper,
+and is removed on completion, error, or cancellation; it never enters durable
+plans, task specs, logs, scripts, artifacts, command arguments, or Pi's
+inherited environment.
 Natural-language objectives are passed to Pi as input data and are never
 executed as shell source. The Agent authenticates each outbound SSH connection
 with Agent-owned SSH key material and copies bounded results back to its own

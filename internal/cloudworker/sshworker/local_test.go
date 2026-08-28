@@ -332,7 +332,7 @@ func sshRequestFixture(t *testing.T, sink ResultSink) SSHRequest {
 	return SSHRequest{
 		ExecutionID: "execution-recovery", Host: "203.0.113.20", User: "ec2-user",
 		PrivateKeyPath: filepath.Join(t.TempDir(), "key"), WorkerScript: []byte("bootstrap"), WorkerScriptSHA256: "unused",
-		Runtime:           RuntimeProtocol{TaskID: "execution-recovery", encodedModelKey: "c2VjcmV0"},
+		Runtime:           RuntimeProtocol{TaskID: "execution-recovery", secretEnvelope: encodeRuntimeSecretEnvelope("secret", "")},
 		MaxWorkspaceBytes: 1 << 20, MaxResultBytes: 1 << 20, Sink: sink, Resume: true,
 	}
 }

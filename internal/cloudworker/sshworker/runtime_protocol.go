@@ -36,17 +36,17 @@ type RuntimeCommand struct {
 // Start detaches the workload and returns immediately. Status, Log, Artifact,
 // and ServerStatus may be called after any SSH reconnect.
 type RuntimeProtocol struct {
-	TaskID          string
-	encodedModelKey string
+	TaskID         string
+	secretEnvelope string
 }
 
 func (protocol RuntimeProtocol) Start() (RuntimeCommand, error) {
-	if !protocol.valid() || protocol.encodedModelKey == "" {
+	if !protocol.valid() || protocol.secretEnvelope == "" {
 		return RuntimeCommand{}, ErrInvalid
 	}
 	return RuntimeCommand{
 		Shell: runnerCommand(RuntimeStart, protocol.TaskID),
-		Stdin: []byte(protocol.encodedModelKey + "\n"),
+		Stdin: []byte(protocol.secretEnvelope + "\n"),
 	}, nil
 }
 

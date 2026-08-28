@@ -87,6 +87,7 @@ func stop(taskID string) error {
 	if current.PID > 0 {
 		if killErr := syscall.Kill(-current.PID, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, syscall.ESRCH) { stopErr = errors.Join(stopErr, killErr) }
 	}
+	cleanupGitHubRuntime(filepath.Join(root, "tasks", taskID))
 	current.Phase, current.ExitCode, current.FinishedAt = "failed", 130, time.Now().UTC().Format(time.RFC3339)
 	if err = saveStatus(taskID, current); err != nil { return errors.Join(stopErr, err) }
 	if stopErr != nil { return stopErr }
@@ -101,9 +102,15 @@ func start(taskID string) error {
 	}
 	encoded, err := bufio.NewReader(io.LimitReader(os.Stdin, 64<<10)).ReadString('\n')
 	if err != nil && err != io.EOF { return err }
-	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
-	if err != nil || len(key) == 0 { return errors.New("missing model credential") }
-	defer clear(key)
+	if len(encoded) == 0 || len(encoded) >= 64<<10 { return errors.New("invalid runtime secret envelope") }
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil || len(raw) == 0 || len(raw) > 24<<10 { return errors.New("missing runtime secret envelope") }
+	defer clear(raw)
+	var envelope struct { Version int ` + "`json:\"version\"`" + `; ModelAPIKey string ` + "`json:\"model_api_key\"`" + `; GitHubPAT string ` + "`json:\"github_pat\"`" + ` }
+	decoder := json.NewDecoder(strings.NewReader(string(raw))); decoder.DisallowUnknownFields()
+	if decoder.Decode(&envelope) != nil || decoder.Decode(&struct{}{}) != io.EOF || envelope.Version != 1 || strings.TrimSpace(envelope.ModelAPIKey) == "" || len(envelope.ModelAPIKey) > 16384 || len(envelope.GitHubPAT) > 4096 { return errors.New("invalid runtime secret envelope") }
+	key := []byte(envelope.ModelAPIKey); defer clear(key)
+	if envelope.GitHubPAT != "" { pat := []byte(envelope.GitHubPAT); defer clear(pat); if err := os.WriteFile(taskPath(taskID, "github-pat"), pat, 0600); err != nil { return err } }
 	logFile, err := os.OpenFile(taskPath(taskID, "runner.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil { return err }
 	defer logFile.Close()
@@ -120,8 +127,9 @@ func start(taskID string) error {
 
 func run(taskID string) error {
 	spec, err := loadSpec(taskID); if err != nil { return err }
-	current, err := awaitStarted(taskID, os.Getpid()); if err != nil { return err }
 	taskRoot := filepath.Join(root, "tasks", taskID)
+	defer cleanupGitHubRuntime(taskRoot)
+	current, err := awaitStarted(taskID, os.Getpid()); if err != nil { return err }
 	workspaceRoot, artifactRoot := filepath.Join(taskRoot, "workspace"), filepath.Join(taskRoot, "artifacts")
 	if err := requireDirectory(workspaceRoot); err != nil { return finish(taskID, current, 1, err) }
 	if err := os.MkdirAll(artifactRoot, 0700); err != nil { return finish(taskID, current, 1, err) }
@@ -148,7 +156,8 @@ func run(taskID string) error {
 	defer objective.Close()
 	command.Dir = workspaceRoot; command.Stdin = objective
 	command.Stdout = io.MultiWriter(os.Stdout, report); command.Stderr = os.Stderr
-	command.Env = append(os.Environ(), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb")
+	command.Env = append(withoutGitHubTokenEnv(os.Environ()), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb")
+	if err := configureGitHubRuntime(taskRoot, command); err != nil { return finish(taskID, current, 1, err) }
 	err = command.Run(); code := 0
 	if errors.Is(runContext.Err(), context.DeadlineExceeded) { code, err = 124, errors.New("maximum runtime exceeded")
 	} else if err != nil { code = 1; var exit *exec.ExitError; if errors.As(err, &exit) { code = exit.ExitCode() } }
@@ -202,6 +211,23 @@ func finish(taskID string, current taskStatus, code int, runErr error) error {
 	if err := saveStatus(taskID, current); err != nil { return err }
 	return runErr
 }
+
+func withoutGitHubTokenEnv(environment []string) []string { result := make([]string, 0, len(environment)); for _, value := range environment { if strings.HasPrefix(value, "GH_TOKEN=") || strings.HasPrefix(value, "GITHUB_TOKEN=") { continue }; result = append(result, value) }; return result }
+
+func configureGitHubRuntime(taskRoot string, command *exec.Cmd) error {
+	patPath := filepath.Join(taskRoot, "github-pat")
+	info, err := os.Stat(patPath); if os.IsNotExist(err) { return nil }; if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 { return errors.New("invalid GitHub credential") }
+	bin := filepath.Join(taskRoot, "github-bin"); if err := os.MkdirAll(bin, 0700); err != nil { return err }
+	helper := filepath.Join(bin, "git-credential-github"); wrapper := filepath.Join(bin, "gh")
+	helperBody := "#!/bin/sh\nprotocol= host=\nwhile IFS='=' read -r key value; do case $key in protocol) protocol=$value ;; host) host=$value ;; esac; done\n[ \"$protocol\" = https ] && [ \"$host\" = github.com ] || exit 0\nprintf 'username=x-access-token\\npassword='\ncat " + strconv.Quote(patPath) + "\nprintf '\\n'\n"
+	wrapperBody := "#!/bin/sh\ntoken=$(cat " + strconv.Quote(patPath) + ") || exit 1\nexec env GH_TOKEN=\"$token\" GH_PROMPT_DISABLED=1 /usr/bin/gh \"$@\"\n"
+	configBody := "[credential \\\"https://github.com\\\"]\n\thelper = " + helper + "\n[core]\n\taskPass = /bin/false\n"
+	if err := os.WriteFile(helper, []byte(helperBody), 0700); err != nil { return err }; if err := os.WriteFile(wrapper, []byte(wrapperBody), 0700); err != nil { return err }; config := filepath.Join(taskRoot, "gitconfig"); if err := os.WriteFile(config, []byte(configBody), 0600); err != nil { return err }
+	command.Env = append(command.Env, "PATH="+bin+":"+os.Getenv("PATH"), "GIT_CONFIG_GLOBAL="+config, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=/bin/false")
+	return nil
+}
+
+func cleanupGitHubRuntime(taskRoot string) { for _, path := range []string{filepath.Join(taskRoot, "github-pat"), filepath.Join(taskRoot, "gitconfig"), filepath.Join(taskRoot, "github-bin", "git-credential-github"), filepath.Join(taskRoot, "github-bin", "gh")} { _ = os.Remove(path) }; _ = os.Remove(filepath.Join(taskRoot, "github-bin")) }
 
 func status(taskID string) error {
 	value, err := loadStatus(taskID)

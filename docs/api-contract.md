@@ -29,6 +29,12 @@ Cloud Workers expose no inbound Agent gRPC service. Their lifecycle and task
 observation use Agent-initiated SSH only; Flutter uses the ticket-authenticated
 same-origin Agent HTTP data plane.
 
+An owner confirmation for a Cloud Worker whose private plan carries a GitHub
+binding states that GitHub repository access will be available; it never shows
+or carries a token. The binding is versioned owner authorization, not a secret
+grant: Agent rejects execution if the exact enabled GitHub config or credential
+version no longer exists at task start, including retained Worker reuse.
+
 Registration means only that an authenticated RPC endpoint is present; it does
 not publish a client capability or prove that an optional provider is ready.
 At HEAD, `CoreExecutionV2Service` has a Protobuf/adapter seam but is not

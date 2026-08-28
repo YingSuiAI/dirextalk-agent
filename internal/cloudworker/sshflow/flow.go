@@ -40,6 +40,7 @@ type Request struct {
 	WorkloadKind      cloudworker.WorkloadKind
 	Service           *cloudworker.ServiceSpec
 	AWS               cloudworker.AWSBinding
+	GitHubBinding     *cloudworker.GitHubBinding
 	Compute           cloudworker.ComputeSpec
 	Limits            cloudworker.Limits
 	InputManifest     cloudworker.InputManifest
@@ -116,7 +117,8 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 		TurnID: run.Plan.TurnID, ExecutionID: run.Plan.ExecutionID, ServerName: run.Plan.ServerName, Objective: run.Plan.Objective,
 		WorkloadKind: run.Plan.WorkloadKind, Service: run.Plan.Service,
 		AWS: run.Plan.AWS, Compute: run.Plan.Compute,
-		Limits: run.Plan.Limits, InputManifest: run.Plan.InputManifest,
+		GitHubBinding: run.Plan.GitHubBinding,
+		Limits:        run.Plan.Limits, InputManifest: run.Plan.InputManifest,
 		WorkspaceMode:     run.Plan.WorkspaceMode,
 		ConfirmationProof: run.ConfirmationProof, ModelSnapshot: run.ModelSnapshot,
 		ReuseOnly: run.Plan.PersistentWorkerReuse, ReuseWorkerID: run.Plan.ReuseWorkerID,

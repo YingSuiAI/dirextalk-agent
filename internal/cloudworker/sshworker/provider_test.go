@@ -1329,7 +1329,7 @@ func discoveryFixture() Discovery {
 func requestFixture() ExecuteRequest {
 	script := []byte("echo ok")
 	sum := sha256.Sum256(script)
-	return ExecuteRequest{ExecutionID: "execution-1", Authority: authorityFixture(), Credential: credentialFixture(), Confirmation: Confirmation{Confirmed: true, Proof: "confirmation-1"}, Discovery: discoveryFixture(), InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 16, WorkerScript: script, WorkerScriptSHA256: hex.EncodeToString(sum[:]), Runtime: RuntimeProtocol{TaskID: "execution-1", encodedModelKey: "c2VjcmV0"}, MaxWorkspaceBytes: 1 << 20, MaxResultBytes: 1 << 20, Sink: &fakeSink{}}
+	return ExecuteRequest{ExecutionID: "execution-1", Authority: authorityFixture(), Credential: credentialFixture(), Confirmation: Confirmation{Confirmed: true, Proof: "confirmation-1"}, Discovery: discoveryFixture(), InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 16, WorkerScript: script, WorkerScriptSHA256: hex.EncodeToString(sum[:]), Runtime: RuntimeProtocol{TaskID: "execution-1", secretEnvelope: encodeRuntimeSecretEnvelope("secret", "")}, MaxWorkspaceBytes: 1 << 20, MaxResultBytes: 1 << 20, Sink: &fakeSink{}}
 }
 
 var _ = bytes.Clone

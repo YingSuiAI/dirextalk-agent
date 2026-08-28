@@ -82,6 +82,12 @@ type IntrinsicBudgetResolver interface {
 	ResolveCloudWorkerBudgetEvidence(context.Context, coreconversation.TurnLease) (*LocalBudgetEvidence, error)
 }
 
+// GitHubBindingResolver provides the current optional GitHub credential
+// identity without exposing a PAT to proposal compilation.
+type GitHubBindingResolver interface {
+	ResolveCurrentGitHubBinding(context.Context, string, uint64) (*GitHubBinding, error)
+}
+
 // RetainedWorkerInventoryResolver returns a live owner-scoped view of
 // persistent Workers. The inventory intrinsic bounds its model-facing result.
 type RetainedWorkerInventoryResolver interface {
@@ -271,11 +277,20 @@ type ProposeIntrinsic struct {
 	owners      IntrinsicOwnerResolver
 	manifests   IntrinsicManifestResolver
 	budgets     IntrinsicBudgetResolver
+	github      GitHubBindingResolver
 	workers     RetainedWorkerInventoryResolver
 	manager     RetainedWorkerManager
 	turns       IntrinsicTurnCommitter
 	domains     RetainedWorkerDomainManager
 	domainTurns IntrinsicTurnCommitter
+}
+
+func (p *ProposeIntrinsic) EnableGitHubBinding(resolver GitHubBindingResolver) error {
+	if p == nil || resolver == nil {
+		return ErrInvalid
+	}
+	p.github = resolver
+	return nil
 }
 
 func NewProposeIntrinsic(service *Service, owners IntrinsicOwnerResolver, manifests IntrinsicManifestResolver, budgets IntrinsicBudgetResolver) (*ProposeIntrinsic, error) {
@@ -577,6 +592,13 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 	if err != nil || strings.TrimSpace(owner.OwnerID) != strings.TrimSpace(bound.Turn.OwnerID) || owner.AccountGeneration != bound.Turn.AccountGeneration {
 		return coreconversation.IntrinsicExecutionResult{}, ErrInvalid
 	}
+	var githubBinding *GitHubBinding
+	if p.github != nil {
+		githubBinding, err = p.github.ResolveCurrentGitHubBinding(ctx, owner.OwnerID, owner.AccountGeneration)
+		if err != nil {
+			return coreconversation.IntrinsicExecutionResult{}, err
+		}
+	}
 	manifest := InputManifest{Schema: InputManifestSchema}
 	if len(arguments.AttachmentIDs) > 0 {
 		if p.manifests == nil || !turnAllowsAttachments(bound.Turn, arguments.AttachmentIDs) {
@@ -614,6 +636,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		ProposalReason: reason, LocalBudgetEvidence: budget, InputManifest: manifest,
 		WorkspaceMode:      mode,
 		ModelAuthorization: modelAuthorization,
+		GitHubBinding:      githubBinding,
 		ComputeRequirements: ComputeRequirements{MinVCPU: arguments.MinVCPU, MinMemoryGiB: arguments.MinMemoryGiB,
 			DiskGiB: arguments.DiskGiB, EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes},
 	})

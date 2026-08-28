@@ -29,6 +29,7 @@ type RuntimeModel struct {
 	BaseURL         string
 	Name            string
 	APIKey          string
+	GitHubPAT       string
 	MaxOutputTokens int
 }
 
@@ -110,7 +111,7 @@ func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 	if err != nil {
 		return RuntimeMaterial{}, ErrInvalid
 	}
-	packages := "ca-certificates curl git golang-go gzip tar"
+	packages := "ca-certificates curl git gh golang-go gzip tar"
 	caddyPreflight := ""
 	caddySetup := ""
 	if request.Service != nil && request.Service.Hostname != "" {
@@ -182,10 +183,19 @@ chmod 700 "$worker_root/dirextalk-worker-runner"
 		TaskID:             request.TaskID,
 		WorkerScript:       []byte(script),
 		WorkerScriptSHA256: hex.EncodeToString(digest[:]),
-		Protocol: RuntimeProtocol{
-			TaskID: request.TaskID, encodedModelKey: base64.StdEncoding.EncodeToString([]byte(request.Model.APIKey)),
-		},
+		Protocol:           RuntimeProtocol{TaskID: request.TaskID, secretEnvelope: encodeRuntimeSecretEnvelope(request.Model.APIKey, request.Model.GitHubPAT)},
 	}, nil
+}
+
+type runtimeSecretEnvelope struct {
+	Version     int    `json:"version"`
+	ModelAPIKey string `json:"model_api_key"`
+	GitHubPAT   string `json:"github_pat,omitempty"`
+}
+
+func encodeRuntimeSecretEnvelope(modelKey, githubPAT string) string {
+	raw, _ := json.Marshal(runtimeSecretEnvelope{Version: 1, ModelAPIKey: modelKey, GitHubPAT: githubPAT})
+	return base64.StdEncoding.EncodeToString(raw)
 }
 
 func piArchive(architecture string) (string, string, error) {
