@@ -339,6 +339,11 @@ encrypted repository. Its model-facing contract requests one focused search
 with enough results, permits another only for a distinct missing fact, and
 directs the model to synthesize sufficient evidence instead of repeating
 equivalent searches for exhaustive confirmation.
+The model receives a bounded normalized evidence projection with canonical
+source URLs and retained reference identity, not raw provider JSON, HTML, or
+presentation fragments. Its final response synthesizes concise natural-language
+Markdown with descriptive linked citations and never dumps raw search snippets
+or meaningless separator markup.
 At each immediate or deferred tool-result transaction, the runtime derives a
 versioned `ProgressObservation` when the result carries validated runtime
 references. Its effective digest covers the normalized action, bounded result,
