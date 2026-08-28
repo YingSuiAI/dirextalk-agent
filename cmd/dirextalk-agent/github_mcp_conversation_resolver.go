@@ -23,7 +23,6 @@ const githubMCPSecretRef = "agent:github:pat"
 
 var githubMCPAllowed = map[string]struct{}{
 	"mcp__github__get_file_contents": {}, "mcp__github__list_branches": {}, "mcp__github__list_commits": {}, "mcp__github__get_commit": {}, "mcp__github__search_repositories": {}, "mcp__github__list_pull_requests": {}, "mcp__github__pull_request_read": {}, "mcp__github__search_pull_requests": {},
-	"mcp__github__create_branch": {}, "mcp__github__create_or_update_file": {}, "mcp__github__delete_file": {}, "mcp__github__push_files": {}, "mcp__github__create_pull_request": {}, "mcp__github__update_pull_request": {}, "mcp__github__update_pull_request_branch": {}, "mcp__github__merge_pull_request": {},
 }
 
 type githubMCPConversationResolver struct {
@@ -84,6 +83,9 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 		}
 		seen[name] = struct{}{}
 		if _, allowed := githubMCPAllowed[name]; allowed {
+			if !t.Effect.ReadOnly() {
+				return out, nil
+			}
 			selected = append(selected, t)
 		}
 	}
@@ -111,22 +113,22 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 	sum := sha256.Sum256(digestInput)
 	digest := hex.EncodeToString(sum[:])
 	sel := coreconversation.ExtensionSelection{Kind: coreconversation.ExtensionMCP, ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:github-mcp:"+digest)).String(), Version: fmt.Sprintf("config-%d-%s", snap.Revision, digest[:12]), Digest: digest, AllowedTools: names}
-	out = append(out, coreconversation.ResolvedExtension{Selection: sel, Snapshot: coreconversation.ExtensionExecutionSnapshot{Selection: sel, InstallationID: sel.ID, VersionID: sel.Version, Source: "github-mcp", ContentDigest: digest, ArtifactDigest: digest, ToolSchemaDigest: digest, ToolNames: names, ReadOnly: false, RequiresConfirmation: true}, Tools: model, Execute: func(c context.Context, q coreconversation.ToolExecutionRequest) (coreconversation.ToolResult, error) {
+	out = append(out, coreconversation.ResolvedExtension{Selection: sel, Snapshot: coreconversation.ExtensionExecutionSnapshot{Selection: sel, InstallationID: sel.ID, VersionID: sel.Version, Source: "github-mcp", ContentDigest: digest, ArtifactDigest: digest, ToolSchemaDigest: digest, ToolNames: names, ReadOnly: true, RequiresConfirmation: false}, Tools: model, Execute: func(c context.Context, q coreconversation.ToolExecutionRequest) (coreconversation.ToolResult, error) {
 		t, ok := runs[q.Call.Name]
 		if !ok {
 			return coreconversation.ToolResult{}, coregithub.ErrInvalid
 		}
 		result, e := t.Run(c, mcphttp.ToolInvocation{Name: q.Call.Name, Arguments: []byte(q.Call.Arguments)})
-		if e != nil || result.IsError {
-			if !t.Effect.ReadOnly() {
-				return coreconversation.ToolResult{CallID: q.Call.ID, ToolName: q.Call.Name, IsError: true, Content: "GitHub write completion is unknown. Read authoritative state before deciding whether to retry."}.WithObservation(coreconversation.ToolOutcomeUnknownMutation, "GitHub write completion is unknown", coreconversation.ToolMutationUnknown), nil
+		if e != nil {
+			if errors.Is(e, mcphttp.ErrProviderUnavailable) {
+				return coreconversation.ToolResult{}, coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeRetryable, "GitHub MCP unavailable", 0, e)
 			}
-			return coreconversation.ToolResult{}, coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeRetryable, "GitHub MCP unavailable", 0, e)
+			return coreconversation.ToolResult{}, coreconversation.NewToolExecutionError(coreconversation.ToolOutcomeFatal, "GitHub MCP failed", 0, e)
 		}
-		if t.Effect.ReadOnly() {
-			return coreconversation.ToolResult{CallID: q.Call.ID, ToolName: q.Call.Name, Content: result.Content}.WithObservation(coreconversation.ToolOutcomeSuccess, "GitHub read completed", coreconversation.ToolMutationNone), nil
+		if result.IsError {
+			return coreconversation.ToolResult{CallID: q.Call.ID, ToolName: q.Call.Name, Content: result.Content, IsError: true}.WithObservation(coreconversation.ToolOutcomeFatal, "GitHub MCP reported a failure", coreconversation.ToolMutationNone), nil
 		}
-		return coreconversation.ToolResult{CallID: q.Call.ID, ToolName: q.Call.Name, Content: result.Content, StateChanged: true}.WithObservation(coreconversation.ToolOutcomeSuccess, "GitHub write completed", coreconversation.ToolMutationChanged), nil
+		return coreconversation.ToolResult{CallID: q.Call.ID, ToolName: q.Call.Name, Content: result.Content}.WithObservation(coreconversation.ToolOutcomeSuccess, "GitHub read completed", coreconversation.ToolMutationNone), nil
 	}})
 	return out, nil
 }
@@ -149,5 +151,5 @@ func (s githubMCPSecret) ResolveSecret(ctx context.Context, ref string) ([]byte,
 	return out, e
 }
 func githubMCPProvider(service *coregithub.Service, s coregithub.ResolvedConfig) (mcphttp.ToolProvider, error) {
-	return mcphttp.New([]mcphttp.ServerConfig{{ID: "github", Endpoint: githubMCPEndpoint, SecretRef: githubMCPSecretRef, Headers: map[string]string{"X-MCP-Toolsets": "repos,pull_requests"}}}, githubMCPSecret{service: service, snapshot: s})
+	return mcphttp.New([]mcphttp.ServerConfig{{ID: "github", Endpoint: githubMCPEndpoint, SecretRef: githubMCPSecretRef, Headers: map[string]string{"X-MCP-Toolsets": "repos,pull_requests", "X-MCP-Readonly": "true"}}}, githubMCPSecret{service: service, snapshot: s})
 }

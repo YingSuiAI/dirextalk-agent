@@ -995,10 +995,11 @@ requests only `repos,pull_requests`, fails closed for unknown tool identities,
 and exposes only an explicit repository/contents/branch/commit/pull-request
 allowlist. Unrelated advertised tools are ignored; malformed, duplicate, or
 zero allowed definitions fail closed. Every tool is marked
-`requires_confirmation` because remote annotations are not an authorization
-boundary. Read tools retain their individual conservative effect classification;
-successful writes are recorded as changed and failed writes as unknown mutation.
-Credential resolution rechecks the authenticated
+`X-MCP-Readonly: true` and exposes only read tools whose effect is explicitly
+read-only. It takes the synthetic inline read-only path and does not claim a
+durable confirmation lane. Clone, edit, push, and pull-request mutations are
+performed only by the confirmation-gated Cloud Worker (stage 2). Credential
+resolution rechecks the authenticated
 owner, account generation and immutable config/credential revision immediately
 before each MCP request; no token is copied to a process environment or Worker.
 
