@@ -25,7 +25,7 @@ const (
 	piLinuxX64SHA256          = "5634d7ebd18274b63af3371e942f342d74bea012389575c1d1ff15ce6ca80c2f"
 	piLinuxARM64SHA256        = "ab95c058a4651b5ff5d8c878e524edfb776263c7a444f325505f247c056eecfc"
 	PiSubagentUpstreamCommit  = "53fa77ccd8a279eb87e92294ef3687b03ff80112"
-	PiSubagentExtensionSHA256 = "e36e0e9c97f75e1c7de39af37ab8f6a18862efab9e18b3656313354914919840"
+	PiSubagentExtensionSHA256 = "1bf8fd9f548c57cb7e42124828c4f3a3c2394d2e9e856f9a8870ad65f96879c2"
 
 	maxObjectiveBytes = 128 << 10
 )
