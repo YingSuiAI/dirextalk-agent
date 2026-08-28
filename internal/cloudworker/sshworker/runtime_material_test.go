@@ -367,7 +367,7 @@ func TestVendoredPiSubagentProvenanceAndBounds(t *testing.T) {
 	if err != nil || !strings.Contains(string(provenance), PiSubagentUpstreamCommit) || !strings.Contains(string(provenance), "MIT") {
 		t.Fatalf("provenance=%q err=%v", provenance, err)
 	}
-	for _, expected := range []string{"MAX_PARALLEL_TASKS = 8", "MAX_CONCURRENCY = 4", "PI_CODING_AGENT_DIR/agents", "--no-extensions", "!script.startsWith(\"/$bunfs/root/\")"} {
+	for _, expected := range []string{"MAX_PARALLEL_TASKS = 8", "MAX_CONCURRENCY = 4", "PI_CODING_AGENT_DIR/agents", "--no-extensions", "script.startsWith(\"/$bunfs/root/\")", "genericRuntime"} {
 		if !strings.Contains(vendoredPiSubagentExtension, expected) {
 			t.Fatalf("vendored subagent missing %q", expected)
 		}
