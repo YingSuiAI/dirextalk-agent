@@ -2675,7 +2675,12 @@ func (s *Service) resolveAcceptedTurnExtensionsForContinuation(ctx context.Conte
 }
 
 func contextBoundExtensionSource(source string) bool {
-	return source == "builtin:web_search:tavily" || source == "builtin:knowledge:semantic" || source == "product-capability" || source == "message-mcp"
+	switch source {
+	case "builtin:web_search:tavily", "builtin:knowledge:semantic", "product-capability", "message-mcp", "github-mcp":
+		return true
+	default:
+		return false
+	}
 }
 
 func containsMessageMCPExtension(extensions []ResolvedExtension) bool {
