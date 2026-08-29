@@ -1333,7 +1333,8 @@ func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *t
 	knowledgeSnapshot := contextSnapshot("builtin:knowledge:semantic", "knowledge_search", strings.Repeat("2", 64))
 	webSnapshot := contextSnapshot("builtin:web_search:tavily", "web_search", strings.Repeat("3", 64))
 	installedSnapshot := contextSnapshot("mcp:installed", "installed_lookup", strings.Repeat("4", 64))
-	snapshots := []ExtensionExecutionSnapshot{productSnapshot, knowledgeSnapshot, webSnapshot, installedSnapshot}
+	githubSnapshot := contextSnapshot("github-mcp", "mcp__github__get_file_contents", strings.Repeat("5", 64))
+	snapshots := []ExtensionExecutionSnapshot{productSnapshot, knowledgeSnapshot, webSnapshot, installedSnapshot, githubSnapshot}
 	turn := Turn{ID: turnID, RequestID: requestID, ConversationID: conversationID,
 		Prompt: "deploy the service", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
 		ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 3,
@@ -2456,6 +2457,40 @@ func TestResolveAcceptedTurnExtensionsIgnoresToolsAddedAfterAcceptance(t *testin
 	if len(resolved) != 1 || resolved[0].Selection.ID != acceptedSelection.ID ||
 		len(resolved[0].Tools) != 1 || resolved[0].Tools[0].Name != "accepted_lookup" ||
 		len(resolved[0].Snapshot.ToolNames) != 1 || resolved[0].Snapshot.ToolNames[0] != "accepted_lookup" {
+		t.Fatalf("resolved extensions=%+v", resolved)
+	}
+}
+
+func TestResolveAcceptedTurnExtensionsRehydratesGitHubContextBoundSnapshot(t *testing.T) {
+	selection := ExtensionSelection{
+		Kind: ExtensionMCP, ID: uuid.NewString(), Version: "config-2-123456789abc",
+		Digest: strings.Repeat("a", 64), AllowedTools: []string{"mcp__github__get_file_contents"},
+	}
+	accepted := ExtensionExecutionSnapshot{
+		Selection: selection, InstallationID: selection.ID, VersionID: selection.Version,
+		Source: "github-mcp", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64),
+		ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64),
+		SecretBindingDigest: strings.Repeat("e", 64), ToolNames: append([]string(nil), selection.AllowedTools...), ReadOnly: true,
+	}
+	service := &Service{extensions: extensionResolverFunc(func(_ context.Context, selections []ExtensionSelection) ([]ResolvedExtension, error) {
+		if len(selections) != 0 {
+			t.Fatalf("GitHub MCP snapshot was routed through installed-extension selections: %+v", selections)
+		}
+		return []ResolvedExtension{{
+			Selection: accepted.Selection,
+			Snapshot:  accepted,
+			Tools: []coremodel.Tool{{
+				Name: accepted.ToolNames[0], InputSchema: map[string]any{"type": "object"},
+			}},
+		}}, nil
+	})}
+
+	resolved, err := service.resolveAcceptedTurnExtensions(context.Background(), []ExtensionExecutionSnapshot{accepted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0].Snapshot.Source != "github-mcp" ||
+		len(resolved[0].Tools) != 1 || resolved[0].Tools[0].Name != accepted.ToolNames[0] {
 		t.Fatalf("resolved extensions=%+v", resolved)
 	}
 }

@@ -1010,9 +1010,12 @@ zero allowed definitions fail closed. Every tool is marked
 read-only. It takes the synthetic inline read-only path and does not claim a
 durable confirmation lane. Clone, edit, push, and pull-request mutations are
 performed only by the confirmation-gated Cloud Worker (stage 2). Credential
-resolution rechecks the authenticated
-owner, account generation and immutable config/credential revision immediately
-before each MCP request; no token is copied to a process environment or Worker.
+resolution rechecks the authenticated owner, account generation and immutable
+config/credential revision immediately before each MCP request. On every Turn
+continuation or recovery, the accepted GitHub MCP snapshot is rehydrated from
+that authenticated context instead of being routed through durable installed-
+extension storage; its exact immutable snapshot and accepted tool-schema
+digests must still match. No token is copied to a process environment or Worker.
 
 Core is a fresh-state service with no legacy public-API or database
 compatibility path, except the explicit internal Cloud Worker v1.0.184/v1.0.185

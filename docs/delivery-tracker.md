@@ -14,6 +14,10 @@ contract](message-server-integration-development-contract.md), and
   proposal, confirmation, reuse, or start. The v1.0.184 and deployed v1.0.185
   unbound digest/confirmation encodings are both verified in-place, while an
   explicitly bound plan remains strictly revision-fenced.
+- Native GitHub MCP snapshots are context-bound. Continuation and recovery
+  rehydrate them from the authenticated owner/account/config/credential context
+  without querying installed-extension storage, while retaining exact accepted
+  snapshot and tool-schema digest checks.
 - Core-only `dirextalk-agent` entrypoint with `migrate` and `serve`.
 - TLS 1.3 gRPC authentication, health/reflection, capability discovery, and
   PostgreSQL-backed profiles, conversations, Tasks, events, schedules,
@@ -345,6 +349,13 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-30**, a focused regression reproduced Native continuation
+  routing an accepted `github-mcp` snapshot through installed-extension
+  storage, then passed after GitHub MCP joined the context-bound resolver set.
+  The same classification is covered when a succeeded Cloud Worker turn
+  finalizes without a second model dispatch. The full Core conversation and
+  Core GitHub suites, Linux GitHub resolver tests, full Linux `go vet`, all
+  three production command builds, Buf lint, and diff checks passed.
 - On **2026-08-20**, existing-conversation Turn admission gained deterministic
   automatic WorkingContext compaction from the frozen profile input budget,
   compiled prompt, selected Skill instructions, and admitted tool schemas. The
