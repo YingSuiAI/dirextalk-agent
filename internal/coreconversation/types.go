@@ -468,6 +468,10 @@ type ModelRunRequest struct {
 	// TransientProviderReasoning is live-process provider continuity for the
 	// immediately preceding tool round. It is never public or durable.
 	TransientProviderReasoning string
+	// ToolCallFormatRecovery is a dispatch-local, non-durable adapter hint set
+	// only after a quarantined text tool-call envelope. It can add corrective
+	// protocol guidance but cannot add tools or execution authority.
+	ToolCallFormatRecovery bool
 }
 type ModelRunResult struct {
 	Message        Message

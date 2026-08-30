@@ -353,6 +353,16 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-30**, OpenAI-compatible Native turns began quarantining leading
+  DSML tool envelopes when the provider omitted structured `tool_calls`.
+  Quarantined text is neither published nor parsed into executable authority;
+  Core records `MODEL_TOOL_CALL_FORMAT_INVALID`, retries once with fixed
+  protocol guidance, and uses deterministic compatibility Markdown after a
+  repeated failure without a third provider dispatch. Focused Core tests prove
+  exact-once recovery and terminal behavior. Focused Linux runtime tests prove
+  split-fragment quarantine, no public DSML delta, structured-call authority,
+  and preservation of ordinary/fenced repository text. This is code-level
+  evidence and does not claim a new deployment.
 - On **2026-08-20**, existing-conversation Turn admission gained deterministic
   automatic WorkingContext compaction from the frozen profile input budget,
   compiled prompt, selected Skill instructions, and admitted tool schemas. The

@@ -27,16 +27,17 @@ const maxRequestBytes = 2 << 20
 const maxMultimodalEncodedRequestBytes = 16 << 20
 
 var (
-	ErrProviderUnavailable    = errors.New("model provider is unavailable")
-	ErrProviderConnectFailure = errors.New("model provider connection failed before dispatch")
-	ErrProviderRejected       = errors.New("model provider rejected the request")
-	ErrProviderRateLimited    = errors.New("model provider rate limited the request")
-	ErrProviderServerFailure  = errors.New("model provider server failure")
-	ErrProviderTimeout        = fmt.Errorf("model provider request timed out: %w", context.DeadlineExceeded)
-	ErrInvalidResponse        = errors.New("invalid model provider response")
-	ErrStreamTruncated        = errors.New("model provider stream terminated before completion")
-	ErrOutputLimitReached     = errors.New("model provider reached its output limit")
-	ErrStreamIdleTimeout      = fmt.Errorf("model provider stream idle timeout: %w", context.DeadlineExceeded)
+	ErrProviderUnavailable        = errors.New("model provider is unavailable")
+	ErrProviderConnectFailure     = errors.New("model provider connection failed before dispatch")
+	ErrProviderRejected           = errors.New("model provider rejected the request")
+	ErrProviderRateLimited        = errors.New("model provider rate limited the request")
+	ErrProviderServerFailure      = errors.New("model provider server failure")
+	ErrProviderTimeout            = fmt.Errorf("model provider request timed out: %w", context.DeadlineExceeded)
+	ErrInvalidResponse            = errors.New("invalid model provider response")
+	ErrModelToolCallFormatInvalid = errors.New("model returned text tool-call markup instead of structured tool calls")
+	ErrStreamTruncated            = errors.New("model provider stream terminated before completion")
+	ErrOutputLimitReached         = errors.New("model provider reached its output limit")
+	ErrStreamIdleTimeout          = fmt.Errorf("model provider stream idle timeout: %w", context.DeadlineExceeded)
 )
 
 type providerHTTPStatusError struct {
@@ -71,10 +72,15 @@ type RetryMetadata struct {
 	RetryAfter  time.Duration
 }
 
-// PreOutputRetryMetadata authorizes only failures known to occur before any
-// response stream was accepted. Callers must additionally prove that no
-// content, reasoning, or tool-call delta became visible.
+// PreOutputRetryMetadata authorizes failures that are safe for one bounded
+// retry before any provider output becomes public or executable. Callers must
+// additionally prove that no content or tool-call delta became visible. A
+// text-encoded tool-call envelope qualifies only when the adapter quarantined
+// the complete candidate instead of parsing or publishing it.
 func PreOutputRetryMetadata(err error) RetryMetadata {
+	if errors.Is(err, ErrModelToolCallFormatInvalid) {
+		return RetryMetadata{Retryable: true}
+	}
 	var statusErr *providerHTTPStatusError
 	if errors.As(err, &statusErr) {
 		switch statusErr.statusCode {
@@ -134,6 +140,8 @@ func SafeFailureClass(err error) string {
 		return "provider_timeout"
 	case errors.Is(err, ErrInvalidResponse):
 		return "provider_invalid_response"
+	case errors.Is(err, ErrModelToolCallFormatInvalid):
+		return "model_tool_call_format_invalid"
 	case errors.Is(err, ErrStreamTruncated):
 		return "provider_stream_truncated"
 	case errors.Is(err, ErrProviderUnavailable):

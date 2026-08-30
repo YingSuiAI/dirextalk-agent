@@ -192,6 +192,52 @@ func TestTurnRetriesOneConnectFailureBeforeOutputAndChargesPhysicalAttempt(t *te
 	}
 }
 
+func TestTurnRetriesQuarantinedToolCallFormatOnceWithRecoveryGuidance(t *testing.T) {
+	model := &retrySequenceModel{outcomes: []retryModelOutcome{{
+		delta: &ModelDelta{ReasoningContent: "private provider reasoning"},
+		err:   coremodel.ErrModelToolCallFormatInvalid,
+	}, {}}}
+	service, store, turn := newAttemptTurnService(t, model)
+	service.executeTurn(context.Background(), turn.ID)
+	if model.callCount() != 2 || store.turn.ModelDispatchCount != 2 || len(store.retryFailures) != 1 {
+		t.Fatalf("calls=%d attempts=%d retry_failures=%+v", model.callCount(), store.turn.ModelDispatchCount, store.retryFailures)
+	}
+	if store.retryFailures[0].Code != modelToolCallFormatInvalidCode || !model.requests[1].ToolCallFormatRecovery {
+		t.Fatalf("failure=%+v recovery_request=%+v", store.retryFailures[0], model.requests[1])
+	}
+	if store.turn.State != TurnCompleted || store.turn.Response == nil || strings.Contains(store.turn.Response.Message.Content, "DSML") {
+		t.Fatalf("turn=%+v", store.turn)
+	}
+	for _, event := range store.events {
+		if event.Kind == TurnEventDelta {
+			t.Fatalf("quarantined format failure published a delta: %+v", event)
+		}
+	}
+}
+
+func TestTurnStopsAfterSecondToolCallFormatFailureWithoutExecutingText(t *testing.T) {
+	model := &retrySequenceModel{outcomes: []retryModelOutcome{
+		{err: coremodel.ErrModelToolCallFormatInvalid},
+		{err: coremodel.ErrModelToolCallFormatInvalid},
+		{},
+	}}
+	service, store, turn := newAttemptTurnService(t, model)
+	service.executeTurn(context.Background(), turn.ID)
+	if model.callCount() != 2 || store.turn.ModelDispatchCount != 2 || store.turn.State != TurnCompleted || store.turn.Response == nil {
+		t.Fatalf("calls=%d attempts=%d turn=%+v", model.callCount(), store.turn.ModelDispatchCount, store.turn)
+	}
+	if store.finalization == nil || store.finalization.Reason != TurnFinalizationToolCallFormat ||
+		!strings.Contains(store.turn.Response.Message.Content, modelToolCallFormatInvalidCode) ||
+		strings.Contains(store.turn.Response.Message.Content, "DSML") {
+		t.Fatalf("finalization=%+v response=%q", store.finalization, store.turn.Response.Message.Content)
+	}
+	for _, event := range store.events {
+		if event.Kind == TurnEventToolCall {
+			t.Fatalf("text protocol produced executable tool event: %+v", event)
+		}
+	}
+}
+
 func TestCompletedTurnEmitsOneStructuredConvergenceRecord(t *testing.T) {
 	model := &retrySequenceModel{outcomes: []retryModelOutcome{{}}}
 	service, store, turn := newAttemptTurnService(t, model)
