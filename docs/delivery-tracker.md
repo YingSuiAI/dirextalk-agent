@@ -364,22 +364,21 @@ support.
   finalizes without a second model dispatch. The full Core conversation and
   Core GitHub suites, Linux GitHub resolver tests, full Linux `go vet`, all
   three production command builds, Buf lint, and diff checks passed.
-- On **2026-08-30**, OpenAI-compatible Native turns began quarantining leading
-  DSML tool envelopes when the provider omitted structured `tool_calls`.
-  Quarantined text is neither published nor parsed into executable authority;
-  Core records `MODEL_TOOL_CALL_FORMAT_INVALID`, retries once with fixed
-  protocol guidance, and uses deterministic compatibility Markdown after a
-  repeated failure without a third provider dispatch. Focused Core tests prove
-  exact-once recovery and terminal behavior. Focused Linux runtime tests prove
-  split-fragment quarantine, no public DSML delta, structured-call authority,
-  and preservation of ordinary/fenced repository text. The guard now remains
-  active when an unrelated durable finalization removes all tools: one live
-  retry copies the same tools-disabled directive and requests an ordinary final
-  answer, while a repeated format failure falls back without executing the
-  text. Focused Linux Core/runtime tests and a PostgreSQL 18 + pgvector test
-  proved that boundary, exact directive reuse, the extra-attempt fence, and no
-  ordinary model-time charge. This is code-level evidence and does not claim a
-  new deployment.
+- On **2026-08-30**, tool-enabled Native model steps gained a validation-before-
+  publication boundary. Model-authored narration accompanying a structured tool
+  call stays private, and a protocol-shaped DSML envelope is quarantined even
+  after a natural-language prefix or across fragmented streaming. The detector
+  preserves fenced, inline-code, and quoted repository examples; quarantined
+  text is never parsed into executable authority. Core records
+  `MODEL_TOOL_CALL_FORMAT_INVALID` and retries once with fixed structured-call
+  guidance. If that retry also fails, Core now performs a tools-disabled best-
+  evidence synthesis instead of immediately showing the technical compatibility
+  fallback; the guard and its single recovery retry remain active, never restore
+  tools, and still converge deterministically if the provider repeats the
+  invalid format. Focused Linux runtime, Core conversation, Capability, and
+  PostgreSQL unit tests passed together with focused `go vet`, the production
+  Agent command build, and diff checks. This is code-level evidence and does not
+  claim a new deployment.
 - On **2026-08-30**, Native public tool progress stopped projecting model-authored
   arguments, exact result content, cursors, or result references. Web Search
   keeps normalized fetched evidence in the private model transcript but now

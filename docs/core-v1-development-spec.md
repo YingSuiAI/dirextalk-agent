@@ -608,20 +608,21 @@ must first prove there are no nonterminal turns carrying the superseded raw
 model-result shape, or explicitly terminalize those turns before the new binary
 may claim them.
 
-OpenAI-compatible text is never promoted into tool authority. If the admitted
-turn runtime exposes tools and a response without structured `tool_calls`
-begins with the complete DSML tool envelope and invoke structure, the adapter
-quarantines the text and
-returns `MODEL_TOOL_CALL_FORMAT_INVALID`; it does not parse a name or arguments.
-Core may retry that known side-effect-free format failure once with fixed
-guidance requiring standard OpenAI-compatible `message.tool_calls`. The guard
-remains active after a finalization directive removes physical tools. In that
-phase, the one live recovery retry keeps tools disabled and requests an
-ordinary final answer. Repeating the format failure creates a deterministic
-Markdown compatibility stop without executing the text or issuing another
-provider request. Ordinary or fenced repository text that only
-contains the marker away from the protocol-leading position remains visible
-content.
+OpenAI-compatible text is never promoted into tool authority. When the admitted
+turn runtime exposes tools, model-authored content remains private until the
+complete provider step is validated. Content accompanying a structured tool
+call is not a public assistant delta. A response without structured
+`tool_calls` that contains a protocol-shaped DSML envelope outside Markdown
+fences, inline code, or quotes is quarantined in full and returns
+`MODEL_TOOL_CALL_FORMAT_INVALID`; a natural-language prefix does not bypass the
+guard, and no name or arguments are parsed. Core may retry that known
+side-effect-free failure once with fixed guidance requiring standard
+OpenAI-compatible `message.tool_calls`. Repeating it creates a durable
+tools-disabled finalization that synthesizes the best answer from already
+retained evidence. The guard remains active there, a single live recovery retry
+retains zero tools, and another format failure creates deterministic Markdown.
+No path executes the text or restores tool authority. Ordinary repository text
+that quotes or fences the markers remains visible content.
 
 Workload Tasks use that same revision/attempt/lease-epoch fencing path. The
 local runner receives only a descriptor request bound to the dispatch; it

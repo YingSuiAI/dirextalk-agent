@@ -31,6 +31,7 @@ const (
 	MaxAdmittedTurnToolCalls           = 20
 	toolLoopNudgeGuidance              = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
 	toolLoopSynthesisGuidance          = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
+	toolCallFormatSynthesisGuidance    = "A previous tool-enabled response used invalid text markup instead of the structured tool protocol. Tools are disabled for this finalization. Produce the best useful final answer from evidence already present in the conversation, explicitly state any remaining gaps, and do not emit or describe DSML, XML, or tool-call markup."
 	outputContinuationGuidance         = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
 	staticSitePublishCorrection        = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
 	conversationConvergenceGuidance    = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
@@ -97,14 +98,14 @@ func (g *turnModelDeadlineGuard) expire(failure error) {
 }
 
 func nonemptyProviderPayload(delta ModelDelta) bool {
-	if delta.Text != "" || delta.ReasoningContent != "" {
+	if delta.Text != "" || delta.ReasoningContent != "" || delta.PrivateProgress {
 		return true
 	}
 	return delta.ToolCall != nil && (delta.ToolCall.ID != "" || delta.ToolCall.Name != "" || delta.ToolCall.Arguments != "")
 }
 
 func meaningfulProviderAction(delta ModelDelta) bool {
-	return strings.TrimSpace(delta.Text) != "" || delta.ToolCall != nil && delta.ToolCall.Validate() == nil
+	return delta.PrivateProgress || strings.TrimSpace(delta.Text) != "" || delta.ToolCall != nil && delta.ToolCall.Validate() == nil
 }
 
 func (g *turnModelDeadlineGuard) observe(delta ModelDelta) {
@@ -1250,8 +1251,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	unappliedWorkerSteer := hasUnappliedDeferredWorkerSteer(turnSteers, workerSteersApplied, toolCallAuthorities)
 	autoFinalizeWorker := terminalWorker && !unappliedWorkerSteer
 	var resolvedExtensions []ResolvedExtension
-	formatFallback := finalizing && finalization.Reason == TurnFinalizationToolCallFormat
-	if !autoFinalizeWorker && !formatFallback {
+	if !autoFinalizeWorker && !finalizing {
 		resolvedExtensions, err = s.resolveAcceptedTurnExtensionsForContinuation(ctx, turn.ExtensionSnapshots, terminalWorker)
 		if err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
@@ -1305,14 +1305,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 			_, _ = s.turns.FailTurn(ctx, lease, "turn_commit_failed", "conversation final response could not be committed")
 		}
-	}
-	if formatFallback {
-		code, summary := uncertainModelFailure(turn)
-		if code == "" || summary == "" {
-			code, summary = finalizationStop(finalization.Reason)
-		}
-		commitFallback(finalization, code, summary)
-		return
 	}
 	if finalizing && (turn.DispatchState == "dispatched" || turn.DispatchState == "uncertain") {
 		code, summary := turn.TerminalCode, turn.TerminalSummary
@@ -1585,7 +1577,11 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	case TurnDispatchGuidanceLoopNudge:
 		systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
 	case TurnDispatchGuidanceLoopSynthesis:
-		systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
+		guidance := toolLoopSynthesisGuidance
+		if directive.FinalizationReason == TurnFinalizationToolCallFormat {
+			guidance = toolCallFormatSynthesisGuidance
+		}
+		systemPrompt = appendSystemPrompt(systemPrompt, guidance)
 	}
 	frozenModelRequest := ModelRunRequest{
 		Conversation: modelConversation,

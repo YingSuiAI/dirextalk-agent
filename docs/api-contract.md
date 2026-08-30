@@ -299,9 +299,12 @@ or stream after admission. It never cancels the accepted Turn; callers use
   requires it even when unchanged. Profile reads return the selected dialect;
   durable execution snapshots and their digests bind it so a model name never
   selects request behavior implicitly.
-- Native conversation progress durably publishes only assistant `delta` text
-  in bounded coalesced events as it arrives from the provider. Provider
-  reasoning is absent from public messages, stream events, Capability JSON,
+- Native conversation progress durably publishes only validated assistant
+  `delta` text. When the admitted runtime exposes tools, the adapter keeps all
+  model-authored content private until the complete provider step is known. A
+  step containing structured tool calls publishes no model-authored text; only
+  a completed, tool-free final answer is released as bounded coalesced public
+  text. Provider reasoning is absent from public messages, stream events, Capability JSON,
   RPC projections, conversation history, failed transcripts, and every durable
   model-result envelope. A complete model step publishes the existing
   `tool_call` event only after the model step and tool identity are durable, and
@@ -354,20 +357,21 @@ or stream after admission. It never cancels the accepted Turn; callers use
   authorization become explicit terminal tool observations; integrity and
   persistence failures retain failed-turn semantics.
 - When a turn's admitted runtime exposes tools, an OpenAI-compatible response
-  that has no structured `message.tool_calls` but begins with a complete DSML
-  tool envelope is never
-  parsed as a call, published as assistant text, or executed. The adapter
-  quarantines the candidate, records `MODEL_TOOL_CALL_FORMAT_INVALID`, and
+  that has no structured `message.tool_calls` but contains a protocol-shaped
+  DSML tool envelope in the ordinary content channel is never parsed as a call,
+  published as assistant text, or executed. Detection covers a natural-language
+  prefix, fragmented streaming, and a truncated bare envelope while excluding
+  Markdown fenced, inline-code, and quoted examples. The adapter quarantines
+  the complete provider response, records `MODEL_TOOL_CALL_FORMAT_INVALID`, and
   permits one dispatch-local retry with fixed guidance requiring standard
-  OpenAI-compatible `tool_calls`. This guard remains active during the
-  tools-disabled finalization of that turn. In that phase the one recovery retry
-  instead requires an ordinary final answer and retains zero tools. A second
-  format failure performs no further provider dispatch and completes through
-  deterministic Markdown with a clear compatibility stop reason. Text inside
-  the candidate is never promoted into tool authority. The detector requires
-  the leading DSML envelope
-  and invoke structure; quoted, fenced, or otherwise ordinary repository text
-  containing the same tokens remains normal content.
+  OpenAI-compatible `tool_calls`. If that retry repeats the failure, Core
+  persists a tools-disabled finalization and asks the model to produce the best
+  useful answer from evidence already retained in the private transcript. The
+  guard remains active during this finalization; one repeated format failure may
+  retry the same tools-disabled directive with ordinary-answer guidance, and a
+  further failure completes through deterministic Markdown. No retry restores
+  tool authority, and text inside the candidate is never promoted into a tool
+  call. Structured tool calls remain the sole execution authority.
 - Recent tool-loop recovery is deliberately conservative and resets at an
   accepted steer. It recognizes only repeated canonical action/result pairs or
   exact A/B alternation. Argument object key order and harmless unquoted local

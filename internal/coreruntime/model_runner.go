@@ -187,10 +187,11 @@ func (r *ModelRunner) Run(ctx context.Context, req coreconversation.ModelRunRequ
 		return coreconversation.ModelRunResult{}, err
 	}
 	content := comp.Message.Content
-	guard := newToolCallTextGuard(isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(cr.Tools), req.GuardTextToolCallEnvelope))
+	guardEnabled := len(cr.Tools) != 0 || req.GuardTextToolCallEnvelope
+	guard := newToolCallTextGuard(guardEnabled, isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(cr.Tools), req.GuardTextToolCallEnvelope))
 	if guard.enabled {
 		_ = guard.Append(content, nil)
-		invalid, _ := guard.Finish(len(comp.Message.ToolCalls) != 0, nil)
+		invalid, _ := guard.Finish(content, len(comp.Message.ToolCalls) != 0, nil)
 		if invalid {
 			r.logProviderFailure(ctx, p.ID, coremodel.ErrModelToolCallFormatInvalid)
 			return coreconversation.ModelRunResult{}, coremodel.ErrModelToolCallFormatInvalid
@@ -220,7 +221,8 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 	var content strings.Builder
 	var reasoning strings.Builder
 	callsByIndex := map[int]coreconversation.ToolCall{}
-	guard := newToolCallTextGuard(isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(cr.Tools), req.GuardTextToolCallEnvelope))
+	guardEnabled := len(cr.Tools) != 0 || req.GuardTextToolCallEnvelope
+	guard := newToolCallTextGuard(guardEnabled, isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(cr.Tools), req.GuardTextToolCallEnvelope))
 	continueOutput := false
 	for {
 		d, e := stream.Recv()
@@ -242,6 +244,11 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 		}
 		if d.Content != "" {
 			content.WriteString(d.Content)
+			if guard.enabled && emit != nil && strings.TrimSpace(d.Content) != "" {
+				if err := emit(coreconversation.ModelDelta{PrivateProgress: true}); err != nil {
+					return coreconversation.ModelRunResult{}, err
+				}
+			}
 			if err := guard.Append(d.Content, func(text string) error {
 				if emit == nil {
 					return nil
@@ -290,7 +297,8 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 			calls = append(calls, callsByIndex[i])
 		}
 	}
-	invalidFormat, guardErr := guard.Finish(len(calls) != 0, func(text string) error {
+	messageContent := content.String()
+	invalidFormat, guardErr := guard.Finish(messageContent, len(callsByIndex) != 0, func(text string) error {
 		if emit == nil {
 			return nil
 		}
@@ -303,7 +311,6 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 		r.logProviderFailure(ctx, p.ID, coremodel.ErrModelToolCallFormatInvalid)
 		return coreconversation.ModelRunResult{}, coremodel.ErrModelToolCallFormatInvalid
 	}
-	messageContent := content.String()
 	if guard.DiscardContent() {
 		messageContent = ""
 	}

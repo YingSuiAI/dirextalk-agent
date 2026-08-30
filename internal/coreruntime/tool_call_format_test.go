@@ -72,10 +72,56 @@ func TestModelRunnerQuarantinesTextEncodedToolCall(t *testing.T) {
 	}
 }
 
+func TestModelRunnerQuarantinesPrefixedTextEncodedToolCall(t *testing.T) {
+	client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{
+		{Content: "再看关键文档和代码结构，然后给你总结。\n\n"},
+		{Content: dsmlToolCallsEnvelope + "\n"},
+		{Content: dsmlInvokePrefix + " name=\"lookup\">\n"},
+	}}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	var public strings.Builder
+	result, err := runner.Stream(context.Background(), modelToolProtocolTestRequest(), func(delta coreconversation.ModelDelta) error {
+		public.WriteString(delta.Text)
+		return nil
+	})
+	if !errors.Is(err, coremodel.ErrModelToolCallFormatInvalid) || public.Len() != 0 ||
+		result.Message.ID != "" || len(result.ToolCalls) != 0 {
+		t.Fatalf("result=%+v err=%v public=%q", result, err, public.String())
+	}
+}
+
+func TestModelRunnerQuarantinesTruncatedBareEnvelopeAfterPreface(t *testing.T) {
+	client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{
+		{Content: "I will inspect another file.\n\n"},
+		{Content: dsmlToolCallsEnvelope + "\nprovider stream ended"},
+	}}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	var public strings.Builder
+	result, err := runner.Stream(context.Background(), modelToolProtocolTestRequest(), func(delta coreconversation.ModelDelta) error {
+		public.WriteString(delta.Text)
+		return nil
+	})
+	if !errors.Is(err, coremodel.ErrModelToolCallFormatInvalid) || public.Len() != 0 || result.Message.ID != "" {
+		t.Fatalf("result=%+v err=%v public=%q", result, err, public.String())
+	}
+}
+
 func TestModelRunnerQuarantinesNonStreamingTextEncodedToolCall(t *testing.T) {
 	client := &toolCallFormatCompletionClient{completion: coremodel.Completion{Message: coremodel.Message{
 		Role:    coremodel.RoleAssistant,
 		Content: dsmlToolCallsEnvelope + "\n" + dsmlInvokePrefix + " name=\"lookup\">",
+	}}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	result, err := runner.Run(context.Background(), modelToolProtocolTestRequest())
+	if !errors.Is(err, coremodel.ErrModelToolCallFormatInvalid) || result.Message.ID != "" || len(result.ToolCalls) != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestModelRunnerQuarantinesNonStreamingPrefixedTextEncodedToolCall(t *testing.T) {
+	client := &toolCallFormatCompletionClient{completion: coremodel.Completion{Message: coremodel.Message{
+		Role:    coremodel.RoleAssistant,
+		Content: "I will inspect one more file.\n\n" + dsmlToolCallsEnvelope + "\n" + dsmlInvokePrefix + " name=\"lookup\">",
 	}}}
 	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
 	result, err := runner.Run(context.Background(), modelToolProtocolTestRequest())
@@ -125,6 +171,9 @@ func TestModelRunnerDoesNotTreatRepositoryTextAsToolProtocol(t *testing.T) {
 	for _, content := range []string{
 		"Repository fixture contains " + dsmlToolCallsEnvelope + " as plain text.",
 		"```text\n" + dsmlToolCallsEnvelope + "\n" + dsmlInvokePrefix + " name=\"lookup\">\n```",
+		"~~~text\n" + dsmlToolCallsEnvelope + "\n" + dsmlInvokePrefix + " name=\"lookup\">\n~~~",
+		"> " + dsmlToolCallsEnvelope + "\n> " + dsmlInvokePrefix + " name=\"lookup\">",
+		"Repository token `" + dsmlToolCallsEnvelope + "` followed by `" + dsmlInvokePrefix + "` is documentation.",
 	} {
 		t.Run(content[:4], func(t *testing.T) {
 			client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: content}}}}
@@ -141,6 +190,29 @@ func TestModelRunnerDoesNotTreatRepositoryTextAsToolProtocol(t *testing.T) {
 	}
 }
 
+func TestModelRunnerPublishesOnlyValidatedFinalText(t *testing.T) {
+	client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{
+		{Content: "validated "},
+		{Content: "answer"},
+	}}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	var public []string
+	privateProgress := 0
+	result, err := runner.Stream(context.Background(), modelToolProtocolTestRequest(), func(delta coreconversation.ModelDelta) error {
+		if delta.PrivateProgress {
+			privateProgress++
+		}
+		if delta.Text != "" {
+			public = append(public, delta.Text)
+		}
+		return nil
+	})
+	if err != nil || !result.Done || result.Message.Content != "validated answer" ||
+		privateProgress != 2 || len(public) != 1 || public[0] != "validated answer" {
+		t.Fatalf("result=%+v err=%v private_progress=%d public=%q", result, err, privateProgress, public)
+	}
+}
+
 func TestModelRunnerKeepsStructuredCallsAuthoritative(t *testing.T) {
 	client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{
 		{Content: dsmlToolCallsEnvelope + "\n" + dsmlInvokePrefix + " name=\"lookup\">"},
@@ -153,6 +225,60 @@ func TestModelRunnerKeepsStructuredCallsAuthoritative(t *testing.T) {
 		return nil
 	})
 	if err != nil || result.Done || result.Message.Content != "" || len(result.ToolCalls) != 1 || result.ToolCalls[0].Name != "lookup" || public.Len() != 0 {
+		t.Fatalf("result=%+v err=%v public=%q", result, err, public.String())
+	}
+}
+
+func TestModelRunnerKeepsToolStepNarrationPrivate(t *testing.T) {
+	const narration = "I will inspect the repository now."
+	client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{
+		{Content: narration},
+		{ToolCalls: []coremodel.ToolCall{{Index: 0, ID: "call-1", Type: "function", Function: coremodel.FunctionCall{Name: "lookup", Arguments: `{}`}}}},
+	}}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	var public strings.Builder
+	result, err := runner.Stream(context.Background(), modelToolProtocolTestRequest(), func(delta coreconversation.ModelDelta) error {
+		public.WriteString(delta.Text)
+		return nil
+	})
+	if err != nil || result.Done || result.Message.Content != narration || len(result.ToolCalls) != 1 ||
+		result.ToolCalls[0].Name != "lookup" || public.Len() != 0 {
+		t.Fatalf("result=%+v err=%v public=%q", result, err, public.String())
+	}
+}
+
+func TestModelRunnerKeepsNonStreamingToolStepNarrationPrivate(t *testing.T) {
+	const narration = "I will inspect the repository now."
+	client := &toolCallFormatCompletionClient{completion: coremodel.Completion{Message: coremodel.Message{
+		Role:    coremodel.RoleAssistant,
+		Content: narration,
+		ToolCalls: []coremodel.ToolCall{{
+			ID: "call-1", Type: "function", Function: coremodel.FunctionCall{Name: "lookup", Arguments: `{}`},
+		}},
+	}}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	result, err := runner.Run(context.Background(), modelToolProtocolTestRequest())
+	if err != nil || result.Done || result.Message.Content != narration || len(result.ToolCalls) != 1 || result.ToolCalls[0].Name != "lookup" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestModelRunnerKeepsTruncatedToolStepNarrationPrivate(t *testing.T) {
+	const narration = "I will inspect the repository now."
+	client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{{
+		Content: narration,
+		ToolCalls: []coremodel.ToolCall{{
+			Index: 0, ID: "call-1", Type: "function", Function: coremodel.FunctionCall{Name: "lookup", Arguments: `{"path":"cut`},
+		}},
+	}}, err: coremodel.ErrOutputLimitReached}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	var public strings.Builder
+	result, err := runner.Stream(context.Background(), modelToolProtocolTestRequest(), func(delta coreconversation.ModelDelta) error {
+		public.WriteString(delta.Text)
+		return nil
+	})
+	if err != nil || !result.Continue || result.Done || result.Message.Content != narration ||
+		len(result.ToolCalls) != 0 || len(result.Message.ToolCalls) != 0 || public.Len() != 0 {
 		t.Fatalf("result=%+v err=%v public=%q", result, err, public.String())
 	}
 }

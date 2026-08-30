@@ -2,7 +2,6 @@ package coreruntime
 
 import (
 	"strings"
-	"unicode"
 )
 
 const (
@@ -14,60 +13,50 @@ const (
 )
 
 type toolCallTextGuard struct {
-	enabled    bool
-	safe       bool
-	suspicious bool
-	pending    strings.Builder
+	enabled        bool
+	detectDSML     bool
+	suspicious     bool
+	suppressPublic bool
+	discardContent bool
 }
 
-func newToolCallTextGuard(enabled bool) *toolCallTextGuard {
-	return &toolCallTextGuard{enabled: enabled, safe: !enabled}
+func newToolCallTextGuard(enabled, detectDSML bool) *toolCallTextGuard {
+	return &toolCallTextGuard{enabled: enabled, detectDSML: detectDSML}
 }
 
-// Append holds only a possible leading DSML tool envelope. The guard never
-// parses names or arguments and never turns text into an executable call.
+// Append withholds model-authored content until the complete provider
+// response establishes whether it is a final answer or a tool-use step. The
+// guard never parses names or arguments and never turns text into an
+// executable call.
 func (g *toolCallTextGuard) Append(fragment string, emit func(string) error) error {
 	if fragment == "" {
 		return nil
 	}
-	if g.safe {
+	if !g.enabled {
 		return emitText(fragment, emit)
 	}
-	g.pending.WriteString(fragment)
-	possible, suspicious := classifyLeadingDSMLToolEnvelope(g.pending.String())
-	if suspicious {
-		g.suspicious = true
-		return nil
-	}
-	if possible {
-		return nil
-	}
-	g.safe = true
-	pending := g.pending.String()
-	g.pending.Reset()
-	return emitText(pending, emit)
+	return nil
 }
 
-// Finish returns true only when a complete leading DSML tool envelope was
-// quarantined and the provider supplied no structured tool calls. Suspicious
-// text is discarded when structured calls are present as well; structured
-// calls remain the sole execution authority.
-func (g *toolCallTextGuard) Finish(hasStructuredToolCalls bool, emit func(string) error) (bool, error) {
-	if g.safe {
+// Finish publishes only a validated final answer. Model-authored content from
+// a structured tool-use step stays private, while protocol-shaped DSML in the
+// ordinary content channel is quarantined regardless of any natural-language
+// prefix. Structured calls remain the sole execution authority.
+func (g *toolCallTextGuard) Finish(content string, hasStructuredToolCalls bool, emit func(string) error) (bool, error) {
+	if !g.enabled {
 		return false, nil
 	}
-	if g.suspicious {
-		g.pending.Reset()
-		return !hasStructuredToolCalls, nil
+	g.suspicious = g.detectDSML && containsUnquotedDSMLToolEnvelope(content)
+	g.suppressPublic = g.suspicious || hasStructuredToolCalls
+	g.discardContent = g.suspicious
+	if g.suppressPublic {
+		return g.suspicious && !hasStructuredToolCalls, nil
 	}
-	pending := g.pending.String()
-	g.pending.Reset()
-	g.safe = true
-	return false, emitText(pending, emit)
+	return false, emitText(content, emit)
 }
 
 func (g *toolCallTextGuard) DiscardContent() bool {
-	return g != nil && g.suspicious
+	return g != nil && g.discardContent
 }
 
 func emitText(text string, emit func(string) error) error {
@@ -77,22 +66,97 @@ func emitText(text string, emit func(string) error) error {
 	return emit(text)
 }
 
-func classifyLeadingDSMLToolEnvelope(content string) (possible, suspicious bool) {
-	trimmed := strings.TrimLeftFunc(content, unicode.IsSpace)
-	if trimmed == "" || strings.HasPrefix(dsmlToolCallsEnvelope, trimmed) {
-		return true, false
+// containsUnquotedDSMLToolEnvelope recognizes only the provider's protocol
+// shape outside Markdown code and quote blocks. A bare envelope is sufficient
+// to quarantine a truncated response. Ordinary inline mentions remain text,
+// and repository examples can be preserved by quoting or fencing them.
+func containsUnquotedDSMLToolEnvelope(content string) bool {
+	visible := markdownProtocolText(content)
+	searchAt := 0
+	for searchAt < len(visible) {
+		relative := strings.Index(visible[searchAt:], dsmlToolCallsEnvelope)
+		if relative < 0 {
+			return false
+		}
+		start := searchAt + relative
+		after := visible[start+len(dsmlToolCallsEnvelope):]
+		trimmed := strings.TrimLeft(after, " \t\r\n")
+		lineStart := strings.LastIndexByte(visible[:start], '\n') + 1
+		protocolPosition := strings.TrimSpace(visible[lineStart:start]) == ""
+		if protocolPosition || trimmed == "" || strings.HasPrefix(trimmed, dsmlInvokePrefix) {
+			return true
+		}
+		searchAt = start + len(dsmlToolCallsEnvelope)
 	}
-	if !strings.HasPrefix(trimmed, dsmlToolCallsEnvelope) {
-		return false, false
+	return false
+}
+
+func markdownProtocolText(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	var visible strings.Builder
+	var fence byte
+	var fenceWidth int
+	for _, line := range lines {
+		body := strings.TrimSuffix(line, "\n")
+		trimmed := strings.TrimLeft(body, " \t")
+		marker, width := markdownFenceMarker(trimmed)
+		if fence != 0 {
+			if marker == fence && width >= fenceWidth {
+				fence, fenceWidth = 0, 0
+			}
+			visible.WriteByte('\n')
+			continue
+		}
+		if marker != 0 {
+			fence, fenceWidth = marker, width
+			visible.WriteByte('\n')
+			continue
+		}
+		if strings.HasPrefix(trimmed, ">") {
+			visible.WriteByte('\n')
+			continue
+		}
+		visible.WriteString(stripMarkdownCodeSpans(body))
+		visible.WriteByte('\n')
 	}
-	remainder := strings.TrimLeftFunc(strings.TrimPrefix(trimmed, dsmlToolCallsEnvelope), unicode.IsSpace)
-	if remainder == "" || strings.HasPrefix(dsmlInvokePrefix, remainder) {
-		return true, false
+	return visible.String()
+}
+
+func markdownFenceMarker(line string) (byte, int) {
+	if len(line) < 3 || line[0] != '`' && line[0] != '~' {
+		return 0, 0
 	}
-	if strings.HasPrefix(remainder, dsmlInvokePrefix) {
-		return true, true
+	marker := line[0]
+	width := 1
+	for width < len(line) && line[width] == marker {
+		width++
 	}
-	return false, false
+	if width < 3 {
+		return 0, 0
+	}
+	return marker, width
+}
+
+func stripMarkdownCodeSpans(line string) string {
+	var visible strings.Builder
+	for offset := 0; offset < len(line); {
+		if line[offset] != '`' {
+			visible.WriteByte(line[offset])
+			offset++
+			continue
+		}
+		width := 1
+		for offset+width < len(line) && line[offset+width] == '`' {
+			width++
+		}
+		closing := strings.Index(line[offset+width:], strings.Repeat("`", width))
+		if closing < 0 {
+			visible.WriteString(line[offset:])
+			break
+		}
+		offset += width + closing + width
+	}
+	return visible.String()
 }
 
 func isOpenAIToolProtocol(profileProvider string, requestDialect string, toolCount int, guardToolFree bool) bool {

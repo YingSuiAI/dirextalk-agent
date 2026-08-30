@@ -750,6 +750,9 @@ type ModelDelta struct {
 	Text             string
 	ReasoningContent string
 	ToolCall         *ToolCall
+	// PrivateProgress reports provider activity that must advance live
+	// deadlines without becoming a public or durable assistant delta.
+	PrivateProgress bool
 }
 type ExtensionResolver interface {
 	ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error)

@@ -223,7 +223,21 @@ func TestTurnRetriesQuarantinedToolCallFormatOnceWithRecoveryGuidance(t *testing
 	}
 }
 
-func TestTurnStopsAfterSecondToolCallFormatFailureWithoutExecutingText(t *testing.T) {
+func TestTurnPrivateProviderProgressNeverBecomesPublicDelta(t *testing.T) {
+	model := &retrySequenceModel{outcomes: []retryModelOutcome{{delta: &ModelDelta{PrivateProgress: true}}}}
+	service, store, turn := newAttemptTurnService(t, model)
+	service.executeTurn(context.Background(), turn.ID)
+	if model.callCount() != 1 || store.turn.State != TurnCompleted || store.turn.Response == nil || store.turn.Response.Message.Content != "ok" {
+		t.Fatalf("calls=%d turn=%+v", model.callCount(), store.turn)
+	}
+	for _, event := range store.events {
+		if event.Kind == TurnEventDelta {
+			t.Fatalf("private provider progress became public: %+v", event)
+		}
+	}
+}
+
+func TestTurnFinalizesFromExistingEvidenceAfterSecondToolCallFormatFailure(t *testing.T) {
 	model := &retrySequenceModel{outcomes: []retryModelOutcome{
 		{err: coremodel.ErrModelToolCallFormatInvalid},
 		{err: coremodel.ErrModelToolCallFormatInvalid},
@@ -231,17 +245,47 @@ func TestTurnStopsAfterSecondToolCallFormatFailureWithoutExecutingText(t *testin
 	}}
 	service, store, turn := newAttemptTurnService(t, model)
 	service.executeTurn(context.Background(), turn.ID)
-	if model.callCount() != 2 || store.turn.ModelDispatchCount != 2 || store.turn.State != TurnCompleted || store.turn.Response == nil {
+	if model.callCount() != 3 || store.turn.ModelDispatchCount != 3 || store.turn.State != TurnCompleted || store.turn.Response == nil {
 		t.Fatalf("calls=%d attempts=%d turn=%+v", model.callCount(), store.turn.ModelDispatchCount, store.turn)
 	}
 	if store.finalization == nil || store.finalization.Reason != TurnFinalizationToolCallFormat ||
-		!strings.Contains(store.turn.Response.Message.Content, modelToolCallFormatInvalidCode) ||
+		store.turn.Response.Message.Content != "ok" ||
 		strings.Contains(store.turn.Response.Message.Content, "DSML") {
 		t.Fatalf("finalization=%+v response=%q", store.finalization, store.turn.Response.Message.Content)
+	}
+	finalRequest := model.requests[2]
+	if finalRequest.ToolCallFormatRecovery || len(finalRequest.Intrinsics) != 0 || len(finalRequest.Extensions) != 0 ||
+		len(finalRequest.ExtensionSnapshots) != 0 || !strings.Contains(finalRequest.Profile.SystemPrompt, toolCallFormatSynthesisGuidance) {
+		t.Fatalf("final request=%+v", finalRequest)
 	}
 	for _, event := range store.events {
 		if event.Kind == TurnEventToolCall {
 			t.Fatalf("text protocol produced executable tool event: %+v", event)
+		}
+	}
+}
+
+func TestTurnFallsBackAfterToolAndFinalizationFormatRecoveryFail(t *testing.T) {
+	model := &retrySequenceModel{outcomes: []retryModelOutcome{
+		{err: coremodel.ErrModelToolCallFormatInvalid},
+		{err: coremodel.ErrModelToolCallFormatInvalid},
+		{err: coremodel.ErrModelToolCallFormatInvalid},
+		{err: coremodel.ErrModelToolCallFormatInvalid},
+	}}
+	service, store, turn := newAttemptTurnService(t, model)
+	service.executeTurn(context.Background(), turn.ID)
+	if model.callCount() != 4 || store.turn.ModelDispatchCount != 4 || store.turn.State != TurnCompleted || store.turn.Response == nil {
+		t.Fatalf("calls=%d attempts=%d turn=%+v", model.callCount(), store.turn.ModelDispatchCount, store.turn)
+	}
+	content := store.turn.Response.Message.Content
+	if store.finalization == nil || store.finalization.Reason != TurnFinalizationToolCallFormat ||
+		!strings.Contains(content, ModelToolCallFormatInvalidCode) || strings.Contains(content, "DSML") ||
+		!model.requests[3].ToolCallFormatRecovery {
+		t.Fatalf("finalization=%+v content=%q final_retry=%+v", store.finalization, content, model.requests[3])
+	}
+	for _, event := range store.events {
+		if event.Kind == TurnEventDelta || event.Kind == TurnEventToolCall {
+			t.Fatalf("invalid text protocol became public or executable: %+v", event)
 		}
 	}
 }
