@@ -9,6 +9,14 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Streamable HTTP MCP tool results retain ordered plain text and embedded
+  textual resources instead of dropping file bodies returned through
+  `resource.text`. Resource metadata is validated without URI dereferencing,
+  binary bodies remain excluded, and the combined redacted 32 KiB projection
+  reports truncation explicitly. Focused protocol tests reproduce the official
+  hosted GitHub file-result shape and cover ordering, malformed resources,
+  binary exclusion, redaction, UTF-8-safe bounding, and propagation through
+  the GitHub conversation resolver.
 - Cloud Worker GitHub access remains opt-in: absent, disabled, or tokenless
   frontend configuration creates an ordinary unbound plan and never blocks its
   proposal, confirmation, reuse, or start. The v1.0.184 and deployed v1.0.185
