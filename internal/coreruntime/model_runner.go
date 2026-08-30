@@ -167,7 +167,7 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 		}
 	}
 	if req.ToolCallFormatRecovery {
-		p.SystemPrompt = appendToolCallFormatRecoveryInstruction(p.SystemPrompt)
+		p.SystemPrompt = appendToolCallFormatRecoveryInstruction(p.SystemPrompt, len(tools) != 0)
 	}
 	client, err := r.factory(p)
 	if err != nil {
@@ -187,7 +187,7 @@ func (r *ModelRunner) Run(ctx context.Context, req coreconversation.ModelRunRequ
 		return coreconversation.ModelRunResult{}, err
 	}
 	content := comp.Message.Content
-	guard := newToolCallTextGuard(isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(cr.Tools)))
+	guard := newToolCallTextGuard(isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(cr.Tools), req.GuardTextToolCallEnvelope))
 	if guard.enabled {
 		_ = guard.Append(content, nil)
 		invalid, _ := guard.Finish(len(comp.Message.ToolCalls) != 0, nil)
@@ -220,7 +220,7 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 	var content strings.Builder
 	var reasoning strings.Builder
 	callsByIndex := map[int]coreconversation.ToolCall{}
-	guard := newToolCallTextGuard(isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(cr.Tools)))
+	guard := newToolCallTextGuard(isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(cr.Tools), req.GuardTextToolCallEnvelope))
 	continueOutput := false
 	for {
 		d, e := stream.Recv()

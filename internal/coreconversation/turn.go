@@ -440,6 +440,11 @@ type ModelAttemptFailure struct {
 	RetryAfterMS int64
 }
 
+// ModelToolCallFormatInvalidCode is the only provider failure that may retry a
+// capability-reducing finalization dispatch. The quarantined text is never
+// parsed or executed; the retry keeps the same tool-free directive.
+const ModelToolCallFormatInvalidCode = "MODEL_TOOL_CALL_FORMAT_INVALID"
+
 const TurnDispatchDirectiveVersion = 1
 
 type TurnDispatchGuidance string

@@ -801,6 +801,22 @@ func decodeCanonicalAttachmentChunk(value string) ([]byte, error) {
 
 // durableChatStreamEvent is the direct HTTP/SSE wire DTO. TurnSequence remains
 // an internal replay cursor and is intentionally not exposed.
+type durableToolCallProgress struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	ExecutionID string `json:"execution_id,omitempty"`
+}
+
+type durableToolResultProgress struct {
+	CallID        string                                  `json:"call_id"`
+	ToolName      string                                  `json:"tool_name,omitempty"`
+	IsError       bool                                    `json:"is_error,omitempty"`
+	Outcome       coreconversation.ToolObservationOutcome `json:"outcome,omitempty"`
+	StateChanged  bool                                    `json:"state_changed,omitempty"`
+	MutationState coreconversation.ToolMutationState      `json:"mutation_state,omitempty"`
+	Summary       string                                  `json:"summary,omitempty"`
+}
+
 type durableChatStreamEvent struct {
 	Kind                string                                     `json:"kind"`
 	IdempotencyKey      string                                     `json:"idempotency_key"`
@@ -811,8 +827,8 @@ type durableChatStreamEvent struct {
 	RelatedTaskIDs      []string                                   `json:"related_task_ids,omitempty"`
 	RelatedPlanIDs      []string                                   `json:"related_plan_ids,omitempty"`
 	References          []coreconversation.Reference               `json:"references,omitempty"`
-	ToolCall            *coreconversation.ToolCall                 `json:"tool_call,omitempty"`
-	ToolResult          *coreconversation.ToolResult               `json:"tool_result,omitempty"`
+	ToolCall            *durableToolCallProgress                   `json:"tool_call,omitempty"`
+	ToolResult          *durableToolResultProgress                 `json:"tool_result,omitempty"`
 	ErrorCode           string                                     `json:"error_code,omitempty"`
 	ErrorSummary        string                                     `json:"error_summary,omitempty"`
 	ConfirmationID      string                                     `json:"confirmation_id,omitempty"`
@@ -824,6 +840,24 @@ type durableChatStreamEvent struct {
 	Attachments         *[]coreconversation.AttachmentPresentation `json:"attachments,omitempty"`
 }
 
+func publicToolCallProgress(call *coreconversation.ToolCall) *durableToolCallProgress {
+	if call == nil {
+		return nil
+	}
+	return &durableToolCallProgress{ID: call.ID, Name: call.Name, ExecutionID: call.ExecutionID}
+}
+
+func publicToolResultProgress(result *coreconversation.ToolResult) *durableToolResultProgress {
+	if result == nil {
+		return nil
+	}
+	return &durableToolResultProgress{
+		CallID: result.CallID, ToolName: result.ToolName, IsError: result.IsError,
+		Outcome: result.Outcome, StateChanged: result.StateChanged,
+		MutationState: result.MutationState, Summary: result.Summary,
+	}
+}
+
 func projectDurableChatStreamEvent(turn coreconversation.Turn, revision uint64, event coreconversation.StreamEvent) (durableChatStreamEvent, error) {
 	if !coretask.ValidUUID(turn.ID) || !coretask.ValidUUID(turn.RequestID) || !coretask.ValidUUID(turn.ConversationID) || revision == 0 ||
 		event.RequestID != turn.RequestID || event.ConversationID != turn.ConversationID {
@@ -832,7 +866,7 @@ func projectDurableChatStreamEvent(turn coreconversation.Turn, revision uint64, 
 	projected := durableChatStreamEvent{
 		Kind: string(event.Kind), IdempotencyKey: turn.RequestID, ConversationID: turn.ConversationID,
 		TurnID: turn.ID, Revision: revision, Text: event.Text,
-		ToolCall: event.ToolCall, ToolResult: event.ToolResult,
+		ToolCall: publicToolCallProgress(event.ToolCall), ToolResult: publicToolResultProgress(event.ToolResult),
 		ErrorCode: event.ErrCode, ErrorSummary: event.ErrSummary,
 		Status: event.Status, Phase: event.Phase,
 	}

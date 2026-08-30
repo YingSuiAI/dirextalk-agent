@@ -10,6 +10,7 @@ const (
 	dsmlInvokePrefix      = "<｜｜DSML｜｜invoke"
 
 	modelToolCallFormatRecoveryInstruction = `The previous response used text markup for a tool call. If a tool is needed, return it only through the standard OpenAI-compatible message.tool_calls field. Do not put DSML, XML, or any other tool-call markup in message content. Do not describe or imitate a tool call in plain text. If no tool is needed, return a normal final answer.`
+	modelToolFreeFormatRecoveryInstruction = `The previous response used text markup for a tool call, but tools are disabled for this final response. Return only a normal final answer. Do not put DSML, XML, or any other tool-call markup in message content. Do not describe or imitate a tool call in plain text.`
 )
 
 type toolCallTextGuard struct {
@@ -94,17 +95,21 @@ func classifyLeadingDSMLToolEnvelope(content string) (possible, suspicious bool)
 	return false, false
 }
 
-func isOpenAIToolProtocol(profileProvider string, requestDialect string, toolCount int) bool {
-	if toolCount == 0 || profileProvider != "openai_compatible" {
+func isOpenAIToolProtocol(profileProvider string, requestDialect string, toolCount int, guardToolFree bool) bool {
+	if (toolCount == 0 && !guardToolFree) || profileProvider != "openai_compatible" {
 		return false
 	}
 	return requestDialect == "openai_compatible_chat_v1" || requestDialect == "openai_reasoning_chat_v1"
 }
 
-func appendToolCallFormatRecoveryInstruction(systemPrompt string) string {
+func appendToolCallFormatRecoveryInstruction(systemPrompt string, toolsAvailable bool) string {
+	instruction := modelToolCallFormatRecoveryInstruction
+	if !toolsAvailable {
+		instruction = modelToolFreeFormatRecoveryInstruction
+	}
 	systemPrompt = strings.TrimSpace(systemPrompt)
 	if systemPrompt == "" {
-		return modelToolCallFormatRecoveryInstruction
+		return instruction
 	}
-	return systemPrompt + "\n\n" + modelToolCallFormatRecoveryInstruction
+	return systemPrompt + "\n\n" + instruction
 }

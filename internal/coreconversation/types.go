@@ -472,6 +472,11 @@ type ModelRunRequest struct {
 	// only after a quarantined text tool-call envelope. It can add corrective
 	// protocol guidance but cannot add tools or execution authority.
 	ToolCallFormatRecovery bool
+	// GuardTextToolCallEnvelope keeps the structured-tool protocol guard active
+	// when a capability-reducing finalization dispatch has removed every tool
+	// from the physical provider request. It is derived from the admitted turn
+	// runtime and never grants execution authority.
+	GuardTextToolCallEnvelope bool
 }
 type ModelRunResult struct {
 	Message        Message

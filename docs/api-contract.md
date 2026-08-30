@@ -223,17 +223,25 @@ or stream after admission. It never cancels the accepted Turn; callers use
   payload, and enters the single finalization path described below. Provider failure,
   invalid or empty terminal output, repeated no-progress tool use, and either
   ordinary budget cap first persist an immutable turn-finalization intent.
-  That intent admits exactly one additional physical provider attempt with an
-  independent 30-second timeout; it carries no intrinsic or extension tools,
-  is not charged to the admitted ordinary clock, and cannot retry. The total
-  physical attempt sequence can therefore reach the admitted dispatch cap plus
-  one (at most 25). If the final attempt returns useful text, that text is
+  That intent normally admits exactly one additional physical provider attempt
+  with an independent 30-second timeout; it carries no intrinsic or extension
+  tools and is not charged to the admitted ordinary clock. It cannot retry for
+  an ordinary provider, timeout, empty-output, or budget failure. The only
+  exception is a quarantined `MODEL_TOOL_CALL_FORMAT_INVALID` response from a
+  turn whose admitted runtime originally exposed structured tools: Core may
+  repeat the same tools-disabled finalization directive once with explicit
+  protocol-recovery guidance. That retry never restores tool authority. The
+  total physical attempt sequence can therefore reach the admitted dispatch
+  cap plus one normally (at most 25), or plus two only for that exact live
+  format-recovery case (at most 26). If the final attempt returns useful text,
+  that text is
   the normal completed Markdown response. If it fails, is empty or invalid, or
   returns a tool call, Core commits a deterministic Markdown response with
   `Completed work`, `Best conclusion`, `Incomplete items`, and `Stop reason`
   sections, preserving durable partial text and tool metadata. A restart before
-  the final dispatch may perform it once; a started, dispatched, or uncertain
-  final attempt is never replayed and falls back deterministically. Clients see
+  the final dispatch may perform it once; a started, retryable, dispatched, or
+  uncertain final attempt is never replayed after process recovery and falls
+  back deterministically. Clients see
   the result through the normal `done.message.content` projection rather than
   an error/configuration JSON terminal. A provider batch that would cross the
   admitted tool-call limit does
@@ -260,7 +268,9 @@ or stream after admission. It never cancels the accepted Turn; callers use
   `CoreConversationReference.source_id`, `chunk_id`, and `content_digest`.
   Web results use `web_source` with a canonical URL source identity (lowercase
   scheme/host, no default port or fragment, `/` for an empty path, and sorted
-  query parameters) plus the result-content digest. Knowledge results use
+  query parameters) plus the result-content digest and a bounded display title.
+  They never place fetched page bodies or search snippets in the public
+  reference preview. Knowledge results use
   `knowledge_chunk` with the durable source/chunk identities and passage
   digest. These identities, rather than titles, previews, or snippets, feed
   progress detection.
@@ -294,10 +304,15 @@ or stream after admission. It never cancels the accepted Turn; callers use
   reasoning is absent from public messages, stream events, Capability JSON,
   RPC projections, conversation history, failed transcripts, and every durable
   model-result envelope. A complete model step publishes the existing
-  `tool_call` event only after the model step and tool
-  identity are durable, and before the extension is dispatched. A successful
-  call is followed by its exact `tool_result`; a failed dispatch retains the
-  already-published call before the existing safe terminal error. Durable turns
+  `tool_call` event only after the model step and tool identity are durable, and
+  before the extension is dispatched. The public event contains only call ID,
+  tool name, and optional execution ID; it never contains model-authored
+  arguments. A successful call is followed by a public `tool_result` progress
+  event containing only call/tool identity, outcome/error state, mutation
+  state, and bounded summary. Exact result content, cursors, and result
+  references remain private to the durable model transcript; authoritative
+  answer references are returned by terminal `done`. A failed dispatch retains
+  the already-published call before the existing safe terminal error. Durable turns
   persist the same public ordering while their private pending/dispatched
   envelope remains the at-most-once authority and is never exposed as an
   additional client event. Provider replay reconstructs one assistant message
@@ -338,14 +353,19 @@ or stream after admission. It never cancels the accepted Turn; callers use
   a failed-turn JSON result. Unknown external tool side effects and
   authorization become explicit terminal tool observations; integrity and
   persistence failures retain failed-turn semantics.
-- When tools are admitted, an OpenAI-compatible response that has no structured
-  `message.tool_calls` but begins with a complete DSML tool envelope is never
+- When a turn's admitted runtime exposes tools, an OpenAI-compatible response
+  that has no structured `message.tool_calls` but begins with a complete DSML
+  tool envelope is never
   parsed as a call, published as assistant text, or executed. The adapter
   quarantines the candidate, records `MODEL_TOOL_CALL_FORMAT_INVALID`, and
   permits one dispatch-local retry with fixed guidance requiring standard
-  OpenAI-compatible `tool_calls`. A second format failure performs no third
-  provider dispatch and completes through deterministic Markdown with a clear
-  compatibility stop reason. The detector requires the leading DSML envelope
+  OpenAI-compatible `tool_calls`. This guard remains active during the
+  tools-disabled finalization of that turn. In that phase the one recovery retry
+  instead requires an ordinary final answer and retains zero tools. A second
+  format failure performs no further provider dispatch and completes through
+  deterministic Markdown with a clear compatibility stop reason. Text inside
+  the candidate is never promoted into tool authority. The detector requires
+  the leading DSML envelope
   and invoke structure; quoted, fenced, or otherwise ordinary repository text
   containing the same tokens remains normal content.
 - Recent tool-loop recovery is deliberately conservative and resets at an

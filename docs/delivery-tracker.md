@@ -372,7 +372,21 @@ support.
   repeated failure without a third provider dispatch. Focused Core tests prove
   exact-once recovery and terminal behavior. Focused Linux runtime tests prove
   split-fragment quarantine, no public DSML delta, structured-call authority,
-  and preservation of ordinary/fenced repository text. This is code-level
+  and preservation of ordinary/fenced repository text. The guard now remains
+  active when an unrelated durable finalization removes all tools: one live
+  retry copies the same tools-disabled directive and requests an ordinary final
+  answer, while a repeated format failure falls back without executing the
+  text. Focused Linux Core/runtime tests and a PostgreSQL 18 + pgvector test
+  proved that boundary, exact directive reuse, the extra-attempt fence, and no
+  ordinary model-time charge. This is code-level evidence and does not claim a
+  new deployment.
+- On **2026-08-30**, Native public tool progress stopped projecting model-authored
+  arguments, exact result content, cursors, or result references. Web Search
+  keeps normalized fetched evidence in the private model transcript but now
+  projects only canonical source identity, digest, and bounded title; Flutter
+  renders that source as a compact external link and ignores legacy web preview
+  bodies. Focused Linux Capability/Web Search tests, Flutter reference/coordinator/
+  Agent-page tests, and targeted Dart analysis passed. This is code-level
   evidence and does not claim a new deployment.
 - On **2026-08-20**, existing-conversation Turn admission gained deterministic
   automatic WorkingContext compaction from the frozen profile input budget,

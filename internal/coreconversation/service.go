@@ -22,6 +22,7 @@ const (
 	MaxAdmittedTurnModelDispatches     = 24
 	MaxAdmittedTurnModelActiveDuration = 20 * time.Minute
 	MaxTurnFinalizationDispatches      = 1
+	MaxTurnFinalizationFormatRetries   = 1
 	MaxTurnFinalizationDuration        = 30 * time.Second
 	turnModelFirstPayloadDeadline      = 15 * time.Second
 	turnModelMeaningfulActionDeadline  = 90 * time.Second
@@ -1553,6 +1554,15 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	modelExtensions := resolvedExtensions
 	modelExtensionSnapshots := append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)
 	modelIntrinsicTools := intrinsicTools
+	guardTextToolCallEnvelope := len(runtimeSnapshot.IntrinsicTools) != 0
+	if !guardTextToolCallEnvelope {
+		for _, snapshot := range turn.ExtensionSnapshots {
+			if len(snapshot.ToolNames) != 0 {
+				guardTextToolCallEnvelope = true
+				break
+			}
+		}
+	}
 	forcedToolName := directive.ForcedToolName
 	switch directive.ToolMode {
 	case TurnDispatchToolsNone:
@@ -1586,13 +1596,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			Model:        profile.Model,
 			SystemPrompt: systemPrompt,
 		},
-		Snapshot:              turn.ProfileSnapshot,
-		ProfileSnapshot:       turn.ProfileSnapshot,
-		ForcedToolName:        forcedToolName,
-		Intrinsics:            append([]ResolvedIntrinsic(nil), modelIntrinsicTools...),
-		Extensions:            modelExtensions,
-		ExtensionSnapshots:    modelExtensionSnapshots,
-		InputPartsByMessageID: inputParts,
+		Snapshot:                  turn.ProfileSnapshot,
+		ProfileSnapshot:           turn.ProfileSnapshot,
+		ForcedToolName:            forcedToolName,
+		Intrinsics:                append([]ResolvedIntrinsic(nil), modelIntrinsicTools...),
+		Extensions:                modelExtensions,
+		ExtensionSnapshots:        modelExtensionSnapshots,
+		InputPartsByMessageID:     inputParts,
+		GuardTextToolCallEnvelope: guardTextToolCallEnvelope,
 	}
 	if !replayed {
 		continuity := s.takeProviderContinuity(id)
@@ -1678,7 +1689,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		case out := <-resultCh:
 			if out.err != nil {
 				formatFailure := errors.Is(out.err, coremodel.ErrModelToolCallFormatInvalid)
-				canRetry := out.retry.Retryable && retryCount == 0 && !replayed && !finalizing
+				canRetry := out.retry.Retryable && retryCount == 0 && !replayed && (!finalizing || formatFailure)
 				if canRetry {
 					if attempts, ok := s.turns.(TurnModelAttemptStore); ok {
 						code, summary := classifyModelDispatchFailure(out.err)
@@ -2456,7 +2467,7 @@ const (
 	modelProviderResponseSummary      = "model provider returned an invalid response"
 	modelProviderTruncatedCode        = "provider_stream_truncated"
 	modelProviderTruncatedSummary     = "model provider stream ended before completion"
-	modelToolCallFormatInvalidCode    = "MODEL_TOOL_CALL_FORMAT_INVALID"
+	modelToolCallFormatInvalidCode    = ModelToolCallFormatInvalidCode
 	modelToolCallFormatInvalidSummary = "selected model is incompatible with structured tool calling: it returned text markup instead of OpenAI tool_calls"
 )
 

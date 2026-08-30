@@ -934,13 +934,22 @@ func (s *CoreConversationStore) MarkTurnModelRetryable(ctx context.Context, leas
 	defer tx.Rollback(ctx)
 	result, err := tx.Exec(ctx, `UPDATE core_conversation_model_attempts a SET state='retryable',failure_code=$2,rate_limited=$3,retry_after_ms=$4,finished_at=clock_timestamp()
 		WHERE a.turn_id=$1 AND a.state='dispatched' AND a.lease_id=$5 AND a.lease_epoch <= $6 AND a.runtime_snapshot_json IS NOT NULL
-		AND NOT EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
+		AND (NOT EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
 			WHERE d.turn_id=a.turn_id AND d.attempt_sequence=a.attempt_sequence AND d.dispatch_epoch=a.dispatch_epoch
-			AND d.directive_json ? 'finalization_reason')`, lease.Turn.ID, failure.Code, failure.RateLimited, failure.RetryAfterMS, lease.LeaseID, lease.Epoch)
+			AND d.directive_json ? 'finalization_reason')
+			OR ($7 AND EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
+				WHERE d.turn_id=a.turn_id AND d.attempt_sequence=a.attempt_sequence AND d.dispatch_epoch=a.dispatch_epoch
+				AND d.directive_json ? 'finalization_reason')))`, lease.Turn.ID, failure.Code, failure.RateLimited, failure.RetryAfterMS, lease.LeaseID, lease.Epoch, failure.Code == core.ModelToolCallFormatInvalidCode)
 	if err != nil || result.RowsAffected() != 1 {
 		return core.ErrConflict
 	}
-	result, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET model_active_milliseconds=model_active_milliseconds+GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (clock_timestamp()-model_dispatch_started_at))*1000))::bigint,model_dispatch_started_at=NULL,updated_at=clock_timestamp() WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NOT NULL`, lease.Turn.ID, lease.LeaseID, lease.Epoch)
+	result, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET model_active_milliseconds=model_active_milliseconds+CASE WHEN EXISTS (
+		SELECT 1 FROM core_conversation_model_dispatch_directives d
+		WHERE d.turn_id=core_conversation_turns.turn_id AND d.attempt_sequence=core_conversation_turns.model_dispatch_count
+		AND d.dispatch_epoch=core_conversation_turns.dispatch_epoch AND d.directive_json ? 'finalization_reason'
+	) THEN 0 ELSE GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (clock_timestamp()-model_dispatch_started_at))*1000))::bigint END,
+		model_dispatch_started_at=NULL,updated_at=clock_timestamp()
+		WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='dispatched' AND model_dispatch_started_at IS NOT NULL`, lease.Turn.ID, lease.LeaseID, lease.Epoch)
 	if err != nil || result.RowsAffected() != 1 {
 		return core.ErrConflict
 	}
@@ -992,21 +1001,38 @@ func (s *CoreConversationStore) PrepareTurnModelRetry(ctx context.Context, lease
 		return core.Turn{}, core.ErrConflict
 	}
 	policy := current.RuntimeSnapshot.ExecutionPolicy
+	var finalizationFormatRetry bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM core_conversation_model_attempts a
+		JOIN core_conversation_model_dispatch_directives d ON d.turn_id=a.turn_id
+			AND d.attempt_sequence=a.attempt_sequence AND d.dispatch_epoch=a.dispatch_epoch
+		WHERE a.turn_id=$1 AND a.attempt_sequence=$2 AND a.state='retryable'
+			AND a.failure_code=$3 AND d.directive_json ? 'finalization_reason')`,
+		lease.Turn.ID, current.ModelDispatchCount, core.ModelToolCallFormatInvalidCode).Scan(&finalizationFormatRetry); err != nil {
+		return core.Turn{}, err
+	}
+	maxDispatches := policy.MaxModelDispatches
+	if finalizationFormatRetry {
+		maxDispatches += core.MaxTurnFinalizationDispatches + core.MaxTurnFinalizationFormatRetries
+	}
 	var attempt uint32
 	var dispatchEpoch uint64
 	var started time.Time
 	err = tx.QueryRow(ctx, `UPDATE core_conversation_turns SET model_dispatch_count=model_dispatch_count+1,model_dispatch_started_at=clock_timestamp(),updated_at=clock_timestamp()
 		WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='running' AND dispatch_state='dispatched'
-		AND model_dispatch_started_at IS NULL AND model_dispatch_count < $4 AND model_active_milliseconds < $5
+		AND model_dispatch_started_at IS NULL AND model_dispatch_count < $4 AND ($6 OR model_active_milliseconds < $5)
 		AND EXISTS (SELECT 1 FROM core_conversation_model_attempts a
 			WHERE a.turn_id=$1 AND a.attempt_sequence=core_conversation_turns.model_dispatch_count AND a.state='retryable'
-			AND NOT EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
+			AND (($6 AND a.failure_code=$7 AND EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
 				WHERE d.turn_id=a.turn_id AND d.attempt_sequence=a.attempt_sequence AND d.dispatch_epoch=a.dispatch_epoch
 				AND d.directive_json ? 'finalization_reason'))
-		RETURNING model_dispatch_count,dispatch_epoch,model_dispatch_started_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch, policy.MaxModelDispatches, policy.MaxModelActiveMilliseconds).Scan(&attempt, &dispatchEpoch, &started)
+				OR (NOT $6 AND NOT EXISTS (SELECT 1 FROM core_conversation_model_dispatch_directives d
+					WHERE d.turn_id=a.turn_id AND d.attempt_sequence=a.attempt_sequence AND d.dispatch_epoch=a.dispatch_epoch
+					AND d.directive_json ? 'finalization_reason'))))
+		RETURNING model_dispatch_count,dispatch_epoch,model_dispatch_started_at`, lease.Turn.ID, lease.LeaseID, lease.Epoch, maxDispatches, policy.MaxModelActiveMilliseconds, finalizationFormatRetry, core.ModelToolCallFormatInvalidCode).Scan(&attempt, &dispatchEpoch, &started)
 	if err != nil {
 		latest, getErr := s.GetTurn(ctx, lease.Turn.ID)
-		if getErr == nil && (latest.ModelDispatchCount >= policy.MaxModelDispatches || latest.ModelActiveDuration >= policy.MaxModelActiveDuration()) {
+		if getErr == nil && (latest.ModelDispatchCount >= maxDispatches || (!finalizationFormatRetry && latest.ModelActiveDuration >= policy.MaxModelActiveDuration())) {
 			return core.Turn{}, core.ErrModelBudgetExhausted
 		}
 		return core.Turn{}, core.ErrConflict

@@ -14,12 +14,26 @@ type toolCallFormatCompletionClient struct {
 	completion coremodel.Completion
 }
 
+type toolCallFormatRequestClient struct {
+	stream  coremodel.Stream
+	request coremodel.CompletionRequest
+}
+
 func (c *toolCallFormatCompletionClient) Generate(context.Context, coremodel.CompletionRequest) (coremodel.Completion, error) {
 	return c.completion, nil
 }
 
 func (*toolCallFormatCompletionClient) Stream(context.Context, coremodel.CompletionRequest) (coremodel.Stream, error) {
 	return nil, errors.New("stream must not be used")
+}
+
+func (*toolCallFormatRequestClient) Generate(context.Context, coremodel.CompletionRequest) (coremodel.Completion, error) {
+	return coremodel.Completion{}, errors.New("generate must not be used")
+}
+
+func (c *toolCallFormatRequestClient) Stream(_ context.Context, request coremodel.CompletionRequest) (coremodel.Stream, error) {
+	c.request = request
+	return c.stream, nil
 }
 
 func modelToolProtocolTestRequest() coreconversation.ModelRunRequest {
@@ -67,6 +81,43 @@ func TestModelRunnerQuarantinesNonStreamingTextEncodedToolCall(t *testing.T) {
 	result, err := runner.Run(context.Background(), modelToolProtocolTestRequest())
 	if !errors.Is(err, coremodel.ErrModelToolCallFormatInvalid) || result.Message.ID != "" || len(result.ToolCalls) != 0 {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestModelRunnerKeepsGuardDuringToolFreeFinalization(t *testing.T) {
+	request := modelToolProtocolTestRequest()
+	request.Extensions = nil
+	request.GuardTextToolCallEnvelope = true
+	client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{
+		{Content: "\n" + dsmlToolCallsEnvelope},
+		{Content: "\n" + dsmlInvokePrefix + " name=\"lookup\">"},
+	}}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	var public strings.Builder
+	result, err := runner.Stream(context.Background(), request, func(delta coreconversation.ModelDelta) error {
+		public.WriteString(delta.Text)
+		return nil
+	})
+	if !errors.Is(err, coremodel.ErrModelToolCallFormatInvalid) || public.Len() != 0 ||
+		result.Message.ID != "" || len(result.ToolCalls) != 0 {
+		t.Fatalf("result=%+v err=%v public=%q", result, err, public.String())
+	}
+}
+
+func TestModelRunnerToolFreeGuardDoesNotHideOrdinaryRepositoryText(t *testing.T) {
+	content := "Final summary: repository fixture contains " + dsmlToolCallsEnvelope + " as plain text."
+	request := modelToolProtocolTestRequest()
+	request.Extensions = nil
+	request.GuardTextToolCallEnvelope = true
+	client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: content}}}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	var public strings.Builder
+	result, err := runner.Stream(context.Background(), request, func(delta coreconversation.ModelDelta) error {
+		public.WriteString(delta.Text)
+		return nil
+	})
+	if err != nil || !result.Done || result.Message.Content != content || public.String() != content {
+		t.Fatalf("result=%+v err=%v public=%q", result, err, public.String())
 	}
 }
 
@@ -121,5 +172,25 @@ func TestModelRunnerAddsFixedRecoveryInstruction(t *testing.T) {
 		!strings.Contains(captured.SystemPrompt, "standard OpenAI-compatible message.tool_calls") ||
 		!strings.Contains(captured.SystemPrompt, "Do not put DSML") {
 		t.Fatalf("result=%+v err=%v system_prompt=%q", result, err, captured.SystemPrompt)
+	}
+}
+
+func TestModelRunnerAddsToolFreeRecoveryInstructionWithoutRestoringAuthority(t *testing.T) {
+	request := modelToolProtocolTestRequest()
+	request.Extensions = nil
+	request.GuardTextToolCallEnvelope = true
+	request.ToolCallFormatRecovery = true
+	request.Snapshot.SystemPrompt = "base policy"
+	var captured coremodel.Profile
+	client := &toolCallFormatRequestClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: "normal final answer"}}}}
+	runner, _ := NewModelRunner(func(profile coremodel.Profile) (coremodel.Client, error) {
+		captured = profile
+		return client, nil
+	})
+	result, err := runner.Stream(context.Background(), request, nil)
+	if err != nil || !result.Done || len(client.request.Tools) != 0 ||
+		!strings.Contains(captured.SystemPrompt, "tools are disabled for this final response") ||
+		!strings.Contains(captured.SystemPrompt, "Do not put DSML") {
+		t.Fatalf("result=%+v err=%v tools=%+v system_prompt=%q", result, err, client.request.Tools, captured.SystemPrompt)
 	}
 }

@@ -114,7 +114,9 @@ func (s *attemptTurnStore) ValidateTurnRuntime(_ context.Context, _ TurnLease, r
 func (s *attemptTurnStore) MarkTurnModelRetryable(_ context.Context, _ TurnLease, failure ModelAttemptFailure) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.dispatchState != "dispatched" || s.retryable || s.directive.FinalizationReason != "" || failure.Validate() != nil {
+	finalizationFormatRetry := s.directive.FinalizationReason != "" && failure.Code == ModelToolCallFormatInvalidCode
+	if s.dispatchState != "dispatched" || s.retryable ||
+		(s.directive.FinalizationReason != "" && !finalizationFormatRetry) || failure.Validate() != nil {
 		return ErrConflict
 	}
 	s.retryFailures = append(s.retryFailures, failure)
@@ -129,10 +131,16 @@ func (s *attemptTurnStore) PrepareTurnModelRetry(context.Context, TurnLease) (Tu
 	if s.turn.RuntimeSnapshot == nil || s.turn.RuntimeSnapshot.ExecutionPolicy.Validate() != nil {
 		return Turn{}, ErrTurnRuntimeIncompatible
 	}
-	if s.turn.ModelDispatchCount >= s.turn.RuntimeSnapshot.ExecutionPolicy.MaxModelDispatches {
+	finalizationFormatRetry := s.directive.FinalizationReason != "" && len(s.retryFailures) != 0 &&
+		s.retryFailures[len(s.retryFailures)-1].Code == ModelToolCallFormatInvalidCode
+	maxDispatches := s.turn.RuntimeSnapshot.ExecutionPolicy.MaxModelDispatches
+	if finalizationFormatRetry {
+		maxDispatches += MaxTurnFinalizationDispatches + MaxTurnFinalizationFormatRetries
+	}
+	if s.turn.ModelDispatchCount >= maxDispatches {
 		return Turn{}, ErrModelBudgetExhausted
 	}
-	if !s.retryable || s.directive.FinalizationReason != "" {
+	if !s.retryable || (s.directive.FinalizationReason != "" && !finalizationFormatRetry) {
 		return Turn{}, ErrConflict
 	}
 	s.retryable = false
@@ -234,6 +242,59 @@ func TestTurnStopsAfterSecondToolCallFormatFailureWithoutExecutingText(t *testin
 	for _, event := range store.events {
 		if event.Kind == TurnEventToolCall {
 			t.Fatalf("text protocol produced executable tool event: %+v", event)
+		}
+	}
+}
+
+func TestToolFreeFinalizationRetriesQuarantinedFormatOnce(t *testing.T) {
+	model := &retrySequenceModel{outcomes: []retryModelOutcome{
+		{err: coremodel.ErrModelToolCallFormatInvalid},
+		{},
+	}}
+	service, store, turn := newAttemptTurnService(t, model)
+	intent := NewTurnFinalizationIntent(TurnFinalizationToolBudget)
+	store.finalization = &intent
+	service.executeTurn(context.Background(), turn.ID)
+
+	if model.callCount() != 2 || store.turn.ModelDispatchCount != 2 || len(store.retryFailures) != 1 {
+		t.Fatalf("calls=%d attempts=%d retry_failures=%+v", model.callCount(), store.turn.ModelDispatchCount, store.retryFailures)
+	}
+	if store.retryFailures[0].Code != ModelToolCallFormatInvalidCode ||
+		!model.requests[1].ToolCallFormatRecovery || len(model.requests[1].Intrinsics) != 0 ||
+		len(model.requests[1].Extensions) != 0 || len(model.requests[1].ExtensionSnapshots) != 0 {
+		t.Fatalf("failure=%+v recovery_request=%+v", store.retryFailures[0], model.requests[1])
+	}
+	if store.turn.State != TurnCompleted || store.turn.Response == nil || store.turn.Response.Message.Content != "ok" {
+		t.Fatalf("turn=%+v", store.turn)
+	}
+	for _, event := range store.events {
+		if event.Kind == TurnEventDelta || event.Kind == TurnEventToolCall {
+			t.Fatalf("quarantined finalization published executable or visible content: %+v", event)
+		}
+	}
+}
+
+func TestToolFreeFinalizationStopsAfterSecondFormatFailure(t *testing.T) {
+	model := &retrySequenceModel{outcomes: []retryModelOutcome{
+		{err: coremodel.ErrModelToolCallFormatInvalid},
+		{err: coremodel.ErrModelToolCallFormatInvalid},
+		{},
+	}}
+	service, store, turn := newAttemptTurnService(t, model)
+	intent := NewTurnFinalizationIntent(TurnFinalizationToolBudget)
+	store.finalization = &intent
+	service.executeTurn(context.Background(), turn.ID)
+
+	if model.callCount() != 2 || store.turn.ModelDispatchCount != 2 || store.turn.State != TurnCompleted || store.turn.Response == nil {
+		t.Fatalf("calls=%d attempts=%d turn=%+v", model.callCount(), store.turn.ModelDispatchCount, store.turn)
+	}
+	content := store.turn.Response.Message.Content
+	if !strings.Contains(content, ModelToolCallFormatInvalidCode) || strings.Contains(content, "DSML") {
+		t.Fatalf("response=%q", content)
+	}
+	for _, event := range store.events {
+		if event.Kind == TurnEventDelta || event.Kind == TurnEventToolCall {
+			t.Fatalf("invalid text format escaped quarantine: %+v", event)
 		}
 	}
 }
