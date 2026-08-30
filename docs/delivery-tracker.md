@@ -362,6 +362,13 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-30**, builtin MCP version identity was extended to bind both
+  the inspected tool-catalog digest and the immutable published artifact
+  digest. Repacking an executable with an unchanged catalog now creates a
+  distinct immutable version instead of colliding with a historical primary
+  key and preventing Agent restart. The PostgreSQL regression covers exact
+  replay, same-content repack, later catalog change, and the durable removal
+  fence.
 - On **2026-08-30**, a focused regression reproduced Native continuation
   routing an accepted `github-mcp` snapshot through installed-extension
   storage, then passed after GitHub MCP joined the context-bound resolver set.
