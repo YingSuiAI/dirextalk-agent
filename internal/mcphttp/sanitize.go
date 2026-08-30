@@ -19,6 +19,8 @@ var (
 	privateKeyPattern           = regexp.MustCompile(`(?s)-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----`)
 )
 
+const toolResultTruncationNotice = "\n\n[MCP tool result truncated: request a narrower result to continue.]"
+
 func validateInputSchema(schema map[string]any) error {
 	if schema == nil || schema["type"] != "object" {
 		return ErrInvalidToolDefinition
@@ -151,7 +153,7 @@ func sanitizeToolResult(content string) string {
 	if content == "" {
 		return "{}"
 	}
-	return truncateUTF8(content, maxToolResultBytes)
+	return truncateUTF8WithNotice(content, maxToolResultBytes, toolResultTruncationNotice)
 }
 
 func sanitizeToolMetadata(content string) string {
@@ -194,6 +196,23 @@ func truncateUTF8(value string, limit int) string {
 		cut--
 	}
 	return value[:cut] + suffix
+}
+
+func truncateUTF8WithNotice(value string, limit int, notice string) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	if len(notice) >= limit {
+		return truncateUTF8(notice, limit)
+	}
+	cut := limit - len(notice)
+	for cut > 0 && !utf8.ValidString(value[:cut]) {
+		cut--
+	}
+	return value[:cut] + notice
 }
 
 func redactCredentialPayload(data []byte, contentType string, credential []byte) []byte {

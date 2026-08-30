@@ -1017,6 +1017,16 @@ that authenticated context instead of being routed through durable installed-
 extension storage; its exact immutable snapshot and accepted tool-schema
 digests must still match. No token is copied to a process environment or Worker.
 
+The shared Streamable HTTP MCP adapter projects ordered `text` content and
+embedded textual `resource.text` content into the model-visible tool result.
+An embedded resource requires a bounded absolute URI and valid optional MIME
+type; the URI is presentation metadata only and is never dereferenced. Binary
+`resource.blob` and other non-text content stay outside the conversation
+boundary. The combined result passes through the existing credential
+redaction and one shared 32 KiB model-visible limit, with an explicit
+truncation notice so the model can request a narrower read instead of assuming
+that a partial file is complete.
+
 Core is a fresh-state service with no legacy public-API or database
 compatibility path, except the explicit internal Cloud Worker v1.0.184/v1.0.185
 unbound-plan encoding support above. Any Protobuf or schema change updates this
