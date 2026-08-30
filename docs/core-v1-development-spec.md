@@ -596,6 +596,18 @@ must first prove there are no nonterminal turns carrying the superseded raw
 model-result shape, or explicitly terminalize those turns before the new binary
 may claim them.
 
+OpenAI-compatible text is never promoted into tool authority. If tools are
+admitted and a response without structured `tool_calls` begins with the complete
+DSML tool envelope and invoke structure, the adapter quarantines the text and
+returns `MODEL_TOOL_CALL_FORMAT_INVALID`; it does not parse a name or arguments.
+Core may retry that known side-effect-free format failure once with fixed
+guidance requiring standard OpenAI-compatible `message.tool_calls`. The retry
+is charged as a physical provider attempt. Repeating the format failure creates
+a dedicated finalization intent and deterministic Markdown compatibility stop
+without a third provider request. Ordinary or fenced repository text that only
+contains the marker away from the protocol-leading position remains visible
+content.
+
 Workload Tasks use that same revision/attempt/lease-epoch fencing path. The
 local runner receives only a descriptor request bound to the dispatch; it
 never receives Agent credentials, raw secrets, or a database connection.

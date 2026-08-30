@@ -453,6 +453,18 @@ func assertTerminalFallbackMarkdown(t *testing.T, turn core.Turn) {
 	}
 }
 
+func TestModelToolCallFormatFinalizationPersistsPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	turn := startPersistedFinalization(t, h, core.TurnFinalizationToolCallFormat)
+	intent, present, err := h.store.LoadTurnFinalization(context.Background(), turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !present || intent.Reason != core.TurnFinalizationToolCallFormat {
+		t.Fatalf("persisted finalization=%+v present=%v", intent, present)
+	}
+}
+
 func TestFinalizationIntentRestartDispatchesOncePostgres(t *testing.T) {
 	h := openTurnDB(t)
 	turn := startPersistedFinalization(t, h, core.TurnFinalizationModelBudget)

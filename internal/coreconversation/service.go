@@ -1249,7 +1249,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	unappliedWorkerSteer := hasUnappliedDeferredWorkerSteer(turnSteers, workerSteersApplied, toolCallAuthorities)
 	autoFinalizeWorker := terminalWorker && !unappliedWorkerSteer
 	var resolvedExtensions []ResolvedExtension
-	if !autoFinalizeWorker {
+	formatFallback := finalizing && finalization.Reason == TurnFinalizationToolCallFormat
+	if !autoFinalizeWorker && !formatFallback {
 		resolvedExtensions, err = s.resolveAcceptedTurnExtensionsForContinuation(ctx, turn.ExtensionSnapshots, terminalWorker)
 		if err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
@@ -1303,6 +1304,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 			_, _ = s.turns.FailTurn(ctx, lease, "turn_commit_failed", "conversation final response could not be committed")
 		}
+	}
+	if formatFallback {
+		code, summary := uncertainModelFailure(turn)
+		if code == "" || summary == "" {
+			code, summary = finalizationStop(finalization.Reason)
+		}
+		commitFallback(finalization, code, summary)
+		return
 	}
 	if finalizing && (turn.DispatchState == "dispatched" || turn.DispatchState == "uncertain") {
 		code, summary := turn.TerminalCode, turn.TerminalSummary
@@ -1601,7 +1610,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 		}
 	}
-	runAttempt := func() {
+	runAttempt := func(formatRecovery bool) {
 		deltaBuffer := newTurnDeltaBuffer(defaultTurnDeltaFlushBytes, defaultTurnDeltaFlushInterval, func(delta ModelDelta) error {
 			_, appendErr := s.turns.AppendTurnEvent(ctx, id, TurnEvent{
 				Kind: TurnEventDelta,
@@ -1616,7 +1625,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			dispatchCtx, deadlineGuard := newTurnModelDeadlineGuard(modelCtx, s.modelDeadlines, modelDeadlineCap)
 			providerPayload := false
 			var callbackErr error
-			result, runErr := s.runModel(dispatchCtx, frozenModelRequest, func(delta ModelDelta) error {
+			modelRequest := frozenModelRequest
+			modelRequest.ToolCallFormatRecovery = formatRecovery
+			result, runErr := s.runModel(dispatchCtx, modelRequest, func(delta ModelDelta) error {
 				deadlineGuard.observe(delta)
 				if nonemptyProviderPayload(delta) {
 					providerPayload = true
@@ -1637,10 +1648,11 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				runErr = ErrModelBudgetExhausted
 			}
 			retry := coremodel.PreOutputRetryMetadata(runErr)
+			formatFailure := errors.Is(runErr, coremodel.ErrModelToolCallFormatInvalid)
 			// Once any provider payload is accepted, including raw reasoning or an
 			// incomplete tool fragment, a latency watchdog failure must not trigger
 			// the one pre-output provider retry.
-			if providerPayload || flushErr != nil {
+			if flushErr != nil || providerPayload && !formatFailure {
 				retry = coremodel.RetryMetadata{}
 			}
 			resultCh <- turnModelOutcome{result: result, err: runErr, retry: retry}
@@ -1649,7 +1661,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if replayed {
 		resultCh <- turnModelOutcome{result: replay}
 	} else {
-		runAttempt()
+		runAttempt(false)
 	}
 	interval := s.turnLeaseTTL / 3
 	if interval <= 0 {
@@ -1660,11 +1672,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	var retryTimer <-chan time.Time
 	cancelEvents := (<-chan struct{})(cancelSignal)
 	retryCount := 0
+	retryFormatRecovery := false
 	for {
 		select {
 		case out := <-resultCh:
 			if out.err != nil {
-				if out.retry.Retryable && retryCount == 0 && !replayed && !finalizing {
+				formatFailure := errors.Is(out.err, coremodel.ErrModelToolCallFormatInvalid)
+				canRetry := out.retry.Retryable && retryCount == 0 && !replayed && !finalizing
+				if canRetry {
 					if attempts, ok := s.turns.(TurnModelAttemptStore); ok {
 						code, summary := classifyModelDispatchFailure(out.err)
 						delay := out.retry.RetryAfter
@@ -1674,6 +1689,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						failure := ModelAttemptFailure{Code: code, Summary: summary, RateLimited: out.retry.RateLimited, RetryAfterMS: delay.Milliseconds()}
 						if attempts.MarkTurnModelRetryable(ctx, lease, failure) == nil {
 							retryCount++
+							retryFormatRecovery = formatFailure
 							retryTimer = time.After(delay)
 							continue
 						}
@@ -2181,7 +2197,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 			turn.ModelDispatchCount = prepared.ModelDispatchCount
 			turn.ModelActiveDuration = prepared.ModelActiveDuration
-			runAttempt()
+			runAttempt(retryFormatRecovery)
+			retryFormatRecovery = false
 		case <-heartbeat.C:
 			t, e := s.turns.GetTurn(ctx, id)
 			if e == nil && t.CancelRequested {
@@ -2280,6 +2297,9 @@ func resolveTurnAttachmentInputParts(ctx context.Context, resolver TurnAttachmen
 }
 
 func finalizationReasonForFailure(code string) TurnFinalizationReason {
+	if code == modelToolCallFormatInvalidCode {
+		return TurnFinalizationToolCallFormat
+	}
 	if code == modelBudgetExhaustedCode {
 		return TurnFinalizationModelBudget
 	}
@@ -2302,6 +2322,8 @@ func finalizationStop(reason TurnFinalizationReason) (string, string) {
 		return modelDispatchUncertainCode, modelDispatchUncertainSummary
 	case TurnFinalizationInvalidOutput:
 		return "invalid_model_result", "model returned an invalid or empty terminal response"
+	case TurnFinalizationToolCallFormat:
+		return modelToolCallFormatInvalidCode, modelToolCallFormatInvalidSummary
 	default:
 		return "finalization_required", "the turn stopped before a complete final response was available"
 	}
@@ -2414,29 +2436,34 @@ func boundedTerminalText(value string, limit int) string {
 }
 
 const (
-	modelDispatchUncertainCode      = "provider_uncertain"
-	modelDispatchUncertainSummary   = "model dispatch outcome is unknown"
-	modelResponseTimeoutCode        = "provider_timeout"
-	modelResponseTimeoutSummary     = "model stream stopped producing progress; outcome is unknown; send a new turn to retry"
-	modelBudgetExhaustedCode        = "model_budget_exhausted"
-	modelBudgetExhaustedSummary     = "model execution budget was exhausted before a final response"
-	toolBudgetExhaustedCode         = "tool_budget_exhausted"
-	toolBudgetExhaustedSummary      = "tool call budget was exhausted before a final response"
-	modelProviderRejectedCode       = "provider_rejected"
-	modelProviderRejectedSummary    = "model provider rejected the request"
-	modelProviderRateLimitedCode    = "provider_rate_limited"
-	modelProviderRateLimitedSummary = "model provider rate limit was reached"
-	turnRuntimeIncompatibleCode     = "TURN_RUNTIME_INCOMPATIBLE"
-	turnRuntimeIncompatibleSummary  = "accepted turn runtime is incompatible with this runtime"
-	modelRequestInvalidCode         = "invalid_model_request"
-	modelRequestInvalidSummary      = "model request is invalid"
-	modelProviderResponseCode       = "provider_invalid_response"
-	modelProviderResponseSummary    = "model provider returned an invalid response"
-	modelProviderTruncatedCode      = "provider_stream_truncated"
-	modelProviderTruncatedSummary   = "model provider stream ended before completion"
+	modelDispatchUncertainCode        = "provider_uncertain"
+	modelDispatchUncertainSummary     = "model dispatch outcome is unknown"
+	modelResponseTimeoutCode          = "provider_timeout"
+	modelResponseTimeoutSummary       = "model stream stopped producing progress; outcome is unknown; send a new turn to retry"
+	modelBudgetExhaustedCode          = "model_budget_exhausted"
+	modelBudgetExhaustedSummary       = "model execution budget was exhausted before a final response"
+	toolBudgetExhaustedCode           = "tool_budget_exhausted"
+	toolBudgetExhaustedSummary        = "tool call budget was exhausted before a final response"
+	modelProviderRejectedCode         = "provider_rejected"
+	modelProviderRejectedSummary      = "model provider rejected the request"
+	modelProviderRateLimitedCode      = "provider_rate_limited"
+	modelProviderRateLimitedSummary   = "model provider rate limit was reached"
+	turnRuntimeIncompatibleCode       = "TURN_RUNTIME_INCOMPATIBLE"
+	turnRuntimeIncompatibleSummary    = "accepted turn runtime is incompatible with this runtime"
+	modelRequestInvalidCode           = "invalid_model_request"
+	modelRequestInvalidSummary        = "model request is invalid"
+	modelProviderResponseCode         = "provider_invalid_response"
+	modelProviderResponseSummary      = "model provider returned an invalid response"
+	modelProviderTruncatedCode        = "provider_stream_truncated"
+	modelProviderTruncatedSummary     = "model provider stream ended before completion"
+	modelToolCallFormatInvalidCode    = "MODEL_TOOL_CALL_FORMAT_INVALID"
+	modelToolCallFormatInvalidSummary = "selected model is incompatible with structured tool calling: it returned text markup instead of OpenAI tool_calls"
 )
 
 func classifyModelDispatchFailure(err error) (string, string) {
+	if errors.Is(err, coremodel.ErrModelToolCallFormatInvalid) {
+		return modelToolCallFormatInvalidCode, modelToolCallFormatInvalidSummary
+	}
 	if errors.Is(err, coremodel.ErrInvalidCompletionRequest) || errors.Is(err, coremodel.ErrCompletionRequestTooLarge) {
 		return modelRequestInvalidCode, modelRequestInvalidSummary
 	}

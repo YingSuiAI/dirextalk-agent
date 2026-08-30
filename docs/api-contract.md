@@ -338,6 +338,16 @@ or stream after admission. It never cancels the accepted Turn; callers use
   a failed-turn JSON result. Unknown external tool side effects and
   authorization become explicit terminal tool observations; integrity and
   persistence failures retain failed-turn semantics.
+- When tools are admitted, an OpenAI-compatible response that has no structured
+  `message.tool_calls` but begins with a complete DSML tool envelope is never
+  parsed as a call, published as assistant text, or executed. The adapter
+  quarantines the candidate, records `MODEL_TOOL_CALL_FORMAT_INVALID`, and
+  permits one dispatch-local retry with fixed guidance requiring standard
+  OpenAI-compatible `tool_calls`. A second format failure performs no third
+  provider dispatch and completes through deterministic Markdown with a clear
+  compatibility stop reason. The detector requires the leading DSML envelope
+  and invoke structure; quoted, fenced, or otherwise ordinary repository text
+  containing the same tokens remains normal content.
 - Recent tool-loop recovery is deliberately conservative and resets at an
   accepted steer. It recognizes only repeated canonical action/result pairs or
   exact A/B alternation. Argument object key order and harmless unquoted local
