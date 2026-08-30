@@ -1383,7 +1383,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		intrinsicPolicy = turn.RuntimeSnapshot.IntrinsicPolicy
 	}
 	var intrinsicTools []ResolvedIntrinsic
-	if intrinsicPolicy != TurnIntrinsicPolicyNone {
+	if !finalizing && intrinsicPolicy != TurnIntrinsicPolicyNone {
 		intrinsicTools, err = s.resolveIntrinsicTools(ctx, lease)
 		if err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_unavailable", "Core intrinsic tool is unavailable")
@@ -1416,21 +1416,26 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	}
 	toolCallBudgetExhausted := uint32(len(toolCallAuthorities)) >= executionPolicy.MaxToolCalls
 	profile := turn.ProfileSnapshot.Profile()
-	systemPrompt := appendSystemPrompt(compilePlatformSystemPrompt(profile.SystemPrompt), conversationConvergenceGuidance)
-	systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, resolvedExtensions)
-	if containsStaticSiteIntrinsic(intrinsicTools) {
-		systemPrompt = staticSiteSystemPrompt(systemPrompt)
-	}
-	if containsScheduleIntrinsic(intrinsicTools) {
-		systemPrompt = scheduleSystemPrompt(systemPrompt)
-	}
-	if containsCloudWorkerIntrinsic(intrinsicTools) {
-		systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
-	}
-	runtimeSnapshot, snapshotErr := newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsicTools, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, executionPolicy, turn.RuntimeSnapshot.ConstrainedWorkflow)
-	if snapshotErr != nil {
-		_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
-		return
+	runtimeSnapshot := *turn.RuntimeSnapshot
+	systemPrompt := runtimeSnapshot.CompiledSystemPrompt
+	if !finalizing {
+		systemPrompt = appendSystemPrompt(compilePlatformSystemPrompt(profile.SystemPrompt), conversationConvergenceGuidance)
+		systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, resolvedExtensions)
+		if containsStaticSiteIntrinsic(intrinsicTools) {
+			systemPrompt = staticSiteSystemPrompt(systemPrompt)
+		}
+		if containsScheduleIntrinsic(intrinsicTools) {
+			systemPrompt = scheduleSystemPrompt(systemPrompt)
+		}
+		if containsCloudWorkerIntrinsic(intrinsicTools) {
+			systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
+		}
+		candidateRuntime, snapshotErr := newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsicTools, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, executionPolicy, turn.RuntimeSnapshot.ConstrainedWorkflow)
+		if snapshotErr != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
+			return
+		}
+		runtimeSnapshot = candidateRuntime
 	}
 	if !replayed {
 		if validateErr := s.turns.ValidateTurnRuntime(ctx, lease, runtimeSnapshot); validateErr != nil {

@@ -318,6 +318,70 @@ func TestToolFreeFinalizationRetriesQuarantinedFormatOnce(t *testing.T) {
 	}
 }
 
+func TestToolFreeFinalizationUsesFrozenRuntimeWithMessageMCP(t *testing.T) {
+	model := &retrySequenceModel{}
+	service, store, turn := newAttemptTurnService(t, model)
+	selection := ExtensionSelection{
+		Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1",
+		Digest: strings.Repeat("a", 64), AllowedTools: []string{"mcp__message__dirextalk_rooms_search"},
+	}
+	snapshot := ExtensionExecutionSnapshot{
+		Selection: selection, InstallationID: selection.ID, VersionID: selection.Version,
+		Source: "message-mcp", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64),
+		ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64),
+		ToolNames: append([]string(nil), selection.AllowedTools...), ReadOnly: true,
+	}
+	resolved := ResolvedExtension{
+		Selection: selection, Snapshot: snapshot,
+		Tools: []coremodel.Tool{{Name: selection.AllowedTools[0], InputSchema: map[string]any{"type": "object"}}},
+	}
+	admittedIntrinsic := ResolvedIntrinsic{
+		Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}},
+		Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+			return IntrinsicExecutionResult{}, nil
+		},
+	}
+	service.intrinsics = intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+		return []ResolvedIntrinsic{admittedIntrinsic}, nil
+	})
+	turn.ExtensionSnapshots = []ExtensionExecutionSnapshot{snapshot}
+	turn.ExtensionSnapshotDigest = TurnStartCommand{ExtensionSnapshots: turn.ExtensionSnapshots}.ExtensionSnapshotDigest()
+	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), turn, []ResolvedExtension{resolved}, "", TurnExecutionDeep, TurnConstrainedWorkflow{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(runtime.CompiledSystemPrompt, messageMCPRoutingGuidance) {
+		t.Fatalf("admitted runtime omitted Message MCP guidance: %q", runtime.CompiledSystemPrompt)
+	}
+	turn.RuntimeSnapshot = &runtime
+	store.turn = turn
+	store.runtime = &runtime
+	intent := NewTurnFinalizationIntent(TurnFinalizationToolBudget)
+	store.finalization = &intent
+	resolverCalls := 0
+	service.extensions = extensionResolverFunc(func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+		resolverCalls++
+		return nil, errors.New("tools-disabled finalization must not resolve extensions")
+	})
+	intrinsicResolverCalls := 0
+	service.intrinsics = intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+		intrinsicResolverCalls++
+		return nil, errors.New("tools-disabled finalization must not resolve intrinsics")
+	})
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	if resolverCalls != 0 || intrinsicResolverCalls != 0 || model.callCount() != 1 || store.turn.State != TurnCompleted || store.turn.Response == nil {
+		t.Fatalf("extension_resolver_calls=%d intrinsic_resolver_calls=%d model_calls=%d turn=%+v failure=%q", resolverCalls, intrinsicResolverCalls, model.callCount(), store.turn, store.failedCode)
+	}
+	request := model.requests[0]
+	if len(request.Intrinsics) != 0 || len(request.Extensions) != 0 || len(request.ExtensionSnapshots) != 0 ||
+		!strings.Contains(request.Profile.SystemPrompt, messageMCPRoutingGuidance) ||
+		!strings.Contains(request.Profile.SystemPrompt, toolLoopSynthesisGuidance) {
+		t.Fatalf("tools-disabled finalization did not preserve the frozen prompt: %+v", request)
+	}
+}
+
 func TestToolFreeFinalizationStopsAfterSecondFormatFailure(t *testing.T) {
 	model := &retrySequenceModel{outcomes: []retryModelOutcome{
 		{err: coremodel.ErrModelToolCallFormatInvalid},

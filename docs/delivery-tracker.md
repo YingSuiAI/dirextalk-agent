@@ -103,6 +103,11 @@ contract](message-server-integration-development-contract.md), and
   argument/presentation wrappers do not count as progress, restart preserves
   the cycle, and steer resets it. Results without
   structured observations retain conservative exact/A-B loop recovery.
+  Tools-disabled finalization validates and reuses the admitted frozen runtime
+  and compiled prompt without resolving current extensions or intrinsics, then
+  removes every tool only from the provider request. Message/GitHub MCP routing
+  guidance therefore cannot disappear and falsely trigger
+  `TURN_RUNTIME_INCOMPATIBLE` after a tool-budget stop.
   Conversation compaction now persists a versioned structured WorkingContext;
   protected user goals/constraints and runtime resource/receipt identities use
   a separate digest CAS, while only decisions, steps, and last-failure summaries
