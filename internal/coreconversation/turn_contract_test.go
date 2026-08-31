@@ -1293,6 +1293,57 @@ func TestExecuteTurnForcesCorrectableStaticSiteRetryAcrossOutputContinuation(t *
 	}
 }
 
+func TestMutatingIntrinsicFailureFinalizesWithUsefulResponseInsteadOfFailingTurn(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	createdAt := time.Now().UTC()
+	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: `{"html":"<h1>ready</h1>"}`}
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID, Prompt: "publish the page",
+		ProfileID: profile.ProfileID, ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+		State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: createdAt}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
+	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn}, events: []TurnEvent{
+		{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: createdAt},
+	}}
+	newService := func(model ModelRunner) *Service {
+		service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+			return []ResolvedIntrinsic{{Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}}, Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+				return IntrinsicExecutionResult{}, errors.New("private publish failure")
+			}}}, nil
+		}))
+		return service
+	}
+
+	newService(fixedToolCallsTurnModel{calls: []ToolCall{call}}).executeTurn(context.Background(), turn.ID)
+	current, err := store.GetTurn(context.Background(), turn.ID)
+	if err != nil || current.State != TurnAccepted || store.failedCode != "" {
+		t.Fatalf("failed intrinsic surfaced terminal error: turn=%+v failed=%q err=%v", current, store.failedCode, err)
+	}
+	var failure *ToolResult
+	for _, event := range store.events {
+		if event.ToolResult != nil && event.ToolResult.CallID == call.ID {
+			failure = event.ToolResult
+		}
+	}
+	if failure == nil || failure.Outcome != ToolOutcomeUnknownMutation || failure.MutationState != ToolMutationUnknown || strings.Contains(failure.Content, "private") {
+		t.Fatalf("failure observation=%+v", failure)
+	}
+	finalModel := &fixedResponseTurnModel{content: "I completed the available work and could not publish the page."}
+	newService(finalModel).executeTurn(context.Background(), turn.ID)
+	current, err = store.GetTurn(context.Background(), turn.ID)
+	if err != nil || current.State != TurnCompleted || current.Response == nil || current.Response.Message.Content != finalModel.content {
+		t.Fatalf("finalized turn=%+v err=%v", current, err)
+	}
+	if len(finalModel.request.Intrinsics) != 0 || store.finalization == nil || store.finalization.Reason != TurnFinalizationToolOutcome {
+		t.Fatalf("finalization request=%+v intent=%+v", finalModel.request, store.finalization)
+	}
+}
+
 func TestAppendTurnToolHistoryClearsStaticSiteForceAfterNextResult(t *testing.T) {
 	createdAt := time.Now().UTC().Add(-time.Minute)
 	first := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: `{}`}

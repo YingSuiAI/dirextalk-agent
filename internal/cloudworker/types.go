@@ -135,6 +135,7 @@ type AWSBinding struct {
 type ComputeSpec struct {
 	InstanceType        string `json:"instance_type"`
 	Architecture        string `json:"architecture"`
+	AcceleratorType     string `json:"accelerator_type,omitempty"`
 	VCPU                uint32 `json:"vcpu"`
 	MemoryGiB           uint32 `json:"memory_gib"`
 	RootDeviceName      string `json:"root_device_name"`
@@ -157,10 +158,41 @@ type ComputeRequirements struct {
 	MinMemoryGiB            uint32 `json:"min_memory_gib"`
 	DiskGiB                 uint64 `json:"disk_gib"`
 	EstimatedRuntimeMinutes uint64 `json:"estimated_runtime_minutes"`
+	AcceleratorType         string `json:"accelerator_type,omitempty"`
+}
+
+const (
+	AcceleratorGPU    = "gpu"
+	AcceleratorNeuron = "neuron"
+	AcceleratorFPGA   = "fpga"
+	AcceleratorMedia  = "media"
+	AcceleratorAny    = "any"
+)
+
+func validAcceleratorRequirement(value string) bool {
+	switch value {
+	case "", AcceleratorGPU, AcceleratorNeuron, AcceleratorFPGA, AcceleratorMedia, AcceleratorAny:
+		return true
+	default:
+		return false
+	}
+}
+
+func validConcreteAccelerator(value string) bool {
+	switch value {
+	case "", AcceleratorGPU, AcceleratorNeuron, AcceleratorFPGA, AcceleratorMedia:
+		return true
+	default:
+		return false
+	}
+}
+
+func acceleratorSatisfies(required, actual string) bool {
+	return required == "" || required == AcceleratorAny && actual != "" || required == actual
 }
 
 func (requirements ComputeRequirements) validate() error {
-	if requirements.MinVCPU == 0 || requirements.MinVCPU > 128 || requirements.MinMemoryGiB == 0 || requirements.MinMemoryGiB > 1024 ||
+	if requirements.MinVCPU == 0 || requirements.MinVCPU > 128 || requirements.MinMemoryGiB == 0 || requirements.MinMemoryGiB > 1024 || !validAcceleratorRequirement(requirements.AcceleratorType) ||
 		requirements.DiskGiB < 8 || requirements.DiskGiB > 16_384 || requirements.EstimatedRuntimeMinutes == 0 || requirements.EstimatedRuntimeMinutes > 24*60 {
 		return ErrInvalid
 	}
@@ -731,7 +763,7 @@ func validateAWS(value AWSBinding) error {
 }
 
 func validateCompute(value ComputeSpec) error {
-	if strings.TrimSpace(value.InstanceType) == "" || (value.Architecture != "x86_64" && value.Architecture != "arm64") || !strings.HasPrefix(value.RootDeviceName, "/dev/") || len(value.RootDeviceName) > 64 || strings.ContainsAny(value.RootDeviceName, "\r\n\x00") || value.VolumeGiB < 8 || value.VolumeGiB > 16384 || value.VolumeType != "gp3" || value.VolumeIOPS < 3000 || value.VolumeIOPS > 16000 || value.VolumeThroughputMiB < 125 || value.VolumeThroughputMiB > 1000 {
+	if strings.TrimSpace(value.InstanceType) == "" || (value.Architecture != "x86_64" && value.Architecture != "arm64") || !validConcreteAccelerator(value.AcceleratorType) || !strings.HasPrefix(value.RootDeviceName, "/dev/") || len(value.RootDeviceName) > 64 || strings.ContainsAny(value.RootDeviceName, "\r\n\x00") || value.VolumeGiB < 8 || value.VolumeGiB > 16384 || value.VolumeType != "gp3" || value.VolumeIOPS < 3000 || value.VolumeIOPS > 16000 || value.VolumeThroughputMiB < 125 || value.VolumeThroughputMiB > 1000 {
 		return ErrInvalid
 	}
 	if (value.VCPU == 0) != (value.MemoryGiB == 0) || value.VCPU > 128 || value.MemoryGiB > 1024 {

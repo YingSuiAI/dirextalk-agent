@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestAdmittedExecutionPoliciesAreVersionedBoundedAndModeSpecific(t *testing.T) {
+func TestAdmittedExecutionPoliciesAreVersionedAndUseSafeMaxima(t *testing.T) {
 	modes := []TurnExecutionMode{
 		TurnExecutionInteractive,
 		TurnExecutionDeep,
@@ -28,12 +28,17 @@ func TestAdmittedExecutionPoliciesAreVersionedBoundedAndModeSpecific(t *testing.
 		policies[mode] = policy
 	}
 	interactive := policies[TurnExecutionInteractive]
+	if interactive.MaxModelDispatches != MaxAdmittedTurnModelDispatches ||
+		interactive.MaxModelActiveMilliseconds != uint64(MaxAdmittedTurnModelActiveDuration.Milliseconds()) ||
+		interactive.MaxToolCalls != MaxAdmittedTurnToolCalls {
+		t.Fatalf("interactive policy did not receive safe maxima: %+v", interactive)
+	}
 	for _, mode := range modes[1:] {
-		larger := policies[mode]
-		if interactive.MaxModelDispatches >= larger.MaxModelDispatches ||
-			interactive.MaxModelActiveMilliseconds >= larger.MaxModelActiveMilliseconds ||
-			interactive.MaxToolCalls >= larger.MaxToolCalls {
-			t.Fatalf("interactive policy=%+v is not materially below %s policy=%+v", interactive, mode, larger)
+		policy := policies[mode]
+		if policy.MaxModelDispatches != interactive.MaxModelDispatches ||
+			policy.MaxModelActiveMilliseconds != interactive.MaxModelActiveMilliseconds ||
+			policy.MaxToolCalls != interactive.MaxToolCalls {
+			t.Fatalf("mode %s did not receive the safe maxima: %+v", mode, policy)
 		}
 	}
 

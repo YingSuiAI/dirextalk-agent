@@ -556,9 +556,9 @@ const (
 )
 
 const (
-	interactiveTurnModelDispatches     = 8
-	interactiveTurnModelActiveDuration = 5 * time.Minute
-	interactiveTurnToolCalls           = 8
+	interactiveTurnModelDispatches     = MaxAdmittedTurnModelDispatches
+	interactiveTurnModelActiveDuration = MaxAdmittedTurnModelActiveDuration
+	interactiveTurnToolCalls           = MaxAdmittedTurnToolCalls
 )
 
 // TurnExecutionPolicy is the immutable ordinary ReAct budget admitted with a

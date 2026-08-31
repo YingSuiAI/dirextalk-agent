@@ -215,6 +215,7 @@ type CoreCloudWorkerComputeProjection struct {
 	VolumeThroughputMib uint64                 `protobuf:"varint,7,opt,name=volume_throughput_mib,json=volumeThroughputMib,proto3" json:"volume_throughput_mib,omitempty"`
 	Vcpu                uint32                 `protobuf:"varint,8,opt,name=vcpu,proto3" json:"vcpu,omitempty"`
 	MemoryGib           uint32                 `protobuf:"varint,9,opt,name=memory_gib,json=memoryGib,proto3" json:"memory_gib,omitempty"`
+	AcceleratorType     string                 `protobuf:"bytes,10,opt,name=accelerator_type,json=acceleratorType,proto3" json:"accelerator_type,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -310,6 +311,13 @@ func (x *CoreCloudWorkerComputeProjection) GetMemoryGib() uint32 {
 		return x.MemoryGib
 	}
 	return 0
+}
+
+func (x *CoreCloudWorkerComputeProjection) GetAcceleratorType() string {
+	if x != nil {
+		return x.AcceleratorType
+	}
+	return ""
 }
 
 type CoreCloudWorkerLimits struct {
@@ -1155,7 +1163,7 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\n" +
 	"account_id\x18\x01 \x01(\tR\taccountId\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12/\n" +
-	"\x13credential_revision\x18\x03 \x01(\x04R\x12credentialRevision\"\xdd\x02\n" +
+	"\x13credential_revision\x18\x03 \x01(\x04R\x12credentialRevision\"\x88\x03\n" +
 	" CoreCloudWorkerComputeProjection\x12#\n" +
 	"\rinstance_type\x18\x01 \x01(\tR\finstanceType\x12\"\n" +
 	"\farchitecture\x18\x02 \x01(\tR\farchitecture\x12(\n" +
@@ -1169,7 +1177,9 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\x15volume_throughput_mib\x18\a \x01(\x04R\x13volumeThroughputMib\x12\x12\n" +
 	"\x04vcpu\x18\b \x01(\rR\x04vcpu\x12\x1d\n" +
 	"\n" +
-	"memory_gib\x18\t \x01(\rR\tmemoryGib\"\x90\x01\n" +
+	"memory_gib\x18\t \x01(\rR\tmemoryGib\x12)\n" +
+	"\x10accelerator_type\x18\n" +
+	" \x01(\tR\x0facceleratorType\"\x90\x01\n" +
 	"\x15CoreCloudWorkerLimits\x12.\n" +
 	"\x13max_runtime_seconds\x18\x01 \x01(\x04R\x11maxRuntimeSeconds\x12\x1d\n" +
 	"\n" +

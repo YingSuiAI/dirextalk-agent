@@ -2012,8 +2012,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 							return
 						}
 						if intrinsicErr != nil || !intrinsicResult.TurnCommitted || intrinsicResult.ToolResult != nil {
-							code, summary := intrinsicTerminalFailure(call.Name, intrinsicErr)
-							_, _ = s.turns.FailTurn(ctx, lease, code, summary)
+							summary := intrinsicTerminalFailure(call.Name, intrinsicErr)
+							if recordErr := recordTerminalIntrinsicFailure(ctx, roundStore, lease, call, summary); recordErr != nil {
+								_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_error_result_failed", "Core intrinsic error result could not be saved")
+							}
 						}
 						return
 					}
@@ -2548,23 +2550,23 @@ func conversationToolAttemptContent(attempt ToolAttempt) string {
 	return content
 }
 
-func intrinsicTerminalFailure(toolName string, err error) (string, string) {
+func intrinsicTerminalFailure(toolName string, err error) string {
 	if errors.Is(err, ErrInvalid) {
-		return "invalid_intrinsic_arguments", "Core intrinsic arguments are invalid"
+		return "Core intrinsic arguments are invalid"
 	}
 	if toolName == coremodel.IntrinsicCloudWorkerDestroyToolName {
-		return "cloud_worker_destroy_failed", "Worker could not be destroyed"
+		return "Worker could not be destroyed"
 	}
 	if toolName == coremodel.IntrinsicCloudWorkerProposeToolName {
-		return "cloud_worker_proposal_failed", "AWS Worker proposal could not be created"
+		return "AWS Worker proposal could not be created"
 	}
 	if toolName == coremodel.IntrinsicScheduleCreateToolName {
-		return "schedule_persistence_failed", "Schedule could not be saved"
+		return "Schedule could not be saved"
 	}
 	if toolName == coremodel.IntrinsicStaticSitePublishToolName {
-		return "static_site_publish_failed", "Static page could not be published"
+		return "Static page could not be published"
 	}
-	return "intrinsic_failed", "Core intrinsic operation failed"
+	return "Core intrinsic operation failed"
 }
 
 func recordCorrectableIntrinsicError(ctx context.Context, store OrderedConversationToolStore, lease TurnLease, call ToolCall, intrinsicErr error) error {
@@ -2591,6 +2593,26 @@ func recordCorrectableIntrinsicError(ctx context.Context, store OrderedConversat
 	}
 	result = result.WithObservation(ToolOutcomeInvalid, content, ToolMutationNone)
 	result.Retry.ValidationCorrections = 1
+	if err := store.RecordConversationToolResult(ctx, lease, result); err != nil {
+		return err
+	}
+	_, err := store.CompleteConversationToolRound(ctx, lease)
+	return err
+}
+
+func recordTerminalIntrinsicFailure(ctx context.Context, store OrderedConversationToolStore, lease TurnLease, call ToolCall, summary string) error {
+	if err := store.RecordConversationToolCall(ctx, lease, call); err != nil {
+		return err
+	}
+	if _, err := store.BeginConversationToolDispatch(ctx, lease, call); err != nil {
+		return err
+	}
+	content := strings.TrimSpace(summary)
+	if content == "" {
+		content = "Core intrinsic operation failed"
+	}
+	result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: content}.
+		WithObservation(ToolOutcomeUnknownMutation, content, ToolMutationUnknown)
 	if err := store.RecordConversationToolResult(ctx, lease, result); err != nil {
 		return err
 	}

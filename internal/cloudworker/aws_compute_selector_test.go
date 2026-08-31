@@ -40,9 +40,13 @@ func (provider *computeSelectionAWS) DescribeInstanceTypes(_ context.Context, in
 		if string(name) == "m7i-flex.large" {
 			memory = 8192
 		}
-		result.InstanceTypes = append(result.InstanceTypes, ec2types.InstanceTypeInfo{InstanceType: name,
+		info := ec2types.InstanceTypeInfo{InstanceType: name,
 			VCpuInfo: &ec2types.VCpuInfo{DefaultVCpus: aws.Int32(vcpu)}, MemoryInfo: &ec2types.MemoryInfo{SizeInMiB: aws.Int64(memory)},
-			ProcessorInfo: &ec2types.ProcessorInfo{SupportedArchitectures: []ec2types.ArchitectureType{ec2types.ArchitectureTypeX8664}}})
+			ProcessorInfo: &ec2types.ProcessorInfo{SupportedArchitectures: []ec2types.ArchitectureType{ec2types.ArchitectureTypeX8664}}}
+		if string(name) == "g5.xlarge" {
+			info.GpuInfo = &ec2types.GpuInfo{Gpus: []ec2types.GpuDeviceInfo{{Name: aws.String("A10G")}}}
+		}
+		result.InstanceTypes = append(result.InstanceTypes, info)
 	}
 	return result, nil
 }
@@ -116,8 +120,28 @@ func (provider computeSelectionPricing) GetProducts(context.Context, *pricing.Ge
 	return &pricing.GetProductsOutput{PriceList: []string{
 		document("g3.4xlarge", "122 GiB", "0.01"),
 		document("t3.small", "2 GiB", "0.03"),
+		document("g5.xlarge", "16 GiB", "1.01"),
 		document("m7i-flex.large", "8 GiB", "0.08"),
 	}}, nil
+}
+
+func TestAWSComputeSelectorHonorsGPURequirement(t *testing.T) {
+	credential := &livePricingCredential{handle: workaws.CredentialHandle{ReferenceID: "11111111-1111-4111-8111-111111111111",
+		Region: "ap-northeast-1", AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:user/test", AccessKeyID: "access", SecretAccessKey: "secret"}}
+	ec2Provider := &computeSelectionAWS{regionalLocation: "ap-northeast-2", offeredTypes: map[string]bool{
+		"t3.small": true, "m7i-flex.large": true, "g5.xlarge": true,
+	}}
+	selector, err := NewAWSComputeSelector(credential, &computeSelectionFactory{ec2: ec2Provider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := AWSBinding{AccountID: credential.handle.AccountID, Region: "ap-northeast-2", CredentialID: credential.handle.ReferenceID, CredentialRevision: 7}
+	selected, err := selector.SelectCompute(context.Background(), binding, ComputeRequirements{
+		MinVCPU: 2, MinMemoryGiB: 2, DiskGiB: 24, EstimatedRuntimeMinutes: 30, AcceleratorType: AcceleratorGPU,
+	})
+	if err != nil || selected.InstanceType != "g5.xlarge" || selected.AcceleratorType != AcceleratorGPU {
+		t.Fatalf("selected=%+v err=%v", selected, err)
+	}
 }
 
 type computeSelectionFactory struct {

@@ -42,6 +42,7 @@ message CoreCloudWorkerComputeProjection {
   uint64 volume_throughput_mib = 7;
   uint32 vcpu = 8;
   uint32 memory_gib = 9;
+  string accelerator_type = 10;
 }
 
 message CoreCloudWorkerLimits {

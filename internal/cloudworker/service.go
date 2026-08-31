@@ -247,7 +247,8 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	compute := selection.Compute
 	if reuse {
 		if !validUUID(selection.WorkerID) || validateCompute(compute) != nil || compute.VCPU < command.ComputeRequirements.MinVCPU ||
-			compute.MemoryGiB < command.ComputeRequirements.MinMemoryGiB || compute.VolumeGiB < command.ComputeRequirements.DiskGiB {
+			compute.MemoryGiB < command.ComputeRequirements.MinMemoryGiB || compute.VolumeGiB < command.ComputeRequirements.DiskGiB ||
+			!acceleratorSatisfies(command.ComputeRequirements.AcceleratorType, compute.AcceleratorType) {
 			return Offer{}, ErrInvalid
 		}
 	} else {
@@ -256,7 +257,8 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 		}
 		compute, err = s.selector.SelectCompute(ctx, awsBinding, command.ComputeRequirements)
 		if err != nil || validateCompute(compute) != nil || compute.VCPU < command.ComputeRequirements.MinVCPU ||
-			compute.MemoryGiB < command.ComputeRequirements.MinMemoryGiB || compute.VolumeGiB < command.ComputeRequirements.DiskGiB {
+			compute.MemoryGiB < command.ComputeRequirements.MinMemoryGiB || compute.VolumeGiB < command.ComputeRequirements.DiskGiB ||
+			!acceleratorSatisfies(command.ComputeRequirements.AcceleratorType, compute.AcceleratorType) {
 			return Offer{}, errors.Join(ErrProviderUnavailable, err)
 		}
 		if err = s.capacity.CheckCreateWorkerCapacity(ctx, strings.TrimSpace(command.OwnerID), command.AccountGeneration, awsBinding); err != nil {

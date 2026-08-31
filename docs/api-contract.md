@@ -177,10 +177,9 @@ or stream after admission. It never cancels the accepted Turn; callers use
   `execution_mode` values `interactive`, `deep`, and `worker_orchestration`;
   omission means `interactive`. `scheduled` is reserved for the trusted due-Task
   adapter and is rejected on owner chat surfaces. The selected mode is bound by
-  the request fingerprint and admits a versioned immutable policy: interactive
-  uses 8 provider dispatches, 5 minutes of cumulative model-active time, and 8
-  tool calls; deep, scheduled, and worker orchestration each use 24 dispatches,
-  20 minutes, and 20 tool calls. A supported policy version accepts previously
+  the request fingerprint and admits a versioned immutable policy: interactive,
+  deep, scheduled, and worker orchestration each use 24 provider dispatches,
+  20 minutes of cumulative model-active time, and 20 tool calls. A supported policy version accepts previously
   admitted safe values within those absolute maxima instead of comparing them
   with the current binary presets, so a safe preset change cannot strand an
   active turn. Unsupported versions, unknown modes, out-of-range values, or a
@@ -314,8 +313,11 @@ or stream after admission. It never cancels the accepted Turn; callers use
   event containing only call/tool identity, outcome/error state, mutation
   state, and bounded summary. Exact result content, cursors, and result
   references remain private to the durable model transcript; authoritative
-  answer references are returned by terminal `done`. A failed dispatch retains
-  the already-published call before the existing safe terminal error. Durable turns
+  answer references are returned by terminal `done`. An ordinary Core intrinsic
+  failure becomes a bounded terminal tool observation and enters the existing
+  tools-disabled synthesis, so completed work and gaps return through normal
+  `done`. Integrity, persistence, and dispatch-authority failures retain
+  failed-turn semantics. Durable turns
   persist the same public ordering while their private pending/dispatched
   envelope remains the at-most-once authority and is never exposed as an
   additional client event. Provider replay reconstructs one assistant message
@@ -901,9 +903,11 @@ tool call declares `intent=execute` or `intent=proposal_only`. Execute preserves
 normal retained-Worker reuse and new-Worker confirmation behavior. Proposal-only
 commits a non-executing plan summary before pricing or offer persistence and
 creates no plan, execution, Task, confirmation, or Worker action. Every executing
-proposal carries minimum vCPU, memory, disk, and estimated runtime rather than
-an AWS instance type. Agent intersects current-generation Linux on-demand
-products with actual regional offerings and selects the cheapest satisfying
+proposal carries minimum vCPU, memory, disk, estimated runtime, and an optional
+closed provider-neutral accelerator class rather than an AWS instance type.
+The accelerator class is GPU, Neuron, FPGA, media, or any accelerator; omission
+leaves compute unconstrained. Agent intersects current-generation Linux on-demand
+products with actual regional offerings and live accelerator metadata and selects the cheapest satisfying
 x86_64 shape in the deployment host's identity-verified AWS Region. The
 uploaded credential's default Region is not resource-placement authority.
 Every proposal performs a fresh AWS Price List read for that
@@ -913,8 +917,9 @@ bounded job also exposes its estimated cost and maximum authorized cost; a
 persistent service omits those two open-ended values. Confirmation validates
 the offer revision and expiry; after confirmation the task executes directly
 without a second pricing or replacement-offer pass.
-Reusing an already retained idle Worker requires its actual vCPU, memory, and
-disk to satisfy the request. The model-facing tool definitions are static and
+Reusing an already retained idle Worker requires its actual vCPU, memory, disk,
+and persisted accelerator class to satisfy the request; absent accelerator
+metadata never satisfies an accelerator request. The model-facing tool definitions are static and
 contain no live Worker identity or state. The separate read-only
 `cloud_worker_inventory` intrinsic revalidates the current turn owner and
 account generation at execution, then returns an at-most-4-KiB

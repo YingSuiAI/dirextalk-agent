@@ -675,25 +675,25 @@ func TestIntrinsicFailureClassificationIsSpecificAndRedacted(t *testing.T) {
 	invalidErr := executeScheduleForTest(t, &conversationScheduleStoreStub{}, lease, "call-invalid", map[string]any{
 		"name": "invalid", "goal": "send reminder", "capability": "chat_summary", "cron": "not a cron", "timezone": "UTC",
 	})
-	code, summary := intrinsicTerminalFailure(coremodel.IntrinsicScheduleCreateToolName, invalidErr)
-	if code != "invalid_intrinsic_arguments" || summary != "Core intrinsic arguments are invalid" {
-		t.Fatalf("invalid classification code=%q summary=%q err=%v", code, summary, invalidErr)
+	summary := intrinsicTerminalFailure(coremodel.IntrinsicScheduleCreateToolName, invalidErr)
+	if summary != "Core intrinsic arguments are invalid" {
+		t.Fatalf("invalid classification summary=%q err=%v", summary, invalidErr)
 	}
-	code, summary = intrinsicTerminalFailure(coremodel.IntrinsicCloudWorkerProposeToolName, ErrInvalid)
-	if code != "invalid_intrinsic_arguments" || summary != "Core intrinsic arguments are invalid" {
-		t.Fatalf("invalid Worker arguments classification code=%q summary=%q", code, summary)
+	summary = intrinsicTerminalFailure(coremodel.IntrinsicCloudWorkerProposeToolName, ErrInvalid)
+	if summary != "Core intrinsic arguments are invalid" {
+		t.Fatalf("invalid Worker arguments classification summary=%q", summary)
 	}
-	code, summary = intrinsicTerminalFailure(coremodel.IntrinsicCloudWorkerProposeToolName, errors.New("private AWS provider detail"))
-	if code != "cloud_worker_proposal_failed" || summary != "AWS Worker proposal could not be created" || strings.Contains(summary, "private") {
-		t.Fatalf("Worker proposal classification code=%q summary=%q", code, summary)
+	summary = intrinsicTerminalFailure(coremodel.IntrinsicCloudWorkerProposeToolName, errors.New("private AWS provider detail"))
+	if summary != "AWS Worker proposal could not be created" || strings.Contains(summary, "private") {
+		t.Fatalf("Worker proposal classification summary=%q", summary)
 	}
 
 	privateErr := errors.New("database unavailable: private connection detail")
 	persistenceErr := executeScheduleForTest(t, &conversationScheduleStoreStub{err: privateErr}, lease, "call-persistence", map[string]any{
 		"name": "once", "goal": "send reminder", "capability": "chat_summary", "run_at": "2026-08-09T00:00:00Z",
 	})
-	code, summary = intrinsicTerminalFailure(coremodel.IntrinsicScheduleCreateToolName, persistenceErr)
-	if code != "schedule_persistence_failed" || summary != "Schedule could not be saved" || strings.Contains(summary, "private") {
-		t.Fatalf("persistence classification code=%q summary=%q err=%v", code, summary, persistenceErr)
+	summary = intrinsicTerminalFailure(coremodel.IntrinsicScheduleCreateToolName, persistenceErr)
+	if summary != "Schedule could not be saved" || strings.Contains(summary, "private") {
+		t.Fatalf("persistence classification summary=%q err=%v", summary, persistenceErr)
 	}
 }

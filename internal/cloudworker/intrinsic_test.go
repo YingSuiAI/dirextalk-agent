@@ -312,6 +312,13 @@ func TestProposeIntrinsicAcceptsSemanticallyEquivalentJSON(t *testing.T) {
 	if arguments.WorkloadKind != string(WorkloadJob) || arguments.Service != nil {
 		t.Fatalf("job defaults were not applied: %+v", arguments)
 	}
+	arguments, err = parseProposeIntrinsicArguments([]byte(`{"intent":"execute","objective":"train","workspace_mode":"none","min_vcpu":2,"min_memory_gib":8,"disk_gib":20,"estimated_runtime_minutes":60,"accelerator_type":" GPU "}`))
+	if err != nil || arguments.AcceleratorType != AcceleratorGPU {
+		t.Fatalf("accelerator arguments=%+v err=%v", arguments, err)
+	}
+	if _, err = parseProposeIntrinsicArguments([]byte(`{"intent":"execute","objective":"train","workspace_mode":"none","min_vcpu":2,"min_memory_gib":8,"disk_gib":20,"estimated_runtime_minutes":60,"accelerator_type":"t4g"}`)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("raw instance type accepted as accelerator: %v", err)
+	}
 	arguments, err = parseProposeIntrinsicArguments([]byte(`{"intent":"execute","objective":"inspect","workspace_mode":"write","min_vcpu":1,"min_memory_gib":1,"disk_gib":2,"estimated_runtime_minutes":15}`))
 	if err != nil || arguments.DiskGiB != 8 {
 		t.Fatalf("small positive disk estimate was not normalized: arguments=%+v err=%v", arguments, err)
@@ -924,7 +931,7 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 	if !ok {
 		t.Fatalf("properties schema=%#v", tools[0].Tool.InputSchema["properties"])
 	}
-	for _, field := range []string{"intent", "min_vcpu", "min_memory_gib", "disk_gib", "estimated_runtime_minutes"} {
+	for _, field := range []string{"intent", "min_vcpu", "min_memory_gib", "disk_gib", "estimated_runtime_minutes", "accelerator_type"} {
 		definition, ok := properties[field].(map[string]any)
 		if !ok || strings.TrimSpace(fmt.Sprint(definition["description"])) == "" {
 			t.Fatalf("sizing description %s=%#v", field, properties[field])

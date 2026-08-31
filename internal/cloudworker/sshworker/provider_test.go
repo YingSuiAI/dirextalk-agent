@@ -447,7 +447,7 @@ func TestRetainedWorkerReuseAcceptsOnlyTheSameLogicalCredentialAcrossRevision(t 
 
 	rotated := createdWith
 	rotated.CredentialRevision++
-	resolved, found, err := provider.ResolveIdleWorker(context.Background(), authorityFixture(), rotated, 2, 2, 16)
+	resolved, found, err := provider.ResolveIdleWorker(context.Background(), authorityFixture(), rotated, 2, 2, 16, "")
 	if err != nil || !found || resolved.WorkerID != worker.WorkerID {
 		t.Fatalf("resolved=%+v found=%t err=%v", resolved, found, err)
 	}
@@ -463,11 +463,34 @@ func TestRetainedWorkerReuseAcceptsOnlyTheSameLogicalCredentialAcrossRevision(t 
 		"region":     {CredentialID: createdWith.CredentialID, CredentialRevision: 2, AccountID: createdWith.AccountID, Region: "us-east-1"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, found, resolveErr := provider.ResolveIdleWorker(context.Background(), authorityFixture(), changed, 2, 2, 16)
+			_, found, resolveErr := provider.ResolveIdleWorker(context.Background(), authorityFixture(), changed, 2, 2, 16, "")
 			if resolveErr != nil || found {
 				t.Fatalf("found=%t err=%v", found, resolveErr)
 			}
 		})
+	}
+}
+
+func TestRetainedWorkerReuseRejectsUnknownOrIncompatibleAccelerator(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	for _, fixture := range []struct {
+		id, accelerator string
+	}{{"worker-unknown", ""}, {"worker-neuron", "neuron"}, {"worker-gpu", "gpu"}} {
+		worker := workerRecordFixture(fixture.id, credentialFixture(), WorkerIdle)
+		worker.AcceleratorType = fixture.accelerator
+		worker.Instance = Instance{ID: "i-" + fixture.id, State: "running", PublicIP: "203.0.113.7"}
+		store.workers[worker.WorkerID] = worker
+		cloud.instances[worker.WorkerID] = worker.Instance
+	}
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	resolved, found, err := provider.ResolveIdleWorker(context.Background(), authorityFixture(), credentialFixture(), 2, 2, 16, "gpu")
+	if err != nil || !found || resolved.WorkerID != "worker-gpu" {
+		t.Fatalf("resolved=%+v found=%t err=%v", resolved, found, err)
+	}
+	resolved, found, err = provider.ResolveIdleWorker(context.Background(), authorityFixture(), credentialFixture(), 2, 2, 16, "any")
+	if err != nil || !found || resolved.AcceleratorType == "" {
+		t.Fatalf("any accelerator resolved=%+v found=%t err=%v", resolved, found, err)
 	}
 }
 

@@ -207,6 +207,10 @@ func TestExecuteTurnUsesSingleSuccessfulFinalProviderResponse(t *testing.T) {
 }
 
 func TestExecuteTurnFinalizationHasIndependentDispatchAllowance(t *testing.T) {
+	interactive, err := AdmittedTurnExecutionPolicy(TurnExecutionInteractive)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name   string
 		mutate func(*Turn)
@@ -214,18 +218,18 @@ func TestExecuteTurnFinalizationHasIndependentDispatchAllowance(t *testing.T) {
 		reason TurnFinalizationReason
 	}{
 		{
-			name: "ordinary dispatch count exhausted",
+			name: "interactive dispatch count exhausted",
 			mutate: func(turn *Turn) {
-				turn.ModelDispatchCount = MaxAdmittedTurnModelDispatches
+				turn.ModelDispatchCount = interactive.MaxModelDispatches
 			},
-			want:   MaxAdmittedTurnModelDispatches + MaxTurnFinalizationDispatches,
+			want:   interactive.MaxModelDispatches + MaxTurnFinalizationDispatches,
 			reason: TurnFinalizationModelBudget,
 		},
 		{
-			name: "ordinary active time exhausted",
+			name: "interactive active time exhausted",
 			mutate: func(turn *Turn) {
 				turn.ModelDispatchCount = 7
-				turn.ModelActiveDuration = MaxAdmittedTurnModelActiveDuration
+				turn.ModelActiveDuration = interactive.MaxModelActiveDuration()
 			},
 			want:   8,
 			reason: TurnFinalizationModelBudget,

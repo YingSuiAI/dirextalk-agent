@@ -112,20 +112,21 @@ type RetainedWorkerInventory struct {
 }
 
 type RetainedWorkerSnapshot struct {
-	WorkerID     string                   `json:"worker_id"`
-	InstanceType string                   `json:"instance_type"`
-	VCPU         uint32                   `json:"vcpu"`
-	MemoryGiB    uint32                   `json:"memory_gib"`
-	VolumeGiB    int32                    `json:"volume_gib"`
-	Availability string                   `json:"availability"`
-	EC2State     string                   `json:"ec2_state"`
-	WorkerPhase  string                   `json:"worker_phase"`
-	PublicIPv4   string                   `json:"public_ipv4,omitempty"`
-	Error        string                   `json:"error,omitempty"`
-	CurrentTask  *RetainedWorkerTask      `json:"current_task,omitempty"`
-	Server       *RetainedWorkerServer    `json:"server,omitempty"`
-	HourlyQuote  *RetainedWorkerQuote     `json:"hourly_quote,omitempty"`
-	Workloads    []RetainedWorkerWorkload `json:"workloads,omitempty"`
+	WorkerID        string                   `json:"worker_id"`
+	InstanceType    string                   `json:"instance_type"`
+	AcceleratorType string                   `json:"accelerator_type,omitempty"`
+	VCPU            uint32                   `json:"vcpu"`
+	MemoryGiB       uint32                   `json:"memory_gib"`
+	VolumeGiB       int32                    `json:"volume_gib"`
+	Availability    string                   `json:"availability"`
+	EC2State        string                   `json:"ec2_state"`
+	WorkerPhase     string                   `json:"worker_phase"`
+	PublicIPv4      string                   `json:"public_ipv4,omitempty"`
+	Error           string                   `json:"error,omitempty"`
+	CurrentTask     *RetainedWorkerTask      `json:"current_task,omitempty"`
+	Server          *RetainedWorkerServer    `json:"server,omitempty"`
+	HourlyQuote     *RetainedWorkerQuote     `json:"hourly_quote,omitempty"`
+	Workloads       []RetainedWorkerWorkload `json:"workloads,omitempty"`
 }
 
 type RetainedWorkerTask struct {
@@ -217,6 +218,9 @@ func boundedWorkerInventoryJSON(inventory RetainedWorkerInventory) []byte {
 			"availability": boundedInventoryText(worker.Availability), "ec2_state": boundedInventoryText(worker.EC2State),
 			"worker_phase": boundedInventoryText(worker.WorkerPhase), "public_ipv4": boundedInventoryText(worker.PublicIPv4),
 			"workload_count": len(worker.Workloads),
+		}
+		if worker.AcceleratorType != "" {
+			item["accelerator_type"] = boundedInventoryText(worker.AcceleratorType)
 		}
 		if worker.CurrentTask != nil {
 			item["current_task"] = map[string]any{"execution_id": boundedInventoryText(worker.CurrentTask.ExecutionID), "phase": boundedInventoryText(worker.CurrentTask.Phase)}
@@ -326,6 +330,7 @@ type proposeIntrinsicArguments struct {
 	MinMemoryGiB            uint32   `json:"min_memory_gib"`
 	DiskGiB                 uint64   `json:"disk_gib"`
 	EstimatedRuntimeMinutes uint64   `json:"estimated_runtime_minutes"`
+	AcceleratorType         string   `json:"accelerator_type,omitempty"`
 	WorkloadKind            string   `json:"workload_kind,omitempty"`
 	Service                 *struct {
 		WorkloadID string `json:"workload_id"`
@@ -358,6 +363,7 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		"min_memory_gib":            map[string]any{"type": "integer", "minimum": 1, "maximum": 1024, "description": "Minimum memory in GiB needed for the task."},
 		"disk_gib":                  map[string]any{"type": "integer", "minimum": 8, "maximum": 16384, "description": "Working disk capacity in GiB needed for inputs, dependencies, and outputs."},
 		"estimated_runtime_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "Sufficient task execution budget in minutes for environment setup, dependency installation, build, configuration, verification, result collection, and reasonable margin. This is not the lifetime of a retained Worker or deployed service."},
+		"accelerator_type":          map[string]any{"type": "string", "enum": []any{AcceleratorGPU, AcceleratorNeuron, AcceleratorFPGA, AcceleratorMedia, AcceleratorAny}, "description": "Optional specialized accelerator requirement. Use gpu for GPU workloads, neuron for AWS Trainium/Inferentia, fpga for FPGA, media for hardware media acceleration, or any when any accelerator class is acceptable. Omit for ordinary unconstrained compute."},
 		"service": map[string]any{"type": "object", "description": "Required for workload_kind=service; omit for job.", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
 			"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9-]+$", "description": "Stable lowercase letters, digits, and hyphens only."},
 			"port":        map[string]any{"type": "integer", "minimum": 1, "maximum": 65535, "description": "Internal HTTP port; not 80 or 443 when hostname is set."},
@@ -638,7 +644,7 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		ModelAuthorization: modelAuthorization,
 		GitHubBinding:      githubBinding,
 		ComputeRequirements: ComputeRequirements{MinVCPU: arguments.MinVCPU, MinMemoryGiB: arguments.MinMemoryGiB,
-			DiskGiB: arguments.DiskGiB, EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes},
+			DiskGiB: arguments.DiskGiB, EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes, AcceleratorType: arguments.AcceleratorType},
 	})
 	if err != nil {
 		slog.Warn("[cloud-worker.intrinsic] proposal_failed",
@@ -725,6 +731,7 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 	}
 	arguments.Objective = strings.TrimSpace(arguments.Objective)
 	arguments.ServerName = strings.TrimSpace(arguments.ServerName)
+	arguments.AcceleratorType = strings.ToLower(strings.TrimSpace(arguments.AcceleratorType))
 	if arguments.Intent != "execute" && arguments.Intent != "proposal_only" {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
@@ -746,7 +753,7 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 		arguments.DiskGiB = 8
 	}
 	if (ComputeRequirements{MinVCPU: arguments.MinVCPU, MinMemoryGiB: arguments.MinMemoryGiB, DiskGiB: arguments.DiskGiB,
-		EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes}).validate() != nil {
+		EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes, AcceleratorType: arguments.AcceleratorType}).validate() != nil {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}
 	if (arguments.WorkloadKind == string(WorkloadService) && (arguments.Service == nil || (ServiceSpec{WorkloadID: arguments.Service.WorkloadID, Port: arguments.Service.Port, HealthPath: arguments.Service.HealthPath, Hostname: arguments.Service.Hostname}).validate() != nil)) ||

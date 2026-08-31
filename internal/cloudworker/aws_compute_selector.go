@@ -56,9 +56,9 @@ func NewAWSComputeSelector(credentials workaws.ExactCredentialResolver, factory 
 }
 
 type pricedInstanceShape struct {
-	name, architecture string
-	vcpu, memoryGiB    uint32
-	hourlyMicros       uint64
+	name, architecture, acceleratorType string
+	vcpu, memoryGiB                     uint32
+	hourlyMicros                        uint64
 }
 
 type computeSelectionStageError struct{ stage string }
@@ -169,9 +169,14 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 			if vcpu < requirements.MinVCPU || memoryMiB < int64(requirements.MinMemoryGiB)*1024 {
 				continue
 			}
+			acceleratorType, matched := matchingAcceleratorType(value, requirements.AcceleratorType)
+			if !matched {
+				continue
+			}
 			shape.vcpu = vcpu
 			shape.memoryGiB = uint32((memoryMiB + 1023) / 1024)
 			shape.architecture = "x86_64"
+			shape.acceleratorType = acceleratorType
 			eligible[name] = shape
 		}
 	}
@@ -193,7 +198,7 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 	if selected.name == "" {
 		return ComputeSpec{}, computeSelectionUnavailable("describe_types")
 	}
-	return ComputeSpec{InstanceType: selected.name, Architecture: selected.architecture, VCPU: selected.vcpu, MemoryGiB: selected.memoryGiB,
+	return ComputeSpec{InstanceType: selected.name, Architecture: selected.architecture, AcceleratorType: selected.acceleratorType, VCPU: selected.vcpu, MemoryGiB: selected.memoryGiB,
 		RootDeviceName: "/dev/xvda", VolumeGiB: requirements.DiskGiB, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}, nil
 }
 
@@ -297,6 +302,32 @@ func containsX8664(values []ec2types.ArchitectureType) bool {
 		}
 	}
 	return false
+}
+
+func matchingAcceleratorType(value ec2types.InstanceTypeInfo, required string) (string, bool) {
+	available := []struct {
+		name    string
+		present bool
+	}{
+		{AcceleratorGPU, value.GpuInfo != nil && len(value.GpuInfo.Gpus) != 0},
+		{AcceleratorNeuron, value.NeuronInfo != nil && len(value.NeuronInfo.NeuronDevices) != 0},
+		{AcceleratorFPGA, value.FpgaInfo != nil && len(value.FpgaInfo.Fpgas) != 0},
+		{AcceleratorMedia, value.MediaAcceleratorInfo != nil && len(value.MediaAcceleratorInfo.Accelerators) != 0},
+	}
+	if required == "" {
+		for _, candidate := range available {
+			if candidate.present {
+				return candidate.name, true
+			}
+		}
+		return "", true
+	}
+	for _, candidate := range available {
+		if candidate.present && (required == AcceleratorAny || required == candidate.name) {
+			return candidate.name, true
+		}
+	}
+	return "", false
 }
 
 var _ ComputeSelector = (*AWSComputeSelector)(nil)

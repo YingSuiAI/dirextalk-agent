@@ -124,6 +124,7 @@ type ExecuteRequest struct {
 	Confirmation       Confirmation // consumed only when a new worker is required
 	Discovery          Discovery
 	InstanceType       string
+	AcceleratorType    string
 	VCPU               uint32
 	MemoryGiB          uint32
 	VolumeGiB          int32
@@ -142,7 +143,7 @@ type ExecuteRequest struct {
 }
 
 func (request ExecuteRequest) validate() error {
-	if request.Authority.validate() != nil || request.Credential.validate() != nil || request.Discovery.validate() != nil || !validID(request.ExecutionID) || strings.TrimSpace(request.InstanceType) == "" || request.VCPU == 0 || request.MemoryGiB == 0 ||
+	if request.Authority.validate() != nil || request.Credential.validate() != nil || request.Discovery.validate() != nil || !validID(request.ExecutionID) || strings.TrimSpace(request.InstanceType) == "" || !validConcreteAccelerator(request.AcceleratorType) || request.VCPU == 0 || request.MemoryGiB == 0 ||
 		request.VolumeGiB < 8 || request.VolumeGiB > 16_384 || len(request.WorkerScript) == 0 || len(request.WorkerScript) > maxWorkerScriptBytes || !request.Runtime.valid() || request.Runtime.TaskID != request.ExecutionID ||
 		request.MaxWorkspaceBytes <= 0 || request.MaxWorkspaceBytes > maxWorkspaceBytes || request.MaxResultBytes <= 0 || request.MaxResultBytes > maxResultBytes || request.Sink == nil {
 		return ErrInvalid
@@ -270,6 +271,7 @@ type WorkerRecord struct {
 	Phase                WorkerPhase        `json:"phase"`
 	SSHUser              string             `json:"ssh_user"`
 	InstanceType         string             `json:"instance_type"`
+	AcceleratorType      string             `json:"accelerator_type,omitempty"`
 	VCPU                 uint32             `json:"vcpu,omitempty"`
 	MemoryGiB            uint32             `json:"memory_gib,omitempty"`
 	VolumeGiB            int32              `json:"volume_gib"`
@@ -316,7 +318,7 @@ func (record WorkerRecord) authority() OwnerAuthority {
 }
 
 func (record WorkerRecord) validate() error {
-	if !validID(record.WorkerID) || record.authority().validate() != nil || record.Credential.validate() != nil {
+	if !validID(record.WorkerID) || record.authority().validate() != nil || record.Credential.validate() != nil || !validConcreteAccelerator(record.AcceleratorType) {
 		return ErrIdentity
 	}
 	return nil
@@ -376,6 +378,7 @@ type WorkerStatus struct {
 	DisplayName        string
 	CreatedAt          time.Time
 	InstanceType       string
+	AcceleratorType    string
 	VCPU, MemoryGiB    uint32
 	VolumeGiB          int32
 	Availability       WorkerAvailability
@@ -390,9 +393,31 @@ type WorkerStatus struct {
 }
 
 func UnavailableStatus(worker WorkerRecord, observedAt time.Time, message string) WorkerStatus {
-	return WorkerStatus{Identity: workerIdentity(worker), DisplayName: worker.DisplayName, CreatedAt: worker.CreatedAt, InstanceType: worker.InstanceType, VCPU: worker.VCPU,
+	return WorkerStatus{Identity: workerIdentity(worker), DisplayName: worker.DisplayName, CreatedAt: worker.CreatedAt, InstanceType: worker.InstanceType, AcceleratorType: worker.AcceleratorType, VCPU: worker.VCPU,
 		MemoryGiB: worker.MemoryGiB, VolumeGiB: worker.VolumeGiB, Availability: WorkerUnavailable, Error: message,
 		EC2State: "unknown", WorkerPhase: worker.Phase, CurrentExecutionID: worker.CurrentExecutionID, ObservedAt: observedAt.UTC()}
+}
+
+func validAcceleratorRequirement(value string) bool {
+	switch value {
+	case "", "gpu", "neuron", "fpga", "media", "any":
+		return true
+	default:
+		return false
+	}
+}
+
+func validConcreteAccelerator(value string) bool {
+	switch value {
+	case "", "gpu", "neuron", "fpga", "media":
+		return true
+	default:
+		return false
+	}
+}
+
+func workerAcceleratorSatisfies(required, actual string) bool {
+	return required == "" || required == "any" && actual != "" || required == actual
 }
 
 func resourceNames(workerID string) (string, string, string) {

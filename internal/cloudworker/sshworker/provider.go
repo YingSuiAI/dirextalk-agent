@@ -58,8 +58,8 @@ func (provider *Provider) Discover(ctx context.Context, credential CredentialIde
 
 // ResolveIdleWorker performs the same instance read-back used by lease,
 // without reserving or mutating either AWS or the local pool.
-func (provider *Provider) ResolveIdleWorker(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity, minVCPU, minMemoryGiB uint32, minVolumeGiB int32) (WorkerRecord, bool, error) {
-	if provider == nil || ctx == nil || authority.validate() != nil || credential.validate() != nil || minVCPU == 0 || minMemoryGiB == 0 || minVolumeGiB < 8 {
+func (provider *Provider) ResolveIdleWorker(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity, minVCPU, minMemoryGiB uint32, minVolumeGiB int32, acceleratorType string) (WorkerRecord, bool, error) {
+	if provider == nil || ctx == nil || authority.validate() != nil || credential.validate() != nil || minVCPU == 0 || minMemoryGiB == 0 || minVolumeGiB < 8 || !validAcceleratorRequirement(acceleratorType) {
 		return WorkerRecord{}, false, ErrInvalid
 	}
 	workers, err := provider.store.ListWorkers(ctx)
@@ -67,7 +67,8 @@ func (provider *Provider) ResolveIdleWorker(ctx context.Context, authority Owner
 		return WorkerRecord{}, false, err
 	}
 	for _, worker := range workers {
-		if worker.authority() != authority || !sameLogicalCredential(worker.Credential, credential) || worker.Phase != WorkerIdle || worker.VCPU < minVCPU || worker.MemoryGiB < minMemoryGiB || worker.VolumeGiB < minVolumeGiB {
+		if worker.authority() != authority || !sameLogicalCredential(worker.Credential, credential) || worker.Phase != WorkerIdle || worker.VCPU < minVCPU || worker.MemoryGiB < minMemoryGiB || worker.VolumeGiB < minVolumeGiB ||
+			!workerAcceleratorSatisfies(acceleratorType, worker.AcceleratorType) {
 			continue
 		}
 		observed, found, observeErr := provider.aws.ObserveInstance(ctx, credential, worker.Instance.ID, resourceTags(worker.WorkerID, authority, worker.Credential, worker.CreationProof))
@@ -267,7 +268,8 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 		worker = WorkerRecord{WorkerID: workerID, OwnerID: request.Authority.OwnerID, AccountGeneration: request.Authority.AccountGeneration,
 			Credential: request.Credential, CreationProof: request.Confirmation.Proof,
 			DisplayName: strings.TrimSpace(request.ServerName),
-			Phase:       WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, VCPU: request.VCPU, MemoryGiB: request.MemoryGiB, VolumeGiB: request.VolumeGiB, CreatedAt: provider.now().UTC()}
+			Phase:       WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, AcceleratorType: request.AcceleratorType,
+			VCPU: request.VCPU, MemoryGiB: request.MemoryGiB, VolumeGiB: request.VolumeGiB, CreatedAt: provider.now().UTC()}
 		worker.UpdatedAt = provider.now().UTC()
 		if err := provider.store.SaveWorkerIntent(ctx, worker, func(ctx context.Context) error {
 			return provider.authorizeCreate(ctx, request.Credential)
@@ -690,7 +692,7 @@ func (provider *Provider) ListWorkers(ctx context.Context, authority OwnerAuthor
 		if worker.authority() != authority || worker.Credential != credential || worker.Phase == WorkerDestroyed {
 			continue
 		}
-		status := WorkerStatus{Identity: workerIdentity(worker), DisplayName: worker.DisplayName, CreatedAt: worker.CreatedAt, InstanceType: worker.InstanceType, VCPU: worker.VCPU,
+		status := WorkerStatus{Identity: workerIdentity(worker), DisplayName: worker.DisplayName, CreatedAt: worker.CreatedAt, InstanceType: worker.InstanceType, AcceleratorType: worker.AcceleratorType, VCPU: worker.VCPU,
 			MemoryGiB: worker.MemoryGiB, VolumeGiB: worker.VolumeGiB, Availability: WorkerAvailable, EC2State: "unknown", WorkerPhase: worker.Phase,
 			CurrentExecutionID: worker.CurrentExecutionID, ObservedAt: provider.now().UTC()}
 		instance, found := Instance{}, false

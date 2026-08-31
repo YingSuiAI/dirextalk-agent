@@ -228,7 +228,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		ServerName: request.ServerName,
 		Authority:  sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, Credential: identity,
 		Confirmation: confirmation, Discovery: discovery, ReuseOnly: request.ReuseOnly, ReuseWorkerID: request.ReuseWorkerID,
-		InstanceType: request.Compute.InstanceType, VCPU: request.Compute.VCPU, MemoryGiB: request.Compute.MemoryGiB,
+		InstanceType: request.Compute.InstanceType, AcceleratorType: request.Compute.AcceleratorType, VCPU: request.Compute.VCPU, MemoryGiB: request.Compute.MemoryGiB,
 		VolumeGiB: int32(request.Compute.VolumeGiB), WorkerScript: material.WorkerScript,
 		WorkerScriptSHA256: material.WorkerScriptSHA256, Runtime: material.Protocol,
 		WorkspacePath: workspacePath, MaxWorkspaceBytes: 512 << 20, MaxResultBytes: int64(request.Limits.MaxOutputBytes), Sink: sink,
@@ -655,7 +655,7 @@ func (executor *sshWorkerExecutor) ResolveIdleWorker(ctx context.Context, ownerI
 		return cloudworker.WorkerReuseSelection{}, false, err
 	}
 	worker, found, err := provider.ResolveIdleWorker(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, identity,
-		requirements.MinVCPU, requirements.MinMemoryGiB, int32(requirements.DiskGiB))
+		requirements.MinVCPU, requirements.MinMemoryGiB, int32(requirements.DiskGiB), requirements.AcceleratorType)
 	if err != nil || !found {
 		return cloudworker.WorkerReuseSelection{}, false, err
 	}
@@ -663,7 +663,7 @@ func (executor *sshWorkerExecutor) ResolveIdleWorker(ctx context.Context, ownerI
 	if err != nil || !compatible {
 		return cloudworker.WorkerReuseSelection{}, false, err
 	}
-	return cloudworker.WorkerReuseSelection{WorkerID: worker.WorkerID, Compute: cloudworker.ComputeSpec{InstanceType: worker.InstanceType, Architecture: "x86_64", VCPU: worker.VCPU, MemoryGiB: worker.MemoryGiB,
+	return cloudworker.WorkerReuseSelection{WorkerID: worker.WorkerID, Compute: cloudworker.ComputeSpec{InstanceType: worker.InstanceType, Architecture: "x86_64", AcceleratorType: worker.AcceleratorType, VCPU: worker.VCPU, MemoryGiB: worker.MemoryGiB,
 		RootDeviceName: "/dev/xvda", VolumeGiB: uint64(worker.VolumeGiB), VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}}, true, nil
 }
 
@@ -810,7 +810,7 @@ func (executor *sshWorkerExecutor) ResolveRetainedWorkerInventory(ctx context.Co
 	inventory := cloudworker.RetainedWorkerInventory{ObservedAt: time.Now().UTC(), AtCapacity: len(statuses) >= sshworker.MaxWorkers,
 		Workers: make([]cloudworker.RetainedWorkerSnapshot, 0, len(statuses))}
 	for _, status := range statuses {
-		worker := cloudworker.RetainedWorkerSnapshot{WorkerID: status.Identity.WorkerID, InstanceType: status.InstanceType,
+		worker := cloudworker.RetainedWorkerSnapshot{WorkerID: status.Identity.WorkerID, InstanceType: status.InstanceType, AcceleratorType: status.AcceleratorType,
 			VCPU: status.VCPU, MemoryGiB: status.MemoryGiB, VolumeGiB: status.VolumeGiB, Availability: string(status.Availability),
 			EC2State: status.EC2State, WorkerPhase: string(status.WorkerPhase), PublicIPv4: status.PublicIP, Error: status.Error}
 		if status.CurrentExecutionID != "" {

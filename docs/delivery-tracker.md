@@ -9,6 +9,18 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Cloud Worker proposals accept an optional provider-neutral accelerator class
+  (`gpu`, `neuron`, `fpga`, `media`, or `any`). Live EC2 type metadata proves
+  the requested class before selection; the concrete class is persisted in the
+  plan and retained Worker JSON, and unknown or incompatible retained Workers
+  cannot satisfy accelerator reuse. Focused selection and reuse regressions
+  cover a cheaper CPU candidate, unknown historical Worker metadata, and an
+  incompatible accelerator class.
+- Ordinary non-read-only Core intrinsic failures now persist a redacted terminal
+  tool observation and enter the existing tools-disabled finalization. The
+  model can summarize completed work and gaps through normal `done`; only
+  integrity, persistence, or dispatch-authority failures retain failed-turn
+  behavior.
 - Streamable HTTP MCP tool results retain ordered plain text and embedded
   textual resources instead of dropping file bodies returned through
   `resource.text`. Resource metadata is validated without URI dereferencing,
@@ -92,8 +104,8 @@ contract](message-server-integration-development-contract.md), and
   explicit equal operation and turn identities.
 - Native turns persist execution-policy version, mode, and admitted values, and
   use those values through the same durable counters during recovery.
-  Interactive admits 8 dispatches, 5 model-active minutes, and 8 tool calls;
-  deep, scheduled, and Worker orchestration admit 24/20/20. Supported safe
+  Interactive, deep, scheduled, and Worker orchestration each admit 24
+  dispatches, 20 model-active minutes, and 20 tool calls. Supported safe
   historical values remain executable after preset changes, while unsupported
   or unsafe policies fail before claim/event mutation. Worker-owned runtime and
   Task limits remain independent. Tool results with validated runtime references persist
@@ -611,8 +623,7 @@ support.
   optional closed interactive/deep/worker-orchestration selector while trusted
   scheduled Tasks bind scheduled mode. Runtime snapshots persist bounded mode,
   dispatch, active-time, and tool-call values; Service and PostgreSQL execute
-  those values directly. Interactive uses 8/5 minutes/8 and the three extended
-  modes use 24/20 minutes/20. Unsupported or unsafe stored policies fail before
+  those values directly. All four modes use 24/20 minutes/20. Unsupported or unsafe stored policies fail before
   claim mutation, and Cloud Worker runtime limits remain independently owned.
 - On **2026-08-20**, focused Core lifecycle tests verified the dispatch-local
   first-payload, meaningful-action, and absolute deadlines, equal-expiration

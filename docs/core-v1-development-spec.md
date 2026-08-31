@@ -516,10 +516,9 @@ acceptance atomically binds the complete compiled system prompt, profile and
 request-dialect digest, intrinsic tool schemas, extension/attachment digests,
 and versioned execution policy. Owner chat accepts only `interactive`, `deep`,
 or `worker_orchestration`, defaulting omission to `interactive`; only the
-trusted due-Task adapter may admit `scheduled`. Interactive admits 8 model
-dispatches, 5 cumulative model-active minutes, and 8 tool calls. Deep,
-scheduled, and worker orchestration admit 24 dispatches, 20 minutes, and 20
-tool calls. The supported policy version validates persisted values against
+trusted due-Task adapter may admit `scheduled`. Interactive, deep, scheduled,
+and worker orchestration each admit 24 model dispatches, 20 cumulative
+model-active minutes, and 20 tool calls. The supported policy version validates persisted values against
 absolute safety bounds rather than current presets, and every service and
 PostgreSQL budget decision reads those admitted values. Unsupported versions,
 unknown modes, unsafe values, and selector/runtime mismatches fail before turn
@@ -866,13 +865,19 @@ different path does not by itself authorize Worker escalation. Repository
 cloning, builds, deployments, services, and other required execution or network
 behavior unavailable through specialized tools remain eligible for Worker use.
 
-A proposal carries provider-neutral minimum vCPU, memory, disk, and estimated
-runtime requirements. Agent intersects current-generation x86_64 on-demand
-products with the deployment host Region's actual EC2 offerings and selects the cheapest shape
+A proposal carries provider-neutral minimum vCPU, memory, disk, estimated
+runtime, and an optional accelerator class (`gpu`, `neuron`, `fpga`, `media`,
+or `any`), never an AWS instance type. Agent intersects current-generation
+x86_64 on-demand products with the deployment host Region's actual EC2
+offerings and live accelerator metadata and selects the cheapest shape
 that satisfies them. The plan and confirmation expose that exact shape and its
 live hourly compute price. Bounded jobs also expose their estimated cost and
 maximum authorized cost; persistent services do not present a finite task cost
 or cost ceiling for their open-ended lifetime.
+
+The selected concrete accelerator class is persisted with each retained
+Worker. An accelerator request cannot reuse a Worker whose accelerator metadata
+is absent or incompatible.
 
 A proposal atomically creates the plan, execution, `CLOUD_WORKER` Task and
 `CoreConfirmation`. Creating a Worker requires a fresh EC2/EBS price read and
