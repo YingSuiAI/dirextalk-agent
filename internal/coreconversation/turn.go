@@ -389,13 +389,14 @@ const TurnFinalizationIntentVersion = 1
 type TurnFinalizationReason string
 
 const (
-	TurnFinalizationToolLoop      TurnFinalizationReason = "tool_loop_no_progress"
-	TurnFinalizationToolBudget    TurnFinalizationReason = "tool_budget_exhausted"
-	TurnFinalizationModelBudget   TurnFinalizationReason = "model_budget_exhausted"
-	TurnFinalizationProvider      TurnFinalizationReason = "provider_failure"
-	TurnFinalizationInvalidOutput TurnFinalizationReason = "invalid_terminal_output"
-	TurnFinalizationToolOutcome   TurnFinalizationReason = "terminal_tool_outcome"
-	TurnFinalizationWorkflow      TurnFinalizationReason = "constrained_workflow"
+	TurnFinalizationToolLoop       TurnFinalizationReason = "tool_loop_no_progress"
+	TurnFinalizationToolBudget     TurnFinalizationReason = "tool_budget_exhausted"
+	TurnFinalizationModelBudget    TurnFinalizationReason = "model_budget_exhausted"
+	TurnFinalizationProvider       TurnFinalizationReason = "provider_failure"
+	TurnFinalizationInvalidOutput  TurnFinalizationReason = "invalid_terminal_output"
+	TurnFinalizationToolCallFormat TurnFinalizationReason = "model_tool_call_format_invalid"
+	TurnFinalizationToolOutcome    TurnFinalizationReason = "terminal_tool_outcome"
+	TurnFinalizationWorkflow       TurnFinalizationReason = "constrained_workflow"
 )
 
 // TurnFinalizationIntent is the durable decision that an ordinary accepted
@@ -416,7 +417,8 @@ func (i TurnFinalizationIntent) Validate() error {
 	}
 	switch i.Reason {
 	case TurnFinalizationToolLoop, TurnFinalizationToolBudget, TurnFinalizationModelBudget,
-		TurnFinalizationProvider, TurnFinalizationInvalidOutput, TurnFinalizationToolOutcome, TurnFinalizationWorkflow:
+		TurnFinalizationProvider, TurnFinalizationInvalidOutput, TurnFinalizationToolCallFormat,
+		TurnFinalizationToolOutcome, TurnFinalizationWorkflow:
 		return nil
 	default:
 		return ErrInvalid
@@ -437,6 +439,11 @@ type ModelAttemptFailure struct {
 	RateLimited  bool
 	RetryAfterMS int64
 }
+
+// ModelToolCallFormatInvalidCode is the only provider failure that may retry a
+// capability-reducing finalization dispatch. The quarantined text is never
+// parsed or executed; the retry keeps the same tool-free directive.
+const ModelToolCallFormatInvalidCode = "MODEL_TOOL_CALL_FORMAT_INVALID"
 
 const TurnDispatchDirectiveVersion = 1
 

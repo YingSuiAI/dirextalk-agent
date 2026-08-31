@@ -2883,3 +2883,14 @@ CREATE TABLE core_github_replays (
     PRIMARY KEY (owner_id, account_generation, idempotency_key)
 );
 -- dirextalk-agent migration end 000028_github_configuration.up.sql
+-- dirextalk-agent migration begin 000029_model_tool_call_format_finalization.up.sql
+-- Text that resembles a tool protocol is never executable authority. Persist
+-- the dedicated compatibility stop reason used after one structured retry.
+ALTER TABLE core_conversation_turn_finalizations
+    DROP CONSTRAINT core_conversation_turn_finalizations_reason_check,
+    ADD CONSTRAINT core_conversation_turn_finalizations_reason_check CHECK (reason IN (
+        'tool_loop_no_progress','tool_budget_exhausted','model_budget_exhausted',
+        'provider_failure','invalid_terminal_output','terminal_tool_outcome',
+        'constrained_workflow','model_tool_call_format_invalid'
+    ));
+-- dirextalk-agent migration end 000029_model_tool_call_format_finalization.up.sql

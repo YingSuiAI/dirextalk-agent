@@ -414,6 +414,7 @@ func TestModelDispatchFailureClassification(t *testing.T) {
 	}{
 		{failure: coremodel.ErrInvalidResponse, code: modelProviderResponseCode, summary: modelProviderResponseSummary},
 		{failure: coremodel.ErrStreamTruncated, code: modelProviderTruncatedCode, summary: modelProviderTruncatedSummary},
+		{failure: coremodel.ErrModelToolCallFormatInvalid, code: modelToolCallFormatInvalidCode, summary: modelToolCallFormatInvalidSummary},
 	} {
 		code, summary = classifyModelDispatchFailure(test.failure)
 		if code != test.code || summary != test.summary {

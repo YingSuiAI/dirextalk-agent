@@ -22,6 +22,7 @@ const (
 	MaxAdmittedTurnModelDispatches     = 24
 	MaxAdmittedTurnModelActiveDuration = 20 * time.Minute
 	MaxTurnFinalizationDispatches      = 1
+	MaxTurnFinalizationFormatRetries   = 1
 	MaxTurnFinalizationDuration        = 30 * time.Second
 	turnModelFirstPayloadDeadline      = 15 * time.Second
 	turnModelMeaningfulActionDeadline  = 90 * time.Second
@@ -30,6 +31,7 @@ const (
 	MaxAdmittedTurnToolCalls           = 20
 	toolLoopNudgeGuidance              = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
 	toolLoopSynthesisGuidance          = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
+	toolCallFormatSynthesisGuidance    = "A previous tool-enabled response used invalid text markup instead of the structured tool protocol. Tools are disabled for this finalization. Produce the best useful final answer from evidence already present in the conversation, explicitly state any remaining gaps, and do not emit or describe DSML, XML, or tool-call markup."
 	outputContinuationGuidance         = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
 	staticSitePublishCorrection        = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
 	conversationConvergenceGuidance    = "When sufficient information is available, act or call the needed tool, then synthesize the result without restating the user's request or tool instructions."
@@ -96,14 +98,14 @@ func (g *turnModelDeadlineGuard) expire(failure error) {
 }
 
 func nonemptyProviderPayload(delta ModelDelta) bool {
-	if delta.Text != "" || delta.ReasoningContent != "" {
+	if delta.Text != "" || delta.ReasoningContent != "" || delta.PrivateProgress {
 		return true
 	}
 	return delta.ToolCall != nil && (delta.ToolCall.ID != "" || delta.ToolCall.Name != "" || delta.ToolCall.Arguments != "")
 }
 
 func meaningfulProviderAction(delta ModelDelta) bool {
-	return strings.TrimSpace(delta.Text) != "" || delta.ToolCall != nil && delta.ToolCall.Validate() == nil
+	return delta.PrivateProgress || strings.TrimSpace(delta.Text) != "" || delta.ToolCall != nil && delta.ToolCall.Validate() == nil
 }
 
 func (g *turnModelDeadlineGuard) observe(delta ModelDelta) {
@@ -1249,7 +1251,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	unappliedWorkerSteer := hasUnappliedDeferredWorkerSteer(turnSteers, workerSteersApplied, toolCallAuthorities)
 	autoFinalizeWorker := terminalWorker && !unappliedWorkerSteer
 	var resolvedExtensions []ResolvedExtension
-	if !autoFinalizeWorker {
+	if !autoFinalizeWorker && !finalizing {
 		resolvedExtensions, err = s.resolveAcceptedTurnExtensionsForContinuation(ctx, turn.ExtensionSnapshots, terminalWorker)
 		if err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
@@ -1381,7 +1383,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		intrinsicPolicy = turn.RuntimeSnapshot.IntrinsicPolicy
 	}
 	var intrinsicTools []ResolvedIntrinsic
-	if intrinsicPolicy != TurnIntrinsicPolicyNone {
+	if !finalizing && intrinsicPolicy != TurnIntrinsicPolicyNone {
 		intrinsicTools, err = s.resolveIntrinsicTools(ctx, lease)
 		if err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_unavailable", "Core intrinsic tool is unavailable")
@@ -1414,21 +1416,26 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	}
 	toolCallBudgetExhausted := uint32(len(toolCallAuthorities)) >= executionPolicy.MaxToolCalls
 	profile := turn.ProfileSnapshot.Profile()
-	systemPrompt := appendSystemPrompt(compilePlatformSystemPrompt(profile.SystemPrompt), conversationConvergenceGuidance)
-	systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, resolvedExtensions)
-	if containsStaticSiteIntrinsic(intrinsicTools) {
-		systemPrompt = staticSiteSystemPrompt(systemPrompt)
-	}
-	if containsScheduleIntrinsic(intrinsicTools) {
-		systemPrompt = scheduleSystemPrompt(systemPrompt)
-	}
-	if containsCloudWorkerIntrinsic(intrinsicTools) {
-		systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
-	}
-	runtimeSnapshot, snapshotErr := newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsicTools, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, executionPolicy, turn.RuntimeSnapshot.ConstrainedWorkflow)
-	if snapshotErr != nil {
-		_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
-		return
+	runtimeSnapshot := *turn.RuntimeSnapshot
+	systemPrompt := runtimeSnapshot.CompiledSystemPrompt
+	if !finalizing {
+		systemPrompt = appendSystemPrompt(compilePlatformSystemPrompt(profile.SystemPrompt), conversationConvergenceGuidance)
+		systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, resolvedExtensions)
+		if containsStaticSiteIntrinsic(intrinsicTools) {
+			systemPrompt = staticSiteSystemPrompt(systemPrompt)
+		}
+		if containsScheduleIntrinsic(intrinsicTools) {
+			systemPrompt = scheduleSystemPrompt(systemPrompt)
+		}
+		if containsCloudWorkerIntrinsic(intrinsicTools) {
+			systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
+		}
+		candidateRuntime, snapshotErr := newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsicTools, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, executionPolicy, turn.RuntimeSnapshot.ConstrainedWorkflow)
+		if snapshotErr != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
+			return
+		}
+		runtimeSnapshot = candidateRuntime
 	}
 	if !replayed {
 		if validateErr := s.turns.ValidateTurnRuntime(ctx, lease, runtimeSnapshot); validateErr != nil {
@@ -1544,6 +1551,15 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	modelExtensions := resolvedExtensions
 	modelExtensionSnapshots := append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)
 	modelIntrinsicTools := intrinsicTools
+	guardTextToolCallEnvelope := len(runtimeSnapshot.IntrinsicTools) != 0
+	if !guardTextToolCallEnvelope {
+		for _, snapshot := range turn.ExtensionSnapshots {
+			if len(snapshot.ToolNames) != 0 {
+				guardTextToolCallEnvelope = true
+				break
+			}
+		}
+	}
 	forcedToolName := directive.ForcedToolName
 	switch directive.ToolMode {
 	case TurnDispatchToolsNone:
@@ -1566,7 +1582,11 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	case TurnDispatchGuidanceLoopNudge:
 		systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
 	case TurnDispatchGuidanceLoopSynthesis:
-		systemPrompt = appendSystemPrompt(systemPrompt, toolLoopSynthesisGuidance)
+		guidance := toolLoopSynthesisGuidance
+		if directive.FinalizationReason == TurnFinalizationToolCallFormat {
+			guidance = toolCallFormatSynthesisGuidance
+		}
+		systemPrompt = appendSystemPrompt(systemPrompt, guidance)
 	}
 	frozenModelRequest := ModelRunRequest{
 		Conversation: modelConversation,
@@ -1577,13 +1597,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			Model:        profile.Model,
 			SystemPrompt: systemPrompt,
 		},
-		Snapshot:              turn.ProfileSnapshot,
-		ProfileSnapshot:       turn.ProfileSnapshot,
-		ForcedToolName:        forcedToolName,
-		Intrinsics:            append([]ResolvedIntrinsic(nil), modelIntrinsicTools...),
-		Extensions:            modelExtensions,
-		ExtensionSnapshots:    modelExtensionSnapshots,
-		InputPartsByMessageID: inputParts,
+		Snapshot:                  turn.ProfileSnapshot,
+		ProfileSnapshot:           turn.ProfileSnapshot,
+		ForcedToolName:            forcedToolName,
+		Intrinsics:                append([]ResolvedIntrinsic(nil), modelIntrinsicTools...),
+		Extensions:                modelExtensions,
+		ExtensionSnapshots:        modelExtensionSnapshots,
+		InputPartsByMessageID:     inputParts,
+		GuardTextToolCallEnvelope: guardTextToolCallEnvelope,
 	}
 	if !replayed {
 		continuity := s.takeProviderContinuity(id)
@@ -1601,7 +1622,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 		}
 	}
-	runAttempt := func() {
+	runAttempt := func(formatRecovery bool) {
 		deltaBuffer := newTurnDeltaBuffer(defaultTurnDeltaFlushBytes, defaultTurnDeltaFlushInterval, func(delta ModelDelta) error {
 			_, appendErr := s.turns.AppendTurnEvent(ctx, id, TurnEvent{
 				Kind: TurnEventDelta,
@@ -1616,7 +1637,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			dispatchCtx, deadlineGuard := newTurnModelDeadlineGuard(modelCtx, s.modelDeadlines, modelDeadlineCap)
 			providerPayload := false
 			var callbackErr error
-			result, runErr := s.runModel(dispatchCtx, frozenModelRequest, func(delta ModelDelta) error {
+			modelRequest := frozenModelRequest
+			modelRequest.ToolCallFormatRecovery = formatRecovery
+			result, runErr := s.runModel(dispatchCtx, modelRequest, func(delta ModelDelta) error {
 				deadlineGuard.observe(delta)
 				if nonemptyProviderPayload(delta) {
 					providerPayload = true
@@ -1637,10 +1660,11 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				runErr = ErrModelBudgetExhausted
 			}
 			retry := coremodel.PreOutputRetryMetadata(runErr)
+			formatFailure := errors.Is(runErr, coremodel.ErrModelToolCallFormatInvalid)
 			// Once any provider payload is accepted, including raw reasoning or an
 			// incomplete tool fragment, a latency watchdog failure must not trigger
 			// the one pre-output provider retry.
-			if providerPayload || flushErr != nil {
+			if flushErr != nil || providerPayload && !formatFailure {
 				retry = coremodel.RetryMetadata{}
 			}
 			resultCh <- turnModelOutcome{result: result, err: runErr, retry: retry}
@@ -1649,7 +1673,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if replayed {
 		resultCh <- turnModelOutcome{result: replay}
 	} else {
-		runAttempt()
+		runAttempt(false)
 	}
 	interval := s.turnLeaseTTL / 3
 	if interval <= 0 {
@@ -1660,11 +1684,14 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	var retryTimer <-chan time.Time
 	cancelEvents := (<-chan struct{})(cancelSignal)
 	retryCount := 0
+	retryFormatRecovery := false
 	for {
 		select {
 		case out := <-resultCh:
 			if out.err != nil {
-				if out.retry.Retryable && retryCount == 0 && !replayed && !finalizing {
+				formatFailure := errors.Is(out.err, coremodel.ErrModelToolCallFormatInvalid)
+				canRetry := out.retry.Retryable && retryCount == 0 && !replayed && (!finalizing || formatFailure)
+				if canRetry {
 					if attempts, ok := s.turns.(TurnModelAttemptStore); ok {
 						code, summary := classifyModelDispatchFailure(out.err)
 						delay := out.retry.RetryAfter
@@ -1674,6 +1701,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 						failure := ModelAttemptFailure{Code: code, Summary: summary, RateLimited: out.retry.RateLimited, RetryAfterMS: delay.Milliseconds()}
 						if attempts.MarkTurnModelRetryable(ctx, lease, failure) == nil {
 							retryCount++
+							retryFormatRecovery = formatFailure
 							retryTimer = time.After(delay)
 							continue
 						}
@@ -2181,7 +2209,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 			turn.ModelDispatchCount = prepared.ModelDispatchCount
 			turn.ModelActiveDuration = prepared.ModelActiveDuration
-			runAttempt()
+			runAttempt(retryFormatRecovery)
+			retryFormatRecovery = false
 		case <-heartbeat.C:
 			t, e := s.turns.GetTurn(ctx, id)
 			if e == nil && t.CancelRequested {
@@ -2280,6 +2309,9 @@ func resolveTurnAttachmentInputParts(ctx context.Context, resolver TurnAttachmen
 }
 
 func finalizationReasonForFailure(code string) TurnFinalizationReason {
+	if code == modelToolCallFormatInvalidCode {
+		return TurnFinalizationToolCallFormat
+	}
 	if code == modelBudgetExhaustedCode {
 		return TurnFinalizationModelBudget
 	}
@@ -2302,6 +2334,8 @@ func finalizationStop(reason TurnFinalizationReason) (string, string) {
 		return modelDispatchUncertainCode, modelDispatchUncertainSummary
 	case TurnFinalizationInvalidOutput:
 		return "invalid_model_result", "model returned an invalid or empty terminal response"
+	case TurnFinalizationToolCallFormat:
+		return modelToolCallFormatInvalidCode, modelToolCallFormatInvalidSummary
 	default:
 		return "finalization_required", "the turn stopped before a complete final response was available"
 	}
@@ -2414,29 +2448,34 @@ func boundedTerminalText(value string, limit int) string {
 }
 
 const (
-	modelDispatchUncertainCode      = "provider_uncertain"
-	modelDispatchUncertainSummary   = "model dispatch outcome is unknown"
-	modelResponseTimeoutCode        = "provider_timeout"
-	modelResponseTimeoutSummary     = "model stream stopped producing progress; outcome is unknown; send a new turn to retry"
-	modelBudgetExhaustedCode        = "model_budget_exhausted"
-	modelBudgetExhaustedSummary     = "model execution budget was exhausted before a final response"
-	toolBudgetExhaustedCode         = "tool_budget_exhausted"
-	toolBudgetExhaustedSummary      = "tool call budget was exhausted before a final response"
-	modelProviderRejectedCode       = "provider_rejected"
-	modelProviderRejectedSummary    = "model provider rejected the request"
-	modelProviderRateLimitedCode    = "provider_rate_limited"
-	modelProviderRateLimitedSummary = "model provider rate limit was reached"
-	turnRuntimeIncompatibleCode     = "TURN_RUNTIME_INCOMPATIBLE"
-	turnRuntimeIncompatibleSummary  = "accepted turn runtime is incompatible with this runtime"
-	modelRequestInvalidCode         = "invalid_model_request"
-	modelRequestInvalidSummary      = "model request is invalid"
-	modelProviderResponseCode       = "provider_invalid_response"
-	modelProviderResponseSummary    = "model provider returned an invalid response"
-	modelProviderTruncatedCode      = "provider_stream_truncated"
-	modelProviderTruncatedSummary   = "model provider stream ended before completion"
+	modelDispatchUncertainCode        = "provider_uncertain"
+	modelDispatchUncertainSummary     = "model dispatch outcome is unknown"
+	modelResponseTimeoutCode          = "provider_timeout"
+	modelResponseTimeoutSummary       = "model stream stopped producing progress; outcome is unknown; send a new turn to retry"
+	modelBudgetExhaustedCode          = "model_budget_exhausted"
+	modelBudgetExhaustedSummary       = "model execution budget was exhausted before a final response"
+	toolBudgetExhaustedCode           = "tool_budget_exhausted"
+	toolBudgetExhaustedSummary        = "tool call budget was exhausted before a final response"
+	modelProviderRejectedCode         = "provider_rejected"
+	modelProviderRejectedSummary      = "model provider rejected the request"
+	modelProviderRateLimitedCode      = "provider_rate_limited"
+	modelProviderRateLimitedSummary   = "model provider rate limit was reached"
+	turnRuntimeIncompatibleCode       = "TURN_RUNTIME_INCOMPATIBLE"
+	turnRuntimeIncompatibleSummary    = "accepted turn runtime is incompatible with this runtime"
+	modelRequestInvalidCode           = "invalid_model_request"
+	modelRequestInvalidSummary        = "model request is invalid"
+	modelProviderResponseCode         = "provider_invalid_response"
+	modelProviderResponseSummary      = "model provider returned an invalid response"
+	modelProviderTruncatedCode        = "provider_stream_truncated"
+	modelProviderTruncatedSummary     = "model provider stream ended before completion"
+	modelToolCallFormatInvalidCode    = ModelToolCallFormatInvalidCode
+	modelToolCallFormatInvalidSummary = "selected model is incompatible with structured tool calling: it returned text markup instead of OpenAI tool_calls"
 )
 
 func classifyModelDispatchFailure(err error) (string, string) {
+	if errors.Is(err, coremodel.ErrModelToolCallFormatInvalid) {
+		return modelToolCallFormatInvalidCode, modelToolCallFormatInvalidSummary
+	}
 	if errors.Is(err, coremodel.ErrInvalidCompletionRequest) || errors.Is(err, coremodel.ErrCompletionRequestTooLarge) {
 		return modelRequestInvalidCode, modelRequestInvalidSummary
 	}
@@ -2675,7 +2714,12 @@ func (s *Service) resolveAcceptedTurnExtensionsForContinuation(ctx context.Conte
 }
 
 func contextBoundExtensionSource(source string) bool {
-	return source == "builtin:web_search:tavily" || source == "builtin:knowledge:semantic" || source == "product-capability" || source == "message-mcp"
+	switch source {
+	case "builtin:web_search:tavily", "builtin:knowledge:semantic", "product-capability", "message-mcp", "github-mcp":
+		return true
+	default:
+		return false
+	}
 }
 
 func containsMessageMCPExtension(extensions []ResolvedExtension) bool {

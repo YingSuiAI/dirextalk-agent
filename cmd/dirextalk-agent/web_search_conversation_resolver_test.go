@@ -139,8 +139,20 @@ func TestWebSearchModelEvidenceCanonicalizesDeduplicatesAndSkipsInvalidURLs(t *t
 		t.Fatalf("envelope=%+v accepted=%+v", envelope, accepted)
 	}
 	references := webSearchEvidenceReferences(accepted)
-	if len(references) != 1 || references[0].SourceID != envelope.Sources[0].URL || references[0].ContentDigest == "" {
+	if len(references) != 1 || references[0].SourceID != envelope.Sources[0].URL || references[0].ContentDigest == "" ||
+		references[0].Title != "first" || references[0].Preview != "" {
 		t.Fatalf("references=%+v", references)
+	}
+}
+
+func TestWebSearchPublicReferencesDoNotDuplicateFetchedPageContent(t *testing.T) {
+	const rawPage = "北京天气预报,北京7天天气预报 热门城市 周边地区"
+	references := webSearchEvidenceReferences([]corewebsearch.SearchItem{{
+		Title: "北京天气", URL: "https://weather.example.test/beijing", Content: rawPage,
+	}})
+	if len(references) != 1 || references[0].Title != "北京天气" || references[0].Preview != "" ||
+		references[0].SourceID == rawPage {
+		t.Fatalf("public references retained fetched page content: %+v", references)
 	}
 }
 

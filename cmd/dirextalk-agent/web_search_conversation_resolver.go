@@ -223,7 +223,10 @@ func webSearchEvidenceReferences(items []corewebsearch.SearchItem) []coreconvers
 		contentSum := sha256.Sum256([]byte(item.Content))
 		reference := coreconversation.Reference{
 			Kind: "web_source", SourceID: sourceID, ContentDigest: hex.EncodeToString(contentSum[:]),
-			Title: boundedEvidencePresentation(item.Title, 512), Preview: boundedEvidencePresentation(item.Content, coreconversation.MaxSummaryBytes),
+			// Search evidence remains available to the model through ToolResult.Content.
+			// Public references are navigation metadata, not a second copy of the
+			// fetched page body; older clients render Preview directly in the chat.
+			Title: boundedEvidencePresentation(item.Title, 512),
 		}
 		if reference.Validate() != nil {
 			continue

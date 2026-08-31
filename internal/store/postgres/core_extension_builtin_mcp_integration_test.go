@@ -67,6 +67,21 @@ func TestCoreExtensionBuiltinMCPSeedIsOneTimeAndRemovalSurvivesRestart(t *testin
 	if err != nil || replayed.ID != installed.ID || replayed.Revision != installed.Revision {
 		t.Fatalf("replayed=%#v err=%v", replayed, err)
 	}
+	repackedDigest := strings.Repeat("c", 64)
+	repacked, err := repository.EnsureBuiltinMCP(ctx, artifact, repackedDigest)
+	if err != nil || repacked.ID != installed.ID || repacked.Revision != installed.Revision+1 || len(repacked.Versions) != 2 || repacked.ActiveVersionID == installed.ActiveVersionID {
+		t.Fatalf("repacked=%#v err=%v", repacked, err)
+	}
+	var repackedActive coreextension.VersionRecord
+	for _, version := range repacked.Versions {
+		if version.VersionID == repacked.ActiveVersionID {
+			repackedActive = version
+			break
+		}
+	}
+	if repackedActive.VersionID == "" || repackedActive.ContentDigest != artifact.ContentDigest || repackedActive.ArtifactDigest != repackedDigest {
+		t.Fatalf("active repacked version=%#v", repackedActive)
+	}
 	updatedCatalog, err := source.NewBuiltinMCPs([]byte("ELF fixture v2"), []byte("shell fixture"))
 	if err != nil {
 		t.Fatal(err)
@@ -74,12 +89,15 @@ func TestCoreExtensionBuiltinMCPSeedIsOneTimeAndRemovalSurvivesRestart(t *testin
 	updatedArtifact := updatedCatalog.Artifacts()[0]
 	updatedDigest := strings.Repeat("b", 64)
 	updated, err := repository.EnsureBuiltinMCP(ctx, updatedArtifact, updatedDigest)
-	if err != nil || updated.ID != installed.ID || updated.Revision != installed.Revision+1 || len(updated.Versions) != 2 || updated.ActiveVersionID == installed.ActiveVersionID {
+	if err != nil || updated.ID != installed.ID || updated.Revision != installed.Revision+2 || len(updated.Versions) != 3 || updated.ActiveVersionID == repacked.ActiveVersionID {
 		t.Fatalf("updated=%#v err=%v", updated, err)
 	}
-	active := updated.Versions[1]
-	if updated.Versions[0].VersionID == updated.ActiveVersionID {
-		active = updated.Versions[0]
+	var active coreextension.VersionRecord
+	for _, version := range updated.Versions {
+		if version.VersionID == updated.ActiveVersionID {
+			active = version
+			break
+		}
 	}
 	if active.VersionID != updated.ActiveVersionID || active.ArtifactDigest != updatedDigest {
 		t.Fatalf("active updated version=%#v", active)

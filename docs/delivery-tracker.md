@@ -9,11 +9,23 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Streamable HTTP MCP tool results retain ordered plain text and embedded
+  textual resources instead of dropping file bodies returned through
+  `resource.text`. Resource metadata is validated without URI dereferencing,
+  binary bodies remain excluded, and the combined redacted 32 KiB projection
+  reports truncation explicitly. Focused protocol tests reproduce the official
+  hosted GitHub file-result shape and cover ordering, malformed resources,
+  binary exclusion, redaction, UTF-8-safe bounding, and propagation through
+  the GitHub conversation resolver.
 - Cloud Worker GitHub access remains opt-in: absent, disabled, or tokenless
   frontend configuration creates an ordinary unbound plan and never blocks its
   proposal, confirmation, reuse, or start. The v1.0.184 and deployed v1.0.185
   unbound digest/confirmation encodings are both verified in-place, while an
   explicitly bound plan remains strictly revision-fenced.
+- Native GitHub MCP snapshots are context-bound. Continuation and recovery
+  rehydrate them from the authenticated owner/account/config/credential context
+  without querying installed-extension storage, while retaining exact accepted
+  snapshot and tool-schema digest checks.
 - Core-only `dirextalk-agent` entrypoint with `migrate` and `serve`.
 - TLS 1.3 gRPC authentication, health/reflection, capability discovery, and
   PostgreSQL-backed profiles, conversations, Tasks, events, schedules,
@@ -91,6 +103,11 @@ contract](message-server-integration-development-contract.md), and
   argument/presentation wrappers do not count as progress, restart preserves
   the cycle, and steer resets it. Results without
   structured observations retain conservative exact/A-B loop recovery.
+  Tools-disabled finalization validates and reuses the admitted frozen runtime
+  and compiled prompt without resolving current extensions or intrinsics, then
+  removes every tool only from the provider request. Message/GitHub MCP routing
+  guidance therefore cannot disappear and falsely trigger
+  `TURN_RUNTIME_INCOMPATIBLE` after a tool-budget stop.
   Conversation compaction now persists a versioned structured WorkingContext;
   protected user goals/constraints and runtime resource/receipt identities use
   a separate digest CAS, while only decisions, steps, and last-failure summaries
@@ -345,6 +362,55 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-30**, builtin MCP version identity was extended to bind both
+  the inspected tool-catalog digest and the immutable published artifact
+  digest. Repacking an executable with an unchanged catalog now creates a
+  distinct immutable version instead of colliding with a historical primary
+  key and preventing Agent restart. The PostgreSQL regression covers exact
+  replay, same-content repack, later catalog change, and the durable removal
+  fence.
+- On **2026-08-30**, a focused regression reproduced Native continuation
+  routing an accepted `github-mcp` snapshot through installed-extension
+  storage, then passed after GitHub MCP joined the context-bound resolver set.
+  The same classification is covered when a succeeded Cloud Worker turn
+  finalizes without a second model dispatch. The full Core conversation and
+  Core GitHub suites, Linux GitHub resolver tests, full Linux `go vet`, all
+  three production command builds, Buf lint, and diff checks passed.
+- On **2026-08-30**, tool-enabled Native model steps gained a validation-before-
+  publication boundary. Model-authored narration accompanying a structured tool
+  call stays private, and a protocol-shaped DSML envelope is quarantined even
+  after a natural-language prefix or across fragmented streaming. The detector
+  preserves fenced, inline-code, and quoted repository examples; quarantined
+  text is never parsed into executable authority. Core records
+  `MODEL_TOOL_CALL_FORMAT_INVALID` and retries once with fixed structured-call
+  guidance. If that retry also fails, Core now performs a tools-disabled best-
+  evidence synthesis instead of immediately showing the technical compatibility
+  fallback; the guard and its single recovery retry remain active, never restore
+  tools, and still converge deterministically if the provider repeats the
+  invalid format. Focused Linux runtime, Core conversation, Capability, and
+  PostgreSQL unit tests passed together with focused `go vet`, the production
+  Agent command build, and diff checks. This is code-level evidence and does not
+  claim a new deployment.
+- On **2026-08-30**, the OpenAI-compatible boundary gained a dispatch-local
+  DeepSeek adapter without accepting DSML as an executable protocol. Direct and
+  gateway-routed DeepSeek tool requests now receive fixed structured-call
+  guidance plus explicit automatic tool choice; the one quarantined recovery
+  attempt requires a standard structured call, while an exact named-tool choice
+  remains stronger. DeepSeek reasoning requests retain the guidance and
+  quarantine but omit the unsupported V4 thinking-mode `tool_choice` field. The
+  mode survives the Eino conversion boundary, invalid or
+  ambiguous combinations fail closed, and the existing validation-before-
+  publication guard remains the only path to public model text. Focused Linux
+  Core model, runtime, and conversation tests passed; this is code-level
+  evidence and does not claim a new deployment.
+- On **2026-08-30**, Native public tool progress stopped projecting model-authored
+  arguments, exact result content, cursors, or result references. Web Search
+  keeps normalized fetched evidence in the private model transcript but now
+  projects only canonical source identity, digest, and bounded title; Flutter
+  renders that source as a compact external link and ignores legacy web preview
+  bodies. Focused Linux Capability/Web Search tests, Flutter reference/coordinator/
+  Agent-page tests, and targeted Dart analysis passed. This is code-level
+  evidence and does not claim a new deployment.
 - On **2026-08-20**, existing-conversation Turn admission gained deterministic
   automatic WorkingContext compaction from the frozen profile input budget,
   compiled prompt, selected Skill instructions, and admitted tool schemas. The

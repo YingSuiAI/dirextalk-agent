@@ -38,7 +38,9 @@ func (s *CoreExtensionStore) EnsureBuiltinMCP(ctx context.Context, artifact core
 		return coreextension.Installation{}, coreextension.ErrInvalid
 	}
 	installationID := uuid.MustParse(coreextension.BuiltinMCPInstallationID(artifact.Candidate.ID))
-	versionID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:builtin-mcp:version:"+artifact.Candidate.ID+":"+artifact.Candidate.Pin.RegistryVersion+":"+artifact.ContentDigest))
+	// Content identity alone is insufficient for executable MCPs: a rebuilt
+	// artifact can preserve the tool catalog while changing its immutable bytes.
+	versionID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:builtin-mcp:version:"+artifact.Candidate.ID+":"+artifact.Candidate.Pin.RegistryVersion+":"+artifact.ContentDigest+":"+artifactDigest))
 	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return coreextension.Installation{}, err

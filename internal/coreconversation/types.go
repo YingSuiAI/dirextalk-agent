@@ -468,6 +468,15 @@ type ModelRunRequest struct {
 	// TransientProviderReasoning is live-process provider continuity for the
 	// immediately preceding tool round. It is never public or durable.
 	TransientProviderReasoning string
+	// ToolCallFormatRecovery is a dispatch-local, non-durable adapter hint set
+	// only after a quarantined text tool-call envelope. It can add corrective
+	// protocol guidance but cannot add tools or execution authority.
+	ToolCallFormatRecovery bool
+	// GuardTextToolCallEnvelope keeps the structured-tool protocol guard active
+	// when a capability-reducing finalization dispatch has removed every tool
+	// from the physical provider request. It is derived from the admitted turn
+	// runtime and never grants execution authority.
+	GuardTextToolCallEnvelope bool
 }
 type ModelRunResult struct {
 	Message        Message
@@ -741,6 +750,9 @@ type ModelDelta struct {
 	Text             string
 	ReasoningContent string
 	ToolCall         *ToolCall
+	// PrivateProgress reports provider activity that must advance live
+	// deadlines without becoming a public or durable assistant delta.
+	PrivateProgress bool
 }
 type ExtensionResolver interface {
 	ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error)

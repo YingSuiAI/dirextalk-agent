@@ -126,10 +126,10 @@ func TestOptionalMemoryRecallTimeoutWarningSurvivesRestartPostgres(t *testing.T)
 		terminal.Response.Message.Content != "completed without optional memory" || len(requests) != 1 {
 		t.Fatalf("recall calls=%d terminal=%+v provider requests=%d", calls, terminal, len(requests))
 	}
-	requestJSON, err := json.Marshal(requests[0])
-	if err != nil || strings.Contains(string(requestJSON), core.MemoryRecallDegradedStatus) ||
-		strings.Contains(string(requestJSON), core.MemoryRecallDegradedText) || strings.Contains(string(requestJSON), "private memory backend detail") {
-		t.Fatalf("warning became model authority: %s err=%v", requestJSON, err)
+	requestText := fmt.Sprintf("%+v", requests[0])
+	if strings.Contains(requestText, core.MemoryRecallDegradedStatus) ||
+		strings.Contains(requestText, core.MemoryRecallDegradedText) || strings.Contains(requestText, "private memory backend detail") {
+		t.Fatalf("warning became model authority: %s", requestText)
 	}
 	if strings.Contains(terminal.Response.Message.Content, core.MemoryRecallDegradedText) {
 		t.Fatalf("warning entered final Markdown: %q", terminal.Response.Message.Content)

@@ -223,17 +223,25 @@ or stream after admission. It never cancels the accepted Turn; callers use
   payload, and enters the single finalization path described below. Provider failure,
   invalid or empty terminal output, repeated no-progress tool use, and either
   ordinary budget cap first persist an immutable turn-finalization intent.
-  That intent admits exactly one additional physical provider attempt with an
-  independent 30-second timeout; it carries no intrinsic or extension tools,
-  is not charged to the admitted ordinary clock, and cannot retry. The total
-  physical attempt sequence can therefore reach the admitted dispatch cap plus
-  one (at most 25). If the final attempt returns useful text, that text is
+  That intent normally admits exactly one additional physical provider attempt
+  with an independent 30-second timeout; it carries no intrinsic or extension
+  tools and is not charged to the admitted ordinary clock. It cannot retry for
+  an ordinary provider, timeout, empty-output, or budget failure. The only
+  exception is a quarantined `MODEL_TOOL_CALL_FORMAT_INVALID` response from a
+  turn whose admitted runtime originally exposed structured tools: Core may
+  repeat the same tools-disabled finalization directive once with explicit
+  protocol-recovery guidance. That retry never restores tool authority. The
+  total physical attempt sequence can therefore reach the admitted dispatch
+  cap plus one normally (at most 25), or plus two only for that exact live
+  format-recovery case (at most 26). If the final attempt returns useful text,
+  that text is
   the normal completed Markdown response. If it fails, is empty or invalid, or
   returns a tool call, Core commits a deterministic Markdown response with
   `Completed work`, `Best conclusion`, `Incomplete items`, and `Stop reason`
   sections, preserving durable partial text and tool metadata. A restart before
-  the final dispatch may perform it once; a started, dispatched, or uncertain
-  final attempt is never replayed and falls back deterministically. Clients see
+  the final dispatch may perform it once; a started, retryable, dispatched, or
+  uncertain final attempt is never replayed after process recovery and falls
+  back deterministically. Clients see
   the result through the normal `done.message.content` projection rather than
   an error/configuration JSON terminal. A provider batch that would cross the
   admitted tool-call limit does
@@ -260,7 +268,9 @@ or stream after admission. It never cancels the accepted Turn; callers use
   `CoreConversationReference.source_id`, `chunk_id`, and `content_digest`.
   Web results use `web_source` with a canonical URL source identity (lowercase
   scheme/host, no default port or fragment, `/` for an empty path, and sorted
-  query parameters) plus the result-content digest. Knowledge results use
+  query parameters) plus the result-content digest and a bounded display title.
+  They never place fetched page bodies or search snippets in the public
+  reference preview. Knowledge results use
   `knowledge_chunk` with the durable source/chunk identities and passage
   digest. These identities, rather than titles, previews, or snippets, feed
   progress detection.
@@ -289,15 +299,23 @@ or stream after admission. It never cancels the accepted Turn; callers use
   requires it even when unchanged. Profile reads return the selected dialect;
   durable execution snapshots and their digests bind it so a model name never
   selects request behavior implicitly.
-- Native conversation progress durably publishes only assistant `delta` text
-  in bounded coalesced events as it arrives from the provider. Provider
-  reasoning is absent from public messages, stream events, Capability JSON,
+- Native conversation progress durably publishes only validated assistant
+  `delta` text. When the admitted runtime exposes tools, the adapter keeps all
+  model-authored content private until the complete provider step is known. A
+  step containing structured tool calls publishes no model-authored text; only
+  a completed, tool-free final answer is released as bounded coalesced public
+  text. Provider reasoning is absent from public messages, stream events, Capability JSON,
   RPC projections, conversation history, failed transcripts, and every durable
   model-result envelope. A complete model step publishes the existing
-  `tool_call` event only after the model step and tool
-  identity are durable, and before the extension is dispatched. A successful
-  call is followed by its exact `tool_result`; a failed dispatch retains the
-  already-published call before the existing safe terminal error. Durable turns
+  `tool_call` event only after the model step and tool identity are durable, and
+  before the extension is dispatched. The public event contains only call ID,
+  tool name, and optional execution ID; it never contains model-authored
+  arguments. A successful call is followed by a public `tool_result` progress
+  event containing only call/tool identity, outcome/error state, mutation
+  state, and bounded summary. Exact result content, cursors, and result
+  references remain private to the durable model transcript; authoritative
+  answer references are returned by terminal `done`. A failed dispatch retains
+  the already-published call before the existing safe terminal error. Durable turns
   persist the same public ordering while their private pending/dispatched
   envelope remains the at-most-once authority and is never exposed as an
   additional client event. Provider replay reconstructs one assistant message
@@ -338,6 +356,34 @@ or stream after admission. It never cancels the accepted Turn; callers use
   a failed-turn JSON result. Unknown external tool side effects and
   authorization become explicit terminal tool observations; integrity and
   persistence failures retain failed-turn semantics.
+- When a turn's admitted runtime exposes tools, an OpenAI-compatible response
+  that has no structured `message.tool_calls` but contains a protocol-shaped
+  DSML tool envelope in the ordinary content channel is never parsed as a call,
+  published as assistant text, or executed. Detection covers a natural-language
+  prefix, fragmented streaming, and a truncated bare envelope while excluding
+  Markdown fenced, inline-code, and quoted examples. The adapter quarantines
+  the complete provider response, records `MODEL_TOOL_CALL_FORMAT_INVALID`, and
+  permits one dispatch-local retry with fixed guidance requiring standard
+  OpenAI-compatible `tool_calls`. If that retry repeats the failure, Core
+  persists a tools-disabled finalization and asks the model to produce the best
+  useful answer from evidence already retained in the private transcript. The
+  guard remains active during this finalization; one repeated format failure may
+  retry the same tools-disabled directive with ordinary-answer guidance, and a
+  further failure completes through deterministic Markdown. No retry restores
+  tool authority, and text inside the candidate is never promoted into a tool
+  call. Structured tool calls remain the sole execution authority.
+- The DeepSeek compatibility adapter does not add a second executable
+  protocol. For the first-party DeepSeek API and DeepSeek models reached
+  through an OpenAI-compatible gateway, a tools-admitted request carries fixed
+  platform guidance that ordinary content is non-executable and an explicit
+  `tool_choice: auto`. After a quarantined text-protocol response, the single
+  correction attempt uses `tool_choice: required`; an already-authorized named
+  tool remains the stronger exact choice. DeepSeek's reasoning request dialect
+  retains the same fixed guidance and quarantine but omits `tool_choice`, which
+  DeepSeek V4 thinking mode rejects. These controls affect provider output
+  shape only and never bypass tool schema validation, accepted snapshots,
+  permissions, confirmations, or the text quarantine. DeepSeek strict mode is
+  not enabled by silently changing a configured endpoint to its beta API.
 - Recent tool-loop recovery is deliberately conservative and resets at an
   accepted steer. It recognizes only repeated canonical action/result pairs or
   exact A/B alternation. Argument object key order and harmless unquoted local
@@ -1010,9 +1056,22 @@ zero allowed definitions fail closed. Every tool is marked
 read-only. It takes the synthetic inline read-only path and does not claim a
 durable confirmation lane. Clone, edit, push, and pull-request mutations are
 performed only by the confirmation-gated Cloud Worker (stage 2). Credential
-resolution rechecks the authenticated
-owner, account generation and immutable config/credential revision immediately
-before each MCP request; no token is copied to a process environment or Worker.
+resolution rechecks the authenticated owner, account generation and immutable
+config/credential revision immediately before each MCP request. On every Turn
+continuation or recovery, the accepted GitHub MCP snapshot is rehydrated from
+that authenticated context instead of being routed through durable installed-
+extension storage; its exact immutable snapshot and accepted tool-schema
+digests must still match. No token is copied to a process environment or Worker.
+
+The shared Streamable HTTP MCP adapter projects ordered `text` content and
+embedded textual `resource.text` content into the model-visible tool result.
+An embedded resource requires a bounded absolute URI and valid optional MIME
+type; the URI is presentation metadata only and is never dereferenced. Binary
+`resource.blob` and other non-text content stay outside the conversation
+boundary. The combined result passes through the existing credential
+redaction and one shared 32 KiB model-visible limit, with an explicit
+truncation notice so the model can request a narrower read instead of assuming
+that a partial file is complete.
 
 Core is a fresh-state service with no legacy public-API or database
 compatibility path, except the explicit internal Cloud Worker v1.0.184/v1.0.185

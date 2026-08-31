@@ -58,8 +58,9 @@ func TestEinoClientGeneratePreservesToolsUsageAndSingleProviderCall(t *testing.T
 		t.Fatal(err)
 	}
 	request := CompletionRequest{
-		Messages: []Message{{Role: RoleUser, Content: "find x"}},
-		Tools:    []Tool{{Name: "lookup", Description: "lookup value", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}}},
+		Messages:   []Message{{Role: RoleUser, Content: "find x"}},
+		Tools:      []Tool{{Name: "lookup", Description: "lookup value", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}}},
+		ToolChoice: ToolChoiceRequired,
 	}
 	completion, err := client.Generate(context.Background(), request)
 	if err != nil {
@@ -73,8 +74,8 @@ func TestEinoClientGeneratePreservesToolsUsageAndSingleProviderCall(t *testing.T
 	if len(delegate.generateReq) != 1 || len(delegate.streamReq) != 0 {
 		t.Fatalf("provider calls generate=%d stream=%d", len(delegate.generateReq), len(delegate.streamReq))
 	}
-	if !reflect.DeepEqual(delegate.generateReq[0].Tools, request.Tools) {
-		t.Fatalf("tool schema changed: got=%#v want=%#v", delegate.generateReq[0].Tools, request.Tools)
+	if !reflect.DeepEqual(delegate.generateReq[0].Tools, request.Tools) || delegate.generateReq[0].ToolChoice != request.ToolChoice {
+		t.Fatalf("tool protocol changed: got=%#v want=%#v", delegate.generateReq[0], request)
 	}
 }
 

@@ -474,6 +474,47 @@ func TestProviderPayloadsForceNamedTool(t *testing.T) {
 	}
 }
 
+func TestOpenAIPayloadEmitsStructuredToolChoiceMode(t *testing.T) {
+	request := CompletionRequest{
+		Messages:   []Message{{Role: RoleUser, Content: "inspect"}},
+		Tools:      []Tool{{Name: "lookup", InputSchema: map[string]any{"type": "object"}}},
+		ToolChoice: ToolChoiceRequired,
+	}
+	payload := openAIPayload(validProfile(ProviderOpenAICompatible, "https://example.com", "k"), request, false)
+	if payload["tool_choice"] != string(ToolChoiceRequired) {
+		t.Fatalf("tool choice=%#v", payload["tool_choice"])
+	}
+	request.ToolChoice = ToolChoiceAuto
+	payload = openAIPayload(validProfile(ProviderOpenAICompatible, "https://example.com", "k"), request, false)
+	if payload["tool_choice"] != string(ToolChoiceAuto) {
+		t.Fatalf("tool choice=%#v", payload["tool_choice"])
+	}
+}
+
+func TestValidateCompletionRequestRejectsAmbiguousToolChoice(t *testing.T) {
+	base := CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "inspect"}}}
+	for name, request := range map[string]CompletionRequest{
+		"auto without tools": {
+			Messages: base.Messages, ToolChoice: ToolChoiceAuto,
+		},
+		"required without tools": {
+			Messages: base.Messages, ToolChoice: ToolChoiceRequired,
+		},
+		"unknown mode": {
+			Messages: base.Messages, Tools: []Tool{{Name: "lookup", InputSchema: map[string]any{"type": "object"}}}, ToolChoice: ToolChoiceMode("sometimes"),
+		},
+		"mode and named choice": {
+			Messages: base.Messages, Tools: []Tool{{Name: "lookup", InputSchema: map[string]any{"type": "object"}}}, ToolChoice: ToolChoiceRequired, ForcedToolName: "lookup",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateCompletionRequest(request); !errors.Is(err, ErrInvalidCompletionRequest) {
+				t.Fatalf("error=%v request=%+v", err, request)
+			}
+		})
+	}
+}
+
 func TestGeminiPayloadProjectsWorkerSchemaToDocumentedSubset(t *testing.T) {
 	request := CompletionRequest{Messages: []Message{{Role: RoleUser, Content: "deploy"}}, Tools: []Tool{{
 		Name: "cloud_worker_propose", Description: "run work", InputSchema: map[string]any{

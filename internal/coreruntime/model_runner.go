@@ -80,10 +80,6 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 		}
 		p.SystemPrompt = req.Profile.SystemPrompt
 	}
-	client, err := r.factory(p)
-	if err != nil {
-		return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, err
-	}
 	start := int(req.Conversation.ContextMessageOffset)
 	if start < 0 || start > len(req.Conversation.Messages) {
 		start = 0
@@ -170,7 +166,32 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 			return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
 		}
 	}
-	return p, client, coremodel.CompletionRequest{Messages: messages, Tools: tools, ForcedToolName: forcedToolName}, nil
+	toolChoice := coremodel.ToolChoiceMode("")
+	openAIToolProtocol := isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(tools), req.GuardTextToolCallEnvelope)
+	deepSeekToolProtocol := openAIToolProtocol && isDeepSeekToolProtocol(p.BaseURL, p.Model)
+	// DeepSeek V4 thinking mode rejects tool_choice even though its ordinary
+	// Chat Completions endpoint accepts it. Keep the structured-call guidance
+	// and quarantine for that dialect, but rely on the admitted tools and the
+	// provider default instead of turning a recoverable model-format issue into
+	// an HTTP 400.
+	explicitToolChoice := !deepSeekToolProtocol || p.RequestDialect != coremodel.DialectOpenAIReasoningChatV1
+	if len(tools) != 0 && deepSeekToolProtocol {
+		p.SystemPrompt = appendDeepSeekStructuredToolInstruction(p.SystemPrompt)
+		if forcedToolName == "" && explicitToolChoice {
+			toolChoice = coremodel.ToolChoiceAuto
+		}
+	}
+	if req.ToolCallFormatRecovery {
+		p.SystemPrompt = appendToolCallFormatRecoveryInstruction(p.SystemPrompt, len(tools) != 0)
+		if len(tools) != 0 && openAIToolProtocol && forcedToolName == "" && explicitToolChoice {
+			toolChoice = coremodel.ToolChoiceRequired
+		}
+	}
+	client, err := r.factory(p)
+	if err != nil {
+		return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, err
+	}
+	return p, client, coremodel.CompletionRequest{Messages: messages, Tools: tools, ToolChoice: toolChoice, ForcedToolName: forcedToolName}, nil
 }
 
 func (r *ModelRunner) Run(ctx context.Context, req coreconversation.ModelRunRequest) (coreconversation.ModelRunResult, error) {
@@ -183,7 +204,21 @@ func (r *ModelRunner) Run(ctx context.Context, req coreconversation.ModelRunRequ
 		r.logProviderFailure(ctx, p.ID, err)
 		return coreconversation.ModelRunResult{}, err
 	}
-	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.Role(comp.Message.Role), Content: comp.Message.Content, ModelProfileID: p.ID}
+	content := comp.Message.Content
+	guardEnabled := len(cr.Tools) != 0 || req.GuardTextToolCallEnvelope
+	guard := newToolCallTextGuard(guardEnabled, isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(cr.Tools), req.GuardTextToolCallEnvelope))
+	if guard.enabled {
+		_ = guard.Append(content, nil)
+		invalid, _ := guard.Finish(content, len(comp.Message.ToolCalls) != 0, nil)
+		if invalid {
+			r.logProviderFailure(ctx, p.ID, coremodel.ErrModelToolCallFormatInvalid)
+			return coreconversation.ModelRunResult{}, coremodel.ErrModelToolCallFormatInvalid
+		}
+		if guard.DiscardContent() {
+			content = ""
+		}
+	}
+	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.Role(comp.Message.Role), Content: content, ModelProfileID: p.ID}
 	for _, tc := range comp.Message.ToolCalls {
 		msg.ToolCalls = append(msg.ToolCalls, coreconversation.ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
 	}
@@ -204,6 +239,8 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 	var content strings.Builder
 	var reasoning strings.Builder
 	callsByIndex := map[int]coreconversation.ToolCall{}
+	guardEnabled := len(cr.Tools) != 0 || req.GuardTextToolCallEnvelope
+	guard := newToolCallTextGuard(guardEnabled, isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(cr.Tools), req.GuardTextToolCallEnvelope))
 	continueOutput := false
 	for {
 		d, e := stream.Recv()
@@ -225,10 +262,18 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 		}
 		if d.Content != "" {
 			content.WriteString(d.Content)
-			if emit != nil {
-				if err := emit(coreconversation.ModelDelta{Text: d.Content}); err != nil {
+			if guard.enabled && emit != nil && strings.TrimSpace(d.Content) != "" {
+				if err := emit(coreconversation.ModelDelta{PrivateProgress: true}); err != nil {
 					return coreconversation.ModelRunResult{}, err
 				}
+			}
+			if err := guard.Append(d.Content, func(text string) error {
+				if emit == nil {
+					return nil
+				}
+				return emit(coreconversation.ModelDelta{Text: text})
+			}); err != nil {
+				return coreconversation.ModelRunResult{}, err
 			}
 		}
 		if d.ReasoningContent != "" {
@@ -270,7 +315,24 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 			calls = append(calls, callsByIndex[i])
 		}
 	}
-	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: content.String(), ToolCalls: calls, ModelProfileID: p.ID}
+	messageContent := content.String()
+	invalidFormat, guardErr := guard.Finish(messageContent, len(callsByIndex) != 0, func(text string) error {
+		if emit == nil {
+			return nil
+		}
+		return emit(coreconversation.ModelDelta{Text: text})
+	})
+	if guardErr != nil {
+		return coreconversation.ModelRunResult{}, guardErr
+	}
+	if invalidFormat {
+		r.logProviderFailure(ctx, p.ID, coremodel.ErrModelToolCallFormatInvalid)
+		return coreconversation.ModelRunResult{}, coremodel.ErrModelToolCallFormatInvalid
+	}
+	if guard.DiscardContent() {
+		messageContent = ""
+	}
+	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: messageContent, ToolCalls: calls, ModelProfileID: p.ID}
 	return coreconversation.ModelRunResult{Message: msg, ToolCalls: calls, Done: len(calls) == 0 && !continueOutput, Continue: continueOutput, TransientProviderReasoning: reasoning.String()}, nil
 }
 

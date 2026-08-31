@@ -453,6 +453,73 @@ func assertTerminalFallbackMarkdown(t *testing.T, turn core.Turn) {
 	}
 }
 
+func TestModelToolCallFormatFinalizationPersistsPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	turn := startPersistedFinalization(t, h, core.TurnFinalizationToolCallFormat)
+	intent, present, err := h.store.LoadTurnFinalization(context.Background(), turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !present || intent.Reason != core.TurnFinalizationToolCallFormat {
+		t.Fatalf("persisted finalization=%+v present=%v", intent, present)
+	}
+}
+
+func TestToolFreeFinalizationFormatRetryPreservesDirectivePostgres(t *testing.T) {
+	h := openTurnDB(t)
+	ctx := context.Background()
+	turn := startPersistedFinalization(t, h, core.TurnFinalizationToolBudget)
+	lease, err := h.store.ClaimTurn(ctx, turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directive := core.NewTurnDispatchDirective(core.TurnDispatchGuidanceLoopSynthesis, core.TurnDispatchToolsNone, "")
+	directive.FinalizationReason = core.TurnFinalizationToolBudget
+	prepared, err := h.store.PrepareTurnModel(ctx, lease, directive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.BindTurnModelRuntime(ctx, lease, *prepared.RuntimeSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	first, err := h.store.LoadTurnModelDirective(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	failure := core.ModelAttemptFailure{Code: core.ModelToolCallFormatInvalidCode, Summary: "provider returned a text tool envelope"}
+	if err = h.store.MarkTurnModelRetryable(ctx, lease, failure); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := h.store.PrepareTurnModelRetry(ctx, lease)
+	if err != nil || retried.ModelDispatchCount != prepared.ModelDispatchCount+1 ||
+		retried.ModelActiveDuration != prepared.ModelActiveDuration {
+		t.Fatalf("retried=%+v err=%v", retried, err)
+	}
+	retryDirective, err := h.store.LoadTurnModelDirective(ctx, lease)
+	if err != nil || retryDirective.Digest() != first.Digest() || retryDirective.ToolMode != core.TurnDispatchToolsNone {
+		t.Fatalf("retry directive=%+v first=%+v err=%v", retryDirective, first, err)
+	}
+
+	other := startPersistedFinalization(t, h, core.TurnFinalizationProvider)
+	otherLease, err := h.store.ClaimTurn(ctx, other.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherDirective := core.NewTurnDispatchDirective(core.TurnDispatchGuidanceLoopSynthesis, core.TurnDispatchToolsNone, "")
+	otherDirective.FinalizationReason = core.TurnFinalizationProvider
+	otherPrepared, err := h.store.PrepareTurnModel(ctx, otherLease, otherDirective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.BindTurnModelRuntime(ctx, otherLease, *otherPrepared.RuntimeSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.MarkTurnModelRetryable(ctx, otherLease, core.ModelAttemptFailure{Code: "provider_timeout", Summary: "timed out"}); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("ordinary finalization retry err=%v", err)
+	}
+}
+
 func TestFinalizationIntentRestartDispatchesOncePostgres(t *testing.T) {
 	h := openTurnDB(t)
 	turn := startPersistedFinalization(t, h, core.TurnFinalizationModelBudget)

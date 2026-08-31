@@ -343,7 +343,10 @@ The model receives a bounded normalized evidence projection with canonical
 source URLs and retained reference identity, not raw provider JSON, HTML, or
 presentation fragments. Its final response synthesizes concise natural-language
 Markdown with descriptive linked citations and never dumps raw search snippets
-or meaningless separator markup.
+or meaningless separator markup. Public `web_source` references retain only
+canonical URL identity, evidence digest, and a bounded display title; fetched
+page bodies and snippets remain private model evidence and never populate the
+public preview field.
 At each immediate or deferred tool-result transaction, the runtime derives a
 versioned `ProgressObservation` when the result carries validated runtime
 references. Its effective digest covers the normalized action, bounded result,
@@ -544,15 +547,21 @@ fragments cannot satisfy the second. User-visible text, a complete valid tool
 call, or a normal runner return is meaningful. The admitted remaining
 model-active clock is stronger and owns equal expirations as
 `model_budget_exhausted`; a dispatch-local expiry is `provider_timeout`. A
-durable finalization intent may reserve one additional physical attempt, so the
-ledger permits at most sequence 25 without changing the admitted ordinary
-fuse. The finalization attempt has no intrinsic tools,
-extensions, extension snapshots, or forced tool; uses an independent 30-second
-deadline; never retries; and is not added to ordinary model-active time. Intent
+durable finalization intent normally reserves one additional physical attempt,
+so the ledger permits at most sequence 25 without changing the admitted
+ordinary fuse. The finalization attempt has no intrinsic tools, extensions,
+extension snapshots, or forced tool; uses an independent 30-second deadline;
+and is not added to ordinary model-active time. It never retries for an
+ordinary failure. The sole exception is a quarantined
+`MODEL_TOOL_CALL_FORMAT_INVALID` response from a turn whose admitted runtime
+originally exposed structured tools: one live recovery attempt copies the same
+tools-disabled directive, receives final-answer-only protocol guidance, and may
+reach sequence 26. It never restores tool authority. Intent
 persistence before dispatch allows one attempt after restart. Persistence of a
 finalization dispatch directive is the no-replay boundary: a started,
-dispatched, or uncertain final attempt instead completes through deterministic
-fallback. A valid final response is committed normally. Provider failure,
+retryable, dispatched, or uncertain final attempt after process recovery
+instead completes through deterministic fallback. A valid final response is
+committed normally. Provider failure,
 invalid/empty output, or a tool call from the final attempt produces a bounded
 four-section Markdown response that preserves durable partial deltas and the
 existing task, plan, reference, tool-summary, and tool-result projections.
@@ -590,11 +599,40 @@ is consumed on use and cleared by restart, cancel, steer, supervisor exit, or
 service close.
 Immediate read-only dispatch uses a compact private pending/dispatched/terminal
 authority inside the current versioned turn-dispatch envelope; it never consumes
-or leaks a public conversation event sequence. Public history contains only the
-exact tool call and terminal result. This is a current-only envelope: rollout
+or leaks a public conversation event sequence. Public progress contains only
+tool identity and bounded execution status; it omits tool arguments, exact
+result content, cursors, and result references. The exact call and terminal
+result stay in the private durable/model transcript, while terminal `done`
+projects authoritative answer references. This is a current-only envelope: rollout
 must first prove there are no nonterminal turns carrying the superseded raw
 model-result shape, or explicitly terminalize those turns before the new binary
 may claim them.
+
+OpenAI-compatible text is never promoted into tool authority. When the admitted
+turn runtime exposes tools, model-authored content remains private until the
+complete provider step is validated. Content accompanying a structured tool
+call is not a public assistant delta. A response without structured
+`tool_calls` that contains a protocol-shaped DSML envelope outside Markdown
+fences, inline code, or quotes is quarantined in full and returns
+`MODEL_TOOL_CALL_FORMAT_INVALID`; a natural-language prefix does not bypass the
+guard, and no name or arguments are parsed. Core may retry that known
+side-effect-free failure once with fixed guidance requiring standard
+OpenAI-compatible `message.tool_calls`. Repeating it creates a durable
+tools-disabled finalization that synthesizes the best answer from already
+retained evidence. The guard remains active there, a single live recovery retry
+retains zero tools, and another format failure creates deterministic Markdown.
+No path executes the text or restores tool authority. Ordinary repository text
+that quotes or fences the markers remains visible content.
+
+The DeepSeek provider adaptation stays inside that same OpenAI-compatible
+authority boundary. A DeepSeek tools-admitted dispatch explicitly selects
+structured automatic tool choice and adds fixed platform guidance before the
+first provider call. A quarantined format-recovery dispatch with tools still
+available selects structured required tool choice; an exact forced tool keeps
+the existing named choice instead. DeepSeek reasoning requests keep the same
+guidance and quarantine but omit `tool_choice`, because V4 thinking mode rejects
+that request field. The adapter never parses DSML, never changes
+the admitted tool set, and never opts a profile into DeepSeek's beta endpoint.
 
 Workload Tasks use that same revision/attempt/lease-epoch fencing path. The
 local runner receives only a descriptor request bound to the dispatch; it

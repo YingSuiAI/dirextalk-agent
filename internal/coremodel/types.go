@@ -474,9 +474,20 @@ type Tool struct {
 	InputSchema map[string]any
 }
 
+// ToolChoiceMode controls only the provider's structured tool-call channel.
+// It never grants execution authority: returned calls still pass Core tool
+// validation, snapshot binding, and confirmation policy before dispatch.
+type ToolChoiceMode string
+
+const (
+	ToolChoiceAuto     ToolChoiceMode = "auto"
+	ToolChoiceRequired ToolChoiceMode = "required"
+)
+
 type CompletionRequest struct {
 	Messages       []Message
 	Tools          []Tool
+	ToolChoice     ToolChoiceMode
 	ForcedToolName string
 }
 

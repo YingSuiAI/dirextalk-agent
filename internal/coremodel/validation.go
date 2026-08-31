@@ -117,7 +117,19 @@ func ValidateCompletionRequest(r CompletionRequest) error {
 			return ErrInvalidCompletionRequest
 		}
 	}
+	switch r.ToolChoice {
+	case "":
+	case ToolChoiceAuto, ToolChoiceRequired:
+		if len(r.Tools) == 0 {
+			return ErrInvalidCompletionRequest
+		}
+	default:
+		return ErrInvalidCompletionRequest
+	}
 	if r.ForcedToolName != "" {
+		if r.ToolChoice != "" {
+			return ErrInvalidCompletionRequest
+		}
 		if !validToolName(r.ForcedToolName) {
 			return ErrInvalidCompletionRequest
 		}
@@ -179,7 +191,7 @@ func validImageMIMEType(value string) bool {
 }
 
 func estimateCompletionBytes(r CompletionRequest) int {
-	total := len(r.ForcedToolName)
+	total := len(r.ForcedToolName) + len(r.ToolChoice)
 	add := func(n int) {
 		if total <= maxRequestBytes {
 			total += n

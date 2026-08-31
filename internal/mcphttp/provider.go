@@ -18,15 +18,16 @@ import (
 )
 
 const (
-	protocolVersion    = "2025-06-18"
-	defaultTimeout     = 15 * time.Second
-	maxResponseBytes   = 1 << 20
-	maxToolResultBytes = 32 << 10
-	maxStructuredBytes = 1 << 20
-	maxSchemaBytes     = 64 << 10
-	maxToolArguments   = 64 << 10
-	maxToolPages       = 32
-	maxTools           = 256
+	protocolVersion     = "2025-06-18"
+	defaultTimeout      = 15 * time.Second
+	maxResponseBytes    = 1 << 20
+	maxToolResultBytes  = 32 << 10
+	maxStructuredBytes  = 1 << 20
+	maxResourceURIBytes = 4 << 10
+	maxSchemaBytes      = 64 << 10
+	maxToolArguments    = 64 << 10
+	maxToolPages        = 32
+	maxTools            = 256
 )
 
 var (

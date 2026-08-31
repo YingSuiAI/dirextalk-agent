@@ -157,24 +157,92 @@ func decodeCallToolResult(data json.RawMessage) (ToolResult, error) {
 	if err := json.Unmarshal(data, &result); err != nil || result.Content == nil {
 		return ToolResult{}, ErrProtocol
 	}
-	texts := make([]string, 0, len(result.Content))
+	parts := make([]string, 0, len(result.Content))
 	for _, rawContent := range result.Content {
-		var content struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
+		var content callToolContent
 		if err := json.Unmarshal(rawContent, &content); err != nil {
 			return ToolResult{}, ErrProtocol
 		}
-		if content.Type == "text" {
-			texts = append(texts, content.Text)
+		switch content.Type {
+		case "text":
+			if content.Text == nil {
+				return ToolResult{}, ErrProtocol
+			}
+			parts = append(parts, *content.Text)
+		case "resource":
+			part, visible, err := decodeEmbeddedTextResource(content.Resource)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			if visible {
+				parts = append(parts, part)
+			}
+		case "":
+			return ToolResult{}, ErrProtocol
+		default:
+			// Images, audio, resource links, and future MCP content types are not
+			// projected through this text-only model boundary.
 		}
 	}
 	return ToolResult{
-		Content:           sanitizeToolResult(strings.Join(texts, "\n")),
+		Content:           sanitizeToolResult(strings.Join(parts, "\n")),
 		StructuredContent: boundedStructuredContent(result.StructuredContent),
 		IsError:           result.IsError,
 	}, nil
+}
+
+type callToolContent struct {
+	Type     string                   `json:"type"`
+	Text     *string                  `json:"text,omitempty"`
+	Resource *embeddedResourceContent `json:"resource,omitempty"`
+}
+
+type embeddedResourceContent struct {
+	URI      string  `json:"uri"`
+	MIMEType string  `json:"mimeType,omitempty"`
+	Text     *string `json:"text,omitempty"`
+	Blob     *string `json:"blob,omitempty"`
+}
+
+func decodeEmbeddedTextResource(resource *embeddedResourceContent) (string, bool, error) {
+	if resource == nil || !validEmbeddedResourceURI(resource.URI) || !validEmbeddedResourceMIMEType(resource.MIMEType) {
+		return "", false, ErrProtocol
+	}
+	if resource.Text != nil && resource.Blob != nil {
+		return "", false, ErrProtocol
+	}
+	if resource.Text == nil {
+		if resource.Blob != nil {
+			// Binary resources stay outside the text-only conversation boundary.
+			return "", false, nil
+		}
+		return "", false, ErrProtocol
+	}
+
+	header := "[MCP embedded text resource uri=" + strconv.Quote(sanitizeToolMetadata(resource.URI))
+	if resource.MIMEType != "" {
+		header += " mime=" + strconv.Quote(resource.MIMEType)
+	}
+	return header + "]\n" + *resource.Text, true, nil
+}
+
+func validEmbeddedResourceURI(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > maxResourceURIBytes || strings.ContainsAny(value, "\r\n\x00") {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	return err == nil && parsed.Scheme != ""
+}
+
+func validEmbeddedResourceMIMEType(value string) bool {
+	if value == "" {
+		return true
+	}
+	if value != strings.TrimSpace(value) || len(value) > 256 || strings.ContainsAny(value, "\r\n\x00") {
+		return false
+	}
+	_, _, err := mime.ParseMediaType(value)
+	return err == nil
 }
 
 func boundedStructuredContent(raw json.RawMessage) json.RawMessage {

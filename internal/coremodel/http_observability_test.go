@@ -169,6 +169,7 @@ func TestSafeFailureClassDistinguishesProviderFailureKinds(t *testing.T) {
 		{name: "request", err: ErrProviderUnavailable, want: "provider_request_failure"},
 		{name: "idle timeout", err: ErrStreamIdleTimeout, want: "provider_timeout"},
 		{name: "invalid response", err: ErrInvalidResponse, want: "provider_invalid_response"},
+		{name: "tool call format", err: ErrModelToolCallFormatInvalid, want: "model_tool_call_format_invalid"},
 		{name: "truncated stream", err: ErrStreamTruncated, want: "provider_stream_truncated"},
 		{name: "unrelated", err: errors.New("private detail"), want: ""},
 	} {
@@ -181,6 +182,9 @@ func TestSafeFailureClassDistinguishesProviderFailureKinds(t *testing.T) {
 }
 
 func TestPreOutputRetryMetadataAllowlistAndRetryAfter(t *testing.T) {
+	if retry := PreOutputRetryMetadata(ErrModelToolCallFormatInvalid); !retry.Retryable || retry.RateLimited || retry.RetryAfter != 0 {
+		t.Fatalf("tool-call format retry=%+v", retry)
+	}
 	date := time.Now().UTC().Add(time.Hour).Format(http.TimeFormat)
 	tests := []struct {
 		status      int

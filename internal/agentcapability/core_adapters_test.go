@@ -1155,6 +1155,47 @@ func TestDurableMemoryWarningProjectsClosedSafeProgress(t *testing.T) {
 	}
 }
 
+func TestDurableToolProgressNeverExposesArgumentsOrResultContent(t *testing.T) {
+	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
+	call := coreconversation.ToolCall{
+		ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"private query","api_key":"private-key"}`,
+	}
+	callRaw, err := ProjectDurableTurnEventJSON(turn, coreconversation.TurnEvent{
+		Kind: coreconversation.TurnEventToolCall, Revision: 2, ToolCall: &call,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{"private query", "private-key", "arguments"} {
+		if bytes.Contains(callRaw, []byte(private)) {
+			t.Fatalf("tool call progress leaked %q: %s", private, callRaw)
+		}
+	}
+	if !bytes.Contains(callRaw, []byte(`"tool_call":{"id":"`+call.ID+`","name":"web_search"}`)) {
+		t.Fatalf("tool call progress lost safe identity: %s", callRaw)
+	}
+
+	result := (coreconversation.ToolResult{
+		CallID: call.ID, ToolName: call.Name, Content: "private fetched page body", Cursor: "private-cursor",
+		References: []coreconversation.Reference{{Kind: "web_source", SourceID: "https://example.test/private", ContentDigest: strings.Repeat("a", 64), Preview: "private preview"}},
+	}).WithObservation(coreconversation.ToolOutcomeSuccess, "Web search returned 1 result", coreconversation.ToolMutationNone)
+	resultRaw, err := ProjectDurableTurnEventJSON(turn, coreconversation.TurnEvent{
+		Kind: coreconversation.TurnEventToolResult, Revision: 2, ToolResult: &result,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{"private fetched page body", "private-cursor", "private preview", "https://example.test/private", "content", "cursor", "references"} {
+		if bytes.Contains(resultRaw, []byte(private)) {
+			t.Fatalf("tool result progress leaked %q: %s", private, resultRaw)
+		}
+	}
+	if !bytes.Contains(resultRaw, []byte(`"summary":"Web search returned 1 result"`)) ||
+		!bytes.Contains(resultRaw, []byte(`"tool_name":"web_search"`)) {
+		t.Fatalf("tool result progress lost safe status: %s", resultRaw)
+	}
+}
+
 func TestDurableDoneEventProjectsAuthoritativeResponse(t *testing.T) {
 	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
 	taskID, planID := uuid.NewString(), uuid.NewString()
