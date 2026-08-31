@@ -717,7 +717,10 @@ or stream after admission. It never cancels the accepted Turn; callers use
   no private, external/manual, or cross-account zone fallback. No match returns
   an explicit correctable tool
   error before Apply, provider write, binding persistence, or turn-success
-  commit. Unbind deletes only the exact
+  commit. Before any Worker proxy, security-group, workload-state, or DNS
+  mutation, bind reads the existing A record. A differing IPv4 or TTL is not
+  overwritten and returns the existing and intended values as a correctable
+  `user_input` tool observation with `mutation_state=unchanged`. Unbind deletes only the exact
   persisted record and may proceed while the Worker is unavailable. Both verify
   the owning account and provider read-back and refuse to
   overwrite or remove a changed record. Initial service creation may still

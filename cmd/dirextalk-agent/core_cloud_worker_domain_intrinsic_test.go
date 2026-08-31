@@ -11,6 +11,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/google/uuid"
 )
 
@@ -133,6 +134,39 @@ func TestApplyRetainedWorkerDomainDoesNotPublishDNSWhenWorkerProxyFails(t *testi
 	if loadErr != nil || stored.Domain != nil || stored.PendingDomain == nil || *stored.PendingDomain != domain ||
 		portCalls != 0 || dns.upserts != 0 || dns.exists {
 		t.Fatalf("stored=%+v port_calls=%d dns=%+v err=%v", stored, portCalls, dns, loadErr)
+	}
+}
+
+func TestApplyRetainedWorkerDomainClassifiesPreflightConflictBeforeAnyMutation(t *testing.T) {
+	expected := cloudworker.RetainedWorkerDomainIntent{Operation: "bind", OwnerID: "owner", AccountGeneration: 1,
+		CredentialID: uuid.NewString(), CredentialRevision: 1, AWSAccountID: "123456789012", Region: "us-east-1",
+		WorkerID: uuid.NewString(), InstanceID: "i-123", KeyPairID: "key-123", SecurityGroupID: "sg-123",
+		WorkloadID: "web", Hostname: "app.example.com", ZoneID: "Z123", TargetIPv4: "203.0.113.10", TTL: 300}
+	expected.IntentDigest = cloudWorkerDomainIntentDigest(expected)
+	conflict := remoteservice.DNSRecordConflictError{
+		Existing: remoteservice.ARecord{ZoneID: expected.ZoneID, Hostname: expected.Hostname, IPv4: "198.51.100.20", TTL: expected.TTL},
+		Intended: remoteservice.ARecord{ZoneID: expected.ZoneID, Hostname: expected.Hostname, IPv4: expected.TargetIPv4, TTL: expected.TTL},
+	}
+	mutationCalls := 0
+	executor := &sshWorkerExecutor{
+		resolveDomain: func(context.Context, string, uint64, string, string, string, string) (cloudworker.RetainedWorkerDomainIntent, error) {
+			return cloudworker.RetainedWorkerDomainIntent{}, conflict
+		},
+		reconcileServiceExposure: func(context.Context, sshworker.WorkerIdentity, sshworkload.Service, string) error {
+			mutationCalls++
+			return nil
+		},
+		setDomainPublicPort: func(context.Context, sshworker.WorkerIdentity, uint16, bool) error {
+			mutationCalls++
+			return nil
+		},
+	}
+
+	result, err := executor.ApplyRetainedWorkerDomain(context.Background(), expected)
+	details, classified := coreconversation.ToolExecutionErrorObservation(err)
+	if !classified || details.Outcome != coreconversation.ToolOutcomeUserInput || !details.MutationStateSet ||
+		details.MutationState != coreconversation.ToolMutationUnchanged || mutationCalls != 0 || result != (cloudworker.RetainedWorkerDomainResult{}) {
+		t.Fatalf("result=%+v err=%v details=%+v mutation_calls=%d", result, err, details, mutationCalls)
 	}
 }
 

@@ -268,7 +268,10 @@ contract](message-server-integration-development-contract.md), and
   idempotent provider reconciliation with another read-back. Bind accepts only
   a matching public Route53 zone in the current verified account; private,
   external/manual, cross-account, and no-match cases perform no Apply/write and
-  return an explicit correctable tool error. A successful bind additionally
+  return an explicit correctable tool error. A pre-existing A record with a
+  different IPv4 or TTL is read before Worker proxy, security-group,
+  workload-state, or DNS mutation and returns a correctable `user_input` result
+  with `mutation_state=unchanged`; it is never overwritten. A successful bind additionally
   requires pinned-SSH reconciliation of the Agent-managed Worker Caddy route,
   public 80/443 security-group reconciliation, direct-to-Worker HTTPS health
   proof, and closure of the original workload port; focused regressions cover

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.193
+
+1. Preflight retained Worker domain bindings against the existing Route53 A record before any Worker, security-group, workload-state, or DNS mutation, and report differing IPv4 or TTL values as an actionable unchanged tool outcome instead of an unknown mutation.
+
 ## v1.0.192
 
 1. Accept live AWS instance specifications whose actual vCPU or system memory exceeds the request schema's minimum-field limits, allowing large multi-GPU shapes to satisfy verified model workloads.

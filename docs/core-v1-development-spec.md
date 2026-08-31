@@ -983,7 +983,11 @@ authoritatively observed current public IPv4 and requires a longest-suffix
 matching public hosted zone owned by the current verified AWS account. Private,
 external/manual, and cross-account zones are unsupported; no match returns a
 stable correctable tool error before Apply, provider write, binding persistence,
-or turn-success commit. The manual-DNS result allowed during initial service
+or turn-success commit. Bind also reads the existing A record before any
+Worker proxy, security-group, workload-state, or DNS mutation. A differing
+IPv4 or TTL returns a correctable `user_input` observation that includes the
+existing and intended values and proves `mutation_state=unchanged`; it never
+overwrites the record. The manual-DNS result allowed during initial service
 deployment is not a fallback for this later bind tool. Unbind removes only the exact
 persisted record and does not require the Worker to be available. Both verify
 the mutation by provider read-back. A later bind is a complete publication

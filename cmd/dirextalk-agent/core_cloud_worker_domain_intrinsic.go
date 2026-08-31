@@ -14,6 +14,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
 
@@ -79,6 +80,9 @@ func (executor *sshWorkerExecutor) ResolveRetainedWorkerDomain(ctx context.Conte
 			return cloudworker.RetainedWorkerDomainIntent{}, cloudworker.ErrRetainedWorkerPublicRoute53Required
 		}
 		domain = &sshworkload.Domain{ZoneID: zoneID, Hostname: canonical, TTL: workerDomainTTL, BoundIPv4: status.PublicIP}
+		if err = remoteservice.PreflightPlannedUpsert(ctx, dns, domainMutation(identity.Credential.AccountID, identity.WorkerID, service.WorkloadID, remoteservice.DNSUpsertA, domain)); err != nil {
+			return cloudworker.RetainedWorkerDomainIntent{}, err
+		}
 		if service.Domain != nil && !reflect.DeepEqual(*service.Domain, *domain) {
 			return cloudworker.RetainedWorkerDomainIntent{}, sshworker.ErrIdentity
 		}
@@ -117,7 +121,10 @@ func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context
 		hostname = expected.Hostname
 	}
 	current, err := executor.ResolveRetainedWorkerDomain(ctx, expected.OwnerID, expected.AccountGeneration, expected.Operation, expected.WorkerID, expected.WorkloadID, hostname)
-	if err != nil || !reflect.DeepEqual(current, expected) {
+	if err != nil {
+		return cloudworker.RetainedWorkerDomainResult{}, cloudworkerClassifyDomainPreflightError(err)
+	}
+	if !reflect.DeepEqual(current, expected) {
 		return cloudworker.RetainedWorkerDomainResult{}, errors.Join(cloudworker.ErrStaleAuthorization, err)
 	}
 	identity := sshworker.WorkerIdentity{OwnerID: expected.OwnerID, AccountGeneration: expected.AccountGeneration, WorkerID: expected.WorkerID,
@@ -191,6 +198,13 @@ func (executor *sshWorkerExecutor) ApplyRetainedWorkerDomain(ctx context.Context
 	}
 	return cloudworker.RetainedWorkerDomainResult{WorkerID: expected.WorkerID, WorkloadID: expected.WorkloadID, Hostname: expected.Hostname,
 		TargetIPv4: expected.TargetIPv4, ZoneID: expected.ZoneID, RecordState: state}, nil
+}
+
+func cloudworkerClassifyDomainPreflightError(err error) error {
+	if !errors.Is(err, remoteservice.ErrDNSConflict) {
+		return errors.Join(cloudworker.ErrStaleAuthorization, err)
+	}
+	return coreconversation.NewToolExecutionErrorWithMutation(coreconversation.ToolOutcomeUserInput, err.Error()+" No Worker, workload, security-group, or DNS resource was changed.", 0, coreconversation.ToolMutationUnchanged, err)
 }
 
 func (executor *sshWorkerExecutor) reconcileRetainedServiceExposure(ctx context.Context, identity sshworker.WorkerIdentity, service sshworkload.Service, hostname string) error {

@@ -19,6 +19,7 @@ var (
 	ErrInvalid      = errors.New("invalid remote workload")
 	ErrNotConfirmed = errors.New("remote mutation is not exactly confirmed")
 	ErrReadback     = errors.New("remote mutation read-back mismatch")
+	ErrDNSConflict  = errors.New("Route53 A record conflicts with the intended Worker record")
 )
 
 type WorkloadKind string

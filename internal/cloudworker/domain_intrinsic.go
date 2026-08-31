@@ -132,7 +132,7 @@ func (p *ProposeIntrinsic) executeDomain(ctx context.Context, bound coreconversa
 	}
 	intent, err := p.domains.ResolveRetainedWorkerDomain(ctx, owner.OwnerID, owner.AccountGeneration, operation, args.WorkerID, args.WorkloadID, args.Hostname)
 	if err != nil {
-		return coreconversation.IntrinsicExecutionResult{}, err
+		return coreconversation.IntrinsicExecutionResult{}, classifyRetainedWorkerDomainPreflightError(err)
 	}
 	result, err := p.domains.ApplyRetainedWorkerDomain(ctx, intent)
 	if err != nil {
@@ -159,6 +159,13 @@ func (p *ProposeIntrinsic) executeDomain(ctx context.Context, bound coreconversa
 		return coreconversation.IntrinsicExecutionResult{}, err
 	}
 	return coreconversation.IntrinsicExecutionResult{TurnCommitted: true}, nil
+}
+
+func classifyRetainedWorkerDomainPreflightError(err error) error {
+	if !errors.Is(err, remoteservice.ErrDNSConflict) {
+		return err
+	}
+	return coreconversation.NewToolExecutionErrorWithMutation(coreconversation.ToolOutcomeUserInput, err.Error()+" No Worker, workload, security-group, or DNS resource was changed.", 0, coreconversation.ToolMutationUnchanged, err)
 }
 
 func parseDomainIntrinsicArguments(raw json.RawMessage, operation string) (domainIntrinsicArguments, error) {

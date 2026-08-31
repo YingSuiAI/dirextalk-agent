@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -720,6 +721,39 @@ func TestIntrinsicDomainBindReturnsCorrectablePublicRoute53ErrorWithoutApply(t *
 	if !errors.Is(err, ErrRetainedWorkerPublicRoute53Required) || !errors.Is(err, coreconversation.ErrInvalid) ||
 		err.Error() != retainedWorkerPublicRoute53Correction || result.TurnCommitted || domainManager.applyCalls != 0 || committer.response.Done {
 		t.Fatalf("result=%+v err=%v manager=%+v response=%+v", result, err, domainManager, committer.response)
+	}
+}
+
+func TestIntrinsicDomainBindReturnsExistingRecordConflictAsUnchangedUserInput(t *testing.T) {
+	intrinsic, _, lease := intrinsicFixture(t, "bind a domain with an existing record", nil, nil)
+	lease.Turn.CreatedAt = time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	workerID := uuid.NewString()
+	manager := &intrinsicWorkerManager{intrinsicWorkerInventory: intrinsicWorkerInventory{value: RetainedWorkerInventory{Workers: []RetainedWorkerSnapshot{{WorkerID: workerID}}}}}
+	if err := intrinsic.EnableRetainedWorkerManagement(manager, &intrinsicTurnCommitter{}); err != nil {
+		t.Fatal(err)
+	}
+	conflict := remoteservice.DNSRecordConflictError{
+		Existing: remoteservice.ARecord{ZoneID: "Z123", Hostname: "app.example.com", IPv4: "198.51.100.20", TTL: 300},
+		Intended: remoteservice.ARecord{ZoneID: "Z123", Hostname: "app.example.com", IPv4: "203.0.113.10", TTL: 300},
+	}
+	domainManager := &intrinsicDomainManager{resolveErr: conflict}
+	committer := &intrinsicTurnCommitter{}
+	if err := intrinsic.EnableRetainedWorkerDomains(domainManager, committer); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := intrinsic.ResolveIntrinsicTools(context.Background(), lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bind := resolvedIntrinsicByName(t, tools, coremodel.IntrinsicCloudWorkerDomainBindToolName)
+	raw := json.RawMessage(fmt.Sprintf(`{"worker_id":%q,"workload_id":"web","hostname":"app.example.com"}`, workerID))
+	result, err := bind.Execute(context.Background(), coreconversation.IntrinsicExecutionRequest{Lease: lease, ConversationRevision: 3, CanonicalArguments: raw,
+		Call: coreconversation.ToolCall{ID: "domain-existing-record", Name: coremodel.IntrinsicCloudWorkerDomainBindToolName, Arguments: string(raw)}})
+	details, classified := coreconversation.ToolExecutionErrorObservation(err)
+	if !classified || details.Outcome != coreconversation.ToolOutcomeUserInput || !details.MutationStateSet ||
+		details.MutationState != coreconversation.ToolMutationUnchanged || !strings.Contains(details.Summary, "198.51.100.20") ||
+		!strings.Contains(details.Summary, "203.0.113.10") || result.TurnCommitted || domainManager.applyCalls != 0 || committer.response.Done {
+		t.Fatalf("result=%+v err=%v details=%+v manager=%+v response=%+v", result, err, details, domainManager, committer.response)
 	}
 }
 

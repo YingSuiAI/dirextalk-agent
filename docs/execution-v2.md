@@ -80,7 +80,11 @@ IPv4 only for a longest-suffix matching public Route53 zone owned by the
 current verified AWS account. Private, external/manual, and cross-account
 zones have no fallback; no match yields an explicit correctable tool error with
 no Apply, provider write, binding persistence, or turn-success commit. Manual
-DNS instructions remain only an initial service-deployment outcome. Unbind uses the exact persisted record and remains available when the
+DNS instructions remain only an initial service-deployment outcome. Before any
+Worker proxy, security-group, workload-state, or DNS mutation, bind reads the
+current A record. A record whose IPv4 or TTL differs from the intended Worker
+record is never overwritten: the tool returns both values as a correctable
+`user_input` observation with `mutation_state=unchanged`. Unbind uses the exact persisted record and remains available when the
 Worker itself is unavailable. Before mutation and every Route53 call, Agent
 revalidates the resolved owner generation, AWS account, current credential
 revision, Worker resource identity, workload, zone, and record. Both mutations

@@ -36,6 +36,38 @@ type ConfirmedDNSMutation struct {
 	Confirmation ExactConfirmation
 }
 
+type DNSRecordConflictError struct {
+	Existing ARecord
+	Intended ARecord
+}
+
+func (err DNSRecordConflictError) Error() string {
+	return fmt.Sprintf("Route53 already has A record %s pointing to %s with TTL %d; the intended Worker record points to %s with TTL %d. The existing record will not be overwritten. Update or remove it, or choose another hostname, then retry.",
+		canonicalHostname(err.Existing.Hostname), err.Existing.IPv4, err.Existing.TTL, err.Intended.IPv4, err.Intended.TTL)
+}
+
+func (DNSRecordConflictError) Unwrap() error { return ErrDNSConflict }
+
+// PreflightPlannedUpsert proves that a planned bind will not overwrite an
+// existing A record. Callers that run it before any local or provider mutation
+// may safely expose ErrDNSConflict as an unchanged, correctable tool outcome.
+func PreflightPlannedUpsert(ctx context.Context, client Route53, mutation DNSMutation) error {
+	if ctx == nil || client == nil || mutation.Action != DNSUpsertA || mutation.validate() != nil {
+		return ErrInvalid
+	}
+	if err := client.VerifyAccount(ctx, mutation.AccountID); err != nil {
+		return err
+	}
+	current, exists, err := client.ReadA(ctx, mutation.Record.ZoneID, canonicalHostname(mutation.Record.Hostname))
+	if err != nil {
+		return err
+	}
+	if exists && !sameRecord(current, mutation.Record) {
+		return DNSRecordConflictError{Existing: current, Intended: mutation.Record}
+	}
+	return nil
+}
+
 // ReconcilePlannedDelete removes one exact record already authorized by its
 // owning Worker operation and verifies that it is absent.
 func ReconcilePlannedDelete(ctx context.Context, client Route53, mutation DNSMutation) error {
@@ -78,20 +110,10 @@ func ReconcilePlannedDelete(ctx context.Context, client Route53, mutation DNSMut
 // Cloud Worker plan. The caller owns confirmation; this helper owns the exact
 // AWS account mutation and read-back.
 func ReconcilePlannedUpsert(ctx context.Context, client Route53, mutation DNSMutation) error {
-	if ctx == nil || client == nil || mutation.Action != DNSUpsertA || mutation.validate() != nil {
-		return ErrInvalid
+	if err := PreflightPlannedUpsert(ctx, client, mutation); err != nil {
+		return err
 	}
 	if err := client.VerifyAccount(ctx, mutation.AccountID); err != nil {
-		return err
-	}
-	current, exists, err := client.ReadA(ctx, mutation.Record.ZoneID, canonicalHostname(mutation.Record.Hostname))
-	if err != nil {
-		return err
-	}
-	if exists && !sameRecord(current, mutation.Record) {
-		return ErrReadback
-	}
-	if err = client.VerifyAccount(ctx, mutation.AccountID); err != nil {
 		return err
 	}
 	if err := client.UpsertA(ctx, mutation); err != nil {

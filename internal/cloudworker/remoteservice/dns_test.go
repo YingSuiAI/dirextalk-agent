@@ -3,6 +3,7 @@ package remoteservice
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -135,12 +136,34 @@ func TestRoute53PlannedBindRefusesToReplaceChangedRecord(t *testing.T) {
 	changed.IPv4 = "203.0.113.99"
 	client := &fakeRoute53{record: changed, exists: true}
 
-	if err := ReconcilePlannedUpsert(context.Background(), client, mutation); !errors.Is(err, ErrReadback) {
+	err := PreflightPlannedUpsert(context.Background(), client, mutation)
+	if !errors.Is(err, ErrDNSConflict) || !strings.Contains(err.Error(), changed.IPv4) ||
+		!strings.Contains(err.Error(), mutation.Record.IPv4) || !strings.Contains(err.Error(), "will not be overwritten") {
+		t.Fatalf("changed-record preflight error = %v", err)
+	}
+	assertCalls(t, client.calls, "verify", "read")
+	if client.upserts != 0 || client.record != changed {
+		t.Fatalf("preflight changed record: %#v", client)
+	}
+
+	client.calls = nil
+	if err = ReconcilePlannedUpsert(context.Background(), client, mutation); !errors.Is(err, ErrDNSConflict) {
 		t.Fatalf("changed-record bind error = %v", err)
 	}
 	assertCalls(t, client.calls, "verify", "read")
 	if client.upserts != 0 || client.record != changed {
 		t.Fatalf("changed record was overwritten: %#v", client)
+	}
+
+	changed = mutation.Record
+	changed.TTL++
+	client = &fakeRoute53{record: changed, exists: true}
+	if err = PreflightPlannedUpsert(context.Background(), client, mutation); !errors.Is(err, ErrDNSConflict) {
+		t.Fatalf("changed-TTL preflight error = %v", err)
+	}
+	assertCalls(t, client.calls, "verify", "read")
+	if client.upserts != 0 || client.record != changed {
+		t.Fatalf("changed TTL record was overwritten: %#v", client)
 	}
 }
 
