@@ -173,7 +173,8 @@ func cloudWorkerPlanResultProperties() map[string]any {
 		"persistent_worker_reuse": map[string]any{"type": "boolean"}, "workspace_mode": stringField(),
 		"aws": cloudWorkerResultObject(map[string]any{"account_id": stringField(), "region": stringField()}),
 		"compute": cloudWorkerResultObject(map[string]any{
-			"instance_type": stringField(), "accelerator_type": stringField(), "vcpu": integerField(), "memory_gib": integerField(),
+			"instance_type": stringField(), "accelerator_type": stringField(), "accelerator_name": stringField(),
+			"accelerator_memory_mib": integerField(), "vcpu": integerField(), "memory_gib": integerField(),
 			"volume_gib": integerField(), "volume_type": stringField(),
 			"volume_iops": integerField(), "volume_throughput_mib": integerField(),
 		}),

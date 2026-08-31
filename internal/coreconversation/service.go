@@ -1210,6 +1210,13 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "durable conversation context is invalid")
 		return
 	}
+	if projector, ok := s.store.(ModelContextProjector); ok && strings.TrimSpace(turn.OwnerID) != "" && turn.AccountGeneration != 0 {
+		conv, err = projector.ProjectModelContext(ctx, conv, turn.OwnerID, turn.AccountGeneration)
+		if err != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, "model_context_projection_unavailable", "referenced conversation context is unavailable")
+			return
+		}
+	}
 	dispatchStore, durableDispatch := s.turns.(TurnDispatchStore)
 	var replay ModelRunResult
 	var replayed bool

@@ -133,16 +133,18 @@ type AWSBinding struct {
 }
 
 type ComputeSpec struct {
-	InstanceType        string `json:"instance_type"`
-	Architecture        string `json:"architecture"`
-	AcceleratorType     string `json:"accelerator_type,omitempty"`
-	VCPU                uint32 `json:"vcpu"`
-	MemoryGiB           uint32 `json:"memory_gib"`
-	RootDeviceName      string `json:"root_device_name"`
-	VolumeGiB           uint64 `json:"volume_gib"`
-	VolumeType          string `json:"volume_type"`
-	VolumeIOPS          uint64 `json:"volume_iops"`
-	VolumeThroughputMiB uint64 `json:"volume_throughput_mib"`
+	InstanceType         string `json:"instance_type"`
+	Architecture         string `json:"architecture"`
+	AcceleratorType      string `json:"accelerator_type,omitempty"`
+	AcceleratorName      string `json:"accelerator_name,omitempty"`
+	AcceleratorMemoryMiB uint64 `json:"accelerator_memory_mib,omitempty"`
+	VCPU                 uint32 `json:"vcpu"`
+	MemoryGiB            uint32 `json:"memory_gib"`
+	RootDeviceName       string `json:"root_device_name"`
+	VolumeGiB            uint64 `json:"volume_gib"`
+	VolumeType           string `json:"volume_type"`
+	VolumeIOPS           uint64 `json:"volume_iops"`
+	VolumeThroughputMiB  uint64 `json:"volume_throughput_mib"`
 }
 
 type Limits struct {
@@ -156,6 +158,7 @@ type Limits struct {
 type ComputeRequirements struct {
 	MinVCPU                 uint32 `json:"min_vcpu"`
 	MinMemoryGiB            uint32 `json:"min_memory_gib"`
+	MinAcceleratorMemoryGiB uint32 `json:"min_accelerator_memory_gib,omitempty"`
 	DiskGiB                 uint64 `json:"disk_gib"`
 	EstimatedRuntimeMinutes uint64 `json:"estimated_runtime_minutes"`
 	AcceleratorType         string `json:"accelerator_type,omitempty"`
@@ -191,9 +194,19 @@ func acceleratorSatisfies(required, actual string) bool {
 	return required == "" || required == AcceleratorAny && actual != "" || required == actual
 }
 
+func acceleratorMemorySatisfies(requiredGiB uint32, actualMiB uint64) bool {
+	return requiredGiB == 0 || actualMiB >= uint64(requiredGiB)*1024
+}
+
+// ValidatePublicCompute validates the secret-free compute projection exposed
+// to clients and model-context projection code.
+func ValidatePublicCompute(value ComputeSpec) error { return validateCompute(value) }
+
 func (requirements ComputeRequirements) validate() error {
 	if requirements.MinVCPU == 0 || requirements.MinVCPU > 128 || requirements.MinMemoryGiB == 0 || requirements.MinMemoryGiB > 1024 || !validAcceleratorRequirement(requirements.AcceleratorType) ||
-		requirements.DiskGiB < 8 || requirements.DiskGiB > 16_384 || requirements.EstimatedRuntimeMinutes == 0 || requirements.EstimatedRuntimeMinutes > 24*60 {
+		requirements.MinAcceleratorMemoryGiB > 1024 || (requirements.AcceleratorType == AcceleratorGPU && requirements.MinAcceleratorMemoryGiB == 0) ||
+		(requirements.AcceleratorType != AcceleratorGPU && requirements.MinAcceleratorMemoryGiB != 0) || requirements.DiskGiB < 8 || requirements.DiskGiB > 16_384 ||
+		requirements.EstimatedRuntimeMinutes == 0 || requirements.EstimatedRuntimeMinutes > 24*60 {
 		return ErrInvalid
 	}
 	return nil
@@ -764,6 +777,10 @@ func validateAWS(value AWSBinding) error {
 
 func validateCompute(value ComputeSpec) error {
 	if strings.TrimSpace(value.InstanceType) == "" || (value.Architecture != "x86_64" && value.Architecture != "arm64") || !validConcreteAccelerator(value.AcceleratorType) || !strings.HasPrefix(value.RootDeviceName, "/dev/") || len(value.RootDeviceName) > 64 || strings.ContainsAny(value.RootDeviceName, "\r\n\x00") || value.VolumeGiB < 8 || value.VolumeGiB > 16384 || value.VolumeType != "gp3" || value.VolumeIOPS < 3000 || value.VolumeIOPS > 16000 || value.VolumeThroughputMiB < 125 || value.VolumeThroughputMiB > 1000 {
+		return ErrInvalid
+	}
+	if value.AcceleratorType == "" && (value.AcceleratorName != "" || value.AcceleratorMemoryMiB != 0) ||
+		strings.TrimSpace(value.AcceleratorName) != value.AcceleratorName || len(value.AcceleratorName) > 128 || strings.ContainsAny(value.AcceleratorName, "\r\n\x00") {
 		return ErrInvalid
 	}
 	if (value.VCPU == 0) != (value.MemoryGiB == 0) || value.VCPU > 128 || value.MemoryGiB > 1024 {

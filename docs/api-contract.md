@@ -903,16 +903,19 @@ tool call declares `intent=execute` or `intent=proposal_only`. Execute preserves
 normal retained-Worker reuse and new-Worker confirmation behavior. Proposal-only
 commits a non-executing plan summary before pricing or offer persistence and
 creates no plan, execution, Task, confirmation, or Worker action. Every executing
-proposal carries minimum vCPU, memory, disk, estimated runtime, and an optional
+proposal carries minimum vCPU, system memory, disk, estimated runtime, and an optional
 closed provider-neutral accelerator class rather than an AWS instance type.
 The accelerator class is GPU, Neuron, FPGA, media, or any accelerator; omission
-leaves compute unconstrained. Agent intersects current-generation Linux on-demand
+leaves compute unconstrained. GPU proposals additionally carry a verified non-zero
+minimum accelerator-memory working set; named model artifacts must be resolved
+and sized before the proposal. Agent intersects current-generation Linux on-demand
 products with actual regional offerings and live accelerator metadata and selects the cheapest satisfying
 x86_64 shape in the deployment host's identity-verified AWS Region. The
 uploaded credential's default Region is not resource-placement authority.
 Every proposal performs a fresh AWS Price List read for that
 exact EC2 shape and gp3 volume. The quote is not served from a persisted pricing
-catalog. Confirmation exposes the exact shape and hourly compute price. A
+catalog. Confirmation exposes the exact shape, accelerator name and assigned
+accelerator memory when present, and hourly compute price. A
 bounded job also exposes its estimated cost and maximum authorized cost; a
 persistent service omits those two open-ended values. Confirmation validates
 the offer revision and expiry; after confirmation the task executes directly

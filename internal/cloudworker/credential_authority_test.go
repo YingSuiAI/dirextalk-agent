@@ -194,6 +194,31 @@ func TestServiceRetainedWorkerQuoteMatchesWorkloadLifetime(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsRetainedGPUBelowRequiredAcceleratorMemory(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	store := &intrinsicStore{}
+	quoter := &limitRecordingQuoter{base: FakeQuoter{AmountMicros: 1000, MaximumAuthorizedMicros: 2000, TTL: 5 * time.Minute, Now: func() time.Time { return now }}}
+	service, err := NewServiceWithAWSBindingResolver(store, intrinsicDefaults(now), quoter,
+		&proposalAWSBindingResolver{binding: intrinsicAWSBinding()}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	reuse := &capacityReuseResolver{found: true, selection: WorkerReuseSelection{WorkerID: uuid.NewString(), Compute: ComputeSpec{
+		InstanceType: "g6f.2xlarge", Architecture: "x86_64", AcceleratorType: AcceleratorGPU, AcceleratorName: "L4", AcceleratorMemoryMiB: 5724,
+		VCPU: 8, MemoryGiB: 32, RootDeviceName: "/dev/xvda", VolumeGiB: 120, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125,
+	}}}
+	enableCredentialProposalDependencies(t, service, reuse)
+	command := credentialProposalCommand()
+	command.ComputeRequirements = ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 16, MinAcceleratorMemoryGiB: 20,
+		DiskGiB: 100, EstimatedRuntimeMinutes: 60, AcceleratorType: AcceleratorGPU}
+	if _, err = service.Propose(context.Background(), command); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("undersized retained GPU proposal err=%v, want invalid", err)
+	}
+	if len(store.commands) != 0 || quoter.last.OwnerID != "" {
+		t.Fatalf("undersized retained GPU crossed quote/store boundary: quote=%+v offers=%d", quoter.last, len(store.commands))
+	}
+}
+
 func TestProposeIntrinsicPublicationTracksCredentialReadinessWithoutRestart(t *testing.T) {
 	now := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
 	defaults := intrinsicDefaults(now)

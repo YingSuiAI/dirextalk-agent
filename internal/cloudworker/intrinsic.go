@@ -328,6 +328,7 @@ type proposeIntrinsicArguments struct {
 	WorkspaceMode           string   `json:"workspace_mode"`
 	MinVCPU                 uint32   `json:"min_vcpu"`
 	MinMemoryGiB            uint32   `json:"min_memory_gib"`
+	MinAcceleratorMemoryGiB uint32   `json:"min_accelerator_memory_gib"`
 	DiskGiB                 uint64   `json:"disk_gib"`
 	EstimatedRuntimeMinutes uint64   `json:"estimated_runtime_minutes"`
 	AcceleratorType         string   `json:"accelerator_type,omitempty"`
@@ -354,16 +355,17 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 		workspaceModes = []any{string(WorkspaceNone), string(WorkspaceReadOnly), string(WorkspaceWrite)}
 	}
 	properties := map[string]any{
-		"intent":                    map[string]any{"type": "string", "enum": []any{"execute", "proposal_only"}, "description": "Use execute only when the user wants the workload to run. Use proposal_only when the user explicitly asks for a plan without starting or authorizing Worker work; it returns a non-executing summary and creates no offer, task, confirmation, or execution."},
-		"objective":                 map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes, "description": "Describe only the workload to run on the Worker."},
-		"server_name":               map[string]any{"type": "string", "minLength": 1, "maxLength": 80, "description": "A short user-facing name for a newly created server. Reused servers keep their existing name."},
-		"workspace_mode":            map[string]any{"type": "string", "enum": workspaceModes, "description": "Use none without attachment_ids, read_only with one or more attachment_ids, or write with optional attachment_ids."},
-		"workload_kind":             map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob), "description": "Use job only for finite execution. You MUST use service when the requested result is a persistent network service, website, API, daemon, or other endpoint that must remain available after this run."},
-		"min_vcpu":                  map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Minimum virtual CPU count needed for the task."},
-		"min_memory_gib":            map[string]any{"type": "integer", "minimum": 1, "maximum": 1024, "description": "Minimum memory in GiB needed for the task."},
-		"disk_gib":                  map[string]any{"type": "integer", "minimum": 8, "maximum": 16384, "description": "Working disk capacity in GiB needed for inputs, dependencies, and outputs."},
-		"estimated_runtime_minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "Sufficient task execution budget in minutes for environment setup, dependency installation, build, configuration, verification, result collection, and reasonable margin. This is not the lifetime of a retained Worker or deployed service."},
-		"accelerator_type":          map[string]any{"type": "string", "enum": []any{AcceleratorGPU, AcceleratorNeuron, AcceleratorFPGA, AcceleratorMedia, AcceleratorAny}, "description": "Optional specialized accelerator requirement. Use gpu for GPU workloads, neuron for AWS Trainium/Inferentia, fpga for FPGA, media for hardware media acceleration, or any when any accelerator class is acceptable. Omit for ordinary unconstrained compute."},
+		"intent":                     map[string]any{"type": "string", "enum": []any{"execute", "proposal_only"}, "description": "Use execute only when the user wants the workload to run. Use proposal_only when the user explicitly asks for a plan without starting or authorizing Worker work; it returns a non-executing summary and creates no offer, task, confirmation, or execution."},
+		"objective":                  map[string]any{"type": "string", "minLength": 1, "maxLength": coretask.MaxGoalBytes, "description": "Describe only the workload to run on the Worker."},
+		"server_name":                map[string]any{"type": "string", "minLength": 1, "maxLength": 80, "description": "A short user-facing name for a newly created server. Reused servers keep their existing name."},
+		"workspace_mode":             map[string]any{"type": "string", "enum": workspaceModes, "description": "Use none without attachment_ids, read_only with one or more attachment_ids, or write with optional attachment_ids."},
+		"workload_kind":              map[string]any{"type": "string", "enum": []any{string(WorkloadJob), string(WorkloadService)}, "default": string(WorkloadJob), "description": "Use job only for finite execution. You MUST use service when the requested result is a persistent network service, website, API, daemon, or other endpoint that must remain available after this run."},
+		"min_vcpu":                   map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Minimum virtual CPU count needed for the task."},
+		"min_memory_gib":             map[string]any{"type": "integer", "minimum": 1, "maximum": 1024, "description": "Minimum memory in GiB needed for the task."},
+		"min_accelerator_memory_gib": map[string]any{"type": "integer", "minimum": 0, "maximum": 1024, "description": "Minimum dedicated accelerator memory in GiB. You MUST provide a verified non-zero working-set requirement for GPU workloads; use 0 only when accelerator_type is omitted. For named downloadable models, verify the exact available tag/artifact and its current published size before proposing."},
+		"disk_gib":                   map[string]any{"type": "integer", "minimum": 8, "maximum": 16384, "description": "Working disk capacity in GiB needed for inputs, dependencies, and outputs."},
+		"estimated_runtime_minutes":  map[string]any{"type": "integer", "minimum": 1, "maximum": 1440, "description": "Sufficient task execution budget in minutes for environment setup, dependency installation, build, configuration, verification, result collection, and reasonable margin. This is not the lifetime of a retained Worker or deployed service."},
+		"accelerator_type":           map[string]any{"type": "string", "enum": []any{AcceleratorGPU, AcceleratorNeuron, AcceleratorFPGA, AcceleratorMedia, AcceleratorAny}, "description": "Optional specialized accelerator requirement. Use gpu for GPU workloads, neuron for AWS Trainium/Inferentia, fpga for FPGA, media for hardware media acceleration, or any when any accelerator class is acceptable. Omit for ordinary unconstrained compute."},
 		"service": map[string]any{"type": "object", "description": "Required for workload_kind=service; omit for job.", "additionalProperties": false, "required": []any{"workload_id", "port", "health_path"}, "properties": map[string]any{
 			"workload_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9-]+$", "description": "Stable lowercase letters, digits, and hyphens only."},
 			"port":        map[string]any{"type": "integer", "minimum": 1, "maximum": 65535, "description": "Internal HTTP port; not 80 or 443 when hostname is set."},
@@ -374,14 +376,14 @@ func (p *ProposeIntrinsic) ResolveIntrinsicTools(ctx context.Context, lease core
 	if attachmentSchema != nil {
 		properties["attachment_ids"] = attachmentSchema
 	}
-	description := "Run substantial project or shell work in a retained execution environment, or return a non-executing plan summary. Once workload_kind, actual minimum resources, and required service fields are known, invoke this tool immediately. Only creating a new Worker requires owner confirmation; retained Worker reuse executes directly, including persistent services and hostname publication. Never use this tool only to bind, change, or remove a hostname for an already deployed service: call cloud_worker_inventory, then cloud_worker_domain_bind or cloud_worker_domain_unbind with its exact IDs."
+	description := "Run substantial project or shell work in a retained execution environment, or return a non-executing plan summary. Before proposing a named model or downloadable workload, use available read/search tools to verify that the exact tag or artifact exists and calculate its minimum CPU memory, accelerator memory, and disk working set; do not create a quote from the model name alone. Once workload_kind, verified minimum resources, and required service fields are known, invoke this tool immediately. Only creating a new Worker requires owner confirmation; retained Worker reuse executes directly, including persistent services and hostname publication. Never use this tool only to bind, change, or remove a hostname for an already deployed service: call cloud_worker_inventory, then cloud_worker_domain_bind or cloud_worker_domain_unbind with its exact IDs."
 	tool := coremodel.Tool{
 		Name:        coremodel.IntrinsicCloudWorkerProposeToolName,
 		Description: description,
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"required":             []any{"intent", "objective", "server_name", "workspace_mode", "min_vcpu", "min_memory_gib", "disk_gib", "estimated_runtime_minutes"},
+			"required":             []any{"intent", "objective", "server_name", "workspace_mode", "min_vcpu", "min_memory_gib", "min_accelerator_memory_gib", "disk_gib", "estimated_runtime_minutes"},
 			"properties":           properties,
 		},
 	}
@@ -644,7 +646,8 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 		ModelAuthorization: modelAuthorization,
 		GitHubBinding:      githubBinding,
 		ComputeRequirements: ComputeRequirements{MinVCPU: arguments.MinVCPU, MinMemoryGiB: arguments.MinMemoryGiB,
-			DiskGiB: arguments.DiskGiB, EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes, AcceleratorType: arguments.AcceleratorType},
+			MinAcceleratorMemoryGiB: arguments.MinAcceleratorMemoryGiB, DiskGiB: arguments.DiskGiB,
+			EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes, AcceleratorType: arguments.AcceleratorType},
 	})
 	if err != nil {
 		slog.Warn("[cloud-worker.intrinsic] proposal_failed",
@@ -671,6 +674,9 @@ func (p *ProposeIntrinsic) commitProposalOnly(ctx context.Context, bound corecon
 		if arguments.Service.Hostname != "" {
 			detail += " at " + arguments.Service.Hostname
 		}
+	}
+	if arguments.AcceleratorType != "" {
+		detail += fmt.Sprintf("\nAccelerator: %s with at least %d GiB dedicated memory", arguments.AcceleratorType, arguments.MinAcceleratorMemoryGiB)
 	}
 	detail += "\n\nRequest execution separately when ready. A suitable retained Worker may then start immediately; creating a new Worker requires owner confirmation."
 	message := coreconversation.Message{
@@ -752,7 +758,7 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 	if arguments.DiskGiB > 0 && arguments.DiskGiB < 8 {
 		arguments.DiskGiB = 8
 	}
-	if (ComputeRequirements{MinVCPU: arguments.MinVCPU, MinMemoryGiB: arguments.MinMemoryGiB, DiskGiB: arguments.DiskGiB,
+	if (ComputeRequirements{MinVCPU: arguments.MinVCPU, MinMemoryGiB: arguments.MinMemoryGiB, MinAcceleratorMemoryGiB: arguments.MinAcceleratorMemoryGiB, DiskGiB: arguments.DiskGiB,
 		EstimatedRuntimeMinutes: arguments.EstimatedRuntimeMinutes, AcceleratorType: arguments.AcceleratorType}).validate() != nil {
 		return proposeIntrinsicArguments{}, ErrInvalid
 	}

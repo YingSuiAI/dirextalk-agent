@@ -13,7 +13,8 @@ func TestCloudWorkerPublicProtoMatchesDynamicSSHPublicProjection(t *testing.T) {
 		t.Fatal("Cloud Worker descriptor is missing")
 	}
 	compute := file.Messages().ByName("CoreCloudWorkerComputeProjection")
-	if compute.Fields().ByName("vcpu") == nil || compute.Fields().ByName("memory_gib") == nil || compute.Fields().ByName("accelerator_type") == nil {
+	if compute.Fields().ByName("vcpu") == nil || compute.Fields().ByName("memory_gib") == nil || compute.Fields().ByName("accelerator_type") == nil ||
+		compute.Fields().ByName("accelerator_name") == nil || compute.Fields().ByName("accelerator_memory_mib") == nil {
 		t.Fatalf("compute projection=%v", compute)
 	}
 	quote := file.Messages().ByName("CoreCloudWorkerQuote")

@@ -80,6 +80,43 @@ func TestCloudWorkerOfferReferencesTrackConfirmedAndRunningState(t *testing.T) {
 	assertState(string(coreconfirmation.StateConsumed), string(cloudworker.StateCanceled))
 }
 
+func TestRejectedCloudWorkerPlanRemainsAvailableToLaterModelContext(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+	offer := h.propose(t)
+	confirmationService, err := coreconfirmation.NewService(h.confirmations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = confirmationService.Reject(h.ctx, coreconfirmation.RejectCommand{
+		ConfirmationID: offer.Confirmation.ConfirmationID, IdempotencyKey: uuid.NewString(),
+		ExpectedRevision: offer.Confirmation.Revision, Reason: coreconfirmation.ReasonUserRejected, At: h.now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const legacySummary = "Cloud Worker offer was rejected. No AWS resources were created."
+	if _, err = h.store.pool.Exec(h.ctx, `UPDATE core_messages SET content=$2 WHERE conversation_id=$1 AND content LIKE 'Cloud Worker offer was rejected.%'`, offer.Plan.ConversationID, legacySummary); err != nil {
+		t.Fatal(err)
+	}
+	conversationStore, err := NewCoreConversationStore(h.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := conversationStore.LoadConversation(h.ctx, offer.Plan.ConversationID)
+	if err != nil || conversation.Messages[len(conversation.Messages)-1].Content != legacySummary {
+		t.Fatalf("legacy transcript=%+v err=%v", conversation.Messages, err)
+	}
+	projected, err := conversationStore.ProjectModelContext(h.ctx, conversation, offer.Plan.OwnerID, offer.Plan.AccountGeneration)
+	wantCompute := cloudworker.PublicComputeSummary(offer.Plan.Compute)
+	if err != nil || !strings.Contains(projected.Messages[len(projected.Messages)-1].Content, wantCompute) {
+		t.Fatalf("projected context=%+v err=%v want=%q", projected.Messages, err, wantCompute)
+	}
+	reloaded, err := conversationStore.LoadConversation(h.ctx, offer.Plan.ConversationID)
+	if err != nil || reloaded.Messages[len(reloaded.Messages)-1].Content != legacySummary {
+		t.Fatalf("model projection mutated transcript=%+v err=%v", reloaded.Messages, err)
+	}
+}
+
 func TestSSHWorkerStoreTerminalizesQuotaFailureAndResumesTurn(t *testing.T) {
 	h := newPGCloudWorkerHarness(t)
 	defer h.cleanup()
@@ -279,7 +316,7 @@ func TestSSHWorkerStoreRebindsConsumedReservationAfterTaskReclaim(t *testing.T) 
 	}
 	conversation, err = conversationStore.LoadConversation(h.ctx, offer.Plan.ConversationID)
 	if err != nil || len(conversation.Messages) != 3 || conversation.Messages[0].Role != core.RoleUser ||
-		conversation.Messages[1].Content != "Cloud Worker quote is ready for confirmation." ||
+		!strings.Contains(conversation.Messages[1].Content, "Cloud Worker quote is ready for confirmation. Selected configuration:") ||
 		conversation.Messages[2].Content != "deployment complete" {
 		t.Fatalf("terminal Worker transcript=%+v err=%v", conversation.Messages, err)
 	}

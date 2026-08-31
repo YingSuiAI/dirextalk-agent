@@ -205,19 +205,21 @@ func (x *CoreCloudWorkerAwsProjection) GetCredentialRevision() uint64 {
 }
 
 type CoreCloudWorkerComputeProjection struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	InstanceType        string                 `protobuf:"bytes,1,opt,name=instance_type,json=instanceType,proto3" json:"instance_type,omitempty"`
-	Architecture        string                 `protobuf:"bytes,2,opt,name=architecture,proto3" json:"architecture,omitempty"`
-	RootDeviceName      string                 `protobuf:"bytes,3,opt,name=root_device_name,json=rootDeviceName,proto3" json:"root_device_name,omitempty"`
-	VolumeGib           uint64                 `protobuf:"varint,4,opt,name=volume_gib,json=volumeGib,proto3" json:"volume_gib,omitempty"`
-	VolumeType          string                 `protobuf:"bytes,5,opt,name=volume_type,json=volumeType,proto3" json:"volume_type,omitempty"`
-	VolumeIops          uint64                 `protobuf:"varint,6,opt,name=volume_iops,json=volumeIops,proto3" json:"volume_iops,omitempty"`
-	VolumeThroughputMib uint64                 `protobuf:"varint,7,opt,name=volume_throughput_mib,json=volumeThroughputMib,proto3" json:"volume_throughput_mib,omitempty"`
-	Vcpu                uint32                 `protobuf:"varint,8,opt,name=vcpu,proto3" json:"vcpu,omitempty"`
-	MemoryGib           uint32                 `protobuf:"varint,9,opt,name=memory_gib,json=memoryGib,proto3" json:"memory_gib,omitempty"`
-	AcceleratorType     string                 `protobuf:"bytes,10,opt,name=accelerator_type,json=acceleratorType,proto3" json:"accelerator_type,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	InstanceType         string                 `protobuf:"bytes,1,opt,name=instance_type,json=instanceType,proto3" json:"instance_type,omitempty"`
+	Architecture         string                 `protobuf:"bytes,2,opt,name=architecture,proto3" json:"architecture,omitempty"`
+	RootDeviceName       string                 `protobuf:"bytes,3,opt,name=root_device_name,json=rootDeviceName,proto3" json:"root_device_name,omitempty"`
+	VolumeGib            uint64                 `protobuf:"varint,4,opt,name=volume_gib,json=volumeGib,proto3" json:"volume_gib,omitempty"`
+	VolumeType           string                 `protobuf:"bytes,5,opt,name=volume_type,json=volumeType,proto3" json:"volume_type,omitempty"`
+	VolumeIops           uint64                 `protobuf:"varint,6,opt,name=volume_iops,json=volumeIops,proto3" json:"volume_iops,omitempty"`
+	VolumeThroughputMib  uint64                 `protobuf:"varint,7,opt,name=volume_throughput_mib,json=volumeThroughputMib,proto3" json:"volume_throughput_mib,omitempty"`
+	Vcpu                 uint32                 `protobuf:"varint,8,opt,name=vcpu,proto3" json:"vcpu,omitempty"`
+	MemoryGib            uint32                 `protobuf:"varint,9,opt,name=memory_gib,json=memoryGib,proto3" json:"memory_gib,omitempty"`
+	AcceleratorType      string                 `protobuf:"bytes,10,opt,name=accelerator_type,json=acceleratorType,proto3" json:"accelerator_type,omitempty"`
+	AcceleratorName      string                 `protobuf:"bytes,11,opt,name=accelerator_name,json=acceleratorName,proto3" json:"accelerator_name,omitempty"`
+	AcceleratorMemoryMib uint64                 `protobuf:"varint,12,opt,name=accelerator_memory_mib,json=acceleratorMemoryMib,proto3" json:"accelerator_memory_mib,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *CoreCloudWorkerComputeProjection) Reset() {
@@ -318,6 +320,20 @@ func (x *CoreCloudWorkerComputeProjection) GetAcceleratorType() string {
 		return x.AcceleratorType
 	}
 	return ""
+}
+
+func (x *CoreCloudWorkerComputeProjection) GetAcceleratorName() string {
+	if x != nil {
+		return x.AcceleratorName
+	}
+	return ""
+}
+
+func (x *CoreCloudWorkerComputeProjection) GetAcceleratorMemoryMib() uint64 {
+	if x != nil {
+		return x.AcceleratorMemoryMib
+	}
+	return 0
 }
 
 type CoreCloudWorkerLimits struct {
@@ -1163,7 +1179,7 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\n" +
 	"account_id\x18\x01 \x01(\tR\taccountId\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12/\n" +
-	"\x13credential_revision\x18\x03 \x01(\x04R\x12credentialRevision\"\x88\x03\n" +
+	"\x13credential_revision\x18\x03 \x01(\x04R\x12credentialRevision\"\xe9\x03\n" +
 	" CoreCloudWorkerComputeProjection\x12#\n" +
 	"\rinstance_type\x18\x01 \x01(\tR\finstanceType\x12\"\n" +
 	"\farchitecture\x18\x02 \x01(\tR\farchitecture\x12(\n" +
@@ -1179,7 +1195,9 @@ const file_dirextalk_agent_v1_core_cloud_worker_proto_rawDesc = "" +
 	"\n" +
 	"memory_gib\x18\t \x01(\rR\tmemoryGib\x12)\n" +
 	"\x10accelerator_type\x18\n" +
-	" \x01(\tR\x0facceleratorType\"\x90\x01\n" +
+	" \x01(\tR\x0facceleratorType\x12)\n" +
+	"\x10accelerator_name\x18\v \x01(\tR\x0facceleratorName\x124\n" +
+	"\x16accelerator_memory_mib\x18\f \x01(\x04R\x14acceleratorMemoryMib\"\x90\x01\n" +
 	"\x15CoreCloudWorkerLimits\x12.\n" +
 	"\x13max_runtime_seconds\x18\x01 \x01(\x04R\x11maxRuntimeSeconds\x12\x1d\n" +
 	"\n" +

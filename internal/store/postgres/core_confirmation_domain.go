@@ -261,7 +261,7 @@ func terminalizeCloudWorkerTurnTx(
 		confirmationState = string(coreconfirmation.StateRejected)
 		turnState, eventKind = string(core.TurnCanceled), core.TurnEventCanceled
 		code = coreconfirmation.ReasonUserRejected
-		summary = "Cloud Worker offer was rejected. No AWS resources were created."
+		summary = "Cloud Worker offer was rejected. No AWS resources were created. Rejected configuration retained for context: " + cloudworker.PublicComputeSummary(plan.Compute) + "."
 	} else if terminal == cloudworker.StateCanceled {
 		turnState, eventKind = string(core.TurnCanceled), core.TurnEventCanceled
 		code = "user_canceled"

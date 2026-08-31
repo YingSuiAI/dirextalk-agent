@@ -56,9 +56,9 @@ func NewAWSComputeSelector(credentials workaws.ExactCredentialResolver, factory 
 }
 
 type pricedInstanceShape struct {
-	name, architecture, acceleratorType string
-	vcpu, memoryGiB                     uint32
-	hourlyMicros                        uint64
+	name, architecture, acceleratorType, acceleratorName string
+	vcpu, memoryGiB                                      uint32
+	acceleratorMemoryMiB, hourlyMicros                   uint64
 }
 
 type computeSelectionStageError struct{ stage string }
@@ -169,14 +169,19 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 			if vcpu < requirements.MinVCPU || memoryMiB < int64(requirements.MinMemoryGiB)*1024 {
 				continue
 			}
-			acceleratorType, matched := matchingAcceleratorType(value, requirements.AcceleratorType)
+			acceleratorType, acceleratorName, acceleratorMemoryMiB, matched := matchingAccelerator(value, requirements.AcceleratorType)
 			if !matched {
+				continue
+			}
+			if requirements.MinAcceleratorMemoryGiB != 0 && acceleratorMemoryMiB < uint64(requirements.MinAcceleratorMemoryGiB)*1024 {
 				continue
 			}
 			shape.vcpu = vcpu
 			shape.memoryGiB = uint32((memoryMiB + 1023) / 1024)
 			shape.architecture = "x86_64"
 			shape.acceleratorType = acceleratorType
+			shape.acceleratorName = acceleratorName
+			shape.acceleratorMemoryMiB = acceleratorMemoryMiB
 			eligible[name] = shape
 		}
 	}
@@ -198,7 +203,8 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 	if selected.name == "" {
 		return ComputeSpec{}, computeSelectionUnavailable("describe_types")
 	}
-	return ComputeSpec{InstanceType: selected.name, Architecture: selected.architecture, AcceleratorType: selected.acceleratorType, VCPU: selected.vcpu, MemoryGiB: selected.memoryGiB,
+	return ComputeSpec{InstanceType: selected.name, Architecture: selected.architecture, AcceleratorType: selected.acceleratorType,
+		AcceleratorName: selected.acceleratorName, AcceleratorMemoryMiB: selected.acceleratorMemoryMiB, VCPU: selected.vcpu, MemoryGiB: selected.memoryGiB,
 		RootDeviceName: "/dev/xvda", VolumeGiB: requirements.DiskGiB, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}, nil
 }
 
@@ -304,30 +310,85 @@ func containsX8664(values []ec2types.ArchitectureType) bool {
 	return false
 }
 
-func matchingAcceleratorType(value ec2types.InstanceTypeInfo, required string) (string, bool) {
+func matchingAccelerator(value ec2types.InstanceTypeInfo, required string) (string, string, uint64, bool) {
 	available := []struct {
-		name    string
-		present bool
+		kind, name string
+		memoryMiB  uint64
+		present    bool
 	}{
-		{AcceleratorGPU, value.GpuInfo != nil && len(value.GpuInfo.Gpus) != 0},
-		{AcceleratorNeuron, value.NeuronInfo != nil && len(value.NeuronInfo.NeuronDevices) != 0},
-		{AcceleratorFPGA, value.FpgaInfo != nil && len(value.FpgaInfo.Fpgas) != 0},
-		{AcceleratorMedia, value.MediaAcceleratorInfo != nil && len(value.MediaAcceleratorInfo.Accelerators) != 0},
+		{kind: AcceleratorGPU, name: firstGPUName(value.GpuInfo), memoryMiB: gpuMemoryMiB(value.GpuInfo), present: value.GpuInfo != nil && len(value.GpuInfo.Gpus) != 0},
+		{kind: AcceleratorNeuron, name: firstNeuronName(value.NeuronInfo), memoryMiB: neuronMemoryMiB(value.NeuronInfo), present: value.NeuronInfo != nil && len(value.NeuronInfo.NeuronDevices) != 0},
+		{kind: AcceleratorFPGA, present: value.FpgaInfo != nil && len(value.FpgaInfo.Fpgas) != 0},
+		{kind: AcceleratorMedia, memoryMiB: mediaMemoryMiB(value.MediaAcceleratorInfo), present: value.MediaAcceleratorInfo != nil && len(value.MediaAcceleratorInfo.Accelerators) != 0},
 	}
 	if required == "" {
 		for _, candidate := range available {
 			if candidate.present {
-				return candidate.name, true
+				return candidate.kind, candidate.name, candidate.memoryMiB, true
 			}
 		}
-		return "", true
+		return "", "", 0, true
 	}
 	for _, candidate := range available {
-		if candidate.present && (required == AcceleratorAny || required == candidate.name) {
-			return candidate.name, true
+		if candidate.present && (required == AcceleratorAny || required == candidate.kind) {
+			return candidate.kind, candidate.name, candidate.memoryMiB, true
 		}
 	}
-	return "", false
+	return "", "", 0, false
+}
+
+func firstGPUName(info *ec2types.GpuInfo) string {
+	if info == nil {
+		return ""
+	}
+	for _, device := range info.Gpus {
+		if name := strings.TrimSpace(aws.ToString(device.Name)); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func firstNeuronName(info *ec2types.NeuronInfo) string {
+	if info == nil {
+		return ""
+	}
+	for _, device := range info.NeuronDevices {
+		if name := strings.TrimSpace(aws.ToString(device.Name)); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func gpuMemoryMiB(info *ec2types.GpuInfo) uint64 {
+	if info == nil {
+		return 0
+	}
+	if total := aws.ToInt32(info.TotalGpuMemoryInMiB); total > 0 {
+		return uint64(total)
+	}
+	var total uint64
+	for _, device := range info.Gpus {
+		if device.MemoryInfo != nil && aws.ToInt32(device.MemoryInfo.SizeInMiB) > 0 && aws.ToInt32(device.Count) > 0 {
+			total += uint64(aws.ToInt32(device.MemoryInfo.SizeInMiB)) * uint64(aws.ToInt32(device.Count))
+		}
+	}
+	return total
+}
+
+func neuronMemoryMiB(info *ec2types.NeuronInfo) uint64 {
+	if info != nil && aws.ToInt32(info.TotalNeuronDeviceMemoryInMiB) > 0 {
+		return uint64(aws.ToInt32(info.TotalNeuronDeviceMemoryInMiB))
+	}
+	return 0
+}
+
+func mediaMemoryMiB(info *ec2types.MediaAcceleratorInfo) uint64 {
+	if info != nil && aws.ToInt32(info.TotalMediaMemoryInMiB) > 0 {
+		return uint64(aws.ToInt32(info.TotalMediaMemoryInMiB))
+	}
+	return 0
 }
 
 var _ ComputeSelector = (*AWSComputeSelector)(nil)

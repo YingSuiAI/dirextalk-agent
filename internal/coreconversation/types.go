@@ -667,6 +667,13 @@ type ConversationStore interface {
 	SaveConversation(context.Context, Conversation, uint64) error
 	DeleteConversation(context.Context, string, uint64) error
 }
+
+// ModelContextProjector may add bounded, secret-free projections of records
+// referenced by transcript messages. The returned copy is model-only and is
+// never written back over the authoritative conversation transcript.
+type ModelContextProjector interface {
+	ProjectModelContext(context.Context, Conversation, string, uint64) (Conversation, error)
+}
 type CreateConversationCommand struct {
 	RequestID    string
 	Conversation Conversation

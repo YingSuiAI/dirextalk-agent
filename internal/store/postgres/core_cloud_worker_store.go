@@ -350,7 +350,7 @@ func (s *CloudWorkerStore) CreateOffer(ctx context.Context, command cloudworker.
 	references := cloudWorkerReferences(plan, execution, 1, confirmationProjection)
 	userMessage := core.Message{ID: deterministicCloudWorkerUUID("conversation-turn-user", turn.RequestID), TurnID: plan.TurnID, Role: core.RoleUser,
 		Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: plan.CreatedAt.Add(-time.Microsecond)}
-	offerSummary := "Cloud Worker quote is ready for confirmation."
+	offerSummary := "Cloud Worker quote is ready for confirmation. Selected configuration: " + cloudworker.PublicComputeSummary(plan.Compute) + "."
 	if plan.GitHubBinding != nil {
 		offerSummary += " GitHub repository access will be available."
 	}

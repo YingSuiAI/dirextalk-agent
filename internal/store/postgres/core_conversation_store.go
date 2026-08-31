@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -18,6 +19,77 @@ import (
 type CoreConversationStore struct {
 	*Store
 	memoryCapture atomic.Bool
+}
+
+func (s *CoreConversationStore) ProjectModelContext(ctx context.Context, conversation core.Conversation, ownerID string, accountGeneration uint64) (core.Conversation, error) {
+	ownerID = strings.TrimSpace(ownerID)
+	if s == nil || s.Store == nil || ctx == nil || ownerID == "" || accountGeneration == 0 || conversation.ID == "" {
+		return core.Conversation{}, core.ErrInvalid
+	}
+	planIDs := make(map[string]struct{})
+	for _, message := range conversation.Messages {
+		for _, reference := range message.References {
+			if reference.Kind == "execution_plan" && reference.AccountGeneration == accountGeneration && reference.PlanID != "" {
+				planIDs[reference.PlanID] = struct{}{}
+			}
+		}
+	}
+	if len(planIDs) == 0 {
+		return conversation, nil
+	}
+	ids := make([]uuid.UUID, 0, len(planIDs))
+	for id := range planIDs {
+		parsed, err := uuid.Parse(id)
+		if err != nil || parsed == uuid.Nil || parsed.String() != id {
+			return core.Conversation{}, core.ErrConflict
+		}
+		ids = append(ids, parsed)
+	}
+	rows, err := s.pool.Query(ctx, `SELECT plan_id::text,plan_json FROM core_cloud_worker_plans
+		WHERE owner_id=$1 AND account_generation=$2 AND conversation_id=$3 AND plan_id=ANY($4::uuid[])`,
+		ownerID, accountGeneration, conversation.ID, ids)
+	if err != nil {
+		return core.Conversation{}, err
+	}
+	defer rows.Close()
+	summaries := make(map[string]string, len(ids))
+	for rows.Next() {
+		var planID string
+		var raw []byte
+		var plan cloudworker.Plan
+		if err = rows.Scan(&planID, &raw); err != nil || json.Unmarshal(raw, &plan) != nil || plan.PlanID != planID || plan.OwnerID != ownerID ||
+			plan.AccountGeneration != accountGeneration || plan.ConversationID != conversation.ID || cloudworker.ValidatePublicCompute(plan.Compute) != nil {
+			return core.Conversation{}, core.ErrConflict
+		}
+		summaries[planID] = cloudworker.PublicComputeSummary(plan.Compute)
+	}
+	if err = rows.Err(); err != nil {
+		return core.Conversation{}, err
+	}
+	projected := conversation
+	projected.Messages = append([]core.Message(nil), conversation.Messages...)
+	seen := make(map[string]struct{}, len(summaries))
+	for index := len(projected.Messages) - 1; index >= 0; index-- {
+		message := projected.Messages[index]
+		if message.Role != core.RoleAssistant {
+			continue
+		}
+		for _, reference := range message.References {
+			summary, ok := summaries[reference.PlanID]
+			if !ok || reference.Kind != "execution_plan" {
+				continue
+			}
+			if _, duplicate := seen[reference.PlanID]; duplicate {
+				continue
+			}
+			seen[reference.PlanID] = struct{}{}
+			if !strings.Contains(message.Content, summary) {
+				message.Content += "\n\nAuthoritative Cloud Worker configuration retained from the referenced plan: " + summary + "."
+				projected.Messages[index] = message
+			}
+		}
+	}
+	return projected, nil
 }
 
 func NewCoreConversationStore(store *Store) (*CoreConversationStore, error) {

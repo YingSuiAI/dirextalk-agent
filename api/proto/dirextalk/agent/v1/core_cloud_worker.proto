@@ -43,6 +43,8 @@ message CoreCloudWorkerComputeProjection {
   uint32 vcpu = 8;
   uint32 memory_gib = 9;
   string accelerator_type = 10;
+  string accelerator_name = 11;
+  uint64 accelerator_memory_mib = 12;
 }
 
 message CoreCloudWorkerLimits {

@@ -694,6 +694,22 @@ type publicActiveTurnStore struct {
 	terminalEvents int
 }
 
+type projectedContextTurnStore struct {
+	*publicActiveTurnStore
+	projected string
+}
+
+func (s *projectedContextTurnStore) ProjectModelContext(_ context.Context, conversation Conversation, ownerID string, accountGeneration uint64) (Conversation, error) {
+	if ownerID != s.turn.OwnerID || accountGeneration != s.turn.AccountGeneration {
+		return Conversation{}, ErrConflict
+	}
+	s.projected = "g6f.2xlarge; GPU NVIDIA L4 (5.59 GiB accelerator memory); 8 vCPU; 32 GiB system memory"
+	projected := conversation
+	projected.Messages = append([]Message(nil), conversation.Messages...)
+	projected.Messages[0].Content += "\n\n" + s.projected
+	return projected, nil
+}
+
 type supervisorRetryTurnStore struct {
 	*publicActiveTurnStore
 	readMu         sync.Mutex
@@ -1042,6 +1058,32 @@ func TestExecuteTurnRecallsNewConversationBeforeModel(t *testing.T) {
 	}
 	if len(model.request.Conversation.Messages) != 2 || model.request.Conversation.Messages[0].Role != RoleUser || model.request.Conversation.Messages[1].Role != RoleUser || model.request.Conversation.Messages[1].Content != turn.Prompt {
 		t.Fatalf("model request omitted recall/current prompt: %+v", model.request.Conversation.Messages)
+	}
+}
+
+func TestExecuteTurnProjectsReferencedPlanIntoModelOnlyContext(t *testing.T) {
+	snapshot := testTurnSnapshot()
+	now := time.Now().UTC()
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:example.test", AccountGeneration: 7,
+		ConversationID: uuid.NewString(), Prompt: "can this rejected configuration run the model?", ProfileID: snapshot.ProfileID,
+		ProfileSnapshot: snapshot, State: TurnAccepted, Revision: 1, CreatedAt: now}
+	base := &publicActiveTurnStore{fakeStore: newFakeStore(), turn: turn}
+	base.fakeStore.conv[turn.ConversationID] = Conversation{ID: turn.ConversationID, Revision: 1, CreatedAt: now.Add(-time.Minute), UpdatedAt: now,
+		Messages: []Message{{ID: uuid.NewString(), Role: RoleAssistant, Content: "Cloud Worker offer was rejected. No AWS resources were created.",
+			ModelProfileID: snapshot.ProfileID, CreatedAt: now.Add(-time.Second)}}}
+	store := &projectedContextTurnStore{publicActiveTurnStore: base}
+	model := &capturingTurnModel{}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return snapshot, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.executeTurn(context.Background(), turn.ID)
+	if model.runs != 1 || store.projected == "" || !strings.Contains(model.request.Conversation.Messages[0].Content, store.projected) {
+		t.Fatalf("model did not receive projected plan context: runs=%d messages=%+v", model.runs, model.request.Conversation.Messages)
+	}
+	persisted, err := store.LoadConversation(context.Background(), turn.ConversationID)
+	if err != nil || strings.Contains(persisted.Messages[0].Content, store.projected) {
+		t.Fatalf("model-only projection mutated transcript: conversation=%+v err=%v", persisted, err)
 	}
 }
 
