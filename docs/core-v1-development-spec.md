@@ -874,15 +874,26 @@ different path does not by itself authorize Worker escalation. Repository
 cloning, builds, deployments, services, and other required execution or network
 behavior unavailable through specialized tools remain eligible for Worker use.
 
-A proposal carries provider-neutral minimum vCPU, memory, disk, estimated
-runtime, and an optional accelerator class (`gpu`, `neuron`, `fpga`, `media`,
-or `any`), never an AWS instance type. Agent intersects current-generation
-x86_64 on-demand products with the deployment host Region's actual EC2
-offerings and live accelerator metadata and selects the cheapest shape
-that satisfies them. The plan and confirmation expose that exact shape and its
-live hourly compute price. Bounded jobs also expose their estimated cost and
-maximum authorized cost; persistent services do not present a finite task cost
-or cost ceiling for their open-ended lifetime.
+A proposal carries provider-neutral minimum vCPU, system memory, disk,
+estimated runtime, and an optional accelerator class (`gpu`, `neuron`, `fpga`,
+`media`, or `any`), never an AWS instance type. GPU proposals also carry a
+verified non-zero minimum assigned accelerator-memory working set. Before a
+named model workload can be proposed, Core's intrinsic guidance requires the
+exact model tag or artifact, quantization or precision, published size,
+runtime and accelerator/driver compatibility, context length, concurrency, and
+CPU-offload policy to be verified. Independent minima include loading peaks,
+KV cache or training state, runtime workspace, temporary model copies, caches,
+outputs, and explicit headroom; an unverified critical fact cannot produce a
+paid proposal.
+
+Agent intersects current-generation x86_64 on-demand products with the
+deployment host Region's actual EC2 offerings and live accelerator metadata
+and selects the cheapest shape satisfying every hard minimum. Fractional GPU
+instances contribute only their assigned accelerator memory. The plan and
+confirmation expose the selected shape, concrete accelerator name and assigned
+memory, and live hourly compute price. Bounded jobs also expose their estimated
+cost and maximum authorized cost; persistent services do not present a finite
+task cost or cost ceiling for their open-ended lifetime.
 
 The selected concrete accelerator class is persisted with each retained
 Worker. An accelerator request cannot reuse a Worker whose accelerator metadata

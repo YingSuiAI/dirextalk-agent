@@ -937,6 +937,17 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 			t.Fatalf("sizing description %s=%#v", field, properties[field])
 		}
 	}
+	for _, required := range []string{"exact tag or artifact", "accelerator/driver compatibility", "context length", "expected concurrency", "KV cache or training state", "fractional instance", "silently assume CPU offload", "critical fact is unverified"} {
+		if !strings.Contains(tools[0].Tool.Description, required) {
+			t.Fatalf("model sizing tool guidance is missing %q: %q", required, tools[0].Tool.Description)
+		}
+	}
+	acceleratorMemoryDescription := fmt.Sprint(properties["min_accelerator_memory_gib"].(map[string]any)["description"])
+	if !strings.Contains(acceleratorMemoryDescription, "assigned accelerator memory") ||
+		!strings.Contains(acceleratorMemoryDescription, "expected concurrency") ||
+		!strings.Contains(acceleratorMemoryDescription, "fractional GPU") {
+		t.Fatalf("accelerator memory sizing guidance=%q", acceleratorMemoryDescription)
+	}
 	intentDescription := fmt.Sprint(properties["intent"].(map[string]any)["description"])
 	if !strings.Contains(intentDescription, "proposal_only") || !strings.Contains(intentDescription, "creates no offer") {
 		t.Fatalf("intent guidance=%q", intentDescription)

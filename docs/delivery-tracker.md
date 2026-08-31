@@ -9,6 +9,16 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Named model deployments now use a two-layer sizing boundary. The default
+  `dirextalk-size-model-deployment` Skill verifies the exact artifact,
+  quantization, runtime/driver compatibility, context, concurrency, offload
+  policy, and independent accelerator-memory, system-memory, disk, CPU, and
+  network minima. The always-present Cloud Worker system/tool contract enforces
+  the paid-proposal subset even when the Skill is not selected: critical facts
+  must be verified, fractional GPUs contribute only assigned memory, resource
+  fields include working-set peaks and headroom, and cost comparison begins
+  only after every hard constraint is satisfied. Focused catalog, prompt, tool
+  schema, and intrinsic tests protect discovery and the mandatory boundary.
 - Task finalization no longer discards tool/model/provider errors when a
   progress event has just advanced the task revision: the runtime revalidates
   the exact task attempt, lease epoch, and holder, then retries only the

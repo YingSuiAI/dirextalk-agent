@@ -22,3 +22,21 @@ func TestCloudWorkerRoutingGuidanceUsesInventoryIntrinsic(t *testing.T) {
 		t.Fatal("routing guidance still depends on inventory injected into a prompt or tool description")
 	}
 }
+
+func TestCloudWorkerRoutingGuidanceRequiresVerifiedModelSizing(t *testing.T) {
+	for _, required := range []string{
+		"exact available model tag or artifact",
+		"accelerator/driver compatibility",
+		"context length",
+		"expected concurrency",
+		"assigned accelerator memory",
+		"KV cache or training state",
+		"fractional GPU contributes only its assigned memory",
+		"silently assume CPU offload",
+		"Compare cost only among shapes satisfying every hard minimum",
+	} {
+		if !strings.Contains(cloudWorkerRoutingGuidance, required) {
+			t.Fatalf("model sizing guidance is missing %q", required)
+		}
+	}
+}

@@ -24,6 +24,7 @@ type builtinSkillDefinition struct {
 var builtinSkillDefinitions = []builtinSkillDefinition{
 	{ID: "dirextalk-research-and-verify", Directory: "research-and-verify", Description: "Research current topics and verify claims with authoritative sources."},
 	{ID: "dirextalk-review-code", Directory: "review-code", Description: "Review code for correctness, security, reliability, and missing tests."},
+	{ID: "dirextalk-size-model-deployment", Directory: "size-model-deployment", Description: "Verify model workloads and calculate accelerator, memory, storage, and server capacity."},
 	{ID: "dirextalk-verify-delivery", Directory: "verify-delivery", Description: "Turn requirements into evidence-backed acceptance and release checks."},
 	{ID: "dirextalk-write-technical-docs", Directory: "write-technical-docs", Description: "Create accurate API guides, runbooks, and architecture documentation."},
 }

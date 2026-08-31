@@ -1,0 +1,3 @@
+interface:
+  display_name: "Size Model Deployment"
+  short_description: "Verify model workloads and calculate server capacity"

@@ -18,7 +18,7 @@ func TestBuiltinSkillsExposePinnedNetworkFreeCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantIDs := []string{"dirextalk-research-and-verify", "dirextalk-review-code", "dirextalk-verify-delivery", "dirextalk-write-technical-docs"}
+	wantIDs := []string{"dirextalk-research-and-verify", "dirextalk-review-code", "dirextalk-size-model-deployment", "dirextalk-verify-delivery", "dirextalk-write-technical-docs"}
 	if len(page.Candidates) != len(wantIDs) {
 		t.Fatalf("candidates = %d, want %d", len(page.Candidates), len(wantIDs))
 	}

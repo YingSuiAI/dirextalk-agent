@@ -55,7 +55,7 @@ func TestEnsureDefaultBuiltinSkillsSeedsOnceAndHonorsRemovalFence(t *testing.T) 
 	if err := ensureDefaultBuiltinSkills(context.Background(), store, catalog, t.TempDir(), publisher); err != nil {
 		t.Fatal(err)
 	}
-	if store.ensured != 4 || publisher.calls != 4 {
+	if store.ensured != 5 || publisher.calls != 5 {
 		t.Fatalf("first seed ensured=%d published=%d", store.ensured, publisher.calls)
 	}
 	// The durable seed survives uninstall. A restart must neither republish nor
