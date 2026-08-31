@@ -372,6 +372,16 @@ or stream after admission. It never cancels the accepted Turn; callers use
   further failure completes through deterministic Markdown. No retry restores
   tool authority, and text inside the candidate is never promoted into a tool
   call. Structured tool calls remain the sole execution authority.
+- The DeepSeek compatibility adapter does not add a second executable
+  protocol. For the first-party DeepSeek API and DeepSeek models reached
+  through an OpenAI-compatible gateway, a tools-admitted request carries fixed
+  platform guidance that ordinary content is non-executable and an explicit
+  `tool_choice: auto`. After a quarantined text-protocol response, the single
+  correction attempt uses `tool_choice: required`; an already-authorized named
+  tool remains the stronger exact choice. These controls affect provider output
+  shape only and never bypass tool schema validation, accepted snapshots,
+  permissions, confirmations, or the text quarantine. DeepSeek strict mode is
+  not enabled by silently changing a configured endpoint to its beta API.
 - Recent tool-loop recovery is deliberately conservative and resets at an
   accepted steer. It recognizes only repeated canonical action/result pairs or
   exact A/B alternation. Argument object key order and harmless unquoted local

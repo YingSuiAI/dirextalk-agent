@@ -391,6 +391,16 @@ support.
   PostgreSQL unit tests passed together with focused `go vet`, the production
   Agent command build, and diff checks. This is code-level evidence and does not
   claim a new deployment.
+- On **2026-08-30**, the OpenAI-compatible boundary gained a dispatch-local
+  DeepSeek adapter without accepting DSML as an executable protocol. Direct and
+  gateway-routed DeepSeek tool requests now receive fixed structured-call
+  guidance plus explicit automatic tool choice; the one quarantined recovery
+  attempt requires a standard structured call, while an exact named-tool choice
+  remains stronger. The mode survives the Eino conversion boundary, invalid or
+  ambiguous combinations fail closed, and the existing validation-before-
+  publication guard remains the only path to public model text. Focused Linux
+  Core model, runtime, and conversation tests passed; this is code-level
+  evidence and does not claim a new deployment.
 - On **2026-08-30**, Native public tool progress stopped projecting model-authored
   arguments, exact result content, cursors, or result references. Web Search
   keeps normalized fetched evidence in the private model transcript but now

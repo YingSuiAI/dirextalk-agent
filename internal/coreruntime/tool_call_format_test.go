@@ -213,6 +213,56 @@ func TestModelRunnerPublishesOnlyValidatedFinalText(t *testing.T) {
 	}
 }
 
+func TestModelRunnerAppliesDeepSeekStructuredToolProtocolBeforeFirstCall(t *testing.T) {
+	request := modelToolProtocolTestRequest()
+	request.Snapshot.BaseURL = "https://api.deepseek.com/v1"
+	request.Snapshot.Model = "deepseek-v4-flash"
+	request.Snapshot.SystemPrompt = "base policy"
+	client := &toolCallFormatRequestClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: "normal answer"}}}}
+	var captured coremodel.Profile
+	runner, _ := NewModelRunner(func(profile coremodel.Profile) (coremodel.Client, error) {
+		captured = profile
+		return client, nil
+	})
+	result, err := runner.Stream(context.Background(), request, nil)
+	if err != nil || !result.Done || client.request.ToolChoice != coremodel.ToolChoiceAuto ||
+		!strings.Contains(captured.SystemPrompt, "OpenAI-compatible structured tool protocol") ||
+		!strings.Contains(captured.SystemPrompt, "Never emit DSML") {
+		t.Fatalf("result=%+v err=%v tool_choice=%q system_prompt=%q", result, err, client.request.ToolChoice, captured.SystemPrompt)
+	}
+}
+
+func TestModelRunnerRecognizesDeepSeekBehindCompatibleGateway(t *testing.T) {
+	request := modelToolProtocolTestRequest()
+	request.Snapshot.Model = "deepseek/deepseek-v4-pro"
+	client := &toolCallFormatRequestClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: "normal answer"}}}}
+	var captured coremodel.Profile
+	runner, _ := NewModelRunner(func(profile coremodel.Profile) (coremodel.Client, error) {
+		captured = profile
+		return client, nil
+	})
+	result, err := runner.Stream(context.Background(), request, nil)
+	if err != nil || !result.Done || client.request.ToolChoice != coremodel.ToolChoiceAuto ||
+		!strings.Contains(captured.SystemPrompt, "OpenAI-compatible structured tool protocol") {
+		t.Fatalf("result=%+v err=%v tool_choice=%q system_prompt=%q", result, err, client.request.ToolChoice, captured.SystemPrompt)
+	}
+}
+
+func TestModelRunnerKeepsNamedToolChoiceStrongerThanDeepSeekMode(t *testing.T) {
+	request := modelToolProtocolTestRequest()
+	request.Snapshot.BaseURL = "https://api.deepseek.com/v1"
+	request.Snapshot.Model = "deepseek-v4-flash"
+	request.ForcedToolName = "lookup"
+	client := &toolCallFormatRequestClient{stream: &fakeStream{deltas: []coremodel.Delta{{
+		ToolCalls: []coremodel.ToolCall{{Index: 0, ID: "call-1", Type: "function", Function: coremodel.FunctionCall{Name: "lookup", Arguments: `{}`}}},
+	}}}}
+	runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	result, err := runner.Stream(context.Background(), request, nil)
+	if err != nil || result.Done || client.request.ToolChoice != "" || client.request.ForcedToolName != "lookup" || len(result.ToolCalls) != 1 {
+		t.Fatalf("result=%+v err=%v request=%+v", result, err, client.request)
+	}
+}
+
 func TestModelRunnerKeepsStructuredCallsAuthoritative(t *testing.T) {
 	client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{
 		{Content: dsmlToolCallsEnvelope + "\n" + dsmlInvokePrefix + " name=\"lookup\">"},
@@ -288,16 +338,17 @@ func TestModelRunnerAddsFixedRecoveryInstruction(t *testing.T) {
 	request.ToolCallFormatRecovery = true
 	request.Snapshot.SystemPrompt = "base policy"
 	var captured coremodel.Profile
-	client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: "normal answer"}}}}
+	client := &toolCallFormatRequestClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: "normal answer"}}}}
 	runner, _ := NewModelRunner(func(profile coremodel.Profile) (coremodel.Client, error) {
 		captured = profile
 		return client, nil
 	})
 	result, err := runner.Stream(context.Background(), request, nil)
-	if err != nil || !result.Done || !strings.HasPrefix(captured.SystemPrompt, "base policy\n\n") ||
+	if err != nil || !result.Done || client.request.ToolChoice != coremodel.ToolChoiceRequired ||
+		!strings.HasPrefix(captured.SystemPrompt, "base policy\n\n") ||
 		!strings.Contains(captured.SystemPrompt, "standard OpenAI-compatible message.tool_calls") ||
 		!strings.Contains(captured.SystemPrompt, "Do not put DSML") {
-		t.Fatalf("result=%+v err=%v system_prompt=%q", result, err, captured.SystemPrompt)
+		t.Fatalf("result=%+v err=%v tool_choice=%q system_prompt=%q", result, err, client.request.ToolChoice, captured.SystemPrompt)
 	}
 }
 

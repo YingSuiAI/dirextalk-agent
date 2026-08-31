@@ -166,14 +166,25 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 			return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
 		}
 	}
+	toolChoice := coremodel.ToolChoiceMode("")
+	openAIToolProtocol := isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(tools), req.GuardTextToolCallEnvelope)
+	if len(tools) != 0 && openAIToolProtocol && isDeepSeekToolProtocol(p.BaseURL, p.Model) {
+		p.SystemPrompt = appendDeepSeekStructuredToolInstruction(p.SystemPrompt)
+		if forcedToolName == "" {
+			toolChoice = coremodel.ToolChoiceAuto
+		}
+	}
 	if req.ToolCallFormatRecovery {
 		p.SystemPrompt = appendToolCallFormatRecoveryInstruction(p.SystemPrompt, len(tools) != 0)
+		if len(tools) != 0 && openAIToolProtocol && forcedToolName == "" {
+			toolChoice = coremodel.ToolChoiceRequired
+		}
 	}
 	client, err := r.factory(p)
 	if err != nil {
 		return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, err
 	}
-	return p, client, coremodel.CompletionRequest{Messages: messages, Tools: tools, ForcedToolName: forcedToolName}, nil
+	return p, client, coremodel.CompletionRequest{Messages: messages, Tools: tools, ToolChoice: toolChoice, ForcedToolName: forcedToolName}, nil
 }
 
 func (r *ModelRunner) Run(ctx context.Context, req coreconversation.ModelRunRequest) (coreconversation.ModelRunResult, error) {

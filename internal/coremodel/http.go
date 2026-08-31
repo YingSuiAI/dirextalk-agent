@@ -531,6 +531,9 @@ func openAIPayload(p Profile, r CompletionRequest, stream bool) map[string]any {
 	if len(r.Tools) > 0 {
 		m["tools"] = openAITools(r.Tools)
 	}
+	if r.ToolChoice != "" {
+		m["tool_choice"] = string(r.ToolChoice)
+	}
 	if r.ForcedToolName != "" {
 		m["tool_choice"] = map[string]any{"type": "function", "function": map[string]any{"name": r.ForcedToolName}}
 	}

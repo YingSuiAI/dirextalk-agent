@@ -624,6 +624,14 @@ retains zero tools, and another format failure creates deterministic Markdown.
 No path executes the text or restores tool authority. Ordinary repository text
 that quotes or fences the markers remains visible content.
 
+The DeepSeek provider adaptation stays inside that same OpenAI-compatible
+authority boundary. A DeepSeek tools-admitted dispatch explicitly selects
+structured automatic tool choice and adds fixed platform guidance before the
+first provider call. A quarantined format-recovery dispatch with tools still
+available selects structured required tool choice; an exact forced tool keeps
+the existing named choice instead. The adapter never parses DSML, never changes
+the admitted tool set, and never opts a profile into DeepSeek's beta endpoint.
+
 Workload Tasks use that same revision/attempt/lease-epoch fencing path. The
 local runner receives only a descriptor request bound to the dispatch; it
 never receives Agent credentials, raw secrets, or a database connection.
