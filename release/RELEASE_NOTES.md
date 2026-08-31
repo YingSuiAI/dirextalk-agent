@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.188
+
+1. Support GPU, Neuron, FPGA, media, and any-accelerator Cloud Worker requirements through live AWS instance metadata while preventing incompatible retained Worker reuse.
+2. Raise interactive conversations to 24 model rounds, 20 minutes, and 20 tool calls, while preserving a final tool-free summary when a limit is reached.
+3. Return sanitized failed-tool observations to the model so it can continue or summarize completed work; keep persistence, authority, and consistency failures terminal.
+
 ## v1.0.187
 
 1. Continue bounded GitHub MCP reads across paginated tool results, accept safe embedded text resources, and keep provider payloads, cursors, arguments, and credentials out of public tool events.
