@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.187
+
+1. Continue bounded GitHub MCP reads across paginated tool results, accept safe embedded text resources, and keep provider payloads, cursors, arguments, and credentials out of public tool events.
+2. Quarantine text-shaped tool-call envelopes and retry once through the structured protocol without executing model text; keep DeepSeek thinking requests compatible by omitting the unsupported `tool_choice` field.
+
 ## v1.0.186
 
 1. Preserve existing Worker plans, confirmations, and proposal replays across upgrades from v1.0.184 and v1.0.185 without rewriting historical authorization.
