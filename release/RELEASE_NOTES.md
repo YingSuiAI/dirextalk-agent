@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.189
+
+1. Detect AWS vCPU quota exhaustion without retrying deterministic launch failures, request the required quota increase through Service Quotas, and surface actionable terminal feedback instead of leaving Cloud Worker provisioning stuck.
+2. Propagate terminal tool and task failures to the client through durable turn completion, including after client disconnects or runtime lease recovery.
+3. Keep failed or incomplete Cloud Worker artifacts destroyable while preserving exact resource ownership and mutation fences.
+
 ## v1.0.188
 
 1. Support GPU, Neuron, FPGA, media, and any-accelerator Cloud Worker requirements through live AWS instance metadata while preventing incompatible retained Worker reuse.
