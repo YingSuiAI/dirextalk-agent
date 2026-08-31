@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.190
+
+1. Require named model workloads to verify the exact artifact, runtime compatibility, context, concurrency, offload policy, and independent CPU, system-memory, accelerator-memory, and disk working sets before proposing paid compute.
+2. Select and reuse GPU Workers only when their live assigned accelerator memory satisfies the verified minimum, including fractional GPU shapes, and expose the concrete accelerator name and memory in public plans.
+3. Add the default model-deployment sizing Skill and preserve bounded rejected Worker configuration context for later conversation turns.
+
 ## v1.0.189
 
 1. Detect AWS vCPU quota exhaustion without retrying deterministic launch failures, request the required quota increase through Service Quotas, and surface actionable terminal feedback instead of leaving Cloud Worker provisioning stuck.
