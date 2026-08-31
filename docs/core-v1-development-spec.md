@@ -382,6 +382,15 @@ Task kinds are Agent, Extension, Conversation Tool, Knowledge indexing,
 `AWS_CHANGE`, `WORKLOAD`, and `CLOUD_WORKER`. A Task is claimed with an
 attempt, lease epoch, and expected revision; only the fenced owner may
 checkpoint or terminalize it.
+Every execution error has a durable client-visible outcome. Generic Agent and
+tool Tasks re-read the exact task/attempt/lease owner and retry only their
+terminal compare-and-swap when a concurrent progress event advanced the
+revision; tool or provider execution itself is never repeated by that repair.
+Domain-owned handlers commit their terminal event with a bounded context that
+survives request cancellation. If domain terminal persistence cannot complete,
+they append a safe recovery phase when the same fence is still current so the
+client sees that finalization is being reconciled instead of an indefinitely
+silent running state.
 Executable Extension and Conversation Tool Tasks seal one closed execution
 target into their durable payload when they are created: `local_sandbox` for
 stdio MCPs and executable Skills, `remote_extension` for remote MCP calls, or
@@ -908,6 +917,13 @@ connects by outbound SSH. Agent uses short SSH operations to start work, read
 status and load, stream logs by offset, and list or copy artifacts. A dropped
 connection does not erase remote state. Job and service workloads share this
 protocol, and a service may remain running across conversation turns.
+EC2 launch uses one physical `RunInstances` attempt. A confirmed
+`VcpuLimitExceeded` rejection is read back as no instance, then the same current
+creation confirmation authorizes one minimum regional On-Demand vCPU quota
+increase request. Agent reuses a sufficient pending request and revalidates the
+exact AWS identity before every Service Quotas call. It terminalizes the Task
+and turn with an actionable request status or console link, and marks the
+retained intent failed and destroyable instead of retrying provisioning.
 The first accepted SSH host key is retained beside the Worker private key in an
 owner-owned 0600 `known_hosts` file; subsequent status, execution, and
 observation connections use that same pin, and key deletion removes both.

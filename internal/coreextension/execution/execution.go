@@ -619,11 +619,12 @@ type Handler struct {
 
 func (h *Handler) Handle(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
 	if h == nil || h.Coordinator == nil {
-		return coreruntime.ManagedOutcome{Err: errors.New("extension coordinator unavailable"), TerminalOwned: true}
+		return coreruntime.ManagedOutcome{Err: errors.New("extension coordinator unavailable")}
 	}
 	in, err := h.Coordinator.Resolve(ctx, task)
 	if err != nil {
-		return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
+		committed, failErr := h.Coordinator.Fail(ctx, task, "extension_resolution_failed", "extension execution could not be prepared")
+		return coreruntime.ManagedOutcome{Err: errors.Join(err, failErr), TerminalOwned: committed}
 	}
 	var result coretask.Result
 	switch {

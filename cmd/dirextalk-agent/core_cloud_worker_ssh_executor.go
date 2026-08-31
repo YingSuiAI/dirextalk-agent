@@ -778,6 +778,10 @@ func (executor *sshWorkerExecutor) ListWorkers(ctx context.Context, authority ss
 	byCredential := make(map[sshworker.CredentialIdentity][]sshworker.WorkerRecord)
 	for _, worker := range records {
 		if worker.OwnerID == authority.OwnerID && worker.AccountGeneration == authority.AccountGeneration && worker.Phase != sshworker.WorkerDestroyed {
+			if worker.Phase == sshworker.WorkerFailed {
+				result = append(result, sshworker.UnavailableStatus(worker, time.Now(), worker.FailureSummary))
+				continue
+			}
 			byCredential[worker.Credential] = append(byCredential[worker.Credential], worker)
 		}
 	}

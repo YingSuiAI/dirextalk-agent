@@ -244,6 +244,30 @@ func TestServerInventoryProjectsProvisioningWorkerAsCancelableCreation(t *testin
 	}
 }
 
+func TestServerInventoryProjectsQuotaRejectedWorkerAsFailedAndDestroyable(t *testing.T) {
+	state, err := sshworker.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := workerIdentityFixture()
+	worker := sshworker.WorkerRecord{WorkerID: identity.WorkerID, OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration,
+		Credential: identity.Credential, DisplayName: "gpu-server", Phase: sshworker.WorkerFailed,
+		FailureCode: "aws_quota_increase_pending", FailureSummary: "AWS quota request quota-request-1 is pending"}
+	if err = state.SaveWorker(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &cloudWorkerCredentialResolverFake{exactRevision: identity.Credential.CredentialRevision, exactErr: errors.New("historical secret unavailable")}
+	inventory := coreServerWorkerInventory{executor: &sshWorkerExecutor{exact: resolver, state: state}}
+	servers, err := inventory.List(context.Background(), coreserver.Authority{OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration})
+	if err != nil || len(servers) != 1 {
+		t.Fatalf("servers=%+v err=%v", servers, err)
+	}
+	server := servers[0]
+	if server.Status != string(sshworker.WorkerFailed) || server.Busy || !server.CanDestroy || !strings.Contains(server.BusyReason, "quota-request-1") {
+		t.Fatalf("failed server=%+v", server)
+	}
+}
+
 func TestSSHWorkerDestroyResolvesCredentialBeforeBusyState(t *testing.T) {
 	state, err := sshworker.NewFileStore(t.TempDir())
 	if err != nil {

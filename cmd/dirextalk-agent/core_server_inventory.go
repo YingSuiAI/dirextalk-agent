@@ -47,6 +47,9 @@ func (inventory coreServerWorkerInventory) List(ctx context.Context, authority c
 		case sshworker.WorkerProvisioning:
 			serverStatus = string(sshworker.WorkerProvisioning)
 			busyReason = "服务器正在创建"
+		case sshworker.WorkerFailed:
+			serverStatus = string(sshworker.WorkerFailed)
+			busyReason = strings.TrimSpace(status.Error)
 		case sshworker.WorkerDestroying:
 			serverStatus = string(sshworker.WorkerDestroying)
 			busyReason = "服务器正在销毁"

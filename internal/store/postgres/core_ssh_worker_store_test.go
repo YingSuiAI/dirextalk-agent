@@ -80,6 +80,52 @@ func TestCloudWorkerOfferReferencesTrackConfirmedAndRunningState(t *testing.T) {
 	assertState(string(coreconfirmation.StateConsumed), string(cloudworker.StateCanceled))
 }
 
+func TestSSHWorkerStoreTerminalizesQuotaFailureAndResumesTurn(t *testing.T) {
+	h := newPGCloudWorkerHarness(t)
+	defer h.cleanup()
+	offer := h.propose(t)
+	confirmationService, err := coreconfirmation.NewService(h.confirmations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = confirmationService.Confirm(h.ctx, coreconfirmation.ConfirmCommand{ConfirmationID: offer.Confirmation.ConfirmationID,
+		IdempotencyKey: uuid.NewString(), ExpectedRevision: offer.Confirmation.Revision, At: h.now}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := NewCoreTaskStore(h.store)
+	claimed, _, err := tasks.ClaimNextDue(h.ctx, "quota-failure", h.now, 2*time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshStore, err := NewSSHWorkerStore(h.store, "cloud-worker/artifacts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := sshStore.Begin(h.ctx, claimed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = sshStore.Progress(h.ctx, &run, "provisioning_worker", "Selecting or provisioning Worker"); err != nil {
+		t.Fatal(err)
+	}
+	summary := "AWS EC2 quota is insufficient in us-east-1; request quota-request-1 is PENDING."
+	if err = sshStore.Fail(h.ctx, run, sshflow.Result{WorkerID: offer.Execution.ExecutionID}, "aws_quota_increase_pending", summary); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := tasks.GetTask(h.ctx, claimed.ID)
+	if err != nil || failed.Status != coretask.StatusFailed || failed.FailureCode != "aws_quota_increase_pending" || failed.FailureSummary != summary {
+		t.Fatalf("task=%+v err=%v", failed, err)
+	}
+	execution, err := h.cloud.GetExecutionForAuthority(h.ctx, h.owner, h.generation, offer.Execution.RunID)
+	if err != nil || execution.State != cloudworker.StateFailed || execution.FailureCode != "aws_quota_increase_pending" || execution.FailureSummary != summary {
+		t.Fatalf("execution=%+v err=%v", execution, err)
+	}
+	turn, err := h.conversation.GetTurn(h.ctx, offer.Plan.TurnID)
+	if err != nil || turn.State != core.TurnAccepted || turn.DispatchState != "" {
+		t.Fatalf("turn=%+v err=%v", turn, err)
+	}
+}
+
 func TestSSHWorkerStoreRebindsConsumedReservationAfterTaskReclaim(t *testing.T) {
 	h := newPGCloudWorkerHarness(t)
 	defer h.cleanup()

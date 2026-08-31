@@ -16,16 +16,17 @@ import (
 )
 
 var (
-	ErrInvalid          = errors.New("invalid ssh worker request")
-	ErrNotConfirmed     = errors.New("ssh worker creation is not confirmed")
-	ErrNotAuthorized    = errors.New("ssh worker destruction is not authorized")
-	ErrIdentity         = errors.New("AWS worker identity mismatch")
-	ErrAmbiguous        = errors.New("AWS operation outcome is ambiguous")
-	ErrProviderRejected = errors.New("AWS rejected the worker operation")
-	ErrCapacity         = errors.New("AWS worker capacity reached")
-	ErrBusy             = errors.New("ssh worker is busy")
-	ErrExecutionFailed  = errors.New("ssh worker execution has already failed")
-	ErrResultTooLarge   = errors.New("ssh worker result exceeds its limit")
+	ErrInvalid           = errors.New("invalid ssh worker request")
+	ErrNotConfirmed      = errors.New("ssh worker creation is not confirmed")
+	ErrNotAuthorized     = errors.New("ssh worker destruction is not authorized")
+	ErrIdentity          = errors.New("AWS worker identity mismatch")
+	ErrAmbiguous         = errors.New("AWS operation outcome is ambiguous")
+	ErrProviderRejected  = errors.New("AWS rejected the worker operation")
+	ErrQuotaInsufficient = errors.New("AWS EC2 instance quota is insufficient")
+	ErrCapacity          = errors.New("AWS worker capacity reached")
+	ErrBusy              = errors.New("ssh worker is busy")
+	ErrExecutionFailed   = errors.New("ssh worker execution has already failed")
+	ErrResultTooLarge    = errors.New("ssh worker result exceeds its limit")
 )
 
 const (
@@ -169,8 +170,73 @@ type Instance struct{ ID, PrivateIP, PublicIP, State, ClientToken string }
 type LaunchRequest struct {
 	WorkerID, ClientToken, InstanceType, KeyName, SecurityGroupID string
 	Discovery                                                     Discovery
+	VCPU                                                          uint32
 	VolumeGiB                                                     int32
 	Tags                                                          ResourceTags
+}
+
+type QuotaIncreaseRequest struct {
+	InstanceType string
+	VCPU         uint32
+	Confirmation Confirmation
+}
+
+// QuotaError is the bounded, secret-free projection of an EC2 launch quota
+// rejection and any exact Service Quotas request made for it.
+type QuotaError struct {
+	Region, InstanceType, QuotaCode, QuotaName string
+	CurrentValue, DesiredValue                 float64
+	RequestID, RequestStatus                   string
+	RequestSubmitted                           bool
+	AutomaticRequestUnavailable                bool
+}
+
+func (failure *QuotaError) Error() string {
+	if failure == nil {
+		return ErrQuotaInsufficient.Error()
+	}
+	return failure.UserSummary()
+}
+
+func (*QuotaError) Unwrap() error { return ErrQuotaInsufficient }
+
+func (failure *QuotaError) FailureCode() string {
+	if failure != nil && failure.RequestSubmitted {
+		return "aws_quota_increase_pending"
+	}
+	return "aws_quota_insufficient"
+}
+
+func (failure *QuotaError) ConsoleURL() string {
+	if failure == nil || strings.TrimSpace(failure.Region) == "" || strings.TrimSpace(failure.QuotaCode) == "" {
+		return "https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas"
+	}
+	return fmt.Sprintf("https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/%s?region=%s", failure.QuotaCode, failure.Region)
+}
+
+func (failure *QuotaError) UserSummary() string {
+	if failure == nil {
+		return "AWS EC2 quota is insufficient. Open AWS Service Quotas and request an increase before retrying."
+	}
+	current := "unknown"
+	if failure.CurrentValue >= 0 {
+		current = fmt.Sprintf("%.0f", failure.CurrentValue)
+	}
+	desired := "the required value"
+	if failure.DesiredValue > 0 {
+		desired = fmt.Sprintf("%.0f vCPUs", failure.DesiredValue)
+	}
+	prefix := fmt.Sprintf("AWS EC2 quota is insufficient in %s: %s is %s vCPUs; %s requires %s.",
+		failure.Region, failure.QuotaName, current, failure.InstanceType, desired)
+	if failure.RequestSubmitted {
+		return fmt.Sprintf("%s A quota increase request was submitted to AWS (request %s, status %s). AWS must approve it before the Worker can be retried. Open %s",
+			prefix, failure.RequestID, failure.RequestStatus, failure.ConsoleURL())
+	}
+	if failure.AutomaticRequestUnavailable {
+		return fmt.Sprintf("%s The Agent could not submit the increase automatically. Grant servicequotas:GetServiceQuota, servicequotas:ListRequestedServiceQuotaChangeHistoryByQuota, servicequotas:RequestServiceQuotaIncrease and iam:CreateServiceLinkedRole, or request it at %s",
+			prefix, failure.ConsoleURL())
+	}
+	return fmt.Sprintf("%s Request the increase at %s", prefix, failure.ConsoleURL())
 }
 
 type AWS interface {
@@ -186,6 +252,7 @@ type AWS interface {
 	DeleteSecurityGroup(context.Context, CredentialIdentity, DestroyAuthorization, SecurityGroup, ResourceTags) error
 	FindInstance(context.Context, CredentialIdentity, string, ResourceTags) (Instance, bool, error)
 	RunInstance(context.Context, CredentialIdentity, Confirmation, LaunchRequest) (Instance, error)
+	RequestInstanceQuotaIncrease(context.Context, CredentialIdentity, QuotaIncreaseRequest) (*QuotaError, error)
 	ObserveInstance(context.Context, CredentialIdentity, string, ResourceTags) (Instance, bool, error)
 	TerminateInstance(context.Context, CredentialIdentity, DestroyAuthorization, Instance, ResourceTags) error
 }
@@ -247,6 +314,7 @@ type WorkerPhase string
 
 const (
 	WorkerProvisioning WorkerPhase = "provisioning"
+	WorkerFailed       WorkerPhase = "failed"
 	WorkerIdle         WorkerPhase = "idle"
 	WorkerBusy         WorkerPhase = "busy"
 	WorkerDestroying   WorkerPhase = "destroying"
@@ -280,6 +348,8 @@ type WorkerRecord struct {
 	Instance             Instance           `json:"instance"`
 	ResourcesDestroyed   bool               `json:"resources_destroyed,omitempty"`
 	CurrentExecutionID   string             `json:"current_execution_id,omitempty"`
+	FailureCode          string             `json:"failure_code,omitempty"`
+	FailureSummary       string             `json:"failure_summary,omitempty"`
 	CreatedAt, UpdatedAt time.Time
 }
 

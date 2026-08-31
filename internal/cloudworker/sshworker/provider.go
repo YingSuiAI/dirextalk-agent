@@ -339,10 +339,23 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 			return WorkerRecord{}, errors.Join(err, provider.reconcileProvisioning(ctx, &worker))
 		}
 		instance, err = provider.aws.RunInstance(ctx, request.Credential, request.Confirmation, LaunchRequest{WorkerID: workerID, ClientToken: clientToken,
-			Discovery: request.Discovery, InstanceType: request.InstanceType, VolumeGiB: request.VolumeGiB, KeyName: key.Name, SecurityGroupID: group.ID, Tags: tags})
+			Discovery: request.Discovery, InstanceType: request.InstanceType, VCPU: request.VCPU, VolumeGiB: request.VolumeGiB, KeyName: key.Name, SecurityGroupID: group.ID, Tags: tags})
 		if err != nil {
 			instance, found, _ = provider.aws.FindInstance(ctx, request.Credential, clientToken, tags)
 			if !found {
+				var quotaFailure *QuotaError
+				if errors.As(err, &quotaFailure) {
+					requested, requestErr := provider.aws.RequestInstanceQuotaIncrease(ctx, request.Credential, QuotaIncreaseRequest{
+						InstanceType: request.InstanceType, VCPU: request.VCPU, Confirmation: request.Confirmation,
+					})
+					if requested != nil {
+						quotaFailure = requested
+					}
+					worker.Phase = WorkerFailed
+					worker.FailureCode = quotaFailure.FailureCode()
+					worker.FailureSummary = quotaFailure.UserSummary()
+					return WorkerRecord{}, errors.Join(ErrProviderRejected, quotaFailure, requestErr, provider.saveWorkerAfterExternalFailure(ctx, &worker))
+				}
 				if errors.Is(err, ErrProviderRejected) {
 					return WorkerRecord{}, err
 				}
@@ -517,7 +530,7 @@ func (provider *Provider) checkCreateCapacity(ctx context.Context, authority Own
 	active := 0
 	tracked := make(map[string]struct{})
 	for _, worker := range workers {
-		if worker.authority() != authority || worker.Phase == WorkerDestroyed || (worker.Phase == WorkerDestroying && worker.ResourcesDestroyed) {
+		if worker.authority() != authority || worker.Phase == WorkerDestroyed || worker.Phase == WorkerFailed || (worker.Phase == WorkerDestroying && worker.ResourcesDestroyed) {
 			continue
 		}
 		active++
@@ -695,6 +708,9 @@ func (provider *Provider) ListWorkers(ctx context.Context, authority OwnerAuthor
 		status := WorkerStatus{Identity: workerIdentity(worker), DisplayName: worker.DisplayName, CreatedAt: worker.CreatedAt, InstanceType: worker.InstanceType, AcceleratorType: worker.AcceleratorType, VCPU: worker.VCPU,
 			MemoryGiB: worker.MemoryGiB, VolumeGiB: worker.VolumeGiB, Availability: WorkerAvailable, EC2State: "unknown", WorkerPhase: worker.Phase,
 			CurrentExecutionID: worker.CurrentExecutionID, ObservedAt: provider.now().UTC()}
+		if worker.Phase == WorkerFailed {
+			status.Availability, status.Error = WorkerUnavailable, worker.FailureSummary
+		}
 		instance, found := Instance{}, false
 		if worker.Instance.ID != "" {
 			var observeErr error
@@ -826,6 +842,15 @@ func workerIdentity(worker WorkerRecord) WorkerIdentity {
 func (provider *Provider) saveWorker(ctx context.Context, worker *WorkerRecord) error {
 	worker.UpdatedAt = provider.now().UTC()
 	return provider.store.SaveWorker(ctx, *worker)
+}
+func (provider *Provider) saveWorkerAfterExternalFailure(ctx context.Context, worker *WorkerRecord) error {
+	saveCtx := ctx
+	cancel := func() {}
+	if ctx.Err() != nil {
+		saveCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	}
+	defer cancel()
+	return provider.saveWorker(saveCtx, worker)
 }
 func (provider *Provider) saveExecution(ctx context.Context, execution *ExecutionRecord) error {
 	execution.UpdatedAt = provider.now().UTC()

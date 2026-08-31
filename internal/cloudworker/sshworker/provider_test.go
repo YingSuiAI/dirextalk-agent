@@ -180,6 +180,7 @@ func (s *fakeSSH) Execute(_ context.Context, r SSHRequest) (ExecutionResult, err
 
 type fakeAWS struct {
 	mutations, runs, terminations int
+	quotaRequests                 int
 	keys                          map[string]KeyPair
 	groups                        map[string]SecurityGroup
 	instances                     map[string]Instance
@@ -188,6 +189,7 @@ type fakeAWS struct {
 	publicPorts                   map[uint16]bool
 	publicPortTags                ResourceTags
 	afterFindKey                  func()
+	afterQuotaRequest             func()
 	observeErr                    map[string]error
 }
 
@@ -286,6 +288,15 @@ func (a *fakeAWS) RunInstance(_ context.Context, _ CredentialIdentity, c Confirm
 		return Instance{}, errors.New("reset")
 	}
 	return i, nil
+}
+func (a *fakeAWS) RequestInstanceQuotaIncrease(_ context.Context, identity CredentialIdentity, request QuotaIncreaseRequest) (*QuotaError, error) {
+	a.quotaRequests++
+	if a.afterQuotaRequest != nil {
+		a.afterQuotaRequest()
+	}
+	quota, _ := onDemandQuotaForInstanceType(request.InstanceType)
+	return &QuotaError{Region: identity.Region, InstanceType: request.InstanceType, QuotaCode: quota.Code, QuotaName: quota.Name,
+		CurrentValue: 0, DesiredValue: float64(request.VCPU), RequestID: "request-1", RequestStatus: "PENDING", RequestSubmitted: true}, nil
 }
 func (a *fakeAWS) ObserveInstance(_ context.Context, _ CredentialIdentity, id string, _ ResourceTags) (Instance, bool, error) {
 	if err := a.observeErr[id]; err != nil {
@@ -526,6 +537,48 @@ func TestProviderPreservesDeterministicCreateRejection(t *testing.T) {
 	}
 	if worker := store.workers[request.ExecutionID]; worker.Phase != WorkerProvisioning || worker.Instance.ID != "" {
 		t.Fatalf("worker=%#v", worker)
+	}
+}
+
+func TestProviderRequestsQuotaOnceAfterConfirmedNoInstanceReadback(t *testing.T) {
+	cloud := newFakeAWS()
+	quota, _ := onDemandQuotaForInstanceType("gr6f.4xlarge")
+	cloud.runErr = errors.Join(ErrProviderRejected, &QuotaError{Region: "ap-east-1", InstanceType: "gr6f.4xlarge",
+		QuotaCode: quota.Code, QuotaName: quota.Name, CurrentValue: -1, DesiredValue: 16})
+	store := newMemoryStore()
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	request := requestFixture()
+	request.InstanceType, request.AcceleratorType, request.VCPU = "gr6f.4xlarge", "gpu", 16
+	_, err := provider.Execute(context.Background(), request)
+	var failure *QuotaError
+	if !errors.As(err, &failure) || !failure.RequestSubmitted || failure.FailureCode() != "aws_quota_increase_pending" || cloud.runs != 1 || cloud.quotaRequests != 1 {
+		t.Fatalf("Execute error=%v failure=%+v runs=%d requests=%d", err, failure, cloud.runs, cloud.quotaRequests)
+	}
+	worker := store.workers[request.ExecutionID]
+	if worker.Phase != WorkerFailed || worker.Instance.ID != "" || worker.FailureCode != "aws_quota_increase_pending" || !strings.Contains(worker.FailureSummary, "request-1") {
+		t.Fatalf("worker=%#v", worker)
+	}
+}
+
+func TestProviderPersistsQuotaFailureAfterRequestContextIsCanceled(t *testing.T) {
+	cloud := newFakeAWS()
+	quota, _ := onDemandQuotaForInstanceType("gr6f.4xlarge")
+	cloud.runErr = errors.Join(ErrProviderRejected, &QuotaError{Region: "ap-east-1", InstanceType: "gr6f.4xlarge",
+		QuotaCode: quota.Code, QuotaName: quota.Name, CurrentValue: -1, DesiredValue: 16})
+	baseStore := newMemoryStore()
+	store := &contextAwareStore{memoryStore: baseStore}
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	request := requestFixture()
+	request.InstanceType, request.AcceleratorType, request.VCPU = "gr6f.4xlarge", "gpu", 16
+	ctx, cancel := context.WithCancel(context.Background())
+	cloud.afterQuotaRequest = cancel
+
+	_, err := provider.Execute(ctx, request)
+	var failure *QuotaError
+	worker := store.workers[request.ExecutionID]
+	if !errors.As(err, &failure) || worker.Phase != WorkerFailed ||
+		worker.FailureCode != "aws_quota_increase_pending" {
+		t.Fatalf("error=%v worker=%+v", err, worker)
 	}
 }
 

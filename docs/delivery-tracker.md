@@ -9,6 +9,20 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Task finalization no longer discards tool/model/provider errors when a
+  progress event has just advanced the task revision: the runtime revalidates
+  the exact task attempt, lease epoch, and holder, then retries only the
+  terminal CAS. Cloud Worker terminal writes survive request cancellation and
+  emit a safe reconciliation progress phase if their domain commit fails.
+- EC2 `VcpuLimitExceeded` is now a single-attempt, deterministic Cloud Worker
+  failure. After exact no-instance read-back, Agent reuses or submits the
+  minimum applicable regional On-Demand vCPU quota request under the confirmed
+  creation authority, persists `aws_quota_increase_pending` or
+  `aws_quota_insufficient`, resumes the originating turn, and projects the
+  retained intent as failed and destroyable instead of silently reclaiming it.
+  Focused SDK, provider, flow, PostgreSQL terminalization, and server-inventory
+  regressions cover the production `gr6f.4xlarge`/G-and-VT quota shape without
+  making a live AWS mutation.
 - Cloud Worker proposals accept an optional provider-neutral accelerator class
   (`gpu`, `neuron`, `fpga`, `media`, or `any`). Live EC2 type metadata proves
   the requested class before selection; the concrete class is persisted in the

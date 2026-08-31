@@ -22,6 +22,15 @@ type TaskStore interface {
 	TimeoutTask(context.Context, coretask.TimeoutCommand) error
 }
 
+// taskTerminalReader is implemented by the production Task store. Keeping it
+// optional preserves the narrow worker boundary while allowing a lost/stale
+// terminal write to be reconciled against the exact task lease before the
+// worker returns. A handler error must not disappear merely because progress
+// advanced the task revision immediately before finalization.
+type taskTerminalReader interface {
+	GetTask(context.Context, string) (coretask.Task, error)
+}
+
 type ScheduleMaterializer interface {
 	// MaterializeNextDue atomically materializes at most one due occurrence and
 	// reports whether a schedule was found. The boolean lets a scheduler tick
@@ -333,15 +342,59 @@ func (p *WorkerPool) execute(parent context.Context, task coretask.Task, lease c
 	writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer writeCancel()
 	if err == nil {
-		_, _ = p.store.CompleteTask(writeCtx, coretask.CompleteCommand{Fence: fence, Result: result, At: time.Now().UTC()})
+		p.persistTerminal(writeCtx, fence, lease.Holder, func(ctx context.Context, current coretask.Fence, at time.Time) error {
+			_, completeErr := p.store.CompleteTask(ctx, coretask.CompleteCommand{Fence: current, Result: result, At: at})
+			return completeErr
+		})
 		return
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		_ = p.store.TimeoutTask(writeCtx, coretask.TimeoutCommand{Fence: fence, At: time.Now().UTC()})
+		p.persistTerminal(writeCtx, fence, lease.Holder, func(ctx context.Context, current coretask.Fence, at time.Time) error {
+			return p.store.TimeoutTask(ctx, coretask.TimeoutCommand{Fence: current, At: at})
+		})
 		return
 	}
 	errorCode, errorSummary := taskFailureProjection(err)
-	_ = p.store.FailTask(writeCtx, coretask.FailCommand{Fence: fence, ErrorCode: errorCode, ErrorSummary: errorSummary, At: time.Now().UTC()})
+	p.persistTerminal(writeCtx, fence, lease.Holder, func(ctx context.Context, current coretask.Fence, at time.Time) error {
+		return p.store.FailTask(ctx, coretask.FailCommand{Fence: current, ErrorCode: errorCode, ErrorSummary: errorSummary, At: at})
+	})
+}
+
+// persistTerminal retries only the terminal persistence, never task execution
+// or a provider/tool side effect. Before every retry it re-reads and validates
+// the immutable task id plus the current attempt, lease epoch, and holder. This
+// closes the common race where a progress event increments the revision after
+// execution has already failed and otherwise leaves the client on "running".
+func (p *WorkerPool) persistTerminal(ctx context.Context, initial coretask.Fence, holder string, write func(context.Context, coretask.Fence, time.Time) error) {
+	fence := initial
+	reader, canRead := p.store.(taskTerminalReader)
+	for attempt := 0; attempt < 3; attempt++ {
+		if write(ctx, fence, time.Now().UTC()) == nil {
+			return
+		}
+		if !canRead {
+			return
+		}
+		current, err := reader.GetTask(ctx, fence.TaskID)
+		if err != nil || taskStatusTerminal(current.Status) {
+			return
+		}
+		if current.Status != coretask.StatusRunning || current.Lease == nil ||
+			current.ID != initial.TaskID || current.Attempt != initial.Attempt ||
+			current.LeaseEpoch != initial.LeaseEpoch || current.Lease.Holder != holder {
+			return
+		}
+		fence.ExpectedRevision = current.Revision
+	}
+}
+
+func taskStatusTerminal(status coretask.Status) bool {
+	switch status {
+	case coretask.StatusSucceeded, coretask.StatusFailed, coretask.StatusCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 func taskFailureProjection(err error) (string, string) {

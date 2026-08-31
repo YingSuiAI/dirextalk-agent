@@ -64,7 +64,7 @@ func TestCoreExternalPurgeRegistryPurgesConfiguredRootsWhenKnowledgeDisabled(t *
 }
 
 func TestCoreExternalPurgeRejectsRetainedWorkersWithoutDeletingState(t *testing.T) {
-	for _, phase := range []string{"provisioning", "idle", "busy", "destroying"} {
+	for _, phase := range []string{"provisioning", "failed", "idle", "busy", "destroying"} {
 		t.Run(phase, func(t *testing.T) {
 			staging := t.TempDir()
 			checker, err := composeRetainedWorkerDeprovisionChecker(config.Config{CoreExtensionStagingRoot: staging})

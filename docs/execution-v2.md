@@ -28,6 +28,19 @@ completes. Status or load questions never authorize destruction.
 
 The Agent manages at most four retained Workers for the authenticated owner and account generation. It uses the sole active AWS credential uploaded and STS-verified through the App, discovers the newest Canonical official Ubuntu 24.04 LTS image and the account's default VPC, and selects only a default subnet whose availability zone currently offers the confirmed instance type. It creates an ordinary EC2 instance with an auto-assigned public IPv4. A provider client rejection is a deterministic terminal failure; only an outcome that may have committed a provider mutation remains recoverable as uncertain.
 
+`RunInstances` performs one physical launch attempt. When EC2 rejects that
+attempt with `VcpuLimitExceeded`, Agent first proves that the confirmed instance
+does not exist, maps its family to the exact regional On-Demand vCPU quota, and
+uses the same still-current Worker-creation confirmation to request only the
+additional vCPUs required by that instance. An existing pending request at or
+above that value is reused instead of duplicated. The Worker execution then
+fails terminally with `aws_quota_increase_pending` when the request was accepted,
+or `aws_quota_insufficient` with the exact Service Quotas console URL and
+required IAM actions when it could not be submitted. The retained intent is
+marked failed and destroyable; quota review never keeps a Task or turn in a
+provisioning loop. Every Service Quotas read/write and lost-response read-back
+revalidates the exact AWS account, Region, credential revision, and confirmation.
+
 The Agent connects by outbound SSH with Agent-owned key material. There is no inbound Agent callback, EIP, custom AMI, S3/KMS artifact path, WorkerControl service, model relay, or deploy-time Worker configuration.
 
 Remote work is durable by task ID. The Agent uses short SSH operations to:

@@ -5,11 +5,14 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
+	quotatypes "github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 )
@@ -49,6 +52,7 @@ type mutationProbeEC2 struct {
 	offerings                             []ec2types.InstanceTypeOffering
 	offeringsInput                        *ec2.DescribeInstanceTypeOfferingsInput
 	runInput                              *ec2.RunInstancesInput
+	runRetryMaxAttempts                   int
 	runErr                                error
 	key                                   *ec2types.KeyPairInfo
 	group                                 ec2types.SecurityGroup
@@ -139,9 +143,14 @@ func (probe *mutationProbeEC2) DescribeInstances(context.Context, *ec2.DescribeI
 	}
 	return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{*probe.instance}}}}, nil
 }
-func (probe *mutationProbeEC2) RunInstances(_ context.Context, input *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+func (probe *mutationProbeEC2) RunInstances(_ context.Context, input *ec2.RunInstancesInput, optionFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
 	probe.runCalls++
 	probe.runInput = input
+	options := ec2.Options{}
+	for _, apply := range optionFns {
+		apply(&options)
+	}
+	probe.runRetryMaxAttempts = options.RetryMaxAttempts
 	if probe.runErr != nil {
 		return nil, probe.runErr
 	}
@@ -152,7 +161,7 @@ func TestSDKRunUsesAutoPublicIPv4WithoutEIP(t *testing.T) {
 	probe := &mutationProbeEC2{}
 	client := newSDK("ap-east-1", probe, stubSTS{}, staticIP{})
 	instance, err := client.RunInstance(context.Background(), credentialFixture(), Confirmation{Confirmed: true, Proof: "confirmation-1"}, LaunchRequest{
-		WorkerID: "worker-1", ClientToken: "token-1", InstanceType: "t3.small", VolumeGiB: 16, KeyName: "key", SecurityGroupID: "sg-1", Discovery: discoveryFixture(), Tags: ResourceTags{"owner": "test"}})
+		WorkerID: "worker-1", ClientToken: "token-1", InstanceType: "t3.small", VCPU: 2, VolumeGiB: 16, KeyName: "key", SecurityGroupID: "sg-1", Discovery: discoveryFixture(), Tags: ResourceTags{"owner": "test"}})
 	if err != nil || instance.PublicIP != "203.0.113.20" || probe.runCalls != 1 {
 		t.Fatalf("RunInstance=%#v,%v calls=%d", instance, err, probe.runCalls)
 	}
@@ -219,9 +228,85 @@ func TestSDKRunClassifiesClientRejectionAsDeterministic(t *testing.T) {
 	probe := &mutationProbeEC2{runErr: &smithy.GenericAPIError{Code: "Client.Unsupported", Message: "instance type is unsupported", Fault: smithy.FaultClient}}
 	client := newSDK("ap-east-1", probe, stubSTS{}, staticIP{})
 	_, err := client.RunInstance(context.Background(), credentialFixture(), Confirmation{Confirmed: true, Proof: "confirmation-1"}, LaunchRequest{
-		WorkerID: "worker-1", ClientToken: "token-1", InstanceType: "c5a.xlarge", VolumeGiB: 16, KeyName: "key", SecurityGroupID: "sg-1", Discovery: discoveryFixture(), Tags: ResourceTags{"owner": "test"}})
+		WorkerID: "worker-1", ClientToken: "token-1", InstanceType: "c5a.xlarge", VCPU: 4, VolumeGiB: 16, KeyName: "key", SecurityGroupID: "sg-1", Discovery: discoveryFixture(), Tags: ResourceTags{"owner": "test"}})
 	if !errors.Is(err, ErrProviderRejected) || errors.Is(err, ErrAmbiguous) || probe.runCalls != 1 {
 		t.Fatalf("RunInstance error=%v calls=%d", err, probe.runCalls)
+	}
+}
+
+type quotaProbe struct {
+	getCalls, listCalls, requestCalls int
+	current                           float64
+	pending                           []quotatypes.RequestedServiceQuotaChange
+}
+
+func (probe *quotaProbe) GetServiceQuota(context.Context, *servicequotas.GetServiceQuotaInput, ...func(*servicequotas.Options)) (*servicequotas.GetServiceQuotaOutput, error) {
+	probe.getCalls++
+	return &servicequotas.GetServiceQuotaOutput{Quota: &quotatypes.ServiceQuota{QuotaCode: aws.String("L-DB2E81BA"), QuotaName: aws.String("Running On-Demand G and VT instances"), Value: aws.Float64(probe.current), Adjustable: true}}, nil
+}
+func (probe *quotaProbe) ListRequestedServiceQuotaChangeHistoryByQuota(context.Context, *servicequotas.ListRequestedServiceQuotaChangeHistoryByQuotaInput, ...func(*servicequotas.Options)) (*servicequotas.ListRequestedServiceQuotaChangeHistoryByQuotaOutput, error) {
+	probe.listCalls++
+	return &servicequotas.ListRequestedServiceQuotaChangeHistoryByQuotaOutput{RequestedQuotas: probe.pending}, nil
+}
+func (probe *quotaProbe) RequestServiceQuotaIncrease(_ context.Context, input *servicequotas.RequestServiceQuotaIncreaseInput, _ ...func(*servicequotas.Options)) (*servicequotas.RequestServiceQuotaIncreaseOutput, error) {
+	probe.requestCalls++
+	return &servicequotas.RequestServiceQuotaIncreaseOutput{RequestedQuota: &quotatypes.RequestedServiceQuotaChange{Id: aws.String("quota-request-1"),
+		QuotaCode: input.QuotaCode, QuotaName: aws.String("Running On-Demand G and VT instances"), DesiredValue: input.DesiredValue, Status: quotatypes.RequestStatusPending}}, nil
+}
+
+func TestSDKClassifiesVCPUQuotaWithoutRetryingLaunch(t *testing.T) {
+	probe := &mutationProbeEC2{runErr: &smithy.GenericAPIError{Code: "Client.VcpuLimitExceeded", Message: "quota exceeded", Fault: smithy.FaultClient}}
+	client := newSDK("ca-central-1", probe, stubSTS{}, staticIP{})
+	identity := credentialFixture()
+	identity.Region = "ca-central-1"
+	_, err := client.RunInstance(context.Background(), identity, Confirmation{Confirmed: true, Proof: "confirmation-1"}, LaunchRequest{
+		WorkerID: "worker-1", ClientToken: "token-1", InstanceType: "gr6f.4xlarge", VCPU: 16, VolumeGiB: 768, KeyName: "key", SecurityGroupID: "sg-1", Discovery: discoveryFixture(), Tags: ResourceTags{"owner": "test"}})
+	var failure *QuotaError
+	if !errors.As(err, &failure) || failure.QuotaCode != "L-DB2E81BA" || failure.DesiredValue != 16 || probe.runCalls != 1 || probe.runRetryMaxAttempts != 1 {
+		t.Fatalf("RunInstance error=%v failure=%+v calls=%d attempts=%d", err, failure, probe.runCalls, probe.runRetryMaxAttempts)
+	}
+}
+
+func TestEC2VCPULimitExceededAcceptsSDKAndCloudTrailCodes(t *testing.T) {
+	for _, code := range []string{"VcpuLimitExceeded", "Client.VcpuLimitExceeded", "client.vcpulimitexceeded"} {
+		if !ec2VCPULimitExceeded(code) {
+			t.Fatalf("code %q was not classified", code)
+		}
+	}
+	if ec2VCPULimitExceeded("InsufficientInstanceCapacity") {
+		t.Fatal("unrelated EC2 rejection was classified as quota exhaustion")
+	}
+}
+
+func TestSDKSubmitsMinimumQuotaIncreaseAndReturnsSafeStatus(t *testing.T) {
+	quotas := &quotaProbe{current: 0}
+	identity := credentialFixture()
+	identity.Region = "ca-central-1"
+	client := newSDKWithQuotas(identity.Region, &mutationProbeEC2{}, &identityProbeSTS{accounts: []string{identity.AccountID, identity.AccountID, identity.AccountID}}, quotas, staticIP{})
+	failure, err := client.RequestInstanceQuotaIncrease(context.Background(), identity, QuotaIncreaseRequest{InstanceType: "gr6f.4xlarge", VCPU: 16,
+		Confirmation: Confirmation{Confirmed: true, Proof: "confirmation-1"}})
+	if err != nil || failure == nil || !failure.RequestSubmitted || failure.DesiredValue != 16 || failure.RequestID != "quota-request-1" ||
+		failure.FailureCode() != "aws_quota_increase_pending" || quotas.getCalls != 1 || quotas.listCalls != 1 || quotas.requestCalls != 1 {
+		t.Fatalf("failure=%+v err=%v calls=%d/%d/%d", failure, err, quotas.getCalls, quotas.listCalls, quotas.requestCalls)
+	}
+	if summary := failure.UserSummary(); !strings.Contains(summary, "L-DB2E81BA") && !strings.Contains(failure.ConsoleURL(), "L-DB2E81BA") {
+		t.Fatalf("summary=%q url=%q", summary, failure.ConsoleURL())
+	}
+}
+
+func TestSDKReusesSufficientPendingQuotaIncrease(t *testing.T) {
+	quotas := &quotaProbe{current: 4, pending: []quotatypes.RequestedServiceQuotaChange{{
+		Id: aws.String("existing-request"), DesiredValue: aws.Float64(20), Status: quotatypes.RequestStatusCaseOpened,
+	}}}
+	identity := credentialFixture()
+	identity.Region = "ca-central-1"
+	client := newSDKWithQuotas(identity.Region, &mutationProbeEC2{}, &identityProbeSTS{accounts: []string{identity.AccountID, identity.AccountID}}, quotas, staticIP{})
+	failure, err := client.RequestInstanceQuotaIncrease(context.Background(), identity, QuotaIncreaseRequest{
+		InstanceType: "gr6f.4xlarge", VCPU: 16, Confirmation: Confirmation{Confirmed: true, Proof: "confirmation-1"},
+	})
+	if err != nil || failure.RequestID != "existing-request" || failure.DesiredValue != 20 ||
+		failure.RequestStatus != string(quotatypes.RequestStatusCaseOpened) || quotas.requestCalls != 0 {
+		t.Fatalf("failure=%+v err=%v request_calls=%d", failure, err, quotas.requestCalls)
 	}
 }
 

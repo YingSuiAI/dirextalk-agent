@@ -14,6 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
+	quotatypes "github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 )
@@ -37,6 +39,11 @@ type EC2API interface {
 }
 type STSAPI interface {
 	GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
+}
+type ServiceQuotasAPI interface {
+	GetServiceQuota(context.Context, *servicequotas.GetServiceQuotaInput, ...func(*servicequotas.Options)) (*servicequotas.GetServiceQuotaOutput, error)
+	ListRequestedServiceQuotaChangeHistoryByQuota(context.Context, *servicequotas.ListRequestedServiceQuotaChangeHistoryByQuotaInput, ...func(*servicequotas.Options)) (*servicequotas.ListRequestedServiceQuotaChangeHistoryByQuotaOutput, error)
+	RequestServiceQuotaIncrease(context.Context, *servicequotas.RequestServiceQuotaIncreaseInput, ...func(*servicequotas.Options)) (*servicequotas.RequestServiceQuotaIncreaseOutput, error)
 }
 type PublicIPReader interface {
 	PublicIP(context.Context) (netip.Addr, error)
@@ -75,6 +82,7 @@ type SDK struct {
 	region string
 	ec2    EC2API
 	sts    STSAPI
+	quotas ServiceQuotasAPI
 	ip     PublicIPReader
 	now    func() time.Time
 }
@@ -83,10 +91,13 @@ func NewSDK(config aws.Config, ip PublicIPReader) (*SDK, error) {
 	if strings.TrimSpace(config.Region) == "" || config.Credentials == nil || ip == nil {
 		return nil, ErrInvalid
 	}
-	return newSDK(config.Region, ec2.NewFromConfig(config), sts.NewFromConfig(config), ip), nil
+	return newSDKWithQuotas(config.Region, ec2.NewFromConfig(config), sts.NewFromConfig(config), servicequotas.NewFromConfig(config), ip), nil
 }
 func newSDK(region string, ec2Client EC2API, stsClient STSAPI, ip PublicIPReader) *SDK {
-	return &SDK{region: region, ec2: ec2Client, sts: stsClient, ip: ip, now: time.Now}
+	return newSDKWithQuotas(region, ec2Client, stsClient, nil, ip)
+}
+func newSDKWithQuotas(region string, ec2Client EC2API, stsClient STSAPI, quotas ServiceQuotasAPI, ip PublicIPReader) *SDK {
+	return &SDK{region: region, ec2: ec2Client, sts: stsClient, quotas: quotas, ip: ip, now: time.Now}
 }
 func (client *SDK) VerifyIdentity(ctx context.Context, identity CredentialIdentity) error {
 	if client == nil || identity.validate() != nil || identity.Region != client.region {
@@ -455,18 +466,157 @@ func (client *SDK) findInstance(ctx context.Context, filters []ec2types.Filter, 
 	return sdkInstance(instances[0]), true, nil
 }
 func (client *SDK) RunInstance(ctx context.Context, identity CredentialIdentity, confirmation Confirmation, request LaunchRequest) (Instance, error) {
+	if request.VCPU == 0 {
+		return Instance{}, ErrInvalid
+	}
 	if err := client.beforeCreate(ctx, identity, confirmation); err != nil {
 		return Instance{}, err
 	}
-	output, err := client.ec2.RunInstances(ctx, &ec2.RunInstancesInput{ImageId: aws.String(request.Discovery.ImageID), InstanceType: ec2types.InstanceType(request.InstanceType), MinCount: aws.Int32(1), MaxCount: aws.Int32(1), ClientToken: aws.String(request.ClientToken), KeyName: aws.String(request.KeyName), NetworkInterfaces: []ec2types.InstanceNetworkInterfaceSpecification{{DeviceIndex: aws.Int32(0), SubnetId: aws.String(request.Discovery.SubnetID), AssociatePublicIpAddress: aws.Bool(true), Groups: []string{request.SecurityGroupID}, DeleteOnTermination: aws.Bool(true)}}, BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String("/dev/xvda"), Ebs: &ec2types.EbsBlockDevice{DeleteOnTermination: aws.Bool(true), Encrypted: aws.Bool(true), VolumeSize: aws.Int32(request.VolumeGiB), VolumeType: ec2types.VolumeTypeGp3}}}, MetadataOptions: &ec2types.InstanceMetadataOptionsRequest{HttpTokens: ec2types.HttpTokensStateRequired, HttpEndpoint: ec2types.InstanceMetadataEndpointStateEnabled}, TagSpecifications: []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeInstance, Tags: sdkTags(request.Tags)}, {ResourceType: ec2types.ResourceTypeVolume, Tags: sdkTags(request.Tags)}}})
+	output, err := client.ec2.RunInstances(ctx, &ec2.RunInstancesInput{ImageId: aws.String(request.Discovery.ImageID), InstanceType: ec2types.InstanceType(request.InstanceType), MinCount: aws.Int32(1), MaxCount: aws.Int32(1), ClientToken: aws.String(request.ClientToken), KeyName: aws.String(request.KeyName), NetworkInterfaces: []ec2types.InstanceNetworkInterfaceSpecification{{DeviceIndex: aws.Int32(0), SubnetId: aws.String(request.Discovery.SubnetID), AssociatePublicIpAddress: aws.Bool(true), Groups: []string{request.SecurityGroupID}, DeleteOnTermination: aws.Bool(true)}}, BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String("/dev/xvda"), Ebs: &ec2types.EbsBlockDevice{DeleteOnTermination: aws.Bool(true), Encrypted: aws.Bool(true), VolumeSize: aws.Int32(request.VolumeGiB), VolumeType: ec2types.VolumeTypeGp3}}}, MetadataOptions: &ec2types.InstanceMetadataOptionsRequest{HttpTokens: ec2types.HttpTokensStateRequired, HttpEndpoint: ec2types.InstanceMetadataEndpointStateEnabled}, TagSpecifications: []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeInstance, Tags: sdkTags(request.Tags)}, {ResourceType: ec2types.ResourceTypeVolume, Tags: sdkTags(request.Tags)}}}, func(options *ec2.Options) {
+		// EC2 can classify quota exhaustion as retryable. Repeating a confirmed
+		// launch cannot fix an account quota and hides the actionable rejection
+		// behind the Task lease deadline.
+		options.RetryMaxAttempts = 1
+	})
 	if err != nil || output == nil || len(output.Instances) != 1 {
 		var apiErr smithy.APIError
+		if err != nil && errors.As(err, &apiErr) && ec2VCPULimitExceeded(apiErr.ErrorCode()) {
+			quota, ok := onDemandQuotaForInstanceType(request.InstanceType)
+			if !ok {
+				quota = ec2Quota{Name: "the applicable Running On-Demand instance quota"}
+			}
+			return Instance{}, errors.Join(ErrProviderRejected, &QuotaError{Region: identity.Region, InstanceType: request.InstanceType,
+				QuotaCode: quota.Code, QuotaName: quota.Name, CurrentValue: -1, DesiredValue: float64(request.VCPU)})
+		}
 		if err != nil && errors.As(err, &apiErr) && apiErr.ErrorFault() == smithy.FaultClient {
 			return Instance{}, errors.Join(ErrProviderRejected, err)
 		}
 		return Instance{}, errors.Join(ErrAmbiguous, err)
 	}
 	return sdkInstance(output.Instances[0]), nil
+}
+
+func ec2VCPULimitExceeded(code string) bool {
+	code = strings.TrimSpace(code)
+	if strings.HasPrefix(strings.ToLower(code), "client.") {
+		code = code[len("client."):]
+	}
+	return strings.EqualFold(code, "VcpuLimitExceeded")
+}
+
+type ec2Quota struct{ Code, Name string }
+
+func onDemandQuotaForInstanceType(instanceType string) (ec2Quota, bool) {
+	family, _, ok := strings.Cut(strings.ToLower(strings.TrimSpace(instanceType)), ".")
+	if !ok || family == "" {
+		return ec2Quota{}, false
+	}
+	quotas := []struct {
+		prefixes []string
+		quota    ec2Quota
+	}{
+		{[]string{"gr", "g", "vt"}, ec2Quota{"L-DB2E81BA", "Running On-Demand G and VT instances"}},
+		{[]string{"p"}, ec2Quota{"L-417A185B", "Running On-Demand P instances"}},
+		{[]string{"inf"}, ec2Quota{"L-1945791B", "Running On-Demand Inf instances"}},
+		{[]string{"trn"}, ec2Quota{"L-2C3B7624", "Running On-Demand Trn instances"}},
+		{[]string{"f"}, ec2Quota{"L-74FC7D96", "Running On-Demand F instances"}},
+		{[]string{"dl"}, ec2Quota{"L-6E869C2A", "Running On-Demand DL instances"}},
+		{[]string{"hpc"}, ec2Quota{"L-F7808C92", "Running On-Demand HPC instances"}},
+		{[]string{"u-", "u6", "u7", "u8"}, ec2Quota{"L-43DA4232", "Running On-Demand High Memory instances"}},
+		{[]string{"x"}, ec2Quota{"L-7295265B", "Running On-Demand X instances"}},
+	}
+	for _, candidate := range quotas {
+		for _, prefix := range candidate.prefixes {
+			if strings.HasPrefix(family, prefix) {
+				return candidate.quota, true
+			}
+		}
+	}
+	return ec2Quota{"L-1216C47A", "Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances"}, true
+}
+
+func (client *SDK) RequestInstanceQuotaIncrease(ctx context.Context, identity CredentialIdentity, request QuotaIncreaseRequest) (*QuotaError, error) {
+	quota, ok := onDemandQuotaForInstanceType(request.InstanceType)
+	failure := &QuotaError{Region: identity.Region, InstanceType: request.InstanceType, CurrentValue: -1,
+		DesiredValue: float64(request.VCPU)}
+	if client == nil || ctx == nil || identity.validate() != nil || request.VCPU == 0 || request.Confirmation.validate() != nil || !ok {
+		failure.AutomaticRequestUnavailable = true
+		return failure, ErrInvalid
+	}
+	failure.QuotaCode, failure.QuotaName = quota.Code, quota.Name
+	if client.quotas == nil {
+		failure.AutomaticRequestUnavailable = true
+		return failure, ErrInvalid
+	}
+	if err := client.beforeCreate(ctx, identity, request.Confirmation); err != nil {
+		failure.AutomaticRequestUnavailable = true
+		return failure, err
+	}
+	current, err := client.quotas.GetServiceQuota(ctx, &servicequotas.GetServiceQuotaInput{ServiceCode: aws.String("ec2"), QuotaCode: aws.String(quota.Code)})
+	if err != nil || current == nil || current.Quota == nil || current.Quota.Value == nil || !current.Quota.Adjustable {
+		failure.AutomaticRequestUnavailable = true
+		return failure, err
+	}
+	failure.CurrentValue = aws.ToFloat64(current.Quota.Value)
+	failure.DesiredValue = failure.CurrentValue + float64(request.VCPU)
+	if existing, found, historyErr := client.findPendingQuotaRequest(ctx, identity, quota.Code, failure.DesiredValue); historyErr != nil {
+		failure.AutomaticRequestUnavailable = true
+		return failure, historyErr
+	} else if found {
+		failure.RequestSubmitted = true
+		failure.RequestID = aws.ToString(existing.Id)
+		failure.RequestStatus = string(existing.Status)
+		failure.DesiredValue = aws.ToFloat64(existing.DesiredValue)
+		return failure, nil
+	}
+	if err = client.beforeCreate(ctx, identity, request.Confirmation); err != nil {
+		failure.AutomaticRequestUnavailable = true
+		return failure, err
+	}
+	created, err := client.quotas.RequestServiceQuotaIncrease(ctx, &servicequotas.RequestServiceQuotaIncreaseInput{
+		ServiceCode: aws.String("ec2"), QuotaCode: aws.String(quota.Code), DesiredValue: aws.Float64(failure.DesiredValue), SupportCaseAllowed: aws.Bool(true),
+	})
+	if err == nil && created != nil && created.RequestedQuota != nil {
+		failure.RequestSubmitted = true
+		failure.RequestID = aws.ToString(created.RequestedQuota.Id)
+		failure.RequestStatus = string(created.RequestedQuota.Status)
+		return failure, nil
+	}
+	// The write has no idempotency token. Revalidate and read back before
+	// reporting it unavailable so a lost response never causes a duplicate.
+	if existing, found, reconcileErr := client.findPendingQuotaRequest(ctx, identity, quota.Code, failure.DesiredValue); reconcileErr == nil && found {
+		failure.RequestSubmitted = true
+		failure.RequestID = aws.ToString(existing.Id)
+		failure.RequestStatus = string(existing.Status)
+		failure.DesiredValue = aws.ToFloat64(existing.DesiredValue)
+		return failure, nil
+	}
+	failure.AutomaticRequestUnavailable = true
+	return failure, err
+}
+
+func (client *SDK) findPendingQuotaRequest(ctx context.Context, identity CredentialIdentity, quotaCode string, desired float64) (quotatypes.RequestedServiceQuotaChange, bool, error) {
+	var token *string
+	for {
+		if err := client.VerifyIdentity(ctx, identity); err != nil {
+			return quotatypes.RequestedServiceQuotaChange{}, false, err
+		}
+		page, err := client.quotas.ListRequestedServiceQuotaChangeHistoryByQuota(ctx, &servicequotas.ListRequestedServiceQuotaChangeHistoryByQuotaInput{
+			ServiceCode: aws.String("ec2"), QuotaCode: aws.String(quotaCode), NextToken: token,
+		})
+		if err != nil || page == nil {
+			return quotatypes.RequestedServiceQuotaChange{}, false, err
+		}
+		for _, candidate := range page.RequestedQuotas {
+			if (candidate.Status == quotatypes.RequestStatusPending || candidate.Status == quotatypes.RequestStatusCaseOpened) && aws.ToFloat64(candidate.DesiredValue) >= desired {
+				return candidate, true, nil
+			}
+		}
+		if page.NextToken == nil || strings.TrimSpace(aws.ToString(page.NextToken)) == "" {
+			return quotatypes.RequestedServiceQuotaChange{}, false, nil
+		}
+		token = page.NextToken
+	}
 }
 func (client *SDK) TerminateInstance(ctx context.Context, identity CredentialIdentity, auth DestroyAuthorization, instance Instance, tags ResourceTags) error {
 	if err := client.beforeDestroy(ctx, identity, auth); err != nil {

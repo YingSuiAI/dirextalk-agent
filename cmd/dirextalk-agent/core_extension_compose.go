@@ -212,7 +212,7 @@ type conversationToolInvocationResolver interface {
 func conversationToolTaskHandler(store conversationToolAttemptStore, coord conversationToolInvocationResolver, local *execution.LocalExecutor, remote *execution.RemoteExecutor, skillReader skillArtifactReader, artifacts *localartifact.Repository, catalogs ...coreserver.Repository) coreruntime.TaskHandler {
 	return func(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
 		if store == nil || coord == nil {
-			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
+			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid}
 		}
 		finish := func(state string, result json.RawMessage, code, summary string) error {
 			finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -232,8 +232,8 @@ func conversationToolTaskHandler(store conversationToolAttemptStore, coord conve
 			if errors.Is(err, coreextension.ErrInvalid) {
 				code, summary = "tool_arguments_invalid", "tool arguments are invalid"
 			}
-			_ = finish("failed", nil, code, summary)
-			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
+			finishErr := finish("failed", nil, code, summary)
+			return coreruntime.ManagedOutcome{Err: errors.Join(err, finishErr), TerminalOwned: true}
 		}
 		var result coretask.Result
 		switch {
@@ -284,21 +284,21 @@ func conversationToolTaskHandler(store conversationToolAttemptStore, coord conve
 				finishErr := finish("failed", nil, code, summary)
 				return coreruntime.ManagedOutcome{Err: errors.Join(err, finishErr), TerminalOwned: true}
 			}
-			_ = finish("uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown")
-			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
+			finishErr := finish("uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown")
+			return coreruntime.ManagedOutcome{Err: errors.Join(err, finishErr), TerminalOwned: true}
 		}
 		if result.Validate() != nil {
-			_ = finish("failed", nil, "tool_result_invalid", "tool returned an invalid result")
-			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
+			finishErr := finish("failed", nil, "tool_result_invalid", "tool returned an invalid result")
+			return coreruntime.ManagedOutcome{Err: errors.Join(coreextension.ErrInvalid, finishErr), TerminalOwned: true}
 		}
 		raw, _ := json.Marshal(result)
 		if len(raw) > coretask.MaxResultBytes {
-			_ = finish("failed", nil, "tool_result_invalid", "tool returned an invalid result")
-			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
+			finishErr := finish("failed", nil, "tool_result_invalid", "tool returned an invalid result")
+			return coreruntime.ManagedOutcome{Err: errors.Join(coreextension.ErrInvalid, finishErr), TerminalOwned: true}
 		}
 		if err = finish("completed", raw, "", ""); err != nil {
-			_ = finish("uncertain", nil, "tool_uncertain", "tool completion outcome is unknown")
-			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
+			uncertainErr := finish("uncertain", nil, "tool_uncertain", "tool completion outcome is unknown")
+			return coreruntime.ManagedOutcome{Err: errors.Join(err, uncertainErr), TerminalOwned: true}
 		}
 		return coreruntime.ManagedOutcome{Result: result, TerminalOwned: true}
 	}
@@ -588,7 +588,7 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store, github *core
 			return conversationToolHandler(ctx, task)
 		}
 		if task.Spec.Payload.Extension == nil {
-			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
+			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid}
 		}
 		switch task.Spec.Payload.Extension.Operation {
 		case coretask.ExtensionOperationInstall, coretask.ExtensionOperationUpdate, coretask.ExtensionOperationUninstall:
@@ -596,7 +596,7 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store, github *core
 		case coretask.ExtensionOperationExecuteTool, coretask.ExtensionOperationExecuteSkill:
 			return executionHandler(ctx, task)
 		default:
-			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
+			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid}
 		}
 	}
 	return &coreExtensionComposition{domain: service, mcpService: mcpService, skillService: skillService, taskHandler: dispatch, lifecycleHandler: lifecycleHandler, executionHandler: executionHandler, conversationToolHandler: conversationToolHandler, conversationResolver: conversationExtensionResolver{store: extStore, skillReader: runner, automatic: &localSandboxSelection}, toolDispatcher: &pinnedExtensionDispatcher{tasks: postgres.NewCoreTaskStore(store), store: extStore, coord: execCoord, local: local, remote: remote}, skillResolver: &pinnedSkillResolver{store: extStore, runner: runner}, artifactCleaner: artifactCleaner}, nil

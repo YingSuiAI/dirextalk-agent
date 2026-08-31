@@ -7,8 +7,10 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -110,7 +112,8 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 		return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 	}
 	if err = handler.store.Progress(ctx, &run, "preparing_environment", "Preparing Worker environment"); err != nil {
-		return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
+		result := Result{WorkerID: run.Plan.ExecutionID}
+		return handler.fail(ctx, run, result, err, "ssh_worker_progress_failed", "Worker progress could not be persisted")
 	}
 	result, executeErr := handler.executor.Execute(ctx, Request{
 		OwnerID: run.Plan.OwnerID, AccountGeneration: run.Plan.AccountGeneration,
@@ -135,38 +138,59 @@ func (handler *Handler) Handle(ctx context.Context, task coretask.Task) corerunt
 		// busy Worker lease must remain available for later observation instead
 		// of being terminalized or automatically replayed.
 		if errors.Is(executeErr, ErrExecutionUncertain) {
-			return coreruntime.ManagedOutcome{Err: executeErr, TerminalOwned: true}
+			progressCtx, cancel := detachedCommitContext(ctx)
+			defer cancel()
+			progressErr := handler.store.Progress(progressCtx, &run, "worker_outcome_uncertain", "Worker outcome is uncertain; reconciling safely")
+			return coreruntime.ManagedOutcome{Err: errors.Join(executeErr, progressErr), TerminalOwned: true}
 		}
 		if strings.TrimSpace(result.WorkerID) == "" {
 			result.WorkerID = run.Plan.ExecutionID
 		}
 		code := "ssh_worker_failed"
 		summary := boundedSummary(executeErr.Error())
+		var quotaFailure *sshworker.QuotaError
+		if errors.As(executeErr, &quotaFailure) {
+			code = quotaFailure.FailureCode()
+			summary = boundedSummary(quotaFailure.UserSummary())
+		}
 		if summary == "" {
 			summary = code
 		}
-		if err = handler.store.Fail(ctx, run, result, code, summary); err != nil {
-			return coreruntime.ManagedOutcome{Err: errors.Join(executeErr, err), TerminalOwned: true}
-		}
-		return coreruntime.ManagedOutcome{Err: executeErr, TerminalOwned: true}
+		return handler.fail(ctx, run, result, executeErr, code, summary)
 	}
 	if strings.TrimSpace(result.Summary) == "" || strings.TrimSpace(result.WorkerID) == "" {
 		if strings.TrimSpace(result.WorkerID) == "" {
 			result.WorkerID = run.Plan.ExecutionID
 		}
 		const summary = "SSH Worker returned an invalid result"
-		if err = handler.store.Fail(ctx, run, result, "ssh_worker_invalid_result", summary); err != nil {
-			return coreruntime.ManagedOutcome{Err: errors.Join(ErrInvalid, err), TerminalOwned: true}
-		}
-		return coreruntime.ManagedOutcome{Err: ErrInvalid, TerminalOwned: true}
+		return handler.fail(ctx, run, result, ErrInvalid, "ssh_worker_invalid_result", summary)
 	}
-	if err = handler.store.Complete(ctx, run, result); err != nil {
+	commitCtx, cancel := detachedCommitContext(ctx)
+	defer cancel()
+	if err = handler.store.Complete(commitCtx, run, result); err != nil {
 		return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 	}
 	return coreruntime.ManagedOutcome{Result: coretask.Result{Text: result.Summary, Summary: result.Summary}, TerminalOwned: true}
 }
 
 func (handler *Handler) TaskHandler() coreruntime.TaskHandler { return handler.Handle }
+
+func (handler *Handler) fail(ctx context.Context, run Run, result Result, cause error, code, summary string) coreruntime.ManagedOutcome {
+	commitCtx, cancel := detachedCommitContext(ctx)
+	defer cancel()
+	if err := handler.store.Fail(commitCtx, run, result, code, summary); err != nil {
+		// If terminal persistence lost a race or its response, leave a visible
+		// recovery event when the same domain fence is still live. The task is
+		// then reclaimed safely; provider/tool execution is not retried here.
+		progressErr := handler.store.Progress(commitCtx, &run, "finalizing_failure", "Worker failed; finalizing the failure safely")
+		return coreruntime.ManagedOutcome{Err: errors.Join(cause, err, progressErr), TerminalOwned: true}
+	}
+	return coreruntime.ManagedOutcome{Err: cause, TerminalOwned: true}
+}
+
+func detachedCommitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+}
 
 func boundedSummary(value string) string {
 	value = strings.TrimSpace(value)

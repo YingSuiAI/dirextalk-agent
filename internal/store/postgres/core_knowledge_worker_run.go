@@ -20,11 +20,11 @@ import (
 
 func (w *knowledgeTaskWorker) run(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
 	if ctx == nil || task.Spec.Kind != coretask.TaskKindKnowledgeIndex || task.Lease == nil {
-		return coreruntime.ManagedOutcome{Err: coretask.ErrLeaseConflict, TerminalOwned: true}
+		return coreruntime.ManagedOutcome{Err: coretask.ErrLeaseConflict}
 	}
 	p := task.Spec.Payload.KnowledgeIndex
 	if p == nil || len(p.SourceIDs) == 0 {
-		return coreruntime.ManagedOutcome{Err: coretask.ErrInvalid, TerminalOwned: true}
+		return coreruntime.ManagedOutcome{Err: coretask.ErrInvalid}
 	}
 	var generation string
 	var jobID string

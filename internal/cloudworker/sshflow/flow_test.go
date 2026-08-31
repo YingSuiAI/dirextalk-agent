@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
@@ -19,10 +20,12 @@ type flowStore struct {
 	failErr          error
 	completed        int
 	failed           int
+	failureCode      string
 	summary          string
 	progress         []string
 	progressErr      error
 	progressErrAfter int
+	failContextErr   error
 }
 
 func (store *flowStore) Begin(context.Context, coretask.Task) (Run, error) {
@@ -39,10 +42,26 @@ func (store *flowStore) Complete(_ context.Context, _ Run, _ Result) error {
 	store.completed++
 	return store.completeErr
 }
-func (store *flowStore) Fail(_ context.Context, _ Run, _ Result, _, summary string) error {
+func (store *flowStore) Fail(ctx context.Context, _ Run, _ Result, code, summary string) error {
 	store.failed++
+	store.failureCode = code
 	store.summary = summary
+	store.failContextErr = ctx.Err()
 	return store.failErr
+}
+
+func TestHandlerProjectsQuotaIncreaseAsActionableTerminalFailure(t *testing.T) {
+	store := &flowStore{run: Run{Plan: cloudworker.Plan{ExecutionID: "33333333-3333-4333-8333-333333333333"}}}
+	failure := &sshworker.QuotaError{Region: "ca-central-1", InstanceType: "gr6f.4xlarge", QuotaCode: "L-DB2E81BA",
+		QuotaName: "Running On-Demand G and VT instances", CurrentValue: 0, DesiredValue: 16,
+		RequestID: "quota-request-1", RequestStatus: "PENDING", RequestSubmitted: true}
+	executor := &flowExecutor{err: errors.Join(sshworker.ErrProviderRejected, failure)}
+	handler, _ := NewHandler(store, executor)
+	outcome := handler.Handle(context.Background(), runningCloudTask())
+	if outcome.Err == nil || !outcome.TerminalOwned || store.failed != 1 || store.failureCode != "aws_quota_increase_pending" ||
+		!strings.Contains(store.summary, "quota-request-1") || !strings.Contains(store.summary, "L-DB2E81BA") {
+		t.Fatalf("outcome=%+v store=%+v", outcome, store)
+	}
 }
 
 type flowExecutor struct {
@@ -141,6 +160,33 @@ func TestHandlerTerminalizesFailureWithoutDestroyingPersistentWorker(t *testing.
 	outcome := handler.Handle(context.Background(), runningCloudTask())
 	if outcome.Err == nil || !outcome.TerminalOwned || store.completed != 0 || store.failed != 1 ||
 		len([]byte(store.summary)) != coretask.MaxSummaryBytes || !strings.HasPrefix(store.summary, "remote command failed") {
+		t.Fatalf("outcome=%+v store=%+v", outcome, store)
+	}
+}
+
+func TestHandlerPersistsFailureAfterRequestContextIsCanceled(t *testing.T) {
+	store := &flowStore{run: Run{Plan: cloudworker.Plan{ExecutionID: "33333333-3333-4333-8333-333333333333"}}}
+	executor := &flowExecutor{err: context.Canceled}
+	handler, _ := NewHandler(store, executor)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	outcome := handler.Handle(ctx, runningCloudTask())
+	if !errors.Is(outcome.Err, context.Canceled) || !outcome.TerminalOwned ||
+		store.failed != 1 || store.failContextErr != nil {
+		t.Fatalf("outcome=%+v store=%+v", outcome, store)
+	}
+}
+
+func TestHandlerLeavesVisibleRecoveryProgressWhenFailureCommitFails(t *testing.T) {
+	store := &flowStore{
+		run:     Run{Plan: cloudworker.Plan{ExecutionID: "33333333-3333-4333-8333-333333333333"}},
+		failErr: errors.New("terminal store unavailable"),
+	}
+	executor := &flowExecutor{err: errors.New("tool failed")}
+	handler, _ := NewHandler(store, executor)
+	outcome := handler.Handle(context.Background(), runningCloudTask())
+	if outcome.Err == nil || !outcome.TerminalOwned || store.failed != 1 ||
+		len(store.progress) < 2 || store.progress[len(store.progress)-1] != "finalizing_failure" {
 		t.Fatalf("outcome=%+v store=%+v", outcome, store)
 	}
 }

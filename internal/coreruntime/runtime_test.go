@@ -926,6 +926,45 @@ type fakeQueue struct {
 	timedout  int
 }
 
+type staleTerminalQueue struct {
+	*fakeQueue
+	failCalls int
+}
+
+func (q *staleTerminalQueue) GetTask(_ context.Context, id string) (coretask.Task, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.task.ID != id {
+		return coretask.Task{}, coretask.ErrNotFound
+	}
+	return q.task, nil
+}
+
+func (q *staleTerminalQueue) FailTask(_ context.Context, cmd coretask.FailCommand) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.failCalls++
+	if q.failCalls == 1 {
+		// Simulate a client-visible progress write winning immediately before
+		// terminalization. The execution must not be repeated; only the terminal
+		// CAS is repaired against the same attempt/epoch/holder.
+		q.task.Revision++
+		return coretask.ErrLeaseConflict
+	}
+	if cmd.TaskID != q.task.ID || cmd.Attempt != q.task.Attempt ||
+		cmd.LeaseEpoch != q.task.LeaseEpoch || cmd.ExpectedRevision != q.task.Revision {
+		return coretask.ErrLeaseConflict
+	}
+	q.failed++
+	q.fail = cmd
+	q.task.Status = coretask.StatusFailed
+	q.task.FailureCode = cmd.ErrorCode
+	q.task.FailureSummary = cmd.ErrorSummary
+	q.task.Revision++
+	q.task.Lease = nil
+	return nil
+}
+
 type fatalQueue struct{ err error }
 
 func (f *fatalQueue) ClaimNextDue(context.Context, string, time.Time, time.Duration, int) (coretask.Task, coretask.Lease, error) {
@@ -1113,6 +1152,40 @@ func TestWorkerPoolMissingSnapshotPersistsStableFailureCode(t *testing.T) {
 	q.mu.Unlock()
 	if failed != 1 || code != "model_error" {
 		t.Fatalf("failed=%d code=%q", failed, code)
+	}
+}
+
+func TestWorkerPoolRepairsStaleTerminalWriteWithoutRepeatingExecution(t *testing.T) {
+	now := time.Now().UTC()
+	taskID := "00000000-0000-4000-8000-000000000012"
+	task := coretask.Task{
+		ID: taskID,
+		Spec: coretask.TaskSpec{
+			Goal:           "fail once",
+			Kind:           coretask.TaskKindWorkload,
+			ModelProfileID: "00000000-0000-4000-8000-000000000011",
+			IdempotencyKey: "00000000-0000-4000-8000-000000000013",
+		},
+		Status: coretask.StatusRunning, Attempt: 1, LeaseEpoch: 1, Revision: 1,
+		CreatedAt: now, UpdatedAt: now, AvailableAt: now,
+		Lease: &coretask.Lease{TaskID: taskID, Attempt: 1, Epoch: 1, Holder: "same-holder", ExpiresAt: now.Add(time.Minute)},
+	}
+	base := &fakeQueue{task: task, lease: *task.Lease}
+	queue := &staleTerminalQueue{fakeQueue: base}
+	executor, _ := NewTaskExecutor(fakeProfiles{}, nil)
+	executions := 0
+	if err := executor.RegisterHandler(coretask.TaskKindWorkload, func(context.Context, coretask.Task) ManagedOutcome {
+		executions++
+		return ManagedOutcome{Err: ErrToolUnavailable}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pool, _ := NewWorkerPool(queue, executor, 1, time.Second)
+	pool.execute(context.Background(), task, *task.Lease)
+
+	if executions != 1 || queue.failCalls != 2 || queue.failed != 1 ||
+		queue.task.Status != coretask.StatusFailed || queue.task.FailureCode != "tool_unavailable" {
+		t.Fatalf("executions=%d fail_calls=%d failed=%d task=%+v", executions, queue.failCalls, queue.failed, queue.task)
 	}
 }
 

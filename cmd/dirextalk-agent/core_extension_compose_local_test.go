@@ -286,6 +286,7 @@ func TestLocalSandboxConversationStoresVerifiedArtifactsUnderTurnAuthority(t *te
 
 type recoveringConversationStore struct {
 	beginErr     error
+	finishErr    error
 	finishState  string
 	finishCtxErr error
 	finishCalls  int
@@ -299,7 +300,7 @@ func (s *recoveringConversationStore) FinishConversationTool(ctx context.Context
 	s.finishCalls++
 	s.finishState = state
 	s.finishCtxErr = ctx.Err()
-	return nil
+	return s.finishErr
 }
 
 func TestConversationToolReclaimTerminalizesDispatchedAttemptWithoutProviderReplay(t *testing.T) {
@@ -320,6 +321,17 @@ func TestConversationToolResolutionFailureUsesDetachedTerminalContext(t *testing
 	out := handler(ctx, coretask.Task{ID: uuid.NewString()})
 	if !errors.Is(out.Err, context.Canceled) || !out.TerminalOwned || store.finishCalls != 1 || store.finishState != "failed" || store.finishCtxErr != nil || resolver.calls != 1 {
 		t.Fatalf("out=%+v finish_calls=%d finish_state=%q finish_ctx_err=%v resolver_calls=%d", out, store.finishCalls, store.finishState, store.finishCtxErr, resolver.calls)
+	}
+}
+
+func TestConversationToolDoesNotDiscardTerminalPersistenceFailure(t *testing.T) {
+	terminalErr := errors.New("terminal persistence failed")
+	store := &recoveringConversationStore{finishErr: terminalErr}
+	handler := conversationToolTaskHandler(store, &localLimitsInvocationResolver{err: coreextension.ErrInvalid}, nil, nil, nil, nil)
+	out := handler(context.Background(), coretask.Task{ID: uuid.NewString()})
+	if !errors.Is(out.Err, coreextension.ErrInvalid) || !errors.Is(out.Err, terminalErr) ||
+		!out.TerminalOwned || store.finishCalls != 1 || store.finishState != "failed" {
+		t.Fatalf("out=%+v store=%+v", out, store)
 	}
 }
 

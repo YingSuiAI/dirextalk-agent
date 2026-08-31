@@ -190,7 +190,7 @@ func (e *TaskExecutor) ExecuteManaged(ctx context.Context, task coretask.Task) (
 func (e *TaskExecutor) executeWorkload(ctx context.Context, task coretask.Task) ManagedOutcome {
 	p := task.Spec.Payload.Workload
 	if p == nil {
-		return ManagedOutcome{Err: errors.New("workload task payload is missing"), TerminalOwned: true}
+		return ManagedOutcome{Err: errors.New("workload task payload is missing")}
 	}
 	if task.Lease == nil || task.Lease.TaskID != task.ID || task.Attempt == 0 || task.LeaseEpoch == 0 || task.Revision == 0 || task.Lease.Attempt != task.Attempt || task.Lease.Epoch != task.LeaseEpoch || task.Lease.ExpiresAt.IsZero() || !task.Lease.ExpiresAt.After(time.Now().UTC()) {
 		return ManagedOutcome{Err: coretask.ErrLeaseConflict, TerminalOwned: true}
