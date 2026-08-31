@@ -2019,8 +2019,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 							return
 						}
 						if intrinsicErr != nil || !intrinsicResult.TurnCommitted || intrinsicResult.ToolResult != nil {
-							summary := intrinsicTerminalFailure(call.Name, intrinsicErr)
-							if recordErr := recordTerminalIntrinsicFailure(ctx, roundStore, lease, call, summary); recordErr != nil {
+							if recordErr := recordTerminalIntrinsicFailure(ctx, roundStore, lease, call, intrinsicErr); recordErr != nil {
 								_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_error_result_failed", "Core intrinsic error result could not be saved")
 							}
 						}
@@ -2607,19 +2606,26 @@ func recordCorrectableIntrinsicError(ctx context.Context, store OrderedConversat
 	return err
 }
 
-func recordTerminalIntrinsicFailure(ctx context.Context, store OrderedConversationToolStore, lease TurnLease, call ToolCall, summary string) error {
+func recordTerminalIntrinsicFailure(ctx context.Context, store OrderedConversationToolStore, lease TurnLease, call ToolCall, intrinsicErr error) error {
 	if err := store.RecordConversationToolCall(ctx, lease, call); err != nil {
 		return err
 	}
 	if _, err := store.BeginConversationToolDispatch(ctx, lease, call); err != nil {
 		return err
 	}
-	content := strings.TrimSpace(summary)
+	content := strings.TrimSpace(intrinsicTerminalFailure(call.Name, intrinsicErr))
 	if content == "" {
 		content = "Core intrinsic operation failed"
 	}
+	outcome, mutation := ToolOutcomeUnknownMutation, ToolMutationUnknown
+	if classified, ok := ToolExecutionErrorObservation(intrinsicErr); ok {
+		content = classified.Summary
+		if classified.MutationStateSet {
+			outcome, mutation = classified.Outcome, classified.MutationState
+		}
+	}
 	result := ToolResult{CallID: call.ID, ToolName: call.Name, Content: content}.
-		WithObservation(ToolOutcomeUnknownMutation, content, ToolMutationUnknown)
+		WithObservation(outcome, content, mutation)
 	if err := store.RecordConversationToolResult(ctx, lease, result); err != nil {
 		return err
 	}

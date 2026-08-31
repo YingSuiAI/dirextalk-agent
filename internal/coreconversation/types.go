@@ -166,6 +166,8 @@ type toolExecutionError struct {
 	outcome                ToolObservationOutcome
 	summary                string
 	retryAfterMilliseconds uint32
+	mutationState          ToolMutationState
+	mutationStateSet       bool
 	cause                  error
 }
 
@@ -176,9 +178,22 @@ type ToolExecutionErrorDetails struct {
 	Outcome                ToolObservationOutcome
 	Summary                string
 	RetryAfterMilliseconds uint32
+	MutationState          ToolMutationState
+	MutationStateSet       bool
 }
 
 func NewToolExecutionError(outcome ToolObservationOutcome, summary string, retryAfterMilliseconds uint32, cause error) error {
+	return newToolExecutionError(outcome, summary, retryAfterMilliseconds, ToolMutationState(""), false, cause)
+}
+
+// NewToolExecutionErrorWithMutation is reserved for execution boundaries that
+// can prove the mutation state they report. Ordinary classified errors must
+// use NewToolExecutionError and cannot make that stronger claim.
+func NewToolExecutionErrorWithMutation(outcome ToolObservationOutcome, summary string, retryAfterMilliseconds uint32, mutationState ToolMutationState, cause error) error {
+	return newToolExecutionError(outcome, summary, retryAfterMilliseconds, mutationState, true, cause)
+}
+
+func newToolExecutionError(outcome ToolObservationOutcome, summary string, retryAfterMilliseconds uint32, mutationState ToolMutationState, mutationStateSet bool, cause error) error {
 	summary = strings.TrimSpace(summary)
 	switch outcome {
 	case ToolOutcomeNotFound, ToolOutcomeInvalid, ToolOutcomeAuth, ToolOutcomeUserInput, ToolOutcomeRetryable, ToolOutcomeFatal, ToolOutcomeUnknownMutation:
@@ -188,7 +203,21 @@ func NewToolExecutionError(outcome ToolObservationOutcome, summary string, retry
 	if summary == "" || len(summary) > MaxSummaryBytes || !utf8.ValidString(summary) || retryAfterMilliseconds > MaxToolRetryAfterMS {
 		return ErrInvalid
 	}
-	return toolExecutionError{outcome: outcome, summary: summary, retryAfterMilliseconds: retryAfterMilliseconds, cause: cause}
+	if mutationStateSet {
+		switch mutationState {
+		case ToolMutationNone, ToolMutationUnchanged, ToolMutationChanged:
+			if outcome == ToolOutcomeUnknownMutation {
+				return ErrInvalid
+			}
+		case ToolMutationUnknown:
+			if outcome != ToolOutcomeUnknownMutation {
+				return ErrInvalid
+			}
+		default:
+			return ErrInvalid
+		}
+	}
+	return toolExecutionError{outcome: outcome, summary: summary, retryAfterMilliseconds: retryAfterMilliseconds, mutationState: mutationState, mutationStateSet: mutationStateSet, cause: cause}
 }
 
 func ToolExecutionErrorObservation(err error) (ToolExecutionErrorDetails, bool) {
@@ -196,7 +225,7 @@ func ToolExecutionErrorObservation(err error) (ToolExecutionErrorDetails, bool) 
 	if !errors.As(err, &classified) {
 		return ToolExecutionErrorDetails{}, false
 	}
-	return ToolExecutionErrorDetails{Outcome: classified.outcome, Summary: classified.summary, RetryAfterMilliseconds: classified.retryAfterMilliseconds}, true
+	return ToolExecutionErrorDetails{Outcome: classified.outcome, Summary: classified.summary, RetryAfterMilliseconds: classified.retryAfterMilliseconds, MutationState: classified.mutationState, MutationStateSet: classified.mutationStateSet}, true
 }
 
 type Reference struct {

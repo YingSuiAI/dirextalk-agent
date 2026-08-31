@@ -9,6 +9,13 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Cloud Worker continuation turns now require the model to infer the workload
+  from the full conversation, retain still-applicable sourced evidence, and
+  treat an empty or low-relevance later search as non-evidence rather than
+  silently reversing an earlier verified decision. Provider failures proven
+  to occur before the proposal store boundary are projected as unchanged,
+  redacted, retryable/auth/fatal observations with a safe selection-stage
+  class; only failures without that proof remain unknown mutations.
 - Named model deployments now use a two-layer sizing boundary. The default
   `dirextalk-size-model-deployment` Skill verifies the exact artifact,
   quantization, runtime/driver compatibility, context, concurrency, offload

@@ -655,12 +655,46 @@ func (p *ProposeIntrinsic) execute(ctx context.Context, bound coreconversation.T
 			"turn_id", bound.Turn.ID,
 			"workspace_mode", mode,
 			"proposal_reason", reason)
-		return coreconversation.IntrinsicExecutionResult{}, err
+		return coreconversation.IntrinsicExecutionResult{}, classifyProposalExecutionError(err)
 	}
 	if offer.Plan.TurnID != bound.Turn.ID || offer.Plan.ConversationID != bound.Turn.ConversationID || offer.Plan.AccountGeneration != owner.AccountGeneration || offer.Task.ID != offer.Plan.TaskID || offer.Confirmation.ConfirmationID != offer.Plan.ConfirmationID {
 		return coreconversation.IntrinsicExecutionResult{}, ErrConflict
 	}
 	return coreconversation.IntrinsicExecutionResult{TurnCommitted: true}, nil
+}
+
+func classifyProposalExecutionError(err error) error {
+	var beforeMutation proposalPreMutationError
+	if err == nil || !errors.As(err, &beforeMutation) {
+		return err
+	}
+	outcome := coreconversation.ToolOutcomeFatal
+	summary := "AWS Worker proposal could not be created; no offer or cloud resource was created"
+	switch {
+	case errors.Is(err, ErrStaleAuthorization):
+		outcome = coreconversation.ToolOutcomeAuth
+		summary = "AWS authorization is unavailable or changed; no Worker proposal or cloud resource was created"
+	case errors.Is(err, ErrPricingCatalogStale):
+		outcome = coreconversation.ToolOutcomeRetryable
+		summary = "AWS pricing data is temporarily unavailable; no Worker proposal or cloud resource was created"
+	case errors.Is(err, ErrProviderUnavailable):
+		outcome = coreconversation.ToolOutcomeRetryable
+		var stage computeSelectionStageError
+		switch {
+		case errors.As(err, &stage) && stage.stage == "pricing":
+			summary = "AWS pricing data is temporarily unavailable; no Worker proposal or cloud resource was created"
+		case errors.As(err, &stage) && stage.stage == "offerings":
+			summary = "AWS regional instance offerings are temporarily unavailable; no Worker proposal or cloud resource was created"
+		case errors.As(err, &stage) && stage.stage == "describe_types":
+			summary = "AWS instance specifications are temporarily unavailable; no Worker proposal or cloud resource was created"
+		default:
+			summary = "AWS compute selection is temporarily unavailable; no Worker proposal or cloud resource was created"
+		}
+	case errors.Is(err, ErrQuoteExpired):
+		outcome = coreconversation.ToolOutcomeRetryable
+		summary = "AWS Worker quote expired before it was saved; no Worker proposal or cloud resource was created"
+	}
+	return coreconversation.NewToolExecutionErrorWithMutation(outcome, summary, 0, coreconversation.ToolMutationUnchanged, err)
 }
 
 func (p *ProposeIntrinsic) commitProposalOnly(ctx context.Context, bound coreconversation.TurnLease, request coreconversation.IntrinsicExecutionRequest, arguments proposeIntrinsicArguments) (coreconversation.IntrinsicExecutionResult, error) {
@@ -790,6 +824,10 @@ func parseProposeIntrinsicArguments(raw json.RawMessage) (proposeIntrinsicArgume
 }
 
 func intrinsicProposalErrorClass(err error) string {
+	var stage computeSelectionStageError
+	if errors.As(err, &stage) && stage.stage != "" {
+		return "provider_unavailable_" + stage.stage
+	}
 	switch {
 	case err == nil:
 		return "none"

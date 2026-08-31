@@ -1386,6 +1386,37 @@ func TestMutatingIntrinsicFailureFinalizesWithUsefulResponseInsteadOfFailingTurn
 	}
 }
 
+func TestClassifiedMutatingIntrinsicFailureRecordsUnchangedOutcome(t *testing.T) {
+	profile := testTurnSnapshot()
+	createdAt := time.Now().UTC()
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "deploy the service",
+		ProfileID: profile.ProfileID, ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+		State: TurnRunning, Revision: 1, LastSequence: 1, CreatedAt: createdAt}
+	base := newFakeStore()
+	base.conv[turn.ConversationID] = Conversation{ID: turn.ConversationID, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
+	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn}, events: []TurnEvent{
+		{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: createdAt},
+	}}
+	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
+	private := errors.New("private AWS detail")
+	classified := NewToolExecutionErrorWithMutation(ToolOutcomeRetryable,
+		"AWS pricing data is temporarily unavailable; no Worker proposal or cloud resource was created", 0, ToolMutationUnchanged, private)
+	lease := TurnLease{Turn: turn, LeaseID: uuid.NewString(), Epoch: 1}
+	if err := recordTerminalIntrinsicFailure(context.Background(), store, lease, call, classified); err != nil {
+		t.Fatal(err)
+	}
+	var result *ToolResult
+	for _, event := range store.events {
+		if event.ToolResult != nil && event.ToolResult.CallID == call.ID {
+			result = event.ToolResult
+		}
+	}
+	if result == nil || result.Outcome != ToolOutcomeRetryable || result.MutationState != ToolMutationUnchanged ||
+		strings.Contains(result.Content, "private") || result.ValidateObservation() != nil {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 func TestAppendTurnToolHistoryClearsStaticSiteForceAfterNextResult(t *testing.T) {
 	createdAt := time.Now().UTC().Add(-time.Minute)
 	first := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicStaticSitePublishToolName, Arguments: `{}`}
@@ -2309,6 +2340,8 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 		!strings.Contains(model.request.Profile.SystemPrompt, "Use cloud_worker_propose only for required network or execution") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "cannot access the Worker filesystem") ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "never create another Worker quote for that change") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "infer the workload from the full conversation") ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "low-relevance search is not evidence") ||
 		strings.Count(model.request.Profile.SystemPrompt, conversationConvergenceGuidance) != 1 ||
 		!strings.Contains(model.request.Profile.SystemPrompt, "does not need to mention AWS") {
 		t.Fatalf("model request lost intrinsic or extension: %+v", model.request)

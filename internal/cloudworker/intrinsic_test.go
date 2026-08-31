@@ -1011,3 +1011,22 @@ func TestIntrinsicSchemaEnumeratesOnlyFrozenTurnAttachments(t *testing.T) {
 		t.Fatalf("read-only workspace was exposed without frozen attachments: %#v", workspace)
 	}
 }
+
+func TestProposalPreMutationFailureIsSafeAndStageSpecific(t *testing.T) {
+	private := errors.New("private provider detail")
+	err := classifyProposalExecutionError(markProposalPreMutation(errors.Join(computeSelectionUnavailable("pricing"), private)))
+	observation, ok := coreconversation.ToolExecutionErrorObservation(err)
+	if !ok || observation.Outcome != coreconversation.ToolOutcomeRetryable ||
+		observation.Summary != "AWS pricing data is temporarily unavailable; no Worker proposal or cloud resource was created" ||
+		strings.Contains(observation.Summary, "private") || !errors.Is(err, private) {
+		t.Fatalf("observation=%+v ok=%v err=%v", observation, ok, err)
+	}
+	if class := intrinsicProposalErrorClass(err); class != "provider_unavailable_pricing" {
+		t.Fatalf("class=%q", class)
+	}
+
+	unclassified := errors.New("private store failure")
+	if got := classifyProposalExecutionError(unclassified); got != unclassified {
+		t.Fatalf("unclassified failure changed: %v", got)
+	}
+}

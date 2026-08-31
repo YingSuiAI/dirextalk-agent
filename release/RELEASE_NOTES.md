@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.191
+
+1. Continue model-deployment retries from the full conversation and retain still-applicable sourced evidence instead of treating an empty or low-relevance search as contradictory evidence.
+2. Report AWS compute-selection and pricing failures proven to occur before proposal persistence as redacted unchanged outcomes, including the safe failing stage, while keeping unproven mutation failures unknown.
+
 ## v1.0.190
 
 1. Require named model workloads to verify the exact artifact, runtime compatibility, context, concurrency, offload policy, and independent CPU, system-memory, accelerator-memory, and disk working sets before proposing paid compute.

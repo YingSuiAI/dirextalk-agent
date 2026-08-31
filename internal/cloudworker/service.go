@@ -114,6 +114,22 @@ type Service struct {
 	selector    ComputeSelector
 }
 
+// proposalPreMutationError proves that Propose returned before CreateOffer,
+// so callers may safely report that no plan, confirmation, task, or provider
+// resource was created. Keep the marker private to this package so only the
+// authoritative proposal path can make that claim.
+type proposalPreMutationError struct{ cause error }
+
+func (e proposalPreMutationError) Error() string { return e.cause.Error() }
+func (e proposalPreMutationError) Unwrap() error { return e.cause }
+
+func markProposalPreMutation(err error) error {
+	if err == nil {
+		return nil
+	}
+	return proposalPreMutationError{cause: err}
+}
+
 func (s *Service) EnablePersistentWorkerReuse(resolver WorkerReuseResolver) error {
 	if s == nil || resolver == nil {
 		return ErrInvalid
@@ -261,7 +277,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 			compute.MemoryGiB < command.ComputeRequirements.MinMemoryGiB || compute.VolumeGiB < command.ComputeRequirements.DiskGiB ||
 			!acceleratorSatisfies(command.ComputeRequirements.AcceleratorType, compute.AcceleratorType) ||
 			!acceleratorMemorySatisfies(command.ComputeRequirements.MinAcceleratorMemoryGiB, compute.AcceleratorMemoryMiB) {
-			return Offer{}, errors.Join(ErrProviderUnavailable, err)
+			return Offer{}, markProposalPreMutation(errors.Join(ErrProviderUnavailable, err))
 		}
 		if err = s.capacity.CheckCreateWorkerCapacity(ctx, strings.TrimSpace(command.OwnerID), command.AccountGeneration, awsBinding); err != nil {
 			return Offer{}, err
@@ -310,7 +326,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	if reuse {
 		live, quoteErr := s.quoter.Quote(ctx, QuoteRequest{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration, ObjectiveDigest: objectiveDigest, UserPromptDigest: plan.UserPromptDigest, InputManifestDigest: plan.InputManifestDigest, WorkspaceMode: plan.WorkspaceMode, ProposalReason: plan.ProposalReason, ModelBindingDigest: plan.ModelAuthorization.BindingDigest, AuthorizationBasisDigest: plan.AuthorizationBasisDigest, AWS: plan.AWS, Compute: plan.Compute, Limits: plan.Limits})
 		if quoteErr != nil || live.ComputeMicrosPerHour == 0 {
-			return Offer{}, errors.Join(ErrProviderUnavailable, quoteErr)
+			return Offer{}, markProposalPreMutation(errors.Join(ErrProviderUnavailable, quoteErr))
 		}
 		amountMicros, maximumAuthorizedMicros := live.AmountMicros, live.MaximumAuthorizedCostMicros
 		if plan.WorkloadKind == WorkloadService {
@@ -325,7 +341,7 @@ func (s *Service) Propose(ctx context.Context, command ProposeCommand) (Offer, e
 	} else {
 		quote, err = s.quoter.Quote(ctx, QuoteRequest{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration, ObjectiveDigest: objectiveDigest, UserPromptDigest: plan.UserPromptDigest, InputManifestDigest: plan.InputManifestDigest, WorkspaceMode: plan.WorkspaceMode, ProposalReason: plan.ProposalReason, ModelBindingDigest: plan.ModelAuthorization.BindingDigest, AuthorizationBasisDigest: plan.AuthorizationBasisDigest, AWS: plan.AWS, Compute: plan.Compute, Limits: plan.Limits})
 		if err != nil {
-			return Offer{}, err
+			return Offer{}, markProposalPreMutation(err)
 		}
 	}
 	plan.Quote = quote

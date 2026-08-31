@@ -73,4 +73,12 @@ func TestToolExecutionErrorCarriesOnlyExplicitSupervisorClassification(t *testin
 	if !errors.Is(NewToolExecutionError(ToolOutcomeRetryable, "provider unavailable", MaxToolRetryAfterMS+1, want), ErrInvalid) {
 		t.Fatal("oversized retry-after was admitted")
 	}
+	withMutation := NewToolExecutionErrorWithMutation(ToolOutcomeRetryable, "proposal unavailable", 0, ToolMutationUnchanged, want)
+	classified, ok := ToolExecutionErrorObservation(withMutation)
+	if !ok || !classified.MutationStateSet || classified.MutationState != ToolMutationUnchanged {
+		t.Fatalf("classified mutation=%+v ok=%v", classified, ok)
+	}
+	if !errors.Is(NewToolExecutionErrorWithMutation(ToolOutcomeRetryable, "bad proof", 0, ToolMutationUnknown, want), ErrInvalid) {
+		t.Fatal("incompatible mutation proof was admitted")
+	}
 }
