@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.192
+
+1. Accept live AWS instance specifications whose actual vCPU or system memory exceeds the request schema's minimum-field limits, allowing large multi-GPU shapes to satisfy verified model workloads.
+
 ## v1.0.191
 
 1. Continue model-deployment retries from the full conversation and retain still-applicable sourced evidence instead of treating an empty or low-relevance search as contradictory evidence.

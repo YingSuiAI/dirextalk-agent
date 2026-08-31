@@ -9,6 +9,11 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Live provider instance capacity is no longer rejected merely because its
+  actual vCPU or system memory exceeds the model-request schema's minimum-field
+  limit. Large multi-GPU EC2 shapes such as `p5.48xlarge` retain their exact
+  observed 192 vCPU and 2 TiB memory in the plan and can satisfy workloads that
+  smaller shapes cannot.
 - Cloud Worker continuation turns now require the model to infer the workload
   from the full conversation, retain still-applicable sourced evidence, and
   treat an empty or low-relevance later search as non-evidence rather than

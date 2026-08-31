@@ -783,7 +783,7 @@ func validateCompute(value ComputeSpec) error {
 		strings.TrimSpace(value.AcceleratorName) != value.AcceleratorName || len(value.AcceleratorName) > 128 || strings.ContainsAny(value.AcceleratorName, "\r\n\x00") {
 		return ErrInvalid
 	}
-	if (value.VCPU == 0) != (value.MemoryGiB == 0) || value.VCPU > 128 || value.MemoryGiB > 1024 {
+	if (value.VCPU == 0) != (value.MemoryGiB == 0) {
 		return ErrInvalid
 	}
 	return nil
