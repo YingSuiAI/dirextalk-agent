@@ -629,7 +629,9 @@ authority boundary. A DeepSeek tools-admitted dispatch explicitly selects
 structured automatic tool choice and adds fixed platform guidance before the
 first provider call. A quarantined format-recovery dispatch with tools still
 available selects structured required tool choice; an exact forced tool keeps
-the existing named choice instead. The adapter never parses DSML, never changes
+the existing named choice instead. DeepSeek reasoning requests keep the same
+guidance and quarantine but omit `tool_choice`, because V4 thinking mode rejects
+that request field. The adapter never parses DSML, never changes
 the admitted tool set, and never opts a profile into DeepSeek's beta endpoint.
 
 Workload Tasks use that same revision/attempt/lease-epoch fencing path. The

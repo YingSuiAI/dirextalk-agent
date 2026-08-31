@@ -168,15 +168,22 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 	}
 	toolChoice := coremodel.ToolChoiceMode("")
 	openAIToolProtocol := isOpenAIToolProtocol(string(p.Provider), string(p.RequestDialect), len(tools), req.GuardTextToolCallEnvelope)
-	if len(tools) != 0 && openAIToolProtocol && isDeepSeekToolProtocol(p.BaseURL, p.Model) {
+	deepSeekToolProtocol := openAIToolProtocol && isDeepSeekToolProtocol(p.BaseURL, p.Model)
+	// DeepSeek V4 thinking mode rejects tool_choice even though its ordinary
+	// Chat Completions endpoint accepts it. Keep the structured-call guidance
+	// and quarantine for that dialect, but rely on the admitted tools and the
+	// provider default instead of turning a recoverable model-format issue into
+	// an HTTP 400.
+	explicitToolChoice := !deepSeekToolProtocol || p.RequestDialect != coremodel.DialectOpenAIReasoningChatV1
+	if len(tools) != 0 && deepSeekToolProtocol {
 		p.SystemPrompt = appendDeepSeekStructuredToolInstruction(p.SystemPrompt)
-		if forcedToolName == "" {
+		if forcedToolName == "" && explicitToolChoice {
 			toolChoice = coremodel.ToolChoiceAuto
 		}
 	}
 	if req.ToolCallFormatRecovery {
 		p.SystemPrompt = appendToolCallFormatRecoveryInstruction(p.SystemPrompt, len(tools) != 0)
-		if len(tools) != 0 && openAIToolProtocol && forcedToolName == "" {
+		if len(tools) != 0 && openAIToolProtocol && forcedToolName == "" && explicitToolChoice {
 			toolChoice = coremodel.ToolChoiceRequired
 		}
 	}

@@ -378,7 +378,9 @@ or stream after admission. It never cancels the accepted Turn; callers use
   platform guidance that ordinary content is non-executable and an explicit
   `tool_choice: auto`. After a quarantined text-protocol response, the single
   correction attempt uses `tool_choice: required`; an already-authorized named
-  tool remains the stronger exact choice. These controls affect provider output
+  tool remains the stronger exact choice. DeepSeek's reasoning request dialect
+  retains the same fixed guidance and quarantine but omits `tool_choice`, which
+  DeepSeek V4 thinking mode rejects. These controls affect provider output
   shape only and never bypass tool schema validation, accepted snapshots,
   permissions, confirmations, or the text quarantine. DeepSeek strict mode is
   not enabled by silently changing a configured endpoint to its beta API.

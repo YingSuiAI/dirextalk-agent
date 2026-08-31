@@ -396,7 +396,9 @@ support.
   gateway-routed DeepSeek tool requests now receive fixed structured-call
   guidance plus explicit automatic tool choice; the one quarantined recovery
   attempt requires a standard structured call, while an exact named-tool choice
-  remains stronger. The mode survives the Eino conversion boundary, invalid or
+  remains stronger. DeepSeek reasoning requests retain the guidance and
+  quarantine but omit the unsupported V4 thinking-mode `tool_choice` field. The
+  mode survives the Eino conversion boundary, invalid or
   ambiguous combinations fail closed, and the existing validation-before-
   publication guard remains the only path to public model text. Focused Linux
   Core model, runtime, and conversation tests passed; this is code-level

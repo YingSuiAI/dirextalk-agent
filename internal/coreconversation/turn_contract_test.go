@@ -1,7 +1,6 @@
 package coreconversation
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2773,9 +2772,9 @@ func TestExecuteTurnContinuesOnceWithDurableWarningWhenOptionalMemoryRecallFails
 	if warnings != 1 {
 		t.Fatalf("memory warnings=%d events=%+v", warnings, store.events)
 	}
-	requestJSON, marshalErr := json.Marshal(model.request)
-	if marshalErr != nil || bytes.Contains(requestJSON, []byte("memory_recall_degraded")) || bytes.Contains(requestJSON, []byte("private backend detail")) {
-		t.Fatalf("memory warning became model authority: %s err=%v", requestJSON, marshalErr)
+	requestText := fmt.Sprintf("%+v", model.request)
+	if strings.Contains(requestText, "memory_recall_degraded") || strings.Contains(requestText, "private backend detail") {
+		t.Fatalf("memory warning became model authority: %s", requestText)
 	}
 	if store.turn.ModelDispatchCount != 1 {
 		t.Fatalf("provider dispatches=%d", store.turn.ModelDispatchCount)

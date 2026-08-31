@@ -3,6 +3,7 @@ package coreruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -245,6 +246,32 @@ func TestModelRunnerRecognizesDeepSeekBehindCompatibleGateway(t *testing.T) {
 	if err != nil || !result.Done || client.request.ToolChoice != coremodel.ToolChoiceAuto ||
 		!strings.Contains(captured.SystemPrompt, "OpenAI-compatible structured tool protocol") {
 		t.Fatalf("result=%+v err=%v tool_choice=%q system_prompt=%q", result, err, client.request.ToolChoice, captured.SystemPrompt)
+	}
+}
+
+func TestModelRunnerOmitsToolChoiceForDeepSeekThinkingMode(t *testing.T) {
+	for _, recovery := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recovery=%t", recovery), func(t *testing.T) {
+			request := modelToolProtocolTestRequest()
+			request.Snapshot.BaseURL = "https://api.deepseek.com/v1"
+			request.Snapshot.Model = "deepseek-v4-pro"
+			request.Snapshot.RequestDialect = coremodel.DialectOpenAIReasoningChatV1
+			request.ToolCallFormatRecovery = recovery
+			client := &toolCallFormatRequestClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: "normal answer"}}}}
+			var captured coremodel.Profile
+			runner, _ := NewModelRunner(func(profile coremodel.Profile) (coremodel.Client, error) {
+				captured = profile
+				return client, nil
+			})
+			result, err := runner.Stream(context.Background(), request, nil)
+			if err != nil || !result.Done || client.request.ToolChoice != "" ||
+				!strings.Contains(captured.SystemPrompt, "OpenAI-compatible structured tool protocol") {
+				t.Fatalf("result=%+v err=%v request=%+v system_prompt=%q", result, err, client.request, captured.SystemPrompt)
+			}
+			if recovery && !strings.Contains(captured.SystemPrompt, "standard OpenAI-compatible message.tool_calls") {
+				t.Fatalf("recovery guidance missing: %q", captured.SystemPrompt)
+			}
+		})
 	}
 }
 
