@@ -448,7 +448,18 @@ func TestSSHWorkerContinuationPersistsRetainedWorkerNextAction(t *testing.T) {
 		execution,
 		"deployment complete",
 		sshflow.Result{WorkerID: "worker-one", AppliedSteerIDs: []string{steerID}},
-		nil,
+		[]sshflow.Artifact{
+			{ArtifactID: uuid.NewString(), Kind: "stdout", Name: "stdout.txt"},
+			{ArtifactID: uuid.NewString(), Kind: "stderr", Name: "stderr.txt"},
+			{ArtifactID: uuid.NewString(), Kind: "file", Name: "legacy/STDOUT"},
+			{ArtifactID: uuid.NewString(), Kind: "file", Name: "legacy/stdout.TXT"},
+			{ArtifactID: uuid.NewString(), Kind: "file", Name: "diagnostics/STDERR"},
+			{ArtifactID: uuid.NewString(), Kind: "file", Name: `legacy\stderr.txt`},
+			{ArtifactID: uuid.NewString(), Kind: "file", Name: "reports/Final-Report.MD"},
+			{ArtifactID: uuid.NewString(), Kind: "file", Name: "completion-report.md"},
+			{ArtifactID: uuid.NewString(), Kind: "file", Name: "legacy/final.json"},
+			{ArtifactID: uuid.NewString(), Kind: "file", Name: "requested-result.html"},
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -457,7 +468,11 @@ func TestSSHWorkerContinuationPersistsRetainedWorkerNextAction(t *testing.T) {
 		WorkerID         string   `json:"worker_id"`
 		PersistentWorker bool     `json:"persistent_worker"`
 		AppliedSteerIDs  []string `json:"applied_steer_ids"`
-		NextAction       struct {
+		Artifacts        []struct {
+			Kind string `json:"kind"`
+			Name string `json:"name"`
+		} `json:"artifacts"`
+		NextAction struct {
 			Kind      string `json:"kind"`
 			Operation string `json:"operation"`
 			WorkerID  string `json:"worker_id"`
@@ -468,6 +483,7 @@ func TestSSHWorkerContinuationPersistsRetainedWorkerNextAction(t *testing.T) {
 	if err = json.Unmarshal([]byte(result.Content), &completion); err != nil ||
 		completion.WorkerID != "worker-one" || !completion.PersistentWorker ||
 		!reflect.DeepEqual(completion.AppliedSteerIDs, []string{steerID}) ||
+		len(completion.Artifacts) != 1 || completion.Artifacts[0].Kind != "file" || completion.Artifacts[0].Name != "requested-result.html" ||
 		completion.NextAction.Kind != "confirm_destroy_worker" || completion.NextAction.Operation != "destroy_worker" ||
 		completion.NextAction.WorkerID != completion.WorkerID || completion.NextAction.Default != "retain" ||
 		!strings.Contains(completion.NextAction.Question, "whether to destroy") {

@@ -150,10 +150,13 @@ four optional attachment source IDs uploaded under that same mutation UUID. Agen
 Core persists it on the current turn. Guidance interrupts a provider generation
 before tool publication, but waits for an already public/dispatched tool result
 without changing that tool's authority. The current SSH text runtime has no
-mid-run guidance injection channel. After a terminal Worker result, unapplied
-guidance is consumed with that result by one normal model round in the same
-durable turn; it may answer or reuse the retained Worker. Flutter may not
-represent the guidance as a queued successor turn.
+mid-run guidance injection channel. A terminal Worker report remains internal
+tool evidence: Agent Core synthesizes the user-facing response instead of
+copying it and follows the latest user message's language unless explicitly
+asked otherwise. After a terminal Worker result, unapplied guidance is consumed
+with that result by one normal model round in the same durable turn; it may
+answer or reuse the retained Worker. Flutter may not represent the guidance as
+a queued successor turn.
 
 ## Deployment boundary
 

@@ -1439,7 +1439,7 @@ func TestAppendTurnToolHistoryClearsStaticSiteForceAfterNextResult(t *testing.T)
 	}
 }
 
-func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *testing.T) {
+func TestExecuteTurnSynthesizesSucceededCloudWorkerInLatestUserLanguage(t *testing.T) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
 	requestID := uuid.NewString()
@@ -1459,7 +1459,7 @@ func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *t
 	githubSnapshot := contextSnapshot("github-mcp", "mcp__github__get_file_contents", strings.Repeat("5", 64))
 	snapshots := []ExtensionExecutionSnapshot{productSnapshot, knowledgeSnapshot, webSnapshot, installedSnapshot, githubSnapshot}
 	turn := Turn{ID: turnID, RequestID: requestID, ConversationID: conversationID,
-		Prompt: "deploy the service", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
+		Prompt: "部署服务", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
 		ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 3,
 		LastSequence: 5, ExpectedRevision: &expectedRevision, CreatedAt: createdAt,
 		ExtensionSnapshots: snapshots, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: snapshots}.ExtensionSnapshotDigest()}
@@ -1493,7 +1493,9 @@ func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *t
 		},
 	}
 	model := &capturingTurnModel{}
+	resolverCalls := 0
 	service, err := NewService(store, model, extensionResolverFunc(func(_ context.Context, selections []ExtensionSelection) ([]ResolvedExtension, error) {
+		resolverCalls++
 		if len(selections) != 1 || selections[0].ID != installedSnapshot.Selection.ID {
 			t.Fatalf("installed selections=%+v", selections)
 		}
@@ -1506,17 +1508,18 @@ func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *t
 	if _, err = service.resolveAcceptedTurnExtensions(context.Background(), snapshots); !errors.Is(err, ErrConflict) {
 		t.Fatalf("context-bound snapshots were accepted without terminal Worker history: %v", err)
 	}
+	resolverCalls = 0
 	service.executeTurn(context.Background(), turn.ID)
 
-	if model.runs != 0 {
-		t.Fatalf("terminal Worker result triggered %d additional model runs", model.runs)
+	if model.runs != 1 || resolverCalls != 0 {
+		t.Fatalf("terminal Worker synthesis model_runs=%d extension_resolver_calls=%d", model.runs, resolverCalls)
 	}
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
 	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil {
 		t.Fatalf("terminal=%+v err=%v", terminal, err)
 	}
 	response := terminal.Response
-	if !strings.Contains(response.Message.Content, "deployment finished") || !strings.Contains(response.Message.Content, workerID) ||
+	if response.Message.Content != "ok" || strings.Contains(response.Message.Content, "deployment finished") || strings.Contains(response.Message.Content, workerID) ||
 		!reflect.DeepEqual(response.RelatedTaskIDs, []string{taskID}) ||
 		!reflect.DeepEqual(response.RelatedPlanIDs, []string{planID}) ||
 		!reflect.DeepEqual(response.References, []Reference{reference}) ||
@@ -1524,13 +1527,29 @@ func TestExecuteTurnCompletesSucceededCloudWorkerWithoutSecondModelDispatch(t *t
 		len(response.ToolResults) != 2 || response.ToolResults[1].CallID != call.ID {
 		t.Fatalf("terminal response metadata=%+v", response)
 	}
+	if !strings.Contains(model.request.Profile.SystemPrompt, workerTerminalSynthesisGuidance) ||
+		!strings.Contains(model.request.Profile.SystemPrompt, "latest user message") ||
+		strings.Contains(model.request.Profile.SystemPrompt, "Simplified Chinese") ||
+		strings.Contains(model.request.Profile.SystemPrompt, "Chinese") ||
+		len(model.request.Intrinsics) != 0 || len(model.request.Extensions) != 0 || len(model.request.ExtensionSnapshots) != 0 {
+		t.Fatalf("terminal Worker synthesis request=%+v", model.request)
+	}
+	foundWorkerReport := false
+	for _, message := range model.request.Conversation.Messages {
+		for _, toolResult := range message.ToolResults {
+			foundWorkerReport = foundWorkerReport || toolResult.CallID == call.ID && strings.Contains(toolResult.Content, "deployment finished")
+		}
+	}
+	if !foundWorkerReport {
+		t.Fatalf("Worker report was not supplied as synthesis evidence: %+v", model.request.Conversation.Messages)
+	}
 	started := 0
 	for _, event := range store.events {
 		if event.Kind == TurnEventStarted {
 			started++
 		}
 	}
-	if started != 1 {
+	if started != 2 {
 		t.Fatalf("continuation started events=%d events=%+v", started, store.events)
 	}
 }

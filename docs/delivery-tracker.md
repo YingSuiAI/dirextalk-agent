@@ -456,10 +456,17 @@ support.
 - On **2026-08-30**, a focused regression reproduced Native continuation
   routing an accepted `github-mcp` snapshot through installed-extension
   storage, then passed after GitHub MCP joined the context-bound resolver set.
-  The same classification is covered when a succeeded Cloud Worker turn
-  finalizes without a second model dispatch. The full Core conversation and
-  Core GitHub suites, Linux GitHub resolver tests, full Linux `go vet`, all
-  three production command builds, Buf lint, and diff checks passed.
+  The full Core conversation and Core GitHub suites, Linux GitHub resolver
+  tests, full Linux `go vet`, all three production command builds, Buf lint,
+  and diff checks passed.
+- On **2026-09-02**, Worker terminal stdout became internal Central evidence
+  instead of a copied user deliverable. Focused embedded-runtime coverage
+  executes the real terminal path and proves stdout remains in the internal log
+  while no `final-report.md` or `completion-report.md` transport artifact is
+  created. Core coverage proves one tools-disabled synthesis receives the
+  Worker result, does not paste it, and is instructed to use the latest user's
+  language without a hardcoded locale; genuine requested file artifacts remain
+  supported.
 - On **2026-08-30**, tool-enabled Native model steps gained a validation-before-
   publication boundary. Model-authored narration accompanying a structured tool
   call stays private, and a protocol-shaped DSML envelope is quarantined even

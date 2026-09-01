@@ -308,11 +308,14 @@ invalidates and cancels the active provider lease and regenerates the same turn.
 After a tool call is public or dispatched, Core preserves that authority and
 lease and waits for its result. Ordinary tools then give the next model round
 both the result and ordered guidance. The current SSH Worker text protocol
-cannot inject guidance into an already running remote process. When its
-terminal result has unapplied deferred guidance, Core resumes one normal model
-round in the same durable turn with both the Worker result and that guidance;
-the model may answer or reuse the retained Worker. No successor turn is
-created.
+cannot inject guidance into an already running remote process. Worker terminal
+stdout is internal evidence rather than a user deliverable. Without later
+guidance, Core performs one tools-disabled model synthesis instead of copying
+that report into the response; with unapplied deferred guidance, Core resumes
+one normal model round in the same durable turn with both the Worker result and
+that guidance, and the model may answer or reuse the retained Worker. Either
+response uses the latest user message's language unless explicitly requested
+otherwise. No successor turn is created.
 
 `agent.info.v1/list_models` is the provider catalog, separate from persisted
 profile listing. It resolves either a write-only request credential or an

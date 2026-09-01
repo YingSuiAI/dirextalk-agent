@@ -31,6 +31,7 @@ const (
 	MaxAdmittedTurnToolCalls           = 20
 	toolLoopNudgeGuidance              = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
 	toolLoopSynthesisGuidance          = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
+	workerTerminalSynthesisGuidance    = "The Cloud Worker is terminal. Its stdout and Worker report are internal evidence, not a user-facing deliverable: do not paste, quote, or lightly reformat them. Synthesize a concise normal answer from the completed work, verification, failures, and genuine user-requested artifacts. Respond in the language of the latest user message unless that message explicitly requests another language. Preserve only useful artifact references, and mention the retained Worker and ask whether to destroy it when the result says it remains available."
 	toolCallFormatSynthesisGuidance    = "A previous tool-enabled response used invalid text markup instead of the structured tool protocol. Tools are disabled for this finalization. Produce the best useful final answer from evidence already present in the conversation, explicitly state any remaining gaps, and do not emit or describe DSML, XML, or tool-call markup."
 	outputContinuationGuidance         = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
 	staticSitePublishCorrection        = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
@@ -1261,16 +1262,16 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			return
 		}
 	}
-	workerContent, appliedWorkerSteers, terminalWorker := terminalCloudWorkerContent(toolCallAuthorities)
+	_, _, appliedWorkerSteers, terminalWorker := terminalCloudWorkerResult(toolCallAuthorities, "succeeded")
 	failedWorkerContent, failedWorker := terminalFailedCloudWorkerContent(toolCallAuthorities)
 	workerSteersApplied := appliedWorkerSteers
 	if failedWorker {
 		_, _, workerSteersApplied, _ = terminalCloudWorkerResult(toolCallAuthorities, "failed")
 	}
 	unappliedWorkerSteer := hasUnappliedDeferredWorkerSteer(turnSteers, workerSteersApplied, toolCallAuthorities)
-	autoFinalizeWorker := terminalWorker && !unappliedWorkerSteer
+	terminalWorkerNeedsSynthesis := (terminalWorker || failedWorker) && !unappliedWorkerSteer
 	var resolvedExtensions []ResolvedExtension
-	if !autoFinalizeWorker && !finalizing {
+	if !finalizing && !terminalWorkerNeedsSynthesis {
 		resolvedExtensions, err = s.resolveAcceptedTurnExtensionsForContinuation(ctx, turn.ExtensionSnapshots, terminalWorker)
 		if err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
@@ -1286,36 +1287,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			_, _ = s.turns.FailTurn(ctx, lease, "revision_conflict", "conversation revision changed")
 			return
 		}
-	}
-	if autoFinalizeWorker {
-		historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
-		answerReferences := publicAnswerReferences(historyReferences)
-		userTime := nextMessageTime(conv, s.clock())
-		message := Message{
-			ID: uuid.NewString(), Role: RoleAssistant, Content: workerContent, ModelProfileID: turn.ProfileID,
-			CreatedAt: userTime.Add(time.Microsecond), RelatedTaskIDs: historyTasks, RelatedPlanIDs: historyPlans,
-			References: answerReferences, ToolSummaries: historySummaries,
-		}
-		if err := message.Validate(); err != nil {
-			_, _ = s.turns.FailTurn(ctx, lease, "invalid_worker_result", "Cloud Worker returned an invalid completion")
-			return
-		}
-		conv.Revision++
-		response := ChatResponse{
-			RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision,
-			Message: message, Done: true, ModelProfileID: turn.ProfileID,
-			RelatedTaskIDs: append([]string(nil), historyTasks...), RelatedPlanIDs: append([]string(nil), historyPlans...),
-			References: cloneReferences(answerReferences), ToolSummaries: append([]string(nil), historySummaries...),
-			ToolResults: historyResults, ConversationTitle: conversationTitleFallback(conversationTitleUserText), ConversationTitleSource: conversationTitleUserText,
-		}
-		if _, commitErr := s.turns.CommitTurn(ctx, lease, response); commitErr != nil {
-			current, readErr := s.turns.GetTurn(ctx, turn.ID)
-			if readErr == nil && current.State == TurnCompleted {
-				return
-			}
-			_, _ = s.turns.FailTurn(ctx, lease, "turn_commit_failed", "conversation response could not be committed")
-		}
-		return
 	}
 	commitFallback := func(intent TurnFinalizationIntent, code, summary string) {
 		if commitErr := s.commitTurnFinalizationFallback(ctx, lease, conv, persistedMessageCount, conversationTitleUserText, intent, code, summary); commitErr != nil {
@@ -1466,6 +1437,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if !finalizing {
 		var reason TurnFinalizationReason
 		switch {
+		case terminalWorkerNeedsSynthesis:
+			reason = TurnFinalizationToolOutcome
 		case history.supervisorTerminal && !deferredWorkerFollowUp:
 			reason = TurnFinalizationToolOutcome
 		case toolCallBudgetExhausted:
@@ -1598,6 +1571,9 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 		}
 	}
+	if !finalizing && (terminalWorker || failedWorker) {
+		systemPrompt = appendSystemPrompt(systemPrompt, workerTerminalSynthesisGuidance)
+	}
 	switch directive.Guidance {
 	case TurnDispatchGuidanceLoopNudge:
 		systemPrompt = appendSystemPrompt(systemPrompt, toolLoopNudgeGuidance)
@@ -1605,6 +1581,8 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		guidance := toolLoopSynthesisGuidance
 		if directive.FinalizationReason == TurnFinalizationToolCallFormat {
 			guidance = toolCallFormatSynthesisGuidance
+		} else if directive.FinalizationReason == TurnFinalizationToolOutcome && (terminalWorker || failedWorker) {
+			guidance = workerTerminalSynthesisGuidance
 		}
 		systemPrompt = appendSystemPrompt(systemPrompt, guidance)
 	}
@@ -2959,17 +2937,6 @@ type turnToolCallAuthority struct {
 	result         *ToolResult
 	callSequence   int64
 	resultSequence int64
-}
-
-func terminalCloudWorkerContent(authorities map[string]turnToolCallAuthority) (string, []string, bool) {
-	content, workerID, appliedSteerIDs, ok := terminalCloudWorkerResult(authorities, "succeeded")
-	if !ok {
-		return "", nil, false
-	}
-	if workerID != "" {
-		content += "\n\nWorker " + workerID + " is retained for reuse. Do you want to destroy it?"
-	}
-	return content, appliedSteerIDs, true
 }
 
 func terminalFailedCloudWorkerContent(authorities map[string]turnToolCallAuthority) (string, bool) {

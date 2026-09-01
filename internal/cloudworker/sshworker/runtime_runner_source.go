@@ -139,10 +139,7 @@ func run(taskID string) error {
 	if err := requireDirectory(workspaceRoot); err != nil { return finish(taskID, current, 1, err) }
 	if err := os.MkdirAll(artifactRoot, 0700); err != nil { return finish(taskID, current, 1, err) }
 	githubAvailable, err := githubRuntimeAvailable(taskRoot); if err != nil { return finish(taskID, current, 1, err) }
-	report, err := os.OpenFile(filepath.Join(artifactRoot, "final-report.md"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil { return finish(taskID, current, 1, err) }
-	defer report.Close()
-	prompt := "Complete the supplied objective on this retained remote host. This is a " + spec.Workload + " workload. Use shell and workspace tools as needed. Write every deliverable under " + artifactRoot + ". Your final response must concisely report completed work, verification, and artifact paths. Use parallel subagents only for independent, non-overlapping scopes. Before concurrent writes create a separate git worktree and branch per writer; revalidate repository owner, remote, and base before push; integrate and test in the parent worktree. Never expose GitHub credentials, model credentials, or hidden configuration."
+	prompt := "Complete the supplied objective on this retained remote host. This is a " + spec.Workload + " workload. Use shell and workspace tools as needed. Put genuine user-requested file deliverables under " + artifactRoot + ". Do not create final-report.md, completion-report.md, or another generic completion report merely to transport your final response. Your final stdout response is an internal report for Central: concisely record completed work, verification, and paths of genuine requested artifacts so Central can synthesize the user-facing answer. Use parallel subagents only for independent, non-overlapping scopes. Before concurrent writes create a separate git worktree and branch per writer; revalidate repository owner, remote, and base before push; integrate and test in the parent worktree. Never expose GitHub credentials, model credentials, or hidden configuration."
 	if githubAvailable {
 		prompt += " GitHub access is available for this task: HTTPS git and gh are already authenticated for github.com. As requested, you may clone private repositories, create a branch, edit and test code, commit and push, and create or update pull requests. Never read, print, copy, encode, or expose the credential. Before every push, revalidate the repository owner, github.com remote URL, base branch, current branch, and intended commits."
 	}
@@ -167,7 +164,7 @@ func run(taskID string) error {
 	command.Env = append(withoutGitHubTokenEnv(os.Environ()), "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi-config"), "PI_TELEMETRY=0", "NO_COLOR=1", "TERM=dumb", "DIREXTALK_WORKER_MODEL="+spec.Model)
 	if err := configureGitHubRuntime(taskRoot, command); err != nil { return finish(taskID, current, 1, err) }
 	pat, err := os.ReadFile(taskPath(taskID, "github-pat")); if os.IsNotExist(err) { pat = nil } else if err != nil { return finish(taskID, current, 1, err) }; defer clear(pat)
-	stdout := &redactingWriter{writer: io.MultiWriter(os.Stdout, report), secret: pat}; stderr := &redactingWriter{writer: os.Stderr, secret: pat}; defer stdout.Flush(); defer stderr.Flush(); command.Stdout = stdout; command.Stderr = stderr
+	stdout := &redactingWriter{writer: os.Stdout, secret: pat}; stderr := &redactingWriter{writer: os.Stderr, secret: pat}; defer stdout.Flush(); defer stderr.Flush(); command.Stdout = stdout; command.Stderr = stderr
 	err = command.Run(); code := 0
 	if errors.Is(runContext.Err(), context.DeadlineExceeded) { code, err = 124, errors.New("maximum runtime exceeded")
 	} else if err != nil { code = 1; var exit *exec.ExitError; if errors.As(err, &exit) { code = exit.ExitCode() } }

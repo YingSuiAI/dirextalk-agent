@@ -997,9 +997,11 @@ the bytes remaining after logs. The proposal's estimated runtime covers
 environment setup,
 dependencies, model execution, the full requested active run or observation
 duration, result collection, and reasonable margin rather than treating an
-explicitly requested duration as the whole execution budget. A successful
-Worker report is committed directly as the final user-facing answer so
-completion does not depend on a second model dispatch.
+explicitly requested duration as the whole execution budget. Worker terminal
+stdout is an internal report returned as tool evidence, never the user-facing
+answer. Core performs a tools-disabled synthesis from that evidence and uses
+the latest user message's language unless that message explicitly requests
+another language. It does not paste or lightly reformat the report.
 
 `agent.chat.v1/upload_attachment_begin` requires `kind` (`image`, `file`, or
 `workspace_archive`) and a matching approved `mime_type`. A turn accepts at

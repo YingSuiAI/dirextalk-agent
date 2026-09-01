@@ -289,7 +289,7 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 		t.Fatal(err)
 	}
 	escaped := filepath.Join(root, "escaped-after-timeout")
-	piScript := "#!/bin/sh\nsetsid sh -c 'sleep 2; touch " + escaped + "' >/dev/null 2>&1 &\nsleep 5\n"
+	piScript := "#!/bin/sh\nprintf 'internal worker report\\n'\nsetsid sh -c 'sleep 2; touch " + escaped + "' >/dev/null 2>&1 &\nsleep 5\n"
 	if err = os.WriteFile(filepath.Join(runtimeRoot, "pi"), []byte(piScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -308,6 +308,15 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 			for _, name := range []string{"github-pat", "gitconfig", filepath.Join("github-bin", "git-credential-github"), filepath.Join("github-bin", "gh")} {
 				if _, statErr := os.Stat(filepath.Join(jobRoot, name)); !os.IsNotExist(statErr) {
 					t.Fatalf("no-PAT task retained GitHub runtime path %s: %v", name, statErr)
+				}
+			}
+			logBody, readErr := os.ReadFile(filepath.Join(jobRoot, "runner.log"))
+			if readErr != nil || !strings.Contains(string(logBody), "internal worker report") {
+				t.Fatalf("internal Worker stdout was not retained in runner log: %q err=%v", logBody, readErr)
+			}
+			for _, name := range []string{"final-report.md", "completion-report.md"} {
+				if _, statErr := os.Stat(filepath.Join(jobRoot, "artifacts", name)); !os.IsNotExist(statErr) {
+					t.Fatalf("runtime created transport-only report artifact %s: %v", name, statErr)
 				}
 			}
 			time.Sleep(1500 * time.Millisecond)
@@ -334,6 +343,28 @@ func TestEmbeddedRemoteRunnerUsesOnlyTaskScopedWorkspaceAndArtifacts(t *testing.
 	for _, forbidden := range []string{`command.Dir = filepath.Join(root, "workspace")`, `filepath.Join(root, "artifacts", taskID)`} {
 		if strings.Contains(remoteRunnerSource, forbidden) {
 			t.Fatalf("runner retains shared execution path %q", forbidden)
+		}
+	}
+}
+
+func TestEmbeddedRemoteRunnerKeepsTerminalStdoutInternalAndRequestedArtifactsExplicit(t *testing.T) {
+	for _, expected := range []string{
+		"Put genuine user-requested file deliverables under ",
+		"Do not create final-report.md, completion-report.md, or another generic completion report",
+		"Your final stdout response is an internal report for Central",
+		"paths of genuine requested artifacts",
+	} {
+		if !strings.Contains(remoteRunnerSource, expected) {
+			t.Fatalf("runner is missing internal-report contract %q", expected)
+		}
+	}
+	for _, forbidden := range []string{
+		`os.OpenFile(filepath.Join(artifactRoot, "final-report.md")`,
+		`os.OpenFile(filepath.Join(artifactRoot, "completion-report.md")`,
+		`io.MultiWriter(os.Stdout`,
+	} {
+		if strings.Contains(remoteRunnerSource, forbidden) {
+			t.Fatalf("runner still materializes terminal stdout as an artifact: %q", forbidden)
 		}
 	}
 }

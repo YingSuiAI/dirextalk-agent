@@ -101,7 +101,13 @@ reuse, observation, or ordinary jobs.
 
 ## Results and artifacts
 
-Terminal output is returned to the original durable turn as the `cloud_worker_propose` tool result. Central resumes that turn and writes the user-facing answer.
+Terminal stdout is returned to the original durable turn as the internal
+`cloud_worker_propose` tool report. Central resumes that turn and synthesizes,
+rather than pastes, the user-facing answer in the latest user's language unless
+the user explicitly requested another language. The runtime does not create
+`final-report.md`, `completion-report.md`, or another generic report merely to
+transport terminal text. Genuine files requested by the user remain ordinary
+artifacts, and operational/debug output may remain internal Agent state.
 The same turn also receives canonical `worker_status` progress for queued,
 provisioning, running, and terminal execution transitions. Long remote runs
 repeat the durable running phase periodically. Each event contains only the

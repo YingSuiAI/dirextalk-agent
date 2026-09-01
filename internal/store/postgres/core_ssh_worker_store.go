@@ -401,9 +401,17 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 		return core.ToolCall{}, core.ToolResult{}, cloudworker.ErrConflict
 	}
 	terminal := execution.State
+	// Raw stdout/stderr remain execution diagnostics and the summary remains
+	// Central's internal evidence. Only genuine result files are deliverables.
+	deliverables := make([]sshflow.Artifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Kind == "file" && !sshWorkerTransportArtifactName(artifact.Name) {
+			deliverables = append(deliverables, artifact)
+		}
+	}
 	completion := map[string]any{"schema": "dirextalk.ssh-worker-completion/v1",
 		"execution_id": plan.ExecutionID, "status": terminal, "worker_id": result.WorkerID,
-		"persistent_worker": true, "worker_report": summary, "artifacts": artifacts,
+		"persistent_worker": true, "worker_report": summary, "artifacts": deliverables,
 		"central_instruction": "Continue the current conversation using the Worker report and local artifacts."}
 	if len(result.AppliedSteerIDs) != 0 {
 		completion["applied_steer_ids"] = append([]string(nil), result.AppliedSteerIDs...)
@@ -437,6 +445,16 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 		return core.ToolCall{}, core.ToolResult{}, errSSHWorkerStoreInvalid
 	}
 	return calls[0], toolResult, nil
+}
+
+func sshWorkerTransportArtifactName(name string) bool {
+	base := strings.ToLower(filepath.Base(strings.ReplaceAll(strings.TrimSpace(name), `\`, "/")))
+	switch base {
+	case "stdout", "stdout.txt", "stderr", "stderr.txt", "final-report.md", "completion-report.md", "final.json":
+		return true
+	default:
+		return false
+	}
 }
 
 func sshWorkerUUID(domain, value string) string {
