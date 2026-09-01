@@ -33,7 +33,7 @@ func (r *cloudWorkerGitHubRepositoryFake) ResolveForDispatch(context.Context, st
 	}
 	return r.current, func() error { return nil }, nil
 }
-func (r *cloudWorkerGitHubRepositoryFake) Update(context.Context, coregithub.Mutation) (coregithub.Config, error) {
+func (r *cloudWorkerGitHubRepositoryFake) Update(context.Context, coregithub.Mutation, func(string) error) (coregithub.Config, error) {
 	return coregithub.Config{}, coregithub.ErrRepository
 }
 func (r *cloudWorkerGitHubRepositoryFake) MarkTested(context.Context, string, int64, int64, time.Time) (coregithub.Config, error) {

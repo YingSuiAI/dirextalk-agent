@@ -81,6 +81,17 @@ contract](message-server-integration-development-contract.md), and
   rehydrate them from the authenticated owner/account/config/credential context
   without querying installed-extension storage, while retaining exact accepted
   snapshot and tool-schema digest checks.
+- An enabled, configured GitHub integration now resolves the official hosted
+  `/mcp/x/all` catalog without read-only or toolset restriction headers. Every
+  advertised tool is admitted, standard annotations retain per-tool replay
+  safety, and disabled or tokenless configurations expose none. New PAT enable
+  and stored-PAT re-enable transitions validate identity inside the locked
+  update transaction, while historical enabled rows remain upgrade-compatible.
+- A GitHub-bound Worker now receives a non-secret prompt hint that its scoped
+  HTTPS Git helper and `gh` wrapper can perform requested private repository and
+  pull-request work. The hint exists only when the task PAT file exists,
+  forbids credential disclosure, and requires exact pre-push revalidation;
+  unbound Worker prompts remain unchanged.
 - Core-only `dirextalk-agent` entrypoint with `migrate` and `serve`.
 - TLS 1.3 gRPC authentication, health/reflection, capability discovery, and
   PostgreSQL-backed profiles, conversations, Tasks, events, schedules,
@@ -420,6 +431,17 @@ support.
 
 ## Verified evidence
 
+- On **2026-09-01**, focused GitHub conversation-resolver regressions passed for
+  the official `/mcp/x/all` endpoint, unrestricted advertised-tool admission,
+  read and mutation outcome classification, secret-free catalog snapshots, and
+  disabled or tokenless configurations exposing no tools while historical
+  enabled/configured rows remain available. Core service regressions also pass
+  for atomic new-PAT enable, stored-PAT re-enable, and no mutation after failed
+  identity validation.
+- On **2026-09-01**, the embedded Worker runtime source and build regressions
+  passed for credential-presence-gated GitHub capability guidance, private
+  clone/branch/edit/test/commit/push/PR scope, credential non-disclosure, and
+  pre-push owner/remote/base/current-branch/commit revalidation.
 - On **2026-08-30**, builtin MCP version identity was extended to bind both
   the inspected tool-catalog digest and the immutable published artifact
   digest. Repacking an executable with an unchanged catalog now creates a

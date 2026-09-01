@@ -27,7 +27,7 @@ func NewCoreGitHubCapability(service *coregithub.Service) Capability {
 func (c *coreGitHubCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return capabilityDescriptor("agent.github.v1", "GitHub", "Agent-owned encrypted GitHub PAT configuration and identity connectivity", []capabilityOperation{
 		{ID: "get_config", DisplayName: "Get GitHub config", Description: "Read the non-secret GitHub configuration.", Type: capv1.OperationType_OPERATION_TYPE_READ, Scope: "agent:mcp:read", InputSchema: emptyObjectSchema, ResultSchema: githubConfigSchema},
-		{ID: "update_config", DisplayName: "Update GitHub config", Description: "Update GitHub configuration and its write-only PAT.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:mcp:write", InputSchema: githubUpdateSchema, ResultSchema: githubConfigSchema},
+		{ID: "update_config", DisplayName: "Update GitHub config", Description: "Update GitHub configuration and its write-only PAT; enabling validates the exact proposed PAT before commit.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:mcp:write", InputSchema: githubUpdateSchema, ResultSchema: githubConfigSchema},
 		{ID: "test", DisplayName: "Test GitHub", Description: "Test the stored GitHub PAT against the GitHub identity API.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:mcp:write", InputSchema: emptyObjectSchema, ResultSchema: githubTestResultSchema},
 	})
 }

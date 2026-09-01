@@ -109,7 +109,11 @@ type Repository interface {
 	// and validates the current non-secret snapshot, and returns a release
 	// function whose scope must cover the bounded provider request.
 	ResolveForDispatch(context.Context, string, int64, ResolvedConfig) (ResolvedConfig, func() error, error)
-	Update(context.Context, Mutation) (Config, error)
+	// Update commits one mutation while holding the immutable owner/generation
+	// and revision fence. validateEnable receives only the exact proposed PAT
+	// and must run before a disabled configuration becomes enabled or an enabled
+	// configuration installs a replacement PAT.
+	Update(context.Context, Mutation, func(string) error) (Config, error)
 	MarkTested(context.Context, string, int64, int64, time.Time) (Config, error)
 }
 
@@ -181,6 +185,11 @@ func (s *Service) Update(ctx context.Context, command UpdateCommand) (Config, er
 		OwnerID: command.OwnerID, AccountGeneration: command.AccountGeneration, IdempotencyKey: command.IdempotencyKey, RequestDigest: digest,
 		ExpectedRevision: command.ExpectedRevision, Enabled: command.Enabled, Provider: command.Provider,
 		GitHubToken: command.GitHubToken, GitHubTokenClear: command.GitHubTokenClear, Now: s.now().UTC(),
+	}, func(token string) error {
+		if err := s.tester.Identity(ctx, token); err != nil {
+			return safeProviderError(err)
+		}
+		return nil
 	})
 	if err != nil {
 		return Config{}, safeRepositoryError(err)
@@ -348,7 +357,8 @@ func ValidIdentity(ownerID string, accountGeneration int64) bool {
 
 func safeRepositoryError(err error) error {
 	switch {
-	case errors.Is(err, ErrInvalid), errors.Is(err, ErrNotConfigured), errors.Is(err, ErrDisabled), errors.Is(err, ErrRevisionConflict), errors.Is(err, ErrIdempotencyConflict):
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, ErrInvalid), errors.Is(err, ErrNotConfigured), errors.Is(err, ErrDisabled), errors.Is(err, ErrRevisionConflict), errors.Is(err, ErrIdempotencyConflict), errors.Is(err, ErrProvider):
 		return err
 	default:
 		return ErrRepository

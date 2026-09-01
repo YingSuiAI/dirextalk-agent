@@ -92,7 +92,7 @@ func (s *CoreGitHubStore) Resolve(ctx context.Context, ownerID string, accountGe
 	return resolved, nil
 }
 
-func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutation) (coregithub.Config, error) {
+func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutation, validateEnable func(string) error) (coregithub.Config, error) {
 	mutation.OwnerID = strings.TrimSpace(mutation.OwnerID)
 	if !coregithub.ValidIdentity(mutation.OwnerID, mutation.AccountGeneration) {
 		return coregithub.Config{}, coregithub.ErrInvalid
@@ -195,6 +195,35 @@ func (s *CoreGitHubStore) Update(ctx context.Context, mutation coregithub.Mutati
 		// provider test, even when the public config revision is otherwise
 		// unchanged by the caller.
 		testedAt = nil
+	}
+	if enabled && (!current.config.Enabled || mutation.GitHubToken != nil) {
+		if validateEnable == nil {
+			return coregithub.Config{}, coregithub.ErrInvalid
+		}
+		proposedToken := mutation.GitHubToken
+		var decrypted []byte
+		if proposedToken == nil {
+			if credentialVersion <= 0 || len(nonce) == 0 || len(ciphertext) == 0 {
+				return coregithub.Config{}, coregithub.ErrNotConfigured
+			}
+			plaintext, openErr := s.store.openDurableSecret(s.secretDomain(provider), githubSecretRecordID(mutation.OwnerID, mutation.AccountGeneration), credentialVersion, githubSecretField, keyVersion, nonce, ciphertext)
+			if openErr != nil {
+				return coregithub.Config{}, coregithub.ErrRepository
+			}
+			decrypted = plaintext
+			value := string(plaintext)
+			proposedToken = &value
+		}
+		if decrypted != nil {
+			defer clearBytes(decrypted)
+		}
+		if proposedToken == nil || strings.TrimSpace(*proposedToken) == "" {
+			return coregithub.Config{}, coregithub.ErrNotConfigured
+		}
+		if validateErr := validateEnable(*proposedToken); validateErr != nil {
+			return coregithub.Config{}, validateErr
+		}
+		testedAt = &now
 	}
 	next := coregithub.Config{Enabled: enabled, Provider: provider, GitHubTokenConfigured: configured, Revision: current.config.Revision + 1, TestedAt: testedAt, UpdatedAt: &now}
 	if !exists {

@@ -27,7 +27,7 @@ func (r *githubResolverRepo) ResolveForDispatch(c context.Context, o string, g i
 	v, e := r.Resolve(c, o, g)
 	return v, func() error { return nil }, e
 }
-func (r *githubResolverRepo) Update(context.Context, coregithub.Mutation) (coregithub.Config, error) {
+func (r *githubResolverRepo) Update(context.Context, coregithub.Mutation, func(string) error) (coregithub.Config, error) {
 	return r.v.Config, nil
 }
 func (r *githubResolverRepo) MarkTested(context.Context, string, int64, int64, time.Time) (coregithub.Config, error) {
@@ -42,22 +42,107 @@ func githubTool(name string, e mcphttp.ToolEffect) mcphttp.Tool {
 		return mcphttp.ToolResult{Content: "ok"}, nil
 	}}
 }
-func TestGitHubMCPFiltersToReadonlyCurrentAllowlist(t *testing.T) {
-	repo := &githubResolverRepo{v: coregithub.ResolvedConfig{Config: coregithub.Config{Enabled: true, Provider: coregithub.ProviderGitHub, GitHubTokenConfigured: true, Revision: 1}, GitHubToken: "secret", CredentialVersion: 1}}
+
+func testedGitHubResolverConfig(enabled, configured bool) coregithub.ResolvedConfig {
+	testedAt := time.Date(2026, 9, 1, 1, 2, 3, 0, time.UTC)
+	value := coregithub.ResolvedConfig{Config: coregithub.Config{Enabled: enabled, Provider: coregithub.ProviderGitHub, GitHubTokenConfigured: configured, Revision: 1, TestedAt: &testedAt}, CredentialVersion: 1}
+	if configured {
+		value.GitHubToken = "secret"
+	}
+	return value
+}
+
+func TestGitHubMCPAdmitsCompleteCatalogAndPreservesToolEffects(t *testing.T) {
+	repo := &githubResolverRepo{v: testedGitHubResolverConfig(true, true)}
 	svc, _ := coregithub.NewService(repo, githubResolverIdentity{})
-	r := &githubMCPConversationResolver{service: svc, factory: func(context.Context, coregithub.ResolvedConfig) (mcphttp.ToolProvider, error) {
+	r := &githubMCPConversationResolver{service: svc, factory: func(_ context.Context, snapshot coregithub.ResolvedConfig) (mcphttp.ToolProvider, error) {
+		if snapshot.GitHubToken != "" {
+			t.Fatal("PAT entered the catalog snapshot")
+		}
 		return mcphttp.ToolProviderFunc(func(context.Context) ([]mcphttp.Tool, error) {
-			return []mcphttp.Tool{githubTool("mcp__github__get_file_contents", mcphttp.ToolEffectUnsafeMutation), githubTool("mcp__github__create_branch", mcphttp.ToolEffectUnsafeMutation)}, nil
+			return []mcphttp.Tool{githubTool("mcp__github__create_issue", mcphttp.ToolEffectUnsafeMutation), githubTool("mcp__github__get_file_contents", mcphttp.ToolEffectReadOnly)}, nil
 		}), nil
 	}}
 	got, e := r.ResolveExtensions(webSearchResolverContext(), nil)
-	if e != nil || len(got) != 1 || len(got[0].Tools) != 1 || got[0].Tools[0].Name != "mcp__github__get_file_contents" || !got[0].Snapshot.ReadOnly || got[0].Snapshot.RequiresConfirmation {
+	if e != nil || len(got) != 1 || len(got[0].Tools) != 2 ||
+		got[0].Tools[0].Name != "mcp__github__create_issue" || got[0].Tools[1].Name != "mcp__github__get_file_contents" ||
+		!got[0].Snapshot.ReadOnly || got[0].Snapshot.RequiresConfirmation {
 		t.Fatalf("%#v %v", got, e)
+	}
+	read, err := got[0].Execute(webSearchResolverContext(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{ID: "read", Name: "mcp__github__get_file_contents", Arguments: `{}`}})
+	if err != nil || read.MutationState != coreconversation.ToolMutationNone || read.StateChanged {
+		t.Fatalf("read=%+v err=%v", read, err)
+	}
+	write, err := got[0].Execute(webSearchResolverContext(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{ID: "write", Name: "mcp__github__create_issue", Arguments: `{}`}})
+	if err != nil || write.MutationState != coreconversation.ToolMutationChanged || !write.StateChanged {
+		t.Fatalf("write=%+v err=%v", write, err)
+	}
+}
+
+func TestGitHubMCPRequiresEnabledCredentialAndPreservesHistoricalConfig(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		value      coregithub.ResolvedConfig
+		wantTools  int
+		wantCalled bool
+	}{
+		{name: "disabled", value: testedGitHubResolverConfig(false, true)},
+		{name: "tokenless", value: testedGitHubResolverConfig(true, false)},
+		{name: "historical configured row without tested timestamp", value: func() coregithub.ResolvedConfig {
+			value := testedGitHubResolverConfig(true, true)
+			value.TestedAt = nil
+			return value
+		}(), wantTools: 1, wantCalled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := &githubResolverRepo{v: test.value}
+			svc, _ := coregithub.NewService(repo, githubResolverIdentity{})
+			called := false
+			resolver := &githubMCPConversationResolver{service: svc, factory: func(context.Context, coregithub.ResolvedConfig) (mcphttp.ToolProvider, error) {
+				called = true
+				return mcphttp.ToolProviderFunc(func(context.Context) ([]mcphttp.Tool, error) {
+					return []mcphttp.Tool{githubTool("mcp__github__get_me", mcphttp.ToolEffectReadOnly)}, nil
+				}), nil
+			}}
+			got, err := resolver.ResolveExtensions(webSearchResolverContext(), nil)
+			if err != nil || len(got) != test.wantTools || called != test.wantCalled {
+				t.Fatalf("resolved=%+v called=%v err=%v", got, called, err)
+			}
+		})
+	}
+}
+
+func TestGitHubMCPUsesOfficialAllToolsEndpointWithoutRestrictionHeaders(t *testing.T) {
+	config := githubMCPServerConfig()
+	if config.Endpoint != "https://api.githubcopilot.com/mcp/x/all" || config.ID != "github" || config.SecretRef != githubMCPSecretRef || len(config.Headers) != 0 {
+		t.Fatalf("config=%+v", config)
+	}
+}
+
+func TestGitHubMCPAmbiguousMutationFailureIsNotReportedAsARead(t *testing.T) {
+	repo := &githubResolverRepo{v: testedGitHubResolverConfig(true, true)}
+	svc, _ := coregithub.NewService(repo, githubResolverIdentity{})
+	resolver := &githubMCPConversationResolver{service: svc, factory: func(context.Context, coregithub.ResolvedConfig) (mcphttp.ToolProvider, error) {
+		return mcphttp.ToolProviderFunc(func(context.Context) ([]mcphttp.Tool, error) {
+			tool := githubTool("mcp__github__create_issue", mcphttp.ToolEffectUnsafeMutation)
+			tool.Run = func(context.Context, mcphttp.ToolInvocation) (mcphttp.ToolResult, error) {
+				return mcphttp.ToolResult{}, mcphttp.ErrProviderUnavailable
+			}
+			return []mcphttp.Tool{tool}, nil
+		}), nil
+	}}
+	resolved, err := resolver.ResolveExtensions(webSearchResolverContext(), nil)
+	if err != nil || len(resolved) != 1 {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	result, err := resolved[0].Execute(webSearchResolverContext(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{ID: "write", Name: "mcp__github__create_issue", Arguments: `{}`}})
+	if err != nil || result.Outcome != coreconversation.ToolOutcomeUnknownMutation || result.MutationState != coreconversation.ToolMutationUnknown || !result.IsError {
+		t.Fatalf("result=%+v err=%v", result, err)
 	}
 }
 
 func TestGitHubMCPPreservesModelVisibleEmbeddedResourceContent(t *testing.T) {
-	repo := &githubResolverRepo{v: coregithub.ResolvedConfig{Config: coregithub.Config{Enabled: true, Provider: coregithub.ProviderGitHub, GitHubTokenConfigured: true, Revision: 1}, GitHubToken: "secret", CredentialVersion: 1}}
+	repo := &githubResolverRepo{v: testedGitHubResolverConfig(true, true)}
 	svc, err := coregithub.NewService(repo, githubResolverIdentity{})
 	if err != nil {
 		t.Fatalf("new GitHub service: %v", err)

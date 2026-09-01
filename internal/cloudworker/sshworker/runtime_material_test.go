@@ -327,6 +327,35 @@ func TestEmbeddedRemoteRunnerScopesGitHubCredentialAndCleansIt(t *testing.T) {
 	}
 }
 
+func TestEmbeddedRemoteRunnerHintsGitHubCapabilityOnlyForBoundTasks(t *testing.T) {
+	for _, expected := range []string{
+		`githubAvailable, err := githubRuntimeAvailable(taskRoot)`,
+		`if githubAvailable {`,
+		`HTTPS git and gh are already authenticated for github.com`,
+		`clone private repositories, create a branch, edit and test code, commit and push, and create or update pull requests`,
+		`Never read, print, copy, encode, or expose the credential`,
+		`Before every push, revalidate the repository owner, github.com remote URL, base branch, current branch, and intended commits`,
+	} {
+		if !strings.Contains(remoteRunnerSource, expected) {
+			t.Fatalf("runner missing conditional GitHub capability hint %q", expected)
+		}
+	}
+	hint := strings.Index(remoteRunnerSource, `GitHub access is available for this task`)
+	if hint < 0 {
+		t.Fatal("GitHub capability hint is missing")
+	}
+	condition := strings.LastIndex(remoteRunnerSource[:hint], `if githubAvailable {`)
+	blockEnd := strings.Index(remoteRunnerSource[hint:], "\n\t}")
+	if condition < 0 || blockEnd < 0 {
+		t.Fatal("GitHub capability hint is not confined to the credential-present branch")
+	}
+	for _, forbidden := range []string{"github_pat_", "RIVER-LANTERN-PAT", `GH_TOKEN=\"` + "secret"} {
+		if strings.Contains(remoteRunnerSource[condition:hint+blockEnd], forbidden) {
+			t.Fatalf("GitHub capability hint contains credential material %q", forbidden)
+		}
+	}
+}
+
 func TestWorkerLoadsOnlyExplicitBoundedServerSubagentExtension(t *testing.T) {
 	material := mustCompileRuntimeForTest(t)
 	script := string(material.WorkerScript)

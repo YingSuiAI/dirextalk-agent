@@ -138,10 +138,14 @@ func run(taskID string) error {
 	workspaceRoot, artifactRoot := filepath.Join(taskRoot, "workspace"), filepath.Join(taskRoot, "artifacts")
 	if err := requireDirectory(workspaceRoot); err != nil { return finish(taskID, current, 1, err) }
 	if err := os.MkdirAll(artifactRoot, 0700); err != nil { return finish(taskID, current, 1, err) }
+	githubAvailable, err := githubRuntimeAvailable(taskRoot); if err != nil { return finish(taskID, current, 1, err) }
 	report, err := os.OpenFile(filepath.Join(artifactRoot, "final-report.md"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil { return finish(taskID, current, 1, err) }
 	defer report.Close()
 	prompt := "Complete the supplied objective on this retained remote host. This is a " + spec.Workload + " workload. Use shell and workspace tools as needed. Write every deliverable under " + artifactRoot + ". Your final response must concisely report completed work, verification, and artifact paths. Use parallel subagents only for independent, non-overlapping scopes. Before concurrent writes create a separate git worktree and branch per writer; revalidate repository owner, remote, and base before push; integrate and test in the parent worktree. Never expose GitHub credentials, model credentials, or hidden configuration."
+	if githubAvailable {
+		prompt += " GitHub access is available for this task: HTTPS git and gh are already authenticated for github.com. As requested, you may clone private repositories, create a branch, edit and test code, commit and push, and create or update pull requests. Never read, print, copy, encode, or expose the credential. Before every push, revalidate the repository owner, github.com remote URL, base branch, current branch, and intended commits."
+	}
 	if spec.Workload == "service" && spec.Service != nil {
 		if spec.Service.Hostname == "" {
 			prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits. It must listen on 0.0.0.0 port " + strconv.Itoa(int(spec.Service.Port)) + " and return HTTP success at " + spec.Service.HealthPath + "."
@@ -226,8 +230,8 @@ func (writer *redactingWriter) Flush() error { if len(writer.pending) > 0 { _, e
 func max(a, b int) int { if a > b { return a }; return b }
 
 func configureGitHubRuntime(taskRoot string, command *exec.Cmd) error {
+	available, err := githubRuntimeAvailable(taskRoot); if err != nil || !available { return err }
 	patPath := filepath.Join(taskRoot, "github-pat")
-	info, err := os.Stat(patPath); if os.IsNotExist(err) { return nil }; if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 { return errors.New("invalid GitHub credential") }
 	bin := filepath.Join(taskRoot, "github-bin"); if err := os.MkdirAll(bin, 0700); err != nil { return err }
 	helper := filepath.Join(bin, "git-credential-github"); wrapper := filepath.Join(bin, "gh")
 	helperBody := "#!/bin/sh\nprotocol= host=\nwhile IFS='=' read -r key value; do case $key in protocol) protocol=$value ;; host) host=$value ;; esac; done\n[ \"$protocol\" = https ] && [ \"$host\" = github.com ] || exit 0\nprintf 'username=x-access-token\\npassword='\ncat " + strconv.Quote(patPath) + "\nprintf '\\n'\n"
@@ -236,6 +240,10 @@ func configureGitHubRuntime(taskRoot string, command *exec.Cmd) error {
 	if err := os.WriteFile(helper, []byte(helperBody), 0700); err != nil { return err }; if err := os.WriteFile(wrapper, []byte(wrapperBody), 0700); err != nil { return err }; config := filepath.Join(taskRoot, "gitconfig"); if err := os.WriteFile(config, []byte(configBody), 0600); err != nil { return err }
 	command.Env = append(command.Env, "PATH="+bin+":"+os.Getenv("PATH"), "GIT_CONFIG_GLOBAL="+config, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=/bin/false")
 	return nil
+}
+
+func githubRuntimeAvailable(taskRoot string) (bool, error) {
+	info, err := os.Stat(filepath.Join(taskRoot, "github-pat")); if os.IsNotExist(err) { return false, nil }; if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 { return false, errors.New("invalid GitHub credential") }; return true, nil
 }
 
 func cleanupGitHubRuntime(taskRoot string) { for _, path := range []string{filepath.Join(taskRoot, "github-pat"), filepath.Join(taskRoot, "gitconfig"), filepath.Join(taskRoot, "github-bin", "git-credential-github"), filepath.Join(taskRoot, "github-bin", "gh")} { _ = os.Remove(path) }; _ = os.Remove(filepath.Join(taskRoot, "github-bin")) }

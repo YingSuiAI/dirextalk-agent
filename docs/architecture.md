@@ -135,10 +135,14 @@ available through a github.com-only Git helper and process-local `gh` wrapper,
 and is removed on completion, error, or cancellation. The runner does not
 intentionally serialize it into durable plans, task specs, command arguments,
 scripts, ordinary logs, or Pi's inherited environment; ordinary runner output
-is exact-token redacted. The Worker is nevertheless a trusted delegate: Pi runs
-as the same user and can invoke the Git credential helper, so least-privilege
-selected-repository, short-expiry PATs are required. Rotation blocks future
-starts but cannot revoke an already-started run or prevent transformed
+is exact-token redacted. Only when that task-scoped credential file exists, Pi
+receives a non-secret capability hint that HTTPS Git and `gh` are authenticated
+for private clone, branch/edit/test/commit/push, and pull-request work. The hint
+requires credential non-disclosure and repository/remote/branch/commit
+revalidation before every push. The Worker is nevertheless a trusted delegate:
+Pi runs as the same user and can invoke the Git credential helper, so least-
+privilege selected-repository, short-expiry PATs are required. Rotation blocks
+future starts but cannot revoke an already-started run or prevent transformed
 credential exfiltration.
 The remote Pi runtime may expose only the vendored server-owned subagent
 extension pinned to Pi `v0.84.1`. It is loaded explicitly while extension

@@ -38,7 +38,11 @@ Plans without that private binding never resolve GitHub configuration, acquire
 a PAT, or gain repository access later. In-place upgrades accept the two
 released unbound internal digest encodings from v1.0.184 and v1.0.185 without
 rewriting the plan or its confirmation; bound plans retain only their exact
-version-fenced encoding.
+version-fenced encoding. Only a bound task receives a non-secret runtime hint
+that its github.com-only HTTPS Git helper and `gh` wrapper are authenticated for
+private clone, branch/edit/test/commit/push, and pull-request work. The hint
+forbids credential disclosure and requires repository, remote, branch, and
+commit revalidation before push.
 
 Registration means only that an authenticated RPC endpoint is present; it does
 not publish a client capability or prove that an optional provider is ready.
@@ -1064,22 +1068,32 @@ write-only and may only be removed through `github_token_clear`. The service
 encrypts the PAT with AAD bound to owner, generation, credential version and
 config revision, and tests it against GitHub's authenticated identity endpoint.
 
-When enabled, Core automatically resolves the official hosted GitHub MCP at
-`https://api.githubcopilot.com/mcp/` using that PAT as a Bearer credential. It
-requests only `repos,pull_requests`, fails closed for unknown tool identities,
-and exposes only an explicit repository/contents/branch/commit/pull-request
-allowlist. Unrelated advertised tools are ignored; malformed, duplicate, or
-zero allowed definitions fail closed. Every tool is marked
-`X-MCP-Readonly: true` and exposes only read tools whose effect is explicitly
-read-only. It takes the synthetic inline read-only path and does not claim a
-durable confirmation lane. Clone, edit, push, and pull-request mutations are
-performed only by the confirmation-gated Cloud Worker (stage 2). Credential
-resolution rechecks the authenticated owner, account generation and immutable
-config/credential revision immediately before each MCP request. On every Turn
+When an enabled configuration has a PAT, Core automatically resolves the
+official hosted GitHub MCP at
+`https://api.githubcopilot.com/mcp/x/all` using that PAT as a Bearer credential.
+Core does not send restrictive `X-MCP-Toolsets` or `X-MCP-Readonly` headers and
+admits the complete tool catalog advertised by that exact trusted endpoint.
+Malformed, duplicate, or empty catalogs fail closed. Standard MCP annotations
+classify each tool independently: fully annotated reads may use the bounded
+read retry policy, while missing, contradictory, or mutating annotations are
+treated as unsafe mutations and never retried after an ambiguous dispatch.
+The synthetic MCP snapshot uses Core's dispatch-recorded inline path and does
+not claim the installed-extension confirmation lane. Disabled or tokenless
+configuration exposes no GitHub MCP tools. Existing enabled/configured rows
+without a historical `tested_at` timestamp remain available during upgrade;
+every new PAT installed while enabled and every disabled-to-enabled transition
+is identity-tested atomically by `update_config`. Credential resolution
+rechecks the authenticated owner, account generation and immutable config/
+credential revision immediately before each MCP request. A failed atomic
+enable test commits no config, credential, revision, or idempotency result. On
+every Turn
 continuation or recovery, the accepted GitHub MCP snapshot is rehydrated from
 that authenticated context instead of being routed through durable installed-
 extension storage; its exact immutable snapshot and accepted tool-schema
-digests must still match. No token is copied to a process environment or Worker.
+digests must still match. The MCP path keeps the PAT server-side and write-only
+and never copies it into model context, logs, or a process environment. A
+separately confirmed bound Worker receives it only through the task-scoped
+secret-dispatch path described above.
 
 The shared Streamable HTTP MCP adapter projects ordered `text` content and
 embedded textual `resource.text` content into the model-visible tool result.
