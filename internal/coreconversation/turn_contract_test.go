@@ -1863,6 +1863,8 @@ func TestDurableReadOnlyIntrinsicResultReturnsToNextModelRound(t *testing.T) {
 	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerInventoryToolName, Arguments: `{}`}
 	inventory := `{"schema":"cloud_worker_inventory/v1","worker_count":1,"workers":[{"worker_id":"` + uuid.NewString() + `"}]}`
 	roomReference := Reference{Kind: "room", RoomID: "!worker-room:example.test", RoomType: "group", Title: "Worker room"}
+	webReference := Reference{Kind: "web_source", SourceID: "https://example.test/worker", ContentDigest: strings.Repeat("c", 64), Title: "Worker source"}
+	privateReferences := []Reference{roomReference, webReference}
 	base := newFakeStore()
 	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), OwnerID: "@owner:example.test", AccountGeneration: 7,
@@ -1900,7 +1902,7 @@ func TestDurableReadOnlyIntrinsicResultReturnsToNextModelRound(t *testing.T) {
 				if recordedCalls != 1 || recordedResults != 0 {
 					t.Fatalf("intrinsic dispatch ordering calls=%d results=%d events=%+v", recordedCalls, recordedResults, store.events)
 				}
-				result := ToolResult{Content: inventory, References: []Reference{roomReference}}.
+				result := ToolResult{Content: inventory, References: privateReferences}.
 					WithObservation(ToolOutcomeSuccess, "Retained Worker inventory read", ToolMutationNone)
 				return IntrinsicExecutionResult{ToolResult: &result}, nil
 			},
@@ -1919,7 +1921,7 @@ func TestDurableReadOnlyIntrinsicResultReturnsToNextModelRound(t *testing.T) {
 		}
 		if event.ToolResult != nil && event.ToolResult.CallID == call.ID {
 			resultIndex = index
-			if event.ToolResult.ToolName != call.Name || event.ToolResult.Content != inventory || event.ToolResult.Validate() != nil || !reflect.DeepEqual(event.ToolResult.References, []Reference{roomReference}) {
+			if event.ToolResult.ToolName != call.Name || event.ToolResult.Content != inventory || event.ToolResult.Validate() != nil || !reflect.DeepEqual(event.ToolResult.References, privateReferences) {
 				t.Fatalf("durable intrinsic result=%+v", event.ToolResult)
 			}
 		}
@@ -1937,7 +1939,7 @@ func TestDurableReadOnlyIntrinsicResultReturnsToNextModelRound(t *testing.T) {
 	secondRound := model.requests[1].Conversation.Messages
 	if len(secondRound) != 3 || len(secondRound[1].ToolCalls) != 1 || secondRound[1].ToolCalls[0].ID != call.ID ||
 		len(secondRound[2].ToolResults) != 1 || secondRound[2].ToolResults[0].Content != inventory || secondRound[2].ToolResults[0].ToolName != call.Name ||
-		!reflect.DeepEqual(secondRound[2].References, []Reference{roomReference}) || model.requests[1].TransientProviderReasoning != "tool reasoning" {
+		!reflect.DeepEqual(secondRound[2].References, privateReferences) || model.requests[1].TransientProviderReasoning != "tool reasoning" {
 		t.Fatalf("second-round intrinsic context=%+v", secondRound)
 	}
 	if service.takeProviderContinuity(turn.ID) != "" {
@@ -1980,6 +1982,20 @@ func TestTurnToolMetadataCapsDurableAggregateReferences(t *testing.T) {
 	}
 	if err := message.Validate(); err != nil {
 		t.Fatalf("bounded durable aggregate is invalid: %v", err)
+	}
+}
+
+func TestPublicAnswerReferencesOmitWebSources(t *testing.T) {
+	room := Reference{Kind: "room", RoomID: "!room:example.test"}
+	web := Reference{
+		Kind: "web_source", SourceID: "https://example.test/source",
+		ContentDigest: strings.Repeat("a", 64), Title: "Source",
+	}
+
+	got := publicAnswerReferences([]Reference{web, room, web})
+	want := []Reference{room}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("public references=%+v want=%+v", got, want)
 	}
 }
 

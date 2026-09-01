@@ -461,6 +461,13 @@ support.
   publication guard remains the only path to public model text. Focused Linux
   Core model, runtime, and conversation tests passed; this is code-level
   evidence and does not claim a new deployment.
+- On **2026-09-01**, terminal Native Agent answers stopped projecting the
+  separate `web_source` reference list. Search evidence and canonical source
+  identity remain in the private durable/model transcript, while the public
+  answer exposes only model-synthesized descriptive Markdown links. Focused
+  Core conversation tests cover omission of Web sources without removing
+  non-Web references. This is code-level evidence and does not claim a new
+  deployment.
 - On **2026-08-30**, Native public tool progress stopped projecting model-authored
   arguments, exact result content, cursors, or result references. Web Search
   keeps normalized fetched evidence in the private model transcript but now

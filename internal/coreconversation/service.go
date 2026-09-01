@@ -372,6 +372,18 @@ func stableReferences(in []Reference) []Reference {
 	}
 	return out
 }
+
+func publicAnswerReferences(in []Reference) []Reference {
+	stable := stableReferences(in)
+	out := make([]Reference, 0, len(stable))
+	for _, reference := range stable {
+		if reference.Kind == "web_source" {
+			continue
+		}
+		out = append(out, reference)
+	}
+	return out
+}
 func (s *Service) clock() time.Time { return s.now().UTC() }
 func nextMessageTime(c Conversation, t time.Time) time.Time {
 	// PostgreSQL timestamptz persists microseconds. Normalize before comparing
@@ -1277,11 +1289,12 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	}
 	if autoFinalizeWorker {
 		historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
+		answerReferences := publicAnswerReferences(historyReferences)
 		userTime := nextMessageTime(conv, s.clock())
 		message := Message{
 			ID: uuid.NewString(), Role: RoleAssistant, Content: workerContent, ModelProfileID: turn.ProfileID,
 			CreatedAt: userTime.Add(time.Microsecond), RelatedTaskIDs: historyTasks, RelatedPlanIDs: historyPlans,
-			References: historyReferences, ToolSummaries: historySummaries,
+			References: answerReferences, ToolSummaries: historySummaries,
 		}
 		if err := message.Validate(); err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "invalid_worker_result", "Cloud Worker returned an invalid completion")
@@ -1292,7 +1305,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision,
 			Message: message, Done: true, ModelProfileID: turn.ProfileID,
 			RelatedTaskIDs: append([]string(nil), historyTasks...), RelatedPlanIDs: append([]string(nil), historyPlans...),
-			References: cloneReferences(historyReferences), ToolSummaries: append([]string(nil), historySummaries...),
+			References: cloneReferences(answerReferences), ToolSummaries: append([]string(nil), historySummaries...),
 			ToolResults: historyResults, ConversationTitle: conversationTitleFallback(conversationTitleUserText), ConversationTitleSource: conversationTitleUserText,
 		}
 		if _, commitErr := s.turns.CommitTurn(ctx, lease, response); commitErr != nil {
@@ -2132,7 +2145,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
 			m.RelatedTaskIDs = stableIDs(append(append(m.RelatedTaskIDs, out.result.RelatedTaskIDs...), historyTasks...))
 			m.RelatedPlanIDs = stableIDs(append(append(m.RelatedPlanIDs, out.result.RelatedPlanIDs...), historyPlans...))
-			m.References = stableReferences(append(append(m.References, out.result.References...), historyReferences...))
+			m.References = publicAnswerReferences(append(append(m.References, out.result.References...), historyReferences...))
 			m.ToolSummaries = stableStrings(append(append(m.ToolSummaries, out.result.ToolSummaries...), historySummaries...))
 			userTime := nextMessageTime(conv, s.clock())
 			m.ModelProfileID, m.Role, m.CreatedAt = turn.ProfileID, RoleAssistant, userTime.Add(time.Microsecond)
@@ -2358,6 +2371,7 @@ func (s *Service) commitTurnFinalizationFallback(ctx context.Context, lease Turn
 		return err
 	}
 	historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
+	answerReferences := publicAnswerReferences(historyReferences)
 	content := terminalFallbackMarkdown(partial, len(historyResults), intent.Reason, code, summary)
 	createdAt := nextMessageTime(conv, s.clock()).Add(time.Microsecond)
 	message := Message{
@@ -2368,7 +2382,7 @@ func (s *Service) commitTurnFinalizationFallback(ctx context.Context, lease Turn
 		CreatedAt:      createdAt,
 		RelatedTaskIDs: historyTasks,
 		RelatedPlanIDs: historyPlans,
-		References:     historyReferences,
+		References:     answerReferences,
 		ToolSummaries:  historySummaries,
 	}
 	if message.Validate() != nil {
@@ -2378,7 +2392,7 @@ func (s *Service) commitTurnFinalizationFallback(ctx context.Context, lease Turn
 		RequestID: lease.Turn.RequestID, ConversationID: lease.Turn.ConversationID, Revision: conv.Revision + 1,
 		Message: message, Done: true, ModelProfileID: lease.Turn.ProfileID,
 		RelatedTaskIDs: append([]string(nil), historyTasks...), RelatedPlanIDs: append([]string(nil), historyPlans...),
-		References: cloneReferences(historyReferences), ToolSummaries: append([]string(nil), historySummaries...),
+		References: cloneReferences(answerReferences), ToolSummaries: append([]string(nil), historySummaries...),
 		ToolResults: historyResults, ConversationTitle: conversationTitleFallback(titleSource), ConversationTitleSource: titleSource,
 	}
 	_, err = s.turns.CommitTurn(ctx, lease, response)

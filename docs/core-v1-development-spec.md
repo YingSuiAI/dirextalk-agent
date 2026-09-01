@@ -343,10 +343,10 @@ The model receives a bounded normalized evidence projection with canonical
 source URLs and retained reference identity, not raw provider JSON, HTML, or
 presentation fragments. Its final response synthesizes concise natural-language
 Markdown with descriptive linked citations and never dumps raw search snippets
-or meaningless separator markup. Public `web_source` references retain only
-canonical URL identity, evidence digest, and a bounded display title; fetched
-page bodies and snippets remain private model evidence and never populate the
-public preview field.
+or meaningless separator markup. `web_source` references, canonical URL
+identity, evidence digests, fetched bodies, and snippets remain private model
+evidence. Terminal public messages omit the separate Web reference list and
+expose sources only through descriptive Markdown links in the answer body.
 At each immediate or deferred tool-result transaction, the runtime derives a
 versioned `ProgressObservation` when the result carries validated runtime
 references. Its effective digest covers the normalized action, bounded result,
@@ -611,7 +611,8 @@ or leaks a public conversation event sequence. Public progress contains only
 tool identity and bounded execution status; it omits tool arguments, exact
 result content, cursors, and result references. The exact call and terminal
 result stay in the private durable/model transcript, while terminal `done`
-projects authoritative answer references. This is a current-only envelope: rollout
+projects authoritative non-Web answer references; Web sources remain private
+and appear publicly only as Markdown links in the answer body. This is a current-only envelope: rollout
 must first prove there are no nonterminal turns carrying the superseded raw
 model-result shape, or explicitly terminalize those turns before the new binary
 may claim them.

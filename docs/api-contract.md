@@ -265,11 +265,14 @@ or stream after admission. It never cancels the accepted Turn; callers use
   than being inferred from content or `is_error`.
   Evidence-bearing references expose stable provenance through
   `CoreConversationReference.source_id`, `chunk_id`, and `content_digest`.
-  Web results use `web_source` with a canonical URL source identity (lowercase
-  scheme/host, no default port or fragment, `/` for an empty path, and sorted
-  query parameters) plus the result-content digest and a bounded display title.
-  They never place fetched page bodies or search snippets in the public
-  reference preview. Knowledge results use
+  Private Web Search tool results use `web_source` with a canonical URL source
+  identity (lowercase scheme/host, no default port or fragment, `/` for an
+  empty path, and sorted query parameters) plus the result-content digest and
+  a bounded display title.
+  They never place fetched page bodies or search snippets in a public
+  reference preview. Terminal public answers omit `web_source` references;
+  user-visible sources appear only as descriptive Markdown links synthesized
+  into `done.message.content`. Knowledge results use
   `knowledge_chunk` with the durable source/chunk identities and passage
   digest. These identities, rather than titles, previews, or snippets, feed
   progress detection.
@@ -312,8 +315,10 @@ or stream after admission. It never cancels the accepted Turn; callers use
   arguments. A successful call is followed by a public `tool_result` progress
   event containing only call/tool identity, outcome/error state, mutation
   state, and bounded summary. Exact result content, cursors, and result
-  references remain private to the durable model transcript; authoritative
-  answer references are returned by terminal `done`. An ordinary Core intrinsic
+  references remain private to the durable model transcript. Terminal `done`
+  returns authoritative non-Web answer references; Web sources are represented
+  only by descriptive Markdown links in the answer body. An ordinary Core
+  intrinsic
   failure becomes a bounded terminal tool observation and enters the existing
   tools-disabled synthesis, so completed work and gaps return through normal
   `done`. Integrity, persistence, and dispatch-authority failures retain
