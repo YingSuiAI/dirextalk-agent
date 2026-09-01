@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.196
+
+1. Validate new or stored GitHub PATs atomically when enabling the integration, discover the official hosted GitHub MCP catalog, and expose safe reads plus explicit issue, comment, and pull-request merge operations without leaking credentials or replaying ambiguous writes.
+2. Route repository clone, branch, edit, test, commit, push, and code pull-request workflows through the confirmation-gated Cloud Worker with its task-scoped GitHub credential, and fix the embedded Git credential configuration used for authenticated private repository access.
+
 ## v1.0.195
 
 1. Keep Web Search evidence private and remove the separate source list from terminal Agent messages, while retaining concise descriptive Markdown links in the answer body.
