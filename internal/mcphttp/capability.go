@@ -35,7 +35,11 @@ func (f ToolProviderFunc) Tools(ctx context.Context) ([]Tool, error) {
 type Tool struct {
 	Definition coremodel.Tool
 	Effect     ToolEffect
-	Run        func(context.Context, ToolInvocation) (ToolResult, error)
+	// AdvertisedReadOnly preserves the remote standard readOnlyHint for an
+	// exact trusted adapter that intentionally applies server-specific policy.
+	// Generic replay safety remains governed only by the stricter Effect.
+	AdvertisedReadOnly bool
+	Run                func(context.Context, ToolInvocation) (ToolResult, error)
 }
 
 // ToolEffect is the conservative execution class derived from the complete

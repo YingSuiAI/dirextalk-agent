@@ -40,3 +40,23 @@ func TestCloudWorkerRoutingGuidanceRequiresVerifiedModelSizing(t *testing.T) {
 		}
 	}
 }
+
+func TestCloudWorkerRoutingGuidanceSeparatesLightweightGitHubMCPFromCodeWork(t *testing.T) {
+	for _, required := range []string{
+		"mcp__github__issue_write",
+		"mcp__github__add_issue_comment",
+		"mcp__github__merge_pull_request",
+		"cloning a public or private repository",
+		"creating a branch or ref",
+		"changing or deleting files",
+		"editing, testing, committing, pushing",
+		"creating or updating a code pull request",
+		"must use cloud_worker_propose",
+		"behind owner confirmation",
+		"Do not claim that GitHub code changes are unavailable",
+	} {
+		if !strings.Contains(cloudWorkerRoutingGuidance, required) {
+			t.Fatalf("GitHub routing guidance is missing %q", required)
+		}
+	}
+}

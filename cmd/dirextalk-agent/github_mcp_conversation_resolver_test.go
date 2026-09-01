@@ -52,7 +52,7 @@ func testedGitHubResolverConfig(enabled, configured bool) coregithub.ResolvedCon
 	return value
 }
 
-func TestGitHubMCPAdmitsCompleteCatalogAndPreservesToolEffects(t *testing.T) {
+func TestGitHubMCPAdmitsReadsAndLightweightMutationsOnly(t *testing.T) {
 	repo := &githubResolverRepo{v: testedGitHubResolverConfig(true, true)}
 	svc, _ := coregithub.NewService(repo, githubResolverIdentity{})
 	r := &githubMCPConversationResolver{service: svc, factory: func(_ context.Context, snapshot coregithub.ResolvedConfig) (mcphttp.ToolProvider, error) {
@@ -60,12 +60,22 @@ func TestGitHubMCPAdmitsCompleteCatalogAndPreservesToolEffects(t *testing.T) {
 			t.Fatal("PAT entered the catalog snapshot")
 		}
 		return mcphttp.ToolProviderFunc(func(context.Context) ([]mcphttp.Tool, error) {
-			return []mcphttp.Tool{githubTool("mcp__github__create_issue", mcphttp.ToolEffectUnsafeMutation), githubTool("mcp__github__get_file_contents", mcphttp.ToolEffectReadOnly)}, nil
+			read := githubTool("mcp__github__get_file_contents", mcphttp.ToolEffectUnsafeMutation)
+			read.AdvertisedReadOnly = true
+			return []mcphttp.Tool{
+				githubTool("mcp__github__push_files", mcphttp.ToolEffectUnsafeMutation),
+				githubTool("mcp__github__merge_pull_request", mcphttp.ToolEffectUnsafeMutation),
+				githubTool("mcp__github__issue_write", mcphttp.ToolEffectUnsafeMutation),
+				githubTool("mcp__github__create_pull_request", mcphttp.ToolEffectUnsafeMutation),
+				githubTool("mcp__github__create_branch", mcphttp.ToolEffectUnsafeMutation),
+				githubTool("mcp__github__add_issue_comment", mcphttp.ToolEffectUnsafeMutation),
+				read,
+			}, nil
 		}), nil
 	}}
 	got, e := r.ResolveExtensions(webSearchResolverContext(), nil)
-	if e != nil || len(got) != 1 || len(got[0].Tools) != 2 ||
-		got[0].Tools[0].Name != "mcp__github__create_issue" || got[0].Tools[1].Name != "mcp__github__get_file_contents" ||
+	wantNames := []string{"mcp__github__add_issue_comment", "mcp__github__get_file_contents", "mcp__github__issue_write", "mcp__github__merge_pull_request"}
+	if e != nil || len(got) != 1 || len(got[0].Tools) != len(wantNames) || strings.Join(got[0].Snapshot.ToolNames, ",") != strings.Join(wantNames, ",") ||
 		!got[0].Snapshot.ReadOnly || got[0].Snapshot.RequiresConfirmation {
 		t.Fatalf("%#v %v", got, e)
 	}
@@ -73,7 +83,7 @@ func TestGitHubMCPAdmitsCompleteCatalogAndPreservesToolEffects(t *testing.T) {
 	if err != nil || read.MutationState != coreconversation.ToolMutationNone || read.StateChanged {
 		t.Fatalf("read=%+v err=%v", read, err)
 	}
-	write, err := got[0].Execute(webSearchResolverContext(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{ID: "write", Name: "mcp__github__create_issue", Arguments: `{}`}})
+	write, err := got[0].Execute(webSearchResolverContext(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{ID: "write", Name: "mcp__github__issue_write", Arguments: `{}`}})
 	if err != nil || write.MutationState != coreconversation.ToolMutationChanged || !write.StateChanged {
 		t.Fatalf("write=%+v err=%v", write, err)
 	}
@@ -124,7 +134,7 @@ func TestGitHubMCPAmbiguousMutationFailureIsNotReportedAsARead(t *testing.T) {
 	svc, _ := coregithub.NewService(repo, githubResolverIdentity{})
 	resolver := &githubMCPConversationResolver{service: svc, factory: func(context.Context, coregithub.ResolvedConfig) (mcphttp.ToolProvider, error) {
 		return mcphttp.ToolProviderFunc(func(context.Context) ([]mcphttp.Tool, error) {
-			tool := githubTool("mcp__github__create_issue", mcphttp.ToolEffectUnsafeMutation)
+			tool := githubTool("mcp__github__issue_write", mcphttp.ToolEffectUnsafeMutation)
 			tool.Run = func(context.Context, mcphttp.ToolInvocation) (mcphttp.ToolResult, error) {
 				return mcphttp.ToolResult{}, mcphttp.ErrProviderUnavailable
 			}
@@ -135,7 +145,7 @@ func TestGitHubMCPAmbiguousMutationFailureIsNotReportedAsARead(t *testing.T) {
 	if err != nil || len(resolved) != 1 {
 		t.Fatalf("resolved=%+v err=%v", resolved, err)
 	}
-	result, err := resolved[0].Execute(webSearchResolverContext(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{ID: "write", Name: "mcp__github__create_issue", Arguments: `{}`}})
+	result, err := resolved[0].Execute(webSearchResolverContext(), coreconversation.ToolExecutionRequest{Call: coreconversation.ToolCall{ID: "write", Name: "mcp__github__issue_write", Arguments: `{}`}})
 	if err != nil || result.Outcome != coreconversation.ToolOutcomeUnknownMutation || result.MutationState != coreconversation.ToolMutationUnknown || !result.IsError {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}

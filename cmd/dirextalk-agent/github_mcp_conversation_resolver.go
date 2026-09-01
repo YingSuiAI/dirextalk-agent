@@ -87,7 +87,21 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 			// keep the resolver boundary conservative for injected providers too.
 			t.Effect = mcphttp.ToolEffectUnsafeMutation
 		}
-		selected = append(selected, t)
+		if t.AdvertisedReadOnly {
+			// Preserve generic strict classification, but retain a
+			// non-contradictory advertised read at this exact trusted boundary
+			// even when optional MCP annotations are omitted.
+			t.Effect = mcphttp.ToolEffectReadOnly
+			selected = append(selected, t)
+			continue
+		}
+		if t.Effect.ReadOnly() {
+			selected = append(selected, t)
+			continue
+		}
+		if githubMCPLightweightMutation(name) {
+			selected = append(selected, t)
+		}
 	}
 	if len(selected) == 0 {
 		return out, nil
@@ -153,6 +167,19 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 		return toolResult.WithObservation(coreconversation.ToolOutcomeSuccess, "GitHub operation completed", coreconversation.ToolMutationChanged), nil
 	}})
 	return out, nil
+}
+
+// githubMCPLightweightMutation is Dirextalk's immutable mutation allowlist.
+// These names match the official GitHub MCP documentation. Repository code/
+// ref/content writes and pull-request creation stay on the confirmation-gated
+// Cloud Worker path.
+func githubMCPLightweightMutation(name string) bool {
+	switch name {
+	case "mcp__github__add_issue_comment", "mcp__github__issue_write", "mcp__github__merge_pull_request":
+		return true
+	default:
+		return false
+	}
 }
 
 type githubMCPSecret struct {

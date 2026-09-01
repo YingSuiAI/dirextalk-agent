@@ -1072,11 +1072,20 @@ When an enabled configuration has a PAT, Core automatically resolves the
 official hosted GitHub MCP at
 `https://api.githubcopilot.com/mcp/x/all` using that PAT as a Bearer credential.
 Core does not send restrictive `X-MCP-Toolsets` or `X-MCP-Readonly` headers and
-admits the complete tool catalog advertised by that exact trusted endpoint.
-Malformed, duplicate, or empty catalogs fail closed. Standard MCP annotations
-classify each tool independently: fully annotated reads may use the bounded
-read retry policy, while missing, contradictory, or mutating annotations are
-treated as unsafe mutations and never retried after an ambiguous dispatch.
+discovers the complete catalog advertised by that exact trusted endpoint.
+Core admits every tool the official server explicitly advertises as read-only,
+plus the Dirextalk mutation allowlist `issue_write`, `add_issue_comment`, and
+`merge_pull_request`, whose names match the official server documentation.
+File/content/ref/branch writes,
+workflow triggers, pull-request creation or code changes, and every other
+unsafe mutation are excluded from the model catalog. Repository clone/edit/
+test/commit/push and code pull-request workflows route to the confirmation-
+gated Cloud Worker. Malformed, duplicate, or empty accepted catalogs fail
+closed. Generic MCP effect classification remains strict. At this exact trusted
+GitHub boundary, `readOnlyHint=true` is retained when no supplied
+`destructiveHint=true` or `idempotentHint=false` contradicts it; missing
+optional annotations are allowed. Every admitted mutation remains unsafe and
+is never retried after an ambiguous dispatch.
 The synthetic MCP snapshot uses Core's dispatch-recorded inline path and does
 not claim the installed-extension confirmation lane. Disabled or tokenless
 configuration exposes no GitHub MCP tools. Existing enabled/configured rows
@@ -1086,8 +1095,7 @@ is identity-tested atomically by `update_config`. Credential resolution
 rechecks the authenticated owner, account generation and immutable config/
 credential revision immediately before each MCP request. A failed atomic
 enable test commits no config, credential, revision, or idempotency result. On
-every Turn
-continuation or recovery, the accepted GitHub MCP snapshot is rehydrated from
+every Turn continuation or recovery, the accepted GitHub MCP snapshot is rehydrated from
 that authenticated context instead of being routed through durable installed-
 extension storage; its exact immutable snapshot and accepted tool-schema
 digests must still match. The MCP path keeps the PAT server-side and write-only

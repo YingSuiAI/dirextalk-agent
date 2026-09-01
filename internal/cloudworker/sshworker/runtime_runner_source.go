@@ -236,7 +236,7 @@ func configureGitHubRuntime(taskRoot string, command *exec.Cmd) error {
 	helper := filepath.Join(bin, "git-credential-github"); wrapper := filepath.Join(bin, "gh")
 	helperBody := "#!/bin/sh\nprotocol= host=\nwhile IFS='=' read -r key value; do case $key in protocol) protocol=$value ;; host) host=$value ;; esac; done\n[ \"$protocol\" = https ] && [ \"$host\" = github.com ] || exit 0\nprintf 'username=x-access-token\\npassword='\ncat " + strconv.Quote(patPath) + "\nprintf '\\n'\n"
 	wrapperBody := "#!/bin/sh\ntoken=$(cat " + strconv.Quote(patPath) + ") || exit 1\nexec env GH_TOKEN=\"$token\" GH_PROMPT_DISABLED=1 /usr/bin/gh \"$@\"\n"
-	configBody := "[credential \\\"https://github.com\\\"]\n\thelper = " + helper + "\n[core]\n\taskPass = /bin/false\n"
+	configBody := "[credential \"https://github.com\"]\n\thelper = " + helper + "\n[core]\n\taskPass = /bin/false\n"
 	if err := os.WriteFile(helper, []byte(helperBody), 0700); err != nil { return err }; if err := os.WriteFile(wrapper, []byte(wrapperBody), 0700); err != nil { return err }; config := filepath.Join(taskRoot, "gitconfig"); if err := os.WriteFile(config, []byte(configBody), 0600); err != nil { return err }
 	command.Env = append(command.Env, "PATH="+bin+":"+os.Getenv("PATH"), "GIT_CONFIG_GLOBAL="+config, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=/bin/false")
 	return nil

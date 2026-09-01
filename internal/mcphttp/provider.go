@@ -253,7 +253,8 @@ func (p *Provider) Tools(ctx context.Context) ([]Tool, error) {
 					Description: remote.Description,
 					InputSchema: cloneSchema(remote.InputSchema),
 				},
-				Effect: remote.Effect,
+				Effect:             remote.Effect,
+				AdvertisedReadOnly: remote.AdvertisedReadOnly,
 				Run: func(callCtx context.Context, invocation ToolInvocation) (ToolResult, error) {
 					if strings.TrimSpace(invocation.Name) != toolName {
 						return ToolResult{}, ErrUnsafeToolArguments
@@ -271,11 +272,12 @@ func (p *Provider) Tools(ctx context.Context) ([]Tool, error) {
 }
 
 type remoteTool struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	InputSchema map[string]any         `json:"inputSchema"`
-	Annotations *remoteToolAnnotations `json:"annotations"`
-	Effect      ToolEffect             `json:"-"`
+	Name               string                 `json:"name"`
+	Description        string                 `json:"description"`
+	InputSchema        map[string]any         `json:"inputSchema"`
+	Annotations        *remoteToolAnnotations `json:"annotations"`
+	Effect             ToolEffect             `json:"-"`
+	AdvertisedReadOnly bool                   `json:"-"`
 }
 
 type remoteToolAnnotations struct {
@@ -297,9 +299,23 @@ func validateRemoteTool(tool remoteTool) (remoteTool, error) {
 		return remoteTool{}, err
 	}
 	tool.InputSchema = cloneSchema(tool.InputSchema)
+	tool.AdvertisedReadOnly = advertisedReadOnly(tool.Annotations)
 	tool.Effect = strictToolEffect(tool.Annotations)
 	tool.Annotations = nil
 	return tool, nil
+}
+
+func advertisedReadOnly(annotations *remoteToolAnnotations) bool {
+	if annotations == nil || annotations.ReadOnlyHint == nil || !*annotations.ReadOnlyHint {
+		return false
+	}
+	if annotations.DestructiveHint != nil && *annotations.DestructiveHint {
+		return false
+	}
+	if annotations.IdempotentHint != nil && !*annotations.IdempotentHint {
+		return false
+	}
+	return true
 }
 
 func strictToolEffect(annotations *remoteToolAnnotations) ToolEffect {

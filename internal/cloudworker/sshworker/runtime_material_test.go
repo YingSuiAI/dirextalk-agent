@@ -248,6 +248,31 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 		t.Fatalf("duplicate service contract was required or created: %v", err)
 	}
 
+	cleanupID := "github-cleanup"
+	cleanupRoot := filepath.Join(root, "tasks", cleanupID)
+	cleanupFiles := []string{
+		filepath.Join(cleanupRoot, "github-pat"),
+		filepath.Join(cleanupRoot, "gitconfig"),
+		filepath.Join(cleanupRoot, "github-bin", "git-credential-github"),
+		filepath.Join(cleanupRoot, "github-bin", "gh"),
+	}
+	for _, path := range cleanupFiles {
+		if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(path, []byte("sentinel"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if output, err = exec.Command(runner, "stop", cleanupID).CombinedOutput(); err != nil {
+		t.Fatalf("cleanup not-started GitHub runtime: %v: %s", err, output)
+	}
+	for _, path := range cleanupFiles {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("GitHub runtime path survived cleanup: %s: %v", path, statErr)
+		}
+	}
+
 	jobID := "job-timeout"
 	jobRoot := filepath.Join(root, "tasks", jobID)
 	if err = os.MkdirAll(filepath.Join(jobRoot, "workspace"), 0o700); err != nil {
@@ -279,6 +304,11 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 		if err == nil && json.Unmarshal(output, &taskStatus) == nil && taskStatus.Phase == "failed" {
 			if taskStatus.ExitCode != 124 {
 				t.Fatalf("timeout exit code = %d, want 124", taskStatus.ExitCode)
+			}
+			for _, name := range []string{"github-pat", "gitconfig", filepath.Join("github-bin", "git-credential-github"), filepath.Join("github-bin", "gh")} {
+				if _, statErr := os.Stat(filepath.Join(jobRoot, name)); !os.IsNotExist(statErr) {
+					t.Fatalf("no-PAT task retained GitHub runtime path %s: %v", name, statErr)
+				}
 			}
 			time.Sleep(1500 * time.Millisecond)
 			if _, statErr := os.Stat(escaped); !os.IsNotExist(statErr) {
@@ -353,6 +383,45 @@ func TestEmbeddedRemoteRunnerHintsGitHubCapabilityOnlyForBoundTasks(t *testing.T
 		if strings.Contains(remoteRunnerSource[condition:hint+blockEnd], forbidden) {
 			t.Fatalf("GitHub capability hint contains credential material %q", forbidden)
 		}
+	}
+}
+
+func TestEmbeddedGitHubConfigIsAcceptedByGitFirstConsumer(t *testing.T) {
+	marker := `configBody := `
+	start := strings.Index(remoteRunnerSource, marker)
+	if start < 0 {
+		t.Fatal("embedded configBody assignment is missing")
+	}
+	end := strings.IndexByte(remoteRunnerSource[start:], '\n')
+	if end < 0 {
+		t.Fatal("embedded configBody assignment is unterminated")
+	}
+	assignment := remoteRunnerSource[start : start+end]
+	directory := t.TempDir()
+	helper := filepath.Join(directory, "git-credential-github")
+	evaluator := "package main\nimport \"os\"\nfunc main() {\nhelper := " + strconv.Quote(helper) + "\n" + assignment + "\n_, _ = os.Stdout.WriteString(configBody)\n}\n"
+	evaluatorPath := filepath.Join(directory, "evaluate.go")
+	if err := os.WriteFile(evaluatorPath, []byte(evaluator), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configBody, err := exec.Command("go", "run", evaluatorPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("evaluate embedded configBody: %v: %s", err, configBody)
+	}
+	configPath := filepath.Join(directory, "gitconfig")
+	if err := os.WriteFile(configPath, configBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command("git", "config", "--file", configPath, "--get", "credential.https://github.com.helper").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rejected embedded configBody: %v: %s\nconfig=%q", err, output, configBody)
+	}
+	if got := strings.TrimSpace(string(output)); got != helper {
+		t.Fatalf("credential helper=%q want=%q", got, helper)
+	}
+	output, err = exec.Command("git", "config", "--file", configPath, "--get", "core.askpass").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(output)) != "/bin/false" {
+		t.Fatalf("git askpass binding=%q err=%v", output, err)
 	}
 }
 

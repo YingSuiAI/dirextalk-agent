@@ -73,6 +73,9 @@ func TestProviderNegotiatesStreamableHTTPAndCallsTool(t *testing.T) {
 	if tools[0].Effect != ToolEffectReadOnly {
 		t.Fatalf("tool effect=%q, want %q", tools[0].Effect, ToolEffectReadOnly)
 	}
+	if !tools[0].AdvertisedReadOnly {
+		t.Fatal("validated readOnlyHint was not retained as provider metadata")
+	}
 
 	result, err := tools[0].Run(context.Background(), ToolInvocation{Name: tools[0].Definition.Name,
 		Arguments: json.RawMessage(`{"query":"durable tasks"}`),
@@ -100,14 +103,15 @@ func TestProviderClassifiesToolAnnotationsConservatively(t *testing.T) {
 	t.Parallel()
 	boolean := func(value bool) *bool { return &value }
 	tests := []struct {
-		name        string
-		annotations *remoteToolAnnotations
-		want        ToolEffect
+		name               string
+		annotations        *remoteToolAnnotations
+		want               ToolEffect
+		advertisedReadOnly bool
 	}{
 		{name: "missing annotations", want: ToolEffectUnsafeMutation},
 		{name: "missing one standard hint", annotations: &remoteToolAnnotations{
 			ReadOnlyHint: boolean(true), DestructiveHint: boolean(false), IdempotentHint: boolean(true),
-		}, want: ToolEffectUnsafeMutation},
+		}, want: ToolEffectUnsafeMutation, advertisedReadOnly: true},
 		{name: "contradictory read and destructive", annotations: &remoteToolAnnotations{
 			ReadOnlyHint: boolean(true), DestructiveHint: boolean(true), IdempotentHint: boolean(true), OpenWorldHint: boolean(false),
 		}, want: ToolEffectUnsafeMutation},
@@ -116,10 +120,10 @@ func TestProviderClassifiesToolAnnotationsConservatively(t *testing.T) {
 		}, want: ToolEffectUnsafeMutation},
 		{name: "fully annotated closed-world read", annotations: &remoteToolAnnotations{
 			ReadOnlyHint: boolean(true), DestructiveHint: boolean(false), IdempotentHint: boolean(true), OpenWorldHint: boolean(false),
-		}, want: ToolEffectReadOnly},
+		}, want: ToolEffectReadOnly, advertisedReadOnly: true},
 		{name: "fully annotated open-world read", annotations: &remoteToolAnnotations{
 			ReadOnlyHint: boolean(true), DestructiveHint: boolean(false), IdempotentHint: boolean(true), OpenWorldHint: boolean(true),
-		}, want: ToolEffectReadOnly},
+		}, want: ToolEffectReadOnly, advertisedReadOnly: true},
 		{name: "non-destructive idempotent write remains a write", annotations: &remoteToolAnnotations{
 			ReadOnlyHint: boolean(false), DestructiveHint: boolean(false), IdempotentHint: boolean(true), OpenWorldHint: boolean(false),
 		}, want: ToolEffectUnsafeMutation},
@@ -128,6 +132,9 @@ func TestProviderClassifiesToolAnnotationsConservatively(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if got := strictToolEffect(test.annotations); got != test.want {
 				t.Fatalf("effect=%q want=%q", got, test.want)
+			}
+			if got := advertisedReadOnly(test.annotations); got != test.advertisedReadOnly {
+				t.Fatalf("advertised read-only=%v want=%v", got, test.advertisedReadOnly)
 			}
 		})
 	}
