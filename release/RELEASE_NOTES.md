@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.197
+
+1. Treat Cloud Worker terminal stdout as internal evidence and require Central to synthesize a concise user-facing response in the latest user's language instead of copying the report.
+2. Stop creating generic completion-report artifacts for new Worker runs and hide historical stdout, stderr, final-report, completion-report, and final JSON transport files from Central while preserving requested file deliverables and server-side diagnostics.
+
 ## v1.0.196
 
 1. Validate new or stored GitHub PATs atomically when enabling the integration, discover the official hosted GitHub MCP catalog, and expose safe reads plus explicit issue, comment, and pull-request merge operations without leaking credentials or replaying ambiguous writes.
