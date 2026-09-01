@@ -9,6 +9,13 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- DeepSeek V4 thinking requests now use the provider's current structured
+  `tool_choice` contract (`auto`, recovery `required`, or the already-authorized
+  named tool). Known DSML, XML, and model-template tool envelopes leaked into
+  ordinary assistant content are quarantined without parsing or execution,
+  including after a failed tool result; the existing bounded retry and
+  tools-disabled finalization keep the turn responsive after repeated format
+  failures.
 - Live provider instance capacity is no longer rejected merely because its
   actual vCPU or system memory exceeds the model-request schema's minimum-field
   limit. Large multi-GPU EC2 shapes such as `p5.48xlarge` retain their exact

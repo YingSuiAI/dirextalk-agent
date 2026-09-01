@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.194
+
+1. Require DeepSeek V4 thinking requests to use standard structured tool choice, and quarantine additional DSML, XML, and model-template text tool envelopes without parsing or executing them.
+2. Preserve bounded recovery after repeated text-shaped tool output so a failed tool result still reaches a normal tools-disabled final response instead of stalling the turn.
+
 ## v1.0.193
 
 1. Preflight retained Worker domain bindings against the existing Route53 A record before any Worker, security-group, workload-state, or DNS mutation, and report differing IPv4 or TTL values as an actionable unchanged tool outcome instead of an unknown mutation.

@@ -14,6 +14,18 @@ const (
 	deepSeekStructuredToolInstruction      = `This request uses the OpenAI-compatible structured tool protocol. When a tool is needed, emit it only through message.tool_calls with a declared function name and JSON arguments. Never emit DSML, XML, or tool-call markup in message content. Ordinary message content is never interpreted as a tool call.`
 )
 
+var textToolCallEnvelopeMarkers = []string{
+	dsmlToolCallsEnvelope,
+	"<|dsml|tool_calls>",
+	"<｜dsml｜tool_calls>",
+	"<｜tool▁calls▁begin｜>",
+	"<|tool_calls_begin|>",
+	"<tool_calls>",
+	"<tool_call>",
+	"<function_calls>",
+	"<function_call>",
+}
+
 type toolCallTextGuard struct {
 	enabled        bool
 	detectDSML     bool
@@ -48,7 +60,7 @@ func (g *toolCallTextGuard) Finish(content string, hasStructuredToolCalls bool, 
 	if !g.enabled {
 		return false, nil
 	}
-	g.suspicious = g.detectDSML && containsUnquotedDSMLToolEnvelope(content)
+	g.suspicious = g.detectDSML && containsUnquotedToolCallEnvelope(content)
 	g.suppressPublic = g.suspicious || hasStructuredToolCalls
 	g.discardContent = g.suspicious
 	if g.suppressPublic {
@@ -68,27 +80,32 @@ func emitText(text string, emit func(string) error) error {
 	return emit(text)
 }
 
-// containsUnquotedDSMLToolEnvelope recognizes only the provider's protocol
-// shape outside Markdown code and quote blocks. A bare envelope is sufficient
-// to quarantine a truncated response. Ordinary inline mentions remain text,
-// and repository examples can be preserved by quoting or fencing them.
-func containsUnquotedDSMLToolEnvelope(content string) bool {
+// containsUnquotedToolCallEnvelope recognizes known provider text-protocol
+// shapes outside Markdown code and quote blocks. A bare envelope at a protocol
+// line is sufficient to quarantine a truncated response. Ordinary inline
+// mentions remain text, and repository examples can be preserved by quoting or
+// fencing them. The detector never parses a name or arguments.
+func containsUnquotedToolCallEnvelope(content string) bool {
 	visible := markdownProtocolText(content)
-	searchAt := 0
-	for searchAt < len(visible) {
-		relative := strings.Index(visible[searchAt:], dsmlToolCallsEnvelope)
-		if relative < 0 {
-			return false
+	lowerVisible := strings.ToLower(visible)
+	for _, marker := range textToolCallEnvelopeMarkers {
+		marker = strings.ToLower(marker)
+		searchAt := 0
+		for searchAt < len(lowerVisible) {
+			relative := strings.Index(lowerVisible[searchAt:], marker)
+			if relative < 0 {
+				break
+			}
+			start := searchAt + relative
+			after := lowerVisible[start+len(marker):]
+			trimmed := strings.TrimLeft(after, " \t\r\n")
+			lineStart := strings.LastIndexByte(lowerVisible[:start], '\n') + 1
+			protocolPosition := strings.TrimSpace(lowerVisible[lineStart:start]) == ""
+			if protocolPosition || trimmed == "" || strings.HasPrefix(trimmed, strings.ToLower(dsmlInvokePrefix)) {
+				return true
+			}
+			searchAt = start + len(marker)
 		}
-		start := searchAt + relative
-		after := visible[start+len(dsmlToolCallsEnvelope):]
-		trimmed := strings.TrimLeft(after, " \t\r\n")
-		lineStart := strings.LastIndexByte(visible[:start], '\n') + 1
-		protocolPosition := strings.TrimSpace(visible[lineStart:start]) == ""
-		if protocolPosition || trimmed == "" || strings.HasPrefix(trimmed, dsmlInvokePrefix) {
-			return true
-		}
-		searchAt = start + len(dsmlToolCallsEnvelope)
 	}
 	return false
 }

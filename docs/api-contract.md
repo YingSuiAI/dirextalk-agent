@@ -359,8 +359,9 @@ or stream after admission. It never cancels the accepted Turn; callers use
   authorization become explicit terminal tool observations; integrity and
   persistence failures retain failed-turn semantics.
 - When a turn's admitted runtime exposes tools, an OpenAI-compatible response
-  that has no structured `message.tool_calls` but contains a protocol-shaped
-  DSML tool envelope in the ordinary content channel is never parsed as a call,
+  that has no structured `message.tool_calls` but contains a known
+  protocol-shaped DSML, XML, or model-template tool envelope in the ordinary
+  content channel is never parsed as a call,
   published as assistant text, or executed. Detection covers a natural-language
   prefix, fragmented streaming, and a truncated bare envelope while excluding
   Markdown fenced, inline-code, and quoted examples. The adapter quarantines
@@ -381,8 +382,9 @@ or stream after admission. It never cancels the accepted Turn; callers use
   `tool_choice: auto`. After a quarantined text-protocol response, the single
   correction attempt uses `tool_choice: required`; an already-authorized named
   tool remains the stronger exact choice. DeepSeek's reasoning request dialect
-  retains the same fixed guidance and quarantine but omits `tool_choice`, which
-  DeepSeek V4 thinking mode rejects. These controls affect provider output
+  uses the same `auto`/`required`/named selection because the current official
+  V4 Chat Completions contract supports structured tool calls in thinking mode.
+  These controls affect provider output
   shape only and never bypass tool schema validation, accepted snapshots,
   permissions, confirmations, or the text quarantine. DeepSeek strict mode is
   not enabled by silently changing a configured endpoint to its beta API.

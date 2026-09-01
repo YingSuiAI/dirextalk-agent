@@ -131,6 +131,41 @@ func TestModelRunnerQuarantinesNonStreamingPrefixedTextEncodedToolCall(t *testin
 	}
 }
 
+func TestModelRunnerQuarantinesDeepSeekTextToolCallVariantsAfterToolError(t *testing.T) {
+	for _, marker := range []string{
+		"<|DSML|tool_calls>",
+		"<｜DSML｜tool_calls>",
+		"<｜tool▁calls▁begin｜>",
+		"<|tool_calls_begin|>",
+		"<tool_calls>",
+		"<tool_call>",
+		"<function_calls>",
+		"<function_call>",
+	} {
+		t.Run(marker, func(t *testing.T) {
+			request := modelToolProtocolTestRequest()
+			failed := (coreconversation.ToolResult{
+				CallID: "call-previous", ToolName: "lookup", Content: "lookup returned an ambiguous tool error", IsError: true,
+			}).WithObservation(
+				coreconversation.ToolOutcomeInvalid, "lookup returned an ambiguous tool error", coreconversation.ToolMutationNone,
+			)
+			request.Conversation.Messages = []coreconversation.Message{
+				{Role: coreconversation.RoleUser, Content: "inspect"},
+				{Role: coreconversation.RoleAssistant, ToolCalls: []coreconversation.ToolCall{{ID: "call-previous", Name: "lookup", Arguments: `{}`}}},
+				{Role: coreconversation.RoleTool, ToolResults: []coreconversation.ToolResult{failed}},
+			}
+			client := &toolCallFormatCompletionClient{completion: coremodel.Completion{Message: coremodel.Message{
+				Role: coremodel.RoleAssistant, Content: "I will retry.\n" + marker + "\n{\"name\":\"lookup\",\"arguments\":{}}",
+			}}}
+			runner, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+			result, err := runner.Run(context.Background(), request)
+			if !errors.Is(err, coremodel.ErrModelToolCallFormatInvalid) || result.Message.ID != "" || len(result.ToolCalls) != 0 {
+				t.Fatalf("marker=%q result=%+v err=%v", marker, result, err)
+			}
+		})
+	}
+}
+
 func TestModelRunnerKeepsGuardDuringToolFreeFinalization(t *testing.T) {
 	request := modelToolProtocolTestRequest()
 	request.Extensions = nil
@@ -171,10 +206,14 @@ func TestModelRunnerToolFreeGuardDoesNotHideOrdinaryRepositoryText(t *testing.T)
 func TestModelRunnerDoesNotTreatRepositoryTextAsToolProtocol(t *testing.T) {
 	for _, content := range []string{
 		"Repository fixture contains " + dsmlToolCallsEnvelope + " as plain text.",
+		"Repository fixture contains <tool_call> as plain text.",
 		"```text\n" + dsmlToolCallsEnvelope + "\n" + dsmlInvokePrefix + " name=\"lookup\">\n```",
+		"```xml\n<tool_call>\n{\"name\":\"lookup\"}\n</tool_call>\n```",
 		"~~~text\n" + dsmlToolCallsEnvelope + "\n" + dsmlInvokePrefix + " name=\"lookup\">\n~~~",
 		"> " + dsmlToolCallsEnvelope + "\n> " + dsmlInvokePrefix + " name=\"lookup\">",
+		"> <function_call>\n> {\"name\":\"lookup\"}",
 		"Repository token `" + dsmlToolCallsEnvelope + "` followed by `" + dsmlInvokePrefix + "` is documentation.",
+		"Repository token `<|tool_calls_begin|>` is documentation.",
 	} {
 		t.Run(content[:4], func(t *testing.T) {
 			client := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: content}}}}
@@ -249,7 +288,7 @@ func TestModelRunnerRecognizesDeepSeekBehindCompatibleGateway(t *testing.T) {
 	}
 }
 
-func TestModelRunnerOmitsToolChoiceForDeepSeekThinkingMode(t *testing.T) {
+func TestModelRunnerUsesStructuredToolChoiceForDeepSeekThinkingMode(t *testing.T) {
 	for _, recovery := range []bool{false, true} {
 		t.Run(fmt.Sprintf("recovery=%t", recovery), func(t *testing.T) {
 			request := modelToolProtocolTestRequest()
@@ -264,7 +303,11 @@ func TestModelRunnerOmitsToolChoiceForDeepSeekThinkingMode(t *testing.T) {
 				return client, nil
 			})
 			result, err := runner.Stream(context.Background(), request, nil)
-			if err != nil || !result.Done || client.request.ToolChoice != "" ||
+			expectedChoice := coremodel.ToolChoiceAuto
+			if recovery {
+				expectedChoice = coremodel.ToolChoiceRequired
+			}
+			if err != nil || !result.Done || client.request.ToolChoice != expectedChoice ||
 				!strings.Contains(captured.SystemPrompt, "OpenAI-compatible structured tool protocol") {
 				t.Fatalf("result=%+v err=%v request=%+v system_prompt=%q", result, err, client.request, captured.SystemPrompt)
 			}
