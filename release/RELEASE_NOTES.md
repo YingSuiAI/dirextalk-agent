@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.195
+
+1. Keep Web Search evidence private and remove the separate source list from terminal Agent messages, while retaining concise descriptive Markdown links in the answer body.
+
 ## v1.0.194
 
 1. Require DeepSeek V4 thinking requests to use standard structured tool choice, and quarantine additional DSML, XML, and model-template text tool envelopes without parsing or executing them.
