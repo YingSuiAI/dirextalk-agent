@@ -22,8 +22,8 @@ case "$service:$operation" in
     ;;
   ec2:describe-images)
     case " $* " in
-      *ami-22222222222222222*) printf '{"Images":[{"ImageId":"ami-22222222222222222","OwnerId":"898082745236","ImageOwnerAlias":"amazon","Description":"Supported EC2 instances: G4dn, G5, G6, Gr6, G6e, G7, G7e, P4d, P4de, P5, P5e, P5en, P6-B200, P6-B300. Release notes: https://aws.amazon.com/releasenotes/aws-deep-learning-base-gpu-ami-ubuntu-24-04/","State":"available","Architecture":"x86_64","RootDeviceType":"ebs","VirtualizationType":"hvm","RootDeviceName":"/dev/sda1","BlockDeviceMappings":[{"DeviceName":"/dev/sda1","Ebs":{"SnapshotId":"snap-22222222222222222"}}]}]}\n' ;;
-      *) printf '{"Images":[{"ImageId":"ami-11111111111111111","OwnerId":"099720109477","State":"available","Architecture":"x86_64","RootDeviceType":"ebs","VirtualizationType":"hvm","RootDeviceName":"/dev/sda1","BlockDeviceMappings":[{"DeviceName":"/dev/sda1","Ebs":{"SnapshotId":"snap-11111111111111111"}}]}]}\n' ;;
+      *ami-22222222222222222*) printf '{"Images":[{"ImageId":"ami-22222222222222222","OwnerId":"898082745236","ImageOwnerAlias":"amazon","Description":"Supported EC2 instances: G4dn, G5, G6, Gr6, G6e, G7, G7e, P4d, P4de, P5, P5e, P5en, P6-B200, P6-B300. Release notes: https://aws.amazon.com/releasenotes/aws-deep-learning-base-gpu-ami-ubuntu-24-04/","State":"available","Architecture":"x86_64","RootDeviceType":"ebs","VirtualizationType":"hvm","RootDeviceName":"/dev/sda1","BlockDeviceMappings":[{"DeviceName":"/dev/sda1","Ebs":{"SnapshotId":"snap-22222222222222222","VolumeSize":32}}]}]}\n' ;;
+      *) printf '{"Images":[{"ImageId":"ami-11111111111111111","OwnerId":"099720109477","State":"available","Architecture":"x86_64","RootDeviceType":"ebs","VirtualizationType":"hvm","RootDeviceName":"/dev/sda1","BlockDeviceMappings":[{"DeviceName":"/dev/sda1","Ebs":{"SnapshotId":"snap-11111111111111111","VolumeSize":32}}]}]}\n' ;;
     esac
     ;;
   ec2:describe-snapshots)

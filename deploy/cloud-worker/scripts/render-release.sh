@@ -154,13 +154,8 @@ else
   root_device=$(jq -er '.Images[0].RootDeviceName' <<<"$image")
   root_snapshot=$(jq -er --arg root "$root_device" '.Images[0].BlockDeviceMappings[] | select(.DeviceName == $root) | .Ebs.SnapshotId' <<<"$image")
   [[ $root_snapshot =~ ^snap-[0-9a-f]{8,17}$ ]] || { echo 'parent root snapshot is missing' >&2; exit 78; }
-  snapshot=$(aws_read_json ec2 describe-snapshots --snapshot-ids "$root_snapshot")
-  [[ $(jq '.Snapshots | length' <<<"$snapshot") == 1 ]]
-  [[ $(jq -r '.Snapshots[0].OwnerId' <<<"$snapshot") == "$parent_owner" ]] || {
-    echo 'parent root snapshot owner does not match the exact parent AMI owner' >&2; exit 78;
-  }
-  root_min_gib=$(jq -er '.Snapshots[0].VolumeSize' <<<"$snapshot")
-  [[ $root_min_gib =~ ^[1-9][0-9]*$ ]] || { echo 'parent snapshot minimum is invalid' >&2; exit 78; }
+  root_min_gib=$(jq -er --arg root "$root_device" '.Images[0].BlockDeviceMappings[] | select(.DeviceName == $root) | .Ebs.VolumeSize' <<<"$image")
+  [[ $root_min_gib =~ ^[1-9][0-9]*$ ]] || { echo 'parent AMI root minimum is invalid' >&2; exit 78; }
 
   subnet=$(aws_read_json ec2 describe-subnets --subnet-ids "$subnet_id")
   [[ $(jq -r '.Subnets[0] | [.OwnerId,.State,(.MapPublicIpOnLaunch|tostring)] | join(":")' <<<"$subnet") == "$account_id:available:false" ]] || {

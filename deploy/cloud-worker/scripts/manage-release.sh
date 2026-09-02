@@ -100,15 +100,14 @@ validate_arn() {
   }
 }
 verify_parent_again() {
-  local image snapshot observed_root observed_snapshot observed_size
+  local image observed_root observed_snapshot observed_size
   image=$(aws_json ec2 describe-images --image-ids "$parent_ami")
   [[ $(jq -r '.Images[0].ImageId+":"+.Images[0].State+":"+.Images[0].Architecture' <<<"$image") == "$parent_ami:available:x86_64" ]]
   observed_root=$(jq -er '.Images[0].RootDeviceName' <<<"$image")
   observed_snapshot=$(jq -er --arg root "$observed_root" '.Images[0].BlockDeviceMappings[]|select(.DeviceName==$root)|.Ebs.SnapshotId' <<<"$image")
   [[ $observed_snapshot == "$root_snapshot" ]] || { echo 'parent root snapshot changed after render' >&2; exit 78; }
-  snapshot=$(aws_json ec2 describe-snapshots --snapshot-ids "$observed_snapshot")
-  observed_size=$(jq -er '.Snapshots[0].VolumeSize' <<<"$snapshot")
-  [[ $observed_size == "$root_min" ]] || { echo 'parent root snapshot minimum changed after render' >&2; exit 78; }
+  observed_size=$(jq -er --arg root "$observed_root" '.Images[0].BlockDeviceMappings[]|select(.DeviceName==$root)|.Ebs.VolumeSize' <<<"$image")
+  [[ $observed_size == "$root_min" ]] || { echo 'parent AMI root minimum changed after render' >&2; exit 78; }
   [[ $(jq -r --arg root "$observed_root" '.blockDeviceMappings[]|select(.deviceName==$root)|.ebs.volumeSize // "inherited"' "$bundle/recipe.json") == inherited ]] || {
     echo 'recipe must inherit the parent root snapshot minimum' >&2; exit 78;
   }
