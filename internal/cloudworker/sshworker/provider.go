@@ -303,7 +303,7 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 			Phase:       WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, AcceleratorType: request.AcceleratorType,
 			VCPU: request.VCPU, MemoryGiB: request.MemoryGiB, VolumeGiB: request.VolumeGiB,
 			ImageID: request.Discovery.ImageID, ImageFlavor: request.Discovery.ImageFlavor, ImageVersion: request.Discovery.ImageVersion,
-			ImageParameterName: request.Discovery.ImageParameterName, ImageParameterVersion: request.Discovery.ImageParameterVersion,
+			ImageOwnerID: request.Discovery.ImageOwnerID, ImagePiVersion: request.Discovery.ImagePiVersion,
 			CreatedAt: provider.now().UTC()}
 		worker.UpdatedAt = provider.now().UTC()
 		if err := provider.store.SaveWorkerIntent(ctx, worker, func(ctx context.Context) error {
@@ -316,7 +316,7 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 		return WorkerRecord{}, ErrIdentity
 	}
 	worker.ImageID, worker.ImageFlavor, worker.ImageVersion = request.Discovery.ImageID, request.Discovery.ImageFlavor, request.Discovery.ImageVersion
-	worker.ImageParameterName, worker.ImageParameterVersion = request.Discovery.ImageParameterName, request.Discovery.ImageParameterVersion
+	worker.ImageOwnerID, worker.ImagePiVersion = request.Discovery.ImageOwnerID, request.Discovery.ImagePiVersion
 	if err := provider.saveWorker(ctx, &worker); err != nil {
 		return WorkerRecord{}, err
 	}

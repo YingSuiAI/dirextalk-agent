@@ -19,20 +19,14 @@ const (
 	FlavorCPU Flavor = "cpu"
 	FlavorGPU Flavor = "gpu"
 
-	SchemaVersion           = "1"
-	ImageVersion            = "1.1.4"
-	PiVersion               = "0.84.4"
-	RollbackPiVersion       = "0.84.1"
-	ToolBaseline            = "1"
-	ParameterDataType       = "aws:ec2:image"
-	TagSchema               = "DirextalkWorkerImageSchema"
-	TagFlavor               = "DirextalkWorkerImageFlavor"
-	TagVersion              = "DirextalkWorkerImageVersion"
-	TagPiVersion            = "DirextalkPiVersion"
-	TagImageTested          = "DirextalkImageTested"
-	TagGPUSupportedFamilies = "DirextalkGPUSupportedFamilies"
-	ManifestPath            = "/opt/dirextalk-worker/manifest.json"
-	PiPath                  = "/opt/dirextalk-worker/bin/pi"
+	SchemaVersion      = "1"
+	ImageVersion       = "1.1.4"
+	PiVersion          = "0.84.4"
+	RollbackPiVersion  = "0.84.1"
+	ToolBaseline       = "1"
+	PublisherAccountID = "066107820442"
+	ManifestPath       = "/opt/dirextalk-worker/manifest.json"
+	PiPath             = "/opt/dirextalk-worker/bin/pi"
 )
 
 type FailureKind string
@@ -50,14 +44,13 @@ type ContractError struct {
 }
 
 func (e ContractError) Error() string {
-	path, _ := ParameterName(e.Flavor)
 	switch e.Kind {
 	case FailureMissing:
-		return fmt.Sprintf("Dirextalk %s Worker image is not published; publish %s in the selected AWS account and Region", e.Flavor, path)
+		return fmt.Sprintf("Dirextalk %s Worker image is not published for this Region; qualify a public image and update the Agent public release catalog", e.Flavor)
 	case FailureIncompatible:
-		return fmt.Sprintf("Dirextalk %s Worker image is incompatible; publish a semantic image release with schema %s and Pi %s at %s", e.Flavor, SchemaVersion, PiVersion, path)
+		return fmt.Sprintf("Dirextalk %s Worker image is incompatible; update the Agent public release catalog with a qualified image using schema %s and Pi %s", e.Flavor, SchemaVersion, PiVersion)
 	case FailureUnverified:
-		return fmt.Sprintf("Dirextalk %s Worker image is not verified; complete the image tests and republish %s", e.Flavor, path)
+		return fmt.Sprintf("Dirextalk %s Worker image is not verified; complete image qualification before updating the Agent public release catalog", e.Flavor)
 	default:
 		return fmt.Sprintf("Dirextalk %s Worker image metadata is temporarily unavailable", e.Flavor)
 	}
@@ -81,23 +74,15 @@ func FlavorForAccelerator(accelerator string) (Flavor, error) {
 	}
 }
 
-func ParameterName(flavor Flavor) (string, error) {
-	if !ValidFlavor(flavor) {
-		return "", ContractError{Kind: FailureIncompatible, Flavor: flavor}
-	}
-	return "/dirextalk/worker-images/v1/" + string(flavor) + "/current", nil
-}
-
-type Parameter struct {
-	Name, DataType, Value string
-	Version               int64
-}
-
 type Reference struct {
-	Flavor           Flavor
-	ParameterName    string
-	ParameterVersion int64
-	ImageID          string
+	Flavor               Flavor   `json:"-"`
+	OwnerID              string   `json:"-"`
+	ImageID              string   `json:"image_id"`
+	SchemaVersion        string   `json:"image_schema"`
+	ImageVersion         string   `json:"image_version"`
+	PiVersion            string   `json:"pi_version"`
+	Tested               bool     `json:"tested"`
+	GPUSupportedFamilies []string `json:"gpu_supported_families,omitempty"`
 }
 
 var (
@@ -110,52 +95,40 @@ func ValidImageVersion(value string) bool { return imageVersionPattern.MatchStri
 
 func CompatiblePiVersion(value string) bool { return value == PiVersion || value == RollbackPiVersion }
 
-func ValidateParameter(flavor Flavor, value Parameter) (Reference, error) {
-	name, err := ParameterName(flavor)
-	if err != nil {
-		return Reference{}, err
+// ValidProvenance also validates retained, already-qualified Workers without
+// requiring their release to remain the current catalog entry.
+func ValidProvenance(ownerID, imageID, version, piVersion string) bool {
+	return ownerID == PublisherAccountID && imageIDPattern.MatchString(imageID) && ValidImageVersion(version) && CompatiblePiVersion(piVersion)
+}
+
+func ValidateReference(reference Reference) error {
+	if !ValidFlavor(reference.Flavor) || reference.SchemaVersion != SchemaVersion ||
+		!ValidProvenance(reference.OwnerID, reference.ImageID, reference.ImageVersion, reference.PiVersion) {
+		return ContractError{Kind: FailureIncompatible, Flavor: reference.Flavor}
 	}
-	if strings.TrimSpace(value.Name) == "" || strings.TrimSpace(value.Value) == "" {
-		return Reference{}, ContractError{Kind: FailureMissing, Flavor: flavor}
+	if !reference.Tested {
+		return ContractError{Kind: FailureUnverified, Flavor: reference.Flavor}
 	}
-	if value.Name != name || value.DataType != ParameterDataType || value.Version <= 0 || !imageIDPattern.MatchString(value.Value) {
-		return Reference{}, ContractError{Kind: FailureIncompatible, Flavor: flavor}
-	}
-	return Reference{Flavor: flavor, ParameterName: name, ParameterVersion: value.Version, ImageID: value.Value}, nil
+	return validateGPUFamilies(reference.Flavor, reference.GPUSupportedFamilies)
 }
 
 type Image struct {
 	Flavor                           Flavor
 	ImageID, ImageName, ImageVersion string
-	ParameterName                    string
-	ParameterVersion                 int64
+	OwnerID, PiVersion               string
 	CreatedAt                        time.Time
 	RootDeviceName                   string
 	RootVolumeGiB                    int32
 	GPUSupportedFamilies             []string
 }
 
-func ValidateImage(accountID string, reference Reference, image types.Image) (Image, error) {
-	if len(accountID) != 12 || !ValidFlavor(reference.Flavor) || reference.ImageID == "" || reference.ParameterVersion <= 0 ||
-		aws.ToString(image.ImageId) != reference.ImageID || aws.ToString(image.OwnerId) != accountID || image.State != types.ImageStateAvailable ||
+func ValidateImage(reference Reference, image types.Image) (Image, error) {
+	if err := ValidateReference(reference); err != nil {
+		return Image{}, err
+	}
+	if aws.ToString(image.ImageId) != reference.ImageID || aws.ToString(image.OwnerId) != PublisherAccountID || !aws.ToBool(image.Public) || image.State != types.ImageStateAvailable ||
 		image.Architecture != types.ArchitectureValuesX8664 || image.VirtualizationType != types.VirtualizationTypeHvm || image.RootDeviceType != types.DeviceTypeEbs {
 		return Image{}, ContractError{Kind: FailureIncompatible, Flavor: reference.Flavor}
-	}
-	tags := make(map[string]string, len(image.Tags))
-	for _, tag := range image.Tags {
-		if key := strings.TrimSpace(aws.ToString(tag.Key)); key != "" {
-			tags[key] = strings.TrimSpace(aws.ToString(tag.Value))
-		}
-	}
-	if tags[TagSchema] != SchemaVersion || tags[TagFlavor] != string(reference.Flavor) || !ValidImageVersion(tags[TagVersion]) || !CompatiblePiVersion(tags[TagPiVersion]) {
-		return Image{}, ContractError{Kind: FailureIncompatible, Flavor: reference.Flavor}
-	}
-	if tags[TagImageTested] != "true" {
-		return Image{}, ContractError{Kind: FailureUnverified, Flavor: reference.Flavor}
-	}
-	gpuFamilies, err := validateGPUFamilies(reference.Flavor, tags[TagGPUSupportedFamilies])
-	if err != nil {
-		return Image{}, err
 	}
 	createdAt, err := time.Parse(time.RFC3339, aws.ToString(image.CreationDate))
 	rootDeviceName := strings.TrimSpace(aws.ToString(image.RootDeviceName))
@@ -169,30 +142,29 @@ func ValidateImage(accountID string, reference Reference, image types.Image) (Im
 	if err != nil || !strings.HasPrefix(rootDeviceName, "/dev/") || rootVolumeGiB < 8 {
 		return Image{}, ContractError{Kind: FailureIncompatible, Flavor: reference.Flavor}
 	}
-	return Image{Flavor: reference.Flavor, ImageID: reference.ImageID, ImageName: aws.ToString(image.Name), ImageVersion: tags[TagVersion],
-		ParameterName: reference.ParameterName, ParameterVersion: reference.ParameterVersion, CreatedAt: createdAt.UTC(),
-		RootDeviceName: rootDeviceName, RootVolumeGiB: rootVolumeGiB, GPUSupportedFamilies: gpuFamilies}, nil
+	return Image{Flavor: reference.Flavor, ImageID: reference.ImageID, ImageName: aws.ToString(image.Name), ImageVersion: reference.ImageVersion,
+		OwnerID: PublisherAccountID, PiVersion: reference.PiVersion, CreatedAt: createdAt.UTC(),
+		RootDeviceName: rootDeviceName, RootVolumeGiB: rootVolumeGiB, GPUSupportedFamilies: append([]string(nil), reference.GPUSupportedFamilies...)}, nil
 }
 
-func validateGPUFamilies(flavor Flavor, value string) ([]string, error) {
+func validateGPUFamilies(flavor Flavor, families []string) error {
 	if flavor == FlavorCPU {
-		if value != "" {
-			return nil, ContractError{Kind: FailureIncompatible, Flavor: flavor}
+		if len(families) != 0 {
+			return ContractError{Kind: FailureIncompatible, Flavor: flavor}
 		}
-		return nil, nil
+		return nil
 	}
-	if flavor != FlavorGPU || value == "" || strings.TrimSpace(value) != value {
-		return nil, ContractError{Kind: FailureIncompatible, Flavor: flavor}
+	if flavor != FlavorGPU || len(families) == 0 {
+		return ContractError{Kind: FailureIncompatible, Flavor: flavor}
 	}
-	families := strings.Split(value, ",")
 	previous := ""
 	for _, family := range families {
 		if !gpuFamilyPattern.MatchString(family) || family <= previous {
-			return nil, ContractError{Kind: FailureIncompatible, Flavor: flavor}
+			return ContractError{Kind: FailureIncompatible, Flavor: flavor}
 		}
 		previous = family
 	}
-	return families, nil
+	return nil
 }
 
 func (image Image) SupportsInstanceType(instanceType string) bool {

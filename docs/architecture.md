@@ -50,14 +50,18 @@ credential. CPU and GPU Workers use public, versioned Dirextalk Ubuntu 24.04
 images published by Dirextalk in the Worker's AWS Region. The CPU recipe starts
 from Canonical Ubuntu; the GPU recipe starts from AWS's Ubuntu 24.04 OSS NVIDIA
 Driver DLAMI and records the exact base image, root snapshot minimum, and
-supported GPU families discovered at release time. Agent resolves only the
-product-owned `/dirextalk/worker-images/v1/{cpu|gpu}/current` SSM pointer and
-requires the exact account owner, runtime/Pi version, flavor, successful-test
-tags, GPU family set, and live root mapping. Missing, unverified, or incompatible
+supported GPU families discovered at release time. Agent resolves only its
+embedded `internal/cloudworker/workerimage/public-releases.json` catalog, which
+pins qualified Region/flavor AMI IDs, schema, release/Pi versions and GPU families
+from publisher account `066107820442`. Discovery requires that exact AMI and
+publisher, public visibility, supported architecture and live root mapping.
+Customer accounts need neither publisher SSM access nor shared AMI tags; SSM
+candidate/current/previous pointers are publisher-only release bookkeeping.
+Missing, unverified, or incompatible
 images fail before an offer with a maintainer-actionable error; there is no
 generic-image fallback. For both flavors, the confirmed storage quantity is the
 greater of the model's actual disk requirement and the selected AMI's live root
-snapshot minimum. Launch resolves and validates the pointer again and requires
+snapshot minimum. Launch resolves and validates the catalog image again and requires
 a fresh quote if its minimum grew; it never silently increases confirmed
 storage. The Agent discovers
 the account's default VPC/subnet at runtime, creates one EC2 instance with an

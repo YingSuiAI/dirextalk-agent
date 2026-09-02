@@ -71,6 +71,18 @@ mapping before moving `current` to `previous` and the verified candidate to
 `current`. Rollback first validates both pointers in every allowlisted Region,
 then swaps them Region-locally while journaling their exact prior values.
 
+These SSM pointers and AMI tags are publisher-only release bookkeeping, not a
+customer discovery API. After successful live qualification and publication,
+record the exact Region/flavor output AMI IDs, schema, release/Pi versions,
+successful-test status and supported GPU families in
+`internal/cloudworker/workerimage/public-releases.json`, owned by publisher
+`066107820442`. An Agent release embeds that catalog and checks exact ID,
+publisher and public visibility using each customer's credentials; AMI tags
+are not shared across accounts. Catalog promotion or rollback requires an Agent
+release. Never add unqualified candidates, placeholder AMI IDs or private images;
+an absent entry fails closed before offering paid compute. Retained Worker
+provenance does not depend on the current catalog entry.
+
 Build and publish require a non-root operator, least-privilege Image Builder
 instance profile, explicit network/KMS/Region inputs, and an acknowledged cost
 ceiling. The process is manual and concurrency-one by default. Cleanup preserves

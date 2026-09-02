@@ -17,8 +17,6 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
 	quotatypes "github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 )
@@ -42,9 +40,6 @@ type EC2API interface {
 }
 type STSAPI interface {
 	GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
-}
-type SSMAPI interface {
-	GetParameter(context.Context, *ssm.GetParameterInput, ...func(*ssm.Options)) (*ssm.GetParameterOutput, error)
 }
 type ServiceQuotasAPI interface {
 	GetServiceQuota(context.Context, *servicequotas.GetServiceQuotaInput, ...func(*servicequotas.Options)) (*servicequotas.GetServiceQuotaOutput, error)
@@ -85,32 +80,29 @@ func (reader HTTPPublicIPReader) PublicIP(ctx context.Context) (netip.Addr, erro
 }
 
 type SDK struct {
-	region string
-	ec2    EC2API
-	ssm    SSMAPI
-	sts    STSAPI
-	quotas ServiceQuotasAPI
-	ip     PublicIPReader
-	now    func() time.Time
+	region         string
+	ec2            EC2API
+	sts            STSAPI
+	quotas         ServiceQuotasAPI
+	ip             PublicIPReader
+	now            func() time.Time
+	imageReference func(string, workerimage.Flavor) (workerimage.Reference, error)
 }
 
 func NewSDK(config aws.Config, ip PublicIPReader) (*SDK, error) {
 	if strings.TrimSpace(config.Region) == "" || config.Credentials == nil || ip == nil {
 		return nil, ErrInvalid
 	}
-	return newSDKWithClients(config.Region, ec2.NewFromConfig(config), ssm.NewFromConfig(config), sts.NewFromConfig(config), servicequotas.NewFromConfig(config), ip), nil
+	return newSDKWithClients(config.Region, ec2.NewFromConfig(config), sts.NewFromConfig(config), servicequotas.NewFromConfig(config), ip), nil
 }
 func newSDK(region string, ec2Client EC2API, stsClient STSAPI, ip PublicIPReader) *SDK {
-	return newSDKWithClients(region, ec2Client, nil, stsClient, nil, ip)
-}
-func newSDKWithSSM(region string, ec2Client EC2API, ssmClient SSMAPI, stsClient STSAPI, ip PublicIPReader) *SDK {
-	return newSDKWithClients(region, ec2Client, ssmClient, stsClient, nil, ip)
+	return newSDKWithClients(region, ec2Client, stsClient, nil, ip)
 }
 func newSDKWithQuotas(region string, ec2Client EC2API, stsClient STSAPI, quotas ServiceQuotasAPI, ip PublicIPReader) *SDK {
-	return newSDKWithClients(region, ec2Client, nil, stsClient, quotas, ip)
+	return newSDKWithClients(region, ec2Client, stsClient, quotas, ip)
 }
-func newSDKWithClients(region string, ec2Client EC2API, ssmClient SSMAPI, stsClient STSAPI, quotas ServiceQuotasAPI, ip PublicIPReader) *SDK {
-	return &SDK{region: region, ec2: ec2Client, ssm: ssmClient, sts: stsClient, quotas: quotas, ip: ip, now: time.Now}
+func newSDKWithClients(region string, ec2Client EC2API, stsClient STSAPI, quotas ServiceQuotasAPI, ip PublicIPReader) *SDK {
+	return &SDK{region: region, ec2: ec2Client, sts: stsClient, quotas: quotas, ip: ip, now: time.Now, imageReference: workerimage.PublishedReference}
 }
 func (client *SDK) VerifyIdentity(ctx context.Context, identity CredentialIdentity) error {
 	if client == nil || identity.validate() != nil || identity.Region != client.region {
@@ -189,41 +181,22 @@ func (client *SDK) Discover(ctx context.Context, identity CredentialIdentity, in
 		return Discovery{}, err
 	}
 	return Discovery{ImageID: image.ImageID, ImageName: image.ImageName, ImageCreatedAt: image.CreatedAt, ImageFlavor: string(image.Flavor), ImageVersion: image.ImageVersion,
-		ImageParameterName: image.ParameterName, ImageParameterVersion: image.ParameterVersion, RootDeviceName: image.RootDeviceName, RootVolumeGiB: image.RootVolumeGiB, SSHUser: "ubuntu", VPCID: vpcID,
+		ImageOwnerID: image.OwnerID, ImagePiVersion: image.PiVersion, RootDeviceName: image.RootDeviceName, RootVolumeGiB: image.RootVolumeGiB, SSHUser: "ubuntu", VPCID: vpcID,
 		SubnetID: aws.ToString(subnets.Subnets[0].SubnetId), PublicEgressCIDR: netip.PrefixFrom(address, 32).String(), ObservedAt: client.now().UTC()}, nil
 }
 
 func (client *SDK) resolveWorkerImage(ctx context.Context, identity CredentialIdentity, flavor workerimage.Flavor) (workerimage.Image, error) {
-	if client.ssm == nil {
-		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureUnavailable, Flavor: flavor}
-	}
-	if err := client.VerifyIdentity(ctx, identity); err != nil {
-		return workerimage.Image{}, err
-	}
-	name, err := workerimage.ParameterName(flavor)
+	reference, err := client.imageReference(client.region, flavor)
 	if err != nil {
 		return workerimage.Image{}, err
 	}
-	parameterOutput, err := client.ssm.GetParameter(ctx, &ssm.GetParameterInput{Name: aws.String(name), WithDecryption: aws.Bool(false)})
-	if err != nil {
-		var missing *ssmtypes.ParameterNotFound
-		if errors.As(err, &missing) {
-			return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureMissing, Flavor: flavor}
-		}
-		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureUnavailable, Flavor: flavor}
-	}
-	if parameterOutput == nil || parameterOutput.Parameter == nil {
-		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureMissing, Flavor: flavor}
-	}
-	parameter := parameterOutput.Parameter
-	reference, err := workerimage.ValidateParameter(flavor, workerimage.Parameter{Name: aws.ToString(parameter.Name), DataType: aws.ToString(parameter.DataType), Value: aws.ToString(parameter.Value), Version: parameter.Version})
-	if err != nil {
+	if err := workerimage.ValidateReference(reference); err != nil {
 		return workerimage.Image{}, err
 	}
 	if err := client.VerifyIdentity(ctx, identity); err != nil {
 		return workerimage.Image{}, err
 	}
-	images, err := client.ec2.DescribeImages(ctx, &ec2.DescribeImagesInput{ImageIds: []string{reference.ImageID}, Owners: []string{identity.AccountID}})
+	images, err := client.ec2.DescribeImages(ctx, &ec2.DescribeImagesInput{ImageIds: []string{reference.ImageID}, Owners: []string{workerimage.PublisherAccountID}})
 	if err != nil {
 		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureUnavailable, Flavor: flavor}
 	}
@@ -233,7 +206,7 @@ func (client *SDK) resolveWorkerImage(ctx context.Context, identity CredentialId
 	if len(images.Images) != 1 {
 		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureIncompatible, Flavor: flavor}
 	}
-	return workerimage.ValidateImage(identity.AccountID, reference, images.Images[0])
+	return workerimage.ValidateImage(reference, images.Images[0])
 }
 
 func (client *SDK) FindKeyPair(ctx context.Context, identity CredentialIdentity, name string, tags ResourceTags) (KeyPair, bool, error) {

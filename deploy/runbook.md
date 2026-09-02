@@ -111,11 +111,18 @@ offline Git clone/edit/test work, GPU driver/CUDA/containerd/SOCI state where
 applicable, reboot persistence under `/var/lib/dirextalk-worker`, and credential,
 history, cache and build-key residue. Promote candidate to current only through
 the repository command, which preserves the previous pointer for rollback and
-performs exact AWS identity and AMI read-back. Distribution is private and
+performs exact AWS identity and AMI read-back. Distribution is public and
 limited to the explicitly supplied Region allowlist; the first cross-Region copy
 and its snapshot incur storage/transfer cost. See `deploy/cloud-worker/README.md`
 for build, promotion, rollback and cleanup commands, IAM/network prerequisites,
 checksums, and cost controls.
+
+After live qualification and public publication succeed, update the embedded
+`internal/cloudworker/workerimage/public-releases.json` with the exact qualified
+Region/flavor AMI identities and release metadata, then release the Agent. Its
+consumer uses that immutable catalog and publisher `066107820442`, not the
+publisher's SSM pointers or tags. A catalog rollback likewise requires an Agent
+release; already-qualified retained Workers remain reusable.
 
 ## Runner integration
 

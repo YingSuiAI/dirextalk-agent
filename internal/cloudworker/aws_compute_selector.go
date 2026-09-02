@@ -3,7 +3,6 @@ package cloudworker
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"math"
 	"math/big"
 	"sort"
@@ -18,8 +17,6 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/pricing"
 	pricingtypes "github.com/aws/aws-sdk-go-v2/service/pricing/types"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
 
 type AWSComputeSelectionAPI interface {
@@ -30,12 +27,7 @@ type AWSComputeSelectionAPI interface {
 
 type AWSComputeSelectionFactory interface {
 	NewEC2(workaws.CredentialHandle, string) (AWSComputeSelectionAPI, error)
-	NewSSM(workaws.CredentialHandle, string) (AWSWorkerImageParameterAPI, error)
 	NewPricing(workaws.CredentialHandle) (AWSPriceListAPI, error)
-}
-
-type AWSWorkerImageParameterAPI interface {
-	GetParameter(context.Context, *ssm.GetParameterInput, ...func(*ssm.Options)) (*ssm.GetParameterOutput, error)
 }
 
 type SDKAWSComputeSelectionFactory struct{}
@@ -49,29 +41,21 @@ func (SDKAWSComputeSelectionFactory) NewEC2(credential workaws.CredentialHandle,
 	return ec2.NewFromConfig(config), nil
 }
 
-func (SDKAWSComputeSelectionFactory) NewSSM(credential workaws.CredentialHandle, region string) (AWSWorkerImageParameterAPI, error) {
-	if credential.Validate() != nil || strings.TrimSpace(region) == "" || strings.TrimSpace(region) != region {
-		return nil, ErrStaleAuthorization
-	}
-	config := aws.Config{Region: region, Credentials: credentials.NewStaticCredentialsProvider(
-		credential.AccessKeyID, credential.SecretAccessKey, credential.SessionToken)}
-	return ssm.NewFromConfig(config), nil
-}
-
 func (SDKAWSComputeSelectionFactory) NewPricing(credential workaws.CredentialHandle) (AWSPriceListAPI, error) {
 	return SDKAWSPriceListFactory{}.New(credential)
 }
 
 type AWSComputeSelector struct {
-	credentials workaws.ExactCredentialResolver
-	factory     AWSComputeSelectionFactory
+	credentials    workaws.ExactCredentialResolver
+	factory        AWSComputeSelectionFactory
+	imageReference func(string, workerimage.Flavor) (workerimage.Reference, error)
 }
 
 func NewAWSComputeSelector(credentials workaws.ExactCredentialResolver, factory AWSComputeSelectionFactory) (*AWSComputeSelector, error) {
 	if credentials == nil || factory == nil {
 		return nil, ErrInvalid
 	}
-	return &AWSComputeSelector{credentials: credentials, factory: factory}, nil
+	return &AWSComputeSelector{credentials: credentials, factory: factory, imageReference: workerimage.PublishedReference}, nil
 }
 
 type pricedInstanceShape struct {
@@ -131,16 +115,15 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 	if err != nil || ec2Client == nil {
 		return ComputeSpec{}, computeSelectionUnavailable("offerings")
 	}
-	ssmClient, err := selector.factory.NewSSM(credential, binding.Region)
-	if err != nil || ssmClient == nil {
-		flavor, _ := imageFlavorForRequirement(requirements.AcceleratorType)
-		return ComputeSpec{}, workerImageSelectionUnavailable(workerimage.ContractError{Kind: workerimage.FailureUnavailable, Flavor: flavor})
-	}
 	flavor, err := imageFlavorForRequirement(requirements.AcceleratorType)
 	if err != nil {
 		return ComputeSpec{}, workerImageSelectionUnavailable(err)
 	}
-	image, err := discoverWorkerImage(ctx, ssmClient, ec2Client, binding.AccountID, flavor)
+	reference, err := selector.imageReference(binding.Region, flavor)
+	if err != nil {
+		return ComputeSpec{}, workerImageSelectionUnavailable(err)
+	}
+	image, err := discoverWorkerImage(ctx, ec2Client, reference)
 	if err != nil {
 		return ComputeSpec{}, workerImageSelectionUnavailable(err)
 	}
@@ -279,28 +262,12 @@ func imageFlavorForRequirement(acceleratorType string) (workerimage.Flavor, erro
 	}
 }
 
-func discoverWorkerImage(ctx context.Context, parameters AWSWorkerImageParameterAPI, images AWSComputeSelectionAPI, accountID string, flavor workerimage.Flavor) (workerimage.Image, error) {
-	name, err := workerimage.ParameterName(flavor)
-	if err != nil {
+func discoverWorkerImage(ctx context.Context, images AWSComputeSelectionAPI, reference workerimage.Reference) (workerimage.Image, error) {
+	flavor := reference.Flavor
+	if err := workerimage.ValidateReference(reference); err != nil {
 		return workerimage.Image{}, err
 	}
-	parameterOutput, err := parameters.GetParameter(ctx, &ssm.GetParameterInput{Name: aws.String(name), WithDecryption: aws.Bool(false)})
-	if err != nil {
-		var missing *ssmtypes.ParameterNotFound
-		if errors.As(err, &missing) {
-			return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureMissing, Flavor: flavor}
-		}
-		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureUnavailable, Flavor: flavor}
-	}
-	if parameterOutput == nil || parameterOutput.Parameter == nil {
-		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureMissing, Flavor: flavor}
-	}
-	parameter := parameterOutput.Parameter
-	reference, err := workerimage.ValidateParameter(flavor, workerimage.Parameter{Name: aws.ToString(parameter.Name), DataType: aws.ToString(parameter.DataType), Value: aws.ToString(parameter.Value), Version: parameter.Version})
-	if err != nil {
-		return workerimage.Image{}, err
-	}
-	imageOutput, err := images.DescribeImages(ctx, &ec2.DescribeImagesInput{ImageIds: []string{reference.ImageID}, Owners: []string{accountID}})
+	imageOutput, err := images.DescribeImages(ctx, &ec2.DescribeImagesInput{ImageIds: []string{reference.ImageID}, Owners: []string{workerimage.PublisherAccountID}})
 	if err != nil {
 		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureUnavailable, Flavor: flavor}
 	}
@@ -310,7 +277,7 @@ func discoverWorkerImage(ctx context.Context, parameters AWSWorkerImageParameter
 	if len(imageOutput.Images) != 1 {
 		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureIncompatible, Flavor: flavor}
 	}
-	return workerimage.ValidateImage(accountID, reference, imageOutput.Images[0])
+	return workerimage.ValidateImage(reference, imageOutput.Images[0])
 }
 
 func listPricedInstanceShapes(ctx context.Context, client AWSPriceListAPI, region string, requirements ComputeRequirements) (map[string]pricedInstanceShape, error) {

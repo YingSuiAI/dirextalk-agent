@@ -343,7 +343,8 @@ func TestExecuteRequiresConfirmationOnlyWhenCreatingAndRetainsWorker(t *testing.
 		t.Fatal(err)
 	}
 	worker := store.workers[r.ExecutionID]
-	if worker.Phase != WorkerIdle || cloud.terminations != 0 || len(cloud.instances) != 1 {
+	if worker.Phase != WorkerIdle || cloud.terminations != 0 || len(cloud.instances) != 1 || worker.VCPU != 2 ||
+		worker.ImageOwnerID != workerimage.PublisherAccountID || worker.ImagePiVersion != workerimage.PiVersion || !worker.hasVerifiedImageContract() {
 		t.Fatalf("worker not retained: %#v", worker)
 	}
 	second := requestFixture()
@@ -519,7 +520,7 @@ func TestRetainedWorkerReuseRejectsWorkerWithoutVerifiedImageContract(t *testing
 	store := newMemoryStore()
 	worker := workerRecordFixture("worker-legacy", credentialFixture(), WorkerIdle)
 	worker.ImageID, worker.ImageFlavor, worker.ImageVersion = "", "", ""
-	worker.ImageParameterName, worker.ImageParameterVersion = "", 0
+	worker.ImageOwnerID, worker.ImagePiVersion = "", ""
 	worker.Instance = Instance{ID: "i-worker-legacy", State: "running", PublicIP: "203.0.113.7"}
 	store.workers[worker.WorkerID] = worker
 	cloud.instances[worker.WorkerID] = worker.Instance
@@ -540,7 +541,6 @@ func TestRetainedWorkerReuseRejectsUnknownOrIncompatibleAccelerator(t *testing.T
 		worker.AcceleratorType = fixture.accelerator
 		if fixture.accelerator == "gpu" {
 			worker.ImageFlavor = "gpu"
-			worker.ImageParameterName = "/dirextalk/worker-images/v1/gpu/current"
 		}
 		worker.Instance = Instance{ID: "i-" + fixture.id, State: "running", PublicIP: "203.0.113.7"}
 		store.workers[worker.WorkerID] = worker
@@ -1345,8 +1345,13 @@ func TestFileStorePersistsAuthorityAndFindsRetainedWorkers(t *testing.T) {
 	}
 	authority := authorityFixture()
 	worker := workerRecordFixture("worker-a", credentialFixture(), WorkerIdle)
+	worker.ImageVersion = "0.9.0" // Persisted qualification is independent of the current catalog.
 	if err = store.SaveWorker(context.Background(), worker); err != nil {
 		t.Fatal(err)
+	}
+	stored, found, err := store.LoadWorker(context.Background(), worker.WorkerID)
+	if err != nil || !found || !stored.hasVerifiedImageContract() || stored.ImageOwnerID != workerimage.PublisherAccountID || stored.ImagePiVersion != workerimage.PiVersion || stored.ImageVersion != "0.9.0" {
+		t.Fatalf("stored image provenance=%+v found=%t err=%v", stored, found, err)
 	}
 	execution := ExecutionRecord{ExecutionID: "execution-a", WorkerID: worker.WorkerID, OwnerID: authority.OwnerID,
 		AccountGeneration: authority.AccountGeneration, Credential: worker.Credential, Phase: TaskRunning}
@@ -1452,7 +1457,7 @@ func workerRecordFixture(id string, credential CredentialIdentity, phase WorkerP
 	return WorkerRecord{WorkerID: id, OwnerID: authorityFixture().OwnerID, AccountGeneration: authorityFixture().AccountGeneration,
 		Credential: credential, Phase: phase, InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 16,
 		ImageID: "ami-0123456789abcdef0", ImageFlavor: "cpu", ImageVersion: workerimage.ImageVersion,
-		ImageParameterName: "/dirextalk/worker-images/v1/cpu/current", ImageParameterVersion: 1}
+		ImageOwnerID: workerimage.PublisherAccountID, ImagePiVersion: workerimage.PiVersion}
 }
 func withBusyInstance(worker WorkerRecord, id string) WorkerRecord {
 	worker.CurrentExecutionID = id
@@ -1461,7 +1466,7 @@ func withBusyInstance(worker WorkerRecord, id string) WorkerRecord {
 }
 func discoveryFixture() Discovery {
 	return Discovery{ImageID: "ami-0123456789abcdef0", ImageName: "dirextalk-worker-cpu", ImageCreatedAt: time.Now().UTC(), ImageFlavor: "cpu", ImageVersion: workerimage.ImageVersion,
-		ImageParameterName: "/dirextalk/worker-images/v1/cpu/current", ImageParameterVersion: 1, RootDeviceName: "/dev/sda1", RootVolumeGiB: 8,
+		ImageOwnerID: workerimage.PublisherAccountID, ImagePiVersion: workerimage.PiVersion, RootDeviceName: "/dev/sda1", RootVolumeGiB: 8,
 		SSHUser: "ec2-user", VPCID: "vpc-default", SubnetID: "subnet-default", PublicEgressCIDR: "198.51.100.7/32", ObservedAt: time.Now().UTC()}
 }
 func requestFixture() ExecuteRequest {

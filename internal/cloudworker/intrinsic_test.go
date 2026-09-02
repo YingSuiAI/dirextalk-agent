@@ -1072,7 +1072,7 @@ func TestProposalImageFailureIsActionableAndProviderDetailFree(t *testing.T) {
 	err := classifyProposalExecutionError(markProposalPreMutation(errors.Join(workerImageSelectionUnavailable(imageErr), private)))
 	observation, ok := coreconversation.ToolExecutionErrorObservation(err)
 	if !ok || observation.Outcome != coreconversation.ToolOutcomeFatal ||
-		!strings.Contains(observation.Summary, "/dirextalk/worker-images/v1/cpu/current") ||
+		!strings.Contains(observation.Summary, "Agent public release catalog") ||
 		strings.Contains(observation.Summary, "SignatureDoesNotMatch") || strings.Contains(observation.Summary, "secret-access-key") {
 		t.Fatalf("observation=%+v ok=%v err=%v", observation, ok, err)
 	}

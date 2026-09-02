@@ -14,8 +14,6 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
 	quotatypes "github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 )
@@ -32,18 +30,29 @@ type identityProbeSTS struct {
 	events   *[]string
 }
 
-type parameterProbeSSM struct {
+type imageCatalogProbe struct {
 	imageID string
-	name    string
+	region  string
+	flavor  workerimage.Flavor
 	err     error
 }
 
-func (probe *parameterProbeSSM) GetParameter(_ context.Context, input *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
-	probe.name = aws.ToString(input.Name)
+func (probe *imageCatalogProbe) resolve(region string, flavor workerimage.Flavor) (workerimage.Reference, error) {
+	probe.region, probe.flavor = region, flavor
 	if probe.err != nil {
-		return nil, probe.err
+		return workerimage.Reference{}, probe.err
 	}
-	return &ssm.GetParameterOutput{Parameter: &ssmtypes.Parameter{Name: input.Name, DataType: aws.String(workerimage.ParameterDataType), Value: aws.String(probe.imageID), Version: 5}}, nil
+	reference := workerimage.Reference{Flavor: flavor, OwnerID: workerimage.PublisherAccountID, ImageID: probe.imageID, SchemaVersion: workerimage.SchemaVersion, ImageVersion: workerimage.ImageVersion, PiVersion: workerimage.PiVersion, Tested: true}
+	if flavor == workerimage.FlavorGPU {
+		reference.GPUSupportedFamilies = []string{"g4dn", "g5", "p5"}
+	}
+	return reference, nil
+}
+
+func newSDKWithCatalog(region string, ec2Client EC2API, catalog *imageCatalogProbe, stsClient STSAPI, ip PublicIPReader) *SDK {
+	client := newSDK(region, ec2Client, stsClient, ip)
+	client.imageReference = catalog.resolve
+	return client
 }
 
 func (probe *identityProbeSTS) GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error) {
@@ -64,6 +73,8 @@ type mutationProbeEC2 struct {
 	terminateCalls                        int
 	describeImagesInput                   *ec2.DescribeImagesInput
 	images                                []ec2types.Image
+	imagesErr                             error
+	vpcCalls                              int
 	vpcs                                  []ec2types.Vpc
 	subnets                               []ec2types.Subnet
 	offerings                             []ec2types.InstanceTypeOffering
@@ -81,9 +92,13 @@ type mutationProbeEC2 struct {
 
 func (probe *mutationProbeEC2) DescribeImages(_ context.Context, input *ec2.DescribeImagesInput, _ ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
 	probe.describeImagesInput = input
+	if probe.imagesErr != nil {
+		return nil, probe.imagesErr
+	}
 	return &ec2.DescribeImagesOutput{Images: probe.images}, nil
 }
 func (probe *mutationProbeEC2) DescribeVpcs(context.Context, *ec2.DescribeVpcsInput, ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error) {
+	probe.vpcCalls++
 	return &ec2.DescribeVpcsOutput{Vpcs: probe.vpcs}, nil
 }
 func (probe *mutationProbeEC2) DescribeSubnets(context.Context, *ec2.DescribeSubnetsInput, ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
@@ -206,9 +221,9 @@ func (staticIP) PublicIP(context.Context) (netip.Addr, error) {
 }
 
 func TestSDKDiscoverUsesExactVerifiedDirextalkCPUImage(t *testing.T) {
-	parameter := &parameterProbeSSM{imageID: "ami-0123456789abcdef0"}
+	catalog := &imageCatalogProbe{imageID: "ami-0123456789abcdef0"}
 	probe := &mutationProbeEC2{
-		images: []ec2types.Image{imageFixture(parameter.imageID, "dirextalk-worker-cpu", "2026-08-02T00:00:00Z", 24, workerimage.FlavorCPU)},
+		images: []ec2types.Image{imageFixture(catalog.imageID, "dirextalk-worker-cpu", "2026-08-02T00:00:00Z", 24)},
 		vpcs:   []ec2types.Vpc{{VpcId: aws.String("vpc-default")}},
 		subnets: []ec2types.Subnet{
 			{SubnetId: aws.String("subnet-z"), AvailabilityZone: aws.String("region-under-test-z")},
@@ -218,14 +233,14 @@ func TestSDKDiscoverUsesExactVerifiedDirextalkCPUImage(t *testing.T) {
 	}
 	credential := credentialFixture()
 	credential.Region = "region-under-test"
-	discovery, err := newSDKWithSSM(credential.Region, probe, parameter, stubSTS{}, staticIP{}).Discover(context.Background(), credential, "c5a.xlarge", "")
+	discovery, err := newSDKWithCatalog(credential.Region, probe, catalog, stubSTS{}, staticIP{}).Discover(context.Background(), credential, "c5a.xlarge", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parameter.name != "/dirextalk/worker-images/v1/cpu/current" || probe.describeImagesInput == nil || !slices.Equal(probe.describeImagesInput.Owners, []string{credential.AccountID}) || !slices.Equal(probe.describeImagesInput.ImageIds, []string{parameter.imageID}) {
-		t.Fatalf("parameter=%q DescribeImages=%#v", parameter.name, probe.describeImagesInput)
+	if catalog.region != credential.Region || catalog.flavor != workerimage.FlavorCPU || probe.describeImagesInput == nil || !slices.Equal(probe.describeImagesInput.Owners, []string{workerimage.PublisherAccountID}) || !slices.Equal(probe.describeImagesInput.ImageIds, []string{catalog.imageID}) {
+		t.Fatalf("catalog=%+v DescribeImages=%#v", catalog, probe.describeImagesInput)
 	}
-	if discovery.ImageID != parameter.imageID || discovery.ImageFlavor != "cpu" || discovery.ImageVersion != workerimage.ImageVersion || discovery.ImageParameterVersion != 5 || discovery.RootDeviceName != "/dev/sda1" || discovery.RootVolumeGiB != 24 || discovery.SSHUser != "ubuntu" || discovery.VPCID != "vpc-default" || discovery.SubnetID != "subnet-a" {
+	if discovery.ImageID != catalog.imageID || discovery.ImageFlavor != "cpu" || discovery.ImageVersion != workerimage.ImageVersion || discovery.ImageOwnerID != workerimage.PublisherAccountID || discovery.ImagePiVersion != workerimage.PiVersion || discovery.RootDeviceName != "/dev/sda1" || discovery.RootVolumeGiB != 24 || discovery.SSHUser != "ubuntu" || discovery.VPCID != "vpc-default" || discovery.SubnetID != "subnet-a" {
 		t.Fatalf("discovery = %#v", discovery)
 	}
 	if probe.offeringsInput == nil || probe.offeringsInput.LocationType != ec2types.LocationTypeAvailabilityZone || len(probe.offeringsInput.Filters) != 1 || !slices.Equal(probe.offeringsInput.Filters[0].Values, []string{"c5a.xlarge"}) {
@@ -234,21 +249,21 @@ func TestSDKDiscoverUsesExactVerifiedDirextalkCPUImage(t *testing.T) {
 }
 
 func TestSDKDiscoverUsesVerifiedDirextalkGPUImageAndSnapshotMinimum(t *testing.T) {
-	parameter := &parameterProbeSSM{imageID: "ami-0123456789abcdef0"}
+	catalog := &imageCatalogProbe{imageID: "ami-0123456789abcdef0"}
 	probe := &mutationProbeEC2{
-		images:    []ec2types.Image{imageFixture(parameter.imageID, "dirextalk-worker-gpu", "2026-08-25T00:00:00Z", 75, workerimage.FlavorGPU)},
+		images:    []ec2types.Image{imageFixture(catalog.imageID, "dirextalk-worker-gpu", "2026-08-25T00:00:00Z", 75)},
 		vpcs:      []ec2types.Vpc{{VpcId: aws.String("vpc-default")}},
 		subnets:   []ec2types.Subnet{{SubnetId: aws.String("subnet-a"), AvailabilityZone: aws.String("region-under-test-a")}},
 		offerings: []ec2types.InstanceTypeOffering{{InstanceType: ec2types.InstanceTypeG4dnXlarge, Location: aws.String("region-under-test-a")}},
 	}
 	credential := credentialFixture()
 	credential.Region = "region-under-test"
-	discovery, err := newSDKWithSSM(credential.Region, probe, parameter, stubSTS{}, staticIP{}).Discover(context.Background(), credential, "g4dn.xlarge", "gpu")
+	discovery, err := newSDKWithCatalog(credential.Region, probe, catalog, stubSTS{}, staticIP{}).Discover(context.Background(), credential, "g4dn.xlarge", "gpu")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parameter.name != "/dirextalk/worker-images/v1/gpu/current" || !slices.Equal(probe.describeImagesInput.Owners, []string{credential.AccountID}) || discovery.RootVolumeGiB != 75 {
-		t.Fatalf("GPU parameter=%q discovery=%#v", parameter.name, discovery)
+	if catalog.flavor != workerimage.FlavorGPU || !slices.Equal(probe.describeImagesInput.Owners, []string{workerimage.PublisherAccountID}) || discovery.RootVolumeGiB != 75 {
+		t.Fatalf("GPU catalog=%+v discovery=%#v", catalog, discovery)
 	}
 	probe.runInput = nil
 	_, err = newSDK(credential.Region, probe, stubSTS{}, staticIP{}).RunInstance(context.Background(), credential, Confirmation{Confirmed: true, Proof: "confirmation-1"}, LaunchRequest{
@@ -271,9 +286,9 @@ func TestSDKRunRejectsImageGrowthBeyondConfirmedVolume(t *testing.T) {
 
 func TestSDKRejectsGPUFamilyUnsupportedByVerifiedImage(t *testing.T) {
 	identity := credentialFixture()
-	parameter := &parameterProbeSSM{imageID: "ami-0123456789abcdef0"}
-	probe := &mutationProbeEC2{images: []ec2types.Image{imageFixture(parameter.imageID, "dirextalk-worker-gpu", "2026-08-25T00:00:00Z", 75, workerimage.FlavorGPU)}}
-	_, err := newSDKWithSSM(identity.Region, probe, parameter, stubSTS{}, staticIP{}).Discover(context.Background(), identity, "gr6f.4xlarge", "gpu")
+	catalog := &imageCatalogProbe{imageID: "ami-0123456789abcdef0"}
+	probe := &mutationProbeEC2{images: []ec2types.Image{imageFixture(catalog.imageID, "dirextalk-worker-gpu", "2026-08-25T00:00:00Z", 75)}}
+	_, err := newSDKWithCatalog(identity.Region, probe, catalog, stubSTS{}, staticIP{}).Discover(context.Background(), identity, "gr6f.4xlarge", "gpu")
 	if !errors.Is(err, ErrProviderRejected) {
 		t.Fatalf("unsupported GPU error = %v", err)
 	}
@@ -281,12 +296,50 @@ func TestSDKRejectsGPUFamilyUnsupportedByVerifiedImage(t *testing.T) {
 
 func TestSDKDiscoverReportsMissingWorkerImageWithoutProviderDetail(t *testing.T) {
 	identity := credentialFixture()
-	private := "SignatureDoesNotMatch secret-access-key"
-	parameter := &parameterProbeSSM{err: &ssmtypes.ParameterNotFound{Message: aws.String(private)}}
-	_, err := newSDKWithSSM(identity.Region, &mutationProbeEC2{}, parameter, stubSTS{}, staticIP{}).Discover(context.Background(), identity, "c5a.xlarge", "")
+	catalog := &imageCatalogProbe{err: workerimage.ContractError{Kind: workerimage.FailureMissing, Flavor: workerimage.FlavorCPU}}
+	probe := &mutationProbeEC2{}
+	_, err := newSDKWithCatalog(identity.Region, probe, catalog, stubSTS{}, staticIP{}).Discover(context.Background(), identity, "c5a.xlarge", "")
 	if !errors.Is(err, ErrProviderRejected) || !workerimage.IsFailure(err, workerimage.FailureMissing) ||
-		!strings.Contains(err.Error(), "/dirextalk/worker-images/v1/cpu/current") || strings.Contains(err.Error(), private) {
+		!strings.Contains(err.Error(), "Agent public release catalog") || probe.describeImagesInput != nil {
 		t.Fatalf("missing image error=%v", err)
+	}
+}
+
+func TestSDKImageDiscoveryRejectsUnqualifiedImageBeforeNetwork(t *testing.T) {
+	identity := credentialFixture()
+	for _, state := range []string{"missing", "customer-owned", "private", "different-id", "provider-failure"} {
+		t.Run(state, func(t *testing.T) {
+			catalog := &imageCatalogProbe{imageID: "ami-0123456789abcdef0"}
+			probe := &mutationProbeEC2{images: []ec2types.Image{imageFixture(catalog.imageID, "dirextalk-worker-cpu", "2026-08-25T00:00:00Z", 24)}}
+			kind := workerimage.FailureIncompatible
+			switch state {
+			case "missing":
+				kind, probe.images = workerimage.FailureMissing, nil
+			case "customer-owned":
+				probe.images[0].OwnerId = aws.String(identity.AccountID)
+			case "private":
+				probe.images[0].Public = aws.Bool(false)
+			case "different-id":
+				probe.images[0].ImageId = aws.String("ami-fffffffffffffffff")
+			case "provider-failure":
+				kind, probe.imagesErr = workerimage.FailureUnavailable, errors.New("SignatureDoesNotMatch secret-access-key")
+			}
+			_, err := newSDKWithCatalog(identity.Region, probe, catalog, stubSTS{}, staticIP{}).Discover(context.Background(), identity, "t3.small", "")
+			if !workerimage.IsFailure(err, kind) || strings.Contains(err.Error(), "secret-access-key") || probe.vpcCalls != 0 || probe.runCalls != 0 {
+				t.Fatalf("error=%v vpcCalls=%d runCalls=%d", err, probe.vpcCalls, probe.runCalls)
+			}
+		})
+	}
+}
+
+func TestSDKImageDiscoveryRevalidatesCustomerIdentityBeforeReadingPublicAMI(t *testing.T) {
+	identity := credentialFixture()
+	probe := &mutationProbeEC2{}
+	sts := &identityProbeSTS{accounts: []string{identity.AccountID, workerimage.PublisherAccountID}}
+	catalog := &imageCatalogProbe{imageID: "ami-0123456789abcdef0"}
+	_, err := newSDKWithCatalog(identity.Region, probe, catalog, sts, staticIP{}).Discover(context.Background(), identity, "t3.small", "")
+	if !errors.Is(err, ErrIdentity) || probe.describeImagesInput != nil {
+		t.Fatalf("error=%v DescribeImages=%+v", err, probe.describeImagesInput)
 	}
 }
 
@@ -304,17 +357,10 @@ func TestVerifiedGPUImageSupportedFamilies(t *testing.T) {
 	}
 }
 
-func imageFixture(id, name, created string, volumeGiB int32, flavor workerimage.Flavor) ec2types.Image {
-	image := ec2types.Image{ImageId: aws.String(id), OwnerId: aws.String("123456789012"), Name: aws.String(name), CreationDate: aws.String(created), RootDeviceName: aws.String("/dev/sda1"),
+func imageFixture(id, name, created string, volumeGiB int32) ec2types.Image {
+	return ec2types.Image{ImageId: aws.String(id), OwnerId: aws.String(workerimage.PublisherAccountID), Public: aws.Bool(true), Name: aws.String(name), CreationDate: aws.String(created), RootDeviceName: aws.String("/dev/sda1"),
 		State: ec2types.ImageStateAvailable, Architecture: ec2types.ArchitectureValuesX8664, VirtualizationType: ec2types.VirtualizationTypeHvm, RootDeviceType: ec2types.DeviceTypeEbs,
-		BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String("/dev/sda1"), Ebs: &ec2types.EbsBlockDevice{VolumeSize: aws.Int32(volumeGiB)}}},
-		Tags: []ec2types.Tag{{Key: aws.String(workerimage.TagSchema), Value: aws.String(workerimage.SchemaVersion)}, {Key: aws.String(workerimage.TagFlavor), Value: aws.String(string(flavor))},
-			{Key: aws.String(workerimage.TagVersion), Value: aws.String(workerimage.ImageVersion)}, {Key: aws.String(workerimage.TagPiVersion), Value: aws.String(workerimage.PiVersion)},
-			{Key: aws.String(workerimage.TagImageTested), Value: aws.String("true")}}}
-	if flavor == workerimage.FlavorGPU {
-		image.Tags = append(image.Tags, ec2types.Tag{Key: aws.String(workerimage.TagGPUSupportedFamilies), Value: aws.String("g4dn,g5,p5")})
-	}
-	return image
+		BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String("/dev/sda1"), Ebs: &ec2types.EbsBlockDevice{VolumeSize: aws.Int32(volumeGiB)}}}}
 }
 
 func TestSDKRunClassifiesClientRejectionAsDeterministic(t *testing.T) {

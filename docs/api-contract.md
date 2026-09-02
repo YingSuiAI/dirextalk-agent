@@ -970,13 +970,15 @@ failures are not capability evidence. Cloud/local-only vetoes remain binding,
 and AWS resources start only after the owner confirms the pending quote. The
 manager supports no more than four retained Workers for one authenticated
 owner/account generation across credential revisions. CPU and GPU Workers use
-the exact private Dirextalk AMI referenced by the Region-local versioned SSM
-pointer. Discovery validates account ownership, flavor, image/runtime/Pi
-versions, successful test status, and, for GPU, the published supported-family
-set. It then reads the AMI's actual root device and snapshot minimum before
+the exact public Dirextalk AMI pinned by the Agent's embedded Region/flavor release
+catalog. Entries are added only after live image qualification and bind publisher
+`066107820442`, schema, release/Pi versions and the GPU supported-family set.
+Discovery checks that exact AMI ID and publisher, public visibility and supported
+architecture; it does not read customer SSM parameters or unshared publisher tags.
+It then reads the AMI's actual root device and snapshot minimum before
 pricing and binds the greater requested/minimum size into the confirmed
 ComputeSpec. Missing, incompatible, and unverified images fail distinctly with
-no public-image fallback. Launch re-resolves the pointer and rejects for a fresh
+no generic-image fallback. Launch re-resolves the catalog image and rejects for a fresh
 quote instead of silently increasing volume size. Runtime discovery reads the default VPC, intersects its available default subnets with the selected instance
 type's current availability-zone offerings, assigns an ordinary public IPv4,
 and uses outbound SSH. First contact uses `accept-new` into a persistent `known_hosts`

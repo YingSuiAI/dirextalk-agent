@@ -927,12 +927,14 @@ only from Agent storage at execution time.
 
 The manager keeps at most four Workers for the authenticated owner/account
 generation. CPU and GPU Workers use versioned, tested Dirextalk Ubuntu 24.04
-AMIs selected through product-owned Region-local SSM pointers. Pre-quote
-discovery validates the exact account owner, flavor, runtime/Pi compatibility,
-test tag and GPU family set, then resolves the actual AMI root device and
+public AMIs pinned in the Agent's embedded Region/flavor release catalog. The
+catalog records only live-qualified images from publisher `066107820442`, with
+schema, release/Pi compatibility and GPU families. Pre-quote discovery validates
+the exact AMI ID, publisher and public visibility without reading customer SSM
+parameters or publisher-only tags, then resolves the actual AMI root device and
 snapshot minimum into the confirmed storage quantity. Missing, incompatible or
-unverified images fail without a public-image fallback. Launch re-resolves the
-pointer and requires a fresh quote rather than increasing storage silently.
+unverified images fail without a generic-image fallback. Launch re-resolves the
+catalog image and requires a fresh quote rather than increasing storage silently.
 Runtime discovery also resolves the default VPC/subnet and launches an instance with an ordinary
 public IPv4, and connects by outbound SSH. Agent uses short SSH operations to start work, read
 status and load, stream logs by offset, and list or copy artifacts. A dropped
