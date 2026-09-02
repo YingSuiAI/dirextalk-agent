@@ -18,8 +18,10 @@ mapping ever supplies a smaller size.
 
 - `release.json`: frozen image, Pi, uv, parent, plugin, and SSM contract.
 - `components/install.yaml.in`: build component for the common toolchain,
-  checksummed Pi and uv/uvx binaries, static-web/PDF tooling, reviewed plugin
-  catalog, state root, manifest, and credential/cache cleanup.
+  checksummed Pi and uv/uvx binaries, static-web/PDF tooling, state root,
+  manifest, and credential/cache cleanup.
+- `components/plugin.yaml.in`: separate checksummed reviewed Pi plugin catalog;
+  the split keeps every inline Image Builder component below 16,000 characters.
 - `components/test.yaml.in`: Image Builder test component, including a real
   reboot between persistence assertions.
 - `scripts/render-release.sh`: offline renderer and live read-only parent

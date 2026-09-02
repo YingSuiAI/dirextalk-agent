@@ -24,7 +24,6 @@ phases:
                 ripgrep tar w3m weasyprint
               install -d -m 0755 /opt/dirextalk-worker/pi/0.84.4
               install -d -m 0755 /opt/dirextalk-worker/uv/0.12.9
-              install -d -m 0755 /opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent/agents
               install -d -m 0700 /var/lib/dirextalk-worker
               printf '%s\n' '__FLAVOR__' >/usr/local/share/dirextalk-worker-flavor
               pi_archive=$(mktemp)
@@ -54,20 +53,6 @@ phases:
               ln -sfn /opt/dirextalk-worker/bin/pi /usr/local/bin/pi
               ln -sfn /opt/dirextalk-worker/bin/uv /usr/local/bin/uv
               ln -sfn /opt/dirextalk-worker/bin/uvx /usr/local/bin/uvx
-              printf '%s' '__SUBAGENT_EXTENSION_B64__' | base64 -d \
-                >/opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent/extension.ts
-              printf '%s' '__SUBAGENT_AGENT_B64__' | base64 -d \
-                >/opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent/agents/worker.md
-              printf '%s  %s\n' \
-                'd81c6e66123fbaeeb585c02f757db8966022aa8649a6c75461bd7a82623f4552' \
-                /opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent/extension.ts | sha256sum -c -
-              printf '%s  %s\n' \
-                '562434d598f2709150b042c50009ac224557769f0430d5093621530ce27cc7b5' \
-                /opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent/agents/worker.md | sha256sum -c -
-              cat >/opt/dirextalk-worker/pi-plugin-catalog/catalog.json <<'JSON'
-              {"schema":"dirextalk.pi-plugin-catalog/v1","plugins":[{"id":"dirextalk-subagent","version":"0.84.1-dirextalk.1","default_enabled":true,"task_activation":"copy","license":"MIT","upstream_commit":"53fa77ccd8a279eb87e92294ef3687b03ff80112","extension_sha256":"d81c6e66123fbaeeb585c02f757db8966022aa8649a6c75461bd7a82623f4552","agent_sha256":"562434d598f2709150b042c50009ac224557769f0430d5093621530ce27cc7b5"}]}
-              JSON
-              chmod -R a-w /opt/dirextalk-worker/pi-plugin-catalog
               chmod 0755 /opt/dirextalk-worker/pi/0.84.4/pi /opt/dirextalk-worker/uv/0.12.9/uv /opt/dirextalk-worker/uv/0.12.9/uvx
               versions=$(jq -n \
                 --arg python "$(python3 --version 2>&1)" \
@@ -100,7 +85,6 @@ phases:
                 '{schema:1,image_version:"1.1.0",flavor:$flavor,pi_version:"0.84.4",tool_baseline:"1",tested:true,gpu_supported_families:$gpu_families,tools:$tools}' \
                 >/opt/dirextalk-worker/manifest.json
               chmod 0644 /opt/dirextalk-worker/manifest.json
-              chmod 0444 /opt/dirextalk-worker/pi-plugin-catalog/catalog.json
       - name: RemoveBuildResidue
         action: ExecuteBash
         onFailure: Abort

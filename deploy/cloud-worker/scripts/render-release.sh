@@ -187,7 +187,7 @@ mkdir -p -- "$output_dir"
 output_dir=$(cd -- "$output_dir" && pwd -P)
 extension_b64=$(base64 -w0 "$plugin_extension")
 agent_b64=$(base64 -w0 "$plugin_agent")
-for kind in install test; do
+for kind in install plugin test; do
   sed -e "s/__FLAVOR__/$flavor/g" \
       -e "s/__GPU_FAMILIES__/$gpu_families/g" \
       -e "s|__SUBAGENT_EXTENSION_B64__|$extension_b64|g" \
@@ -203,6 +203,9 @@ jq -n --arg name "$name-install" --rawfile data "$output_dir/install.yaml" \
 jq -n --arg name "$name-test" --rawfile data "$output_dir/test.yaml" \
   --argjson tags "$tags" '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker test component 1.1.0",platform:"Linux",data:$data,tags:$tags}' \
   >"$output_dir/test-component.json"
+jq -n --arg name "$name-plugin" --rawfile data "$output_dir/plugin.yaml" \
+  --argjson tags "$tags" '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker reviewed Pi plugin component 1.1.0",platform:"Linux",data:$data,tags:$tags}' \
+  >"$output_dir/plugin-component.json"
 jq -n --arg name "$name-infrastructure" --arg profile "$instance_profile" --arg type "$build_type" \
   --arg subnet "$subnet_id" --arg sg "$security_group_id" --argjson tags "$tags" \
   '{name:$name,description:"Dirextalk Worker Image Builder infrastructure 1.1.0",instanceProfileName:$profile,instanceTypes:[$type],subnetId:$subnet,securityGroupIds:[$sg],terminateInstanceOnFailure:true,instanceMetadataOptions:{httpTokens:"required",httpPutResponseHopLimit:1},tags:$tags}' \
@@ -212,7 +215,7 @@ jq -n --arg name "$name-distribution" --arg account "$account_id" --arg flavor "
   >"$output_dir/distribution.json"
 jq -n --arg name "$name" --arg parent "$parent_ami" --arg root "$root_device" --arg snapshot "$root_snapshot" \
   --arg min "$root_min_gib" --argjson tags "$tags" \
-  '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker public image recipe 1.1.0",parentImage:$parent,components:[{componentArn:"REPLACE_BUILD_COMPONENT_ARN"},{componentArn:"REPLACE_TEST_COMPONENT_ARN"}],blockDeviceMappings:[{deviceName:$root,ebs:{deleteOnTermination:true,encrypted:false,volumeType:"gp3"}}],workingDirectory:"/tmp",additionalInstanceConfiguration:{systemsManagerAgent:{uninstallAfterBuild:false}},tags:($tags+{DirextalkParentSnapshot:$snapshot,DirextalkParentRootMinGiB:$min})}' \
+  '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker public image recipe 1.1.0",parentImage:$parent,components:[{componentArn:"REPLACE_BUILD_COMPONENT_ARN"},{componentArn:"REPLACE_PLUGIN_COMPONENT_ARN"},{componentArn:"REPLACE_TEST_COMPONENT_ARN"}],blockDeviceMappings:[{deviceName:$root,ebs:{deleteOnTermination:true,encrypted:false,volumeType:"gp3"}}],workingDirectory:"/tmp",additionalInstanceConfiguration:{systemsManagerAgent:{uninstallAfterBuild:false}},tags:($tags+{DirextalkParentSnapshot:$snapshot,DirextalkParentRootMinGiB:$min})}' \
   >"$output_dir/recipe.json"
 jq -n --arg name "$name-pipeline" --argjson tags "$tags" \
   '{name:$name,description:"On-demand Dirextalk Worker image pipeline 1.1.0",status:"DISABLED",imageRecipeArn:"REPLACE_RECIPE_ARN",infrastructureConfigurationArn:"REPLACE_INFRASTRUCTURE_ARN",distributionConfigurationArn:"REPLACE_DISTRIBUTION_ARN",imageTestsConfiguration:{imageTestsEnabled:true,timeoutMinutes:90},enhancedImageMetadataEnabled:true,tags:$tags}' \
@@ -231,6 +234,7 @@ cat >"$output_dir/manual-commands.sh" <<EOF
 set -euo pipefail
 # Auditable outline only. Prefer manage-release.sh, which identity-fences every call.
 aws imagebuilder create-component --region '$region' --cli-input-json file://'$output_dir/build-component.json'
+aws imagebuilder create-component --region '$region' --cli-input-json file://'$output_dir/plugin-component.json'
 aws imagebuilder create-component --region '$region' --cli-input-json file://'$output_dir/test-component.json'
 aws imagebuilder create-infrastructure-configuration --region '$region' --cli-input-json file://'$output_dir/infrastructure.json'
 aws imagebuilder create-distribution-configuration --region '$region' --cli-input-json file://'$output_dir/distribution.json'
@@ -242,7 +246,7 @@ EOF
 chmod 0700 "$output_dir/manual-commands.sh"
 (
   cd -- "$output_dir"
-  sha256sum build-component.json distribution.json infrastructure.json install.yaml manual-commands.sh pipeline.json recipe.json render.json test-component.json test.yaml >SHA256SUMS
+  sha256sum build-component.json distribution.json infrastructure.json install.yaml manual-commands.sh pipeline.json plugin-component.json plugin.yaml recipe.json render.json test-component.json test.yaml >SHA256SUMS
 )
 printf 'rendered=%s\naccount=%s\nregion=%s\ndistribution_regions=%s\nflavor=%s\nparent=%s\nroot_snapshot=%s\nroot_min_gib=%s\n' \
   "$output_dir" "$account_id" "$region" "$distribution_regions" "$flavor" "$parent_ami" "$root_snapshot" "$root_min_gib"

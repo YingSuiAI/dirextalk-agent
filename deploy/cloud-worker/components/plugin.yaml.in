@@ -1,0 +1,48 @@
+name: dirextalk-worker-__FLAVOR__-plugin-1-1-0
+description: Install the reviewed Dirextalk Worker 1.1.0 Pi plugin catalog.
+schemaVersion: 1.0
+phases:
+  - name: build
+    steps:
+      - name: InstallReviewedPiPluginCatalog
+        action: ExecuteBash
+        onFailure: Abort
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              catalog=/opt/dirextalk-worker/pi-plugin-catalog
+              install -d -m 0755 "$catalog/dirextalk-subagent/agents"
+              printf '%s' '__SUBAGENT_EXTENSION_B64__' | base64 -d \
+                >"$catalog/dirextalk-subagent/extension.ts"
+              printf '%s' '__SUBAGENT_AGENT_B64__' | base64 -d \
+                >"$catalog/dirextalk-subagent/agents/worker.md"
+              printf '%s  %s\n' \
+                'd81c6e66123fbaeeb585c02f757db8966022aa8649a6c75461bd7a82623f4552' \
+                "$catalog/dirextalk-subagent/extension.ts" | sha256sum -c -
+              printf '%s  %s\n' \
+                '562434d598f2709150b042c50009ac224557769f0430d5093621530ce27cc7b5' \
+                "$catalog/dirextalk-subagent/agents/worker.md" | sha256sum -c -
+              cat >"$catalog/catalog.json" <<'JSON'
+              {"schema":"dirextalk.pi-plugin-catalog/v1","plugins":[{"id":"dirextalk-subagent","version":"0.84.1-dirextalk.1","default_enabled":true,"task_activation":"copy","license":"MIT","upstream_commit":"53fa77ccd8a279eb87e92294ef3687b03ff80112","extension_sha256":"d81c6e66123fbaeeb585c02f757db8966022aa8649a6c75461bd7a82623f4552","agent_sha256":"562434d598f2709150b042c50009ac224557769f0430d5093621530ce27cc7b5"}]}
+              JSON
+              chmod -R a-w "$catalog"
+              chmod 0444 "$catalog/catalog.json"
+  - name: validate
+    steps:
+      - name: ValidateReviewedPiPluginCatalog
+        action: ExecuteBash
+        onFailure: Abort
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              catalog=/opt/dirextalk-worker/pi-plugin-catalog
+              test "$(stat -c '%U:%G:%a' "$catalog/catalog.json")" = root:root:444
+              jq -e '.schema == "dirextalk.pi-plugin-catalog/v1" and (.plugins | length) == 1 and .plugins[0].id == "dirextalk-subagent"' "$catalog/catalog.json" >/dev/null
+              printf '%s  %s\n' \
+                'd81c6e66123fbaeeb585c02f757db8966022aa8649a6c75461bd7a82623f4552' \
+                "$catalog/dirextalk-subagent/extension.ts" | sha256sum -c -
+              printf '%s  %s\n' \
+                '562434d598f2709150b042c50009ac224557769f0430d5093621530ce27cc7b5' \
+                "$catalog/dirextalk-subagent/agents/worker.md" | sha256sum -c -

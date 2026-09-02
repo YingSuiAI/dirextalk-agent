@@ -120,7 +120,7 @@ require_resource_ids() {
 create_release() {
   require_mutation_gate
   verify_parent_again
-  local build test infra dist recipe pipeline recipe_payload pipeline_payload
+  local build plugin test infra dist recipe pipeline recipe_payload pipeline_payload
   local journal=$bundle/creation-journal.ndjson
   [[ ! -e $journal || -f $journal && ! -L $journal ]] || { echo 'unsafe creation journal' >&2; exit 66; }
   : >>"$journal"
@@ -133,6 +133,9 @@ create_release() {
   build=$(aws_json imagebuilder create-component --cli-input-json "file://$bundle/build-component.json")
   build=$(jq -er .componentBuildVersionArn <<<"$build"); validate_arn "$build" imagebuilder
   record_created build_component "$build"
+  plugin=$(aws_json imagebuilder create-component --cli-input-json "file://$bundle/plugin-component.json")
+  plugin=$(jq -er .componentBuildVersionArn <<<"$plugin"); validate_arn "$plugin" imagebuilder
+  record_created plugin_component "$plugin"
   test=$(aws_json imagebuilder create-component --cli-input-json "file://$bundle/test-component.json")
   test=$(jq -er .componentBuildVersionArn <<<"$test"); validate_arn "$test" imagebuilder
   record_created test_component "$test"
@@ -144,7 +147,7 @@ create_release() {
   record_created distribution "$dist"
   recipe_payload=$(mktemp); pipeline_payload=$(mktemp)
   trap 'rm -f -- "$recipe_payload" "$pipeline_payload"' RETURN
-  jq --arg build "$build" --arg test "$test" '(.components[0].componentArn=$build)|(.components[1].componentArn=$test)' "$bundle/recipe.json" >"$recipe_payload"
+  jq --arg build "$build" --arg plugin "$plugin" --arg test "$test" '(.components[0].componentArn=$build)|(.components[1].componentArn=$plugin)|(.components[2].componentArn=$test)' "$bundle/recipe.json" >"$recipe_payload"
   recipe=$(aws_json imagebuilder create-image-recipe --cli-input-json "file://$recipe_payload")
   recipe=$(jq -er .imageRecipeArn <<<"$recipe"); validate_arn "$recipe" imagebuilder
   record_created recipe "$recipe"
@@ -155,8 +158,8 @@ create_release() {
   pipeline=$(jq -er .imagePipelineArn <<<"$pipeline"); validate_arn "$pipeline" imagebuilder
   record_created pipeline "$pipeline"
   jq -n --arg account "$account_id" --arg region "$region" --arg flavor "$flavor" \
-    --arg build "$build" --arg test "$test" --arg infra "$infra" --arg dist "$dist" --arg recipe "$recipe" --arg pipeline "$pipeline" \
-    '{schema:"dirextalk.worker-image-resources/v1",account_id:$account,region:$region,flavor:$flavor,build_component_arn:$build,test_component_arn:$test,infrastructure_arn:$infra,distribution_arn:$dist,recipe_arn:$recipe,pipeline_arn:$pipeline}' \
+    --arg build "$build" --arg plugin "$plugin" --arg test "$test" --arg infra "$infra" --arg dist "$dist" --arg recipe "$recipe" --arg pipeline "$pipeline" \
+    '{schema:"dirextalk.worker-image-resources/v1",account_id:$account,region:$region,flavor:$flavor,build_component_arn:$build,plugin_component_arn:$plugin,test_component_arn:$test,infrastructure_arn:$infra,distribution_arn:$dist,recipe_arn:$recipe,pipeline_arn:$pipeline}' \
     >"$resource_ids"
   chmod 0600 "$resource_ids"
   printf 'created=true\npipeline_arn=%s\n' "$pipeline"
