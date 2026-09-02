@@ -926,12 +926,18 @@ exact returned UUID to the static destroy tool. Provider identity is resolved
 only from Agent storage at execution time.
 
 The manager keeps at most four Workers for the authenticated owner/account
-generation. It discovers the newest Canonical official Ubuntu 24.04 LTS image
-and the default VPC/subnet, launches an instance with an ordinary public IPv4, and
-connects by outbound SSH. Agent uses short SSH operations to start work, read
+generation. CPU Workers use the newest Canonical Ubuntu 24.04 LTS image and GPU
+Workers use the newest supported AWS Ubuntu 24.04 Deep Learning Base OSS NVIDIA
+Driver GPU AMI. Discovery resolves the actual AMI root device and snapshot
+minimum plus the default VPC/subnet, launches an instance with an ordinary
+public IPv4, and connects by outbound SSH. Agent uses short SSH operations to start work, read
 status and load, stream logs by offset, and list or copy artifacts. A dropped
-connection does not erase remote state. Job and service workloads share this
-protocol, and a service may remain running across conversation turns.
+connection or host reboot does not erase remote state under
+`/var/lib/dirextalk-worker`. A durable versioned marker installs the standard
+Python, Node, Git/GitHub CLI, Go, build-tool, and shell-utility baseline only
+once per instance, with readiness verified before every task. Job and service
+workloads share this protocol, and a service may remain running across
+conversation turns.
 EC2 launch uses one physical `RunInstances` attempt. A confirmed
 `VcpuLimitExceeded` rejection is read back as no instance, then the same current
 creation confirmation authorizes one minimum regional On-Demand vCPU quota
@@ -1003,8 +1009,11 @@ identity and cannot produce an HTTPS-ready result. Active binding state and the
 last exact removed record provide idempotent reconciliation when a provider mutation
 succeeds but the final turn commit must retry; the retry revalidates the same
 identity and repeats provider read-back. Route53 is not required for Worker creation or
-ordinary execution. There is no EIP, custom AMI, S3/KMS artifact
-path, WorkerControl listener, model relay, or deploy-time Worker binding. The
+ordinary execution. Existing execution recovery reads retained state before
+new AMI/network/public-egress discovery. Active execution remains protected
+from destroy, but a stale Busy projection is owner-destroyable. There is no EIP,
+product custom AMI, S3/KMS artifact path, WorkerControl listener, model relay,
+or deploy-time Worker binding. The
 complete read, cancellation, event, artifact, and management contract is
 [Execution V2](execution-v2.md).
 

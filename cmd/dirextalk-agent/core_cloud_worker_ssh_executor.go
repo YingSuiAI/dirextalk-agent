@@ -172,10 +172,6 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 			return sshflow.Result{}, errors.Join(sshworker.ErrBusy, loadErr, compatibleErr)
 		}
 	}
-	discovery, err := provider.Discover(ctx, identity, request.Compute.InstanceType)
-	if err != nil {
-		return sshflow.Result{}, err
-	}
 	workload := sshworker.WorkloadJob
 	var service *sshworker.RuntimeServiceSpec
 	if request.WorkloadKind == cloudworker.WorkloadService && request.Service != nil {
@@ -227,7 +223,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	result, err := provider.Execute(ctx, sshworker.ExecuteRequest{ExecutionID: request.ExecutionID,
 		ServerName: request.ServerName,
 		Authority:  sshworker.OwnerAuthority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, Credential: identity,
-		Confirmation: confirmation, Discovery: discovery, ReuseOnly: request.ReuseOnly, ReuseWorkerID: request.ReuseWorkerID,
+		Confirmation: confirmation, ReuseOnly: request.ReuseOnly, ReuseWorkerID: request.ReuseWorkerID,
 		InstanceType: request.Compute.InstanceType, AcceleratorType: request.Compute.AcceleratorType, VCPU: request.Compute.VCPU, MemoryGiB: request.Compute.MemoryGiB,
 		VolumeGiB: int32(request.Compute.VolumeGiB), WorkerScript: material.WorkerScript,
 		WorkerScriptSHA256: material.WorkerScriptSHA256, Runtime: material.Protocol,
@@ -892,6 +888,21 @@ func (executor *sshWorkerExecutor) DestroyRetainedWorker(ctx context.Context, ow
 	return executor.DestroyWorker(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, sshworker.DestroyRequest{
 		Identity: identity, Authorization: sshworker.DestroyAuthorization{Authorized: true, Proof: proof},
 	})
+}
+
+func (executor *sshWorkerExecutor) CheckRetainedWorkerDestroyable(ctx context.Context, ownerID string, accountGeneration uint64, workerID string) error {
+	if executor == nil || ctx == nil || strings.TrimSpace(ownerID) == "" || accountGeneration == 0 || strings.TrimSpace(workerID) == "" {
+		return sshworker.ErrInvalid
+	}
+	worker, found, err := executor.state.LoadWorker(ctx, workerID)
+	if err != nil || !found || worker.OwnerID != ownerID || worker.AccountGeneration != accountGeneration {
+		return errors.Join(sshworker.ErrIdentity, err)
+	}
+	provider, err := executor.providerForIdentity(ctx, worker.Credential)
+	if err != nil {
+		return err
+	}
+	return provider.CheckWorkerDestroyable(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, worker.Credential, workerID)
 }
 
 type workerDestroyer interface {

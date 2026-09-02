@@ -88,8 +88,9 @@ func (r *repositoryFake) DeleteServer(_ context.Context, _ Authority, serverID s
 }
 
 type workersFake struct {
-	servers   []Server
-	destroyed bool
+	servers        []Server
+	destroyed      bool
+	prepareDestroy error
 }
 
 func (w *workersFake) List(context.Context, Authority) ([]Server, error) {
@@ -102,6 +103,9 @@ func (w *workersFake) Get(_ context.Context, _ Authority, id string) (Server, er
 		}
 	}
 	return Server{}, ErrNotFound
+}
+func (w *workersFake) PrepareDestroy(context.Context, Authority, string) error {
+	return w.prepareDestroy
 }
 func (w *workersFake) Destroy(_ context.Context, _ Authority, id, _ string) error {
 	for index, server := range w.servers {
@@ -149,7 +153,7 @@ func TestDestroyServerRejectsPrimaryAndBusyWorker(t *testing.T) {
 	now := time.Now().UTC()
 	primaryID, workerID := uuid.NewString(), uuid.NewString()
 	repository := &repositoryFake{instance: Instance{ID: primaryID, CreatedAt: now}}
-	workers := &workersFake{servers: []Server{{ServerID: workerID, Busy: true, CreatedAt: now}}}
+	workers := &workersFake{servers: []Server{{ServerID: workerID, Busy: true, CreatedAt: now}}, prepareDestroy: ErrBusy}
 	service, _ := NewService(repository, workers, &deleterFake{}, Config{PrimaryName: "primary"})
 	authority := Authority{OwnerID: "owner", AccountGeneration: 1}
 	if err := service.DestroyServer(context.Background(), authority, primaryID, uuid.NewString()); !errors.Is(err, ErrPrimary) {
@@ -160,6 +164,20 @@ func TestDestroyServerRejectsPrimaryAndBusyWorker(t *testing.T) {
 	}
 	if repository.marked || workers.destroyed {
 		t.Fatal("rejected destroy mutated state")
+	}
+}
+
+func TestDestroyServerAllowsStaleBusyWorker(t *testing.T) {
+	now := time.Now().UTC()
+	primaryID, workerID := uuid.NewString(), uuid.NewString()
+	repository := &repositoryFake{instance: Instance{ID: primaryID, CreatedAt: now}}
+	workers := &workersFake{servers: []Server{{ServerID: workerID, Busy: true, CreatedAt: now}}}
+	service, _ := NewService(repository, workers, &deleterFake{}, Config{PrimaryName: "primary"})
+	if err := service.DestroyServer(context.Background(), Authority{OwnerID: "owner", AccountGeneration: 1}, workerID, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if !repository.marked || !workers.destroyed || !repository.deleted {
+		t.Fatalf("stale cleanup = marked:%v worker:%v catalog:%v", repository.marked, workers.destroyed, repository.deleted)
 	}
 }
 

@@ -142,7 +142,7 @@ func (s *Service) DestroyServer(ctx context.Context, authority Authority, server
 	if serverID == instance.ID {
 		return ErrPrimary
 	}
-	server, err := s.workers.Get(ctx, authority, serverID)
+	_, err = s.workers.Get(ctx, authority, serverID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			artifacts, listErr := s.repository.ListServerArtifactsForCleanup(ctx, authority, serverID)
@@ -162,11 +162,11 @@ func (s *Service) DestroyServer(ctx context.Context, authority Authority, server
 		}
 		return err
 	}
-	// A provisioning record may outlive a failed or canceled create attempt.
-	// Let the Worker provider's serialized destroy fence decide whether creation
-	// is still active so an orphaned partial record remains owner-deletable.
-	if server.Busy && server.Status != "destroying" && server.Status != "provisioning" {
-		return ErrBusy
+	// Busy is a projected local phase and may be stale after a task terminalized.
+	// Always ask the provider's serialized active-execution fence before
+	// mutating the artifact catalog; only live work remains protected.
+	if err = s.workers.PrepareDestroy(ctx, authority, serverID); err != nil {
+		return err
 	}
 	if err = s.repository.MarkServerDeleting(ctx, authority, serverID); err != nil {
 		return err

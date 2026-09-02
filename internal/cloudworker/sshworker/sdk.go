@@ -109,16 +109,28 @@ func (client *SDK) VerifyIdentity(ctx context.Context, identity CredentialIdenti
 	}
 	return nil
 }
-func (client *SDK) Discover(ctx context.Context, identity CredentialIdentity, instanceType string) (Discovery, error) {
+func (client *SDK) Discover(ctx context.Context, identity CredentialIdentity, instanceType, acceleratorType string) (Discovery, error) {
 	instanceType = strings.TrimSpace(instanceType)
-	if instanceType == "" {
+	acceleratorType = strings.TrimSpace(acceleratorType)
+	if instanceType == "" || !validConcreteAccelerator(acceleratorType) {
 		return Discovery{}, ErrInvalid
 	}
 	if err := client.VerifyIdentity(ctx, identity); err != nil {
 		return Discovery{}, err
 	}
-	images, err := client.ec2.DescribeImages(ctx, &ec2.DescribeImagesInput{Owners: []string{"099720109477"}, Filters: []ec2types.Filter{
-		{Name: aws.String("name"), Values: []string{"ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"}}, {Name: aws.String("state"), Values: []string{"available"}},
+	imageOwner := "099720109477"
+	imageName := "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
+	if acceleratorType == "gpu" {
+		if !officialGPUImageSupports(instanceType) {
+			return Discovery{}, fmt.Errorf("%s is not supported by the official Ubuntu 24.04 GPU DLAMI: %w", instanceType, ErrProviderRejected)
+		}
+		// AWS publishes this DLAMI family with the NVIDIA open kernel driver and
+		// CUDA user-space baseline already installed for supported GPU families.
+		imageOwner = "amazon"
+		imageName = "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) ????????"
+	}
+	images, err := client.ec2.DescribeImages(ctx, &ec2.DescribeImagesInput{Owners: []string{imageOwner}, Filters: []ec2types.Filter{
+		{Name: aws.String("name"), Values: []string{imageName}}, {Name: aws.String("state"), Values: []string{"available"}},
 		{Name: aws.String("architecture"), Values: []string{"x86_64"}}, {Name: aws.String("root-device-type"), Values: []string{"ebs"}}, {Name: aws.String("virtualization-type"), Values: []string{"hvm"}}}})
 	if err != nil || len(images.Images) == 0 {
 		return Discovery{}, errors.Join(ErrInvalid, err)
@@ -129,6 +141,17 @@ func (client *SDK) Discover(ctx context.Context, identity CredentialIdentity, in
 	image := images.Images[0]
 	createdAt, err := time.Parse(time.RFC3339, aws.ToString(image.CreationDate))
 	if err != nil || aws.ToString(image.ImageId) == "" {
+		return Discovery{}, ErrInvalid
+	}
+	rootDeviceName := strings.TrimSpace(aws.ToString(image.RootDeviceName))
+	var rootVolumeGiB int32
+	for _, mapping := range image.BlockDeviceMappings {
+		if aws.ToString(mapping.DeviceName) == rootDeviceName && mapping.Ebs != nil {
+			rootVolumeGiB = aws.ToInt32(mapping.Ebs.VolumeSize)
+			break
+		}
+	}
+	if !strings.HasPrefix(rootDeviceName, "/dev/") || rootVolumeGiB < 8 {
 		return Discovery{}, ErrInvalid
 	}
 	vpcs, err := client.ec2.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{Filters: []ec2types.Filter{{Name: aws.String("is-default"), Values: []string{"true"}}}})
@@ -174,8 +197,22 @@ func (client *SDK) Discover(ctx context.Context, identity CredentialIdentity, in
 	if err != nil {
 		return Discovery{}, err
 	}
-	return Discovery{ImageID: aws.ToString(image.ImageId), ImageName: aws.ToString(image.Name), ImageCreatedAt: createdAt.UTC(), SSHUser: "ubuntu", VPCID: vpcID,
+	return Discovery{ImageID: aws.ToString(image.ImageId), ImageName: aws.ToString(image.Name), ImageCreatedAt: createdAt.UTC(), RootDeviceName: rootDeviceName, RootVolumeGiB: rootVolumeGiB, SSHUser: "ubuntu", VPCID: vpcID,
 		SubnetID: aws.ToString(subnets.Subnets[0].SubnetId), PublicEgressCIDR: netip.PrefixFrom(address, 32).String(), ObservedAt: client.now().UTC()}, nil
+}
+
+func officialGPUImageSupports(instanceType string) bool {
+	family, _, ok := strings.Cut(strings.ToLower(strings.TrimSpace(instanceType)), ".")
+	if !ok {
+		return false
+	}
+	switch family {
+	case "g4dn", "g5", "g6", "gr6", "g6e", "g7", "g7e",
+		"p4d", "p4de", "p5", "p5e", "p5en", "p6-b200", "p6-b300":
+		return true
+	default:
+		return false
+	}
 }
 
 func (client *SDK) FindKeyPair(ctx context.Context, identity CredentialIdentity, name string, tags ResourceTags) (KeyPair, bool, error) {
@@ -466,13 +503,14 @@ func (client *SDK) findInstance(ctx context.Context, filters []ec2types.Filter, 
 	return sdkInstance(instances[0]), true, nil
 }
 func (client *SDK) RunInstance(ctx context.Context, identity CredentialIdentity, confirmation Confirmation, request LaunchRequest) (Instance, error) {
-	if request.VCPU == 0 {
+	if request.VCPU == 0 || request.Discovery.validate() != nil {
 		return Instance{}, ErrInvalid
 	}
 	if err := client.beforeCreate(ctx, identity, confirmation); err != nil {
 		return Instance{}, err
 	}
-	output, err := client.ec2.RunInstances(ctx, &ec2.RunInstancesInput{ImageId: aws.String(request.Discovery.ImageID), InstanceType: ec2types.InstanceType(request.InstanceType), MinCount: aws.Int32(1), MaxCount: aws.Int32(1), ClientToken: aws.String(request.ClientToken), KeyName: aws.String(request.KeyName), NetworkInterfaces: []ec2types.InstanceNetworkInterfaceSpecification{{DeviceIndex: aws.Int32(0), SubnetId: aws.String(request.Discovery.SubnetID), AssociatePublicIpAddress: aws.Bool(true), Groups: []string{request.SecurityGroupID}, DeleteOnTermination: aws.Bool(true)}}, BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String("/dev/xvda"), Ebs: &ec2types.EbsBlockDevice{DeleteOnTermination: aws.Bool(true), Encrypted: aws.Bool(true), VolumeSize: aws.Int32(request.VolumeGiB), VolumeType: ec2types.VolumeTypeGp3}}}, MetadataOptions: &ec2types.InstanceMetadataOptionsRequest{HttpTokens: ec2types.HttpTokensStateRequired, HttpEndpoint: ec2types.InstanceMetadataEndpointStateEnabled}, TagSpecifications: []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeInstance, Tags: sdkTags(request.Tags)}, {ResourceType: ec2types.ResourceTypeVolume, Tags: sdkTags(request.Tags)}}}, func(options *ec2.Options) {
+	volumeGiB := max(request.VolumeGiB, request.Discovery.RootVolumeGiB)
+	output, err := client.ec2.RunInstances(ctx, &ec2.RunInstancesInput{ImageId: aws.String(request.Discovery.ImageID), InstanceType: ec2types.InstanceType(request.InstanceType), MinCount: aws.Int32(1), MaxCount: aws.Int32(1), ClientToken: aws.String(request.ClientToken), KeyName: aws.String(request.KeyName), NetworkInterfaces: []ec2types.InstanceNetworkInterfaceSpecification{{DeviceIndex: aws.Int32(0), SubnetId: aws.String(request.Discovery.SubnetID), AssociatePublicIpAddress: aws.Bool(true), Groups: []string{request.SecurityGroupID}, DeleteOnTermination: aws.Bool(true)}}, BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String(request.Discovery.RootDeviceName), Ebs: &ec2types.EbsBlockDevice{DeleteOnTermination: aws.Bool(true), Encrypted: aws.Bool(true), VolumeSize: aws.Int32(volumeGiB), VolumeType: ec2types.VolumeTypeGp3}}}, MetadataOptions: &ec2types.InstanceMetadataOptionsRequest{HttpTokens: ec2types.HttpTokensStateRequired, HttpEndpoint: ec2types.InstanceMetadataEndpointStateEnabled}, TagSpecifications: []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeInstance, Tags: sdkTags(request.Tags)}, {ResourceType: ec2types.ResourceTypeVolume, Tags: sdkTags(request.Tags)}}}, func(options *ec2.Options) {
 		// EC2 can classify quota exhaustion as retryable. Repeating a confirmed
 		// launch cannot fix an account quota and hides the actionable rejection
 		// behind the Task lease deadline.

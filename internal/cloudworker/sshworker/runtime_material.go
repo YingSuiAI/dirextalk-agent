@@ -74,9 +74,9 @@ type RuntimeMaterial struct {
 	Protocol           RuntimeProtocol
 }
 
-// CompileRuntime builds the fixed bootstrap for an official Ubuntu 24.04 LTS
-// host. The natural-language objective is encoded as data and fed to Pi on
-// stdin; it is never evaluated by the shell.
+// CompileRuntime builds the fixed bootstrap for a supported Ubuntu 24.04
+// Worker host. The natural-language objective is encoded as data and fed to
+// Pi on stdin; it is never evaluated by the shell.
 func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 	objective := strings.TrimSpace(request.Objective)
 	if !validID(request.TaskID) || objective == "" || len(objective) > maxObjectiveBytes || !request.Workload.valid() ||
@@ -119,15 +119,18 @@ func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 	if err != nil {
 		return RuntimeMaterial{}, ErrInvalid
 	}
-	packages := "ca-certificates curl git gh golang-go gzip tar"
+	packages := "build-essential ca-certificates curl git gh golang-go gzip jq nodejs npm python-is-python3 python3 python3-pip python3-venv ripgrep tar"
 	caddyPreflight := ""
 	caddySetup := ""
 	if request.Service != nil && request.Service.Hostname != "" {
-		packages += " caddy"
 		caddyPreflight = `caddy_preexisting=false
 if command -v caddy >/dev/null 2>&1; then caddy_preexisting=true; fi
 `
-		caddySetup = `if [[ "$caddy_preexisting" == true ]] && [[ -f /etc/caddy/Caddyfile ]] && ! grep -qxF '# Managed by Dirextalk Agent' /etc/caddy/Caddyfile; then
+		caddySetup = `if [[ "$caddy_preexisting" != true ]]; then
+  sudo apt-get -qq update >/dev/null
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install caddy >/dev/null
+fi
+if [[ "$caddy_preexisting" == true ]] && [[ -f /etc/caddy/Caddyfile ]] && ! grep -qxF '# Managed by Dirextalk Agent' /etc/caddy/Caddyfile; then
   echo 'refusing to replace an unmanaged Caddyfile' >&2
   exit 1
 fi
@@ -147,18 +150,51 @@ trap - EXIT
 set -euo pipefail
 umask 077
 
-readonly worker_root=/tmp/dirextalk-worker
+readonly worker_root=/var/lib/dirextalk-worker
 readonly runtime_root="$worker_root/runtime"
 readonly config_root="$worker_root/pi-config"
 readonly artifact_root="$worker_root/artifacts"
 readonly archive="$worker_root/pi.tar.gz"
 readonly pi_bin="$runtime_root/pi"
 readonly task_root="$worker_root/tasks/%s"
+readonly baseline_marker="$worker_root/.coding-tool-baseline-v1"
 
+if [[ -L "$worker_root" ]]; then
+  echo 'refusing symlinked Worker state root' >&2
+  exit 1
+fi
+sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0700 "$worker_root"
+test -d "$worker_root" && test -O "$worker_root" && test ! -L "$worker_root"
 mkdir -p -- "$runtime_root" "$config_root" "$artifact_root" "$task_root"
 %s
-sudo apt-get -qq update >/dev/null
-sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install %s >/dev/null
+verify_coding_tools() {
+  command -v python3 >/dev/null
+  command -v python >/dev/null
+  python3 -m pip --version >/dev/null
+  python3 -m venv --help >/dev/null
+  command -v node >/dev/null
+  command -v npm >/dev/null
+  command -v git >/dev/null
+  command -v gh >/dev/null
+  command -v go >/dev/null
+  command -v curl >/dev/null
+  command -v tar >/dev/null
+  command -v gzip >/dev/null
+  command -v cc >/dev/null
+  command -v jq >/dev/null
+  command -v rg >/dev/null
+}
+if [[ ! -f "$baseline_marker" ]]; then
+  sudo apt-get -qq update >/dev/null
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install %s >/dev/null
+  verify_coding_tools
+  marker_tmp="$(mktemp "$worker_root/.coding-tool-baseline-v1.XXXXXX")"
+  printf 'v1\n' > "$marker_tmp"
+  chmod 600 "$marker_tmp"
+  mv -f -- "$marker_tmp" "$baseline_marker"
+fi
+test "$(cat "$baseline_marker")" = v1
+verify_coding_tools
 %s
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
   --output "$archive" %s

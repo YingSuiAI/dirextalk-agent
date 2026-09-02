@@ -46,15 +46,22 @@ explicit owner action, either through the owner client management operation or
 the Native Agent's owner-scoped `cloud_worker_destroy` intrinsic.
 
 The Worker manager supports at most four retained Workers for the current
-credential. It discovers the newest Canonical official Ubuntu 24.04 LTS image
-and the account's default VPC/subnet at runtime, creates one EC2 instance with an
-ordinary auto-assigned public IPv4, and connects from Agent by outbound SSH.
-There is no EIP, custom AMI, inbound Worker API, WorkerControl listener, model
-relay, S3/KMS artifact path, or deploy-time Worker injection. Jobs and service
-workloads persist status and logs on the Worker so a later SSH connection can
-resume observation. Result files are copied into the Agent-owned local artifact
-repository. Optional Route53 binding is an explicit management action and is
-not required to create, reuse, or observe a Worker.
+credential. CPU Workers use the newest Canonical Ubuntu 24.04 LTS image; GPU
+Workers use the newest AWS-published Ubuntu 24.04 Deep Learning Base OSS NVIDIA
+Driver GPU AMI for an explicitly supported instance family. The Agent discovers
+the account's default VPC/subnet at runtime, creates one EC2 instance with an
+ordinary auto-assigned public IPv4, and connects by outbound SSH. It sizes the
+AMI root device to at least the image snapshot minimum instead of attaching a
+second guessed root device. There is no EIP, product custom AMI, inbound Worker
+API, WorkerControl listener, model relay, S3/KMS artifact path, or deploy-time
+Worker injection. Jobs and service
+workloads persist status and logs under `/var/lib/dirextalk-worker` so reboot or
+a later SSH connection can resume observation. Each instance installs a
+versioned coding-tool baseline once and verifies Python, Node, Git/GitHub CLI,
+Go, build tools, and common shell utilities before execution. Result files are
+copied into the Agent-owned local artifact repository. Optional Route53 binding
+is an explicit management action and is not required to create, reuse, or
+observe a Worker.
 
 The durable scheduler and Extension Runner share the current fixed capacity of
 three process-starting local sandbox Tasks. The immutable Task payload

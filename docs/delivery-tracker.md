@@ -391,10 +391,12 @@ contract](message-server-integration-development-contract.md), and
   Cloud Worker publication while keeping the rest of Agent available.
   New Worker creation uses a fresh EC2/EBS quote and exact owner confirmation;
   retained idle Workers are reused without another creation. The manager
-  supports at most four ordinary-public-IPv4 EC2 Workers, discovers the current
-  Canonical official Ubuntu 24.04 LTS image and default network live, and copies
+  supports at most four ordinary-public-IPv4 EC2 Workers. CPU Workers discover
+  current Canonical Ubuntu 24.04 while supported GPU Workers discover the AWS
+  Ubuntu 24.04 Deep Learning Base OSS NVIDIA Driver GPU AMI; both discover the
+  default network live and copy
   remote results into Agent-owned local artifact storage. It has no EIP, S3/KMS,
-  custom AMI, WorkerControl, model relay, or deploy-time account/credential binding.
+  product custom AMI, WorkerControl, model relay, or deploy-time account/credential binding.
   Worker/execution records are bound to the authenticated owner/account
   generation; historical provisioning recovery is read-only, partial cleanup
   is retryable, and one unavailable AWS observation no longer hides the rest
@@ -746,6 +748,14 @@ support.
   AMI, S3/KMS staging/result, WorkerControl, model-relay, provider-graph,
   pre-launch repricing, and automatic cleanup paths have been removed. These
   tests use fakes or SDK test doubles and perform no AWS mutation.
+- On **2026-09-02**, focused regressions moved Worker runtime and task state from
+  reboot-volatile `/tmp` to `/var/lib/dirextalk-worker`, added a durable
+  versioned coding-tool baseline with per-task readiness checks, selected the
+  AWS Ubuntu 24.04 OSS NVIDIA GPU DLAMI for supported GPU families, respected
+  the AMI root-device snapshot minimum, bypassed fresh discovery during retained
+  execution recovery, and allowed stale (but not actively executing) Busy
+  Workers through the explicit destroy path. This evidence is code-level and
+  does not claim a live AWS launch.
 - On **2026-08-13**, the active implementation replaced that historical
   inbound/custom-image path with the persistent SSH Worker manager. Focused
   tests covered AWS-owned AL2023/default-network discovery, ordinary public IPv4,

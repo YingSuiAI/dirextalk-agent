@@ -180,6 +180,8 @@ func (s *fakeSSH) Execute(_ context.Context, r SSHRequest) (ExecutionResult, err
 
 type fakeAWS struct {
 	mutations, runs, terminations int
+	discoveryCalls                int
+	discoveryErr                  error
 	quotaRequests                 int
 	keys                          map[string]KeyPair
 	groups                        map[string]SecurityGroup
@@ -197,8 +199,9 @@ func newFakeAWS() *fakeAWS {
 	return &fakeAWS{keys: map[string]KeyPair{}, groups: map[string]SecurityGroup{}, instances: map[string]Instance{}, publicPorts: map[uint16]bool{}, observeErr: map[string]error{}}
 }
 func (a *fakeAWS) VerifyIdentity(context.Context, CredentialIdentity) error { return nil }
-func (a *fakeAWS) Discover(context.Context, CredentialIdentity, string) (Discovery, error) {
-	return discoveryFixture(), nil
+func (a *fakeAWS) Discover(context.Context, CredentialIdentity, string, string) (Discovery, error) {
+	a.discoveryCalls++
+	return discoveryFixture(), a.discoveryErr
 }
 func (a *fakeAWS) ListInstances(context.Context, CredentialIdentity, ResourceTags) ([]Instance, error) {
 	r := []Instance{}
@@ -352,6 +355,20 @@ func TestExecuteRequiresConfirmationOnlyWhenCreatingAndRetainsWorker(t *testing.
 	}
 	if cloud.runs != 1 || ssh.calls != 2 || ssh.hosts[1] != "203.0.113.20" {
 		t.Fatalf("idle worker not reused: cloud=%#v ssh=%#v", cloud, ssh)
+	}
+}
+
+func TestFreshCreateDiscoversImageAndNetworkInsideProvider(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	request := requestFixture()
+	request.Discovery = Discovery{}
+	if _, err := provider.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if cloud.discoveryCalls != 1 || cloud.runs != 1 {
+		t.Fatalf("discovery calls=%d runs=%d", cloud.discoveryCalls, cloud.runs)
 	}
 }
 
@@ -627,12 +644,17 @@ func TestCompletedRemoteExecutionResumesCollectionWithoutRerunning(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	request.Discovery = Discovery{}
+	cloud.discoveryErr = errors.New("public IP probe unavailable")
 	result, err := provider.Execute(context.Background(), request)
 	if err != nil || result.Summary != "collected" {
 		t.Fatalf("resumed collection result=%+v err=%v", result, err)
 	}
 	if ssh.calls != 2 || ssh.starts != 1 || ssh.seen[0].Resume || ssh.seen[0].CollectOnly || !ssh.seen[1].Resume || !ssh.seen[1].CollectOnly || cloud.runs != 1 {
 		t.Fatalf("calls=%d starts=%d resume=[%t %t] collect_only=[%t %t] cloud_runs=%d", ssh.calls, ssh.starts, ssh.seen[0].Resume, ssh.seen[1].Resume, ssh.seen[0].CollectOnly, ssh.seen[1].CollectOnly, cloud.runs)
+	}
+	if cloud.discoveryCalls != 0 {
+		t.Fatalf("retained collection performed %d fresh discoveries", cloud.discoveryCalls)
 	}
 }
 
@@ -1400,7 +1422,7 @@ func withBusyInstance(worker WorkerRecord, id string) WorkerRecord {
 	return worker
 }
 func discoveryFixture() Discovery {
-	return Discovery{ImageID: "ami-official", ImageName: "al2023", ImageCreatedAt: time.Now().UTC(), SSHUser: "ec2-user", VPCID: "vpc-default", SubnetID: "subnet-default", PublicEgressCIDR: "198.51.100.7/32", ObservedAt: time.Now().UTC()}
+	return Discovery{ImageID: "ami-official", ImageName: "al2023", ImageCreatedAt: time.Now().UTC(), RootDeviceName: "/dev/sda1", RootVolumeGiB: 8, SSHUser: "ec2-user", VPCID: "vpc-default", SubnetID: "subnet-default", PublicEgressCIDR: "198.51.100.7/32", ObservedAt: time.Now().UTC()}
 }
 func requestFixture() ExecuteRequest {
 	script := []byte("echo ok")

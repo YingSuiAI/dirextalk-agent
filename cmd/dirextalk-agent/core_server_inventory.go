@@ -74,6 +74,20 @@ func (inventory coreServerWorkerInventory) Get(ctx context.Context, authority co
 	return coreserver.Server{}, coreserver.ErrNotFound
 }
 
+func (inventory coreServerWorkerInventory) PrepareDestroy(ctx context.Context, authority coreserver.Authority, serverID string) error {
+	if inventory.executor == nil {
+		return coreserver.ErrNotFound
+	}
+	err := inventory.executor.CheckRetainedWorkerDestroyable(ctx, authority.OwnerID, authority.AccountGeneration, serverID)
+	if errors.Is(err, sshworker.ErrBusy) {
+		return coreserver.ErrBusy
+	}
+	if errors.Is(err, sshworker.ErrIdentity) {
+		return coreserver.ErrNotFound
+	}
+	return err
+}
+
 func (inventory coreServerWorkerInventory) Destroy(ctx context.Context, authority coreserver.Authority, serverID, operationID string) error {
 	if inventory.executor == nil {
 		return coreserver.ErrNotFound

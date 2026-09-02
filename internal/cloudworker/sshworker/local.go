@@ -473,13 +473,16 @@ func (executor CommandSSHExecutor) Execute(ctx context.Context, request SSHReque
 	if err != nil {
 		return ExecutionResult{}, err
 	}
-	taskRoot := "/tmp/dirextalk-worker/tasks/" + request.ExecutionID
+	taskRoot := "/var/lib/dirextalk-worker/tasks/" + request.ExecutionID
 	workspaceRoot := taskRoot + "/workspace"
 	artifactRoot := taskRoot + "/artifacts"
 	workerScript := taskRoot + "/worker.sh"
 	var appliedSteerIDs []string
 	if !request.Resume {
-		prepare := "rm -rf -- " + shellQuote(taskRoot) + " && mkdir -p -- " + shellQuote(workspaceRoot) + " " + shellQuote(artifactRoot)
+		prepare := "if [ -L /var/lib/dirextalk-worker ]; then exit 1; fi && " +
+			"sudo install -d -o \"$(id -u)\" -g \"$(id -g)\" -m 0700 /var/lib/dirextalk-worker && " +
+			"test -d /var/lib/dirextalk-worker && test -O /var/lib/dirextalk-worker && test ! -L /var/lib/dirextalk-worker && " +
+			"rm -rf -- " + shellQuote(taskRoot) + " && mkdir -p -- " + shellQuote(workspaceRoot) + " " + shellQuote(artifactRoot)
 		if err := retrySSH(ctx, sshPath, base, prepare); err != nil {
 			return ExecutionResult{}, err
 		}

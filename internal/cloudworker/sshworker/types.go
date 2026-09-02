@@ -1,5 +1,5 @@
 // Package sshworker runs confirmed tasks on a small persistent EC2 worker pool.
-// It deliberately has no S3, KMS, custom AMI, callback, or pricing-catalog dependency.
+// It deliberately has no S3, KMS, callback, or pricing-catalog dependency.
 package sshworker
 
 import (
@@ -101,6 +101,8 @@ type Discovery struct {
 	ImageID          string
 	ImageName        string
 	ImageCreatedAt   time.Time
+	RootDeviceName   string
+	RootVolumeGiB    int32
 	SSHUser          string
 	VPCID            string
 	SubnetID         string
@@ -111,7 +113,8 @@ type Discovery struct {
 func (discovery Discovery) validate() error {
 	prefix, err := netip.ParsePrefix(discovery.PublicEgressCIDR)
 	if err != nil || !prefix.Addr().Is4() || prefix.Bits() != 32 || strings.TrimSpace(discovery.ImageID) == "" ||
-		strings.TrimSpace(discovery.SSHUser) == "" || strings.TrimSpace(discovery.VPCID) == "" || strings.TrimSpace(discovery.SubnetID) == "" || discovery.ObservedAt.IsZero() {
+		strings.TrimSpace(discovery.SSHUser) == "" || !strings.HasPrefix(discovery.RootDeviceName, "/dev/") || discovery.RootVolumeGiB < 8 ||
+		strings.TrimSpace(discovery.VPCID) == "" || strings.TrimSpace(discovery.SubnetID) == "" || discovery.ObservedAt.IsZero() {
 		return ErrInvalid
 	}
 	return nil
@@ -144,7 +147,8 @@ type ExecuteRequest struct {
 }
 
 func (request ExecuteRequest) validate() error {
-	if request.Authority.validate() != nil || request.Credential.validate() != nil || request.Discovery.validate() != nil || !validID(request.ExecutionID) || strings.TrimSpace(request.InstanceType) == "" || !validConcreteAccelerator(request.AcceleratorType) || request.VCPU == 0 || request.MemoryGiB == 0 ||
+	if request.Authority.validate() != nil || request.Credential.validate() != nil ||
+		(request.Discovery != (Discovery{}) && request.Discovery.validate() != nil) || !validID(request.ExecutionID) || strings.TrimSpace(request.InstanceType) == "" || !validConcreteAccelerator(request.AcceleratorType) || request.VCPU == 0 || request.MemoryGiB == 0 ||
 		request.VolumeGiB < 8 || request.VolumeGiB > 16_384 || len(request.WorkerScript) == 0 || len(request.WorkerScript) > maxWorkerScriptBytes || !request.Runtime.valid() || request.Runtime.TaskID != request.ExecutionID ||
 		request.MaxWorkspaceBytes <= 0 || request.MaxWorkspaceBytes > maxWorkspaceBytes || request.MaxResultBytes <= 0 || request.MaxResultBytes > maxResultBytes || request.Sink == nil {
 		return ErrInvalid
@@ -241,7 +245,7 @@ func (failure *QuotaError) UserSummary() string {
 
 type AWS interface {
 	VerifyIdentity(context.Context, CredentialIdentity) error
-	Discover(context.Context, CredentialIdentity, string) (Discovery, error)
+	Discover(context.Context, CredentialIdentity, string, string) (Discovery, error)
 	ListInstances(context.Context, CredentialIdentity, ResourceTags) ([]Instance, error)
 	FindKeyPair(context.Context, CredentialIdentity, string, ResourceTags) (KeyPair, bool, error)
 	ImportKeyPair(context.Context, CredentialIdentity, Confirmation, string, []byte, ResourceTags) (KeyPair, error)

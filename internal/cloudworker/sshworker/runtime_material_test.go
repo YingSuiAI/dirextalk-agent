@@ -39,7 +39,16 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 		"releases/download/v0.84.1/pi-linux-x64.tar.gz",
 		piLinuxX64SHA256,
 		"sudo apt-get -qq update",
-		"sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install ca-certificates curl git gh golang-go gzip tar",
+		"sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install build-essential ca-certificates curl git gh golang-go gzip jq nodejs npm python-is-python3 python3 python3-pip python3-venv ripgrep tar",
+		"readonly worker_root=/var/lib/dirextalk-worker",
+		`readonly baseline_marker="$worker_root/.coding-tool-baseline-v1"`,
+		`test ! -L "$worker_root"`,
+		"python3 -m pip --version",
+		"python3 -m venv --help",
+		"command -v node",
+		"command -v gh",
+		"command -v go",
+		"command -v rg",
 		`readonly task_root="$worker_root/tasks/task-001"`,
 		`dirextalk-worker-runner`,
 		`server-status`,
@@ -48,6 +57,9 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 		if !strings.Contains(script, expected) {
 			t.Fatalf("script does not contain %q", expected)
 		}
+	}
+	if strings.Contains(script, "/tmp/dirextalk-worker") || strings.Contains(remoteRunnerSource, "/tmp/dirextalk-worker") {
+		t.Fatal("Worker runtime state still uses the reboot-volatile /tmp root")
 	}
 	if strings.Contains(script, "dnf") {
 		t.Fatal("bootstrap contains the retired dnf package path")
@@ -188,7 +200,7 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 	directory := t.TempDir()
 	root := filepath.Join(directory, "worker")
 	source := filepath.Join(directory, "runner.go")
-	body := strings.Replace(remoteRunnerSource, `const root = "/tmp/dirextalk-worker"`, `const root = `+strconv.Quote(root), 1)
+	body := strings.Replace(remoteRunnerSource, `const root = "/var/lib/dirextalk-worker"`, `const root = `+strconv.Quote(root), 1)
 	if err := os.WriteFile(source, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

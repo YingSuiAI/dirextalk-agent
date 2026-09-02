@@ -137,7 +137,7 @@ func (protocol RuntimeProtocol) ServiceStatus() (RuntimeCommand, error) {
 func (protocol RuntimeProtocol) valid() bool { return validID(protocol.TaskID) }
 
 func runnerCommand(action RuntimeAction, arguments ...string) string {
-	parts := []string{shellQuote("/tmp/dirextalk-worker/dirextalk-worker-runner"), shellQuote(string(action))}
+	parts := []string{shellQuote("/var/lib/dirextalk-worker/dirextalk-worker-runner"), shellQuote(string(action))}
 	for _, argument := range arguments {
 		parts = append(parts, shellQuote(argument))
 	}

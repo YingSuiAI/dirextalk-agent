@@ -45,13 +45,16 @@ func NewWithPool(awsClient AWS, keys KeyMaterial, ssh SSHExecutor, store Store, 
 		pool: pool, authorizeCreate: authorizeCreate, active: make(map[string]struct{})}, nil
 }
 
-func (provider *Provider) Discover(ctx context.Context, credential CredentialIdentity, instanceType string) (Discovery, error) {
+func (provider *Provider) discover(ctx context.Context, credential CredentialIdentity, instanceType, acceleratorType string) (Discovery, error) {
 	if provider == nil || ctx == nil || credential.validate() != nil {
 		return Discovery{}, ErrInvalid
 	}
-	discovery, err := provider.aws.Discover(ctx, credential, instanceType)
-	if err != nil || discovery.validate() != nil {
-		return Discovery{}, errors.Join(ErrInvalid, err)
+	discovery, err := provider.aws.Discover(ctx, credential, instanceType, acceleratorType)
+	if err != nil {
+		return Discovery{}, err
+	}
+	if discovery.validate() != nil {
+		return Discovery{}, ErrInvalid
 	}
 	return discovery, nil
 }
@@ -236,6 +239,10 @@ func (provider *Provider) acquire(ctx context.Context, request ExecuteRequest, p
 			if err := provider.authorizeCreate(ctx, request.Credential); err != nil {
 				return WorkerRecord{}, errors.Join(err, provider.reconcileProvisioning(ctx, &worker))
 			}
+			request, err = provider.discoverForCreate(ctx, request)
+			if err != nil {
+				return WorkerRecord{}, err
+			}
 			return provider.create(ctx, request)
 		}
 	}
@@ -253,10 +260,33 @@ func (provider *Provider) acquire(ctx context.Context, request ExecuteRequest, p
 	if err := provider.authorizeCreate(ctx, request.Credential); err != nil {
 		return WorkerRecord{}, err
 	}
+	request, err = provider.discoverForCreate(ctx, request)
+	if err != nil {
+		return WorkerRecord{}, err
+	}
 	return provider.create(ctx, request)
 }
 
+func (provider *Provider) discoverForCreate(ctx context.Context, request ExecuteRequest) (ExecuteRequest, error) {
+	if request.Discovery != (Discovery{}) {
+		if request.Discovery.validate() != nil {
+			return ExecuteRequest{}, ErrInvalid
+		}
+		return request, nil
+	}
+	discovery, err := provider.discover(ctx, request.Credential, request.InstanceType, request.AcceleratorType)
+	if err != nil {
+		return ExecuteRequest{}, err
+	}
+	request.Discovery = discovery
+	return request, nil
+}
+
 func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (WorkerRecord, error) {
+	if request.Discovery.validate() != nil {
+		return WorkerRecord{}, ErrInvalid
+	}
+	effectiveVolumeGiB := max(request.VolumeGiB, request.Discovery.RootVolumeGiB)
 	workerID := request.ExecutionID
 	tags := resourceTags(workerID, request.Authority, request.Credential, request.Confirmation.Proof)
 	keyName, groupName, clientToken := resourceNames(workerID)
@@ -269,7 +299,7 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 			Credential: request.Credential, CreationProof: request.Confirmation.Proof,
 			DisplayName: strings.TrimSpace(request.ServerName),
 			Phase:       WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, AcceleratorType: request.AcceleratorType,
-			VCPU: request.VCPU, MemoryGiB: request.MemoryGiB, VolumeGiB: request.VolumeGiB, CreatedAt: provider.now().UTC()}
+			VCPU: request.VCPU, MemoryGiB: request.MemoryGiB, VolumeGiB: effectiveVolumeGiB, CreatedAt: provider.now().UTC()}
 		worker.UpdatedAt = provider.now().UTC()
 		if err := provider.store.SaveWorkerIntent(ctx, worker, func(ctx context.Context) error {
 			return provider.authorizeCreate(ctx, request.Credential)
@@ -279,6 +309,12 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 	}
 	if worker.authority() != request.Authority || worker.Credential != request.Credential || worker.CreationProof != request.Confirmation.Proof {
 		return WorkerRecord{}, ErrIdentity
+	}
+	if worker.Instance.ID == "" && worker.VolumeGiB < effectiveVolumeGiB {
+		worker.VolumeGiB = effectiveVolumeGiB
+		if err := provider.saveWorker(ctx, &worker); err != nil {
+			return WorkerRecord{}, err
+		}
 	}
 	privatePath, publicKey, err := provider.keys.Ensure(ctx, workerID)
 	if err != nil || privatePath == "" || len(publicKey) == 0 {
@@ -558,6 +594,29 @@ func (provider *Provider) DestroyWorker(ctx context.Context, request DestroyRequ
 		return err
 	}
 	return provider.FinalizeWorkerDestroy(ctx, request)
+}
+
+// CheckWorkerDestroyable distinguishes an actively executing Worker from a
+// stale Busy record without mutating either local state or AWS resources.
+func (provider *Provider) CheckWorkerDestroyable(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity, workerID string) error {
+	if provider == nil || ctx == nil || authority.validate() != nil || credential.validate() != nil || !validID(workerID) {
+		return ErrInvalid
+	}
+	provider.pool.mu.Lock()
+	defer provider.pool.mu.Unlock()
+	worker, found, err := provider.store.LoadWorker(ctx, workerID)
+	if err != nil {
+		return err
+	}
+	if !found || worker.authority() != authority || worker.Credential != credential {
+		return ErrIdentity
+	}
+	if worker.Phase == WorkerBusy {
+		if _, running := provider.active[worker.CurrentExecutionID]; running {
+			return ErrBusy
+		}
+	}
+	return nil
 }
 
 func (provider *Provider) DestroyWorkerResources(ctx context.Context, request DestroyRequest) error {

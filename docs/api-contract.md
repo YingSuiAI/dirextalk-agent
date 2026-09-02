@@ -969,17 +969,20 @@ model may select it without cloud or remote wording, but model text and local
 failures are not capability evidence. Cloud/local-only vetoes remain binding,
 and AWS resources start only after the owner confirms the pending quote. The
 manager supports no more than four retained Workers for one authenticated
-owner/account generation across credential revisions. It discovers the newest
-Canonical official Ubuntu 24.04 LTS image and the
-default VPC at runtime, intersects its available default subnets with the
-selected instance type's current availability-zone offerings, assigns an
-ordinary public IPv4, and uses
-outbound SSH. First contact uses `accept-new` into a persistent `known_hosts`
+owner/account generation across credential revisions. CPU Workers use the
+newest Canonical Ubuntu 24.04 LTS image; GPU Workers use the newest supported
+AWS Ubuntu 24.04 Deep Learning Base OSS NVIDIA Driver GPU AMI. Discovery reads
+the AMI's actual root device and snapshot minimum and the default VPC at
+runtime, intersects its available default subnets with the selected instance
+type's current availability-zone offerings, assigns an ordinary public IPv4,
+and uses outbound SSH. First contact uses `accept-new` into a persistent `known_hosts`
 file beside the Worker private key; later connections require that pinned host
 key. The file must be a single-link, owner-owned regular file with mode 0600,
 is opened without following symlinks, and is removed with the Worker key.
-Image identity remains internal provider data. There is no EIP,
-custom AMI, S3/KMS, WorkerControl callback, model relay, Worker domain, or
+Image identity remains internal provider data. Runtime state persists under
+`/var/lib/dirextalk-worker`; retained execution recovery occurs before fresh
+image/network/public-egress discovery. There is no EIP, product custom AMI,
+S3/KMS, WorkerControl callback, model relay, Worker domain, or
 deployment-time binding. Terminal Worker output returns to the same durable
 turn as a tool result with related task/plan IDs and local Agent-owned artifact
 metadata. Remote workload completion is persisted before result collection.

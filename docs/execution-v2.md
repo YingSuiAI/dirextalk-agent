@@ -26,7 +26,7 @@ completes. Status or load questions never authorize destruction.
 
 ## Persistent SSH Workers
 
-The Agent manages at most four retained Workers for the authenticated owner and account generation. It uses the sole active AWS credential uploaded and STS-verified through the App, discovers the newest Canonical official Ubuntu 24.04 LTS image and the account's default VPC, and selects only a default subnet whose availability zone currently offers the confirmed instance type. It creates an ordinary EC2 instance with an auto-assigned public IPv4. A provider client rejection is a deterministic terminal failure; only an outcome that may have committed a provider mutation remains recoverable as uncertain.
+The Agent manages at most four retained Workers for the authenticated owner and account generation. It uses the sole active AWS credential uploaded and STS-verified through the App. CPU Workers use the newest Canonical Ubuntu 24.04 LTS image; GPU Workers use the newest AWS-published Ubuntu 24.04 Deep Learning Base OSS NVIDIA Driver GPU AMI and reject instance families that AWS does not list as supported by that image. Discovery also resolves the AMI's real root device and snapshot minimum. The Agent discovers the account's default VPC and selects only a default subnet whose availability zone currently offers the confirmed instance type. It creates an ordinary EC2 instance with an auto-assigned public IPv4. A provider client rejection is a deterministic terminal failure; only an outcome that may have committed a provider mutation remains recoverable as uncertain.
 
 `RunInstances` performs one physical launch attempt. When EC2 rejects that
 attempt with `VcpuLimitExceeded`, Agent first proves that the confirmed instance
@@ -41,7 +41,7 @@ marked failed and destroyable; quota review never keeps a Task or turn in a
 provisioning loop. Every Service Quotas read/write and lost-response read-back
 revalidates the exact AWS account, Region, credential revision, and confirmation.
 
-The Agent connects by outbound SSH with Agent-owned key material. There is no inbound Agent callback, EIP, custom AMI, S3/KMS artifact path, WorkerControl service, model relay, or deploy-time Worker configuration.
+The Agent connects by outbound SSH with Agent-owned key material. There is no inbound Agent callback, EIP, product custom AMI, S3/KMS artifact path, WorkerControl service, model relay, or deploy-time Worker configuration. Worker runtime, task status, logs, and result material live under the reboot-persistent `/var/lib/dirextalk-worker` root. A versioned per-instance marker prevents repeating the coding-tool installation, while every task verifies the required Python, Node, Git/GitHub CLI, Go, build-tool, and utility commands before starting. Recovery reads retained execution state before any new image, network, or public-egress discovery, so an unrelated discovery outage cannot mask completed remote work or result collection.
 
 Remote work is durable by task ID. The Agent uses short SSH operations to:
 
@@ -50,6 +50,10 @@ Remote work is durable by task ID. The Agent uses short SSH operations to:
 - read logs from an offset;
 - list and download artifacts;
 - stop a workload or destroy the Worker.
+
+An explicit destroy consults the provider's in-process execution fence. Live
+work remains protected, while a stale local Busy projection with no active
+execution can be destroyed and reconciled normally.
 
 A dropped SSH connection does not erase remote state or authorize a duplicate start. Jobs terminalize when their remote task finishes. Stopping the owning turn cancels its active execution without destroying the retained Worker. Services may remain active across turns until the owner stops them or destroys the Worker.
 

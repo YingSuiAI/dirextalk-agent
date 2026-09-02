@@ -168,6 +168,10 @@ func TestSDKRunUsesAutoPublicIPv4WithoutEIP(t *testing.T) {
 	if probe.runInput == nil || len(probe.runInput.NetworkInterfaces) != 1 || !aws.ToBool(probe.runInput.NetworkInterfaces[0].AssociatePublicIpAddress) {
 		t.Fatalf("public IPv4 not requested: %#v", probe.runInput)
 	}
+	if len(probe.runInput.BlockDeviceMappings) != 1 || aws.ToString(probe.runInput.BlockDeviceMappings[0].DeviceName) != "/dev/sda1" ||
+		aws.ToInt32(probe.runInput.BlockDeviceMappings[0].Ebs.VolumeSize) != 16 {
+		t.Fatalf("root volume mapping = %#v", probe.runInput.BlockDeviceMappings)
+	}
 }
 func (probe *mutationProbeEC2) TerminateInstances(context.Context, *ec2.TerminateInstancesInput, ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
 	probe.terminateCalls++
@@ -187,8 +191,8 @@ func (staticIP) PublicIP(context.Context) (netip.Addr, error) {
 func TestSDKDiscoverUsesCanonicalOwnerAndNewestUbuntu2404Image(t *testing.T) {
 	probe := &mutationProbeEC2{
 		images: []ec2types.Image{
-			{ImageId: aws.String("ami-older"), Name: aws.String("ubuntu-noble-older"), CreationDate: aws.String("2026-08-01T00:00:00Z")},
-			{ImageId: aws.String("ami-newest"), Name: aws.String("ubuntu-noble-newest"), CreationDate: aws.String("2026-08-02T00:00:00Z")},
+			imageFixture("ami-older", "ubuntu-noble-older", "2026-08-01T00:00:00Z", 8),
+			imageFixture("ami-newest", "ubuntu-noble-newest", "2026-08-02T00:00:00Z", 8),
 		},
 		vpcs: []ec2types.Vpc{{VpcId: aws.String("vpc-default")}},
 		subnets: []ec2types.Subnet{
@@ -199,7 +203,7 @@ func TestSDKDiscoverUsesCanonicalOwnerAndNewestUbuntu2404Image(t *testing.T) {
 	}
 	credential := credentialFixture()
 	credential.Region = "region-under-test"
-	discovery, err := newSDK(credential.Region, probe, stubSTS{}, staticIP{}).Discover(context.Background(), credential, "c5a.xlarge")
+	discovery, err := newSDK(credential.Region, probe, stubSTS{}, staticIP{}).Discover(context.Background(), credential, "c5a.xlarge", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,12 +220,71 @@ func TestSDKDiscoverUsesCanonicalOwnerAndNewestUbuntu2404Image(t *testing.T) {
 	if !slices.Equal(imageNames, []string{"ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"}) {
 		t.Fatalf("DescribeImages names = %v", imageNames)
 	}
-	if discovery.ImageID != "ami-newest" || discovery.ImageName != "ubuntu-noble-newest" || discovery.SSHUser != "ubuntu" || discovery.VPCID != "vpc-default" || discovery.SubnetID != "subnet-a" {
+	if discovery.ImageID != "ami-newest" || discovery.ImageName != "ubuntu-noble-newest" || discovery.RootDeviceName != "/dev/sda1" || discovery.RootVolumeGiB != 8 || discovery.SSHUser != "ubuntu" || discovery.VPCID != "vpc-default" || discovery.SubnetID != "subnet-a" {
 		t.Fatalf("discovery = %#v", discovery)
 	}
 	if probe.offeringsInput == nil || probe.offeringsInput.LocationType != ec2types.LocationTypeAvailabilityZone || len(probe.offeringsInput.Filters) != 1 || !slices.Equal(probe.offeringsInput.Filters[0].Values, []string{"c5a.xlarge"}) {
 		t.Fatalf("instance type offerings input = %#v", probe.offeringsInput)
 	}
+}
+
+func TestSDKDiscoverUsesOfficialAWSGPUImageAndSnapshotMinimum(t *testing.T) {
+	probe := &mutationProbeEC2{
+		images:    []ec2types.Image{imageFixture("ami-gpu", "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) 20260825", "2026-08-25T00:00:00Z", 100)},
+		vpcs:      []ec2types.Vpc{{VpcId: aws.String("vpc-default")}},
+		subnets:   []ec2types.Subnet{{SubnetId: aws.String("subnet-a"), AvailabilityZone: aws.String("region-under-test-a")}},
+		offerings: []ec2types.InstanceTypeOffering{{InstanceType: ec2types.InstanceTypeG4dnXlarge, Location: aws.String("region-under-test-a")}},
+	}
+	credential := credentialFixture()
+	credential.Region = "region-under-test"
+	discovery, err := newSDK(credential.Region, probe, stubSTS{}, staticIP{}).Discover(context.Background(), credential, "g4dn.xlarge", "gpu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(probe.describeImagesInput.Owners, []string{"amazon"}) {
+		t.Fatalf("GPU owners = %v", probe.describeImagesInput.Owners)
+	}
+	var imageNames []string
+	for _, filter := range probe.describeImagesInput.Filters {
+		if aws.ToString(filter.Name) == "name" {
+			imageNames = filter.Values
+		}
+	}
+	if !slices.Equal(imageNames, []string{"Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) ????????"}) || discovery.RootVolumeGiB != 100 {
+		t.Fatalf("GPU filter=%v discovery=%#v", imageNames, discovery)
+	}
+	probe.runInput = nil
+	_, err = newSDK(credential.Region, probe, stubSTS{}, staticIP{}).RunInstance(context.Background(), credential, Confirmation{Confirmed: true, Proof: "confirmation-1"}, LaunchRequest{
+		WorkerID: "worker-gpu", ClientToken: "token-gpu", InstanceType: "g4dn.xlarge", VCPU: 4, VolumeGiB: 32, KeyName: "key", SecurityGroupID: "sg-1", Discovery: discovery, Tags: ResourceTags{"owner": "test"}})
+	if err != nil || len(probe.runInput.BlockDeviceMappings) != 1 || aws.ToString(probe.runInput.BlockDeviceMappings[0].DeviceName) != "/dev/sda1" || aws.ToInt32(probe.runInput.BlockDeviceMappings[0].Ebs.VolumeSize) != 100 {
+		t.Fatalf("GPU root mapping=%#v err=%v", probe.runInput, err)
+	}
+}
+
+func TestSDKRejectsGPUFamilyUnsupportedByOfficialImage(t *testing.T) {
+	identity := credentialFixture()
+	_, err := newSDK(identity.Region, &mutationProbeEC2{}, stubSTS{}, staticIP{}).Discover(context.Background(), identity, "gr6f.4xlarge", "gpu")
+	if !errors.Is(err, ErrProviderRejected) {
+		t.Fatalf("unsupported GPU error = %v", err)
+	}
+}
+
+func TestOfficialGPUImageSupportedFamilies(t *testing.T) {
+	for _, instanceType := range []string{"g4dn.xlarge", "g5.2xlarge", "g6.xlarge", "gr6.4xlarge", "g6e.2xlarge", "g7.4xlarge", "g7e.8xlarge", "p4d.24xlarge", "p4de.24xlarge", "p5.48xlarge", "p5e.48xlarge", "p5en.48xlarge", "p6-b200.48xlarge", "p6-b300.48xlarge"} {
+		if !officialGPUImageSupports(instanceType) {
+			t.Errorf("documented GPU family rejected: %s", instanceType)
+		}
+	}
+	for _, instanceType := range []string{"g6f.2xlarge", "gr6f.4xlarge", "p3.16xlarge", "g5g.xlarge", "gpu"} {
+		if officialGPUImageSupports(instanceType) {
+			t.Errorf("unsupported GPU family accepted: %s", instanceType)
+		}
+	}
+}
+
+func imageFixture(id, name, created string, volumeGiB int32) ec2types.Image {
+	return ec2types.Image{ImageId: aws.String(id), Name: aws.String(name), CreationDate: aws.String(created), RootDeviceName: aws.String("/dev/sda1"),
+		BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String("/dev/sda1"), Ebs: &ec2types.EbsBlockDevice{VolumeSize: aws.Int32(volumeGiB)}}}}
 }
 
 func TestSDKRunClassifiesClientRejectionAsDeterministic(t *testing.T) {

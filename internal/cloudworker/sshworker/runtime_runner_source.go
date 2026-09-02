@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const root = "/tmp/dirextalk-worker"
+const root = "/var/lib/dirextalk-worker"
 
 type taskSpec struct {
 	TaskID string ` + "`json:\"task_id\"`" + `
