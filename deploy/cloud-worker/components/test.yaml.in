@@ -1,5 +1,5 @@
-name: dirextalk-worker-__FLAVOR__-test-1-1-2
-description: Qualify Dirextalk Worker 1.1.2, including offline content tooling and reboot persistence.
+name: dirextalk-worker-__FLAVOR__-test-1-1-3
+description: Qualify Dirextalk Worker 1.1.3, including offline content tooling and reboot persistence.
 schemaVersion: 1.0
 phases:
   - name: test

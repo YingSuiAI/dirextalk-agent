@@ -770,7 +770,7 @@ support.
   and cross-recipe two-version cleanup. This is code/static evidence only: the
   configured AWS CLI identity was root and no paid AMI build, distribution, or
   SSM publication was performed.
-- On **2026-09-02**, Worker image release `1.1.2` upgraded the pinned Pi binary
+- On **2026-09-02**, Worker image release `1.1.3` upgraded the pinned Pi binary
   to `v0.84.4` and added checksummed uv/uvx `0.12.9`, Ubuntu-packaged static-web
   extraction, and PDF authoring/inspection tools. Image tests create an offline
   uv environment, parse an in-memory HTTP response, generate a PDF, validate

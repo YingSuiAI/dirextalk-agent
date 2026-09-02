@@ -1,5 +1,5 @@
-name: dirextalk-worker-__FLAVOR__-install-1-1-2
-description: Install the Dirextalk Worker 1.1.2 toolchain and pinned Pi runtime.
+name: dirextalk-worker-__FLAVOR__-install-1-1-3
+description: Install the Dirextalk Worker 1.1.3 toolchain and pinned Pi runtime.
 schemaVersion: 1.0
 phases:
   - name: build
@@ -47,7 +47,9 @@ phases:
               /opt/dirextalk-worker/uv/0.12.9/uv --version | grep -Eq '^uv 0\.12\.9( \([^)]*\))?$'
               /opt/dirextalk-worker/uv/0.12.9/uvx --version | grep -Eq '^uvx 0\.12\.9( \([^)]*\))?$'
               install -d -m 0755 /opt/dirextalk-worker/bin
-              install -m 0755 /opt/dirextalk-worker/pi/0.84.4/pi /opt/dirextalk-worker/bin/pi
+              printf '%s\n' '#!/bin/sh' 'exec /opt/dirextalk-worker/pi/0.84.4/pi "$@"' \
+                >/opt/dirextalk-worker/bin/pi
+              chmod 0755 /opt/dirextalk-worker/bin/pi
               install -m 0755 /opt/dirextalk-worker/uv/0.12.9/uv /opt/dirextalk-worker/bin/uv
               install -m 0755 /opt/dirextalk-worker/uv/0.12.9/uvx /opt/dirextalk-worker/bin/uvx
               ln -sfn /opt/dirextalk-worker/bin/pi /usr/local/bin/pi
@@ -82,7 +84,7 @@ phases:
                 --arg lxml "$(python3 -c 'from importlib.metadata import version; print(version("lxml"))')" \
                 '{python:$python,pip:$pip,node:$node,npm:$npm,git:$git,gh:$gh,go:$go,cc:$cc,curl:$curl,tar:$tar,gzip:$gzip,jq:$jq,ripgrep:$rg,uv:$uv,uvx:$uvx,pandoc:$pandoc,weasyprint:$weasyprint,qpdf:$qpdf,pdfinfo:$pdfinfo,html2text:$html2text,w3m:$w3m,xmllint:$xmllint,httpx:$httpx,beautifulsoup4:$beautifulsoup4,lxml:$lxml}')
               jq -n --arg flavor '__FLAVOR__' --arg gpu_families '__GPU_FAMILIES__' --argjson tools "$versions" \
-                '{schema:1,image_version:"1.1.2",flavor:$flavor,pi_version:"0.84.4",tool_baseline:"1",tested:true,gpu_supported_families:$gpu_families,tools:$tools}' \
+                '{schema:1,image_version:"1.1.3",flavor:$flavor,pi_version:"0.84.4",tool_baseline:"1",tested:true,gpu_supported_families:$gpu_families,tools:$tools}' \
                 >/opt/dirextalk-worker/manifest.json
               chmod 0644 /opt/dirextalk-worker/manifest.json
       - name: RemoveBuildResidue
@@ -115,7 +117,7 @@ phases:
               uv --version | grep -Eq '^uv 0\.12\.9( \([^)]*\))?$'
               uvx --version | grep -Eq '^uvx 0\.12\.9( \([^)]*\))?$'
               test "$(jq -r .schema /opt/dirextalk-worker/manifest.json)" = '1'
-              test "$(jq -r .image_version /opt/dirextalk-worker/manifest.json)" = '1.1.2'
+              test "$(jq -r .image_version /opt/dirextalk-worker/manifest.json)" = '1.1.3'
               test "$(jq -r .tested /opt/dirextalk-worker/manifest.json)" = 'true'
               test "$(cat /usr/local/share/dirextalk-worker-flavor)" = '__FLAVOR__'
               command -v python python3 pip npm node git gh go cc caddy curl tar gzip jq rg uv uvx \
