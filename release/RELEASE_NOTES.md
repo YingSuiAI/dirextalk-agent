@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.198
+
+1. Preserve the accepted runtime snapshot when a terminal Cloud Worker enters Central synthesis, preventing context-bound extension guidance from causing a runtime incompatibility failure after successful Worker completion.
+
 ## v1.0.197
 
 1. Treat Cloud Worker terminal stdout as internal evidence and require Central to synthesize a concise user-facing response in the latest user's language instead of copying the report.
