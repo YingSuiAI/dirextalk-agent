@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.199
+
+1. Keep Cloud Worker runtime, task status, logs, and artifacts under reboot-persistent storage, install and verify the CPU coding-tool baseline once per Worker, and recover retained results without unrelated fresh AWS discovery.
+2. Select AWS's official Ubuntu NVIDIA DLAMI for supported GPU Workers, dynamically include its live root-snapshot minimum in the confirmed EBS quote, and reject incompatible GPU families or post-confirmation image growth before launch.
+3. Allow explicitly requested cleanup of stale Busy Workers while preserving the active-execution destroy fence.
+
 ## v1.0.198
 
 1. Preserve the accepted runtime snapshot when a terminal Cloud Worker enters Central synthesis, preventing context-bound extension guidance from causing a runtime incompatibility failure after successful Worker completion.
