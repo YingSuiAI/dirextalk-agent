@@ -30,8 +30,8 @@ phases:
               rg --version
               test "$(pi --version)" = '0.84.4'
               test "$(/opt/dirextalk-worker/bin/pi --version)" = '0.84.4'
-              uv --version | grep -Eq '^uv 0\.12\.9( \([^)]*\))?$'
-              uvx --version | grep -Eq '^uvx 0\.12\.9( \([^)]*\))?$'
+              uv --version | grep -E '^uv 0\.12\.9( \([^)]*\))?$' >/dev/null
+              uvx --version | grep -E '^uvx 0\.12\.9( \([^)]*\))?$' >/dev/null
               test "$(stat -c '%U:%G:%a' /opt/dirextalk-worker/manifest.json)" = 'root:root:644'
               test "$(stat -c '%U:%G:%a' /opt/dirextalk-worker/bin/pi)" = 'root:root:755'
               timeout 15 pi --help >/dev/null
@@ -42,7 +42,7 @@ phases:
           commands:
             - |
               set -euo pipefail
-              root=$(mktemp -d)
+              root=$(mktemp -d /tmp/dirextalk-image-test.XXXXXX)
               trap 'rm -rf -- "$root"' EXIT
               UV_PYTHON_DOWNLOADS=never uv --offline venv --python /usr/bin/python3 "$root/.venv"
               "$root/.venv/bin/python" -c 'import sys; assert sys.version_info >= (3, 12)'
@@ -63,12 +63,12 @@ phases:
               printf '# Dirextalk Worker\n\nOffline PDF smoke test.\n' >"$root/doc.md"
               pandoc "$root/doc.md" --standalone --output "$root/doc.html"
               weasyprint "$root/doc.html" "$root/doc.pdf"
-              pdfinfo "$root/doc.pdf" | grep -q '^Pages:'
+              pdfinfo "$root/doc.pdf" | grep '^Pages:' >/dev/null
               pdftotext "$root/doc.pdf" "$root/doc.txt"
               grep -q 'Dirextalk Worker' "$root/doc.txt"
               qpdf --check "$root/doc.pdf"
-              html2text "$root/doc.html" | grep -q 'Dirextalk Worker'
-              w3m -dump "$root/doc.html" | grep -q 'Dirextalk Worker'
+              html2text "$root/doc.html" | grep 'Dirextalk Worker' >/dev/null
+              w3m -dump "$root/doc.html" | grep 'Dirextalk Worker' >/dev/null
               xmllint --html --recover --noout "$root/doc.html" 2>"$root/xmllint.log"
       - name: VerifyOfflineGitWorkflow
         action: ExecuteBash
@@ -77,7 +77,7 @@ phases:
           commands:
             - |
               set -euo pipefail
-              root=$(mktemp -d)
+              root=$(mktemp -d /tmp/dirextalk-image-test.XXXXXX)
               trap 'rm -rf -- "$root"' EXIT
               git init --bare "$root/origin.git"
               git clone "$root/origin.git" "$root/source"
@@ -121,7 +121,7 @@ phases:
                 fi
                 systemctl is-enabled containerd.service
                 systemctl is-active containerd.service
-                ctr plugins ls | grep -iq 'soci'
+                ctr plugins ls | awk '$1 == "io.containerd.snapshotter.v1" && $2 == "soci" && $NF == "ok" { found = 1 } END { exit !found }'
                 validation_image='nvidia/cuda:12.8.1-base-ubuntu24.04@sha256:e711c99333fdfe8ae1e677b4972be6c5021f0128a1d31f775c7e58d88921b6a9'
                 nerdctl pull --platform linux/amd64 "$validation_image"
                 nerdctl run --rm --platform linux/amd64 --gpus all "$validation_image" nvidia-smi
@@ -161,7 +161,7 @@ phases:
               if test '__FLAVOR__' = gpu; then
                 systemctl is-active containerd.service
                 nvidia-smi -L
-                ctr plugins ls | grep -iq 'soci'
+                ctr plugins ls | awk '$1 == "io.containerd.snapshotter.v1" && $2 == "soci" && $NF == "ok" { found = 1 } END { exit !found }'
                 validation_image='nvidia/cuda:12.8.1-base-ubuntu24.04@sha256:e711c99333fdfe8ae1e677b4972be6c5021f0128a1d31f775c7e58d88921b6a9'
                 nerdctl run --rm --platform linux/amd64 --gpus all "$validation_image" nvidia-smi
               fi
@@ -172,16 +172,24 @@ phases:
           commands:
             - |
               set -euo pipefail
-              forbidden=$(find /root /home/ubuntu -xdev -type f \( \
+              trap 'printf "residue check failed at line %s (status %s)\n" "$LINENO" "$?" >&2' ERR
+              forbidden=$(find /root /home/ubuntu /tmp /var/tmp -xdev \( -type f -o -type l \) \( \
                 -name '.bash_history' -o -name '.zsh_history' -o \
                 -name '.git-credentials' -o -name '.npmrc' -o \
                 -name 'credentials' -path '*/.aws/*' -o \
                 -name 'hosts.yml' -path '*/.config/gh/*' -o \
-                -name 'authorized_keys' -o -name '*.pem' -o -name '*.key' \
-                \) -print 2>/dev/null || true)
+                -name 'authorized_keys' \( -type l -o -size +0c \) -o \
+                -name 'id_rsa' -o -name 'id_dsa' -o -name 'id_ecdsa' -o -name 'id_ed25519' -o \
+                -name '*.pem' -o -name '*.key' -o \
+                -type l \( -name '.ssh' -o -name '.aws' -o -path '*/.config/gh' \) \
+                \) -print)
               test -z "$forbidden" || { printf 'forbidden residue:\n%s\n' "$forbidden" >&2; exit 1; }
-              test -z "$(find /var/lib/apt/lists /var/cache/apt/archives -type f -print -quit 2>/dev/null)"
-              test -z "$(find /tmp /var/tmp -mindepth 1 -print -quit 2>/dev/null)"
-              ! env | grep -Eiq '(AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN)='
+              apt_residue=$(find /var/lib/apt/lists /var/cache/apt/archives \( -type f -o -type l \) -print -quit)
+              test -z "$apt_residue"
+              # Boot and the test runner create runtime temp entries; only our build/test roots are forbidden.
+              temporary_residue=$(find /tmp /var/tmp -xdev -mindepth 1 -maxdepth 1 \
+                \( -name 'dirextalk-image-test.*' -o -name 'tmp.*' \) -print)
+              test -z "$temporary_residue" || { printf 'temporary build/test residue:\n%s\n' "$temporary_residue" >&2; exit 1; }
+              env | awk -F= 'toupper($1) ~ /^(AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN)$/ { found = 1 } END { exit found ? 1 : 0 }'
               test "$(pi --version)" = '0.84.4'
-              uv --version | grep -Eq '^uv 0\.12\.9( \([^)]*\))?$'
+              uv --version | grep -E '^uv 0\.12\.9( \([^)]*\))?$' >/dev/null

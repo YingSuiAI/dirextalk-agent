@@ -146,8 +146,12 @@ AWS_PROFILE=release deploy/cloud-worker/scripts/manage-release.sh publish \
   --execute --confirm-costs
 ```
 
-The application reads only
-`/dirextalk/worker-images/v1/{cpu|gpu}/current`. Candidate is never consumed.
+These owner-account pointers are release bookkeeping, not a customer-account
+discovery API. The application reads its embedded public release catalog,
+then verifies the exact AMI ID, trusted publisher, public permission, and live
+root mapping through EC2. Update the catalog only after successful promotion.
+The `/imagebuilder/` prefix permits distribution through the AWS-managed
+Image Builder service-linked role without a custom SSM write policy.
 Rollback validates `current` and `previous` in every allowlisted Region before
 changing any pointer, then swaps them Region-locally. It writes the exact old
 values to `rollback-journal.ndjson` before each Region mutation so an operator
@@ -171,10 +175,14 @@ AWS_PROFILE=release deploy/cloud-worker/scripts/manage-release.sh cleanup \
 the source Region is desired. The renderer validates canonical Region names,
 sorts and deduplicates them, requires the source Region, records the final list
 in `render.json`, and never infers an additional Region. Image Builder creates
-an unencrypted public AMI and public backing snapshot in each listed Region and
-writes the owner-account candidate SSM parameter there. Any AWS account can
-launch the AMI in that Region; the owner-account SSM pointers remain the Agent's
-trusted promotion channel. Publish and cleanup revalidate
+an unencrypted public AMI in each listed Region and writes the owner-account
+candidate SSM parameter there. Before promotion, independently verify the exact
+output snapshot and explicitly grant public snapshot permission if distribution
+has not done so. AMI and snapshot block-public-access settings must permit the
+requested sharing; restore any temporarily relaxed account setting after
+publication without revoking existing release permissions. Any AWS account can
+launch the AMI in that Region; owner-account SSM pointers remain operator-only
+promotion and retention state. Publish and cleanup revalidate
 the same STS account and explicit Region before every regional read or write.
 Retain only current plus one previous AMI per flavor in every listed Region.
 
@@ -193,7 +201,11 @@ runs `nvidia-smi` inside the exact `nvidia/cuda:12.8.1-base-ubuntu24.04` amd64
 container digest frozen in `release.json`. It writes a nonce under
 `/var/lib/dirextalk-worker`, performs an Image Builder-managed reboot, and
 requires the same inode content after boot. Finally it fails on credential,
-shell-history, authorized-key, package-cache, or build-key residue.
+shell-history, nonempty or symlinked authorized-key, package-cache, or build-key
+residue. Empty boot-created authorized-key files and normal operating-system
+temporary directories are not build residue. The offline regression gate runs
+the actual test scripts against success, negative, and infrastructure-failure
+fixtures, including large producer output under shell pipefail.
 
 Successful Image Builder component/test execution is necessary but not enough
 to publish: `publish` also requires the exact build-version ARN to be AVAILABLE,

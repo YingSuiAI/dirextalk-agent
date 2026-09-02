@@ -41,7 +41,7 @@
     "digest": "sha256:e711c99333fdfe8ae1e677b4972be6c5021f0128a1d31f775c7e58d88921b6a9",
     "command": "nvidia-smi"
   },
-  "ssm_prefix": "/dirextalk/worker-images/v1",
+  "ssm_prefix": "/imagebuilder/dirextalk/worker-images/v1",
   "distribution": {
     "mode": "public-explicit-region-allowlist",
     "visibility": "public",

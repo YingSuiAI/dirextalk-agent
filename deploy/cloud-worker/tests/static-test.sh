@@ -5,6 +5,7 @@ umask 077
 test_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 cloud_dir=$(cd -- "$test_dir/.." && pwd -P)
 for script in "$cloud_dir"/scripts/*.sh "$cloud_dir"/tests/*.sh; do bash -n "$script"; done
+python3 "$test_dir/test_component.py"
 
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
@@ -69,7 +70,7 @@ for flavor in cpu gpu; do
   [[ $(jq -r '[.distributions[].region]|join(",")' "$work/$flavor/distribution.json") == us-east-1,us-west-2 ]]
   [[ $(jq -r '[.distributions[].amiDistributionConfiguration.launchPermission.userGroups[]]|unique|join(",")' "$work/$flavor/distribution.json") == all ]]
   [[ $(jq -r '[.distributions[].amiDistributionConfiguration.kmsKeyId // "absent"]|unique|join(",")' "$work/$flavor/distribution.json") == absent ]]
-  [[ $(jq -r '[.distributions[].ssmParameterConfigurations[0].parameterName]|unique|join(",")' "$work/$flavor/distribution.json") == "/dirextalk/worker-images/v1/$flavor/candidate" ]]
+  [[ $(jq -r '[.distributions[].ssmParameterConfigurations[0].parameterName]|unique|join(",")' "$work/$flavor/distribution.json") == "/imagebuilder/dirextalk/worker-images/v1/$flavor/candidate" ]]
   [[ $(jq -r '[.distributions[].ssmParameterConfigurations[0].dataType]|unique|join(",")' "$work/$flavor/distribution.json") == aws:ec2:image ]]
   [[ $(jq -r '.components | length' "$work/$flavor/recipe.json") == 3 ]]
   for component in build plugin test; do
