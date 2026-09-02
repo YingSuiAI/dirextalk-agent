@@ -112,7 +112,7 @@ func TestCloudWorkerCredentialAuthorityDoubleFencesRevisionAndIdentity(t *testin
 	}
 }
 
-func TestCloudWorkerCredentialAuthorityRejectsMalformedHostAndUnsupportedWorkerRegion(t *testing.T) {
+func TestCloudWorkerCredentialAuthorityRejectsMalformedHostAndEmptyWorkerRegion(t *testing.T) {
 	_, resolver := cloudWorkerCredentialAuthorityFixture(t)
 	for _, region := range []string{" us-east-1", "local-1"} {
 		if _, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, region, func(context.Context, int, string) (coreaws.CredentialPage, error) {
@@ -126,9 +126,9 @@ func TestCloudWorkerCredentialAuthorityRejectsMalformedHostAndUnsupportedWorkerR
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected.Region = "us-west-2"
+	expected.Region = ""
 	if _, err = authority.ResolveExactAWSBinding(context.Background(), expected); !errors.Is(err, cloudworker.ErrInvalid) {
-		t.Fatalf("unsupported Worker region returned %v", err)
+		t.Fatalf("empty Worker region returned %v", err)
 	}
 }
 

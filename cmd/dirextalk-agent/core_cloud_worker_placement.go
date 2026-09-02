@@ -26,7 +26,7 @@ func supportedCloudWorkerRegion(region string) bool {
 }
 
 // Placement is lazy and briefly cached: verified new proposals share fresh
-// measurements, while durable bindings retain their own allowlisted Region.
+// measurements, while durable bindings retain their own recorded Region.
 type cloudWorkerPlacement struct {
 	hostRegion string
 	probe      func(context.Context, string) (time.Duration, error)

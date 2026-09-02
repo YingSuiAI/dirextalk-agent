@@ -47,8 +47,10 @@ approximate host-metro great-circle distance; unknown or absent hints select
 uniformly at random. Successful choices are cached for five minutes; concurrent
 requests share one measurement and expired choices refresh lazily. Canceled
 attempts are not cached. Existing persisted bindings keep
-their own supported Region after restart, regardless of the new placement
-choice. Account, credential identity and revision authorization fences remain
+their recorded Region after restart, including Regions outside the current
+new-placement candidates. Query and cleanup never relocate an existing resource;
+the three-Region restriction is enforced before every new-resource mutation.
+Account, credential identity and revision authorization fences remain
 unchanged. The uploaded credential's default Region remains credential metadata
 and cannot redirect Worker resources. Deployment does not
 bind a Worker account, image, network, domain, or credential.

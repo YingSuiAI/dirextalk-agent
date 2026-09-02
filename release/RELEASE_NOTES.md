@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.201
+
+1. Keep existing Workers queryable and destroyable in their recorded AWS Region after upgrade, including Regions outside the current new-placement candidates, while retaining exact ownership and credential authorization.
+2. Enforce the three-Region placement restriction at new-resource creation and provisioning recovery, without relocating retained resources or changing Worker AMIs.
+3. Show a failed Worker only once when healthy Workers share its AWS credential and Region, preserving actionable failure details.
+
 ## v1.0.200
 
 1. Use qualified public Dirextalk CPU/GPU Worker AMIs with Pi 0.84.4, preinstalled coding, web and PDF tools, and task-scoped subagents; select Tokyo, Northern California, or Paris from fresh bounded endpoint-latency evidence.

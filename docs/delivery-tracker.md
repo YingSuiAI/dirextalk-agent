@@ -919,6 +919,16 @@ support.
   tests, and vet, SA staticcheck 0.7.0, govulncheck 1.7.0, command builds, Buf
   lint, and diff checks passed.
 
+- On **2026-09-02**, D1 v1.0.200 acceptance reproduced an upgrade regression:
+  the new-placement Region allowlist incorrectly disabled retained
+  `ca-central-1` Workers. Exact credential resolution and retained lifecycle now
+  keep the persisted Region; the allowlist is enforced at every new-resource
+  authorization boundary instead. Real executor/provider regressions first
+  reproduced the unavailable old-Region record and duplicate failed/healthy
+  sibling projection, then passed list/get, exact SDK credential retrieval,
+  owner-fenced destruction, repeated cleanup, and unique failure projection.
+  The AMI, pricing, billing, and artifact contracts are unchanged.
+
 ## Remaining release gates
 
 - Two isolated Compose-project E2E verification is not recorded here.

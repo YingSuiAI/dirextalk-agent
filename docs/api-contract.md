@@ -944,10 +944,13 @@ deployment-owned host Region selects the closest supported Region; an absent
 or unrecognized host Region selects uniformly at random. Measurements and their
 selected Region are cached for five minutes, with concurrent resolution
 coalesced and expired entries refreshed on demand. Cancellation does not cache
-a choice. Existing plans and Workers retain their exact allowlisted Region after
-restart or changed placement; all account/credential/revision fences still
-apply. A missing host Region never disables composition, and the uploaded
-credential's default Region is not resource-placement authority.
+a choice. Existing plans and Workers retain their exact recorded Region after
+restart or changed placement, including Regions outside those three candidates
+for observation, exact credential resolution, and cleanup. New-resource creation
+remains restricted to the three candidates, including provisioning recovery;
+all account/credential/revision fences still apply. A missing host Region never
+disables composition, and the uploaded credential's default Region is not
+resource-placement authority.
 Every proposal performs a fresh AWS Price List read for that
 exact EC2 shape and gp3 volume. The quote is not served from a persisted pricing
 catalog. Confirmation exposes the exact shape, accelerator name and assigned

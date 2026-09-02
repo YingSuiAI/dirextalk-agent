@@ -78,9 +78,6 @@ func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, github clou
 }
 
 func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudworker.AWSBinding) (*sshworker.Provider, sshworker.CredentialIdentity, error) {
-	if !supportedCloudWorkerRegion(binding.Region) {
-		return nil, sshworker.CredentialIdentity{}, cloudworker.ErrInvalid
-	}
 	handle, err := executor.exact.ResolveCredentialRevision(ctx, binding.CredentialID, binding.CredentialRevision)
 	identity := sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision, AccountID: binding.AccountID, Region: binding.Region}
 	if err != nil || handle.Validate() != nil || handle.ReferenceID != identity.CredentialID || handle.AccountID != identity.AccountID {
@@ -117,7 +114,7 @@ func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudwo
 }
 
 func (executor *sshWorkerExecutor) authorizeWorkerCreate(ctx context.Context, credential sshworker.CredentialIdentity) error {
-	if executor == nil || executor.authority == nil || ctx == nil {
+	if executor == nil || executor.authority == nil || ctx == nil || !supportedCloudWorkerRegion(credential.Region) {
 		return cloudworker.ErrStaleAuthorization
 	}
 	current, err := executor.authority.resolveCurrentAWSBindingInRegion(ctx, credential.Region)
@@ -789,10 +786,12 @@ func (executor *sshWorkerExecutor) ListWorkers(ctx context.Context, authority ss
 		return nil, err
 	}
 	result := make([]sshworker.WorkerStatus, 0)
+	failedPositions := make(map[string]int)
 	byCredential := make(map[sshworker.CredentialIdentity][]sshworker.WorkerRecord)
 	for _, worker := range records {
 		if worker.OwnerID == authority.OwnerID && worker.AccountGeneration == authority.AccountGeneration && worker.Phase != sshworker.WorkerDestroyed {
 			if worker.Phase == sshworker.WorkerFailed {
+				failedPositions[worker.WorkerID] = len(result)
 				result = append(result, sshworker.UnavailableStatus(worker, time.Now(), worker.FailureSummary))
 				continue
 			}
@@ -814,7 +813,15 @@ func (executor *sshWorkerExecutor) ListWorkers(ctx context.Context, authority ss
 			}
 			continue
 		}
-		result = append(result, workers...)
+		for _, worker := range workers {
+			// A healthy sibling makes the provider also observe failures that
+			// were already projected without requiring available credentials.
+			if index, projected := failedPositions[worker.Identity.WorkerID]; projected {
+				result[index] = worker
+			} else {
+				result = append(result, worker)
+			}
+		}
 	}
 	return result, nil
 }

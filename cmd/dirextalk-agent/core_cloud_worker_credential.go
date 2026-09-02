@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
@@ -60,9 +61,9 @@ func (authority *cloudWorkerCredentialAuthority) ResolveCurrentAWSBinding(ctx co
 
 // A persisted operation's Region is immutable even after process restart or a
 // new placement decision. Its account and current credential revision fences
-// are identical to a new proposal's; only its recorded allowlisted Region wins.
+// are identical to a new proposal's; its recorded Region is not new placement.
 func (authority *cloudWorkerCredentialAuthority) resolveCurrentAWSBindingInRegion(ctx context.Context, region string) (cloudworker.AWSBinding, error) {
-	if !supportedCloudWorkerRegion(region) {
+	if strings.TrimSpace(region) == "" {
 		return cloudworker.AWSBinding{}, cloudworker.ErrInvalid
 	}
 	binding, err := authority.resolveCurrentCredentialBinding(ctx)
@@ -126,7 +127,7 @@ func (authority *cloudWorkerCredentialAuthority) ResolveExactAWSBinding(ctx cont
 }
 
 func (authority *cloudWorkerCredentialAuthority) ResolveExactCredential(ctx context.Context, expected cloudworker.AWSBinding) (workaws.CredentialHandle, error) {
-	if authority == nil || authority.exact == nil || ctx == nil || expected.CredentialRevision == 0 || !supportedCloudWorkerRegion(expected.Region) {
+	if authority == nil || authority.exact == nil || ctx == nil || expected.CredentialRevision == 0 || strings.TrimSpace(expected.Region) == "" {
 		return workaws.CredentialHandle{}, cloudworker.ErrInvalid
 	}
 	credential, err := authority.exact.ResolveCredentialRevision(ctx, expected.CredentialID, expected.CredentialRevision)
@@ -149,7 +150,7 @@ type cloudWorkerAWSCredentialsProvider struct {
 }
 
 func newCloudWorkerAWSCredentialsProvider(authority *cloudWorkerCredentialAuthority, binding cloudworker.AWSBinding) (*cloudWorkerAWSCredentialsProvider, error) {
-	if authority == nil || authority.exact == nil || binding.CredentialRevision == 0 || !supportedCloudWorkerRegion(binding.Region) {
+	if authority == nil || authority.exact == nil || binding.CredentialRevision == 0 || strings.TrimSpace(binding.Region) == "" {
 		return nil, cloudworker.ErrInvalid
 	}
 	return &cloudWorkerAWSCredentialsProvider{authority: authority, binding: binding}, nil
