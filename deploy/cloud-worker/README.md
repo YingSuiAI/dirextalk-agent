@@ -10,8 +10,8 @@ Driver GPU DLAMI parameter and retains its NVIDIA driver, CUDA, NVIDIA Container
 Toolkit, containerd, nerdctl, and SOCI installation. The renderer resolves the
 exact parent AMI, root device, and backing snapshot size before creating a
 recipe. Its block mapping deliberately omits `volumeSize`: Image Builder must
-inherit the parent snapshot minimum while changing the root volume to encrypted
-gp3. The generated recipe records the observed minimum and fails if a generated
+inherit the parent snapshot minimum while keeping the public image root volume
+unencrypted on gp3. The generated recipe records the observed minimum and fails if a generated
 mapping ever supplies a smaller size.
 
 ## Release contents
