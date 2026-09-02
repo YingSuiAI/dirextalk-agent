@@ -51,9 +51,13 @@ Remote work is durable by task ID. The Agent uses short SSH operations to:
 - list and download artifacts;
 - stop a workload or destroy the Worker.
 
-An explicit destroy consults the provider's in-process execution fence. Live
-work remains protected, while a stale local Busy projection with no active
-execution can be destroyed and reconciled normally.
+Explicit owner-authorized destruction is available while a Worker is busy,
+provisioning, unavailable, or already terminated outside Dirextalk. It cancels
+and drains active provisioning/execution, persists a destroy intent, and fences
+late completion, release, and list observations from resurrecting the Worker.
+AWS absence is successful cleanup only after an exact-identity read; permission
+and transport failures retain the cleanup intent for retry. Primary-node and
+owner/resource-identity protection remain unchanged.
 
 A dropped SSH connection does not erase remote state or authorize a duplicate start. Jobs terminalize when their remote task finishes. Stopping the owning turn cancels its active execution without destroying the retained Worker. Services may remain active across turns until the owner stops them or destroys the Worker.
 

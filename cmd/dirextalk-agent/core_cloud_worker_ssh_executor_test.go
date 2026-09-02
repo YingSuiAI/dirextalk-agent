@@ -244,6 +244,39 @@ func TestServerInventoryProjectsProvisioningWorkerAsCancelableCreation(t *testin
 	}
 }
 
+func TestServerInventoryGetUsesLocalIdentityWithoutCloudOrSSH(t *testing.T) {
+	state, err := sshworker.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := workerIdentityFixture()
+	worker := sshworker.WorkerRecord{WorkerID: identity.WorkerID, OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration,
+		Credential: identity.Credential, Phase: sshworker.WorkerBusy, CurrentExecutionID: "old-execution",
+		Instance: sshworker.Instance{ID: identity.InstanceID, State: "terminated"}, KeyPair: sshworker.KeyPair{ID: identity.KeyPairID}, SecurityGroup: sshworker.SecurityGroup{ID: identity.SecurityGroupID}}
+	if err := state.SaveWorker(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	// No credential resolver/provider exists: a cloud status prerequisite would fail.
+	inventory := coreServerWorkerInventory{executor: &sshWorkerExecutor{state: state}}
+	authority := coreserver.Authority{OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration}
+	server, err := inventory.Get(context.Background(), authority, identity.WorkerID)
+	if err != nil || server.Identity != identity || !server.CanDestroy || !server.Busy {
+		t.Fatalf("server=%+v err=%v", server, err)
+	}
+	other := authority
+	other.AccountGeneration++
+	if _, err := inventory.Get(context.Background(), other, identity.WorkerID); !errors.Is(err, coreserver.ErrNotFound) {
+		t.Fatalf("other generation: %v", err)
+	}
+	worker.Phase = sshworker.WorkerDestroyed
+	if err := state.SaveWorker(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inventory.Get(context.Background(), authority, identity.WorkerID); !errors.Is(err, coreserver.ErrNotFound) {
+		t.Fatalf("destroyed readback: %v", err)
+	}
+}
+
 func TestServerInventoryProjectsQuotaRejectedWorkerAsFailedAndDestroyable(t *testing.T) {
 	state, err := sshworker.NewFileStore(t.TempDir())
 	if err != nil {
@@ -746,7 +779,7 @@ func TestDestroyWorkerReportsDNSFailureAfterComputeDestruction(t *testing.T) {
 	if err = executor.destroyWorkerResources(context.Background(), destroyer, request); err != nil {
 		t.Fatalf("exact DNS cleanup retry failed: %v", err)
 	}
-	if destroyer.resourceCalls != 2 || destroyer.finalizeCalls != 1 || destroyer.finalized != identity || dns.deletes != 2 {
+	if destroyer.resourceCalls != 2 || destroyer.finalizeCalls != 0 || dns.deletes != 2 {
 		t.Fatalf("cleanup retry did not finalize exactly once: destroyer=%+v dns=%+v", destroyer, dns)
 	}
 	if services, listErr := repository.List(context.Background(), identity); listErr != nil || len(services) != 0 {
@@ -778,8 +811,8 @@ func TestDestroyWorkerCompletesAfterRequestCancellationDuringTerminationWait(t *
 	requestCtx, cancel := context.WithCancel(context.Background())
 	terminationStarted, terminationWaitCompleted := false, false
 	destroyer := &workerDestroyerStub{resourceHook: func(ctx context.Context) error {
-		if dns.deletes != 1 || dns.exists {
-			return errors.New("provider cleanup started before DNS removal read-back")
+		if dns.deletes != 0 || !dns.exists {
+			return errors.New("DNS cleanup started before execution was stopped")
 		}
 		terminationStarted = true
 		cancel()
@@ -797,7 +830,7 @@ func TestDestroyWorkerCompletesAfterRequestCancellationDuringTerminationWait(t *
 		t.Fatalf("server-owned destroy completion failed after disconnect: %v", err)
 	}
 	if requestCtx.Err() == nil || !terminationStarted || !terminationWaitCompleted ||
-		destroyer.resourceCalls != 1 || destroyer.finalizeCalls != 1 || dns.deletes != 1 || dns.exists {
+		destroyer.resourceCalls != 1 || destroyer.finalizeCalls != 0 || dns.deletes != 1 || dns.exists {
 		t.Fatalf("destroy did not complete after disconnect: destroyer=%+v dns=%+v request_err=%v", destroyer, dns, requestCtx.Err())
 	}
 	if services, listErr := repository.List(context.Background(), identity); listErr != nil || len(services) != 0 {
@@ -814,8 +847,53 @@ func TestDestroyPartialWorkerSkipsWorkloadStoreAndUsesExactProviderIdentity(t *t
 	if err := executor.destroyWorkerResources(context.Background(), destroyer, request); err != nil {
 		t.Fatal(err)
 	}
-	if destroyer.resourceCalls != 1 || destroyer.finalizeCalls != 1 || destroyer.request.Identity != identity || destroyer.finalized != identity {
+	if destroyer.resourceCalls != 1 || destroyer.finalizeCalls != 0 || destroyer.request.Identity != identity {
 		t.Fatalf("partial exact identity was not passed through: %+v", destroyer)
+	}
+}
+
+func TestDestroyWorkerStopsDurableTasksOnlyAfterAcceptedIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		phase    sshworker.WorkerPhase
+		failure  error
+		expected int
+	}{
+		{"cleaned", sshworker.WorkerDestroying, nil, 1},
+		{"AWS-failure-after-intent", sshworker.WorkerDestroying, errors.New("AWS unavailable"), 1},
+		{"rejected-before-intent", sshworker.WorkerProvisioning, sshworker.ErrIdentity, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state, err := sshworker.NewFileStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := workerIdentityFixture()
+			identity.InstanceID, identity.KeyPairID, identity.SecurityGroupID = "", "", ""
+			worker := sshworker.WorkerRecord{WorkerID: identity.WorkerID, OwnerID: identity.OwnerID, AccountGeneration: identity.AccountGeneration, Credential: identity.Credential, Phase: sshworker.WorkerProvisioning}
+			if err := state.SaveWorker(context.Background(), worker); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			executor := &sshWorkerExecutor{state: state, stopWorkerExecutions: func(_ context.Context, authority sshworker.OwnerAuthority, workerID string) error {
+				if workerID != identity.WorkerID || authority != workerAuthorityFixture() {
+					t.Fatalf("wrong task authority=%+v worker=%s", authority, workerID)
+				}
+				calls++
+				return nil
+			}}
+			destroyer := &workerDestroyerStub{resourceHook: func(ctx context.Context) error {
+				worker.Phase = test.phase
+				if err := state.SaveWorker(ctx, worker); err != nil {
+					return err
+				}
+				return test.failure
+			}}
+			err = executor.destroyWorkerResources(context.Background(), destroyer, sshworker.DestroyRequest{Identity: identity, Authorization: sshworker.DestroyAuthorization{Authorized: true, Proof: "destroy"}})
+			if !errors.Is(err, test.failure) || calls != test.expected {
+				t.Fatalf("err=%v task stops=%d", err, calls)
+			}
+		})
 	}
 }
 

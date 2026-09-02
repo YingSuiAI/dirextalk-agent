@@ -743,10 +743,13 @@ or stream after admission. It never cancels the accepted Turn; callers use
   when the current account/zone is not configured; this does not suppress Worker creation,
   reuse, list, get, or destroy. There is no EIP field or operation. `destroy_worker`
   requires its explicit confirmation literal and the complete identity
-  returned by list/get; a busy or changed resource identity fails closed.
-  Once that authorization and exact identity are resolved, Agent removes and
-  reads back owned Route53 records, then completes EC2, security-group, key and
-  local-state cleanup in a bounded server-owned context; a client disconnect
+  returned by list/get; a changed resource identity fails closed, while busy,
+  provisioning, and unavailable Workers remain destroyable. A known retained
+  Worker is resolved from local identity without requiring SSH or a live status
+  probe. Once that authorization and exact identity are resolved, Agent persists
+  the destroy intent, cancels and drains execution, completes exact EC2 and
+  security-group/key cleanup, then removes and reads back owned Route53 records
+  and completes local cleanup in a bounded server-owned context; a client disconnect
   does not cancel the accepted cleanup.
   If credentials rotate after a provisioning intent, recovery only discovers
   and persists resources carrying that intent's exact tags so partial resources
@@ -769,14 +772,21 @@ or stream after admission. It never cancels the accepted Turn; callers use
   `list_artifacts` pages the server-bound catalog with the non-deletable Agent
   backend service first; `delete_artifact` deletes only static pages and local
   or Worker execution files through their owning repository; `destroy_server`
-  rejects the primary node and busy Workers. The
+  rejects the primary node but permits explicit destruction of busy Workers. The
   `core_server_artifacts` catalog is the authoritative binding/index, not an
   artifact body store. New static pages, sandbox files, Worker files, services,
   and domain changes update it; pre-migration history is not backfilled. All
   Worker destroy surfaces converge on one exact-identity cascade that marks the
-  catalog deleting, removes indexed execution bodies, service/DNS/AWS state,
-  reads back Worker absence, and only then removes its catalog rows. Conversation,
-  Task, run, and audit records are retained.
+  catalog deleting, stops execution and removes service/DNS/AWS state and indexed
+  execution bodies and catalog rows before finalizing and reading back Worker
+  absence. Until all cleanup succeeds, the Worker stays visible as destroying
+  so artifact, DNS, or local-key failures can be retried. Conversation,
+  Task, run, and audit records are retained. Before catalog cleanup, destruction
+  closes unfinished durable Task/run publication under the same fence as terminal
+  result publication, so a late result cannot restore deleted attachments.
+  Already absent Workers and repeated
+  exact cleanup requests succeed; infrastructure or identity failures remain
+  explicit errors and leave retryable cleanup state.
 - Every `agent.knowledge.v1` mutation, including `index_sources`, requires an
   explicit canonical UUID `idempotency_key`; missing or malformed keys are
   rejected, while read operations do not require one. Neutral

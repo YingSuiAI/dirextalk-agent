@@ -56,6 +56,7 @@ type sshWorkerExecutor struct {
 	reconcileServiceExposure func(context.Context, sshworker.WorkerIdentity, sshworkload.Service, string) error
 	setDomainPublicPort      func(context.Context, sshworker.WorkerIdentity, uint16, bool) error
 	serverArtifacts          coreserver.Repository
+	stopWorkerExecutions     func(context.Context, sshworker.OwnerAuthority, string) error
 	mu                       sync.Mutex
 }
 
@@ -234,6 +235,11 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		}, ReportProgress: request.ReportProgress, Finalize: finalize})
 	workerResult := sshflow.Result{ExitCode: result.ExitCode, WorkerID: result.WorkerID}
 	workerResult.AppliedSteerIDs = append([]string(nil), result.AppliedSteerIDs...)
+	if errors.Is(err, context.Canceled) || errors.Is(err, sshworker.ErrExecutionFailed) {
+		// Destruction drains the provider before deleting output. Do not publish
+		// a stale artifact snapshot into the catalog after that cleanup.
+		return workerResult, err
+	}
 	artifacts, artifactErr := executor.executionArtifacts(ctx, localartifact.Authority{OwnerID: request.OwnerID, AccountGeneration: request.AccountGeneration}, request.ExecutionID)
 	workerResult.Artifacts = artifacts
 	if artifactErr != nil {
@@ -868,6 +874,8 @@ func (executor *sshWorkerExecutor) ObserveWorker(ctx context.Context, authority 
 }
 
 func (executor *sshWorkerExecutor) DestroyWorker(ctx context.Context, authority sshworker.OwnerAuthority, request sshworker.DestroyRequest) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), retainedWorkerDestroyCompletionTimeout)
+	defer cancel()
 	request.Identity.OwnerID, request.Identity.AccountGeneration = authority.OwnerID, authority.AccountGeneration
 	worker, found, err := executor.state.LoadWorker(ctx, request.Identity.WorkerID)
 	if err != nil || !found || worker.OwnerID != authority.OwnerID || worker.AccountGeneration != authority.AccountGeneration ||
@@ -878,57 +886,90 @@ func (executor *sshWorkerExecutor) DestroyWorker(ctx context.Context, authority 
 	if err != nil {
 		return err
 	}
-	return executor.destroyWorkerResources(ctx, provider, request)
+	if err := executor.destroyWorkerResources(ctx, provider, request); err != nil {
+		return err
+	}
+	return provider.FinalizeWorkerDestroy(ctx, request)
 }
 
-func (executor *sshWorkerExecutor) DestroyRetainedWorker(ctx context.Context, ownerID string, accountGeneration uint64, workerID, proof string) error {
+func (executor *sshWorkerExecutor) retainedWorkerDestroy(ctx context.Context, ownerID string, accountGeneration uint64, workerID, proof string) (*sshworker.Provider, sshworker.DestroyRequest, error) {
 	if executor == nil || ctx == nil || strings.TrimSpace(ownerID) == "" || accountGeneration == 0 || strings.TrimSpace(workerID) == "" || strings.TrimSpace(proof) == "" {
-		return sshworker.ErrInvalid
+		return nil, sshworker.DestroyRequest{}, sshworker.ErrInvalid
 	}
 	worker, found, err := executor.state.LoadWorker(ctx, workerID)
 	if err != nil || !found || worker.OwnerID != ownerID || worker.AccountGeneration != accountGeneration {
-		return errors.Join(sshworker.ErrIdentity, err)
+		return nil, sshworker.DestroyRequest{}, errors.Join(sshworker.ErrIdentity, err)
 	}
 	identity := sshworker.WorkerIdentity{
 		WorkerID: worker.WorkerID, OwnerID: worker.OwnerID, AccountGeneration: worker.AccountGeneration,
 		Credential: worker.Credential, InstanceID: worker.Instance.ID,
 		KeyPairID: worker.KeyPair.ID, SecurityGroupID: worker.SecurityGroup.ID,
 	}
-	return executor.DestroyWorker(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, sshworker.DestroyRequest{
+	provider, err := executor.providerForIdentity(ctx, identity.Credential)
+	return provider, sshworker.DestroyRequest{
 		Identity: identity, Authorization: sshworker.DestroyAuthorization{Authorized: true, Proof: proof},
-	})
+	}, err
 }
 
-func (executor *sshWorkerExecutor) CheckRetainedWorkerDestroyable(ctx context.Context, ownerID string, accountGeneration uint64, workerID string) error {
-	if executor == nil || ctx == nil || strings.TrimSpace(ownerID) == "" || accountGeneration == 0 || strings.TrimSpace(workerID) == "" {
-		return sshworker.ErrInvalid
-	}
-	worker, found, err := executor.state.LoadWorker(ctx, workerID)
-	if err != nil || !found || worker.OwnerID != ownerID || worker.AccountGeneration != accountGeneration {
-		return errors.Join(sshworker.ErrIdentity, err)
-	}
-	provider, err := executor.providerForIdentity(ctx, worker.Credential)
+func (executor *sshWorkerExecutor) DestroyRetainedWorkerResources(ctx context.Context, ownerID string, accountGeneration uint64, workerID, proof string) error {
+	provider, request, err := executor.retainedWorkerDestroy(ctx, ownerID, accountGeneration, workerID, proof)
 	if err != nil {
 		return err
 	}
-	return provider.CheckWorkerDestroyable(ctx, sshworker.OwnerAuthority{OwnerID: ownerID, AccountGeneration: accountGeneration}, worker.Credential, workerID)
+	return executor.destroyWorkerResources(ctx, provider, request)
+}
+
+func (executor *sshWorkerExecutor) DestroyRetainedWorker(ctx context.Context, ownerID string, accountGeneration uint64, workerID, proof string) error {
+	completionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), retainedWorkerDestroyCompletionTimeout)
+	defer cancel()
+	if err := executor.DestroyRetainedWorkerResources(completionCtx, ownerID, accountGeneration, workerID, proof); err != nil {
+		return err
+	}
+	return executor.FinalizeRetainedWorkerDestroy(completionCtx, ownerID, accountGeneration, workerID, proof)
+}
+
+func (executor *sshWorkerExecutor) FinalizeRetainedWorkerDestroy(ctx context.Context, ownerID string, accountGeneration uint64, workerID, proof string) error {
+	provider, request, err := executor.retainedWorkerDestroy(ctx, ownerID, accountGeneration, workerID, proof)
+	if err != nil {
+		return err
+	}
+	return provider.FinalizeWorkerDestroy(ctx, request)
 }
 
 type workerDestroyer interface {
 	DestroyWorkerResources(context.Context, sshworker.DestroyRequest) error
-	FinalizeWorkerDestroy(context.Context, sshworker.DestroyRequest) error
 }
 
-const retainedWorkerDestroyCompletionTimeout = 10 * time.Minute
+const retainedWorkerDestroyCompletionTimeout = coreserver.DestroyCompletionTimeout
 
 func (executor *sshWorkerExecutor) destroyWorkerResources(ctx context.Context, provider workerDestroyer, request sshworker.DestroyRequest) error {
 	completionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), retainedWorkerDestroyCompletionTimeout)
 	defer cancel()
-	if !completeWorkerResourceIdentity(request.Identity) {
-		if err := provider.DestroyWorkerResources(completionCtx, request); err != nil {
-			return err
+	// Persist destroy intent, cancel/drain execution and remove compute before
+	// enumerating services; finalization may have published one last service.
+	destroyErr := provider.DestroyWorkerResources(completionCtx, request)
+	if executor.stopWorkerExecutions != nil && !errors.Is(destroyErr, sshworker.ErrIdentity) && !errors.Is(destroyErr, sshworker.ErrNotAuthorized) {
+		worker, found, loadErr := executor.state.LoadWorker(completionCtx, request.Identity.WorkerID)
+		if loadErr != nil {
+			return errors.Join(destroyErr, loadErr)
 		}
-		return provider.FinalizeWorkerDestroy(completionCtx, request)
+		accepted := found && worker.OwnerID == request.Identity.OwnerID && worker.AccountGeneration == request.Identity.AccountGeneration && worker.Credential == request.Identity.Credential &&
+			(request.Identity.InstanceID == "" || worker.Instance.ID == request.Identity.InstanceID) &&
+			(request.Identity.KeyPairID == "" || worker.KeyPair.ID == request.Identity.KeyPairID) &&
+			(request.Identity.SecurityGroupID == "" || worker.SecurityGroup.ID == request.Identity.SecurityGroupID) &&
+			(worker.Phase == sshworker.WorkerDestroying || worker.Phase == sshworker.WorkerDestroyed)
+		if accepted {
+			stopErr := executor.stopWorkerExecutions(completionCtx, sshworker.OwnerAuthority{OwnerID: worker.OwnerID, AccountGeneration: worker.AccountGeneration}, worker.WorkerID)
+			if stopErr != nil {
+				return errors.Join(destroyErr, stopErr)
+			}
+		}
+	}
+	if destroyErr != nil {
+		return destroyErr
+	}
+	if !completeWorkerResourceIdentity(request.Identity) {
+		return nil
 	}
 	services, err := executor.workloads.List(completionCtx, request.Identity)
 	if err != nil {
@@ -941,9 +982,6 @@ func (executor *sshWorkerExecutor) destroyWorkerResources(ctx context.Context, p
 		}
 		dnsErr = errors.Join(dnsErr, executor.deleteDomain(completionCtx, service))
 	}
-	if err = provider.DestroyWorkerResources(completionCtx, request); err != nil {
-		return err
-	}
 	if dnsErr != nil {
 		// The exact compute is gone, but retain the exact DNS/workload identity
 		// so a later owner-authorized cleanup can retry the unresolved record.
@@ -952,7 +990,7 @@ func (executor *sshWorkerExecutor) destroyWorkerResources(ctx context.Context, p
 	if err = executor.workloads.RemoveWorker(completionCtx, request.Identity); err != nil {
 		return err
 	}
-	return provider.FinalizeWorkerDestroy(completionCtx, request)
+	return nil
 }
 
 func completeWorkerResourceIdentity(identity sshworker.WorkerIdentity) bool {

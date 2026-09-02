@@ -88,9 +88,12 @@ func (r *repositoryFake) DeleteServer(_ context.Context, _ Authority, serverID s
 }
 
 type workersFake struct {
-	servers        []Server
-	destroyed      bool
-	prepareDestroy error
+	servers     []Server
+	destroyed   bool
+	destroyErr  error
+	finalized   bool
+	finalizeErr error
+	destroyHook func()
 }
 
 func (w *workersFake) List(context.Context, Authority) ([]Server, error) {
@@ -104,13 +107,19 @@ func (w *workersFake) Get(_ context.Context, _ Authority, id string) (Server, er
 	}
 	return Server{}, ErrNotFound
 }
-func (w *workersFake) PrepareDestroy(context.Context, Authority, string) error {
-	return w.prepareDestroy
-}
-func (w *workersFake) Destroy(_ context.Context, _ Authority, id, _ string) error {
+func (w *workersFake) Destroy(ctx context.Context, _ Authority, id, _ string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if w.destroyHook != nil {
+		w.destroyHook()
+	}
+	if w.destroyErr != nil {
+		return w.destroyErr
+	}
 	for index, server := range w.servers {
 		if server.ServerID == id {
-			w.servers = append(w.servers[:index], w.servers[index+1:]...)
+			w.servers[index].Status = "destroying"
 			w.destroyed = true
 			return nil
 		}
@@ -118,9 +127,36 @@ func (w *workersFake) Destroy(_ context.Context, _ Authority, id, _ string) erro
 	return ErrNotFound
 }
 
-type deleterFake struct{ deleted int }
+func (w *workersFake) FinalizeDestroy(ctx context.Context, _ Authority, id, _ string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if w.finalizeErr != nil {
+		return w.finalizeErr
+	}
+	for index, server := range w.servers {
+		if server.ServerID == id {
+			w.servers = append(w.servers[:index], w.servers[index+1:]...)
+			w.finalized = true
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+type deleterFake struct {
+	deleted int
+	before  func()
+	err     error
+}
 
 func (d *deleterFake) DeleteArtifact(context.Context, Authority, Artifact, string) error {
+	if d.before != nil {
+		d.before()
+	}
+	if d.err != nil {
+		return d.err
+	}
 	d.deleted++
 	return nil
 }
@@ -149,21 +185,27 @@ func TestListServersPinsPrimaryAndSortsWorkersOldestFirst(t *testing.T) {
 	}
 }
 
-func TestDestroyServerRejectsPrimaryAndBusyWorker(t *testing.T) {
+func TestDestroyServerRejectsPrimaryButAllowsBusyWorker(t *testing.T) {
 	now := time.Now().UTC()
 	primaryID, workerID := uuid.NewString(), uuid.NewString()
 	repository := &repositoryFake{instance: Instance{ID: primaryID, CreatedAt: now}}
-	workers := &workersFake{servers: []Server{{ServerID: workerID, Busy: true, CreatedAt: now}}, prepareDestroy: ErrBusy}
+	workers := &workersFake{servers: []Server{{ServerID: workerID, Busy: true, CreatedAt: now}}}
 	service, _ := NewService(repository, workers, &deleterFake{}, Config{PrimaryName: "primary"})
 	authority := Authority{OwnerID: "owner", AccountGeneration: 1}
 	if err := service.DestroyServer(context.Background(), authority, primaryID, uuid.NewString()); !errors.Is(err, ErrPrimary) {
 		t.Fatalf("primary error = %v", err)
 	}
-	if err := service.DestroyServer(context.Background(), authority, workerID, uuid.NewString()); !errors.Is(err, ErrBusy) {
-		t.Fatalf("busy error = %v", err)
-	}
 	if repository.marked || workers.destroyed {
 		t.Fatal("rejected destroy mutated state")
+	}
+	if err := service.DestroyServer(context.Background(), authority, workerID, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if !repository.deleted || !workers.destroyed {
+		t.Fatal("busy worker not destroyed")
+	}
+	if err := service.DestroyServer(context.Background(), authority, workerID, uuid.NewString()); err != nil {
+		t.Fatalf("repeat cleanup: %v", err)
 	}
 }
 
@@ -209,18 +251,75 @@ func TestDestroyServerCleansOrphanedProvisioningWorker(t *testing.T) {
 	}
 }
 
-func TestDestroyServerDeletesExecutionBodiesBeforeWorkerAndCatalog(t *testing.T) {
+func TestDestroyServerDeletesWorkerAndExecutionBodiesBeforeCatalog(t *testing.T) {
 	now := time.Now().UTC()
 	primaryID, workerID := uuid.NewString(), uuid.NewString()
 	repository := &repositoryFake{instance: Instance{ID: primaryID, CreatedAt: now}, artifacts: []Artifact{{ArtifactID: uuid.NewString(), ServerID: workerID, ServerKind: ServerWorker, ArtifactKind: ArtifactExecutionFile, SourceKind: "cloud_worker_artifact", SourceID: uuid.NewString(), Name: "result.zip", Status: "verified", RecordKind: "cloud_worker", ExecutionID: uuid.NewString(), MediaType: "application/zip", DeletionState: "active", CreatedAt: now, UpdatedAt: now}}}
 	workers := &workersFake{servers: []Server{{ServerID: workerID, CreatedAt: now}}}
-	deleter := &deleterFake{}
+	deleter := &deleterFake{before: func() {
+		if !workers.destroyed || workers.finalized || repository.deleted {
+			t.Fatal("bodies must be deleted after stopped worker and before catalog")
+		}
+	}}
 	service, _ := NewService(repository, workers, deleter, Config{PrimaryName: "primary"})
 	if err := service.DestroyServer(context.Background(), Authority{OwnerID: "owner", AccountGeneration: 1}, workerID, uuid.NewString()); err != nil {
 		t.Fatal(err)
 	}
 	if !repository.marked || deleter.deleted != 1 || !workers.destroyed || !repository.deleted {
 		t.Fatalf("cleanup = marked:%v bodies:%d worker:%v catalog:%v", repository.marked, deleter.deleted, workers.destroyed, repository.deleted)
+	}
+}
+
+func TestDestroyServerKeepsVisibleWorkerUntilArtifactCleanupSucceeds(t *testing.T) {
+	workerID := uuid.NewString()
+	repository := &repositoryFake{instance: Instance{ID: uuid.NewString()}, artifacts: []Artifact{{ArtifactID: uuid.NewString(), ServerID: workerID, ArtifactKind: ArtifactExecutionFile}}}
+	workers := &workersFake{servers: []Server{{ServerID: workerID, Busy: true}}}
+	deleter := &deleterFake{err: errors.New("artifact storage unavailable")}
+	service, _ := NewService(repository, workers, deleter, Config{PrimaryName: "primary"})
+	authority := Authority{OwnerID: "owner", AccountGeneration: 1}
+	operation := uuid.NewString()
+	if err := service.DestroyServer(context.Background(), authority, workerID, operation); !errors.Is(err, deleter.err) {
+		t.Fatalf("error=%v", err)
+	}
+	server, err := workers.Get(context.Background(), authority, workerID)
+	if err != nil || server.Status != "destroying" || workers.finalized || repository.deleted {
+		t.Fatalf("failed cleanup lost visible target: server=%+v err=%v", server, err)
+	}
+	deleter.err = nil
+	if err := service.DestroyServer(context.Background(), authority, workerID, operation); err != nil {
+		t.Fatal(err)
+	}
+	if !workers.finalized || !repository.deleted || deleter.deleted != 1 {
+		t.Fatal("retry did not finish cleanup")
+	}
+}
+
+func TestDestroyServerFinalizesAfterInitiatingClientDisconnects(t *testing.T) {
+	workerID := uuid.NewString()
+	repository := &repositoryFake{instance: Instance{ID: uuid.NewString()}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	workers := &workersFake{servers: []Server{{ServerID: workerID}}, destroyHook: cancel}
+	service, _ := NewService(repository, workers, &deleterFake{}, Config{PrimaryName: "primary"})
+	if err := service.DestroyServer(ctx, Authority{OwnerID: "owner", AccountGeneration: 1}, workerID, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Err() == nil || !repository.deleted || !workers.finalized {
+		t.Fatal("client disconnect prevented accepted cleanup")
+	}
+}
+
+func TestDestroyServerRetainsBodiesAndCatalogAfterInfrastructureFailure(t *testing.T) {
+	workerID := uuid.NewString()
+	repository := &repositoryFake{instance: Instance{ID: uuid.NewString()}, artifacts: []Artifact{{ArtifactID: uuid.NewString(), ServerID: workerID, ArtifactKind: ArtifactExecutionFile}}}
+	workers := &workersFake{servers: []Server{{ServerID: workerID, Busy: true}}, destroyErr: errors.New("AWS permission denied")}
+	deleter := &deleterFake{}
+	service, _ := NewService(repository, workers, deleter, Config{PrimaryName: "primary"})
+	if err := service.DestroyServer(context.Background(), Authority{OwnerID: "owner", AccountGeneration: 1}, workerID, uuid.NewString()); !errors.Is(err, workers.destroyErr) {
+		t.Fatalf("error=%v", err)
+	}
+	if repository.deleted || workers.destroyed || deleter.deleted != 0 {
+		t.Fatal("failed cleanup lost retryable state")
 	}
 }
 

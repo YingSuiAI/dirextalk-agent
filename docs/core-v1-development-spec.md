@@ -1016,8 +1016,10 @@ last exact removed record provide idempotent reconciliation when a provider muta
 succeeds but the final turn commit must retry; the retry revalidates the same
 identity and repeats provider read-back. Route53 is not required for Worker creation or
 ordinary execution. Existing execution recovery reads retained state before
-new AMI/network/public-egress discovery. Active execution remains protected
-from destroy, but a stale Busy projection is owner-destroyable. There is no EIP,
+new AMI/network/public-egress discovery. Explicit owner-authorized destruction
+cancels active execution and remains available for busy, provisioning, and
+externally terminated Workers; the exact identity and cleanup contract is
+defined in Execution V2. There is no EIP,
 frontend AMI control, S3/KMS artifact path, WorkerControl listener, model relay,
 or deploy-time Worker binding. The
 complete read, cancellation, event, artifact, and management contract is

@@ -663,7 +663,9 @@ func (client *SDK) TerminateInstance(ctx context.Context, identity CredentialIde
 	if !found {
 		return nil
 	}
-	if observed != instance {
+	// State and IP addresses may change when an owner stops/restarts the same
+	// instance elsewhere. They are not resource identity or a destroy veto.
+	if observed.ID != instance.ID || observed.ClientToken != instance.ClientToken {
 		return ErrIdentity
 	}
 	if err := client.beforeDestroy(ctx, identity, auth); err != nil {

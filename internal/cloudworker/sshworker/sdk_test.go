@@ -719,7 +719,7 @@ func TestSDKDestroyRejectsMismatchedResourceWithoutMutation(t *testing.T) {
 	raw := instanceFixture(tags)
 	instanceProbe := &mutationProbeEC2{instance: &raw}
 	changed := sdkInstance(raw)
-	changed.PublicIP = "203.0.113.99"
+	changed.ClientToken = "another-creation-intent"
 	if err := newSDK("ap-east-1", instanceProbe, stubSTS{}, staticIP{}).TerminateInstance(context.Background(), credentialFixture(), auth, changed, tags); !errors.Is(err, ErrIdentity) || instanceProbe.terminateCalls != 0 {
 		t.Fatalf("instance error=%v writes=%d", err, instanceProbe.terminateCalls)
 	}
@@ -727,6 +727,19 @@ func TestSDKDestroyRejectsMismatchedResourceWithoutMutation(t *testing.T) {
 	instanceProbe = &mutationProbeEC2{instance: &raw}
 	if err := newSDK("ap-east-1", instanceProbe, stubSTS{}, staticIP{}).TerminateInstance(context.Background(), credentialFixture(), auth, sdkInstance(raw), tags); !errors.Is(err, ErrIdentity) || instanceProbe.terminateCalls != 0 {
 		t.Fatalf("instance tags error=%v writes=%d", err, instanceProbe.terminateCalls)
+	}
+}
+
+func TestSDKTerminateAllowsStateAndAddressChangesForExactInstance(t *testing.T) {
+	tags := ResourceTags{"worker": "worker-1"}
+	raw := instanceFixture(tags)
+	request := sdkInstance(raw)
+	raw.State = &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}
+	raw.PublicIpAddress = aws.String("")
+	probe := &mutationProbeEC2{instance: &raw}
+	err := newSDK("ap-east-1", probe, stubSTS{}, staticIP{}).TerminateInstance(context.Background(), credentialFixture(), DestroyAuthorization{Authorized: true, Proof: "destroy"}, request, tags)
+	if err != nil || probe.terminateCalls != 1 || probe.instance.State.Name != ec2types.InstanceStateNameShuttingDown {
+		t.Fatalf("terminate err=%v writes=%d", err, probe.terminateCalls)
 	}
 }
 

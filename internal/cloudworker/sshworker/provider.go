@@ -19,15 +19,29 @@ type Provider struct {
 	now             func() time.Time
 	pool            *Pool
 	authorizeCreate CreateAuthorizer
-	active          map[string]struct{}
 }
 
 // Pool serializes owner-wide Worker admission across credential revisions.
 // SSH execution itself never holds this lock.
-type Pool struct{ mu sync.Mutex }
+type Pool struct {
+	mu         sync.Mutex
+	runsMu     sync.Mutex
+	runs       map[string]*activeExecution
+	destroying map[string]int
+}
+
+type activeExecution struct {
+	workerID   string
+	authority  OwnerAuthority
+	credential CredentialIdentity
+	cancel     context.CancelCauseFunc
+	done       chan struct{}
+}
 type CreateAuthorizer func(context.Context, CredentialIdentity) error
 
-func NewPool() *Pool { return &Pool{} }
+func NewPool() *Pool {
+	return &Pool{runs: make(map[string]*activeExecution), destroying: make(map[string]int)}
+}
 
 func New(awsClient AWS, keys KeyMaterial, ssh SSHExecutor, store Store, status ...StatusSource) (*Provider, error) {
 	return NewWithPool(awsClient, keys, ssh, store, NewPool(), func(context.Context, CredentialIdentity) error { return nil }, status...)
@@ -42,7 +56,36 @@ func NewWithPool(awsClient AWS, keys KeyMaterial, ssh SSHExecutor, store Store, 
 		source = status[0]
 	}
 	return &Provider{aws: awsClient, keys: keys, ssh: ssh, store: store, target: PublicIPTarget{}, status: source, now: time.Now,
-		pool: pool, authorizeCreate: authorizeCreate, active: make(map[string]struct{})}, nil
+		pool: pool, authorizeCreate: authorizeCreate}, nil
+}
+
+// Register before acquiring the pool lock: provisioning holds that lock across
+// AWS calls, but an authorized destroy must still be able to cancel its wait.
+func (provider *Provider) registerExecution(ctx context.Context, request ExecuteRequest) (context.Context, func(), error) {
+	provider.pool.runsMu.Lock()
+	defer provider.pool.runsMu.Unlock()
+	workerID := request.ExecutionID
+	if request.ReuseOnly {
+		workerID = request.ReuseWorkerID
+	}
+	if provider.pool.destroying[workerID] > 0 {
+		return nil, nil, ErrExecutionFailed
+	}
+	if _, found := provider.pool.runs[request.ExecutionID]; found {
+		return nil, nil, ErrBusy
+	}
+	runCtx, cancel := context.WithCancelCause(ctx)
+	run := &activeExecution{workerID: workerID, authority: request.Authority, credential: request.Credential, cancel: cancel, done: make(chan struct{})}
+	provider.pool.runs[request.ExecutionID] = run
+	return runCtx, func() {
+		cancel(nil)
+		provider.pool.runsMu.Lock()
+		defer provider.pool.runsMu.Unlock()
+		if provider.pool.runs[request.ExecutionID] == run {
+			delete(provider.pool.runs, request.ExecutionID)
+		}
+		close(run.done)
+	}, nil
 }
 
 func (provider *Provider) discover(ctx context.Context, credential CredentialIdentity, instanceType, acceleratorType string) (Discovery, error) {
@@ -92,6 +135,11 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	if provider == nil || ctx == nil || request.validate() != nil {
 		return ExecutionResult{}, ErrInvalid
 	}
+	ctx, unregister, err := provider.registerExecution(ctx, request)
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+	defer unregister()
 	if request.ReportProgress != nil {
 		if err := request.ReportProgress(ctx, "provisioning_worker", "Selecting or provisioning Worker"); err != nil {
 			return ExecutionResult{}, err
@@ -99,6 +147,9 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 	}
 	worker, execution, completed, resume, err := provider.lease(ctx, request)
 	if err != nil {
+		if errors.Is(context.Cause(ctx), ErrExecutionFailed) {
+			return ExecutionResult{}, errors.Join(context.Canceled, ErrExecutionFailed)
+		}
 		return ExecutionResult{}, err
 	}
 	if completed {
@@ -126,18 +177,24 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 			return provider.recordRemoteCompletion(recordCtx, &execution)
 		}, Resume: resume, CollectOnly: execution.RemoteCompleted})
 	if runErr != nil {
+		if ctx.Err() != nil {
+			return ExecutionResult{}, errors.Join(ctx.Err(), provider.failExecution(ctx, &execution, &worker))
+		}
 		deterministicCollectionFailure := errors.Is(runErr, ErrResultTooLarge) || errors.Is(runErr, ErrInvalid)
 		if !deterministicCollectionFailure && (errors.Is(runErr, ErrAmbiguous) || errors.Is(runErr, errRetryableResultCollection)) {
-			provider.pool.mu.Lock()
-			delete(provider.active, execution.ExecutionID)
-			provider.pool.mu.Unlock()
 			return ExecutionResult{}, runErr
 		}
 		return ExecutionResult{}, errors.Join(runErr, provider.failExecution(ctx, &execution, &worker))
 	}
 	result.WorkerID = worker.WorkerID
+	if ctx.Err() != nil {
+		return ExecutionResult{}, errors.Join(ctx.Err(), provider.failExecution(ctx, &execution, &worker))
+	}
 	if request.Finalize != nil {
 		if err := request.Finalize(ctx, worker.WorkerID, &result); err != nil {
+			if errors.Is(context.Cause(ctx), ErrExecutionFailed) {
+				err = errors.Join(context.Canceled, ErrExecutionFailed)
+			}
 			return result, errors.Join(err, provider.failExecution(ctx, &execution, &worker))
 		}
 	}
@@ -158,6 +215,9 @@ func (provider *Provider) Execute(ctx context.Context, request ExecuteRequest) (
 func (provider *Provider) lease(ctx context.Context, request ExecuteRequest) (WorkerRecord, ExecutionRecord, bool, bool, error) {
 	provider.pool.mu.Lock()
 	defer provider.pool.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return WorkerRecord{}, ExecutionRecord{}, false, false, err
+	}
 	execution, exists, err := provider.store.LoadExecution(ctx, request.ExecutionID)
 	if err != nil {
 		return WorkerRecord{}, ExecutionRecord{}, false, false, err
@@ -173,9 +233,6 @@ func (provider *Provider) lease(ctx context.Context, request ExecuteRequest) (Wo
 		reconcileErr := provider.reconcileTerminalWorkerReleaseLocked(ctx, execution, TaskFailed)
 		return WorkerRecord{}, execution, false, false, errors.Join(ErrExecutionFailed, reconcileErr)
 	}
-	if _, running := provider.active[request.ExecutionID]; running {
-		return WorkerRecord{}, ExecutionRecord{}, false, false, ErrBusy
-	}
 	resume := exists && execution.Phase == TaskRunning && execution.WorkerID != ""
 	worker, err := provider.acquire(ctx, request, execution)
 	if err != nil {
@@ -189,7 +246,6 @@ func (provider *Provider) lease(ctx context.Context, request ExecuteRequest) (Wo
 			return WorkerRecord{}, ExecutionRecord{}, false, false, err
 		}
 	}
-	provider.active[request.ExecutionID] = struct{}{}
 	return worker, execution, false, resume, nil
 }
 
@@ -474,6 +530,17 @@ func (provider *Provider) waitRunning(ctx context.Context, worker *WorkerRecord)
 }
 
 func (provider *Provider) releaseLocked(ctx context.Context, worker *WorkerRecord, executionID string) error {
+	current, found, err := provider.store.LoadWorker(ctx, worker.WorkerID)
+	if err != nil {
+		return err
+	}
+	if !found || workerIdentity(current) != workerIdentity(*worker) {
+		return ErrIdentity
+	}
+	if current.Phase == WorkerDestroying || current.Phase == WorkerDestroyed {
+		return nil
+	}
+	*worker = current
 	if executionID != "" && worker.CurrentExecutionID != executionID {
 		return ErrIdentity
 	}
@@ -490,7 +557,6 @@ func (provider *Provider) failExecution(ctx context.Context, execution *Executio
 	defer cancel()
 	provider.pool.mu.Lock()
 	defer provider.pool.mu.Unlock()
-	delete(provider.active, execution.ExecutionID)
 	execution.Phase = TaskFailed
 	return errors.Join(provider.saveExecution(cleanupCtx, execution), provider.releaseLocked(cleanupCtx, worker, execution.ExecutionID))
 }
@@ -498,7 +564,9 @@ func (provider *Provider) failExecution(ctx context.Context, execution *Executio
 func (provider *Provider) completeExecution(ctx context.Context, execution *ExecutionRecord, worker *WorkerRecord, result ExecutionResult) (bool, error) {
 	provider.pool.mu.Lock()
 	defer provider.pool.mu.Unlock()
-	delete(provider.active, execution.ExecutionID)
+	if err := provider.executionStillOwned(ctx, execution); err != nil {
+		return false, err
+	}
 	execution.Result, execution.Phase = result, TaskCompleted
 	if err := provider.saveExecution(ctx, execution); err != nil {
 		return false, errors.Join(ErrAmbiguous, err)
@@ -512,6 +580,9 @@ func (provider *Provider) completeExecution(ctx context.Context, execution *Exec
 func (provider *Provider) recordRemoteCompletion(ctx context.Context, execution *ExecutionRecord) error {
 	provider.pool.mu.Lock()
 	defer provider.pool.mu.Unlock()
+	if err := provider.executionStillOwned(ctx, execution); err != nil {
+		return err
+	}
 	if execution.RemoteCompleted {
 		return nil
 	}
@@ -522,6 +593,23 @@ func (provider *Provider) recordRemoteCompletion(ctx context.Context, execution 
 	if err := provider.saveExecution(ctx, execution); err != nil {
 		execution.RemoteCompleted = false
 		return err
+	}
+	return nil
+}
+
+func (provider *Provider) executionStillOwned(ctx context.Context, execution *ExecutionRecord) error {
+	worker, found, err := provider.store.LoadWorker(ctx, execution.WorkerID)
+	if err != nil {
+		return err
+	}
+	if !found || worker.authority() != execution.authority() || !sameLogicalCredential(worker.Credential, execution.Credential) {
+		return ErrIdentity
+	}
+	if worker.Phase == WorkerDestroying || worker.Phase == WorkerDestroyed {
+		return ErrExecutionFailed
+	}
+	if worker.CurrentExecutionID != execution.ExecutionID {
+		return ErrIdentity
 	}
 	return nil
 }
@@ -540,7 +628,7 @@ func (provider *Provider) reconcileTerminalWorkerReleaseLocked(ctx context.Conte
 	if worker.authority() != execution.authority() || !sameLogicalCredential(worker.Credential, execution.Credential) {
 		return ErrIdentity
 	}
-	if worker.Phase == WorkerIdle && worker.CurrentExecutionID == "" {
+	if worker.Phase == WorkerDestroying || worker.Phase == WorkerDestroyed || worker.Phase == WorkerIdle && worker.CurrentExecutionID == "" {
 		return nil
 	}
 	if worker.Phase != WorkerBusy || worker.CurrentExecutionID != execution.ExecutionID {
@@ -600,29 +688,6 @@ func (provider *Provider) DestroyWorker(ctx context.Context, request DestroyRequ
 	return provider.FinalizeWorkerDestroy(ctx, request)
 }
 
-// CheckWorkerDestroyable distinguishes an actively executing Worker from a
-// stale Busy record without mutating either local state or AWS resources.
-func (provider *Provider) CheckWorkerDestroyable(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity, workerID string) error {
-	if provider == nil || ctx == nil || authority.validate() != nil || credential.validate() != nil || !validID(workerID) {
-		return ErrInvalid
-	}
-	provider.pool.mu.Lock()
-	defer provider.pool.mu.Unlock()
-	worker, found, err := provider.store.LoadWorker(ctx, workerID)
-	if err != nil {
-		return err
-	}
-	if !found || worker.authority() != authority || worker.Credential != credential {
-		return ErrIdentity
-	}
-	if worker.Phase == WorkerBusy {
-		if _, running := provider.active[worker.CurrentExecutionID]; running {
-			return ErrBusy
-		}
-	}
-	return nil
-}
-
 func (provider *Provider) DestroyWorkerResources(ctx context.Context, request DestroyRequest) error {
 	if provider == nil || ctx == nil || request.Authorization.validate() != nil || request.Identity.authority().validate() != nil || request.Identity.Credential.validate() != nil || !validID(request.Identity.WorkerID) {
 		if request.Authorization.validate() != nil {
@@ -630,8 +695,6 @@ func (provider *Provider) DestroyWorkerResources(ctx context.Context, request De
 		}
 		return ErrInvalid
 	}
-	provider.pool.mu.Lock()
-	defer provider.pool.mu.Unlock()
 	worker, found, err := provider.store.LoadWorker(ctx, request.Identity.WorkerID)
 	if err != nil {
 		return err
@@ -639,15 +702,49 @@ func (provider *Provider) DestroyWorkerResources(ctx context.Context, request De
 	if !found {
 		return nil
 	}
-	if worker.authority() != request.Identity.authority() || worker.Credential != request.Identity.Credential || worker.Instance.ID != request.Identity.InstanceID || worker.KeyPair.ID != request.Identity.KeyPairID ||
-		worker.SecurityGroup.ID != request.Identity.SecurityGroupID {
+	if !matchesDestroyIdentity(worker, request.Identity) ||
+		(worker.Phase != WorkerDestroying && worker.Phase != WorkerDestroyed && workerIdentity(worker) != request.Identity) {
 		return ErrIdentity
 	}
-	if worker.Phase == WorkerBusy {
-		if _, running := provider.active[worker.CurrentExecutionID]; running {
-			return ErrBusy
+	// Fence new starts and cancel current provisioning/SSH before waiting for
+	// the pool lock. Only the already-validated owner/resource can be canceled.
+	provider.pool.runsMu.Lock()
+	provider.pool.destroying[worker.WorkerID]++
+	var stopped []<-chan struct{}
+	for _, run := range provider.pool.runs {
+		if run.workerID == worker.WorkerID && run.authority == worker.authority() && sameLogicalCredential(run.credential, worker.Credential) {
+			run.cancel(ErrExecutionFailed)
+			stopped = append(stopped, run.done)
 		}
 	}
+	provider.pool.runsMu.Unlock()
+	initial := worker
+	defer func() {
+		provider.pool.runsMu.Lock()
+		defer provider.pool.runsMu.Unlock()
+		provider.pool.destroying[initial.WorkerID]--
+		if provider.pool.destroying[initial.WorkerID] == 0 {
+			delete(provider.pool.destroying, initial.WorkerID)
+		}
+	}()
+	provider.pool.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			provider.pool.mu.Unlock()
+		}
+	}()
+	worker, found, err = provider.store.LoadWorker(ctx, request.Identity.WorkerID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if worker.CreationProof != initial.CreationProof || !matchesDestroyIdentity(worker, request.Identity) {
+		return ErrIdentity
+	}
+	request.Identity = workerIdentity(worker)
 	if worker.Phase == WorkerDestroyed {
 		return nil
 	}
@@ -657,6 +754,55 @@ func (provider *Provider) DestroyWorkerResources(ctx context.Context, request De
 	worker.Phase = WorkerDestroying
 	if err := provider.saveWorker(ctx, &worker); err != nil {
 		return err
+	}
+	if worker.Instance.ID == "" || worker.KeyPair.ID == "" || worker.SecurityGroup.ID == "" {
+		// A canceled AWS request may have succeeded before its identity was
+		// saved. Discover only this intent's exact tags; never create on cleanup.
+		if err := provider.reconcileProvisioning(ctx, &worker); err != nil {
+			return err
+		}
+		request.Identity = workerIdentity(worker)
+	}
+	if worker.CurrentExecutionID != "" {
+		execution, exists, err := provider.store.LoadExecution(ctx, worker.CurrentExecutionID)
+		if err != nil {
+			return err
+		}
+		if exists {
+			if execution.WorkerID != worker.WorkerID || execution.authority() != worker.authority() || !sameLogicalCredential(execution.Credential, worker.Credential) {
+				return ErrIdentity
+			}
+			if execution.Phase == TaskRunning {
+				execution.Phase = TaskFailed
+				if err := provider.saveExecution(ctx, &execution); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	// Release the pool lock so canceled execution cleanup can finish. Keeping
+	// the durable destroy intent prevents late completion/release resurrecting
+	// the Worker; waiting also drains result/service publication before cleanup.
+	provider.pool.mu.Unlock()
+	locked = false
+	for _, done := range stopped {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	provider.pool.mu.Lock()
+	locked = true
+	worker, found, err = provider.store.LoadWorker(ctx, request.Identity.WorkerID)
+	if err != nil {
+		return err
+	}
+	if !found || workerIdentity(worker) != request.Identity {
+		return ErrIdentity
+	}
+	if worker.Phase == WorkerDestroyed || worker.ResourcesDestroyed {
+		return nil
 	}
 	tags := resourceTags(worker.WorkerID, worker.authority(), worker.Credential, worker.CreationProof)
 	if err := provider.destroy(ctx, request.Authorization, tags, &worker); err != nil {
@@ -679,8 +825,7 @@ func (provider *Provider) FinalizeWorkerDestroy(ctx context.Context, request Des
 	if err != nil || !found {
 		return err
 	}
-	if worker.authority() != request.Identity.authority() || worker.Credential != request.Identity.Credential || worker.Instance.ID != request.Identity.InstanceID || worker.KeyPair.ID != request.Identity.KeyPairID ||
-		worker.SecurityGroup.ID != request.Identity.SecurityGroupID {
+	if !matchesDestroyIdentity(worker, request.Identity) {
 		return ErrIdentity
 	}
 	if worker.Phase == WorkerDestroyed {
@@ -695,8 +840,18 @@ func (provider *Provider) FinalizeWorkerDestroy(ctx context.Context, request Des
 	if err := provider.keys.Delete(ctx, worker.WorkerID); err != nil {
 		return err
 	}
-	worker.Phase = WorkerDestroyed
+	worker.Phase, worker.CurrentExecutionID = WorkerDestroyed, ""
 	return provider.saveWorker(ctx, &worker)
+}
+
+// A provisioning request may initially have only some resource IDs. Those
+// already supplied must still match; cleanup may have discovered the others
+// under the same durable Worker intent after canceling an in-flight AWS call.
+func matchesDestroyIdentity(worker WorkerRecord, identity WorkerIdentity) bool {
+	return worker.WorkerID == identity.WorkerID && worker.authority() == identity.authority() && worker.Credential == identity.Credential &&
+		(identity.InstanceID == "" || worker.Instance.ID == identity.InstanceID) &&
+		(identity.KeyPairID == "" || worker.KeyPair.ID == identity.KeyPairID) &&
+		(identity.SecurityGroupID == "" || worker.SecurityGroup.ID == identity.SecurityGroupID)
 }
 
 func (provider *Provider) destroy(ctx context.Context, authorization DestroyAuthorization, tags ResourceTags, worker *WorkerRecord) error {
@@ -705,12 +860,9 @@ func (provider *Provider) destroy(ctx context.Context, authorization DestroyAuth
 		if err != nil {
 			return err
 		}
-		if found && instance.State != "terminated" {
+		if found && instance.State != "terminated" && instance.State != "shutting-down" {
 			if err := provider.aws.TerminateInstance(ctx, worker.Credential, authorization, instance, tags); err != nil {
-				instance, found, _ = provider.aws.ObserveInstance(ctx, worker.Credential, worker.Instance.ID, tags)
-				if found && instance.State != "shutting-down" && instance.State != "terminated" {
-					return errors.Join(ErrAmbiguous, err)
-				}
+				return err
 			}
 		}
 		if err := provider.waitTerminated(ctx, worker, tags); err != nil {
@@ -719,18 +871,12 @@ func (provider *Provider) destroy(ctx context.Context, authorization DestroyAuth
 	}
 	if worker.SecurityGroup.ID != "" && worker.SecurityGroup.Name != "" {
 		if err := provider.aws.DeleteSecurityGroup(ctx, worker.Credential, authorization, worker.SecurityGroup, tags); err != nil {
-			_, found, _ := provider.aws.FindSecurityGroup(ctx, worker.Credential, worker.SecurityGroup.Name, tags)
-			if found {
-				return errors.Join(ErrAmbiguous, err)
-			}
+			return err
 		}
 	}
 	if worker.KeyPair.ID != "" && worker.KeyPair.Name != "" {
 		if err := provider.aws.DeleteKeyPair(ctx, worker.Credential, authorization, worker.KeyPair, tags); err != nil {
-			_, found, _ := provider.aws.FindKeyPair(ctx, worker.Credential, worker.KeyPair.Name, tags)
-			if found {
-				return errors.Join(ErrAmbiguous, err)
-			}
+			return err
 		}
 	}
 	return nil
@@ -787,11 +933,9 @@ func (provider *Provider) ListWorkers(ctx context.Context, authority OwnerAuthor
 		}
 		if status.Availability == WorkerAvailable && found {
 			status.EC2State, status.PublicIP = instance.State, instance.PublicIP
-			if worker.Instance != instance {
-				worker.Instance = instance
-				if err := provider.saveWorker(ctx, &worker); err != nil {
-					status.Availability, status.Error = WorkerUnavailable, "Worker state could not be persisted"
-				}
+			worker.Instance = instance
+			if instance.State == "terminated" || instance.State == "shutting-down" {
+				status.Availability, status.Error = WorkerUnavailable, "AWS instance has been terminated"
 			}
 		}
 		if worker.CurrentExecutionID != "" {
@@ -800,7 +944,7 @@ func (provider *Provider) ListWorkers(ctx context.Context, authority OwnerAuthor
 				status.TaskPhase = execution.Phase
 			}
 		}
-		if provider.status != nil && status.Availability == WorkerAvailable {
+		if provider.status != nil && status.Availability == WorkerAvailable && instance.State == "running" && instance.PublicIP != "" {
 			status.Runner, _ = provider.status.Observe(ctx, worker)
 			status.Quote, _ = provider.status.HourlyQuote(ctx, worker)
 		}
@@ -817,7 +961,7 @@ func (provider *Provider) WorkerIdentity(ctx context.Context, authority OwnerAut
 	if err != nil {
 		return WorkerIdentity{}, err
 	}
-	if !found || worker.authority() != authority || !sameLogicalCredential(worker.Credential, credential) || worker.Phase == WorkerDestroyed {
+	if !found || worker.authority() != authority || !sameLogicalCredential(worker.Credential, credential) || worker.Phase == WorkerDestroyed || worker.Phase == WorkerDestroying {
 		return WorkerIdentity{}, ErrIdentity
 	}
 	return workerIdentity(worker), nil
@@ -830,7 +974,7 @@ func (provider *Provider) ObserveService(ctx context.Context, identity WorkerIde
 	if err != nil {
 		return ServiceRuntimeStatus{}, err
 	}
-	if !found || workerIdentity(worker) != identity || worker.Phase == WorkerDestroyed {
+	if !found || workerIdentity(worker) != identity || worker.Phase == WorkerDestroyed || worker.Phase == WorkerDestroying {
 		return ServiceRuntimeStatus{}, ErrIdentity
 	}
 	source, ok := provider.status.(interface {
@@ -849,7 +993,7 @@ func (provider *Provider) SetPublicPort(ctx context.Context, identity WorkerIden
 	if err != nil {
 		return err
 	}
-	if !found || workerIdentity(worker) != identity || worker.Phase == WorkerDestroyed {
+	if !found || workerIdentity(worker) != identity || worker.Phase == WorkerDestroyed || worker.Phase == WorkerDestroying {
 		return ErrIdentity
 	}
 	manager, ok := provider.aws.(interface {
@@ -872,7 +1016,7 @@ func (provider *Provider) ReconcileServiceExposure(ctx context.Context, identity
 	if err != nil {
 		return err
 	}
-	if !found || workerIdentity(worker) != identity || worker.Phase == WorkerDestroyed {
+	if !found || workerIdentity(worker) != identity || worker.Phase == WorkerDestroyed || worker.Phase == WorkerDestroying {
 		return ErrIdentity
 	}
 	manager, ok := provider.status.(interface {

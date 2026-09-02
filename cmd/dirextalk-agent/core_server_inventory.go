@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	workercap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
@@ -26,73 +27,66 @@ func (inventory coreServerWorkerInventory) List(ctx context.Context, authority c
 	}
 	result := make([]coreserver.Server, 0, len(statuses))
 	for _, status := range statuses {
-		name := strings.TrimSpace(status.DisplayName)
-		if name == "" {
-			name = status.PublicIP
-		}
-		if name == "" {
-			name = "Worker " + shortServerID(status.Identity.WorkerID)
-		}
-		createdAt := status.CreatedAt.UTC()
-		if createdAt.IsZero() {
-			createdAt = status.ObservedAt.UTC()
-		}
-		busy := status.CurrentExecutionID != "" || status.WorkerPhase == sshworker.WorkerBusy || status.WorkerPhase == sshworker.WorkerProvisioning || status.WorkerPhase == sshworker.WorkerDestroying
-		busyReason := ""
-		serverStatus := string(status.Availability)
-		if busy {
-			busyReason = "服务器任务正在运行"
-		}
-		switch status.WorkerPhase {
-		case sshworker.WorkerProvisioning:
-			serverStatus = string(sshworker.WorkerProvisioning)
-			busyReason = "服务器正在创建"
-		case sshworker.WorkerFailed:
-			serverStatus = string(sshworker.WorkerFailed)
-			busyReason = strings.TrimSpace(status.Error)
-		case sshworker.WorkerDestroying:
-			serverStatus = string(sshworker.WorkerDestroying)
-			busyReason = "服务器正在销毁"
-		}
-		result = append(result, coreserver.Server{ServerID: status.Identity.WorkerID, ServerKind: coreserver.ServerWorker, Name: name,
-			Status: serverStatus, Address: status.PublicIP, Region: status.Identity.Credential.Region, CanDestroy: true,
-			Busy: busy, BusyReason: busyReason, CreatedAt: createdAt, Identity: status.Identity})
+		result = append(result, serverFromWorkerStatus(status))
 	}
 	return result, nil
 }
 
+func serverFromWorkerStatus(status sshworker.WorkerStatus) coreserver.Server {
+	name := strings.TrimSpace(status.DisplayName)
+	if name == "" {
+		name = status.PublicIP
+	}
+	if name == "" {
+		name = "Worker " + shortServerID(status.Identity.WorkerID)
+	}
+	createdAt := status.CreatedAt.UTC()
+	if createdAt.IsZero() {
+		createdAt = status.ObservedAt.UTC()
+	}
+	busy := status.CurrentExecutionID != "" || status.WorkerPhase == sshworker.WorkerBusy || status.WorkerPhase == sshworker.WorkerProvisioning || status.WorkerPhase == sshworker.WorkerDestroying
+	busyReason := ""
+	serverStatus := string(status.Availability)
+	if busy {
+		busyReason = "服务器任务正在运行"
+	}
+	switch status.WorkerPhase {
+	case sshworker.WorkerProvisioning:
+		serverStatus, busyReason = string(sshworker.WorkerProvisioning), "服务器正在创建"
+	case sshworker.WorkerFailed:
+		serverStatus, busyReason = string(sshworker.WorkerFailed), strings.TrimSpace(status.Error)
+	case sshworker.WorkerDestroying:
+		serverStatus, busyReason = string(sshworker.WorkerDestroying), "服务器正在销毁"
+	}
+	return coreserver.Server{ServerID: status.Identity.WorkerID, ServerKind: coreserver.ServerWorker, Name: name,
+		Status: serverStatus, Address: status.PublicIP, Region: status.Identity.Credential.Region, CanDestroy: true,
+		Busy: busy, BusyReason: busyReason, CreatedAt: createdAt, Identity: status.Identity}
+}
+
 func (inventory coreServerWorkerInventory) Get(ctx context.Context, authority coreserver.Authority, serverID string) (coreserver.Server, error) {
-	servers, err := inventory.List(ctx, authority)
+	if inventory.executor == nil {
+		return coreserver.Server{}, coreserver.ErrNotFound
+	}
+	worker, found, err := inventory.executor.state.LoadWorker(ctx, serverID)
 	if err != nil {
 		return coreserver.Server{}, err
 	}
-	for _, server := range servers {
-		if server.ServerID == serverID {
-			return server, nil
-		}
+	if !found || worker.OwnerID != authority.OwnerID || worker.AccountGeneration != authority.AccountGeneration || worker.Phase == sshworker.WorkerDestroyed {
+		return coreserver.Server{}, coreserver.ErrNotFound
 	}
-	return coreserver.Server{}, coreserver.ErrNotFound
-}
-
-func (inventory coreServerWorkerInventory) PrepareDestroy(ctx context.Context, authority coreserver.Authority, serverID string) error {
-	if inventory.executor == nil {
-		return coreserver.ErrNotFound
+	status := sshworker.UnavailableStatus(worker, time.Now(), worker.FailureSummary)
+	status.PublicIP, status.EC2State = worker.Instance.PublicIP, worker.Instance.State
+	if worker.Instance.State == "running" {
+		status.Availability = sshworker.WorkerAvailable
 	}
-	err := inventory.executor.CheckRetainedWorkerDestroyable(ctx, authority.OwnerID, authority.AccountGeneration, serverID)
-	if errors.Is(err, sshworker.ErrBusy) {
-		return coreserver.ErrBusy
-	}
-	if errors.Is(err, sshworker.ErrIdentity) {
-		return coreserver.ErrNotFound
-	}
-	return err
+	return serverFromWorkerStatus(status), nil
 }
 
 func (inventory coreServerWorkerInventory) Destroy(ctx context.Context, authority coreserver.Authority, serverID, operationID string) error {
 	if inventory.executor == nil {
 		return coreserver.ErrNotFound
 	}
-	err := inventory.executor.DestroyRetainedWorker(ctx, authority.OwnerID, authority.AccountGeneration, serverID, "servers:"+operationID)
+	err := inventory.executor.DestroyRetainedWorkerResources(ctx, authority.OwnerID, authority.AccountGeneration, serverID, "servers:"+operationID)
 	if errors.Is(err, sshworker.ErrBusy) {
 		return coreserver.ErrBusy
 	}
@@ -100,6 +94,13 @@ func (inventory coreServerWorkerInventory) Destroy(ctx context.Context, authorit
 		return coreserver.ErrNotFound
 	}
 	return err
+}
+
+func (inventory coreServerWorkerInventory) FinalizeDestroy(ctx context.Context, authority coreserver.Authority, serverID, operationID string) error {
+	if inventory.executor == nil {
+		return coreserver.ErrNotFound
+	}
+	return inventory.executor.FinalizeRetainedWorkerDestroy(ctx, authority.OwnerID, authority.AccountGeneration, serverID, "servers:"+operationID)
 }
 
 type coreServerArtifactDeleter struct {
@@ -156,8 +157,17 @@ func (manager serverManagedWorkerManager) ObserveWorker(ctx context.Context, aut
 	return manager.executor.ObserveWorker(ctx, authority, identity)
 }
 func (manager serverManagedWorkerManager) DestroyWorker(ctx context.Context, authority sshworker.OwnerAuthority, request sshworker.DestroyRequest) error {
-	if _, err := manager.executor.ObserveWorker(ctx, authority, request.Identity); err != nil {
+	if request.Authorization.Authorized != true || strings.TrimSpace(request.Authorization.Proof) == "" {
+		return sshworker.ErrNotAuthorized
+	}
+	worker, found, err := manager.executor.state.LoadWorker(ctx, request.Identity.WorkerID)
+	if err != nil {
 		return err
+	}
+	request.Identity.OwnerID, request.Identity.AccountGeneration = authority.OwnerID, authority.AccountGeneration
+	if !found || worker.OwnerID != authority.OwnerID || worker.AccountGeneration != authority.AccountGeneration || worker.Credential != request.Identity.Credential ||
+		worker.Instance.ID != request.Identity.InstanceID || worker.KeyPair.ID != request.Identity.KeyPairID || worker.SecurityGroup.ID != request.Identity.SecurityGroupID {
+		return sshworker.ErrIdentity
 	}
 	return manager.servers.DestroyServer(ctx, coreserver.Authority{OwnerID: authority.OwnerID, AccountGeneration: authority.AccountGeneration}, request.Identity.WorkerID,
 		uuid.NewSHA1(uuid.NameSpaceOID, []byte("dirextalk:legacy-worker-destroy:"+request.Identity.WorkerID)).String())

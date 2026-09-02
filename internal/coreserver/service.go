@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -15,6 +16,8 @@ type Config struct {
 	PrimaryOrigin string
 	PrimaryRegion string
 }
+
+const DestroyCompletionTimeout = 10 * time.Minute
 
 type Service struct {
 	repository Repository
@@ -142,15 +145,14 @@ func (s *Service) DestroyServer(ctx context.Context, authority Authority, server
 	if serverID == instance.ID {
 		return ErrPrimary
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DestroyCompletionTimeout)
+	defer cancel()
 	_, err = s.workers.Get(ctx, authority, serverID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			artifacts, listErr := s.repository.ListServerArtifactsForCleanup(ctx, authority, serverID)
 			if listErr != nil {
 				return listErr
-			}
-			if len(artifacts) == 0 {
-				return ErrNotFound
 			}
 			if err = s.repository.MarkServerDeleting(ctx, authority, serverID); err != nil {
 				return err
@@ -162,13 +164,12 @@ func (s *Service) DestroyServer(ctx context.Context, authority Authority, server
 		}
 		return err
 	}
-	// Busy is a projected local phase and may be stale after a task terminalized.
-	// Always ask the provider's serialized active-execution fence before
-	// mutating the artifact catalog; only live work remains protected.
-	if err = s.workers.PrepareDestroy(ctx, authority, serverID); err != nil {
+	if err = s.repository.MarkServerDeleting(ctx, authority, serverID); err != nil {
 		return err
 	}
-	if err = s.repository.MarkServerDeleting(ctx, authority, serverID); err != nil {
+	// Explicit destruction cancels active work first. Local output cleanup must
+	// not race a still-running Worker publishing another result.
+	if err = s.workers.Destroy(ctx, authority, serverID, operationID); err != nil {
 		return err
 	}
 	artifacts, err := s.repository.ListServerArtifactsForCleanup(ctx, authority, serverID)
@@ -178,7 +179,12 @@ func (s *Service) DestroyServer(ctx context.Context, authority Authority, server
 	if err = s.deleteExecutionArtifacts(ctx, authority, artifacts, operationID); err != nil {
 		return err
 	}
-	if err = s.workers.Destroy(ctx, authority, serverID, operationID); err != nil {
+	if err = s.repository.DeleteServer(ctx, authority, serverID); err != nil {
+		return err
+	}
+	// Keep the Worker visible as destroying until every owned artifact/catalog
+	// cleanup has succeeded, so failures always leave a user-retryable target.
+	if err = s.workers.FinalizeDestroy(ctx, authority, serverID, operationID); err != nil {
 		return err
 	}
 	if _, err = s.workers.Get(ctx, authority, serverID); err == nil {
@@ -186,7 +192,7 @@ func (s *Service) DestroyServer(ctx context.Context, authority Authority, server
 	} else if !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	return s.repository.DeleteServer(ctx, authority, serverID)
+	return nil
 }
 
 func (s *Service) deleteExecutionArtifacts(ctx context.Context, authority Authority, artifacts []Artifact, operationID string) error {

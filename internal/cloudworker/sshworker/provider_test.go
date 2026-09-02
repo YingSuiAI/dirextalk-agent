@@ -18,6 +18,7 @@ import (
 )
 
 type memoryStore struct {
+	mu         sync.Mutex
 	executions map[string]ExecutionRecord
 	workers    map[string]WorkerRecord
 }
@@ -59,18 +60,26 @@ func newMemoryStore() *memoryStore {
 	return &memoryStore{executions: map[string]ExecutionRecord{}, workers: map[string]WorkerRecord{}}
 }
 func (s *memoryStore) LoadExecution(_ context.Context, id string) (ExecutionRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	r, ok := s.executions[id]
 	return r, ok, nil
 }
 func (s *memoryStore) SaveExecution(_ context.Context, r ExecutionRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.executions[r.ExecutionID] = r
 	return nil
 }
 func (s *memoryStore) LoadWorker(_ context.Context, id string) (WorkerRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	r, ok := s.workers[id]
 	return r, ok, nil
 }
 func (s *memoryStore) ListWorkers(context.Context) ([]WorkerRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	r := []WorkerRecord{}
 	for _, w := range s.workers {
 		r = append(r, w)
@@ -78,6 +87,8 @@ func (s *memoryStore) ListWorkers(context.Context) ([]WorkerRecord, error) {
 	return r, nil
 }
 func (s *memoryStore) SaveWorker(_ context.Context, r WorkerRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.workers[r.WorkerID] = r
 	return nil
 }
@@ -85,8 +96,7 @@ func (s *memoryStore) SaveWorkerIntent(ctx context.Context, r WorkerRecord, auth
 	if err := authorize(ctx); err != nil {
 		return err
 	}
-	s.workers[r.WorkerID] = r
-	return nil
+	return s.SaveWorker(ctx, r)
 }
 
 type fakeKeys struct {
@@ -765,7 +775,6 @@ func TestFailExecutionUsesFreshContextAfterCancellation(t *testing.T) {
 	worker := WorkerRecord{WorkerID: "worker-canceled", Phase: WorkerBusy, CurrentExecutionID: execution.ExecutionID}
 	base.executions[execution.ExecutionID] = execution
 	base.workers[worker.WorkerID] = worker
-	provider.active[execution.ExecutionID] = struct{}{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err = provider.failExecution(ctx, &execution, &worker); err != nil {
@@ -773,9 +782,6 @@ func TestFailExecutionUsesFreshContextAfterCancellation(t *testing.T) {
 	}
 	if base.executions[execution.ExecutionID].Phase != TaskFailed || base.workers[worker.WorkerID].Phase != WorkerIdle || base.workers[worker.WorkerID].CurrentExecutionID != "" {
 		t.Fatalf("execution=%+v worker=%+v", base.executions[execution.ExecutionID], base.workers[worker.WorkerID])
-	}
-	if _, active := provider.active[execution.ExecutionID]; active {
-		t.Fatal("canceled execution remained active")
 	}
 }
 
@@ -827,7 +833,7 @@ func TestPersistedRemoteSuccessSurvivesWorkerReleaseFailure(t *testing.T) {
 	if execution.Phase != TaskCompleted || worker.Phase != WorkerIdle || worker.CurrentExecutionID != "" || store.idleSaveCalls != 2 {
 		t.Fatalf("execution=%+v worker=%+v", execution, worker)
 	}
-	if _, active := provider.active[request.ExecutionID]; active {
+	if _, active := provider.pool.runs[request.ExecutionID]; active {
 		t.Fatal("completed execution remained active")
 	}
 }
@@ -1021,25 +1027,24 @@ func TestDestroyResourcesStaysListableUntilFinalized(t *testing.T) {
 	}
 }
 
-func TestDestroyBusyWorkerRequiresCurrentProcessActivity(t *testing.T) {
+func TestDestroyStaleBusyWorkerWithExternallyDeletedInstance(t *testing.T) {
 	cloud, store, keys := newFakeAWS(), newMemoryStore(), &fakeKeys{}
 	request := requestFixture()
 	worker := withBusyInstance(workerRecordFixture("worker-stale", request.Credential, WorkerBusy), "execution-stale")
 	worker.KeyPair = KeyPair{ID: "key-stale", Name: "key-stale"}
 	worker.SecurityGroup = SecurityGroup{ID: "sg-stale", Name: "sg-stale"}
 	worker.Instance.ClientToken = "worker-stale"
-	store.workers[worker.WorkerID], cloud.instances[worker.Instance.ClientToken] = worker, worker.Instance
+	worker.Instance.State = "terminated"
+	store.workers[worker.WorkerID] = worker
 	cloud.keys[worker.KeyPair.Name], cloud.groups[worker.SecurityGroup.Name] = worker.KeyPair, worker.SecurityGroup
 	provider, _ := New(cloud, keys, &fakeSSH{}, store)
 	identity := workerIdentity(worker)
 	destroy := DestroyRequest{Identity: identity, Authorization: DestroyAuthorization{Authorized: true, Proof: "destroy-1"}}
-	provider.active[worker.CurrentExecutionID] = struct{}{}
-	if err := provider.DestroyWorker(context.Background(), destroy); !errors.Is(err, ErrBusy) || cloud.terminations != 0 {
-		t.Fatalf("active destroy err=%v terminations=%d", err, cloud.terminations)
-	}
-	delete(provider.active, worker.CurrentExecutionID)
 	if err := provider.DestroyWorker(context.Background(), destroy); err != nil || store.workers[worker.WorkerID].Phase != WorkerDestroyed {
 		t.Fatalf("stale destroy err=%v worker=%+v", err, store.workers[worker.WorkerID])
+	}
+	if err := provider.DestroyWorker(context.Background(), destroy); err != nil || cloud.terminations != 0 || keys.delete != 1 {
+		t.Fatalf("idempotent delete err=%v terminations=%d key deletes=%d", err, cloud.terminations, keys.delete)
 	}
 }
 
@@ -1267,8 +1272,8 @@ func TestListWorkersRefreshesPublicIPBeforeReadOnlyRunnerProbe(t *testing.T) {
 	if err != nil || len(statuses) != 1 || statuses[0].EC2State != "running" || statuses[0].PublicIP != "203.0.113.20" || statuses[0].Runner.Load1 != 0.5 || statuses[0].Quote.MicrosPerHour != 25_000 {
 		t.Fatalf("statuses=%#v err=%v", statuses, err)
 	}
-	if len(status.seen) != 1 || status.quoteCalls != 1 || status.seen[0].Instance.PublicIP != "203.0.113.20" || store.workers[r.ExecutionID].Instance.PublicIP != "203.0.113.20" {
-		t.Fatalf("runner probe did not use persisted live IP: seen=%#v stored=%#v", status.seen, store.workers[r.ExecutionID])
+	if len(status.seen) != 1 || status.quoteCalls != 1 || status.seen[0].Instance.PublicIP != "203.0.113.20" || store.workers[r.ExecutionID].Instance.PublicIP != "203.0.113.10" {
+		t.Fatalf("runner probe must use live IP without rewriting lifecycle state: seen=%#v stored=%#v", status.seen, store.workers[r.ExecutionID])
 	}
 	if keys.ensure != ensureBeforeList || keys.lookup != 0 {
 		t.Fatalf("list created key material: ensure=%d lookup=%d", keys.ensure, keys.lookup)

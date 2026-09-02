@@ -108,8 +108,8 @@ type Repository interface {
 type WorkerInventory interface {
 	List(context.Context, Authority) ([]Server, error)
 	Get(context.Context, Authority, string) (Server, error)
-	PrepareDestroy(context.Context, Authority, string) error
 	Destroy(context.Context, Authority, string, string) error
+	FinalizeDestroy(context.Context, Authority, string, string) error
 }
 
 type ArtifactDeleter interface {
