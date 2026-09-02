@@ -769,6 +769,15 @@ support.
   and cross-recipe two-version cleanup. This is code/static evidence only: the
   configured AWS CLI identity was root and no paid AMI build, distribution, or
   SSM publication was performed.
+- On **2026-09-02**, Worker image release `1.1.0` upgraded the pinned Pi binary
+  to `v0.84.4` and added checksummed uv/uvx `0.12.9`, Ubuntu-packaged static-web
+  extraction, and PDF authoring/inspection tools. Image tests create an offline
+  uv environment, parse an in-memory HTTP response, generate a PDF, validate
+  its structure, and recover its text. The Agent accepts `v0.84.1` only for the
+  single retained rollback image; new publication requires `v0.84.4` exactly.
+  Third-party Pi Skill discovery remains disabled pending source and permission
+  audit. This is code/static evidence only; no paid AMI build or publication was
+  performed.
 - On **2026-08-13**, the active implementation replaced that historical
   inbound/custom-image path with the persistent SSH Worker manager. Focused
   tests covered AWS-owned AL2023/default-network discovery, ordinary public IPv4,

@@ -177,7 +177,7 @@ jq -e --arg flavor %s '
   .schema == 1 and
   (.image_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
   .flavor == $flavor and
-  .pi_version == "%s" and
+  (.pi_version == "%s" or .pi_version == "%s") and
   .tool_baseline == "%s" and
   .tested == true
 ' "$image_manifest" >/dev/null
@@ -203,7 +203,8 @@ verify_coding_tools
 test -x "$pi_bin"
 test ! -L "$pi_bin"
 test "$(stat -c '%%U:%%G:%%a' "$pi_bin")" = root:root:755
-test "$("$pi_bin" --version)" = %s
+manifest_pi_version=$(jq -er .pi_version "$image_manifest")
+test "$("$pi_bin" --version)" = "$manifest_pi_version"
 
 printf '%%s' %s | base64 --decode > "$config_root/models.json"
 printf '%%s' %s | base64 --decode > "$task_root/objective.txt"
@@ -217,8 +218,8 @@ chmod 700 "$worker_root/dirextalk-worker-runner"
 "$worker_root/dirextalk-worker-runner" server-status >/dev/null
 `,
 		shellQuote(workerimage.ManifestPath), shellQuote(workerimage.PiPath), request.TaskID,
-		caddyPreflight, shellQuote(request.ImageFlavor), workerimage.PiVersion, workerimage.ToolBaseline,
-		caddySetup, shellQuote(PiReleaseVersion),
+		caddyPreflight, shellQuote(request.ImageFlavor), workerimage.PiVersion, workerimage.RollbackPiVersion, workerimage.ToolBaseline,
+		caddySetup,
 		shellQuote(base64.StdEncoding.EncodeToString(modelConfig)),
 		shellQuote(base64.StdEncoding.EncodeToString([]byte(objective))),
 		shellQuote(base64.StdEncoding.EncodeToString(spec)),

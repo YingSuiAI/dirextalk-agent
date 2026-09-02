@@ -1,4 +1,4 @@
-# Dirextalk Worker AMI release 1.0.0
+# Dirextalk Worker AMI release 1.1.0
 
 This directory is the Agent-owned, operator-run EC2 Image Builder release
 surface for the persistent SSH Worker. It does not change the server host AMI,
@@ -16,10 +16,10 @@ mapping ever supplies a smaller size.
 
 ## Release contents
 
-- `release.json`: frozen image, Pi, parent, plugin, and SSM contract.
+- `release.json`: frozen image, Pi, uv, parent, plugin, and SSM contract.
 - `components/install.yaml.in`: build component for the common toolchain,
-  checksummed Pi binary, reviewed plugin catalog, state root, manifest, and
-  credential/cache cleanup.
+  checksummed Pi and uv/uvx binaries, static-web/PDF tooling, reviewed plugin
+  catalog, state root, manifest, and credential/cache cleanup.
 - `components/test.yaml.in`: Image Builder test component, including a real
   reboot between persistence assertions.
 - `scripts/render-release.sh`: offline renderer and live read-only parent
@@ -31,15 +31,18 @@ mapping ever supplies a smaller size.
 The only reviewed default Pi plugin is the reduced Dirextalk subagent extension
 already vendored by the SSH Worker. It is MIT-licensed and pinned to upstream
 commit `53fa77ccd8a279eb87e92294ef3687b03ff80112`; the renderer verifies both
-vendored file digests. The image installs it into a catalog, not a user's Pi
-configuration. A task enables it by copying the catalog entry and agent file
+vendored file digests. Its reduced surface remains derived from Pi `v0.84.1`
+and has been compared with the upstream `v0.84.4` example; the intervening
+changes concern project-agent discovery and inherited model settings that this
+server-owned variant does not use. The image installs it into a catalog, not a
+user's Pi configuration. A task enables it by copying the catalog entry and agent file
 into that task's `PI_CODING_AGENT_DIR`, or disables it by omitting that copy.
 No token or configuration is baked into the image. High-privilege and
 task-specific marketplace plugins are intentionally absent.
 
 | Plugin | Decision | Maintenance, permission, offline, and size assessment |
 | --- | --- | --- |
-| reduced `dirextalk-subagent` | default catalog entry | Existing server-vendored source; Pi `v0.84.1` commit pin; MIT; 8,269 bytes; no added dependency; works offline; only server-owned agents are discovered. |
+| reduced `dirextalk-subagent` | default catalog entry | Existing server-vendored source; Pi `v0.84.1` provenance, validated with Pi `v0.84.4`; MIT; 8,269 bytes; no added dependency; works offline; only server-owned agents are discovered. |
 | `pi-review` 1.2.1 | reject | Community session/slash-command workflow is not general Worker runtime value. |
 | `pi-subagents` 0.63.0 | reject | Duplicates the reviewed extension, is about 5 MB, and has broader behavior. |
 | `cc-safety-net` 2.3.1 | opt-in only after audit | Its configuration can fail open; it is not safe as an image-wide default. |
@@ -50,6 +53,22 @@ Any future addition must pin the package version, tar SHA-256, registry
 integrity, upstream commit or SLSA provenance, and the complete mirrored
 dependency closure. Install lifecycle scripts remain disabled unless separately
 audited. Runtime plugin installation and baked credentials are prohibited.
+
+The common image also includes pinned `uv`/`uvx`, plus Ubuntu-packaged
+`httpx`, Beautiful Soup, lxml, html2text, w3m and xmllint for static or
+server-rendered web content. PDF authoring and inspection use Pandoc,
+WeasyPrint, Poppler (`pdfinfo`/`pdftotext`) and qpdf. These cover deterministic
+non-browser extraction and PDF workflows without downloading a Python
+environment at task start. Chromium/Playwright is not a default because its
+large browser payload and rapid security-update cadence require a separately
+owned release track.
+
+Pi Skills execute with the Worker's full permissions. Therefore no third-party
+Skill is silently enabled image-wide: the runner continues to disable discovery,
+and only checksum-pinned, source-reviewed, task-selected Skills may later enter
+the catalog. A proposed Skill must document its tools, network and filesystem
+effects, license, upstream revision and offline behavior; instructions that only
+restate the preinstalled CLI help are not accepted.
 
 ## Render without AWS access
 
@@ -124,7 +143,7 @@ Region-local read-back after every write:
 ```bash
 AWS_PROFILE=release deploy/cloud-worker/scripts/manage-release.sh publish \
   --bundle /tmp/dirextalk-worker-ami-cpu --image-build-version-arn \
-  arn:aws:imagebuilder:us-east-1:123456789012:image/dirextalk-worker-cpu-1-0-0/1.0.0/1 \
+  arn:aws:imagebuilder:us-east-1:123456789012:image/dirextalk-worker-cpu-1-1-0/1.1.0/1 \
   --execute --confirm-costs
 ```
 
@@ -164,8 +183,12 @@ Retain only current plus one previous AMI per flavor in every listed Region.
 ## Image tests and operational evidence
 
 The test component validates every required tool and captures its version; Pi
-must print `0.84.1`. It creates a local bare Git repository, clones it without a
-network, edits code, and runs Python and Node tests. GPU images additionally
+must print `0.84.4`, while uv and uvx must print `0.12.9`. It creates an offline
+uv virtual environment, exercises httpx/Beautiful Soup/lxml against an in-memory
+response, and converts Markdown through HTML to PDF before checking its
+structure and extracted text with qpdf and Poppler. It also creates a local bare
+Git repository, clones it without a network, edits code, and runs Python and
+Node tests. GPU images additionally
 require working NVIDIA/CUDA tooling, NVIDIA Container Toolkit, containerd,
 nerdctl, and a loaded SOCI snapshotter plugin. The post-snapshot GPU test also
 runs `nvidia-smi` inside the exact `nvidia/cuda:12.8.1-base-ubuntu24.04` amd64
@@ -182,8 +205,8 @@ and Region, and all five common immutable output tags:
 ```text
 DirextalkWorkerImageSchema=1
 DirextalkWorkerImageFlavor=cpu|gpu
-DirextalkWorkerImageVersion=1.0.0
-DirextalkPiVersion=0.84.1
+DirextalkWorkerImageVersion=1.1.0
+DirextalkPiVersion=0.84.4
 DirextalkImageTested=true
 ```
 

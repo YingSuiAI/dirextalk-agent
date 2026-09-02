@@ -69,7 +69,7 @@ for flavor in cpu gpu; do
   [[ $(jq -r '[.distributions[].amiDistributionConfiguration.kmsKeyId]|join(",")' "$work/$flavor/distribution.json") == arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111,arn:aws:kms:us-west-2:123456789012:key/11111111-1111-4111-8111-111111111111 ]]
   [[ $(jq -r '[.distributions[].ssmParameterConfigurations[0].parameterName]|unique|join(",")' "$work/$flavor/distribution.json") == "/dirextalk/worker-images/v1/$flavor/candidate" ]]
   [[ $(jq -r '[.distributions[].ssmParameterConfigurations[0].dataType]|unique|join(",")' "$work/$flavor/distribution.json") == aws:ec2:image ]]
-  jq -e --arg flavor "$flavor" '.distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageSchema == "1" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageFlavor == $flavor and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageVersion == "1.0.0" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkPiVersion == "0.84.1" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkImageTested == "true"' "$work/$flavor/distribution.json" >/dev/null
+  jq -e --arg flavor "$flavor" '.distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageSchema == "1" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageFlavor == $flavor and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageVersion == "1.1.0" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkPiVersion == "0.84.4" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkImageTested == "true"' "$work/$flavor/distribution.json" >/dev/null
   if [[ $flavor == gpu ]]; then
     families=g4dn,g5,g6,g6e,g7,g7e,gr6,p4d,p4de,p5,p5e,p5en,p6-b200,p6-b300
     [[ $(jq -r .gpu_supported_families "$work/$flavor/render.json") == "$families" ]]
@@ -83,8 +83,13 @@ for flavor in cpu gpu; do
   grep -q 'sha256:e711c99333fdfe8ae1e677b4972be6c5021f0128a1d31f775c7e58d88921b6a9' "$work/$flavor/test.yaml"
   grep -q 'd81c6e66123fbaeeb585c02f757db8966022aa8649a6c75461bd7a82623f4552' "$work/$flavor/install.yaml"
   grep -q '/opt/dirextalk-worker/bin/pi' "$work/$flavor/install.yaml"
+  grep -q '/opt/dirextalk-worker/bin/uvx' "$work/$flavor/install.yaml"
+  grep -q 'c2f3c3e6a1850bd87654cc3ca8811013272397c3d042a4e2a64c43ee1b423972' "$work/$flavor/install.yaml"
+  grep -q 'ec7a99cd05e0cd7f80243f135ce1361c76835cb0ee60055d14d20eba8eba1460' "$work/$flavor/install.yaml"
   grep -q '/opt/dirextalk-worker/manifest.json' "$work/$flavor/install.yaml"
   grep -q 'build-essential caddy ca-certificates' "$work/$flavor/install.yaml"
+  grep -q 'pandoc poppler-utils python3-bs4 python3-httpx python3-lxml qpdf' "$work/$flavor/install.yaml"
+  grep -q 'VerifyOfflinePythonWebAndPDFWorkflow' "$work/$flavor/test.yaml"
 done
 
 : >"$FAKE_AWS_LOG"
@@ -111,4 +116,5 @@ grep -q 'delete-image --image-build-version-arn' "$cloud_dir/scripts/manage-rele
 grep -q 'delete-snapshot --snapshot-id' "$cloud_dir/scripts/manage-release.sh"
 grep -q 'wait_candidate' "$cloud_dir/scripts/manage-release.sh"
 grep -q 'aws_json_region' "$cloud_dir/scripts/manage-release.sh"
+grep -Fq '($t.DirextalkPiVersion=="0.84.4" or $t.DirextalkPiVersion=="0.84.1")' "$cloud_dir/scripts/manage-release.sh"
 printf 'cloud-worker image assets: PASS\n'

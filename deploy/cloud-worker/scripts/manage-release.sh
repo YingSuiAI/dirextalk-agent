@@ -191,7 +191,7 @@ build_release() {
 }
 
 # shellcheck disable=SC2016 # jq variables are interpreted by jq.
-expected_tag_query='(.Tags|map({key:.Key,value:.Value})|from_entries) as $t | $t.DirextalkWorkerImageSchema=="1" and $t.DirextalkWorkerImageFlavor==$flavor and $t.DirextalkWorkerImageVersion=="1.0.0" and $t.DirextalkPiVersion=="0.84.1" and $t.DirextalkImageTested=="true"'
+expected_tag_query='(.Tags|map({key:.Key,value:.Value})|from_entries) as $t | $t.DirextalkWorkerImageSchema=="1" and $t.DirextalkWorkerImageFlavor==$flavor and $t.DirextalkWorkerImageVersion=="1.1.0" and $t.DirextalkPiVersion=="0.84.4" and $t.DirextalkImageTested=="true"'
 verify_output_ami() {
   local call_region=$1 ami=$2 image
   [[ $ami =~ ^ami-[0-9a-f]{8,17}$ ]] || return 1
@@ -222,7 +222,7 @@ verify_cleanup_ami() {
   [[ $(jq -r '.Images[0] | [.OwnerId,.State,.Architecture,.RootDeviceType,.VirtualizationType] | join(":")' <<<"$image") == "$account_id:available:x86_64:ebs:hvm" ]]
   version=$(jq -er '.Images[0].Tags|map({key:.Key,value:.Value})|from_entries|.DirextalkWorkerImageVersion' <<<"$image")
   [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-  jq -e --arg flavor "$flavor" '(.Images[0].Tags|map({key:.Key,value:.Value})|from_entries) as $t | $t.DirextalkWorkerImageSchema=="1" and $t.DirextalkWorkerImageFlavor==$flavor and $t.DirextalkPiVersion=="0.84.1" and $t.DirextalkImageTested=="true"' <<<"$image" >/dev/null
+  jq -e --arg flavor "$flavor" '(.Images[0].Tags|map({key:.Key,value:.Value})|from_entries) as $t | $t.DirextalkWorkerImageSchema=="1" and $t.DirextalkWorkerImageFlavor==$flavor and ($t.DirextalkPiVersion=="0.84.4" or $t.DirextalkPiVersion=="0.84.1") and $t.DirextalkImageTested=="true"' <<<"$image" >/dev/null
   if [[ $flavor == gpu ]]; then
     families=$(jq -er '.Images[0].Tags|map({key:.Key,value:.Value})|from_entries|.DirextalkGPUSupportedFamilies' <<<"$image")
     [[ $families =~ ^(g(r)?[3-9][a-z0-9-]*|p[2-9][a-z0-9-]*)(,(g(r)?[3-9][a-z0-9-]*|p[2-9][a-z0-9-]*))*$ ]]

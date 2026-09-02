@@ -42,6 +42,8 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 		"/opt/dirextalk-worker/bin/pi",
 		"/opt/dirextalk-worker/manifest.json",
 		`.image_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")`,
+		`(.pi_version == "0.84.4" or .pi_version == "0.84.1")`,
+		`test "$("$pi_bin" --version)" = "$manifest_pi_version"`,
 		`.tool_baseline == "1"`,
 		"readonly worker_root=/var/lib/dirextalk-worker",
 		`test ! -L "$worker_root"`,
@@ -519,7 +521,7 @@ func TestWorkerLoadsOnlyExplicitBoundedServerSubagentExtension(t *testing.T) {
 }
 
 func TestVendoredPiSubagentProvenanceAndBounds(t *testing.T) {
-	if PiReleaseVersion != "0.84.1" || PiSubagentUpstreamCommit != "53fa77ccd8a279eb87e92294ef3687b03ff80112" {
+	if PiReleaseVersion != "0.84.4" || PiSubagentUpstreamCommit != "53fa77ccd8a279eb87e92294ef3687b03ff80112" {
 		t.Fatalf("unexpected Pi provenance version=%s commit=%s", PiReleaseVersion, PiSubagentUpstreamCommit)
 	}
 	digest := sha256.Sum256([]byte(vendoredPiSubagentExtension))

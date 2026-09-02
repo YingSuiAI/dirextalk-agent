@@ -67,7 +67,8 @@ API, WorkerControl listener, model relay, S3/KMS artifact path, or deploy-time
 Worker injection. Jobs and service
 workloads persist status and logs under `/var/lib/dirextalk-worker` so reboot or
 a later SSH connection can resume observation. The verified image preinstalls
-the pinned Pi runtime, Caddy, Python, Node, Git/GitHub CLI, Go, build tools, and
+the pinned Pi runtime, uv/uvx, Caddy, Python, Node, Git/GitHub CLI, Go, build
+tools, static-web extraction utilities, PDF authoring/inspection tools, and
 common shell utilities; every task verifies the immutable image manifest and
 commands without installing or downloading the baseline. Result files are
 copied into the Agent-owned local artifact repository. Optional Route53 binding
@@ -162,14 +163,18 @@ Pi runs as the same user and can invoke the Git credential helper, so least-
 privilege selected-repository, short-expiry PATs are required. Rotation blocks
 future starts but cannot revoke an already-started run or prevent transformed
 credential exfiltration.
-The remote Pi runtime may expose only the vendored server-owned subagent
-extension pinned to Pi `v0.84.1`. It is loaded explicitly while extension
+The remote Pi runtime is Pi `v0.84.4` and may expose only the vendored
+server-owned subagent extension derived from Pi `v0.84.1` and compatibility-
+checked against `v0.84.4`. It is loaded explicitly while extension
 discovery remains disabled, and it discovers only server-owned agent
 definitions under the Worker `PI_CODING_AGENT_DIR`. It never reads project
 agent definitions or workflow prompts. Parallel delegation is bounded to eight
 tasks and four concurrent subprocesses; child work requiring concurrent writes
 must use separate worktrees and branches, then revalidate and integrate through
 the parent worktree.
+Third-party Pi Skill discovery remains disabled because Skills run with full
+Worker permissions. Future Skills must be checksum-pinned, source-reviewed and
+selected per task before the runtime passes an explicit `--skill` path.
 Natural-language objectives are passed to Pi as input data and are never
 executed as shell source. The Agent authenticates each outbound SSH connection
 with Agent-owned SSH key material and copies bounded results back to its own

@@ -1,5 +1,5 @@
-name: dirextalk-worker-__FLAVOR__-install-1-0-0
-description: Install the Dirextalk Worker 1.0.0 toolchain and pinned Pi runtime.
+name: dirextalk-worker-__FLAVOR__-install-1-1-0
+description: Install the Dirextalk Worker 1.1.0 toolchain and pinned Pi runtime.
 schemaVersion: 1.0
 phases:
   - name: build
@@ -19,25 +19,41 @@ phases:
               done
               apt-get install -y --no-install-recommends \
                 build-essential caddy ca-certificates curl git gh golang-go gzip jq \
+                html2text libxml2-utils pandoc poppler-utils python3-bs4 python3-httpx python3-lxml qpdf \
                 nodejs npm python-is-python3 python3 python3-pip python3-venv \
-                ripgrep tar
-              install -d -m 0755 /opt/dirextalk-worker/pi/0.84.1
+                ripgrep tar w3m weasyprint
+              install -d -m 0755 /opt/dirextalk-worker/pi/0.84.4
+              install -d -m 0755 /opt/dirextalk-worker/uv/0.12.9
               install -d -m 0755 /opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent/agents
               install -d -m 0700 /var/lib/dirextalk-worker
               printf '%s\n' '__FLAVOR__' >/usr/local/share/dirextalk-worker-flavor
-              archive=$(mktemp)
-              trap 'rm -f -- "$archive"' EXIT
-              curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-                --output "$archive" \
-                'https://github.com/earendil-works/pi/releases/download/v0.84.1/pi-linux-x64.tar.gz'
+              pi_archive=$(mktemp)
+              uv_archive=$(mktemp)
+              trap 'rm -f -- "$pi_archive" "$uv_archive"' EXIT
+              curl --retry 3 --retry-all-errors --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+                --output "$pi_archive" \
+                'https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-linux-x64.tar.gz'
               printf '%s  %s\n' \
-                '5634d7ebd18274b63af3371e942f342d74bea012389575c1d1ff15ce6ca80c2f' \
-                "$archive" | sha256sum -c -
-              tar -xzf "$archive" -C /opt/dirextalk-worker/pi/0.84.1 --strip-components=1
-              test "$(/opt/dirextalk-worker/pi/0.84.1/pi --version)" = '0.84.1'
+                'c2f3c3e6a1850bd87654cc3ca8811013272397c3d042a4e2a64c43ee1b423972' \
+                "$pi_archive" | sha256sum -c -
+              tar -xzf "$pi_archive" -C /opt/dirextalk-worker/pi/0.84.4 --strip-components=1
+              test "$(/opt/dirextalk-worker/pi/0.84.4/pi --version)" = '0.84.4'
+              curl --retry 3 --retry-all-errors --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+                --output "$uv_archive" \
+                'https://github.com/astral-sh/uv/releases/download/0.12.9/uv-x86_64-unknown-linux-gnu.tar.gz'
+              printf '%s  %s\n' \
+                'ec7a99cd05e0cd7f80243f135ce1361c76835cb0ee60055d14d20eba8eba1460' \
+                "$uv_archive" | sha256sum -c -
+              tar -xzf "$uv_archive" -C /opt/dirextalk-worker/uv/0.12.9 --strip-components=1
+              test "$(/opt/dirextalk-worker/uv/0.12.9/uv --version)" = 'uv 0.12.9'
+              test "$(/opt/dirextalk-worker/uv/0.12.9/uvx --version)" = 'uvx 0.12.9'
               install -d -m 0755 /opt/dirextalk-worker/bin
-              install -m 0755 /opt/dirextalk-worker/pi/0.84.1/pi /opt/dirextalk-worker/bin/pi
+              install -m 0755 /opt/dirextalk-worker/pi/0.84.4/pi /opt/dirextalk-worker/bin/pi
+              install -m 0755 /opt/dirextalk-worker/uv/0.12.9/uv /opt/dirextalk-worker/bin/uv
+              install -m 0755 /opt/dirextalk-worker/uv/0.12.9/uvx /opt/dirextalk-worker/bin/uvx
               ln -sfn /opt/dirextalk-worker/bin/pi /usr/local/bin/pi
+              ln -sfn /opt/dirextalk-worker/bin/uv /usr/local/bin/uv
+              ln -sfn /opt/dirextalk-worker/bin/uvx /usr/local/bin/uvx
               printf '%s' '__SUBAGENT_EXTENSION_B64__' | base64 -d \
                 >/opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent/extension.ts
               printf '%s' '__SUBAGENT_AGENT_B64__' | base64 -d \
@@ -52,7 +68,7 @@ phases:
               {"schema":"dirextalk.pi-plugin-catalog/v1","plugins":[{"id":"dirextalk-subagent","version":"0.84.1-dirextalk.1","default_enabled":true,"task_activation":"copy","license":"MIT","upstream_commit":"53fa77ccd8a279eb87e92294ef3687b03ff80112","extension_sha256":"d81c6e66123fbaeeb585c02f757db8966022aa8649a6c75461bd7a82623f4552","agent_sha256":"562434d598f2709150b042c50009ac224557769f0430d5093621530ce27cc7b5"}]}
               JSON
               chmod -R a-w /opt/dirextalk-worker/pi-plugin-catalog
-              chmod 0755 /opt/dirextalk-worker/pi/0.84.1/pi
+              chmod 0755 /opt/dirextalk-worker/pi/0.84.4/pi /opt/dirextalk-worker/uv/0.12.9/uv /opt/dirextalk-worker/uv/0.12.9/uvx
               versions=$(jq -n \
                 --arg python "$(python3 --version 2>&1)" \
                 --arg pip "$(python3 -m pip --version)" \
@@ -67,9 +83,21 @@ phases:
                 --arg gzip "$(gzip --version | head -n1)" \
                 --arg jq "$(jq --version)" \
                 --arg rg "$(rg --version | head -n1)" \
-                '{python:$python,pip:$pip,node:$node,npm:$npm,git:$git,gh:$gh,go:$go,cc:$cc,curl:$curl,tar:$tar,gzip:$gzip,jq:$jq,ripgrep:$rg}')
+                --arg uv "$(uv --version)" \
+                --arg uvx "$(uvx --version)" \
+                --arg pandoc "$(pandoc --version | head -n1)" \
+                --arg weasyprint "$(weasyprint --version)" \
+                --arg qpdf "$(qpdf --version | head -n1)" \
+                --arg pdfinfo "$(pdfinfo -v 2>&1 | head -n1)" \
+                --arg html2text "$(dpkg-query -W -f='${Version}' html2text)" \
+                --arg w3m "$(dpkg-query -W -f='${Version}' w3m)" \
+                --arg xmllint "$(dpkg-query -W -f='${Version}' libxml2-utils)" \
+                --arg httpx "$(python3 -c 'from importlib.metadata import version; print(version("httpx"))')" \
+                --arg beautifulsoup4 "$(python3 -c 'from importlib.metadata import version; print(version("beautifulsoup4"))')" \
+                --arg lxml "$(python3 -c 'from importlib.metadata import version; print(version("lxml"))')" \
+                '{python:$python,pip:$pip,node:$node,npm:$npm,git:$git,gh:$gh,go:$go,cc:$cc,curl:$curl,tar:$tar,gzip:$gzip,jq:$jq,ripgrep:$rg,uv:$uv,uvx:$uvx,pandoc:$pandoc,weasyprint:$weasyprint,qpdf:$qpdf,pdfinfo:$pdfinfo,html2text:$html2text,w3m:$w3m,xmllint:$xmllint,httpx:$httpx,beautifulsoup4:$beautifulsoup4,lxml:$lxml}')
               jq -n --arg flavor '__FLAVOR__' --arg gpu_families '__GPU_FAMILIES__' --argjson tools "$versions" \
-                '{schema:1,image_version:"1.0.0",flavor:$flavor,pi_version:"0.84.1",tool_baseline:"1",tested:true,gpu_supported_families:$gpu_families,tools:$tools}' \
+                '{schema:1,image_version:"1.1.0",flavor:$flavor,pi_version:"0.84.4",tool_baseline:"1",tested:true,gpu_supported_families:$gpu_families,tools:$tools}' \
                 >/opt/dirextalk-worker/manifest.json
               chmod 0644 /opt/dirextalk-worker/manifest.json
               chmod 0444 /opt/dirextalk-worker/pi-plugin-catalog/catalog.json
@@ -99,11 +127,14 @@ phases:
           commands:
             - |
               set -euo pipefail
-              test "$(pi --version)" = '0.84.1'
+              test "$(pi --version)" = '0.84.4'
+              test "$(uv --version)" = 'uv 0.12.9'
+              test "$(uvx --version)" = 'uvx 0.12.9'
               test "$(jq -r .schema /opt/dirextalk-worker/manifest.json)" = '1'
-              test "$(jq -r .image_version /opt/dirextalk-worker/manifest.json)" = '1.0.0'
+              test "$(jq -r .image_version /opt/dirextalk-worker/manifest.json)" = '1.1.0'
               test "$(jq -r .tested /opt/dirextalk-worker/manifest.json)" = 'true'
               test "$(cat /usr/local/share/dirextalk-worker-flavor)" = '__FLAVOR__'
-              command -v python python3 pip npm node git gh go cc caddy curl tar gzip jq rg
+              command -v python python3 pip npm node git gh go cc caddy curl tar gzip jq rg uv uvx \
+                pandoc weasyprint qpdf pdfinfo pdftotext html2text w3m xmllint
               test -d /var/lib/dirextalk-worker
               test ! -L /var/lib/dirextalk-worker

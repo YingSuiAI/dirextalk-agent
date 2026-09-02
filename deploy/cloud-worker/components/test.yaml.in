@@ -1,5 +1,5 @@
-name: dirextalk-worker-__FLAVOR__-test-1-0-0
-description: Qualify Dirextalk Worker 1.0.0, including reboot persistence and residue checks.
+name: dirextalk-worker-__FLAVOR__-test-1-1-0
+description: Qualify Dirextalk Worker 1.1.0, including offline content tooling and reboot persistence.
 schemaVersion: 1.0
 phases:
   - name: test
@@ -11,7 +11,8 @@ phases:
           commands:
             - |
               set -euo pipefail
-              command -v python python3 pip npm node git gh go cc caddy curl tar gzip jq rg
+              command -v python python3 pip npm node git gh go cc caddy curl tar gzip jq rg uv uvx \
+                pandoc weasyprint qpdf pdfinfo pdftotext html2text w3m xmllint
               python --version
               python3 -m pip --version
               python3 -m venv --help >/dev/null
@@ -27,11 +28,48 @@ phases:
               gzip --version
               jq --version
               rg --version
-              test "$(pi --version)" = '0.84.1'
-              test "$(/opt/dirextalk-worker/bin/pi --version)" = '0.84.1'
+              test "$(pi --version)" = '0.84.4'
+              test "$(/opt/dirextalk-worker/bin/pi --version)" = '0.84.4'
+              test "$(uv --version)" = 'uv 0.12.9'
+              test "$(uvx --version)" = 'uvx 0.12.9'
               test "$(stat -c '%U:%G:%a' /opt/dirextalk-worker/manifest.json)" = 'root:root:644'
               test "$(stat -c '%U:%G:%a' /opt/dirextalk-worker/bin/pi)" = 'root:root:755'
               timeout 15 pi --help >/dev/null
+      - name: VerifyOfflinePythonWebAndPDFWorkflow
+        action: ExecuteBash
+        onFailure: Abort
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              root=$(mktemp -d)
+              trap 'rm -rf -- "$root"' EXIT
+              UV_PYTHON_DOWNLOADS=never uv --offline venv --python /usr/bin/python3 "$root/.venv"
+              "$root/.venv/bin/python" -c 'import sys; assert sys.version_info >= (3, 12)'
+              python3 - <<'PY'
+              import httpx
+              from bs4 import BeautifulSoup
+              from lxml import html
+
+              transport = httpx.MockTransport(lambda request: httpx.Response(
+                  200,
+                  request=request,
+                  text='<html><head><title>Dirextalk</title></head><body><main><a href="/docs">Worker docs</a></main></body></html>',
+              ))
+              body = httpx.Client(transport=transport).get('https://example.invalid/').text
+              assert BeautifulSoup(body, 'html.parser').title.string == 'Dirextalk'
+              assert html.fromstring(body).xpath('string(//main/a)') == 'Worker docs'
+              PY
+              printf '# Dirextalk Worker\n\nOffline PDF smoke test.\n' >"$root/doc.md"
+              pandoc "$root/doc.md" --standalone --output "$root/doc.html"
+              weasyprint "$root/doc.html" "$root/doc.pdf"
+              pdfinfo "$root/doc.pdf" | grep -q '^Pages:'
+              pdftotext "$root/doc.pdf" "$root/doc.txt"
+              grep -q 'Dirextalk Worker' "$root/doc.txt"
+              qpdf --check "$root/doc.pdf"
+              html2text "$root/doc.html" | grep -q 'Dirextalk Worker'
+              w3m -dump "$root/doc.html" | grep -q 'Dirextalk Worker'
+              xmllint --html --recover --noout "$root/doc.html" 2>"$root/xmllint.log"
       - name: VerifyOfflineGitWorkflow
         action: ExecuteBash
         onFailure: Abort
@@ -145,4 +183,5 @@ phases:
               test -z "$(find /var/lib/apt/lists /var/cache/apt/archives -type f -print -quit 2>/dev/null)"
               test -z "$(find /tmp /var/tmp -mindepth 1 -print -quit 2>/dev/null)"
               ! env | grep -Eiq '(AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN)='
-              test "$(pi --version)" = '0.84.1'
+              test "$(pi --version)" = '0.84.4'
+              test "$(uv --version)" = 'uv 0.12.9'

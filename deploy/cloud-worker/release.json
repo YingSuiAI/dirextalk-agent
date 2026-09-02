@@ -1,11 +1,16 @@
 {
   "schema": "dirextalk.worker-image-release/v1",
   "image_schema": "1",
-  "image_version": "1.0.0",
+  "image_version": "1.1.0",
   "pi": {
-    "version": "0.84.1",
-    "linux_x64_url": "https://github.com/earendil-works/pi/releases/download/v0.84.1/pi-linux-x64.tar.gz",
-    "linux_x64_sha256": "5634d7ebd18274b63af3371e942f342d74bea012389575c1d1ff15ce6ca80c2f"
+    "version": "0.84.4",
+    "linux_x64_url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-linux-x64.tar.gz",
+    "linux_x64_sha256": "c2f3c3e6a1850bd87654cc3ca8811013272397c3d042a4e2a64c43ee1b423972"
+  },
+  "uv": {
+    "version": "0.12.9",
+    "linux_x64_url": "https://github.com/astral-sh/uv/releases/download/0.12.9/uv-x86_64-unknown-linux-gnu.tar.gz",
+    "linux_x64_sha256": "ec7a99cd05e0cd7f80243f135ce1361c76835cb0ee60055d14d20eba8eba1460"
   },
   "plugins": [
     {
@@ -46,12 +51,14 @@
   },
   "required_tools": [
     "python", "python3", "pip", "venv", "node", "npm", "git", "gh",
-    "go", "cc", "caddy", "curl", "tar", "gzip", "jq", "rg"
+    "go", "cc", "caddy", "curl", "tar", "gzip", "jq", "rg", "uv", "uvx",
+    "pandoc", "weasyprint", "qpdf", "pdfinfo", "pdftotext", "html2text", "w3m", "xmllint",
+    "python3-bs4", "python3-httpx", "python3-lxml"
   ],
   "required_ami_tags": {
     "DirextalkWorkerImageSchema": "1",
-    "DirextalkWorkerImageVersion": "1.0.0",
-    "DirextalkPiVersion": "0.84.1",
+    "DirextalkWorkerImageVersion": "1.1.0",
+    "DirextalkPiVersion": "0.84.4",
     "DirextalkImageTested": "true"
   },
   "gpu_required_ami_tag": "DirextalkGPUSupportedFamilies=<render.json gpu_supported_families>"

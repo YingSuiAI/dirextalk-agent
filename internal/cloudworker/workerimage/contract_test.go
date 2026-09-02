@@ -33,6 +33,22 @@ func TestValidateParameterAndImageRequireExactVersionedContract(t *testing.T) {
 	if compatible, err := ValidateImage("123456789012", reference, previous); err != nil || compatible.ImageVersion != "0.9.0" {
 		t.Fatalf("compatible previous image=%+v err=%v", compatible, err)
 	}
+	for index := range previous.Tags {
+		if aws.ToString(previous.Tags[index].Key) == TagPiVersion {
+			previous.Tags[index].Value = aws.String(RollbackPiVersion)
+		}
+	}
+	if _, err := ValidateImage("123456789012", reference, previous); err != nil {
+		t.Fatalf("rollback Pi version rejected: %v", err)
+	}
+	for index := range previous.Tags {
+		if aws.ToString(previous.Tags[index].Key) == TagPiVersion {
+			previous.Tags[index].Value = aws.String("0.83.0")
+		}
+	}
+	if _, err := ValidateImage("123456789012", reference, previous); !IsFailure(err, FailureIncompatible) {
+		t.Fatalf("unsupported Pi version accepted: %v", err)
+	}
 }
 
 func TestValidateImageClassifiesUnverifiedAndIncompatibleWithoutProviderDetails(t *testing.T) {

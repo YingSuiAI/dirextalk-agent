@@ -20,8 +20,9 @@ const (
 	FlavorGPU Flavor = "gpu"
 
 	SchemaVersion           = "1"
-	ImageVersion            = "1.0.0"
-	PiVersion               = "0.84.1"
+	ImageVersion            = "1.1.0"
+	PiVersion               = "0.84.4"
+	RollbackPiVersion       = "0.84.1"
 	ToolBaseline            = "1"
 	ParameterDataType       = "aws:ec2:image"
 	TagSchema               = "DirextalkWorkerImageSchema"
@@ -107,6 +108,8 @@ var (
 
 func ValidImageVersion(value string) bool { return imageVersionPattern.MatchString(value) }
 
+func CompatiblePiVersion(value string) bool { return value == PiVersion || value == RollbackPiVersion }
+
 func ValidateParameter(flavor Flavor, value Parameter) (Reference, error) {
 	name, err := ParameterName(flavor)
 	if err != nil {
@@ -144,7 +147,7 @@ func ValidateImage(accountID string, reference Reference, image types.Image) (Im
 			tags[key] = strings.TrimSpace(aws.ToString(tag.Value))
 		}
 	}
-	if tags[TagSchema] != SchemaVersion || tags[TagFlavor] != string(reference.Flavor) || !ValidImageVersion(tags[TagVersion]) || tags[TagPiVersion] != PiVersion {
+	if tags[TagSchema] != SchemaVersion || tags[TagFlavor] != string(reference.Flavor) || !ValidImageVersion(tags[TagVersion]) || !CompatiblePiVersion(tags[TagPiVersion]) {
 		return Image{}, ContractError{Kind: FailureIncompatible, Flavor: reference.Flavor}
 	}
 	if tags[TagImageTested] != "true" {
