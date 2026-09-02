@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.200
+
+1. Use qualified public Dirextalk CPU/GPU Worker AMIs with Pi 0.84.4, preinstalled coding, web and PDF tools, and task-scoped subagents; select Tokyo, Northern California, or Paris from fresh bounded endpoint-latency evidence.
+2. Allow explicitly authorized Worker destruction while busy, provisioning, unavailable, or already removed in AWS. Cancel active work, verify exact cloud cleanup, and keep failed cleanup visible and safely retryable without losing task history or restoring deleted artifacts.
+3. Preserve observed Worker addresses for later service operations without allowing stale status reads or late task completion to overwrite a newer lease or destroy intent.
+
 ## v1.0.199
 
 1. Keep Cloud Worker runtime, task status, logs, and artifacts under reboot-persistent storage, install and verify the CPU coding-tool baseline once per Worker, and recover retained results without unrelated fresh AWS discovery.
