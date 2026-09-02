@@ -75,7 +75,7 @@ for flavor in cpu gpu; do
   for component in build plugin test; do
     (( $(jq -r .data "$work/$flavor/$component-component.json" | wc -c) <= 16000 ))
   done
-  jq -e --arg flavor "$flavor" '.distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageSchema == "1" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageFlavor == $flavor and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageVersion == "1.1.0" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkPiVersion == "0.84.4" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkImageTested == "true"' "$work/$flavor/distribution.json" >/dev/null
+  jq -e --arg flavor "$flavor" '.distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageSchema == "1" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageFlavor == $flavor and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageVersion == "1.1.1" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkPiVersion == "0.84.4" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkImageTested == "true"' "$work/$flavor/distribution.json" >/dev/null
   if [[ $flavor == gpu ]]; then
     families=g4dn,g5,g6,g6e,g7,g7e,gr6,p4d,p4de,p5,p5e,p5en,p6-b200,p6-b300
     [[ $(jq -r .gpu_supported_families "$work/$flavor/render.json") == "$families" ]]

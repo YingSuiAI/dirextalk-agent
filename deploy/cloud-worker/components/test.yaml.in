@@ -1,5 +1,5 @@
-name: dirextalk-worker-__FLAVOR__-test-1-1-0
-description: Qualify Dirextalk Worker 1.1.0, including offline content tooling and reboot persistence.
+name: dirextalk-worker-__FLAVOR__-test-1-1-1
+description: Qualify Dirextalk Worker 1.1.1, including offline content tooling and reboot persistence.
 schemaVersion: 1.0
 phases:
   - name: test
@@ -31,7 +31,7 @@ phases:
               test "$(pi --version)" = '0.84.4'
               test "$(/opt/dirextalk-worker/bin/pi --version)" = '0.84.4'
               test "$(uv --version)" = 'uv 0.12.9'
-              test "$(uvx --version)" = 'uvx 0.12.9'
+              uvx --version | grep -Eq '^uvx? 0\.12\.9$'
               test "$(stat -c '%U:%G:%a' /opt/dirextalk-worker/manifest.json)" = 'root:root:644'
               test "$(stat -c '%U:%G:%a' /opt/dirextalk-worker/bin/pi)" = 'root:root:755'
               timeout 15 pi --help >/dev/null
