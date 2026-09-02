@@ -196,28 +196,29 @@ for kind in install plugin test; do
 done
 
 name=dirextalk-worker-$flavor-1-1-0
-tags=$(jq -n --arg flavor "$flavor" --arg gpu_families "$gpu_families" '{DirextalkWorkerImageSchema:"1",DirextalkWorkerImageFlavor:$flavor,DirextalkWorkerImageVersion:"1.1.0",DirextalkPiVersion:"0.84.4",DirextalkImageTested:"true"} + if $flavor == "gpu" then {DirextalkGPUSupportedFamilies:$gpu_families} else {} end')
+resource_tags=$(jq -n --arg flavor "$flavor" '{DirextalkWorkerImageSchema:"1",DirextalkWorkerImageFlavor:$flavor,DirextalkWorkerImageVersion:"1.1.0",DirextalkPiVersion:"0.84.4",DirextalkImageTested:"true"}')
+ami_tags=$(jq -n --argjson tags "$resource_tags" --arg flavor "$flavor" --arg gpu_families "$gpu_families" '$tags + if $flavor == "gpu" then {DirextalkGPUSupportedFamilies:$gpu_families} else {} end')
 jq -n --arg name "$name-install" --rawfile data "$output_dir/install.yaml" \
-  --argjson tags "$tags" '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker install component 1.1.0",platform:"Linux",data:$data,tags:$tags}' \
+  --argjson tags "$resource_tags" '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker install component 1.1.0",platform:"Linux",data:$data,tags:$tags}' \
   >"$output_dir/build-component.json"
 jq -n --arg name "$name-test" --rawfile data "$output_dir/test.yaml" \
-  --argjson tags "$tags" '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker test component 1.1.0",platform:"Linux",data:$data,tags:$tags}' \
+  --argjson tags "$resource_tags" '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker test component 1.1.0",platform:"Linux",data:$data,tags:$tags}' \
   >"$output_dir/test-component.json"
 jq -n --arg name "$name-plugin" --rawfile data "$output_dir/plugin.yaml" \
-  --argjson tags "$tags" '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker reviewed Pi plugin component 1.1.0",platform:"Linux",data:$data,tags:$tags}' \
+  --argjson tags "$resource_tags" '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker reviewed Pi plugin component 1.1.0",platform:"Linux",data:$data,tags:$tags}' \
   >"$output_dir/plugin-component.json"
 jq -n --arg name "$name-infrastructure" --arg profile "$instance_profile" --arg type "$build_type" \
-  --arg subnet "$subnet_id" --arg sg "$security_group_id" --argjson tags "$tags" \
+  --arg subnet "$subnet_id" --arg sg "$security_group_id" --argjson tags "$resource_tags" \
   '{name:$name,description:"Dirextalk Worker Image Builder infrastructure 1.1.0",instanceProfileName:$profile,instanceTypes:[$type],subnetId:$subnet,securityGroupIds:[$sg],terminateInstanceOnFailure:true,instanceMetadataOptions:{httpTokens:"required",httpPutResponseHopLimit:1},tags:$tags}' \
   >"$output_dir/infrastructure.json"
-jq -n --arg name "$name-distribution" --arg account "$account_id" --arg flavor "$flavor" --argjson regions "$distribution_regions_json" --argjson tags "$tags" \
-  '{name:$name,description:"Dirextalk Worker public allowlisted multi-Region distribution 1.1.0",distributions:[$regions[] as $region|{region:$region,amiDistributionConfiguration:{name:("dirextalk-worker-"+$flavor+"-1.1.0-"+$region+"-{{ imagebuilder:buildDate }}"),description:"Public Dirextalk Worker AMI 1.1.0",launchPermission:{userGroups:["all"]},amiTags:$tags},ssmParameterConfigurations:[{amiAccountId:$account,parameterName:("/dirextalk/worker-images/v1/"+$flavor+"/candidate"),dataType:"aws:ec2:image"}]}],tags:$tags}' \
+jq -n --arg name "$name-distribution" --arg account "$account_id" --arg flavor "$flavor" --argjson regions "$distribution_regions_json" --argjson resource_tags "$resource_tags" --argjson ami_tags "$ami_tags" \
+  '{name:$name,description:"Dirextalk Worker public allowlisted multi-Region distribution 1.1.0",distributions:[$regions[] as $region|{region:$region,amiDistributionConfiguration:{name:("dirextalk-worker-"+$flavor+"-1.1.0-"+$region+"-{{ imagebuilder:buildDate }}"),description:"Public Dirextalk Worker AMI 1.1.0",launchPermission:{userGroups:["all"]},amiTags:$ami_tags},ssmParameterConfigurations:[{amiAccountId:$account,parameterName:("/dirextalk/worker-images/v1/"+$flavor+"/candidate"),dataType:"aws:ec2:image"}]}],tags:$resource_tags}' \
   >"$output_dir/distribution.json"
 jq -n --arg name "$name" --arg parent "$parent_ami" --arg root "$root_device" --arg snapshot "$root_snapshot" \
-  --arg min "$root_min_gib" --argjson tags "$tags" \
+  --arg min "$root_min_gib" --argjson tags "$resource_tags" \
   '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker public image recipe 1.1.0",parentImage:$parent,components:[{componentArn:"REPLACE_BUILD_COMPONENT_ARN"},{componentArn:"REPLACE_PLUGIN_COMPONENT_ARN"},{componentArn:"REPLACE_TEST_COMPONENT_ARN"}],blockDeviceMappings:[{deviceName:$root,ebs:{deleteOnTermination:true,encrypted:false,volumeType:"gp3"}}],workingDirectory:"/tmp",additionalInstanceConfiguration:{systemsManagerAgent:{uninstallAfterBuild:false}},tags:($tags+{DirextalkParentSnapshot:$snapshot,DirextalkParentRootMinGiB:$min})}' \
   >"$output_dir/recipe.json"
-jq -n --arg name "$name-pipeline" --argjson tags "$tags" \
+jq -n --arg name "$name-pipeline" --argjson tags "$resource_tags" \
   '{name:$name,description:"On-demand Dirextalk Worker image pipeline 1.1.0",status:"DISABLED",imageRecipeArn:"REPLACE_RECIPE_ARN",infrastructureConfigurationArn:"REPLACE_INFRASTRUCTURE_ARN",distributionConfigurationArn:"REPLACE_DISTRIBUTION_ARN",imageTestsConfiguration:{imageTestsEnabled:true,timeoutMinutes:90},enhancedImageMetadataEnabled:true,tags:$tags}' \
   >"$output_dir/pipeline.json"
 jq -n --arg schema dirextalk.worker-image-render/v1 --arg account "$account_id" --arg region "$region" --arg flavor "$flavor" \

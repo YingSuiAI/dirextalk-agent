@@ -80,6 +80,7 @@ for flavor in cpu gpu; do
     families=g4dn,g5,g6,g6e,g7,g7e,gr6,p4d,p4de,p5,p5e,p5en,p6-b200,p6-b300
     [[ $(jq -r .gpu_supported_families "$work/$flavor/render.json") == "$families" ]]
     [[ $(jq -r '.distributions[0].amiDistributionConfiguration.amiTags.DirextalkGPUSupportedFamilies' "$work/$flavor/distribution.json") == "$families" ]]
+    [[ $(jq -r '.tags.DirextalkGPUSupportedFamilies // "absent"' "$work/$flavor/build-component.json") == absent ]]
   else
     [[ $(jq -r '.distributions[0].amiDistributionConfiguration.amiTags.DirextalkGPUSupportedFamilies // "absent"' "$work/$flavor/distribution.json") == absent ]]
   fi
