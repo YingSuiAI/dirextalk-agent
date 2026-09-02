@@ -779,6 +779,46 @@ support.
   Third-party Pi Skill discovery remains disabled pending source and permission
   audit. This is code/static evidence only; no paid AMI build or publication was
   performed.
+- Later on **2026-09-02**, explicitly authorized paid tests in account
+  `066107820442`, Region `ap-northeast-1`, exercised the actual image test
+  component against CPU `t3.small` (2 vCPU) and GPU `g4dn.xlarge` instances.
+  Both passed Pi `0.84.4`, uv/uvx `0.12.9`, offline web/PDF/Git workflows,
+  reboot persistence and credential/build-residue checks; GPU also passed a
+  digest-pinned CUDA container before and after reboot. Corrected tests distinguish
+  empty boot-created authorized-key files from credentials and avoid SIGPIPE
+  false failures while checking the loaded SOCI plugin. The approved G/VT
+  On-Demand quota is 4 vCPU. Runtime component input hashes are unchanged from
+  `b905ef9`; formal Image Builder requalification reuses those candidate AMIs
+  with test source `0d0d575`, without reinstalling the toolchain.
+  Agent commit `8fd44aa` replaces customer-account SSM/tag discovery with a
+  publisher-pinned public catalog, preserves configurable 2-vCPU selection and
+  retained Worker provenance, and passes cross-account/tagless regressions.
+  `go test ./...`, `go vet ./...`, `go build ./cmd/...` and the image static gate
+  pass; database integration tests requiring a configured DSN were not enabled.
+  Both formal Image Builder qualifications subsequently reached `AVAILABLE`:
+  CPU `dirextalk-worker-cpu-1-1-4-q0d0d575/1.1.4/1` produced
+  `ami-05baeb14ab66b6919` / `snap-0241c67020c85b75c`; GPU
+  `dirextalk-worker-gpu-1-1-4-q0d0d575/1.1.4/2` produced
+  `ami-05a21233b0d8cfd3a` / `snap-003cccadc9ed00dd7`. Both AMIs and their
+  unencrypted root snapshots have independently read-back public permissions,
+  and the Region-local owner `current` pointers were promoted through the
+  publication wrapper. The first GPU qualification attempt created no instance
+  because the diagnostic instance had not yet released its 4-vCPU quota; the
+  second began only after confirmed termination.
+  The checked-in public catalog contains those exact outputs. A read-only live
+  probe through production `SelectCompute` chose `t3a.small` (2 vCPU, 2 GiB,
+  8-GiB gp3 root), and production SDK discovery resolved both catalog images
+  with live root minima of 8/75 GiB. This is real publisher-account evidence,
+  not a claim of launching in a second AWS account; cross-account/tagless
+  behavior is covered by focused regressions and public permission read-back.
+  The Region's original `block-new-sharing` protection was restored and both
+  released AMIs remained public. Diagnostic/build/test instances were terminated;
+  the temporary NAT gateway, its default route and elastic IP were removed.
+  Four failed private candidates and their snapshots were deleted after
+  validating the exact image-build provenance and absence of live references.
+  Only the two published release snapshots remain as retained image storage.
+  Agent application-image publication remains separate and is deferred while
+  the concurrent Worker-destruction fix is integrated.
 - On **2026-08-13**, the active implementation replaced that historical
   inbound/custom-image path with the persistent SSH Worker manager. Focused
   tests covered AWS-owned AL2023/default-network discovery, ordinary public IPv4,

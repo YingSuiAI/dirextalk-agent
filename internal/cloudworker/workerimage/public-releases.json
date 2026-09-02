@@ -1,5 +1,38 @@
 {
   "schema": "dirextalk.worker-image-catalog/v1",
   "publisher_account_id": "066107820442",
-  "regions": {}
+  "regions": {
+    "ap-northeast-1": {
+      "cpu": {
+        "image_id": "ami-05baeb14ab66b6919",
+        "image_schema": "1",
+        "image_version": "1.1.4",
+        "pi_version": "0.84.4",
+        "tested": true
+      },
+      "gpu": {
+        "image_id": "ami-05a21233b0d8cfd3a",
+        "image_schema": "1",
+        "image_version": "1.1.4",
+        "pi_version": "0.84.4",
+        "tested": true,
+        "gpu_supported_families": [
+          "g4dn",
+          "g5",
+          "g6",
+          "g6e",
+          "g7",
+          "g7e",
+          "gr6",
+          "p4d",
+          "p4de",
+          "p5",
+          "p5e",
+          "p5en",
+          "p6-b200",
+          "p6-b300"
+        ]
+      }
+    }
+  }
 }
