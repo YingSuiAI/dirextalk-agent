@@ -22,12 +22,12 @@ type Provider struct {
 }
 
 // Pool serializes owner-wide Worker admission across credential revisions.
-// SSH execution itself never holds this lock.
+// SSH execution and remote destruction never hold this lock.
 type Pool struct {
 	mu         sync.Mutex
 	runsMu     sync.Mutex
 	runs       map[string]*activeExecution
-	destroying map[string]int
+	destroying map[string]chan struct{}
 }
 
 type activeExecution struct {
@@ -40,7 +40,7 @@ type activeExecution struct {
 type CreateAuthorizer func(context.Context, CredentialIdentity) error
 
 func NewPool() *Pool {
-	return &Pool{runs: make(map[string]*activeExecution), destroying: make(map[string]int)}
+	return &Pool{runs: make(map[string]*activeExecution), destroying: make(map[string]chan struct{})}
 }
 
 func New(awsClient AWS, keys KeyMaterial, ssh SSHExecutor, store Store, status ...StatusSource) (*Provider, error) {
@@ -68,7 +68,7 @@ func (provider *Provider) registerExecution(ctx context.Context, request Execute
 	if request.ReuseOnly {
 		workerID = request.ReuseWorkerID
 	}
-	if provider.pool.destroying[workerID] > 0 {
+	if provider.pool.destroying[workerID] != nil {
 		return nil, nil, ErrExecutionFailed
 	}
 	if _, found := provider.pool.runs[request.ExecutionID]; found {
@@ -476,6 +476,17 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 // reconcileProvisioning records only resources that already exist under the
 // stale intent's exact tags. It never creates or resumes execution.
 func (provider *Provider) reconcileProvisioning(ctx context.Context, worker *WorkerRecord) error {
+	before := *worker
+	err := provider.findProvisioningResources(ctx, worker)
+	if *worker != before {
+		err = errors.Join(err, provider.saveWorker(ctx, worker))
+	}
+	return err
+}
+
+// Discovery is separate from persistence so destroy can wait for AWS without
+// holding the owner-wide lock, then save partial identities under its fence.
+func (provider *Provider) findProvisioningResources(ctx context.Context, worker *WorkerRecord) error {
 	keyName, groupName, clientToken := resourceNames(worker.WorkerID)
 	tags := resourceTags(worker.WorkerID, worker.authority(), worker.Credential, worker.CreationProof)
 	var result error
@@ -484,7 +495,6 @@ func (provider *Provider) reconcileProvisioning(ctx context.Context, worker *Wor
 		result = errors.Join(result, err)
 		if err == nil && found {
 			worker.KeyPair = key
-			result = errors.Join(result, provider.saveWorker(ctx, worker))
 		}
 	}
 	if worker.SecurityGroup.ID == "" {
@@ -492,7 +502,6 @@ func (provider *Provider) reconcileProvisioning(ctx context.Context, worker *Wor
 		result = errors.Join(result, err)
 		if err == nil && found {
 			worker.SecurityGroup = group
-			result = errors.Join(result, provider.saveWorker(ctx, worker))
 		}
 	}
 	if worker.Instance.ID == "" {
@@ -500,7 +509,6 @@ func (provider *Provider) reconcileProvisioning(ctx context.Context, worker *Wor
 		result = errors.Join(result, err)
 		if err == nil && found {
 			worker.Instance = instance
-			result = errors.Join(result, provider.saveWorker(ctx, worker))
 		}
 	}
 	return result
@@ -706,10 +714,40 @@ func (provider *Provider) DestroyWorkerResources(ctx context.Context, request De
 		(worker.Phase != WorkerDestroying && worker.Phase != WorkerDestroyed && workerIdentity(worker) != request.Identity) {
 		return ErrIdentity
 	}
-	// Fence new starts and cancel current provisioning/SSH before waiting for
-	// the pool lock. Only the already-validated owner/resource can be canceled.
-	provider.pool.runsMu.Lock()
-	provider.pool.destroying[worker.WorkerID]++
+	// Serialize destruction only for this Worker, with a cancelable wait. This
+	// also fences starts while remote cleanup runs outside the owner-wide lock.
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		provider.pool.runsMu.Lock()
+		pending := provider.pool.destroying[worker.WorkerID]
+		if pending == nil {
+			provider.pool.destroying[worker.WorkerID] = make(chan struct{})
+			break
+		}
+		provider.pool.runsMu.Unlock()
+		select {
+		case <-pending:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	initial := worker
+	// A queued request may have outlived its original record. Revalidate before
+	// canceling any execution; the same Worker ID is not replacement authority.
+	worker, found, err = provider.store.LoadWorker(ctx, initial.WorkerID)
+	if err == nil && found && (worker.CreationProof != initial.CreationProof || !matchesDestroyIdentity(worker, request.Identity)) {
+		err = ErrIdentity
+	}
+	if err != nil || !found {
+		close(provider.pool.destroying[initial.WorkerID])
+		delete(provider.pool.destroying, initial.WorkerID)
+		provider.pool.runsMu.Unlock()
+		return err
+	}
+	// Cancel provisioning/SSH before waiting for the pool lock. Only the
+	// already-validated owner/resource can be canceled.
 	var stopped []<-chan struct{}
 	for _, run := range provider.pool.runs {
 		if run.workerID == worker.WorkerID && run.authority == worker.authority() && sameLogicalCredential(run.credential, worker.Credential) {
@@ -718,14 +756,11 @@ func (provider *Provider) DestroyWorkerResources(ctx context.Context, request De
 		}
 	}
 	provider.pool.runsMu.Unlock()
-	initial := worker
 	defer func() {
 		provider.pool.runsMu.Lock()
 		defer provider.pool.runsMu.Unlock()
-		provider.pool.destroying[initial.WorkerID]--
-		if provider.pool.destroying[initial.WorkerID] == 0 {
-			delete(provider.pool.destroying, initial.WorkerID)
-		}
+		close(provider.pool.destroying[initial.WorkerID])
+		delete(provider.pool.destroying, initial.WorkerID)
 	}()
 	provider.pool.mu.Lock()
 	locked := true
@@ -754,14 +789,6 @@ func (provider *Provider) DestroyWorkerResources(ctx context.Context, request De
 	worker.Phase = WorkerDestroying
 	if err := provider.saveWorker(ctx, &worker); err != nil {
 		return err
-	}
-	if worker.Instance.ID == "" || worker.KeyPair.ID == "" || worker.SecurityGroup.ID == "" {
-		// A canceled AWS request may have succeeded before its identity was
-		// saved. Discover only this intent's exact tags; never create on cleanup.
-		if err := provider.reconcileProvisioning(ctx, &worker); err != nil {
-			return err
-		}
-		request.Identity = workerIdentity(worker)
 	}
 	if worker.CurrentExecutionID != "" {
 		execution, exists, err := provider.store.LoadExecution(ctx, worker.CurrentExecutionID)
@@ -798,18 +825,54 @@ func (provider *Provider) DestroyWorkerResources(ctx context.Context, request De
 	if err != nil {
 		return err
 	}
-	if !found || workerIdentity(worker) != request.Identity {
+	if !found || workerIdentity(worker) != request.Identity || worker.CreationProof != initial.CreationProof {
 		return ErrIdentity
 	}
 	if worker.Phase == WorkerDestroyed || worker.ResourcesDestroyed {
 		return nil
 	}
+	if worker.Phase != WorkerDestroying {
+		return ErrIdentity
+	}
+	provider.pool.mu.Unlock()
+	locked = false
+	if worker.Instance.ID == "" || worker.KeyPair.ID == "" || worker.SecurityGroup.ID == "" {
+		// A canceled AWS request may have succeeded before its identity was
+		// saved. Discover only this intent's exact tags; never create on cleanup.
+		discovered := worker
+		discoveryErr := provider.findProvisioningResources(ctx, &discovered)
+		provider.pool.mu.Lock()
+		locked = true
+		current, exists, loadErr := provider.store.LoadWorker(ctx, worker.WorkerID)
+		if loadErr != nil {
+			return errors.Join(discoveryErr, loadErr)
+		}
+		if !exists || workerIdentity(current) != workerIdentity(worker) || current.CreationProof != worker.CreationProof || current.Phase != WorkerDestroying {
+			return errors.Join(discoveryErr, ErrIdentity)
+		}
+		current.Instance, current.KeyPair, current.SecurityGroup = discovered.Instance, discovered.KeyPair, discovered.SecurityGroup
+		if err := errors.Join(discoveryErr, provider.saveWorker(ctx, &current)); err != nil {
+			return err
+		}
+		worker = current
+		provider.pool.mu.Unlock()
+		locked = false
+	}
 	tags := resourceTags(worker.WorkerID, worker.authority(), worker.Credential, worker.CreationProof)
 	if err := provider.destroy(ctx, request.Authorization, tags, &worker); err != nil {
 		return err
 	}
-	worker.ResourcesDestroyed = true
-	return provider.saveWorker(ctx, &worker)
+	provider.pool.mu.Lock()
+	locked = true
+	current, found, err := provider.store.LoadWorker(ctx, worker.WorkerID)
+	if err != nil {
+		return err
+	}
+	if !found || workerIdentity(current) != workerIdentity(worker) || current.CreationProof != worker.CreationProof || current.Phase != WorkerDestroying {
+		return ErrIdentity
+	}
+	current.ResourcesDestroyed = true
+	return provider.saveWorker(ctx, &current)
 }
 
 func (provider *Provider) FinalizeWorkerDestroy(ctx context.Context, request DestroyRequest) error {
