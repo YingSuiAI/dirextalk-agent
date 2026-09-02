@@ -270,6 +270,9 @@ func terminalizeCloudWorkerTurnTx(
 			confirmationState = string(coreconfirmation.StateConsumed)
 			summary = "Cloud Worker task was stopped. Any retained Worker remains available."
 		}
+		if execution.FailureCode == "worker_destroy_requested" {
+			code, summary = execution.FailureCode, execution.FailureSummary
+		}
 	}
 	references := cloudWorkerReferences(plan, execution, uint64(confirmation.Revision+1), confirmationState)
 	message := core.Message{

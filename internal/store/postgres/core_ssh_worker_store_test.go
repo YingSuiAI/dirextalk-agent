@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -160,6 +162,185 @@ func TestSSHWorkerStoreTerminalizesQuotaFailureAndResumesTurn(t *testing.T) {
 	turn, err := h.conversation.GetTurn(h.ctx, offer.Plan.TurnID)
 	if err != nil || turn.State != core.TurnAccepted || turn.DispatchState != "" {
 		t.Fatalf("turn=%+v err=%v", turn, err)
+	}
+}
+
+type interruptedSSHWorkerExecutor struct{ err error }
+
+func (executor interruptedSSHWorkerExecutor) Execute(ctx context.Context, request sshflow.Request) (sshflow.Result, error) {
+	if err := request.ReportProgress(ctx, "connecting_worker", "Connecting to Worker"); err != nil {
+		return sshflow.Result{}, err
+	}
+	return sshflow.Result{WorkerID: request.ExecutionID}, executor.err
+}
+
+func TestSSHWorkerHandlerPersistsDestroyedWorkerFailureAndResumesTurn(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "active execution canceled", err: context.Canceled},
+		{name: "failed execution recovered after restart", err: sshworker.ErrExecutionFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newPGCloudWorkerHarness(t)
+			defer h.cleanup()
+			offer := h.propose(t)
+			confirmations, err := coreconfirmation.NewService(h.confirmations)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = confirmations.Confirm(h.ctx, coreconfirmation.ConfirmCommand{
+				ConfirmationID: offer.Confirmation.ConfirmationID, IdempotencyKey: uuid.NewString(),
+				ExpectedRevision: offer.Confirmation.Revision, At: h.now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			tasks := NewCoreTaskStore(h.store)
+			claimed, _, err := tasks.ClaimNextDue(h.ctx, "worker-destroy", h.now, 2*time.Minute, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := NewSSHWorkerStore(h.store, "cloud-worker/artifacts")
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler, err := sshflow.NewHandler(store, interruptedSSHWorkerExecutor{err: test.err})
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome := handler.Handle(h.ctx, claimed)
+			if !errors.Is(outcome.Err, test.err) || !outcome.TerminalOwned {
+				t.Fatalf("outcome=%+v", outcome)
+			}
+			failed, err := tasks.GetTask(h.ctx, claimed.ID)
+			if err != nil || failed.Status != coretask.StatusFailed || failed.FailureCode != "ssh_worker_failed" || failed.Lease != nil {
+				t.Fatalf("task=%+v err=%v", failed, err)
+			}
+			execution, err := h.cloud.GetExecutionForAuthority(h.ctx, h.owner, h.generation, offer.Execution.RunID)
+			if err != nil || execution.State != cloudworker.StateFailed || execution.FailureSummary != test.err.Error() {
+				t.Fatalf("execution=%+v err=%v", execution, err)
+			}
+			turn, err := h.conversation.GetTurn(h.ctx, offer.Plan.TurnID)
+			if err != nil || turn.State != core.TurnAccepted || turn.DispatchState != "" {
+				t.Fatalf("turn=%+v err=%v", turn, err)
+			}
+			var terminalEvents, toolResults int
+			if err = h.store.pool.QueryRow(h.ctx, `SELECT count(*) FROM core_task_events WHERE task_id=$1 AND phase='ssh_worker_terminal' AND status='failed'`, claimed.ID).Scan(&terminalEvents); err != nil {
+				t.Fatal(err)
+			}
+			if err = h.store.pool.QueryRow(h.ctx, `SELECT count(*) FROM core_conversation_turn_events WHERE turn_id=$1 AND kind=$2`, turn.ID, string(core.TurnEventToolResult)).Scan(&toolResults); err != nil {
+				t.Fatal(err)
+			}
+			if terminalEvents != 1 || toolResults != 1 {
+				t.Fatalf("terminal events=%d conversation tool results=%d", terminalEvents, toolResults)
+			}
+		})
+	}
+}
+
+func TestSSHWorkerDestroyFencesLateResultCatalogCommit(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		reuse       bool
+		queued      bool
+		finishFirst bool
+	}{
+		{name: "new Worker running"},
+		{name: "reused Worker running", reuse: true},
+		{name: "reused Worker queued", reuse: true, queued: true},
+		{name: "result committed before destroy", finishFirst: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newPGCloudWorkerHarness(t)
+			defer h.cleanup()
+			workerID := uuid.NewString()
+			if test.reuse {
+				if err := h.service.EnablePersistentWorkerReuse(pgCloudRetainedReuseResolver{workerID: workerID}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			offer := h.propose(t)
+			if !test.reuse {
+				workerID = offer.Plan.ExecutionID
+				confirmations, err := coreconfirmation.NewService(h.confirmations)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = confirmations.Confirm(h.ctx, coreconfirmation.ConfirmCommand{
+					ConfirmationID: offer.Confirmation.ConfirmationID, IdempotencyKey: uuid.NewString(),
+					ExpectedRevision: offer.Confirmation.Revision, At: h.now,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			store, err := NewSSHWorkerStore(h.store, "cloud-worker/artifacts")
+			if err != nil {
+				t.Fatal(err)
+			}
+			tasks := NewCoreTaskStore(h.store)
+			var run sshflow.Run
+			if !test.queued {
+				task, _, err := tasks.ClaimNextDue(h.ctx, "destroy-race", h.now, 2*time.Minute, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				run, err = store.Begin(h.ctx, task)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			result := sshflow.Result{Summary: "finished", WorkerID: workerID, Artifacts: []sshflow.Artifact{{
+				ArtifactID: uuid.NewString(), ExecutionID: offer.Plan.ExecutionID, Kind: "file", Name: "result.txt",
+				MediaType: "text/plain", RelativePath: "cloud-worker/artifacts/" + offer.Plan.ExecutionID + "/result.txt",
+				SizeBytes: 4, SHA256: strings.Repeat("a", 64),
+			}}}
+			if test.finishFirst {
+				if err = store.Complete(h.ctx, run, result); err != nil {
+					t.Fatal(err)
+				}
+			}
+			authority := sshworker.OwnerAuthority{OwnerID: h.owner, AccountGeneration: h.generation}
+			foreign := authority
+			foreign.AccountGeneration++
+			if err = store.StopWorkerExecutions(h.ctx, foreign, workerID); err != nil {
+				t.Fatal(err)
+			}
+			if task, err := tasks.GetTask(h.ctx, offer.Plan.TaskID); err != nil || task.Status == coretask.StatusCanceled {
+				t.Fatalf("foreign destroy changed task=%+v err=%v", task, err)
+			}
+			for range 2 {
+				if err = store.StopWorkerExecutions(h.ctx, authority, workerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !test.finishFirst && !test.queued {
+				if err = store.Complete(h.ctx, run, result); !errors.Is(err, cloudworker.ErrLeaseConflict) {
+					t.Fatalf("late successful result escaped destroyed-task fence: %v", err)
+				}
+			}
+			var artifacts int
+			if err = h.store.pool.QueryRow(h.ctx, `SELECT count(*) FROM core_server_artifacts WHERE server_id=$1`, workerID).Scan(&artifacts); err != nil {
+				t.Fatal(err)
+			}
+			wantArtifacts := 0
+			if test.finishFirst {
+				wantArtifacts = 1
+			}
+			if artifacts != wantArtifacts {
+				t.Fatalf("catalog artifacts=%d want=%d", artifacts, wantArtifacts)
+			}
+			if !test.finishFirst {
+				task, err := tasks.GetTask(h.ctx, offer.Plan.TaskID)
+				if err != nil || task.Status != coretask.StatusCanceled || task.FailureCode != "user_canceled" || task.Lease != nil {
+					t.Fatalf("task=%+v err=%v", task, err)
+				}
+				turn, err := h.conversation.GetTurn(h.ctx, offer.Plan.TurnID)
+				if err != nil || turn.State != core.TurnCanceled || !strings.Contains(turn.TerminalSummary, "Worker is being destroyed") {
+					t.Fatalf("turn=%+v err=%v", turn, err)
+				}
+			}
+		})
 	}
 }
 

@@ -1888,7 +1888,7 @@ func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.Tu
 				cloudworker.ValidateFrozenBinding(plan, execution, confirmation.Binding) != nil {
 				return core.Turn{}, core.ErrConflict
 			}
-			if _, cancelErr := cancelCloudWorkerExecutionTx(ctx, tx, task, confirmation, plan, execution, c.RequestID, now); cancelErr != nil {
+			if _, cancelErr := cancelCloudWorkerExecutionTx(ctx, tx, task, confirmation, plan, execution, c.RequestID, now, false); cancelErr != nil {
 				return core.Turn{}, core.ErrConflict
 			}
 			result, updateErr := tx.Exec(ctx, `UPDATE core_conversation_turns SET cancel_requested=true,

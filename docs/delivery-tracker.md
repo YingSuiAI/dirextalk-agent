@@ -9,6 +9,17 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Explicit Worker destruction accepts busy, provisioning, and unavailable
+  Workers without an SSH prerequisite. It cancels execution, fences late Task
+  results, verifies exact cloud-resource removal, and keeps a retryable
+  destroying record until DNS, files, catalog, and key cleanup finish. Already
+  absent resources are idempotent success; identity, permission, and observation
+  failures are not absence. PostgreSQL regressions exercise the real SSH flow
+  handler and task/turn cancellation, including original and reused Workers,
+  queued reuse, repeated cleanup, and both orderings of result publication versus
+  destruction. Focused provider, SDK, inventory, and cascade tests cover active
+  cancellation, externally removed instances, and partial-cleanup retries. This
+  change has not been published to a live Agent node yet.
 - DeepSeek V4 thinking requests now use the provider's current structured
   `tool_choice` contract (`auto`, recovery `required`, or the already-authorized
   named tool). Known DSML, XML, and model-template tool envelopes leaked into

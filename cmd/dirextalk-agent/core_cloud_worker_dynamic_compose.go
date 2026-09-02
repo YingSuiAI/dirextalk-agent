@@ -99,6 +99,7 @@ func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store,
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker flow store: %w", err)
 	}
+	executor.stopWorkerExecutions = flowStore.StopWorkerExecutions
 	handler, err := sshflow.NewHandler(flowStore, executor)
 	if err != nil {
 		return nil, fmt.Errorf("initialize SSH Worker task handler: %w", err)

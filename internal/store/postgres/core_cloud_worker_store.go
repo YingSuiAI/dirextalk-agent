@@ -745,6 +745,7 @@ func cancelCloudWorkerExecutionTx(
 	execution cloudworker.Execution,
 	mutationID string,
 	now time.Time,
+	destroyingWorker bool,
 ) (cloudworker.Execution, error) {
 	if tx == nil || !coretask.ValidUUID(mutationID) || now.IsZero() ||
 		(execution.State != cloudworker.StateWaitingUser && execution.State != cloudworker.StateQueued &&
@@ -759,6 +760,10 @@ func cancelCloudWorkerExecutionTx(
 	summary := "Cloud Worker task stopped by user"
 	if beforeDispatch {
 		summary = "Cloud Worker task canceled before dispatch"
+	}
+	code := "user_canceled"
+	if destroyingWorker {
+		code, summary = "worker_destroy_requested", "Cloud Worker task stopped because its Worker is being destroyed"
 	}
 	leaseEpoch := task.LeaseEpoch
 	if task.Status == coretask.StatusRunning {
@@ -809,7 +814,7 @@ func cancelCloudWorkerExecutionTx(
 	if err != nil {
 		return cloudworker.Execution{}, err
 	}
-	next.FailureCode, next.FailureSummary = "user_canceled", summary
+	next.FailureCode, next.FailureSummary = code, summary
 	if err = next.Seal(); err != nil {
 		return cloudworker.Execution{}, err
 	}
@@ -902,7 +907,7 @@ func (s *CloudWorkerStore) RequestCancel(ctx context.Context, owner string, acco
 		return cloudworker.Execution{}, cloudworker.ErrConflict
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	next, err := cancelCloudWorkerExecutionTx(ctx, tx, task, confirmation, plan, execution, idempotencyKey, now)
+	next, err := cancelCloudWorkerExecutionTx(ctx, tx, task, confirmation, plan, execution, idempotencyKey, now, false)
 	if err != nil {
 		return cloudworker.Execution{}, err
 	}
