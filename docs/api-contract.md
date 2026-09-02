@@ -751,6 +751,12 @@ or stream after admission. It never cancels the accepted Turn; callers use
   security-group/key cleanup, then removes and reads back owned Route53 records
   and completes local cleanup in a bounded server-owned context; a client disconnect
   does not cancel the accepted cleanup.
+  Remote teardown and termination polling do not hold the shared Worker pool
+  mutex. Cleanup is serialized for the exact Worker, while unrelated Workers
+  remain queryable and independently manageable across Regions. A canceled
+  waiter does not cancel another accepted cleanup. State transitions and final
+  deletion revalidate the persisted immutable identity, and stale observations
+  cannot overwrite destroying state or restore removed records.
   If credentials rotate after a provisioning intent, recovery only discovers
   and persists resources carrying that intent's exact tags so partial resources
   remain destroyable; it never creates a missing resource or resumes execution.
@@ -1036,6 +1042,27 @@ stdout is an internal report returned as tool evidence, never the user-facing
 answer. Core performs a tools-disabled synthesis from that evidence and uses
 the latest user message's language unless that message explicitly requests
 another language. It does not paste or lightly reformat the report.
+Completion supplies explicit billing evidence: actual charges are unavailable
+without an authoritative bill, and the existing quote is an estimate or
+new-resource authorization, not a measured spend. Zero incremental creation
+authorization for a retained Worker does not mean free execution; the existing
+compute and storage can continue billing. Worker reports cannot override this
+distinction, and neither the Worker nor final synthesis invents a zero bill
+from absent cost data.
+
+Genuine collected result files carry `execution_artifact` references with
+`record_kind=cloud_worker`, positive `account_generation`, exact `artifact_id`
+and `execution_id`, and verified `name`, `media_type`, `size_bytes`, and
+`sha256`. The same shape supports `local_sandbox`. Raw stdout and transport
+reports are not user deliverables. Model-visible artifact metadata omits
+filesystem paths and provides a canonical internal body link
+`dirextalk-artifact://<record_kind>/<artifact_id>`. It is a presentation handle,
+not a public endpoint or authorization grant. The client resolves it only
+against a matching reference in that assistant message, then re-reads metadata
+and downloads through the current authenticated artifact API. No token, query,
+fragment, arbitrary `sandbox:` path or file URL confers access. A body-linked
+artifact is not duplicated as a second attachment card; unavailable or deleted
+artifacts remain honest errors rather than broken external downloads.
 
 `agent.chat.v1/upload_attachment_begin` requires `kind` (`image`, `file`, or
 `workspace_archive`) and a matching approved `mime_type`. A turn accepts at

@@ -60,6 +60,10 @@ it. Reusing an existing idle Worker does not create infrastructure and does not
 require another creation quote. A retained Worker is destroyed only by an
 explicit owner action, either through the owner client management operation or
 the Native Agent's owner-scoped `cloud_worker_destroy` intrinsic.
+Worker teardown keeps shared pool critical sections short and serializes only
+the exact Worker's cleanup. AWS waits and remote deletion run outside the
+global mutex, preserving independent Worker observation and lifecycle
+operations without weakening actual-absence or immutable-identity checks.
 
 The Worker manager supports at most four retained Workers for the current
 credential. CPU and GPU Workers use public, versioned Dirextalk Ubuntu 24.04

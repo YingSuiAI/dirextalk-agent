@@ -9,6 +9,26 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Slow AWS termination and partial-resource discovery no longer hold the
+  owner-wide Worker pool lock. Per-Worker cancelable serialization preserves
+  durable destroy intent, execution/publication draining, immutable resource
+  fences, and authoritative absence before cleanup. Deterministic same- and
+  cross-Region consumer tests reproduce the former inventory/reuse/destroy
+  stall; cancellation, retry, stale replacement, and partial discovery tests
+  pass with the full SSH Worker race suite.
+- Cloud Worker completion publishes verified `execution_artifact` references
+  and canonical internal body links instead of server filesystem paths. The
+  final reference bound prioritizes linked, transcript-backed artifacts and
+  rejects model-created artifact authority. Focused tests cover collection,
+  malformed/foreign references, saturated synthesis, PostgreSQL terminal
+  persistence, and history reload. The matching Flutter consumer uses its
+  authenticated metadata/chunk API, not a public URL.
+- Central and the shipped Worker prompt distinguish sealed plan estimates and
+  zero new-allocation authorization from actual billing. Completion explicitly
+  marks actual cost unavailable and warns that retained compute/storage may
+  continue accruing charges. Missing or unsealed quote data no longer becomes
+  a fabricated zero bill. Runtime injection and quote/reuse/service regressions
+  pass; these three follow-up fixes await the v1.0.202 release/live acceptance.
 - Explicit Worker destruction accepts busy, provisioning, and unavailable
   Workers without an SSH prerequisite. It cancels execution, fences late Task
   results, verifies exact cloud-resource removal, and keeps a retryable
@@ -19,7 +39,9 @@ contract](message-server-integration-development-contract.md), and
   queued reuse, repeated cleanup, and both orderings of result publication versus
   destruction. Focused provider, SDK, inventory, and cascade tests cover active
   cancellation, externally removed instances, and partial-cleanup retries. This
-  change has not been published to a live Agent node yet.
+  behavior was published through v1.0.201 and exercised on D1 with disposable
+  CPU/GPU jobs and independent AWS absence checks; the slow-termination
+  concurrency defect found by that acceptance is addressed above.
 - DeepSeek V4 thinking requests now use the provider's current structured
   `tool_choice` contract (`auto`, recovery `required`, or the already-authorized
   named tool). Known DSML, XML, and model-template tool envelopes leaked into
