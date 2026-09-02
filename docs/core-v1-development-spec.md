@@ -926,18 +926,20 @@ exact returned UUID to the static destroy tool. Provider identity is resolved
 only from Agent storage at execution time.
 
 The manager keeps at most four Workers for the authenticated owner/account
-generation. CPU Workers use the newest Canonical Ubuntu 24.04 LTS image and GPU
-Workers use the newest supported AWS Ubuntu 24.04 Deep Learning Base OSS NVIDIA
-Driver GPU AMI. Pre-quote discovery resolves the actual AMI root device and
-snapshot minimum into the confirmed storage quantity. Launch revalidates that
-minimum and requires a fresh quote rather than increasing storage silently.
+generation. CPU and GPU Workers use versioned, tested Dirextalk Ubuntu 24.04
+AMIs selected through product-owned Region-local SSM pointers. Pre-quote
+discovery validates the exact account owner, flavor, runtime/Pi compatibility,
+test tag and GPU family set, then resolves the actual AMI root device and
+snapshot minimum into the confirmed storage quantity. Missing, incompatible or
+unverified images fail without a public-image fallback. Launch re-resolves the
+pointer and requires a fresh quote rather than increasing storage silently.
 Runtime discovery also resolves the default VPC/subnet and launches an instance with an ordinary
 public IPv4, and connects by outbound SSH. Agent uses short SSH operations to start work, read
 status and load, stream logs by offset, and list or copy artifacts. A dropped
 connection or host reboot does not erase remote state under
-`/var/lib/dirextalk-worker`. A durable versioned marker installs the standard
-Python, Node, Git/GitHub CLI, Go, build-tool, and shell-utility baseline only
-once per instance, with readiness verified before every task. Job and service
+`/var/lib/dirextalk-worker`. Image Builder installs the standard pinned Pi,
+Python, Node, Git/GitHub CLI, Go, Caddy, build-tool, and shell-utility baseline;
+the task bootstrap only validates that immutable manifest and command set. Job and service
 workloads share this protocol, and a service may remain running across
 conversation turns.
 EC2 launch uses one physical `RunInstances` attempt. A confirmed
@@ -1014,7 +1016,7 @@ identity and repeats provider read-back. Route53 is not required for Worker crea
 ordinary execution. Existing execution recovery reads retained state before
 new AMI/network/public-egress discovery. Active execution remains protected
 from destroy, but a stale Busy projection is owner-destroyable. There is no EIP,
-product custom AMI, S3/KMS artifact path, WorkerControl listener, model relay,
+frontend AMI control, S3/KMS artifact path, WorkerControl listener, model relay,
 or deploy-time Worker binding. The
 complete read, cancellation, event, artifact, and management contract is
 [Execution V2](execution-v2.md).

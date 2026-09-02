@@ -687,6 +687,17 @@ func classifyProposalExecutionError(err error) error {
 			summary = "AWS regional instance offerings are temporarily unavailable; no Worker proposal or cloud resource was created"
 		case errors.As(err, &stage) && stage.stage == "describe_types":
 			summary = "AWS instance specifications are temporarily unavailable; no Worker proposal or cloud resource was created"
+		case errors.As(err, &stage) && stage.stage == "worker_image_missing":
+			outcome = coreconversation.ToolOutcomeFatal
+			summary = stage.cause.Error() + "; no Worker proposal or cloud resource was created"
+		case errors.As(err, &stage) && stage.stage == "worker_image_incompatible":
+			outcome = coreconversation.ToolOutcomeFatal
+			summary = stage.cause.Error() + "; no Worker proposal or cloud resource was created"
+		case errors.As(err, &stage) && stage.stage == "worker_image_unverified":
+			outcome = coreconversation.ToolOutcomeFatal
+			summary = stage.cause.Error() + "; no Worker proposal or cloud resource was created"
+		case errors.As(err, &stage) && stage.stage == "worker_image_unavailable":
+			summary = "Dirextalk Worker image metadata is temporarily unavailable; no Worker proposal or cloud resource was created"
 		default:
 			summary = "AWS compute selection is temporarily unavailable; no Worker proposal or cloud resource was created"
 		}

@@ -1,0 +1,199 @@
+# Dirextalk Worker AMI release 1.0.0
+
+This directory is the Agent-owned, operator-run EC2 Image Builder release
+surface for the persistent SSH Worker. It does not change the server host AMI,
+run from the deployer, or expose AMI choices to clients.
+
+The two images are Ubuntu 24.04 x86_64 images. CPU starts from Canonical's
+public SSM parameter. GPU starts from AWS's public Ubuntu 24.04 Base OSS NVIDIA
+Driver GPU DLAMI parameter and retains its NVIDIA driver, CUDA, NVIDIA Container
+Toolkit, containerd, nerdctl, and SOCI installation. The renderer resolves the
+exact parent AMI, root device, and backing snapshot size before creating a
+recipe. Its block mapping deliberately omits `volumeSize`: Image Builder must
+inherit the parent snapshot minimum while changing the root volume to encrypted
+gp3. The generated recipe records the observed minimum and fails if a generated
+mapping ever supplies a smaller size.
+
+## Release contents
+
+- `release.json`: frozen image, Pi, parent, plugin, and SSM contract.
+- `components/install.yaml.in`: build component for the common toolchain,
+  checksummed Pi binary, reviewed plugin catalog, state root, manifest, and
+  credential/cache cleanup.
+- `components/test.yaml.in`: Image Builder test component, including a real
+  reboot between persistence assertions.
+- `scripts/render-release.sh`: offline renderer and live read-only parent
+  resolver. It writes complete AWS CLI JSON payloads and a checksum manifest.
+- `scripts/manage-release.sh`: identity-fenced create/build/publish/cleanup
+  entrypoint. AWS mutations require both `--execute` and `--confirm-costs`.
+- `tests/static-test.sh`: offline contract tests with a fake AWS CLI.
+
+The only reviewed default Pi plugin is the reduced Dirextalk subagent extension
+already vendored by the SSH Worker. It is MIT-licensed and pinned to upstream
+commit `53fa77ccd8a279eb87e92294ef3687b03ff80112`; the renderer verifies both
+vendored file digests. The image installs it into a catalog, not a user's Pi
+configuration. A task enables it by copying the catalog entry and agent file
+into that task's `PI_CODING_AGENT_DIR`, or disables it by omitting that copy.
+No token or configuration is baked into the image. High-privilege and
+task-specific marketplace plugins are intentionally absent.
+
+| Plugin | Decision | Maintenance, permission, offline, and size assessment |
+| --- | --- | --- |
+| reduced `dirextalk-subagent` | default catalog entry | Existing server-vendored source; Pi `v0.84.1` commit pin; MIT; 8,269 bytes; no added dependency; works offline; only server-owned agents are discovered. |
+| `pi-review` 1.2.1 | reject | Community session/slash-command workflow is not general Worker runtime value. |
+| `pi-subagents` 0.63.0 | reject | Duplicates the reviewed extension, is about 5 MB, and has broader behavior. |
+| `cc-safety-net` 2.3.1 | opt-in only after audit | Its configuration can fail open; it is not safe as an image-wide default. |
+| `pi-lens` 4.1.3 | reject | About 24 MB with native/download lifecycle hooks, weakening offline reproducibility. |
+| `rpiv-todo` 2.9.0 | reject | TUI/session behavior duplicates task state and is not a general prerequisite. |
+
+Any future addition must pin the package version, tar SHA-256, registry
+integrity, upstream commit or SLSA provenance, and the complete mirrored
+dependency closure. Install lifecycle scripts remain disabled unless separately
+audited. Runtime plugin installation and baked credentials are prohibited.
+
+## Render without AWS access
+
+This produces auditable placeholders, payload shapes, checksums, and manual
+commands without contacting AWS:
+
+```bash
+deploy/cloud-worker/scripts/render-release.sh \
+  --offline --account-id 123456789012 --region us-east-1 \
+  --flavor cpu --distribution-regions us-east-1,us-west-2 \
+  --distribution-kms-keys \
+    us-east-1=arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111,us-west-2=arn:aws:kms:us-west-2:123456789012:key/22222222-2222-4222-8222-222222222222 \
+  --instance-profile DirextalkWorkerImageBuilder \
+  --subnet-id subnet-REPLACE --security-group-id sg-REPLACE \
+  --output-dir /tmp/dirextalk-worker-ami-cpu
+```
+
+Review `manual-commands.sh`, replace every `REPLACE_*` value, rerun the live
+read-only render, and compare `SHA256SUMS`. The generated files contain no
+credentials. The output directory is disposable and must not be committed.
+
+## Live read-only render and authorized execution
+
+Use one explicit AWS profile and region. The live renderer calls STS, SSM,
+EC2 image/snapshot discovery, and instance-type offering discovery only:
+
+```bash
+AWS_PROFILE=release deploy/cloud-worker/scripts/render-release.sh \
+  --account-id 123456789012 --region us-east-1 --flavor cpu \
+  --distribution-regions us-east-1,us-west-2 \
+  --distribution-kms-keys \
+    us-east-1=arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111,us-west-2=arn:aws:kms:us-west-2:123456789012:key/22222222-2222-4222-8222-222222222222 \
+  --instance-profile DirextalkWorkerImageBuilder \
+  --subnet-id subnet-0123456789abcdef0 \
+  --security-group-id sg-0123456789abcdef0 \
+  --output-dir /tmp/dirextalk-worker-ami-cpu
+```
+
+The operator must review the resolved account, source Region, parent AMI owner
+and snapshot minimum, build instance type, explicit distribution Region
+allowlist, generated payloads,
+same-account Region-local KMS keys, and cost impact. Creation and build are
+separate explicit actions:
+
+```bash
+AWS_PROFILE=release deploy/cloud-worker/scripts/manage-release.sh create \
+  --bundle /tmp/dirextalk-worker-ami-cpu --execute --confirm-costs
+AWS_PROFILE=release deploy/cloud-worker/scripts/manage-release.sh build \
+  --bundle /tmp/dirextalk-worker-ami-cpu --execute --confirm-costs
+```
+
+`build` starts one on-demand pipeline execution. Infrastructure configuration
+uses the selected single build type, no key pair, IMDSv2, termination on
+failure, and the supplied private subnet/security group. The security group is
+required to have zero ingress, and the subnet must disable automatic public
+IPv4 assignment. Private SSM, Image Builder, package, GitHub, and
+container-registry connectivity is an operator-owned prerequisite; the scripts
+never add routes or broaden network rules.
+
+Every successful create is appended immediately to
+`creation-journal.ndjson`; this preserves exact ARNs if a later create step
+fails. Stop on partial failure and use those exact ARNs for authorized manual
+cleanup rather than rediscovering resources by mutable name.
+
+After Image Builder reports success, independently inspect its tests and exact
+output AMIs. Image Builder writes the candidate parameter in each allowlisted
+Region as part of distribution. Promotion requires every candidate to match
+that Region's exact output AMI, verifies its owner, state, tags and root
+snapshot, then advances `current` to `previous` and candidate to `current` with
+Region-local read-back after every write:
+
+```bash
+AWS_PROFILE=release deploy/cloud-worker/scripts/manage-release.sh publish \
+  --bundle /tmp/dirextalk-worker-ami-cpu --image-build-version-arn \
+  arn:aws:imagebuilder:us-east-1:123456789012:image/dirextalk-worker-cpu-1-0-0/1.0.0/1 \
+  --execute --confirm-costs
+```
+
+The application reads only
+`/dirextalk/worker-images/v1/{cpu|gpu}/current`. Candidate is never consumed.
+Rollback validates `current` and `previous` in every allowlisted Region before
+changing any pointer, then swaps them Region-locally. It writes the exact old
+values to `rollback-journal.ndjson` before each Region mutation so an operator
+can recover a partially completed cross-Region rollback without rediscovery:
+
+```bash
+AWS_PROFILE=release deploy/cloud-worker/scripts/manage-release.sh rollback \
+  --bundle /tmp/dirextalk-worker-ami-cpu --execute --confirm-costs
+```
+
+Cleanup protects the exact current and previous AMIs, deregisters older matching
+release images, then deletes only snapshots proven to belong to those exact
+images and account:
+
+```bash
+AWS_PROFILE=release deploy/cloud-worker/scripts/manage-release.sh cleanup \
+  --bundle /tmp/dirextalk-worker-ami-cpu --execute --confirm-costs
+```
+
+`--distribution-regions` is a required explicit safety boundary when more than
+the source Region is desired. The renderer validates canonical Region names,
+sorts and deduplicates them, requires the source Region, records the final list
+in `render.json`, and never infers an additional Region. Image Builder privately
+copies the tested AMI and writes the candidate SSM parameter in each listed
+Region; cross-account distribution is absent. Publish and cleanup revalidate
+the same STS account and explicit Region before every regional read or write.
+The renderer and create action also require and revalidate one enabled
+same-account `ENCRYPT_DECRYPT` KMS key ARN per Region; no implicit default key
+or cross-Region key reuse is accepted.
+Retain only current plus one previous AMI per flavor in every listed Region.
+
+## Image tests and operational evidence
+
+The test component validates every required tool and captures its version; Pi
+must print `0.84.1`. It creates a local bare Git repository, clones it without a
+network, edits code, and runs Python and Node tests. GPU images additionally
+require working NVIDIA/CUDA tooling, NVIDIA Container Toolkit, containerd,
+nerdctl, and a loaded SOCI snapshotter plugin. The post-snapshot GPU test also
+runs `nvidia-smi` inside the exact `nvidia/cuda:12.8.1-base-ubuntu24.04` amd64
+container digest frozen in `release.json`. It writes a nonce under
+`/var/lib/dirextalk-worker`, performs an Image Builder-managed reboot, and
+requires the same inode content after boot. Finally it fails on credential,
+shell-history, authorized-key, package-cache, or build-key residue.
+
+Successful Image Builder component/test execution is necessary but not enough
+to publish: `publish` also requires the exact build-version ARN to be AVAILABLE,
+the recipe ARN to match the rendered recipe, one output AMI in the same account
+and Region, and all five common immutable output tags:
+
+```text
+DirextalkWorkerImageSchema=1
+DirextalkWorkerImageFlavor=cpu|gpu
+DirextalkWorkerImageVersion=1.0.0
+DirextalkPiVersion=0.84.1
+DirextalkImageTested=true
+```
+
+GPU adds `DirextalkGPUSupportedFamilies`, parsed strictly from the exact live
+parent Description clause beginning `Supported EC2 instances:` and ending
+before `. Release notes:`. The original Description and normalized lowercase
+comma list are retained in `render.json`; publication requires the output tag
+to equal that list.
+
+If IAM, quota, private connectivity, or distribution policy blocks execution,
+stop. Keep the rendered bundle and `SHA256SUMS` as the handoff; do not bypass
+the denied control or substitute a different account, Region, parent, instance
+type, or public network.

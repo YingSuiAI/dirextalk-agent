@@ -32,6 +32,7 @@ type taskSpec struct {
 	Model string ` + "`json:\"model\"`" + `
 	MaxRuntimeSeconds uint64 ` + "`json:\"max_runtime_seconds\"`" + `
 	Service *serviceSpec ` + "`json:\"service,omitempty\"`" + `
+	EnableSubagent bool ` + "`json:\"enable_subagent\"`" + `
 }
 
 type serviceSpec struct {
@@ -150,9 +151,13 @@ func run(taskID string) error {
 			prompt += " Deploy the requested application as a persistent service that remains alive after this Pi process exits and after a host reboot. Run it as a systemd service or a restart-enabled container; never use shell backgrounding (&), nohup, or disown for a persistent service. Port " + strconv.Itoa(int(spec.Service.Port)) + " is its internal HTTP port: listen only on 127.0.0.1 and return HTTP success at " + spec.Service.HealthPath + ". For static files, run a lightweight persistent local HTTP service on that internal port. The Agent runner owns Caddy and reserves ports 80 and 443; ensure the application and package defaults do not listen on either port. If using Nginx or Apache, disable its default port-80 site before starting it. The Agent host owns Route53/DNS. Do not install, configure, edit, or restart Caddy, and do not call AWS CLI, Route53, or another DNS API."
 		}
 	}
-	piArguments := []string{"--mode", "text", "--print", "--no-session", "--provider", "dirextalk-worker", "--model", spec.Model, "--thinking", "medium", "--tools", "read,bash,edit,write,grep,find,ls,subagent", "--no-extensions", "-e", filepath.Join(root, "pi-config", "extensions", "dirextalk-subagent", "extension.ts"), "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt}
+	tools := "read,bash,edit,write,grep,find,ls"
+	if spec.EnableSubagent { tools += ",subagent" }
+	piArguments := []string{"--mode", "text", "--print", "--no-session", "--provider", "dirextalk-worker", "--model", spec.Model, "--thinking", "medium", "--tools", tools, "--no-extensions"}
+	if spec.EnableSubagent { piArguments = append(piArguments, "-e", filepath.Join(root, "pi-config", "extensions", "dirextalk-subagent", "extension.ts")) }
+	piArguments = append(piArguments, "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--system-prompt", prompt)
 	unit := "dirextalk-worker-" + taskID + ".scope"
-	arguments := []string{"--user", "--scope", "--quiet", "--unit", unit, "--property=RuntimeMaxSec=" + strconv.FormatUint(spec.MaxRuntimeSeconds+5, 10) + "s", filepath.Join(root, "runtime", "pi")}
+	arguments := []string{"--user", "--scope", "--quiet", "--unit", unit, "--property=RuntimeMaxSec=" + strconv.FormatUint(spec.MaxRuntimeSeconds+5, 10) + "s", "/opt/dirextalk-worker/bin/pi"}
 	arguments = append(arguments, piArguments...)
 	runContext, cancel := context.WithTimeout(context.Background(), time.Duration(spec.MaxRuntimeSeconds)*time.Second); defer cancel()
 	command := exec.CommandContext(runContext, "systemd-run", arguments...)

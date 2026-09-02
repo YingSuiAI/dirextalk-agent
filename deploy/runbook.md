@@ -95,6 +95,28 @@ restoring the matching image and database backup; never run a newer migration
 image against an older restored data volume without an explicit compatibility
 review.
 
+## Cloud Worker images
+
+Cloud Worker images are maintained independently from the Agent container at
+`deploy/cloud-worker`. Operators first render an immutable CPU or GPU release
+from the official Region-local parent parameter, inspect the captured parent
+AMI/parameter/root-volume evidence and generated checksums, then create and run
+the on-demand EC2 Image Builder resources with a non-root release identity. Do
+not use the Agent host deployer, frontend configuration, or a mutable image name
+to select a Worker image.
+
+Only a standard Image Builder build whose post-snapshot tests pass may populate
+the candidate parameter. Those tests cover the toolchain, pinned Pi startup,
+offline Git clone/edit/test work, GPU driver/CUDA/containerd/SOCI state where
+applicable, reboot persistence under `/var/lib/dirextalk-worker`, and credential,
+history, cache and build-key residue. Promote candidate to current only through
+the repository command, which preserves the previous pointer for rollback and
+performs exact AWS identity and AMI read-back. Distribution is private and
+limited to the explicitly supplied Region allowlist; the first cross-Region copy
+and its snapshot incur storage/transfer cost. See `deploy/cloud-worker/README.md`
+for build, promotion, rollback and cleanup commands, IAM/network prerequisites,
+checksums, and cost controls.
+
 ## Runner integration
 
 The extension and Core Runner services use fixed UIDs `65531` and `65530`,

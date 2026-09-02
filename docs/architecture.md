@@ -46,22 +46,30 @@ explicit owner action, either through the owner client management operation or
 the Native Agent's owner-scoped `cloud_worker_destroy` intrinsic.
 
 The Worker manager supports at most four retained Workers for the current
-credential. CPU Workers use the newest Canonical Ubuntu 24.04 LTS image; GPU
-Workers use the newest AWS-published Ubuntu 24.04 Deep Learning Base OSS NVIDIA
-Driver GPU AMI for an explicitly supported instance family. The Agent discovers
-the GPU AMI root device and snapshot minimum before pricing, so the confirmed
-storage quantity is the greater of the requested disk and current image
-minimum. Launch revalidates the latest image and requires a fresh quote if its
-minimum grew; it never silently increases confirmed storage. The Agent discovers
+credential. CPU and GPU Workers use private, versioned Dirextalk Ubuntu 24.04
+images published in the Worker's AWS account and Region. The CPU recipe starts
+from Canonical Ubuntu; the GPU recipe starts from AWS's Ubuntu 24.04 OSS NVIDIA
+Driver DLAMI and records the exact base image, root snapshot minimum, and
+supported GPU families discovered at release time. Agent resolves only the
+product-owned `/dirextalk/worker-images/v1/{cpu|gpu}/current` SSM pointer and
+requires the exact account owner, runtime/Pi version, flavor, successful-test
+tags, GPU family set, and live root mapping. Missing, unverified, or incompatible
+images fail before an offer with a maintainer-actionable error; there is no
+public-image fallback. For both flavors, the confirmed storage quantity is the
+greater of the model's actual disk requirement and the selected AMI's live root
+snapshot minimum. Launch resolves and validates the pointer again and requires
+a fresh quote if its minimum grew; it never silently increases confirmed
+storage. The Agent discovers
 the account's default VPC/subnet at runtime, creates one EC2 instance with an
 ordinary auto-assigned public IPv4, and connects by outbound SSH. There is no
-EIP, product custom AMI, inbound Worker
+EIP, frontend-selectable AMI, inbound Worker
 API, WorkerControl listener, model relay, S3/KMS artifact path, or deploy-time
 Worker injection. Jobs and service
 workloads persist status and logs under `/var/lib/dirextalk-worker` so reboot or
-a later SSH connection can resume observation. Each instance installs a
-versioned coding-tool baseline once and verifies Python, Node, Git/GitHub CLI,
-Go, build tools, and common shell utilities before execution. Result files are
+a later SSH connection can resume observation. The verified image preinstalls
+the pinned Pi runtime, Caddy, Python, Node, Git/GitHub CLI, Go, build tools, and
+common shell utilities; every task verifies the immutable image manifest and
+commands without installing or downloading the baseline. Result files are
 copied into the Agent-owned local artifact repository. Optional Route53 binding
 is an explicit management action and is not required to create, reuse, or
 observe a Worker.

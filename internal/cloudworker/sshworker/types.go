@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/workerimage"
 )
 
 var (
@@ -98,21 +100,27 @@ func (authorization DestroyAuthorization) validate() error {
 }
 
 type Discovery struct {
-	ImageID          string
-	ImageName        string
-	ImageCreatedAt   time.Time
-	RootDeviceName   string
-	RootVolumeGiB    int32
-	SSHUser          string
-	VPCID            string
-	SubnetID         string
-	PublicEgressCIDR string
-	ObservedAt       time.Time
+	ImageID               string
+	ImageName             string
+	ImageCreatedAt        time.Time
+	ImageFlavor           string
+	ImageVersion          string
+	ImageParameterName    string
+	ImageParameterVersion int64
+	RootDeviceName        string
+	RootVolumeGiB         int32
+	SSHUser               string
+	VPCID                 string
+	SubnetID              string
+	PublicEgressCIDR      string
+	ObservedAt            time.Time
 }
 
 func (discovery Discovery) validate() error {
 	prefix, err := netip.ParsePrefix(discovery.PublicEgressCIDR)
 	if err != nil || !prefix.Addr().Is4() || prefix.Bits() != 32 || strings.TrimSpace(discovery.ImageID) == "" ||
+		(discovery.ImageFlavor != string(workerimage.FlavorCPU) && discovery.ImageFlavor != string(workerimage.FlavorGPU)) || !workerimage.ValidImageVersion(discovery.ImageVersion) ||
+		strings.TrimSpace(discovery.ImageParameterName) == "" || discovery.ImageParameterVersion <= 0 ||
 		strings.TrimSpace(discovery.SSHUser) == "" || !strings.HasPrefix(discovery.RootDeviceName, "/dev/") || discovery.RootVolumeGiB < 8 ||
 		strings.TrimSpace(discovery.VPCID) == "" || strings.TrimSpace(discovery.SubnetID) == "" || discovery.ObservedAt.IsZero() {
 		return ErrInvalid
@@ -334,27 +342,46 @@ const (
 )
 
 type WorkerRecord struct {
-	WorkerID             string             `json:"worker_id"`
-	OwnerID              string             `json:"owner_id"`
-	AccountGeneration    uint64             `json:"account_generation"`
-	Credential           CredentialIdentity `json:"credential"`
-	CreationProof        string             `json:"creation_proof"`
-	DisplayName          string             `json:"display_name,omitempty"`
-	Phase                WorkerPhase        `json:"phase"`
-	SSHUser              string             `json:"ssh_user"`
-	InstanceType         string             `json:"instance_type"`
-	AcceleratorType      string             `json:"accelerator_type,omitempty"`
-	VCPU                 uint32             `json:"vcpu,omitempty"`
-	MemoryGiB            uint32             `json:"memory_gib,omitempty"`
-	VolumeGiB            int32              `json:"volume_gib"`
-	KeyPair              KeyPair            `json:"key_pair"`
-	SecurityGroup        SecurityGroup      `json:"security_group"`
-	Instance             Instance           `json:"instance"`
-	ResourcesDestroyed   bool               `json:"resources_destroyed,omitempty"`
-	CurrentExecutionID   string             `json:"current_execution_id,omitempty"`
-	FailureCode          string             `json:"failure_code,omitempty"`
-	FailureSummary       string             `json:"failure_summary,omitempty"`
-	CreatedAt, UpdatedAt time.Time
+	WorkerID              string             `json:"worker_id"`
+	OwnerID               string             `json:"owner_id"`
+	AccountGeneration     uint64             `json:"account_generation"`
+	Credential            CredentialIdentity `json:"credential"`
+	CreationProof         string             `json:"creation_proof"`
+	DisplayName           string             `json:"display_name,omitempty"`
+	Phase                 WorkerPhase        `json:"phase"`
+	SSHUser               string             `json:"ssh_user"`
+	InstanceType          string             `json:"instance_type"`
+	AcceleratorType       string             `json:"accelerator_type,omitempty"`
+	VCPU                  uint32             `json:"vcpu,omitempty"`
+	MemoryGiB             uint32             `json:"memory_gib,omitempty"`
+	VolumeGiB             int32              `json:"volume_gib"`
+	ImageID               string             `json:"image_id,omitempty"`
+	ImageFlavor           string             `json:"image_flavor,omitempty"`
+	ImageVersion          string             `json:"image_version,omitempty"`
+	ImageParameterName    string             `json:"image_parameter_name,omitempty"`
+	ImageParameterVersion int64              `json:"image_parameter_version,omitempty"`
+	KeyPair               KeyPair            `json:"key_pair"`
+	SecurityGroup         SecurityGroup      `json:"security_group"`
+	Instance              Instance           `json:"instance"`
+	ResourcesDestroyed    bool               `json:"resources_destroyed,omitempty"`
+	CurrentExecutionID    string             `json:"current_execution_id,omitempty"`
+	FailureCode           string             `json:"failure_code,omitempty"`
+	FailureSummary        string             `json:"failure_summary,omitempty"`
+	CreatedAt, UpdatedAt  time.Time
+}
+
+func (worker WorkerRecord) hasVerifiedImageContract() bool {
+	flavor := workerimage.Flavor(worker.ImageFlavor)
+	expectedFlavor, flavorErr := workerimage.FlavorForAccelerator(worker.AcceleratorType)
+	parameterName, err := workerimage.ParameterName(flavor)
+	if flavorErr != nil || flavor != expectedFlavor || err != nil || !workerimage.ValidImageVersion(worker.ImageVersion) || worker.ImageParameterName != parameterName {
+		return false
+	}
+	_, err = workerimage.ValidateParameter(flavor, workerimage.Parameter{
+		Name: worker.ImageParameterName, DataType: workerimage.ParameterDataType,
+		Value: worker.ImageID, Version: worker.ImageParameterVersion,
+	})
+	return err == nil
 }
 
 type ExecutionRecord struct {

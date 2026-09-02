@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/workerimage"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -1062,5 +1063,17 @@ func TestProposalPreMutationFailureIsSafeAndStageSpecific(t *testing.T) {
 	unclassified := errors.New("private store failure")
 	if got := classifyProposalExecutionError(unclassified); got != unclassified {
 		t.Fatalf("unclassified failure changed: %v", got)
+	}
+}
+
+func TestProposalImageFailureIsActionableAndProviderDetailFree(t *testing.T) {
+	private := errors.New("SignatureDoesNotMatch secret-access-key")
+	imageErr := workerimage.ContractError{Kind: workerimage.FailureMissing, Flavor: workerimage.FlavorCPU}
+	err := classifyProposalExecutionError(markProposalPreMutation(errors.Join(workerImageSelectionUnavailable(imageErr), private)))
+	observation, ok := coreconversation.ToolExecutionErrorObservation(err)
+	if !ok || observation.Outcome != coreconversation.ToolOutcomeFatal ||
+		!strings.Contains(observation.Summary, "/dirextalk/worker-images/v1/cpu/current") ||
+		strings.Contains(observation.Summary, "SignatureDoesNotMatch") || strings.Contains(observation.Summary, "secret-access-key") {
+		t.Fatalf("observation=%+v ok=%v err=%v", observation, ok, err)
 	}
 }

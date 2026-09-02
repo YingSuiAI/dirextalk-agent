@@ -758,6 +758,17 @@ support.
   execution recovery, and allowed stale (but not actively executing) Busy
   Workers through the explicit destroy path. This evidence is code-level and
   does not claim a live AWS launch.
+- On **2026-09-02**, the versioned Dirextalk Worker image contract replaced
+  CPU/GPU public-image discovery and first-task toolchain installation. Focused
+  tests cover exact SSM-to-AMI owner/tag/version validation, dynamic GPU family
+  metadata, CPU/GPU live root minima before pricing, launch-time drift rejection,
+  actionable missing/incompatible/unverified failures, the immutable Pi/tool
+  manifest, and task-scoped subagent enablement. Agent-owned EC2 Image Builder
+  assets add pinned CPU/DLAMI parents, build/validate/test components, reboot and
+  residue checks, private distribution, candidate/current/previous promotion,
+  and cross-recipe two-version cleanup. This is code/static evidence only: the
+  configured AWS CLI identity was root and no paid AMI build, distribution, or
+  SSM publication was performed.
 - On **2026-08-13**, the active implementation replaced that historical
   inbound/custom-image path with the persistent SSH Worker manager. Focused
   tests covered AWS-owned AL2023/default-network discovery, ordinary public IPv4,

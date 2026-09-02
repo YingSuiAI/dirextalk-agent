@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/workerimage"
 )
 
 type memoryStore struct {
@@ -512,6 +514,22 @@ func TestRetainedWorkerReuseAcceptsOnlyTheSameLogicalCredentialAcrossRevision(t 
 	}
 }
 
+func TestRetainedWorkerReuseRejectsWorkerWithoutVerifiedImageContract(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	worker := workerRecordFixture("worker-legacy", credentialFixture(), WorkerIdle)
+	worker.ImageID, worker.ImageFlavor, worker.ImageVersion = "", "", ""
+	worker.ImageParameterName, worker.ImageParameterVersion = "", 0
+	worker.Instance = Instance{ID: "i-worker-legacy", State: "running", PublicIP: "203.0.113.7"}
+	store.workers[worker.WorkerID] = worker
+	cloud.instances[worker.WorkerID] = worker.Instance
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+
+	if resolved, found, err := provider.ResolveIdleWorker(context.Background(), authorityFixture(), credentialFixture(), 2, 2, 16, ""); err != nil || found {
+		t.Fatalf("resolved=%+v found=%t err=%v", resolved, found, err)
+	}
+}
+
 func TestRetainedWorkerReuseRejectsUnknownOrIncompatibleAccelerator(t *testing.T) {
 	cloud := newFakeAWS()
 	store := newMemoryStore()
@@ -520,6 +538,10 @@ func TestRetainedWorkerReuseRejectsUnknownOrIncompatibleAccelerator(t *testing.T
 	}{{"worker-unknown", ""}, {"worker-neuron", "neuron"}, {"worker-gpu", "gpu"}} {
 		worker := workerRecordFixture(fixture.id, credentialFixture(), WorkerIdle)
 		worker.AcceleratorType = fixture.accelerator
+		if fixture.accelerator == "gpu" {
+			worker.ImageFlavor = "gpu"
+			worker.ImageParameterName = "/dirextalk/worker-images/v1/gpu/current"
+		}
 		worker.Instance = Instance{ID: "i-" + fixture.id, State: "running", PublicIP: "203.0.113.7"}
 		store.workers[worker.WorkerID] = worker
 		cloud.instances[worker.WorkerID] = worker.Instance
@@ -862,8 +884,9 @@ func TestExecuteRunsSeparateWorkerLeasesConcurrently(t *testing.T) {
 	now := time.Now().UTC()
 	for index, workerID := range []string{"worker-a", "worker-b"} {
 		instance := Instance{ID: "i-" + workerID, PublicIP: "203.0.113." + string(rune('1'+index)), State: "running", ClientToken: workerID}
-		store.workers[workerID] = WorkerRecord{WorkerID: workerID, OwnerID: authorityFixture().OwnerID, AccountGeneration: authorityFixture().AccountGeneration, Credential: credentialFixture(), Phase: WorkerIdle, SSHUser: "ec2-user",
-			InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 16, Instance: instance, UpdatedAt: now.Add(time.Duration(index) * time.Second)}
+		worker := workerRecordFixture(workerID, credentialFixture(), WorkerIdle)
+		worker.SSHUser, worker.Instance, worker.UpdatedAt = "ec2-user", instance, now.Add(time.Duration(index)*time.Second)
+		store.workers[workerID] = worker
 		cloud.instances[workerID] = instance
 	}
 	ssh := &blockingSSH{started: make(chan SSHRequest, 2), release: make(chan struct{})}
@@ -1427,7 +1450,9 @@ func credentialFixture() CredentialIdentity {
 func authorityFixture() OwnerAuthority { return OwnerAuthority{OwnerID: "owner", AccountGeneration: 7} }
 func workerRecordFixture(id string, credential CredentialIdentity, phase WorkerPhase) WorkerRecord {
 	return WorkerRecord{WorkerID: id, OwnerID: authorityFixture().OwnerID, AccountGeneration: authorityFixture().AccountGeneration,
-		Credential: credential, Phase: phase, InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 16}
+		Credential: credential, Phase: phase, InstanceType: "t3.small", VCPU: 2, MemoryGiB: 2, VolumeGiB: 16,
+		ImageID: "ami-0123456789abcdef0", ImageFlavor: "cpu", ImageVersion: workerimage.ImageVersion,
+		ImageParameterName: "/dirextalk/worker-images/v1/cpu/current", ImageParameterVersion: 1}
 }
 func withBusyInstance(worker WorkerRecord, id string) WorkerRecord {
 	worker.CurrentExecutionID = id
@@ -1435,7 +1460,9 @@ func withBusyInstance(worker WorkerRecord, id string) WorkerRecord {
 	return worker
 }
 func discoveryFixture() Discovery {
-	return Discovery{ImageID: "ami-official", ImageName: "al2023", ImageCreatedAt: time.Now().UTC(), RootDeviceName: "/dev/sda1", RootVolumeGiB: 8, SSHUser: "ec2-user", VPCID: "vpc-default", SubnetID: "subnet-default", PublicEgressCIDR: "198.51.100.7/32", ObservedAt: time.Now().UTC()}
+	return Discovery{ImageID: "ami-0123456789abcdef0", ImageName: "dirextalk-worker-cpu", ImageCreatedAt: time.Now().UTC(), ImageFlavor: "cpu", ImageVersion: workerimage.ImageVersion,
+		ImageParameterName: "/dirextalk/worker-images/v1/cpu/current", ImageParameterVersion: 1, RootDeviceName: "/dev/sda1", RootVolumeGiB: 8,
+		SSHUser: "ec2-user", VPCID: "vpc-default", SubnetID: "subnet-default", PublicEgressCIDR: "198.51.100.7/32", ObservedAt: time.Now().UTC()}
 }
 func requestFixture() ExecuteRequest {
 	script := []byte("echo ok")

@@ -23,6 +23,7 @@ require (
 require (
 	github.com/aws/aws-sdk-go-v2/service/pricing v1.44.2
 	github.com/aws/aws-sdk-go-v2/service/servicequotas v1.39.1
+	github.com/aws/aws-sdk-go-v2/service/ssm v1.73.0
 	github.com/matrix-org/gomatrixserverlib v0.0.0-20250815065806-6697d93cbcba
 	github.com/pgvector/pgvector-go/pgx v0.4.1
 )

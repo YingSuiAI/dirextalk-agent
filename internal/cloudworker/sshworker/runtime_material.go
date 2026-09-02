@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/remoteservice"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/workerimage"
 )
 
 //go:embed vendor/pi-subagent/v0.84.1/extension.ts
@@ -20,10 +21,8 @@ var vendoredPiSubagentExtension string
 var vendoredPiSubagentWorkerAgent string
 
 const (
-	PiReleaseVersion = "0.84.1"
+	PiReleaseVersion = workerimage.PiVersion
 
-	piLinuxX64SHA256          = "5634d7ebd18274b63af3371e942f342d74bea012389575c1d1ff15ce6ca80c2f"
-	piLinuxARM64SHA256        = "ab95c058a4651b5ff5d8c878e524edfb776263c7a444f325505f247c056eecfc"
 	PiSubagentUpstreamCommit  = "53fa77ccd8a279eb87e92294ef3687b03ff80112"
 	PiSubagentExtensionSHA256 = "d81c6e66123fbaeeb585c02f757db8966022aa8649a6c75461bd7a82623f4552"
 
@@ -49,6 +48,8 @@ type RuntimeRequest struct {
 	MaxRuntimeSeconds uint64
 	Service           *RuntimeServiceSpec
 	Model             RuntimeModel
+	ImageFlavor       string
+	EnableSubagent    bool
 }
 
 type RuntimeServiceSpec struct {
@@ -81,13 +82,11 @@ func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 	objective := strings.TrimSpace(request.Objective)
 	if !validID(request.TaskID) || objective == "" || len(objective) > maxObjectiveBytes || !request.Workload.valid() ||
 		request.MaxRuntimeSeconds == 0 || request.MaxRuntimeSeconds > 24*60*60 ||
+		(request.Architecture != "x86_64" && request.Architecture != "amd64") ||
+		(request.ImageFlavor != string(workerimage.FlavorCPU) && request.ImageFlavor != string(workerimage.FlavorGPU)) ||
 		(request.Workload == WorkloadJob && request.Service != nil) ||
 		(request.Workload == WorkloadService && (request.Service == nil || !request.Service.valid())) {
 		return RuntimeMaterial{}, ErrInvalid
-	}
-	archive, archiveSHA256, err := piArchive(request.Architecture)
-	if err != nil {
-		return RuntimeMaterial{}, err
 	}
 	api, err := piModelAPI(request.Model.Provider)
 	if err != nil || !validRuntimeModel(request.Model) {
@@ -114,23 +113,16 @@ func CompileRuntime(request RuntimeRequest) (RuntimeMaterial, error) {
 	}
 	spec, err := json.Marshal(remoteTaskSpec{
 		TaskID: request.TaskID, Workload: request.Workload, Model: request.Model.Name,
-		MaxRuntimeSeconds: request.MaxRuntimeSeconds, Service: request.Service,
+		MaxRuntimeSeconds: request.MaxRuntimeSeconds, Service: request.Service, EnableSubagent: request.EnableSubagent,
 	})
 	if err != nil {
 		return RuntimeMaterial{}, ErrInvalid
 	}
-	packages := "build-essential ca-certificates curl git gh golang-go gzip jq nodejs npm python-is-python3 python3 python3-pip python3-venv ripgrep tar"
 	caddyPreflight := ""
 	caddySetup := ""
 	if request.Service != nil && request.Service.Hostname != "" {
-		caddyPreflight = `caddy_preexisting=false
-if command -v caddy >/dev/null 2>&1; then caddy_preexisting=true; fi
-`
-		caddySetup = `if [[ "$caddy_preexisting" != true ]]; then
-  sudo apt-get -qq update >/dev/null
-  sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install caddy >/dev/null
-fi
-if [[ "$caddy_preexisting" == true ]] && [[ -f /etc/caddy/Caddyfile ]] && ! grep -qxF '# Managed by Dirextalk Agent' /etc/caddy/Caddyfile; then
+		caddyPreflight = "command -v caddy >/dev/null\n"
+		caddySetup = `if [[ -f /etc/caddy/Caddyfile ]] && ! grep -qxF '# Managed by Dirextalk Agent' /etc/caddy/Caddyfile; then
   echo 'refusing to replace an unmanaged Caddyfile' >&2
   exit 1
 fi
@@ -146,18 +138,30 @@ rm -f -- "$caddy_main"
 trap - EXIT
 `
 	}
+	subagentSetup := ""
+	if request.EnableSubagent {
+		subagentSetup = `readonly subagent_catalog=/opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent
+test -f "$subagent_catalog/extension.ts" && test ! -L "$subagent_catalog/extension.ts"
+test -f "$subagent_catalog/agents/worker.md" && test ! -L "$subagent_catalog/agents/worker.md"
+test "$(stat -c '%U:%G' "$subagent_catalog/extension.ts")" = root:root
+test "$(stat -c '%U:%G' "$subagent_catalog/agents/worker.md")" = root:root
+printf '%s  %s\n' 'd81c6e66123fbaeeb585c02f757db8966022aa8649a6c75461bd7a82623f4552' "$subagent_catalog/extension.ts" | sha256sum -c - >/dev/null
+printf '%s  %s\n' '562434d598f2709150b042c50009ac224557769f0430d5093621530ce27cc7b5' "$subagent_catalog/agents/worker.md" | sha256sum -c - >/dev/null
+mkdir -p -- "$config_root/extensions/dirextalk-subagent" "$config_root/agents"
+install -m 0600 "$subagent_catalog/extension.ts" "$config_root/extensions/dirextalk-subagent/extension.ts"
+install -m 0600 "$subagent_catalog/agents/worker.md" "$config_root/agents/worker.md"
+`
+	}
 	script := fmt.Sprintf(`#!/bin/bash
 set -euo pipefail
 umask 077
 
 readonly worker_root=/var/lib/dirextalk-worker
-readonly runtime_root="$worker_root/runtime"
 readonly config_root="$worker_root/pi-config"
 readonly artifact_root="$worker_root/artifacts"
-readonly archive="$worker_root/pi.tar.gz"
-readonly pi_bin="$runtime_root/pi"
+readonly image_manifest=%s
+readonly pi_bin=%s
 readonly task_root="$worker_root/tasks/%s"
-readonly baseline_marker="$worker_root/.coding-tool-baseline-v1"
 
 if [[ -L "$worker_root" ]]; then
   echo 'refusing symlinked Worker state root' >&2
@@ -165,8 +169,18 @@ if [[ -L "$worker_root" ]]; then
 fi
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0700 "$worker_root"
 test -d "$worker_root" && test -O "$worker_root" && test ! -L "$worker_root"
-mkdir -p -- "$runtime_root" "$config_root" "$artifact_root" "$task_root"
+mkdir -p -- "$config_root" "$artifact_root" "$task_root"
 %s
+test -f "$image_manifest" && test ! -L "$image_manifest"
+test "$(stat -c '%%U:%%G:%%a' "$image_manifest")" = root:root:644
+jq -e --arg flavor %s '
+  .schema == 1 and
+  (.image_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+  .flavor == $flavor and
+  .pi_version == "%s" and
+  .tool_baseline == "%s" and
+  .tested == true
+' "$image_manifest" >/dev/null
 verify_coding_tools() {
   command -v python3 >/dev/null
   command -v python >/dev/null
@@ -184,48 +198,32 @@ verify_coding_tools() {
   command -v jq >/dev/null
   command -v rg >/dev/null
 }
-if [[ ! -f "$baseline_marker" ]]; then
-  sudo apt-get -qq update >/dev/null
-  sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install %s >/dev/null
-  verify_coding_tools
-  marker_tmp="$(mktemp "$worker_root/.coding-tool-baseline-v1.XXXXXX")"
-  printf 'v1\n' > "$marker_tmp"
-  chmod 600 "$marker_tmp"
-  mv -f -- "$marker_tmp" "$baseline_marker"
-fi
-test "$(cat "$baseline_marker")" = v1
 verify_coding_tools
 %s
-curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-  --output "$archive" %s
-printf '%%s  %%s\n' %s "$archive" | sha256sum -c - >/dev/null
-tar -xzf "$archive" -C "$runtime_root" --strip-components=1
-rm -f -- "$archive"
+test -x "$pi_bin"
+test ! -L "$pi_bin"
+test "$(stat -c '%%U:%%G:%%a' "$pi_bin")" = root:root:755
 test "$("$pi_bin" --version)" = %s
 
 printf '%%s' %s | base64 --decode > "$config_root/models.json"
 printf '%%s' %s | base64 --decode > "$task_root/objective.txt"
 printf '%%s' %s | base64 --decode > "$task_root/spec.json"
 printf '%%s' %s | base64 --decode > "$worker_root/runner.go"
-mkdir -p -- "$config_root/extensions/dirextalk-subagent" "$config_root/agents"
-printf '%%s' %s | base64 --decode > "$config_root/extensions/dirextalk-subagent/extension.ts"
-printf '%%s' %s | base64 --decode > "$config_root/agents/worker.md"
-chmod 600 "$config_root/models.json" "$task_root/objective.txt" "$task_root/spec.json" "$worker_root/runner.go" "$config_root/extensions/dirextalk-subagent/extension.ts" "$config_root/agents/worker.md"
+chmod 600 "$config_root/models.json" "$task_root/objective.txt" "$task_root/spec.json" "$worker_root/runner.go"
+%s
 cd -- "$worker_root"
 go build -trimpath -ldflags='-s -w' -o "$worker_root/dirextalk-worker-runner" "$worker_root/runner.go"
 chmod 700 "$worker_root/dirextalk-worker-runner"
 "$worker_root/dirextalk-worker-runner" server-status >/dev/null
 `,
-		request.TaskID,
-		caddyPreflight, packages, caddySetup,
-		shellQuote("https://github.com/earendil-works/pi/releases/download/v"+PiReleaseVersion+"/"+archive),
-		shellQuote(archiveSHA256), shellQuote(PiReleaseVersion),
+		shellQuote(workerimage.ManifestPath), shellQuote(workerimage.PiPath), request.TaskID,
+		caddyPreflight, shellQuote(request.ImageFlavor), workerimage.PiVersion, workerimage.ToolBaseline,
+		caddySetup, shellQuote(PiReleaseVersion),
 		shellQuote(base64.StdEncoding.EncodeToString(modelConfig)),
 		shellQuote(base64.StdEncoding.EncodeToString([]byte(objective))),
 		shellQuote(base64.StdEncoding.EncodeToString(spec)),
 		shellQuote(base64.StdEncoding.EncodeToString([]byte(remoteRunnerSource))),
-		shellQuote(base64.StdEncoding.EncodeToString([]byte(vendoredPiSubagentExtension))),
-		shellQuote(base64.StdEncoding.EncodeToString([]byte(vendoredPiSubagentWorkerAgent))),
+		subagentSetup,
 	)
 	digest := sha256.Sum256([]byte(script))
 	return RuntimeMaterial{
@@ -262,17 +260,6 @@ func encodeRuntimeSecretEnvelopeFromBase64(baseEnvelope, githubPAT string) strin
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(updated)
-}
-
-func piArchive(architecture string) (string, string, error) {
-	switch strings.ToLower(strings.TrimSpace(architecture)) {
-	case "amd64", "x86_64":
-		return "pi-linux-x64.tar.gz", piLinuxX64SHA256, nil
-	case "arm64", "aarch64":
-		return "pi-linux-arm64.tar.gz", piLinuxARM64SHA256, nil
-	default:
-		return "", "", ErrInvalid
-	}
 }
 
 func piModelAPI(provider string) (string, error) {

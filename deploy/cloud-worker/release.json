@@ -1,0 +1,58 @@
+{
+  "schema": "dirextalk.worker-image-release/v1",
+  "image_schema": "1",
+  "image_version": "1.0.0",
+  "pi": {
+    "version": "0.84.1",
+    "linux_x64_url": "https://github.com/earendil-works/pi/releases/download/v0.84.1/pi-linux-x64.tar.gz",
+    "linux_x64_sha256": "5634d7ebd18274b63af3371e942f342d74bea012389575c1d1ff15ce6ca80c2f"
+  },
+  "plugins": [
+    {
+      "id": "dirextalk-subagent",
+      "version": "0.84.1-dirextalk.1",
+      "default_enabled": true,
+      "task_toggle": "copy-or-omit from /opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent",
+      "upstream": "https://github.com/earendil-works/pi/tree/53fa77ccd8a279eb87e92294ef3687b03ff80112/packages/coding-agent/examples/extensions/subagent",
+      "license": "MIT",
+      "extension_source": "internal/cloudworker/sshworker/vendor/pi-subagent/v0.84.1/extension.ts",
+      "extension_sha256": "d81c6e66123fbaeeb585c02f757db8966022aa8649a6c75461bd7a82623f4552",
+      "agent_source": "internal/cloudworker/sshworker/vendor/pi-subagent/v0.84.1/agents/worker.md",
+      "agent_sha256": "562434d598f2709150b042c50009ac224557769f0430d5093621530ce27cc7b5"
+    }
+  ],
+  "parents": {
+    "cpu": "/aws/service/canonical/ubuntu/server/noble/stable/current/amd64/hvm/ebs-gp3/ami-id",
+    "gpu": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id"
+  },
+  "gpu_supported_families": {
+    "source": "exact live parent AMI Description recorded by render-release.sh",
+    "output_tag": "DirextalkGPUSupportedFamilies",
+    "format": "sorted unique lowercase comma-separated EC2 GPU family names"
+  },
+  "gpu_validation_container": {
+    "image": "nvidia/cuda:12.8.1-base-ubuntu24.04",
+    "platform": "linux/amd64",
+    "digest": "sha256:e711c99333fdfe8ae1e677b4972be6c5021f0128a1d31f775c7e58d88921b6a9",
+    "command": "nvidia-smi"
+  },
+  "ssm_prefix": "/dirextalk/worker-images/v1",
+  "distribution": {
+    "mode": "explicit-region-allowlist",
+    "source_region_required": true,
+    "cross_account": false,
+    "kms": "one explicit enabled same-account ENCRYPT_DECRYPT key ARN per Region",
+    "candidate_parameter_created_by": "EC2 Image Builder distribution"
+  },
+  "required_tools": [
+    "python", "python3", "pip", "venv", "node", "npm", "git", "gh",
+    "go", "cc", "caddy", "curl", "tar", "gzip", "jq", "rg"
+  ],
+  "required_ami_tags": {
+    "DirextalkWorkerImageSchema": "1",
+    "DirextalkWorkerImageVersion": "1.0.0",
+    "DirextalkPiVersion": "0.84.1",
+    "DirextalkImageTested": "true"
+  },
+  "gpu_required_ami_tag": "DirextalkGPUSupportedFamilies=<render.json gpu_supported_families>"
+}

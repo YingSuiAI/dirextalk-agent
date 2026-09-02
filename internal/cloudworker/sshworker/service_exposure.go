@@ -51,17 +51,13 @@ readonly caddy_main=/etc/caddy/Caddyfile
 readonly caddy_dir=/etc/caddy/dirextalk
 readonly target="$caddy_dir/$workload_id.caddy"
 
-caddy_preexisting=false
-if command -v caddy >/dev/null 2>&1; then
-  caddy_preexisting=true
-fi
-if [[ "$caddy_preexisting" == true ]] && [[ -f "$caddy_main" ]] && ! grep -qxF '# Managed by Dirextalk Agent' "$caddy_main"; then
-  echo 'refusing to replace an unmanaged Caddyfile' >&2
+if ! command -v caddy >/dev/null 2>&1; then
+  echo 'worker image is missing the required caddy baseline' >&2
   exit 1
 fi
-if [[ "$caddy_preexisting" == false ]]; then
-  sudo apt-get -qq update >/dev/null
-  sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install caddy >/dev/null
+if [[ -f "$caddy_main" ]] && ! grep -qxF '# Managed by Dirextalk Agent' "$caddy_main"; then
+  echo 'refusing to replace an unmanaged Caddyfile' >&2
+  exit 1
 fi
 
 sudo install -d -m 0755 "$caddy_dir"

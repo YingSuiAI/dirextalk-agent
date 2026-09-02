@@ -27,6 +27,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshflow"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/sshworkload"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/workerimage"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreserver"
@@ -180,7 +181,7 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 	}
 	material, err := sshworker.CompileRuntime(sshworker.RuntimeRequest{TaskID: request.ExecutionID, Objective: request.Objective,
 		Architecture: request.Compute.Architecture, Workload: workload, MaxRuntimeSeconds: request.Limits.MaxRuntimeSeconds, Service: service,
-		Model: workerRuntimeModel(request.ModelSnapshot)})
+		Model: workerRuntimeModel(request.ModelSnapshot), ImageFlavor: workerImageFlavor(request.Compute.AcceleratorType), EnableSubagent: true})
 	if err != nil {
 		return sshflow.Result{}, err
 	}
@@ -252,6 +253,14 @@ func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.
 		return workerResult, fmt.Errorf("remote Worker exited with code %d", result.ExitCode)
 	}
 	return workerResult, nil
+}
+
+func workerImageFlavor(acceleratorType string) string {
+	flavor, err := workerimage.FlavorForAccelerator(acceleratorType)
+	if err != nil {
+		return ""
+	}
+	return string(flavor)
 }
 
 func (executor *sshWorkerExecutor) resolveDeferredWorkerGuidance(ctx context.Context, request sshflow.Request) (sshworker.RuntimeGuidance, error) {

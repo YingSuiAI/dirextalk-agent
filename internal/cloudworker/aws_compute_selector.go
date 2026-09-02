@@ -3,6 +3,7 @@ package cloudworker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"math/big"
 	"sort"
@@ -17,6 +18,8 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/pricing"
 	pricingtypes "github.com/aws/aws-sdk-go-v2/service/pricing/types"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
 
 type AWSComputeSelectionAPI interface {
@@ -27,7 +30,12 @@ type AWSComputeSelectionAPI interface {
 
 type AWSComputeSelectionFactory interface {
 	NewEC2(workaws.CredentialHandle, string) (AWSComputeSelectionAPI, error)
+	NewSSM(workaws.CredentialHandle, string) (AWSWorkerImageParameterAPI, error)
 	NewPricing(workaws.CredentialHandle) (AWSPriceListAPI, error)
+}
+
+type AWSWorkerImageParameterAPI interface {
+	GetParameter(context.Context, *ssm.GetParameterInput, ...func(*ssm.Options)) (*ssm.GetParameterOutput, error)
 }
 
 type SDKAWSComputeSelectionFactory struct{}
@@ -39,6 +47,15 @@ func (SDKAWSComputeSelectionFactory) NewEC2(credential workaws.CredentialHandle,
 	config := aws.Config{Region: region, Credentials: credentials.NewStaticCredentialsProvider(
 		credential.AccessKeyID, credential.SecretAccessKey, credential.SessionToken)}
 	return ec2.NewFromConfig(config), nil
+}
+
+func (SDKAWSComputeSelectionFactory) NewSSM(credential workaws.CredentialHandle, region string) (AWSWorkerImageParameterAPI, error) {
+	if credential.Validate() != nil || strings.TrimSpace(region) == "" || strings.TrimSpace(region) != region {
+		return nil, ErrStaleAuthorization
+	}
+	config := aws.Config{Region: region, Credentials: credentials.NewStaticCredentialsProvider(
+		credential.AccessKeyID, credential.SecretAccessKey, credential.SessionToken)}
+	return ssm.NewFromConfig(config), nil
 }
 
 func (SDKAWSComputeSelectionFactory) NewPricing(credential workaws.CredentialHandle) (AWSPriceListAPI, error) {
@@ -63,16 +80,40 @@ type pricedInstanceShape struct {
 	acceleratorMemoryMiB, hourlyMicros                   uint64
 }
 
-type computeSelectionStageError struct{ stage string }
+type computeSelectionStageError struct {
+	stage string
+	cause error
+}
 
 func (e computeSelectionStageError) Error() string {
+	if e.cause != nil {
+		return e.cause.Error()
+	}
 	return "cloudworker: compute selection " + e.stage + " unavailable"
 }
 
-func (e computeSelectionStageError) Unwrap() error { return ErrProviderUnavailable }
+func (e computeSelectionStageError) Unwrap() []error {
+	if e.cause == nil {
+		return []error{ErrProviderUnavailable}
+	}
+	return []error{ErrProviderUnavailable, e.cause}
+}
 
 func computeSelectionUnavailable(stage string) error {
 	return computeSelectionStageError{stage: stage}
+}
+
+func workerImageSelectionUnavailable(err error) error {
+	stage := "worker_image_unavailable"
+	switch {
+	case workerimage.IsFailure(err, workerimage.FailureMissing):
+		stage = "worker_image_missing"
+	case workerimage.IsFailure(err, workerimage.FailureIncompatible):
+		stage = "worker_image_incompatible"
+	case workerimage.IsFailure(err, workerimage.FailureUnverified):
+		stage = "worker_image_unverified"
+	}
+	return computeSelectionStageError{stage: stage, cause: err}
 }
 
 // SelectCompute reads current-generation Linux shared-tenancy on-demand
@@ -89,6 +130,19 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 	ec2Client, err := selector.factory.NewEC2(credential, binding.Region)
 	if err != nil || ec2Client == nil {
 		return ComputeSpec{}, computeSelectionUnavailable("offerings")
+	}
+	ssmClient, err := selector.factory.NewSSM(credential, binding.Region)
+	if err != nil || ssmClient == nil {
+		flavor, _ := imageFlavorForRequirement(requirements.AcceleratorType)
+		return ComputeSpec{}, workerImageSelectionUnavailable(workerimage.ContractError{Kind: workerimage.FailureUnavailable, Flavor: flavor})
+	}
+	flavor, err := imageFlavorForRequirement(requirements.AcceleratorType)
+	if err != nil {
+		return ComputeSpec{}, workerImageSelectionUnavailable(err)
+	}
+	image, err := discoverWorkerImage(ctx, ssmClient, ec2Client, binding.AccountID, flavor)
+	if err != nil {
+		return ComputeSpec{}, workerImageSelectionUnavailable(err)
 	}
 	pricingClient, err := selector.factory.NewPricing(credential)
 	if err != nil || pricingClient == nil {
@@ -175,7 +229,7 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 			if !matched {
 				continue
 			}
-			if acceleratorType == AcceleratorGPU && !workerimage.SupportsOfficialUbuntuGPU(name) {
+			if flavor == workerimage.FlavorGPU && (acceleratorType != AcceleratorGPU || !image.SupportsInstanceType(name)) {
 				continue
 			}
 			if requirements.MinAcceleratorMemoryGiB != 0 && acceleratorMemoryMiB < uint64(requirements.MinAcceleratorMemoryGiB)*1024 {
@@ -208,46 +262,55 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 	if selected.name == "" {
 		return ComputeSpec{}, computeSelectionUnavailable("describe_types")
 	}
-	rootDeviceName := "/dev/xvda"
-	volumeGiB := requirements.DiskGiB
-	if selected.acceleratorType == AcceleratorGPU {
-		var imageMinimum uint64
-		rootDeviceName, imageMinimum, err = discoverOfficialGPURoot(ctx, ec2Client)
-		if err != nil {
-			return ComputeSpec{}, computeSelectionUnavailable("gpu_image")
-		}
-		volumeGiB = max(volumeGiB, imageMinimum)
-	}
+	volumeGiB := max(requirements.DiskGiB, uint64(image.RootVolumeGiB))
 	return ComputeSpec{InstanceType: selected.name, Architecture: selected.architecture, AcceleratorType: selected.acceleratorType,
 		AcceleratorName: selected.acceleratorName, AcceleratorMemoryMiB: selected.acceleratorMemoryMiB, VCPU: selected.vcpu, MemoryGiB: selected.memoryGiB,
-		RootDeviceName: rootDeviceName, VolumeGiB: volumeGiB, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}, nil
+		RootDeviceName: image.RootDeviceName, VolumeGiB: volumeGiB, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}, nil
 }
 
-func discoverOfficialGPURoot(ctx context.Context, client AWSComputeSelectionAPI) (string, uint64, error) {
-	output, err := client.DescribeImages(ctx, &ec2.DescribeImagesInput{Owners: []string{workerimage.OfficialUbuntuGPUOwner}, Filters: []ec2types.Filter{
-		{Name: aws.String("name"), Values: []string{workerimage.OfficialUbuntuGPUNamePattern}},
-		{Name: aws.String("state"), Values: []string{"available"}},
-		{Name: aws.String("architecture"), Values: []string{"x86_64"}},
-		{Name: aws.String("root-device-type"), Values: []string{"ebs"}},
-		{Name: aws.String("virtualization-type"), Values: []string{"hvm"}},
-	}})
-	if err != nil || output == nil || len(output.Images) == 0 {
-		return "", 0, ErrProviderUnavailable
+func imageFlavorForRequirement(acceleratorType string) (workerimage.Flavor, error) {
+	switch acceleratorType {
+	case "":
+		return workerimage.FlavorCPU, nil
+	case AcceleratorGPU, AcceleratorAny:
+		return workerimage.FlavorGPU, nil
+	default:
+		return "", workerimage.ContractError{Kind: workerimage.FailureIncompatible}
 	}
-	sort.Slice(output.Images, func(i, j int) bool {
-		return aws.ToString(output.Images[i].CreationDate) > aws.ToString(output.Images[j].CreationDate)
-	})
-	image := output.Images[0]
-	rootDeviceName := strings.TrimSpace(aws.ToString(image.RootDeviceName))
-	for _, mapping := range image.BlockDeviceMappings {
-		if aws.ToString(mapping.DeviceName) == rootDeviceName && mapping.Ebs != nil {
-			volumeGiB := aws.ToInt32(mapping.Ebs.VolumeSize)
-			if strings.HasPrefix(rootDeviceName, "/dev/") && volumeGiB >= 8 {
-				return rootDeviceName, uint64(volumeGiB), nil
-			}
+}
+
+func discoverWorkerImage(ctx context.Context, parameters AWSWorkerImageParameterAPI, images AWSComputeSelectionAPI, accountID string, flavor workerimage.Flavor) (workerimage.Image, error) {
+	name, err := workerimage.ParameterName(flavor)
+	if err != nil {
+		return workerimage.Image{}, err
+	}
+	parameterOutput, err := parameters.GetParameter(ctx, &ssm.GetParameterInput{Name: aws.String(name), WithDecryption: aws.Bool(false)})
+	if err != nil {
+		var missing *ssmtypes.ParameterNotFound
+		if errors.As(err, &missing) {
+			return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureMissing, Flavor: flavor}
 		}
+		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureUnavailable, Flavor: flavor}
 	}
-	return "", 0, ErrProviderUnavailable
+	if parameterOutput == nil || parameterOutput.Parameter == nil {
+		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureMissing, Flavor: flavor}
+	}
+	parameter := parameterOutput.Parameter
+	reference, err := workerimage.ValidateParameter(flavor, workerimage.Parameter{Name: aws.ToString(parameter.Name), DataType: aws.ToString(parameter.DataType), Value: aws.ToString(parameter.Value), Version: parameter.Version})
+	if err != nil {
+		return workerimage.Image{}, err
+	}
+	imageOutput, err := images.DescribeImages(ctx, &ec2.DescribeImagesInput{ImageIds: []string{reference.ImageID}, Owners: []string{accountID}})
+	if err != nil {
+		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureUnavailable, Flavor: flavor}
+	}
+	if imageOutput == nil || len(imageOutput.Images) == 0 {
+		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureMissing, Flavor: flavor}
+	}
+	if len(imageOutput.Images) != 1 {
+		return workerimage.Image{}, workerimage.ContractError{Kind: workerimage.FailureIncompatible, Flavor: flavor}
+	}
+	return workerimage.ValidateImage(accountID, reference, imageOutput.Images[0])
 }
 
 func listPricedInstanceShapes(ctx context.Context, client AWSPriceListAPI, region string, requirements ComputeRequirements) (map[string]pricedInstanceShape, error) {

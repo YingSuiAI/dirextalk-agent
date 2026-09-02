@@ -15,6 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/pricing"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
 
 type computeSelectionAWS struct {
@@ -27,6 +29,16 @@ type computeSelectionAWS struct {
 	images               []ec2types.Image
 	offeringsErr         error
 	describeTypesErr     error
+}
+
+type computeSelectionSSM struct {
+	parameterName string
+	imageID       string
+}
+
+func (provider *computeSelectionSSM) GetParameter(_ context.Context, input *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
+	provider.parameterName = aws.ToString(input.Name)
+	return &ssm.GetParameterOutput{Parameter: &ssmtypes.Parameter{Name: input.Name, DataType: aws.String(workerimage.ParameterDataType), Value: aws.String(provider.imageID), Version: 7}}, nil
 }
 
 func (provider *computeSelectionAWS) DescribeImages(_ context.Context, input *ec2.DescribeImagesInput, _ ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
@@ -144,7 +156,7 @@ func TestAWSComputeSelectorDiscoversGPURootBeforeQuoteAndExcludesUnsupportedFami
 		Region: "ap-northeast-1", AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:user/test", AccessKeyID: "access", SecretAccessKey: "secret"}}
 	ec2Provider := &computeSelectionAWS{regionalLocation: "ap-northeast-2", offeredTypes: map[string]bool{
 		"t3.small": true, "m7i-flex.large": true, "g5.xlarge": true, "g6f.2xlarge": true,
-	}, images: []ec2types.Image{gpuImageFixture("ami-gpu", "2026-08-25T00:00:00Z", 75)}}
+	}, images: []ec2types.Image{workerImageFixture("ami-0123456789abcdef0", workerimage.FlavorGPU, "2026-08-25T00:00:00Z", 75)}}
 	selector, err := NewAWSComputeSelector(credential, &computeSelectionFactory{ec2: ec2Provider})
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +168,8 @@ func TestAWSComputeSelectorDiscoversGPURootBeforeQuoteAndExcludesUnsupportedFami
 	if err != nil || selected.InstanceType != "g5.xlarge" || selected.AcceleratorType != AcceleratorGPU || selected.AcceleratorName != "A10G" || selected.AcceleratorMemoryMiB != 24*1024 || selected.RootDeviceName != "/dev/sda1" || selected.VolumeGiB != 75 {
 		t.Fatalf("selected=%+v err=%v", selected, err)
 	}
-	if ec2Provider.describeImagesInput == nil || !slices.Equal(ec2Provider.describeImagesInput.Owners, []string{workerimage.OfficialUbuntuGPUOwner}) {
+	if ec2Provider.describeImagesInput == nil || !slices.Equal(ec2Provider.describeImagesInput.Owners, []string{credential.handle.AccountID}) ||
+		!slices.Equal(ec2Provider.describeImagesInput.ImageIds, []string{"ami-0123456789abcdef0"}) || factoryParameterName(t, selector) != "/dirextalk/worker-images/v1/gpu/current" {
 		t.Fatalf("GPU image discovery = %#v", ec2Provider.describeImagesInput)
 	}
 	larger, err := selector.SelectCompute(context.Background(), binding, ComputeRequirements{
@@ -167,26 +180,53 @@ func TestAWSComputeSelectorDiscoversGPURootBeforeQuoteAndExcludesUnsupportedFami
 	}
 }
 
-func gpuImageFixture(id, created string, volumeGiB int32) ec2types.Image {
-	return ec2types.Image{ImageId: aws.String(id), Name: aws.String("Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) 20260825"), CreationDate: aws.String(created), RootDeviceName: aws.String("/dev/sda1"),
-		BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String("/dev/sda1"), Ebs: &ec2types.EbsBlockDevice{VolumeSize: aws.Int32(volumeGiB)}}}}
+func workerImageFixture(id string, flavor workerimage.Flavor, created string, volumeGiB int32) ec2types.Image {
+	image := ec2types.Image{ImageId: aws.String(id), OwnerId: aws.String("123456789012"), Name: aws.String("dirextalk-worker-" + string(flavor)), CreationDate: aws.String(created), RootDeviceName: aws.String("/dev/sda1"),
+		State: ec2types.ImageStateAvailable, Architecture: ec2types.ArchitectureValuesX8664, VirtualizationType: ec2types.VirtualizationTypeHvm, RootDeviceType: ec2types.DeviceTypeEbs,
+		BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String("/dev/sda1"), Ebs: &ec2types.EbsBlockDevice{VolumeSize: aws.Int32(volumeGiB)}}},
+		Tags: []ec2types.Tag{{Key: aws.String(workerimage.TagSchema), Value: aws.String(workerimage.SchemaVersion)}, {Key: aws.String(workerimage.TagFlavor), Value: aws.String(string(flavor))},
+			{Key: aws.String(workerimage.TagVersion), Value: aws.String(workerimage.ImageVersion)}, {Key: aws.String(workerimage.TagPiVersion), Value: aws.String(workerimage.PiVersion)},
+			{Key: aws.String(workerimage.TagImageTested), Value: aws.String("true")}}}
+	if flavor == workerimage.FlavorGPU {
+		image.Tags = append(image.Tags, ec2types.Tag{Key: aws.String(workerimage.TagGPUSupportedFamilies), Value: aws.String("g4dn,g5,p5")})
+	}
+	return image
 }
 
 type computeSelectionFactory struct {
 	ec2       *computeSelectionAWS
 	ec2Region string
 	pricing   AWSPriceListAPI
+	ssm       *computeSelectionSSM
 }
 
 func (factory *computeSelectionFactory) NewEC2(_ workaws.CredentialHandle, region string) (AWSComputeSelectionAPI, error) {
 	factory.ec2Region = region
 	return factory.ec2, nil
 }
+func (factory *computeSelectionFactory) NewSSM(_ workaws.CredentialHandle, _ string) (AWSWorkerImageParameterAPI, error) {
+	if factory.ssm == nil {
+		factory.ssm = &computeSelectionSSM{imageID: "ami-0123456789abcdef0"}
+	}
+	if len(factory.ec2.images) == 0 {
+		factory.ec2.images = []ec2types.Image{workerImageFixture(factory.ssm.imageID, workerimage.FlavorCPU, "2026-08-25T00:00:00Z", 16)}
+	}
+	return factory.ssm, nil
+}
 func (factory *computeSelectionFactory) NewPricing(workaws.CredentialHandle) (AWSPriceListAPI, error) {
 	if factory.pricing != nil {
 		return factory.pricing, nil
 	}
 	return computeSelectionPricing{}, nil
+}
+
+func factoryParameterName(t *testing.T, selector *AWSComputeSelector) string {
+	t.Helper()
+	factory, ok := selector.factory.(*computeSelectionFactory)
+	if !ok || factory.ssm == nil {
+		t.Fatal("SSM factory was not used")
+	}
+	return factory.ssm.parameterName
 }
 
 func TestAWSComputeSelectorChoosesCheapestAvailableShapeSatisfyingRequirements(t *testing.T) {
@@ -202,8 +242,8 @@ func TestAWSComputeSelectorChoosesCheapestAvailableShapeSatisfyingRequirements(t
 		t.Fatal(err)
 	}
 	binding := AWSBinding{AccountID: credential.handle.AccountID, Region: "ap-northeast-2", CredentialID: credential.handle.ReferenceID, CredentialRevision: 7}
-	cheap, err := selector.SelectCompute(context.Background(), binding, ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 2, DiskGiB: 24, EstimatedRuntimeMinutes: 30})
-	if err != nil || cheap.InstanceType != "t3.small" || cheap.VCPU != 2 || cheap.MemoryGiB != 2 || cheap.VolumeGiB != 24 {
+	cheap, err := selector.SelectCompute(context.Background(), binding, ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 2, DiskGiB: 8, EstimatedRuntimeMinutes: 30})
+	if err != nil || cheap.InstanceType != "t3.small" || cheap.VCPU != 2 || cheap.MemoryGiB != 2 || cheap.VolumeGiB != 16 {
 		t.Fatalf("cheap=%+v err=%v", cheap, err)
 	}
 	larger, err := selector.SelectCompute(context.Background(), binding, ComputeRequirements{MinVCPU: 2, MinMemoryGiB: 4, DiskGiB: 40, EstimatedRuntimeMinutes: 60})

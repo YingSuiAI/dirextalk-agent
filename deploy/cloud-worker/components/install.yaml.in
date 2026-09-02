@@ -1,0 +1,109 @@
+name: dirextalk-worker-__FLAVOR__-install-1-0-0
+description: Install the Dirextalk Worker 1.0.0 toolchain and pinned Pi runtime.
+schemaVersion: 1.0
+phases:
+  - name: build
+    steps:
+      - name: InstallToolchain
+        action: ExecuteBash
+        onFailure: Abort
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              for attempt in 1 2 3; do
+                apt-get update && break
+                test "$attempt" -lt 3
+                sleep 10
+              done
+              apt-get install -y --no-install-recommends \
+                build-essential caddy ca-certificates curl git gh golang-go gzip jq \
+                nodejs npm python-is-python3 python3 python3-pip python3-venv \
+                ripgrep tar
+              install -d -m 0755 /opt/dirextalk-worker/pi/0.84.1
+              install -d -m 0755 /opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent/agents
+              install -d -m 0700 /var/lib/dirextalk-worker
+              printf '%s\n' '__FLAVOR__' >/usr/local/share/dirextalk-worker-flavor
+              archive=$(mktemp)
+              trap 'rm -f -- "$archive"' EXIT
+              curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+                --output "$archive" \
+                'https://github.com/earendil-works/pi/releases/download/v0.84.1/pi-linux-x64.tar.gz'
+              printf '%s  %s\n' \
+                '5634d7ebd18274b63af3371e942f342d74bea012389575c1d1ff15ce6ca80c2f' \
+                "$archive" | sha256sum -c -
+              tar -xzf "$archive" -C /opt/dirextalk-worker/pi/0.84.1 --strip-components=1
+              test "$(/opt/dirextalk-worker/pi/0.84.1/pi --version)" = '0.84.1'
+              install -d -m 0755 /opt/dirextalk-worker/bin
+              install -m 0755 /opt/dirextalk-worker/pi/0.84.1/pi /opt/dirextalk-worker/bin/pi
+              ln -sfn /opt/dirextalk-worker/bin/pi /usr/local/bin/pi
+              printf '%s' '__SUBAGENT_EXTENSION_B64__' | base64 -d \
+                >/opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent/extension.ts
+              printf '%s' '__SUBAGENT_AGENT_B64__' | base64 -d \
+                >/opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent/agents/worker.md
+              printf '%s  %s\n' \
+                'd81c6e66123fbaeeb585c02f757db8966022aa8649a6c75461bd7a82623f4552' \
+                /opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent/extension.ts | sha256sum -c -
+              printf '%s  %s\n' \
+                '562434d598f2709150b042c50009ac224557769f0430d5093621530ce27cc7b5' \
+                /opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent/agents/worker.md | sha256sum -c -
+              cat >/opt/dirextalk-worker/pi-plugin-catalog/catalog.json <<'JSON'
+              {"schema":"dirextalk.pi-plugin-catalog/v1","plugins":[{"id":"dirextalk-subagent","version":"0.84.1-dirextalk.1","default_enabled":true,"task_activation":"copy","license":"MIT","upstream_commit":"53fa77ccd8a279eb87e92294ef3687b03ff80112","extension_sha256":"d81c6e66123fbaeeb585c02f757db8966022aa8649a6c75461bd7a82623f4552","agent_sha256":"562434d598f2709150b042c50009ac224557769f0430d5093621530ce27cc7b5"}]}
+              JSON
+              chmod -R a-w /opt/dirextalk-worker/pi-plugin-catalog
+              chmod 0755 /opt/dirextalk-worker/pi/0.84.1/pi
+              versions=$(jq -n \
+                --arg python "$(python3 --version 2>&1)" \
+                --arg pip "$(python3 -m pip --version)" \
+                --arg node "$(node --version)" \
+                --arg npm "$(npm --version)" \
+                --arg git "$(git --version)" \
+                --arg gh "$(gh --version | head -n1)" \
+                --arg go "$(go version)" \
+                --arg cc "$(cc --version | head -n1)" \
+                --arg curl "$(curl --version | head -n1)" \
+                --arg tar "$(tar --version | head -n1)" \
+                --arg gzip "$(gzip --version | head -n1)" \
+                --arg jq "$(jq --version)" \
+                --arg rg "$(rg --version | head -n1)" \
+                '{python:$python,pip:$pip,node:$node,npm:$npm,git:$git,gh:$gh,go:$go,cc:$cc,curl:$curl,tar:$tar,gzip:$gzip,jq:$jq,ripgrep:$rg}')
+              jq -n --arg flavor '__FLAVOR__' --arg gpu_families '__GPU_FAMILIES__' --argjson tools "$versions" \
+                '{schema:1,image_version:"1.0.0",flavor:$flavor,pi_version:"0.84.1",tool_baseline:"1",tested:true,gpu_supported_families:$gpu_families,tools:$tools}' \
+                >/opt/dirextalk-worker/manifest.json
+              chmod 0644 /opt/dirextalk-worker/manifest.json
+              chmod 0444 /opt/dirextalk-worker/pi-plugin-catalog/catalog.json
+      - name: RemoveBuildResidue
+        action: ExecuteBash
+        onFailure: Abort
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              apt-get clean
+              rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+              rm -rf /root/.cache /root/.npm /root/.config/gh /root/.aws
+              rm -f /root/.bash_history /root/.git-credentials /root/.npmrc
+              if id ubuntu >/dev/null 2>&1; then
+                home=$(getent passwd ubuntu | cut -d: -f6)
+                rm -rf "$home/.cache" "$home/.npm" "$home/.config/gh" "$home/.aws"
+                rm -f "$home/.bash_history" "$home/.git-credentials" "$home/.npmrc"
+              fi
+              find /tmp /var/tmp -mindepth 1 -xdev -delete
+  - name: validate
+    steps:
+      - name: ValidateInstalledRuntime
+        action: ExecuteBash
+        onFailure: Abort
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              test "$(pi --version)" = '0.84.1'
+              test "$(jq -r .schema /opt/dirextalk-worker/manifest.json)" = '1'
+              test "$(jq -r .image_version /opt/dirextalk-worker/manifest.json)" = '1.0.0'
+              test "$(jq -r .tested /opt/dirextalk-worker/manifest.json)" = 'true'
+              test "$(cat /usr/local/share/dirextalk-worker-flavor)" = '__FLAVOR__'
+              command -v python python3 pip npm node git gh go cc caddy curl tar gzip jq rg
+              test -d /var/lib/dirextalk-worker
+              test ! -L /var/lib/dirextalk-worker

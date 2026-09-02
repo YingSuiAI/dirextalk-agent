@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/workerimage"
 )
 
 func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) {
@@ -30,18 +32,18 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 			Provider: "openai_compatible", BaseURL: "https://models.example/v1",
 			Name: "test-model", APIKey: secret, MaxOutputTokens: 16_384,
 		},
+		ImageFlavor: string(workerimage.FlavorCPU), EnableSubagent: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	script := string(material.WorkerScript)
 	for _, expected := range []string{
-		"releases/download/v0.84.1/pi-linux-x64.tar.gz",
-		piLinuxX64SHA256,
-		"sudo apt-get -qq update",
-		"sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq -y install build-essential ca-certificates curl git gh golang-go gzip jq nodejs npm python-is-python3 python3 python3-pip python3-venv ripgrep tar",
+		"/opt/dirextalk-worker/bin/pi",
+		"/opt/dirextalk-worker/manifest.json",
+		`.image_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")`,
+		`.tool_baseline == "1"`,
 		"readonly worker_root=/var/lib/dirextalk-worker",
-		`readonly baseline_marker="$worker_root/.coding-tool-baseline-v1"`,
 		`test ! -L "$worker_root"`,
 		"python3 -m pip --version",
 		"python3 -m venv --help",
@@ -56,6 +58,11 @@ func TestCompileRuntimePinsMaintainedPiAndKeepsSecretOutOfPayload(t *testing.T) 
 	} {
 		if !strings.Contains(script, expected) {
 			t.Fatalf("script does not contain %q", expected)
+		}
+	}
+	for _, forbidden := range []string{"apt-get", "releases/download/", "pi.tar.gz"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("task bootstrap still contains image-owned setup %q", forbidden)
 		}
 	}
 	if strings.Contains(script, "/tmp/dirextalk-worker") || strings.Contains(remoteRunnerSource, "/tmp/dirextalk-worker") {
@@ -89,6 +96,7 @@ func TestCompileRuntimeOmitsUnsetModelOutputLimit(t *testing.T) {
 		TaskID: "task-default-limit", Objective: "deploy the service", Architecture: "x86_64", Workload: WorkloadJob, MaxRuntimeSeconds: 3600,
 		Model: RuntimeModel{Provider: "openai_compatible", BaseURL: "https://openrouter.ai/api/v1",
 			Name: "deepseek/deepseek-v4-flash", APIKey: "secret"},
+		ImageFlavor: string(workerimage.FlavorCPU), EnableSubagent: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -103,10 +111,11 @@ func TestCompileRuntimeOmitsUnsetModelOutputLimit(t *testing.T) {
 func TestCompileRuntimeTreatsObjectiveAsData(t *testing.T) {
 	objective := `deploy $(touch /tmp/not-executed) ; echo "done" && report`
 	material, err := CompileRuntime(RuntimeRequest{
-		TaskID: "task-002", Objective: objective, Architecture: "arm64", Workload: WorkloadService, MaxRuntimeSeconds: 3600,
+		TaskID: "task-002", Objective: objective, Architecture: "x86_64", Workload: WorkloadService, MaxRuntimeSeconds: 3600,
 		Service: &RuntimeServiceSpec{WorkloadID: "memory-api", Port: 8080, HealthPath: "/health", Hostname: "api.example.test"},
 		Model: RuntimeModel{Provider: "anthropic", BaseURL: "https://api.anthropic.com",
 			Name: "claude-test", APIKey: "secret", MaxOutputTokens: 4096},
+		ImageFlavor: string(workerimage.FlavorCPU), EnableSubagent: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -117,9 +126,6 @@ func TestCompileRuntimeTreatsObjectiveAsData(t *testing.T) {
 	}
 	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(objective))) {
 		t.Fatal("encoded objective is missing")
-	}
-	if !strings.Contains(script, piLinuxARM64SHA256) {
-		t.Fatal("arm64 release pin is missing")
 	}
 	for _, required := range []string{" caddy", "# Managed by Dirextalk Agent", "refusing to replace an unmanaged Caddyfile"} {
 		if !strings.Contains(script, required) {
@@ -141,7 +147,7 @@ func TestCompileRuntimeTreatsObjectiveAsData(t *testing.T) {
 }
 
 func TestCompileRuntimeRejectsIncompleteOrUnsupportedInputs(t *testing.T) {
-	valid := RuntimeRequest{TaskID: "task-003", Objective: "work", Architecture: "amd64", Workload: WorkloadJob, MaxRuntimeSeconds: 3600, Model: RuntimeModel{
+	valid := RuntimeRequest{TaskID: "task-003", Objective: "work", Architecture: "amd64", Workload: WorkloadJob, MaxRuntimeSeconds: 3600, ImageFlavor: string(workerimage.FlavorCPU), EnableSubagent: true, Model: RuntimeModel{
 		Provider: "gemini", BaseURL: "https://generativelanguage.googleapis.com/v1beta",
 		Name: "gemini-test", APIKey: "secret", MaxOutputTokens: 4096,
 	}}
@@ -166,7 +172,7 @@ func TestCompileRuntimeRejectsIncompleteOrUnsupportedInputs(t *testing.T) {
 
 func TestRuntimeProtocolCompilesResumableCommands(t *testing.T) {
 	material, err := CompileRuntime(RuntimeRequest{
-		TaskID: "task-004", Objective: "run a service", Architecture: "arm64", Workload: WorkloadService, MaxRuntimeSeconds: 3600,
+		TaskID: "task-004", Objective: "run a service", Architecture: "x86_64", Workload: WorkloadService, MaxRuntimeSeconds: 3600, ImageFlavor: string(workerimage.FlavorCPU), EnableSubagent: true,
 		Service: &RuntimeServiceSpec{WorkloadID: "web", Port: 8080, HealthPath: "/health"},
 		Model:   RuntimeModel{Provider: "anthropic", BaseURL: "https://api.anthropic.com", Name: "claude", APIKey: "secret", MaxOutputTokens: 4096},
 	})
@@ -201,6 +207,7 @@ func TestEmbeddedRemoteRunnerBuilds(t *testing.T) {
 	root := filepath.Join(directory, "worker")
 	source := filepath.Join(directory, "runner.go")
 	body := strings.Replace(remoteRunnerSource, `const root = "/var/lib/dirextalk-worker"`, `const root = `+strconv.Quote(root), 1)
+	body = strings.Replace(body, `"/opt/dirextalk-worker/bin/pi"`, `filepath.Join(root, "runtime", "pi")`, 1)
 	if err := os.WriteFile(source, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -474,15 +481,30 @@ func TestWorkerLoadsOnlyExplicitBoundedServerSubagentExtension(t *testing.T) {
 	for _, expected := range []string{
 		`"$config_root/extensions/dirextalk-subagent/extension.ts"`,
 		`"$config_root/agents/worker.md"`,
+		`readonly subagent_catalog=/opt/dirextalk-worker/pi-plugin-catalog/dirextalk-subagent`,
+		`sha256sum -c - >/dev/null`,
 		`mkdir -p -- "$config_root/extensions/dirextalk-subagent" "$config_root/agents"`,
 	} {
 		if !strings.Contains(script, expected) {
 			t.Fatalf("bootstrap missing server subagent material %q", expected)
 		}
 	}
+	disabled, err := CompileRuntime(RuntimeRequest{
+		TaskID: "task-disabled-plugin", Objective: "work", Architecture: "x86_64", Workload: WorkloadJob,
+		MaxRuntimeSeconds: 60, ImageFlavor: string(workerimage.FlavorCPU), EnableSubagent: false,
+		Model: RuntimeModel{Provider: "openai_compatible", BaseURL: "https://models.example/v1", Name: "test", APIKey: "secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(disabled.WorkerScript), "readonly subagent_catalog=") {
+		t.Fatal("disabled task bootstrap activates the image plugin catalog")
+	}
 	for _, expected := range []string{
-		`"--tools", "read,bash,edit,write,grep,find,ls,subagent"`,
-		`"--no-extensions", "-e", filepath.Join(root, "pi-config", "extensions", "dirextalk-subagent", "extension.ts")`,
+		`tools := "read,bash,edit,write,grep,find,ls"`,
+		`if spec.EnableSubagent { tools += ",subagent" }`,
+		`if spec.EnableSubagent { piArguments = append(piArguments, "-e", filepath.Join(root, "pi-config", "extensions", "dirextalk-subagent", "extension.ts")) }`,
+		`"--tools", tools, "--no-extensions"`,
 		`"--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files"`,
 		"separate git worktree and branch per writer",
 		"Never expose GitHub credentials, model credentials",
@@ -522,7 +544,7 @@ func TestVendoredPiSubagentProvenanceAndBounds(t *testing.T) {
 
 func mustCompileRuntimeForTest(t *testing.T) RuntimeMaterial {
 	t.Helper()
-	material, err := CompileRuntime(RuntimeRequest{TaskID: "task-github", Objective: "use a repository", Architecture: "x86_64", Workload: WorkloadJob, MaxRuntimeSeconds: 60, Model: RuntimeModel{Provider: "openai_compatible", BaseURL: "https://models.example/v1", Name: "test", APIKey: "model-secret"}})
+	material, err := CompileRuntime(RuntimeRequest{TaskID: "task-github", Objective: "use a repository", Architecture: "x86_64", Workload: WorkloadJob, MaxRuntimeSeconds: 60, ImageFlavor: string(workerimage.FlavorCPU), EnableSubagent: true, Model: RuntimeModel{Provider: "openai_compatible", BaseURL: "https://models.example/v1", Name: "test", APIKey: "model-secret"}})
 	if err != nil {
 		t.Fatal(err)
 	}

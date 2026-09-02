@@ -342,7 +342,7 @@ func TestSSHWorkerRuntimePreservesUnsetProfileOutputLimit(t *testing.T) {
 		t.Fatalf("max output tokens = %d", model.MaxOutputTokens)
 	}
 	if _, err := sshworker.CompileRuntime(sshworker.RuntimeRequest{TaskID: "33333333-3333-4333-8333-333333333333", MaxRuntimeSeconds: 3600,
-		Objective: "deploy the service", Architecture: "x86_64", Workload: sshworker.WorkloadJob, Model: model}); err != nil {
+		Objective: "deploy the service", Architecture: "x86_64", Workload: sshworker.WorkloadJob, Model: model, ImageFlavor: "cpu", EnableSubagent: true}); err != nil {
 		t.Fatalf("compile profile using Pi default output limit: %v", err)
 	}
 }

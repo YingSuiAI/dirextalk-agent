@@ -150,4 +150,5 @@ type remoteTaskSpec struct {
 	Model             string              `json:"model"`
 	MaxRuntimeSeconds uint64              `json:"max_runtime_seconds"`
 	Service           *RuntimeServiceSpec `json:"service,omitempty"`
+	EnableSubagent    bool                `json:"enable_subagent"`
 }

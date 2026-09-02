@@ -57,3 +57,24 @@ GitHub Release, and pulled `latest` probe are the maintained release identity.
 The formal GitHub Release title is `Dirextalk Agent vX.Y.Z`, its body is the
 checked-in version section. Publication requires explicit authorization;
 prepare and verify do not push or create external state.
+
+## Cloud Worker image release
+
+Cloud Worker AMIs have a separate product-runtime release contract under
+`deploy/cloud-worker`. An Agent source release does not imply that either AMI
+was built or published. Each CPU/GPU image release pins its parent AMI identity,
+component and recipe versions, Pi version and SHA-256, tool manifest, test
+component, distribution allowlist, and output tags. Image Builder writes only a
+candidate pointer. The publication command independently revalidates the AWS
+account, Region, candidate AMI owner, recipe/build identity, tags and live root
+mapping before moving `current` to `previous` and the verified candidate to
+`current`. Rollback first validates both pointers in every allowlisted Region,
+then swaps them Region-locally while journaling their exact prior values.
+
+Build and publish require a non-root operator, least-privilege Image Builder
+instance profile, explicit network/KMS/Region inputs, and an acknowledged cost
+ceiling. The process is manual and concurrency-one by default. Cleanup preserves
+the exact Region-local current and previous AMIs for each flavor and removes
+older tagged outputs only after revalidating every AMI and snapshot owner; an
+Image Builder lifecycle count is not the authority because counts are scoped per
+recipe version.

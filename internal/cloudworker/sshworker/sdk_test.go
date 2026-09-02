@@ -14,6 +14,8 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
 	quotatypes "github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 )
@@ -28,6 +30,20 @@ type identityProbeSTS struct {
 	accounts []string
 	calls    int
 	events   *[]string
+}
+
+type parameterProbeSSM struct {
+	imageID string
+	name    string
+	err     error
+}
+
+func (probe *parameterProbeSSM) GetParameter(_ context.Context, input *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
+	probe.name = aws.ToString(input.Name)
+	if probe.err != nil {
+		return nil, probe.err
+	}
+	return &ssm.GetParameterOutput{Parameter: &ssmtypes.Parameter{Name: input.Name, DataType: aws.String(workerimage.ParameterDataType), Value: aws.String(probe.imageID), Version: 5}}, nil
 }
 
 func (probe *identityProbeSTS) GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error) {
@@ -189,13 +205,11 @@ func (staticIP) PublicIP(context.Context) (netip.Addr, error) {
 	return netip.MustParseAddr("198.51.100.7"), nil
 }
 
-func TestSDKDiscoverUsesCanonicalOwnerAndNewestUbuntu2404Image(t *testing.T) {
+func TestSDKDiscoverUsesExactVerifiedDirextalkCPUImage(t *testing.T) {
+	parameter := &parameterProbeSSM{imageID: "ami-0123456789abcdef0"}
 	probe := &mutationProbeEC2{
-		images: []ec2types.Image{
-			imageFixture("ami-older", "ubuntu-noble-older", "2026-08-01T00:00:00Z", 8),
-			imageFixture("ami-newest", "ubuntu-noble-newest", "2026-08-02T00:00:00Z", 8),
-		},
-		vpcs: []ec2types.Vpc{{VpcId: aws.String("vpc-default")}},
+		images: []ec2types.Image{imageFixture(parameter.imageID, "dirextalk-worker-cpu", "2026-08-02T00:00:00Z", 24, workerimage.FlavorCPU)},
+		vpcs:   []ec2types.Vpc{{VpcId: aws.String("vpc-default")}},
 		subnets: []ec2types.Subnet{
 			{SubnetId: aws.String("subnet-z"), AvailabilityZone: aws.String("region-under-test-z")},
 			{SubnetId: aws.String("subnet-a"), AvailabilityZone: aws.String("region-under-test-a")},
@@ -204,24 +218,14 @@ func TestSDKDiscoverUsesCanonicalOwnerAndNewestUbuntu2404Image(t *testing.T) {
 	}
 	credential := credentialFixture()
 	credential.Region = "region-under-test"
-	discovery, err := newSDK(credential.Region, probe, stubSTS{}, staticIP{}).Discover(context.Background(), credential, "c5a.xlarge", "")
+	discovery, err := newSDKWithSSM(credential.Region, probe, parameter, stubSTS{}, staticIP{}).Discover(context.Background(), credential, "c5a.xlarge", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if probe.describeImagesInput == nil || !slices.Equal(probe.describeImagesInput.Owners, []string{"099720109477"}) {
-		t.Fatalf("DescribeImages owners = %v, want Canonical owner 099720109477", probe.describeImagesInput.Owners)
+	if parameter.name != "/dirextalk/worker-images/v1/cpu/current" || probe.describeImagesInput == nil || !slices.Equal(probe.describeImagesInput.Owners, []string{credential.AccountID}) || !slices.Equal(probe.describeImagesInput.ImageIds, []string{parameter.imageID}) {
+		t.Fatalf("parameter=%q DescribeImages=%#v", parameter.name, probe.describeImagesInput)
 	}
-	var imageNames []string
-	for _, filter := range probe.describeImagesInput.Filters {
-		if aws.ToString(filter.Name) == "name" {
-			imageNames = filter.Values
-			break
-		}
-	}
-	if !slices.Equal(imageNames, []string{"ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"}) {
-		t.Fatalf("DescribeImages names = %v", imageNames)
-	}
-	if discovery.ImageID != "ami-newest" || discovery.ImageName != "ubuntu-noble-newest" || discovery.RootDeviceName != "/dev/sda1" || discovery.RootVolumeGiB != 8 || discovery.SSHUser != "ubuntu" || discovery.VPCID != "vpc-default" || discovery.SubnetID != "subnet-a" {
+	if discovery.ImageID != parameter.imageID || discovery.ImageFlavor != "cpu" || discovery.ImageVersion != workerimage.ImageVersion || discovery.ImageParameterVersion != 5 || discovery.RootDeviceName != "/dev/sda1" || discovery.RootVolumeGiB != 24 || discovery.SSHUser != "ubuntu" || discovery.VPCID != "vpc-default" || discovery.SubnetID != "subnet-a" {
 		t.Fatalf("discovery = %#v", discovery)
 	}
 	if probe.offeringsInput == nil || probe.offeringsInput.LocationType != ec2types.LocationTypeAvailabilityZone || len(probe.offeringsInput.Filters) != 1 || !slices.Equal(probe.offeringsInput.Filters[0].Values, []string{"c5a.xlarge"}) {
@@ -229,30 +233,22 @@ func TestSDKDiscoverUsesCanonicalOwnerAndNewestUbuntu2404Image(t *testing.T) {
 	}
 }
 
-func TestSDKDiscoverUsesOfficialAWSGPUImageAndSnapshotMinimum(t *testing.T) {
+func TestSDKDiscoverUsesVerifiedDirextalkGPUImageAndSnapshotMinimum(t *testing.T) {
+	parameter := &parameterProbeSSM{imageID: "ami-0123456789abcdef0"}
 	probe := &mutationProbeEC2{
-		images:    []ec2types.Image{imageFixture("ami-gpu", "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) 20260825", "2026-08-25T00:00:00Z", 75)},
+		images:    []ec2types.Image{imageFixture(parameter.imageID, "dirextalk-worker-gpu", "2026-08-25T00:00:00Z", 75, workerimage.FlavorGPU)},
 		vpcs:      []ec2types.Vpc{{VpcId: aws.String("vpc-default")}},
 		subnets:   []ec2types.Subnet{{SubnetId: aws.String("subnet-a"), AvailabilityZone: aws.String("region-under-test-a")}},
 		offerings: []ec2types.InstanceTypeOffering{{InstanceType: ec2types.InstanceTypeG4dnXlarge, Location: aws.String("region-under-test-a")}},
 	}
 	credential := credentialFixture()
 	credential.Region = "region-under-test"
-	discovery, err := newSDK(credential.Region, probe, stubSTS{}, staticIP{}).Discover(context.Background(), credential, "g4dn.xlarge", "gpu")
+	discovery, err := newSDKWithSSM(credential.Region, probe, parameter, stubSTS{}, staticIP{}).Discover(context.Background(), credential, "g4dn.xlarge", "gpu")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(probe.describeImagesInput.Owners, []string{"amazon"}) {
-		t.Fatalf("GPU owners = %v", probe.describeImagesInput.Owners)
-	}
-	var imageNames []string
-	for _, filter := range probe.describeImagesInput.Filters {
-		if aws.ToString(filter.Name) == "name" {
-			imageNames = filter.Values
-		}
-	}
-	if !slices.Equal(imageNames, []string{workerimage.OfficialUbuntuGPUNamePattern}) || discovery.RootVolumeGiB != 75 {
-		t.Fatalf("GPU filter=%v discovery=%#v", imageNames, discovery)
+	if parameter.name != "/dirextalk/worker-images/v1/gpu/current" || !slices.Equal(probe.describeImagesInput.Owners, []string{credential.AccountID}) || discovery.RootVolumeGiB != 75 {
+		t.Fatalf("GPU parameter=%q discovery=%#v", parameter.name, discovery)
 	}
 	probe.runInput = nil
 	_, err = newSDK(credential.Region, probe, stubSTS{}, staticIP{}).RunInstance(context.Background(), credential, Confirmation{Confirmed: true, Proof: "confirmation-1"}, LaunchRequest{
@@ -273,30 +269,52 @@ func TestSDKRunRejectsImageGrowthBeyondConfirmedVolume(t *testing.T) {
 	}
 }
 
-func TestSDKRejectsGPUFamilyUnsupportedByOfficialImage(t *testing.T) {
+func TestSDKRejectsGPUFamilyUnsupportedByVerifiedImage(t *testing.T) {
 	identity := credentialFixture()
-	_, err := newSDK(identity.Region, &mutationProbeEC2{}, stubSTS{}, staticIP{}).Discover(context.Background(), identity, "gr6f.4xlarge", "gpu")
+	parameter := &parameterProbeSSM{imageID: "ami-0123456789abcdef0"}
+	probe := &mutationProbeEC2{images: []ec2types.Image{imageFixture(parameter.imageID, "dirextalk-worker-gpu", "2026-08-25T00:00:00Z", 75, workerimage.FlavorGPU)}}
+	_, err := newSDKWithSSM(identity.Region, probe, parameter, stubSTS{}, staticIP{}).Discover(context.Background(), identity, "gr6f.4xlarge", "gpu")
 	if !errors.Is(err, ErrProviderRejected) {
 		t.Fatalf("unsupported GPU error = %v", err)
 	}
 }
 
-func TestOfficialGPUImageSupportedFamilies(t *testing.T) {
-	for _, instanceType := range []string{"g4dn.xlarge", "g5.2xlarge", "g6.xlarge", "gr6.4xlarge", "g6e.2xlarge", "g7.4xlarge", "g7e.8xlarge", "p4d.24xlarge", "p4de.24xlarge", "p5.48xlarge", "p5e.48xlarge", "p5en.48xlarge", "p6-b200.48xlarge", "p6-b300.48xlarge"} {
-		if !workerimage.SupportsOfficialUbuntuGPU(instanceType) {
+func TestSDKDiscoverReportsMissingWorkerImageWithoutProviderDetail(t *testing.T) {
+	identity := credentialFixture()
+	private := "SignatureDoesNotMatch secret-access-key"
+	parameter := &parameterProbeSSM{err: &ssmtypes.ParameterNotFound{Message: aws.String(private)}}
+	_, err := newSDKWithSSM(identity.Region, &mutationProbeEC2{}, parameter, stubSTS{}, staticIP{}).Discover(context.Background(), identity, "c5a.xlarge", "")
+	if !errors.Is(err, ErrProviderRejected) || !workerimage.IsFailure(err, workerimage.FailureMissing) ||
+		!strings.Contains(err.Error(), "/dirextalk/worker-images/v1/cpu/current") || strings.Contains(err.Error(), private) {
+		t.Fatalf("missing image error=%v", err)
+	}
+}
+
+func TestVerifiedGPUImageSupportedFamilies(t *testing.T) {
+	image := workerimage.Image{Flavor: workerimage.FlavorGPU, GPUSupportedFamilies: []string{"g4dn", "g5", "p5"}}
+	for _, instanceType := range []string{"g4dn.xlarge", "g5.2xlarge", "p5.48xlarge"} {
+		if !image.SupportsInstanceType(instanceType) {
 			t.Errorf("documented GPU family rejected: %s", instanceType)
 		}
 	}
-	for _, instanceType := range []string{"g6f.2xlarge", "gr6f.4xlarge", "p3.16xlarge", "g5g.xlarge", "gpu"} {
-		if workerimage.SupportsOfficialUbuntuGPU(instanceType) {
+	for _, instanceType := range []string{"g6f.2xlarge", "p3.16xlarge", "g5g.xlarge", "gpu"} {
+		if image.SupportsInstanceType(instanceType) {
 			t.Errorf("unsupported GPU family accepted: %s", instanceType)
 		}
 	}
 }
 
-func imageFixture(id, name, created string, volumeGiB int32) ec2types.Image {
-	return ec2types.Image{ImageId: aws.String(id), Name: aws.String(name), CreationDate: aws.String(created), RootDeviceName: aws.String("/dev/sda1"),
-		BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String("/dev/sda1"), Ebs: &ec2types.EbsBlockDevice{VolumeSize: aws.Int32(volumeGiB)}}}}
+func imageFixture(id, name, created string, volumeGiB int32, flavor workerimage.Flavor) ec2types.Image {
+	image := ec2types.Image{ImageId: aws.String(id), OwnerId: aws.String("123456789012"), Name: aws.String(name), CreationDate: aws.String(created), RootDeviceName: aws.String("/dev/sda1"),
+		State: ec2types.ImageStateAvailable, Architecture: ec2types.ArchitectureValuesX8664, VirtualizationType: ec2types.VirtualizationTypeHvm, RootDeviceType: ec2types.DeviceTypeEbs,
+		BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String("/dev/sda1"), Ebs: &ec2types.EbsBlockDevice{VolumeSize: aws.Int32(volumeGiB)}}},
+		Tags: []ec2types.Tag{{Key: aws.String(workerimage.TagSchema), Value: aws.String(workerimage.SchemaVersion)}, {Key: aws.String(workerimage.TagFlavor), Value: aws.String(string(flavor))},
+			{Key: aws.String(workerimage.TagVersion), Value: aws.String(workerimage.ImageVersion)}, {Key: aws.String(workerimage.TagPiVersion), Value: aws.String(workerimage.PiVersion)},
+			{Key: aws.String(workerimage.TagImageTested), Value: aws.String("true")}}}
+	if flavor == workerimage.FlavorGPU {
+		image.Tags = append(image.Tags, ec2types.Tag{Key: aws.String(workerimage.TagGPUSupportedFamilies), Value: aws.String("g4dn,g5,p5")})
+	}
+	return image
 }
 
 func TestSDKRunClassifiesClientRejectionAsDeterministic(t *testing.T) {

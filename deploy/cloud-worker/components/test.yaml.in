@@ -1,0 +1,148 @@
+name: dirextalk-worker-__FLAVOR__-test-1-0-0
+description: Qualify Dirextalk Worker 1.0.0, including reboot persistence and residue checks.
+schemaVersion: 1.0
+phases:
+  - name: test
+    steps:
+      - name: VerifyToolsAndPi
+        action: ExecuteBash
+        onFailure: Abort
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              command -v python python3 pip npm node git gh go cc caddy curl tar gzip jq rg
+              python --version
+              python3 -m pip --version
+              python3 -m venv --help >/dev/null
+              node --version
+              npm --version
+              git --version
+              gh --version
+              go version
+              cc --version
+              caddy version
+              curl --version
+              tar --version
+              gzip --version
+              jq --version
+              rg --version
+              test "$(pi --version)" = '0.84.1'
+              test "$(/opt/dirextalk-worker/bin/pi --version)" = '0.84.1'
+              test "$(stat -c '%U:%G:%a' /opt/dirextalk-worker/manifest.json)" = 'root:root:644'
+              test "$(stat -c '%U:%G:%a' /opt/dirextalk-worker/bin/pi)" = 'root:root:755'
+              timeout 15 pi --help >/dev/null
+      - name: VerifyOfflineGitWorkflow
+        action: ExecuteBash
+        onFailure: Abort
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              root=$(mktemp -d)
+              trap 'rm -rf -- "$root"' EXIT
+              git init --bare "$root/origin.git"
+              git clone "$root/origin.git" "$root/source"
+              cd "$root/source"
+              git config user.name 'Dirextalk Image Test'
+              git config user.email 'image-test@invalid.example'
+              printf 'def add(a, b):\n    return a + b\n' >sample.py
+              printf 'import unittest\nfrom sample import add\nclass T(unittest.TestCase):\n    def test_add(self): self.assertEqual(add(2, 3), 5)\nif __name__ == "__main__": unittest.main()\n' >test_sample.py
+              printf '{"scripts":{"test":"node -e \\"if (2 + 3 !== 5) process.exit(1)\\""}}\n' >package.json
+              git add sample.py test_sample.py package.json
+              git commit -m baseline
+              git push origin HEAD:main
+              cd "$root"
+              git clone --no-local "$root/origin.git" work
+              cd work
+              printf '\n# image-builder-edit\n' >>sample.py
+              python3 -m unittest -v
+              npm test
+              test -n "$(git diff -- sample.py)"
+      - name: VerifyGPUStack
+        action: ExecuteBash
+        onFailure: Abort
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              if test '__FLAVOR__' = gpu; then
+                nvidia-smi -L
+                if command -v nvcc >/dev/null 2>&1; then nvcc --version; else /usr/local/cuda/bin/nvcc --version; fi
+                nvidia-ctk --version
+                nvidia-container-cli --version
+                containerd --version
+                nerdctl --version
+                if command -v soci-snapshotter-grpc >/dev/null 2>&1; then
+                  soci-snapshotter-grpc --version
+                elif command -v soci >/dev/null 2>&1; then
+                  soci --version
+                else
+                  echo 'SOCI executable is missing' >&2
+                  exit 1
+                fi
+                systemctl is-enabled containerd.service
+                systemctl is-active containerd.service
+                ctr plugins ls | grep -iq 'soci'
+                validation_image='nvidia/cuda:12.8.1-base-ubuntu24.04@sha256:e711c99333fdfe8ae1e677b4972be6c5021f0128a1d31f775c7e58d88921b6a9'
+                nerdctl pull --platform linux/amd64 "$validation_image"
+                nerdctl run --rm --platform linux/amd64 --gpus all "$validation_image" nvidia-smi
+              fi
+      - name: WritePersistenceProbe
+        action: ExecuteBash
+        onFailure: Abort
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              test -d /var/lib/dirextalk-worker
+              test ! -L /var/lib/dirextalk-worker
+              boot=$(cat /proc/sys/kernel/random/boot_id)
+              nonce=$(cat /proc/sys/kernel/random/uuid)
+              printf '%s\n%s\n' "$boot" "$nonce" >/var/lib/dirextalk-worker/.image-builder-persistence-probe
+              chmod 0600 /var/lib/dirextalk-worker/.image-builder-persistence-probe
+      - name: RebootForPersistenceTest
+        action: Reboot
+        onFailure: Abort
+        inputs:
+          delaySeconds: 5
+      - name: VerifyPersistenceAfterReboot
+        action: ExecuteBash
+        onFailure: Abort
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              probe=/var/lib/dirextalk-worker/.image-builder-persistence-probe
+              test -f "$probe" && test ! -L "$probe"
+              before=$(sed -n '1p' "$probe")
+              nonce=$(sed -n '2p' "$probe")
+              test -n "$nonce"
+              test "$before" != "$(cat /proc/sys/kernel/random/boot_id)"
+              rm -f "$probe"
+              if test '__FLAVOR__' = gpu; then
+                systemctl is-active containerd.service
+                nvidia-smi -L
+                ctr plugins ls | grep -iq 'soci'
+                validation_image='nvidia/cuda:12.8.1-base-ubuntu24.04@sha256:e711c99333fdfe8ae1e677b4972be6c5021f0128a1d31f775c7e58d88921b6a9'
+                nerdctl run --rm --platform linux/amd64 --gpus all "$validation_image" nvidia-smi
+              fi
+      - name: VerifyNoBuildResidue
+        action: ExecuteBash
+        onFailure: Abort
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              forbidden=$(find /root /home/ubuntu -xdev -type f \( \
+                -name '.bash_history' -o -name '.zsh_history' -o \
+                -name '.git-credentials' -o -name '.npmrc' -o \
+                -name 'credentials' -path '*/.aws/*' -o \
+                -name 'hosts.yml' -path '*/.config/gh/*' -o \
+                -name 'authorized_keys' -o -name '*.pem' -o -name '*.key' \
+                \) -print 2>/dev/null || true)
+              test -z "$forbidden" || { printf 'forbidden residue:\n%s\n' "$forbidden" >&2; exit 1; }
+              test -z "$(find /var/lib/apt/lists /var/cache/apt/archives -type f -print -quit 2>/dev/null)"
+              test -z "$(find /tmp /var/tmp -mindepth 1 -print -quit 2>/dev/null)"
+              ! env | grep -Eiq '(AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN)='
+              test "$(pi --version)" = '0.84.1'

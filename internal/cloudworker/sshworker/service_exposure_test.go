@@ -12,6 +12,12 @@ import (
 )
 
 func TestReconcileServiceExposureScriptIsValidBash(t *testing.T) {
+	if strings.Contains(reconcileServiceExposureScript, "apt-get") {
+		t.Fatal("service exposure must rely on the worker image tool baseline")
+	}
+	if !strings.Contains(reconcileServiceExposureScript, "worker image is missing the required caddy baseline") {
+		t.Fatal("service exposure must report a missing image tool baseline")
+	}
 	path := filepath.Join(t.TempDir(), "reconcile-service-exposure.sh")
 	if err := os.WriteFile(path, []byte(reconcileServiceExposureScript), 0o700); err != nil {
 		t.Fatal(err)

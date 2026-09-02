@@ -71,7 +71,7 @@ func (provider *Provider) ResolveIdleWorker(ctx context.Context, authority Owner
 	}
 	for _, worker := range workers {
 		if worker.authority() != authority || !sameLogicalCredential(worker.Credential, credential) || worker.Phase != WorkerIdle || worker.VCPU < minVCPU || worker.MemoryGiB < minMemoryGiB || worker.VolumeGiB < minVolumeGiB ||
-			!workerAcceleratorSatisfies(acceleratorType, worker.AcceleratorType) {
+			!workerAcceleratorSatisfies(acceleratorType, worker.AcceleratorType) || !worker.hasVerifiedImageContract() {
 			continue
 		}
 		observed, found, observeErr := provider.aws.ObserveInstance(ctx, credential, worker.Instance.ID, resourceTags(worker.WorkerID, authority, worker.Credential, worker.CreationProof))
@@ -214,7 +214,7 @@ func (provider *Provider) acquire(ctx context.Context, request ExecuteRequest, p
 			if worker.authority() != request.Authority || !sameLogicalCredential(worker.Credential, request.Credential) {
 				return WorkerRecord{}, ErrIdentity
 			}
-			if worker.Phase != WorkerIdle || worker.VCPU < request.VCPU || worker.MemoryGiB < request.MemoryGiB || worker.VolumeGiB < request.VolumeGiB {
+			if worker.Phase != WorkerIdle || worker.VCPU < request.VCPU || worker.MemoryGiB < request.MemoryGiB || worker.VolumeGiB < request.VolumeGiB || !worker.hasVerifiedImageContract() {
 				return WorkerRecord{}, ErrBusy
 			}
 			observed, found, observeErr := provider.aws.ObserveInstance(ctx, request.Credential, worker.Instance.ID, resourceTags(worker.WorkerID, request.Authority, worker.Credential, worker.CreationProof))
@@ -301,7 +301,10 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 			Credential: request.Credential, CreationProof: request.Confirmation.Proof,
 			DisplayName: strings.TrimSpace(request.ServerName),
 			Phase:       WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, AcceleratorType: request.AcceleratorType,
-			VCPU: request.VCPU, MemoryGiB: request.MemoryGiB, VolumeGiB: request.VolumeGiB, CreatedAt: provider.now().UTC()}
+			VCPU: request.VCPU, MemoryGiB: request.MemoryGiB, VolumeGiB: request.VolumeGiB,
+			ImageID: request.Discovery.ImageID, ImageFlavor: request.Discovery.ImageFlavor, ImageVersion: request.Discovery.ImageVersion,
+			ImageParameterName: request.Discovery.ImageParameterName, ImageParameterVersion: request.Discovery.ImageParameterVersion,
+			CreatedAt: provider.now().UTC()}
 		worker.UpdatedAt = provider.now().UTC()
 		if err := provider.store.SaveWorkerIntent(ctx, worker, func(ctx context.Context) error {
 			return provider.authorizeCreate(ctx, request.Credential)
@@ -311,6 +314,11 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 	}
 	if worker.authority() != request.Authority || worker.Credential != request.Credential || worker.CreationProof != request.Confirmation.Proof {
 		return WorkerRecord{}, ErrIdentity
+	}
+	worker.ImageID, worker.ImageFlavor, worker.ImageVersion = request.Discovery.ImageID, request.Discovery.ImageFlavor, request.Discovery.ImageVersion
+	worker.ImageParameterName, worker.ImageParameterVersion = request.Discovery.ImageParameterName, request.Discovery.ImageParameterVersion
+	if err := provider.saveWorker(ctx, &worker); err != nil {
+		return WorkerRecord{}, err
 	}
 	privatePath, publicKey, err := provider.keys.Ensure(ctx, workerID)
 	if err != nil || privatePath == "" || len(publicKey) == 0 {
