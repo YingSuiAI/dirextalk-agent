@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.202
+
+1. Keep Worker list, get, execution, and independent destruction responsive while another Worker terminates; serialize same-Worker cleanup, preserve cancellation and identity fences, and report success only after exact resource cleanup.
+2. Bind Worker deliverable links to verified artifacts in both live replies and history, preserve bounded linked references, and avoid exposing internal sandbox paths as downloadable files.
+3. Distinguish quoted estimates and retained-Worker reuse from actual billing; never present unavailable measured charges as zero cost.
+
 ## v1.0.201
 
 1. Keep existing Workers queryable and destroyable in their recorded AWS Region after upgrade, including Regions outside the current new-placement candidates, while retaining exact ownership and credential authorization.
