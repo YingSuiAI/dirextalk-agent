@@ -403,16 +403,43 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 	terminal := execution.State
 	// Raw stdout/stderr remain execution diagnostics and the summary remains
 	// Central's internal evidence. Only genuine result files are deliverables.
-	deliverables := make([]sshflow.Artifact, 0, len(artifacts))
+	type deliverable struct {
+		core.Reference
+		URI string `json:"uri"`
+	}
+	deliverables := make([]deliverable, 0, len(artifacts))
+	artifactReferences := make([]core.Reference, 0, len(artifacts))
+	seen := make(map[string]struct{}, len(artifacts))
+	omitted := 0
 	for _, artifact := range artifacts {
 		if artifact.Kind == "file" && !sshWorkerTransportArtifactName(artifact.Name) {
-			deliverables = append(deliverables, artifact)
+			size := uint64(artifact.SizeBytes)
+			reference := core.Reference{Kind: "execution_artifact", AccountGeneration: plan.AccountGeneration,
+				RecordKind: "cloud_worker", ArtifactID: artifact.ArtifactID, ExecutionID: artifact.ExecutionID,
+				Name: artifact.Name, MediaType: artifact.MediaType, SizeBytes: &size, SHA256: artifact.SHA256}
+			if artifact.ExecutionID != plan.ExecutionID || artifact.SizeBytes < 0 || reference.Validate() != nil {
+				return core.ToolCall{}, core.ToolResult{}, errSSHWorkerStoreInvalid
+			}
+			if _, duplicate := seen[artifact.ArtifactID]; duplicate {
+				return core.ToolCall{}, core.ToolResult{}, errSSHWorkerStoreInvalid
+			}
+			seen[artifact.ArtifactID] = struct{}{}
+			// Reserve the plan/run slots; never advertise a URI without its
+			// matching public reference when a result has many files.
+			if len(artifactReferences) == core.MaxReferences-2 {
+				omitted++
+				continue
+			}
+			artifactReferences = append(artifactReferences, reference)
+			deliverables = append(deliverables, deliverable{Reference: reference,
+				URI: "dirextalk-artifact://cloud_worker/" + artifact.ArtifactID})
 		}
 	}
 	completion := map[string]any{"schema": "dirextalk.ssh-worker-completion/v1",
 		"execution_id": plan.ExecutionID, "status": terminal, "worker_id": result.WorkerID,
 		"persistent_worker": true, "worker_report": summary, "artifacts": deliverables,
-		"central_instruction": "Continue the current conversation using the Worker report and local artifacts."}
+		"cost_evidence": sshWorkerCostEvidence(plan), "artifacts_omitted": omitted,
+		"central_instruction": core.CloudWorkerCompletionGuidance}
 	if len(result.AppliedSteerIDs) != 0 {
 		completion["applied_steer_ids"] = append([]string(nil), result.AppliedSteerIDs...)
 	}
@@ -421,7 +448,7 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 			"kind": "confirm_destroy_worker", "operation": "destroy_worker", "worker_id": result.WorkerID, "default": "retain",
 			"question": "The Worker is retained for reuse. Ask the user whether to destroy it now.",
 		}
-		completion["central_instruction"] = "Continue the current conversation using the Worker report and local artifacts. Tell the user which Worker was retained and ask whether to destroy it now; do not destroy it without their explicit choice."
+		completion["central_instruction"] = core.CloudWorkerCompletionGuidance + " Tell the user which Worker was retained and ask whether to destroy it now; do not destroy it without their explicit choice."
 	}
 	payload, _ := json.Marshal(completion)
 	toolResult := core.ToolResult{CallID: calls[0].ID, ToolName: coremodel.IntrinsicCloudWorkerProposeToolName,
@@ -436,6 +463,7 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 				RunRevision: execution.Revision, ExecutionID: execution.ExecutionID, Status: string(execution.State)},
 		},
 	}
+	toolResult.References = append(toolResult.References, artifactReferences...)
 	if terminal == cloudworker.StateSucceeded {
 		toolResult = toolResult.WithObservation(core.ToolOutcomeSuccess, "Cloud Worker completed", core.ToolMutationChanged)
 	} else {
@@ -445,6 +473,27 @@ func sshWorkerContinuation(dispatch *core.ModelRunResult, plan cloudworker.Plan,
 		return core.ToolCall{}, core.ToolResult{}, errSSHWorkerStoreInvalid
 	}
 	return calls[0], toolResult, nil
+}
+
+func sshWorkerCostEvidence(plan cloudworker.Plan) map[string]any {
+	evidence := map[string]any{"actual_cost_status": "unavailable", "persistent_worker_reuse": plan.PersistentWorkerReuse}
+	quote := plan.Quote
+	if quote.Seal() != nil || quote.Digest != plan.Quote.Digest {
+		return evidence
+	}
+	quoted := map[string]any{"currency": quote.Currency, "source_time": quote.SourceTime,
+		"expires_at": quote.ExpiresAt, "status": "original_plan_estimate_not_billing"}
+	if quote.ComputeMicrosPerHour > 0 {
+		quoted["compute_micros_per_hour"] = quote.ComputeMicrosPerHour
+	}
+	if plan.WorkloadKind != cloudworker.WorkloadService {
+		quoted["maximum_new_allocation_authorized_cost_micros"] = quote.MaximumAuthorizedCostMicros
+		if !plan.PersistentWorkerReuse {
+			quoted["estimated_job_cost_micros"] = quote.AmountMicros
+		}
+	}
+	evidence["quote"] = quoted
+	return evidence
 }
 
 func sshWorkerTransportArtifactName(name string) bool {

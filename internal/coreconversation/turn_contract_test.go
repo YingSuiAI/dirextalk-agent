@@ -164,8 +164,10 @@ type blockingTurnModel struct {
 }
 
 type capturingTurnModel struct {
-	request ModelRunRequest
-	runs    int
+	request    ModelRunRequest
+	runs       int
+	content    string
+	references []Reference
 }
 
 type outputContinuationTurnModel struct {
@@ -663,7 +665,11 @@ func (f intrinsicResolverFunc) ResolveIntrinsicTools(ctx context.Context, lease 
 func (m *capturingTurnModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
 	m.request = request
 	m.runs++
-	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "ok", CreatedAt: time.Now().UTC()}}, nil
+	content := m.content
+	if content == "" {
+		content = "ok"
+	}
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: content, References: m.references, CreatedAt: time.Now().UTC()}}, nil
 }
 
 func (m *capturingTurnModel) Stream(ctx context.Context, request ModelRunRequest, _ func(ModelDelta) error) (ModelRunResult, error) {
@@ -1455,6 +1461,11 @@ func TestAppendTurnToolHistoryClearsStaticSiteForceAfterNextResult(t *testing.T)
 }
 
 func TestExecuteTurnSynthesizesSucceededCloudWorkerInLatestUserLanguage(t *testing.T) {
+	t.Run("ordinary", func(t *testing.T) { testExecuteTurnSynthesizesSucceededCloudWorker(t, false) })
+	t.Run("saturated references", func(t *testing.T) { testExecuteTurnSynthesizesSucceededCloudWorker(t, true) })
+}
+
+func testExecuteTurnSynthesizesSucceededCloudWorker(t *testing.T, saturated bool) {
 	profile := testTurnSnapshot()
 	conversationID := uuid.NewString()
 	requestID := uuid.NewString()
@@ -1504,9 +1515,13 @@ func TestExecuteTurnSynthesizesSucceededCloudWorkerInLatestUserLanguage(t *testi
 	reference := Reference{Kind: "execution_plan", AccountGeneration: 1, TaskID: taskID,
 		PlanID: planID, PlanRevision: 1, Status: "waiting_user"}
 	workerID := uuid.NewString()
+	size := uint64(4)
+	artifact := Reference{Kind: "execution_artifact", AccountGeneration: 1, RecordKind: "cloud_worker",
+		ArtifactID: uuid.NewString(), ExecutionID: uuid.NewString(), Name: "result.txt", MediaType: "text/plain", SizeBytes: &size, SHA256: strings.Repeat("a", 64)}
+	expectedReferences := []Reference{reference, artifact}
 	result := observedTestToolResult(ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"schema":"dirextalk.ssh-worker-completion/v1","status":"succeeded","worker_id":"` + workerID + `","worker_report":"deployment finished"}`,
 		RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID},
-		References: []Reference{reference}, Summary: "Cloud Worker result returned"})
+		References: expectedReferences, Summary: "Cloud Worker result returned"})
 	prefix := Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "earlier answer",
 		ModelProfileID: profile.ProfileID, CreatedAt: createdAt.Add(-time.Minute)}
 	durableUser := Message{ID: TurnUserMessageID(requestID), Role: RoleUser, Content: turn.Prompt,
@@ -1526,7 +1541,18 @@ func TestExecuteTurnSynthesizesSucceededCloudWorkerInLatestUserLanguage(t *testi
 			{TurnID: turn.ID, Sequence: 5, Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: createdAt.Add(4 * time.Second)},
 		},
 	}}
+	wantContent := "ok"
 	model := &capturingTurnModel{}
+	if saturated {
+		for i := 0; i < MaxReferences; i++ {
+			webResult.References = append(webResult.References, Reference{Kind: "room", RoomID: "!" + uuid.NewString() + ":example.test"})
+		}
+		forged := artifact
+		forged.ArtifactID = uuid.NewString()
+		wantContent = "[Result](dirextalk-artifact://cloud_worker/" + artifact.ArtifactID + ") [Unknown](dirextalk-artifact://cloud_worker/" + forged.ArtifactID + ")"
+		model.content, model.references = wantContent, []Reference{forged}
+		expectedReferences = append([]Reference{artifact}, webResult.References[:MaxReferences-1]...)
+	}
 	resolverCalls := 0
 	intrinsicResolverCalls := 0
 	service, err := NewService(store, model, extensionResolverFunc(func(_ context.Context, selections []ExtensionSelection) ([]ResolvedExtension, error) {
@@ -1558,10 +1584,10 @@ func TestExecuteTurnSynthesizesSucceededCloudWorkerInLatestUserLanguage(t *testi
 		t.Fatalf("terminal=%+v err=%v", terminal, err)
 	}
 	response := terminal.Response
-	if response.Message.Content != "ok" || strings.Contains(response.Message.Content, "deployment finished") || strings.Contains(response.Message.Content, workerID) ||
+	if response.Message.Content != wantContent || strings.Contains(response.Message.Content, "deployment finished") || strings.Contains(response.Message.Content, workerID) ||
 		!reflect.DeepEqual(response.RelatedTaskIDs, []string{taskID}) ||
 		!reflect.DeepEqual(response.RelatedPlanIDs, []string{planID}) ||
-		!reflect.DeepEqual(response.References, []Reference{reference}) ||
+		!reflect.DeepEqual(response.References, expectedReferences) || !reflect.DeepEqual(response.Message.References, expectedReferences) ||
 		!reflect.DeepEqual(response.ToolSummaries, []string{webResult.Summary, result.Summary}) ||
 		len(response.ToolResults) != 2 || response.ToolResults[1].CallID != call.ID {
 		t.Fatalf("terminal response metadata=%+v", response)
@@ -1581,6 +1607,15 @@ func TestExecuteTurnSynthesizesSucceededCloudWorkerInLatestUserLanguage(t *testi
 	}
 	if !foundWorkerReport {
 		t.Fatalf("Worker report was not supplied as synthesis evidence: %+v", model.request.Conversation.Messages)
+	}
+	for _, expected := range []string{"dirextalk-artifact://", "actual billed cost is unavailable", "zero new-allocation authorization", "retained storage"} {
+		if !strings.Contains(model.request.Profile.SystemPrompt, expected) {
+			t.Fatalf("resumed model is missing %q", expected)
+		}
+	}
+	context, err := AdvanceWorkingContextFromTranscript(NewWorkingContext(), model.request.Conversation.Messages)
+	if err != nil || !reflect.DeepEqual(context.Artifacts, []Reference{artifact}) {
+		t.Fatalf("durable working context lost cloud artifact: %+v err=%v", context.Artifacts, err)
 	}
 	started := 0
 	for _, event := range store.events {

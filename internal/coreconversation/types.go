@@ -1016,7 +1016,7 @@ func validateKnowledgeChunkReference(r Reference) error {
 }
 
 func validateExecutionArtifactReference(r Reference) error {
-	if r.AccountGeneration == 0 || r.RecordKind != "local_sandbox" || !validUUID(r.ArtifactID) || !validUUID(r.ExecutionID) ||
+	if r.AccountGeneration == 0 || (r.RecordKind != "local_sandbox" && r.RecordKind != "cloud_worker") || !validUUID(r.ArtifactID) || !validUUID(r.ExecutionID) ||
 		r.Name == "" || r.Name != strings.TrimSpace(r.Name) || len(r.Name) > 1024 || !utf8.ValidString(r.Name) ||
 		path.IsAbs(r.Name) || path.Clean(r.Name) != r.Name || r.Name == "." || strings.HasPrefix(r.Name, "../") || strings.ContainsAny(r.Name, "\\\r\n\x00") ||
 		r.MediaType == "" || r.MediaType != strings.TrimSpace(r.MediaType) || len(r.MediaType) > 255 || !utf8.ValidString(r.MediaType) || strings.ContainsAny(r.MediaType, "\r\n\x00") ||

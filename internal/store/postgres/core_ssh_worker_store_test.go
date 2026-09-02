@@ -639,7 +639,7 @@ func TestSSHWorkerContinuationPersistsRetainedWorkerNextAction(t *testing.T) {
 			{ArtifactID: uuid.NewString(), Kind: "file", Name: "reports/Final-Report.MD"},
 			{ArtifactID: uuid.NewString(), Kind: "file", Name: "completion-report.md"},
 			{ArtifactID: uuid.NewString(), Kind: "file", Name: "legacy/final.json"},
-			{ArtifactID: uuid.NewString(), Kind: "file", Name: "requested-result.html"},
+			{ArtifactID: uuid.NewString(), ExecutionID: plan.ExecutionID, Kind: "file", Name: "requested-result.html", MediaType: "text/html", SizeBytes: 4, SHA256: strings.Repeat("a", 64)},
 		},
 	)
 	if err != nil {
@@ -664,13 +664,13 @@ func TestSSHWorkerContinuationPersistsRetainedWorkerNextAction(t *testing.T) {
 	if err = json.Unmarshal([]byte(result.Content), &completion); err != nil ||
 		completion.WorkerID != "worker-one" || !completion.PersistentWorker ||
 		!reflect.DeepEqual(completion.AppliedSteerIDs, []string{steerID}) ||
-		len(completion.Artifacts) != 1 || completion.Artifacts[0].Kind != "file" || completion.Artifacts[0].Name != "requested-result.html" ||
+		len(completion.Artifacts) != 1 || completion.Artifacts[0].Kind != "execution_artifact" || completion.Artifacts[0].Name != "requested-result.html" ||
 		completion.NextAction.Kind != "confirm_destroy_worker" || completion.NextAction.Operation != "destroy_worker" ||
 		completion.NextAction.WorkerID != completion.WorkerID || completion.NextAction.Default != "retain" ||
 		!strings.Contains(completion.NextAction.Question, "whether to destroy") {
 		t.Fatalf("completion=%+v err=%v", completion, err)
 	}
-	if len(result.References) != 2 || result.References[0].Kind != "execution_plan" ||
+	if len(result.References) != 3 || result.References[0].Kind != "execution_plan" ||
 		result.References[1].Kind != "execution_run" || result.References[1].RunID != execution.RunID {
 		t.Fatalf("completion references=%+v", result.References)
 	}

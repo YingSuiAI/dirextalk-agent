@@ -390,6 +390,41 @@ func TestEmbeddedRemoteRunnerKeepsTerminalStdoutInternalAndRequestedArtifactsExp
 	}
 }
 
+func TestCompileRuntimeDeliversBillingTruthfulWorkerPrompt(t *testing.T) {
+	material, err := CompileRuntime(RuntimeRequest{TaskID: "billing-contract", Objective: "Build a result", Architecture: "x86_64", Workload: WorkloadJob, MaxRuntimeSeconds: 60,
+		Model: RuntimeModel{Provider: "openai_compatible", BaseURL: "https://example.test/v1", Name: "test", APIKey: "test"}, ImageFlavor: string(workerimage.FlavorCPU)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Evaluate the exact prompt expressions shipped in the bootstrap, not a
+	// second test-owned copy of the wording.
+	if !strings.Contains(string(material.WorkerScript), shellQuote(base64.StdEncoding.EncodeToString([]byte(remoteRunnerSource)))) {
+		t.Fatal("bootstrap does not deliver the current runner")
+	}
+	start := strings.Index(remoteRunnerSource, "\tprompt := ")
+	if start < 0 {
+		t.Fatal("Worker prompt assembly missing")
+	}
+	end := strings.Index(remoteRunnerSource[start:], "\tif githubAvailable {")
+	if end < 0 {
+		t.Fatal("Worker prompt assembly missing")
+	}
+	source := "package main\nimport \"fmt\"\nfunc main() {\nspec := struct{Workload string}{\"job\"}; artifactRoot := \"/internal/artifacts\"\n" + remoteRunnerSource[start:start+end] + "\nfmt.Print(prompt)\n}\n"
+	filename := filepath.Join(t.TempDir(), "prompt.go")
+	if err = os.WriteFile(filename, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command("go", "run", filename).CombinedOutput()
+	if err != nil {
+		t.Fatalf("evaluate delivered prompt: %s %v", output, err)
+	}
+	for _, required := range []string{"actual billed cost as unavailable", "zero new-resource authorization", "Plan estimates are not actual billing", "retained compute and storage", "Central supplies verified artifact links", "user's requested language"} {
+		if !strings.Contains(string(output), required) {
+			t.Fatalf("delivered prompt lacks %q", required)
+		}
+	}
+}
+
 func TestEmbeddedRemoteRunnerScopesGitHubCredentialAndCleansIt(t *testing.T) {
 	for _, expected := range []string{
 		`github.com ] || exit 0`,

@@ -31,7 +31,7 @@ const (
 	MaxAdmittedTurnToolCalls           = 20
 	toolLoopNudgeGuidance              = "The latest tool action and result are repeating without new evidence. Change approach or synthesize from what is already available; do not repeat the same action."
 	toolLoopSynthesisGuidance          = "The tool loop continued without new evidence. Do not call tools. Produce the best useful answer now from all accumulated evidence and explicitly state remaining gaps."
-	workerTerminalSynthesisGuidance    = "The Cloud Worker is terminal. Its stdout and Worker report are internal evidence, not a user-facing deliverable: do not paste, quote, or lightly reformat them. Synthesize a concise normal answer from the completed work, verification, failures, and genuine user-requested artifacts. Respond in the language of the latest user message unless that message explicitly requests another language. Preserve only useful artifact references, and mention the retained Worker and ask whether to destroy it when the result says it remains available."
+	workerTerminalSynthesisGuidance    = "The Cloud Worker is terminal. Its stdout and Worker report are internal evidence, not a user-facing deliverable: do not paste, quote, or lightly reformat them. Synthesize a concise normal answer from the completed work, verification, failures, and genuine user-requested artifacts. Preserve only useful artifact references, and mention the retained Worker and ask whether to destroy it when the result says it remains available. " + CloudWorkerCompletionGuidance
 	toolCallFormatSynthesisGuidance    = "A previous tool-enabled response used invalid text markup instead of the structured tool protocol. Tools are disabled for this finalization. Produce the best useful final answer from evidence already present in the conversation, explicitly state any remaining gaps, and do not emit or describe DSML, XML, or tool-call markup."
 	outputContinuationGuidance         = "Continue the previous assistant response by emitting only the missing suffix. Do not restart or repeat any prior analysis, reasoning, plan, or response text. Preserve the work already completed. If a tool call was cut off, issue it again once as one complete call."
 	staticSitePublishCorrection        = "static_site_publish arguments are invalid; invoke static_site_publish again immediately with the required non-empty html string containing the complete page, and do not repeat analysis or draft the page outside the tool call"
@@ -2133,7 +2133,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
 			m.RelatedTaskIDs = stableIDs(append(append(m.RelatedTaskIDs, out.result.RelatedTaskIDs...), historyTasks...))
 			m.RelatedPlanIDs = stableIDs(append(append(m.RelatedPlanIDs, out.result.RelatedPlanIDs...), historyPlans...))
-			m.References = publicAnswerReferences(append(append(m.References, out.result.References...), historyReferences...))
+			m.References = answerReferences(m.Content, append(append(m.References, out.result.References...), historyReferences...), conv.Messages)
 			m.ToolSummaries = stableStrings(append(append(m.ToolSummaries, out.result.ToolSummaries...), historySummaries...))
 			userTime := nextMessageTime(conv, s.clock())
 			m.ModelProfileID, m.Role, m.CreatedAt = turn.ProfileID, RoleAssistant, userTime.Add(time.Microsecond)
@@ -2359,8 +2359,8 @@ func (s *Service) commitTurnFinalizationFallback(ctx context.Context, lease Turn
 		return err
 	}
 	historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
-	answerReferences := publicAnswerReferences(historyReferences)
 	content := terminalFallbackMarkdown(partial, len(historyResults), intent.Reason, code, summary)
+	finalReferences := answerReferences(content, historyReferences, conv.Messages)
 	createdAt := nextMessageTime(conv, s.clock()).Add(time.Microsecond)
 	message := Message{
 		ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-final-assistant:"+lease.Turn.RequestID)).String(),
@@ -2370,7 +2370,7 @@ func (s *Service) commitTurnFinalizationFallback(ctx context.Context, lease Turn
 		CreatedAt:      createdAt,
 		RelatedTaskIDs: historyTasks,
 		RelatedPlanIDs: historyPlans,
-		References:     answerReferences,
+		References:     finalReferences,
 		ToolSummaries:  historySummaries,
 	}
 	if message.Validate() != nil {
@@ -2380,7 +2380,7 @@ func (s *Service) commitTurnFinalizationFallback(ctx context.Context, lease Turn
 		RequestID: lease.Turn.RequestID, ConversationID: lease.Turn.ConversationID, Revision: conv.Revision + 1,
 		Message: message, Done: true, ModelProfileID: lease.Turn.ProfileID,
 		RelatedTaskIDs: append([]string(nil), historyTasks...), RelatedPlanIDs: append([]string(nil), historyPlans...),
-		References: cloneReferences(answerReferences), ToolSummaries: append([]string(nil), historySummaries...),
+		References: cloneReferences(finalReferences), ToolSummaries: append([]string(nil), historySummaries...),
 		ToolResults: historyResults, ConversationTitle: conversationTitleFallback(titleSource), ConversationTitleSource: titleSource,
 	}
 	_, err = s.turns.CommitTurn(ctx, lease, response)

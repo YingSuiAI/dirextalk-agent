@@ -6,6 +6,10 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 )
 
+// CloudWorkerCompletionGuidance is shared by durable completion evidence and
+// fresh/resumed model instructions. A quote never supplies billing authority.
+const CloudWorkerCompletionGuidance = `Use only the verified execution_artifact references supplied by Central for genuine user-requested deliverables. Link essential files in Markdown using their exact supplied uri, dirextalk-artifact://<record_kind>/<artifact_id>; never invent sandbox:, file:, filesystem paths, or download URLs. Do not turn stdout, the Worker report, or generic completion reports into extra attachments. Worker reports are task evidence, not billing authority. Explicitly tell the user that actual billed cost is unavailable unless authoritative billing evidence is supplied. A plan quote is only an estimate and new-allocation spending authorization, not an actual bill. Missing values, reuse, or zero new-allocation authorization never mean free or zero actual cost. Retained running compute and retained storage can continue to incur charges until stopped or deleted as applicable; use only trusted quoted rates, label their source time, and do not invent storage rates or treat an old quote as current pricing. Respond in the language of the latest user message unless it explicitly requests another language.`
+
 const cloudWorkerRoutingGuidance = `Assess the request against the available tools. Prefer the smallest sufficient tool path. Use specialized tools first: use web_search for lightweight web research, local_sandbox_run for small offline shell or file transformations, and static_site_publish for a self-contained HTML result. Research plus report or static-page generation is not by itself a reason to start a Worker. After a successful web_search, lightweight research or report work must synthesize the available evidence and state any gaps. Do not use Cloud Worker solely to improve completeness, exactness, freshness, or repeat the same research through another path.
 
 The local sandbox is limited to 30 CPU seconds, 256 MiB memory, 32 processes, 16 MiB total files, and no network. Use cloud_worker_propose only for required network or execution unavailable from specialized tools, including repository cloning, dependency installation, builds, deployments, long-running services, durable remote work, or work exceeding those limits. Skip a local attempt that cannot satisfy the task. If the user asks only for a conceptual plan or forbids starting Worker work, answer directly without calling the tool. Follow-up work requiring a Worker's workspace or artifacts must reuse that retained Worker; local_sandbox_run cannot access the Worker filesystem.
@@ -18,9 +22,9 @@ Call cloud_worker_inventory to read current status, load, current-task, public-I
 
 func cloudWorkerSystemPrompt(base string) string {
 	if strings.TrimSpace(base) == "" {
-		return cloudWorkerRoutingGuidance
+		return cloudWorkerRoutingGuidance + "\n\n" + CloudWorkerCompletionGuidance
 	}
-	return strings.TrimSpace(base) + "\n\n" + cloudWorkerRoutingGuidance
+	return strings.TrimSpace(base) + "\n\n" + cloudWorkerRoutingGuidance + "\n\n" + CloudWorkerCompletionGuidance
 }
 
 func containsCloudWorkerIntrinsic(tools []ResolvedIntrinsic) bool {
