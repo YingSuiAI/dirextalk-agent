@@ -255,9 +255,9 @@ func ValidateCore(cfg *Config) error {
 	return nil
 }
 
-// ValidateCoreCloudWorker validates the optional host-owned deployment region.
-// When it is absent the Agent stays available but does not compose Cloud Worker
-// operations. Uploaded AWS credential regions never select Worker resources.
+// ValidateCoreCloudWorker validates the optional host-owned placement hint.
+// Empty or unrecognized canonical hints use bounded placement fallback;
+// uploaded AWS credential regions never select Worker resources.
 func ValidateCoreCloudWorker(cfg *Config) error {
 	if cfg == nil {
 		return nil

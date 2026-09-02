@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 	"time"
 
 	workercap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/worker"
@@ -22,9 +21,6 @@ const cloudWorkerDefaultQuoteTTL = 15 * time.Minute
 
 func composeDynamicCloudWorkerProposal(cfg config.Config, store *postgres.Store, conversationStore *postgres.CoreConversationStore, workerState *sshworker.FileStore, githubService *coregithub.Service) (*coreCloudWorkerComposition, error) {
 	if !cfg.CapabilityEnabled && !cfg.AgentHTTPEnabled {
-		return nil, nil
-	}
-	if strings.TrimSpace(cfg.CoreCloudWorkerHostRegion) == "" {
 		return nil, nil
 	}
 	if store == nil || conversationStore == nil || workerState == nil {

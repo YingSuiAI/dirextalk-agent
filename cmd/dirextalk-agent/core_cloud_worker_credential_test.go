@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ type cloudWorkerCredentialResolverFake struct {
 }
 
 const fixtureCloudWorkerHostRegion = "ap-northeast-2"
+const fixtureCloudWorkerRegion = "ap-northeast-1"
 
 func (resolver *cloudWorkerCredentialResolverFake) ResolveCredentialRevision(_ context.Context, _ string, revision uint64) (workaws.CredentialHandle, error) {
 	resolver.exactCalls++
@@ -78,13 +80,14 @@ func cloudWorkerCredentialAuthorityFixture(t *testing.T) (*cloudWorkerCredential
 	if err != nil {
 		t.Fatal(err)
 	}
+	authority.placement.probe = unavailableCloudWorkerEndpoint
 	return authority, resolver
 }
 
 func TestCloudWorkerCredentialAuthorityDoubleFencesRevisionAndIdentity(t *testing.T) {
 	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
 	binding, err := authority.ResolveCurrentAWSBinding(context.Background())
-	if err != nil || binding.CredentialID != resolver.handle.ReferenceID || binding.Region != fixtureCloudWorkerHostRegion ||
+	if err != nil || binding.CredentialID != resolver.handle.ReferenceID || binding.Region != fixtureCloudWorkerRegion ||
 		resolver.revisionCalls != 2 || resolver.credentialCalls != 1 {
 		t.Fatalf("exact authority binding=%+v revision_calls=%d credential_calls=%d err=%v",
 			binding, resolver.revisionCalls, resolver.credentialCalls, err)
@@ -109,9 +112,9 @@ func TestCloudWorkerCredentialAuthorityDoubleFencesRevisionAndIdentity(t *testin
 	}
 }
 
-func TestCloudWorkerCredentialAuthorityRejectsInvalidOrChangedHostRegion(t *testing.T) {
+func TestCloudWorkerCredentialAuthorityRejectsMalformedHostAndUnsupportedWorkerRegion(t *testing.T) {
 	_, resolver := cloudWorkerCredentialAuthorityFixture(t)
-	for _, region := range []string{"", " us-east-1", "local-1"} {
+	for _, region := range []string{" us-east-1", "local-1"} {
 		if _, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, region, func(context.Context, int, string) (coreaws.CredentialPage, error) {
 			return coreaws.CredentialPage{Items: resolver.views}, nil
 		}); !errors.Is(err, cloudworker.ErrInvalid) {
@@ -125,7 +128,7 @@ func TestCloudWorkerCredentialAuthorityRejectsInvalidOrChangedHostRegion(t *test
 	}
 	expected.Region = "us-west-2"
 	if _, err = authority.ResolveExactAWSBinding(context.Background(), expected); !errors.Is(err, cloudworker.ErrInvalid) {
-		t.Fatalf("changed host region returned %v", err)
+		t.Fatalf("unsupported Worker region returned %v", err)
 	}
 }
 
@@ -144,9 +147,70 @@ func TestCloudWorkerCredentialReadinessTracksCurrentVerifiedView(t *testing.T) {
 	}
 }
 
+func TestCloudWorkerCredentialPlacementIsLazyVerifiedAndIndependentOfUploadedRegion(t *testing.T) {
+	_, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	for _, host := range []string{"", "zz-unknown-1"} {
+		authority, err := newCloudWorkerCredentialAuthority(resolver, resolver, resolver, host, func(context.Context, int, string) (coreaws.CredentialPage, error) {
+			return coreaws.CredentialPage{Items: resolver.views}, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var probes atomic.Int32
+		authority.placement.probe = func(ctx context.Context, region string) (time.Duration, error) {
+			probes.Add(1)
+			return unavailableCloudWorkerEndpoint(ctx, region)
+		}
+		authority.placement.random = func(int) int { return 2 }
+		resolver.views[0].VerifiedRevision = 0
+		if _, err := authority.ResolveCurrentAWSBinding(context.Background()); !errors.Is(err, cloudworker.ErrStaleAuthorization) || probes.Load() != 0 {
+			t.Fatalf("unverified authority probed: err=%v probes=%d", err, probes.Load())
+		}
+		resolver.views[0].VerifiedRevision = resolver.views[0].Revision
+		first, err := authority.ResolveCurrentAWSBinding(context.Background())
+		if err != nil || first.Region != "eu-west-3" || first.Region == resolver.handle.Region {
+			t.Fatalf("binding=%+v uploaded_region=%q err=%v", first, resolver.handle.Region, err)
+		}
+		second, err := authority.ResolveCurrentAWSBinding(context.Background())
+		if err != nil || second != first || probes.Load() != 3 {
+			t.Fatalf("proposal revalidation changed placement: first=%+v second=%+v probes=%d err=%v", first, second, probes.Load(), err)
+		}
+	}
+}
+
+func TestCloudWorkerCredentialPlacementRevalidatesAfterProbeTimeRotationOrDeletion(t *testing.T) {
+	for _, change := range []string{"verified_rotation", "unverified_rotation", "deleted"} {
+		t.Run(change, func(t *testing.T) {
+			authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
+			authority.placement.probe = func(_ context.Context, region string) (time.Duration, error) {
+				if region == "ap-northeast-1" {
+					switch change {
+					case "verified_rotation":
+						resolver.revisions = []uint64{4, 4}
+						resolver.views[0].Revision, resolver.views[0].VerifiedRevision = 4, 4
+					case "unverified_rotation":
+						resolver.views[0].Revision = 4
+					case "deleted":
+						resolver.views = nil
+					}
+				}
+				return time.Millisecond, nil
+			}
+			binding, err := authority.ResolveCurrentAWSBinding(context.Background())
+			if change == "verified_rotation" {
+				if err != nil || binding.CredentialRevision != 4 {
+					t.Fatalf("stale pre-probe binding=%+v err=%v", binding, err)
+				}
+			} else if !errors.Is(err, cloudworker.ErrStaleAuthorization) || binding != (cloudworker.AWSBinding{}) {
+				t.Fatalf("changed authority escaped: binding=%+v err=%v", binding, err)
+			}
+		})
+	}
+}
+
 func TestCloudWorkerCredentialAuthorityKeepsExactRevisionAfterRotateAndDisable(t *testing.T) {
 	authority, resolver := cloudWorkerCredentialAuthorityFixture(t)
-	expected := cloudworker.AWSBinding{AccountID: resolver.handle.AccountID, Region: fixtureCloudWorkerHostRegion, CredentialID: resolver.handle.ReferenceID, CredentialRevision: resolver.exactRevision}
+	expected := cloudworker.AWSBinding{AccountID: resolver.handle.AccountID, Region: fixtureCloudWorkerRegion, CredentialID: resolver.handle.ReferenceID, CredentialRevision: resolver.exactRevision}
 	resolver.revisions = []uint64{4, 4}
 	resolver.views[0].Revision, resolver.views[0].VerifiedRevision = 4, 4
 	if current, err := authority.ResolveCurrentAWSBinding(context.Background()); err != nil || current.CredentialRevision != 4 {

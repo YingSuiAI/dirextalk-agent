@@ -695,8 +695,8 @@ or stream after admission. It never cancels the accepted Turn; callers use
   Exactly one credential may be active: concurrent creates are serialized and
   a second create is rejected until the current credential is deleted.
 - Optional `agent.worker.v1` publishes only after the persistent SSH Worker
-  manager, the host-owned deployment Region, and the sole current verified AWS
-  credential source are composed.
+  manager, bounded three-Region placement, and the sole current verified AWS
+  credential source are composed; the host deployment Region is optional.
   `list_workers` and `get_worker` expose the exact
   AWS resource identity, observed EC2 state and ordinary auto-assigned public
   IPv4, Worker/task phase, server load and last-seen time, live hourly quote,
@@ -934,8 +934,20 @@ leaves compute unconstrained. GPU proposals additionally carry a verified non-ze
 minimum accelerator-memory working set; named model artifacts must be resolved
 and sized before the proposal. Agent intersects current-generation Linux on-demand
 products with actual regional offerings and live accelerator metadata and selects the cheapest satisfying
-x86_64 shape in the deployment host's identity-verified AWS Region. The
-uploaded credential's default Region is not resource-placement authority.
+x86_64 shape in one of three Worker Regions: `ap-northeast-1`, `us-west-1`, or
+`eu-west-3`. New placement lazily measures the three regional AWS EC2 HTTPS
+endpoints concurrently after credential verification, with normal TLS checks
+and a three-second bound, selecting the lowest successful duration. This is
+endpoint connection/response-header latency, not a Worker latency guarantee.
+If all endpoints fail, approximate great-circle distance from the optional
+deployment-owned host Region selects the closest supported Region; an absent
+or unrecognized host Region selects uniformly at random. Measurements and their
+selected Region are cached for five minutes, with concurrent resolution
+coalesced and expired entries refreshed on demand. Cancellation does not cache
+a choice. Existing plans and Workers retain their exact allowlisted Region after
+restart or changed placement; all account/credential/revision fences still
+apply. A missing host Region never disables composition, and the uploaded
+credential's default Region is not resource-placement authority.
 Every proposal performs a fresh AWS Price List read for that
 exact EC2 shape and gp3 volume. The quote is not served from a persisted pricing
 catalog. Confirmation exposes the exact shape, accelerator name and assigned

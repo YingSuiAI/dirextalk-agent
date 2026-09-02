@@ -78,6 +78,9 @@ func newSSHWorkerExecutor(authority *cloudWorkerCredentialAuthority, github clou
 }
 
 func (executor *sshWorkerExecutor) provider(ctx context.Context, binding cloudworker.AWSBinding) (*sshworker.Provider, sshworker.CredentialIdentity, error) {
+	if !supportedCloudWorkerRegion(binding.Region) {
+		return nil, sshworker.CredentialIdentity{}, cloudworker.ErrInvalid
+	}
 	handle, err := executor.exact.ResolveCredentialRevision(ctx, binding.CredentialID, binding.CredentialRevision)
 	identity := sshworker.CredentialIdentity{CredentialID: binding.CredentialID, CredentialRevision: binding.CredentialRevision, AccountID: binding.AccountID, Region: binding.Region}
 	if err != nil || handle.Validate() != nil || handle.ReferenceID != identity.CredentialID || handle.AccountID != identity.AccountID {
@@ -117,7 +120,7 @@ func (executor *sshWorkerExecutor) authorizeWorkerCreate(ctx context.Context, cr
 	if executor == nil || executor.authority == nil || ctx == nil {
 		return cloudworker.ErrStaleAuthorization
 	}
-	current, err := executor.authority.ResolveCurrentAWSBinding(ctx)
+	current, err := executor.authority.resolveCurrentAWSBindingInRegion(ctx, credential.Region)
 	expected := cloudworker.AWSBinding{AccountID: credential.AccountID, Region: credential.Region,
 		CredentialID: credential.CredentialID, CredentialRevision: credential.CredentialRevision}
 	if err != nil || current != expected {
@@ -149,7 +152,7 @@ func (executor *sshWorkerExecutor) hourlyQuote(ctx context.Context, worker sshwo
 }
 
 func (executor *sshWorkerExecutor) Execute(ctx context.Context, request sshflow.Request) (sshflow.Result, error) {
-	current, err := executor.authority.ResolveCurrentAWSBinding(ctx)
+	current, err := executor.authority.resolveCurrentAWSBindingInRegion(ctx, request.AWS.Region)
 	if err != nil || current != request.AWS {
 		return sshflow.Result{}, errors.Join(cloudworker.ErrStaleAuthorization, err)
 	}
@@ -762,8 +765,8 @@ func (executor *sshWorkerExecutor) currentBindingForCredential(ctx context.Conte
 	if executor == nil || executor.authority == nil || ctx == nil {
 		return cloudworker.AWSBinding{}, sshworker.ErrIdentity
 	}
-	binding, err := executor.authority.ResolveCurrentAWSBinding(ctx)
-	if err != nil || binding.CredentialID != identity.CredentialID || binding.AccountID != identity.AccountID || binding.Region != identity.Region {
+	binding, err := executor.authority.resolveCurrentAWSBindingInRegion(ctx, identity.Region)
+	if err != nil || binding.CredentialID != identity.CredentialID || binding.AccountID != identity.AccountID {
 		return cloudworker.AWSBinding{}, errors.Join(sshworker.ErrIdentity, err)
 	}
 	return binding, nil

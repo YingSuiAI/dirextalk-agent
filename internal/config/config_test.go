@@ -116,14 +116,14 @@ func TestValidateAgentHTTPReusesTheGrantKeyAndDefaultsTheInternalListener(t *tes
 }
 
 func TestValidateCoreCloudWorkerRequiresCanonicalHostRegion(t *testing.T) {
-	for _, region := range []string{"us-east-1", "us-gov-west-1", "cn-north-1"} {
+	for _, region := range []string{"us-east-1", "us-gov-west-1", "cn-north-1", "zz-unknown-1"} {
 		cfg := Config{AgentHTTPEnabled: true, CoreCloudWorkerHostRegion: region}
 		if err := ValidateCoreCloudWorker(&cfg); err != nil {
 			t.Fatalf("region %q rejected: %v", region, err)
 		}
 	}
 	if err := ValidateCoreCloudWorker(&Config{AgentHTTPEnabled: true}); err != nil {
-		t.Fatalf("missing optional host region should withhold Cloud Worker only: %v", err)
+		t.Fatalf("empty optional placement hint must remain valid: %v", err)
 	}
 	for _, region := range []string{" us-east-1", "US-EAST-1", "local-1", "us-east-01"} {
 		cfg := Config{AgentHTTPEnabled: true, CoreCloudWorkerHostRegion: region}

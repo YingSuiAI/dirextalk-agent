@@ -348,6 +348,100 @@ func TestSSHWorkerExecuteRejectsRotatedCurrentCredentialBeforeWorkspaceRead(t *t
 	}
 }
 
+func TestSSHWorkerPersistedRegionSurvivesRandomPlacementRestart(t *testing.T) {
+	ctx := context.Background()
+	first, _ := cloudWorkerCredentialAuthorityFixture(t)
+	first.placement.hostRegion = ""
+	first.placement.random = func(int) int { return 0 }
+	now := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	first.placement.now = func() time.Time { return now }
+	expected, err := first.ResolveCurrentAWSBinding(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateRoot := t.TempDir()
+	state, err := sshworker.NewFileStore(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := sshworker.WorkerRecord{WorkerID: "22222222-2222-4222-8222-222222222222", OwnerID: "owner", AccountGeneration: 1, Phase: sshworker.WorkerIdle,
+		Credential: sshworker.CredentialIdentity{CredentialID: expected.CredentialID, CredentialRevision: expected.CredentialRevision, AccountID: expected.AccountID, Region: expected.Region}, VolumeGiB: 24}
+	if err := state.SaveWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	// Expired connectivity measurements may change only future placement.
+	now = now.Add(cloudWorkerPlacementTTL)
+	first.placement.random = func(int) int { return 1 }
+	refreshed, err := first.ResolveCurrentAWSBinding(ctx)
+	if err != nil || refreshed.Region != "us-west-1" {
+		t.Fatalf("refreshed=%+v err=%v", refreshed, err)
+	}
+	if exact, err := first.ResolveExactAWSBinding(ctx, expected); err != nil || exact != expected {
+		t.Fatalf("post-expiry exact=%+v err=%v", exact, err)
+	}
+	if err := (&sshWorkerExecutor{authority: first}).authorizeWorkerCreate(ctx, worker.Credential); err != nil {
+		t.Fatalf("expiry rejected confirmed placement: %v", err)
+	}
+	// A fresh authority also makes a different valid choice after process restart.
+	restarted, resolver := cloudWorkerCredentialAuthorityFixture(t)
+	restarted.placement.hostRegion = ""
+	restarted.placement.random = func(int) int { return 1 }
+	current, err := restarted.ResolveCurrentAWSBinding(ctx)
+	if err != nil || current.Region != "us-west-1" || current.Region == expected.Region {
+		t.Fatalf("new placement=%+v err=%v", current, err)
+	}
+	state, err = sshworker.NewFileStore(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, found, err := state.LoadWorker(ctx, worker.WorkerID)
+	if err != nil || !found || persisted.Credential != worker.Credential {
+		t.Fatalf("persisted=%+v found=%t err=%v", persisted, found, err)
+	}
+	if exact, err := restarted.ResolveExactAWSBinding(ctx, expected); err != nil || exact != expected {
+		t.Fatalf("exact=%+v err=%v", exact, err)
+	}
+	credentials, err := newCloudWorkerAWSCredentialsProvider(restarted, expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := credentials.Retrieve(ctx); err != nil {
+		t.Fatalf("persisted SDK credentials: %v", err)
+	}
+
+	cachedProvider := &sshworker.Provider{}
+	catalog := &workerStatusPricingCatalog{snapshot: cloudworker.PricingCatalogSnapshot{Currency: "USD", SourceTime: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}}
+	sources := &workspaceSourceStub{reads: make(map[string]cloudworker.SourceRead)}
+	executor := &sshWorkerExecutor{authority: restarted, exact: resolver, state: state, root: t.TempDir(), sources: sources, pricing: catalog,
+		providers: map[sshworker.CredentialIdentity]*sshworker.Provider{persisted.Credential: cachedProvider}}
+	if err := executor.authorizeWorkerCreate(ctx, persisted.Credential); err != nil {
+		t.Fatalf("persisted authorized creation was rerouted: %v", err)
+	}
+	if provider, err := executor.providerForIdentity(ctx, persisted.Credential); err != nil || provider != cachedProvider {
+		t.Fatalf("retained provider=%p err=%v", provider, err)
+	}
+	if _, err := executor.hourlyQuote(ctx, persisted); err != nil || catalog.request.Region != expected.Region {
+		t.Fatalf("retained pricing Region=%q err=%v", catalog.request.Region, err)
+	}
+	item := workspaceManifestItem("11111111-1111-4111-8111-111111111111", "55555555-5555-4555-8555-555555555555", "inputs/file.txt", "file", "text/plain", []byte("input"))
+	request := sshflowRequest(sealedWorkspaceManifest(t, item), cloudworker.WorkspaceReadOnly)
+	request.AWS = expected
+	_, err = executor.Execute(ctx, request)
+	if !errors.Is(err, sshworker.ErrInvalid) || errors.Is(err, cloudworker.ErrStaleAuthorization) || sources.calls != 1 {
+		t.Fatalf("persisted execution failed before expected source boundary: err=%v reads=%d", err, sources.calls)
+	}
+	// Different placement may not weaken the current credential revision fence.
+	resolver.revisions = []uint64{4, 4}
+	resolver.views[0].Revision, resolver.views[0].VerifiedRevision = 4, 4
+	if err := executor.authorizeWorkerCreate(ctx, persisted.Credential); !errors.Is(err, cloudworker.ErrStaleAuthorization) {
+		t.Fatalf("rotated creation accepted: %v", err)
+	}
+	_, err = executor.Execute(ctx, request)
+	if !errors.Is(err, cloudworker.ErrStaleAuthorization) || sources.calls != 1 {
+		t.Fatalf("rotated execution err=%v reads=%d", err, sources.calls)
+	}
+}
+
 func TestSSHWorkerRetainedReuseRechecksGitHubBindingBeforeWorkspaceRead(t *testing.T) {
 	authority, _ := cloudWorkerCredentialAuthorityFixture(t)
 	awsBinding, err := authority.ResolveCurrentAWSBinding(context.Background())

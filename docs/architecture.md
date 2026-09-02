@@ -33,10 +33,24 @@ are absent from the public registry until their composition and readiness
 checks pass. Background model, extension, Knowledge, and AWS work use the same
 durable Task/event path; the Agent never creates a parallel execution history.
 Local Agent/MCP/Skill/Knowledge work remains on the existing sandbox and worker
-pool. Cloud Worker readiness requires both the sole active AWS credential
-uploaded and verified through the App and the host-owned, identity-verified AWS
-Region supplied by deployment. The uploaded credential's default Region remains
-credential metadata and cannot redirect Worker resources. Deployment does not
+pool. Cloud Worker readiness requires the sole active AWS credential uploaded
+and verified through the App; a missing deployment Region does not disable
+composition. New Workers are restricted to `ap-northeast-1` (Tokyo), `us-west-1`
+(N. California), and `eu-west-3` (Paris). After credential verification, the first
+new-placement resolution concurrently measures direct unauthenticated HTTPS/TLS
+connectivity to the three regional EC2 endpoints with a three-second bound and
+normal certificate verification. The lowest successful duration wins; this
+measures endpoint connection and response-header latency, not actual Worker
+latency. If all probes fail, the optional deployment-owned
+`core_cloud_worker_host_region` hint selects the nearest supported Region by
+approximate host-metro great-circle distance; unknown or absent hints select
+uniformly at random. Successful choices are cached for five minutes; concurrent
+requests share one measurement and expired choices refresh lazily. Canceled
+attempts are not cached. Existing persisted bindings keep
+their own supported Region after restart, regardless of the new placement
+choice. Account, credential identity and revision authorization fences remain
+unchanged. The uploaded credential's default Region remains credential metadata
+and cannot redirect Worker resources. Deployment does not
 bind a Worker account, image, network, domain, or credential.
 Before creating a new Worker, the Agent reads the current AWS EC2 and EBS price,
 presents the exact quote, and performs no AWS mutation until the owner confirms

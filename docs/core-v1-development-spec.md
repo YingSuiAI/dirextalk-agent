@@ -847,11 +847,11 @@ for the request-local SDK call and never logs them.
 
 Cloud Worker readiness is derived at request time from the durable
 Task/confirmation stores, local artifact repository, persistent SSH Worker
-manager, the sole active App-uploaded AWS credential, and the host-owned AWS
-Region recorded from the deployment node's immutable identity. Missing Region
-configuration withholds Cloud Worker publication without taking down other
-Agent capabilities. The credential's stored default Region is not placement
-authority. The [API contract](api-contract.md) defines publication gates;
+manager and the sole active App-uploaded AWS credential. The deployment-owned
+host Region is an optional placement hint; missing configuration does not
+withhold Cloud Worker publication. The credential's stored default Region is
+not placement authority. The [API contract](api-contract.md) defines publication
+gates and the latency-first three-Region placement/fallback policy;
 evidence and remaining verification are recorded in the
 [delivery tracker](delivery-tracker.md).
 
@@ -891,7 +891,7 @@ outputs, and explicit headroom; an unverified critical fact cannot produce a
 paid proposal.
 
 Agent intersects current-generation x86_64 on-demand products with the
-deployment host Region's actual EC2 offerings and live accelerator metadata
+selected Worker Region's actual EC2 offerings and live accelerator metadata
 and selects the cheapest shape satisfying every hard minimum. Fractional GPU
 instances contribute only their assigned accelerator memory. The plan and
 confirmation expose the selected shape, concrete accelerator name and assigned

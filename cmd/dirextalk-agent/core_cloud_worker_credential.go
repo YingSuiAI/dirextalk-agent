@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"strings"
 
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
@@ -13,15 +12,14 @@ import (
 
 // cloudWorkerCredentialAuthority performs a fresh, double-revision-fenced
 // read through the durable CoreAWS credential store. A verified sole active
-// credential becomes proposal-ready immediately. The host-owned deployment
-// region is immutable process configuration and is never taken from the
-// uploaded credential's default region.
+// credential becomes proposal-ready immediately. New placement is selected
+// after credential verification, never from its uploaded default Region.
 type cloudWorkerCredentialAuthority struct {
 	credentials workaws.CredentialResolver
 	revisions   workaws.CredentialRevisionResolver
 	exact       workaws.ExactCredentialResolver
 	list        func(context.Context, int, string) (coreaws.CredentialPage, error)
-	hostRegion  string
+	placement   *cloudWorkerPlacement
 }
 
 func newCloudWorkerCredentialAuthority(
@@ -32,14 +30,50 @@ func newCloudWorkerCredentialAuthority(
 	list func(context.Context, int, string) (coreaws.CredentialPage, error),
 ) (*cloudWorkerCredentialAuthority, error) {
 	regionConfig := config.Config{CoreCloudWorkerHostRegion: hostRegion}
-	if credentials == nil || revisions == nil || exact == nil || list == nil || strings.TrimSpace(hostRegion) == "" ||
+	if credentials == nil || revisions == nil || exact == nil || list == nil ||
 		config.ValidateCoreCloudWorker(&regionConfig) != nil {
 		return nil, cloudworker.ErrInvalid
 	}
-	return &cloudWorkerCredentialAuthority{credentials: credentials, revisions: revisions, exact: exact, list: list, hostRegion: hostRegion}, nil
+	return &cloudWorkerCredentialAuthority{credentials: credentials, revisions: revisions, exact: exact, list: list, placement: newCloudWorkerPlacement(hostRegion)}, nil
 }
 
 func (authority *cloudWorkerCredentialAuthority) ResolveCurrentAWSBinding(ctx context.Context) (cloudworker.AWSBinding, error) {
+	if authority == nil || authority.placement == nil || ctx == nil {
+		return cloudworker.AWSBinding{}, cloudworker.ErrInvalid
+	}
+	// A verified-view eligibility read allows credential-free endpoint probing;
+	// the full current credential fence must happen AFTER that network wait.
+	if !authority.HasCurrentVerifiedAWSBinding(ctx) {
+		return cloudworker.AWSBinding{}, cloudworker.ErrStaleAuthorization
+	}
+	region, err := authority.placement.region(ctx)
+	if err != nil {
+		return cloudworker.AWSBinding{}, err
+	}
+	binding, err := authority.resolveCurrentCredentialBinding(ctx)
+	if err != nil {
+		return cloudworker.AWSBinding{}, err
+	}
+	binding.Region = region
+	return binding, nil
+}
+
+// A persisted operation's Region is immutable even after process restart or a
+// new placement decision. Its account and current credential revision fences
+// are identical to a new proposal's; only its recorded allowlisted Region wins.
+func (authority *cloudWorkerCredentialAuthority) resolveCurrentAWSBindingInRegion(ctx context.Context, region string) (cloudworker.AWSBinding, error) {
+	if !supportedCloudWorkerRegion(region) {
+		return cloudworker.AWSBinding{}, cloudworker.ErrInvalid
+	}
+	binding, err := authority.resolveCurrentCredentialBinding(ctx)
+	if err != nil {
+		return cloudworker.AWSBinding{}, err
+	}
+	binding.Region = region
+	return binding, nil
+}
+
+func (authority *cloudWorkerCredentialAuthority) resolveCurrentCredentialBinding(ctx context.Context) (cloudworker.AWSBinding, error) {
 	if authority == nil || authority.credentials == nil || authority.revisions == nil || authority.exact == nil || ctx == nil {
 		return cloudworker.AWSBinding{}, cloudworker.ErrInvalid
 	}
@@ -68,7 +102,6 @@ func (authority *cloudWorkerCredentialAuthority) ResolveCurrentAWSBinding(ctx co
 		int64(credentialBinding.CredentialRevision) != view.Revision {
 		return cloudworker.AWSBinding{}, cloudworker.ErrStaleAuthorization
 	}
-	credentialBinding.Region = authority.hostRegion
 	return credentialBinding, nil
 }
 
@@ -93,7 +126,7 @@ func (authority *cloudWorkerCredentialAuthority) ResolveExactAWSBinding(ctx cont
 }
 
 func (authority *cloudWorkerCredentialAuthority) ResolveExactCredential(ctx context.Context, expected cloudworker.AWSBinding) (workaws.CredentialHandle, error) {
-	if authority == nil || authority.exact == nil || ctx == nil || expected.CredentialRevision == 0 || expected.Region != authority.hostRegion {
+	if authority == nil || authority.exact == nil || ctx == nil || expected.CredentialRevision == 0 || !supportedCloudWorkerRegion(expected.Region) {
 		return workaws.CredentialHandle{}, cloudworker.ErrInvalid
 	}
 	credential, err := authority.exact.ResolveCredentialRevision(ctx, expected.CredentialID, expected.CredentialRevision)
@@ -116,7 +149,7 @@ type cloudWorkerAWSCredentialsProvider struct {
 }
 
 func newCloudWorkerAWSCredentialsProvider(authority *cloudWorkerCredentialAuthority, binding cloudworker.AWSBinding) (*cloudWorkerAWSCredentialsProvider, error) {
-	if authority == nil || authority.exact == nil || binding.CredentialRevision == 0 {
+	if authority == nil || authority.exact == nil || binding.CredentialRevision == 0 || !supportedCloudWorkerRegion(binding.Region) {
 		return nil, cloudworker.ErrInvalid
 	}
 	return &cloudWorkerAWSCredentialsProvider{authority: authority, binding: binding}, nil

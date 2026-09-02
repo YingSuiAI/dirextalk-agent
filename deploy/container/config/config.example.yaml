@@ -38,8 +38,9 @@ core_static_sites_enabled: false
 core_workload_enabled: false
 core_workload_runner_socket: /run/dirextalk-core-runner/runner.sock
 core_workload_runner_uid: 65530
-# The production host provisioner writes its identity-verified AWS region.
-# Without it the Agent stays healthy but withholds Cloud Worker operations.
+# Optional deployment-owned AWS Region hint for Worker placement fallback.
+# Worker placement measures three regional HTTPS endpoints (3s timeout, 5m cache).
+# If all fail, choose the geographically nearest Region, or random when unknown.
 # core_cloud_worker_host_region: us-east-1
 core_knowledge_enabled: false
 # When enabled, Knowledge uses pgvector in the configured Agent PostgreSQL
