@@ -119,12 +119,19 @@ func TestPublishedCatalogIsValidAndOnlyContainsQualifiedEntries(t *testing.T) {
 	if err := json.Unmarshal(publishedCatalog, &catalog); err != nil {
 		t.Fatal(err)
 	}
-	// Empty catalogs are intentionally valid while live qualification is pending.
+	// The supported placement Regions must all have both qualified flavors.
+	wantRegions := []string{"ap-northeast-1", "us-west-1", "eu-west-3"}
+	if len(catalog.Regions) != len(wantRegions) {
+		t.Fatalf("published Region count=%d, want %d", len(catalog.Regions), len(wantRegions))
+	}
 	if _, err := PublishedReference("unpublished-region", FlavorCPU); !IsFailure(err, FailureMissing) {
 		t.Fatalf("catalog header invalid: %v", err)
 	}
-	for region, entries := range catalog.Regions {
-		for flavor := range entries {
+	for _, region := range wantRegions {
+		if len(catalog.Regions[region]) != 2 {
+			t.Fatalf("%s must publish exactly CPU and GPU images", region)
+		}
+		for _, flavor := range []Flavor{FlavorCPU, FlavorGPU} {
 			if _, err := PublishedReference(region, flavor); err != nil {
 				t.Fatalf("%s/%s: %v", region, flavor, err)
 			}

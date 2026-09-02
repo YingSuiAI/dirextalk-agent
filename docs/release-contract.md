@@ -83,6 +83,20 @@ release. Never add unqualified candidates, placeholder AMI IDs or private images
 an absent entry fails closed before offering paid compute. Retained Worker
 provenance does not depend on the current catalog entry.
 
+The Worker placement allowlist is Tokyo (`ap-northeast-1`), Northern California
+(`us-west-1`), and Paris (`eu-west-3`). Each Region needs its own qualified public
+CPU and GPU catalog entries before an Agent release enables the three-Region
+placement policy. Adding coverage does not require rebuilding unchanged runtime
+inputs: copy the exact qualified AMI, preserve its source build ARN and runtime
+provenance, and independently verify the copy's AWS-reported source AMI/Region,
+owner, root snapshot, release metadata, availability and public permissions.
+Exercise the regional production consumer and CPU boot/reboot tool checks before
+catalog promotion; report GPU source qualification separately from any regional
+GPU hardware test. Publication does not inherit source sharing permissions.
+Record copy request tokens, exact output IDs and regional pointer versions, and
+restore temporarily relaxed public-access protection after sharing. New regional
+pointers must not overwrite an unrelated current or candidate release.
+
 Build and publish require a non-root operator, least-privilege Image Builder
 instance profile, explicit network/KMS/Region inputs, and an acknowledged cost
 ceiling. The process is manual and concurrency-one by default. Cleanup preserves

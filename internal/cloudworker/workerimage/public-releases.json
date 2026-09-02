@@ -33,6 +33,70 @@
           "p6-b300"
         ]
       }
+    },
+    "us-west-1": {
+      "cpu": {
+        "image_id": "ami-0716038bb18f71563",
+        "image_schema": "1",
+        "image_version": "1.1.4",
+        "pi_version": "0.84.4",
+        "tested": true
+      },
+      "gpu": {
+        "image_id": "ami-0d97c786fadd13d69",
+        "image_schema": "1",
+        "image_version": "1.1.4",
+        "pi_version": "0.84.4",
+        "tested": true,
+        "gpu_supported_families": [
+          "g4dn",
+          "g5",
+          "g6",
+          "g6e",
+          "g7",
+          "g7e",
+          "gr6",
+          "p4d",
+          "p4de",
+          "p5",
+          "p5e",
+          "p5en",
+          "p6-b200",
+          "p6-b300"
+        ]
+      }
+    },
+    "eu-west-3": {
+      "cpu": {
+        "image_id": "ami-0aa6660ab89f73a10",
+        "image_schema": "1",
+        "image_version": "1.1.4",
+        "pi_version": "0.84.4",
+        "tested": true
+      },
+      "gpu": {
+        "image_id": "ami-0b04324d5042ea771",
+        "image_schema": "1",
+        "image_version": "1.1.4",
+        "pi_version": "0.84.4",
+        "tested": true,
+        "gpu_supported_families": [
+          "g4dn",
+          "g5",
+          "g6",
+          "g6e",
+          "g7",
+          "g7e",
+          "gr6",
+          "p4d",
+          "p4de",
+          "p5",
+          "p5e",
+          "p5en",
+          "p6-b200",
+          "p6-b300"
+        ]
+      }
     }
   }
 }

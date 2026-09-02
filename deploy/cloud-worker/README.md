@@ -186,6 +186,18 @@ promotion and retention state. Publish and cleanup revalidate
 the same STS account and explicit Region before every regional read or write.
 Retain only current plus one previous AMI per flavor in every listed Region.
 
+The application's supported placement Regions and regional-copy acceptance
+requirements are defined in [the release contract](../../docs/release-contract.md).
+For a new Image Builder release, distribute to
+`ap-northeast-1,eu-west-3,us-west-1`. Expanding an unchanged, already-qualified
+release instead uses ordinary EC2 AMI copies, preserving exact source-build
+provenance without reinstalling the runtime or requesting a paid completion
+window. Keep copy receipts and independent regional acceptance with the release
+evidence. Such copies are not additional outputs of the original Image Builder
+build ARN: do not present them to `manage-release.sh publish` as if they were.
+Create the new Regions' owner-only candidate/current pointers without
+overwriting existing values, then update the embedded catalog after acceptance.
+
 ## Image tests and operational evidence
 
 The test component validates every required tool and captures its version; Pi

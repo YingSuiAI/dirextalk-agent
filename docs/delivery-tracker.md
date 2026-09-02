@@ -830,6 +830,51 @@ support.
   Only the two published release snapshots remain as retained image storage.
   Agent application-image publication remains separate and is deferred while
   the concurrent Worker-destruction fix is integrated.
+- Subsequently on **2026-09-02**, the user explicitly authorized root publication
+  for the three-Region release, as a bounded exception to the normal non-root
+  operator requirement. The exact qualified Tokyo `1.1.4` CPU/GPU images above
+  were copied without rebuilding runtime inputs. Northern California
+  (`us-west-1`) received CPU `ami-0716038bb18f71563` /
+  `snap-0e7a9f586610c5769` and GPU `ami-0d97c786fadd13d69` /
+  `snap-09696ec7698858bd4`; Paris (`eu-west-3`) received CPU
+  `ami-0aa6660ab89f73a10` / `snap-01646742c7da42cfb` and GPU
+  `ami-0b04324d5042ea771` / `snap-06be92ac8548827a8`.
+  Copy request tokens, source qualification build ARNs, AWS-reported source
+  AMI/Region, owner, live root mapping, and public AMI/snapshot permissions were
+  independently checked with exact account/principal/UserId fences before AWS
+  calls. Both new Regions' original `block-new-sharing` AMI protection was
+  restored, snapshot protection stayed unchanged, and public read-back still
+  passed. Their owner-only candidate/current SSM pointers were initialized at
+  version 1 without overwriting prior values; Tokyo outputs were reused unchanged.
+  The embedded catalog now has exactly CPU and GPU entries in each of the three
+  Regions, enforced by a regression that first failed on the Tokyo-only catalog.
+
+  Real `t3.small` (2 vCPU, 2 GiB) instances booted both copied CPU images and
+  passed the unchanged tool/Pi/uv, offline web/PDF/Git, real reboot persistence,
+  and residue component checks. The first external wrapper used a Bash-only
+  option under the SSM document's POSIX shell; a minimal local reproduction
+  isolated it, and a corrected outer wrapper passed on the same instances
+  without changing the component or rebuilding either image. Both instances,
+  their root volumes, and their temporary no-ingress security groups were
+  independently verified terminated/deleted. GPU hardware qualification remains
+  the Tokyo T4 evidence above: the publisher's G/VT quota is zero in both new
+  Regions, so no new regional GPU instance test is claimed. Production
+  `SelectCompute` and SDK discovery passed in all three Regions using the actual
+  catalog; each selected `t3a.small` (2 vCPU, 2 GiB, 8-GiB gp3) and discovered
+  the exact regional CPU/GPU IDs with 8/75-GiB root minima. These are live
+  publisher-account checks, not a second-account launch claim.
+
+  Agent commit `3f12c3d` implements the API contract's three-Region latency-first
+  placement, bounded five-minute cache, geographic/random fallback, optional
+  host hint, and durable-region credential/lifecycle fences. The real direct
+  HTTPS probe from WSL measured Tokyo 276 ms, California 706 ms, and Paris
+  862 ms, selecting Tokyo within 862 ms; these are endpoint measurements, not
+  Worker latency guarantees. Focused race checks, `go test ./...`,
+  `go vet ./...`, `go build ./cmd/...`, and diff checks passed. PostgreSQL
+  integration checks requiring `AGENT_TEST_POSTGRES_DSN` were not enabled.
+  The application changes and embedded catalog still require the separate
+  formal Agent application release; this AMI publication did not push Git,
+  publish an Agent container, or change a running Agent deployment.
 - On **2026-08-13**, the active implementation replaced that historical
   inbound/custom-image path with the persistent SSH Worker manager. Focused
   tests covered AWS-owned AL2023/default-network discovery, ordinary public IPv4,
