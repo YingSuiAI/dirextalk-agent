@@ -1,4 +1,4 @@
-# Dirextalk Worker AMI release 1.1.1
+# Dirextalk Worker AMI release 1.1.2
 
 This directory is the Agent-owned, operator-run EC2 Image Builder release
 surface for the persistent SSH Worker. It does not change the server host AMI,
@@ -142,7 +142,7 @@ Region-local read-back after every write:
 ```bash
 AWS_PROFILE=release deploy/cloud-worker/scripts/manage-release.sh publish \
   --bundle /tmp/dirextalk-worker-ami-cpu --image-build-version-arn \
-  arn:aws:imagebuilder:us-east-1:123456789012:image/dirextalk-worker-cpu-1-1-1/1.1.1/1 \
+  arn:aws:imagebuilder:us-east-1:123456789012:image/dirextalk-worker-cpu-1-1-2/1.1.2/1 \
   --execute --confirm-costs
 ```
 
@@ -204,7 +204,7 @@ and all five common immutable output tags:
 ```text
 DirextalkWorkerImageSchema=1
 DirextalkWorkerImageFlavor=cpu|gpu
-DirextalkWorkerImageVersion=1.1.1
+DirextalkWorkerImageVersion=1.1.2
 DirextalkPiVersion=0.84.4
 DirextalkImageTested=true
 ```

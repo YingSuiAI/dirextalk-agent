@@ -1,7 +1,7 @@
 {
   "schema": "dirextalk.worker-image-release/v1",
   "image_schema": "1",
-  "image_version": "1.1.1",
+  "image_version": "1.1.2",
   "pi": {
     "version": "0.84.4",
     "linux_x64_url": "https://github.com/earendil-works/pi/releases/download/v0.84.4/pi-linux-x64.tar.gz",
@@ -58,7 +58,7 @@
   ],
   "required_ami_tags": {
     "DirextalkWorkerImageSchema": "1",
-    "DirextalkWorkerImageVersion": "1.1.1",
+    "DirextalkWorkerImageVersion": "1.1.2",
     "DirextalkPiVersion": "0.84.4",
     "DirextalkImageTested": "true"
   },
