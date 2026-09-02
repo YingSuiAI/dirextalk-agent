@@ -467,6 +467,14 @@ support.
   Worker result, does not paste it, and is instructed to use the latest user's
   language without a hardcoded locale; genuine requested file artifacts remain
   supported.
+- On **2026-09-02**, terminal Worker synthesis was repaired to persist its
+  tools-disabled finalization intent before the continuation can re-resolve
+  tools, rebuild the compiled prompt, or validate a derived runtime. The
+  finalization dispatch then validates the exact stored admission snapshot, so
+  accepted turns containing context-bound routing guidance retain their
+  immutable runtime digest. Focused coverage uses an ordering-aware strict
+  runtime validator and proves Central still performs one language-aware
+  synthesis without exposing the raw Worker report.
 - On **2026-08-30**, tool-enabled Native model steps gained a validation-before-
   publication boundary. Model-authored narration accompanying a structured tool
   call stays private, and a protocol-shaped DSML envelope is quarantined even

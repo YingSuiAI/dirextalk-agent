@@ -1288,6 +1288,18 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			return
 		}
 	}
+	if terminalWorkerNeedsSynthesis && !finalizing {
+		if !durableFinalization {
+			_, _ = s.turns.FailTurn(ctx, lease, "finalization_store_unavailable", "durable turn finalization store is unavailable")
+			return
+		}
+		finalization = NewTurnFinalizationIntent(TurnFinalizationToolOutcome)
+		if err = finalizationStore.PrepareTurnFinalization(ctx, lease, finalization, nil); err != nil {
+			return
+		}
+		s.executeTurn(ctx, id)
+		return
+	}
 	commitFallback := func(intent TurnFinalizationIntent, code, summary string) {
 		if commitErr := s.commitTurnFinalizationFallback(ctx, lease, conv, persistedMessageCount, conversationTitleUserText, intent, code, summary); commitErr != nil {
 			current, readErr := s.turns.GetTurn(ctx, turn.ID)
@@ -1437,8 +1449,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if !finalizing {
 		var reason TurnFinalizationReason
 		switch {
-		case terminalWorkerNeedsSynthesis:
-			reason = TurnFinalizationToolOutcome
 		case history.supervisorTerminal && !deferredWorkerFollowUp:
 			reason = TurnFinalizationToolOutcome
 		case toolCallBudgetExhausted:

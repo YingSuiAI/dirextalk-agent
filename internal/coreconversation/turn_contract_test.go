@@ -338,6 +338,21 @@ type readOnlyTurnStore struct {
 	prepared        ToolAttempt
 }
 
+type runtimeValidatingTurnStore struct {
+	*readOnlyTurnStore
+	validations int
+}
+
+func (s *runtimeValidatingTurnStore) ValidateTurnRuntime(_ context.Context, _ TurnLease, runtime TurnRuntimeSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.validations++
+	if s.finalization == nil || s.turn.RuntimeSnapshot == nil || s.turn.RuntimeSnapshot.Digest() != runtime.Digest() {
+		return ErrTurnRuntimeIncompatible
+	}
+	return nil
+}
+
 func (s *readOnlyTurnStore) PrepareTurnFinalization(_ context.Context, _ TurnLease, intent TurnFinalizationIntent, failure *ModelAttemptFailure) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1457,12 +1472,31 @@ func TestExecuteTurnSynthesizesSucceededCloudWorkerInLatestUserLanguage(t *testi
 	webSnapshot := contextSnapshot("builtin:web_search:tavily", "web_search", strings.Repeat("3", 64))
 	installedSnapshot := contextSnapshot("mcp:installed", "installed_lookup", strings.Repeat("4", 64))
 	githubSnapshot := contextSnapshot("github-mcp", "mcp__github__get_file_contents", strings.Repeat("5", 64))
-	snapshots := []ExtensionExecutionSnapshot{productSnapshot, knowledgeSnapshot, webSnapshot, installedSnapshot, githubSnapshot}
+	messageSnapshot := contextSnapshot("message-mcp", "message_lookup", strings.Repeat("6", 64))
+	snapshots := []ExtensionExecutionSnapshot{productSnapshot, knowledgeSnapshot, webSnapshot, installedSnapshot, githubSnapshot, messageSnapshot}
 	turn := Turn{ID: turnID, RequestID: requestID, ConversationID: conversationID,
 		Prompt: "部署服务", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
 		ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 3,
 		LastSequence: 5, ExpectedRevision: &expectedRevision, CreatedAt: createdAt,
 		ExtensionSnapshots: snapshots, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: snapshots}.ExtensionSnapshotDigest()}
+	admittedSystemPrompt := appendSystemPrompt(compilePlatformSystemPrompt(profile.SystemPrompt), conversationConvergenceGuidance)
+	admittedSystemPrompt = appendMessageMCPRoutingGuidance(admittedSystemPrompt, []ResolvedExtension{{Snapshot: messageSnapshot}})
+	workerIntrinsic := ResolvedIntrinsic{
+		Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerProposeToolName, InputSchema: map[string]any{"type": "object"}},
+		Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+			return IntrinsicExecutionResult{}, nil
+		},
+	}
+	admittedSystemPrompt = cloudWorkerSystemPrompt(admittedSystemPrompt)
+	policy, err := AdmittedTurnExecutionPolicy(TurnExecutionDeep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admittedRuntime, err := newTurnRuntimeSnapshotWithPolicy(admittedSystemPrompt, profile, []ResolvedIntrinsic{workerIntrinsic}, turn.ExtensionSnapshotDigest, "", "", policy, TurnConstrainedWorkflow{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn.RuntimeSnapshot = &admittedRuntime
 	taskID, planID := uuid.NewString(), uuid.NewString()
 	webCall := ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"worker recovery"}`}
 	webResult := observedTestToolResult(ToolResult{CallID: webCall.ID, ToolName: webCall.Name, Content: `{"results":[]}`})
@@ -1482,7 +1516,7 @@ func TestExecuteTurnSynthesizesSucceededCloudWorkerInLatestUserLanguage(t *testi
 	base := newFakeStore()
 	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 2,
 		Messages: []Message{prefix, durableUser, quote}, CreatedAt: createdAt.Add(-time.Hour), UpdatedAt: createdAt}
-	store := &readOnlyTurnStore{
+	store := &runtimeValidatingTurnStore{readOnlyTurnStore: &readOnlyTurnStore{
 		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
 		events: []TurnEvent{
 			{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: createdAt},
@@ -1491,9 +1525,10 @@ func TestExecuteTurnSynthesizesSucceededCloudWorkerInLatestUserLanguage(t *testi
 			{TurnID: turn.ID, Sequence: 4, Kind: TurnEventToolCall, ToolCall: &call, CreatedAt: createdAt.Add(3 * time.Second)},
 			{TurnID: turn.ID, Sequence: 5, Kind: TurnEventToolResult, ToolResult: &result, CreatedAt: createdAt.Add(4 * time.Second)},
 		},
-	}
+	}}
 	model := &capturingTurnModel{}
 	resolverCalls := 0
+	intrinsicResolverCalls := 0
 	service, err := NewService(store, model, extensionResolverFunc(func(_ context.Context, selections []ExtensionSelection) ([]ResolvedExtension, error) {
 		resolverCalls++
 		if len(selections) != 1 || selections[0].ID != installedSnapshot.Selection.ID {
@@ -1505,14 +1540,18 @@ func TestExecuteTurnSynthesizesSucceededCloudWorkerInLatestUserLanguage(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+		intrinsicResolverCalls++
+		return []ResolvedIntrinsic{workerIntrinsic}, nil
+	}))
 	if _, err = service.resolveAcceptedTurnExtensions(context.Background(), snapshots); !errors.Is(err, ErrConflict) {
 		t.Fatalf("context-bound snapshots were accepted without terminal Worker history: %v", err)
 	}
 	resolverCalls = 0
 	service.executeTurn(context.Background(), turn.ID)
 
-	if model.runs != 1 || resolverCalls != 0 {
-		t.Fatalf("terminal Worker synthesis model_runs=%d extension_resolver_calls=%d", model.runs, resolverCalls)
+	if model.runs != 1 || resolverCalls != 0 || intrinsicResolverCalls != 0 || store.validations != 1 {
+		t.Fatalf("terminal Worker synthesis model_runs=%d extension_resolver_calls=%d intrinsic_resolver_calls=%d runtime_validations=%d", model.runs, resolverCalls, intrinsicResolverCalls, store.validations)
 	}
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
 	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil {
