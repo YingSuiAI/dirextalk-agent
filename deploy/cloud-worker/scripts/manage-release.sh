@@ -180,7 +180,7 @@ build_release() {
 }
 
 # shellcheck disable=SC2016 # jq variables are interpreted by jq.
-expected_tag_query='(.Tags|map({key:.Key,value:.Value})|from_entries) as $t | $t.DirextalkWorkerImageSchema=="1" and $t.DirextalkWorkerImageFlavor==$flavor and $t.DirextalkWorkerImageVersion=="1.1.3" and $t.DirextalkPiVersion=="0.84.4" and $t.DirextalkImageTested=="true"'
+expected_tag_query='(.Tags|map({key:.Key,value:.Value})|from_entries) as $t | $t.DirextalkWorkerImageSchema=="1" and $t.DirextalkWorkerImageFlavor==$flavor and $t.DirextalkWorkerImageVersion=="1.1.4" and $t.DirextalkPiVersion=="0.84.4" and $t.DirextalkImageTested=="true"'
 verify_output_ami() {
   local call_region=$1 ami=$2 image permission
   [[ $ami =~ ^ami-[0-9a-f]{8,17}$ ]] || return 1

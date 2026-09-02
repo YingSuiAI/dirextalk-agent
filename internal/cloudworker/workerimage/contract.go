@@ -20,7 +20,7 @@ const (
 	FlavorGPU Flavor = "gpu"
 
 	SchemaVersion           = "1"
-	ImageVersion            = "1.1.3"
+	ImageVersion            = "1.1.4"
 	PiVersion               = "0.84.4"
 	RollbackPiVersion       = "0.84.1"
 	ToolBaseline            = "1"

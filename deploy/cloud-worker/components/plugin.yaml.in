@@ -1,5 +1,5 @@
-name: dirextalk-worker-__FLAVOR__-plugin-1-1-3
-description: Install the reviewed Dirextalk Worker 1.1.3 Pi plugin catalog.
+name: dirextalk-worker-__FLAVOR__-plugin-1-1-4
+description: Install the reviewed Dirextalk Worker 1.1.4 Pi plugin catalog.
 schemaVersion: 1.0
 phases:
   - name: build

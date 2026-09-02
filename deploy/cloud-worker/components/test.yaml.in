@@ -1,5 +1,5 @@
-name: dirextalk-worker-__FLAVOR__-test-1-1-3
-description: Qualify Dirextalk Worker 1.1.3, including offline content tooling and reboot persistence.
+name: dirextalk-worker-__FLAVOR__-test-1-1-4
+description: Qualify Dirextalk Worker 1.1.4, including offline content tooling and reboot persistence.
 schemaVersion: 1.0
 phases:
   - name: test
@@ -91,7 +91,7 @@ phases:
               git commit -m baseline
               git push origin HEAD:main
               cd "$root"
-              git clone --no-local "$root/origin.git" work
+              git clone --no-local --branch main "$root/origin.git" work
               cd work
               printf '\n# image-builder-edit\n' >>sample.py
               python3 -m unittest -v
