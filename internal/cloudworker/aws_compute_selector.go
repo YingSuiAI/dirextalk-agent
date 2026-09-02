@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/workerimage"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -19,6 +20,7 @@ import (
 )
 
 type AWSComputeSelectionAPI interface {
+	DescribeImages(context.Context, *ec2.DescribeImagesInput, ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error)
 	DescribeInstanceTypes(context.Context, *ec2.DescribeInstanceTypesInput, ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error)
 	DescribeInstanceTypeOfferings(context.Context, *ec2.DescribeInstanceTypeOfferingsInput, ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 }
@@ -173,6 +175,9 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 			if !matched {
 				continue
 			}
+			if acceleratorType == AcceleratorGPU && !workerimage.SupportsOfficialUbuntuGPU(name) {
+				continue
+			}
 			if requirements.MinAcceleratorMemoryGiB != 0 && acceleratorMemoryMiB < uint64(requirements.MinAcceleratorMemoryGiB)*1024 {
 				continue
 			}
@@ -203,9 +208,46 @@ func (selector *AWSComputeSelector) SelectCompute(ctx context.Context, binding A
 	if selected.name == "" {
 		return ComputeSpec{}, computeSelectionUnavailable("describe_types")
 	}
+	rootDeviceName := "/dev/xvda"
+	volumeGiB := requirements.DiskGiB
+	if selected.acceleratorType == AcceleratorGPU {
+		var imageMinimum uint64
+		rootDeviceName, imageMinimum, err = discoverOfficialGPURoot(ctx, ec2Client)
+		if err != nil {
+			return ComputeSpec{}, computeSelectionUnavailable("gpu_image")
+		}
+		volumeGiB = max(volumeGiB, imageMinimum)
+	}
 	return ComputeSpec{InstanceType: selected.name, Architecture: selected.architecture, AcceleratorType: selected.acceleratorType,
 		AcceleratorName: selected.acceleratorName, AcceleratorMemoryMiB: selected.acceleratorMemoryMiB, VCPU: selected.vcpu, MemoryGiB: selected.memoryGiB,
-		RootDeviceName: "/dev/xvda", VolumeGiB: requirements.DiskGiB, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}, nil
+		RootDeviceName: rootDeviceName, VolumeGiB: volumeGiB, VolumeType: "gp3", VolumeIOPS: 3000, VolumeThroughputMiB: 125}, nil
+}
+
+func discoverOfficialGPURoot(ctx context.Context, client AWSComputeSelectionAPI) (string, uint64, error) {
+	output, err := client.DescribeImages(ctx, &ec2.DescribeImagesInput{Owners: []string{workerimage.OfficialUbuntuGPUOwner}, Filters: []ec2types.Filter{
+		{Name: aws.String("name"), Values: []string{workerimage.OfficialUbuntuGPUNamePattern}},
+		{Name: aws.String("state"), Values: []string{"available"}},
+		{Name: aws.String("architecture"), Values: []string{"x86_64"}},
+		{Name: aws.String("root-device-type"), Values: []string{"ebs"}},
+		{Name: aws.String("virtualization-type"), Values: []string{"hvm"}},
+	}})
+	if err != nil || output == nil || len(output.Images) == 0 {
+		return "", 0, ErrProviderUnavailable
+	}
+	sort.Slice(output.Images, func(i, j int) bool {
+		return aws.ToString(output.Images[i].CreationDate) > aws.ToString(output.Images[j].CreationDate)
+	})
+	image := output.Images[0]
+	rootDeviceName := strings.TrimSpace(aws.ToString(image.RootDeviceName))
+	for _, mapping := range image.BlockDeviceMappings {
+		if aws.ToString(mapping.DeviceName) == rootDeviceName && mapping.Ebs != nil {
+			volumeGiB := aws.ToInt32(mapping.Ebs.VolumeSize)
+			if strings.HasPrefix(rootDeviceName, "/dev/") && volumeGiB >= 8 {
+				return rootDeviceName, uint64(volumeGiB), nil
+			}
+		}
+	}
+	return "", 0, ErrProviderUnavailable
 }
 
 func listPricedInstanceShapes(ctx context.Context, client AWSPriceListAPI, region string, requirements ComputeRequirements) (map[string]pricedInstanceShape, error) {

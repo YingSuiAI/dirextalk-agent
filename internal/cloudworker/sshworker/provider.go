@@ -286,7 +286,9 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 	if request.Discovery.validate() != nil {
 		return WorkerRecord{}, ErrInvalid
 	}
-	effectiveVolumeGiB := max(request.VolumeGiB, request.Discovery.RootVolumeGiB)
+	if request.Discovery.RootVolumeGiB > request.VolumeGiB {
+		return WorkerRecord{}, fmt.Errorf("confirmed %d GiB root volume is smaller than AMI snapshot minimum %d GiB; request a fresh quote: %w", request.VolumeGiB, request.Discovery.RootVolumeGiB, ErrProviderRejected)
+	}
 	workerID := request.ExecutionID
 	tags := resourceTags(workerID, request.Authority, request.Credential, request.Confirmation.Proof)
 	keyName, groupName, clientToken := resourceNames(workerID)
@@ -299,7 +301,7 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 			Credential: request.Credential, CreationProof: request.Confirmation.Proof,
 			DisplayName: strings.TrimSpace(request.ServerName),
 			Phase:       WorkerProvisioning, SSHUser: request.Discovery.SSHUser, InstanceType: request.InstanceType, AcceleratorType: request.AcceleratorType,
-			VCPU: request.VCPU, MemoryGiB: request.MemoryGiB, VolumeGiB: effectiveVolumeGiB, CreatedAt: provider.now().UTC()}
+			VCPU: request.VCPU, MemoryGiB: request.MemoryGiB, VolumeGiB: request.VolumeGiB, CreatedAt: provider.now().UTC()}
 		worker.UpdatedAt = provider.now().UTC()
 		if err := provider.store.SaveWorkerIntent(ctx, worker, func(ctx context.Context) error {
 			return provider.authorizeCreate(ctx, request.Credential)
@@ -309,12 +311,6 @@ func (provider *Provider) create(ctx context.Context, request ExecuteRequest) (W
 	}
 	if worker.authority() != request.Authority || worker.Credential != request.Credential || worker.CreationProof != request.Confirmation.Proof {
 		return WorkerRecord{}, ErrIdentity
-	}
-	if worker.Instance.ID == "" && worker.VolumeGiB < effectiveVolumeGiB {
-		worker.VolumeGiB = effectiveVolumeGiB
-		if err := provider.saveWorker(ctx, &worker); err != nil {
-			return WorkerRecord{}, err
-		}
 	}
 	privatePath, publicKey, err := provider.keys.Ensure(ctx, workerID)
 	if err != nil || privatePath == "" || len(publicKey) == 0 {

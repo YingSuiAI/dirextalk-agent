@@ -928,8 +928,10 @@ only from Agent storage at execution time.
 The manager keeps at most four Workers for the authenticated owner/account
 generation. CPU Workers use the newest Canonical Ubuntu 24.04 LTS image and GPU
 Workers use the newest supported AWS Ubuntu 24.04 Deep Learning Base OSS NVIDIA
-Driver GPU AMI. Discovery resolves the actual AMI root device and snapshot
-minimum plus the default VPC/subnet, launches an instance with an ordinary
+Driver GPU AMI. Pre-quote discovery resolves the actual AMI root device and
+snapshot minimum into the confirmed storage quantity. Launch revalidates that
+minimum and requires a fresh quote rather than increasing storage silently.
+Runtime discovery also resolves the default VPC/subnet and launches an instance with an ordinary
 public IPv4, and connects by outbound SSH. Agent uses short SSH operations to start work, read
 status and load, stream logs by offset, and list or copy artifacts. A dropped
 connection or host reboot does not erase remote state under

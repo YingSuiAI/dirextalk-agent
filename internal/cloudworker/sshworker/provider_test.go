@@ -372,6 +372,19 @@ func TestFreshCreateDiscoversImageAndNetworkInsideProvider(t *testing.T) {
 	}
 }
 
+func TestFreshCreateRejectsImageGrowthBeyondConfirmedVolume(t *testing.T) {
+	cloud := newFakeAWS()
+	store := newMemoryStore()
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	request := requestFixture()
+	request.VolumeGiB = 75
+	request.Discovery.RootVolumeGiB = 80
+	_, err := provider.Execute(context.Background(), request)
+	if !errors.Is(err, ErrProviderRejected) || !strings.Contains(err.Error(), "fresh quote") || cloud.mutations != 0 || len(store.workers) != 0 {
+		t.Fatalf("image growth err=%v mutations=%d workers=%d", err, cloud.mutations, len(store.workers))
+	}
+}
+
 func TestCapacityFivePreventsSixthCreate(t *testing.T) {
 	cloud := newFakeAWS()
 	store := newMemoryStore()

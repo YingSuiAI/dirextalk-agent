@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/workerimage"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -230,7 +231,7 @@ func TestSDKDiscoverUsesCanonicalOwnerAndNewestUbuntu2404Image(t *testing.T) {
 
 func TestSDKDiscoverUsesOfficialAWSGPUImageAndSnapshotMinimum(t *testing.T) {
 	probe := &mutationProbeEC2{
-		images:    []ec2types.Image{imageFixture("ami-gpu", "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) 20260825", "2026-08-25T00:00:00Z", 100)},
+		images:    []ec2types.Image{imageFixture("ami-gpu", "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) 20260825", "2026-08-25T00:00:00Z", 75)},
 		vpcs:      []ec2types.Vpc{{VpcId: aws.String("vpc-default")}},
 		subnets:   []ec2types.Subnet{{SubnetId: aws.String("subnet-a"), AvailabilityZone: aws.String("region-under-test-a")}},
 		offerings: []ec2types.InstanceTypeOffering{{InstanceType: ec2types.InstanceTypeG4dnXlarge, Location: aws.String("region-under-test-a")}},
@@ -250,14 +251,25 @@ func TestSDKDiscoverUsesOfficialAWSGPUImageAndSnapshotMinimum(t *testing.T) {
 			imageNames = filter.Values
 		}
 	}
-	if !slices.Equal(imageNames, []string{"Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) ????????"}) || discovery.RootVolumeGiB != 100 {
+	if !slices.Equal(imageNames, []string{workerimage.OfficialUbuntuGPUNamePattern}) || discovery.RootVolumeGiB != 75 {
 		t.Fatalf("GPU filter=%v discovery=%#v", imageNames, discovery)
 	}
 	probe.runInput = nil
 	_, err = newSDK(credential.Region, probe, stubSTS{}, staticIP{}).RunInstance(context.Background(), credential, Confirmation{Confirmed: true, Proof: "confirmation-1"}, LaunchRequest{
-		WorkerID: "worker-gpu", ClientToken: "token-gpu", InstanceType: "g4dn.xlarge", VCPU: 4, VolumeGiB: 32, KeyName: "key", SecurityGroupID: "sg-1", Discovery: discovery, Tags: ResourceTags{"owner": "test"}})
-	if err != nil || len(probe.runInput.BlockDeviceMappings) != 1 || aws.ToString(probe.runInput.BlockDeviceMappings[0].DeviceName) != "/dev/sda1" || aws.ToInt32(probe.runInput.BlockDeviceMappings[0].Ebs.VolumeSize) != 100 {
+		WorkerID: "worker-gpu", ClientToken: "token-gpu", InstanceType: "g4dn.xlarge", VCPU: 4, VolumeGiB: 75, KeyName: "key", SecurityGroupID: "sg-1", Discovery: discovery, Tags: ResourceTags{"owner": "test"}})
+	if err != nil || len(probe.runInput.BlockDeviceMappings) != 1 || aws.ToString(probe.runInput.BlockDeviceMappings[0].DeviceName) != "/dev/sda1" || aws.ToInt32(probe.runInput.BlockDeviceMappings[0].Ebs.VolumeSize) != 75 {
 		t.Fatalf("GPU root mapping=%#v err=%v", probe.runInput, err)
+	}
+}
+
+func TestSDKRunRejectsImageGrowthBeyondConfirmedVolume(t *testing.T) {
+	probe := &mutationProbeEC2{}
+	discovery := discoveryFixture()
+	discovery.RootVolumeGiB = 80
+	_, err := newSDK("ap-east-1", probe, stubSTS{}, staticIP{}).RunInstance(context.Background(), credentialFixture(), Confirmation{Confirmed: true, Proof: "confirmation-1"}, LaunchRequest{
+		WorkerID: "worker-gpu", ClientToken: "token-gpu", InstanceType: "g4dn.xlarge", VCPU: 4, VolumeGiB: 75, KeyName: "key", SecurityGroupID: "sg-1", Discovery: discovery, Tags: ResourceTags{"owner": "test"}})
+	if !errors.Is(err, ErrProviderRejected) || !strings.Contains(err.Error(), "fresh quote") || probe.runCalls != 0 {
+		t.Fatalf("future image growth err=%v run_calls=%d", err, probe.runCalls)
 	}
 }
 
@@ -271,12 +283,12 @@ func TestSDKRejectsGPUFamilyUnsupportedByOfficialImage(t *testing.T) {
 
 func TestOfficialGPUImageSupportedFamilies(t *testing.T) {
 	for _, instanceType := range []string{"g4dn.xlarge", "g5.2xlarge", "g6.xlarge", "gr6.4xlarge", "g6e.2xlarge", "g7.4xlarge", "g7e.8xlarge", "p4d.24xlarge", "p4de.24xlarge", "p5.48xlarge", "p5e.48xlarge", "p5en.48xlarge", "p6-b200.48xlarge", "p6-b300.48xlarge"} {
-		if !officialGPUImageSupports(instanceType) {
+		if !workerimage.SupportsOfficialUbuntuGPU(instanceType) {
 			t.Errorf("documented GPU family rejected: %s", instanceType)
 		}
 	}
 	for _, instanceType := range []string{"g6f.2xlarge", "gr6f.4xlarge", "p3.16xlarge", "g5g.xlarge", "gpu"} {
-		if officialGPUImageSupports(instanceType) {
+		if workerimage.SupportsOfficialUbuntuGPU(instanceType) {
 			t.Errorf("unsupported GPU family accepted: %s", instanceType)
 		}
 	}

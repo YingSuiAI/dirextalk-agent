@@ -49,10 +49,13 @@ The Worker manager supports at most four retained Workers for the current
 credential. CPU Workers use the newest Canonical Ubuntu 24.04 LTS image; GPU
 Workers use the newest AWS-published Ubuntu 24.04 Deep Learning Base OSS NVIDIA
 Driver GPU AMI for an explicitly supported instance family. The Agent discovers
+the GPU AMI root device and snapshot minimum before pricing, so the confirmed
+storage quantity is the greater of the requested disk and current image
+minimum. Launch revalidates the latest image and requires a fresh quote if its
+minimum grew; it never silently increases confirmed storage. The Agent discovers
 the account's default VPC/subnet at runtime, creates one EC2 instance with an
-ordinary auto-assigned public IPv4, and connects by outbound SSH. It sizes the
-AMI root device to at least the image snapshot minimum instead of attaching a
-second guessed root device. There is no EIP, product custom AMI, inbound Worker
+ordinary auto-assigned public IPv4, and connects by outbound SSH. There is no
+EIP, product custom AMI, inbound Worker
 API, WorkerControl listener, model relay, S3/KMS artifact path, or deploy-time
 Worker injection. Jobs and service
 workloads persist status and logs under `/var/lib/dirextalk-worker` so reboot or

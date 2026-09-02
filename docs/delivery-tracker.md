@@ -752,7 +752,9 @@ support.
   reboot-volatile `/tmp` to `/var/lib/dirextalk-worker`, added a durable
   versioned coding-tool baseline with per-task readiness checks, selected the
   AWS Ubuntu 24.04 OSS NVIDIA GPU DLAMI for supported GPU families, respected
-  the AMI root-device snapshot minimum, bypassed fresh discovery during retained
+  the dynamically discovered AMI root-device snapshot minimum in the priced
+  ComputeSpec, rejected later image growth instead of silently increasing the
+  confirmed volume, bypassed fresh discovery during retained
   execution recovery, and allowed stale (but not actively executing) Busy
   Workers through the explicit destroy path. This evidence is code-level and
   does not claim a live AWS launch.

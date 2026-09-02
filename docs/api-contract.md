@@ -972,8 +972,10 @@ manager supports no more than four retained Workers for one authenticated
 owner/account generation across credential revisions. CPU Workers use the
 newest Canonical Ubuntu 24.04 LTS image; GPU Workers use the newest supported
 AWS Ubuntu 24.04 Deep Learning Base OSS NVIDIA Driver GPU AMI. Discovery reads
-the AMI's actual root device and snapshot minimum and the default VPC at
-runtime, intersects its available default subnets with the selected instance
+the GPU AMI's actual root device and snapshot minimum before pricing and binds
+the greater requested/minimum size into the confirmed ComputeSpec. Launch
+revalidates the latest image and rejects for a fresh quote instead of silently
+increasing volume size. Runtime discovery reads the default VPC, intersects its available default subnets with the selected instance
 type's current availability-zone offerings, assigns an ordinary public IPv4,
 and uses outbound SSH. First contact uses `accept-new` into a persistent `known_hosts`
 file beside the Worker private key; later connections require that pinned host

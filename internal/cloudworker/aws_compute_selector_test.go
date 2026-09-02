@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/awscredential"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker/workerimage"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -22,8 +23,15 @@ type computeSelectionAWS struct {
 	offeredTypes         map[string]bool
 	calls                *[]string
 	describedTypes       []string
+	describeImagesInput  *ec2.DescribeImagesInput
+	images               []ec2types.Image
 	offeringsErr         error
 	describeTypesErr     error
+}
+
+func (provider *computeSelectionAWS) DescribeImages(_ context.Context, input *ec2.DescribeImagesInput, _ ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error) {
+	provider.describeImagesInput = input
+	return &ec2.DescribeImagesOutput{Images: provider.images}, nil
 }
 
 func (provider *computeSelectionAWS) DescribeInstanceTypes(_ context.Context, input *ec2.DescribeInstanceTypesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error) {
@@ -49,7 +57,7 @@ func (provider *computeSelectionAWS) DescribeInstanceTypes(_ context.Context, in
 		if string(name) == "g6f.2xlarge" {
 			info.VCpuInfo.DefaultVCpus = aws.Int32(8)
 			info.MemoryInfo.SizeInMiB = aws.Int64(32 * 1024)
-			info.GpuInfo = &ec2types.GpuInfo{TotalGpuMemoryInMiB: aws.Int32(5724), Gpus: []ec2types.GpuDeviceInfo{{Name: aws.String("L4")}}}
+			info.GpuInfo = &ec2types.GpuInfo{TotalGpuMemoryInMiB: aws.Int32(24 * 1024), Gpus: []ec2types.GpuDeviceInfo{{Name: aws.String("L4")}}}
 		}
 		result.InstanceTypes = append(result.InstanceTypes, info)
 	}
@@ -131,12 +139,12 @@ func (provider computeSelectionPricing) GetProducts(context.Context, *pricing.Ge
 	}}, nil
 }
 
-func TestAWSComputeSelectorHonorsGPURequirement(t *testing.T) {
+func TestAWSComputeSelectorDiscoversGPURootBeforeQuoteAndExcludesUnsupportedFamily(t *testing.T) {
 	credential := &livePricingCredential{handle: workaws.CredentialHandle{ReferenceID: "11111111-1111-4111-8111-111111111111",
 		Region: "ap-northeast-1", AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:user/test", AccessKeyID: "access", SecretAccessKey: "secret"}}
 	ec2Provider := &computeSelectionAWS{regionalLocation: "ap-northeast-2", offeredTypes: map[string]bool{
 		"t3.small": true, "m7i-flex.large": true, "g5.xlarge": true, "g6f.2xlarge": true,
-	}}
+	}, images: []ec2types.Image{gpuImageFixture("ami-gpu", "2026-08-25T00:00:00Z", 75)}}
 	selector, err := NewAWSComputeSelector(credential, &computeSelectionFactory{ec2: ec2Provider})
 	if err != nil {
 		t.Fatal(err)
@@ -145,9 +153,23 @@ func TestAWSComputeSelectorHonorsGPURequirement(t *testing.T) {
 	selected, err := selector.SelectCompute(context.Background(), binding, ComputeRequirements{
 		MinVCPU: 2, MinMemoryGiB: 2, MinAcceleratorMemoryGiB: 20, DiskGiB: 24, EstimatedRuntimeMinutes: 30, AcceleratorType: AcceleratorGPU,
 	})
-	if err != nil || selected.InstanceType != "g5.xlarge" || selected.AcceleratorType != AcceleratorGPU || selected.AcceleratorName != "A10G" || selected.AcceleratorMemoryMiB != 24*1024 {
+	if err != nil || selected.InstanceType != "g5.xlarge" || selected.AcceleratorType != AcceleratorGPU || selected.AcceleratorName != "A10G" || selected.AcceleratorMemoryMiB != 24*1024 || selected.RootDeviceName != "/dev/sda1" || selected.VolumeGiB != 75 {
 		t.Fatalf("selected=%+v err=%v", selected, err)
 	}
+	if ec2Provider.describeImagesInput == nil || !slices.Equal(ec2Provider.describeImagesInput.Owners, []string{workerimage.OfficialUbuntuGPUOwner}) {
+		t.Fatalf("GPU image discovery = %#v", ec2Provider.describeImagesInput)
+	}
+	larger, err := selector.SelectCompute(context.Background(), binding, ComputeRequirements{
+		MinVCPU: 2, MinMemoryGiB: 2, MinAcceleratorMemoryGiB: 20, DiskGiB: 120, EstimatedRuntimeMinutes: 30, AcceleratorType: AcceleratorGPU,
+	})
+	if err != nil || larger.VolumeGiB != 120 {
+		t.Fatalf("larger GPU volume=%+v err=%v", larger, err)
+	}
+}
+
+func gpuImageFixture(id, created string, volumeGiB int32) ec2types.Image {
+	return ec2types.Image{ImageId: aws.String(id), Name: aws.String("Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) 20260825"), CreationDate: aws.String(created), RootDeviceName: aws.String("/dev/sda1"),
+		BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String("/dev/sda1"), Ebs: &ec2types.EbsBlockDevice{VolumeSize: aws.Int32(volumeGiB)}}}}
 }
 
 type computeSelectionFactory struct {
