@@ -43,10 +43,11 @@
   },
   "ssm_prefix": "/dirextalk/worker-images/v1",
   "distribution": {
-    "mode": "explicit-region-allowlist",
+    "mode": "public-explicit-region-allowlist",
+    "visibility": "public",
     "source_region_required": true,
-    "cross_account": false,
-    "kms": "one explicit enabled same-account ENCRYPT_DECRYPT key ARN per Region",
+    "launch_permission": "all AWS accounts",
+    "snapshot_encryption": false,
     "candidate_parameter_created_by": "EC2 Image Builder distribution"
   },
   "required_tools": [

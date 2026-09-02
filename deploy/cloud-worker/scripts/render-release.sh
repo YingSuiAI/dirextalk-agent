@@ -7,7 +7,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: render-release.sh [--offline] --account-id ID --region REGION --flavor cpu|gpu
        --instance-profile NAME --subnet-id ID --security-group-id ID --output-dir DIR
-       --distribution-regions REGION[,REGION...] --distribution-kms-keys REGION=KEY_ARN[,REGION=KEY_ARN...]
+       --distribution-regions REGION[,REGION...]
        [--build-instance-type TYPE]
 EOF
   exit 64
@@ -23,7 +23,6 @@ security_group_id=''
 output_dir=''
 build_type=''
 distribution_regions=''
-distribution_kms_keys=''
 while (($#)); do
   case "$1" in
     --offline) offline=true; shift ;;
@@ -36,7 +35,6 @@ while (($#)); do
     --output-dir) output_dir=${2:-}; shift 2 ;;
     --build-instance-type) build_type=${2:-}; shift 2 ;;
     --distribution-regions) distribution_regions=${2:-}; shift 2 ;;
-    --distribution-kms-keys) distribution_kms_keys=${2:-}; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -62,22 +60,6 @@ printf '%s\n' "${distribution_region_list[@]}" | grep -qxF "$region" || {
 }
 distribution_regions=$(IFS=,; printf '%s' "${distribution_region_list[*]}")
 distribution_regions_json=$(printf '%s\n' "${distribution_region_list[@]}" | jq -R . | jq -s .)
-declare -A kms_key_by_region=()
-IFS=, read -r -a kms_pairs <<<"$distribution_kms_keys"
-for pair in "${kms_pairs[@]}"; do
-  kms_region=${pair%%=*}; kms_key=${pair#*=}
-  [[ $pair == *=* && -n $kms_region && -n $kms_key && -z ${kms_key_by_region[$kms_region]:-} ]] || usage
-  [[ $kms_key =~ ^arn:(aws|aws-us-gov|aws-cn):kms:$kms_region:$account_id:key/[A-Za-z0-9-]{16,}$ ]] || {
-    echo "invalid same-account KMS key ARN for $kms_region" >&2; exit 64;
-  }
-  kms_key_by_region[$kms_region]=$kms_key
-done
-kms_keys_json='{}'
-for requested_region in "${distribution_region_list[@]}"; do
-  [[ -n ${kms_key_by_region[$requested_region]:-} ]] || { echo "missing KMS key for $requested_region" >&2; exit 64; }
-  kms_keys_json=$(jq -c --arg region "$requested_region" --arg key "${kms_key_by_region[$requested_region]}" '. + {($region):$key}' <<<"$kms_keys_json")
-done
-((${#kms_key_by_region[@]} == ${#distribution_region_list[@]})) || { echo 'KMS key map contains a Region outside the distribution allowlist' >&2; exit 64; }
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 cloud_dir=$(cd -- "$script_dir/.." && pwd -P)
@@ -111,21 +93,9 @@ verify_identity() {
     echo 'AWS region environment conflicts with the explicit region' >&2; return 77;
   }
 }
-verify_identity_region() {
-  local call_region=$1 observed
-  [[ -n $aws_cli ]] || { echo 'AWS CLI is required for live rendering' >&2; return 69; }
-  observed=$($aws_cli sts get-caller-identity --region "$call_region" --query Account --output text) || return $?
-  [[ $observed == "$account_id" ]] || { echo "AWS account changed in $call_region: expected $account_id, observed $observed" >&2; return 77; }
-}
 aws_read_json() {
   verify_identity
   $aws_cli "$@" --region "$region" --output json
-}
-aws_read_json_region() {
-  local call_region=$1
-  shift
-  verify_identity_region "$call_region"
-  $aws_cli "$@" --region "$call_region" --output json
 }
 
 parent_parameter=$(jq -r --arg flavor "$flavor" '.parents[$flavor]' "$release_file")
@@ -216,12 +186,6 @@ else
   [[ $(jq -r '.InstanceProfile.Arn' <<<"$profile") == arn:aws*:iam::${account_id}:instance-profile/* ]] || {
     echo 'instance profile account mismatch' >&2; exit 78;
   }
-  for requested_region in "${distribution_region_list[@]}"; do
-    key_metadata=$(aws_read_json_region "$requested_region" kms describe-key --key-id "${kms_key_by_region[$requested_region]}")
-    [[ $(jq -r '.KeyMetadata | [.AWSAccountId,.Arn,.Enabled,(.KeyUsage=="ENCRYPT_DECRYPT"),(.KeyState=="Enabled")] | map(tostring) | join(":")' <<<"$key_metadata") == "$account_id:${kms_key_by_region[$requested_region]}:true:true:true" ]] || {
-      echo "KMS key is not an enabled same-account encryption key in $requested_region" >&2; exit 78;
-    }
-  done
 fi
 
 mkdir -p -- "$output_dir"
@@ -248,12 +212,12 @@ jq -n --arg name "$name-infrastructure" --arg profile "$instance_profile" --arg 
   --arg subnet "$subnet_id" --arg sg "$security_group_id" --argjson tags "$tags" \
   '{name:$name,description:"Dirextalk Worker Image Builder infrastructure 1.1.0",instanceProfileName:$profile,instanceTypes:[$type],subnetId:$subnet,securityGroupIds:[$sg],terminateInstanceOnFailure:true,instanceMetadataOptions:{httpTokens:"required",httpPutResponseHopLimit:1},tags:$tags}' \
   >"$output_dir/infrastructure.json"
-jq -n --arg name "$name-distribution" --arg account "$account_id" --arg flavor "$flavor" --argjson regions "$distribution_regions_json" --argjson kms "$kms_keys_json" --argjson tags "$tags" \
-  '{name:$name,description:"Dirextalk Worker allowlisted multi-Region distribution 1.1.0",distributions:[$regions[] as $region|{region:$region,amiDistributionConfiguration:{name:("dirextalk-worker-"+$flavor+"-1.1.0-"+$region+"-{{ imagebuilder:buildDate }}"),description:"Dirextalk Worker AMI 1.1.0",kmsKeyId:$kms[$region],amiTags:$tags},ssmParameterConfigurations:[{amiAccountId:$account,parameterName:("/dirextalk/worker-images/v1/"+$flavor+"/candidate"),dataType:"aws:ec2:image"}]}],tags:$tags}' \
+jq -n --arg name "$name-distribution" --arg account "$account_id" --arg flavor "$flavor" --argjson regions "$distribution_regions_json" --argjson tags "$tags" \
+  '{name:$name,description:"Dirextalk Worker public allowlisted multi-Region distribution 1.1.0",distributions:[$regions[] as $region|{region:$region,amiDistributionConfiguration:{name:("dirextalk-worker-"+$flavor+"-1.1.0-"+$region+"-{{ imagebuilder:buildDate }}"),description:"Public Dirextalk Worker AMI 1.1.0",launchPermissionConfiguration:{userGroups:["all"]},amiTags:$tags},ssmParameterConfigurations:[{amiAccountId:$account,parameterName:("/dirextalk/worker-images/v1/"+$flavor+"/candidate"),dataType:"aws:ec2:image"}]}],tags:$tags}' \
   >"$output_dir/distribution.json"
 jq -n --arg name "$name" --arg parent "$parent_ami" --arg root "$root_device" --arg snapshot "$root_snapshot" \
   --arg min "$root_min_gib" --argjson tags "$tags" \
-  '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker image recipe 1.1.0",parentImage:$parent,components:[{componentArn:"REPLACE_BUILD_COMPONENT_ARN"},{componentArn:"REPLACE_TEST_COMPONENT_ARN"}],blockDeviceMappings:[{deviceName:$root,ebs:{deleteOnTermination:true,encrypted:true,volumeType:"gp3"}}],workingDirectory:"/tmp",additionalInstanceConfiguration:{systemsManagerAgent:{uninstallAfterBuild:false}},tags:($tags+{DirextalkParentSnapshot:$snapshot,DirextalkParentRootMinGiB:$min})}' \
+  '{name:$name,semanticVersion:"1.1.0",description:"Dirextalk Worker public image recipe 1.1.0",parentImage:$parent,components:[{componentArn:"REPLACE_BUILD_COMPONENT_ARN"},{componentArn:"REPLACE_TEST_COMPONENT_ARN"}],blockDeviceMappings:[{deviceName:$root,ebs:{deleteOnTermination:true,encrypted:false,volumeType:"gp3"}}],workingDirectory:"/tmp",additionalInstanceConfiguration:{systemsManagerAgent:{uninstallAfterBuild:false}},tags:($tags+{DirextalkParentSnapshot:$snapshot,DirextalkParentRootMinGiB:$min})}' \
   >"$output_dir/recipe.json"
 jq -n --arg name "$name-pipeline" --argjson tags "$tags" \
   '{name:$name,description:"On-demand Dirextalk Worker image pipeline 1.1.0",status:"DISABLED",imageRecipeArn:"REPLACE_RECIPE_ARN",infrastructureConfigurationArn:"REPLACE_INFRASTRUCTURE_ARN",distributionConfigurationArn:"REPLACE_DISTRIBUTION_ARN",imageTestsConfiguration:{imageTestsEnabled:true,timeoutMinutes:90},enhancedImageMetadataEnabled:true,tags:$tags}' \
@@ -263,8 +227,8 @@ jq -n --arg schema dirextalk.worker-image-render/v1 --arg account "$account_id" 
   --arg parent_description "$parent_description" --arg gpu_families "$gpu_families" \
   --arg root_device "$root_device" --arg root_snapshot "$root_snapshot" --arg root_min "$root_min_gib" \
   --arg build_type "$build_type" --arg profile "$instance_profile" --arg subnet "$subnet_id" --arg sg "$security_group_id" \
-  --argjson distribution_regions "$distribution_regions_json" --argjson distribution_kms_keys "$kms_keys_json" \
-  '{schema:$schema,image_schema:"1",image_version:"1.1.0",pi_version:"0.84.4",uv_version:"0.12.9",account_id:$account,region:$region,distribution_regions:$distribution_regions,distribution_kms_keys:$distribution_kms_keys,flavor:$flavor,parent_parameter:$parent_parameter,parent_ami_id:$parent_ami,parent_owner_id:$parent_owner,parent_description:$parent_description,gpu_supported_families:$gpu_families,parent_root_device:$root_device,parent_root_snapshot_id:$root_snapshot,parent_root_min_gib:$root_min,build_instance_type:$build_type,instance_profile:$profile,subnet_id:$subnet,security_group_id:$sg,ssm:{candidate:("/dirextalk/worker-images/v1/"+$flavor+"/candidate"),current:("/dirextalk/worker-images/v1/"+$flavor+"/current"),previous:("/dirextalk/worker-images/v1/"+$flavor+"/previous")}}' \
+  --argjson distribution_regions "$distribution_regions_json" \
+  '{schema:$schema,image_schema:"1",image_version:"1.1.0",pi_version:"0.84.4",uv_version:"0.12.9",visibility:"public",snapshot_encrypted:false,account_id:$account,region:$region,distribution_regions:$distribution_regions,flavor:$flavor,parent_parameter:$parent_parameter,parent_ami_id:$parent_ami,parent_owner_id:$parent_owner,parent_description:$parent_description,gpu_supported_families:$gpu_families,parent_root_device:$root_device,parent_root_snapshot_id:$root_snapshot,parent_root_min_gib:$root_min,build_instance_type:$build_type,instance_profile:$profile,subnet_id:$subnet,security_group_id:$sg,ssm:{candidate:("/dirextalk/worker-images/v1/"+$flavor+"/candidate"),current:("/dirextalk/worker-images/v1/"+$flavor+"/current"),previous:("/dirextalk/worker-images/v1/"+$flavor+"/previous")}}' \
   >"$output_dir/render.json"
 
 cat >"$output_dir/manual-commands.sh" <<EOF
@@ -278,8 +242,7 @@ aws imagebuilder create-distribution-configuration --region '$region' --cli-inpu
 # Replace component ARNs in recipe.json, create the recipe, replace its/config ARNs in pipeline.json, then create the disabled pipeline.
 # Start exactly one build with: aws imagebuilder start-image-pipeline-execution --region '$region' --image-pipeline-arn REPLACE_PIPELINE_ARN
 # Distribution allowlist: $distribution_regions
-# Distribution KMS keys: $distribution_kms_keys
-# Image Builder writes the Region-local candidate parameter. Promote only through manage-release.sh publish after every output is AVAILABLE and exact tag read-back succeeds.
+# Image Builder makes each output public and writes the owner-account Region-local candidate parameter. Promote only through manage-release.sh publish after every output is AVAILABLE and exact public launch/snapshot permission read-back succeeds.
 EOF
 chmod 0700 "$output_dir/manual-commands.sh"
 (

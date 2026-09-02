@@ -48,11 +48,10 @@ root_min=$(jq -er .parent_root_min_gib "$bundle/render.json")
 (( ${#distribution_regions[@]} > 0 )) || { echo 'distribution Region allowlist is empty' >&2; exit 78; }
 for distribution_region in "${distribution_regions[@]}"; do
   [[ $distribution_region =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]] || { echo 'distribution Region is malformed' >&2; exit 78; }
-  kms_key=$(jq -er --arg region "$distribution_region" '.distribution_kms_keys[$region]' "$bundle/render.json")
-  [[ $kms_key =~ ^arn:(aws|aws-us-gov|aws-cn):kms:$distribution_region:$account_id:key/[A-Za-z0-9-]{16,}$ ]] || {
-    echo "distribution KMS key is invalid for $distribution_region" >&2; exit 78;
-  }
 done
+[[ $(jq -r '.visibility+":"+(.snapshot_encrypted|tostring)' "$bundle/render.json") == public:false ]] || {
+  echo 'release bundle is not the public unencrypted image contract' >&2; exit 78;
+}
 [[ $(printf '%s\n' "${distribution_regions[@]}" | sort -u | paste -sd, -) == $(printf '%s\n' "${distribution_regions[@]}" | paste -sd, -) ]] || {
   echo 'distribution Region allowlist is not sorted and unique' >&2; exit 78;
 }
@@ -114,17 +113,6 @@ verify_parent_again() {
     echo 'recipe must inherit the parent root snapshot minimum' >&2; exit 78;
   }
 }
-verify_distribution_keys() {
-  local call_region key metadata
-  for call_region in "${distribution_regions[@]}"; do
-    key=$(jq -er --arg region "$call_region" '.distribution_kms_keys[$region]' "$bundle/render.json")
-    metadata=$(aws_json_region "$call_region" kms describe-key --key-id "$key")
-    [[ $(jq -r '.KeyMetadata | [.AWSAccountId,.Arn,.Enabled,(.KeyUsage=="ENCRYPT_DECRYPT"),(.KeyState=="Enabled")] | map(tostring) | join(":")' <<<"$metadata") == "$account_id:$key:true:true:true" ]] || {
-      echo "distribution KMS key changed or is unavailable in $call_region" >&2; exit 78;
-    }
-  done
-}
-
 resource_ids=$bundle/resource-ids.json
 require_resource_ids() {
   [[ -f $resource_ids && ! -L $resource_ids ]] || { echo 'resource-ids.json is missing; run create first' >&2; exit 66; }
@@ -133,7 +121,6 @@ require_resource_ids() {
 create_release() {
   require_mutation_gate
   verify_parent_again
-  verify_distribution_keys
   local build test infra dist recipe pipeline recipe_payload pipeline_payload
   local journal=$bundle/creation-journal.ndjson
   [[ ! -e $journal || -f $journal && ! -L $journal ]] || { echo 'unsafe creation journal' >&2; exit 66; }
@@ -193,12 +180,16 @@ build_release() {
 # shellcheck disable=SC2016 # jq variables are interpreted by jq.
 expected_tag_query='(.Tags|map({key:.Key,value:.Value})|from_entries) as $t | $t.DirextalkWorkerImageSchema=="1" and $t.DirextalkWorkerImageFlavor==$flavor and $t.DirextalkWorkerImageVersion=="1.1.0" and $t.DirextalkPiVersion=="0.84.4" and $t.DirextalkImageTested=="true"'
 verify_output_ami() {
-  local call_region=$1 ami=$2 image
+  local call_region=$1 ami=$2 image permission
   [[ $ami =~ ^ami-[0-9a-f]{8,17}$ ]] || return 1
   image=$(aws_json_region "$call_region" ec2 describe-images --image-ids "$ami")
   [[ $(jq '.Images|length' <<<"$image") == 1 ]]
   [[ $(jq -r '.Images[0].OwnerId+":"+.Images[0].State' <<<"$image") == "$account_id:available" ]]
   jq -e --arg flavor "$flavor" ".Images[0] | $expected_tag_query" <<<"$image" >/dev/null
+  permission=$(aws_json_region "$call_region" ec2 describe-image-attribute --image-id "$ami" --attribute launchPermission)
+  jq -e '.LaunchPermissions | any(.Group=="all")' <<<"$permission" >/dev/null || {
+    echo 'output AMI is not public' >&2; return 1;
+  }
   if [[ $flavor == gpu ]]; then
     local expected_families
     expected_families=$(jq -er .gpu_supported_families "$bundle/render.json")
@@ -208,18 +199,24 @@ verify_output_ami() {
   local device snapshot size
   device=$(jq -er '.Images[0].RootDeviceName' <<<"$image")
   snapshot=$(jq -er --arg root "$device" '.Images[0].BlockDeviceMappings[]|select(.DeviceName==$root)|.Ebs.SnapshotId' <<<"$image")
-  local snapshot_detail
+  local snapshot_detail snapshot_permission
   snapshot_detail=$(aws_json_region "$call_region" ec2 describe-snapshots --snapshot-ids "$snapshot")
-  [[ $(jq -r '.Snapshots[0].OwnerId' <<<"$snapshot_detail") == "$account_id" ]] || { echo 'output AMI root snapshot owner mismatch' >&2; return 1; }
+  [[ $(jq -r '.Snapshots[0].OwnerId+":"+(.Snapshots[0].Encrypted|tostring)' <<<"$snapshot_detail") == "$account_id:false" ]] || { echo 'output AMI root snapshot is not owner-held and unencrypted' >&2; return 1; }
+  snapshot_permission=$(aws_json_region "$call_region" ec2 describe-snapshot-attribute --snapshot-id "$snapshot" --attribute createVolumePermission)
+  jq -e '.CreateVolumePermissions | any(.Group=="all")' <<<"$snapshot_permission" >/dev/null || {
+    echo 'output AMI root snapshot is not public' >&2; return 1;
+  }
   size=$(jq -er '.Snapshots[0].VolumeSize' <<<"$snapshot_detail")
   ((size >= root_min)) || { echo 'output AMI root snapshot is smaller than rendered parent minimum' >&2; return 1; }
 }
 verify_cleanup_ami() {
-  local call_region=$1 ami=$2 image version device snapshot snapshot_detail size families canonical
+  local call_region=$1 ami=$2 image version device snapshot snapshot_detail snapshot_permission size families canonical permission
   [[ $ami =~ ^ami-[0-9a-f]{8,17}$ ]] || return 1
   image=$(aws_json_region "$call_region" ec2 describe-images --image-ids "$ami")
   [[ $(jq '.Images|length' <<<"$image") == 1 ]]
   [[ $(jq -r '.Images[0] | [.OwnerId,.State,.Architecture,.RootDeviceType,.VirtualizationType] | join(":")' <<<"$image") == "$account_id:available:x86_64:ebs:hvm" ]]
+  permission=$(aws_json_region "$call_region" ec2 describe-image-attribute --image-id "$ami" --attribute launchPermission)
+  jq -e '.LaunchPermissions | any(.Group=="all")' <<<"$permission" >/dev/null
   version=$(jq -er '.Images[0].Tags|map({key:.Key,value:.Value})|from_entries|.DirextalkWorkerImageVersion' <<<"$image")
   [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
   jq -e --arg flavor "$flavor" '(.Images[0].Tags|map({key:.Key,value:.Value})|from_entries) as $t | $t.DirextalkWorkerImageSchema=="1" and $t.DirextalkWorkerImageFlavor==$flavor and ($t.DirextalkPiVersion=="0.84.4" or $t.DirextalkPiVersion=="0.84.1") and $t.DirextalkImageTested=="true"' <<<"$image" >/dev/null
@@ -232,7 +229,9 @@ verify_cleanup_ami() {
   device=$(jq -er '.Images[0].RootDeviceName' <<<"$image")
   snapshot=$(jq -er --arg root "$device" '.Images[0].BlockDeviceMappings[]|select(.DeviceName==$root)|.Ebs.SnapshotId' <<<"$image")
   snapshot_detail=$(aws_json_region "$call_region" ec2 describe-snapshots --snapshot-ids "$snapshot")
-  [[ $(jq -r '.Snapshots[0].OwnerId' <<<"$snapshot_detail") == "$account_id" ]]
+  [[ $(jq -r '.Snapshots[0].OwnerId+":"+(.Snapshots[0].Encrypted|tostring)' <<<"$snapshot_detail") == "$account_id:false" ]]
+  snapshot_permission=$(aws_json_region "$call_region" ec2 describe-snapshot-attribute --snapshot-id "$snapshot" --attribute createVolumePermission)
+  jq -e '.CreateVolumePermissions | any(.Group=="all")' <<<"$snapshot_permission" >/dev/null
   size=$(jq -er '.Snapshots[0].VolumeSize' <<<"$snapshot_detail")
   ((size >= 8))
 }

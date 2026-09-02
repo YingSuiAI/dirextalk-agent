@@ -46,8 +46,8 @@ explicit owner action, either through the owner client management operation or
 the Native Agent's owner-scoped `cloud_worker_destroy` intrinsic.
 
 The Worker manager supports at most four retained Workers for the current
-credential. CPU and GPU Workers use private, versioned Dirextalk Ubuntu 24.04
-images published in the Worker's AWS account and Region. The CPU recipe starts
+credential. CPU and GPU Workers use public, versioned Dirextalk Ubuntu 24.04
+images published by Dirextalk in the Worker's AWS Region. The CPU recipe starts
 from Canonical Ubuntu; the GPU recipe starts from AWS's Ubuntu 24.04 OSS NVIDIA
 Driver DLAMI and records the exact base image, root snapshot minimum, and
 supported GPU families discovered at release time. Agent resolves only the
@@ -55,7 +55,7 @@ product-owned `/dirextalk/worker-images/v1/{cpu|gpu}/current` SSM pointer and
 requires the exact account owner, runtime/Pi version, flavor, successful-test
 tags, GPU family set, and live root mapping. Missing, unverified, or incompatible
 images fail before an offer with a maintainer-actionable error; there is no
-public-image fallback. For both flavors, the confirmed storage quantity is the
+generic-image fallback. For both flavors, the confirmed storage quantity is the
 greater of the model's actual disk requirement and the selected AMI's live root
 snapshot minimum. Launch resolves and validates the pointer again and requires
 a fresh quote if its minimum grew; it never silently increases confirmed

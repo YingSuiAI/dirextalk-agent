@@ -55,7 +55,6 @@ for flavor in cpu gpu; do
   "$cloud_dir/scripts/render-release.sh" \
     --account-id 123456789012 --region us-east-1 --flavor "$flavor" \
     --distribution-regions us-west-2,us-east-1,us-west-2 \
-    --distribution-kms-keys us-west-2=arn:aws:kms:us-west-2:123456789012:key/11111111-1111-4111-8111-111111111111,us-east-1=arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111 \
     --instance-profile DirextalkWorkerImageBuilder \
     --subnet-id subnet-0123456789abcdef0 --security-group-id sg-0123456789abcdef0 \
     --output-dir "$work/$flavor" >/dev/null
@@ -63,10 +62,13 @@ for flavor in cpu gpu; do
   [[ $(jq -r .flavor "$work/$flavor/render.json") == "$flavor" ]]
   [[ $(jq -r .parent_root_min_gib "$work/$flavor/render.json") == 32 ]]
   [[ $(jq -r '.blockDeviceMappings[0].ebs.volumeSize // "inherited"' "$work/$flavor/recipe.json") == inherited ]]
+  [[ $(jq -r '.blockDeviceMappings[0].ebs.encrypted' "$work/$flavor/recipe.json") == false ]]
   [[ $(jq -r '.distribution_regions|join(",")' "$work/$flavor/render.json") == us-east-1,us-west-2 ]]
+  [[ $(jq -r '.visibility+":"+(.snapshot_encrypted|tostring)' "$work/$flavor/render.json") == public:false ]]
   [[ $(jq -r '.distributions | length' "$work/$flavor/distribution.json") == 2 ]]
   [[ $(jq -r '[.distributions[].region]|join(",")' "$work/$flavor/distribution.json") == us-east-1,us-west-2 ]]
-  [[ $(jq -r '[.distributions[].amiDistributionConfiguration.kmsKeyId]|join(",")' "$work/$flavor/distribution.json") == arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111,arn:aws:kms:us-west-2:123456789012:key/11111111-1111-4111-8111-111111111111 ]]
+  [[ $(jq -r '[.distributions[].amiDistributionConfiguration.launchPermissionConfiguration.userGroups[]]|unique|join(",")' "$work/$flavor/distribution.json") == all ]]
+  [[ $(jq -r '[.distributions[].amiDistributionConfiguration.kmsKeyId // "absent"]|unique|join(",")' "$work/$flavor/distribution.json") == absent ]]
   [[ $(jq -r '[.distributions[].ssmParameterConfigurations[0].parameterName]|unique|join(",")' "$work/$flavor/distribution.json") == "/dirextalk/worker-images/v1/$flavor/candidate" ]]
   [[ $(jq -r '[.distributions[].ssmParameterConfigurations[0].dataType]|unique|join(",")' "$work/$flavor/distribution.json") == aws:ec2:image ]]
   jq -e --arg flavor "$flavor" '.distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageSchema == "1" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageFlavor == $flavor and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkWorkerImageVersion == "1.1.0" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkPiVersion == "0.84.4" and .distributions[0].amiDistributionConfiguration.amiTags.DirextalkImageTested == "true"' "$work/$flavor/distribution.json" >/dev/null
@@ -104,7 +106,6 @@ grep -q '^would_swap=verified-region-local-current-and-previous$' <<<"$output"
 
 if "$cloud_dir/scripts/render-release.sh" --offline --account-id 123456789012 --region us-east-1 --flavor cpu \
   --distribution-regions us-west-2 --instance-profile DirextalkWorkerImageBuilder \
-  --distribution-kms-keys us-west-2=arn:aws:kms:us-west-2:123456789012:key/11111111-1111-4111-8111-111111111111 \
   --subnet-id subnet-REPLACE --security-group-id sg-REPLACE --output-dir "$work/reject" >/dev/null 2>&1; then
   echo 'renderer accepted a distribution allowlist without its source Region' >&2
   exit 1
@@ -116,5 +117,7 @@ grep -q 'delete-image --image-build-version-arn' "$cloud_dir/scripts/manage-rele
 grep -q 'delete-snapshot --snapshot-id' "$cloud_dir/scripts/manage-release.sh"
 grep -q 'wait_candidate' "$cloud_dir/scripts/manage-release.sh"
 grep -q 'aws_json_region' "$cloud_dir/scripts/manage-release.sh"
+grep -q 'describe-image-attribute --image-id' "$cloud_dir/scripts/manage-release.sh"
+grep -q 'describe-snapshot-attribute --snapshot-id' "$cloud_dir/scripts/manage-release.sh"
 grep -Fq '($t.DirextalkPiVersion=="0.84.4" or $t.DirextalkPiVersion=="0.84.1")' "$cloud_dir/scripts/manage-release.sh"
 printf 'cloud-worker image assets: PASS\n'

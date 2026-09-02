@@ -765,7 +765,8 @@ support.
   actionable missing/incompatible/unverified failures, the immutable Pi/tool
   manifest, and task-scoped subagent enablement. Agent-owned EC2 Image Builder
   assets add pinned CPU/DLAMI parents, build/validate/test components, reboot and
-  residue checks, private distribution, candidate/current/previous promotion,
+  residue checks, public unencrypted distribution with explicit public
+  AMI/snapshot postcondition checks, candidate/current/previous promotion,
   and cross-recipe two-version cleanup. This is code/static evidence only: the
   configured AWS CLI identity was root and no paid AMI build, distribution, or
   SSM publication was performed.

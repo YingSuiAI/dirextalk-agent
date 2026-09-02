@@ -79,8 +79,6 @@ commands without contacting AWS:
 deploy/cloud-worker/scripts/render-release.sh \
   --offline --account-id 123456789012 --region us-east-1 \
   --flavor cpu --distribution-regions us-east-1,us-west-2 \
-  --distribution-kms-keys \
-    us-east-1=arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111,us-west-2=arn:aws:kms:us-west-2:123456789012:key/22222222-2222-4222-8222-222222222222 \
   --instance-profile DirextalkWorkerImageBuilder \
   --subnet-id subnet-REPLACE --security-group-id sg-REPLACE \
   --output-dir /tmp/dirextalk-worker-ami-cpu
@@ -99,8 +97,6 @@ EC2 image/snapshot discovery, and instance-type offering discovery only:
 AWS_PROFILE=release deploy/cloud-worker/scripts/render-release.sh \
   --account-id 123456789012 --region us-east-1 --flavor cpu \
   --distribution-regions us-east-1,us-west-2 \
-  --distribution-kms-keys \
-    us-east-1=arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111,us-west-2=arn:aws:kms:us-west-2:123456789012:key/22222222-2222-4222-8222-222222222222 \
   --instance-profile DirextalkWorkerImageBuilder \
   --subnet-id subnet-0123456789abcdef0 \
   --security-group-id sg-0123456789abcdef0 \
@@ -110,7 +106,7 @@ AWS_PROFILE=release deploy/cloud-worker/scripts/render-release.sh \
 The operator must review the resolved account, source Region, parent AMI owner
 and snapshot minimum, build instance type, explicit distribution Region
 allowlist, generated payloads,
-same-account Region-local KMS keys, and cost impact. Creation and build are
+public unencrypted snapshot policy, and cost impact. Creation and build are
 separate explicit actions:
 
 ```bash
@@ -136,8 +132,9 @@ cleanup rather than rediscovering resources by mutable name.
 After Image Builder reports success, independently inspect its tests and exact
 output AMIs. Image Builder writes the candidate parameter in each allowlisted
 Region as part of distribution. Promotion requires every candidate to match
-that Region's exact output AMI, verifies its owner, state, tags and root
-snapshot, then advances `current` to `previous` and candidate to `current` with
+that Region's exact output AMI, verifies its owner, state, tags, public launch
+permission, and public unencrypted root snapshot, then advances `current` to
+`previous` and candidate to `current` with
 Region-local read-back after every write:
 
 ```bash
@@ -171,13 +168,12 @@ AWS_PROFILE=release deploy/cloud-worker/scripts/manage-release.sh cleanup \
 `--distribution-regions` is a required explicit safety boundary when more than
 the source Region is desired. The renderer validates canonical Region names,
 sorts and deduplicates them, requires the source Region, records the final list
-in `render.json`, and never infers an additional Region. Image Builder privately
-copies the tested AMI and writes the candidate SSM parameter in each listed
-Region; cross-account distribution is absent. Publish and cleanup revalidate
+in `render.json`, and never infers an additional Region. Image Builder creates
+an unencrypted public AMI and public backing snapshot in each listed Region and
+writes the owner-account candidate SSM parameter there. Any AWS account can
+launch the AMI in that Region; the owner-account SSM pointers remain the Agent's
+trusted promotion channel. Publish and cleanup revalidate
 the same STS account and explicit Region before every regional read or write.
-The renderer and create action also require and revalidate one enabled
-same-account `ENCRYPT_DECRYPT` KMS key ARN per Region; no implicit default key
-or cross-Region key reuse is accepted.
 Retain only current plus one previous AMI per flavor in every listed Region.
 
 ## Image tests and operational evidence
@@ -200,7 +196,8 @@ shell-history, authorized-key, package-cache, or build-key residue.
 Successful Image Builder component/test execution is necessary but not enough
 to publish: `publish` also requires the exact build-version ARN to be AVAILABLE,
 the recipe ARN to match the rendered recipe, one output AMI in the same account
-and Region, and all five common immutable output tags:
+and Region, public AMI and snapshot permissions, an unencrypted root snapshot,
+and all five common immutable output tags:
 
 ```text
 DirextalkWorkerImageSchema=1
