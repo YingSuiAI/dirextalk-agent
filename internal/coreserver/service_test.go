@@ -15,6 +15,7 @@ type repositoryFake struct {
 	ensured   int
 	marked    bool
 	deleted   bool
+	deleteErr error
 }
 
 func (r *repositoryFake) Instance(context.Context) (Instance, error) { return r.instance, nil }
@@ -83,6 +84,9 @@ func (r *repositoryFake) MarkServerDeleting(_ context.Context, _ Authority, serv
 	return nil
 }
 func (r *repositoryFake) DeleteServer(_ context.Context, _ Authority, serverID string) error {
+	if r.deleteErr != nil {
+		return r.deleteErr
+	}
 	r.deleted = true
 	return nil
 }
@@ -306,6 +310,28 @@ func TestDestroyServerFinalizesAfterInitiatingClientDisconnects(t *testing.T) {
 	}
 	if ctx.Err() == nil || !repository.deleted || !workers.finalized {
 		t.Fatal("client disconnect prevented accepted cleanup")
+	}
+}
+
+func TestDestroyServerCatalogFailureLeavesVisibleWorkerForNewOperationRetry(t *testing.T) {
+	workerID := uuid.NewString()
+	repository := &repositoryFake{instance: Instance{ID: uuid.NewString()}, artifacts: []Artifact{{ArtifactID: uuid.NewString(), ServerID: workerID, ArtifactKind: ArtifactExecutionFile}}, deleteErr: errors.New("catalog unavailable")}
+	workers := &workersFake{servers: []Server{{ServerID: workerID}}}
+	deleter := &deleterFake{}
+	service, _ := NewService(repository, workers, deleter, Config{PrimaryName: "primary"})
+	authority := Authority{OwnerID: "owner", AccountGeneration: 1}
+	if err := service.DestroyServer(context.Background(), authority, workerID, uuid.NewString()); !errors.Is(err, repository.deleteErr) {
+		t.Fatalf("error=%v", err)
+	}
+	if _, err := workers.Get(context.Background(), authority, workerID); err != nil || workers.finalized || deleter.deleted != 1 {
+		t.Fatal("catalog failure lost visible cleanup target")
+	}
+	repository.deleteErr = nil
+	if err := service.DestroyServer(context.Background(), authority, workerID, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if !workers.finalized || !repository.deleted {
+		t.Fatal("new operation did not complete retry")
 	}
 }
 

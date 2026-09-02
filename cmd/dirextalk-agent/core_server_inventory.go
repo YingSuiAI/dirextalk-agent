@@ -121,12 +121,18 @@ func (deleter coreServerArtifactDeleter) DeleteArtifact(ctx context.Context, aut
 			return coreserver.ErrConflict
 		}
 		_, err := deleter.artifacts.DeleteLocalSandbox(ctx, localartifact.Authority{OwnerID: authority.OwnerID, AccountGeneration: authority.AccountGeneration}, artifact.SourceID, idempotencyKey)
+		if errors.Is(err, localartifact.ErrNotFound) {
+			return nil
+		}
 		return err
 	case "cloud_worker_artifact":
 		if deleter.artifacts == nil {
 			return coreserver.ErrConflict
 		}
 		_, err := deleter.artifacts.Delete(ctx, localartifact.Authority{OwnerID: authority.OwnerID, AccountGeneration: authority.AccountGeneration}, artifact.SourceID, idempotencyKey)
+		if errors.Is(err, localartifact.ErrNotFound) {
+			return nil
+		}
 		return err
 	default:
 		return coreserver.ErrConflict
