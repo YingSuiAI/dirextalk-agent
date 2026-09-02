@@ -933,7 +933,16 @@ func (provider *Provider) ListWorkers(ctx context.Context, authority OwnerAuthor
 		}
 		if status.Availability == WorkerAvailable && found {
 			status.EC2State, status.PublicIP = instance.State, instance.PublicIP
-			worker.Instance = instance
+			current, refreshErr := provider.refreshObservedInstance(ctx, worker, instance)
+			if refreshErr != nil {
+				status.Availability, status.Error = WorkerUnavailable, "Worker state could not be persisted"
+			} else {
+				worker = current
+				if worker.Phase == WorkerDestroyed {
+					continue
+				}
+				status.WorkerPhase, status.CurrentExecutionID = worker.Phase, worker.CurrentExecutionID
+			}
 			if instance.State == "terminated" || instance.State == "shutting-down" {
 				status.Availability, status.Error = WorkerUnavailable, "AWS instance has been terminated"
 			}
@@ -944,13 +953,33 @@ func (provider *Provider) ListWorkers(ctx context.Context, authority OwnerAuthor
 				status.TaskPhase = execution.Phase
 			}
 		}
-		if provider.status != nil && status.Availability == WorkerAvailable && instance.State == "running" && instance.PublicIP != "" {
+		if provider.status != nil && status.Availability == WorkerAvailable && worker.Phase != WorkerDestroying && instance.State == "running" && instance.PublicIP != "" {
 			status.Runner, _ = provider.status.Observe(ctx, worker)
 			status.Quote, _ = provider.status.HourlyQuote(ctx, worker)
 		}
 		result = append(result, status)
 	}
 	return result, nil
+}
+
+// Later SSH mutations resolve their target from retained state. Keep the
+// observed address current, but merge it into a freshly locked record so an
+// observation cannot overwrite a newer lease or destroy intent.
+func (provider *Provider) refreshObservedInstance(ctx context.Context, snapshot WorkerRecord, instance Instance) (WorkerRecord, error) {
+	provider.pool.mu.Lock()
+	defer provider.pool.mu.Unlock()
+	current, found, err := provider.store.LoadWorker(ctx, snapshot.WorkerID)
+	if err != nil {
+		return WorkerRecord{}, err
+	}
+	if !found || workerIdentity(current) != workerIdentity(snapshot) || current.CreationProof != snapshot.CreationProof {
+		return WorkerRecord{}, ErrIdentity
+	}
+	if current.Phase == WorkerDestroying || current.Phase == WorkerDestroyed || current.Instance == instance {
+		return current, nil
+	}
+	current.Instance = instance
+	return current, provider.saveWorker(ctx, &current)
 }
 
 func (provider *Provider) WorkerIdentity(ctx context.Context, authority OwnerAuthority, credential CredentialIdentity, workerID string) (WorkerIdentity, error) {

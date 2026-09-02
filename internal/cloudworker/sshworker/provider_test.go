@@ -1272,11 +1272,17 @@ func TestListWorkersRefreshesPublicIPBeforeReadOnlyRunnerProbe(t *testing.T) {
 	if err != nil || len(statuses) != 1 || statuses[0].EC2State != "running" || statuses[0].PublicIP != "203.0.113.20" || statuses[0].Runner.Load1 != 0.5 || statuses[0].Quote.MicrosPerHour != 25_000 {
 		t.Fatalf("statuses=%#v err=%v", statuses, err)
 	}
-	if len(status.seen) != 1 || status.quoteCalls != 1 || status.seen[0].Instance.PublicIP != "203.0.113.20" || store.workers[r.ExecutionID].Instance.PublicIP != "203.0.113.10" {
-		t.Fatalf("runner probe must use live IP without rewriting lifecycle state: seen=%#v stored=%#v", status.seen, store.workers[r.ExecutionID])
+	if len(status.seen) != 1 || status.quoteCalls != 1 || status.seen[0].Instance.PublicIP != "203.0.113.20" || store.workers[r.ExecutionID].Instance.PublicIP != "203.0.113.20" {
+		t.Fatalf("runner probe must persist live IP without rewriting lifecycle state: seen=%#v stored=%#v", status.seen, store.workers[r.ExecutionID])
 	}
 	if keys.ensure != ensureBeforeList || keys.lookup != 0 {
 		t.Fatalf("list created key material: ensure=%d lookup=%d", keys.ensure, keys.lookup)
+	}
+	if err := provider.ReconcileServiceExposure(context.Background(), workerIdentity(worker), ServiceExposure{WorkloadID: "web", Hostname: "app.example.test", Port: 8080}); err != nil {
+		t.Fatal(err)
+	}
+	if status.exposureWorker.Instance.PublicIP != "203.0.113.20" {
+		t.Fatalf("later service SSH used stale address: %+v", status.exposureWorker)
 	}
 }
 

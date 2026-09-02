@@ -205,4 +205,39 @@ func TestInFlightListCannotResurrectDestroyedWorker(t *testing.T) {
 	if worker.Phase != WorkerDestroyed {
 		t.Fatalf("list resurrected worker: %+v", worker)
 	}
+	if worker.Instance.PublicIP == observed.PublicIP {
+		t.Fatal("late observation rewrote destroyed instance state")
+	}
+}
+
+func TestInFlightListRefreshesAddressWithoutOverwritingNewLease(t *testing.T) {
+	cloud, store := newFakeAWS(), newMemoryStore()
+	provider, _ := New(cloud, &fakeKeys{}, &fakeSSH{}, store)
+	request := requestFixture()
+	if _, err := provider.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	worker, _, _ := store.LoadWorker(context.Background(), request.ExecutionID)
+	observed := worker.Instance
+	observed.PublicIP = "198.51.100.123"
+	paused := &pausedObservationAWS{fakeAWS: cloud, entered: make(chan struct{}), release: make(chan struct{}), instance: observed}
+	provider.aws = paused
+	done := make(chan error, 1)
+	go func() {
+		_, err := provider.ListWorkers(context.Background(), request.Authority, request.Credential)
+		done <- err
+	}()
+	<-paused.entered
+	worker.Phase, worker.CurrentExecutionID = WorkerBusy, "new-execution"
+	if err := store.SaveWorker(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	close(paused.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	worker, _, _ = store.LoadWorker(context.Background(), request.ExecutionID)
+	if worker.Phase != WorkerBusy || worker.CurrentExecutionID != "new-execution" || worker.Instance.PublicIP != observed.PublicIP {
+		t.Fatalf("observation overwrote lease or lost live IP: %+v", worker)
+	}
 }
