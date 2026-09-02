@@ -67,7 +67,7 @@ for flavor in cpu gpu; do
   [[ $(jq -r '.visibility+":"+(.snapshot_encrypted|tostring)' "$work/$flavor/render.json") == public:false ]]
   [[ $(jq -r '.distributions | length' "$work/$flavor/distribution.json") == 2 ]]
   [[ $(jq -r '[.distributions[].region]|join(",")' "$work/$flavor/distribution.json") == us-east-1,us-west-2 ]]
-  [[ $(jq -r '[.distributions[].amiDistributionConfiguration.launchPermissionConfiguration.userGroups[]]|unique|join(",")' "$work/$flavor/distribution.json") == all ]]
+  [[ $(jq -r '[.distributions[].amiDistributionConfiguration.launchPermission.userGroups[]]|unique|join(",")' "$work/$flavor/distribution.json") == all ]]
   [[ $(jq -r '[.distributions[].amiDistributionConfiguration.kmsKeyId // "absent"]|unique|join(",")' "$work/$flavor/distribution.json") == absent ]]
   [[ $(jq -r '[.distributions[].ssmParameterConfigurations[0].parameterName]|unique|join(",")' "$work/$flavor/distribution.json") == "/dirextalk/worker-images/v1/$flavor/candidate" ]]
   [[ $(jq -r '[.distributions[].ssmParameterConfigurations[0].dataType]|unique|join(",")' "$work/$flavor/distribution.json") == aws:ec2:image ]]
