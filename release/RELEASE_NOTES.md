@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.203
+
+1. Continue authorized follow-up actions after successful Worker tasks using the admitted tools and remaining budget; require a successful action receipt before claiming delivery succeeded.
+2. Admit 52 model dispatches, 48 tool calls, and one hour of model-active time, with migration 30 preserving existing turn limits while supporting the 54-attempt physical ceiling.
+3. Give final-answer format recovery its own timeout window and preserve verified Worker outcomes and artifact links in normal replies and history when final synthesis fails.
+
 ## v1.0.202
 
 1. Keep Worker list, get, execution, and independent destruction responsive while another Worker terminates; serialize same-Worker cleanup, preserve cancellation and identity fences, and report success only after exact resource cleanup.
