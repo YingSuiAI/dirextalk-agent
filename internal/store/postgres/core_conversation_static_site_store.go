@@ -83,4 +83,27 @@ func (s *CoreConversationStore) CommitConversationStaticSite(ctx context.Context
 	return command.Receipt, nil
 }
 
+func (s *CoreConversationStore) ResolveConversationStaticSite(ctx context.Context, query core.StaticSiteSourceQuery) (core.StaticSiteReceipt, error) {
+	if s == nil || s.pool == nil || ctx == nil || query.Validate() != nil {
+		return core.StaticSiteReceipt{}, core.ErrInvalid
+	}
+	var receipt core.StaticSiteReceipt
+	err := s.pool.QueryRow(ctx, `SELECT site_id::text,release_id::text,public_path,content_sha256,size_bytes
+		FROM core_static_site_releases
+		WHERE owner_id=$1 AND account_generation=$2 AND conversation_id=$3
+		AND ($4::uuid IS NULL OR release_id=$4)
+		ORDER BY created_at DESC,release_id DESC LIMIT 1`, query.OwnerID, query.AccountGeneration,
+		query.ConversationID, nullableUUIDPG(query.ReleaseID)).Scan(&receipt.SiteID, &receipt.ReleaseID, &receipt.PublicPath, &receipt.SHA256, &receipt.SizeBytes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.StaticSiteReceipt{}, core.ErrStaticSiteNotFound
+	}
+	if err != nil {
+		return core.StaticSiteReceipt{}, err
+	}
+	if receipt.Validate() != nil || query.ReleaseID != "" && receipt.ReleaseID != query.ReleaseID {
+		return core.StaticSiteReceipt{}, core.ErrConflict
+	}
+	return receipt, nil
+}
+
 var _ core.ConversationStaticSiteStore = (*CoreConversationStore)(nil)

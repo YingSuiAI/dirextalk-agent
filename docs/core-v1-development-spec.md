@@ -516,6 +516,17 @@ responsive semantic HTML with inline CSS only. JavaScript, forms, external
 assets, network requests, and multi-file bundles are not part of the current
 contract.
 
+The read-only `static_site_read` intrinsic resolves source only inside the
+current owner, account generation, and conversation. It reads either the
+exact immutable release UUID supplied by the model or, when omitted, the
+latest release in that conversation. PostgreSQL first resolves the complete
+receipt; the filesystem reader then revalidates the server-derived path,
+size, and SHA-256 before returning bounded HTML as untrusted model data. A
+revision therefore reads the prior source in one model round and publishes a
+new immutable release in a later round. Source HTML is never injected into
+unrelated turns and this internal tool does not add a public byte-download
+operation.
+
 The authenticated owner manages those same releases through
 `agent.static_sites.v1/list_releases` and `delete_release`. List returns the
 server-produced absolute public URL and receipt fields only. Delete accepts one

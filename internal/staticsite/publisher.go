@@ -177,6 +177,56 @@ func (p *Publisher) PublishSingleHTML(ctx context.Context, publication core.Stat
 	return receipt(publication, digest, false), nil
 }
 
+// ReadSingleHTML opens only the immutable release proven by a database-backed
+// receipt and verifies its bytes before returning model-visible source.
+func (p *Publisher) ReadSingleHTML(ctx context.Context, expected core.StaticSiteReceipt) ([]byte, error) {
+	if p == nil || ctx == nil || expected.Validate() != nil {
+		return nil, core.ErrInvalid
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	releaseRoot := filepath.Join(p.publicRoot, expected.SiteID, expected.ReleaseID)
+	if filepath.Clean(releaseRoot) != releaseRoot || validateOwnedDirectory(releaseRoot, 0o022) != nil {
+		return nil, core.ErrConflict
+	}
+	entries, err := os.ReadDir(releaseRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, core.ErrConflict
+		}
+		return nil, err
+	}
+	if len(entries) != 1 || entries[0].Name() != indexFileName || entries[0].Type()&os.ModeSymlink != 0 {
+		return nil, core.ErrConflict
+	}
+	file, err := os.Open(filepath.Join(releaseRoot, indexFileName))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, core.ErrConflict
+		}
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o222 != 0 || info.Size() != expected.SizeBytes {
+		return nil, core.ErrConflict
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, core.MaxStaticSiteHTMLBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) != expected.SizeBytes || digestBytes(raw) != expected.SHA256 {
+		return nil, core.ErrConflict
+	}
+	return raw, nil
+}
+
 func (p *Publisher) verifyExisting(publication core.StaticSitePublication, digest, finalRoot string) (core.StaticSiteReceipt, error) {
 	if err := validateOwnedDirectory(finalRoot, 0o022); err != nil {
 		return core.StaticSiteReceipt{}, core.ErrConflict

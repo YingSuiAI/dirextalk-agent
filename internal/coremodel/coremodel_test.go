@@ -554,7 +554,7 @@ func TestGeminiPayloadProjectsWorkerSchemaToDocumentedSubset(t *testing.T) {
 }
 
 func TestProviderSafeIntrinsicNamesRoundTripPayloadsAndResponses(t *testing.T) {
-	for _, name := range []string{IntrinsicScheduleCreateToolName, IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerInventoryToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicStaticSitePublishToolName} {
+	for _, name := range []string{IntrinsicScheduleCreateToolName, IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerInventoryToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicStaticSiteReadToolName, IntrinsicStaticSitePublishToolName} {
 		if !IsIntrinsicToolName(name) || !toolNamePattern.MatchString(name) || strings.Contains(name, ".") {
 			t.Fatalf("intrinsic tool name is not provider-safe: %q", name)
 		}

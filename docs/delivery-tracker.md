@@ -9,6 +9,14 @@ contract](message-server-integration-development-contract.md), and
 
 ## Implemented at HEAD
 
+- Static page revisions can now read the latest or an exact prior immutable
+  release only within the admitted owner, account generation, and conversation.
+  The read-only intrinsic revalidates the database receipt against the
+  server-derived path, file shape, size, and digest before returning bounded
+  untrusted HTML. Accepted turns also execute their frozen prompt and intrinsic
+  schema after an Agent upgrade, ignoring newly added tools while failing
+  closed when an admitted binding is missing or changed. Focused Core,
+  publisher, model, and PostgreSQL tests pass.
 - Slow AWS termination and partial-resource discovery no longer hold the
   owner-wide Worker pool lock. Per-Worker cancelable serialization preserves
   durable destroy intent, execution/publication draining, immutable resource

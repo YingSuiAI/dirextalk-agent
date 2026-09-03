@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +91,36 @@ func TestConversationStaticSiteCommitPersistsReceiptAndReplaysPostgres(t *testin
 	changed.Receipt.SHA256 = strings.Repeat("b", 64)
 	if _, err = h.store.CommitConversationStaticSite(context.Background(), changed); err != core.ErrConflict {
 		t.Fatalf("changed receipt err=%v", err)
+	}
+}
+
+func TestConversationStaticSiteSourceResolutionIsOwnerGenerationAndConversationScopedPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	command := conversationStaticSiteCommand(t, h)
+	if _, err := h.store.CommitConversationStaticSite(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	query := core.StaticSiteSourceQuery{OwnerID: command.Lease.Turn.OwnerID, AccountGeneration: command.Lease.Turn.AccountGeneration, ConversationID: command.Lease.Turn.ConversationID}
+	latest, err := h.store.ResolveConversationStaticSite(context.Background(), query)
+	if err != nil || latest != command.Receipt {
+		t.Fatalf("latest=%+v err=%v", latest, err)
+	}
+	query.ReleaseID = command.Receipt.ReleaseID
+	exact, err := h.store.ResolveConversationStaticSite(context.Background(), query)
+	if err != nil || exact != command.Receipt {
+		t.Fatalf("exact=%+v err=%v", exact, err)
+	}
+	for _, mutate := range []func(*core.StaticSiteSourceQuery){
+		func(value *core.StaticSiteSourceQuery) { value.OwnerID = "@other:example.test" },
+		func(value *core.StaticSiteSourceQuery) { value.AccountGeneration++ },
+		func(value *core.StaticSiteSourceQuery) { value.ConversationID = uuid.NewString() },
+		func(value *core.StaticSiteSourceQuery) { value.ReleaseID = uuid.NewString() },
+	} {
+		foreign := query
+		mutate(&foreign)
+		if _, err = h.store.ResolveConversationStaticSite(context.Background(), foreign); !errors.Is(err, core.ErrStaticSiteNotFound) {
+			t.Fatalf("foreign=%+v err=%v", foreign, err)
+		}
 	}
 }
 

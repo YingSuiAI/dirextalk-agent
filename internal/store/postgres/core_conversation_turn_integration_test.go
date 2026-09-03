@@ -342,6 +342,15 @@ func TestCoreConversationFirstTurnPersistsProvisionalTitleAtAcceptancePostgres(t
 	if err = h.store.CreateConversation(context.Background(), core.Conversation{ID: existingID, Revision: 1}, uuid.NewString()); err != nil {
 		t.Fatal(err)
 	}
+	newerID := uuid.NewString()
+	if err = h.store.CreateConversation(context.Background(), core.Conversation{ID: newerID, Title: "newer idle conversation", Revision: 1}, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	staleUpdatedAt := time.Now().UTC().Add(-2 * time.Hour)
+	newerUpdatedAt := staleUpdatedAt.Add(time.Hour)
+	if _, err = h.pool.Exec(context.Background(), `UPDATE core_conversations SET updated_at=CASE conversation_id WHEN $1 THEN $3::timestamptz WHEN $2 THEN $4::timestamptz END WHERE conversation_id IN ($1,$2)`, existingID, newerID, staleUpdatedAt, newerUpdatedAt); err != nil {
+		t.Fatal(err)
+	}
 	cmd = turnCommand()
 	cmd.ConversationID = existingID
 	cmd.Prompt = "existing empty conversation"
@@ -354,9 +363,34 @@ func TestCoreConversationFirstTurnPersistsProvisionalTitleAtAcceptancePostgres(t
 	if err != nil || conversation.Title != "existing empty conversation" || conversation.Revision != revision {
 		t.Fatalf("existing accepted conversation=%+v err=%v", conversation, err)
 	}
+	if !conversation.UpdatedAt.After(newerUpdatedAt) {
+		t.Fatalf("accepted conversation updated_at=%s newer_idle=%s", conversation.UpdatedAt, newerUpdatedAt)
+	}
+	listed, _, err := h.store.ListConversations(context.Background(), "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existingIndex, newerIndex := -1, -1
+	listedIDs := make([]string, 0, len(listed))
+	for index, item := range listed {
+		listedIDs = append(listedIDs, item.ID)
+		if item.ID == existingID {
+			existingIndex = index
+		}
+		if item.ID == newerID {
+			newerIndex = index
+		}
+	}
+	if existingIndex < 0 || newerIndex < 0 || existingIndex >= newerIndex {
+		t.Fatalf("accepted conversation list order=%v", listedIDs)
+	}
 
 	precreatedID := uuid.NewString()
 	if err = h.store.CreateConversation(context.Background(), core.Conversation{ID: precreatedID, Revision: 1}, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	precreatedUpdatedAt := time.Now().UTC().Add(-3 * time.Hour)
+	if _, err = h.pool.Exec(context.Background(), `UPDATE core_conversations SET updated_at=$2 WHERE conversation_id=$1`, precreatedID, precreatedUpdatedAt); err != nil {
 		t.Fatal(err)
 	}
 	cmd = turnCommand()
@@ -368,6 +402,29 @@ func TestCoreConversationFirstTurnPersistsProvisionalTitleAtAcceptancePostgres(t
 	conversation, err = h.store.LoadConversation(context.Background(), precreatedID)
 	if err != nil || conversation.Title != "precreated conversation without" || conversation.Revision != 1 {
 		t.Fatalf("precreated accepted conversation=%+v err=%v", conversation, err)
+	}
+	if !conversation.UpdatedAt.After(precreatedUpdatedAt) {
+		t.Fatalf("precreated accepted updated_at=%s stale=%s", conversation.UpdatedAt, precreatedUpdatedAt)
+	}
+
+	futureID := uuid.NewString()
+	if err = h.store.CreateConversation(context.Background(), core.Conversation{ID: futureID, Revision: 1}, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	futureUpdatedAt := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Microsecond)
+	if _, err = h.pool.Exec(context.Background(), `UPDATE core_conversations SET updated_at=$2 WHERE conversation_id=$1`, futureID, futureUpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	cmd = turnCommand()
+	cmd.ConversationID = futureID
+	cmd.Prompt = "future timestamp conversation"
+	cmd.ExpectedRevision = &revision
+	if _, err = h.store.StartTurn(context.Background(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err = h.store.LoadConversation(context.Background(), futureID)
+	if err != nil || conversation.Title != "future timestamp conversation" || conversation.UpdatedAt.Before(futureUpdatedAt) {
+		t.Fatalf("future accepted conversation=%+v future=%s err=%v", conversation, futureUpdatedAt, err)
 	}
 }
 

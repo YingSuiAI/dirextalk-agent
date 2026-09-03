@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.0.207
+
+1. Keep accepted turns bound to their admitted prompt and intrinsic tool contracts across runtime upgrades, rejecting incompatible replacements instead of changing an in-flight turn.
+2. Let follow-up turns securely read and revise the owner's previously published static-site HTML while preserving owner, generation, conversation, path, size, and digest checks.
+3. Advance first-turn conversation activity together with its provisional title so newly accepted conversations remain visible and correctly ordered in history.
+
 ## v1.0.206
 
 1. Resume same-turn follow-ups by durably superseding the interrupted model attempt, including automatic repair of turns stranded by v1.0.205.

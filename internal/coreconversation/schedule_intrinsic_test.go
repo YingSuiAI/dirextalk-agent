@@ -376,6 +376,7 @@ func TestExecuteTurnPassesLoadedConversationRevisionToScheduleIntrinsic(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindCurrentTestTurnRuntime(t, service, turnStore)
 	service.executeTurn(context.Background(), turn.ID)
 	if len(scheduleStore.commands) != 1 || scheduleStore.commands[0].Response.Revision != 6 || turnStore.failedCode != "" {
 		t.Fatalf("commands=%+v failed=%q", scheduleStore.commands, turnStore.failedCode)
@@ -407,6 +408,7 @@ func TestExecuteTurnReturnsInvalidScheduleArgumentsToModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindCurrentTestTurnRuntime(t, service, turnStore)
 	service.executeTurn(context.Background(), turn.ID)
 	if len(scheduleStore.commands) != 0 || turnStore.turn.State != TurnAccepted || turnStore.failedCode != "" {
 		t.Fatalf("invalid arguments terminated turn: commands=%+v turn=%+v failed=%q", scheduleStore.commands, turnStore.turn, turnStore.failedCode)
@@ -446,6 +448,7 @@ func TestIntrinsicOrderViolationUsesOneCorrectionThenCommitsScheduleOnce(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindCurrentTestTurnRuntime(t, service, turnStore)
 
 	service.executeTurn(context.Background(), turn.ID)
 	if turnStore.failedCode != "" || len(scheduleStore.commands) != 0 || turnStore.turn.State != TurnAccepted {
@@ -497,6 +500,7 @@ func TestRepeatedIntrinsicOrderViolationFinalizesUsefulMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindCurrentTestTurnRuntime(t, service, turnStore)
 	for attempt := 0; attempt < 3 && turnStore.turn.State != TurnCompleted; attempt++ {
 		service.executeTurn(context.Background(), turn.ID)
 	}

@@ -216,6 +216,7 @@ func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartC
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return core.Turn{}, err
 	}
+	var now time.Time
 	if c.ExpectedRevision != nil {
 		var revision uint64
 		if err = tx.QueryRow(ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1 AND deleted_at IS NULL FOR UPDATE`, c.ConversationID).Scan(&revision); err != nil {
@@ -224,7 +225,8 @@ func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartC
 		if revision != *c.ExpectedRevision {
 			return core.Turn{}, core.ErrConflict
 		}
-		if _, err = tx.Exec(ctx, `UPDATE core_conversations SET title=$2 WHERE conversation_id=$1 AND title='' AND NOT EXISTS (SELECT 1 FROM core_messages WHERE conversation_id=$1)`, c.ConversationID, core.ProvisionalConversationTitle(c.Prompt)); err != nil {
+		now = time.Now().UTC()
+		if _, err = tx.Exec(ctx, `UPDATE core_conversations SET title=$2,updated_at=GREATEST(updated_at,$3) WHERE conversation_id=$1 AND title='' AND NOT EXISTS (SELECT 1 FROM core_messages WHERE conversation_id=$1)`, c.ConversationID, core.ProvisionalConversationTitle(c.Prompt), now); err != nil {
 			return core.Turn{}, err
 		}
 		if c.ContextCompaction != nil {
@@ -236,14 +238,14 @@ func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartC
 	// A turn may open a new conversation. Materialize its empty revision
 	// baseline before inserting the turn so the foreign key is valid; the
 	// completion transaction advances this row with the fenced revision.
-	now := time.Now().UTC()
 	if c.ExpectedRevision == nil {
+		now = time.Now().UTC()
 		if _, err = tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,$2,1,$3,$3) ON CONFLICT(conversation_id) DO NOTHING`, c.ConversationID, core.ProvisionalConversationTitle(c.Prompt), now); err != nil {
 			return core.Turn{}, err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE core_conversations SET title=$2
+		if _, err = tx.Exec(ctx, `UPDATE core_conversations SET title=$2,updated_at=GREATEST(updated_at,$3)
 			WHERE conversation_id=$1 AND deleted_at IS NULL AND title=''
-			AND NOT EXISTS (SELECT 1 FROM core_messages WHERE conversation_id=$1)`, c.ConversationID, core.ProvisionalConversationTitle(c.Prompt)); err != nil {
+			AND NOT EXISTS (SELECT 1 FROM core_messages WHERE conversation_id=$1)`, c.ConversationID, core.ProvisionalConversationTitle(c.Prompt), now); err != nil {
 			return core.Turn{}, err
 		}
 		var title string

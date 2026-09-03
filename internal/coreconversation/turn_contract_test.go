@@ -677,6 +677,19 @@ func (f intrinsicResolverFunc) ResolveIntrinsicTools(ctx context.Context, lease 
 	return f(ctx, lease)
 }
 
+func bindCurrentTestTurnRuntime(t *testing.T, service *Service, store *readOnlyTurnStore) {
+	t.Helper()
+	extensions, err := service.resolveAcceptedTurnExtensions(context.Background(), store.turn.ExtensionSnapshots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := service.buildTurnAdmissionRuntime(context.Background(), store.turn, extensions, "", TurnExecutionDeep, TurnConstrainedWorkflow{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.turn.RuntimeSnapshot = &runtime
+}
+
 func (m *capturingTurnModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
 	m.request = request
 	m.runs++
@@ -1333,7 +1346,9 @@ func TestExecuteTurnContinuesOutputLimitFromDurableEventsAfterRestart(t *testing
 	}
 
 	firstModel := &outputContinuationTurnModel{partial: true}
-	newService(firstModel).executeTurn(context.Background(), turn.ID)
+	firstService := newService(firstModel)
+	bindCurrentTestTurnRuntime(t, firstService, store)
+	firstService.executeTurn(context.Background(), turn.ID)
 	if current, err := store.GetTurn(context.Background(), turn.ID); err != nil || current.State != TurnAccepted || current.Response != nil {
 		t.Fatalf("partial turn=%+v err=%v", current, err)
 	}
@@ -1389,7 +1404,9 @@ func TestExecuteTurnForcesCorrectableStaticSiteRetryAcrossOutputContinuation(t *
 		return service
 	}
 
-	newService(fixedToolCallsTurnModel{calls: []ToolCall{call}}).executeTurn(context.Background(), turn.ID)
+	firstService := newService(fixedToolCallsTurnModel{calls: []ToolCall{call}})
+	bindCurrentTestTurnRuntime(t, firstService, store)
+	firstService.executeTurn(context.Background(), turn.ID)
 	current, err := store.GetTurn(context.Background(), turn.ID)
 	var correction *ToolResult
 	for _, event := range store.events {
@@ -1438,7 +1455,9 @@ func TestMutatingIntrinsicFailureFinalizesWithUsefulResponseInsteadOfFailingTurn
 		return service
 	}
 
-	newService(fixedToolCallsTurnModel{calls: []ToolCall{call}}).executeTurn(context.Background(), turn.ID)
+	firstService := newService(fixedToolCallsTurnModel{calls: []ToolCall{call}})
+	bindCurrentTestTurnRuntime(t, firstService, store)
+	firstService.executeTurn(context.Background(), turn.ID)
 	current, err := store.GetTurn(context.Background(), turn.ID)
 	if err != nil || current.State != TurnAccepted || store.failedCode != "" {
 		t.Fatalf("failed intrinsic surfaced terminal error: turn=%+v failed=%q err=%v", current, store.failedCode, err)
@@ -1762,6 +1781,7 @@ func TestExecuteTurnAllowsFailedWorkerFollowUpProposalForDeferredSteer(t *testin
 				}},
 		}, nil
 	}))
+	bindCurrentTestTurnRuntime(t, service, store)
 
 	service.executeTurn(context.Background(), turn.ID)
 
@@ -2057,6 +2077,7 @@ func TestDurableReadOnlyIntrinsicResultReturnsToNextModelRound(t *testing.T) {
 			},
 		}}, nil
 	}))
+	bindCurrentTestTurnRuntime(t, service, store)
 
 	service.executeTurn(context.Background(), turn.ID)
 	first, err := store.GetTurn(context.Background(), turn.ID)
@@ -2185,6 +2206,7 @@ func TestReadOnlyIntrinsicDispatchedReplayIsNotReexecuted(t *testing.T) {
 			},
 		}}, nil
 	}))
+	bindCurrentTestTurnRuntime(t, service, store)
 
 	service.executeTurn(context.Background(), turn.ID)
 	current, err := store.GetTurn(context.Background(), turn.ID)
@@ -2495,6 +2517,7 @@ func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testi
 			},
 		}}, nil
 	}))
+	bindCurrentTestTurnRuntime(t, service, store)
 
 	service.executeTurn(context.Background(), turn.ID)
 
@@ -2542,6 +2565,7 @@ func TestExecuteTurnRejectsModelOnlyScheduleSuccessReceipt(t *testing.T) {
 			},
 		}}, nil
 	}))
+	bindCurrentTestTurnRuntime(t, service, store)
 
 	service.executeTurn(context.Background(), turn.ID)
 
@@ -2682,6 +2706,7 @@ func TestExecuteTurnAppliesStagedToolLoopRecovery(t *testing.T) {
 					return IntrinsicExecutionResult{TurnCommitted: true}, nil
 				}}}, nil
 			}))
+			bindCurrentTestTurnRuntime(t, service, store)
 
 			service.executeTurn(context.Background(), turn.ID)
 

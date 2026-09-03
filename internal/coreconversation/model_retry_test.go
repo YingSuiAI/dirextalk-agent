@@ -3,6 +3,7 @@ package coreconversation
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"reflect"
@@ -497,17 +498,56 @@ func TestTurnRetryCannotExceedPhysicalAttemptBudget(t *testing.T) {
 	}
 }
 
-func TestAdmittedTurnRejectsChangedRuntimeBeforeProviderDispatch(t *testing.T) {
+func TestAdmittedTurnUsesFrozenRuntimeWhenServerAddsIntrinsicAfterAcceptance(t *testing.T) {
 	model := &retrySequenceModel{}
 	service, store, turn := newAttemptTurnService(t, model)
-	old, err := NewTurnRuntimeSnapshot("superseded runtime", turn.ProfileSnapshot, nil, "", "")
+	old, err := NewTurnRuntimeSnapshot("frozen admitted runtime", turn.ProfileSnapshot, nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	store.turn.RuntimeSnapshot = &old
+	service.SetIntrinsicResolver(intrinsicResolverFunc(func(context.Context, TurnLease) ([]ResolvedIntrinsic, error) {
+		return []ResolvedIntrinsic{{Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSiteReadToolName, InputSchema: map[string]any{"type": "object"}}, ReadOnly: true, Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+			return IntrinsicExecutionResult{}, errors.New("new intrinsic must not enter frozen turn")
+		}}}, nil
+	}))
 	service.executeTurn(context.Background(), turn.ID)
-	if model.callCount() != 0 || store.failedCode != turnRuntimeIncompatibleCode || store.turn.ModelDispatchCount != 0 {
+	if model.callCount() != 1 || store.failedCode != "" || store.turn.ModelDispatchCount != 1 {
 		t.Fatalf("calls=%d failure=%q attempts=%d", model.callCount(), store.failedCode, store.turn.ModelDispatchCount)
+	}
+	request := model.requests[0]
+	if request.Profile.SystemPrompt != old.CompiledSystemPrompt || len(request.Intrinsics) != 0 {
+		t.Fatalf("request did not preserve admitted runtime: %+v", request)
+	}
+}
+
+func TestBindAdmittedIntrinsicToolsRejectsChangedSchemaOrMissingBinding(t *testing.T) {
+	currentContract := coremodel.Tool{Name: coremodel.IntrinsicStaticSiteReadToolName, Description: "read", InputSchema: map[string]any{
+		"type": "object", "properties": map[string]any{"limit": map[string]any{"type": "integer", "maximum": 1}},
+	}}
+	admittedRaw, err := json.Marshal(currentContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var admitted coremodel.Tool
+	if err = json.Unmarshal(admittedRaw, &admitted); err != nil {
+		t.Fatal(err)
+	}
+	matching := ResolvedIntrinsic{Tool: currentContract, ReadOnly: true, Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+		return IntrinsicExecutionResult{}, nil
+	}}
+	added := ResolvedIntrinsic{Tool: coremodel.Tool{Name: coremodel.IntrinsicStaticSitePublishToolName, InputSchema: map[string]any{"type": "object"}}, Execute: matching.Execute}
+	bound, err := bindAdmittedIntrinsicTools([]ResolvedIntrinsic{matching, added}, []coremodel.Tool{admitted})
+	if err != nil || len(bound) != 1 || bound[0].Tool.Name != admitted.Name {
+		t.Fatalf("bound=%+v err=%v", bound, err)
+	}
+	changed := matching
+	changed.Tool.Description = "changed"
+	if _, err = bindAdmittedIntrinsicTools([]ResolvedIntrinsic{changed}, []coremodel.Tool{admitted}); !errors.Is(err, ErrTurnRuntimeIncompatible) {
+		t.Fatalf("changed schema err=%v", err)
+	}
+	if _, err = bindAdmittedIntrinsicTools(nil, []coremodel.Tool{admitted}); !errors.Is(err, ErrTurnRuntimeIncompatible) {
+		t.Fatalf("missing binding err=%v", err)
 	}
 }
 

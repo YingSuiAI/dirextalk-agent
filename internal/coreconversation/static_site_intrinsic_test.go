@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/google/uuid"
 )
 
 type intrinsicCorrectionTestError struct{ content string }
@@ -19,6 +20,7 @@ func (err intrinsicCorrectionTestError) IntrinsicCorrection() string { return er
 
 type staticSitePublisherStub struct {
 	publications []StaticSitePublication
+	sources      map[string][]byte
 	err          error
 }
 
@@ -34,14 +36,41 @@ func (p *staticSitePublisherStub) PublishSingleHTML(_ context.Context, publicati
 	}, nil
 }
 
+func (p *staticSitePublisherStub) ReadSingleHTML(_ context.Context, receipt StaticSiteReceipt) ([]byte, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	raw, ok := p.sources[receipt.ReleaseID]
+	if !ok {
+		return nil, ErrConflict
+	}
+	return append([]byte(nil), raw...), nil
+}
+
 type staticSiteStoreStub struct {
 	commands []ConversationStaticSiteCommand
+	receipts []StaticSiteReceipt
+	queries  []StaticSiteSourceQuery
 	err      error
 }
 
 type staticSiteCapableTurnStore struct {
 	*replayTurnStore
 	*staticSiteStoreStub
+}
+
+func (s *staticSiteStoreStub) ResolveConversationStaticSite(_ context.Context, query StaticSiteSourceQuery) (StaticSiteReceipt, error) {
+	if s.err != nil {
+		return StaticSiteReceipt{}, s.err
+	}
+	s.queries = append(s.queries, query)
+	for index := len(s.receipts) - 1; index >= 0; index-- {
+		receipt := s.receipts[index]
+		if query.ReleaseID == "" || receipt.ReleaseID == query.ReleaseID {
+			return receipt, nil
+		}
+	}
+	return StaticSiteReceipt{}, ErrStaticSiteNotFound
 }
 
 func (s *staticSiteStoreStub) CommitConversationStaticSite(_ context.Context, command ConversationStaticSiteCommand) (StaticSiteReceipt, error) {
@@ -74,6 +103,97 @@ func TestStaticSiteIntrinsicPublishesSingleHTMLWithServerDerivedPath(t *testing.
 	}
 	if _, err = intrinsic.Execute(context.Background(), request); err != nil || publisher.publications[1].SiteID != publisher.publications[0].SiteID || publisher.publications[1].ReleaseID != publisher.publications[0].ReleaseID {
 		t.Fatalf("deterministic replay err=%v publications=%+v", err, publisher.publications)
+	}
+}
+
+func TestStaticSiteReadIntrinsicLoadsLatestOrExactReleaseInBoundConversation(t *testing.T) {
+	lease := scheduleIntrinsicLease()
+	siteID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-static-site:"+lease.Turn.OwnerID+":"+lease.Turn.ConversationID)).String()
+	firstHTML := []byte("<!doctype html><style>:root{--surface:#fff}</style><main>first</main>")
+	latestHTML := []byte("<!doctype html><style>:root{--surface:#eef8ff}</style><main>latest</main>")
+	first := StaticSiteReceipt{SiteID: siteID, ReleaseID: uuid.NewString(), PublicPath: "", SHA256: staticSiteDigest(firstHTML), SizeBytes: int64(len(firstHTML))}
+	first.PublicPath = "/.sites/" + first.SiteID + "/" + first.ReleaseID + "/"
+	latest := StaticSiteReceipt{SiteID: siteID, ReleaseID: uuid.NewString(), PublicPath: "", SHA256: staticSiteDigest(latestHTML), SizeBytes: int64(len(latestHTML))}
+	latest.PublicPath = "/.sites/" + latest.SiteID + "/" + latest.ReleaseID + "/"
+	store := &staticSiteStoreStub{receipts: []StaticSiteReceipt{first, latest}}
+	publisher := &staticSitePublisherStub{sources: map[string][]byte{first.ReleaseID: firstHTML, latest.ReleaseID: latestHTML}}
+	intrinsic := staticSiteReadIntrinsic(store, publisher, lease)
+
+	for _, test := range []struct {
+		name      string
+		arguments string
+		want      StaticSiteReceipt
+		wantHTML  string
+	}{
+		{name: "latest", arguments: `{}`, want: latest, wantHTML: string(latestHTML)},
+		{name: "exact", arguments: `{"release_id":"` + first.ReleaseID + `"}`, want: first, wantHTML: string(firstHTML)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicStaticSiteReadToolName, Arguments: test.arguments}
+			result, err := intrinsic.Execute(context.Background(), IntrinsicExecutionRequest{Lease: lease, Call: call, CanonicalArguments: json.RawMessage(test.arguments), ConversationRevision: 7})
+			if err != nil || result.TurnCommitted || result.ToolResult == nil || result.ToolResult.ValidateObservation() != nil || result.ToolResult.Outcome != ToolOutcomeSuccess {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			var source staticSiteReadResult
+			if json.Unmarshal([]byte(result.ToolResult.Content), &source) != nil || source.Schema != "dirextalk.static-site-source/v1" ||
+				source.SiteID != test.want.SiteID || source.ReleaseID != test.want.ReleaseID || source.SHA256 != test.want.SHA256 ||
+				source.SizeBytes != test.want.SizeBytes || source.HTML != test.wantHTML {
+				t.Fatalf("source=%+v", source)
+			}
+		})
+	}
+	if len(store.queries) != 2 || store.queries[0].OwnerID != lease.Turn.OwnerID || store.queries[0].AccountGeneration != lease.Turn.AccountGeneration ||
+		store.queries[0].ConversationID != lease.Turn.ConversationID || store.queries[0].ReleaseID != "" || store.queries[1].ReleaseID != first.ReleaseID {
+		t.Fatalf("queries=%+v", store.queries)
+	}
+}
+
+func TestStaticSiteReadIntrinsicReturnsSafeNotFoundAndRejectsForeignReceipt(t *testing.T) {
+	lease := scheduleIntrinsicLease()
+	call := ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicStaticSiteReadToolName, Arguments: `{}`}
+	store := &staticSiteStoreStub{}
+	publisher := &staticSitePublisherStub{sources: map[string][]byte{}}
+	_, err := staticSiteReadIntrinsic(store, publisher, lease).Execute(context.Background(), IntrinsicExecutionRequest{Lease: lease, Call: call, CanonicalArguments: json.RawMessage(`{}`)})
+	details, classified := ToolExecutionErrorObservation(err)
+	if !classified || details.Outcome != ToolOutcomeNotFound || details.Summary != "No published static page was found in this conversation" {
+		t.Fatalf("not found err=%v details=%+v", err, details)
+	}
+
+	foreignHTML := []byte("<main>foreign</main>")
+	foreign := StaticSiteReceipt{SiteID: uuid.NewString(), ReleaseID: uuid.NewString(), SHA256: staticSiteDigest(foreignHTML), SizeBytes: int64(len(foreignHTML))}
+	foreign.PublicPath = "/.sites/" + foreign.SiteID + "/" + foreign.ReleaseID + "/"
+	store.receipts = []StaticSiteReceipt{foreign}
+	publisher.sources[foreign.ReleaseID] = foreignHTML
+	_, err = staticSiteReadIntrinsic(store, publisher, lease).Execute(context.Background(), IntrinsicExecutionRequest{Lease: lease, Call: call, CanonicalArguments: json.RawMessage(`{}`)})
+	details, classified = ToolExecutionErrorObservation(err)
+	if !classified || details.Outcome != ToolOutcomeFatal || details.Summary != "Published static page identity failed verification" {
+		t.Fatalf("foreign err=%v details=%+v", err, details)
+	}
+
+	for _, deterministic := range []error{ErrInvalid, ErrConflict} {
+		store.err = deterministic
+		_, err = staticSiteReadIntrinsic(store, publisher, lease).Execute(context.Background(), IntrinsicExecutionRequest{Lease: lease, Call: call, CanonicalArguments: json.RawMessage(`{}`)})
+		details, classified = ToolExecutionErrorObservation(err)
+		if !classified || details.Outcome != ToolOutcomeFatal || details.Summary != "Published static page metadata failed verification" {
+			t.Fatalf("deterministic err=%v details=%+v", err, details)
+		}
+	}
+
+	store.err = nil
+	valid := foreign
+	valid.SiteID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-static-site:"+lease.Turn.OwnerID+":"+lease.Turn.ConversationID)).String()
+	valid.PublicPath = "/.sites/" + valid.SiteID + "/" + valid.ReleaseID + "/"
+	store.receipts = []StaticSiteReceipt{valid}
+	publisher.err = context.DeadlineExceeded
+	_, err = staticSiteReadIntrinsic(store, publisher, lease).Execute(context.Background(), IntrinsicExecutionRequest{Lease: lease, Call: call, CanonicalArguments: json.RawMessage(`{}`)})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline err=%v", err)
+	}
+	publisher.err = errors.New("temporary read failure")
+	_, err = staticSiteReadIntrinsic(store, publisher, lease).Execute(context.Background(), IntrinsicExecutionRequest{Lease: lease, Call: call, CanonicalArguments: json.RawMessage(`{}`)})
+	details, classified = ToolExecutionErrorObservation(err)
+	if !classified || details.Outcome != ToolOutcomeRetryable || details.Summary != "Published static page source is temporarily unavailable" {
+		t.Fatalf("temporary source err=%v details=%+v", err, details)
 	}
 }
 
@@ -155,7 +275,8 @@ func TestStaticSiteSkillIsEmbeddedWithoutFrontmatter(t *testing.T) {
 	prompt := staticSiteSystemPrompt("existing profile instruction")
 	if !strings.HasPrefix(prompt, "existing profile instruction\n\n# Publish Static Site") ||
 		strings.Contains(prompt, "name: publish-static-site") || !strings.Contains(prompt, "Pico-inspired") ||
-		!strings.Contains(prompt, "Do not create an archive for a single page") {
+		!strings.Contains(prompt, "Do not create an archive for a single page") || !strings.Contains(prompt, "call `static_site_read` first") ||
+		!strings.Contains(prompt, "untrusted source data") {
 		t.Fatalf("embedded prompt=%q", prompt)
 	}
 }
@@ -170,7 +291,7 @@ func TestServiceExposesStaticSiteOnlyWithReadyPublisherAndStore(t *testing.T) {
 	}
 	service.SetStaticSitePublisher(&staticSitePublisherStub{}, "https://s3.dirextalk.ai")
 	tools, err = service.resolveIntrinsicTools(context.Background(), lease)
-	if err != nil || len(tools) != 1 || tools[0].Tool.Name != coremodel.IntrinsicStaticSitePublishToolName {
+	if err != nil || len(tools) != 2 || tools[0].Tool.Name != coremodel.IntrinsicStaticSiteReadToolName || !tools[0].ReadOnly || tools[1].Tool.Name != coremodel.IntrinsicStaticSitePublishToolName {
 		t.Fatalf("tools=%+v err=%v", tools, err)
 	}
 	service.SetStaticSitePublisher(nil, "")

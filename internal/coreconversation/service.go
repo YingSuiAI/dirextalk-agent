@@ -388,6 +388,53 @@ func publicAnswerReferences(in []Reference) []Reference {
 	}
 	return out
 }
+
+// bindAdmittedIntrinsicTools restores only executable bindings whose exact
+// model-facing contracts were frozen at turn admission. Tools added after an
+// Agent upgrade do not alter an already accepted turn, while a removed or
+// changed admitted tool still fails closed.
+func bindAdmittedIntrinsicTools(available []ResolvedIntrinsic, admitted []coremodel.Tool) ([]ResolvedIntrinsic, error) {
+	admittedByName := make(map[string]coremodel.Tool, len(admitted))
+	for _, tool := range admitted {
+		if tool.InputSchema == nil || !coremodel.IsIntrinsicToolName(tool.Name) {
+			return nil, ErrTurnRuntimeIncompatible
+		}
+		if _, duplicate := admittedByName[tool.Name]; duplicate {
+			return nil, ErrTurnRuntimeIncompatible
+		}
+		admittedByName[tool.Name] = tool
+	}
+	byName := make(map[string]ResolvedIntrinsic, len(admitted))
+	for _, intrinsic := range available {
+		admittedTool, required := admittedByName[intrinsic.Tool.Name]
+		if !required {
+			continue
+		}
+		if intrinsic.Execute == nil || intrinsic.Tool.InputSchema == nil || !sameIntrinsicToolContract(intrinsic.Tool, admittedTool) {
+			return nil, ErrTurnRuntimeIncompatible
+		}
+		if _, duplicate := byName[intrinsic.Tool.Name]; duplicate {
+			return nil, ErrTurnRuntimeIncompatible
+		}
+		byName[intrinsic.Tool.Name] = intrinsic
+	}
+	bound := make([]ResolvedIntrinsic, 0, len(admitted))
+	for _, tool := range admitted {
+		intrinsic, ok := byName[tool.Name]
+		if !ok {
+			return nil, ErrTurnRuntimeIncompatible
+		}
+		bound = append(bound, intrinsic)
+	}
+	return bound, nil
+}
+
+func sameIntrinsicToolContract(current, admitted coremodel.Tool) bool {
+	currentRaw, currentErr := json.Marshal(current)
+	admittedRaw, admittedErr := json.Marshal(admitted)
+	return currentErr == nil && admittedErr == nil && string(currentRaw) == string(admittedRaw)
+}
+
 func (s *Service) clock() time.Time { return s.now().UTC() }
 func nextMessageTime(c Conversation, t time.Time) time.Time {
 	// PostgreSQL timestamptz persists microseconds. Normalize before comparing
@@ -1407,9 +1454,15 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	}
 	var intrinsicTools []ResolvedIntrinsic
 	if !finalizing && intrinsicPolicy != TurnIntrinsicPolicyNone {
-		intrinsicTools, err = s.resolveIntrinsicTools(ctx, lease)
+		var available []ResolvedIntrinsic
+		available, err = s.resolveIntrinsicTools(ctx, lease)
 		if err != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_unavailable", "Core intrinsic tool is unavailable")
+			return
+		}
+		intrinsicTools, err = bindAdmittedIntrinsicTools(available, turn.RuntimeSnapshot.IntrinsicTools)
+		if err != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
 			return
 		}
 	}
@@ -1441,25 +1494,6 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	profile := turn.ProfileSnapshot.Profile()
 	runtimeSnapshot := *turn.RuntimeSnapshot
 	systemPrompt := runtimeSnapshot.CompiledSystemPrompt
-	if !finalizing {
-		systemPrompt = appendSystemPrompt(compilePlatformSystemPrompt(profile.SystemPrompt), conversationConvergenceGuidance)
-		systemPrompt = appendMessageMCPRoutingGuidance(systemPrompt, resolvedExtensions)
-		if containsStaticSiteIntrinsic(intrinsicTools) {
-			systemPrompt = staticSiteSystemPrompt(systemPrompt)
-		}
-		if containsScheduleIntrinsic(intrinsicTools) {
-			systemPrompt = scheduleSystemPrompt(systemPrompt)
-		}
-		if containsCloudWorkerIntrinsic(intrinsicTools) {
-			systemPrompt = cloudWorkerSystemPrompt(systemPrompt)
-		}
-		candidateRuntime, snapshotErr := newTurnRuntimeSnapshotWithPolicy(systemPrompt, turn.ProfileSnapshot, intrinsicTools, turn.ExtensionSnapshotDigest, turn.AttachmentSnapshotDigest, intrinsicPolicy, executionPolicy, turn.RuntimeSnapshot.ConstrainedWorkflow)
-		if snapshotErr != nil {
-			_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)
-			return
-		}
-		runtimeSnapshot = candidateRuntime
-	}
 	if !replayed {
 		if validateErr := s.turns.ValidateTurnRuntime(ctx, lease, runtimeSnapshot); validateErr != nil {
 			_, _ = s.turns.FailTurn(ctx, lease, turnRuntimeIncompatibleCode, turnRuntimeIncompatibleSummary)

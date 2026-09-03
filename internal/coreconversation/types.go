@@ -644,6 +644,22 @@ func (r StaticSiteReceipt) Validate() error {
 
 type StaticSitePublisher interface {
 	PublishSingleHTML(context.Context, StaticSitePublication) (StaticSiteReceipt, error)
+	ReadSingleHTML(context.Context, StaticSiteReceipt) ([]byte, error)
+}
+
+type StaticSiteSourceQuery struct {
+	OwnerID           string
+	AccountGeneration uint64
+	ConversationID    string
+	ReleaseID         string
+}
+
+func (q StaticSiteSourceQuery) Validate() error {
+	if strings.TrimSpace(q.OwnerID) == "" || q.OwnerID != strings.TrimSpace(q.OwnerID) || q.AccountGeneration == 0 ||
+		!validUUID(q.ConversationID) || q.ReleaseID != "" && !validUUID(q.ReleaseID) {
+		return ErrInvalid
+	}
+	return nil
 }
 
 // ConversationStaticSiteCommand commits the immutable publication receipt
@@ -672,6 +688,7 @@ func (c ConversationStaticSiteCommand) Validate() error {
 
 type ConversationStaticSiteStore interface {
 	CommitConversationStaticSite(context.Context, ConversationStaticSiteCommand) (StaticSiteReceipt, error)
+	ResolveConversationStaticSite(context.Context, StaticSiteSourceQuery) (StaticSiteReceipt, error)
 }
 
 // ExtensionSnapshotResolver may resolve an already-pinned snapshot to an
@@ -876,6 +893,7 @@ var (
 	ErrChatFailed              = errors.New("chat failed")
 	ErrToolDispatchStarted     = errors.New("conversation tool dispatch already started")
 	ErrMemoryRecallUnavailable = errors.New("long-term memory recall is unavailable")
+	ErrStaticSiteNotFound      = errors.New("static-site release not found")
 	ErrExtensionsUnsupported   = errors.New("conversation extensions require durable turn")
 	ErrModelBudgetExhausted    = errors.New("conversation model budget exhausted")
 	ErrTurnRuntimeIncompatible = errors.New("conversation turn runtime is incompatible")

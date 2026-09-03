@@ -32,13 +32,14 @@ const (
 	IntrinsicCloudWorkerDomainBindToolName   = "cloud_worker_domain_bind"
 	IntrinsicCloudWorkerDomainUnbindToolName = "cloud_worker_domain_unbind"
 	IntrinsicScheduleCreateToolName          = "agent_schedule_create"
+	IntrinsicStaticSiteReadToolName          = "static_site_read"
 	IntrinsicStaticSitePublishToolName       = "static_site_publish"
 	maxImageInputBytes                       = 8 << 20
 )
 
 func IsIntrinsicToolName(value string) bool {
 	switch value {
-	case IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerInventoryToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicCloudWorkerDomainBindToolName, IntrinsicCloudWorkerDomainUnbindToolName, IntrinsicScheduleCreateToolName, IntrinsicStaticSitePublishToolName:
+	case IntrinsicCloudWorkerProposeToolName, IntrinsicCloudWorkerInventoryToolName, IntrinsicCloudWorkerDestroyToolName, IntrinsicCloudWorkerDomainBindToolName, IntrinsicCloudWorkerDomainUnbindToolName, IntrinsicScheduleCreateToolName, IntrinsicStaticSiteReadToolName, IntrinsicStaticSitePublishToolName:
 		return true
 	default:
 		return false

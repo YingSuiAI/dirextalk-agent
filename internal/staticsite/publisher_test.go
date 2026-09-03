@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,36 @@ func TestPublisherPublishesSingleHTMLWithoutArchiveAndReplaysExactly(t *testing.
 	stageEntries, err := os.ReadDir(filepath.Join(root, ".staging"))
 	if err != nil || len(stageEntries) != 0 {
 		t.Fatalf("staging=%v err=%v", stageEntries, err)
+	}
+}
+
+func TestPublisherReadsOnlyReceiptVerifiedImmutableHTML(t *testing.T) {
+	root := t.TempDir()
+	publisher, err := NewPublisher(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication := core.StaticSitePublication{SiteID: uuid.NewString(), ReleaseID: uuid.NewString(), HTML: []byte("<!doctype html><main>source</main>")}
+	receipt, err := publisher.PublishSingleHTML(context.Background(), publication)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := publisher.ReadSingleHTML(context.Background(), receipt)
+	if err != nil || string(raw) != string(publication.HTML) {
+		t.Fatalf("raw=%q err=%v", raw, err)
+	}
+
+	tampered := receipt
+	tampered.SHA256 = strings.Repeat("a", 64)
+	if _, err = publisher.ReadSingleHTML(context.Background(), tampered); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("tampered receipt err=%v", err)
+	}
+	indexPath := filepath.Join(root, "public", receipt.SiteID, receipt.ReleaseID, indexFileName)
+	if err = os.Chmod(indexPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = publisher.ReadSingleHTML(context.Background(), receipt); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("writable source err=%v", err)
 	}
 }
 
