@@ -193,8 +193,8 @@ contract](message-server-integration-development-contract.md), and
   explicit equal operation and turn identities.
 - Native turns persist execution-policy version, mode, and admitted values, and
   use those values through the same durable counters during recovery.
-  Interactive, deep, scheduled, and Worker orchestration each admit 24
-  dispatches, 20 model-active minutes, and 20 tool calls. Supported safe
+  Interactive, deep, scheduled, and Worker orchestration each admit 52
+  dispatches, one model-active hour, and 48 tool calls. Supported safe
   historical values remain executable after preset changes, while unsupported
   or unsafe policies fail before claim/event mutation. Worker-owned runtime and
   Task limits remain independent. Tool results with validated runtime references persist
@@ -468,6 +468,25 @@ support.
 
 ## Verified evidence
 
+- On **2026-09-03**, the Native conversation policy increased to 52 ordinary
+  model dispatches, one cumulative model-active hour, and 48 tool calls,
+  superseding the older preset entries below without rewriting admitted
+  lower policies. Each admitted final-format recovery gets a fresh 30-second
+  window; expiry is `finalization_timeout`, not ordinary budget exhaustion.
+  Successful Workers now continue authorized follow-ups through their pinned
+  tool catalog. Deterministic fallback preserves verified Worker outcome and
+  canonical artifacts without raw reports, unconfirmed sending claims, or an
+  invented bill; completed HTTP replay/history no longer becomes an error.
+  Focused Core/HTTP/Capability packages and a race lane passed, including the
+  actual 30-second expiry, synthetic Message MCP lookup/send with durable
+  receipt and no resend, ordinary retries, and cancellation. Isolated
+  PostgreSQL 18.4 + pgvector 0.8.6 exposed the old SQL sequence-25 ceiling;
+  append-only migration 30 raises both physical-attempt constraints to 54.
+  Fresh-state and actual schema-29-to-30 upgrade regressions passed with old
+  policy/digest/fingerprint unchanged, attempts 53/54 accepted and 55 rejected,
+  ordinary retry count/time accounting, cancellation, and finalization
+  restart/no-replay fences. No release, production change, or paid cloud work
+  was performed for this repair.
 - On **2026-09-01**, focused GitHub conversation-resolver regressions passed for
   the official `/mcp/x/all` endpoint, all advertised reads, the three explicit
   lightweight mutation names, rejection of branch/file/push/PR-creation tools,

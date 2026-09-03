@@ -374,6 +374,11 @@ func pageConversationMessages(conversationID string, values []coreconversation.M
 }
 
 func projectPublicTurnMetadata(value coreconversation.Turn) publicTurnMetadata {
+	// Completed fallback turns retain attempt diagnostics internally, but these
+	// are not a public error or a substitute assistant response during replay.
+	if value.State == coreconversation.TurnCompleted {
+		value.TerminalCode, value.TerminalSummary = "", ""
+	}
 	return publicTurnMetadata{
 		TurnID:          value.ID,
 		ConversationID:  value.ConversationID,

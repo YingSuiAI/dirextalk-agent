@@ -383,7 +383,7 @@ func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request, requ
 				return
 			}
 			var failure *agentdatav2.ErrorEnvelope
-			if turn.TerminalCode != "" {
+			if (turn.State == coreconversation.TurnFailed || turn.State == coreconversation.TurnCanceled) && turn.TerminalCode != "" {
 				projected := turnEventErrorEnvelope(turn.ID, turn.TerminalCode, turn.TerminalSummary)
 				failure = &projected
 				result = nil

@@ -1576,7 +1576,7 @@ func testExecuteTurnSynthesizesSucceededCloudWorker(t *testing.T, saturated bool
 	resolverCalls = 0
 	service.executeTurn(context.Background(), turn.ID)
 
-	if model.runs != 1 || resolverCalls != 0 || intrinsicResolverCalls != 0 || store.validations != 1 {
+	if model.runs != 1 || resolverCalls != 1 || intrinsicResolverCalls != 0 || store.validations != 1 {
 		t.Fatalf("terminal Worker synthesis model_runs=%d extension_resolver_calls=%d intrinsic_resolver_calls=%d runtime_validations=%d", model.runs, resolverCalls, intrinsicResolverCalls, store.validations)
 	}
 	terminal, err := store.GetTurn(context.Background(), turn.ID)
@@ -2222,7 +2222,7 @@ func TestExecuteTurnStopsRepeatedToolRoundsWithoutFinalResponse(t *testing.T) {
 }
 
 func TestExecuteTurnEnforcesDurableToolCallBudget(t *testing.T) {
-	if MaxAdmittedTurnToolCalls != 20 {
+	if MaxAdmittedTurnToolCalls != 48 {
 		t.Fatalf("turn tool call cap=%d", MaxAdmittedTurnToolCalls)
 	}
 	profile := testTurnSnapshot()

@@ -544,6 +544,67 @@ func TestChatStartMapsInvalidAdmissionInsteadOfCollapsingToConflict(t *testing.T
 	}
 }
 
+func TestCompletedTurnFallbackRemainsCompletedOnAuthenticatedGETReplay(t *testing.T) {
+	h := newTestHarness(t)
+	now := time.Now().UTC()
+	turnID, conversationID := uuid.NewString(), uuid.NewString()
+	size := uint64(4)
+	artifact := coreconversation.Reference{Kind: "execution_artifact", RecordKind: "cloud_worker", AccountGeneration: 7, ArtifactID: uuid.NewString(), ExecutionID: uuid.NewString(), Name: "report.txt", MediaType: "text/plain", SizeBytes: &size, SHA256: strings.Repeat("a", 64)}
+	content := "## Completed work\n\nWorker execution succeeded. [Report](dirextalk-artifact://cloud_worker/" + artifact.ArtifactID + "). Actual billed cost is unavailable."
+	store := &admissionStore{turn: coreconversation.Turn{ID: turnID, RequestID: uuid.NewString(), OwnerID: "@owner:s3.example", AccountGeneration: 7,
+		ConversationID: conversationID, State: coreconversation.TurnCompleted, Revision: 2, LastSequence: 4, TerminalCode: "finalization_timeout", TerminalSummary: "final response synthesis exceeded its time limit", CreatedAt: now, UpdatedAt: now},
+		conversation: coreconversation.Conversation{ID: conversationID, Revision: 2, CreatedAt: now, UpdatedAt: now,
+			Messages: []coreconversation.Message{{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: content, References: []coreconversation.Reference{artifact}, CreatedAt: now}}}}
+	conversation, err := coreconversation.NewService(store, admissionModel{}, nil, admissionProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conversation.Close() })
+	server := *h.server
+	server.registry = agentcapability.NewCoreRegistry(agentcapability.CoreBindings{Conversation: conversation})
+	server.conversation = conversation
+	ticket := h.ticket(t, []string{"agent:chat:read"}, h.now.Add(15*time.Minute))
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, requestWithTicket(http.MethodGet, "/agent/v1/operations/"+turnID, "", ticket))
+	var response struct {
+		State  string          `json:"state"`
+		Error  json.RawMessage `json:"error"`
+		Result struct {
+			Turn struct {
+				State           string `json:"state"`
+				TerminalCode    string `json:"terminal_code"`
+				TerminalSummary string `json:"terminal_summary"`
+			} `json:"turn"`
+		} `json:"result"`
+	}
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &response) != nil || response.State != "completed" || response.Result.Turn.State != "completed" || response.Result.Turn.TerminalCode != "" || response.Result.Turn.TerminalSummary != "" || (len(response.Error) > 0 && string(response.Error) != "null") {
+		t.Fatalf("completed replay became an error: %d %s", recorder.Code, recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	server.ServeHTTP(recorder, requestWithTicket(http.MethodGet, "/agent/v1/conversations/"+conversationID, "", ticket))
+	var history struct {
+		Messages []struct {
+			Content    string                       `json:"content"`
+			References []coreconversation.Reference `json:"references"`
+		} `json:"messages"`
+	}
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &history) != nil || len(history.Messages) != 1 || history.Messages[0].Content != content || len(history.Messages[0].References) != 1 || history.Messages[0].References[0].ArtifactID != artifact.ArtifactID || strings.Contains(recorder.Body.String(), "finalization_timeout") {
+		t.Fatalf("fallback history unavailable: %d %s", recorder.Code, recorder.Body.String())
+	}
+	for _, state := range []coreconversation.TurnState{coreconversation.TurnFailed, coreconversation.TurnCanceled} {
+		store.turn.State = state
+		recorder = httptest.NewRecorder()
+		server.ServeHTTP(recorder, requestWithTicket(http.MethodGet, "/agent/v1/operations/"+turnID, "", ticket))
+		var terminal struct {
+			Error  json.RawMessage `json:"error"`
+			Result json.RawMessage `json:"result"`
+		}
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &terminal) != nil || !strings.Contains(string(terminal.Error), "FINALIZATION_TIMEOUT") || (len(terminal.Result) > 0 && string(terminal.Result) != "null") {
+			t.Fatalf("%s lost terminal error: %d %s", state, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestEmptyNativeConversationHTTPReadsReturnArrays(t *testing.T) {
 	h := newTestHarness(t)
 	now := time.Now().UTC()

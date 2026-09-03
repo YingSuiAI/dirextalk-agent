@@ -18,6 +18,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/execution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/migrations"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -32,6 +33,11 @@ type turnDBHarness struct {
 }
 
 func openTurnDB(t *testing.T) *turnDBHarness {
+	t.Helper()
+	return openTurnDBAtVersion(t, migrations.CurrentVersion)
+}
+
+func openTurnDBAtVersion(t *testing.T, version int64) *turnDBHarness {
 	t.Helper()
 	dsn := os.Getenv("AGENT_TEST_POSTGRES_DSN")
 	if dsn == "" {
@@ -69,7 +75,27 @@ func openTurnDB(t *testing.T) *turnDBHarness {
 		t.Fatal(err)
 	}
 	instance := uuid.NewString()
-	if err = ApplyMigrations(ctx, pool, instance); err != nil {
+	if version == migrations.CurrentVersion {
+		err = ApplyMigrations(ctx, pool, instance)
+	} else {
+		// Construct the real prior schema and its immutable checksum ledger.
+		// Upgrade tests must then enter through production ApplyMigrations.
+		_, err = pool.Exec(ctx, `CREATE TABLE agent_schema_migrations(version bigint PRIMARY KEY, checksum bytea NOT NULL CHECK(octet_length(checksum)=32), applied_at timestamptz NOT NULL DEFAULT clock_timestamp())`)
+		for _, migration := range migrations.Ordered() {
+			if err != nil || migration.Version > version {
+				break
+			}
+			if _, err = pool.Exec(ctx, string(migration.Script)); err != nil {
+				break
+			}
+			checksum := sha256.Sum256(migration.Script)
+			_, err = pool.Exec(ctx, `INSERT INTO agent_schema_migrations(version,checksum) VALUES($1,$2)`, migration.Version, checksum[:])
+		}
+		if err == nil {
+			_, err = pool.Exec(ctx, `INSERT INTO agent_instance_metadata(agent_instance_id) VALUES($1)`, instance)
+		}
+	}
+	if err != nil {
 		pool.Close()
 		_, _ = admin.Exec(ctx, "DROP SCHEMA "+quoted+" CASCADE")
 		admin.Close()
@@ -128,7 +154,7 @@ func runtimeWithExecutionPolicy(t *testing.T, runtime core.TurnRuntimeSnapshot, 
 }
 
 func TestCoreConversationPersistsAndEnforcesSafeHistoricalExecutionPolicyPostgres(t *testing.T) {
-	h := openTurnDB(t)
+	h := openTurnDBAtVersion(t, 29)
 	ctx := context.Background()
 	cmd := turnCommand()
 	candidate, err := h.store.PrepareTurnRuntimeAdmission(ctx, cmd)
@@ -140,9 +166,9 @@ func TestCoreConversationPersistsAndEnforcesSafeHistoricalExecutionPolicyPostgre
 		t.Fatal(err)
 	}
 	policy := runtime.ExecutionPolicy
-	policy.MaxModelDispatches = 3
-	policy.MaxModelActiveMilliseconds = uint64((2 * time.Minute).Milliseconds())
-	policy.MaxToolCalls = 2
+	policy.MaxModelDispatches = 24
+	policy.MaxModelActiveMilliseconds = uint64((20 * time.Minute).Milliseconds())
+	policy.MaxToolCalls = 20
 	runtime = runtimeWithExecutionPolicy(t, runtime, policy)
 	if err = runtime.Validate(); err != nil {
 		t.Fatalf("safe historical runtime invalid: %v", err)
@@ -151,8 +177,11 @@ func TestCoreConversationPersistsAndEnforcesSafeHistoricalExecutionPolicyPostgre
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = ApplyMigrations(ctx, h.pool, h.store.instanceID.String()); err != nil {
+		t.Fatal(err)
+	}
 	stored, err := h.store.GetTurn(ctx, turn.ID)
-	if err != nil || stored.RuntimeSnapshot == nil || stored.RuntimeSnapshot.ExecutionPolicy != policy {
+	if err != nil || stored.RuntimeSnapshot == nil || stored.RuntimeSnapshot.ExecutionPolicy != policy || stored.RuntimeSnapshot.Digest() != runtime.Digest() || stored.RequestFingerprint != turn.RequestFingerprint {
 		t.Fatalf("stored policy=%+v err=%v", stored.RuntimeSnapshot, err)
 	}
 	if _, err = h.pool.Exec(ctx, `UPDATE core_conversation_turns SET model_dispatch_count=$2 WHERE turn_id=$1`, turn.ID, policy.MaxModelDispatches); err != nil {
@@ -168,6 +197,43 @@ func TestCoreConversationPersistsAndEnforcesSafeHistoricalExecutionPolicyPostgre
 	current, err := h.store.GetTurn(ctx, turn.ID)
 	if err != nil || current.ModelDispatchCount != policy.MaxModelDispatches {
 		t.Fatalf("current=%+v err=%v", current, err)
+	}
+	// The upgraded schema simultaneously preserves this old turn's cap and
+	// accepts the new admission's separately fenced 53rd/54th attempts.
+	assertFinalizationFormatAttemptCeilingPostgres(t, h)
+}
+
+func TestCoreConversationNewBudgetPhysicalRetryAccountingPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	ctx := context.Background()
+	turn := startAdmittedTurn(t, h, turnCommand())
+	policy := turn.RuntimeSnapshot.ExecutionPolicy
+	if policy.MaxToolCalls != 48 || policy.MaxModelDispatches != 52 || policy.MaxModelActiveDuration() != time.Hour {
+		t.Fatalf("new admission policy=%+v", policy)
+	}
+	// The formerly terminal 24-dispatch/20-minute boundary is ordinary work
+	// under this turn's immutable new policy, not a reserved final allowance.
+	if _, err := h.pool.Exec(ctx, `UPDATE core_conversation_turns SET model_dispatch_count=24,model_active_milliseconds=1200000 WHERE turn_id=$1`, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := h.store.ClaimTurn(ctx, turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := h.store.PrepareTurnModel(ctx, lease, core.DefaultTurnDispatchDirective())
+	if err != nil || prepared.ModelDispatchCount != 25 {
+		t.Fatalf("ordinary dispatch=%+v err=%v", prepared, err)
+	}
+	if err = h.store.BindTurnModelRuntime(ctx, lease, *prepared.RuntimeSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err = h.store.MarkTurnModelRetryable(ctx, lease, core.ModelAttemptFailure{Code: "provider_connect_failed", Summary: "connection refused before output"}); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := h.store.PrepareTurnModelRetry(ctx, lease)
+	if err != nil || retried.ModelDispatchCount != 26 || retried.ModelActiveDuration <= prepared.ModelActiveDuration || retried.RuntimeSnapshot.Digest() != turn.RuntimeSnapshot.Digest() {
+		t.Fatalf("retry accounting=%+v err=%v", retried, err)
 	}
 }
 

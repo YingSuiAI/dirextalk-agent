@@ -16,6 +16,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type countingConversationModel struct {
@@ -467,8 +468,16 @@ func TestModelToolCallFormatFinalizationPersistsPostgres(t *testing.T) {
 
 func TestToolFreeFinalizationFormatRetryPreservesDirectivePostgres(t *testing.T) {
 	h := openTurnDB(t)
+	assertFinalizationFormatAttemptCeilingPostgres(t, h)
+}
+
+func assertFinalizationFormatAttemptCeilingPostgres(t *testing.T, h *turnDBHarness) {
+	t.Helper()
 	ctx := context.Background()
 	turn := startPersistedFinalization(t, h, core.TurnFinalizationToolBudget)
+	if _, err := h.pool.Exec(ctx, `UPDATE core_conversation_turns SET model_dispatch_count=52,model_active_milliseconds=3600000 WHERE turn_id=$1`, turn.ID); err != nil {
+		t.Fatal(err)
+	}
 	lease, err := h.store.ClaimTurn(ctx, turn.ID, time.Now().UTC(), time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -476,8 +485,8 @@ func TestToolFreeFinalizationFormatRetryPreservesDirectivePostgres(t *testing.T)
 	directive := core.NewTurnDispatchDirective(core.TurnDispatchGuidanceLoopSynthesis, core.TurnDispatchToolsNone, "")
 	directive.FinalizationReason = core.TurnFinalizationToolBudget
 	prepared, err := h.store.PrepareTurnModel(ctx, lease, directive)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || prepared.ModelDispatchCount != 53 {
+		t.Fatalf("final attempt=%d err=%v", prepared.ModelDispatchCount, err)
 	}
 	if err = h.store.BindTurnModelRuntime(ctx, lease, *prepared.RuntimeSnapshot); err != nil {
 		t.Fatal(err)
@@ -492,13 +501,20 @@ func TestToolFreeFinalizationFormatRetryPreservesDirectivePostgres(t *testing.T)
 		t.Fatal(err)
 	}
 	retried, err := h.store.PrepareTurnModelRetry(ctx, lease)
-	if err != nil || retried.ModelDispatchCount != prepared.ModelDispatchCount+1 ||
+	if err != nil || retried.ModelDispatchCount != 54 ||
 		retried.ModelActiveDuration != prepared.ModelActiveDuration {
 		t.Fatalf("retried=%+v err=%v", retried, err)
 	}
 	retryDirective, err := h.store.LoadTurnModelDirective(ctx, lease)
 	if err != nil || retryDirective.Digest() != first.Digest() || retryDirective.ToolMode != core.TurnDispatchToolsNone {
 		t.Fatalf("retry directive=%+v first=%+v err=%v", retryDirective, first, err)
+	}
+	for _, table := range []string{"core_conversation_model_attempts", "core_conversation_model_dispatch_directives"} {
+		_, err := h.pool.Exec(ctx, `UPDATE `+table+` SET attempt_sequence=55 WHERE turn_id=$1 AND attempt_sequence=54`, turn.ID)
+		var constraintErr *pgconn.PgError
+		if !errors.As(err, &constraintErr) || constraintErr.Code != "23514" {
+			t.Fatalf("%s accepted physical attempt55: %v", table, err)
+		}
 	}
 
 	other := startPersistedFinalization(t, h, core.TurnFinalizationProvider)

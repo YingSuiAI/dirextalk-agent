@@ -297,7 +297,8 @@ replayed. Once ordinary provider work stops because of one of these
 classifications, invalid or empty terminal output, no-progress tool use, or an
 ordinary model/tool budget, Core persists a versioned finalization intent. The
 intent admits one separate tools-disabled provider attempt with a 30-second
-deadline and no retry. It does not consume the ordinary active-time budget. A
+deadline, plus only the single quarantined-format recovery described below.
+It does not consume the ordinary active-time budget. A
 provider dispatch already started under that intent is never replayed after
 restart.
 
@@ -364,7 +365,7 @@ Tools without a structured runtime observation retain the conservative exact
 action/result and A/B fallback. Three identical pairs or six A/B pairs add a
 brief correction with tools intact; a fourth identical pair or eighth A/B pair
 makes the next request a one-pass, tool-free synthesis from durable evidence.
-The recovery is subordinate to the turn-wide maximum of 20 accepted tool calls.
+The recovery is subordinate to the turn-wide maximum of 48 accepted tool calls.
 At the limit, Core removes all extension and intrinsic tools for one synthesis
 request; a returned batch that would exceed the limit fails durably as
 `tool_budget_exhausted` before any excess call is dispatched.
@@ -529,8 +530,8 @@ request-dialect digest, intrinsic tool schemas, extension/attachment digests,
 and versioned execution policy. Owner chat accepts only `interactive`, `deep`,
 or `worker_orchestration`, defaulting omission to `interactive`; only the
 trusted due-Task adapter may admit `scheduled`. Interactive, deep, scheduled,
-and worker orchestration each admit 24 model dispatches, 20 cumulative
-model-active minutes, and 20 tool calls. The supported policy version validates persisted values against
+and worker orchestration each admit 52 model dispatches, one cumulative
+model-active hour, and 48 tool calls. The supported policy version validates persisted values against
 absolute safety bounds rather than current presets, and every service and
 PostgreSQL budget decision reads those admitted values. Unsupported versions,
 unknown modes, unsafe values, and selector/runtime mismatches fail before turn
@@ -559,7 +560,7 @@ call, or a normal runner return is meaningful. The admitted remaining
 model-active clock is stronger and owns equal expirations as
 `model_budget_exhausted`; a dispatch-local expiry is `provider_timeout`. A
 durable finalization intent normally reserves one additional physical attempt,
-so the ledger permits at most sequence 25 without changing the admitted
+so the ledger permits at most sequence 53 without changing the admitted
 ordinary fuse. The finalization attempt has no intrinsic tools, extensions,
 extension snapshots, or forced tool; uses an independent 30-second deadline;
 and is not added to ordinary model-active time. It never retries for an
@@ -567,7 +568,9 @@ ordinary failure. The sole exception is a quarantined
 `MODEL_TOOL_CALL_FORMAT_INVALID` response from a turn whose admitted runtime
 originally exposed structured tools: one live recovery attempt copies the same
 tools-disabled directive, receives final-answer-only protocol guidance, and may
-reach sequence 26. It never restores tool authority. Intent
+reach sequence 54 with a fresh full 30-second window. It never restores tool
+authority. Final-window expiry is `finalization_timeout`, not ordinary budget
+exhaustion; earlier provider deadlines remain provider failures. Intent
 persistence before dispatch allows one attempt after restart. Persistence of a
 finalization dispatch directive is the no-replay boundary: a started,
 retryable, dispatched, or uncertain final attempt after process recovery
@@ -577,7 +580,10 @@ invalid/empty output, or a tool call from the final attempt produces a bounded
 four-section Markdown response that preserves durable partial deltas and the
 existing task, plan, reference, tool-summary, and tool-result projections.
 Completed fallback is emitted through the normal `done` response, not a failed
-turn. Integrity, authorization, persistence, revision/runtime-snapshot, and
+turn. Completed public GET/list metadata omits retained internal attempt-error
+diagnostics, while authoritative history retains the fallback body and validated
+artifact references; failed/canceled turns still expose their terminal errors.
+Integrity, authorization, persistence, revision/runtime-snapshot, and
 unknown external-side-effect failures remain terminal failures. Other
 background Tasks keep their own execution deadline/context. The nonnegative
 round ordinal remains the current replay identity. Core v1 does not expose Eino
@@ -964,7 +970,15 @@ inside a task-named systemd scope; timeout cancellation stops that scope so
 session-changing descendants cannot continue after the task is terminal.
 
 Worker results are copied into the Agent-owned local artifact repository and
-returned to the original durable turn. Finite execution persists
+returned to the original durable turn. Success does not force tools-disabled
+synthesis: outstanding authorized follow-ups continue through the same pinned
+tool catalog and remaining ordinary budget. Sending success requires its own
+durable successful receipt, not a Worker report or partial model statement.
+If required pinned capabilities cannot rehydrate after recovery, the turn safely
+reduces to frozen finalization without inventing request grants. A failed final
+synthesis uses the trusted Worker outcome and canonical artifact references,
+never raw transport reports or unconfirmed sending claims, and marks actual
+billed cost unavailable. Finite execution persists
 `RemoteCompleted` after observing remote completion and before collecting the
 result. A transient collection failure leaves the execution running and the
 Worker busy; restart recovery uses `CollectOnly` and cannot start that workload

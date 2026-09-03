@@ -224,6 +224,8 @@ func convergenceDeadlineClass(turn Turn) string {
 		return "provider_response"
 	case modelBudgetExhaustedCode:
 		return "model_active_budget"
+	case finalizationTimeoutCode:
+		return "finalization"
 	default:
 		return "none"
 	}

@@ -221,10 +221,10 @@ func TestExecuteTurnPersistsPreciseModelFailureClassification(t *testing.T) {
 }
 
 func TestTurnModelBudgetUsesStabilityCaps(t *testing.T) {
-	if MaxAdmittedTurnModelDispatches != 24 {
+	if MaxAdmittedTurnModelDispatches != 52 {
 		t.Fatalf("model dispatch cap=%d", MaxAdmittedTurnModelDispatches)
 	}
-	if MaxAdmittedTurnModelActiveDuration != 20*time.Minute {
+	if MaxAdmittedTurnModelActiveDuration != time.Hour {
 		t.Fatalf("model active duration cap=%s", MaxAdmittedTurnModelActiveDuration)
 	}
 }

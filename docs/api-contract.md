@@ -182,8 +182,8 @@ or stream after admission. It never cancels the accepted Turn; callers use
   omission means `interactive`. `scheduled` is reserved for the trusted due-Task
   adapter and is rejected on owner chat surfaces. The selected mode is bound by
   the request fingerprint and admits a versioned immutable policy: interactive,
-  deep, scheduled, and worker orchestration each use 24 provider dispatches,
-  20 minutes of cumulative model-active time, and 20 tool calls. A supported policy version accepts previously
+  deep, scheduled, and worker orchestration each use 52 provider dispatches,
+  one hour of cumulative model-active time, and 48 tool calls. A supported policy version accepts previously
   admitted safe values within those absolute maxima instead of comparing them
   with the current binary presets, so a safe preset change cannot strand an
   active turn. Unsupported versions, unknown modes, out-of-range values, or a
@@ -233,10 +233,13 @@ or stream after admission. It never cancels the accepted Turn; callers use
   exception is a quarantined `MODEL_TOOL_CALL_FORMAT_INVALID` response from a
   turn whose admitted runtime originally exposed structured tools: Core may
   repeat the same tools-disabled finalization directive once with explicit
-  protocol-recovery guidance. That retry never restores tool authority. The
+  protocol-recovery guidance and a fresh full 30-second window. That retry never
+  restores tool authority. Expiry of the finalization window is
+  `finalization_timeout`, not ordinary `model_budget_exhausted`; earlier provider
+  or dispatch-local timeouts retain their own classification. The
   total physical attempt sequence can therefore reach the admitted dispatch
-  cap plus one normally (at most 25), or plus two only for that exact live
-  format-recovery case (at most 26). If the final attempt returns useful text,
+  cap plus one normally (at most 53), or plus two only for that exact live
+  format-recovery case (at most 54). If the final attempt returns useful text,
   that text is
   the normal completed Markdown response. If it fails, is empty or invalid, or
   returns a tool call, Core commits a deterministic Markdown response with
@@ -246,7 +249,10 @@ or stream after admission. It never cancels the accepted Turn; callers use
   uncertain final attempt is never replayed after process recovery and falls
   back deterministically. Clients see
   the result through the normal `done.message.content` projection rather than
-  an error/configuration JSON terminal. A provider batch that would cross the
+  an error/configuration JSON terminal. Completed GET/list snapshots suppress
+  internal attempt-error diagnostics and preserve the normal result/history
+  projection; failed and canceled turns retain their terminal errors.
+  A provider batch that would cross the
   admitted tool-call limit does
   not dispatch the excess calls and enters the same persisted tool-free
   finalization path. Every model-visible tool result is the persisted
@@ -1039,9 +1045,16 @@ dependencies, model execution, the full requested active run or observation
 duration, result collection, and reasonable margin rather than treating an
 explicitly requested duration as the whole execution budget. Worker terminal
 stdout is an internal report returned as tool evidence, never the user-facing
-answer. Core performs a tools-disabled synthesis from that evidence and uses
-the latest user message's language unless that message explicitly requests
-another language. It does not paste or lightly reformat the report.
+answer. A successful Worker is intermediate evidence: Core continues outstanding
+user-authorized work with the exact admitted tool snapshots and remaining
+ordinary budget, and requires a separate successful tool receipt before claiming
+a follow-up such as report delivery succeeded. Failed Workers or unavailable
+pinned capabilities on recovery use frozen tools-disabled finalization; recovery
+does not invent missing request grants or silently drop required tools. Answers
+use the latest user message's language unless explicitly requested otherwise and
+never paste or lightly reformat the report. If final synthesis fails, deterministic
+fallback states the verified Worker status and useful trusted artifact links;
+it does not promote raw reports or unconfirmed partial sending claims into facts.
 Completion supplies explicit billing evidence: actual charges are unavailable
 without an authoritative bill, and the existing quote is an estimate or
 new-resource authorization, not a measured spend. Zero incremental creation

@@ -2894,3 +2894,14 @@ ALTER TABLE core_conversation_turn_finalizations
         'constrained_workflow','model_tool_call_format_invalid'
     ));
 -- dirextalk-agent migration end 000029_model_tool_call_format_finalization.up.sql
+-- dirextalk-agent migration begin 000030_turn_execution_budget.up.sql
+-- Absolute physical ceiling: 52 ordinary dispatches, one reserved final
+-- synthesis, and one admitted live structured-tool-format recovery.
+-- Per-turn admission snapshots still enforce their own lower ordinary limits.
+ALTER TABLE core_conversation_model_attempts
+    DROP CONSTRAINT core_conversation_model_attempts_attempt_sequence_check,
+    ADD CONSTRAINT core_conversation_model_attempts_attempt_sequence_check CHECK (attempt_sequence BETWEEN 1 AND 54);
+ALTER TABLE core_conversation_model_dispatch_directives
+    DROP CONSTRAINT core_conversation_model_dispatch_attempt_sequence_check,
+    ADD CONSTRAINT core_conversation_model_dispatch_attempt_sequence_check CHECK (attempt_sequence BETWEEN 1 AND 54);
+-- dirextalk-agent migration end 000030_turn_execution_budget.up.sql
