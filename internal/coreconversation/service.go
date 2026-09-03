@@ -165,6 +165,7 @@ type Service struct {
 	workers             sync.WaitGroup
 	cancelMu            sync.Mutex
 	cancelSignals       map[string]chan struct{}
+	steerSignals        map[string]chan struct{}
 	runtimeMu           sync.Mutex
 	runtime             map[string]*turnRuntime
 	turnOrderingMu      sync.Mutex
@@ -252,7 +253,7 @@ func NewService(store Store, models ModelRunner, extensions ExtensionResolver, p
 		extensions = noopExtensions{}
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
-	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}, modelDeadlines: defaultTurnModelDeadlines(), memoryRecallTimeout: turnMemoryRecallTimeout, continuity: map[string]string{}, convergenceObserver: slogConvergenceObserver{}}
+	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, steerSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}, modelDeadlines: defaultTurnModelDeadlines(), memoryRecallTimeout: turnMemoryRecallTimeout, continuity: map[string]string{}, convergenceObserver: slogConvergenceObserver{}}
 	if turns, ok := store.(TurnStore); ok {
 		s.turns = turns
 	}
@@ -900,7 +901,7 @@ func (s *Service) SteerTurn(ctx context.Context, cmd TurnSteerCommand) (Turn, er
 	}
 	s.retainProviderContinuity(cmd.TurnID, "")
 	s.cancelMu.Lock()
-	if signal := s.cancelSignals[cmd.TurnID]; signal != nil {
+	if signal := s.steerSignals[cmd.TurnID]; signal != nil {
 		select {
 		case <-signal:
 		default:
@@ -1335,10 +1336,21 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cancelSignal := make(chan struct{})
+	steerSignal := make(chan struct{})
 	s.cancelMu.Lock()
 	s.cancelSignals[id] = cancelSignal
+	s.steerSignals[id] = steerSignal
 	s.cancelMu.Unlock()
-	defer func() { s.cancelMu.Lock(); delete(s.cancelSignals, id); s.cancelMu.Unlock() }()
+	defer func() {
+		s.cancelMu.Lock()
+		if s.cancelSignals[id] == cancelSignal {
+			delete(s.cancelSignals, id)
+		}
+		if s.steerSignals[id] == steerSignal {
+			delete(s.steerSignals, id)
+		}
+		s.cancelMu.Unlock()
+	}()
 	resultCh := make(chan turnModelOutcome, 1)
 	var recalledMemory string
 	if !replayed && !history.memoryRecallDegraded && s.memoryRecall != nil {
@@ -1708,6 +1720,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	defer heartbeat.Stop()
 	var retryTimer <-chan time.Time
 	cancelEvents := (<-chan struct{})(cancelSignal)
+	steerEvents := (<-chan struct{})(steerSignal)
 	retryCount := 0
 	retryFormatRecovery := false
 	for {
@@ -2239,9 +2252,13 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		case <-cancelEvents:
 			cancelEvents = nil
 			cancel()
-			if retryTimer != nil {
-				return
-			}
+		case <-steerEvents:
+			steerEvents = nil
+			cancel()
+			// Steer atomically revoked this generation's lease and fenced its
+			// delta buffer before signaling. Do not let a provider that ignores
+			// context cancellation hold the supervisor and block its replacement.
+			return
 		}
 	}
 }

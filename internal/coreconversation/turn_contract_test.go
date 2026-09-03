@@ -281,6 +281,11 @@ type bufferedSteerModel struct {
 	emitted chan struct{}
 }
 
+type uncancelableSteerModel struct {
+	emitted chan struct{}
+	release chan struct{}
+}
+
 func (m *bufferedSteerModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
 	return ModelRunResult{}, ErrInvalid
 }
@@ -291,6 +296,16 @@ func (m *bufferedSteerModel) Stream(ctx context.Context, _ ModelRunRequest, emit
 	}
 	close(m.emitted)
 	<-ctx.Done()
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "superseded", CreatedAt: time.Now().UTC()}}, nil
+}
+
+func (m *uncancelableSteerModel) Run(context.Context, ModelRunRequest) (ModelRunResult, error) {
+	return ModelRunResult{}, ErrInvalid
+}
+
+func (m *uncancelableSteerModel) Stream(context.Context, ModelRunRequest, func(ModelDelta) error) (ModelRunResult, error) {
+	close(m.emitted)
+	<-m.release
 	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "superseded", CreatedAt: time.Now().UTC()}}, nil
 }
 
@@ -1206,6 +1221,47 @@ func TestSteerFlushesBufferedProviderOutputBeforeSteeredEvent(t *testing.T) {
 	}
 	if steerIndex < 0 {
 		t.Fatalf("steer event missing: %+v", events)
+	}
+}
+
+func TestSteerDoesNotWaitForProviderThatIgnoresCancellation(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+		Prompt: "initial prompt", ProfileID: profile.ProfileID, ProfileSnapshot: profile,
+		ProfileSnapshotDigest: profile.Digest(), State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC()}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: turn.CreatedAt, UpdatedAt: turn.CreatedAt}
+	store := &orderingSteerStore{readOnlyTurnStore: &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}}
+	model := &uncancelableSteerModel{emitted: make(chan struct{}), release: make(chan struct{})}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		service.executeTurn(context.Background(), turn.ID)
+		close(done)
+	}()
+	select {
+	case <-model.emitted:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not start")
+	}
+	if _, err = service.SteerTurn(context.Background(), TurnSteerCommand{RequestID: uuid.NewString(), TurnID: turn.ID, ExpectedRevision: 1, Instruction: "new guidance"}); err != nil {
+		close(model.release)
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+		close(model.release)
+	case <-time.After(time.Second):
+		close(model.release)
+		<-done
+		t.Fatal("steer waited for a provider that ignored cancellation")
 	}
 }
 
