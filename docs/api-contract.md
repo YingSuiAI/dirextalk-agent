@@ -1146,21 +1146,25 @@ config revision, and tests it against GitHub's authenticated identity endpoint.
 
 When an enabled configuration has a PAT, Core automatically resolves the
 official hosted GitHub MCP at
-`https://api.githubcopilot.com/mcp/x/all` using that PAT as a Bearer credential.
-Core does not send restrictive `X-MCP-Toolsets` or `X-MCP-Readonly` headers and
-discovers the complete catalog advertised by that exact trusted endpoint.
-Core admits every tool the official server explicitly advertises as read-only,
-plus the Dirextalk mutation allowlist `issue_write`, `add_issue_comment`, and
-`merge_pull_request`, whose names match the official server documentation.
+`https://api.githubcopilot.com/mcp/` using that PAT as a Bearer credential.
+Core sends the official `X-MCP-Tools` header with a bounded direct-operation
+allowlist covering identity, repository/code/commit/branch, issue and pull-
+request reads plus `issue_write`, `add_issue_comment`, and
+`merge_pull_request`. It independently enforces the same names after discovery,
+so an upstream configuration change cannot expand a Turn's model context or
+mutation surface.
 File/content/ref/branch writes,
 workflow triggers, pull-request creation or code changes, and every other
 unsafe mutation are excluded from the model catalog. Repository clone/edit/
 test/commit/push and code pull-request workflows route to the confirmation-
 gated Cloud Worker. Malformed, duplicate, or empty accepted catalogs fail
-closed. Generic MCP effect classification remains strict. At this exact trusted
+closed. Generic MCP effect classification remains strict. GitHub's hosted
+dynamic-toolset discovery is not available, and Skills may guide routing but
+cannot mutate an accepted Turn's frozen tool schemas. At this exact trusted
 GitHub boundary, `readOnlyHint=true` is retained when no supplied
-`destructiveHint=true` or `idempotentHint=false` contradicts it; missing
-optional annotations are allowed. Every admitted mutation remains unsafe and
+`destructiveHint=true` contradicts it; `idempotentHint` is ignored for reads as
+required by the MCP annotation contract, and missing optional annotations are
+allowed. Every admitted mutation remains unsafe and
 is never retried after an ambiguous dispatch.
 The synthetic MCP snapshot uses Core's dispatch-recorded inline path and does
 not claim the installed-extension confirmation lane. Disabled or tokenless

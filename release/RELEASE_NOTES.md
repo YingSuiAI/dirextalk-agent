@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.204
+
+1. Restore public repository and other common GitHub reads by honoring the MCP annotation contract, while limiting direct conversations to a curated 16-tool GitHub set instead of injecting the hosted server's complete catalog.
+
 ## v1.0.203
 
 1. Continue authorized follow-up actions after successful Worker tasks using the admitted tools and remaining budget; require a successful action receipt before claiming delivery succeeded.

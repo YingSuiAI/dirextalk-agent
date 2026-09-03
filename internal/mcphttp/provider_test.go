@@ -117,7 +117,7 @@ func TestProviderClassifiesToolAnnotationsConservatively(t *testing.T) {
 		}, want: ToolEffectUnsafeMutation},
 		{name: "read declared non-idempotent", annotations: &remoteToolAnnotations{
 			ReadOnlyHint: boolean(true), DestructiveHint: boolean(false), IdempotentHint: boolean(false), OpenWorldHint: boolean(false),
-		}, want: ToolEffectUnsafeMutation},
+		}, want: ToolEffectUnsafeMutation, advertisedReadOnly: true},
 		{name: "fully annotated closed-world read", annotations: &remoteToolAnnotations{
 			ReadOnlyHint: boolean(true), DestructiveHint: boolean(false), IdempotentHint: boolean(true), OpenWorldHint: boolean(false),
 		}, want: ToolEffectReadOnly, advertisedReadOnly: true},

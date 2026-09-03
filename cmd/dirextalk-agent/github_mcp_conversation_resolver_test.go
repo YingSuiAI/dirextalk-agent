@@ -62,6 +62,8 @@ func TestGitHubMCPAdmitsReadsAndLightweightMutationsOnly(t *testing.T) {
 		return mcphttp.ToolProviderFunc(func(context.Context) ([]mcphttp.Tool, error) {
 			read := githubTool("mcp__github__get_file_contents", mcphttp.ToolEffectUnsafeMutation)
 			read.AdvertisedReadOnly = true
+			unselectedRead := githubTool("mcp__github__get_discussion", mcphttp.ToolEffectUnsafeMutation)
+			unselectedRead.AdvertisedReadOnly = true
 			return []mcphttp.Tool{
 				githubTool("mcp__github__push_files", mcphttp.ToolEffectUnsafeMutation),
 				githubTool("mcp__github__merge_pull_request", mcphttp.ToolEffectUnsafeMutation),
@@ -70,6 +72,7 @@ func TestGitHubMCPAdmitsReadsAndLightweightMutationsOnly(t *testing.T) {
 				githubTool("mcp__github__create_branch", mcphttp.ToolEffectUnsafeMutation),
 				githubTool("mcp__github__add_issue_comment", mcphttp.ToolEffectUnsafeMutation),
 				read,
+				unselectedRead,
 			}, nil
 		}), nil
 	}}
@@ -122,10 +125,16 @@ func TestGitHubMCPRequiresEnabledCredentialAndPreservesHistoricalConfig(t *testi
 	}
 }
 
-func TestGitHubMCPUsesOfficialAllToolsEndpointWithoutRestrictionHeaders(t *testing.T) {
+func TestGitHubMCPUsesOfficialCuratedToolsEndpoint(t *testing.T) {
 	config := githubMCPServerConfig()
-	if config.Endpoint != "https://api.githubcopilot.com/mcp/x/all" || config.ID != "github" || config.SecretRef != githubMCPSecretRef || len(config.Headers) != 0 {
+	if config.Endpoint != "https://api.githubcopilot.com/mcp/" || config.ID != "github" || config.SecretRef != githubMCPSecretRef ||
+		config.Headers["X-MCP-Tools"] != strings.Join(githubMCPDirectTools, ",") || len(config.Headers) != 1 {
 		t.Fatalf("config=%+v", config)
+	}
+	for _, denied := range []string{"mcp__github__create_branch", "mcp__github__create_pull_request", "mcp__github__push_files"} {
+		if githubMCPDirectTool(denied) {
+			t.Fatalf("code mutation %q entered the direct GitHub tool set", denied)
+		}
 	}
 }
 

@@ -18,8 +18,27 @@ import (
 	"github.com/google/uuid"
 )
 
-const githubMCPEndpoint = "https://api.githubcopilot.com/mcp/x/all"
+const githubMCPEndpoint = "https://api.githubcopilot.com/mcp/"
 const githubMCPSecretRef = "agent:github:pat"
+
+var githubMCPDirectTools = []string{
+	"add_issue_comment",
+	"get_commit",
+	"get_file_contents",
+	"get_me",
+	"issue_read",
+	"issue_write",
+	"list_branches",
+	"list_commits",
+	"list_issues",
+	"list_pull_requests",
+	"merge_pull_request",
+	"pull_request_read",
+	"search_code",
+	"search_issues",
+	"search_pull_requests",
+	"search_repositories",
+}
 
 type githubMCPConversationResolver struct {
 	base    coreconversation.ExtensionResolver
@@ -81,6 +100,9 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 			return out, nil
 		}
 		seen[name] = struct{}{}
+		if !githubMCPDirectTool(name) {
+			continue
+		}
 		if t.Effect != mcphttp.ToolEffectReadOnly && t.Effect != mcphttp.ToolEffectUnsafeMutation {
 			// Missing or unknown provider annotations are never assumed safe to
 			// retry. The shared MCP adapter normally performs this normalization;
@@ -169,6 +191,19 @@ func (r *githubMCPConversationResolver) ResolveExtensions(ctx context.Context, s
 	return out, nil
 }
 
+func githubMCPDirectTool(name string) bool {
+	remoteName := strings.TrimPrefix(name, "mcp__github__")
+	if remoteName == name {
+		return false
+	}
+	for _, allowed := range githubMCPDirectTools {
+		if remoteName == allowed {
+			return true
+		}
+	}
+	return false
+}
+
 // githubMCPLightweightMutation is Dirextalk's immutable mutation allowlist.
 // These names match the official GitHub MCP documentation. Repository code/
 // ref/content writes and pull-request creation stay on the confirmation-gated
@@ -221,5 +256,10 @@ func githubMCPProvider(service *coregithub.Service, s coregithub.ResolvedConfig)
 }
 
 func githubMCPServerConfig() mcphttp.ServerConfig {
-	return mcphttp.ServerConfig{ID: "github", Endpoint: githubMCPEndpoint, SecretRef: githubMCPSecretRef}
+	return mcphttp.ServerConfig{
+		ID:        "github",
+		Endpoint:  githubMCPEndpoint,
+		SecretRef: githubMCPSecretRef,
+		Headers:   map[string]string{"X-MCP-Tools": strings.Join(githubMCPDirectTools, ",")},
+	}
 }

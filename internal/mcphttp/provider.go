@@ -312,9 +312,10 @@ func advertisedReadOnly(annotations *remoteToolAnnotations) bool {
 	if annotations.DestructiveHint != nil && *annotations.DestructiveHint {
 		return false
 	}
-	if annotations.IdempotentHint != nil && !*annotations.IdempotentHint {
-		return false
-	}
+	// MCP defines idempotentHint only for mutating tools
+	// (readOnlyHint=false). GitHub's hosted MCP currently sends false for this
+	// otherwise irrelevant hint on reads, so it must not contradict an explicit
+	// readOnlyHint=true advertisement.
 	return true
 }
 

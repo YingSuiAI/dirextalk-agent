@@ -9,7 +9,7 @@ import (
 const (
 	// CurrentReleaseVersion is the only checked-in formal release identity.
 	// Local builds still report dev unless the build injects this exact value.
-	CurrentReleaseVersion = "v1.0.203"
+	CurrentReleaseVersion = "v1.0.204"
 	SchemaCompatVersion   = 1
 )
 
