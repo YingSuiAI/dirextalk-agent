@@ -203,6 +203,50 @@ func TestCoreConversationPersistsAndEnforcesSafeHistoricalExecutionPolicyPostgre
 	assertFinalizationFormatAttemptCeilingPostgres(t, h)
 }
 
+func TestTurnSteerSupersededModelMigrationRepairsV205OrphanPostgres(t *testing.T) {
+	h := openTurnDBAtVersion(t, 30)
+	ctx := context.Background()
+	turn := startAdmittedTurn(t, h, turnCommand())
+	lease, err := h.store.ClaimTurn(ctx, turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.store.PrepareTurnModel(ctx, lease, core.DefaultTurnDispatchDirective()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.pool.Exec(ctx, `UPDATE core_conversation_turns
+		SET state='accepted',dispatch_state='',dispatch_epoch=0,model_dispatch_started_at=NULL,
+		lease_id=NULL,lease_expires_at=NULL,lease_epoch=lease_epoch+1,revision=revision+1
+		WHERE turn_id=$1`, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.pool.Exec(ctx, `UPDATE core_conversations SET title='' WHERE conversation_id=$1`, turn.ConversationID); err != nil {
+		t.Fatal(err)
+	}
+	if err = ApplyMigrations(ctx, h.pool, h.store.instanceID.String()); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	var finishedAt *time.Time
+	if err = h.pool.QueryRow(ctx, `SELECT state,finished_at FROM core_conversation_model_attempts WHERE turn_id=$1`, turn.ID).Scan(&state, &finishedAt); err != nil {
+		t.Fatal(err)
+	}
+	if state != "superseded" || finishedAt == nil {
+		t.Fatalf("repaired attempt state=%q finished_at=%v", state, finishedAt)
+	}
+	conversation, err := h.store.LoadConversation(ctx, turn.ConversationID)
+	if err != nil || conversation.Title != turn.Prompt {
+		t.Fatalf("repaired conversation title=%q err=%v", conversation.Title, err)
+	}
+	replacement, err := h.store.ClaimTurn(ctx, turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.store.PrepareTurnModel(ctx, replacement, core.DefaultTurnDispatchDirective()); err != nil {
+		t.Fatalf("prepare replacement after migration repair: %v", err)
+	}
+}
+
 func TestCoreConversationNewBudgetPhysicalRetryAccountingPostgres(t *testing.T) {
 	h := openTurnDB(t)
 	ctx := context.Background()
@@ -309,6 +353,21 @@ func TestCoreConversationFirstTurnPersistsProvisionalTitleAtAcceptancePostgres(t
 	conversation, err = h.store.LoadConversation(context.Background(), existingID)
 	if err != nil || conversation.Title != "existing empty conversation" || conversation.Revision != revision {
 		t.Fatalf("existing accepted conversation=%+v err=%v", conversation, err)
+	}
+
+	precreatedID := uuid.NewString()
+	if err = h.store.CreateConversation(context.Background(), core.Conversation{ID: precreatedID, Revision: 1}, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	cmd = turnCommand()
+	cmd.ConversationID = precreatedID
+	cmd.Prompt = "precreated conversation without expected revision"
+	if _, err = h.store.StartTurn(context.Background(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err = h.store.LoadConversation(context.Background(), precreatedID)
+	if err != nil || conversation.Title != "precreated conversation without" || conversation.Revision != 1 {
+		t.Fatalf("precreated accepted conversation=%+v err=%v", conversation, err)
 	}
 }
 
@@ -577,6 +636,13 @@ func TestCoreConversationTurnSteerInvalidatesProviderLeaseAndCommitsGuidancePost
 	if err = h.store.RecordTurnModelResult(context.Background(), staleLease, core.ModelRunResult{}); err != core.ErrConflict {
 		t.Fatalf("stale provider result err=%v", err)
 	}
+	var supersededState string
+	if err = h.pool.QueryRow(context.Background(), `SELECT state FROM core_conversation_model_attempts WHERE turn_id=$1 AND attempt_sequence=1`, turn.ID).Scan(&supersededState); err != nil {
+		t.Fatal(err)
+	}
+	if supersededState != "superseded" {
+		t.Fatalf("steered model attempt state=%q, want superseded", supersededState)
+	}
 	replayed, applied, err := h.store.RequestTurnSteer(context.Background(), steer)
 	if err != nil || replayed.Revision != steered.Revision {
 		t.Fatalf("steer replay=%+v err=%v", replayed, err)
@@ -596,6 +662,15 @@ func TestCoreConversationTurnSteerInvalidatesProviderLeaseAndCommitsGuidancePost
 	lease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err = h.store.PrepareTurnModel(context.Background(), lease, core.DefaultTurnDispatchDirective()); err != nil {
+		t.Fatalf("prepare replacement model after steer: %v", err)
+	}
+	if err = h.store.BindTurnModelRuntime(context.Background(), lease, *lease.Turn.RuntimeSnapshot); err != nil {
+		t.Fatalf("bind replacement model runtime after steer: %v", err)
+	}
+	if err = h.store.RecordTurnModelResult(context.Background(), lease, core.ModelRunResult{}); err != nil {
+		t.Fatalf("record replacement model after steer: %v", err)
 	}
 	response := core.ChatResponse{RequestID: cmd.RequestID, ConversationID: turn.ConversationID, Revision: 2, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "concise answer", ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC()}}
 	if _, err = h.store.CommitTurn(context.Background(), lease, response); err != nil {

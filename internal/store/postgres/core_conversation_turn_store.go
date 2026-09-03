@@ -241,6 +241,15 @@ func (s *CoreConversationStore) startTurn(ctx context.Context, c core.TurnStartC
 		if _, err = tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,$2,1,$3,$3) ON CONFLICT(conversation_id) DO NOTHING`, c.ConversationID, core.ProvisionalConversationTitle(c.Prompt), now); err != nil {
 			return core.Turn{}, err
 		}
+		if _, err = tx.Exec(ctx, `UPDATE core_conversations SET title=$2
+			WHERE conversation_id=$1 AND deleted_at IS NULL AND title=''
+			AND NOT EXISTS (SELECT 1 FROM core_messages WHERE conversation_id=$1)`, c.ConversationID, core.ProvisionalConversationTitle(c.Prompt)); err != nil {
+			return core.Turn{}, err
+		}
+		var title string
+		if err = tx.QueryRow(ctx, `SELECT title FROM core_conversations WHERE conversation_id=$1 AND deleted_at IS NULL`, c.ConversationID).Scan(&title); err != nil || strings.TrimSpace(title) == "" {
+			return core.Turn{}, core.ErrConflict
+		}
 	}
 	turnID := c.TurnID
 	if turnID == "" {
@@ -2121,6 +2130,11 @@ func (s *CoreConversationStore) RequestTurnSteer(ctx context.Context, c core.Tur
 		}
 		turn, getErr := s.GetTurn(ctx, c.TurnID)
 		return turn, false, getErr
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_conversation_model_attempts
+		SET state='superseded',failure_code='',rate_limited=false,retry_after_ms=0,finished_at=$2
+		WHERE turn_id=$1 AND state='dispatched'`, c.TurnID, now); err != nil {
+		return core.Turn{}, false, err
 	}
 	result, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',dispatch_state='',dispatch_epoch=0,dispatch_result_json=NULL,
 		model_active_milliseconds=model_active_milliseconds+CASE WHEN model_dispatch_started_at IS NULL THEN 0 ELSE GREATEST(0,FLOOR(EXTRACT(EPOCH FROM ($2-model_dispatch_started_at))*1000))::bigint END,

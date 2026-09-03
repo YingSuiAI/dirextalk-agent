@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.206
+
+1. Resume same-turn follow-ups by durably superseding the interrupted model attempt, including automatic repair of turns stranded by v1.0.205.
+2. Give every accepted first turn an immediate title derived from the user's opening message, including conversations pre-created by the client, and repair existing untitled turn history during upgrade.
+
 ## v1.0.205
 
 1. Start an accepted same-turn follow-up without waiting for a superseded model provider that ignores cancellation, while preserving durable conversation, tool, and Worker context and retaining ordinary stop completion semantics.

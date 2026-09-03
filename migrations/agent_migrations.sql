@@ -2905,3 +2905,29 @@ ALTER TABLE core_conversation_model_dispatch_directives
     DROP CONSTRAINT core_conversation_model_dispatch_attempt_sequence_check,
     ADD CONSTRAINT core_conversation_model_dispatch_attempt_sequence_check CHECK (attempt_sequence BETWEEN 1 AND 54);
 -- dirextalk-agent migration end 000030_turn_execution_budget.up.sql
+-- dirextalk-agent migration begin 000031_turn_steer_supersedes_model.up.sql
+-- A same-turn follow-up invalidates the provider lease and gives the in-flight
+-- model attempt an explicit terminal state. Repair attempts left active by
+-- Agent v1.0.205 after the turn dispatch itself had already been reset.
+ALTER TABLE core_conversation_model_attempts
+    DROP CONSTRAINT core_conversation_model_attempts_state_check,
+    ADD CONSTRAINT core_conversation_model_attempts_state_check CHECK (state IN ('dispatched','retryable','completed','uncertain','superseded'));
+UPDATE core_conversation_model_attempts AS attempt
+SET state='superseded',failure_code='',rate_limited=false,retry_after_ms=0,finished_at=clock_timestamp()
+FROM core_conversation_turns AS turn
+WHERE attempt.turn_id=turn.turn_id
+  AND attempt.state='dispatched'
+  AND turn.dispatch_state <> 'dispatched';
+WITH first_turn AS (
+    SELECT DISTINCT ON (conversation_id) conversation_id,prompt
+    FROM core_conversation_turns
+    WHERE btrim(prompt) <> ''
+    ORDER BY conversation_id,created_at,turn_id
+)
+UPDATE core_conversations AS conversation
+SET title=left(regexp_replace(btrim(first_turn.prompt),'\s+',' ','g'),32),updated_at=clock_timestamp()
+FROM first_turn
+WHERE conversation.conversation_id=first_turn.conversation_id
+  AND conversation.deleted_at IS NULL
+  AND conversation.title='';
+-- dirextalk-agent migration end 000031_turn_steer_supersedes_model.up.sql
