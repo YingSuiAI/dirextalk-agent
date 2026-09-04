@@ -168,6 +168,7 @@ func TestFinalizationDeadlineIsNotOrdinaryBudgetExhaustion(t *testing.T) {
 		return ModelRunResult{}, ctx.Err()
 	})
 	service, store, turn := newTerminalFinalizationFixture(t, model)
+	service.finalizationDuration = 60 * time.Millisecond
 	intent := NewTurnFinalizationIntent(TurnFinalizationToolBudget)
 	store.finalization = &intent
 	service.executeTurn(context.Background(), turn.ID)

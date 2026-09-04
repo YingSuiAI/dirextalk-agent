@@ -296,7 +296,7 @@ seconds; other transport failures and all post-payload failures are never
 replayed. Once ordinary provider work stops because of one of these
 classifications, invalid or empty terminal output, no-progress tool use, or an
 ordinary model/tool budget, Core persists a versioned finalization intent. The
-intent admits one separate tools-disabled provider attempt with a 30-second
+intent admits one separate tools-disabled provider attempt with a two-minute
 deadline, plus only the single quarantined-format recovery described below.
 It does not consume the ordinary active-time budget. A
 provider dispatch already started under that intent is never replayed after
@@ -562,24 +562,25 @@ correctable-tool force so correction cannot suppress terminal synthesis. Tool,
 Worker, and confirmation execution or waiting do not consume the admitted
 model-active clock. Worker-owned runtime, token, output, remote-process, and
 Task deadlines remain separate from the main conversation ReAct policy. Every
-physical provider dispatch has nonrenewing deadlines measured from dispatch
-start: 15 seconds to the first nonempty payload, 90 seconds to the first
-meaningful action, and five minutes absolute. Reasoning may satisfy the first
-deadline; keepalives, empty deltas, reasoning, and incomplete tool-call
-fragments cannot satisfy the second. User-visible text, a complete valid tool
-call, or a normal runner return is meaningful. The admitted remaining
+physical provider dispatch has a 15-second first-nonempty-payload deadline, a
+90-second progress-idle deadline before its first meaningful action, and a
+five-minute absolute deadline. Nonempty reasoning and incomplete tool-call
+fragments satisfy the first deadline and renew the progress-idle window;
+keepalives, empty deltas, and whitespace do not. User-visible text, a complete
+valid tool call, or a normal runner return is meaningful and ends the
+progress-idle check. The admitted remaining
 model-active clock is stronger and owns equal expirations as
 `model_budget_exhausted`; a dispatch-local expiry is `provider_timeout`. A
 durable finalization intent normally reserves one additional physical attempt,
 so the ledger permits at most sequence 53 without changing the admitted
 ordinary fuse. The finalization attempt has no intrinsic tools, extensions,
-extension snapshots, or forced tool; uses an independent 30-second deadline;
+extension snapshots, or forced tool; uses an independent two-minute deadline;
 and is not added to ordinary model-active time. It never retries for an
 ordinary failure. The sole exception is a quarantined
 `MODEL_TOOL_CALL_FORMAT_INVALID` response from a turn whose admitted runtime
 originally exposed structured tools: one live recovery attempt copies the same
 tools-disabled directive, receives final-answer-only protocol guidance, and may
-reach sequence 54 with a fresh full 30-second window. It never restores tool
+reach sequence 54 with a fresh full two-minute window. It never restores tool
 authority. Final-window expiry is `finalization_timeout`, not ordinary budget
 exhaustion; earlier provider deadlines remain provider failures. Intent
 persistence before dispatch allows one attempt after restart. Persistence of a
@@ -588,8 +589,11 @@ retryable, dispatched, or uncertain final attempt after process recovery
 instead completes through deterministic fallback. A valid final response is
 committed normally. Provider failure,
 invalid/empty output, or a tool call from the final attempt produces a bounded
-four-section Markdown response that preserves durable partial deltas and the
-existing task, plan, reference, tool-summary, and tool-result projections.
+response that returns durable partial deltas directly when available, otherwise
+uses concise same-language tool summaries or a retry message. Internal terminal
+codes remain durable metadata and are not rendered in user-facing content; the
+existing task, plan, reference, tool-summary, and tool-result projections remain
+preserved.
 Completed fallback is emitted through the normal `done` response, not a failed
 turn. Completed public GET/list metadata omits retained internal attempt-error
 diagnostics, while authoritative history retains the fallback body and validated

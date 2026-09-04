@@ -38,13 +38,38 @@ func assertUsefulTerminalMarkdown(t *testing.T, turn Turn, partial string) {
 		t.Fatalf("turn did not complete with a response: %+v", turn)
 	}
 	content := turn.Response.Message.Content
-	for _, heading := range []string{"## Completed work", "## Best conclusion", "## Incomplete items", "## Stop reason"} {
-		if !strings.Contains(content, heading) {
-			t.Fatalf("terminal Markdown omitted %q: %q", heading, content)
+	if strings.TrimSpace(content) == "" {
+		t.Fatal("terminal response was empty")
+	}
+	for _, internal := range []string{"## Stop reason", "finalization_timeout", "model_dispatch_uncertain", "provider_failure"} {
+		if strings.Contains(content, internal) {
+			t.Fatalf("terminal response exposed internal status %q: %q", internal, content)
 		}
 	}
 	if partial != "" && !strings.Contains(content, partial) {
-		t.Fatalf("terminal Markdown lost partial output %q: %q", partial, content)
+		t.Fatalf("terminal response lost the usable partial output; want %q in %q", partial, content)
+	}
+}
+
+func TestTerminalFallbackUsesConversationLanguageWithoutInternalTimeout(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		prompt    string
+		want      string
+		summaries []string
+	}{
+		{name: "Chinese", prompt: "帮我生成一个网页", want: "这次没有生成可用结果，请重试。"},
+		{name: "English", prompt: "Build a web page", want: "No usable result was generated this time. Please try again."},
+		{name: "Chinese tool result", prompt: "帮我搜索", summaries: []string{"已找到三条结果"}, want: "已完成的工具结果：\n\n- 已找到三条结果"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := terminalFallbackMarkdown("", test.prompt, test.summaries); got != test.want {
+				t.Fatalf("fallback=%q, want %q", got, test.want)
+			}
+		})
+	}
+	if got := terminalFallbackMarkdown("已经完成的结果", "帮我处理", nil); got != "已经完成的结果" {
+		t.Fatalf("partial output was wrapped or replaced: %q", got)
 	}
 }
 

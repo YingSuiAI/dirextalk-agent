@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.208
+
+1. Treat ongoing provider reasoning and incomplete structured tool-call fragments as progress while retaining the 90-second idle and five-minute absolute dispatch bounds.
+2. Extend tools-disabled finalization to two minutes for slower models, then return durable partial output or concise same-language results without exposing internal timeout diagnostics.
+
 ## v1.0.207
 
 1. Keep accepted turns bound to their admitted prompt and intrinsic tool contracts across runtime upgrades, rejecting incompatible replacements instead of changing an in-flight turn.

@@ -476,6 +476,15 @@ support.
 
 ## Verified evidence
 
+- On **2026-09-04**, nonempty reasoning and incomplete structured tool-call
+  fragments became progress for the 90-second pre-action idle watchdog while
+  the five-minute absolute dispatch bound remains unchanged. Tools-disabled
+  finalization now has an independent two-minute window. If it still cannot
+  synthesize a final answer, Core returns durable partial output directly or a
+  concise same-language tool summary/retry message; internal timeout and stop
+  codes remain in durable diagnostics instead of the conversation bubble.
+  Focused Core regressions cover progressing reasoning, deadline expiry,
+  same-language fallback, partial output, Worker evidence, and format recovery.
 - On **2026-09-03**, the Native conversation policy increased to 52 ordinary
   model dispatches, one cumulative model-active hour, and 48 tool calls,
   superseding the older preset entries below without rewriting admitted

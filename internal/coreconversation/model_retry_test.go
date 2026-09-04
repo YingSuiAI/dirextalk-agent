@@ -280,7 +280,8 @@ func TestTurnFallsBackAfterToolAndFinalizationFormatRecoveryFail(t *testing.T) {
 	}
 	content := store.turn.Response.Message.Content
 	if store.finalization == nil || store.finalization.Reason != TurnFinalizationToolCallFormat ||
-		!strings.Contains(content, ModelToolCallFormatInvalidCode) || strings.Contains(content, "DSML") ||
+		content != "No usable result was generated this time. Please try again." ||
+		store.turn.TerminalCode != ModelToolCallFormatInvalidCode || strings.Contains(content, "DSML") ||
 		!model.requests[3].ToolCallFormatRecovery {
 		t.Fatalf("finalization=%+v content=%q final_retry=%+v", store.finalization, content, model.requests[3])
 	}
@@ -398,7 +399,8 @@ func TestToolFreeFinalizationStopsAfterSecondFormatFailure(t *testing.T) {
 		t.Fatalf("calls=%d attempts=%d turn=%+v", model.callCount(), store.turn.ModelDispatchCount, store.turn)
 	}
 	content := store.turn.Response.Message.Content
-	if !strings.Contains(content, ModelToolCallFormatInvalidCode) || strings.Contains(content, "DSML") {
+	if content != "No usable result was generated this time. Please try again." ||
+		store.turn.TerminalCode != ModelToolCallFormatInvalidCode || strings.Contains(content, "DSML") {
 		t.Fatalf("response=%q", content)
 	}
 	for _, event := range store.events {

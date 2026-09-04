@@ -227,6 +227,9 @@ func TestTurnModelBudgetUsesStabilityCaps(t *testing.T) {
 	if MaxAdmittedTurnModelActiveDuration != time.Hour {
 		t.Fatalf("model active duration cap=%s", MaxAdmittedTurnModelActiveDuration)
 	}
+	if MaxTurnFinalizationDuration != 2*time.Minute {
+		t.Fatalf("finalization duration=%s", MaxTurnFinalizationDuration)
+	}
 }
 
 func TestTurnModelDeadlineConstantsUseExistingProviderBounds(t *testing.T) {
@@ -263,6 +266,26 @@ func TestTurnModelDeadlineGuardPreservesParentCancellation(t *testing.T) {
 				t.Fatalf("parent cancellation was reclassified as %v", failure)
 			}
 		})
+	}
+}
+
+func TestTurnModelDeadlineGuardTreatsOngoingReasoningAsProgress(t *testing.T) {
+	ctx, guard := newTurnModelDeadlineGuard(context.Background(), turnModelDeadlines{
+		firstPayload:     20 * time.Millisecond,
+		meaningfulAction: 50 * time.Millisecond,
+		singleDispatch:   250 * time.Millisecond,
+	}, 300*time.Millisecond)
+
+	for index := 0; index < 4; index++ {
+		guard.observe(ModelDelta{ReasoningContent: "working"})
+		time.Sleep(30 * time.Millisecond)
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("ongoing reasoning was canceled after update %d: %v", index+1, context.Cause(ctx))
+		}
+	}
+	guard.observe(ModelDelta{Text: "final answer"})
+	if failure := guard.finish(); failure != nil {
+		t.Fatalf("progressing dispatch failed: %v", failure)
 	}
 }
 

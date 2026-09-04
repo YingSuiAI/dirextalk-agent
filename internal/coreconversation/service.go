@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -23,7 +24,7 @@ const (
 	MaxAdmittedTurnModelActiveDuration = time.Hour
 	MaxTurnFinalizationDispatches      = 1
 	MaxTurnFinalizationFormatRetries   = 1
-	MaxTurnFinalizationDuration        = 30 * time.Second
+	MaxTurnFinalizationDuration        = 2 * time.Minute
 	turnModelFirstPayloadDeadline      = 15 * time.Second
 	turnModelMeaningfulActionDeadline  = 90 * time.Second
 	turnModelSingleDispatchDeadline    = 5 * time.Minute
@@ -64,19 +65,23 @@ func defaultTurnModelDeadlines() turnModelDeadlines {
 // turnModelDeadlineGuard owns only one physical provider dispatch. The
 // admitted model-active context remains the stronger outer budget.
 type turnModelDeadlineGuard struct {
-	mu               sync.Mutex
-	parent           context.Context
-	cancel           context.CancelCauseFunc
-	firstPayload     *time.Timer
-	meaningfulAction *time.Timer
-	singleDispatch   *time.Timer
-	failure          error
-	closed           bool
+	mu                       sync.Mutex
+	parent                   context.Context
+	cancel                   context.CancelCauseFunc
+	firstPayload             *time.Timer
+	meaningfulAction         *time.Timer
+	meaningfulActionDuration time.Duration
+	meaningfulActionEpoch    uint64
+	singleDispatch           *time.Timer
+	failure                  error
+	closed                   bool
 }
 
 func newTurnModelDeadlineGuard(parent context.Context, deadlines turnModelDeadlines, outerLimit time.Duration) (context.Context, *turnModelDeadlineGuard) {
 	ctx, cancel := context.WithCancelCause(parent)
 	guard := &turnModelDeadlineGuard{parent: parent, cancel: cancel}
+	guard.mu.Lock()
+	defer guard.mu.Unlock()
 	install := func(duration time.Duration, failure error) *time.Timer {
 		if duration <= 0 || outerLimit > 0 && duration >= outerLimit {
 			return nil
@@ -84,9 +89,38 @@ func newTurnModelDeadlineGuard(parent context.Context, deadlines turnModelDeadli
 		return time.AfterFunc(duration, func() { guard.expire(failure) })
 	}
 	guard.firstPayload = install(deadlines.firstPayload, errTurnModelFirstPayloadDeadline)
-	guard.meaningfulAction = install(deadlines.meaningfulAction, errTurnModelMeaningfulActionDeadline)
+	if deadlines.meaningfulAction > 0 && (outerLimit <= 0 || deadlines.meaningfulAction < outerLimit) {
+		guard.meaningfulActionDuration = deadlines.meaningfulAction
+		guard.armMeaningfulActionLocked()
+	}
 	guard.singleDispatch = install(deadlines.singleDispatch, errTurnModelSingleDispatchDeadline)
 	return ctx, guard
+}
+
+func (g *turnModelDeadlineGuard) armMeaningfulActionLocked() {
+	if g.meaningfulActionDuration <= 0 || g.closed || g.failure != nil {
+		return
+	}
+	g.meaningfulActionEpoch++
+	epoch := g.meaningfulActionEpoch
+	g.meaningfulAction = time.AfterFunc(g.meaningfulActionDuration, func() {
+		g.mu.Lock()
+		if g.closed || g.failure != nil || g.parent.Err() != nil || epoch != g.meaningfulActionEpoch {
+			g.mu.Unlock()
+			return
+		}
+		g.failure = errTurnModelMeaningfulActionDeadline
+		g.mu.Unlock()
+		g.cancel(errTurnModelMeaningfulActionDeadline)
+	})
+}
+
+func (g *turnModelDeadlineGuard) resetMeaningfulActionLocked() {
+	if g.meaningfulActionDuration <= 0 || g.meaningfulAction == nil {
+		return
+	}
+	g.meaningfulAction.Stop()
+	g.armMeaningfulActionLocked()
 }
 
 func (g *turnModelDeadlineGuard) expire(failure error) {
@@ -111,6 +145,11 @@ func meaningfulProviderAction(delta ModelDelta) bool {
 	return delta.PrivateProgress || strings.TrimSpace(delta.Text) != "" || delta.ToolCall != nil && delta.ToolCall.Validate() == nil
 }
 
+func providerWorkProgress(delta ModelDelta) bool {
+	return strings.TrimSpace(delta.ReasoningContent) != "" || delta.ToolCall != nil &&
+		(delta.ToolCall.ID != "" || delta.ToolCall.Name != "" || delta.ToolCall.Arguments != "")
+}
+
 func (g *turnModelDeadlineGuard) observe(delta ModelDelta) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -124,6 +163,9 @@ func (g *turnModelDeadlineGuard) observe(delta ModelDelta) {
 	if meaningfulProviderAction(delta) && g.meaningfulAction != nil {
 		g.meaningfulAction.Stop()
 		g.meaningfulAction = nil
+		g.meaningfulActionEpoch++
+	} else if providerWorkProgress(delta) {
+		g.resetMeaningfulActionLocked()
 	}
 }
 
@@ -148,34 +190,35 @@ func (g *turnModelDeadlineGuard) finish() error {
 }
 
 type Service struct {
-	store               Store
-	models              ModelRunner
-	extensions          ExtensionResolver
-	intrinsics          IntrinsicResolver
-	staticSites         StaticSitePublisher
-	staticSiteOrigin    string
-	memoryRecall        MemoryRecallResolver
-	titleGenerator      ConversationTitleGenerator
-	snapshots           SnapshotProfileResolver
-	now                 func() time.Time
-	turnLeaseTTL        time.Duration
-	turns               TurnStore
-	lifecycleCtx        context.Context
-	lifecycleCancel     context.CancelFunc
-	workers             sync.WaitGroup
-	cancelMu            sync.Mutex
-	cancelSignals       map[string]chan struct{}
-	steerSignals        map[string]chan struct{}
-	runtimeMu           sync.Mutex
-	runtime             map[string]*turnRuntime
-	turnOrderingMu      sync.Mutex
-	turnOrdering        map[string]*turnDeltaOrdering
-	modelDeadlines      turnModelDeadlines
-	memoryRecallTimeout time.Duration
-	continuityMu        sync.Mutex
-	continuity          map[string]string
-	convergenceMu       sync.Mutex
-	convergenceObserver ConvergenceObserver
+	store                Store
+	models               ModelRunner
+	extensions           ExtensionResolver
+	intrinsics           IntrinsicResolver
+	staticSites          StaticSitePublisher
+	staticSiteOrigin     string
+	memoryRecall         MemoryRecallResolver
+	titleGenerator       ConversationTitleGenerator
+	snapshots            SnapshotProfileResolver
+	now                  func() time.Time
+	turnLeaseTTL         time.Duration
+	turns                TurnStore
+	lifecycleCtx         context.Context
+	lifecycleCancel      context.CancelFunc
+	workers              sync.WaitGroup
+	cancelMu             sync.Mutex
+	cancelSignals        map[string]chan struct{}
+	steerSignals         map[string]chan struct{}
+	runtimeMu            sync.Mutex
+	runtime              map[string]*turnRuntime
+	turnOrderingMu       sync.Mutex
+	turnOrdering         map[string]*turnDeltaOrdering
+	modelDeadlines       turnModelDeadlines
+	finalizationDuration time.Duration
+	memoryRecallTimeout  time.Duration
+	continuityMu         sync.Mutex
+	continuity           map[string]string
+	convergenceMu        sync.Mutex
+	convergenceObserver  ConvergenceObserver
 }
 
 type turnModelOutcome struct {
@@ -253,11 +296,18 @@ func NewService(store Store, models ModelRunner, extensions ExtensionResolver, p
 		extensions = noopExtensions{}
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
-	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, steerSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}, modelDeadlines: defaultTurnModelDeadlines(), memoryRecallTimeout: turnMemoryRecallTimeout, continuity: map[string]string{}, convergenceObserver: slogConvergenceObserver{}}
+	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, turnLeaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, steerSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}, turnOrdering: map[string]*turnDeltaOrdering{}, modelDeadlines: defaultTurnModelDeadlines(), finalizationDuration: MaxTurnFinalizationDuration, memoryRecallTimeout: turnMemoryRecallTimeout, continuity: map[string]string{}, convergenceObserver: slogConvergenceObserver{}}
 	if turns, ok := store.(TurnStore); ok {
 		s.turns = turns
 	}
 	return s, nil
+}
+
+func (s *Service) turnFinalizationDuration() time.Duration {
+	if s.finalizationDuration > 0 {
+		return s.finalizationDuration
+	}
+	return MaxTurnFinalizationDuration
 }
 
 func (s *Service) takeProviderContinuity(turnID string) string {
@@ -1571,7 +1621,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		turn.ModelActiveDuration = prepared.ModelActiveDuration
 		remaining := executionPolicy.MaxModelActiveDuration() - prepared.ModelActiveDuration
 		if finalizing {
-			remaining = MaxTurnFinalizationDuration
+			remaining = s.turnFinalizationDuration()
 		}
 		if remaining <= 0 {
 			if !finalizing {
@@ -2270,7 +2320,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			turn.ModelActiveDuration = prepared.ModelActiveDuration
 			modelDeadlineCap = executionPolicy.MaxModelActiveDuration() - prepared.ModelActiveDuration
 			if finalizing {
-				modelDeadlineCap = MaxTurnFinalizationDuration
+				modelDeadlineCap = s.turnFinalizationDuration()
 			}
 			runAttempt(retryFormatRecovery)
 			retryFormatRecovery = false
@@ -2417,8 +2467,8 @@ func (s *Service) commitTurnFinalizationFallback(ctx context.Context, lease Turn
 		return err
 	}
 	historyTasks, historyPlans, historyReferences, historySummaries, historyResults := turnToolMetadata(conv.Messages[persistedMessageCount:])
-	content := terminalFallbackMarkdown(partial, len(historyResults), intent.Reason, code, summary)
-	if workerContent, ok := workerOutcomeFallback(historyResults, intent.Reason, code, summary); ok {
+	content := terminalFallbackMarkdown(partial, lease.Turn.Prompt, historySummaries)
+	if workerContent, ok := workerOutcomeFallback(historyResults, lease.Turn.Prompt); ok {
 		content = workerContent
 	}
 	finalReferences := answerReferences(content, historyReferences, conv.Messages)
@@ -2475,33 +2525,64 @@ func (s *Service) loadTurnPartialOutput(ctx context.Context, turnID string) (str
 	return boundedTerminalText(strings.TrimSpace(output.String()), MaxContentBytes/2), nil
 }
 
-func terminalFallbackMarkdown(partial string, toolResults int, reason TurnFinalizationReason, code, summary string) string {
+func terminalFallbackMarkdown(partial, prompt string, toolSummaries []string) string {
 	partial = strings.TrimSpace(partial)
-	completed := "- The request was accepted, but no final model text was produced."
-	best := "- No reliable additional conclusion can be made from the available output."
 	if partial != "" {
-		completed = partial
-		best = "- The partial output above is the best available conclusion."
-	} else if toolResults > 0 {
-		completed = fmt.Sprintf("- Collected and retained %d durable tool result(s).", toolResults)
-		best = "- The durable tool evidence was retained, but a reliable synthesis was not available."
+		return boundedTerminalText(partial, MaxContentBytes)
 	}
-	return formatTerminalFallback(completed, best, "- A complete final answer to the request remains unavailable.", reason, code, summary)
+	if len(toolSummaries) > 0 {
+		var content strings.Builder
+		wroteSummary := false
+		switch terminalResponseLanguage(prompt) {
+		case "zh":
+			content.WriteString("已完成的工具结果：")
+		case "ja":
+			content.WriteString("完了したツールの結果：")
+		case "ko":
+			content.WriteString("완료된 도구 결과:")
+		default:
+			content.WriteString("Completed tool results:")
+		}
+		for _, summary := range toolSummaries {
+			summary = strings.TrimSpace(summary)
+			if summary != "" {
+				content.WriteString("\n\n- ")
+				content.WriteString(boundedTerminalText(summary, MaxSummaryBytes))
+				wroteSummary = true
+			}
+		}
+		if wroteSummary {
+			return boundedTerminalText(content.String(), MaxContentBytes)
+		}
+	}
+	switch terminalResponseLanguage(prompt) {
+	case "zh":
+		return "这次没有生成可用结果，请重试。"
+	case "ja":
+		return "今回は利用できる結果を生成できませんでした。もう一度お試しください。"
+	case "ko":
+		return "이번에는 사용할 수 있는 결과를 생성하지 못했습니다. 다시 시도해 주세요."
+	default:
+		return "No usable result was generated this time. Please try again."
+	}
 }
 
-func formatTerminalFallback(completed, best, incomplete string, reason TurnFinalizationReason, code, summary string) string {
-	if strings.TrimSpace(summary) == "" {
-		code, summary = finalizationStop(reason)
+func terminalResponseLanguage(prompt string) string {
+	hasHan := false
+	for _, current := range prompt {
+		switch {
+		case unicode.In(current, unicode.Hiragana, unicode.Katakana):
+			return "ja"
+		case unicode.In(current, unicode.Hangul):
+			return "ko"
+		case unicode.In(current, unicode.Han):
+			hasHan = true
+		}
 	}
-	stop := boundedTerminalText(strings.TrimSpace(summary), MaxSummaryBytes)
-	if strings.TrimSpace(code) != "" {
-		stop = "`" + boundedTerminalText(strings.TrimSpace(code), 128) + "`: " + stop
+	if hasHan {
+		return "zh"
 	}
-	content := "## Completed work\n\n" + completed +
-		"\n\n## Best conclusion\n\n" + best +
-		"\n\n## Incomplete items\n\n" + incomplete + "\n\n" +
-		"## Stop reason\n\n- " + stop
-	return boundedTerminalText(content, MaxContentBytes)
+	return "en"
 }
 
 func boundedTerminalText(value string, limit int) string {
