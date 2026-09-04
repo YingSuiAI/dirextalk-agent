@@ -64,34 +64,42 @@ func TestProjectCloudWorkerRunReferencesRequiresDurableRunPresence(t *testing.T)
 	conversation := func() core.Conversation {
 		return core.Conversation{ID: "conversation", Messages: []core.Message{{References: []core.Reference{
 			{Kind: "execution_plan", TaskID: "task", PlanID: "plan"},
+			{Kind: "execution_artifact", RecordKind: "cloud_worker", ExecutionID: "execution", ArtifactID: "artifact"},
 			reference,
 			{Kind: "execution_run", RunID: "generic-run"},
 		}}}}
 	}
 
 	available := conversation()
-	projectCloudWorkerRunReferences(&available, map[string]cloudworker.Execution{"run": execution})
-	if len(available.Messages[0].References) != 3 {
+	projectCloudWorkerRunReferences(&available, map[string]cloudworker.Execution{"run": execution}, nil)
+	if len(available.Messages[0].References) != 4 {
 		t.Fatalf("available references = %+v", available.Messages[0].References)
 	}
 
 	missing := conversation()
-	projectCloudWorkerRunReferences(&missing, nil)
+	projectCloudWorkerRunReferences(&missing, nil, nil)
 	if references := missing.Messages[0].References; len(references) != 2 || references[0].Kind != "execution_plan" || references[1].RunID != "generic-run" {
 		t.Fatalf("missing authority references = %+v", references)
 	}
 
 	historical := conversation()
 	execution.Revision++
-	projectCloudWorkerRunReferences(&historical, map[string]cloudworker.Execution{"run": execution})
-	if len(historical.Messages[0].References) != 3 {
+	projectCloudWorkerRunReferences(&historical, map[string]cloudworker.Execution{"run": execution}, nil)
+	if len(historical.Messages[0].References) != 4 {
 		t.Fatalf("historical references = %+v", historical.Messages[0].References)
 	}
 
 	foreign := conversation()
 	execution.ConversationID = "other-conversation"
-	projectCloudWorkerRunReferences(&foreign, map[string]cloudworker.Execution{"run": execution})
+	projectCloudWorkerRunReferences(&foreign, map[string]cloudworker.Execution{"run": execution}, nil)
 	if len(foreign.Messages[0].References) != 2 {
 		t.Fatalf("foreign references = %+v", foreign.Messages[0].References)
+	}
+
+	destroyed := conversation()
+	execution.ConversationID = "conversation"
+	projectCloudWorkerRunReferences(&destroyed, map[string]cloudworker.Execution{"run": execution}, map[string]struct{}{"run": {}})
+	if references := destroyed.Messages[0].References; len(references) != 2 || references[0].Kind != "execution_plan" || references[1].RunID != "generic-run" {
+		t.Fatalf("destroyed Worker references = %+v", references)
 	}
 }

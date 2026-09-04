@@ -17,6 +17,12 @@ import (
 	"github.com/google/uuid"
 )
 
+type cloudWorkerReferenceSourceFunc func(context.Context, string, uint64, string) (bool, error)
+
+func (resolve cloudWorkerReferenceSourceFunc) CloudWorkerReferenceAvailable(ctx context.Context, ownerID string, accountGeneration uint64, workerID string) (bool, error) {
+	return resolve(ctx, ownerID, accountGeneration, workerID)
+}
+
 func completionFixture() (*core.ModelRunResult, cloudworker.Plan, cloudworker.Execution) {
 	call := core.ToolCall{ID: uuid.NewString(), Name: coremodel.IntrinsicCloudWorkerProposeToolName, Arguments: `{}`}
 	plan := cloudworker.Plan{OwnerID: "owner", AccountGeneration: 7, TaskID: uuid.NewString(), PlanID: uuid.NewString(), ExecutionID: uuid.NewString(), Revision: 1, Status: "waiting_user", WorkloadKind: cloudworker.WorkloadJob}
@@ -198,6 +204,37 @@ func TestSSHWorkerCompletionPersistsArtifactThroughTerminalAndHistory(t *testing
 	last := history.Messages[len(history.Messages)-1]
 	if last.Validate() != nil || last.Content != response.Message.Content || !reflect.DeepEqual(last.References, result.References) {
 		t.Fatalf("history=%+v", last)
+	}
+
+	var resolvedWorkerID string
+	h.conversation.SetCloudWorkerReferenceSource(cloudWorkerReferenceSourceFunc(
+		func(_ context.Context, ownerID string, accountGeneration uint64, workerID string) (bool, error) {
+			if ownerID != run.Plan.OwnerID || accountGeneration != run.Plan.AccountGeneration {
+				t.Fatalf("reference authority = %q/%d", ownerID, accountGeneration)
+			}
+			resolvedWorkerID = workerID
+			return false, nil
+		},
+	))
+	retiredHistory, err := h.conversation.LoadConversation(h.ctx, offer.Plan.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runReferences, artifactReferences, planReferences int
+	for _, message := range retiredHistory.Messages {
+		for _, reference := range message.References {
+			switch reference.Kind {
+			case "execution_run":
+				runReferences++
+			case "execution_artifact":
+				artifactReferences++
+			case "execution_plan":
+				planReferences++
+			}
+		}
+	}
+	if resolvedWorkerID != run.Plan.ExecutionID || runReferences != 0 || artifactReferences != 0 || planReferences != 2 || retiredHistory.Messages[len(retiredHistory.Messages)-1].Content != response.Message.Content {
+		t.Fatalf("resolved_worker=%q run_refs=%d artifact_refs=%d plan_refs=%d history=%+v", resolvedWorkerID, runReferences, artifactReferences, planReferences, retiredHistory)
 	}
 }
 

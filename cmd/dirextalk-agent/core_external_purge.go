@@ -38,6 +38,17 @@ func (c *retainedWorkerDeprovisionChecker) CheckDeprovision(ctx context.Context,
 	return nil
 }
 
+func (c *retainedWorkerDeprovisionChecker) CloudWorkerReferenceAvailable(ctx context.Context, ownerID string, accountGeneration uint64, workerID string) (bool, error) {
+	if c == nil || c.store == nil || ctx == nil || strings.TrimSpace(ownerID) == "" || accountGeneration == 0 || strings.TrimSpace(workerID) == "" {
+		return false, coredeprovision.ErrInvalid
+	}
+	worker, found, err := c.store.LoadWorker(ctx, workerID)
+	if err != nil || !found {
+		return false, err
+	}
+	return worker.OwnerID == ownerID && worker.AccountGeneration == accountGeneration && worker.Phase != sshworker.WorkerDestroyed, nil
+}
+
 func (c *retainedWorkerDeprovisionChecker) DeleteCredentialIfUnused(ctx context.Context, credentialID string, deleteCredential func() error) (bool, error) {
 	if c == nil || c.store == nil {
 		return false, coredeprovision.ErrInvalid

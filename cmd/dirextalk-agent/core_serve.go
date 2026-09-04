@@ -158,6 +158,9 @@ func serveCore(cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("initialize conversation store: %w", err)
 	}
+	if retainedWorkers != nil {
+		conversationStore.SetCloudWorkerReferenceSource(retainedWorkers)
+	}
 	conversation, err := coreconversation.NewService(conversationStore, modelRunner, nil, coreconversation.AdaptProfileResolver(profiles))
 	if err != nil {
 		return fmt.Errorf("initialize conversation service: %w", err)

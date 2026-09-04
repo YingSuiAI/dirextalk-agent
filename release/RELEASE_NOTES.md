@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+1. Prevent login, restart, and second-device history reloads from recreating destroyed Cloud Worker cards by checking persisted Worker lifecycle authority and omitting the retired run and deleted artifact references while preserving conversation text and valid retained-Worker results.
+
 ## v1.0.209
 
 1. Stop restarted, reauthenticated, and second-device clients from polling retired Cloud Worker references by omitting runs missing from durable conversation history while preserving valid historical results and unrelated references.

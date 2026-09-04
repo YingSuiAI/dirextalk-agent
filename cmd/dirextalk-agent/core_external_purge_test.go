@@ -137,6 +137,38 @@ func TestCoreExternalPurgeFailsClosedOnInvalidWorkerState(t *testing.T) {
 	}
 }
 
+func TestRetainedWorkerHistoryReferenceRequiresCurrentWorkerAuthority(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		worker     *sshworker.WorkerRecord
+		owner      string
+		generation uint64
+		want       bool
+	}{
+		{name: "retained", worker: workerFixturePtr(retainedWorkerFixture(sshworker.WorkerIdle, "owner", 7)), owner: "owner", generation: 7, want: true},
+		{name: "destroyed", worker: workerFixturePtr(retainedWorkerFixture(sshworker.WorkerDestroyed, "owner", 7)), owner: "owner", generation: 7},
+		{name: "missing", owner: "owner", generation: 7},
+		{name: "foreign owner", worker: workerFixturePtr(retainedWorkerFixture(sshworker.WorkerIdle, "other", 7)), owner: "owner", generation: 7},
+		{name: "foreign generation", worker: workerFixturePtr(retainedWorkerFixture(sshworker.WorkerIdle, "owner", 6)), owner: "owner", generation: 7},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			checker, err := composeRetainedWorkerDeprovisionChecker(config.Config{CoreExtensionStagingRoot: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.worker != nil {
+				if err = checker.store.SaveWorker(context.Background(), *test.worker); err != nil {
+					t.Fatal(err)
+				}
+			}
+			available, err := checker.CloudWorkerReferenceAvailable(context.Background(), test.owner, test.generation, "worker-a")
+			if err != nil || available != test.want {
+				t.Fatalf("available=%t err=%v, want %t", available, err, test.want)
+			}
+		})
+	}
+}
+
 func retainedWorkerFixture(phase sshworker.WorkerPhase, owner string, generation uint64) sshworker.WorkerRecord {
 	return sshworker.WorkerRecord{
 		WorkerID: "worker-a", OwnerID: owner, AccountGeneration: generation, Phase: phase,

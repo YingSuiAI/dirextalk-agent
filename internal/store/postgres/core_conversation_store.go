@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -18,7 +19,15 @@ import (
 
 type CoreConversationStore struct {
 	*Store
-	memoryCapture atomic.Bool
+	memoryCapture              atomic.Bool
+	cloudWorkerReferenceSource CloudWorkerReferenceSource
+}
+
+// CloudWorkerReferenceSource resolves the persisted Worker lifecycle behind a
+// durable execution. Execution rows remain as audit history after their Worker
+// is destroyed, so they cannot by themselves authorize a live history card.
+type CloudWorkerReferenceSource interface {
+	CloudWorkerReferenceAvailable(context.Context, string, uint64, string) (bool, error)
 }
 
 func (s *CoreConversationStore) ProjectModelContext(ctx context.Context, conversation core.Conversation, ownerID string, accountGeneration uint64) (core.Conversation, error) {
@@ -97,6 +106,15 @@ func NewCoreConversationStore(store *Store) (*CoreConversationStore, error) {
 		return nil, errors.New("postgres store is required")
 	}
 	return &CoreConversationStore{Store: store}, nil
+}
+
+// SetCloudWorkerReferenceSource binds the local durable Worker state used by
+// conversation history. It is configured once during service composition,
+// before the store is published to concurrent callers.
+func (s *CoreConversationStore) SetCloudWorkerReferenceSource(source CloudWorkerReferenceSource) {
+	if s != nil {
+		s.cloudWorkerReferenceSource = source
+	}
 }
 
 // EnableMemoryCapture starts the durable post-turn consolidation outbox only
@@ -371,24 +389,89 @@ func (s *CoreConversationStore) projectAvailableCloudWorkerRuns(ctx context.Cont
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	projectCloudWorkerRunReferences(conversation, executions)
+	unavailableRuns := make(map[string]struct{})
+	if s.cloudWorkerReferenceSource != nil {
+		workerAvailability := make(map[cloudWorkerReferenceIdentity]bool)
+		for runID, execution := range executions {
+			if execution.WorkerID == "" {
+				continue
+			}
+			identity := cloudWorkerReferenceIdentity{
+				OwnerID: execution.OwnerID, AccountGeneration: execution.AccountGeneration, WorkerID: execution.WorkerID,
+			}
+			available, resolved := workerAvailability[identity]
+			if !resolved {
+				available, err = s.cloudWorkerReferenceSource.CloudWorkerReferenceAvailable(
+					ctx, identity.OwnerID, identity.AccountGeneration, identity.WorkerID,
+				)
+				if err != nil {
+					slog.Warn("Cloud Worker history reference authority is unavailable", "worker_id", identity.WorkerID, "error", err)
+					available = false
+				}
+				workerAvailability[identity] = available
+			}
+			if !available {
+				unavailableRuns[runID] = struct{}{}
+			}
+		}
+	}
+	projectCloudWorkerRunReferences(conversation, executions, unavailableRuns)
 	return nil
 }
 
-func projectCloudWorkerRunReferences(conversation *core.Conversation, executions map[string]cloudworker.Execution) {
+type cloudWorkerReferenceIdentity struct {
+	OwnerID           string
+	AccountGeneration uint64
+	WorkerID          string
+}
+
+func projectCloudWorkerRunReferences(conversation *core.Conversation, executions map[string]cloudworker.Execution, unavailableRuns map[string]struct{}) {
 	if conversation == nil {
 		return
+	}
+	unavailableExecutions := make(map[string]struct{}, len(unavailableRuns))
+	for runID := range unavailableRuns {
+		if execution, available := executions[runID]; available {
+			unavailableExecutions[execution.ExecutionID] = struct{}{}
+		}
+	}
+	for _, message := range conversation.Messages {
+		for _, reference := range message.References {
+			if reference.Kind != "execution_run" || reference.TaskID == "" {
+				continue
+			}
+			execution, available := executions[reference.RunID]
+			if !available || execution.ConversationID != conversation.ID ||
+				reference.AccountGeneration != execution.AccountGeneration ||
+				reference.TaskID != execution.TaskID || reference.PlanID != execution.PlanID ||
+				reference.ExecutionID != execution.ExecutionID ||
+				(reference.WorkerID != "" && reference.WorkerID != execution.WorkerID) {
+				unavailableExecutions[reference.ExecutionID] = struct{}{}
+			}
+		}
 	}
 	for messageIndex := range conversation.Messages {
 		references := conversation.Messages[messageIndex].References
 		projected := make([]core.Reference, 0, len(references))
 		for _, reference := range references {
+			if reference.Kind == "execution_artifact" && reference.RecordKind == "cloud_worker" {
+				if _, unavailable := unavailableExecutions[reference.ExecutionID]; unavailable {
+					continue
+				}
+			}
 			if reference.Kind != "execution_run" || reference.TaskID == "" {
 				projected = append(projected, reference)
 				continue
 			}
 			execution, available := executions[reference.RunID]
-			if !available || execution.ConversationID != conversation.ID {
+			if !available || execution.ConversationID != conversation.ID ||
+				reference.AccountGeneration != execution.AccountGeneration ||
+				reference.TaskID != execution.TaskID || reference.PlanID != execution.PlanID ||
+				reference.ExecutionID != execution.ExecutionID ||
+				(reference.WorkerID != "" && reference.WorkerID != execution.WorkerID) {
+				continue
+			}
+			if _, unavailable := unavailableRuns[reference.RunID]; unavailable {
 				continue
 			}
 			projected = append(projected, reference)
