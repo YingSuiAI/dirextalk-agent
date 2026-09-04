@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.209
+
+1. Stop restarted, reauthenticated, and second-device clients from polling retired Cloud Worker references by omitting missing or drifted run authority from conversation history while preserving valid runs and unrelated references.
+
 ## v1.0.208
 
 1. Treat ongoing provider reasoning and incomplete structured tool-call fragments as progress while retaining the 90-second idle and five-minute absolute dispatch bounds.
