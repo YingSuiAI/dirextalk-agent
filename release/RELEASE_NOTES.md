@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.210
+
 1. Prevent login, restart, and second-device history reloads from recreating destroyed Cloud Worker cards by checking persisted Worker lifecycle authority and omitting the retired run and deleted artifact references while preserving conversation text and valid retained-Worker results.
 
 ## v1.0.209
